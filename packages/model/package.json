@@ -3,6 +3,11 @@
   "version": "0.0.0",
   "description": "Core model primitives for Latkit.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lukelowry/latkit.git",
+    "directory": "packages/model"
+  },
   "license": "MIT",
   "sideEffects": false,
   "files": [

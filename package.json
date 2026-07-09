@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.30.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lukelowry/latkit.git"
+  },
   "engines": {
     "node": ">=22"
   },
@@ -16,7 +20,8 @@
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "quality": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test"
+    "quality": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+    "release": "pnpm build && changeset publish"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.0",
