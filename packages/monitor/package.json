@@ -1,6 +1,6 @@
 {
   "name": "@latkit/monitor",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "WebGPU trace monitor for Latkit.",
   "type": "module",
   "repository": {
