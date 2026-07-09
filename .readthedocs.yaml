@@ -8,9 +8,10 @@ build:
   jobs:
     post_install:
       - corepack enable
-      - pnpm install --frozen-lockfile
+      - corepack prepare pnpm@10.30.0 --activate
+      - corepack pnpm install --frozen-lockfile
     pre_build:
-      - pnpm docs:api
+      - corepack pnpm docs:api
 
 python:
   install:
