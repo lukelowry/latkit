@@ -32,8 +32,14 @@ function normalizeLinkTarget(target, file) {
   const hash = hashIndex >= 0 ? normalized.slice(hashIndex) : '';
   if (!pathname.endsWith('.md')) return normalized;
 
-  const referenceAbsolute = path.resolve(referenceRoot, pathname);
-  if (!existsSync(referenceAbsolute)) return normalized;
+  const candidates = [
+    path.resolve(path.dirname(file), pathname),
+    path.resolve(referenceRoot, pathname),
+  ];
+  const referenceAbsolute = candidates.find(
+    (candidate) => candidate.startsWith(referenceRoot) && existsSync(candidate),
+  );
+  if (!referenceAbsolute) return normalized;
 
   const relative = toPosixPath(path.relative(path.dirname(file), referenceAbsolute));
   return `${relative || path.basename(referenceAbsolute)}${hash}`;

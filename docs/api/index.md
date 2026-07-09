@@ -12,9 +12,9 @@ The API reference is generated from the published package entrypoints with TypeD
 ## Common entrypoints
 
 - [`createNetwork`](reference/network/index.md#createnetwork) creates a network canvas controller.
-- [`Topology`](reference/network/index/interfaces/Topology.md) describes CPU-side graph data.
+- [`Topology`](reference/network/index.md) describes CPU-side graph data in the network package reference.
 - [`createMonitor`](reference/monitor/index.md#createmonitor) creates a monitor canvas controller.
-- [`Series`](reference/monitor/index/interfaces/Series.md) describes packed monitor samples.
+- [`Series`](reference/monitor/index.md) describes packed monitor samples in the monitor package reference.
 - [`colormap`](reference/colormaps/index.md#colormap) returns a normalized color transfer function.
 
 ```{toctree}
@@ -23,6 +23,5 @@ The API reference is generated from the published package entrypoints with TypeD
 :glob:
 
 reference/index
-reference/*/index
-reference/*/index/interfaces/*
+reference/**/*
 ```
