@@ -1,3 +1,3 @@
 # @latkit/network
 
-Network primitives for Latkit.
+WebGPU network renderer for Latkit.

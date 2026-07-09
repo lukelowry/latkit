@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <title>@latkit/monitor example</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div>
+          <h1>latkit / monitor</h1>
+          <div id="status">loading</div>
+        </div>
+        <div class="toolbar" aria-label="stream controls">
+          <button
+            id="run-toggle"
+            class="icon-button"
+            type="button"
+            aria-label="Pause stream"
+            title="Pause stream"
+          >
+            <span aria-hidden="true">II</span>
+          </button>
+          <button
+            id="reset"
+            class="icon-button"
+            type="button"
+            aria-label="Reset stream"
+            title="Reset stream"
+          >
+            <span aria-hidden="true">R</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="monitor-shell" aria-label="telemetry monitor">
+          <div id="monitor-stage"></div>
+          <div class="readout">
+            <div>
+              <span>hover</span>
+              <strong id="hover-readout">-</strong>
+            </div>
+            <div>
+              <span>pick</span>
+              <strong id="pick-readout">-</strong>
+            </div>
+          </div>
+        </section>
+
+        <aside class="panel">
+          <section>
+            <label>signal</label>
+            <div id="signals" class="segmented"></div>
+          </section>
+
+          <section>
+            <label>domain</label>
+            <label class="switch">
+              <input id="auto-range" type="checkbox" />
+              <span>auto</span>
+            </label>
+          </section>
+
+          <section>
+            <label for="rate">rate</label>
+            <div class="range-row">
+              <input id="rate" type="range" min="2" max="30" step="1" value="10" />
+              <output id="rate-value" for="rate">10 hz</output>
+            </div>
+          </section>
+
+          <section>
+            <label>colormap</label>
+            <div id="colormaps" class="swatches"></div>
+          </section>
+
+          <section>
+            <label>focus</label>
+            <div id="selected" class="selected">none</div>
+          </section>
+
+          <section class="hot-section">
+            <label>hot elements</label>
+            <div id="hot-list" class="hot-list"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

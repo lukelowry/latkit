@@ -1,0 +1,32 @@
+{
+  "name": "@latkit/monitor",
+  "version": "0.0.0",
+  "description": "WebGPU trace monitor for Latkit.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --project @latkit/monitor",
+    "bench": "vitest bench --run --project @latkit/monitor"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.60",
+    "jsdom": "^26.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

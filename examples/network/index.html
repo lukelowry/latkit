@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>@latkit/network example</title>
+  </head>
+  <body>
+    <div id="stage"></div>
+
+    <div id="hud">
+      <header>
+        <h1>latkit / network</h1>
+        <div id="status">loading</div>
+      </header>
+
+      <section>
+        <label>topology</label>
+        <div id="topologies" class="row"></div>
+      </section>
+
+      <section>
+        <label>projection</label>
+        <div id="projections" class="row"></div>
+      </section>
+
+      <section>
+        <label>layers</label>
+        <div id="toggles" class="row"></div>
+      </section>
+
+      <section>
+        <label>colormap</label>
+        <div id="colormaps" class="row"></div>
+      </section>
+
+      <section id="readout">
+        <label>pick</label>
+        <div class="pick"><span>hover</span><span class="hover">-</span></div>
+        <div class="pick"><span>select</span><span class="select">-</span></div>
+      </section>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

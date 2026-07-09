@@ -1,0 +1,27 @@
+{
+  "name": "@latkit/colormaps",
+  "version": "0.0.0",
+  "description": "Colormap catalog for Latkit.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --project @latkit/colormaps"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

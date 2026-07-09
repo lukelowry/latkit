@@ -1,0 +1,771 @@
+import type { ProjectionMode } from '../projections.js';
+import type { Viewport } from '../camera/projection.js';
+import type { Uniforms } from '../webgpu/uniforms.js';
+import {
+  W_BASE_EDGE_WIDTH,
+  W_DASH_PERIOD,
+  W_HEIGHT_CENTER,
+  W_HEIGHT_OUT_MIN,
+  W_HEIGHT_OUT_SCALE,
+  W_HEIGHT_SCALE,
+  W_HEIGHT_WORLD_SCALE,
+  W_VERTEX_LOD,
+  W_VIEWPORT_X,
+  W_VIEWPORT_Y,
+  W_V_HEIGHT_MODE,
+  W_V_SIZE_MIN,
+  W_V_SIZE_MODE,
+  W_V_SIZE_SCALE,
+} from '../webgpu/uniforms.js';
+import { readEncodedSegmentsInfo, type EncodedSegments } from '../segments/index.js';
+import { SEGMENT_RECORD_WORDS, W as SEG_W } from '../segments/wire.js';
+import { readEncodedTopologyInfo, type Bounds, type EncodedTopology } from '../topology/index.js';
+import { W as TOPO_W } from '../topology/wire.js';
+import { VISUAL } from '../visual.js';
+import { Grid } from './grid.js';
+import {
+  createPoint,
+  mixPoint,
+  projectorFor,
+  MIN_CLIP_W,
+  type ProjectedPoint,
+  type Projector,
+} from './project.js';
+
+/**
+ * Live dependencies the picker reads at query time.
+ *
+ * The uniform buffer is the same one the shaders render from, so pose,
+ * visual scale, and channel normalization cannot drift between picked and
+ * painted geometry.
+ */
+export interface PickerDeps {
+  /** Packed render uniforms shared with the GPU shaders. */
+  readonly uniforms: Uniforms;
+  /** Current projection mode used to select the matching CPU projector. */
+  mode(): ProjectionMode;
+  /**
+   * Camera cursor unprojection from CSS px and CSS viewport.
+   *
+   * Used only to seed the coord-space query region; exact tests are forward
+   * projections through the same shader mirror used for rendering.
+   */
+  unproject(sx: number, sy: number, vp: Viewport): readonly [number, number] | null;
+  /** Raw bound channel values (the same arrays the GPU uploaded). */
+  values(channel: 'vertexHeight' | 'vertexSize' | 'edgeDash'): Float32Array | null;
+}
+
+/** One screen-space pick request against the current scene. */
+export interface PickQuery {
+  /** Cursor in CSS px within the canvas. */
+  readonly sx: number;
+  readonly sy: number;
+  /** Pick target radius in CSS px. */
+  readonly radiusPx: number;
+  /** CSS viewport of the canvas. */
+  readonly vp: Viewport;
+  /** Whether vertices are eligible for this query. */
+  readonly vertices: boolean;
+  /** Whether edges are eligible for this query. */
+  readonly edges: boolean;
+  /** Whether height poles are eligible for this query. */
+  readonly poles: boolean;
+}
+
+export type PickResult = readonly [kind: 'vertex' | 'edge', index: number];
+
+/**
+ * Largest screen overhang of any pickable primitive around its anchor:
+ * vertex radius cap times the size-channel multiplier cap.
+ */
+const BILLBOARD_PAD_PX = VISUAL.maxVertexRadiusPx * VISUAL.vertexSizeMaxMul;
+/**
+ * Headroom on the sampled screen-to-coord Jacobian for curvature between
+ * sample points. The brute-force parity property test polices this.
+ */
+const JACOBIAN_SAFETY = 1.5;
+/**
+ * Extra headroom on the height-shell pad.
+ *
+ * The anisotropy ratio is sampled at the pick reach but the shell walk
+ * extends beyond it, where grazing stretch keeps growing. Also policed by
+ * the property test.
+ */
+const HEIGHT_PAD_SAFETY = 2;
+/** Jacobian probe distance in CSS px. */
+const PROBE_PX = 4;
+/**
+ * Anisotropy cap for the height-shell pad.
+ *
+ * Past this the pose is degenerate (grazing horizon) and the query falls
+ * back to covering the scene.
+ */
+const JACOBIAN_RATIO_CAP = 64;
+/** Binary-search steps when the cursor unprojects off the surface. */
+const SEED_SEARCH_STEPS = 18;
+/**
+ * Hull stretch beyond which one bounding circle gives way to a walk of
+ * minor-radius circles along the major axis.
+ */
+const ELLIPSE_THRESHOLD = 4;
+/**
+ * Cap on walked circles.
+ *
+ * A footprint stretched past this covers so much of the scene that a full
+ * scan is cheaper than the walk's overhead.
+ */
+const ELLIPSE_MAX_STEPS = 64;
+
+/** Coord-space circle used to enumerate grid candidates. */
+interface QueryCircle {
+  /** Circle center x in topology coord space. */
+  readonly x: number;
+  /** Circle center y in topology coord space. */
+  readonly y: number;
+  /** Circle radius in topology coord units. */
+  readonly r: number;
+}
+
+/** Typed views over the encoded segment records. */
+interface SegmentViews {
+  /** Unsigned word view for ids and packed parameter ranges. */
+  readonly u32: Uint32Array;
+  /** Float word view for endpoint coordinates. */
+  readonly f32: Float32Array;
+  /** Segment-record start offset, in 32-bit words. */
+  readonly recordsOffset: number;
+}
+
+/** Static topology and coord-space acceleration data used by exact picking. */
+interface Scene {
+  /** Number of vertices in `coords`. */
+  readonly vertexCount: number;
+  /** Number of encoded segment records. */
+  readonly segmentCount: number;
+  /** Interleaved topology coordinates as x/y pairs. */
+  readonly coords: Float32Array;
+  /** Encoded segment views. */
+  readonly seg: SegmentViews;
+  /** Topology coordinate bounds. */
+  readonly bounds: Bounds;
+  /** Diagonal extent used as the full-scene query radius. */
+  readonly extent: number;
+  /** Periodic x span, or 0 for non-wrapping coordinate spaces. */
+  readonly wrapX: number;
+  /** Coord-space grid over vertices. */
+  readonly vertexGrid: Grid;
+  /** Coord-space grid over segment records. */
+  readonly segmentGrid: Grid;
+}
+
+/**
+ * Synchronous CPU picker over a static coord-space index.
+ *
+ * The scene (vertex grid + segment grid over the encoded wire blobs) builds
+ * once per topology; camera motion never touches it. A pick unprojects the
+ * cursor, derives a conservative coord-space radius from a numerically
+ * sampled screen-to-coord Jacobian, enumerates grid candidates, and runs
+ * exact screen-space tests that mirror the render shaders: LOD floor, size
+ * multipliers, height displacement, pole capsules, dash gaps, positive-w
+ * clipping, horizon visibility, and vertex-beats-edge ranking.
+ */
+export class Picker {
+  private scene: Scene | null = null;
+  private readonly projectors = new Map<ProjectionMode, Projector>();
+  private readonly f32: Float32Array;
+  private readonly u32: Uint32Array;
+
+  // Scratch for exact tests; a pick allocates nothing.
+  private readonly pA = createPoint();
+  private readonly pB = createPoint();
+  private readonly pM = createPoint();
+
+  /** Create a picker bound to live render dependencies. */
+  constructor(private readonly deps: PickerDeps) {
+    this.f32 = new Float32Array(deps.uniforms.raw);
+    this.u32 = deps.uniforms.rawU32;
+  }
+
+  /**
+   * Replace the indexed scene.
+   *
+   * Passing null topology or segments clears the picker. Encoded buffers are
+   * viewed in place; callers must not mutate them while they are active.
+   */
+  setScene(topology: EncodedTopology | null, segments: EncodedSegments | null): void {
+    if (!topology || !segments) {
+      this.scene = null;
+      return;
+    }
+    const info = readEncodedTopologyInfo(topology);
+    const segInfo = readEncodedSegmentsInfo(segments);
+    const topoU32 = new Uint32Array(topology.buffer, topology.byteOffset, topology.byteLength / 4);
+    const coords = new Float32Array(
+      topology.buffer,
+      topology.byteOffset + topoU32[TOPO_W.vCoords]! * 4,
+      info.vertexCount * 2,
+    );
+    const segU32 = new Uint32Array(segments.buffer, segments.byteOffset, segments.byteLength / 4);
+    const seg: SegmentViews = {
+      u32: segU32,
+      f32: new Float32Array(segments.buffer, segments.byteOffset, segments.byteLength / 4),
+      recordsOffset: segU32[SEG_W.records]!,
+    };
+    const bounds = info.bounds;
+    const wrapX = isGeoBounds(bounds) ? 360 : 0;
+    this.scene = {
+      vertexCount: info.vertexCount,
+      segmentCount: segInfo.segmentCount,
+      coords,
+      seg,
+      bounds,
+      extent: Math.hypot(bounds.xMax - bounds.xMin, bounds.yMax - bounds.yMin) || 1,
+      wrapX,
+      vertexGrid: Grid.points(coords, info.vertexCount, bounds),
+      segmentGrid: Grid.segments(
+        seg.f32,
+        seg.recordsOffset,
+        SEGMENT_RECORD_WORDS,
+        4,
+        6,
+        segInfo.segmentCount,
+        bounds,
+        wrapX,
+      ),
+    };
+  }
+
+  /** Best hit under the cursor; a vertex beats any edge. */
+  pick(q: PickQuery): PickResult | null {
+    const r = this.query(q);
+    return r.vertex ?? r.edge;
+  }
+
+  /** Best vertex then best edge; the contract tap-cycling relies on. */
+  pickAll(q: PickQuery): PickResult[] {
+    const r = this.query(q);
+    const hits: PickResult[] = [];
+    if (r.vertex) hits.push(r.vertex);
+    if (r.edge) hits.push(r.edge);
+    return hits;
+  }
+
+  // Query core.
+
+  /** Run one query and return independently ranked best vertex and edge hits. */
+  private query(q: PickQuery): { vertex: PickResult | null; edge: PickResult | null } {
+    const scene = this.scene;
+    const miss = { vertex: null, edge: null };
+    if (!scene || q.vp.w <= 0 || q.vp.h <= 0) return miss;
+    if (this.f32[W_VIEWPORT_X]! <= 0 || this.f32[W_VIEWPORT_Y]! <= 0) return miss;
+
+    const mode = this.deps.mode();
+    const proj = this.projector(mode);
+
+    // Device-px cursor and radius (uniform viewport is device px).
+    const dprX = this.f32[W_VIEWPORT_X]! / q.vp.w;
+    const dprY = this.f32[W_VIEWPORT_Y]! / q.vp.h;
+    const cursorX = q.sx * dprX;
+    const cursorY = q.sy * dprY;
+    const radiusDev = Math.max(1, q.radiusPx * Math.max(dprX, dprY));
+
+    const region = this.queryRegion(q, scene, mode);
+    if (!region) return miss;
+
+    const heights = this.u32[W_V_HEIGHT_MODE] !== 0 ? this.deps.values('vertexHeight') : null;
+    const sizes = this.u32[W_V_SIZE_MODE] !== 0 ? this.deps.values('vertexSize') : null;
+    const dashes = this.f32[W_DASH_PERIOD]! > 0 ? this.deps.values('edgeDash') : null;
+    const poles = q.poles && heights !== null && mode !== 'flat';
+
+    const state: TestState = {
+      proj,
+      scene,
+      cursorX,
+      cursorY,
+      radiusDev,
+      heights,
+      sizes,
+      dashes,
+      vertices: q.vertices,
+      poles,
+      lod: this.f32[W_VERTEX_LOD]!,
+      dashPeriod: this.f32[W_DASH_PERIOD]!,
+      baseEdgeWidth: this.f32[W_BASE_EDGE_WIDTH]!,
+      bestVertexD2: Infinity,
+      bestVertexId: -1,
+      bestEdgeD2: Infinity,
+      bestEdgeId: -1,
+    };
+
+    // Grid stamps dedupe within one circle; across circles the min-tracking
+    // accept functions make repeats idempotent. A region that covers the
+    // scene (the horizon-band worst case) scans ids directly: same exact
+    // tests, none of the cell-enumeration overhead.
+    if (region.length === 1 && region[0]!.r >= scene.extent) {
+      if (q.vertices || poles) {
+        for (let id = 0; id < scene.vertexCount; id++) this.testVertex(state, id);
+      }
+      if (q.edges) {
+        for (let id = 0; id < scene.segmentCount; id++) this.testSegment(state, id);
+      }
+    } else {
+      const testVertex = (id: number): void => this.testVertex(state, id);
+      const testSegment = (id: number): void => this.testSegment(state, id);
+      for (const circle of region) {
+        for (const cx of this.seamMirrors(scene, circle.x, circle.r)) {
+          if (q.vertices || poles) scene.vertexGrid.each(cx, circle.y, circle.r, testVertex);
+          if (q.edges) scene.segmentGrid.each(cx, circle.y, circle.r, testSegment);
+        }
+      }
+    }
+
+    return {
+      vertex: state.bestVertexId >= 0 ? ['vertex', state.bestVertexId] : null,
+      edge: state.bestEdgeId >= 0 ? ['edge', state.bestEdgeId] : null,
+    };
+  }
+
+  /** Coord-space query circles covering everything whose projection can
+   *  land within the pick radius, or null when nothing can (cursor far off
+   *  the surface). Strongly anisotropic footprints, such as grazing tilt or
+   *  the globe's limb, walk small circles along the stretched axis instead
+   *  of inflating one bounding circle to the whole scene. Degenerate poses
+   *  clamp to the scene extent; the grid then degrades to a full scan,
+   *  which stays exact. */
+  private queryRegion(
+    q: PickQuery,
+    scene: Scene,
+    mode: ProjectionMode,
+  ): readonly QueryCircle[] | null {
+    const { vp } = q;
+    let sx = q.sx;
+    let sy = q.sy;
+    let reachPx =
+      q.radiusPx +
+      BILLBOARD_PAD_PX /
+        Math.min(this.f32[W_VIEWPORT_X]! / vp.w, this.f32[W_VIEWPORT_Y]! / vp.h, 1);
+
+    const heightsActive = mode !== 'flat' && this.u32[W_V_HEIGHT_MODE] !== 0;
+    let seed = this.deps.unproject(sx, sy, vp);
+    if (!seed) {
+      // Cursor is off the surface (above tilt's horizon / off the globe).
+      // Find the nearest on-surface point; beyond the pick reach nothing can
+      // be hit unless heights are bound, where lifted geometry can
+      // overhang the surface's screen footprint, so the padded query below
+      // must run regardless.
+      const found = this.seedNearSurface(sx, sy, vp);
+      if (!found) return this.coverAll(scene);
+      if (!heightsActive && found.offPx > reachPx) return null;
+      sx = found.sx;
+      sy = found.sy;
+      seed = found.seed;
+      reachPx += found.offPx;
+    }
+
+    // Sample the screen-to-coord map at the probe distance and at the full
+    // pick reach in the four screen directions, keeping the coord-space
+    // delta vectors (short probes normalized up to the reach). The vector
+    // hull bounds the footprint; perspective stretch toward the horizon
+    // makes it strongly anisotropic. When a probe falls off the surface
+    // because the seed sits against the horizon rim, retry once from a point
+    // pushed toward the viewport center, widening the reach by the push;
+    // past that the footprint genuinely reaches the horizon and only a
+    // full scan is conservative.
+    const vecs: [number, number][] = [];
+    let jacMax = 0;
+    let jacMin = Infinity;
+    const cx = vp.w / 2;
+    const cy = vp.h / 2;
+    for (let attempt = 0; ; attempt++) {
+      vecs.length = 0;
+      let probesOk = true;
+      for (const d of [PROBE_PX, reachPx]) {
+        for (const [dx, dy] of [
+          [d, 0],
+          [-d, 0],
+          [0, d],
+          [0, -d],
+        ] as const) {
+          const p = this.deps.unproject(sx + dx, sy + dy, vp);
+          if (!p) {
+            probesOk = false;
+            break;
+          }
+          const vx = wrapDelta(p[0] - seed[0], scene.wrapX) * (reachPx / d);
+          const vy = (p[1] - seed[1]) * (reachPx / d);
+          vecs.push([vx, vy]);
+          const w = Math.hypot(vx, vy) / reachPx;
+          if (w > jacMax) jacMax = w;
+          if (w > 0 && w < jacMin) jacMin = w;
+        }
+        if (!probesOk) break;
+      }
+      if (probesOk) break;
+      if (attempt >= 1) return this.coverAll(scene);
+      const away = Math.hypot(cx - sx, cy - sy);
+      if (away < 1) return this.coverAll(scene);
+      const push = Math.min(reachPx * 2, away);
+      sx += ((cx - sx) / away) * push;
+      sy += ((cy - sy) / away) * push;
+      const pushed = this.deps.unproject(sx, sy, vp);
+      if (!pushed) return this.coverAll(scene);
+      seed = pushed;
+      reachPx += push;
+      jacMax = 0;
+      jacMin = Infinity;
+    }
+    if (!(jacMax > 0) || !Number.isFinite(jacMax)) return this.coverAll(scene);
+
+    // Height displacement widens the footprint: walking the cursor ray up
+    // the height shell moves its surface intersection by up to
+    // h / tan(elevation) in coord space, and the sampled anisotropy ratio
+    // bounds 1 / sin(elevation) from above. Tilt heights are world = coord
+    // units; globe heights are radial world units on the unit sphere, which
+    // convert to surface degrees. Flat is orthographic and pays nothing.
+    let pad = 0;
+    if (heightsActive) {
+      const outMin = this.f32[W_HEIGHT_OUT_MIN]!;
+      const outScale = this.f32[W_HEIGHT_OUT_SCALE]!;
+      const maxAbsH = Math.max(Math.abs(outMin), Math.abs(outMin + outScale));
+      const toCoord = mode === 'globe' ? 180 / Math.PI : 1;
+      const hCoord = maxAbsH * this.f32[W_HEIGHT_WORLD_SCALE]! * toCoord;
+      const ratio = jacMin > 0 ? jacMax / jacMin : Infinity;
+      if (!(ratio <= JACOBIAN_RATIO_CAP)) return this.coverAll(scene);
+      pad = hCoord * ratio * HEIGHT_PAD_SAFETY;
+    }
+
+    return this.circlesForHull(scene, seed[0], seed[1], vecs, pad);
+  }
+
+  /** Cover the probe-vector hull around the seed with query circles. Nearly
+   *  isotropic hulls get one circle; stretched hulls walk minor-radius
+   *  circles along the major axis (asymmetric because grazing stretch is
+   *  one-sided), so the enumerated area tracks the true footprint instead
+   *  of its bounding circle. */
+  private circlesForHull(
+    scene: Scene,
+    x: number,
+    y: number,
+    vecs: readonly (readonly [number, number])[],
+    pad: number,
+  ): readonly QueryCircle[] {
+    let major = 0;
+    let mx = 0;
+    let my = 0;
+    for (const [vx, vy] of vecs) {
+      const len = Math.hypot(vx, vy);
+      if (len > major) {
+        major = len;
+        mx = vx / len;
+        my = vy / len;
+      }
+    }
+
+    let along = 0; // farthest reach with the major direction
+    let against = 0; // farthest reach opposing it
+    let minor = 0; // farthest reach perpendicular to it
+    for (const [vx, vy] of vecs) {
+      const a = vx * mx + vy * my;
+      const p = Math.abs(vx * -my + vy * mx);
+      along = Math.max(along, a);
+      against = Math.max(against, -a);
+      minor = Math.max(minor, p);
+    }
+    along = along * JACOBIAN_SAFETY + pad;
+    against = against * JACOBIAN_SAFETY + pad;
+    minor = minor * JACOBIAN_SAFETY + pad;
+
+    const bounding = Math.max(along, against);
+    if (!Number.isFinite(bounding) || bounding > scene.extent) return [this.coverAllCircle(scene)];
+    if (bounding <= minor * ELLIPSE_THRESHOLD) {
+      return [{ x, y, r: bounding }];
+    }
+
+    const steps = Math.ceil((along + against) / minor);
+    if (steps > ELLIPSE_MAX_STEPS) return [this.coverAllCircle(scene)];
+    const circles: QueryCircle[] = [];
+    for (let i = 0; i <= steps; i++) {
+      const t = -against + ((along + against) * i) / steps;
+      circles.push({ x: x + mx * t, y: y + my * t, r: minor * 1.5 });
+    }
+    return circles;
+  }
+
+  /** Return the full-scene fallback as a one-circle query region. */
+  private coverAll(scene: Scene): readonly QueryCircle[] {
+    return [this.coverAllCircle(scene)];
+  }
+
+  /** Build a coord-space circle large enough to enumerate the whole scene. */
+  private coverAllCircle(scene: Scene): QueryCircle {
+    return {
+      x: (scene.bounds.xMin + scene.bounds.xMax) / 2,
+      y: (scene.bounds.yMin + scene.bounds.yMax) / 2,
+      r: scene.extent,
+    };
+  }
+
+  /** Nearest on-surface screen point to an off-surface cursor. Probes
+   *  toward the viewport center (the radial nearest direction for the
+   *  globe's centered disc) and straight down the screen (the nearest
+   *  direction to tilt's horizontal horizon), keeping the closer boundary
+   *  so the off-distance never overstates the true gap. */
+  private seedNearSurface(
+    sx: number,
+    sy: number,
+    vp: Viewport,
+  ): { sx: number; sy: number; seed: readonly [number, number]; offPx: number } | null {
+    let best: { sx: number; sy: number; seed: readonly [number, number]; offPx: number } | null =
+      null;
+    const targets: readonly (readonly [number, number])[] = [
+      [vp.w / 2, vp.h / 2],
+      [sx, vp.h],
+    ];
+    for (const [tx, ty] of targets) {
+      if (!this.deps.unproject(tx, ty, vp)) continue;
+      let lo = 0; // off-surface end
+      let hi = 1; // on-surface end
+      for (let i = 0; i < SEED_SEARCH_STEPS; i++) {
+        const mid = (lo + hi) / 2;
+        if (this.deps.unproject(sx + (tx - sx) * mid, sy + (ty - sy) * mid, vp)) hi = mid;
+        else lo = mid;
+      }
+      const bx = sx + (tx - sx) * hi;
+      const by = sy + (ty - sy) * hi;
+      const seed = this.deps.unproject(bx, by, vp);
+      if (!seed) continue;
+      const offPx = Math.hypot(bx - sx, by - sy);
+      if (!best || offPx < best.offPx) best = { sx: bx, sy: by, seed, offPx };
+    }
+    return best;
+  }
+
+  /** Yield x positions needed to query a circle across a periodic seam. */
+  private *seamMirrors(scene: Scene, x: number, r: number): Generator<number> {
+    yield x;
+    if (scene.wrapX <= 0) return;
+    const half = scene.wrapX / 2;
+    if (x - r < -half) yield x + scene.wrapX;
+    if (x + r > half) yield x - scene.wrapX;
+  }
+
+  /** Return a cached projector for the current mode and live uniform buffer. */
+  private projector(mode: ProjectionMode): Projector {
+    let proj = this.projectors.get(mode);
+    if (!proj) {
+      proj = projectorFor(mode, this.deps.uniforms);
+      this.projectors.set(mode, proj);
+    }
+    return proj;
+  }
+
+  // Exact tests (mirror the render shaders in device px).
+
+  /** Decode normalized vertex height in the same range the shader uses. */
+  private normHeight(state: TestState, vi: number): number {
+    const heights = state.heights;
+    if (!heights) return 0;
+    const t = clamp01((heights[vi]! - this.f32[W_HEIGHT_CENTER]!) * this.f32[W_HEIGHT_SCALE]!);
+    return this.f32[W_HEIGHT_OUT_MIN]! + t * this.f32[W_HEIGHT_OUT_SCALE]!;
+  }
+
+  /** Decode per-vertex size multiplier, or 1 when the channel is unbound. */
+  private sizeScale(state: TestState, vi: number): number {
+    const sizes = state.sizes;
+    if (!sizes) return 1;
+    const t = clamp01((sizes[vi]! - this.f32[W_V_SIZE_MIN]!) * this.f32[W_V_SIZE_SCALE]!);
+    return VISUAL.vertexSizeMinMul + (VISUAL.vertexSizeMaxMul - VISUAL.vertexSizeMinMul) * t;
+  }
+
+  /** Test one vertex billboard and optional height pole against the cursor. */
+  private testVertex(state: TestState, id: number): void {
+    const x = state.scene.coords[id * 2]!;
+    const y = state.scene.coords[id * 2 + 1]!;
+    const h = this.normHeight(state, id);
+
+    if (state.vertices) {
+      const p = this.pA;
+      state.proj.project(p, x, y, h);
+      if (state.proj.visible(p)) {
+        const radius = state.proj.screenRadius(p) * this.sizeScale(state, id);
+        if (radius >= state.lod) {
+          state.proj.toScreen(p);
+          const dx = state.cursorX - p.sx;
+          const dy = state.cursorY - p.sy;
+          const d2 = dx * dx + dy * dy;
+          const limit = state.radiusDev + radius;
+          if (d2 <= limit * limit) acceptVertex(state, id, d2);
+        }
+      }
+    }
+
+    if (state.poles && Math.abs(h) > 1e-6) {
+      const base = this.pA;
+      const tip = this.pB;
+      state.proj.project(base, x, y, 0);
+      state.proj.project(tip, x, y, h);
+      if (!state.proj.visible(tip)) return;
+      state.proj.toScreen(base);
+      state.proj.toScreen(tip);
+      const d2 = pointSegmentD2(state.cursorX, state.cursorY, base.sx, base.sy, tip.sx, tip.sy);
+      const limit = state.radiusDev + state.proj.poleHalfWidth(base);
+      if (d2 <= limit * limit) acceptVertex(state, id, d2);
+    }
+  }
+
+  /** Test one encoded segment against the cursor in device-pixel space. */
+  private testSegment(state: TestState, id: number): void {
+    const { u32, f32, recordsOffset } = state.scene.seg;
+    const base = recordsOffset + id * SEGMENT_RECORD_WORDS;
+    const edgeId = u32[base]!;
+    const from = u32[base + 1]!;
+    const to = u32[base + 2]!;
+    const tPack = u32[base + 3]!;
+    const ta = (tPack & 0xffff) / 0xffff;
+    const tb = (tPack >>> 16) / 0xffff;
+
+    const hFrom = this.normHeight(state, from);
+    const hTo = this.normHeight(state, to);
+
+    const A = this.pA;
+    const B = this.pB;
+    state.proj.project(A, f32[base + 4]!, f32[base + 5]!, hFrom + (hTo - hFrom) * ta);
+    state.proj.project(B, f32[base + 6]!, f32[base + 7]!, hFrom + (hTo - hFrom) * tb);
+
+    if (!clipPositiveW(A, B)) return;
+    state.proj.toScreen(A);
+    state.proj.toScreen(B);
+
+    const abx = B.sx - A.sx;
+    const aby = B.sy - A.sy;
+    const len2 = Math.max(abx * abx + aby * aby, 1e-6);
+    const t = clamp01(((state.cursorX - A.sx) * abx + (state.cursorY - A.sy) * aby) / len2);
+    const qx = A.sx + abx * t;
+    const qy = A.sy + aby * t;
+    const dx = state.cursorX - qx;
+    const dy = state.cursorY - qy;
+    const d2 = dx * dx + dy * dy;
+
+    const M = this.pM;
+    mixPoint(M, A, B, t);
+    if (!state.proj.visible(M)) return;
+
+    if (state.dashPeriod > 0 && state.dashes && state.dashes[edgeId]! < 0.5) {
+      const lenPx = Math.sqrt(len2);
+      const phase = (t * lenPx) / state.dashPeriod;
+      if (phase - Math.floor(phase) > 0.5) return;
+    }
+
+    mixPoint(M, A, B, 0.5);
+    const limit = state.radiusDev + state.proj.screenHalfWidth(M, state.baseEdgeWidth);
+    if (d2 <= limit * limit) acceptEdge(state, edgeId, d2);
+  }
+}
+
+/** Mutable scratch state shared by exact primitive tests during one query. */
+interface TestState {
+  /** Projection mirror for the active render mode. */
+  readonly proj: Projector;
+  /** Static scene and coord-space indices. */
+  readonly scene: Scene;
+  /** Cursor x in device px. */
+  readonly cursorX: number;
+  /** Cursor y in device px. */
+  readonly cursorY: number;
+  /** Pick target radius in device px. */
+  readonly radiusDev: number;
+  /** Bound raw vertex-height channel values, if enabled. */
+  readonly heights: Float32Array | null;
+  /** Bound raw vertex-size channel values, if enabled. */
+  readonly sizes: Float32Array | null;
+  /** Bound raw edge-dash channel values, if enabled. */
+  readonly dashes: Float32Array | null;
+  /** Whether vertex billboards are eligible. */
+  readonly vertices: boolean;
+  /** Whether height poles are eligible. */
+  readonly poles: boolean;
+  /** Vertex radius LOD floor in device px. */
+  readonly lod: number;
+  /** Dash period in device px; non-positive values disable dash rejection. */
+  readonly dashPeriod: number;
+  /** Base edge width in world or flat units, before projection scaling. */
+  readonly baseEdgeWidth: number;
+  /** Best vertex squared distance in device px. */
+  bestVertexD2: number;
+  /** Best vertex index, or -1 before any hit. */
+  bestVertexId: number;
+  /** Best edge squared distance in device px. */
+  bestEdgeD2: number;
+  /** Best edge id, or -1 before any hit. */
+  bestEdgeId: number;
+}
+
+/** Same ranking as the compute reduce: lower score wins, lower id ties. */
+function acceptVertex(state: TestState, id: number, d2: number): void {
+  if (d2 < state.bestVertexD2 || (d2 === state.bestVertexD2 && id < state.bestVertexId)) {
+    state.bestVertexD2 = d2;
+    state.bestVertexId = id;
+  }
+}
+
+/** Same edge ranking as the compute reduce: lower score wins, lower id ties. */
+function acceptEdge(state: TestState, id: number, d2: number): void {
+  if (d2 < state.bestEdgeD2 || (d2 === state.bestEdgeD2 && id < state.bestEdgeId)) {
+    state.bestEdgeD2 = d2;
+    state.bestEdgeId = id;
+  }
+}
+
+/**
+ * Mirror of clip_segment_positive_w: reject when both endpoints sit at or
+ * behind the clip floor, else pull the failing endpoint onto it. The two
+ * branches are mutually exclusive (the both-behind case already returned),
+ * so clipping in place is safe.
+ */
+function clipPositiveW(a: ProjectedPoint, b: ProjectedPoint): boolean {
+  const aw = a.cw;
+  const bw = b.cw;
+  if (aw <= MIN_CLIP_W && bw <= MIN_CLIP_W) return false;
+  if (aw <= MIN_CLIP_W) {
+    mixPoint(a, a, b, clamp01((MIN_CLIP_W - aw) / Math.max(bw - aw, 1e-6)));
+  } else if (bw <= MIN_CLIP_W) {
+    mixPoint(b, a, b, clamp01((MIN_CLIP_W - aw) / Math.min(bw - aw, -1e-6)));
+  }
+  return true;
+}
+
+/** Squared distance from a point to a screen-space segment in device px. */
+function pointSegmentD2(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const len2 = Math.max(abx * abx + aby * aby, 1e-6);
+  const t = clamp01(((px - ax) * abx + (py - ay) * aby) / len2);
+  const dx = px - (ax + abx * t);
+  const dy = py - (ay + aby * t);
+  return dx * dx + dy * dy;
+}
+
+/** Signed x delta folded to the shortest span across a periodic seam. */
+function wrapDelta(dx: number, wrapX: number): number {
+  if (wrapX <= 0) return dx;
+  if (dx > wrapX / 2) return dx - wrapX;
+  if (dx < -wrapX / 2) return dx + wrapX;
+  return dx;
+}
+
+/** Whether bounds look like longitude/latitude degrees and should wrap at 360. */
+function isGeoBounds(b: Bounds): boolean {
+  return b.xMin >= -180 && b.xMax <= 180 && b.yMin >= -90 && b.yMax <= 90;
+}
+
+/** Clamp a scalar to [0, 1]. */
+function clamp01(v: number): number {
+  return Math.min(1, Math.max(0, v));
+}
