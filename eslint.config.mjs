@@ -10,6 +10,7 @@ export default defineConfig([
     ignores: [
       '**/coverage/**',
       '**/dist/**',
+      '**/docs/_build/**',
       '**/node_modules/**',
       '**/*.d.ts.map',
       'pnpm-lock.yaml',

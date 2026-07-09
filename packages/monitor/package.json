@@ -31,6 +31,11 @@
     "@webgpu/types": "^0.1.60",
     "jsdom": "^26.1.0"
   },
+  "typedocOptions": {
+    "entryPoints": [
+      "src/index.ts"
+    ]
+  },
   "publishConfig": {
     "access": "public"
   }

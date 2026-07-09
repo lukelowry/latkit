@@ -1,14 +1,8 @@
 import type { Uniforms } from './webgpu/uniforms.js';
 import { effectiveRange, finiteExtent, linearNorm, type ChannelRange } from './range.js';
 
-/** Channels indexed by vertex id. */
-type VertexChannel = 'vertexColor' | 'vertexHeight' | 'vertexSize';
-
-/** Channels indexed by edge id. */
-type EdgeChannel = 'edgeColor' | 'edgeDash';
-
 /** Named per-vertex or per-edge data stream that can affect rendering. */
-export type Channel = VertexChannel | EdgeChannel;
+export type Channel = 'vertexColor' | 'vertexHeight' | 'vertexSize' | 'edgeColor' | 'edgeDash';
 
 /** Storage cardinality used when packing channel data. */
 type ChannelScope = 'vertex' | 'edge';

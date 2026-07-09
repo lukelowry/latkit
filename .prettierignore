@@ -1,5 +1,7 @@
 node_modules
 dist
 coverage
+docs/_build
+docs/api/reference
 packages/*/dist
 examples/*/dist

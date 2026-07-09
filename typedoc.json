@@ -1,0 +1,13 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "name": "Latkit API",
+  "entryPointStrategy": "packages",
+  "entryPoints": ["packages/model", "packages/colormaps", "packages/monitor", "packages/network"],
+  "out": "docs/api/reference",
+  "plugin": ["typedoc-plugin-markdown"],
+  "readme": "none",
+  "excludeInternal": true,
+  "excludePrivate": true,
+  "hideGenerator": true,
+  "sourceLinkTemplate": "https://github.com/lukelowry/latkit/blob/{gitRevision}/{path}#L{line}"
+}

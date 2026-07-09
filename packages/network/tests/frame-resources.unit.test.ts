@@ -29,8 +29,9 @@ describe('FrameResources', () => {
       'network-msaa',
       'network-depth',
     ]);
-    expect(resources.colorAttachment(4, swapView, clear)).toMatchObject({
-      view: expect.anything(),
+    const attachment = resources.colorAttachment(4, swapView, clear);
+    expect(attachment.view).toBeDefined();
+    expect(attachment).toMatchObject({
       resolveTarget: swapView,
       loadOp: 'clear',
       clearValue: clear,
