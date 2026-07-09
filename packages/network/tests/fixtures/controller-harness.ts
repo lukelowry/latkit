@@ -1,10 +1,5 @@
 import { vi } from 'vitest';
-import type {
-  ControllerDeps,
-  Events,
-  Network,
-  Options,
-} from '../../src/controller.js';
+import type { ControllerDeps, Events, Network, Options } from '../../src/controller.js';
 import { createNetworkWithDeps } from '../../src/controller.js';
 import { packBound, type Channel, type ChannelSlot } from '../../src/channels.js';
 import type { Bounds, EncodedTopology } from '../../src/topology/index.js';
@@ -100,8 +95,7 @@ export class FakeRenderer {
 
 export class FakeCamera {
   screenToWorld = vi.fn((_sx: number, _sy: number, _vp: Viewport): readonly [number, number] => [
-    0,
-    0,
+    0, 0,
   ]);
   isAnimating = vi.fn(() => false);
   beginDrag = vi.fn();
@@ -201,10 +195,7 @@ function makeSurface(): FakeSurface {
   };
 }
 
-function makeGpuContext(
-  canvas: HTMLCanvasElement,
-  lost: Promise<GPUDeviceLostInfo>,
-): GpuContext {
+function makeGpuContext(canvas: HTMLCanvasElement, lost: Promise<GPUDeviceLostInfo>): GpuContext {
   return {
     device: {
       lost,

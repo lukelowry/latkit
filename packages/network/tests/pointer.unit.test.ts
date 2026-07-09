@@ -435,12 +435,7 @@ describe('attachPointer hover and cancellation', () => {
     firePointer(h.element, 'pointermove', { clientX: 110, clientY: 100 });
     firePointer(h.element, 'pointerup', { clientX: 110, clientY: 100 });
 
-    expect(h.intents.map((i) => i.kind)).toEqual([
-      'dragStart',
-      'dragMove',
-      'dragEnd',
-      'hover',
-    ]);
+    expect(h.intents.map((i) => i.kind)).toEqual(['dragStart', 'dragMove', 'dragEnd', 'hover']);
     h.handle.destroy();
   });
 });

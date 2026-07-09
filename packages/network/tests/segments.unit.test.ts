@@ -106,9 +106,9 @@ describe('EncodedSegments', () => {
   });
 
   it('rejects segment sources with invalid endpoints or polyline order', () => {
-    expect(() =>
-      encodeSegments(sampleTopology({ edges: new Uint32Array([0, 3, 1, 2]) })),
-    ).toThrow('edge endpoint out of range');
+    expect(() => encodeSegments(sampleTopology({ edges: new Uint32Array([0, 3, 1, 2]) }))).toThrow(
+      'edge endpoint out of range',
+    );
 
     expect(() =>
       encodeSegments(
@@ -178,7 +178,9 @@ function corruptSegments(mutator: (words: Uint32Array) => void): EncodedSegments
 
 function truncateSegments(): EncodedSegments {
   const encoded = encodeSegments(sampleTopology());
-  const truncated = new Uint8Array(encoded.buffer.slice(0, encoded.byteLength - 4)) as EncodedSegments;
+  const truncated = new Uint8Array(
+    encoded.buffer.slice(0, encoded.byteLength - 4),
+  ) as EncodedSegments;
   new Uint32Array(truncated.buffer)[W.storageBytes] = truncated.byteLength;
   return truncated;
 }

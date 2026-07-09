@@ -72,9 +72,9 @@ describe('Renderer resource lifecycle', () => {
     await flushGpuPromises();
 
     expect(ready).toHaveBeenCalledOnce();
-    expect(h.device.renderPipelines.filter((pipeline) => pipeline.label === 'globe-bg')).toHaveLength(
-      1,
-    );
+    expect(
+      h.device.renderPipelines.filter((pipeline) => pipeline.label === 'globe-bg'),
+    ).toHaveLength(1);
     renderer.destroy();
   });
 
@@ -257,9 +257,9 @@ describe('Renderer frame encoding', () => {
     expect(pass.draw).toHaveBeenCalledWith(4, 1, 0, 2);
     expect(pass.draw).toHaveBeenCalledWith(4, 1, 0, 0);
     expect(pass.draw).toHaveBeenCalledWith(4, 1, 0, 1);
-    expect(
-      h.device.queue.writeBuffer.mock.calls.some((call) => call[2] === uniforms.raw),
-    ).toBe(true);
+    expect(h.device.queue.writeBuffer.mock.calls.some((call) => call[2] === uniforms.raw)).toBe(
+      true,
+    );
     renderer.destroy();
   });
 
@@ -301,9 +301,9 @@ describe('Renderer frame encoding', () => {
 
     expect(renderer.render(uniforms)).toBe(true);
 
-    const labels = h.device.encoders[0]!.passes[0]!.calls
-      .filter((call) => call.method === 'setPipeline')
-      .map((call) => (call.args[0] as { label?: string }).label);
+    const labels = h.device.encoders[0]!.passes[0]!.calls.filter(
+      (call) => call.method === 'setPipeline',
+    ).map((call) => (call.args[0] as { label?: string }).label);
     expect(labels).toContain('tilt-pole');
     renderer.destroy();
   });

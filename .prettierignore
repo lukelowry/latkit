@@ -3,5 +3,6 @@ dist
 coverage
 docs/_build
 docs/api/reference
+pnpm-lock.yaml
 packages/*/dist
 examples/*/dist

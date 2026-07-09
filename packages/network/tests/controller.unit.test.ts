@@ -11,10 +11,7 @@ import {
   FLAG_GRATICULE,
 } from '../src/webgpu/uniforms.js';
 import { VISUAL } from '../src/visual.js';
-import {
-  createControllerHarness,
-  flushMicrotasks,
-} from './fixtures/controller-harness.js';
+import { createControllerHarness, flushMicrotasks } from './fixtures/controller-harness.js';
 import { geographicTopology, nonGlobeTopology } from './fixtures/topology.js';
 
 type Harness = Awaited<ReturnType<typeof createControllerHarness>>;
@@ -171,11 +168,7 @@ describe('createNetwork controller', () => {
     h.network.load(nonGlobeTopology());
 
     expect(h.network.setProjection('globe')).toBe(false);
-    expect(h.rig.switchTo).not.toHaveBeenCalledWith(
-      'globe',
-      expect.anything(),
-      expect.anything(),
-    );
+    expect(h.rig.switchTo).not.toHaveBeenCalledWith('globe', expect.anything(), expect.anything());
     expect(h.renderer.useProjectionPipelines).not.toHaveBeenCalledWith('globe');
   });
 
@@ -317,9 +310,7 @@ describe('createNetwork controller', () => {
     h.emitPointer({ kind: 'hover', sx: 5, sy: 6, targetPx: 10, vp: { w: 100, h: 80 } });
     h.picker.pick.mockClear();
     h.rig.camera.isAnimating.mockReturnValue(true);
-    vi.spyOn(performance, 'now')
-      .mockReturnValueOnce(0)
-      .mockReturnValueOnce(20);
+    vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValueOnce(20);
 
     h.loop.frame();
     h.loop.frame();

@@ -179,7 +179,10 @@ function bindDash(s: Setup, raw: Float32Array): void {
 // segment — no grid, no query region. The picker must agree with it exactly;
 // any conservative-bound bug in the grid path fails here.
 
-function oraclePick(s: Setup, q: PickQuery): { vertex: PickResult | null; edge: PickResult | null } {
+function oraclePick(
+  s: Setup,
+  q: PickQuery,
+): { vertex: PickResult | null; edge: PickResult | null } {
   const u = s.uniforms;
   const projector = projectorFor(s.mode, u);
   const dprX = u.frame.viewportX / q.vp.w;
@@ -480,10 +483,7 @@ describe('Picker behavior (globe)', () => {
     });
     s.uniforms.geometry.vertexSize = 2;
     const near = s.screenAt(0, 0);
-    expect(s.picker.pick(s.query(near.sx, near.sy, 8, { edges: false }))).toEqual([
-      'vertex',
-      0,
-    ]);
+    expect(s.picker.pick(s.query(near.sx, near.sy, 8, { edges: false }))).toEqual(['vertex', 0]);
 
     // Nowhere on screen picks the far-side vertex.
     for (let gy = 0; gy < 10; gy++) {
@@ -515,14 +515,8 @@ describe('Picker behavior (globe)', () => {
 
     const west = s.screenAt(179.5, 0);
     const east = s.screenAt(-179.5, 0);
-    expect(s.picker.pick(s.query(west.sx, west.sy, 6, { edges: false }))).toEqual([
-      'vertex',
-      0,
-    ]);
-    expect(s.picker.pick(s.query(east.sx, east.sy, 6, { edges: false }))).toEqual([
-      'vertex',
-      1,
-    ]);
+    expect(s.picker.pick(s.query(west.sx, west.sy, 6, { edges: false }))).toEqual(['vertex', 0]);
+    expect(s.picker.pick(s.query(east.sx, east.sy, 6, { edges: false }))).toEqual(['vertex', 1]);
 
     const seamMid = s.screenAt(180, 0);
     expect(s.picker.pick(s.query(seamMid.sx, seamMid.sy, 6, { vertices: false }))).toEqual([
