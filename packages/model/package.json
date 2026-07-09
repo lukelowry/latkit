@@ -1,6 +1,6 @@
 {
   "name": "@latkit/model",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Core model primitives for Latkit.",
   "type": "module",
   "repository": {
