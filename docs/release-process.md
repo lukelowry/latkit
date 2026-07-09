@@ -1,6 +1,6 @@
 # Release process
 
-Latkit uses Changesets for versioning and GitHub Actions for publishing.
+Latkit uses Changesets for versioning and GitHub Actions for publishing. This page is for maintainers preparing a release candidate.
 
 1. Make the code or documentation change.
 2. Add a changeset with `pnpm changeset`.
@@ -18,6 +18,8 @@ Before merging a release candidate, run:
 pnpm build
 pnpm typecheck
 pnpm test:run
-pnpm docs:api
+pnpm docs:build
 pnpm -r --filter "./packages/**" exec npm pack --dry-run
 ```
+
+`pnpm docs:build` regenerates TypeDoc Markdown before running Sphinx, so a separate `pnpm docs:api` command is only needed when you want to inspect generated reference files without building HTML.

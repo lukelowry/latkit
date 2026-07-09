@@ -4,6 +4,9 @@ type CoefficientRows = readonly [Rgb01, Rgb01, Rgb01, Rgb01, Rgb01, Rgb01];
 /**
  * Maps a normalized scalar to an RGB color.
  *
+ * @param t - Normalized value. Values outside `[0, 1]` are clamped.
+ * @returns RGB channels in `[0, 1]`.
+ *
  * Input values are clamped to `[0, 1]`, and returned channels are also in
  * `[0, 1]`.
  */
@@ -17,10 +20,16 @@ export type Colormap = (t: number) => readonly [number, number, number];
  */
 export type ColormapKind = 'sequential' | 'diverging';
 
-/** Supported CSS gradient directions for `colormapGradientCss`. */
+/** Supported CSS gradient directions for {@link colormapGradientCss}. */
 export type ColormapGradientDirection = 'to top' | 'to right';
 
-/** Bundled colormap names in display order. */
+/**
+ * Bundled colormap names in display order.
+ *
+ * @remarks
+ * The first group contains sequential maps for magnitude-like values. The
+ * second group contains diverging maps for signed deviation around a midpoint.
+ */
 export const COLORMAP_NAMES = [
   'viridis',
   'inferno',
@@ -239,12 +248,28 @@ export const COLORMAP_LABEL: Readonly<Record<ColormapName, string>> = {
   vermlime: 'Vermilion-Lime',
 };
 
-/** Returns whether a bundled colormap is diverging. */
+/**
+ * Checks whether a bundled colormap is diverging.
+ *
+ * @param name - Bundled colormap name.
+ * @returns True if the colormap is diverging; false otherwise.
+ */
 export function isDiverging(name: ColormapName): boolean {
   return COLORMAP_KIND[name] === 'diverging';
 }
 
-/** Returns a pure colormap function for a bundled preset. */
+/**
+ * Returns a pure colormap function for a bundled preset.
+ *
+ * @param name - Bundled colormap name.
+ * @returns A transfer function from normalized scalar values to RGB channels.
+ *
+ * @example
+ * ```ts
+ * const viridis = colormap('viridis');
+ * const [r, g, b] = viridis(0.5);
+ * ```
+ */
 export function colormap(name: ColormapName): Colormap {
   const coefficients = COEFFICIENTS[name];
   return (t) => evaluateRgb01(coefficients, t);
@@ -252,6 +277,15 @@ export function colormap(name: ColormapName): Colormap {
 
 /**
  * Builds a CSS `linear-gradient()` from the same evaluator as `colormap`.
+ *
+ * @param name - Bundled colormap name.
+ * @param direction - CSS gradient direction. Default: `"to top"`.
+ * @returns A CSS `linear-gradient()` string suitable for legends and swatches.
+ *
+ * @example
+ * ```ts
+ * legend.style.background = colormapGradientCss('magma', 'to right');
+ * ```
  *
  * Use `to top` for vertical legends and `to right` for horizontal swatches.
  */

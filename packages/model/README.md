@@ -2,8 +2,6 @@
 
 Core model primitives for Latkit.
 
-## Author
+Most applications do not need to import this package directly yet. It is reserved for shared public data primitives as the Latkit package family grows.
 
-Luke Lowery developed this module during his PhD studies at Texas A&M University. You can learn more on his [research page](https://lukelowry.github.io/) or view his publications on [Google Scholar](https://scholar.google.com/citations?user=CTynuRMAAAAJ&hl=en).
-
-Selected related work includes [sgwt](https://pypi.org/project/sgwt/), [esapp](https://pypi.org/project/esapp/), and [ORNL/GridKit](https://github.com/ORNL/GridKit).
+Use renderer packages such as `@latkit/network` and `@latkit/monitor` for current visualization APIs.

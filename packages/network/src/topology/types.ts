@@ -1,10 +1,42 @@
-/** CPU-side graph and geometry used to build network render buffers. */
+/**
+ * CPU-side graph and geometry used to build network render buffers.
+ *
+ * @remarks
+ * `vertexCoords` and `polylinePoints` are interleaved coordinate pairs. Flat
+ * and tilt projections accept arbitrary `x, y` coordinates. Globe projection
+ * is available when coordinates fit geographic longitude and latitude bounds.
+ *
+ * `polylineStart` is an offset table into `polylinePoints`. It must contain
+ * `edgeCount + 1` entries, begin at `0`, stay monotonic, and end at the number
+ * of polyline points. Straight edges with no bend points can use a zero-filled
+ * table.
+ *
+ * @example
+ * ```ts
+ * const topology: Topology = {
+ *   vertexCount: 3,
+ *   vertexCoords: new Float32Array([-96, 30, -95, 31, -94, 30]),
+ *   edges: new Uint32Array([0, 1, 1, 2]),
+ *   polylineStart: new Uint32Array([0, 0, 0]),
+ * };
+ * ```
+ */
 export interface Topology {
   /** Number of logical graph vertices. */
   readonly vertexCount: number;
-  /** Optional x/y or lon/lat coordinates, two f32 values per vertex. */
+  /**
+   * Optional `x, y` or `lon, lat` coordinates, two f32 values per vertex.
+   *
+   * @remarks
+   * Omit this field to use a generated unit-ring layout.
+   */
   readonly vertexCoords?: Float32Array;
-  /** Edge endpoint vertex indices stored as `[from0, to0, from1, to1, ...]`. */
+  /**
+   * Edge endpoint vertex indices stored as `[from0, to0, from1, to1, ...]`.
+   *
+   * @remarks
+   * Every endpoint index must be less than `Topology.vertexCount`.
+   */
   readonly edges: Uint32Array;
   /**
    * Edge-to-polyline offset table with `edgeCount + 1` entries.
@@ -13,7 +45,13 @@ export interface Topology {
    * entry must equal the number of points in `polylinePoints`.
    */
   readonly polylineStart: Uint32Array;
-  /** Optional intermediate x/y or lon/lat points, two f32 values per point. */
+  /**
+   * Optional intermediate `x, y` or `lon, lat` points, two f32 values per point.
+   *
+   * @remarks
+   * These are bend points only. Edge endpoints still come from
+   * `Topology.edges` and `Topology.vertexCoords`.
+   */
   readonly polylinePoints?: Float32Array;
 }
 

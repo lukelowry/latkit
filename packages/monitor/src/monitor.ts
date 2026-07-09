@@ -4,15 +4,37 @@ import { LanePainter, SEGMENT_BUDGET, COLORMAP_LUT_SIZE, framesPerWindow } from 
 /**
  * Packed monitor samples over one shared time axis and element axis.
  *
- * `values` is signal-major:
- * `values[signal * time.length * elementCount + frame * elementCount + element]`.
+ * @remarks
+ * `values` is signal-major. Convert a signal, frame, and element to an index
+ * with:
+ *
+ * ```ts
+ * signal * time.length * elementCount + frame * elementCount + element
+ * ```
+ *
+ * `validFrames` lets append-heavy callers load a preallocated buffer before all
+ * frames are ready. After writing more samples, call {@link Monitor.extend} to
+ * commit the new frame frontier.
+ *
+ * @example
+ * ```ts
+ * const series: Series = {
+ *   time: Float64Array.from([0, 1, 2]),
+ *   values: new Float32Array(1 * 3 * 2),
+ *   signalCount: 1,
+ *   elementCount: 2,
+ *   validFrames: 0,
+ * };
+ *
+ * series.values[0 * 3 * 2 + 0 * 2 + 0] = 0.25;
+ * ```
  */
 export interface Series {
   /** Time coordinate for each frame. */
   readonly time: Float32Array | Float64Array;
   /** Packed f32 samples for every signal, frame, and element. */
   readonly values: Float32Array;
-  /** Number of independent signals stored in {@link Series.values}. */
+  /** Number of independent signals stored in `Series.values`. */
   readonly signalCount: number;
   /** Number of elements sampled at each frame. */
   readonly elementCount: number;
@@ -22,13 +44,32 @@ export interface Series {
   readonly validFrames?: number;
 }
 
-/** Monitor construction options. */
+/**
+ * Initial monitor display options.
+ *
+ * @remarks
+ * These options seed the controller returned by {@link createMonitor}. Runtime
+ * setters such as {@link Monitor.setValueRange} and {@link Monitor.setColormap}
+ * can update the mutable parts later.
+ */
 export interface Options {
-  /** Transfer function for normalized values; defaults to a neutral gray ramp. */
+  /**
+   * Transfer function for normalized values.
+   *
+   * @defaultValue A neutral gray ramp.
+   */
   colormap?: (t: number) => readonly [number, number, number];
-  /** Trace stroke width in CSS pixels. */
+  /**
+   * Trace stroke width in CSS pixels.
+   *
+   * @defaultValue `1.5`.
+   */
   lineWidthPx?: number;
-  /** Fixed value domain; omit to auto-fit the active signal's finite extent. */
+  /**
+   * Fixed value domain for vertical position and color.
+   *
+   * @defaultValue Auto-fit the active signal's finite extent.
+   */
   valueRange?: readonly [number, number];
 }
 
@@ -40,7 +81,7 @@ export interface Reading {
   readonly element: number;
   /** Frame index nearest the pointer. */
   readonly frame: number;
-  /** Time value at {@link Reading.frame}. */
+  /** Time value at `Reading.frame`. */
   readonly t: number;
   /** Sample value at the selected signal, frame, and element. */
   readonly value: number;
@@ -50,7 +91,13 @@ export interface Reading {
   readonly y: number;
 }
 
-/** Events emitted by a {@link Monitor} instance. */
+/**
+ * Events emitted by a {@link Monitor} instance.
+ *
+ * @remarks
+ * `hover` emits `null` when the pointer leaves the canvas. `pick` only emits
+ * when a pointer-down interaction resolves to a reading.
+ */
 export type Events = {
   /** Nearest reading while hovering, or null when the pointer leaves. */
   hover: Reading | null;
@@ -60,14 +107,32 @@ export type Events = {
   deviceLost: { readonly reason: string; readonly message: string };
 };
 
-/** Imperative controller for a WebGPU signal monitor canvas. */
+/**
+ * Imperative controller for a WebGPU signal monitor canvas.
+ *
+ * @remarks
+ * The controller owns the inserted canvas and associated GPU resources. Call
+ * {@link Monitor.destroy} when the host removes the view.
+ */
 export interface Monitor {
   /** Canvas element inserted into the supplied container. */
   readonly element: HTMLCanvasElement;
-  /** Subscribe to a monitor event and receive an unsubscribe callback. */
+  /**
+   * Subscribe to a monitor event and receive an unsubscribe callback.
+   *
+   * @param event - Event name to observe.
+   * @param handler - Callback invoked with the event payload.
+   * @returns A function that removes the handler.
+   */
   on<K extends keyof Events>(event: K, handler: (payload: Events[K]) => void): () => void;
 
-  /** Bind a series and schedule its committed frames for painting. */
+  /**
+   * Bind a series and schedule its committed frames for painting.
+   *
+   * @param series - Packed monitor samples and time coordinates.
+   * @param signal - Initial signal index. Default: `0`.
+   * @throws Error when the series shape or signal index is invalid.
+   */
   load(series: Series, signal?: number): void;
 
   /**
@@ -75,16 +140,37 @@ export interface Monitor {
    *
    * Pass `values` to replace the loaded sample buffer; otherwise mutate the
    * existing buffer in place before calling.
+   *
+   * @param validFrames - Number of frames ready to draw, clamped to the series length.
+   * @param values - Optional replacement buffer with the same length as the loaded series.
+   * @throws Error when no series is loaded or the replacement buffer length differs.
    */
   extend(validFrames: number, values?: Float32Array): void;
 
-  /** Switch the displayed signal. */
+  /**
+   * Switch the displayed signal.
+   *
+   * @param signal - Signal index in `[0, series.signalCount)`.
+   * @throws Error when no series is loaded or the signal index is invalid.
+   */
   setSignal(signal: number): void;
-  /** Override the value domain, or pass null to return to auto-fit. */
+  /**
+   * Override the value domain, or pass null to return to auto-fit.
+   *
+   * @param range - Fixed `[min, max]` domain, or `null` for auto-fit.
+   */
   setValueRange(range: readonly [number, number] | null): void;
-  /** Replace the transfer function used for trace color. */
+  /**
+   * Replace the transfer function used for trace color.
+   *
+   * @param fn - Function mapping normalized values in `[0, 1]` to RGB channels in `[0, 1]`.
+   */
   setColormap(fn: (t: number) => readonly [number, number, number]): void;
-  /** Highlight one element with a foreground trace, or pass null to clear focus. */
+  /**
+   * Highlight one element with a foreground trace, or pass null to clear focus.
+   *
+   * @param element - Element index to focus, or `null` to clear focus.
+   */
   setFocus(element: number | null): void;
   /** Clear the loaded series and blank the monitor. */
   clear(): void;
@@ -120,7 +206,18 @@ interface PaintJob {
 }
 
 /**
- * Creates a WebGPU-backed monitor inside a container element.
+ * Creates a WebGPU-backed monitor and appends its canvas to `container`.
+ *
+ * @param container - Host element that owns the inserted canvas.
+ * @param options - Initial display options.
+ * @returns A controller for loading series data, subscribing to readings, and releasing GPU resources.
+ * @throws Error when WebGPU initialization fails.
+ *
+ * @example
+ * ```ts
+ * const monitor = await createMonitor(container, { valueRange: [0, 1] });
+ * monitor.load(series, 0);
+ * ```
  *
  * The returned controller owns the inserted canvas and must be destroyed when
  * the host no longer needs it.

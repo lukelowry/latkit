@@ -1,23 +1,60 @@
 # Latkit
 
-Latkit is a TypeScript package family for visualizing network and monitor data in the browser with WebGPU.
+```{image} _static/banner.png
+:alt: Latkit visualization banner
+:width: 100%
+```
 
-The docs are split into guides for design intent and generated API reference for the public package entrypoints.
+Latkit is a TypeScript package family for browser-based WebGPU visualization of network topology and monitor data.
 
-## About the author
+Use it when you need to render large graph-like systems, stream many time-oriented readings, or share colormap behavior across those visualizations.
 
-Luke Lowery developed Latkit during his PhD studies at Texas A&M University. You can learn more on his [research page](https://lukelowry.github.io/) or view his publications on [Google Scholar](https://scholar.google.com/citations?user=CTynuRMAAAAJ&hl=en).
+## Start here
 
-Selected related work includes [sgwt](https://pypi.org/project/sgwt/), [esapp](https://pypi.org/project/esapp/), and [ORNL/GridKit](https://github.com/ORNL/GridKit).
+| Goal                                | Read                                              |
+| ----------------------------------- | ------------------------------------------------- |
+| Install packages and run an example | [Get started](getting-started.md)                 |
+| Render a small network              | [Create a network view](network-quickstart.md)    |
+| Render monitor traces               | [Create a monitor](monitor-quickstart.md)         |
+| Shape real data for the renderer    | [Topology and channels](topology-and-channels.md) |
+| Look up public types and methods    | [API reference](api/index.md)                     |
+
+## Requirements
+
+Latkit packages are ESM modules for modern browser applications. The rendering packages require a browser with WebGPU support. The repository uses Node.js 22 or newer for local development.
+
+## Packages
+
+| Package             | Use it for                                          |
+| ------------------- | --------------------------------------------------- |
+| `@latkit/network`   | Interactive WebGPU network topology views           |
+| `@latkit/monitor`   | WebGPU time-series and signal monitor views         |
+| `@latkit/colormaps` | Named colormaps, labels, and CSS gradients          |
+| `@latkit/model`     | Shared model primitives as the package family grows |
 
 ```{toctree}
 :maxdepth: 2
-:caption: Guides
+:caption: Learn
 
 getting-started
+network-quickstart
+monitor-quickstart
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: How-to
+
+topology-and-channels
+colormaps
+lifecycle
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Explanation
+
 architecture
-release-process
-about-author
 ```
 
 ```{toctree}
@@ -25,4 +62,12 @@ about-author
 :caption: Reference
 
 api/index
+```
+
+```{toctree}
+:maxdepth: 1
+:caption: Project
+
+release-process
+about-author
 ```

@@ -26,11 +26,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --project @latkit/model"
   },
-  "typedocOptions": {
-    "entryPoints": [
-      "src/index.ts"
-    ]
-  },
   "publishConfig": {
     "access": "public"
   }

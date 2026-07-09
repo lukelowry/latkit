@@ -1,26 +1,27 @@
 # API reference
 
-The API reference is generated from the published package entrypoints with TypeDoc.
+The API reference is generated from the published package entrypoints with TypeDoc. Start with the package page that matches the renderer or helper you are using.
 
-Run this command after changing exported symbols:
+| Package                                             | Public surface                                                               |
+| --------------------------------------------------- | ---------------------------------------------------------------------------- |
+| [`@latkit/network`](reference/network/index.md)     | Network renderer, topology input, channels, events, and display options      |
+| [`@latkit/monitor`](reference/monitor/index.md)     | Monitor renderer, packed series input, readings, events, and display options |
+| [`@latkit/colormaps`](reference/colormaps/index.md) | Colormap names, labels, transfer functions, and CSS gradients                |
+| [`@latkit/model`](reference/model/index.md)         | Shared model primitives as they become public                                |
 
-```sh
-pnpm docs:api
-```
+## Common entrypoints
+
+- [`createNetwork`](reference/network/index.md#createnetwork) creates a network canvas controller.
+- [`Topology`](reference/network/index.md) describes CPU-side graph data in the network package reference.
+- [`createMonitor`](reference/monitor/index.md#createmonitor) creates a monitor canvas controller.
+- [`Series`](reference/monitor/index.md) describes packed monitor samples in the monitor package reference.
+- [`colormap`](reference/colormaps/index.md#colormap) returns a normalized color transfer function.
 
 ```{toctree}
 :maxdepth: 2
-
-reference/README
-```
-
-```{toctree}
 :hidden:
 :glob:
 
-reference/@latkit/*/README
-reference/@latkit/*/functions/*
-reference/@latkit/*/interfaces/*
-reference/@latkit/*/type-aliases/*
-reference/@latkit/*/variables/*
+reference/index
+reference/**/*
 ```
