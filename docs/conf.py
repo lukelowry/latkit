@@ -1,6 +1,6 @@
 project = "Latkit"
-author = "Latkit contributors"
-copyright = "2026, Latkit contributors"
+author = "Luke Lowery"
+copyright = "2026, Luke Lowery"
 
 extensions = [
     "myst_parser",
