@@ -26,11 +26,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --project @latkit/colormaps"
   },
-  "typedocOptions": {
-    "entryPoints": [
-      "src/index.ts"
-    ]
-  },
   "publishConfig": {
     "access": "public"
   }

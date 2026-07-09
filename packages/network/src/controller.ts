@@ -30,67 +30,179 @@ import { edgeCountOf } from './topology/pack.js';
 import { Picker, type PickerDeps, type PickQuery, type PickResult } from './pick/picker.js';
 
 /**
- * Network construction configuration.
+ * Initial network renderer configuration.
  *
+ * @remarks
  * `msaa` is read once at construction. Other fields seed the initial view and
  * can be patched later with {@link Network.setOptions}.
  */
 export interface Options {
-  /** Multisample anti-aliasing sample count selected at construction. */
+  /**
+   * Multisample anti-aliasing sample count selected at construction.
+   *
+   * @defaultValue Automatically selects `4` on typical displays and `1` on very large device-pixel surfaces.
+   */
   msaa?: 1 | 4;
-  /** Draw vertex billboards. */
+  /**
+   * Draw vertex billboards.
+   *
+   * @defaultValue `true`.
+   */
   vertices?: boolean;
-  /** Draw edge segments. */
+  /**
+   * Draw edge segments.
+   *
+   * @defaultValue `true`.
+   */
   edges?: boolean;
-  /** Draw height poles when a vertexHeight channel is active. */
+  /**
+   * Draw height poles when a `vertexHeight` channel is active.
+   *
+   * @defaultValue `false`.
+   */
   poles?: boolean;
-  /** Draw geographic border overlays. */
+  /**
+   * Draw geographic border overlays.
+   *
+   * @defaultValue `true`.
+   */
   borders?: boolean;
-  /** Draw projection graticule lines. */
+  /**
+   * Draw projection graticule lines.
+   *
+   * @defaultValue `false`.
+   */
   graticule?: boolean;
-  /** Draw the globe earth-axis indicator when supported. */
+  /**
+   * Draw the globe earth-axis indicator when supported.
+   *
+   * @defaultValue `true`.
+   */
   earthAxis?: boolean;
-  /** Enable time-based daylight shading. */
+  /**
+   * Enable time-based daylight shading.
+   *
+   * @defaultValue `true`.
+   */
   daylight?: boolean;
-  /** Minimum brightness on the night side of overlay geometry. */
+  /**
+   * Minimum brightness on the night side of overlay geometry.
+   *
+   * @defaultValue `0.55`.
+   */
   nightFloor?: number;
-  /** Minimum brightness on the night side of opaque surfaces. */
+  /**
+   * Minimum brightness on the night side of opaque surfaces.
+   *
+   * @defaultValue `0.1`.
+   */
   surfaceNightFloor?: number;
-  /** Softness of the day/night terminator in shader units. */
+  /**
+   * Softness of the day/night terminator in shader units.
+   *
+   * @defaultValue `0.12`.
+   */
   terminatorWidth?: number;
-  /** Resting vertex color when the vertexColor channel carries no signal. */
+  /**
+   * Resting vertex color when the `vertexColor` channel carries no signal.
+   *
+   * @defaultValue `[0.5, 0.5, 0.5, 1]`.
+   */
   baseColor?: readonly [number, number, number, number];
-  /** Seeds the color LUT; falls back to the renderer's neutral ramp. */
+  /**
+   * Seeds the color lookup texture used by colormap channels.
+   *
+   * @defaultValue A neutral gray ramp.
+   */
   colormap?: (t: number) => readonly [number, number, number];
-  /** Graticule line color as four normalized color channels. */
+  /**
+   * Graticule line color as four normalized color channels.
+   *
+   * @defaultValue `[0.45, 0.48, 0.54, 1]`.
+   */
   graticuleColor?: readonly [number, number, number, number];
-  /** Tilt ground plane and globe sphere base color as four normalized color channels. */
+  /**
+   * Tilt ground plane and globe sphere base color as four normalized color channels.
+   *
+   * @defaultValue `[0.15, 0.16, 0.19, 1]`.
+   */
   surfaceColor?: readonly [number, number, number, number];
-  /** Geographic border tint as four normalized color channels; shaders keep tier alpha. */
+  /**
+   * Geographic border tint as four normalized color channels; shaders keep tier alpha.
+   *
+   * @defaultValue `[0.52, 0.5, 0.49, 1]`.
+   */
   borderColor?: readonly [number, number, number, number];
-  /** Enable hover and selection highlighting. */
+  /**
+   * Enable hover and selection highlighting.
+   *
+   * @defaultValue `true`.
+   */
   focusEnabled?: boolean;
-  /** Hover highlight color as four normalized color channels. */
+  /**
+   * Hover highlight color as four normalized color channels.
+   *
+   * @defaultValue `[0.72, 0.28, 0.18, 1]`.
+   */
   hoverColor?: readonly [number, number, number, number];
-  /** Selection highlight color as four normalized color channels. */
+  /**
+   * Selection highlight color as four normalized color channels.
+   *
+   * @defaultValue `[0.72, 0.28, 0.18, 1]`.
+   */
   selectedColor?: readonly [number, number, number, number];
-  /** Multiplier applied to the hover color alpha channel. */
+  /**
+   * Multiplier applied to the hover color alpha channel.
+   *
+   * @defaultValue `0.5`.
+   */
   hoverAlpha?: number;
-  /** Multiplier applied to the selected color alpha channel. */
+  /**
+   * Multiplier applied to the selected color alpha channel.
+   *
+   * @defaultValue `0.82`.
+   */
   selectedAlpha?: number;
-  /** Additional hover radius around focused vertices, in device px. */
+  /**
+   * Additional hover radius around focused vertices, in device pixels.
+   *
+   * @defaultValue `6`.
+   */
   vertexHoverPx?: number;
-  /** Additional selection radius around focused vertices, in device px. */
+  /**
+   * Additional selection radius around focused vertices, in device pixels.
+   *
+   * @defaultValue `7`.
+   */
   vertexSelectedPx?: number;
-  /** Additional hover half-width around focused edges, in device px. */
+  /**
+   * Additional hover half-width around focused edges, in device pixels.
+   *
+   * @defaultValue `3.5`.
+   */
   edgeHoverPx?: number;
-  /** Additional selection half-width around focused edges, in device px. */
+  /**
+   * Additional selection half-width around focused edges, in device pixels.
+   *
+   * @defaultValue `5`.
+   */
   edgeSelectedPx?: number;
-  /** Endpoint highlight mode for focused edges. */
+  /**
+   * Endpoint highlight mode for focused edges.
+   *
+   * @defaultValue `"selected"`.
+   */
   focusEndpointMode?: 'off' | 'selected' | 'hover-selected';
 }
 
-/** Events emitted by a {@link Network} instance. */
+/**
+ * Events emitted by a {@link Network} instance.
+ *
+ * @remarks
+ * `hover` and `select` use `null` values to report cleared interaction state.
+ * Programmatic selection methods do not emit `select`; user pointer selection
+ * does emit it.
+ */
 export type Events = {
   /** Hovered vertex or edge; null kind and index after hover exit. */
   hover: (kind: 'vertex' | 'edge' | null, index: number | null) => void;
@@ -102,33 +214,67 @@ export type Events = {
   deviceLost: (reason: string, message: string) => void;
 };
 
-/** Imperative controller for a WebGPU network canvas. */
+/**
+ * Imperative controller for a WebGPU network canvas.
+ *
+ * @remarks
+ * The controller owns the inserted canvas, pointer handlers, render loop, and
+ * GPU resources. Call {@link Network.destroy} when the host removes the view.
+ * Load topology before binding channels or reading projection availability.
+ */
 export interface Network {
   /** Canvas element inserted into the supplied container. */
   readonly element: HTMLCanvasElement;
   /** Projection modes currently supported by the loaded topology. */
   readonly projections: Readonly<{ flat: boolean; tilt: boolean; globe: boolean }>;
-  /** Subscribe to a network event and receive an unsubscribe callback. */
+  /**
+   * Subscribe to a network event and receive an unsubscribe callback.
+   *
+   * @param event - Event name to observe.
+   * @param handler - Callback invoked with the event payload.
+   * @returns A function that removes the handler.
+   */
   on<K extends keyof Events>(event: K, handler: Events[K]): () => void;
   /**
    * Bind a topology and schedule its first paint.
    *
-   * This method is synchronous; read {@link Network.projections} immediately
+   * This method is synchronous; read `Network.projections` immediately
    * after it returns. Throws when topology validation or GPU binding fails,
    * leaving the prior view intact.
+   *
+   * @param topology - CPU-side graph and geometry arrays.
+   * @throws Error when topology validation or GPU binding fails.
    */
   load(topology: Topology): void;
-  /** Replace the optional geographic border overlay. */
+  /**
+   * Replace the optional geographic border overlay.
+   *
+   * @param borders - Packed border geometry, or `null` to clear borders.
+   */
   setBorders(borders: Borders | null): void;
-  /** Replace the color lookup table used by colormap channels. */
+  /**
+   * Replace the color lookup table used by colormap channels.
+   *
+   * @param fn - Function mapping normalized values in `[0, 1]` to RGB channels in `[0, 1]`.
+   */
   setColormap(fn: (t: number) => readonly [number, number, number]): void;
-  /** Set the default vertex color used without a vertexColor channel. */
+  /**
+   * Set the default vertex color used without a `vertexColor` channel.
+   *
+   * @param color - RGBA color with normalized channels in `[0, 1]`.
+   */
   setBaseColor(color: readonly [number, number, number, number]): void;
   /**
    * Bind or replace a per-vertex or per-edge rendering channel.
    *
    * `domain` is the input value range. Height channels may also pass an
    * output `range`; use null for `domain` to keep the auto-scanned input range.
+   *
+   * @param channel - Channel name to bind.
+   * @param values - Scalar values whose length matches the current topology.
+   * @param domain - Input domain used for normalization, or `null` for height auto-scan.
+   * @param range - Output range for `vertexHeight`; ignored by other channels.
+   * @throws Error when no topology is loaded or the array length is invalid.
    */
   setChannel(
     channel: Channel,
@@ -136,25 +282,65 @@ export interface Network {
     domain?: readonly [number, number] | null,
     range?: readonly [number, number],
   ): void;
-  /** Clear a previously bound rendering channel. */
+  /**
+   * Clear a previously bound rendering channel.
+   *
+   * @param channel - Channel name to clear.
+   */
   clearChannel(channel: Channel): void;
-  /** Override the input domain used to normalize a non-dash channel. */
+  /**
+   * Override the input domain used to normalize a non-dash channel.
+   *
+   * @param channel - Channel name to update.
+   * @param range - Fixed input range, or `null` to return to the scanned/default domain.
+   */
   setChannelRange(channel: Channel, range: readonly [number, number] | null): void;
-  /** Update display options. `msaa` remains construction-only. */
+  /**
+   * Update display options. `msaa` remains construction-only.
+   *
+   * @param options - Partial display option patch.
+   */
   setOptions(options: Options): void;
-  /** Fit the loaded topology into the current viewport. */
+  /**
+   * Fit the loaded topology into the current viewport.
+   *
+   * @param animate - If true, animate toward the fit view when a viewport is available.
+   */
   fit(animate?: boolean): void;
-  /** Switch projection mode, returning false when the loaded topology cannot host it. */
+  /**
+   * Switch projection mode.
+   *
+   * @param mode - Projection mode to activate.
+   * @returns True if the loaded topology supports the mode; false otherwise.
+   */
   setProjection(mode: 'flat' | 'tilt' | 'globe'): boolean;
-  /** Programmatically select an item without emitting a select event. */
+  /**
+   * Programmatically select an item without emitting a `select` event.
+   *
+   * @param kind - Item kind to select.
+   * @param index - Vertex or edge index.
+   */
   select(kind: 'vertex' | 'edge', index: number): void;
   /** Clear selection without emitting a select event. */
   clearSelection(): void;
-  /** Pan the active camera by screen pixels. */
+  /**
+   * Pan the active camera by screen pixels.
+   *
+   * @param dx - Horizontal delta in CSS pixels.
+   * @param dy - Vertical delta in CSS pixels.
+   */
   panBy(dx: number, dy: number): void;
-  /** Zoom the active camera around the viewport center. */
+  /**
+   * Zoom the active camera around the viewport center.
+   *
+   * @param factor - Multiplicative zoom factor.
+   */
   zoomBy(factor: number): void;
-  /** Fade the canvas in after the first real frame has painted. */
+  /**
+   * Fade the canvas in after the first real frame has painted.
+   *
+   * @param ms - Transition duration in milliseconds. Default: `150`.
+   */
   fadeIn(ms?: number): void;
   /** Pause animation and rendering until resumed. */
   pause(): void;
@@ -227,7 +413,19 @@ const DEFAULT_FOCUS_STYLE: FocusStyle = {
 };
 
 /**
- * Creates a WebGPU-backed network renderer inside a container element.
+ * Creates a WebGPU network renderer and appends its canvas to `container`.
+ *
+ * @param container - Host element that owns the inserted canvas.
+ * @param options - Initial rendering and interaction options.
+ * @returns A controller for loading topology, binding channels, and releasing GPU resources.
+ * @throws Error when WebGPU initialization fails.
+ *
+ * @example
+ * ```ts
+ * const network = await createNetwork(container, { graticule: true });
+ * network.load(topology);
+ * network.fadeIn();
+ * ```
  *
  * The returned controller owns the inserted canvas and must be destroyed when
  * the host no longer needs it.

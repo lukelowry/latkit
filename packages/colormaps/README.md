@@ -2,8 +2,22 @@
 
 Colormap catalog for Latkit.
 
-## Author
+## Install
 
-Luke Lowery developed this module during his PhD studies at Texas A&M University. You can learn more on his [research page](https://lukelowry.github.io/) or view his publications on [Google Scholar](https://scholar.google.com/citations?user=CTynuRMAAAAJ&hl=en).
+```sh
+npm install @latkit/colormaps
+```
 
-Selected related work includes [sgwt](https://pypi.org/project/sgwt/), [esapp](https://pypi.org/project/esapp/), and [ORNL/GridKit](https://github.com/ORNL/GridKit).
+## Basic use
+
+```ts
+import { COLORMAP_LABEL, colormap, colormapGradientCss } from '@latkit/colormaps';
+
+const viridis = colormap('viridis');
+const [r, g, b] = viridis(0.5);
+
+button.title = COLORMAP_LABEL.viridis;
+button.style.background = colormapGradientCss('viridis', 'to right');
+```
+
+Colormap functions accept normalized values in `[0, 1]` and return RGB channels in `[0, 1]`.

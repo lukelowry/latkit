@@ -3,11 +3,31 @@
   "name": "Latkit API",
   "entryPointStrategy": "packages",
   "entryPoints": ["packages/model", "packages/colormaps", "packages/monitor", "packages/network"],
+  "packageOptions": {
+    "entryPoints": ["src/index.ts"],
+    "excludeInternal": true,
+    "excludePrivate": true
+  },
   "out": "docs/api/reference",
   "plugin": ["typedoc-plugin-markdown"],
   "readme": "none",
   "excludeInternal": true,
   "excludePrivate": true,
+  "disableSources": true,
   "hideGenerator": true,
-  "sourceLinkTemplate": "https://github.com/lukelowry/latkit/blob/{gitRevision}/{path}#L{line}"
+  "hideBreadcrumbs": true,
+  "hidePageHeader": true,
+  "entryFileName": "index",
+  "excludeScopesInPaths": true,
+  "indexFormat": "table",
+  "interfacePropertiesFormat": "table",
+  "parametersFormat": "table",
+  "propertyMembersFormat": "table",
+  "typeAliasPropertiesFormat": "table",
+  "typeDeclarationFormat": "table",
+  "membersWithOwnFile": ["Class", "Interface"],
+  "tableColumnSettings": {
+    "hideSources": true,
+    "leftAlignHeaders": true
+  }
 }

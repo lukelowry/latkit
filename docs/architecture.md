@@ -2,10 +2,16 @@
 
 Latkit is organized as a small monorepo. Each published package owns a single public entrypoint and emits bundled ESM plus TypeScript declarations.
 
+## Runtime shape
+
+Rendering packages create and own a canvas inside a host element. The application remains responsible for sizing the host element, supplying data arrays, listening to events, and calling `destroy()` when the view is removed.
+
+Both renderers use WebGPU resources internally. Public APIs stay imperative on purpose: data often arrives from simulation, telemetry, or graph pipelines where direct controller methods are easier to integrate than a framework-specific component model.
+
 ## Package boundaries
 
 `@latkit/model`
-: Keeps shared primitives small and dependency-light.
+: Keeps shared model primitives small and dependency-light as the package family grows.
 
 `@latkit/colormaps`
 : Owns color catalogs and formatting helpers. Rendering packages can consume this package without duplicating palette data.
@@ -21,3 +27,9 @@ Latkit is organized as a small monorepo. Each published package owns a single pu
 Human-authored docs live under `docs/`. Generated API reference is written to `docs/api/reference/` by TypeDoc and is intentionally ignored by git.
 
 The generated API docs are built from package entrypoints instead of source directories. That keeps the published API obvious and prevents internal implementation modules from becoming accidental documentation commitments.
+
+## Public API boundary
+
+Consumers should import from package roots such as `@latkit/network` and `@latkit/monitor`. Source paths under `packages/*/src` are implementation details.
+
+Generated reference pages document only exported package entrypoints. If a symbol appears in the reference, treat it as part of the public contract unless it is marked internal and excluded from the generated docs.
