@@ -17,7 +17,7 @@ export interface RenderLoopDeps {
    * Runs after `camera.tick()` and before frame submission so hover state can
    * be resolved against the final camera pose for this frame.
    */
-  onFrame?: () => void;
+  onFrame?: (sizeSettled: boolean) => void;
   /**
    * Updates viewport-derived visual uniforms before hover picking and GPU
    * submission observe them.
@@ -51,7 +51,7 @@ export class RenderLoop {
   private readonly uniforms: Uniforms;
   private readonly renderer: Renderer;
   private readonly onZoom?: (atFitView: boolean) => void;
-  private readonly onFrame?: () => void;
+  private readonly onFrame?: (sizeSettled: boolean) => void;
   private readonly onBeforeFrame?: (vp: Viewport) => void;
   private readonly onPaint?: () => void;
   // Swappable state set by the canvas orchestrator as it changes.
@@ -276,7 +276,7 @@ export class RenderLoop {
     // uniforms upload, so the highlight it writes is part of the frame
     // being submitted. Host callbacks may pause or destroy the loop; bail
     // if they did.
-    this.onFrame?.();
+    this.onFrame?.(this.sizeSettled);
     if (this.dead || !this.active) return;
 
     const painted = this.submitFrame();
