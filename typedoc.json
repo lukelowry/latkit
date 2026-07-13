@@ -2,7 +2,13 @@
   "$schema": "https://typedoc.org/schema.json",
   "name": "Latkit API",
   "entryPointStrategy": "packages",
-  "entryPoints": ["packages/model", "packages/colormaps", "packages/monitor", "packages/network"],
+  "entryPoints": [
+    "packages/model",
+    "packages/colormaps",
+    "packages/gpu",
+    "packages/monitor",
+    "packages/network"
+  ],
   "packageOptions": {
     "entryPoints": ["src/index.ts"],
     "excludeInternal": true,

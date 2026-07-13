@@ -29,6 +29,7 @@ Latkit packages are ESM modules for modern browser applications. The rendering p
 | ------------------- | --------------------------------------------------- |
 | `@latkit/network`   | Interactive WebGPU network topology views           |
 | `@latkit/monitor`   | WebGPU time-series and signal monitor views         |
+| `@latkit/gpu`       | Shared Core WebGPU device acquisition and ownership |
 | `@latkit/colormaps` | Named colormaps, labels, and CSS gradients          |
 | `@latkit/model`     | Shared model primitives as the package family grows |
 

@@ -1,0 +1,35 @@
+{
+  "name": "@latkit/gpu",
+  "version": "0.0.0",
+  "description": "Shared WebGPU device acquisition for Latkit.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lukelowry/latkit.git",
+    "directory": "packages/gpu"
+  },
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --project @latkit/gpu"
+  },
+  "dependencies": {
+    "@webgpu/types": "^0.1.71"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

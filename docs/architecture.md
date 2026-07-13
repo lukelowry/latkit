@@ -16,6 +16,9 @@ Both renderers use WebGPU resources internally. Public APIs stay imperative on p
 `@latkit/colormaps`
 : Owns color catalogs and formatting helpers. Rendering packages can consume this package without duplicating palette data.
 
+`@latkit/gpu`
+: Owns Core WebGPU adapter selection, logical-device lifetime, and typed availability failures. Canvas configuration and renderer resources remain in the rendering packages.
+
 `@latkit/monitor`
 : Owns monitor-specific state, WebGPU resources, and rendering behavior.
 

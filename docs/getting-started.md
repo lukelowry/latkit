@@ -13,7 +13,7 @@ This guide gets a local Latkit checkout or downstream app to its first rendered 
 Install only the packages your app needs:
 
 ```sh
-npm install @latkit/model @latkit/colormaps @latkit/monitor @latkit/network
+npm install @latkit/model @latkit/colormaps @latkit/gpu @latkit/monitor @latkit/network
 ```
 
 Most applications start with one renderer plus colormaps:
@@ -36,6 +36,9 @@ npm install @latkit/monitor @latkit/colormaps
 `@latkit/colormaps`
 : Named colormap data and helpers for gradients and scale metadata.
 
+`@latkit/gpu`
+: Shared Core WebGPU device acquisition for renderers in one browser realm.
+
 `@latkit/monitor`
 : A WebGPU signal monitor for time-oriented readings.
 
@@ -48,6 +51,7 @@ Use package entrypoints directly:
 
 ```ts
 import { colormap } from '@latkit/colormaps';
+import { createGpu } from '@latkit/gpu';
 import { createMonitor } from '@latkit/monitor';
 import { createNetwork } from '@latkit/network';
 ```
