@@ -195,12 +195,9 @@ function makeSurface(): FakeSurface {
   };
 }
 
-function makeGpuContext(canvas: HTMLCanvasElement, lost: Promise<GPUDeviceLostInfo>): GpuContext {
+function makeGpuContext(device: GPUDevice, canvas: HTMLCanvasElement): GpuContext {
   return {
-    device: {
-      lost,
-      destroy: vi.fn(),
-    } as unknown as GPUDevice,
+    device,
     context: {} as unknown as GPUCanvasContext,
     format: 'bgra8unorm',
     canvas,
@@ -216,6 +213,8 @@ export interface ControllerHarness {
   readonly picker: FakePicker;
   readonly surface: FakeSurface;
   readonly pointerCleanup: { destroy: ReturnType<typeof vi.fn> };
+  readonly device: GPUDevice;
+  readonly deviceDestroy: ReturnType<typeof vi.fn>;
   readonly deviceLost: Deferred<GPUDeviceLostInfo>;
   readonly events: {
     readonly deviceLost: Array<Parameters<Events['deviceLost']>>;
@@ -224,11 +223,20 @@ export interface ControllerHarness {
   destroy(): void;
 }
 
-export async function createControllerHarness(options: Options = {}): Promise<ControllerHarness> {
+export async function createControllerHarness(
+  options: Options = {},
+  configure?: (deps: ControllerDeps) => void,
+): Promise<ControllerHarness> {
   const container = document.createElement('div');
   const surface = makeSurface();
   const deviceLost = deferred<GPUDeviceLostInfo>();
-  const gpu = makeGpuContext(surface.element, deviceLost.promise);
+  const deviceDestroy = vi.fn();
+  const device = {
+    limits: {},
+    lost: deviceLost.promise,
+    destroy: deviceDestroy,
+  } as unknown as GPUDevice;
+  const gpu = makeGpuContext(device, surface.element);
 
   const renderer = new FakeRenderer();
   const loop = new FakeRenderLoop();
@@ -241,7 +249,7 @@ export async function createControllerHarness(options: Options = {}): Promise<Co
 
   const deps: ControllerDeps = {
     createSurface: vi.fn(() => surface),
-    createGpuContext: vi.fn(async () => gpu),
+    createGpuContext: vi.fn(() => gpu),
     destroyGpuContext: vi.fn(),
     createRenderer: vi.fn(() => renderer as unknown as Renderer),
     createRenderLoop: vi.fn(
@@ -257,15 +265,11 @@ export async function createControllerHarness(options: Options = {}): Promise<Co
       return picker as unknown as Picker;
     }),
   };
+  configure?.(deps);
 
-  const network = await createNetworkWithDeps(container, options, deps);
-  let destroyed = false;
-  const destroyNetwork = network.destroy;
-  network.destroy = () => {
-    if (destroyed) return;
-    destroyed = true;
-    destroyNetwork();
-  };
+  const network = await Promise.resolve().then(() =>
+    createNetworkWithDeps(device, container, options, deps),
+  );
   network.on('deviceLost', (reason, message) => events.deviceLost.push([reason, message]));
 
   return {
@@ -277,6 +281,8 @@ export async function createControllerHarness(options: Options = {}): Promise<Co
     picker,
     surface,
     pointerCleanup,
+    device,
+    deviceDestroy,
     deviceLost,
     events,
     emitPointer(intent: Intent) {

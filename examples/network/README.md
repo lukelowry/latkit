@@ -13,7 +13,7 @@ pnpm install
 pnpm --filter @latkit/network-example dev
 ```
 
-The dev script builds `@latkit/network` first, then starts Vite at
+The dev script builds `@latkit/gpu` and `@latkit/network` first, then starts Vite at
 http://127.0.0.1:5188.
 
 ## Build
@@ -22,5 +22,5 @@ http://127.0.0.1:5188.
 pnpm --filter @latkit/network-example build
 ```
 
-The example depends on `@latkit/network` through the workspace package link, so
-it consumes the same `dist` entrypoint a downstream app would use.
+The example depends on `@latkit/gpu` and `@latkit/network` through workspace
+package links, so it consumes the same `dist` entrypoints a downstream app would use.

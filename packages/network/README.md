@@ -5,13 +5,14 @@ WebGPU network renderer for Latkit.
 ## Install
 
 ```sh
-npm install @latkit/network @latkit/colormaps
+npm install @latkit/gpu @latkit/network @latkit/colormaps
 ```
 
 ## Basic use
 
 ```ts
 import { colormap } from '@latkit/colormaps';
+import { requestDevice } from '@latkit/gpu';
 import { createNetwork, type Topology } from '@latkit/network';
 
 const topology: Topology = {
@@ -21,7 +22,8 @@ const topology: Topology = {
   polylineStart: new Uint32Array([0, 0, 0]),
 };
 
-const network = await createNetwork(container, {
+const device = await requestDevice();
+const network = await createNetwork(device, container, {
   colormap: colormap('viridis'),
   graticule: true,
 });
@@ -31,7 +33,16 @@ network.setChannel('vertexColor', new Float32Array([0.1, 0.8, 0.4]), [0, 1]);
 network.fadeIn();
 ```
 
-Call `network.destroy()` when the host removes the view.
+`createNetwork()` accepts a native Core `GPUDevice`; `@latkit/gpu` is a
+convenient way to acquire one but is not required.
+
+Network borrows the device, so destroy the renderer first and the device only
+after every renderer using it has been destroyed:
+
+```ts
+network.destroy();
+device.destroy();
+```
 
 ## Data shape
 

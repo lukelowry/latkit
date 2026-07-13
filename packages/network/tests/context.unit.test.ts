@@ -13,74 +13,91 @@ function canvasWithContext(context: GPUCanvasContext | null): HTMLCanvasElement 
   } as unknown as HTMLCanvasElement;
 }
 
+function makeDevice(): { readonly device: GPUDevice; readonly destroy: ReturnType<typeof vi.fn> } {
+  const destroy = vi.fn();
+  return { device: { destroy } as unknown as GPUDevice, destroy };
+}
+
 describe('createGpuContext', () => {
-  it('throws when WebGPU is unavailable', async () => {
-    vi.stubGlobal('navigator', {});
+  it('throws when the canvas cannot provide a WebGPU context', () => {
+    const { device } = makeDevice();
 
-    await expect(createGpuContext(canvasWithContext(null))).rejects.toThrow(
-      'WebGPU is not available in this browser',
-    );
-  });
-
-  it('throws when no adapter is available', async () => {
-    vi.stubGlobal('navigator', {
-      gpu: { requestAdapter: vi.fn(async () => null) },
-    });
-
-    await expect(createGpuContext(canvasWithContext(null))).rejects.toThrow(
-      'No WebGPU adapter is available',
-    );
-  });
-
-  it('throws when device acquisition fails', async () => {
-    vi.stubGlobal('navigator', {
-      gpu: {
-        requestAdapter: vi.fn(async () => ({ requestDevice: vi.fn(async () => null) })),
-      },
-    });
-
-    await expect(createGpuContext(canvasWithContext(null))).rejects.toThrow(
-      'Failed to acquire a WebGPU device',
-    );
-  });
-
-  it('throws when the canvas cannot provide a WebGPU context', async () => {
-    vi.stubGlobal('navigator', {
-      gpu: {
-        requestAdapter: vi.fn(async () => ({
-          requestDevice: vi.fn(async () => ({ destroy: vi.fn() })),
-        })),
-      },
-    });
-
-    await expect(createGpuContext(canvasWithContext(null))).rejects.toThrow(
+    expect(() => createGpuContext(device, canvasWithContext(null))).toThrow(
       'Canvas does not support a WebGPU context',
     );
   });
 
-  it('configures the canvas context and destroys the acquired device', async () => {
-    const device = { destroy: vi.fn() } as unknown as GPUDevice;
-    const context = { configure: vi.fn() } as unknown as GPUCanvasContext;
+  it('queries the presentation format and configures the canvas with a borrowed device', () => {
+    const { device, destroy } = makeDevice();
+    const context = {
+      configure: vi.fn(),
+      unconfigure: vi.fn(),
+    } as unknown as GPUCanvasContext;
     const canvas = canvasWithContext(context);
-    const requestDevice = vi.fn(async () => device);
-    const requestAdapter = vi.fn(async () => ({ requestDevice }));
-    vi.stubGlobal('navigator', {
-      gpu: {
-        requestAdapter,
-        getPreferredCanvasFormat: vi.fn(() => 'bgra8unorm'),
-      },
-    });
+    const getPreferredCanvasFormat = vi.fn(() => 'bgra8unorm' as GPUTextureFormat);
+    vi.stubGlobal('navigator', { gpu: { getPreferredCanvasFormat } });
 
-    const gpu = await createGpuContext(canvas);
+    const gpu = createGpuContext(device, canvas);
     destroyGpuContext(gpu);
 
-    expect(requestAdapter).toHaveBeenCalledWith({ powerPreference: 'high-performance' });
+    expect(getPreferredCanvasFormat).toHaveBeenCalledOnce();
     expect(context.configure).toHaveBeenCalledWith({
       device,
       format: 'bgra8unorm',
       alphaMode: 'premultiplied',
     });
     expect(gpu).toEqual({ device, context, format: 'bgra8unorm', canvas });
-    expect(device.destroy).toHaveBeenCalledOnce();
+    expect(context.unconfigure).toHaveBeenCalledOnce();
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it('preserves preferred-format lookup errors', () => {
+    const { device } = makeDevice();
+    const failure = new Error('format lookup failed');
+    const context = { configure: vi.fn() } as unknown as GPUCanvasContext;
+    vi.stubGlobal('navigator', {
+      gpu: {
+        getPreferredCanvasFormat: vi.fn(() => {
+          throw failure;
+        }),
+      },
+    });
+
+    let caught: unknown;
+    try {
+      createGpuContext(device, canvasWithContext(context));
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBe(failure);
+    expect(context.configure).not.toHaveBeenCalled();
+  });
+
+  it('unconfigures partial setup and preserves configuration errors', () => {
+    const { device, destroy } = makeDevice();
+    const failure = new Error('configuration failed');
+    const context = {
+      configure: vi.fn(() => {
+        throw failure;
+      }),
+      unconfigure: vi.fn(() => {
+        throw new Error('cleanup also failed');
+      }),
+    } as unknown as GPUCanvasContext;
+    vi.stubGlobal('navigator', {
+      gpu: { getPreferredCanvasFormat: vi.fn(() => 'bgra8unorm') },
+    });
+
+    let caught: unknown;
+    try {
+      createGpuContext(device, canvasWithContext(context));
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBe(failure);
+    expect(context.unconfigure).toHaveBeenCalledOnce();
+    expect(destroy).not.toHaveBeenCalled();
   });
 });

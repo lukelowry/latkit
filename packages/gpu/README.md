@@ -1,10 +1,10 @@
 # @latkit/gpu
 
-Shared Core WebGPU device acquisition for Latkit.
+Native Core WebGPU device acquisition for Latkit.
 
-`@latkit/gpu` gives one part of an application explicit ownership of a logical
-GPU device while allowing renderers in the same browser realm to borrow it. It
-does not configure canvases or manage renderer resources.
+`@latkit/gpu` handles the environmental part of requesting a device and then
+returns the platform `GPUDevice` directly. The caller owns that device. Canvas
+configuration and renderer resources remain with the rendering packages.
 
 ## Install
 
@@ -12,45 +12,46 @@ does not configure canvases or manage renderer resources.
 npm install @latkit/gpu
 ```
 
-## Create a device
+## Request a device
 
 ```ts
-import { createGpu } from '@latkit/gpu';
+import { requestDevice } from '@latkit/gpu';
 
-const gpu = await createGpu();
+const device = await requestDevice();
 
 try {
-  console.log(gpu.device.limits);
-  console.log(gpu.format);
+  console.log(device.limits);
 
-  void gpu.device.lost.then((info) => {
+  void device.lost.then((info) => {
     console.error('GPU device lost:', info.reason, info.message);
   });
 } finally {
-  gpu.destroy();
+  device.destroy();
 }
 ```
 
-`createGpu()` requests Core WebGPU and leaves the adapter power preference to
-the browser. Pass `powerPreference` only when the application has a specific
+`requestDevice()` requests Core WebGPU and leaves the adapter power preference
+to the browser. Pass `powerPreference` only when the application has a specific
 reason to override that choice:
 
 ```ts
-const gpu = await createGpu({ powerPreference: 'high-performance' });
+const device = await requestDevice({
+  powerPreference: 'high-performance',
+});
 ```
 
 ## Handle availability
 
 ```ts
-import { createGpu, GpuUnavailableError } from '@latkit/gpu';
+import { GpuUnavailableError, requestDevice } from '@latkit/gpu';
 
 try {
-  const gpu = await createGpu();
+  const device = await requestDevice();
 
   try {
-    // Use gpu.device while the owner remains alive.
+    // Create renderers that borrow device.
   } finally {
-    gpu.destroy();
+    device.destroy();
   }
 } catch (error) {
   if (error instanceof GpuUnavailableError) {
@@ -61,6 +62,6 @@ try {
 }
 ```
 
-Only expected API, adapter, device, and canvas-context availability failures
-use `GpuUnavailableError`. Programming and validation failures are not
-reclassified.
+Only API absence, a null adapter, and device-request rejection use
+`GpuUnavailableError`. Other platform and programming failures retain their
+original identity.

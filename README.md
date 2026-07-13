@@ -20,20 +20,20 @@ It provides imperative renderer controllers, typed data shapes, and shared color
 | ------------------- | --------------------------------------------------- |
 | `@latkit/network`   | Interactive WebGPU network topology views           |
 | `@latkit/monitor`   | WebGPU time-series and signal monitor views         |
-| `@latkit/gpu`       | Shared Core WebGPU device acquisition and ownership |
+| `@latkit/gpu`       | Native Core WebGPU device acquisition               |
 | `@latkit/colormaps` | Named colormaps, labels, and CSS gradients          |
 | `@latkit/model`     | Shared model primitives as the package family grows |
 
 ## Install
 
 ```sh
-npm install @latkit/network @latkit/colormaps
+npm install @latkit/gpu @latkit/network @latkit/colormaps
 ```
 
 or:
 
 ```sh
-npm install @latkit/monitor @latkit/colormaps
+npm install @latkit/gpu @latkit/monitor @latkit/colormaps
 ```
 
 ## Run examples

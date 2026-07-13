@@ -4,6 +4,7 @@ import {
   colormapGradientCss,
   type ColormapName,
 } from '@latkit/colormaps';
+import { requestDevice } from '@latkit/gpu';
 import { createNetwork, type Network } from '@latkit/network';
 import { TOPOLOGIES, type GeneratedTopology, type TopologyOption } from './topologies.js';
 import './style.css';
@@ -35,9 +36,17 @@ async function main(): Promise<void> {
 
   setStatus(current);
 
+  let device: GPUDevice;
+  try {
+    device = await requestDevice();
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err));
+    return;
+  }
+
   let net: Network;
   try {
-    net = await createNetwork(stage, {
+    net = await createNetwork(device, stage, {
       msaa: 4,
       daylight: true,
       graticule: false,
@@ -46,6 +55,7 @@ async function main(): Promise<void> {
       colormap: colormap(EXAMPLE_COLORMAPS[0]!),
     });
   } catch (err) {
+    device.destroy();
     fail(err instanceof Error ? err.message : String(err));
     return;
   }
@@ -80,6 +90,12 @@ async function main(): Promise<void> {
   });
   wireColormaps(net);
   wirePicking(net);
+
+  window.addEventListener('pagehide', (event) => {
+    if (event.persisted) return;
+    net.destroy();
+    device.destroy();
+  });
 }
 
 function setStatus(topology: GeneratedTopology): void {

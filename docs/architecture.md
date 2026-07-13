@@ -4,7 +4,7 @@ Latkit is organized as a small monorepo. Each published package owns a single pu
 
 ## Runtime shape
 
-Rendering packages create and own a canvas inside a host element. The application remains responsible for sizing the host element, supplying data arrays, listening to events, and calling `destroy()` when the view is removed.
+Rendering packages create and own a canvas inside a host element. The application supplies a native Core `GPUDevice`, owns its lifetime, sizes the host element, supplies data arrays, listens to events, and calls `destroy()` when the view is removed.
 
 Both renderers use WebGPU resources internally. Public APIs stay imperative on purpose: data often arrives from simulation, telemetry, or graph pipelines where direct controller methods are easier to integrate than a framework-specific component model.
 
@@ -17,7 +17,7 @@ Both renderers use WebGPU resources internally. Public APIs stay imperative on p
 : Owns color catalogs and formatting helpers. Rendering packages can consume this package without duplicating palette data.
 
 `@latkit/gpu`
-: Owns Core WebGPU adapter selection, logical-device lifetime, and typed availability failures. Canvas configuration and renderer resources remain in the rendering packages.
+: Centralizes Core WebGPU device requests and typed availability failures. It returns a native Core `GPUDevice`; applications own its lifetime, while rendering packages own canvas configuration and renderer resources.
 
 `@latkit/monitor`
 : Owns monitor-specific state, WebGPU resources, and rendering behavior.

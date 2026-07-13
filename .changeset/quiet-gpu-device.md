@@ -2,4 +2,4 @@
 '@latkit/gpu': patch
 ---
 
-Add shared Core WebGPU device acquisition with explicit lifetime ownership.
+Add native Core WebGPU device acquisition with explicit caller ownership.

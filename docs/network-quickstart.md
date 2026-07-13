@@ -16,6 +16,7 @@ Latkit appends its own canvas to a container. Give the container a stable size b
 
 ```ts
 import { colormap } from '@latkit/colormaps';
+import { requestDevice } from '@latkit/gpu';
 import { createNetwork, type Topology } from '@latkit/network';
 
 const container = document.getElementById('network');
@@ -30,7 +31,8 @@ const topology: Topology = {
   polylineStart: new Uint32Array([0, 0, 0]),
 };
 
-const network = await createNetwork(container, {
+const device = await requestDevice();
+const network = await createNetwork(device, container, {
   colormap: colormap('viridis'),
   graticule: true,
 });
@@ -60,7 +62,12 @@ network.setOptions({ edges: true, vertices: true, daylight: true });
 unsubscribeHover();
 ```
 
-Call `network.destroy()` when your app removes the view.
+When your app removes the view, destroy the renderer first and the application-owned device last:
+
+```ts
+network.destroy();
+device.destroy();
+```
 
 ## Run the full example
 

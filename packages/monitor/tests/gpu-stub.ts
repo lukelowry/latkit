@@ -38,10 +38,20 @@ export interface GpuLog {
   readonly lutWrites: Uint8Array[];
   copies: number;
   submits: number;
+  deviceDestroys: number;
+  contextConfigures: number;
+  contextUnconfigures: number;
+  formatQueries: number;
+  resizeDisconnects: number;
 }
 
 export interface GpuStub {
+  /** One native device shared by every monitor created in a test. */
+  readonly device: GPUDevice;
   readonly log: GpuLog;
+  setConfigureError(error: Error): void;
+  setContextAvailable(available: boolean): void;
+  setFormatError(error: Error): void;
   loseDevice(reason?: string, message?: string): void;
   /** Run pending rAF callbacks once, then settle microtasks. */
   frame(): Promise<void>;
@@ -57,6 +67,11 @@ export function installGpuStub(): GpuStub {
     lutWrites: [],
     copies: 0,
     submits: 0,
+    deviceDestroys: 0,
+    contextConfigures: 0,
+    contextUnconfigures: 0,
+    formatQueries: 0,
+    resizeDisconnects: 0,
   };
 
   let resolveLost: (info: { reason: string; message: string }) => void = () => {};
@@ -89,7 +104,9 @@ export function installGpuStub(): GpuStub {
   const device = {
     limits: { maxStorageBufferBindingSize: 128 * 1024 * 1024, maxBufferSize: 256 * 1024 * 1024 },
     lost,
-    destroy: () => {},
+    destroy: () => {
+      log.deviceDestroys++;
+    },
     createShaderModule: (descriptor: { code: string }) => ({ code: descriptor.code }),
     createRenderPipeline: (descriptor: { label?: string }) => ({
       label: descriptor.label ?? '',
@@ -162,13 +179,24 @@ export function installGpuStub(): GpuStub {
     },
   };
 
-  const context = {
-    configure: () => {},
+  let configureError: Error | undefined;
+
+  const context = () => ({
+    configure: () => {
+      log.contextConfigures++;
+      if (configureError !== undefined) throw configureError;
+    },
+    unconfigure: () => {
+      log.contextUnconfigures++;
+    },
     getCurrentTexture: () => ({
       label: 'canvas',
       createView: () => ({ __target: 'canvas' }),
     }),
-  };
+  });
+
+  let contextAvailable = true;
+  let formatError: Error | undefined;
 
   const originals = {
     navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator'),
@@ -184,8 +212,11 @@ export function installGpuStub(): GpuStub {
     configurable: true,
     value: {
       gpu: {
-        requestAdapter: async () => ({ requestDevice: async () => device }),
-        getPreferredCanvasFormat: () => 'bgra8unorm',
+        getPreferredCanvasFormat: () => {
+          log.formatQueries++;
+          if (formatError !== undefined) throw formatError;
+          return 'bgra8unorm';
+        },
       },
     },
   });
@@ -206,7 +237,9 @@ export function installGpuStub(): GpuStub {
     configurable: true,
     value: class {
       observe(): void {}
-      disconnect(): void {}
+      disconnect(): void {
+        log.resizeDisconnects++;
+      }
       unobserve(): void {}
     },
   });
@@ -233,12 +266,24 @@ export function installGpuStub(): GpuStub {
     this: HTMLCanvasElement,
     kind: string,
   ) {
-    if (kind === 'webgpu') return context as unknown as RenderingContext;
+    if (kind === 'webgpu' && contextAvailable) {
+      return context() as unknown as RenderingContext;
+    }
     return null;
   } as typeof HTMLCanvasElement.prototype.getContext;
 
   return {
+    device: device as unknown as GPUDevice,
     log,
+    setConfigureError: (error) => {
+      configureError = error;
+    },
+    setContextAvailable: (available) => {
+      contextAvailable = available;
+    },
+    setFormatError: (error) => {
+      formatError = error;
+    },
     loseDevice: (reason = 'unknown', message = 'lost') => {
       resolveLost({ reason, message });
     },

@@ -19,13 +19,13 @@ npm install @latkit/model @latkit/colormaps @latkit/gpu @latkit/monitor @latkit/
 Most applications start with one renderer plus colormaps:
 
 ```sh
-npm install @latkit/network @latkit/colormaps
+npm install @latkit/gpu @latkit/network @latkit/colormaps
 ```
 
 or:
 
 ```sh
-npm install @latkit/monitor @latkit/colormaps
+npm install @latkit/gpu @latkit/monitor @latkit/colormaps
 ```
 
 ## Choose a package
@@ -37,7 +37,7 @@ npm install @latkit/monitor @latkit/colormaps
 : Named colormap data and helpers for gradients and scale metadata.
 
 `@latkit/gpu`
-: Shared Core WebGPU device acquisition for renderers in one browser realm.
+: Native Core WebGPU device acquisition and typed availability failures.
 
 `@latkit/monitor`
 : A WebGPU signal monitor for time-oriented readings.
@@ -51,7 +51,7 @@ Use package entrypoints directly:
 
 ```ts
 import { colormap } from '@latkit/colormaps';
-import { createGpu } from '@latkit/gpu';
+import { requestDevice } from '@latkit/gpu';
 import { createMonitor } from '@latkit/monitor';
 import { createNetwork } from '@latkit/network';
 ```

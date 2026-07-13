@@ -22,6 +22,7 @@ The example below has one signal, four frames, and two elements.
 
 ```ts
 import { colormap } from '@latkit/colormaps';
+import { requestDevice } from '@latkit/gpu';
 import { createMonitor, type Series } from '@latkit/monitor';
 
 const container = document.getElementById('monitor');
@@ -40,7 +41,8 @@ const series: Series = {
   validFrames: 0,
 };
 
-const monitor = await createMonitor(container, {
+const device = await requestDevice();
+const monitor = await createMonitor(device, container, {
   valueRange: [0, 1],
   colormap: colormap('magma'),
 });
@@ -68,7 +70,12 @@ monitor.on('pick', (reading) => {
 });
 ```
 
-Call `monitor.destroy()` when the host page removes the monitor.
+When the host page removes the monitor, destroy the renderer first and the application-owned device last:
+
+```ts
+monitor.destroy();
+device.destroy();
+```
 
 ## Run the full example
 

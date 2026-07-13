@@ -39,10 +39,10 @@ function makeSeries(input: {
   };
 }
 
-async function mount(options?: Parameters<typeof createMonitor>[1]): Promise<Monitor> {
+async function mount(options?: Parameters<typeof createMonitor>[2]): Promise<Monitor> {
   const host = document.createElement('div');
   document.body.append(host);
-  return createMonitor(host, options);
+  return createMonitor(stub.device, host, options);
 }
 
 /** Pump frames until the paint queue drains (no draws recorded on a pumped frame). */
@@ -64,6 +64,97 @@ function sample(series: Series, signal: number, frame: number): Float32Array {
 }
 
 describe('monitor', () => {
+  it('rejects compatibility devices before creating a canvas', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const device = {
+      limits: { maxStorageBuffersInVertexStage: 0 },
+    } as unknown as GPUDevice;
+
+    await expect(createMonitor(device, host)).rejects.toThrow('A Core WebGPU device is required');
+    expect(host.querySelector('canvas')).toBeNull();
+    host.remove();
+  });
+
+  it('shares one borrowed device without taking ownership', async () => {
+    const first = await mount();
+    const second = await mount();
+    expect(stub.log.contextConfigures).toBe(2);
+    expect(stub.log.formatQueries).toBe(2);
+
+    first.destroy();
+    first.destroy();
+    expect(stub.log.contextUnconfigures).toBe(1);
+    expect(stub.log.deviceDestroys).toBe(0);
+
+    second.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
+    await settle();
+    expect(historyDraws()).not.toHaveLength(0);
+
+    second.destroy();
+    second.destroy();
+    expect(stub.log.contextUnconfigures).toBe(2);
+    expect(stub.log.deviceDestroys).toBe(0);
+  });
+
+  it('preserves canvas context failures and leaves the borrowed device alive', async () => {
+    stub.setContextAvailable(false);
+    const host = document.createElement('div');
+    document.body.append(host);
+
+    const creation = createMonitor(stub.device, host);
+    await expect(creation).rejects.toThrow('WebGPU canvas context unavailable');
+    expect(host.querySelector('canvas')).toBeNull();
+    expect(stub.log.deviceDestroys).toBe(0);
+    host.remove();
+  });
+
+  it('preserves preferred-format errors by identity', async () => {
+    const failure = new Error('preferred format failed');
+    stub.setFormatError(failure);
+    const host = document.createElement('div');
+    document.body.append(host);
+
+    await expect(createMonitor(stub.device, host)).rejects.toBe(failure);
+    expect(host.querySelector('canvas')).toBeNull();
+    expect(stub.log.deviceDestroys).toBe(0);
+    host.remove();
+  });
+
+  it('unconfigures partial canvas setup and preserves configuration errors', async () => {
+    const failure = new Error('canvas configuration failed');
+    stub.setConfigureError(failure);
+    const host = document.createElement('div');
+    document.body.append(host);
+
+    await expect(createMonitor(stub.device, host)).rejects.toBe(failure);
+    expect(host.querySelector('canvas')).toBeNull();
+    expect(stub.log.contextUnconfigures).toBe(1);
+    expect(stub.log.deviceDestroys).toBe(0);
+    host.remove();
+  });
+
+  it('transactionally cleans up when caller colormap code throws', async () => {
+    const failure = new Error('colormap failed');
+    const host = document.createElement('div');
+    document.body.append(host);
+
+    await expect(
+      createMonitor(stub.device, host, {
+        colormap: () => {
+          throw failure;
+        },
+      }),
+    ).rejects.toBe(failure);
+
+    expect(host.querySelector('canvas')).toBeNull();
+    expect(stub.log.contextUnconfigures).toBe(1);
+    expect(stub.log.resizeDisconnects).toBe(1);
+    expect(stub.log.buffers.every((buffer) => buffer.destroyed)).toBe(true);
+    expect(stub.log.deviceDestroys).toBe(0);
+    host.remove();
+  });
+
   it('zero-copy: slabs are subarray views into the series buffer', async () => {
     const scope = await mount();
     const series = makeSeries({
@@ -351,21 +442,42 @@ describe('monitor', () => {
     scope.destroy();
   });
 
-  it('device loss emits once and halts the present loop', async () => {
-    const scope = await mount();
-    const lost: unknown[] = [];
-    scope.on('deviceLost', (info) => lost.push(info));
+  it('shared device loss reaches every borrower once and still permits cleanup', async () => {
+    const first = await mount();
+    const second = await mount();
+    const firstLost: unknown[] = [];
+    const secondLost: unknown[] = [];
+    first.on('deviceLost', (info) => firstLost.push(info));
+    second.on('deviceLost', (info) => secondLost.push(info));
     stub.loseDevice('unknown', 'simulated');
     await stub.frame();
     await stub.frame();
-    expect(lost).toHaveLength(1);
-    expect(lost[0]).toMatchObject({ message: 'simulated' });
+    expect(firstLost).toHaveLength(1);
+    expect(secondLost).toHaveLength(1);
+    expect(firstLost[0]).toMatchObject({ message: 'simulated' });
+    expect(secondLost[0]).toMatchObject({ message: 'simulated' });
 
     const series = makeSeries({ elements: 1, time: [0, 1], signals: [[1, 2]] });
     stub.log.draws.length = 0;
-    scope.load(series);
+    first.load(series);
+    second.load(series);
     await stub.frame();
     expect(stub.log.draws).toHaveLength(0);
+    first.destroy();
+    second.destroy();
+    expect(stub.log.contextUnconfigures).toBe(2);
+    expect(stub.log.deviceDestroys).toBe(0);
+  });
+
+  it('treats owner destruction of a borrowed device as device loss', async () => {
+    const scope = await mount();
+    const lost: unknown[] = [];
+    scope.on('deviceLost', (info) => lost.push(info));
+
+    stub.loseDevice('destroyed', 'owner destroyed device');
+    await stub.frame();
+
+    expect(lost).toEqual([{ reason: 'destroyed', message: 'owner destroyed device' }]);
     scope.destroy();
   });
 

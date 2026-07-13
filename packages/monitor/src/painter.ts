@@ -4,9 +4,10 @@ import segmentWgsl from './gpu/segment.wgsl?raw';
 /**
  * GPU painter for monitor history and focus passes.
  *
- * LanePainter owns WebGPU resources only. The controller chooses which sample
- * windows to upload and which segment ranges to draw; this class turns those
- * decisions into ordered buffer writes and render passes.
+ * LanePainter borrows a WebGPU device and owns the resources and canvas
+ * configuration it creates. The controller chooses which sample windows to
+ * upload and which segment ranges to draw; this class turns those decisions
+ * into ordered buffer writes and render passes.
  */
 
 /** Upload granularity for one slab window, capped by maxStorageBufferBindingSize. */
@@ -56,28 +57,38 @@ export class LanePainter {
   #focusXnorm: GPUBuffer | null = null;
   #historyGroup: GPUBindGroup | null = null;
   #focusGroup: GPUBindGroup | null = null;
+  #destroyed = false;
 
-  static async create(canvas: HTMLCanvasElement): Promise<LanePainter> {
+  static create(device: GPUDevice, canvas: HTMLCanvasElement): LanePainter {
     const gpu = navigator.gpu;
     if (!gpu) throw new Error('WebGPU is not available');
-    const adapter = await gpu.requestAdapter();
-    if (!adapter) throw new Error('WebGPU adapter unavailable');
-    const device = await adapter.requestDevice();
+
     const context = canvas.getContext('webgpu') as GPUCanvasContext | null;
     if (!context) throw new Error('WebGPU canvas context unavailable');
+
     const format = gpu.getPreferredCanvasFormat();
-    context.configure({
-      device,
-      format,
-      alphaMode: 'premultiplied',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
-    });
-    const dpr = window.devicePixelRatio || 1;
-    const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
-    const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
-    canvas.width = width;
-    canvas.height = height;
-    return new LanePainter(device, context, format, width, height);
+    try {
+      context.configure({
+        device,
+        format,
+        alphaMode: 'premultiplied',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
+      });
+      const dpr = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+      const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+      canvas.width = width;
+      canvas.height = height;
+
+      return new LanePainter(device, context, format, width, height);
+    } catch (error) {
+      try {
+        context.unconfigure();
+      } catch {
+        // Preserve the resource initialization error.
+      }
+      throw error;
+    }
   }
 
   /**
@@ -344,12 +355,14 @@ export class LanePainter {
   }
 
   destroy(): void {
+    if (this.#destroyed) return;
+    this.#destroyed = true;
     this.releaseSlabs();
     this.#history.destroy();
     this.#lut.destroy();
     this.#historyUniform.destroy();
     this.#focusUniform.destroy();
-    this.device.destroy();
+    this.#context.unconfigure();
   }
 
   #makeHistory(width: number, height: number): GPUTexture {

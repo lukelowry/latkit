@@ -12,6 +12,9 @@ import {
 describe('monitor package entrypoint', () => {
   it('re-exports the public controller factory and types', () => {
     expect(createMonitor).toBeTypeOf('function');
+    expectTypeOf<Parameters<typeof createMonitor>[0]>().toEqualTypeOf<GPUDevice>();
+    expectTypeOf<Parameters<typeof createMonitor>[1]>().toEqualTypeOf<HTMLElement>();
+    expectTypeOf<Parameters<typeof createMonitor>[2]>().toEqualTypeOf<Options | undefined>();
     expectTypeOf<Monitor['element']>().toEqualTypeOf<HTMLCanvasElement>();
     expectTypeOf<Options['colormap']>().toEqualTypeOf<
       ((t: number) => readonly [number, number, number]) | undefined

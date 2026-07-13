@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createNetwork } from '../src/controller.js';
-import type { Events, Options } from '../src/controller.js';
+import type { ControllerDeps, Events, Options } from '../src/controller.js';
 import {
   FLAG_DAYLIGHT,
   FLAG_FOCUS_ENABLED,
@@ -40,11 +40,66 @@ afterEach(() => {
 });
 
 describe('createNetwork controller', () => {
-  it('surfaces WebGPU setup failures through the public factory', async () => {
+  it('rejects compatibility devices before creating a surface', async () => {
     const container = document.createElement('div');
-    vi.stubGlobal('navigator', { gpu: undefined });
+    const device = {
+      limits: { maxStorageBuffersInVertexStage: 0 },
+    } as unknown as GPUDevice;
 
-    await expect(createNetwork(container)).rejects.toThrow('WebGPU is not available');
+    await expect(createNetwork(device, container)).rejects.toThrow(
+      'A Core WebGPU device is required',
+    );
+    expect(container.childElementCount).toBe(0);
+  });
+
+  it('surfaces canvas setup failures and releases the inserted surface', async () => {
+    const container = document.createElement('div');
+    const deviceDestroy = vi.fn();
+    const device = {
+      limits: {},
+      destroy: deviceDestroy,
+    } as unknown as GPUDevice;
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+
+    await expect(createNetwork(device, container)).rejects.toThrow(
+      'Canvas does not support a WebGPU context',
+    );
+
+    expect(container.childElementCount).toBe(0);
+    expect(deviceDestroy).not.toHaveBeenCalled();
+  });
+
+  it('cleans partial initialization and preserves the original error', async () => {
+    const failure = new Error('pointer setup failed');
+    let deps!: ControllerDeps;
+
+    await expect(
+      createControllerHarness({}, (next) => {
+        deps = next;
+        deps.attachPointer = vi.fn(() => {
+          throw failure;
+        });
+      }),
+    ).rejects.toBe(failure);
+
+    const surface = vi.mocked(deps.createSurface).mock.results[0]!.value as ReturnType<
+      ControllerDeps['createSurface']
+    >;
+    const gpu = vi.mocked(deps.createGpuContext).mock.results[0]!.value as ReturnType<
+      ControllerDeps['createGpuContext']
+    >;
+    const renderer = vi.mocked(deps.createRenderer).mock.results[0]!.value as ReturnType<
+      ControllerDeps['createRenderer']
+    >;
+    const loop = vi.mocked(deps.createRenderLoop).mock.results[0]!.value as ReturnType<
+      ControllerDeps['createRenderLoop']
+    >;
+
+    expect(loop.destroy).toHaveBeenCalledOnce();
+    expect(renderer.destroy).toHaveBeenCalledOnce();
+    expect(deps.destroyGpuContext).toHaveBeenCalledOnce();
+    expect(surface.destroy).toHaveBeenCalledOnce();
+    expect(gpu.device.destroy).not.toHaveBeenCalled();
   });
 
   it('applies construction options through renderer and uniforms', async () => {
@@ -415,25 +470,39 @@ describe('createNetwork controller', () => {
     expect(events).toEqual([['unknown', 'lost for test']]);
   });
 
-  it('ignores device loss caused by explicit destruction', async () => {
+  it('forwards destruction of a borrowed device while the controller is live', async () => {
     const h = await makeHarness();
 
     h.deviceLost.resolve({ reason: 'destroyed', message: 'normal shutdown' } as GPUDeviceLostInfo);
+    await flushMicrotasks();
+
+    expect(h.loop.pause).toHaveBeenCalledOnce();
+    expect(h.events.deviceLost).toEqual([['destroyed', 'normal shutdown']]);
+  });
+
+  it('ignores device loss after controller teardown', async () => {
+    const h = await makeHarness();
+    h.network.destroy();
+
+    h.deviceLost.resolve({ reason: 'unknown', message: 'late loss' } as GPUDeviceLostInfo);
     await flushMicrotasks();
 
     expect(h.loop.pause).not.toHaveBeenCalled();
     expect(h.events.deviceLost).toEqual([]);
   });
 
-  it('destroys owned collaborators', async () => {
+  it('idempotently destroys owned collaborators without destroying the borrowed device', async () => {
     const h = await makeHarness();
 
     h.network.destroy();
+    h.network.destroy();
 
-    expect(h.loop.destroy).toHaveBeenCalled();
-    expect(h.pointerCleanup.destroy).toHaveBeenCalled();
-    expect(h.renderer.destroy).toHaveBeenCalled();
-    expect(h.deps.destroyGpuContext).toHaveBeenCalled();
-    expect(h.surface.destroy).toHaveBeenCalled();
+    expect(h.deps.createGpuContext).toHaveBeenCalledWith(h.device, h.surface.element);
+    expect(h.loop.destroy).toHaveBeenCalledOnce();
+    expect(h.pointerCleanup.destroy).toHaveBeenCalledOnce();
+    expect(h.renderer.destroy).toHaveBeenCalledOnce();
+    expect(h.deps.destroyGpuContext).toHaveBeenCalledOnce();
+    expect(h.surface.destroy).toHaveBeenCalledOnce();
+    expect(h.deviceDestroy).not.toHaveBeenCalled();
   });
 });

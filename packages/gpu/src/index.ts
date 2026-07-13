@@ -1,5 +1,5 @@
-/** Creates an owned Core WebGPU device for sharing between Latkit renderers. */
-export { createGpu, GpuUnavailableError } from './gpu.js';
+/** Native Core WebGPU device acquisition and availability failure. */
+export { GpuUnavailableError, requestDevice } from './device.js';
 
-/** Shared WebGPU device and acquisition options. */
-export type { Gpu, Options } from './gpu.js';
+/** Adapter-selection options. */
+export type { Options } from './device.js';

@@ -27,8 +27,10 @@
     "test": "vitest run --project @latkit/network",
     "bench": "vitest bench --run --project @latkit/network"
   },
+  "dependencies": {
+    "@webgpu/types": "^0.1.71"
+  },
   "devDependencies": {
-    "@webgpu/types": "^0.1.60",
     "jsdom": "^26.1.0"
   },
   "publishConfig": {

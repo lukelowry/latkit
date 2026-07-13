@@ -1,7 +1,7 @@
 {
   "name": "@latkit/gpu",
   "version": "0.0.0",
-  "description": "Shared WebGPU device acquisition for Latkit.",
+  "description": "Core WebGPU device acquisition for Latkit.",
   "type": "module",
   "repository": {
     "type": "git",

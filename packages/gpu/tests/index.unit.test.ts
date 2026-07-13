@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
-import type { Gpu, GpuUnavailableError, Options } from '../src/index.js';
+import type { GpuUnavailableError, Options, requestDevice } from '../src/index.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -15,17 +15,13 @@ describe('gpu package entrypoint', () => {
 
     const entrypoint = await import('../src/index.js');
 
-    expect(Object.keys(entrypoint).sort()).toEqual(['GpuUnavailableError', 'createGpu']);
-    await expect(entrypoint.createGpu()).rejects.toBeInstanceOf(entrypoint.GpuUnavailableError);
+    expect(Object.keys(entrypoint).sort()).toEqual(['GpuUnavailableError', 'requestDevice']);
+    await expect(entrypoint.requestDevice()).rejects.toBeInstanceOf(entrypoint.GpuUnavailableError);
   });
 
   it('keeps the public types minimal and exact', () => {
-    expectTypeOf<Gpu['device']>().toEqualTypeOf<GPUDevice>();
-    expectTypeOf<Gpu['format']>().toEqualTypeOf<GPUTextureFormat>();
-    expectTypeOf<Gpu['destroy']>().toEqualTypeOf<() => void>();
+    expectTypeOf<ReturnType<typeof requestDevice>>().toEqualTypeOf<Promise<GPUDevice>>();
     expectTypeOf<Options['powerPreference']>().toEqualTypeOf<GPUPowerPreference | undefined>();
-    expectTypeOf<GpuUnavailableError['stage']>().toEqualTypeOf<
-      'api' | 'adapter' | 'device' | 'context'
-    >();
+    expectTypeOf<GpuUnavailableError['stage']>().toEqualTypeOf<'api' | 'adapter' | 'device'>();
   });
 });

@@ -7,10 +7,20 @@ canvas owned by the monitor controller. It is designed for append-heavy data:
 load a series once, mutate or replace the value buffer as frames commit, and call
 `extend()` to paint only the new frontier.
 
+## Install
+
+```sh
+npm install @latkit/gpu @latkit/monitor
+```
+
+## Basic use
+
 ```ts
+import { requestDevice } from '@latkit/gpu';
 import { createMonitor, type Series } from '@latkit/monitor';
 
-const monitor = await createMonitor(container, {
+const device = await requestDevice();
+const monitor = await createMonitor(device, container, {
   valueRange: [0, 1],
   colormap: (t) => [t, 0.5, 1 - t],
 });
@@ -23,6 +33,21 @@ const series: Series = {
 };
 
 monitor.load(series);
+```
+
+`createMonitor()` accepts a native Core `GPUDevice`; `@latkit/gpu` is a
+convenient way to acquire one but is not required. The monitor borrows the
+device and owns only its canvas configuration and renderer resources. This
+makes one device safe to share across monitors:
+
+```ts
+const overview = await createMonitor(device, overviewContainer);
+const detail = await createMonitor(device, detailContainer);
+
+// On teardown, release every borrower before its device owner.
+overview.destroy();
+detail.destroy();
+device.destroy();
 ```
 
 `Series.values` is signal-major:
