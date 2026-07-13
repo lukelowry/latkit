@@ -1,6 +1,6 @@
 {
   "name": "@latkit/network",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "WebGPU network renderer for Latkit.",
   "type": "module",
   "repository": {
