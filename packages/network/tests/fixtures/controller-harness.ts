@@ -98,12 +98,12 @@ export class FakeCamera {
     0, 0,
   ]);
   isAnimating = vi.fn(() => false);
-  beginDrag = vi.fn();
-  drag = vi.fn();
-  endDrag = vi.fn();
-  panBy = vi.fn();
-  zoomAt = vi.fn();
-  rotateBy = vi.fn();
+  beginDrag = vi.fn(() => true);
+  drag = vi.fn(() => true);
+  endDrag = vi.fn(() => true);
+  panBy = vi.fn(() => true);
+  zoomAt = vi.fn(() => true);
+  rotateBy = vi.fn(() => true);
   fitView = vi.fn();
 }
 
@@ -162,9 +162,9 @@ export class FakeRenderLoop {
     this.bounds = bounds;
   });
 
-  frame(vp: Viewport = this.viewport): void {
+  frame(vp: Viewport = this.viewport, sizeSettled = true): void {
     this.deps?.onBeforeFrame?.(vp);
-    this.deps?.onFrame?.();
+    this.deps?.onFrame?.(sizeSettled);
   }
 
   paint(): void {

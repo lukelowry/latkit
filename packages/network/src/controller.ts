@@ -18,7 +18,7 @@ import {
 import { FocusState, type FocusStyle, type RGBA } from './focus-state.js';
 import { VISUAL, planeHeightWorldScale } from './visual.js';
 import { ProjectionRig } from './camera/rig.js';
-import { attachPointer } from './input/pointer.js';
+import { attachPointer, type HoverProbe } from './input/pointer.js';
 import { createSurface } from './input/surface.js';
 import type { Viewport } from './camera/projection.js';
 import { createChannels, type Channel } from './channels.js';
@@ -473,10 +473,10 @@ export async function createNetworkWithDeps(
     canvas,
     uniforms,
     renderer,
-    onZoom: (atFitView) => events.emit('zoom', atFitView),
+    onZoom: (atFitView) => stageZoomNotice(atFitView),
     onBeforeFrame: (frameVp) => updateHeightWorldScale(frameVp),
-    onFrame: () => resolveHover(),
-    onPaint: () => onFirstPaint(),
+    onFrame: (sizeSettled) => resolveHover(sizeSettled),
+    onPaint: () => onSuccessfulPaint(),
   });
 
   renderer.onProjectionPipelinesReady = () => loop.wake();
@@ -536,11 +536,28 @@ export async function createNetworkWithDeps(
   let topologyCharacteristicLength: number | null = null;
   let projections = projectionAvailability(null, null);
   let vertexSize = 0;
-  /**
-   * Last hovered cursor, re-picked each frame so highlighting tracks live
-   * camera motion.
-   */
-  let hoverCursor: { sx: number; sy: number; targetPx: number } | null = null;
+  /** Latest physical hover point; converted through the current DOMRect per pick. */
+  let hoverProbe: HoverProbe | null = null;
+  /** Aggregate pointer/wheel navigation lifecycle supplied by the input adapter. */
+  let navigationActive = false;
+  /** Invalidates only semantic picks, avoiding repeated large-scene queries. */
+  let hoverDirty = false;
+  type HoverNotice = readonly ['vertex' | 'edge' | null, number | null];
+  interface VersionedNotice<T> {
+    readonly value: T;
+    readonly scene: number;
+  }
+  /** Focus change awaiting a successful frame submission. */
+  let pendingHoverNotice: VersionedNotice<HoverNotice> | undefined;
+  /** Latest submitted focus change awaiting post-tick delivery. */
+  let readyHoverNotice: VersionedNotice<HoverNotice> | undefined;
+  /** Fit-state transition awaiting a successful frame submission. */
+  let pendingZoomNotice: VersionedNotice<boolean> | undefined;
+  /** Latest submitted fit-state transition awaiting post-tick delivery. */
+  let readyZoomNotice: VersionedNotice<boolean> | undefined;
+  let noticeDeliveryQueued = false;
+  let sceneGeneration = 0;
+  let destroyed = false;
 
   /** Current canvas viewport in device pixels. */
   const vp = (): Viewport => surface.size();
@@ -564,11 +581,16 @@ export async function createNetworkWithDeps(
   });
 
   /** Builds a pick query using current visibility and viewport state. */
-  const pickQueryAt = (sx: number, sy: number, targetPx: number): PickQuery => ({
+  const pickQueryAt = (
+    sx: number,
+    sy: number,
+    targetPx: number,
+    view: Viewport = vp(),
+  ): PickQuery => ({
     sx,
     sy,
     radiusPx: targetPx,
-    vp: vp(),
+    vp: view,
     vertices: display.vertices,
     edges: display.edges,
     poles: display.poles,
@@ -580,44 +602,62 @@ export async function createNetworkWithDeps(
   }, SUN_REFRESH_MS);
 
   const pointerCleanup = deps.attachPointer(surface, (intent) => {
-    if (!topology) return;
     switch (intent.kind) {
+      case 'navigationStart':
+        navigationActive = true;
+        hoverDirty = true;
+        applyHover(null);
+        loop.wake();
+        break;
+      case 'navigationEnd':
+        navigationActive = false;
+        hoverProbe = intent.probe;
+        hoverDirty = true;
+        loop.wake();
+        break;
       case 'dragStart':
-        rig.camera.beginDrag(intent.sx, intent.sy, intent.vp);
+        if (!topology) break;
+        rig.camera.beginDrag(intent.sx, intent.sy, intent.vp, intent.time);
         break;
       case 'dragMove':
-        rig.camera.drag(intent.dx, intent.dy, intent.sx, intent.sy, intent.vp);
-        loop.wake();
+        if (!topology) break;
+        if (rig.camera.drag(intent.dx, intent.dy, intent.sx, intent.sy, intent.vp, intent.time)) {
+          loop.wake();
+        }
         break;
       case 'dragEnd':
-        rig.camera.endDrag();
-        loop.wake();
+        if (!topology) break;
+        if (rig.camera.endDrag(intent.coast, intent.time)) loop.wake();
         break;
       case 'pan':
-        rig.camera.panBy(intent.dx, intent.dy, intent.vp);
-        loop.wake();
+        if (!topology) break;
+        if (rig.camera.panBy(intent.dx, intent.dy, intent.vp)) loop.wake();
         break;
       case 'zoom':
-        rig.camera.zoomAt(intent.factor, intent.sx, intent.sy, intent.vp);
-        loop.wake();
+        if (!topology) break;
+        if (rig.camera.zoomAt(intent.factor, intent.sx, intent.sy, intent.vp)) loop.wake();
         break;
       case 'rotate':
-        rig.camera.rotateBy(intent.dxPx, intent.dyPx, intent.vp);
-        loop.wake();
+        if (!topology) break;
+        if (rig.camera.rotateBy(intent.dxPx, intent.dyPx, intent.vp)) loop.wake();
         break;
       case 'tap':
+        if (!topology) break;
         cycleSelection(picker.pickAll(pickQueryAt(intent.sx, intent.sy, intent.targetPx)));
         break;
       case 'doubleTap':
+        if (!topology) break;
         if (topologyBounds) rig.camera.fitView(topologyBounds, intent.vp);
         loop.wake();
         break;
       case 'hover':
-        hoverCursor = { sx: intent.sx, sy: intent.sy, targetPx: intent.targetPx };
-        resolveHover();
+        hoverProbe = intent;
+        hoverDirty = true;
+        loop.wake();
         break;
       case 'hoverEnd':
-        hoverCursor = null;
+        hoverProbe = null;
+        hoverDirty = false;
         if (applyHover(null)) repaint();
         break;
       default:
@@ -658,16 +698,19 @@ export async function createNetworkWithDeps(
 
     setChannel(channel, values, domain, range) {
       channels.set(channel, values, domain, range);
+      if (channelAffectsPicking(channel)) hoverDirty = true;
       repaint();
     },
 
     clearChannel(channel) {
       channels.clear(channel);
+      if (channelAffectsPicking(channel)) hoverDirty = true;
       repaint();
     },
 
     setChannelRange(channel, range) {
       channels.setRange(channel, range);
+      if (channelAffectsPicking(channel)) hoverDirty = true;
       repaint();
     },
 
@@ -681,6 +724,8 @@ export async function createNetworkWithDeps(
 
     setProjection(mode) {
       if (!PROJECTIONS[mode].canUse(topologyBounds, topologyCharacteristicLength)) return false;
+      if (mode === rig.mode) return true;
+      hoverDirty = true;
       const placed = rig.switchTo(mode, topologyBounds, vp());
       loop.setCamera(rig.camera);
       if (topology && !placed) loop.requestFit();
@@ -691,7 +736,7 @@ export async function createNetworkWithDeps(
     },
 
     setOptions(options) {
-      applyOptions(options);
+      if (applyOptions(options)) hoverDirty = true;
       repaint();
     },
 
@@ -703,19 +748,22 @@ export async function createNetworkWithDeps(
       } else {
         loop.requestFit();
       }
+      hoverDirty = true;
       loop.wake();
     },
 
     panBy(dx, dy) {
       if (!topology) return;
-      rig.camera.panBy(dx, dy, vp());
+      if (!rig.camera.panBy(dx, dy, vp())) return;
+      hoverDirty = true;
       loop.wake();
     },
 
     zoomBy(factor) {
       if (!topology) return;
       const v = vp();
-      rig.camera.zoomAt(factor, v.w / 2, v.h / 2, v);
+      if (!rig.camera.zoomAt(factor, v.w / 2, v.h / 2, v)) return;
+      hoverDirty = true;
       loop.wake();
     },
 
@@ -735,6 +783,11 @@ export async function createNetworkWithDeps(
     },
 
     destroy() {
+      destroyed = true;
+      pendingHoverNotice = undefined;
+      readyHoverNotice = undefined;
+      pendingZoomNotice = undefined;
+      readyZoomNotice = undefined;
       clearInterval(sunTimer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       loop.destroy();
@@ -770,6 +823,47 @@ export async function createNetworkWithDeps(
     }
   }
 
+  /**
+   * Promotes submitted public state transitions for delivery after the render tick.
+   *
+   * Keeping host callbacks out of `onFrame` prevents reentrant load/projection
+   * mutations from mixing two scenes into one GPU submission.
+   */
+  function onSuccessfulPaint(): void {
+    onFirstPaint();
+    let promoted = false;
+    if (pendingZoomNotice) {
+      readyZoomNotice = pendingZoomNotice;
+      pendingZoomNotice = undefined;
+      promoted = true;
+    }
+    if (pendingHoverNotice) {
+      readyHoverNotice = pendingHoverNotice;
+      pendingHoverNotice = undefined;
+      promoted = true;
+    }
+    if (!promoted || noticeDeliveryQueued) return;
+    noticeDeliveryQueued = true;
+    queueMicrotask(() => {
+      noticeDeliveryQueued = false;
+      const zoomNotice = readyZoomNotice;
+      const hoverNotice = readyHoverNotice;
+      readyZoomNotice = undefined;
+      readyHoverNotice = undefined;
+      if (destroyed) return;
+      // Preserve the pre-submit ordering: zoom state changes precede hover
+      // resolution. A zoom listener may replace the scene, in which case the
+      // generation check suppresses the now-stale hover notice below.
+      if (zoomNotice?.scene === sceneGeneration) events.emit('zoom', zoomNotice.value);
+      if (hoverNotice?.scene === sceneGeneration) events.emit('hover', ...hoverNotice.value);
+    });
+  }
+
+  /** Stage a fit-state event for the frame that submits the new camera state. */
+  function stageZoomNotice(atFitView: boolean): void {
+    pendingZoomNotice = { value: atFitView, scene: sceneGeneration };
+  }
+
   /** Writes the base vertex color into shared uniforms. */
   function applyBaseColor(color: RGBA): void {
     uniforms.baseVertexColor.set(color);
@@ -789,7 +883,11 @@ export async function createNetworkWithDeps(
   }
 
   /** Applies construction or runtime display options. */
-  function applyOptions(opts: Options): void {
+  function applyOptions(opts: Options): boolean {
+    const pickVisibilityChanged =
+      (opts.vertices !== undefined && opts.vertices !== display.vertices) ||
+      (opts.edges !== undefined && opts.edges !== display.edges) ||
+      (opts.poles !== undefined && opts.poles !== display.poles);
     if (opts.baseColor) applyBaseColor(opts.baseColor);
     if (opts.colormap) applyColormap(opts.colormap);
     if (opts.graticuleColor) uniforms.gridColor.set(opts.graticuleColor);
@@ -814,6 +912,7 @@ export async function createNetworkWithDeps(
       earthAxis: display.earthAxis,
     });
     writeDisplayToUniforms();
+    return pickVisibilityChanged;
   }
 
   /** Applies focus-related option fields as a partial patch. */
@@ -882,34 +981,54 @@ export async function createNetworkWithDeps(
     return availability as Network['projections'];
   }
 
-  /** Applies hover focus and emits a hover event only when focus state changes. */
+  /** Channels whose values alter projected hit geometry rather than color only. */
+  function channelAffectsPicking(channel: Channel): boolean {
+    return channel === 'vertexHeight' || channel === 'vertexSize' || channel === 'edgeDash';
+  }
+
+  /** Applies hover focus and stages a notification only when focus state changes. */
   function applyHover(hit: PickResult | null): boolean {
     const changed = hit ? focus.setHover(hit[0], hit[1]) : focus.setHover(null);
     if (!changed) return false;
-    if (hit) events.emit('hover', hit[0], hit[1]);
-    else events.emit('hover', null, null);
+    pendingHoverNotice = {
+      value: hit ? [hit[0], hit[1]] : [null, null],
+      scene: sceneGeneration,
+    };
     return true;
   }
 
-  /** Last measured hover-pick cost; used to throttle expensive live re-picks. */
-  let lastPickMs = 0;
-
-  /** Maximum live-pick cost allowed while the camera is still animating. */
-  const LIVE_HOVER_BUDGET_MS = 8;
-
   /**
-   * Re-picks the stored cursor against the current camera pose.
+   * Re-picks the stored physical pointer against a stable submitted camera pose.
    *
-   * This runs on hover intents and after camera ticks so highlights remain live
-   * during movement; expensive degenerate picks defer until the camera settles.
+   * Large-scene picking is entirely suppressed during navigation, camera chase,
+   * and resize quantization. The first settled frame resolves exactly once and
+   * includes the result in that same GPU submission.
    */
-  function resolveHover(): void {
-    if (!hoverCursor || !topology) return;
-    if (lastPickMs > LIVE_HOVER_BUDGET_MS && rig.camera.isAnimating()) return;
-    const started = performance.now();
-    const hit = picker.pick(pickQueryAt(hoverCursor.sx, hoverCursor.sy, hoverCursor.targetPx));
-    lastPickMs = performance.now() - started;
-    if (applyHover(hit)) repaint();
+  function resolveHover(sizeSettled: boolean): void {
+    if (!topology || !hoverProbe || navigationActive) {
+      applyHover(null);
+      return;
+    }
+    if (!sizeSettled || rig.camera.isAnimating()) {
+      hoverDirty = true;
+      applyHover(null);
+      return;
+    }
+    if (!hoverDirty) return;
+
+    let hit: PickResult | null = null;
+    {
+      const rect = surface.rect();
+      const sx = hoverProbe.clientX - rect.left;
+      const sy = hoverProbe.clientY - rect.top;
+      if (sx >= 0 && sy >= 0 && sx < rect.width && sy < rect.height) {
+        hit = picker.pick(
+          pickQueryAt(sx, sy, hoverProbe.targetPx, { w: rect.width, h: rect.height }),
+        );
+      }
+    }
+    hoverDirty = false;
+    applyHover(hit);
   }
 
   /** Applies programmatic selection without emitting a select event. */
@@ -959,13 +1078,26 @@ export async function createNetworkWithDeps(
     picker.setScene(encoded, encodedSegments);
 
     topology = next;
+    sceneGeneration++;
+    pendingHoverNotice = undefined;
+    readyHoverNotice = undefined;
+    pendingZoomNotice = undefined;
+    readyZoomNotice = undefined;
     topologyBounds = info.bounds;
     topologyCharacteristicLength = info.characteristicLength;
     projections = projectionAvailability(topologyBounds, topologyCharacteristicLength);
 
-    hoverCursor = null;
+    hoverDirty = true;
     applyHover(null);
     applySelection(null);
+
+    // A new topology can invalidate the active projection (notably globe).
+    // Fall back atomically so the camera, picker mode, and pipelines agree.
+    if (!projections[rig.mode]) {
+      rig.switchTo('flat', topologyBounds, vp());
+      loop.setCamera(rig.camera);
+      renderer.useProjectionPipelines('flat');
+    }
 
     vertexSize = info.characteristicLength * VISUAL.vertexSizeScale;
     uniforms.geometry.vertexSize = vertexSize;

@@ -10,6 +10,7 @@ import type { Surface } from '../src/input/surface.js';
 
 interface TestPointerEventInit extends PointerEventInit {
   coalesced?: PointerEvent[];
+  timeStamp?: number;
 }
 
 class TestPointerEvent extends MouseEvent {
@@ -22,6 +23,9 @@ class TestPointerEvent extends MouseEvent {
     this.pointerId = init.pointerId ?? 1;
     this.pointerType = init.pointerType ?? 'mouse';
     this.coalesced = init.coalesced ?? [];
+    if (init.timeStamp !== undefined) {
+      Object.defineProperty(this, 'timeStamp', { value: init.timeStamp });
+    }
   }
 
   getCoalescedEvents(): PointerEvent[] {
@@ -67,6 +71,7 @@ function pointer(type: string, init: TestPointerEventInit = {}): PointerEvent {
     clientX: init.clientX ?? 0,
     clientY: init.clientY ?? 0,
     coalesced: init.coalesced,
+    timeStamp: init.timeStamp,
   } as TestPointerEventInit);
 }
 
@@ -104,10 +109,27 @@ describe('attachPointer drag and tap recognition', () => {
     firePointer(h.element, 'pointermove', { clientX: 102, clientY: 100 });
     firePointer(h.element, 'pointermove', { clientX: 104, clientY: 100 });
 
-    expect(h.intents).toEqual([
-      { kind: 'dragStart', sx: 100, sy: 100, vp: { w: 800, h: 600 } },
-      { kind: 'dragMove', dx: 4, dy: 0, sx: 104, sy: 100, vp: { w: 800, h: 600 } },
+    expect(h.intents.map((intent) => intent.kind)).toEqual([
+      'navigationStart',
+      'dragStart',
+      'dragMove',
     ]);
+    expect(h.intents[1]).toMatchObject({
+      kind: 'dragStart',
+      sx: 100,
+      sy: 100,
+      vp: { w: 800, h: 600 },
+    });
+    expect(h.intents[2]).toMatchObject({
+      kind: 'dragMove',
+      dx: 4,
+      dy: 0,
+      sx: 104,
+      sy: 100,
+      vp: { w: 800, h: 600 },
+    });
+    expect(h.intents[1]?.kind === 'dragStart' && typeof h.intents[1].time).toBe('number');
+    expect(h.intents[2]?.kind === 'dragMove' && typeof h.intents[2].time).toBe('number');
     h.handle.destroy();
   });
 
@@ -118,25 +140,54 @@ describe('attachPointer drag and tap recognition', () => {
     firePointer(h.element, 'pointermove', { pointerType: 'touch', clientX: 109, clientY: 100 });
     expect(h.intents).toHaveLength(0);
     firePointer(h.element, 'pointermove', { pointerType: 'touch', clientX: 111, clientY: 100 });
-    expect(h.intents.map((i) => i.kind)).toEqual(['dragStart', 'dragMove']);
+    expect(h.intents.map((i) => i.kind)).toEqual(['navigationStart', 'dragStart', 'dragMove']);
     h.handle.destroy();
   });
 
   it('processes coalesced drag events with one rect read per pointermove', () => {
     const h = harness();
 
-    firePointer(h.element, 'pointerdown', { clientX: 100, clientY: 100 });
+    firePointer(h.element, 'pointerdown', { clientX: 100, clientY: 100, timeStamp: 10 });
     firePointer(h.element, 'pointermove', {
       clientX: 106,
       clientY: 100,
       coalesced: [
-        pointer('pointermove', { clientX: 102, clientY: 100 }),
-        pointer('pointermove', { clientX: 106, clientY: 100 }),
+        pointer('pointermove', { clientX: 102, clientY: 100, timeStamp: 15 }),
+        pointer('pointermove', { clientX: 104, clientY: 100, timeStamp: 20 }),
+        pointer('pointermove', { clientX: 106, clientY: 100, timeStamp: 30 }),
       ],
     });
 
-    expect(h.intents.map((i) => i.kind)).toEqual(['dragStart', 'dragMove']);
-    expect(h.intents[1]).toMatchObject({ dx: 6, sx: 106 });
+    expect(h.intents.map((i) => i.kind)).toEqual([
+      'navigationStart',
+      'dragStart',
+      'dragMove',
+      'dragMove',
+    ]);
+    expect(h.intents[2]).toMatchObject({ dx: 4, sx: 104, time: 20 });
+    expect(h.intents[3]).toMatchObject({ dx: 2, sx: 106, time: 30 });
+    expect(h.intents[1]).toMatchObject({ kind: 'dragStart', time: 15 });
+    h.handle.destroy();
+  });
+
+  it('processes the final pointerup coordinate before deciding tap versus drag', () => {
+    const h = harness();
+
+    firePointer(h.element, 'pointerdown', { clientX: 100, clientY: 100, timeStamp: 10 });
+    firePointer(h.element, 'pointerup', { clientX: 110, clientY: 104, timeStamp: 20 });
+
+    expect(h.intents.map((intent) => intent.kind)).toEqual([
+      'navigationStart',
+      'dragStart',
+      'dragMove',
+      'dragEnd',
+      'navigationEnd',
+    ]);
+    expect(h.intents[1]).toMatchObject({ kind: 'dragStart', time: 10 });
+    expect(h.intents[2]).toMatchObject({ kind: 'dragMove', time: 20 });
+    expect(h.intents[3]).toMatchObject({ kind: 'dragEnd', time: 20 });
+    expect(h.intents[2]).toMatchObject({ dx: 10, dy: 4, sx: 110, sy: 104 });
+    expect(h.intents).not.toContainEqual(expect.objectContaining({ kind: 'tap' }));
     h.handle.destroy();
   });
 
@@ -165,10 +216,28 @@ describe('attachPointer drag and tap recognition', () => {
     ]);
     h.handle.destroy();
   });
+
+  it('requires matching pointer families and clears tap memory after navigation', () => {
+    const h = harness();
+
+    firePointer(h.element, 'pointerdown', { pointerType: 'mouse', clientX: 10, clientY: 10 });
+    firePointer(h.element, 'pointerup', { pointerType: 'mouse', clientX: 10, clientY: 10 });
+    firePointer(h.element, 'pointerdown', { pointerType: 'touch', clientX: 10, clientY: 10 });
+    firePointer(h.element, 'pointerup', { pointerType: 'touch', clientX: 10, clientY: 10 });
+
+    firePointer(h.element, 'pointerdown', { clientX: 20, clientY: 20 });
+    firePointer(h.element, 'pointermove', { clientX: 30, clientY: 20 });
+    firePointer(h.element, 'pointerup', { clientX: 30, clientY: 20 });
+    firePointer(h.element, 'pointerdown', { clientX: 20, clientY: 20 });
+    firePointer(h.element, 'pointerup', { clientX: 20, clientY: 20 });
+
+    expect(h.intents.filter((intent) => intent.kind === 'doubleTap')).toHaveLength(0);
+    h.handle.destroy();
+  });
 });
 
 describe('attachPointer pinch lifecycle', () => {
-  it('entering pinch emits a seed zoom before pinch moves', () => {
+  it('entering pinch starts navigation without a side-effecting seed zoom', () => {
     const h = harness();
 
     firePointer(h.element, 'pointerdown', {
@@ -190,12 +259,12 @@ describe('attachPointer pinch lifecycle', () => {
       clientY: 100,
     });
 
-    expect(h.intents[0]).toMatchObject({ kind: 'zoom', factor: 1, sx: 150, sy: 100 });
+    expect(h.intents.map((i) => i.kind)).toEqual(['navigationStart', 'zoom']);
     expect(h.intents[1]).toMatchObject({ kind: 'zoom', factor: 1.5, sx: 175, sy: 100 });
     h.handle.destroy();
   });
 
-  it('second finger during drag ends drag before seed zoom', () => {
+  it('second finger during drag cancels coast without restarting navigation', () => {
     const h = harness();
 
     firePointer(h.element, 'pointerdown', {
@@ -217,8 +286,14 @@ describe('attachPointer pinch lifecycle', () => {
       clientY: 100,
     });
 
-    expect(h.intents.map((i) => i.kind)).toEqual(['dragStart', 'dragMove', 'dragEnd', 'zoom']);
-    expect(h.intents[3]).toMatchObject({ kind: 'zoom', factor: 1, sx: 210, sy: 100 });
+    expect(h.intents.map((i) => i.kind)).toEqual([
+      'navigationStart',
+      'dragStart',
+      'dragMove',
+      'dragEnd',
+    ]);
+    expect(h.intents[3]).toMatchObject({ kind: 'dragEnd', coast: false });
+    expect(h.intents[3]?.kind === 'dragEnd' && typeof h.intents[3].time).toBe('number');
     h.handle.destroy();
   });
 
@@ -250,7 +325,7 @@ describe('attachPointer pinch lifecycle', () => {
       clientY: 100,
     });
 
-    expect(h.intents.map((i) => i.kind)).toEqual(['zoom', 'dragStart', 'dragMove']);
+    expect(h.intents.map((i) => i.kind)).toEqual(['navigationStart', 'dragStart', 'dragMove']);
     expect(h.intents[1]).toMatchObject({ kind: 'dragStart', sx: 200, sy: 100 });
     expect(h.intents[2]).toMatchObject({ kind: 'dragMove', dx: 20, dy: 0, sx: 220, sy: 100 });
     h.handle.destroy();
@@ -284,13 +359,13 @@ describe('attachPointer pinch lifecycle', () => {
       clientY: 100,
     });
 
-    expect(h.intents.map((i) => i.kind)).toEqual(['zoom']);
+    expect(h.intents.map((i) => i.kind)).toEqual(['navigationStart']);
     h.handle.destroy();
   });
 });
 
 describe('attachPointer hover and cancellation', () => {
-  it('gates hover during drag and emits synthetic hover on natural mouse drag end', () => {
+  it('gates hover during drag and restores the final client probe on natural release', () => {
     const h = harness();
 
     firePointer(h.element, 'pointermove', { clientX: 50, clientY: 50 });
@@ -301,13 +376,19 @@ describe('attachPointer hover and cancellation', () => {
 
     expect(h.intents.map((i) => i.kind)).toEqual([
       'hover',
+      'navigationStart',
       'dragStart',
       'dragMove',
       'dragMove',
       'dragEnd',
-      'hover',
+      'navigationEnd',
     ]);
-    expect(h.intents[5]).toMatchObject({ kind: 'hover', sx: 120, sy: 100, targetPx: 10 });
+    expect(h.intents[6]).toEqual({
+      kind: 'navigationEnd',
+      probe: { clientX: 120, clientY: 100, targetPx: 10 },
+    });
+    expect(h.intents[5]).toMatchObject({ kind: 'dragEnd', coast: true });
+    expect(h.intents[5]?.kind === 'dragEnd' && typeof h.intents[5].time).toBe('number');
     h.handle.destroy();
   });
 
@@ -318,7 +399,13 @@ describe('attachPointer hover and cancellation', () => {
     firePointer(h.element, 'pointermove', { pointerType: 'touch', clientX: 120, clientY: 100 });
     firePointer(h.element, 'pointerup', { pointerType: 'touch', clientX: 120, clientY: 100 });
 
-    expect(h.intents.map((i) => i.kind)).toEqual(['dragStart', 'dragMove', 'dragEnd']);
+    expect(h.intents.map((i) => i.kind)).toEqual([
+      'navigationStart',
+      'dragStart',
+      'dragMove',
+      'dragEnd',
+      'navigationEnd',
+    ]);
     h.handle.destroy();
   });
 
@@ -328,13 +415,19 @@ describe('attachPointer hover and cancellation', () => {
     firePointer(h.element, 'pointerdown', { clientX: 100, clientY: 100 });
     firePointer(h.element, 'pointerleave', { clientX: 101, clientY: 100 });
     firePointer(h.element, 'pointerup', { clientX: 101, clientY: 100 });
-    expect(h.intents).toHaveLength(0);
+    expect(h.intents.map((i) => i.kind)).toEqual(['hoverEnd']);
+    h.intents.length = 0;
 
     firePointer(h.element, 'pointerdown', { clientX: 100, clientY: 100 });
     firePointer(h.element, 'pointermove', { clientX: 110, clientY: 100 });
     firePointer(h.element, 'pointerleave', { clientX: 110, clientY: 100 });
     firePointer(h.element, 'pointermove', { clientX: 120, clientY: 100 });
-    expect(h.intents.map((i) => i.kind)).toEqual(['dragStart', 'dragMove', 'dragMove']);
+    expect(h.intents.map((i) => i.kind)).toEqual([
+      'navigationStart',
+      'dragStart',
+      'dragMove',
+      'dragMove',
+    ]);
     h.handle.destroy();
   });
 
@@ -353,19 +446,35 @@ describe('attachPointer hover and cancellation', () => {
     h.handle.destroy();
   });
 
-  it('cancel, blur, and visibility reset emit dragEnd without synthetic hover', () => {
+  it('cancel, blur, and visibility reset clear navigation and never coast', () => {
     const h = harness();
 
     firePointer(h.element, 'pointerdown', { clientX: 100, clientY: 100 });
     firePointer(h.element, 'pointermove', { clientX: 110, clientY: 100 });
     firePointer(h.element, 'pointercancel', { clientX: 110, clientY: 100 });
-    expect(h.intents.map((i) => i.kind)).toEqual(['dragStart', 'dragMove', 'dragEnd']);
+    expect(h.intents.map((i) => i.kind)).toEqual([
+      'navigationStart',
+      'dragStart',
+      'dragMove',
+      'dragEnd',
+      'navigationEnd',
+      'hoverEnd',
+    ]);
+    expect(h.intents[3]).toMatchObject({ kind: 'dragEnd', coast: false });
+    expect(h.intents[3]?.kind === 'dragEnd' && typeof h.intents[3].time).toBe('number');
 
     h.intents.length = 0;
     firePointer(h.element, 'pointerdown', { clientX: 100, clientY: 100 });
     firePointer(h.element, 'pointermove', { clientX: 110, clientY: 100 });
     window.dispatchEvent(new Event('blur'));
-    expect(h.intents.map((i) => i.kind)).toEqual(['dragStart', 'dragMove', 'dragEnd']);
+    expect(h.intents.map((i) => i.kind)).toEqual([
+      'navigationStart',
+      'dragStart',
+      'dragMove',
+      'dragEnd',
+      'navigationEnd',
+      'hoverEnd',
+    ]);
 
     h.intents.length = 0;
     firePointer(h.element, 'pointerdown', {
@@ -382,7 +491,12 @@ describe('attachPointer hover and cancellation', () => {
     });
     Object.defineProperty(document, 'hidden', { value: true, configurable: true });
     document.dispatchEvent(new Event('visibilitychange'));
-    expect(h.intents.map((i) => i.kind)).toEqual(['zoom', 'dragEnd']);
+    expect(h.intents.map((i) => i.kind)).toEqual([
+      'navigationStart',
+      'dragEnd',
+      'navigationEnd',
+      'hoverEnd',
+    ]);
     h.handle.destroy();
   });
 
@@ -392,12 +506,18 @@ describe('attachPointer hover and cancellation', () => {
     firePointer(h.element, 'pointerdown', { clientX: 100, clientY: 100 });
     firePointer(h.element, 'pointercancel', { clientX: 100, clientY: 100 });
     firePointer(h.element, 'pointerup', { clientX: 100, clientY: 100 });
-    expect(h.intents).toHaveLength(0);
+    expect(h.intents.map((i) => i.kind)).toEqual(['hoverEnd']);
 
     firePointer(h.element, 'pointerdown', { button: 2, pointerId: 1, clientX: 100, clientY: 100 });
     firePointer(h.element, 'pointermove', { pointerId: 1, clientX: 110, clientY: 100 });
     firePointer(h.element, 'pointercancel', { pointerId: 1, clientX: 110, clientY: 100 });
-    expect(h.intents.map((i) => i.kind)).toEqual(['rotate']);
+    expect(h.intents.map((i) => i.kind)).toEqual([
+      'hoverEnd',
+      'navigationStart',
+      'rotate',
+      'navigationEnd',
+      'hoverEnd',
+    ]);
 
     h.intents.length = 0;
     firePointer(h.element, 'pointerdown', {
@@ -418,7 +538,12 @@ describe('attachPointer hover and cancellation', () => {
       clientX: 100,
       clientY: 100,
     });
-    expect(h.intents.map((i) => i.kind)).toEqual(['zoom', 'dragEnd']);
+    expect(h.intents.map((i) => i.kind)).toEqual([
+      'navigationStart',
+      'dragEnd',
+      'navigationEnd',
+      'hoverEnd',
+    ]);
     h.handle.destroy();
   });
 
@@ -435,12 +560,93 @@ describe('attachPointer hover and cancellation', () => {
     firePointer(h.element, 'pointermove', { clientX: 110, clientY: 100 });
     firePointer(h.element, 'pointerup', { clientX: 110, clientY: 100 });
 
-    expect(h.intents.map((i) => i.kind)).toEqual(['dragStart', 'dragMove', 'dragEnd', 'hover']);
+    expect(h.intents.map((i) => i.kind)).toEqual([
+      'navigationStart',
+      'dragStart',
+      'dragMove',
+      'dragEnd',
+      'navigationEnd',
+    ]);
+    h.handle.destroy();
+  });
+
+  it('cancels a captured gesture on lostpointercapture without coasting', () => {
+    const h = harness();
+
+    firePointer(h.element, 'pointerdown', { clientX: 100, clientY: 100 });
+    firePointer(h.element, 'pointermove', { clientX: 110, clientY: 100 });
+    firePointer(h.element, 'lostpointercapture', { pointerId: 1, clientX: 110, clientY: 100 });
+
+    expect(h.intents.map((intent) => intent.kind)).toEqual([
+      'navigationStart',
+      'dragStart',
+      'dragMove',
+      'dragEnd',
+      'navigationEnd',
+      'hoverEnd',
+    ]);
+    expect(h.intents[3]).toMatchObject({ kind: 'dragEnd', coast: false });
+    expect(h.intents[3]?.kind === 'dragEnd' && typeof h.intents[3].time).toBe('number');
     h.handle.destroy();
   });
 });
 
 describe('wheel policy and delta conversion', () => {
+  it('aggregates a wheel burst into one debounced navigation lifecycle', () => {
+    vi.useFakeTimers();
+    const h = harness({ isZoom: () => true });
+
+    fireWheel(h.element, { clientX: 410, clientY: 305, deltaY: 10 });
+    vi.advanceTimersByTime(100);
+    fireWheel(h.element, { clientX: 420, clientY: 310, deltaY: 10 });
+    vi.advanceTimersByTime(119);
+
+    expect(h.intents.filter((intent) => intent.kind === 'navigationStart')).toHaveLength(1);
+    expect(h.intents.filter((intent) => intent.kind === 'navigationEnd')).toHaveLength(0);
+
+    vi.advanceTimersByTime(1);
+    expect(h.intents.at(-1)).toEqual({
+      kind: 'navigationEnd',
+      probe: { clientX: 420, clientY: 310, targetPx: 10 },
+    });
+    h.handle.destroy();
+    vi.useRealTimers();
+  });
+
+  it('ignores horizontal zoom no-ops and wheel pans during pointer navigation', () => {
+    const zoom = harness({ isZoom: () => true });
+    fireWheel(zoom.element, { deltaX: 10, deltaY: 0, ctrlKey: true });
+    fireWheel(zoom.element, { deltaY: 1_000_000 });
+    expect(zoom.intents).toEqual([]);
+    zoom.handle.destroy();
+
+    const pan = harness({ isZoom: () => false });
+    firePointer(pan.element, 'pointerdown', { clientX: 100, clientY: 100 });
+    firePointer(pan.element, 'pointermove', { clientX: 110, clientY: 100 });
+    fireWheel(pan.element, { deltaY: 0.5 });
+    expect(pan.intents.filter((intent) => intent.kind === 'pan')).toEqual([]);
+    expect(pan.intents.filter((intent) => intent.kind === 'navigationStart')).toHaveLength(1);
+    pan.handle.destroy();
+  });
+
+  it('keeps navigation active until overlapping pointer and wheel sources both end', () => {
+    vi.useFakeTimers();
+    const h = harness({ isZoom: () => true });
+
+    firePointer(h.element, 'pointerdown', { clientX: 100, clientY: 100 });
+    firePointer(h.element, 'pointermove', { clientX: 110, clientY: 100 });
+    fireWheel(h.element, { clientX: 110, clientY: 100, deltaY: 10 });
+    firePointer(h.element, 'pointerup', { clientX: 110, clientY: 100 });
+
+    expect(h.intents.filter((intent) => intent.kind === 'navigationStart')).toHaveLength(1);
+    expect(h.intents.filter((intent) => intent.kind === 'navigationEnd')).toHaveLength(0);
+
+    vi.advanceTimersByTime(120);
+    expect(h.intents.filter((intent) => intent.kind === 'navigationEnd')).toHaveLength(1);
+    h.handle.destroy();
+    vi.useRealTimers();
+  });
+
   it('default wheel policy matches the zoom-vs-pan matrix', () => {
     const cases: Array<[string, WheelEventInit, Intent['kind']]> = [
       ['ctrlKey', { deltaY: 20, ctrlKey: true }, 'zoom'],
@@ -455,7 +661,7 @@ describe('wheel policy and delta conversion', () => {
       const h = harness(DEFAULT_WHEEL_POLICY);
       const event = fireWheel(h.element, init);
       expect(event.defaultPrevented).toBe(true);
-      expect(h.intents[0]?.kind).toBe(kind);
+      expect(h.intents.find((intent) => intent.kind === kind)?.kind).toBe(kind);
       h.handle.destroy();
     }
   });
@@ -468,7 +674,7 @@ describe('wheel policy and delta conversion', () => {
     fireWheel(h.element, { deltaY: 1, deltaMode: 2 });
     fireWheel(h.element, { deltaX: 5, deltaY: -2, deltaMode: 0 });
 
-    expect(h.intents).toEqual([
+    expect(h.intents.filter((intent) => intent.kind === 'pan')).toEqual([
       { kind: 'pan', dx: -0, dy: -120, vp: { w: 800, h: 600 } },
       { kind: 'pan', dx: -0, dy: -99, vp: { w: 800, h: 600 } },
       { kind: 'pan', dx: -0, dy: -800, vp: { w: 800, h: 600 } },
@@ -483,9 +689,10 @@ describe('wheel policy and delta conversion', () => {
     fireWheel(h.element, { deltaY: 120 });
     fireWheel(h.element, { deltaY: -120 });
 
-    expect(h.intents[0]).toMatchObject({ kind: 'zoom' });
-    expect(h.intents[0].kind === 'zoom' ? h.intents[0].factor : 0).toBeLessThan(1);
-    expect(h.intents[1].kind === 'zoom' ? h.intents[1].factor : 0).toBeGreaterThan(1);
+    const zooms = h.intents.filter((intent) => intent.kind === 'zoom');
+    expect(zooms[0]).toMatchObject({ kind: 'zoom' });
+    expect(zooms[0]!.kind === 'zoom' ? zooms[0]!.factor : 0).toBeLessThan(1);
+    expect(zooms[1]!.kind === 'zoom' ? zooms[1]!.factor : 0).toBeGreaterThan(1);
     h.handle.destroy();
   });
 });
@@ -498,7 +705,14 @@ describe('attachPointer rotation', () => {
     firePointer(h.element, 'pointermove', { clientX: 110, clientY: 95 });
     firePointer(h.element, 'pointerup', { button: 2, clientX: 110, clientY: 95 });
 
-    expect(h.intents).toEqual([{ kind: 'rotate', dxPx: 10, dyPx: -5, vp: { w: 800, h: 600 } }]);
+    expect(h.intents).toEqual([
+      { kind: 'navigationStart' },
+      { kind: 'rotate', dxPx: 10, dyPx: -5, vp: { w: 800, h: 600 } },
+      {
+        kind: 'navigationEnd',
+        probe: { clientX: 110, clientY: 95, targetPx: 10 },
+      },
+    ]);
     h.handle.destroy();
   });
 
@@ -509,7 +723,7 @@ describe('attachPointer rotation', () => {
     firePointer(h.element, 'pointerdown', { button: 0, pointerId: 2, clientX: 200, clientY: 200 });
     firePointer(h.element, 'pointermove', { pointerId: 1, clientX: 105, clientY: 100 });
 
-    expect(h.intents.map((i) => i.kind)).toEqual(['rotate']);
+    expect(h.intents.map((i) => i.kind)).toEqual(['navigationStart', 'rotate']);
     h.handle.destroy();
   });
 

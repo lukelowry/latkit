@@ -142,6 +142,9 @@ describe('createNetwork controller', () => {
     h.network.on('zoom', (atFitView) => zooms.push(atFitView));
 
     h.loop.deps?.onZoom?.(true);
+    expect(zooms).toEqual([]);
+    h.loop.paint();
+    await flushMicrotasks();
     expect(zooms).toEqual([true]);
 
     h.loop.wake.mockClear();
@@ -184,6 +187,25 @@ describe('createNetwork controller', () => {
     h.rig.nextSwitchPlaced = false;
     expect(h.network.setProjection('flat')).toBe(true);
     expect(h.loop.requestFit).toHaveBeenCalled();
+  });
+
+  it('keeps same-mode projection calls inert and falls back when new topology is incompatible', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+
+    h.rig.switchTo.mockClear();
+    h.renderer.useProjectionPipelines.mockClear();
+    expect(h.network.setProjection('flat')).toBe(true);
+    expect(h.rig.switchTo).not.toHaveBeenCalled();
+    expect(h.renderer.useProjectionPipelines).not.toHaveBeenCalled();
+
+    expect(h.network.setProjection('globe')).toBe(true);
+    h.rig.switchTo.mockClear();
+    h.renderer.useProjectionPipelines.mockClear();
+    h.network.load(nonGlobeTopology());
+
+    expect(h.rig.switchTo).toHaveBeenCalledWith('flat', expect.anything(), { w: 100, h: 80 });
+    expect(h.renderer.useProjectionPipelines).toHaveBeenCalledWith('flat');
   });
 
   it('routes display mutators through renderer, channels, uniforms, and repaint', async () => {
@@ -230,7 +252,11 @@ describe('createNetwork controller', () => {
     h.network.on('select', (kind, index) => selects.push([kind, index]));
 
     h.picker.nextHit = ['vertex', 1];
-    h.emitPointer({ kind: 'hover', sx: 5, sy: 6, targetPx: 10, vp: { w: 100, h: 80 } });
+    h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
+    h.loop.frame();
+    expect(hovers).toEqual([]);
+    h.loop.paint();
+    await flushMicrotasks();
 
     h.picker.nextHits = [['edge', 0]];
     h.emitPointer({ kind: 'tap', sx: 5, sy: 6, targetPx: 10, vp: { w: 100, h: 80 } });
@@ -243,17 +269,25 @@ describe('createNetwork controller', () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
 
-    h.emitPointer({ kind: 'dragStart', sx: 1, sy: 2, vp: { w: 100, h: 80 } });
-    h.emitPointer({ kind: 'dragMove', dx: 3, dy: 4, sx: 5, sy: 6, vp: { w: 100, h: 80 } });
-    h.emitPointer({ kind: 'dragEnd' });
+    h.emitPointer({ kind: 'dragStart', sx: 1, sy: 2, vp: { w: 100, h: 80 }, time: 10 });
+    h.emitPointer({
+      kind: 'dragMove',
+      dx: 3,
+      dy: 4,
+      sx: 5,
+      sy: 6,
+      vp: { w: 100, h: 80 },
+      time: 20,
+    });
+    h.emitPointer({ kind: 'dragEnd', coast: true, time: 30 });
     h.emitPointer({ kind: 'pan', dx: 7, dy: 8, vp: { w: 100, h: 80 } });
     h.emitPointer({ kind: 'zoom', factor: 1.5, sx: 9, sy: 10, vp: { w: 100, h: 80 } });
     h.emitPointer({ kind: 'rotate', dxPx: 11, dyPx: 12, vp: { w: 100, h: 80 } });
     h.emitPointer({ kind: 'doubleTap', sx: 50, sy: 40, targetPx: 10, vp: { w: 100, h: 80 } });
 
-    expect(h.rig.camera.beginDrag).toHaveBeenCalledWith(1, 2, { w: 100, h: 80 });
-    expect(h.rig.camera.drag).toHaveBeenCalledWith(3, 4, 5, 6, { w: 100, h: 80 });
-    expect(h.rig.camera.endDrag).toHaveBeenCalled();
+    expect(h.rig.camera.beginDrag).toHaveBeenCalledWith(1, 2, { w: 100, h: 80 }, 10);
+    expect(h.rig.camera.drag).toHaveBeenCalledWith(3, 4, 5, 6, { w: 100, h: 80 }, 20);
+    expect(h.rig.camera.endDrag).toHaveBeenCalledWith(true, 30);
     expect(h.rig.camera.panBy).toHaveBeenCalledWith(7, 8, { w: 100, h: 80 });
     expect(h.rig.camera.zoomAt).toHaveBeenCalledWith(1.5, 9, 10, { w: 100, h: 80 });
     expect(h.rig.camera.rotateBy).toHaveBeenCalledWith(11, 12, { w: 100, h: 80 });
@@ -269,8 +303,14 @@ describe('createNetwork controller', () => {
     h.network.on('select', (kind, index) => selects.push([kind, index]));
 
     h.picker.nextHit = ['vertex', 1];
-    h.emitPointer({ kind: 'hover', sx: 5, sy: 6, targetPx: 10, vp: { w: 100, h: 80 } });
+    h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
+    h.loop.frame();
+    h.loop.paint();
+    await flushMicrotasks();
     h.emitPointer({ kind: 'hoverEnd' });
+    h.loop.frame();
+    h.loop.paint();
+    await flushMicrotasks();
     h.picker.nextHits = [];
     h.emitPointer({ kind: 'tap', sx: 5, sy: 6, targetPx: 10, vp: { w: 100, h: 80 } });
 
@@ -279,6 +319,165 @@ describe('createNetwork controller', () => {
       [null, null],
     ]);
     expect(selects).toEqual([[null, null]]);
+  });
+
+  it('clears only hover during navigation and restores it after the camera settles', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    h.network.select('vertex', 2);
+    h.picker.nextHit = ['edge', 0];
+    h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
+    h.loop.frame();
+
+    h.emitPointer({ kind: 'navigationStart' });
+    expect(h.loop.uniforms.focus.hoverEdge).toBe(-1);
+    expect(h.loop.uniforms.focus.selectedVertex).toBe(2);
+
+    h.picker.pick.mockClear();
+    h.emitPointer({
+      kind: 'navigationEnd',
+      probe: { clientX: 7, clientY: 8, targetPx: 10 },
+    });
+    h.rig.camera.isAnimating.mockReturnValue(true);
+    h.loop.frame();
+    expect(h.picker.pick).not.toHaveBeenCalled();
+
+    h.rig.camera.isAnimating.mockReturnValue(false);
+    h.loop.frame();
+    expect(h.picker.pick).toHaveBeenCalledOnce();
+    expect(h.picker.lastQuery).toMatchObject({ sx: 7, sy: 8 });
+  });
+
+  it('uses the current DOMRect, waits for resize settlement, and avoids redundant static picks', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    vi.spyOn(h.surface, 'rect').mockReturnValue(new DOMRect(10, 20, 100, 80));
+    h.picker.nextHit = ['vertex', 1];
+    h.emitPointer({ kind: 'hover', clientX: 15, clientY: 26, targetPx: 10 });
+
+    h.loop.frame(undefined, false);
+    expect(h.picker.pick).not.toHaveBeenCalled();
+    h.loop.frame(undefined, true);
+    expect(h.picker.pick).toHaveBeenCalledOnce();
+    expect(h.picker.lastQuery).toMatchObject({ sx: 5, sy: 6, vp: { w: 100, h: 80 } });
+
+    h.loop.frame(undefined, true);
+    expect(h.picker.pick).toHaveBeenCalledOnce();
+  });
+
+  it('does not dirty or wake hover for rejected public camera input', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
+    h.loop.frame();
+    h.picker.pick.mockClear();
+    h.loop.wake.mockClear();
+    h.rig.camera.panBy.mockReturnValue(false);
+    h.rig.camera.zoomAt.mockReturnValue(false);
+
+    h.network.panBy(0, 0);
+    h.network.panBy(Number.NaN, 1);
+    h.network.zoomBy(1);
+    h.network.zoomBy(0);
+
+    expect(h.loop.wake).not.toHaveBeenCalled();
+    h.loop.frame();
+    expect(h.picker.pick).not.toHaveBeenCalled();
+  });
+
+  it('invalidates hover only for streams and visibility that affect hit geometry', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
+    h.loop.frame();
+    h.picker.pick.mockClear();
+
+    h.network.setChannel('vertexColor', new Float32Array([0, 0.5, 1]));
+    h.network.setOptions({ daylight: false, baseColor: [0.2, 0.3, 0.4, 1] });
+    h.loop.frame();
+    expect(h.picker.pick).not.toHaveBeenCalled();
+
+    h.network.setChannel('vertexSize', new Float32Array([1, 2, 3]));
+    h.loop.frame();
+    expect(h.picker.pick).toHaveBeenCalledOnce();
+
+    h.picker.pick.mockClear();
+    h.network.setOptions({ vertices: false });
+    h.loop.frame();
+    expect(h.picker.pick).toHaveBeenCalledOnce();
+    expect(h.picker.lastQuery?.vertices).toBe(false);
+  });
+
+  it('delivers painted hover notifications after the render tick, preventing reentrant scene mutation', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    h.picker.nextHit = ['vertex', 1];
+    let insidePaint = false;
+    const callbackStates: boolean[] = [];
+    h.network.on('hover', () => {
+      callbackStates.push(insidePaint);
+      h.network.setProjection('tilt');
+      h.network.load(nonGlobeTopology());
+    });
+
+    h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
+    h.loop.frame();
+    expect(callbackStates).toEqual([]);
+
+    insidePaint = true;
+    h.loop.paint();
+    insidePaint = false;
+    expect(callbackStates).toEqual([]);
+    await flushMicrotasks();
+
+    expect(callbackStates).toEqual([false]);
+    expect(h.rig.switchTo).toHaveBeenCalledWith('tilt', expect.anything(), { w: 100, h: 80 });
+    expect(h.loop.frameNow).toHaveBeenCalled();
+  });
+
+  it('coalesces zoom notifications until paint and keeps zoom listeners out of the render tick', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    let insidePaint = false;
+    const notices: Array<{ atFit: boolean; insidePaint: boolean }> = [];
+    let hoverNotices = 0;
+    h.network.on('hover', () => hoverNotices++);
+    h.network.on('zoom', (atFit) => {
+      notices.push({ atFit, insidePaint });
+      h.network.setProjection('tilt');
+      h.network.load(nonGlobeTopology());
+    });
+
+    h.picker.nextHit = ['vertex', 1];
+    h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
+    h.loop.frame();
+    h.loop.deps?.onZoom?.(false);
+    h.loop.deps?.onZoom?.(true);
+    expect(notices).toEqual([]);
+
+    insidePaint = true;
+    h.loop.paint();
+    insidePaint = false;
+    expect(notices).toEqual([]);
+    await flushMicrotasks();
+
+    expect(notices).toEqual([{ atFit: true, insidePaint: false }]);
+    expect(hoverNotices).toBe(0);
+    expect(h.rig.switchTo).toHaveBeenCalledWith('tilt', expect.anything(), { w: 100, h: 80 });
+    expect(h.loop.frameNow).toHaveBeenCalled();
+  });
+
+  it('retains the physical hover probe and re-picks after topology reload', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
+    h.loop.frame();
+    h.picker.pick.mockClear();
+
+    h.network.load(geographicTopology());
+    h.loop.frame();
+
+    expect(h.picker.pick).toHaveBeenCalledOnce();
   });
 
   it('cycles stacked tap hits after current vertex or edge selections', async () => {
@@ -303,19 +502,24 @@ describe('createNetwork controller', () => {
     ]);
   });
 
-  it('re-picks hover on rendered frames but defers costly live picks while animating', async () => {
+  it('picks hover once settled and suppresses all live picks while navigating or animating', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
     h.picker.nextHit = ['edge', 0];
-    h.emitPointer({ kind: 'hover', sx: 5, sy: 6, targetPx: 10, vp: { w: 100, h: 80 } });
-    h.picker.pick.mockClear();
+    h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
     h.rig.camera.isAnimating.mockReturnValue(true);
-    vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValueOnce(20);
-
     h.loop.frame();
     h.loop.frame();
+    expect(h.picker.pick).not.toHaveBeenCalled();
 
-    expect(h.picker.pick).toHaveBeenCalledTimes(1);
+    h.rig.camera.isAnimating.mockReturnValue(false);
+    h.loop.frame();
+    expect(h.picker.pick).toHaveBeenCalledOnce();
+
+    h.emitPointer({ kind: 'navigationStart' });
+    h.picker.pick.mockClear();
+    h.loop.frame();
+    expect(h.picker.pick).not.toHaveBeenCalled();
   });
 
   it('defers fadeIn until first paint', async () => {

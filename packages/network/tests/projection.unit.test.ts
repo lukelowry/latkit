@@ -627,6 +627,104 @@ describe('Camera', () => {
 
     expect(camera.fitIntent).toBe(false);
     expect(camera.current[0]).not.toBe(before);
+    expect(camera.isAnimating()).toBe(false);
+  });
+
+  it('panBy moves perspective projections without starting inertia', () => {
+    for (const proj of [createTiltProjection(), createGlobeProjection()]) {
+      const camera = new Camera(proj, createUniforms().projection);
+      camera.init(bounds, vp);
+      const before = [...camera.current];
+
+      expect(camera.panBy(20, -10, vp)).toBe(true);
+      expect([...camera.current]).not.toEqual(before);
+      expect(camera.isAnimating()).toBe(false);
+    }
+  });
+
+  it('rejects invalid and unit camera input without changing fit intent or state', () => {
+    const { camera } = make();
+    const current = [...camera.current];
+    const target = [...camera.target];
+
+    expect(camera.panBy(0, 0, vp)).toBe(false);
+    expect(camera.panBy(Number.NaN, 1, vp)).toBe(false);
+    expect(camera.zoomAt(1, 400, 300, vp)).toBe(false);
+    expect(camera.zoomAt(0, 400, 300, vp)).toBe(false);
+    expect(camera.zoomAt(Number.NaN, 400, 300, vp)).toBe(false);
+    expect(camera.zoomAt(0.5, 400, 300, vp)).toBe(false); // clamped at fit-scale minimum
+    expect(camera.rotateBy(1, 1, vp)).toBe(false);
+
+    expect([...camera.current]).toEqual(current);
+    expect([...camera.target]).toEqual(target);
+    expect(camera.fitIntent).toBe(true);
+    expect(camera.isAnimating()).toBe(false);
+  });
+
+  it('keeps fit motion for rejected input and interrupts it only for an actual zoom', () => {
+    let now = 1_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const { camera } = make();
+    camera.panBy(100, 0, vp);
+    camera.fitView(bounds, vp);
+    now += 100;
+    camera.tick(now, vp);
+
+    expect(camera.zoomAt(1, 400, 300, vp)).toBe(false);
+    now += 500;
+    camera.tick(now, vp);
+    expect(camera.isAtFitView()).toBe(true);
+
+    camera.panBy(100, 0, vp);
+    camera.fitView(bounds, vp);
+    now += 100;
+    camera.tick(now, vp);
+    expect(camera.zoomAt(2, 400, 300, vp)).toBe(true);
+    now += 1_000;
+    camera.tick(now, vp);
+    expect(camera.isAtFitView()).toBe(false);
+  });
+
+  it('samples a one-event flick from drag-start to crossing timestamps', () => {
+    const { camera } = make();
+
+    camera.beginDrag(400, 300, vp, 10);
+    camera.drag(2_000, 0, 2_400, 300, vp, 20);
+    camera.endDrag(true, 20);
+
+    expect(camera.isAnimating()).toBe(true);
+  });
+
+  it('accumulates dense drag samples against the last accepted velocity baseline', () => {
+    const { camera } = make();
+
+    camera.beginDrag(400, 300, vp, 0);
+    for (let i = 1; i <= 6; i++) {
+      camera.drag(2, 0, 400 + i * 2, 300, vp, i * 0.1);
+    }
+    camera.endDrag(true, 0.6);
+
+    expect(camera.isAnimating()).toBe(true);
+  });
+
+  it('decays retained drag velocity while held still before release', () => {
+    const { camera } = make();
+
+    camera.beginDrag(400, 300, vp, 10);
+    camera.drag(1_000, 0, 1_400, 300, vp, 30);
+    camera.endDrag(true, 2_030);
+
+    expect(camera.isAnimating()).toBe(false);
+  });
+
+  it('never coasts a cancelled drag', () => {
+    const { camera } = make();
+
+    camera.beginDrag(400, 300, vp, 10);
+    camera.drag(1_000, 0, 1_400, 300, vp, 30);
+    camera.endDrag(false, 31);
+
+    expect(camera.isAnimating()).toBe(false);
   });
 
   it('samples drag velocity, coasts, and lets zoom interrupt the coast', () => {

@@ -46,6 +46,17 @@ const ZOOM_EPSILON = 0.001;
  */
 const SNAP_PX = 0.25;
 
+/** Camera math requires a finite, non-empty CSS-pixel viewport. */
+function validViewport(vp: Viewport): boolean {
+  return Number.isFinite(vp.w) && Number.isFinite(vp.h) && vp.w > 0 && vp.h > 0;
+}
+
+/** Exact state equality; projection mutators clamp deterministically. */
+function sameState(a: CameraState, b: CameraState): boolean {
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 /**
  * Motion driver for the target state.
  *
@@ -93,8 +104,11 @@ export class Camera {
   private readonly vel: Tangent;
   /** Scratch tangent reused for per-sample delta during drag. */
   private readonly scratchTangent: Tangent;
+  /** Scratch state reused to validate target-space input before interruption. */
+  private readonly scratchState: CameraState;
   private lastDragT = 0;
-  private readonly prevState: CameraState;
+  /** Camera state at `lastDragT`, retained across too-dense spatial samples. */
+  private readonly velocityState: CameraState;
 
   /** Create a camera bound to a projection and its GPU uniform region. */
   constructor(
@@ -105,9 +119,10 @@ export class Camera {
     // coast, and snap machinery below is dimension-blind.
     this.current = new Float64Array(proj.stateSize) as CameraState;
     this.target = new Float64Array(proj.stateSize) as CameraState;
-    this.prevState = new Float64Array(proj.stateSize) as CameraState;
+    this.velocityState = new Float64Array(proj.stateSize) as CameraState;
     this.vel = createTangent(proj.stateSize);
     this.scratchTangent = createTangent(proj.stateSize);
+    this.scratchState = new Float64Array(proj.stateSize) as CameraState;
   }
 
   /** Place current, target, and fit state from graph bounds. */
@@ -154,29 +169,88 @@ export class Camera {
   }
 
   /** Apply a rotation gesture through the target chase. */
-  rotateBy(dxPx: number, dyPx: number, vp: Viewport): void {
-    if (!this.proj.rotate) return;
-    this.proj.rotate(this.target, dxPx, dyPx, vp);
+  rotateBy(dxPx: number, dyPx: number, vp: Viewport): boolean {
+    if (
+      !this.proj.rotate ||
+      !Number.isFinite(dxPx) ||
+      !Number.isFinite(dyPx) ||
+      (dxPx === 0 && dyPx === 0) ||
+      !validViewport(vp)
+    ) {
+      return false;
+    }
+    const driven = this.motion.kind === 'coasting' || this.motion.kind === 'fitting';
+    const base = driven ? this.current : this.target;
+    this.scratchState.set(base);
+    this.proj.rotate(this.scratchState, dxPx, dyPx, vp);
+    if (sameState(this.scratchState, base)) return false;
+    if (driven) this.interrupt();
+    this.target.set(this.scratchState);
     this.fitIntent = false;
+    return true;
+  }
+
+  /**
+   * Give new input ownership of the currently rendered pose.
+   *
+   * This is the gesture-boundary cancellation primitive: pending fit, coast,
+   * chase, and cursor anchoring cannot leak into a newly started interaction.
+   */
+  private interrupt(time = performance.now()): void {
+    this.target.set(this.current);
+    this.motion = { kind: 'idle' };
+    this.anchor = null;
+    this.vel.fill(0);
+    this.lastT = Number.isFinite(time) ? time : performance.now();
   }
 
   /** Start a drag gesture and capture the projection-specific pan session. */
-  beginDrag(sx: number, sy: number, vp: Viewport): void {
+  beginDrag(sx: number, sy: number, vp: Viewport, time = performance.now()): boolean {
+    if (
+      !Number.isFinite(sx) ||
+      !Number.isFinite(sy) ||
+      !validViewport(vp) ||
+      !Number.isFinite(time)
+    ) {
+      return false;
+    }
+    this.interrupt(time);
     const session = this.proj.beginPan(this.current, sx, sy, vp);
     this.motion = { kind: 'dragging', session };
     this.anchor = null;
     this.vel.fill(0);
-    this.lastDragT = performance.now();
+    this.lastDragT = time;
+    this.velocityState.set(this.current);
     // Pan is a deliberate move off fit. `panBy` routes through here too.
     this.fitIntent = false;
+    return true;
   }
 
   /** Apply one drag sample to current state and update drag velocity. */
-  drag(dx: number, dy: number, sx: number, sy: number, vp: Viewport): void {
-    if (this.motion.kind !== 'dragging') return;
+  drag(
+    dx: number,
+    dy: number,
+    sx: number,
+    sy: number,
+    vp: Viewport,
+    time = performance.now(),
+  ): boolean {
+    if (this.motion.kind !== 'dragging') return false;
+    if (
+      !Number.isFinite(dx) ||
+      !Number.isFinite(dy) ||
+      !Number.isFinite(sx) ||
+      !Number.isFinite(sy) ||
+      !Number.isFinite(time) ||
+      !validViewport(vp) ||
+      (dx === 0 && dy === 0)
+    ) {
+      return false;
+    }
 
-    this.prevState.set(this.current);
+    this.scratchState.set(this.current);
     this.motion.session.apply(this.current, dx, dy, sx, sy, vp);
+    const changed = !sameState(this.scratchState, this.current);
 
     // Mirror every non-zoom slot into target so chase is a no-op during the
     // drag. ZOOM_SLOT stays owned by anchored zoom, allowing wheel zoom during
@@ -187,15 +261,15 @@ export class Camera {
 
     // Velocity EMA over drag deltas, for coast-after-release. Length-generic
     // so extra slots contribute zero unless a projection chooses otherwise.
-    const now = performance.now();
-    const dt = now - this.lastDragT;
+    const dt = time - this.lastDragT;
     if (dt > VEL_MIN_DT) {
       const inst = this.scratchTangent;
-      this.proj.delta(inst, this.prevState, this.current, dt);
+      this.proj.delta(inst, this.velocityState, this.current, dt);
       for (let i = 0; i < this.vel.length; i++) {
         this.vel[i] = this.vel[i] * (1 - VEL_ALPHA) + inst[i] * VEL_ALPHA;
       }
-      this.lastDragT = now;
+      this.velocityState.set(this.current);
+      this.lastDragT = time;
     }
 
     // Wheel-zoom-during-drag coexistence: re-derive anchor.world from the
@@ -209,40 +283,83 @@ export class Camera {
       );
       if (w) this.anchor.world = w;
     }
+    return changed;
   }
 
   /** Perform a one-shot center pan, used by keyboard nudges. */
-  panBy(dx: number, dy: number, vp: Viewport): void {
+  panBy(dx: number, dy: number, vp: Viewport): boolean {
+    if (
+      !Number.isFinite(dx) ||
+      !Number.isFinite(dy) ||
+      (dx === 0 && dy === 0) ||
+      !validViewport(vp)
+    ) {
+      return false;
+    }
     const sx = vp.w / 2;
     const sy = vp.h / 2;
-    this.beginDrag(sx, sy, vp);
-    this.drag(dx, dy, sx, sy, vp);
-    this.endDrag();
+    const time = performance.now();
+    if (!this.beginDrag(sx, sy, vp, time)) return false;
+    const changed = this.drag(dx, dy, sx + dx, sy + dy, vp, time);
+    this.endDrag(false, time);
+    return changed;
   }
 
   /** End the active drag and start coast when sampled velocity is high enough. */
-  endDrag(): void {
-    if (this.motion.kind !== 'dragging') return;
-    if (this.proj.tangentNorm(this.vel) < COAST_THRESHOLD) {
+  endDrag(coast = true, time = performance.now()): boolean {
+    if (this.motion.kind !== 'dragging') return false;
+    if (!coast) {
+      this.target.set(this.current);
       this.motion = { kind: 'idle' };
-      return;
+      this.anchor = null;
+      this.vel.fill(0);
+      return true;
+    }
+    const releaseTime = Number.isFinite(time) ? Math.max(time, this.lastDragT) : performance.now();
+    const idleMs = releaseTime - this.lastDragT;
+    const releaseDecay = Math.exp(-idleMs * COAST_K);
+    if (this.proj.tangentNorm(this.vel) * releaseDecay < COAST_THRESHOLD) {
+      this.motion = { kind: 'idle' };
+      return true;
     }
     const from = this.proj.clone(this.target);
-    const tangent = new Float64Array(this.vel) as Tangent;
-    this.motion = { kind: 'coasting', tangent, from, t0: performance.now() };
+    const tangent = new Float64Array(this.vel.length) as Tangent;
+    for (let i = 0; i < tangent.length; i++) tangent[i] = this.vel[i] * releaseDecay;
+    this.motion = {
+      kind: 'coasting',
+      tangent,
+      from,
+      t0: releaseTime,
+    };
+    return true;
   }
 
   /** Zoom toward `factor` while keeping the screen point anchored when possible. */
-  zoomAt(factor: number, sx: number, sy: number, vp: Viewport): void {
+  zoomAt(factor: number, sx: number, sy: number, vp: Viewport): boolean {
+    if (
+      !Number.isFinite(factor) ||
+      factor <= 0 ||
+      factor === 1 ||
+      !Number.isFinite(sx) ||
+      !Number.isFinite(sy) ||
+      !validViewport(vp)
+    ) {
+      return false;
+    }
+    const driven = this.motion.kind === 'coasting' || this.motion.kind === 'fitting';
+    const base = driven ? this.current : this.target;
+    this.scratchState.set(base);
+    this.proj.zoom(this.scratchState, factor, this.fit);
+    if (sameState(this.scratchState, base)) return false;
+    // Fit/coast own target independently. Preserve the visible pose only once
+    // this input has been proven to change the projection state.
+    if (driven) this.interrupt();
     // Capture the world point under the cursor so chase can hold it there.
     const world = this.proj.screenToWorld(this.current, sx, sy, vp);
     this.anchor = world ? { world, screen: [sx, sy] } : null;
-    this.proj.zoom(this.target, factor, this.fit);
-    // Zoom interrupts coast and fit, but a concurrent drag is allowed.
-    if (this.motion.kind === 'coasting' || this.motion.kind === 'fitting') {
-      this.motion = { kind: 'idle' };
-    }
+    this.target.set(this.scratchState);
     this.fitIntent = false;
+    return true;
   }
 
   /** Animate from the current pose to a fresh fitted view. */
