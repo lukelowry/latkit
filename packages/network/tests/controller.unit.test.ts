@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createNetwork } from '../src/controller.js';
-import type { Events, Options } from '../src/controller.js';
+import type { ControllerDeps, Events, Options } from '../src/controller.js';
 import {
   FLAG_DAYLIGHT,
   FLAG_FOCUS_ENABLED,
@@ -34,17 +34,99 @@ function expectRgbaClose(actual: Float32Array, expected: readonly number[]): voi
 afterEach(() => {
   for (const harness of harnesses) harness.destroy();
   harnesses = [];
+  document.body.innerHTML = '';
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe('createNetwork controller', () => {
-  it('surfaces WebGPU setup failures through the public factory', async () => {
-    const container = document.createElement('div');
-    vi.stubGlobal('navigator', { gpu: undefined });
+  it('rejects non-Core devices before creating a surface', async () => {
+    const canvas = document.createElement('canvas');
+    canvas.setAttribute('width', '640');
+    canvas.setAttribute('height', '360');
+    document.body.append(canvas);
+    const device = {
+      limits: { maxStorageBuffersInVertexStage: 0 },
+    } as unknown as GPUDevice;
 
-    await expect(createNetwork(container)).rejects.toThrow('WebGPU is not available');
+    await expect(createNetwork(device, canvas)).rejects.toThrow('A Core WebGPU device is required');
+    expect(canvas.isConnected).toBe(true);
+  });
+
+  it('surfaces canvas setup failures without removing or mutating the borrowed canvas', async () => {
+    const canvas = document.createElement('canvas');
+    canvas.setAttribute('width', '640');
+    canvas.setAttribute('height', '360');
+    canvas.style.touchAction = 'pan-x';
+    canvas.style.userSelect = 'text';
+    canvas.style.opacity = '0.5';
+    canvas.setAttribute('aria-hidden', 'false');
+    document.body.append(canvas);
+    const deviceDestroy = vi.fn();
+    const device = {
+      limits: {},
+      destroy: deviceDestroy,
+    } as unknown as GPUDevice;
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+
+    await expect(createNetwork(device, canvas)).rejects.toThrow(
+      'WebGPU canvas context unavailable',
+    );
+
+    expect(canvas.isConnected).toBe(true);
+    expect(canvas.style.touchAction).toBe('pan-x');
+    expect(canvas.style.userSelect).toBe('text');
+    expect(canvas.style.opacity).toBe('0.5');
+    expect(canvas.getAttribute('aria-hidden')).toBe('false');
+    expect(canvas.getAttribute('width')).toBe('640');
+    expect(canvas.getAttribute('height')).toBe('360');
+    expect(deviceDestroy).not.toHaveBeenCalled();
+  });
+
+  it('cleans partial initialization and preserves the original error', async () => {
+    const failure = new Error('pointer setup failed');
+    let deps!: ControllerDeps;
+
+    await expect(
+      createControllerHarness({}, (next) => {
+        deps = next;
+        const RenderLoop = deps.RenderLoop;
+        deps.RenderLoop = vi.fn(
+          (renderLoopDeps: ConstructorParameters<ControllerDeps['RenderLoop']>[0]) => {
+            renderLoopDeps.presentation.resize(800, 450);
+            return new RenderLoop(renderLoopDeps);
+          },
+        ) as unknown as typeof RenderLoop;
+        deps.attachPointer = vi.fn(() => {
+          throw failure;
+        });
+      }),
+    ).rejects.toBe(failure);
+
+    const surface = vi.mocked(deps.createSurface).mock.results[0]!.value as ReturnType<
+      ControllerDeps['createSurface']
+    >;
+    const presentation = vi.mocked(deps.createPresentation).mock.results[0]!.value as ReturnType<
+      ControllerDeps['createPresentation']
+    >;
+    const renderer = vi.mocked(deps.Renderer).mock.results[0]!.value as InstanceType<
+      ControllerDeps['Renderer']
+    >;
+    const loop = vi.mocked(deps.RenderLoop).mock.results[0]!.value as InstanceType<
+      ControllerDeps['RenderLoop']
+    >;
+
+    expect(loop.destroy).toHaveBeenCalledOnce();
+    expect(renderer.destroy).toHaveBeenCalledOnce();
+    expect(presentation.destroy).toHaveBeenCalledOnce();
+    expect(surface.destroy).toHaveBeenCalledOnce();
+    expect(surface.element.isConnected).toBe(true);
+    expect(surface.element.getAttribute('width')).toBe('320');
+    expect(surface.element.getAttribute('height')).toBe('180');
+    expect(surface.element.style.opacity).toBe('');
+    expect(surface.element.hasAttribute('aria-hidden')).toBe(false);
+    expect(presentation.device.destroy).not.toHaveBeenCalled();
   });
 
   it('applies construction options through renderer and uniforms', async () => {
@@ -160,10 +242,13 @@ describe('createNetwork controller', () => {
     expect(h.picker.deps?.values('vertexHeight')).toBe(values);
   });
 
-  it('returns its canvas element from the public facade', async () => {
+  it('uses the caller canvas without exposing it as controller-owned state', async () => {
     const h = await makeHarness();
 
-    expect(h.network.element).toBe(h.surface.element);
+    expect(h.deps.createSurface).toHaveBeenCalledWith(h.canvas);
+    expect(h.deps.createPresentation).toHaveBeenCalledWith(h.device, h.canvas);
+    expect(h.canvas.hasAttribute('aria-hidden')).toBe(false);
+    expect(h.network).not.toHaveProperty('element');
   });
 
   it('keeps unsupported projection changes inert', async () => {
@@ -619,25 +704,44 @@ describe('createNetwork controller', () => {
     expect(events).toEqual([['unknown', 'lost for test']]);
   });
 
-  it('ignores device loss caused by explicit destruction', async () => {
+  it('forwards destruction of a borrowed device while the controller is live', async () => {
     const h = await makeHarness();
 
     h.deviceLost.resolve({ reason: 'destroyed', message: 'normal shutdown' } as GPUDeviceLostInfo);
+    await flushMicrotasks();
+
+    expect(h.loop.pause).toHaveBeenCalledOnce();
+    expect(h.events.deviceLost).toEqual([['destroyed', 'normal shutdown']]);
+  });
+
+  it('ignores device loss after controller teardown', async () => {
+    const h = await makeHarness();
+    h.network.destroy();
+
+    h.deviceLost.resolve({ reason: 'unknown', message: 'late loss' } as GPUDeviceLostInfo);
     await flushMicrotasks();
 
     expect(h.loop.pause).not.toHaveBeenCalled();
     expect(h.events.deviceLost).toEqual([]);
   });
 
-  it('destroys owned collaborators', async () => {
+  it('idempotently destroys owned collaborators without destroying the borrowed device', async () => {
     const h = await makeHarness();
+    h.presentation.resize(800, 450);
 
     h.network.destroy();
+    h.network.destroy();
 
-    expect(h.loop.destroy).toHaveBeenCalled();
-    expect(h.pointerCleanup.destroy).toHaveBeenCalled();
-    expect(h.renderer.destroy).toHaveBeenCalled();
-    expect(h.deps.destroyGpuContext).toHaveBeenCalled();
-    expect(h.surface.destroy).toHaveBeenCalled();
+    expect(h.deps.createPresentation).toHaveBeenCalledWith(h.device, h.canvas);
+    expect(h.loop.destroy).toHaveBeenCalledOnce();
+    expect(h.pointerCleanup.destroy).toHaveBeenCalledOnce();
+    expect(h.renderer.destroy).toHaveBeenCalledOnce();
+    expect(h.presentation.destroy).toHaveBeenCalledOnce();
+    expect(h.surface.destroy).toHaveBeenCalledOnce();
+    expect(h.canvas.isConnected).toBe(true);
+    expect(h.canvas.getAttribute('width')).toBe('320');
+    expect(h.canvas.getAttribute('height')).toBe('180');
+    expect(h.canvas.style.opacity).toBe('');
+    expect(h.deviceDestroy).not.toHaveBeenCalled();
   });
 });

@@ -26,14 +26,14 @@ fn project_world(p: vec3f) -> vec4f { return u.vp * vec4f(p, 1.0); }
 // cap in screen space so zoom reveals topology instead of inflating glyphs.
 fn screen_radius(clip: vec4f) -> f32 {
   let px = u.vertex_size * GLOBE_VERTEX_SCALE / (clip.w * u.fov_scale) * u.viewport.y * 0.5;
-  return min(px, MAX_VERTEX_RADIUS_PX);
+  return min(px, css_px(MAX_VERTEX_RADIUS_PX));
 }
 
 fn screen_half_width(clip: vec4f, base_width: f32) -> f32 {
   let px = base_width * GLOBE_EDGE_SCALE / (clip.w * u.fov_scale) * u.viewport.y * 0.5;
-  return clamp(px, MIN_EDGE_HALF_WIDTH_PX, MAX_EDGE_HALF_WIDTH_PX);
+  return clamp(px, css_px(MIN_EDGE_HALF_WIDTH_PX), css_px(MAX_EDGE_HALF_WIDTH_PX));
 }
 
 fn screen_pole_half_width(clip: vec4f) -> f32 {
-  return max(screen_radius(clip) * 0.15, 1.5);
+  return max(screen_radius(clip) * 0.15, css_px(1.5));
 }

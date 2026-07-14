@@ -4,6 +4,7 @@ import {
   colormapGradientCss,
   type ColormapName,
 } from '@latkit/colormaps';
+import { requestDevice } from '@latkit/gpu';
 import { createMonitor, type Monitor, type Reading, type Series } from '@latkit/monitor';
 import './style.css';
 
@@ -42,7 +43,7 @@ interface HotElement {
 }
 
 const app = document.getElementById('app') as HTMLElement;
-const stage = document.getElementById('monitor-stage') as HTMLElement;
+const stage = document.getElementById('monitor-stage') as HTMLCanvasElement;
 const statusEl = document.getElementById('status') as HTMLElement;
 const signalRow = document.getElementById('signals') as HTMLElement;
 const colormapRow = document.getElementById('colormaps') as HTMLElement;
@@ -57,6 +58,7 @@ const rateInput = document.getElementById('rate') as HTMLInputElement;
 const rateValue = document.getElementById('rate-value') as HTMLOutputElement;
 
 let seed = 0x5eed1234;
+let device: GPUDevice | null = null;
 let monitor: Monitor | null = null;
 let series = createSeries();
 let frameCursor = 0;
@@ -91,12 +93,15 @@ async function main(): Promise<void> {
   wireChrome();
 
   try {
-    monitor = await createMonitor(stage, {
+    device = await requestDevice();
+    monitor = await createMonitor(device, stage, {
       lineWidthPx: 1.4,
       valueRange: signalRange(currentSignal),
       colormap: colormap(EXAMPLE_COLORMAPS[0]!),
     });
   } catch (error) {
+    device?.destroy();
+    device = null;
     fail(error instanceof Error ? error.message : String(error));
     return;
   }
@@ -119,6 +124,15 @@ async function main(): Promise<void> {
 
   resetStream();
   setRunning(true);
+
+  window.addEventListener('pagehide', (event) => {
+    if (event.persisted) return;
+    stopTimer();
+    monitor?.destroy();
+    monitor = null;
+    device?.destroy();
+    device = null;
+  });
 }
 
 function wireChrome(): void {

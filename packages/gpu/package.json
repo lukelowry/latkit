@@ -1,12 +1,12 @@
 {
-  "name": "@latkit/monitor",
-  "version": "0.0.1",
-  "description": "WebGPU trace monitor for Latkit.",
+  "name": "@latkit/gpu",
+  "version": "0.0.0",
+  "description": "Core WebGPU device and presentation primitives for Latkit.",
   "type": "module",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lukelowry/latkit.git",
-    "directory": "packages/monitor"
+    "directory": "packages/gpu"
   },
   "license": "MIT",
   "sideEffects": false,
@@ -24,15 +24,10 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --project @latkit/monitor",
-    "bench": "vitest bench --run --project @latkit/monitor"
+    "test": "vitest run --project @latkit/gpu"
   },
   "dependencies": {
-    "@latkit/gpu": "workspace:*",
     "@webgpu/types": "^0.1.71"
-  },
-  "devDependencies": {
-    "jsdom": "^26.1.0"
   },
   "publishConfig": {
     "access": "public"

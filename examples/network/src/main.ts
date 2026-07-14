@@ -4,6 +4,7 @@ import {
   colormapGradientCss,
   type ColormapName,
 } from '@latkit/colormaps';
+import { requestDevice } from '@latkit/gpu';
 import { createNetwork, type Network } from '@latkit/network';
 import { TOPOLOGIES, type GeneratedTopology, type TopologyOption } from './topologies.js';
 import './style.css';
@@ -14,18 +15,17 @@ const EXAMPLE_COLORMAPS = [
   'cividis',
 ] as const satisfies readonly ColormapName[];
 
-const stage = document.getElementById('stage') as HTMLElement;
+const stage = document.getElementById('stage') as HTMLCanvasElement;
 const statusEl = document.getElementById('status') as HTMLElement;
 const readoutEl = document.getElementById('readout') as HTMLElement;
 
 function fail(message: string): void {
-  stage.innerHTML = '';
   const box = document.createElement('div');
   box.className = 'fatal';
   box.innerHTML =
     `<h2>Cannot render</h2><p>${message}</p>` +
     '<p class="hint">This example needs a browser with WebGPU support.</p>';
-  stage.appendChild(box);
+  stage.replaceWith(box);
 }
 
 async function main(): Promise<void> {
@@ -35,9 +35,17 @@ async function main(): Promise<void> {
 
   setStatus(current);
 
+  let device: GPUDevice;
+  try {
+    device = await requestDevice();
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err));
+    return;
+  }
+
   let net: Network;
   try {
-    net = await createNetwork(stage, {
+    net = await createNetwork(device, stage, {
       msaa: 4,
       daylight: true,
       graticule: false,
@@ -46,6 +54,7 @@ async function main(): Promise<void> {
       colormap: colormap(EXAMPLE_COLORMAPS[0]!),
     });
   } catch (err) {
+    device.destroy();
     fail(err instanceof Error ? err.message : String(err));
     return;
   }
@@ -80,6 +89,12 @@ async function main(): Promise<void> {
   });
   wireColormaps(net);
   wirePicking(net);
+
+  window.addEventListener('pagehide', (event) => {
+    if (event.persisted) return;
+    net.destroy();
+    device.destroy();
+  });
 }
 
 function setStatus(topology: GeneratedTopology): void {

@@ -1,4 +1,4 @@
-/** Creates a WebGPU signal monitor in a host container. */
+/** Creates a WebGPU signal monitor on a caller-owned canvas. */
 export { createMonitor } from './monitor.js';
 
 /** Public monitor controller types, events, options, and input data shape. */

@@ -19,6 +19,7 @@ Install only the packages your application needs.
 | ---------------------------------------------------------------------- | ----------------------------------------------------- |
 | [`@latkit/network`](https://www.npmjs.com/package/@latkit/network)     | Interactive WebGPU network topology views             |
 | [`@latkit/monitor`](https://www.npmjs.com/package/@latkit/monitor)     | WebGPU time-series and signal monitor views           |
+| [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)             | Core WebGPU device and canvas presentation primitives |
 | [`@latkit/colormaps`](https://www.npmjs.com/package/@latkit/colormaps) | Named colormaps, labels, and CSS gradient helpers     |
 | [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | Shared model primitives for the Latkit package family |
 
@@ -33,24 +34,25 @@ Install only the packages your application needs.
 For network visualization:
 
 ```sh
-npm install @latkit/network @latkit/colormaps
+npm install @latkit/gpu @latkit/network @latkit/colormaps
 ```
 
 For monitor visualization:
 
 ```sh
-npm install @latkit/monitor @latkit/colormaps
+npm install @latkit/gpu @latkit/monitor @latkit/colormaps
 ```
 
 ## Quick start
 
 ```ts
 import { colormap } from '@latkit/colormaps';
+import { requestDevice } from '@latkit/gpu';
 import { createNetwork, type Topology } from '@latkit/network';
 
-const container = document.getElementById('network');
-if (!(container instanceof HTMLElement)) {
-  throw new Error('Missing #network container.');
+const canvas = document.querySelector<HTMLCanvasElement>('#network');
+if (!canvas) {
+  throw new Error('Missing #network canvas.');
 }
 
 const topology: Topology = {
@@ -60,7 +62,8 @@ const topology: Topology = {
   polylineStart: new Uint32Array([0, 0, 0]),
 };
 
-const network = await createNetwork(container, {
+const device = await requestDevice();
+const network = await createNetwork(device, canvas, {
   colormap: colormap('viridis'),
   graticule: true,
 });

@@ -28,7 +28,7 @@ afterEach(() => {
 describe('Renderer resource lifecycle', () => {
   it('allocates shared GPU resources and builds the initial projection pipeline', async () => {
     const h = makeFakeGpu();
-    const renderer = new Renderer(h.gpu, 1);
+    const renderer = new Renderer(h.presentation, 1);
 
     await flushGpuPromises();
 
@@ -51,7 +51,27 @@ describe('Renderer resource lifecycle', () => {
     vi.stubGlobal('devicePixelRatio', 1);
     const h = makeFakeGpu();
 
-    const renderer = new Renderer(h.gpu);
+    const renderer = new Renderer(h.presentation);
+    await flushGpuPromises();
+
+    expect(h.device.renderPipelines[0]?.multisample?.count).toBe(1);
+    renderer.destroy();
+  });
+
+  it("uses the canvas window's display for automatic multisampling", async () => {
+    vi.stubGlobal('screen', { width: 100, height: 100 });
+    vi.stubGlobal('devicePixelRatio', 1);
+    const h = makeFakeGpu();
+    Object.assign(h.canvas, {
+      ownerDocument: {
+        defaultView: {
+          screen: { width: 2000, height: 1000 },
+          devicePixelRatio: 2,
+        },
+      },
+    });
+
+    const renderer = new Renderer(h.presentation);
     await flushGpuPromises();
 
     expect(h.device.renderPipelines[0]?.multisample?.count).toBe(1);
@@ -60,7 +80,7 @@ describe('Renderer resource lifecycle', () => {
 
   it('dedupes lazy projection builds and wakes when they are ready', async () => {
     const h = makeFakeGpu();
-    const renderer = new Renderer(h.gpu);
+    const renderer = new Renderer(h.presentation);
     const ready = vi.fn();
     renderer.onProjectionPipelinesReady = ready;
 
@@ -83,7 +103,7 @@ describe('Renderer resource lifecycle', () => {
     h.device.createRenderPipelineAsync.mockRejectedValueOnce(new Error('shader no good'));
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    const renderer = new Renderer(h.gpu);
+    const renderer = new Renderer(h.presentation);
     await flushGpuPromises();
 
     expect(error).toHaveBeenCalledWith(
@@ -95,7 +115,7 @@ describe('Renderer resource lifecycle', () => {
 
   it('binds topology transactionally and replaces channel storage on relayout', async () => {
     const h = makeFakeGpu();
-    const renderer = new Renderer(h.gpu);
+    const renderer = new Renderer(h.presentation);
     const topology = sampleTopology();
 
     renderer.bindTopology(encodeTopology(topology), encodeSegments(topology));
@@ -124,7 +144,7 @@ describe('Renderer resource lifecycle', () => {
 
   it('rejects mismatched segment metadata before replacing the current scene', () => {
     const h = makeFakeGpu();
-    const renderer = new Renderer(h.gpu);
+    const renderer = new Renderer(h.presentation);
     const topology = sampleTopology();
     const encodedTopology = encodeTopology(topology);
 
@@ -170,7 +190,7 @@ describe('Renderer resource lifecycle', () => {
   it('cleans partially allocated topology resources when a later allocation fails', () => {
     const h = makeFakeGpu();
     h.device.failBufferLabels.add('network-segments');
-    const renderer = new Renderer(h.gpu);
+    const renderer = new Renderer(h.presentation);
     const topology = singleEdgeTopology();
 
     expect(() => renderer.bindTopology(encodeTopology(topology), encodeSegments(topology))).toThrow(
@@ -188,7 +208,7 @@ describe('Renderer resource lifecycle', () => {
 
   it('checks both WebGPU storage and total buffer limits', () => {
     const h = makeFakeGpu({ limits: { maxBufferSize: 4, maxStorageBufferBindingSize: 4096 } });
-    const renderer = new Renderer(h.gpu);
+    const renderer = new Renderer(h.presentation);
     const topology = singleEdgeTopology();
 
     expect(() => renderer.bindTopology(encodeTopology(topology), encodeSegments(topology))).toThrow(
@@ -199,7 +219,7 @@ describe('Renderer resource lifecycle', () => {
 
   it('replaces and clears optional border buffers', () => {
     const h = makeFakeGpu();
-    const renderer = new Renderer(h.gpu);
+    const renderer = new Renderer(h.presentation);
     const borders = {
       vertices: new Uint8Array(BORDER_VERTEX_STRIDE_BYTES),
       indices: new Uint32Array([0]),
@@ -217,7 +237,7 @@ describe('Renderer resource lifecycle', () => {
 describe('Renderer frame encoding', () => {
   it('skips rendering until both topology and active pipelines are ready', async () => {
     const h = makeFakeGpu();
-    const renderer = new Renderer(h.gpu);
+    const renderer = new Renderer(h.presentation);
     const topology = sampleTopology();
     renderer.bindTopology(encodeTopology(topology), encodeSegments(topology));
 
@@ -231,7 +251,7 @@ describe('Renderer frame encoding', () => {
 
   it('submits a flat graticule frame with focused edge and vertex overlays', async () => {
     const h = makeFakeGpu();
-    const renderer = new Renderer(h.gpu, 1);
+    const renderer = new Renderer(h.presentation, 1);
     const topology = sampleTopology();
     renderer.bindTopology(encodeTopology(topology), encodeSegments(topology));
     await flushGpuPromises();
@@ -265,7 +285,7 @@ describe('Renderer frame encoding', () => {
 
   it('warns once when a focused edge has no segment range', async () => {
     const h = makeFakeGpu();
-    const renderer = new Renderer(h.gpu);
+    const renderer = new Renderer(h.presentation);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const topology = sampleTopology();
     renderer.bindTopology(encodeTopology(topology), encodeSegments(topology));
@@ -289,7 +309,7 @@ describe('Renderer frame encoding', () => {
 
   it('renders height poles only for non-flat projections with height channels', async () => {
     const h = makeFakeGpu();
-    const renderer = new Renderer(h.gpu);
+    const renderer = new Renderer(h.presentation);
     const topology = sampleTopology();
     renderer.bindTopology(encodeTopology(topology), encodeSegments(topology));
     renderer.useProjectionPipelines('tilt');

@@ -5,13 +5,14 @@ WebGPU network renderer for Latkit.
 ## Install
 
 ```sh
-npm install @latkit/network @latkit/colormaps
+npm install @latkit/gpu @latkit/network @latkit/colormaps
 ```
 
 ## Basic use
 
 ```ts
 import { colormap } from '@latkit/colormaps';
+import { requestDevice } from '@latkit/gpu';
 import { createNetwork, type Topology } from '@latkit/network';
 
 const topology: Topology = {
@@ -21,7 +22,9 @@ const topology: Topology = {
   polylineStart: new Uint32Array([0, 0, 0]),
 };
 
-const network = await createNetwork(container, {
+const device = await requestDevice();
+const canvas = document.querySelector<HTMLCanvasElement>('#network')!;
+const network = await createNetwork(device, canvas, {
   colormap: colormap('viridis'),
   graticule: true,
 });
@@ -31,7 +34,19 @@ network.setChannel('vertexColor', new Float32Array([0.1, 0.8, 0.4]), [0, 1]);
 network.fadeIn();
 ```
 
-Call `network.destroy()` when the host removes the view.
+`createNetwork()` accepts a native Core `GPUDevice` and a caller-owned
+`HTMLCanvasElement`. `@latkit/gpu` acquires the device and supplies Network's
+shared presentation internals. The caller controls the canvas's placement and
+CSS size.
+
+Network borrows both. Destroy the renderer before removing the canvas, and
+destroy the device only after every renderer using it has been destroyed:
+
+```ts
+network.destroy();
+canvas.remove();
+device.destroy();
+```
 
 ## Data shape
 

@@ -1,3 +1,5 @@
+import { observeCanvas, type Presentation } from '@latkit/gpu';
+
 import type { Camera } from '../camera/camera.js';
 import type { Viewport } from '../camera/projection.js';
 import type { Bounds } from '../topology/index.js';
@@ -5,8 +7,8 @@ import type { Renderer } from './renderer.js';
 import type { Uniforms } from './uniforms.js';
 
 export interface RenderLoopDeps {
-  /** Canvas whose backing store is resized and rendered by the loop. */
-  canvas: HTMLCanvasElement;
+  /** Configured HTML canvas presentation resized and rendered by the loop. */
+  presentation: Presentation<HTMLCanvasElement>;
   /** Packed uniform views shared with camera, renderer, and picking state. */
   uniforms: Uniforms;
   /** GPU renderer that submits one encoded network frame. */
@@ -47,7 +49,7 @@ const RESIZE_SETTLE_TICKS = 3;
  * over single-submit there.
  */
 export class RenderLoop {
-  private readonly canvas: HTMLCanvasElement;
+  private readonly presentation: Presentation<HTMLCanvasElement>;
   private readonly uniforms: Uniforms;
   private readonly renderer: Renderer;
   private readonly onZoom?: (atFitView: boolean) => void;
@@ -82,6 +84,9 @@ export class RenderLoop {
    */
   private roW = 0;
   private roH = 0;
+  private devicePixelRatio = 1;
+  private requestedW = 0;
+  private requestedH = 0;
 
   // Resize wiring. Owned by the loop because the contract, "canvas backing
   // buffer matches CSS-displayed size at paint time", is the loop's
@@ -91,11 +96,10 @@ export class RenderLoop {
   // arrangement leaves room for a consumer to wire `wake` (next-frame
   // rAF), which produces a one-frame lag visible as bilinear scaling
   // during continuous CSS-driven resizes (e.g. the workbench rail slot).
-  private resizeObserver: ResizeObserver | null = null;
-  private vvResizeHandler: (() => void) | null = null;
+  private stopObserving: (() => void) | null = null;
 
   constructor(deps: RenderLoopDeps) {
-    this.canvas = deps.canvas;
+    this.presentation = deps.presentation;
     this.uniforms = deps.uniforms;
     this.renderer = deps.renderer;
     this.onZoom = deps.onZoom;
@@ -105,36 +109,14 @@ export class RenderLoop {
     this.tick = this.tick.bind(this);
     this.tickRaf = this.tickRaf.bind(this);
 
-    const onResize = (entries?: readonly ResizeObserverEntry[]): void => {
-      const box = entries?.[entries.length - 1]?.devicePixelContentBoxSize?.[0];
-      if (box) {
-        this.roW = box.inlineSize;
-        this.roH = box.blockSize;
-      }
-      this.flushSameFrame();
-    };
-
-    if (typeof ResizeObserver !== 'undefined') {
-      const ro = new ResizeObserver(onResize);
-      try {
-        // `device-pixel-content-box` reports buffer-aligned sizes (incl. DPR
-        // changes from drag-to-other-monitor). Older browsers fall back to
-        // the default observation, which still fires on CSS box changes.
-        ro.observe(this.canvas, { box: 'device-pixel-content-box' as ResizeObserverBoxOptions });
-      } catch {
-        ro.observe(this.canvas);
-      }
-      this.resizeObserver = ro;
-    }
-
-    // visualViewport.resize fires when iOS Safari shows/hides the URL bar.
-    // Layout doesn't always change, so ResizeObserver may not catch it; we
-    // wire it explicitly to the same flush (no size entries to read there).
-    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
-    if (vv) {
-      this.vvResizeHandler = () => onResize();
-      vv.addEventListener('resize', this.vvResizeHandler);
-    }
+    let ready = false;
+    this.stopObserving = observeCanvas(this.presentation.canvas, (width, height, pixelRatio) => {
+      this.roW = width;
+      this.roH = height;
+      this.devicePixelRatio = pixelRatio;
+      if (ready) this.flushSameFrame();
+    });
+    ready = true;
   }
 
   // Injected state
@@ -219,13 +201,8 @@ export class RenderLoop {
     this.dead = true;
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.rafId = 0;
-    this.resizeObserver?.disconnect();
-    this.resizeObserver = null;
-    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
-    if (vv && this.vvResizeHandler) {
-      vv.removeEventListener('resize', this.vvResizeHandler);
-      this.vvResizeHandler = null;
-    }
+    this.stopObserving?.();
+    this.stopObserving = null;
   }
 
   // Per-frame work
@@ -250,10 +227,14 @@ export class RenderLoop {
     if (!this.camera || !this.bounds) return;
     if (!this.syncViewport()) return;
 
-    const dpr = devicePixelRatio;
     const frameVp = this.frameVp;
-    frameVp.w = this.canvas.width / dpr;
-    frameVp.h = this.canvas.height / dpr;
+    const logicalWidth = this.exactW / this.devicePixelRatio;
+    const logicalHeight = this.exactH / this.devicePixelRatio;
+    if (this.camera.fitIntent && (frameVp.w !== logicalWidth || frameVp.h !== logicalHeight)) {
+      this.needsFit = true;
+    }
+    frameVp.w = logicalWidth;
+    frameVp.h = logicalHeight;
 
     if (this.needsFit) {
       this.camera.init(this.bounds, frameVp);
@@ -269,8 +250,8 @@ export class RenderLoop {
       this.onZoom?.(fit);
     }
 
-    this.uniforms.frame.viewportX = this.canvas.width;
-    this.uniforms.frame.viewportY = this.canvas.height;
+    this.uniforms.frame.viewportX = this.presentation.canvas.width;
+    this.uniforms.frame.viewportY = this.presentation.canvas.height;
 
     // Hover resolves here after this frame's camera pose is final and before
     // uniforms upload, so the highlight it writes is part of the frame
@@ -304,11 +285,12 @@ export class RenderLoop {
    * @returns False when the element has no area and the caller should skip the frame.
    */
   private syncViewport(): boolean {
+    const { canvas } = this.presentation;
     // Prefer the ResizeObserver's device-pixel size, exact and free of a
     // forced layout read; fall back to css times dpr before the first
     // observation and on the visualViewport-only path.
-    const pw = this.roW || Math.round(this.canvas.clientWidth * devicePixelRatio);
-    const ph = this.roH || Math.round(this.canvas.clientHeight * devicePixelRatio);
+    const pw = this.roW || Math.round(canvas.clientWidth * this.devicePixelRatio);
+    const ph = this.roH || Math.round(canvas.clientHeight * this.devicePixelRatio);
     if (pw === 0 || ph === 0) return false;
 
     if (this.exactW === 0 && this.exactH === 0) {
@@ -330,9 +312,10 @@ export class RenderLoop {
     const tw = settled ? pw : Math.ceil(pw / RESIZE_QUANTUM) * RESIZE_QUANTUM;
     const th = settled ? ph : Math.ceil(ph / RESIZE_QUANTUM) * RESIZE_QUANTUM;
 
-    if (this.canvas.width !== tw || this.canvas.height !== th) {
-      this.canvas.width = tw;
-      this.canvas.height = th;
+    if (this.requestedW !== tw || this.requestedH !== th) {
+      this.requestedW = tw;
+      this.requestedH = th;
+      this.presentation.resize(tw, th);
       // Viewport changed. If the user is at fit-view by intent (initial
       // load, F key, doubleTap, fit(true); see camera.fitIntent), the
       // pose is no longer fit because the viewport changed under the
@@ -347,8 +330,13 @@ export class RenderLoop {
 
   /** Uploads frame uniforms and delegates rendering to the GPU renderer. */
   private submitFrame(): boolean {
-    this.uniforms.frame.viewportX = this.canvas.width;
-    this.uniforms.frame.viewportY = this.canvas.height;
+    const { canvas } = this.presentation;
+    this.uniforms.frame.viewportX = canvas.width;
+    this.uniforms.frame.viewportY = canvas.height;
+    this.uniforms.frame.backingScale = Math.min(
+      canvas.width / this.frameVp.w,
+      canvas.height / this.frameVp.h,
+    );
     this.uniforms.frame.time = performance.now() * 0.001;
     return this.renderer.render(this.uniforms);
   }
