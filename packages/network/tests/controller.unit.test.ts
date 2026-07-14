@@ -71,7 +71,7 @@ describe('createNetwork controller', () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
 
     await expect(createNetwork(device, canvas)).rejects.toThrow(
-      'Canvas does not support a WebGPU context',
+      'WebGPU canvas context unavailable',
     );
 
     expect(canvas.isConnected).toBe(true);
@@ -91,14 +91,13 @@ describe('createNetwork controller', () => {
     await expect(
       createControllerHarness({}, (next) => {
         deps = next;
-        const createRenderLoop = deps.createRenderLoop;
-        deps.createRenderLoop = vi.fn(
-          (renderLoopDeps: Parameters<ControllerDeps['createRenderLoop']>[0]) => {
-            renderLoopDeps.canvas.width = 800;
-            renderLoopDeps.canvas.height = 450;
-            return createRenderLoop(renderLoopDeps);
+        const RenderLoop = deps.RenderLoop;
+        deps.RenderLoop = vi.fn(
+          (renderLoopDeps: ConstructorParameters<ControllerDeps['RenderLoop']>[0]) => {
+            renderLoopDeps.presentation.resize(800, 450);
+            return new RenderLoop(renderLoopDeps);
           },
-        );
+        ) as unknown as typeof RenderLoop;
         deps.attachPointer = vi.fn(() => {
           throw failure;
         });
@@ -108,26 +107,26 @@ describe('createNetwork controller', () => {
     const surface = vi.mocked(deps.createSurface).mock.results[0]!.value as ReturnType<
       ControllerDeps['createSurface']
     >;
-    const gpu = vi.mocked(deps.createGpuContext).mock.results[0]!.value as ReturnType<
-      ControllerDeps['createGpuContext']
+    const presentation = vi.mocked(deps.createPresentation).mock.results[0]!.value as ReturnType<
+      ControllerDeps['createPresentation']
     >;
-    const renderer = vi.mocked(deps.createRenderer).mock.results[0]!.value as ReturnType<
-      ControllerDeps['createRenderer']
+    const renderer = vi.mocked(deps.Renderer).mock.results[0]!.value as InstanceType<
+      ControllerDeps['Renderer']
     >;
-    const loop = vi.mocked(deps.createRenderLoop).mock.results[0]!.value as ReturnType<
-      ControllerDeps['createRenderLoop']
+    const loop = vi.mocked(deps.RenderLoop).mock.results[0]!.value as InstanceType<
+      ControllerDeps['RenderLoop']
     >;
 
     expect(loop.destroy).toHaveBeenCalledOnce();
     expect(renderer.destroy).toHaveBeenCalledOnce();
-    expect(deps.destroyGpuContext).toHaveBeenCalledOnce();
+    expect(presentation.destroy).toHaveBeenCalledOnce();
     expect(surface.destroy).toHaveBeenCalledOnce();
     expect(surface.element.isConnected).toBe(true);
     expect(surface.element.getAttribute('width')).toBe('320');
     expect(surface.element.getAttribute('height')).toBe('180');
     expect(surface.element.style.opacity).toBe('');
     expect(surface.element.hasAttribute('aria-hidden')).toBe(false);
-    expect(gpu.device.destroy).not.toHaveBeenCalled();
+    expect(presentation.device.destroy).not.toHaveBeenCalled();
   });
 
   it('applies construction options through renderer and uniforms', async () => {
@@ -244,7 +243,7 @@ describe('createNetwork controller', () => {
     const h = await makeHarness();
 
     expect(h.deps.createSurface).toHaveBeenCalledWith(h.canvas);
-    expect(h.deps.createGpuContext).toHaveBeenCalledWith(h.device, h.canvas);
+    expect(h.deps.createPresentation).toHaveBeenCalledWith(h.device, h.canvas);
     expect(h.canvas.hasAttribute('aria-hidden')).toBe(false);
     expect(h.network).not.toHaveProperty('element');
   });
@@ -524,17 +523,16 @@ describe('createNetwork controller', () => {
 
   it('idempotently destroys owned collaborators without destroying the borrowed device', async () => {
     const h = await makeHarness();
-    h.canvas.width = 800;
-    h.canvas.height = 450;
+    h.presentation.resize(800, 450);
 
     h.network.destroy();
     h.network.destroy();
 
-    expect(h.deps.createGpuContext).toHaveBeenCalledWith(h.device, h.canvas);
+    expect(h.deps.createPresentation).toHaveBeenCalledWith(h.device, h.canvas);
     expect(h.loop.destroy).toHaveBeenCalledOnce();
     expect(h.pointerCleanup.destroy).toHaveBeenCalledOnce();
     expect(h.renderer.destroy).toHaveBeenCalledOnce();
-    expect(h.deps.destroyGpuContext).toHaveBeenCalledOnce();
+    expect(h.presentation.destroy).toHaveBeenCalledOnce();
     expect(h.surface.destroy).toHaveBeenCalledOnce();
     expect(h.canvas.isConnected).toBe(true);
     expect(h.canvas.getAttribute('width')).toBe('320');

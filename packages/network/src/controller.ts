@@ -1,5 +1,7 @@
 /// <reference types="@webgpu/types" />
 
+import { createPresentation, type Presentation } from '@latkit/gpu';
+
 import {
   encodeTopology,
   readEncodedTopologyInfo,
@@ -8,13 +10,7 @@ import {
 } from './topology/index.js';
 import { encodeSegments } from './segments/index.js';
 import { Renderer } from './webgpu/renderer.js';
-import { createGpuContext, destroyGpuContext, type GpuContext } from './webgpu/context.js';
-import {
-  createUniforms,
-  FLAG_DAYLIGHT,
-  FLAG_GRATICULE,
-  type ProjectionRegion,
-} from './webgpu/uniforms.js';
+import { createUniforms, FLAG_DAYLIGHT, FLAG_GRATICULE } from './webgpu/uniforms.js';
 import { FocusState, type FocusStyle, type RGBA } from './focus-state.js';
 import { VISUAL, planeHeightWorldScale } from './visual.js';
 import { ProjectionRig } from './camera/rig.js';
@@ -22,12 +18,12 @@ import { attachPointer } from './input/pointer.js';
 import { createSurface } from './input/surface.js';
 import type { Viewport } from './camera/projection.js';
 import { createChannels, type Channel } from './channels.js';
-import { RenderLoop, type RenderLoopDeps } from './webgpu/render-loop.js';
+import { RenderLoop } from './webgpu/render-loop.js';
 import { PROJECTIONS, type ProjectionMode } from './projections.js';
 import type { Borders } from './borders.js';
 import { createEmitter } from './emitter.js';
 import { edgeCountOf } from './topology/pack.js';
-import { Picker, type PickerDeps, type PickQuery, type PickResult } from './pick/picker.js';
+import { Picker, type PickQuery, type PickResult } from './pick/picker.js';
 
 /**
  * Initial network renderer configuration.
@@ -164,25 +160,25 @@ export interface Options {
    */
   selectedAlpha?: number;
   /**
-   * Additional hover radius around focused vertices, in device pixels.
+   * Additional hover radius around focused vertices, in CSS pixels.
    *
    * @defaultValue `6`.
    */
   vertexHoverPx?: number;
   /**
-   * Additional selection radius around focused vertices, in device pixels.
+   * Additional selection radius around focused vertices, in CSS pixels.
    *
    * @defaultValue `7`.
    */
   vertexSelectedPx?: number;
   /**
-   * Additional hover half-width around focused edges, in device pixels.
+   * Additional hover half-width around focused edges, in CSS pixels.
    *
    * @defaultValue `3.5`.
    */
   edgeHoverPx?: number;
   /**
-   * Additional selection half-width around focused edges, in device pixels.
+   * Additional selection half-width around focused edges, in CSS pixels.
    *
    * @defaultValue `5`.
    */
@@ -350,31 +346,25 @@ export interface Network {
   destroy(): void;
 }
 
-/** Internal factory seam used by controller behavior tests. */
+/** Internal collaborator seam used by controller behavior tests. */
 export interface ControllerDeps {
   createSurface: typeof createSurface;
-  createGpuContext: typeof createGpuContext;
-  destroyGpuContext: typeof destroyGpuContext;
-  createRenderer(gpu: GpuContext, msaa?: 1 | 4): Renderer;
-  createRenderLoop(deps: RenderLoopDeps): RenderLoop;
-  createRig(region: ProjectionRegion): ProjectionRig;
+  createPresentation(device: GPUDevice, canvas: HTMLCanvasElement): Presentation<HTMLCanvasElement>;
+  Renderer: typeof Renderer;
+  RenderLoop: typeof RenderLoop;
+  ProjectionRig: typeof ProjectionRig;
   attachPointer: typeof attachPointer;
-  createPicker(deps: PickerDeps): Picker;
+  Picker: typeof Picker;
 }
 
 const DEFAULT_CONTROLLER_DEPS: ControllerDeps = {
   createSurface,
-  createGpuContext,
-  destroyGpuContext,
-  /* v8 ignore next -- thin default dependency wrapper; Renderer is unit-tested directly. */
-  createRenderer: (gpu, msaa) => new Renderer(gpu, msaa),
-  /* v8 ignore next -- thin default dependency wrapper; RenderLoop is unit-tested directly. */
-  createRenderLoop: (deps) => new RenderLoop(deps),
-  /* v8 ignore next -- thin default dependency wrapper; ProjectionRig is unit-tested directly. */
-  createRig: (region) => new ProjectionRig(region),
+  createPresentation,
+  Renderer,
+  RenderLoop,
+  ProjectionRig,
   attachPointer,
-  /* v8 ignore next -- thin default dependency wrapper; Picker is unit-tested directly. */
-  createPicker: (deps) => new Picker(deps),
+  Picker,
 };
 
 /** Screen-space threshold used by shaders for vertex level-of-detail behavior. */
@@ -508,7 +498,7 @@ function forwardDeviceLoss(
   };
 }
 
-/** Builds a controller synchronously after its Promise-returning boundary. */
+/** Creates the controller after the Promise boundary has established transactional cleanup. */
 function createNetworkController(
   device: GPUDevice,
   canvas: HTMLCanvasElement,
@@ -521,25 +511,19 @@ function createNetworkController(
   const surface = deps.createSurface(canvas);
   lifecycle.add(() => surface.destroy());
   const originalCanvasState = {
-    width: canvas.getAttribute('width'),
-    height: canvas.getAttribute('height'),
     opacity: canvas.style.opacity,
     transition: canvas.style.transition,
   };
   canvas.style.opacity = '0';
   lifecycle.add(() => {
-    if (originalCanvasState.width === null) canvas.removeAttribute('width');
-    else canvas.setAttribute('width', originalCanvasState.width);
-    if (originalCanvasState.height === null) canvas.removeAttribute('height');
-    else canvas.setAttribute('height', originalCanvasState.height);
     canvas.style.opacity = originalCanvasState.opacity;
     canvas.style.transition = originalCanvasState.transition;
   });
 
-  const gpu = deps.createGpuContext(device, canvas);
-  lifecycle.add(() => deps.destroyGpuContext(gpu));
+  const presentation = deps.createPresentation(device, canvas);
+  lifecycle.add(() => presentation.destroy());
   const uniforms = createUniforms();
-  const renderer = deps.createRenderer(gpu, options.msaa);
+  const renderer = new deps.Renderer(presentation, options.msaa);
   lifecycle.add(() => renderer.destroy());
 
   /**
@@ -551,8 +535,8 @@ function createNetworkController(
   let hasPainted = false;
   let pendingFadeMs: number | null = null;
 
-  const loop = deps.createRenderLoop({
-    canvas,
+  const loop = new deps.RenderLoop({
+    presentation,
     uniforms,
     renderer,
     onZoom: (atFitView) => events.emit('zoom', atFitView),
@@ -566,7 +550,7 @@ function createNetworkController(
   /** Schedule a frame for a visual state change. */
   const repaint = (): void => loop.wake();
 
-  const rig = deps.createRig(uniforms.projection);
+  const rig = new deps.ProjectionRig(uniforms.projection);
   loop.setCamera(rig.camera);
 
   let deviceLost = false;
@@ -641,7 +625,7 @@ function createNetworkController(
    *
    * Camera motion updates uniforms and unprojection but never mutates the index.
    */
-  const picker = deps.createPicker({
+  const picker = new deps.Picker({
     uniforms,
     mode: () => rig.mode,
     unproject: (sx, sy, view) => rig.camera.screenToWorld(sx, sy, view),

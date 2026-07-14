@@ -36,10 +36,10 @@ const series: Series = {
 monitor.load(series);
 ```
 
-`createMonitor()` accepts a native Core `GPUDevice`; `@latkit/gpu` is a
-convenient way to acquire one but is not required. The monitor borrows the
-device and canvas, and owns only the canvas configuration and renderer
-resources it creates. This makes one device safe to share across monitors:
+`createMonitor()` accepts a native Core `GPUDevice`; `@latkit/gpu` acquires the
+device and supplies Monitor's shared presentation internals. The monitor borrows
+the device and canvas while owning its presentation and renderer resources. This
+makes one device safe to share across monitors:
 
 ```ts
 const overview = await createMonitor(device, overviewCanvas);

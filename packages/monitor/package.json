@@ -28,6 +28,7 @@
     "bench": "vitest bench --run --project @latkit/monitor"
   },
   "dependencies": {
+    "@latkit/gpu": "workspace:*",
     "@webgpu/types": "^0.1.71"
   },
   "devDependencies": {

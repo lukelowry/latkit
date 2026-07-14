@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
 
 import type { GpuUnavailableError, Options, requestDevice } from '../src/index.js';
 
@@ -7,6 +8,16 @@ afterEach(() => {
 });
 
 describe('gpu package entrypoint', () => {
+  it('builds and publishes only the root entrypoint', async () => {
+    const manifest = JSON.parse(
+      await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as { exports: Record<string, unknown> };
+    const build = (await import('../tsup.config.js')).default;
+
+    expect(Object.keys(manifest.exports)).toEqual(['.']);
+    expect(build).toMatchObject({ entry: ['src/index.ts'] });
+  });
+
   it('imports without browser globals and exposes only the intended values', async () => {
     vi.stubGlobal('navigator', undefined);
     vi.stubGlobal('window', undefined);
@@ -15,7 +26,12 @@ describe('gpu package entrypoint', () => {
 
     const entrypoint = await import('../src/index.js');
 
-    expect(Object.keys(entrypoint).sort()).toEqual(['GpuUnavailableError', 'requestDevice']);
+    expect(Object.keys(entrypoint).sort()).toEqual([
+      'GpuUnavailableError',
+      'createPresentation',
+      'observeCanvas',
+      'requestDevice',
+    ]);
     await expect(entrypoint.requestDevice()).rejects.toBeInstanceOf(entrypoint.GpuUnavailableError);
   });
 

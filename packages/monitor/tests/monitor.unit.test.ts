@@ -117,6 +117,21 @@ describe('monitor', () => {
     expect(canvas.style.cssText).toBe(style);
   });
 
+  it('configures presentation textures for rendering and history copies', async () => {
+    const monitor = await mount();
+
+    expect(stub.log.contextConfigurations).toEqual([
+      {
+        device: stub.device,
+        format: 'bgra8unorm',
+        alphaMode: 'premultiplied',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
+      },
+    ]);
+
+    monitor.destroy();
+  });
+
   it('observes the canvas and uses exact device-pixel content-box sizes', async () => {
     const canvas = makeCanvas(200, 100);
     const monitor = await createMonitor(stub.device, canvas);
@@ -129,6 +144,39 @@ describe('monitor', () => {
     await stub.frame();
     expect(canvas.width).toBe(401);
     expect(canvas.height).toBe(203);
+    const history = stub.log.textures.filter((texture) => texture.label === 'monitor-history');
+    expect(history).toHaveLength(2);
+    expect(history[0]).toMatchObject({ width: 200, height: 100, destroyed: true });
+    expect(history[1]).toMatchObject({ width: 401, height: 203, destroyed: false });
+
+    monitor.destroy();
+    expect(history[1]!.destroyed).toBe(true);
+  });
+
+  it('allocates renderer textures from the device-limited backing size', async () => {
+    stub.setTextureLimit(256);
+    const canvas = makeCanvas(800, 400);
+    const monitor = await createMonitor(stub.device, canvas);
+
+    expect(canvas.width).toBe(256);
+    expect(canvas.height).toBe(128);
+    let history = stub.log.textures.filter((texture) => texture.label === 'monitor-history');
+    expect(history[0]).toMatchObject({ width: 256, height: 128 });
+    monitor.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
+    await settle();
+    let uniform = stub.log.writes.filter((write) => write.label === 'monitor-uniform').pop()!;
+    let values = new Float32Array(uniform.copy!.buffer, uniform.copy!.byteOffset, 6);
+    expect(Array.from(values.slice(0, 3))).toEqual([256, 128, expect.closeTo(0.48, 5)]);
+
+    stub.resize(canvas, [600, 600]);
+    await stub.frame();
+    history = stub.log.textures.filter((texture) => texture.label === 'monitor-history');
+    expect(canvas.width).toBe(256);
+    expect(canvas.height).toBe(256);
+    expect(history[1]).toMatchObject({ width: 256, height: 256 });
+    uniform = stub.log.writes.filter((write) => write.label === 'monitor-uniform').pop()!;
+    values = new Float32Array(uniform.copy!.buffer, uniform.copy!.byteOffset, 6);
+    expect(Array.from(values.slice(0, 3))).toEqual([256, 256, expect.closeTo(0.64, 5)]);
 
     monitor.destroy();
   });

@@ -30,6 +30,13 @@ export interface BufferRecord {
   destroyed: boolean;
 }
 
+export interface TextureRecord {
+  readonly label: string;
+  readonly width: number;
+  readonly height: number;
+  destroyed: boolean;
+}
+
 export interface ResizeObservation {
   readonly target: Element;
   readonly box: ResizeObserverBoxOptions | undefined;
@@ -39,12 +46,14 @@ export interface GpuLog {
   readonly draws: DrawRecord[];
   readonly writes: WriteRecord[];
   readonly buffers: BufferRecord[];
+  readonly textures: TextureRecord[];
   readonly clears: string[];
   readonly lutWrites: Uint8Array[];
   copies: number;
   submits: number;
   deviceDestroys: number;
   contextConfigures: number;
+  readonly contextConfigurations: GPUCanvasConfiguration[];
   contextUnconfigures: number;
   formatQueries: number;
   resizeDisconnects: number;
@@ -55,6 +64,7 @@ export interface GpuStub {
   /** One native device shared by every monitor created in a test. */
   readonly device: GPUDevice;
   readonly log: GpuLog;
+  setTextureLimit(limit: number): void;
   setConfigureError(error: Error): void;
   setContextAvailable(available: boolean): void;
   setDevicePixelObservationAvailable(available: boolean): void;
@@ -71,12 +81,14 @@ export function installGpuStub(): GpuStub {
     draws: [],
     writes: [],
     buffers: [],
+    textures: [],
     clears: [],
     lutWrites: [],
     copies: 0,
     submits: 0,
     deviceDestroys: 0,
     contextConfigures: 0,
+    contextConfigurations: [],
     contextUnconfigures: 0,
     formatQueries: 0,
     resizeDisconnects: 0,
@@ -104,14 +116,35 @@ export function installGpuStub(): GpuStub {
     };
   };
 
-  const makeTexture = (descriptor: { label?: string }) => ({
-    label: descriptor.label ?? '',
-    createView: () => ({ __target: descriptor.label ?? '' }),
-    destroy: () => {},
-  });
+  const makeTexture = (descriptor: {
+    label?: string;
+    size: readonly number[] | { width: number; height?: number };
+  }) => {
+    const width = 'width' in descriptor.size ? descriptor.size.width : descriptor.size[0]!;
+    const height =
+      'width' in descriptor.size ? (descriptor.size.height ?? 1) : (descriptor.size[1] ?? 1);
+    const record: TextureRecord = {
+      label: descriptor.label ?? '',
+      width,
+      height,
+      destroyed: false,
+    };
+    log.textures.push(record);
+    return {
+      label: record.label,
+      createView: () => ({ __target: record.label }),
+      destroy: () => {
+        record.destroyed = true;
+      },
+    };
+  };
 
   const device = {
-    limits: { maxStorageBufferBindingSize: 128 * 1024 * 1024, maxBufferSize: 256 * 1024 * 1024 },
+    limits: {
+      maxTextureDimension2D: 8192,
+      maxStorageBufferBindingSize: 128 * 1024 * 1024,
+      maxBufferSize: 256 * 1024 * 1024,
+    },
     lost,
     destroy: () => {
       log.deviceDestroys++;
@@ -191,8 +224,9 @@ export function installGpuStub(): GpuStub {
   let configureError: Error | undefined;
 
   const context = () => ({
-    configure: () => {
+    configure: (configuration: GPUCanvasConfiguration) => {
       log.contextConfigures++;
+      log.contextConfigurations.push(configuration);
       if (configureError !== undefined) throw configureError;
     },
     unconfigure: () => {
@@ -310,6 +344,9 @@ export function installGpuStub(): GpuStub {
   return {
     device: device as unknown as GPUDevice,
     log,
+    setTextureLimit: (limit) => {
+      device.limits.maxTextureDimension2D = limit;
+    },
     setConfigureError: (error) => {
       configureError = error;
     },

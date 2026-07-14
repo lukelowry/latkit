@@ -8,7 +8,7 @@ export interface ProjectionRegion {
   fovScale: number;
   /** Writes the normalized light direction for daylight shading. */
   setLightDir(x: number, y: number, z: number): void;
-  /** Writes tilt look-at point and bearing basis into words 116..119. */
+  /** Writes tilt look-at point and bearing basis into words 92..95. */
   setTiltParams(lookX: number, lookY: number, sinB: number, cosB: number): void;
   /** Minimum overlay brightness on the night side. */
   nightFloor: number;
@@ -36,6 +36,8 @@ interface FrameRegion {
   viewportY: number;
   /** Monotonic frame time used by time-varying shaders. */
   time: number;
+  /** Backing pixels per CSS pixel after device-limit fitting. */
+  backingScale: number;
 }
 
 /** Geometry-scale uniforms derived from topology and channel state. */
@@ -155,7 +157,7 @@ export interface Uniforms {
 }
 
 /** Total byte length of the packed uniform buffer shared with WGSL. */
-export const UNIFORM_BUFFER_BYTES = 480;
+export const UNIFORM_BUFFER_BYTES = 384;
 
 /** Projection flag bit for daylight shading; must match uniforms.wgsl. */
 export const FLAG_DAYLIGHT = 1;
@@ -200,6 +202,8 @@ export const W_VIEWPORT_X = 28;
 export const W_VIEWPORT_Y = 29;
 /** Word offset for frame time. */
 const W_TIME = 30;
+/** Word offset for backing pixels per CSS pixel. */
+const W_BACKING_SCALE = 88;
 /** Word offset for base vertex radius. */
 export const W_VERTEX_SIZE = 31;
 /** Word offset for vertex level-of-detail threshold. */
@@ -285,19 +289,19 @@ export const W_SELECTED_ENDPOINT_B = 71;
 /** Word offset for the first component of base vertex color. */
 const W_BASE_VERTEX_COLOR_R = 72;
 /** Word offset for overlay night-side floor. */
-const W_NIGHT_FLOOR = 112;
+const W_NIGHT_FLOOR = 89;
 /** Word offset for daylight terminator width. */
-const W_TERMINATOR_WIDTH = 113;
+const W_TERMINATOR_WIDTH = 90;
 /** Word offset for surface night-side floor. */
-const W_SURFACE_NIGHT_FLOOR = 114;
+const W_SURFACE_NIGHT_FLOOR = 91;
 /** Word offset for tilt look-at x. */
-const W_TILT_LOOK_X = 116;
+const W_TILT_LOOK_X = 92;
 /** Word offset for tilt look-at y. */
-const W_TILT_LOOK_Y = 117;
+const W_TILT_LOOK_Y = 93;
 /** Word offset for tilt bearing sine. */
-const W_TILT_SIN_BEARING = 118;
+const W_TILT_SIN_BEARING = 94;
 /** Word offset for tilt bearing cosine. */
-const W_TILT_COS_BEARING = 119;
+const W_TILT_COS_BEARING = 95;
 
 /** Tests whether the graticule projection flag is enabled in a raw uniform view. */
 export function hasGraticuleFlag(u: Uint32Array): boolean {
@@ -315,6 +319,7 @@ export function createUniforms(): Uniforms {
   const f = new Float32Array(buf);
   const i = new Int32Array(buf);
   const u = new Uint32Array(buf);
+  f[W_BACKING_SCALE] = 1;
 
   const projection: ProjectionRegion = {
     setVP(m: Float32Array) {
@@ -410,6 +415,12 @@ export function createUniforms(): Uniforms {
     },
     set time(v) {
       f[W_TIME] = v;
+    },
+    get backingScale() {
+      return f[W_BACKING_SCALE];
+    },
+    set backingScale(v) {
+      f[W_BACKING_SCALE] = v;
     },
   };
 

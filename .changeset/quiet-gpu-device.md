@@ -1,5 +1,5 @@
 ---
-'@latkit/gpu': patch
+'@latkit/gpu': minor
 ---
 
-Add native Core WebGPU device acquisition with explicit caller ownership.
+Add native Core WebGPU device acquisition and shared canvas presentation primitives with explicit caller ownership.

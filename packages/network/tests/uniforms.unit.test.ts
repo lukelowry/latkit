@@ -45,7 +45,7 @@ describe('createUniforms', () => {
     expect(view[15]).toBe(4);
   });
 
-  it('frame region writes to bytes 112-123', () => {
+  it('frame region writes viewport, time, and presentation scale to their packed slots', () => {
     const u = createUniforms();
     const view = new Float32Array(u.raw);
     u.frame.viewportX = 1920;
@@ -54,6 +54,8 @@ describe('createUniforms', () => {
     expect(view[29]).toBe(1080);
     u.frame.time = 1.5;
     expect(view[30]).toBe(1.5);
+    u.frame.backingScale = 2;
+    expect(view[88]).toBe(2);
   });
 
   it('geometry region writes to bytes 124-143', () => {

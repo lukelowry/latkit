@@ -35,8 +35,9 @@ network.fadeIn();
 ```
 
 `createNetwork()` accepts a native Core `GPUDevice` and a caller-owned
-`HTMLCanvasElement`; `@latkit/gpu` is a convenient way to acquire the device
-but is not required. The caller controls the canvas's placement and CSS size.
+`HTMLCanvasElement`. `@latkit/gpu` acquires the device and supplies Network's
+shared presentation internals. The caller controls the canvas's placement and
+CSS size.
 
 Network borrows both. Destroy the renderer before removing the canvas, and
 destroy the device only after every renderer using it has been destroyed:

@@ -40,9 +40,10 @@ fn grid_enabled() -> bool {
 fn line_alpha(dist: f32, grad: f32, width_px: f32, spacing: f32, alpha: f32) -> f32 {
   let g = max(grad, 1e-6);
   let px_dist = dist / g;
-  let core = 1.0 - smoothstep(width_px, width_px + 1.0, px_dist);
+  let width = css_px(width_px);
+  let core = 1.0 - smoothstep(width, width + 1.0, px_dist);
   let px_between_lines = spacing / g;
-  let resolve = smoothstep(2.0, 5.0, px_between_lines);
+  let resolve = smoothstep(css_px(2.0), css_px(5.0), px_between_lines);
   return core * resolve * alpha;
 }
 
@@ -62,7 +63,7 @@ fn cartesian_grid(coord: vec2f) -> f32 {
   let gy = length(vec2f(dpdx(coord.y), dpdy(coord.y)));
   let g = max(max(gx, gy), 1e-12);
 
-  let major = decade_ceil(g * GRID_CART_MIN_PX);
+  let major = decade_ceil(g * css_px(GRID_CART_MIN_PX));
   let minor = major * 0.1;
 
   let major_alpha = max(

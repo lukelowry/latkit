@@ -1,13 +1,15 @@
 /// <reference types="@webgpu/types" />
+import type { Presentation } from '@latkit/gpu';
+
 import segmentWgsl from './gpu/segment.wgsl?raw';
 
 /**
  * GPU painter for monitor history and focus passes.
  *
- * LanePainter borrows a WebGPU device and owns the resources and canvas
- * configuration it creates. The controller chooses which sample windows to
- * upload and which segment ranges to draw; this class turns those decisions
- * into ordered buffer writes and render passes.
+ * LanePainter borrows a WebGPU presentation and owns only its renderer
+ * resources. The controller chooses which sample windows to upload and which
+ * segment ranges to draw; this class turns those decisions into ordered buffer
+ * writes and render passes.
  */
 
 /** Upload granularity for one slab window, capped by maxStorageBufferBindingSize. */
@@ -32,19 +34,6 @@ export interface UniformValues {
 
 const UNIFORM_BYTES = 24; // size: vec2f, lineWidth: f32, elementCount: u32, rangeMin: f32, rangeScale: f32
 
-interface CanvasState {
-  readonly canvas: HTMLCanvasElement;
-  readonly width: string | null;
-  readonly height: string | null;
-}
-
-function restoreCanvasSize(state: CanvasState): void {
-  if (state.width === null) state.canvas.removeAttribute('width');
-  else state.canvas.setAttribute('width', state.width);
-  if (state.height === null) state.canvas.removeAttribute('height');
-  else state.canvas.setAttribute('height', state.height);
-}
-
 export class LanePainter {
   readonly device: GPUDevice;
   widthPx: number;
@@ -54,7 +43,6 @@ export class LanePainter {
 
   readonly #context: GPUCanvasContext;
   readonly #format: GPUTextureFormat;
-  readonly #canvasState: CanvasState | null;
   #history: GPUTexture;
   #historyView: GPUTextureView;
   readonly #historyPipeline: GPURenderPipeline;
@@ -73,65 +61,12 @@ export class LanePainter {
   #focusGroup: GPUBindGroup | null = null;
   #destroyed = false;
 
-  static create(device: GPUDevice, canvas: HTMLCanvasElement): LanePainter {
-    const gpu = navigator.gpu;
-    if (!gpu) throw new Error('WebGPU is not available');
-
-    const context = canvas.getContext('webgpu') as GPUCanvasContext | null;
-    if (!context) throw new Error('WebGPU canvas context unavailable');
-
-    const format = gpu.getPreferredCanvasFormat();
-    const canvasState: CanvasState = {
-      canvas,
-      width: canvas.getAttribute('width'),
-      height: canvas.getAttribute('height'),
-    };
-    try {
-      context.configure({
-        device,
-        format,
-        alphaMode: 'premultiplied',
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
-      });
-      const dpr = window.devicePixelRatio || 1;
-      const width = Math.max(1, Math.round(canvas.clientWidth * dpr));
-      const height = Math.max(1, Math.round(canvas.clientHeight * dpr));
-      canvas.width = width;
-      canvas.height = height;
-
-      return new LanePainter(device, context, format, width, height, canvasState);
-    } catch (error) {
-      try {
-        context.unconfigure();
-      } catch {
-        // Preserve the resource initialization error.
-      }
-      try {
-        restoreCanvasSize(canvasState);
-      } catch {
-        // Preserve the resource initialization error.
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Testable constructor for callers that already own a WebGPU device.
-   *
-   * Production code should usually call {@link LanePainter.create}.
-   */
-  constructor(
-    device: GPUDevice,
-    context: GPUCanvasContext,
-    format: GPUTextureFormat,
-    widthPx: number,
-    heightPx: number,
-    canvasState: CanvasState | null = null,
-  ) {
+  /** Creates renderer resources against a borrowed presentation. */
+  constructor(presentation: Presentation, widthPx: number, heightPx: number) {
+    const { device, context, format } = presentation;
     this.device = device;
     this.#context = context;
     this.#format = format;
-    this.#canvasState = canvasState;
     this.widthPx = widthPx;
     this.heightPx = heightPx;
     this.windowValueCapacity = Math.floor(
@@ -383,19 +318,11 @@ export class LanePainter {
   destroy(): void {
     if (this.#destroyed) return;
     this.#destroyed = true;
-    try {
-      this.releaseSlabs();
-      this.#history.destroy();
-      this.#lut.destroy();
-      this.#historyUniform.destroy();
-      this.#focusUniform.destroy();
-    } finally {
-      try {
-        this.#context.unconfigure();
-      } finally {
-        if (this.#canvasState) restoreCanvasSize(this.#canvasState);
-      }
-    }
+    this.releaseSlabs();
+    this.#history.destroy();
+    this.#lut.destroy();
+    this.#historyUniform.destroy();
+    this.#focusUniform.destroy();
   }
 
   #makeHistory(width: number, height: number): GPUTexture {

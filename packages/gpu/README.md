@@ -1,10 +1,11 @@
 # @latkit/gpu
 
-Native Core WebGPU device acquisition for Latkit.
+Core WebGPU device and canvas presentation primitives for Latkit.
 
 `@latkit/gpu` handles the environmental part of requesting a device and then
-returns the platform `GPUDevice` directly. The caller owns that device. Canvas
-configuration and renderer resources remain with the rendering packages.
+returns the platform `GPUDevice` directly. It also provides the shared
+presentation implementation used by Latkit renderers. All exports come from the
+single `@latkit/gpu` entrypoint.
 
 ## Install
 
@@ -65,3 +66,28 @@ try {
 Only API absence, a null adapter, and device-request rejection use
 `GpuUnavailableError`. Other platform and programming failures retain their
 original identity.
+
+## Configure presentation
+
+Renderer implementations can configure either an `HTMLCanvasElement` or an
+`OffscreenCanvas` through the same primitive:
+
+```ts
+import { createPresentation } from '@latkit/gpu';
+
+const presentation = createPresentation(device, canvas);
+presentation.resize(800, 450);
+
+try {
+  const texture = presentation.context.getCurrentTexture();
+  // Encode rendering commands for texture.
+} finally {
+  presentation.destroy();
+}
+```
+
+`Presentation` owns its context configuration and backing-size changes. It
+preserves aspect ratio when fitting oversized requests to the device limit,
+restores the original canvas size when destroyed, and never destroys its
+borrowed device. `observeCanvas()` provides device-pixel sizes and pixel ratio
+for an HTML canvas while leaving scheduling and resize policy to the renderer.

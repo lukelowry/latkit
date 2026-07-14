@@ -23,7 +23,7 @@ deliberate exclusions, and the validation procedure.
 | ------------------- | --------------------------------------------------- |
 | `@latkit/network`   | Interactive WebGPU network topology views           |
 | `@latkit/monitor`   | WebGPU time-series and signal monitor views         |
-| `@latkit/gpu`       | Native Core WebGPU device acquisition               |
+| `@latkit/gpu`       | Core WebGPU device and presentation primitives      |
 | `@latkit/colormaps` | Named colormaps, labels, and CSS gradients          |
 | `@latkit/model`     | Shared model primitives as the package family grows |
 

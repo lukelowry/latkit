@@ -1,4 +1,6 @@
 /// <reference types="@webgpu/types" />
+import { createPresentation, observeCanvas } from '@latkit/gpu';
+
 import { LanePainter, SEGMENT_BUDGET, COLORMAP_LUT_SIZE, framesPerWindow } from './painter.js';
 
 /**
@@ -224,37 +226,31 @@ interface PaintJob {
  * The returned controller never removes `canvas` or destroys `device`.
  * Destroy the monitor before either borrowed resource is released.
  */
-export function createMonitor(
+export async function createMonitor( // eslint-disable-line @typescript-eslint/require-await -- Preserve the public Promise contract.
   device: GPUDevice,
   canvas: HTMLCanvasElement,
   options: Options = {},
 ): Promise<Monitor> {
-  return Promise.resolve().then(() => createMonitorController(device, canvas, options));
-}
-
-function createMonitorController(
-  device: GPUDevice,
-  canvas: HTMLCanvasElement,
-  options: Options,
-): Monitor {
   assertDeviceLimits(device);
   const lifecycle = createControllerLifecycle();
   try {
-    return buildMonitorController(device, canvas, options, lifecycle);
+    return createMonitorController(device, canvas, options, lifecycle);
   } catch (error) {
     lifecycle.destroy();
     throw error;
   }
 }
 
-function buildMonitorController(
+function createMonitorController(
   device: GPUDevice,
   canvas: HTMLCanvasElement,
   options: Options,
   lifecycle: ControllerLifecycle,
 ): Monitor {
-  const painter = LanePainter.create(device, canvas);
-  lifecycle.add(() => painter.destroy());
+  const presentation = createPresentation(device, canvas, {
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
+  });
+  lifecycle.add(() => presentation.destroy());
 
   const handlers = new Map<keyof Events, Set<(payload: never) => void>>();
   lifecycle.add(() => handlers.clear());
@@ -278,9 +274,7 @@ function buildMonitorController(
   let dead = false;
   let destroyed = false;
   let paused = false;
-  let pendingResize = false;
-  let observedWidthPx = 0;
-  let observedHeightPx = 0;
+  let pendingSize: { width: number; height: number; devicePixelRatio: number } | null = null;
   let rafId: number | null = null;
   let lostForwarded = false;
 
@@ -288,30 +282,41 @@ function buildMonitorController(
   let cursorDirty = false;
   let lastReading: Reading | null = null;
 
-  const dpr = (): number => window.devicePixelRatio || 1;
+  let backingScale = 1;
+
+  const fittedBackingScale = (width: number, height: number, ratio: number): number =>
+    ratio * Math.min(canvas.width / width, canvas.height / height);
 
   const schedule = (): void => {
     if (dead || paused || rafId !== null) return;
     rafId = requestAnimationFrame(tick);
   };
 
-  const resizeObserver = new ResizeObserver((entries) => {
-    const box = entries[entries.length - 1]?.devicePixelContentBoxSize?.[0];
-    if (box) {
-      observedWidthPx = Math.max(1, Math.round(box.inlineSize));
-      observedHeightPx = Math.max(1, Math.round(box.blockSize));
-    }
-    pendingResize = true;
-    schedule();
+  let ready = false;
+  let initialWidth = 1;
+  let initialHeight = 1;
+  let initialDevicePixelRatio = 1;
+  const stopObserving = observeCanvas(canvas, (width, height, ratio) => {
+    const size = {
+      width: Math.max(1, width),
+      height: Math.max(1, height),
+      devicePixelRatio: ratio,
+    };
+    initialWidth = size.width;
+    initialHeight = size.height;
+    initialDevicePixelRatio = size.devicePixelRatio;
+    pendingSize = size;
+    if (ready) schedule();
   });
-  lifecycle.add(() => resizeObserver.disconnect());
-  try {
-    resizeObserver.observe(canvas, {
-      box: 'device-pixel-content-box' as ResizeObserverBoxOptions,
-    });
-  } catch {
-    resizeObserver.observe(canvas);
-  }
+  lifecycle.add(stopObserving);
+
+  presentation.resize(initialWidth, initialHeight);
+  backingScale = fittedBackingScale(initialWidth, initialHeight, initialDevicePixelRatio);
+  const painter = new LanePainter(presentation, canvas.width, canvas.height);
+  lifecycle.add(() => painter.destroy());
+  pendingSize = null;
+  ready = true;
+
   lifecycle.add(() => {
     dead = true;
     if (rafId !== null) cancelAnimationFrame(rafId);
@@ -359,12 +364,12 @@ function buildMonitorController(
     };
     painter.writeUniform('history', {
       ...base,
-      lineWidthPx: lineWidthPx * dpr(),
+      lineWidthPx: lineWidthPx * backingScale,
       elementCount: bound?.series.elementCount ?? 1,
     });
     painter.writeUniform('focus', {
       ...base,
-      lineWidthPx: lineWidthPx * dpr() * 2.5,
+      lineWidthPx: lineWidthPx * backingScale * 2.5,
       elementCount: 1,
     });
   }
@@ -486,14 +491,15 @@ function buildMonitorController(
   function tick(): void {
     rafId = null;
     if (dead || paused) return;
-    if (pendingResize) {
-      pendingResize = false;
-      const width = observedWidthPx || Math.max(1, Math.round(canvas.clientWidth * dpr()));
-      const height = observedHeightPx || Math.max(1, Math.round(canvas.clientHeight * dpr()));
-      if (width !== painter.widthPx || height !== painter.heightPx) {
-        canvas.width = width;
-        canvas.height = height;
-        painter.resize(width, height);
+    if (pendingSize) {
+      const { width, height, devicePixelRatio } = pendingSize;
+      pendingSize = null;
+      const resized = presentation.resize(width, height);
+      const nextBackingScale = fittedBackingScale(width, height, devicePixelRatio);
+      const scaleChanged = nextBackingScale !== backingScale;
+      backingScale = nextBackingScale;
+      if (resized) painter.resize(canvas.width, canvas.height);
+      if (resized || scaleChanged) {
         if (bound) {
           writeUniforms();
           scheduleRepaint();

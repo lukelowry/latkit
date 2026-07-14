@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 
-import type { GpuContext } from './context.js';
+import type { Presentation } from '@latkit/gpu';
 import {
   UNIFORM_BUFFER_BYTES,
   hasGraticuleFlag,
@@ -87,7 +87,7 @@ interface EdgeFocusRange {
  * before replacing the current scene.
  */
 export class Renderer {
-  private readonly gpu: GpuContext;
+  private readonly presentation: Presentation;
 
   private readonly topologyBindGroupLayout: GPUBindGroupLayout;
   private readonly segmentsBindGroupLayout: GPUBindGroupLayout;
@@ -138,15 +138,17 @@ export class Renderer {
   };
 
   /** Allocates shared layouts, static geometry, uniforms, and the initial projection pipeline build. */
-  constructor(gpu: GpuContext, msaaSampleCount?: 1 | 4) {
-    this.gpu = gpu;
-    const device = gpu.device;
+  constructor(presentation: Presentation, msaaSampleCount?: 1 | 4) {
+    this.presentation = presentation;
+    const { device } = presentation;
     // 4x attachments at 4K-class resolutions cost ~265MB; above ~7M device
     // pixels (native 4K, or DPR-2 4K) the analytic shader AA carries 1x.
-    const devicePx =
-      typeof screen !== 'undefined' && typeof devicePixelRatio !== 'undefined'
-        ? screen.width * screen.height * devicePixelRatio ** 2
-        : 0;
+    const { canvas } = presentation;
+    const view = 'ownerDocument' in canvas ? canvas.ownerDocument?.defaultView : null;
+    const display = view?.screen ?? (typeof screen === 'undefined' ? undefined : screen);
+    const pixelRatio =
+      view?.devicePixelRatio ?? (typeof devicePixelRatio === 'undefined' ? 1 : devicePixelRatio);
+    const devicePx = display ? display.width * display.height * pixelRatio ** 2 : 0;
     this.sampleCount = msaaSampleCount ?? (devicePx > 7_000_000 ? 1 : 4);
 
     this.unitQuad = device.createBuffer({
@@ -285,8 +287,8 @@ export class Renderer {
   /** Builds all GPU pipelines required by a projection definition. */
   private async buildProjectionPipelines(def: ProjectionDef): Promise<ProjectionPipelineSet> {
     return buildProjectionPipelineSet(def, {
-      device: this.gpu.device,
-      format: this.gpu.format,
+      device: this.presentation.device,
+      format: this.presentation.format,
       sampleCount: this.sampleCount,
       overlayPipelineLayout: this.overlayPipelineLayout,
       edgePipelineLayout: this.edgePipelineLayout,
@@ -311,7 +313,7 @@ export class Renderer {
 
   /** Replaces the optional geographic border buffers. */
   setBorders(borders: Borders | null): void {
-    const next = borders ? BorderBuffers.create(this.gpu.device, borders) : null;
+    const next = borders ? BorderBuffers.create(this.presentation.device, borders) : null;
     const previous = this.borders;
     this.borders = next;
     previous?.destroy();
@@ -349,18 +351,18 @@ export class Renderer {
       readonly channelsBindGroup: GPUBindGroup;
     };
     try {
-      topologyBuffer = this.gpu.device.createBuffer({
+      topologyBuffer = this.presentation.device.createBuffer({
         label: 'network-topology',
         size: topologyBytes,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
-      this.gpu.device.queue.writeBuffer(topologyBuffer, 0, encoded);
-      const topologyBindGroup = this.gpu.device.createBindGroup({
+      this.presentation.device.queue.writeBuffer(topologyBuffer, 0, encoded);
+      const topologyBindGroup = this.presentation.device.createBindGroup({
         label: 'network-topology-bind-group',
         layout: this.topologyBindGroupLayout,
         entries: [{ binding: 0, resource: { buffer: topologyBuffer } }],
       });
-      segmentBuffer = this.gpu.device.createBuffer({
+      segmentBuffer = this.presentation.device.createBuffer({
         label: 'network-segments',
         size: segmentBytes,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
@@ -368,13 +370,13 @@ export class Renderer {
       // Bind the encoded segment blob directly, mirroring topology. The shader
       // uses the record offset in the header; edgeStarts also stays available
       // to CPU focus range code through readEdgeSegmentStarts().
-      this.gpu.device.queue.writeBuffer(segmentBuffer, 0, encodedSegments);
-      const segmentsBindGroup = this.gpu.device.createBindGroup({
+      this.presentation.device.queue.writeBuffer(segmentBuffer, 0, encodedSegments);
+      const segmentsBindGroup = this.presentation.device.createBindGroup({
         label: 'network-segments-bind-group',
         layout: this.segmentsBindGroupLayout,
         entries: [{ binding: 0, resource: { buffer: segmentBuffer } }],
       });
-      channelBuf = this.gpu.device.createBuffer({
+      channelBuf = this.presentation.device.createBuffer({
         label: 'channels',
         size: 4,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
@@ -416,7 +418,7 @@ export class Renderer {
 
   /** Throws when a storage allocation would exceed the current device limits. */
   private assertStorageBufferFits(label: string, bytes: number): void {
-    const limits = this.gpu.device.limits;
+    const limits = this.presentation.device.limits;
     const maxStorageBytes = limits?.maxStorageBufferBindingSize ?? Number.POSITIVE_INFINITY;
     if (bytes > maxStorageBytes) {
       throw new Error(
@@ -440,7 +442,7 @@ export class Renderer {
     if (!this.bound) throw new Error('network topology must be loaded before setting channels');
     const { slot, words } = packBound(bound, vertexCount, edgeCount);
     const bytes = Math.max(4, words * 4);
-    const limits = this.gpu.device.limits;
+    const limits = this.presentation.device.limits;
     const maxStorageBytes = limits?.maxStorageBufferBindingSize ?? Number.POSITIVE_INFINITY;
     const maxBufferBytes = limits?.maxBufferSize ?? Number.POSITIVE_INFINITY;
     if (bytes > maxStorageBytes || bytes > maxBufferBytes) {
@@ -448,7 +450,7 @@ export class Renderer {
     }
 
     this.channelBuf?.destroy();
-    this.channelBuf = this.gpu.device.createBuffer({
+    this.channelBuf = this.presentation.device.createBuffer({
       label: 'channels',
       size: bytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
@@ -463,7 +465,7 @@ export class Renderer {
     const slot = this.slots.get(channel);
     if (!slot || !this.channelBuf)
       throw new Error(`network channel ${channel} has no storage slot`);
-    this.gpu.device.queue.writeBuffer(
+    this.presentation.device.queue.writeBuffer(
       this.channelBuf,
       slot.offset * Float32Array.BYTES_PER_ELEMENT,
       values.buffer,
@@ -474,7 +476,7 @@ export class Renderer {
 
   /** Uploads a baked colormap with `COLORMAP_LUT_SIZE * 4` RGBA bytes. */
   writeColormap(lut: Uint8Array): void {
-    this.gpu.device.queue.writeTexture(
+    this.presentation.device.queue.writeTexture(
       { texture: this.cmLut },
       lut as Uint8Array<ArrayBuffer>,
       { bytesPerRow: COLORMAP_LUT_SIZE * 4 },
@@ -500,14 +502,14 @@ export class Renderer {
       !this.channelsBindGroup
     )
       return false;
-    const { device, context, canvas } = this.gpu;
+    const { device, context, canvas } = this.presentation;
     const polesRendered = this.computePolesRendered(uniforms);
 
     device.queue.writeBuffer(this.uniforms, 0, uniforms.raw);
 
     const pw = canvas.width,
       ph = canvas.height;
-    this.frameResources.ensureSize(device, this.gpu.format, this.sampleCount, pw, ph);
+    this.frameResources.ensureSize(device, this.presentation.format, this.sampleCount, pw, ph);
     const visual = pipelines.visual;
 
     const swapView = context.getCurrentTexture().createView();
@@ -631,7 +633,7 @@ export class Renderer {
 
   /** Creates the bind group containing uniforms, channel storage, and colormap resources. */
   private createChannelsBindGroup(channelBuf: GPUBuffer): GPUBindGroup {
-    return this.gpu.device.createBindGroup({
+    return this.presentation.device.createBindGroup({
       label: 'channels-bind-group',
       layout: this.channelsBindGroupLayout,
       entries: [

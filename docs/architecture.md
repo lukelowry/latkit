@@ -4,7 +4,7 @@ Latkit is organized as a small monorepo. Each published package owns a single pu
 
 ## Runtime shape
 
-Applications create, size, and own their canvases. Rendering packages borrow a canvas and native Core `GPUDevice`, configure the WebGPU presentation context, attach interaction and resize handling, and own only renderer-specific resources. Applications call `destroy()` before releasing either borrowed object.
+Applications create, size, and own their canvases. Rendering packages borrow a canvas and native Core `GPUDevice`, own a shared `@latkit/gpu` presentation, attach interaction and resize handling, and own renderer-specific resources. Applications call `destroy()` before releasing either borrowed object.
 
 Both renderers use WebGPU resources internally. Public APIs stay imperative on purpose: data often arrives from simulation, telemetry, or graph pipelines where direct controller methods are easier to integrate than a framework-specific component model.
 
@@ -17,7 +17,7 @@ Both renderers use WebGPU resources internally. Public APIs stay imperative on p
 : Owns color catalogs and formatting helpers. Rendering packages can consume this package without duplicating palette data.
 
 `@latkit/gpu`
-: Centralizes Core WebGPU device requests and typed availability failures. It returns a native Core `GPUDevice`; applications own its lifetime and their canvases, while rendering packages own canvas configuration and renderer resources.
+: Centralizes Core WebGPU device requests, typed availability failures, and canvas presentation mechanics. It returns native platform objects and never takes device or canvas ownership.
 
 `@latkit/monitor`
 : Owns monitor-specific state, WebGPU resources, and rendering behavior.

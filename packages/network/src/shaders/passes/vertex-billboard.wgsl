@@ -44,7 +44,7 @@ fn vs_vertex(quad: vec2f, inst: u32, role: u32) -> VOut {
   let clip = project_world(world);
 
   let r = screen_radius(clip) * vertex_size_scale(inst);
-  if (r < u.vertex_lod) {
+  if (r < css_px(u.vertex_lod)) {
     return out;
   }
 

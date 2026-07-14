@@ -119,6 +119,9 @@ importers:
 
   packages/monitor:
     dependencies:
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../gpu
       '@webgpu/types':
         specifier: ^0.1.71
         version: 0.1.71
@@ -129,6 +132,9 @@ importers:
 
   packages/network:
     dependencies:
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../gpu
       '@webgpu/types':
         specifier: ^0.1.71
         version: 0.1.71

@@ -37,7 +37,7 @@ npm install @latkit/gpu @latkit/monitor @latkit/colormaps
 : Named colormap data and helpers for gradients and scale metadata.
 
 `@latkit/gpu`
-: Native Core WebGPU device acquisition and typed availability failures.
+: Core WebGPU device acquisition, typed availability failures, and shared canvas presentation.
 
 `@latkit/monitor`
 : A WebGPU signal monitor for time-oriented readings.

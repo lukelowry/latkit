@@ -1,4 +1,6 @@
 import { vi } from 'vitest';
+import type { Presentation } from '@latkit/gpu';
+
 import type { ControllerDeps, Events, Network, Options } from '../../src/controller.js';
 import { createNetworkWithDeps } from '../../src/controller.js';
 import { packBound, type Channel, type ChannelSlot } from '../../src/channels.js';
@@ -9,7 +11,6 @@ import type { Intent } from '../../src/input/pointer.js';
 import type { Picker, PickerDeps, PickQuery, PickResult } from '../../src/pick/picker.js';
 import type { ProjectionMode } from '../../src/projections.js';
 import type { Viewport } from '../../src/camera/projection.js';
-import type { GpuContext } from '../../src/webgpu/context.js';
 import type { Renderer } from '../../src/webgpu/renderer.js';
 import type { RenderLoop, RenderLoopDeps } from '../../src/webgpu/render-loop.js';
 import type { ProjectionRig } from '../../src/camera/rig.js';
@@ -192,12 +193,34 @@ function makeSurface(element: HTMLCanvasElement): FakeSurface {
   };
 }
 
-function makeGpuContext(device: GPUDevice, canvas: HTMLCanvasElement): GpuContext {
+function makePresentation(
+  device: GPUDevice,
+  canvas: HTMLCanvasElement,
+): Presentation<HTMLCanvasElement> {
+  const width = canvas.getAttribute('width');
+  const height = canvas.getAttribute('height');
+  let destroyed = false;
+
   return {
-    device,
-    context: {} as unknown as GPUCanvasContext,
-    format: 'bgra8unorm',
     canvas,
+    device,
+    context: { canvas } as unknown as GPUCanvasContext,
+    format: 'bgra8unorm',
+    resize: vi.fn((nextWidth: number, nextHeight: number) => {
+      if (destroyed) return false;
+      const changed = canvas.width !== nextWidth || canvas.height !== nextHeight;
+      canvas.width = nextWidth;
+      canvas.height = nextHeight;
+      return changed;
+    }),
+    destroy: vi.fn(() => {
+      if (destroyed) return;
+      destroyed = true;
+      if (width === null) canvas.removeAttribute('width');
+      else canvas.setAttribute('width', width);
+      if (height === null) canvas.removeAttribute('height');
+      else canvas.setAttribute('height', height);
+    }),
   };
 }
 
@@ -212,6 +235,7 @@ export interface ControllerHarness {
   readonly surface: FakeSurface;
   readonly pointerCleanup: { destroy: ReturnType<typeof vi.fn> };
   readonly device: GPUDevice;
+  readonly presentation: Presentation<HTMLCanvasElement>;
   readonly deviceDestroy: ReturnType<typeof vi.fn>;
   readonly deviceLost: Deferred<GPUDeviceLostInfo>;
   readonly events: {
@@ -237,7 +261,7 @@ export async function createControllerHarness(
     lost: deviceLost.promise,
     destroy: deviceDestroy,
   } as unknown as GPUDevice;
-  const gpu = makeGpuContext(device, canvas);
+  const presentation = makePresentation(device, canvas);
 
   const renderer = new FakeRenderer();
   const loop = new FakeRenderLoop();
@@ -250,27 +274,24 @@ export async function createControllerHarness(
 
   const deps: ControllerDeps = {
     createSurface: vi.fn(() => surface),
-    createGpuContext: vi.fn(() => gpu),
-    destroyGpuContext: vi.fn(),
-    createRenderer: vi.fn(() => renderer as unknown as Renderer),
-    createRenderLoop: vi.fn(
+    createPresentation: vi.fn(() => presentation),
+    Renderer: vi.fn(() => renderer as unknown as Renderer) as unknown as typeof Renderer,
+    RenderLoop: vi.fn(
       (renderLoopDeps: RenderLoopDeps) => loop.attach(renderLoopDeps) as unknown as RenderLoop,
-    ),
-    createRig: vi.fn(() => rig as unknown as ProjectionRig),
+    ) as unknown as typeof RenderLoop,
+    ProjectionRig: vi.fn(() => rig as unknown as ProjectionRig) as unknown as typeof ProjectionRig,
     attachPointer: vi.fn((_surface: Surface, emit: (intent: Intent) => void) => {
       emitPointer = emit;
       return pointerCleanup;
     }),
-    createPicker: vi.fn((pickerDeps: PickerDeps) => {
+    Picker: vi.fn((pickerDeps: PickerDeps) => {
       picker.deps = pickerDeps;
       return picker as unknown as Picker;
-    }),
+    }) as unknown as typeof Picker,
   };
   configure?.(deps);
 
-  const network = await Promise.resolve().then(() =>
-    createNetworkWithDeps(device, canvas, options, deps),
-  );
+  const network = await createNetworkWithDeps(device, canvas, options, deps);
   network.on('deviceLost', (reason, message) => events.deviceLost.push([reason, message]));
 
   return {
@@ -284,6 +305,7 @@ export async function createControllerHarness(
     surface,
     pointerCleanup,
     device,
+    presentation,
     deviceDestroy,
     deviceLost,
     events,
