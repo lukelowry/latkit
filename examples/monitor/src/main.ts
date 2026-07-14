@@ -43,7 +43,7 @@ interface HotElement {
 }
 
 const app = document.getElementById('app') as HTMLElement;
-const stage = document.getElementById('monitor-stage') as HTMLElement;
+const stage = document.getElementById('monitor-stage') as HTMLCanvasElement;
 const statusEl = document.getElementById('status') as HTMLElement;
 const signalRow = document.getElementById('signals') as HTMLElement;
 const colormapRow = document.getElementById('colormaps') as HTMLElement;

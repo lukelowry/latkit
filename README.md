@@ -14,6 +14,9 @@ It provides imperative renderer controllers, typed data shapes, and shared color
 - A WebGPU-capable browser for `@latkit/network` and `@latkit/monitor`.
 - An ESM-capable bundler or dev server for downstream apps.
 
+See [WebGPU support](docs/webgpu-support.md) for verified browser/device rows,
+deliberate exclusions, and the validation procedure.
+
 ## Packages
 
 | Package             | Use it for                                          |

@@ -1,0 +1,21 @@
+{
+  "name": "@latkit/browser-fixture",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "predev": "pnpm --filter @latkit/gpu build && pnpm --filter @latkit/network build && pnpm --filter @latkit/monitor build",
+    "dev": "vite --host 127.0.0.1 --port 4178",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@latkit/gpu": "workspace:*",
+    "@latkit/monitor": "workspace:*",
+    "@latkit/network": "workspace:*"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.71",
+    "typescript": "^5.7.0",
+    "vite": "^7.0.0"
+  }
+}

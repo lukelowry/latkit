@@ -30,6 +30,11 @@ export interface BufferRecord {
   destroyed: boolean;
 }
 
+export interface ResizeObservation {
+  readonly target: Element;
+  readonly box: ResizeObserverBoxOptions | undefined;
+}
+
 export interface GpuLog {
   readonly draws: DrawRecord[];
   readonly writes: WriteRecord[];
@@ -43,6 +48,7 @@ export interface GpuLog {
   contextUnconfigures: number;
   formatQueries: number;
   resizeDisconnects: number;
+  readonly resizeObservations: ResizeObservation[];
 }
 
 export interface GpuStub {
@@ -51,7 +57,9 @@ export interface GpuStub {
   readonly log: GpuLog;
   setConfigureError(error: Error): void;
   setContextAvailable(available: boolean): void;
+  setDevicePixelObservationAvailable(available: boolean): void;
   setFormatError(error: Error): void;
+  resize(target: Element, devicePixels?: readonly [width: number, height: number]): void;
   loseDevice(reason?: string, message?: string): void;
   /** Run pending rAF callbacks once, then settle microtasks. */
   frame(): Promise<void>;
@@ -72,6 +80,7 @@ export function installGpuStub(): GpuStub {
     contextUnconfigures: 0,
     formatQueries: 0,
     resizeDisconnects: 0,
+    resizeObservations: [],
   };
 
   let resolveLost: (info: { reason: string; message: string }) => void = () => {};
@@ -233,14 +242,40 @@ export function installGpuStub(): GpuStub {
     configurable: true,
     value: { STORAGE: 0x80, COPY_DST: 0x08, UNIFORM: 0x40 },
   });
+  let devicePixelObservationAvailable = true;
+  const resizeObservers: Array<{
+    readonly callback: ResizeObserverCallback;
+    readonly targets: Set<Element>;
+    active: boolean;
+  }> = [];
   Object.defineProperty(globalThis, 'ResizeObserver', {
     configurable: true,
     value: class {
-      observe(): void {}
+      readonly #record: (typeof resizeObservers)[number];
+
+      constructor(callback: ResizeObserverCallback) {
+        this.#record = { callback, targets: new Set(), active: true };
+        resizeObservers.push(this.#record);
+      }
+
+      observe(target: Element, options?: ResizeObserverOptions): void {
+        if (options?.box === 'device-pixel-content-box' && !devicePixelObservationAvailable) {
+          throw new TypeError('device-pixel-content-box unsupported');
+        }
+        this.#record.targets.add(target);
+        log.resizeObservations.push({ target, box: options?.box });
+      }
+
       disconnect(): void {
+        if (!this.#record.active) return;
+        this.#record.active = false;
+        this.#record.targets.clear();
         log.resizeDisconnects++;
       }
-      unobserve(): void {}
+
+      unobserve(target: Element): void {
+        this.#record.targets.delete(target);
+      }
     },
   });
 
@@ -281,8 +316,28 @@ export function installGpuStub(): GpuStub {
     setContextAvailable: (available) => {
       contextAvailable = available;
     },
+    setDevicePixelObservationAvailable: (available) => {
+      devicePixelObservationAvailable = available;
+    },
     setFormatError: (error) => {
       formatError = error;
+    },
+    resize: (target, devicePixels) => {
+      const entry = {
+        target,
+        ...(devicePixels
+          ? {
+              devicePixelContentBoxSize: [
+                { inlineSize: devicePixels[0], blockSize: devicePixels[1] },
+              ],
+            }
+          : {}),
+      } as unknown as ResizeObserverEntry;
+      for (const observer of resizeObservers) {
+        if (observer.active && observer.targets.has(target)) {
+          observer.callback([entry], {} as ResizeObserver);
+        }
+      }
     },
     loseDevice: (reason = 'unknown', message = 'lost') => {
       resolveLost({ reason, message });

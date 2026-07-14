@@ -32,6 +32,19 @@ export interface UniformValues {
 
 const UNIFORM_BYTES = 24; // size: vec2f, lineWidth: f32, elementCount: u32, rangeMin: f32, rangeScale: f32
 
+interface CanvasState {
+  readonly canvas: HTMLCanvasElement;
+  readonly width: string | null;
+  readonly height: string | null;
+}
+
+function restoreCanvasSize(state: CanvasState): void {
+  if (state.width === null) state.canvas.removeAttribute('width');
+  else state.canvas.setAttribute('width', state.width);
+  if (state.height === null) state.canvas.removeAttribute('height');
+  else state.canvas.setAttribute('height', state.height);
+}
+
 export class LanePainter {
   readonly device: GPUDevice;
   widthPx: number;
@@ -41,6 +54,7 @@ export class LanePainter {
 
   readonly #context: GPUCanvasContext;
   readonly #format: GPUTextureFormat;
+  readonly #canvasState: CanvasState | null;
   #history: GPUTexture;
   #historyView: GPUTextureView;
   readonly #historyPipeline: GPURenderPipeline;
@@ -67,6 +81,11 @@ export class LanePainter {
     if (!context) throw new Error('WebGPU canvas context unavailable');
 
     const format = gpu.getPreferredCanvasFormat();
+    const canvasState: CanvasState = {
+      canvas,
+      width: canvas.getAttribute('width'),
+      height: canvas.getAttribute('height'),
+    };
     try {
       context.configure({
         device,
@@ -75,15 +94,20 @@ export class LanePainter {
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
       });
       const dpr = window.devicePixelRatio || 1;
-      const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
-      const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+      const width = Math.max(1, Math.round(canvas.clientWidth * dpr));
+      const height = Math.max(1, Math.round(canvas.clientHeight * dpr));
       canvas.width = width;
       canvas.height = height;
 
-      return new LanePainter(device, context, format, width, height);
+      return new LanePainter(device, context, format, width, height, canvasState);
     } catch (error) {
       try {
         context.unconfigure();
+      } catch {
+        // Preserve the resource initialization error.
+      }
+      try {
+        restoreCanvasSize(canvasState);
       } catch {
         // Preserve the resource initialization error.
       }
@@ -102,10 +126,12 @@ export class LanePainter {
     format: GPUTextureFormat,
     widthPx: number,
     heightPx: number,
+    canvasState: CanvasState | null = null,
   ) {
     this.device = device;
     this.#context = context;
     this.#format = format;
+    this.#canvasState = canvasState;
     this.widthPx = widthPx;
     this.heightPx = heightPx;
     this.windowValueCapacity = Math.floor(
@@ -357,12 +383,19 @@ export class LanePainter {
   destroy(): void {
     if (this.#destroyed) return;
     this.#destroyed = true;
-    this.releaseSlabs();
-    this.#history.destroy();
-    this.#lut.destroy();
-    this.#historyUniform.destroy();
-    this.#focusUniform.destroy();
-    this.#context.unconfigure();
+    try {
+      this.releaseSlabs();
+      this.#history.destroy();
+      this.#lut.destroy();
+      this.#historyUniform.destroy();
+      this.#focusUniform.destroy();
+    } finally {
+      try {
+        this.#context.unconfigure();
+      } finally {
+        if (this.#canvasState) restoreCanvasSize(this.#canvasState);
+      }
+    }
   }
 
   #makeHistory(width: number, height: number): GPUTexture {

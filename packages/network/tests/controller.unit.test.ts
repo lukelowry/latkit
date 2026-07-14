@@ -34,6 +34,7 @@ function expectRgbaClose(actual: Float32Array, expected: readonly number[]): voi
 afterEach(() => {
   for (const harness of harnesses) harness.destroy();
   harnesses = [];
+  document.body.innerHTML = '';
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -41,19 +42,27 @@ afterEach(() => {
 
 describe('createNetwork controller', () => {
   it('rejects compatibility devices before creating a surface', async () => {
-    const container = document.createElement('div');
+    const canvas = document.createElement('canvas');
+    canvas.setAttribute('width', '640');
+    canvas.setAttribute('height', '360');
+    document.body.append(canvas);
     const device = {
       limits: { maxStorageBuffersInVertexStage: 0 },
     } as unknown as GPUDevice;
 
-    await expect(createNetwork(device, container)).rejects.toThrow(
-      'A Core WebGPU device is required',
-    );
-    expect(container.childElementCount).toBe(0);
+    await expect(createNetwork(device, canvas)).rejects.toThrow('A Core WebGPU device is required');
+    expect(canvas.isConnected).toBe(true);
   });
 
-  it('surfaces canvas setup failures and releases the inserted surface', async () => {
-    const container = document.createElement('div');
+  it('surfaces canvas setup failures without removing or mutating the borrowed canvas', async () => {
+    const canvas = document.createElement('canvas');
+    canvas.setAttribute('width', '640');
+    canvas.setAttribute('height', '360');
+    canvas.style.touchAction = 'pan-x';
+    canvas.style.userSelect = 'text';
+    canvas.style.opacity = '0.5';
+    canvas.setAttribute('aria-hidden', 'false');
+    document.body.append(canvas);
     const deviceDestroy = vi.fn();
     const device = {
       limits: {},
@@ -61,11 +70,17 @@ describe('createNetwork controller', () => {
     } as unknown as GPUDevice;
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
 
-    await expect(createNetwork(device, container)).rejects.toThrow(
+    await expect(createNetwork(device, canvas)).rejects.toThrow(
       'Canvas does not support a WebGPU context',
     );
 
-    expect(container.childElementCount).toBe(0);
+    expect(canvas.isConnected).toBe(true);
+    expect(canvas.style.touchAction).toBe('pan-x');
+    expect(canvas.style.userSelect).toBe('text');
+    expect(canvas.style.opacity).toBe('0.5');
+    expect(canvas.getAttribute('aria-hidden')).toBe('false');
+    expect(canvas.getAttribute('width')).toBe('640');
+    expect(canvas.getAttribute('height')).toBe('360');
     expect(deviceDestroy).not.toHaveBeenCalled();
   });
 
@@ -76,6 +91,14 @@ describe('createNetwork controller', () => {
     await expect(
       createControllerHarness({}, (next) => {
         deps = next;
+        const createRenderLoop = deps.createRenderLoop;
+        deps.createRenderLoop = vi.fn(
+          (renderLoopDeps: Parameters<ControllerDeps['createRenderLoop']>[0]) => {
+            renderLoopDeps.canvas.width = 800;
+            renderLoopDeps.canvas.height = 450;
+            return createRenderLoop(renderLoopDeps);
+          },
+        );
         deps.attachPointer = vi.fn(() => {
           throw failure;
         });
@@ -99,6 +122,11 @@ describe('createNetwork controller', () => {
     expect(renderer.destroy).toHaveBeenCalledOnce();
     expect(deps.destroyGpuContext).toHaveBeenCalledOnce();
     expect(surface.destroy).toHaveBeenCalledOnce();
+    expect(surface.element.isConnected).toBe(true);
+    expect(surface.element.getAttribute('width')).toBe('320');
+    expect(surface.element.getAttribute('height')).toBe('180');
+    expect(surface.element.style.opacity).toBe('');
+    expect(surface.element.hasAttribute('aria-hidden')).toBe(false);
     expect(gpu.device.destroy).not.toHaveBeenCalled();
   });
 
@@ -212,10 +240,13 @@ describe('createNetwork controller', () => {
     expect(h.picker.deps?.values('vertexHeight')).toBe(values);
   });
 
-  it('returns its canvas element from the public facade', async () => {
+  it('uses the caller canvas without exposing it as controller-owned state', async () => {
     const h = await makeHarness();
 
-    expect(h.network.element).toBe(h.surface.element);
+    expect(h.deps.createSurface).toHaveBeenCalledWith(h.canvas);
+    expect(h.deps.createGpuContext).toHaveBeenCalledWith(h.device, h.canvas);
+    expect(h.canvas.hasAttribute('aria-hidden')).toBe(false);
+    expect(h.network).not.toHaveProperty('element');
   });
 
   it('keeps unsupported projection changes inert', async () => {
@@ -493,16 +524,22 @@ describe('createNetwork controller', () => {
 
   it('idempotently destroys owned collaborators without destroying the borrowed device', async () => {
     const h = await makeHarness();
+    h.canvas.width = 800;
+    h.canvas.height = 450;
 
     h.network.destroy();
     h.network.destroy();
 
-    expect(h.deps.createGpuContext).toHaveBeenCalledWith(h.device, h.surface.element);
+    expect(h.deps.createGpuContext).toHaveBeenCalledWith(h.device, h.canvas);
     expect(h.loop.destroy).toHaveBeenCalledOnce();
     expect(h.pointerCleanup.destroy).toHaveBeenCalledOnce();
     expect(h.renderer.destroy).toHaveBeenCalledOnce();
     expect(h.deps.destroyGpuContext).toHaveBeenCalledOnce();
     expect(h.surface.destroy).toHaveBeenCalledOnce();
+    expect(h.canvas.isConnected).toBe(true);
+    expect(h.canvas.getAttribute('width')).toBe('320');
+    expect(h.canvas.getAttribute('height')).toBe('180');
+    expect(h.canvas.style.opacity).toBe('');
     expect(h.deviceDestroy).not.toHaveBeenCalled();
   });
 });

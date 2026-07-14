@@ -15,18 +15,17 @@ const EXAMPLE_COLORMAPS = [
   'cividis',
 ] as const satisfies readonly ColormapName[];
 
-const stage = document.getElementById('stage') as HTMLElement;
+const stage = document.getElementById('stage') as HTMLCanvasElement;
 const statusEl = document.getElementById('status') as HTMLElement;
 const readoutEl = document.getElementById('readout') as HTMLElement;
 
 function fail(message: string): void {
-  stage.innerHTML = '';
   const box = document.createElement('div');
   box.className = 'fatal';
   box.innerHTML =
     `<h2>Cannot render</h2><p>${message}</p>` +
     '<p class="hint">This example needs a browser with WebGPU support.</p>';
-  stage.appendChild(box);
+  stage.replaceWith(box);
 }
 
 async function main(): Promise<void> {

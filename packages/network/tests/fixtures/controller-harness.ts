@@ -177,11 +177,8 @@ export interface FakeSurface extends Surface {
   viewport: Viewport;
 }
 
-function makeSurface(): FakeSurface {
-  const element = document.createElement('canvas');
-  const destroy = vi.fn(() => {
-    element.remove();
-  });
+function makeSurface(element: HTMLCanvasElement): FakeSurface {
+  const destroy = vi.fn();
   return {
     element,
     viewport: { w: 100, h: 80 },
@@ -211,6 +208,7 @@ export interface ControllerHarness {
   readonly loop: FakeRenderLoop;
   readonly rig: FakeProjectionRig;
   readonly picker: FakePicker;
+  readonly canvas: HTMLCanvasElement;
   readonly surface: FakeSurface;
   readonly pointerCleanup: { destroy: ReturnType<typeof vi.fn> };
   readonly device: GPUDevice;
@@ -227,8 +225,11 @@ export async function createControllerHarness(
   options: Options = {},
   configure?: (deps: ControllerDeps) => void,
 ): Promise<ControllerHarness> {
-  const container = document.createElement('div');
-  const surface = makeSurface();
+  const canvas = document.createElement('canvas');
+  canvas.setAttribute('width', '320');
+  canvas.setAttribute('height', '180');
+  document.body.append(canvas);
+  const surface = makeSurface(canvas);
   const deviceLost = deferred<GPUDeviceLostInfo>();
   const deviceDestroy = vi.fn();
   const device = {
@@ -236,7 +237,7 @@ export async function createControllerHarness(
     lost: deviceLost.promise,
     destroy: deviceDestroy,
   } as unknown as GPUDevice;
-  const gpu = makeGpuContext(device, surface.element);
+  const gpu = makeGpuContext(device, canvas);
 
   const renderer = new FakeRenderer();
   const loop = new FakeRenderLoop();
@@ -268,7 +269,7 @@ export async function createControllerHarness(
   configure?.(deps);
 
   const network = await Promise.resolve().then(() =>
-    createNetworkWithDeps(device, container, options, deps),
+    createNetworkWithDeps(device, canvas, options, deps),
   );
   network.on('deviceLost', (reason, message) => events.deviceLost.push([reason, message]));
 
@@ -279,6 +280,7 @@ export async function createControllerHarness(
     loop,
     rig,
     picker,
+    canvas,
     surface,
     pointerCleanup,
     device,

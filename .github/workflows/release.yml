@@ -48,8 +48,25 @@ jobs:
       - name: Typecheck packages
         run: pnpm typecheck
 
+      - name: Typecheck browser suite
+        run: pnpm typecheck:browser
+
       - name: Test packages
         run: pnpm test:run
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps --no-shell chromium
+
+      - name: Test WebGPU renderers
+        run: pnpm test:browser
+
+      - name: Upload WebGPU diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-webgpu-release
+          path: output/playwright
+          if-no-files-found: ignore
 
       - name: Check publish payloads
         run: pnpm -r --filter "./packages/**" exec npm pack --dry-run

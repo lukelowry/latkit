@@ -23,7 +23,8 @@ const topology: Topology = {
 };
 
 const device = await requestDevice();
-const network = await createNetwork(device, container, {
+const canvas = document.querySelector<HTMLCanvasElement>('#network')!;
+const network = await createNetwork(device, canvas, {
   colormap: colormap('viridis'),
   graticule: true,
 });
@@ -33,14 +34,16 @@ network.setChannel('vertexColor', new Float32Array([0.1, 0.8, 0.4]), [0, 1]);
 network.fadeIn();
 ```
 
-`createNetwork()` accepts a native Core `GPUDevice`; `@latkit/gpu` is a
-convenient way to acquire one but is not required.
+`createNetwork()` accepts a native Core `GPUDevice` and a caller-owned
+`HTMLCanvasElement`; `@latkit/gpu` is a convenient way to acquire the device
+but is not required. The caller controls the canvas's placement and CSS size.
 
-Network borrows the device, so destroy the renderer first and the device only
-after every renderer using it has been destroyed:
+Network borrows both. Destroy the renderer before removing the canvas, and
+destroy the device only after every renderer using it has been destroyed:
 
 ```ts
 network.destroy();
+canvas.remove();
 device.destroy();
 ```
 

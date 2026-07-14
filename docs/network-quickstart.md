@@ -2,12 +2,12 @@
 
 This tutorial creates a small WebGPU network renderer, loads a topology, binds a scalar channel, and fades the canvas in after the first frame.
 
-## Create a host element
+## Create a canvas
 
-Latkit appends its own canvas to a container. Give the container a stable size before creating the renderer:
+The application owns the canvas. Give it a stable display size before creating the renderer:
 
 ```html
-<div id="network" style="width: 100%; height: 480px"></div>
+<canvas id="network" style="display: block; width: 100%; height: 480px"></canvas>
 ```
 
 ## Build a topology
@@ -19,9 +19,9 @@ import { colormap } from '@latkit/colormaps';
 import { requestDevice } from '@latkit/gpu';
 import { createNetwork, type Topology } from '@latkit/network';
 
-const container = document.getElementById('network');
-if (!(container instanceof HTMLElement)) {
-  throw new Error('Missing #network container.');
+const canvas = document.getElementById('network');
+if (!(canvas instanceof HTMLCanvasElement)) {
+  throw new Error('Missing #network canvas.');
 }
 
 const topology: Topology = {
@@ -32,7 +32,7 @@ const topology: Topology = {
 };
 
 const device = await requestDevice();
-const network = await createNetwork(device, container, {
+const network = await createNetwork(device, canvas, {
   colormap: colormap('viridis'),
   graticule: true,
 });
@@ -62,10 +62,11 @@ network.setOptions({ edges: true, vertices: true, daylight: true });
 unsubscribeHover();
 ```
 
-When your app removes the view, destroy the renderer first and the application-owned device last:
+When your app removes the view, destroy the renderer before removing its canvas, and release the application-owned device last:
 
 ```ts
 network.destroy();
+canvas.remove();
 device.destroy();
 ```
 

@@ -10,7 +10,9 @@ beforeEach(() => {
   stub = installGpuStub();
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   stub.teardown();
+  document.body.replaceChildren();
 });
 
 /** Frame-major values for signals over `frames x elements`. */
@@ -40,9 +42,26 @@ function makeSeries(input: {
 }
 
 async function mount(options?: Parameters<typeof createMonitor>[2]): Promise<Monitor> {
-  const host = document.createElement('div');
-  document.body.append(host);
-  return createMonitor(stub.device, host, options);
+  const canvas = makeCanvas();
+  const monitor = await createMonitor(stub.device, canvas, options);
+  mountedCanvases.set(monitor, canvas);
+  return monitor;
+}
+
+const mountedCanvases = new WeakMap<Monitor, HTMLCanvasElement>();
+
+function makeCanvas(width = 320, height = 180): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  Object.defineProperties(canvas, {
+    clientWidth: { configurable: true, value: width, writable: true },
+    clientHeight: { configurable: true, value: height, writable: true },
+  });
+  document.body.append(canvas);
+  return canvas;
+}
+
+function canvasFor(monitor: Monitor): HTMLCanvasElement {
+  return mountedCanvases.get(monitor)!;
 }
 
 /** Pump frames until the paint queue drains (no draws recorded on a pumped frame). */
@@ -64,21 +83,80 @@ function sample(series: Series, signal: number, frame: number): Float32Array {
 }
 
 describe('monitor', () => {
-  it('rejects compatibility devices before creating a canvas', async () => {
-    const host = document.createElement('div');
-    document.body.append(host);
+  it('rejects compatibility devices before configuring the caller canvas', async () => {
+    const canvas = makeCanvas();
     const device = {
       limits: { maxStorageBuffersInVertexStage: 0 },
     } as unknown as GPUDevice;
 
-    await expect(createMonitor(device, host)).rejects.toThrow('A Core WebGPU device is required');
-    expect(host.querySelector('canvas')).toBeNull();
-    host.remove();
+    await expect(createMonitor(device, canvas)).rejects.toThrow('A Core WebGPU device is required');
+    expect(stub.log.contextConfigures).toBe(0);
+    expect(canvas.isConnected).toBe(true);
+  });
+
+  it('borrows the caller canvas without creating, reparenting, or removing it', async () => {
+    const host = document.createElement('section');
+    const canvas = makeCanvas();
+    canvas.setAttribute('width', '777');
+    canvas.setAttribute('height', '333');
+    canvas.style.cssText = 'display: block; width: 50%; height: 12rem;';
+    const style = canvas.style.cssText;
+    host.append(canvas);
+    document.body.append(host);
+    const createElement = vi.spyOn(document, 'createElement');
+
+    const monitor = await createMonitor(stub.device, canvas);
+
+    expect(createElement).not.toHaveBeenCalledWith('canvas');
+    expect(canvas.parentElement).toBe(host);
+    expect('element' in monitor).toBe(false);
+    monitor.destroy();
+    expect(canvas.parentElement).toBe(host);
+    expect(canvas.getAttribute('width')).toBe('777');
+    expect(canvas.getAttribute('height')).toBe('333');
+    expect(canvas.style.cssText).toBe(style);
+  });
+
+  it('observes the canvas and uses exact device-pixel content-box sizes', async () => {
+    const canvas = makeCanvas(200, 100);
+    const monitor = await createMonitor(stub.device, canvas);
+
+    expect(stub.log.resizeObservations).toContainEqual({
+      target: canvas,
+      box: 'device-pixel-content-box',
+    });
+    stub.resize(canvas, [401, 203]);
+    await stub.frame();
+    expect(canvas.width).toBe(401);
+    expect(canvas.height).toBe(203);
+
+    monitor.destroy();
+  });
+
+  it('falls back to CSS pixels times DPR when device-pixel observation is unavailable', async () => {
+    stub.setDevicePixelObservationAvailable(false);
+    const canvas = makeCanvas(200, 100);
+    const monitor = await createMonitor(stub.device, canvas);
+
+    expect(stub.log.resizeObservations).toContainEqual({ target: canvas, box: undefined });
+    Object.defineProperties(canvas, {
+      clientWidth: { configurable: true, value: 211, writable: true },
+      clientHeight: { configurable: true, value: 107, writable: true },
+    });
+    stub.resize(canvas);
+    await stub.frame();
+    const dpr = window.devicePixelRatio || 1;
+    expect(canvas.width).toBe(Math.round(211 * dpr));
+    expect(canvas.height).toBe(Math.round(107 * dpr));
+
+    monitor.destroy();
   });
 
   it('shares one borrowed device without taking ownership', async () => {
     const first = await mount();
     const second = await mount();
+    const firstCanvas = canvasFor(first);
+    const secondCanvas = canvasFor(second);
     expect(stub.log.contextConfigures).toBe(2);
     expect(stub.log.formatQueries).toBe(2);
 
@@ -86,6 +164,7 @@ describe('monitor', () => {
     first.destroy();
     expect(stub.log.contextUnconfigures).toBe(1);
     expect(stub.log.deviceDestroys).toBe(0);
+    expect(firstCanvas.isConnected).toBe(true);
 
     second.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
     await settle();
@@ -95,64 +174,61 @@ describe('monitor', () => {
     second.destroy();
     expect(stub.log.contextUnconfigures).toBe(2);
     expect(stub.log.deviceDestroys).toBe(0);
+    expect(secondCanvas.isConnected).toBe(true);
   });
 
   it('preserves canvas context failures and leaves the borrowed device alive', async () => {
     stub.setContextAvailable(false);
-    const host = document.createElement('div');
-    document.body.append(host);
+    const canvas = makeCanvas();
 
-    const creation = createMonitor(stub.device, host);
+    const creation = createMonitor(stub.device, canvas);
     await expect(creation).rejects.toThrow('WebGPU canvas context unavailable');
-    expect(host.querySelector('canvas')).toBeNull();
+    expect(canvas.isConnected).toBe(true);
     expect(stub.log.deviceDestroys).toBe(0);
-    host.remove();
   });
 
   it('preserves preferred-format errors by identity', async () => {
     const failure = new Error('preferred format failed');
     stub.setFormatError(failure);
-    const host = document.createElement('div');
-    document.body.append(host);
+    const canvas = makeCanvas();
 
-    await expect(createMonitor(stub.device, host)).rejects.toBe(failure);
-    expect(host.querySelector('canvas')).toBeNull();
+    await expect(createMonitor(stub.device, canvas)).rejects.toBe(failure);
+    expect(canvas.isConnected).toBe(true);
     expect(stub.log.deviceDestroys).toBe(0);
-    host.remove();
   });
 
   it('unconfigures partial canvas setup and preserves configuration errors', async () => {
     const failure = new Error('canvas configuration failed');
     stub.setConfigureError(failure);
-    const host = document.createElement('div');
-    document.body.append(host);
+    const canvas = makeCanvas();
 
-    await expect(createMonitor(stub.device, host)).rejects.toBe(failure);
-    expect(host.querySelector('canvas')).toBeNull();
+    await expect(createMonitor(stub.device, canvas)).rejects.toBe(failure);
+    expect(canvas.isConnected).toBe(true);
+    expect(canvas.getAttribute('width')).toBeNull();
+    expect(canvas.getAttribute('height')).toBeNull();
     expect(stub.log.contextUnconfigures).toBe(1);
     expect(stub.log.deviceDestroys).toBe(0);
-    host.remove();
   });
 
   it('transactionally cleans up when caller colormap code throws', async () => {
     const failure = new Error('colormap failed');
-    const host = document.createElement('div');
-    document.body.append(host);
+    const canvas = makeCanvas();
 
     await expect(
-      createMonitor(stub.device, host, {
+      createMonitor(stub.device, canvas, {
         colormap: () => {
           throw failure;
         },
       }),
     ).rejects.toBe(failure);
 
-    expect(host.querySelector('canvas')).toBeNull();
+    expect(canvas.isConnected).toBe(true);
+    expect(canvas.getAttribute('width')).toBeNull();
+    expect(canvas.getAttribute('height')).toBeNull();
     expect(stub.log.contextUnconfigures).toBe(1);
     expect(stub.log.resizeDisconnects).toBe(1);
     expect(stub.log.buffers.every((buffer) => buffer.destroyed)).toBe(true);
     expect(stub.log.deviceDestroys).toBe(0);
-    host.remove();
   });
 
   it('zero-copy: slabs are subarray views into the series buffer', async () => {
@@ -407,7 +483,7 @@ describe('monitor', () => {
     scope.load(series);
     await settle();
 
-    const canvas = scope.element;
+    const canvas = canvasFor(scope);
     vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
       left: 0,
       top: 0,

@@ -1,6 +1,6 @@
 # Lifecycle and failures
 
-Applications own Core WebGPU devices. Latkit renderers borrow a device and own only their canvas and renderer-specific GPU resources. Request a device when a view group mounts, share it across that group, and destroy it after every borrowing renderer has been destroyed.
+Applications own Core WebGPU devices and canvases. Latkit renderers borrow both and own only their renderer-specific GPU resources and event bindings. Request a device when a view group mounts, share it across that group, and destroy it after every borrowing renderer has been destroyed.
 
 ## Handle WebGPU support
 
@@ -9,6 +9,9 @@ Applications own Core WebGPU devices. Latkit renderers borrow a device and own o
 ```ts
 import { GpuUnavailableError, requestDevice } from '@latkit/gpu';
 import { createNetwork, type Network } from '@latkit/network';
+
+const networkCanvas = document.querySelector<HTMLCanvasElement>('#network');
+if (!networkCanvas) throw new Error('Missing #network canvas');
 
 let device: GPUDevice;
 
@@ -24,7 +27,7 @@ try {
 let network: Network | undefined;
 
 try {
-  network = await createNetwork(device, container);
+  network = await createNetwork(device, networkCanvas);
   network.load(topology);
 } catch (error) {
   network?.destroy();
@@ -33,7 +36,7 @@ try {
 }
 ```
 
-Pass the same device to `createMonitor(device, container)` when both views share an application lifetime.
+Pass the same device to `createMonitor(device, monitorCanvas)` when both views share an application lifetime.
 
 ## Listen for device loss
 
@@ -70,7 +73,9 @@ Always destroy renderers before destroying their device:
 ```ts
 network.destroy();
 monitor.destroy();
+networkCanvas.remove();
+monitorCanvas.remove();
 device.destroy();
 ```
 
-Destroying a renderer removes its canvas, clears event handlers, and releases its GPU resources. It never destroys the borrowed device.
+Destroying a renderer clears its event handlers, unconfigures its canvas, and releases its GPU resources. It never removes the borrowed canvas or destroys the borrowed device.

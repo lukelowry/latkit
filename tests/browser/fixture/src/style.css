@@ -1,0 +1,65 @@
+:root {
+  color: #dce6f3;
+  background: #080b10;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  width: 720px;
+  margin: 0 auto;
+  padding: 24px 40px 48px;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+h1,
+h2 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+#status[data-state='ready'] {
+  color: #72e2a7;
+}
+
+#status[data-state='error'] {
+  color: #ff7b72;
+}
+
+.view {
+  display: block;
+  overflow: hidden;
+  width: 640px;
+  border: 1px solid #293241;
+  background: #0b0f16;
+}
+
+.network {
+  height: 420px;
+}
+
+.monitor {
+  height: 160px;
+  margin-block: 12px;
+}
+
+#report {
+  overflow: auto;
+  max-height: 240px;
+  padding: 12px;
+  color: #9fb0c3;
+  background: #0b0f16;
+  font-size: 11px;
+}

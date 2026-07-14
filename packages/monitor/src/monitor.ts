@@ -111,13 +111,11 @@ export type Events = {
  * Imperative controller for a WebGPU signal monitor canvas.
  *
  * @remarks
- * The controller owns the inserted canvas and renderer resources, but only
- * borrows the device supplied to {@link createMonitor}. Call
- * {@link Monitor.destroy} when the host removes the view.
+ * The controller owns its renderer resources, but borrows both the device and
+ * canvas supplied to {@link createMonitor}. Call {@link Monitor.destroy}
+ * before releasing either borrowed resource.
  */
 export interface Monitor {
-  /** Canvas element inserted into the supplied container. */
-  readonly element: HTMLCanvasElement;
   /**
    * Subscribe to a monitor event and receive an unsubscribe callback.
    *
@@ -179,7 +177,7 @@ export interface Monitor {
   pause(): void;
   /** Resume painting after a consumer pause. */
   resume(): void;
-  /** Release event handlers, renderer resources, and the inserted canvas. */
+  /** Release event handlers, canvas configuration, and renderer resources. */
   destroy(): void;
 }
 
@@ -207,10 +205,10 @@ interface PaintJob {
 }
 
 /**
- * Creates a WebGPU-backed monitor and appends its canvas to `container`.
+ * Creates a WebGPU-backed monitor on a caller-owned canvas.
  *
  * @param device - Core WebGPU device borrowed for the lifetime of the monitor.
- * @param container - Host element that owns the inserted canvas.
+ * @param canvas - Canvas borrowed for presentation and pointer interaction.
  * @param options - Initial display options.
  * @returns A controller for loading series data, subscribing to readings, and releasing renderer resources.
  * @throws TypeError when `device` does not provide Core WebGPU features and limits.
@@ -218,30 +216,31 @@ interface PaintJob {
  *
  * @example
  * ```ts
- * const monitor = await createMonitor(device, container, { valueRange: [0, 1] });
+ * const canvas = document.querySelector<HTMLCanvasElement>('#monitor')!;
+ * const monitor = await createMonitor(device, canvas, { valueRange: [0, 1] });
  * monitor.load(series, 0);
  * ```
  *
- * The returned controller owns the inserted canvas, but never destroys
- * `device`. Destroy the monitor before its device owner releases the device.
+ * The returned controller never removes `canvas` or destroys `device`.
+ * Destroy the monitor before either borrowed resource is released.
  */
 export function createMonitor(
   device: GPUDevice,
-  container: HTMLElement,
+  canvas: HTMLCanvasElement,
   options: Options = {},
 ): Promise<Monitor> {
-  return Promise.resolve().then(() => createMonitorController(device, container, options));
+  return Promise.resolve().then(() => createMonitorController(device, canvas, options));
 }
 
 function createMonitorController(
   device: GPUDevice,
-  container: HTMLElement,
+  canvas: HTMLCanvasElement,
   options: Options,
 ): Monitor {
   assertDeviceLimits(device);
   const lifecycle = createControllerLifecycle();
   try {
-    return buildMonitorController(device, container, options, lifecycle);
+    return buildMonitorController(device, canvas, options, lifecycle);
   } catch (error) {
     lifecycle.destroy();
     throw error;
@@ -250,18 +249,10 @@ function createMonitorController(
 
 function buildMonitorController(
   device: GPUDevice,
-  container: HTMLElement,
+  canvas: HTMLCanvasElement,
   options: Options,
   lifecycle: ControllerLifecycle,
 ): Monitor {
-  const canvas = document.createElement('canvas');
-  canvas.style.display = 'block';
-  canvas.style.width = '100%';
-  canvas.style.height = '100%';
-  canvas.setAttribute('aria-hidden', 'true');
-  container.append(canvas);
-  lifecycle.add(() => canvas.remove());
-
   const painter = LanePainter.create(device, canvas);
   lifecycle.add(() => painter.destroy());
 
@@ -288,6 +279,8 @@ function buildMonitorController(
   let destroyed = false;
   let paused = false;
   let pendingResize = false;
+  let observedWidthPx = 0;
+  let observedHeightPx = 0;
   let rafId: number | null = null;
   let lostForwarded = false;
 
@@ -302,12 +295,23 @@ function buildMonitorController(
     rafId = requestAnimationFrame(tick);
   };
 
-  const resizeObserver = new ResizeObserver(() => {
+  const resizeObserver = new ResizeObserver((entries) => {
+    const box = entries[entries.length - 1]?.devicePixelContentBoxSize?.[0];
+    if (box) {
+      observedWidthPx = Math.max(1, Math.round(box.inlineSize));
+      observedHeightPx = Math.max(1, Math.round(box.blockSize));
+    }
     pendingResize = true;
     schedule();
   });
   lifecycle.add(() => resizeObserver.disconnect());
-  resizeObserver.observe(container);
+  try {
+    resizeObserver.observe(canvas, {
+      box: 'device-pixel-content-box' as ResizeObserverBoxOptions,
+    });
+  } catch {
+    resizeObserver.observe(canvas);
+  }
   lifecycle.add(() => {
     dead = true;
     if (rafId !== null) cancelAnimationFrame(rafId);
@@ -484,8 +488,8 @@ function buildMonitorController(
     if (dead || paused) return;
     if (pendingResize) {
       pendingResize = false;
-      const width = Math.max(1, Math.floor(canvas.clientWidth * dpr()));
-      const height = Math.max(1, Math.floor(canvas.clientHeight * dpr()));
+      const width = observedWidthPx || Math.max(1, Math.round(canvas.clientWidth * dpr()));
+      const height = observedHeightPx || Math.max(1, Math.round(canvas.clientHeight * dpr()));
       if (width !== painter.widthPx || height !== painter.heightPx) {
         canvas.width = width;
         canvas.height = height;
@@ -571,8 +575,6 @@ function buildMonitorController(
   }
 
   return {
-    element: canvas,
-
     on(event, handler) {
       let set = handlers.get(event);
       if (!set) {

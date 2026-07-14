@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Latkit WebGPU browser fixture</title>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Latkit WebGPU browser fixture</h1>
+        <output id="status" data-state="starting">starting</output>
+      </header>
+      <section>
+        <h2>Network</h2>
+        <canvas id="network" class="view network" data-select="none"></canvas>
+      </section>
+      <section>
+        <h2>Monitors</h2>
+        <canvas id="monitor-0" class="view monitor" data-pick="none"></canvas>
+        <canvas id="monitor-1" class="view monitor" data-pick="none"></canvas>
+      </section>
+      <pre id="report" aria-label="GPU report"></pre>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

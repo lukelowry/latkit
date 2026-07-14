@@ -2,12 +2,12 @@
 
 This tutorial creates a WebGPU monitor, loads a packed series, commits one frame, and listens for pointer readings.
 
-## Create a host element
+## Create a canvas
 
-The monitor owns the canvas it inserts into your container:
+The application owns the canvas and its layout:
 
 ```html
-<div id="monitor" style="width: 100%; height: 360px"></div>
+<canvas id="monitor" style="display: block; width: 100%; height: 360px"></canvas>
 ```
 
 ## Load a series
@@ -25,9 +25,9 @@ import { colormap } from '@latkit/colormaps';
 import { requestDevice } from '@latkit/gpu';
 import { createMonitor, type Series } from '@latkit/monitor';
 
-const container = document.getElementById('monitor');
-if (!(container instanceof HTMLElement)) {
-  throw new Error('Missing #monitor container.');
+const canvas = document.getElementById('monitor');
+if (!(canvas instanceof HTMLCanvasElement)) {
+  throw new Error('Missing #monitor canvas.');
 }
 
 const frameCount = 4;
@@ -42,7 +42,7 @@ const series: Series = {
 };
 
 const device = await requestDevice();
-const monitor = await createMonitor(device, container, {
+const monitor = await createMonitor(device, canvas, {
   valueRange: [0, 1],
   colormap: colormap('magma'),
 });
@@ -70,10 +70,11 @@ monitor.on('pick', (reading) => {
 });
 ```
 
-When the host page removes the monitor, destroy the renderer first and the application-owned device last:
+When the page removes the monitor, destroy the renderer before removing its canvas, and release the application-owned device last:
 
 ```ts
 monitor.destroy();
+canvas.remove();
 device.destroy();
 ```
 

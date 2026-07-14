@@ -1,6 +1,7 @@
 node_modules/
 dist/
 coverage/
+output/
 docs/_build/
 docs/api/reference/
 .turbo/

@@ -1,6 +1,6 @@
 ---
-'@latkit/network': patch
-'@latkit/monitor': patch
+'@latkit/network': minor
+'@latkit/monitor': minor
 ---
 
-Require an application-owned native Core `GPUDevice` when creating renderers so one device can be shared explicitly across canvases.
+Require application-owned native Core `GPUDevice` and `HTMLCanvasElement` instances so device sharing, canvas layout, and DOM ownership stay explicit.

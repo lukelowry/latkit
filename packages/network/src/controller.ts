@@ -218,15 +218,13 @@ export type Events = {
  * Imperative controller for a WebGPU network canvas.
  *
  * @remarks
- * The controller owns the inserted canvas, pointer handlers, render loop, and
- * renderer-created GPU resources. It borrows the device passed to
- * {@link createNetwork} and never destroys it. Call {@link Network.destroy}
- * when the host removes the view. Load topology before binding channels or
- * reading projection availability.
+ * The controller borrows the canvas and device passed to {@link createNetwork};
+ * it never removes the canvas or destroys the device. It owns its pointer
+ * handlers, render loop, and renderer-created GPU resources. Call
+ * {@link Network.destroy} before removing the canvas. Load topology before
+ * binding channels or reading projection availability.
  */
 export interface Network {
-  /** Canvas element inserted into the supplied container. */
-  readonly element: HTMLCanvasElement;
   /** Projection modes currently supported by the loaded topology. */
   readonly projections: Readonly<{ flat: boolean; tilt: boolean; globe: boolean }>;
   /**
@@ -348,7 +346,7 @@ export interface Network {
   pause(): void;
   /** Resume rendering when the page and GPU device allow it. */
   resume(): void;
-  /** Release renderer resources and DOM state without destroying the borrowed device. */
+  /** Release renderer resources and DOM state without removing the canvas or destroying the device. */
   destroy(): void;
 }
 
@@ -415,10 +413,10 @@ const DEFAULT_FOCUS_STYLE: FocusStyle = {
 };
 
 /**
- * Creates a WebGPU network renderer and appends its canvas to `container`.
+ * Creates a WebGPU network renderer on a caller-owned canvas.
  *
  * @param device - Borrowed Core WebGPU device. The caller retains ownership.
- * @param container - Host element that owns the inserted canvas.
+ * @param canvas - Borrowed canvas used for presentation and pointer input.
  * @param options - Initial rendering and interaction options.
  * @returns A controller for loading topology, binding channels, and releasing GPU resources.
  * @throws TypeError when `device` does not provide Core WebGPU features and limits.
@@ -426,33 +424,34 @@ const DEFAULT_FOCUS_STYLE: FocusStyle = {
  *
  * @example
  * ```ts
- * const network = await createNetwork(device, container, { graticule: true });
+ * const network = await createNetwork(device, canvas, { graticule: true });
  * network.load(topology);
  * network.fadeIn();
  * ```
  *
- * The returned controller owns the inserted canvas and renderer resources, but
- * not `device`. Destroy the controller before destroying the borrowed device.
+ * The returned controller owns its renderer resources, but not `canvas` or
+ * `device`. Destroy the controller before removing the canvas or destroying the
+ * borrowed device.
  */
 export async function createNetwork(
   device: GPUDevice,
-  container: HTMLElement,
+  canvas: HTMLCanvasElement,
   options: Options = {},
 ): Promise<Network> {
-  return createNetworkWithDeps(device, container, options, DEFAULT_CONTROLLER_DEPS);
+  return createNetworkWithDeps(device, canvas, options, DEFAULT_CONTROLLER_DEPS);
 }
 
 /** @internal */
 export async function createNetworkWithDeps( // eslint-disable-line @typescript-eslint/require-await -- Match the public Promise contract.
   device: GPUDevice,
-  container: HTMLElement,
+  canvas: HTMLCanvasElement,
   options: Options,
   deps: ControllerDeps,
 ): Promise<Network> {
   assertDeviceLimits(device);
   const lifecycle = createControllerLifecycle();
   try {
-    return createNetworkController(device, container, options, deps, lifecycle);
+    return createNetworkController(device, canvas, options, deps, lifecycle);
   } catch (error) {
     lifecycle.destroy();
     throw error;
@@ -512,18 +511,30 @@ function forwardDeviceLoss(
 /** Builds a controller synchronously after its Promise-returning boundary. */
 function createNetworkController(
   device: GPUDevice,
-  container: HTMLElement,
+  canvas: HTMLCanvasElement,
   options: Options,
   deps: ControllerDeps,
   lifecycle: ControllerLifecycle,
 ): Network {
   const events = createEmitter<Events>();
   lifecycle.add(events.clear);
-  const surface = deps.createSurface(container);
+  const surface = deps.createSurface(canvas);
   lifecycle.add(() => surface.destroy());
-  const canvas = surface.element;
+  const originalCanvasState = {
+    width: canvas.getAttribute('width'),
+    height: canvas.getAttribute('height'),
+    opacity: canvas.style.opacity,
+    transition: canvas.style.transition,
+  };
   canvas.style.opacity = '0';
-  canvas.setAttribute('aria-hidden', 'true');
+  lifecycle.add(() => {
+    if (originalCanvasState.width === null) canvas.removeAttribute('width');
+    else canvas.setAttribute('width', originalCanvasState.width);
+    if (originalCanvasState.height === null) canvas.removeAttribute('height');
+    else canvas.setAttribute('height', originalCanvasState.height);
+    canvas.style.opacity = originalCanvasState.opacity;
+    canvas.style.transition = originalCanvasState.transition;
+  });
 
   const gpu = deps.createGpuContext(device, canvas);
   lifecycle.add(() => deps.destroyGpuContext(gpu));
@@ -616,7 +627,7 @@ function createNetworkController(
    */
   let hoverCursor: { sx: number; sy: number; targetPx: number } | null = null;
 
-  /** Current canvas viewport in device pixels. */
+  /** Current canvas viewport in CSS pixels. */
   const vp = (): Viewport => surface.size();
 
   const channels = createChannels(uniforms, renderer, {
@@ -704,9 +715,6 @@ function createNetworkController(
 
   /** Public controller facade; all methods keep state changes behind repaint gates. */
   const api: Network = {
-    get element() {
-      return canvas;
-    },
     get projections() {
       return projections;
     },

@@ -1,0 +1,15 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "baseUrl": "../../..",
+    "paths": {
+      "@latkit/gpu": ["packages/gpu/src/index.ts"],
+      "@latkit/monitor": ["packages/monitor/src/index.ts"],
+      "@latkit/network": ["packages/network/src/index.ts"]
+    },
+    "types": ["@webgpu/types", "vite/client"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  },
+  "include": ["src"]
+}
