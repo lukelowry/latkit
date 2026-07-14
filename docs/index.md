@@ -62,7 +62,7 @@ architecture
 :maxdepth: 2
 :caption: Reference
 
-webgpu-support
+compatibility
 api/index
 ```
 

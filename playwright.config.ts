@@ -38,8 +38,8 @@ export default defineConfig({
   },
   projects: [
     {
-      name: 'chromium-webgpu',
-      metadata: { verification: 'engine' },
+      name: 'chromium-engine',
+      metadata: { verification: 'engine', scope: 'full', api: 'required' },
       use: {
         browserName: 'chromium',
         // Full Chromium's new headless mode; headless shell does not expose a
@@ -49,13 +49,27 @@ export default defineConfig({
       },
     },
     {
+      name: 'firefox-engine',
+      metadata: { verification: 'engine', scope: 'capabilities', api: 'required' },
+      use: { browserName: 'firefox' },
+    },
+    {
+      name: 'webkit-engine',
+      metadata: {
+        verification: 'engine',
+        scope: 'capabilities',
+        api: process.platform === 'darwin' ? 'required' : 'optional',
+      },
+      use: { browserName: 'webkit' },
+    },
+    {
       name: 'chrome-hardware',
-      metadata: { verification: 'hardware' },
+      metadata: { verification: 'hardware', scope: 'full', api: 'required' },
       use: { browserName: 'chromium', channel: 'chrome' },
     },
     {
       name: 'edge-hardware',
-      metadata: { verification: 'hardware' },
+      metadata: { verification: 'hardware', scope: 'full', api: 'required' },
       use: { browserName: 'chromium', channel: 'msedge' },
     },
   ],

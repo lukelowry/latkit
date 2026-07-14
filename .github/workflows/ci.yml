@@ -27,7 +27,21 @@ jobs:
       - run: pnpm -r --filter "./packages/**" exec npm pack --dry-run
 
   browser:
-    runs-on: ubuntu-latest
+    name: Browser engine (${{ matrix.project }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            browser: chromium
+            project: chromium-engine
+          - os: windows-latest
+            browser: firefox
+            project: firefox-engine
+          - os: macos-26
+            browser: webkit
+            project: webkit-engine
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -38,12 +52,12 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps --no-shell chromium
-      - run: pnpm test:browser
+      - run: pnpm exec playwright install --with-deps ${{ matrix.browser }}
+      - run: pnpm exec playwright test --project=${{ matrix.project }}
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-webgpu
+          name: playwright-webgpu-${{ matrix.project }}
           path: output/playwright
           if-no-files-found: ignore
 

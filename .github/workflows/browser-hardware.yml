@@ -1,0 +1,104 @@
+name: Browser hardware
+
+on:
+  workflow_dispatch:
+    inputs:
+      browser:
+        description: Stable browser to verify on a labeled physical runner
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - chrome
+          - edge
+          - firefox
+          - safari
+
+permissions:
+  contents: read
+
+jobs:
+  chrome:
+    if: inputs.browser == 'all' || inputs.browser == 'chrome'
+    runs-on: [self-hosted, Windows, X64, webgpu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:browser:chrome
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-webgpu-hardware
+          path: output/playwright
+          if-no-files-found: ignore
+
+  edge:
+    if: inputs.browser == 'all' || inputs.browser == 'edge'
+    runs-on: [self-hosted, Windows, X64, webgpu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:browser:edge
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-webgpu-hardware
+          path: output/playwright
+          if-no-files-found: ignore
+
+  firefox:
+    if: inputs.browser == 'all' || inputs.browser == 'firefox'
+    runs-on: [self-hosted, Windows, X64, webgpu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:browser:firefox
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firefox-webgpu-hardware
+          path: output/webdriver
+          if-no-files-found: ignore
+
+  safari:
+    if: inputs.browser == 'all' || inputs.browser == 'safari'
+    runs-on: [self-hosted, macOS, ARM64, webgpu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:browser:safari
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: safari-webgpu-hardware
+          path: output/webdriver
+          if-no-files-found: ignore

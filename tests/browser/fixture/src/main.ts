@@ -1,46 +1,13 @@
 import { requestDevice } from '@latkit/gpu';
 import { createMonitor, type Monitor, type Series } from '@latkit/monitor';
-import { createNetwork, type Network, type Topology } from '@latkit/network';
+import { createNetwork, type Borders, type Network, type Topology } from '@latkit/network';
+import {
+  emptyAdapterEvidence,
+  evidenceFromDevice,
+  probeCompatibility,
+} from './compatibility-probe.js';
+import type { BrowserReport, FixtureApi, FixtureState } from './protocol.js';
 import './style.css';
-
-interface AdapterReport {
-  readonly api: boolean;
-  readonly coreAdapter: boolean;
-  readonly info?: Readonly<Record<string, string>>;
-  readonly fallback?: boolean;
-  readonly features?: readonly string[];
-  readonly limits?: Readonly<Record<string, number>>;
-}
-
-interface BrowserReport {
-  readonly userAgent: string;
-  readonly platform: string;
-  readonly adapter: AdapterReport;
-}
-
-interface BorrowerLosses {
-  readonly network: number;
-  readonly monitor0: number;
-  readonly monitor1: number;
-}
-
-interface FixtureState {
-  readonly generation: number;
-  readonly liveMonitors: number;
-  readonly ownerLosses: number;
-  readonly borrowerLosses: BorrowerLosses;
-  readonly uncapturedErrors: number;
-  readonly lastUncapturedError: string | null;
-  readonly lastOwnerLoss: Readonly<{ reason: string; message: string }> | null;
-}
-
-interface FixtureApi {
-  readonly ready: Promise<void>;
-  destroyFirstMonitor(): Promise<void>;
-  remountAfterLoss(): Promise<void>;
-  report(): BrowserReport | null;
-  state(): FixtureState;
-}
 
 declare global {
   interface Window {
@@ -59,7 +26,15 @@ const monitorCanvases = [
 let device: GPUDevice | null = null;
 let network: Network | null = null;
 let monitors: Array<Monitor | null> = [];
-let browserReport: BrowserReport | null = null;
+let browserReport: BrowserReport = {
+  userAgent: navigator.userAgent,
+  platform: navigator.platform,
+  webgpu: {
+    apiAvailable: Boolean(navigator.gpu),
+    core: emptyAdapterEvidence('core'),
+    compatibility: emptyAdapterEvidence('compatibility'),
+  },
+};
 let generation = 0;
 let ownerLosses = 0;
 const borrowerLosses = { network: 0, monitor0: 0, monitor1: 0 };
@@ -74,6 +49,9 @@ const topology: Topology = {
   polylineStart: new Uint32Array(5),
 };
 
+const borders = makeBorders();
+const requestedMsaa = new URLSearchParams(location.search).get('msaa') === '4' ? 4 : 1;
+
 function makeSeries(offset: number): Series {
   const frames = 96;
   const elements = 3;
@@ -87,47 +65,18 @@ function makeSeries(offset: number): Series {
   return { time, values, signalCount: 1, elementCount: elements };
 }
 
-function reportDevice(device: GPUDevice): BrowserReport {
-  const infoNames = ['vendor', 'architecture', 'device', 'description'] as const;
-  const info = Object.fromEntries(
-    infoNames.flatMap((name) => {
-      const value = device.adapterInfo[name];
-      return value.length > 0 ? [[name, value] as const] : [];
-    }),
-  );
-  const limitNames = [
-    'maxBufferSize',
-    'maxStorageBufferBindingSize',
-    'maxStorageBuffersPerShaderStage',
-    'maxStorageBuffersInVertexStage',
-  ] as const;
-  const limits = Object.fromEntries(
-    limitNames.flatMap((name) => {
-      const value = device.limits[name];
-      return typeof value === 'number' ? [[name, value] as const] : [];
-    }),
-  );
-
-  return {
-    userAgent: navigator.userAgent,
-    platform: navigator.platform,
-    adapter: {
-      api: true,
-      coreAdapter: true,
-      info,
-      fallback: device.adapterInfo.isFallbackAdapter,
-      features: [...device.features].sort(),
-      limits,
-    },
-  };
-}
-
 async function mount(): Promise<void> {
   generation++;
   const nextDevice = await requestDevice();
   device = nextDevice;
-  browserReport = reportDevice(nextDevice);
-  reportElement.textContent = JSON.stringify(browserReport, null, 2);
+  browserReport = {
+    ...browserReport,
+    webgpu: {
+      ...browserReport.webgpu,
+      core: evidenceFromDevice('core', nextDevice),
+    },
+  };
+  renderReport();
   nextDevice.addEventListener('uncapturederror', (event) => {
     uncapturedErrors++;
     lastUncapturedError = event.error.message;
@@ -138,11 +87,12 @@ async function mount(): Promise<void> {
   });
 
   const nextNetwork = await createNetwork(nextDevice, networkCanvas, {
-    msaa: 1,
-    borders: false,
-    graticule: false,
-    earthAxis: false,
-    daylight: false,
+    msaa: requestedMsaa,
+    borders: true,
+    graticule: true,
+    earthAxis: true,
+    daylight: true,
+    poles: true,
     baseColor: [0.1, 0.9, 1, 1],
   });
   network = nextNetwork;
@@ -154,9 +104,18 @@ async function mount(): Promise<void> {
     networkCanvas.dataset.select = kind === null ? 'none' : `${kind}:${index}`;
   });
   nextNetwork.load(topology);
+  nextNetwork.setBorders(borders);
   nextNetwork.setChannel('vertexColor', new Float32Array([1, 0, 0.25, 0.5, 0.75]), [0, 1]);
+  nextNetwork.setChannel(
+    'vertexHeight',
+    new Float32Array([0.1, 0.3, 0.5, 0.7, 0.9]),
+    [0, 1],
+    [0, 1],
+  );
   nextNetwork.fit(false);
   nextNetwork.fadeIn(0);
+  networkCanvas.dataset.projection = 'flat';
+  networkCanvas.dataset.msaa = String(requestedMsaa);
 
   monitors = await Promise.all(
     monitorCanvases.map(async (canvas, index) => {
@@ -217,6 +176,17 @@ async function remountAfterLoss(): Promise<void> {
   await mount();
 }
 
+async function setProjection(mode: 'flat' | 'tilt' | 'globe'): Promise<boolean> {
+  const supported = network?.setProjection(mode) ?? false;
+  if (!supported) return false;
+
+  networkCanvas.dataset.projection = mode;
+  network?.fit(false);
+  network?.fadeIn(0);
+  if (device) await settleDevice(device);
+  return true;
+}
+
 function currentState(): FixtureState {
   return {
     generation,
@@ -248,28 +218,88 @@ async function settleDevice(target: GPUDevice): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
-async function start(): Promise<void> {
+async function discoverCapabilities(): Promise<void> {
   browserReport = {
-    userAgent: navigator.userAgent,
-    platform: navigator.platform,
-    adapter: { api: Boolean(navigator.gpu), coreAdapter: false },
+    ...browserReport,
+    webgpu: {
+      ...browserReport.webgpu,
+      compatibility: await probeCompatibility(navigator.gpu),
+    },
   };
-  reportElement.textContent = JSON.stringify(browserReport, null, 2);
-  await mount();
+  renderReport();
+  status.dataset.capabilities = 'ready';
+}
+
+async function start(): Promise<void> {
+  try {
+    await mount();
+  } catch (error) {
+    browserReport = {
+      ...browserReport,
+      webgpu: {
+        ...browserReport.webgpu,
+        core: {
+          ...browserReport.webgpu.core,
+          error: errorMessage(error),
+        },
+      },
+    };
+    renderReport();
+    throw error;
+  }
   status.dataset.state = 'ready';
   status.value = 'ready';
 }
 
-const ready = start().catch((error: unknown) => {
+const capabilitiesReady = discoverCapabilities().catch((error: unknown) => {
+  status.dataset.capabilities = 'error';
+  renderReport();
+  throw error;
+});
+
+const ready = capabilitiesReady.then(start).catch((error: unknown) => {
   status.dataset.state = 'error';
-  status.value = error instanceof Error ? error.message : String(error);
+  status.value = errorMessage(error);
   throw error;
 });
 
 window.latkitFixture = {
+  capabilitiesReady,
   ready,
   destroyFirstMonitor,
   remountAfterLoss,
+  setProjection,
   report: () => browserReport,
   state: currentState,
 };
+
+function renderReport(): void {
+  reportElement.textContent = JSON.stringify(browserReport, null, 2);
+}
+
+function makeBorders(): Borders {
+  const points = [
+    [-1, -0.4],
+    [1, 0.4],
+  ] as const;
+  const buffer = new ArrayBuffer(points.length * 24);
+  const view = new DataView(buffer);
+  for (let index = 0; index < points.length; index++) {
+    const [longitude, latitude] = points[index]!;
+    const longitudeRad = (longitude * Math.PI) / 180;
+    const latitudeRad = (latitude * Math.PI) / 180;
+    const cosLatitude = Math.cos(latitudeRad);
+    const offset = index * 24;
+    view.setFloat32(offset, longitude, true);
+    view.setFloat32(offset + 4, latitude, true);
+    view.setFloat32(offset + 8, cosLatitude * Math.cos(longitudeRad), true);
+    view.setFloat32(offset + 12, Math.sin(latitudeRad), true);
+    view.setFloat32(offset + 16, cosLatitude * Math.sin(longitudeRad), true);
+    view.setUint32(offset + 20, 0, true);
+  }
+  return { vertices: new Uint8Array(buffer), indices: new Uint32Array([0, 1]) };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
