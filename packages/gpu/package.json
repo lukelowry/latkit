@@ -1,6 +1,6 @@
 {
   "name": "@latkit/gpu",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Core WebGPU device and presentation primitives for Latkit.",
   "type": "module",
   "repository": {
