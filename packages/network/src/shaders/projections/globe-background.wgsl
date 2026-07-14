@@ -53,7 +53,7 @@ fn globe_bg_sample(frag_pos: vec4f) -> GlobeBgSample {
   // meaningfully behind the limb still hides.
   let sin_e = max(-dot(rd, normal), 1e-3);
   let world_per_px = t * u.fov_scale * 2.0 / u.viewport.y;
-  let slack = min(SURFACE_DEPTH_SLACK_PX * world_per_px / sin_e, GLOBE_DEPTH_SLACK_MAX);
+  let slack = min(css_px(SURFACE_DEPTH_SLACK_PX) * world_per_px / sin_e, GLOBE_DEPTH_SLACK_MAX);
   let clip = u.vp * vec4f(p_safe + rd * slack, 1.0);
 
   let pole_mix = abs(normal.y);

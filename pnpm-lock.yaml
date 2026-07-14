@@ -59,12 +59,15 @@ importers:
       '@latkit/colormaps':
         specifier: workspace:*
         version: link:../../packages/colormaps
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../../packages/gpu
       '@latkit/monitor':
         specifier: workspace:*
         version: link:../../packages/monitor
     devDependencies:
       '@webgpu/types':
-        specifier: ^0.1.60
+        specifier: ^0.1.71
         version: 0.1.71
       typescript:
         specifier: ^5.7.0
@@ -78,12 +81,15 @@ importers:
       '@latkit/colormaps':
         specifier: workspace:*
         version: link:../../packages/colormaps
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../../packages/gpu
       '@latkit/network':
         specifier: workspace:*
         version: link:../../packages/network
     devDependencies:
       '@webgpu/types':
-        specifier: ^0.1.60
+        specifier: ^0.1.71
         version: 0.1.71
       typescript:
         specifier: ^5.7.0
@@ -94,22 +100,36 @@ importers:
 
   packages/colormaps: {}
 
+  packages/gpu:
+    dependencies:
+      '@webgpu/types':
+        specifier: ^0.1.71
+        version: 0.1.71
+
   packages/model: {}
 
   packages/monitor:
-    devDependencies:
+    dependencies:
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../gpu
       '@webgpu/types':
-        specifier: ^0.1.60
+        specifier: ^0.1.71
         version: 0.1.71
+    devDependencies:
       jsdom:
         specifier: ^26.1.0
         version: 26.1.0
 
   packages/network:
-    devDependencies:
+    dependencies:
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../gpu
       '@webgpu/types':
-        specifier: ^0.1.60
+        specifier: ^0.1.71
         version: 0.1.71
+    devDependencies:
       jsdom:
         specifier: ^26.1.0
         version: 26.1.0

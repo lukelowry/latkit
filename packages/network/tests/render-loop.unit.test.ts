@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Presentation } from '@latkit/gpu';
+
 import { RenderLoop } from '../src/webgpu/render-loop.js';
 import { createUniforms } from '../src/webgpu/uniforms.js';
 import type { Camera } from '../src/camera/camera.js';
@@ -67,6 +69,7 @@ interface Harness {
   canvas: { clientWidth: number; clientHeight: number; width: number; height: number };
   renders: string[];
   cameraInits: Array<{ bounds: unknown; vp: { w: number; h: number } }>;
+  resize: ReturnType<typeof vi.fn>;
   setAnimating(v: boolean): void;
   fireResize(entries?: ResizeObserverEntry[]): void;
 }
@@ -77,9 +80,24 @@ function makeHarness(
     onBeforeFrame?: (vp: { w: number; h: number }) => void;
     onPaint?: () => void;
     render?: () => boolean;
+    pixelRatio?: number;
+    limit?: number;
+    visualViewport?: VisualViewport;
   } = {},
 ): Harness {
-  const canvas = { clientWidth: 200, clientHeight: 100, width: 0, height: 0 };
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    ownerDocument: {
+      defaultView: {
+        devicePixelRatio: opts.pixelRatio ?? 1,
+        ResizeObserver,
+        visualViewport: opts.visualViewport,
+      },
+    },
+  };
   const uniforms = createUniforms();
   const renders: string[] = [];
   const cameraInits: Array<{ bounds: unknown; vp: { w: number; h: number } }> = [];
@@ -89,6 +107,24 @@ function makeHarness(
       return opts.render?.() ?? true;
     },
   } as unknown as Renderer;
+  const resize = vi.fn((width: number, height: number) => {
+    const limit = opts.limit ?? Number.POSITIVE_INFINITY;
+    const scale = Math.min(1, limit / width, limit / height);
+    const nextWidth = Math.max(1, Math.floor(width * scale));
+    const nextHeight = Math.max(1, Math.floor(height * scale));
+    const changed = canvas.width !== nextWidth || canvas.height !== nextHeight;
+    canvas.width = nextWidth;
+    canvas.height = nextHeight;
+    return changed;
+  });
+  const presentation = {
+    canvas: canvas as unknown as HTMLCanvasElement,
+    device: {} as GPUDevice,
+    context: { canvas } as unknown as GPUCanvasContext,
+    format: 'bgra8unorm',
+    resize,
+    destroy: vi.fn(),
+  } satisfies Presentation<HTMLCanvasElement>;
   let animating = false;
   const camera = {
     fitIntent: false,
@@ -102,7 +138,7 @@ function makeHarness(
   const bounds = { xMin: 0, xMax: 1, yMin: 0, yMax: 1 };
 
   const loop = new RenderLoop({
-    canvas: canvas as unknown as HTMLCanvasElement,
+    presentation,
     uniforms,
     renderer,
     onFrame: opts.onFrame,
@@ -117,10 +153,11 @@ function makeHarness(
     canvas,
     renders,
     cameraInits,
+    resize,
     setAnimating: (v) => {
       animating = v;
     },
-    fireResize: (entries) => roCallback?.(entries),
+    fireResize: (entries) => roCallback?.(entries ?? []),
   };
 }
 
@@ -226,12 +263,7 @@ describe('RenderLoop scheduling', () => {
       }),
       removeEventListener: vi.fn(),
     };
-    Object.defineProperty(window, 'visualViewport', {
-      value: visualViewport,
-      configurable: true,
-    });
-
-    const h = makeHarness();
+    const h = makeHarness({ visualViewport: visualViewport as unknown as VisualViewport });
     h.loop.frameNow();
     h.canvas.clientWidth = 220;
     const resize = handler as (() => void) | null;
@@ -291,6 +323,20 @@ describe('RenderLoop scheduling', () => {
     frame(); // settle → snap to the RO-exact size
     expect(h.canvas.width).toBe(210);
     expect(h.canvas.height).toBe(100);
+  });
+
+  it('keeps CSS camera space and stable resize work when the backing size is limited', () => {
+    const h = makeHarness({ pixelRatio: 2, limit: 256 });
+
+    h.loop.requestFit();
+    h.loop.frameNow();
+    h.loop.frameNow();
+
+    expect(h.canvas.width).toBe(256);
+    expect(h.canvas.height).toBe(128);
+    expect(h.cameraInits[0]?.vp).toEqual({ w: 200, h: 100 });
+    expect(h.resize).toHaveBeenCalledOnce();
+    expect(h.resize).toHaveBeenCalledWith(400, 200);
   });
 
   it('pause cancels pending frames; resume renders again', async () => {

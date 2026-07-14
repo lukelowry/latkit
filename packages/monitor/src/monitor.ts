@@ -1,4 +1,6 @@
 /// <reference types="@webgpu/types" />
+import { createPresentation, observeCanvas } from '@latkit/gpu';
+
 import { LanePainter, SEGMENT_BUDGET, COLORMAP_LUT_SIZE, framesPerWindow } from './painter.js';
 
 /**
@@ -111,12 +113,11 @@ export type Events = {
  * Imperative controller for a WebGPU signal monitor canvas.
  *
  * @remarks
- * The controller owns the inserted canvas and associated GPU resources. Call
- * {@link Monitor.destroy} when the host removes the view.
+ * The controller owns its renderer resources, but borrows both the device and
+ * canvas supplied to {@link createMonitor}. Call {@link Monitor.destroy}
+ * before releasing either borrowed resource.
  */
 export interface Monitor {
-  /** Canvas element inserted into the supplied container. */
-  readonly element: HTMLCanvasElement;
   /**
    * Subscribe to a monitor event and receive an unsubscribe callback.
    *
@@ -178,7 +179,7 @@ export interface Monitor {
   pause(): void;
   /** Resume painting after a consumer pause. */
   resume(): void;
-  /** Release event handlers, GPU resources, and the inserted canvas. */
+  /** Release event handlers, canvas configuration, and renderer resources. */
   destroy(): void;
 }
 
@@ -206,42 +207,53 @@ interface PaintJob {
 }
 
 /**
- * Creates a WebGPU-backed monitor and appends its canvas to `container`.
+ * Creates a WebGPU-backed monitor on a caller-owned canvas.
  *
- * @param container - Host element that owns the inserted canvas.
+ * @param device - Core WebGPU device borrowed for the lifetime of the monitor.
+ * @param canvas - Canvas borrowed for presentation and pointer interaction.
  * @param options - Initial display options.
- * @returns A controller for loading series data, subscribing to readings, and releasing GPU resources.
- * @throws Error when WebGPU initialization fails.
+ * @returns A controller for loading series data, subscribing to readings, and releasing renderer resources.
+ * @throws TypeError when `device` does not provide Core WebGPU features and limits.
+ * @throws Error when canvas presentation or renderer initialization fails.
  *
  * @example
  * ```ts
- * const monitor = await createMonitor(container, { valueRange: [0, 1] });
+ * const canvas = document.querySelector<HTMLCanvasElement>('#monitor')!;
+ * const monitor = await createMonitor(device, canvas, { valueRange: [0, 1] });
  * monitor.load(series, 0);
  * ```
  *
- * The returned controller owns the inserted canvas and must be destroyed when
- * the host no longer needs it.
+ * The returned controller never removes `canvas` or destroys `device`.
+ * Destroy the monitor before either borrowed resource is released.
  */
-export async function createMonitor(
-  container: HTMLElement,
+export async function createMonitor( // eslint-disable-line @typescript-eslint/require-await -- Preserve the public Promise contract.
+  device: GPUDevice,
+  canvas: HTMLCanvasElement,
   options: Options = {},
 ): Promise<Monitor> {
-  const canvas = document.createElement('canvas');
-  canvas.style.display = 'block';
-  canvas.style.width = '100%';
-  canvas.style.height = '100%';
-  canvas.setAttribute('aria-hidden', 'true');
-  container.append(canvas);
-
-  let painter: LanePainter;
+  assertDeviceLimits(device);
+  const lifecycle = createControllerLifecycle();
   try {
-    painter = await LanePainter.create(canvas);
+    return createMonitorController(device, canvas, options, lifecycle);
   } catch (error) {
-    canvas.remove();
+    lifecycle.destroy();
     throw error;
   }
+}
+
+function createMonitorController(
+  device: GPUDevice,
+  canvas: HTMLCanvasElement,
+  options: Options,
+  lifecycle: ControllerLifecycle,
+): Monitor {
+  const presentation = createPresentation(device, canvas, {
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
+  });
+  lifecycle.add(() => presentation.destroy());
 
   const handlers = new Map<keyof Events, Set<(payload: never) => void>>();
+  lifecycle.add(() => handlers.clear());
   const emit = <K extends keyof Events>(event: K, payload: Events[K]): void => {
     for (const handler of handlers.get(event) ?? []) (handler as (p: Events[K]) => void)(payload);
   };
@@ -260,8 +272,9 @@ export async function createMonitor(
   let focusElement: number | null = null;
   let presentDirty = false;
   let dead = false;
+  let destroyed = false;
   let paused = false;
-  let pendingResize = false;
+  let pendingSize: { width: number; height: number; devicePixelRatio: number } | null = null;
   let rafId: number | null = null;
   let lostForwarded = false;
 
@@ -269,27 +282,57 @@ export async function createMonitor(
   let cursorDirty = false;
   let lastReading: Reading | null = null;
 
-  const dpr = (): number => window.devicePixelRatio || 1;
+  let backingScale = 1;
+
+  const fittedBackingScale = (width: number, height: number, ratio: number): number =>
+    ratio * Math.min(canvas.width / width, canvas.height / height);
 
   const schedule = (): void => {
     if (dead || paused || rafId !== null) return;
     rafId = requestAnimationFrame(tick);
   };
 
-  const resizeObserver = new ResizeObserver(() => {
-    pendingResize = true;
-    schedule();
+  let ready = false;
+  let initialWidth = 1;
+  let initialHeight = 1;
+  let initialDevicePixelRatio = 1;
+  const stopObserving = observeCanvas(canvas, (width, height, ratio) => {
+    const size = {
+      width: Math.max(1, width),
+      height: Math.max(1, height),
+      devicePixelRatio: ratio,
+    };
+    initialWidth = size.width;
+    initialHeight = size.height;
+    initialDevicePixelRatio = size.devicePixelRatio;
+    pendingSize = size;
+    if (ready) schedule();
   });
-  resizeObserver.observe(container);
+  lifecycle.add(stopObserving);
 
-  void painter.device.lost.then((info) => {
-    if (dead || info.reason === 'destroyed' || lostForwarded) return;
-    lostForwarded = true;
+  presentation.resize(initialWidth, initialHeight);
+  backingScale = fittedBackingScale(initialWidth, initialHeight, initialDevicePixelRatio);
+  const painter = new LanePainter(presentation, canvas.width, canvas.height);
+  lifecycle.add(() => painter.destroy());
+  pendingSize = null;
+  ready = true;
+
+  lifecycle.add(() => {
+    dead = true;
     if (rafId !== null) cancelAnimationFrame(rafId);
     rafId = null;
-    dead = true;
-    emit('deviceLost', { reason: String(info.reason), message: info.message });
   });
+
+  lifecycle.add(
+    forwardDeviceLoss(painter.device, (info) => {
+      if (dead || lostForwarded) return;
+      lostForwarded = true;
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = null;
+      dead = true;
+      emit('deviceLost', { reason: String(info.reason), message: info.message });
+    }),
+  );
 
   function bakeColormap(): void {
     const lut = new Uint8Array(COLORMAP_LUT_SIZE * 4);
@@ -321,12 +364,12 @@ export async function createMonitor(
     };
     painter.writeUniform('history', {
       ...base,
-      lineWidthPx: lineWidthPx * dpr(),
+      lineWidthPx: lineWidthPx * backingScale,
       elementCount: bound?.series.elementCount ?? 1,
     });
     painter.writeUniform('focus', {
       ...base,
-      lineWidthPx: lineWidthPx * dpr() * 2.5,
+      lineWidthPx: lineWidthPx * backingScale * 2.5,
       elementCount: 1,
     });
   }
@@ -448,14 +491,15 @@ export async function createMonitor(
   function tick(): void {
     rafId = null;
     if (dead || paused) return;
-    if (pendingResize) {
-      pendingResize = false;
-      const width = Math.max(1, Math.floor(canvas.clientWidth * dpr()));
-      const height = Math.max(1, Math.floor(canvas.clientHeight * dpr()));
-      if (width !== painter.widthPx || height !== painter.heightPx) {
-        canvas.width = width;
-        canvas.height = height;
-        painter.resize(width, height);
+    if (pendingSize) {
+      const { width, height, devicePixelRatio } = pendingSize;
+      pendingSize = null;
+      const resized = presentation.resize(width, height);
+      const nextBackingScale = fittedBackingScale(width, height, devicePixelRatio);
+      const scaleChanged = nextBackingScale !== backingScale;
+      backingScale = nextBackingScale;
+      if (resized) painter.resize(canvas.width, canvas.height);
+      if (resized || scaleChanged) {
         if (bound) {
           writeUniforms();
           scheduleRepaint();
@@ -481,21 +525,29 @@ export async function createMonitor(
     return Math.max(0, bound.validFrames - 1);
   }
 
-  canvas.addEventListener('pointermove', (event) => {
+  const onPointerMove = (event: PointerEvent): void => {
     cursor = { x: event.clientX, y: event.clientY };
     cursorDirty = true;
     schedule();
-  });
-  canvas.addEventListener('pointerleave', () => {
+  };
+  const onPointerLeave = (): void => {
     cursor = null;
     cursorDirty = true;
     schedule();
-  });
-  canvas.addEventListener('pointerdown', (event) => {
+  };
+  const onPointerDown = (event: PointerEvent): void => {
     cursor = { x: event.clientX, y: event.clientY };
     const reading = scanReading();
     if (reading) emit('pick', reading);
+  };
+  lifecycle.add(() => {
+    canvas.removeEventListener('pointermove', onPointerMove);
+    canvas.removeEventListener('pointerleave', onPointerLeave);
+    canvas.removeEventListener('pointerdown', onPointerDown);
   });
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerleave', onPointerLeave);
+  canvas.addEventListener('pointerdown', onPointerDown);
 
   function requireBound(op: string): Bound {
     if (!bound) throw new Error(`${ERROR_PREFIX}: ${op} before load`);
@@ -529,8 +581,6 @@ export async function createMonitor(
   }
 
   return {
-    element: canvas,
-
     on(event, handler) {
       let set = handlers.get(event);
       if (!set) {
@@ -645,14 +695,60 @@ export async function createMonitor(
     },
 
     destroy() {
+      if (destroyed) return;
+      destroyed = true;
       dead = true;
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      rafId = null;
-      resizeObserver.disconnect();
-      handlers.clear();
-      painter.destroy();
-      canvas.remove();
+      lifecycle.destroy();
     },
+  };
+}
+
+/** Idempotent cleanup stack for transactional controller construction. */
+interface ControllerLifecycle {
+  add(cleanup: () => void): void;
+  destroy(): void;
+}
+
+function createControllerLifecycle(): ControllerLifecycle {
+  const cleanups: Array<() => void> = [];
+  let destroyed = false;
+
+  return {
+    add(cleanup) {
+      cleanups.push(cleanup);
+    },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      for (let i = cleanups.length - 1; i >= 0; i--) {
+        try {
+          cleanups[i]!();
+        } catch {
+          // Continue so one cleanup cannot strand the remaining resources.
+        }
+      }
+      cleanups.length = 0;
+    },
+  };
+}
+
+/** Rejects devices known not to meet the renderer's Core WebGPU limits. */
+function assertDeviceLimits(device: GPUDevice): void {
+  const vertexStorage = device.limits.maxStorageBuffersInVertexStage;
+  if (vertexStorage !== undefined && vertexStorage < 2) {
+    throw new TypeError('A Core WebGPU device is required');
+  }
+}
+
+/** Relays one device-loss notification without retaining a destroyed monitor. */
+function forwardDeviceLoss(
+  device: GPUDevice,
+  listener: (info: GPUDeviceLostInfo) => void,
+): () => void {
+  let active: ((info: GPUDeviceLostInfo) => void) | undefined = listener;
+  void device.lost.then((info) => active?.(info));
+  return () => {
+    active = undefined;
   };
 }
 

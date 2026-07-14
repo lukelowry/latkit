@@ -1,7 +1,7 @@
 /// <reference types="@webgpu/types" />
 
 import { vi } from 'vitest';
-import type { GpuContext } from '../../src/webgpu/context.js';
+import type { Presentation } from '@latkit/gpu';
 
 export interface FakeBuffer {
   readonly descriptor: GPUBufferDescriptor;
@@ -174,7 +174,7 @@ export interface FakeGpuHarness {
   readonly canvas: HTMLCanvasElement;
   readonly context: GPUCanvasContext;
   readonly device: FakeGpuDevice;
-  readonly gpu: GpuContext;
+  readonly presentation: Presentation;
 }
 
 export function installWebGpuConstants(): void {
@@ -201,17 +201,20 @@ export function makeFakeGpu(
     createView: vi.fn(() => ({ label: 'swap-view' }) as unknown as GPUTextureView),
   };
   const context = {
+    canvas,
     getCurrentTexture: vi.fn(() => swapTexture),
   } as unknown as GPUCanvasContext;
   return {
     canvas,
     context,
     device,
-    gpu: {
+    presentation: {
       canvas,
       context,
       device: device as unknown as GPUDevice,
       format: 'bgra8unorm',
+      resize: vi.fn(),
+      destroy: vi.fn(),
     },
   };
 }

@@ -175,7 +175,7 @@ describe('Renderer channel relayout guard', () => {
   it('throws when compact channel storage exceeds WebGPU limits', () => {
     const renderer = Object.create(Renderer.prototype) as Renderer;
     (renderer as any).bound = true;
-    (renderer as any).gpu = {
+    (renderer as any).presentation = {
       device: { limits: { maxStorageBufferBindingSize: 7, maxBufferSize: 1024 } },
     };
 
@@ -188,7 +188,7 @@ describe('Renderer channel relayout guard', () => {
     const writeBuffer = vi.fn();
     const renderer = Object.create(Renderer.prototype) as Renderer;
     const channelBuf = {};
-    (renderer as any).gpu = { device: { queue: { writeBuffer } } };
+    (renderer as any).presentation = { device: { queue: { writeBuffer } } };
     (renderer as any).channelBuf = channelBuf;
     (renderer as any).slots = new Map<Channel, { offset: number; count: number }>([
       ['vertexColor', { offset: 2, count: 3 }],
@@ -216,7 +216,7 @@ describe('Renderer channel relayout guard', () => {
     (renderer as any).topologyBuffer = previousTopologyBuffer;
     (renderer as any).segmentBuffer = previousSegmentBuffer;
     (renderer as any).channelBuf = previousChannelBuffer;
-    (renderer as any).gpu = {
+    (renderer as any).presentation = {
       device: { limits: { maxStorageBufferBindingSize: 1 } },
     };
 

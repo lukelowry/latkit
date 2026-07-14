@@ -1,5 +1,5 @@
 // Shared uniform struct, prepended to all shader modules at pipeline creation time.
-// Total: 480 bytes (30 x 16, naturally aligned).
+// Total: 384 bytes (24 x 16, naturally aligned).
 
 struct Uniforms {
   // Projection (bytes 0-111)
@@ -80,22 +80,17 @@ struct Uniforms {
   surface_color: vec4f,
   border_color: vec4f,
 
-  // Padding (bytes 352-447): keeps the lighting block anchored at byte 448 so
-  // the tail offsets stay fixed.
-  _color_tail_pad: array<vec4f, 6>,
-
-  // Day/night controls (bytes 448-463).
-  // night_floor         - overlay floor (vertices/edges/poles/graticule). Tuned for legibility.
-  // surface_night_floor - sphere surface floor. Tuned for atmospheric darkness.
-  // Two parameters because the two roles want different contrast; one curve
-  // cannot serve both without making the night side either unreadable or
-  // unconvincing.
+  // Presentation scale and day/night controls (bytes 352-367).
+  // backing_scale      - actual backing pixels per CSS pixel after device-limit fitting.
+  // night_floor        - overlay floor (vertices/edges/poles/graticule). Tuned for legibility.
+  // terminator_width   - width of the day/night transition band.
+  // surface_night_floor - opaque-surface floor, tuned independently for atmospheric darkness.
+  backing_scale: f32,
   night_floor: f32,
   terminator_width: f32,
   surface_night_floor: f32,
-  _pad_light: f32,
 
-  // Tilt camera basis (bytes 464-479) - written by tilt.pack() only.
+  // Tilt camera basis (bytes 368-383) - written by tilt.pack() only.
   // (look_x, look_y, sin(bearing), cos(bearing)): the bg derives its
   // per-fragment ray basis from these because the globe's normalize(-cam)
   // trick assumes a look-at-origin Y-up camera, and a naive look-at basis
@@ -104,6 +99,10 @@ struct Uniforms {
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
+
+fn css_px(value: f32) -> f32 {
+  return value * u.backing_scale;
+}
 
 const FLAG_DAYLIGHT:  u32 = 1u;
 const FLAG_GRATICULE: u32 = 2u;

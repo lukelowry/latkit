@@ -49,7 +49,7 @@ fn vs(
 
   let t = f32(vid / 2u);
   let side = select(-1.0, 1.0, (vid % 2u) == 1u);
-  let screen = mix(screen_a, screen_b, t) + normal * side * EARTH_AXIS_HALF_WIDTH_PX;
+  let screen = mix(screen_a, screen_b, t) + normal * side * css_px(EARTH_AXIS_HALF_WIDTH_PX);
 
   let clip = mix(clip_a, clip_b, t);
   let ndc = screen * 2.0 / u.viewport - vec2f(1.0);

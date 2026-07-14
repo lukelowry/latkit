@@ -83,7 +83,7 @@ fn tilt_bg_sample(frag_pos: vec4f) -> TiltBgSample {
   // without slack the nearer floor under their lower half wins the test.
   let sin_e = max(-rd.z, 1e-3);
   let world_per_px = t * u.fov_scale * 2.0 / u.viewport.y;
-  let slack = SURFACE_DEPTH_SLACK_PX * world_per_px / sin_e;
+  let slack = css_px(SURFACE_DEPTH_SLACK_PX) * world_per_px / sin_e;
 
   let clip = u.vp * vec4f(p + rd * slack, 1.0);
   var out: TiltBgSample;

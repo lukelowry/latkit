@@ -59,7 +59,7 @@ fn edge_dash_discard(v: VOut) -> bool {
   }
   let along = clamp(v.uv.x, 0.0, v.seg_aspect) / max(v.seg_aspect, 1e-6);
   let px = along * v.seg_len_px;
-  return fract(px / u.dash_period) > 0.5;
+  return fract(px / css_px(u.dash_period)) > 0.5;
 }
 
 fn edge_fragment_alpha(d: f32) -> f32 {
@@ -215,7 +215,7 @@ fn edge_underlay_fragment_color(v: VOut) -> vec4f {
   if (u.dash_period > 0.0 && v.dashed != 0u) {
     let along = clamp(v.uv.x, 0.0, v.seg_aspect) / max(v.seg_aspect, 1e-6);
     let px = along * v.seg_len_px;
-    if (fract(px / u.dash_period) > 0.5) { discard; }
+    if (fract(px / css_px(u.dash_period)) > 0.5) { discard; }
   }
 
   let selected = v.focus == 2u;

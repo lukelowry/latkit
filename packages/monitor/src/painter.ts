@@ -1,12 +1,15 @@
 /// <reference types="@webgpu/types" />
+import type { Presentation } from '@latkit/gpu';
+
 import segmentWgsl from './gpu/segment.wgsl?raw';
 
 /**
  * GPU painter for monitor history and focus passes.
  *
- * LanePainter owns WebGPU resources only. The controller chooses which sample
- * windows to upload and which segment ranges to draw; this class turns those
- * decisions into ordered buffer writes and render passes.
+ * LanePainter borrows a WebGPU presentation and owns only its renderer
+ * resources. The controller chooses which sample windows to upload and which
+ * segment ranges to draw; this class turns those decisions into ordered buffer
+ * writes and render passes.
  */
 
 /** Upload granularity for one slab window, capped by maxStorageBufferBindingSize. */
@@ -56,42 +59,11 @@ export class LanePainter {
   #focusXnorm: GPUBuffer | null = null;
   #historyGroup: GPUBindGroup | null = null;
   #focusGroup: GPUBindGroup | null = null;
+  #destroyed = false;
 
-  static async create(canvas: HTMLCanvasElement): Promise<LanePainter> {
-    const gpu = navigator.gpu;
-    if (!gpu) throw new Error('WebGPU is not available');
-    const adapter = await gpu.requestAdapter();
-    if (!adapter) throw new Error('WebGPU adapter unavailable');
-    const device = await adapter.requestDevice();
-    const context = canvas.getContext('webgpu') as GPUCanvasContext | null;
-    if (!context) throw new Error('WebGPU canvas context unavailable');
-    const format = gpu.getPreferredCanvasFormat();
-    context.configure({
-      device,
-      format,
-      alphaMode: 'premultiplied',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
-    });
-    const dpr = window.devicePixelRatio || 1;
-    const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
-    const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
-    canvas.width = width;
-    canvas.height = height;
-    return new LanePainter(device, context, format, width, height);
-  }
-
-  /**
-   * Testable constructor for callers that already own a WebGPU device.
-   *
-   * Production code should usually call {@link LanePainter.create}.
-   */
-  constructor(
-    device: GPUDevice,
-    context: GPUCanvasContext,
-    format: GPUTextureFormat,
-    widthPx: number,
-    heightPx: number,
-  ) {
+  /** Creates renderer resources against a borrowed presentation. */
+  constructor(presentation: Presentation, widthPx: number, heightPx: number) {
+    const { device, context, format } = presentation;
     this.device = device;
     this.#context = context;
     this.#format = format;
@@ -344,12 +316,13 @@ export class LanePainter {
   }
 
   destroy(): void {
+    if (this.#destroyed) return;
+    this.#destroyed = true;
     this.releaseSlabs();
     this.#history.destroy();
     this.#lut.destroy();
     this.#historyUniform.destroy();
     this.#focusUniform.destroy();
-    this.device.destroy();
   }
 
   #makeHistory(width: number, height: number): GPUTexture {

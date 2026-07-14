@@ -1,4 +1,4 @@
-/** Creates a WebGPU network renderer in a host container. */
+/** Creates a WebGPU network renderer on a caller-owned canvas. */
 export { createNetwork } from './controller.js';
 
 /** Public network controller types and construction options. */

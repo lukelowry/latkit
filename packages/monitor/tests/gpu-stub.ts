@@ -30,18 +30,46 @@ export interface BufferRecord {
   destroyed: boolean;
 }
 
+export interface TextureRecord {
+  readonly label: string;
+  readonly width: number;
+  readonly height: number;
+  destroyed: boolean;
+}
+
+export interface ResizeObservation {
+  readonly target: Element;
+  readonly box: ResizeObserverBoxOptions | undefined;
+}
+
 export interface GpuLog {
   readonly draws: DrawRecord[];
   readonly writes: WriteRecord[];
   readonly buffers: BufferRecord[];
+  readonly textures: TextureRecord[];
   readonly clears: string[];
   readonly lutWrites: Uint8Array[];
   copies: number;
   submits: number;
+  deviceDestroys: number;
+  contextConfigures: number;
+  readonly contextConfigurations: GPUCanvasConfiguration[];
+  contextUnconfigures: number;
+  formatQueries: number;
+  resizeDisconnects: number;
+  readonly resizeObservations: ResizeObservation[];
 }
 
 export interface GpuStub {
+  /** One native device shared by every monitor created in a test. */
+  readonly device: GPUDevice;
   readonly log: GpuLog;
+  setTextureLimit(limit: number): void;
+  setConfigureError(error: Error): void;
+  setContextAvailable(available: boolean): void;
+  setDevicePixelObservationAvailable(available: boolean): void;
+  setFormatError(error: Error): void;
+  resize(target: Element, devicePixels?: readonly [width: number, height: number]): void;
   loseDevice(reason?: string, message?: string): void;
   /** Run pending rAF callbacks once, then settle microtasks. */
   frame(): Promise<void>;
@@ -53,10 +81,18 @@ export function installGpuStub(): GpuStub {
     draws: [],
     writes: [],
     buffers: [],
+    textures: [],
     clears: [],
     lutWrites: [],
     copies: 0,
     submits: 0,
+    deviceDestroys: 0,
+    contextConfigures: 0,
+    contextConfigurations: [],
+    contextUnconfigures: 0,
+    formatQueries: 0,
+    resizeDisconnects: 0,
+    resizeObservations: [],
   };
 
   let resolveLost: (info: { reason: string; message: string }) => void = () => {};
@@ -80,16 +116,39 @@ export function installGpuStub(): GpuStub {
     };
   };
 
-  const makeTexture = (descriptor: { label?: string }) => ({
-    label: descriptor.label ?? '',
-    createView: () => ({ __target: descriptor.label ?? '' }),
-    destroy: () => {},
-  });
+  const makeTexture = (descriptor: {
+    label?: string;
+    size: readonly number[] | { width: number; height?: number };
+  }) => {
+    const width = 'width' in descriptor.size ? descriptor.size.width : descriptor.size[0]!;
+    const height =
+      'width' in descriptor.size ? (descriptor.size.height ?? 1) : (descriptor.size[1] ?? 1);
+    const record: TextureRecord = {
+      label: descriptor.label ?? '',
+      width,
+      height,
+      destroyed: false,
+    };
+    log.textures.push(record);
+    return {
+      label: record.label,
+      createView: () => ({ __target: record.label }),
+      destroy: () => {
+        record.destroyed = true;
+      },
+    };
+  };
 
   const device = {
-    limits: { maxStorageBufferBindingSize: 128 * 1024 * 1024, maxBufferSize: 256 * 1024 * 1024 },
+    limits: {
+      maxTextureDimension2D: 8192,
+      maxStorageBufferBindingSize: 128 * 1024 * 1024,
+      maxBufferSize: 256 * 1024 * 1024,
+    },
     lost,
-    destroy: () => {},
+    destroy: () => {
+      log.deviceDestroys++;
+    },
     createShaderModule: (descriptor: { code: string }) => ({ code: descriptor.code }),
     createRenderPipeline: (descriptor: { label?: string }) => ({
       label: descriptor.label ?? '',
@@ -162,13 +221,25 @@ export function installGpuStub(): GpuStub {
     },
   };
 
-  const context = {
-    configure: () => {},
+  let configureError: Error | undefined;
+
+  const context = () => ({
+    configure: (configuration: GPUCanvasConfiguration) => {
+      log.contextConfigures++;
+      log.contextConfigurations.push(configuration);
+      if (configureError !== undefined) throw configureError;
+    },
+    unconfigure: () => {
+      log.contextUnconfigures++;
+    },
     getCurrentTexture: () => ({
       label: 'canvas',
       createView: () => ({ __target: 'canvas' }),
     }),
-  };
+  });
+
+  let contextAvailable = true;
+  let formatError: Error | undefined;
 
   const originals = {
     navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator'),
@@ -184,8 +255,11 @@ export function installGpuStub(): GpuStub {
     configurable: true,
     value: {
       gpu: {
-        requestAdapter: async () => ({ requestDevice: async () => device }),
-        getPreferredCanvasFormat: () => 'bgra8unorm',
+        getPreferredCanvasFormat: () => {
+          log.formatQueries++;
+          if (formatError !== undefined) throw formatError;
+          return 'bgra8unorm';
+        },
       },
     },
   });
@@ -202,12 +276,40 @@ export function installGpuStub(): GpuStub {
     configurable: true,
     value: { STORAGE: 0x80, COPY_DST: 0x08, UNIFORM: 0x40 },
   });
+  let devicePixelObservationAvailable = true;
+  const resizeObservers: Array<{
+    readonly callback: ResizeObserverCallback;
+    readonly targets: Set<Element>;
+    active: boolean;
+  }> = [];
   Object.defineProperty(globalThis, 'ResizeObserver', {
     configurable: true,
     value: class {
-      observe(): void {}
-      disconnect(): void {}
-      unobserve(): void {}
+      readonly #record: (typeof resizeObservers)[number];
+
+      constructor(callback: ResizeObserverCallback) {
+        this.#record = { callback, targets: new Set(), active: true };
+        resizeObservers.push(this.#record);
+      }
+
+      observe(target: Element, options?: ResizeObserverOptions): void {
+        if (options?.box === 'device-pixel-content-box' && !devicePixelObservationAvailable) {
+          throw new TypeError('device-pixel-content-box unsupported');
+        }
+        this.#record.targets.add(target);
+        log.resizeObservations.push({ target, box: options?.box });
+      }
+
+      disconnect(): void {
+        if (!this.#record.active) return;
+        this.#record.active = false;
+        this.#record.targets.clear();
+        log.resizeDisconnects++;
+      }
+
+      unobserve(target: Element): void {
+        this.#record.targets.delete(target);
+      }
     },
   });
 
@@ -233,12 +335,47 @@ export function installGpuStub(): GpuStub {
     this: HTMLCanvasElement,
     kind: string,
   ) {
-    if (kind === 'webgpu') return context as unknown as RenderingContext;
+    if (kind === 'webgpu' && contextAvailable) {
+      return context() as unknown as RenderingContext;
+    }
     return null;
   } as typeof HTMLCanvasElement.prototype.getContext;
 
   return {
+    device: device as unknown as GPUDevice,
     log,
+    setTextureLimit: (limit) => {
+      device.limits.maxTextureDimension2D = limit;
+    },
+    setConfigureError: (error) => {
+      configureError = error;
+    },
+    setContextAvailable: (available) => {
+      contextAvailable = available;
+    },
+    setDevicePixelObservationAvailable: (available) => {
+      devicePixelObservationAvailable = available;
+    },
+    setFormatError: (error) => {
+      formatError = error;
+    },
+    resize: (target, devicePixels) => {
+      const entry = {
+        target,
+        ...(devicePixels
+          ? {
+              devicePixelContentBoxSize: [
+                { inlineSize: devicePixels[0], blockSize: devicePixels[1] },
+              ],
+            }
+          : {}),
+      } as unknown as ResizeObserverEntry;
+      for (const observer of resizeObservers) {
+        if (observer.active && observer.targets.has(target)) {
+          observer.callback([entry], {} as ResizeObserver);
+        }
+      }
+    },
     loseDevice: (reason = 'unknown', message = 'lost') => {
       resolveLost({ reason, message });
     },

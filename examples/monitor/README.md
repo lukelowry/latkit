@@ -12,7 +12,7 @@ pnpm install
 pnpm --filter @latkit/monitor-example dev
 ```
 
-The dev script builds `@latkit/colormaps` and `@latkit/monitor`, then starts Vite at `http://127.0.0.1:5190`.
+The dev script builds `@latkit/colormaps`, `@latkit/gpu`, and `@latkit/monitor`, then starts Vite at `http://127.0.0.1:5190`.
 
 ## Build
 
@@ -20,4 +20,4 @@ The dev script builds `@latkit/colormaps` and `@latkit/monitor`, then starts Vit
 pnpm --filter @latkit/monitor-example build
 ```
 
-The example depends on `@latkit/monitor` through the workspace package link, so it consumes the same `dist` entrypoint a downstream app would use.
+The example depends on `@latkit/gpu` and `@latkit/monitor` through workspace package links, so it consumes the same `dist` entrypoints a downstream app would use.

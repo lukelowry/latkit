@@ -1,5 +1,7 @@
 /// <reference types="@webgpu/types" />
 
+import { createPresentation, type Presentation } from '@latkit/gpu';
+
 import {
   encodeTopology,
   readEncodedTopologyInfo,
@@ -8,13 +10,7 @@ import {
 } from './topology/index.js';
 import { encodeSegments } from './segments/index.js';
 import { Renderer } from './webgpu/renderer.js';
-import { createGpuContext, destroyGpuContext, type GpuContext } from './webgpu/context.js';
-import {
-  createUniforms,
-  FLAG_DAYLIGHT,
-  FLAG_GRATICULE,
-  type ProjectionRegion,
-} from './webgpu/uniforms.js';
+import { createUniforms, FLAG_DAYLIGHT, FLAG_GRATICULE } from './webgpu/uniforms.js';
 import { FocusState, type FocusStyle, type RGBA } from './focus-state.js';
 import { VISUAL, planeHeightWorldScale } from './visual.js';
 import { ProjectionRig } from './camera/rig.js';
@@ -22,12 +18,12 @@ import { attachPointer, type HoverProbe } from './input/pointer.js';
 import { createSurface } from './input/surface.js';
 import type { Viewport } from './camera/projection.js';
 import { createChannels, type Channel } from './channels.js';
-import { RenderLoop, type RenderLoopDeps } from './webgpu/render-loop.js';
+import { RenderLoop } from './webgpu/render-loop.js';
 import { PROJECTIONS, type ProjectionMode } from './projections.js';
 import type { Borders } from './borders.js';
 import { createEmitter } from './emitter.js';
 import { edgeCountOf } from './topology/pack.js';
-import { Picker, type PickerDeps, type PickQuery, type PickResult } from './pick/picker.js';
+import { Picker, type PickQuery, type PickResult } from './pick/picker.js';
 
 /**
  * Initial network renderer configuration.
@@ -164,25 +160,25 @@ export interface Options {
    */
   selectedAlpha?: number;
   /**
-   * Additional hover radius around focused vertices, in device pixels.
+   * Additional hover radius around focused vertices, in CSS pixels.
    *
    * @defaultValue `6`.
    */
   vertexHoverPx?: number;
   /**
-   * Additional selection radius around focused vertices, in device pixels.
+   * Additional selection radius around focused vertices, in CSS pixels.
    *
    * @defaultValue `7`.
    */
   vertexSelectedPx?: number;
   /**
-   * Additional hover half-width around focused edges, in device pixels.
+   * Additional hover half-width around focused edges, in CSS pixels.
    *
    * @defaultValue `3.5`.
    */
   edgeHoverPx?: number;
   /**
-   * Additional selection half-width around focused edges, in device pixels.
+   * Additional selection half-width around focused edges, in CSS pixels.
    *
    * @defaultValue `5`.
    */
@@ -218,13 +214,13 @@ export type Events = {
  * Imperative controller for a WebGPU network canvas.
  *
  * @remarks
- * The controller owns the inserted canvas, pointer handlers, render loop, and
- * GPU resources. Call {@link Network.destroy} when the host removes the view.
- * Load topology before binding channels or reading projection availability.
+ * The controller borrows the canvas and device passed to {@link createNetwork};
+ * it never removes the canvas or destroys the device. It owns its pointer
+ * handlers, render loop, and renderer-created GPU resources. Call
+ * {@link Network.destroy} before removing the canvas. Load topology before
+ * binding channels or reading projection availability.
  */
 export interface Network {
-  /** Canvas element inserted into the supplied container. */
-  readonly element: HTMLCanvasElement;
   /** Projection modes currently supported by the loaded topology. */
   readonly projections: Readonly<{ flat: boolean; tilt: boolean; globe: boolean }>;
   /**
@@ -346,35 +342,29 @@ export interface Network {
   pause(): void;
   /** Resume rendering when the page and GPU device allow it. */
   resume(): void;
-  /** Release event handlers, GPU resources, and DOM surface state. */
+  /** Release renderer resources and DOM state without removing the canvas or destroying the device. */
   destroy(): void;
 }
 
-/** Internal factory seam used by controller behavior tests. */
+/** Internal collaborator seam used by controller behavior tests. */
 export interface ControllerDeps {
   createSurface: typeof createSurface;
-  createGpuContext: typeof createGpuContext;
-  destroyGpuContext: typeof destroyGpuContext;
-  createRenderer(gpu: GpuContext, msaa?: 1 | 4): Renderer;
-  createRenderLoop(deps: RenderLoopDeps): RenderLoop;
-  createRig(region: ProjectionRegion): ProjectionRig;
+  createPresentation(device: GPUDevice, canvas: HTMLCanvasElement): Presentation<HTMLCanvasElement>;
+  Renderer: typeof Renderer;
+  RenderLoop: typeof RenderLoop;
+  ProjectionRig: typeof ProjectionRig;
   attachPointer: typeof attachPointer;
-  createPicker(deps: PickerDeps): Picker;
+  Picker: typeof Picker;
 }
 
 const DEFAULT_CONTROLLER_DEPS: ControllerDeps = {
   createSurface,
-  createGpuContext,
-  destroyGpuContext,
-  /* v8 ignore next -- thin default dependency wrapper; Renderer is unit-tested directly. */
-  createRenderer: (gpu, msaa) => new Renderer(gpu, msaa),
-  /* v8 ignore next -- thin default dependency wrapper; RenderLoop is unit-tested directly. */
-  createRenderLoop: (deps) => new RenderLoop(deps),
-  /* v8 ignore next -- thin default dependency wrapper; ProjectionRig is unit-tested directly. */
-  createRig: (region) => new ProjectionRig(region),
+  createPresentation,
+  Renderer,
+  RenderLoop,
+  ProjectionRig,
   attachPointer,
-  /* v8 ignore next -- thin default dependency wrapper; Picker is unit-tested directly. */
-  createPicker: (deps) => new Picker(deps),
+  Picker,
 };
 
 /** Screen-space threshold used by shaders for vertex level-of-detail behavior. */
@@ -413,52 +403,128 @@ const DEFAULT_FOCUS_STYLE: FocusStyle = {
 };
 
 /**
- * Creates a WebGPU network renderer and appends its canvas to `container`.
+ * Creates a WebGPU network renderer on a caller-owned canvas.
  *
- * @param container - Host element that owns the inserted canvas.
+ * @param device - Borrowed Core WebGPU device. The caller retains ownership.
+ * @param canvas - Borrowed canvas used for presentation and pointer input.
  * @param options - Initial rendering and interaction options.
  * @returns A controller for loading topology, binding channels, and releasing GPU resources.
- * @throws Error when WebGPU initialization fails.
+ * @throws TypeError when `device` does not provide Core WebGPU features and limits.
+ * @throws Error when canvas presentation or renderer initialization fails.
  *
  * @example
  * ```ts
- * const network = await createNetwork(container, { graticule: true });
+ * const network = await createNetwork(device, canvas, { graticule: true });
  * network.load(topology);
  * network.fadeIn();
  * ```
  *
- * The returned controller owns the inserted canvas and must be destroyed when
- * the host no longer needs it.
+ * The returned controller owns its renderer resources, but not `canvas` or
+ * `device`. Destroy the controller before removing the canvas or destroying the
+ * borrowed device.
  */
 export async function createNetwork(
-  container: HTMLElement,
+  device: GPUDevice,
+  canvas: HTMLCanvasElement,
   options: Options = {},
 ): Promise<Network> {
-  return createNetworkWithDeps(container, options, DEFAULT_CONTROLLER_DEPS);
+  return createNetworkWithDeps(device, canvas, options, DEFAULT_CONTROLLER_DEPS);
 }
 
 /** @internal */
-export async function createNetworkWithDeps(
-  container: HTMLElement,
+export async function createNetworkWithDeps( // eslint-disable-line @typescript-eslint/require-await -- Match the public Promise contract.
+  device: GPUDevice,
+  canvas: HTMLCanvasElement,
   options: Options,
   deps: ControllerDeps,
 ): Promise<Network> {
-  const events = createEmitter<Events>();
-  const surface = deps.createSurface(container);
-  const canvas = surface.element;
-  canvas.style.opacity = '0';
-  canvas.setAttribute('aria-hidden', 'true');
-
-  let gpu: GpuContext;
+  assertDeviceLimits(device);
+  const lifecycle = createControllerLifecycle();
   try {
-    gpu = await deps.createGpuContext(canvas);
+    return createNetworkController(device, canvas, options, deps, lifecycle);
   } catch (error) {
-    surface.destroy();
-    events.clear();
+    lifecycle.destroy();
     throw error;
   }
+}
+
+/** Rejects devices known not to meet the renderer's Core WebGPU limits. */
+function assertDeviceLimits(device: GPUDevice): void {
+  const vertexStorage = device.limits.maxStorageBuffersInVertexStage;
+  if (vertexStorage !== undefined && vertexStorage < 3) {
+    throw new TypeError('A Core WebGPU device is required');
+  }
+}
+
+/** Resources registered transactionally while a controller is constructed. */
+interface ControllerLifecycle {
+  add(cleanup: () => void): void;
+  destroy(): void;
+}
+
+/** Creates an idempotent, reverse-order controller cleanup stack. */
+function createControllerLifecycle(): ControllerLifecycle {
+  const cleanups: Array<() => void> = [];
+  let destroyed = false;
+
+  return {
+    add(cleanup) {
+      cleanups.push(cleanup);
+    },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      for (let i = cleanups.length - 1; i >= 0; i--) {
+        try {
+          cleanups[i]!();
+        } catch {
+          // Cleanup is best-effort so one resource cannot strand the remainder.
+        }
+      }
+      cleanups.length = 0;
+    },
+  };
+}
+
+/** Relays one device-loss notification without retaining a destroyed controller. */
+function forwardDeviceLoss(
+  device: GPUDevice,
+  listener: (info: GPUDeviceLostInfo) => void,
+): () => void {
+  let active: ((info: GPUDeviceLostInfo) => void) | undefined = listener;
+  void device.lost.then((info) => active?.(info));
+  return () => {
+    active = undefined;
+  };
+}
+
+/** Creates the controller after the Promise boundary has established transactional cleanup. */
+function createNetworkController(
+  device: GPUDevice,
+  canvas: HTMLCanvasElement,
+  options: Options,
+  deps: ControllerDeps,
+  lifecycle: ControllerLifecycle,
+): Network {
+  const events = createEmitter<Events>();
+  lifecycle.add(events.clear);
+  const surface = deps.createSurface(canvas);
+  lifecycle.add(() => surface.destroy());
+  const originalCanvasState = {
+    opacity: canvas.style.opacity,
+    transition: canvas.style.transition,
+  };
+  canvas.style.opacity = '0';
+  lifecycle.add(() => {
+    canvas.style.opacity = originalCanvasState.opacity;
+    canvas.style.transition = originalCanvasState.transition;
+  });
+
+  const presentation = deps.createPresentation(device, canvas);
+  lifecycle.add(() => presentation.destroy());
   const uniforms = createUniforms();
-  const renderer = deps.createRenderer(gpu, options.msaa);
+  const renderer = new deps.Renderer(presentation, options.msaa);
+  lifecycle.add(() => renderer.destroy());
 
   /**
    * First-paint gate for fadeIn requests.
@@ -469,8 +535,8 @@ export async function createNetworkWithDeps(
   let hasPainted = false;
   let pendingFadeMs: number | null = null;
 
-  const loop = deps.createRenderLoop({
-    canvas,
+  const loop = new deps.RenderLoop({
+    presentation,
     uniforms,
     renderer,
     onZoom: (atFitView) => stageZoomNotice(atFitView),
@@ -478,22 +544,24 @@ export async function createNetworkWithDeps(
     onFrame: (sizeSettled) => resolveHover(sizeSettled),
     onPaint: () => onSuccessfulPaint(),
   });
+  lifecycle.add(() => loop.destroy());
 
   renderer.onProjectionPipelinesReady = () => loop.wake();
   /** Schedule a frame for a visual state change. */
   const repaint = (): void => loop.wake();
 
-  const rig = deps.createRig(uniforms.projection);
+  const rig = new deps.ProjectionRig(uniforms.projection);
   loop.setCamera(rig.camera);
 
   let deviceLost = false;
-  void gpu.device.lost.then((info) => {
-    if (deviceLost) return;
-    deviceLost = true;
-    if (info.reason === 'destroyed') return;
-    loop.pause();
-    events.emit('deviceLost', info.reason ?? 'unknown', info.message || 'WebGPU device was lost');
-  });
+  lifecycle.add(
+    forwardDeviceLoss(device, (info) => {
+      if (deviceLost) return;
+      deviceLost = true;
+      loop.pause();
+      events.emit('deviceLost', info.reason ?? 'unknown', info.message || 'WebGPU device was lost');
+    }),
+  );
 
   let consumerPaused = false;
   let pageVisible = typeof document !== 'undefined' ? !document.hidden : true;
@@ -510,6 +578,7 @@ export async function createNetworkWithDeps(
     syncRenderLoopActivity();
   };
   document.addEventListener('visibilitychange', onVisibilityChange);
+  lifecycle.add(() => document.removeEventListener('visibilitychange', onVisibilityChange));
 
   /** Mutable display state mirrored into uniforms and renderer visibility. */
   const display = {
@@ -559,7 +628,7 @@ export async function createNetworkWithDeps(
   let sceneGeneration = 0;
   let destroyed = false;
 
-  /** Current canvas viewport in device pixels. */
+  /** Current canvas viewport in CSS pixels. */
   const vp = (): Viewport => surface.size();
 
   const channels = createChannels(uniforms, renderer, {
@@ -573,7 +642,7 @@ export async function createNetworkWithDeps(
    *
    * Camera motion updates uniforms and unprojection but never mutates the index.
    */
-  const picker = deps.createPicker({
+  const picker = new deps.Picker({
     uniforms,
     mode: () => rig.mode,
     unproject: (sx, sy, view) => rig.camera.screenToWorld(sx, sy, view),
@@ -600,6 +669,7 @@ export async function createNetworkWithDeps(
   const sunTimer = setInterval(() => {
     if (display.daylight && rig.mode === 'globe') loop.wake();
   }, SUN_REFRESH_MS);
+  lifecycle.add(() => clearInterval(sunTimer));
 
   const pointerCleanup = deps.attachPointer(surface, (intent) => {
     switch (intent.kind) {
@@ -665,12 +735,10 @@ export async function createNetworkWithDeps(
         intent satisfies never;
     }
   });
+  lifecycle.add(() => pointerCleanup.destroy());
 
   /** Public controller facade; all methods keep state changes behind repaint gates. */
   const api: Network = {
-    get element() {
-      return canvas;
-    },
     get projections() {
       return projections;
     },
@@ -788,17 +856,10 @@ export async function createNetworkWithDeps(
       readyHoverNotice = undefined;
       pendingZoomNotice = undefined;
       readyZoomNotice = undefined;
-      clearInterval(sunTimer);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-      loop.destroy();
       topology = null;
       topologyBounds = null;
       topologyCharacteristicLength = null;
-      pointerCleanup.destroy();
-      renderer.destroy();
-      deps.destroyGpuContext(gpu);
-      surface.destroy();
-      events.clear();
+      lifecycle.destroy();
     },
   };
 
