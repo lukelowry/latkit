@@ -1,6 +1,28 @@
 /** Numeric channel domain expressed as `[min, max]`. */
 export type ChannelRange = readonly [number, number];
 
+/** Validate a public channel domain or output range without retaining it. */
+export function validateChannelRange(
+  value: unknown,
+  name = 'network channel range',
+): asserts value is ChannelRange {
+  if (!Array.isArray(value) || value.length !== 2) {
+    throw new TypeError(`${name} must contain exactly two numbers`);
+  }
+  const tuple = value as readonly unknown[];
+  const minimum = tuple[0];
+  const maximum = tuple[1];
+  if (typeof minimum !== 'number' || typeof maximum !== 'number') {
+    throw new TypeError(`${name} must contain exactly two numbers`);
+  }
+  if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) {
+    throw new RangeError(`${name} values must be finite`);
+  }
+  if (minimum > maximum) {
+    throw new RangeError(`${name} minimum must not exceed its maximum`);
+  }
+}
+
 /** Resolve the active input range, giving explicit clamps precedence. */
 export function effectiveRange(
   dataRange: ChannelRange | null | undefined,

@@ -131,6 +131,7 @@ describe('createNetwork controller', () => {
 
   it('applies construction options through renderer and uniforms', async () => {
     const h = await makeHarness({
+      msaa: 4,
       vertices: false,
       earthAxis: false,
       graticule: true,
@@ -156,6 +157,22 @@ describe('createNetwork controller', () => {
     expectRgbaClose(h.loop.uniforms.surfaceColor, [0.3, 0.4, 0.5, 1]);
     expectRgbaClose(h.loop.uniforms.borderColor, [0.4, 0.5, 0.6, 1]);
     expect(h.renderer.writeColormap).toHaveBeenCalledOnce();
+    expect(h.deps.Renderer).toHaveBeenCalledOnce();
+    expect(h.deps.Renderer).toHaveBeenCalledWith(h.presentation, 4);
+  });
+
+  it('validates construction options before creating renderer resources', async () => {
+    let deps!: ControllerDeps;
+
+    await expect(
+      createControllerHarness({ vertices: 1 } as unknown as Options, (next) => {
+        deps = next;
+      }),
+    ).rejects.toThrow(TypeError);
+
+    expect(deps.createSurface).not.toHaveBeenCalled();
+    expect(deps.createPresentation).not.toHaveBeenCalled();
+    expect(deps.Renderer).not.toHaveBeenCalled();
   });
 
   it('threads setOptions through renderer state and projection flags', async () => {
@@ -167,6 +184,78 @@ describe('createNetwork controller', () => {
     expect(h.renderer.visibility.earthAxis).toBe(false);
     expect(h.loop.uniforms.projection.flags & FLAG_GRATICULE).toBe(FLAG_GRATICULE);
     expect(h.loop.wake).toHaveBeenCalled();
+  });
+
+  it('filters construction-only msaa from live option patches', async () => {
+    const h = await makeHarness({ msaa: 4 });
+    h.renderer.setVisible.mockClear();
+    h.loop.wake.mockClear();
+
+    h.network.setOptions({ msaa: 1, vertices: false });
+
+    expect(h.deps.Renderer).toHaveBeenCalledOnce();
+    expect(h.deps.Renderer).toHaveBeenCalledWith(h.presentation, 4);
+    expect(h.renderer.visibility.vertices).toBe(false);
+    expect(h.renderer.setVisible).toHaveBeenCalledOnce();
+    expect(h.loop.wake).toHaveBeenCalledOnce();
+  });
+
+  it('keeps empty and construction-only live option patches inert', async () => {
+    const h = await makeHarness({ msaa: 4 });
+    h.renderer.setVisible.mockClear();
+    h.loop.wake.mockClear();
+
+    h.network.setOptions({});
+    h.network.setOptions({ msaa: 1 });
+
+    expect(h.renderer.setVisible).not.toHaveBeenCalled();
+    expect(h.loop.wake).not.toHaveBeenCalled();
+  });
+
+  it('validates a complete live patch before mutating renderer state', async () => {
+    const h = await makeHarness();
+    h.renderer.setVisible.mockClear();
+    h.renderer.writeColormap.mockClear();
+    h.loop.wake.mockClear();
+    const uniformState = new Uint8Array(h.loop.uniforms.raw).slice();
+    const visibility = { ...h.renderer.visibility };
+
+    expect(() => h.network.setOptions({ vertices: false, terminatorWidth: -1 })).toThrow(
+      RangeError,
+    );
+
+    expect(h.renderer.visibility).toEqual(visibility);
+    expect(new Uint8Array(h.loop.uniforms.raw)).toEqual(uniformState);
+    expect(h.renderer.setVisible).not.toHaveBeenCalled();
+    expect(h.renderer.writeColormap).not.toHaveBeenCalled();
+    expect(h.loop.wake).not.toHaveBeenCalled();
+  });
+
+  it('samples a colormap completely before applying any part of its option patch', async () => {
+    const h = await makeHarness();
+    h.renderer.setVisible.mockClear();
+    h.renderer.writeColormap.mockClear();
+    h.loop.wake.mockClear();
+    const uniformState = new Uint8Array(h.loop.uniforms.raw).slice();
+    const visibility = { ...h.renderer.visibility };
+    const failure = new Error('colormap failed');
+
+    expect(() =>
+      h.network.setOptions({
+        vertices: false,
+        baseColor: [1, 0, 0, 1],
+        colormap: (t) => {
+          if (t > 0) throw failure;
+          return [0, 0, 0];
+        },
+      }),
+    ).toThrow(failure);
+
+    expect(h.renderer.visibility).toEqual(visibility);
+    expect(new Uint8Array(h.loop.uniforms.raw)).toEqual(uniformState);
+    expect(h.renderer.setVisible).not.toHaveBeenCalled();
+    expect(h.renderer.writeColormap).not.toHaveBeenCalled();
+    expect(h.loop.wake).not.toHaveBeenCalled();
   });
 
   it('threads focus options through focus uniforms', async () => {
@@ -216,6 +305,21 @@ describe('createNetwork controller', () => {
     expect(h.loop.setBounds).toHaveBeenCalled();
     expect(h.loop.requestFit).toHaveBeenCalled();
     expect(h.loop.frameNow).toHaveBeenCalled();
+  });
+
+  it('exposes complete immutable projection records and replaces them after load', async () => {
+    const h = await makeHarness();
+    const beforeLoad = h.network.projections;
+
+    expect(Object.keys(beforeLoad)).toEqual(['flat', 'tilt', 'globe']);
+    expect(Object.isFrozen(beforeLoad)).toBe(true);
+    expect(() => Object.assign(beforeLoad, { flat: !beforeLoad.flat })).toThrow(TypeError);
+
+    h.network.load(geographicTopology());
+
+    expect(h.network.projections).not.toBe(beforeLoad);
+    expect(h.network.projections).toEqual({ flat: true, tilt: true, globe: true });
+    expect(Object.isFrozen(h.network.projections)).toBe(true);
   });
 
   it('keeps renderer, loop, and picker callbacks wired to live controller state', async () => {
@@ -702,6 +806,23 @@ describe('createNetwork controller', () => {
 
     expect(h.loop.pause).toHaveBeenCalled();
     expect(events).toEqual([['unknown', 'lost for test']]);
+  });
+
+  it('immediately notifies late device-loss subscribers exactly once', async () => {
+    const h = await makeHarness();
+    h.deviceLost.resolve({ reason: 'unknown', message: 'already lost' } as GPUDeviceLostInfo);
+    await flushMicrotasks();
+    const late = vi.fn<Events['deviceLost']>();
+
+    const unsubscribe = h.network.on('deviceLost', late);
+
+    expect(late).toHaveBeenCalledOnce();
+    expect(late).toHaveBeenCalledWith('unknown', 'already lost');
+    expect(h.events.deviceLost).toEqual([['unknown', 'already lost']]);
+    await flushMicrotasks();
+    expect(late).toHaveBeenCalledOnce();
+
+    unsubscribe();
   });
 
   it('forwards destruction of a borrowed device while the controller is live', async () => {

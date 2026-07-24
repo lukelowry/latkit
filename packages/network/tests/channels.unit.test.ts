@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createChannels, packBound, type Channel } from '../src/channels.js';
+import type { ChannelRange } from '../src/range.js';
 import { createUniforms } from '../src/webgpu/uniforms.js';
 import { Renderer } from '../src/webgpu/renderer.js';
 import { encodeSegments } from '../src/segments/index.js';
@@ -66,8 +67,6 @@ describe('createChannels', () => {
     expect(uniforms.channel.heightScale).toBeCloseTo(1 / 8);
     expect(uniforms.channel.heightOutMin).toBe(0);
     expect(uniforms.channel.heightOutScale).toBe(1);
-    expect(channels.dataRange('vertexHeight')).toEqual([2, 10]);
-    expect(channels.outputRange('vertexHeight')).toEqual([0, 1]);
 
     channels.setRange('vertexHeight', [4, 6]);
     expect(uniforms.channel.heightCenter).toBe(4);
@@ -78,9 +77,93 @@ describe('createChannels', () => {
     expect(uniforms.channel.heightScale).toBeCloseTo(1 / 8);
 
     channels.setRange('vertexHeight', [2, 10]);
-    expect(renderer.writeChannel).toHaveBeenCalledTimes(1);
+    expect(renderer.writeChannel).not.toHaveBeenCalled();
     channels.setRange('edgeColor', null);
     expect(uniforms.channel.eColorScale).toBe(0);
+  });
+
+  it('owns caller-supplied domains, output ranges, and later domain overrides', () => {
+    const { channels, uniforms } = make();
+    const domain: [number, number] = [1, 3];
+    const output: [number, number] = [0, 2];
+
+    channels.set('vertexHeight', new Float32Array([1, 2, 3]), domain, output);
+    domain[0] = 100;
+    output[1] = 100;
+
+    expect(uniforms.channel.heightCenter).toBe(1);
+    expect(uniforms.channel.heightScale).toBeCloseTo(1 / 2);
+    expect(uniforms.channel.heightOutMin).toBe(0);
+    expect(uniforms.channel.heightOutScale).toBe(2);
+
+    const override: [number, number] = [2, 4];
+    channels.setRange('vertexHeight', override);
+    override[0] = 20;
+    override[1] = 40;
+    channels.set('vertexHeight', new Float32Array([3, 4, 5]), [3, 5], [0, 2]);
+
+    expect(uniforms.channel.heightCenter).toBe(2);
+    expect(uniforms.channel.heightScale).toBeCloseTo(1 / 2);
+  });
+
+  it('rejects invalid replacement ranges before mutating CPU, GPU, or uniform state', () => {
+    const { channels, uniforms, renderer } = make();
+    const original = new Float32Array([1, 2, 3]);
+    channels.set('vertexHeight', original, [1, 3], [0, 2]);
+
+    const invalid: ReadonlyArray<
+      readonly [label: string, domain: unknown, output: unknown, ErrorType: typeof Error]
+    > = [
+      ['short domain', [1], [0, 2], TypeError],
+      ['nonnumeric domain', [1, '3'], [0, 2], TypeError],
+      ['nonfinite domain', [1, Infinity], [0, 2], RangeError],
+      ['reversed domain', [3, 1], [0, 2], RangeError],
+      ['short output', [1, 3], [0], TypeError],
+      ['nonfinite output', [1, 3], [0, Number.NaN], RangeError],
+      ['reversed output', [1, 3], [2, 0], RangeError],
+    ];
+
+    for (const [label, domain, output, ErrorType] of invalid) {
+      renderer.relayout.mockClear();
+      renderer.writeChannel.mockClear();
+      const uniformState = new Uint8Array(uniforms.raw).slice();
+      const replacement = new Float32Array([4, 5, 6]);
+
+      expect(
+        () =>
+          channels.set('vertexHeight', replacement, domain as ChannelRange, output as ChannelRange),
+        label,
+      ).toThrow(ErrorType);
+      expect(channels.values('vertexHeight'), label).toBe(original);
+      expect(new Uint8Array(uniforms.raw), label).toEqual(uniformState);
+      expect(renderer.relayout, label).not.toHaveBeenCalled();
+      expect(renderer.writeChannel, label).not.toHaveBeenCalled();
+    }
+  });
+
+  it('validates domain overrides atomically while edgeDash remains range-free', () => {
+    const { channels, uniforms, renderer } = make();
+    channels.set('vertexColor', new Float32Array([0, 0.5, 1]), [0, 1]);
+    renderer.relayout.mockClear();
+    renderer.writeChannel.mockClear();
+
+    const invalid: ReadonlyArray<readonly [unknown, typeof Error]> = [
+      [[0], TypeError],
+      [[0, '1'], TypeError],
+      [[0, Number.NaN], RangeError],
+      [[1, 0], RangeError],
+    ];
+    for (const [range, ErrorType] of invalid) {
+      const uniformState = new Uint8Array(uniforms.raw).slice();
+      expect(() => channels.setRange('vertexColor', range as ChannelRange)).toThrow(ErrorType);
+      expect(new Uint8Array(uniforms.raw)).toEqual(uniformState);
+    }
+    expect(renderer.relayout).not.toHaveBeenCalled();
+    expect(renderer.writeChannel).not.toHaveBeenCalled();
+
+    expect(() =>
+      channels.setRange('edgeDash', [Number.NaN, -Infinity] as ChannelRange),
+    ).not.toThrow();
   });
 
   it('updates existing channel values without reallocating storage', () => {
@@ -97,12 +180,35 @@ describe('createChannels', () => {
     expect(uniforms.channel.vColorScale).toBe(1);
   });
 
+  it('leaves CPU and uniform state unchanged when renderer mutations fail', () => {
+    const { channels, renderer, uniforms } = make();
+    const original = new Float32Array([0, 0.5, 1]);
+    channels.set('vertexColor', original, [0, 1]);
+
+    const beforeReplacement = new Uint8Array(uniforms.raw).slice();
+    renderer.writeChannel.mockImplementationOnce(() => {
+      throw new Error('upload failed');
+    });
+    expect(() => channels.set('vertexColor', new Float32Array([1, 0.5, 0]), [10, 20])).toThrow(
+      'upload failed',
+    );
+    expect(channels.values('vertexColor')).toBe(original);
+    expect(new Uint8Array(uniforms.raw)).toEqual(beforeReplacement);
+
+    const beforeClear = new Uint8Array(uniforms.raw).slice();
+    renderer.relayout.mockImplementationOnce(() => {
+      throw new Error('relayout failed');
+    });
+    expect(() => channels.clear('vertexColor')).toThrow('relayout failed');
+    expect(channels.values('vertexColor')).toBe(original);
+    expect(new Uint8Array(uniforms.raw)).toEqual(beforeClear);
+  });
+
   it('falls back to a neutral height domain when no finite values are present', () => {
     const { channels, uniforms } = make();
 
     channels.set('vertexHeight', new Float32Array([Number.NaN, Infinity, -Infinity]), null);
 
-    expect(channels.dataRange('vertexHeight')).toEqual([0, 1]);
     expect(uniforms.channel.heightCenter).toBe(0);
     expect(uniforms.channel.heightScale).toBe(1);
   });
@@ -120,7 +226,6 @@ describe('createChannels', () => {
 
     channels.clear('vertexSize');
     expect(channels.values('vertexSize')).toBeNull();
-    expect(channels.dataRange('vertexSize')).toBeNull();
   });
 
   it('resets all channels to neutral uniforms', () => {
@@ -136,7 +241,6 @@ describe('createChannels', () => {
     expect(uniforms.channel.heightOutScale).toBe(0);
     expect(uniforms.channel.eColorMode).toBe(0);
     expect(channels.values('vertexHeight')).toBeNull();
-    expect(channels.dataRange('vertexHeight')).toBeNull();
   });
 
   it('keeps dash range-free and controls dash period as the off mode', () => {
@@ -144,7 +248,6 @@ describe('createChannels', () => {
 
     channels.set('edgeDash', new Float32Array([1, 0]), [100, 200]);
     expect(uniforms.geometry.dashPeriod).toBeGreaterThan(0);
-    expect(channels.dataRange('edgeDash')).toBeNull();
 
     channels.clear('edgeDash');
     expect(uniforms.geometry.dashPeriod).toBe(0);

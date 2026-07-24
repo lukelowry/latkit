@@ -2,13 +2,40 @@
 export { createNetwork } from './controller.js';
 
 /** Public network controller types and construction options. */
-export type { Network, Options, Events } from './controller.js';
+export type { Network, Events } from './controller.js';
+
+/** Canonical renderer options, defaults, validation kinds, and mutation lifecycle. */
+export { DEFAULT_OPTIONS, OPTION_DEFINITIONS, validateOption, validateOptions } from './options.js';
+export type {
+  ConstructionOption,
+  OptionDefinition,
+  OptionKeyByLifecycle,
+  Options,
+  ResolvedOptions,
+  RuntimeOption,
+} from './options.js';
 
 /** Rendering-channel names and normalization options. */
-export type { Channel } from './channels.js';
+export { CHANNEL_DEFINITIONS } from './channels.js';
+export type { Channel, ChannelDefinition, ChannelMap, ChannelScope } from './channels.js';
+
+/** Channel-domain measurement shared by channel-binding consumers. */
+export { finiteExtent, validateChannelRange } from './range.js';
+export type { ChannelRange } from './range.js';
+
+/** Projection mode names accepted by the network controller. */
+export { PROJECTION_MODES } from './projections.js';
+export type { ProjectionMode } from './projections.js';
+
+/** Shared view-style primitives used by renderer option consumers. */
+export type { FocusEndpointMode, RGBA } from './focus-state.js';
 
 /** Input graph topology format passed to {@link Network.load}. */
 export type { Topology } from './topology/types.js';
 
+/** Validate graph topology without creating renderer resources. */
+export { validateTopology } from './topology/validate.js';
+
 /** Optional geographic border overlay payload. */
+export { validateBorders } from './borders.js';
 export type { Borders } from './borders.js';

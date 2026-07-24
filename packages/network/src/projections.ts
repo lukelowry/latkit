@@ -14,8 +14,11 @@ import globeBgSrc from './shaders/projections/globe-background.wgsl?raw';
 import globeRaySrc from './shaders/projections/globe-ray.wgsl?raw';
 import daylightSrc from './shaders/projections/globe-daylight.wgsl?raw';
 
+/** Canonical projection modes supported by the network renderer. */
+export const PROJECTION_MODES = Object.freeze(['flat', 'tilt', 'globe'] as const);
+
 /** Projection modes supported by the network renderer. */
-export type ProjectionMode = 'flat' | 'tilt' | 'globe';
+export type ProjectionMode = (typeof PROJECTION_MODES)[number];
 
 /**
  * Registry entry for one projection's camera factory, shader fragments, and
@@ -121,7 +124,7 @@ function canHostGlobe(bounds: Bounds | null, characteristicLength: number | null
 }
 
 /** Projection registry consumed by the controller, rig, renderer, and availability checks. */
-export const PROJECTIONS: Record<ProjectionMode, ProjectionDef> = {
+export const PROJECTIONS = Object.freeze({
   flat: {
     mode: 'flat',
     create: createFlatProjection,
@@ -165,4 +168,4 @@ export const PROJECTIONS: Record<ProjectionMode, ProjectionDef> = {
     haloDepthCompare: 'less-equal',
     canUse: canHostGlobe,
   },
-};
+} satisfies Record<ProjectionMode, ProjectionDef>);

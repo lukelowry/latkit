@@ -666,23 +666,10 @@ export function createUniforms(): Uniforms {
   focus.selectedVertex = -1;
   focus.selectedEdge = -1;
   focus.setEndpointIds(-1, -1, -1, -1);
-  focus.flags = FLAG_FOCUS_ENABLED;
-  focus.hoverAlpha = 0.5;
-  focus.selectedAlpha = 0.82;
-  focus.vertexHoverUnderlayPx = 6;
-  focus.vertexSelectedUnderlayPx = 7;
-  focus.edgeHoverUnderlayPx = 3.5;
-  focus.edgeSelectedUnderlayPx = 5;
 
   const gridColor = new Float32Array(buf, 304, 4);
   const surfaceColor = new Float32Array(buf, 320, 4);
   const borderColor = new Float32Array(buf, 336, 4);
-  // Defaults preserve the prior look when no host pushes a theme: the former hardcoded grid/surface
-  // constants plus a warm mid-neutral for borders (the host overrides all three on mount). The
-  // void/sky is a transparent clear (renderer), so the themed DOM shows through.
-  gridColor.set([0.45, 0.48, 0.54, 1]);
-  surfaceColor.set([0.15, 0.16, 0.19, 1]);
-  borderColor.set([0.52, 0.5, 0.49, 1]);
 
   return {
     raw: buf,

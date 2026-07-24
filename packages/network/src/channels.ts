@@ -1,24 +1,32 @@
 import type { Uniforms } from './webgpu/uniforms.js';
-import { effectiveRange, finiteExtent, linearNorm, type ChannelRange } from './range.js';
+import {
+  effectiveRange,
+  finiteExtent,
+  linearNorm,
+  validateChannelRange,
+  type ChannelRange,
+} from './range.js';
+
+/** Canonical ordered channel metadata shared by Network consumers. */
+export const CHANNEL_DEFINITIONS = Object.freeze([
+  Object.freeze({ key: 'vertexColor', scope: 'vertex', map: 'colormap' }),
+  Object.freeze({ key: 'vertexHeight', scope: 'vertex', map: 'height' }),
+  Object.freeze({ key: 'vertexSize', scope: 'vertex', map: 'size' }),
+  Object.freeze({ key: 'edgeColor', scope: 'edge', map: 'colormap' }),
+  Object.freeze({ key: 'edgeDash', scope: 'edge', map: 'dash' }),
+] as const);
+
+/** Static metadata for one supported channel. */
+export type ChannelDefinition = (typeof CHANNEL_DEFINITIONS)[number];
 
 /** Named per-vertex or per-edge data stream that can affect rendering. */
-export type Channel = 'vertexColor' | 'vertexHeight' | 'vertexSize' | 'edgeColor' | 'edgeDash';
+export type Channel = ChannelDefinition['key'];
 
 /** Storage cardinality used when packing channel data. */
-type ChannelScope = 'vertex' | 'edge';
+export type ChannelScope = ChannelDefinition['scope'];
 
 /** Shader interpretation for a packed channel stream. */
-type ChannelMap = 'colormap' | 'height' | 'size' | 'dash';
-
-/** Static metadata for one supported channel key. */
-interface ChannelDef {
-  /** Public channel name. */
-  readonly key: Channel;
-  /** Whether the channel contains one value per vertex or edge. */
-  readonly scope: ChannelScope;
-  /** Rendering behavior driven by the channel values. */
-  readonly map: ChannelMap;
-}
+export type ChannelMap = ChannelDefinition['map'];
 
 /** Storage slot assigned to one packed channel in the shared channel buffer. */
 export interface ChannelSlot {
@@ -28,17 +36,10 @@ export interface ChannelSlot {
   readonly count: number;
 }
 
-/** Ordered channel layout; this order is the packing ABI for channel offsets. */
-const CHANNELS: readonly ChannelDef[] = [
-  { key: 'vertexColor', scope: 'vertex', map: 'colormap' },
-  { key: 'vertexHeight', scope: 'vertex', map: 'height' },
-  { key: 'vertexSize', scope: 'vertex', map: 'size' },
-  { key: 'edgeColor', scope: 'edge', map: 'colormap' },
-  { key: 'edgeDash', scope: 'edge', map: 'dash' },
-];
-
 /** Fast lookup for validating and resolving channel metadata. */
-const CHANNEL_BY_KEY = new Map<Channel, ChannelDef>(CHANNELS.map((def) => [def.key, def]));
+const CHANNEL_BY_KEY = new Map<Channel, ChannelDefinition>(
+  CHANNEL_DEFINITIONS.map((definition) => [definition.key, definition]),
+);
 
 /** Default screen-space dash period used when edgeDash is enabled. */
 const DASH_PERIOD_PX = 12;
@@ -52,7 +53,7 @@ const MODE_COLORMAP = 1;
 /**
  * Computes a dense storage layout for the currently bound channels.
  *
- * Channels are packed in stable {@link CHANNELS} order so uniform offsets stay
+ * Channels are packed in stable {@link CHANNEL_DEFINITIONS} order so uniform offsets stay
  * deterministic across relayouts.
  */
 export function packBound(
@@ -62,7 +63,7 @@ export function packBound(
 ): { slot: Map<Channel, ChannelSlot>; words: number } {
   const slot = new Map<Channel, ChannelSlot>();
   let words = 0;
-  for (const def of CHANNELS) {
+  for (const def of CHANNEL_DEFINITIONS) {
     if (!bound.has(def.key)) continue;
     const count = def.scope === 'vertex' ? vertexCount : edgeCount;
     slot.set(def.key, { offset: words, count });
@@ -72,7 +73,7 @@ export function packBound(
 }
 
 /** Returns static metadata for a channel or throws on impossible input. */
-function channelDef(channel: Channel): ChannelDef {
+function channelDef(channel: Channel): ChannelDefinition {
   const def = CHANNEL_BY_KEY.get(channel);
   if (!def) throw new Error(`unknown network channel ${String(channel)}`);
   return def;
@@ -85,6 +86,7 @@ interface ChannelRenderer {
     bound: ReadonlySet<Channel>,
     vertexCount: number,
     edgeCount: number,
+    values?: ReadonlyMap<Channel, Float32Array>,
   ): ReadonlyMap<Channel, ChannelSlot>;
   /** Upload values into an already assigned channel slot. */
   writeChannel(channel: Channel, values: Float32Array): void;
@@ -117,10 +119,6 @@ export interface Channels {
   setRange(channel: Channel, range: ChannelRange | null): void;
   /** Return the last array bound to a channel, or null when unbound. */
   values(channel: Channel): Float32Array | null;
-  /** Return the measured input domain for a channel, or null when unavailable. */
-  dataRange(channel: Channel): ChannelRange | null;
-  /** Return the output range used by a height channel, or null for other channels. */
-  outputRange(channel: Channel): ChannelRange | null;
 }
 
 /**
@@ -161,31 +159,44 @@ export function createChannels(
     validateLength(channel, values);
     const def = channelDef(channel);
     const isNew = !bound.has(channel);
-    current.set(channel, values);
-    if (def.map !== 'dash') {
-      data.set(channel, resolveDomain(def, values, domain));
-      if (def.map === 'height') output.set(channel, copyRange(range ?? [0, 1]));
-    }
+    const nextDomain = def.map === 'dash' ? null : resolveDomain(def, values, domain);
+    const nextOutput = def.map === 'height' ? checkedRange(range ?? [0, 1], 'height range') : null;
     if (isNew) {
+      const nextCurrent = new Map(current);
+      nextCurrent.set(channel, values);
+      const nextBound = new Set(bound);
+      nextBound.add(channel);
+      const slots = renderer.relayout(nextBound, deps.vertexCount(), deps.edgeCount(), nextCurrent);
+      writeOffsets(nextBound, slots);
+      current.set(channel, values);
       bound.add(channel);
-      reflow(); // relayout re-uploads every bound channel, this one included
     } else {
       renderer.writeChannel(channel, values);
+      current.set(channel, values);
     }
+    if (nextDomain) data.set(channel, nextDomain);
+    if (nextOutput) output.set(channel, nextOutput);
     setMode(channel, true);
     writeScalars(channel);
   }
 
   function clear(channel: Channel): void {
+    if (bound.has(channel)) {
+      const nextCurrent = new Map(current);
+      nextCurrent.delete(channel);
+      const nextBound = new Set(bound);
+      nextBound.delete(channel);
+      const slots = renderer.relayout(nextBound, deps.vertexCount(), deps.edgeCount(), nextCurrent);
+      writeOffsets(nextBound, slots);
+    }
     setMode(channel, false);
     current.delete(channel);
     data.delete(channel);
     domainOverride.delete(channel);
     output.delete(channel);
-    const wasBound = bound.delete(channel);
+    bound.delete(channel);
     writeOffset(channel, 0);
     writeScalars(channel);
-    if (wasBound) reflow();
   }
 
   function reset(): void {
@@ -194,7 +205,7 @@ export function createChannels(
     domainOverride.clear();
     output.clear();
     bound.clear();
-    for (const def of CHANNELS) {
+    for (const def of CHANNEL_DEFINITIONS) {
       setMode(def.key, false);
       writeOffset(def.key, 0);
       writeScalars(def.key);
@@ -205,8 +216,9 @@ export function createChannels(
     if (channelDef(channel).map === 'dash') return;
     const previous = domainOverride.get(channel) ?? null;
     if (range) {
-      if (sameRange(previous, range)) return;
-      domainOverride.set(channel, copyRange(range));
+      const checked = checkedRange(range, `${channel} domain`);
+      if (sameRange(previous, checked)) return;
+      domainOverride.set(channel, checked);
     } else {
       if (!previous) return;
       domainOverride.delete(channel);
@@ -214,15 +226,17 @@ export function createChannels(
     writeScalars(channel);
   }
 
-  function reflow(): void {
-    const slots = renderer.relayout(bound, deps.vertexCount(), deps.edgeCount());
-    for (const channel of bound) {
+  function writeOffsets(
+    channels: ReadonlySet<Channel>,
+    slots: ReadonlyMap<Channel, ChannelSlot>,
+  ): void {
+    for (const channel of channels) {
       const slot = slots.get(channel);
       if (!slot) throw new Error(`network channel ${channel} has no storage slot`);
-      writeOffset(channel, slot.offset);
     }
-    for (const channel of bound) {
-      renderer.writeChannel(channel, current.get(channel)!);
+    for (const channel of channels) {
+      const slot = slots.get(channel)!;
+      writeOffset(channel, slot.offset);
     }
   }
 
@@ -309,7 +323,7 @@ export function createChannels(
       }
       default:
         /* v8 ignore next -- compile-time exhaustive channel map guard. */
-        def.map satisfies never;
+        def satisfies never;
     }
   }
 
@@ -349,8 +363,6 @@ export function createChannels(
     reset,
     setRange,
     values: (channel) => current.get(channel) ?? null,
-    dataRange: (channel) => data.get(channel) ?? null,
-    outputRange: (channel) => output.get(channel) ?? null,
   };
 }
 
@@ -361,11 +373,11 @@ function sameRange(a: ChannelRange | null, b: ChannelRange): boolean {
 
 /** Resolves the channel input domain from an explicit range or value scans. */
 function resolveDomain(
-  def: ChannelDef,
+  def: ChannelDefinition,
   values: Float32Array,
   domain?: ChannelRange | null,
 ): ChannelRange {
-  if (domain) return copyRange(domain);
+  if (domain) return checkedRange(domain, `${def.key} domain`);
   if (def.map === 'height') return finiteExtent(values) ?? [0, 1];
   return [0, 1];
 }
@@ -373,4 +385,10 @@ function resolveDomain(
 /** Copies a range tuple so callers cannot mutate stored normalization state. */
 function copyRange(range: ChannelRange): ChannelRange {
   return [range[0], range[1]];
+}
+
+/** Validate and own a channel range before retaining it. */
+function checkedRange(range: ChannelRange, name: string): ChannelRange {
+  validateChannelRange(range, `network ${name}`);
+  return copyRange(range);
 }

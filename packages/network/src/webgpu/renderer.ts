@@ -28,6 +28,7 @@ import {
 import type { Borders } from '../borders.js';
 import { BorderBuffers } from './border-buffers.js';
 import { packBound, type Channel, type ChannelSlot } from '../channels.js';
+import { DEFAULT_OPTIONS } from '../options.js';
 
 import { PROJECTIONS, type ProjectionDef, type ProjectionMode } from '../projections.js';
 
@@ -40,14 +41,14 @@ import {
 
 const COLORMAP_LUT_SIZE = 256;
 
-/** Creates the neutral grayscale LUT used before the consumer supplies a colormap. */
+/** Sample the canonical default colormap for direct Renderer construction. */
 function defaultColormapLut(): Uint8Array {
   const lut = new Uint8Array(COLORMAP_LUT_SIZE * 4);
   for (let i = 0; i < COLORMAP_LUT_SIZE; i++) {
-    const v = Math.round((i / (COLORMAP_LUT_SIZE - 1)) * 255);
-    lut[i * 4] = v;
-    lut[i * 4 + 1] = v;
-    lut[i * 4 + 2] = v;
+    const [red, green, blue] = DEFAULT_OPTIONS.colormap(i / (COLORMAP_LUT_SIZE - 1));
+    lut[i * 4] = Math.round(red * 255);
+    lut[i * 4 + 1] = Math.round(green * 255);
+    lut[i * 4 + 2] = Math.round(blue * 255);
     lut[i * 4 + 3] = 255;
   }
   return lut;
@@ -130,11 +131,11 @@ export class Renderer {
   private bound = false;
   private destroyed = false;
   private visibility = {
-    vertices: true,
-    edges: true,
-    poles: false,
-    borders: true,
-    earthAxis: true,
+    vertices: DEFAULT_OPTIONS.vertices,
+    edges: DEFAULT_OPTIONS.edges,
+    poles: DEFAULT_OPTIONS.poles,
+    borders: DEFAULT_OPTIONS.borders,
+    earthAxis: DEFAULT_OPTIONS.earthAxis,
   };
 
   /** Allocates shared layouts, static geometry, uniforms, and the initial projection pipeline build. */
@@ -438,6 +439,7 @@ export class Renderer {
     bound: ReadonlySet<Channel>,
     vertexCount: number,
     edgeCount: number,
+    values?: ReadonlyMap<Channel, Float32Array>,
   ): ReadonlyMap<Channel, ChannelSlot> {
     if (!this.bound) throw new Error('network topology must be loaded before setting channels');
     const { slot, words } = packBound(bound, vertexCount, edgeCount);
@@ -449,15 +451,36 @@ export class Renderer {
       throw new Error(`network channel storage ${bytes} exceeds WebGPU limits`);
     }
 
-    this.channelBuf?.destroy();
-    this.channelBuf = this.presentation.device.createBuffer({
+    const nextChannelBuf = this.presentation.device.createBuffer({
       label: 'channels',
       size: bytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    this.slots = slot;
-    this.rebindGroup0();
-    return this.slots;
+    try {
+      if (values) {
+        for (const [channel, channelValues] of values) {
+          const channelSlot = slot.get(channel);
+          if (!channelSlot) throw new Error(`network channel ${channel} has no storage slot`);
+          this.presentation.device.queue.writeBuffer(
+            nextChannelBuf,
+            channelSlot.offset * Float32Array.BYTES_PER_ELEMENT,
+            channelValues.buffer,
+            channelValues.byteOffset,
+            channelValues.byteLength,
+          );
+        }
+      }
+      const nextBindGroup = this.createChannelsBindGroup(nextChannelBuf);
+      const previousChannelBuf = this.channelBuf;
+      this.channelBuf = nextChannelBuf;
+      this.channelsBindGroup = nextBindGroup;
+      this.slots = slot;
+      previousChannelBuf?.destroy();
+      return this.slots;
+    } catch (error) {
+      nextChannelBuf.destroy();
+      throw error;
+    }
   }
 
   /** Writes one channel's values into its assigned storage slot. */
@@ -619,16 +642,6 @@ export class Renderer {
     this.uniforms.destroy();
     this.edgeStrip.destroy();
     this.cmLut.destroy();
-  }
-
-  /** Recreates the channels bind group after channel storage changes. */
-  private rebindGroup0(): void {
-    /* v8 ignore next 4 -- public relayout allocates channelBuf before this helper is reachable. */
-    if (!this.channelBuf) {
-      this.channelsBindGroup = null;
-      return;
-    }
-    this.channelsBindGroup = this.createChannelsBindGroup(this.channelBuf);
   }
 
   /** Creates the bind group containing uniforms, channel storage, and colormap resources. */

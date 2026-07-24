@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import topologySrc from '../src/shaders/common/topology-buffer.wgsl?raw';
-import { W, encodeTopology, readEncodedTopologyInfo } from '../src/topology/index.js';
+import {
+  W,
+  encodeTopology,
+  readEncodedTopologyInfo,
+  validateTopology,
+} from '../src/topology/index.js';
 import { HEADER_WORDS, MAGIC, WGSL_LAYOUT } from '../src/topology/wire.js';
 import { computeBounds, estimateCharacteristicLength, ringLayout } from '../src/topology/pack.js';
 import { sampleTopology } from './fixtures/topology.js';
@@ -87,6 +92,19 @@ describe('Topology', () => {
     expect(coords.length).toBe(6);
     expect(coords[0]).toBeCloseTo(1, 6);
     expect(coords[1]).toBeCloseTo(0, 6);
+  });
+
+  it('validates topology without encoding renderer storage', () => {
+    expect(() => validateTopology(sampleTopology())).not.toThrow();
+    expect(() => validateTopology(sampleTopology({ edges: new Uint32Array([0, 1, 2]) }))).toThrow(
+      'invalid edge length',
+    );
+    expect(() =>
+      validateTopology(sampleTopology({ vertexCoords: new Float32Array([0, 0, NaN, 1, 2, 2]) })),
+    ).toThrow('invalid vertex coordinates');
+    expect(() =>
+      validateTopology(sampleTopology({ edges: [0, 1] as unknown as Uint32Array })),
+    ).toThrow('edges must be Uint32Array');
   });
 
   it('places fallback vertices on a deterministic unit ring', () => {

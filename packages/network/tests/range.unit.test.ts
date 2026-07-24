@@ -1,7 +1,36 @@
 import { describe, expect, it } from 'vitest';
-import { effectiveRange, finiteExtent, linearNorm } from '../src/range.js';
+import { effectiveRange, finiteExtent, linearNorm, validateChannelRange } from '../src/range.js';
 
 describe('channel range helpers', () => {
+  it.each([
+    [0, 1],
+    [-10, -2],
+    [3, 3],
+  ] as const)('accepts the finite ordered range [%s, %s]', (minimum, maximum) => {
+    expect(() => validateChannelRange([minimum, maximum])).not.toThrow();
+  });
+
+  it.each([
+    [null, TypeError],
+    [[0], TypeError],
+    [[0, 1, 2], TypeError],
+    [['0', 1], TypeError],
+    [[0, Number.NaN], RangeError],
+    [[Number.NEGATIVE_INFINITY, 1], RangeError],
+    [[2, 1], RangeError],
+  ] as const)('rejects invalid range %# with the semantic error class', (value, ErrorType) => {
+    expect(() => validateChannelRange(value)).toThrow(ErrorType);
+  });
+
+  it('uses the caller-facing name in validation failures without mutating input', () => {
+    const range = [2, 1];
+
+    expect(() => validateChannelRange(range, 'vertex height range')).toThrow(
+      'vertex height range minimum must not exceed its maximum',
+    );
+    expect(range).toEqual([2, 1]);
+  });
+
   it('uses clamp, then data range, then the default range', () => {
     expect(effectiveRange([2, 8], [3, 5])).toEqual([3, 5]);
     expect(effectiveRange([2, 8], null)).toEqual([2, 8]);

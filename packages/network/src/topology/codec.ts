@@ -8,10 +8,12 @@ import {
 } from './pack.js';
 import type { Bounds, EncodedTopology, EncodedTopologyInfo, Topology } from './types.js';
 import { spherePositionsForCoords } from './sphere.js';
+import { validateTopology } from './validate.js';
 import { HEADER_WORDS, MAGIC, W } from './wire.js';
 
 /** Encode a topology into the canonical GPU-facing topology buffer. */
 export function encodeTopology(topology: Topology): EncodedTopology {
+  validateTopology(topology);
   const vertexCoords = resolveVertexCoords(topology);
   const polylinePoints = polylinePointsOf(topology);
   const edgeCount = edgeCountOf(topology);
@@ -85,9 +87,6 @@ function writeTopologyStorage(input: {
 }): EncodedTopology {
   const vertexCount = input.vertexCount;
   const edgeCount = input.edgeCount;
-  const polylinePointCount = input.polylinePoints.length / 2;
-
-  validateTopology(input, vertexCount, edgeCount, polylinePointCount);
 
   const lengths = [input.vertexCoords.length, input.vertexSphere.length] as const;
 
@@ -125,52 +124,6 @@ function writeTopologyStorage(input: {
   );
 
   return storage;
-}
-
-/**
- * Validate topology source arrays before writing encoded storage.
- *
- * @throws Error when counts, lengths, endpoints, or polyline offsets are invalid.
- */
-function validateTopology(
-  input: {
-    readonly vertexCount?: number;
-    readonly vertexCoords: Float32Array;
-    readonly vertexSphere: Float32Array;
-    readonly edges: Uint32Array;
-    readonly polylineStart: Uint32Array;
-    readonly polylinePoints: Float32Array;
-  },
-  vertexCount: number,
-  edgeCount: number,
-  polylinePointCount: number,
-): void {
-  if (!Number.isInteger(vertexCount) || vertexCount < 0) throw new Error('invalid vertex count');
-  if (!Number.isInteger(edgeCount) || edgeCount < 0) throw new Error('invalid edge length');
-  if (!Number.isInteger(polylinePointCount) || polylinePointCount < 0) {
-    throw new Error('invalid polyline point length');
-  }
-  if (input.vertexCount !== undefined && input.vertexCount !== vertexCount)
-    throw new Error('invalid vertex count');
-  if (input.vertexCoords.length !== vertexCount * 2)
-    throw new Error('invalid vertex coordinate length');
-  if (input.vertexSphere.length !== vertexCount * 3)
-    throw new Error('invalid vertex sphere length');
-  if (input.edges.length !== edgeCount * 2) throw new Error('invalid edge length');
-  for (let i = 0; i < input.edges.length; i++) {
-    if (input.edges[i]! >= vertexCount) throw new Error('edge endpoint out of range');
-  }
-  if (input.polylineStart.length !== edgeCount + 1) throw new Error('invalid polylineStart length');
-  if (input.polylinePoints.length !== polylinePointCount * 2)
-    throw new Error('invalid polyline point length');
-  if (edgeCount > 0 && input.polylineStart[0] !== 0)
-    throw new Error('polylineStart must begin at zero');
-  if (input.polylineStart[edgeCount] !== polylinePointCount)
-    throw new Error('polylineStart terminal mismatch');
-  for (let i = 1; i < input.polylineStart.length; i++) {
-    if (input.polylineStart[i]! < input.polylineStart[i - 1]!)
-      throw new Error('polylineStart must be monotonic');
-  }
 }
 
 /**
