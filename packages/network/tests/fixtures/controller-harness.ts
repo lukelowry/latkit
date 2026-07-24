@@ -77,8 +77,11 @@ export class FakeRenderer {
       bound: ReadonlySet<Channel>,
       vertexCount: number,
       edgeCount: number,
+      values?: ReadonlyMap<Channel, Float32Array>,
     ): ReadonlyMap<Channel, ChannelSlot> => {
       this.slots = packBound(bound, vertexCount, edgeCount).slot;
+      if (values)
+        for (const [channel, channelValues] of values) this.writeChannel(channel, channelValues);
       return this.slots;
     },
   );

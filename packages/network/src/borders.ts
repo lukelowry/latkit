@@ -28,6 +28,12 @@ export interface Borders {
  * @throws Error when vertex stride or index alignment is invalid.
  */
 export function validateBorders(borders: Borders): void {
+  if (!isTypedArray(borders.vertices, '[object Uint8Array]')) {
+    throw new TypeError('Invalid borders: vertices must be a Uint8Array');
+  }
+  if (!isTypedArray(borders.indices, '[object Uint32Array]')) {
+    throw new TypeError('Invalid borders: indices must be a Uint32Array');
+  }
   if (borders.vertices.byteLength % BORDER_VERTEX_STRIDE_BYTES !== 0) {
     throw new Error(
       `Invalid borders: vertex data must be a multiple of ${BORDER_VERTEX_STRIDE_BYTES} bytes`,
@@ -38,4 +44,9 @@ export function validateBorders(borders: Borders): void {
       `Invalid borders: index data must be ${Uint32Array.BYTES_PER_ELEMENT}-byte aligned`,
     );
   }
+}
+
+/** Recognize typed arrays across realms without accepting shape-compatible objects. */
+function isTypedArray(value: unknown, tag: string): boolean {
+  return ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === tag;
 }

@@ -13,7 +13,7 @@ npm install @latkit/gpu @latkit/network @latkit/colormaps
 ```ts
 import { colormap } from '@latkit/colormaps';
 import { requestDevice } from '@latkit/gpu';
-import { createNetwork, type Topology } from '@latkit/network';
+import { createNetwork, finiteExtent, type Topology } from '@latkit/network';
 
 const topology: Topology = {
   vertexCount: 3,
@@ -30,9 +30,19 @@ const network = await createNetwork(device, canvas, {
 });
 
 network.load(topology);
-network.setChannel('vertexColor', new Float32Array([0.1, 0.8, 0.4]), [0, 1]);
+const values = new Float32Array([0.1, 0.8, 0.4]);
+network.setChannel('vertexColor', values, finiteExtent(values));
 network.fadeIn();
 ```
+
+## Shared view semantics
+
+Higher-level Network consumers can derive their own surfaces without copying renderer vocabulary.
+`CHANNEL_DEFINITIONS` and `PROJECTION_MODES` are frozen canonical registries;
+`OPTION_DEFINITIONS` and `DEFAULT_OPTIONS` own option names, validation kinds, lifecycles, and
+defaults. `validateOption`, `validateOptions`, and `validateChannelRange` expose the same validation
+boundary consumed by Network itself, while `finiteExtent` and `validateBorders` cover channel-domain
+and geographic-border data.
 
 `createNetwork()` accepts a native Core `GPUDevice` and a caller-owned
 `HTMLCanvasElement`. `@latkit/gpu` acquires the device and supplies Network's

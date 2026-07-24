@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@latkit/embed example</title>
+  </head>
+  <body>
+    <main>
+      <header class="topbar">
+        <span>latkit / embed contract</span>
+        <span id="status" role="status">waiting</span>
+      </header>
+
+      <section class="intro" aria-labelledby="example-title">
+        <p class="eyebrow">Declarative WebGPU network</p>
+        <h1 id="example-title">North American transfer network</h1>
+        <p>
+          Use the built-in projection, navigation, colormap, channel, and legend controls. Focus the
+          canvas to try arrow-key panning, <kbd>+</kbd>/<kbd>-</kbd> zoom, Home to fit, and Escape
+          to clear selection.
+        </p>
+      </section>
+
+      <latkit-network
+        aria-label="North American transfer network with 12 cities and 18 connections"
+        controls="caption projection navigation colormap channels legends"
+        msaa="4"
+        colormap="coolwarm"
+        projection="tilt"
+        vertex-color="voltage"
+        vertex-color-domain="0.94 1.06"
+        vertex-height="generation"
+        vertex-height-domain="2500 9500"
+        vertex-height-range="0 1.2"
+        vertex-size="capacity"
+        vertex-size-domain="4000 11000"
+        edge-color="flow"
+        edge-color-domain="-900 900"
+        edge-dash="in-service"
+        border-source="natural-earth"
+        poles
+        borders
+        graticule
+        earth-axis
+        daylight
+        focus-enabled
+        focus-endpoint-mode="hover-selected"
+        night-floor="0.35"
+        surface-night-floor="0.06"
+        terminator-width="0.16"
+        base-color="0.36 0.4 0.46 1"
+        graticule-color="0.38 0.48 0.62 1"
+        surface-color="0.055 0.075 0.11 1"
+        border-color="0.74 0.68 0.55 1"
+        hover-color="1 0.72 0.28 1"
+        selected-color="1 0.36 0.24 1"
+        hover-alpha="0.62"
+        selected-alpha="0.9"
+      >
+        <script type="application/json">
+          {
+            "topology": {
+              "vertexCount": 12,
+              "vertexCoords": [
+                -122.33, 47.61, -122.68, 45.52, -122.42, 37.77, -118.24, 34.05, -112.07, 33.45,
+                -104.99, 39.74, -96.8, 32.78, -93.27, 44.98, -87.63, 41.88, -84.39, 33.75, -77.04,
+                38.91, -74.01, 40.71
+              ],
+              "edges": [
+                0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 5, 7, 7, 8, 6, 8, 6, 9, 8, 10, 9, 10, 10, 11, 8,
+                11, 0, 5, 2, 5, 3, 6, 7, 11
+              ]
+            },
+            "labels": {
+              "vertex": [
+                "Seattle",
+                "Portland",
+                "San Francisco",
+                "Los Angeles",
+                "Phoenix",
+                "Denver",
+                "Dallas",
+                "Minneapolis",
+                "Chicago",
+                "Atlanta",
+                "Washington",
+                "New York"
+              ],
+              "edge": [
+                "Seattle–Portland",
+                "Portland–San Francisco",
+                "San Francisco–Los Angeles",
+                "Los Angeles–Phoenix",
+                "Phoenix–Denver",
+                "Denver–Dallas",
+                "Denver–Minneapolis",
+                "Minneapolis–Chicago",
+                "Dallas–Chicago",
+                "Dallas–Atlanta",
+                "Chicago–Washington",
+                "Atlanta–Washington",
+                "Washington–New York",
+                "Chicago–New York",
+                "Seattle–Denver",
+                "San Francisco–Denver",
+                "Los Angeles–Dallas",
+                "Minneapolis–New York"
+              ]
+            },
+            "fields": [
+              {
+                "id": "voltage",
+                "label": "Voltage",
+                "unit": "pu",
+                "scope": "vertex",
+                "values": [1.02, 1.01, 0.98, 0.96, 1, 1.04, 0.97, 1.03, 0.99, 0.95, 1.01, 1]
+              },
+              {
+                "id": "generation",
+                "label": "Generation",
+                "unit": "MW",
+                "scope": "vertex",
+                "values": [3400, 2800, 5200, 6100, 4600, 7200, 8300, 4100, 9200, 6800, 7500, 8700]
+              },
+              {
+                "id": "capacity",
+                "label": "Capacity",
+                "unit": "MW",
+                "scope": "vertex",
+                "values": [
+                  4800, 4200, 7400, 8100, 6300, 9600, 10500, 5700, 11000, 8500, 9300, 10800
+                ]
+              },
+              {
+                "id": "flow",
+                "label": "Transfer",
+                "unit": "MW",
+                "scope": "edge",
+                "values": [
+                  -740, -620, -510, 260, 430, -380, 590, -440, 760, -680, 540, -470, 810, -320, 350,
+                  -560, 690, -610
+                ]
+              },
+              {
+                "id": "in-service",
+                "label": "In service",
+                "scope": "edge",
+                "values": [1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 0, 0, 1]
+              }
+            ]
+          }
+        </script>
+
+        <div class="fallback">
+          <strong>Interactive view unavailable.</strong>
+          <span>
+            This 12-city transfer network requires a browser with WebGPU support. The page text and
+            configuration examples remain available below.
+          </span>
+        </div>
+      </latkit-network>
+
+      <p class="note">
+        Inline network JSON <span aria-hidden="true">·</span> five canonical channels
+        <span aria-hidden="true">·</span> three projections
+        <span aria-hidden="true">·</span> packaged Natural Earth borders
+      </p>
+
+      <section class="recipes" aria-labelledby="recipes-title">
+        <div class="recipes-heading">
+          <p class="eyebrow">Focused configurations</p>
+          <h2 id="recipes-title">Chrome is independently selectable</h2>
+        </div>
+
+        <article>
+          <h3>Renderer only</h3>
+          <p>Hide built-in chrome without disabling renderer interaction or keyboard commands.</p>
+          <pre><code>&lt;latkit-network
+  src="network.json"
+  controls="none"
+  projection="flat"
+  vertex-color="voltage"
+&gt;&lt;/latkit-network&gt;</code></pre>
+        </article>
+
+        <article>
+          <h3>Purpose-built explorer</h3>
+          <p>Request only the caption, projection buttons, and two channel pickers.</p>
+          <pre><code>&lt;latkit-network
+  src="network.json"
+  controls="caption projection vertex-color edge-color vertex-color-legend"
+  vertex-color="voltage"
+  edge-color="flow"
+&gt;&lt;/latkit-network&gt;</code></pre>
+        </article>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

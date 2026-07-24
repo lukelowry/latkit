@@ -85,13 +85,19 @@ describe('Borders GPU resource', () => {
     ).toThrow('vertex data must be a multiple');
   });
 
-  it('rejects unaligned index views before GPU upload', () => {
+  it('rejects shape-compatible objects before GPU upload', () => {
     expect(() =>
       validateBorders({
         vertices: new Uint8Array(BORDER_VERTEX_STRIDE_BYTES),
         indices: { byteOffset: 2 } as Uint32Array<ArrayBuffer>,
       }),
-    ).toThrow('index data must be 4-byte aligned');
+    ).toThrow('indices must be a Uint32Array');
+    expect(() =>
+      validateBorders({
+        vertices: { byteLength: BORDER_VERTEX_STRIDE_BYTES } as Uint8Array<ArrayBuffer>,
+        indices: new Uint32Array([0]),
+      }),
+    ).toThrow('vertices must be a Uint8Array');
   });
 
   it('destroys the owned GPU buffer', () => {

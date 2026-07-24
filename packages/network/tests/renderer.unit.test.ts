@@ -142,6 +142,33 @@ describe('Renderer resource lifecycle', () => {
     renderer.destroy();
   });
 
+  it('keeps previous channel storage when a transactional relayout upload fails', () => {
+    const h = makeFakeGpu();
+    const renderer = new Renderer(h.presentation);
+    const topology = sampleTopology();
+    renderer.bindTopology(encodeTopology(topology), encodeSegments(topology));
+    const previous = h.device.buffers.find((buffer) => buffer.descriptor.label === 'channels')!;
+    const failure = new Error('queue rejected channel upload');
+    h.device.queue.writeBuffer.mockImplementationOnce(() => {
+      throw failure;
+    });
+
+    expect(() =>
+      renderer.relayout(
+        new Set(['vertexColor']),
+        3,
+        2,
+        new Map([['vertexColor', new Float32Array([0, 0.5, 1])]]),
+      ),
+    ).toThrow(failure);
+
+    const attempted = h.device.buffers.at(-1)!;
+    expect(attempted).not.toBe(previous);
+    expect(attempted.destroyed).toBe(true);
+    expect(previous.destroyed).toBe(false);
+    renderer.destroy();
+  });
+
   it('rejects mismatched segment metadata before replacing the current scene', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);
@@ -295,6 +322,7 @@ describe('Renderer frame encoding', () => {
     ]);
 
     const uniforms = createUniforms();
+    uniforms.focus.flags = FLAG_FOCUS_ENABLED;
     uniforms.focus.hoverEdge = 0;
 
     renderer.render(uniforms);

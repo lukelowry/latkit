@@ -1,0 +1,247 @@
+:root {
+  color: #e9edf2;
+  background: #080b10;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+  font-synthesis: none;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background: radial-gradient(circle at 18% -10%, rgb(55 88 126 / 24%), transparent 34rem), #080b10;
+}
+
+main {
+  width: min(1240px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 24px 0 64px;
+}
+
+.topbar,
+.note {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: #929eae;
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.topbar {
+  padding-bottom: 18px;
+  border-bottom: 1px solid #202833;
+  text-transform: uppercase;
+}
+
+#status {
+  overflow: hidden;
+  color: #c7cdd7;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#status[data-state='live'] {
+  color: #78c99a;
+}
+
+#status[data-state='error'] {
+  color: #ee8c78;
+}
+
+.intro {
+  max-width: 760px;
+  padding: 44px 0 28px;
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  color: #83a9d5;
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 14px;
+  color: #f4f7fa;
+  font-size: clamp(2rem, 6vw, 4.1rem);
+  font-weight: 520;
+  letter-spacing: -0.045em;
+  line-height: 0.98;
+}
+
+.intro > p:last-child {
+  max-width: 68ch;
+  margin-bottom: 0;
+  color: #aab4c2;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+kbd {
+  padding: 0.12rem 0.36rem;
+  border: 1px solid #465365;
+  border-radius: 4px;
+  background: #161c25;
+  color: #e8edf3;
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  font-size: 0.85em;
+}
+
+latkit-network {
+  --latkit-chrome-surface: rgb(10 17 26 / 84%);
+  --latkit-chrome-surface-strong: rgb(10 17 26 / 95%);
+  --latkit-chrome-control: rgb(28 42 57 / 90%);
+  --latkit-chrome-control-hover: #263a52;
+  --latkit-chrome-text: #f2f6fa;
+  --latkit-chrome-muted: #9fadc0;
+  --latkit-chrome-border: #405166;
+  --latkit-chrome-accent: #7cb8ff;
+  --latkit-chrome-focus: #ffffff;
+  --latkit-chrome-radius: 2px;
+  --latkit-chrome-shadow: 0 1px 3px rgb(0 0 0 / 28%);
+  --latkit-chrome-font: inherit;
+
+  height: min(80vh, 800px);
+  min-height: 560px;
+  border: 1px solid #293442;
+  border-radius: 14px;
+  background: #0d1219;
+  box-shadow: 0 28px 80px rgb(0 0 0 / 32%);
+}
+
+.fallback {
+  display: grid;
+  height: 100%;
+  place-content: center;
+  gap: 8px;
+  padding: 32px;
+  color: #aab4c2;
+  text-align: center;
+}
+
+.fallback strong {
+  color: #f0f3f7;
+  font-size: 15px;
+}
+
+.fallback span {
+  max-width: 54ch;
+  line-height: 1.55;
+}
+
+.note {
+  justify-content: center;
+  flex-wrap: wrap;
+  margin: 12px 0 0;
+  text-align: center;
+}
+
+.note span {
+  color: #536173;
+}
+
+.recipes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 68px;
+}
+
+.recipes-heading {
+  grid-column: 1 / -1;
+  margin-bottom: 4px;
+}
+
+.recipes h2 {
+  margin-bottom: 0;
+  color: #edf1f5;
+  font-size: clamp(1.5rem, 4vw, 2.25rem);
+  font-weight: 520;
+  letter-spacing: -0.03em;
+}
+
+.recipes article {
+  min-width: 0;
+  padding: 22px;
+  border: 1px solid #26303c;
+  border-radius: 12px;
+  background: rgb(16 22 30 / 78%);
+}
+
+.recipes h3 {
+  margin-bottom: 8px;
+  color: #e9edf2;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.recipes article > p {
+  min-height: 3em;
+  margin-bottom: 18px;
+  color: #98a4b4;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+pre {
+  overflow-x: auto;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid #202a36;
+  border-radius: 8px;
+  background: #090d13;
+  color: #c8d7e8;
+  font:
+    12px/1.6 ui-monospace,
+    'SFMono-Regular',
+    Consolas,
+    monospace;
+}
+
+@media (max-width: 760px) {
+  main {
+    width: min(100% - 20px, 1240px);
+    padding-top: 16px;
+  }
+
+  .intro {
+    padding-top: 32px;
+  }
+
+  latkit-network {
+    height: 720px;
+    min-height: 520px;
+  }
+
+  .recipes {
+    grid-template-columns: 1fr;
+    margin-top: 52px;
+  }
+
+  .recipes article > p {
+    min-height: 0;
+  }
+}

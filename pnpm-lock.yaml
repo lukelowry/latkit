@@ -54,6 +54,19 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@26.1.1)(jsdom@26.1.0)(yaml@2.9.0)
 
+  examples/embed:
+    dependencies:
+      '@latkit/embed':
+        specifier: workspace:*
+        version: link:../../packages/embed
+    devDependencies:
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^7.0.0
+        version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
+
   examples/monitor:
     dependencies:
       '@latkit/colormaps':
@@ -99,6 +112,25 @@ importers:
         version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
 
   packages/colormaps: {}
+
+  packages/embed:
+    dependencies:
+      '@latkit/colormaps':
+        specifier: workspace:*
+        version: link:../colormaps
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../gpu
+      '@latkit/network':
+        specifier: workspace:*
+        version: link:../network
+    devDependencies:
+      '@webgpu/types':
+        specifier: ^0.1.71
+        version: 0.1.71
+      jsdom:
+        specifier: ^26.1.0
+        version: 26.1.0
 
   packages/gpu:
     dependencies:

@@ -1,0 +1,21 @@
+{
+  "name": "@latkit/embed-example",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "predev": "pnpm --filter @latkit/colormaps build && pnpm --filter @latkit/gpu build && pnpm --filter @latkit/network build && pnpm --filter @latkit/embed build",
+    "dev": "vite --host 127.0.0.1 --port 5192",
+    "prebuild": "pnpm --filter @latkit/colormaps build && pnpm --filter @latkit/gpu build && pnpm --filter @latkit/network build && pnpm --filter @latkit/embed build",
+    "build": "pnpm run typecheck && vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "preview": "vite preview --host 127.0.0.1 --port 5192"
+  },
+  "dependencies": {
+    "@latkit/embed": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vite": "^7.0.0"
+  }
+}

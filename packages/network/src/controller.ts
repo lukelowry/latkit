@@ -17,179 +17,24 @@ import { ProjectionRig } from './camera/rig.js';
 import { attachPointer, type HoverProbe } from './input/pointer.js';
 import { createSurface } from './input/surface.js';
 import type { Viewport } from './camera/projection.js';
-import { createChannels, type Channel } from './channels.js';
+import { CHANNEL_DEFINITIONS, createChannels, type Channel } from './channels.js';
+import type { ChannelRange } from './range.js';
 import { RenderLoop } from './webgpu/render-loop.js';
-import { PROJECTIONS, type ProjectionMode } from './projections.js';
+import { PROJECTIONS, PROJECTION_MODES, type ProjectionMode } from './projections.js';
 import type { Borders } from './borders.js';
 import { createEmitter } from './emitter.js';
 import { edgeCountOf } from './topology/pack.js';
 import { Picker, type PickQuery, type PickResult } from './pick/picker.js';
+import {
+  DEFAULT_OPTIONS,
+  OPTION_DEFINITIONS,
+  resolveOptions,
+  validateOptions,
+  type Options,
+  type ResolvedOptions,
+} from './options.js';
 
-/**
- * Initial network renderer configuration.
- *
- * @remarks
- * `msaa` is read once at construction. Other fields seed the initial view and
- * can be patched later with {@link Network.setOptions}.
- */
-export interface Options {
-  /**
-   * Multisample anti-aliasing sample count selected at construction.
-   *
-   * @defaultValue Automatically selects `4` on typical displays and `1` on very large device-pixel surfaces.
-   */
-  msaa?: 1 | 4;
-  /**
-   * Draw vertex billboards.
-   *
-   * @defaultValue `true`.
-   */
-  vertices?: boolean;
-  /**
-   * Draw edge segments.
-   *
-   * @defaultValue `true`.
-   */
-  edges?: boolean;
-  /**
-   * Draw height poles when a `vertexHeight` channel is active.
-   *
-   * @defaultValue `false`.
-   */
-  poles?: boolean;
-  /**
-   * Draw geographic border overlays.
-   *
-   * @defaultValue `true`.
-   */
-  borders?: boolean;
-  /**
-   * Draw projection graticule lines.
-   *
-   * @defaultValue `false`.
-   */
-  graticule?: boolean;
-  /**
-   * Draw the globe earth-axis indicator when supported.
-   *
-   * @defaultValue `true`.
-   */
-  earthAxis?: boolean;
-  /**
-   * Enable time-based daylight shading.
-   *
-   * @defaultValue `true`.
-   */
-  daylight?: boolean;
-  /**
-   * Minimum brightness on the night side of overlay geometry.
-   *
-   * @defaultValue `0.55`.
-   */
-  nightFloor?: number;
-  /**
-   * Minimum brightness on the night side of opaque surfaces.
-   *
-   * @defaultValue `0.1`.
-   */
-  surfaceNightFloor?: number;
-  /**
-   * Softness of the day/night terminator in shader units.
-   *
-   * @defaultValue `0.12`.
-   */
-  terminatorWidth?: number;
-  /**
-   * Resting vertex color when the `vertexColor` channel carries no signal.
-   *
-   * @defaultValue `[0.5, 0.5, 0.5, 1]`.
-   */
-  baseColor?: readonly [number, number, number, number];
-  /**
-   * Seeds the color lookup texture used by colormap channels.
-   *
-   * @defaultValue A neutral gray ramp.
-   */
-  colormap?: (t: number) => readonly [number, number, number];
-  /**
-   * Graticule line color as four normalized color channels.
-   *
-   * @defaultValue `[0.45, 0.48, 0.54, 1]`.
-   */
-  graticuleColor?: readonly [number, number, number, number];
-  /**
-   * Tilt ground plane and globe sphere base color as four normalized color channels.
-   *
-   * @defaultValue `[0.15, 0.16, 0.19, 1]`.
-   */
-  surfaceColor?: readonly [number, number, number, number];
-  /**
-   * Geographic border tint as four normalized color channels; shaders keep tier alpha.
-   *
-   * @defaultValue `[0.52, 0.5, 0.49, 1]`.
-   */
-  borderColor?: readonly [number, number, number, number];
-  /**
-   * Enable hover and selection highlighting.
-   *
-   * @defaultValue `true`.
-   */
-  focusEnabled?: boolean;
-  /**
-   * Hover highlight color as four normalized color channels.
-   *
-   * @defaultValue `[0.72, 0.28, 0.18, 1]`.
-   */
-  hoverColor?: readonly [number, number, number, number];
-  /**
-   * Selection highlight color as four normalized color channels.
-   *
-   * @defaultValue `[0.72, 0.28, 0.18, 1]`.
-   */
-  selectedColor?: readonly [number, number, number, number];
-  /**
-   * Multiplier applied to the hover color alpha channel.
-   *
-   * @defaultValue `0.5`.
-   */
-  hoverAlpha?: number;
-  /**
-   * Multiplier applied to the selected color alpha channel.
-   *
-   * @defaultValue `0.82`.
-   */
-  selectedAlpha?: number;
-  /**
-   * Additional hover radius around focused vertices, in CSS pixels.
-   *
-   * @defaultValue `6`.
-   */
-  vertexHoverPx?: number;
-  /**
-   * Additional selection radius around focused vertices, in CSS pixels.
-   *
-   * @defaultValue `7`.
-   */
-  vertexSelectedPx?: number;
-  /**
-   * Additional hover half-width around focused edges, in CSS pixels.
-   *
-   * @defaultValue `3.5`.
-   */
-  edgeHoverPx?: number;
-  /**
-   * Additional selection half-width around focused edges, in CSS pixels.
-   *
-   * @defaultValue `5`.
-   */
-  edgeSelectedPx?: number;
-  /**
-   * Endpoint highlight mode for focused edges.
-   *
-   * @defaultValue `"selected"`.
-   */
-  focusEndpointMode?: 'off' | 'selected' | 'hover-selected';
-}
+export type { Options } from './options.js';
 
 /**
  * Events emitted by a {@link Network} instance.
@@ -222,7 +67,7 @@ export type Events = {
  */
 export interface Network {
   /** Projection modes currently supported by the loaded topology. */
-  readonly projections: Readonly<{ flat: boolean; tilt: boolean; globe: boolean }>;
+  readonly projections: Readonly<Record<ProjectionMode, boolean>>;
   /**
    * Subscribe to a network event and receive an unsubscribe callback.
    *
@@ -253,13 +98,13 @@ export interface Network {
    *
    * @param fn - Function mapping normalized values in `[0, 1]` to RGB channels in `[0, 1]`.
    */
-  setColormap(fn: (t: number) => readonly [number, number, number]): void;
+  setColormap(fn: NonNullable<Options['colormap']>): void;
   /**
    * Set the default vertex color used without a `vertexColor` channel.
    *
    * @param color - RGBA color with normalized channels in `[0, 1]`.
    */
-  setBaseColor(color: readonly [number, number, number, number]): void;
+  setBaseColor(color: RGBA): void;
   /**
    * Bind or replace a per-vertex or per-edge rendering channel.
    *
@@ -275,8 +120,8 @@ export interface Network {
   setChannel(
     channel: Channel,
     values: Float32Array,
-    domain?: readonly [number, number] | null,
-    range?: readonly [number, number],
+    domain?: ChannelRange | null,
+    range?: ChannelRange,
   ): void;
   /**
    * Clear a previously bound rendering channel.
@@ -290,7 +135,7 @@ export interface Network {
    * @param channel - Channel name to update.
    * @param range - Fixed input range, or `null` to return to the scanned/default domain.
    */
-  setChannelRange(channel: Channel, range: readonly [number, number] | null): void;
+  setChannelRange(channel: Channel, range: ChannelRange | null): void;
   /**
    * Update display options. `msaa` remains construction-only.
    *
@@ -309,7 +154,7 @@ export interface Network {
    * @param mode - Projection mode to activate.
    * @returns True if the loaded topology supports the mode; false otherwise.
    */
-  setProjection(mode: 'flat' | 'tilt' | 'globe'): boolean;
+  setProjection(mode: ProjectionMode): boolean;
   /**
    * Programmatically select an item without emitting a `select` event.
    *
@@ -346,6 +191,17 @@ export interface Network {
   destroy(): void;
 }
 
+/** Strip construction-only values from one validated live option patch. */
+function runtimeOptionPatch(options: Options): Options {
+  const patch: Options = {};
+  const source = options as Readonly<Record<string, unknown>>;
+  const target = patch as Record<string, unknown>;
+  for (const [key, definition] of Object.entries(OPTION_DEFINITIONS)) {
+    if (definition.lifecycle === 'runtime' && source[key] !== undefined) target[key] = source[key];
+  }
+  return patch;
+}
+
 /** Internal collaborator seam used by controller behavior tests. */
 export interface ControllerDeps {
   createSurface: typeof createSurface;
@@ -379,28 +235,8 @@ const SUN_REFRESH_MS = 30_000;
 /** Number of entries in the renderer's one-dimensional colormap texture. */
 const COLORMAP_LUT_SIZE = 256;
 
-/** Neutral resting vertex color used before options are applied. */
-const DEFAULT_BASE_COLOR: RGBA = [0.5, 0.5, 0.5, 1];
-
 /** Converts a clamped 0..1 color component into an 8-bit LUT value. */
 const u8 = (x: number): number => Math.round(Math.min(1, Math.max(0, x)) * 255);
-
-/** Shared default focus accent color. */
-const DEFAULT_FOCUS_COLOR: RGBA = [0.72, 0.28, 0.18, 1];
-
-/** Default hover and selection style written into focus uniforms. */
-const DEFAULT_FOCUS_STYLE: FocusStyle = {
-  enabled: true,
-  hoverColor: DEFAULT_FOCUS_COLOR,
-  selectedColor: DEFAULT_FOCUS_COLOR,
-  hoverAlpha: 0.5,
-  selectedAlpha: 0.82,
-  vertexHoverPx: 6,
-  vertexSelectedPx: 7,
-  edgeHoverPx: 3.5,
-  edgeSelectedPx: 5,
-  endpointMode: 'selected',
-};
 
 /**
  * Creates a WebGPU network renderer on a caller-owned canvas.
@@ -438,10 +274,11 @@ export async function createNetworkWithDeps( // eslint-disable-line @typescript-
   options: Options,
   deps: ControllerDeps,
 ): Promise<Network> {
+  const resolvedOptions = resolveOptions(options);
   assertDeviceLimits(device);
   const lifecycle = createControllerLifecycle();
   try {
-    return createNetworkController(device, canvas, options, deps, lifecycle);
+    return createNetworkController(device, canvas, resolvedOptions, deps, lifecycle);
   } catch (error) {
     lifecycle.destroy();
     throw error;
@@ -502,7 +339,7 @@ function forwardDeviceLoss(
 function createNetworkController(
   device: GPUDevice,
   canvas: HTMLCanvasElement,
-  options: Options,
+  options: ResolvedOptions,
   deps: ControllerDeps,
   lifecycle: ControllerLifecycle,
 ): Network {
@@ -553,13 +390,13 @@ function createNetworkController(
   const rig = new deps.ProjectionRig(uniforms.projection);
   loop.setCamera(rig.camera);
 
-  let deviceLost = false;
+  let deviceLoss: readonly [reason: string, message: string] | null = null;
   lifecycle.add(
     forwardDeviceLoss(device, (info) => {
-      if (deviceLost) return;
-      deviceLost = true;
+      if (deviceLoss) return;
+      deviceLoss = [info.reason ?? 'unknown', info.message || 'WebGPU device was lost'];
       loop.pause();
-      events.emit('deviceLost', info.reason ?? 'unknown', info.message || 'WebGPU device was lost');
+      events.emit('deviceLost', ...deviceLoss);
     }),
   );
 
@@ -568,7 +405,7 @@ function createNetworkController(
 
   /** Keeps loop activity consistent with user pause, page visibility, and device loss. */
   function syncRenderLoopActivity(): void {
-    if (!consumerPaused && pageVisible && !deviceLost) loop.resume();
+    if (!consumerPaused && pageVisible && !deviceLoss) loop.resume();
     else loop.pause();
   }
 
@@ -582,23 +419,33 @@ function createNetworkController(
 
   /** Mutable display state mirrored into uniforms and renderer visibility. */
   const display = {
-    daylight: true,
-    graticule: false,
-    borders: true,
-    vertices: true,
-    edges: true,
-    poles: false,
-    earthAxis: true,
-    nightFloor: 0.55,
-    surfaceNightFloor: 0.1,
-    terminatorWidth: 0.12,
+    daylight: DEFAULT_OPTIONS.daylight,
+    graticule: DEFAULT_OPTIONS.graticule,
+    borders: DEFAULT_OPTIONS.borders,
+    vertices: DEFAULT_OPTIONS.vertices,
+    edges: DEFAULT_OPTIONS.edges,
+    poles: DEFAULT_OPTIONS.poles,
+    earthAxis: DEFAULT_OPTIONS.earthAxis,
+    nightFloor: DEFAULT_OPTIONS.nightFloor,
+    surfaceNightFloor: DEFAULT_OPTIONS.surfaceNightFloor,
+    terminatorWidth: DEFAULT_OPTIONS.terminatorWidth,
   };
 
   uniforms.geometry.vertexLod = VERTEX_LOD_PX;
-  let focusStyle = DEFAULT_FOCUS_STYLE;
+  let focusStyle: FocusStyle = {
+    enabled: DEFAULT_OPTIONS.focusEnabled,
+    hoverColor: DEFAULT_OPTIONS.hoverColor,
+    selectedColor: DEFAULT_OPTIONS.selectedColor,
+    hoverAlpha: DEFAULT_OPTIONS.hoverAlpha,
+    selectedAlpha: DEFAULT_OPTIONS.selectedAlpha,
+    vertexHoverPx: DEFAULT_OPTIONS.vertexHoverPx,
+    vertexSelectedPx: DEFAULT_OPTIONS.vertexSelectedPx,
+    edgeHoverPx: DEFAULT_OPTIONS.edgeHoverPx,
+    edgeSelectedPx: DEFAULT_OPTIONS.edgeSelectedPx,
+    endpointMode: DEFAULT_OPTIONS.focusEndpointMode,
+  };
   const focus = new FocusState(uniforms, edgeEndpoints, focusStyle);
-  applyBaseColor(DEFAULT_BASE_COLOR);
-  applyOptions(options);
+  applyOptions(options, true);
 
   let topology: Topology | null = null;
   let topologyBounds: Bounds | null = null;
@@ -743,7 +590,19 @@ function createNetworkController(
       return projections;
     },
 
-    on: events.on,
+    on(event, handler) {
+      const unsubscribe = events.on(event, handler);
+      if (event === 'deviceLost' && deviceLoss) {
+        try {
+          (handler as Events['deviceLost'])(...deviceLoss);
+        } catch (error) {
+          queueMicrotask(() => {
+            throw error;
+          });
+        }
+      }
+      return unsubscribe;
+    },
 
     load(next) {
       loadTopology(next);
@@ -755,13 +614,11 @@ function createNetworkController(
     },
 
     setColormap(fn) {
-      applyColormap(fn);
-      repaint();
+      updateOptions({ colormap: fn });
     },
 
     setBaseColor(color) {
-      applyBaseColor(color);
-      repaint();
+      updateOptions({ baseColor: color });
     },
 
     setChannel(channel, values, domain, range) {
@@ -804,8 +661,7 @@ function createNetworkController(
     },
 
     setOptions(options) {
-      if (applyOptions(options)) hoverDirty = true;
-      repaint();
+      updateOptions(options);
     },
 
     fit(animate) {
@@ -930,8 +786,8 @@ function createNetworkController(
     uniforms.baseVertexColor.set(color);
   }
 
-  /** Samples a user colormap into the fixed-size GPU LUT texture. */
-  function applyColormap(fn: (t: number) => readonly [number, number, number]): void {
+  /** Samples a user colormap before any renderer state is mutated. */
+  function sampleColormap(fn: NonNullable<Options['colormap']>): Uint8Array {
     const lut = new Uint8Array(COLORMAP_LUT_SIZE * 4);
     for (let i = 0; i < COLORMAP_LUT_SIZE; i++) {
       const [r, g, b] = fn(i / (COLORMAP_LUT_SIZE - 1));
@@ -940,17 +796,30 @@ function createNetworkController(
       lut[i * 4 + 2] = u8(b);
       lut[i * 4 + 3] = 255;
     }
-    renderer.writeColormap(lut);
+    return lut;
+  }
+
+  /** Validate and apply one public runtime option patch as a single repaint. */
+  function updateOptions(opts: Options): void {
+    validateOptions(opts);
+    const patch = runtimeOptionPatch(opts);
+    if (Object.keys(patch).length === 0) return;
+    if (applyOptions(patch)) hoverDirty = true;
+    repaint();
   }
 
   /** Applies construction or runtime display options. */
-  function applyOptions(opts: Options): boolean {
+  function applyOptions(opts: Options, initial = false): boolean {
+    const colormapLut =
+      opts.colormap && (!initial || opts.colormap !== DEFAULT_OPTIONS.colormap)
+        ? sampleColormap(opts.colormap)
+        : null;
     const pickVisibilityChanged =
       (opts.vertices !== undefined && opts.vertices !== display.vertices) ||
       (opts.edges !== undefined && opts.edges !== display.edges) ||
       (opts.poles !== undefined && opts.poles !== display.poles);
+    if (colormapLut) renderer.writeColormap(colormapLut);
     if (opts.baseColor) applyBaseColor(opts.baseColor);
-    if (opts.colormap) applyColormap(opts.colormap);
     if (opts.graticuleColor) uniforms.gridColor.set(opts.graticuleColor);
     if (opts.surfaceColor) uniforms.surfaceColor.set(opts.surfaceColor);
     if (opts.borderColor) uniforms.borderColor.set(opts.borderColor);
@@ -988,8 +857,8 @@ function createNetworkController(
     };
 
     update('enabled', opts.focusEnabled);
-    update('hoverColor', opts.hoverColor);
-    update('selectedColor', opts.selectedColor);
+    update('hoverColor', opts.hoverColor ? [...opts.hoverColor] : undefined);
+    update('selectedColor', opts.selectedColor ? [...opts.selectedColor] : undefined);
     update('hoverAlpha', opts.hoverAlpha);
     update('selectedAlpha', opts.selectedAlpha);
     update('vertexHoverPx', opts.vertexHoverPx);
@@ -1036,15 +905,15 @@ function createNetworkController(
     characteristicLength: number | null,
   ): Network['projections'] {
     const availability = {} as Record<ProjectionMode, boolean>;
-    for (const def of Object.values(PROJECTIONS)) {
-      availability[def.mode] = def.canUse(bounds, characteristicLength);
+    for (const mode of PROJECTION_MODES) {
+      availability[mode] = PROJECTIONS[mode].canUse(bounds, characteristicLength);
     }
-    return availability as Network['projections'];
+    return Object.freeze(availability);
   }
 
   /** Channels whose values alter projected hit geometry rather than color only. */
   function channelAffectsPicking(channel: Channel): boolean {
-    return channel === 'vertexHeight' || channel === 'vertexSize' || channel === 'edgeDash';
+    return CHANNEL_DEFINITIONS.find((definition) => definition.key === channel)!.map !== 'colormap';
   }
 
   /** Applies hover focus and stages a notification only when focus state changes. */
