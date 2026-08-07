@@ -1,5 +1,11 @@
 # @latkit/network
 
+## 0.3.0
+
+### Minor Changes
+
+- 3ed363b: Add threshold-gated `contextmenu` events, synchronous CPU `hitTest` and `locate` queries, and subset fitting without changing the existing picker hot path. Forward subset fitting through `NetworkElement`.
+
 ## 0.2.0
 
 ### Minor Changes
