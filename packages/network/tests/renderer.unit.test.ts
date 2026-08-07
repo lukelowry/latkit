@@ -46,6 +46,28 @@ describe('Renderer resource lifecycle', () => {
     expect(h.device.textures.every((texture) => texture.destroyed)).toBe(true);
   });
 
+  it('dispatches complete flat and globe bundles before awaiting compilation', async () => {
+    const h = makeFakeGpu();
+    let release!: (pipeline: GPURenderPipeline) => void;
+    const pending = new Promise<GPURenderPipeline>((resolve) => {
+      release = resolve;
+    });
+    h.device.createRenderPipelineAsync.mockReturnValue(pending);
+
+    const renderer = new Renderer(h.presentation, 1);
+    const labels = (): string[] =>
+      h.device.createRenderPipelineAsync.mock.calls.map(([descriptor]) => descriptor.label ?? '');
+
+    // Flat has nine pipelines; globe adds its earth-axis pipeline for ten.
+    expect(labels().filter((label) => label.startsWith('flat-'))).toHaveLength(9);
+    renderer.warmProjection('globe');
+    expect(labels().filter((label) => label.startsWith('globe-'))).toHaveLength(10);
+
+    release({ label: 'compiled' } as GPURenderPipeline);
+    await flushGpuPromises();
+    renderer.destroy();
+  });
+
   it('selects 1x pipelines by default on huge device-pixel screens', async () => {
     vi.stubGlobal('screen', { width: 4000, height: 2400 });
     vi.stubGlobal('devicePixelRatio', 1);
@@ -78,7 +100,7 @@ describe('Renderer resource lifecycle', () => {
     renderer.destroy();
   });
 
-  it('dedupes lazy projection builds and wakes when they are ready', async () => {
+  it('dedupes warmed projection builds and wakes when they are ready', async () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);
     const ready = vi.fn();
@@ -87,8 +109,8 @@ describe('Renderer resource lifecycle', () => {
     await flushGpuPromises();
     ready.mockClear();
 
-    renderer.useProjectionPipelines('globe');
-    renderer.useProjectionPipelines('globe');
+    renderer.warmProjection('globe');
+    renderer.warmProjection('globe');
     await flushGpuPromises();
 
     expect(ready).toHaveBeenCalledOnce();

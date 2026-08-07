@@ -959,6 +959,12 @@ function createNetworkController(
       revealCanvas(pendingFadeMs);
       pendingFadeMs = null;
     }
+    for (const mode of PROJECTION_MODES) {
+      if (mode === rig.mode || !projections[mode]) continue;
+      setTimeout(() => {
+        if (!destroyed && mode !== rig.mode && projections[mode]) renderer.warmProjection(mode);
+      }, 0);
+    }
   }
 
   /**

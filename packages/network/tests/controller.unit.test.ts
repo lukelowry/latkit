@@ -831,6 +831,32 @@ describe('createNetwork controller', () => {
     expect(h.surface.element.style.transition).toContain('opacity 25ms');
   });
 
+  it('warms supported inactive projections once after first paint', async () => {
+    vi.useFakeTimers();
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+
+    h.loop.paint();
+    expect(h.renderer.warmProjection).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(0);
+
+    expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt'], ['globe']]);
+    h.loop.paint();
+    vi.advanceTimersByTime(0);
+    expect(h.renderer.warmProjection).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not warm projections unavailable to the loaded topology', async () => {
+    vi.useFakeTimers();
+    const h = await makeHarness();
+    h.network.load(nonGlobeTopology());
+
+    h.loop.paint();
+    vi.advanceTimersByTime(0);
+
+    expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt']]);
+  });
+
   it('fits, pans, and zooms through the public camera methods', async () => {
     const h = await makeHarness();
     h.network.fit(true);

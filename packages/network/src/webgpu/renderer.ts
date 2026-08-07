@@ -252,16 +252,21 @@ export class Renderer {
     // Projection pipeline sets come from the projection registry: one bundle per
     // mode carries the overlay prelude, the bg shader (which writes the
     // depth all overlays occlusion-test against), and the border_world
-    // snippet (final lifted position included). Builds are async and lazy:
-    // the active projection set compiles off-thread while the topology loads, and
+    // snippet (final lifted position included). Builds are async and lazy: the
+    // active projection set compiles off-thread while the topology loads, and
     // render() simply skips frames until it lands (the loop treats a null
-    // render as "no frame"). Other projection sets compile on first use.
+    // render as "no frame"). The controller warms supported alternatives after first paint.
     this.ensureProjectionPipelines(this.activeMode);
   }
 
   /** Selects the active projection pipeline set, building it lazily if needed. */
   useProjectionPipelines(mode: ProjectionMode): void {
     this.activeMode = mode;
+    this.ensureProjectionPipelines(mode);
+  }
+
+  /** Compiles a projection pipeline set without changing the active mode. */
+  warmProjection(mode: ProjectionMode): void {
     this.ensureProjectionPipelines(mode);
   }
 

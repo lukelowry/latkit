@@ -181,17 +181,8 @@ export async function buildProjectionPipelines(
       ? mod(`${def.mode}-earth-axis`, projectionPrelude + uniformsSrc + earthAxisSrc)
       : null;
 
-  const [vertex, vertexHalo, vertexFocus, edge, edgeHalo, edgeFocus, pole] = await Promise.all([
-    rpl('vertex', vertM),
-    rpl('vertex-halo', vertM, 'vs_halo', 'underlay', dsHalo),
-    rpl('vertex-focus', vertM, 'vs_focus', 'base', dsFocus),
-    rpl('edge', edgeM, 'vs', 'base', dsOverlay, edgePipelineLayout),
-    rpl('edge-halo', edgeM, 'vs_halo', 'underlay', dsHalo, edgePipelineLayout),
-    rpl('edge-focus', edgeM, 'vs_focus', 'base', dsFocus, edgePipelineLayout),
-    rpl('pole', poleM),
-  ]);
-
-  const borders = await device.createRenderPipelineAsync({
+  // Dispatch every pipeline before the sole await so driver compilation overlaps.
+  const pendingBorders = device.createRenderPipelineAsync({
     label: `${def.mode}-borders`,
     layout: bgPipelineLayout,
     vertex: {
@@ -218,7 +209,7 @@ export async function buildProjectionPipelines(
     multisample: ms,
   });
 
-  const bg = await device.createRenderPipelineAsync({
+  const pendingBackground = device.createRenderPipelineAsync({
     label: `${def.mode}-bg`,
     layout: bgPipelineLayout,
     vertex: { module: bgModule, entryPoint: 'vs', buffers: [] },
@@ -232,8 +223,8 @@ export async function buildProjectionPipelines(
     multisample: ms,
   });
 
-  const earthAxis = earthAxisModule
-    ? await device.createRenderPipelineAsync({
+  const pendingEarthAxis = earthAxisModule
+    ? device.createRenderPipelineAsync({
         label: `${def.mode}-earth-axis`,
         layout: bgPipelineLayout,
         vertex: { module: earthAxisModule, entryPoint: 'vs', buffers: [] },
@@ -250,7 +241,21 @@ export async function buildProjectionPipelines(
         },
         multisample: ms,
       })
-    : undefined;
+    : Promise.resolve(undefined);
+
+  const [vertex, vertexHalo, vertexFocus, edge, edgeHalo, edgeFocus, pole, borders, bg, earthAxis] =
+    await Promise.all([
+      rpl('vertex', vertM),
+      rpl('vertex-halo', vertM, 'vs_halo', 'underlay', dsHalo),
+      rpl('vertex-focus', vertM, 'vs_focus', 'base', dsFocus),
+      rpl('edge', edgeM, 'vs', 'base', dsOverlay, edgePipelineLayout),
+      rpl('edge-halo', edgeM, 'vs_halo', 'underlay', dsHalo, edgePipelineLayout),
+      rpl('edge-focus', edgeM, 'vs_focus', 'base', dsFocus, edgePipelineLayout),
+      rpl('pole', poleM),
+      pendingBorders,
+      pendingBackground,
+      pendingEarthAxis,
+    ]);
 
   return {
     visual: {
