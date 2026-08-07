@@ -665,6 +665,76 @@ describe('Camera', () => {
     expect(fresh.isAnimating()).toBe(false);
   });
 
+  it('reveal recenters without changing zoom or projection-specific orientation', () => {
+    const target = { xMin: 2, xMax: 4, yMin: 1, yMax: 3 };
+    for (const proj of [createFlatProjection(), createTiltProjection(), createGlobeProjection()]) {
+      const camera = new Camera(proj, createUniforms().projection);
+      camera.init(bounds, vp);
+      if (camera.current.length > 3) {
+        camera.current[3] = 47;
+        camera.target[3] = 47;
+      }
+      if (camera.current.length > 4) {
+        camera.current[4] = 123;
+        camera.target[4] = 123;
+      }
+      const before = [...camera.current];
+
+      expect(camera.reveal(target, vp, false)).toBe('moved');
+      expect(camera.current[0]).toBeCloseTo(3);
+      expect(camera.current[1]).toBeCloseTo(2);
+      expect(camera.current[2]).toBe(before[2]);
+      expect([...camera.current].slice(3)).toEqual(before.slice(3));
+      expect(camera.fitIntent).toBe(false);
+    }
+  });
+
+  it('a newer reveal replaces an in-progress reveal', () => {
+    let now = 1_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const { camera } = make();
+
+    expect(camera.reveal({ xMin: -4, xMax: -4, yMin: -2, yMax: -2 }, vp, true)).toBe('moved');
+    now += 100;
+    camera.tick(now, vp);
+    expect(camera.reveal({ xMin: 4, xMax: 4, yMin: 2, yMax: 2 }, vp, true)).toBe('moved');
+    now += 500;
+    camera.tick(now, vp);
+
+    expect(camera.current[0]).toBeCloseTo(4);
+    expect(camera.current[1]).toBeCloseTo(2);
+    expect(camera.isAnimating()).toBe(false);
+  });
+
+  it('claimCurrent cancels driven motion but leaves an idle fit view untouched', () => {
+    const { camera } = make();
+    expect(camera.claimCurrent()).toBe(false);
+    expect(camera.fitIntent).toBe(true);
+
+    expect(camera.reveal({ xMin: 4, xMax: 4, yMin: 2, yMax: 2 }, vp, true)).toBe('moved');
+    expect(camera.claimCurrent()).toBe(true);
+    expect(camera.isAnimating()).toBe(false);
+    expect(camera.fitIntent).toBe(false);
+  });
+
+  it('preserves fit intent for an idle no-op reveal', () => {
+    const { camera } = make();
+
+    expect(camera.reveal(bounds, vp, false)).toBe('unchanged');
+    expect(camera.fitIntent).toBe(true);
+    expect(camera.isAnimating()).toBe(false);
+  });
+
+  it('claimCurrent cancels an idle residual chase', () => {
+    const { camera } = make();
+    camera.target[0] = camera.current[0]! + 1;
+
+    expect(camera.claimCurrent()).toBe(true);
+    expect(camera.target[0]).toBe(camera.current[0]);
+    expect(camera.fitIntent).toBe(false);
+    expect(camera.isAnimating()).toBe(false);
+  });
+
   it('moveTo observes the original zoom limit in every projection', () => {
     const tiny = { xMin: 0, xMax: 0.000001, yMin: 0, yMax: 0.000001 };
     for (const proj of [createFlatProjection(), createTiltProjection(), createGlobeProjection()]) {

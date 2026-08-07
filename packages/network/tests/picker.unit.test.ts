@@ -513,6 +513,7 @@ describe('Picker behavior (globe)', () => {
     s.uniforms.geometry.vertexSize = 2;
     const near = s.screenAt(0, 0);
     expect(s.picker.pick(s.query(near.sx, near.sy, 8, { edges: false }))).toEqual(['vertex', 0]);
+    expect(s.picker.locateDetail(['vertex', 0], VP)?.visible).toBe(true);
 
     // Nowhere on screen picks the far-side vertex.
     for (let gy = 0; gy < 10; gy++) {
@@ -527,6 +528,7 @@ describe('Picker behavior (globe)', () => {
     const far = s.screenAt(179, 0);
     expect(s.picker.locate(['vertex', 1], VP)?.[0]).toBeCloseTo(far.sx);
     expect(s.picker.locate(['vertex', 1], VP)?.[1]).toBeCloseTo(far.sy);
+    expect(s.picker.locateDetail(['vertex', 1], VP)?.visible).toBe(false);
   });
 
   it('picks across the antimeridian seam', () => {

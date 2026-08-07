@@ -14,6 +14,7 @@ import type { Viewport } from '../../src/camera/projection.js';
 import type { Renderer } from '../../src/webgpu/renderer.js';
 import type { RenderLoop, RenderLoopDeps } from '../../src/webgpu/render-loop.js';
 import type { ProjectionRig } from '../../src/camera/rig.js';
+import type { RevealResult } from '../../src/camera/camera.js';
 import type { Uniforms } from '../../src/webgpu/uniforms.js';
 import type { Borders } from '../../src/borders.js';
 
@@ -111,6 +112,10 @@ export class FakeCamera {
   rotateBy = vi.fn(() => true);
   fitView = vi.fn();
   moveTo = vi.fn((_bounds: Bounds, _viewport: Viewport, _animate: boolean) => true);
+  reveal = vi.fn(
+    (_bounds: Bounds, _viewport: Viewport, _animate: boolean): RevealResult => 'moved',
+  );
+  claimCurrent = vi.fn(() => false);
 }
 
 export class FakeProjectionRig {
@@ -131,6 +136,7 @@ export class FakePicker {
   nextHits: PickResult[] = [];
   lastQuery: PickQuery | null = null;
   nextLocation: readonly [number, number] | null = null;
+  nextLocationVisible = true;
   lastLocate: readonly [PickResult, Viewport] | null = null;
 
   setScene = vi.fn((_encoded: EncodedTopology, _encodedSegments: EncodedSegments) => {});
@@ -149,6 +155,18 @@ export class FakePicker {
     this.lastLocate = [item, viewport];
     return this.nextLocation;
   });
+
+  locateDetail = vi.fn(
+    (
+      item: PickResult,
+      viewport: Viewport,
+    ): { readonly point: readonly [number, number]; readonly visible: boolean } | null => {
+      this.lastLocate = [item, viewport];
+      return this.nextLocation
+        ? { point: this.nextLocation, visible: this.nextLocationVisible }
+        : null;
+    },
+  );
 }
 
 export class FakeRenderLoop {
@@ -167,6 +185,8 @@ export class FakeRenderLoop {
   wake = vi.fn();
   requestFit = vi.fn();
   requestMove = vi.fn();
+  requestReveal = vi.fn();
+  cancelDeferredMove = vi.fn();
   cancelPlacement = vi.fn();
   frameNow = vi.fn();
   pause = vi.fn();

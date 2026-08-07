@@ -74,6 +74,11 @@ interface Harness {
     vp: { w: number; h: number };
     animate: boolean;
   }>;
+  cameraReveals: Array<{
+    bounds: unknown;
+    vp: { w: number; h: number };
+    animate: boolean;
+  }>;
   resize: ReturnType<typeof vi.fn>;
   setAnimating(v: boolean): void;
   fireResize(entries?: ResizeObserverEntry[]): void;
@@ -107,6 +112,7 @@ function makeHarness(
   const renders: string[] = [];
   const cameraInits: Array<{ bounds: unknown; vp: { w: number; h: number } }> = [];
   const cameraMoves: Harness['cameraMoves'] = [];
+  const cameraReveals: Harness['cameraReveals'] = [];
   const renderer = {
     render: () => {
       renders.push('render');
@@ -141,6 +147,10 @@ function makeHarness(
       cameraMoves.push({ bounds: nextBounds, vp: { ...nextVp }, animate });
       return true;
     },
+    reveal: (nextBounds: unknown, nextVp: { w: number; h: number }, animate: boolean) => {
+      cameraReveals.push({ bounds: nextBounds, vp: { ...nextVp }, animate });
+      return 'moved';
+    },
     tick: () => {},
     isAtFitView: () => false,
     isAnimating: () => animating,
@@ -164,6 +174,7 @@ function makeHarness(
     renders,
     cameraInits,
     cameraMoves,
+    cameraReveals,
     resize,
     setAnimating: (v) => {
       animating = v;
@@ -396,6 +407,19 @@ describe('RenderLoop scheduling', () => {
     expect(h.cameraMoves).toEqual([{ bounds: subset, vp: { w: 200, h: 100 }, animate: true }]);
   });
 
+  it('applies a deferred reveal after canonical initialization on the first sized frame', () => {
+    const h = makeHarness();
+    const item = { xMin: 0.25, xMax: 0.25, yMin: 0.5, yMax: 0.5 };
+
+    h.loop.requestFit();
+    h.loop.requestReveal(item, true);
+    h.loop.frameNow();
+
+    expect(h.cameraInits).toHaveLength(1);
+    expect(h.cameraReveals).toEqual([{ bounds: item, vp: { w: 200, h: 100 }, animate: true }]);
+    expect(h.cameraMoves).toEqual([]);
+  });
+
   it('lets a newer immediate command cancel all deferred placement', () => {
     const h = makeHarness();
     const subset = { xMin: 0.25, xMax: 0.5, yMin: 0.25, yMax: 0.5 };
@@ -407,5 +431,18 @@ describe('RenderLoop scheduling', () => {
 
     expect(h.cameraInits).toEqual([]);
     expect(h.cameraMoves).toEqual([]);
+  });
+
+  it('cancels a deferred move without dropping a pending canonical fit', () => {
+    const h = makeHarness();
+    const item = { xMin: 0.25, xMax: 0.25, yMin: 0.5, yMax: 0.5 };
+
+    h.loop.requestFit();
+    h.loop.requestReveal(item, true);
+    h.loop.cancelDeferredMove();
+    h.loop.frameNow();
+
+    expect(h.cameraInits).toHaveLength(1);
+    expect(h.cameraReveals).toEqual([]);
   });
 });

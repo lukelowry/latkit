@@ -45,6 +45,16 @@ export interface Item {
   readonly index: number;
 }
 
+/** Camera behavior for bringing one item into view without reframing it. */
+export interface RevealOptions {
+  /** CSS-pixel inset that the item's anchor must clear. @defaultValue `48` */
+  readonly paddingPx?: number;
+  /** Center the item even when it is already visible inside the inset. @defaultValue `false` */
+  readonly center?: boolean;
+  /** Animate the camera move. @defaultValue `false` */
+  readonly animate?: boolean;
+}
+
 /**
  * Events emitted by a {@link Network} instance.
  *
@@ -117,6 +127,19 @@ export interface Network {
    * @returns The projected client coordinate, or null for an invalid or unprojectable item.
    */
   locate(item: Item): readonly [clientX: number, clientY: number] | null;
+  /**
+   * Bring an item into view without changing selection, projection, or zoom.
+   *
+   * Unless `center` is true, an item already visible inside the padded
+   * viewport is a no-op. The camera centers valid off-screen or occluded
+   * items while retaining the current scale, distance, tilt, and bearing.
+   * Newer camera commands replace an in-progress reveal.
+   *
+   * @param item - Vertex or edge identity in the loaded topology.
+   * @param options - Visibility inset, centering policy, and animation flag.
+   * @returns True for a valid item, including an already-visible no-op.
+   */
+  reveal(item: Item, options?: RevealOptions): boolean;
   /**
    * Bind a topology and schedule its first paint.
    *
@@ -278,6 +301,9 @@ const DEFAULT_CONTROLLER_DEPS: ControllerDeps = {
 
 /** Shared allocation-free result for invalid or empty public hit tests. */
 const NO_ITEMS: readonly Item[] = Object.freeze([]);
+
+/** Default CSS-pixel inset used by reveal visibility checks. */
+const DEFAULT_REVEAL_PADDING_PX = 48;
 
 /** Screen-space threshold used by shaders for vertex level-of-detail behavior. */
 const VERTEX_LOD_PX = 2;
@@ -534,6 +560,33 @@ function createNetworkController(
   /** Current canvas viewport in CSS pixels. */
   const vp = (): Viewport => surface.size();
 
+  /** Resolve viewport state and projection-aware bounds for item camera commands. */
+  const resolveItemBounds = (items: readonly Item[]) => {
+    const view = vp();
+    const hasViewport =
+      Number.isFinite(view.w) && Number.isFinite(view.h) && view.w > 0 && view.h > 0;
+    const center =
+      rig.mode === 'globe'
+        ? ((hasViewport ? rig.camera.screenToWorld(view.w / 2, view.h / 2, view)?.[0] : null) ??
+          rig.camera.current[0]!)
+        : null;
+    return {
+      view,
+      hasViewport,
+      bounds: topology ? boundsForItems(topology, items, center) : null,
+    };
+  };
+
+  /** Normalize reveal padding and retain a usable central viewport band. */
+  const resolveRevealPadding = (paddingPx: number | undefined, view: Viewport): number => {
+    const requested =
+      paddingPx === undefined || !Number.isFinite(paddingPx) || paddingPx < 0
+        ? DEFAULT_REVEAL_PADDING_PX
+        : paddingPx;
+    const maximum = Math.max(0, (Math.min(view.w, view.h) - 2) / 2);
+    return Math.min(requested, maximum);
+  };
+
   const channels = createChannels(uniforms, renderer, {
     loaded: () => topology !== null,
     vertexCount: () => topology?.vertexCount ?? 0,
@@ -704,6 +757,58 @@ function createNetworkController(
       return point ? [point[0] + rect.left, point[1] + rect.top] : null;
     },
 
+    reveal(item, options = {}) {
+      if (!topology || !topologyBounds) return false;
+      const { view, hasViewport, bounds } = resolveItemBounds([item]);
+      if (!bounds) return false;
+
+      if (hasViewport && !options.center) {
+        const location = picker.locateDetail([item.kind, item.index], view);
+        const padding = resolveRevealPadding(options.paddingPx, view);
+        if (
+          location?.visible &&
+          location.point[0] >= padding &&
+          location.point[0] <= view.w - padding &&
+          location.point[1] >= padding &&
+          location.point[1] <= view.h - padding
+        ) {
+          const claimed = rig.camera.claimCurrent();
+          if (claimed) {
+            loop.cancelPlacement();
+            hoverDirty = true;
+            loop.wake();
+          } else {
+            loop.cancelDeferredMove();
+          }
+          return true;
+        }
+      }
+
+      const animate = options.animate ?? false;
+      if (!hasViewport) {
+        // Zero-size initial placement already retains needsFit; established
+        // cameras must keep their current zoom when the viewport returns.
+        loop.requestReveal(bounds, animate);
+        hoverDirty = true;
+        loop.wake();
+        return true;
+      }
+
+      const result = rig.camera.reveal(bounds, view, animate);
+      if (result === 'unavailable') {
+        loop.requestFit();
+        loop.requestReveal(bounds, animate);
+      } else if (result === 'unchanged') {
+        loop.cancelDeferredMove();
+        return true;
+      } else {
+        loop.cancelPlacement();
+      }
+      hoverDirty = true;
+      loop.wake();
+      return true;
+    },
+
     load(next) {
       loadTopology(next);
     },
@@ -767,9 +872,9 @@ function createNetworkController(
 
     fit(itemsOrAnimate: readonly Item[] | boolean = false, animate: boolean = false) {
       if (!topology) return;
-      const view = vp();
 
       if (typeof itemsOrAnimate === 'boolean') {
+        const view = vp();
         if (itemsOrAnimate && view.w > 0 && view.h > 0 && topologyBounds) {
           loop.cancelPlacement();
           rig.camera.fitView(topologyBounds, view);
@@ -778,14 +883,7 @@ function createNetworkController(
         }
       } else {
         if (!topologyBounds) return;
-        const hasViewport =
-          Number.isFinite(view.w) && Number.isFinite(view.h) && view.w > 0 && view.h > 0;
-        const center =
-          rig.mode === 'globe'
-            ? ((hasViewport ? rig.camera.screenToWorld(view.w / 2, view.h / 2, view)?.[0] : null) ??
-              rig.camera.current[0]!)
-            : null;
-        const bounds = boundsForItems(topology, itemsOrAnimate, center);
+        const { view, hasViewport, bounds } = resolveItemBounds(itemsOrAnimate);
         if (!bounds) return;
         const framed = expandDegenerateBounds(bounds, topologyBounds, MAX_ZOOM_RATIO);
         if (!hasViewport || !rig.camera.moveTo(framed, view, animate)) {

@@ -74,6 +74,12 @@ export interface PickQuery {
 
 export type PickResult = readonly [kind: 'vertex' | 'edge', index: number];
 
+/** Package-private item anchor with surface visibility retained for reveal policy. */
+export interface LocatedItem {
+  readonly point: readonly [number, number];
+  readonly visible: boolean;
+}
+
 /**
  * Largest screen overhang of any pickable primitive around its anchor:
  * vertex radius cap times the size-channel multiplier cap.
@@ -264,6 +270,11 @@ export class Picker {
    * nearest projectable point when the entire edge is occluded.
    */
   locate(item: PickResult, vp: Viewport): readonly [number, number] | null {
+    return this.locateDetail(item, vp)?.point ?? null;
+  }
+
+  /** Project one item and retain whether its chosen anchor is on the visible surface. */
+  locateDetail(item: PickResult, vp: Viewport): LocatedItem | null {
     const scene = this.scene;
     if (!scene || !Number.isFinite(vp.w) || !Number.isFinite(vp.h) || vp.w <= 0 || vp.h <= 0) {
       return null;
@@ -295,7 +306,9 @@ export class Picker {
       proj.toScreen(p);
       const x = p.sx / dprX;
       const y = p.sy / dprY;
-      return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null;
+      return Number.isFinite(x) && Number.isFinite(y)
+        ? { point: [x, y], visible: proj.visible(p) }
+        : null;
     }
 
     if (kind !== 'edge' || id >= scene.seg.edgeCount) return null;
@@ -352,8 +365,12 @@ export class Picker {
       }
     }
 
-    if (visibleScore < Infinity) return [visibleX / dprX, visibleY / dprY];
-    return fallbackScore < Infinity ? [fallbackX / dprX, fallbackY / dprY] : null;
+    if (visibleScore < Infinity) {
+      return { point: [visibleX / dprX, visibleY / dprY], visible: true };
+    }
+    return fallbackScore < Infinity
+      ? { point: [fallbackX / dprX, fallbackY / dprY], visible: false }
+      : null;
   }
 
   // Query core.
