@@ -22,6 +22,8 @@ fn displace_world(w: vec3f, h: f32) -> vec3f {
 
 fn project_world(p: vec3f) -> vec4f { return u.vp * vec4f(p, 1.0); }
 
+fn project_overlay(p: vec3f, _h: f32) -> vec4f { return project_world(p); }
+
 // `vertex_size` is in coordinate degrees; convert through surface radians and
 // cap in screen space so zoom reveals topology instead of inflating glyphs.
 fn screen_radius(clip: vec4f) -> f32 {

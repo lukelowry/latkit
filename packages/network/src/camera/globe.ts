@@ -234,6 +234,7 @@ export function createGlobeProjection(): Projection {
   }
 
   return {
+    family: 'globe',
     stateSize: 3,
 
     fit(b, vp): CameraState {
@@ -357,6 +358,7 @@ export function createGlobeProjection(): Projection {
       region.setVP(vpMatrix);
       region.setCameraPos(cameraPos[0], cameraPos[1], cameraPos[2]);
       region.fovScale = effectiveFovScale(s);
+      region.planeMix = 1;
 
       const now = Date.now();
       if (now - lightStamp > 30_000) {

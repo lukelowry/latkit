@@ -44,6 +44,11 @@ network.fadeIn();
 
 The view starts in the flat projection. If the topology coordinates fit the geographic range required for globe mode, `network.projections.globe` becomes true after `load()`.
 
+`flat` and `tilt` are two views of one planar camera. Projection changes animate
+the same pitch state in either direction and reuse one WebGPU pipeline bundle.
+A `vertexHeight` channel controls depth order at flat rest and blends
+continuously into physical height as the view tilts.
+
 ## Add interaction handlers
 
 Use events to mirror hover and selection state into your app:

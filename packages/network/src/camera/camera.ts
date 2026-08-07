@@ -3,6 +3,7 @@ import type {
   CameraState,
   Tangent,
   PanSession,
+  PlaneView,
   PoseSnapshot,
   Vec2,
   Viewport,
@@ -180,6 +181,18 @@ export class Camera {
       // The projection may prefer to settle elsewhere; the chase animates it.
       this.proj.settleImportedPose?.(this.target);
     }
+    return true;
+  }
+
+  /** Retarget one view of the current camera family without replacing state. */
+  setView(view: PlaneView, bounds: GraphBounds | null, vp: Viewport): boolean {
+    if (!this.proj.setView) return false;
+    const intent = this.fitIntent;
+    this.interrupt();
+    this.proj.setView(view, this.target);
+    this.fitIntent = intent;
+    if (!bounds || !validBounds(bounds) || !validViewport(vp)) return false;
+    this.fit = this.proj.fit(bounds, vp);
     return true;
   }
 

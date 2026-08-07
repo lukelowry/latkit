@@ -9,6 +9,7 @@ import {
   W_HEIGHT_OUT_SCALE,
   W_HEIGHT_SCALE,
   W_HEIGHT_WORLD_SCALE,
+  W_PLANE_MIX,
   W_VERTEX_LOD,
   W_VIEWPORT_X,
   W_VIEWPORT_Y,
@@ -192,7 +193,7 @@ export class Picker {
 
   /** Create a picker bound to live render dependencies. */
   constructor(private readonly deps: PickerDeps) {
-    this.f32 = new Float32Array(deps.uniforms.raw);
+    this.f32 = deps.uniforms.rawF32;
     this.u32 = deps.uniforms.rawU32;
   }
 
@@ -398,7 +399,7 @@ export class Picker {
     const heights = this.u32[W_V_HEIGHT_MODE] !== 0 ? this.deps.values('vertexHeight') : null;
     const sizes = this.u32[W_V_SIZE_MODE] !== 0 ? this.deps.values('vertexSize') : null;
     const dashes = this.f32[W_DASH_PERIOD]! > 0 ? this.deps.values('edgeDash') : null;
-    const poles = q.poles && heights !== null && mode !== 'flat';
+    const poles = q.poles && heights !== null && (mode === 'globe' || this.f32[W_PLANE_MIX]! > 0);
 
     const state: TestState = {
       proj,
@@ -468,7 +469,8 @@ export class Picker {
       BILLBOARD_PAD_PX /
         Math.min(this.f32[W_VIEWPORT_X]! / vp.w, this.f32[W_VIEWPORT_Y]! / vp.h, 1);
 
-    const heightsActive = mode !== 'flat' && this.u32[W_V_HEIGHT_MODE] !== 0;
+    const heightsActive =
+      (mode === 'globe' || this.f32[W_PLANE_MIX]! > 0) && this.u32[W_V_HEIGHT_MODE] !== 0;
     let seed = this.deps.unproject(sx, sy, vp);
     if (!seed) {
       // Cursor is off the surface (above tilt's horizon / off the globe).
@@ -550,7 +552,7 @@ export class Picker {
       const outMin = this.f32[W_HEIGHT_OUT_MIN]!;
       const outScale = this.f32[W_HEIGHT_OUT_SCALE]!;
       const maxAbsH = Math.max(Math.abs(outMin), Math.abs(outMin + outScale));
-      const toCoord = mode === 'globe' ? 180 / Math.PI : 1;
+      const toCoord = mode === 'globe' ? 180 / Math.PI : this.f32[W_PLANE_MIX]!;
       const hCoord = maxAbsH * this.f32[W_HEIGHT_WORLD_SCALE]! * toCoord;
       const ratio = jacMin > 0 ? jacMax / jacMin : Infinity;
       if (!(ratio <= JACOBIAN_RATIO_CAP)) return this.coverAll(scene);

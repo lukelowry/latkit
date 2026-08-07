@@ -8,8 +8,10 @@ export interface ProjectionRegion {
   fovScale: number;
   /** Writes the normalized light direction for daylight shading. */
   setLightDir(x: number, y: number, z: number): void;
-  /** Writes tilt look-at point and bearing basis into words 92..95. */
-  setTiltParams(lookX: number, lookY: number, sinB: number, cosB: number): void;
+  /** Writes planar look-at point and bearing basis into words 92..95. */
+  setPlaneParams(lookX: number, lookY: number, sinB: number, cosB: number): void;
+  /** Blend from orthographic depth order to physical planar height. */
+  planeMix: number;
   /** Minimum overlay brightness on the night side. */
   nightFloor: number;
   /** Width of the daylight terminator blend band. */
@@ -132,6 +134,8 @@ interface ChannelRegion {
 export interface Uniforms {
   /** Backing buffer uploaded wholesale to the GPU each frame. */
   readonly raw: ArrayBuffer;
+  /** Cached floating-point view over {@link Uniforms.raw}. */
+  readonly rawF32: Float32Array;
   /** Cached signed 32-bit view over {@link Uniforms.raw}. */
   readonly rawI32: Int32Array;
   /** Cached unsigned 32-bit view over {@link Uniforms.raw}. */
@@ -157,7 +161,7 @@ export interface Uniforms {
 }
 
 /** Total byte length of the packed uniform buffer shared with WGSL. */
-export const UNIFORM_BUFFER_BYTES = 384;
+export const UNIFORM_BUFFER_BYTES = 400;
 
 /** Projection flag bit for daylight shading; must match uniforms.wgsl. */
 export const FLAG_DAYLIGHT = 1;
@@ -294,14 +298,16 @@ const W_NIGHT_FLOOR = 89;
 const W_TERMINATOR_WIDTH = 90;
 /** Word offset for surface night-side floor. */
 const W_SURFACE_NIGHT_FLOOR = 91;
-/** Word offset for tilt look-at x. */
-const W_TILT_LOOK_X = 92;
-/** Word offset for tilt look-at y. */
-const W_TILT_LOOK_Y = 93;
-/** Word offset for tilt bearing sine. */
-const W_TILT_SIN_BEARING = 94;
-/** Word offset for tilt bearing cosine. */
-const W_TILT_COS_BEARING = 95;
+/** Word offset for planar look-at x. */
+const W_PLANE_LOOK_X = 92;
+/** Word offset for planar look-at y. */
+const W_PLANE_LOOK_Y = 93;
+/** Word offset for planar bearing sine. */
+const W_PLANE_SIN_BEARING = 94;
+/** Word offset for planar bearing cosine. */
+const W_PLANE_COS_BEARING = 95;
+/** Word offset for the planar projection blend. */
+export const W_PLANE_MIX = 96;
 
 /** Tests whether the graticule projection flag is enabled in a raw uniform view. */
 export function hasGraticuleFlag(u: Uint32Array): boolean {
@@ -311,6 +317,11 @@ export function hasGraticuleFlag(u: Uint32Array): boolean {
 /** Tests whether the vertexHeight channel mode is active in a raw uniform view. */
 export function hasVertexHeightChannel(u: Uint32Array): boolean {
   return u[W_V_HEIGHT_MODE] !== 0;
+}
+
+/** Tests whether the rendered camera has left the flat planar state. */
+export function hasPlaneDepth(f: Float32Array): boolean {
+  return f[W_PLANE_MIX]! > 0;
 }
 
 /** Allocates a zeroed uniform buffer and typed region accessors over it. */
@@ -341,11 +352,17 @@ export function createUniforms(): Uniforms {
       f[W_LIGHT_Y] = y;
       f[W_LIGHT_Z] = z;
     },
-    setTiltParams(lookX, lookY, sinB, cosB) {
-      f[W_TILT_LOOK_X] = lookX;
-      f[W_TILT_LOOK_Y] = lookY;
-      f[W_TILT_SIN_BEARING] = sinB;
-      f[W_TILT_COS_BEARING] = cosB;
+    setPlaneParams(lookX, lookY, sinB, cosB) {
+      f[W_PLANE_LOOK_X] = lookX;
+      f[W_PLANE_LOOK_Y] = lookY;
+      f[W_PLANE_SIN_BEARING] = sinB;
+      f[W_PLANE_COS_BEARING] = cosB;
+    },
+    get planeMix() {
+      return f[W_PLANE_MIX];
+    },
+    set planeMix(v) {
+      f[W_PLANE_MIX] = v;
     },
     get nightFloor() {
       return f[W_NIGHT_FLOOR];
@@ -673,6 +690,7 @@ export function createUniforms(): Uniforms {
 
   return {
     raw: buf,
+    rawF32: f,
     rawI32: i,
     rawU32: u,
     projection,

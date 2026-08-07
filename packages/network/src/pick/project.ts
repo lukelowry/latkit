@@ -9,8 +9,12 @@ import {
   W_FLAT_TX,
   W_FLAT_TY,
   W_FOV_SCALE,
+  W_HEIGHT_OUT_MIN,
+  W_HEIGHT_OUT_SCALE,
   W_HEIGHT_WORLD_SCALE,
+  W_PLANE_MIX,
   W_VERTEX_SIZE,
+  W_V_HEIGHT_MODE,
   W_VIEWPORT_X,
   W_VIEWPORT_Y,
 } from '../webgpu/uniforms.js';
@@ -105,12 +109,11 @@ export interface Projector {
 
 /** Create the projection-specific CPU mirror for the active render mode. */
 export function projectorFor(mode: ProjectionMode, uniforms: Uniforms): Projector {
-  const f = new Float32Array(uniforms.raw);
+  const f = uniforms.rawF32;
   switch (mode) {
     case 'flat':
-      return flatProjector(f);
     case 'tilt':
-      return tiltProjector(f);
+      return planeProjector(f, uniforms.rawU32);
     case 'globe':
       return globeProjector(f);
     default:
@@ -155,58 +158,46 @@ function polePx(radius: number): number {
   return Math.max(radius * 0.15, 1.5);
 }
 
-/** Project topology xy as flat orthographic world coordinates. */
-function flatProjector(f: Float32Array): Projector {
-  return {
-    // Orthographic top-down: height never displaces flat geometry.
-    project(out, x, y, _h) {
-      out.wx = x;
-      out.wy = y;
-      out.wz = 0;
-      out.cx = x * f[W_FLAT_SX]! + f[W_FLAT_TX]!;
-      out.cy = y * f[W_FLAT_SY]! + f[W_FLAT_TY]!;
-      out.cz = 0.5;
-      out.cw = 1;
-    },
-    toScreen(p) {
-      toScreen(f, p);
-    },
-    visible(p) {
-      return p.cw > 0;
-    },
-    screenRadius() {
-      const px = f[W_VERTEX_SIZE]! * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5;
-      return Math.min(px, VISUAL.maxVertexRadiusPx);
-    },
-    screenHalfWidth(_p, baseWidth) {
-      return clampHalfWidth(baseWidth * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5);
-    },
-    poleHalfWidth(p) {
-      return polePx(this.screenRadius(p));
-    },
-  };
-}
-
-/** Project topology xy onto the tilted plane with height as world z lift. */
-function tiltProjector(f: Float32Array): Projector {
+/** Mirror the shared flat-to-tilt planar shader. */
+function planeProjector(f: Float32Array, u: Uint32Array): Projector {
   return {
     project(out, x, y, h) {
+      const amount = f[W_PLANE_MIX]!;
       out.wx = x;
       out.wy = y;
-      out.wz = VISUAL.tiltSurfaceLift * f[W_VERTEX_SIZE]! + h * f[W_HEIGHT_WORLD_SCALE]!;
-      projectVP(f, out);
+      out.wz = amount * (VISUAL.tiltSurfaceLift * f[W_VERTEX_SIZE]! + h * f[W_HEIGHT_WORLD_SCALE]!);
+      if (amount === 0) {
+        out.cx = x * f[W_FLAT_SX]! + f[W_FLAT_TX]!;
+        out.cy = y * f[W_FLAT_SY]! + f[W_FLAT_TY]!;
+        out.cz = 0.5;
+        out.cw = 1;
+      } else {
+        projectVP(f, out);
+      }
+      const scale = Math.max(Math.abs(f[W_HEIGHT_OUT_SCALE]!), 1e-6);
+      const rank =
+        u[W_V_HEIGHT_MODE] === 0 ? 0 : Math.min(1, Math.max(0, (h - f[W_HEIGHT_OUT_MIN]!) / scale));
+      out.cz -= rank * VISUAL.flatHeightDepthSpan * (1 - amount) * out.cw;
     },
     toScreen(p) {
       toScreen(f, p);
     },
     visible(p) {
-      return p.cw > 0 && p.wz >= -0.0005;
+      return p.cw > 0 && (f[W_PLANE_MIX] === 0 || p.wz >= -0.0005);
     },
     screenRadius(p) {
-      return Math.min(perspectivePx(f, p.cw, f[W_VERTEX_SIZE]!), VISUAL.maxVertexRadiusPx);
+      const px =
+        f[W_PLANE_MIX] === 0
+          ? f[W_VERTEX_SIZE]! * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
+          : perspectivePx(f, p.cw, f[W_VERTEX_SIZE]!);
+      return Math.min(px, VISUAL.maxVertexRadiusPx);
     },
     screenHalfWidth(p, baseWidth) {
-      return clampHalfWidth(perspectivePx(f, p.cw, baseWidth));
+      const px =
+        f[W_PLANE_MIX] === 0
+          ? baseWidth * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
+          : perspectivePx(f, p.cw, baseWidth);
+      return clampHalfWidth(px);
     },
     poleHalfWidth(p) {
       return polePx(this.screenRadius(p));

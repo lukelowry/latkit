@@ -1,5 +1,5 @@
 // Shared uniform struct, prepended to all shader modules at pipeline creation time.
-// Total: 384 bytes (24 x 16, naturally aligned).
+// Total: 400 bytes (25 x 16, naturally aligned).
 
 struct Uniforms {
   // Projection (bytes 0-111)
@@ -90,12 +90,18 @@ struct Uniforms {
   terminator_width: f32,
   surface_night_floor: f32,
 
-  // Tilt camera basis (bytes 368-383) - written by tilt.pack() only.
+  // Planar camera basis (bytes 368-383).
   // (look_x, look_y, sin(bearing), cos(bearing)): the bg derives its
   // per-fragment ray basis from these because the globe's normalize(-cam)
   // trick assumes a look-at-origin Y-up camera, and a naive look-at basis
   // degenerates at nadir. right = (cos b, sin b, 0) is stable everywhere.
-  tilt_params: vec4f,
+  plane_params: vec4f,
+
+  // Flat-to-tilt projection blend (bytes 384-399).
+  plane_mix: f32,
+  _plane_pad_0: f32,
+  _plane_pad_1: f32,
+  _plane_pad_2: f32,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -118,11 +124,10 @@ const ROLE_BASE:  u32 = 0u;
 const ROLE_FOCUS: u32 = 1u;
 const ROLE_HALO:  u32 = 2u;
 
-// Depth-bias constants for flat-mode sort-z. Globe overlays use real
-// world-space lift plus the sphere depth buffer for occlusion.
-const Z_BIAS_VERTEX_BAND_OFFSET : f32 = -1.0e-3;
-const Z_BIAS_EDGE_BAND_OFFSET   : f32 = -0.5e-3;
-const Z_BIAS_SELECTION_LIFT     : f32 =  0.05e-3;
+// Small semantic biases sit on top of height-derived depth.
+const Z_BIAS_VERTEX_BAND_OFFSET : f32 = -2.0e-6;
+const Z_BIAS_EDGE_BAND_OFFSET   : f32 = -1.0e-6;
+const Z_BIAS_SELECTION_LIFT     : f32 =  5.0e-7;
 const Z_BIAS_JITTER_AMPLITUDE   : f32 =  1.0e-7;
 
 // Deterministic per-instance NDC jitter, bounded to -Z_BIAS_JITTER_AMPLITUDE.

@@ -26,10 +26,14 @@ export class ProjectionRig {
    * means the caller should request a fit once bounds and viewport are usable.
    */
   switchTo(mode: ProjectionMode, bounds: GraphBounds | null, vp: Viewport): boolean {
+    const next = PROJECTIONS[mode];
+    this.mode = mode;
+    if (this.projection.family === 'plane' && (mode === 'flat' || mode === 'tilt')) {
+      return this.camera.setView(mode, bounds, vp);
+    }
     const pose = this.projection.exportPose?.(this.camera.current, vp) ?? null;
     const fitIntent = this.camera.fitIntent;
-    this.mode = mode;
-    this.projection = PROJECTIONS[mode].create();
+    this.projection = next.create();
     this.camera = new Camera(this.projection, this.region);
     if (!bounds) return false;
     return this.camera.initFrom(pose, fitIntent, bounds, vp);

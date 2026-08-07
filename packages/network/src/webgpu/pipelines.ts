@@ -1,7 +1,7 @@
 /// <reference types="@webgpu/types" />
 
 import { BORDER_VERTEX_STRIDE_BYTES } from '../borders.js';
-import type { ProjectionDef } from '../projections.js';
+import type { PipelineDef } from '../projections.js';
 import { VISUAL_WGSL } from '../visual.js';
 import { WGSL_LAYOUT } from '../topology/wire.js';
 import { WGSL_LAYOUT as SEGMENTS_WGSL_LAYOUT } from '../segments/wire.js';
@@ -84,7 +84,7 @@ function visualFragmentEntry(kind: VisualFragmentKind): string {
  * background depth, borders, and mode-specific depth behavior.
  */
 export async function buildProjectionPipelines(
-  def: ProjectionDef,
+  def: PipelineDef,
   options: ProjectionPipelineFactoryOptions,
 ): Promise<ProjectionPipelineSet> {
   const {

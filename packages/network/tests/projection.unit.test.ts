@@ -1,7 +1,6 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { createFlatProjection } from '../src/camera/flat.js';
 import { createGlobeProjection } from '../src/camera/globe.js';
-import { createTiltProjection } from '../src/camera/tilt.js';
+import { createFlatProjection, createTiltProjection } from '../src/camera/plane.js';
 import { Camera } from '../src/camera/camera.js';
 import { ProjectionRig } from '../src/camera/rig.js';
 import { createUniforms } from '../src/webgpu/uniforms.js';
@@ -139,7 +138,7 @@ describe('flat projection', () => {
   it('imports projection-independent poses', () => {
     const imported = proj.importPose!({ centerX: 3, centerY: -2, pxPerWorld: 40 }, vp);
 
-    expect(Array.from(imported)).toEqual([3, -2, 40]);
+    expect(Array.from(imported)).toEqual([3, -2, 40, 0, 0]);
   });
 
   it('near returns true when the residual motion is sub-pixel', () => {
@@ -372,7 +371,6 @@ describe('globe projection', () => {
 
 describe('tilt projection', () => {
   const proj = createTiltProjection();
-  const FOV_SCALE = Math.tan((2 * Math.atan(1 / 3)) / 2);
 
   function fitState() {
     return proj.fit(bounds, vp);
@@ -439,7 +437,7 @@ describe('tilt projection', () => {
     expect(imported[1]).toBe(-2);
     expect(imported[3]).toBe(0); // pitch 0 — pixel-identical to flat
     // Scale round-trips: px-per-world at the look point matches the export.
-    expect(vp.h / 2 / (imported[2] * FOV_SCALE)).toBeCloseTo(pose.pxPerWorld, 6);
+    expect(imported[2]).toBeCloseTo(pose.pxPerWorld, 6);
 
     const target = proj.clone(imported);
     proj.settleImportedPose!(target);
@@ -477,7 +475,7 @@ describe('tilt projection', () => {
     expect(s[2]).toBe(fit[2]);
 
     proj.zoom(s, 1e9, fit);
-    expect(s[2]).toBeCloseTo(fit[2] / MAX_ZOOM_RATIO, 6);
+    expect(s[2]).toBeCloseTo(fit[2] * MAX_ZOOM_RATIO, 6);
     proj.zoom(s, 1e-9, fit);
     expect(s[2]).toBe(fit[2]);
   });
@@ -533,7 +531,7 @@ describe('tilt projection', () => {
     expect(pose.pxPerWorld).toBeGreaterThan(0);
     expect(region.vp.some((value) => value !== 0)).toBe(true);
     expect(region.cameraPos[2]).toBeGreaterThan(0);
-    expect(region.tiltParams[3]).toBeCloseTo(1, 6);
+    expect(region.planeParams[3]).toBeCloseTo(1, 6);
   });
 });
 
@@ -923,6 +921,7 @@ describe('Camera', () => {
     // passed pixel tolerance. Exercises the R1 loops before any real
     // 5-slot projection exists.
     const proj: Projection = {
+      family: 'plane',
       stateSize: 5,
       fit: () => Float64Array.of(0, 0, 1, 10, 20) as CameraState,
       clone: (s) => new Float64Array(s) as CameraState,
@@ -1021,7 +1020,40 @@ describe('ProjectionRig', () => {
     expect(rig.mode).toBe('tilt');
     expect(rig.switchTo('flat', bounds, vp)).toBe(true);
     expect(rig.mode).toBe('flat');
-    expect(rig.camera.current.length).toBe(3);
+    expect(rig.camera.current.length).toBe(5);
+  });
+
+  it('keeps one planar camera and animates flat and tilt in both directions', () => {
+    const uniforms = createUniforms();
+    const rig = new ProjectionRig(uniforms.projection);
+    rig.camera.init(bounds, vp);
+    const camera = rig.camera;
+    const projection = rig.projection;
+
+    expect(rig.switchTo('tilt', bounds, vp)).toBe(true);
+    expect(rig.camera).toBe(camera);
+    expect(rig.projection).toBe(projection);
+    expect(camera.current[3]).toBe(0);
+    expect(camera.target[3]).toBeGreaterThan(0);
+
+    let now = performance.now();
+    now += 16.67;
+    camera.tick(now, vp);
+    expect(uniforms.projection.planeMix).toBeGreaterThan(0);
+    expect(uniforms.projection.planeMix).toBeLessThan(1);
+
+    expect(rig.switchTo('flat', bounds, vp)).toBe(true);
+    expect(rig.camera).toBe(camera);
+    expect(camera.target[3]).toBe(0);
+    let frames = 0;
+    while (camera.isAnimating() && frames < 120) {
+      now += 16.67;
+      camera.tick(now, vp);
+      frames++;
+    }
+    expect(frames).toBeLessThan(120);
+    expect(camera.current[3]).toBe(0);
+    expect(uniforms.projection.planeMix).toBe(0);
   });
 });
 
@@ -1030,7 +1062,8 @@ function makeProjectionRegion() {
     vp: new Float32Array(16),
     cameraPos: [0, 0, 0],
     lightDir: [0, 0, 0],
-    tiltParams: [0, 0, 0, 0],
+    planeParams: [0, 0, 0, 0],
+    planeMix: 0,
     fovScale: 0,
     nightFloor: 0,
     terminatorWidth: 0,
@@ -1049,8 +1082,8 @@ function makeProjectionRegion() {
     setLightDir(x: number, y: number, z: number) {
       this.lightDir = [x, y, z];
     },
-    setTiltParams(lookX: number, lookY: number, sinB: number, cosB: number) {
-      this.tiltParams = [lookX, lookY, sinB, cosB];
+    setPlaneParams(lookX: number, lookY: number, sinB: number, cosB: number) {
+      this.planeParams = [lookX, lookY, sinB, cosB];
     },
   };
 }

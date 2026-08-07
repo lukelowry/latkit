@@ -32,8 +32,8 @@ fn vs_pole(quad: vec2f, inst: u32) -> VOut {
     return culled_pole(inst);
   }
 
-  let base_clip = project_world(base);
-  let tip_clip = project_world(displace_world(surface, h));
+  let base_clip = project_overlay(base, 0.0);
+  let tip_clip = project_overlay(displace_world(surface, h), h);
   let at_tip = quad.y > 0.0;
   let clip = select(base_clip, tip_clip, at_tip);
 
@@ -50,7 +50,7 @@ fn vs_pole(quad: vec2f, inst: u32) -> VOut {
   let offset = normal * quad.x * hw * 2.0 / u.viewport * clip.w;
 
   var out: VOut;
-  let z_bias = select(pole_sort_z_bias(inst), 0.0, u.fov_scale > 0.0);
+  let z_bias = pole_sort_z_bias(inst) * (1.0 - u.plane_mix);
   out.pos = vec4f(clip.xy + offset, clip.z + z_bias * clip.w, clip.w);
   let base_color = vertex_channel_color(inst);
   out.color = vec4f(base_color.rgb * daylight(surface), base_color.a);

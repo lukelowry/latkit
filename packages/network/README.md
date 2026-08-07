@@ -35,6 +35,10 @@ network.setChannel('vertexColor', values, finiteExtent(values));
 network.fadeIn();
 ```
 
+`vertexHeight` orders overlapping geometry by depth in `flat`, then becomes
+physical lift continuously as the same planar camera tilts. Switching between
+`flat` and `tilt` reuses that camera and its WebGPU pipeline bundle.
+
 ## Selection and navigation
 
 `Item` is the renderer's stable vertex/edge identity. Selection changes only

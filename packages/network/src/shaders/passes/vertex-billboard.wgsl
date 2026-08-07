@@ -40,8 +40,9 @@ fn vs_vertex(quad: vec2f, inst: u32, role: u32) -> VOut {
   if (role == ROLE_BASE) { state = 0u; }
 
   let pos = vertex_coord(inst);
-  let world = displace_world(vertex_surface_world(inst, pos), vertex_norm_height(inst));
-  let clip = project_world(world);
+  let h = vertex_norm_height(inst);
+  let world = displace_world(vertex_surface_world(inst, pos), h);
+  let clip = project_overlay(world, h);
 
   let r = screen_radius(clip) * vertex_size_scale(inst);
   if (r < css_px(u.vertex_lod)) {
@@ -57,18 +58,22 @@ fn vs_vertex(quad: vec2f, inst: u32, role: u32) -> VOut {
   let outer = r + underlay_px;
   let ndc_offset = quad * (outer + 1.0) * 2.0 / u.viewport * clip.w;
   var z = clip.z;
-  if (u.fov_scale > 0.0) {
-    if (state != 0u) { z -= Z_BIAS_SELECTION_LIFT * clip.w; }
-  } else {
-    let base_bias = Z_BIAS_VERTEX_BAND_OFFSET + jitter(inst);
-    let focus_bias = Z_BIAS_VERTEX_BAND_OFFSET - Z_BIAS_SELECTION_LIFT;
-    z += select(base_bias, focus_bias, state != 0u) * clip.w;
-  }
+  let flat_bias = select(
+    Z_BIAS_VERTEX_BAND_OFFSET + jitter(inst),
+    Z_BIAS_VERTEX_BAND_OFFSET - Z_BIAS_SELECTION_LIFT,
+    state != 0u,
+  );
+  let depth_bias = mix(
+    flat_bias,
+    select(0.0, -Z_BIAS_SELECTION_LIFT, state != 0u),
+    u.plane_mix,
+  );
+  z += depth_bias * clip.w;
   out.pos = vec4f(clip.xy + ndc_offset, z, clip.w);
 
   let base_color = vertex_channel_color(inst);
   var light_world = world;
-  if (u.fov_scale > 0.0) { light_world = normalize(world); }
+  if (u.plane_mix > 0.0) { light_world = normalize(world); }
   out.color = vec4f(base_color.rgb * daylight(light_world), base_color.a);
   out.uv = quad;
   out.focus = state;

@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { createFlatProjection } from '../src/camera/flat.js';
 import { createGlobeProjection } from '../src/camera/globe.js';
-import { createTiltProjection } from '../src/camera/tilt.js';
+import { createFlatProjection, createTiltProjection } from '../src/camera/plane.js';
 import type { Projection, Viewport } from '../src/camera/projection.js';
 import type { ProjectionMode } from '../src/projections.js';
 import { createUniforms, type Uniforms } from '../src/webgpu/uniforms.js';

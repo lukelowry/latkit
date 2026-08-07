@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { createFlatProjection } from '../src/camera/flat.js';
 import { createGlobeProjection } from '../src/camera/globe.js';
-import { createTiltProjection } from '../src/camera/tilt.js';
+import { createFlatProjection, createTiltProjection } from '../src/camera/plane.js';
 import type { Projection, Viewport } from '../src/camera/projection.js';
 import type { ProjectionMode } from '../src/projections.js';
 import { createUniforms, type Uniforms } from '../src/webgpu/uniforms.js';
@@ -65,13 +64,32 @@ describe('pick projector parity', () => {
     }
   });
 
-  it('flat is orthographic: height never moves the projection', () => {
+  it('flat keeps height out of xy while ordering it in depth', () => {
     const s = setup('flat');
-    const base = screenOf(s, 3, 4, 0);
     uniformsHeightScale(s.uniforms, 5);
-    const lifted = screenOf(s, 3, 4, 1);
-    expect(lifted.sx).toBe(base.sx);
-    expect(lifted.sy).toBe(base.sy);
+    const low = createPoint();
+    const high = createPoint();
+    s.projector.project(low, 3, 4, 0);
+    s.projector.project(high, 3, 4, 1);
+    expect(high.cx).toBe(low.cx);
+    expect(high.cy).toBe(low.cy);
+    expect(high.cz).toBeCloseTo(low.cz - VISUAL.flatHeightDepthSpan, 6);
+    expect(high.wz).toBe(0);
+  });
+
+  it('transitions height continuously from depth order to physical lift', () => {
+    const s = setup('flat', (state) => {
+      state[3] = 27.5;
+    });
+    uniformsHeightScale(s.uniforms, 2);
+    const low = createPoint();
+    const high = createPoint();
+    s.projector.project(low, 0, 0, 0);
+    s.projector.project(high, 0, 0, 1);
+
+    expect(s.uniforms.projection.planeMix).toBeCloseTo(0.5, 6);
+    expect(high.wz - low.wz).toBeCloseTo(1, 6);
+    expect(high.cz).toBeLessThan(low.cz);
   });
 
   it('flat screen radius and half width follow the affine scale with caps', () => {
