@@ -74,6 +74,21 @@ describe('Topology', () => {
     );
   });
 
+  it('keeps canonical fit bounds vertex-only when edge bends cross the antimeridian', () => {
+    const topology = sampleTopology({
+      vertexCoords: new Float32Array([170, -5, 175, 5, 179, 0]),
+      polylinePoints: new Float32Array([181, -2, -179, 2]),
+    });
+    const info = readEncodedTopologyInfo(encodeTopology(topology));
+    const vertexBounds = computeBounds(topology.vertexCoords!);
+
+    expect(info.bounds).toEqual(vertexBounds);
+    expect(info.characteristicLength).toBeCloseTo(
+      estimateCharacteristicLength(topology.vertexCount, vertexBounds),
+      6,
+    );
+  });
+
   it('copies SharedArrayBuffer-backed parsed input into owned encoded storage', () => {
     const shared = new SharedArrayBuffer(24);
     const vertexCoords = new Float32Array(shared);

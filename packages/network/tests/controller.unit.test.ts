@@ -322,6 +322,18 @@ describe('createNetwork controller', () => {
     expect(Object.isFrozen(h.network.projections)).toBe(true);
   });
 
+  it('keeps globe availability based on vertices when an edge bend crosses longitude 180', async () => {
+    const h = await makeHarness();
+    const topology = geographicTopology();
+
+    h.network.load({
+      ...topology,
+      polylinePoints: new Float32Array([181, 4, -179, 0]),
+    });
+
+    expect(h.network.projections.globe).toBe(true);
+  });
+
   it('keeps renderer, loop, and picker callbacks wired to live controller state', async () => {
     const h = await makeHarness();
     const zooms: boolean[] = [];
@@ -452,6 +464,92 @@ describe('createNetwork controller', () => {
 
     expect(hovers).toEqual([['vertex', 1]]);
     expect(selects).toEqual([['edge', 0]]);
+  });
+
+  it('forwards contextmenu intents without picking or mutating focus', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    const events: MouseEvent[] = [];
+    h.network.on('contextmenu', (event) => events.push(event));
+    const event = new MouseEvent('contextmenu', { clientX: 5, clientY: 6 });
+
+    h.emitPointer({ kind: 'contextmenu', event });
+
+    expect(events).toEqual([event]);
+    expect(h.picker.pick).not.toHaveBeenCalled();
+    expect(h.picker.pickAll).not.toHaveBeenCalled();
+    expect(h.loop.uniforms.focus.selectedVertex).toBe(-1);
+    expect(h.loop.uniforms.focus.selectedEdge).toBe(-1);
+  });
+
+  it('hitTest maps client coordinates through current visibility without changing focus', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    vi.spyOn(h.surface, 'rect').mockReturnValue(new DOMRect(20, 30, 100, 80));
+    h.network.setOptions({ vertices: false, poles: true });
+    h.picker.nextHits = [
+      ['vertex', 2],
+      ['edge', 0],
+    ];
+
+    expect(h.network.hitTest(25, 36, 14)).toEqual([
+      { kind: 'vertex', index: 2 },
+      { kind: 'edge', index: 0 },
+    ]);
+    expect(h.picker.lastQuery).toEqual({
+      sx: 5,
+      sy: 6,
+      radiusPx: 14,
+      vp: { w: 100, h: 80 },
+      vertices: false,
+      edges: true,
+      poles: true,
+    });
+    expect(h.loop.uniforms.focus.selectedVertex).toBe(-1);
+    expect(h.loop.uniforms.focus.selectedEdge).toBe(-1);
+  });
+
+  it('hitTest defaults to the mouse radius and skips invalid or unavailable queries', async () => {
+    const h = await makeHarness();
+
+    expect(h.network.hitTest(5, 6)).toEqual([]);
+    expect(h.picker.pickAll).not.toHaveBeenCalled();
+
+    h.network.load(geographicTopology());
+    h.picker.nextHits = [['edge', 0]];
+    expect(h.network.hitTest(5, 6)).toEqual([{ kind: 'edge', index: 0 }]);
+    expect(h.picker.lastQuery?.radiusPx).toBe(10);
+
+    h.picker.pickAll.mockClear();
+    expect(h.network.hitTest(-1, 6)).toEqual([]);
+    expect(h.network.hitTest(Number.NaN, 6)).toEqual([]);
+    expect(h.network.hitTest(5, 6, -1)).toEqual([]);
+    expect(h.picker.pickAll).not.toHaveBeenCalled();
+  });
+
+  it('clamps hitTest radius to the viewport diagonal', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+
+    h.network.hitTest(5, 6, 1_000_000);
+
+    expect(h.picker.lastQuery?.radiusPx).toBeCloseTo(Math.hypot(100, 80));
+  });
+
+  it('locates items in client space without consulting display visibility', async () => {
+    const h = await makeHarness();
+    expect(h.network.locate({ kind: 'vertex', index: 2 })).toBeNull();
+    expect(h.picker.locate).not.toHaveBeenCalled();
+
+    h.network.load(geographicTopology());
+    vi.spyOn(h.surface, 'rect').mockReturnValue(new DOMRect(20, 30, 100, 80));
+    h.network.setOptions({ vertices: false, edges: false });
+    h.picker.nextLocation = [5, 6];
+
+    expect(h.network.locate({ kind: 'vertex', index: 2 })).toEqual([25, 36]);
+    expect(h.picker.lastLocate).toEqual([['vertex', 2], { w: 100, h: 80 }]);
+    expect(h.loop.uniforms.focus.selectedVertex).toBe(-1);
+    expect(h.loop.uniforms.focus.selectedEdge).toBe(-1);
   });
 
   it('routes movement pointer intents to the active camera', async () => {
@@ -752,6 +850,84 @@ describe('createNetwork controller', () => {
     expect(h.loop.requestFit).toHaveBeenCalled();
     expect(h.rig.camera.panBy).toHaveBeenCalledWith(3, 4, { w: 100, h: 80 });
     expect(h.rig.camera.zoomAt).toHaveBeenCalledWith(1.25, 50, 40, { w: 100, h: 80 });
+  });
+
+  it('fits valid item subsets without replacing whole-topology fit behavior', async () => {
+    const h = await makeHarness();
+    h.network.fit([{ kind: 'vertex', index: 1 }], true);
+    expect(h.rig.camera.moveTo).not.toHaveBeenCalled();
+    expect(h.loop.requestMove).not.toHaveBeenCalled();
+
+    h.network.load(geographicTopology());
+    h.network.setOptions({ vertices: false, edges: false });
+    h.loop.requestFit.mockClear();
+    h.loop.requestMove.mockClear();
+    h.loop.wake.mockClear();
+    h.surface.viewport = { w: 0, h: 80 };
+    h.network.fit([{ kind: 'vertex', index: 1 }], true);
+
+    expect(h.rig.camera.moveTo).not.toHaveBeenCalled();
+    expect(h.loop.requestFit).toHaveBeenCalledOnce();
+    expect(h.loop.requestMove).toHaveBeenCalledOnce();
+    expect(h.loop.requestMove.mock.calls[0]?.[1]).toBe(true);
+    expect(h.loop.wake).toHaveBeenCalledOnce();
+
+    h.surface.viewport = { w: 100, h: 80 };
+    h.loop.requestFit.mockClear();
+    h.loop.requestMove.mockClear();
+    h.loop.wake.mockClear();
+    h.network.fit([], true);
+    h.network.fit(
+      [
+        { kind: 'vertex', index: -1 },
+        { kind: 'edge', index: 99 },
+      ],
+      true,
+    );
+    expect(h.rig.camera.moveTo).not.toHaveBeenCalled();
+    expect(h.loop.requestFit).not.toHaveBeenCalled();
+    expect(h.loop.requestMove).not.toHaveBeenCalled();
+    expect(h.loop.wake).not.toHaveBeenCalled();
+
+    h.network.fit(
+      [
+        { kind: 'vertex', index: 1 },
+        { kind: 'vertex', index: 1 },
+      ],
+      true,
+    );
+
+    expect(h.rig.camera.moveTo).toHaveBeenCalledOnce();
+    const [bounds, view, animate] = h.rig.camera.moveTo.mock.calls[0]!;
+    expect((bounds.xMin + bounds.xMax) / 2).toBeCloseTo(0);
+    expect((bounds.yMin + bounds.yMax) / 2).toBeCloseTo(5);
+    expect(bounds.xMax).toBeGreaterThan(bounds.xMin);
+    expect(bounds.yMax).toBeGreaterThan(bounds.yMin);
+    expect(view).toEqual({ w: 100, h: 80 });
+    expect(animate).toBe(true);
+    expect(h.loop.wake).toHaveBeenCalledOnce();
+
+    h.rig.camera.moveTo.mockClear();
+    h.network.fit([{ kind: 'edge', index: 0 }]);
+    expect(h.rig.camera.moveTo.mock.calls[0]?.[2]).toBe(false);
+  });
+
+  it('anchors globe subset bounds at the camera longitude when center unprojection misses', async () => {
+    const h = await makeHarness();
+    h.network.load({
+      vertexCount: 2,
+      vertexCoords: new Float32Array([-179, 0, 179, 1]),
+      edges: new Uint32Array([0, 1]),
+      polylineStart: new Uint32Array([0, 0]),
+    });
+    h.rig.mode = 'globe';
+    h.rig.camera.current[0] = 170;
+    h.rig.camera.screenToWorld.mockReturnValue(null);
+
+    h.network.fit([{ kind: 'vertex', index: 0 }]);
+
+    const bounds = h.rig.camera.moveTo.mock.calls[0]?.[0];
+    expect(bounds && (bounds.xMin + bounds.xMax) / 2).toBeCloseTo(181);
   });
 
   it('keeps render-loop activity in sync with pause, resume, and page visibility', async () => {

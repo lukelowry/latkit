@@ -51,6 +51,18 @@ function validViewport(vp: Viewport): boolean {
   return Number.isFinite(vp.w) && Number.isFinite(vp.h) && vp.w > 0 && vp.h > 0;
 }
 
+/** Camera fits require finite, ordered coordinate bounds. */
+function validBounds(bounds: GraphBounds): boolean {
+  return (
+    Number.isFinite(bounds.xMin) &&
+    Number.isFinite(bounds.xMax) &&
+    Number.isFinite(bounds.yMin) &&
+    Number.isFinite(bounds.yMax) &&
+    bounds.xMin <= bounds.xMax &&
+    bounds.yMin <= bounds.yMax
+  );
+}
+
 /** Exact state equality; projection mutators clamp deterministically. */
 function sameState(a: CameraState, b: CameraState): boolean {
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
@@ -370,6 +382,36 @@ export class Camera {
     this.motion = { kind: 'fitting', from, to, t0: performance.now() };
     this.anchor = null;
     this.fitIntent = true;
+  }
+
+  /**
+   * Move to arbitrary bounds without redefining the canonical fitted view.
+   *
+   * A unit projection zoom normalizes the candidate through the same
+   * projection-specific clamp used by gestures. The canonical `fit` state is
+   * deliberately retained for future zoom limits and `isAtFitView()` checks.
+   * An already-satisfied move still takes camera ownership and clears fit
+   * intent, matching an explicit subset-fit request.
+   */
+  moveTo(bounds: GraphBounds, vp: Viewport, animate: boolean): boolean {
+    const fit = this.fit;
+    if (!fit || !validBounds(bounds) || !validViewport(vp)) return false;
+
+    const to = this.proj.fit(bounds, vp);
+    this.proj.zoom(to, 1, fit);
+    const from = this.proj.clone(this.current);
+    const changed = !sameState(from, to);
+    this.interrupt();
+    this.fitIntent = false;
+    if (!changed) return true;
+
+    if (animate) {
+      this.motion = { kind: 'fitting', from, to, t0: performance.now() };
+    } else {
+      this.current.set(to);
+      this.target.set(to);
+    }
+    return true;
   }
 
   /** Advance animation state and pack the current projection uniforms. */

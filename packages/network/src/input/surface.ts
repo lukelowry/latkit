@@ -30,11 +30,6 @@ export function createSurface(canvas: HTMLCanvasElement): Surface {
   canvas.style.touchAction = 'none';
   canvas.style.userSelect = 'none';
 
-  const suppressContextMenu = (e: Event): void => {
-    e.preventDefault();
-  };
-  canvas.addEventListener('contextmenu', suppressContextMenu);
-
   /** Read the current CSS layout box for size and input coordinate mapping. */
   function readRect(): DOMRect {
     return canvas.getBoundingClientRect();
@@ -48,7 +43,6 @@ export function createSurface(canvas: HTMLCanvasElement): Surface {
     },
     rect: readRect,
     destroy() {
-      canvas.removeEventListener('contextmenu', suppressContextMenu);
       canvas.style.touchAction = originalStyle.touchAction;
       canvas.style.userSelect = originalStyle.userSelect;
     },

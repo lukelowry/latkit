@@ -27,7 +27,7 @@ Install only the packages your application needs.
 
 - A WebGPU-capable browser for `@latkit/network` and `@latkit/monitor`
 - An ESM-capable bundler or development server
-- Node.js 22 or newer when developing Latkit locally
+- Node.js 24 when developing Latkit locally
 
 ## Installation
 

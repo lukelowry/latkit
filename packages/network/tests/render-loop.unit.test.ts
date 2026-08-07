@@ -69,6 +69,11 @@ interface Harness {
   canvas: { clientWidth: number; clientHeight: number; width: number; height: number };
   renders: string[];
   cameraInits: Array<{ bounds: unknown; vp: { w: number; h: number } }>;
+  cameraMoves: Array<{
+    bounds: unknown;
+    vp: { w: number; h: number };
+    animate: boolean;
+  }>;
   resize: ReturnType<typeof vi.fn>;
   setAnimating(v: boolean): void;
   fireResize(entries?: ResizeObserverEntry[]): void;
@@ -101,6 +106,7 @@ function makeHarness(
   const uniforms = createUniforms();
   const renders: string[] = [];
   const cameraInits: Array<{ bounds: unknown; vp: { w: number; h: number } }> = [];
+  const cameraMoves: Harness['cameraMoves'] = [];
   const renderer = {
     render: () => {
       renders.push('render');
@@ -131,6 +137,10 @@ function makeHarness(
     init: (nextBounds: unknown, nextVp: { w: number; h: number }) => {
       cameraInits.push({ bounds: nextBounds, vp: { ...nextVp } });
     },
+    moveTo: (nextBounds: unknown, nextVp: { w: number; h: number }, animate: boolean) => {
+      cameraMoves.push({ bounds: nextBounds, vp: { ...nextVp }, animate });
+      return true;
+    },
     tick: () => {},
     isAtFitView: () => false,
     isAnimating: () => animating,
@@ -153,6 +163,7 @@ function makeHarness(
     canvas,
     renders,
     cameraInits,
+    cameraMoves,
     resize,
     setAnimating: (v) => {
       animating = v;
@@ -371,5 +382,30 @@ describe('RenderLoop scheduling', () => {
       { bounds: { xMin: 0, xMax: 1, yMin: 0, yMax: 1 }, vp: { w: 200, h: 100 } },
     ]);
     expect(order).toEqual(['beforeFrame', 'render']);
+  });
+
+  it('applies a deferred move after canonical initialization on the first sized frame', () => {
+    const h = makeHarness();
+    const subset = { xMin: 0.25, xMax: 0.5, yMin: 0.25, yMax: 0.5 };
+
+    h.loop.requestFit();
+    h.loop.requestMove(subset, true);
+    h.loop.frameNow();
+
+    expect(h.cameraInits).toHaveLength(1);
+    expect(h.cameraMoves).toEqual([{ bounds: subset, vp: { w: 200, h: 100 }, animate: true }]);
+  });
+
+  it('lets a newer immediate command cancel all deferred placement', () => {
+    const h = makeHarness();
+    const subset = { xMin: 0.25, xMax: 0.5, yMin: 0.25, yMax: 0.5 };
+
+    h.loop.requestFit();
+    h.loop.requestMove(subset, false);
+    h.loop.cancelPlacement();
+    h.loop.frameNow();
+
+    expect(h.cameraInits).toEqual([]);
+    expect(h.cameraMoves).toEqual([]);
   });
 });

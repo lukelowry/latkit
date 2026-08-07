@@ -43,13 +43,13 @@ describe('createSurface', () => {
     surface.destroy();
   });
 
-  it('suppresses contextmenu events on the canvas', () => {
+  it('leaves contextmenu policy to the pointer adapter', () => {
     const canvas = document.createElement('canvas');
     const surface = createSurface(canvas);
 
     const ev = new MouseEvent('contextmenu', { cancelable: true });
     surface.element.dispatchEvent(ev);
-    expect(ev.defaultPrevented).toBe(true);
+    expect(ev.defaultPrevented).toBe(false);
 
     surface.destroy();
   });
@@ -82,8 +82,7 @@ describe('createSurface', () => {
     expect(canvas.style.touchAction).toBe('pan-y');
     expect(canvas.style.userSelect).toBe('text');
 
-    // The listener was removed on destroy, so subsequent contextmenu
-    // events on the caller-owned canvas no longer cancel.
+    // The surface never owns contextmenu policy on the caller-owned canvas.
     const ev = new MouseEvent('contextmenu', { cancelable: true });
     surface.element.dispatchEvent(ev);
     expect(ev.defaultPrevented).toBe(false);

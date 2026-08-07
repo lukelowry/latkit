@@ -66,6 +66,7 @@ export class RenderLoop {
   private active = true;
   private dead = false;
   private needsFit = false;
+  private pendingMove: { readonly bounds: Bounds; readonly animate: boolean } | null = null;
   private lastFit = true;
   /** When the pending rAF is a trailing guard, it renders only if new work
    *  arrived. Any explicit wake upgrades it to an unconditional frame. */
@@ -132,6 +133,16 @@ export class RenderLoop {
   /** Next tick will call `camera.init(bounds, vp)` before other work. */
   requestFit(): void {
     this.needsFit = true;
+    this.pendingMove = null;
+  }
+  /** Move after any pending canonical initialization on the next sized frame. */
+  requestMove(bounds: Bounds, animate: boolean): void {
+    this.pendingMove = { bounds, animate };
+  }
+  /** Cancel deferred camera placement when a newer immediate command wins. */
+  cancelPlacement(): void {
+    this.needsFit = false;
+    this.pendingMove = null;
   }
 
   // Scheduling
@@ -201,6 +212,7 @@ export class RenderLoop {
     this.dead = true;
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.rafId = 0;
+    this.pendingMove = null;
     this.stopObserving?.();
     this.stopObserving = null;
   }
@@ -214,7 +226,7 @@ export class RenderLoop {
     this.rafId = 0;
     const guardOnly = this.guardOnly;
     this.guardOnly = false;
-    if (guardOnly && !this.needsFit && this.sizeSettled) {
+    if (guardOnly && !this.needsFit && !this.pendingMove && this.sizeSettled) {
       return;
     }
     this.tick();
@@ -239,6 +251,11 @@ export class RenderLoop {
     if (this.needsFit) {
       this.camera.init(this.bounds, frameVp);
       this.needsFit = false;
+    }
+    if (this.pendingMove) {
+      const move = this.pendingMove;
+      this.pendingMove = null;
+      this.camera.moveTo(move.bounds, frameVp, move.animate);
     }
 
     this.camera.tick(performance.now(), frameVp);

@@ -4,7 +4,7 @@ This guide gets a local Latkit checkout or downstream app to its first rendered 
 
 ## Prerequisites
 
-- Node.js 22 or newer.
+- Node.js 24.
 - A browser with WebGPU support.
 - A bundler or dev server that can load ESM packages.
 

@@ -98,9 +98,10 @@ export class FakeRenderer {
 }
 
 export class FakeCamera {
-  screenToWorld = vi.fn((_sx: number, _sy: number, _vp: Viewport): readonly [number, number] => [
-    0, 0,
-  ]);
+  current = Float64Array.of(0, 0, 1);
+  screenToWorld = vi.fn(
+    (_sx: number, _sy: number, _vp: Viewport): readonly [number, number] | null => [0, 0],
+  );
   isAnimating = vi.fn(() => false);
   beginDrag = vi.fn(() => true);
   drag = vi.fn(() => true);
@@ -109,6 +110,7 @@ export class FakeCamera {
   zoomAt = vi.fn(() => true);
   rotateBy = vi.fn(() => true);
   fitView = vi.fn();
+  moveTo = vi.fn((_bounds: Bounds, _viewport: Viewport, _animate: boolean) => true);
 }
 
 export class FakeProjectionRig {
@@ -128,6 +130,8 @@ export class FakePicker {
   nextHit: PickResult | null = null;
   nextHits: PickResult[] = [];
   lastQuery: PickQuery | null = null;
+  nextLocation: readonly [number, number] | null = null;
+  lastLocate: readonly [PickResult, Viewport] | null = null;
 
   setScene = vi.fn((_encoded: EncodedTopology, _encodedSegments: EncodedSegments) => {});
 
@@ -139,6 +143,11 @@ export class FakePicker {
   pickAll = vi.fn((query: PickQuery): PickResult[] => {
     this.lastQuery = query;
     return this.nextHits;
+  });
+
+  locate = vi.fn((item: PickResult, viewport: Viewport): readonly [number, number] | null => {
+    this.lastLocate = [item, viewport];
+    return this.nextLocation;
   });
 }
 
@@ -157,6 +166,8 @@ export class FakeRenderLoop {
   setCamera = vi.fn();
   wake = vi.fn();
   requestFit = vi.fn();
+  requestMove = vi.fn();
+  cancelPlacement = vi.fn();
   frameNow = vi.fn();
   pause = vi.fn();
   resume = vi.fn();

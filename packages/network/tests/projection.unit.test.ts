@@ -619,6 +619,63 @@ describe('Camera', () => {
     expect(camera.isAtFitView()).toBe(true);
   });
 
+  it('moveTo preserves the canonical fit reference and exact zoom clamp', () => {
+    const { camera } = make();
+    const fitScale = camera.current[2];
+    const tiny = { xMin: 2, xMax: 2.000001, yMin: 1, yMax: 1.000001 };
+
+    expect(camera.moveTo(tiny, vp, false)).toBe(true);
+    expect(camera.current[0]).toBeCloseTo(2);
+    expect(camera.current[1]).toBeCloseTo(1);
+    expect(camera.current[2]).toBeCloseTo(fitScale * MAX_ZOOM_RATIO);
+    expect(camera.fitIntent).toBe(false);
+    expect(camera.isAtFitView()).toBe(false);
+
+    expect(camera.zoomAt(1 / MAX_ZOOM_RATIO, vp.w / 2, vp.h / 2, vp)).toBe(true);
+    let now = performance.now();
+    for (let i = 0; i < 120; i++) {
+      now += 16.67;
+      camera.tick(now, vp);
+    }
+    expect(Math.abs(camera.current[2] / fitScale - 1)).toBeLessThan(0.001);
+    // Zooming changes scale around the subset center; it must not silently
+    // recenter onto the canonical fit pose.
+    expect(camera.isAtFitView()).toBe(false);
+    expect(camera.fitIntent).toBe(false);
+  });
+
+  it('moveTo supports animation and rejects unavailable placement', () => {
+    let now = 1_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const fresh = new Camera(createFlatProjection(), createUniforms().projection);
+    const target = { xMin: 1, xMax: 2, yMin: 3, yMax: 4 };
+
+    expect(fresh.moveTo(target, vp, false)).toBe(false);
+    fresh.init(bounds, vp);
+    const before = [...fresh.current];
+    expect(fresh.moveTo(target, { w: 0, h: vp.h }, true)).toBe(false);
+    expect(fresh.moveTo(target, vp, true)).toBe(true);
+    expect([...fresh.current]).toEqual(before);
+    expect(fresh.isAnimating()).toBe(true);
+
+    now += 500;
+    fresh.tick(now, vp);
+    expect(fresh.current[0]).toBeCloseTo(1.5);
+    expect(fresh.current[1]).toBeCloseTo(3.5);
+    expect(fresh.isAnimating()).toBe(false);
+  });
+
+  it('moveTo observes the original zoom limit in every projection', () => {
+    const tiny = { xMin: 0, xMax: 0.000001, yMin: 0, yMax: 0.000001 };
+    for (const proj of [createFlatProjection(), createTiltProjection(), createGlobeProjection()]) {
+      const camera = new Camera(proj, createUniforms().projection);
+      camera.init(bounds, vp);
+
+      expect(camera.moveTo(tiny, vp, false)).toBe(true);
+      expect(camera.zoomAt(2, vp.w / 2, vp.h / 2, vp)).toBe(false);
+    }
+  });
+
   it('panBy performs a one-shot drag and marks fit intent false', () => {
     const { camera } = make();
     const before = camera.current[0];

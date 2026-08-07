@@ -32,6 +32,8 @@ export type Intent =
   | { kind: 'zoom'; factor: number; sx: number; sy: number; vp: Viewport }
   /** Right-drag or two-finger twist mapped to projection rotation pixels. */
   | { kind: 'rotate'; dxPx: number; dyPx: number; vp: Viewport }
+  /** Browser context request released after secondary-drag disambiguation. */
+  | { kind: 'contextmenu'; event: MouseEvent }
   /** Click/tap hit request with a target radius in CSS px. */
   | { kind: 'tap'; sx: number; sy: number; targetPx: number; vp: Viewport }
   /** Second nearby tap inside the double-tap window. */
@@ -72,10 +74,13 @@ const POINTER = {
   doubleTapPx: 25,
 } as const;
 
+/** Default mouse/pen pick target radius, in CSS px. */
+export const MOUSE_PICK_RADIUS_PX = 10;
+
 /** Pick target radii by pointer family, in CSS px. */
 const PICK = {
   /** Mouse/pen click target floor; larger than the 2px LOD floor. */
-  mousePx: 10,
+  mousePx: MOUSE_PICK_RADIUS_PX,
 
   /** Touch click target. Half of Apple HIG 44pt diameter, expressed as radius. */
   touchPx: 22,
@@ -92,6 +97,9 @@ const WHEEL = {
   /** Quiet period that closes one browser wheel transaction. */
   endMs: 120,
 } as const;
+
+/** Grace period for contextmenu events dispatched in a task after pointerup. */
+const CONTEXT_RELEASE_MS = 50;
 
 /** Touch rotation gain for two-pointer twist gestures. */
 const ROTATE = {
@@ -154,6 +162,14 @@ interface LastTap {
 type State =
   | { kind: 'idle'; lastTap: LastTap | null }
   | {
+      kind: 'contextPressed';
+      pointer: PointerSlot;
+      startSx: number;
+      startSy: number;
+      contextEvent: MouseEvent | null;
+      lastTap: null;
+    }
+  | {
       kind: 'pressed';
       pointer: PointerSlot;
       startSx: number;
@@ -214,7 +230,26 @@ export function attachPointer(
   let pointerNavigating = false;
   let wheelNavigating = false;
   let wheelEndTimer: ReturnType<typeof setTimeout> | null = null;
+  let contextRelease: 'emit' | 'suppress' | null = null;
+  let contextReleaseTimer: ReturnType<typeof setTimeout> | null = null;
   const captured = new Set<number>();
+
+  /** Keep a short post-pointerup slot because contextmenu may arrive in a later task. */
+  function stageContextRelease(action: 'emit' | 'suppress'): void {
+    if (contextReleaseTimer !== null) clearTimeout(contextReleaseTimer);
+    contextRelease = action;
+    contextReleaseTimer = setTimeout(() => {
+      contextRelease = null;
+      contextReleaseTimer = null;
+    }, CONTEXT_RELEASE_MS);
+  }
+
+  /** Clear any event/order state retained for contextmenu disambiguation. */
+  function clearContextRelease(): void {
+    if (contextReleaseTimer !== null) clearTimeout(contextReleaseTimer);
+    contextRelease = null;
+    contextReleaseTimer = null;
+  }
 
   function screen(e: PointerEvent | WheelEvent, rect = surface.rect()): ScreenPoint {
     return {
@@ -287,11 +322,13 @@ export function attachPointer(
   /** Cancel the pointer FSM while preserving an overlapping wheel transaction. */
   function cancelPointer(emitIntents: boolean, time = performance.now()): void {
     const hadDrag = state.kind === 'dragging' || state.kind === 'pinching';
+    const hadContextGesture = state.kind === 'contextPressed' || state.kind === 'rotating';
     const wasNavigating = pointerNavigating;
     const ids = statePointerIds(state);
     state = { kind: 'idle', lastTap: null };
     latestProbe = null;
     pointerNavigating = false;
+    if (hadContextGesture) stageContextRelease('suppress');
     for (const id of ids) release(id);
     if (!emitIntents) return;
     if (hadDrag) emit({ kind: 'dragEnd', coast: false, time });
@@ -310,6 +347,7 @@ export function attachPointer(
     wheelNavigating = false;
     if (wheelEndTimer !== null) clearTimeout(wheelEndTimer);
     wheelEndTimer = null;
+    clearContextRelease();
     for (const id of ids) release(id);
     captured.clear();
     if (!emitIntents) return;
@@ -323,16 +361,22 @@ export function attachPointer(
     const s = screen(e, rect);
     updateProbe(e, rect);
 
-    // Right-button drag rotates (pitch/bearing on projections with the
-    // degree of freedom; a no-op elsewhere). Only from idle; rotation
-    // never coexists with dragging or pinching (see the State invariant).
-    // The canvas suppresses contextmenu, so right-drag is clean.
+    // A secondary press remains inert until it crosses the mouse threshold.
+    // This preserves stationary context activation without weakening the
+    // rotation/drag exclusivity invariant.
     if (e.button === 2) {
       if (state.kind !== 'idle') return;
       const p = slot(e, s);
       capture(p.id);
-      state = { kind: 'rotating', pointer: p, lastSx: s.sx, lastSy: s.sy, lastTap: null };
-      beginNavigation('pointer');
+      clearContextRelease();
+      state = {
+        kind: 'contextPressed',
+        pointer: p,
+        startSx: s.sx,
+        startSy: s.sy,
+        contextEvent: null,
+        lastTap: null,
+      };
       return;
     }
     if (e.button !== 0) return;
@@ -376,7 +420,12 @@ export function attachPointer(
   function onPointerMove(e: PointerEvent): void {
     const rect = surface.rect();
     updateProbe(e, rect);
-    if (state.kind === 'pressed' || state.kind === 'dragging' || state.kind === 'rotating') {
+    if (
+      state.kind === 'pressed' ||
+      state.kind === 'contextPressed' ||
+      state.kind === 'dragging' ||
+      state.kind === 'rotating'
+    ) {
       const events = e.getCoalescedEvents?.();
       const batch = events?.length ? events : [e];
       for (const pe of batch) processPointerMove(pe, rect);
@@ -423,6 +472,28 @@ export function attachPointer(
           lastSy: s.sy,
           lastTap: null,
         };
+        return;
+      }
+
+      case 'contextPressed': {
+        if (e.pointerId !== state.pointer.id) return;
+        const dx = s.sx - state.startSx;
+        const dy = s.sy - state.startSy;
+        const p = { ...state.pointer, sx: s.sx, sy: s.sy };
+        if (dx * dx + dy * dy <= DRAG_MOUSE_SQ) {
+          state = { ...state, pointer: p };
+          return;
+        }
+
+        beginNavigation('pointer');
+        state = {
+          kind: 'rotating',
+          pointer: p,
+          lastSx: s.sx,
+          lastSy: s.sy,
+          lastTap: null,
+        };
+        emit({ kind: 'rotate', dxPx: dx, dyPx: dy, vp: s.vp });
         return;
       }
 
@@ -499,6 +570,16 @@ export function attachPointer(
     if (state.kind !== 'idle') processPointerMove(e, rect);
     const s = screen(e, rect);
 
+    if (state.kind === 'contextPressed') {
+      if (e.pointerId !== state.pointer.id) return;
+      const contextEvent = state.contextEvent;
+      state = { kind: 'idle', lastTap: null };
+      release(e.pointerId);
+      if (contextEvent) emit({ kind: 'contextmenu', event: contextEvent });
+      else stageContextRelease('emit');
+      return;
+    }
+
     if (state.kind === 'pressed') {
       if (e.pointerId !== state.pointer.id) return;
       const targetPx = state.targetPx;
@@ -524,6 +605,7 @@ export function attachPointer(
       state = { kind: 'idle', lastTap: null };
       endNavigation('pointer');
       release(e.pointerId);
+      stageContextRelease('suppress');
       return;
     }
 
@@ -551,8 +633,9 @@ export function attachPointer(
   }
 
   function onPointerCancel(e: PointerEvent): void {
-    if (state.kind === 'pressed') {
+    if (state.kind === 'pressed' || state.kind === 'contextPressed') {
       if (e.pointerId !== state.pointer.id) return;
+      if (state.kind === 'contextPressed') stageContextRelease('suppress');
       state = { kind: 'idle', lastTap: null };
       latestProbe = null;
       release(e.pointerId);
@@ -600,6 +683,28 @@ export function attachPointer(
   function onLostPointerCapture(e: PointerEvent): void {
     captured.delete(e.pointerId);
     if (ownsPointer(state, e.pointerId)) cancelPointer(true, e.timeStamp);
+  }
+
+  /** Suppress the native menu and release only context gestures, never rotations. */
+  function onContextMenu(e: MouseEvent): void {
+    e.preventDefault();
+
+    if (state.kind === 'contextPressed') {
+      state = { ...state, contextEvent: e };
+      return;
+    }
+    if (state.kind === 'rotating') {
+      return;
+    }
+    if (contextRelease !== null) {
+      const action = contextRelease;
+      clearContextRelease();
+      if (action === 'emit') emit({ kind: 'contextmenu', event: e });
+      return;
+    }
+
+    // With no secondary-pointer transaction, this is keyboard or assistive input.
+    emit({ kind: 'contextmenu', event: e });
   }
 
   function onWheel(e: WheelEvent): void {
@@ -657,6 +762,7 @@ export function attachPointer(
   element.addEventListener('pointercancel', onPointerCancel);
   element.addEventListener('pointerleave', onPointerLeave);
   element.addEventListener('lostpointercapture', onLostPointerCapture);
+  element.addEventListener('contextmenu', onContextMenu);
   element.addEventListener('wheel', onWheel, { passive: false });
   window.addEventListener('blur', onBlur);
   document.addEventListener('visibilitychange', onVisibilityChange);
@@ -670,6 +776,7 @@ export function attachPointer(
       element.removeEventListener('pointercancel', onPointerCancel);
       element.removeEventListener('pointerleave', onPointerLeave);
       element.removeEventListener('lostpointercapture', onLostPointerCapture);
+      element.removeEventListener('contextmenu', onContextMenu);
       element.removeEventListener('wheel', onWheel);
       window.removeEventListener('blur', onBlur);
       document.removeEventListener('visibilitychange', onVisibilityChange);
@@ -731,7 +838,12 @@ function containsClientPoint(rect: DOMRect, clientX: number, clientY: number): b
 
 /** Whether one active FSM state owns a pointer id. */
 function ownsPointer(state: State, pointerId: number): boolean {
-  if (state.kind === 'pressed' || state.kind === 'dragging' || state.kind === 'rotating') {
+  if (
+    state.kind === 'pressed' ||
+    state.kind === 'contextPressed' ||
+    state.kind === 'dragging' ||
+    state.kind === 'rotating'
+  ) {
     return state.pointer.id === pointerId;
   }
   return state.kind === 'pinching' && (state.a.id === pointerId || state.b.id === pointerId);
@@ -739,7 +851,12 @@ function ownsPointer(state: State, pointerId: number): boolean {
 
 /** Snapshot owned pointer ids before transitioning the FSM to idle. */
 function statePointerIds(state: State): number[] {
-  if (state.kind === 'pressed' || state.kind === 'dragging' || state.kind === 'rotating') {
+  if (
+    state.kind === 'pressed' ||
+    state.kind === 'contextPressed' ||
+    state.kind === 'dragging' ||
+    state.kind === 'rotating'
+  ) {
     return [state.pointer.id];
   }
   return state.kind === 'pinching' ? [state.a.id, state.b.id] : [];

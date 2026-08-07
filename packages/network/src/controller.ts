@@ -14,9 +14,9 @@ import { createUniforms, FLAG_DAYLIGHT, FLAG_GRATICULE } from './webgpu/uniforms
 import { FocusState, type FocusStyle, type RGBA } from './focus-state.js';
 import { VISUAL, planeHeightWorldScale } from './visual.js';
 import { ProjectionRig } from './camera/rig.js';
-import { attachPointer, type HoverProbe } from './input/pointer.js';
+import { attachPointer, MOUSE_PICK_RADIUS_PX, type HoverProbe } from './input/pointer.js';
 import { createSurface } from './input/surface.js';
-import type { Viewport } from './camera/projection.js';
+import { MAX_ZOOM_RATIO, type Viewport } from './camera/projection.js';
 import { CHANNEL_DEFINITIONS, createChannels, type Channel } from './channels.js';
 import type { ChannelRange } from './range.js';
 import { RenderLoop } from './webgpu/render-loop.js';
@@ -33,8 +33,17 @@ import {
   type Options,
   type ResolvedOptions,
 } from './options.js';
+import { boundsForItems, expandDegenerateBounds } from './topology/subset-bounds.js';
 
 export type { Options } from './options.js';
+
+/** Identity of one vertex or edge in the loaded topology. */
+export interface Item {
+  /** Topology primitive kind. */
+  readonly kind: 'vertex' | 'edge';
+  /** Zero-based vertex or edge index. */
+  readonly index: number;
+}
 
 /**
  * Events emitted by a {@link Network} instance.
@@ -49,6 +58,14 @@ export type Events = {
   hover: (kind: 'vertex' | 'edge' | null, index: number | null) => void;
   /** User-selected vertex or edge; null kind and index after selection clear. */
   select: (kind: 'vertex' | 'edge' | null, index: number | null) => void;
+  /**
+   * Browser context request released after right-drag disambiguation.
+   *
+   * The default action is already prevented. The native event may have been
+   * retained until pointer release, so rely on its coordinates, modifiers,
+   * and target; `currentTarget` and `composedPath()` are not stable.
+   */
+  contextmenu: (event: MouseEvent) => void;
   /** Camera zoom state after a fit-view transition or gesture. */
   zoom: (atFitView: boolean) => void;
   /** WebGPU device-loss notification surfaced before rendering pauses. */
@@ -76,6 +93,30 @@ export interface Network {
    * @returns A function that removes the handler.
    */
   on<K extends keyof Events>(event: K, handler: Events[K]): () => void;
+  /**
+   * Query visible geometry at a client-space point without changing focus.
+   *
+   * Returns at most two items: the best vertex followed by the best edge.
+   * The default radius is 10 CSS pixels; callers handling touch input should
+   * pass an appropriate larger radius. The radius is clamped to the viewport
+   * diagonal to keep pathological requests bounded.
+   *
+   * @param clientX - Client-space horizontal coordinate in CSS pixels.
+   * @param clientY - Client-space vertical coordinate in CSS pixels.
+   * @param radiusPx - Optional search radius in CSS pixels.
+   * @returns Matching visible items in pick priority order.
+   */
+  hitTest(clientX: number, clientY: number, radiusPx?: number): readonly Item[];
+  /**
+   * Project an item to a client-space CSS-pixel anchor without changing focus.
+   *
+   * The coordinate may be outside the canvas or visually occluded. Display
+   * visibility options do not affect the result.
+   *
+   * @param item - Vertex or edge identity in the loaded topology.
+   * @returns The projected client coordinate, or null for an invalid or unprojectable item.
+   */
+  locate(item: Item): readonly [clientX: number, clientY: number] | null;
   /**
    * Bind a topology and schedule its first paint.
    *
@@ -148,6 +189,18 @@ export interface Network {
    * @param animate - If true, animate toward the fit view when a viewport is available.
    */
   fit(animate?: boolean): void;
+  /**
+   * Fit valid items into the current viewport without changing selection.
+   *
+   * Invalid or stale items are ignored; an empty valid subset is a no-op.
+   * Base topology geometry is framed independently of display visibility and
+   * transient channel displacement. A valid request made before camera
+   * placement is deferred until the first non-empty viewport frame.
+   *
+   * @param items - Vertex and edge identities to frame.
+   * @param animate - If true, animate toward the subset view.
+   */
+  fit(items: readonly Item[], animate?: boolean): void;
   /**
    * Switch projection mode.
    *
@@ -222,6 +275,9 @@ const DEFAULT_CONTROLLER_DEPS: ControllerDeps = {
   attachPointer,
   Picker,
 };
+
+/** Shared allocation-free result for invalid or empty public hit tests. */
+const NO_ITEMS: readonly Item[] = Object.freeze([]);
 
 /** Screen-space threshold used by shaders for vertex level-of-detail behavior. */
 const VERTEX_LOD_PX = 2;
@@ -520,6 +576,9 @@ function createNetworkController(
 
   const pointerCleanup = deps.attachPointer(surface, (intent) => {
     switch (intent.kind) {
+      case 'contextmenu':
+        events.emit('contextmenu', intent.event);
+        break;
       case 'navigationStart':
         navigationActive = true;
         hoverDirty = true;
@@ -564,7 +623,10 @@ function createNetworkController(
         break;
       case 'doubleTap':
         if (!topology) break;
-        if (topologyBounds) rig.camera.fitView(topologyBounds, intent.vp);
+        if (topologyBounds) {
+          loop.cancelPlacement();
+          rig.camera.fitView(topologyBounds, intent.vp);
+        }
         loop.wake();
         break;
       case 'hover':
@@ -602,6 +664,44 @@ function createNetworkController(
         }
       }
       return unsubscribe;
+    },
+
+    hitTest(clientX, clientY, radiusPx = MOUSE_PICK_RADIUS_PX) {
+      if (
+        !topology ||
+        !Number.isFinite(clientX) ||
+        !Number.isFinite(clientY) ||
+        !Number.isFinite(radiusPx) ||
+        radiusPx < 0
+      ) {
+        return NO_ITEMS;
+      }
+
+      const rect = surface.rect();
+      const sx = clientX - rect.left;
+      const sy = clientY - rect.top;
+      if (
+        rect.width <= 0 ||
+        rect.height <= 0 ||
+        sx < 0 ||
+        sy < 0 ||
+        sx >= rect.width ||
+        sy >= rect.height
+      ) {
+        return NO_ITEMS;
+      }
+
+      const boundedRadius = Math.min(radiusPx, Math.hypot(rect.width, rect.height));
+      return picker
+        .pickAll(pickQueryAt(sx, sy, boundedRadius, { w: rect.width, h: rect.height }))
+        .map(([kind, index]) => ({ kind, index }));
+    },
+
+    locate(item) {
+      if (!topology) return null;
+      const rect = surface.rect();
+      const point = picker.locate([item.kind, item.index], { w: rect.width, h: rect.height });
+      return point ? [point[0] + rect.left, point[1] + rect.top] : null;
     },
 
     load(next) {
@@ -650,6 +750,7 @@ function createNetworkController(
     setProjection(mode) {
       if (!PROJECTIONS[mode].canUse(topologyBounds, topologyCharacteristicLength)) return false;
       if (mode === rig.mode) return true;
+      loop.cancelPlacement();
       hoverDirty = true;
       const placed = rig.switchTo(mode, topologyBounds, vp());
       loop.setCamera(rig.camera);
@@ -664,13 +765,35 @@ function createNetworkController(
       updateOptions(options);
     },
 
-    fit(animate) {
+    fit(itemsOrAnimate: readonly Item[] | boolean = false, animate: boolean = false) {
       if (!topology) return;
       const view = vp();
-      if (animate && view.w > 0 && view.h > 0 && topologyBounds) {
-        rig.camera.fitView(topologyBounds, view);
+
+      if (typeof itemsOrAnimate === 'boolean') {
+        if (itemsOrAnimate && view.w > 0 && view.h > 0 && topologyBounds) {
+          loop.cancelPlacement();
+          rig.camera.fitView(topologyBounds, view);
+        } else {
+          loop.requestFit();
+        }
       } else {
-        loop.requestFit();
+        if (!topologyBounds) return;
+        const hasViewport =
+          Number.isFinite(view.w) && Number.isFinite(view.h) && view.w > 0 && view.h > 0;
+        const center =
+          rig.mode === 'globe'
+            ? ((hasViewport ? rig.camera.screenToWorld(view.w / 2, view.h / 2, view)?.[0] : null) ??
+              rig.camera.current[0]!)
+            : null;
+        const bounds = boundsForItems(topology, itemsOrAnimate, center);
+        if (!bounds) return;
+        const framed = expandDegenerateBounds(bounds, topologyBounds, MAX_ZOOM_RATIO);
+        if (!hasViewport || !rig.camera.moveTo(framed, view, animate)) {
+          loop.requestFit();
+          loop.requestMove(framed, animate);
+        } else {
+          loop.cancelPlacement();
+        }
       }
       hoverDirty = true;
       loop.wake();
