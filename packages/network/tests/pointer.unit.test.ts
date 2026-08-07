@@ -94,6 +94,16 @@ function fireWheel(el: HTMLElement, init: WheelEventInit = {}): WheelEvent {
   return event;
 }
 
+function fireContextMenu(el: HTMLElement, init: MouseEventInit = {}): MouseEvent {
+  const event = new MouseEvent('contextmenu', {
+    bubbles: true,
+    cancelable: true,
+    ...init,
+  });
+  el.dispatchEvent(event);
+  return event;
+}
+
 beforeEach(() => {
   vi.restoreAllMocks();
   globalThis.PointerEvent = TestPointerEvent as unknown as typeof PointerEvent;
@@ -698,6 +708,59 @@ describe('wheel policy and delta conversion', () => {
 });
 
 describe('attachPointer rotation', () => {
+  it('forwards a stationary contextmenu that arrives before pointerup', () => {
+    const h = harness();
+
+    firePointer(h.element, 'pointerdown', { button: 2, clientX: 100, clientY: 100 });
+    firePointer(h.element, 'pointermove', { clientX: 102, clientY: 100 });
+    const event = fireContextMenu(h.element, { button: 2, clientX: 102, clientY: 100 });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(h.intents).toEqual([]);
+
+    firePointer(h.element, 'pointerup', { button: 2, clientX: 102, clientY: 100 });
+
+    expect(h.intents).toEqual([{ kind: 'contextmenu', event }]);
+    h.handle.destroy();
+  });
+
+  it('forwards a stationary contextmenu that arrives after pointerup', () => {
+    const h = harness();
+
+    firePointer(h.element, 'pointerdown', { button: 2, clientX: 100, clientY: 100 });
+    firePointer(h.element, 'pointerup', { button: 2, clientX: 100, clientY: 100 });
+    const event = fireContextMenu(h.element, { button: 2, clientX: 100, clientY: 100 });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(h.intents).toEqual([{ kind: 'contextmenu', event }]);
+    h.handle.destroy();
+  });
+
+  it('expires a missing post-pointerup contextmenu without synthesizing an event', () => {
+    vi.useFakeTimers();
+    const h = harness();
+
+    firePointer(h.element, 'pointerdown', { button: 2, clientX: 100, clientY: 100 });
+    firePointer(h.element, 'pointerup', { button: 2, clientX: 100, clientY: 100 });
+    vi.advanceTimersByTime(51);
+
+    expect(h.intents).toEqual([]);
+    const event = fireContextMenu(h.element);
+    expect(h.intents).toEqual([{ kind: 'contextmenu', event }]);
+    h.handle.destroy();
+    vi.useRealTimers();
+  });
+
+  it('forwards keyboard contextmenu immediately while idle', () => {
+    const h = harness();
+
+    const event = fireContextMenu(h.element, { clientX: 0, clientY: 0 });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(h.intents).toEqual([{ kind: 'contextmenu', event }]);
+    h.handle.destroy();
+  });
+
   it('right-button drag emits rotate deltas, never dragStart', () => {
     const h = harness();
 
@@ -713,6 +776,57 @@ describe('attachPointer rotation', () => {
         probe: { clientX: 110, clientY: 95, targetPx: 10 },
       },
     ]);
+    h.handle.destroy();
+  });
+
+  it('discards contextmenu dispatched before or after a right-drag release', () => {
+    const before = harness();
+    firePointer(before.element, 'pointerdown', { button: 2, clientX: 100, clientY: 100 });
+    fireContextMenu(before.element, { button: 2, clientX: 100, clientY: 100 });
+    firePointer(before.element, 'pointermove', { clientX: 110, clientY: 100 });
+    firePointer(before.element, 'pointerup', { button: 2, clientX: 110, clientY: 100 });
+    expect(before.intents.map((intent) => intent.kind)).toEqual([
+      'navigationStart',
+      'rotate',
+      'navigationEnd',
+    ]);
+    before.handle.destroy();
+
+    const after = harness();
+    firePointer(after.element, 'pointerdown', { button: 2, clientX: 100, clientY: 100 });
+    firePointer(after.element, 'pointermove', { clientX: 110, clientY: 100 });
+    firePointer(after.element, 'pointerup', { button: 2, clientX: 110, clientY: 100 });
+    fireContextMenu(after.element, { button: 2, clientX: 110, clientY: 100 });
+    expect(after.intents.map((intent) => intent.kind)).toEqual([
+      'navigationStart',
+      'rotate',
+      'navigationEnd',
+    ]);
+    after.handle.destroy();
+
+    const during = harness();
+    firePointer(during.element, 'pointerdown', { button: 2, clientX: 100, clientY: 100 });
+    firePointer(during.element, 'pointermove', { clientX: 110, clientY: 100 });
+    fireContextMenu(during.element, { button: 2, clientX: 110, clientY: 100 });
+    firePointer(during.element, 'pointerup', { button: 2, clientX: 110, clientY: 100 });
+    fireContextMenu(during.element, { button: 2, clientX: 110, clientY: 100 });
+    expect(during.intents.map((intent) => intent.kind)).toEqual([
+      'navigationStart',
+      'rotate',
+      'navigationEnd',
+    ]);
+    during.handle.destroy();
+  });
+
+  it('suppresses contextmenu after a cancelled secondary press', () => {
+    const h = harness();
+
+    firePointer(h.element, 'pointerdown', { button: 2, clientX: 100, clientY: 100 });
+    firePointer(h.element, 'pointercancel', { button: 2, clientX: 100, clientY: 100 });
+    const event = fireContextMenu(h.element, { button: 2, clientX: 100, clientY: 100 });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(h.intents.map((intent) => intent.kind)).toEqual(['hoverEnd']);
     h.handle.destroy();
   });
 

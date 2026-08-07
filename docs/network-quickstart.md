@@ -53,6 +53,13 @@ const unsubscribeHover = network.on('hover', (kind, index) => {
   console.log(kind, index);
 });
 
+// The host opts into keyboard context activation on the borrowed canvas.
+canvas.tabIndex = 0;
+const unsubscribeContext = network.on('contextmenu', (event) => {
+  const items = network.hitTest(event.clientX, event.clientY);
+  console.log(items);
+});
+
 if (network.projections.globe) {
   network.setProjection('globe');
 }
@@ -60,7 +67,18 @@ if (network.projections.globe) {
 network.setOptions({ edges: true, vertices: true, daylight: true });
 
 unsubscribeHover();
+unsubscribeContext();
 ```
+
+A stationary secondary click emits `contextmenu`; crossing the normal mouse-drag threshold rotates instead. `hitTest` is synchronous, does not change hover or selection, and returns at most the best vertex followed by the best edge. `locate(item)` returns a client-space anchor for menus and DOM overlays without changing focus, including when the item is off-canvas or occluded.
+
+Fit selected topology identities without changing selection:
+
+```ts
+network.fit([{ kind: 'vertex', index: 0 }], true);
+```
+
+Subset fitting includes edge bend points, ignores stale identities and display visibility, and preserves the whole-topology fit as the camera's zoom reference.
 
 When your app removes the view, destroy the renderer before removing its canvas, and release the application-owned device last:
 

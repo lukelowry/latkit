@@ -421,6 +421,33 @@ describe('Picker behavior (flat)', () => {
     const s = makeSetup('flat', { dpr: 2 });
     const v = s.screenAt(0, 0); // screenAt already divides by dpr
     expect(s.picker.pick(s.query(v.sx, v.sy))).toEqual(['vertex', 12]);
+    const located = s.picker.locate(['vertex', 12], VP);
+    expect(located?.[0]).toBeCloseTo(v.sx);
+    expect(located?.[1]).toBeCloseTo(v.sy);
+  });
+
+  it('locates a stable anchor on a multi-segment edge', () => {
+    const s = makeSetup('flat');
+    const edge = s.topology.edges.length / 2 - 1;
+    const located = s.picker.locate(['edge', edge], VP);
+
+    expect(located).not.toBeNull();
+    expect(Number.isFinite(located![0])).toBe(true);
+    expect(Number.isFinite(located![1])).toBe(true);
+  });
+
+  it('rejects invalid locate requests and unavailable scenes', () => {
+    const s = makeSetup('flat');
+    const edgeCount = s.topology.edges.length / 2;
+
+    expect(s.picker.locate(['vertex', 25], VP)).toBeNull();
+    expect(s.picker.locate(['edge', edgeCount], VP)).toBeNull();
+    expect(s.picker.locate(['vertex', -1], VP)).toBeNull();
+    expect(s.picker.locate(['vertex', 1.5], VP)).toBeNull();
+    expect(s.picker.locate(['vertex', 0], { w: 0, h: VP.h })).toBeNull();
+
+    s.picker.setScene(null, null);
+    expect(s.picker.locate(['vertex', 0], VP)).toBeNull();
   });
 
   it('returns nothing before a scene is bound or after it is cleared', () => {
@@ -444,6 +471,8 @@ describe('Picker behavior (tilt)', () => {
       'vertex',
       12,
     ]);
+    expect(s.picker.locate(['vertex', 12], VP)?.[0]).toBeCloseTo(lifted.sx);
+    expect(s.picker.locate(['vertex', 12], VP)?.[1]).toBeCloseTo(lifted.sy);
   });
 
   it('picks poles along the base-to-tip column when enabled', () => {
@@ -494,6 +523,10 @@ describe('Picker behavior (globe)', () => {
         expect(hit).not.toEqual(['vertex', 1]);
       }
     }
+
+    const far = s.screenAt(179, 0);
+    expect(s.picker.locate(['vertex', 1], VP)?.[0]).toBeCloseTo(far.sx);
+    expect(s.picker.locate(['vertex', 1], VP)?.[1]).toBeCloseTo(far.sy);
   });
 
   it('picks across the antimeridian seam', () => {

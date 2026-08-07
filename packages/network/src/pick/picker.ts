@@ -128,6 +128,10 @@ interface QueryCircle {
 
 /** Typed views over the encoded segment records. */
 interface SegmentViews {
+  /** Number of source edges represented by the segment ranges. */
+  readonly edgeCount: number;
+  /** Word offset of the edge-to-segment range table. */
+  readonly edgeStartsOffset: number;
   /** Unsigned word view for ids and packed parameter ranges. */
   readonly u32: Uint32Array;
   /** Float word view for endpoint coordinates. */
@@ -207,6 +211,8 @@ export class Picker {
     );
     const segU32 = new Uint32Array(segments.buffer, segments.byteOffset, segments.byteLength / 4);
     const seg: SegmentViews = {
+      edgeCount: segInfo.edgeCount,
+      edgeStartsOffset: segU32[SEG_W.edgeStarts]!,
       u32: segU32,
       f32: new Float32Array(segments.buffer, segments.byteOffset, segments.byteLength / 4),
       recordsOffset: segU32[SEG_W.records]!,
@@ -248,6 +254,106 @@ export class Picker {
     if (r.vertex) hits.push(r.vertex);
     if (r.edge) hits.push(r.edge);
     return hits;
+  }
+
+  /**
+   * Project one item to a stable CSS-pixel anchor in the supplied viewport.
+   *
+   * This deliberately ignores display visibility and occlusion. Edges prefer
+   * the visible point nearest the viewport center, then fall back to the
+   * nearest projectable point when the entire edge is occluded.
+   */
+  locate(item: PickResult, vp: Viewport): readonly [number, number] | null {
+    const scene = this.scene;
+    if (!scene || !Number.isFinite(vp.w) || !Number.isFinite(vp.h) || vp.w <= 0 || vp.h <= 0) {
+      return null;
+    }
+
+    const deviceW = this.f32[W_VIEWPORT_X]!;
+    const deviceH = this.f32[W_VIEWPORT_Y]!;
+    if (!Number.isFinite(deviceW) || !Number.isFinite(deviceH) || deviceW <= 0 || deviceH <= 0) {
+      return null;
+    }
+
+    const [kind, id] = item;
+    if (!Number.isInteger(id) || id < 0) return null;
+    const proj = this.projector(this.deps.mode());
+    const heights = this.u32[W_V_HEIGHT_MODE] !== 0 ? this.deps.values('vertexHeight') : null;
+    const dprX = deviceW / vp.w;
+    const dprY = deviceH / vp.h;
+
+    if (kind === 'vertex') {
+      if (id >= scene.vertexCount) return null;
+      const p = this.pA;
+      proj.project(
+        p,
+        scene.coords[id * 2]!,
+        scene.coords[id * 2 + 1]!,
+        this.normHeight(heights, id),
+      );
+      if (p.cw <= MIN_CLIP_W) return null;
+      proj.toScreen(p);
+      const x = p.sx / dprX;
+      const y = p.sy / dprY;
+      return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null;
+    }
+
+    if (kind !== 'edge' || id >= scene.seg.edgeCount) return null;
+    const { edgeStartsOffset, f32, u32, recordsOffset } = scene.seg;
+    const start = u32[edgeStartsOffset + id]!;
+    const end = u32[edgeStartsOffset + id + 1]!;
+    let visibleScore = Infinity;
+    let visibleX = 0;
+    let visibleY = 0;
+    let fallbackScore = Infinity;
+    let fallbackX = 0;
+    let fallbackY = 0;
+
+    for (let segment = start; segment < end; segment++) {
+      const base = recordsOffset + segment * SEGMENT_RECORD_WORDS;
+      const from = u32[base + 1]!;
+      const to = u32[base + 2]!;
+      const tPack = u32[base + 3]!;
+      const ta = (tPack & 0xffff) / 0xffff;
+      const tb = (tPack >>> 16) / 0xffff;
+      const hFrom = this.normHeight(heights, from);
+      const hTo = this.normHeight(heights, to);
+      const A = this.pA;
+      const B = this.pB;
+      proj.project(A, f32[base + 4]!, f32[base + 5]!, hFrom + (hTo - hFrom) * ta);
+      proj.project(B, f32[base + 6]!, f32[base + 7]!, hFrom + (hTo - hFrom) * tb);
+      if (!clipPositiveW(A, B)) continue;
+      proj.toScreen(A);
+      proj.toScreen(B);
+
+      const abx = B.sx - A.sx;
+      const aby = B.sy - A.sy;
+      const len2 = abx * abx + aby * aby;
+      const t =
+        len2 > 1e-6
+          ? clamp01(((deviceW / 2 - A.sx) * abx + (deviceH / 2 - A.sy) * aby) / len2)
+          : 0.5;
+      const x = A.sx + abx * t;
+      const y = A.sy + aby * t;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const score = (x - deviceW / 2) ** 2 + (y - deviceH / 2) ** 2;
+      if (score < fallbackScore) {
+        fallbackScore = score;
+        fallbackX = x;
+        fallbackY = y;
+      }
+
+      const M = this.pM;
+      mixPoint(M, A, B, t);
+      if (proj.visible(M) && score < visibleScore) {
+        visibleScore = score;
+        visibleX = x;
+        visibleY = y;
+      }
+    }
+
+    if (visibleScore < Infinity) return [visibleX / dprX, visibleY / dprY];
+    return fallbackScore < Infinity ? [fallbackX / dprX, fallbackY / dprY] : null;
   }
 
   // Query core.
@@ -562,8 +668,7 @@ export class Picker {
   // Exact tests (mirror the render shaders in device px).
 
   /** Decode normalized vertex height in the same range the shader uses. */
-  private normHeight(state: TestState, vi: number): number {
-    const heights = state.heights;
+  private normHeight(heights: Float32Array | null, vi: number): number {
     if (!heights) return 0;
     const t = clamp01((heights[vi]! - this.f32[W_HEIGHT_CENTER]!) * this.f32[W_HEIGHT_SCALE]!);
     return this.f32[W_HEIGHT_OUT_MIN]! + t * this.f32[W_HEIGHT_OUT_SCALE]!;
@@ -581,7 +686,7 @@ export class Picker {
   private testVertex(state: TestState, id: number): void {
     const x = state.scene.coords[id * 2]!;
     const y = state.scene.coords[id * 2 + 1]!;
-    const h = this.normHeight(state, id);
+    const h = this.normHeight(state.heights, id);
 
     if (state.vertices) {
       const p = this.pA;
@@ -624,8 +729,8 @@ export class Picker {
     const ta = (tPack & 0xffff) / 0xffff;
     const tb = (tPack >>> 16) / 0xffff;
 
-    const hFrom = this.normHeight(state, from);
-    const hTo = this.normHeight(state, to);
+    const hFrom = this.normHeight(state.heights, from);
+    const hTo = this.normHeight(state.heights, to);
 
     const A = this.pA;
     const B = this.pB;

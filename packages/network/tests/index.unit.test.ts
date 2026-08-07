@@ -11,6 +11,7 @@ import type {
   Borders,
   ChannelRange,
   FocusEndpointMode,
+  Item,
   Network,
   ProjectionMode,
   RGBA,
@@ -30,5 +31,12 @@ describe('network package entrypoint', () => {
     expectTypeOf<RGBA>().toEqualTypeOf<readonly [number, number, number, number]>();
     expectTypeOf<FocusEndpointMode>().toEqualTypeOf<'off' | 'selected' | 'hover-selected'>();
     expectTypeOf<'element' extends keyof Network ? true : false>().toEqualTypeOf<false>();
+    expectTypeOf<Item>().toEqualTypeOf<{
+      readonly kind: 'vertex' | 'edge';
+      readonly index: number;
+    }>();
+    expectTypeOf<Network['locate']>().returns.toEqualTypeOf<
+      readonly [clientX: number, clientY: number] | null
+    >();
   });
 });

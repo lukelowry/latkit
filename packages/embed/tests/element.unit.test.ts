@@ -520,6 +520,7 @@ describe('NetworkElement', () => {
     network.fadeIn.mockClear();
 
     h.element.fit(true);
+    h.element.fit([{ kind: 'vertex', index: 1 }], true);
     h.element.panBy(12, -8);
     h.element.zoomBy(1.25);
     h.element.fadeIn(240);
@@ -527,6 +528,7 @@ describe('NetworkElement', () => {
     h.element.clearSelection();
 
     expect(network.fit).toHaveBeenCalledWith(true);
+    expect(network.fit).toHaveBeenCalledWith([{ kind: 'vertex', index: 1 }], true);
     expect(network.panBy).toHaveBeenCalledWith(12, -8);
     expect(network.zoomBy).toHaveBeenCalledWith(1.25);
     expect(network.fadeIn).toHaveBeenCalledWith(240);

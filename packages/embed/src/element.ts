@@ -8,6 +8,7 @@ import {
   type Borders,
   type Channel,
   type ChannelRange,
+  type Item,
   type Network,
   type Options,
   type ProjectionMode,
@@ -403,8 +404,13 @@ export function createNetworkElementClass(
       return this.#projections[mode];
     }
 
-    fit(animate?: boolean): void {
-      this.#liveNetwork()?.fit(animate);
+    fit(animate?: boolean): void;
+    fit(items: readonly Item[], animate?: boolean): void;
+    fit(itemsOrAnimate: readonly Item[] | boolean = false, animate = false): void {
+      const network = this.#liveNetwork();
+      if (!network) return;
+      if (typeof itemsOrAnimate === 'boolean') network.fit(itemsOrAnimate);
+      else network.fit(itemsOrAnimate, animate);
     }
 
     select(kind: 'vertex' | 'edge', index: number): void {

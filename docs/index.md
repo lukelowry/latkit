@@ -21,7 +21,7 @@ Use it when you need to render large graph-like systems, stream many time-orient
 
 ## Requirements
 
-Latkit packages are ESM modules for modern browser applications. The rendering packages require a browser with WebGPU support. The repository uses Node.js 22 or newer for local development.
+Latkit packages are ESM modules for modern browser applications. The rendering packages require a browser with WebGPU support. The repository uses Node.js 24 for local development.
 
 ## Packages
 
