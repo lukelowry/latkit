@@ -1,5 +1,19 @@
 # @latkit/embed
 
+## 0.4.0
+
+### Minor Changes
+
+- 184bffc: Add view-preserving item reveal and forward it through `NetworkElement`. Export the
+  colormap and option-definition types referenced by public renderer configuration. Unify flat
+  and tilted height rendering, warm inactive projection pipelines serially after paints and
+  topology loads, and remove duplicated topology preparation from the load path.
+
+### Patch Changes
+
+- Updated dependencies [184bffc]
+  - @latkit/network@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes
