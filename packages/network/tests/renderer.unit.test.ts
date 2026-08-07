@@ -61,9 +61,9 @@ describe('Renderer resource lifecycle', () => {
     // The shared planar family has nine; globe adds earth-axis for ten.
     expect(labels().filter((label) => label.startsWith('plane-'))).toHaveLength(9);
     renderer.useProjectionPipelines('tilt');
-    renderer.warmProjection('flat');
+    void renderer.warmProjection('flat');
     expect(labels().filter((label) => label.startsWith('plane-'))).toHaveLength(9);
-    renderer.warmProjection('globe');
+    void renderer.warmProjection('globe');
     expect(labels().filter((label) => label.startsWith('globe-'))).toHaveLength(10);
 
     release({ label: 'compiled' } as GPURenderPipeline);
@@ -112,9 +112,10 @@ describe('Renderer resource lifecycle', () => {
     await flushGpuPromises();
     ready.mockClear();
 
-    renderer.warmProjection('globe');
-    renderer.warmProjection('globe');
-    await flushGpuPromises();
+    const first = renderer.warmProjection('globe');
+    const second = renderer.warmProjection('globe');
+    expect(second).toBe(first);
+    await Promise.all([first, second]);
 
     expect(ready).toHaveBeenCalledOnce();
     expect(
@@ -130,11 +131,14 @@ describe('Renderer resource lifecycle', () => {
 
     const renderer = new Renderer(h.presentation);
     await flushGpuPromises();
+    const calls = h.device.createRenderPipelineAsync.mock.calls.length;
+    await renderer.warmProjection('flat');
 
     expect(error).toHaveBeenCalledWith(
       'network: failed to build the plane projection pipelines',
       expect.any(Error),
     );
+    expect(h.device.createRenderPipelineAsync).toHaveBeenCalledTimes(calls);
     renderer.destroy();
   });
 

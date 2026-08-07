@@ -8,10 +8,12 @@ export type { Network, Events, Item, RevealOptions } from './controller.js';
 export { DEFAULT_OPTIONS, OPTION_DEFINITIONS, validateOption, validateOptions } from './options.js';
 export type {
   ConstructionOption,
+  NetworkColormap,
   OptionDefinition,
   OptionKeyByLifecycle,
   Options,
   ResolvedOptions,
+  RuntimeOptionDefinition,
   RuntimeOption,
 } from './options.js';
 

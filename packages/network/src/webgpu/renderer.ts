@@ -107,7 +107,8 @@ export class Renderer {
 
   private readonly frameResources = new FrameResources();
   private readonly projectionPipelines = new Map<PipelineMode, ProjectionPipelineSet>();
-  private readonly buildingProjectionPipelines = new Set<PipelineMode>();
+  private readonly buildingProjectionPipelines = new Map<PipelineMode, Promise<void>>();
+  private readonly failedProjectionPipelines = new Set<PipelineMode>();
   private activePipeline: PipelineMode = 'plane';
   /**
    * MSAA is 4x or off because WebGPU permits only 1 and 4, and the sample
@@ -263,25 +264,29 @@ export class Renderer {
     // active projection set compiles off-thread while the topology loads, and
     // render() simply skips frames until it lands (the loop treats a null
     // render as "no frame"). The controller warms supported alternatives after first paint.
-    this.ensureProjectionPipelines(this.activePipeline);
+    void this.ensureProjectionPipelines(this.activePipeline);
   }
 
   /** Selects the active projection pipeline set, building it lazily if needed. */
   useProjectionPipelines(mode: ProjectionMode): void {
     this.activePipeline = PROJECTIONS[mode].pipeline;
-    this.ensureProjectionPipelines(this.activePipeline);
+    void this.ensureProjectionPipelines(this.activePipeline);
   }
 
   /** Compiles a projection pipeline set without changing the active mode. */
-  warmProjection(mode: ProjectionMode): void {
-    this.ensureProjectionPipelines(PROJECTIONS[mode].pipeline);
+  warmProjection(mode: ProjectionMode): Promise<void> {
+    return this.ensureProjectionPipelines(PROJECTIONS[mode].pipeline);
   }
 
-  /** Starts an async build for a projection pipeline set when it is not cached. */
-  private ensureProjectionPipelines(mode: PipelineMode): void {
-    if (this.projectionPipelines.has(mode) || this.buildingProjectionPipelines.has(mode)) return;
-    this.buildingProjectionPipelines.add(mode);
-    void this.buildProjectionPipelines(PIPELINES[mode]).then(
+  /** Returns the cached or in-flight build for one projection pipeline set. */
+  private ensureProjectionPipelines(mode: PipelineMode): Promise<void> {
+    if (this.projectionPipelines.has(mode) || this.failedProjectionPipelines.has(mode)) {
+      return Promise.resolve();
+    }
+    const pending = this.buildingProjectionPipelines.get(mode);
+    if (pending) return pending;
+
+    const build = this.buildProjectionPipelines(PIPELINES[mode]).then(
       (pipelines) => {
         this.buildingProjectionPipelines.delete(mode);
         if (this.destroyed) return;
@@ -290,11 +295,14 @@ export class Renderer {
       },
       (error: unknown) => {
         this.buildingProjectionPipelines.delete(mode);
+        this.failedProjectionPipelines.add(mode);
         // Projection pipeline validation failing is a build-time shader bug; keep the
         // session alive (render() keeps skipping) and surface the cause.
         console.error(`network: failed to build the ${mode} projection pipelines`, error);
       },
     );
+    this.buildingProjectionPipelines.set(mode, build);
+    return build;
   }
 
   /** Builds all GPU pipelines required by a projection definition. */

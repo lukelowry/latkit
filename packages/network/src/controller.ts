@@ -4,6 +4,7 @@ import { createPresentation, type Presentation } from '@latkit/gpu';
 
 import {
   encodeTopology,
+  prepareTopology,
   readEncodedTopologyInfo,
   type Bounds,
   type Topology,
@@ -453,6 +454,8 @@ function createNetworkController(
    */
   let hasPainted = false;
   let pendingFadeMs: number | null = null;
+  let warmRequested = false;
+  let warming = false;
 
   const loop = new deps.RenderLoop({
     presentation,
@@ -951,6 +954,35 @@ function createNetworkController(
     canvas.style.opacity = '1';
   }
 
+  /** Warms currently supported inactive projections in serial build order. */
+  function warmInactiveProjections(): void {
+    if (!hasPainted || destroyed) return;
+    warmRequested = true;
+    if (warming) return;
+    warming = true;
+
+    void (async () => {
+      try {
+        while (warmRequested && !destroyed) {
+          warmRequested = false;
+          for (const mode of PROJECTION_MODES) {
+            if (mode !== rig.mode && projections[mode]) {
+              try {
+                await renderer.warmProjection(mode);
+              } catch (error) {
+                console.error(`network: failed to warm the ${mode} projection pipelines`, error);
+              }
+            }
+            if (destroyed) return;
+          }
+        }
+      } finally {
+        warming = false;
+        if (warmRequested) warmInactiveProjections();
+      }
+    })();
+  }
+
   /** Flushes a pending fade-in request exactly once after the first paint. */
   function onFirstPaint(): void {
     if (hasPainted) return;
@@ -959,12 +991,7 @@ function createNetworkController(
       revealCanvas(pendingFadeMs);
       pendingFadeMs = null;
     }
-    for (const mode of PROJECTION_MODES) {
-      if (mode === rig.mode || !projections[mode]) continue;
-      setTimeout(() => {
-        if (!destroyed && mode !== rig.mode && projections[mode]) renderer.warmProjection(mode);
-      }, 0);
-    }
+    warmInactiveProjections();
   }
 
   /**
@@ -1228,8 +1255,9 @@ function createNetworkController(
    * the descriptive error propagates to the caller.
    */
   function loadTopology(next: Topology): void {
-    const encoded = encodeTopology(next);
-    const encodedSegments = encodeSegments(next);
+    const prepared = prepareTopology(next);
+    const encoded = encodeTopology(prepared);
+    const encodedSegments = encodeSegments(prepared);
     const info = readEncodedTopologyInfo(encoded);
     renderer.bindTopology(encoded, encodedSegments);
     picker.setScene(encoded, encodedSegments);
@@ -1264,6 +1292,7 @@ function createNetworkController(
     channels.reset();
     loop.setBounds(info.bounds);
     loop.requestFit();
+    warmInactiveProjections();
     loop.frameNow();
   }
 

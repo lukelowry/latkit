@@ -95,7 +95,7 @@ export class FakeRenderer {
     this.projectionMode = mode;
   });
 
-  warmProjection = vi.fn((_mode: ProjectionMode) => {});
+  warmProjection = vi.fn((_mode: ProjectionMode): Promise<void> => Promise.resolve());
 
   destroy = vi.fn();
 }

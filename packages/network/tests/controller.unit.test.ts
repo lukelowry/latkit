@@ -11,7 +11,11 @@ import {
   FLAG_GRATICULE,
 } from '../src/webgpu/uniforms.js';
 import { VISUAL } from '../src/visual.js';
-import { createControllerHarness, flushMicrotasks } from './fixtures/controller-harness.js';
+import {
+  createControllerHarness,
+  deferred,
+  flushMicrotasks,
+} from './fixtures/controller-harness.js';
 import { geographicTopology, nonGlobeTopology } from './fixtures/topology.js';
 
 type Harness = Awaited<ReturnType<typeof createControllerHarness>>;
@@ -831,30 +835,59 @@ describe('createNetwork controller', () => {
     expect(h.surface.element.style.transition).toContain('opacity 25ms');
   });
 
-  it('warms supported inactive projections once after first paint', async () => {
-    vi.useFakeTimers();
+  it('warms supported inactive projections serially after first paint', async () => {
     const h = await makeHarness();
+    const tilt = deferred<void>();
+    h.renderer.warmProjection.mockImplementation((mode) =>
+      mode === 'tilt' ? tilt.promise : Promise.resolve(),
+    );
     h.network.load(geographicTopology());
 
     h.loop.paint();
-    expect(h.renderer.warmProjection).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(0);
+    expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt']]);
 
+    tilt.resolve();
+    await flushMicrotasks();
     expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt'], ['globe']]);
     h.loop.paint();
-    vi.advanceTimersByTime(0);
+    await flushMicrotasks();
     expect(h.renderer.warmProjection).toHaveBeenCalledTimes(2);
   });
 
-  it('does not warm projections unavailable to the loaded topology', async () => {
-    vi.useFakeTimers();
+  it('contains warm failures and continues with the next projection', async () => {
+    const h = await makeHarness();
+    const failure = new Error('warm failed');
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    h.renderer.warmProjection.mockImplementation((mode) =>
+      mode === 'tilt' ? Promise.reject(failure) : Promise.resolve(),
+    );
+    h.network.load(geographicTopology());
+
+    h.loop.paint();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt'], ['globe']]);
+    expect(error).toHaveBeenCalledWith(
+      'network: failed to warm the tilt projection pipelines',
+      failure,
+    );
+  });
+
+  it('warms projections that become available after a later load', async () => {
     const h = await makeHarness();
     h.network.load(nonGlobeTopology());
 
     h.loop.paint();
-    vi.advanceTimersByTime(0);
-
+    await flushMicrotasks();
+    await flushMicrotasks();
     expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt']]);
+
+    h.network.load(geographicTopology());
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt'], ['tilt'], ['globe']]);
   });
 
   it('fits, pans, and zooms through the public camera methods', async () => {

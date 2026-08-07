@@ -1,12 +1,6 @@
-import type { Topology } from '../topology/index.js';
+import type { PreparedTopology, Topology } from '../topology/index.js';
 import { writeSpherePosition } from '../topology/sphere.js';
-import {
-  edgeCountOf,
-  polylinePointsOf,
-  resolveVertexCoords,
-  segmentCountFor,
-  topologyFingerprint,
-} from '../topology/pack.js';
+import { prepareTopology } from '../topology/pack.js';
 import type { EncodedSegments, EncodedSegmentsInfo } from './types.js';
 import {
   HEADER_WORDS,
@@ -24,19 +18,9 @@ import {
  * polyline points to its target vertex. Segments remain edge-major so
  * `edgeStarts[edge]..edgeStarts[edge + 1]` is the instance range for one edge.
  */
-export function encodeSegments(topology: Topology): EncodedSegments {
-  const vertexCoords = resolveVertexCoords(topology);
-  const polylinePoints = polylinePointsOf(topology);
-  const edgeCount = edgeCountOf(topology);
-  const segmentCount = segmentCountFor(topology.polylineStart);
-  const fingerprint = topologyFingerprint({
-    vertexCount: topology.vertexCount,
-    vertexCoords,
-    edges: topology.edges,
-    polylineStart: topology.polylineStart,
-    polylinePoints,
-  });
-  validateSegmentInput(topology, vertexCoords, polylinePoints, edgeCount);
+export function encodeSegments(source: Topology | PreparedTopology): EncodedSegments {
+  const input = 'fingerprint' in source ? source : prepareTopology(source);
+  const { vertexCoords, polylinePoints, edgeCount, segmentCount } = input;
 
   const edgeStartsWords = edgeCount + 1;
   const recordWords = segmentCount * SEGMENT_RECORD_WORDS;
@@ -53,10 +37,10 @@ export function encodeSegments(topology: Topology): EncodedSegments {
   words[W.headerWords] = HEADER_WORDS;
   words[W.storageBytes] = storage.byteLength;
   words[W.flags] = 0;
-  words[W.vertexCount] = topology.vertexCount;
+  words[W.vertexCount] = input.vertexCount;
   words[W.edgeCount] = edgeCount;
   words[W.segmentCount] = segmentCount;
-  words[W.fingerprint] = fingerprint;
+  words[W.fingerprint] = input.fingerprint;
   words[W.edgeStarts] = HEADER_WORDS;
   words[W.records] = recordsOffset;
   words[W.sphereEndpoints] = sphereEndpointsOffset;
@@ -66,14 +50,11 @@ export function encodeSegments(topology: Topology): EncodedSegments {
   for (let edge = 0; edge < edgeCount; edge++) {
     words[edgeStartsOffset + edge] = segment;
 
-    const from = topology.edges[edge * 2]!;
-    const to = topology.edges[edge * 2 + 1]!;
-    if (from >= topology.vertexCount || to >= topology.vertexCount) {
-      throw new Error('edge endpoint out of range');
-    }
+    const from = input.edges[edge * 2]!;
+    const to = input.edges[edge * 2 + 1]!;
 
-    const lo = topology.polylineStart[edge]!;
-    const hi = topology.polylineStart[edge + 1]!;
+    const lo = input.polylineStart[edge]!;
+    const hi = input.polylineStart[edge + 1]!;
     const pointCount = hi - lo;
     const edgeSegmentCount = pointCount + 1;
 
@@ -141,37 +122,6 @@ export function readEdgeSegmentStarts(bytes: Uint8Array): Uint32Array<ArrayBuffe
   const out = new Uint32Array(new ArrayBuffer((edgeCount + 1) * 4));
   out.set(view);
   return out;
-}
-
-/**
- * Validate source topology arrays before derived segment records are written.
- *
- * @throws Error when counts, lengths, or polyline offsets are invalid.
- */
-function validateSegmentInput(
-  topology: Topology,
-  vertexCoords: Float32Array,
-  polylinePoints: Float32Array,
-  edgeCount: number,
-): void {
-  if (!Number.isInteger(topology.vertexCount) || topology.vertexCount < 0)
-    throw new Error('invalid vertex count');
-  if (!Number.isInteger(edgeCount) || edgeCount < 0) throw new Error('invalid edge length');
-  if (vertexCoords.length !== topology.vertexCount * 2)
-    throw new Error('invalid vertex coordinate length');
-  if (topology.edges.length !== edgeCount * 2) throw new Error('invalid edge length');
-  if (topology.polylineStart.length !== edgeCount + 1)
-    throw new Error('invalid polylineStart length');
-  if (edgeCount > 0 && topology.polylineStart[0] !== 0)
-    throw new Error('polylineStart must begin at zero');
-  for (let i = 1; i < topology.polylineStart.length; i += 1) {
-    if (topology.polylineStart[i]! < topology.polylineStart[i - 1]!) {
-      throw new Error('polylineStart must be monotonic');
-    }
-  }
-  const polylinePointCount = topology.polylineStart[edgeCount] ?? 0;
-  if (polylinePoints.length !== polylinePointCount * 2)
-    throw new Error('invalid polyline point length');
 }
 
 /**
