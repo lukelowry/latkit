@@ -1,14 +1,11 @@
-import { createFlatProjection } from './camera/flat.js';
 import { createGlobeProjection } from './camera/globe.js';
-import { createTiltProjection } from './camera/tilt.js';
+import { createPlaneProjection } from './camera/plane.js';
 import type { Projection } from './camera/projection.js';
 import type { Bounds } from './topology/index.js';
 
-import flatSrc from './shaders/projections/flat-overlay.wgsl?raw';
-import flatBgSrc from './shaders/projections/flat-background.wgsl?raw';
-import tiltSrc from './shaders/projections/tilt-overlay.wgsl?raw';
-import tiltBgSrc from './shaders/projections/tilt-background.wgsl?raw';
-import tiltRaySrc from './shaders/projections/tilt-ray.wgsl?raw';
+import planeSrc from './shaders/projections/plane-overlay.wgsl?raw';
+import planeBgSrc from './shaders/projections/plane-background.wgsl?raw';
+import planeRaySrc from './shaders/projections/plane-ray.wgsl?raw';
 import globeSrc from './shaders/projections/globe-overlay.wgsl?raw';
 import globeBgSrc from './shaders/projections/globe-background.wgsl?raw';
 import globeRaySrc from './shaders/projections/globe-ray.wgsl?raw';
@@ -20,15 +17,27 @@ export const PROJECTION_MODES = Object.freeze(['flat', 'tilt', 'globe'] as const
 /** Projection modes supported by the network renderer. */
 export type ProjectionMode = (typeof PROJECTION_MODES)[number];
 
+/** Shader/pipeline families. Flat and tilt share the planar bundle. */
+export type PipelineMode = 'plane' | 'globe';
+
 /**
- * Registry entry for one projection's camera factory, shader fragments, and
- * topology suitability predicate.
+ * Registry entry for one public camera view.
  */
 export interface ProjectionDef {
   /** Stable mode identifier used by the public API and renderer state. */
   readonly mode: ProjectionMode;
   /** Creates a fresh camera projection implementation for this mode. */
   readonly create: () => Projection;
+  /** Shared WebGPU pipeline bundle used by this view. */
+  readonly pipeline: PipelineMode;
+  /** Returns whether the loaded topology can be displayed in this mode. */
+  readonly canUse: (bounds: Bounds | null, characteristicLength: number | null) => boolean;
+}
+
+/** Shader sources and fixed pipeline state for one pipeline family. */
+export interface PipelineDef {
+  /** Stable pipeline cache key and label prefix. */
+  readonly mode: PipelineMode;
   /** Overlay prelude that implements the WGSL symbol contract below. */
   readonly overlayWgsl: string;
   /** WGSL body for `vertex_surface_world()`. */
@@ -43,8 +52,6 @@ export interface ProjectionDef {
   readonly borderWorldWgsl: string;
   /** Depth compare used by focus halo pipelines. */
   readonly haloDepthCompare: 'always' | 'less-equal';
-  /** Returns whether the loaded topology can be displayed in this mode. */
-  readonly canUse: (bounds: Bounds | null, characteristicLength: number | null) => boolean;
 }
 
 // WGSL symbol contract
@@ -55,6 +62,7 @@ export interface ProjectionDef {
 //   fn to_world(pos: vec2f) -> vec3f                 topology coords -> world
 //   fn displace_world(w: vec3f, h: f32) -> vec3f     base lift + height -> world
 //   fn project_world(p: vec3f) -> vec4f              world -> clip
+//   fn project_overlay(p: vec3f, h: f32) -> vec4f    overlay height -> clip depth
 //   fn screen_radius(clip: vec4f) -> f32             vertex px radius (pre-LOD)
 //   fn screen_half_width(clip: vec4f, w: f32) -> f32
 //   fn screen_pole_half_width(clip: vec4f) -> f32
@@ -72,11 +80,11 @@ export interface ProjectionDef {
 //            geographic_graticule.
 //
 // Conventions:
-//   u.fov_scale > 0 means matrix/perspective path: real depth, flat sort-bias off.
+//   u.plane_mix is 0 at flat rest and 1 for perspective/globe depth.
 //   The bg shader MUST write frag_depth; the depth test against it is the
 //   only overlay occlusion mechanism. No analytic occlusion in overlays.
 //   displace_world owns the anti-z-fight base lift off the surface the bg
-//   draws (globe: GLOBE_SURFACE_OFFSET; flat: n/a - sort-bias bands).
+//   draws. Planar height moves continuously from clip depth to physical z.
 //   border_world returns the FINAL lifted position too.
 //   Picking is CPU-side: src/pick/project.ts mirrors this symbol contract
 //   per mode over the same packed uniforms, and the pick parity tests pin
@@ -123,39 +131,43 @@ function canHostGlobe(bounds: Bounds | null, characteristicLength: number | null
   return characteristicLength <= GLOBE_MAX_CL;
 }
 
-/** Projection registry consumed by the controller, rig, renderer, and availability checks. */
+/** Public camera-view registry. */
 export const PROJECTIONS = Object.freeze({
   flat: {
     mode: 'flat',
-    create: createFlatProjection,
-    overlayWgsl: flatSrc,
-    vertexSurfaceWgsl: planarVertexSurfaceWgsl,
-    segmentSurfaceWgsl: planarSegmentSurfaceWgsl,
-    bgWgsl: flatBgSrc,
-    bgPreludeWgsl: '',
-    borderWorldWgsl:
-      'fn border_world(lonlat: vec2f, ecef: vec3f) -> vec3f { return vec3f(lonlat, 0.0); }\n',
-    haloDepthCompare: 'always',
+    create: () => createPlaneProjection('flat'),
+    pipeline: 'plane',
     canUse: () => true,
   },
   tilt: {
     mode: 'tilt',
-    create: createTiltProjection,
-    overlayWgsl: tiltSrc,
-    vertexSurfaceWgsl: planarVertexSurfaceWgsl,
-    segmentSurfaceWgsl: planarSegmentSurfaceWgsl,
-    bgWgsl: tiltBgSrc,
-    bgPreludeWgsl: tiltRaySrc,
-    // Borders sit on the plane with the same anti-z-fight lift the
-    // overlays get (+z, not the globe's radial lift).
-    borderWorldWgsl:
-      'fn border_world(lonlat: vec2f, ecef: vec3f) -> vec3f { return vec3f(lonlat, TILT_SURFACE_LIFT * u.vertex_size); }\n',
-    haloDepthCompare: 'less-equal',
+    create: () => createPlaneProjection('tilt'),
+    pipeline: 'plane',
     canUse: () => true,
   },
   globe: {
     mode: 'globe',
     create: createGlobeProjection,
+    pipeline: 'globe',
+    canUse: canHostGlobe,
+  },
+} satisfies Record<ProjectionMode, ProjectionDef>);
+
+/** Minimal shader/pipeline registry: one bundle per coordinate family. */
+export const PIPELINES = Object.freeze({
+  plane: {
+    mode: 'plane',
+    overlayWgsl: planeSrc,
+    vertexSurfaceWgsl: planarVertexSurfaceWgsl,
+    segmentSurfaceWgsl: planarSegmentSurfaceWgsl,
+    bgWgsl: planeBgSrc,
+    bgPreludeWgsl: planeRaySrc,
+    borderWorldWgsl:
+      'fn border_world(lonlat: vec2f, ecef: vec3f) -> vec3f { return vec3f(lonlat, TILT_SURFACE_LIFT * u.vertex_size * u.plane_mix); }\n',
+    haloDepthCompare: 'less-equal',
+  },
+  globe: {
+    mode: 'globe',
     overlayWgsl: globeSrc + daylightSrc,
     vertexSurfaceWgsl: globeVertexSurfaceWgsl,
     segmentSurfaceWgsl: globeSegmentSurfaceWgsl,
@@ -166,6 +178,5 @@ export const PROJECTIONS = Object.freeze({
     borderWorldWgsl:
       'fn border_world(lonlat: vec2f, ecef: vec3f) -> vec3f { return normalize(ecef) * (1.0 + GLOBE_SURFACE_OFFSET); }\n',
     haloDepthCompare: 'less-equal',
-    canUse: canHostGlobe,
   },
-} satisfies Record<ProjectionMode, ProjectionDef>);
+} satisfies Record<PipelineMode, PipelineDef>);

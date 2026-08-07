@@ -70,7 +70,7 @@ export interface Options {
 }
 
 /** Validation and lifecycle metadata for a runtime-mutable option. */
-type RuntimeOptionDefinition =
+export type RuntimeOptionDefinition =
   | { readonly kind: 'boolean'; readonly default: boolean }
   | { readonly kind: 'finite' | 'nonnegative'; readonly default: number }
   | { readonly kind: 'rgba'; readonly default: RGBA }

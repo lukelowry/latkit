@@ -2,16 +2,18 @@
 export { createNetwork } from './controller.js';
 
 /** Public network controller types and construction options. */
-export type { Network, Events, Item } from './controller.js';
+export type { Network, Events, Item, RevealOptions } from './controller.js';
 
 /** Canonical renderer options, defaults, validation kinds, and mutation lifecycle. */
 export { DEFAULT_OPTIONS, OPTION_DEFINITIONS, validateOption, validateOptions } from './options.js';
 export type {
   ConstructionOption,
+  NetworkColormap,
   OptionDefinition,
   OptionKeyByLifecycle,
   Options,
   ResolvedOptions,
+  RuntimeOptionDefinition,
   RuntimeOption,
 } from './options.js';
 

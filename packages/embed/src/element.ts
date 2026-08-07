@@ -13,6 +13,7 @@ import {
   type Options,
   type ProjectionMode,
   type RGBA,
+  type RevealOptions,
 } from '@latkit/network';
 
 import { Activation, abortError } from './activation.js';
@@ -103,6 +104,7 @@ type ForwardedNetworkApi = Pick<
   | 'setChannelRange'
   | 'setProjection'
   | 'fit'
+  | 'reveal'
   | 'select'
   | 'clearSelection'
   | 'panBy'
@@ -411,6 +413,10 @@ export function createNetworkElementClass(
       if (!network) return;
       if (typeof itemsOrAnimate === 'boolean') network.fit(itemsOrAnimate);
       else network.fit(itemsOrAnimate, animate);
+    }
+
+    reveal(item: Item, options?: RevealOptions): boolean {
+      return this.#liveNetwork()?.reveal(item, options) ?? false;
     }
 
     select(kind: 'vertex' | 'edge', index: number): void {

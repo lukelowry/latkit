@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { createFlatProjection } from '../src/camera/flat.js';
 import { createGlobeProjection } from '../src/camera/globe.js';
-import { createTiltProjection } from '../src/camera/tilt.js';
+import { createFlatProjection, createTiltProjection } from '../src/camera/plane.js';
 import type { Projection, Viewport } from '../src/camera/projection.js';
 import type { ProjectionMode } from '../src/projections.js';
 import { createUniforms, type Uniforms } from '../src/webgpu/uniforms.js';
@@ -513,6 +512,7 @@ describe('Picker behavior (globe)', () => {
     s.uniforms.geometry.vertexSize = 2;
     const near = s.screenAt(0, 0);
     expect(s.picker.pick(s.query(near.sx, near.sy, 8, { edges: false }))).toEqual(['vertex', 0]);
+    expect(s.picker.locateDetail(['vertex', 0], VP)?.visible).toBe(true);
 
     // Nowhere on screen picks the far-side vertex.
     for (let gy = 0; gy < 10; gy++) {
@@ -527,6 +527,7 @@ describe('Picker behavior (globe)', () => {
     const far = s.screenAt(179, 0);
     expect(s.picker.locate(['vertex', 1], VP)?.[0]).toBeCloseTo(far.sx);
     expect(s.picker.locate(['vertex', 1], VP)?.[1]).toBeCloseTo(far.sy);
+    expect(s.picker.locateDetail(['vertex', 1], VP)?.visible).toBe(false);
   });
 
   it('picks across the antimeridian seam', () => {

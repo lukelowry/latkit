@@ -7,6 +7,7 @@ import {
   readEncodedSegmentsInfo,
   type EncodedSegments,
 } from '../src/segments/index.js';
+import { encodeTopology, prepareTopology, readEncodedTopologyInfo } from '../src/topology/index.js';
 import {
   HEADER_WORDS,
   MAGIC,
@@ -18,6 +19,16 @@ import {
 import { sampleTopology } from './fixtures/topology.js';
 
 describe('EncodedSegments', () => {
+  it('shares validated preparation with topology encoding', () => {
+    const topology = sampleTopology();
+    const prepared = prepareTopology(topology);
+    const topologyInfo = readEncodedTopologyInfo(encodeTopology(prepared));
+    const segmentsInfo = readEncodedSegmentsInfo(encodeSegments(prepared));
+
+    expect(segmentsInfo.fingerprint).toBe(topologyInfo.fingerprint);
+    expect(segmentsInfo.edgeCount).toBe(topologyInfo.edgeCount);
+  });
+
   it('packs edge-major precomputed segment records', () => {
     const encoded = encodeSegments(sampleTopology());
     const words = new Uint32Array(encoded.buffer);

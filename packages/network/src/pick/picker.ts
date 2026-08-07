@@ -9,6 +9,7 @@ import {
   W_HEIGHT_OUT_SCALE,
   W_HEIGHT_SCALE,
   W_HEIGHT_WORLD_SCALE,
+  W_PLANE_MIX,
   W_VERTEX_LOD,
   W_VIEWPORT_X,
   W_VIEWPORT_Y,
@@ -73,6 +74,12 @@ export interface PickQuery {
 }
 
 export type PickResult = readonly [kind: 'vertex' | 'edge', index: number];
+
+/** Package-private item anchor with surface visibility retained for reveal policy. */
+export interface LocatedItem {
+  readonly point: readonly [number, number];
+  readonly visible: boolean;
+}
 
 /**
  * Largest screen overhang of any pickable primitive around its anchor:
@@ -186,7 +193,7 @@ export class Picker {
 
   /** Create a picker bound to live render dependencies. */
   constructor(private readonly deps: PickerDeps) {
-    this.f32 = new Float32Array(deps.uniforms.raw);
+    this.f32 = deps.uniforms.rawF32;
     this.u32 = deps.uniforms.rawU32;
   }
 
@@ -264,6 +271,11 @@ export class Picker {
    * nearest projectable point when the entire edge is occluded.
    */
   locate(item: PickResult, vp: Viewport): readonly [number, number] | null {
+    return this.locateDetail(item, vp)?.point ?? null;
+  }
+
+  /** Project one item and retain whether its chosen anchor is on the visible surface. */
+  locateDetail(item: PickResult, vp: Viewport): LocatedItem | null {
     const scene = this.scene;
     if (!scene || !Number.isFinite(vp.w) || !Number.isFinite(vp.h) || vp.w <= 0 || vp.h <= 0) {
       return null;
@@ -295,7 +307,9 @@ export class Picker {
       proj.toScreen(p);
       const x = p.sx / dprX;
       const y = p.sy / dprY;
-      return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null;
+      return Number.isFinite(x) && Number.isFinite(y)
+        ? { point: [x, y], visible: proj.visible(p) }
+        : null;
     }
 
     if (kind !== 'edge' || id >= scene.seg.edgeCount) return null;
@@ -352,8 +366,12 @@ export class Picker {
       }
     }
 
-    if (visibleScore < Infinity) return [visibleX / dprX, visibleY / dprY];
-    return fallbackScore < Infinity ? [fallbackX / dprX, fallbackY / dprY] : null;
+    if (visibleScore < Infinity) {
+      return { point: [visibleX / dprX, visibleY / dprY], visible: true };
+    }
+    return fallbackScore < Infinity
+      ? { point: [fallbackX / dprX, fallbackY / dprY], visible: false }
+      : null;
   }
 
   // Query core.
@@ -381,7 +399,7 @@ export class Picker {
     const heights = this.u32[W_V_HEIGHT_MODE] !== 0 ? this.deps.values('vertexHeight') : null;
     const sizes = this.u32[W_V_SIZE_MODE] !== 0 ? this.deps.values('vertexSize') : null;
     const dashes = this.f32[W_DASH_PERIOD]! > 0 ? this.deps.values('edgeDash') : null;
-    const poles = q.poles && heights !== null && mode !== 'flat';
+    const poles = q.poles && heights !== null && (mode === 'globe' || this.f32[W_PLANE_MIX]! > 0);
 
     const state: TestState = {
       proj,
@@ -451,7 +469,8 @@ export class Picker {
       BILLBOARD_PAD_PX /
         Math.min(this.f32[W_VIEWPORT_X]! / vp.w, this.f32[W_VIEWPORT_Y]! / vp.h, 1);
 
-    const heightsActive = mode !== 'flat' && this.u32[W_V_HEIGHT_MODE] !== 0;
+    const heightsActive =
+      (mode === 'globe' || this.f32[W_PLANE_MIX]! > 0) && this.u32[W_V_HEIGHT_MODE] !== 0;
     let seed = this.deps.unproject(sx, sy, vp);
     if (!seed) {
       // Cursor is off the surface (above tilt's horizon / off the globe).
@@ -533,7 +552,7 @@ export class Picker {
       const outMin = this.f32[W_HEIGHT_OUT_MIN]!;
       const outScale = this.f32[W_HEIGHT_OUT_SCALE]!;
       const maxAbsH = Math.max(Math.abs(outMin), Math.abs(outMin + outScale));
-      const toCoord = mode === 'globe' ? 180 / Math.PI : 1;
+      const toCoord = mode === 'globe' ? 180 / Math.PI : this.f32[W_PLANE_MIX]!;
       const hCoord = maxAbsH * this.f32[W_HEIGHT_WORLD_SCALE]! * toCoord;
       const ratio = jacMin > 0 ? jacMax / jacMin : Infinity;
       if (!(ratio <= JACOBIAN_RATIO_CAP)) return this.coverAll(scene);

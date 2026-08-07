@@ -73,6 +73,8 @@ fn build_edge_capsule(
   edge_id: u32,
   wa: vec3f,
   wb: vec3f,
+  ha: f32,
+  hb: f32,
   halo: bool,
   focus_state: u32,
 ) -> VOut {
@@ -83,11 +85,11 @@ fn build_edge_capsule(
   // Globe overlays are lifted off the surface, so lighting uses their unit
   // direction. Flat daylight is a no-op and can consume the raw world point.
   var light_world = select(wa, wb, strip.x > 0.5);
-  if (u.fov_scale > 0.0) { light_world = normalize(light_world); }
+  if (u.plane_mix > 0.0) { light_world = normalize(light_world); }
   out.light = daylight(light_world);
 
-  let clip_a = project_world(wa);
-  let clip_b = project_world(wb);
+  let clip_a = project_overlay(wa, ha);
+  let clip_b = project_overlay(wb, hb);
 
   let screen_a = (clip_a.xy / clip_a.w * 0.5 + vec2f(0.5)) * u.viewport;
   let screen_b = (clip_b.xy / clip_b.w * 0.5 + vec2f(0.5)) * u.viewport;
@@ -124,13 +126,17 @@ fn build_edge_capsule(
   let interp_clip = mix(clip_a, clip_b, clip_t);
   let ndc = screen_pos * 2.0 / u.viewport - vec2f(1.0);
   var z = interp_clip.z;
-  if (u.fov_scale > 0.0) {
-    if (focus_state != 0u) { z -= Z_BIAS_SELECTION_LIFT * interp_clip.w; }
-  } else {
-    let base_bias = Z_BIAS_EDGE_BAND_OFFSET + jitter(edge_id);
-    let focus_bias = Z_BIAS_EDGE_BAND_OFFSET - Z_BIAS_SELECTION_LIFT;
-    z += select(base_bias, focus_bias, focus_state != 0u) * interp_clip.w;
-  }
+  let flat_bias = select(
+    Z_BIAS_EDGE_BAND_OFFSET + jitter(edge_id),
+    Z_BIAS_EDGE_BAND_OFFSET - Z_BIAS_SELECTION_LIFT,
+    focus_state != 0u,
+  );
+  let depth_bias = mix(
+    flat_bias,
+    select(0.0, -Z_BIAS_SELECTION_LIFT, focus_state != 0u),
+    u.plane_mix,
+  );
+  z += depth_bias * interp_clip.w;
   out.pos = vec4f(ndc * interp_clip.w, z, interp_clip.w);
   out.uv = vec2f(ext_t, side);
   return out;
@@ -142,6 +148,8 @@ fn edge_common(
   endpoints: vec2u,
   wa: vec3f,
   wb: vec3f,
+  ha: f32,
+  hb: f32,
   role: u32,
 ) -> VOut {
   var focus_state = 0u;
@@ -150,7 +158,7 @@ fn edge_common(
     if (resolved_focus_state == 0u) { return culled_edge(); }
     focus_state = resolved_focus_state;
   }
-  var out = build_edge_capsule(strip, edge_id, wa, wb, role == ROLE_HALO, focus_state);
+  var out = build_edge_capsule(strip, edge_id, wa, wb, ha, hb, role == ROLE_HALO, focus_state);
   out.edge_color = edge_channel_color_from_vertices(edge_id, endpoints);
   if (u.dash_period > 0.0) {
     out.dashed = select(0u, 1u, edge_dash_val(edge_id) < 0.5);
@@ -165,10 +173,12 @@ fn vs_edge(strip: vec2f, inst: u32, role: u32) -> VOut {
   let h_b_endpoint = vertex_norm_height(seg.to_vertex);
   let surface_a = segment_surface_world(seg, inst, 0u);
   let surface_b = segment_surface_world(seg, inst, 1u);
-  let wa = displace_world(surface_a, mix(h_a_endpoint, h_b_endpoint, seg.height_t.x));
-  let wb = displace_world(surface_b, mix(h_a_endpoint, h_b_endpoint, seg.height_t.y));
+  let ha = mix(h_a_endpoint, h_b_endpoint, seg.height_t.x);
+  let hb = mix(h_a_endpoint, h_b_endpoint, seg.height_t.y);
+  let wa = displace_world(surface_a, ha);
+  let wb = displace_world(surface_b, hb);
 
-  return edge_common(strip, seg.edge_id, endpoints, wa, wb, role);
+  return edge_common(strip, seg.edge_id, endpoints, wa, wb, ha, hb, role);
 }
 
 @vertex

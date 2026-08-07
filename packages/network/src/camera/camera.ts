@@ -3,6 +3,7 @@ import type {
   CameraState,
   Tangent,
   PanSession,
+  PlaneView,
   PoseSnapshot,
   Vec2,
   Viewport,
@@ -81,6 +82,9 @@ type Motion =
   | { kind: 'dragging'; session: PanSession }
   | { kind: 'coasting'; tangent: Tangent; t0: number; from: CameraState }
   | { kind: 'fitting'; from: CameraState; to: CameraState; t0: number };
+
+/** Outcome of a projection-preserving reveal command. */
+export type RevealResult = 'unavailable' | 'unchanged' | 'claimed' | 'moved';
 
 /** Cursor anchor captured during a wheel or pinch zoom. */
 interface Anchor {
@@ -177,6 +181,18 @@ export class Camera {
       // The projection may prefer to settle elsewhere; the chase animates it.
       this.proj.settleImportedPose?.(this.target);
     }
+    return true;
+  }
+
+  /** Retarget one view of the current camera family without replacing state. */
+  setView(view: PlaneView, bounds: GraphBounds | null, vp: Viewport): boolean {
+    if (!this.proj.setView) return false;
+    const intent = this.fitIntent;
+    this.interrupt();
+    this.proj.setView(view, this.target);
+    this.fitIntent = intent;
+    if (!bounds || !validBounds(bounds) || !validViewport(vp)) return false;
+    this.fit = this.proj.fit(bounds, vp);
     return true;
   }
 
@@ -411,6 +427,56 @@ export class Camera {
       this.current.set(to);
       this.target.set(to);
     }
+    return true;
+  }
+
+  /**
+   * Center arbitrary bounds while preserving projection, zoom, and orientation.
+   *
+   * `Projection.fit` owns coordinate normalization (notably longitude
+   * wrapping and latitude clamping), but only its center slots are adopted.
+   * The current zoom and projection-specific extras remain untouched.
+   */
+  reveal(bounds: GraphBounds, vp: Viewport, animate: boolean): RevealResult {
+    if (!this.fit || !validBounds(bounds) || !validViewport(vp)) return 'unavailable';
+
+    const to = this.proj.fit(bounds, vp);
+    for (let i = ZOOM_SLOT; i < to.length; i++) to[i] = this.current[i]!;
+    const changed = to[0] !== this.current[0] || to[1] !== this.current[1];
+    if (!changed) return this.claimCurrent() ? 'claimed' : 'unchanged';
+
+    let from: CameraState | undefined;
+    if (animate) from = this.proj.clone(this.current);
+    this.interrupt();
+    this.fitIntent = false;
+
+    if (from) {
+      this.motion = { kind: 'fitting', from, to, t0: performance.now() };
+    } else {
+      this.current.set(to);
+      this.target.set(to);
+    }
+    return 'moved';
+  }
+
+  /**
+   * Let a no-op reveal supersede older motion without disturbing an idle view.
+   *
+   * Returns false when the camera already has no driver or residual chase.
+   */
+  claimCurrent(): boolean {
+    let driven = this.motion.kind !== 'idle' || this.anchor !== null;
+    if (!driven) {
+      for (let i = 0; i < this.current.length; i++) {
+        if (this.current[i] !== this.target[i]) {
+          driven = true;
+          break;
+        }
+      }
+    }
+    if (!driven) return false;
+    this.interrupt();
+    this.fitIntent = false;
     return true;
   }
 

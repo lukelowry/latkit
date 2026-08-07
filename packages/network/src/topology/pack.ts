@@ -1,10 +1,47 @@
 import type { Bounds, Topology } from './types.js';
+import { validateTopology } from './validate.js';
 
 /** Cached generated layouts for topologies that omit explicit vertex coordinates. */
 const fallbackCoords = new WeakMap<Topology, Float32Array>();
 
 /** Shared empty coordinate array for topologies with no polyline points. */
 const EMPTY_F32 = new Float32Array(0);
+
+/** Validated topology inputs shared by the topology and segment encoders. */
+export interface PreparedTopology {
+  readonly vertexCount: number;
+  readonly vertexCoords: Float32Array;
+  readonly edges: Uint32Array;
+  readonly polylineStart: Uint32Array;
+  readonly polylinePoints: Float32Array;
+  readonly edgeCount: number;
+  readonly segmentCount: number;
+  readonly fingerprint: number;
+}
+
+/** Validate and resolve the geometry fields consumed by both encoders. */
+export function prepareTopology(topology: Topology): PreparedTopology {
+  validateTopology(topology);
+  const vertexCoords = resolveVertexCoords(topology);
+  const polylinePoints = polylinePointsOf(topology);
+
+  return {
+    vertexCount: topology.vertexCount,
+    vertexCoords,
+    edges: topology.edges,
+    polylineStart: topology.polylineStart,
+    polylinePoints,
+    edgeCount: edgeCountOf(topology),
+    segmentCount: segmentCountFor(topology.polylineStart),
+    fingerprint: topologyFingerprint({
+      vertexCount: topology.vertexCount,
+      vertexCoords,
+      edges: topology.edges,
+      polylineStart: topology.polylineStart,
+      polylinePoints,
+    }),
+  };
+}
 
 /** Build the default unit-ring vertex layout used when geometry is absent. */
 export function ringLayout(vertexCount: number): Float32Array {
@@ -21,7 +58,7 @@ export function ringLayout(vertexCount: number): Float32Array {
 }
 
 /** Count render segments implied by each edge polyline plus its endpoint span. */
-export function segmentCountFor(polylineStart: Uint32Array): number {
+function segmentCountFor(polylineStart: Uint32Array): number {
   let count = 0;
   for (let edge = 0; edge < polylineStart.length - 1; edge++) {
     count += polylineStart[edge + 1]! - polylineStart[edge]! + 1;
@@ -54,7 +91,7 @@ export function resolveVertexCoords(topology: Topology): Float32Array {
 }
 
 /** Compute a deterministic u32 fingerprint for topology geometry inputs. */
-export function topologyFingerprint(input: {
+function topologyFingerprint(input: {
   readonly vertexCount: number;
   readonly vertexCoords: Float32Array;
   readonly edges: Uint32Array;

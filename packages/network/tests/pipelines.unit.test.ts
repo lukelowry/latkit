@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { PROJECTIONS } from '../src/projections.js';
+import { PIPELINES } from '../src/projections.js';
 import { buildProjectionPipelines } from '../src/webgpu/pipelines.js';
 
 describe('buildProjectionPipelines', () => {
@@ -17,7 +17,7 @@ describe('buildProjectionPipelines', () => {
       }),
     } as unknown as GPUDevice;
 
-    const pipelines = await buildProjectionPipelines(PROJECTIONS.globe, {
+    const pipelines = await buildProjectionPipelines(PIPELINES.globe, {
       device,
       format: 'bgra8unorm',
       sampleCount: 1,
@@ -95,8 +95,8 @@ describe('buildProjectionPipelines', () => {
       bgPipelineLayout: { label: 'bg' } as unknown as GPUPipelineLayout,
     };
 
-    const flat = await buildProjectionPipelines(PROJECTIONS.flat, options);
-    const tilt = await buildProjectionPipelines(PROJECTIONS.tilt, options);
+    const flat = await buildProjectionPipelines(PIPELINES.plane, options);
+    const tilt = await buildProjectionPipelines(PIPELINES.plane, options);
 
     expect(flat.visual.earthAxis).toBeUndefined();
     expect(tilt.visual.earthAxis).toBeUndefined();

@@ -36,10 +36,16 @@ export type Viewport = {
   h: number;
 };
 
+/** Camera families that share a state manifold and GPU pipeline. */
+export type ProjectionFamily = 'plane' | 'globe';
+
+/** Named views of the shared planar camera. */
+export type PlaneView = 'flat' | 'tilt';
+
 /**
  * A point on the camera's 3-D state manifold.
  *
- * Flat: [cx, cy, scale], Euclidean and linear in all axes.
+ * Plane: [cx, cy, scale, pitch, bearing].
  * Globe: [lon, lat, dist], spherical in lon/lat and linear in dist.
  *
  * The underlying storage is a Float64Array for zero-alloc math. Construct
@@ -100,6 +106,8 @@ export interface PoseSnapshot {
  * live outside this interface.
  */
 export interface Projection {
+  /** State/pipeline family. Views in one family can transition in place. */
+  readonly family: ProjectionFamily;
   /**
    * State/tangent dimensionality.
    *
@@ -109,6 +117,9 @@ export interface Projection {
    * two slot conventions read this.
    */
   readonly stateSize: number;
+
+  /** Retarget a view without replacing the camera state. */
+  setView?(view: PlaneView, target: CameraState): void;
 
   /** Return the state that frames `bounds` in `vp`. */
   fit(bounds: GraphBounds, vp: Viewport): CameraState;
@@ -169,8 +180,7 @@ export interface Projection {
   /**
    * Return the state that is visually continuous with `pose`.
    *
-   * Tilt returns pitch 0, which is pixel-identical to the flat view it came
-   * from.
+   * Planar imports return pitch 0, the shared flat-continuity anchor.
    */
   importPose?(pose: PoseSnapshot, vp: Viewport): CameraState;
 

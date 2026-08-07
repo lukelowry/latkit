@@ -39,11 +39,36 @@ describe('Renderer resource lifecycle', () => {
     ]);
     expect(h.device.textures.map((texture) => texture.descriptor.label)).toEqual(['colormap-lut']);
     expect(h.device.queue.writeTexture).toHaveBeenCalledOnce();
-    expect(h.device.renderPipelines.map((pipeline) => pipeline.label)).toContain('flat-bg');
+    expect(h.device.renderPipelines.map((pipeline) => pipeline.label)).toContain('plane-bg');
 
     renderer.destroy();
     expect(h.device.buffers.every((buffer) => buffer.destroyed)).toBe(true);
     expect(h.device.textures.every((texture) => texture.destroyed)).toBe(true);
+  });
+
+  it('dispatches complete plane and globe bundles before awaiting compilation', async () => {
+    const h = makeFakeGpu();
+    let release!: (pipeline: GPURenderPipeline) => void;
+    const pending = new Promise<GPURenderPipeline>((resolve) => {
+      release = resolve;
+    });
+    h.device.createRenderPipelineAsync.mockReturnValue(pending);
+
+    const renderer = new Renderer(h.presentation, 1);
+    const labels = (): string[] =>
+      h.device.createRenderPipelineAsync.mock.calls.map(([descriptor]) => descriptor.label ?? '');
+
+    // The shared planar family has nine; globe adds earth-axis for ten.
+    expect(labels().filter((label) => label.startsWith('plane-'))).toHaveLength(9);
+    renderer.useProjectionPipelines('tilt');
+    void renderer.warmProjection('flat');
+    expect(labels().filter((label) => label.startsWith('plane-'))).toHaveLength(9);
+    void renderer.warmProjection('globe');
+    expect(labels().filter((label) => label.startsWith('globe-'))).toHaveLength(10);
+
+    release({ label: 'compiled' } as GPURenderPipeline);
+    await flushGpuPromises();
+    renderer.destroy();
   });
 
   it('selects 1x pipelines by default on huge device-pixel screens', async () => {
@@ -78,7 +103,7 @@ describe('Renderer resource lifecycle', () => {
     renderer.destroy();
   });
 
-  it('dedupes lazy projection builds and wakes when they are ready', async () => {
+  it('dedupes warmed projection builds and wakes when they are ready', async () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);
     const ready = vi.fn();
@@ -87,9 +112,10 @@ describe('Renderer resource lifecycle', () => {
     await flushGpuPromises();
     ready.mockClear();
 
-    renderer.useProjectionPipelines('globe');
-    renderer.useProjectionPipelines('globe');
-    await flushGpuPromises();
+    const first = renderer.warmProjection('globe');
+    const second = renderer.warmProjection('globe');
+    expect(second).toBe(first);
+    await Promise.all([first, second]);
 
     expect(ready).toHaveBeenCalledOnce();
     expect(
@@ -105,11 +131,14 @@ describe('Renderer resource lifecycle', () => {
 
     const renderer = new Renderer(h.presentation);
     await flushGpuPromises();
+    const calls = h.device.createRenderPipelineAsync.mock.calls.length;
+    await renderer.warmProjection('flat');
 
     expect(error).toHaveBeenCalledWith(
-      'network: failed to build the flat projection pipelines',
+      'network: failed to build the plane projection pipelines',
       expect.any(Error),
     );
+    expect(h.device.createRenderPipelineAsync).toHaveBeenCalledTimes(calls);
     renderer.destroy();
   });
 
@@ -297,7 +326,7 @@ describe('Renderer frame encoding', () => {
 
     const pass = h.device.encoders[0]!.passes[0]!;
     expect(pass.setPipeline).toHaveBeenCalledWith(
-      expect.objectContaining({ label: 'flat-bg' }) as GPURenderPipeline,
+      expect.objectContaining({ label: 'plane-bg' }) as GPURenderPipeline,
     );
     expect(pass.draw).toHaveBeenCalledWith(4, 4);
     expect(pass.draw).toHaveBeenCalledWith(4, 3, 0, 1);
@@ -345,6 +374,7 @@ describe('Renderer frame encoding', () => {
 
     const uniforms = createUniforms();
     uniforms.channel.vHeightMode = 1;
+    uniforms.projection.planeMix = 1;
     renderer.setVisible({ poles: true });
 
     expect(renderer.render(uniforms)).toBe(true);
@@ -352,7 +382,7 @@ describe('Renderer frame encoding', () => {
     const labels = h.device.encoders[0]!.passes[0]!.calls.filter(
       (call) => call.method === 'setPipeline',
     ).map((call) => (call.args[0] as { label?: string }).label);
-    expect(labels).toContain('tilt-pole');
+    expect(labels).toContain('plane-pole');
     renderer.destroy();
   });
 });

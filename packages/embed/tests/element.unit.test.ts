@@ -506,6 +506,7 @@ describe('NetworkElement', () => {
     h.element.addEventListener('select', selected);
 
     h.element.fit(true);
+    expect(h.element.reveal({ kind: 'vertex', index: 1 })).toBe(false);
     h.element.panBy(1, 2);
     h.element.zoomBy(1.5);
     h.element.fadeIn(300);
@@ -521,6 +522,9 @@ describe('NetworkElement', () => {
 
     h.element.fit(true);
     h.element.fit([{ kind: 'vertex', index: 1 }], true);
+    expect(h.element.reveal({ kind: 'vertex', index: 1 }, { paddingPx: 32, animate: true })).toBe(
+      true,
+    );
     h.element.panBy(12, -8);
     h.element.zoomBy(1.25);
     h.element.fadeIn(240);
@@ -529,6 +533,10 @@ describe('NetworkElement', () => {
 
     expect(network.fit).toHaveBeenCalledWith(true);
     expect(network.fit).toHaveBeenCalledWith([{ kind: 'vertex', index: 1 }], true);
+    expect(network.reveal).toHaveBeenCalledWith(
+      { kind: 'vertex', index: 1 },
+      { paddingPx: 32, animate: true },
+    );
     expect(network.panBy).toHaveBeenCalledWith(12, -8);
     expect(network.zoomBy).toHaveBeenCalledWith(1.25);
     expect(network.fadeIn).toHaveBeenCalledWith(240);

@@ -33,6 +33,8 @@ export const VISUAL = {
   baseEdgeWidthScale: 0.012,
   /** Target peak height at fit for flat/tilt. */
   heightTargetPx: 40,
+  /** Clip-depth span reserved for height order in the flat view. */
+  flatHeightDepthSpan: 0.25,
   /** Lower bound for flat/tilt height amplitude, in vertex radii. */
   heightMinVertexRadii: 3,
   /** Upper bound for height displacement relative to graph footprint. */
@@ -66,6 +68,7 @@ const GLOBE_VERTEX_SCALE: f32 = ${VISUAL.globeVertexScale};
 const GLOBE_EDGE_SCALE: f32 = ${VISUAL.globeEdgeScale};
 const GLOBE_SURFACE_OFFSET: f32 = ${VISUAL.globeSurfaceOffset};
 const TILT_SURFACE_LIFT: f32 = ${VISUAL.tiltSurfaceLift};
+const FLAT_HEIGHT_DEPTH_SPAN: f32 = ${VISUAL.flatHeightDepthSpan};
 const SURFACE_DEPTH_SLACK_PX: f32 = ${VISUAL.surfaceDepthSlackPx};
 const FRAGMENT_ALPHA_DISCARD: f32 = 0.001;
 `;

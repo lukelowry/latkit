@@ -74,6 +74,7 @@ describe('embed package entrypoint', () => {
       | 'setChannelRange'
       | 'setProjection'
       | 'fit'
+      | 'reveal'
       | 'select'
       | 'clearSelection'
       | 'panBy'
@@ -93,6 +94,7 @@ describe('embed package entrypoint', () => {
     expectTypeOf<NetworkElement['setChannelRange']>().toEqualTypeOf<Network['setChannelRange']>();
     expectTypeOf<NetworkElement['setProjection']>().toEqualTypeOf<Network['setProjection']>();
     expectTypeOf<NetworkElement['fit']>().toEqualTypeOf<Network['fit']>();
+    expectTypeOf<NetworkElement['reveal']>().toEqualTypeOf<Network['reveal']>();
     expectTypeOf<NetworkElement['select']>().toEqualTypeOf<Network['select']>();
     expectTypeOf<NetworkElement['clearSelection']>().toEqualTypeOf<Network['clearSelection']>();
     expectTypeOf<NetworkElement['panBy']>().toEqualTypeOf<Network['panBy']>();

@@ -44,6 +44,11 @@ network.fadeIn();
 
 The view starts in the flat projection. If the topology coordinates fit the geographic range required for globe mode, `network.projections.globe` becomes true after `load()`.
 
+`flat` and `tilt` are two views of one planar camera. Projection changes animate
+the same pitch state in either direction and reuse one WebGPU pipeline bundle.
+A `vertexHeight` channel controls depth order at flat rest and blends
+continuously into physical height as the view tilts.
+
 ## Add interaction handlers
 
 Use events to mirror hover and selection state into your app:
@@ -79,6 +84,16 @@ network.fit([{ kind: 'vertex', index: 0 }], true);
 ```
 
 Subset fitting includes edge bend points, ignores stale identities and display visibility, and preserves the whole-topology fit as the camera's zoom reference.
+
+Use `reveal()` when an item should become visible without changing camera zoom:
+
+```ts
+network.reveal({ kind: 'vertex', index: 0 }, { paddingPx: 48, animate: true });
+```
+
+An item already visible inside the padded viewport is left in place. Pass
+`{ center: true }` to center it explicitly. Reveal preserves scale, globe
+distance, tilt, and bearing.
 
 When your app removes the view, destroy the renderer before removing its canvas, and release the application-owned device last:
 

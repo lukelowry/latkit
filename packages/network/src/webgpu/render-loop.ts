@@ -66,7 +66,11 @@ export class RenderLoop {
   private active = true;
   private dead = false;
   private needsFit = false;
-  private pendingMove: { readonly bounds: Bounds; readonly animate: boolean } | null = null;
+  private pendingMove: {
+    readonly kind: 'fit' | 'reveal';
+    readonly bounds: Bounds;
+    readonly animate: boolean;
+  } | null = null;
   private lastFit = true;
   /** When the pending rAF is a trailing guard, it renders only if new work
    *  arrived. Any explicit wake upgrades it to an unconditional frame. */
@@ -137,12 +141,20 @@ export class RenderLoop {
   }
   /** Move after any pending canonical initialization on the next sized frame. */
   requestMove(bounds: Bounds, animate: boolean): void {
-    this.pendingMove = { bounds, animate };
+    this.pendingMove = { kind: 'fit', bounds, animate };
+  }
+  /** Reveal after any pending canonical initialization on the next sized frame. */
+  requestReveal(bounds: Bounds, animate: boolean): void {
+    this.pendingMove = { kind: 'reveal', bounds, animate };
+  }
+  /** Cancel a deferred subset move or reveal while preserving canonical fit work. */
+  cancelDeferredMove(): void {
+    this.pendingMove = null;
   }
   /** Cancel deferred camera placement when a newer immediate command wins. */
   cancelPlacement(): void {
     this.needsFit = false;
-    this.pendingMove = null;
+    this.cancelDeferredMove();
   }
 
   // Scheduling
@@ -255,7 +267,8 @@ export class RenderLoop {
     if (this.pendingMove) {
       const move = this.pendingMove;
       this.pendingMove = null;
-      this.camera.moveTo(move.bounds, frameVp, move.animate);
+      if (move.kind === 'reveal') this.camera.reveal(move.bounds, frameVp, move.animate);
+      else this.camera.moveTo(move.bounds, frameVp, move.animate);
     }
 
     this.camera.tick(performance.now(), frameVp);

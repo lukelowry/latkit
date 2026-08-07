@@ -11,7 +11,11 @@ import {
   FLAG_GRATICULE,
 } from '../src/webgpu/uniforms.js';
 import { VISUAL } from '../src/visual.js';
-import { createControllerHarness, flushMicrotasks } from './fixtures/controller-harness.js';
+import {
+  createControllerHarness,
+  deferred,
+  flushMicrotasks,
+} from './fixtures/controller-harness.js';
 import { geographicTopology, nonGlobeTopology } from './fixtures/topology.js';
 
 type Harness = Awaited<ReturnType<typeof createControllerHarness>>;
@@ -831,6 +835,61 @@ describe('createNetwork controller', () => {
     expect(h.surface.element.style.transition).toContain('opacity 25ms');
   });
 
+  it('warms supported inactive projections serially after first paint', async () => {
+    const h = await makeHarness();
+    const tilt = deferred<void>();
+    h.renderer.warmProjection.mockImplementation((mode) =>
+      mode === 'tilt' ? tilt.promise : Promise.resolve(),
+    );
+    h.network.load(geographicTopology());
+
+    h.loop.paint();
+    expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt']]);
+
+    tilt.resolve();
+    await flushMicrotasks();
+    expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt'], ['globe']]);
+    h.loop.paint();
+    await flushMicrotasks();
+    expect(h.renderer.warmProjection).toHaveBeenCalledTimes(2);
+  });
+
+  it('contains warm failures and continues with the next projection', async () => {
+    const h = await makeHarness();
+    const failure = new Error('warm failed');
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    h.renderer.warmProjection.mockImplementation((mode) =>
+      mode === 'tilt' ? Promise.reject(failure) : Promise.resolve(),
+    );
+    h.network.load(geographicTopology());
+
+    h.loop.paint();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt'], ['globe']]);
+    expect(error).toHaveBeenCalledWith(
+      'network: failed to warm the tilt projection pipelines',
+      failure,
+    );
+  });
+
+  it('warms projections that become available after a later load', async () => {
+    const h = await makeHarness();
+    h.network.load(nonGlobeTopology());
+
+    h.loop.paint();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt']]);
+
+    h.network.load(geographicTopology());
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt'], ['tilt'], ['globe']]);
+  });
+
   it('fits, pans, and zooms through the public camera methods', async () => {
     const h = await makeHarness();
     h.network.fit(true);
@@ -912,7 +971,112 @@ describe('createNetwork controller', () => {
     expect(h.rig.camera.moveTo.mock.calls[0]?.[2]).toBe(false);
   });
 
-  it('anchors globe subset bounds at the camera longitude when center unprojection misses', async () => {
+  it('reveals only items outside the padded visible viewport and preserves fit semantics', async () => {
+    const h = await makeHarness();
+    expect(h.network.reveal({ kind: 'vertex', index: 1 })).toBe(false);
+
+    h.network.load(geographicTopology());
+    h.loop.cancelDeferredMove.mockClear();
+    h.loop.cancelPlacement.mockClear();
+    h.loop.wake.mockClear();
+    h.picker.nextLocation = [50, 40];
+    h.picker.nextLocationVisible = true;
+
+    expect(h.network.reveal({ kind: 'vertex', index: 1 }, { paddingPx: 8 })).toBe(true);
+    expect(h.rig.camera.reveal).not.toHaveBeenCalled();
+    expect(h.rig.camera.claimCurrent).toHaveBeenCalledOnce();
+    expect(h.loop.cancelDeferredMove).toHaveBeenCalledOnce();
+    expect(h.loop.cancelPlacement).not.toHaveBeenCalled();
+    expect(h.loop.wake).not.toHaveBeenCalled();
+
+    h.picker.nextLocation = [2, 40];
+    expect(h.network.reveal({ kind: 'vertex', index: 1 }, { paddingPx: 8, animate: true })).toBe(
+      true,
+    );
+    expect(h.rig.camera.reveal).toHaveBeenCalledOnce();
+    const [bounds, view, animate] = h.rig.camera.reveal.mock.calls[0]!;
+    expect((bounds.xMin + bounds.xMax) / 2).toBeCloseTo(0);
+    expect((bounds.yMin + bounds.yMax) / 2).toBeCloseTo(5);
+    expect(view).toEqual({ w: 100, h: 80 });
+    expect(animate).toBe(true);
+    expect(h.rig.camera.moveTo).not.toHaveBeenCalled();
+    expect(h.loop.cancelPlacement).toHaveBeenCalledOnce();
+    expect(h.loop.wake).toHaveBeenCalledOnce();
+  });
+
+  it('normalizes invalid reveal padding and caps oversized padding', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    h.picker.nextLocationVisible = true;
+
+    for (const paddingPx of [Number.NaN, -1]) {
+      h.rig.camera.reveal.mockClear();
+      h.picker.nextLocation = [38, 40];
+      expect(h.network.reveal({ kind: 'vertex', index: 1 }, { paddingPx })).toBe(true);
+      expect(h.rig.camera.reveal).toHaveBeenCalledOnce();
+    }
+
+    h.rig.camera.reveal.mockClear();
+    h.picker.nextLocation = [50, 40];
+    expect(h.network.reveal({ kind: 'vertex', index: 1 }, { paddingPx: 10_000 })).toBe(true);
+    expect(h.rig.camera.reveal).not.toHaveBeenCalled();
+  });
+
+  it('lets an already-visible reveal supersede older camera motion', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    h.picker.nextLocation = [50, 40];
+    h.picker.nextLocationVisible = true;
+    h.rig.camera.claimCurrent.mockReturnValue(true);
+    h.loop.cancelPlacement.mockClear();
+    h.loop.wake.mockClear();
+
+    expect(h.network.reveal({ kind: 'vertex', index: 1 })).toBe(true);
+
+    expect(h.rig.camera.claimCurrent).toHaveBeenCalledOnce();
+    expect(h.rig.camera.reveal).not.toHaveBeenCalled();
+    expect(h.loop.cancelPlacement).toHaveBeenCalledOnce();
+    expect(h.loop.wake).toHaveBeenCalledOnce();
+  });
+
+  it('centers occluded items, supports explicit centering, and defers an unavailable viewport', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    h.picker.nextLocation = [50, 40];
+    h.picker.nextLocationVisible = false;
+
+    expect(h.network.reveal({ kind: 'edge', index: 0 })).toBe(true);
+    expect(h.rig.camera.reveal).toHaveBeenCalledOnce();
+
+    h.rig.camera.reveal.mockClear();
+    h.rig.camera.reveal.mockReturnValueOnce('unchanged');
+    h.loop.cancelDeferredMove.mockClear();
+    h.loop.wake.mockClear();
+    h.picker.nextLocationVisible = true;
+    expect(h.network.reveal({ kind: 'edge', index: 0 }, { center: true })).toBe(true);
+    expect(h.rig.camera.reveal).toHaveBeenCalledOnce();
+    expect(h.loop.cancelDeferredMove).toHaveBeenCalledOnce();
+    expect(h.loop.wake).not.toHaveBeenCalled();
+
+    h.rig.camera.reveal.mockClear();
+    h.surface.viewport = { w: 0, h: 80 };
+    expect(h.network.reveal({ kind: 'vertex', index: 1 }, { animate: true })).toBe(true);
+    expect(h.rig.camera.reveal).not.toHaveBeenCalled();
+    expect(h.loop.requestReveal).toHaveBeenCalledWith(expect.any(Object), true);
+
+    h.surface.viewport = { w: 100, h: 80 };
+    h.picker.nextLocationVisible = false;
+    h.rig.camera.reveal.mockReturnValueOnce('unavailable');
+    h.loop.requestFit.mockClear();
+    h.loop.requestReveal.mockClear();
+    expect(h.network.reveal({ kind: 'edge', index: 0 })).toBe(true);
+    expect(h.loop.requestFit).toHaveBeenCalledOnce();
+    expect(h.loop.requestReveal).toHaveBeenCalledWith(expect.any(Object), false);
+
+    expect(h.network.reveal({ kind: 'vertex', index: 99 })).toBe(false);
+  });
+
+  it('anchors globe item bounds at the camera longitude when center unprojection misses', async () => {
     const h = await makeHarness();
     h.network.load({
       vertexCount: 2,
@@ -928,6 +1092,12 @@ describe('createNetwork controller', () => {
 
     const bounds = h.rig.camera.moveTo.mock.calls[0]?.[0];
     expect(bounds && (bounds.xMin + bounds.xMax) / 2).toBeCloseTo(181);
+
+    h.picker.nextLocation = [50, 40];
+    h.picker.nextLocationVisible = false;
+    h.network.reveal({ kind: 'vertex', index: 0 });
+    const revealBounds = h.rig.camera.reveal.mock.calls[0]?.[0];
+    expect(revealBounds && (revealBounds.xMin + revealBounds.xMax) / 2).toBeCloseTo(181);
   });
 
   it('keeps render-loop activity in sync with pause, resume, and page visibility', async () => {

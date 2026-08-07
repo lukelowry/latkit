@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PROJECTIONS } from '../src/projections.js';
+import { PIPELINES } from '../src/projections.js';
 import edgeSrc from '../src/shaders/passes/edge-segment.wgsl?raw';
 import frameEncoderSrc from '../src/webgpu/frame-encoder.ts?raw';
 import pipelinesSrc from '../src/webgpu/pipelines.ts?raw';
@@ -21,15 +21,16 @@ describe('globe focus and occlusion shader contract', () => {
 
   it('routes globe edges through the direct segment shader path', () => {
     expect(edgeSrc).toContain('let seg = segment_record(inst);');
-    expect(edgeSrc).toContain('return edge_common(strip, seg.edge_id, endpoints, wa, wb, role);');
+    expect(edgeSrc).toContain(
+      'return edge_common(strip, seg.edge_id, endpoints, wa, wb, ha, hb, role);',
+    );
     expect(frameEncoderSrc).toContain('rp.draw(4, inputs.topology.segmentCount)');
     expect(frameEncoderSrc).not.toContain('drawIndirect');
   });
 
   it('depth-tests globe halos against sphere depth', () => {
-    expect(PROJECTIONS.flat.haloDepthCompare).toBe('always');
-    expect(PROJECTIONS.tilt.haloDepthCompare).toBe('less-equal');
-    expect(PROJECTIONS.globe.haloDepthCompare).toBe('less-equal');
+    expect(PIPELINES.plane.haloDepthCompare).toBe('less-equal');
+    expect(PIPELINES.globe.haloDepthCompare).toBe('less-equal');
     expect(pipelinesSrc).toContain('depthCompare: def.haloDepthCompare');
   });
 

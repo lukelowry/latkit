@@ -35,6 +35,31 @@ network.setChannel('vertexColor', values, finiteExtent(values));
 network.fadeIn();
 ```
 
+`vertexHeight` orders overlapping geometry by depth in `flat`, then becomes
+physical lift continuously as the same planar camera tilts. Switching between
+`flat` and `tilt` reuses that camera and its WebGPU pipeline bundle.
+
+## Selection and navigation
+
+`Item` is the renderer's stable vertex/edge identity. Selection changes only
+the focus ring, `reveal` brings an item into view without changing zoom or
+projection, and subset fit deliberately reframes it:
+
+```ts
+const item = { kind: 'vertex', index: 1 } as const;
+
+network.select(item.kind, item.index);
+network.reveal(item, { paddingPx: 48, animate: true });
+
+// Use only for an explicit "fit item" interaction.
+network.fit([item], true);
+```
+
+An item already visible inside the reveal padding is left in place. Pass
+`{ center: true }` for an explicit centering command. Reveal retains scale, globe
+distance, tilt, and bearing; a newer camera command replaces any in-progress
+move.
+
 ## Shared view semantics
 
 Higher-level Network consumers can derive their own surfaces without copying renderer vocabulary.

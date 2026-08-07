@@ -72,6 +72,7 @@ export interface FakeNetwork {
   readonly setOptions: ReturnType<typeof vi.fn>;
   readonly setProjection: ReturnType<typeof vi.fn>;
   readonly fit: ReturnType<typeof vi.fn>;
+  readonly reveal: ReturnType<typeof vi.fn>;
   readonly select: ReturnType<typeof vi.fn>;
   readonly clearSelection: ReturnType<typeof vi.fn>;
   readonly panBy: ReturnType<typeof vi.fn>;
@@ -104,6 +105,7 @@ export function fakeNetwork(
   const setOptions = vi.fn();
   const setProjection = vi.fn((mode: ProjectionMode) => projections[mode]);
   const fit = vi.fn();
+  const reveal = vi.fn(() => true);
   const select = vi.fn();
   const clearSelection = vi.fn();
   const panBy = vi.fn();
@@ -126,6 +128,7 @@ export function fakeNetwork(
       setOptions,
       setProjection,
       fit,
+      reveal,
       select,
       clearSelection,
       panBy,
@@ -146,6 +149,7 @@ export function fakeNetwork(
     setOptions,
     setProjection,
     fit,
+    reveal,
     select,
     clearSelection,
     panBy,

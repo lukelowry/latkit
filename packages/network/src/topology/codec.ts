@@ -1,43 +1,31 @@
 import {
   computeBounds,
-  edgeCountOf,
   estimateCharacteristicLength,
-  polylinePointsOf,
-  resolveVertexCoords,
-  topologyFingerprint,
+  prepareTopology,
+  type PreparedTopology,
 } from './pack.js';
 import type { Bounds, EncodedTopology, EncodedTopologyInfo, Topology } from './types.js';
 import { spherePositionsForCoords } from './sphere.js';
-import { validateTopology } from './validate.js';
 import { HEADER_WORDS, MAGIC, W } from './wire.js';
 
 /** Encode a topology into the canonical GPU-facing topology buffer. */
-export function encodeTopology(topology: Topology): EncodedTopology {
-  validateTopology(topology);
-  const vertexCoords = resolveVertexCoords(topology);
-  const polylinePoints = polylinePointsOf(topology);
-  const edgeCount = edgeCountOf(topology);
+export function encodeTopology(source: Topology | PreparedTopology): EncodedTopology {
+  const input = 'fingerprint' in source ? source : prepareTopology(source);
+  const { vertexCoords, polylinePoints, edgeCount } = input;
   const vertexSphere = spherePositionsForCoords(vertexCoords);
   const bounds = computeBounds(vertexCoords);
-  const fingerprint = topologyFingerprint({
-    vertexCount: topology.vertexCount,
-    vertexCoords,
-    edges: topology.edges,
-    polylineStart: topology.polylineStart,
-    polylinePoints,
-  });
 
   return writeTopologyStorage({
-    vertexCount: topology.vertexCount,
+    vertexCount: input.vertexCount,
     vertexCoords,
     vertexSphere,
-    edges: topology.edges,
-    polylineStart: topology.polylineStart,
+    edges: input.edges,
+    polylineStart: input.polylineStart,
     polylinePoints,
     bounds,
-    characteristicLength: estimateCharacteristicLength(topology.vertexCount, bounds),
+    characteristicLength: estimateCharacteristicLength(input.vertexCount, bounds),
     edgeCount,
-    fingerprint,
+    fingerprint: input.fingerprint,
   });
 }
 

@@ -5,6 +5,7 @@ import {
   FLAG_GRATICULE,
   hasGraticuleFlag,
   UNIFORM_BUFFER_BYTES,
+  W_PLANE_MIX,
 } from '../src/webgpu/uniforms.js';
 
 describe('createUniforms', () => {
@@ -20,6 +21,18 @@ describe('createUniforms', () => {
     expect(view[24]).toBe(2.5);
     u.projection.fovScale = 0.33;
     expect(view[19]).toBeCloseTo(0.33);
+  });
+
+  it('packs the planar basis and blend into the final aligned block', () => {
+    const u = createUniforms();
+    u.projection.setPlaneParams(1, 2, 0.5, 0.75);
+    u.projection.planeMix = 0.25;
+
+    expect(u.rawF32).toBeInstanceOf(Float32Array);
+    expect(u.rawF32.buffer).toBe(u.raw);
+    expect(Array.from(u.rawF32.slice(92, 96))).toEqual([1, 2, 0.5, 0.75]);
+    expect(u.rawF32[W_PLANE_MIX]).toBe(0.25);
+    expect(u.rawF32.length).toBe(100);
   });
 
   it('reads the graticule bit from projection flags', () => {

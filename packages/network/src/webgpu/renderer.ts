@@ -4,6 +4,7 @@ import type { Presentation } from '@latkit/gpu';
 import {
   UNIFORM_BUFFER_BYTES,
   hasGraticuleFlag,
+  hasPlaneDepth,
   hasVertexHeightChannel,
   FLAG_FOCUS_ENABLED,
   FLAG_FOCUS_HOVER_ENDPOINTS,
@@ -30,7 +31,13 @@ import { BorderBuffers } from './border-buffers.js';
 import { packBound, type Channel, type ChannelSlot } from '../channels.js';
 import { DEFAULT_OPTIONS } from '../options.js';
 
-import { PROJECTIONS, type ProjectionDef, type ProjectionMode } from '../projections.js';
+import {
+  PIPELINES,
+  PROJECTIONS,
+  type PipelineDef,
+  type PipelineMode,
+  type ProjectionMode,
+} from '../projections.js';
 
 import { FrameResources } from './frame-resources.js';
 import { encodeNetworkFrame } from './frame-encoder.js';
@@ -55,7 +62,7 @@ function defaultColormapLut(): Uint8Array {
 }
 
 /** Uniform views the renderer uploads or inspects during a frame. */
-type FrameUniforms = Pick<Uniforms, 'raw' | 'rawI32' | 'rawU32'>;
+type FrameUniforms = Pick<Uniforms, 'raw' | 'rawF32' | 'rawI32' | 'rawU32'>;
 
 /**
  * Transparent clear color that lets the themed DOM behind the premultiplied
@@ -99,9 +106,10 @@ export class Renderer {
   private readonly warnedEmptyEdgeFocusRanges = new Set<number>();
 
   private readonly frameResources = new FrameResources();
-  private readonly projectionPipelines = new Map<ProjectionMode, ProjectionPipelineSet>();
-  private readonly buildingProjectionPipelines = new Set<ProjectionMode>();
-  private activeMode: ProjectionMode = 'flat';
+  private readonly projectionPipelines = new Map<PipelineMode, ProjectionPipelineSet>();
+  private readonly buildingProjectionPipelines = new Map<PipelineMode, Promise<void>>();
+  private readonly failedProjectionPipelines = new Set<PipelineMode>();
+  private activePipeline: PipelineMode = 'plane';
   /**
    * MSAA is 4x or off because WebGPU permits only 1 and 4, and the sample
    * count is baked into every pipeline.
@@ -252,24 +260,33 @@ export class Renderer {
     // Projection pipeline sets come from the projection registry: one bundle per
     // mode carries the overlay prelude, the bg shader (which writes the
     // depth all overlays occlusion-test against), and the border_world
-    // snippet (final lifted position included). Builds are async and lazy:
-    // the active projection set compiles off-thread while the topology loads, and
+    // snippet (final lifted position included). Builds are async and lazy: the
+    // active projection set compiles off-thread while the topology loads, and
     // render() simply skips frames until it lands (the loop treats a null
-    // render as "no frame"). Other projection sets compile on first use.
-    this.ensureProjectionPipelines(this.activeMode);
+    // render as "no frame"). The controller warms supported alternatives after first paint.
+    void this.ensureProjectionPipelines(this.activePipeline);
   }
 
   /** Selects the active projection pipeline set, building it lazily if needed. */
   useProjectionPipelines(mode: ProjectionMode): void {
-    this.activeMode = mode;
-    this.ensureProjectionPipelines(mode);
+    this.activePipeline = PROJECTIONS[mode].pipeline;
+    void this.ensureProjectionPipelines(this.activePipeline);
   }
 
-  /** Starts an async build for a projection pipeline set when it is not cached. */
-  private ensureProjectionPipelines(mode: ProjectionMode): void {
-    if (this.projectionPipelines.has(mode) || this.buildingProjectionPipelines.has(mode)) return;
-    this.buildingProjectionPipelines.add(mode);
-    void this.buildProjectionPipelines(PROJECTIONS[mode]).then(
+  /** Compiles a projection pipeline set without changing the active mode. */
+  warmProjection(mode: ProjectionMode): Promise<void> {
+    return this.ensureProjectionPipelines(PROJECTIONS[mode].pipeline);
+  }
+
+  /** Returns the cached or in-flight build for one projection pipeline set. */
+  private ensureProjectionPipelines(mode: PipelineMode): Promise<void> {
+    if (this.projectionPipelines.has(mode) || this.failedProjectionPipelines.has(mode)) {
+      return Promise.resolve();
+    }
+    const pending = this.buildingProjectionPipelines.get(mode);
+    if (pending) return pending;
+
+    const build = this.buildProjectionPipelines(PIPELINES[mode]).then(
       (pipelines) => {
         this.buildingProjectionPipelines.delete(mode);
         if (this.destroyed) return;
@@ -278,15 +295,18 @@ export class Renderer {
       },
       (error: unknown) => {
         this.buildingProjectionPipelines.delete(mode);
+        this.failedProjectionPipelines.add(mode);
         // Projection pipeline validation failing is a build-time shader bug; keep the
         // session alive (render() keeps skipping) and surface the cause.
         console.error(`network: failed to build the ${mode} projection pipelines`, error);
       },
     );
+    this.buildingProjectionPipelines.set(mode, build);
+    return build;
   }
 
   /** Builds all GPU pipelines required by a projection definition. */
-  private async buildProjectionPipelines(def: ProjectionDef): Promise<ProjectionPipelineSet> {
+  private async buildProjectionPipelines(def: PipelineDef): Promise<ProjectionPipelineSet> {
     return buildProjectionPipelineSet(def, {
       device: this.presentation.device,
       format: this.presentation.format,
@@ -515,7 +535,7 @@ export class Renderer {
   render(uniforms: FrameUniforms): boolean {
     // No frame until the active projection pipeline build lands; the loop
     // treats a null render as "skip", and onProjectionPipelinesReady wakes it.
-    const pipelines = this.projectionPipelines.get(this.activeMode);
+    const pipelines = this.projectionPipelines.get(this.activePipeline);
     if (
       !pipelines ||
       !this.bound ||
@@ -561,7 +581,10 @@ export class Renderer {
         TRANSPARENT_CLEAR,
       ),
       depthView: this.frameResources.depthView,
-      drawBackground: this.activeMode !== 'flat' || hasGraticuleFlag(uniforms.rawU32),
+      drawBackground:
+        this.activePipeline === 'globe' ||
+        hasPlaneDepth(uniforms.rawF32) ||
+        hasGraticuleFlag(uniforms.rawU32),
       visual,
       channelsBindGroup: this.channelsBindGroup,
       topologyBindGroup: this.topologyBindGroup,
@@ -583,7 +606,9 @@ export class Renderer {
   /** Returns whether the height-pole pass has visible output for this frame. */
   private computePolesRendered(uniforms: FrameUniforms): boolean {
     return (
-      this.visibility.poles && this.activeMode !== 'flat' && hasVertexHeightChannel(uniforms.rawU32)
+      this.visibility.poles &&
+      (this.activePipeline === 'globe' || hasPlaneDepth(uniforms.rawF32)) &&
+      hasVertexHeightChannel(uniforms.rawU32)
     );
   }
 

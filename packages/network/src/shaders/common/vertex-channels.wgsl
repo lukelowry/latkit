@@ -30,22 +30,7 @@ fn vertex_channel_color(vi: u32) -> vec4f {
   return vec4f(colormap(t), 1.0);
 }
 
-// Returns a flat-mode negative NDC bias to add to natural clip-space z.
-// Vertex band sits in front of edge band by Z_BIAS_*_OFFSET difference;
-// jitter breaks ties between primitives at literally identical depth.
-// Globe shaders gate this off and use projection-level world-space lift.
-fn vertex_sort_z_bias(vi: u32) -> f32 {
-  if (vertex_focus_state_for(i32(vi)) != 0u) {
-    return Z_BIAS_VERTEX_BAND_OFFSET - Z_BIAS_SELECTION_LIFT;
-  }
-  return Z_BIAS_VERTEX_BAND_OFFSET + jitter(vi);
-}
-
-// Poles have real 3D extent (radial extension off the sphere). A channel-driven
-// sort would override the natural depth a pole visibly sticks out by, swapping
-// physically near/far poles whenever their channel values disagreed with their
-// 3D ordering. So flat poles get a constant band offset plus jitter for
-// tie-breaks; globe poles use their lifted 3D geometry and depth testing.
+// Pole geometry owns height order; this only breaks exact depth ties.
 fn pole_sort_z_bias(vi: u32) -> f32 {
   if (vertex_focus_state_for(i32(vi)) != 0u) {
     return Z_BIAS_EDGE_BAND_OFFSET - Z_BIAS_SELECTION_LIFT;
