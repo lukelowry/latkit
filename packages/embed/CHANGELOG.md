@@ -1,5 +1,17 @@
 # @latkit/embed
 
+## 0.5.0
+
+### Minor Changes
+
+- 9a09a67: Add raw `vertexVisible` and `edgeVisible` channels with matching renderer, picking, Embed attributes, and lifecycle behavior; `Network` and `NetworkElement` consistently ignore range arguments for raw dash and visibility channels. Add `rotateBy()` plus live `vertexScale`, `edgeScale`, `heightScale`, `vertexLodPx`, and `dashPeriodPx` geometry controls with matching Embed attributes. Channel values are now snapshotted, topology fit bounds and visual scales consistently use vertices, crossing edge segments clip to positive W, teardown releases retained scene data, and asynchronous pipeline failures are exposed through `pipelineError` and forwarded by `NetworkElement` as a DOM event.
+
+### Patch Changes
+
+- Updated dependencies [9a09a67]
+- Updated dependencies [9a09a67]
+  - @latkit/network@0.5.0
+
 ## 0.4.0
 
 ### Minor Changes
