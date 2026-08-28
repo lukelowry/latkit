@@ -176,12 +176,18 @@ describe('createChannels', () => {
     const { channels, renderer, uniforms } = make();
 
     channels.set('vertexColor', new Float32Array([0, 0.5, 1]));
+    const snapshot = channels.values('vertexColor');
     renderer.relayout.mockClear();
     renderer.writeChannel.mockClear();
-    channels.set('vertexColor', new Float32Array([1, 0.5, 0]));
+    const replacement = new Float32Array([1, 0.5, 0]);
+    channels.set('vertexColor', replacement);
 
     expect(renderer.relayout).not.toHaveBeenCalled();
-    expect(renderer.writeChannel).toHaveBeenCalledOnce();
+    expect(renderer.writeChannel).toHaveBeenCalledExactlyOnceWith('vertexColor', replacement);
+    // The CPU snapshot is refreshed in place rather than reallocated per update.
+    expect(channels.values('vertexColor')).toBe(snapshot);
+    expect(channels.values('vertexColor')).toEqual(replacement);
+    expect(channels.values('vertexColor')).not.toBe(replacement);
     expect(uniforms.channel.vColorMin).toBe(0);
     expect(uniforms.channel.vColorScale).toBe(1);
   });

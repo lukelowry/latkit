@@ -19,7 +19,14 @@ export type {
 
 /** Rendering-channel names and normalization options. */
 export { CHANNEL_DEFINITIONS, channelNormalizes } from './channels.js';
-export type { Channel, ChannelDefinition, ChannelMap, ChannelScope } from './channels.js';
+export type {
+  Channel,
+  ChannelDefinition,
+  ChannelMap,
+  ChannelScope,
+  NormalizedChannel,
+  NormalizedChannelDefinition,
+} from './channels.js';
 
 /** Channel-domain measurement shared by channel-binding consumers. */
 export { finiteExtent, validateChannelRange } from './range.js';

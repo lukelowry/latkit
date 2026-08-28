@@ -23,8 +23,10 @@ import {
   W_V_SIZE_SCALE,
 } from '../webgpu/uniforms.js';
 import { SEGMENT_RECORD_WORDS } from '../segments/wire.js';
+import type { DecodedSegments } from '../segments/index.js';
 import type { PreparedScene } from '../scene.js';
 import type { Bounds } from '../topology/index.js';
+import type { Channel } from '../channels.js';
 import { VISUAL } from '../visual.js';
 import { Grid } from './grid.js';
 import {
@@ -56,9 +58,15 @@ export interface PickerDeps {
    */
   unproject(sx: number, sy: number, vp: Viewport): readonly [number, number] | null;
   /** Raw bound channel values (the same arrays the GPU uploaded). */
-  values(
-    channel: 'vertexHeight' | 'vertexSize' | 'edgeDash' | 'vertexVisible' | 'edgeVisible',
-  ): Float32Array | null;
+  values(channel: PickChannel): Float32Array | null;
+}
+
+/** Channels that alter projected hit geometry; color channels never affect picking. */
+export type PickChannel = Exclude<Channel, 'vertexColor' | 'edgeColor'>;
+
+/** Whether a channel change can move or hide pickable geometry. */
+export function isPickChannel(channel: Channel): channel is PickChannel {
+  return channel !== 'vertexColor' && channel !== 'edgeColor';
 }
 
 /** One screen-space pick request against the current scene. */
@@ -138,20 +146,6 @@ interface QueryCircle {
   readonly r: number;
 }
 
-/** Typed views over the encoded segment records. */
-interface SegmentViews {
-  /** Number of source edges represented by the segment ranges. */
-  readonly edgeCount: number;
-  /** Owned edge-to-segment range table. */
-  readonly edgeStarts: Uint32Array;
-  /** Unsigned word view for ids and packed parameter ranges. */
-  readonly u32: Uint32Array;
-  /** Float word view for endpoint coordinates. */
-  readonly f32: Float32Array;
-  /** Segment-record start offset, in 32-bit words. */
-  readonly recordsOffset: number;
-}
-
 /** Static topology and coord-space acceleration data used by exact picking. */
 interface Scene {
   /** Number of vertices in `coords`. */
@@ -160,8 +154,8 @@ interface Scene {
   readonly segmentCount: number;
   /** Interleaved topology coordinates as x/y pairs. */
   readonly coords: Float32Array;
-  /** Encoded segment views. */
-  readonly seg: SegmentViews;
+  /** Validated segment views shared with the renderer's prepared scene. */
+  readonly seg: DecodedSegments;
   /** Topology coordinate bounds. */
   readonly bounds: Bounds;
   /** Diagonal extent used as the full-scene query radius. */
@@ -205,43 +199,37 @@ export class Picker {
   /**
    * Build static picking indices without replacing the active scene.
    *
-   * This is the fallible half of picker scene replacement; callers commit the
-   * returned candidate only after other scene resources are ready.
+   * This is the fallible half of scene replacement; callers commit the result
+   * only once every other scene resource is ready.
    */
   prepareScene(scene: PreparedScene): Scene {
     const { info, coords, segments } = scene;
-    const seg: SegmentViews = {
-      edgeCount: segments.info.edgeCount,
-      edgeStarts: segments.edgeStarts,
-      u32: segments.u32,
-      f32: segments.f32,
-      recordsOffset: segments.recordsOffset,
-    };
-    const bounds = info.bounds;
-    const wrapX = isGeoBounds(info.bounds) ? 360 : 0;
+    const { bounds, vertexCount } = info;
+    const { segmentCount } = segments.info;
+    const wrapX = isGeoBounds(bounds) ? 360 : 0;
     return {
-      vertexCount: info.vertexCount,
-      segmentCount: segments.info.segmentCount,
+      vertexCount,
+      segmentCount,
       coords,
-      seg,
+      seg: segments,
       bounds,
       extent: Math.hypot(bounds.xMax - bounds.xMin, bounds.yMax - bounds.yMin) || 1,
       wrapX,
-      vertexGrid: Grid.points(coords, info.vertexCount, bounds),
+      vertexGrid: Grid.points(coords, vertexCount, bounds),
       segmentGrid: Grid.segments(
-        seg.f32,
-        seg.recordsOffset,
+        segments.f32,
+        segments.recordsOffset,
         SEGMENT_RECORD_WORDS,
         4,
         6,
-        segments.info.segmentCount,
+        segmentCount,
         bounds,
         wrapX,
       ),
     };
   }
 
-  /** Commit a prepared picker scene through a non-throwing assignment. */
+  /** Replace (or clear) the active scene; never throws. */
   commitScene(scene: Scene | null): void {
     this.scene = scene;
   }
@@ -310,7 +298,7 @@ export class Picker {
         : null;
     }
 
-    if (kind !== 'edge' || id >= scene.seg.edgeCount) return null;
+    if (kind !== 'edge' || id >= scene.seg.info.edgeCount) return null;
     const { edgeStarts, f32, u32, recordsOffset } = scene.seg;
     const start = edgeStarts[id]!;
     const end = edgeStarts[id + 1]!;
@@ -395,15 +383,13 @@ export class Picker {
     const region = this.queryRegion(q, scene, mode);
     if (!region) return miss;
 
+    const itemFlags = this.u32[W_ITEM_FLAGS]!;
     const heights = this.u32[W_V_HEIGHT_MODE] !== 0 ? this.deps.values('vertexHeight') : null;
     const sizes = this.u32[W_V_SIZE_MODE] !== 0 ? this.deps.values('vertexSize') : null;
     const dashes = this.f32[W_DASH_PERIOD]! > 0 ? this.deps.values('edgeDash') : null;
     const vertexVisible =
-      (this.u32[W_ITEM_FLAGS]! & ITEM_VERTEX_VISIBLE) !== 0
-        ? this.deps.values('vertexVisible')
-        : null;
-    const edgeVisible =
-      (this.u32[W_ITEM_FLAGS]! & ITEM_EDGE_VISIBLE) !== 0 ? this.deps.values('edgeVisible') : null;
+      itemFlags & ITEM_VERTEX_VISIBLE ? this.deps.values('vertexVisible') : null;
+    const edgeVisible = itemFlags & ITEM_EDGE_VISIBLE ? this.deps.values('edgeVisible') : null;
     const poles = q.poles && heights !== null && (mode === 'globe' || this.f32[W_PLANE_MIX]! > 0);
 
     const state: TestState = {

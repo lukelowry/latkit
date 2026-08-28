@@ -30,9 +30,20 @@ export type ChannelScope = ChannelDefinition['scope'];
 /** Shader interpretation for a packed channel stream. */
 export type ChannelMap = ChannelDefinition['map'];
 
-/** Whether a channel map consumes an input domain and normalization scalars. */
-export function channelNormalizes(map: ChannelMap): boolean {
-  return map === 'colormap' || map === 'height' || map === 'size';
+/** Channel definitions whose values pass through an input domain and normalization scalars. */
+export type NormalizedChannelDefinition = Extract<
+  ChannelDefinition,
+  { readonly map: 'colormap' | 'height' | 'size' }
+>;
+
+/** Channels whose values pass through an input domain and normalization scalars. */
+export type NormalizedChannel = NormalizedChannelDefinition['key'];
+
+/** Whether a channel consumes an input domain; `dash` and `visible` are raw. */
+export function channelNormalizes(
+  definition: ChannelDefinition,
+): definition is NormalizedChannelDefinition {
+  return definition.map !== 'dash' && definition.map !== 'visible';
 }
 
 /** Storage slot assigned to one packed channel in the shared channel buffer. */
@@ -168,20 +179,23 @@ export function createChannels(
     const def = channelDef(channel);
     const isNew = !bound.has(channel);
     const nextOutput = def.map === 'height' ? checkedRange(range ?? [0, 1], 'height range') : null;
-    const owned = values.slice();
-    const nextDomain = channelNormalizes(def.map) ? resolveDomain(def, owned, domain) : null;
+    const nextDomain = channelNormalizes(def) ? resolveDomain(def, values, domain) : null;
+    // The GPU upload copies synchronously, so the caller's array feeds it
+    // directly; the CPU snapshot is refreshed only once the upload succeeded.
     if (isNew) {
       const nextCurrent = new Map(current);
-      nextCurrent.set(channel, owned);
+      nextCurrent.set(channel, values);
       const nextBound = new Set(bound);
       nextBound.add(channel);
       const slots = renderer.relayout(nextBound, deps.vertexCount(), deps.edgeCount(), nextCurrent);
       writeOffsets(nextBound, slots);
-      current.set(channel, owned);
+      // Own a snapshot so later caller mutation cannot alter bound state.
+      current.set(channel, values.slice());
       bound.add(channel);
     } else {
-      renderer.writeChannel(channel, owned);
-      current.set(channel, owned);
+      renderer.writeChannel(channel, values);
+      // Re-binds refresh the snapshot in place so animated updates never allocate.
+      current.get(channel)!.set(values);
     }
     if (nextDomain) data.set(channel, nextDomain);
     if (nextOutput) output.set(channel, nextOutput);
@@ -222,7 +236,7 @@ export function createChannels(
   }
 
   function setRange(channel: Channel, range: ChannelRange | null): void {
-    if (!channelNormalizes(channelDef(channel).map)) return;
+    if (!channelNormalizes(channelDef(channel))) return;
     const previous = domainOverride.get(channel) ?? null;
     if (range) {
       const checked = checkedRange(range, `${channel} domain`);
@@ -309,9 +323,9 @@ export function createChannels(
 
   function writeScalars(channel: Channel): void {
     const def = channelDef(channel);
-    if (!channelNormalizes(def.map)) return;
+    if (!channelNormalizes(def)) return;
     if (!bound.has(channel)) {
-      writeNeutralScalars(channel);
+      writeNeutralScalars(def.key);
       return;
     }
     const [lo, hi] = effectiveRange(data.get(channel), domainOverride.get(channel));
@@ -342,18 +356,13 @@ export function createChannels(
         uniforms.channel.vSizeScale = scale;
         break;
       }
-      /* v8 ignore start -- channelNormalizes returns before raw maps reach this switch. */
-      case 'dash':
-      case 'visible':
-        break;
-      /* v8 ignore stop */
       default:
         /* v8 ignore next -- compile-time exhaustive channel map guard. */
         def satisfies never;
     }
   }
 
-  function writeNeutralScalars(channel: Channel): void {
+  function writeNeutralScalars(channel: NormalizedChannel): void {
     switch (channel) {
       case 'vertexColor':
         uniforms.channel.vColorMin = 0;
@@ -373,12 +382,6 @@ export function createChannels(
         uniforms.channel.vSizeMin = 0;
         uniforms.channel.vSizeScale = 0;
         break;
-      /* v8 ignore start -- raw channels return before neutral scalars are needed. */
-      case 'edgeDash':
-      case 'vertexVisible':
-      case 'edgeVisible':
-        break;
-      /* v8 ignore stop */
       default:
         /* v8 ignore next -- compile-time exhaustive Channel guard. */
         channel satisfies never;

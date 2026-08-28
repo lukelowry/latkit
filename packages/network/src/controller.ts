@@ -13,7 +13,7 @@ import { ProjectionRig } from './camera/rig.js';
 import { attachPointer, MOUSE_PICK_RADIUS_PX, type HoverProbe } from './input/pointer.js';
 import { createSurface } from './input/surface.js';
 import { MAX_ZOOM_RATIO, type Viewport } from './camera/projection.js';
-import { CHANNEL_DEFINITIONS, createChannels, type Channel } from './channels.js';
+import { createChannels, type Channel } from './channels.js';
 import type { ChannelRange } from './range.js';
 import { RenderLoop } from './webgpu/render-loop.js';
 import {
@@ -25,7 +25,7 @@ import {
 import type { Borders } from './borders.js';
 import { createEmitter } from './emitter.js';
 import { edgeCountOf } from './topology/pack.js';
-import { Picker, type PickQuery, type PickResult } from './pick/picker.js';
+import { Picker, isPickChannel, type PickQuery, type PickResult } from './pick/picker.js';
 import {
   DEFAULT_OPTIONS,
   OPTION_DEFINITIONS,
@@ -33,6 +33,7 @@ import {
   validateOptions,
   type Options,
   type ResolvedOptions,
+  type RuntimeOption,
 } from './options.js';
 import { boundsForItems, expandDegenerateBounds } from './topology/subset-bounds.js';
 
@@ -323,16 +324,41 @@ const FADE_IN_MS = 150;
 /** Wake cadence for globe daylight updates while the globe is visible. */
 const SUN_REFRESH_MS = 30_000;
 
-/** Deliver latched event arguments to a late subscriber with emitter-equivalent error isolation. */
-function replay<Args extends unknown[]>(handler: (...args: Args) => void, args: Args): void {
-  try {
-    handler(...args);
-  } catch (error) {
-    queueMicrotask(() => {
-      throw error;
-    });
-  }
-}
+/** Runtime options mirrored one-to-one into controller display state. */
+const DISPLAY_OPTIONS = [
+  'daylight',
+  'graticule',
+  'borders',
+  'vertices',
+  'edges',
+  'poles',
+  'vertexScale',
+  'edgeScale',
+  'heightScale',
+  'vertexLodPx',
+  'dashPeriodPx',
+  'earthAxis',
+  'nightFloor',
+  'surfaceNightFloor',
+  'terminatorWidth',
+] as const satisfies readonly RuntimeOption[];
+
+type DisplayOption = (typeof DISPLAY_OPTIONS)[number];
+
+/** Mutable display state; every key is a resolved runtime option. */
+type DisplayState = { -readonly [Key in DisplayOption]: ResolvedOptions[Key] };
+
+/** Display options whose change moves, resizes, or hides pickable geometry. */
+const PICK_GEOMETRY_OPTIONS: ReadonlySet<DisplayOption> = new Set<DisplayOption>([
+  'vertices',
+  'edges',
+  'poles',
+  'vertexScale',
+  'edgeScale',
+  'heightScale',
+  'vertexLodPx',
+  'dashPeriodPx',
+]);
 
 /** Number of entries in the renderer's one-dimensional colormap texture. */
 const COLORMAP_LUT_SIZE = 256;
@@ -437,6 +463,17 @@ function forwardDeviceLoss(
   };
 }
 
+/** Deliver latched event arguments to a late subscriber with emitter-equivalent error isolation. */
+function replay<Args extends unknown[]>(handler: (...args: Args) => void, args: Args): void {
+  try {
+    handler(...args);
+  } catch (error) {
+    queueMicrotask(() => {
+      throw error;
+    });
+  }
+}
+
 /** Creates the controller after the Promise boundary has established transactional cleanup. */
 function createNetworkController(
   device: GPUDevice,
@@ -527,23 +564,9 @@ function createNetworkController(
   lifecycle.add(() => document.removeEventListener('visibilitychange', onVisibilityChange));
 
   /** Mutable display state mirrored into uniforms and renderer visibility. */
-  const display = {
-    daylight: DEFAULT_OPTIONS.daylight,
-    graticule: DEFAULT_OPTIONS.graticule,
-    borders: DEFAULT_OPTIONS.borders,
-    vertices: DEFAULT_OPTIONS.vertices,
-    edges: DEFAULT_OPTIONS.edges,
-    poles: DEFAULT_OPTIONS.poles,
-    vertexScale: DEFAULT_OPTIONS.vertexScale,
-    edgeScale: DEFAULT_OPTIONS.edgeScale,
-    heightScale: DEFAULT_OPTIONS.heightScale,
-    vertexLodPx: DEFAULT_OPTIONS.vertexLodPx,
-    dashPeriodPx: DEFAULT_OPTIONS.dashPeriodPx,
-    earthAxis: DEFAULT_OPTIONS.earthAxis,
-    nightFloor: DEFAULT_OPTIONS.nightFloor,
-    surfaceNightFloor: DEFAULT_OPTIONS.surfaceNightFloor,
-    terminatorWidth: DEFAULT_OPTIONS.terminatorWidth,
-  };
+  const display = Object.fromEntries(
+    DISPLAY_OPTIONS.map((key) => [key, DEFAULT_OPTIONS[key]]),
+  ) as DisplayState;
 
   let focusStyle: FocusStyle = {
     enabled: DEFAULT_OPTIONS.focusEnabled,
@@ -707,13 +730,9 @@ function createNetworkController(
         cycleSelection(picker.pickAll(pickQueryAt(intent.sx, intent.sy, intent.targetPx)));
         break;
       case 'doubleTap':
-        if (!topology) break;
-        {
-          const bounds = topologyBounds;
-          if (!bounds) break;
-          loop.cancelPlacement();
-          rig.camera.fitView(bounds, intent.vp);
-        }
+        if (!topology || !topologyBounds) break;
+        loop.cancelPlacement();
+        rig.camera.fitView(topologyBounds, intent.vp);
         loop.wake();
         break;
       case 'hover':
@@ -857,19 +876,19 @@ function createNetworkController(
 
     setChannel(channel, values, domain, range) {
       channels.set(channel, values, domain, range);
-      if (channelAffectsPicking(channel)) hoverDirty = true;
+      if (isPickChannel(channel)) hoverDirty = true;
       repaint();
     },
 
     clearChannel(channel) {
       channels.clear(channel);
-      if (channelAffectsPicking(channel)) hoverDirty = true;
+      if (isPickChannel(channel)) hoverDirty = true;
       repaint();
     },
 
     setChannelRange(channel, range) {
       channels.setRange(channel, range);
-      if (channelAffectsPicking(channel)) hoverDirty = true;
+      if (isPickChannel(channel)) hoverDirty = true;
       repaint();
     },
 
@@ -904,19 +923,17 @@ function createNetworkController(
 
       if (typeof itemsOrAnimate === 'boolean') {
         const view = vp();
-        const fullBounds = topologyBounds;
-        if (itemsOrAnimate && view.w > 0 && view.h > 0 && fullBounds) {
+        if (itemsOrAnimate && view.w > 0 && view.h > 0 && topologyBounds) {
           loop.cancelPlacement();
-          rig.camera.fitView(fullBounds, view);
+          rig.camera.fitView(topologyBounds, view);
         } else {
           loop.requestFit();
         }
       } else {
-        const fullBounds = topologyBounds;
-        if (!fullBounds) return;
+        if (!topologyBounds) return;
         const { view, hasViewport, bounds } = resolveItemBounds(itemsOrAnimate);
         if (!bounds) return;
-        const framed = expandDegenerateBounds(bounds, fullBounds, MAX_ZOOM_RATIO);
+        const framed = expandDegenerateBounds(bounds, topologyBounds, MAX_ZOOM_RATIO);
         if (!hasViewport || !rig.camera.moveTo(framed, view, animate)) {
           loop.requestFit();
           loop.requestMove(framed, animate);
@@ -1105,38 +1122,19 @@ function createNetworkController(
       opts.colormap && (!initial || opts.colormap !== DEFAULT_OPTIONS.colormap)
         ? sampleColormap(opts.colormap)
         : null;
-    const pickGeometryChanged =
-      (opts.vertices !== undefined && opts.vertices !== display.vertices) ||
-      (opts.edges !== undefined && opts.edges !== display.edges) ||
-      (opts.poles !== undefined && opts.poles !== display.poles) ||
-      (opts.vertexScale !== undefined && opts.vertexScale !== display.vertexScale) ||
-      (opts.edgeScale !== undefined && opts.edgeScale !== display.edgeScale) ||
-      (opts.heightScale !== undefined && opts.heightScale !== display.heightScale) ||
-      (opts.vertexLodPx !== undefined && opts.vertexLodPx !== display.vertexLodPx) ||
-      (opts.dashPeriodPx !== undefined && opts.dashPeriodPx !== display.dashPeriodPx);
     if (colormapLut) renderer.writeColormap(colormapLut);
     if (opts.baseColor) applyBaseColor(opts.baseColor);
     if (opts.graticuleColor) uniforms.gridColor.set(opts.graticuleColor);
     if (opts.surfaceColor) uniforms.surfaceColor.set(opts.surfaceColor);
     if (opts.borderColor) uniforms.borderColor.set(opts.borderColor);
-    if (opts.graticule !== undefined) display.graticule = opts.graticule;
-    if (opts.borders !== undefined) display.borders = opts.borders;
-    if (opts.vertices !== undefined) display.vertices = opts.vertices;
-    if (opts.edges !== undefined) display.edges = opts.edges;
-    if (opts.poles !== undefined) display.poles = opts.poles;
-    if (opts.vertexScale !== undefined) display.vertexScale = opts.vertexScale;
-    if (opts.edgeScale !== undefined) display.edgeScale = opts.edgeScale;
-    if (opts.heightScale !== undefined) display.heightScale = opts.heightScale;
-    if (opts.vertexLodPx !== undefined) display.vertexLodPx = opts.vertexLodPx;
-    if (opts.dashPeriodPx !== undefined) {
-      display.dashPeriodPx = opts.dashPeriodPx;
-      channels.refreshDashPeriod();
+    let pickGeometryChanged = false;
+    for (const key of DISPLAY_OPTIONS) {
+      const value = opts[key];
+      if (value === undefined || value === display[key]) continue;
+      (display as Record<DisplayOption, boolean | number>)[key] = value;
+      if (PICK_GEOMETRY_OPTIONS.has(key)) pickGeometryChanged = true;
     }
-    if (opts.earthAxis !== undefined) display.earthAxis = opts.earthAxis;
-    if (opts.daylight !== undefined) display.daylight = opts.daylight;
-    if (opts.nightFloor !== undefined) display.nightFloor = opts.nightFloor;
-    if (opts.surfaceNightFloor !== undefined) display.surfaceNightFloor = opts.surfaceNightFloor;
-    if (opts.terminatorWidth !== undefined) display.terminatorWidth = opts.terminatorWidth;
+    if (opts.dashPeriodPx !== undefined) channels.refreshDashPeriod();
     applyFocusOptions(opts);
     renderer.setVisible({
       vertices: display.vertices,
@@ -1198,12 +1196,11 @@ function createNetworkController(
 
   /** Updates projection-specific height amplitude from current viewport state. */
   function updateHeightWorldScale(frameVp: Viewport): void {
-    const fullBounds = topologyBounds;
-    if (!topology || !fullBounds) return;
+    if (!topology || !topologyBounds) return;
     const scale =
       rig.mode === 'globe'
         ? VISUAL.globeHeightRadialScale
-        : planeHeightWorldScale(fullBounds, frameVp, vertexSize * display.vertexScale);
+        : planeHeightWorldScale(topologyBounds, frameVp, vertexSize * display.vertexScale);
     uniforms.geometry.heightWorldScale = scale * display.heightScale;
   }
 
@@ -1226,11 +1223,6 @@ function createNetworkController(
       availability[mode] = PROJECTIONS[mode].canUse(bounds, characteristicLength);
     }
     return Object.freeze(availability);
-  }
-
-  /** Channels whose values alter projected hit geometry rather than color only. */
-  function channelAffectsPicking(channel: Channel): boolean {
-    return CHANNEL_DEFINITIONS.find((definition) => definition.key === channel)!.map !== 'colormap';
   }
 
   /** Applies hover focus and stages a notification only when focus state changes. */
