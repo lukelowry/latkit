@@ -2,6 +2,7 @@ import type { Colormap } from '@latkit/colormaps';
 import { GpuUnavailableError } from '@latkit/gpu';
 import {
   PROJECTION_MODES,
+  channelNormalizes,
   createNetwork,
   validateBorders,
   validateOption,
@@ -11,6 +12,7 @@ import {
   type Item,
   type Network,
   type Options,
+  type PipelineMode,
   type ProjectionMode,
   type RGBA,
   type RevealOptions,
@@ -46,7 +48,6 @@ import { createChrome, type Chrome } from './view/chrome.js';
 import { fieldsFor } from './view/fields.js';
 import { createShell, type Shell } from './view/shell.js';
 import {
-  isNormalizedChannel,
   resolveOptionState,
   resolveView,
   validateDirectChannelLengths,
@@ -82,6 +83,12 @@ export interface NetworkDeviceLostEventDetail {
   readonly recovering: boolean;
 }
 
+/** Failure payload carried by the Network `pipelineError` DOM event. */
+export interface NetworkPipelineErrorEventDetail {
+  readonly pipeline: PipelineMode;
+  readonly cause: unknown;
+}
+
 /** Public DOM events emitted by {@link NetworkElement}. */
 export interface NetworkElementEventMap {
   load: Event;
@@ -90,6 +97,7 @@ export interface NetworkElementEventMap {
   select: CustomEvent<NetworkItemEventDetail>;
   zoom: CustomEvent<NetworkZoomEventDetail>;
   deviceLost: CustomEvent<NetworkDeviceLostEventDetail>;
+  pipelineError: CustomEvent<NetworkPipelineErrorEventDetail>;
 }
 
 /** Public declarative Network element surface; construction remains owned by {@link register}. */
@@ -108,6 +116,7 @@ type ForwardedNetworkApi = Pick<
   | 'select'
   | 'clearSelection'
   | 'panBy'
+  | 'rotateBy'
   | 'zoomBy'
   | 'fadeIn'
   | 'pause'
@@ -354,9 +363,10 @@ export function createNetworkElementClass(
       range?: ChannelRange,
     ): void {
       const definition = channelAttribute(channel);
+      const normalizes = channelNormalizes(definition);
       assertFloat32Array(values, `${channel} values`);
       const checkedDomain =
-        definition.map === 'dash' || domain === undefined
+        !normalizes || domain === undefined
           ? undefined
           : domain === null
             ? null
@@ -373,9 +383,7 @@ export function createNetworkElementClass(
         if (definition.rangeAttribute) this.removeAttribute(definition.rangeAttribute);
         this.#input.directChannels[channel] = {
           values,
-          ...(definition.map === 'dash' || checkedDomain === undefined
-            ? {}
-            : { baseDomain: checkedDomain }),
+          ...(normalizes && checkedDomain !== undefined ? { baseDomain: checkedDomain } : {}),
           ...(definition.map === 'height' && checkedOutput ? { outputRange: checkedOutput } : {}),
         };
         this.#requestViewUpdate();
@@ -395,7 +403,7 @@ export function createNetworkElementClass(
 
     setChannelRange(channel: Channel, range: ChannelRange | null): void {
       const definition = channelAttribute(channel);
-      if (!isNormalizedChannel(channel) || !definition.domainAttribute) return;
+      if (!channelNormalizes(definition) || !definition.domainAttribute) return;
       if (range === null) this.removeAttribute(definition.domainAttribute);
       else this.setAttribute(definition.domainAttribute, serializeRange(range, `${channel} range`));
     }
@@ -445,6 +453,10 @@ export function createNetworkElementClass(
 
     panBy(dx: number, dy: number): void {
       this.#liveNetwork()?.panBy(dx, dy);
+    }
+
+    rotateBy(dx: number, dy: number): void {
+      this.#liveNetwork()?.rotateBy(dx, dy);
     }
 
     zoomBy(factor: number): void {
@@ -610,6 +622,12 @@ export function createNetworkElementClass(
       run.own(
         network.on('deviceLost', (reason, message) => {
           this.#onDeviceLost(run, reason, message);
+        }),
+      );
+      run.own(
+        network.on('pipelineError', (pipeline, cause) => {
+          if (!this.#isCurrent(run)) return;
+          this.#dispatchDetailEvent('pipelineError', { pipeline, cause });
         }),
       );
     }

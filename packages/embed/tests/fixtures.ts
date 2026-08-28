@@ -76,6 +76,7 @@ export interface FakeNetwork {
   readonly select: ReturnType<typeof vi.fn>;
   readonly clearSelection: ReturnType<typeof vi.fn>;
   readonly panBy: ReturnType<typeof vi.fn>;
+  readonly rotateBy: ReturnType<typeof vi.fn>;
   readonly zoomBy: ReturnType<typeof vi.fn>;
   emit<Key extends keyof Events>(event: Key, ...args: Parameters<Events[Key]>): void;
 }
@@ -109,6 +110,7 @@ export function fakeNetwork(
   const select = vi.fn();
   const clearSelection = vi.fn();
   const panBy = vi.fn();
+  const rotateBy = vi.fn();
   const zoomBy = vi.fn();
   return {
     value: {
@@ -132,6 +134,7 @@ export function fakeNetwork(
       select,
       clearSelection,
       panBy,
+      rotateBy,
       zoomBy,
     } as unknown as Network,
     on,
@@ -153,6 +156,7 @@ export function fakeNetwork(
     select,
     clearSelection,
     panBy,
+    rotateBy,
     zoomBy,
     emit(event, ...args) {
       for (const handler of [...(listeners.get(event) ?? [])]) handler(...args);

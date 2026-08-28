@@ -368,6 +368,11 @@ describe('NetworkElement', () => {
     h.element.setOptions({
       msaa: 4,
       edges: false,
+      vertexScale: 1.25,
+      edgeScale: 0.75,
+      heightScale: 1.5,
+      vertexLodPx: 3,
+      dashPeriodPx: 16,
       nightFloor: 0.25,
       baseColor: [0.1, 0.2, 0.3, 1],
       colormap: customColormap,
@@ -379,6 +384,11 @@ describe('NetworkElement', () => {
 
     expect(h.element.getAttribute('msaa')).toBe('4');
     expect(h.element.getAttribute('edges')).toBe('false');
+    expect(h.element.getAttribute('vertex-scale')).toBe('1.25');
+    expect(h.element.getAttribute('edge-scale')).toBe('0.75');
+    expect(h.element.getAttribute('height-scale')).toBe('1.5');
+    expect(h.element.getAttribute('vertex-lod-px')).toBe('3');
+    expect(h.element.getAttribute('dash-period-px')).toBe('16');
     expect(h.element.getAttribute('base-color')).toBe('0.1 0.2 0.3 1');
     expect(h.element.getAttribute('vertex-height')).toBe('');
     expect(h.element.getAttribute('vertex-height-domain')).toBe('2 8');
@@ -394,6 +404,11 @@ describe('NetworkElement', () => {
       expect.objectContaining({
         msaa: 4,
         edges: false,
+        vertexScale: 1.25,
+        edgeScale: 0.75,
+        heightScale: 1.5,
+        vertexLodPx: 3,
+        dashPeriodPx: 16,
         nightFloor: 0.25,
         baseColor: [0.1, 0.2, 0.3, 1],
       }),
@@ -433,7 +448,7 @@ describe('NetworkElement', () => {
     expect(h.element.hasAttribute('vertex-color-domain')).toBe(false);
   });
 
-  it('ignores channel ranges that Network ignores', async () => {
+  it('ignores channel range arguments that Network ignores', async () => {
     const h = harness();
     document.body.append(h.element);
     h.near(true);
@@ -441,14 +456,35 @@ describe('NetworkElement', () => {
     const network = h.networks[0]!;
     const vertexValues = new Float32Array([1, 2, 3]);
     const edgeValues = new Float32Array([1, 0, 1]);
+    const invalidRange = [Number.NaN, Number.NEGATIVE_INFINITY] as const;
 
     expect(() =>
       h.element.setChannel('vertexColor', vertexValues, undefined, [2, 1]),
     ).not.toThrow();
     expect(network.setChannel).toHaveBeenLastCalledWith('vertexColor', vertexValues, undefined);
 
-    expect(() => h.element.setChannel('edgeDash', edgeValues, [2, 1], [2, 1])).not.toThrow();
+    expect(() =>
+      h.element.setChannel('edgeDash', edgeValues, invalidRange, invalidRange),
+    ).not.toThrow();
     expect(network.setChannel).toHaveBeenLastCalledWith('edgeDash', edgeValues);
+
+    network.setChannelRange.mockClear();
+
+    expect(() =>
+      h.element.setChannel('vertexVisible', vertexValues, invalidRange, invalidRange),
+    ).not.toThrow();
+    expect(network.setChannel).toHaveBeenLastCalledWith('vertexVisible', vertexValues);
+    expect(h.element.getAttribute('vertex-visible-domain')).toBeNull();
+
+    expect(() =>
+      h.element.setChannel('edgeVisible', edgeValues, invalidRange, invalidRange),
+    ).not.toThrow();
+    expect(network.setChannel).toHaveBeenLastCalledWith('edgeVisible', edgeValues);
+    expect(h.element.getAttribute('edge-visible-domain')).toBeNull();
+
+    expect(() => h.element.setChannelRange('vertexVisible', invalidRange)).not.toThrow();
+    expect(() => h.element.setChannelRange('edgeVisible', invalidRange)).not.toThrow();
+    expect(network.setChannelRange).not.toHaveBeenCalled();
   });
 
   it('keeps direct values across range changes and replaces them on same-value field reassertion', async () => {
@@ -508,6 +544,7 @@ describe('NetworkElement', () => {
     h.element.fit(true);
     expect(h.element.reveal({ kind: 'vertex', index: 1 })).toBe(false);
     h.element.panBy(1, 2);
+    h.element.rotateBy(3, 4);
     h.element.zoomBy(1.5);
     h.element.fadeIn(300);
     h.element.select('vertex', 1);
@@ -526,6 +563,7 @@ describe('NetworkElement', () => {
       true,
     );
     h.element.panBy(12, -8);
+    h.element.rotateBy(6, -2);
     h.element.zoomBy(1.25);
     h.element.fadeIn(240);
     h.element.select('vertex', 1);
@@ -538,6 +576,7 @@ describe('NetworkElement', () => {
       { paddingPx: 32, animate: true },
     );
     expect(network.panBy).toHaveBeenCalledWith(12, -8);
+    expect(network.rotateBy).toHaveBeenCalledWith(6, -2);
     expect(network.zoomBy).toHaveBeenCalledWith(1.25);
     expect(network.fadeIn).toHaveBeenCalledWith(240);
     expect(network.select).toHaveBeenCalledWith('vertex', 1);
@@ -625,6 +664,21 @@ describe('NetworkElement', () => {
     h.networks[0]!.emit('deviceLost', 'destroyed', 'stale duplicate');
     expect(losses).toHaveLength(1);
     expect(h.networks).toHaveLength(2);
+  });
+
+  it('forwards asynchronous pipeline failures as a DOM event', async () => {
+    const h = harness();
+    const failures: CustomEvent[] = [];
+    h.element.addEventListener('pipelineError', (event) => failures.push(event));
+    document.body.append(h.element);
+    h.near(true);
+    await h.element.ready;
+
+    const cause = new Error('shader no good');
+    h.networks[0]!.emit('pipelineError', 'globe', cause);
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.detail).toEqual({ pipeline: 'globe', cause });
   });
 
   it('installs rejected current readiness after a post-live mutation failure', async () => {

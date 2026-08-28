@@ -4,9 +4,15 @@ import { createGlobeProjection } from '../src/camera/globe.js';
 import { createFlatProjection, createTiltProjection } from '../src/camera/plane.js';
 import type { Projection, Viewport } from '../src/camera/projection.js';
 import type { ProjectionMode } from '../src/projections.js';
-import { createUniforms, type Uniforms } from '../src/webgpu/uniforms.js';
+import {
+  createUniforms,
+  ITEM_EDGE_VISIBLE,
+  ITEM_VERTEX_VISIBLE,
+  type Uniforms,
+} from '../src/webgpu/uniforms.js';
 import { Picker, type PickQuery, type PickResult } from '../src/pick/picker.js';
 import { createPoint, mixPoint, projectorFor, MIN_CLIP_W } from '../src/pick/project.js';
+import { prepareScene } from '../src/scene.js';
 import { encodeSegments } from '../src/segments/index.js';
 import { SEGMENT_RECORD_WORDS, W as SEG_W } from '../src/segments/wire.js';
 import { encodeTopology, type Topology } from '../src/topology/index.js';
@@ -15,7 +21,7 @@ import { mulberry32 } from './fixtures/random.js';
 
 const VP: Viewport = { w: 800, h: 600 };
 
-type PickChannel = 'vertexHeight' | 'vertexSize' | 'edgeDash';
+type PickChannel = 'vertexHeight' | 'vertexSize' | 'edgeDash' | 'vertexVisible' | 'edgeVisible';
 
 interface Setup {
   readonly mode: ProjectionMode;
@@ -96,6 +102,7 @@ function makeSetup(
     proj.pack(state, uniforms.projection, VP);
     uniforms.frame.viewportX = VP.w * dpr;
     uniforms.frame.viewportY = VP.h * dpr;
+    uniforms.frame.backingScale = dpr;
   };
   pack();
   uniforms.geometry.vertexSize = 0.2;
@@ -110,7 +117,8 @@ function makeSetup(
   });
   const encoded = encodeTopology(topology);
   const segments = encodeSegments(topology);
-  picker.setScene(encoded, segments);
+  const scene = prepareScene(encoded, segments);
+  picker.commitScene(picker.prepareScene(scene));
 
   const projector = projectorFor(mode, uniforms);
   return {
@@ -173,6 +181,16 @@ function bindDash(s: Setup, raw: Float32Array): void {
   s.uniforms.geometry.dashPeriod = 12;
 }
 
+function bindVertexVisibility(s: Setup, raw: Float32Array): void {
+  s.values.set('vertexVisible', raw);
+  s.uniforms.channel.itemFlags |= ITEM_VERTEX_VISIBLE;
+}
+
+function bindEdgeVisibility(s: Setup, raw: Float32Array): void {
+  s.values.set('edgeVisible', raw);
+  s.uniforms.channel.itemFlags |= ITEM_EDGE_VISIBLE;
+}
+
 // ── Brute-force oracle ──────────────────────────────────────────
 // Independent reimplementation of the exact tests over every vertex and
 // segment — no grid, no query region. The picker must agree with it exactly;
@@ -193,6 +211,12 @@ function oraclePick(
   const heights = u.channel.vHeightMode !== 0 ? (s.values.get('vertexHeight') ?? null) : null;
   const sizes = u.channel.vSizeMode !== 0 ? (s.values.get('vertexSize') ?? null) : null;
   const dashes = u.geometry.dashPeriod > 0 ? (s.values.get('edgeDash') ?? null) : null;
+  const vertexVisible =
+    (u.channel.itemFlags & ITEM_VERTEX_VISIBLE) !== 0
+      ? (s.values.get('vertexVisible') ?? null)
+      : null;
+  const edgeVisible =
+    (u.channel.itemFlags & ITEM_EDGE_VISIBLE) !== 0 ? (s.values.get('edgeVisible') ?? null) : null;
   const poles = q.poles && heights !== null && s.mode !== 'flat';
 
   const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
@@ -247,6 +271,7 @@ function oraclePick(
     M = createPoint();
 
   for (let id = 0; id < s.topology.vertexCount; id++) {
+    if (vertexVisible && !(vertexVisible[id]! > 0)) continue;
     const x = coords[id * 2]!;
     const y = coords[id * 2 + 1]!;
     const h = normHeight(id);
@@ -255,7 +280,7 @@ function oraclePick(
       projector.project(A, x, y, h);
       if (projector.visible(A)) {
         const radius = projector.screenRadius(A) * sizeScale(id);
-        if (radius >= u.geometry.vertexLod) {
+        if (radius >= u.geometry.vertexLod * u.frame.backingScale) {
           projector.toScreen(A);
           const dx = cursorX - A.sx;
           const dy = cursorY - A.sy;
@@ -269,7 +294,7 @@ function oraclePick(
     if (poles && Math.abs(h) > 1e-6) {
       projector.project(A, x, y, 0);
       projector.project(B, x, y, h);
-      if (projector.visible(B)) {
+      if (A.cw > MIN_CLIP_W && B.cw > MIN_CLIP_W && projector.visible(B)) {
         projector.toScreen(A);
         projector.toScreen(B);
         const { d2 } = segD2(cursorX, cursorY, A.sx, A.sy, B.sx, B.sy);
@@ -295,6 +320,7 @@ function oraclePick(
     for (let id = 0; id < count; id++) {
       const base = records + id * SEGMENT_RECORD_WORDS;
       const edgeId = segU32[base]!;
+      if (edgeVisible && !(edgeVisible[edgeId]! > 0)) continue;
       const tPack = segU32[base + 3]!;
       const hFrom = normHeight(segU32[base + 1]!);
       const hTo = normHeight(segU32[base + 2]!);
@@ -325,7 +351,7 @@ function oraclePick(
       if (!projector.visible(M)) continue;
 
       if (u.geometry.dashPeriod > 0 && dashes && dashes[edgeId]! < 0.5) {
-        const phase = (t * Math.sqrt(len2)) / u.geometry.dashPeriod;
+        const phase = (t * Math.sqrt(len2)) / (u.geometry.dashPeriod * u.frame.backingScale);
         if (phase - Math.floor(phase) > 0.5) continue;
       }
 
@@ -369,6 +395,27 @@ describe('Picker behavior (flat)', () => {
     const v = s.screenAt(0, 0);
     expect(s.picker.pick(s.query(v.sx, v.sy, 6, { vertices: false }))?.[0]).toBe('edge');
     expect(s.picker.pick(s.query(v.sx, v.sy, 6, { vertices: false, edges: false }))).toBeNull();
+  });
+
+  it('matches raw visibility thresholds while locate remains geometry-only', () => {
+    const s = makeSetup('flat');
+    const center = s.screenAt(0, 0);
+    const vertexVisible = new Float32Array(25).fill(1);
+    vertexVisible[12] = Number.NaN;
+    bindVertexVisibility(s, vertexVisible);
+
+    expect(s.picker.pick(s.query(center.sx, center.sy))?.[0]).toBe('edge');
+    expect(s.picker.locate(['vertex', 12], VP)).not.toBeNull();
+
+    const midpoint = s.screenAt(1, 0);
+    const query = s.query(midpoint.sx, midpoint.sy, 1, { vertices: false });
+    const edge = s.picker.pick(query);
+    expect(edge?.[0]).toBe('edge');
+
+    const edgeVisible = new Float32Array(s.topology.edges.length / 2).fill(1);
+    edgeVisible[edge![1]] = 0;
+    bindEdgeVisibility(s, edgeVisible);
+    expect(s.picker.pick(query)).toBeNull();
   });
 
   it('drops vertices below the LOD floor while edges stay pickable', () => {
@@ -425,6 +472,47 @@ describe('Picker behavior (flat)', () => {
     expect(located?.[1]).toBeCloseTo(v.sy);
   });
 
+  it('keeps capped billboard extent and LOD in CSS pixels at high DPR', () => {
+    const s = makeSetup('flat', { dpr: 2 });
+    s.uniforms.geometry.vertexSize = 100;
+    const v = s.screenAt(0, 0);
+
+    expect(
+      s.picker.pick(
+        s.query(v.sx + VISUAL.maxVertexRadiusPx - 0.25, v.sy, 0, {
+          vertices: true,
+          edges: false,
+        }),
+      ),
+    ).toEqual(['vertex', 12]);
+    // A zero-radius query still owns the deliberate one-device-pixel target
+    // floor, which is 0.5 CSS px at DPR 2.
+    expect(
+      s.picker.pick(
+        s.query(v.sx + VISUAL.maxVertexRadiusPx + 0.25, v.sy, 0, {
+          vertices: true,
+          edges: false,
+        }),
+      ),
+    ).toEqual(['vertex', 12]);
+    expect(
+      s.picker.pick(
+        s.query(v.sx + VISUAL.maxVertexRadiusPx + 0.75, v.sy, 0, {
+          vertices: true,
+          edges: false,
+        }),
+      ),
+    ).toBeNull();
+
+    s.uniforms.geometry.vertexLod = VISUAL.maxVertexRadiusPx + 0.25;
+    expect(s.picker.pick(s.query(v.sx, v.sy, 0, { vertices: true, edges: false }))).toBeNull();
+    s.uniforms.geometry.vertexLod = VISUAL.maxVertexRadiusPx - 0.25;
+    expect(s.picker.pick(s.query(v.sx, v.sy, 0, { vertices: true, edges: false }))).toEqual([
+      'vertex',
+      12,
+    ]);
+  });
+
   it('locates a stable anchor on a multi-segment edge', () => {
     const s = makeSetup('flat');
     const edge = s.topology.edges.length / 2 - 1;
@@ -433,6 +521,25 @@ describe('Picker behavior (flat)', () => {
     expect(located).not.toBeNull();
     expect(Number.isFinite(located![0])).toBe(true);
     expect(Number.isFinite(located![1])).toBe(true);
+  });
+
+  it('does not replace the active picker scene before commit', () => {
+    const s = makeSetup('flat');
+    const center = s.screenAt(0, 0);
+    const query = s.query(center.sx, center.sy, 0, { edges: false });
+    const topology: Topology = {
+      vertexCount: 1,
+      vertexCoords: new Float32Array([100, 100]),
+      edges: new Uint32Array(0),
+      polylineStart: new Uint32Array([0]),
+    };
+    const scene = prepareScene(encodeTopology(topology), encodeSegments(topology));
+
+    const candidate = s.picker.prepareScene(scene);
+
+    expect(s.picker.pick(query)).toEqual(['vertex', 12]);
+    s.picker.commitScene(candidate);
+    expect(s.picker.pick(query)).toBeNull();
   });
 
   it('rejects invalid locate requests and unavailable scenes', () => {
@@ -445,13 +552,13 @@ describe('Picker behavior (flat)', () => {
     expect(s.picker.locate(['vertex', 1.5], VP)).toBeNull();
     expect(s.picker.locate(['vertex', 0], { w: 0, h: VP.h })).toBeNull();
 
-    s.picker.setScene(null, null);
+    s.picker.commitScene(null);
     expect(s.picker.locate(['vertex', 0], VP)).toBeNull();
   });
 
   it('returns nothing before a scene is bound or after it is cleared', () => {
     const s = makeSetup('flat');
-    s.picker.setScene(null, null);
+    s.picker.commitScene(null);
     expect(s.picker.pick(s.query(400, 300, 50))).toBeNull();
   });
 });
@@ -612,7 +719,7 @@ describe('Picker matches the brute-force oracle', () => {
       const topology = randomTopology(rand, mode === 'globe');
 
       for (const [poseIndex, mutate] of posesFor(mode, rand).entries()) {
-        const s = makeSetup(mode, { topology, mutate });
+        const s = makeSetup(mode, { topology, mutate, dpr: (poseIndex % 3) + 1 });
         s.pack();
 
         // Alternate channel bindings across poses.
@@ -630,6 +737,14 @@ describe('Picker matches the brute-force oracle', () => {
           const dashes = new Float32Array(topology.edges.length / 2);
           for (let i = 0; i < dashes.length; i++) dashes[i] = rand() < 0.5 ? 0 : 1;
           bindDash(s, dashes);
+        }
+        if (poseIndex % 5 === 4) {
+          const vertexVisible = new Float32Array(topology.vertexCount);
+          for (let i = 0; i < vertexVisible.length; i++) vertexVisible[i] = rand() < 0.3 ? 0 : 1;
+          bindVertexVisibility(s, vertexVisible);
+          const edgeVisible = new Float32Array(topology.edges.length / 2);
+          for (let i = 0; i < edgeVisible.length; i++) edgeVisible[i] = rand() < 0.3 ? 0 : 1;
+          bindEdgeVisibility(s, edgeVisible);
         }
 
         for (let c = 0; c < 12; c++) {

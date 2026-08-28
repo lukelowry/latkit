@@ -5,7 +5,7 @@ import {
   type ColormapName,
 } from '@latkit/colormaps';
 import { requestDevice } from '@latkit/gpu';
-import { createNetwork, type Network } from '@latkit/network';
+import { createNetwork, type Network, type ProjectionMode } from '@latkit/network';
 import { TOPOLOGIES, type GeneratedTopology, type TopologyOption } from './topologies.js';
 import './style.css';
 
@@ -82,7 +82,8 @@ async function main(): Promise<void> {
   net.fadeIn();
 
   wireTopologies(() => currentId, applyTopology);
-  wireProjections(net);
+  const setProjection = wireProjections(net);
+  const cameraDemo = wireCameraDemo(net, setProjection);
   wireToggles(net, (on) => {
     heightOn = on;
     applyChannels();
@@ -92,6 +93,7 @@ async function main(): Promise<void> {
 
   window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
+    cameraDemo.destroy();
     net.destroy();
     device.destroy();
   });
@@ -115,19 +117,80 @@ function wireTopologies(currentId: () => string, apply: (opt: TopologyOption) =>
   }
 }
 
-function wireProjections(net: Network): void {
-  const modes = ['flat', 'tilt', 'globe'] as const;
+function wireProjections(net: Network): (mode: ProjectionMode) => boolean {
+  const modes: readonly ProjectionMode[] = ['flat', 'tilt', 'globe'];
   const row = document.getElementById('projections') as HTMLElement;
+  const buttons = new Map<ProjectionMode, HTMLButtonElement>();
+
+  function select(mode: ProjectionMode): boolean {
+    if (!net.setProjection(mode)) return false;
+    setActive(row, buttons.get(mode)!);
+    return true;
+  }
 
   for (const mode of modes) {
     const btn = createButton(mode, mode === 'flat');
     btn.disabled = !net.projections[mode];
     btn.addEventListener('click', () => {
-      if (!net.setProjection(mode)) return;
-      setActive(row, btn);
+      select(mode);
     });
+    buttons.set(mode, btn);
     row.appendChild(btn);
   }
+
+  return select;
+}
+
+function wireCameraDemo(
+  net: Network,
+  setProjection: (mode: ProjectionMode) => boolean,
+): { destroy(): void } {
+  const row = document.getElementById('camera') as HTMLElement;
+  const projections = document.getElementById('projections') as HTMLElement;
+  const btn = createButton('auto rotate', false);
+  let frameId: number | null = null;
+  let previousTime = 0;
+
+  function stop(): void {
+    if (frameId === null) return;
+    cancelAnimationFrame(frameId);
+    frameId = null;
+    previousTime = 0;
+    setPressed(btn, false);
+  }
+
+  function frame(time: number): void {
+    if (frameId === null) return;
+    if (previousTime !== 0) {
+      const elapsed = Math.min(time - previousTime, 50);
+      net.rotateBy(elapsed * 0.02, 0);
+    }
+    previousTime = time;
+    frameId = requestAnimationFrame(frame);
+  }
+
+  btn.addEventListener('click', () => {
+    if (frameId !== null) {
+      stop();
+      return;
+    }
+    if (!setProjection('tilt')) return;
+    setPressed(btn, true);
+    frameId = requestAnimationFrame(frame);
+  });
+  stage.addEventListener('pointerdown', stop);
+  stage.addEventListener('wheel', stop, { passive: true });
+  projections.addEventListener('click', stop);
+  row.appendChild(btn);
+
+  return {
+    destroy() {
+      stop();
+      stage.removeEventListener('pointerdown', stop);
+      stage.removeEventListener('wheel', stop);
+      projections.removeEventListener('click', stop);
+    },
+  };
 }
 
 function wireToggles(net: Network, setHeight: (on: boolean) => void): void {

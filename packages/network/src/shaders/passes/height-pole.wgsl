@@ -23,17 +23,22 @@ fn culled_pole(inst: u32) -> VOut {
 }
 
 fn vs_pole(quad: vec2f, inst: u32) -> VOut {
-  let pos = vertex_coord(inst);
-  let surface = vertex_surface_world(inst, pos);
-  let base = displace_world(surface, 0.0);
-
+  // Both culls read one channel word each; they run before any geometry load.
+  if (!vertex_visible(inst)) { return culled_pole(inst); }
   let h = vertex_norm_height(inst);
   if (abs(h) < 1e-6) {
     return culled_pole(inst);
   }
 
+  let pos = vertex_coord(inst);
+  let surface = vertex_surface_world(inst, pos);
+  let base = displace_world(surface, 0.0);
+
   let base_clip = project_overlay(base, 0.0);
   let tip_clip = project_overlay(displace_world(surface, h), h);
+  if (base_clip.w <= MIN_CLIP_W || tip_clip.w <= MIN_CLIP_W) {
+    return culled_pole(inst);
+  }
   let at_tip = quad.y > 0.0;
   let clip = select(base_clip, tip_clip, at_tip);
 

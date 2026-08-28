@@ -20,12 +20,7 @@ import {
   W_SELECTED_VERTEX,
   type Uniforms,
 } from './uniforms.js';
-import { readEncodedTopologyInfo, type EncodedTopology } from '../topology/index.js';
-import {
-  readEdgeSegmentStarts,
-  readEncodedSegmentsInfo,
-  type EncodedSegments,
-} from '../segments/index.js';
+import type { PreparedScene } from '../scene.js';
 import type { Borders } from '../borders.js';
 import { BorderBuffers } from './border-buffers.js';
 import { packBound, type Channel, type ChannelSlot } from '../channels.js';
@@ -117,6 +112,8 @@ export class Renderer {
   private readonly sampleCount: 1 | 4;
   /** Fires when an async projection pipeline build lands. */
   onProjectionPipelinesReady?: () => void;
+  /** Reports a failed async projection pipeline build. */
+  onProjectionPipelinesError?: (mode: PipelineMode, cause: unknown) => void;
 
   private readonly unitQuad: GPUBuffer;
   private readonly edgeStrip: GPUBuffer;
@@ -295,7 +292,9 @@ export class Renderer {
       },
       (error: unknown) => {
         this.buildingProjectionPipelines.delete(mode);
+        if (this.destroyed) return;
         this.failedProjectionPipelines.add(mode);
+        this.onProjectionPipelinesError?.(mode, error);
         // Projection pipeline validation failing is a build-time shader bug; keep the
         // session alive (render() keeps skipping) and surface the cause.
         console.error(`network: failed to build the ${mode} projection pipelines`, error);
@@ -340,20 +339,13 @@ export class Renderer {
     previous?.destroy();
   }
 
-  /** Validates, uploads, and binds an encoded topology plus its segment buffer. */
-  bindTopology(encoded: EncodedTopology, encodedSegments: EncodedSegments): void {
-    const info = readEncodedTopologyInfo(encoded);
-    const segmentInfo = readEncodedSegmentsInfo(encodedSegments);
-    if (segmentInfo.vertexCount !== info.vertexCount) {
-      throw new Error('network segment vertex count does not match topology');
-    }
-    if (segmentInfo.edgeCount !== info.edgeCount) {
-      throw new Error('network segment edge count does not match topology');
-    }
-    if (segmentInfo.fingerprint !== info.fingerprint) {
-      throw new Error('network segment fingerprint does not match topology');
-    }
-    const edgeSegStart = readEdgeSegmentStarts(encodedSegments);
+  /** Uploads and binds an already validated prepared scene. */
+  bindTopology(scene: PreparedScene): void {
+    const encoded = scene.topology;
+    const encodedSegments = scene.segments.encoded;
+    const info = scene.info;
+    const segmentInfo = scene.segments.info;
+    const edgeSegStart = scene.segments.edgeStarts;
 
     const topologyBytes = encoded.byteLength;
     const segmentBytes = encodedSegments.byteLength;
@@ -389,8 +381,8 @@ export class Renderer {
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
       // Bind the encoded segment blob directly, mirroring topology. The shader
-      // uses the record offset in the header; edgeStarts also stays available
-      // to CPU focus range code through readEdgeSegmentStarts().
+      // uses the record offset in the header; the prepared edgeStarts copy
+      // also stays available to CPU focus range code.
       this.presentation.device.queue.writeBuffer(segmentBuffer, 0, encodedSegments);
       const segmentsBindGroup = this.presentation.device.createBindGroup({
         label: 'network-segments-bind-group',

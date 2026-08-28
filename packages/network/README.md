@@ -39,6 +39,24 @@ network.fadeIn();
 physical lift continuously as the same planar camera tilts. Switching between
 `flat` and `tilt` reuses that camera and its WebGPU pipeline bundle.
 
+`vertexVisible` and `edgeVisible` are raw masks: values greater than zero are
+visible, while zero, negative values, and `NaN` are hidden. If a visibility
+channel is unbound, all items in that scope are visible.
+
+Geometry tuning is live and remains relative to topology-derived sizes:
+
+```ts
+network.setOptions({
+  vertexScale: 1.25, // vertex radius
+  edgeScale: 0.8, // edge half-width
+  heightScale: 1.5, // vertex-height displacement
+  vertexLodPx: 2, // CSS-pixel visibility threshold
+  dashPeriodPx: 12, // CSS-pixel edge-dash period; 0 renders solid
+});
+```
+
+All five options accept non-negative numbers; their defaults are `1`, `1`, `1`, `2`, and `12`.
+
 ## Selection and navigation
 
 `Item` is the renderer's stable vertex/edge identity. Selection changes only
@@ -59,6 +77,20 @@ An item already visible inside the reveal padding is left in place. Pass
 `{ center: true }` for an explicit centering command. Reveal retains scale, globe
 distance, tilt, and bearing; a newer camera command replaces any in-progress
 move.
+
+Navigation methods use relative screen-space input. Deltas are CSS pixels and
+zoom is multiplicative:
+
+```ts
+network.panBy(24, 0);
+network.zoomBy(1.2);
+
+network.setProjection('tilt');
+network.rotateBy(18, -8);
+```
+
+Rotation changes bearing and pitch in `tilt` and is a no-op in projections
+without rotation, including `flat` and `globe`.
 
 ## Shared view semantics
 

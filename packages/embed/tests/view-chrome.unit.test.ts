@@ -82,7 +82,7 @@ describe('semantic chrome', () => {
         button.getAttribute('aria-label'),
       ),
     ).toEqual(['Fit view', 'Zoom in', 'Zoom out']);
-    expect(h.shell.regions.channels.querySelectorAll('[part~="channel"]')).toHaveLength(5);
+    expect(h.shell.regions.channels.querySelectorAll('[part~="channel"]')).toHaveLength(7);
     expect(h.shell.regions.legends.querySelectorAll('[part~="legend"]')).toHaveLength(2);
     expect(h.shell.regions.live.getAttribute('aria-live')).toBe('polite');
     expect(h.host.shadowRoot?.querySelectorAll('[aria-live]')).toHaveLength(1);

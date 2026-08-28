@@ -4,7 +4,10 @@ import {
   FLAG_DAYLIGHT,
   FLAG_GRATICULE,
   hasGraticuleFlag,
+  ITEM_EDGE_VISIBLE,
+  ITEM_VERTEX_VISIBLE,
   UNIFORM_BUFFER_BYTES,
+  W_ITEM_FLAGS,
   W_PLANE_MIX,
 } from '../src/webgpu/uniforms.js';
 
@@ -153,6 +156,9 @@ describe('createUniforms', () => {
     u.channel.vSizeMode = 1;
     u.channel.vSizeMin = 0.3;
     u.channel.vSizeScale = 0.4;
+    u.channel.vVisibleOffset = 6000;
+    u.channel.eVisibleOffset = 7000;
+    u.channel.itemFlags = ITEM_VERTEX_VISIBLE | ITEM_EDGE_VISIBLE;
     expect(fview[50]).toBeCloseTo(1.5);
     expect(fview[51]).toBeCloseTo(0.25);
     expect(fview[66]).toBeCloseTo(-1);
@@ -162,6 +168,9 @@ describe('createUniforms', () => {
     expect(uview[54]).toBe(1);
     expect(fview[55]).toBeCloseTo(0.3);
     expect(fview[56]).toBeCloseTo(0.4);
+    expect(uview[97]).toBe(6000);
+    expect(uview[98]).toBe(7000);
+    expect(uview[W_ITEM_FLAGS]).toBe(ITEM_VERTEX_VISIBLE | ITEM_EDGE_VISIBLE);
   });
 
   it('base vertex color is a vec4 Float32Array view at byte 288', () => {
@@ -218,6 +227,9 @@ describe('createUniforms', () => {
     u.channel.vSizeMode = 1;
     u.channel.vSizeMin = 0.41;
     u.channel.vSizeScale = 0.42;
+    u.channel.vVisibleOffset = 12;
+    u.channel.eVisibleOffset = 13;
+    u.channel.itemFlags = ITEM_VERTEX_VISIBLE | ITEM_EDGE_VISIBLE;
 
     expect(u.projection.fovScale).toBeCloseTo(0.9);
     expect(u.projection.nightFloor).toBeCloseTo(0.2);
@@ -254,5 +266,8 @@ describe('createUniforms', () => {
     expect(u.channel.vSizeMode).toBe(1);
     expect(u.channel.vSizeMin).toBeCloseTo(0.41);
     expect(u.channel.vSizeScale).toBeCloseTo(0.42);
+    expect(u.channel.vVisibleOffset).toBe(12);
+    expect(u.channel.eVisibleOffset).toBe(13);
+    expect(u.channel.itemFlags).toBe(ITEM_VERTEX_VISIBLE | ITEM_EDGE_VISIBLE);
   });
 });

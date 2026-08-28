@@ -128,6 +128,12 @@ interface ChannelRegion {
   vSizeMin: number;
   /** Vertex size input-domain reciprocal scale. */
   vSizeScale: number;
+  /** Float-word offset for vertexVisible channel storage. */
+  vVisibleOffset: number;
+  /** Float-word offset for edgeVisible channel storage. */
+  eVisibleOffset: number;
+  /** Enabled raw item-channel flags shared with shaders and picking. */
+  itemFlags: number;
 }
 
 /** CPU-side view of the packed uniform buffer shared with WGSL. */
@@ -173,6 +179,10 @@ export const FLAG_FOCUS_ENABLED = 1;
 export const FLAG_FOCUS_SELECTED_ENDPOINTS = 2;
 /** Focus flag bit that includes hovered edge endpoints. */
 export const FLAG_FOCUS_HOVER_ENDPOINTS = 4;
+/** Item flag bit for an enabled vertexVisible channel. */
+export const ITEM_VERTEX_VISIBLE = 1;
+/** Item flag bit for an enabled edgeVisible channel. */
+export const ITEM_EDGE_VISIBLE = 2;
 
 /** Word offset for the start of the 4x4 view-projection matrix. */
 const W_VP_0 = 0;
@@ -207,7 +217,7 @@ export const W_VIEWPORT_Y = 29;
 /** Word offset for frame time. */
 const W_TIME = 30;
 /** Word offset for backing pixels per CSS pixel. */
-const W_BACKING_SCALE = 88;
+export const W_BACKING_SCALE = 88;
 /** Word offset for base vertex radius. */
 export const W_VERTEX_SIZE = 31;
 /** Word offset for vertex level-of-detail threshold. */
@@ -308,6 +318,12 @@ const W_PLANE_SIN_BEARING = 94;
 const W_PLANE_COS_BEARING = 95;
 /** Word offset for the planar projection blend. */
 export const W_PLANE_MIX = 96;
+/** Word offset for vertexVisible storage. */
+const W_V_VISIBLE_OFFSET = 97;
+/** Word offset for edgeVisible storage. */
+const W_E_VISIBLE_OFFSET = 98;
+/** Word offset for enabled raw item-channel flags. */
+export const W_ITEM_FLAGS = 99;
 
 /** Tests whether the graticule projection flag is enabled in a raw uniform view. */
 export function hasGraticuleFlag(u: Uint32Array): boolean {
@@ -675,6 +691,24 @@ export function createUniforms(): Uniforms {
     },
     set heightOutScale(v) {
       f[W_HEIGHT_OUT_SCALE] = v;
+    },
+    get vVisibleOffset() {
+      return u[W_V_VISIBLE_OFFSET];
+    },
+    set vVisibleOffset(v) {
+      u[W_V_VISIBLE_OFFSET] = v;
+    },
+    get eVisibleOffset() {
+      return u[W_E_VISIBLE_OFFSET];
+    },
+    set eVisibleOffset(v) {
+      u[W_E_VISIBLE_OFFSET] = v;
+    },
+    get itemFlags() {
+      return u[W_ITEM_FLAGS];
+    },
+    set itemFlags(v) {
+      u[W_ITEM_FLAGS] = v;
     },
   };
 

@@ -49,7 +49,10 @@ describe('view attribute registries', () => {
       CHANNEL_DEFINITIONS.map((definition) => ({
         ...definition,
         attribute: htmlName(definition.key),
-        domainAttribute: definition.map === 'dash' ? null : `${htmlName(definition.key)}-domain`,
+        domainAttribute:
+          definition.map === 'dash' || definition.map === 'visible'
+            ? null
+            : `${htmlName(definition.key)}-domain`,
         rangeAttribute: definition.map === 'height' ? `${htmlName(definition.key)}-range` : null,
       })),
     );
@@ -70,6 +73,8 @@ describe('view attribute registries', () => {
       'vertex-size',
       'edge-color',
       'edge-dash',
+      'vertex-visible',
+      'edge-visible',
       'vertex-color-legend',
       'edge-color-legend',
     ]);
@@ -94,6 +99,11 @@ describe('option attributes', () => {
   const validCases: ReadonlyArray<readonly [keyof Options, string, unknown, string]> = [
     ['vertices', '', true, 'true'],
     ['edges', 'false', false, 'false'],
+    ['vertexScale', '1.25', 1.25, '1.25'],
+    ['edgeScale', '0.75', 0.75, '0.75'],
+    ['heightScale', '1.5', 1.5, '1.5'],
+    ['vertexLodPx', '3', 3, '3'],
+    ['dashPeriodPx', '16', 16, '16'],
     ['nightFloor', '-1.25e-2', -0.0125, '-0.0125'],
     ['terminatorWidth', '2.5', 2.5, '2.5'],
     ['baseColor', '0 0.25 0.5 1', [0, 0.25, 0.5, 1], '0 0.25 0.5 1'],
@@ -113,6 +123,14 @@ describe('option attributes', () => {
       expect(warnings).toEqual([]);
     },
   );
+
+  it('uses exact kebab-case names for live geometry options', () => {
+    expect(
+      (['vertexScale', 'edgeScale', 'heightScale', 'vertexLodPx', 'dashPeriodPx'] as const).map(
+        (key) => option(key).attribute,
+      ),
+    ).toEqual(['vertex-scale', 'edge-scale', 'height-scale', 'vertex-lod-px', 'dash-period-px']);
+  });
 
   it.each([
     ['vertices', 'yes'],
@@ -215,6 +233,8 @@ describe('controls grammar', () => {
       'vertex-size',
       'edge-color',
       'edge-dash',
+      'vertex-visible',
+      'edge-visible',
       'vertex-color-legend',
       'edge-color-legend',
     ] satisfies Control[]);

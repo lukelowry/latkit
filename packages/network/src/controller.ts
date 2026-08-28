@@ -2,14 +2,9 @@
 
 import { createPresentation, type Presentation } from '@latkit/gpu';
 
-import {
-  encodeTopology,
-  prepareTopology,
-  readEncodedTopologyInfo,
-  type Bounds,
-  type Topology,
-} from './topology/index.js';
+import { encodeTopology, prepareTopology, type Bounds, type Topology } from './topology/index.js';
 import { encodeSegments } from './segments/index.js';
+import { prepareScene } from './scene.js';
 import { Renderer } from './webgpu/renderer.js';
 import { createUniforms, FLAG_DAYLIGHT, FLAG_GRATICULE } from './webgpu/uniforms.js';
 import { FocusState, type FocusStyle, type RGBA } from './focus-state.js';
@@ -18,14 +13,19 @@ import { ProjectionRig } from './camera/rig.js';
 import { attachPointer, MOUSE_PICK_RADIUS_PX, type HoverProbe } from './input/pointer.js';
 import { createSurface } from './input/surface.js';
 import { MAX_ZOOM_RATIO, type Viewport } from './camera/projection.js';
-import { CHANNEL_DEFINITIONS, createChannels, type Channel } from './channels.js';
+import { createChannels, type Channel } from './channels.js';
 import type { ChannelRange } from './range.js';
 import { RenderLoop } from './webgpu/render-loop.js';
-import { PROJECTIONS, PROJECTION_MODES, type ProjectionMode } from './projections.js';
+import {
+  PROJECTIONS,
+  PROJECTION_MODES,
+  type PipelineMode,
+  type ProjectionMode,
+} from './projections.js';
 import type { Borders } from './borders.js';
 import { createEmitter } from './emitter.js';
 import { edgeCountOf } from './topology/pack.js';
-import { Picker, type PickQuery, type PickResult } from './pick/picker.js';
+import { Picker, isPickChannel, type PickQuery, type PickResult } from './pick/picker.js';
 import {
   DEFAULT_OPTIONS,
   OPTION_DEFINITIONS,
@@ -33,6 +33,7 @@ import {
   validateOptions,
   type Options,
   type ResolvedOptions,
+  type RuntimeOption,
 } from './options.js';
 import { boundsForItems, expandDegenerateBounds } from './topology/subset-bounds.js';
 
@@ -81,6 +82,8 @@ export type Events = {
   zoom: (atFitView: boolean) => void;
   /** WebGPU device-loss notification surfaced before rendering pauses. */
   deviceLost: (reason: string, message: string) => void;
+  /** Asynchronous shader-pipeline build failure; rendering for that family is unavailable. */
+  pipelineError: (pipeline: PipelineMode, cause: unknown) => void;
 };
 
 /**
@@ -173,12 +176,14 @@ export interface Network {
   /**
    * Bind or replace a per-vertex or per-edge rendering channel.
    *
-   * `domain` is the input value range. Height channels may also pass an
-   * output `range`; use null for `domain` to keep the auto-scanned input range.
+   * `domain` configures normalized channels only. Raw `edgeDash`,
+   * `vertexVisible`, and `edgeVisible` channels ignore both range arguments.
+   * Height channels may pass an output `range`; a null height domain retains
+   * automatic finite-extent scanning.
    *
    * @param channel - Channel name to bind.
    * @param values - Scalar values whose length matches the current topology.
-   * @param domain - Input domain used for normalization, or `null` for height auto-scan.
+   * @param domain - Input domain for normalized channels, or `null` for scanned/default behavior.
    * @param range - Output range for `vertexHeight`; ignored by other channels.
    * @throws Error when no topology is loaded or the array length is invalid.
    */
@@ -195,7 +200,9 @@ export interface Network {
    */
   clearChannel(channel: Channel): void;
   /**
-   * Override the input domain used to normalize a non-dash channel.
+   * Override the input domain used by a normalized channel.
+   *
+   * Calls for raw dash and visibility channels are accepted as no-ops.
    *
    * @param channel - Channel name to update.
    * @param range - Fixed input range, or `null` to return to the scanned/default domain.
@@ -248,6 +255,15 @@ export interface Network {
    * @param dy - Vertical delta in CSS pixels.
    */
   panBy(dx: number, dy: number): void;
+  /**
+   * Rotate the active camera by screen pixels.
+   *
+   * The call is a no-op when the active projection does not support rotation.
+   *
+   * @param dx - Horizontal delta in CSS pixels.
+   * @param dy - Vertical delta in CSS pixels.
+   */
+  rotateBy(dx: number, dy: number): void;
   /**
    * Zoom the active camera around the viewport center.
    *
@@ -306,14 +322,47 @@ const NO_ITEMS: readonly Item[] = Object.freeze([]);
 /** Default CSS-pixel inset used by reveal visibility checks. */
 const DEFAULT_REVEAL_PADDING_PX = 48;
 
-/** Screen-space threshold used by shaders for vertex level-of-detail behavior. */
-const VERTEX_LOD_PX = 2;
-
 /** Default opacity transition length used by {@link Network.fadeIn}. */
 const FADE_IN_MS = 150;
 
 /** Wake cadence for globe daylight updates while the globe is visible. */
 const SUN_REFRESH_MS = 30_000;
+
+/** Runtime options mirrored one-to-one into controller display state. */
+const DISPLAY_OPTIONS = [
+  'daylight',
+  'graticule',
+  'borders',
+  'vertices',
+  'edges',
+  'poles',
+  'vertexScale',
+  'edgeScale',
+  'heightScale',
+  'vertexLodPx',
+  'dashPeriodPx',
+  'earthAxis',
+  'nightFloor',
+  'surfaceNightFloor',
+  'terminatorWidth',
+] as const satisfies readonly RuntimeOption[];
+
+type DisplayOption = (typeof DISPLAY_OPTIONS)[number];
+
+/** Mutable display state; every key is a resolved runtime option. */
+type DisplayState = { -readonly [Key in DisplayOption]: ResolvedOptions[Key] };
+
+/** Display options whose change moves, resizes, or hides pickable geometry. */
+const PICK_GEOMETRY_OPTIONS: ReadonlySet<DisplayOption> = new Set<DisplayOption>([
+  'vertices',
+  'edges',
+  'poles',
+  'vertexScale',
+  'edgeScale',
+  'heightScale',
+  'vertexLodPx',
+  'dashPeriodPx',
+]);
 
 /** Number of entries in the renderer's one-dimensional colormap texture. */
 const COLORMAP_LUT_SIZE = 256;
@@ -418,6 +467,17 @@ function forwardDeviceLoss(
   };
 }
 
+/** Deliver latched event arguments to a late subscriber with emitter-equivalent error isolation. */
+function replay<Args extends unknown[]>(handler: (...args: Args) => void, args: Args): void {
+  try {
+    handler(...args);
+  } catch (error) {
+    queueMicrotask(() => {
+      throw error;
+    });
+  }
+}
+
 /** Creates the controller after the Promise boundary has established transactional cleanup. */
 function createNetworkController(
   device: GPUDevice,
@@ -469,13 +529,18 @@ function createNetworkController(
   lifecycle.add(() => loop.destroy());
 
   renderer.onProjectionPipelinesReady = () => loop.wake();
+  let pipelineFailure: Parameters<Events['pipelineError']> | null = null;
+  renderer.onProjectionPipelinesError = (pipeline, cause) => {
+    pipelineFailure = [pipeline, cause];
+    events.emit('pipelineError', pipeline, cause);
+  };
   /** Schedule a frame for a visual state change. */
   const repaint = (): void => loop.wake();
 
   const rig = new deps.ProjectionRig(uniforms.projection);
   loop.setCamera(rig.camera);
 
-  let deviceLoss: readonly [reason: string, message: string] | null = null;
+  let deviceLoss: Parameters<Events['deviceLost']> | null = null;
   lifecycle.add(
     forwardDeviceLoss(device, (info) => {
       if (deviceLoss) return;
@@ -503,20 +568,10 @@ function createNetworkController(
   lifecycle.add(() => document.removeEventListener('visibilitychange', onVisibilityChange));
 
   /** Mutable display state mirrored into uniforms and renderer visibility. */
-  const display = {
-    daylight: DEFAULT_OPTIONS.daylight,
-    graticule: DEFAULT_OPTIONS.graticule,
-    borders: DEFAULT_OPTIONS.borders,
-    vertices: DEFAULT_OPTIONS.vertices,
-    edges: DEFAULT_OPTIONS.edges,
-    poles: DEFAULT_OPTIONS.poles,
-    earthAxis: DEFAULT_OPTIONS.earthAxis,
-    nightFloor: DEFAULT_OPTIONS.nightFloor,
-    surfaceNightFloor: DEFAULT_OPTIONS.surfaceNightFloor,
-    terminatorWidth: DEFAULT_OPTIONS.terminatorWidth,
-  };
+  const display = Object.fromEntries(
+    DISPLAY_OPTIONS.map((key) => [key, DEFAULT_OPTIONS[key]]),
+  ) as DisplayState;
 
-  uniforms.geometry.vertexLod = VERTEX_LOD_PX;
   let focusStyle: FocusStyle = {
     enabled: DEFAULT_OPTIONS.focusEnabled,
     hoverColor: DEFAULT_OPTIONS.hoverColor,
@@ -530,7 +585,6 @@ function createNetworkController(
     endpointMode: DEFAULT_OPTIONS.focusEndpointMode,
   };
   const focus = new FocusState(uniforms, edgeEndpoints, focusStyle);
-  applyOptions(options, true);
 
   let topology: Topology | null = null;
   let topologyBounds: Bounds | null = null;
@@ -594,6 +648,7 @@ function createNetworkController(
     loaded: () => topology !== null,
     vertexCount: () => topology?.vertexCount ?? 0,
     edgeCount: () => (topology ? edgeCountOf(topology) : 0),
+    dashPeriodPx: () => display.dashPeriodPx,
   });
 
   /**
@@ -607,6 +662,7 @@ function createNetworkController(
     unproject: (sx, sy, view) => rig.camera.screenToWorld(sx, sy, view),
     values: (channel) => channels.values(channel),
   });
+  applyOptions(options, true);
 
   /** Builds a pick query using current visibility and viewport state. */
   const pickQueryAt = (
@@ -678,11 +734,9 @@ function createNetworkController(
         cycleSelection(picker.pickAll(pickQueryAt(intent.sx, intent.sy, intent.targetPx)));
         break;
       case 'doubleTap':
-        if (!topology) break;
-        if (topologyBounds) {
-          loop.cancelPlacement();
-          rig.camera.fitView(topologyBounds, intent.vp);
-        }
+        if (!topology || !topologyBounds) break;
+        loop.cancelPlacement();
+        rig.camera.fitView(topologyBounds, intent.vp);
         loop.wake();
         break;
       case 'hover':
@@ -710,14 +764,9 @@ function createNetworkController(
 
     on(event, handler) {
       const unsubscribe = events.on(event, handler);
-      if (event === 'deviceLost' && deviceLoss) {
-        try {
-          (handler as Events['deviceLost'])(...deviceLoss);
-        } catch (error) {
-          queueMicrotask(() => {
-            throw error;
-          });
-        }
+      if (event === 'deviceLost' && deviceLoss) replay(handler as Events['deviceLost'], deviceLoss);
+      if (event === 'pipelineError' && pipelineFailure) {
+        replay(handler as Events['pipelineError'], pipelineFailure);
       }
       return unsubscribe;
     },
@@ -831,19 +880,19 @@ function createNetworkController(
 
     setChannel(channel, values, domain, range) {
       channels.set(channel, values, domain, range);
-      if (channelAffectsPicking(channel)) hoverDirty = true;
+      if (isPickChannel(channel)) hoverDirty = true;
       repaint();
     },
 
     clearChannel(channel) {
       channels.clear(channel);
-      if (channelAffectsPicking(channel)) hoverDirty = true;
+      if (isPickChannel(channel)) hoverDirty = true;
       repaint();
     },
 
     setChannelRange(channel, range) {
       channels.setRange(channel, range);
-      if (channelAffectsPicking(channel)) hoverDirty = true;
+      if (isPickChannel(channel)) hoverDirty = true;
       repaint();
     },
 
@@ -907,6 +956,13 @@ function createNetworkController(
       loop.wake();
     },
 
+    rotateBy(dx, dy) {
+      if (!topology) return;
+      if (!rig.camera.rotateBy(dx, dy, vp())) return;
+      hoverDirty = true;
+      loop.wake();
+    },
+
     zoomBy(factor) {
       if (!topology) return;
       const v = vp();
@@ -939,6 +995,8 @@ function createNetworkController(
       topology = null;
       topologyBounds = null;
       topologyCharacteristicLength = null;
+      picker.commitScene(null);
+      channels.reset();
       lifecycle.destroy();
     },
   };
@@ -1068,25 +1126,19 @@ function createNetworkController(
       opts.colormap && (!initial || opts.colormap !== DEFAULT_OPTIONS.colormap)
         ? sampleColormap(opts.colormap)
         : null;
-    const pickVisibilityChanged =
-      (opts.vertices !== undefined && opts.vertices !== display.vertices) ||
-      (opts.edges !== undefined && opts.edges !== display.edges) ||
-      (opts.poles !== undefined && opts.poles !== display.poles);
     if (colormapLut) renderer.writeColormap(colormapLut);
     if (opts.baseColor) applyBaseColor(opts.baseColor);
     if (opts.graticuleColor) uniforms.gridColor.set(opts.graticuleColor);
     if (opts.surfaceColor) uniforms.surfaceColor.set(opts.surfaceColor);
     if (opts.borderColor) uniforms.borderColor.set(opts.borderColor);
-    if (opts.graticule !== undefined) display.graticule = opts.graticule;
-    if (opts.borders !== undefined) display.borders = opts.borders;
-    if (opts.vertices !== undefined) display.vertices = opts.vertices;
-    if (opts.edges !== undefined) display.edges = opts.edges;
-    if (opts.poles !== undefined) display.poles = opts.poles;
-    if (opts.earthAxis !== undefined) display.earthAxis = opts.earthAxis;
-    if (opts.daylight !== undefined) display.daylight = opts.daylight;
-    if (opts.nightFloor !== undefined) display.nightFloor = opts.nightFloor;
-    if (opts.surfaceNightFloor !== undefined) display.surfaceNightFloor = opts.surfaceNightFloor;
-    if (opts.terminatorWidth !== undefined) display.terminatorWidth = opts.terminatorWidth;
+    let pickGeometryChanged = false;
+    for (const key of DISPLAY_OPTIONS) {
+      const value = opts[key];
+      if (value === undefined || value === display[key]) continue;
+      (display as Record<DisplayOption, boolean | number>)[key] = value;
+      if (PICK_GEOMETRY_OPTIONS.has(key)) pickGeometryChanged = true;
+    }
+    if (opts.dashPeriodPx !== undefined) channels.refreshDashPeriod();
     applyFocusOptions(opts);
     renderer.setVisible({
       vertices: display.vertices,
@@ -1096,7 +1148,8 @@ function createNetworkController(
       earthAxis: display.earthAxis,
     });
     writeDisplayToUniforms();
-    return pickVisibilityChanged;
+    writeGeometryScales(vp());
+    return pickGeometryChanged;
   }
 
   /** Applies focus-related option fields as a partial patch. */
@@ -1126,13 +1179,14 @@ function createNetworkController(
     focus.setStyle(focusStyle);
   }
 
-  /** Writes display flags and lighting scalars into projection uniforms. */
+  /** Writes display flags, lighting scalars, and screen-space thresholds into uniforms. */
   function writeDisplayToUniforms(): void {
     uniforms.projection.flags =
       (display.daylight ? FLAG_DAYLIGHT : 0) | (display.graticule ? FLAG_GRATICULE : 0);
     uniforms.projection.nightFloor = display.nightFloor;
     uniforms.projection.surfaceNightFloor = display.surfaceNightFloor;
     uniforms.projection.terminatorWidth = display.terminatorWidth;
+    uniforms.geometry.vertexLod = display.vertexLodPx;
   }
 
   /** Returns endpoint vertex ids for focus underlays, or [-1, -1] when invalid. */
@@ -1147,10 +1201,20 @@ function createNetworkController(
   /** Updates projection-specific height amplitude from current viewport state. */
   function updateHeightWorldScale(frameVp: Viewport): void {
     if (!topology || !topologyBounds) return;
-    uniforms.geometry.heightWorldScale =
+    const scale =
       rig.mode === 'globe'
         ? VISUAL.globeHeightRadialScale
-        : planeHeightWorldScale(topologyBounds, frameVp, vertexSize);
+        : planeHeightWorldScale(topologyBounds, frameVp, vertexSize * display.vertexScale);
+    uniforms.geometry.heightWorldScale = scale * display.heightScale;
+  }
+
+  /** Writes topology-derived geometry sizes through the current display multipliers. */
+  function writeGeometryScales(frameVp: Viewport): void {
+    if (topologyCharacteristicLength === null) return;
+    uniforms.geometry.vertexSize = vertexSize * display.vertexScale;
+    uniforms.geometry.baseEdgeWidth =
+      topologyCharacteristicLength * VISUAL.baseEdgeWidthScale * display.edgeScale;
+    updateHeightWorldScale(frameVp);
   }
 
   /** Computes projection support for the currently loaded topology shape. */
@@ -1163,11 +1227,6 @@ function createNetworkController(
       availability[mode] = PROJECTIONS[mode].canUse(bounds, characteristicLength);
     }
     return Object.freeze(availability);
-  }
-
-  /** Channels whose values alter projected hit geometry rather than color only. */
-  function channelAffectsPicking(channel: Channel): boolean {
-    return CHANNEL_DEFINITIONS.find((definition) => definition.key === channel)!.map !== 'colormap';
   }
 
   /** Applies hover focus and stages a notification only when focus state changes. */
@@ -1258,10 +1317,12 @@ function createNetworkController(
     const prepared = prepareTopology(next);
     const encoded = encodeTopology(prepared);
     const encodedSegments = encodeSegments(prepared);
-    const info = readEncodedTopologyInfo(encoded);
-    renderer.bindTopology(encoded, encodedSegments);
-    picker.setScene(encoded, encodedSegments);
+    const scene = prepareScene(encoded, encodedSegments);
+    const pickScene = picker.prepareScene(scene);
+    renderer.bindTopology(scene);
+    picker.commitScene(pickScene);
 
+    const info = scene.info;
     topology = next;
     sceneGeneration++;
     pendingHoverNotice = undefined;
@@ -1285,12 +1346,10 @@ function createNetworkController(
     }
 
     vertexSize = info.characteristicLength * VISUAL.vertexSizeScale;
-    uniforms.geometry.vertexSize = vertexSize;
-    uniforms.geometry.baseEdgeWidth = info.characteristicLength * VISUAL.baseEdgeWidthScale;
-    updateHeightWorldScale(vp());
+    writeGeometryScales(vp());
 
     channels.reset();
-    loop.setBounds(info.bounds);
+    loop.setBounds(topologyBounds);
     loop.requestFit();
     warmInactiveProjections();
     loop.frameNow();

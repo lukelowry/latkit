@@ -1,6 +1,7 @@
 import { COLORMAP_NAMES, colormap, type Colormap, type ColormapName } from '@latkit/colormaps';
 import {
   PROJECTION_MODES,
+  channelNormalizes,
   finiteExtent,
   type Borders,
   type Channel,
@@ -14,7 +15,6 @@ import type { NetworkData } from '../data/types.js';
 import type { DirectChannelBinding, InputRevision } from '../source.js';
 import {
   CHANNEL_ATTRIBUTES,
-  NORMALIZED_CHANNEL_NAMES,
   OPTION_ATTRIBUTES,
   parseControls,
   parseOptionAttribute,
@@ -24,7 +24,6 @@ import {
   warning,
   type Control,
   type ControlSelection,
-  type NormalizedChannel,
   type RuntimeAttributeOption,
   type ViewWarning,
 } from './attributes.js';
@@ -279,6 +278,7 @@ function resolveChannel(
   warnings: ViewWarning[],
 ): ChannelBinding | null {
   const definition = channelAttribute(channel);
+  const normalizes = channelNormalizes(definition);
   const domainOverride = definition.domainAttribute
     ? parseRange(
         definition.domainAttribute,
@@ -295,10 +295,11 @@ function resolveChannel(
     : null;
 
   if (direct) {
-    const baseDomain =
-      definition.map === 'height' && direct.baseDomain == null
+    const baseDomain = normalizes
+      ? definition.map === 'height' && direct.baseDomain == null
         ? (finiteExtent(direct.values) ?? ([0, 1] as const))
-        : copyOptionalRange(direct.baseDomain);
+        : copyOptionalRange(direct.baseDomain)
+      : null;
     return Object.freeze({
       kind: 'direct',
       source: direct,
@@ -343,7 +344,7 @@ function resolveChannel(
   return Object.freeze({
     kind: 'field',
     entry,
-    baseDomain: copyOptionalRange(entry.extent) ?? null,
+    baseDomain: normalizes ? (copyOptionalRange(entry.extent) ?? null) : null,
     domainOverride,
     ...(definition.map === 'height' ? { outputRange: rangeOverride ?? ([0, 1] as const) } : {}),
   });
@@ -392,9 +393,4 @@ function copyOptionalRange(
 
 function copyRange(range: ChannelRange): ChannelRange {
   return [range[0], range[1]];
-}
-
-/** Channel keys whose domain attribute can be set imperatively. */
-export function isNormalizedChannel(channel: Channel): channel is NormalizedChannel {
-  return NORMALIZED_CHANNEL_NAMES.includes(channel as NormalizedChannel);
 }

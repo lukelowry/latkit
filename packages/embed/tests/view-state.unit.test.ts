@@ -44,6 +44,11 @@ describe('resolved option state', () => {
       attributeValues({
         msaa: '4',
         vertices: 'false',
+        'vertex-scale': '1.25',
+        'edge-scale': '0.75',
+        'height-scale': '1.5',
+        'vertex-lod-px': '3',
+        'dash-period-px': '16',
         'night-floor': '0.25',
         'base-color': '0.1 0.2 0.3 1',
         colormap: 'magma',
@@ -54,6 +59,11 @@ describe('resolved option state', () => {
 
     expect(state.msaa).toBe(4);
     expect(state.options.vertices).toBe(false);
+    expect(state.options.vertexScale).toBe(1.25);
+    expect(state.options.edgeScale).toBe(0.75);
+    expect(state.options.heightScale).toBe(1.5);
+    expect(state.options.vertexLodPx).toBe(3);
+    expect(state.options.dashPeriodPx).toBe(16);
     expect(state.options.nightFloor).toBe(0.25);
     expect(state.options.baseColor).toEqual([0.1, 0.2, 0.3, 1]);
     expect(state.colormap).toEqual({ kind: 'custom', fn: customColormap, revision: 0 });
@@ -95,15 +105,17 @@ describe('resolved option state', () => {
 });
 
 describe('resolved channels', () => {
-  it('binds every canonical channel with its scope, measured domain, and height range', () => {
+  it('binds every canonical channel with normalized domains and the height range', () => {
     const view = resolvedView(networkDataWithFields(), {
       colormap: 'plasma',
       projection: 'tilt',
       'vertex-color': 'capacity',
       'vertex-height': 'load',
       'vertex-size': 'capacity',
+      'vertex-visible': 'capacity',
       'edge-color': 'flow',
       'edge-dash': 'flow',
+      'edge-visible': 'flow',
     });
 
     expect(view.projection).toBe('tilt');
@@ -112,8 +124,10 @@ describe('resolved channels', () => {
       vertexColor: ['capacity', [40, 80], null, undefined],
       vertexHeight: ['load', [10, 30], null, [0, 1]],
       vertexSize: ['capacity', [40, 80], null, undefined],
+      vertexVisible: ['capacity', null, null, undefined],
       edgeColor: ['flow', [4, 8], null, undefined],
-      edgeDash: ['flow', [4, 8], null, undefined],
+      edgeDash: ['flow', null, null, undefined],
+      edgeVisible: ['flow', null, null, undefined],
     });
     expect(view.warnings).toEqual([]);
   });
@@ -267,6 +281,8 @@ describe('projection and controls resolution', () => {
       'vertex-size',
       'edge-color',
       'edge-dash',
+      'vertex-visible',
+      'edge-visible',
       'colormap',
     ]);
   });

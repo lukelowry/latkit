@@ -190,6 +190,37 @@ describe('createNetwork controller', () => {
     expect(h.loop.wake).toHaveBeenCalled();
   });
 
+  it('applies global geometry scales, CSS-pixel LOD, and the active dash period', async () => {
+    const baseline = await makeHarness();
+    baseline.network.load(geographicTopology());
+    const h = await makeHarness({
+      vertexScale: 2,
+      edgeScale: 3,
+      vertexLodPx: 5,
+      dashPeriodPx: 18,
+    });
+    h.network.load(geographicTopology());
+
+    expect(h.loop.uniforms.geometry.vertexSize).toBeCloseTo(
+      baseline.loop.uniforms.geometry.vertexSize * 2,
+    );
+    expect(h.loop.uniforms.geometry.baseEdgeWidth).toBeCloseTo(
+      baseline.loop.uniforms.geometry.baseEdgeWidth * 3,
+    );
+    expect(h.loop.uniforms.geometry.vertexLod).toBe(5);
+
+    const height = h.loop.uniforms.geometry.heightWorldScale;
+    h.network.setOptions({ heightScale: 4 });
+    expect(h.loop.uniforms.geometry.heightWorldScale).toBeCloseTo(height * 4);
+
+    h.network.setChannel('edgeDash', new Float32Array([0, 1]));
+    expect(h.loop.uniforms.geometry.dashPeriod).toBe(18);
+    h.network.setOptions({ dashPeriodPx: 6 });
+    expect(h.loop.uniforms.geometry.dashPeriod).toBe(6);
+    h.network.clearChannel('edgeDash');
+    expect(h.loop.uniforms.geometry.dashPeriod).toBe(0);
+  });
+
   it('filters construction-only msaa from live option patches', async () => {
     const h = await makeHarness({ msaa: 4 });
     h.renderer.setVisible.mockClear();
@@ -304,11 +335,81 @@ describe('createNetwork controller', () => {
     h.network.load(geographicTopology());
 
     expect(h.renderer.bindTopology).toHaveBeenCalledOnce();
-    expect(h.picker.setScene).toHaveBeenCalledOnce();
+    expect(h.picker.prepareScene).toHaveBeenCalledOnce();
+    expect(h.picker.commitScene).toHaveBeenCalledOnce();
+    expect(h.picker.prepareScene.mock.invocationCallOrder[0]).toBeLessThan(
+      h.renderer.bindTopology.mock.invocationCallOrder[0]!,
+    );
+    expect(h.renderer.bindTopology.mock.invocationCallOrder[0]).toBeLessThan(
+      h.picker.commitScene.mock.invocationCallOrder[0]!,
+    );
     expect(h.network.projections).toMatchObject({ flat: true, tilt: true, globe: true });
     expect(h.loop.setBounds).toHaveBeenCalled();
     expect(h.loop.requestFit).toHaveBeenCalled();
     expect(h.loop.frameNow).toHaveBeenCalled();
+  });
+
+  it('uses canonical vertex bounds for fit and sizing across projections', async () => {
+    const h = await makeHarness();
+    h.network.load({
+      ...geographicTopology(),
+      polylinePoints: new Float32Array([30, -20, 40, 4]),
+    });
+
+    const bounds = h.loop.setBounds.mock.calls.at(-1)?.[0];
+    expect(bounds).toMatchObject({ xMin: -10, xMax: 10, yMin: -5, yMax: 5 });
+    const vertexSize = Math.sqrt((20 * 10) / 3) * 0.08;
+    expect(h.loop.uniforms.geometry.vertexSize).toBeCloseTo(vertexSize);
+
+    h.network.fit(true);
+    expect(h.rig.camera.fitView).toHaveBeenCalledWith(bounds, { w: 100, h: 80 });
+    expect(h.loop.cancelPlacement).toHaveBeenCalled();
+    expect(h.network.projections.globe).toBe(true);
+
+    const boundsWrites = h.loop.setBounds.mock.calls.length;
+    h.network.setProjection('globe');
+    expect(h.loop.setBounds).toHaveBeenCalledTimes(boundsWrites);
+    expect(h.loop.uniforms.geometry.vertexSize).toBeCloseTo(vertexSize);
+  });
+
+  it('keeps the previous scene when picker preparation fails', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    const previousPickerScene = h.picker.scene;
+    const previousTopology = h.renderer.encodedTopology;
+
+    h.renderer.bindTopology.mockClear();
+    h.picker.commitScene.mockClear();
+    h.picker.prepareScene.mockImplementationOnce(() => {
+      throw new Error('grid allocation failed');
+    });
+
+    expect(() => h.network.load(nonGlobeTopology())).toThrow('grid allocation failed');
+    expect(h.renderer.bindTopology).not.toHaveBeenCalled();
+    expect(h.picker.commitScene).not.toHaveBeenCalled();
+    expect(h.picker.scene).toBe(previousPickerScene);
+    expect(h.renderer.encodedTopology).toBe(previousTopology);
+    expect(h.network.projections.globe).toBe(true);
+  });
+
+  it('does not commit the prepared picker scene when GPU binding fails', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    const previousPickerScene = h.picker.scene;
+    const previousTopology = h.renderer.encodedTopology;
+
+    h.picker.prepareScene.mockClear();
+    h.picker.commitScene.mockClear();
+    h.renderer.bindTopology.mockImplementationOnce(() => {
+      throw new Error('GPU allocation failed');
+    });
+
+    expect(() => h.network.load(nonGlobeTopology())).toThrow('GPU allocation failed');
+    expect(h.picker.prepareScene).toHaveBeenCalledOnce();
+    expect(h.picker.commitScene).not.toHaveBeenCalled();
+    expect(h.picker.scene).toBe(previousPickerScene);
+    expect(h.renderer.encodedTopology).toBe(previousTopology);
+    expect(h.network.projections.globe).toBe(true);
   });
 
   it('exposes complete immutable projection records and replaces them after load', async () => {
@@ -359,7 +460,8 @@ describe('createNetwork controller', () => {
     const values = new Float32Array([0, 0.5, 1]);
     h.network.load(geographicTopology());
     h.network.setChannel('vertexHeight', values);
-    expect(h.picker.deps?.values('vertexHeight')).toBe(values);
+    expect(h.picker.deps?.values('vertexHeight')).not.toBe(values);
+    expect(h.picker.deps?.values('vertexHeight')).toEqual(values);
   });
 
   it('uses the caller canvas without exposing it as controller-owned state', async () => {
@@ -664,10 +766,13 @@ describe('createNetwork controller', () => {
     h.picker.pick.mockClear();
     h.loop.wake.mockClear();
     h.rig.camera.panBy.mockReturnValue(false);
+    h.rig.camera.rotateBy.mockReturnValue(false);
     h.rig.camera.zoomAt.mockReturnValue(false);
 
     h.network.panBy(0, 0);
     h.network.panBy(Number.NaN, 1);
+    h.network.rotateBy(0, 0);
+    h.network.rotateBy(1, Number.NaN);
     h.network.zoomBy(1);
     h.network.zoomBy(0);
 
@@ -858,6 +963,8 @@ describe('createNetwork controller', () => {
     const h = await makeHarness();
     const failure = new Error('warm failed');
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const pipelineError = vi.fn();
+    h.network.on('pipelineError', pipelineError);
     h.renderer.warmProjection.mockImplementation((mode) =>
       mode === 'tilt' ? Promise.reject(failure) : Promise.resolve(),
     );
@@ -872,6 +979,22 @@ describe('createNetwork controller', () => {
       'network: failed to warm the tilt projection pipelines',
       failure,
     );
+    // The renderer reports build failures through onProjectionPipelinesError;
+    // an unexpected warm rejection is only logged.
+    expect(pipelineError).not.toHaveBeenCalled();
+  });
+
+  it('replays the latest asynchronous pipeline failure to late subscribers', async () => {
+    const h = await makeHarness();
+    const failure = new Error('pipeline failed');
+    h.renderer.onProjectionPipelinesError?.('globe', failure);
+
+    const late = vi.fn();
+    const unsubscribe = h.network.on('pipelineError', late);
+
+    expect(late).toHaveBeenCalledOnce();
+    expect(late).toHaveBeenCalledWith('globe', failure);
+    unsubscribe();
   });
 
   it('warms projections that become available after a later load', async () => {
@@ -890,24 +1013,28 @@ describe('createNetwork controller', () => {
     expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt'], ['tilt'], ['globe']]);
   });
 
-  it('fits, pans, and zooms through the public camera methods', async () => {
+  it('fits, pans, rotates, and zooms through the public camera methods', async () => {
     const h = await makeHarness();
     h.network.fit(true);
     h.network.panBy(1, 2);
+    h.network.rotateBy(1, 2);
     h.network.zoomBy(2);
     expect(h.rig.camera.fitView).not.toHaveBeenCalled();
     expect(h.rig.camera.panBy).not.toHaveBeenCalled();
+    expect(h.rig.camera.rotateBy).not.toHaveBeenCalled();
     expect(h.rig.camera.zoomAt).not.toHaveBeenCalled();
 
     h.network.load(geographicTopology());
     h.network.fit(true);
     h.network.fit(false);
     h.network.panBy(3, 4);
+    h.network.rotateBy(5, 6);
     h.network.zoomBy(1.25);
 
     expect(h.rig.camera.fitView).toHaveBeenCalled();
     expect(h.loop.requestFit).toHaveBeenCalled();
     expect(h.rig.camera.panBy).toHaveBeenCalledWith(3, 4, { w: 100, h: 80 });
+    expect(h.rig.camera.rotateBy).toHaveBeenCalledWith(5, 6, { w: 100, h: 80 });
     expect(h.rig.camera.zoomAt).toHaveBeenCalledWith(1.25, 50, 40, { w: 100, h: 80 });
   });
 
@@ -1195,6 +1322,8 @@ describe('createNetwork controller', () => {
   it('idempotently destroys owned collaborators without destroying the borrowed device', async () => {
     const h = await makeHarness();
     h.presentation.resize(800, 450);
+    h.network.load(geographicTopology());
+    h.network.setChannel('vertexVisible', new Float32Array([1, 0, 1]));
 
     h.network.destroy();
     h.network.destroy();
@@ -1205,6 +1334,8 @@ describe('createNetwork controller', () => {
     expect(h.renderer.destroy).toHaveBeenCalledOnce();
     expect(h.presentation.destroy).toHaveBeenCalledOnce();
     expect(h.surface.destroy).toHaveBeenCalledOnce();
+    expect(h.picker.commitScene).toHaveBeenLastCalledWith(null);
+    expect(h.picker.deps?.values('vertexVisible')).toBeNull();
     expect(h.canvas.isConnected).toBe(true);
     expect(h.canvas.getAttribute('width')).toBe('320');
     expect(h.canvas.getAttribute('height')).toBe('180');

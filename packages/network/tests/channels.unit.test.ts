@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createChannels, packBound, type Channel } from '../src/channels.js';
 import type { ChannelRange } from '../src/range.js';
-import { createUniforms } from '../src/webgpu/uniforms.js';
+import { createUniforms, ITEM_EDGE_VISIBLE, ITEM_VERTEX_VISIBLE } from '../src/webgpu/uniforms.js';
 import { Renderer } from '../src/webgpu/renderer.js';
 import { encodeSegments } from '../src/segments/index.js';
+import { prepareScene } from '../src/scene.js';
 import { encodeTopology } from '../src/topology/index.js';
 import { singleEdgeTopology } from './fixtures/topology.js';
 
@@ -31,12 +32,14 @@ describe('createChannels', () => {
       ),
       writeChannel: vi.fn(),
     };
+    const display = { dashPeriodPx: 18 };
     const channels = createChannels(uniforms, renderer, {
       loaded: () => loaded,
       vertexCount: () => 3,
       edgeCount: () => 2,
+      dashPeriodPx: () => display.dashPeriodPx,
     });
-    return { uniforms, renderer, channels };
+    return { uniforms, renderer, channels, display };
   }
 
   it('validates channel lengths without scanning values', () => {
@@ -110,6 +113,9 @@ describe('createChannels', () => {
     const { channels, uniforms, renderer } = make();
     const original = new Float32Array([1, 2, 3]);
     channels.set('vertexHeight', original, [1, 3], [0, 2]);
+    const retained = channels.values('vertexHeight');
+    expect(retained).not.toBe(original);
+    expect(retained).toEqual(original);
 
     const invalid: ReadonlyArray<
       readonly [label: string, domain: unknown, output: unknown, ErrorType: typeof Error]
@@ -134,7 +140,7 @@ describe('createChannels', () => {
           channels.set('vertexHeight', replacement, domain as ChannelRange, output as ChannelRange),
         label,
       ).toThrow(ErrorType);
-      expect(channels.values('vertexHeight'), label).toBe(original);
+      expect(channels.values('vertexHeight'), label).toBe(retained);
       expect(new Uint8Array(uniforms.raw), label).toEqual(uniformState);
       expect(renderer.relayout, label).not.toHaveBeenCalled();
       expect(renderer.writeChannel, label).not.toHaveBeenCalled();
@@ -170,12 +176,18 @@ describe('createChannels', () => {
     const { channels, renderer, uniforms } = make();
 
     channels.set('vertexColor', new Float32Array([0, 0.5, 1]));
+    const snapshot = channels.values('vertexColor');
     renderer.relayout.mockClear();
     renderer.writeChannel.mockClear();
-    channels.set('vertexColor', new Float32Array([1, 0.5, 0]));
+    const replacement = new Float32Array([1, 0.5, 0]);
+    channels.set('vertexColor', replacement);
 
     expect(renderer.relayout).not.toHaveBeenCalled();
-    expect(renderer.writeChannel).toHaveBeenCalledOnce();
+    expect(renderer.writeChannel).toHaveBeenCalledExactlyOnceWith('vertexColor', replacement);
+    // The CPU snapshot is refreshed in place rather than reallocated per update.
+    expect(channels.values('vertexColor')).toBe(snapshot);
+    expect(channels.values('vertexColor')).toEqual(replacement);
+    expect(channels.values('vertexColor')).not.toBe(replacement);
     expect(uniforms.channel.vColorMin).toBe(0);
     expect(uniforms.channel.vColorScale).toBe(1);
   });
@@ -184,6 +196,7 @@ describe('createChannels', () => {
     const { channels, renderer, uniforms } = make();
     const original = new Float32Array([0, 0.5, 1]);
     channels.set('vertexColor', original, [0, 1]);
+    const retained = channels.values('vertexColor');
 
     const beforeReplacement = new Uint8Array(uniforms.raw).slice();
     renderer.writeChannel.mockImplementationOnce(() => {
@@ -192,7 +205,7 @@ describe('createChannels', () => {
     expect(() => channels.set('vertexColor', new Float32Array([1, 0.5, 0]), [10, 20])).toThrow(
       'upload failed',
     );
-    expect(channels.values('vertexColor')).toBe(original);
+    expect(channels.values('vertexColor')).toBe(retained);
     expect(new Uint8Array(uniforms.raw)).toEqual(beforeReplacement);
 
     const beforeClear = new Uint8Array(uniforms.raw).slice();
@@ -200,7 +213,7 @@ describe('createChannels', () => {
       throw new Error('relayout failed');
     });
     expect(() => channels.clear('vertexColor')).toThrow('relayout failed');
-    expect(channels.values('vertexColor')).toBe(original);
+    expect(channels.values('vertexColor')).toBe(retained);
     expect(new Uint8Array(uniforms.raw)).toEqual(beforeClear);
   });
 
@@ -247,24 +260,71 @@ describe('createChannels', () => {
     const { channels, uniforms } = make();
 
     channels.set('edgeDash', new Float32Array([1, 0]), [100, 200]);
-    expect(uniforms.geometry.dashPeriod).toBeGreaterThan(0);
+    expect(uniforms.geometry.dashPeriod).toBe(18);
 
     channels.clear('edgeDash');
     expect(uniforms.geometry.dashPeriod).toBe(0);
   });
 
-  it('retains bound values for the picker and drops them on clear', () => {
+  it('refreshes the dash period only while edgeDash is bound', () => {
+    const { channels, uniforms, display } = make();
+
+    display.dashPeriodPx = 6;
+    channels.refreshDashPeriod();
+    expect(uniforms.geometry.dashPeriod).toBe(0);
+
+    channels.set('edgeDash', new Float32Array([1, 0]), [100, 200]);
+    expect(uniforms.geometry.dashPeriod).toBe(6);
+
+    display.dashPeriodPx = 9;
+    channels.refreshDashPeriod();
+    expect(uniforms.geometry.dashPeriod).toBe(9);
+  });
+
+  it('treats visibility as a raw range-free channel and toggles packed flags', () => {
+    const { channels, uniforms } = make();
+
+    channels.set('vertexVisible', new Float32Array([1, 0, Number.NaN]), [10, -10]);
+    expect(uniforms.channel.itemFlags & ITEM_VERTEX_VISIBLE).toBe(ITEM_VERTEX_VISIBLE);
+    expect(uniforms.channel.vVisibleOffset).toBe(0);
+    expect(() =>
+      channels.setRange('vertexVisible', [Number.NaN, -Infinity] as ChannelRange),
+    ).not.toThrow();
+
+    channels.set('edgeVisible', new Float32Array([0, 1]));
+    expect(uniforms.channel.itemFlags & ITEM_EDGE_VISIBLE).toBe(ITEM_EDGE_VISIBLE);
+    expect(uniforms.channel.eVisibleOffset).toBe(3);
+
+    channels.clear('vertexVisible');
+    expect(uniforms.channel.itemFlags & ITEM_VERTEX_VISIBLE).toBe(0);
+    expect(uniforms.channel.itemFlags & ITEM_EDGE_VISIBLE).toBe(ITEM_EDGE_VISIBLE);
+
+    channels.reset();
+    expect(uniforms.channel.itemFlags).toBe(0);
+  });
+
+  it('owns bound value snapshots for the renderer and picker and drops them on clear', () => {
     const { channels } = make();
 
-    // The CPU picker reads raw values through values(); the retained array
-    // must be exactly what was bound, for every pick-affecting channel.
     const heights = new Float32Array([1, 2, 3]);
     channels.set('vertexHeight', heights, null, [0, 3]);
-    expect(channels.values('vertexHeight')).toBe(heights);
+    const retainedHeights = channels.values('vertexHeight');
+    expect(retainedHeights).not.toBe(heights);
+    expect(retainedHeights).toEqual(heights);
+    heights[0] = 99;
+    expect(retainedHeights?.[0]).toBe(1);
 
     const dashes = new Float32Array([1, 0]);
     channels.set('edgeDash', dashes);
-    expect(channels.values('edgeDash')).toBe(dashes);
+    const retainedDashes = channels.values('edgeDash');
+    expect(retainedDashes).not.toBe(dashes);
+    expect(retainedDashes).toEqual(dashes);
+
+    const replacement = new Float32Array([0, 1]);
+    channels.set('edgeDash', replacement);
+    const retainedReplacement = channels.values('edgeDash');
+    replacement[0] = 1;
+    expect(retainedReplacement).toEqual(new Float32Array([0, 1]));
 
     channels.clear('vertexHeight');
     expect(channels.values('vertexHeight')).toBeNull();
@@ -324,7 +384,8 @@ describe('Renderer channel relayout guard', () => {
     };
 
     const topology = singleEdgeTopology();
-    expect(() => renderer.bindTopology(encodeTopology(topology), encodeSegments(topology))).toThrow(
+    const scene = prepareScene(encodeTopology(topology), encodeSegments(topology));
+    expect(() => renderer.bindTopology(scene)).toThrow(
       'exceeds WebGPU storage buffer binding limit',
     );
     expect(previousTopologyBuffer.destroy).not.toHaveBeenCalled();

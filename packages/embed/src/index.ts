@@ -21,5 +21,6 @@ export type {
   NetworkElement,
   NetworkElementEventMap,
   NetworkItemEventDetail,
+  NetworkPipelineErrorEventDetail,
   NetworkZoomEventDetail,
 } from './element.js';

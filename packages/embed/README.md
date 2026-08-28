@@ -115,17 +115,26 @@ canonical default.
 ></latkit-network>
 ```
 
-All five Network channels are independently bindable:
+All seven Network channels are independently bindable:
 
-- `vertex-color`, `vertex-height`, and `vertex-size` accept vertex field ids;
-- `edge-color` and `edge-dash` accept edge field ids;
+- `vertex-color`, `vertex-height`, `vertex-size`, and `vertex-visible` accept vertex field ids;
+- `edge-color`, `edge-dash`, and `edge-visible` accept edge field ids;
 - normalized channels have matching `*-domain` overrides;
 - `vertex-height-range` controls the independent height output range;
+- visibility channels show values greater than zero and have no domain attribute;
 - an empty channel attribute explicitly unbinds that channel.
+
+The matching programmatic methods preserve Network's raw-channel semantics: `setChannel` ignores domain and output-range arguments for `edgeDash`, `vertexVisible`, and `edgeVisible`, while `setChannelRange` is a no-op for those channels.
 
 Every serializable Network option is available under its exact kebab-case name. `msaa` is the only
 construction option, so changing it replaces the live activation against cached data. Other options,
 bindings, projection, colormap, borders, and controls update without recreating the renderer.
+
+The live geometry options are `vertex-scale`, `edge-scale`, `height-scale`, `vertex-lod-px`, and
+`dash-period-px`. The first three multiply the topology-derived vertex radius, edge half-width, and
+height displacement. `vertex-lod-px` culls vertices below a CSS-pixel radius, while
+`dash-period-px` sets the screen-space period used by `edge-dash`; `0` disables dash gaps. Their
+defaults are `1`, `1`, `1`, `2`, and `12`. All accept non-negative numbers.
 
 `border-source="natural-earth"` selects the packaged geometry. The independent `borders` Network
 option controls whether border rendering and packaged loading are enabled. `border-source="none"`
@@ -211,13 +220,14 @@ element.select('vertex', 1);
 ```
 
 The complete element method surface is `setOptions`, `setBorders`, `setColormap`, `setBaseColor`,
-`setChannel`, `clearChannel`, `setChannelRange`, `setProjection`, `fit`, `select`, `clearSelection`,
-`panBy`, `zoomBy`, `fadeIn`, `pause`, and `resume`. `projections` reports the current topology's mode
-availability. The underlying Network, canvas ownership, and GPU device remain private.
+`setChannel`, `clearChannel`, `setChannelRange`, `setProjection`, `fit`, `reveal`, `select`,
+`clearSelection`, `panBy`, `rotateBy`, `zoomBy`, `fadeIn`, `pause`, and `resume`. `projections`
+reports the current topology's mode availability. The underlying Network, canvas ownership, and GPU
+device remain private.
 
 Renderer notifications become bubbling, composed DOM events named `load`, `error`, `hover`, `select`,
-`zoom`, and `deviceLost`. `ready` always describes the current activation and is replaced for source
-changes, reconnect, `msaa` changes, and device recovery.
+`zoom`, `deviceLost`, and `pipelineError`. `ready` always describes the current activation and is
+replaced for source changes, reconnect, `msaa` changes, and device recovery.
 
 The canvas is focusable and named. Arrow keys pan, `+`/`=` and `-`/`_` zoom, Home fits, and Escape
 clears selection. Selection changes are announced through a polite live region; hover is not.

@@ -18,8 +18,15 @@ export type {
 } from './options.js';
 
 /** Rendering-channel names and normalization options. */
-export { CHANNEL_DEFINITIONS } from './channels.js';
-export type { Channel, ChannelDefinition, ChannelMap, ChannelScope } from './channels.js';
+export { CHANNEL_DEFINITIONS, channelNormalizes } from './channels.js';
+export type {
+  Channel,
+  ChannelDefinition,
+  ChannelMap,
+  ChannelScope,
+  NormalizedChannel,
+  NormalizedChannelDefinition,
+} from './channels.js';
 
 /** Channel-domain measurement shared by channel-binding consumers. */
 export { finiteExtent, validateChannelRange } from './range.js';
@@ -27,7 +34,7 @@ export type { ChannelRange } from './range.js';
 
 /** Projection mode names accepted by the network controller. */
 export { PROJECTION_MODES } from './projections.js';
-export type { ProjectionMode } from './projections.js';
+export type { PipelineMode, ProjectionMode } from './projections.js';
 
 /** Shared view-style primitives used by renderer option consumers. */
 export type { FocusEndpointMode, RGBA } from './focus-state.js';

@@ -10,6 +10,7 @@ import type {
   NetworkElementEventMap,
   NetworkItemEventDetail,
   NetworkJSON,
+  NetworkPipelineErrorEventDetail,
   NetworkZoomEventDetail,
 } from '../src/index.js';
 
@@ -78,6 +79,7 @@ describe('embed package entrypoint', () => {
       | 'select'
       | 'clearSelection'
       | 'panBy'
+      | 'rotateBy'
       | 'zoomBy'
       | 'fadeIn'
       | 'pause'
@@ -98,6 +100,7 @@ describe('embed package entrypoint', () => {
     expectTypeOf<NetworkElement['select']>().toEqualTypeOf<Network['select']>();
     expectTypeOf<NetworkElement['clearSelection']>().toEqualTypeOf<Network['clearSelection']>();
     expectTypeOf<NetworkElement['panBy']>().toEqualTypeOf<Network['panBy']>();
+    expectTypeOf<NetworkElement['rotateBy']>().toEqualTypeOf<Network['rotateBy']>();
     expectTypeOf<NetworkElement['zoomBy']>().toEqualTypeOf<Network['zoomBy']>();
     expectTypeOf<NetworkElement['fadeIn']>().toEqualTypeOf<Network['fadeIn']>();
     expectTypeOf<NetworkElement['pause']>().toEqualTypeOf<Network['pause']>();
@@ -106,7 +109,7 @@ describe('embed package entrypoint', () => {
 
   it('publishes the exact typed DOM event map', () => {
     expectTypeOf<keyof NetworkElementEventMap>().toEqualTypeOf<
-      'load' | 'error' | 'hover' | 'select' | 'zoom' | 'deviceLost'
+      'load' | 'error' | 'hover' | 'select' | 'zoom' | 'deviceLost' | 'pipelineError'
     >();
     expectTypeOf<NetworkElementEventMap['load']>().toEqualTypeOf<Event>();
     expectTypeOf<NetworkElementEventMap['error']>().toEqualTypeOf<
@@ -123,6 +126,9 @@ describe('embed package entrypoint', () => {
     >();
     expectTypeOf<NetworkElementEventMap['deviceLost']>().toEqualTypeOf<
       CustomEvent<NetworkDeviceLostEventDetail>
+    >();
+    expectTypeOf<NetworkElementEventMap['pipelineError']>().toEqualTypeOf<
+      CustomEvent<NetworkPipelineErrorEventDetail>
     >();
   });
 });

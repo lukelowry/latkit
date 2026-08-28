@@ -81,15 +81,22 @@ fn build_edge_capsule(
   var out = culled_edge();
   out.edge_id = edge_id;
 
-  // Per-endpoint daylight; the rasterizer interpolates across the edge.
-  // Globe overlays are lifted off the surface, so lighting uses their unit
-  // direction. Flat daylight is a no-op and can consume the raw world point.
-  var light_world = select(wa, wb, strip.x > 0.5);
-  if (u.plane_mix > 0.0) { light_world = normalize(light_world); }
-  out.light = daylight(light_world);
-
-  let clip_a = project_overlay(wa, ha);
-  let clip_b = project_overlay(wb, hb);
+  // Clip against the positive-w floor before any per-vertex work so segments
+  // fully behind the camera cost only two projections.
+  var clip_a = project_overlay(wa, ha);
+  var clip_b = project_overlay(wb, hb);
+  let aw = clip_a.w;
+  let bw = clip_b.w;
+  if (aw <= MIN_CLIP_W && bw <= MIN_CLIP_W) {
+    return out;
+  }
+  if (aw <= MIN_CLIP_W) {
+    let t = clamp((MIN_CLIP_W - aw) / max(bw - aw, 1e-6), 0.0, 1.0);
+    clip_a = mix(clip_a, clip_b, t);
+  } else if (bw <= MIN_CLIP_W) {
+    let t = clamp((MIN_CLIP_W - aw) / min(bw - aw, -1e-6), 0.0, 1.0);
+    clip_b = mix(clip_a, clip_b, t);
+  }
 
   let screen_a = (clip_a.xy / clip_a.w * 0.5 + vec2f(0.5)) * u.viewport;
   let screen_b = (clip_b.xy / clip_b.w * 0.5 + vec2f(0.5)) * u.viewport;
@@ -99,6 +106,13 @@ fn build_edge_capsule(
     return out;
   }
 
+  // Per-endpoint daylight; the rasterizer interpolates across the edge.
+  // Globe overlays are lifted off the surface, so lighting uses their unit
+  // direction. Flat daylight is a no-op and can consume the raw world point.
+  var light_world = select(wa, wb, strip.x > 0.5);
+  if (u.plane_mix > 0.0) { light_world = normalize(light_world); }
+  out.light = daylight(light_world);
+
   let tangent = dir / screen_len;
   let normal = vec2f(-tangent.y, tangent.x);
   let mid_clip = mix(clip_a, clip_b, 0.5);
@@ -106,7 +120,7 @@ fn build_edge_capsule(
 
   var underlay_px = 0.0;
   if (halo) {
-    underlay_px = edge_underlay_px(focus_state);
+    underlay_px = css_px(edge_underlay_px(focus_state));
     if (underlay_px <= 0.0) { return out; }
   }
   let hw = base_hw + underlay_px;
@@ -167,6 +181,9 @@ fn edge_common(
 }
 
 fn vs_edge(strip: vec2f, inst: u32, role: u32) -> VOut {
+  if ((u.item_flags & ITEM_EDGE_VISIBLE) != 0u) {
+    if (!edge_visible(segment_edge_id(inst))) { return culled_edge(); }
+  }
   let seg = segment_record(inst);
   let endpoints = vec2u(seg.from_vertex, seg.to_vertex);
   let h_a_endpoint = vertex_norm_height(seg.from_vertex);
@@ -217,16 +234,10 @@ fn fs_color(v: VOut) -> ColorOut {
 }
 
 fn edge_underlay_fragment_color(v: VOut) -> vec4f {
-  let cx = clamp(v.uv.x, 0.0, v.seg_aspect);
-  let d = length(vec2f(v.uv.x - cx, v.uv.y));
+  let d = edge_capsule_distance(v);
   let aa = fwidth(d);
   if (d > 1.0) { discard; }
-
-  if (u.dash_period > 0.0 && v.dashed != 0u) {
-    let along = clamp(v.uv.x, 0.0, v.seg_aspect) / max(v.seg_aspect, 1e-6);
-    let px = along * v.seg_len_px;
-    if (fract(px / css_px(u.dash_period)) > 0.5) { discard; }
-  }
+  if (edge_dash_discard(v)) { discard; }
 
   let selected = v.focus == 2u;
   let alpha = edge_underlay_alpha(d, v.core_ratio, aa) *

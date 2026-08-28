@@ -2,6 +2,9 @@ import type { ProjectionMode } from '../projections.js';
 import type { Viewport } from '../camera/projection.js';
 import type { Uniforms } from '../webgpu/uniforms.js';
 import {
+  ITEM_EDGE_VISIBLE,
+  ITEM_VERTEX_VISIBLE,
+  W_BACKING_SCALE,
   W_BASE_EDGE_WIDTH,
   W_DASH_PERIOD,
   W_HEIGHT_CENTER,
@@ -9,6 +12,7 @@ import {
   W_HEIGHT_OUT_SCALE,
   W_HEIGHT_SCALE,
   W_HEIGHT_WORLD_SCALE,
+  W_ITEM_FLAGS,
   W_PLANE_MIX,
   W_VERTEX_LOD,
   W_VIEWPORT_X,
@@ -18,10 +22,11 @@ import {
   W_V_SIZE_MODE,
   W_V_SIZE_SCALE,
 } from '../webgpu/uniforms.js';
-import { readEncodedSegmentsInfo, type EncodedSegments } from '../segments/index.js';
-import { SEGMENT_RECORD_WORDS, W as SEG_W } from '../segments/wire.js';
-import { readEncodedTopologyInfo, type Bounds, type EncodedTopology } from '../topology/index.js';
-import { W as TOPO_W } from '../topology/wire.js';
+import { SEGMENT_RECORD_WORDS } from '../segments/wire.js';
+import type { DecodedSegments } from '../segments/index.js';
+import type { PreparedScene } from '../scene.js';
+import type { Bounds } from '../topology/index.js';
+import type { Channel } from '../channels.js';
 import { VISUAL } from '../visual.js';
 import { Grid } from './grid.js';
 import {
@@ -53,7 +58,15 @@ export interface PickerDeps {
    */
   unproject(sx: number, sy: number, vp: Viewport): readonly [number, number] | null;
   /** Raw bound channel values (the same arrays the GPU uploaded). */
-  values(channel: 'vertexHeight' | 'vertexSize' | 'edgeDash'): Float32Array | null;
+  values(channel: PickChannel): Float32Array | null;
+}
+
+/** Channels that alter projected hit geometry; color channels never affect picking. */
+export type PickChannel = Exclude<Channel, 'vertexColor' | 'edgeColor'>;
+
+/** Whether a channel change can move or hide pickable geometry. */
+export function isPickChannel(channel: Channel): channel is PickChannel {
+  return channel !== 'vertexColor' && channel !== 'edgeColor';
 }
 
 /** One screen-space pick request against the current scene. */
@@ -133,20 +146,6 @@ interface QueryCircle {
   readonly r: number;
 }
 
-/** Typed views over the encoded segment records. */
-interface SegmentViews {
-  /** Number of source edges represented by the segment ranges. */
-  readonly edgeCount: number;
-  /** Word offset of the edge-to-segment range table. */
-  readonly edgeStartsOffset: number;
-  /** Unsigned word view for ids and packed parameter ranges. */
-  readonly u32: Uint32Array;
-  /** Float word view for endpoint coordinates. */
-  readonly f32: Float32Array;
-  /** Segment-record start offset, in 32-bit words. */
-  readonly recordsOffset: number;
-}
-
 /** Static topology and coord-space acceleration data used by exact picking. */
 interface Scene {
   /** Number of vertices in `coords`. */
@@ -155,8 +154,8 @@ interface Scene {
   readonly segmentCount: number;
   /** Interleaved topology coordinates as x/y pairs. */
   readonly coords: Float32Array;
-  /** Encoded segment views. */
-  readonly seg: SegmentViews;
+  /** Validated segment views shared with the renderer's prepared scene. */
+  readonly seg: DecodedSegments;
   /** Topology coordinate bounds. */
   readonly bounds: Bounds;
   /** Diagonal extent used as the full-scene query radius. */
@@ -198,54 +197,41 @@ export class Picker {
   }
 
   /**
-   * Replace the indexed scene.
+   * Build static picking indices without replacing the active scene.
    *
-   * Passing null topology or segments clears the picker. Encoded buffers are
-   * viewed in place; callers must not mutate them while they are active.
+   * This is the fallible half of scene replacement; callers commit the result
+   * only once every other scene resource is ready.
    */
-  setScene(topology: EncodedTopology | null, segments: EncodedSegments | null): void {
-    if (!topology || !segments) {
-      this.scene = null;
-      return;
-    }
-    const info = readEncodedTopologyInfo(topology);
-    const segInfo = readEncodedSegmentsInfo(segments);
-    const topoU32 = new Uint32Array(topology.buffer, topology.byteOffset, topology.byteLength / 4);
-    const coords = new Float32Array(
-      topology.buffer,
-      topology.byteOffset + topoU32[TOPO_W.vCoords]! * 4,
-      info.vertexCount * 2,
-    );
-    const segU32 = new Uint32Array(segments.buffer, segments.byteOffset, segments.byteLength / 4);
-    const seg: SegmentViews = {
-      edgeCount: segInfo.edgeCount,
-      edgeStartsOffset: segU32[SEG_W.edgeStarts]!,
-      u32: segU32,
-      f32: new Float32Array(segments.buffer, segments.byteOffset, segments.byteLength / 4),
-      recordsOffset: segU32[SEG_W.records]!,
-    };
-    const bounds = info.bounds;
+  prepareScene(scene: PreparedScene): Scene {
+    const { info, coords, segments } = scene;
+    const { bounds, vertexCount } = info;
+    const { segmentCount } = segments.info;
     const wrapX = isGeoBounds(bounds) ? 360 : 0;
-    this.scene = {
-      vertexCount: info.vertexCount,
-      segmentCount: segInfo.segmentCount,
+    return {
+      vertexCount,
+      segmentCount,
       coords,
-      seg,
+      seg: segments,
       bounds,
       extent: Math.hypot(bounds.xMax - bounds.xMin, bounds.yMax - bounds.yMin) || 1,
       wrapX,
-      vertexGrid: Grid.points(coords, info.vertexCount, bounds),
+      vertexGrid: Grid.points(coords, vertexCount, bounds),
       segmentGrid: Grid.segments(
-        seg.f32,
-        seg.recordsOffset,
+        segments.f32,
+        segments.recordsOffset,
         SEGMENT_RECORD_WORDS,
         4,
         6,
-        segInfo.segmentCount,
+        segmentCount,
         bounds,
         wrapX,
       ),
     };
+  }
+
+  /** Replace (or clear) the active scene; never throws. */
+  commitScene(scene: Scene | null): void {
+    this.scene = scene;
   }
 
   /** Best hit under the cursor; a vertex beats any edge. */
@@ -312,10 +298,10 @@ export class Picker {
         : null;
     }
 
-    if (kind !== 'edge' || id >= scene.seg.edgeCount) return null;
-    const { edgeStartsOffset, f32, u32, recordsOffset } = scene.seg;
-    const start = u32[edgeStartsOffset + id]!;
-    const end = u32[edgeStartsOffset + id + 1]!;
+    if (kind !== 'edge' || id >= scene.seg.info.edgeCount) return null;
+    const { edgeStarts, f32, u32, recordsOffset } = scene.seg;
+    const start = edgeStarts[id]!;
+    const end = edgeStarts[id + 1]!;
     let visibleScore = Infinity;
     let visibleX = 0;
     let visibleY = 0;
@@ -389,6 +375,7 @@ export class Picker {
     // Device-px cursor and radius (uniform viewport is device px).
     const dprX = this.f32[W_VIEWPORT_X]! / q.vp.w;
     const dprY = this.f32[W_VIEWPORT_Y]! / q.vp.h;
+    const backingScale = this.f32[W_BACKING_SCALE]!;
     const cursorX = q.sx * dprX;
     const cursorY = q.sy * dprY;
     const radiusDev = Math.max(1, q.radiusPx * Math.max(dprX, dprY));
@@ -396,9 +383,13 @@ export class Picker {
     const region = this.queryRegion(q, scene, mode);
     if (!region) return miss;
 
+    const itemFlags = this.u32[W_ITEM_FLAGS]!;
     const heights = this.u32[W_V_HEIGHT_MODE] !== 0 ? this.deps.values('vertexHeight') : null;
     const sizes = this.u32[W_V_SIZE_MODE] !== 0 ? this.deps.values('vertexSize') : null;
     const dashes = this.f32[W_DASH_PERIOD]! > 0 ? this.deps.values('edgeDash') : null;
+    const vertexVisible =
+      itemFlags & ITEM_VERTEX_VISIBLE ? this.deps.values('vertexVisible') : null;
+    const edgeVisible = itemFlags & ITEM_EDGE_VISIBLE ? this.deps.values('edgeVisible') : null;
     const poles = q.poles && heights !== null && (mode === 'globe' || this.f32[W_PLANE_MIX]! > 0);
 
     const state: TestState = {
@@ -410,10 +401,12 @@ export class Picker {
       heights,
       sizes,
       dashes,
+      vertexVisible,
+      edgeVisible,
       vertices: q.vertices,
       poles,
-      lod: this.f32[W_VERTEX_LOD]!,
-      dashPeriod: this.f32[W_DASH_PERIOD]!,
+      lod: this.f32[W_VERTEX_LOD]! * backingScale,
+      dashPeriod: this.f32[W_DASH_PERIOD]! * backingScale,
       baseEdgeWidth: this.f32[W_BASE_EDGE_WIDTH]!,
       bestVertexD2: Infinity,
       bestVertexId: -1,
@@ -703,6 +696,7 @@ export class Picker {
 
   /** Test one vertex billboard and optional height pole against the cursor. */
   private testVertex(state: TestState, id: number): void {
+    if (state.vertexVisible && !(state.vertexVisible[id]! > 0)) return;
     const x = state.scene.coords[id * 2]!;
     const y = state.scene.coords[id * 2 + 1]!;
     const h = this.normHeight(state.heights, id);
@@ -728,6 +722,7 @@ export class Picker {
       const tip = this.pB;
       state.proj.project(base, x, y, 0);
       state.proj.project(tip, x, y, h);
+      if (base.cw <= MIN_CLIP_W || tip.cw <= MIN_CLIP_W) return;
       if (!state.proj.visible(tip)) return;
       state.proj.toScreen(base);
       state.proj.toScreen(tip);
@@ -742,6 +737,7 @@ export class Picker {
     const { u32, f32, recordsOffset } = state.scene.seg;
     const base = recordsOffset + id * SEGMENT_RECORD_WORDS;
     const edgeId = u32[base]!;
+    if (state.edgeVisible && !(state.edgeVisible[edgeId]! > 0)) return;
     const from = u32[base + 1]!;
     const to = u32[base + 2]!;
     const tPack = u32[base + 3]!;
@@ -804,6 +800,10 @@ interface TestState {
   readonly sizes: Float32Array | null;
   /** Bound raw edge-dash channel values, if enabled. */
   readonly dashes: Float32Array | null;
+  /** Bound raw per-vertex visibility values, if enabled. */
+  readonly vertexVisible: Float32Array | null;
+  /** Bound raw per-edge visibility values, if enabled. */
+  readonly edgeVisible: Float32Array | null;
   /** Whether vertex billboards are eligible. */
   readonly vertices: boolean;
   /** Whether height poles are eligible. */

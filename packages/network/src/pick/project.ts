@@ -4,6 +4,7 @@ import {
   W_CAMERA_X,
   W_CAMERA_Y,
   W_CAMERA_Z,
+  W_BACKING_SCALE,
   W_FLAT_SX,
   W_FLAT_SY,
   W_FLAT_TX,
@@ -20,13 +21,8 @@ import {
 } from '../webgpu/uniforms.js';
 import { VISUAL } from '../visual.js';
 
-/**
- * Positive-w clip floor for segment endpoints.
- *
- * This matches the old compute picker's PICK_MIN_CLIP_W constant; segments
- * straddling the camera plane clip against this floor before screen tests.
- */
-export const MIN_CLIP_W = 1e-4;
+/** Positive-w clip floor shared with the shaders through {@link VISUAL}. */
+export const MIN_CLIP_W = VISUAL.minClipW;
 
 /** Degrees-to-radians multiplier used by longitude/latitude globe projection. */
 const DEG2RAD = Math.PI / 180;
@@ -149,13 +145,17 @@ function perspectivePx(f: Float32Array, w: number, worldSize: number): number {
 }
 
 /** Clamp an edge half-width to the visual shader's supported px range. */
-function clampHalfWidth(px: number): number {
-  return Math.min(Math.max(px, VISUAL.minEdgeHalfWidthPx), VISUAL.maxEdgeHalfWidthPx);
+function clampHalfWidth(f: Float32Array, px: number): number {
+  const backingScale = f[W_BACKING_SCALE]!;
+  return Math.min(
+    Math.max(px, VISUAL.minEdgeHalfWidthPx * backingScale),
+    VISUAL.maxEdgeHalfWidthPx * backingScale,
+  );
 }
 
 /** Derive pole capsule half-width from the vertex radius with a readable floor. */
-function polePx(radius: number): number {
-  return Math.max(radius * 0.15, 1.5);
+function polePx(f: Float32Array, radius: number): number {
+  return Math.max(radius * 0.15, 1.5 * f[W_BACKING_SCALE]!);
 }
 
 /** Mirror the shared flat-to-tilt planar shader. */
@@ -190,17 +190,17 @@ function planeProjector(f: Float32Array, u: Uint32Array): Projector {
         f[W_PLANE_MIX] === 0
           ? f[W_VERTEX_SIZE]! * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
           : perspectivePx(f, p.cw, f[W_VERTEX_SIZE]!);
-      return Math.min(px, VISUAL.maxVertexRadiusPx);
+      return Math.min(px, VISUAL.maxVertexRadiusPx * f[W_BACKING_SCALE]!);
     },
     screenHalfWidth(p, baseWidth) {
       const px =
         f[W_PLANE_MIX] === 0
           ? baseWidth * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
           : perspectivePx(f, p.cw, baseWidth);
-      return clampHalfWidth(px);
+      return clampHalfWidth(f, px);
     },
     poleHalfWidth(p) {
-      return polePx(this.screenRadius(p));
+      return polePx(f, this.screenRadius(p));
     },
   };
 }
@@ -241,13 +241,13 @@ function globeProjector(f: Float32Array): Projector {
     },
     screenRadius(p) {
       const px = perspectivePx(f, p.cw, f[W_VERTEX_SIZE]! * VISUAL.globeVertexScale);
-      return Math.min(px, VISUAL.maxVertexRadiusPx);
+      return Math.min(px, VISUAL.maxVertexRadiusPx * f[W_BACKING_SCALE]!);
     },
     screenHalfWidth(p, baseWidth) {
-      return clampHalfWidth(perspectivePx(f, p.cw, baseWidth * VISUAL.globeEdgeScale));
+      return clampHalfWidth(f, perspectivePx(f, p.cw, baseWidth * VISUAL.globeEdgeScale));
     },
     poleHalfWidth(p) {
-      return polePx(this.screenRadius(p));
+      return polePx(f, this.screenRadius(p));
     },
   };
 }
