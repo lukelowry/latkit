@@ -130,10 +130,13 @@ describe('Renderer resource lifecycle', () => {
 
   it('logs projection build failures without throwing out of construction', async () => {
     const h = makeFakeGpu();
-    h.device.createRenderPipelineAsync.mockRejectedValueOnce(new Error('shader no good'));
+    const failure = new Error('shader no good');
+    h.device.createRenderPipelineAsync.mockRejectedValueOnce(failure);
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const renderer = new Renderer(h.presentation);
+    const reported = vi.fn();
+    renderer.onProjectionPipelinesError = reported;
     await flushGpuPromises();
     const calls = h.device.createRenderPipelineAsync.mock.calls.length;
     await renderer.warmProjection('flat');
@@ -142,6 +145,7 @@ describe('Renderer resource lifecycle', () => {
       'network: failed to build the plane projection pipelines',
       expect.any(Error),
     );
+    expect(reported).toHaveBeenCalledWith('plane', failure);
     expect(h.device.createRenderPipelineAsync).toHaveBeenCalledTimes(calls);
     renderer.destroy();
   });

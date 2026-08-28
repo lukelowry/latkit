@@ -23,6 +23,7 @@ fn culled_pole(inst: u32) -> VOut {
 }
 
 fn vs_pole(quad: vec2f, inst: u32) -> VOut {
+  if (!vertex_visible(inst)) { return culled_pole(inst); }
   let pos = vertex_coord(inst);
   let surface = vertex_surface_world(inst, pos);
   let base = displace_world(surface, 0.0);

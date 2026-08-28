@@ -49,7 +49,10 @@ describe('view attribute registries', () => {
       CHANNEL_DEFINITIONS.map((definition) => ({
         ...definition,
         attribute: htmlName(definition.key),
-        domainAttribute: definition.map === 'dash' ? null : `${htmlName(definition.key)}-domain`,
+        domainAttribute:
+          definition.map === 'dash' || definition.map === 'visible'
+            ? null
+            : `${htmlName(definition.key)}-domain`,
         rangeAttribute: definition.map === 'height' ? `${htmlName(definition.key)}-range` : null,
       })),
     );
@@ -70,6 +73,8 @@ describe('view attribute registries', () => {
       'vertex-size',
       'edge-color',
       'edge-dash',
+      'vertex-visible',
+      'edge-visible',
       'vertex-color-legend',
       'edge-color-legend',
     ]);
@@ -228,6 +233,8 @@ describe('controls grammar', () => {
       'vertex-size',
       'edge-color',
       'edge-dash',
+      'vertex-visible',
+      'edge-visible',
       'vertex-color-legend',
       'edge-color-legend',
     ] satisfies Control[]);

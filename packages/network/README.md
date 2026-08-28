@@ -39,6 +39,10 @@ network.fadeIn();
 physical lift continuously as the same planar camera tilts. Switching between
 `flat` and `tilt` reuses that camera and its WebGPU pipeline bundle.
 
+`vertexVisible` and `edgeVisible` are raw masks: values greater than zero are
+visible, while zero, negative values, and `NaN` are hidden. If a visibility
+channel is unbound, all items in that scope are visible.
+
 Geometry tuning is live and remains relative to topology-derived sizes:
 
 ```ts

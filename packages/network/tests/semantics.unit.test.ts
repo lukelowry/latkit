@@ -47,6 +47,8 @@ describe('canonical Network semantics', () => {
       { key: 'vertexSize', scope: 'vertex', map: 'size' },
       { key: 'edgeColor', scope: 'edge', map: 'colormap' },
       { key: 'edgeDash', scope: 'edge', map: 'dash' },
+      { key: 'vertexVisible', scope: 'vertex', map: 'visible' },
+      { key: 'edgeVisible', scope: 'edge', map: 'visible' },
     ]);
     expect(Object.isFrozen(CHANNEL_DEFINITIONS)).toBe(true);
     for (const definition of CHANNEL_DEFINITIONS) {

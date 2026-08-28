@@ -99,9 +99,9 @@ struct Uniforms {
 
   // Flat-to-tilt projection blend (bytes 384-399).
   plane_mix: f32,
-  _plane_pad_0: f32,
-  _plane_pad_1: f32,
-  _plane_pad_2: f32,
+  v_visible_offset: u32,
+  e_visible_offset: u32,
+  item_flags: u32,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -123,6 +123,9 @@ const ID_KIND_EDGE:   u32 = 2u;
 const ROLE_BASE:  u32 = 0u;
 const ROLE_FOCUS: u32 = 1u;
 const ROLE_HALO:  u32 = 2u;
+
+const ITEM_VERTEX_VISIBLE: u32 = 1u;
+const ITEM_EDGE_VISIBLE:   u32 = 2u;
 
 // Small semantic biases sit on top of height-derived depth.
 const Z_BIAS_VERTEX_BAND_OFFSET : f32 = -2.0e-6;

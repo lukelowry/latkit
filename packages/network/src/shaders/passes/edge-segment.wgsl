@@ -21,6 +21,10 @@ struct ColorOut {
   @location(0) color: vec4f,
 }
 
+// Mirrors pick/project.ts MIN_CLIP_W. Segments crossing the camera plane are
+// clipped before perspective division so their screen capsule stays finite.
+const MIN_EDGE_CLIP_W: f32 = 1e-4;
+
 fn culled_edge() -> VOut {
   var out: VOut;
   out.pos = vec4f(0.0, 0.0, 2.0, 1.0);
@@ -88,8 +92,20 @@ fn build_edge_capsule(
   if (u.plane_mix > 0.0) { light_world = normalize(light_world); }
   out.light = daylight(light_world);
 
-  let clip_a = project_overlay(wa, ha);
-  let clip_b = project_overlay(wb, hb);
+  var clip_a = project_overlay(wa, ha);
+  var clip_b = project_overlay(wb, hb);
+  let aw = clip_a.w;
+  let bw = clip_b.w;
+  if (aw <= MIN_EDGE_CLIP_W && bw <= MIN_EDGE_CLIP_W) {
+    return out;
+  }
+  if (aw <= MIN_EDGE_CLIP_W) {
+    let t = clamp((MIN_EDGE_CLIP_W - aw) / max(bw - aw, 1e-6), 0.0, 1.0);
+    clip_a = mix(clip_a, clip_b, t);
+  } else if (bw <= MIN_EDGE_CLIP_W) {
+    let t = clamp((MIN_EDGE_CLIP_W - aw) / min(bw - aw, -1e-6), 0.0, 1.0);
+    clip_b = mix(clip_a, clip_b, t);
+  }
 
   let screen_a = (clip_a.xy / clip_a.w * 0.5 + vec2f(0.5)) * u.viewport;
   let screen_b = (clip_b.xy / clip_b.w * 0.5 + vec2f(0.5)) * u.viewport;
@@ -168,6 +184,7 @@ fn edge_common(
 
 fn vs_edge(strip: vec2f, inst: u32, role: u32) -> VOut {
   let seg = segment_record(inst);
+  if (!edge_visible(seg.edge_id)) { return culled_edge(); }
   let endpoints = vec2u(seg.from_vertex, seg.to_vertex);
   let h_a_endpoint = vertex_norm_height(seg.from_vertex);
   let h_b_endpoint = vertex_norm_height(seg.to_vertex);

@@ -112,6 +112,8 @@ export class Renderer {
   private readonly sampleCount: 1 | 4;
   /** Fires when an async projection pipeline build lands. */
   onProjectionPipelinesReady?: () => void;
+  /** Reports a failed async projection pipeline build. */
+  onProjectionPipelinesError?: (mode: PipelineMode, cause: unknown) => void;
 
   private readonly unitQuad: GPUBuffer;
   private readonly edgeStrip: GPUBuffer;
@@ -290,7 +292,9 @@ export class Renderer {
       },
       (error: unknown) => {
         this.buildingProjectionPipelines.delete(mode);
+        if (this.destroyed) return;
         this.failedProjectionPipelines.add(mode);
+        this.onProjectionPipelinesError?.(mode, error);
         // Projection pipeline validation failing is a build-time shader bug; keep the
         // session alive (render() keeps skipping) and surface the cause.
         console.error(`network: failed to build the ${mode} projection pipelines`, error);

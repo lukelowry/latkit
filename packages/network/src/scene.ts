@@ -1,4 +1,6 @@
 import { decodeSegments, type DecodedSegments, type EncodedSegments } from './segments/index.js';
+import { SEGMENT_RECORD_WORDS } from './segments/wire.js';
+import { estimateCharacteristicLength } from './topology/pack.js';
 import { readEncodedTopologyInfo, type EncodedTopology } from './topology/index.js';
 import type { EncodedTopologyInfo } from './topology/types.js';
 import { W } from './topology/wire.js';
@@ -9,6 +11,10 @@ export interface PreparedScene {
   readonly topology: EncodedTopology;
   /** Validated topology metadata. */
   readonly info: EncodedTopologyInfo;
+  /** Raw-coordinate bounds covering vertices and every rendered edge segment. */
+  readonly pathBounds: EncodedTopologyInfo['bounds'];
+  /** Typical planar spacing derived from the complete rendered path extent. */
+  readonly pathCharacteristicLength: number;
   /** Zero-copy interleaved vertex-coordinate view. */
   readonly coords: Float32Array<ArrayBuffer>;
   /** Validated encoded segments and reusable views. */
@@ -49,5 +55,34 @@ export function prepareScene(
     info.vertexCount * 2,
   );
 
-  return { topology, info, coords, segments };
+  const pathBounds = computePathBounds(info.bounds, segments);
+  return {
+    topology,
+    info,
+    pathBounds,
+    pathCharacteristicLength: estimateCharacteristicLength(info.vertexCount, pathBounds),
+    coords,
+    segments,
+  };
+}
+
+/** Expand canonical vertex bounds over every encoded segment endpoint. */
+function computePathBounds(
+  vertexBounds: EncodedTopologyInfo['bounds'],
+  segments: DecodedSegments,
+): EncodedTopologyInfo['bounds'] {
+  let { xMin, xMax, yMin, yMax } = vertexBounds;
+  const { f32, recordsOffset } = segments;
+  for (let segment = 0; segment < segments.info.segmentCount; segment++) {
+    const base = recordsOffset + segment * SEGMENT_RECORD_WORDS;
+    for (let offset = 4; offset <= 6; offset += 2) {
+      const x = f32[base + offset]!;
+      const y = f32[base + offset + 1]!;
+      xMin = Math.min(xMin, x);
+      xMax = Math.max(xMax, x);
+      yMin = Math.min(yMin, y);
+      yMax = Math.max(yMax, y);
+    }
+  }
+  return { xMin, xMax, yMin, yMax };
 }

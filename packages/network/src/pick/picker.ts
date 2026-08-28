@@ -2,6 +2,8 @@ import type { ProjectionMode } from '../projections.js';
 import type { Viewport } from '../camera/projection.js';
 import type { Uniforms } from '../webgpu/uniforms.js';
 import {
+  ITEM_EDGE_VISIBLE,
+  ITEM_VERTEX_VISIBLE,
   W_BACKING_SCALE,
   W_BASE_EDGE_WIDTH,
   W_DASH_PERIOD,
@@ -10,6 +12,7 @@ import {
   W_HEIGHT_OUT_SCALE,
   W_HEIGHT_SCALE,
   W_HEIGHT_WORLD_SCALE,
+  W_ITEM_FLAGS,
   W_PLANE_MIX,
   W_VERTEX_LOD,
   W_VIEWPORT_X,
@@ -53,7 +56,9 @@ export interface PickerDeps {
    */
   unproject(sx: number, sy: number, vp: Viewport): readonly [number, number] | null;
   /** Raw bound channel values (the same arrays the GPU uploaded). */
-  values(channel: 'vertexHeight' | 'vertexSize' | 'edgeDash'): Float32Array | null;
+  values(
+    channel: 'vertexHeight' | 'vertexSize' | 'edgeDash' | 'vertexVisible' | 'edgeVisible',
+  ): Float32Array | null;
 }
 
 /** One screen-space pick request against the current scene. */
@@ -212,8 +217,8 @@ export class Picker {
       f32: segments.f32,
       recordsOffset: segments.recordsOffset,
     };
-    const bounds = info.bounds;
-    const wrapX = isGeoBounds(bounds) ? 360 : 0;
+    const bounds = scene.pathBounds;
+    const wrapX = isGeoBounds(info.bounds) ? 360 : 0;
     return {
       vertexCount: info.vertexCount,
       segmentCount: segments.info.segmentCount,
@@ -393,6 +398,12 @@ export class Picker {
     const heights = this.u32[W_V_HEIGHT_MODE] !== 0 ? this.deps.values('vertexHeight') : null;
     const sizes = this.u32[W_V_SIZE_MODE] !== 0 ? this.deps.values('vertexSize') : null;
     const dashes = this.f32[W_DASH_PERIOD]! > 0 ? this.deps.values('edgeDash') : null;
+    const vertexVisible =
+      (this.u32[W_ITEM_FLAGS]! & ITEM_VERTEX_VISIBLE) !== 0
+        ? this.deps.values('vertexVisible')
+        : null;
+    const edgeVisible =
+      (this.u32[W_ITEM_FLAGS]! & ITEM_EDGE_VISIBLE) !== 0 ? this.deps.values('edgeVisible') : null;
     const poles = q.poles && heights !== null && (mode === 'globe' || this.f32[W_PLANE_MIX]! > 0);
 
     const state: TestState = {
@@ -404,6 +415,8 @@ export class Picker {
       heights,
       sizes,
       dashes,
+      vertexVisible,
+      edgeVisible,
       vertices: q.vertices,
       poles,
       lod: this.f32[W_VERTEX_LOD]! * backingScale,
@@ -697,6 +710,7 @@ export class Picker {
 
   /** Test one vertex billboard and optional height pole against the cursor. */
   private testVertex(state: TestState, id: number): void {
+    if (state.vertexVisible && !(state.vertexVisible[id]! > 0)) return;
     const x = state.scene.coords[id * 2]!;
     const y = state.scene.coords[id * 2 + 1]!;
     const h = this.normHeight(state.heights, id);
@@ -736,6 +750,7 @@ export class Picker {
     const { u32, f32, recordsOffset } = state.scene.seg;
     const base = recordsOffset + id * SEGMENT_RECORD_WORDS;
     const edgeId = u32[base]!;
+    if (state.edgeVisible && !(state.edgeVisible[edgeId]! > 0)) return;
     const from = u32[base + 1]!;
     const to = u32[base + 2]!;
     const tPack = u32[base + 3]!;
@@ -798,6 +813,10 @@ interface TestState {
   readonly sizes: Float32Array | null;
   /** Bound raw edge-dash channel values, if enabled. */
   readonly dashes: Float32Array | null;
+  /** Bound raw per-vertex visibility values, if enabled. */
+  readonly vertexVisible: Float32Array | null;
+  /** Bound raw per-edge visibility values, if enabled. */
+  readonly edgeVisible: Float32Array | null;
   /** Whether vertex billboards are eligible. */
   readonly vertices: boolean;
   /** Whether height poles are eligible. */

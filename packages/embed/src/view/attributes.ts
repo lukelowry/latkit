@@ -3,6 +3,7 @@ import {
   DEFAULT_OPTIONS,
   OPTION_DEFINITIONS,
   PROJECTION_MODES,
+  channelNormalizes,
   type Channel,
   type ChannelDefinition,
   type ChannelRange,
@@ -62,8 +63,11 @@ export type ChannelAttributeDefinition = ChannelDefinition & {
 /** HTML field-binding name for a canonical Network channel. */
 export type ChannelAttribute = HtmlName<Channel>;
 
+/** Network channel definitions that use normalized input domains. */
+type NormalizedChannelDefinition = Exclude<ChannelDefinition, { readonly map: 'dash' | 'visible' }>;
+
 /** Network channels that use normalized input domains. */
-export type NormalizedChannel = Exclude<ChannelDefinition, { readonly map: 'dash' }>['key'];
+export type NormalizedChannel = NormalizedChannelDefinition['key'];
 
 /** Network channels rendered through the shared colormap. */
 export type ColormapChannel = Extract<ChannelDefinition, { readonly map: 'colormap' }>['key'];
@@ -115,7 +119,7 @@ export const CHANNEL_ATTRIBUTES: readonly ChannelAttributeDefinition[] = Object.
     return Object.freeze({
       ...definition,
       attribute,
-      domainAttribute: definition.map === 'dash' ? null : (`${attribute}-domain` as const),
+      domainAttribute: channelNormalizes(definition.map) ? (`${attribute}-domain` as const) : null,
       rangeAttribute: definition.map === 'height' ? (`${attribute}-range` as const) : null,
     }) as ChannelAttributeDefinition;
   }),
@@ -123,9 +127,8 @@ export const CHANNEL_ATTRIBUTES: readonly ChannelAttributeDefinition[] = Object.
 
 /** Normalized channels in canonical Network order. */
 export const NORMALIZED_CHANNEL_NAMES: readonly NormalizedChannel[] = Object.freeze(
-  CHANNEL_DEFINITIONS.filter(
-    (definition): definition is Exclude<ChannelDefinition, { readonly map: 'dash' }> =>
-      definition.map !== 'dash',
+  CHANNEL_DEFINITIONS.filter((definition): definition is NormalizedChannelDefinition =>
+    channelNormalizes(definition.map),
   ).map((definition) => definition.key),
 );
 

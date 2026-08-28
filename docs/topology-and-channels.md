@@ -39,7 +39,7 @@ const topology: Topology = {
 
 ## Projection support
 
-Flat and tilt projections accept arbitrary coordinates. Globe projection is available only when loaded bounds look geographic: longitude in `[-180, 180]`, latitude in `[-90, 90]`, a non-trivial geographic span, and a characteristic length small enough for globe rendering.
+Flat and tilt projections accept arbitrary coordinates and include polyline bend points in fit bounds. Globe eligibility remains based on vertex coordinates: longitude in `[-180, 180]`, latitude in `[-90, 90]`, a non-trivial geographic span, and a characteristic length small enough for globe rendering.
 
 Read support after `load()`:
 
@@ -55,13 +55,15 @@ if (network.projections.globe) {
 
 Channels bind scalar values to vertices or edges after a topology is loaded.
 
-| Channel        | Length        | Effect                                      |
-| -------------- | ------------- | ------------------------------------------- |
-| `vertexColor`  | `vertexCount` | Colors vertices through the active colormap |
-| `vertexHeight` | `vertexCount` | Raises vertices and height poles            |
-| `vertexSize`   | `vertexCount` | Scales vertex billboards                    |
-| `edgeColor`    | `edgeCount`   | Colors edges through the active colormap    |
-| `edgeDash`     | `edgeCount`   | Enables per-edge dash pattern values        |
+| Channel         | Length        | Effect                                       |
+| --------------- | ------------- | -------------------------------------------- |
+| `vertexColor`   | `vertexCount` | Colors vertices through the active colormap  |
+| `vertexHeight`  | `vertexCount` | Raises vertices and height poles             |
+| `vertexSize`    | `vertexCount` | Scales vertex billboards                     |
+| `vertexVisible` | `vertexCount` | Shows vertices whose value is greater than 0 |
+| `edgeColor`     | `edgeCount`   | Colors edges through the active colormap     |
+| `edgeDash`      | `edgeCount`   | Enables per-edge dash pattern values         |
+| `edgeVisible`   | `edgeCount`   | Shows edges whose value is greater than 0    |
 
 ```ts
 network.load(topology);
@@ -69,9 +71,13 @@ network.load(topology);
 network.setChannel('vertexColor', vertexLoad, [0, 1]);
 network.setChannel('edgeColor', edgeStress, [0, 100]);
 network.setChannel('vertexHeight', vertexLoad, [0, 1], [0, 0.8]);
+network.setChannel('vertexVisible', energizedVertices);
+network.setChannel('edgeVisible', energizedEdges);
 ```
 
-The third argument is the input domain. Pass `null` to auto-scan height values. The fourth argument is the output height range and only applies to `vertexHeight`.
+The third argument is the input domain. Pass `null` to auto-scan height values. The fourth argument is the output height range and only applies to `vertexHeight`. Visibility channels are raw and range-free: an unbound channel shows every item, while a bound channel shows only values greater than zero. Zero, negative values, and `NaN` hide the item in both rendering and hit testing. Clearing the channel restores all items.
+
+`setChannel()` snapshots its typed array, so later caller mutations do not alter the bound rendering or picking state. Bind the array again to publish changes.
 
 ## Validation failures
 

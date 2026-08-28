@@ -349,6 +349,26 @@ describe('createNetwork controller', () => {
     expect(h.loop.frameNow).toHaveBeenCalled();
   });
 
+  it('uses polyline extent for planar fit without changing globe eligibility bounds', async () => {
+    const h = await makeHarness();
+    h.network.load({
+      ...geographicTopology(),
+      polylinePoints: new Float32Array([30, -20, 40, 4]),
+    });
+
+    const bounds = h.loop.setBounds.mock.calls.at(-1)?.[0];
+    expect(bounds).toMatchObject({ xMin: -10, xMax: 40, yMin: -20, yMax: 5 });
+    expect(h.loop.uniforms.geometry.vertexSize).toBeCloseTo(Math.sqrt((50 * 25) / 3) * 0.08);
+
+    h.network.fit(true);
+    expect(h.rig.camera.fitView).toHaveBeenCalledWith(bounds, { w: 100, h: 80 });
+    expect(h.loop.cancelPlacement).toHaveBeenCalled();
+    expect(h.network.projections.globe).toBe(true);
+
+    h.network.setProjection('globe');
+    expect(h.loop.uniforms.geometry.vertexSize).toBeCloseTo(Math.sqrt((20 * 10) / 3) * 0.08);
+  });
+
   it('keeps the previous scene when picker preparation fails', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
@@ -437,7 +457,8 @@ describe('createNetwork controller', () => {
     const values = new Float32Array([0, 0.5, 1]);
     h.network.load(geographicTopology());
     h.network.setChannel('vertexHeight', values);
-    expect(h.picker.deps?.values('vertexHeight')).toBe(values);
+    expect(h.picker.deps?.values('vertexHeight')).not.toBe(values);
+    expect(h.picker.deps?.values('vertexHeight')).toEqual(values);
   });
 
   it('uses the caller canvas without exposing it as controller-owned state', async () => {
@@ -939,6 +960,8 @@ describe('createNetwork controller', () => {
     const h = await makeHarness();
     const failure = new Error('warm failed');
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const pipelineError = vi.fn();
+    h.network.on('pipelineError', pipelineError);
     h.renderer.warmProjection.mockImplementation((mode) =>
       mode === 'tilt' ? Promise.reject(failure) : Promise.resolve(),
     );
@@ -953,6 +976,20 @@ describe('createNetwork controller', () => {
       'network: failed to warm the tilt projection pipelines',
       failure,
     );
+    expect(pipelineError).toHaveBeenCalledWith('plane', failure);
+  });
+
+  it('replays the latest asynchronous pipeline failure to late subscribers', async () => {
+    const h = await makeHarness();
+    const failure = new Error('pipeline failed');
+    h.renderer.onProjectionPipelinesError?.('globe', failure);
+
+    const late = vi.fn();
+    const unsubscribe = h.network.on('pipelineError', late);
+
+    expect(late).toHaveBeenCalledOnce();
+    expect(late).toHaveBeenCalledWith('globe', failure);
+    unsubscribe();
   });
 
   it('warms projections that become available after a later load', async () => {
@@ -1280,6 +1317,8 @@ describe('createNetwork controller', () => {
   it('idempotently destroys owned collaborators without destroying the borrowed device', async () => {
     const h = await makeHarness();
     h.presentation.resize(800, 450);
+    h.network.load(geographicTopology());
+    h.network.setChannel('vertexVisible', new Float32Array([1, 0, 1]));
 
     h.network.destroy();
     h.network.destroy();
@@ -1290,6 +1329,8 @@ describe('createNetwork controller', () => {
     expect(h.renderer.destroy).toHaveBeenCalledOnce();
     expect(h.presentation.destroy).toHaveBeenCalledOnce();
     expect(h.surface.destroy).toHaveBeenCalledOnce();
+    expect(h.picker.commitScene).toHaveBeenLastCalledWith(null);
+    expect(h.picker.deps?.values('vertexVisible')).toBeNull();
     expect(h.canvas.isConnected).toBe(true);
     expect(h.canvas.getAttribute('width')).toBe('320');
     expect(h.canvas.getAttribute('height')).toBe('180');

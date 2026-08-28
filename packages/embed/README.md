@@ -115,12 +115,13 @@ canonical default.
 ></latkit-network>
 ```
 
-All five Network channels are independently bindable:
+All seven Network channels are independently bindable:
 
-- `vertex-color`, `vertex-height`, and `vertex-size` accept vertex field ids;
-- `edge-color` and `edge-dash` accept edge field ids;
+- `vertex-color`, `vertex-height`, `vertex-size`, and `vertex-visible` accept vertex field ids;
+- `edge-color`, `edge-dash`, and `edge-visible` accept edge field ids;
 - normalized channels have matching `*-domain` overrides;
 - `vertex-height-range` controls the independent height output range;
+- visibility channels show values greater than zero and have no domain attribute;
 - an empty channel attribute explicitly unbinds that channel.
 
 Every serializable Network option is available under its exact kebab-case name. `msaa` is the only

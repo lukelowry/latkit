@@ -41,6 +41,7 @@ export function flushMicrotasks(): Promise<void> {
 
 export class FakeRenderer {
   onProjectionPipelinesReady?: () => void;
+  onProjectionPipelinesError?: (mode: 'plane' | 'globe', cause: unknown) => void;
   visibility = {
     vertices: true,
     edges: true,

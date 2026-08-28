@@ -1,4 +1,4 @@
-import type { Uniforms } from './webgpu/uniforms.js';
+import { ITEM_EDGE_VISIBLE, ITEM_VERTEX_VISIBLE, type Uniforms } from './webgpu/uniforms.js';
 import {
   effectiveRange,
   finiteExtent,
@@ -14,6 +14,8 @@ export const CHANNEL_DEFINITIONS = Object.freeze([
   Object.freeze({ key: 'vertexSize', scope: 'vertex', map: 'size' }),
   Object.freeze({ key: 'edgeColor', scope: 'edge', map: 'colormap' }),
   Object.freeze({ key: 'edgeDash', scope: 'edge', map: 'dash' }),
+  Object.freeze({ key: 'vertexVisible', scope: 'vertex', map: 'visible' }),
+  Object.freeze({ key: 'edgeVisible', scope: 'edge', map: 'visible' }),
 ] as const);
 
 /** Static metadata for one supported channel. */
@@ -27,6 +29,11 @@ export type ChannelScope = ChannelDefinition['scope'];
 
 /** Shader interpretation for a packed channel stream. */
 export type ChannelMap = ChannelDefinition['map'];
+
+/** Whether a channel map consumes an input domain and normalization scalars. */
+export function channelNormalizes(map: ChannelMap): boolean {
+  return map === 'colormap' || map === 'height' || map === 'size';
+}
 
 /** Storage slot assigned to one packed channel in the shared channel buffer. */
 export interface ChannelSlot {
@@ -114,7 +121,7 @@ export interface Channels {
   clear(channel: Channel): void;
   /** Clear all channels after topology replacement. */
   reset(): void;
-  /** Override the input domain used by an active non-dash channel. */
+  /** Override the input domain used by an active normalized channel. */
   setRange(channel: Channel, range: ChannelRange | null): void;
   /** Re-read the display dash period; a no-op while `edgeDash` is unbound. */
   refreshDashPeriod(): void;
@@ -160,20 +167,21 @@ export function createChannels(
     validateLength(channel, values);
     const def = channelDef(channel);
     const isNew = !bound.has(channel);
-    const nextDomain = def.map === 'dash' ? null : resolveDomain(def, values, domain);
     const nextOutput = def.map === 'height' ? checkedRange(range ?? [0, 1], 'height range') : null;
+    const owned = values.slice();
+    const nextDomain = channelNormalizes(def.map) ? resolveDomain(def, owned, domain) : null;
     if (isNew) {
       const nextCurrent = new Map(current);
-      nextCurrent.set(channel, values);
+      nextCurrent.set(channel, owned);
       const nextBound = new Set(bound);
       nextBound.add(channel);
       const slots = renderer.relayout(nextBound, deps.vertexCount(), deps.edgeCount(), nextCurrent);
       writeOffsets(nextBound, slots);
-      current.set(channel, values);
+      current.set(channel, owned);
       bound.add(channel);
     } else {
-      renderer.writeChannel(channel, values);
-      current.set(channel, values);
+      renderer.writeChannel(channel, owned);
+      current.set(channel, owned);
     }
     if (nextDomain) data.set(channel, nextDomain);
     if (nextOutput) output.set(channel, nextOutput);
@@ -214,7 +222,7 @@ export function createChannels(
   }
 
   function setRange(channel: Channel, range: ChannelRange | null): void {
-    if (channelDef(channel).map === 'dash') return;
+    if (!channelNormalizes(channelDef(channel).map)) return;
     const previous = domainOverride.get(channel) ?? null;
     if (range) {
       const checked = checkedRange(range, `${channel} domain`);
@@ -258,6 +266,12 @@ export function createChannels(
       case 'edgeDash':
         uniforms.channel.eDashOffset = offset;
         break;
+      case 'vertexVisible':
+        uniforms.channel.vVisibleOffset = offset;
+        break;
+      case 'edgeVisible':
+        uniforms.channel.eVisibleOffset = offset;
+        break;
       default:
         /* v8 ignore next -- compile-time exhaustive Channel guard. */
         channel satisfies never;
@@ -281,6 +295,12 @@ export function createChannels(
       case 'edgeDash':
         uniforms.geometry.dashPeriod = on ? deps.dashPeriodPx() : 0;
         break;
+      case 'vertexVisible':
+        uniforms.channel.itemFlags = toggleBit(uniforms.channel.itemFlags, ITEM_VERTEX_VISIBLE, on);
+        break;
+      case 'edgeVisible':
+        uniforms.channel.itemFlags = toggleBit(uniforms.channel.itemFlags, ITEM_EDGE_VISIBLE, on);
+        break;
       default:
         /* v8 ignore next -- compile-time exhaustive Channel guard. */
         channel satisfies never;
@@ -289,7 +309,7 @@ export function createChannels(
 
   function writeScalars(channel: Channel): void {
     const def = channelDef(channel);
-    if (def.map === 'dash') return;
+    if (!channelNormalizes(def.map)) return;
     if (!bound.has(channel)) {
       writeNeutralScalars(channel);
       return;
@@ -322,6 +342,11 @@ export function createChannels(
         uniforms.channel.vSizeScale = scale;
         break;
       }
+      /* v8 ignore start -- channelNormalizes returns before raw maps reach this switch. */
+      case 'dash':
+      case 'visible':
+        break;
+      /* v8 ignore stop */
       default:
         /* v8 ignore next -- compile-time exhaustive channel map guard. */
         def satisfies never;
@@ -348,8 +373,10 @@ export function createChannels(
         uniforms.channel.vSizeMin = 0;
         uniforms.channel.vSizeScale = 0;
         break;
-      /* v8 ignore start -- writeScalars returns before dash channels need neutral scalars. */
+      /* v8 ignore start -- raw channels return before neutral scalars are needed. */
       case 'edgeDash':
+      case 'vertexVisible':
+      case 'edgeVisible':
         break;
       /* v8 ignore stop */
       default:
@@ -366,6 +393,11 @@ export function createChannels(
     refreshDashPeriod: () => setMode('edgeDash', bound.has('edgeDash')),
     values: (channel) => current.get(channel) ?? null,
   };
+}
+
+/** Set or clear one u32 flag while keeping JavaScript bit operations unsigned. */
+function toggleBit(value: number, bit: number, on: boolean): number {
+  return (on ? value | bit : value & ~bit) >>> 0;
 }
 
 /** Tests range equality without allocating. */

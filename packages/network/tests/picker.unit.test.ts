@@ -4,7 +4,12 @@ import { createGlobeProjection } from '../src/camera/globe.js';
 import { createFlatProjection, createTiltProjection } from '../src/camera/plane.js';
 import type { Projection, Viewport } from '../src/camera/projection.js';
 import type { ProjectionMode } from '../src/projections.js';
-import { createUniforms, type Uniforms } from '../src/webgpu/uniforms.js';
+import {
+  createUniforms,
+  ITEM_EDGE_VISIBLE,
+  ITEM_VERTEX_VISIBLE,
+  type Uniforms,
+} from '../src/webgpu/uniforms.js';
 import { Picker, type PickQuery, type PickResult } from '../src/pick/picker.js';
 import { createPoint, mixPoint, projectorFor, MIN_CLIP_W } from '../src/pick/project.js';
 import { prepareScene } from '../src/scene.js';
@@ -16,7 +21,7 @@ import { mulberry32 } from './fixtures/random.js';
 
 const VP: Viewport = { w: 800, h: 600 };
 
-type PickChannel = 'vertexHeight' | 'vertexSize' | 'edgeDash';
+type PickChannel = 'vertexHeight' | 'vertexSize' | 'edgeDash' | 'vertexVisible' | 'edgeVisible';
 
 interface Setup {
   readonly mode: ProjectionMode;
@@ -174,6 +179,16 @@ function bindSizes(s: Setup, raw: Float32Array): void {
 function bindDash(s: Setup, raw: Float32Array): void {
   s.values.set('edgeDash', raw);
   s.uniforms.geometry.dashPeriod = 12;
+}
+
+function bindVertexVisibility(s: Setup, raw: Float32Array): void {
+  s.values.set('vertexVisible', raw);
+  s.uniforms.channel.itemFlags |= ITEM_VERTEX_VISIBLE;
+}
+
+function bindEdgeVisibility(s: Setup, raw: Float32Array): void {
+  s.values.set('edgeVisible', raw);
+  s.uniforms.channel.itemFlags |= ITEM_EDGE_VISIBLE;
 }
 
 // ── Brute-force oracle ──────────────────────────────────────────
@@ -372,6 +387,27 @@ describe('Picker behavior (flat)', () => {
     const v = s.screenAt(0, 0);
     expect(s.picker.pick(s.query(v.sx, v.sy, 6, { vertices: false }))?.[0]).toBe('edge');
     expect(s.picker.pick(s.query(v.sx, v.sy, 6, { vertices: false, edges: false }))).toBeNull();
+  });
+
+  it('matches raw visibility thresholds while locate remains geometry-only', () => {
+    const s = makeSetup('flat');
+    const center = s.screenAt(0, 0);
+    const vertexVisible = new Float32Array(25).fill(1);
+    vertexVisible[12] = Number.NaN;
+    bindVertexVisibility(s, vertexVisible);
+
+    expect(s.picker.pick(s.query(center.sx, center.sy))?.[0]).toBe('edge');
+    expect(s.picker.locate(['vertex', 12], VP)).not.toBeNull();
+
+    const midpoint = s.screenAt(1, 0);
+    const query = s.query(midpoint.sx, midpoint.sy, 1, { vertices: false });
+    const edge = s.picker.pick(query);
+    expect(edge?.[0]).toBe('edge');
+
+    const edgeVisible = new Float32Array(s.topology.edges.length / 2).fill(1);
+    edgeVisible[edge![1]] = 0;
+    bindEdgeVisibility(s, edgeVisible);
+    expect(s.picker.pick(query)).toBeNull();
   });
 
   it('drops vertices below the LOD floor while edges stay pickable', () => {

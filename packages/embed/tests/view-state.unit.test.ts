@@ -112,8 +112,10 @@ describe('resolved channels', () => {
       'vertex-color': 'capacity',
       'vertex-height': 'load',
       'vertex-size': 'capacity',
+      'vertex-visible': 'capacity',
       'edge-color': 'flow',
       'edge-dash': 'flow',
+      'edge-visible': 'flow',
     });
 
     expect(view.projection).toBe('tilt');
@@ -122,8 +124,10 @@ describe('resolved channels', () => {
       vertexColor: ['capacity', [40, 80], null, undefined],
       vertexHeight: ['load', [10, 30], null, [0, 1]],
       vertexSize: ['capacity', [40, 80], null, undefined],
+      vertexVisible: ['capacity', [40, 80], null, undefined],
       edgeColor: ['flow', [4, 8], null, undefined],
       edgeDash: ['flow', [4, 8], null, undefined],
+      edgeVisible: ['flow', [4, 8], null, undefined],
     });
     expect(view.warnings).toEqual([]);
   });
@@ -277,6 +281,8 @@ describe('projection and controls resolution', () => {
       'vertex-size',
       'edge-color',
       'edge-dash',
+      'vertex-visible',
+      'edge-visible',
       'colormap',
     ]);
   });

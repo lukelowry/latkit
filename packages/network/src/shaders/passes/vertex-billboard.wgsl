@@ -34,6 +34,7 @@ fn vertex_underlay_px(state: u32) -> f32 {
 fn vs_vertex(quad: vec2f, inst: u32, role: u32) -> VOut {
   var out = culled_vertex();
   out.vertex_id = inst;
+  if (!vertex_visible(inst)) { return out; }
   let resolved_state = vertex_focus_state_for(i32(inst));
   if ((role == ROLE_FOCUS || role == ROLE_HALO) && resolved_state == 0u) { return out; }
   var state = resolved_state;

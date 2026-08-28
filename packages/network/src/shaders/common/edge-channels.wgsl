@@ -1,5 +1,10 @@
 // Channel-direct helpers for edge-scoped values.
 
+fn edge_visible(ei: u32) -> bool {
+  if ((u.item_flags & ITEM_EDGE_VISIBLE) == 0u) { return true; }
+  return rf(u.e_visible_offset + ei) > 0.0;
+}
+
 fn edge_color_val(ei: u32) -> f32 {
   return rf(u.e_color_offset + ei);
 }
