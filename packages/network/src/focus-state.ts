@@ -25,13 +25,13 @@ export interface FocusStyle {
   hoverAlpha: number;
   /** Extra multiplier applied to the selected color alpha channel. */
   selectedAlpha: number;
-  /** Additional hover radius around focused vertices, in device px. */
+  /** Additional hover radius around focused vertices, in CSS px. */
   vertexHoverPx: number;
-  /** Additional selection radius around focused vertices, in device px. */
+  /** Additional selection radius around focused vertices, in CSS px. */
   vertexSelectedPx: number;
-  /** Additional hover half-width around focused edges, in device px. */
+  /** Additional hover half-width around focused edges, in CSS px. */
   edgeHoverPx: number;
-  /** Additional selection half-width around focused edges, in device px. */
+  /** Additional selection half-width around focused edges, in CSS px. */
   edgeSelectedPx: number;
   /** Endpoint underlay mode for focused edges. */
   endpointMode: FocusEndpointMode;

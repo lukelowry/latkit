@@ -96,6 +96,7 @@ function makeSetup(
     proj.pack(state, uniforms.projection, VP);
     uniforms.frame.viewportX = VP.w * dpr;
     uniforms.frame.viewportY = VP.h * dpr;
+    uniforms.frame.backingScale = dpr;
   };
   pack();
   uniforms.geometry.vertexSize = 0.2;
@@ -255,7 +256,7 @@ function oraclePick(
       projector.project(A, x, y, h);
       if (projector.visible(A)) {
         const radius = projector.screenRadius(A) * sizeScale(id);
-        if (radius >= u.geometry.vertexLod) {
+        if (radius >= u.geometry.vertexLod * u.frame.backingScale) {
           projector.toScreen(A);
           const dx = cursorX - A.sx;
           const dy = cursorY - A.sy;
@@ -325,7 +326,7 @@ function oraclePick(
       if (!projector.visible(M)) continue;
 
       if (u.geometry.dashPeriod > 0 && dashes && dashes[edgeId]! < 0.5) {
-        const phase = (t * Math.sqrt(len2)) / u.geometry.dashPeriod;
+        const phase = (t * Math.sqrt(len2)) / (u.geometry.dashPeriod * u.frame.backingScale);
         if (phase - Math.floor(phase) > 0.5) continue;
       }
 
@@ -423,6 +424,47 @@ describe('Picker behavior (flat)', () => {
     const located = s.picker.locate(['vertex', 12], VP);
     expect(located?.[0]).toBeCloseTo(v.sx);
     expect(located?.[1]).toBeCloseTo(v.sy);
+  });
+
+  it('keeps capped billboard extent and LOD in CSS pixels at high DPR', () => {
+    const s = makeSetup('flat', { dpr: 2 });
+    s.uniforms.geometry.vertexSize = 100;
+    const v = s.screenAt(0, 0);
+
+    expect(
+      s.picker.pick(
+        s.query(v.sx + VISUAL.maxVertexRadiusPx - 0.25, v.sy, 0, {
+          vertices: true,
+          edges: false,
+        }),
+      ),
+    ).toEqual(['vertex', 12]);
+    // A zero-radius query still owns the deliberate one-device-pixel target
+    // floor, which is 0.5 CSS px at DPR 2.
+    expect(
+      s.picker.pick(
+        s.query(v.sx + VISUAL.maxVertexRadiusPx + 0.25, v.sy, 0, {
+          vertices: true,
+          edges: false,
+        }),
+      ),
+    ).toEqual(['vertex', 12]);
+    expect(
+      s.picker.pick(
+        s.query(v.sx + VISUAL.maxVertexRadiusPx + 0.75, v.sy, 0, {
+          vertices: true,
+          edges: false,
+        }),
+      ),
+    ).toBeNull();
+
+    s.uniforms.geometry.vertexLod = VISUAL.maxVertexRadiusPx + 0.25;
+    expect(s.picker.pick(s.query(v.sx, v.sy, 0, { vertices: true, edges: false }))).toBeNull();
+    s.uniforms.geometry.vertexLod = VISUAL.maxVertexRadiusPx - 0.25;
+    expect(s.picker.pick(s.query(v.sx, v.sy, 0, { vertices: true, edges: false }))).toEqual([
+      'vertex',
+      12,
+    ]);
   });
 
   it('locates a stable anchor on a multi-segment edge', () => {
@@ -612,7 +654,7 @@ describe('Picker matches the brute-force oracle', () => {
       const topology = randomTopology(rand, mode === 'globe');
 
       for (const [poseIndex, mutate] of posesFor(mode, rand).entries()) {
-        const s = makeSetup(mode, { topology, mutate });
+        const s = makeSetup(mode, { topology, mutate, dpr: (poseIndex % 3) + 1 });
         s.pack();
 
         // Alternate channel bindings across poses.

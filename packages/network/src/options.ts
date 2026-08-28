@@ -23,6 +23,16 @@ export interface Options {
   edges?: boolean;
   /** Draw height poles when a `vertexHeight` channel is active. @defaultValue `false`. */
   poles?: boolean;
+  /** Multiplier applied to the topology-derived vertex radius before its pixel cap. @defaultValue `1`. */
+  vertexScale?: number;
+  /** Multiplier applied to the topology-derived edge half-width before pixel clamps. @defaultValue `1`. */
+  edgeScale?: number;
+  /** Multiplier applied to vertex-height displacement. @defaultValue `1`. */
+  heightScale?: number;
+  /** Vertex level-of-detail threshold in CSS pixels. @defaultValue `2`. */
+  vertexLodPx?: number;
+  /** Screen-space edge dash period in CSS pixels. @defaultValue `12`. */
+  dashPeriodPx?: number;
   /** Draw geographic border overlays. @defaultValue `true`. */
   borders?: boolean;
   /** Draw projection graticule lines. @defaultValue `false`. */
@@ -99,6 +109,11 @@ const optionDefinitions = {
   vertices: { kind: 'boolean', default: true, lifecycle: 'runtime' },
   edges: { kind: 'boolean', default: true, lifecycle: 'runtime' },
   poles: { kind: 'boolean', default: false, lifecycle: 'runtime' },
+  vertexScale: { kind: 'nonnegative', default: 1, lifecycle: 'runtime' },
+  edgeScale: { kind: 'nonnegative', default: 1, lifecycle: 'runtime' },
+  heightScale: { kind: 'nonnegative', default: 1, lifecycle: 'runtime' },
+  vertexLodPx: { kind: 'nonnegative', default: 2, lifecycle: 'runtime' },
+  dashPeriodPx: { kind: 'nonnegative', default: 12, lifecycle: 'runtime' },
   borders: { kind: 'boolean', default: true, lifecycle: 'runtime' },
   graticule: { kind: 'boolean', default: false, lifecycle: 'runtime' },
   earthAxis: { kind: 'boolean', default: true, lifecycle: 'runtime' },

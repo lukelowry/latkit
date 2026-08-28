@@ -2,7 +2,9 @@
 
 A Vite example for the published shape of [`@latkit/network`](../../packages/network).
 It renders synthetic network topologies with WebGPU and exercises projections,
-channels, colormaps, layer visibility, lighting, and picking.
+programmatic camera rotation, channels, colormaps, layer visibility, lighting,
+and picking. The camera animation is off by default; use **auto rotate** to
+start it, then click again or interact with the canvas to stop it.
 
 ## Run
 

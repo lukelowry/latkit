@@ -108,6 +108,7 @@ type ForwardedNetworkApi = Pick<
   | 'select'
   | 'clearSelection'
   | 'panBy'
+  | 'rotateBy'
   | 'zoomBy'
   | 'fadeIn'
   | 'pause'
@@ -445,6 +446,10 @@ export function createNetworkElementClass(
 
     panBy(dx: number, dy: number): void {
       this.#liveNetwork()?.panBy(dx, dy);
+    }
+
+    rotateBy(dx: number, dy: number): void {
+      this.#liveNetwork()?.rotateBy(dx, dy);
     }
 
     zoomBy(factor: number): void {

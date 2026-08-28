@@ -190,6 +190,37 @@ describe('createNetwork controller', () => {
     expect(h.loop.wake).toHaveBeenCalled();
   });
 
+  it('applies global geometry scales, CSS-pixel LOD, and the active dash period', async () => {
+    const baseline = await makeHarness();
+    baseline.network.load(geographicTopology());
+    const h = await makeHarness({
+      vertexScale: 2,
+      edgeScale: 3,
+      vertexLodPx: 5,
+      dashPeriodPx: 18,
+    });
+    h.network.load(geographicTopology());
+
+    expect(h.loop.uniforms.geometry.vertexSize).toBeCloseTo(
+      baseline.loop.uniforms.geometry.vertexSize * 2,
+    );
+    expect(h.loop.uniforms.geometry.baseEdgeWidth).toBeCloseTo(
+      baseline.loop.uniforms.geometry.baseEdgeWidth * 3,
+    );
+    expect(h.loop.uniforms.geometry.vertexLod).toBe(5);
+
+    const height = h.loop.uniforms.geometry.heightWorldScale;
+    h.network.setOptions({ heightScale: 4 });
+    expect(h.loop.uniforms.geometry.heightWorldScale).toBeCloseTo(height * 4);
+
+    h.network.setChannel('edgeDash', new Float32Array([0, 1]));
+    expect(h.loop.uniforms.geometry.dashPeriod).toBe(18);
+    h.network.setOptions({ dashPeriodPx: 6 });
+    expect(h.loop.uniforms.geometry.dashPeriod).toBe(6);
+    h.network.clearChannel('edgeDash');
+    expect(h.loop.uniforms.geometry.dashPeriod).toBe(0);
+  });
+
   it('filters construction-only msaa from live option patches', async () => {
     const h = await makeHarness({ msaa: 4 });
     h.renderer.setVisible.mockClear();
@@ -664,10 +695,13 @@ describe('createNetwork controller', () => {
     h.picker.pick.mockClear();
     h.loop.wake.mockClear();
     h.rig.camera.panBy.mockReturnValue(false);
+    h.rig.camera.rotateBy.mockReturnValue(false);
     h.rig.camera.zoomAt.mockReturnValue(false);
 
     h.network.panBy(0, 0);
     h.network.panBy(Number.NaN, 1);
+    h.network.rotateBy(0, 0);
+    h.network.rotateBy(1, Number.NaN);
     h.network.zoomBy(1);
     h.network.zoomBy(0);
 
@@ -890,24 +924,28 @@ describe('createNetwork controller', () => {
     expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt'], ['tilt'], ['globe']]);
   });
 
-  it('fits, pans, and zooms through the public camera methods', async () => {
+  it('fits, pans, rotates, and zooms through the public camera methods', async () => {
     const h = await makeHarness();
     h.network.fit(true);
     h.network.panBy(1, 2);
+    h.network.rotateBy(1, 2);
     h.network.zoomBy(2);
     expect(h.rig.camera.fitView).not.toHaveBeenCalled();
     expect(h.rig.camera.panBy).not.toHaveBeenCalled();
+    expect(h.rig.camera.rotateBy).not.toHaveBeenCalled();
     expect(h.rig.camera.zoomAt).not.toHaveBeenCalled();
 
     h.network.load(geographicTopology());
     h.network.fit(true);
     h.network.fit(false);
     h.network.panBy(3, 4);
+    h.network.rotateBy(5, 6);
     h.network.zoomBy(1.25);
 
     expect(h.rig.camera.fitView).toHaveBeenCalled();
     expect(h.loop.requestFit).toHaveBeenCalled();
     expect(h.rig.camera.panBy).toHaveBeenCalledWith(3, 4, { w: 100, h: 80 });
+    expect(h.rig.camera.rotateBy).toHaveBeenCalledWith(5, 6, { w: 100, h: 80 });
     expect(h.rig.camera.zoomAt).toHaveBeenCalledWith(1.25, 50, 40, { w: 100, h: 80 });
   });
 

@@ -207,7 +207,7 @@ export const W_VIEWPORT_Y = 29;
 /** Word offset for frame time. */
 const W_TIME = 30;
 /** Word offset for backing pixels per CSS pixel. */
-const W_BACKING_SCALE = 88;
+export const W_BACKING_SCALE = 88;
 /** Word offset for base vertex radius. */
 export const W_VERTEX_SIZE = 31;
 /** Word offset for vertex level-of-detail threshold. */

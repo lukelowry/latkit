@@ -106,7 +106,7 @@ fn build_edge_capsule(
 
   var underlay_px = 0.0;
   if (halo) {
-    underlay_px = edge_underlay_px(focus_state);
+    underlay_px = css_px(edge_underlay_px(focus_state));
     if (underlay_px <= 0.0) { return out; }
   }
   let hw = base_hw + underlay_px;

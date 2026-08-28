@@ -49,6 +49,20 @@ the same pitch state in either direction and reuse one WebGPU pipeline bundle.
 A `vertexHeight` channel controls depth order at flat rest and blends
 continuously into physical height as the view tilts.
 
+Pan and rotation use the same CSS-pixel deltas as pointer gestures; zoom is
+multiplicative:
+
+```ts
+network.panBy(24, 0);
+network.zoomBy(1.2);
+
+network.setProjection('tilt');
+network.rotateBy(18, -8);
+```
+
+`rotateBy()` changes bearing and pitch in `tilt`. It is a no-op in projections
+that do not support rotation, including `flat` and `globe`.
+
 ## Add interaction handlers
 
 Use events to mirror hover and selection state into your app:
@@ -105,7 +119,8 @@ device.destroy();
 
 ## Run the full example
 
-The repository example adds topology switching, projection controls, colormap controls, layer toggles, and picking:
+The repository example adds topology switching, projection controls, an opt-in
+camera animation, colormap controls, layer toggles, and picking:
 
 ```sh
 pnpm --filter @latkit/network-example dev

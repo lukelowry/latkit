@@ -34,6 +34,7 @@ function setup(mode: ProjectionMode, mutate?: (state: Float64Array) => void): Se
   proj.pack(state, uniforms.projection, VP);
   uniforms.frame.viewportX = VP.w;
   uniforms.frame.viewportY = VP.h;
+  uniforms.frame.backingScale = 1;
   uniforms.geometry.vertexSize = 0.2;
   uniforms.geometry.baseEdgeWidth = 0.05;
   uniforms.geometry.vertexLod = 2;
@@ -50,6 +51,23 @@ function screenOf(s: Setup, x: number, y: number, h = 0): { sx: number; sy: numb
 }
 
 describe('pick projector parity', () => {
+  it('scales visual clamps and pole floors from CSS into device pixels', () => {
+    const s = setup('flat');
+    s.uniforms.frame.viewportX = VP.w * 2;
+    s.uniforms.frame.viewportY = VP.h * 2;
+    s.uniforms.frame.backingScale = 2;
+    s.uniforms.geometry.vertexSize = 100;
+    const projector = s.projector;
+    const p = createPoint();
+    projector.project(p, 0, 0, 0);
+
+    expect(projector.screenRadius(p)).toBe(VISUAL.maxVertexRadiusPx * 2);
+    expect(projector.screenHalfWidth(p, 0)).toBe(VISUAL.minEdgeHalfWidthPx * 2);
+
+    s.uniforms.geometry.vertexSize = 0;
+    expect(projector.poleHalfWidth(p)).toBe(3);
+  });
+
   it('flat roundtrips through the camera affine exactly', () => {
     const s = setup('flat');
     for (const [x, y] of [

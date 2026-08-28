@@ -41,9 +41,6 @@ const CHANNEL_BY_KEY = new Map<Channel, ChannelDefinition>(
   CHANNEL_DEFINITIONS.map((definition) => [definition.key, definition]),
 );
 
-/** Default screen-space dash period used when edgeDash is enabled. */
-const DASH_PERIOD_PX = 12;
-
 /** Shader mode value for an inactive channel. */
 const MODE_OFF = 0;
 
@@ -100,6 +97,8 @@ interface ChannelDeps {
   vertexCount(): number;
   /** Current edge count for edge-scoped channels. */
   edgeCount(): number;
+  /** Current screen-space dash period selected by display options. */
+  dashPeriodPx(): number;
 }
 
 /** Runtime channel controller returned to the network API. */
@@ -117,6 +116,8 @@ export interface Channels {
   reset(): void;
   /** Override the input domain used by an active non-dash channel. */
   setRange(channel: Channel, range: ChannelRange | null): void;
+  /** Re-read the display dash period; a no-op while `edgeDash` is unbound. */
+  refreshDashPeriod(): void;
   /** Return the last array bound to a channel, or null when unbound. */
   values(channel: Channel): Float32Array | null;
 }
@@ -278,7 +279,7 @@ export function createChannels(
         uniforms.channel.vSizeMode = on ? 1 : 0;
         break;
       case 'edgeDash':
-        uniforms.geometry.dashPeriod = on ? DASH_PERIOD_PX : 0;
+        uniforms.geometry.dashPeriod = on ? deps.dashPeriodPx() : 0;
         break;
       default:
         /* v8 ignore next -- compile-time exhaustive Channel guard. */
@@ -362,6 +363,7 @@ export function createChannels(
     clear,
     reset,
     setRange,
+    refreshDashPeriod: () => setMode('edgeDash', bound.has('edgeDash')),
     values: (channel) => current.get(channel) ?? null,
   };
 }

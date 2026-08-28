@@ -127,6 +127,12 @@ Every serializable Network option is available under its exact kebab-case name. 
 construction option, so changing it replaces the live activation against cached data. Other options,
 bindings, projection, colormap, borders, and controls update without recreating the renderer.
 
+The live geometry options are `vertex-scale`, `edge-scale`, `height-scale`, `vertex-lod-px`, and
+`dash-period-px`. The first three multiply the topology-derived vertex radius, edge half-width, and
+height displacement. `vertex-lod-px` culls vertices below a CSS-pixel radius, while
+`dash-period-px` sets the screen-space period used by `edge-dash`; `0` disables dash gaps. Their
+defaults are `1`, `1`, `1`, `2`, and `12`. All accept non-negative numbers.
+
 `border-source="natural-earth"` selects the packaged geometry. The independent `borders` Network
 option controls whether border rendering and packaged loading are enabled. `border-source="none"`
 disables the packaged source.
@@ -211,9 +217,10 @@ element.select('vertex', 1);
 ```
 
 The complete element method surface is `setOptions`, `setBorders`, `setColormap`, `setBaseColor`,
-`setChannel`, `clearChannel`, `setChannelRange`, `setProjection`, `fit`, `select`, `clearSelection`,
-`panBy`, `zoomBy`, `fadeIn`, `pause`, and `resume`. `projections` reports the current topology's mode
-availability. The underlying Network, canvas ownership, and GPU device remain private.
+`setChannel`, `clearChannel`, `setChannelRange`, `setProjection`, `fit`, `reveal`, `select`,
+`clearSelection`, `panBy`, `rotateBy`, `zoomBy`, `fadeIn`, `pause`, and `resume`. `projections`
+reports the current topology's mode availability. The underlying Network, canvas ownership, and GPU
+device remain private.
 
 Renderer notifications become bubbling, composed DOM events named `load`, `error`, `hover`, `select`,
 `zoom`, and `deviceLost`. `ready` always describes the current activation and is replaced for source

@@ -89,6 +89,7 @@ function makeRig(
   proj.pack(state, uniforms.projection, VP);
   uniforms.frame.viewportX = VP.w;
   uniforms.frame.viewportY = VP.h;
+  uniforms.frame.backingScale = 1;
   uniforms.geometry.vertexSize = (xMax - xMin) * 0.0005;
   uniforms.geometry.baseEdgeWidth = (xMax - xMin) * 0.0001;
   uniforms.geometry.vertexLod = 2;

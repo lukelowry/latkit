@@ -51,7 +51,7 @@ fn vs_vertex(quad: vec2f, inst: u32, role: u32) -> VOut {
 
   var underlay_px = 0.0;
   if (role == ROLE_HALO) {
-    underlay_px = vertex_underlay_px(state);
+    underlay_px = css_px(vertex_underlay_px(state));
     if (underlay_px <= 0.0) { return out; }
   }
 

@@ -31,12 +31,14 @@ describe('createChannels', () => {
       ),
       writeChannel: vi.fn(),
     };
+    const display = { dashPeriodPx: 18 };
     const channels = createChannels(uniforms, renderer, {
       loaded: () => loaded,
       vertexCount: () => 3,
       edgeCount: () => 2,
+      dashPeriodPx: () => display.dashPeriodPx,
     });
-    return { uniforms, renderer, channels };
+    return { uniforms, renderer, channels, display };
   }
 
   it('validates channel lengths without scanning values', () => {
@@ -247,10 +249,25 @@ describe('createChannels', () => {
     const { channels, uniforms } = make();
 
     channels.set('edgeDash', new Float32Array([1, 0]), [100, 200]);
-    expect(uniforms.geometry.dashPeriod).toBeGreaterThan(0);
+    expect(uniforms.geometry.dashPeriod).toBe(18);
 
     channels.clear('edgeDash');
     expect(uniforms.geometry.dashPeriod).toBe(0);
+  });
+
+  it('refreshes the dash period only while edgeDash is bound', () => {
+    const { channels, uniforms, display } = make();
+
+    display.dashPeriodPx = 6;
+    channels.refreshDashPeriod();
+    expect(uniforms.geometry.dashPeriod).toBe(0);
+
+    channels.set('edgeDash', new Float32Array([1, 0]), [100, 200]);
+    expect(uniforms.geometry.dashPeriod).toBe(6);
+
+    display.dashPeriodPx = 9;
+    channels.refreshDashPeriod();
+    expect(uniforms.geometry.dashPeriod).toBe(9);
   });
 
   it('retains bound values for the picker and drops them on clear', () => {

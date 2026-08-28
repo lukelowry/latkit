@@ -2,6 +2,7 @@ import type { ProjectionMode } from '../projections.js';
 import type { Viewport } from '../camera/projection.js';
 import type { Uniforms } from '../webgpu/uniforms.js';
 import {
+  W_BACKING_SCALE,
   W_BASE_EDGE_WIDTH,
   W_DASH_PERIOD,
   W_HEIGHT_CENTER,
@@ -389,6 +390,7 @@ export class Picker {
     // Device-px cursor and radius (uniform viewport is device px).
     const dprX = this.f32[W_VIEWPORT_X]! / q.vp.w;
     const dprY = this.f32[W_VIEWPORT_Y]! / q.vp.h;
+    const backingScale = this.f32[W_BACKING_SCALE]!;
     const cursorX = q.sx * dprX;
     const cursorY = q.sy * dprY;
     const radiusDev = Math.max(1, q.radiusPx * Math.max(dprX, dprY));
@@ -412,8 +414,8 @@ export class Picker {
       dashes,
       vertices: q.vertices,
       poles,
-      lod: this.f32[W_VERTEX_LOD]!,
-      dashPeriod: this.f32[W_DASH_PERIOD]!,
+      lod: this.f32[W_VERTEX_LOD]! * backingScale,
+      dashPeriod: this.f32[W_DASH_PERIOD]! * backingScale,
       baseEdgeWidth: this.f32[W_BASE_EDGE_WIDTH]!,
       bestVertexD2: Infinity,
       bestVertexId: -1,

@@ -26,6 +26,8 @@ describe('network package entrypoint', () => {
     expect(validateTopology).toBeTypeOf('function');
     expectTypeOf<Parameters<typeof createNetwork>[1]>().toEqualTypeOf<HTMLCanvasElement>();
     expectTypeOf<Parameters<Network['setProjection']>[0]>().toEqualTypeOf<ProjectionMode>();
+    expectTypeOf<Parameters<Network['rotateBy']>>().toEqualTypeOf<[dx: number, dy: number]>();
+    expectTypeOf<ReturnType<Network['rotateBy']>>().toEqualTypeOf<void>();
     expectTypeOf<ReturnType<typeof finiteExtent>>().toEqualTypeOf<ChannelRange | null>();
     expectTypeOf<Parameters<typeof validateBorders>[0]>().toEqualTypeOf<Borders>();
     expectTypeOf<RGBA>().toEqualTypeOf<readonly [number, number, number, number]>();

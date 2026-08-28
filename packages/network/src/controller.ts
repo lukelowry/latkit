@@ -249,6 +249,15 @@ export interface Network {
    */
   panBy(dx: number, dy: number): void;
   /**
+   * Rotate the active camera by screen pixels.
+   *
+   * The call is a no-op when the active projection does not support rotation.
+   *
+   * @param dx - Horizontal delta in CSS pixels.
+   * @param dy - Vertical delta in CSS pixels.
+   */
+  rotateBy(dx: number, dy: number): void;
+  /**
    * Zoom the active camera around the viewport center.
    *
    * @param factor - Multiplicative zoom factor.
@@ -305,9 +314,6 @@ const NO_ITEMS: readonly Item[] = Object.freeze([]);
 
 /** Default CSS-pixel inset used by reveal visibility checks. */
 const DEFAULT_REVEAL_PADDING_PX = 48;
-
-/** Screen-space threshold used by shaders for vertex level-of-detail behavior. */
-const VERTEX_LOD_PX = 2;
 
 /** Default opacity transition length used by {@link Network.fadeIn}. */
 const FADE_IN_MS = 150;
@@ -510,13 +516,17 @@ function createNetworkController(
     vertices: DEFAULT_OPTIONS.vertices,
     edges: DEFAULT_OPTIONS.edges,
     poles: DEFAULT_OPTIONS.poles,
+    vertexScale: DEFAULT_OPTIONS.vertexScale,
+    edgeScale: DEFAULT_OPTIONS.edgeScale,
+    heightScale: DEFAULT_OPTIONS.heightScale,
+    vertexLodPx: DEFAULT_OPTIONS.vertexLodPx,
+    dashPeriodPx: DEFAULT_OPTIONS.dashPeriodPx,
     earthAxis: DEFAULT_OPTIONS.earthAxis,
     nightFloor: DEFAULT_OPTIONS.nightFloor,
     surfaceNightFloor: DEFAULT_OPTIONS.surfaceNightFloor,
     terminatorWidth: DEFAULT_OPTIONS.terminatorWidth,
   };
 
-  uniforms.geometry.vertexLod = VERTEX_LOD_PX;
   let focusStyle: FocusStyle = {
     enabled: DEFAULT_OPTIONS.focusEnabled,
     hoverColor: DEFAULT_OPTIONS.hoverColor,
@@ -530,7 +540,6 @@ function createNetworkController(
     endpointMode: DEFAULT_OPTIONS.focusEndpointMode,
   };
   const focus = new FocusState(uniforms, edgeEndpoints, focusStyle);
-  applyOptions(options, true);
 
   let topology: Topology | null = null;
   let topologyBounds: Bounds | null = null;
@@ -594,6 +603,7 @@ function createNetworkController(
     loaded: () => topology !== null,
     vertexCount: () => topology?.vertexCount ?? 0,
     edgeCount: () => (topology ? edgeCountOf(topology) : 0),
+    dashPeriodPx: () => display.dashPeriodPx,
   });
 
   /**
@@ -607,6 +617,7 @@ function createNetworkController(
     unproject: (sx, sy, view) => rig.camera.screenToWorld(sx, sy, view),
     values: (channel) => channels.values(channel),
   });
+  applyOptions(options, true);
 
   /** Builds a pick query using current visibility and viewport state. */
   const pickQueryAt = (
@@ -907,6 +918,13 @@ function createNetworkController(
       loop.wake();
     },
 
+    rotateBy(dx, dy) {
+      if (!topology) return;
+      if (!rig.camera.rotateBy(dx, dy, vp())) return;
+      hoverDirty = true;
+      loop.wake();
+    },
+
     zoomBy(factor) {
       if (!topology) return;
       const v = vp();
@@ -1068,10 +1086,15 @@ function createNetworkController(
       opts.colormap && (!initial || opts.colormap !== DEFAULT_OPTIONS.colormap)
         ? sampleColormap(opts.colormap)
         : null;
-    const pickVisibilityChanged =
+    const pickGeometryChanged =
       (opts.vertices !== undefined && opts.vertices !== display.vertices) ||
       (opts.edges !== undefined && opts.edges !== display.edges) ||
-      (opts.poles !== undefined && opts.poles !== display.poles);
+      (opts.poles !== undefined && opts.poles !== display.poles) ||
+      (opts.vertexScale !== undefined && opts.vertexScale !== display.vertexScale) ||
+      (opts.edgeScale !== undefined && opts.edgeScale !== display.edgeScale) ||
+      (opts.heightScale !== undefined && opts.heightScale !== display.heightScale) ||
+      (opts.vertexLodPx !== undefined && opts.vertexLodPx !== display.vertexLodPx) ||
+      (opts.dashPeriodPx !== undefined && opts.dashPeriodPx !== display.dashPeriodPx);
     if (colormapLut) renderer.writeColormap(colormapLut);
     if (opts.baseColor) applyBaseColor(opts.baseColor);
     if (opts.graticuleColor) uniforms.gridColor.set(opts.graticuleColor);
@@ -1082,6 +1105,14 @@ function createNetworkController(
     if (opts.vertices !== undefined) display.vertices = opts.vertices;
     if (opts.edges !== undefined) display.edges = opts.edges;
     if (opts.poles !== undefined) display.poles = opts.poles;
+    if (opts.vertexScale !== undefined) display.vertexScale = opts.vertexScale;
+    if (opts.edgeScale !== undefined) display.edgeScale = opts.edgeScale;
+    if (opts.heightScale !== undefined) display.heightScale = opts.heightScale;
+    if (opts.vertexLodPx !== undefined) display.vertexLodPx = opts.vertexLodPx;
+    if (opts.dashPeriodPx !== undefined) {
+      display.dashPeriodPx = opts.dashPeriodPx;
+      channels.refreshDashPeriod();
+    }
     if (opts.earthAxis !== undefined) display.earthAxis = opts.earthAxis;
     if (opts.daylight !== undefined) display.daylight = opts.daylight;
     if (opts.nightFloor !== undefined) display.nightFloor = opts.nightFloor;
@@ -1096,7 +1127,8 @@ function createNetworkController(
       earthAxis: display.earthAxis,
     });
     writeDisplayToUniforms();
-    return pickVisibilityChanged;
+    writeGeometryScales(vp());
+    return pickGeometryChanged;
   }
 
   /** Applies focus-related option fields as a partial patch. */
@@ -1126,13 +1158,14 @@ function createNetworkController(
     focus.setStyle(focusStyle);
   }
 
-  /** Writes display flags and lighting scalars into projection uniforms. */
+  /** Writes display flags, lighting scalars, and screen-space thresholds into uniforms. */
   function writeDisplayToUniforms(): void {
     uniforms.projection.flags =
       (display.daylight ? FLAG_DAYLIGHT : 0) | (display.graticule ? FLAG_GRATICULE : 0);
     uniforms.projection.nightFloor = display.nightFloor;
     uniforms.projection.surfaceNightFloor = display.surfaceNightFloor;
     uniforms.projection.terminatorWidth = display.terminatorWidth;
+    uniforms.geometry.vertexLod = display.vertexLodPx;
   }
 
   /** Returns endpoint vertex ids for focus underlays, or [-1, -1] when invalid. */
@@ -1147,10 +1180,20 @@ function createNetworkController(
   /** Updates projection-specific height amplitude from current viewport state. */
   function updateHeightWorldScale(frameVp: Viewport): void {
     if (!topology || !topologyBounds) return;
-    uniforms.geometry.heightWorldScale =
+    const scale =
       rig.mode === 'globe'
         ? VISUAL.globeHeightRadialScale
-        : planeHeightWorldScale(topologyBounds, frameVp, vertexSize);
+        : planeHeightWorldScale(topologyBounds, frameVp, vertexSize * display.vertexScale);
+    uniforms.geometry.heightWorldScale = scale * display.heightScale;
+  }
+
+  /** Writes topology-derived geometry sizes through the current display multipliers. */
+  function writeGeometryScales(frameVp: Viewport): void {
+    if (topologyCharacteristicLength === null) return;
+    uniforms.geometry.vertexSize = vertexSize * display.vertexScale;
+    uniforms.geometry.baseEdgeWidth =
+      topologyCharacteristicLength * VISUAL.baseEdgeWidthScale * display.edgeScale;
+    updateHeightWorldScale(frameVp);
   }
 
   /** Computes projection support for the currently loaded topology shape. */
@@ -1285,9 +1328,7 @@ function createNetworkController(
     }
 
     vertexSize = info.characteristicLength * VISUAL.vertexSizeScale;
-    uniforms.geometry.vertexSize = vertexSize;
-    uniforms.geometry.baseEdgeWidth = info.characteristicLength * VISUAL.baseEdgeWidthScale;
-    updateHeightWorldScale(vp());
+    writeGeometryScales(vp());
 
     channels.reset();
     loop.setBounds(info.bounds);

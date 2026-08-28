@@ -368,6 +368,11 @@ describe('NetworkElement', () => {
     h.element.setOptions({
       msaa: 4,
       edges: false,
+      vertexScale: 1.25,
+      edgeScale: 0.75,
+      heightScale: 1.5,
+      vertexLodPx: 3,
+      dashPeriodPx: 16,
       nightFloor: 0.25,
       baseColor: [0.1, 0.2, 0.3, 1],
       colormap: customColormap,
@@ -379,6 +384,11 @@ describe('NetworkElement', () => {
 
     expect(h.element.getAttribute('msaa')).toBe('4');
     expect(h.element.getAttribute('edges')).toBe('false');
+    expect(h.element.getAttribute('vertex-scale')).toBe('1.25');
+    expect(h.element.getAttribute('edge-scale')).toBe('0.75');
+    expect(h.element.getAttribute('height-scale')).toBe('1.5');
+    expect(h.element.getAttribute('vertex-lod-px')).toBe('3');
+    expect(h.element.getAttribute('dash-period-px')).toBe('16');
     expect(h.element.getAttribute('base-color')).toBe('0.1 0.2 0.3 1');
     expect(h.element.getAttribute('vertex-height')).toBe('');
     expect(h.element.getAttribute('vertex-height-domain')).toBe('2 8');
@@ -394,6 +404,11 @@ describe('NetworkElement', () => {
       expect.objectContaining({
         msaa: 4,
         edges: false,
+        vertexScale: 1.25,
+        edgeScale: 0.75,
+        heightScale: 1.5,
+        vertexLodPx: 3,
+        dashPeriodPx: 16,
         nightFloor: 0.25,
         baseColor: [0.1, 0.2, 0.3, 1],
       }),
@@ -508,6 +523,7 @@ describe('NetworkElement', () => {
     h.element.fit(true);
     expect(h.element.reveal({ kind: 'vertex', index: 1 })).toBe(false);
     h.element.panBy(1, 2);
+    h.element.rotateBy(3, 4);
     h.element.zoomBy(1.5);
     h.element.fadeIn(300);
     h.element.select('vertex', 1);
@@ -526,6 +542,7 @@ describe('NetworkElement', () => {
       true,
     );
     h.element.panBy(12, -8);
+    h.element.rotateBy(6, -2);
     h.element.zoomBy(1.25);
     h.element.fadeIn(240);
     h.element.select('vertex', 1);
@@ -538,6 +555,7 @@ describe('NetworkElement', () => {
       { paddingPx: 32, animate: true },
     );
     expect(network.panBy).toHaveBeenCalledWith(12, -8);
+    expect(network.rotateBy).toHaveBeenCalledWith(6, -2);
     expect(network.zoomBy).toHaveBeenCalledWith(1.25);
     expect(network.fadeIn).toHaveBeenCalledWith(240);
     expect(network.select).toHaveBeenCalledWith('vertex', 1);
