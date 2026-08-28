@@ -448,7 +448,7 @@ describe('NetworkElement', () => {
     expect(h.element.hasAttribute('vertex-color-domain')).toBe(false);
   });
 
-  it('ignores channel ranges that Network ignores', async () => {
+  it('ignores channel range arguments that Network ignores', async () => {
     const h = harness();
     document.body.append(h.element);
     h.near(true);
@@ -456,14 +456,35 @@ describe('NetworkElement', () => {
     const network = h.networks[0]!;
     const vertexValues = new Float32Array([1, 2, 3]);
     const edgeValues = new Float32Array([1, 0, 1]);
+    const invalidRange = [Number.NaN, Number.NEGATIVE_INFINITY] as const;
 
     expect(() =>
       h.element.setChannel('vertexColor', vertexValues, undefined, [2, 1]),
     ).not.toThrow();
     expect(network.setChannel).toHaveBeenLastCalledWith('vertexColor', vertexValues, undefined);
 
-    expect(() => h.element.setChannel('edgeDash', edgeValues, [2, 1], [2, 1])).not.toThrow();
+    expect(() =>
+      h.element.setChannel('edgeDash', edgeValues, invalidRange, invalidRange),
+    ).not.toThrow();
     expect(network.setChannel).toHaveBeenLastCalledWith('edgeDash', edgeValues);
+
+    network.setChannelRange.mockClear();
+
+    expect(() =>
+      h.element.setChannel('vertexVisible', vertexValues, invalidRange, invalidRange),
+    ).not.toThrow();
+    expect(network.setChannel).toHaveBeenLastCalledWith('vertexVisible', vertexValues);
+    expect(h.element.getAttribute('vertex-visible-domain')).toBeNull();
+
+    expect(() =>
+      h.element.setChannel('edgeVisible', edgeValues, invalidRange, invalidRange),
+    ).not.toThrow();
+    expect(network.setChannel).toHaveBeenLastCalledWith('edgeVisible', edgeValues);
+    expect(h.element.getAttribute('edge-visible-domain')).toBeNull();
+
+    expect(() => h.element.setChannelRange('vertexVisible', invalidRange)).not.toThrow();
+    expect(() => h.element.setChannelRange('edgeVisible', invalidRange)).not.toThrow();
+    expect(network.setChannelRange).not.toHaveBeenCalled();
   });
 
   it('keeps direct values across range changes and replaces them on same-value field reassertion', async () => {

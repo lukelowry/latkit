@@ -17,6 +17,8 @@ describe('initial view application', () => {
       'vertex-size': 'capacity',
       'edge-color': 'flow',
       'edge-dash': 'flow',
+      'vertex-visible': 'capacity',
+      'edge-visible': 'flow',
       'vertex-height-range': '-1 2',
     });
     const h = networkHarness();
@@ -32,6 +34,8 @@ describe('initial view application', () => {
       ['vertexSize', data.fields![1]!.values, [40, 80]],
       ['edgeColor', data.fields![2]!.values, [4, 8]],
       ['edgeDash', data.fields![2]!.values],
+      ['vertexVisible', data.fields![1]!.values],
+      ['edgeVisible', data.fields![2]!.values],
     ]);
     expect(h.setChannelRange.mock.calls).toEqual([
       ['vertexColor', null],

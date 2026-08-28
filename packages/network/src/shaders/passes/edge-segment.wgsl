@@ -181,7 +181,9 @@ fn edge_common(
 }
 
 fn vs_edge(strip: vec2f, inst: u32, role: u32) -> VOut {
-  if (!edge_visible(segment_edge_id(inst))) { return culled_edge(); }
+  if ((u.item_flags & ITEM_EDGE_VISIBLE) != 0u) {
+    if (!edge_visible(segment_edge_id(inst))) { return culled_edge(); }
+  }
   let seg = segment_record(inst);
   let endpoints = vec2u(seg.from_vertex, seg.to_vertex);
   let h_a_endpoint = vertex_norm_height(seg.from_vertex);

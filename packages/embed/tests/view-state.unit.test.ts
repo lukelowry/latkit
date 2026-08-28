@@ -105,7 +105,7 @@ describe('resolved option state', () => {
 });
 
 describe('resolved channels', () => {
-  it('binds every canonical channel with its scope, measured domain, and height range', () => {
+  it('binds every canonical channel with normalized domains and the height range', () => {
     const view = resolvedView(networkDataWithFields(), {
       colormap: 'plasma',
       projection: 'tilt',
@@ -124,10 +124,10 @@ describe('resolved channels', () => {
       vertexColor: ['capacity', [40, 80], null, undefined],
       vertexHeight: ['load', [10, 30], null, [0, 1]],
       vertexSize: ['capacity', [40, 80], null, undefined],
-      vertexVisible: ['capacity', [40, 80], null, undefined],
+      vertexVisible: ['capacity', null, null, undefined],
       edgeColor: ['flow', [4, 8], null, undefined],
-      edgeDash: ['flow', [4, 8], null, undefined],
-      edgeVisible: ['flow', [4, 8], null, undefined],
+      edgeDash: ['flow', null, null, undefined],
+      edgeVisible: ['flow', null, null, undefined],
     });
     expect(view.warnings).toEqual([]);
   });

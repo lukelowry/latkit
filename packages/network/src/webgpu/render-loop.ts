@@ -280,8 +280,13 @@ export class RenderLoop {
       this.onZoom?.(fit);
     }
 
-    this.uniforms.frame.viewportX = this.presentation.canvas.width;
-    this.uniforms.frame.viewportY = this.presentation.canvas.height;
+    const { canvas } = this.presentation;
+    this.uniforms.frame.viewportX = canvas.width;
+    this.uniforms.frame.viewportY = canvas.height;
+    this.uniforms.frame.backingScale = Math.min(
+      canvas.width / frameVp.w,
+      canvas.height / frameVp.h,
+    );
 
     // Hover resolves here after this frame's camera pose is final and before
     // uniforms upload, so the highlight it writes is part of the frame
@@ -360,13 +365,6 @@ export class RenderLoop {
 
   /** Uploads frame uniforms and delegates rendering to the GPU renderer. */
   private submitFrame(): boolean {
-    const { canvas } = this.presentation;
-    this.uniforms.frame.viewportX = canvas.width;
-    this.uniforms.frame.viewportY = canvas.height;
-    this.uniforms.frame.backingScale = Math.min(
-      canvas.width / this.frameVp.w,
-      canvas.height / this.frameVp.h,
-    );
     this.uniforms.frame.time = performance.now() * 0.001;
     return this.renderer.render(this.uniforms);
   }

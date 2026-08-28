@@ -1,4 +1,10 @@
-import type { Channel, ChannelRange, Network, Options } from '@latkit/network';
+import {
+  channelNormalizes,
+  type Channel,
+  type ChannelRange,
+  type Network,
+  type Options,
+} from '@latkit/network';
 
 import {
   CHANNEL_ATTRIBUTES,
@@ -8,7 +14,6 @@ import {
 } from './attributes.js';
 import {
   channelValues,
-  isNormalizedChannel,
   type ChannelBinding,
   type ResolvedRuntimeOptions,
   type ViewState,
@@ -72,23 +77,26 @@ function applyChannel(
     return;
   }
 
+  const definition = channelAttribute(channel);
+  const normalizes = channelNormalizes(definition);
   const sourceChanged = !previous || !sameChannelSource(previous, next);
   const baseChanged = !previous || !sameOptionalRange(previous.baseDomain, next.baseDomain);
   const outputChanged = !previous || !sameOptionalRange(previous.outputRange, next.outputRange);
+
   if (sourceChanged || baseChanged || outputChanged) {
-    const definition = channelAttribute(channel);
-    if (definition.map === 'dash') network.setChannel(channel, channelValues(next));
-    else if (definition.map === 'height') {
+    if (!normalizes) {
+      network.setChannel(channel, channelValues(next));
+    } else if (definition.map === 'height') {
       network.setChannel(channel, channelValues(next), next.baseDomain, next.outputRange);
-    } else network.setChannel(channel, channelValues(next), next.baseDomain);
-    if (isNormalizedChannel(channel)) network.setChannelRange(channel, next.domainOverride);
+    } else {
+      network.setChannel(channel, channelValues(next), next.baseDomain);
+    }
+
+    if (normalizes) network.setChannelRange(channel, next.domainOverride);
     return;
   }
 
-  if (
-    isNormalizedChannel(channel) &&
-    !sameOptionalRange(previous.domainOverride, next.domainOverride)
-  ) {
+  if (normalizes && !sameOptionalRange(previous.domainOverride, next.domainOverride)) {
     network.setChannelRange(channel, next.domainOverride);
   }
 }

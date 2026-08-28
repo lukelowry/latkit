@@ -2,6 +2,7 @@ import type { Colormap } from '@latkit/colormaps';
 import { GpuUnavailableError } from '@latkit/gpu';
 import {
   PROJECTION_MODES,
+  channelNormalizes,
   createNetwork,
   validateBorders,
   validateOption,
@@ -47,7 +48,6 @@ import { createChrome, type Chrome } from './view/chrome.js';
 import { fieldsFor } from './view/fields.js';
 import { createShell, type Shell } from './view/shell.js';
 import {
-  isNormalizedChannel,
   resolveOptionState,
   resolveView,
   validateDirectChannelLengths,
@@ -363,9 +363,10 @@ export function createNetworkElementClass(
       range?: ChannelRange,
     ): void {
       const definition = channelAttribute(channel);
+      const normalizes = channelNormalizes(definition);
       assertFloat32Array(values, `${channel} values`);
       const checkedDomain =
-        definition.map === 'dash' || domain === undefined
+        !normalizes || domain === undefined
           ? undefined
           : domain === null
             ? null
@@ -382,9 +383,7 @@ export function createNetworkElementClass(
         if (definition.rangeAttribute) this.removeAttribute(definition.rangeAttribute);
         this.#input.directChannels[channel] = {
           values,
-          ...(definition.map === 'dash' || checkedDomain === undefined
-            ? {}
-            : { baseDomain: checkedDomain }),
+          ...(normalizes && checkedDomain !== undefined ? { baseDomain: checkedDomain } : {}),
           ...(definition.map === 'height' && checkedOutput ? { outputRange: checkedOutput } : {}),
         };
         this.#requestViewUpdate();
@@ -404,7 +403,7 @@ export function createNetworkElementClass(
 
     setChannelRange(channel: Channel, range: ChannelRange | null): void {
       const definition = channelAttribute(channel);
-      if (!isNormalizedChannel(channel) || !definition.domainAttribute) return;
+      if (!channelNormalizes(definition) || !definition.domainAttribute) return;
       if (range === null) this.removeAttribute(definition.domainAttribute);
       else this.setAttribute(definition.domainAttribute, serializeRange(range, `${channel} range`));
     }

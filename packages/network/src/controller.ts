@@ -176,12 +176,14 @@ export interface Network {
   /**
    * Bind or replace a per-vertex or per-edge rendering channel.
    *
-   * `domain` is the input value range. Height channels may also pass an
-   * output `range`; use null for `domain` to keep the auto-scanned input range.
+   * `domain` configures normalized channels only. Raw `edgeDash`,
+   * `vertexVisible`, and `edgeVisible` channels ignore both range arguments.
+   * Height channels may pass an output `range`; a null height domain retains
+   * automatic finite-extent scanning.
    *
    * @param channel - Channel name to bind.
    * @param values - Scalar values whose length matches the current topology.
-   * @param domain - Input domain used for normalization, or `null` for height auto-scan.
+   * @param domain - Input domain for normalized channels, or `null` for scanned/default behavior.
    * @param range - Output range for `vertexHeight`; ignored by other channels.
    * @throws Error when no topology is loaded or the array length is invalid.
    */
@@ -198,7 +200,9 @@ export interface Network {
    */
   clearChannel(channel: Channel): void;
   /**
-   * Override the input domain used to normalize a non-dash channel.
+   * Override the input domain used by a normalized channel.
+   *
+   * Calls for raw dash and visibility channels are accepted as no-ops.
    *
    * @param channel - Channel name to update.
    * @param range - Fixed input range, or `null` to return to the scanned/default domain.

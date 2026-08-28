@@ -124,6 +124,8 @@ All seven Network channels are independently bindable:
 - visibility channels show values greater than zero and have no domain attribute;
 - an empty channel attribute explicitly unbinds that channel.
 
+The matching programmatic methods preserve Network's raw-channel semantics: `setChannel` ignores domain and output-range arguments for `edgeDash`, `vertexVisible`, and `edgeVisible`, while `setChannelRange` is a no-op for those channels.
+
 Every serializable Network option is available under its exact kebab-case name. `msaa` is the only
 construction option, so changing it replaces the live activation against cached data. Other options,
 bindings, projection, colormap, borders, and controls update without recreating the renderer.

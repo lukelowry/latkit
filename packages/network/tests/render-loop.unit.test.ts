@@ -66,6 +66,7 @@ function drain(): Promise<void> {
 
 interface Harness {
   loop: RenderLoop;
+  uniforms: ReturnType<typeof createUniforms>;
   canvas: { clientWidth: number; clientHeight: number; width: number; height: number };
   renders: string[];
   cameraInits: Array<{ bounds: unknown; vp: { w: number; h: number } }>;
@@ -170,6 +171,7 @@ function makeHarness(
 
   return {
     loop,
+    uniforms,
     canvas,
     renders,
     cameraInits,
@@ -230,6 +232,41 @@ describe('RenderLoop scheduling', () => {
     frame();
     expect(renders.length).toBe(1);
     expect(order).toEqual(['hook']);
+  });
+
+  it('updates presentation scale after visual derivation and before picking without advancing time', () => {
+    type Phase = 'before' | 'frame' | 'render';
+    const observed: Array<{ phase: Phase; backingScale: number; time: number }> = [];
+    let h!: Harness;
+    const capture = (phase: Phase): void => {
+      observed.push({
+        phase,
+        backingScale: h.uniforms.frame.backingScale,
+        time: h.uniforms.frame.time,
+      });
+    };
+    h = makeHarness({
+      pixelRatio: 2,
+      limit: 256,
+      onBeforeFrame: () => capture('before'),
+      onFrame: () => capture('frame'),
+      render: () => {
+        capture('render');
+        return true;
+      },
+    });
+    h.uniforms.frame.backingScale = 7;
+    h.uniforms.frame.time = -1;
+
+    h.loop.frameNow();
+
+    expect(observed.map(({ phase }) => phase)).toEqual(['before', 'frame', 'render']);
+    expect(observed[0]).toEqual({ phase: 'before', backingScale: 7, time: -1 });
+    expect(observed[1]).toMatchObject({ phase: 'frame', time: -1 });
+    expect(observed[1]!.backingScale).toBeCloseTo(1.28, 6);
+    expect(observed[2]!.phase).toBe('render');
+    expect(observed[2]!.backingScale).toBeCloseTo(1.28, 6);
+    expect(observed[2]!.time).toBeGreaterThanOrEqual(0);
   });
 
   it('resize re-renders before the same paint even after a render, quantized then snapped', async () => {
