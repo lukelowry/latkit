@@ -21,13 +21,8 @@ import {
 } from '../webgpu/uniforms.js';
 import { VISUAL } from '../visual.js';
 
-/**
- * Positive-w clip floor for segment endpoints.
- *
- * This matches the old compute picker's PICK_MIN_CLIP_W constant; segments
- * straddling the camera plane clip against this floor before screen tests.
- */
-export const MIN_CLIP_W = 1e-4;
+/** Positive-w clip floor shared with the shaders through {@link VISUAL}. */
+export const MIN_CLIP_W = VISUAL.minClipW;
 
 /** Degrees-to-radians multiplier used by longitude/latitude globe projection. */
 const DEG2RAD = Math.PI / 180;

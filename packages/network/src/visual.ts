@@ -54,6 +54,13 @@ export const VISUAL = {
    * grazing pitch.
    */
   surfaceDepthSlackPx: 20,
+  /**
+   * Positive-w clip floor for segment and pole endpoints.
+   *
+   * Geometry straddling the camera plane clips against this floor before
+   * perspective division, in the shaders and the CPU picker alike.
+   */
+  minClipW: 1e-4,
 } as const;
 
 /** WGSL source fragment mirroring the numeric constants in {@link VISUAL}. */
@@ -70,6 +77,7 @@ const GLOBE_SURFACE_OFFSET: f32 = ${VISUAL.globeSurfaceOffset};
 const TILT_SURFACE_LIFT: f32 = ${VISUAL.tiltSurfaceLift};
 const FLAT_HEIGHT_DEPTH_SPAN: f32 = ${VISUAL.flatHeightDepthSpan};
 const SURFACE_DEPTH_SLACK_PX: f32 = ${VISUAL.surfaceDepthSlackPx};
+const MIN_CLIP_W: f32 = ${VISUAL.minClipW};
 const FRAGMENT_ALPHA_DISCARD: f32 = 0.001;
 `;
 

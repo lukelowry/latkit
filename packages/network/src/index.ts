@@ -27,7 +27,7 @@ export type { ChannelRange } from './range.js';
 
 /** Projection mode names accepted by the network controller. */
 export { PROJECTION_MODES } from './projections.js';
-export type { ProjectionMode } from './projections.js';
+export type { PipelineMode, ProjectionMode } from './projections.js';
 
 /** Shared view-style primitives used by renderer option consumers. */
 export type { FocusEndpointMode, RGBA } from './focus-state.js';

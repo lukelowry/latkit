@@ -39,7 +39,7 @@ const topology: Topology = {
 
 ## Projection support
 
-Flat and tilt projections accept arbitrary coordinates and include polyline bend points in fit bounds. Globe eligibility remains based on vertex coordinates: longitude in `[-180, 180]`, latitude in `[-90, 90]`, a non-trivial geographic span, and a characteristic length small enough for globe rendering.
+All projections use vertex coordinates for topology fit bounds. Flat and tilt accept arbitrary coordinates; globe additionally requires longitude in `[-180, 180]`, latitude in `[-90, 90]`, a non-trivial geographic span, and a characteristic length small enough for globe rendering. Item-specific edge framing still includes that edge's polyline bends.
 
 Read support after `load()`:
 

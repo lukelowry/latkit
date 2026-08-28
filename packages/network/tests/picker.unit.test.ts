@@ -211,6 +211,12 @@ function oraclePick(
   const heights = u.channel.vHeightMode !== 0 ? (s.values.get('vertexHeight') ?? null) : null;
   const sizes = u.channel.vSizeMode !== 0 ? (s.values.get('vertexSize') ?? null) : null;
   const dashes = u.geometry.dashPeriod > 0 ? (s.values.get('edgeDash') ?? null) : null;
+  const vertexVisible =
+    (u.channel.itemFlags & ITEM_VERTEX_VISIBLE) !== 0
+      ? (s.values.get('vertexVisible') ?? null)
+      : null;
+  const edgeVisible =
+    (u.channel.itemFlags & ITEM_EDGE_VISIBLE) !== 0 ? (s.values.get('edgeVisible') ?? null) : null;
   const poles = q.poles && heights !== null && s.mode !== 'flat';
 
   const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
@@ -265,6 +271,7 @@ function oraclePick(
     M = createPoint();
 
   for (let id = 0; id < s.topology.vertexCount; id++) {
+    if (vertexVisible && !(vertexVisible[id]! > 0)) continue;
     const x = coords[id * 2]!;
     const y = coords[id * 2 + 1]!;
     const h = normHeight(id);
@@ -287,7 +294,7 @@ function oraclePick(
     if (poles && Math.abs(h) > 1e-6) {
       projector.project(A, x, y, 0);
       projector.project(B, x, y, h);
-      if (projector.visible(B)) {
+      if (A.cw > MIN_CLIP_W && B.cw > MIN_CLIP_W && projector.visible(B)) {
         projector.toScreen(A);
         projector.toScreen(B);
         const { d2 } = segD2(cursorX, cursorY, A.sx, A.sy, B.sx, B.sy);
@@ -313,6 +320,7 @@ function oraclePick(
     for (let id = 0; id < count; id++) {
       const base = records + id * SEGMENT_RECORD_WORDS;
       const edgeId = segU32[base]!;
+      if (edgeVisible && !(edgeVisible[edgeId]! > 0)) continue;
       const tPack = segU32[base + 3]!;
       const hFrom = normHeight(segU32[base + 1]!);
       const hTo = normHeight(segU32[base + 2]!);
@@ -729,6 +737,14 @@ describe('Picker matches the brute-force oracle', () => {
           const dashes = new Float32Array(topology.edges.length / 2);
           for (let i = 0; i < dashes.length; i++) dashes[i] = rand() < 0.5 ? 0 : 1;
           bindDash(s, dashes);
+        }
+        if (poseIndex % 5 === 4) {
+          const vertexVisible = new Float32Array(topology.vertexCount);
+          for (let i = 0; i < vertexVisible.length; i++) vertexVisible[i] = rand() < 0.3 ? 0 : 1;
+          bindVertexVisibility(s, vertexVisible);
+          const edgeVisible = new Float32Array(topology.edges.length / 2);
+          for (let i = 0; i < edgeVisible.length; i++) edgeVisible[i] = rand() < 0.3 ? 0 : 1;
+          bindEdgeVisibility(s, edgeVisible);
         }
 
         for (let c = 0; c < 12; c++) {

@@ -10,6 +10,7 @@ import type {
   NetworkElementEventMap,
   NetworkItemEventDetail,
   NetworkJSON,
+  NetworkPipelineErrorEventDetail,
   NetworkZoomEventDetail,
 } from '../src/index.js';
 
@@ -108,7 +109,7 @@ describe('embed package entrypoint', () => {
 
   it('publishes the exact typed DOM event map', () => {
     expectTypeOf<keyof NetworkElementEventMap>().toEqualTypeOf<
-      'load' | 'error' | 'hover' | 'select' | 'zoom' | 'deviceLost'
+      'load' | 'error' | 'hover' | 'select' | 'zoom' | 'deviceLost' | 'pipelineError'
     >();
     expectTypeOf<NetworkElementEventMap['load']>().toEqualTypeOf<Event>();
     expectTypeOf<NetworkElementEventMap['error']>().toEqualTypeOf<
@@ -125,6 +126,9 @@ describe('embed package entrypoint', () => {
     >();
     expectTypeOf<NetworkElementEventMap['deviceLost']>().toEqualTypeOf<
       CustomEvent<NetworkDeviceLostEventDetail>
+    >();
+    expectTypeOf<NetworkElementEventMap['pipelineError']>().toEqualTypeOf<
+      CustomEvent<NetworkPipelineErrorEventDetail>
     >();
   });
 });

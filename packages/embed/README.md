@@ -224,8 +224,8 @@ reports the current topology's mode availability. The underlying Network, canvas
 device remain private.
 
 Renderer notifications become bubbling, composed DOM events named `load`, `error`, `hover`, `select`,
-`zoom`, and `deviceLost`. `ready` always describes the current activation and is replaced for source
-changes, reconnect, `msaa` changes, and device recovery.
+`zoom`, `deviceLost`, and `pipelineError`. `ready` always describes the current activation and is
+replaced for source changes, reconnect, `msaa` changes, and device recovery.
 
 The canvas is focusable and named. Arrow keys pan, `+`/`=` and `-`/`_` zoom, Home fits, and Escape
 clears selection. Selection changes are announced through a polite live region; hover is not.

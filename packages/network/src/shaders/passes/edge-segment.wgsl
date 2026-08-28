@@ -21,10 +21,6 @@ struct ColorOut {
   @location(0) color: vec4f,
 }
 
-// Mirrors pick/project.ts MIN_CLIP_W. Segments crossing the camera plane are
-// clipped before perspective division so their screen capsule stays finite.
-const MIN_EDGE_CLIP_W: f32 = 1e-4;
-
 fn culled_edge() -> VOut {
   var out: VOut;
   out.pos = vec4f(0.0, 0.0, 2.0, 1.0);
@@ -96,14 +92,14 @@ fn build_edge_capsule(
   var clip_b = project_overlay(wb, hb);
   let aw = clip_a.w;
   let bw = clip_b.w;
-  if (aw <= MIN_EDGE_CLIP_W && bw <= MIN_EDGE_CLIP_W) {
+  if (aw <= MIN_CLIP_W && bw <= MIN_CLIP_W) {
     return out;
   }
-  if (aw <= MIN_EDGE_CLIP_W) {
-    let t = clamp((MIN_EDGE_CLIP_W - aw) / max(bw - aw, 1e-6), 0.0, 1.0);
+  if (aw <= MIN_CLIP_W) {
+    let t = clamp((MIN_CLIP_W - aw) / max(bw - aw, 1e-6), 0.0, 1.0);
     clip_a = mix(clip_a, clip_b, t);
-  } else if (bw <= MIN_EDGE_CLIP_W) {
-    let t = clamp((MIN_EDGE_CLIP_W - aw) / min(bw - aw, -1e-6), 0.0, 1.0);
+  } else if (bw <= MIN_CLIP_W) {
+    let t = clamp((MIN_CLIP_W - aw) / min(bw - aw, -1e-6), 0.0, 1.0);
     clip_b = mix(clip_a, clip_b, t);
   }
 

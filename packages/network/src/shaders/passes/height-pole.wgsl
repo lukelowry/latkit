@@ -35,6 +35,9 @@ fn vs_pole(quad: vec2f, inst: u32) -> VOut {
 
   let base_clip = project_overlay(base, 0.0);
   let tip_clip = project_overlay(displace_world(surface, h), h);
+  if (base_clip.w <= MIN_CLIP_W || tip_clip.w <= MIN_CLIP_W) {
+    return culled_pole(inst);
+  }
   let at_tip = quad.y > 0.0;
   let clip = select(base_clip, tip_clip, at_tip);
 

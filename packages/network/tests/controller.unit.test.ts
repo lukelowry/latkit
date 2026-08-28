@@ -349,7 +349,7 @@ describe('createNetwork controller', () => {
     expect(h.loop.frameNow).toHaveBeenCalled();
   });
 
-  it('uses polyline extent for planar fit without changing globe eligibility bounds', async () => {
+  it('uses canonical vertex bounds for fit and sizing across projections', async () => {
     const h = await makeHarness();
     h.network.load({
       ...geographicTopology(),
@@ -357,16 +357,19 @@ describe('createNetwork controller', () => {
     });
 
     const bounds = h.loop.setBounds.mock.calls.at(-1)?.[0];
-    expect(bounds).toMatchObject({ xMin: -10, xMax: 40, yMin: -20, yMax: 5 });
-    expect(h.loop.uniforms.geometry.vertexSize).toBeCloseTo(Math.sqrt((50 * 25) / 3) * 0.08);
+    expect(bounds).toMatchObject({ xMin: -10, xMax: 10, yMin: -5, yMax: 5 });
+    const vertexSize = Math.sqrt((20 * 10) / 3) * 0.08;
+    expect(h.loop.uniforms.geometry.vertexSize).toBeCloseTo(vertexSize);
 
     h.network.fit(true);
     expect(h.rig.camera.fitView).toHaveBeenCalledWith(bounds, { w: 100, h: 80 });
     expect(h.loop.cancelPlacement).toHaveBeenCalled();
     expect(h.network.projections.globe).toBe(true);
 
+    const boundsWrites = h.loop.setBounds.mock.calls.length;
     h.network.setProjection('globe');
-    expect(h.loop.uniforms.geometry.vertexSize).toBeCloseTo(Math.sqrt((20 * 10) / 3) * 0.08);
+    expect(h.loop.setBounds).toHaveBeenCalledTimes(boundsWrites);
+    expect(h.loop.uniforms.geometry.vertexSize).toBeCloseTo(vertexSize);
   });
 
   it('keeps the previous scene when picker preparation fails', async () => {
@@ -976,7 +979,9 @@ describe('createNetwork controller', () => {
       'network: failed to warm the tilt projection pipelines',
       failure,
     );
-    expect(pipelineError).toHaveBeenCalledWith('plane', failure);
+    // The renderer reports build failures through onProjectionPipelinesError;
+    // an unexpected warm rejection is only logged.
+    expect(pipelineError).not.toHaveBeenCalled();
   });
 
   it('replays the latest asynchronous pipeline failure to late subscribers', async () => {

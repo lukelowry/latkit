@@ -217,7 +217,7 @@ export class Picker {
       f32: segments.f32,
       recordsOffset: segments.recordsOffset,
     };
-    const bounds = scene.pathBounds;
+    const bounds = info.bounds;
     const wrapX = isGeoBounds(info.bounds) ? 360 : 0;
     return {
       vertexCount: info.vertexCount,
@@ -736,6 +736,7 @@ export class Picker {
       const tip = this.pB;
       state.proj.project(base, x, y, 0);
       state.proj.project(tip, x, y, h);
+      if (base.cw <= MIN_CLIP_W || tip.cw <= MIN_CLIP_W) return;
       if (!state.proj.visible(tip)) return;
       state.proj.toScreen(base);
       state.proj.toScreen(tip);

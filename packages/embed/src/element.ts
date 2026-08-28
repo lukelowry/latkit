@@ -11,6 +11,7 @@ import {
   type Item,
   type Network,
   type Options,
+  type PipelineMode,
   type ProjectionMode,
   type RGBA,
   type RevealOptions,
@@ -82,6 +83,12 @@ export interface NetworkDeviceLostEventDetail {
   readonly recovering: boolean;
 }
 
+/** Failure payload carried by the Network `pipelineError` DOM event. */
+export interface NetworkPipelineErrorEventDetail {
+  readonly pipeline: PipelineMode;
+  readonly cause: unknown;
+}
+
 /** Public DOM events emitted by {@link NetworkElement}. */
 export interface NetworkElementEventMap {
   load: Event;
@@ -90,6 +97,7 @@ export interface NetworkElementEventMap {
   select: CustomEvent<NetworkItemEventDetail>;
   zoom: CustomEvent<NetworkZoomEventDetail>;
   deviceLost: CustomEvent<NetworkDeviceLostEventDetail>;
+  pipelineError: CustomEvent<NetworkPipelineErrorEventDetail>;
 }
 
 /** Public declarative Network element surface; construction remains owned by {@link register}. */
@@ -615,6 +623,12 @@ export function createNetworkElementClass(
       run.own(
         network.on('deviceLost', (reason, message) => {
           this.#onDeviceLost(run, reason, message);
+        }),
+      );
+      run.own(
+        network.on('pipelineError', (pipeline, cause) => {
+          if (!this.#isCurrent(run)) return;
+          this.#dispatchDetailEvent('pipelineError', { pipeline, cause });
         }),
       );
     }

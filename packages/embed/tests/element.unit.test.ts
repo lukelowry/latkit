@@ -645,6 +645,21 @@ describe('NetworkElement', () => {
     expect(h.networks).toHaveLength(2);
   });
 
+  it('forwards asynchronous pipeline failures as a DOM event', async () => {
+    const h = harness();
+    const failures: CustomEvent[] = [];
+    h.element.addEventListener('pipelineError', (event) => failures.push(event));
+    document.body.append(h.element);
+    h.near(true);
+    await h.element.ready;
+
+    const cause = new Error('shader no good');
+    h.networks[0]!.emit('pipelineError', 'globe', cause);
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.detail).toEqual({ pipeline: 'globe', cause });
+  });
+
   it('installs rejected current readiness after a post-live mutation failure', async () => {
     const h = harness();
     const errors: unknown[] = [];

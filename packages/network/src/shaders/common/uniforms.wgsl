@@ -97,7 +97,7 @@ struct Uniforms {
   // degenerates at nadir. right = (cos b, sin b, 0) is stable everywhere.
   plane_params: vec4f,
 
-  // Flat-to-tilt projection blend (bytes 384-399).
+  // Flat-to-tilt projection blend and raw item-channel addressing (bytes 384-399).
   plane_mix: f32,
   v_visible_offset: u32,
   e_visible_offset: u32,

@@ -29,15 +29,13 @@ describe('PreparedScene', () => {
     expect([...scene.segments.edgeStarts]).toEqual([0, 1, 4]);
   });
 
-  it('tracks polyline extent separately from canonical vertex bounds', () => {
+  it('retains canonical vertex bounds when polyline bends extend beyond them', () => {
     const topology = sampleTopology({
       polylinePoints: new Float32Array([30, -7, 40, 6]),
     });
     const scene = prepareScene(encodeTopology(topology), encodeSegments(topology));
 
     expect(scene.info.bounds).toMatchObject({ xMin: 0, xMax: 20, yMin: 0, yMax: 10 });
-    expect(scene.pathBounds).toMatchObject({ xMin: 0, xMax: 40, yMin: -7, yMax: 10 });
-    expect(scene.pathCharacteristicLength).toBeCloseTo(Math.sqrt((40 * 17) / 3));
   });
 
   it('rejects topology and segment vertex-count mismatches', () => {

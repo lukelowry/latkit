@@ -323,6 +323,17 @@ const FADE_IN_MS = 150;
 /** Wake cadence for globe daylight updates while the globe is visible. */
 const SUN_REFRESH_MS = 30_000;
 
+/** Deliver latched event arguments to a late subscriber with emitter-equivalent error isolation. */
+function replay<Args extends unknown[]>(handler: (...args: Args) => void, args: Args): void {
+  try {
+    handler(...args);
+  } catch (error) {
+    queueMicrotask(() => {
+      throw error;
+    });
+  }
+}
+
 /** Number of entries in the renderer's one-dimensional colormap texture. */
 const COLORMAP_LUT_SIZE = 256;
 
@@ -477,7 +488,7 @@ function createNetworkController(
   lifecycle.add(() => loop.destroy());
 
   renderer.onProjectionPipelinesReady = () => loop.wake();
-  let pipelineFailure: readonly [pipeline: PipelineMode, cause: unknown] | null = null;
+  let pipelineFailure: Parameters<Events['pipelineError']> | null = null;
   renderer.onProjectionPipelinesError = (pipeline, cause) => {
     pipelineFailure = [pipeline, cause];
     events.emit('pipelineError', pipeline, cause);
@@ -488,7 +499,7 @@ function createNetworkController(
   const rig = new deps.ProjectionRig(uniforms.projection);
   loop.setCamera(rig.camera);
 
-  let deviceLoss: readonly [reason: string, message: string] | null = null;
+  let deviceLoss: Parameters<Events['deviceLost']> | null = null;
   lifecycle.add(
     forwardDeviceLoss(device, (info) => {
       if (deviceLoss) return;
@@ -550,9 +561,7 @@ function createNetworkController(
 
   let topology: Topology | null = null;
   let topologyBounds: Bounds | null = null;
-  let topologyPathBounds: Bounds | null = null;
   let topologyCharacteristicLength: number | null = null;
-  let topologyPathCharacteristicLength: number | null = null;
   let projections = projectionAvailability(null, null);
   let vertexSize = 0;
   /** Latest physical hover point; converted through the current DOMRect per pick. */
@@ -580,14 +589,6 @@ function createNetworkController(
 
   /** Current canvas viewport in CSS pixels. */
   const vp = (): Viewport => surface.size();
-
-  /** Full rendered-coordinate bounds appropriate for one projection family. */
-  const projectionBounds = (mode: ProjectionMode = rig.mode): Bounds | null =>
-    mode === 'globe' ? topologyBounds : topologyPathBounds;
-
-  /** Topology-derived visual scale appropriate for one projection family. */
-  const projectionCharacteristicLength = (mode: ProjectionMode = rig.mode): number | null =>
-    mode === 'globe' ? topologyCharacteristicLength : topologyPathCharacteristicLength;
 
   /** Resolve viewport state and projection-aware bounds for item camera commands. */
   const resolveItemBounds = (items: readonly Item[]) => {
@@ -708,7 +709,7 @@ function createNetworkController(
       case 'doubleTap':
         if (!topology) break;
         {
-          const bounds = projectionBounds();
+          const bounds = topologyBounds;
           if (!bounds) break;
           loop.cancelPlacement();
           rig.camera.fitView(bounds, intent.vp);
@@ -740,23 +741,9 @@ function createNetworkController(
 
     on(event, handler) {
       const unsubscribe = events.on(event, handler);
-      if (event === 'deviceLost' && deviceLoss) {
-        try {
-          (handler as Events['deviceLost'])(...deviceLoss);
-        } catch (error) {
-          queueMicrotask(() => {
-            throw error;
-          });
-        }
-      }
+      if (event === 'deviceLost' && deviceLoss) replay(handler as Events['deviceLost'], deviceLoss);
       if (event === 'pipelineError' && pipelineFailure) {
-        try {
-          (handler as Events['pipelineError'])(...pipelineFailure);
-        } catch (error) {
-          queueMicrotask(() => {
-            throw error;
-          });
-        }
+        replay(handler as Events['pipelineError'], pipelineFailure);
       }
       return unsubscribe;
     },
@@ -899,12 +886,10 @@ function createNetworkController(
       if (mode === rig.mode) return true;
       loop.cancelPlacement();
       hoverDirty = true;
-      const nextBounds = projectionBounds(mode);
-      const placed = rig.switchTo(mode, nextBounds, vp());
+      const placed = rig.switchTo(mode, topologyBounds, vp());
       loop.setCamera(rig.camera);
-      loop.setBounds(nextBounds);
       if (topology && !placed) loop.requestFit();
-      writeGeometryScales(vp());
+      updateHeightWorldScale(vp());
       renderer.useProjectionPipelines(mode);
       repaint();
       return true;
@@ -919,7 +904,7 @@ function createNetworkController(
 
       if (typeof itemsOrAnimate === 'boolean') {
         const view = vp();
-        const fullBounds = projectionBounds();
+        const fullBounds = topologyBounds;
         if (itemsOrAnimate && view.w > 0 && view.h > 0 && fullBounds) {
           loop.cancelPlacement();
           rig.camera.fitView(fullBounds, view);
@@ -927,7 +912,7 @@ function createNetworkController(
           loop.requestFit();
         }
       } else {
-        const fullBounds = projectionBounds();
+        const fullBounds = topologyBounds;
         if (!fullBounds) return;
         const { view, hasViewport, bounds } = resolveItemBounds(itemsOrAnimate);
         if (!bounds) return;
@@ -988,9 +973,7 @@ function createNetworkController(
       readyZoomNotice = undefined;
       topology = null;
       topologyBounds = null;
-      topologyPathBounds = null;
       topologyCharacteristicLength = null;
-      topologyPathCharacteristicLength = null;
       picker.commitScene(null);
       channels.reset();
       lifecycle.destroy();
@@ -1024,8 +1007,6 @@ function createNetworkController(
               try {
                 await renderer.warmProjection(mode);
               } catch (error) {
-                pipelineFailure = [PROJECTIONS[mode].pipeline, error];
-                events.emit('pipelineError', ...pipelineFailure);
                 console.error(`network: failed to warm the ${mode} projection pipelines`, error);
               }
             }
@@ -1217,7 +1198,7 @@ function createNetworkController(
 
   /** Updates projection-specific height amplitude from current viewport state. */
   function updateHeightWorldScale(frameVp: Viewport): void {
-    const fullBounds = projectionBounds();
+    const fullBounds = topologyBounds;
     if (!topology || !fullBounds) return;
     const scale =
       rig.mode === 'globe'
@@ -1228,12 +1209,10 @@ function createNetworkController(
 
   /** Writes topology-derived geometry sizes through the current display multipliers. */
   function writeGeometryScales(frameVp: Viewport): void {
-    const characteristicLength = projectionCharacteristicLength();
-    if (characteristicLength === null) return;
-    vertexSize = characteristicLength * VISUAL.vertexSizeScale;
+    if (topologyCharacteristicLength === null) return;
     uniforms.geometry.vertexSize = vertexSize * display.vertexScale;
     uniforms.geometry.baseEdgeWidth =
-      characteristicLength * VISUAL.baseEdgeWidthScale * display.edgeScale;
+      topologyCharacteristicLength * VISUAL.baseEdgeWidthScale * display.edgeScale;
     updateHeightWorldScale(frameVp);
   }
 
@@ -1355,9 +1334,7 @@ function createNetworkController(
     pendingZoomNotice = undefined;
     readyZoomNotice = undefined;
     topologyBounds = info.bounds;
-    topologyPathBounds = scene.pathBounds;
     topologyCharacteristicLength = info.characteristicLength;
-    topologyPathCharacteristicLength = scene.pathCharacteristicLength;
     projections = projectionAvailability(topologyBounds, topologyCharacteristicLength);
 
     hoverDirty = true;
@@ -1367,15 +1344,16 @@ function createNetworkController(
     // A new topology can invalidate the active projection (notably globe).
     // Fall back atomically so the camera, picker mode, and pipelines agree.
     if (!projections[rig.mode]) {
-      rig.switchTo('flat', topologyPathBounds, vp());
+      rig.switchTo('flat', topologyBounds, vp());
       loop.setCamera(rig.camera);
       renderer.useProjectionPipelines('flat');
     }
 
+    vertexSize = info.characteristicLength * VISUAL.vertexSizeScale;
     writeGeometryScales(vp());
 
     channels.reset();
-    loop.setBounds(projectionBounds());
+    loop.setBounds(topologyBounds);
     loop.requestFit();
     warmInactiveProjections();
     loop.frameNow();
