@@ -335,11 +335,58 @@ describe('createNetwork controller', () => {
     h.network.load(geographicTopology());
 
     expect(h.renderer.bindTopology).toHaveBeenCalledOnce();
-    expect(h.picker.setScene).toHaveBeenCalledOnce();
+    expect(h.picker.prepareScene).toHaveBeenCalledOnce();
+    expect(h.picker.commitScene).toHaveBeenCalledOnce();
+    expect(h.picker.prepareScene.mock.invocationCallOrder[0]).toBeLessThan(
+      h.renderer.bindTopology.mock.invocationCallOrder[0]!,
+    );
+    expect(h.renderer.bindTopology.mock.invocationCallOrder[0]).toBeLessThan(
+      h.picker.commitScene.mock.invocationCallOrder[0]!,
+    );
     expect(h.network.projections).toMatchObject({ flat: true, tilt: true, globe: true });
     expect(h.loop.setBounds).toHaveBeenCalled();
     expect(h.loop.requestFit).toHaveBeenCalled();
     expect(h.loop.frameNow).toHaveBeenCalled();
+  });
+
+  it('keeps the previous scene when picker preparation fails', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    const previousPickerScene = h.picker.scene;
+    const previousTopology = h.renderer.encodedTopology;
+
+    h.renderer.bindTopology.mockClear();
+    h.picker.commitScene.mockClear();
+    h.picker.prepareScene.mockImplementationOnce(() => {
+      throw new Error('grid allocation failed');
+    });
+
+    expect(() => h.network.load(nonGlobeTopology())).toThrow('grid allocation failed');
+    expect(h.renderer.bindTopology).not.toHaveBeenCalled();
+    expect(h.picker.commitScene).not.toHaveBeenCalled();
+    expect(h.picker.scene).toBe(previousPickerScene);
+    expect(h.renderer.encodedTopology).toBe(previousTopology);
+    expect(h.network.projections.globe).toBe(true);
+  });
+
+  it('does not commit the prepared picker scene when GPU binding fails', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    const previousPickerScene = h.picker.scene;
+    const previousTopology = h.renderer.encodedTopology;
+
+    h.picker.prepareScene.mockClear();
+    h.picker.commitScene.mockClear();
+    h.renderer.bindTopology.mockImplementationOnce(() => {
+      throw new Error('GPU allocation failed');
+    });
+
+    expect(() => h.network.load(nonGlobeTopology())).toThrow('GPU allocation failed');
+    expect(h.picker.prepareScene).toHaveBeenCalledOnce();
+    expect(h.picker.commitScene).not.toHaveBeenCalled();
+    expect(h.picker.scene).toBe(previousPickerScene);
+    expect(h.renderer.encodedTopology).toBe(previousTopology);
+    expect(h.network.projections.globe).toBe(true);
   });
 
   it('exposes complete immutable projection records and replaces them after load', async () => {

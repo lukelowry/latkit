@@ -1,7 +1,7 @@
 import type { PreparedTopology, Topology } from '../topology/index.js';
 import { writeSpherePosition } from '../topology/sphere.js';
 import { prepareTopology } from '../topology/pack.js';
-import type { EncodedSegments, EncodedSegmentsInfo } from './types.js';
+import type { DecodedSegments, EncodedSegments, EncodedSegmentsInfo } from './types.js';
 import {
   HEADER_WORDS,
   MAGIC,
@@ -89,17 +89,24 @@ export function encodeSegments(source: Topology | PreparedTopology): EncodedSegm
  * @throws Error when the header, section offsets, or record references are invalid.
  */
 export function readEncodedSegmentsInfo(bytes: Uint8Array): EncodedSegmentsInfo {
-  const words = encodedWords(bytes);
-  validateSegmentsHeader(words, bytes.byteLength);
+  return validateEncodedSegments(bytes).info;
+}
 
-  const info = {
-    vertexCount: words[W.vertexCount]!,
-    edgeCount: words[W.edgeCount]!,
-    segmentCount: words[W.segmentCount]!,
-    fingerprint: words[W.fingerprint]!,
+/**
+ * Validate encoded segment storage once and return reusable typed views.
+ *
+ * @throws Error when the header, section offsets, or record references are invalid.
+ */
+export function decodeSegments(encoded: EncodedSegments): DecodedSegments {
+  const { u32, info } = validateEncodedSegments(encoded);
+  return {
+    encoded,
+    info,
+    u32,
+    f32: new Float32Array(encoded.buffer, encoded.byteOffset, encoded.byteLength / 4),
+    edgeStarts: copyEdgeStarts(u32, info.edgeCount),
+    recordsOffset: u32[W.records]!,
   };
-  validateSegmentsSections(words, bytes.byteLength / 4, info);
-  return info;
 }
 
 /**
@@ -108,17 +115,37 @@ export function readEncodedSegmentsInfo(bytes: Uint8Array): EncodedSegmentsInfo 
  * @throws Error when the encoded storage fails segment validation.
  */
 export function readEdgeSegmentStarts(bytes: Uint8Array): Uint32Array<ArrayBuffer> {
-  const words = encodedWords(bytes);
-  validateSegmentsHeader(words, bytes.byteLength);
-  const edgeCount = words[W.edgeCount]!;
-  validateSegmentsSections(words, bytes.byteLength / 4, {
-    vertexCount: words[W.vertexCount]!,
-    edgeCount,
-    segmentCount: words[W.segmentCount]!,
-    fingerprint: words[W.fingerprint]!,
-  });
-  const offset = words[W.edgeStarts]!;
-  const view = new Uint32Array(words.buffer, words.byteOffset + offset * 4, edgeCount + 1);
+  const { u32, info } = validateEncodedSegments(bytes);
+  return copyEdgeStarts(u32, info.edgeCount);
+}
+
+/** Validated segment words and their decoded header metadata. */
+interface ValidatedSegments {
+  readonly u32: Uint32Array<ArrayBuffer>;
+  readonly info: EncodedSegmentsInfo;
+}
+
+/** Validate one encoded segment buffer and retain its aligned word view. */
+function validateEncodedSegments(bytes: Uint8Array): ValidatedSegments {
+  const u32 = encodedWords(bytes);
+  validateSegmentsHeader(u32, bytes.byteLength);
+  const info = {
+    vertexCount: u32[W.vertexCount]!,
+    edgeCount: u32[W.edgeCount]!,
+    segmentCount: u32[W.segmentCount]!,
+    fingerprint: u32[W.fingerprint]!,
+  };
+  validateSegmentsSections(u32, bytes.byteLength / 4, info);
+  return { u32, info };
+}
+
+/** Copy the compact CPU edge-range table from validated segment words. */
+function copyEdgeStarts(
+  u32: Uint32Array<ArrayBuffer>,
+  edgeCount: number,
+): Uint32Array<ArrayBuffer> {
+  const offset = u32[W.edgeStarts]!;
+  const view = new Uint32Array(u32.buffer, u32.byteOffset + offset * 4, edgeCount + 1);
   const out = new Uint32Array(new ArrayBuffer((edgeCount + 1) * 4));
   out.set(view);
   return out;
@@ -207,7 +234,7 @@ function validateSegmentsSections(
  *
  * @throws Error when storage is too short, unaligned, or not ArrayBuffer-backed.
  */
-function encodedWords(bytes: Uint8Array): Uint32Array {
+function encodedWords(bytes: Uint8Array): Uint32Array<ArrayBuffer> {
   if (bytes.byteLength < HEADER_WORDS * 4) throw new Error('segments header is truncated');
   if (bytes.byteLength % 4 !== 0) throw new Error('segments byte length must be 4-byte aligned');
   if (!(bytes.buffer instanceof ArrayBuffer))

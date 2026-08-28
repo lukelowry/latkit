@@ -4,6 +4,7 @@ import type { ChannelRange } from '../src/range.js';
 import { createUniforms } from '../src/webgpu/uniforms.js';
 import { Renderer } from '../src/webgpu/renderer.js';
 import { encodeSegments } from '../src/segments/index.js';
+import { prepareScene } from '../src/scene.js';
 import { encodeTopology } from '../src/topology/index.js';
 import { singleEdgeTopology } from './fixtures/topology.js';
 
@@ -341,7 +342,8 @@ describe('Renderer channel relayout guard', () => {
     };
 
     const topology = singleEdgeTopology();
-    expect(() => renderer.bindTopology(encodeTopology(topology), encodeSegments(topology))).toThrow(
+    const scene = prepareScene(encodeTopology(topology), encodeSegments(topology));
+    expect(() => renderer.bindTopology(scene)).toThrow(
       'exceeds WebGPU storage buffer binding limit',
     );
     expect(previousTopologyBuffer.destroy).not.toHaveBeenCalled();

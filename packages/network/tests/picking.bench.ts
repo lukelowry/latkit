@@ -6,6 +6,7 @@ import type { Projection, Viewport } from '../src/camera/projection.js';
 import type { ProjectionMode } from '../src/projections.js';
 import { createUniforms } from '../src/webgpu/uniforms.js';
 import { Picker } from '../src/pick/picker.js';
+import { prepareScene, type PreparedScene } from '../src/scene.js';
 import { encodeSegments } from '../src/segments/index.js';
 import { encodeTopology, type Topology } from '../src/topology/index.js';
 
@@ -62,8 +63,7 @@ interface Rig {
 function makeRig(
   mode: ProjectionMode,
   topology: Topology,
-  encoded: ReturnType<typeof encodeTopology>,
-  segments: ReturnType<typeof encodeSegments>,
+  scene: PreparedScene,
   mutate?: (state: Float64Array) => void,
 ): Rig {
   const uniforms = createUniforms();
@@ -100,7 +100,7 @@ function makeRig(
     unproject: (sx, sy, vp) => proj.screenToWorld(state, sx, sy, vp),
     values: () => null,
   });
-  picker.setScene(encoded, segments);
+  picker.commitScene(picker.prepareScene(scene));
 
   // Rotate cursors so successive picks touch different grid regions.
   const cursors: [number, number][] = [];
@@ -128,10 +128,19 @@ function makeRig(
 const topology = stressTopology(500);
 const encoded = encodeTopology(topology);
 const segments = encodeSegments(topology);
+const scene = prepareScene(encoded, segments);
 
 describe('picking at 1M segments', () => {
   bench(
-    'scene build (grids over 500k vertices + 1M segments)',
+    'encoded scene validation',
+    () => {
+      prepareScene(encoded, segments);
+    },
+    { iterations: 5, warmupIterations: 1 },
+  );
+
+  bench(
+    'pick index build (grids over 500k vertices + 1M segments)',
     () => {
       const picker = new Picker({
         uniforms: createUniforms(),
@@ -139,19 +148,19 @@ describe('picking at 1M segments', () => {
         unproject: () => [0, 0],
         values: () => null,
       });
-      picker.setScene(encoded, segments);
+      picker.prepareScene(scene);
     },
     { iterations: 5, warmupIterations: 1 },
   );
 
   {
-    const rig = makeRig('flat', topology, encoded, segments);
+    const rig = makeRig('flat', topology, scene);
     bench('flat pick at fit zoom (widest candidate sweep)', () => {
       rig.pick();
     });
   }
   {
-    const rig = makeRig('flat', topology, encoded, segments, (s) => {
+    const rig = makeRig('flat', topology, scene, (s) => {
       s[2] = s[2]! * 64;
     });
     bench('flat pick zoomed in 64x', () => {
@@ -159,13 +168,13 @@ describe('picking at 1M segments', () => {
     });
   }
   {
-    const rig = makeRig('tilt', topology, encoded, segments);
+    const rig = makeRig('tilt', topology, scene);
     bench('tilt pick at default pitch', () => {
       rig.pick();
     });
   }
   {
-    const rig = makeRig('tilt', topology, encoded, segments, (s) => {
+    const rig = makeRig('tilt', topology, scene, (s) => {
       s[3] = 85;
     });
     bench('tilt pick at grazing pitch', () => {
@@ -176,7 +185,7 @@ describe('picking at 1M segments', () => {
     // Cursor pinned just below the horizon line at grazing pitch: the
     // footprint reaches past the horizon and the conservative region
     // degenerates to a full scan — the documented worst case.
-    const rig = makeRig('tilt', topology, encoded, segments, (s) => {
+    const rig = makeRig('tilt', topology, scene, (s) => {
       s[3] = 85;
     });
     const proj = createTiltProjection();
@@ -214,14 +223,15 @@ describe('picking at 1M segments (globe)', () => {
   const geo = stressTopology(60);
   const geoEncoded = encodeTopology(geo);
   const geoSegments = encodeSegments(geo);
+  const geoScene = prepareScene(geoEncoded, geoSegments);
   {
-    const rig = makeRig('globe', geo, geoEncoded, geoSegments);
+    const rig = makeRig('globe', geo, geoScene);
     bench('globe pick at fit zoom', () => {
       rig.pick();
     });
   }
   {
-    const rig = makeRig('globe', geo, geoEncoded, geoSegments, (s) => {
+    const rig = makeRig('globe', geo, geoScene, (s) => {
       s[2] = 1.2;
     });
     bench('globe pick zoomed in', () => {

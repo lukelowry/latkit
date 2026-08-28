@@ -6,6 +6,7 @@ import { createNetworkWithDeps } from '../../src/controller.js';
 import { packBound, type Channel, type ChannelSlot } from '../../src/channels.js';
 import type { Bounds, EncodedTopology } from '../../src/topology/index.js';
 import type { EncodedSegments } from '../../src/segments/index.js';
+import type { PreparedScene } from '../../src/scene.js';
 import type { Surface } from '../../src/input/surface.js';
 import type { Intent } from '../../src/input/pointer.js';
 import type { Picker, PickerDeps, PickQuery, PickResult } from '../../src/pick/picker.js';
@@ -62,9 +63,9 @@ export class FakeRenderer {
     if (opts.earthAxis !== undefined) this.visibility.earthAxis = opts.earthAxis;
   });
 
-  bindTopology = vi.fn((encoded: EncodedTopology, encodedSegments: EncodedSegments) => {
-    this.encodedTopology = encoded;
-    this.encodedSegments = encodedSegments;
+  bindTopology = vi.fn((scene: PreparedScene) => {
+    this.encodedTopology = scene.topology;
+    this.encodedSegments = scene.segments.encoded;
   });
 
   writeColormap = vi.fn((_lut: Uint8Array) => {});
@@ -140,8 +141,13 @@ export class FakePicker {
   nextLocation: readonly [number, number] | null = null;
   nextLocationVisible = true;
   lastLocate: readonly [PickResult, Viewport] | null = null;
+  scene: PreparedScene | null = null;
 
-  setScene = vi.fn((_encoded: EncodedTopology, _encodedSegments: EncodedSegments) => {});
+  prepareScene = vi.fn((scene: PreparedScene) => scene);
+
+  commitScene = vi.fn((scene: PreparedScene | null) => {
+    this.scene = scene;
+  });
 
   pick = vi.fn((query: PickQuery): PickResult | null => {
     this.lastQuery = query;

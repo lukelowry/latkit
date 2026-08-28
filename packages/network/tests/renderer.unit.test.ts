@@ -2,9 +2,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Renderer } from '../src/webgpu/renderer.js';
-import { encodeTopology } from '../src/topology/index.js';
-import { encodeSegments, type EncodedSegments } from '../src/segments/index.js';
-import { W as SEG_W } from '../src/segments/wire.js';
+import { encodeTopology, type Topology } from '../src/topology/index.js';
+import { encodeSegments } from '../src/segments/index.js';
+import { prepareScene, type PreparedScene } from '../src/scene.js';
 import {
   createUniforms,
   FLAG_FOCUS_ENABLED,
@@ -24,6 +24,10 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
+function preparedScene(topology: Topology): PreparedScene {
+  return prepareScene(encodeTopology(topology), encodeSegments(topology));
+}
 
 describe('Renderer resource lifecycle', () => {
   it('allocates shared GPU resources and builds the initial projection pipeline', async () => {
@@ -147,7 +151,7 @@ describe('Renderer resource lifecycle', () => {
     const renderer = new Renderer(h.presentation);
     const topology = sampleTopology();
 
-    renderer.bindTopology(encodeTopology(topology), encodeSegments(topology));
+    renderer.bindTopology(preparedScene(topology));
     const initialChannelBuffer = h.device.buffers.find(
       (buffer) => buffer.descriptor.label === 'channels',
     );
@@ -175,7 +179,7 @@ describe('Renderer resource lifecycle', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);
     const topology = sampleTopology();
-    renderer.bindTopology(encodeTopology(topology), encodeSegments(topology));
+    renderer.bindTopology(preparedScene(topology));
     const previous = h.device.buffers.find((buffer) => buffer.descriptor.label === 'channels')!;
     const failure = new Error('queue rejected channel upload');
     h.device.queue.writeBuffer.mockImplementationOnce(() => {
@@ -198,58 +202,13 @@ describe('Renderer resource lifecycle', () => {
     renderer.destroy();
   });
 
-  it('rejects mismatched segment metadata before replacing the current scene', () => {
-    const h = makeFakeGpu();
-    const renderer = new Renderer(h.presentation);
-    const topology = sampleTopology();
-    const encodedTopology = encodeTopology(topology);
-
-    const corrupt = (mutate: (words: Uint32Array) => void): EncodedSegments => {
-      const encoded = encodeSegments(topology);
-      const copy = new Uint8Array(encoded) as EncodedSegments;
-      mutate(new Uint32Array(copy.buffer));
-      return copy;
-    };
-
-    expect(() =>
-      renderer.bindTopology(
-        encodedTopology,
-        corrupt((words) => {
-          words[SEG_W.vertexCount] = 99;
-        }),
-      ),
-    ).toThrow('network segment vertex count does not match topology');
-    expect(() =>
-      renderer.bindTopology(
-        encodedTopology,
-        encodeSegments(
-          sampleTopology({
-            edges: new Uint32Array([0, 1]),
-            polylineStart: new Uint32Array([0, 0]),
-            polylinePoints: new Float32Array(0),
-          }),
-        ),
-      ),
-    ).toThrow('network segment edge count does not match topology');
-    expect(() =>
-      renderer.bindTopology(
-        encodedTopology,
-        corrupt((words) => {
-          words[SEG_W.fingerprint] = 99;
-        }),
-      ),
-    ).toThrow('network segment fingerprint does not match topology');
-
-    renderer.destroy();
-  });
-
   it('cleans partially allocated topology resources when a later allocation fails', () => {
     const h = makeFakeGpu();
     h.device.failBufferLabels.add('network-segments');
     const renderer = new Renderer(h.presentation);
     const topology = singleEdgeTopology();
 
-    expect(() => renderer.bindTopology(encodeTopology(topology), encodeSegments(topology))).toThrow(
+    expect(() => renderer.bindTopology(preparedScene(topology))).toThrow(
       'failed buffer network-segments',
     );
 
@@ -267,7 +226,7 @@ describe('Renderer resource lifecycle', () => {
     const renderer = new Renderer(h.presentation);
     const topology = singleEdgeTopology();
 
-    expect(() => renderer.bindTopology(encodeTopology(topology), encodeSegments(topology))).toThrow(
+    expect(() => renderer.bindTopology(preparedScene(topology))).toThrow(
       'exceeds WebGPU buffer size limit',
     );
     renderer.destroy();
@@ -295,7 +254,7 @@ describe('Renderer frame encoding', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);
     const topology = sampleTopology();
-    renderer.bindTopology(encodeTopology(topology), encodeSegments(topology));
+    renderer.bindTopology(preparedScene(topology));
 
     expect(renderer.render(createUniforms())).toBe(false);
 
@@ -309,7 +268,7 @@ describe('Renderer frame encoding', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation, 1);
     const topology = sampleTopology();
-    renderer.bindTopology(encodeTopology(topology), encodeSegments(topology));
+    renderer.bindTopology(preparedScene(topology));
     await flushGpuPromises();
 
     const uniforms = createUniforms();
@@ -344,7 +303,7 @@ describe('Renderer frame encoding', () => {
     const renderer = new Renderer(h.presentation);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const topology = sampleTopology();
-    renderer.bindTopology(encodeTopology(topology), encodeSegments(topology));
+    renderer.bindTopology(preparedScene(topology));
     await flushGpuPromises();
     (renderer as unknown as { edgeSegStart: Uint32Array }).edgeSegStart = new Uint32Array([
       0, 0, 4,
@@ -368,7 +327,7 @@ describe('Renderer frame encoding', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);
     const topology = sampleTopology();
-    renderer.bindTopology(encodeTopology(topology), encodeSegments(topology));
+    renderer.bindTopology(preparedScene(topology));
     renderer.useProjectionPipelines('tilt');
     await flushGpuPromises();
 

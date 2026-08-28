@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import segmentsSrc from '../src/shaders/common/segment-buffer.wgsl?raw';
 import {
+  decodeSegments,
   encodeSegments,
   readEdgeSegmentStarts,
   readEncodedSegmentsInfo,
@@ -85,6 +86,23 @@ describe('EncodedSegments', () => {
       segmentCount: 4,
       fingerprint: words[W.fingerprint],
     });
+  });
+
+  it('decodes validated metadata and reusable views together', () => {
+    const encoded = encodeSegments(sampleTopology());
+    const decoded = decodeSegments(encoded);
+
+    expect(decoded.encoded).toBe(encoded);
+    expect(decoded.info).toMatchObject({
+      vertexCount: 3,
+      edgeCount: 2,
+      segmentCount: 4,
+    });
+    expect(decoded.u32.buffer).toBe(encoded.buffer);
+    expect(decoded.f32.buffer).toBe(encoded.buffer);
+    expect([...decoded.edgeStarts]).toEqual([0, 1, 4]);
+    expect(decoded.edgeStarts.buffer).not.toBe(encoded.buffer);
+    expect(decoded.recordsOffset).toBe(decoded.u32[W.records]);
   });
 
   it('validates segment section offsets and starts', () => {

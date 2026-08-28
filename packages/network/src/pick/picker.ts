@@ -19,10 +19,9 @@ import {
   W_V_SIZE_MODE,
   W_V_SIZE_SCALE,
 } from '../webgpu/uniforms.js';
-import { readEncodedSegmentsInfo, type EncodedSegments } from '../segments/index.js';
-import { SEGMENT_RECORD_WORDS, W as SEG_W } from '../segments/wire.js';
-import { readEncodedTopologyInfo, type Bounds, type EncodedTopology } from '../topology/index.js';
-import { W as TOPO_W } from '../topology/wire.js';
+import { SEGMENT_RECORD_WORDS } from '../segments/wire.js';
+import type { PreparedScene } from '../scene.js';
+import type { Bounds } from '../topology/index.js';
 import { VISUAL } from '../visual.js';
 import { Grid } from './grid.js';
 import {
@@ -138,8 +137,8 @@ interface QueryCircle {
 interface SegmentViews {
   /** Number of source edges represented by the segment ranges. */
   readonly edgeCount: number;
-  /** Word offset of the edge-to-segment range table. */
-  readonly edgeStartsOffset: number;
+  /** Owned edge-to-segment range table. */
+  readonly edgeStarts: Uint32Array;
   /** Unsigned word view for ids and packed parameter ranges. */
   readonly u32: Uint32Array;
   /** Float word view for endpoint coordinates. */
@@ -199,37 +198,25 @@ export class Picker {
   }
 
   /**
-   * Replace the indexed scene.
+   * Build static picking indices without replacing the active scene.
    *
-   * Passing null topology or segments clears the picker. Encoded buffers are
-   * viewed in place; callers must not mutate them while they are active.
+   * This is the fallible half of picker scene replacement; callers commit the
+   * returned candidate only after other scene resources are ready.
    */
-  setScene(topology: EncodedTopology | null, segments: EncodedSegments | null): void {
-    if (!topology || !segments) {
-      this.scene = null;
-      return;
-    }
-    const info = readEncodedTopologyInfo(topology);
-    const segInfo = readEncodedSegmentsInfo(segments);
-    const topoU32 = new Uint32Array(topology.buffer, topology.byteOffset, topology.byteLength / 4);
-    const coords = new Float32Array(
-      topology.buffer,
-      topology.byteOffset + topoU32[TOPO_W.vCoords]! * 4,
-      info.vertexCount * 2,
-    );
-    const segU32 = new Uint32Array(segments.buffer, segments.byteOffset, segments.byteLength / 4);
+  prepareScene(scene: PreparedScene): Scene {
+    const { info, coords, segments } = scene;
     const seg: SegmentViews = {
-      edgeCount: segInfo.edgeCount,
-      edgeStartsOffset: segU32[SEG_W.edgeStarts]!,
-      u32: segU32,
-      f32: new Float32Array(segments.buffer, segments.byteOffset, segments.byteLength / 4),
-      recordsOffset: segU32[SEG_W.records]!,
+      edgeCount: segments.info.edgeCount,
+      edgeStarts: segments.edgeStarts,
+      u32: segments.u32,
+      f32: segments.f32,
+      recordsOffset: segments.recordsOffset,
     };
     const bounds = info.bounds;
     const wrapX = isGeoBounds(bounds) ? 360 : 0;
-    this.scene = {
+    return {
       vertexCount: info.vertexCount,
-      segmentCount: segInfo.segmentCount,
+      segmentCount: segments.info.segmentCount,
       coords,
       seg,
       bounds,
@@ -242,11 +229,16 @@ export class Picker {
         SEGMENT_RECORD_WORDS,
         4,
         6,
-        segInfo.segmentCount,
+        segments.info.segmentCount,
         bounds,
         wrapX,
       ),
     };
+  }
+
+  /** Commit a prepared picker scene through a non-throwing assignment. */
+  commitScene(scene: Scene | null): void {
+    this.scene = scene;
   }
 
   /** Best hit under the cursor; a vertex beats any edge. */
@@ -314,9 +306,9 @@ export class Picker {
     }
 
     if (kind !== 'edge' || id >= scene.seg.edgeCount) return null;
-    const { edgeStartsOffset, f32, u32, recordsOffset } = scene.seg;
-    const start = u32[edgeStartsOffset + id]!;
-    const end = u32[edgeStartsOffset + id + 1]!;
+    const { edgeStarts, f32, u32, recordsOffset } = scene.seg;
+    const start = edgeStarts[id]!;
+    const end = edgeStarts[id + 1]!;
     let visibleScore = Infinity;
     let visibleX = 0;
     let visibleY = 0;

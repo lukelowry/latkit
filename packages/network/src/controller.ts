@@ -2,14 +2,9 @@
 
 import { createPresentation, type Presentation } from '@latkit/gpu';
 
-import {
-  encodeTopology,
-  prepareTopology,
-  readEncodedTopologyInfo,
-  type Bounds,
-  type Topology,
-} from './topology/index.js';
+import { encodeTopology, prepareTopology, type Bounds, type Topology } from './topology/index.js';
 import { encodeSegments } from './segments/index.js';
+import { prepareScene } from './scene.js';
 import { Renderer } from './webgpu/renderer.js';
 import { createUniforms, FLAG_DAYLIGHT, FLAG_GRATICULE } from './webgpu/uniforms.js';
 import { FocusState, type FocusStyle, type RGBA } from './focus-state.js';
@@ -1301,10 +1296,12 @@ function createNetworkController(
     const prepared = prepareTopology(next);
     const encoded = encodeTopology(prepared);
     const encodedSegments = encodeSegments(prepared);
-    const info = readEncodedTopologyInfo(encoded);
-    renderer.bindTopology(encoded, encodedSegments);
-    picker.setScene(encoded, encodedSegments);
+    const scene = prepareScene(encoded, encodedSegments);
+    const pickScene = picker.prepareScene(scene);
+    renderer.bindTopology(scene);
+    picker.commitScene(pickScene);
 
+    const info = scene.info;
     topology = next;
     sceneGeneration++;
     pendingHoverNotice = undefined;

@@ -7,6 +7,7 @@ import type { ProjectionMode } from '../src/projections.js';
 import { createUniforms, type Uniforms } from '../src/webgpu/uniforms.js';
 import { Picker, type PickQuery, type PickResult } from '../src/pick/picker.js';
 import { createPoint, mixPoint, projectorFor, MIN_CLIP_W } from '../src/pick/project.js';
+import { prepareScene } from '../src/scene.js';
 import { encodeSegments } from '../src/segments/index.js';
 import { SEGMENT_RECORD_WORDS, W as SEG_W } from '../src/segments/wire.js';
 import { encodeTopology, type Topology } from '../src/topology/index.js';
@@ -111,7 +112,8 @@ function makeSetup(
   });
   const encoded = encodeTopology(topology);
   const segments = encodeSegments(topology);
-  picker.setScene(encoded, segments);
+  const scene = prepareScene(encoded, segments);
+  picker.commitScene(picker.prepareScene(scene));
 
   const projector = projectorFor(mode, uniforms);
   return {
@@ -477,6 +479,25 @@ describe('Picker behavior (flat)', () => {
     expect(Number.isFinite(located![1])).toBe(true);
   });
 
+  it('does not replace the active picker scene before commit', () => {
+    const s = makeSetup('flat');
+    const center = s.screenAt(0, 0);
+    const query = s.query(center.sx, center.sy, 0, { edges: false });
+    const topology: Topology = {
+      vertexCount: 1,
+      vertexCoords: new Float32Array([100, 100]),
+      edges: new Uint32Array(0),
+      polylineStart: new Uint32Array([0]),
+    };
+    const scene = prepareScene(encodeTopology(topology), encodeSegments(topology));
+
+    const candidate = s.picker.prepareScene(scene);
+
+    expect(s.picker.pick(query)).toEqual(['vertex', 12]);
+    s.picker.commitScene(candidate);
+    expect(s.picker.pick(query)).toBeNull();
+  });
+
   it('rejects invalid locate requests and unavailable scenes', () => {
     const s = makeSetup('flat');
     const edgeCount = s.topology.edges.length / 2;
@@ -487,13 +508,13 @@ describe('Picker behavior (flat)', () => {
     expect(s.picker.locate(['vertex', 1.5], VP)).toBeNull();
     expect(s.picker.locate(['vertex', 0], { w: 0, h: VP.h })).toBeNull();
 
-    s.picker.setScene(null, null);
+    s.picker.commitScene(null);
     expect(s.picker.locate(['vertex', 0], VP)).toBeNull();
   });
 
   it('returns nothing before a scene is bound or after it is cleared', () => {
     const s = makeSetup('flat');
-    s.picker.setScene(null, null);
+    s.picker.commitScene(null);
     expect(s.picker.pick(s.query(400, 300, 50))).toBeNull();
   });
 });
