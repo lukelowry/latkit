@@ -29,7 +29,7 @@ export interface CameraRegion {
 export interface LightRegion {
   /** Writes the normalized sun direction for daylight shading. */
   setDir(x: number, y: number, z: number): void;
-  /** Display flag bitmask (daylight, graticule) shared with uniforms.wgsl. */
+  /** Display flag bitmask (daylight, graticule, geographic) shared with uniforms.wgsl. */
   flags: number;
   /** Minimum overlay brightness on the night side. */
   nightFloor: number;
@@ -182,6 +182,13 @@ export const UNIFORM_BUFFER_BYTES = 416;
 export const FLAG_DAYLIGHT = 1;
 /** Display flag bit for graticule rendering; must match uniforms.wgsl. */
 export const FLAG_GRATICULE = 2;
+/**
+ * Display flag bit for geographic coordinates; must match uniforms.wgsl.
+ *
+ * Set whenever the loaded topology reads as lon/lat degrees (`isGeographic`).
+ * The plane background clips its ground to the world rect on this bit.
+ */
+export const FLAG_GEOGRAPHIC = 4;
 /** Focus flag bit that enables hover/selection rendering. */
 export const FLAG_FOCUS_ENABLED = 1;
 /** Focus flag bit that includes selected edge endpoints. */

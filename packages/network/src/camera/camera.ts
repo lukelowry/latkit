@@ -187,11 +187,41 @@ export class Camera {
     }
   }
 
+  /**
+   * The state all in-flight motion is heading toward.
+   *
+   * Fit-style motion reports its destination; chase and coast report the
+   * target they pull `current` toward. At rest this is simply the target.
+   */
+  private get settled(): CameraState {
+    return this.motion.kind === 'fitting' ? this.motion.to : this.target;
+  }
+
+  /**
+   * Read the pose and anchor scale a projection switch must preserve.
+   *
+   * Carries the settled state, never the transient chase state: a switch
+   * mid-animation then lands exactly where the same switch after the
+   * animation lands. Null until placed.
+   */
+  carry(vp: Viewport): { pose: CameraPose; px: number } | null {
+    if (!this.fit) return null;
+    const s = this.settled;
+    return { pose: this.proj.pose(s), px: this.proj.pxPerWorld(s, vp) };
+  }
+
   /** Retarget one view of the current camera family without replacing state. */
   setView(view: PlaneView): void {
     if (!this.proj.setView) return;
     const intent = this.fitIntent;
-    this.interrupt();
+    // Adopt the settled destination instead of interrupting to the rendered
+    // transient, so a view switch mid-animation eases to the same place the
+    // post-animation switch reaches; the chase supplies the easing.
+    this.target.set(this.settled);
+    this.motion = { kind: 'idle' };
+    this.anchor = null;
+    this.vel.fill(0);
+    this.lastT = performance.now();
     this.proj.setView(view, this.target);
     this.fitIntent = intent;
   }

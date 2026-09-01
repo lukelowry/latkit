@@ -6,7 +6,12 @@ import { encodeTopology, prepareTopology, type Bounds, type Topology } from './t
 import { encodeSegments } from './segments/index.js';
 import { prepareScene } from './scene.js';
 import { Renderer } from './webgpu/renderer.js';
-import { createUniforms, FLAG_DAYLIGHT, FLAG_GRATICULE } from './webgpu/uniforms.js';
+import {
+  createUniforms,
+  FLAG_DAYLIGHT,
+  FLAG_GEOGRAPHIC,
+  FLAG_GRATICULE,
+} from './webgpu/uniforms.js';
 import { FocusState, type FocusStyle, type RGBA } from './focus-state.js';
 import { VISUAL } from './visual.js';
 import { CameraRig } from './camera/rig.js';
@@ -1190,9 +1195,13 @@ function createNetworkController(
   function writeDisplayToUniforms(): void {
     // Daylight interprets coordinates as lon/lat degrees, so it arms only for
     // geographic topologies; every projection family shades when it is set.
+    // FLAG_GEOGRAPHIC tracks the topology alone: the plane background clips
+    // its ground to the lon/lat world rect whenever coordinates are degrees.
+    const geographic = isGeographic(topologyBounds);
     uniforms.light.flags =
-      (display.daylight && isGeographic(topologyBounds) ? FLAG_DAYLIGHT : 0) |
-      (display.graticule ? FLAG_GRATICULE : 0);
+      (display.daylight && geographic ? FLAG_DAYLIGHT : 0) |
+      (display.graticule ? FLAG_GRATICULE : 0) |
+      (geographic ? FLAG_GEOGRAPHIC : 0);
     uniforms.light.nightFloor = display.nightFloor;
     uniforms.light.surfaceNightFloor = display.surfaceNightFloor;
     uniforms.light.terminatorWidth = display.terminatorWidth;

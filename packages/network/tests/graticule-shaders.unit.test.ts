@@ -35,20 +35,35 @@ describe('background graticule shader contract', () => {
 
   it('keeps the oblique plane Cartesian and derivative-safe', () => {
     const grid = planeBgSrc.indexOf('cartesian_grid(p.xy)');
-    const discard = planeBgSrc.indexOf('if (!descending) { discard; }');
+    const cover = planeBgSrc.indexOf('world_coverage(p.xy)');
+    const discard = planeBgSrc.indexOf('if (!descending || cover == 0.0) { discard; }');
 
     expect(grid).toBeGreaterThanOrEqual(0);
-    expect(discard).toBeGreaterThan(grid);
+    expect(cover).toBeGreaterThan(grid);
+    expect(discard).toBeGreaterThan(cover);
     expect(planeBgSrc).not.toContain('fn decade_grid');
+  });
+
+  it('clips the geographic ground to the world rect in both branches', () => {
+    // Geographic coordinates end at ±180 x ±90; beyond them the plane shows
+    // the page background, gated on FLAG_GEOGRAPHIC so abstract topologies
+    // keep the unbounded ground. Coverage takes derivatives, so both samples
+    // evaluate it before their discard.
+    expect(planeBgSrc).toContain('const WORLD_EDGE_HALF = vec2f(180.0, 90.0);');
+    expect(planeBgSrc).toContain('if ((u.flags & FLAG_GEOGRAPHIC) == 0u) { return 1.0; }');
+    const flatCover = planeBgSrc.indexOf('world_coverage(p)');
+    const flatDiscard = planeBgSrc.indexOf('if (cover == 0.0) { discard; }');
+    expect(flatCover).toBeGreaterThanOrEqual(0);
+    expect(flatDiscard).toBeGreaterThan(flatCover);
   });
 
   it('draws one ground palette in flat and tilt', () => {
     // Both branches compose the identical lit surface/grid tone; only the
-    // inverse projection and the horizon fade differ. The tilt fade is the
-    // sole alpha term left - the ground never fades in with camera pitch.
+    // inverse projection, the horizon fade, and the world-edge coverage
+    // differ - the ground never fades in with camera pitch.
     expect(planeBgSrc).toContain('fn ground_color(p: vec3f, grid: f32) -> vec3f');
-    expect(planeBgSrc).toContain('vec4f(ground_color(vec3f(p, 0.0), grid), 1.0)');
-    expect(planeBgSrc).toContain('vec4f(ground_color(p, grid), fade)');
+    expect(planeBgSrc).toContain('vec4f(ground_color(vec3f(p, 0.0), grid), cover)');
+    expect(planeBgSrc).toContain('vec4f(ground_color(p, grid), fade * cover)');
     expect(planeBgSrc).not.toContain('u.depth_mix;');
     expect(planeBgSrc).toContain('@builtin(frag_depth) depth: f32');
   });

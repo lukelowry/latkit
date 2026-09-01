@@ -8,6 +8,23 @@
 const HORIZON_START = 8.0;
 const HORIZON_END = 40.0;
 
+// Geographic ground is one bounded rectangular map: beyond ±180°lon x ±90°lat
+// the coordinates are fictitious (geo_to_xyz is periodic, so the daylight
+// terminator would repeat every 360°), so the ground ends there with a crisp
+// edge and the page background shows - the planar twin of the globe floating
+// in empty space. Non-geographic planes stay unbounded: abstract coordinates
+// are valid everywhere, daylight never arms, and any cut would be arbitrary.
+const WORLD_EDGE_HALF = vec2f(180.0, 90.0);
+
+// Screen-space coverage of the world rect: 1 inside, 0 outside, antialiased
+// over one pixel at the edge. Takes derivatives - evaluate before any discard.
+fn world_coverage(p: vec2f) -> f32 {
+  if ((u.flags & FLAG_GEOGRAPHIC) == 0u) { return 1.0; }
+  let edge = max(abs(p.x) - WORLD_EDGE_HALF.x, abs(p.y) - WORLD_EDGE_HALF.y);
+  let px = max(length(vec2f(dpdx(edge), dpdy(edge))), 1e-12);
+  return clamp(0.5 - edge / px, 0.0, 1.0);
+}
+
 struct PlaneSample {
   color: vec4f,
   depth: f32,
@@ -43,7 +60,9 @@ fn flat_sample(frag_pos: vec4f) -> PlaneSample {
     (ndc.y - u.flat_ty) / u.flat_sy,
   );
   let grid = cartesian_grid(p);
-  return PlaneSample(vec4f(ground_color(vec3f(p, 0.0), grid), 1.0), 0.5);
+  let cover = world_coverage(p);
+  if (cover == 0.0) { discard; }
+  return PlaneSample(vec4f(ground_color(vec3f(p, 0.0), grid), cover), 0.5);
 }
 
 fn plane_sample(frag_pos: vec4f) -> PlaneSample {
@@ -52,10 +71,11 @@ fn plane_sample(frag_pos: vec4f) -> PlaneSample {
   let descending = rd.z < -1e-6;
   let t = select(1.0, -u.camera_pos.z / rd.z, descending);
   let p = u.camera_pos + rd * t;
-  // cartesian_grid takes derivatives: evaluate before the horizon discard so
-  // each derivative quad is well-defined at the horizon line.
+  // cartesian_grid and world_coverage take derivatives: evaluate both before
+  // any discard so each derivative quad is well-defined at the cut lines.
   let grid = cartesian_grid(p.xy);
-  if (!descending) { discard; }
+  let cover = world_coverage(p.xy);
+  if (!descending || cover == 0.0) { discard; }
 
   let heights = t / max(u.camera_pos.z, 1e-9);
   let fade = 1.0 - smoothstep(HORIZON_START, HORIZON_END, heights);
@@ -64,7 +84,7 @@ fn plane_sample(frag_pos: vec4f) -> PlaneSample {
   let world_per_px = t * u.fov_scale * 2.0 / u.viewport.y;
   let slack = css_px(SURFACE_DEPTH_SLACK_PX) * world_per_px / sin_e;
   let clip = u.vp * vec4f(p + rd * slack, 1.0);
-  return PlaneSample(vec4f(ground_color(p, grid), fade), clamp(clip.z / clip.w, 0.0, 1.0));
+  return PlaneSample(vec4f(ground_color(p, grid), fade * cover), clamp(clip.z / clip.w, 0.0, 1.0));
 }
 
 @fragment

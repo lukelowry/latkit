@@ -1,6 +1,6 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { createGlobeProjection } from '../src/camera/globe.js';
-import { createPlaneProjection } from '../src/camera/plane.js';
+import { createPlaneProjection, TILT_PITCH } from '../src/camera/plane.js';
 import { Camera } from '../src/camera/camera.js';
 import { CameraRig } from '../src/camera/rig.js';
 import { createUniforms } from '../src/webgpu/uniforms.js';
@@ -1331,6 +1331,141 @@ describe('CameraRig', () => {
     expect(rig.camera.current[0]).toBe(3);
     expect(rig.camera.current[1]).toBe(-2);
     expect(rig.mode).toBe('tilt');
+  });
+
+  // Determinism invariants: the destination of a projection switch depends
+  // only on the settled view being left, never on chase timing, on the mode
+  // label the pose came from, or on whether the canvas happened to be sized.
+  const GEO_BOUNDS: Bounds = { xMin: -98, xMax: -96, yMin: 30, yMax: 32 };
+
+  /** Put an explored (fit-intent-free) state directly on the rig's camera. */
+  function explore(rig: CameraRig, state: readonly number[]): void {
+    rig.camera.current.set(state);
+    rig.camera.target.set(state);
+    rig.camera.fitIntent = false;
+  }
+
+  it('lands the same globe pose whether the switch happens mid-animation or settled', () => {
+    const run = (settleMs: number) => {
+      const { rig } = makeRig(GEO_BOUNDS);
+      let now = performance.now();
+      rig.tick(now, vp);
+      explore(rig, [-97.2, 30.7, 500, 0, 0]);
+      rig.switchTo('tilt', vp);
+      for (let t = 0; t < settleMs; t += 16.67) rig.tick((now += 16.67), vp);
+      rig.switchTo('globe', vp);
+      let frames = 0;
+      while (rig.isAnimating() && frames++ < 240) rig.tick((now += 16.67), vp);
+      return [...rig.camera.current];
+    };
+
+    const quick = run(50); // pitch still easing toward the tilt oblique
+    const settled = run(2_000);
+    expect(quick[3]).toBe(TILT_PITCH);
+    expect(quick).toEqual(settled);
+  });
+
+  it('carries identical planar states identically to the globe from flat and tilt', () => {
+    const states = (['flat', 'tilt'] as const).map((mode) => {
+      const { rig } = makeRig(GEO_BOUNDS);
+      rig.tick(NOW, vp);
+      if (mode === 'tilt') rig.switchTo('tilt', vp);
+      explore(rig, [-97.2, 30.7, 500, 0, 0]);
+      rig.switchTo('globe', vp);
+      return [...rig.camera.current];
+    });
+    expect(states[0]).toEqual(states[1]);
+  });
+
+  it('round-trips tilt to globe and back to the starting view', () => {
+    const { rig } = makeRig(GEO_BOUNDS);
+    rig.tick(NOW, vp);
+    rig.switchTo('tilt', vp);
+    explore(rig, [-97.2, 30.7, 500, TILT_PITCH, 30]);
+
+    rig.switchTo('globe', vp);
+    rig.switchTo('tilt', vp);
+
+    expect(rig.camera.current[0]).toBeCloseTo(-97.2, 9);
+    expect(rig.camera.current[1]).toBeCloseTo(30.7, 9);
+    expect(rig.camera.current[2]).toBeCloseTo(500, 6);
+    expect(rig.camera.current[3]).toBe(TILT_PITCH);
+    expect(rig.camera.current[4]).toBe(30);
+    expect(rig.camera.fitIntent).toBe(false);
+  });
+
+  it('a hidden switch lands exactly where the sized switch lands', () => {
+    const run = (switchVp: Viewport) => {
+      const { rig } = makeRig(GEO_BOUNDS);
+      rig.tick(NOW, vp);
+      explore(rig, [-97.2, 30.7, 500, 0, 0]);
+      rig.switchTo('globe', switchVp);
+      rig.tick(NOW + 16, vp);
+      return [...rig.camera.current];
+    };
+    expect(run(hidden)).toEqual(run(vp));
+  });
+
+  it('flushes a deferred reveal into the pose carried across a hidden switch', () => {
+    const item = { xMin: -96.4, xMax: -96.4, yMin: 31.6, yMax: 31.6 };
+    const run = (cmdVp: Viewport, switchVp: Viewport) => {
+      const { rig } = makeRig(GEO_BOUNDS);
+      rig.tick(NOW, vp);
+      explore(rig, [-97.2, 30.7, 500, 0, 0]);
+      rig.reveal(item, cmdVp, false);
+      rig.switchTo('globe', switchVp);
+      rig.tick(NOW + 16, vp);
+      return [...rig.camera.current];
+    };
+
+    const deferred = run(hidden, hidden);
+    expect(deferred).toEqual(run(vp, vp));
+    expect(deferred[0]).toBeCloseTo(-96.4, 6);
+    expect(deferred[1]).toBeCloseTo(31.6, 6);
+  });
+
+  it('preserves the view across chained hidden cross-family switches', () => {
+    const { rig } = makeRig(GEO_BOUNDS);
+    rig.tick(NOW, vp);
+    explore(rig, [-97.2, 30.7, 500, 0, 0]);
+
+    rig.switchTo('globe', hidden);
+    rig.switchTo('flat', hidden);
+    expect(rig.pendingPlacement).toBe(true);
+    rig.tick(NOW + 16, vp);
+
+    expect(rig.camera.current[0]).toBeCloseTo(-97.2, 9);
+    expect(rig.camera.current[1]).toBeCloseTo(30.7, 9);
+    expect(rig.camera.current[2]).toBeCloseTo(500, 6);
+    expect(rig.camera.fitIntent).toBe(false);
+  });
+
+  it('carries a mid-flight moveTo destination across a cross-family switch', () => {
+    let now = 1_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const { rig } = makeRig(GEO_BOUNDS);
+    rig.tick(now, vp);
+    rig.moveTo({ xMin: -97.5, xMax: -97.1, yMin: 30.4, yMax: 30.8 }, vp, true);
+    now += 100;
+    rig.tick(now, vp);
+    expect(rig.isAnimating()).toBe(true);
+
+    rig.switchTo('globe', vp);
+
+    expect(rig.camera.current[0]).toBeCloseTo(-97.3, 6);
+    expect(rig.camera.current[1]).toBeCloseTo(30.6, 6);
+  });
+
+  it('an in-family switch keeps the chase destination', () => {
+    const { rig } = makeRig();
+    rig.tick(performance.now(), vp);
+    rig.camera.zoomAt(2, vp.w / 2, vp.h / 2, vp);
+    const targetScale = rig.camera.target[2];
+
+    rig.switchTo('tilt', vp);
+
+    expect(rig.camera.target[2]).toBe(targetScale);
+    expect(rig.camera.target[3]).toBe(TILT_PITCH);
   });
 });
 

@@ -136,34 +136,39 @@ export class CameraRig {
    * Switch projection mode, always preserving the current view.
    *
    * In-family switches retarget the shared camera and mark the fit reference
-   * stale. Cross-family switches carry the pose and anchor scale - against
-   * the live viewport, or the last rendered one when the canvas is hidden -
-   * and apply immediately when sized, else as a pending placement. A view is
-   * only surrendered to the canonical fit while fit intent is active.
+   * stale. Cross-family switches behave as if a frame ticked first: the
+   * canonical fit and any deferred command flush into the outgoing camera
+   * against the live viewport - or the last rendered one while the canvas is
+   * hidden - and the settled pose plus anchor scale carry into the new
+   * camera, applied immediately when sized, else as a pending placement.
+   * A view is only surrendered to the canonical fit while fit intent is
+   * active; with no viewport reference at all, deferred bounds commands are
+   * projection-agnostic and survive the switch to replay after the fit.
    */
   switchTo(mode: ProjectionMode, vp: Viewport): void {
     if (mode === this.modeValue) return;
     const sameFamily = PROJECTIONS[this.modeValue].family === PROJECTIONS[mode].family;
-    this.modeValue = mode;
     if (sameFamily) {
+      this.modeValue = mode;
       this.camera.setView(mode as PlaneView);
       this.fitStale = true;
       return;
     }
 
+    // Flush before modeValue changes so the deferred replay is exactly the
+    // one a rendered frame under the outgoing mode would have performed.
     const ref = usable(vp) ? vp : usable(this.lastVp) ? this.lastVp : null;
-    const carry = ref !== null && this.camera.placed && !this.camera.fitIntent;
-    const pose = carry ? this.projection.pose(this.camera.current) : null;
-    const px = carry ? this.projection.pxPerWorld(this.camera.current, ref!) : 0;
+    if (ref && this.bounds) this.apply(ref);
+    const carried = ref !== null && !this.camera.fitIntent ? this.camera.carry(ref) : null;
     const fitIntent = this.camera.fitIntent;
+    this.modeValue = mode;
     this.projection = PROJECTIONS[mode].create();
     this.camera = new Camera(this.projection, this.region);
-    if (pose) {
+    if (carried) {
       this.needsFit = false;
-      this.pending = { kind: 'place', pose, px, fitIntent };
+      this.pending = { kind: 'place', pose: carried.pose, px: carried.px, fitIntent };
     } else {
       this.needsFit = true;
-      this.pending = null;
     }
     if (usable(vp) && this.bounds) this.apply(vp);
   }

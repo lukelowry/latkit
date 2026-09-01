@@ -114,8 +114,9 @@ fn css_px(value: f32) -> f32 {
   return value * u.backing_scale;
 }
 
-const FLAG_DAYLIGHT:  u32 = 1u;
-const FLAG_GRATICULE: u32 = 2u;
+const FLAG_DAYLIGHT:   u32 = 1u;
+const FLAG_GRATICULE:  u32 = 2u;
+const FLAG_GEOGRAPHIC: u32 = 4u;
 
 const FOCUS_ENABLED:            u32 = 1u;
 const FOCUS_SELECTED_ENDPOINTS: u32 = 2u;

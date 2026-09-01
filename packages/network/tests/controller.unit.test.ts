@@ -8,6 +8,7 @@ import {
   FLAG_FOCUS_ENABLED,
   FLAG_FOCUS_HOVER_ENDPOINTS,
   FLAG_FOCUS_SELECTED_ENDPOINTS,
+  FLAG_GEOGRAPHIC,
   FLAG_GRATICULE,
 } from '../src/webgpu/uniforms.js';
 import { VISUAL } from '../src/visual.js';
@@ -1260,6 +1261,22 @@ describe('createNetwork controller', () => {
     h.network.load(geographicTopology());
     h.network.setOptions({ daylight: false });
     expect(h.loop.uniforms.light.flags & FLAG_DAYLIGHT).toBe(0);
+  });
+
+  it('arms FLAG_GEOGRAPHIC for geographic topologies regardless of daylight', async () => {
+    const h = await makeHarness();
+    expect(h.loop.uniforms.light.flags & FLAG_GEOGRAPHIC).toBe(0);
+
+    // The plane background clips its ground to the lon/lat world rect on
+    // this bit alone; the daylight toggle must not disturb it.
+    h.network.load(geographicTopology());
+    expect(h.loop.uniforms.light.flags & FLAG_GEOGRAPHIC).toBe(FLAG_GEOGRAPHIC);
+    h.network.setOptions({ daylight: false });
+    expect(h.loop.uniforms.light.flags & FLAG_GEOGRAPHIC).toBe(FLAG_GEOGRAPHIC);
+
+    // Abstract coordinates keep the unbounded plane.
+    h.network.load(nonGlobeTopology());
+    expect(h.loop.uniforms.light.flags & FLAG_GEOGRAPHIC).toBe(0);
   });
 
   it('updates globe height scale during frame hooks', async () => {
