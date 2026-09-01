@@ -12,6 +12,7 @@ import channelEdgeSrc from '../shaders/common/edge-channels.wgsl?raw';
 import topologySrc from '../shaders/common/topology-buffer.wgsl?raw';
 import segmentsSrc from '../shaders/common/segment-buffer.wgsl?raw';
 import graticuleSrc from '../shaders/common/graticule.wgsl?raw';
+import cameraRaySrc from '../shaders/common/camera-ray.wgsl?raw';
 import coreVertexSrc from '../shaders/passes/vertex-billboard.wgsl?raw';
 import coreEdgeSrc from '../shaders/passes/edge-segment.wgsl?raw';
 import corePoleSrc from '../shaders/passes/height-pole.wgsl?raw';
@@ -174,7 +175,7 @@ export async function buildProjectionPipelines(
   });
   const bgModule = mod(
     `${def.mode}-bg`,
-    VISUAL_WGSL + uniformsSrc + graticuleSrc + def.bgPreludeWgsl + def.bgWgsl,
+    VISUAL_WGSL + uniformsSrc + graticuleSrc + cameraRaySrc + def.bgPreludeWgsl + def.bgWgsl,
   );
   const earthAxisModule =
     def.mode === 'globe'

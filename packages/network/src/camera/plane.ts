@@ -1,4 +1,5 @@
 import type {
+  CameraPose,
   CameraState,
   PanSession,
   PlaneView,
@@ -6,23 +7,19 @@ import type {
   Vec2,
   Viewport,
 } from './projection.js';
-import { FIT_PAD, MAX_ZOOM_RATIO } from './projection.js';
-import { DEG2RAD } from './geo.js';
+import { BEARING_RATE, FIT_PAD, MAX_ZOOM_RATIO, PITCH_RATE } from './projection.js';
+import { DEG2RAD, turn, wrap } from './geo.js';
 import { mat4Invert, mat4Mul, mat4Perspective, mat4Unproject } from './mat4.js';
 
 const FOV_Y = 2 * Math.atan(1 / 3);
 const FOV_SCALE = 1 / 3;
 const MAX_PITCH = 85;
 export const TILT_PITCH = 55;
-const BEARING_RATE = 0.4;
-const PITCH_RATE = 0.25;
 const NEAR_HEIGHT = 0.1;
 const FAR_DIST = 50;
 const SCALE_MIN = 0.001;
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
-const wrap = (v: number): number => ((v % 360) + 360) % 360;
-const turn = (a: number, b: number): number => ((((b - a) % 360) + 540) % 360) - 180;
 const mix = (v: number): number => {
   const t = clamp(v / TILT_PITCH, 0, 1);
   return t * t * (3 - 2 * t);
@@ -141,8 +138,7 @@ export function createPlaneProjection(initial: PlaneView): Projection {
     },
 
     clone(s): CameraState {
-      if (s.length === 5) return new Float64Array(s) as CameraState;
-      return Float64Array.of(s[0]!, s[1]!, s[2]!, 0, 0) as CameraState;
+      return new Float64Array(s) as CameraState;
     },
 
     screenToWorld(s, sx, sy, vp): Vec2 | null {
@@ -259,6 +255,18 @@ export function createPlaneProjection(initial: PlaneView): Projection {
       valid = false;
     },
 
+    pose(s): CameraPose {
+      return { centerX: s[0]!, centerY: s[1]!, pitch: s[3]!, bearing: s[4]! };
+    },
+
+    applyPose(s, pose) {
+      if (pose.centerX !== undefined) s[0] = pose.centerX;
+      if (pose.centerY !== undefined) s[1] = pose.centerY;
+      if (pose.pitch !== undefined) s[3] = view === 'flat' ? 0 : clamp(pose.pitch, 0, MAX_PITCH);
+      if (pose.bearing !== undefined) s[4] = view === 'flat' ? 0 : wrap(pose.bearing);
+      valid = false;
+    },
+
     exportPose(s) {
       return { centerX: s[0], centerY: s[1], pxPerWorld: Math.abs(s[2]) };
     },
@@ -283,8 +291,7 @@ export function createPlaneProjection(initial: PlaneView): Projection {
       build(s, vp);
       region.setVP(vpM);
       region.setCameraPos(eye[0], eye[1], eye[2]);
-      const b = s[4] * DEG2RAD;
-      region.setPlaneParams(s[0], s[1], Math.sin(b), Math.cos(b));
+      region.setViewBasis(viewM);
     },
   };
 }

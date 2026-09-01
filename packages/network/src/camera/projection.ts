@@ -6,6 +6,12 @@ export const FIT_PAD = 0.85;
 /** Maximum zoom-in ratio relative to the fitted view. */
 export const MAX_ZOOM_RATIO = 512;
 
+/** Bearing change per horizontal rotation-gesture pixel, in degrees. */
+export const BEARING_RATE = 0.4;
+
+/** Pitch change per vertical rotation-gesture pixel, in degrees. */
+export const PITCH_RATE = 0.25;
+
 /**
  * State slot reserved for the projection's zoom scalar.
  *
@@ -43,10 +49,11 @@ export type ProjectionFamily = 'plane' | 'globe';
 export type PlaneView = 'flat' | 'tilt';
 
 /**
- * A point on the camera's 3-D state manifold.
+ * A point on the camera's 5-D state manifold.
  *
  * Plane: [cx, cy, scale, pitch, bearing].
- * Globe: [lon, lat, dist], spherical in lon/lat and linear in dist.
+ * Globe: [lon, lat, dist, pitch, bearing], spherical in lon/lat and linear
+ * in dist.
  *
  * The underlying storage is a Float64Array for zero-alloc math. Construct
  * via `Projection.fit()` or `Projection.clone()`; callers should not index
@@ -66,8 +73,29 @@ export type CameraState = Float64Array;
  *   [0]: horizontal orientation tangent (flat: dx/dt; globe: arc-rate)
  *   [1]: vertical orientation tangent (flat: dy/dt; globe: dlat/dt deg/s)
  *   [2]: zoom tangent (flat: d(scale)/dt; globe: d(dist)/dt)
+ *   [3]: pitch tangent, deg/s
+ *   [4]: bearing tangent, deg/s
  */
 export type Tangent = Float64Array;
+
+/**
+ * Projection-independent camera pose.
+ *
+ * Center is world units on the plane family and lon/lat degrees on the
+ * globe; pitch is degrees off nadir (0 looks straight down) and bearing is
+ * degrees clockwise from north. Zoom is deliberately absent: its units are
+ * projection-specific and it stays behind `Network.zoomBy`.
+ */
+export interface CameraPose {
+  /** World x coordinate or longitude at the view anchor. */
+  readonly centerX: number;
+  /** World y coordinate or latitude at the view anchor. */
+  readonly centerY: number;
+  /** Camera tilt off nadir in degrees. */
+  readonly pitch: number;
+  /** Camera heading in degrees clockwise from north. */
+  readonly bearing: number;
+}
 
 /**
  * Live drag handle for a single drag gesture.
@@ -170,9 +198,20 @@ export interface Projection {
   /**
    * Apply a rotation gesture to `state`.
    *
-   * Omitted by projections without a rotational degree of freedom.
+   * A view without rotational freedom (the flat plane) mutates nothing.
    */
-  rotate?(state: CameraState, dxPx: number, dyPx: number, vp: Viewport): void;
+  rotate(state: CameraState, dxPx: number, dyPx: number, vp: Viewport): void;
+
+  /** Read the public pose from `state`. */
+  pose(state: CameraState): CameraPose;
+
+  /**
+   * Merge a partial public pose into `state`.
+   *
+   * Owns wrapping and clamping for the active view; fields a view cannot
+   * host (flat pitch/bearing) clamp to their resting value.
+   */
+  applyPose(state: CameraState, pose: Partial<CameraPose>): void;
 
   /** Export a projection-independent pose, or null when continuity is unavailable. */
   exportPose?(state: CameraState, vp: Viewport): PoseSnapshot | null;
@@ -196,6 +235,6 @@ export interface Projection {
 }
 
 /** Allocate a zero-filled tangent buffer of the projection's dimension. */
-export function createTangent(size = 3): Tangent {
+export function createTangent(size: number): Tangent {
   return new Float64Array(size);
 }

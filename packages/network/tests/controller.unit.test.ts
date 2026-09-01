@@ -1013,16 +1013,19 @@ describe('createNetwork controller', () => {
     expect(h.renderer.warmProjection.mock.calls).toEqual([['tilt'], ['tilt'], ['globe']]);
   });
 
-  it('fits, pans, rotates, and zooms through the public camera methods', async () => {
+  it('fits, pans, rotates, poses, and zooms through the public camera methods', async () => {
     const h = await makeHarness();
     h.network.fit(true);
     h.network.panBy(1, 2);
     h.network.rotateBy(1, 2);
     h.network.zoomBy(2);
+    expect(h.network.getPose()).toBeNull();
+    expect(h.network.setPose({ centerX: 1 })).toBe(false);
     expect(h.rig.camera.fitView).not.toHaveBeenCalled();
     expect(h.rig.camera.panBy).not.toHaveBeenCalled();
     expect(h.rig.camera.rotateBy).not.toHaveBeenCalled();
     expect(h.rig.camera.zoomAt).not.toHaveBeenCalled();
+    expect(h.rig.camera.setPose).not.toHaveBeenCalled();
 
     h.network.load(geographicTopology());
     h.network.fit(true);
@@ -1036,6 +1039,12 @@ describe('createNetwork controller', () => {
     expect(h.rig.camera.panBy).toHaveBeenCalledWith(3, 4, { w: 100, h: 80 });
     expect(h.rig.camera.rotateBy).toHaveBeenCalledWith(5, 6, { w: 100, h: 80 });
     expect(h.rig.camera.zoomAt).toHaveBeenCalledWith(1.25, 50, 40, { w: 100, h: 80 });
+
+    expect(h.network.getPose()).toEqual({ centerX: 0, centerY: 0, pitch: 0, bearing: 0 });
+    h.loop.wake.mockClear();
+    expect(h.network.setPose({ bearing: 90 }, { animate: true })).toBe(true);
+    expect(h.rig.camera.setPose).toHaveBeenCalledWith({ bearing: 90 }, true);
+    expect(h.loop.wake).toHaveBeenCalled();
   });
 
   it('fits valid item subsets without replacing whole-topology fit behavior', async () => {

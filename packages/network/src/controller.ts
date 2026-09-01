@@ -12,7 +12,7 @@ import { VISUAL, planeHeightWorldScale } from './visual.js';
 import { ProjectionRig } from './camera/rig.js';
 import { attachPointer, MOUSE_PICK_RADIUS_PX, type HoverProbe } from './input/pointer.js';
 import { createSurface } from './input/surface.js';
-import { MAX_ZOOM_RATIO, type Viewport } from './camera/projection.js';
+import { type CameraPose, MAX_ZOOM_RATIO, type Viewport } from './camera/projection.js';
 import { createChannels, type Channel } from './channels.js';
 import type { ChannelRange } from './range.js';
 import { RenderLoop } from './webgpu/render-loop.js';
@@ -45,6 +45,12 @@ export interface Item {
   readonly kind: 'vertex' | 'edge';
   /** Zero-based vertex or edge index. */
   readonly index: number;
+}
+
+/** Options for {@link Network.setPose}. */
+export interface PoseOptions {
+  /** Ease toward the pose instead of placing it immediately. @defaultValue `false` */
+  readonly animate?: boolean;
 }
 
 /** Camera behavior for bringing one item into view without reframing it. */
@@ -258,12 +264,32 @@ export interface Network {
   /**
    * Rotate the active camera by screen pixels.
    *
-   * The call is a no-op when the active projection does not support rotation.
+   * Horizontal pixels turn the bearing and vertical pixels tilt the pitch.
+   * The call is a no-op in the flat view, which has no rotational freedom.
    *
    * @param dx - Horizontal delta in CSS pixels.
    * @param dy - Vertical delta in CSS pixels.
    */
   rotateBy(dx: number, dy: number): void;
+  /**
+   * Read the camera pose the next {@link Network.setPose} would build on.
+   *
+   * @returns The current pose, or null before a topology is loaded or the
+   * camera is placed.
+   */
+  getPose(): CameraPose | null;
+  /**
+   * Merge a partial camera pose, wrapped and clamped per the active view.
+   *
+   * With `animate` the camera eases toward the pose; otherwise it is placed
+   * immediately. Fields the view cannot host (flat pitch/bearing) clamp to
+   * their resting value.
+   *
+   * @param pose - Pose fields to change; omitted fields keep their value.
+   * @param options - Animation flag.
+   * @returns True when the pose was accepted and changed camera state.
+   */
+  setPose(pose: Partial<CameraPose>, options?: PoseOptions): boolean;
   /**
    * Zoom the active camera around the viewport center.
    *
@@ -961,6 +987,19 @@ function createNetworkController(
       if (!rig.camera.rotateBy(dx, dy, vp())) return;
       hoverDirty = true;
       loop.wake();
+    },
+
+    getPose() {
+      if (!topology) return null;
+      return rig.camera.pose();
+    },
+
+    setPose(pose, options = {}) {
+      if (!topology) return false;
+      if (!rig.camera.setPose(pose, options.animate ?? false)) return false;
+      hoverDirty = true;
+      loop.wake();
+      return true;
     },
 
     zoomBy(factor) {

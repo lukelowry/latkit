@@ -82,8 +82,8 @@ async function main(): Promise<void> {
   net.fadeIn();
 
   wireTopologies(() => currentId, applyTopology);
-  const setProjection = wireProjections(net);
-  const cameraDemo = wireCameraDemo(net, setProjection);
+  const projections = wireProjections(net);
+  const cameraDemo = wireCameraDemo(net, projections);
   wireToggles(net, (on) => {
     heightOn = on;
     applyChannels();
@@ -117,13 +117,20 @@ function wireTopologies(currentId: () => string, apply: (opt: TopologyOption) =>
   }
 }
 
-function wireProjections(net: Network): (mode: ProjectionMode) => boolean {
+interface ProjectionControls {
+  select(mode: ProjectionMode): boolean;
+  mode(): ProjectionMode;
+}
+
+function wireProjections(net: Network): ProjectionControls {
   const modes: readonly ProjectionMode[] = ['flat', 'tilt', 'globe'];
   const row = document.getElementById('projections') as HTMLElement;
   const buttons = new Map<ProjectionMode, HTMLButtonElement>();
+  let active: ProjectionMode = 'flat';
 
   function select(mode: ProjectionMode): boolean {
     if (!net.setProjection(mode)) return false;
+    active = mode;
     setActive(row, buttons.get(mode)!);
     return true;
   }
@@ -138,12 +145,16 @@ function wireProjections(net: Network): (mode: ProjectionMode) => boolean {
     row.appendChild(btn);
   }
 
-  return select;
+  return { select, mode: () => active };
 }
+
+/** Longitude drift for the globe spin, in degrees per millisecond (8 deg/s,
+ *  the same rate the tilt bearing orbit resolves to). */
+const SPIN_DEG_PER_MS = 0.008;
 
 function wireCameraDemo(
   net: Network,
-  setProjection: (mode: ProjectionMode) => boolean,
+  { select, mode }: ProjectionControls,
 ): { destroy(): void } {
   const row = document.getElementById('camera') as HTMLElement;
   const projections = document.getElementById('projections') as HTMLElement;
@@ -163,7 +174,16 @@ function wireCameraDemo(
     if (frameId === null) return;
     if (previousTime !== 0) {
       const elapsed = Math.min(time - previousTime, 50);
-      net.rotateBy(elapsed * 0.02, 0);
+      if (mode() === 'globe') {
+        // Spin the globe about its axis: drift the pose longitude and let the
+        // camera chase ease it, holding latitude, pitch, and bearing as-is.
+        const pose = net.getPose();
+        if (pose) {
+          net.setPose({ centerX: pose.centerX + elapsed * SPIN_DEG_PER_MS }, { animate: true });
+        }
+      } else {
+        net.rotateBy(elapsed * 0.02, 0);
+      }
     }
     previousTime = time;
     frameId = requestAnimationFrame(frame);
@@ -174,7 +194,7 @@ function wireCameraDemo(
       stop();
       return;
     }
-    if (!setProjection('tilt')) return;
+    if (mode() !== 'globe' && !select('tilt')) return;
     setPressed(btn, true);
     frameId = requestAnimationFrame(frame);
   });

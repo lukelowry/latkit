@@ -5,10 +5,8 @@ import type { Bounds } from './topology/index.js';
 
 import planeSrc from './shaders/projections/plane-overlay.wgsl?raw';
 import planeBgSrc from './shaders/projections/plane-background.wgsl?raw';
-import planeRaySrc from './shaders/projections/plane-ray.wgsl?raw';
 import globeSrc from './shaders/projections/globe-overlay.wgsl?raw';
 import globeBgSrc from './shaders/projections/globe-background.wgsl?raw';
-import globeRaySrc from './shaders/projections/globe-ray.wgsl?raw';
 import daylightSrc from './shaders/projections/globe-daylight.wgsl?raw';
 
 /** Canonical projection modes supported by the network renderer. */
@@ -72,12 +70,13 @@ export interface PipelineDef {
 // owns the concatenation):
 //   overlay: VISUAL_WGSL + overlayWgsl + uniforms + channel-* + topology + core
 //   border:  VISUAL_WGSL + overlayWgsl + uniforms + borderWorldWgsl + borders
-//   bg:      VISUAL_WGSL + uniforms + graticule + bgPreludeWgsl + bgWgsl
+//   bg:      VISUAL_WGSL + uniforms + graticule + camera-ray + bgPreludeWgsl + bgWgsl
 //            - NO overlay prelude: a bg shader cannot reference projection
 //            overlay helpers unless its bgPreludeWgsl carries them.
 //            graticule.wgsl owns the shared grid line rendering and flag
 //            helper; flat/tilt use cartesian_grid, globe uses
-//            geographic_graticule.
+//            geographic_graticule. camera-ray.wgsl owns the per-fragment eye
+//            ray from the packed camera basis; every bg gets it.
 //
 // Conventions:
 //   u.plane_mix is 0 at flat rest and 1 for perspective/globe depth.
@@ -161,7 +160,7 @@ export const PIPELINES = Object.freeze({
     vertexSurfaceWgsl: planarVertexSurfaceWgsl,
     segmentSurfaceWgsl: planarSegmentSurfaceWgsl,
     bgWgsl: planeBgSrc,
-    bgPreludeWgsl: planeRaySrc,
+    bgPreludeWgsl: '',
     borderWorldWgsl:
       'fn border_world(lonlat: vec2f, ecef: vec3f) -> vec3f { return vec3f(lonlat, TILT_SURFACE_LIFT * u.vertex_size * u.plane_mix); }\n',
     haloDepthCompare: 'less-equal',
@@ -172,7 +171,7 @@ export const PIPELINES = Object.freeze({
     vertexSurfaceWgsl: globeVertexSurfaceWgsl,
     segmentSurfaceWgsl: globeSegmentSurfaceWgsl,
     bgWgsl: globeBgSrc,
-    bgPreludeWgsl: globeRaySrc + daylightSrc,
+    bgPreludeWgsl: daylightSrc,
     // ecef is unit-length in the border asset; the normalize is the same
     // defensive posture the shared shader carried before the lift moved here.
     borderWorldWgsl:

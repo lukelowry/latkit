@@ -4,6 +4,16 @@ export const DEG2RAD = Math.PI / 180;
 /** Radians-to-degrees conversion factor. */
 export const RAD2DEG = 180 / Math.PI;
 
+/** Wrap an angle in degrees to [0, 360). */
+export function wrap(deg: number): number {
+  return ((deg % 360) + 360) % 360;
+}
+
+/** Shortest signed angular turn in degrees from `a` to `b`. */
+export function turn(a: number, b: number): number {
+  return ((((b - a) % 360) + 540) % 360) - 180;
+}
+
 /**
  * Convert a unit-sphere xyz coordinate to [lon, lat] degrees.
  *

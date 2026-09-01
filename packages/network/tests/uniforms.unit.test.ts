@@ -26,16 +26,24 @@ describe('createUniforms', () => {
     expect(view[19]).toBeCloseTo(0.33);
   });
 
-  it('packs the planar basis and blend into the final aligned block', () => {
+  it('packs the camera basis and blend into the final aligned block', () => {
     const u = createUniforms();
-    u.projection.setPlaneParams(1, 2, 0.5, 0.75);
+    const view = new Float32Array(16);
+    view[0] = 1;
+    view[4] = 2;
+    view[8] = 3;
+    view[1] = 4;
+    view[5] = 5;
+    view[9] = 6;
+    u.projection.setViewBasis(view);
     u.projection.planeMix = 0.25;
 
     expect(u.rawF32).toBeInstanceOf(Float32Array);
     expect(u.rawF32.buffer).toBe(u.raw);
-    expect(Array.from(u.rawF32.slice(92, 96))).toEqual([1, 2, 0.5, 0.75]);
+    expect(Array.from(u.rawF32.slice(92, 95))).toEqual([1, 2, 3]);
+    expect(Array.from(u.rawF32.slice(96, 99))).toEqual([4, 5, 6]);
     expect(u.rawF32[W_PLANE_MIX]).toBe(0.25);
-    expect(u.rawF32.length).toBe(100);
+    expect(u.rawF32.length).toBe(104);
   });
 
   it('reads the graticule bit from projection flags', () => {
@@ -168,8 +176,8 @@ describe('createUniforms', () => {
     expect(uview[54]).toBe(1);
     expect(fview[55]).toBeCloseTo(0.3);
     expect(fview[56]).toBeCloseTo(0.4);
-    expect(uview[97]).toBe(6000);
-    expect(uview[98]).toBe(7000);
+    expect(uview[100]).toBe(6000);
+    expect(uview[101]).toBe(7000);
     expect(uview[W_ITEM_FLAGS]).toBe(ITEM_VERTEX_VISIBLE | ITEM_EDGE_VISIBLE);
   });
 

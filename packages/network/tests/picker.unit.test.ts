@@ -709,6 +709,8 @@ describe('Picker matches the brute-force oracle', () => {
         state[0] = state[0]! + jitter(50);
         state[1] = Math.max(-80, Math.min(80, state[1]! + jitter(40)));
         state[2] = 1.05 + rand() * 2;
+        state[3] = i === 0 ? 0 : rand() * 75;
+        state[4] = rand() * 360;
       }
     });
   }

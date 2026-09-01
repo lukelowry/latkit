@@ -1,5 +1,6 @@
 import type {
   Projection,
+  CameraPose,
   CameraState,
   Tangent,
   PanSession,
@@ -199,7 +200,6 @@ export class Camera {
   /** Apply a rotation gesture through the target chase. */
   rotateBy(dxPx: number, dyPx: number, vp: Viewport): boolean {
     if (
-      !this.proj.rotate ||
       !Number.isFinite(dxPx) ||
       !Number.isFinite(dyPx) ||
       (dxPx === 0 && dyPx === 0) ||
@@ -214,6 +214,39 @@ export class Camera {
     if (sameState(this.scratchState, base)) return false;
     if (driven) this.interrupt();
     this.target.set(this.scratchState);
+    this.fitIntent = false;
+    return true;
+  }
+
+  /**
+   * Read the public pose of the state {@link setPose} would mutate.
+   *
+   * Self-driven motion (coast, fit) reads the rendered state; otherwise the
+   * target, which the chase has snapped onto at rest. Null until placed.
+   */
+  pose(): CameraPose | null {
+    if (!this.fit) return null;
+    const driven = this.motion.kind === 'coasting' || this.motion.kind === 'fitting';
+    return this.proj.pose(driven ? this.current : this.target);
+  }
+
+  /**
+   * Merge a partial public pose, easing through the chase when animated.
+   *
+   * An absolute pose write supersedes cursor anchoring by definition. Returns
+   * false before placement and when the post-clamp pose changes nothing.
+   */
+  setPose(pose: Partial<CameraPose>, animate: boolean): boolean {
+    if (!this.fit) return false;
+    const driven = this.motion.kind === 'coasting' || this.motion.kind === 'fitting';
+    const base = driven ? this.current : this.target;
+    this.scratchState.set(base);
+    this.proj.applyPose(this.scratchState, pose);
+    if (sameState(this.scratchState, base)) return false;
+    if (driven) this.interrupt();
+    this.anchor = null;
+    this.target.set(this.scratchState);
+    if (!animate) this.current.set(this.scratchState);
     this.fitIntent = false;
     return true;
   }

@@ -114,6 +114,8 @@ export class FakeCamera {
   panBy = vi.fn(() => true);
   zoomAt = vi.fn(() => true);
   rotateBy = vi.fn(() => true);
+  pose = vi.fn(() => ({ centerX: 0, centerY: 0, pitch: 0, bearing: 0 }));
+  setPose = vi.fn(() => true);
   fitView = vi.fn();
   moveTo = vi.fn((_bounds: Bounds, _viewport: Viewport, _animate: boolean) => true);
   reveal = vi.fn(

@@ -35,6 +35,12 @@ fn vs(
   let clip_a = u.vp * vec4f(a, 1.0);
   let clip_b = u.vp * vec4f(b, 1.0);
 
+  // The screen-space ribbon expansion below is meaningless once an endpoint
+  // reaches the camera plane, which a pitched low-altitude camera can do.
+  if (clip_a.w <= MIN_CLIP_W || clip_b.w <= MIN_CLIP_W) {
+    return axis_culled();
+  }
+
   let screen_a = (clip_a.xy / clip_a.w * 0.5 + vec2f(0.5)) * u.viewport;
   let screen_b = (clip_b.xy / clip_b.w * 0.5 + vec2f(0.5)) * u.viewport;
 

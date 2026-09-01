@@ -8,8 +8,13 @@ export interface ProjectionRegion {
   fovScale: number;
   /** Writes the normalized light direction for daylight shading. */
   setLightDir(x: number, y: number, z: number): void;
-  /** Writes planar look-at point and bearing basis into words 92..95. */
-  setPlaneParams(lookX: number, lookY: number, sinB: number, cosB: number): void;
+  /**
+   * Writes the view matrix's right and up rows into words 92..98.
+   *
+   * Shaders derive the look direction as up x right, so the per-fragment ray
+   * basis always matches the exact matrix the VP was built from.
+   */
+  setViewBasis(view: Float32Array): void;
   /** Blend from orthographic depth order to physical planar height. */
   planeMix: number;
   /** Minimum overlay brightness on the night side. */
@@ -167,7 +172,7 @@ export interface Uniforms {
 }
 
 /** Total byte length of the packed uniform buffer shared with WGSL. */
-export const UNIFORM_BUFFER_BYTES = 400;
+export const UNIFORM_BUFFER_BYTES = 416;
 
 /** Projection flag bit for daylight shading; must match uniforms.wgsl. */
 export const FLAG_DAYLIGHT = 1;
@@ -308,22 +313,26 @@ const W_NIGHT_FLOOR = 89;
 const W_TERMINATOR_WIDTH = 90;
 /** Word offset for surface night-side floor. */
 const W_SURFACE_NIGHT_FLOOR = 91;
-/** Word offset for planar look-at x. */
-const W_PLANE_LOOK_X = 92;
-/** Word offset for planar look-at y. */
-const W_PLANE_LOOK_Y = 93;
-/** Word offset for planar bearing sine. */
-const W_PLANE_SIN_BEARING = 94;
-/** Word offset for planar bearing cosine. */
-const W_PLANE_COS_BEARING = 95;
+/** Word offset for the camera-basis right row x. */
+const W_CAMERA_RIGHT_X = 92;
+/** Word offset for the camera-basis right row y. */
+const W_CAMERA_RIGHT_Y = 93;
+/** Word offset for the camera-basis right row z. */
+const W_CAMERA_RIGHT_Z = 94;
 /** Word offset for the planar projection blend. */
-export const W_PLANE_MIX = 96;
-/** Word offset for vertexVisible storage. */
-const W_V_VISIBLE_OFFSET = 97;
-/** Word offset for edgeVisible storage. */
-const W_E_VISIBLE_OFFSET = 98;
+export const W_PLANE_MIX = 95;
+/** Word offset for the camera-basis up row x. */
+const W_CAMERA_UP_X = 96;
+/** Word offset for the camera-basis up row y. */
+const W_CAMERA_UP_Y = 97;
+/** Word offset for the camera-basis up row z. */
+const W_CAMERA_UP_Z = 98;
 /** Word offset for enabled raw item-channel flags. */
 export const W_ITEM_FLAGS = 99;
+/** Word offset for vertexVisible storage. */
+const W_V_VISIBLE_OFFSET = 100;
+/** Word offset for edgeVisible storage. */
+const W_E_VISIBLE_OFFSET = 101;
 
 /** Tests whether the graticule projection flag is enabled in a raw uniform view. */
 export function hasGraticuleFlag(u: Uint32Array): boolean {
@@ -368,11 +377,13 @@ export function createUniforms(): Uniforms {
       f[W_LIGHT_Y] = y;
       f[W_LIGHT_Z] = z;
     },
-    setPlaneParams(lookX, lookY, sinB, cosB) {
-      f[W_PLANE_LOOK_X] = lookX;
-      f[W_PLANE_LOOK_Y] = lookY;
-      f[W_PLANE_SIN_BEARING] = sinB;
-      f[W_PLANE_COS_BEARING] = cosB;
+    setViewBasis(view) {
+      f[W_CAMERA_RIGHT_X] = view[0]!;
+      f[W_CAMERA_RIGHT_Y] = view[4]!;
+      f[W_CAMERA_RIGHT_Z] = view[8]!;
+      f[W_CAMERA_UP_X] = view[1]!;
+      f[W_CAMERA_UP_Y] = view[5]!;
+      f[W_CAMERA_UP_Z] = view[9]!;
     },
     get planeMix() {
       return f[W_PLANE_MIX];

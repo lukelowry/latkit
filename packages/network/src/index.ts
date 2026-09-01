@@ -2,7 +2,10 @@
 export { createNetwork } from './controller.js';
 
 /** Public network controller types and construction options. */
-export type { Network, Events, Item, RevealOptions } from './controller.js';
+export type { Network, Events, Item, PoseOptions, RevealOptions } from './controller.js';
+
+/** Projection-independent camera pose read and written through {@link Network}. */
+export type { CameraPose } from './camera/projection.js';
 
 /** Canonical renderer options, defaults, validation kinds, and mutation lifecycle. */
 export { DEFAULT_OPTIONS, OPTION_DEFINITIONS, validateOption, validateOptions } from './options.js';

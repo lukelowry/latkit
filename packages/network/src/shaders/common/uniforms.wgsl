@@ -1,5 +1,5 @@
 // Shared uniform struct, prepended to all shader modules at pipeline creation time.
-// Total: 400 bytes (25 x 16, naturally aligned).
+// Total: 416 bytes (26 x 16, naturally aligned).
 
 struct Uniforms {
   // Projection (bytes 0-111)
@@ -90,18 +90,20 @@ struct Uniforms {
   terminator_width: f32,
   surface_night_floor: f32,
 
-  // Planar camera basis (bytes 368-383).
-  // (look_x, look_y, sin(bearing), cos(bearing)): the bg derives its
-  // per-fragment ray basis from these because the globe's normalize(-cam)
-  // trick assumes a look-at-origin Y-up camera, and a naive look-at basis
-  // degenerates at nadir. right = (cos b, sin b, 0) is stable everywhere.
-  plane_params: vec4f,
-
-  // Flat-to-tilt projection blend and raw item-channel addressing (bytes 384-399).
+  // Camera basis (bytes 368-399): the active camera's view-matrix right and
+  // up rows, packed by pack() beside vp/camera_pos. Ray helpers derive
+  // look = cross(camera_up, camera_right); no shader rebuilds a basis from
+  // camera_pos. Valid whenever plane_mix > 0 or the globe pipeline is active,
+  // the same staleness contract camera_pos carries - flat never reads it.
+  // plane_mix (flat-to-tilt blend) and item_flags ride the vec3f pad lanes.
+  camera_right: vec3f,
   plane_mix: f32,
+  camera_up: vec3f,
+  item_flags: u32,
+
+  // Raw item-channel addressing (bytes 400-407; struct pads to 416).
   v_visible_offset: u32,
   e_visible_offset: u32,
-  item_flags: u32,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;

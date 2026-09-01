@@ -1,11 +1,24 @@
 // Globe background: ray-traced lit sphere with shared graticule.
 // Prepended at pipeline creation:
-// uniforms.wgsl + graticule.wgsl + globe-ray.wgsl + daylight.wgsl.
-// Renders a full-screen triangle with ray-sphere math.
+// uniforms.wgsl + graticule.wgsl + camera-ray.wgsl + daylight.wgsl.
+// Renders a full-screen triangle with ray-sphere math. The bg writes the
+// resulting surface depth via frag_depth; every overlay pass depth-tests
+// against it, which is the sole sphere-occlusion mechanism.
 
 // Sphere base tone tracks the theme (u.surface_color); a subtle pole darkening keeps the
 // equator/pole gradient the fixed constants used to give. See uniforms.wgsl.
 const POLE_DARKEN = 0.88;
+
+fn unit_sphere_t(ray_origin: vec3f, ray_dir: vec3f) -> f32 {
+  let half_b = dot(ray_origin, ray_dir);
+  let c = dot(ray_origin, ray_origin) - 1.0;
+  let disc = half_b * half_b - c;
+  if (disc < 0.0) { return -1.0; }
+
+  let t = -half_b - sqrt(disc);
+  if (t < 0.0) { return -1.0; }
+  return t;
+}
 
 // Depth-slack ceiling in world units (sphere radius 1): keeps the limb's
 // occlusion cut crisp where the grazing term would otherwise diverge.
@@ -29,8 +42,8 @@ fn vs(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4f {
 }
 
 fn globe_bg_sample(frag_pos: vec4f) -> GlobeBgSample {
-  let rd = globe_ray_dir_for_fragment(frag_pos.xy);
-  let t = globe_ray_unit_sphere_t(u.camera_pos, rd);
+  let rd = camera_ray(frag_pos.xy);
+  let t = unit_sphere_t(u.camera_pos, rd);
   let p_safe = u.camera_pos + rd * max(t, 0.0);
 
   // geographic_graticule() takes derivatives. Run it before discard so each

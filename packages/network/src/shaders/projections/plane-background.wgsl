@@ -35,7 +35,7 @@ fn flat_sample(frag_pos: vec4f) -> PlaneSample {
 
 fn plane_sample(frag_pos: vec4f) -> PlaneSample {
   if (u.plane_mix == 0.0) { return flat_sample(frag_pos); }
-  let rd = plane_ray(frag_pos.xy);
+  let rd = camera_ray(frag_pos.xy);
   let descending = rd.z < -1e-6;
   let t = select(1.0, -u.camera_pos.z / rd.z, descending);
   let p = u.camera_pos + rd * t;
