@@ -64,7 +64,7 @@ describe('Renderer resource lifecycle', () => {
 
     // The shared planar family has nine; globe adds earth-axis for ten.
     expect(labels().filter((label) => label.startsWith('plane-'))).toHaveLength(9);
-    renderer.useProjectionPipelines('tilt');
+    renderer.useProjection('tilt');
     void renderer.warmProjection('flat');
     expect(labels().filter((label) => label.startsWith('plane-'))).toHaveLength(9);
     void renderer.warmProjection('globe');
@@ -111,7 +111,7 @@ describe('Renderer resource lifecycle', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);
     const ready = vi.fn();
-    renderer.onProjectionPipelinesReady = ready;
+    renderer.onPipelinesReady = ready;
 
     await flushGpuPromises();
     ready.mockClear();
@@ -136,7 +136,7 @@ describe('Renderer resource lifecycle', () => {
 
     const renderer = new Renderer(h.presentation);
     const reported = vi.fn();
-    renderer.onProjectionPipelinesError = reported;
+    renderer.onPipelineError = reported;
     await flushGpuPromises();
     const calls = h.device.createRenderPipelineAsync.mock.calls.length;
     await renderer.warmProjection('flat');
@@ -276,7 +276,7 @@ describe('Renderer frame encoding', () => {
     await flushGpuPromises();
 
     const uniforms = createUniforms();
-    uniforms.projection.flags = FLAG_GRATICULE;
+    uniforms.light.flags = FLAG_GRATICULE;
     uniforms.focus.flags =
       FLAG_FOCUS_ENABLED | FLAG_FOCUS_HOVER_ENDPOINTS | FLAG_FOCUS_SELECTED_ENDPOINTS;
     uniforms.focus.hoverVertex = 2;
@@ -332,12 +332,12 @@ describe('Renderer frame encoding', () => {
     const renderer = new Renderer(h.presentation);
     const topology = sampleTopology();
     renderer.bindTopology(preparedScene(topology));
-    renderer.useProjectionPipelines('tilt');
+    renderer.useProjection('tilt');
     await flushGpuPromises();
 
     const uniforms = createUniforms();
     uniforms.channel.vHeightMode = 1;
-    uniforms.projection.planeMix = 1;
+    uniforms.camera.depthMix = 1;
     renderer.setVisible({ poles: true });
 
     expect(renderer.render(uniforms)).toBe(true);

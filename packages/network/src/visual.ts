@@ -1,4 +1,5 @@
-import { FIT_PAD, type GraphBounds, type Viewport } from './camera/projection.js';
+import { FIT_PAD, type Viewport } from './camera/projection.js';
+import type { Bounds } from './topology/types.js';
 
 /**
  * Shared visual tuning constants used by the controller and generated WGSL.
@@ -87,11 +88,7 @@ const FRAGMENT_ALPHA_DISCARD: f32 = 0.001;
  * Channel normalization maps values into roughly [-1, 1]. This viewport-derived
  * budget keeps range changes from changing the apparent maximum displacement.
  */
-export function planeHeightWorldScale(
-  bounds: GraphBounds,
-  vp: Viewport,
-  vertexSize: number,
-): number {
+export function planeHeightWorldScale(bounds: Bounds, vp: Viewport, vertexSize: number): number {
   const min = vertexSize * VISUAL.heightMinVertexRadii;
   if (vp.w <= 0 || vp.h <= 0) return min;
 

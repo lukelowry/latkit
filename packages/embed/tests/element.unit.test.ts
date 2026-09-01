@@ -545,6 +545,8 @@ describe('NetworkElement', () => {
     expect(h.element.reveal({ kind: 'vertex', index: 1 })).toBe(false);
     h.element.panBy(1, 2);
     h.element.rotateBy(3, 4);
+    expect(h.element.getPose()).toBeNull();
+    expect(h.element.setPose({ bearing: 45 })).toBe(false);
     h.element.zoomBy(1.5);
     h.element.fadeIn(300);
     h.element.select('vertex', 1);
@@ -564,6 +566,8 @@ describe('NetworkElement', () => {
     );
     h.element.panBy(12, -8);
     h.element.rotateBy(6, -2);
+    expect(h.element.getPose()).toEqual({ centerX: 1, centerY: 2, pitch: 3, bearing: 4 });
+    expect(h.element.setPose({ bearing: 90 }, { animate: true })).toBe(true);
     h.element.zoomBy(1.25);
     h.element.fadeIn(240);
     h.element.select('vertex', 1);
@@ -577,6 +581,8 @@ describe('NetworkElement', () => {
     );
     expect(network.panBy).toHaveBeenCalledWith(12, -8);
     expect(network.rotateBy).toHaveBeenCalledWith(6, -2);
+    expect(network.getPose).toHaveBeenCalledOnce();
+    expect(network.setPose).toHaveBeenCalledWith({ bearing: 90 }, { animate: true });
     expect(network.zoomBy).toHaveBeenCalledWith(1.25);
     expect(network.fadeIn).toHaveBeenCalledWith(240);
     expect(network.select).toHaveBeenCalledWith('vertex', 1);

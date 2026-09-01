@@ -216,14 +216,15 @@ element.setColormap(colormap('plasma'));
 await element.ready;
 element.setProjection('globe');
 element.fit(true);
+element.setPose({ bearing: 30, pitch: 20 }, { animate: true });
 element.select('vertex', 1);
 ```
 
 The complete element method surface is `setOptions`, `setBorders`, `setColormap`, `setBaseColor`,
 `setChannel`, `clearChannel`, `setChannelRange`, `setProjection`, `fit`, `reveal`, `select`,
-`clearSelection`, `panBy`, `rotateBy`, `zoomBy`, `fadeIn`, `pause`, and `resume`. `projections`
-reports the current topology's mode availability. The underlying Network, canvas ownership, and GPU
-device remain private.
+`clearSelection`, `panBy`, `rotateBy`, `getPose`, `setPose`, `zoomBy`, `fadeIn`, `pause`, and
+`resume`. `projections` reports the current topology's mode availability. The underlying
+Network, canvas ownership, and GPU device remain private.
 
 Renderer notifications become bubbling, composed DOM events named `load`, `error`, `hover`, `select`,
 `zoom`, `deviceLost`, and `pipelineError`. `ready` always describes the current activation and is

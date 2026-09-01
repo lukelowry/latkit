@@ -14,7 +14,7 @@ import type { ProjectionMode } from '../../src/projections.js';
 import type { Viewport } from '../../src/camera/projection.js';
 import type { Renderer } from '../../src/webgpu/renderer.js';
 import type { RenderLoop, RenderLoopDeps } from '../../src/webgpu/render-loop.js';
-import type { ProjectionRig } from '../../src/camera/rig.js';
+import type { CameraRig } from '../../src/camera/rig.js';
 import type { RevealResult } from '../../src/camera/camera.js';
 import type { Uniforms } from '../../src/webgpu/uniforms.js';
 import type { Borders } from '../../src/borders.js';
@@ -40,8 +40,8 @@ export function flushMicrotasks(): Promise<void> {
 }
 
 export class FakeRenderer {
-  onProjectionPipelinesReady?: () => void;
-  onProjectionPipelinesError?: (mode: 'plane' | 'globe', cause: unknown) => void;
+  onPipelinesReady?: () => void;
+  onPipelineError?: (family: 'plane' | 'globe', cause: unknown) => void;
   visibility = {
     vertices: true,
     edges: true,
@@ -93,7 +93,7 @@ export class FakeRenderer {
     this.channelWrites.push({ channel, values });
   });
 
-  useProjectionPipelines = vi.fn((mode: ProjectionMode) => {
+  useProjection = vi.fn((mode: ProjectionMode) => {
     this.projectionMode = mode;
   });
 
@@ -114,6 +114,8 @@ export class FakeCamera {
   panBy = vi.fn(() => true);
   zoomAt = vi.fn(() => true);
   rotateBy = vi.fn(() => true);
+  pose = vi.fn(() => ({ centerX: 0, centerY: 0, pitch: 0, bearing: 0 }));
+  setPose = vi.fn(() => true);
   fitView = vi.fn();
   moveTo = vi.fn((_bounds: Bounds, _viewport: Viewport, _animate: boolean) => true);
   reveal = vi.fn(
@@ -122,16 +124,30 @@ export class FakeCamera {
   claimCurrent = vi.fn(() => false);
 }
 
-export class FakeProjectionRig {
+export class FakeCameraRig {
   mode: ProjectionMode = 'flat';
   camera = new FakeCamera();
-  nextSwitchPlaced = true;
+  bounds: Bounds | null = null;
+  pendingPlacement = false;
+  nextClaim = false;
 
-  switchTo = vi.fn((mode: ProjectionMode, _bounds: Bounds | null, _vp: Viewport): boolean => {
+  setBounds = vi.fn((bounds: Bounds | null) => {
+    this.bounds = bounds;
+  });
+
+  fit = vi.fn((_vp: Viewport, _animate: boolean) => {});
+  moveTo = vi.fn((_bounds: Bounds, _vp: Viewport, _animate: boolean) => {});
+  reveal = vi.fn((_bounds: Bounds, _vp: Viewport, _animate: boolean) => {});
+  claim = vi.fn((): boolean => this.nextClaim);
+
+  switchTo = vi.fn((mode: ProjectionMode, _vp: Viewport) => {
     this.mode = mode;
     this.camera = new FakeCamera();
-    return this.nextSwitchPlaced;
   });
+
+  tick = vi.fn((_now: number, _vp: Viewport): boolean => this.bounds !== null);
+  isAnimating = vi.fn(() => this.camera.isAnimating());
+  isAtFitView = vi.fn(() => false);
 }
 
 export class FakePicker {
@@ -182,7 +198,6 @@ export class FakeRenderLoop {
   deps: RenderLoopDeps | null = null;
   uniforms!: Uniforms;
   viewport: Viewport = { w: 100, h: 80 };
-  bounds: Bounds | null = null;
 
   attach(deps: RenderLoopDeps): this {
     this.deps = deps;
@@ -190,21 +205,11 @@ export class FakeRenderLoop {
     return this;
   }
 
-  setCamera = vi.fn();
   wake = vi.fn();
-  requestFit = vi.fn();
-  requestMove = vi.fn();
-  requestReveal = vi.fn();
-  cancelDeferredMove = vi.fn();
-  cancelPlacement = vi.fn();
   frameNow = vi.fn();
   pause = vi.fn();
   resume = vi.fn();
   destroy = vi.fn();
-
-  setBounds = vi.fn((bounds: Bounds) => {
-    this.bounds = bounds;
-  });
 
   frame(vp: Viewport = this.viewport, sizeSettled = true): void {
     this.deps?.onBeforeFrame?.(vp);
@@ -272,7 +277,7 @@ export interface ControllerHarness {
   readonly deps: ControllerDeps;
   readonly renderer: FakeRenderer;
   readonly loop: FakeRenderLoop;
-  readonly rig: FakeProjectionRig;
+  readonly rig: FakeCameraRig;
   readonly picker: FakePicker;
   readonly canvas: HTMLCanvasElement;
   readonly surface: FakeSurface;
@@ -308,7 +313,7 @@ export async function createControllerHarness(
 
   const renderer = new FakeRenderer();
   const loop = new FakeRenderLoop();
-  const rig = new FakeProjectionRig();
+  const rig = new FakeCameraRig();
   const picker = new FakePicker();
   const events = { deviceLost: [] as Array<Parameters<Events['deviceLost']>> };
 
@@ -322,7 +327,7 @@ export async function createControllerHarness(
     RenderLoop: vi.fn(
       (renderLoopDeps: RenderLoopDeps) => loop.attach(renderLoopDeps) as unknown as RenderLoop,
     ) as unknown as typeof RenderLoop,
-    ProjectionRig: vi.fn(() => rig as unknown as ProjectionRig) as unknown as typeof ProjectionRig,
+    CameraRig: vi.fn(() => rig as unknown as CameraRig) as unknown as typeof CameraRig,
     attachPointer: vi.fn((_surface: Surface, emit: (intent: Intent) => void) => {
       emitPointer = emit;
       return pointerCleanup;

@@ -6,43 +6,45 @@ import type {
   Vec2,
   Viewport,
 } from './projection.js';
-import { FIT_PAD, MAX_ZOOM_RATIO } from './projection.js';
-import { DEG2RAD } from './geo.js';
-import { mat4Invert, mat4Mul, mat4Perspective, mat4Unproject } from './mat4.js';
+import {
+  advanceViewSlots,
+  deltaViewSlots,
+  FIT_PAD,
+  FOV_SCALE,
+  FOV_Y,
+  MAX_ZOOM_RATIO,
+  mixViewSlots,
+  rotateViewSlots,
+  statePose,
+  viewSlotsAtFit,
+} from './projection.js';
+import { DEG2RAD, turn, wrap } from './geo.js';
+import { mat4Mul, mat4Perspective } from './mat4.js';
+import { createScreenRay } from './raycast.js';
 
-const FOV_Y = 2 * Math.atan(1 / 3);
-const FOV_SCALE = 1 / 3;
 const MAX_PITCH = 85;
 export const TILT_PITCH = 55;
-const BEARING_RATE = 0.4;
-const PITCH_RATE = 0.25;
 const NEAR_HEIGHT = 0.1;
 const FAR_DIST = 50;
 const SCALE_MIN = 0.001;
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v));
-const wrap = (v: number): number => ((v % 360) + 360) % 360;
-const turn = (a: number, b: number): number => ((((b - a) % 360) + 540) % 360) - 180;
 const mix = (v: number): number => {
   const t = clamp(v / TILT_PITCH, 0, 1);
   return t * t * (3 - 2 * t);
 };
 
-const nearHit = new Float64Array(3);
-const farHit = new Float64Array(3);
-
 /** One planar camera: flat is pitch zero, tilt is its oblique target. */
 export function createPlaneProjection(initial: PlaneView): Projection {
   let view = initial;
   const vpM = new Float32Array(16);
-  const invM = new Float32Array(16);
   const eye = new Float32Array(3);
   const projM = new Float32Array(16);
   const viewM = new Float32Array(16);
   const stamp = new Float64Array(7);
   const hit = new Float64Array(3);
+  const screenRay = createScreenRay();
   let valid = false;
-  let invValid = false;
 
   const dirty = (s: CameraState, vp: Viewport): boolean =>
     s[0] !== stamp[0] ||
@@ -95,30 +97,22 @@ export function createPlaneProjection(initial: PlaneView): Projection {
     mat4Mul(vpM, projM, viewM);
     stamp.set([s[0], s[1], s[2], s[3], s[4], vp.w, vp.h]);
     valid = true;
-    invValid = false;
+    screenRay.invalidate();
   }
 
   function ray(s: CameraState, sx: number, sy: number, vp: Viewport): boolean {
     build(s, vp);
-    if (!invValid) {
-      if (!mat4Invert(invM, vpM)) return false;
-      invValid = true;
-    }
-    const nx = (sx / vp.w) * 2 - 1;
-    const ny = 1 - (sy / vp.h) * 2;
-    mat4Unproject(nearHit, nx, ny, 0, invM);
-    mat4Unproject(farHit, nx, ny, 1, invM);
-    const dz = farHit[2] - nearHit[2];
-    if (!(dz < -1e-12)) return false;
-    const t = -nearHit[2] / dz;
+    if (!screenRay.cast(vpM, sx, sy, vp)) return false;
+    const { origin, dir } = screenRay;
+    if (!(dir[2] < -1e-12)) return false;
+    const t = -origin[2] / dir[2];
     if (t < 0 || !Number.isFinite(t)) return false;
-    hit[0] = nearHit[0] + (farHit[0] - nearHit[0]) * t;
-    hit[1] = nearHit[1] + (farHit[1] - nearHit[1]) * t;
+    hit[0] = origin[0] + dir[0] * t;
+    hit[1] = origin[1] + dir[1] * t;
     return true;
   }
 
   return {
-    family: 'plane',
     stateSize: 5,
 
     setView(next, target) {
@@ -141,8 +135,7 @@ export function createPlaneProjection(initial: PlaneView): Projection {
     },
 
     clone(s): CameraState {
-      if (s.length === 5) return new Float64Array(s) as CameraState;
-      return Float64Array.of(s[0]!, s[1]!, s[2]!, 0, 0) as CameraState;
+      return new Float64Array(s) as CameraState;
     },
 
     screenToWorld(s, sx, sy, vp): Vec2 | null {
@@ -155,26 +148,20 @@ export function createPlaneProjection(initial: PlaneView): Projection {
     mix(out, a, b, t) {
       out[0] = a[0] + (b[0] - a[0]) * t;
       out[1] = a[1] + (b[1] - a[1]) * t;
-      out[2] = a[2] + (b[2] - a[2]) * t;
-      out[3] = a[3] + (b[3] - a[3]) * t;
-      out[4] = a[4] + turn(a[4], b[4]) * t;
+      mixViewSlots(out, a, b, t);
       valid = false;
     },
 
     delta(out, a, b, dt) {
       out[0] = (b[0] - a[0]) / dt;
       out[1] = (b[1] - a[1]) / dt;
-      out[2] = (b[2] - a[2]) / dt;
-      out[3] = (b[3] - a[3]) / dt;
-      out[4] = turn(a[4], b[4]) / dt;
+      deltaViewSlots(out, a, b, dt);
     },
 
     advance(out, s, tangent, amount) {
       out[0] = s[0] + tangent[0] * amount;
       out[1] = s[1] + tangent[1] * amount;
-      out[2] = s[2] + tangent[2] * amount;
-      out[3] = clamp(s[3] + tangent[3] * amount, 0, MAX_PITCH);
-      out[4] = wrap(s[4] + tangent[4] * amount);
+      advanceViewSlots(out, s, tangent, amount, MAX_PITCH);
       valid = false;
     },
 
@@ -194,11 +181,9 @@ export function createPlaneProjection(initial: PlaneView): Projection {
 
     isAtFit(current, fit) {
       return (
-        Math.abs(current[2] / fit[2] - 1) < 0.01 &&
+        viewSlotsAtFit(current, fit) &&
         Math.abs(current[0] - fit[0]) * fit[2] < 1 &&
-        Math.abs(current[1] - fit[1]) * fit[2] < 1 &&
-        Math.abs(current[3] - fit[3]) < 0.1 &&
-        Math.abs(turn(current[4], fit[4])) < 0.1
+        Math.abs(current[1] - fit[1]) * fit[2] < 1
       );
     },
 
@@ -254,21 +239,22 @@ export function createPlaneProjection(initial: PlaneView): Projection {
 
     rotate(s, dx, dy) {
       if (view === 'flat') return;
-      s[4] = wrap(s[4] + dx * BEARING_RATE);
-      s[3] = clamp(s[3] - dy * PITCH_RATE, 0, MAX_PITCH);
+      rotateViewSlots(s, dx, dy, MAX_PITCH);
       valid = false;
     },
 
-    exportPose(s) {
-      return { centerX: s[0], centerY: s[1], pxPerWorld: Math.abs(s[2]) };
+    pose: statePose,
+
+    applyPose(s, pose) {
+      if (pose.centerX !== undefined) s[0] = pose.centerX;
+      if (pose.centerY !== undefined) s[1] = pose.centerY;
+      if (pose.pitch !== undefined) s[3] = view === 'flat' ? 0 : clamp(pose.pitch, 0, MAX_PITCH);
+      if (pose.bearing !== undefined) s[4] = view === 'flat' ? 0 : wrap(pose.bearing);
+      valid = false;
     },
 
-    importPose(pose) {
-      return Float64Array.of(pose.centerX, pose.centerY, pose.pxPerWorld, 0, 0) as CameraState;
-    },
-
-    settleImportedPose(target) {
-      target[3] = view === 'flat' ? 0 : TILT_PITCH;
+    pxPerWorld(s) {
+      return Math.abs(s[2]);
     },
 
     pack(s, region, vp) {
@@ -278,16 +264,12 @@ export function createPlaneProjection(initial: PlaneView): Projection {
       region.flatTx = (-2 * s[2] * s[0]) / vp.w;
       region.flatTy = (-2 * s[2] * s[1]) / vp.h;
       region.fovScale = FOV_SCALE;
-      region.planeMix = amount;
+      region.depthMix = amount;
       if (amount === 0) return;
       build(s, vp);
       region.setVP(vpM);
       region.setCameraPos(eye[0], eye[1], eye[2]);
-      const b = s[4] * DEG2RAD;
-      region.setPlaneParams(s[0], s[1], Math.sin(b), Math.cos(b));
+      region.setViewBasis(viewM);
     },
   };
 }
-
-export const createFlatProjection = (): Projection => createPlaneProjection('flat');
-export const createTiltProjection = (): Projection => createPlaneProjection('tilt');

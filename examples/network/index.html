@@ -10,43 +10,48 @@
     <title>@latkit/network example</title>
   </head>
   <body>
-    <canvas id="stage" aria-label="network visualization"></canvas>
+    <canvas
+      id="stage"
+      tabindex="0"
+      role="application"
+      aria-label="Network visualization. Arrow keys pan, plus and minus zoom, Shift with arrow keys rotates, Escape clears the selection."
+    ></canvas>
 
     <div id="hud">
       <header>
         <h1>latkit / network</h1>
-        <div id="status">loading</div>
+        <div id="status" aria-live="polite">loading</div>
       </header>
 
       <section>
-        <label>topology</label>
-        <div id="topologies" class="row"></div>
+        <span class="label" id="topologies-label">topology</span>
+        <div id="topologies" class="row" role="group" aria-labelledby="topologies-label"></div>
       </section>
 
       <section>
-        <label>projection</label>
-        <div id="projections" class="row"></div>
+        <span class="label" id="projections-label">projection</span>
+        <div id="projections" class="row" role="group" aria-labelledby="projections-label"></div>
       </section>
 
       <section>
-        <label>camera</label>
-        <div id="camera" class="row"></div>
+        <span class="label" id="camera-label">camera</span>
+        <div id="camera" class="row" role="group" aria-labelledby="camera-label"></div>
       </section>
 
       <section>
-        <label>layers</label>
-        <div id="toggles" class="row"></div>
+        <span class="label" id="toggles-label">layers</span>
+        <div id="toggles" class="row" role="group" aria-labelledby="toggles-label"></div>
       </section>
 
       <section>
-        <label>colormap</label>
-        <div id="colormaps" class="row"></div>
+        <span class="label" id="colormaps-label">colormap</span>
+        <div id="colormaps" class="row" role="group" aria-labelledby="colormaps-label"></div>
       </section>
 
       <section id="readout">
-        <label>pick</label>
+        <span class="label">pick</span>
         <div class="pick"><span>hover</span><span class="hover">-</span></div>
-        <div class="pick"><span>select</span><span class="select">-</span></div>
+        <div class="pick"><span>select</span><span class="select" aria-live="polite">-</span></div>
       </section>
     </div>
 

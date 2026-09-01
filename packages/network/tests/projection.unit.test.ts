@@ -1,60 +1,65 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { createGlobeProjection } from '../src/camera/globe.js';
-import { createFlatProjection, createTiltProjection } from '../src/camera/plane.js';
+import { createPlaneProjection, TILT_PITCH } from '../src/camera/plane.js';
 import { Camera } from '../src/camera/camera.js';
-import { ProjectionRig } from '../src/camera/rig.js';
+import { CameraRig } from '../src/camera/rig.js';
 import { createUniforms } from '../src/webgpu/uniforms.js';
 import { createTangent, MAX_ZOOM_RATIO } from '../src/camera/projection.js';
-import type { CameraState, GraphBounds, Projection, Viewport } from '../src/camera/projection.js';
+import type { CameraState, Projection, Viewport } from '../src/camera/projection.js';
+import type { Bounds } from '../src/topology/types.js';
 import { VISUAL } from '../src/visual.js';
 
-const bounds: GraphBounds = { xMin: -5, xMax: 5, yMin: -3, yMax: 3 };
+const bounds: Bounds = { xMin: -5, xMax: 5, yMin: -3, yMax: 3 };
 const vp: Viewport = { w: 800, h: 600 };
+
+/** Build a camera state literal: [x, y, zoom, pitch, bearing]. */
+const st = (x: number, y: number, zoom: number, pitch = 0, bearing = 0): CameraState =>
+  Float64Array.of(x, y, zoom, pitch, bearing) as CameraState;
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe('flat projection', () => {
-  const proj = createFlatProjection();
+  const proj = createPlaneProjection('flat');
 
   it('screenToWorld inverts at center', () => {
-    const s = proj.clone(new Float64Array([0, 0, 100]));
+    const s = st(0, 0, 100);
     const [wx, wy] = proj.screenToWorld(s, 400, 300, vp)!;
     expect(wx).toBeCloseTo(0, 6);
     expect(wy).toBeCloseTo(0, 6);
   });
 
   it('screenToWorld inverts at offset', () => {
-    const s = proj.clone(new Float64Array([0, 0, 100]));
+    const s = st(0, 0, 100);
     const [wx, wy] = proj.screenToWorld(s, 500, 200, vp)!;
     expect(wx).toBeCloseTo(1, 6);
     expect(wy).toBeCloseTo(1, 6);
   });
 
   it('zoom clamps at min (before fit)', () => {
-    const s = proj.clone(new Float64Array([0, 0, 0.001]));
+    const s = st(0, 0, 0.001);
     proj.zoom(s, 0.5, null);
     expect(s[2]).toBe(0.001);
   });
 
   it('zoom clamps at max (after fit)', () => {
-    const fit = proj.clone(new Float64Array([0, 0, 10]));
+    const fit = st(0, 0, 10);
     const max = fit[2] * MAX_ZOOM_RATIO;
-    const s = proj.clone(new Float64Array([0, 0, max]));
+    const s = st(0, 0, max);
     proj.zoom(s, 2, fit);
     expect(s[2]).toBe(max);
   });
 
   it('zoom works in normal range', () => {
-    const fit = proj.clone(new Float64Array([0, 0, 10]));
-    const s = proj.clone(new Float64Array([0, 0, 50]));
+    const fit = st(0, 0, 10);
+    const s = st(0, 0, 50);
     proj.zoom(s, 1.1, fit);
     expect(s[2]).toBeCloseTo(55, 6);
   });
 
   it('snapToAnchor keeps world point at screen point', () => {
-    const s = proj.clone(new Float64Array([0, 0, 100]));
+    const s = st(0, 0, 100);
     const worldPt: [number, number] = [2, 3];
     const screenPt: [number, number] = [450, 250];
     proj.snapToAnchor(s, worldPt, screenPt, vp);
@@ -76,9 +81,9 @@ describe('flat projection', () => {
   });
 
   it('mix interpolates component-wise', () => {
-    const a = proj.clone(new Float64Array([0, 0, 100]));
-    const b = proj.clone(new Float64Array([10, 20, 200]));
-    const out = new Float64Array(3);
+    const a = st(0, 0, 100);
+    const b = st(10, 20, 200);
+    const out = new Float64Array(5);
     proj.mix(out, a, b, 0.5);
     expect(out[0]).toBeCloseTo(5, 6);
     expect(out[1]).toBeCloseTo(10, 6);
@@ -86,9 +91,9 @@ describe('flat projection', () => {
   });
 
   it('mix at t=0 returns a', () => {
-    const a = proj.clone(new Float64Array([1, 2, 3]));
-    const b = proj.clone(new Float64Array([4, 5, 6]));
-    const out = new Float64Array(3);
+    const a = st(1, 2, 3);
+    const b = st(4, 5, 6);
+    const out = new Float64Array(5);
     proj.mix(out, a, b, 0);
     expect(out[0]).toBeCloseTo(1, 6);
     expect(out[1]).toBeCloseTo(2, 6);
@@ -96,18 +101,18 @@ describe('flat projection', () => {
   });
 
   it('delta computes per-axis rate', () => {
-    const tangent = createTangent();
-    const prev = proj.clone(new Float64Array([0, 0, 100]));
-    const curr = proj.clone(new Float64Array([10, 0, 100]));
+    const tangent = createTangent(5);
+    const prev = st(0, 0, 100);
+    const curr = st(10, 0, 100);
     proj.delta(tangent, prev, curr, 10);
     expect(tangent[0]).toBeCloseTo(1, 6);
     expect(tangent[1]).toBeCloseTo(0, 6);
   });
 
   it('advance integrates tangent', () => {
-    const out = new Float64Array(3);
-    const from = proj.clone(new Float64Array([0, 0, 100]));
-    const tangent = createTangent();
+    const out = new Float64Array(5);
+    const from = st(0, 0, 100);
+    const tangent = createTangent(5);
     tangent[0] = 5;
     tangent[1] = -3;
     tangent[2] = 0;
@@ -118,7 +123,7 @@ describe('flat projection', () => {
   });
 
   it('tangentNorm returns pan magnitude, ignoring zoom', () => {
-    const tangent = createTangent();
+    const tangent = createTangent(5);
     tangent[0] = 3;
     tangent[1] = 4;
     tangent[2] = 99;
@@ -126,7 +131,7 @@ describe('flat projection', () => {
   });
 
   it('beginPan applies flat screen deltas in world units', () => {
-    const s = proj.clone(new Float64Array([0, 0, 100]));
+    const s = st(0, 0, 100);
     const session = proj.beginPan(s, 400, 300, vp);
 
     session.apply(s, 50, -25, 450, 275, vp);
@@ -135,58 +140,59 @@ describe('flat projection', () => {
     expect(s[1]).toBeCloseTo(-0.25, 6);
   });
 
-  it('imports projection-independent poses', () => {
-    const imported = proj.importPose!({ centerX: 3, centerY: -2, pxPerWorld: 40 }, vp);
-
-    expect(Array.from(imported)).toEqual([3, -2, 40, 0, 0]);
+  it('reports px-per-world as the flat scale, pitch aside', () => {
+    expect(proj.pxPerWorld(st(3, -2, 40), vp)).toBe(40);
+    expect(proj.pxPerWorld(st(3, -2, 40, 55, 120), vp)).toBe(40);
   });
 
   it('near returns true when the residual motion is sub-pixel', () => {
-    const a = proj.clone(new Float64Array([1, 2, 3]));
-    const b = proj.clone(new Float64Array([1, 2, 3.0000001]));
+    const a = st(1, 2, 3);
+    const b = st(1, 2, 3.0000001);
     expect(proj.near(a, b, vp, 0.25)).toBe(true);
   });
 
   it('near returns false when states differ visibly', () => {
-    const a = proj.clone(new Float64Array([1, 2, 3]));
-    const b = proj.clone(new Float64Array([1, 2, 5]));
+    const a = st(1, 2, 3);
+    const b = st(1, 2, 5);
     expect(proj.near(a, b, vp, 0.25)).toBe(false);
   });
 
   it('near scales position tolerance with zoom', () => {
     // 0.01 world units is 1px at scale 100 (visible) but 0.01px at scale 1.
-    const a = proj.clone(new Float64Array([0, 0, 100]));
-    const b = proj.clone(new Float64Array([0.01, 0, 100]));
+    const a = st(0, 0, 100);
+    const b = st(0.01, 0, 100);
     expect(proj.near(a, b, vp, 0.25)).toBe(false);
-    const c = proj.clone(new Float64Array([0, 0, 1]));
-    const d = proj.clone(new Float64Array([0.01, 0, 1]));
+    const c = st(0, 0, 1);
+    const d = st(0.01, 0, 1);
     expect(proj.near(c, d, vp, 0.25)).toBe(true);
   });
 });
 
 describe('globe projection', () => {
   const proj = createGlobeProjection();
-  const geoBounds: GraphBounds = { xMin: -98, xMax: -96, yMin: 30, yMax: 32 };
+  const geoBounds: Bounds = { xMin: -98, xMax: -96, yMin: 30, yMax: 32 };
 
-  it('fit returns [lon, lat, dist] with valid distance', () => {
+  it('fit returns [lon, lat, dist, pitch, bearing] resting unrotated', () => {
     const s = proj.fit(geoBounds, vp);
-    expect(s.length).toBe(3);
+    expect(s.length).toBe(5);
     expect(s[0]).toBeCloseTo(-97, 0);
     expect(s[1]).toBeCloseTo(31, 0);
     expect(s[2]).toBeGreaterThan(1 + VISUAL.globeSurfaceOffset);
     expect(s[2]).toBeLessThanOrEqual(5.0);
+    expect(s[3]).toBe(0);
+    expect(s[4]).toBe(0);
   });
 
   it('zoom: factor > 1 scales clearance above the surface', () => {
     const surfaceRadius = 1 + VISUAL.globeSurfaceOffset;
-    const s = proj.clone(new Float64Array([0, 0, 2.5]));
+    const s = st(0, 0, 2.5);
     proj.zoom(s, 2, null);
     expect(s[2]).toBeCloseTo(surfaceRadius + (2.5 - surfaceRadius) / 2, 6);
   });
 
   it('zoom near the surface stays proportional instead of clamping', () => {
     const surfaceRadius = 1 + VISUAL.globeSurfaceOffset;
-    const fit = proj.clone(new Float64Array([0, 0, 1.063]));
+    const fit = st(0, 0, 1.063);
     const s = proj.clone(fit);
 
     proj.zoom(s, 1.1, fit);
@@ -196,7 +202,7 @@ describe('globe projection', () => {
   });
 
   it('zoom clamps at the minimum effective distance', () => {
-    const s = proj.clone(new Float64Array([0, 0, 1.1]));
+    const s = st(0, 0, 1.1);
     proj.zoom(s, 100, null);
     const surfaceRadius = 1 + VISUAL.globeSurfaceOffset;
     expect(s[2]).toBeGreaterThan(surfaceRadius);
@@ -204,13 +210,13 @@ describe('globe projection', () => {
   });
 
   it('zoom clamps at MAX_DIST', () => {
-    const s = proj.clone(new Float64Array([0, 0, 4.9]));
+    const s = st(0, 0, 4.9);
     proj.zoom(s, 0.01, null);
     expect(s[2]).toBe(5.0);
   });
 
   it('screenToWorld returns coords at center', () => {
-    const s = proj.clone(new Float64Array([0, 0, 2.5]));
+    const s = st(0, 0, 2.5);
     const result = proj.screenToWorld(s, vp.w / 2, vp.h / 2, vp);
     expect(result).not.toBeNull();
     expect(result![0]).toBeCloseTo(0, 0);
@@ -226,15 +232,15 @@ describe('globe projection', () => {
   });
 
   it('screenToWorld returns null for off-sphere', () => {
-    const s = proj.clone(new Float64Array([0, 0, 5.0]));
+    const s = st(0, 0, 5.0);
     const result = proj.screenToWorld(s, 0, 0, vp);
     expect(result).toBeNull();
   });
 
   it('mix interpolates lon/lat/dist', () => {
-    const a = proj.clone(new Float64Array([-97, 31, 3.0]));
-    const b = proj.clone(new Float64Array([-50, 10, 2.0]));
-    const out = new Float64Array(3);
+    const a = st(-97, 31, 3.0);
+    const b = st(-50, 10, 2.0);
+    const out = new Float64Array(5);
     proj.mix(out, a, b, 0);
     expect(out[0]).toBeCloseTo(-97, 6);
     expect(out[1]).toBeCloseTo(31, 6);
@@ -246,21 +252,21 @@ describe('globe projection', () => {
   });
 
   it('mix handles longitude wrapping', () => {
-    const a = proj.clone(new Float64Array([170, 0, 2.0]));
-    const b = proj.clone(new Float64Array([-170, 0, 2.0]));
-    const out = new Float64Array(3);
+    const a = st(170, 0, 2.0);
+    const b = st(-170, 0, 2.0);
+    const out = new Float64Array(5);
     proj.mix(out, a, b, 0.5);
     expect(Math.abs(out[0])).toBeCloseTo(180, 0); // shortest path goes through 180
   });
 
   it('near returns true for identical states', () => {
-    const s = proj.clone(new Float64Array([0, 0, 2.5]));
+    const s = st(0, 0, 2.5);
     expect(proj.near(s, s, vp, 0.25)).toBe(true);
   });
 
   it('near returns false across a visible orbit delta', () => {
-    const a = proj.clone(new Float64Array([0, 0, 2.5]));
-    const b = proj.clone(new Float64Array([5, 0, 2.5]));
+    const a = st(0, 0, 2.5);
+    const b = st(5, 0, 2.5);
     expect(proj.near(a, b, vp, 0.25)).toBe(false);
   });
 
@@ -270,7 +276,7 @@ describe('globe projection', () => {
   });
 
   it('tangentNorm returns pan magnitude', () => {
-    const tangent = createTangent();
+    const tangent = createTangent(5);
     tangent[0] = 0.3;
     tangent[1] = 0.4;
     tangent[2] = 0;
@@ -278,21 +284,21 @@ describe('globe projection', () => {
   });
 
   it('drag right decreases longitude', () => {
-    const s = proj.clone(new Float64Array([0, 0, 2.5]));
+    const s = st(0, 0, 2.5);
     const session = proj.beginPan(s, 400, 300, vp);
     session.apply(s, 50, 0, 450, 300, vp);
     expect(s[0]).toBeLessThan(0);
   });
 
   it('drag down increases latitude', () => {
-    const s = proj.clone(new Float64Array([0, 0, 2.5]));
+    const s = st(0, 0, 2.5);
     const session = proj.beginPan(s, 400, 300, vp);
     session.apply(s, 0, 50, 400, 350, vp);
     expect(s[1]).toBeGreaterThan(0);
   });
 
   it('drag clamps latitude at MAX_LAT', () => {
-    const s = proj.clone(new Float64Array([0, 85, 2.5]));
+    const s = st(0, 85, 2.5);
     const session = proj.beginPan(s, 400, 300, vp);
     for (let i = 0; i < 200; i++) session.apply(s, 0, 10, 400, 300, vp);
     expect(s[1]).toBeLessThanOrEqual(89.9);
@@ -326,7 +332,7 @@ describe('globe projection', () => {
   });
 
   it('falls back to angular pan when the cursor ray misses the globe', () => {
-    const s = proj.clone(new Float64Array([0, 0, 5]));
+    const s = st(0, 0, 5);
     const session = proj.beginPan(s, 0, 0, vp);
 
     session.apply(s, 10, 20, 0, 0, vp);
@@ -335,42 +341,72 @@ describe('globe projection', () => {
     expect(s[1]).toBeGreaterThan(0);
   });
 
-  it('refreshes globe daylight while packing uniforms after the cache expires', () => {
-    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(0);
-    const fresh = createGlobeProjection();
-    const s = fresh.fit(geoBounds, vp);
-    const region = makeProjectionRegion();
-    fresh.pack(s, region, vp);
-    const first = region.lightDir.slice();
-
-    nowSpy.mockReturnValue(31_000);
-    fresh.pack(s, region, vp);
-
-    expect(region.lightDir).not.toEqual(first);
-  });
-
   it('delta scales lon by cosLat for pole-uniform velocity', () => {
-    const tangent = createTangent();
+    const tangent = createTangent(5);
     // At lat=60, cosLat=0.5. A 10-deg lon move in 1 ms should store 5 as arc-rate.
-    const prev = proj.clone(new Float64Array([0, 60, 2.5]));
-    const curr = proj.clone(new Float64Array([10, 60, 2.5]));
+    const prev = st(0, 60, 2.5);
+    const curr = st(10, 60, 2.5);
     proj.delta(tangent, prev, curr, 1);
     expect(tangent[0]).toBeCloseTo(10 * Math.cos((60 * Math.PI) / 180), 3);
   });
 
   it('advance unscales lon by cosLat (inverse of delta)', () => {
-    const out = new Float64Array(3);
-    const from = proj.clone(new Float64Array([0, 60, 2.5]));
-    const tangent = createTangent();
+    const out = new Float64Array(5);
+    const from = st(0, 60, 2.5);
+    const tangent = createTangent(5);
     tangent[0] = 5; // arc-rate (half cosLat)
     proj.advance(out, from, tangent, 1);
     // Should result in ~10 deg lon shift (unscaled).
     expect(out[0]).toBeCloseTo(10, 3);
   });
+
+  it('rotate turns bearing and clamps pitch to the globe ceiling', () => {
+    const s = st(0, 0, 2.5);
+    proj.rotate(s, 100, 0, vp); // 100px × 0.4°/px
+    expect(s[4]).toBeCloseTo(40, 6);
+    proj.rotate(s, 0, -10_000, vp); // drag up hard → globe pitch ceiling
+    expect(s[3]).toBe(75);
+    proj.rotate(s, 0, 10_000, vp); // drag down hard → pitch floor 0
+    expect(s[3]).toBe(0);
+  });
+
+  it('pose reads and applyPose wraps lon, clamps lat and pitch', () => {
+    const s = st(0, 0, 2.5);
+    proj.applyPose(s, { centerX: 190, centerY: 95, pitch: 100, bearing: -30 });
+    expect(proj.pose(s)).toEqual({ centerX: -170, centerY: 89.9, pitch: 75, bearing: 330 });
+    proj.applyPose(s, { centerY: 31 });
+    expect(proj.pose(s).centerY).toBe(31);
+    expect(proj.pose(s).centerX).toBe(-170);
+  });
+
+  it('px-per-world is pitch-invariant, above and below the clearance floor', () => {
+    // Above the floor: the eye orbit lengthens with pitch but the FOV holds.
+    const level = st(-97, 31, 2.5);
+    const pitched = st(-97, 31, 2.5, 60, 135);
+    expect(proj.pxPerWorld(level, vp)).toBeGreaterThan(0);
+    expect(proj.pxPerWorld(pitched, vp)).toBeCloseTo(proj.pxPerWorld(level, vp), 9);
+
+    // Below the floor: the narrowed FOV keeps the clearance/FOV product, and
+    // with it the anchor scale, exactly where the effective clearance puts it.
+    const nearSurface = st(0, 0, 1.002);
+    const nearPitched = st(0, 0, 1.002, 60, 0);
+    const ratio = proj.pxPerWorld(nearPitched, vp) / proj.pxPerWorld(nearSurface, vp);
+    expect(ratio).toBeCloseTo(1, 9);
+  });
+
+  it('a pitched, beared camera still anchors the state lon/lat at screen center', () => {
+    const s = st(-97, 31, 2.5, 60, 135);
+    const center = proj.screenToWorld(s, vp.w / 2, vp.h / 2, vp);
+    expect(center).not.toBeNull();
+    expect(center![0]).toBeCloseTo(-97, 0);
+    expect(center![1]).toBeCloseTo(31, 0);
+    const fit = proj.fit(geoBounds, vp);
+    expect(proj.isAtFit(s, fit)).toBe(false);
+  });
 });
 
 describe('tilt projection', () => {
-  const proj = createTiltProjection();
+  const proj = createPlaneProjection('tilt');
 
   function fitState() {
     return proj.fit(bounds, vp);
@@ -380,13 +416,13 @@ describe('tilt projection', () => {
     const s = fitState();
     expect(s.length).toBe(5);
     // Regression: a fit or reload must never flatten tilt to nadir (which is
-    // pixel-identical to flat). The fit pitch equals the pitch an imported
-    // flat pose settles to, so the fit-fallback path (globe→tilt) and the
-    // import+settle path (flat→tilt) agree — both land tilted.
+    // pixel-identical to flat). The fit pitch equals the pitch setView
+    // settles an entering camera to, so the fit-fallback path and the
+    // carried-pose path agree — both land tilted.
     expect(s[3]).toBeGreaterThan(0);
     expect(s[4]).toBe(0);
-    const settled = proj.importPose!({ centerX: 0, centerY: 0, pxPerWorld: 1 }, vp);
-    proj.settleImportedPose!(settled);
+    const settled = st(0, 0, 1);
+    proj.setView!('tilt', settled);
     expect(s[3]).toBe(settled[3]);
     // The look point still lands at screen center; the oblique unproject
     // round-trips to ~1e-5 world units (perspective, vs nadir's near-exact).
@@ -411,12 +447,23 @@ describe('tilt projection', () => {
 
   it('rotate wraps bearing and clamps pitch', () => {
     const s = fitState();
-    proj.rotate!(s, 1000, 0, vp); // 1000px × 0.4°/px = 400° → wraps
+    proj.rotate(s, 1000, 0, vp); // 1000px × 0.4°/px = 400° → wraps
     expect(s[4]).toBeCloseTo(40, 6);
-    proj.rotate!(s, 0, 10_000, vp); // drag down hard → pitch floor 0
+    proj.rotate(s, 0, 10_000, vp); // drag down hard → pitch floor 0
     expect(s[3]).toBe(0);
-    proj.rotate!(s, 0, -10_000, vp); // drag up hard → pitch ceiling
+    proj.rotate(s, 0, -10_000, vp); // drag up hard → pitch ceiling
     expect(s[3]).toBe(85);
+  });
+
+  it('pose reads and applyPose merges, clamped per the active view', () => {
+    const s = fitState();
+    proj.applyPose(s, { centerX: 7, pitch: 200, bearing: -30 });
+    expect(proj.pose(s)).toEqual({ centerX: 7, centerY: s[1], pitch: 85, bearing: 330 });
+
+    const flat = createPlaneProjection('flat');
+    const f = st(0, 0, 10);
+    flat.applyPose(f, { pitch: 45, bearing: 90 });
+    expect(flat.pose(f)).toEqual({ centerX: 0, centerY: 0, pitch: 0, bearing: 0 });
   });
 
   it('near is true for identical states and false across visible deltas', () => {
@@ -427,21 +474,20 @@ describe('tilt projection', () => {
     expect(proj.near(s, moved, vp, 0.25)).toBe(false);
   });
 
-  it('imports a flat pose pixel-identically and settles toward its default pitch', () => {
-    const flat = createFlatProjection();
-    const flatState = flat.clone(new Float64Array([3, -2, 40]));
-    const pose = flat.exportPose!(flatState, vp)!;
+  it('places a carried flat pose pixel-identically within the zoom envelope', () => {
+    const flat = createPlaneProjection('flat');
+    const flatState = st(3, -2, 100);
+    const pose = flat.pose(flatState);
+    const px = flat.pxPerWorld(flatState, vp);
 
-    const imported = proj.importPose!(pose, vp);
-    expect(imported[0]).toBe(3);
-    expect(imported[1]).toBe(-2);
-    expect(imported[3]).toBe(0); // pitch 0 — pixel-identical to flat
-    // Scale round-trips: px-per-world at the look point matches the export.
-    expect(imported[2]).toBeCloseTo(pose.pxPerWorld, 6);
-
-    const target = proj.clone(imported);
-    proj.settleImportedPose!(target);
-    expect(target[3]).toBeGreaterThan(0); // eases over via the chase
+    const camera = new Camera(createPlaneProjection('tilt'), createUniforms().camera);
+    camera.place(pose, px, false, bounds, vp);
+    expect(camera.current[0]).toBe(3);
+    expect(camera.current[1]).toBe(-2);
+    expect(camera.current[3]).toBe(0); // carried flat pitch — pixel-identical
+    expect(camera.fitIntent).toBe(false);
+    // Scale round-trips: px-per-world at the look point matches the carrier.
+    expect(camera.current[2]).toBeCloseTo(100, 9);
   });
 
   it('mixes, differentiates, advances, and measures tilt manifold state', () => {
@@ -519,27 +565,30 @@ describe('tilt projection', () => {
     expect(after[1]).toBeCloseTo(grabbed[1], 4);
   });
 
-  it('exports tilt poses and packs matrix camera parameters', () => {
+  it('reads tilt poses and packs matrix camera parameters', () => {
     const s = fitState();
-    const pose = proj.exportPose!(s, vp)!;
+    const pose = proj.pose(s);
     const region = makeProjectionRegion();
 
     proj.pack(s, region, vp);
 
     expect(pose.centerX).toBeCloseTo(s[0], 6);
     expect(pose.centerY).toBeCloseTo(s[1], 6);
-    expect(pose.pxPerWorld).toBeGreaterThan(0);
+    expect(proj.pxPerWorld(s, vp)).toBeGreaterThan(0);
     expect(region.vp.some((value) => value !== 0)).toBe(true);
     expect(region.cameraPos[2]).toBeGreaterThan(0);
-    expect(region.planeParams[3]).toBeCloseTo(1, 6);
+    // At bearing 0 the packed basis is right = +x and up tilted off +y.
+    expect(region.viewBasis.slice(0, 3)).toEqual([1, 0, 0]);
+    expect(region.viewBasis[4]).toBeGreaterThan(0);
+    expect(region.viewBasis[5]).toBeGreaterThan(0);
   });
 });
 
 describe('Camera', () => {
   function make() {
-    const proj = createFlatProjection();
+    const proj = createPlaneProjection('flat');
     const uniforms = createUniforms();
-    const camera = new Camera(proj, uniforms.projection);
+    const camera = new Camera(proj, uniforms.camera);
     camera.init(bounds, vp);
     return { proj, camera, uniforms };
   }
@@ -549,17 +598,32 @@ describe('Camera', () => {
     expect(camera.isAtFitView()).toBe(true);
   });
 
-  it('initFrom defers zero-size placement and restores imported fit intent', () => {
+  it('place restores the carried pose and fit intent over fresh bounds', () => {
     const { camera } = make();
-    const pose = { centerX: 2, centerY: 3, pxPerWorld: 25 };
+    const pose = { centerX: 2, centerY: 3, pitch: 0, bearing: 0 };
 
-    expect(camera.initFrom(pose, false, bounds, { w: 0, h: 10 })).toBe(false);
-    expect(camera.initFrom(pose, false, bounds, vp)).toBe(true);
+    camera.place(pose, 100, false, bounds, vp);
 
     expect(camera.fitIntent).toBe(false);
     expect(camera.current[0]).toBe(2);
     expect(camera.current[1]).toBe(3);
-    expect(camera.current[2]).toBe(25);
+    expect(camera.current[2]).toBeCloseTo(100, 9);
+    expect(camera.isAnimating()).toBe(false);
+  });
+
+  it('place lands carried scale through the same clamps gestures use', () => {
+    const { camera } = make();
+    const fitScale = camera.current[2];
+
+    // A wider-than-fit carried view is unreachable by gestures; it clamps.
+    const wide = { centerX: 0, centerY: 0, pitch: 0, bearing: 0 };
+    camera.place(wide, fitScale / 4, false, bounds, vp);
+    expect(camera.current[2]).toBe(fitScale);
+    // A non-positive scale means no usable carrier: the fit wins outright.
+    const carried = { centerX: 2, centerY: 3, pitch: 0, bearing: 0 };
+    camera.place(carried, 0, false, bounds, vp);
+    expect(camera.current[0]).toBe(0);
+    expect(camera.fitIntent).toBe(true);
   });
 
   it('zoom changes state after ticks', () => {
@@ -645,7 +709,7 @@ describe('Camera', () => {
   it('moveTo supports animation and rejects unavailable placement', () => {
     let now = 1_000;
     vi.spyOn(performance, 'now').mockImplementation(() => now);
-    const fresh = new Camera(createFlatProjection(), createUniforms().projection);
+    const fresh = new Camera(createPlaneProjection('flat'), createUniforms().camera);
     const target = { xMin: 1, xMax: 2, yMin: 3, yMax: 4 };
 
     expect(fresh.moveTo(target, vp, false)).toBe(false);
@@ -665,8 +729,12 @@ describe('Camera', () => {
 
   it('reveal recenters without changing zoom or projection-specific orientation', () => {
     const target = { xMin: 2, xMax: 4, yMin: 1, yMax: 3 };
-    for (const proj of [createFlatProjection(), createTiltProjection(), createGlobeProjection()]) {
-      const camera = new Camera(proj, createUniforms().projection);
+    for (const proj of [
+      createPlaneProjection('flat'),
+      createPlaneProjection('tilt'),
+      createGlobeProjection(),
+    ]) {
+      const camera = new Camera(proj, createUniforms().camera);
       camera.init(bounds, vp);
       if (camera.current.length > 3) {
         camera.current[3] = 47;
@@ -735,8 +803,12 @@ describe('Camera', () => {
 
   it('moveTo observes the original zoom limit in every projection', () => {
     const tiny = { xMin: 0, xMax: 0.000001, yMin: 0, yMax: 0.000001 };
-    for (const proj of [createFlatProjection(), createTiltProjection(), createGlobeProjection()]) {
-      const camera = new Camera(proj, createUniforms().projection);
+    for (const proj of [
+      createPlaneProjection('flat'),
+      createPlaneProjection('tilt'),
+      createGlobeProjection(),
+    ]) {
+      const camera = new Camera(proj, createUniforms().camera);
       camera.init(bounds, vp);
 
       expect(camera.moveTo(tiny, vp, false)).toBe(true);
@@ -756,8 +828,8 @@ describe('Camera', () => {
   });
 
   it('panBy moves perspective projections without starting inertia', () => {
-    for (const proj of [createTiltProjection(), createGlobeProjection()]) {
-      const camera = new Camera(proj, createUniforms().projection);
+    for (const proj of [createPlaneProjection('tilt'), createGlobeProjection()]) {
+      const camera = new Camera(proj, createUniforms().camera);
       camera.init(bounds, vp);
       const before = [...camera.current];
 
@@ -784,6 +856,31 @@ describe('Camera', () => {
     expect([...camera.target]).toEqual(target);
     expect(camera.fitIntent).toBe(true);
     expect(camera.isAnimating()).toBe(false);
+  });
+
+  it('setPose places or eases a merged pose and rejects unplaced or no-op writes', () => {
+    const unplaced = new Camera(createPlaneProjection('flat'), createUniforms().camera);
+    expect(unplaced.pose()).toBeNull();
+    expect(unplaced.setPose({ centerX: 1 }, false)).toBe(false);
+
+    const { camera } = make();
+    expect(camera.setPose({ pitch: 45 }, false)).toBe(false); // flat clamps to a no-op
+    expect(camera.setPose({ centerX: 3 }, false)).toBe(true);
+    expect(camera.current[0]).toBe(3);
+    expect(camera.fitIntent).toBe(false);
+    expect(camera.pose()).toEqual({ centerX: 3, centerY: 0, pitch: 0, bearing: 0 });
+
+    expect(camera.setPose({ centerY: 2 }, true)).toBe(true);
+    expect(camera.target[1]).toBe(2);
+    expect(camera.current[1]).not.toBe(2); // eases through the chase
+    let now = performance.now();
+    let frames = 0;
+    while (camera.isAnimating() && frames < 240) {
+      now += 16.67;
+      camera.tick(now, vp);
+      frames++;
+    }
+    expect(camera.current[1]).toBe(2);
   });
 
   it('keeps fit motion for rejected input and interrupts it only for an actual zoom', () => {
@@ -918,10 +1015,9 @@ describe('Camera', () => {
 
   it('generalizes drag mirror, EMA, and convergence to projection-extra slots', () => {
     // Minimal 5-slot projection: linear algebra everywhere, near() in the
-    // passed pixel tolerance. Exercises the R1 loops before any real
-    // 5-slot projection exists.
+    // passed pixel tolerance. Exercises the dimension-blind Camera loops
+    // without any real projection's wrap/clamp policies.
     const proj: Projection = {
-      family: 'plane',
       stateSize: 5,
       fit: () => Float64Array.of(0, 0, 1, 10, 20) as CameraState,
       clone: (s) => new Float64Array(s) as CameraState,
@@ -955,9 +1051,17 @@ describe('Camera', () => {
         state[4] += dxPx;
         state[3] += dyPx;
       },
+      pose: (s) => ({ centerX: s[0]!, centerY: s[1]!, pitch: s[3]!, bearing: s[4]! }),
+      applyPose(state, pose) {
+        if (pose.centerX !== undefined) state[0] = pose.centerX;
+        if (pose.centerY !== undefined) state[1] = pose.centerY;
+        if (pose.pitch !== undefined) state[3] = pose.pitch;
+        if (pose.bearing !== undefined) state[4] = pose.bearing;
+      },
+      pxPerWorld: (s) => s[2]!,
       pack() {},
     };
-    const camera = new Camera(proj, createUniforms().projection);
+    const camera = new Camera(proj, createUniforms().camera);
     camera.init(bounds, vp);
     expect(camera.current.length).toBe(5);
     expect(camera.current[4]).toBe(20);
@@ -1011,49 +1115,366 @@ describe('Camera', () => {
   });
 });
 
-describe('ProjectionRig', () => {
-  it('starts flat and switches projections with or without bounds', () => {
-    const rig = new ProjectionRig(createUniforms().projection);
+describe('CameraRig', () => {
+  const NOW = 1_000;
+  const hidden: Viewport = { w: 0, h: 0 };
 
+  function makeRig(b: Bounds = bounds) {
+    const uniforms = createUniforms();
+    const rig = new CameraRig(uniforms.camera);
+    rig.setBounds(b);
+    return { rig, uniforms };
+  }
+
+  it('starts flat, skips frames without a scene, and fits on the first sized tick', () => {
+    const rig = new CameraRig(createUniforms().camera);
     expect(rig.mode).toBe('flat');
-    expect(rig.switchTo('tilt', null, vp)).toBe(false);
-    expect(rig.mode).toBe('tilt');
-    expect(rig.switchTo('flat', bounds, vp)).toBe(true);
-    expect(rig.mode).toBe('flat');
+    expect(rig.tick(NOW, vp)).toBe(false);
+
+    rig.setBounds(bounds);
+    expect(rig.pendingPlacement).toBe(true);
+    expect(rig.tick(NOW, vp)).toBe(true);
+    expect(rig.camera.isAtFitView()).toBe(true);
+    expect(rig.pendingPlacement).toBe(false);
     expect(rig.camera.current.length).toBe(5);
   });
 
-  it('keeps one planar camera and animates flat and tilt in both directions', () => {
-    const uniforms = createUniforms();
-    const rig = new ProjectionRig(uniforms.projection);
-    rig.camera.init(bounds, vp);
-    const camera = rig.camera;
-    const projection = rig.projection;
+  it('defers the canonical fit until the first usable viewport', () => {
+    const { rig } = makeRig();
+    rig.tick(NOW, hidden);
+    expect(rig.camera.placed).toBe(false);
+    expect(rig.pendingPlacement).toBe(true);
 
-    expect(rig.switchTo('tilt', bounds, vp)).toBe(true);
+    rig.tick(NOW + 16, vp);
+    expect(rig.camera.placed).toBe(true);
+    expect(rig.camera.isAtFitView()).toBe(true);
+  });
+
+  it('applies a deferred move after canonical placement on the first sized frame', () => {
+    const { rig } = makeRig();
+    rig.moveTo({ xMin: 2, xMax: 3, yMin: 1, yMax: 2 }, hidden, false);
+
+    rig.tick(NOW, vp);
+
+    expect(rig.camera.current[0]).toBeCloseTo(2.5);
+    expect(rig.camera.current[1]).toBeCloseTo(1.5);
+    expect(rig.camera.fitIntent).toBe(false);
+  });
+
+  it('applies a deferred reveal, while claim drops it but keeps the canonical fit', () => {
+    const { rig } = makeRig();
+    const item = { xMin: 4, xMax: 4, yMin: 2, yMax: 2 };
+    rig.reveal(item, hidden, false);
+    rig.tick(NOW, vp);
+    expect(rig.camera.current[0]).toBeCloseTo(4);
+    expect(rig.camera.current[1]).toBeCloseTo(2);
+
+    rig.setBounds(bounds);
+    rig.reveal(item, hidden, false);
+    expect(rig.claim()).toBe(false);
+    expect(rig.pendingPlacement).toBe(true);
+    rig.tick(NOW + 32, vp);
+    expect(rig.camera.isAtFitView()).toBe(true);
+  });
+
+  it('the latest hidden camera command wins the deferred slot', () => {
+    const { rig } = makeRig();
+    rig.moveTo({ xMin: 2, xMax: 3, yMin: 1, yMax: 2 }, hidden, false);
+    rig.fit(hidden, false);
+
+    rig.tick(NOW, vp);
+
+    expect(rig.camera.isAtFitView()).toBe(true);
+    expect(rig.camera.fitIntent).toBe(true);
+  });
+
+  it('fit animates when sized and defers to the next sized frame when hidden', () => {
+    const { rig } = makeRig();
+    // Chase and fit motion stamp real time internally; drive ticks from it.
+    let now = performance.now();
+    rig.tick(now, vp);
+    rig.camera.zoomAt(4, vp.w / 2, vp.h / 2, vp);
+    for (let i = 0; i < 90; i++) {
+      now += 16.67;
+      rig.tick(now, vp);
+    }
+    expect(rig.isAtFitView()).toBe(false);
+
+    rig.fit(vp, true);
+    expect(rig.isAnimating()).toBe(true);
+    for (let i = 0; i < 60; i++) {
+      now += 16.67;
+      rig.tick(now, vp);
+    }
+    expect(rig.isAtFitView()).toBe(true);
+
+    rig.camera.zoomAt(4, vp.w / 2, vp.h / 2, vp);
+    for (let i = 0; i < 90; i++) {
+      now += 16.67;
+      rig.tick(now, vp);
+    }
+    rig.fit(hidden, true);
+    expect(rig.pendingPlacement).toBe(true);
+    rig.tick(now + 16, vp);
+    expect(rig.isAtFitView()).toBe(true);
+  });
+
+  it('re-fits on viewport change under fit intent and preserves explored poses', () => {
+    const { rig } = makeRig();
+    rig.tick(NOW, vp);
+    const scale = rig.camera.current[2];
+
+    rig.tick(NOW + 16, { w: 400, h: 300 });
+    expect(rig.camera.isAtFitView()).toBe(true);
+    expect(rig.camera.current[2]).not.toBe(scale);
+
+    rig.camera.setPose({ centerX: 4 }, false);
+    rig.tick(NOW + 32, vp);
+    expect(rig.camera.current[0]).toBe(4);
+    expect(rig.camera.fitIntent).toBe(false);
+  });
+
+  it('keeps one planar camera and animates flat and tilt in both directions', () => {
+    const { rig, uniforms } = makeRig();
+    // Chase motion stamps real time on view retargets; drive ticks from it.
+    let now = performance.now();
+    rig.tick(now, vp);
+    const camera = rig.camera;
+
+    rig.switchTo('tilt', vp);
     expect(rig.camera).toBe(camera);
-    expect(rig.projection).toBe(projection);
     expect(camera.current[3]).toBe(0);
     expect(camera.target[3]).toBeGreaterThan(0);
 
-    let now = performance.now();
     now += 16.67;
-    camera.tick(now, vp);
-    expect(uniforms.projection.planeMix).toBeGreaterThan(0);
-    expect(uniforms.projection.planeMix).toBeLessThan(1);
+    rig.tick(now, vp);
+    expect(uniforms.camera.depthMix).toBeGreaterThan(0);
+    expect(uniforms.camera.depthMix).toBeLessThan(1);
 
-    expect(rig.switchTo('flat', bounds, vp)).toBe(true);
+    rig.switchTo('flat', vp);
     expect(rig.camera).toBe(camera);
     expect(camera.target[3]).toBe(0);
     let frames = 0;
-    while (camera.isAnimating() && frames < 120) {
+    while (rig.isAnimating() && frames < 120) {
       now += 16.67;
-      camera.tick(now, vp);
+      rig.tick(now, vp);
       frames++;
     }
     expect(frames).toBeLessThan(120);
     expect(camera.current[3]).toBe(0);
-    expect(uniforms.projection.planeMix).toBe(0);
+    expect(uniforms.camera.depthMix).toBe(0);
+  });
+
+  it('preserves the view across plane-globe switches in both directions', () => {
+    const geoBounds: Bounds = { xMin: -98, xMax: -96, yMin: 30, yMax: 32 };
+    const { rig } = makeRig(geoBounds);
+    rig.tick(NOW, vp);
+    rig.camera.current.set(Float64Array.of(-97.2, 30.7, 500, 0, 0));
+    rig.camera.target.set(rig.camera.current);
+    rig.camera.fitIntent = false;
+
+    rig.switchTo('globe', vp);
+    expect(rig.camera.current[0]).toBeCloseTo(-97.2, 6);
+    expect(rig.camera.current[1]).toBeCloseTo(30.7, 6);
+    expect(createGlobeProjection().pxPerWorld(rig.camera.current, vp)).toBeCloseTo(500, 6);
+    expect(rig.camera.fitIntent).toBe(false);
+
+    // Pitch and turn the globe; the whole orientation carries back to tilt,
+    // whose target then settles toward its resting oblique via the chase.
+    rig.camera.setPose({ pitch: 40, bearing: 30 }, false);
+    rig.switchTo('tilt', vp);
+    expect(rig.camera.current[0]).toBeCloseTo(-97.2, 6);
+    expect(rig.camera.current[1]).toBeCloseTo(30.7, 6);
+    expect(rig.camera.current[3]).toBe(40);
+    expect(rig.camera.current[4]).toBe(30);
+    expect(rig.camera.target[3]).toBeGreaterThan(40);
+    expect(createPlaneProjection('tilt').pxPerWorld(rig.camera.current, vp)).toBeCloseTo(500, 6);
+    expect(rig.camera.fitIntent).toBe(false);
+  });
+
+  it('lets the incoming fit win a switch while fit intent is active', () => {
+    const geoBounds: Bounds = { xMin: -98, xMax: -96, yMin: 30, yMax: 32 };
+    const { rig } = makeRig(geoBounds);
+    rig.tick(NOW, vp);
+
+    rig.switchTo('globe', vp);
+    expect(rig.camera.isAtFitView()).toBe(true);
+    expect(rig.camera.fitIntent).toBe(true);
+  });
+
+  it('carries an explored pose through a projection switch while hidden', () => {
+    const geoBounds: Bounds = { xMin: -98, xMax: -96, yMin: 30, yMax: 32 };
+    const { rig } = makeRig(geoBounds);
+    rig.tick(NOW, vp); // records the last rendered viewport for the carry
+    rig.camera.current.set(Float64Array.of(-97.2, 30.7, 500, 0, 0));
+    rig.camera.target.set(rig.camera.current);
+    rig.camera.fitIntent = false;
+
+    rig.switchTo('globe', hidden);
+    expect(rig.pendingPlacement).toBe(true);
+
+    rig.tick(NOW + 16, vp);
+    expect(rig.camera.current[0]).toBeCloseTo(-97.2, 6);
+    expect(rig.camera.current[1]).toBeCloseTo(30.7, 6);
+    expect(createGlobeProjection().pxPerWorld(rig.camera.current, vp)).toBeCloseTo(500, 6);
+    expect(rig.camera.fitIntent).toBe(false);
+  });
+
+  it('keeps an explored planar pose through a hidden flat-tilt toggle', () => {
+    const { rig } = makeRig();
+    rig.tick(NOW, vp);
+    rig.camera.setPose({ centerX: 3, centerY: -2 }, false);
+
+    rig.switchTo('tilt', hidden);
+    rig.tick(NOW + 16, vp);
+
+    expect(rig.camera.current[0]).toBe(3);
+    expect(rig.camera.current[1]).toBe(-2);
+    expect(rig.mode).toBe('tilt');
+  });
+
+  // Determinism invariants: the destination of a projection switch depends
+  // only on the settled view being left, never on chase timing, on the mode
+  // label the pose came from, or on whether the canvas happened to be sized.
+  const GEO_BOUNDS: Bounds = { xMin: -98, xMax: -96, yMin: 30, yMax: 32 };
+
+  /** Put an explored (fit-intent-free) state directly on the rig's camera. */
+  function explore(rig: CameraRig, state: readonly number[]): void {
+    rig.camera.current.set(state);
+    rig.camera.target.set(state);
+    rig.camera.fitIntent = false;
+  }
+
+  it('lands the same globe pose whether the switch happens mid-animation or settled', () => {
+    const run = (settleMs: number) => {
+      const { rig } = makeRig(GEO_BOUNDS);
+      let now = performance.now();
+      rig.tick(now, vp);
+      explore(rig, [-97.2, 30.7, 500, 0, 0]);
+      rig.switchTo('tilt', vp);
+      for (let t = 0; t < settleMs; t += 16.67) rig.tick((now += 16.67), vp);
+      rig.switchTo('globe', vp);
+      let frames = 0;
+      while (rig.isAnimating() && frames++ < 240) rig.tick((now += 16.67), vp);
+      return [...rig.camera.current];
+    };
+
+    const quick = run(50); // pitch still easing toward the tilt oblique
+    const settled = run(2_000);
+    expect(quick[3]).toBe(TILT_PITCH);
+    expect(quick).toEqual(settled);
+  });
+
+  it('carries identical planar states identically to the globe from flat and tilt', () => {
+    const states = (['flat', 'tilt'] as const).map((mode) => {
+      const { rig } = makeRig(GEO_BOUNDS);
+      rig.tick(NOW, vp);
+      if (mode === 'tilt') rig.switchTo('tilt', vp);
+      explore(rig, [-97.2, 30.7, 500, 0, 0]);
+      rig.switchTo('globe', vp);
+      return [...rig.camera.current];
+    });
+    expect(states[0]).toEqual(states[1]);
+  });
+
+  it('round-trips tilt to globe and back to the starting view', () => {
+    const { rig } = makeRig(GEO_BOUNDS);
+    rig.tick(NOW, vp);
+    rig.switchTo('tilt', vp);
+    explore(rig, [-97.2, 30.7, 500, TILT_PITCH, 30]);
+
+    rig.switchTo('globe', vp);
+    rig.switchTo('tilt', vp);
+
+    expect(rig.camera.current[0]).toBeCloseTo(-97.2, 9);
+    expect(rig.camera.current[1]).toBeCloseTo(30.7, 9);
+    expect(rig.camera.current[2]).toBeCloseTo(500, 6);
+    expect(rig.camera.current[3]).toBe(TILT_PITCH);
+    expect(rig.camera.current[4]).toBe(30);
+    expect(rig.camera.fitIntent).toBe(false);
+  });
+
+  it('a hidden switch lands exactly where the sized switch lands', () => {
+    const run = (switchVp: Viewport) => {
+      const { rig } = makeRig(GEO_BOUNDS);
+      rig.tick(NOW, vp);
+      explore(rig, [-97.2, 30.7, 500, 0, 0]);
+      rig.switchTo('globe', switchVp);
+      rig.tick(NOW + 16, vp);
+      return [...rig.camera.current];
+    };
+    expect(run(hidden)).toEqual(run(vp));
+  });
+
+  it('flushes a deferred reveal into the pose carried across a hidden switch', () => {
+    const item = { xMin: -96.4, xMax: -96.4, yMin: 31.6, yMax: 31.6 };
+    const run = (cmdVp: Viewport, switchVp: Viewport) => {
+      const { rig } = makeRig(GEO_BOUNDS);
+      rig.tick(NOW, vp);
+      explore(rig, [-97.2, 30.7, 500, 0, 0]);
+      rig.reveal(item, cmdVp, false);
+      rig.switchTo('globe', switchVp);
+      rig.tick(NOW + 16, vp);
+      return [...rig.camera.current];
+    };
+
+    const deferred = run(hidden, hidden);
+    expect(deferred).toEqual(run(vp, vp));
+    expect(deferred[0]).toBeCloseTo(-96.4, 6);
+    expect(deferred[1]).toBeCloseTo(31.6, 6);
+  });
+
+  it('preserves the view across chained hidden cross-family switches', () => {
+    const { rig } = makeRig(GEO_BOUNDS);
+    rig.tick(NOW, vp);
+    explore(rig, [-97.2, 30.7, 500, 0, 0]);
+
+    rig.switchTo('globe', hidden);
+    rig.switchTo('flat', hidden);
+    expect(rig.pendingPlacement).toBe(true);
+    rig.tick(NOW + 16, vp);
+
+    expect(rig.camera.current[0]).toBeCloseTo(-97.2, 9);
+    expect(rig.camera.current[1]).toBeCloseTo(30.7, 9);
+    expect(rig.camera.current[2]).toBeCloseTo(500, 6);
+    expect(rig.camera.fitIntent).toBe(false);
+  });
+
+  it('carries a mid-flight moveTo destination across a cross-family switch', () => {
+    let now = 1_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const { rig } = makeRig(GEO_BOUNDS);
+    rig.tick(now, vp);
+    rig.moveTo({ xMin: -97.5, xMax: -97.1, yMin: 30.4, yMax: 30.8 }, vp, true);
+    now += 100;
+    rig.tick(now, vp);
+    expect(rig.isAnimating()).toBe(true);
+
+    rig.switchTo('globe', vp);
+
+    expect(rig.camera.current[0]).toBeCloseTo(-97.3, 6);
+    expect(rig.camera.current[1]).toBeCloseTo(30.6, 6);
+  });
+
+  it('an animated fit before first placement snaps to the canonical fit', () => {
+    const { rig } = makeRig();
+    rig.fit(vp, true); // camera not yet placed: nothing to animate from
+    rig.tick(NOW, vp);
+
+    expect(rig.camera.isAtFitView()).toBe(true);
+    expect(rig.isAnimating()).toBe(false);
+  });
+
+  it('an in-family switch keeps the chase destination', () => {
+    const { rig } = makeRig();
+    rig.tick(performance.now(), vp);
+    rig.camera.zoomAt(2, vp.w / 2, vp.h / 2, vp);
+    const targetScale = rig.camera.target[2];
+
+    rig.switchTo('tilt', vp);
+
+    expect(rig.camera.target[2]).toBe(targetScale);
+    expect(rig.camera.target[3]).toBe(TILT_PITCH);
   });
 });
 
@@ -1061,14 +1482,10 @@ function makeProjectionRegion() {
   return {
     vp: new Float32Array(16),
     cameraPos: [0, 0, 0],
-    lightDir: [0, 0, 0],
-    planeParams: [0, 0, 0, 0],
-    planeMix: 0,
+    /** Captured basis rows: [rightX, rightY, rightZ, upX, upY, upZ]. */
+    viewBasis: [0, 0, 0, 0, 0, 0],
+    depthMix: 0,
     fovScale: 0,
-    nightFloor: 0,
-    terminatorWidth: 0,
-    surfaceNightFloor: 0,
-    flags: 0,
     flatSx: 0,
     flatSy: 0,
     flatTx: 0,
@@ -1079,11 +1496,8 @@ function makeProjectionRegion() {
     setCameraPos(x: number, y: number, z: number) {
       this.cameraPos = [x, y, z];
     },
-    setLightDir(x: number, y: number, z: number) {
-      this.lightDir = [x, y, z];
-    },
-    setPlaneParams(lookX: number, lookY: number, sinB: number, cosB: number) {
-      this.planeParams = [lookX, lookY, sinB, cosB];
+    setViewBasis(view: Float32Array) {
+      this.viewBasis = [view[0]!, view[4]!, view[8]!, view[1]!, view[5]!, view[9]!];
     },
   };
 }

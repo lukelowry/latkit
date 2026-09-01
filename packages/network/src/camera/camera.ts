@@ -1,15 +1,15 @@
-import type {
+﻿import type {
   Projection,
+  CameraPose,
   CameraState,
   Tangent,
   PanSession,
   PlaneView,
-  PoseSnapshot,
   Vec2,
   Viewport,
-  GraphBounds,
 } from './projection.js';
-import type { ProjectionRegion } from '../webgpu/uniforms.js';
+import type { Bounds } from '../topology/types.js';
+import type { CameraRegion } from '../webgpu/uniforms.js';
 import { createTangent, ZOOM_SLOT } from './projection.js';
 
 /** Cubic smoothstep: C1 at both ends, zero derivative at t=0 and t=1. */
@@ -39,12 +39,7 @@ const COAST_THRESHOLD = 0.05;
 /** Anchored zoom releases when relative zoom error falls below this value. */
 const ZOOM_EPSILON = 0.001;
 
-/**
- * Chase termination threshold in CSS pixels.
- *
- * When the remaining current-to-target motion would shift no on-screen
- * content by more than this, `current` snaps onto `target` and the loop stops.
- */
+/** Chase snaps onto target once residual motion shifts content less than this, in CSS px. */
 const SNAP_PX = 0.25;
 
 /** Camera math requires a finite, non-empty CSS-pixel viewport. */
@@ -53,7 +48,7 @@ function validViewport(vp: Viewport): boolean {
 }
 
 /** Camera fits require finite, ordered coordinate bounds. */
-function validBounds(bounds: GraphBounds): boolean {
+function validBounds(bounds: Bounds): boolean {
   return (
     Number.isFinite(bounds.xMin) &&
     Number.isFinite(bounds.xMax) &&
@@ -104,11 +99,8 @@ export class Camera {
   private fit: CameraState | null = null;
 
   /**
-   * Whether the user currently intends to stay at the fitted view.
-   *
-   * This is distinct from the current pose. It becomes true on `init` and
-   * `fitView`, and false on pan, rotate, or zoom. The render loop uses it to
-   * decide whether viewport changes should auto-refit.
+   * True while the user intends to stay at the fitted view (set by `init`
+   * and `fitView`, cleared by gestures); drives auto-refit on resize.
    */
   fitIntent = true;
 
@@ -126,13 +118,12 @@ export class Camera {
   /** Camera state at `lastDragT`, retained across too-dense spatial samples. */
   private readonly velocityState: CameraState;
 
-  /** Create a camera bound to a projection and its GPU uniform region. */
+  /** Create a camera bound to a projection and its GPU camera region. */
   constructor(
     private readonly proj: Projection,
-    private readonly region: ProjectionRegion,
+    private readonly region: CameraRegion,
   ) {
-    // All state/tangent buffers are sized by the projection, so the chase,
-    // coast, and snap machinery below is dimension-blind.
+    // Buffers are sized by the projection; the motion machinery is dimension-blind.
     this.current = new Float64Array(proj.stateSize) as CameraState;
     this.target = new Float64Array(proj.stateSize) as CameraState;
     this.velocityState = new Float64Array(proj.stateSize) as CameraState;
@@ -142,75 +133,98 @@ export class Camera {
   }
 
   /** Place current, target, and fit state from graph bounds. */
-  init(bounds: GraphBounds, vp: Viewport): void {
+  init(bounds: Bounds, vp: Viewport): void {
     const s = this.proj.fit(bounds, vp);
     this.current.set(s);
     this.target.set(s);
-    // Own a separate copy: mutations to `current`/`target` must not leak
-    // into the fit reference used by zoom clamps and isAtFitView().
+    // Own a separate copy: state mutations must not leak into the fit reference.
     this.fit = this.proj.clone(s);
     this.lastT = performance.now();
     this.motion = { kind: 'idle' };
     this.anchor = null;
-    // init is the canonical "place the camera at fit". Both first-load and
-    // RenderLoop's auto-refit-on-resize path enter through here, so this is
-    // the right place to assert the intent.
     this.fitIntent = true;
   }
 
+  /** True once the camera holds a fit reference and can serve pose commands. */
+  get placed(): boolean {
+    return this.fit !== null;
+  }
+
   /**
-   * Place the camera from an imported pose when supported, else from bounds.
+   * Place the camera from a carried pose and anchor scale over fresh bounds.
    *
-   * The fit reference always derives from the bounds; a pose import restores
-   * carried `fitIntent` instead of resetting it. Returns false when the
-   * viewport has no area and the caller should defer placement.
+   * The pose merges through `applyPose` and the scale lands through the same
+   * `zoom` clamps gestures use; the carried `fitIntent` is restored.
    */
-  initFrom(
-    pose: PoseSnapshot | null,
+  place(
+    pose: CameraPose,
+    pxPerWorld: number,
     fitIntent: boolean,
-    bounds: GraphBounds,
+    bounds: Bounds,
     vp: Viewport,
-  ): boolean {
-    if (vp.w <= 0 || vp.h <= 0) return false;
-    const imported = pose ? this.proj.importPose?.(pose, vp) : undefined;
+  ): void {
     this.init(bounds, vp);
-    if (imported) {
-      this.current.set(imported);
-      this.target.set(imported);
+    if (Number.isFinite(pxPerWorld) && pxPerWorld > 0) {
+      this.proj.applyPose(this.target, pose);
+      this.proj.zoom(this.target, pxPerWorld / this.proj.pxPerWorld(this.target, vp), this.fit);
+      this.current.set(this.target);
       this.fitIntent = fitIntent;
-      // The projection may prefer to settle elsewhere; the chase animates it.
-      this.proj.settleImportedPose?.(this.target);
     }
-    return true;
+  }
+
+  /** The state all in-flight motion is heading toward (fit destination, else target). */
+  private get settled(): CameraState {
+    return this.motion.kind === 'fitting' ? this.motion.to : this.target;
+  }
+
+  /**
+   * Read the pose and anchor scale a projection switch must preserve.
+   *
+   * Reads the settled state, never the transient chase state, so a switch
+   * mid-animation lands where the post-animation switch would. Null until
+   * placed.
+   */
+  carry(vp: Viewport): { pose: CameraPose; px: number } | null {
+    if (!this.fit) return null;
+    const s = this.settled;
+    return { pose: this.proj.pose(s), px: this.proj.pxPerWorld(s, vp) };
   }
 
   /** Retarget one view of the current camera family without replacing state. */
-  setView(view: PlaneView, bounds: GraphBounds | null, vp: Viewport): boolean {
-    if (!this.proj.setView) return false;
+  setView(view: PlaneView): void {
+    if (!this.proj.setView) return;
     const intent = this.fitIntent;
-    this.interrupt();
+    // Interrupt to the settled destination, not the rendered transient, so a
+    // mid-animation switch eases to the post-animation pose.
+    this.interrupt(this.settled);
     this.proj.setView(view, this.target);
     this.fitIntent = intent;
-    if (!bounds || !validBounds(bounds) || !validViewport(vp)) return false;
-    this.fit = this.proj.fit(bounds, vp);
-    return true;
   }
 
-  /** Apply a rotation gesture through the target chase. */
-  rotateBy(dxPx: number, dyPx: number, vp: Viewport): boolean {
-    if (
-      !this.proj.rotate ||
-      !Number.isFinite(dxPx) ||
-      !Number.isFinite(dyPx) ||
-      (dxPx === 0 && dyPx === 0) ||
-      !validViewport(vp)
-    ) {
-      return false;
-    }
-    const driven = this.motion.kind === 'coasting' || this.motion.kind === 'fitting';
+  /**
+   * Refresh the fit reference (zoom clamps, `isAtFitView`) for the live
+   * viewport without touching the rendered pose.
+   */
+  refreshFit(bounds: Bounds, vp: Viewport): void {
+    if (!validBounds(bounds) || !validViewport(vp)) return;
+    this.fit = this.proj.fit(bounds, vp);
+  }
+
+  /** True while self-driven motion (coast, fit) owns the rendered state. */
+  private get driven(): boolean {
+    return this.motion.kind === 'coasting' || this.motion.kind === 'fitting';
+  }
+
+  /**
+   * Route one mutation through the shared camera write protocol: mutate a
+   * scratch copy of the driven base, ignore post-clamp no-ops, and otherwise
+   * interrupt self-driven motion, retarget the chase, and clear fit intent.
+   */
+  private mutateTarget(mutate: (state: CameraState) => void): boolean {
+    const driven = this.driven;
     const base = driven ? this.current : this.target;
     this.scratchState.set(base);
-    this.proj.rotate(this.scratchState, dxPx, dyPx, vp);
+    mutate(this.scratchState);
     if (sameState(this.scratchState, base)) return false;
     if (driven) this.interrupt();
     this.target.set(this.scratchState);
@@ -218,14 +232,49 @@ export class Camera {
     return true;
   }
 
+  /** Apply a rotation gesture through the target chase. */
+  rotateBy(dxPx: number, dyPx: number, vp: Viewport): boolean {
+    if (
+      !Number.isFinite(dxPx) ||
+      !Number.isFinite(dyPx) ||
+      (dxPx === 0 && dyPx === 0) ||
+      !validViewport(vp)
+    ) {
+      return false;
+    }
+    return this.mutateTarget((s) => this.proj.rotate(s, dxPx, dyPx, vp));
+  }
+
   /**
-   * Give new input ownership of the currently rendered pose.
-   *
-   * This is the gesture-boundary cancellation primitive: pending fit, coast,
-   * chase, and cursor anchoring cannot leak into a newly started interaction.
+   * Read the public pose of the state {@link setPose} would mutate: the
+   * rendered state during self-driven motion, else the target. Null until
+   * placed.
    */
-  private interrupt(time = performance.now()): void {
-    this.target.set(this.current);
+  pose(): CameraPose | null {
+    if (!this.fit) return null;
+    return this.proj.pose(this.driven ? this.current : this.target);
+  }
+
+  /**
+   * Merge a partial public pose, easing through the chase when animated.
+   * False before placement or when the post-clamp pose changes nothing.
+   */
+  setPose(pose: Partial<CameraPose>, animate: boolean): boolean {
+    if (!this.fit) return false;
+    if (!this.mutateTarget((s) => this.proj.applyPose(s, pose))) return false;
+    this.anchor = null;
+    if (!animate) this.current.set(this.target);
+    return true;
+  }
+
+  /**
+   * Stop all motion and re-aim the chase at `base`.
+   *
+   * Gesture boundaries pass the rendered state (the default) so pending
+   * motion cannot leak into a new interaction; view switches pass `settled`.
+   */
+  private interrupt(base: CameraState = this.current, time = performance.now()): void {
+    this.target.set(base);
     this.motion = { kind: 'idle' };
     this.anchor = null;
     this.vel.fill(0);
@@ -242,7 +291,7 @@ export class Camera {
     ) {
       return false;
     }
-    this.interrupt(time);
+    this.interrupt(this.current, time);
     const session = this.proj.beginPan(this.current, sx, sy, vp);
     this.motion = { kind: 'dragging', session };
     this.anchor = null;
@@ -281,14 +330,12 @@ export class Camera {
     const changed = !sameState(this.scratchState, this.current);
 
     // Mirror every non-zoom slot into target so chase is a no-op during the
-    // drag. ZOOM_SLOT stays owned by anchored zoom, allowing wheel zoom during
-    // a drag.
+    // drag; ZOOM_SLOT stays owned by anchored zoom (wheel zoom during drag).
     for (let i = 0; i < this.current.length; i++) {
       if (i !== ZOOM_SLOT) this.target[i] = this.current[i];
     }
 
-    // Velocity EMA over drag deltas, for coast-after-release. Length-generic
-    // so extra slots contribute zero unless a projection chooses otherwise.
+    // Velocity EMA over drag deltas, for coast-after-release.
     const dt = time - this.lastDragT;
     if (dt > VEL_MIN_DT) {
       const inst = this.scratchTangent;
@@ -300,8 +347,7 @@ export class Camera {
       this.lastDragT = time;
     }
 
-    // Wheel-zoom-during-drag coexistence: re-derive anchor.world from the
-    // current screen point so the anchored-zoom constraint tracks the cursor.
+    // Re-derive anchor.world so an anchored zoom mid-drag tracks the cursor.
     if (this.anchor) {
       const w = this.proj.screenToWorld(
         this.current,
@@ -374,24 +420,15 @@ export class Camera {
     ) {
       return false;
     }
-    const driven = this.motion.kind === 'coasting' || this.motion.kind === 'fitting';
-    const base = driven ? this.current : this.target;
-    this.scratchState.set(base);
-    this.proj.zoom(this.scratchState, factor, this.fit);
-    if (sameState(this.scratchState, base)) return false;
-    // Fit/coast own target independently. Preserve the visible pose only once
-    // this input has been proven to change the projection state.
-    if (driven) this.interrupt();
+    if (!this.mutateTarget((s) => this.proj.zoom(s, factor, this.fit))) return false;
     // Capture the world point under the cursor so chase can hold it there.
     const world = this.proj.screenToWorld(this.current, sx, sy, vp);
     this.anchor = world ? { world, screen: [sx, sy] } : null;
-    this.target.set(this.scratchState);
-    this.fitIntent = false;
     return true;
   }
 
   /** Animate from the current pose to a fresh fitted view. */
-  fitView(bounds: GraphBounds, vp: Viewport): void {
+  fitView(bounds: Bounds, vp: Viewport): void {
     const to = this.proj.fit(bounds, vp);
     const from = this.proj.clone(this.current);
     this.fit = to;
@@ -403,13 +440,10 @@ export class Camera {
   /**
    * Move to arbitrary bounds without redefining the canonical fitted view.
    *
-   * A unit projection zoom normalizes the candidate through the same
-   * projection-specific clamp used by gestures. The canonical `fit` state is
-   * deliberately retained for future zoom limits and `isAtFitView()` checks.
-   * An already-satisfied move still takes camera ownership and clears fit
-   * intent, matching an explicit subset-fit request.
+   * The candidate lands through the gesture zoom clamp; an already-satisfied
+   * move still takes camera ownership and clears fit intent.
    */
-  moveTo(bounds: GraphBounds, vp: Viewport, animate: boolean): boolean {
+  moveTo(bounds: Bounds, vp: Viewport, animate: boolean): boolean {
     const fit = this.fit;
     if (!fit || !validBounds(bounds) || !validViewport(vp)) return false;
 
@@ -431,13 +465,11 @@ export class Camera {
   }
 
   /**
-   * Center arbitrary bounds while preserving projection, zoom, and orientation.
-   *
-   * `Projection.fit` owns coordinate normalization (notably longitude
-   * wrapping and latitude clamping), but only its center slots are adopted.
-   * The current zoom and projection-specific extras remain untouched.
+   * Center arbitrary bounds while preserving zoom and orientation.
+   * `Projection.fit` owns coordinate normalization; only its center slots
+   * are adopted.
    */
-  reveal(bounds: GraphBounds, vp: Viewport, animate: boolean): RevealResult {
+  reveal(bounds: Bounds, vp: Viewport, animate: boolean): RevealResult {
     if (!this.fit || !validBounds(bounds) || !validViewport(vp)) return 'unavailable';
 
     const to = this.proj.fit(bounds, vp);
@@ -460,9 +492,8 @@ export class Camera {
   }
 
   /**
-   * Let a no-op reveal supersede older motion without disturbing an idle view.
-   *
-   * Returns false when the camera already has no driver or residual chase.
+   * Let a no-op reveal supersede older motion without disturbing an idle
+   * view. False when the camera already has no driver or residual chase.
    */
   claimCurrent(): boolean {
     let driven = this.motion.kind !== 'idle' || this.anchor !== null;
@@ -538,12 +569,10 @@ export class Camera {
   /** Return true while the camera needs another animation frame. */
   isAnimating(): boolean {
     // A held-still drag is not "animating"; the gesture layer wakes us on
-    // each delta. Only self-driven motion plus anchored zoom need rAF.
-    if (this.motion.kind === 'coasting' || this.motion.kind === 'fitting') return true;
+    // each delta. tick() snaps current onto target at convergence, so exact
+    // slot equality is the rest signal.
+    if (this.driven) return true;
     if (this.anchor !== null) return true;
-    // tick() snaps current onto target once the chase residual is
-    // sub-perceptual, so exact equality over every slot is the convergence
-    // signal.
     for (let i = 0; i < this.current.length; i++) {
       if (this.current[i] !== this.target[i]) return true;
     }

@@ -107,11 +107,7 @@ fn build_edge_capsule(
   }
 
   // Per-endpoint daylight; the rasterizer interpolates across the edge.
-  // Globe overlays are lifted off the surface, so lighting uses their unit
-  // direction. Flat daylight is a no-op and can consume the raw world point.
-  var light_world = select(wa, wb, strip.x > 0.5);
-  if (u.plane_mix > 0.0) { light_world = normalize(light_world); }
-  out.light = daylight(light_world);
+  out.light = daylight(select(wa, wb, strip.x > 0.5));
 
   let tangent = dir / screen_len;
   let normal = vec2f(-tangent.y, tangent.x);
@@ -148,7 +144,7 @@ fn build_edge_capsule(
   let depth_bias = mix(
     flat_bias,
     select(0.0, -Z_BIAS_SELECTION_LIFT, focus_state != 0u),
-    u.plane_mix,
+    u.depth_mix,
   );
   z += depth_bias * interp_clip.w;
   out.pos = vec4f(ndc * interp_clip.w, z, interp_clip.w);

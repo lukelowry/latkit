@@ -1,8 +1,7 @@
 import { observeCanvas, type Presentation } from '@latkit/gpu';
 
-import type { Camera } from '../camera/camera.js';
+import type { CameraRig } from '../camera/rig.js';
 import type { Viewport } from '../camera/projection.js';
-import type { Bounds } from '../topology/index.js';
 import type { Renderer } from './renderer.js';
 import type { Uniforms } from './uniforms.js';
 
@@ -13,10 +12,12 @@ export interface RenderLoopDeps {
   uniforms: Uniforms;
   /** GPU renderer that submits one encoded network frame. */
   renderer: Renderer;
+  /** Camera authority ticked once per frame; owns all deferred placement. */
+  rig: CameraRig;
   /** Receives fit-view state transitions after camera ticking. */
   onZoom?: (atFitView: boolean) => void;
   /**
-   * Runs after `camera.tick()` and before frame submission so hover state can
+   * Runs after the rig tick and before frame submission so hover state can
    * be resolved against the final camera pose for this frame.
    */
   onFrame?: (sizeSettled: boolean) => void;
@@ -40,7 +41,8 @@ const RESIZE_SETTLE_TICKS = 3;
 
 /**
  * Orchestrates the render loop: rAF scheduling, viewport sync, uniform write,
- * and GPU submit.
+ * and GPU submit. Camera state, bounds, and deferred placement live on the
+ * rig; the loop is pure scheduling.
  *
  * Scheduling invariant: ordinary wakes coalesce to at most one frame per
  * paint. Resizes go through
@@ -52,25 +54,17 @@ export class RenderLoop {
   private readonly presentation: Presentation<HTMLCanvasElement>;
   private readonly uniforms: Uniforms;
   private readonly renderer: Renderer;
+  private readonly rig: CameraRig;
   private readonly onZoom?: (atFitView: boolean) => void;
   private readonly onFrame?: (sizeSettled: boolean) => void;
   private readonly onBeforeFrame?: (vp: Viewport) => void;
   private readonly onPaint?: () => void;
-  // Swappable state set by the canvas orchestrator as it changes.
-  private camera: Camera | null = null;
-  private bounds: Bounds | null = null;
 
   // Loop state.
   private rafId = 0;
   private microQueued = false;
   private active = true;
   private dead = false;
-  private needsFit = false;
-  private pendingMove: {
-    readonly kind: 'fit' | 'reveal';
-    readonly bounds: Bounds;
-    readonly animate: boolean;
-  } | null = null;
   private lastFit = true;
   /** When the pending rAF is a trailing guard, it renders only if new work
    *  arrived. Any explicit wake upgrades it to an unconditional frame. */
@@ -107,6 +101,7 @@ export class RenderLoop {
     this.presentation = deps.presentation;
     this.uniforms = deps.uniforms;
     this.renderer = deps.renderer;
+    this.rig = deps.rig;
     this.onZoom = deps.onZoom;
     this.onFrame = deps.onFrame;
     this.onBeforeFrame = deps.onBeforeFrame;
@@ -122,39 +117,6 @@ export class RenderLoop {
       if (ready) this.flushSameFrame();
     });
     ready = true;
-  }
-
-  // Injected state
-
-  /** Replaces the camera ticked by the loop. */
-  setCamera(camera: Camera): void {
-    this.camera = camera;
-  }
-  /** Replaces the topology bounds used for pending fit requests. */
-  setBounds(bounds: Bounds | null): void {
-    this.bounds = bounds;
-  }
-  /** Next tick will call `camera.init(bounds, vp)` before other work. */
-  requestFit(): void {
-    this.needsFit = true;
-    this.pendingMove = null;
-  }
-  /** Move after any pending canonical initialization on the next sized frame. */
-  requestMove(bounds: Bounds, animate: boolean): void {
-    this.pendingMove = { kind: 'fit', bounds, animate };
-  }
-  /** Reveal after any pending canonical initialization on the next sized frame. */
-  requestReveal(bounds: Bounds, animate: boolean): void {
-    this.pendingMove = { kind: 'reveal', bounds, animate };
-  }
-  /** Cancel a deferred subset move or reveal while preserving canonical fit work. */
-  cancelDeferredMove(): void {
-    this.pendingMove = null;
-  }
-  /** Cancel deferred camera placement when a newer immediate command wins. */
-  cancelPlacement(): void {
-    this.needsFit = false;
-    this.cancelDeferredMove();
   }
 
   // Scheduling
@@ -224,7 +186,6 @@ export class RenderLoop {
     this.dead = true;
     if (this.rafId) cancelAnimationFrame(this.rafId);
     this.rafId = 0;
-    this.pendingMove = null;
     this.stopObserving?.();
     this.stopObserving = null;
   }
@@ -238,7 +199,7 @@ export class RenderLoop {
     this.rafId = 0;
     const guardOnly = this.guardOnly;
     this.guardOnly = false;
-    if (guardOnly && !this.needsFit && !this.pendingMove && this.sizeSettled) {
+    if (guardOnly && !this.rig.pendingPlacement && this.sizeSettled) {
       return;
     }
     this.tick();
@@ -248,33 +209,15 @@ export class RenderLoop {
   private tick(): void {
     this.rafId = 0;
     if (this.dead) return;
-    if (!this.camera || !this.bounds) return;
     if (!this.syncViewport()) return;
 
     const frameVp = this.frameVp;
-    const logicalWidth = this.exactW / this.devicePixelRatio;
-    const logicalHeight = this.exactH / this.devicePixelRatio;
-    if (this.camera.fitIntent && (frameVp.w !== logicalWidth || frameVp.h !== logicalHeight)) {
-      this.needsFit = true;
-    }
-    frameVp.w = logicalWidth;
-    frameVp.h = logicalHeight;
-
-    if (this.needsFit) {
-      this.camera.init(this.bounds, frameVp);
-      this.needsFit = false;
-    }
-    if (this.pendingMove) {
-      const move = this.pendingMove;
-      this.pendingMove = null;
-      if (move.kind === 'reveal') this.camera.reveal(move.bounds, frameVp, move.animate);
-      else this.camera.moveTo(move.bounds, frameVp, move.animate);
-    }
-
-    this.camera.tick(performance.now(), frameVp);
+    frameVp.w = this.exactW / this.devicePixelRatio;
+    frameVp.h = this.exactH / this.devicePixelRatio;
+    if (!this.rig.tick(performance.now(), frameVp)) return;
     this.onBeforeFrame?.(frameVp);
 
-    const fit = this.camera.isAtFitView();
+    const fit = this.rig.isAtFitView();
     if (fit !== this.lastFit) {
       this.lastFit = fit;
       this.onZoom?.(fit);
@@ -295,13 +238,13 @@ export class RenderLoop {
     this.onFrame?.(this.sizeSettled);
     if (this.dead || !this.active) return;
 
-    const painted = this.submitFrame();
+    const painted = this.renderer.render(this.uniforms);
     if (painted) this.onPaint?.();
 
     // A host callback may have scheduled a frame mid-tick; never stack a
     // second rAF on top of it.
     if (!this.rafId) {
-      if (this.camera.isAnimating() || !this.sizeSettled) {
+      if (this.rig.isAnimating() || !this.sizeSettled) {
         this.rafId = requestAnimationFrame(this.tickRaf);
       } else {
         // Trailing guard: catches notifications that arrive later in this
@@ -351,21 +294,7 @@ export class RenderLoop {
       this.requestedW = tw;
       this.requestedH = th;
       this.presentation.resize(tw, th);
-      // Viewport changed. If the user is at fit-view by intent (initial
-      // load, F key, doubleTap, fit(true); see camera.fitIntent), the
-      // pose is no longer fit because the viewport changed under the
-      // camera. Re-fit so the graph stays centered and fully visible. If
-      // the user has panned/zoomed, fitIntent is false and we leave the
-      // camera alone; their explored pose is preserved (the graph just
-      // gets cropped or uncropped by the new viewport).
-      if (this.camera?.fitIntent) this.needsFit = true;
     }
     return true;
-  }
-
-  /** Uploads frame uniforms and delegates rendering to the GPU renderer. */
-  private submitFrame(): boolean {
-    this.uniforms.frame.time = performance.now() * 0.001;
-    return this.renderer.render(this.uniforms);
   }
 }

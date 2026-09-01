@@ -87,10 +87,17 @@ network.zoomBy(1.2);
 
 network.setProjection('tilt');
 network.rotateBy(18, -8);
+
+const pose = network.getPose();
+if (pose) {
+  network.setPose({ bearing: pose.bearing + 30 }, { animate: true });
+}
 ```
 
-Rotation changes bearing and pitch in `tilt` and is a no-op in projections
-without rotation, including `flat` and `globe`.
+Rotation changes bearing and pitch in `tilt` and `globe`; `flat` has no rotational
+freedom. `getPose()` returns the camera pose that the next `setPose()` call builds on.
+Partial pose updates preserve omitted fields, wrap or clamp values for the active projection,
+and can be placed immediately or animated. `network.projection` reports the active mode.
 
 ## Shared view semantics
 

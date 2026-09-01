@@ -1,8 +1,10 @@
 // Shared uniform struct, prepended to all shader modules at pipeline creation time.
-// Total: 400 bytes (25 x 16, naturally aligned).
+// Total: 416 bytes (26 x 16, naturally aligned).
 
 struct Uniforms {
-  // Projection (bytes 0-111)
+  // Camera (packed by the active projection) plus world lighting (bytes 0-111).
+  // light_dir is owned by daylight state (src/daylight.ts); the display flag
+  // bitmask rides its pad lane.
   vp: mat4x4f,
   camera_pos: vec3f,
   fov_scale: f32,
@@ -13,24 +15,23 @@ struct Uniforms {
   flat_tx: f32,
   flat_ty: f32,
 
-  // Frame (bytes 112-123)
+  // Frame (bytes 112-119)
   viewport: vec2f,
-  time: f32,
 
-  // Geometry (bytes 124-143)
+  // Geometry (bytes 120-139)
   vertex_size: f32,
   vertex_lod: f32,
   base_edge_width: f32,
   dash_period: f32,
   height_world_scale: f32,
 
-  // Interaction (bytes 144-159)
+  // Interaction (bytes 140-155)
   hover_vertex: i32,
   hover_edge: i32,
   selected_vertex: i32,
   selected_edge: i32,
 
-  // Channel buffer addressing + normalization (bytes 160-227)
+  // Channel buffer addressing + normalization (bytes 156-223)
   v_color_offset: u32,
   e_color_offset: u32,
   e_dash_offset: u32,
@@ -49,7 +50,7 @@ struct Uniforms {
   v_size_min: f32,
   v_size_scale: f32,
 
-  // Focus style (bytes 228-287)
+  // Focus style (bytes 224-287)
   focus_hover_color: u32,
   focus_selected_color: u32,
   focus_flags: u32,
@@ -59,7 +60,7 @@ struct Uniforms {
   focus_vertex_selected_underlay_px: f32,
   focus_edge_hover_underlay_px: f32,
   focus_edge_selected_underlay_px: f32,
-  // Height output range (bytes 264-271): normalized domain t maps to
+  // Height output range (bytes 260-267): normalized domain t maps to
   // height_out_min + t * height_out_scale.
   height_out_min: f32,
   height_out_scale: f32,
@@ -74,7 +75,7 @@ struct Uniforms {
   // theme instead of hardcoded constants. The void/sky is NOT here - it stays a transparent clear so
   // the themed DOM bleeds through (see renderer.ts).
   // grid_color    - the shared graticule line color.
-  // surface_color - the tilt ground plane and globe sphere base tone.
+  // surface_color - the ground plane (flat/tilt) and globe sphere base tone.
   // border_color  - the geographic border tint (coastlines/admin lines); per-tier alpha in borders.wgsl.
   grid_color: vec4f,
   surface_color: vec4f,
@@ -90,18 +91,21 @@ struct Uniforms {
   terminator_width: f32,
   surface_night_floor: f32,
 
-  // Planar camera basis (bytes 368-383).
-  // (look_x, look_y, sin(bearing), cos(bearing)): the bg derives its
-  // per-fragment ray basis from these because the globe's normalize(-cam)
-  // trick assumes a look-at-origin Y-up camera, and a naive look-at basis
-  // degenerates at nadir. right = (cos b, sin b, 0) is stable everywhere.
-  plane_params: vec4f,
+  // Camera basis (bytes 368-399): the active camera's view-matrix right and
+  // up rows, packed by pack() beside vp/camera_pos. Ray helpers derive
+  // look = cross(camera_up, camera_right); no shader rebuilds a basis from
+  // camera_pos. Valid whenever depth_mix > 0, the same staleness contract
+  // camera_pos carries - flat never reads it.
+  // depth_mix (0 at orthographic flat rest, 1 for full 3D depth; the globe
+  // always packs 1) and item_flags ride the vec3f pad lanes.
+  camera_right: vec3f,
+  depth_mix: f32,
+  camera_up: vec3f,
+  item_flags: u32,
 
-  // Flat-to-tilt projection blend and raw item-channel addressing (bytes 384-399).
-  plane_mix: f32,
+  // Raw item-channel addressing (bytes 400-407; struct pads to 416).
   v_visible_offset: u32,
   e_visible_offset: u32,
-  item_flags: u32,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -110,8 +114,9 @@ fn css_px(value: f32) -> f32 {
   return value * u.backing_scale;
 }
 
-const FLAG_DAYLIGHT:  u32 = 1u;
-const FLAG_GRATICULE: u32 = 2u;
+const FLAG_DAYLIGHT:   u32 = 1u;
+const FLAG_GRATICULE:  u32 = 2u;
+const FLAG_GEOGRAPHIC: u32 = 4u;
 
 const FOCUS_ENABLED:            u32 = 1u;
 const FOCUS_SELECTED_ENDPOINTS: u32 = 2u;

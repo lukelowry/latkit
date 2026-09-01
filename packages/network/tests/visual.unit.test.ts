@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { FIT_PAD, type GraphBounds, type Viewport } from '../src/camera/projection.js';
+import { FIT_PAD, type Viewport } from '../src/camera/projection.js';
+import type { Bounds } from '../src/topology/types.js';
 import { VISUAL, planeHeightWorldScale } from '../src/visual.js';
 
-const bounds: GraphBounds = { xMin: 0, xMax: 100, yMin: 0, yMax: 50 };
+const bounds: Bounds = { xMin: 0, xMax: 100, yMin: 0, yMax: 50 };
 
 describe('planeHeightWorldScale', () => {
   it('targets a stable pixel height at fit', () => {

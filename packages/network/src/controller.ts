@@ -6,20 +6,27 @@ import { encodeTopology, prepareTopology, type Bounds, type Topology } from './t
 import { encodeSegments } from './segments/index.js';
 import { prepareScene } from './scene.js';
 import { Renderer } from './webgpu/renderer.js';
-import { createUniforms, FLAG_DAYLIGHT, FLAG_GRATICULE } from './webgpu/uniforms.js';
+import {
+  createUniforms,
+  FLAG_DAYLIGHT,
+  FLAG_GEOGRAPHIC,
+  FLAG_GRATICULE,
+} from './webgpu/uniforms.js';
 import { FocusState, type FocusStyle, type RGBA } from './focus-state.js';
-import { VISUAL, planeHeightWorldScale } from './visual.js';
-import { ProjectionRig } from './camera/rig.js';
+import { VISUAL } from './visual.js';
+import { CameraRig } from './camera/rig.js';
+import { createDaylight, SUN_REFRESH_MS } from './daylight.js';
 import { attachPointer, MOUSE_PICK_RADIUS_PX, type HoverProbe } from './input/pointer.js';
 import { createSurface } from './input/surface.js';
-import { MAX_ZOOM_RATIO, type Viewport } from './camera/projection.js';
+import { type CameraPose, MAX_ZOOM_RATIO, type Viewport } from './camera/projection.js';
 import { createChannels, type Channel } from './channels.js';
 import type { ChannelRange } from './range.js';
 import { RenderLoop } from './webgpu/render-loop.js';
 import {
   PROJECTIONS,
   PROJECTION_MODES,
-  type PipelineMode,
+  isGeographic,
+  type ProjectionFamily,
   type ProjectionMode,
 } from './projections.js';
 import type { Borders } from './borders.js';
@@ -45,6 +52,12 @@ export interface Item {
   readonly kind: 'vertex' | 'edge';
   /** Zero-based vertex or edge index. */
   readonly index: number;
+}
+
+/** Options for {@link Network.setPose}. */
+export interface PoseOptions {
+  /** Ease toward the pose instead of placing it immediately. @defaultValue `false` */
+  readonly animate?: boolean;
 }
 
 /** Camera behavior for bringing one item into view without reframing it. */
@@ -83,7 +96,7 @@ export type Events = {
   /** WebGPU device-loss notification surfaced before rendering pauses. */
   deviceLost: (reason: string, message: string) => void;
   /** Asynchronous shader-pipeline build failure; rendering for that family is unavailable. */
-  pipelineError: (pipeline: PipelineMode, cause: unknown) => void;
+  pipelineError: (family: ProjectionFamily, cause: unknown) => void;
 };
 
 /**
@@ -99,6 +112,11 @@ export type Events = {
 export interface Network {
   /** Projection modes currently supported by the loaded topology. */
   readonly projections: Readonly<Record<ProjectionMode, boolean>>;
+  /**
+   * Active projection mode: the destination of the last accepted
+   * {@link Network.setProjection} call, `'flat'` before any.
+   */
+  readonly projection: ProjectionMode;
   /**
    * Subscribe to a network event and receive an unsubscribe callback.
    *
@@ -258,12 +276,32 @@ export interface Network {
   /**
    * Rotate the active camera by screen pixels.
    *
-   * The call is a no-op when the active projection does not support rotation.
+   * Horizontal pixels turn the bearing and vertical pixels tilt the pitch.
+   * The call is a no-op in the flat view, which has no rotational freedom.
    *
    * @param dx - Horizontal delta in CSS pixels.
    * @param dy - Vertical delta in CSS pixels.
    */
   rotateBy(dx: number, dy: number): void;
+  /**
+   * Read the camera pose the next {@link Network.setPose} would build on.
+   *
+   * @returns The current pose, or null before a topology is loaded or the
+   * camera is placed.
+   */
+  getPose(): CameraPose | null;
+  /**
+   * Merge a partial camera pose, wrapped and clamped per the active view.
+   *
+   * With `animate` the camera eases toward the pose; otherwise it is placed
+   * immediately. Fields the view cannot host (flat pitch/bearing) clamp to
+   * their resting value.
+   *
+   * @param pose - Pose fields to change; omitted fields keep their value.
+   * @param options - Animation flag.
+   * @returns True when the pose was accepted and changed camera state.
+   */
+  setPose(pose: Partial<CameraPose>, options?: PoseOptions): boolean;
   /**
    * Zoom the active camera around the viewport center.
    *
@@ -301,7 +339,7 @@ export interface ControllerDeps {
   createPresentation(device: GPUDevice, canvas: HTMLCanvasElement): Presentation<HTMLCanvasElement>;
   Renderer: typeof Renderer;
   RenderLoop: typeof RenderLoop;
-  ProjectionRig: typeof ProjectionRig;
+  CameraRig: typeof CameraRig;
   attachPointer: typeof attachPointer;
   Picker: typeof Picker;
 }
@@ -311,7 +349,7 @@ const DEFAULT_CONTROLLER_DEPS: ControllerDeps = {
   createPresentation,
   Renderer,
   RenderLoop,
-  ProjectionRig,
+  CameraRig,
   attachPointer,
   Picker,
 };
@@ -324,9 +362,6 @@ const DEFAULT_REVEAL_PADDING_PX = 48;
 
 /** Default opacity transition length used by {@link Network.fadeIn}. */
 const FADE_IN_MS = 150;
-
-/** Wake cadence for globe daylight updates while the globe is visible. */
-const SUN_REFRESH_MS = 30_000;
 
 /** Runtime options mirrored one-to-one into controller display state. */
 const DISPLAY_OPTIONS = [
@@ -505,6 +540,8 @@ function createNetworkController(
   const uniforms = createUniforms();
   const renderer = new deps.Renderer(presentation, options.msaa);
   lifecycle.add(() => renderer.destroy());
+  const daylight = createDaylight(uniforms.light);
+  const rig = new deps.CameraRig(uniforms.camera);
 
   /**
    * First-paint gate for fadeIn requests.
@@ -521,24 +558,25 @@ function createNetworkController(
     presentation,
     uniforms,
     renderer,
+    rig,
     onZoom: (atFitView) => stageZoomNotice(atFitView),
-    onBeforeFrame: (frameVp) => updateHeightWorldScale(frameVp),
+    onBeforeFrame: (frameVp) => {
+      daylight.refresh();
+      updateHeightWorldScale(frameVp);
+    },
     onFrame: (sizeSettled) => resolveHover(sizeSettled),
     onPaint: () => onSuccessfulPaint(),
   });
   lifecycle.add(() => loop.destroy());
 
-  renderer.onProjectionPipelinesReady = () => loop.wake();
+  renderer.onPipelinesReady = () => loop.wake();
   let pipelineFailure: Parameters<Events['pipelineError']> | null = null;
-  renderer.onProjectionPipelinesError = (pipeline, cause) => {
-    pipelineFailure = [pipeline, cause];
-    events.emit('pipelineError', pipeline, cause);
+  renderer.onPipelineError = (family, cause) => {
+    pipelineFailure = [family, cause];
+    events.emit('pipelineError', family, cause);
   };
   /** Schedule a frame for a visual state change. */
   const repaint = (): void => loop.wake();
-
-  const rig = new deps.ProjectionRig(uniforms.projection);
-  loop.setCamera(rig.camera);
 
   let deviceLoss: Parameters<Events['deviceLost']> | null = null;
   lifecycle.add(
@@ -597,6 +635,11 @@ function createNetworkController(
   let navigationActive = false;
   /** Invalidates only semantic picks, avoiding repeated large-scene queries. */
   let hoverDirty = false;
+  /** Camera state changed: invalidate hover and schedule a frame. */
+  const cameraMoved = (): void => {
+    hoverDirty = true;
+    loop.wake();
+  };
   type HoverNotice = readonly ['vertex' | 'edge' | null, number | null];
   interface VersionedNotice<T> {
     readonly value: T;
@@ -622,11 +665,11 @@ function createNetworkController(
     const view = vp();
     const hasViewport =
       Number.isFinite(view.w) && Number.isFinite(view.h) && view.w > 0 && view.h > 0;
-    const center =
-      rig.mode === 'globe'
-        ? ((hasViewport ? rig.camera.screenToWorld(view.w / 2, view.h / 2, view)?.[0] : null) ??
-          rig.camera.current[0]!)
-        : null;
+    const center = PROJECTIONS[rig.mode].wrapX
+      ? ((hasViewport ? rig.camera.screenToWorld(view.w / 2, view.h / 2, view)?.[0] : null) ??
+        rig.camera.pose()?.centerX ??
+        0)
+      : null;
     return {
       view,
       hasViewport,
@@ -680,9 +723,9 @@ function createNetworkController(
     poles: display.poles,
   });
 
-  /** Periodic wake-up for time-varying globe daylight. */
+  /** Periodic idle wake while daylight shading is armed for the loaded data. */
   const sunTimer = setInterval(() => {
-    if (display.daylight && rig.mode === 'globe') loop.wake();
+    if (display.daylight && isGeographic(topologyBounds)) loop.wake();
   }, SUN_REFRESH_MS);
   lifecycle.add(() => clearInterval(sunTimer));
 
@@ -735,8 +778,7 @@ function createNetworkController(
         break;
       case 'doubleTap':
         if (!topology || !topologyBounds) break;
-        loop.cancelPlacement();
-        rig.camera.fitView(topologyBounds, intent.vp);
+        rig.fit(intent.vp, true);
         loop.wake();
         break;
       case 'hover':
@@ -760,6 +802,10 @@ function createNetworkController(
   const api: Network = {
     get projections() {
       return projections;
+    },
+
+    get projection() {
+      return rig.mode;
     },
 
     on(event, handler) {
@@ -824,40 +870,13 @@ function createNetworkController(
           location.point[1] >= padding &&
           location.point[1] <= view.h - padding
         ) {
-          const claimed = rig.camera.claimCurrent();
-          if (claimed) {
-            loop.cancelPlacement();
-            hoverDirty = true;
-            loop.wake();
-          } else {
-            loop.cancelDeferredMove();
-          }
+          if (rig.claim()) cameraMoved();
           return true;
         }
       }
 
-      const animate = options.animate ?? false;
-      if (!hasViewport) {
-        // Zero-size initial placement already retains needsFit; established
-        // cameras must keep their current zoom when the viewport returns.
-        loop.requestReveal(bounds, animate);
-        hoverDirty = true;
-        loop.wake();
-        return true;
-      }
-
-      const result = rig.camera.reveal(bounds, view, animate);
-      if (result === 'unavailable') {
-        loop.requestFit();
-        loop.requestReveal(bounds, animate);
-      } else if (result === 'unchanged') {
-        loop.cancelDeferredMove();
-        return true;
-      } else {
-        loop.cancelPlacement();
-      }
-      hoverDirty = true;
-      loop.wake();
+      rig.reveal(bounds, view, options.animate ?? false);
+      cameraMoved();
       return true;
     },
 
@@ -907,14 +926,10 @@ function createNetworkController(
     setProjection(mode) {
       if (!PROJECTIONS[mode].canUse(topologyBounds, topologyCharacteristicLength)) return false;
       if (mode === rig.mode) return true;
-      loop.cancelPlacement();
-      hoverDirty = true;
-      const placed = rig.switchTo(mode, topologyBounds, vp());
-      loop.setCamera(rig.camera);
-      if (topology && !placed) loop.requestFit();
+      rig.switchTo(mode, vp());
       updateHeightWorldScale(vp());
-      renderer.useProjectionPipelines(mode);
-      repaint();
+      renderer.useProjection(mode);
+      cameraMoved();
       return true;
     },
 
@@ -926,49 +941,45 @@ function createNetworkController(
       if (!topology) return;
 
       if (typeof itemsOrAnimate === 'boolean') {
-        const view = vp();
-        if (itemsOrAnimate && view.w > 0 && view.h > 0 && topologyBounds) {
-          loop.cancelPlacement();
-          rig.camera.fitView(topologyBounds, view);
-        } else {
-          loop.requestFit();
-        }
+        rig.fit(vp(), itemsOrAnimate);
       } else {
         if (!topologyBounds) return;
-        const { view, hasViewport, bounds } = resolveItemBounds(itemsOrAnimate);
+        const { view, bounds } = resolveItemBounds(itemsOrAnimate);
         if (!bounds) return;
-        const framed = expandDegenerateBounds(bounds, topologyBounds, MAX_ZOOM_RATIO);
-        if (!hasViewport || !rig.camera.moveTo(framed, view, animate)) {
-          loop.requestFit();
-          loop.requestMove(framed, animate);
-        } else {
-          loop.cancelPlacement();
-        }
+        rig.moveTo(expandDegenerateBounds(bounds, topologyBounds, MAX_ZOOM_RATIO), view, animate);
       }
-      hoverDirty = true;
-      loop.wake();
+      cameraMoved();
     },
 
     panBy(dx, dy) {
       if (!topology) return;
       if (!rig.camera.panBy(dx, dy, vp())) return;
-      hoverDirty = true;
-      loop.wake();
+      cameraMoved();
     },
 
     rotateBy(dx, dy) {
       if (!topology) return;
       if (!rig.camera.rotateBy(dx, dy, vp())) return;
-      hoverDirty = true;
-      loop.wake();
+      cameraMoved();
+    },
+
+    getPose() {
+      if (!topology) return null;
+      return rig.camera.pose();
+    },
+
+    setPose(pose, options = {}) {
+      if (!topology) return false;
+      if (!rig.camera.setPose(pose, options.animate ?? false)) return false;
+      cameraMoved();
+      return true;
     },
 
     zoomBy(factor) {
       if (!topology) return;
       const v = vp();
       if (!rig.camera.zoomAt(factor, v.w / 2, v.h / 2, v)) return;
-      hoverDirty = true;
-      loop.wake();
+      cameraMoved();
     },
 
     fadeIn(ms = FADE_IN_MS) {
@@ -995,6 +1006,7 @@ function createNetworkController(
       topology = null;
       topologyBounds = null;
       topologyCharacteristicLength = null;
+      rig.setBounds(null);
       picker.commitScene(null);
       channels.reset();
       lifecycle.destroy();
@@ -1181,11 +1193,18 @@ function createNetworkController(
 
   /** Writes display flags, lighting scalars, and screen-space thresholds into uniforms. */
   function writeDisplayToUniforms(): void {
-    uniforms.projection.flags =
-      (display.daylight ? FLAG_DAYLIGHT : 0) | (display.graticule ? FLAG_GRATICULE : 0);
-    uniforms.projection.nightFloor = display.nightFloor;
-    uniforms.projection.surfaceNightFloor = display.surfaceNightFloor;
-    uniforms.projection.terminatorWidth = display.terminatorWidth;
+    // Daylight interprets coordinates as lon/lat degrees, so it arms only for
+    // geographic topologies; every projection family shades when it is set.
+    // FLAG_GEOGRAPHIC tracks the topology alone: the plane background clips
+    // its ground to the lon/lat world rect whenever coordinates are degrees.
+    const geographic = isGeographic(topologyBounds);
+    uniforms.light.flags =
+      (display.daylight && geographic ? FLAG_DAYLIGHT : 0) |
+      (display.graticule ? FLAG_GRATICULE : 0) |
+      (geographic ? FLAG_GEOGRAPHIC : 0);
+    uniforms.light.nightFloor = display.nightFloor;
+    uniforms.light.surfaceNightFloor = display.surfaceNightFloor;
+    uniforms.light.terminatorWidth = display.terminatorWidth;
     uniforms.geometry.vertexLod = display.vertexLodPx;
   }
 
@@ -1201,10 +1220,11 @@ function createNetworkController(
   /** Updates projection-specific height amplitude from current viewport state. */
   function updateHeightWorldScale(frameVp: Viewport): void {
     if (!topology || !topologyBounds) return;
-    const scale =
-      rig.mode === 'globe'
-        ? VISUAL.globeHeightRadialScale
-        : planeHeightWorldScale(topologyBounds, frameVp, vertexSize * display.vertexScale);
+    const scale = PROJECTIONS[rig.mode].heightWorldScale(
+      topologyBounds,
+      frameVp,
+      vertexSize * display.vertexScale,
+    );
     uniforms.geometry.heightWorldScale = scale * display.heightScale;
   }
 
@@ -1340,17 +1360,18 @@ function createNetworkController(
     // A new topology can invalidate the active projection (notably globe).
     // Fall back atomically so the camera, picker mode, and pipelines agree.
     if (!projections[rig.mode]) {
-      rig.switchTo('flat', topologyBounds, vp());
-      loop.setCamera(rig.camera);
-      renderer.useProjectionPipelines('flat');
+      rig.switchTo('flat', vp());
+      renderer.useProjection('flat');
     }
 
     vertexSize = info.characteristicLength * VISUAL.vertexSizeScale;
     writeGeometryScales(vp());
+    // New bounds can change the geographic daylight gate.
+    writeDisplayToUniforms();
 
     channels.reset();
-    loop.setBounds(topologyBounds);
-    loop.requestFit();
+    // A fresh scene schedules its canonical fit on the rig.
+    rig.setBounds(topologyBounds);
     warmInactiveProjections();
     loop.frameNow();
   }

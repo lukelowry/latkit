@@ -47,8 +47,8 @@ network.on('deviceLost', (reason, message) => {
   console.error(reason, message);
 });
 
-network.on('pipelineError', (pipeline, cause) => {
-  console.error(`Unable to build ${pipeline} shaders`, cause);
+network.on('pipelineError', (family, cause) => {
+  console.error(`Unable to build ${family} shaders`, cause);
 });
 
 monitor.on('deviceLost', (info) => {
@@ -56,7 +56,7 @@ monitor.on('deviceLost', (info) => {
 });
 ```
 
-A lost device cannot be restored. Destroy every renderer borrowing it, request a new device, and recreate the views. A `pipelineError` identifies an asynchronous `plane` or `globe` shader-family failure; late subscribers receive the latest failure so applications can replace a canvas that never became renderable.
+A lost device cannot be restored. Destroy every renderer borrowing it, request a new device, and recreate the views. A `pipelineError` identifies an asynchronous `plane` or `globe` projection-family failure; late subscribers receive the latest failure so applications can replace a canvas that never became renderable.
 
 ## Pause and resume rendering
 

@@ -33,8 +33,6 @@ export interface EncodeNetworkFrameInputs {
   colorAttachment: GPURenderPassColorAttachment;
   /** Depth attachment view for this frame. */
   depthView: GPUTextureView;
-  /** Whether to draw the projection background pass. */
-  drawBackground: boolean;
   /** Active projection pipelines. */
   visual: VisualPipelines;
   /** Bind group containing uniforms, channel storage, and colormap texture. */
@@ -73,11 +71,11 @@ export function encodeNetworkFrame(inputs: EncodeNetworkFrameInputs): void {
     },
   });
 
-  if (inputs.drawBackground) {
-    rp.setPipeline(inputs.visual.bg);
-    rp.setBindGroup(0, inputs.channelsBindGroup);
-    rp.draw(3);
-  }
+  // The background is the scene's surface (ground plane or sphere) and its
+  // depth reference; it draws every frame in every projection.
+  rp.setPipeline(inputs.visual.bg);
+  rp.setBindGroup(0, inputs.channelsBindGroup);
+  rp.draw(3);
 
   if (inputs.visibility.earthAxis && inputs.visual.earthAxis) {
     rp.setPipeline(inputs.visual.earthAxis);

@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { PIPELINES } from '../src/projections.js';
 import edgeSrc from '../src/shaders/passes/edge-segment.wgsl?raw';
 import frameEncoderSrc from '../src/webgpu/frame-encoder.ts?raw';
 import pipelinesSrc from '../src/webgpu/pipelines.ts?raw';
@@ -28,10 +27,10 @@ describe('globe focus and occlusion shader contract', () => {
     expect(frameEncoderSrc).not.toContain('drawIndirect');
   });
 
-  it('depth-tests globe halos against sphere depth', () => {
-    expect(PIPELINES.plane.haloDepthCompare).toBe('less-equal');
-    expect(PIPELINES.globe.haloDepthCompare).toBe('less-equal');
-    expect(pipelinesSrc).toContain('depthCompare: def.haloDepthCompare');
+  it('depth-tests halos against scene depth without writing it', () => {
+    const halo = pipelinesSrc.slice(pipelinesSrc.indexOf('const dsHalo'));
+    expect(halo).toContain('depthWriteEnabled: false');
+    expect(halo).toContain("depthCompare: 'less-equal'");
   });
 
   it('keeps focus range misses non-catastrophic and observable', () => {

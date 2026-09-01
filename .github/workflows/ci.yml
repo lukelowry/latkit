@@ -21,6 +21,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
       - run: pnpm build
+      - run: pnpm lint
+      - run: pnpm build:examples
       - run: pnpm typecheck
       - run: pnpm test:run
       - run: pnpm -r --filter "./packages/**" exec npm pack --dry-run

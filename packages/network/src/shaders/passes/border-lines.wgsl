@@ -29,17 +29,15 @@ fn vs(
 ) -> VOut {
   // border_world returns the FINAL world position, anti-z-fight lift
   // included - each projection's def owns its lift direction (radial on
-  // the globe, +z on planes). Only the daylight input remains shared.
+  // the globe, +z on planes).
   let world = border_world(lonlat, ecef);
-  var light_world = world;
-  if (u.plane_mix > 0.0) { light_world = normalize(world); }
   let clip = project_world(world);
 
   var out: VOut;
   out.pos = clip;
 
   let c = border_color(layer);
-  out.color = vec4f(c.rgb * daylight(light_world), c.a);
+  out.color = vec4f(c.rgb * daylight(world), c.a);
   return out;
 }
 
