@@ -1,5 +1,13 @@
 # @latkit/embed
 
+## 0.6.1
+
+### Patch Changes
+
+- 986ed05: Require caller-supplied vertex coordinates for geographic interpretation: generated ring layouts no longer arm daylight shading, geographic ground clipping, the daylight refresh timer, or globe availability. Expose the stored interpretation as `Network.geographic` (mirrored by `NetworkElement.geographic`) and add an optional `Topology.coordinateSpace` declaration — `'cartesian'` keeps abstract data off geographic features even when its bounds fit lon/lat ranges — forwarded through the embed's serialized topology format.
+- Updated dependencies [986ed05]
+  - @latkit/network@0.6.1
+
 ## 0.6.0
 
 ### Minor Changes
