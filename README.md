@@ -21,7 +21,7 @@ Install only the packages your application needs.
 | [`@latkit/monitor`](https://www.npmjs.com/package/@latkit/monitor)     | WebGPU time-series and signal monitor views           |
 | [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)             | Core WebGPU device and canvas presentation primitives |
 | [`@latkit/colormaps`](https://www.npmjs.com/package/@latkit/colormaps) | Named colormaps, labels, and CSS gradient helpers     |
-| [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | Shared model primitives for the Latkit package family |
+| [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | Columnar network model, series, and byte form         |
 
 ## Requirements
 
