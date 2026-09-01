@@ -55,7 +55,7 @@ fn vs_pole(quad: vec2f, inst: u32) -> VOut {
   let offset = normal * quad.x * hw * 2.0 / u.viewport * clip.w;
 
   var out: VOut;
-  let z_bias = pole_sort_z_bias(inst) * (1.0 - u.plane_mix);
+  let z_bias = pole_sort_z_bias(inst) * (1.0 - u.depth_mix);
   out.pos = vec4f(clip.xy + offset, clip.z + z_bias * clip.w, clip.w);
   let base_color = vertex_channel_color(inst);
   out.color = vec4f(base_color.rgb * daylight(surface), base_color.a);

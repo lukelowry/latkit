@@ -113,7 +113,6 @@ export function createPlaneProjection(initial: PlaneView): Projection {
   }
 
   return {
-    family: 'plane',
     stateSize: 5,
 
     setView(next, target) {
@@ -265,7 +264,7 @@ export function createPlaneProjection(initial: PlaneView): Projection {
       region.flatTx = (-2 * s[2] * s[0]) / vp.w;
       region.flatTy = (-2 * s[2] * s[1]) / vp.h;
       region.fovScale = FOV_SCALE;
-      region.planeMix = amount;
+      region.depthMix = amount;
       if (amount === 0) return;
       build(s, vp);
       region.setVP(vpM);
@@ -274,6 +273,3 @@ export function createPlaneProjection(initial: PlaneView): Projection {
     },
   };
 }
-
-export const createFlatProjection = (): Projection => createPlaneProjection('flat');
-export const createTiltProjection = (): Projection => createPlaneProjection('tilt');

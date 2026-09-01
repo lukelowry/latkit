@@ -3,7 +3,7 @@ import type { Presentation } from '@latkit/gpu';
 
 import { RenderLoop } from '../src/webgpu/render-loop.js';
 import { createUniforms } from '../src/webgpu/uniforms.js';
-import type { Camera } from '../src/camera/camera.js';
+import type { CameraRig } from '../src/camera/rig.js';
 import type { Renderer } from '../src/webgpu/renderer.js';
 
 // ── rAF / DOM harness ─────────────────────────────────────────
@@ -69,19 +69,10 @@ interface Harness {
   uniforms: ReturnType<typeof createUniforms>;
   canvas: { clientWidth: number; clientHeight: number; width: number; height: number };
   renders: string[];
-  cameraInits: Array<{ bounds: unknown; vp: { w: number; h: number } }>;
-  cameraMoves: Array<{
-    bounds: unknown;
-    vp: { w: number; h: number };
-    animate: boolean;
-  }>;
-  cameraReveals: Array<{
-    bounds: unknown;
-    vp: { w: number; h: number };
-    animate: boolean;
-  }>;
+  rigTicks: Array<{ now: number; vp: { w: number; h: number } }>;
   resize: ReturnType<typeof vi.fn>;
   setAnimating(v: boolean): void;
+  setPendingPlacement(v: boolean): void;
   fireResize(entries?: ResizeObserverEntry[]): void;
 }
 
@@ -90,6 +81,7 @@ function makeHarness(
     onFrame?: () => void;
     onBeforeFrame?: (vp: { w: number; h: number }) => void;
     onPaint?: () => void;
+    onRigTick?: () => void;
     render?: () => boolean;
     pixelRatio?: number;
     limit?: number;
@@ -111,9 +103,7 @@ function makeHarness(
   };
   const uniforms = createUniforms();
   const renders: string[] = [];
-  const cameraInits: Array<{ bounds: unknown; vp: { w: number; h: number } }> = [];
-  const cameraMoves: Harness['cameraMoves'] = [];
-  const cameraReveals: Harness['cameraReveals'] = [];
+  const rigTicks: Harness['rigTicks'] = [];
   const renderer = {
     render: () => {
       renders.push('render');
@@ -139,47 +129,42 @@ function makeHarness(
     destroy: vi.fn(),
   } satisfies Presentation<HTMLCanvasElement>;
   let animating = false;
-  const camera = {
-    fitIntent: false,
-    init: (nextBounds: unknown, nextVp: { w: number; h: number }) => {
-      cameraInits.push({ bounds: nextBounds, vp: { ...nextVp } });
+  let pendingPlacement = false;
+  const rig = {
+    get pendingPlacement() {
+      return pendingPlacement;
     },
-    moveTo: (nextBounds: unknown, nextVp: { w: number; h: number }, animate: boolean) => {
-      cameraMoves.push({ bounds: nextBounds, vp: { ...nextVp }, animate });
+    tick: (now: number, nextVp: { w: number; h: number }) => {
+      rigTicks.push({ now, vp: { ...nextVp } });
+      opts.onRigTick?.();
       return true;
     },
-    reveal: (nextBounds: unknown, nextVp: { w: number; h: number }, animate: boolean) => {
-      cameraReveals.push({ bounds: nextBounds, vp: { ...nextVp }, animate });
-      return 'moved';
-    },
-    tick: () => {},
     isAtFitView: () => false,
     isAnimating: () => animating,
-  } as unknown as Camera;
-  const bounds = { xMin: 0, xMax: 1, yMin: 0, yMax: 1 };
+  } as unknown as CameraRig;
 
   const loop = new RenderLoop({
     presentation,
     uniforms,
     renderer,
+    rig,
     onFrame: opts.onFrame,
     onBeforeFrame: opts.onBeforeFrame,
     onPaint: opts.onPaint,
   });
-  loop.setCamera(camera);
-  loop.setBounds(bounds);
 
   return {
     loop,
     uniforms,
     canvas,
     renders,
-    cameraInits,
-    cameraMoves,
-    cameraReveals,
+    rigTicks,
     resize,
     setAnimating: (v) => {
       animating = v;
+    },
+    setPendingPlacement: (v) => {
+      pendingPlacement = v;
     },
     fireResize: (entries) => roCallback?.(entries ?? []),
   };
@@ -234,15 +219,14 @@ describe('RenderLoop scheduling', () => {
     expect(order).toEqual(['hook']);
   });
 
-  it('updates presentation scale after visual derivation and before picking without advancing time', () => {
+  it('updates presentation scale after visual derivation and before picking', () => {
     type Phase = 'before' | 'frame' | 'render';
-    const observed: Array<{ phase: Phase; backingScale: number; time: number }> = [];
+    const observed: Array<{ phase: Phase; backingScale: number }> = [];
     // The callbacks only fire from frameNow() below, after `h` initializes.
     const capture = (phase: Phase): void => {
       observed.push({
         phase,
         backingScale: h.uniforms.frame.backingScale,
-        time: h.uniforms.frame.time,
       });
     };
     const h = makeHarness({
@@ -256,17 +240,14 @@ describe('RenderLoop scheduling', () => {
       },
     });
     h.uniforms.frame.backingScale = 7;
-    h.uniforms.frame.time = -1;
 
     h.loop.frameNow();
 
     expect(observed.map(({ phase }) => phase)).toEqual(['before', 'frame', 'render']);
-    expect(observed[0]).toEqual({ phase: 'before', backingScale: 7, time: -1 });
-    expect(observed[1]).toMatchObject({ phase: 'frame', time: -1 });
+    expect(observed[0]).toEqual({ phase: 'before', backingScale: 7 });
     expect(observed[1]!.backingScale).toBeCloseTo(1.28, 6);
     expect(observed[2]!.phase).toBe('render');
     expect(observed[2]!.backingScale).toBeCloseTo(1.28, 6);
-    expect(observed[2]!.time).toBeGreaterThanOrEqual(0);
   });
 
   it('resize re-renders before the same paint even after a render, quantized then snapped', async () => {
@@ -387,13 +368,12 @@ describe('RenderLoop scheduling', () => {
   it('keeps CSS camera space and stable resize work when the backing size is limited', () => {
     const h = makeHarness({ pixelRatio: 2, limit: 256 });
 
-    h.loop.requestFit();
     h.loop.frameNow();
     h.loop.frameNow();
 
     expect(h.canvas.width).toBe(256);
     expect(h.canvas.height).toBe(128);
-    expect(h.cameraInits[0]?.vp).toEqual({ w: 200, h: 100 });
+    expect(h.rigTicks[0]?.vp).toEqual({ w: 200, h: 100 });
     expect(h.resize).toHaveBeenCalledOnce();
     expect(h.resize).toHaveBeenCalledWith(400, 200);
   });
@@ -413,9 +393,10 @@ describe('RenderLoop scheduling', () => {
     expect(h.renders.length).toBe(1);
   });
 
-  it('applies pending fit before ticking and submitting the frame', () => {
+  it('ticks the rig with the CSS viewport before the frame hooks and the submit', () => {
     const order: string[] = [];
     const h = makeHarness({
+      onRigTick: () => order.push('rig'),
       onBeforeFrame: () => order.push('beforeFrame'),
       render: () => {
         order.push('render');
@@ -423,63 +404,26 @@ describe('RenderLoop scheduling', () => {
       },
     });
 
-    h.loop.requestFit();
     h.loop.frameNow();
 
-    expect(h.cameraInits).toEqual([
-      { bounds: { xMin: 0, xMax: 1, yMin: 0, yMax: 1 }, vp: { w: 200, h: 100 } },
-    ]);
-    expect(order).toEqual(['beforeFrame', 'render']);
+    expect(h.rigTicks).toHaveLength(1);
+    expect(h.rigTicks[0]?.vp).toEqual({ w: 200, h: 100 });
+    expect(h.rigTicks[0]?.now).toBeGreaterThan(0);
+    expect(order).toEqual(['rig', 'beforeFrame', 'render']);
   });
 
-  it('applies a deferred move after canonical initialization on the first sized frame', () => {
+  it('renders a trailing guard frame while the rig holds deferred placement', () => {
     const h = makeHarness();
-    const subset = { xMin: 0.25, xMax: 0.5, yMin: 0.25, yMax: 0.5 };
+    h.loop.frameNow(); // arms the trailing guard
+    expect(h.renders.length).toBe(1);
 
-    h.loop.requestFit();
-    h.loop.requestMove(subset, true);
-    h.loop.frameNow();
+    h.setPendingPlacement(true);
+    frame(); // guard sees pending placement and renders
+    expect(h.renders.length).toBe(2);
 
-    expect(h.cameraInits).toHaveLength(1);
-    expect(h.cameraMoves).toEqual([{ bounds: subset, vp: { w: 200, h: 100 }, animate: true }]);
-  });
-
-  it('applies a deferred reveal after canonical initialization on the first sized frame', () => {
-    const h = makeHarness();
-    const item = { xMin: 0.25, xMax: 0.25, yMin: 0.5, yMax: 0.5 };
-
-    h.loop.requestFit();
-    h.loop.requestReveal(item, true);
-    h.loop.frameNow();
-
-    expect(h.cameraInits).toHaveLength(1);
-    expect(h.cameraReveals).toEqual([{ bounds: item, vp: { w: 200, h: 100 }, animate: true }]);
-    expect(h.cameraMoves).toEqual([]);
-  });
-
-  it('lets a newer immediate command cancel all deferred placement', () => {
-    const h = makeHarness();
-    const subset = { xMin: 0.25, xMax: 0.5, yMin: 0.25, yMax: 0.5 };
-
-    h.loop.requestFit();
-    h.loop.requestMove(subset, false);
-    h.loop.cancelPlacement();
-    h.loop.frameNow();
-
-    expect(h.cameraInits).toEqual([]);
-    expect(h.cameraMoves).toEqual([]);
-  });
-
-  it('cancels a deferred move without dropping a pending canonical fit', () => {
-    const h = makeHarness();
-    const item = { xMin: 0.25, xMax: 0.25, yMin: 0.5, yMax: 0.5 };
-
-    h.loop.requestFit();
-    h.loop.requestReveal(item, true);
-    h.loop.cancelDeferredMove();
-    h.loop.frameNow();
-
-    expect(h.cameraInits).toHaveLength(1);
-    expect(h.cameraReveals).toEqual([]);
+    h.setPendingPlacement(false);
+    frame(); // subsequent guard goes quiet
+    expect(h.renders.length).toBe(2);
+    expect(rafPending.size).toBe(0);
   });
 });

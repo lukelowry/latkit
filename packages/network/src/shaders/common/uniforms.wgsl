@@ -2,7 +2,9 @@
 // Total: 416 bytes (26 x 16, naturally aligned).
 
 struct Uniforms {
-  // Projection (bytes 0-111)
+  // Camera (packed by the active projection) plus world lighting (bytes 0-111).
+  // light_dir is owned by daylight state (src/daylight.ts); the display flag
+  // bitmask rides its pad lane.
   vp: mat4x4f,
   camera_pos: vec3f,
   fov_scale: f32,
@@ -13,24 +15,23 @@ struct Uniforms {
   flat_tx: f32,
   flat_ty: f32,
 
-  // Frame (bytes 112-123)
+  // Frame (bytes 112-119)
   viewport: vec2f,
-  time: f32,
 
-  // Geometry (bytes 124-143)
+  // Geometry (bytes 120-139)
   vertex_size: f32,
   vertex_lod: f32,
   base_edge_width: f32,
   dash_period: f32,
   height_world_scale: f32,
 
-  // Interaction (bytes 144-159)
+  // Interaction (bytes 140-155)
   hover_vertex: i32,
   hover_edge: i32,
   selected_vertex: i32,
   selected_edge: i32,
 
-  // Channel buffer addressing + normalization (bytes 160-227)
+  // Channel buffer addressing + normalization (bytes 156-223)
   v_color_offset: u32,
   e_color_offset: u32,
   e_dash_offset: u32,
@@ -49,7 +50,7 @@ struct Uniforms {
   v_size_min: f32,
   v_size_scale: f32,
 
-  // Focus style (bytes 228-287)
+  // Focus style (bytes 224-287)
   focus_hover_color: u32,
   focus_selected_color: u32,
   focus_flags: u32,
@@ -59,7 +60,7 @@ struct Uniforms {
   focus_vertex_selected_underlay_px: f32,
   focus_edge_hover_underlay_px: f32,
   focus_edge_selected_underlay_px: f32,
-  // Height output range (bytes 264-271): normalized domain t maps to
+  // Height output range (bytes 260-267): normalized domain t maps to
   // height_out_min + t * height_out_scale.
   height_out_min: f32,
   height_out_scale: f32,
@@ -93,11 +94,12 @@ struct Uniforms {
   // Camera basis (bytes 368-399): the active camera's view-matrix right and
   // up rows, packed by pack() beside vp/camera_pos. Ray helpers derive
   // look = cross(camera_up, camera_right); no shader rebuilds a basis from
-  // camera_pos. Valid whenever plane_mix > 0 or the globe pipeline is active,
-  // the same staleness contract camera_pos carries - flat never reads it.
-  // plane_mix (flat-to-tilt blend) and item_flags ride the vec3f pad lanes.
+  // camera_pos. Valid whenever depth_mix > 0, the same staleness contract
+  // camera_pos carries - flat never reads it.
+  // depth_mix (0 at orthographic flat rest, 1 for full 3D depth; the globe
+  // always packs 1) and item_flags ride the vec3f pad lanes.
   camera_right: vec3f,
-  plane_mix: f32,
+  depth_mix: f32,
   camera_up: vec3f,
   item_flags: u32,
 

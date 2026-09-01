@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { createGlobeProjection } from '../src/camera/globe.js';
-import { createFlatProjection, createTiltProjection } from '../src/camera/plane.js';
+import { createPlaneProjection } from '../src/camera/plane.js';
 import type { Projection, Viewport } from '../src/camera/projection.js';
-import type { ProjectionMode } from '../src/projections.js';
+import { PIPELINES, PROJECTIONS, type ProjectionMode } from '../src/projections.js';
 import {
   createUniforms,
   ITEM_EDGE_VISIBLE,
@@ -11,7 +11,7 @@ import {
   type Uniforms,
 } from '../src/webgpu/uniforms.js';
 import { Picker, type PickQuery, type PickResult } from '../src/pick/picker.js';
-import { createPoint, mixPoint, projectorFor, MIN_CLIP_W } from '../src/pick/project.js';
+import { createPoint, mixPoint, MIN_CLIP_W } from '../src/pick/project.js';
 import { prepareScene } from '../src/scene.js';
 import { encodeSegments } from '../src/segments/index.js';
 import { SEGMENT_RECORD_WORDS, W as SEG_W } from '../src/segments/wire.js';
@@ -78,9 +78,9 @@ function makeSetup(
   const uniforms = createUniforms();
   const proj =
     mode === 'flat'
-      ? createFlatProjection()
+      ? createPlaneProjection('flat')
       : mode === 'tilt'
-        ? createTiltProjection()
+        ? createPlaneProjection('tilt')
         : createGlobeProjection();
   const coords = topology.vertexCoords!;
   let xMin = Infinity,
@@ -99,7 +99,7 @@ function makeSetup(
   const dpr = opts.dpr ?? 1;
   const values = new Map<PickChannel, Float32Array>();
   const pack = (): void => {
-    proj.pack(state, uniforms.projection, VP);
+    proj.pack(state, uniforms.camera, VP);
     uniforms.frame.viewportX = VP.w * dpr;
     uniforms.frame.viewportY = VP.h * dpr;
     uniforms.frame.backingScale = dpr;
@@ -120,7 +120,7 @@ function makeSetup(
   const scene = prepareScene(encoded, segments);
   picker.commitScene(picker.prepareScene(scene));
 
-  const projector = projectorFor(mode, uniforms);
+  const projector = PIPELINES[PROJECTIONS[mode].family].projector(uniforms);
   return {
     mode,
     uniforms,
@@ -201,7 +201,7 @@ function oraclePick(
   q: PickQuery,
 ): { vertex: PickResult | null; edge: PickResult | null } {
   const u = s.uniforms;
-  const projector = projectorFor(s.mode, u);
+  const projector = PIPELINES[PROJECTIONS[s.mode].family].projector(u);
   const dprX = u.frame.viewportX / q.vp.w;
   const dprY = u.frame.viewportY / q.vp.h;
   const cursorX = q.sx * dprX;

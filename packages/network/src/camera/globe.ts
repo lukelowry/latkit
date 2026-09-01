@@ -11,7 +11,6 @@ import {
   viewSlotsAtFit,
 } from './projection.js';
 import { DEG2RAD, RAD2DEG, turn, wrap, xyzToGeo } from './geo.js';
-import { sunDirection } from './solar.js';
 import { mat4Mul, mat4Perspective } from './mat4.js';
 import { createScreenRay } from './raycast.js';
 import { VISUAL } from '../visual.js';
@@ -138,12 +137,6 @@ export function createGlobeProjection(): Projection {
   const projM = new Float32Array(16);
   const viewM = new Float32Array(16);
   const screenRay = createScreenRay();
-
-  // Solar light direction is cached and refreshed at most every 30s via
-  // pack(). A canvas-level timer wakes the render loop on the same cadence so
-  // the terminator stays live while idle.
-  let lightDir: [number, number, number] = sunDirection(new Date());
-  let lightStamp = Date.now();
 
   // VP matrix cache, rebuilt on state or viewport change.
   const vpStamp = new Float64Array(7); // [lon, lat, dist, pitch, bearing, vpW, vpH]
@@ -319,7 +312,6 @@ export function createGlobeProjection(): Projection {
   }
 
   return {
-    family: 'globe',
     stateSize: 5,
 
     fit(b, vp): CameraState {
@@ -485,14 +477,7 @@ export function createGlobeProjection(): Projection {
       region.setCameraPos(cameraPos[0], cameraPos[1], cameraPos[2]);
       region.setViewBasis(viewM);
       region.fovScale = effectiveFovScale(s);
-      region.planeMix = 1;
-
-      const now = Date.now();
-      if (now - lightStamp > 30_000) {
-        lightDir = sunDirection(new Date(now));
-        lightStamp = now;
-      }
-      region.setLightDir(lightDir[0], lightDir[1], lightDir[2]);
+      region.depthMix = 1;
     },
   };
 }

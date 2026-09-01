@@ -32,7 +32,7 @@ fn vs(
   // the globe, +z on planes). Only the daylight input remains shared.
   let world = border_world(lonlat, ecef);
   var light_world = world;
-  if (u.plane_mix > 0.0) { light_world = normalize(world); }
+  if (u.depth_mix > 0.0) { light_world = normalize(world); }
   let clip = project_world(world);
 
   var out: VOut;

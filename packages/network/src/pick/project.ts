@@ -1,10 +1,10 @@
-import type { ProjectionMode } from '../projections.js';
 import type { Uniforms } from '../webgpu/uniforms.js';
 import {
   W_CAMERA_X,
   W_CAMERA_Y,
   W_CAMERA_Z,
   W_BACKING_SCALE,
+  W_DEPTH_MIX,
   W_FLAT_SX,
   W_FLAT_SY,
   W_FLAT_TX,
@@ -13,7 +13,6 @@ import {
   W_HEIGHT_OUT_MIN,
   W_HEIGHT_OUT_SCALE,
   W_HEIGHT_WORLD_SCALE,
-  W_PLANE_MIX,
   W_VERTEX_SIZE,
   W_V_HEIGHT_MODE,
   W_VIEWPORT_X,
@@ -26,6 +25,8 @@ export const MIN_CLIP_W = VISUAL.minClipW;
 
 /** Degrees-to-radians multiplier used by longitude/latitude globe projection. */
 const DEG2RAD = Math.PI / 180;
+/** Radians-to-degrees multiplier for globe height pads in surface degrees. */
+const RAD2DEG = 180 / Math.PI;
 
 /**
  * One projected candidate point: displaced world position, clip position,
@@ -81,12 +82,14 @@ export function mixPoint(
 }
 
 /**
- * CPU mirror of one projection's WGSL symbol contract: `to_world`,
+ * CPU mirror of one projection family's WGSL symbol contract: `to_world`,
  * `displace_world`, `project_world`, `pick_visible`, `screen_radius`,
  * `screen_half_width`, `screen_pole_half_width`. It reads the same packed
  * uniform words the shaders read, so the picked pose can never drift from
  * the rendered one. `h` is the normalized height (`vertex_norm_height`
  * output); the projector owns the world-scale conversion like the WGSL does.
+ * The registry (`PIPELINES[family].projector`) is the only construction
+ * seam, keeping per-family variation out of pick code.
  */
 export interface Projector {
   /** Fill world + clip for topology coord (x, y) at normalized height h. */
@@ -101,21 +104,8 @@ export interface Projector {
   screenHalfWidth(p: ProjectedPoint, baseWidth: number): number;
   /** Pole hit half-width in device px at the projected anchor. */
   poleHalfWidth(p: ProjectedPoint): number;
-}
-
-/** Create the projection-specific CPU mirror for the active render mode. */
-export function projectorFor(mode: ProjectionMode, uniforms: Uniforms): Projector {
-  const f = uniforms.rawF32;
-  switch (mode) {
-    case 'flat':
-    case 'tilt':
-      return planeProjector(f, uniforms.rawU32);
-    case 'globe':
-      return globeProjector(f);
-    default:
-      /* v8 ignore next -- compile-time exhaustive projection mode guard. */
-      return mode satisfies never;
-  }
+  /** World-height to topology-coord conversion for query-footprint pads. */
+  heightPadScale(): number;
 }
 
 /** Convert clip coordinates to device-pixel screen coordinates. */
@@ -159,10 +149,12 @@ function polePx(f: Float32Array, radius: number): number {
 }
 
 /** Mirror the shared flat-to-tilt planar shader. */
-function planeProjector(f: Float32Array, u: Uint32Array): Projector {
+export function planeProjector(uniforms: Uniforms): Projector {
+  const f = uniforms.rawF32;
+  const u = uniforms.rawU32;
   return {
     project(out, x, y, h) {
-      const amount = f[W_PLANE_MIX]!;
+      const amount = f[W_DEPTH_MIX]!;
       out.wx = x;
       out.wy = y;
       out.wz = amount * (VISUAL.tiltSurfaceLift * f[W_VERTEX_SIZE]! + h * f[W_HEIGHT_WORLD_SCALE]!);
@@ -183,18 +175,18 @@ function planeProjector(f: Float32Array, u: Uint32Array): Projector {
       toScreen(f, p);
     },
     visible(p) {
-      return p.cw > 0 && (f[W_PLANE_MIX] === 0 || p.wz >= -0.0005);
+      return p.cw > 0 && (f[W_DEPTH_MIX] === 0 || p.wz >= -0.0005);
     },
     screenRadius(p) {
       const px =
-        f[W_PLANE_MIX] === 0
+        f[W_DEPTH_MIX] === 0
           ? f[W_VERTEX_SIZE]! * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
           : perspectivePx(f, p.cw, f[W_VERTEX_SIZE]!);
       return Math.min(px, VISUAL.maxVertexRadiusPx * f[W_BACKING_SCALE]!);
     },
     screenHalfWidth(p, baseWidth) {
       const px =
-        f[W_PLANE_MIX] === 0
+        f[W_DEPTH_MIX] === 0
           ? baseWidth * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
           : perspectivePx(f, p.cw, baseWidth);
       return clampHalfWidth(f, px);
@@ -202,11 +194,16 @@ function planeProjector(f: Float32Array, u: Uint32Array): Projector {
     poleHalfWidth(p) {
       return polePx(f, this.screenRadius(p));
     },
+    heightPadScale() {
+      // Tilt heights are world = coord units, faded by the depth blend.
+      return f[W_DEPTH_MIX]!;
+    },
   };
 }
 
 /** Project topology lon-lat degrees onto the unit globe with radial height. */
-function globeProjector(f: Float32Array): Projector {
+export function globeProjector(uniforms: Uniforms): Projector {
+  const f = uniforms.rawF32;
   return {
     project(out, x, y, h) {
       const la = y * DEG2RAD;
@@ -248,6 +245,10 @@ function globeProjector(f: Float32Array): Projector {
     },
     poleHalfWidth(p) {
       return polePx(f, this.screenRadius(p));
+    },
+    heightPadScale() {
+      // Radial world units on the unit sphere convert to surface degrees.
+      return RAD2DEG;
     },
   };
 }

@@ -17,7 +17,6 @@ import coreVertexSrc from '../shaders/passes/vertex-billboard.wgsl?raw';
 import coreEdgeSrc from '../shaders/passes/edge-segment.wgsl?raw';
 import corePoleSrc from '../shaders/passes/height-pole.wgsl?raw';
 import bordersSrc from '../shaders/passes/border-lines.wgsl?raw';
-import earthAxisSrc from '../shaders/passes/earth-axis.wgsl?raw';
 
 /** Fragment entry flavor used by overlay passes. */
 type VisualFragmentKind = 'base' | 'underlay';
@@ -42,11 +41,11 @@ export interface VisualPipelines {
   borders: GPURenderPipeline;
   /** Projection background pass that also establishes depth. */
   bg: GPURenderPipeline;
-  /** Globe-only earth-axis indicator pass. */
+  /** Earth-axis indicator pass for definitions that declare its shader. */
   earthAxis?: GPURenderPipeline;
 }
 
-/** Pipeline bundle cached by projection mode. */
+/** Pipeline bundle cached by projection family. */
 export interface ProjectionPipelineSet {
   /** Visual pipelines used by frame encoding. */
   visual: VisualPipelines;
@@ -117,17 +116,9 @@ export async function buildProjectionPipelines(
     'pole',
     projectionPrelude + uniformsSrc + channelVertexSrc + vertexGeometrySrc + corePoleSrc,
   );
-  const dsBg: GPUDepthStencilState = {
-    format: 'depth24plus',
-    depthWriteEnabled: true,
-    depthCompare: 'less-equal',
-  };
-  const dsOverlay: GPUDepthStencilState = {
-    format: 'depth24plus',
-    depthWriteEnabled: true,
-    depthCompare: 'less-equal',
-  };
-  const dsFocus: GPUDepthStencilState = {
+  // Every depth-writing pass tests against the bg-established depth the same
+  // way; halos only differ in leaving the depth buffer untouched.
+  const dsOpaque: GPUDepthStencilState = {
     format: 'depth24plus',
     depthWriteEnabled: true,
     depthCompare: 'less-equal',
@@ -135,7 +126,7 @@ export async function buildProjectionPipelines(
   const dsHalo: GPUDepthStencilState = {
     format: 'depth24plus',
     depthWriteEnabled: false,
-    depthCompare: def.haloDepthCompare,
+    depthCompare: 'less-equal',
   };
   const blend: GPUBlendState = {
     color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
@@ -152,11 +143,11 @@ export async function buildProjectionPipelines(
     module: GPUShaderModule,
     vertexEntry = 'vs',
     fragmentKind: VisualFragmentKind = 'base',
-    depthStencil = dsOverlay,
+    depthStencil = dsOpaque,
     layout: GPUPipelineLayout = overlayPipelineLayout,
   ) =>
     device.createRenderPipelineAsync({
-      label: `${def.mode}-${label}`,
+      label: `${def.family}-${label}`,
       layout,
       vertex: { module, entryPoint: vertexEntry, buffers: [vbl] },
       fragment: {
@@ -170,21 +161,20 @@ export async function buildProjectionPipelines(
     });
 
   const borderModule = device.createShaderModule({
-    label: `${def.mode}-borders`,
+    label: `${def.family}-borders`,
     code: projectionPrelude + uniformsSrc + def.borderWorldWgsl + bordersSrc,
   });
   const bgModule = mod(
-    `${def.mode}-bg`,
+    `${def.family}-bg`,
     VISUAL_WGSL + uniformsSrc + graticuleSrc + cameraRaySrc + def.bgPreludeWgsl + def.bgWgsl,
   );
-  const earthAxisModule =
-    def.mode === 'globe'
-      ? mod(`${def.mode}-earth-axis`, projectionPrelude + uniformsSrc + earthAxisSrc)
-      : null;
+  const earthAxisModule = def.earthAxisWgsl
+    ? mod(`${def.family}-earth-axis`, projectionPrelude + uniformsSrc + def.earthAxisWgsl)
+    : null;
 
   // Dispatch every pipeline before the sole await so driver compilation overlaps.
   const pendingBorders = device.createRenderPipelineAsync({
-    label: `${def.mode}-borders`,
+    label: `${def.family}-borders`,
     layout: bgPipelineLayout,
     vertex: {
       module: borderModule,
@@ -211,7 +201,7 @@ export async function buildProjectionPipelines(
   });
 
   const pendingBackground = device.createRenderPipelineAsync({
-    label: `${def.mode}-bg`,
+    label: `${def.family}-bg`,
     layout: bgPipelineLayout,
     vertex: { module: bgModule, entryPoint: 'vs', buffers: [] },
     fragment: {
@@ -220,13 +210,13 @@ export async function buildProjectionPipelines(
       targets: colorTargets(format, blend),
     },
     primitive: { topology: 'triangle-list' },
-    depthStencil: dsBg,
+    depthStencil: dsOpaque,
     multisample: ms,
   });
 
   const pendingEarthAxis = earthAxisModule
     ? device.createRenderPipelineAsync({
-        label: `${def.mode}-earth-axis`,
+        label: `${def.family}-earth-axis`,
         layout: bgPipelineLayout,
         vertex: { module: earthAxisModule, entryPoint: 'vs', buffers: [] },
         fragment: {
@@ -248,10 +238,10 @@ export async function buildProjectionPipelines(
     await Promise.all([
       rpl('vertex', vertM),
       rpl('vertex-halo', vertM, 'vs_halo', 'underlay', dsHalo),
-      rpl('vertex-focus', vertM, 'vs_focus', 'base', dsFocus),
-      rpl('edge', edgeM, 'vs', 'base', dsOverlay, edgePipelineLayout),
+      rpl('vertex-focus', vertM, 'vs_focus', 'base'),
+      rpl('edge', edgeM, 'vs', 'base', dsOpaque, edgePipelineLayout),
       rpl('edge-halo', edgeM, 'vs_halo', 'underlay', dsHalo, edgePipelineLayout),
-      rpl('edge-focus', edgeM, 'vs_focus', 'base', dsFocus, edgePipelineLayout),
+      rpl('edge-focus', edgeM, 'vs_focus', 'base', dsOpaque, edgePipelineLayout),
       rpl('pole', poleM),
       pendingBorders,
       pendingBackground,

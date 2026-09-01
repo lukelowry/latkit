@@ -1,4 +1,4 @@
-import type { ProjectionRegion } from '../webgpu/uniforms.js';
+import type { CameraRegion } from '../webgpu/uniforms.js';
 import type { Bounds } from '../topology/types.js';
 import { turn, wrap } from './geo.js';
 
@@ -37,9 +37,6 @@ export type Viewport = {
   /** Height in CSS pixels. */
   h: number;
 };
-
-/** Camera families that share a state manifold and GPU pipeline. */
-export type ProjectionFamily = 'plane' | 'globe';
 
 /** Named views of the shared planar camera. */
 export type PlaneView = 'flat' | 'tilt';
@@ -113,8 +110,6 @@ export interface PanSession {
  * live outside this interface.
  */
 export interface Projection {
-  /** State/pipeline family. Views in one family can transition in place. */
-  readonly family: ProjectionFamily;
   /**
    * State/tangent dimensionality.
    *
@@ -205,8 +200,8 @@ export interface Projection {
    */
   pxPerWorld(state: CameraState, vp: Viewport): number;
 
-  /** Pack the current state into GPU uniforms for the active projection. */
-  pack(state: CameraState, region: ProjectionRegion, vp: Viewport): void;
+  /** Pack the current state into GPU camera uniforms. */
+  pack(state: CameraState, region: CameraRegion, vp: Viewport): void;
 }
 
 /** Allocate a zero-filled tangent buffer of the projection's dimension. */

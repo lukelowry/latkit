@@ -34,7 +34,7 @@ fn flat_sample(frag_pos: vec4f) -> PlaneSample {
 }
 
 fn plane_sample(frag_pos: vec4f) -> PlaneSample {
-  if (u.plane_mix == 0.0) { return flat_sample(frag_pos); }
+  if (u.depth_mix == 0.0) { return flat_sample(frag_pos); }
   let rd = camera_ray(frag_pos.xy);
   let descending = rd.z < -1e-6;
   let t = select(1.0, -u.camera_pos.z / rd.z, descending);
@@ -45,7 +45,7 @@ fn plane_sample(frag_pos: vec4f) -> PlaneSample {
 
   let heights = t / max(u.camera_pos.z, 1e-9);
   let fade = 1.0 - smoothstep(HORIZON_START, HORIZON_END, heights);
-  let surface = u.plane_mix;
+  let surface = u.depth_mix;
   let alpha = grid + surface * (1.0 - grid);
   let premul =
     u.grid_color.rgb * grid +

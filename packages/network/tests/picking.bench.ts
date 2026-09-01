@@ -1,7 +1,7 @@
 import { bench, describe } from 'vitest';
 
 import { createGlobeProjection } from '../src/camera/globe.js';
-import { createFlatProjection, createTiltProjection } from '../src/camera/plane.js';
+import { createPlaneProjection } from '../src/camera/plane.js';
 import type { Projection, Viewport } from '../src/camera/projection.js';
 import type { ProjectionMode } from '../src/projections.js';
 import { createUniforms } from '../src/webgpu/uniforms.js';
@@ -69,9 +69,9 @@ function makeRig(
   const uniforms = createUniforms();
   const proj: Projection =
     mode === 'flat'
-      ? createFlatProjection()
+      ? createPlaneProjection('flat')
       : mode === 'tilt'
-        ? createTiltProjection()
+        ? createPlaneProjection('tilt')
         : createGlobeProjection();
   const coords = topology.vertexCoords!;
   let xMin = Infinity,
@@ -86,7 +86,7 @@ function makeRig(
   }
   const state = proj.fit({ xMin, xMax, yMin, yMax }, VP) as Float64Array;
   mutate?.(state);
-  proj.pack(state, uniforms.projection, VP);
+  proj.pack(state, uniforms.camera, VP);
   uniforms.frame.viewportX = VP.w;
   uniforms.frame.viewportY = VP.h;
   uniforms.frame.backingScale = 1;
@@ -188,7 +188,7 @@ describe('picking at 1M segments', () => {
     const rig = makeRig('tilt', topology, scene, (s) => {
       s[3] = 85;
     });
-    const proj = createTiltProjection();
+    const proj = createPlaneProjection('tilt');
     const coords = topology.vertexCoords!;
     let xMin = Infinity,
       xMax = -Infinity,

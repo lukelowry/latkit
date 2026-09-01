@@ -154,8 +154,8 @@ describe('createNetwork controller', () => {
       borders: true,
       earthAxis: false,
     });
-    expect(h.loop.uniforms.projection.flags & FLAG_GRATICULE).toBe(FLAG_GRATICULE);
-    expect(h.loop.uniforms.projection.flags & FLAG_DAYLIGHT).toBe(0);
+    expect(h.loop.uniforms.light.flags & FLAG_GRATICULE).toBe(FLAG_GRATICULE);
+    expect(h.loop.uniforms.light.flags & FLAG_DAYLIGHT).toBe(0);
     expectRgbaClose(h.loop.uniforms.baseVertexColor, [0.1, 0.2, 0.3, 1]);
     expectRgbaClose(h.loop.uniforms.gridColor, [0.2, 0.3, 0.4, 1]);
     expectRgbaClose(h.loop.uniforms.surfaceColor, [0.3, 0.4, 0.5, 1]);
@@ -186,7 +186,7 @@ describe('createNetwork controller', () => {
 
     expect(h.renderer.visibility.vertices).toBe(false);
     expect(h.renderer.visibility.earthAxis).toBe(false);
-    expect(h.loop.uniforms.projection.flags & FLAG_GRATICULE).toBe(FLAG_GRATICULE);
+    expect(h.loop.uniforms.light.flags & FLAG_GRATICULE).toBe(FLAG_GRATICULE);
     expect(h.loop.wake).toHaveBeenCalled();
   });
 
@@ -344,8 +344,7 @@ describe('createNetwork controller', () => {
       h.picker.commitScene.mock.invocationCallOrder[0]!,
     );
     expect(h.network.projections).toMatchObject({ flat: true, tilt: true, globe: true });
-    expect(h.loop.setBounds).toHaveBeenCalled();
-    expect(h.loop.requestFit).toHaveBeenCalled();
+    expect(h.rig.setBounds).toHaveBeenCalled();
     expect(h.loop.frameNow).toHaveBeenCalled();
   });
 
@@ -356,19 +355,18 @@ describe('createNetwork controller', () => {
       polylinePoints: new Float32Array([30, -20, 40, 4]),
     });
 
-    const bounds = h.loop.setBounds.mock.calls.at(-1)?.[0];
+    const bounds = h.rig.setBounds.mock.calls.at(-1)?.[0];
     expect(bounds).toMatchObject({ xMin: -10, xMax: 10, yMin: -5, yMax: 5 });
     const vertexSize = Math.sqrt((20 * 10) / 3) * 0.08;
     expect(h.loop.uniforms.geometry.vertexSize).toBeCloseTo(vertexSize);
 
     h.network.fit(true);
-    expect(h.rig.camera.fitView).toHaveBeenCalledWith(bounds, { w: 100, h: 80 });
-    expect(h.loop.cancelPlacement).toHaveBeenCalled();
+    expect(h.rig.fit).toHaveBeenCalledWith({ w: 100, h: 80 }, true);
     expect(h.network.projections.globe).toBe(true);
 
-    const boundsWrites = h.loop.setBounds.mock.calls.length;
+    const boundsWrites = h.rig.setBounds.mock.calls.length;
     h.network.setProjection('globe');
-    expect(h.loop.setBounds).toHaveBeenCalledTimes(boundsWrites);
+    expect(h.rig.setBounds).toHaveBeenCalledTimes(boundsWrites);
     expect(h.loop.uniforms.geometry.vertexSize).toBeCloseTo(vertexSize);
   });
 
@@ -451,7 +449,7 @@ describe('createNetwork controller', () => {
     expect(zooms).toEqual([true]);
 
     h.loop.wake.mockClear();
-    h.renderer.onProjectionPipelinesReady?.();
+    h.renderer.onPipelinesReady?.();
     expect(h.loop.wake).toHaveBeenCalledOnce();
 
     expect(h.picker.deps?.mode()).toBe('flat');
@@ -478,22 +476,18 @@ describe('createNetwork controller', () => {
     h.network.load(nonGlobeTopology());
 
     expect(h.network.setProjection('globe')).toBe(false);
-    expect(h.rig.switchTo).not.toHaveBeenCalledWith('globe', expect.anything(), expect.anything());
-    expect(h.renderer.useProjectionPipelines).not.toHaveBeenCalledWith('globe');
+    expect(h.rig.switchTo).not.toHaveBeenCalledWith('globe', expect.anything());
+    expect(h.renderer.useProjection).not.toHaveBeenCalledWith('globe');
   });
 
-  it('switches supported projections and requests a fit when placement is deferred', async () => {
+  it('switches supported projections through the rig and renderer together', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
 
     expect(h.network.setProjection('tilt')).toBe(true);
-    expect(h.rig.switchTo).toHaveBeenCalledWith('tilt', expect.anything(), { w: 100, h: 80 });
-    expect(h.loop.setCamera).toHaveBeenCalledWith(h.rig.camera);
-    expect(h.renderer.useProjectionPipelines).toHaveBeenCalledWith('tilt');
-
-    h.rig.nextSwitchPlaced = false;
-    expect(h.network.setProjection('flat')).toBe(true);
-    expect(h.loop.requestFit).toHaveBeenCalled();
+    expect(h.rig.switchTo).toHaveBeenCalledWith('tilt', { w: 100, h: 80 });
+    expect(h.renderer.useProjection).toHaveBeenCalledWith('tilt');
+    expect(h.loop.wake).toHaveBeenCalled();
   });
 
   it('keeps same-mode projection calls inert and falls back when new topology is incompatible', async () => {
@@ -501,18 +495,18 @@ describe('createNetwork controller', () => {
     h.network.load(geographicTopology());
 
     h.rig.switchTo.mockClear();
-    h.renderer.useProjectionPipelines.mockClear();
+    h.renderer.useProjection.mockClear();
     expect(h.network.setProjection('flat')).toBe(true);
     expect(h.rig.switchTo).not.toHaveBeenCalled();
-    expect(h.renderer.useProjectionPipelines).not.toHaveBeenCalled();
+    expect(h.renderer.useProjection).not.toHaveBeenCalled();
 
     expect(h.network.setProjection('globe')).toBe(true);
     h.rig.switchTo.mockClear();
-    h.renderer.useProjectionPipelines.mockClear();
+    h.renderer.useProjection.mockClear();
     h.network.load(nonGlobeTopology());
 
-    expect(h.rig.switchTo).toHaveBeenCalledWith('flat', expect.anything(), { w: 100, h: 80 });
-    expect(h.renderer.useProjectionPipelines).toHaveBeenCalledWith('flat');
+    expect(h.rig.switchTo).toHaveBeenCalledWith('flat', { w: 100, h: 80 });
+    expect(h.renderer.useProjection).toHaveBeenCalledWith('flat');
   });
 
   it('routes display mutators through renderer, channels, uniforms, and repaint', async () => {
@@ -684,7 +678,7 @@ describe('createNetwork controller', () => {
     expect(h.rig.camera.panBy).toHaveBeenCalledWith(7, 8, { w: 100, h: 80 });
     expect(h.rig.camera.zoomAt).toHaveBeenCalledWith(1.5, 9, 10, { w: 100, h: 80 });
     expect(h.rig.camera.rotateBy).toHaveBeenCalledWith(11, 12, { w: 100, h: 80 });
-    expect(h.rig.camera.fitView).toHaveBeenCalled();
+    expect(h.rig.fit).toHaveBeenCalledWith({ w: 100, h: 80 }, true);
   });
 
   it('clears hover and selection from pointer exits and empty taps', async () => {
@@ -827,7 +821,7 @@ describe('createNetwork controller', () => {
     await flushMicrotasks();
 
     expect(callbackStates).toEqual([false]);
-    expect(h.rig.switchTo).toHaveBeenCalledWith('tilt', expect.anything(), { w: 100, h: 80 });
+    expect(h.rig.switchTo).toHaveBeenCalledWith('tilt', { w: 100, h: 80 });
     expect(h.loop.frameNow).toHaveBeenCalled();
   });
 
@@ -859,7 +853,7 @@ describe('createNetwork controller', () => {
 
     expect(notices).toEqual([{ atFit: true, insidePaint: false }]);
     expect(hoverNotices).toBe(0);
-    expect(h.rig.switchTo).toHaveBeenCalledWith('tilt', expect.anything(), { w: 100, h: 80 });
+    expect(h.rig.switchTo).toHaveBeenCalledWith('tilt', { w: 100, h: 80 });
     expect(h.loop.frameNow).toHaveBeenCalled();
   });
 
@@ -979,7 +973,7 @@ describe('createNetwork controller', () => {
       'network: failed to warm the tilt projection pipelines',
       failure,
     );
-    // The renderer reports build failures through onProjectionPipelinesError;
+    // The renderer reports build failures through onPipelineError;
     // an unexpected warm rejection is only logged.
     expect(pipelineError).not.toHaveBeenCalled();
   });
@@ -987,7 +981,7 @@ describe('createNetwork controller', () => {
   it('replays the latest asynchronous pipeline failure to late subscribers', async () => {
     const h = await makeHarness();
     const failure = new Error('pipeline failed');
-    h.renderer.onProjectionPipelinesError?.('globe', failure);
+    h.renderer.onPipelineError?.('globe', failure);
 
     const late = vi.fn();
     const unsubscribe = h.network.on('pipelineError', late);
@@ -1021,7 +1015,7 @@ describe('createNetwork controller', () => {
     h.network.zoomBy(2);
     expect(h.network.getPose()).toBeNull();
     expect(h.network.setPose({ centerX: 1 })).toBe(false);
-    expect(h.rig.camera.fitView).not.toHaveBeenCalled();
+    expect(h.rig.fit).not.toHaveBeenCalled();
     expect(h.rig.camera.panBy).not.toHaveBeenCalled();
     expect(h.rig.camera.rotateBy).not.toHaveBeenCalled();
     expect(h.rig.camera.zoomAt).not.toHaveBeenCalled();
@@ -1034,8 +1028,8 @@ describe('createNetwork controller', () => {
     h.network.rotateBy(5, 6);
     h.network.zoomBy(1.25);
 
-    expect(h.rig.camera.fitView).toHaveBeenCalled();
-    expect(h.loop.requestFit).toHaveBeenCalled();
+    expect(h.rig.fit).toHaveBeenNthCalledWith(1, { w: 100, h: 80 }, true);
+    expect(h.rig.fit).toHaveBeenNthCalledWith(2, { w: 100, h: 80 }, false);
     expect(h.rig.camera.panBy).toHaveBeenCalledWith(3, 4, { w: 100, h: 80 });
     expect(h.rig.camera.rotateBy).toHaveBeenCalledWith(5, 6, { w: 100, h: 80 });
     expect(h.rig.camera.zoomAt).toHaveBeenCalledWith(1.25, 50, 40, { w: 100, h: 80 });
@@ -1050,26 +1044,23 @@ describe('createNetwork controller', () => {
   it('fits valid item subsets without replacing whole-topology fit behavior', async () => {
     const h = await makeHarness();
     h.network.fit([{ kind: 'vertex', index: 1 }], true);
-    expect(h.rig.camera.moveTo).not.toHaveBeenCalled();
-    expect(h.loop.requestMove).not.toHaveBeenCalled();
+    expect(h.rig.moveTo).not.toHaveBeenCalled();
 
     h.network.load(geographicTopology());
     h.network.setOptions({ vertices: false, edges: false });
-    h.loop.requestFit.mockClear();
-    h.loop.requestMove.mockClear();
+    h.rig.moveTo.mockClear();
     h.loop.wake.mockClear();
     h.surface.viewport = { w: 0, h: 80 };
     h.network.fit([{ kind: 'vertex', index: 1 }], true);
 
-    expect(h.rig.camera.moveTo).not.toHaveBeenCalled();
-    expect(h.loop.requestFit).toHaveBeenCalledOnce();
-    expect(h.loop.requestMove).toHaveBeenCalledOnce();
-    expect(h.loop.requestMove.mock.calls[0]?.[1]).toBe(true);
+    // The rig owns the usable-viewport split; the controller always forwards.
+    expect(h.rig.moveTo).toHaveBeenCalledOnce();
+    expect(h.rig.moveTo.mock.calls[0]?.[1]).toEqual({ w: 0, h: 80 });
+    expect(h.rig.moveTo.mock.calls[0]?.[2]).toBe(true);
     expect(h.loop.wake).toHaveBeenCalledOnce();
 
     h.surface.viewport = { w: 100, h: 80 };
-    h.loop.requestFit.mockClear();
-    h.loop.requestMove.mockClear();
+    h.rig.moveTo.mockClear();
     h.loop.wake.mockClear();
     h.network.fit([], true);
     h.network.fit(
@@ -1079,9 +1070,7 @@ describe('createNetwork controller', () => {
       ],
       true,
     );
-    expect(h.rig.camera.moveTo).not.toHaveBeenCalled();
-    expect(h.loop.requestFit).not.toHaveBeenCalled();
-    expect(h.loop.requestMove).not.toHaveBeenCalled();
+    expect(h.rig.moveTo).not.toHaveBeenCalled();
     expect(h.loop.wake).not.toHaveBeenCalled();
 
     h.network.fit(
@@ -1092,8 +1081,8 @@ describe('createNetwork controller', () => {
       true,
     );
 
-    expect(h.rig.camera.moveTo).toHaveBeenCalledOnce();
-    const [bounds, view, animate] = h.rig.camera.moveTo.mock.calls[0]!;
+    expect(h.rig.moveTo).toHaveBeenCalledOnce();
+    const [bounds, view, animate] = h.rig.moveTo.mock.calls[0]!;
     expect((bounds.xMin + bounds.xMax) / 2).toBeCloseTo(0);
     expect((bounds.yMin + bounds.yMax) / 2).toBeCloseTo(5);
     expect(bounds.xMax).toBeGreaterThan(bounds.xMin);
@@ -1102,9 +1091,9 @@ describe('createNetwork controller', () => {
     expect(animate).toBe(true);
     expect(h.loop.wake).toHaveBeenCalledOnce();
 
-    h.rig.camera.moveTo.mockClear();
+    h.rig.moveTo.mockClear();
     h.network.fit([{ kind: 'edge', index: 0 }]);
-    expect(h.rig.camera.moveTo.mock.calls[0]?.[2]).toBe(false);
+    expect(h.rig.moveTo.mock.calls[0]?.[2]).toBe(false);
   });
 
   it('reveals only items outside the padded visible viewport and preserves fit semantics', async () => {
@@ -1112,31 +1101,27 @@ describe('createNetwork controller', () => {
     expect(h.network.reveal({ kind: 'vertex', index: 1 })).toBe(false);
 
     h.network.load(geographicTopology());
-    h.loop.cancelDeferredMove.mockClear();
-    h.loop.cancelPlacement.mockClear();
+    h.rig.claim.mockClear();
     h.loop.wake.mockClear();
     h.picker.nextLocation = [50, 40];
     h.picker.nextLocationVisible = true;
 
     expect(h.network.reveal({ kind: 'vertex', index: 1 }, { paddingPx: 8 })).toBe(true);
-    expect(h.rig.camera.reveal).not.toHaveBeenCalled();
-    expect(h.rig.camera.claimCurrent).toHaveBeenCalledOnce();
-    expect(h.loop.cancelDeferredMove).toHaveBeenCalledOnce();
-    expect(h.loop.cancelPlacement).not.toHaveBeenCalled();
+    expect(h.rig.reveal).not.toHaveBeenCalled();
+    expect(h.rig.claim).toHaveBeenCalledOnce();
     expect(h.loop.wake).not.toHaveBeenCalled();
 
     h.picker.nextLocation = [2, 40];
     expect(h.network.reveal({ kind: 'vertex', index: 1 }, { paddingPx: 8, animate: true })).toBe(
       true,
     );
-    expect(h.rig.camera.reveal).toHaveBeenCalledOnce();
-    const [bounds, view, animate] = h.rig.camera.reveal.mock.calls[0]!;
+    expect(h.rig.reveal).toHaveBeenCalledOnce();
+    const [bounds, view, animate] = h.rig.reveal.mock.calls[0]!;
     expect((bounds.xMin + bounds.xMax) / 2).toBeCloseTo(0);
     expect((bounds.yMin + bounds.yMax) / 2).toBeCloseTo(5);
     expect(view).toEqual({ w: 100, h: 80 });
     expect(animate).toBe(true);
-    expect(h.rig.camera.moveTo).not.toHaveBeenCalled();
-    expect(h.loop.cancelPlacement).toHaveBeenCalledOnce();
+    expect(h.rig.moveTo).not.toHaveBeenCalled();
     expect(h.loop.wake).toHaveBeenCalledOnce();
   });
 
@@ -1146,16 +1131,16 @@ describe('createNetwork controller', () => {
     h.picker.nextLocationVisible = true;
 
     for (const paddingPx of [Number.NaN, -1]) {
-      h.rig.camera.reveal.mockClear();
+      h.rig.reveal.mockClear();
       h.picker.nextLocation = [38, 40];
       expect(h.network.reveal({ kind: 'vertex', index: 1 }, { paddingPx })).toBe(true);
-      expect(h.rig.camera.reveal).toHaveBeenCalledOnce();
+      expect(h.rig.reveal).toHaveBeenCalledOnce();
     }
 
-    h.rig.camera.reveal.mockClear();
+    h.rig.reveal.mockClear();
     h.picker.nextLocation = [50, 40];
     expect(h.network.reveal({ kind: 'vertex', index: 1 }, { paddingPx: 10_000 })).toBe(true);
-    expect(h.rig.camera.reveal).not.toHaveBeenCalled();
+    expect(h.rig.reveal).not.toHaveBeenCalled();
   });
 
   it('lets an already-visible reveal supersede older camera motion', async () => {
@@ -1163,52 +1148,39 @@ describe('createNetwork controller', () => {
     h.network.load(geographicTopology());
     h.picker.nextLocation = [50, 40];
     h.picker.nextLocationVisible = true;
-    h.rig.camera.claimCurrent.mockReturnValue(true);
-    h.loop.cancelPlacement.mockClear();
+    h.rig.nextClaim = true;
     h.loop.wake.mockClear();
 
     expect(h.network.reveal({ kind: 'vertex', index: 1 })).toBe(true);
 
-    expect(h.rig.camera.claimCurrent).toHaveBeenCalledOnce();
-    expect(h.rig.camera.reveal).not.toHaveBeenCalled();
-    expect(h.loop.cancelPlacement).toHaveBeenCalledOnce();
+    expect(h.rig.claim).toHaveBeenCalledOnce();
+    expect(h.rig.reveal).not.toHaveBeenCalled();
     expect(h.loop.wake).toHaveBeenCalledOnce();
   });
 
-  it('centers occluded items, supports explicit centering, and defers an unavailable viewport', async () => {
+  it('centers occluded items, supports explicit centering, and forwards hidden viewports', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
     h.picker.nextLocation = [50, 40];
     h.picker.nextLocationVisible = false;
 
     expect(h.network.reveal({ kind: 'edge', index: 0 })).toBe(true);
-    expect(h.rig.camera.reveal).toHaveBeenCalledOnce();
+    expect(h.rig.reveal).toHaveBeenCalledOnce();
 
-    h.rig.camera.reveal.mockClear();
-    h.rig.camera.reveal.mockReturnValueOnce('unchanged');
-    h.loop.cancelDeferredMove.mockClear();
-    h.loop.wake.mockClear();
+    h.rig.reveal.mockClear();
     h.picker.nextLocationVisible = true;
     expect(h.network.reveal({ kind: 'edge', index: 0 }, { center: true })).toBe(true);
-    expect(h.rig.camera.reveal).toHaveBeenCalledOnce();
-    expect(h.loop.cancelDeferredMove).toHaveBeenCalledOnce();
-    expect(h.loop.wake).not.toHaveBeenCalled();
+    expect(h.rig.reveal).toHaveBeenCalledOnce();
 
-    h.rig.camera.reveal.mockClear();
+    // The rig owns unusable-viewport deferral; the controller forwards as-is.
+    h.rig.reveal.mockClear();
     h.surface.viewport = { w: 0, h: 80 };
     expect(h.network.reveal({ kind: 'vertex', index: 1 }, { animate: true })).toBe(true);
-    expect(h.rig.camera.reveal).not.toHaveBeenCalled();
-    expect(h.loop.requestReveal).toHaveBeenCalledWith(expect.any(Object), true);
+    expect(h.rig.reveal).toHaveBeenCalledOnce();
+    expect(h.rig.reveal.mock.calls[0]?.[1]).toEqual({ w: 0, h: 80 });
+    expect(h.rig.reveal.mock.calls[0]?.[2]).toBe(true);
 
     h.surface.viewport = { w: 100, h: 80 };
-    h.picker.nextLocationVisible = false;
-    h.rig.camera.reveal.mockReturnValueOnce('unavailable');
-    h.loop.requestFit.mockClear();
-    h.loop.requestReveal.mockClear();
-    expect(h.network.reveal({ kind: 'edge', index: 0 })).toBe(true);
-    expect(h.loop.requestFit).toHaveBeenCalledOnce();
-    expect(h.loop.requestReveal).toHaveBeenCalledWith(expect.any(Object), false);
-
     expect(h.network.reveal({ kind: 'vertex', index: 99 })).toBe(false);
   });
 
@@ -1221,18 +1193,18 @@ describe('createNetwork controller', () => {
       polylineStart: new Uint32Array([0, 0]),
     });
     h.rig.mode = 'globe';
-    h.rig.camera.current[0] = 170;
+    h.rig.camera.pose.mockReturnValue({ centerX: 170, centerY: 0, pitch: 0, bearing: 0 });
     h.rig.camera.screenToWorld.mockReturnValue(null);
 
     h.network.fit([{ kind: 'vertex', index: 0 }]);
 
-    const bounds = h.rig.camera.moveTo.mock.calls[0]?.[0];
+    const bounds = h.rig.moveTo.mock.calls[0]?.[0];
     expect(bounds && (bounds.xMin + bounds.xMax) / 2).toBeCloseTo(181);
 
     h.picker.nextLocation = [50, 40];
     h.picker.nextLocationVisible = false;
     h.network.reveal({ kind: 'vertex', index: 0 });
-    const revealBounds = h.rig.camera.reveal.mock.calls[0]?.[0];
+    const revealBounds = h.rig.reveal.mock.calls[0]?.[0];
     expect(revealBounds && (revealBounds.xMin + revealBounds.xMax) / 2).toBeCloseTo(181);
   });
 

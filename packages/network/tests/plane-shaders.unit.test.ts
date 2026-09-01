@@ -7,8 +7,8 @@ import { VISUAL_WGSL } from '../src/visual.js';
 
 describe('planar height shader contract', () => {
   it('moves height from flat depth into physical lift with one blend', () => {
-    expect(planeSrc).toContain('z * u.plane_mix');
-    expect(planeSrc).toContain('FLAT_HEIGHT_DEPTH_SPAN * (1.0 - u.plane_mix)');
+    expect(planeSrc).toContain('z * u.depth_mix');
+    expect(planeSrc).toContain('FLAT_HEIGHT_DEPTH_SPAN * (1.0 - u.depth_mix)');
     expect(vertexSrc).toContain('let clip = project_overlay(world, h);');
     expect(edgeSrc).toContain('var clip_a = project_overlay(wa, ha);');
     expect(edgeSrc).toContain('var clip_b = project_overlay(wb, hb);');

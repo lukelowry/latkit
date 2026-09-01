@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { createGlobeProjection } from '../src/camera/globe.js';
-import { createFlatProjection, createTiltProjection } from '../src/camera/plane.js';
+import { createPlaneProjection } from '../src/camera/plane.js';
 import type { Projection, Viewport } from '../src/camera/projection.js';
-import type { ProjectionMode } from '../src/projections.js';
+import { PIPELINES, PROJECTIONS, type ProjectionMode } from '../src/projections.js';
 import { createUniforms, type Uniforms } from '../src/webgpu/uniforms.js';
-import { createPoint, projectorFor, type Projector } from '../src/pick/project.js';
+import { createPoint, type Projector } from '../src/pick/project.js';
 import { VISUAL } from '../src/visual.js';
 
 const VP: Viewport = { w: 800, h: 600 };
@@ -21,9 +21,9 @@ function setup(mode: ProjectionMode, mutate?: (state: Float64Array) => void): Se
   const uniforms = createUniforms();
   const proj =
     mode === 'flat'
-      ? createFlatProjection()
+      ? createPlaneProjection('flat')
       : mode === 'tilt'
-        ? createTiltProjection()
+        ? createPlaneProjection('tilt')
         : createGlobeProjection();
   const bounds =
     mode === 'globe'
@@ -31,14 +31,19 @@ function setup(mode: ProjectionMode, mutate?: (state: Float64Array) => void): Se
       : { xMin: -10, xMax: 10, yMin: -10, yMax: 10 };
   const state = proj.fit(bounds, VP) as Float64Array;
   mutate?.(state);
-  proj.pack(state, uniforms.projection, VP);
+  proj.pack(state, uniforms.camera, VP);
   uniforms.frame.viewportX = VP.w;
   uniforms.frame.viewportY = VP.h;
   uniforms.frame.backingScale = 1;
   uniforms.geometry.vertexSize = 0.2;
   uniforms.geometry.baseEdgeWidth = 0.05;
   uniforms.geometry.vertexLod = 2;
-  return { uniforms, proj, state, projector: projectorFor(mode, uniforms) };
+  return {
+    uniforms,
+    proj,
+    state,
+    projector: PIPELINES[PROJECTIONS[mode].family].projector(uniforms),
+  };
 }
 
 /** Project a coord at height h and return CSS screen px (dpr 1 here). */
@@ -105,7 +110,7 @@ describe('pick projector parity', () => {
     s.projector.project(low, 0, 0, 0);
     s.projector.project(high, 0, 0, 1);
 
-    expect(s.uniforms.projection.planeMix).toBeCloseTo(0.5, 6);
+    expect(s.uniforms.camera.depthMix).toBeCloseTo(0.5, 6);
     expect(high.wz - low.wz).toBeCloseTo(1, 6);
     expect(high.cz).toBeLessThan(low.cz);
   });
@@ -115,7 +120,7 @@ describe('pick projector parity', () => {
     const p = createPoint();
     s.projector.project(p, 0, 0, 0);
 
-    const sx = Math.abs(s.uniforms.projection.flatSx);
+    const sx = Math.abs(s.uniforms.camera.flatSx);
     const expectedRadius = Math.min(0.2 * sx * VP.w * 0.5, VISUAL.maxVertexRadiusPx);
     expect(s.projector.screenRadius(p)).toBeCloseTo(expectedRadius, 6);
 
@@ -191,7 +196,7 @@ describe('pick projector parity', () => {
     const s = setup('globe');
     const p = createPoint();
     s.projector.project(p, 0, 0, 0);
-    const fov = s.uniforms.projection.fovScale;
+    const fov = s.uniforms.camera.fovScale;
     const expected = Math.min(
       ((0.2 * VISUAL.globeVertexScale) / (p.cw * fov)) * VP.h * 0.5,
       VISUAL.maxVertexRadiusPx,

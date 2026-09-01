@@ -15,7 +15,7 @@ import type {
   FocusEndpointMode,
   Item,
   Network,
-  PipelineMode,
+  ProjectionFamily,
   PoseOptions,
   ProjectionMode,
   RGBA,
@@ -31,7 +31,7 @@ describe('network package entrypoint', () => {
     expectTypeOf<Parameters<typeof createNetwork>[1]>().toEqualTypeOf<HTMLCanvasElement>();
     expectTypeOf<Parameters<Network['setProjection']>[0]>().toEqualTypeOf<ProjectionMode>();
     expectTypeOf<Parameters<Events['pipelineError']>>().toEqualTypeOf<
-      [pipeline: PipelineMode, cause: unknown]
+      [family: ProjectionFamily, cause: unknown]
     >();
     expectTypeOf<Parameters<Network['rotateBy']>>().toEqualTypeOf<[dx: number, dy: number]>();
     expectTypeOf<ReturnType<Network['rotateBy']>>().toEqualTypeOf<void>();

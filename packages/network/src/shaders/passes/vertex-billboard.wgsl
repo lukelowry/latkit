@@ -67,14 +67,14 @@ fn vs_vertex(quad: vec2f, inst: u32, role: u32) -> VOut {
   let depth_bias = mix(
     flat_bias,
     select(0.0, -Z_BIAS_SELECTION_LIFT, state != 0u),
-    u.plane_mix,
+    u.depth_mix,
   );
   z += depth_bias * clip.w;
   out.pos = vec4f(clip.xy + ndc_offset, z, clip.w);
 
   let base_color = vertex_channel_color(inst);
   var light_world = world;
-  if (u.plane_mix > 0.0) { light_world = normalize(world); }
+  if (u.depth_mix > 0.0) { light_world = normalize(world); }
   out.color = vec4f(base_color.rgb * daylight(light_world), base_color.a);
   out.uv = quad;
   out.focus = state;

@@ -4,7 +4,7 @@ import type { Presentation } from '@latkit/gpu';
 import {
   UNIFORM_BUFFER_BYTES,
   hasGraticuleFlag,
-  hasPlaneDepth,
+  hasSceneDepth,
   hasVertexHeightChannel,
   FLAG_FOCUS_ENABLED,
   FLAG_FOCUS_HOVER_ENDPOINTS,
@@ -30,7 +30,7 @@ import {
   PIPELINES,
   PROJECTIONS,
   type PipelineDef,
-  type PipelineMode,
+  type ProjectionFamily,
   type ProjectionMode,
 } from '../projections.js';
 
@@ -101,19 +101,19 @@ export class Renderer {
   private readonly warnedEmptyEdgeFocusRanges = new Set<number>();
 
   private readonly frameResources = new FrameResources();
-  private readonly projectionPipelines = new Map<PipelineMode, ProjectionPipelineSet>();
-  private readonly buildingProjectionPipelines = new Map<PipelineMode, Promise<void>>();
-  private readonly failedProjectionPipelines = new Set<PipelineMode>();
-  private activePipeline: PipelineMode = 'plane';
+  private readonly pipelines = new Map<ProjectionFamily, ProjectionPipelineSet>();
+  private readonly buildingPipelines = new Map<ProjectionFamily, Promise<void>>();
+  private readonly failedPipelines = new Set<ProjectionFamily>();
+  private activeFamily: ProjectionFamily = 'plane';
   /**
    * MSAA is 4x or off because WebGPU permits only 1 and 4, and the sample
    * count is baked into every pipeline.
    */
   private readonly sampleCount: 1 | 4;
-  /** Fires when an async projection pipeline build lands. */
-  onProjectionPipelinesReady?: () => void;
-  /** Reports a failed async projection pipeline build. */
-  onProjectionPipelinesError?: (mode: PipelineMode, cause: unknown) => void;
+  /** Fires when an async pipeline-family build lands. */
+  onPipelinesReady?: () => void;
+  /** Reports a failed async pipeline-family build. */
+  onPipelineError?: (family: ProjectionFamily, cause: unknown) => void;
 
   private readonly unitQuad: GPUBuffer;
   private readonly edgeStrip: GPUBuffer;
@@ -254,58 +254,58 @@ export class Renderer {
       bindGroupLayouts: [this.channelsBindGroupLayout],
     });
 
-    // Projection pipeline sets come from the projection registry: one bundle per
-    // mode carries the overlay prelude, the bg shader (which writes the
+    // Pipeline sets come from the family registry: one bundle per family
+    // carries the overlay prelude, the bg shader (which writes the
     // depth all overlays occlusion-test against), and the border_world
     // snippet (final lifted position included). Builds are async and lazy: the
-    // active projection set compiles off-thread while the topology loads, and
+    // active family compiles off-thread while the topology loads, and
     // render() simply skips frames until it lands (the loop treats a null
     // render as "no frame"). The controller warms supported alternatives after first paint.
-    void this.ensureProjectionPipelines(this.activePipeline);
+    void this.ensurePipelines(this.activeFamily);
   }
 
-  /** Selects the active projection pipeline set, building it lazily if needed. */
-  useProjectionPipelines(mode: ProjectionMode): void {
-    this.activePipeline = PROJECTIONS[mode].pipeline;
-    void this.ensureProjectionPipelines(this.activePipeline);
+  /** Selects the active pipeline family for a mode, building it lazily if needed. */
+  useProjection(mode: ProjectionMode): void {
+    this.activeFamily = PROJECTIONS[mode].family;
+    void this.ensurePipelines(this.activeFamily);
   }
 
-  /** Compiles a projection pipeline set without changing the active mode. */
+  /** Compiles a mode's pipeline family without changing the active one. */
   warmProjection(mode: ProjectionMode): Promise<void> {
-    return this.ensureProjectionPipelines(PROJECTIONS[mode].pipeline);
+    return this.ensurePipelines(PROJECTIONS[mode].family);
   }
 
-  /** Returns the cached or in-flight build for one projection pipeline set. */
-  private ensureProjectionPipelines(mode: PipelineMode): Promise<void> {
-    if (this.projectionPipelines.has(mode) || this.failedProjectionPipelines.has(mode)) {
+  /** Returns the cached or in-flight build for one pipeline family. */
+  private ensurePipelines(family: ProjectionFamily): Promise<void> {
+    if (this.pipelines.has(family) || this.failedPipelines.has(family)) {
       return Promise.resolve();
     }
-    const pending = this.buildingProjectionPipelines.get(mode);
+    const pending = this.buildingPipelines.get(family);
     if (pending) return pending;
 
-    const build = this.buildProjectionPipelines(PIPELINES[mode]).then(
+    const build = this.buildPipelines(PIPELINES[family]).then(
       (pipelines) => {
-        this.buildingProjectionPipelines.delete(mode);
+        this.buildingPipelines.delete(family);
         if (this.destroyed) return;
-        this.projectionPipelines.set(mode, pipelines);
-        this.onProjectionPipelinesReady?.();
+        this.pipelines.set(family, pipelines);
+        this.onPipelinesReady?.();
       },
       (error: unknown) => {
-        this.buildingProjectionPipelines.delete(mode);
+        this.buildingPipelines.delete(family);
         if (this.destroyed) return;
-        this.failedProjectionPipelines.add(mode);
-        this.onProjectionPipelinesError?.(mode, error);
-        // Projection pipeline validation failing is a build-time shader bug; keep the
+        this.failedPipelines.add(family);
+        this.onPipelineError?.(family, error);
+        // Pipeline validation failing is a build-time shader bug; keep the
         // session alive (render() keeps skipping) and surface the cause.
-        console.error(`network: failed to build the ${mode} projection pipelines`, error);
+        console.error(`network: failed to build the ${family} projection pipelines`, error);
       },
     );
-    this.buildingProjectionPipelines.set(mode, build);
+    this.buildingPipelines.set(family, build);
     return build;
   }
 
-  /** Builds all GPU pipelines required by a projection definition. */
-  private async buildProjectionPipelines(def: PipelineDef): Promise<ProjectionPipelineSet> {
+  /** Builds all GPU pipelines required by a pipeline definition. */
+  private async buildPipelines(def: PipelineDef): Promise<ProjectionPipelineSet> {
     return buildProjectionPipelineSet(def, {
       device: this.presentation.device,
       format: this.presentation.format,
@@ -525,9 +525,9 @@ export class Renderer {
    * @returns Whether a frame was actually submitted.
    */
   render(uniforms: FrameUniforms): boolean {
-    // No frame until the active projection pipeline build lands; the loop
-    // treats a null render as "skip", and onProjectionPipelinesReady wakes it.
-    const pipelines = this.projectionPipelines.get(this.activePipeline);
+    // No frame until the active pipeline-family build lands; the loop
+    // treats a null render as "skip", and onPipelinesReady wakes it.
+    const pipelines = this.pipelines.get(this.activeFamily);
     if (
       !pipelines ||
       !this.bound ||
@@ -573,10 +573,9 @@ export class Renderer {
         TRANSPARENT_CLEAR,
       ),
       depthView: this.frameResources.depthView,
-      drawBackground:
-        this.activePipeline === 'globe' ||
-        hasPlaneDepth(uniforms.rawF32) ||
-        hasGraticuleFlag(uniforms.rawU32),
+      // Uniform-driven: the globe always packs full scene depth, so no
+      // per-family dispatch is needed here.
+      drawBackground: hasSceneDepth(uniforms.rawF32) || hasGraticuleFlag(uniforms.rawU32),
       visual,
       channelsBindGroup: this.channelsBindGroup,
       topologyBindGroup: this.topologyBindGroup,
@@ -599,7 +598,7 @@ export class Renderer {
   private computePolesRendered(uniforms: FrameUniforms): boolean {
     return (
       this.visibility.poles &&
-      (this.activePipeline === 'globe' || hasPlaneDepth(uniforms.rawF32)) &&
+      hasSceneDepth(uniforms.rawF32) &&
       hasVertexHeightChannel(uniforms.rawU32)
     );
   }

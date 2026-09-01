@@ -1,4 +1,9 @@
-import type { ProjectionMode } from '../projections.js';
+import {
+  PIPELINES,
+  PROJECTIONS,
+  type ProjectionFamily,
+  type ProjectionMode,
+} from '../projections.js';
 import type { Viewport } from '../camera/projection.js';
 import type { Uniforms } from '../webgpu/uniforms.js';
 import {
@@ -7,13 +12,13 @@ import {
   W_BACKING_SCALE,
   W_BASE_EDGE_WIDTH,
   W_DASH_PERIOD,
+  W_DEPTH_MIX,
   W_HEIGHT_CENTER,
   W_HEIGHT_OUT_MIN,
   W_HEIGHT_OUT_SCALE,
   W_HEIGHT_SCALE,
   W_HEIGHT_WORLD_SCALE,
   W_ITEM_FLAGS,
-  W_PLANE_MIX,
   W_VERTEX_LOD,
   W_VIEWPORT_X,
   W_VIEWPORT_Y,
@@ -32,7 +37,6 @@ import { Grid } from './grid.js';
 import {
   createPoint,
   mixPoint,
-  projectorFor,
   MIN_CLIP_W,
   type ProjectedPoint,
   type Projector,
@@ -181,7 +185,7 @@ interface Scene {
  */
 export class Picker {
   private scene: Scene | null = null;
-  private readonly projectors = new Map<ProjectionMode, Projector>();
+  private readonly projectors = new Map<ProjectionFamily, Projector>();
   private readonly f32: Float32Array;
   private readonly u32: Uint32Array;
 
@@ -369,8 +373,7 @@ export class Picker {
     if (!scene || q.vp.w <= 0 || q.vp.h <= 0) return miss;
     if (this.f32[W_VIEWPORT_X]! <= 0 || this.f32[W_VIEWPORT_Y]! <= 0) return miss;
 
-    const mode = this.deps.mode();
-    const proj = this.projector(mode);
+    const proj = this.projector(this.deps.mode());
 
     // Device-px cursor and radius (uniform viewport is device px).
     const dprX = this.f32[W_VIEWPORT_X]! / q.vp.w;
@@ -380,7 +383,7 @@ export class Picker {
     const cursorY = q.sy * dprY;
     const radiusDev = Math.max(1, q.radiusPx * Math.max(dprX, dprY));
 
-    const region = this.queryRegion(q, scene, mode);
+    const region = this.queryRegion(q, scene, proj);
     if (!region) return miss;
 
     const itemFlags = this.u32[W_ITEM_FLAGS]!;
@@ -390,7 +393,9 @@ export class Picker {
     const vertexVisible =
       itemFlags & ITEM_VERTEX_VISIBLE ? this.deps.values('vertexVisible') : null;
     const edgeVisible = itemFlags & ITEM_EDGE_VISIBLE ? this.deps.values('edgeVisible') : null;
-    const poles = q.poles && heights !== null && (mode === 'globe' || this.f32[W_PLANE_MIX]! > 0);
+    // The globe always packs full depth, so one uniform read covers both
+    // families - no per-mode dispatch.
+    const poles = q.poles && heights !== null && this.f32[W_DEPTH_MIX]! > 0;
 
     const state: TestState = {
       proj,
@@ -449,11 +454,7 @@ export class Picker {
    *  of inflating one bounding circle to the whole scene. Degenerate poses
    *  clamp to the scene extent; the grid then degrades to a full scan,
    *  which stays exact. */
-  private queryRegion(
-    q: PickQuery,
-    scene: Scene,
-    mode: ProjectionMode,
-  ): readonly QueryCircle[] | null {
+  private queryRegion(q: PickQuery, scene: Scene, proj: Projector): readonly QueryCircle[] | null {
     const { vp } = q;
     let sx = q.sx;
     let sy = q.sy;
@@ -462,8 +463,7 @@ export class Picker {
       BILLBOARD_PAD_PX /
         Math.min(this.f32[W_VIEWPORT_X]! / vp.w, this.f32[W_VIEWPORT_Y]! / vp.h, 1);
 
-    const heightsActive =
-      (mode === 'globe' || this.f32[W_PLANE_MIX]! > 0) && this.u32[W_V_HEIGHT_MODE] !== 0;
+    const heightsActive = this.f32[W_DEPTH_MIX]! > 0 && this.u32[W_V_HEIGHT_MODE] !== 0;
     let seed = this.deps.unproject(sx, sy, vp);
     if (!seed) {
       // Cursor is off the surface (above tilt's horizon / off the globe).
@@ -537,16 +537,15 @@ export class Picker {
     // Height displacement widens the footprint: walking the cursor ray up
     // the height shell moves its surface intersection by up to
     // h / tan(elevation) in coord space, and the sampled anisotropy ratio
-    // bounds 1 / sin(elevation) from above. Tilt heights are world = coord
-    // units; globe heights are radial world units on the unit sphere, which
-    // convert to surface degrees. Flat is orthographic and pays nothing.
+    // bounds 1 / sin(elevation) from above. The projector owns the
+    // world-to-coord conversion (tilt: coord units faded by depth blend;
+    // globe: radial units to surface degrees). Flat pays nothing.
     let pad = 0;
     if (heightsActive) {
       const outMin = this.f32[W_HEIGHT_OUT_MIN]!;
       const outScale = this.f32[W_HEIGHT_OUT_SCALE]!;
       const maxAbsH = Math.max(Math.abs(outMin), Math.abs(outMin + outScale));
-      const toCoord = mode === 'globe' ? 180 / Math.PI : this.f32[W_PLANE_MIX]!;
-      const hCoord = maxAbsH * this.f32[W_HEIGHT_WORLD_SCALE]! * toCoord;
+      const hCoord = maxAbsH * this.f32[W_HEIGHT_WORLD_SCALE]! * proj.heightPadScale();
       const ratio = jacMin > 0 ? jacMax / jacMin : Infinity;
       if (!(ratio <= JACOBIAN_RATIO_CAP)) return this.coverAll(scene);
       pad = hCoord * ratio * HEIGHT_PAD_SAFETY;
@@ -667,12 +666,13 @@ export class Picker {
     if (x + r > half) yield x - scene.wrapX;
   }
 
-  /** Return a cached projector for the current mode and live uniform buffer. */
+  /** Return the cached per-family projector over the live uniform buffer. */
   private projector(mode: ProjectionMode): Projector {
-    let proj = this.projectors.get(mode);
+    const family = PROJECTIONS[mode].family;
+    let proj = this.projectors.get(family);
     if (!proj) {
-      proj = projectorFor(mode, this.deps.uniforms);
-      this.projectors.set(mode, proj);
+      proj = PIPELINES[family].projector(this.deps.uniforms);
+      this.projectors.set(family, proj);
     }
     return proj;
   }

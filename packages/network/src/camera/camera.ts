@@ -9,7 +9,7 @@
   Viewport,
 } from './projection.js';
 import type { Bounds } from '../topology/types.js';
-import type { ProjectionRegion } from '../webgpu/uniforms.js';
+import type { CameraRegion } from '../webgpu/uniforms.js';
 import { createTangent, ZOOM_SLOT } from './projection.js';
 
 /** Cubic smoothstep: C1 at both ends, zero derivative at t=0 and t=1. */
@@ -126,10 +126,10 @@ export class Camera {
   /** Camera state at `lastDragT`, retained across too-dense spatial samples. */
   private readonly velocityState: CameraState;
 
-  /** Create a camera bound to a projection and its GPU uniform region. */
+  /** Create a camera bound to a projection and its GPU camera region. */
   constructor(
     private readonly proj: Projection,
-    private readonly region: ProjectionRegion,
+    private readonly region: CameraRegion,
   ) {
     // All state/tangent buffers are sized by the projection, so the chase,
     // coast, and snap machinery below is dimension-blind.
@@ -158,43 +158,54 @@ export class Camera {
     this.fitIntent = true;
   }
 
+  /** True once the camera holds a fit reference and can serve pose commands. */
+  get placed(): boolean {
+    return this.fit !== null;
+  }
+
   /**
-   * Place the camera from a carried pose and anchor scale, else from bounds.
+   * Place the camera from a carried pose and anchor scale over fresh bounds.
    *
-   * The fit reference always derives from the bounds. A carried pose is
+   * The fit reference always derives from the bounds. The carried pose is
    * merged through `applyPose` (the active view clamps fields it cannot
    * host) and its scale lands through the same `zoom` clamps gestures use;
    * the placement restores the carried `fitIntent` instead of resetting it.
-   * Returns false when the viewport has no area and the caller should defer.
    */
   place(
-    pose: CameraPose | null,
+    pose: CameraPose,
     pxPerWorld: number,
     fitIntent: boolean,
     bounds: Bounds,
     vp: Viewport,
-  ): boolean {
-    if (vp.w <= 0 || vp.h <= 0) return false;
+  ): void {
     this.init(bounds, vp);
-    if (pose && Number.isFinite(pxPerWorld) && pxPerWorld > 0) {
+    if (Number.isFinite(pxPerWorld) && pxPerWorld > 0) {
       this.proj.applyPose(this.target, pose);
       this.proj.zoom(this.target, pxPerWorld / this.proj.pxPerWorld(this.target, vp), this.fit);
       this.current.set(this.target);
       this.fitIntent = fitIntent;
     }
-    return true;
   }
 
   /** Retarget one view of the current camera family without replacing state. */
-  setView(view: PlaneView, bounds: Bounds | null, vp: Viewport): boolean {
-    if (!this.proj.setView) return false;
+  setView(view: PlaneView): void {
+    if (!this.proj.setView) return;
     const intent = this.fitIntent;
     this.interrupt();
     this.proj.setView(view, this.target);
     this.fitIntent = intent;
-    if (!bounds || !validBounds(bounds) || !validViewport(vp)) return false;
+  }
+
+  /**
+   * Refresh the fit reference for the current bounds and viewport.
+   *
+   * Leaves the rendered pose untouched: only zoom clamps and
+   * `isAtFitView()` observe the reference, which now tracks the live
+   * viewport instead of the one the camera was first placed under.
+   */
+  refreshFit(bounds: Bounds, vp: Viewport): void {
+    if (!validBounds(bounds) || !validViewport(vp)) return;
     this.fit = this.proj.fit(bounds, vp);
-    return true;
   }
 
   /** True while self-driven motion (coast, fit) owns the rendered state. */

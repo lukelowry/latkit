@@ -17,7 +17,7 @@ describe('background graticule shader contract', () => {
   });
 
   it('keeps a transparent Cartesian fast path at flat rest', () => {
-    expect(planeBgSrc).toContain('if (u.plane_mix == 0.0) { return flat_sample(frag_pos); }');
+    expect(planeBgSrc).toContain('if (u.depth_mix == 0.0) { return flat_sample(frag_pos); }');
     expect(planeBgSrc).toContain('if (!grid_enabled()) { discard; }');
     expect(planeBgSrc).toContain('cartesian_grid(p)');
     expect(planeBgSrc).toContain('if (grid < 0.001) { discard; }');
@@ -42,7 +42,7 @@ describe('background graticule shader contract', () => {
   });
 
   it('blends the ground surface from the live planar transition', () => {
-    expect(planeBgSrc).toContain('let surface = u.plane_mix;');
+    expect(planeBgSrc).toContain('let surface = u.depth_mix;');
     expect(planeBgSrc).toContain('let alpha = grid + surface * (1.0 - grid);');
     expect(planeBgSrc).toContain('vec4f(rgb, alpha * fade)');
     expect(planeBgSrc).toContain('@builtin(frag_depth) depth: f32');
