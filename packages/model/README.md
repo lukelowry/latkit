@@ -1,7 +1,111 @@
 # @latkit/model
 
-Core model primitives for Latkit.
+The immutable, columnar description of a network and its element classes that a vendor produces
+once and every latkit renderer and view consumes directly, plus the byte form that lets it cross a
+process boundary lazily.
 
-Most applications do not need to import this package directly yet. It is reserved for shared public data primitives as the Latkit package family grows.
+Four nouns:
 
-Use renderer packages such as `@latkit/network` and `@latkit/monitor` for current visualization APIs.
+| Noun     | What it is                                                                                    |
+| -------- | --------------------------------------------------------------------------------------------- |
+| `Model`  | A value: topology, owners, element classes, and one lazy, cached loader for class columns     |
+| `Series` | Packed signals over one element axis and time, shaped exactly as `@latkit/monitor` loads them |
+| A run    | What any engine emits: `RunUpdate`s whose frames `collect` into a `Series`                    |
+| `Source` | The same model as bytes: one core plus one shard per class, owned by whoever asks             |
+
+`Topology` and `Item` are field-for-field the shapes `@latkit/network` loads and picks, so a model
+never adapts for a renderer. The package has no dependencies, no state machines, no I/O, and no
+rendering.
+
+## Produce a model
+
+A vendor builds a model with `createModel`; there is no interface to implement. Owner classes are
+the ones whose element `i` is vertex `i` or edge `i`, and they declare nothing more. Any other class
+may anchor each element to a topology item, `0xffffffff` marking an element with no place. Columns
+are scalar: number, text, or flag.
+
+```ts
+import { createModel, type ClassData } from '@latkit/model';
+
+const model = createModel(
+  {
+    vendor: 'gridkit',
+    id: caseId,
+    name: 'IEEE 14',
+    meta: { freqBase: 60 },
+    topology,
+    owners: { vertex: 'bus', edge: 'branch' },
+    classes: [
+      { id: 'bus', label: 'Bus', count: 14, signals: BUS_SIGNALS },
+      {
+        id: 'gen',
+        label: 'Generator',
+        count: 5,
+        anchor: { kind: 'vertex', index: genBus },
+        signals: GEN_SIGNALS,
+      },
+    ],
+  },
+  {
+    load: async (classId): Promise<ClassData> => columnsFor(classId),
+    bytes: async () => caseBytes,
+  },
+);
+```
+
+## Consume a model
+
+```ts
+import { createGrid, elementAt, itemOf } from '@latkit/model';
+
+network.load(model.topology);
+
+const bus = await model.load('bus');
+const vm = bus.columns.find((column) => column.id === 'Vm');
+if (vm?.kind === 'number') network.setChannel('vertexColor', Float32Array.from(vm.values));
+
+network.on('pick', (item) => {
+  const ref = elementAt(model, item);
+  if (ref) console.log(bus.labels[ref.index]);
+});
+
+const grid = createGrid(bus.labels, bus.columns);
+const { rows, total } = await grid.window('north', { column: 'Vm', dir: 'desc' }, 0, 50);
+```
+
+## Run a model
+
+Running is held by whoever has an engine, never by the model. A `Runner` streams `RunUpdate`s; the
+frames for one class `collect` into a `Series` the monitor loads unchanged.
+
+```ts
+import { collect, frameAt, sample, type RunFrames } from '@latkit/model';
+
+const frames: RunFrames[] = [];
+for await (const update of runner.run(command, signal)) {
+  if (update.type === 'frames' && update.classId === 'bus') frames.push(update);
+}
+const series = collect(frames);
+monitor.load(series);
+network.setChannel('vertexColor', sample(series, 0, frameAt(series.time, t)));
+```
+
+## Move a model
+
+```ts
+import { openModel, sourceOf } from '@latkit/model';
+
+// pack, for example when staging a library at build time
+const source = sourceOf(model);
+await write('core.bin', await source.core());
+for (const cls of model.classes) await write(`${cls.id}.bin`, await source.class(cls.id));
+
+// unpack, classes still lazy
+const opened = await openModel(
+  { core: fetchCore, class: fetchShard, bytes: fetchCase },
+  { signal, progress: (loaded, total) => bar.set(loaded / total) },
+);
+```
+
+The pack format is versioned and private: a small JSON directory followed by 8-byte-aligned typed
+sections, so unpacking is a set of typed-array views into the received buffer.

@@ -11,7 +11,7 @@ Both renderers use WebGPU resources internally. Public APIs stay imperative on p
 ## Package boundaries
 
 `@latkit/model`
-: Keeps shared model primitives small and dependency-light as the package family grows.
+: Owns the immutable, columnar network model, its packed series, and its byte form. Depends on nothing; the renderers consume its shapes structurally.
 
 `@latkit/colormaps`
 : Owns color catalogs and formatting helpers. Rendering packages can consume this package without duplicating palette data.

@@ -8,7 +8,7 @@ The API reference is generated from the published package entrypoints with TypeD
 | [`@latkit/monitor`](reference/monitor/index.md)     | Monitor renderer, packed series input, readings, events, and display options   |
 | [`@latkit/gpu`](reference/gpu/index.md)             | Core WebGPU device acquisition, availability failures, and canvas presentation |
 | [`@latkit/colormaps`](reference/colormaps/index.md) | Colormap names, labels, transfer functions, and CSS gradients                  |
-| [`@latkit/model`](reference/model/index.md)         | Shared model primitives as they become public                                  |
+| [`@latkit/model`](reference/model/index.md)         | Columnar network model, packed series, run updates, grid queries, and sources  |
 
 ## Common entrypoints
 
