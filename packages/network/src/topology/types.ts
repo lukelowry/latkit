@@ -4,7 +4,9 @@
  * @remarks
  * `vertexCoords` and `polylinePoints` are interleaved coordinate pairs. Flat
  * and tilt projections accept arbitrary `x, y` coordinates. Globe projection
- * is available when coordinates fit geographic longitude and latitude bounds.
+ * and other geographic features are available when caller-supplied
+ * coordinates fit geographic longitude and latitude bounds; see
+ * `coordinateSpace` to override that inference.
  *
  * `polylineStart` is an offset table into `polylinePoints`. It must contain
  * `edgeCount + 1` entries, begin at `0`, stay monotonic, and end at the number
@@ -31,6 +33,19 @@ export interface Topology {
    * Omit this field to use a generated unit-ring layout.
    */
   readonly vertexCoords?: Float32Array;
+  /**
+   * Optional declaration of how coordinates are interpreted.
+   *
+   * @remarks
+   * When omitted, caller-supplied coordinates whose bounds fit longitude and
+   * latitude ranges are inferred geographic. Pass `'cartesian'` to keep
+   * abstract `x, y` data off geographic features (daylight shading, ground
+   * clipping, globe availability) even when it fits those bounds.
+   * `'geographic'` documents intent; coordinates must still fit longitude and
+   * latitude ranges to take effect. Generated ring layouts are never
+   * geographic.
+   */
+  readonly coordinateSpace?: 'cartesian' | 'geographic';
   /**
    * Edge endpoint vertex indices stored as `[from0, to0, from1, to1, ...]`.
    *

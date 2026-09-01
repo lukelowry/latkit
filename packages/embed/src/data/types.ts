@@ -29,6 +29,7 @@ export interface NetworkData {
 export interface NetworkTopologyJSON {
   readonly vertexCount: number;
   readonly vertexCoords?: NumericJSON;
+  readonly coordinateSpace?: 'cartesian' | 'geographic';
   readonly edges: NumericJSON;
   readonly polylineStart?: NumericJSON;
   readonly polylinePoints?: NumericJSON;

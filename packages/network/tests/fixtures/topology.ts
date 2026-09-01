@@ -28,6 +28,15 @@ export function geographicTopology(): Topology {
   });
 }
 
+/** Topology without caller-supplied coordinates: renders on the generated unit ring. */
+export function ringTopology(): Topology {
+  return {
+    vertexCount: 3,
+    edges: new Uint32Array([0, 1, 1, 2]),
+    polylineStart: new Uint32Array([0, 0, 0]),
+  };
+}
+
 export function nonGlobeTopology(): Topology {
   return sampleTopology({
     vertexCoords: new Float32Array([190, 0, 200, 4, 210, -3]),

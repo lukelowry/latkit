@@ -25,7 +25,7 @@ import { RenderLoop } from './webgpu/render-loop.js';
 import {
   PROJECTIONS,
   PROJECTION_MODES,
-  isGeographic,
+  isGeographicTopology,
   type ProjectionFamily,
   type ProjectionMode,
 } from './projections.js';
@@ -112,6 +112,17 @@ export type Events = {
 export interface Network {
   /** Projection modes currently supported by the loaded topology. */
   readonly projections: Readonly<Record<ProjectionMode, boolean>>;
+  /**
+   * Whether loaded coordinates are interpreted as geographic lon/lat degrees.
+   *
+   * @remarks
+   * True only when the topology supplies its own coordinates, does not
+   * declare `coordinateSpace: 'cartesian'`, and its bounds fit longitude and
+   * latitude ranges. This interpretation gates daylight shading, geographic
+   * ground clipping, and globe availability; generated ring layouts are never
+   * geographic. False before the first {@link Network.load}.
+   */
+  readonly geographic: boolean;
   /**
    * Active projection mode: the destination of the last accepted
    * {@link Network.setProjection} call, `'flat'` before any.
@@ -627,7 +638,8 @@ function createNetworkController(
   let topology: Topology | null = null;
   let topologyBounds: Bounds | null = null;
   let topologyCharacteristicLength: number | null = null;
-  let projections = projectionAvailability(null, null);
+  let topologyGeographic = false;
+  let projections = projectionAvailability(null, null, false);
   let vertexSize = 0;
   /** Latest physical hover point; converted through the current DOMRect per pick. */
   let hoverProbe: HoverProbe | null = null;
@@ -725,7 +737,7 @@ function createNetworkController(
 
   /** Periodic idle wake while daylight shading is armed for the loaded data. */
   const sunTimer = setInterval(() => {
-    if (display.daylight && isGeographic(topologyBounds)) loop.wake();
+    if (display.daylight && topologyGeographic) loop.wake();
   }, SUN_REFRESH_MS);
   lifecycle.add(() => clearInterval(sunTimer));
 
@@ -802,6 +814,10 @@ function createNetworkController(
   const api: Network = {
     get projections() {
       return projections;
+    },
+
+    get geographic() {
+      return topologyGeographic;
     },
 
     get projection() {
@@ -924,7 +940,7 @@ function createNetworkController(
     },
 
     setProjection(mode) {
-      if (!PROJECTIONS[mode].canUse(topologyBounds, topologyCharacteristicLength)) return false;
+      if (!projections[mode]) return false;
       if (mode === rig.mode) return true;
       rig.switchTo(mode, vp());
       updateHeightWorldScale(vp());
@@ -1197,11 +1213,10 @@ function createNetworkController(
     // geographic topologies; every projection family shades when it is set.
     // FLAG_GEOGRAPHIC tracks the topology alone: the plane background clips
     // its ground to the lon/lat world rect whenever coordinates are degrees.
-    const geographic = isGeographic(topologyBounds);
     uniforms.light.flags =
-      (display.daylight && geographic ? FLAG_DAYLIGHT : 0) |
+      (display.daylight && topologyGeographic ? FLAG_DAYLIGHT : 0) |
       (display.graticule ? FLAG_GRATICULE : 0) |
-      (geographic ? FLAG_GEOGRAPHIC : 0);
+      (topologyGeographic ? FLAG_GEOGRAPHIC : 0);
     uniforms.light.nightFloor = display.nightFloor;
     uniforms.light.surfaceNightFloor = display.surfaceNightFloor;
     uniforms.light.terminatorWidth = display.terminatorWidth;
@@ -1241,10 +1256,11 @@ function createNetworkController(
   function projectionAvailability(
     bounds: Bounds | null,
     characteristicLength: number | null,
+    geographic: boolean,
   ): Network['projections'] {
     const availability = {} as Record<ProjectionMode, boolean>;
     for (const mode of PROJECTION_MODES) {
-      availability[mode] = PROJECTIONS[mode].canUse(bounds, characteristicLength);
+      availability[mode] = PROJECTIONS[mode].canUse(bounds, characteristicLength, geographic);
     }
     return Object.freeze(availability);
   }
@@ -1351,7 +1367,14 @@ function createNetworkController(
     readyZoomNotice = undefined;
     topologyBounds = info.bounds;
     topologyCharacteristicLength = info.characteristicLength;
-    projections = projectionAvailability(topologyBounds, topologyCharacteristicLength);
+    // Geographic interpretation requires the caller's own coordinates: the
+    // generated ring fallback must never read as lon/lat degrees.
+    topologyGeographic = isGeographicTopology(next, info.bounds);
+    projections = projectionAvailability(
+      topologyBounds,
+      topologyCharacteristicLength,
+      topologyGeographic,
+    );
 
     hoverDirty = true;
     applyHover(null);

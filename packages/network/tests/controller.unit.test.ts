@@ -17,7 +17,7 @@ import {
   deferred,
   flushMicrotasks,
 } from './fixtures/controller-harness.js';
-import { geographicTopology, nonGlobeTopology } from './fixtures/topology.js';
+import { geographicTopology, nonGlobeTopology, ringTopology } from './fixtures/topology.js';
 
 type Harness = Awaited<ReturnType<typeof createControllerHarness>>;
 
@@ -1241,6 +1241,13 @@ describe('createNetwork controller', () => {
     vi.advanceTimersByTime(30_000);
     expect(h.loop.wake).toHaveBeenCalledOnce();
 
+    // Generated ring layouts stay abstract despite in-range bounds.
+    h.network.load(ringTopology());
+    h.loop.wake.mockClear();
+    vi.advanceTimersByTime(30_000);
+    expect(h.loop.wake).not.toHaveBeenCalled();
+
+    h.network.load(geographicTopology());
     h.network.setOptions({ daylight: false });
     h.loop.wake.mockClear();
     vi.advanceTimersByTime(30_000);
@@ -1277,6 +1284,58 @@ describe('createNetwork controller', () => {
     // Abstract coordinates keep the unbounded plane.
     h.network.load(nonGlobeTopology());
     expect(h.loop.uniforms.light.flags & FLAG_GEOGRAPHIC).toBe(0);
+  });
+
+  it('never reads generated layouts as geographic', async () => {
+    const h = await makeHarness();
+
+    // The ring fallback's bounds fit the lon/lat box, but interpretation
+    // requires caller-supplied coordinates.
+    h.network.load(ringTopology());
+    expect(h.network.geographic).toBe(false);
+    expect(h.network.projections.globe).toBe(false);
+    expect(h.loop.uniforms.light.flags & (FLAG_DAYLIGHT | FLAG_GEOGRAPHIC)).toBe(0);
+
+    // An empty coordinate array also resolves to the generated ring.
+    h.network.load({ ...ringTopology(), vertexCoords: new Float32Array(0) });
+    expect(h.network.geographic).toBe(false);
+    expect(h.network.projections.globe).toBe(false);
+    expect(h.loop.uniforms.light.flags & (FLAG_DAYLIGHT | FLAG_GEOGRAPHIC)).toBe(0);
+
+    // A declaration cannot turn generated coordinates into geographic data.
+    h.network.load({ ...ringTopology(), coordinateSpace: 'geographic' });
+    expect(h.network.geographic).toBe(false);
+    expect(h.network.projections.globe).toBe(false);
+    expect(h.loop.uniforms.light.flags & (FLAG_DAYLIGHT | FLAG_GEOGRAPHIC)).toBe(0);
+  });
+
+  it('honors coordinate declarations without bypassing geographic bounds', async () => {
+    const h = await makeHarness();
+
+    h.network.load({ ...geographicTopology(), coordinateSpace: 'cartesian' });
+    expect(h.network.geographic).toBe(false);
+    expect(h.network.projections.globe).toBe(false);
+    expect(h.loop.uniforms.light.flags & (FLAG_DAYLIGHT | FLAG_GEOGRAPHIC)).toBe(0);
+
+    h.network.load({ ...geographicTopology(), coordinateSpace: 'geographic' });
+    expect(h.network.geographic).toBe(true);
+    expect(h.network.projections.globe).toBe(true);
+
+    h.network.load({ ...nonGlobeTopology(), coordinateSpace: 'geographic' });
+    expect(h.network.geographic).toBe(false);
+    expect(h.network.projections.globe).toBe(false);
+    expect(h.loop.uniforms.light.flags & (FLAG_DAYLIGHT | FLAG_GEOGRAPHIC)).toBe(0);
+  });
+
+  it('exposes geographic interpretation for the loaded topology', async () => {
+    const h = await makeHarness();
+    expect(h.network.geographic).toBe(false);
+
+    h.network.load(geographicTopology());
+    expect(h.network.geographic).toBe(true);
+
+    h.network.load(nonGlobeTopology());
+    expect(h.network.geographic).toBe(false);
   });
 
   it('updates globe height scale during frame hooks', async () => {

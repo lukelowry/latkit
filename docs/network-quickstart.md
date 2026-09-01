@@ -27,6 +27,7 @@ if (!(canvas instanceof HTMLCanvasElement)) {
 const topology: Topology = {
   vertexCount: 3,
   vertexCoords: new Float32Array([-96, 30, -95, 31, -94, 30]),
+  coordinateSpace: 'geographic',
   edges: new Uint32Array([0, 1, 1, 2]),
   polylineStart: new Uint32Array([0, 0, 0]),
 };
@@ -42,7 +43,10 @@ network.setChannel('vertexColor', new Float32Array([0.1, 0.8, 0.4]), [0, 1]);
 network.fadeIn();
 ```
 
-The view starts in the flat projection. If the topology coordinates fit the geographic range required for globe mode, `network.projections.globe` becomes true after `load()`.
+The view starts in the flat projection. After `load()`, `network.geographic` reports whether
+caller-supplied coordinates are interpreted as longitude and latitude. Generated layouts are never
+geographic, and `coordinateSpace: 'cartesian'` disables geographic inference. When geographic
+coordinates also satisfy the required span and scale, `network.projections.globe` becomes true.
 
 `flat` and `tilt` are two views of one planar camera. Projection changes animate
 the same pitch state in either direction and reuse one WebGPU pipeline bundle.

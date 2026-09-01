@@ -8,7 +8,12 @@ import {
   validateTopology,
 } from '../src/topology/index.js';
 import { HEADER_WORDS, MAGIC, WGSL_LAYOUT } from '../src/topology/wire.js';
-import { computeBounds, estimateCharacteristicLength, ringLayout } from '../src/topology/pack.js';
+import {
+  computeBounds,
+  estimateCharacteristicLength,
+  hasExplicitCoords,
+  ringLayout,
+} from '../src/topology/pack.js';
 import { sampleTopology } from './fixtures/topology.js';
 
 describe('Topology', () => {
@@ -120,6 +125,20 @@ describe('Topology', () => {
     expect(() =>
       validateTopology(sampleTopology({ edges: [0, 1] as unknown as Uint32Array })),
     ).toThrow('edges must be Uint32Array');
+  });
+
+  it('accepts declared coordinate spaces and rejects unknown values', () => {
+    expect(() => validateTopology(sampleTopology({ coordinateSpace: 'cartesian' }))).not.toThrow();
+    expect(() => validateTopology(sampleTopology({ coordinateSpace: 'geographic' }))).not.toThrow();
+    expect(() => validateTopology(sampleTopology({ coordinateSpace: 'polar' as never }))).toThrow(
+      'invalid coordinate space',
+    );
+  });
+
+  it('reports caller-supplied coordinates only when rendering uses them', () => {
+    expect(hasExplicitCoords(sampleTopology())).toBe(true);
+    expect(hasExplicitCoords(sampleTopology({ vertexCoords: undefined }))).toBe(false);
+    expect(hasExplicitCoords(sampleTopology({ vertexCoords: new Float32Array(0) }))).toBe(false);
   });
 
   it('places fallback vertices on a deterministic unit ring', () => {

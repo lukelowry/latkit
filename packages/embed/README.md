@@ -64,6 +64,7 @@ Every source uses one static, unversioned `NetworkData` shape. Effective source 
       "topology": {
         "vertexCount": 2,
         "vertexCoords": [-96, 30, -95, 31],
+        "coordinateSpace": "geographic",
         "edges": [0, 1]
       },
       "labels": { "vertex": ["West", "East"], "edge": ["Tie line"] },
@@ -85,6 +86,11 @@ Every source uses one static, unversioned `NetworkData` shape. Effective source 
 `parseNetwork(input)` validates JSON-compatible input and returns newly owned typed arrays. Numeric
 arrays can be ordinary JSON arrays or little-endian base64 objects. Assign decoded data directly
 through `element.data` when the host already owns `NetworkData`.
+
+Omitting `vertexCoords` uses an abstract generated ring layout, which is never geographic.
+Explicit coordinates inside longitude and latitude bounds are inferred geographic unless
+`coordinateSpace: "cartesian"` opts out; `"geographic"` documents intent without bypassing
+those bounds.
 
 ## View attributes
 
@@ -223,8 +229,9 @@ element.select('vertex', 1);
 The complete element method surface is `setOptions`, `setBorders`, `setColormap`, `setBaseColor`,
 `setChannel`, `clearChannel`, `setChannelRange`, `setProjection`, `fit`, `reveal`, `select`,
 `clearSelection`, `panBy`, `rotateBy`, `getPose`, `setPose`, `zoomBy`, `fadeIn`, `pause`, and
-`resume`. `projections` reports the current topology's mode availability. The underlying
-Network, canvas ownership, and GPU device remain private.
+`resume`. `geographic` reports whether the live topology is interpreted as longitude and
+latitude, while `projections` reports its mode availability. The underlying Network, canvas
+ownership, and GPU device remain private.
 
 Renderer notifications become bubbling, composed DOM events named `load`, `error`, `hover`, `select`,
 `zoom`, `deviceLost`, and `pipelineError`. `ready` always describes the current activation and is

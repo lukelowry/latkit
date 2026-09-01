@@ -119,6 +119,7 @@ export function fakeNetwork(
   return {
     value: {
       projections,
+      geographic: true,
       on,
       load,
       setBorders,

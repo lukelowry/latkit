@@ -30,6 +30,7 @@ describe('network package entrypoint', () => {
     expect(validateTopology).toBeTypeOf('function');
     expectTypeOf<Parameters<typeof createNetwork>[1]>().toEqualTypeOf<HTMLCanvasElement>();
     expectTypeOf<Parameters<Network['setProjection']>[0]>().toEqualTypeOf<ProjectionMode>();
+    expectTypeOf<Network['geographic']>().toEqualTypeOf<boolean>();
     expectTypeOf<Parameters<Events['pipelineError']>>().toEqualTypeOf<
       [family: ProjectionFamily, cause: unknown]
     >();

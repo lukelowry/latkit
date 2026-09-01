@@ -97,6 +97,27 @@ describe('parseNetwork', () => {
     expect(data.fields).toBeUndefined();
   });
 
+  it('forwards the declared coordinate space and rejects unknown values', () => {
+    const topology = {
+      vertexCount: 2,
+      vertexCoords: [0, 0, 10, 10],
+      edges: [0, 1],
+    };
+
+    expect(parseNetwork({ topology }).topology.coordinateSpace).toBeUndefined();
+    expect(
+      parseNetwork({ topology: { ...topology, coordinateSpace: 'cartesian' } }).topology
+        .coordinateSpace,
+    ).toBe('cartesian');
+    expect(
+      parseNetwork({ topology: { ...topology, coordinateSpace: 'geographic' } }).topology
+        .coordinateSpace,
+    ).toBe('geographic');
+    expect(() => parseNetwork({ topology: { ...topology, coordinateSpace: 'polar' } })).toThrow(
+      'topology.coordinateSpace must be "cartesian" or "geographic"',
+    );
+  });
+
   it.each([
     ['a null root', null, 'root must be an object'],
     ['a missing topology', {}, 'root.topology is required'],
