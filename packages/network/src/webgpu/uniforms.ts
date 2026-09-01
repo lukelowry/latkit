@@ -248,15 +248,10 @@ const a = (region: RegionName, key: string, view: ViewKey = 'f'): readonly Unifo
 ];
 
 /**
- * Single source of truth for the packed uniform layout.
- *
- * Field order and types MUST match `struct Uniforms` in
- * shaders/common/uniforms.wgsl, which stays hand-written for its layout
- * commentary; the natural-layout validator below proves every declared word
- * offset is exactly the one WGSL assigns to this field order, and the parity
- * unit test pins the .wgsl struct text to this table. Offsets are explicit
- * and deliberate: scalars ride the vec3f pad lanes (fov_scale, flags,
- * depth_mix, item_flags) instead of burning whole 16-byte slots.
+ * Single source of truth for the packed uniform layout. Field order and
+ * types MUST match `struct Uniforms` in shaders/common/uniforms.wgsl; the
+ * validator below proves each declared word offset is the one WGSL assigns,
+ * and the parity unit test pins the .wgsl struct text to this table.
  */
 export const UNIFORM_LAYOUT: readonly UniformField[] = [
   { name: 'vp', type: 'mat4x4f', word: 0 },
@@ -407,12 +402,9 @@ export const UNIFORM_LAYOUT: readonly UniformField[] = [
 ];
 
 /**
- * Natural-layout walk over the table.
- *
- * WGSL cannot express explicit offsets, so a declared offset is only real if
- * it is the one WGSL derives from field order and alignment. This proves each
- * one is (which also rules out overlap and unintended gaps) and that the
- * struct rounds to {@link UNIFORM_BUFFER_BYTES}.
+ * Natural-layout walk proving each declared offset is the one WGSL derives
+ * from field order and alignment, and that the struct rounds to
+ * {@link UNIFORM_BUFFER_BYTES}.
  */
 function validateLayout(fields: readonly UniformField[]): void {
   let cursor = 0;

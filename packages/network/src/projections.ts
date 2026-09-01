@@ -84,34 +84,21 @@ export interface PipelineDef {
 //   fn sun_normal(world: vec3f) -> vec3f             unit planet-center direction
 //                                                    (sunWgsl; daylight input)
 //
-// Module composition per slot (what your code can see; webgpu/pipelines.ts
-// owns the concatenation):
+// Module composition per slot (webgpu/pipelines.ts owns the concatenation):
 //   overlay: VISUAL_WGSL + overlayWgsl + daylight + sunWgsl + uniforms
 //            + channel-* + topology + core
 //   border:  VISUAL_WGSL + overlayWgsl + daylight + sunWgsl + uniforms
 //            + borderWorldWgsl + borders
 //   bg:      VISUAL_WGSL + uniforms + graticule + camera-ray + daylight
-//            + sunWgsl + bgWgsl
-//            - NO overlay prelude: a bg shader cannot reference projection
-//            overlay helpers.
-//            graticule.wgsl owns the shared grid line rendering and flag
-//            helper; flat/tilt use cartesian_grid, globe uses
-//            geographic_graticule. camera-ray.wgsl owns the per-fragment eye
-//            ray from the packed camera basis; every bg gets it.
-//            daylight.wgsl owns the shared solar terminator (and geo_to_xyz);
-//            every slot gets it, and the family's sunWgsl supplies the
-//            position -> planet-center direction map it shades with.
+//            + sunWgsl + bgWgsl - no overlay prelude.
 //
 // Conventions:
 //   u.depth_mix is 0 at flat rest and 1 for perspective/globe depth.
 //   The bg shader MUST write frag_depth; the depth test against it is the
-//   only overlay occlusion mechanism. No analytic occlusion in overlays.
-//   displace_world owns the anti-z-fight base lift off the surface the bg
-//   draws. Planar height moves continuously from clip depth to physical z.
-//   border_world returns the FINAL lifted position too.
-//   Picking is CPU-side: src/pick/project.ts mirrors this symbol contract
-//   per family over the same packed uniforms, and the pick parity tests pin
-//   the two implementations together.
+//   only overlay occlusion mechanism. displace_world owns the anti-z-fight
+//   base lift; border_world returns the FINAL lifted position too.
+//   Picking is CPU-side: src/pick/project.ts mirrors this contract per
+//   family over the same packed uniforms, pinned by the pick parity tests.
 
 /** A bounding box smaller than this (in degrees) stays off the globe. */
 const GLOBE_MIN_DEG = 0.1;

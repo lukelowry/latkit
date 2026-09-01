@@ -12,7 +12,7 @@ import {
   type Item,
   type Network,
   type Options,
-  type PipelineMode,
+  type ProjectionFamily,
   type ProjectionMode,
   type RGBA,
   type RevealOptions,
@@ -85,7 +85,7 @@ export interface NetworkDeviceLostEventDetail {
 
 /** Failure payload carried by the Network `pipelineError` DOM event. */
 export interface NetworkPipelineErrorEventDetail {
-  readonly pipeline: PipelineMode;
+  readonly pipeline: ProjectionFamily;
   readonly cause: unknown;
 }
 

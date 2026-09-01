@@ -33,15 +33,14 @@ const MAX_DIST = 5.0;
 const MAX_LAT = 89.9;
 /** Maximum camera pitch in degrees; higher poses drown the frame in sky. */
 const MAX_PITCH = 75;
-/** Raycast trust radius in degrees of longitude offset from the camera meridian.
- *  Inside it the grab/anchor fixed-point update provably contracts (its error
- *  at least halves per event); beyond it a pitched horizon hit can diverge. */
+/** Raycast trust radius in degrees of longitude from the camera meridian;
+ *  inside it the grab/anchor fixed-point update provably contracts. */
 const TRUST_ARC_DEG = 60;
 /** Grab-tracking demotes to screen-speed panning when one event demands more
  *  than this multiple of the screen-speed arc (grazing-incidence blowup). */
 const PAN_DEMOTE_RATIO = 4;
-/** Per-frame anchor correction cap in degrees of arc; a converging anchored
- *  zoom moves far less, so larger demands are pathological and skipped. */
+/** Per-frame anchor correction cap in degrees of arc; larger demands are
+ *  pathological and skipped. */
 const SNAP_MAX_ARC_DEG = 5;
 
 /** Wrap longitude to [-180, 180]. */
@@ -81,11 +80,9 @@ function effectiveClearance(s: CameraState): number {
 }
 
 /**
- * Return the physical clearance floor for one pitch.
- *
- * Solves |anchor + c * backward| = SURFACE_R + MIN_CAMERA_CLEARANCE, so the
- * orbiting eye keeps near-plane margin from the sphere in every direction at
- * any pitch. Reduces to MIN_CAMERA_CLEARANCE at pitch zero.
+ * Physical clearance floor for one pitch: solves |anchor + c * backward| =
+ * SURFACE_R + MIN_CAMERA_CLEARANCE so the orbiting eye keeps near-plane
+ * margin from the sphere at any pitch.
  */
 function clearanceFloor(pitchRad: number): number {
   const rc = SURFACE_R * Math.cos(pitchRad);
@@ -99,11 +96,9 @@ function physicalClearance(s: CameraState): number {
 }
 
 /**
- * Return the narrowed FOV scale used when effective clearance is very small.
- *
- * The narrowing keeps the anchor scale invariant: physicalClearance times
- * this value equals FOV_SCALE times the effective clearance at any pitch, so
- * zoom semantics and screen-space metrics never depend on pitch.
+ * Narrowed FOV scale below the clearance floor. Keeps physicalClearance *
+ * effectiveFovScale == FOV_SCALE * effectiveClearance at any pitch, so zoom
+ * semantics and screen-space metrics never depend on pitch.
  */
 function effectiveFovScale(s: CameraState): number {
   return FOV_SCALE * Math.min(1, effectiveClearance(s) / clearanceFloor(s[3] * DEG2RAD));
@@ -294,11 +289,8 @@ export function createGlobeProjection(): Projection {
   }
 
   /**
-   * Pan by screen speed at the anchor: bearing-rotated, pitch-foreshortened.
-   *
-   * This is the permanent mode for drags the raycast cannot track (sky and
-   * horizon-region grabs), so its ground speed must match grab-tracking at
-   * the anchor or the demotion seam would hitch.
+   * Pan by screen speed at the anchor (bearing-rotated, pitch-foreshortened);
+   * its ground speed must match grab-tracking or the demotion seam hitches.
    */
   function panFallback(s: CameraState, dx: number, dy: number, vp: Viewport): void {
     const degPerPx = arcDegPerPx(s, vp);
@@ -396,13 +388,10 @@ export function createGlobeProjection(): Projection {
     },
 
     beginPan(state, startSx, startSy, startVp): PanSession {
-      // Capture the world point under the cursor when the drag began. On each
-      // apply, re-raycast the cursor and orbit so the original world point
-      // tracks back to the current screen point. Tracking is trusted only
-      // inside TRUST_ARC_DEG of the camera meridian, where the fixed-point
-      // update provably contracts; one demotion latches screen-speed panning
-      // for the rest of the gesture, because re-trusting after a limb miss
-      // would snap the stale grab point back under the cursor.
+      // Orbit so the grabbed world point tracks the cursor. Trusted only
+      // inside TRUST_ARC_DEG; one demotion latches screen-speed panning for
+      // the rest of the gesture (re-trusting would snap the stale grab point
+      // back under the cursor).
       const grab = rayCast(state, startSx, startSy, startVp);
       let trusted = grab !== null && Math.abs(lonDelta(state[0], grab[0])) <= TRUST_ARC_DEG;
       return {
@@ -463,10 +452,8 @@ export function createGlobeProjection(): Projection {
     },
 
     pxPerWorld(s, vp) {
-      // Screen pixels per degree of surface arc at the anchor: the inverse of
-      // arcDegPerPx, hence pitch-invariant via the clearance/FOV product. The
-      // SURFACE_R * DEG2RAD factor converts globe radii to graph degrees so
-      // the scalar transfers to the planar family, whose world unit is the
+      // Pixels per degree of surface arc at the anchor - pitch-invariant, and
+      // directly transferable to the planar family, whose world unit is the
       // degree whenever a topology can host the globe at all.
       return 1 / arcDegPerPx(s, vp);
     },

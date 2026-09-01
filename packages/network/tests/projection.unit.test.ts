@@ -1456,6 +1456,15 @@ describe('CameraRig', () => {
     expect(rig.camera.current[1]).toBeCloseTo(30.6, 6);
   });
 
+  it('an animated fit before first placement snaps to the canonical fit', () => {
+    const { rig } = makeRig();
+    rig.fit(vp, true); // camera not yet placed: nothing to animate from
+    rig.tick(NOW, vp);
+
+    expect(rig.camera.isAtFitView()).toBe(true);
+    expect(rig.isAnimating()).toBe(false);
+  });
+
   it('an in-family switch keeps the chase destination', () => {
     const { rig } = makeRig();
     rig.tick(performance.now(), vp);

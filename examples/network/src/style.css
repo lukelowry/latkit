@@ -32,6 +32,17 @@ body {
   height: 100%;
 }
 
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* The canvas fills the viewport, so draw its focus ring inside the edge. */
+#stage:focus-visible {
+  outline-color: var(--active);
+  outline-offset: -2px;
+}
+
 #hud {
   position: fixed;
   top: 16px;
@@ -76,7 +87,7 @@ section {
   gap: 8px;
 }
 
-label {
+.label {
   color: var(--muted);
   font-size: 10px;
   line-height: 1;
@@ -177,6 +188,12 @@ button.swatch::before {
 .fatal .hint {
   color: var(--muted);
   font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button {
+    transition: none;
+  }
 }
 
 @media (max-width: 640px) {

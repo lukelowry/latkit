@@ -20,11 +20,7 @@ export const BEARING_RATE = 0.4;
 /** Pitch change per vertical rotation-gesture pixel, in degrees. */
 export const PITCH_RATE = 0.25;
 
-/**
- * State slot reserved for the projection's zoom scalar.
- *
- * The anchored-zoom machinery owns this slot and the drag mirror skips it.
- */
+/** State slot for the zoom scalar; owned by anchored zoom, skipped by the drag mirror. */
 export const ZOOM_SLOT = 2;
 
 /** A 2D point in projection world coordinates. */
@@ -42,41 +38,24 @@ export type Viewport = {
 export type PlaneView = 'flat' | 'tilt';
 
 /**
- * A point on the camera's 5-D state manifold.
- *
- * Plane: [cx, cy, scale, pitch, bearing].
- * Globe: [lon, lat, dist, pitch, bearing], spherical in lon/lat and linear
- * in dist.
- *
- * The underlying storage is a Float64Array for zero-alloc math. Construct
- * via `Projection.fit()` or `Projection.clone()`; callers should not index
- * the array directly because slot semantics are projection-private.
+ * A point on the camera's 5-D state manifold. Plane: [cx, cy, scale, pitch,
+ * bearing]; globe: [lon, lat, dist, pitch, bearing]. Slot semantics are
+ * projection-private; construct via `Projection.fit()` or `clone()`.
  */
 export type CameraState = Float64Array;
 
 /**
- * A tangent vector at a camera state.
- *
- * This is the quantity produced by `delta()` and consumed by `advance()`.
- * Stored per-axis like state, but the units are normalized (e.g. globe
- * lon-tangent is an arc-rate, not deg/s) so `tangentNorm` can compare pan
- * speed fairly across latitudes.
- *
- * Slots:
- *   [0]: horizontal orientation tangent (flat: dx/dt; globe: arc-rate)
- *   [1]: vertical orientation tangent (flat: dy/dt; globe: dlat/dt deg/s)
- *   [2]: zoom tangent (flat: d(scale)/dt; globe: d(dist)/dt)
- *   [3]: pitch tangent, deg/s
- *   [4]: bearing tangent, deg/s
+ * A tangent vector at a camera state, produced by `delta()` and consumed by
+ * `advance()`. Units are normalized (globe lon-tangent is an arc-rate, not
+ * deg/s) so `tangentNorm` compares pan speed fairly across latitudes.
+ * Slots: [0] horizontal, [1] vertical, [2] zoom, [3] pitch deg/s,
+ * [4] bearing deg/s.
  */
 export type Tangent = Float64Array;
 
 /**
- * Projection-independent camera pose.
- *
- * Center is world units on the plane family and lon/lat degrees on the
- * globe; pitch is degrees off nadir (0 looks straight down) and bearing is
- * degrees clockwise from north. Zoom is deliberately absent: its units are
+ * Projection-independent camera pose. Center is world units (plane) or
+ * lon/lat degrees (globe). Zoom is deliberately absent: its units are
  * projection-specific and it stays behind `Network.zoomBy`.
  */
 export interface CameraPose {
@@ -90,55 +69,34 @@ export interface CameraPose {
   readonly bearing: number;
 }
 
-/**
- * Live drag handle for a single drag gesture.
- *
- * Encapsulates the projection-specific grab point so the controller does not
- * need to know whether panning uses a flat-plane delta or a globe raycast.
- */
+/** Live drag handle encapsulating the projection-specific grab point. */
 export interface PanSession {
   /** Apply one drag delta to `state`. Called per pointer move. */
   apply(state: CameraState, dx: number, dy: number, sx: number, sy: number, vp: Viewport): void;
 }
 
 /**
- * Pure geometry and manifold algebra for one camera coordinate system.
- *
- * A projection constructs camera states, maps screen pixels to world points,
- * provides interpolation/integration primitives for the controller, and packs
- * the current state into GPU uniforms. Animation state and renderer-only flags
- * live outside this interface.
+ * Pure geometry and manifold algebra for one camera coordinate system:
+ * state construction, screen-world mapping, interpolation/integration
+ * primitives, and GPU uniform packing. Animation state lives outside.
  */
 export interface Projection {
   /**
-   * State/tangent dimensionality.
-   *
-   * Convention: slots 0 and 1 are the primary surface orientation, ZOOM_SLOT
-   * is the zoom scalar, and slots 3+ are projection extras. The Camera's
-   * chase/coast/snap machinery is dimension-blind; only allocations and the
-   * two slot conventions read this.
+   * State/tangent dimensionality. Slots 0/1 are the surface orientation,
+   * ZOOM_SLOT the zoom scalar, 3+ projection extras.
    */
   readonly stateSize: number;
 
   /** Retarget a view without replacing the camera state. */
   setView?(view: PlaneView, target: CameraState): void;
 
-  /**
-   * Return the state that frames `bounds` in `vp`.
-   *
-   * Bounds are graph coordinates (flat: [x, y]; globe: [lon, lat] degrees).
-   */
+  /** Return the state that frames `bounds` (graph coordinates) in `vp`. */
   fit(bounds: Bounds, vp: Viewport): CameraState;
 
   /** Return a detached copy of `state` with projection-owned storage. */
   clone(state: CameraState): CameraState;
 
-  /**
-   * Map a screen pixel to projection world coordinates.
-   *
-   * This backs cursor-anchored pan and zoom. Picking is GPU-side, so no CPU
-   * projection of primitives lives on the projection.
-   */
+  /** Map a screen pixel to world coordinates; backs cursor-anchored pan/zoom. */
   screenToWorld(state: CameraState, sx: number, sy: number, vp: Viewport): Vec2 | null;
 
   /** Interpolate along the manifold: out = lerp/slerp-equivalent(a, b, t). */
@@ -154,10 +112,8 @@ export interface Projection {
   tangentNorm(tangent: Tangent): number;
 
   /**
-   * Convergence predicate in screen space.
-   *
-   * Returns true when moving from `a` to `b` would shift no on-screen content
-   * by more than `epsPx` CSS pixels at viewport `vp`.
+   * True when moving from `a` to `b` would shift no on-screen content by
+   * more than `epsPx` CSS pixels at viewport `vp`.
    */
   near(a: CameraState, b: CameraState, vp: Viewport, epsPx: number): boolean;
 
@@ -173,30 +129,22 @@ export interface Projection {
   /** Adjust orientation so `worldPt` projects back to `screenPt`. */
   snapToAnchor(state: CameraState, worldPt: Vec2, screenPt: Vec2, vp: Viewport): void;
 
-  /**
-   * Apply a rotation gesture to `state`.
-   *
-   * A view without rotational freedom (the flat plane) mutates nothing.
-   */
+  /** Apply a rotation gesture; a view without rotational freedom mutates nothing. */
   rotate(state: CameraState, dxPx: number, dyPx: number, vp: Viewport): void;
 
   /** Read the public pose from `state`. */
   pose(state: CameraState): CameraPose;
 
   /**
-   * Merge a partial public pose into `state`.
-   *
-   * Owns wrapping and clamping for the active view; fields a view cannot
-   * host (flat pitch/bearing) clamp to their resting value.
+   * Merge a partial public pose into `state`, owning wrapping and clamping
+   * for the active view (flat clamps pitch/bearing to rest).
    */
   applyPose(state: CameraState, pose: Partial<CameraPose>): void;
 
   /**
    * Screen pixels per graph-coordinate y unit at the view anchor.
-   *
-   * Pitch-invariant by construction in every projection, so together with
-   * `pose`/`applyPose` this scalar transfers a view across projection
-   * switches: apply the pose, then `zoom` by `wanted / pxPerWorld(state)`.
+   * Pitch-invariant by construction, so with `pose`/`applyPose` it transfers
+   * a view across projection switches.
    */
   pxPerWorld(state: CameraState, vp: Viewport): number;
 

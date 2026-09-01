@@ -81,15 +81,23 @@ async function main(): Promise<void> {
   applyChannels();
   net.fadeIn();
 
-  wireTopologies(() => currentId, applyTopology);
   const projections = wireProjections(net);
   const cameraDemo = wireCameraDemo(net, projections);
+  wireTopologies(
+    () => currentId,
+    (opt) => {
+      applyTopology(opt);
+      // Loading can drop projection support and fall back to flat.
+      projections.refresh();
+    },
+  );
   wireToggles(net, (on) => {
     heightOn = on;
     applyChannels();
   });
   wireColormaps(net);
   wirePicking(net);
+  wireKeyboard(net);
 
   window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
@@ -120,6 +128,7 @@ function wireTopologies(currentId: () => string, apply: (opt: TopologyOption) =>
 interface ProjectionControls {
   select(mode: ProjectionMode): boolean;
   mode(): ProjectionMode;
+  refresh(): void;
 }
 
 function wireProjections(net: Network): ProjectionControls {
@@ -127,9 +136,17 @@ function wireProjections(net: Network): ProjectionControls {
   const row = document.getElementById('projections') as HTMLElement;
   const buttons = new Map<ProjectionMode, HTMLButtonElement>();
 
+  /** Sync pressed and disabled states with the network's live state. */
+  function refresh(): void {
+    for (const [mode, btn] of buttons) {
+      btn.disabled = !net.projections[mode];
+      setPressed(btn, mode === net.projection);
+    }
+  }
+
   function select(mode: ProjectionMode): boolean {
     if (!net.setProjection(mode)) return false;
-    setActive(row, buttons.get(mode)!);
+    refresh();
     return true;
   }
 
@@ -143,19 +160,17 @@ function wireProjections(net: Network): ProjectionControls {
     row.appendChild(btn);
   }
 
-  return { select, mode: () => net.projection };
+  return { select, mode: () => net.projection, refresh };
 }
 
 /** Longitude drift for the globe spin, in degrees per millisecond (8 deg/s,
  *  the same rate the tilt bearing orbit resolves to). */
 const SPIN_DEG_PER_MS = 0.008;
 
-function wireCameraDemo(
-  net: Network,
-  { select, mode }: ProjectionControls,
-): { destroy(): void } {
+function wireCameraDemo(net: Network, { select, mode }: ProjectionControls): { destroy(): void } {
   const row = document.getElementById('camera') as HTMLElement;
   const projections = document.getElementById('projections') as HTMLElement;
+  const topologies = document.getElementById('topologies') as HTMLElement;
   const btn = createButton('auto rotate', false);
   let frameId: number | null = null;
   let previousTime = 0;
@@ -198,7 +213,10 @@ function wireCameraDemo(
   });
   stage.addEventListener('pointerdown', stop);
   stage.addEventListener('wheel', stop, { passive: true });
+  stage.addEventListener('keydown', stop);
   projections.addEventListener('click', stop);
+  // A topology change can reset the projection, leaving the spin a no-op.
+  topologies.addEventListener('click', stop);
   row.appendChild(btn);
 
   return {
@@ -206,7 +224,9 @@ function wireCameraDemo(
       stop();
       stage.removeEventListener('pointerdown', stop);
       stage.removeEventListener('wheel', stop);
+      stage.removeEventListener('keydown', stop);
       projections.removeEventListener('click', stop);
+      topologies.removeEventListener('click', stop);
     },
   };
 }
@@ -249,6 +269,49 @@ function wireColormaps(net: Network): void {
     });
     row.appendChild(btn);
   }
+}
+
+/** Screen pixels one arrow keypress pans or rotates by. */
+const KEY_PAN_PX = 48;
+
+function wireKeyboard(net: Network): void {
+  stage.addEventListener('keydown', (event) => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    // Shift + arrows rotates (bearing/pitch); plain arrows pan the view.
+    const move = (dx: number, dy: number): void => {
+      if (event.shiftKey) net.rotateBy(dx, dy);
+      else net.panBy(-dx, -dy);
+    };
+    switch (event.key) {
+      case 'ArrowLeft':
+        move(-KEY_PAN_PX, 0);
+        break;
+      case 'ArrowRight':
+        move(KEY_PAN_PX, 0);
+        break;
+      case 'ArrowUp':
+        move(0, -KEY_PAN_PX);
+        break;
+      case 'ArrowDown':
+        move(0, KEY_PAN_PX);
+        break;
+      case '+':
+      case '=':
+        net.zoomBy(1.2);
+        break;
+      case '-':
+      case '_':
+        net.zoomBy(1 / 1.2);
+        break;
+      case 'Escape':
+        net.clearSelection();
+        readoutEl.querySelector('.select')!.textContent = '-';
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+  });
 }
 
 function wirePicking(net: Network): void {

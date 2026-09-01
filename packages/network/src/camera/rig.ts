@@ -21,14 +21,10 @@ function usable(vp: Viewport): boolean {
 }
 
 /**
- * The single camera authority: active projection, mode, topology bounds, and
- * deferred placement.
- *
- * Every camera command lands here and is either applied immediately (usable
- * viewport) or retained and replayed on the first sized frame - the canonical
- * fit as `needsFit`, the latest move/reveal/pose-carry as one `pending` slot.
- * The render loop only calls `tick()`; the controller never asks whether the
- * viewport is usable.
+ * The single camera authority: active projection, mode, bounds, and deferred
+ * placement. Commands apply immediately under a usable viewport, else they
+ * are retained (`needsFit` + one `pending` slot) and replayed on the first
+ * sized frame; the render loop only calls `tick()`.
  */
 export class CameraRig {
   /** Camera bound to the active projection; identity changes on family switches. */
@@ -73,7 +69,8 @@ export class CameraRig {
   /** Fit the whole scene: animated when possible, else on the next sized frame. */
   fit(vp: Viewport, animate: boolean): void {
     if (!this.bounds) return;
-    if (animate && usable(vp)) {
+    // An unplaced camera has no view to animate from; defer to the canonical fit.
+    if (animate && usable(vp) && this.camera.placed) {
       this.needsFit = false;
       this.pending = null;
       this.camera.fitView(this.bounds, vp);
@@ -115,11 +112,9 @@ export class CameraRig {
   }
 
   /**
-   * Let the currently rendered pose supersede stale motion and deferred moves.
-   *
-   * The reveal path calls this when an item is already visible: a claimed
-   * camera cancels all deferred placement; an idle one only drops deferred
-   * moves, preserving a pending canonical fit or pose carry.
+   * Let the rendered pose supersede stale motion and deferred moves: a
+   * claimed camera cancels all deferred placement, an idle one only drops
+   * deferred moves.
    */
   claim(): boolean {
     const claimed = this.camera.claimCurrent();
@@ -135,15 +130,11 @@ export class CameraRig {
   /**
    * Switch projection mode, always preserving the current view.
    *
-   * In-family switches retarget the shared camera and mark the fit reference
-   * stale. Cross-family switches behave as if a frame ticked first: the
-   * canonical fit and any deferred command flush into the outgoing camera
-   * against the live viewport - or the last rendered one while the canvas is
-   * hidden - and the settled pose plus anchor scale carry into the new
-   * camera, applied immediately when sized, else as a pending placement.
-   * A view is only surrendered to the canonical fit while fit intent is
-   * active; with no viewport reference at all, deferred bounds commands are
-   * projection-agnostic and survive the switch to replay after the fit.
+   * In-family switches retarget the shared camera. Cross-family switches
+   * behave as if a frame ticked first: deferred commands flush into the
+   * outgoing camera against the live (or last rendered) viewport, then the
+   * settled pose and anchor scale carry into the new camera. A view is only
+   * surrendered to the canonical fit while fit intent is active.
    */
   switchTo(mode: ProjectionMode, vp: Viewport): void {
     if (mode === this.modeValue) return;
@@ -233,9 +224,7 @@ export class CameraRig {
         break;
       case 'place':
         this.camera.place(pending.pose, pending.px, pending.fitIntent, bounds, vp);
-        // Let the incoming view settle fields it prefers at rest: tilt eases
-        // the carried pitch toward its oblique through the chase; flat's are
-        // already clamped and the globe has no view to retarget.
+        // Let the incoming view ease fields it prefers at rest (tilt's pitch).
         this.projection.setView?.(this.modeValue as PlaneView, this.camera.target);
         break;
     }
