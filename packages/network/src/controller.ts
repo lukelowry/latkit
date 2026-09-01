@@ -8,7 +8,7 @@ import { prepareScene } from './scene.js';
 import { Renderer } from './webgpu/renderer.js';
 import { createUniforms, FLAG_DAYLIGHT, FLAG_GRATICULE } from './webgpu/uniforms.js';
 import { FocusState, type FocusStyle, type RGBA } from './focus-state.js';
-import { VISUAL, planeHeightWorldScale } from './visual.js';
+import { VISUAL } from './visual.js';
 import { ProjectionRig } from './camera/rig.js';
 import { attachPointer, MOUSE_PICK_RADIUS_PX, type HoverProbe } from './input/pointer.js';
 import { createSurface } from './input/surface.js';
@@ -105,6 +105,11 @@ export type Events = {
 export interface Network {
   /** Projection modes currently supported by the loaded topology. */
   readonly projections: Readonly<Record<ProjectionMode, boolean>>;
+  /**
+   * Active projection mode: the destination of the last accepted
+   * {@link Network.setProjection} call, `'flat'` before any.
+   */
+  readonly projection: ProjectionMode;
   /**
    * Subscribe to a network event and receive an unsubscribe callback.
    *
@@ -648,11 +653,10 @@ function createNetworkController(
     const view = vp();
     const hasViewport =
       Number.isFinite(view.w) && Number.isFinite(view.h) && view.w > 0 && view.h > 0;
-    const center =
-      rig.mode === 'globe'
-        ? ((hasViewport ? rig.camera.screenToWorld(view.w / 2, view.h / 2, view)?.[0] : null) ??
-          rig.camera.current[0]!)
-        : null;
+    const center = PROJECTIONS[rig.mode].wrapX
+      ? ((hasViewport ? rig.camera.screenToWorld(view.w / 2, view.h / 2, view)?.[0] : null) ??
+        rig.camera.current[0]!)
+      : null;
     return {
       view,
       hasViewport,
@@ -706,9 +710,9 @@ function createNetworkController(
     poles: display.poles,
   });
 
-  /** Periodic wake-up for time-varying globe daylight. */
+  /** Periodic wake-up for projections whose daylight tracks wall-clock time. */
   const sunTimer = setInterval(() => {
-    if (display.daylight && rig.mode === 'globe') loop.wake();
+    if (display.daylight && PROJECTIONS[rig.mode].timeVaryingLight) loop.wake();
   }, SUN_REFRESH_MS);
   lifecycle.add(() => clearInterval(sunTimer));
 
@@ -786,6 +790,10 @@ function createNetworkController(
   const api: Network = {
     get projections() {
       return projections;
+    },
+
+    get projection() {
+      return rig.mode;
     },
 
     on(event, handler) {
@@ -1240,10 +1248,11 @@ function createNetworkController(
   /** Updates projection-specific height amplitude from current viewport state. */
   function updateHeightWorldScale(frameVp: Viewport): void {
     if (!topology || !topologyBounds) return;
-    const scale =
-      rig.mode === 'globe'
-        ? VISUAL.globeHeightRadialScale
-        : planeHeightWorldScale(topologyBounds, frameVp, vertexSize * display.vertexScale);
+    const scale = PROJECTIONS[rig.mode].heightWorldScale(
+      topologyBounds,
+      frameVp,
+      vertexSize * display.vertexScale,
+    );
     uniforms.geometry.heightWorldScale = scale * display.heightScale;
   }
 

@@ -1,4 +1,5 @@
-import { FIT_PAD, type GraphBounds, type Viewport } from './camera/projection.js';
+import { FIT_PAD, type Viewport } from './camera/projection.js';
+import type { Bounds } from './topology/types.js';
 
 /**
  * Shared visual tuning constants used by the controller and generated WGSL.
@@ -88,7 +89,7 @@ const FRAGMENT_ALPHA_DISCARD: f32 = 0.001;
  * budget keeps range changes from changing the apparent maximum displacement.
  */
 export function planeHeightWorldScale(
-  bounds: GraphBounds,
+  bounds: Bounds,
   vp: Viewport,
   vertexSize: number,
 ): number {

@@ -237,7 +237,7 @@ describe('RenderLoop scheduling', () => {
   it('updates presentation scale after visual derivation and before picking without advancing time', () => {
     type Phase = 'before' | 'frame' | 'render';
     const observed: Array<{ phase: Phase; backingScale: number; time: number }> = [];
-    let h!: Harness;
+    // The callbacks only fire from frameNow() below, after `h` initializes.
     const capture = (phase: Phase): void => {
       observed.push({
         phase,
@@ -245,7 +245,7 @@ describe('RenderLoop scheduling', () => {
         time: h.uniforms.frame.time,
       });
     };
-    h = makeHarness({
+    const h = makeHarness({
       pixelRatio: 2,
       limit: 256,
       onBeforeFrame: () => capture('before'),

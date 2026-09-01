@@ -1,7 +1,15 @@
 import type { ProjectionRegion } from '../webgpu/uniforms.js';
+import type { Bounds } from '../topology/types.js';
+import { turn, wrap } from './geo.js';
 
 /** Fraction of the viewport used when fitting graph bounds. */
 export const FIT_PAD = 0.85;
+
+/** Vertical field of view shared by every perspective camera. */
+export const FOV_Y = 2 * Math.atan(1 / 3);
+
+/** Tangent of half the shared vertical field of view. */
+export const FOV_SCALE = 1 / 3;
 
 /** Maximum zoom-in ratio relative to the fitted view. */
 export const MAX_ZOOM_RATIO = 512;
@@ -18,18 +26,6 @@ export const PITCH_RATE = 0.25;
  * The anchored-zoom machinery owns this slot and the drag mirror skips it.
  */
 export const ZOOM_SLOT = 2;
-
-/** Graph bounds in world space (flat: [cx, cy]; globe: [lon, lat]). */
-export interface GraphBounds {
-  /** Minimum horizontal coordinate or longitude. */
-  xMin: number;
-  /** Maximum horizontal coordinate or longitude. */
-  xMax: number;
-  /** Minimum vertical coordinate or latitude. */
-  yMin: number;
-  /** Maximum vertical coordinate or latitude. */
-  yMax: number;
-}
 
 /** A 2D point in projection world coordinates. */
 export type Vec2 = [number, number];
@@ -109,23 +105,6 @@ export interface PanSession {
 }
 
 /**
- * A lossy, projection-independent view snapshot for continuity across
- * projection switches.
- *
- * The snapshot carries the world point at the view center and the screen
- * scale there. Geometry only; user intent (`fitIntent`) is a Camera property
- * and travels with the rig, not the snapshot.
- */
-export interface PoseSnapshot {
-  /** World x coordinate or longitude at the view center. */
-  centerX: number;
-  /** World y coordinate or latitude at the view center. */
-  centerY: number;
-  /** Screen pixels per world unit at the view center. */
-  pxPerWorld: number;
-}
-
-/**
  * Pure geometry and manifold algebra for one camera coordinate system.
  *
  * A projection constructs camera states, maps screen pixels to world points,
@@ -149,8 +128,12 @@ export interface Projection {
   /** Retarget a view without replacing the camera state. */
   setView?(view: PlaneView, target: CameraState): void;
 
-  /** Return the state that frames `bounds` in `vp`. */
-  fit(bounds: GraphBounds, vp: Viewport): CameraState;
+  /**
+   * Return the state that frames `bounds` in `vp`.
+   *
+   * Bounds are graph coordinates (flat: [x, y]; globe: [lon, lat] degrees).
+   */
+  fit(bounds: Bounds, vp: Viewport): CameraState;
 
   /** Return a detached copy of `state` with projection-owned storage. */
   clone(state: CameraState): CameraState;
@@ -213,22 +196,14 @@ export interface Projection {
    */
   applyPose(state: CameraState, pose: Partial<CameraPose>): void;
 
-  /** Export a projection-independent pose, or null when continuity is unavailable. */
-  exportPose?(state: CameraState, vp: Viewport): PoseSnapshot | null;
-
   /**
-   * Return the state that is visually continuous with `pose`.
+   * Screen pixels per graph-coordinate y unit at the view anchor.
    *
-   * Planar imports return pitch 0, the shared flat-continuity anchor.
+   * Pitch-invariant by construction in every projection, so together with
+   * `pose`/`applyPose` this scalar transfers a view across projection
+   * switches: apply the pose, then `zoom` by `wanted / pxPerWorld(state)`.
    */
-  importPose?(pose: PoseSnapshot, vp: Viewport): CameraState;
-
-  /**
-   * Mutate `target` to the state where an imported pose should settle.
-   *
-   * Called once by `Camera.initFrom` after a successful import.
-   */
-  settleImportedPose?(target: CameraState): void;
+  pxPerWorld(state: CameraState, vp: Viewport): number;
 
   /** Pack the current state into GPU uniforms for the active projection. */
   pack(state: CameraState, region: ProjectionRegion, vp: Viewport): void;
@@ -237,4 +212,60 @@ export interface Projection {
 /** Allocate a zero-filled tangent buffer of the projection's dimension. */
 export function createTangent(size: number): Tangent {
   return new Float64Array(size);
+}
+
+// Shared implementations for the zoom/pitch/bearing slot tail (slots 2..4).
+// Slots 0/1 stay per-projection: that is where the globe's spherical wrap and
+// cosLat coupling live. Callers own their matrix invalidation.
+
+/** Apply a rotation gesture to the pitch/bearing slots, clamped to `maxPitch`. */
+export function rotateViewSlots(
+  s: CameraState,
+  dxPx: number,
+  dyPx: number,
+  maxPitch: number,
+): void {
+  s[4] = wrap(s[4]! + dxPx * BEARING_RATE);
+  s[3] = Math.max(0, Math.min(maxPitch, s[3]! - dyPx * PITCH_RATE));
+}
+
+/** Read the public pose out of the shared state slot convention. */
+export function statePose(s: CameraState): CameraPose {
+  return { centerX: s[0]!, centerY: s[1]!, pitch: s[3]!, bearing: s[4]! };
+}
+
+/** Interpolate the slot tail: linear zoom and pitch, shortest-turn bearing. */
+export function mixViewSlots(out: CameraState, a: CameraState, b: CameraState, t: number): void {
+  out[2] = a[2]! + (b[2]! - a[2]!) * t;
+  out[3] = a[3]! + (b[3]! - a[3]!) * t;
+  out[4] = a[4]! + turn(a[4]!, b[4]!) * t;
+}
+
+/** Differentiate the slot tail into tangent rates. */
+export function deltaViewSlots(out: Tangent, a: CameraState, b: CameraState, dt: number): void {
+  out[2] = (b[2]! - a[2]!) / dt;
+  out[3] = (b[3]! - a[3]!) / dt;
+  out[4] = turn(a[4]!, b[4]!) / dt;
+}
+
+/** Integrate the slot tail, clamping pitch to `maxPitch` and wrapping bearing. */
+export function advanceViewSlots(
+  out: CameraState,
+  s: CameraState,
+  tangent: Tangent,
+  amount: number,
+  maxPitch: number,
+): void {
+  out[2] = s[2]! + tangent[2]! * amount;
+  out[3] = Math.max(0, Math.min(maxPitch, s[3]! + tangent[3]! * amount));
+  out[4] = wrap(s[4]! + tangent[4]! * amount);
+}
+
+/** Slot-tail agreement terms of `isAtFit`: relative zoom, pitch, bearing. */
+export function viewSlotsAtFit(current: CameraState, fit: CameraState): boolean {
+  return (
+    Math.abs(current[2]! / fit[2]! - 1) < 0.01 &&
+    Math.abs(current[3]! - fit[3]!) < 0.1 &&
+    Math.abs(turn(current[4]!, fit[4]!)) < 0.1
+  );
 }

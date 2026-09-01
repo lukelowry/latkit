@@ -1,14 +1,21 @@
-import type { CameraPose, Projection, CameraState, PanSession, Vec2, Viewport } from './projection.js';
-import { BEARING_RATE, FIT_PAD, MAX_ZOOM_RATIO, PITCH_RATE } from './projection.js';
+import type { Projection, CameraState, PanSession, Vec2, Viewport } from './projection.js';
+import {
+  advanceViewSlots,
+  deltaViewSlots,
+  FIT_PAD,
+  FOV_SCALE,
+  MAX_ZOOM_RATIO,
+  mixViewSlots,
+  rotateViewSlots,
+  statePose,
+  viewSlotsAtFit,
+} from './projection.js';
 import { DEG2RAD, RAD2DEG, turn, wrap, xyzToGeo } from './geo.js';
 import { sunDirection } from './solar.js';
-import { mat4Mul, mat4Perspective, mat4Invert, mat4Unproject } from './mat4.js';
+import { mat4Mul, mat4Perspective } from './mat4.js';
+import { createScreenRay } from './raycast.js';
 import { VISUAL } from '../visual.js';
 
-/** Vertical field of view used by the perspective globe camera. */
-const FOV_Y = 2 * Math.atan(1 / 3);
-/** Tangent of half the globe field of view. */
-const FOV_SCALE = Math.tan(FOV_Y / 2);
 /** Perspective near plane in globe camera units. */
 const NEAR = 0.005;
 /** Perspective far plane in globe camera units. */
@@ -116,8 +123,6 @@ function arcDegPerPx(s: CameraState, vp: Viewport): number {
 
 // Zero-alloc scratch shared across all globe projections. Safe to share because
 // no function using these arrays yields mid-use.
-const _unprojNear = new Float64Array(3);
-const _unprojFar = new Float64Array(3);
 const _geoOut = new Float64Array(2);
 
 /** Create the perspective globe projection. */
@@ -132,7 +137,7 @@ export function createGlobeProjection(): Projection {
   const cameraPos = new Float32Array(3);
   const projM = new Float32Array(16);
   const viewM = new Float32Array(16);
-  const invVP = new Float32Array(16);
+  const screenRay = createScreenRay();
 
   // Solar light direction is cached and refreshed at most every 30s via
   // pack(). A canvas-level timer wakes the render loop on the same cadence so
@@ -143,7 +148,6 @@ export function createGlobeProjection(): Projection {
   // VP matrix cache, rebuilt on state or viewport change.
   const vpStamp = new Float64Array(7); // [lon, lat, dist, pitch, bearing, vpW, vpH]
   let vpValid = false;
-  let invVpValid = false;
 
   /** Return true when the cached view-projection matrix no longer matches. */
   function vpDirty(s: CameraState, vp: Viewport): boolean {
@@ -230,7 +234,7 @@ export function createGlobeProjection(): Projection {
     mat4Perspective(projM, effectiveFovY(s), vp.w / vp.h, NEAR, FAR);
     mat4Mul(vpMatrix, projM, viewM);
 
-    invVpValid = false;
+    screenRay.invalidate();
     vpStamp[0] = s[0];
     vpStamp[1] = s[1];
     vpStamp[2] = s[2];
@@ -244,7 +248,7 @@ export function createGlobeProjection(): Projection {
   /** Mark cached view-projection matrices as stale. */
   function invalidate(): void {
     vpValid = false;
-    invVpValid = false;
+    screenRay.invalidate();
   }
 
   // Cursor-ray hit point, closure-scoped like the VP caches it depends on.
@@ -258,22 +262,14 @@ export function createGlobeProjection(): Projection {
    */
   function raySphereHit(s: CameraState, sx: number, sy: number, vp: Viewport): boolean {
     buildVP(s, vp);
-    if (!invVpValid) {
-      mat4Invert(invVP, vpMatrix);
-      invVpValid = true;
-    }
+    if (!screenRay.cast(vpMatrix, sx, sy, vp)) return false;
 
-    const nx = (sx / vp.w) * 2 - 1;
-    const ny = 1 - (sy / vp.h) * 2;
-    mat4Unproject(_unprojNear, nx, ny, 0, invVP);
-    mat4Unproject(_unprojFar, nx, ny, 1, invVP);
-
-    const dx = _unprojFar[0] - _unprojNear[0];
-    const dy = _unprojFar[1] - _unprojNear[1];
-    const dz = _unprojFar[2] - _unprojNear[2];
-    const ox = _unprojNear[0],
-      oy = _unprojNear[1],
-      oz = _unprojNear[2];
+    const dx = screenRay.dir[0],
+      dy = screenRay.dir[1],
+      dz = screenRay.dir[2];
+    const ox = screenRay.origin[0],
+      oy = screenRay.origin[1],
+      oz = screenRay.origin[2];
 
     const a = dx * dx + dy * dy + dz * dz;
     if (a === 0) return false;
@@ -355,9 +351,7 @@ export function createGlobeProjection(): Projection {
     mix(out, a, b, t) {
       out[0] = a[0] + lonDelta(a[0], b[0]) * t;
       out[1] = a[1] + (b[1] - a[1]) * t;
-      out[2] = a[2] + (b[2] - a[2]) * t;
-      out[3] = a[3] + (b[3] - a[3]) * t;
-      out[4] = a[4] + turn(a[4], b[4]) * t;
+      mixViewSlots(out, a, b, t);
       invalidate();
     },
 
@@ -367,9 +361,7 @@ export function createGlobeProjection(): Projection {
       const cosLat = Math.cos(b[1] * DEG2RAD);
       out[0] = (lonDelta(a[0], b[0]) * cosLat) / dt;
       out[1] = (b[1] - a[1]) / dt;
-      out[2] = (b[2] - a[2]) / dt;
-      out[3] = (b[3] - a[3]) / dt;
-      out[4] = turn(a[4], b[4]) / dt;
+      deltaViewSlots(out, a, b, dt);
     },
 
     advance(out, s, tangent, scalar) {
@@ -377,9 +369,7 @@ export function createGlobeProjection(): Projection {
       const cosLat = Math.cos(s[1] * DEG2RAD);
       out[0] = wrapLon(s[0] + (cosLat > 0.01 ? tangent[0] / cosLat : 0) * scalar);
       out[1] = clampLat(s[1] + tangent[1] * scalar);
-      out[2] = s[2] + tangent[2] * scalar;
-      out[3] = clampPitch(s[3] + tangent[3] * scalar);
-      out[4] = wrap(s[4] + tangent[4] * scalar);
+      advanceViewSlots(out, s, tangent, scalar, MAX_PITCH);
       invalidate();
     },
 
@@ -407,11 +397,9 @@ export function createGlobeProjection(): Projection {
 
     isAtFit(current, fit): boolean {
       return (
-        Math.abs(current[2] / fit[2] - 1) < 0.01 &&
+        viewSlotsAtFit(current, fit) &&
         Math.abs(lonDelta(current[0], fit[0])) < 0.1 &&
-        Math.abs(current[1] - fit[1]) < 0.1 &&
-        Math.abs(current[3] - fit[3]) < 0.1 &&
-        Math.abs(turn(current[4], fit[4])) < 0.1
+        Math.abs(current[1] - fit[1]) < 0.1
       );
     },
 
@@ -468,14 +456,11 @@ export function createGlobeProjection(): Projection {
     },
 
     rotate(s, dx, dy) {
-      s[4] = wrap(s[4] + dx * BEARING_RATE);
-      s[3] = clampPitch(s[3] - dy * PITCH_RATE);
+      rotateViewSlots(s, dx, dy, MAX_PITCH);
       invalidate();
     },
 
-    pose(s): CameraPose {
-      return { centerX: s[0]!, centerY: s[1]!, pitch: s[3]!, bearing: s[4]! };
-    },
+    pose: statePose,
 
     applyPose(s, pose) {
       if (pose.centerX !== undefined) s[0] = wrapLon(pose.centerX);
@@ -483,6 +468,15 @@ export function createGlobeProjection(): Projection {
       if (pose.pitch !== undefined) s[3] = clampPitch(pose.pitch);
       if (pose.bearing !== undefined) s[4] = wrap(pose.bearing);
       invalidate();
+    },
+
+    pxPerWorld(s, vp) {
+      // Screen pixels per degree of surface arc at the anchor: the inverse of
+      // arcDegPerPx, hence pitch-invariant via the clearance/FOV product. The
+      // SURFACE_R * DEG2RAD factor converts globe radii to graph degrees so
+      // the scalar transfers to the planar family, whose world unit is the
+      // degree whenever a topology can host the globe at all.
+      return 1 / arcDegPerPx(s, vp);
     },
 
     pack(s, region, vp) {

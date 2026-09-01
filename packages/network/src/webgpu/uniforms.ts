@@ -189,150 +189,244 @@ export const ITEM_VERTEX_VISIBLE = 1;
 /** Item flag bit for an enabled edgeVisible channel. */
 export const ITEM_EDGE_VISIBLE = 2;
 
-/** Word offset for the start of the 4x4 view-projection matrix. */
-const W_VP_0 = 0;
-/** Word offset for camera x position. */
-export const W_CAMERA_X = 16;
-/** Word offset for camera y position. */
-export const W_CAMERA_Y = 17;
-/** Word offset for camera z position. */
-export const W_CAMERA_Z = 18;
-/** Word offset for camera field-of-view scale. */
-export const W_FOV_SCALE = 19;
-/** Word offset for light direction x. */
-const W_LIGHT_X = 20;
-/** Word offset for light direction y. */
-const W_LIGHT_Y = 21;
-/** Word offset for light direction z. */
-const W_LIGHT_Z = 22;
-/** Word offset for projection flags. */
-const W_PROJECTION_FLAGS = 23;
-/** Word offset for flat projection x scale. */
-export const W_FLAT_SX = 24;
-/** Word offset for flat projection y scale. */
-export const W_FLAT_SY = 25;
-/** Word offset for flat projection x translation. */
-export const W_FLAT_TX = 26;
-/** Word offset for flat projection y translation. */
-export const W_FLAT_TY = 27;
-/** Word offset for viewport width. */
-export const W_VIEWPORT_X = 28;
-/** Word offset for viewport height. */
-export const W_VIEWPORT_Y = 29;
-/** Word offset for frame time. */
-const W_TIME = 30;
-/** Word offset for backing pixels per CSS pixel. */
-export const W_BACKING_SCALE = 88;
-/** Word offset for base vertex radius. */
-export const W_VERTEX_SIZE = 31;
-/** Word offset for vertex level-of-detail threshold. */
-export const W_VERTEX_LOD = 32;
-/** Word offset for base edge half-width. */
-export const W_BASE_EDGE_WIDTH = 33;
-/** Word offset for edge dash period. */
-export const W_DASH_PERIOD = 34;
-/** Word offset for height amplitude in world units. */
-export const W_HEIGHT_WORLD_SCALE = 35;
-/** Word offset for hovered vertex id. */
-export const W_HOVER_VERTEX = 36;
-/** Word offset for hovered edge id. */
-export const W_HOVER_EDGE = 37;
-/** Word offset for selected vertex id. */
-export const W_SELECTED_VERTEX = 38;
-/** Word offset for selected edge id. */
-export const W_SELECTED_EDGE = 39;
-/** Word offset for vertexColor storage offset. */
-const W_V_COLOR_OFFSET = 40;
-/** Word offset for edgeColor storage offset. */
-const W_E_COLOR_OFFSET = 41;
-/** Word offset for edgeDash storage offset. */
-const W_E_DASH_OFFSET = 42;
-/** Word offset for vertexHeight storage offset. */
-const W_V_HEIGHT_OFFSET = 43;
-/** Word offset for vertexColor shader mode. */
-const W_V_COLOR_MODE = 44;
-/** Word offset for vertexColor domain minimum. */
-const W_V_COLOR_MIN = 45;
-/** Word offset for vertexColor normalization scale. */
-const W_V_COLOR_SCALE = 46;
-/** Word offset for edgeColor shader mode. */
-const W_E_COLOR_MODE = 47;
-/** Word offset for edgeColor domain minimum. */
-const W_E_COLOR_MIN = 48;
-/** Word offset for edgeColor normalization scale. */
-const W_E_COLOR_SCALE = 49;
-/** Word offset for vertexHeight domain center/minimum. */
-export const W_HEIGHT_CENTER = 50;
-/** Word offset for vertexHeight normalization scale. */
-export const W_HEIGHT_SCALE = 51;
-/** Word offset for vertexHeight shader mode. */
-export const W_V_HEIGHT_MODE = 52;
-/** Word offset for vertexSize storage offset. */
-const W_V_SIZE_OFFSET = 53;
-/** Word offset for vertexSize shader mode. */
-export const W_V_SIZE_MODE = 54;
-/** Word offset for vertexSize domain minimum. */
-export const W_V_SIZE_MIN = 55;
-/** Word offset for vertexSize normalization scale. */
-export const W_V_SIZE_SCALE = 56;
-/** Word offset for packed hover focus color. */
-const W_FOCUS_HOVER_COLOR = 57;
-/** Word offset for packed selected focus color. */
-const W_FOCUS_SELECTED_COLOR = 58;
-/** Word offset for focus flags. */
-export const W_FOCUS_FLAGS = 59;
-/** Word offset for hover focus alpha. */
-const W_FOCUS_HOVER_ALPHA = 60;
-/** Word offset for selected focus alpha. */
-const W_FOCUS_SELECTED_ALPHA = 61;
-/** Word offset for vertex hover underlay radius. */
-const W_FOCUS_VERTEX_HOVER_UNDERLAY_PX = 62;
-/** Word offset for vertex selected underlay radius. */
-const W_FOCUS_VERTEX_SELECTED_UNDERLAY_PX = 63;
-/** Word offset for edge hover underlay width. */
-const W_FOCUS_EDGE_HOVER_UNDERLAY_PX = 64;
-/** Word offset for edge selected underlay width. */
-const W_FOCUS_EDGE_SELECTED_UNDERLAY_PX = 65;
-/** Word offset for vertexHeight output range minimum. */
-export const W_HEIGHT_OUT_MIN = 66;
-/** Word offset for vertexHeight output range scale. */
-export const W_HEIGHT_OUT_SCALE = 67;
-/** Word offset for hovered edge endpoint A. */
-export const W_HOVER_ENDPOINT_A = 68;
-/** Word offset for hovered edge endpoint B. */
-export const W_HOVER_ENDPOINT_B = 69;
-/** Word offset for selected edge endpoint A. */
-export const W_SELECTED_ENDPOINT_A = 70;
-/** Word offset for selected edge endpoint B. */
-export const W_SELECTED_ENDPOINT_B = 71;
-/** Word offset for the first component of base vertex color. */
-const W_BASE_VERTEX_COLOR_R = 72;
-/** Word offset for overlay night-side floor. */
-const W_NIGHT_FLOOR = 89;
-/** Word offset for daylight terminator width. */
-const W_TERMINATOR_WIDTH = 90;
-/** Word offset for surface night-side floor. */
-const W_SURFACE_NIGHT_FLOOR = 91;
-/** Word offset for the camera-basis right row x. */
-const W_CAMERA_RIGHT_X = 92;
-/** Word offset for the camera-basis right row y. */
-const W_CAMERA_RIGHT_Y = 93;
-/** Word offset for the camera-basis right row z. */
-const W_CAMERA_RIGHT_Z = 94;
-/** Word offset for the planar projection blend. */
-export const W_PLANE_MIX = 95;
-/** Word offset for the camera-basis up row x. */
-const W_CAMERA_UP_X = 96;
-/** Word offset for the camera-basis up row y. */
-const W_CAMERA_UP_Y = 97;
-/** Word offset for the camera-basis up row z. */
-const W_CAMERA_UP_Z = 98;
-/** Word offset for enabled raw item-channel flags. */
-export const W_ITEM_FLAGS = 99;
-/** Word offset for vertexVisible storage. */
-const W_V_VISIBLE_OFFSET = 100;
-/** Word offset for edgeVisible storage. */
-const W_E_VISIBLE_OFFSET = 101;
+/** WGSL uniform-address-space size and alignment per representable type. */
+const WGSL_TYPES = {
+  f32: { size: 4, align: 4 },
+  u32: { size: 4, align: 4 },
+  i32: { size: 4, align: 4 },
+  vec2f: { size: 8, align: 8 },
+  vec3f: { size: 12, align: 16 },
+  vec4f: { size: 16, align: 16 },
+  vec4i: { size: 16, align: 16 },
+  mat4x4f: { size: 64, align: 16 },
+} as const;
+
+/** WGSL member types representable in the uniform layout table. */
+type WgslType = keyof typeof WGSL_TYPES;
+
+/** Region objects that carry generated scalar accessors. */
+type RegionName = 'projection' | 'frame' | 'geometry' | 'focus' | 'channel';
+
+/** Typed-array view a scalar accessor reads and writes through. */
+type ViewKey = 'f' | 'i' | 'u';
+
+/** One scalar accessor generated onto a region object. */
+interface UniformAccessor {
+  readonly region: RegionName;
+  readonly key: string;
+  readonly view: ViewKey;
+  /** Word lane within a multi-word field; defaults to 0. */
+  readonly lane?: number;
+}
+
+/** One WGSL struct member with its asserted word offset. */
+interface UniformField {
+  /** WGSL member name, matching shaders/common/uniforms.wgsl. */
+  readonly name: string;
+  readonly type: WgslType;
+  /** Explicit 4-byte-word offset; the validator proves WGSL agrees. */
+  readonly word: number;
+  readonly accessors?: readonly UniformAccessor[];
+  /** Initial per-lane word values written by createUniforms; default zero. */
+  readonly init?: readonly number[];
+}
+
+/** Shorthand for the common single-scalar accessor. */
+const a = (region: RegionName, key: string, view: ViewKey = 'f'): readonly UniformAccessor[] => [
+  { region, key, view },
+];
+
+/**
+ * Single source of truth for the packed uniform layout.
+ *
+ * Field order and types MUST match `struct Uniforms` in
+ * shaders/common/uniforms.wgsl, which stays hand-written for its layout
+ * commentary; the natural-layout validator below proves every declared word
+ * offset is exactly the one WGSL assigns to this field order, and the parity
+ * unit test pins the .wgsl struct text to this table. Offsets are explicit
+ * and deliberate: scalars ride the vec3f pad lanes (fov_scale, flags,
+ * plane_mix, item_flags) instead of burning whole 16-byte slots.
+ */
+export const UNIFORM_LAYOUT: readonly UniformField[] = [
+  { name: 'vp', type: 'mat4x4f', word: 0 },
+  { name: 'camera_pos', type: 'vec3f', word: 16 },
+  { name: 'fov_scale', type: 'f32', word: 19, accessors: a('projection', 'fovScale') },
+  { name: 'light_dir', type: 'vec3f', word: 20 },
+  { name: 'flags', type: 'u32', word: 23, accessors: a('projection', 'flags', 'u') },
+  { name: 'flat_sx', type: 'f32', word: 24, accessors: a('projection', 'flatSx') },
+  { name: 'flat_sy', type: 'f32', word: 25, accessors: a('projection', 'flatSy') },
+  { name: 'flat_tx', type: 'f32', word: 26, accessors: a('projection', 'flatTx') },
+  { name: 'flat_ty', type: 'f32', word: 27, accessors: a('projection', 'flatTy') },
+  {
+    name: 'viewport',
+    type: 'vec2f',
+    word: 28,
+    accessors: [
+      { region: 'frame', key: 'viewportX', view: 'f' },
+      { region: 'frame', key: 'viewportY', view: 'f', lane: 1 },
+    ],
+  },
+  { name: 'time', type: 'f32', word: 30, accessors: a('frame', 'time') },
+  { name: 'vertex_size', type: 'f32', word: 31, accessors: a('geometry', 'vertexSize') },
+  { name: 'vertex_lod', type: 'f32', word: 32, accessors: a('geometry', 'vertexLod') },
+  { name: 'base_edge_width', type: 'f32', word: 33, accessors: a('geometry', 'baseEdgeWidth') },
+  { name: 'dash_period', type: 'f32', word: 34, accessors: a('geometry', 'dashPeriod') },
+  {
+    name: 'height_world_scale',
+    type: 'f32',
+    word: 35,
+    accessors: a('geometry', 'heightWorldScale'),
+  },
+  { name: 'hover_vertex', type: 'i32', word: 36, accessors: a('focus', 'hoverVertex', 'i'), init: [-1] },
+  { name: 'hover_edge', type: 'i32', word: 37, accessors: a('focus', 'hoverEdge', 'i'), init: [-1] },
+  { name: 'selected_vertex', type: 'i32', word: 38, accessors: a('focus', 'selectedVertex', 'i'), init: [-1] },
+  { name: 'selected_edge', type: 'i32', word: 39, accessors: a('focus', 'selectedEdge', 'i'), init: [-1] },
+  { name: 'v_color_offset', type: 'u32', word: 40, accessors: a('channel', 'vColorOffset', 'u') },
+  { name: 'e_color_offset', type: 'u32', word: 41, accessors: a('channel', 'eColorOffset', 'u') },
+  { name: 'e_dash_offset', type: 'u32', word: 42, accessors: a('channel', 'eDashOffset', 'u') },
+  { name: 'v_height_offset', type: 'u32', word: 43, accessors: a('channel', 'vHeightOffset', 'u') },
+  { name: 'v_color_mode', type: 'u32', word: 44, accessors: a('channel', 'vColorMode', 'u') },
+  { name: 'v_color_min', type: 'f32', word: 45, accessors: a('channel', 'vColorMin') },
+  { name: 'v_color_scale', type: 'f32', word: 46, accessors: a('channel', 'vColorScale') },
+  { name: 'e_color_mode', type: 'u32', word: 47, accessors: a('channel', 'eColorMode', 'u') },
+  { name: 'e_color_min', type: 'f32', word: 48, accessors: a('channel', 'eColorMin') },
+  { name: 'e_color_scale', type: 'f32', word: 49, accessors: a('channel', 'eColorScale') },
+  { name: 'height_center', type: 'f32', word: 50, accessors: a('channel', 'heightCenter') },
+  { name: 'height_scale', type: 'f32', word: 51, accessors: a('channel', 'heightScale') },
+  { name: 'v_height_mode', type: 'u32', word: 52, accessors: a('channel', 'vHeightMode', 'u') },
+  { name: 'v_size_offset', type: 'u32', word: 53, accessors: a('channel', 'vSizeOffset', 'u') },
+  { name: 'v_size_mode', type: 'u32', word: 54, accessors: a('channel', 'vSizeMode', 'u') },
+  { name: 'v_size_min', type: 'f32', word: 55, accessors: a('channel', 'vSizeMin') },
+  { name: 'v_size_scale', type: 'f32', word: 56, accessors: a('channel', 'vSizeScale') },
+  { name: 'focus_hover_color', type: 'u32', word: 57, accessors: a('focus', 'hoverColor', 'u') },
+  { name: 'focus_selected_color', type: 'u32', word: 58, accessors: a('focus', 'selectedColor', 'u') },
+  { name: 'focus_flags', type: 'u32', word: 59, accessors: a('focus', 'flags', 'u') },
+  { name: 'focus_hover_alpha', type: 'f32', word: 60, accessors: a('focus', 'hoverAlpha') },
+  { name: 'focus_selected_alpha', type: 'f32', word: 61, accessors: a('focus', 'selectedAlpha') },
+  {
+    name: 'focus_vertex_hover_underlay_px',
+    type: 'f32',
+    word: 62,
+    accessors: a('focus', 'vertexHoverUnderlayPx'),
+  },
+  {
+    name: 'focus_vertex_selected_underlay_px',
+    type: 'f32',
+    word: 63,
+    accessors: a('focus', 'vertexSelectedUnderlayPx'),
+  },
+  {
+    name: 'focus_edge_hover_underlay_px',
+    type: 'f32',
+    word: 64,
+    accessors: a('focus', 'edgeHoverUnderlayPx'),
+  },
+  {
+    name: 'focus_edge_selected_underlay_px',
+    type: 'f32',
+    word: 65,
+    accessors: a('focus', 'edgeSelectedUnderlayPx'),
+  },
+  { name: 'height_out_min', type: 'f32', word: 66, accessors: a('channel', 'heightOutMin') },
+  { name: 'height_out_scale', type: 'f32', word: 67, accessors: a('channel', 'heightOutScale') },
+  { name: 'focus_endpoint_ids', type: 'vec4i', word: 68, init: [-1, -1, -1, -1] },
+  { name: 'base_vertex_color', type: 'vec4f', word: 72 },
+  { name: 'grid_color', type: 'vec4f', word: 76 },
+  { name: 'surface_color', type: 'vec4f', word: 80 },
+  { name: 'border_color', type: 'vec4f', word: 84 },
+  { name: 'backing_scale', type: 'f32', word: 88, accessors: a('frame', 'backingScale'), init: [1] },
+  { name: 'night_floor', type: 'f32', word: 89, accessors: a('projection', 'nightFloor') },
+  { name: 'terminator_width', type: 'f32', word: 90, accessors: a('projection', 'terminatorWidth') },
+  {
+    name: 'surface_night_floor',
+    type: 'f32',
+    word: 91,
+    accessors: a('projection', 'surfaceNightFloor'),
+  },
+  { name: 'camera_right', type: 'vec3f', word: 92 },
+  { name: 'plane_mix', type: 'f32', word: 95, accessors: a('projection', 'planeMix') },
+  { name: 'camera_up', type: 'vec3f', word: 96 },
+  { name: 'item_flags', type: 'u32', word: 99, accessors: a('channel', 'itemFlags', 'u') },
+  { name: 'v_visible_offset', type: 'u32', word: 100, accessors: a('channel', 'vVisibleOffset', 'u') },
+  { name: 'e_visible_offset', type: 'u32', word: 101, accessors: a('channel', 'eVisibleOffset', 'u') },
+];
+
+/**
+ * Natural-layout walk over the table.
+ *
+ * WGSL cannot express explicit offsets, so a declared offset is only real if
+ * it is the one WGSL derives from field order and alignment. This proves each
+ * one is (which also rules out overlap and unintended gaps) and that the
+ * struct rounds to {@link UNIFORM_BUFFER_BYTES}.
+ */
+function validateLayout(fields: readonly UniformField[]): void {
+  let cursor = 0;
+  for (const field of fields) {
+    const { size, align } = WGSL_TYPES[field.type];
+    cursor = Math.ceil(cursor / align) * align;
+    if (cursor !== field.word * 4) {
+      throw new Error(
+        `uniform layout: ${field.name} declared at byte ${field.word * 4}, WGSL packs it at ${cursor}`,
+      );
+    }
+    cursor += size;
+  }
+  const total = Math.ceil(cursor / 16) * 16;
+  if (total !== UNIFORM_BUFFER_BYTES) {
+    throw new Error(`uniform layout: struct rounds to ${total} bytes, not ${UNIFORM_BUFFER_BYTES}`);
+  }
+}
+validateLayout(UNIFORM_LAYOUT);
+
+/** Word offset of a named layout field. */
+function wordOf(name: string): number {
+  const field = UNIFORM_LAYOUT.find((entry) => entry.name === name);
+  if (!field) throw new Error(`uniform layout: no field named ${name}`);
+  return field.word;
+}
+
+// Word offsets derived from the layout table for raw-view consumers
+// (pick/project.ts, pick/picker.ts, webgpu/renderer.ts, tests).
+export const W_CAMERA_X = wordOf('camera_pos');
+export const W_CAMERA_Y = W_CAMERA_X + 1;
+export const W_CAMERA_Z = W_CAMERA_X + 2;
+export const W_FOV_SCALE = wordOf('fov_scale');
+export const W_FLAT_SX = wordOf('flat_sx');
+export const W_FLAT_SY = wordOf('flat_sy');
+export const W_FLAT_TX = wordOf('flat_tx');
+export const W_FLAT_TY = wordOf('flat_ty');
+export const W_VIEWPORT_X = wordOf('viewport');
+export const W_VIEWPORT_Y = W_VIEWPORT_X + 1;
+export const W_BACKING_SCALE = wordOf('backing_scale');
+export const W_VERTEX_SIZE = wordOf('vertex_size');
+export const W_VERTEX_LOD = wordOf('vertex_lod');
+export const W_BASE_EDGE_WIDTH = wordOf('base_edge_width');
+export const W_DASH_PERIOD = wordOf('dash_period');
+export const W_HEIGHT_WORLD_SCALE = wordOf('height_world_scale');
+export const W_HOVER_VERTEX = wordOf('hover_vertex');
+export const W_HOVER_EDGE = wordOf('hover_edge');
+export const W_SELECTED_VERTEX = wordOf('selected_vertex');
+export const W_SELECTED_EDGE = wordOf('selected_edge');
+export const W_HEIGHT_CENTER = wordOf('height_center');
+export const W_HEIGHT_SCALE = wordOf('height_scale');
+export const W_V_HEIGHT_MODE = wordOf('v_height_mode');
+export const W_V_SIZE_MODE = wordOf('v_size_mode');
+export const W_V_SIZE_MIN = wordOf('v_size_min');
+export const W_V_SIZE_SCALE = wordOf('v_size_scale');
+export const W_FOCUS_FLAGS = wordOf('focus_flags');
+export const W_HEIGHT_OUT_MIN = wordOf('height_out_min');
+export const W_HEIGHT_OUT_SCALE = wordOf('height_out_scale');
+export const W_HOVER_ENDPOINT_A = wordOf('focus_endpoint_ids');
+export const W_HOVER_ENDPOINT_B = W_HOVER_ENDPOINT_A + 1;
+export const W_SELECTED_ENDPOINT_A = W_HOVER_ENDPOINT_A + 2;
+export const W_SELECTED_ENDPOINT_B = W_HOVER_ENDPOINT_A + 3;
+export const W_PLANE_MIX = wordOf('plane_mix');
+export const W_ITEM_FLAGS = wordOf('item_flags');
+
+const W_PROJECTION_FLAGS = wordOf('flags');
+const W_LIGHT = wordOf('light_dir');
+const W_CAMERA_RIGHT = wordOf('camera_right');
+const W_CAMERA_UP = wordOf('camera_up');
 
 /** Tests whether the graticule projection flag is enabled in a raw uniform view. */
 export function hasGraticuleFlag(u: Uint32Array): boolean {
@@ -355,401 +449,87 @@ export function createUniforms(): Uniforms {
   const f = new Float32Array(buf);
   const i = new Int32Array(buf);
   const u = new Uint32Array(buf);
-  f[W_BACKING_SCALE] = 1;
+  const views = { f, i, u } as const;
 
-  const projection: ProjectionRegion = {
+  // Scalar accessors are generated straight off the layout table; the unit
+  // test exercises every region property, so a table/interface mismatch
+  // cannot survive the suite despite the casts below.
+  const regions: Record<RegionName, Record<string, unknown>> = {
+    projection: {},
+    frame: {},
+    geometry: {},
+    focus: {},
+    channel: {},
+  };
+  for (const field of UNIFORM_LAYOUT) {
+    for (const acc of field.accessors ?? []) {
+      const view = views[acc.view];
+      const at = field.word + (acc.lane ?? 0);
+      Object.defineProperty(regions[acc.region], acc.key, {
+        enumerable: true,
+        get: () => view[at],
+        set: (value: number) => {
+          view[at] = value;
+        },
+      });
+    }
+    if (field.init) {
+      const view = field.type === 'i32' || field.type === 'vec4i' ? i : field.type === 'u32' ? u : f;
+      field.init.forEach((value, lane) => {
+        view[field.word + lane] = value;
+      });
+    }
+  }
+
+  // Multi-word writers stay hand-rolled on top of the generated scalars.
+  Object.assign(regions.projection, {
     setVP(m: Float32Array) {
-      f.set(m.subarray(0, 16), W_VP_0);
+      f.set(m.subarray(0, 16), 0);
     },
-    setCameraPos(x, y, z) {
+    setCameraPos(x: number, y: number, z: number) {
       f[W_CAMERA_X] = x;
       f[W_CAMERA_Y] = y;
       f[W_CAMERA_Z] = z;
     },
-    get fovScale() {
-      return f[W_FOV_SCALE];
-    },
-    set fovScale(v) {
-      f[W_FOV_SCALE] = v;
-    },
-    setLightDir(x, y, z) {
-      f[W_LIGHT_X] = x;
-      f[W_LIGHT_Y] = y;
-      f[W_LIGHT_Z] = z;
-    },
-    setViewBasis(view) {
-      f[W_CAMERA_RIGHT_X] = view[0]!;
-      f[W_CAMERA_RIGHT_Y] = view[4]!;
-      f[W_CAMERA_RIGHT_Z] = view[8]!;
-      f[W_CAMERA_UP_X] = view[1]!;
-      f[W_CAMERA_UP_Y] = view[5]!;
-      f[W_CAMERA_UP_Z] = view[9]!;
-    },
-    get planeMix() {
-      return f[W_PLANE_MIX];
-    },
-    set planeMix(v) {
-      f[W_PLANE_MIX] = v;
-    },
-    get nightFloor() {
-      return f[W_NIGHT_FLOOR];
-    },
-    set nightFloor(v) {
-      f[W_NIGHT_FLOOR] = v;
-    },
-    get terminatorWidth() {
-      return f[W_TERMINATOR_WIDTH];
-    },
-    set terminatorWidth(v) {
-      f[W_TERMINATOR_WIDTH] = v;
-    },
-    get surfaceNightFloor() {
-      return f[W_SURFACE_NIGHT_FLOOR];
-    },
-    set surfaceNightFloor(v) {
-      f[W_SURFACE_NIGHT_FLOOR] = v;
-    },
-    get flags() {
-      return u[W_PROJECTION_FLAGS];
-    },
-    set flags(v) {
-      u[W_PROJECTION_FLAGS] = v;
-    },
-    get flatSx() {
-      return f[W_FLAT_SX];
-    },
-    set flatSx(v) {
-      f[W_FLAT_SX] = v;
-    },
-    get flatSy() {
-      return f[W_FLAT_SY];
-    },
-    set flatSy(v) {
-      f[W_FLAT_SY] = v;
-    },
-    get flatTx() {
-      return f[W_FLAT_TX];
-    },
-    set flatTx(v) {
-      f[W_FLAT_TX] = v;
-    },
-    get flatTy() {
-      return f[W_FLAT_TY];
-    },
-    set flatTy(v) {
-      f[W_FLAT_TY] = v;
-    },
-  };
-
-  const frame: FrameRegion = {
-    get viewportX() {
-      return f[W_VIEWPORT_X];
-    },
-    set viewportX(v) {
-      f[W_VIEWPORT_X] = v;
-    },
-    get viewportY() {
-      return f[W_VIEWPORT_Y];
-    },
-    set viewportY(v) {
-      f[W_VIEWPORT_Y] = v;
-    },
-    get time() {
-      return f[W_TIME];
-    },
-    set time(v) {
-      f[W_TIME] = v;
-    },
-    get backingScale() {
-      return f[W_BACKING_SCALE];
-    },
-    set backingScale(v) {
-      f[W_BACKING_SCALE] = v;
-    },
-  };
-
-  const geometry: GeometryRegion = {
-    get vertexSize() {
-      return f[W_VERTEX_SIZE];
-    },
-    set vertexSize(v) {
-      f[W_VERTEX_SIZE] = v;
-    },
-    get vertexLod() {
-      return f[W_VERTEX_LOD];
-    },
-    set vertexLod(v) {
-      f[W_VERTEX_LOD] = v;
-    },
-    get baseEdgeWidth() {
-      return f[W_BASE_EDGE_WIDTH];
-    },
-    set baseEdgeWidth(v) {
-      f[W_BASE_EDGE_WIDTH] = v;
-    },
-    get dashPeriod() {
-      return f[W_DASH_PERIOD];
-    },
-    set dashPeriod(v) {
-      f[W_DASH_PERIOD] = v;
-    },
-    get heightWorldScale() {
-      return f[W_HEIGHT_WORLD_SCALE];
-    },
-    set heightWorldScale(v) {
-      f[W_HEIGHT_WORLD_SCALE] = v;
-    },
-  };
-
-  const focus: FocusRegion = {
-    get hoverVertex() {
-      return i[W_HOVER_VERTEX];
-    },
-    set hoverVertex(v) {
-      i[W_HOVER_VERTEX] = v;
-    },
-    get hoverEdge() {
-      return i[W_HOVER_EDGE];
-    },
-    set hoverEdge(v) {
-      i[W_HOVER_EDGE] = v;
-    },
-    get selectedVertex() {
-      return i[W_SELECTED_VERTEX];
-    },
-    set selectedVertex(v) {
-      i[W_SELECTED_VERTEX] = v;
-    },
-    get selectedEdge() {
-      return i[W_SELECTED_EDGE];
-    },
-    set selectedEdge(v) {
-      i[W_SELECTED_EDGE] = v;
-    },
-    get hoverColor() {
-      return u[W_FOCUS_HOVER_COLOR];
-    },
-    set hoverColor(v) {
-      u[W_FOCUS_HOVER_COLOR] = v;
-    },
-    get selectedColor() {
-      return u[W_FOCUS_SELECTED_COLOR];
-    },
-    set selectedColor(v) {
-      u[W_FOCUS_SELECTED_COLOR] = v;
-    },
-    get flags() {
-      return u[W_FOCUS_FLAGS];
-    },
-    set flags(v) {
-      u[W_FOCUS_FLAGS] = v;
-    },
-    get hoverAlpha() {
-      return f[W_FOCUS_HOVER_ALPHA];
-    },
-    set hoverAlpha(v) {
-      f[W_FOCUS_HOVER_ALPHA] = v;
-    },
-    get selectedAlpha() {
-      return f[W_FOCUS_SELECTED_ALPHA];
-    },
-    set selectedAlpha(v) {
-      f[W_FOCUS_SELECTED_ALPHA] = v;
-    },
-    get vertexHoverUnderlayPx() {
-      return f[W_FOCUS_VERTEX_HOVER_UNDERLAY_PX];
-    },
-    set vertexHoverUnderlayPx(v) {
-      f[W_FOCUS_VERTEX_HOVER_UNDERLAY_PX] = v;
-    },
-    get vertexSelectedUnderlayPx() {
-      return f[W_FOCUS_VERTEX_SELECTED_UNDERLAY_PX];
-    },
-    set vertexSelectedUnderlayPx(v) {
-      f[W_FOCUS_VERTEX_SELECTED_UNDERLAY_PX] = v;
-    },
-    get edgeHoverUnderlayPx() {
-      return f[W_FOCUS_EDGE_HOVER_UNDERLAY_PX];
-    },
-    set edgeHoverUnderlayPx(v) {
-      f[W_FOCUS_EDGE_HOVER_UNDERLAY_PX] = v;
-    },
-    get edgeSelectedUnderlayPx() {
-      return f[W_FOCUS_EDGE_SELECTED_UNDERLAY_PX];
-    },
-    set edgeSelectedUnderlayPx(v) {
-      f[W_FOCUS_EDGE_SELECTED_UNDERLAY_PX] = v;
-    },
-    setEndpointIds(hoverA, hoverB, selectedA, selectedB) {
+    setLightDir(x: number, y: number, z: number) {
+      f[W_LIGHT] = x;
+      f[W_LIGHT + 1] = y;
+      f[W_LIGHT + 2] = z;
+    },
+    setViewBasis(view: Float32Array) {
+      f[W_CAMERA_RIGHT] = view[0]!;
+      f[W_CAMERA_RIGHT + 1] = view[4]!;
+      f[W_CAMERA_RIGHT + 2] = view[8]!;
+      f[W_CAMERA_UP] = view[1]!;
+      f[W_CAMERA_UP + 1] = view[5]!;
+      f[W_CAMERA_UP + 2] = view[9]!;
+    },
+  });
+  Object.assign(regions.focus, {
+    setEndpointIds(hoverA: number, hoverB: number, selectedA: number, selectedB: number) {
       i[W_HOVER_ENDPOINT_A] = hoverA;
       i[W_HOVER_ENDPOINT_B] = hoverB;
       i[W_SELECTED_ENDPOINT_A] = selectedA;
       i[W_SELECTED_ENDPOINT_B] = selectedB;
     },
-  };
+  });
 
-  const channel: ChannelRegion = {
-    get vColorOffset() {
-      return u[W_V_COLOR_OFFSET];
-    },
-    set vColorOffset(v) {
-      u[W_V_COLOR_OFFSET] = v;
-    },
-    get eColorOffset() {
-      return u[W_E_COLOR_OFFSET];
-    },
-    set eColorOffset(v) {
-      u[W_E_COLOR_OFFSET] = v;
-    },
-    get eDashOffset() {
-      return u[W_E_DASH_OFFSET];
-    },
-    set eDashOffset(v) {
-      u[W_E_DASH_OFFSET] = v;
-    },
-    get vHeightOffset() {
-      return u[W_V_HEIGHT_OFFSET];
-    },
-    set vHeightOffset(v) {
-      u[W_V_HEIGHT_OFFSET] = v;
-    },
-    get vColorMode() {
-      return u[W_V_COLOR_MODE];
-    },
-    set vColorMode(v) {
-      u[W_V_COLOR_MODE] = v;
-    },
-    get vColorMin() {
-      return f[W_V_COLOR_MIN];
-    },
-    set vColorMin(v) {
-      f[W_V_COLOR_MIN] = v;
-    },
-    get vColorScale() {
-      return f[W_V_COLOR_SCALE];
-    },
-    set vColorScale(v) {
-      f[W_V_COLOR_SCALE] = v;
-    },
-    get eColorMode() {
-      return u[W_E_COLOR_MODE];
-    },
-    set eColorMode(v) {
-      u[W_E_COLOR_MODE] = v;
-    },
-    get eColorMin() {
-      return f[W_E_COLOR_MIN];
-    },
-    set eColorMin(v) {
-      f[W_E_COLOR_MIN] = v;
-    },
-    get eColorScale() {
-      return f[W_E_COLOR_SCALE];
-    },
-    set eColorScale(v) {
-      f[W_E_COLOR_SCALE] = v;
-    },
-    get heightCenter() {
-      return f[W_HEIGHT_CENTER];
-    },
-    set heightCenter(v) {
-      f[W_HEIGHT_CENTER] = v;
-    },
-    get heightScale() {
-      return f[W_HEIGHT_SCALE];
-    },
-    set heightScale(v) {
-      f[W_HEIGHT_SCALE] = v;
-    },
-    get vHeightMode() {
-      return u[W_V_HEIGHT_MODE];
-    },
-    set vHeightMode(v) {
-      u[W_V_HEIGHT_MODE] = v;
-    },
-    get vSizeOffset() {
-      return u[W_V_SIZE_OFFSET];
-    },
-    set vSizeOffset(v) {
-      u[W_V_SIZE_OFFSET] = v;
-    },
-    get vSizeMode() {
-      return u[W_V_SIZE_MODE];
-    },
-    set vSizeMode(v) {
-      u[W_V_SIZE_MODE] = v;
-    },
-    get vSizeMin() {
-      return f[W_V_SIZE_MIN];
-    },
-    set vSizeMin(v) {
-      f[W_V_SIZE_MIN] = v;
-    },
-    get vSizeScale() {
-      return f[W_V_SIZE_SCALE];
-    },
-    set vSizeScale(v) {
-      f[W_V_SIZE_SCALE] = v;
-    },
-    get heightOutMin() {
-      return f[W_HEIGHT_OUT_MIN];
-    },
-    set heightOutMin(v) {
-      f[W_HEIGHT_OUT_MIN] = v;
-    },
-    get heightOutScale() {
-      return f[W_HEIGHT_OUT_SCALE];
-    },
-    set heightOutScale(v) {
-      f[W_HEIGHT_OUT_SCALE] = v;
-    },
-    get vVisibleOffset() {
-      return u[W_V_VISIBLE_OFFSET];
-    },
-    set vVisibleOffset(v) {
-      u[W_V_VISIBLE_OFFSET] = v;
-    },
-    get eVisibleOffset() {
-      return u[W_E_VISIBLE_OFFSET];
-    },
-    set eVisibleOffset(v) {
-      u[W_E_VISIBLE_OFFSET] = v;
-    },
-    get itemFlags() {
-      return u[W_ITEM_FLAGS];
-    },
-    set itemFlags(v) {
-      u[W_ITEM_FLAGS] = v;
-    },
-  };
-
-  focus.hoverVertex = -1;
-  focus.hoverEdge = -1;
-  focus.selectedVertex = -1;
-  focus.selectedEdge = -1;
-  focus.setEndpointIds(-1, -1, -1, -1);
-
-  const gridColor = new Float32Array(buf, 304, 4);
-  const surfaceColor = new Float32Array(buf, 320, 4);
-  const borderColor = new Float32Array(buf, 336, 4);
+  const vec4View = (name: string): Float32Array =>
+    new Float32Array(buf, wordOf(name) * Float32Array.BYTES_PER_ELEMENT, 4);
 
   return {
     raw: buf,
     rawF32: f,
     rawI32: i,
     rawU32: u,
-    projection,
-    frame,
-    geometry,
-    focus,
-    channel,
-    baseVertexColor: new Float32Array(
-      buf,
-      W_BASE_VERTEX_COLOR_R * Float32Array.BYTES_PER_ELEMENT,
-      4,
-    ),
-    gridColor,
-    surfaceColor,
-    borderColor,
+    projection: regions.projection as unknown as ProjectionRegion,
+    frame: regions.frame as unknown as FrameRegion,
+    geometry: regions.geometry as unknown as GeometryRegion,
+    focus: regions.focus as unknown as FocusRegion,
+    channel: regions.channel as unknown as ChannelRegion,
+    baseVertexColor: vec4View('base_vertex_color'),
+    gridColor: vec4View('grid_color'),
+    surfaceColor: vec4View('surface_color'),
+    borderColor: vec4View('border_color'),
   };
 }

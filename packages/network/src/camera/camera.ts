@@ -1,15 +1,14 @@
-import type {
+﻿import type {
   Projection,
   CameraPose,
   CameraState,
   Tangent,
   PanSession,
   PlaneView,
-  PoseSnapshot,
   Vec2,
   Viewport,
-  GraphBounds,
 } from './projection.js';
+import type { Bounds } from '../topology/types.js';
 import type { ProjectionRegion } from '../webgpu/uniforms.js';
 import { createTangent, ZOOM_SLOT } from './projection.js';
 
@@ -54,7 +53,7 @@ function validViewport(vp: Viewport): boolean {
 }
 
 /** Camera fits require finite, ordered coordinate bounds. */
-function validBounds(bounds: GraphBounds): boolean {
+function validBounds(bounds: Bounds): boolean {
   return (
     Number.isFinite(bounds.xMin) &&
     Number.isFinite(bounds.xMax) &&
@@ -143,7 +142,7 @@ export class Camera {
   }
 
   /** Place current, target, and fit state from graph bounds. */
-  init(bounds: GraphBounds, vp: Viewport): void {
+  init(bounds: Bounds, vp: Viewport): void {
     const s = this.proj.fit(bounds, vp);
     this.current.set(s);
     this.target.set(s);
@@ -160,33 +159,34 @@ export class Camera {
   }
 
   /**
-   * Place the camera from an imported pose when supported, else from bounds.
+   * Place the camera from a carried pose and anchor scale, else from bounds.
    *
-   * The fit reference always derives from the bounds; a pose import restores
-   * carried `fitIntent` instead of resetting it. Returns false when the
-   * viewport has no area and the caller should defer placement.
+   * The fit reference always derives from the bounds. A carried pose is
+   * merged through `applyPose` (the active view clamps fields it cannot
+   * host) and its scale lands through the same `zoom` clamps gestures use;
+   * the placement restores the carried `fitIntent` instead of resetting it.
+   * Returns false when the viewport has no area and the caller should defer.
    */
-  initFrom(
-    pose: PoseSnapshot | null,
+  place(
+    pose: CameraPose | null,
+    pxPerWorld: number,
     fitIntent: boolean,
-    bounds: GraphBounds,
+    bounds: Bounds,
     vp: Viewport,
   ): boolean {
     if (vp.w <= 0 || vp.h <= 0) return false;
-    const imported = pose ? this.proj.importPose?.(pose, vp) : undefined;
     this.init(bounds, vp);
-    if (imported) {
-      this.current.set(imported);
-      this.target.set(imported);
+    if (pose && Number.isFinite(pxPerWorld) && pxPerWorld > 0) {
+      this.proj.applyPose(this.target, pose);
+      this.proj.zoom(this.target, pxPerWorld / this.proj.pxPerWorld(this.target, vp), this.fit);
+      this.current.set(this.target);
       this.fitIntent = fitIntent;
-      // The projection may prefer to settle elsewhere; the chase animates it.
-      this.proj.settleImportedPose?.(this.target);
     }
     return true;
   }
 
   /** Retarget one view of the current camera family without replacing state. */
-  setView(view: PlaneView, bounds: GraphBounds | null, vp: Viewport): boolean {
+  setView(view: PlaneView, bounds: Bounds | null, vp: Viewport): boolean {
     if (!this.proj.setView) return false;
     const intent = this.fitIntent;
     this.interrupt();
@@ -194,6 +194,31 @@ export class Camera {
     this.fitIntent = intent;
     if (!bounds || !validBounds(bounds) || !validViewport(vp)) return false;
     this.fit = this.proj.fit(bounds, vp);
+    return true;
+  }
+
+  /** True while self-driven motion (coast, fit) owns the rendered state. */
+  private get driven(): boolean {
+    return this.motion.kind === 'coasting' || this.motion.kind === 'fitting';
+  }
+
+  /**
+   * Route one mutation through the shared camera write protocol.
+   *
+   * The mutation runs on a scratch copy of the driven base (rendered state
+   * during self-driven motion, else the target). A post-clamp no-op leaves
+   * any running motion untouched and returns false; a real change interrupts
+   * self-driven motion, retargets the chase, and clears fit intent.
+   */
+  private mutateTarget(mutate: (state: CameraState) => void): boolean {
+    const driven = this.driven;
+    const base = driven ? this.current : this.target;
+    this.scratchState.set(base);
+    mutate(this.scratchState);
+    if (sameState(this.scratchState, base)) return false;
+    if (driven) this.interrupt();
+    this.target.set(this.scratchState);
+    this.fitIntent = false;
     return true;
   }
 
@@ -207,15 +232,7 @@ export class Camera {
     ) {
       return false;
     }
-    const driven = this.motion.kind === 'coasting' || this.motion.kind === 'fitting';
-    const base = driven ? this.current : this.target;
-    this.scratchState.set(base);
-    this.proj.rotate(this.scratchState, dxPx, dyPx, vp);
-    if (sameState(this.scratchState, base)) return false;
-    if (driven) this.interrupt();
-    this.target.set(this.scratchState);
-    this.fitIntent = false;
-    return true;
+    return this.mutateTarget((s) => this.proj.rotate(s, dxPx, dyPx, vp));
   }
 
   /**
@@ -226,8 +243,7 @@ export class Camera {
    */
   pose(): CameraPose | null {
     if (!this.fit) return null;
-    const driven = this.motion.kind === 'coasting' || this.motion.kind === 'fitting';
-    return this.proj.pose(driven ? this.current : this.target);
+    return this.proj.pose(this.driven ? this.current : this.target);
   }
 
   /**
@@ -238,16 +254,9 @@ export class Camera {
    */
   setPose(pose: Partial<CameraPose>, animate: boolean): boolean {
     if (!this.fit) return false;
-    const driven = this.motion.kind === 'coasting' || this.motion.kind === 'fitting';
-    const base = driven ? this.current : this.target;
-    this.scratchState.set(base);
-    this.proj.applyPose(this.scratchState, pose);
-    if (sameState(this.scratchState, base)) return false;
-    if (driven) this.interrupt();
+    if (!this.mutateTarget((s) => this.proj.applyPose(s, pose))) return false;
     this.anchor = null;
-    this.target.set(this.scratchState);
-    if (!animate) this.current.set(this.scratchState);
-    this.fitIntent = false;
+    if (!animate) this.current.set(this.target);
     return true;
   }
 
@@ -407,24 +416,15 @@ export class Camera {
     ) {
       return false;
     }
-    const driven = this.motion.kind === 'coasting' || this.motion.kind === 'fitting';
-    const base = driven ? this.current : this.target;
-    this.scratchState.set(base);
-    this.proj.zoom(this.scratchState, factor, this.fit);
-    if (sameState(this.scratchState, base)) return false;
-    // Fit/coast own target independently. Preserve the visible pose only once
-    // this input has been proven to change the projection state.
-    if (driven) this.interrupt();
+    if (!this.mutateTarget((s) => this.proj.zoom(s, factor, this.fit))) return false;
     // Capture the world point under the cursor so chase can hold it there.
     const world = this.proj.screenToWorld(this.current, sx, sy, vp);
     this.anchor = world ? { world, screen: [sx, sy] } : null;
-    this.target.set(this.scratchState);
-    this.fitIntent = false;
     return true;
   }
 
   /** Animate from the current pose to a fresh fitted view. */
-  fitView(bounds: GraphBounds, vp: Viewport): void {
+  fitView(bounds: Bounds, vp: Viewport): void {
     const to = this.proj.fit(bounds, vp);
     const from = this.proj.clone(this.current);
     this.fit = to;
@@ -442,7 +442,7 @@ export class Camera {
    * An already-satisfied move still takes camera ownership and clears fit
    * intent, matching an explicit subset-fit request.
    */
-  moveTo(bounds: GraphBounds, vp: Viewport, animate: boolean): boolean {
+  moveTo(bounds: Bounds, vp: Viewport, animate: boolean): boolean {
     const fit = this.fit;
     if (!fit || !validBounds(bounds) || !validViewport(vp)) return false;
 
@@ -470,7 +470,7 @@ export class Camera {
    * wrapping and latitude clamping), but only its center slots are adopted.
    * The current zoom and projection-specific extras remain untouched.
    */
-  reveal(bounds: GraphBounds, vp: Viewport, animate: boolean): RevealResult {
+  reveal(bounds: Bounds, vp: Viewport, animate: boolean): RevealResult {
     if (!this.fit || !validBounds(bounds) || !validViewport(vp)) return 'unavailable';
 
     const to = this.proj.fit(bounds, vp);
@@ -572,7 +572,7 @@ export class Camera {
   isAnimating(): boolean {
     // A held-still drag is not "animating"; the gesture layer wakes us on
     // each delta. Only self-driven motion plus anchored zoom need rAF.
-    if (this.motion.kind === 'coasting' || this.motion.kind === 'fitting') return true;
+    if (this.driven) return true;
     if (this.anchor !== null) return true;
     // tick() snaps current onto target once the chase residual is
     // sub-perceptual, so exact equality over every slot is the convergence

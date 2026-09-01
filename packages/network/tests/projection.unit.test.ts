@@ -5,10 +5,11 @@ import { Camera } from '../src/camera/camera.js';
 import { ProjectionRig } from '../src/camera/rig.js';
 import { createUniforms } from '../src/webgpu/uniforms.js';
 import { createTangent, MAX_ZOOM_RATIO } from '../src/camera/projection.js';
-import type { CameraState, GraphBounds, Projection, Viewport } from '../src/camera/projection.js';
+import type { CameraState, Projection, Viewport } from '../src/camera/projection.js';
+import type { Bounds } from '../src/topology/types.js';
 import { VISUAL } from '../src/visual.js';
 
-const bounds: GraphBounds = { xMin: -5, xMax: 5, yMin: -3, yMax: 3 };
+const bounds: Bounds = { xMin: -5, xMax: 5, yMin: -3, yMax: 3 };
 const vp: Viewport = { w: 800, h: 600 };
 
 /** Build a camera state literal: [x, y, zoom, pitch, bearing]. */
@@ -139,10 +140,9 @@ describe('flat projection', () => {
     expect(s[1]).toBeCloseTo(-0.25, 6);
   });
 
-  it('imports projection-independent poses', () => {
-    const imported = proj.importPose!({ centerX: 3, centerY: -2, pxPerWorld: 40 }, vp);
-
-    expect(Array.from(imported)).toEqual([3, -2, 40, 0, 0]);
+  it('reports px-per-world as the flat scale, pitch aside', () => {
+    expect(proj.pxPerWorld(st(3, -2, 40), vp)).toBe(40);
+    expect(proj.pxPerWorld(st(3, -2, 40, 55, 120), vp)).toBe(40);
   });
 
   it('near returns true when the residual motion is sub-pixel', () => {
@@ -170,7 +170,7 @@ describe('flat projection', () => {
 
 describe('globe projection', () => {
   const proj = createGlobeProjection();
-  const geoBounds: GraphBounds = { xMin: -98, xMax: -96, yMin: 30, yMax: 32 };
+  const geoBounds: Bounds = { xMin: -98, xMax: -96, yMin: 30, yMax: 32 };
 
   it('fit returns [lon, lat, dist, pitch, bearing] resting unrotated', () => {
     const s = proj.fit(geoBounds, vp);
@@ -393,6 +393,21 @@ describe('globe projection', () => {
     expect(proj.pose(s).centerX).toBe(-170);
   });
 
+  it('px-per-world is pitch-invariant, above and below the clearance floor', () => {
+    // Above the floor: the eye orbit lengthens with pitch but the FOV holds.
+    const level = st(-97, 31, 2.5);
+    const pitched = st(-97, 31, 2.5, 60, 135);
+    expect(proj.pxPerWorld(level, vp)).toBeGreaterThan(0);
+    expect(proj.pxPerWorld(pitched, vp)).toBeCloseTo(proj.pxPerWorld(level, vp), 9);
+
+    // Below the floor: the narrowed FOV keeps the clearance/FOV product, and
+    // with it the anchor scale, exactly where the effective clearance puts it.
+    const nearSurface = st(0, 0, 1.002);
+    const nearPitched = st(0, 0, 1.002, 60, 0);
+    const ratio = proj.pxPerWorld(nearPitched, vp) / proj.pxPerWorld(nearSurface, vp);
+    expect(ratio).toBeCloseTo(1, 9);
+  });
+
   it('a pitched, beared camera still anchors the state lon/lat at screen center', () => {
     const s = st(-97, 31, 2.5, 60, 135);
     const center = proj.screenToWorld(s, vp.w / 2, vp.h / 2, vp);
@@ -415,13 +430,13 @@ describe('tilt projection', () => {
     const s = fitState();
     expect(s.length).toBe(5);
     // Regression: a fit or reload must never flatten tilt to nadir (which is
-    // pixel-identical to flat). The fit pitch equals the pitch an imported
-    // flat pose settles to, so the fit-fallback path (globe→tilt) and the
-    // import+settle path (flat→tilt) agree — both land tilted.
+    // pixel-identical to flat). The fit pitch equals the pitch setView
+    // settles an entering camera to, so the fit-fallback path and the
+    // carried-pose path agree — both land tilted.
     expect(s[3]).toBeGreaterThan(0);
     expect(s[4]).toBe(0);
-    const settled = proj.importPose!({ centerX: 0, centerY: 0, pxPerWorld: 1 }, vp);
-    proj.settleImportedPose!(settled);
+    const settled = st(0, 0, 1);
+    proj.setView!('tilt', settled);
     expect(s[3]).toBe(settled[3]);
     // The look point still lands at screen center; the oblique unproject
     // round-trips to ~1e-5 world units (perspective, vs nadir's near-exact).
@@ -473,21 +488,20 @@ describe('tilt projection', () => {
     expect(proj.near(s, moved, vp, 0.25)).toBe(false);
   });
 
-  it('imports a flat pose pixel-identically and settles toward its default pitch', () => {
+  it('places a carried flat pose pixel-identically within the zoom envelope', () => {
     const flat = createFlatProjection();
-    const flatState = st(3, -2, 40);
-    const pose = flat.exportPose!(flatState, vp)!;
+    const flatState = st(3, -2, 100);
+    const pose = flat.pose(flatState);
+    const px = flat.pxPerWorld(flatState, vp);
 
-    const imported = proj.importPose!(pose, vp);
-    expect(imported[0]).toBe(3);
-    expect(imported[1]).toBe(-2);
-    expect(imported[3]).toBe(0); // pitch 0 — pixel-identical to flat
-    // Scale round-trips: px-per-world at the look point matches the export.
-    expect(imported[2]).toBeCloseTo(pose.pxPerWorld, 6);
-
-    const target = proj.clone(imported);
-    proj.settleImportedPose!(target);
-    expect(target[3]).toBeGreaterThan(0); // eases over via the chase
+    const camera = new Camera(createTiltProjection(), createUniforms().projection);
+    expect(camera.place(pose, px, false, bounds, vp)).toBe(true);
+    expect(camera.current[0]).toBe(3);
+    expect(camera.current[1]).toBe(-2);
+    expect(camera.current[3]).toBe(0); // carried flat pitch — pixel-identical
+    expect(camera.fitIntent).toBe(false);
+    // Scale round-trips: px-per-world at the look point matches the carrier.
+    expect(camera.current[2]).toBeCloseTo(100, 9);
   });
 
   it('mixes, differentiates, advances, and measures tilt manifold state', () => {
@@ -565,16 +579,16 @@ describe('tilt projection', () => {
     expect(after[1]).toBeCloseTo(grabbed[1], 4);
   });
 
-  it('exports tilt poses and packs matrix camera parameters', () => {
+  it('reads tilt poses and packs matrix camera parameters', () => {
     const s = fitState();
-    const pose = proj.exportPose!(s, vp)!;
+    const pose = proj.pose(s);
     const region = makeProjectionRegion();
 
     proj.pack(s, region, vp);
 
     expect(pose.centerX).toBeCloseTo(s[0], 6);
     expect(pose.centerY).toBeCloseTo(s[1], 6);
-    expect(pose.pxPerWorld).toBeGreaterThan(0);
+    expect(proj.pxPerWorld(s, vp)).toBeGreaterThan(0);
     expect(region.vp.some((value) => value !== 0)).toBe(true);
     expect(region.cameraPos[2]).toBeGreaterThan(0);
     // At bearing 0 the packed basis is right = +x and up tilted off +y.
@@ -598,17 +612,33 @@ describe('Camera', () => {
     expect(camera.isAtFitView()).toBe(true);
   });
 
-  it('initFrom defers zero-size placement and restores imported fit intent', () => {
+  it('place defers zero-size placement and restores carried fit intent', () => {
     const { camera } = make();
-    const pose = { centerX: 2, centerY: 3, pxPerWorld: 25 };
+    const pose = { centerX: 2, centerY: 3, pitch: 0, bearing: 0 };
 
-    expect(camera.initFrom(pose, false, bounds, { w: 0, h: 10 })).toBe(false);
-    expect(camera.initFrom(pose, false, bounds, vp)).toBe(true);
+    expect(camera.place(pose, 100, false, bounds, { w: 0, h: 10 })).toBe(false);
+    expect(camera.place(pose, 100, false, bounds, vp)).toBe(true);
 
     expect(camera.fitIntent).toBe(false);
     expect(camera.current[0]).toBe(2);
     expect(camera.current[1]).toBe(3);
-    expect(camera.current[2]).toBe(25);
+    expect(camera.current[2]).toBeCloseTo(100, 9);
+    expect(camera.isAnimating()).toBe(false);
+  });
+
+  it('place lands carried scale through the same clamps gestures use', () => {
+    const { camera } = make();
+    const fitScale = camera.current[2];
+
+    // A wider-than-fit carried view is unreachable by gestures; it clamps.
+    const wide = { centerX: 0, centerY: 0, pitch: 0, bearing: 0 };
+    expect(camera.place(wide, fitScale / 4, false, bounds, vp)).toBe(true);
+    expect(camera.current[2]).toBe(fitScale);
+    // A non-positive scale means no usable carrier: the fit wins outright.
+    const carried = { centerX: 2, centerY: 3, pitch: 0, bearing: 0 };
+    expect(camera.place(carried, 0, false, bounds, vp)).toBe(true);
+    expect(camera.current[0]).toBe(0);
+    expect(camera.fitIntent).toBe(true);
   });
 
   it('zoom changes state after ticks', () => {
@@ -1036,6 +1066,7 @@ describe('Camera', () => {
         if (pose.pitch !== undefined) state[3] = pose.pitch;
         if (pose.bearing !== undefined) state[4] = pose.bearing;
       },
+      pxPerWorld: (s) => s[2]!,
       pack() {},
     };
     const camera = new Camera(proj, createUniforms().projection);
@@ -1135,6 +1166,43 @@ describe('ProjectionRig', () => {
     expect(frames).toBeLessThan(120);
     expect(camera.current[3]).toBe(0);
     expect(uniforms.projection.planeMix).toBe(0);
+  });
+
+  it('preserves the view across plane-globe switches in both directions', () => {
+    const geoBounds: Bounds = { xMin: -98, xMax: -96, yMin: 30, yMax: 32 };
+    const rig = new ProjectionRig(createUniforms().projection);
+    rig.camera.init(geoBounds, vp);
+    rig.camera.current.set(Float64Array.of(-97.2, 30.7, 500, 0, 0));
+    rig.camera.target.set(rig.camera.current);
+    rig.camera.fitIntent = false;
+
+    expect(rig.switchTo('globe', geoBounds, vp)).toBe(true);
+    expect(rig.camera.current[0]).toBeCloseTo(-97.2, 6);
+    expect(rig.camera.current[1]).toBeCloseTo(30.7, 6);
+    expect(rig.projection.pxPerWorld(rig.camera.current, vp)).toBeCloseTo(500, 6);
+    expect(rig.camera.fitIntent).toBe(false);
+
+    // Pitch and turn the globe; the whole orientation carries back to tilt,
+    // whose target then settles toward its resting oblique via the chase.
+    rig.camera.setPose({ pitch: 40, bearing: 30 }, false);
+    expect(rig.switchTo('tilt', geoBounds, vp)).toBe(true);
+    expect(rig.camera.current[0]).toBeCloseTo(-97.2, 6);
+    expect(rig.camera.current[1]).toBeCloseTo(30.7, 6);
+    expect(rig.camera.current[3]).toBe(40);
+    expect(rig.camera.current[4]).toBe(30);
+    expect(rig.camera.target[3]).toBeGreaterThan(40);
+    expect(rig.projection.pxPerWorld(rig.camera.current, vp)).toBeCloseTo(500, 6);
+    expect(rig.camera.fitIntent).toBe(false);
+  });
+
+  it('lets the incoming fit win a switch while fit intent is active', () => {
+    const geoBounds: Bounds = { xMin: -98, xMax: -96, yMin: 30, yMax: 32 };
+    const rig = new ProjectionRig(createUniforms().projection);
+    rig.camera.init(geoBounds, vp);
+
+    expect(rig.switchTo('globe', geoBounds, vp)).toBe(true);
+    expect(rig.camera.isAtFitView()).toBe(true);
+    expect(rig.camera.fitIntent).toBe(true);
   });
 });
 

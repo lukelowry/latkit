@@ -1,6 +1,7 @@
 import { createGlobeProjection } from './camera/globe.js';
 import { createPlaneProjection } from './camera/plane.js';
-import type { Projection } from './camera/projection.js';
+import type { Projection, Viewport } from './camera/projection.js';
+import { VISUAL, planeHeightWorldScale } from './visual.js';
 import type { Bounds } from './topology/index.js';
 
 import planeSrc from './shaders/projections/plane-overlay.wgsl?raw';
@@ -30,6 +31,17 @@ export interface ProjectionDef {
   readonly pipeline: PipelineMode;
   /** Returns whether the loaded topology can be displayed in this mode. */
   readonly canUse: (bounds: Bounds | null, characteristicLength: number | null) => boolean;
+  /** Projection-space visual amplitude for the normalized height channel. */
+  readonly heightWorldScale: (bounds: Bounds, vp: Viewport, vertexSize: number) => number;
+  /** Whether this projection's lighting varies with wall-clock time. */
+  readonly timeVaryingLight: boolean;
+  /**
+   * X axis is periodic longitude.
+   *
+   * Item bounds then take the minimal covering arc nearest the view center;
+   * pose slot 0 and `screenToWorld()[0]` are degrees longitude when set.
+   */
+  readonly wrapX: boolean;
 }
 
 /** Shader sources and fixed pipeline state for one pipeline family. */
@@ -137,18 +149,27 @@ export const PROJECTIONS = Object.freeze({
     create: () => createPlaneProjection('flat'),
     pipeline: 'plane',
     canUse: () => true,
+    heightWorldScale: planeHeightWorldScale,
+    timeVaryingLight: false,
+    wrapX: false,
   },
   tilt: {
     mode: 'tilt',
     create: () => createPlaneProjection('tilt'),
     pipeline: 'plane',
     canUse: () => true,
+    heightWorldScale: planeHeightWorldScale,
+    timeVaryingLight: false,
+    wrapX: false,
   },
   globe: {
     mode: 'globe',
     create: createGlobeProjection,
     pipeline: 'globe',
     canUse: canHostGlobe,
+    heightWorldScale: () => VISUAL.globeHeightRadialScale,
+    timeVaryingLight: true,
+    wrapX: true,
   },
 } satisfies Record<ProjectionMode, ProjectionDef>);
 

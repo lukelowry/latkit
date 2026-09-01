@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   createUniforms,
@@ -7,9 +8,40 @@ import {
   ITEM_EDGE_VISIBLE,
   ITEM_VERTEX_VISIBLE,
   UNIFORM_BUFFER_BYTES,
+  UNIFORM_LAYOUT,
   W_ITEM_FLAGS,
   W_PLANE_MIX,
 } from '../src/webgpu/uniforms.js';
+
+describe('uniform layout table', () => {
+  // The natural-layout validator runs at module load: importing uniforms.js
+  // at all proves each declared offset is the one WGSL assigns. These tests
+  // pin the two remaining degrees of freedom - the hand-written WGSL struct
+  // text and a couple of raw literals as double-entry bookkeeping.
+
+  it('matches the hand-written WGSL struct field for field', () => {
+    const src = readFileSync(
+      new URL('../src/shaders/common/uniforms.wgsl', import.meta.url),
+      'utf8',
+    );
+    const body = src.slice(src.indexOf('struct Uniforms {'), src.indexOf('\n}'));
+    const fields = [...body.matchAll(/^ {2}(\w+)\s*:\s*(\w+),/gm)].map((m) => ({
+      name: m[1],
+      type: m[2],
+    }));
+    expect(fields).toEqual(UNIFORM_LAYOUT.map(({ name, type }) => ({ name, type })));
+  });
+
+  it('keeps the pad-lane scalars and block anchors at their published offsets', () => {
+    const wordOf = (name: string) => UNIFORM_LAYOUT.find((f) => f.name === name)?.word;
+    expect(wordOf('fov_scale')).toBe(19);
+    expect(wordOf('plane_mix')).toBe(95);
+    expect(wordOf('item_flags')).toBe(99);
+    expect(wordOf('grid_color')).toBe(76);
+    expect(wordOf('backing_scale')).toBe(88);
+    expect(UNIFORM_BUFFER_BYTES).toBe(416);
+  });
+});
 
 describe('createUniforms', () => {
   it('creates a raw buffer that matches the exported uniform layout size', () => {

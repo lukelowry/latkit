@@ -126,17 +126,15 @@ function wireProjections(net: Network): ProjectionControls {
   const modes: readonly ProjectionMode[] = ['flat', 'tilt', 'globe'];
   const row = document.getElementById('projections') as HTMLElement;
   const buttons = new Map<ProjectionMode, HTMLButtonElement>();
-  let active: ProjectionMode = 'flat';
 
   function select(mode: ProjectionMode): boolean {
     if (!net.setProjection(mode)) return false;
-    active = mode;
     setActive(row, buttons.get(mode)!);
     return true;
   }
 
   for (const mode of modes) {
-    const btn = createButton(mode, mode === 'flat');
+    const btn = createButton(mode, mode === net.projection);
     btn.disabled = !net.projections[mode];
     btn.addEventListener('click', () => {
       select(mode);
@@ -145,7 +143,7 @@ function wireProjections(net: Network): ProjectionControls {
     row.appendChild(btn);
   }
 
-  return { select, mode: () => active };
+  return { select, mode: () => net.projection };
 }
 
 /** Longitude drift for the globe spin, in degrees per millisecond (8 deg/s,
