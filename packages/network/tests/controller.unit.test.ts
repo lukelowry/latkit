@@ -1301,9 +1301,15 @@ describe('createNetwork controller', () => {
     expect(h.network.geographic).toBe(false);
     expect(h.network.projections.globe).toBe(false);
     expect(h.loop.uniforms.light.flags & (FLAG_DAYLIGHT | FLAG_GEOGRAPHIC)).toBe(0);
+
+    // A declaration cannot turn generated coordinates into geographic data.
+    h.network.load({ ...ringTopology(), coordinateSpace: 'geographic' });
+    expect(h.network.geographic).toBe(false);
+    expect(h.network.projections.globe).toBe(false);
+    expect(h.loop.uniforms.light.flags & (FLAG_DAYLIGHT | FLAG_GEOGRAPHIC)).toBe(0);
   });
 
-  it('keeps cartesian-declared coordinates off geographic features', async () => {
+  it('honors coordinate declarations without bypassing geographic bounds', async () => {
     const h = await makeHarness();
 
     h.network.load({ ...geographicTopology(), coordinateSpace: 'cartesian' });
@@ -1314,6 +1320,11 @@ describe('createNetwork controller', () => {
     h.network.load({ ...geographicTopology(), coordinateSpace: 'geographic' });
     expect(h.network.geographic).toBe(true);
     expect(h.network.projections.globe).toBe(true);
+
+    h.network.load({ ...nonGlobeTopology(), coordinateSpace: 'geographic' });
+    expect(h.network.geographic).toBe(false);
+    expect(h.network.projections.globe).toBe(false);
+    expect(h.loop.uniforms.light.flags & (FLAG_DAYLIGHT | FLAG_GEOGRAPHIC)).toBe(0);
   });
 
   it('exposes geographic interpretation for the loaded topology', async () => {

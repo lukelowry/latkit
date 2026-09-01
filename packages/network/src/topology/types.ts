@@ -6,7 +6,7 @@
  * and tilt projections accept arbitrary `x, y` coordinates. Globe projection
  * and other geographic features are available when caller-supplied
  * coordinates fit geographic longitude and latitude bounds; see
- * {@link Topology.coordinateSpace} to override that inference.
+ * `coordinateSpace` to override that inference.
  *
  * `polylineStart` is an offset table into `polylinePoints`. It must contain
  * `edgeCount + 1` entries, begin at `0`, stay monotonic, and end at the number

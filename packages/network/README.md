@@ -18,6 +18,7 @@ import { createNetwork, finiteExtent, type Topology } from '@latkit/network';
 const topology: Topology = {
   vertexCount: 3,
   vertexCoords: new Float32Array([-96, 30, -95, 31, -94, 30]),
+  coordinateSpace: 'geographic',
   edges: new Uint32Array([0, 1, 1, 2]),
   polylineStart: new Uint32Array([0, 0, 0]),
 };
@@ -124,9 +125,16 @@ device.destroy();
 
 ## Data shape
 
-- `vertexCoords` stores two numbers per vertex.
+- `vertexCoords` stores two numbers per vertex. Omit it to use an abstract generated ring layout.
+- `coordinateSpace` can declare explicit coordinates as `'cartesian'` or `'geographic'`.
 - `edges` stores endpoint pairs.
 - `polylineStart` stores one offset per edge plus a terminal offset.
 - Channel arrays must match the current vertex or edge count.
+
+`network.geographic` reports how the loaded coordinates are interpreted. Generated layouts are
+never geographic. Explicit coordinates inside longitude and latitude bounds are inferred
+geographic unless `coordinateSpace: 'cartesian'` opts out; `'geographic'` documents intent but
+does not bypass those bounds. `network.projections.globe` additionally reflects the required
+geographic span and scale.
 
 See the repository docs for topology, channel, projection, and lifecycle guidance.

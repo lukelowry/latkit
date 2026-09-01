@@ -6,13 +6,19 @@ Use this guide when adapting real network data to `@latkit/network`.
 
 `Topology` is the CPU-side graph shape passed to `network.load()`.
 
-| Field            | Length            | Meaning                                      |
-| ---------------- | ----------------- | -------------------------------------------- |
-| `vertexCount`    | `1` number        | Number of logical graph vertices             |
-| `vertexCoords`   | `vertexCount * 2` | Interleaved `x, y` or `lon, lat` coordinates |
-| `edges`          | `edgeCount * 2`   | Endpoint vertex indices as `from, to` pairs  |
-| `polylineStart`  | `edgeCount + 1`   | Offset table into `polylinePoints`           |
-| `polylinePoints` | `pointCount * 2`  | Optional bend points for edge polylines      |
+| Field             | Length            | Meaning                                              |
+| ----------------- | ----------------- | ---------------------------------------------------- |
+| `vertexCount`     | `1` number        | Number of logical graph vertices                     |
+| `vertexCoords`    | `vertexCount * 2` | Optional interleaved `x, y` or `lon, lat` values     |
+| `coordinateSpace` | N/A               | Optional `'cartesian'` or `'geographic'` declaration |
+| `edges`           | `edgeCount * 2`   | Endpoint vertex indices as `from, to` pairs          |
+| `polylineStart`   | `edgeCount + 1`   | Offset table into `polylinePoints`                   |
+| `polylinePoints`  | `pointCount * 2`  | Optional bend points for edge polylines              |
+
+Omit `vertexCoords` to use the generated unit-ring layout. Generated coordinates are always
+abstract. Caller-supplied coordinates inside longitude and latitude bounds are inferred geographic
+unless `coordinateSpace: 'cartesian'` opts out. `coordinateSpace: 'geographic'` documents intent,
+but coordinates must still fit those bounds.
 
 For straight edges with no bend points, use a zero-filled `polylineStart` with `edgeCount + 1` entries:
 
@@ -39,13 +45,18 @@ const topology: Topology = {
 
 ## Projection support
 
-All projections use vertex coordinates for topology fit bounds. Flat and tilt accept arbitrary coordinates; globe additionally requires longitude in `[-180, 180]`, latitude in `[-90, 90]`, a non-trivial geographic span, and a characteristic length small enough for globe rendering. Item-specific edge framing still includes that edge's polyline bends.
+All projections use resolved vertex coordinates for topology fit bounds. Flat and tilt accept
+arbitrary coordinates. Globe additionally requires a geographic interpretation, longitude in
+`[-180, 180]`, latitude in `[-90, 90]`, a non-trivial geographic span, and a characteristic length
+small enough for globe rendering. Item-specific edge framing still includes that edge's polyline
+bends.
 
 Read support after `load()`:
 
 ```ts
 network.load(topology);
 
+console.log(network.geographic);
 if (network.projections.globe) {
   network.setProjection('globe');
 }
