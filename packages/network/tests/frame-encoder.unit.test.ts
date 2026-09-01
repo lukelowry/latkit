@@ -24,7 +24,6 @@ function makeInputs(overrides: Partial<EncodeNetworkFrameInputs> = {}) {
     encoder,
     colorAttachment: {} as GPURenderPassColorAttachment,
     depthView: {} as GPUTextureView,
-    drawBackground: false,
     visual: {
       vertex: {} as GPURenderPipeline,
       vertexHalo: {} as GPURenderPipeline,
@@ -54,6 +53,17 @@ function makeInputs(overrides: Partial<EncodeNetworkFrameInputs> = {}) {
 }
 
 describe('encodeNetworkFrame edge draws', () => {
+  it('always draws the background surface before any overlay', () => {
+    const { inputs, rp, draw } = makeInputs({
+      visibility: { vertices: false, edges: false, poles: false, borders: false, earthAxis: false },
+    });
+
+    encodeNetworkFrame(inputs);
+
+    expect(rp.setPipeline).toHaveBeenNthCalledWith(1, inputs.visual.bg);
+    expect(draw).toHaveBeenCalledWith(3);
+  });
+
   it('draws all edges directly from topology segments', () => {
     const { inputs, draw, drawIndirect } = makeInputs();
 
@@ -96,7 +106,6 @@ describe('encodeNetworkFrame edge draws', () => {
       indexCount: 8,
     };
     const { inputs, rp, draw, drawIndexed } = makeInputs({
-      drawBackground: true,
       visual: {
         vertex: {} as GPURenderPipeline,
         vertexHalo: {} as GPURenderPipeline,

@@ -10,7 +10,6 @@ import planeSrc from './shaders/projections/plane-overlay.wgsl?raw';
 import planeBgSrc from './shaders/projections/plane-background.wgsl?raw';
 import globeSrc from './shaders/projections/globe-overlay.wgsl?raw';
 import globeBgSrc from './shaders/projections/globe-background.wgsl?raw';
-import daylightSrc from './shaders/projections/globe-daylight.wgsl?raw';
 import earthAxisSrc from './shaders/passes/earth-axis.wgsl?raw';
 
 /** Canonical projection modes supported by the network renderer. */
@@ -52,20 +51,18 @@ export interface ProjectionDef {
 export interface PipelineDef {
   /** Stable pipeline cache key and label prefix. */
   readonly family: ProjectionFamily;
-  /** Whether this bundle's shaders consume `light_dir` (daylight shading). */
-  readonly lit: boolean;
   /** CPU picking mirror over the same packed uniforms the shaders read. */
   readonly projector: (uniforms: Uniforms) => Projector;
   /** Overlay prelude that implements the WGSL symbol contract below. */
   readonly overlayWgsl: string;
+  /** WGSL body for `sun_normal()`, feeding the shared daylight terminator. */
+  readonly sunWgsl: string;
   /** WGSL body for `vertex_surface_world()`. */
   readonly vertexSurfaceWgsl: string;
   /** WGSL body for `segment_surface_world()`. */
   readonly segmentSurfaceWgsl: string;
   /** Background shader source. It must write `frag_depth`. */
   readonly bgWgsl: string;
-  /** Extra WGSL sources required by the background shader. */
-  readonly bgPreludeWgsl: string;
   /** WGSL body for `border_world()`, returning the final lifted world position. */
   readonly borderWorldWgsl: string;
   /** Optional extra pass drawn behind overlays (the globe's earth axis). */
@@ -84,19 +81,26 @@ export interface PipelineDef {
 //   fn screen_radius(clip: vec4f) -> f32             vertex px radius (pre-LOD)
 //   fn screen_half_width(clip: vec4f, w: f32) -> f32
 //   fn screen_pole_half_width(clip: vec4f) -> f32
-//   fn daylight(world: vec3f) -> f32                 return 1.0 when n/a
+//   fn sun_normal(world: vec3f) -> vec3f             unit planet-center direction
+//                                                    (sunWgsl; daylight input)
 //
 // Module composition per slot (what your code can see; webgpu/pipelines.ts
 // owns the concatenation):
-//   overlay: VISUAL_WGSL + overlayWgsl + uniforms + channel-* + topology + core
-//   border:  VISUAL_WGSL + overlayWgsl + uniforms + borderWorldWgsl + borders
-//   bg:      VISUAL_WGSL + uniforms + graticule + camera-ray + bgPreludeWgsl + bgWgsl
+//   overlay: VISUAL_WGSL + overlayWgsl + daylight + sunWgsl + uniforms
+//            + channel-* + topology + core
+//   border:  VISUAL_WGSL + overlayWgsl + daylight + sunWgsl + uniforms
+//            + borderWorldWgsl + borders
+//   bg:      VISUAL_WGSL + uniforms + graticule + camera-ray + daylight
+//            + sunWgsl + bgWgsl
 //            - NO overlay prelude: a bg shader cannot reference projection
-//            overlay helpers unless its bgPreludeWgsl carries them.
+//            overlay helpers.
 //            graticule.wgsl owns the shared grid line rendering and flag
 //            helper; flat/tilt use cartesian_grid, globe uses
 //            geographic_graticule. camera-ray.wgsl owns the per-fragment eye
 //            ray from the packed camera basis; every bg gets it.
+//            daylight.wgsl owns the shared solar terminator (and geo_to_xyz);
+//            every slot gets it, and the family's sunWgsl supplies the
+//            position -> planet-center direction map it shades with.
 //
 // Conventions:
 //   u.depth_mix is 0 at flat rest and 1 for perspective/globe depth.
@@ -141,11 +145,23 @@ fn segment_surface_world(_seg: SegmentRecord, segment_id: u32, endpoint: u32) ->
 }
 `;
 
+/**
+ * Returns whether topology coordinates read as geographic lon/lat degrees.
+ *
+ * This is the availability gate for coordinate-interpreting features that any
+ * projection can render (daylight shading); the globe additionally constrains
+ * extent and scale via its `canUse`.
+ */
+export function isGeographic(bounds: Bounds | null): boolean {
+  if (!bounds) return false;
+  return bounds.xMin >= -180 && bounds.xMax <= 180 && bounds.yMin >= -90 && bounds.yMax <= 90;
+}
+
 /** Returns whether topology bounds and scale are suitable for globe rendering. */
 function canHostGlobe(bounds: Bounds | null, characteristicLength: number | null): boolean {
   if (!bounds || characteristicLength === null) return false;
+  if (!isGeographic(bounds)) return false;
   const b = bounds;
-  if (b.xMin < -180 || b.xMax > 180 || b.yMin < -90 || b.yMax > 90) return false;
   if (b.xMax - b.xMin < GLOBE_MIN_DEG || b.yMax - b.yMin < GLOBE_MIN_DEG) return false;
   return characteristicLength <= GLOBE_MAX_CL;
 }
@@ -182,25 +198,28 @@ export const PROJECTIONS = Object.freeze({
 export const PIPELINES = Object.freeze({
   plane: {
     family: 'plane',
-    lit: false,
     projector: planeProjector,
     overlayWgsl: planeSrc,
+    // Plane world coordinates are lon/lat degrees whenever daylight is armed
+    // (FLAG_DAYLIGHT is gated on isGeographic), so the geographic conversion
+    // is always meaningful here.
+    sunWgsl: 'fn sun_normal(world: vec3f) -> vec3f { return geo_to_xyz(world.x, world.y); }\n',
     vertexSurfaceWgsl: planarVertexSurfaceWgsl,
     segmentSurfaceWgsl: planarSegmentSurfaceWgsl,
     bgWgsl: planeBgSrc,
-    bgPreludeWgsl: '',
     borderWorldWgsl:
       'fn border_world(lonlat: vec2f, ecef: vec3f) -> vec3f { return vec3f(lonlat, TILT_SURFACE_LIFT * u.vertex_size * u.depth_mix); }\n',
   },
   globe: {
     family: 'globe',
-    lit: true,
     projector: globeProjector,
-    overlayWgsl: globeSrc + daylightSrc,
+    overlayWgsl: globeSrc,
+    // Globe world positions sit on (or are lifted radially off) the unit
+    // sphere; normalizing recovers the surface direction.
+    sunWgsl: 'fn sun_normal(world: vec3f) -> vec3f { return normalize(world); }\n',
     vertexSurfaceWgsl: globeVertexSurfaceWgsl,
     segmentSurfaceWgsl: globeSegmentSurfaceWgsl,
     bgWgsl: globeBgSrc,
-    bgPreludeWgsl: daylightSrc,
     // ecef is unit-length in the border asset; the normalize is the same
     // defensive posture the shared shader carried before the lift moved here.
     borderWorldWgsl:

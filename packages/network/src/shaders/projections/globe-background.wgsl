@@ -1,6 +1,6 @@
 // Globe background: ray-traced lit sphere with shared graticule.
 // Prepended at pipeline creation:
-// uniforms.wgsl + graticule.wgsl + camera-ray.wgsl + daylight.wgsl.
+// uniforms.wgsl + graticule.wgsl + camera-ray.wgsl + daylight.wgsl + sun_normal.
 // Renders a full-screen triangle with ray-sphere math. The bg writes the
 // resulting surface depth via frag_depth; every overlay pass depth-tests
 // against it, which is the sole sphere-occlusion mechanism.

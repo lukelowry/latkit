@@ -3,7 +3,6 @@
 import type { Presentation } from '@latkit/gpu';
 import {
   UNIFORM_BUFFER_BYTES,
-  hasGraticuleFlag,
   hasSceneDepth,
   hasVertexHeightChannel,
   FLAG_FOCUS_ENABLED,
@@ -573,9 +572,6 @@ export class Renderer {
         TRANSPARENT_CLEAR,
       ),
       depthView: this.frameResources.depthView,
-      // Uniform-driven: the globe always packs full scene depth, so no
-      // per-family dispatch is needed here.
-      drawBackground: hasSceneDepth(uniforms.rawF32) || hasGraticuleFlag(uniforms.rawU32),
       visual,
       channelsBindGroup: this.channelsBindGroup,
       topologyBindGroup: this.topologyBindGroup,

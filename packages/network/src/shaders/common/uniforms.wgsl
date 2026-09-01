@@ -75,7 +75,7 @@ struct Uniforms {
   // theme instead of hardcoded constants. The void/sky is NOT here - it stays a transparent clear so
   // the themed DOM bleeds through (see renderer.ts).
   // grid_color    - the shared graticule line color.
-  // surface_color - the tilt ground plane and globe sphere base tone.
+  // surface_color - the ground plane (flat/tilt) and globe sphere base tone.
   // border_color  - the geographic border tint (coastlines/admin lines); per-tier alpha in borders.wgsl.
   grid_color: vec4f,
   surface_color: vec4f,

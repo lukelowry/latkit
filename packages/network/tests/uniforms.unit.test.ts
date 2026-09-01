@@ -4,7 +4,6 @@ import {
   createUniforms,
   FLAG_DAYLIGHT,
   FLAG_GRATICULE,
-  hasGraticuleFlag,
   ITEM_EDGE_VISIBLE,
   ITEM_VERTEX_VISIBLE,
   UNIFORM_BUFFER_BYTES,
@@ -85,10 +84,8 @@ describe('createUniforms', () => {
     expect(view[20]).toBeCloseTo(0.1);
     expect(view[21]).toBeCloseTo(0.2);
     expect(view[22]).toBeCloseTo(0.3);
-    u.light.flags = FLAG_DAYLIGHT;
-    expect(hasGraticuleFlag(u.rawU32)).toBe(false);
     u.light.flags = FLAG_DAYLIGHT | FLAG_GRATICULE;
-    expect(hasGraticuleFlag(u.rawU32)).toBe(true);
+    expect(u.rawU32[23]).toBe(FLAG_DAYLIGHT | FLAG_GRATICULE);
   });
 
   it('camera setVP copies 16 floats to bytes 0-63', () => {

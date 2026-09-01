@@ -18,9 +18,9 @@ import { createChannels, type Channel } from './channels.js';
 import type { ChannelRange } from './range.js';
 import { RenderLoop } from './webgpu/render-loop.js';
 import {
-  PIPELINES,
   PROJECTIONS,
   PROJECTION_MODES,
+  isGeographic,
   type ProjectionFamily,
   type ProjectionMode,
 } from './projections.js';
@@ -718,9 +718,9 @@ function createNetworkController(
     poles: display.poles,
   });
 
-  /** Periodic idle wake while the active family's shading consumes daylight. */
+  /** Periodic idle wake while daylight shading is armed for the loaded data. */
   const sunTimer = setInterval(() => {
-    if (display.daylight && PIPELINES[PROJECTIONS[rig.mode].family].lit) loop.wake();
+    if (display.daylight && isGeographic(topologyBounds)) loop.wake();
   }, SUN_REFRESH_MS);
   lifecycle.add(() => clearInterval(sunTimer));
 
@@ -1188,8 +1188,11 @@ function createNetworkController(
 
   /** Writes display flags, lighting scalars, and screen-space thresholds into uniforms. */
   function writeDisplayToUniforms(): void {
+    // Daylight interprets coordinates as lon/lat degrees, so it arms only for
+    // geographic topologies; every projection family shades when it is set.
     uniforms.light.flags =
-      (display.daylight ? FLAG_DAYLIGHT : 0) | (display.graticule ? FLAG_GRATICULE : 0);
+      (display.daylight && isGeographic(topologyBounds) ? FLAG_DAYLIGHT : 0) |
+      (display.graticule ? FLAG_GRATICULE : 0);
     uniforms.light.nightFloor = display.nightFloor;
     uniforms.light.surfaceNightFloor = display.surfaceNightFloor;
     uniforms.light.terminatorWidth = display.terminatorWidth;
@@ -1354,6 +1357,8 @@ function createNetworkController(
 
     vertexSize = info.characteristicLength * VISUAL.vertexSizeScale;
     writeGeometryScales(vp());
+    // New bounds can change the geographic daylight gate.
+    writeDisplayToUniforms();
 
     channels.reset();
     // A fresh scene schedules its canonical fit on the rig.

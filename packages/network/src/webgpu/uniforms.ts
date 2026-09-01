@@ -471,15 +471,9 @@ export const W_SELECTED_ENDPOINT_B = W_HOVER_ENDPOINT_A + 3;
 export const W_DEPTH_MIX = wordOf('depth_mix');
 export const W_ITEM_FLAGS = wordOf('item_flags');
 
-const W_DISPLAY_FLAGS = wordOf('flags');
 const W_LIGHT = wordOf('light_dir');
 const W_CAMERA_RIGHT = wordOf('camera_right');
 const W_CAMERA_UP = wordOf('camera_up');
-
-/** Tests whether the graticule display flag is enabled in a raw uniform view. */
-export function hasGraticuleFlag(u: Uint32Array): boolean {
-  return (u[W_DISPLAY_FLAGS]! & FLAG_GRATICULE) !== 0;
-}
 
 /** Tests whether the vertexHeight channel mode is active in a raw uniform view. */
 export function hasVertexHeightChannel(u: Uint32Array): boolean {

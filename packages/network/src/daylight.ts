@@ -46,8 +46,8 @@ export interface Daylight {
  *
  * `refresh()` is called once per frame (a stamp compare) and from the
  * controller's idle wake timer, so `light_dir` is fresh regardless of the
- * active projection; shaders decide whether to consume it via FLAG_DAYLIGHT
- * and the pipeline family's `lit` flag.
+ * active projection. Every projection family shades with it; the controller
+ * arms FLAG_DAYLIGHT only for geographic topologies (`isGeographic`).
  */
 export function createDaylight(light: LightRegion): Daylight {
   let stamp = -Infinity;

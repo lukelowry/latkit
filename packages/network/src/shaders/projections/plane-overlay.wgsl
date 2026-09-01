@@ -45,5 +45,3 @@ fn screen_half_width(clip: vec4f, width: f32) -> f32 {
 fn screen_pole_half_width(clip: vec4f) -> f32 {
   return max(screen_radius(clip) * 0.15, css_px(1.5));
 }
-
-fn daylight(_world: vec3f) -> f32 { return 1.0; }

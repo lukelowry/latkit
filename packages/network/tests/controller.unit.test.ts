@@ -1225,12 +1225,18 @@ describe('createNetwork controller', () => {
     expect(h.loop.resume).toHaveBeenCalledTimes(2);
   });
 
-  it('wakes periodically for globe daylight only while daylight is enabled', async () => {
+  it('wakes periodically for daylight only when enabled and geographic', async () => {
     vi.useFakeTimers();
     const h = await makeHarness();
-    h.rig.mode = 'globe';
     h.loop.wake.mockClear();
 
+    // No topology: the geographic gate holds the idle wake.
+    vi.advanceTimersByTime(30_000);
+    expect(h.loop.wake).not.toHaveBeenCalled();
+
+    // Geographic data wakes in every projection family (mode stays flat).
+    h.network.load(geographicTopology());
+    h.loop.wake.mockClear();
     vi.advanceTimersByTime(30_000);
     expect(h.loop.wake).toHaveBeenCalledOnce();
 
@@ -1238,6 +1244,22 @@ describe('createNetwork controller', () => {
     h.loop.wake.mockClear();
     vi.advanceTimersByTime(30_000);
     expect(h.loop.wake).not.toHaveBeenCalled();
+  });
+
+  it('arms FLAG_DAYLIGHT only for geographic topologies', async () => {
+    const h = await makeHarness();
+    expect(h.loop.uniforms.light.flags & FLAG_DAYLIGHT).toBe(0);
+
+    h.network.load(geographicTopology());
+    expect(h.loop.uniforms.light.flags & FLAG_DAYLIGHT).toBe(FLAG_DAYLIGHT);
+
+    // Coordinates outside lon/lat ranges disarm shading despite the option.
+    h.network.load(nonGlobeTopology());
+    expect(h.loop.uniforms.light.flags & FLAG_DAYLIGHT).toBe(0);
+
+    h.network.load(geographicTopology());
+    h.network.setOptions({ daylight: false });
+    expect(h.loop.uniforms.light.flags & FLAG_DAYLIGHT).toBe(0);
   });
 
   it('updates globe height scale during frame hooks', async () => {

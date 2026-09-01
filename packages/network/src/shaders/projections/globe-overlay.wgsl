@@ -1,15 +1,6 @@
 // Projection strategy: 3D sphere (lon/lat -> unit sphere -> VP matrix).
-
-// `base_edge_width` is given in degrees (matches the flat projection's units);
-// on the unit sphere a degree is exactly PI / 180 of arc, so this scale
-// converts degrees to arc-radians. Renders the same pixel thickness across
-// projections at a reasonable fit zoom.
-fn geo_to_xyz(lon: f32, lat: f32) -> vec3f {
-  let la = radians(lat);
-  let lo = radians(lon);
-  let c = cos(la);
-  return vec3f(c * cos(lo), sin(la), -c * sin(lo));
-}
+// geo_to_xyz lives in common/daylight.wgsl, shared with the plane family's
+// sun_normal.
 
 fn to_world(pos: vec2f) -> vec3f { return geo_to_xyz(pos.x, pos.y); }
 

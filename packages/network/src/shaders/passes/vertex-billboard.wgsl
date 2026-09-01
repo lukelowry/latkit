@@ -73,9 +73,7 @@ fn vs_vertex(quad: vec2f, inst: u32, role: u32) -> VOut {
   out.pos = vec4f(clip.xy + ndc_offset, z, clip.w);
 
   let base_color = vertex_channel_color(inst);
-  var light_world = world;
-  if (u.depth_mix > 0.0) { light_world = normalize(world); }
-  out.color = vec4f(base_color.rgb * daylight(light_world), base_color.a);
+  out.color = vec4f(base_color.rgb * daylight(world), base_color.a);
   out.uv = quad;
   out.focus = state;
   out.core_ratio = r / max(outer, 0.001);

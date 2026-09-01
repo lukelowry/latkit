@@ -39,7 +39,7 @@ export interface Options {
   graticule?: boolean;
   /** Draw the globe earth-axis indicator when supported. @defaultValue `true`. */
   earthAxis?: boolean;
-  /** Enable time-based daylight shading. @defaultValue `true`. */
+  /** Enable solar-terminator daylight shading on geographic topologies. @defaultValue `true`. */
   daylight?: boolean;
   /** Minimum brightness on the night side of overlay geometry. @defaultValue `0.55`. */
   nightFloor?: number;
@@ -53,7 +53,7 @@ export interface Options {
   colormap?: NetworkColormap;
   /** Graticule line color as normalized RGBA. @defaultValue `[0.45, 0.48, 0.54, 1]`. */
   graticuleColor?: RGBA;
-  /** Tilt ground plane and globe sphere base color. @defaultValue `[0.15, 0.16, 0.19, 1]`. */
+  /** Ground plane (flat/tilt) and globe sphere base color. @defaultValue `[0.15, 0.16, 0.19, 1]`. */
   surfaceColor?: RGBA;
   /** Geographic border tint; shaders retain tier alpha. @defaultValue `[0.52, 0.5, 0.49, 1]`. */
   borderColor?: RGBA;

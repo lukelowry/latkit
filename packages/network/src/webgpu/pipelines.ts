@@ -13,6 +13,7 @@ import topologySrc from '../shaders/common/topology-buffer.wgsl?raw';
 import segmentsSrc from '../shaders/common/segment-buffer.wgsl?raw';
 import graticuleSrc from '../shaders/common/graticule.wgsl?raw';
 import cameraRaySrc from '../shaders/common/camera-ray.wgsl?raw';
+import daylightSrc from '../shaders/common/daylight.wgsl?raw';
 import coreVertexSrc from '../shaders/passes/vertex-billboard.wgsl?raw';
 import coreEdgeSrc from '../shaders/passes/edge-segment.wgsl?raw';
 import corePoleSrc from '../shaders/passes/height-pole.wgsl?raw';
@@ -96,7 +97,9 @@ export async function buildProjectionPipelines(
     bgPipelineLayout,
   } = options;
   const mod = (label: string, code: string) => device.createShaderModule({ label, code });
-  const projectionPrelude = VISUAL_WGSL + def.overlayWgsl;
+  // The shared solar terminator (daylight.wgsl) is universal; the family
+  // supplies only sun_normal(), its position -> planet-center direction map.
+  const projectionPrelude = VISUAL_WGSL + def.overlayWgsl + daylightSrc + def.sunWgsl;
   const topologyWgsl = WGSL_LAYOUT + topologySrc;
   const segmentsWgsl = SEGMENTS_WGSL_LAYOUT + segmentsSrc;
   const vertexGeometrySrc = topologyWgsl + def.vertexSurfaceWgsl;
@@ -166,7 +169,13 @@ export async function buildProjectionPipelines(
   });
   const bgModule = mod(
     `${def.family}-bg`,
-    VISUAL_WGSL + uniformsSrc + graticuleSrc + cameraRaySrc + def.bgPreludeWgsl + def.bgWgsl,
+    VISUAL_WGSL +
+      uniformsSrc +
+      graticuleSrc +
+      cameraRaySrc +
+      daylightSrc +
+      def.sunWgsl +
+      def.bgWgsl,
   );
   const earthAxisModule = def.earthAxisWgsl
     ? mod(`${def.family}-earth-axis`, projectionPrelude + uniformsSrc + def.earthAxisWgsl)
