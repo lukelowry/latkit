@@ -123,4 +123,4 @@ Latkit is developed by [Luke Lowery](https://lukelowry.github.io/) and began dur
 
 ## License
 
-Latkit packages are released under the MIT License.
+Latkit packages are released under the [MIT License](./LICENSE).

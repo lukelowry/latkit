@@ -15,11 +15,17 @@ The release workflow uses npm Trusted Publishing. Package publishing is tied to 
 Before merging a release candidate, run:
 
 ```sh
+pnpm format:check
+pnpm lint
 pnpm build
+pnpm build:examples
 pnpm typecheck
 pnpm test:run
 pnpm docs:build
 pnpm -r --filter "./packages/**" exec npm pack --dry-run
 ```
 
-`pnpm docs:build` regenerates TypeDoc Markdown before running Sphinx, so a separate `pnpm docs:api` command is only needed when you want to inspect generated reference files without building HTML.
+`pnpm build:examples` checks the example applications against the package entrypoints produced by
+`pnpm build`. `pnpm docs:build` regenerates TypeDoc Markdown before running Sphinx, so a
+separate `pnpm docs:api` command is only needed when you want to inspect generated reference
+files without building HTML.

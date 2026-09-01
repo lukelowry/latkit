@@ -20,7 +20,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
+      - run: pnpm lint
       - run: pnpm build
+      - run: pnpm build:examples
       - run: pnpm typecheck
       - run: pnpm test:run
       - run: pnpm -r --filter "./packages/**" exec npm pack --dry-run

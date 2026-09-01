@@ -80,6 +80,8 @@ describe('embed package entrypoint', () => {
       | 'clearSelection'
       | 'panBy'
       | 'rotateBy'
+      | 'getPose'
+      | 'setPose'
       | 'zoomBy'
       | 'fadeIn'
       | 'pause'
@@ -101,6 +103,8 @@ describe('embed package entrypoint', () => {
     expectTypeOf<NetworkElement['clearSelection']>().toEqualTypeOf<Network['clearSelection']>();
     expectTypeOf<NetworkElement['panBy']>().toEqualTypeOf<Network['panBy']>();
     expectTypeOf<NetworkElement['rotateBy']>().toEqualTypeOf<Network['rotateBy']>();
+    expectTypeOf<NetworkElement['getPose']>().toEqualTypeOf<Network['getPose']>();
+    expectTypeOf<NetworkElement['setPose']>().toEqualTypeOf<Network['setPose']>();
     expectTypeOf<NetworkElement['zoomBy']>().toEqualTypeOf<Network['zoomBy']>();
     expectTypeOf<NetworkElement['fadeIn']>().toEqualTypeOf<Network['fadeIn']>();
     expectTypeOf<NetworkElement['pause']>().toEqualTypeOf<Network['pause']>();

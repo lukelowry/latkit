@@ -58,10 +58,17 @@ network.zoomBy(1.2);
 
 network.setProjection('tilt');
 network.rotateBy(18, -8);
+
+const pose = network.getPose();
+if (pose) {
+  network.setPose({ bearing: pose.bearing + 30 }, { animate: true });
+}
 ```
 
-`rotateBy()` changes bearing and pitch in `tilt`. It is a no-op in projections
-that do not support rotation, including `flat` and `globe`.
+`rotateBy()` changes bearing and pitch in `tilt` and `globe`; it is a no-op in
+`flat`. `getPose()` returns the pose the next `setPose()` call builds on. Pose
+updates merge partial center, pitch, and bearing fields and optionally animate. Read
+`network.projection` for the active mode.
 
 ## Add interaction handlers
 

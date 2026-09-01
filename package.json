@@ -12,6 +12,7 @@
   },
   "scripts": {
     "build": "pnpm -r --filter \"./packages/**\" run build",
+    "build:examples": "pnpm -r --filter \"./examples/**\" run typecheck && pnpm -r --filter \"./examples/**\" exec vite build",
     "format": "prettier --write \"**/*.{ts,tsx,js,mjs,cjs,json,md,yml,yaml,css,html}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,cjs,json,md,yml,yaml,css,html}\"",
     "lint": "eslint .",
@@ -22,7 +23,7 @@
     "test:coverage": "vitest run --coverage",
     "docs:api": "pnpm build && typedoc --options typedoc.json && node scripts/normalize-typedoc-links.mjs",
     "docs:build": "pnpm docs:api && python -m sphinx -W --keep-going -b html docs docs/_build/html",
-    "quality": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+    "quality": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:run",
     "release": "pnpm build && changeset publish"
   },
   "devDependencies": {

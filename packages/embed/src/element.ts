@@ -7,11 +7,13 @@ import {
   validateBorders,
   validateOption,
   type Borders,
+  type CameraPose,
   type Channel,
   type ChannelRange,
   type Item,
   type Network,
   type Options,
+  type PoseOptions,
   type ProjectionFamily,
   type ProjectionMode,
   type RGBA,
@@ -117,6 +119,8 @@ type ForwardedNetworkApi = Pick<
   | 'clearSelection'
   | 'panBy'
   | 'rotateBy'
+  | 'getPose'
+  | 'setPose'
   | 'zoomBy'
   | 'fadeIn'
   | 'pause'
@@ -457,6 +461,14 @@ export function createNetworkElementClass(
 
     rotateBy(dx: number, dy: number): void {
       this.#liveNetwork()?.rotateBy(dx, dy);
+    }
+
+    getPose(): CameraPose | null {
+      return this.#liveNetwork()?.getPose() ?? null;
+    }
+
+    setPose(pose: Partial<CameraPose>, options?: PoseOptions): boolean {
+      return this.#liveNetwork()?.setPose(pose, options) ?? false;
     }
 
     zoomBy(factor: number): void {
