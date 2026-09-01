@@ -76,10 +76,14 @@ export function polylinePointsOf(topology: Topology): Float32Array {
   return topology.polylinePoints ?? EMPTY_F32;
 }
 
+/** Return whether rendered coordinates are caller-supplied rather than the ring fallback. */
+export function hasExplicitCoords(topology: Topology): boolean {
+  return topology.vertexCoords !== undefined && topology.vertexCoords.length > 0;
+}
+
 /** Return explicit vertex coordinates or a cached ring fallback for the topology. */
 export function resolveVertexCoords(topology: Topology): Float32Array {
-  const coords = topology.vertexCoords;
-  if (coords && coords.length > 0) return coords;
+  if (hasExplicitCoords(topology)) return topology.vertexCoords!;
 
   const expected = topology.vertexCount * 2;
   const cached = fallbackCoords.get(topology);

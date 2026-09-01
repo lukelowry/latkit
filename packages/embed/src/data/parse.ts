@@ -35,6 +35,15 @@ function parseTopology(input: unknown): Topology {
   const vertexCoordsSlot = optional(source, 'vertexCoords');
   const vertexCoords =
     vertexCoordsSlot === undefined ? undefined : f32(vertexCoordsSlot, 'topology.vertexCoords');
+  const coordinateSpaceSlot = optional(source, 'coordinateSpace');
+  if (
+    coordinateSpaceSlot !== undefined &&
+    coordinateSpaceSlot !== 'cartesian' &&
+    coordinateSpaceSlot !== 'geographic'
+  ) {
+    fail('topology.coordinateSpace', 'must be "cartesian" or "geographic"');
+  }
+  const coordinateSpace = coordinateSpaceSlot;
   const edges = u32(required(source, 'edges', 'topology'), 'topology.edges');
   if (edges.length % 2 !== 0) fail('topology.edges', 'length must be even');
   const edgeCount = edges.length / 2;
@@ -53,6 +62,7 @@ function parseTopology(input: unknown): Topology {
   return {
     vertexCount,
     vertexCoords,
+    coordinateSpace,
     edges,
     polylineStart,
     polylinePoints,

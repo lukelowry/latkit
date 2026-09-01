@@ -883,15 +883,18 @@ describe('NetworkElement', () => {
     const unavailable = h.element.projections;
     expect(unavailable).toEqual({ flat: false, tilt: false, globe: false });
     expect(Object.isFrozen(unavailable)).toBe(true);
+    expect(h.element.geographic).toBe(false);
 
     document.body.append(h.element);
     h.near(true);
     await h.element.ready;
     expect(h.element.projections).toEqual({ flat: true, tilt: true, globe: true });
+    expect(h.element.geographic).toBe(true);
 
     h.element.remove();
     expect(h.element.projections).toEqual({ flat: false, tilt: false, globe: false });
     expect(Object.isFrozen(h.element.projections)).toBe(true);
+    expect(h.element.geographic).toBe(false);
   });
 });
 

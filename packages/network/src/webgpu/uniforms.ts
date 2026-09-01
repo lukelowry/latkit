@@ -185,8 +185,9 @@ export const FLAG_GRATICULE = 2;
 /**
  * Display flag bit for geographic coordinates; must match uniforms.wgsl.
  *
- * Set whenever the loaded topology reads as lon/lat degrees (`isGeographic`).
- * The plane background clips its ground to the world rect on this bit.
+ * Set whenever the loaded topology reads as lon/lat degrees
+ * (`isGeographicTopology`); generated ring layouts never qualify. The plane
+ * background clips its ground to the world rect on this bit.
  */
 export const FLAG_GEOGRAPHIC = 4;
 /** Focus flag bit that enables hover/selection rendering. */

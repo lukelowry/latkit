@@ -4,7 +4,8 @@ import type { Projection, Viewport } from './camera/projection.js';
 import { globeProjector, planeProjector, type Projector } from './pick/project.js';
 import type { Uniforms } from './webgpu/uniforms.js';
 import { VISUAL, planeHeightWorldScale } from './visual.js';
-import type { Bounds } from './topology/index.js';
+import type { Bounds, Topology } from './topology/index.js';
+import { hasExplicitCoords } from './topology/pack.js';
 
 import planeSrc from './shaders/projections/plane-overlay.wgsl?raw';
 import planeBgSrc from './shaders/projections/plane-background.wgsl?raw';
@@ -35,7 +36,11 @@ export interface ProjectionDef {
   /** Camera-manifold and shader family this view belongs to. */
   readonly family: ProjectionFamily;
   /** Returns whether the loaded topology can be displayed in this mode. */
-  readonly canUse: (bounds: Bounds | null, characteristicLength: number | null) => boolean;
+  readonly canUse: (
+    bounds: Bounds | null,
+    characteristicLength: number | null,
+    geographic: boolean,
+  ) => boolean;
   /** Projection-space visual amplitude for the normalized height channel. */
   readonly heightWorldScale: (bounds: Bounds, vp: Viewport, vertexSize: number) => number;
   /**
@@ -132,22 +137,36 @@ fn segment_surface_world(_seg: SegmentRecord, segment_id: u32, endpoint: u32) ->
 }
 `;
 
-/**
- * Returns whether topology coordinates read as geographic lon/lat degrees.
- *
- * This is the availability gate for coordinate-interpreting features that any
- * projection can render (daylight shading); the globe additionally constrains
- * extent and scale via its `canUse`.
- */
+/** Returns whether bounds fit geographic longitude/latitude degree ranges. */
 export function isGeographic(bounds: Bounds | null): boolean {
   if (!bounds) return false;
   return bounds.xMin >= -180 && bounds.xMax <= 180 && bounds.yMin >= -90 && bounds.yMax <= 90;
 }
 
-/** Returns whether topology bounds and scale are suitable for globe rendering. */
-function canHostGlobe(bounds: Bounds | null, characteristicLength: number | null): boolean {
-  if (!bounds || characteristicLength === null) return false;
-  if (!isGeographic(bounds)) return false;
+/**
+ * Returns whether topology coordinates are interpreted as geographic lon/lat
+ * degrees.
+ *
+ * Requires caller-supplied coordinates: a generated ring layout always reads
+ * as abstract even though its bounds fit the lon/lat box, and
+ * `coordinateSpace: 'cartesian'` opts explicit coordinates out as well. This
+ * is the availability gate for coordinate-interpreting features that any
+ * projection can render (daylight shading, geographic ground clipping); the
+ * globe additionally constrains extent and scale via its `canUse`.
+ */
+export function isGeographicTopology(topology: Topology, bounds: Bounds | null): boolean {
+  return (
+    hasExplicitCoords(topology) && topology.coordinateSpace !== 'cartesian' && isGeographic(bounds)
+  );
+}
+
+/** Returns whether topology interpretation, bounds, and scale suit globe rendering. */
+function canHostGlobe(
+  bounds: Bounds | null,
+  characteristicLength: number | null,
+  geographic: boolean,
+): boolean {
+  if (!geographic || !bounds || characteristicLength === null) return false;
   const b = bounds;
   if (b.xMax - b.xMin < GLOBE_MIN_DEG || b.yMax - b.yMin < GLOBE_MIN_DEG) return false;
   return characteristicLength <= GLOBE_MAX_CL;
@@ -188,8 +207,8 @@ export const PIPELINES = Object.freeze({
     projector: planeProjector,
     overlayWgsl: planeSrc,
     // Plane world coordinates are lon/lat degrees whenever daylight is armed
-    // (FLAG_DAYLIGHT is gated on isGeographic), so the geographic conversion
-    // is always meaningful here.
+    // (FLAG_DAYLIGHT is gated on isGeographicTopology), so the geographic
+    // conversion is always meaningful here.
     sunWgsl: 'fn sun_normal(world: vec3f) -> vec3f { return geo_to_xyz(world.x, world.y); }\n',
     vertexSurfaceWgsl: planarVertexSurfaceWgsl,
     segmentSurfaceWgsl: planarSegmentSurfaceWgsl,

@@ -22,6 +22,15 @@ export function validateTopology(topology: Topology): void {
     validateFinite(vertexCoords, 'vertex coordinates');
   }
 
+  const coordinateSpace = topology.coordinateSpace;
+  if (
+    coordinateSpace !== undefined &&
+    coordinateSpace !== 'cartesian' &&
+    coordinateSpace !== 'geographic'
+  ) {
+    throw new Error('invalid coordinate space');
+  }
+
   const edges = topology.edges;
   if (!isTypedArray(edges, 'Uint32Array')) throw new Error('edges must be Uint32Array');
   if (edges.length % 2 !== 0) throw new Error('invalid edge length');

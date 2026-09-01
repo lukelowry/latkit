@@ -134,6 +134,8 @@ export interface NetworkElement extends HTMLElement, ForwardedNetworkApi {
   readonly ready: Promise<void>;
   /** Projection availability for the current live topology. */
   readonly projections: Network['projections'];
+  /** Whether the current live topology reads as geographic lon/lat degrees. */
+  readonly geographic: boolean;
 
   addEventListener<Key extends keyof NetworkElementEventMap>(
     type: Key,
@@ -219,6 +221,7 @@ export function createNetworkElementClass(
       atFitView: true,
     };
     #projections: Network['projections'] = UNAVAILABLE_PROJECTIONS;
+    #geographic = false;
     #shell: Shell;
     #chrome: Chrome;
     #stopObserving: (() => void) | null = null;
@@ -254,6 +257,10 @@ export function createNetworkElementClass(
       return this.#projections;
     }
 
+    get geographic(): boolean {
+      return this.#geographic;
+    }
+
     connectedCallback(): void {
       if (this.#hasConnected) {
         this.#recoveries = 0;
@@ -275,6 +282,7 @@ export function createNetworkElementClass(
       this.#near = false;
       this.#activation.cancel();
       this.#projections = UNAVAILABLE_PROJECTIONS;
+      this.#geographic = false;
       this.#shell.showFallback();
       this.#chrome.reset();
     }
@@ -512,6 +520,7 @@ export function createNetworkElementClass(
       this.#activation = next;
       previous.cancel();
       this.#projections = UNAVAILABLE_PROJECTIONS;
+      this.#geographic = false;
       this.#interaction = {
         hover: null,
         selected: this.#input.selected,
@@ -574,6 +583,7 @@ export function createNetworkElementClass(
 
         network.load(data.topology);
         this.#projections = network.projections;
+        this.#geographic = network.geographic;
         this.#subscribeNetworkEvents(run, network);
 
         const next = await this.#prepareInitialBorders(run);
@@ -972,6 +982,7 @@ export function createNetworkElementClass(
       const failed = run.live ? this.#installActivation() : run;
       failed.fail(error);
       this.#projections = UNAVAILABLE_PROJECTIONS;
+      this.#geographic = false;
       this.#shell.showFallback();
       this.#chrome.reset();
       if (!(error instanceof GpuUnavailableError)) dependencies.warn('activation failed', error);

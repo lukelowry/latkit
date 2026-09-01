@@ -66,6 +66,7 @@ describe('embed package entrypoint', () => {
   it('matches every intentionally exposed Network member exactly', () => {
     expectTypeOf<SharedNetworkMember>().toEqualTypeOf<
       | 'projections'
+      | 'geographic'
       | 'setOptions'
       | 'setBorders'
       | 'setColormap'
