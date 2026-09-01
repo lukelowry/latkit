@@ -1,6 +1,6 @@
 {
   "name": "@latkit/embed",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Self-contained browser embeds for Latkit.",
   "type": "module",
   "repository": {
