@@ -45,11 +45,11 @@ jobs:
       - name: Check formatting
         run: pnpm format:check
 
-      - name: Lint sources
-        run: pnpm lint
-
       - name: Build packages
         run: pnpm build
+
+      - name: Lint sources
+        run: pnpm lint
 
       - name: Build examples
         run: pnpm build:examples

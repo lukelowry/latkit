@@ -23,7 +23,7 @@
     "test:coverage": "vitest run --coverage",
     "docs:api": "pnpm build && typedoc --options typedoc.json && node scripts/normalize-typedoc-links.mjs",
     "docs:build": "pnpm docs:api && python -m sphinx -W --keep-going -b html docs docs/_build/html",
-    "quality": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:run",
+    "quality": "pnpm format:check && pnpm build && pnpm lint && pnpm typecheck && pnpm test:run",
     "release": "pnpm build && changeset publish"
   },
   "devDependencies": {

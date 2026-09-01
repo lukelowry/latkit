@@ -16,14 +16,18 @@ Before merging a release candidate, run:
 
 ```sh
 pnpm format:check
-pnpm lint
 pnpm build
+pnpm lint
 pnpm build:examples
 pnpm typecheck
 pnpm test:run
 pnpm docs:build
 pnpm -r --filter "./packages/**" exec npm pack --dry-run
 ```
+
+`pnpm build` precedes type-aware linting because workspace packages resolve one another
+through their generated public declarations. The combined `pnpm quality` command preserves
+this order.
 
 `pnpm build:examples` checks the example applications against the package entrypoints produced by
 `pnpm build`. `pnpm docs:build` regenerates TypeDoc Markdown before running Sphinx, so a
