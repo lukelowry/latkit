@@ -29,7 +29,7 @@ Both renderers use WebGPU resources internally. Public APIs stay imperative on p
 : Owns the boundary between two halves of one application: the `Port` over workers, webviews, and sockets, the binary frame that carries typed arrays intact, and the protocols served and connected over a port. Depends on nothing and knows nothing about models.
 
 `@latkit/remote`
-: Owns a model as it crosses a port: `serveSource` and `connectSource` for a source and its runner, `serveGrid` and `connectGrid` for a grid. Depends on `@latkit/model` and `@latkit/port`; it is the only package that knows both.
+: Owns a model as it crosses a port: `serveSource` and `connectSource` for a source and its runner, `serveGrid` and `connectGrid` for a grid, `serveResults` and `connectResults` for what a run recorded. Depends on `@latkit/model` and `@latkit/port`; it is the only package that knows both. Formats stay outside it: a vendor turns its files into `RunFrames`, and the port carries only those.
 
 ## Documentation boundary
 

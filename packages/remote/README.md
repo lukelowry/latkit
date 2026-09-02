@@ -1,8 +1,9 @@
 # @latkit/remote
 
 A `@latkit/model` model served across a `@latkit/port`: its source and runner as one served lineage,
-and its grids as windows of display text. Whichever side holds the data serves; the other side
-opens the same `Model`, runs the same `Runner`, and binds the same `Grid`.
+its grids as windows of display text, and its results as the batches a run streamed. Whichever side
+holds the data serves; the other side opens the same `Model`, runs the same `Runner`, binds the same
+`Grid`, and reads the same `Results`.
 
 ## Install
 
@@ -85,3 +86,29 @@ const stop = connectGrid(port, 'case', (remote) => {
 
 Every `set` publishes a fresh binding; a window asked of a replaced grid answers empty rather than
 failing, since the client already holds the newer header.
+
+## Serve results
+
+What a run recorded stays where it was recorded; each read streams one class's batches, the same
+`RunFrames` the run itself streamed. Nothing is published ahead of a read: the batches describe
+their own shape, and `collect` folds them.
+
+```ts
+// the side with the recording
+import { serveResults } from '@latkit/remote';
+
+const stop = serveResults(port, store); // `store` implements `Results` over whatever it holds
+
+// the side that plots
+import { collect } from '@latkit/model';
+import { connectResults } from '@latkit/remote';
+
+const results = connectResults(port);
+const vm = await collect(results.read('bus', [0], signal), frames);
+monitor.load(vm);
+```
+
+A read selects signals by recorded-order index, or every recorded signal with `null`. The service
+awaits the port's drain between batches, and aborting the read's signal stops the serving side. A
+served side that must bound what one read asks for passes `{ maxSignals }`; by default a selection
+is unbounded, so a class with any number of recorded signals reads whole.

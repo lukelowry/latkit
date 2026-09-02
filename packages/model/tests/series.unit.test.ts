@@ -38,6 +38,43 @@ describe('collect', () => {
   });
 });
 
+async function* stream(batches: readonly RunFrames[]): AsyncIterable<RunFrames> {
+  for (const entry of batches) {
+    await Promise.resolve();
+    yield entry;
+  }
+}
+
+describe('collect from a stream', () => {
+  const batches = [batch([0], [1, 2, 10, 20]), batch([1], [3, NaN, 30, 40])];
+
+  it('fills a preallocated series when the frame count is known', async () => {
+    const series = await collect(stream(batches), 2);
+    expect(Array.from(series.time)).toEqual([0, 1]);
+    expect(Array.from(series.values)).toEqual([1, 2, 3, NaN, 10, 20, 30, 40]);
+    expect(Array.from(series.ranges)).toEqual([1, 3, 10, 40]);
+  });
+
+  it('holds the batches and folds at the end when the count is unknown', async () => {
+    expect(await collect(stream(batches))).toEqual(collect(batches));
+    expect((await collect(stream([]))).signalCount).toBe(0);
+  });
+
+  it('rejects a stream that carries other than the expected frames', async () => {
+    await expect(collect(stream(batches.slice(0, 1)), 2)).rejects.toThrow(/received 1 of 2 frames/);
+    await expect(collect(stream(batches), 1)).rejects.toThrow(/overruns the 1 frames/);
+    await expect(collect(stream([]), 3)).rejects.toThrow(/received 0 of 3 frames/);
+    await expect(collect(stream([]), -1)).rejects.toThrow(/non-negative integer/);
+    expect((await collect(stream([]), 0)).time.length).toBe(0);
+  });
+
+  it('rejects inconsistent batches as the array form does', async () => {
+    const mixed = [batch([0], [1, 2, 3, 4]), batch([1], [1, 2], 1)];
+    await expect(collect(stream(mixed), 2)).rejects.toThrow(/disagrees/);
+    await expect(collect(stream([batch([0, 1], [1, 2, 3, 4])]), 2)).rejects.toThrow(/carries/);
+  });
+});
+
 describe('sample', () => {
   it('views one signal at one frame and refuses out-of-range indices', () => {
     const series = collect([batch([0, 1], [1, 2, 10, 20, 3, 4, 30, 40])]);

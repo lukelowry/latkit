@@ -1,7 +1,7 @@
 {
   "name": "@latkit/remote",
   "version": "0.1.0",
-  "description": "A Latkit model served across a port: its source, its runner, and its grids.",
+  "description": "A Latkit model served across a port: its source, its runner, its grids, and its results.",
   "type": "module",
   "repository": {
     "type": "git",
