@@ -1,5 +1,18 @@
 # @latkit/network
 
+## 0.7.0
+
+### Minor Changes
+
+- 4219e1e: One controller, three registries. `Network` gains `neighborhood`, `reveal(item, { neighbors })`, `setProjection(mode, fallback)`, `orbit(active)` with `orbiting` and an `orbit` event, `setChannelDomain`, and `getChannelDomain`; `select(item | null)` replaces `select(kind, index)` and `clearSelection`; `setChannel(channel, null)` clears; `setPose(pose, animate)` takes a boolean; every event carries one payload (`hover` and `select` an `Item | null`, `deviceLost` and `pipelineError` an object); `setColormap`, `setBaseColor`, and `fadeIn` are gone (patch `colormap` and `baseColor` through `setOptions`; the host owns canvas visibility). The height output range is the live `heightRange` option. `CHANNELS`, `OPTIONS`, and `PROJECTIONS` replace `CHANNEL_DEFINITIONS`, `channelDefinition`, `channelNormalizes`, `OPTION_DEFINITIONS`, `DEFAULT_OPTIONS`, `validateOption`, and `PROJECTION_MODES`; `Projection`, `Pose`, and `Domain` replace `ProjectionMode`, `CameraPose`, and `ChannelRange`; `Topology` and `Item` are `@latkit/model`'s. `finiteExtent`, `validateChannelRange`, `validateBorders`, `adjacency`, `revealNeighborhood`, `preferProjection`, `canAutoRotate`, and `createOrbit` are no longer exported. The packaged Natural Earth borders load through `@latkit/network/borders`.
+
+### Patch Changes
+
+- Updated dependencies [4219e1e]
+- Updated dependencies [4219e1e]
+  - @latkit/gpu@0.2.0
+  - @latkit/model@0.3.0
+
 ## 0.6.1
 
 ### Patch Changes

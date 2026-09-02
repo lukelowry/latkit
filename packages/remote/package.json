@@ -1,6 +1,6 @@
 {
   "name": "@latkit/remote",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A Latkit model served across a port: its source, its runner, its grids, and its results.",
   "type": "module",
   "repository": {
