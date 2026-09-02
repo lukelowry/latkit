@@ -1,5 +1,16 @@
 # @latkit/remote
 
+## 0.2.0
+
+### Minor Changes
+
+- 299e99f: Add `serveResults` and `connectResults`: a `Results` served across a port, one class's batches per stream, with an optional `maxSignals` bound on what one read may select.
+
+### Patch Changes
+
+- Updated dependencies [299e99f]
+  - @latkit/model@0.2.0
+
 ## 0.1.0
 
 ### Minor Changes
