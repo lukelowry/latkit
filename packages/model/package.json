@@ -1,6 +1,6 @@
 {
   "name": "@latkit/model",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Immutable columnar network model, its series, and its byte form for Latkit.",
   "type": "module",
   "repository": {
