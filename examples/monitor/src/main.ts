@@ -1,9 +1,4 @@
-import {
-  COLORMAP_LABEL,
-  colormap,
-  colormapGradientCss,
-  type ColormapName,
-} from '@latkit/colormaps';
+import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
 import { requestDevice } from '@latkit/gpu';
 import { createMonitor, type Monitor, type Reading, type Series } from '@latkit/monitor';
 import './style.css';
@@ -152,10 +147,10 @@ function wireChrome(): void {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'swatch';
-    button.title = COLORMAP_LABEL[name];
-    button.setAttribute('aria-label', COLORMAP_LABEL[name]);
+    button.title = COLORMAPS[name].label;
+    button.setAttribute('aria-label', COLORMAPS[name].label);
     button.setAttribute('aria-pressed', String(i === 0));
-    button.style.setProperty('--swatch', colormapGradientCss(name, 'to right'));
+    button.style.setProperty('--swatch', gradient(name, 'to right'));
     button.addEventListener('click', () => {
       monitor?.setColormap(colormap(name));
       setActive(colormapRow, button);

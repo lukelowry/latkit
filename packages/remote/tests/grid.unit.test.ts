@@ -4,7 +4,10 @@ import { createGrid, type Grid } from '@latkit/model';
 import { connect, protocol } from '@latkit/port';
 import { loopback, type LoopbackPort, settle } from '@latkit/port/testing';
 
-import { connectGrid, type GridHeader, type RemoteGrid, serveGrid } from '../src/index.js';
+import { connectGrid, type GridHeader, serveGrid } from '../src/index.js';
+
+/** A served grid as the client binds it: the `Grid` queries plus the header. */
+type Binding = Grid & GridHeader;
 
 function grid(
   labels: readonly string[],
@@ -21,7 +24,7 @@ function grid(
 
 /** Collect every binding the client receives, awaiting the initial describe. */
 async function follow(client: LoopbackPort) {
-  const grids: (RemoteGrid | null)[] = [];
+  const grids: (Binding | null)[] = [];
   const stop = connectGrid(client, 'case', (remote) => grids.push(remote));
   await settle();
   return { grids, stop, latest: () => grids[grids.length - 1] ?? null };

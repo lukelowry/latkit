@@ -1,7 +1,7 @@
 {
   "name": "@latkit/network",
   "version": "0.6.1",
-  "description": "WebGPU network renderer for Latkit.",
+  "description": "WebGPU network renderer for Latkit, with the view policy and packaged borders every host shares.",
   "type": "module",
   "repository": {
     "type": "git",
@@ -18,17 +18,23 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./borders": {
+      "types": "./dist/borders.d.ts",
+      "import": "./dist/borders.js"
+    },
+    "./assets/*": "./dist/assets/*"
   },
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node scripts/copy-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --project @latkit/network",
     "bench": "vitest bench --run --project @latkit/network"
   },
   "dependencies": {
     "@latkit/gpu": "workspace:*",
+    "@latkit/model": "workspace:*",
     "@webgpu/types": "^0.1.71"
   },
   "devDependencies": {

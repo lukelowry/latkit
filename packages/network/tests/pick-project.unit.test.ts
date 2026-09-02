@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { createGlobeProjection } from '../src/camera/globe.js';
 import { createPlaneProjection } from '../src/camera/plane.js';
-import type { Projection, Viewport } from '../src/camera/projection.js';
-import { PIPELINES, PROJECTIONS, type ProjectionMode } from '../src/projections.js';
+import type { CameraProjection, Viewport } from '../src/camera/projection.js';
+import { PIPELINES, PROJECTION_DEFS, type Projection } from '../src/projections.js';
 import { createUniforms, type Uniforms } from '../src/webgpu/uniforms.js';
 import { createPoint, type Projector } from '../src/pick/project.js';
 import { VISUAL } from '../src/visual.js';
@@ -12,12 +12,12 @@ const VP: Viewport = { w: 800, h: 600 };
 
 interface Setup {
   uniforms: Uniforms;
-  proj: Projection;
+  proj: CameraProjection;
   state: Float64Array;
   projector: Projector;
 }
 
-function setup(mode: ProjectionMode, mutate?: (state: Float64Array) => void): Setup {
+function setup(mode: Projection, mutate?: (state: Float64Array) => void): Setup {
   const uniforms = createUniforms();
   const proj =
     mode === 'flat'
@@ -42,7 +42,7 @@ function setup(mode: ProjectionMode, mutate?: (state: Float64Array) => void): Se
     uniforms,
     proj,
     state,
-    projector: PIPELINES[PROJECTIONS[mode].family].projector(uniforms),
+    projector: PIPELINES[PROJECTION_DEFS[mode].family].projector(uniforms),
   };
 }
 

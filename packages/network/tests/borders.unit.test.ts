@@ -1,7 +1,7 @@
 /// <reference types="@webgpu/types" />
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BORDER_VERTEX_STRIDE_BYTES, validateBorders } from '../src/borders.js';
+import { BORDER_VERTEX_STRIDE_BYTES, validateBorders } from '../src/borders/index.js';
 import { BorderBuffers } from '../src/webgpu/border-buffers.js';
 
 interface FakeBuffer {

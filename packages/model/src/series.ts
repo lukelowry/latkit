@@ -1,6 +1,6 @@
 /**
- * Packed signals over one element axis and time: the one numeric container, shaped exactly as
- * `@latkit/monitor` loads it.
+ * Packed signals over one element axis and time: the one numeric container, the series
+ * `@latkit/monitor` loads.
  */
 
 /**
@@ -9,15 +9,15 @@
  * @remarks
  * `values[signal * elementCount * time.length + frame * elementCount + element]`; each signal's
  * block is frame-major and contiguous. `NaN` marks a missing sample. `ranges` holds per-signal
- * finite `[min, max]` pairs, `NaN` when a signal has no finite sample. A `Series` is structurally a
- * `@latkit/monitor` `Series`.
+ * finite `[min, max]` pairs, `NaN` when a signal has no finite sample; a consumer scans the values
+ * when it is omitted. `collect` always fills it.
  */
 export interface Series {
   readonly time: Float64Array;
   readonly elementCount: number;
   readonly signalCount: number;
   readonly values: Float32Array;
-  readonly ranges: Float32Array;
+  readonly ranges?: Float32Array;
   /** Frames ready to read; omitted means every frame. */
   readonly validFrames?: number;
 }

@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createNetwork } from '../src/controller.js';
-import type { ControllerDeps, Events, Options } from '../src/controller.js';
+import type { ControllerDeps, Events, Item, Options } from '../src/controller.js';
 import {
   FLAG_DAYLIGHT,
   FLAG_FOCUS_ENABLED,
@@ -218,7 +218,7 @@ describe('createNetwork controller', () => {
     expect(h.loop.uniforms.geometry.dashPeriod).toBe(18);
     h.network.setOptions({ dashPeriodPx: 6 });
     expect(h.loop.uniforms.geometry.dashPeriod).toBe(6);
-    h.network.clearChannel('edgeDash');
+    h.network.setChannel('edgeDash', null);
     expect(h.loop.uniforms.geometry.dashPeriod).toBe(0);
   });
 
@@ -516,28 +516,29 @@ describe('createNetwork controller', () => {
     h.loop.wake.mockClear();
 
     h.network.setBorders({ vertices: new Uint8Array(0), indices: new Uint32Array(0) });
-    h.network.setColormap((t) => [1 - t, t, 0.5]);
-    h.network.setBaseColor([0.9, 0.8, 0.7, 1]);
+    h.network.setOptions({ colormap: (t) => [1 - t, t, 0.5], baseColor: [0.9, 0.8, 0.7, 1] });
     h.network.setChannel('vertexColor', new Float32Array([0, 0.5, 1]));
-    h.network.setChannelRange('vertexColor', [0.2, 0.8]);
-    h.network.clearChannel('vertexColor');
+    h.network.setChannelDomain('vertexColor', [0.2, 0.8]);
+    expect(h.network.getChannelDomain('vertexColor')).toEqual([0.2, 0.8]);
+    h.network.setChannel('vertexColor', null);
+    expect(h.network.getChannelDomain('vertexColor')).toBeNull();
 
     expect(h.renderer.setBorders).toHaveBeenCalledOnce();
     expect(h.renderer.writeColormap).toHaveBeenCalled();
     expectRgbaClose(h.loop.uniforms.baseVertexColor, [0.9, 0.8, 0.7, 1]);
     expect(h.renderer.relayout).toHaveBeenCalled();
     expect(h.renderer.writeChannel).toHaveBeenCalledWith('vertexColor', expect.any(Float32Array));
-    expect(h.loop.wake).toHaveBeenCalledTimes(6);
+    expect(h.loop.wake).toHaveBeenCalledTimes(5);
   });
 
   it('applies programmatic selection and clearing without emitting select events', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
-    const selects: Array<['vertex' | 'edge' | null, number | null]> = [];
-    h.network.on('select', (kind, index) => selects.push([kind, index]));
+    const selects: Array<Item | null> = [];
+    h.network.on('select', (item) => selects.push(item));
 
-    h.network.select('vertex', 1);
-    h.network.clearSelection();
+    h.network.select({ kind: 'vertex', index: 1 });
+    h.network.select(null);
 
     expect(h.loop.uniforms.focus.selectedVertex).toBe(-1);
     expect(h.loop.uniforms.focus.selectedEdge).toBe(-1);
@@ -548,10 +549,10 @@ describe('createNetwork controller', () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
 
-    const hovers: Array<['vertex' | 'edge' | null, number | null]> = [];
-    const selects: Array<['vertex' | 'edge' | null, number | null]> = [];
-    h.network.on('hover', (kind, index) => hovers.push([kind, index]));
-    h.network.on('select', (kind, index) => selects.push([kind, index]));
+    const hovers: Array<Item | null> = [];
+    const selects: Array<Item | null> = [];
+    h.network.on('hover', (item) => hovers.push(item));
+    h.network.on('select', (item) => selects.push(item));
 
     h.picker.nextHit = ['vertex', 1];
     h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
@@ -563,8 +564,8 @@ describe('createNetwork controller', () => {
     h.picker.nextHits = [['edge', 0]];
     h.emitPointer({ kind: 'tap', sx: 5, sy: 6, targetPx: 10, vp: { w: 100, h: 80 } });
 
-    expect(hovers).toEqual([['vertex', 1]]);
-    expect(selects).toEqual([['edge', 0]]);
+    expect(hovers).toEqual([{ kind: 'vertex', index: 1 }]);
+    expect(selects).toEqual([{ kind: 'edge', index: 0 }]);
   });
 
   it('forwards contextmenu intents without picking or mutating focus', async () => {
@@ -685,10 +686,10 @@ describe('createNetwork controller', () => {
   it('clears hover and selection from pointer exits and empty taps', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
-    const hovers: Array<['vertex' | 'edge' | null, number | null]> = [];
-    const selects: Array<['vertex' | 'edge' | null, number | null]> = [];
-    h.network.on('hover', (kind, index) => hovers.push([kind, index]));
-    h.network.on('select', (kind, index) => selects.push([kind, index]));
+    const hovers: Array<Item | null> = [];
+    const selects: Array<Item | null> = [];
+    h.network.on('hover', (item) => hovers.push(item));
+    h.network.on('select', (item) => selects.push(item));
 
     h.picker.nextHit = ['vertex', 1];
     h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
@@ -702,17 +703,14 @@ describe('createNetwork controller', () => {
     h.picker.nextHits = [];
     h.emitPointer({ kind: 'tap', sx: 5, sy: 6, targetPx: 10, vp: { w: 100, h: 80 } });
 
-    expect(hovers).toEqual([
-      ['vertex', 1],
-      [null, null],
-    ]);
-    expect(selects).toEqual([[null, null]]);
+    expect(hovers).toEqual([{ kind: 'vertex', index: 1 }, null]);
+    expect(selects).toEqual([null]);
   });
 
   it('clears only hover during navigation and restores it after the camera settles', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
-    h.network.select('vertex', 2);
+    h.network.select({ kind: 'vertex', index: 2 });
     h.picker.nextHit = ['edge', 0];
     h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
     h.loop.frame();
@@ -874,22 +872,22 @@ describe('createNetwork controller', () => {
   it('cycles stacked tap hits after current vertex or edge selections', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
-    const selects: Array<['vertex' | 'edge' | null, number | null]> = [];
-    h.network.on('select', (kind, index) => selects.push([kind, index]));
+    const selects: Array<Item | null> = [];
+    h.network.on('select', (item) => selects.push(item));
 
     h.picker.nextHits = [
       ['vertex', 1],
       ['edge', 0],
       ['edge', 1],
     ];
-    h.network.select('vertex', 1);
+    h.network.select({ kind: 'vertex', index: 1 });
     h.emitPointer({ kind: 'tap', sx: 1, sy: 2, targetPx: 10, vp: { w: 100, h: 80 } });
-    h.network.select('edge', 0);
+    h.network.select({ kind: 'edge', index: 0 });
     h.emitPointer({ kind: 'tap', sx: 1, sy: 2, targetPx: 10, vp: { w: 100, h: 80 } });
 
     expect(selects).toEqual([
-      ['edge', 0],
-      ['edge', 1],
+      { kind: 'edge', index: 0 },
+      { kind: 'edge', index: 1 },
     ]);
   });
 
@@ -911,28 +909,6 @@ describe('createNetwork controller', () => {
     h.picker.pick.mockClear();
     h.loop.frame();
     expect(h.picker.pick).not.toHaveBeenCalled();
-  });
-
-  it('defers fadeIn until first paint', async () => {
-    const h = await makeHarness();
-
-    h.network.fadeIn(75);
-    expect(h.surface.element.style.opacity).toBe('0');
-
-    h.loop.paint();
-
-    expect(h.surface.element.style.opacity).toBe('1');
-    expect(h.surface.element.style.transition).toContain('opacity 75ms');
-  });
-
-  it('reveals immediately when fadeIn is called after first paint', async () => {
-    const h = await makeHarness();
-
-    h.loop.paint();
-    h.network.fadeIn(25);
-
-    expect(h.surface.element.style.opacity).toBe('1');
-    expect(h.surface.element.style.transition).toContain('opacity 25ms');
   });
 
   it('warms supported inactive projections serially after first paint', async () => {
@@ -988,7 +964,7 @@ describe('createNetwork controller', () => {
     const unsubscribe = h.network.on('pipelineError', late);
 
     expect(late).toHaveBeenCalledOnce();
-    expect(late).toHaveBeenCalledWith('globe', failure);
+    expect(late).toHaveBeenCalledWith({ family: 'globe', cause: failure });
     unsubscribe();
   });
 
@@ -1037,7 +1013,7 @@ describe('createNetwork controller', () => {
 
     expect(h.network.getPose()).toEqual({ centerX: 0, centerY: 0, pitch: 0, bearing: 0 });
     h.loop.wake.mockClear();
-    expect(h.network.setPose({ bearing: 90 }, { animate: true })).toBe(true);
+    expect(h.network.setPose({ bearing: 90 }, true)).toBe(true);
     expect(h.rig.camera.setPose).toHaveBeenCalledWith({ bearing: 90 }, true);
     expect(h.loop.wake).toHaveBeenCalled();
   });
@@ -1209,6 +1185,113 @@ describe('createNetwork controller', () => {
     expect(revealBounds && (revealBounds.xMin + revealBounds.xMax) / 2).toBeCloseTo(181);
   });
 
+  it('falls back through the canonical projection order only when asked', async () => {
+    const h = await makeHarness();
+    h.network.load(nonGlobeTopology());
+    h.network.setProjection('tilt');
+
+    expect(h.network.setProjection('globe')).toBe(false);
+    expect(h.network.projection).toBe('tilt');
+    expect(h.network.setProjection('globe', true)).toBe(false);
+    expect(h.network.projection).toBe('flat');
+    expect(h.network.setProjection('tilt', true)).toBe(true);
+    expect(h.network.projection).toBe('tilt');
+  });
+
+  it('answers neighborhoods from a per-topology adjacency', async () => {
+    const h = await makeHarness();
+    expect(h.network.neighborhood({ kind: 'vertex', index: 0 })).toEqual([]);
+
+    h.network.load(geographicTopology());
+    expect(h.network.neighborhood({ kind: 'edge', index: 0 })).toEqual([
+      { kind: 'edge', index: 0 },
+      { kind: 'vertex', index: 0 },
+      { kind: 'vertex', index: 1 },
+    ]);
+    const first = h.network.neighborhood({ kind: 'vertex', index: 1 });
+    expect(first.length).toBeGreaterThan(1);
+    expect(h.network.neighborhood({ kind: 'vertex', index: 1 })).toEqual(first);
+  });
+
+  it('reveals a populated neighborhood by fitting it and a lone item by centering it', async () => {
+    const h = await makeHarness();
+    h.network.load({
+      vertexCount: 3,
+      vertexCoords: new Float32Array([-10, -5, 10, 5, 0, 0]),
+      edges: new Uint32Array([0, 1]),
+      polylineStart: new Uint32Array([0, 0]),
+    });
+    h.picker.nextLocation = [50, 40];
+    h.picker.nextLocationVisible = true;
+
+    expect(h.network.reveal({ kind: 'vertex', index: 0 }, { neighbors: true, animate: true })).toBe(
+      true,
+    );
+    expect(h.rig.moveTo).toHaveBeenCalledOnce();
+    expect(h.rig.moveTo.mock.calls[0]?.[2]).toBe(true);
+    expect(h.rig.reveal).not.toHaveBeenCalled();
+
+    expect(h.network.reveal({ kind: 'vertex', index: 2 }, { neighbors: true })).toBe(true);
+    expect(h.rig.moveTo).toHaveBeenCalledOnce();
+    expect(h.rig.reveal).toHaveBeenCalledOnce();
+    expect(h.rig.reveal.mock.calls[0]?.[2]).toBe(false);
+  });
+
+  it('orbits through the internal driver, reports transitions, and stops on gestures', async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.stubGlobal('cancelAnimationFrame', () => {});
+    const h = await makeHarness();
+    const transitions: boolean[] = [];
+    h.network.on('orbit', (active) => transitions.push(active));
+
+    expect(h.network.orbit(true)).toBe(false);
+    expect(h.network.orbiting).toBe(false);
+
+    h.network.load(geographicTopology());
+    expect(h.network.orbit(true)).toBe(true);
+    expect(h.network.orbiting).toBe(true);
+    expect(h.network.projection).toBe('tilt');
+    expect(h.network.orbit(true)).toBe(true);
+    frames.shift()?.(0);
+    frames.shift()?.(16);
+    expect(h.rig.camera.rotateBy).toHaveBeenLastCalledWith(0.32, 0, { w: 100, h: 80 });
+
+    h.emitPointer({ kind: 'navigationStart' });
+    expect(h.network.orbiting).toBe(false);
+    expect(transitions).toEqual([true, false]);
+
+    expect(h.network.orbit(true)).toBe(true);
+    expect(h.network.orbit(false)).toBe(false);
+    expect(transitions).toEqual([true, false, true, false]);
+
+    h.network.orbit(true);
+    h.network.load(nonGlobeTopology());
+    expect(h.network.orbiting).toBe(true);
+    h.network.destroy();
+    expect(h.network.orbiting).toBe(false);
+  });
+
+  it('applies the height range option through channel scalars', async () => {
+    const h = await makeHarness({ heightRange: [1, 3] });
+    h.network.load(geographicTopology());
+    h.network.setChannel('vertexHeight', new Float32Array([0, 1, 2]));
+    expect(h.loop.uniforms.channel.heightOutMin).toBe(1);
+    expect(h.loop.uniforms.channel.heightOutScale).toBe(2);
+
+    h.picker.pick.mockClear();
+    h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
+    h.loop.frame();
+    h.picker.pick.mockClear();
+    h.network.setOptions({ heightRange: [0, 4] });
+    expect(h.loop.uniforms.channel.heightOutScale).toBe(4);
+    h.loop.frame();
+    expect(h.picker.pick).toHaveBeenCalledOnce();
+  });
+
   it('keeps render-loop activity in sync with pause, resume, and page visibility', async () => {
     const h = await makeHarness();
     const hidden = vi.spyOn(document, 'hidden', 'get');
@@ -1350,27 +1433,27 @@ describe('createNetwork controller', () => {
 
   it('pauses and emits deviceLost when WebGPU is lost', async () => {
     const h = await makeHarness();
-    const events: Array<Parameters<Events['deviceLost']>> = [];
-    h.network.on('deviceLost', (reason, message) => events.push([reason, message]));
+    const events: Events['deviceLost'][] = [];
+    h.network.on('deviceLost', (loss) => events.push(loss));
 
     h.deviceLost.resolve({ reason: 'unknown', message: 'lost for test' } as GPUDeviceLostInfo);
     await flushMicrotasks();
 
     expect(h.loop.pause).toHaveBeenCalled();
-    expect(events).toEqual([['unknown', 'lost for test']]);
+    expect(events).toEqual([{ reason: 'unknown', message: 'lost for test' }]);
   });
 
   it('immediately notifies late device-loss subscribers exactly once', async () => {
     const h = await makeHarness();
     h.deviceLost.resolve({ reason: 'unknown', message: 'already lost' } as GPUDeviceLostInfo);
     await flushMicrotasks();
-    const late = vi.fn<Events['deviceLost']>();
+    const late = vi.fn<(loss: Events['deviceLost']) => void>();
 
     const unsubscribe = h.network.on('deviceLost', late);
 
     expect(late).toHaveBeenCalledOnce();
-    expect(late).toHaveBeenCalledWith('unknown', 'already lost');
-    expect(h.events.deviceLost).toEqual([['unknown', 'already lost']]);
+    expect(late).toHaveBeenCalledWith({ reason: 'unknown', message: 'already lost' });
+    expect(h.events.deviceLost).toEqual([{ reason: 'unknown', message: 'already lost' }]);
     await flushMicrotasks();
     expect(late).toHaveBeenCalledOnce();
 
@@ -1384,7 +1467,7 @@ describe('createNetwork controller', () => {
     await flushMicrotasks();
 
     expect(h.loop.pause).toHaveBeenCalledOnce();
-    expect(h.events.deviceLost).toEqual([['destroyed', 'normal shutdown']]);
+    expect(h.events.deviceLost).toEqual([{ reason: 'destroyed', message: 'normal shutdown' }]);
   });
 
   it('ignores device loss after controller teardown', async () => {

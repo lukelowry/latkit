@@ -65,7 +65,7 @@ describe('results service', () => {
     expect(series.signalCount).toBe(2);
     expect(Array.from(series.time)).toEqual([0, 0.5, 1]);
     expect(Array.from(series.values)).toEqual([1, 2, 3, 4, 5, 6, 10, 20, 30, 40, 50, 60]);
-    expect(Array.from(series.ranges)).toEqual([1, 6, 10, 60]);
+    expect(Array.from(series.ranges!)).toEqual([1, 6, 10, 60]);
   });
 
   it('a selection restricts and orders the signals', async () => {

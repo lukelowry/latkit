@@ -1,4 +1,4 @@
-import { observeCanvas, type Presentation } from '@latkit/gpu';
+import type { Presentation } from '@latkit/gpu';
 
 import type { CameraRig } from '../camera/rig.js';
 import type { Viewport } from '../camera/projection.js';
@@ -110,7 +110,7 @@ export class RenderLoop {
     this.tickRaf = this.tickRaf.bind(this);
 
     let ready = false;
-    this.stopObserving = observeCanvas(this.presentation.canvas, (width, height, pixelRatio) => {
+    this.stopObserving = this.presentation.observe((width, height, pixelRatio) => {
       this.roW = width;
       this.roH = height;
       this.devicePixelRatio = pixelRatio;

@@ -1,4 +1,4 @@
-import type { Projection, CameraState, PanSession, Vec2, Viewport } from './projection.js';
+import type { CameraProjection, CameraState, PanSession, Vec2, Viewport } from './projection.js';
 import {
   advanceViewSlots,
   deltaViewSlots,
@@ -120,7 +120,7 @@ function arcDegPerPx(s: CameraState, vp: Viewport): number {
 const _geoOut = new Float64Array(2);
 
 /** Create the perspective globe projection. */
-export function createGlobeProjection(): Projection {
+export function createGlobeProjection(): CameraProjection {
   // State layout: [lon (deg), lat (deg), dist, pitch (deg), bearing (deg)].
   // The camera orbits the surface anchor at (lon, lat) and looks at it; pitch
   // tilts it off nadir and bearing turns it clockwise from north. Below the

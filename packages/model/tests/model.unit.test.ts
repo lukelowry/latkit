@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { createModel, elementAt, itemOf, type Loader } from '../src/index.js';
+import { createModel, elementAt, itemOf } from '../src/index.js';
+import type { Loader } from '../src/model.js';
 import { sampleData, sampleLoader, sampleModel } from './fixture.js';
 
 describe('createModel', () => {

@@ -1,22 +1,12 @@
 import {
-  CHANNEL_DEFINITIONS,
-  DEFAULT_OPTIONS,
-  OPTION_DEFINITIONS,
-  PROJECTION_MODES,
-  channelNormalizes,
+  CHANNELS,
+  OPTIONS,
+  PROJECTIONS,
+  validateOptions,
   type Channel,
-  type ChannelDefinition,
-  type ChannelRange,
-  type ConstructionOption,
-  type FocusEndpointMode,
-  type NormalizedChannel,
-  type OptionDefinition,
+  type Domain,
   type Options,
-  type ProjectionMode,
-  type RGBA,
-  type RuntimeOption,
-  validateChannelRange,
-  validateOption,
+  type Projection,
 } from '@latkit/network';
 
 /** Convert one Network camelCase public name to its exact HTML spelling. */
@@ -31,13 +21,30 @@ export function htmlName(name: string): string {
   return name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
 }
 
+/** One Network option's validation kind, default, and live acceptance. */
+export type OptionDefinition = (typeof OPTIONS)[keyof typeof OPTIONS];
+
+/** One Network channel's scope, shader map, label, and normalization. */
+export type ChannelDefinition = (typeof CHANNELS)[Channel];
+
+/** Normalized RGBA tuple as Network's color options accept it. */
+export type RGBA = NonNullable<Options['baseColor']>;
+
+/** Endpoint highlight modes accepted by Network's `focusEndpointMode`. */
+export type FocusEndpointMode = NonNullable<Options['focusEndpointMode']>;
+
 type AttributeOption = Exclude<keyof Options, 'colormap'>;
 
-/** Serializable option keys selected by Network's construction lifecycle metadata. */
-export type ConstructionAttributeOption = Extract<AttributeOption, ConstructionOption>;
+/** Option keys selected by whether Network accepts them live. */
+type OptionKeyByLive<Live extends boolean> = {
+  [Key in keyof typeof OPTIONS]: (typeof OPTIONS)[Key]['live'] extends Live ? Key : never;
+}[keyof typeof OPTIONS];
 
-/** Serializable option keys selected by Network's runtime lifecycle metadata. */
-export type RuntimeAttributeOption = Extract<AttributeOption, RuntimeOption>;
+/** Serializable option keys Network reads once at construction. */
+export type ConstructionAttributeOption = Extract<AttributeOption, OptionKeyByLive<false>>;
+
+/** Serializable option keys Network accepts as live patches. */
+export type RuntimeAttributeOption = Extract<AttributeOption, OptionKeyByLive<true>>;
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends <Value>() => Value extends Right ? 1 : 2
@@ -45,7 +52,7 @@ type Equal<Left, Right> =
     : false;
 type Expect<Value extends true> = Value;
 type _ConstructionOptionsAreExactlyMsaa = Expect<Equal<ConstructionAttributeOption, 'msaa'>>;
-type _ColormapRemainsRuntime = Expect<Equal<Extract<RuntimeOption, 'colormap'>, 'colormap'>>;
+type _ColormapRemainsLive = Expect<Equal<Extract<OptionKeyByLive<true>, 'colormap'>, 'colormap'>>;
 
 /** One serializable Network option and its mechanically derived HTML attribute. */
 export interface OptionAttribute {
@@ -56,18 +63,23 @@ export interface OptionAttribute {
 
 /** One canonical channel and its mechanically derived HTML surfaces. */
 export type ChannelAttributeDefinition = ChannelDefinition & {
+  readonly key: Channel;
   readonly attribute: HtmlName<Channel>;
   readonly domainAttribute: `${HtmlName<Channel>}-domain` | null;
-  readonly rangeAttribute: `${HtmlName<Channel>}-range` | null;
 };
 
 /** HTML field-binding name for a canonical Network channel. */
 export type ChannelAttribute = HtmlName<Channel>;
 
-export type { NormalizedChannel };
+/** Channels whose values pass through an input domain. */
+export type NormalizedChannel = {
+  [Key in Channel]: (typeof CHANNELS)[Key]['normalized'] extends true ? Key : never;
+}[Channel];
 
 /** Network channels rendered through the shared colormap. */
-export type ColormapChannel = Extract<ChannelDefinition, { readonly map: 'colormap' }>['key'];
+export type ColormapChannel = {
+  [Key in Channel]: (typeof CHANNELS)[Key]['map'] extends 'colormap' ? Key : never;
+}[Channel];
 
 /** HTML legend token for a colormap-mapped Network channel. */
 export type LegendControl = `${HtmlName<ColormapChannel>}-legend`;
@@ -90,9 +102,7 @@ export type ControlSelection =
   | { readonly mode: 'none' }
   | { readonly mode: 'explicit'; readonly controls: ReadonlySet<Control> };
 
-const optionEntries = Object.entries(OPTION_DEFINITIONS) as Array<
-  readonly [keyof Options, OptionDefinition]
->;
+const optionEntries = Object.entries(OPTIONS) as Array<readonly [keyof Options, OptionDefinition]>;
 
 /** Every serializable Network option attribute, derived from Network metadata. */
 export const OPTION_ATTRIBUTES: readonly OptionAttribute[] = Object.freeze(
@@ -109,29 +119,33 @@ export const OPTION_ATTRIBUTES: readonly OptionAttribute[] = Object.freeze(
     ),
 );
 
-/** Every channel-facing HTML surface, derived from Network metadata. */
+const channelEntries = Object.entries(CHANNELS) as Array<readonly [Channel, ChannelDefinition]>;
+
+/** Every channel-facing HTML surface, derived from Network metadata in canonical order. */
 export const CHANNEL_ATTRIBUTES: readonly ChannelAttributeDefinition[] = Object.freeze(
-  CHANNEL_DEFINITIONS.map((definition) => {
-    const attribute = htmlName(definition.key) as HtmlName<Channel>;
+  channelEntries.map(([key, definition]) => {
+    const attribute = htmlName(key) as HtmlName<Channel>;
     return Object.freeze({
       ...definition,
+      key,
       attribute,
-      domainAttribute: channelNormalizes(definition) ? (`${attribute}-domain` as const) : null,
-      rangeAttribute: definition.map === 'height' ? (`${attribute}-range` as const) : null,
+      domainAttribute: definition.normalized ? (`${attribute}-domain` as const) : null,
     }) as ChannelAttributeDefinition;
   }),
 );
 
 /** Normalized channels in canonical Network order. */
 export const NORMALIZED_CHANNEL_NAMES: readonly NormalizedChannel[] = Object.freeze(
-  CHANNEL_DEFINITIONS.filter(channelNormalizes).map((definition) => definition.key),
+  CHANNEL_ATTRIBUTES.filter((entry) => entry.normalized).map(
+    (entry) => entry.key as NormalizedChannel,
+  ),
 );
 
 /** Fast derived lookups; these contain no independently authored vocabulary. */
 export const OPTION_BY_ATTRIBUTE: ReadonlyMap<string, OptionAttribute> = new Map(
   OPTION_ATTRIBUTES.map((entry) => [entry.attribute, entry] as const),
 );
-export const CHANNEL_BY_KEY = new Map(
+export const CHANNEL_BY_KEY: ReadonlyMap<Channel, ChannelAttributeDefinition> = new Map(
   CHANNEL_ATTRIBUTES.map((entry) => [entry.key, entry] as const),
 );
 export const CHANNEL_BY_ATTRIBUTE: ReadonlyMap<string, ChannelAttributeDefinition> = new Map(
@@ -152,7 +166,7 @@ export const CONTROL_NAMES: readonly Control[] = Object.freeze([
 ]);
 
 const CONTROLS = new Set<string>(CONTROL_NAMES);
-const PROJECTIONS = new Set<string>(PROJECTION_MODES);
+const PROJECTION_NAMES = new Set<string>(PROJECTIONS);
 const INVALID_OPTION = Symbol('invalid option attribute');
 
 /** Every live non-source attribute consumed by resolved view state. */
@@ -163,12 +177,9 @@ export const VIEW_ATTRIBUTES: readonly string[] = Object.freeze(
     'border-source',
     'controls',
     ...OPTION_ATTRIBUTES.map((entry) => entry.attribute),
-    ...CHANNEL_ATTRIBUTES.flatMap((entry) => {
-      const names: string[] = [entry.attribute];
-      if (entry.domainAttribute) names.push(entry.domainAttribute);
-      if (entry.rangeAttribute) names.push(entry.rangeAttribute);
-      return names;
-    }),
+    ...CHANNEL_ATTRIBUTES.flatMap((entry) =>
+      entry.domainAttribute ? [entry.attribute, entry.domainAttribute] : [entry.attribute],
+    ),
   ]),
 );
 
@@ -179,9 +190,9 @@ export function channelAttribute(channel: Channel): ChannelAttributeDefinition {
   return definition;
 }
 
-/** Validate a projection mode through Network's canonical tuple. */
-export function assertProjectionMode(value: unknown): asserts value is ProjectionMode {
-  if (typeof value !== 'string' || !PROJECTIONS.has(value)) {
+/** Validate a projection through Network's canonical tuple. */
+export function assertProjection(value: unknown): asserts value is Projection {
+  if (typeof value !== 'string' || !PROJECTION_NAMES.has(value)) {
     throw new TypeError(`Unknown network projection ${quote(String(value))}`);
   }
 }
@@ -193,27 +204,40 @@ export function assertFloat32Array(value: unknown, name: string): asserts value 
   }
 }
 
-/** Validate and copy a public channel range. */
-export function checkedRange(value: unknown, name: string): ChannelRange {
-  validateChannelRange(value, name);
+/** Validate a `[min, max]` domain with Network's rules without retaining it. */
+export function validateDomain(value: unknown, name: string): asserts value is Domain {
+  if (!Array.isArray(value) || value.length !== 2) {
+    throw new TypeError(`${name} must contain exactly two numbers`);
+  }
+  const [minimum, maximum] = value as readonly unknown[];
+  if (typeof minimum !== 'number' || typeof maximum !== 'number') {
+    throw new TypeError(`${name} must contain exactly two numbers`);
+  }
+  if (!Number.isFinite(minimum) || !Number.isFinite(maximum)) {
+    throw new RangeError(`${name} values must be finite`);
+  }
+  if (minimum > maximum) throw new RangeError(`${name} minimum must not exceed its maximum`);
+}
+
+/** Validate and copy a public channel domain. */
+export function checkedDomain(value: unknown, name: string): Domain {
+  validateDomain(value, name);
   return [value[0], value[1]];
 }
 
-/** Parse one range attribute, returning null for absent or invalid values. */
-export function parseRange(
+/** Parse one domain attribute, returning null for absent or invalid values. */
+export function parseDomain(
   attribute: string,
   raw: string | null,
   warnings: ViewWarning[],
-): ChannelRange | null {
+): Domain | null {
   if (raw === null) return null;
-  const parts = tokens(raw);
-  if (parts.length === 2) {
-    const values = parts.map(decimal);
+  const parsed = decimalPair(raw);
+  if (parsed) {
     try {
-      validateChannelRange(values, attribute);
-      return [values[0]!, values[1]!];
+      return checkedDomain(parsed, attribute);
     } catch {
-      // Invalid author values warn and leave the binding's base range active.
+      // Invalid author values warn and leave the binding's base domain active.
     }
   }
   warnings.push(
@@ -222,9 +246,9 @@ export function parseRange(
   return null;
 }
 
-/** Serialize a validated range to a stable space-separated attribute value. */
-export function serializeRange(value: ChannelRange, name = 'range'): string {
-  const checked = checkedRange(value, name);
+/** Serialize a validated domain to a stable space-separated attribute value. */
+export function serializeDomain(value: Domain, name = 'domain'): string {
+  const checked = checkedDomain(value, name);
   return `${checked[0]} ${checked[1]}`;
 }
 
@@ -291,7 +315,7 @@ export function parseOptionAttribute(
   raw: string | null,
   warnings: ViewWarning[],
 ): unknown {
-  const fallback = DEFAULT_OPTIONS[entry.option];
+  const fallback: unknown = entry.definition.default;
   if (raw === null) return fallback;
 
   let value: unknown = INVALID_OPTION;
@@ -301,18 +325,17 @@ export function parseOptionAttribute(
       else if (raw === 'false') value = false;
       break;
     case 'finite':
-    case 'nonnegative': {
+    case 'nonnegative':
       value = decimal(raw.trim());
       break;
-    }
     case 'rgba': {
       const parts = tokens(raw);
-      if (parts.length === 4) {
-        const rgba = parts.map(decimal);
-        value = rgba;
-      }
+      if (parts.length === 4) value = parts.map(decimal);
       break;
     }
+    case 'domain':
+      value = decimalPair(raw) ?? INVALID_OPTION;
+      break;
     case 'focus-endpoint':
       value = raw;
       break;
@@ -327,7 +350,7 @@ export function parseOptionAttribute(
 
   if (value !== INVALID_OPTION) {
     try {
-      validateOption(entry.option, value);
+      validateOptions({ [entry.option]: value });
       return value;
     } catch {
       // Invalid author values warn and resolve to the Network-owned default.
@@ -345,19 +368,19 @@ export function parseOptionAttribute(
 
 /** Validate and serialize one JavaScript option value through Network metadata. */
 export function serializeOption(entry: OptionAttribute, value: unknown): string {
-  validateOption(entry.option, value);
+  validateOptions({ [entry.option]: value });
   switch (entry.definition.kind) {
     case 'boolean':
-      return String(value);
     case 'finite':
     case 'nonnegative':
+    case 'msaa':
       return String(value);
     case 'rgba':
       return (value as RGBA).join(' ');
+    case 'domain':
+      return (value as Domain).join(' ');
     case 'focus-endpoint':
       return value as FocusEndpointMode;
-    case 'msaa':
-      return String(value);
     case 'colormap':
       throw new TypeError('colormap is not serializable');
     default:
@@ -384,6 +407,12 @@ function tokens(value: string): string[] {
 function decimal(value: string): number {
   if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value)) return Number.NaN;
   return Number(value);
+}
+
+/** Parse exactly two strict decimals, or null for any other token count. */
+function decimalPair(value: string): [number, number] | null {
+  const parts = tokens(value);
+  return parts.length === 2 ? [decimal(parts[0]!), decimal(parts[1]!)] : null;
 }
 
 function unique(values: readonly string[]): string[] {

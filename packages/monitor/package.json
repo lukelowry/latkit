@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@latkit/gpu": "workspace:*",
+    "@latkit/model": "workspace:*",
     "@webgpu/types": "^0.1.71"
   },
   "devDependencies": {

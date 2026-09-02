@@ -4,11 +4,12 @@ The immutable, columnar description of a network and its element classes that a 
 once and every latkit renderer and view consumes directly, plus the byte form that lets it cross a
 process boundary lazily.
 
-Five nouns:
+Six nouns:
 
 | Noun      | What it is                                                                                    |
 | --------- | --------------------------------------------------------------------------------------------- |
 | `Model`   | A value: topology, owners, element classes, and one lazy, cached loader for class columns     |
+| `Field`   | One quantity of a class a host binds or plots: a numeric column or a recorded signal          |
 | `Series`  | Packed signals over one element axis and time, shaped exactly as `@latkit/monitor` loads them |
 | A run     | What any engine emits: `RunUpdate`s whose frames `collect` into a `Series`                    |
 | `Results` | What a run leaves behind: its recorded samples, read back class by class as those batches     |
@@ -72,6 +73,21 @@ network.on('pick', (item) => {
 
 const grid = createGrid(bus.labels, bus.columns);
 const { rows, total } = await grid.window('north', { column: 'Vm', dir: 'desc' }, 0, 50);
+```
+
+## Name what a host shows
+
+A `Field` is one quantity of a class: a numeric column, or a signal the class records. `fieldsOf`
+lists them in a stable order, columns first and then recorded signals in the order a `Series` packs
+them, and `fieldKey` keys a reference. A binding picker, a plot lane, and an inspector row all speak
+in fields, never in columns or arrays.
+
+```ts
+import { fieldKey, fieldsOf } from '@latkit/model';
+
+const bus = model.classes.find((cls) => cls.id === 'bus')!;
+const fields = fieldsOf(bus, await model.load('bus'), results.get('bus'));
+const bound = new Map(fields.map((field) => [fieldKey(field), field]));
 ```
 
 ## Run a model

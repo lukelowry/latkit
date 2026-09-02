@@ -1,6 +1,6 @@
 ﻿import type {
-  Projection,
-  CameraPose,
+  CameraProjection,
+  Pose,
   CameraState,
   Tangent,
   PanSession,
@@ -120,7 +120,7 @@ export class Camera {
 
   /** Create a camera bound to a projection and its GPU camera region. */
   constructor(
-    private readonly proj: Projection,
+    private readonly proj: CameraProjection,
     private readonly region: CameraRegion,
   ) {
     // Buffers are sized by the projection; the motion machinery is dimension-blind.
@@ -156,13 +156,7 @@ export class Camera {
    * The pose merges through `applyPose` and the scale lands through the same
    * `zoom` clamps gestures use; the carried `fitIntent` is restored.
    */
-  place(
-    pose: CameraPose,
-    pxPerWorld: number,
-    fitIntent: boolean,
-    bounds: Bounds,
-    vp: Viewport,
-  ): void {
+  place(pose: Pose, pxPerWorld: number, fitIntent: boolean, bounds: Bounds, vp: Viewport): void {
     this.init(bounds, vp);
     if (Number.isFinite(pxPerWorld) && pxPerWorld > 0) {
       this.proj.applyPose(this.target, pose);
@@ -184,7 +178,7 @@ export class Camera {
    * mid-animation lands where the post-animation switch would. Null until
    * placed.
    */
-  carry(vp: Viewport): { pose: CameraPose; px: number } | null {
+  carry(vp: Viewport): { pose: Pose; px: number } | null {
     if (!this.fit) return null;
     const s = this.settled;
     return { pose: this.proj.pose(s), px: this.proj.pxPerWorld(s, vp) };
@@ -250,7 +244,7 @@ export class Camera {
    * rendered state during self-driven motion, else the target. Null until
    * placed.
    */
-  pose(): CameraPose | null {
+  pose(): Pose | null {
     if (!this.fit) return null;
     return this.proj.pose(this.driven ? this.current : this.target);
   }
@@ -259,7 +253,7 @@ export class Camera {
    * Merge a partial public pose, easing through the chase when animated.
    * False before placement or when the post-clamp pose changes nothing.
    */
-  setPose(pose: Partial<CameraPose>, animate: boolean): boolean {
+  setPose(pose: Partial<Pose>, animate: boolean): boolean {
     if (!this.fit) return false;
     if (!this.mutateTarget((s) => this.proj.applyPose(s, pose))) return false;
     this.anchor = null;
@@ -466,7 +460,7 @@ export class Camera {
 
   /**
    * Center arbitrary bounds while preserving zoom and orientation.
-   * `Projection.fit` owns coordinate normalization; only its center slots
+   * `CameraProjection.fit` owns coordinate normalization; only its center slots
    * are adopted.
    */
   reveal(bounds: Bounds, vp: Viewport, animate: boolean): RevealResult {

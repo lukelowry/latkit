@@ -1,5 +1,6 @@
 /// <reference types="@webgpu/types" />
 
+import type { Item } from '@latkit/model';
 import { createPresentation, type Presentation } from '@latkit/gpu';
 
 import { encodeTopology, prepareTopology, type Bounds, type Topology } from './topology/index.js';
@@ -18,24 +19,26 @@ import { CameraRig } from './camera/rig.js';
 import { createDaylight, SUN_REFRESH_MS } from './daylight.js';
 import { attachPointer, MOUSE_PICK_RADIUS_PX, type HoverProbe } from './input/pointer.js';
 import { createSurface } from './input/surface.js';
-import { type CameraPose, MAX_ZOOM_RATIO, type Viewport } from './camera/projection.js';
+import { type Pose, MAX_ZOOM_RATIO, type Viewport } from './camera/projection.js';
 import { createChannels, type Channel } from './channels.js';
-import type { ChannelRange } from './range.js';
+import type { Domain } from './range.js';
 import { RenderLoop } from './webgpu/render-loop.js';
 import {
+  PROJECTION_DEFS,
   PROJECTIONS,
-  PROJECTION_MODES,
   isGeographicTopology,
   type ProjectionFamily,
-  type ProjectionMode,
+  type Projection,
 } from './projections.js';
-import type { Borders } from './borders.js';
+import type { Borders } from './borders/index.js';
 import { createEmitter } from './emitter.js';
 import { edgeCountOf } from './topology/pack.js';
+import { adjacency, neighborhood, type Adjacency } from './topology/adjacency.js';
+import { createOrbit } from './orbit.js';
 import { Picker, isPickChannel, type PickQuery, type PickResult } from './pick/picker.js';
 import {
   DEFAULT_OPTIONS,
-  OPTION_DEFINITIONS,
+  OPTIONS,
   resolveOptions,
   validateOptions,
   type Options,
@@ -45,44 +48,35 @@ import {
 import { boundsForItems, expandDegenerateBounds } from './topology/subset-bounds.js';
 
 export type { Options } from './options.js';
+export type { Item } from '@latkit/model';
 
-/** Identity of one vertex or edge in the loaded topology. */
-export interface Item {
-  /** Topology primitive kind. */
-  readonly kind: 'vertex' | 'edge';
-  /** Zero-based vertex or edge index. */
-  readonly index: number;
-}
-
-/** Options for {@link Network.setPose}. */
-export interface PoseOptions {
-  /** Ease toward the pose instead of placing it immediately. @defaultValue `false` */
-  readonly animate?: boolean;
-}
-
-/** Camera behavior for bringing one item into view without reframing it. */
+/** Camera behavior for bringing one item into view. */
 export interface RevealOptions {
   /** CSS-pixel inset that the item's anchor must clear. @defaultValue `48` */
   readonly paddingPx?: number;
   /** Center the item even when it is already visible inside the inset. @defaultValue `false` */
   readonly center?: boolean;
+  /**
+   * Frame the item with its neighborhood: an edge with both endpoints, a vertex with its incident
+   * edges and their far ends. A lone item is centered at the current scale. @defaultValue `false`
+   */
+  readonly neighbors?: boolean;
   /** Animate the camera move. @defaultValue `false` */
   readonly animate?: boolean;
 }
 
 /**
- * Events emitted by a {@link Network} instance.
+ * Events emitted by a {@link Network} instance, keyed by name with their payload.
  *
  * @remarks
- * `hover` and `select` use `null` values to report cleared interaction state.
- * Programmatic selection methods do not emit `select`; user pointer selection
- * does emit it.
+ * `hover` and `select` carry `null` when interaction state clears. Programmatic
+ * selection does not emit `select`; user pointer selection does.
  */
 export type Events = {
-  /** Hovered vertex or edge; null kind and index after hover exit. */
-  hover: (kind: 'vertex' | 'edge' | null, index: number | null) => void;
-  /** User-selected vertex or edge; null kind and index after selection clear. */
-  select: (kind: 'vertex' | 'edge' | null, index: number | null) => void;
+  /** Hovered vertex or edge, or null after hover exit. */
+  hover: Item | null;
+  /** User-selected vertex or edge, or null after a clearing tap. */
+  select: Item | null;
   /**
    * Browser context request released after right-drag disambiguation.
    *
@@ -90,13 +84,15 @@ export type Events = {
    * retained until pointer release, so rely on its coordinates, modifiers,
    * and target; `currentTarget` and `composedPath()` are not stable.
    */
-  contextmenu: (event: MouseEvent) => void;
-  /** Camera zoom state after a fit-view transition or gesture. */
-  zoom: (atFitView: boolean) => void;
+  contextmenu: MouseEvent;
+  /** Whether the camera sits at the fit view, after a fit transition or gesture. */
+  zoom: boolean;
+  /** Whether continuous rotation is running, after {@link Network.orbit} or an interrupting gesture. */
+  orbit: boolean;
   /** WebGPU device-loss notification surfaced before rendering pauses. */
-  deviceLost: (reason: string, message: string) => void;
+  deviceLost: { readonly reason: string; readonly message: string };
   /** Asynchronous shader-pipeline build failure; rendering for that family is unavailable. */
-  pipelineError: (family: ProjectionFamily, cause: unknown) => void;
+  pipelineError: { readonly family: ProjectionFamily; readonly cause: unknown };
 };
 
 /**
@@ -110,8 +106,13 @@ export type Events = {
  * binding channels or reading projection availability.
  */
 export interface Network {
-  /** Projection modes currently supported by the loaded topology. */
-  readonly projections: Readonly<Record<ProjectionMode, boolean>>;
+  /**
+   * Active projection: the destination of the last accepted
+   * {@link Network.setProjection} call, `'flat'` before any.
+   */
+  readonly projection: Projection;
+  /** Projections currently supported by the loaded topology. */
+  readonly projections: Readonly<Record<Projection, boolean>>;
   /**
    * Whether loaded coordinates are interpreted as geographic lon/lat degrees.
    *
@@ -123,11 +124,9 @@ export interface Network {
    * geographic. False before the first {@link Network.load}.
    */
   readonly geographic: boolean;
-  /**
-   * Active projection mode: the destination of the last accepted
-   * {@link Network.setProjection} call, `'flat'` before any.
-   */
-  readonly projection: ProjectionMode;
+  /** Whether continuous rotation is running. */
+  readonly orbiting: boolean;
+
   /**
    * Subscribe to a network event and receive an unsubscribe callback.
    *
@@ -135,7 +134,62 @@ export interface Network {
    * @param handler - Callback invoked with the event payload.
    * @returns A function that removes the handler.
    */
-  on<K extends keyof Events>(event: K, handler: Events[K]): () => void;
+  on<K extends keyof Events>(event: K, handler: (payload: Events[K]) => void): () => void;
+
+  /**
+   * Bind a topology and schedule its first paint.
+   *
+   * This method is synchronous; read `Network.projections` immediately
+   * after it returns. Throws when topology validation or GPU binding fails,
+   * leaving the prior view intact.
+   *
+   * @param topology - CPU-side graph and geometry arrays.
+   * @throws Error when topology validation or GPU binding fails.
+   */
+  load(topology: Topology): void;
+  /**
+   * Replace the optional geographic border overlay.
+   *
+   * @param borders - Packed border geometry, or `null` to clear borders.
+   * @throws Error when the geometry violates the border layout.
+   */
+  setBorders(borders: Borders | null): void;
+  /**
+   * Update display options. `msaa` remains construction-only.
+   *
+   * @param options - Partial display option patch.
+   * @throws TypeError or RangeError when any option is invalid; nothing is applied.
+   */
+  setOptions(options: Options): void;
+  /**
+   * Bind, replace, or clear a per-vertex or per-edge rendering channel.
+   *
+   * `domain` configures normalized channels only. Raw `edgeDash`,
+   * `vertexVisible`, and `edgeVisible` channels ignore it. A null height
+   * domain scans the finite extent of the values.
+   *
+   * @param channel - Channel name to bind.
+   * @param values - Scalar values whose length matches the current topology, or `null` to clear.
+   * @param domain - Input domain for normalized channels, or `null` for scanned/default behavior.
+   * @throws Error when no topology is loaded or the array length is invalid.
+   */
+  setChannel(channel: Channel, values: Float32Array | null, domain?: Domain | null): void;
+  /**
+   * Override the input domain used by a normalized channel.
+   *
+   * Calls for raw dash and visibility channels are accepted as no-ops.
+   *
+   * @param channel - Channel name to update.
+   * @param domain - Fixed input domain, or `null` to return to the scanned/default domain.
+   */
+  setChannelDomain(channel: Channel, domain: Domain | null): void;
+  /**
+   * The input domain a bound normalized channel is using, or null for an unbound or raw channel.
+   *
+   * @param channel - Channel name to read.
+   */
+  getChannelDomain(channel: Channel): Domain | null;
+
   /**
    * Query visible geometry at a client-space point without changing focus.
    *
@@ -161,88 +215,29 @@ export interface Network {
    */
   locate(item: Item): readonly [clientX: number, clientY: number] | null;
   /**
-   * Bring an item into view without changing selection, projection, or zoom.
-   *
-   * Unless `center` is true, an item already visible inside the padded
-   * viewport is a no-op. The camera centers valid off-screen or occluded
-   * items while retaining the current scale, distance, tilt, and bearing.
-   * Newer camera commands replace an in-progress reveal.
+   * The item plus what touches it in the loaded topology: an edge with both
+   * endpoints, a vertex with its incident edges and their far ends.
    *
    * @param item - Vertex or edge identity in the loaded topology.
-   * @param options - Visibility inset, centering policy, and animation flag.
-   * @returns True for a valid item, including an already-visible no-op.
+   * @returns The neighborhood, beginning with `item`; empty before a topology is loaded.
    */
-  reveal(item: Item, options?: RevealOptions): boolean;
+  neighborhood(item: Item): readonly Item[];
   /**
-   * Bind a topology and schedule its first paint.
+   * Select an item, or clear the selection with `null`, without emitting `select`.
    *
-   * This method is synchronous; read `Network.projections` immediately
-   * after it returns. Throws when topology validation or GPU binding fails,
-   * leaving the prior view intact.
-   *
-   * @param topology - CPU-side graph and geometry arrays.
-   * @throws Error when topology validation or GPU binding fails.
+   * @param item - Vertex or edge identity, or `null` to clear.
    */
-  load(topology: Topology): void;
+  select(item: Item | null): void;
+
   /**
-   * Replace the optional geographic border overlay.
+   * Switch projection.
    *
-   * @param borders - Packed border geometry, or `null` to clear borders.
+   * @param mode - Projection to activate.
+   * @param fallback - When `mode` is unsupported, switch instead to the first
+   * supported projection in canonical order.
+   * @returns True when the loaded topology supports `mode`.
    */
-  setBorders(borders: Borders | null): void;
-  /**
-   * Replace the color lookup table used by colormap channels.
-   *
-   * @param fn - Function mapping normalized values in `[0, 1]` to RGB channels in `[0, 1]`.
-   */
-  setColormap(fn: NonNullable<Options['colormap']>): void;
-  /**
-   * Set the default vertex color used without a `vertexColor` channel.
-   *
-   * @param color - RGBA color with normalized channels in `[0, 1]`.
-   */
-  setBaseColor(color: RGBA): void;
-  /**
-   * Bind or replace a per-vertex or per-edge rendering channel.
-   *
-   * `domain` configures normalized channels only. Raw `edgeDash`,
-   * `vertexVisible`, and `edgeVisible` channels ignore both range arguments.
-   * Height channels may pass an output `range`; a null height domain retains
-   * automatic finite-extent scanning.
-   *
-   * @param channel - Channel name to bind.
-   * @param values - Scalar values whose length matches the current topology.
-   * @param domain - Input domain for normalized channels, or `null` for scanned/default behavior.
-   * @param range - Output range for `vertexHeight`; ignored by other channels.
-   * @throws Error when no topology is loaded or the array length is invalid.
-   */
-  setChannel(
-    channel: Channel,
-    values: Float32Array,
-    domain?: ChannelRange | null,
-    range?: ChannelRange,
-  ): void;
-  /**
-   * Clear a previously bound rendering channel.
-   *
-   * @param channel - Channel name to clear.
-   */
-  clearChannel(channel: Channel): void;
-  /**
-   * Override the input domain used by a normalized channel.
-   *
-   * Calls for raw dash and visibility channels are accepted as no-ops.
-   *
-   * @param channel - Channel name to update.
-   * @param range - Fixed input range, or `null` to return to the scanned/default domain.
-   */
-  setChannelRange(channel: Channel, range: ChannelRange | null): void;
-  /**
-   * Update display options. `msaa` remains construction-only.
-   *
-   * @param options - Partial display option patch.
-   */
-  setOptions(options: Options): void;
+  setProjection(mode: Projection, fallback?: boolean): boolean;
   /**
    * Fit the loaded topology into the current viewport.
    *
@@ -262,21 +257,38 @@ export interface Network {
    */
   fit(items: readonly Item[], animate?: boolean): void;
   /**
-   * Switch projection mode.
+   * Bring an item into view without changing selection, projection, or zoom.
    *
-   * @param mode - Projection mode to activate.
-   * @returns True if the loaded topology supports the mode; false otherwise.
+   * Unless `center` is true, an item already visible inside the padded
+   * viewport is a no-op. The camera centers valid off-screen or occluded
+   * items while retaining the current scale, distance, tilt, and bearing.
+   * With `neighbors`, a populated neighborhood is fitted instead. Newer
+   * camera commands replace an in-progress reveal.
+   *
+   * @param item - Vertex or edge identity in the loaded topology.
+   * @param options - Visibility inset, centering policy, neighborhood, and animation flag.
+   * @returns True for a valid item, including an already-visible no-op.
    */
-  setProjection(mode: ProjectionMode): boolean;
+  reveal(item: Item, options?: RevealOptions): boolean;
   /**
-   * Programmatically select an item without emitting a `select` event.
+   * Read the camera pose the next {@link Network.setPose} would build on.
    *
-   * @param kind - Item kind to select.
-   * @param index - Vertex or edge index.
+   * @returns The current pose, or null before a topology is loaded or the
+   * camera is placed.
    */
-  select(kind: 'vertex' | 'edge', index: number): void;
-  /** Clear selection without emitting a select event. */
-  clearSelection(): void;
+  getPose(): Pose | null;
+  /**
+   * Merge a partial camera pose, wrapped and clamped per the active view.
+   *
+   * With `animate` the camera eases toward the pose; otherwise it is placed
+   * immediately. Fields the view cannot host (flat pitch/bearing) clamp to
+   * their resting value.
+   *
+   * @param pose - Pose fields to change; omitted fields keep their value.
+   * @param animate - If true, ease toward the pose.
+   * @returns True when the pose was accepted and changed camera state.
+   */
+  setPose(pose: Partial<Pose>, animate?: boolean): boolean;
   /**
    * Pan the active camera by screen pixels.
    *
@@ -295,36 +307,23 @@ export interface Network {
    */
   rotateBy(dx: number, dy: number): void;
   /**
-   * Read the camera pose the next {@link Network.setPose} would build on.
-   *
-   * @returns The current pose, or null before a topology is loaded or the
-   * camera is placed.
-   */
-  getPose(): CameraPose | null;
-  /**
-   * Merge a partial camera pose, wrapped and clamped per the active view.
-   *
-   * With `animate` the camera eases toward the pose; otherwise it is placed
-   * immediately. Fields the view cannot host (flat pitch/bearing) clamp to
-   * their resting value.
-   *
-   * @param pose - Pose fields to change; omitted fields keep their value.
-   * @param options - Animation flag.
-   * @returns True when the pose was accepted and changed camera state.
-   */
-  setPose(pose: Partial<CameraPose>, options?: PoseOptions): boolean;
-  /**
    * Zoom the active camera around the viewport center.
    *
    * @param factor - Multiplicative zoom factor.
    */
   zoomBy(factor: number): void;
   /**
-   * Fade the canvas in after the first real frame has painted.
+   * Start or stop continuous rotation.
    *
-   * @param ms - Transition duration in milliseconds. Default: `150`.
+   * A flat view promotes to tilt, a planar view drags horizontally, and a
+   * globe drifts longitude. A pointer or wheel gesture on the canvas stops
+   * the orbit; `orbit` events report every transition.
+   *
+   * @param active - Whether rotation should run.
+   * @returns True when rotation is running afterwards; false when no 3D projection is available.
    */
-  fadeIn(ms?: number): void;
+  orbit(active: boolean): boolean;
+
   /** Pause animation and rendering until resumed. */
   pause(): void;
   /** Resume rendering when the page and GPU device allow it. */
@@ -338,8 +337,8 @@ function runtimeOptionPatch(options: Options): Options {
   const patch: Options = {};
   const source = options as Readonly<Record<string, unknown>>;
   const target = patch as Record<string, unknown>;
-  for (const [key, definition] of Object.entries(OPTION_DEFINITIONS)) {
-    if (definition.lifecycle === 'runtime' && source[key] !== undefined) target[key] = source[key];
+  for (const [key, definition] of Object.entries(OPTIONS)) {
+    if (definition.live && source[key] !== undefined) target[key] = source[key];
   }
   return patch;
 }
@@ -353,6 +352,7 @@ export interface ControllerDeps {
   CameraRig: typeof CameraRig;
   attachPointer: typeof attachPointer;
   Picker: typeof Picker;
+  createOrbit: typeof createOrbit;
 }
 
 const DEFAULT_CONTROLLER_DEPS: ControllerDeps = {
@@ -363,16 +363,14 @@ const DEFAULT_CONTROLLER_DEPS: ControllerDeps = {
   CameraRig,
   attachPointer,
   Picker,
+  createOrbit,
 };
 
-/** Shared allocation-free result for invalid or empty public hit tests. */
+/** Shared allocation-free result for invalid or empty public queries. */
 const NO_ITEMS: readonly Item[] = Object.freeze([]);
 
 /** Default CSS-pixel inset used by reveal visibility checks. */
 const DEFAULT_REVEAL_PADDING_PX = 48;
-
-/** Default opacity transition length used by {@link Network.fadeIn}. */
-const FADE_IN_MS = 150;
 
 /** Runtime options mirrored one-to-one into controller display state. */
 const DISPLAY_OPTIONS = [
@@ -385,6 +383,7 @@ const DISPLAY_OPTIONS = [
   'vertexScale',
   'edgeScale',
   'heightScale',
+  'heightRange',
   'vertexLodPx',
   'dashPeriodPx',
   'earthAxis',
@@ -406,6 +405,7 @@ const PICK_GEOMETRY_OPTIONS: ReadonlySet<DisplayOption> = new Set<DisplayOption>
   'vertexScale',
   'edgeScale',
   'heightScale',
+  'heightRange',
   'vertexLodPx',
   'dashPeriodPx',
 ]);
@@ -430,7 +430,6 @@ const u8 = (x: number): number => Math.round(Math.min(1, Math.max(0, x)) * 255);
  * ```ts
  * const network = await createNetwork(device, canvas, { graticule: true });
  * network.load(topology);
- * network.fadeIn();
  * ```
  *
  * The returned controller owns its renderer resources, but not `canvas` or
@@ -513,15 +512,20 @@ function forwardDeviceLoss(
   };
 }
 
-/** Deliver latched event arguments to a late subscriber with emitter-equivalent error isolation. */
-function replay<Args extends unknown[]>(handler: (...args: Args) => void, args: Args): void {
+/** Deliver a latched event payload to a late subscriber with emitter-equivalent error isolation. */
+function replay<Payload>(handler: (payload: Payload) => void, payload: Payload): void {
   try {
-    handler(...args);
+    handler(payload);
   } catch (error) {
     queueMicrotask(() => {
       throw error;
     });
   }
+}
+
+/** Item identity from a pick result. */
+function itemOf(hit: PickResult): Item {
+  return { kind: hit[0], index: hit[1] };
 }
 
 /** Creates the controller after the Promise boundary has established transactional cleanup. */
@@ -536,15 +540,6 @@ function createNetworkController(
   lifecycle.add(events.clear);
   const surface = deps.createSurface(canvas);
   lifecycle.add(() => surface.destroy());
-  const originalCanvasState = {
-    opacity: canvas.style.opacity,
-    transition: canvas.style.transition,
-  };
-  canvas.style.opacity = '0';
-  lifecycle.add(() => {
-    canvas.style.opacity = originalCanvasState.opacity;
-    canvas.style.transition = originalCanvasState.transition;
-  });
 
   const presentation = deps.createPresentation(device, canvas);
   lifecycle.add(() => presentation.destroy());
@@ -554,14 +549,8 @@ function createNetworkController(
   const daylight = createDaylight(uniforms.light);
   const rig = new deps.CameraRig(uniforms.camera);
 
-  /**
-   * First-paint gate for fadeIn requests.
-   *
-   * The canvas starts hidden and should become visible only after content has
-   * actually painted, so load(); fadeIn() never reveals a blank compiling frame.
-   */
+  /** First-paint gate for pipeline warming. */
   let hasPainted = false;
-  let pendingFadeMs: number | null = null;
   let warmRequested = false;
   let warming = false;
 
@@ -581,21 +570,24 @@ function createNetworkController(
   lifecycle.add(() => loop.destroy());
 
   renderer.onPipelinesReady = () => loop.wake();
-  let pipelineFailure: Parameters<Events['pipelineError']> | null = null;
+  let pipelineFailure: Events['pipelineError'] | null = null;
   renderer.onPipelineError = (family, cause) => {
-    pipelineFailure = [family, cause];
-    events.emit('pipelineError', family, cause);
+    pipelineFailure = { family, cause };
+    events.emit('pipelineError', pipelineFailure);
   };
   /** Schedule a frame for a visual state change. */
   const repaint = (): void => loop.wake();
 
-  let deviceLoss: Parameters<Events['deviceLost']> | null = null;
+  let deviceLoss: Events['deviceLost'] | null = null;
   lifecycle.add(
     forwardDeviceLoss(device, (info) => {
       if (deviceLoss) return;
-      deviceLoss = [info.reason ?? 'unknown', info.message || 'WebGPU device was lost'];
+      deviceLoss = {
+        reason: info.reason ?? 'unknown',
+        message: info.message || 'WebGPU device was lost',
+      };
       loop.pause();
-      events.emit('deviceLost', ...deviceLoss);
+      events.emit('deviceLost', deviceLoss);
     }),
   );
 
@@ -636,6 +628,7 @@ function createNetworkController(
   const focus = new FocusState(uniforms, edgeEndpoints, focusStyle);
 
   let topology: Topology | null = null;
+  let topologyAdjacency: Adjacency | null = null;
   let topologyBounds: Bounds | null = null;
   let topologyCharacteristicLength: number | null = null;
   let topologyGeographic = false;
@@ -652,15 +645,14 @@ function createNetworkController(
     hoverDirty = true;
     loop.wake();
   };
-  type HoverNotice = readonly ['vertex' | 'edge' | null, number | null];
   interface VersionedNotice<T> {
     readonly value: T;
     readonly scene: number;
   }
   /** Focus change awaiting a successful frame submission. */
-  let pendingHoverNotice: VersionedNotice<HoverNotice> | undefined;
+  let pendingHoverNotice: VersionedNotice<Item | null> | undefined;
   /** Latest submitted focus change awaiting post-tick delivery. */
-  let readyHoverNotice: VersionedNotice<HoverNotice> | undefined;
+  let readyHoverNotice: VersionedNotice<Item | null> | undefined;
   /** Fit-state transition awaiting a successful frame submission. */
   let pendingZoomNotice: VersionedNotice<boolean> | undefined;
   /** Latest submitted fit-state transition awaiting post-tick delivery. */
@@ -677,7 +669,7 @@ function createNetworkController(
     const view = vp();
     const hasViewport =
       Number.isFinite(view.w) && Number.isFinite(view.h) && view.w > 0 && view.h > 0;
-    const center = PROJECTIONS[rig.mode].wrapX
+    const center = PROJECTION_DEFS[rig.mode].wrapX
       ? ((hasViewport ? rig.camera.screenToWorld(view.w / 2, view.h / 2, view)?.[0] : null) ??
         rig.camera.pose()?.centerX ??
         0)
@@ -704,6 +696,7 @@ function createNetworkController(
     vertexCount: () => topology?.vertexCount ?? 0,
     edgeCount: () => (topology ? edgeCountOf(topology) : 0),
     dashPeriodPx: () => display.dashPeriodPx,
+    heightRange: () => display.heightRange,
   });
 
   /**
@@ -747,6 +740,7 @@ function createNetworkController(
         events.emit('contextmenu', intent.event);
         break;
       case 'navigationStart':
+        orbit.stop();
         navigationActive = true;
         hoverDirty = true;
         applyHover(null);
@@ -759,6 +753,7 @@ function createNetworkController(
         loop.wake();
         break;
       case 'dragStart':
+        orbit.stop();
         if (!topology) break;
         rig.camera.beginDrag(intent.sx, intent.sy, intent.vp, intent.time);
         break;
@@ -773,14 +768,17 @@ function createNetworkController(
         if (rig.camera.endDrag(intent.coast, intent.time)) loop.wake();
         break;
       case 'pan':
+        orbit.stop();
         if (!topology) break;
         if (rig.camera.panBy(intent.dx, intent.dy, intent.vp)) loop.wake();
         break;
       case 'zoom':
+        orbit.stop();
         if (!topology) break;
         if (rig.camera.zoomAt(intent.factor, intent.sx, intent.sy, intent.vp)) loop.wake();
         break;
       case 'rotate':
+        orbit.stop();
         if (!topology) break;
         if (rig.camera.rotateBy(intent.dxPx, intent.dyPx, intent.vp)) loop.wake();
         break;
@@ -789,6 +787,7 @@ function createNetworkController(
         cycleSelection(picker.pickAll(pickQueryAt(intent.sx, intent.sy, intent.targetPx)));
         break;
       case 'doubleTap':
+        orbit.stop();
         if (!topology || !topologyBounds) break;
         rig.fit(intent.vp, true);
         loop.wake();
@@ -810,8 +809,23 @@ function createNetworkController(
   });
   lifecycle.add(() => pointerCleanup.destroy());
 
+  /** Switch projection through the rig and renderer together; false when unsupported. */
+  function switchProjection(mode: Projection): boolean {
+    if (!projections[mode]) return false;
+    if (mode === rig.mode) return true;
+    rig.switchTo(mode, vp());
+    updateHeightWorldScale(vp());
+    renderer.useProjection(mode);
+    cameraMoved();
+    return true;
+  }
+
   /** Public controller facade; all methods keep state changes behind repaint gates. */
   const api: Network = {
+    get projection() {
+      return rig.mode;
+    },
+
     get projections() {
       return projections;
     },
@@ -820,17 +834,49 @@ function createNetworkController(
       return topologyGeographic;
     },
 
-    get projection() {
-      return rig.mode;
+    get orbiting() {
+      return orbit.active;
     },
 
     on(event, handler) {
       const unsubscribe = events.on(event, handler);
-      if (event === 'deviceLost' && deviceLoss) replay(handler as Events['deviceLost'], deviceLoss);
+      if (event === 'deviceLost' && deviceLoss) {
+        replay(handler as (payload: Events['deviceLost']) => void, deviceLoss);
+      }
       if (event === 'pipelineError' && pipelineFailure) {
-        replay(handler as Events['pipelineError'], pipelineFailure);
+        replay(handler as (payload: Events['pipelineError']) => void, pipelineFailure);
       }
       return unsubscribe;
+    },
+
+    load(next) {
+      loadTopology(next);
+    },
+
+    setBorders(borders) {
+      renderer.setBorders(borders);
+      repaint();
+    },
+
+    setOptions(options) {
+      updateOptions(options);
+    },
+
+    setChannel(channel, values, domain) {
+      if (values === null) channels.clear(channel);
+      else channels.set(channel, values, domain);
+      if (isPickChannel(channel)) hoverDirty = true;
+      repaint();
+    },
+
+    setChannelDomain(channel, domain) {
+      channels.setDomain(channel, domain);
+      if (isPickChannel(channel)) hoverDirty = true;
+      repaint();
+    },
+
+    getChannelDomain(channel) {
+      return channels.domain(channel);
     },
 
     hitTest(clientX, clientY, radiusPx = MOUSE_PICK_RADIUS_PX) {
@@ -861,7 +907,7 @@ function createNetworkController(
       const boundedRadius = Math.min(radiusPx, Math.hypot(rect.width, rect.height));
       return picker
         .pickAll(pickQueryAt(sx, sy, boundedRadius, { w: rect.width, h: rect.height }))
-        .map(([kind, index]) => ({ kind, index }));
+        .map(itemOf);
     },
 
     locate(item) {
@@ -871,8 +917,51 @@ function createNetworkController(
       return point ? [point[0] + rect.left, point[1] + rect.top] : null;
     },
 
+    neighborhood(item) {
+      if (!topology) return NO_ITEMS;
+      topologyAdjacency ??= adjacency(topology);
+      return neighborhood(topologyAdjacency, item);
+    },
+
+    select(item) {
+      applySelection(item);
+    },
+
+    setProjection(mode, fallback = false) {
+      if (switchProjection(mode)) return true;
+      if (fallback) for (const candidate of PROJECTIONS) if (switchProjection(candidate)) break;
+      return false;
+    },
+
+    fit(itemsOrAnimate: readonly Item[] | boolean = false, animate: boolean = false) {
+      if (!topology) return;
+
+      if (typeof itemsOrAnimate === 'boolean') {
+        rig.fit(vp(), itemsOrAnimate);
+      } else {
+        if (!topologyBounds) return;
+        const { view, bounds } = resolveItemBounds(itemsOrAnimate);
+        if (!bounds) return;
+        rig.moveTo(expandDegenerateBounds(bounds, topologyBounds, MAX_ZOOM_RATIO), view, animate);
+      }
+      cameraMoved();
+    },
+
     reveal(item, options = {}) {
       if (!topology || !topologyBounds) return false;
+      const animate = options.animate ?? false;
+      if (options.neighbors) {
+        const items = api.neighborhood(item);
+        if (items.length > 1) {
+          const { view, bounds } = resolveItemBounds(items);
+          if (!bounds) return false;
+          rig.moveTo(expandDegenerateBounds(bounds, topologyBounds, MAX_ZOOM_RATIO), view, animate);
+          cameraMoved();
+          return true;
+        }
+        return api.reveal(item, { ...options, neighbors: false, center: true });
+      }
+
       const { view, hasViewport, bounds } = resolveItemBounds([item]);
       if (!bounds) return false;
 
@@ -891,80 +980,21 @@ function createNetworkController(
         }
       }
 
-      rig.reveal(bounds, view, options.animate ?? false);
+      rig.reveal(bounds, view, animate);
       cameraMoved();
       return true;
     },
 
-    load(next) {
-      loadTopology(next);
+    getPose() {
+      if (!topology) return null;
+      return rig.camera.pose();
     },
 
-    setBorders(borders) {
-      renderer.setBorders(borders);
-      repaint();
-    },
-
-    setColormap(fn) {
-      updateOptions({ colormap: fn });
-    },
-
-    setBaseColor(color) {
-      updateOptions({ baseColor: color });
-    },
-
-    setChannel(channel, values, domain, range) {
-      channels.set(channel, values, domain, range);
-      if (isPickChannel(channel)) hoverDirty = true;
-      repaint();
-    },
-
-    clearChannel(channel) {
-      channels.clear(channel);
-      if (isPickChannel(channel)) hoverDirty = true;
-      repaint();
-    },
-
-    setChannelRange(channel, range) {
-      channels.setRange(channel, range);
-      if (isPickChannel(channel)) hoverDirty = true;
-      repaint();
-    },
-
-    select(kind, index) {
-      applySelection(kind, index);
-    },
-
-    clearSelection() {
-      applySelection(null);
-    },
-
-    setProjection(mode) {
-      if (!projections[mode]) return false;
-      if (mode === rig.mode) return true;
-      rig.switchTo(mode, vp());
-      updateHeightWorldScale(vp());
-      renderer.useProjection(mode);
+    setPose(pose, animate = false) {
+      if (!topology) return false;
+      if (!rig.camera.setPose(pose, animate)) return false;
       cameraMoved();
       return true;
-    },
-
-    setOptions(options) {
-      updateOptions(options);
-    },
-
-    fit(itemsOrAnimate: readonly Item[] | boolean = false, animate: boolean = false) {
-      if (!topology) return;
-
-      if (typeof itemsOrAnimate === 'boolean') {
-        rig.fit(vp(), itemsOrAnimate);
-      } else {
-        if (!topologyBounds) return;
-        const { view, bounds } = resolveItemBounds(itemsOrAnimate);
-        if (!bounds) return;
-        rig.moveTo(expandDegenerateBounds(bounds, topologyBounds, MAX_ZOOM_RATIO), view, animate);
-      }
-      cameraMoved();
     },
 
     panBy(dx, dy) {
@@ -979,18 +1009,6 @@ function createNetworkController(
       cameraMoved();
     },
 
-    getPose() {
-      if (!topology) return null;
-      return rig.camera.pose();
-    },
-
-    setPose(pose, options = {}) {
-      if (!topology) return false;
-      if (!rig.camera.setPose(pose, options.animate ?? false)) return false;
-      cameraMoved();
-      return true;
-    },
-
     zoomBy(factor) {
       if (!topology) return;
       const v = vp();
@@ -998,9 +1016,13 @@ function createNetworkController(
       cameraMoved();
     },
 
-    fadeIn(ms = FADE_IN_MS) {
-      if (hasPainted) revealCanvas(ms);
-      else pendingFadeMs = ms;
+    orbit(active) {
+      if (!active) {
+        orbit.stop();
+        return false;
+      }
+      if (!topology) return false;
+      return orbit.start();
     },
 
     pause() {
@@ -1015,11 +1037,13 @@ function createNetworkController(
 
     destroy() {
       destroyed = true;
+      orbit.stop();
       pendingHoverNotice = undefined;
       readyHoverNotice = undefined;
       pendingZoomNotice = undefined;
       readyZoomNotice = undefined;
       topology = null;
+      topologyAdjacency = null;
       topologyBounds = null;
       topologyCharacteristicLength = null;
       rig.setBounds(null);
@@ -1029,16 +1053,9 @@ function createNetworkController(
     },
   };
 
-  /**
-   * Reveals the canvas after the first successful paint.
-   *
-   * Calls made before first paint are latched by pendingFadeMs and flushed by
-   * onFirstPaint so the opacity transition starts when content appears.
-   */
-  function revealCanvas(ms: number): void {
-    canvas.style.transition = `opacity ${ms}ms cubic-bezier(0, 0, 0.2, 1)`;
-    canvas.style.opacity = '1';
-  }
+  const orbit = deps.createOrbit(api, (active) => {
+    if (!destroyed) events.emit('orbit', active);
+  });
 
   /** Warms currently supported inactive projections in serial build order. */
   function warmInactiveProjections(): void {
@@ -1051,7 +1068,7 @@ function createNetworkController(
       try {
         while (warmRequested && !destroyed) {
           warmRequested = false;
-          for (const mode of PROJECTION_MODES) {
+          for (const mode of PROJECTIONS) {
             if (mode !== rig.mode && projections[mode]) {
               try {
                 await renderer.warmProjection(mode);
@@ -1069,17 +1086,6 @@ function createNetworkController(
     })();
   }
 
-  /** Flushes a pending fade-in request exactly once after the first paint. */
-  function onFirstPaint(): void {
-    if (hasPainted) return;
-    hasPainted = true;
-    if (pendingFadeMs !== null) {
-      revealCanvas(pendingFadeMs);
-      pendingFadeMs = null;
-    }
-    warmInactiveProjections();
-  }
-
   /**
    * Promotes submitted public state transitions for delivery after the render tick.
    *
@@ -1087,7 +1093,10 @@ function createNetworkController(
    * mutations from mixing two scenes into one GPU submission.
    */
   function onSuccessfulPaint(): void {
-    onFirstPaint();
+    if (!hasPainted) {
+      hasPainted = true;
+      warmInactiveProjections();
+    }
     let promoted = false;
     if (pendingZoomNotice) {
       readyZoomNotice = pendingZoomNotice;
@@ -1112,7 +1121,7 @@ function createNetworkController(
       // resolution. A zoom listener may replace the scene, in which case the
       // generation check suppresses the now-stale hover notice below.
       if (zoomNotice?.scene === sceneGeneration) events.emit('zoom', zoomNotice.value);
-      if (hoverNotice?.scene === sceneGeneration) events.emit('hover', ...hoverNotice.value);
+      if (hoverNotice?.scene === sceneGeneration) events.emit('hover', hoverNotice.value);
     });
   }
 
@@ -1163,10 +1172,12 @@ function createNetworkController(
     for (const key of DISPLAY_OPTIONS) {
       const value = opts[key];
       if (value === undefined || value === display[key]) continue;
-      (display as Record<DisplayOption, boolean | number>)[key] = value;
+      (display as Record<DisplayOption, DisplayState[DisplayOption]>)[key] =
+        key === 'heightRange' ? [...(value as Domain)] : value;
       if (PICK_GEOMETRY_OPTIONS.has(key)) pickGeometryChanged = true;
     }
     if (opts.dashPeriodPx !== undefined) channels.refreshDashPeriod();
+    if (opts.heightRange !== undefined) channels.refreshHeightRange();
     applyFocusOptions(opts);
     renderer.setVisible({
       vertices: display.vertices,
@@ -1235,7 +1246,7 @@ function createNetworkController(
   /** Updates projection-specific height amplitude from current viewport state. */
   function updateHeightWorldScale(frameVp: Viewport): void {
     if (!topology || !topologyBounds) return;
-    const scale = PROJECTIONS[rig.mode].heightWorldScale(
+    const scale = PROJECTION_DEFS[rig.mode].heightWorldScale(
       topologyBounds,
       frameVp,
       vertexSize * display.vertexScale,
@@ -1258,9 +1269,9 @@ function createNetworkController(
     characteristicLength: number | null,
     geographic: boolean,
   ): Network['projections'] {
-    const availability = {} as Record<ProjectionMode, boolean>;
-    for (const mode of PROJECTION_MODES) {
-      availability[mode] = PROJECTIONS[mode].canUse(bounds, characteristicLength, geographic);
+    const availability = {} as Record<Projection, boolean>;
+    for (const mode of PROJECTIONS) {
+      availability[mode] = PROJECTION_DEFS[mode].canUse(bounds, characteristicLength, geographic);
     }
     return Object.freeze(availability);
   }
@@ -1269,10 +1280,7 @@ function createNetworkController(
   function applyHover(hit: PickResult | null): boolean {
     const changed = hit ? focus.setHover(hit[0], hit[1]) : focus.setHover(null);
     if (!changed) return false;
-    pendingHoverNotice = {
-      value: hit ? [hit[0], hit[1]] : [null, null],
-      scene: sceneGeneration,
-    };
+    pendingHoverNotice = { value: hit ? itemOf(hit) : null, scene: sceneGeneration };
     return true;
   }
 
@@ -1311,19 +1319,16 @@ function createNetworkController(
   }
 
   /** Applies programmatic selection without emitting a select event. */
-  function applySelection(kind: 'vertex' | 'edge' | null, index = -1): void {
-    if (focus.select(kind, index)) repaint();
+  function applySelection(item: Item | null): void {
+    const changed = item ? focus.select(item.kind, item.index) : focus.select(null);
+    if (changed) repaint();
   }
 
   /** Applies a user selection and emits the public select event. */
   function commitUserSelection(hit: PickResult | null): void {
-    if (hit) {
-      applySelection(hit[0], hit[1]);
-      events.emit('select', hit[0], hit[1]);
-    } else {
-      applySelection(null);
-      events.emit('select', null, null);
-    }
+    const item = hit ? itemOf(hit) : null;
+    applySelection(item);
+    events.emit('select', item);
   }
 
   /** Cycles through stacked hits under a tap, preserving current selection order. */
@@ -1360,6 +1365,7 @@ function createNetworkController(
 
     const info = scene.info;
     topology = next;
+    topologyAdjacency = null;
     sceneGeneration++;
     pendingHoverNotice = undefined;
     readyHoverNotice = undefined;
@@ -1383,6 +1389,7 @@ function createNetworkController(
     // A new topology can invalidate the active projection (notably globe).
     // Fall back atomically so the camera, picker mode, and pipelines agree.
     if (!projections[rig.mode]) {
+      orbit.stop();
       rig.switchTo('flat', vp());
       renderer.useProjection('flat');
     }

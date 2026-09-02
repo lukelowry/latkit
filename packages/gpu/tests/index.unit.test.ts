@@ -28,8 +28,8 @@ describe('gpu package entrypoint', () => {
 
     expect(Object.keys(entrypoint).sort()).toEqual([
       'GpuUnavailableError',
+      'createDevicePool',
       'createPresentation',
-      'observeCanvas',
       'requestDevice',
     ]);
     await expect(entrypoint.requestDevice()).rejects.toBeInstanceOf(entrypoint.GpuUnavailableError);

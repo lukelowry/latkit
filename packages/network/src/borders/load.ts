@@ -1,19 +1,28 @@
-import { validateBorders, type Borders } from '@latkit/network';
+/**
+ * `@latkit/network/borders` — the packaged Natural Earth 50m line borders (coastlines, land
+ * boundaries, state and province lines) in the `Borders` layout the renderer consumes. Loaded from
+ * the package's own assets and decoded once per module instance; every caller shares the one
+ * request, and a caller's abort ends only its own participation.
+ *
+ * @packageDocumentation
+ */
 
-const PREFIX = '@latkit/embed';
+import { type Borders, validateBorders } from './index.js';
+
+const PREFIX = '@latkit/network';
 
 let cached: Borders | null = null;
 let inFlight: Promise<Borders> | null = null;
 
 /**
- * Load and validate the packaged Natural Earth border payload.
+ * Load and validate the packaged border geometry.
  *
- * Successful work is shared across every element in this module instance. A
- * caller's abort signal ends only that caller's participation; it never
- * cancels the shared fetch or prevents another activation from using its
- * result.
+ * @remarks
+ * Successful work is shared across every caller in this module instance. A rejection is never
+ * memoized, so a transient failure retries on the next call. `signal` aborts only this caller's
+ * wait: it never cancels the shared fetch or keeps another caller from its result.
  */
-export function loadNaturalEarthBorders(signal?: AbortSignal): Promise<Borders> {
+export function loadBorders(signal?: AbortSignal): Promise<Borders> {
   if (signal?.aborted) return Promise.reject(abortReason(signal));
   if (cached) return Promise.resolve(cached);
 
@@ -23,7 +32,7 @@ export function loadNaturalEarthBorders(signal?: AbortSignal): Promise<Borders> 
 
 /** Start one shared request and retain only successful decoded data. */
 function beginRequest(): Promise<Borders> {
-  const request = fetchNaturalEarthBorders();
+  const request = fetchBorders();
   const tracked: Promise<Borders> = request.then(
     (borders) => {
       cached = borders;
@@ -37,14 +46,14 @@ function beginRequest(): Promise<Borders> {
   );
   inFlight = tracked;
 
-  // The shared request may outlive every aborted participant. Observe its
-  // rejection here so that a later retry does not leave an unhandled promise.
+  // The shared request may outlive every aborted participant. Observe its rejection here so
+  // that a later retry does not leave an unhandled promise.
   void tracked.catch(() => undefined);
   return tracked;
 }
 
-/** Fetch both fixed assets concurrently and decode their public Network shape. */
-async function fetchNaturalEarthBorders(): Promise<Borders> {
+/** Fetch both assets concurrently and decode them into the renderer's shape. */
+async function fetchBorders(): Promise<Borders> {
   const verticesUrl = new URL('./assets/ne-50m-line-borders.vertices.bin', import.meta.url);
   const indicesUrl = new URL('./assets/ne-50m-line-borders.indices.bin', import.meta.url);
   const [verticesResponse, indicesResponse] = await Promise.all([
@@ -104,7 +113,7 @@ function participate(request: Promise<Borders>, signal?: AbortSignal): Promise<B
       },
       (error: unknown) => {
         signal.removeEventListener('abort', abort);
-        reject(asError(error, 'Natural Earth border loading failed'));
+        reject(asError(error, 'border loading failed'));
       },
     );
   });
@@ -113,9 +122,7 @@ function participate(request: Promise<Borders>, signal?: AbortSignal): Promise<B
 /** Use the platform abort reason while retaining a conventional fallback. */
 function abortReason(signal: AbortSignal): Error {
   const reason: unknown = signal.reason;
-  return reason instanceof Error
-    ? reason
-    : new DOMException('Border load participation aborted', 'AbortError');
+  return reason instanceof Error ? reason : new DOMException('Border load aborted', 'AbortError');
 }
 
 function asError(reason: unknown, message: string): Error {

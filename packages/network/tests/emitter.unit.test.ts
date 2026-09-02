@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createEmitter } from '../src/emitter.js';
 
 type Events = {
-  ping: (value: number) => void;
-  empty: () => void;
+  ping: number;
+  empty: undefined;
 };
 
 afterEach(() => {
@@ -15,7 +15,7 @@ describe('createEmitter', () => {
     const events = createEmitter<Events>();
     const handler = vi.fn();
 
-    events.emit('empty');
+    events.emit('empty', undefined);
     const off = events.on('ping', handler);
     events.emit('ping', 1);
     off();

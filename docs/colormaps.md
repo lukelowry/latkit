@@ -1,13 +1,13 @@
 # Colormaps
 
-`@latkit/colormaps` provides named transfer functions and labels that can be shared between network, monitor, and legend UI.
+`@latkit/colormaps` provides named transfer functions and a registry of labels and kinds that can be shared between network, monitor, and legend UI.
 
 ## Use a colormap
 
 ```ts
 import { colormap } from '@latkit/colormaps';
 
-network.setColormap(colormap('viridis'));
+network.setOptions({ colormap: colormap('viridis') });
 monitor.setColormap(colormap('magma'));
 ```
 
@@ -15,26 +15,32 @@ The returned function accepts a normalized value in `[0, 1]` and returns RGB cha
 
 ## Build a legend
 
-Use `COLORMAP_LABEL` for display text and `colormapGradientCss()` for a CSS gradient that matches the same evaluator used by the renderers.
+`COLORMAPS` is a frozen registry keyed by colormap name. Use `COLORMAPS[name].label` for display text and `gradient()` for a CSS gradient that matches the same evaluator used by the renderers.
 
 ```ts
-import { COLORMAP_LABEL, colormap, colormapGradientCss } from '@latkit/colormaps';
+import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
 
-const button = document.createElement('button');
-button.type = 'button';
-button.title = COLORMAP_LABEL.viridis;
-button.style.background = colormapGradientCss('viridis', 'to right');
-button.addEventListener('click', () => network.setColormap(colormap('viridis')));
+for (const name of Object.keys(COLORMAPS) as ColormapName[]) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.title = COLORMAPS[name].label;
+  button.style.background = gradient(name, 'to right');
+  button.addEventListener('click', () => network.setOptions({ colormap: colormap(name) }));
+  picker.appendChild(button);
+}
 ```
+
+Registry keys are in display order: sequential maps first, then diverging maps. `gradient()` defaults to `'to top'` for vertical legends; pass `'to right'` for horizontal swatches.
 
 ## Choose sequential or diverging maps
 
-Sequential maps encode magnitude. Diverging maps encode signed deviation around a midpoint.
+Sequential maps encode magnitude. Diverging maps encode signed deviation around a midpoint. Each registry entry reports its family through `kind`.
 
 ```ts
-import { COLORMAP_NAMES, isDiverging } from '@latkit/colormaps';
+import { COLORMAPS, type ColormapName } from '@latkit/colormaps';
 
-const divergingNames = COLORMAP_NAMES.filter((name) => isDiverging(name));
+const names = Object.keys(COLORMAPS) as ColormapName[];
+const divergingNames = names.filter((name) => COLORMAPS[name].kind === 'diverging');
 ```
 
 Use sequential maps for quantities like load or count. Use diverging maps for quantities where values above and below a reference point both matter.

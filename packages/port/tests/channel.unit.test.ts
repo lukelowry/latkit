@@ -1,15 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-  connect,
-  describeError,
-  messagePort,
-  type MessageTarget,
-  protocol,
-  serve,
-  transferred,
-} from '../src/index.js';
+import { connect, describeError, messagePort, protocol, serve, transferred } from '../src/index.js';
 import { requests, str } from '../src/guard.js';
+import type { MessageTarget } from '../src/port.js';
 import { loopback, settle } from '../src/testing.js';
 
 type Echo = { readonly text: string; readonly delayMs?: number };

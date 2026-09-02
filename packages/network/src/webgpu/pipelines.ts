@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 
-import { BORDER_VERTEX_STRIDE_BYTES } from '../borders.js';
+import { BORDER_VERTEX_STRIDE_BYTES } from '../borders/index.js';
 import type { PipelineDef } from '../projections.js';
 import { VISUAL_WGSL } from '../visual.js';
 import { WGSL_LAYOUT } from '../topology/wire.js';

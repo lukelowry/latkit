@@ -1,11 +1,11 @@
-/** Numeric channel domain expressed as `[min, max]`. */
-export type ChannelRange = readonly [number, number];
+/** A numeric interval expressed as `[min, max]`: a channel's input domain or an output range. */
+export type Domain = readonly [number, number];
 
-/** Validate a public channel domain or output range without retaining it. */
-export function validateChannelRange(
+/** Validate a public domain without retaining it. */
+export function validateDomain(
   value: unknown,
-  name = 'network channel range',
-): asserts value is ChannelRange {
+  name = 'network channel domain',
+): asserts value is Domain {
   if (!Array.isArray(value) || value.length !== 2) {
     throw new TypeError(`${name} must contain exactly two numbers`);
   }
@@ -23,11 +23,11 @@ export function validateChannelRange(
   }
 }
 
-/** Resolve the active input range, giving explicit clamps precedence. */
+/** Resolve the active input domain, giving an explicit override precedence. */
 export function effectiveRange(
-  dataRange: ChannelRange | null | undefined,
-  clamp: ChannelRange | null | undefined,
-): ChannelRange {
+  dataRange: Domain | null | undefined,
+  clamp: Domain | null | undefined,
+): Domain {
   return clamp ?? dataRange ?? [0, 1];
 }
 
@@ -43,7 +43,7 @@ export function linearNorm(min: number, max: number): [number, number] {
 }
 
 /** Return the finite `[min, max]` extent of values, or `null` when none exist. */
-export function finiteExtent(values: Float32Array): ChannelRange | null {
+export function finiteExtent(values: Float32Array): Domain | null {
   let min = Infinity;
   let max = -Infinity;
   for (const value of values) {

@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const PACKAGE_ROOT = fileURLToPath(new URL('../', import.meta.url));
+/** The one source of the border binaries; embed's dist copies serve only its standalone bundle. */
+const NETWORK_ASSETS = fileURLToPath(new URL('../../network/assets/', import.meta.url));
 const EXAMPLE_ROOT = fileURLToPath(new URL('../../../examples/embed/', import.meta.url));
 const VITE_BIN = fileURLToPath(
   new URL('../../../examples/embed/node_modules/vite/bin/vite.js', import.meta.url),
@@ -15,6 +17,16 @@ const VITE_BIN = fileURLToPath(
 const BORDER_ASSETS = [
   'ne-50m-line-borders.indices.bin',
   'ne-50m-line-borders.vertices.bin',
+] as const;
+
+/** The complete public barrel: two values and four types. */
+const PUBLIC_EXPORTS = [
+  'NetworkData',
+  'NetworkElement',
+  'NetworkElementEventMap',
+  'NetworkJSON',
+  'parseNetwork',
+  'register',
 ] as const;
 
 describe('embed package delivery', () => {
@@ -70,37 +82,35 @@ describe('embed package delivery', () => {
       'utf8',
     );
 
-    for (const publicType of [
-      'NetworkElement',
-      'NetworkElementEventMap',
-      'NetworkItemEventDetail',
-      'NetworkZoomEventDetail',
-      'NetworkDeviceLostEventDetail',
-    ]) {
-      expect(declarations).toMatch(new RegExp(`\\b${publicType}\\b`));
+    expect(exportedNames(declarations)).toEqual([...PUBLIC_EXPORTS]);
+    for (const publicType of PUBLIC_EXPORTS.filter((name) => /^[A-Z]/.test(name))) {
       expect(registerDeclarations).toMatch(new RegExp(`\\b${publicType}\\b`));
     }
     expect(registerDeclarations).toContain("from './index.js'");
     expect(declarations).not.toMatch(
-      /\b(?:ElementDependencies|createNetworkElementClass|Activation|DevicePool)\b/,
+      /\b(?:ElementDependencies|createNetworkElementClass|Activation|DevicePool|createDevicePool)\b/,
+    );
+    expect(declarations).not.toMatch(
+      /\bNetwork(?:Item|Zoom|DeviceLost|PipelineError)EventDetail\b/,
+    );
+    expect(declarations).not.toMatch(
+      /\b(?:setColormap|setBaseColor|clearChannel|setChannelRange|clearSelection|fadeIn)\b/,
     );
     expect(declarations).not.toMatch(/\b(?:class|interface)\s+LatkitNetwork/);
   });
 
-  it('copies exact border payloads and keeps both bundle locations relative', async () => {
-    const esm = await readFile(new URL('../dist/index.js', import.meta.url), 'utf8');
+  it('copies the exact border payloads @latkit/network publishes beside the standalone bundle', async () => {
     const payloads = await Promise.all(
       BORDER_ASSETS.map(async (asset) => {
         const [distributed, source] = await Promise.all([
           readFile(new URL(`../dist/assets/${asset}`, import.meta.url)),
-          readFile(new URL(`../assets/${asset}`, import.meta.url)),
+          readFile(join(NETWORK_ASSETS, asset)),
         ]);
         return { asset, distributed, source };
       }),
     );
 
     for (const { asset, distributed, source } of payloads) {
-      expect(esm).toMatch(assetUrlPattern(asset));
       expect(distributed.equals(source), asset).toBe(true);
     }
   }, 60_000);
@@ -134,7 +144,7 @@ describe('embed package delivery', () => {
       expect(javascript).not.toMatch(/\bimport\s*["']@latkit\//);
 
       const sourcePayloads = await Promise.all(
-        BORDER_ASSETS.map((asset) => readFile(join(PACKAGE_ROOT, 'assets', asset))),
+        BORDER_ASSETS.map((asset) => readFile(join(NETWORK_ASSETS, asset))),
       );
       const productionPayloads = await Promise.all(
         binaries.map((file) => readFile(join(output, file))),
@@ -198,6 +208,21 @@ function registrationSmokeScript(specifier: string, verifyRootRegister: boolean)
 function assetUrlPattern(asset: string): RegExp {
   const escaped = asset.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`new URL\\(["']\\./assets/${escaped}["'],\\s*import\\.meta\\.url\\)`);
+}
+
+/** Every name in the bundled declaration's `export { ... }` statements, sorted. */
+function exportedNames(declarations: string): string[] {
+  return [...declarations.matchAll(/export\s*\{([^}]*)\}/g)]
+    .flatMap((match) => match[1]!.split(','))
+    .map((entry) =>
+      entry
+        .trim()
+        .replace(/^type\s+/, '')
+        .split(/\s+as\s+/)[0]!
+        .trim(),
+    )
+    .filter((name) => name.length > 0)
+    .sort();
 }
 
 async function listFiles(directory: string, prefix = ''): Promise<string[]> {

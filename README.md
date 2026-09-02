@@ -72,7 +72,6 @@ const network = await createNetwork(device, canvas, {
 
 network.load(topology);
 network.setChannel('vertexColor', new Float32Array([0.1, 0.8, 0.4]), [0, 1]);
-network.fadeIn();
 ```
 
 See the [network quickstart](https://latkit.readthedocs.io/en/latest/network-quickstart.html) and [monitor quickstart](https://latkit.readthedocs.io/en/latest/monitor-quickstart.html) for complete usage and lifecycle guidance.

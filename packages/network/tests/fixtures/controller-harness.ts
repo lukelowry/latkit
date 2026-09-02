@@ -3,6 +3,7 @@ import type { Presentation } from '@latkit/gpu';
 
 import type { ControllerDeps, Events, Network, Options } from '../../src/controller.js';
 import { createNetworkWithDeps } from '../../src/controller.js';
+import { createOrbit } from '../../src/orbit.js';
 import { packBound, type Channel, type ChannelSlot } from '../../src/channels.js';
 import type { Bounds, EncodedTopology } from '../../src/topology/index.js';
 import type { EncodedSegments } from '../../src/segments/index.js';
@@ -10,14 +11,14 @@ import type { PreparedScene } from '../../src/scene.js';
 import type { Surface } from '../../src/input/surface.js';
 import type { Intent } from '../../src/input/pointer.js';
 import type { Picker, PickerDeps, PickQuery, PickResult } from '../../src/pick/picker.js';
-import type { ProjectionMode } from '../../src/projections.js';
+import type { Projection } from '../../src/projections.js';
 import type { Viewport } from '../../src/camera/projection.js';
 import type { Renderer } from '../../src/webgpu/renderer.js';
 import type { RenderLoop, RenderLoopDeps } from '../../src/webgpu/render-loop.js';
 import type { CameraRig } from '../../src/camera/rig.js';
 import type { RevealResult } from '../../src/camera/camera.js';
 import type { Uniforms } from '../../src/webgpu/uniforms.js';
-import type { Borders } from '../../src/borders.js';
+import type { Borders } from '../../src/borders/index.js';
 
 export interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -50,7 +51,7 @@ export class FakeRenderer {
     earthAxis: true,
   };
   borders: Borders | null = null;
-  projectionMode: ProjectionMode = 'flat';
+  projectionMode: Projection = 'flat';
   slots: ReadonlyMap<Channel, ChannelSlot> = new Map();
   encodedTopology: EncodedTopology | null = null;
   encodedSegments: EncodedSegments | null = null;
@@ -93,11 +94,11 @@ export class FakeRenderer {
     this.channelWrites.push({ channel, values });
   });
 
-  useProjection = vi.fn((mode: ProjectionMode) => {
+  useProjection = vi.fn((mode: Projection) => {
     this.projectionMode = mode;
   });
 
-  warmProjection = vi.fn((_mode: ProjectionMode): Promise<void> => Promise.resolve());
+  warmProjection = vi.fn((_mode: Projection): Promise<void> => Promise.resolve());
 
   destroy = vi.fn();
 }
@@ -125,7 +126,7 @@ export class FakeCamera {
 }
 
 export class FakeCameraRig {
-  mode: ProjectionMode = 'flat';
+  mode: Projection = 'flat';
   camera = new FakeCamera();
   bounds: Bounds | null = null;
   pendingPlacement = false;
@@ -140,7 +141,7 @@ export class FakeCameraRig {
   reveal = vi.fn((_bounds: Bounds, _vp: Viewport, _animate: boolean) => {});
   claim = vi.fn((): boolean => this.nextClaim);
 
-  switchTo = vi.fn((mode: ProjectionMode, _vp: Viewport) => {
+  switchTo = vi.fn((mode: Projection, _vp: Viewport) => {
     this.mode = mode;
     this.camera = new FakeCamera();
   });
@@ -261,6 +262,10 @@ function makePresentation(
       canvas.height = nextHeight;
       return changed;
     }),
+    observe: vi.fn((listener: (width: number, height: number, pixelRatio: number) => void) => {
+      if (!destroyed) listener(canvas.width, canvas.height, 1);
+      return () => {};
+    }),
     destroy: vi.fn(() => {
       if (destroyed) return;
       destroyed = true;
@@ -287,7 +292,7 @@ export interface ControllerHarness {
   readonly deviceDestroy: ReturnType<typeof vi.fn>;
   readonly deviceLost: Deferred<GPUDeviceLostInfo>;
   readonly events: {
-    readonly deviceLost: Array<Parameters<Events['deviceLost']>>;
+    readonly deviceLost: Events['deviceLost'][];
   };
   emitPointer(intent: Intent): void;
   destroy(): void;
@@ -315,7 +320,7 @@ export async function createControllerHarness(
   const loop = new FakeRenderLoop();
   const rig = new FakeCameraRig();
   const picker = new FakePicker();
-  const events = { deviceLost: [] as Array<Parameters<Events['deviceLost']>> };
+  const events = { deviceLost: [] as Events['deviceLost'][] };
 
   let emitPointer: ((intent: Intent) => void) | null = null;
   const pointerCleanup = { destroy: vi.fn() };
@@ -336,11 +341,12 @@ export async function createControllerHarness(
       picker.deps = pickerDeps;
       return picker as unknown as Picker;
     }) as unknown as typeof Picker,
+    createOrbit,
   };
   configure?.(deps);
 
   const network = await createNetworkWithDeps(device, canvas, options, deps);
-  network.on('deviceLost', (reason, message) => events.deviceLost.push([reason, message]));
+  network.on('deviceLost', (loss) => events.deviceLost.push(loss));
 
   return {
     network,

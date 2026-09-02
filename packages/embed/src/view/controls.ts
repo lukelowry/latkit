@@ -1,5 +1,5 @@
-import { COLORMAP_LABEL, COLORMAP_NAMES } from '@latkit/colormaps';
-import { PROJECTION_MODES, type Network, type ProjectionMode } from '@latkit/network';
+import { COLORMAPS, type ColormapName } from '@latkit/colormaps';
+import { PROJECTIONS, type Network, type Projection } from '@latkit/network';
 
 import { CHANNEL_ATTRIBUTES, type ChannelAttributeDefinition } from './attributes.js';
 import { humanizeName } from './format.js';
@@ -181,7 +181,7 @@ function createInspectorToggle(document: Document, inspector: HTMLElement): HTML
 const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 
 /** Stroke path data for one 16x16 projection glyph per canonical mode. */
-const PROJECTION_ICON_PATHS: Readonly<Record<ProjectionMode, readonly string[]>> = Object.freeze({
+const PROJECTION_ICON_PATHS: Readonly<Record<Projection, readonly string[]>> = Object.freeze({
   flat: Object.freeze(['M1.5 3.5h13v9h-13z', 'M1.5 8h13', 'M8 3.5v9']),
   tilt: Object.freeze(['M4.5 4.5h7l3 7h-13z', 'M3.25 8h9.5', 'M8 4.5v7']),
   globe: Object.freeze([
@@ -227,14 +227,14 @@ function createProjectionControls(
   document: Document,
   fieldset: HTMLFieldSetElement,
   host: HostCommandSink,
-): ReadonlyMap<ProjectionMode, HTMLButtonElement> {
+): ReadonlyMap<Projection, HTMLButtonElement> {
   const legend = document.createElement('legend');
   legend.textContent = 'Projection';
   const row = document.createElement('div');
   row.className = 'latkit-segments';
   fieldset.append(legend, row);
-  const buttons = new Map<ProjectionMode, HTMLButtonElement>();
-  for (const mode of PROJECTION_MODES) {
+  const buttons = new Map<Projection, HTMLButtonElement>();
+  for (const mode of PROJECTIONS) {
     const button = document.createElement('button');
     button.type = 'button';
     const label = humanizeName(mode);
@@ -300,10 +300,10 @@ function createColormapControl(
   text.textContent = 'Colormap';
   text.className = 'latkit-control-label';
   const select = document.createElement('select');
-  for (const name of COLORMAP_NAMES) {
+  for (const name of Object.keys(COLORMAPS) as ColormapName[]) {
     const option = document.createElement('option');
     option.value = name;
-    option.textContent = COLORMAP_LABEL[name];
+    option.textContent = COLORMAPS[name].label;
     select.append(option);
   }
   select.addEventListener('change', () => {
@@ -335,7 +335,7 @@ function createChannelControls(
     root.setAttribute('part', `channel ${definition.attribute}`);
     root.hidden = true;
     const text = document.createElement('span');
-    text.textContent = humanizeName(definition.key);
+    text.textContent = definition.label;
     text.className = 'latkit-control-label';
     const select = document.createElement('select');
     select.addEventListener('change', () => {

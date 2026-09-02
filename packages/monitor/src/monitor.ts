@@ -1,50 +1,19 @@
 /// <reference types="@webgpu/types" />
-import { createPresentation, observeCanvas } from '@latkit/gpu';
+import { createPresentation } from '@latkit/gpu';
+import type { Series } from '@latkit/model';
 
 import { LanePainter, SEGMENT_BUDGET, COLORMAP_LUT_SIZE, framesPerWindow } from './painter.js';
 
 /**
- * Packed monitor samples over one shared time axis and element axis.
+ * The packed samples a monitor loads: `@latkit/model`'s `Series`.
  *
  * @remarks
- * `values` is signal-major. Convert a signal, frame, and element to an index
- * with:
- *
- * ```ts
- * signal * time.length * elementCount + frame * elementCount + element
- * ```
- *
- * `validFrames` lets append-heavy callers load a preallocated buffer before all
- * frames are ready. After writing more samples, call {@link Monitor.extend} to
- * commit the new frame frontier.
- *
- * @example
- * ```ts
- * const series: Series = {
- *   time: Float64Array.from([0, 1, 2]),
- *   values: new Float32Array(1 * 3 * 2),
- *   signalCount: 1,
- *   elementCount: 2,
- *   validFrames: 0,
- * };
- *
- * series.values[0 * 3 * 2 + 0 * 2 + 0] = 0.25;
- * ```
+ * `values` is signal-major, `validFrames` lets append-heavy callers load a preallocated buffer
+ * before all frames are ready, and `ranges` may be omitted, in which case the monitor scans the
+ * committed frames. After writing more samples, call {@link Monitor.extend} to commit the new
+ * frame frontier.
  */
-export interface Series {
-  /** Time coordinate for each frame. */
-  readonly time: Float32Array | Float64Array;
-  /** Packed f32 samples for every signal, frame, and element. */
-  readonly values: Float32Array;
-  /** Number of independent signals stored in `Series.values`. */
-  readonly signalCount: number;
-  /** Number of elements sampled at each frame. */
-  readonly elementCount: number;
-  /** Optional per-signal min/max pairs: `[min0, max0, min1, max1, ...]`. */
-  readonly ranges?: Float32Array;
-  /** Number of frames ready to draw; omit to treat the whole series as committed. */
-  readonly validFrames?: number;
-}
+export type { Series };
 
 /**
  * Initial monitor display options.
@@ -296,7 +265,7 @@ function createMonitorController(
   let initialWidth = 1;
   let initialHeight = 1;
   let initialDevicePixelRatio = 1;
-  const stopObserving = observeCanvas(canvas, (width, height, ratio) => {
+  const stopObserving = presentation.observe((width, height, ratio) => {
     const size = {
       width: Math.max(1, width),
       height: Math.max(1, height),

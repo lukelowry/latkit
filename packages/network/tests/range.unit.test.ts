@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { effectiveRange, finiteExtent, linearNorm, validateChannelRange } from '../src/range.js';
+import { effectiveRange, finiteExtent, linearNorm, validateDomain } from '../src/range.js';
 
 describe('channel range helpers', () => {
   it.each([
@@ -7,7 +7,7 @@ describe('channel range helpers', () => {
     [-10, -2],
     [3, 3],
   ] as const)('accepts the finite ordered range [%s, %s]', (minimum, maximum) => {
-    expect(() => validateChannelRange([minimum, maximum])).not.toThrow();
+    expect(() => validateDomain([minimum, maximum])).not.toThrow();
   });
 
   it.each([
@@ -19,13 +19,13 @@ describe('channel range helpers', () => {
     [[Number.NEGATIVE_INFINITY, 1], RangeError],
     [[2, 1], RangeError],
   ] as const)('rejects invalid range %# with the semantic error class', (value, ErrorType) => {
-    expect(() => validateChannelRange(value)).toThrow(ErrorType);
+    expect(() => validateDomain(value)).toThrow(ErrorType);
   });
 
   it('uses the caller-facing name in validation failures without mutating input', () => {
     const range = [2, 1];
 
-    expect(() => validateChannelRange(range, 'vertex height range')).toThrow(
+    expect(() => validateDomain(range, 'vertex height range')).toThrow(
       'vertex height range minimum must not exceed its maximum',
     );
     expect(range).toEqual([2, 1]);

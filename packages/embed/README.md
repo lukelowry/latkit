@@ -108,7 +108,7 @@ canonical default.
   vertex-color-domain="0.95 1.05"
   vertex-height="generation"
   vertex-height-domain="0 1000"
-  vertex-height-range="0 1"
+  height-range="0 1"
   vertex-size="capacity"
   edge-color="flow"
   edge-color-domain="-500 500"
@@ -126,21 +126,24 @@ All seven Network channels are independently bindable:
 - `vertex-color`, `vertex-height`, `vertex-size`, and `vertex-visible` accept vertex field ids;
 - `edge-color`, `edge-dash`, and `edge-visible` accept edge field ids;
 - normalized channels have matching `*-domain` overrides;
-- `vertex-height-range` controls the independent height output range;
 - visibility channels show values greater than zero and have no domain attribute;
 - an empty channel attribute explicitly unbinds that channel.
 
-The matching programmatic methods preserve Network's raw-channel semantics: `setChannel` ignores domain and output-range arguments for `edgeDash`, `vertexVisible`, and `edgeVisible`, while `setChannelRange` is a no-op for those channels.
+The matching programmatic methods preserve Network's raw-channel semantics: `setChannel` ignores
+the domain argument for `edgeDash`, `vertexVisible`, and `edgeVisible`, and `setChannelDomain` is
+a no-op for those channels. `setChannel(channel, null)` unbinds a channel.
 
 Every serializable Network option is available under its exact kebab-case name. `msaa` is the only
 construction option, so changing it replaces the live activation against cached data. Other options,
 bindings, projection, colormap, borders, and controls update without recreating the renderer.
 
-The live geometry options are `vertex-scale`, `edge-scale`, `height-scale`, `vertex-lod-px`, and
-`dash-period-px`. The first three multiply the topology-derived vertex radius, edge half-width, and
-height displacement. `vertex-lod-px` culls vertices below a CSS-pixel radius, while
-`dash-period-px` sets the screen-space period used by `edge-dash`; `0` disables dash gaps. Their
-defaults are `1`, `1`, `1`, `2`, and `12`. All accept non-negative numbers.
+The live geometry options are `vertex-scale`, `edge-scale`, `height-scale`, `height-range`,
+`vertex-lod-px`, and `dash-period-px`. The first three multiply the topology-derived vertex radius,
+edge half-width, and height displacement; `height-range` is the `"min max"` output range the
+normalized `vertex-height` channel maps onto. `vertex-lod-px` culls vertices below a CSS-pixel
+radius, while `dash-period-px` sets the screen-space period used by `edge-dash`; `0` disables dash
+gaps. Their defaults are `1`, `1`, `1`, `0 1`, `2`, and `12`. The scalar options accept non-negative
+numbers.
 
 `border-source="natural-earth"` selects the packaged geometry. The independent `borders` Network
 option controls whether border rendering and packaged loading are enabled. `border-source="none"`
@@ -214,35 +217,46 @@ element.setOptions({
   edges: true,
   graticule: true,
   baseColor: [0.36, 0.4, 0.46, 1],
+  heightRange: [0, 1.2],
+  colormap: colormap('plasma'),
 });
 element.setChannel('vertexColor', new Float32Array([0.98, 1.02]), [0.95, 1.05]);
-element.setChannelRange('vertexColor', [0.97, 1.03]);
-element.setColormap(colormap('plasma'));
+element.setChannelDomain('vertexColor', [0.97, 1.03]);
 
 await element.ready;
-element.setProjection('globe');
+element.setProjection('globe', true);
 element.fit(true);
-element.setPose({ bearing: 30, pitch: 20 }, { animate: true });
-element.select('vertex', 1);
+element.setPose({ bearing: 30, pitch: 20 }, true);
+element.select({ kind: 'vertex', index: 1 });
+element.reveal({ kind: 'vertex', index: 1 }, { neighbors: true, animate: true });
+element.orbit(true);
 ```
 
-The complete element method surface is `setOptions`, `setBorders`, `setColormap`, `setBaseColor`,
-`setChannel`, `clearChannel`, `setChannelRange`, `setProjection`, `fit`, `reveal`, `select`,
-`clearSelection`, `panBy`, `rotateBy`, `getPose`, `setPose`, `zoomBy`, `fadeIn`, `pause`, and
-`resume`. `geographic` reports whether the live topology is interpreted as longitude and
-latitude, while `projections` reports its mode availability. The underlying Network, canvas
-ownership, and GPU device remain private.
+The element mirrors the Network verbs one-to-one: `setOptions`, `setBorders`, `setChannel`,
+`setChannelDomain`, `getChannelDomain`, `setProjection`, `fit`, `reveal`, `neighborhood`, `select`,
+`panBy`, `rotateBy`, `getPose`, `setPose`, `zoomBy`, `orbit`, `pause`, and `resume`, plus the
+readonly `projections`, `geographic`, and `orbiting`. Configuration verbs (`setOptions`,
+`setBorders`, `setChannel`, `setChannelDomain`, `setProjection`) are retained across reconnect and
+device recovery and reflect into attributes; camera and selection verbs act only while live.
+`select(null)` clears the selection, `setChannel(channel, null)` unbinds a channel, the colormap and
+base color are ordinary `setOptions` fields, and `getChannelDomain` reports the input domain a bound
+normalized channel is using. The underlying Network, canvas ownership, and GPU device remain private.
 
 Renderer notifications become bubbling, composed DOM events named `load`, `error`, `hover`, `select`,
-`zoom`, `deviceLost`, and `pipelineError`. `ready` always describes the current activation and is
-replaced for source changes, reconnect, `msaa` changes, and device recovery.
+`zoom`, `orbit`, `deviceLost`, and `pipelineError`. `hover` and `select` carry an `Item | null`
+detail (`{ kind: 'vertex' | 'edge', index }`), `zoom` and `orbit` carry a boolean, `deviceLost`
+carries `{ reason, message, recovering }`, and `pipelineError` carries `{ family, cause }`. `ready`
+always describes the current activation and is replaced for source changes, reconnect, `msaa`
+changes, and device recovery.
 
 The canvas is focusable and named. Arrow keys pan, `+`/`=` and `-`/`_` zoom, Home fits, and Escape
 clears selection. Selection changes are announced through a polite live region; hover is not.
 
 ## Published border assets
 
-Natural Earth border binaries are also available through stable package subpaths:
+The Natural Earth border binaries are `@latkit/network`'s, loaded through `@latkit/network/borders`.
+The standalone bundle resolves them beside itself, so the same files also ship under stable embed
+subpaths:
 
 ```text
 @latkit/embed/assets/ne-50m-line-borders.vertices.bin

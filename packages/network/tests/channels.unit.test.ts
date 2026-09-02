@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createChannels, packBound, type Channel } from '../src/channels.js';
-import type { ChannelRange } from '../src/range.js';
+import type { Domain } from '../src/range.js';
 import { createUniforms, ITEM_EDGE_VISIBLE, ITEM_VERTEX_VISIBLE } from '../src/webgpu/uniforms.js';
 import { Renderer } from '../src/webgpu/renderer.js';
 import { encodeSegments } from '../src/segments/index.js';
@@ -32,12 +32,13 @@ describe('createChannels', () => {
       ),
       writeChannel: vi.fn(),
     };
-    const display = { dashPeriodPx: 18 };
+    const display = { dashPeriodPx: 18, heightRange: [0, 1] as Domain };
     const channels = createChannels(uniforms, renderer, {
       loaded: () => loaded,
       vertexCount: () => 3,
       edgeCount: () => 2,
       dashPeriodPx: () => display.dashPeriodPx,
+      heightRange: () => display.heightRange,
     });
     return { uniforms, renderer, channels, display };
   }
@@ -64,35 +65,34 @@ describe('createChannels', () => {
   it('stores height domain/output ranges, applies domain overrides, and reverts to data domain', () => {
     const { channels, uniforms, renderer } = make();
 
-    channels.set('vertexHeight', new Float32Array([2, 6, 10]), [2, 10], [0, 1]);
+    channels.set('vertexHeight', new Float32Array([2, 6, 10]), [2, 10]);
     expect(uniforms.channel.vHeightMode).toBe(1);
     expect(uniforms.channel.heightCenter).toBe(2);
     expect(uniforms.channel.heightScale).toBeCloseTo(1 / 8);
     expect(uniforms.channel.heightOutMin).toBe(0);
     expect(uniforms.channel.heightOutScale).toBe(1);
 
-    channels.setRange('vertexHeight', [4, 6]);
+    channels.setDomain('vertexHeight', [4, 6]);
     expect(uniforms.channel.heightCenter).toBe(4);
     expect(uniforms.channel.heightScale).toBeCloseTo(1 / 2);
 
-    channels.setRange('vertexHeight', null);
+    channels.setDomain('vertexHeight', null);
     expect(uniforms.channel.heightCenter).toBe(2);
     expect(uniforms.channel.heightScale).toBeCloseTo(1 / 8);
 
-    channels.setRange('vertexHeight', [2, 10]);
+    channels.setDomain('vertexHeight', [2, 10]);
     expect(renderer.writeChannel).not.toHaveBeenCalled();
-    channels.setRange('edgeColor', null);
+    channels.setDomain('edgeColor', null);
     expect(uniforms.channel.eColorScale).toBe(0);
   });
 
-  it('owns caller-supplied domains, output ranges, and later domain overrides', () => {
-    const { channels, uniforms } = make();
+  it('owns caller-supplied domains, reads the display height range, and owns later overrides', () => {
+    const { channels, uniforms, display } = make();
     const domain: [number, number] = [1, 3];
-    const output: [number, number] = [0, 2];
+    display.heightRange = [0, 2];
 
-    channels.set('vertexHeight', new Float32Array([1, 2, 3]), domain, output);
+    channels.set('vertexHeight', new Float32Array([1, 2, 3]), domain);
     domain[0] = 100;
-    output[1] = 100;
 
     expect(uniforms.channel.heightCenter).toBe(1);
     expect(uniforms.channel.heightScale).toBeCloseTo(1 / 2);
@@ -100,46 +100,41 @@ describe('createChannels', () => {
     expect(uniforms.channel.heightOutScale).toBe(2);
 
     const override: [number, number] = [2, 4];
-    channels.setRange('vertexHeight', override);
+    channels.setDomain('vertexHeight', override);
     override[0] = 20;
     override[1] = 40;
-    channels.set('vertexHeight', new Float32Array([3, 4, 5]), [3, 5], [0, 2]);
+    channels.set('vertexHeight', new Float32Array([3, 4, 5]), [3, 5]);
 
     expect(uniforms.channel.heightCenter).toBe(2);
     expect(uniforms.channel.heightScale).toBeCloseTo(1 / 2);
   });
 
-  it('rejects invalid replacement ranges before mutating CPU, GPU, or uniform state', () => {
+  it('rejects invalid replacement domains before mutating CPU, GPU, or uniform state', () => {
     const { channels, uniforms, renderer } = make();
     const original = new Float32Array([1, 2, 3]);
-    channels.set('vertexHeight', original, [1, 3], [0, 2]);
+    channels.set('vertexHeight', original, [1, 3]);
     const retained = channels.values('vertexHeight');
     expect(retained).not.toBe(original);
     expect(retained).toEqual(original);
 
     const invalid: ReadonlyArray<
-      readonly [label: string, domain: unknown, output: unknown, ErrorType: typeof Error]
+      readonly [label: string, domain: unknown, ErrorType: typeof Error]
     > = [
-      ['short domain', [1], [0, 2], TypeError],
-      ['nonnumeric domain', [1, '3'], [0, 2], TypeError],
-      ['nonfinite domain', [1, Infinity], [0, 2], RangeError],
-      ['reversed domain', [3, 1], [0, 2], RangeError],
-      ['short output', [1, 3], [0], TypeError],
-      ['nonfinite output', [1, 3], [0, Number.NaN], RangeError],
-      ['reversed output', [1, 3], [2, 0], RangeError],
+      ['short domain', [1], TypeError],
+      ['nonnumeric domain', [1, '3'], TypeError],
+      ['nonfinite domain', [1, Infinity], RangeError],
+      ['reversed domain', [3, 1], RangeError],
     ];
 
-    for (const [label, domain, output, ErrorType] of invalid) {
+    for (const [label, domain, ErrorType] of invalid) {
       renderer.relayout.mockClear();
       renderer.writeChannel.mockClear();
       const uniformState = new Uint8Array(uniforms.raw).slice();
       const replacement = new Float32Array([4, 5, 6]);
 
-      expect(
-        () =>
-          channels.set('vertexHeight', replacement, domain as ChannelRange, output as ChannelRange),
-        label,
-      ).toThrow(ErrorType);
+      expect(() => channels.set('vertexHeight', replacement, domain as Domain), label).toThrow(
+        ErrorType,
+      );
       expect(channels.values('vertexHeight'), label).toBe(retained);
       expect(new Uint8Array(uniforms.raw), label).toEqual(uniformState);
       expect(renderer.relayout, label).not.toHaveBeenCalled();
@@ -161,15 +156,13 @@ describe('createChannels', () => {
     ];
     for (const [range, ErrorType] of invalid) {
       const uniformState = new Uint8Array(uniforms.raw).slice();
-      expect(() => channels.setRange('vertexColor', range as ChannelRange)).toThrow(ErrorType);
+      expect(() => channels.setDomain('vertexColor', range as Domain)).toThrow(ErrorType);
       expect(new Uint8Array(uniforms.raw)).toEqual(uniformState);
     }
     expect(renderer.relayout).not.toHaveBeenCalled();
     expect(renderer.writeChannel).not.toHaveBeenCalled();
 
-    expect(() =>
-      channels.setRange('edgeDash', [Number.NaN, -Infinity] as ChannelRange),
-    ).not.toThrow();
+    expect(() => channels.setDomain('edgeDash', [Number.NaN, -Infinity] as Domain)).not.toThrow();
   });
 
   it('updates existing channel values without reallocating storage', () => {
@@ -230,7 +223,7 @@ describe('createChannels', () => {
     const { channels, uniforms } = make();
 
     channels.set('vertexSize', new Float32Array([Number.NaN, 2, 3]), [1, 3]);
-    channels.setRange('vertexSize', [1.5, 2.5]);
+    channels.setDomain('vertexSize', [1.5, 2.5]);
 
     channels.clear('vertexSize');
     expect(uniforms.channel.vSizeMode).toBe(0);
@@ -244,7 +237,7 @@ describe('createChannels', () => {
   it('resets all channels to neutral uniforms', () => {
     const { channels, uniforms } = make();
 
-    channels.set('vertexHeight', new Float32Array([1, 2, 3]), null, [1, 3]);
+    channels.set('vertexHeight', new Float32Array([1, 2, 3]), null);
     channels.set('edgeColor', new Float32Array([4, 5]), [4, 5]);
 
     channels.reset();
@@ -281,6 +274,29 @@ describe('createChannels', () => {
     expect(uniforms.geometry.dashPeriod).toBe(9);
   });
 
+  it('reports the effective domain of bound normalized channels and refreshes the height range', () => {
+    const { channels, uniforms, display } = make();
+
+    expect(channels.domain('vertexColor')).toBeNull();
+    channels.set('vertexColor', new Float32Array([0, 0.5, 1]), [2, 4]);
+    expect(channels.domain('vertexColor')).toEqual([2, 4]);
+    channels.setDomain('vertexColor', [3, 5]);
+    expect(channels.domain('vertexColor')).toEqual([3, 5]);
+    channels.set('edgeDash', new Float32Array([1, 0]));
+    expect(channels.domain('edgeDash')).toBeNull();
+
+    display.heightRange = [1, 3];
+    channels.refreshHeightRange();
+    expect(uniforms.channel.heightOutScale).toBe(0);
+    channels.set('vertexHeight', new Float32Array([1, 2, 3]));
+    expect(uniforms.channel.heightOutMin).toBe(1);
+    expect(uniforms.channel.heightOutScale).toBe(2);
+    display.heightRange = [0, 4];
+    channels.refreshHeightRange();
+    expect(uniforms.channel.heightOutScale).toBe(4);
+    expect(channels.domain('vertexHeight')).toEqual([1, 3]);
+  });
+
   it('treats visibility as a raw range-free channel and toggles packed flags', () => {
     const { channels, uniforms } = make();
 
@@ -288,7 +304,7 @@ describe('createChannels', () => {
     expect(uniforms.channel.itemFlags & ITEM_VERTEX_VISIBLE).toBe(ITEM_VERTEX_VISIBLE);
     expect(uniforms.channel.vVisibleOffset).toBe(0);
     expect(() =>
-      channels.setRange('vertexVisible', [Number.NaN, -Infinity] as ChannelRange),
+      channels.setDomain('vertexVisible', [Number.NaN, -Infinity] as Domain),
     ).not.toThrow();
 
     channels.set('edgeVisible', new Float32Array([0, 1]));
@@ -307,7 +323,7 @@ describe('createChannels', () => {
     const { channels } = make();
 
     const heights = new Float32Array([1, 2, 3]);
-    channels.set('vertexHeight', heights, null, [0, 3]);
+    channels.set('vertexHeight', heights, null);
     const retainedHeights = channels.values('vertexHeight');
     expect(retainedHeights).not.toBe(heights);
     expect(retainedHeights).toEqual(heights);

@@ -9,13 +9,9 @@ import type { Results, RunFrames } from '@latkit/model';
 import { connect, type Port, type Protocol, protocol, serve } from '@latkit/port';
 import { arrayOf, index, nullable, object, str } from '@latkit/port/guard';
 
-type Request = { readonly classId: string; readonly signals: readonly number[] | null };
+import type { Remote } from './remote.js';
 
-/** What a served side accepts from a read. */
-export interface ResultsOptions {
-  /** The most signals one read may select. Unbounded when omitted. */
-  readonly maxSignals?: number;
-}
+type Request = { readonly classId: string; readonly signals: readonly number[] | null };
 
 /** The one `results` protocol; its guard bounds a selection only where the served side asks. */
 const resultsProtocol = (maxSignals = Infinity): Protocol<Request, RunFrames> =>
@@ -28,11 +24,13 @@ const resultsProtocol = (maxSignals = Infinity): Protocol<Request, RunFrames> =>
  * Serve `results` on `port` until the returned close is called. Each read is one stream of its
  * batches; the service awaits the port's drain between them and aborts the read when the caller
  * stops or the connection closes.
+ *
+ * @param options - `maxSignals` caps how many signals one read may select; unbounded when omitted.
  */
 export function serveResults(
   port: Port,
   results: Results,
-  options: ResultsOptions = {},
+  options: { readonly maxSignals?: number } = {},
 ): () => void {
   const service = serve(port, resultsProtocol(options.maxSignals), (request, signal) =>
     results.read(request.classId, request.signals, signal),
@@ -40,11 +38,8 @@ export function serveResults(
   return () => service.close();
 }
 
-/** The results a `serveResults` peer holds, as the reading side sees them. */
-export type RemoteResults = Results & { close(): void };
-
 /** Read the results a `serveResults` peer holds. Closing ends every read in flight. */
-export function connectResults(port: Port): RemoteResults {
+export function connectResults(port: Port): Remote<Results> {
   const connection = connect(port, resultsProtocol());
   return {
     read: (classId, signals, signal) => connection.stream({ classId, signals }, { signal }),

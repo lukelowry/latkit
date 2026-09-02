@@ -1,10 +1,4 @@
-import {
-  CHANNEL_DEFINITIONS,
-  DEFAULT_OPTIONS,
-  OPTION_DEFINITIONS,
-  PROJECTION_MODES,
-  type Options,
-} from '@latkit/network';
+import { CHANNELS, OPTIONS, PROJECTIONS, type Channel, type Options } from '@latkit/network';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -15,23 +9,23 @@ import {
   OPTION_BY_ATTRIBUTE,
   VIEW_ATTRIBUTES,
   assertFloat32Array,
-  assertProjectionMode,
+  assertProjection,
   channelAttribute,
-  checkedRange,
+  checkedDomain,
   htmlName,
   parseControls,
+  parseDomain,
   parseOptionAttribute,
-  parseRange,
+  serializeDomain,
   serializeOption,
-  serializeRange,
   type Control,
   type OptionAttribute,
   type ViewWarning,
 } from '../src/view/attributes.js';
 
 describe('view attribute registries', () => {
-  it('derives every serializable option from Network metadata', () => {
-    const expected = Object.entries(OPTION_DEFINITIONS)
+  it('derives every serializable option from the Network registry', () => {
+    const expected = Object.entries(OPTIONS)
       .filter(([name]) => name !== 'colormap')
       .map(([option, definition]) => ({ option, attribute: htmlName(option), definition }));
 
@@ -40,20 +34,17 @@ describe('view attribute registries', () => {
     expect(Object.isFrozen(OPTION_ATTRIBUTES)).toBe(true);
     for (const entry of OPTION_ATTRIBUTES) {
       expect(OPTION_BY_ATTRIBUTE.get(entry.attribute)).toBe(entry);
-      expect(entry.definition).toBe(OPTION_DEFINITIONS[entry.option]);
+      expect(entry.definition).toBe(OPTIONS[entry.option]);
     }
   });
 
-  it('derives channel attributes, domains, height range, and controls in canonical order', () => {
+  it('derives channel attributes, domains, and controls in canonical order', () => {
     expect(CHANNEL_ATTRIBUTES).toEqual(
-      CHANNEL_DEFINITIONS.map((definition) => ({
+      Object.entries(CHANNELS).map(([key, definition]) => ({
         ...definition,
-        attribute: htmlName(definition.key),
-        domainAttribute:
-          definition.map === 'dash' || definition.map === 'visible'
-            ? null
-            : `${htmlName(definition.key)}-domain`,
-        rangeAttribute: definition.map === 'height' ? `${htmlName(definition.key)}-range` : null,
+        key,
+        attribute: htmlName(key),
+        domainAttribute: definition.normalized ? `${htmlName(key)}-domain` : null,
       })),
     );
     expect(NORMALIZED_CHANNEL_NAMES).toEqual([
@@ -86,11 +77,12 @@ describe('view attribute registries', () => {
     expect(VIEW_ATTRIBUTES).toContain('colormap');
     expect(VIEW_ATTRIBUTES).toContain('border-source');
     expect(VIEW_ATTRIBUTES).toContain('controls');
+    expect(VIEW_ATTRIBUTES).toContain('height-range');
+    expect(VIEW_ATTRIBUTES).not.toContain('vertex-height-range');
     for (const option of OPTION_ATTRIBUTES) expect(VIEW_ATTRIBUTES).toContain(option.attribute);
     for (const channel of CHANNEL_ATTRIBUTES) {
       expect(VIEW_ATTRIBUTES).toContain(channel.attribute);
       if (channel.domainAttribute) expect(VIEW_ATTRIBUTES).toContain(channel.domainAttribute);
-      if (channel.rangeAttribute) expect(VIEW_ATTRIBUTES).toContain(channel.rangeAttribute);
     }
   });
 });
@@ -102,6 +94,7 @@ describe('option attributes', () => {
     ['vertexScale', '1.25', 1.25, '1.25'],
     ['edgeScale', '0.75', 0.75, '0.75'],
     ['heightScale', '1.5', 1.5, '1.5'],
+    ['heightRange', '-1 2.5', [-1, 2.5], '-1 2.5'],
     ['vertexLodPx', '3', 3, '3'],
     ['dashPeriodPx', '16', 16, '16'],
     ['nightFloor', '-1.25e-2', -0.0125, '-0.0125'],
@@ -126,10 +119,24 @@ describe('option attributes', () => {
 
   it('uses exact kebab-case names for live geometry options', () => {
     expect(
-      (['vertexScale', 'edgeScale', 'heightScale', 'vertexLodPx', 'dashPeriodPx'] as const).map(
-        (key) => option(key).attribute,
-      ),
-    ).toEqual(['vertex-scale', 'edge-scale', 'height-scale', 'vertex-lod-px', 'dash-period-px']);
+      (
+        [
+          'vertexScale',
+          'edgeScale',
+          'heightScale',
+          'heightRange',
+          'vertexLodPx',
+          'dashPeriodPx',
+        ] as const
+      ).map((key) => option(key).attribute),
+    ).toEqual([
+      'vertex-scale',
+      'edge-scale',
+      'height-scale',
+      'height-range',
+      'vertex-lod-px',
+      'dash-period-px',
+    ]);
   });
 
   it.each([
@@ -137,6 +144,9 @@ describe('option attributes', () => {
     ['nightFloor', '0x10'],
     ['nightFloor', 'Infinity'],
     ['terminatorWidth', '-0.1'],
+    ['heightRange', '2 1'],
+    ['heightRange', '0'],
+    ['heightRange', '0 Infinity'],
     ['baseColor', '0 0 0'],
     ['baseColor', '0 0 0 1.1'],
     ['focusEndpointMode', 'hover'],
@@ -145,7 +155,7 @@ describe('option attributes', () => {
     const warnings: ViewWarning[] = [];
     const entry = option(key);
 
-    expect(parseOptionAttribute(entry, raw, warnings)).toEqual(DEFAULT_OPTIONS[key]);
+    expect(parseOptionAttribute(entry, raw, warnings)).toEqual(OPTIONS[key].default);
     expect(warnings).toEqual([
       {
         key: `${entry.attribute}\0${raw}`,
@@ -157,7 +167,7 @@ describe('option attributes', () => {
   it('uses defaults without warning when attributes are absent', () => {
     for (const entry of OPTION_ATTRIBUTES) {
       const warnings: ViewWarning[] = [];
-      expect(parseOptionAttribute(entry, null, warnings)).toBe(DEFAULT_OPTIONS[entry.option]);
+      expect(parseOptionAttribute(entry, null, warnings)).toBe(OPTIONS[entry.option].default);
       expect(warnings).toEqual([]);
     }
   });
@@ -166,6 +176,7 @@ describe('option attributes', () => {
     ['vertices', 'true'],
     ['nightFloor', Number.NaN],
     ['terminatorWidth', -1],
+    ['heightRange', [1, 0]],
     ['baseColor', [0, 0, 0, 2]],
     ['focusEndpointMode', 'selected-hover'],
     ['msaa', 8],
@@ -174,36 +185,39 @@ describe('option attributes', () => {
   });
 });
 
-describe('range and enum attributes', () => {
+describe('domain and enum attributes', () => {
   it.each([
     ['-1 2.5', [-1, 2.5]],
     ['.5 1e2', [0.5, 100]],
-  ] as const)('parses strict decimal range %s', (raw, expected) => {
+  ] as const)('parses strict decimal domain %s', (raw, expected) => {
     const warnings: ViewWarning[] = [];
-    expect(parseRange('vertex-color-domain', raw, warnings)).toEqual(expected);
+    expect(parseDomain('vertex-color-domain', raw, warnings)).toEqual(expected);
     expect(warnings).toEqual([]);
   });
 
-  it.each(['', '1', '2 1', '0x1 2', '0 Infinity', '0 1 2'])('rejects invalid range %s', (raw) => {
+  it.each(['', '1', '2 1', '0x1 2', '0 Infinity', '0 1 2'])('rejects invalid domain %s', (raw) => {
     const warnings: ViewWarning[] = [];
-    expect(parseRange('vertex-color-domain', raw, warnings)).toBeNull();
+    expect(parseDomain('vertex-color-domain', raw, warnings)).toBeNull();
     expect(warnings).toHaveLength(1);
   });
 
-  it('validates and copies imperative ranges', () => {
+  it('validates and copies imperative domains', () => {
     const input = [1, 2] as const;
-    const checked = checkedRange(input, 'domain');
+    const checked = checkedDomain(input, 'domain');
     expect(checked).toEqual(input);
     expect(checked).not.toBe(input);
-    expect(serializeRange(input)).toBe('1 2');
-    expect(() => checkedRange([2, 1], 'domain')).toThrow(RangeError);
-    expect(() => checkedRange([1, Number.NaN], 'domain')).toThrow(RangeError);
+    expect(serializeDomain(input)).toBe('1 2');
+    expect(() => checkedDomain([2, 1], 'domain')).toThrow(RangeError);
+    expect(() => checkedDomain([1, Number.NaN], 'domain')).toThrow(RangeError);
+    expect(() => checkedDomain([1], 'domain')).toThrow(TypeError);
   });
 
   it('validates projections, channels, and typed arrays through canonical boundaries', () => {
-    for (const mode of PROJECTION_MODES) expect(() => assertProjectionMode(mode)).not.toThrow();
-    expect(() => assertProjectionMode('map')).toThrow(TypeError);
-    for (const channel of CHANNEL_DEFINITIONS) expect(channelAttribute(channel.key)).toBeDefined();
+    for (const mode of PROJECTIONS) expect(() => assertProjection(mode)).not.toThrow();
+    expect(() => assertProjection('map')).toThrow(TypeError);
+    for (const channel of Object.keys(CHANNELS) as Channel[]) {
+      expect(channelAttribute(channel)).toBeDefined();
+    }
     expect(() => channelAttribute('color' as never)).toThrow(TypeError);
     expect(() => assertFloat32Array(new Float32Array(), 'values')).not.toThrow();
     expect(() => assertFloat32Array([1, 2], 'values')).toThrow(TypeError);

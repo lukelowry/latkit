@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { DevicePool } from '../src/device-pool.js';
+import { poolOver } from '../src/pool.js';
 
 describe('DevicePool', () => {
   it('coalesces acquisition and destroys the device after the final lease', async () => {
     const requested = deferred<GPUDevice>();
     const request = vi.fn(() => requested.promise);
-    const pool = new DevicePool(request);
+    const pool = poolOver(request);
     const device = fakeDevice();
 
     const firstPending = pool.acquire();
@@ -32,7 +32,7 @@ describe('DevicePool', () => {
       .fn<() => Promise<GPUDevice>>()
       .mockResolvedValueOnce(first.value)
       .mockResolvedValueOnce(second.value);
-    const pool = new DevicePool(request);
+    const pool = poolOver(request);
 
     const oldLease = await pool.acquire();
     first.lost.resolve({ reason: 'unknown', message: 'test loss' } as GPUDeviceLostInfo);
@@ -54,7 +54,7 @@ describe('DevicePool', () => {
       .fn<() => Promise<GPUDevice>>()
       .mockRejectedValueOnce(new Error('adapter failed'))
       .mockResolvedValueOnce(device.value);
-    const pool = new DevicePool(request);
+    const pool = poolOver(request);
 
     await expect(pool.acquire()).rejects.toThrow('adapter failed');
     const lease = await pool.acquire();

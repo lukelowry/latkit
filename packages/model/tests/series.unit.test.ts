@@ -20,7 +20,7 @@ describe('collect', () => {
     expect(series.signalCount).toBe(2);
     expect(Array.from(series.time)).toEqual([0, 1]);
     expect(Array.from(series.values)).toEqual([1, 2, 3, NaN, 10, 20, 30, 40]);
-    expect(Array.from(series.ranges)).toEqual([1, 3, 10, 40]);
+    expect(Array.from(series.ranges!)).toEqual([1, 3, 10, 40]);
     expect(Array.from(sample(series, 1, 1))).toEqual([30, 40]);
   });
 
@@ -29,7 +29,7 @@ describe('collect', () => {
     expect(empty.time.length).toBe(0);
     expect(empty.signalCount).toBe(0);
     const missing = collect([batch([0], [NaN, NaN, 1, 1])]);
-    expect(Array.from(missing.ranges)).toEqual([NaN, NaN, 1, 1]);
+    expect(Array.from(missing.ranges!)).toEqual([NaN, NaN, 1, 1]);
   });
 
   it('rejects inconsistent batches', () => {
@@ -52,7 +52,7 @@ describe('collect from a stream', () => {
     const series = await collect(stream(batches), 2);
     expect(Array.from(series.time)).toEqual([0, 1]);
     expect(Array.from(series.values)).toEqual([1, 2, 3, NaN, 10, 20, 30, 40]);
-    expect(Array.from(series.ranges)).toEqual([1, 3, 10, 40]);
+    expect(Array.from(series.ranges!)).toEqual([1, 3, 10, 40]);
   });
 
   it('holds the batches and folds at the end when the count is unknown', async () => {

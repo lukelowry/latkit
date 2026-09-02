@@ -24,7 +24,9 @@ for more. `messagePort` wraps anything with the DOM message-target shape and car
 structured clone carries, transfer list included. `bytePort` wraps any channel that carries bytes
 faithfully and rides each message on one binary frame, so typed arrays view the received buffer in
 place even where structured clone does not survive. `socketPort` is `bytePort` over a browser
-`WebSocket` or a node `ws` socket, queueing posts until it opens.
+`WebSocket` or a node `ws` socket, queueing posts until it opens. Each constructor takes its
+target structurally, so a `Worker`, a webview API, or a socket passes as it is; only `Port` is a
+named type.
 
 Every message is JSON values plus typed arrays (`Uint8Array` through `Float64Array`), anywhere in
 the value, on every transport. A service written against a worker runs unchanged against a socket.
@@ -97,6 +99,11 @@ for await (const frame of connect(port, FRAMES).stream(request, { signal })) pai
 Leaving the loop early, or aborting `signal`, cancels the handler and ends the iteration quietly. A
 handler failure ends it with that error. A reply whose buffers the handler relinquishes is wrapped
 with `transferred(value, buffers)`, for a reply or for a streamed item alike.
+
+The root exports `messagePort`, `bytePort`, `socketPort`, `protocol`, `serve`, `connect`,
+`transferred`, and `describeError`, with the types `Port`, `Protocol`, `Service`, and
+`Connection`. Call options (`signal`, `progress`, `transfer`) and a handler's shape are stated
+inline on `call`, `stream`, and `serve`; `Guard` lives with the guards in `@latkit/port/guard`.
 
 ## Testing
 

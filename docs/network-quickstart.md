@@ -1,6 +1,6 @@
 # Create a network view
 
-This tutorial creates a small WebGPU network renderer, loads a topology, binds a scalar channel, and fades the canvas in after the first frame.
+This tutorial creates a small WebGPU network renderer, loads a topology, binds a scalar channel, and wires interaction.
 
 ## Create a canvas
 
@@ -40,7 +40,6 @@ const network = await createNetwork(device, canvas, {
 
 network.load(topology);
 network.setChannel('vertexColor', new Float32Array([0.1, 0.8, 0.4]), [0, 1]);
-network.fadeIn();
 ```
 
 The view starts in the flat projection. After `load()`, `network.geographic` reports whether
@@ -65,22 +64,24 @@ network.rotateBy(18, -8);
 
 const pose = network.getPose();
 if (pose) {
-  network.setPose({ bearing: pose.bearing + 30 }, { animate: true });
+  network.setPose({ bearing: pose.bearing + 30 }, true);
 }
 ```
 
 `rotateBy()` changes bearing and pitch in `tilt` and `globe`; it is a no-op in
 `flat`. `getPose()` returns the pose the next `setPose()` call builds on. Pose
 updates merge partial center, pitch, and bearing fields and optionally animate. Read
-`network.projection` for the active mode.
+`network.projection` for the active mode, and pass `setProjection(mode, true)` to fall back to the
+first projection the loaded topology can host. `orbit(true)` starts continuous rotation until a
+gesture or `orbit(false)` stops it.
 
 ## Add interaction handlers
 
-Use events to mirror hover and selection state into your app:
+Every event carries one payload. Use them to mirror hover and selection state into your app:
 
 ```ts
-const unsubscribeHover = network.on('hover', (kind, index) => {
-  console.log(kind, index);
+const unsubscribeHover = network.on('hover', (item) => {
+  console.log(item?.kind, item?.index);
 });
 
 // The host opts into keyboard context activation on the borrowed canvas.
@@ -100,7 +101,7 @@ unsubscribeHover();
 unsubscribeContext();
 ```
 
-A stationary secondary click emits `contextmenu`; crossing the normal mouse-drag threshold rotates instead. `hitTest` is synchronous, does not change hover or selection, and returns at most the best vertex followed by the best edge. `locate(item)` returns a client-space anchor for menus and DOM overlays without changing focus, including when the item is off-canvas or occluded.
+A stationary secondary click emits `contextmenu`; crossing the normal mouse-drag threshold rotates instead. `hitTest` is synchronous, does not change hover or selection, and returns at most the best vertex followed by the best edge. `locate(item)` returns a client-space anchor for menus and DOM overlays without changing focus, including when the item is off-canvas or occluded. `neighborhood(item)` lists an item with what touches it.
 
 Fit selected topology identities without changing selection:
 
@@ -114,11 +115,12 @@ Use `reveal()` when an item should become visible without changing camera zoom:
 
 ```ts
 network.reveal({ kind: 'vertex', index: 0 }, { paddingPx: 48, animate: true });
+network.reveal({ kind: 'vertex', index: 0 }, { neighbors: true, animate: true });
 ```
 
 An item already visible inside the padded viewport is left in place. Pass
-`{ center: true }` to center it explicitly. Reveal preserves scale, globe
-distance, tilt, and bearing.
+`{ center: true }` to center it explicitly, or `{ neighbors: true }` to frame it with its
+neighborhood. Reveal preserves scale, globe distance, tilt, and bearing.
 
 When your app removes the view, destroy the renderer before removing its canvas, and release the application-owned device last:
 

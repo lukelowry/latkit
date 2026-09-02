@@ -1,9 +1,9 @@
-import { colormapGradientCss, type Colormap } from '@latkit/colormaps';
-import type { Channel } from '@latkit/network';
+import { gradient, type Colormap } from '@latkit/colormaps';
+import { CHANNELS, type Channel } from '@latkit/network';
 
 import { CHANNEL_ATTRIBUTES, type LegendControl } from './attributes.js';
 import { effectiveChannelDomain, type ChannelBinding, type ViewState } from './state.js';
-import { formatNumber, humanizeName } from './format.js';
+import { formatNumber } from './format.js';
 
 interface LegendNodes {
   readonly channel: Channel;
@@ -106,12 +106,12 @@ function clearLegend(entry: LegendNodes): void {
 }
 
 function bindingLabel(binding: ChannelBinding, channel: Channel): string {
-  return binding.kind === 'field' ? binding.entry.field.label : humanizeName(channel);
+  return binding.kind === 'field' ? binding.entry.field.label : CHANNELS[channel].label;
 }
 
 function legendBackground(view: ViewState): string {
   return view.colormap.kind === 'named'
-    ? colormapGradientCss(view.colormap.name, 'to right')
+    ? gradient(view.colormap.name, 'to right')
     : customGradient(view.colormap.fn);
 }
 

@@ -1,30 +1,30 @@
 /**
- * Creates a minimal typed pub/sub dispatcher.
+ * Creates a minimal typed pub/sub dispatcher over a payload map.
  *
  * Handlers are invoked synchronously for each emission. Handler exceptions are
  * rethrown in a microtask so one bad listener cannot stop later listeners.
  */
-type StoredHandler = (...args: unknown[]) => void;
+type StoredHandler = (payload: unknown) => void;
 
-export function createEmitter<E extends { [Key in keyof E]: (...args: never[]) => unknown }>() {
+export function createEmitter<E extends object>() {
   const listeners = new Map<keyof E, Set<StoredHandler>>();
   return {
     /** Register a handler for one event and return its disposer. */
-    on<K extends keyof E>(event: K, handler: E[K]): () => void {
+    on<K extends keyof E>(event: K, handler: (payload: E[K]) => void): () => void {
       let set = listeners.get(event);
       if (!set) listeners.set(event, (set = new Set()));
-      set.add(handler as unknown as StoredHandler);
+      set.add(handler as StoredHandler);
       return () => {
-        set!.delete(handler as unknown as StoredHandler);
+        set!.delete(handler as StoredHandler);
       };
     },
     /** Deliver a payload to a snapshot of the current handlers for an event. */
-    emit<K extends keyof E>(event: K, ...args: Parameters<E[K]>): void {
+    emit<K extends keyof E>(event: K, payload: E[K]): void {
       const set = listeners.get(event);
       if (!set) return;
       for (const handler of [...set]) {
         try {
-          (handler as unknown as (...values: Parameters<E[K]>) => unknown)(...args);
+          handler(payload);
         } catch (error) {
           queueMicrotask(() => {
             throw error;

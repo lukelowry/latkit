@@ -1,15 +1,3 @@
-export {
-  COLORMAP_KIND,
-  COLORMAP_LABEL,
-  COLORMAP_NAMES,
-  colormap,
-  colormapGradientCss,
-  isDiverging,
-} from './colormaps.js';
+export { COLORMAPS, colormap, gradient } from './colormaps.js';
 
-export type {
-  Colormap,
-  ColormapGradientDirection,
-  ColormapKind,
-  ColormapName,
-} from './colormaps.js';
+export type { Colormap, ColormapName } from './colormaps.js';

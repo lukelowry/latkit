@@ -12,7 +12,7 @@ import {
   FLAG_FOCUS_SELECTED_ENDPOINTS,
   FLAG_GRATICULE,
 } from '../src/webgpu/uniforms.js';
-import { BORDER_VERTEX_STRIDE_BYTES } from '../src/borders.js';
+import { BORDER_VERTEX_STRIDE_BYTES } from '../src/borders/index.js';
 import { sampleTopology, singleEdgeTopology } from './fixtures/topology.js';
 import { flushGpuPromises, installWebGpuConstants, makeFakeGpu } from './fixtures/fake-webgpu.js';
 

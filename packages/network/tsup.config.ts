@@ -1,7 +1,10 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/index.ts'],
+  entry: {
+    index: 'src/index.ts',
+    borders: 'src/borders/load.ts',
+  },
   format: ['esm'],
   dts: { banner: '/// <reference types="@webgpu/types" />' },
   sourcemap: true,
