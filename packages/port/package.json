@@ -1,6 +1,6 @@
 {
   "name": "@latkit/port",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Ports, frames, and typed request, reply, and stream protocols for Latkit.",
   "type": "module",
   "repository": {
