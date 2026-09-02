@@ -14,7 +14,7 @@ The API reference is generated from the published package entrypoints with TypeD
 
 ## Common entrypoints
 
-- [`createNetwork`](reference/network/index.md#createnetwork) creates a network canvas controller; [`Network`](reference/network/interfaces/Network.md) is everything a host does with it.
+- [`createNetwork`](reference/network/index.md#createnetwork) creates a network canvas controller; the `Network` interface on that page is everything a host does with it.
 - [`Topology`](reference/model/index.md), [`Item`](reference/model/index.md), and [`Series`](reference/model/index.md) are the shapes every renderer loads and returns, defined once in the model package.
 - [`createMonitor`](reference/monitor/index.md#createmonitor) creates a monitor canvas controller.
 - [`requestDevice`](reference/gpu/index.md#requestdevice) requests a native Core WebGPU device; [`createDevicePool`](reference/gpu/index.md#createdevicepool) shares one among many renderers.
