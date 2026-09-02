@@ -72,8 +72,7 @@ async function normalizeLinkTarget(target, file) {
   // TypeDoc anchors table rows with raw `<a id>` tags, which MyST does not resolve across
   // pages. Keep a fragment only when the target page has a heading for it; otherwise link
   // to the page.
-  const fragment =
-    hash && (await headingAnchors(referenceAbsolute)).has(hash.slice(1)) ? hash : '';
+  const fragment = hash && (await headingAnchors(referenceAbsolute)).has(hash.slice(1)) ? hash : '';
   const relative = toPosixPath(path.relative(path.dirname(file), referenceAbsolute));
   return `${relative || path.basename(referenceAbsolute)}${fragment}`;
 }
