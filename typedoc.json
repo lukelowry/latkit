@@ -7,7 +7,9 @@
     "packages/colormaps",
     "packages/gpu",
     "packages/monitor",
-    "packages/network"
+    "packages/network",
+    "packages/port",
+    "packages/remote"
   ],
   "packageOptions": {
     "entryPoints": ["src/index.ts"],
