@@ -1,5 +1,11 @@
 # @latkit/port
 
+## 0.2.0
+
+### Minor Changes
+
+- 4219e1e: Narrow the root barrel to `messagePort`, `bytePort`, `socketPort`, `protocol`, `serve`, `connect`, `transferred`, `describeError` and the types `Port`, `Protocol`, `Service`, `Connection`. `ByteTarget`, `MessageTarget`, `SocketTarget`, `Progress`, `Handler`, `CallOptions`, and the `Transferred` class are no longer exported (the constructors take their targets structurally, and call options are inline on `call` and `stream`); `Guard` is imported from `@latkit/port/guard`.
+
 ## 0.1.0
 
 ### Minor Changes

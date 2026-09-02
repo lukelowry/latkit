@@ -1,5 +1,18 @@
 # @latkit/remote
 
+## 0.3.0
+
+### Minor Changes
+
+- 4219e1e: Add `Remote<T>`, the shape every connected side shares: what the peer serves plus `close`. `connectResults` returns `Remote<Results>` and `RemoteSource` is a `Remote<Served>` with `reopen`; the `RemoteGrid`, `RemoteResults`, `ServeOptions`, and `ResultsOptions` names are gone, their shapes stated inline on `connectGrid`, `serveSource`, and `serveResults`.
+
+### Patch Changes
+
+- Updated dependencies [4219e1e]
+- Updated dependencies [4219e1e]
+  - @latkit/model@0.3.0
+  - @latkit/port@0.2.0
+
 ## 0.2.0
 
 ### Minor Changes
