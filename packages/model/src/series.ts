@@ -22,29 +22,34 @@ export interface Series {
   readonly validFrames?: number;
 }
 
-/** Pack per-signal frame-major arrays into one buffer. Internal: `collect` is the public entry. */
-export function packSeries(
+/**
+ * A `Series` over an already packed signal-major buffer, its per-signal ranges computed. Internal:
+ * `collect` is the public entry.
+ */
+export function packedSeries(
   time: Float64Array,
   elementCount: number,
-  signals: readonly Float32Array[],
+  signalCount: number,
+  values: Float32Array,
 ): Series {
   const stride = elementCount * time.length;
-  const values = new Float32Array(signals.length * stride);
-  const ranges = new Float32Array(signals.length * 2);
-  signals.forEach((block, signal) => {
-    if (block.length !== stride)
-      throw new Error(`signal ${signal} has ${block.length} values, expected ${stride}`);
-    values.set(block, signal * stride);
+  if (values.length !== signalCount * stride) {
+    throw new Error(`packed series has ${values.length} values, expected ${signalCount * stride}`);
+  }
+  const ranges = new Float32Array(signalCount * 2);
+  for (let signal = 0; signal < signalCount; signal++) {
     let lo = Infinity;
     let hi = -Infinity;
-    for (const value of block) {
+    const end = (signal + 1) * stride;
+    for (let i = signal * stride; i < end; i++) {
+      const value = values[i]!;
       if (value < lo) lo = value;
       if (value > hi) hi = value;
     }
     ranges[signal * 2] = lo <= hi ? lo : NaN;
     ranges[signal * 2 + 1] = lo <= hi ? hi : NaN;
-  });
-  return { time, elementCount, signalCount: signals.length, values, ranges };
+  }
+  return { time, elementCount, signalCount, values, ranges };
 }
 
 /** A zero-copy view of one signal at one frame, `elementCount` long. */

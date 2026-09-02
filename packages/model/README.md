@@ -4,14 +4,15 @@ The immutable, columnar description of a network and its element classes that a 
 once and every latkit renderer and view consumes directly, plus the byte form that lets it cross a
 process boundary lazily.
 
-Four nouns:
+Five nouns:
 
-| Noun     | What it is                                                                                    |
-| -------- | --------------------------------------------------------------------------------------------- |
-| `Model`  | A value: topology, owners, element classes, and one lazy, cached loader for class columns     |
-| `Series` | Packed signals over one element axis and time, shaped exactly as `@latkit/monitor` loads them |
-| A run    | What any engine emits: `RunUpdate`s whose frames `collect` into a `Series`                    |
-| `Source` | The same model as bytes: one core plus one shard per class, owned by whoever asks             |
+| Noun      | What it is                                                                                    |
+| --------- | --------------------------------------------------------------------------------------------- |
+| `Model`   | A value: topology, owners, element classes, and one lazy, cached loader for class columns     |
+| `Series`  | Packed signals over one element axis and time, shaped exactly as `@latkit/monitor` loads them |
+| A run     | What any engine emits: `RunUpdate`s whose frames `collect` into a `Series`                    |
+| `Results` | What a run leaves behind: its recorded samples, read back class by class as those batches     |
+| `Source`  | The same model as bytes: one core plus one shard per class, owned by whoever asks             |
 
 `Topology` and `Item` are field-for-field the shapes `@latkit/network` loads and picks, so a model
 never adapts for a renderer. The package has no dependencies, no state machines, no I/O, and no
@@ -89,6 +90,25 @@ const series = collect(frames);
 monitor.load(series);
 network.setChannel('vertexColor', sample(series, 0, frameAt(series.time, t)));
 ```
+
+## Read what a run recorded
+
+Whoever keeps a run's samples, a store on disk, a file the solver wrote, series held in memory,
+exposes them as `Results`: one class's batches in frame order, the same `RunFrames` the run
+streamed. `collect` folds a stream of them too, filling a preallocated series when the frame count
+is known.
+
+```ts
+import { collect, type Results } from '@latkit/model';
+
+const results: Results = {
+  read: (classId, signals, signal) => store.batches(classId, signals, signal),
+};
+const vm = await collect(results.read('bus', [0], signal), frames);
+```
+
+A read selects signals by recorded-order index; `null` reads every recorded signal. The format
+behind a `Results` is its own business, so a viewer written against one never learns what it was.
 
 ## Move a model
 

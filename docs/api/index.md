@@ -8,9 +8,9 @@ The API reference is generated from the published package entrypoints with TypeD
 | [`@latkit/monitor`](reference/monitor/index.md)     | Monitor renderer, packed series input, readings, events, and display options        |
 | [`@latkit/gpu`](reference/gpu/index.md)             | Core WebGPU device acquisition, availability failures, and canvas presentation      |
 | [`@latkit/colormaps`](reference/colormaps/index.md) | Colormap names, labels, transfer functions, and CSS gradients                       |
-| [`@latkit/model`](reference/model/index.md)         | Columnar network model, packed series, run updates, grid queries, and sources       |
+| [`@latkit/model`](reference/model/index.md)         | Columnar network model, packed series, runs and their results, grids, and sources   |
 | [`@latkit/port`](reference/port/index.md)           | Ports over workers, webviews, and sockets; protocols served and connected over them |
-| [`@latkit/remote`](reference/remote/index.md)       | A model's source, runner, and grids served across a port                            |
+| [`@latkit/remote`](reference/remote/index.md)       | A model's source, runner, grids, and results served across a port                   |
 
 ## Common entrypoints
 
@@ -23,6 +23,7 @@ The API reference is generated from the published package entrypoints with TypeD
 - [`colormap`](reference/colormaps/index.md#colormap) returns a normalized color transfer function.
 - [`protocol`](reference/port/index.md#protocol) declares the contract both ends of a service import; [`serve`](reference/port/index.md#serve) answers it and [`connect`](reference/port/index.md#connect) calls it.
 - [`connectSource`](reference/remote/index.md#connectsource) opens the model a `serveSource` peer serves.
+- [`connectResults`](reference/remote/index.md#connectresults) reads the results a `serveResults` peer holds; [`collect`](reference/model/index.md#collect) folds a read into a `Series`.
 
 ```{toctree}
 :maxdepth: 2

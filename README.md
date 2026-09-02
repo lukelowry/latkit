@@ -23,7 +23,7 @@ Install only the packages your application needs.
 | [`@latkit/colormaps`](https://www.npmjs.com/package/@latkit/colormaps) | Named colormaps, labels, and CSS gradient helpers             |
 | [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | Columnar network model, series, and byte form                 |
 | [`@latkit/port`](https://www.npmjs.com/package/@latkit/port)           | Ports, frames, and typed request, reply, and stream protocols |
-| [`@latkit/remote`](https://www.npmjs.com/package/@latkit/remote)       | A model served across a port: source, runner, and grids       |
+| [`@latkit/remote`](https://www.npmjs.com/package/@latkit/remote)       | A model served across a port: source, runner, grids, results  |
 
 ## Requirements
 

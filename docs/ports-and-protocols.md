@@ -2,7 +2,7 @@
 
 `@latkit/port` carries messages between the two halves of one application: a page and its worker,
 an extension host and its webview, a browser and a server. `@latkit/remote` uses it to serve a
-`@latkit/model` model from whichever half holds the data.
+`@latkit/model` model, and what a run of it recorded, from whichever half holds the data.
 
 ## A port
 
@@ -124,6 +124,29 @@ const model = await openModel(remote.source, {
 
 A grid is served the same way: `serveGrid` publishes the header and answers windows of display text,
 and `connectGrid` hands the page a `Grid` it binds to a table.
+
+## Serve results
+
+What a run recorded is served as a `Results`: one class's batches per stream, the same `RunFrames`
+the run itself streamed, so `collect` folds either. The batches describe their own shape, and
+nothing is published ahead of a read.
+
+```ts
+// host.ts
+import { serveResults } from '@latkit/remote';
+
+const stop = serveResults(port, store); // `store` implements `Results` over whatever it holds
+
+// page.ts
+import { collect } from '@latkit/model';
+import { connectResults } from '@latkit/remote';
+
+const results = connectResults(port);
+monitor.load(await collect(results.read('bus', [0], signal), frames));
+```
+
+A read selects signals by recorded-order index, or every recorded signal with `null`. A served side
+that must bound what one read asks for passes `maxSignals`; by default a selection is unbounded.
 
 ## Test across a port
 
