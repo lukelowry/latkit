@@ -6,12 +6,13 @@ import { networkDataWithFields } from './fixtures.js';
 import { direct, inputRevision, resolvedView } from './view-fixtures.js';
 
 describe('initial view application', () => {
-  it('applies runtime options, colormap, all channels, range resets, and projection', () => {
+  it('applies live options with the colormap, all channels, domain resets, and projection', () => {
     const data = networkDataWithFields();
     const view = resolvedView(data, {
       vertices: 'false',
       projection: 'tilt',
       colormap: 'plasma',
+      'height-range': '-1 2',
       'vertex-color': 'load',
       'vertex-height': 'load',
       'vertex-size': 'capacity',
@@ -19,25 +20,24 @@ describe('initial view application', () => {
       'edge-dash': 'flow',
       'vertex-visible': 'capacity',
       'edge-visible': 'flow',
-      'vertex-height-range': '-1 2',
     });
     const h = networkHarness();
 
     applyView(h.value, null, view);
 
+    expect(view.options.heightRange).toEqual([-1, 2]);
     expect(h.setOptions).toHaveBeenCalledOnce();
-    expect(h.setOptions).toHaveBeenCalledWith(view.options);
-    expect(h.setColormap).toHaveBeenCalledWith(view.colormap.fn);
+    expect(h.setOptions).toHaveBeenCalledWith({ ...view.options, colormap: view.colormap.fn });
     expect(h.setChannel.mock.calls).toEqual([
       ['vertexColor', data.fields![0]!.values, [10, 30]],
-      ['vertexHeight', data.fields![0]!.values, [10, 30], [-1, 2]],
+      ['vertexHeight', data.fields![0]!.values, [10, 30]],
       ['vertexSize', data.fields![1]!.values, [40, 80]],
       ['edgeColor', data.fields![2]!.values, [4, 8]],
       ['edgeDash', data.fields![2]!.values],
       ['vertexVisible', data.fields![1]!.values],
       ['edgeVisible', data.fields![2]!.values],
     ]);
-    expect(h.setChannelRange.mock.calls).toEqual([
+    expect(h.setChannelDomain.mock.calls).toEqual([
       ['vertexColor', null],
       ['vertexHeight', null],
       ['vertexSize', null],
@@ -46,21 +46,20 @@ describe('initial view application', () => {
     expect(h.setProjection).toHaveBeenCalledWith('tilt');
   });
 
-  it('does not reapply runtime options already supplied at construction', () => {
+  it('does not reapply options or the colormap already supplied at construction', () => {
     const view = resolvedView(networkDataWithFields());
     const h = networkHarness();
 
-    applyView(h.value, null, view, view.options);
+    applyView(h.value, null, view, view);
 
     expect(h.setOptions).not.toHaveBeenCalled();
-    expect(h.setColormap).toHaveBeenCalledOnce();
     expect(h.setChannel).toHaveBeenCalledOnce();
     expect(h.setProjection).toHaveBeenCalledOnce();
   });
 });
 
 describe('differential option and colormap application', () => {
-  it('collects effective runtime changes into one patch', () => {
+  it('collects effective live changes into one patch', () => {
     const data = networkDataWithFields();
     const previous = resolvedView(data, {
       'base-color': '0.1 0.2 0.3 1',
@@ -78,19 +77,32 @@ describe('differential option and colormap application', () => {
 
     expect(h.setOptions).toHaveBeenCalledWith({ vertices: false, nightFloor: 0.2 });
     expect(h.setOptions).toHaveBeenCalledOnce();
-    expect(h.setColormap).not.toHaveBeenCalled();
     expect(h.setChannel).not.toHaveBeenCalled();
   });
 
-  it('compares RGBA tuples by members rather than allocation identity', () => {
+  it('compares RGBA and domain tuples by members rather than allocation identity', () => {
     const data = networkDataWithFields();
-    const previous = resolvedView(data, { 'base-color': '0.2 0.3 0.4 1' });
-    const next = resolvedView(data, { 'base-color': '0.2 0.3 0.4 1' });
+    const previous = resolvedView(data, { 'base-color': '0.2 0.3 0.4 1', 'height-range': '0 2' });
+    const next = resolvedView(data, { 'base-color': '0.2 0.3 0.4 1', 'height-range': '0 2' });
     const h = networkHarness();
 
     expect(previous.options.baseColor).not.toBe(next.options.baseColor);
+    expect(previous.options.heightRange).not.toBe(next.options.heightRange);
     applyView(h.value, previous, next);
     expect(h.setOptions).not.toHaveBeenCalled();
+  });
+
+  it('sends a changed height range as a live option without reuploading values', () => {
+    const data = networkDataWithFields();
+    const previous = resolvedView(data, { 'vertex-height': 'load', 'height-range': '0 1' });
+    const next = resolvedView(data, { 'vertex-height': 'load', 'height-range': '-2 4' });
+    const h = networkHarness();
+
+    applyView(h.value, previous, next);
+
+    expect(h.setOptions).toHaveBeenCalledWith({ heightRange: [-2, 4] });
+    expect(h.setChannel).not.toHaveBeenCalled();
+    expect(h.setChannelDomain).not.toHaveBeenCalled();
   });
 
   it('compares named maps by name and custom maps by function identity', () => {
@@ -102,22 +114,22 @@ describe('differential option and colormap application', () => {
     const nextNamed = resolvedView(data, { colormap: 'plasma' });
 
     applyView(h.value, previousNamed, nextNamed);
-    expect(h.setColormap).toHaveBeenLastCalledWith(nextNamed.colormap.fn);
+    expect(h.setOptions).toHaveBeenLastCalledWith({ colormap: nextNamed.colormap.fn });
 
-    h.setColormap.mockClear();
+    h.setOptions.mockClear();
     applyView(
       h.value,
       resolvedView(data, {}, { configuration: { customColormap: first } }),
       resolvedView(data, {}, { configuration: { customColormap: first } }),
     );
-    expect(h.setColormap).not.toHaveBeenCalled();
+    expect(h.setOptions).not.toHaveBeenCalled();
 
     applyView(
       h.value,
       resolvedView(data, {}, { configuration: { customColormap: first } }),
       resolvedView(data, {}, { configuration: { customColormap: second } }),
     );
-    expect(h.setColormap).toHaveBeenCalledWith(second);
+    expect(h.setOptions).toHaveBeenCalledWith({ colormap: second });
   });
 });
 
@@ -134,13 +146,13 @@ describe('differential channel application', () => {
     applyView(h.value, previous, next);
 
     expect(h.setChannel).toHaveBeenCalledWith('vertexColor', data.fields![1]!.values, [40, 80]);
-    expect(h.setChannelRange).toHaveBeenCalledWith('vertexColor', null);
+    expect(h.setChannelDomain).toHaveBeenCalledWith('vertexColor', null);
   });
 
   it.each([
     ['2 8', [2, 8]],
     [null, null],
-  ] as const)('updates only a domain override to %s without uploading values', (raw, range) => {
+  ] as const)('updates only a domain override to %s without uploading values', (raw, domain) => {
     const data = networkDataWithFields();
     const previous = resolvedView(data, {
       'vertex-color': 'load',
@@ -155,30 +167,7 @@ describe('differential channel application', () => {
     applyView(h.value, previous, next);
 
     expect(h.setChannel).not.toHaveBeenCalled();
-    expect(h.setChannelRange).toHaveBeenCalledWith('vertexColor', range);
-  });
-
-  it('reuploads height values when only the output range changes', () => {
-    const data = networkDataWithFields();
-    const previous = resolvedView(data, {
-      'vertex-height': 'load',
-      'vertex-height-range': '0 1',
-    });
-    const next = resolvedView(data, {
-      'vertex-height': 'load',
-      'vertex-height-range': '-2 4',
-    });
-    const h = networkHarness();
-
-    applyView(h.value, previous, next);
-
-    expect(h.setChannel).toHaveBeenCalledWith(
-      'vertexHeight',
-      data.fields![0]!.values,
-      [10, 30],
-      [-2, 4],
-    );
-    expect(h.setChannelRange).toHaveBeenCalledWith('vertexHeight', null);
+    expect(h.setChannelDomain).toHaveBeenCalledWith('vertexColor', domain);
   });
 
   it('reuploads the same direct values when their retained base domain changes', () => {
@@ -193,7 +182,18 @@ describe('differential channel application', () => {
     applyView(h.value, previous, next);
 
     expect(h.setChannel).toHaveBeenCalledWith('vertexSize', values, [0, 4]);
-    expect(h.setChannelRange).toHaveBeenCalledWith('vertexSize', null);
+    expect(h.setChannelDomain).toHaveBeenCalledWith('vertexSize', null);
+  });
+
+  it('lets Network scan a direct height channel bound without a domain', () => {
+    const data = networkDataWithFields();
+    const values = new Float32Array([7, 2, 5]);
+    const input = inputRevision(data, { vertexHeight: direct(values) });
+    const h = networkHarness();
+
+    applyView(h.value, resolvedView(data), resolvedView(data, {}, { input }));
+
+    expect(h.setChannel).toHaveBeenCalledWith('vertexHeight', values, undefined);
   });
 
   it('clears unbound channels exactly once', () => {
@@ -204,13 +204,12 @@ describe('differential channel application', () => {
 
     applyView(h.value, previous, next);
 
-    expect(h.clearChannel).toHaveBeenCalledOnce();
-    expect(h.clearChannel).toHaveBeenCalledWith('vertexColor');
-    expect(h.setChannel).not.toHaveBeenCalled();
-    expect(h.setChannelRange).not.toHaveBeenCalled();
+    expect(h.setChannel).toHaveBeenCalledOnce();
+    expect(h.setChannel).toHaveBeenCalledWith('vertexColor', null);
+    expect(h.setChannelDomain).not.toHaveBeenCalled();
   });
 
-  it('never applies range operations to edgeDash', () => {
+  it('never applies domain operations to edgeDash', () => {
     const data = networkDataWithFields();
     const values = new Float32Array([0, 1, 0]);
     const input = inputRevision(data, { edgeDash: direct(values) });
@@ -221,7 +220,7 @@ describe('differential channel application', () => {
     applyView(h.value, previous, next);
 
     expect(h.setChannel).toHaveBeenCalledWith('edgeDash', values);
-    expect(h.setChannelRange).not.toHaveBeenCalled();
+    expect(h.setChannelDomain).not.toHaveBeenCalled();
   });
 
   it('does nothing for equal effective channel state', () => {
@@ -233,8 +232,7 @@ describe('differential channel application', () => {
     applyView(h.value, previous, next);
 
     expect(h.setChannel).not.toHaveBeenCalled();
-    expect(h.clearChannel).not.toHaveBeenCalled();
-    expect(h.setChannelRange).not.toHaveBeenCalled();
+    expect(h.setChannelDomain).not.toHaveBeenCalled();
   });
 });
 
@@ -259,34 +257,21 @@ describe('differential projection application', () => {
 interface NetworkHarness {
   readonly value: Network;
   readonly setOptions: ReturnType<typeof vi.fn<(options: Options) => void>>;
-  readonly setColormap: ReturnType<typeof vi.fn>;
   readonly setChannel: ReturnType<typeof vi.fn>;
-  readonly clearChannel: ReturnType<typeof vi.fn>;
-  readonly setChannelRange: ReturnType<typeof vi.fn>;
+  readonly setChannelDomain: ReturnType<typeof vi.fn>;
   readonly setProjection: ReturnType<typeof vi.fn>;
 }
 
 function networkHarness(projectionResult = true): NetworkHarness {
   const setOptions = vi.fn<(options: Options) => void>();
-  const setColormap = vi.fn();
   const setChannel = vi.fn();
-  const clearChannel = vi.fn();
-  const setChannelRange = vi.fn();
+  const setChannelDomain = vi.fn();
   const setProjection = vi.fn(() => projectionResult);
   return {
-    value: {
-      setOptions,
-      setColormap,
-      setChannel,
-      clearChannel,
-      setChannelRange,
-      setProjection,
-    } as unknown as Network,
+    value: { setOptions, setChannel, setChannelDomain, setProjection } as unknown as Network,
     setOptions,
-    setColormap,
     setChannel,
-    clearChannel,
-    setChannelRange,
+    setChannelDomain,
     setProjection,
   };
 }

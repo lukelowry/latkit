@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { createGlobeProjection } from '../src/camera/globe.js';
 import { createPlaneProjection } from '../src/camera/plane.js';
-import type { Projection, Viewport } from '../src/camera/projection.js';
-import { PIPELINES, PROJECTIONS, type ProjectionMode } from '../src/projections.js';
+import type { CameraProjection, Viewport } from '../src/camera/projection.js';
+import { PIPELINES, PROJECTION_DEFS, type Projection } from '../src/projections.js';
 import {
   createUniforms,
   ITEM_EDGE_VISIBLE,
@@ -24,9 +24,9 @@ const VP: Viewport = { w: 800, h: 600 };
 type PickChannel = 'vertexHeight' | 'vertexSize' | 'edgeDash' | 'vertexVisible' | 'edgeVisible';
 
 interface Setup {
-  readonly mode: ProjectionMode;
+  readonly mode: Projection;
   readonly uniforms: Uniforms;
-  readonly proj: Projection;
+  readonly proj: CameraProjection;
   readonly state: Float64Array;
   readonly picker: Picker;
   readonly topology: Topology;
@@ -67,7 +67,7 @@ function gridTopology(): Topology {
 }
 
 function makeSetup(
-  mode: ProjectionMode,
+  mode: Projection,
   opts: {
     topology?: Topology;
     mutate?: (state: Float64Array) => void;
@@ -120,7 +120,7 @@ function makeSetup(
   const scene = prepareScene(encoded, segments);
   picker.commitScene(picker.prepareScene(scene));
 
-  const projector = PIPELINES[PROJECTIONS[mode].family].projector(uniforms);
+  const projector = PIPELINES[PROJECTION_DEFS[mode].family].projector(uniforms);
   return {
     mode,
     uniforms,
@@ -201,7 +201,7 @@ function oraclePick(
   q: PickQuery,
 ): { vertex: PickResult | null; edge: PickResult | null } {
   const u = s.uniforms;
-  const projector = PIPELINES[PROJECTIONS[s.mode].family].projector(u);
+  const projector = PIPELINES[PROJECTION_DEFS[s.mode].family].projector(u);
   const dprX = u.frame.viewportX / q.vp.w;
   const dprY = u.frame.viewportY / q.vp.h;
   const cursorX = q.sx * dprX;
@@ -692,7 +692,7 @@ describe('Picker matches the brute-force oracle', () => {
     };
   }
 
-  function posesFor(mode: ProjectionMode, rand: () => number): ((state: Float64Array) => void)[] {
+  function posesFor(mode: Projection, rand: () => number): ((state: Float64Array) => void)[] {
     const jitter = (scale: number): number => (rand() * 2 - 1) * scale;
     return Array.from({ length: 8 }, (_, i) => (state: Float64Array): void => {
       if (mode === 'flat') {

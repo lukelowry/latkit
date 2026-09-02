@@ -1,6 +1,6 @@
 import { createGlobeProjection } from './camera/globe.js';
 import { createPlaneProjection } from './camera/plane.js';
-import type { Projection, Viewport } from './camera/projection.js';
+import type { CameraProjection, Viewport } from './camera/projection.js';
 import { globeProjector, planeProjector, type Projector } from './pick/project.js';
 import type { Uniforms } from './webgpu/uniforms.js';
 import { VISUAL, planeHeightWorldScale } from './visual.js';
@@ -14,10 +14,10 @@ import globeBgSrc from './shaders/projections/globe-background.wgsl?raw';
 import earthAxisSrc from './shaders/passes/earth-axis.wgsl?raw';
 
 /** Canonical projection modes supported by the network renderer. */
-export const PROJECTION_MODES = Object.freeze(['flat', 'tilt', 'globe'] as const);
+export const PROJECTIONS = Object.freeze(['flat', 'tilt', 'globe'] as const);
 
 /** Projection modes supported by the network renderer. */
-export type ProjectionMode = (typeof PROJECTION_MODES)[number];
+export type Projection = (typeof PROJECTIONS)[number];
 
 /**
  * Projection families: modes in one family share a camera state manifold and
@@ -30,9 +30,9 @@ export type ProjectionFamily = 'plane' | 'globe';
  */
 export interface ProjectionDef {
   /** Stable mode identifier used by the public API and renderer state. */
-  readonly mode: ProjectionMode;
+  readonly mode: Projection;
   /** Creates a fresh camera projection implementation for this mode. */
-  readonly create: () => Projection;
+  readonly create: () => CameraProjection;
   /** Camera-manifold and shader family this view belongs to. */
   readonly family: ProjectionFamily;
   /** Returns whether the loaded topology can be displayed in this mode. */
@@ -173,7 +173,7 @@ function canHostGlobe(
 }
 
 /** Public camera-view registry. */
-export const PROJECTIONS = Object.freeze({
+export const PROJECTION_DEFS = Object.freeze({
   flat: {
     mode: 'flat',
     create: () => createPlaneProjection('flat'),
@@ -198,7 +198,7 @@ export const PROJECTIONS = Object.freeze({
     heightWorldScale: () => VISUAL.globeHeightRadialScale,
     wrapX: true,
   },
-} satisfies Record<ProjectionMode, ProjectionDef>);
+} satisfies Record<Projection, ProjectionDef>);
 
 /** Minimal shader/pipeline registry: one bundle per projection family. */
 export const PIPELINES = Object.freeze({

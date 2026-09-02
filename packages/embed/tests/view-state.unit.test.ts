@@ -1,4 +1,4 @@
-import { DEFAULT_OPTIONS, OPTION_DEFINITIONS, type Channel, type Network } from '@latkit/network';
+import { OPTIONS, type Channel, type Network } from '@latkit/network';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -20,13 +20,14 @@ describe('resolved option state', () => {
   it('uses Network defaults, Embed viridis, and no border source', () => {
     const state = resolveOptionState(attributeValues(), elementConfiguration());
     const expectedRuntime = Object.fromEntries(
-      Object.entries(OPTION_DEFINITIONS)
-        .filter(([key, definition]) => key !== 'colormap' && definition.lifecycle === 'runtime')
-        .map(([key]) => [key, DEFAULT_OPTIONS[key as keyof typeof DEFAULT_OPTIONS]]),
+      Object.entries(OPTIONS)
+        .filter(([key, definition]) => key !== 'colormap' && definition.live)
+        .map(([key, definition]) => [key, definition.default]),
     );
 
     expect(state.msaa).toBeUndefined();
     expect(state.options).toEqual(expectedRuntime);
+    expect(state.options.heightRange).toEqual([0, 1]);
     expect(state.colormap).toMatchObject({ kind: 'named', name: 'viridis' });
     expect(state.borders).toEqual({ kind: 'none' });
     expect(state.warnings).toEqual([]);
@@ -34,7 +35,7 @@ describe('resolved option state', () => {
     expect(Object.isFrozen(state.options)).toBe(true);
   });
 
-  it('resolves construction/runtime attributes and custom precedence independently', () => {
+  it('resolves construction/live attributes and custom precedence independently', () => {
     const customColormap = (value: number) => [value, 0, 1 - value] as const;
     const customBorders = {
       vertices: new Uint8Array(24),
@@ -47,6 +48,7 @@ describe('resolved option state', () => {
         'vertex-scale': '1.25',
         'edge-scale': '0.75',
         'height-scale': '1.5',
+        'height-range': '0 2',
         'vertex-lod-px': '3',
         'dash-period-px': '16',
         'night-floor': '0.25',
@@ -62,6 +64,7 @@ describe('resolved option state', () => {
     expect(state.options.vertexScale).toBe(1.25);
     expect(state.options.edgeScale).toBe(0.75);
     expect(state.options.heightScale).toBe(1.5);
+    expect(state.options.heightRange).toEqual([0, 2]);
     expect(state.options.vertexLodPx).toBe(3);
     expect(state.options.dashPeriodPx).toBe(16);
     expect(state.options.nightFloor).toBe(0.25);
@@ -93,7 +96,7 @@ describe('resolved option state', () => {
       elementConfiguration(),
     );
 
-    expect(state.options.nightFloor).toBe(DEFAULT_OPTIONS.nightFloor);
+    expect(state.options.nightFloor).toBe(OPTIONS.nightFloor.default);
     expect(state.colormap).toMatchObject({ kind: 'named', name: 'viridis' });
     expect(state.borders).toEqual({ kind: 'none' });
     expect(state.warnings.map(({ key }) => key)).toEqual([
@@ -105,7 +108,7 @@ describe('resolved option state', () => {
 });
 
 describe('resolved channels', () => {
-  it('binds every canonical channel with normalized domains and the height range', () => {
+  it('binds every canonical channel with normalized field extents as domains', () => {
     const view = resolvedView(networkDataWithFields(), {
       colormap: 'plasma',
       projection: 'tilt',
@@ -121,13 +124,13 @@ describe('resolved channels', () => {
     expect(view.projection).toBe('tilt');
     expect(view.colormap).toMatchObject({ kind: 'named', name: 'plasma' });
     expect(channelSummary(view.channels)).toEqual({
-      vertexColor: ['capacity', [40, 80], null, undefined],
-      vertexHeight: ['load', [10, 30], null, [0, 1]],
-      vertexSize: ['capacity', [40, 80], null, undefined],
-      vertexVisible: ['capacity', null, null, undefined],
-      edgeColor: ['flow', [4, 8], null, undefined],
-      edgeDash: ['flow', null, null, undefined],
-      edgeVisible: ['flow', null, null, undefined],
+      vertexColor: ['capacity', [40, 80], null],
+      vertexHeight: ['load', [10, 30], null],
+      vertexSize: ['capacity', [40, 80], null],
+      vertexVisible: ['capacity', null, null],
+      edgeColor: ['flow', [4, 8], null],
+      edgeDash: ['flow', null, null],
+      edgeVisible: ['flow', null, null],
     });
     expect(view.warnings).toEqual([]);
   });
@@ -136,7 +139,6 @@ describe('resolved channels', () => {
     const view = resolvedView(networkDataWithFields(), {
       'vertex-height': 'load',
       'vertex-height-domain': '12 25',
-      'vertex-height-range': '-2 3',
       'edge-color': 'flow',
       'edge-color-domain': '5 7',
     });
@@ -144,7 +146,6 @@ describe('resolved channels', () => {
     expect(view.channels.vertexHeight).toMatchObject({
       baseDomain: [10, 30],
       domainOverride: [12, 25],
-      outputRange: [-2, 3],
     });
     expect(view.channels.edgeColor).toMatchObject({
       baseDomain: [4, 8],
@@ -153,22 +154,18 @@ describe('resolved channels', () => {
     expect(effectiveChannelDomain(view.channels.vertexHeight!)).toEqual([12, 25]);
   });
 
-  it('gives direct arrays precedence and preserves Network range semantics', () => {
+  it('gives direct arrays precedence and passes their domains through to Network', () => {
     const data = networkDataWithFields();
     const heightValues = new Float32Array([7, 2, 5]);
     const sizeValues = new Float32Array([3, 4, 5]);
     const input = inputRevision(data, {
       vertexColor: direct(new Float32Array([1, 2, 3]), { baseDomain: [1, 3] }),
-      vertexHeight: direct(heightValues, { outputRange: [-1, 1] }),
+      vertexHeight: direct(heightValues),
       vertexSize: direct(sizeValues, { baseDomain: null }),
     });
     const view = resolvedView(
       data,
-      {
-        'vertex-color': 'load',
-        'vertex-height-domain': '3 6',
-        'vertex-height-range': '10 20',
-      },
+      { 'vertex-color': 'load', 'vertex-height-domain': '3 6' },
       { input },
     );
 
@@ -180,10 +177,9 @@ describe('resolved channels', () => {
     expect(view.channels.vertexHeight).toMatchObject({
       kind: 'direct',
       values: heightValues,
-      baseDomain: [2, 7],
       domainOverride: [3, 6],
-      outputRange: [10, 20],
     });
+    expect(view.channels.vertexHeight?.baseDomain).toBeUndefined();
     expect(view.channels.vertexSize).toMatchObject({
       kind: 'direct',
       values: sizeValues,
@@ -322,7 +318,7 @@ function channelSummary(channels: ReturnType<typeof resolvedView>['channels']) {
     Object.entries(channels).map(([channel, binding]) => [
       channel,
       binding?.kind === 'field'
-        ? [binding.entry.field.id, binding.baseDomain, binding.domainOverride, binding.outputRange]
+        ? [binding.entry.field.id, binding.baseDomain, binding.domainOverride]
         : null,
     ]),
   ) as Record<Channel, unknown>;

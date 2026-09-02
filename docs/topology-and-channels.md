@@ -81,14 +81,16 @@ network.load(topology);
 
 network.setChannel('vertexColor', vertexLoad, [0, 1]);
 network.setChannel('edgeColor', edgeStress, [0, 100]);
-network.setChannel('vertexHeight', vertexLoad, [0, 1], [0, 0.8]);
+network.setChannel('vertexHeight', vertexLoad, null);
+network.setOptions({ heightRange: [0, 0.8] });
 network.setChannel('vertexVisible', energizedVertices);
 network.setChannel('edgeVisible', energizedEdges);
+network.setChannel('edgeVisible', null);
 ```
 
-The third argument is the input domain. Pass `null` to auto-scan height values. The fourth argument is the output height range and only applies to `vertexHeight`. Visibility channels are raw and range-free: an unbound channel shows every item, while a bound channel shows only values greater than zero. Zero, negative values, and `NaN` hide the item in both rendering and hit testing. Clearing the channel restores all items.
+The third argument is the input domain. Pass `null` to auto-scan height values. The `heightRange` option is the output range `vertexHeight` maps onto. `setChannelDomain()` moves a bound channel's domain without re-uploading its values, and `getChannelDomain()` reads the domain in effect. Visibility channels are raw and domain-free: an unbound channel shows every item, while a bound channel shows only values greater than zero. Zero, negative values, and `NaN` hide the item in both rendering and hit testing. Passing `null` as the values clears the channel and restores all items.
 
-`setChannel()` snapshots its typed array, so later caller mutations do not alter the bound rendering or picking state. Bind the array again to publish changes.
+`setChannel()` snapshots its typed array, so later caller mutations do not alter the bound rendering or picking state. Bind the array again to publish changes. `CHANNELS` lists every channel with its scope, display label, and whether it is normalized.
 
 ## Validation failures
 

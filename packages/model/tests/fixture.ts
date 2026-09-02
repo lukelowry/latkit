@@ -1,4 +1,5 @@
-import { createModel, type ClassData, type Loader, type Model } from '../src/index.js';
+import { createModel, type ClassData, type Model } from '../src/index.js';
+import type { Loader } from '../src/model.js';
 
 /** Three vertices in a line with two edges, buses owning vertices, branches owning edges, two
  *  generators anchored to vertices 0 and 2, and one area with no place on the canvas. */

@@ -6,16 +6,10 @@
  */
 
 import type { Runner, RunUpdate, Source } from '@latkit/model';
-import {
-  type CallOptions,
-  connect,
-  type Port,
-  protocol,
-  serve,
-  type Transferred,
-  transferred,
-} from '@latkit/port';
+import { connect, type Port, protocol, serve, transferred } from '@latkit/port';
 import { bytes, requests, str } from '@latkit/port/guard';
+
+import type { Remote } from './remote.js';
 
 /** What one side serves: a source and, when it has an engine, a runner. */
 export interface Served {
@@ -23,21 +17,12 @@ export interface Served {
   readonly runner?: Runner;
 }
 
-/** How a served lineage continues: the reopen that turns edited bytes into the next served pair. */
-export interface ServeOptions {
-  reopen?(bytes: Uint8Array): Promise<Served>;
-  onClose?(): void;
-}
-
 /**
  * The far side of a served model: its source, its runner when the server can run, and the reopen
  * that supersedes this remote with the next.
  */
-export interface RemoteSource {
-  readonly source: Source;
-  readonly runner?: Runner;
+export interface RemoteSource extends Remote<Served> {
   reopen(bytes: Uint8Array): Promise<RemoteSource>;
-  close(): void;
 }
 
 type Request =
@@ -74,11 +59,19 @@ function superseded(): AsyncIterable<RunUpdate> {
   };
 }
 
-/** Serve one model lineage on `port` until either side closes. Returns the server's own close. */
+/**
+ * Serve one model lineage on `port` until either side closes. Returns the server's own close.
+ *
+ * @param options - `reopen` continues the lineage, turning edited bytes into the next served
+ * pair; without it a reopen request is refused. `onClose` fires once the service has ended.
+ */
 export function serveSource(
   port: Port,
   initial: Served | Promise<Served>,
-  options: ServeOptions = {},
+  options: {
+    reopen?(bytes: Uint8Array): Promise<Served>;
+    onClose?(): void;
+  } = {},
 ): () => void {
   let served: Promise<Served> | null = adopt(initial);
   let running = false;
@@ -101,8 +94,7 @@ export function serveSource(
     SOURCE,
     async (request, signal, progress) => {
       const entry = await current();
-      const owned = (data: Uint8Array): Transferred<Reply> =>
-        transferred<Reply>(data, [data.buffer as ArrayBuffer]);
+      const owned = (data: Uint8Array) => transferred<Reply>(data, [data.buffer as ArrayBuffer]);
       switch (request.op) {
         case 'hello':
           return { runnable: entry.runner !== undefined };
@@ -153,9 +145,13 @@ export async function connectSource(port: Port): Promise<RemoteSource> {
 
   const remote = (own: number, canRun: boolean): RemoteSource => {
     const live = (): boolean => own === generation;
-    const ask = async (request: Request, options: CallOptions = {}): Promise<Uint8Array> => {
+    const ask = async (
+      request: Request,
+      signal?: AbortSignal,
+      progress?: (loaded: number, total: number) => void,
+    ): Promise<Uint8Array> => {
       if (!live()) throw new Error(SUPERSEDED);
-      const reply = await calls.call(request, options);
+      const reply = await calls.call(request, { signal, progress });
       if (!bytes(reply)) throw new Error('malformed source reply');
       return reply;
     };
@@ -167,9 +163,9 @@ export async function connectSource(port: Port): Promise<RemoteSource> {
     };
     return {
       source: {
-        core: (signal, progress) => ask({ op: 'core' }, { signal, progress }),
-        class: (id, signal) => ask({ op: 'class', id }, { signal }),
-        bytes: (signal) => ask({ op: 'bytes' }, { signal }),
+        core: (signal, progress) => ask({ op: 'core' }, signal, progress),
+        class: (id, signal) => ask({ op: 'class', id }, signal),
+        bytes: (signal) => ask({ op: 'bytes' }, signal),
       },
       ...(canRun && { runner }),
       async reopen(next) {

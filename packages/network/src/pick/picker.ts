@@ -1,8 +1,8 @@
 import {
   PIPELINES,
-  PROJECTIONS,
+  PROJECTION_DEFS,
   type ProjectionFamily,
-  type ProjectionMode,
+  type Projection,
 } from '../projections.js';
 import type { Viewport } from '../camera/projection.js';
 import type { Uniforms } from '../webgpu/uniforms.js';
@@ -53,7 +53,7 @@ export interface PickerDeps {
   /** Packed render uniforms shared with the GPU shaders. */
   readonly uniforms: Uniforms;
   /** Current projection mode used to select the matching CPU projector. */
-  mode(): ProjectionMode;
+  mode(): Projection;
   /**
    * Camera cursor unprojection from CSS px and CSS viewport.
    *
@@ -667,8 +667,8 @@ export class Picker {
   }
 
   /** Return the cached per-family projector over the live uniform buffer. */
-  private projector(mode: ProjectionMode): Projector {
-    const family = PROJECTIONS[mode].family;
+  private projector(mode: Projection): Projector {
+    const family = PROJECTION_DEFS[mode].family;
     let proj = this.projectors.get(family);
     if (!proj) {
       proj = PIPELINES[family].projector(this.deps.uniforms);

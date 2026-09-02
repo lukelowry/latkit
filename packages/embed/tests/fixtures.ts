@@ -1,4 +1,4 @@
-import type { Events, Network, ProjectionMode, Topology } from '@latkit/network';
+import type { Events, Item, Network, Projection, Topology } from '@latkit/network';
 import { vi } from 'vitest';
 
 import type { NetworkData } from '../src/data/types.js';
@@ -55,120 +55,102 @@ export function serializedNetwork(): Record<string, unknown> {
   };
 }
 
+type Spy = ReturnType<typeof vi.fn>;
+
 export interface FakeNetwork {
   readonly value: Network;
-  readonly on: ReturnType<typeof vi.fn>;
-  readonly load: ReturnType<typeof vi.fn>;
-  readonly setBorders: ReturnType<typeof vi.fn>;
-  readonly fadeIn: ReturnType<typeof vi.fn>;
-  readonly pause: ReturnType<typeof vi.fn>;
-  readonly resume: ReturnType<typeof vi.fn>;
-  readonly destroy: ReturnType<typeof vi.fn>;
-  readonly setColormap: ReturnType<typeof vi.fn>;
-  readonly setBaseColor: ReturnType<typeof vi.fn>;
-  readonly setChannel: ReturnType<typeof vi.fn>;
-  readonly clearChannel: ReturnType<typeof vi.fn>;
-  readonly setChannelRange: ReturnType<typeof vi.fn>;
-  readonly setOptions: ReturnType<typeof vi.fn>;
-  readonly setProjection: ReturnType<typeof vi.fn>;
-  readonly fit: ReturnType<typeof vi.fn>;
-  readonly reveal: ReturnType<typeof vi.fn>;
-  readonly select: ReturnType<typeof vi.fn>;
-  readonly clearSelection: ReturnType<typeof vi.fn>;
-  readonly panBy: ReturnType<typeof vi.fn>;
-  readonly rotateBy: ReturnType<typeof vi.fn>;
-  readonly getPose: ReturnType<typeof vi.fn>;
-  readonly setPose: ReturnType<typeof vi.fn>;
-  readonly zoomBy: ReturnType<typeof vi.fn>;
-  emit<Key extends keyof Events>(event: Key, ...args: Parameters<Events[Key]>): void;
+  readonly on: Spy;
+  readonly load: Spy;
+  readonly setBorders: Spy;
+  readonly pause: Spy;
+  readonly resume: Spy;
+  readonly destroy: Spy;
+  readonly setChannel: Spy;
+  readonly setChannelDomain: Spy;
+  readonly getChannelDomain: Spy;
+  readonly setOptions: Spy;
+  readonly setProjection: Spy;
+  readonly fit: Spy;
+  readonly reveal: Spy;
+  readonly neighborhood: Spy;
+  readonly select: Spy;
+  readonly panBy: Spy;
+  readonly rotateBy: Spy;
+  readonly getPose: Spy;
+  readonly setPose: Spy;
+  readonly zoomBy: Spy;
+  readonly orbit: Spy;
+  emit<Key extends keyof Events>(event: Key, payload: Events[Key]): void;
 }
 
 export function fakeNetwork(
   projections: Network['projections'] = { flat: true, tilt: true, globe: true },
 ): FakeNetwork {
-  const listeners = new Map<keyof Events, Set<(...args: unknown[]) => unknown>>();
-  const on = vi.fn((event: keyof Events, handler: (...args: never[]) => unknown) => {
+  const listeners = new Map<keyof Events, Set<(payload: unknown) => unknown>>();
+  const on = vi.fn((event: keyof Events, handler: (payload: never) => unknown) => {
     let handlers = listeners.get(event);
     if (!handlers) listeners.set(event, (handlers = new Set()));
-    const stored = handler as unknown as (...args: unknown[]) => unknown;
+    const stored = handler as unknown as (payload: unknown) => unknown;
     handlers.add(stored);
     return () => handlers!.delete(stored);
   });
+  let orbiting = false;
   const load = vi.fn();
   const setBorders = vi.fn();
-  const fadeIn = vi.fn();
   const pause = vi.fn();
   const resume = vi.fn();
   const destroy = vi.fn();
-  const setColormap = vi.fn();
-  const setBaseColor = vi.fn();
   const setChannel = vi.fn();
-  const clearChannel = vi.fn();
-  const setChannelRange = vi.fn();
+  const setChannelDomain = vi.fn();
+  const getChannelDomain = vi.fn(() => null);
   const setOptions = vi.fn();
-  const setProjection = vi.fn((mode: ProjectionMode) => projections[mode]);
+  const setProjection = vi.fn((mode: Projection) => projections[mode]);
   const fit = vi.fn();
   const reveal = vi.fn(() => true);
+  const neighborhood = vi.fn((item: Item) => [item]);
   const select = vi.fn();
-  const clearSelection = vi.fn();
   const panBy = vi.fn();
   const rotateBy = vi.fn();
   const getPose = vi.fn(() => ({ centerX: 1, centerY: 2, pitch: 3, bearing: 4 }));
   const setPose = vi.fn(() => true);
   const zoomBy = vi.fn();
-  return {
-    value: {
-      projections,
-      geographic: true,
-      on,
-      load,
-      setBorders,
-      fadeIn,
-      pause,
-      resume,
-      destroy,
-      setColormap,
-      setBaseColor,
-      setChannel,
-      clearChannel,
-      setChannelRange,
-      setOptions,
-      setProjection,
-      fit,
-      reveal,
-      select,
-      clearSelection,
-      panBy,
-      rotateBy,
-      getPose,
-      setPose,
-      zoomBy,
-    } as unknown as Network,
+  const orbit = vi.fn((active: boolean) => (orbiting = active));
+  const spies = {
     on,
     load,
     setBorders,
-    fadeIn,
     pause,
     resume,
     destroy,
-    setColormap,
-    setBaseColor,
     setChannel,
-    clearChannel,
-    setChannelRange,
+    setChannelDomain,
+    getChannelDomain,
     setOptions,
     setProjection,
     fit,
     reveal,
+    neighborhood,
     select,
-    clearSelection,
     panBy,
     rotateBy,
     getPose,
     setPose,
     zoomBy,
-    emit(event, ...args) {
-      for (const handler of [...(listeners.get(event) ?? [])]) handler(...args);
+    orbit,
+  };
+  return {
+    value: {
+      projection: 'flat',
+      projections,
+      geographic: true,
+      get orbiting() {
+        return orbiting;
+      },
+      ...spies,
+    } as unknown as Network,
+    ...spies,
+    emit(event, payload) {
+      for (const handler of [...(listeners.get(event) ?? [])]) handler(payload);
     },
   };
 }

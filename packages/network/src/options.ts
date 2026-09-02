@@ -1,14 +1,15 @@
 import type { FocusEndpointMode, RGBA } from './focus-state.js';
+import { type Domain, validateDomain } from './range.js';
 
 /** Function mapping a normalized scalar to normalized RGB channels. */
-export type NetworkColormap = (t: number) => readonly [number, number, number];
+export type Colormap = (t: number) => readonly [number, number, number];
 
 /**
- * Initial network renderer configuration and runtime option patch.
+ * Network display options: the construction record and the live patch.
  *
  * @remarks
- * `msaa` is read once at construction. Other fields seed the initial view and
- * can be patched later with `Network.setOptions`.
+ * `msaa` is read once at construction. Every other field seeds the initial view and can be
+ * patched later with `Network.setOptions`; `OPTIONS` says which and carries each default.
  */
 export interface Options {
   /**
@@ -29,6 +30,8 @@ export interface Options {
   edgeScale?: number;
   /** Multiplier applied to vertex-height displacement. @defaultValue `1`. */
   heightScale?: number;
+  /** Output range the normalized `vertexHeight` channel maps onto. @defaultValue `[0, 1]`. */
+  heightRange?: Domain;
   /** Vertex level-of-detail threshold in CSS pixels. @defaultValue `2`. */
   vertexLodPx?: number;
   /** Screen-space edge dash period in CSS pixels. @defaultValue `12`. */
@@ -50,7 +53,7 @@ export interface Options {
   /** Resting vertex color without a `vertexColor` channel. @defaultValue `[0.5, 0.5, 0.5, 1]`. */
   baseColor?: RGBA;
   /** Seeds the color lookup texture used by colormap channels. @defaultValue A neutral gray ramp. */
-  colormap?: NetworkColormap;
+  colormap?: Colormap;
   /** Graticule line color as normalized RGBA. @defaultValue `[0.45, 0.48, 0.54, 1]`. */
   graticuleColor?: RGBA;
   /** Ground plane (flat/tilt) and globe sphere base color. @defaultValue `[0.15, 0.16, 0.19, 1]`. */
@@ -79,159 +82,118 @@ export interface Options {
   focusEndpointMode?: FocusEndpointMode;
 }
 
-/** Validation and lifecycle metadata for a runtime-mutable option. */
-export type RuntimeOptionDefinition =
-  | { readonly kind: 'boolean'; readonly default: boolean }
-  | { readonly kind: 'finite' | 'nonnegative'; readonly default: number }
-  | { readonly kind: 'rgba'; readonly default: RGBA }
-  | { readonly kind: 'focus-endpoint'; readonly default: FocusEndpointMode }
-  | { readonly kind: 'colormap'; readonly default: NetworkColormap };
-
-/** Canonical metadata for one Network option. */
+/** Validation kind, default, and whether `Network.setOptions` accepts the option live. */
 export type OptionDefinition =
-  | (RuntimeOptionDefinition & { readonly lifecycle: 'runtime' })
-  | {
-      readonly kind: 'msaa';
-      readonly default: undefined;
-      readonly lifecycle: 'construction';
-    };
+  | { readonly kind: 'boolean'; readonly default: boolean; readonly live: true }
+  | { readonly kind: 'finite' | 'nonnegative'; readonly default: number; readonly live: true }
+  | { readonly kind: 'rgba'; readonly default: RGBA; readonly live: true }
+  | { readonly kind: 'domain'; readonly default: Domain; readonly live: true }
+  | { readonly kind: 'focus-endpoint'; readonly default: FocusEndpointMode; readonly live: true }
+  | { readonly kind: 'colormap'; readonly default: Colormap; readonly live: true }
+  | { readonly kind: 'msaa'; readonly default: undefined; readonly live: false };
 
 /** Network's neutral transfer function before a consumer supplies a colormap. */
-const neutralColormap: NetworkColormap = Object.freeze((t: number) => [t, t, t] as const);
+const neutralColormap: Colormap = Object.freeze((t: number) => [t, t, t] as const);
 
-/** Freeze an RGBA default before exposing it through public metadata. */
-function rgba(red: number, green: number, blue: number, alpha: number): RGBA {
-  return Object.freeze([red, green, blue, alpha] as const);
+/** Freeze a tuple default before exposing it through public metadata. */
+function tuple<T extends readonly number[]>(...values: T): Readonly<T> {
+  return Object.freeze(values);
 }
 
-const optionDefinitions = {
-  msaa: { kind: 'msaa', default: undefined, lifecycle: 'construction' },
-  vertices: { kind: 'boolean', default: true, lifecycle: 'runtime' },
-  edges: { kind: 'boolean', default: true, lifecycle: 'runtime' },
-  poles: { kind: 'boolean', default: false, lifecycle: 'runtime' },
-  vertexScale: { kind: 'nonnegative', default: 1, lifecycle: 'runtime' },
-  edgeScale: { kind: 'nonnegative', default: 1, lifecycle: 'runtime' },
-  heightScale: { kind: 'nonnegative', default: 1, lifecycle: 'runtime' },
-  vertexLodPx: { kind: 'nonnegative', default: 2, lifecycle: 'runtime' },
-  dashPeriodPx: { kind: 'nonnegative', default: 12, lifecycle: 'runtime' },
-  borders: { kind: 'boolean', default: true, lifecycle: 'runtime' },
-  graticule: { kind: 'boolean', default: false, lifecycle: 'runtime' },
-  earthAxis: { kind: 'boolean', default: true, lifecycle: 'runtime' },
-  daylight: { kind: 'boolean', default: true, lifecycle: 'runtime' },
-  nightFloor: { kind: 'finite', default: 0.55, lifecycle: 'runtime' },
-  surfaceNightFloor: { kind: 'finite', default: 0.1, lifecycle: 'runtime' },
-  terminatorWidth: { kind: 'nonnegative', default: 0.12, lifecycle: 'runtime' },
-  baseColor: { kind: 'rgba', default: rgba(0.5, 0.5, 0.5, 1), lifecycle: 'runtime' },
-  colormap: { kind: 'colormap', default: neutralColormap, lifecycle: 'runtime' },
-  graticuleColor: {
-    kind: 'rgba',
-    default: rgba(0.45, 0.48, 0.54, 1),
-    lifecycle: 'runtime',
-  },
-  surfaceColor: {
-    kind: 'rgba',
-    default: rgba(0.15, 0.16, 0.19, 1),
-    lifecycle: 'runtime',
-  },
-  borderColor: {
-    kind: 'rgba',
-    default: rgba(0.52, 0.5, 0.49, 1),
-    lifecycle: 'runtime',
-  },
-  focusEnabled: { kind: 'boolean', default: true, lifecycle: 'runtime' },
-  hoverColor: {
-    kind: 'rgba',
-    default: rgba(0.72, 0.28, 0.18, 1),
-    lifecycle: 'runtime',
-  },
-  selectedColor: {
-    kind: 'rgba',
-    default: rgba(0.72, 0.28, 0.18, 1),
-    lifecycle: 'runtime',
-  },
-  hoverAlpha: { kind: 'nonnegative', default: 0.5, lifecycle: 'runtime' },
-  selectedAlpha: { kind: 'nonnegative', default: 0.82, lifecycle: 'runtime' },
-  vertexHoverPx: { kind: 'nonnegative', default: 6, lifecycle: 'runtime' },
-  vertexSelectedPx: { kind: 'nonnegative', default: 7, lifecycle: 'runtime' },
-  edgeHoverPx: { kind: 'nonnegative', default: 3.5, lifecycle: 'runtime' },
-  edgeSelectedPx: { kind: 'nonnegative', default: 5, lifecycle: 'runtime' },
-  focusEndpointMode: {
-    kind: 'focus-endpoint',
-    default: 'selected',
-    lifecycle: 'runtime',
-  },
+const definitions = {
+  msaa: { kind: 'msaa', default: undefined, live: false },
+  vertices: { kind: 'boolean', default: true, live: true },
+  edges: { kind: 'boolean', default: true, live: true },
+  poles: { kind: 'boolean', default: false, live: true },
+  vertexScale: { kind: 'nonnegative', default: 1, live: true },
+  edgeScale: { kind: 'nonnegative', default: 1, live: true },
+  heightScale: { kind: 'nonnegative', default: 1, live: true },
+  heightRange: { kind: 'domain', default: tuple(0, 1), live: true },
+  vertexLodPx: { kind: 'nonnegative', default: 2, live: true },
+  dashPeriodPx: { kind: 'nonnegative', default: 12, live: true },
+  borders: { kind: 'boolean', default: true, live: true },
+  graticule: { kind: 'boolean', default: false, live: true },
+  earthAxis: { kind: 'boolean', default: true, live: true },
+  daylight: { kind: 'boolean', default: true, live: true },
+  nightFloor: { kind: 'finite', default: 0.55, live: true },
+  surfaceNightFloor: { kind: 'finite', default: 0.1, live: true },
+  terminatorWidth: { kind: 'nonnegative', default: 0.12, live: true },
+  baseColor: { kind: 'rgba', default: tuple(0.5, 0.5, 0.5, 1), live: true },
+  colormap: { kind: 'colormap', default: neutralColormap, live: true },
+  graticuleColor: { kind: 'rgba', default: tuple(0.45, 0.48, 0.54, 1), live: true },
+  surfaceColor: { kind: 'rgba', default: tuple(0.15, 0.16, 0.19, 1), live: true },
+  borderColor: { kind: 'rgba', default: tuple(0.52, 0.5, 0.49, 1), live: true },
+  focusEnabled: { kind: 'boolean', default: true, live: true },
+  hoverColor: { kind: 'rgba', default: tuple(0.72, 0.28, 0.18, 1), live: true },
+  selectedColor: { kind: 'rgba', default: tuple(0.72, 0.28, 0.18, 1), live: true },
+  hoverAlpha: { kind: 'nonnegative', default: 0.5, live: true },
+  selectedAlpha: { kind: 'nonnegative', default: 0.82, live: true },
+  vertexHoverPx: { kind: 'nonnegative', default: 6, live: true },
+  vertexSelectedPx: { kind: 'nonnegative', default: 7, live: true },
+  edgeHoverPx: { kind: 'nonnegative', default: 3.5, live: true },
+  edgeSelectedPx: { kind: 'nonnegative', default: 5, live: true },
+  focusEndpointMode: { kind: 'focus-endpoint', default: 'selected', live: true },
 } as const satisfies Record<keyof Required<Options>, OptionDefinition>;
 
-for (const definition of Object.values(optionDefinitions)) Object.freeze(definition);
+for (const definition of Object.values(definitions)) Object.freeze(definition);
 
-/** Canonical option names, defaults, validation kinds, and mutation lifecycles. */
-export const OPTION_DEFINITIONS = Object.freeze(optionDefinitions);
+/** Every option: its validation kind, default, and whether it is accepted live. */
+export const OPTIONS: Readonly<typeof definitions> = Object.freeze(definitions);
 
-/** Option keys selected mechanically by their canonical mutation lifecycle. */
-export type OptionKeyByLifecycle<Lifecycle extends OptionDefinition['lifecycle']> = {
-  [
-    Key in keyof typeof OPTION_DEFINITIONS
-  ]: (typeof OPTION_DEFINITIONS)[Key]['lifecycle'] extends Lifecycle ? Key : never;
-}[keyof typeof OPTION_DEFINITIONS];
-
-/** Options captured when a Network is constructed. */
-export type ConstructionOption = OptionKeyByLifecycle<'construction'>;
+/** Option keys selected by whether they are accepted live. */
+type OptionKeyByLive<Live extends boolean> = {
+  [Key in keyof typeof OPTIONS]: (typeof OPTIONS)[Key]['live'] extends Live ? Key : never;
+}[keyof typeof OPTIONS];
 
 /** Options accepted as live Network patches. */
-export type RuntimeOption = OptionKeyByLifecycle<'runtime'>;
+export type RuntimeOption = OptionKeyByLive<true>;
 
 /** Fully resolved Network options, including automatic `undefined` defaults. */
 export type ResolvedOptions = Readonly<{
-  [
-    Key in keyof typeof OPTION_DEFINITIONS
-  ]: undefined extends (typeof OPTION_DEFINITIONS)[Key]['default']
+  [Key in keyof typeof OPTIONS]: undefined extends (typeof OPTIONS)[Key]['default']
     ? Options[Key] | undefined
     : NonNullable<Options[Key]>;
 }>;
 
-/** Build the public default record mechanically from the canonical definitions. */
+/** Build the default record mechanically from the canonical definitions. */
 function resolveDefaults(): ResolvedOptions {
-  const entries = Object.entries(OPTION_DEFINITIONS).map(([key, definition]) => [
-    key,
-    definition.default,
-  ]);
+  const entries = Object.entries(OPTIONS).map(([key, definition]) => [key, definition.default]);
   return Object.freeze(Object.fromEntries(entries)) as ResolvedOptions;
 }
 
-/** Deeply immutable resolved defaults used by Network and higher-level consumers. */
+/** Deeply immutable resolved defaults used by Network itself. */
 export const DEFAULT_OPTIONS = resolveDefaults();
 
 /** Resolve and own a complete construction option record. */
 export function resolveOptions(options: Options): ResolvedOptions {
   validateOptions(options);
   const values = options as Readonly<Record<string, unknown>>;
-  const entries = Object.entries(OPTION_DEFINITIONS).map(([key, definition]) => {
+  const entries = Object.entries(OPTIONS).map(([key, definition]) => {
     const supplied = values[key];
     const value = supplied === undefined ? definition.default : supplied;
-    return [key, definition.kind === 'rgba' ? Object.freeze([...(value as RGBA)]) : value];
+    const owned =
+      definition.kind === 'rgba' || definition.kind === 'domain'
+        ? Object.freeze([...(value as readonly number[])])
+        : value;
+    return [key, owned];
   });
   return Object.freeze(Object.fromEntries(entries)) as ResolvedOptions;
 }
 
-/** Validate an option patch completely before the controller mutates renderer state. */
+/**
+ * Validate an option patch completely before any of it is applied.
+ *
+ * @throws TypeError or RangeError naming the first invalid option.
+ */
 export function validateOptions(options: Options): void {
   if (options === null || typeof options !== 'object') {
     throw new TypeError('network options must be an object');
   }
-  for (const [key, definition] of Object.entries(OPTION_DEFINITIONS)) {
+  for (const [key, definition] of Object.entries(OPTIONS)) {
     const value = options[key as keyof Options];
     if (value === undefined) continue;
     validateOptionValue(key, definition, value);
   }
-}
-
-/** Validate one defined public option value through its canonical metadata. */
-export function validateOption<Key extends keyof Options>(
-  key: Key,
-  value: unknown,
-): asserts value is Exclude<Options[Key], undefined> {
-  const definition = OPTION_DEFINITIONS[key];
-  validateOptionValue(String(key), definition, value);
 }
 
 /** Validate one supplied value according to its canonical metadata. */
@@ -248,6 +210,9 @@ function validateOptionValue(key: string, definition: OptionDefinition, value: u
       return;
     case 'rgba':
       validateRgba(key, value);
+      return;
+    case 'domain':
+      validateDomain(value, `network option ${key}`);
       return;
     case 'focus-endpoint':
       if (value !== 'off' && value !== 'selected' && value !== 'hover-selected') {

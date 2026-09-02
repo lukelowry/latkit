@@ -9,7 +9,10 @@ import { describeError } from './error.js';
 import type { Port } from './port.js';
 import type { Progress, Protocol } from './protocol.js';
 
-/** A reply, or one streamed item, whose buffers the handler relinquishes to the transport. */
+/**
+ * A reply, or one streamed item, whose buffers the handler relinquishes to the transport. Made
+ * only by `transferred`, which is the public face; the class itself stays off the barrel.
+ */
 export class Transferred<T> {
   /** Wrap `value`, naming the buffers in it the transport may detach. */
   constructor(
@@ -78,7 +81,8 @@ function abortError(): DOMException {
 
 /**
  * Answers one call. A returned promise is the one reply; a returned async iterable is a stream,
- * one `yield` per item. `signal` aborts when the caller cancels or the service closes.
+ * one `yield` per item. `signal` aborts when the caller cancels or the service closes. The alias
+ * is internal: `serve` spells the shape out where it is read.
  */
 export type Handler<Req, Res> = (
   request: Req,
@@ -181,7 +185,10 @@ export function serve<Req, Res, Ev = never>(
   };
 }
 
-/** Per-call knobs: cancellation, progress, and buffers the caller relinquishes. */
+/**
+ * Per-call knobs: cancellation, progress, and buffers the caller relinquishes. Internal; a caller
+ * passes the literal and the compiler infers it from `call` and `stream`.
+ */
 export interface CallOptions {
   readonly signal?: AbortSignal;
   readonly progress?: Progress;

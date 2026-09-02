@@ -2,7 +2,8 @@
 
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
-import { createPresentation, observeCanvas, type Presentation } from '../src/index.js';
+import { createPresentation, type Presentation } from '../src/index.js';
+import { observeCanvas } from '../src/presentation.js';
 
 interface ContextHarness {
   readonly context: GPUCanvasContext;
@@ -271,6 +272,61 @@ describe('createPresentation', () => {
     presentation.destroy();
     expect(canvas.width).toBe(2048);
     expect(canvas.height).toBe(1024);
+  });
+
+  it('observes an HTML canvas until destroyed', () => {
+    const { device } = makeDevice();
+    const h = makeContext();
+    const disconnect = vi.fn();
+    let resizeCallback: ResizeObserverCallback | undefined;
+    const { canvas } = makeCanvas(h.context, {
+      devicePixelRatio: 2,
+      ResizeObserver: class {
+        constructor(callback: ResizeObserverCallback) {
+          resizeCallback = callback;
+        }
+        observe = vi.fn();
+        disconnect = disconnect;
+      },
+    } as unknown as Partial<Window & typeof globalThis>);
+    const presentation = createPresentation(device, canvas, { format: 'bgra8unorm' });
+    const listener = vi.fn();
+
+    const stop = presentation.observe(listener);
+    expect(listener).toHaveBeenNthCalledWith(1, 400, 200, 2);
+    resizeCallback?.(
+      [
+        { devicePixelContentBoxSize: [{ inlineSize: 421, blockSize: 211 }] },
+      ] as unknown as ResizeObserverEntry[],
+      {} as ResizeObserver,
+    );
+    expect(listener).toHaveBeenNthCalledWith(2, 421, 211, 2);
+
+    stop();
+    stop();
+    expect(disconnect).toHaveBeenCalledOnce();
+
+    presentation.destroy();
+    const after = vi.fn();
+    expect(() => presentation.observe(after)()).not.toThrow();
+    expect(after).not.toHaveBeenCalled();
+  });
+
+  it('reports an OffscreenCanvas once from its current size', () => {
+    const { device } = makeDevice();
+    const h = makeContext();
+    const canvas = {
+      width: 640,
+      height: 360,
+      getContext: vi.fn(() => h.context),
+    } as unknown as OffscreenCanvas;
+    const presentation = createPresentation(device, canvas, { format: 'bgra8unorm' });
+    const listener = vi.fn();
+
+    presentation.observe(listener)();
+
+    expect(listener).toHaveBeenCalledExactlyOnceWith(640, 360, 1);
+    presentation.destroy();
   });
 });
 

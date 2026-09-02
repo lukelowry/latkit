@@ -12,7 +12,6 @@ export type {
   Column,
   ElementRef,
   Item,
-  Loader,
   Model,
   Signal,
   Topology,
@@ -21,6 +20,9 @@ export { createModel, elementAt, itemOf } from './model.js';
 
 export type { Series } from './series.js';
 export { frameAt, sample } from './series.js';
+
+export type { Field, FieldRef } from './field.js';
+export { fieldKey, fieldsOf } from './field.js';
 
 export type { Results, RunFrames, Runner, RunUpdate } from './run.js';
 export { collect } from './run.js';

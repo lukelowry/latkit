@@ -1,29 +1,23 @@
-import type { Colormap } from '@latkit/colormaps';
-import { GpuUnavailableError } from '@latkit/gpu';
+import { GpuUnavailableError, createDevicePool, type DeviceLease } from '@latkit/gpu';
 import {
-  PROJECTION_MODES,
-  channelNormalizes,
+  PROJECTIONS,
   createNetwork,
-  validateBorders,
-  validateOption,
+  validateOptions,
   type Borders,
-  type CameraPose,
   type Channel,
-  type ChannelRange,
+  type Domain,
+  type Events,
   type Item,
   type Network,
   type Options,
-  type PoseOptions,
-  type ProjectionFamily,
-  type ProjectionMode,
-  type RGBA,
+  type Pose,
+  type Projection,
   type RevealOptions,
 } from '@latkit/network';
+import { loadBorders } from '@latkit/network/borders';
 
 import { Activation, abortError } from './activation.js';
-import { loadNaturalEarthBorders } from './borders.js';
 import type { NetworkData } from './data/types.js';
-import { devices, type DeviceLease } from './device-pool.js';
 import {
   createInputRevision,
   resolveInput,
@@ -38,12 +32,12 @@ import {
   OPTION_BY_ATTRIBUTE,
   VIEW_ATTRIBUTES,
   assertFloat32Array,
-  assertProjectionMode,
+  assertProjection,
   channelAttribute,
-  checkedRange,
+  checkedDomain,
   parseOptionAttribute,
+  serializeDomain,
   serializeOption,
-  serializeRange,
   type ViewWarning,
 } from './view/attributes.js';
 import { createChrome, type Chrome } from './view/chrome.js';
@@ -64,78 +58,68 @@ const ROOT_MARGIN = '200px';
 const DEVICE_RECOVERIES = 2;
 
 const UNAVAILABLE_PROJECTIONS = Object.freeze(
-  Object.fromEntries(PROJECTION_MODES.map((mode) => [mode, false])),
+  Object.fromEntries(PROJECTIONS.map((mode) => [mode, false])),
 ) as Network['projections'];
 
-/** Item identity carried by hover and selection DOM events. */
-export interface NetworkItemEventDetail {
-  readonly kind: 'vertex' | 'edge' | null;
-  readonly index: number | null;
-}
-
-/** Fit-state payload carried by the Network `zoom` DOM event. */
-export interface NetworkZoomEventDetail {
-  readonly atFitView: boolean;
-}
-
-/** Recovery payload carried by the Network `deviceLost` DOM event. */
-export interface NetworkDeviceLostEventDetail {
-  readonly reason: string;
-  readonly message: string;
-  readonly recovering: boolean;
-}
-
-/** Failure payload carried by the Network `pipelineError` DOM event. */
-export interface NetworkPipelineErrorEventDetail {
-  readonly pipeline: ProjectionFamily;
-  readonly cause: unknown;
-}
+/** Shared allocation-free result for queries made before the element is live. */
+const NO_ITEMS: readonly Item[] = Object.freeze([]);
 
 /** Public DOM events emitted by {@link NetworkElement}. */
 export interface NetworkElementEventMap {
+  /** The current activation became live. */
   load: Event;
+  /** The current activation failed; `ready` rejects with the same error. */
   error: CustomEvent<{ readonly error: unknown }>;
-  hover: CustomEvent<NetworkItemEventDetail>;
-  select: CustomEvent<NetworkItemEventDetail>;
-  zoom: CustomEvent<NetworkZoomEventDetail>;
-  deviceLost: CustomEvent<NetworkDeviceLostEventDetail>;
-  pipelineError: CustomEvent<NetworkPipelineErrorEventDetail>;
+  /** Hovered vertex or edge, or null after hover exit. */
+  hover: CustomEvent<Item | null>;
+  /** User-selected vertex or edge, or null after a clearing tap. */
+  select: CustomEvent<Item | null>;
+  /** Whether the camera sits at the fit view. */
+  zoom: CustomEvent<boolean>;
+  /** Whether continuous rotation is running. */
+  orbit: CustomEvent<boolean>;
+  /** WebGPU device loss; `recovering` says whether a replacement activation follows. */
+  deviceLost: CustomEvent<{
+    readonly reason: string;
+    readonly message: string;
+    readonly recovering: boolean;
+  }>;
+  /** Asynchronous shader-pipeline build failure for one projection family. */
+  pipelineError: CustomEvent<{ readonly family: 'plane' | 'globe'; readonly cause: unknown }>;
 }
 
-/** Public declarative Network element surface; construction remains owned by {@link register}. */
+/** Network verbs and readonly state the element mirrors one-to-one. */
 type ForwardedNetworkApi = Pick<
   Network,
+  | 'projections'
+  | 'geographic'
+  | 'orbiting'
   | 'setOptions'
   | 'setBorders'
-  | 'setColormap'
-  | 'setBaseColor'
   | 'setChannel'
-  | 'clearChannel'
-  | 'setChannelRange'
+  | 'setChannelDomain'
+  | 'getChannelDomain'
   | 'setProjection'
   | 'fit'
   | 'reveal'
+  | 'neighborhood'
   | 'select'
-  | 'clearSelection'
   | 'panBy'
   | 'rotateBy'
   | 'getPose'
   | 'setPose'
   | 'zoomBy'
-  | 'fadeIn'
+  | 'orbit'
   | 'pause'
   | 'resume'
 >;
 
+/** Public declarative Network element surface; construction remains owned by {@link register}. */
 export interface NetworkElement extends HTMLElement, ForwardedNetworkApi {
   /** Direct decoded input. Null returns to src or inline source resolution. */
   data: NetworkData | null;
   /** Promise for the current activation becoming live. */
   readonly ready: Promise<void>;
-  /** Projection availability for the current live topology. */
-  readonly projections: Network['projections'];
-  /** Whether the current live topology reads as geographic lon/lat degrees. */
-  readonly geographic: boolean;
 
   addEventListener<Key extends keyof NetworkElementEventMap>(
     type: Key,
@@ -175,11 +159,14 @@ interface BorderRequest {
   release(): void;
 }
 
+/** Shared device pool for every element in this module instance. */
+const devices = createDevicePool();
+
 const DEFAULT_DEPENDENCIES: ElementDependencies = {
   resolveInput,
   acquireDevice: () => devices.acquire(),
   createNetwork,
-  loadNaturalEarthBorders,
+  loadNaturalEarthBorders: loadBorders,
   observeNear,
   warn: (message, error) => {
     if (error === undefined) console.warn(`@latkit/embed: ${message}`);
@@ -261,6 +248,10 @@ export function createNetworkElementClass(
       return this.#geographic;
     }
 
+    get orbiting(): boolean {
+      return this.#liveNetwork()?.orbiting ?? false;
+    }
+
     connectedCallback(): void {
       if (this.#hasConnected) {
         this.#recoveries = 0;
@@ -305,10 +296,7 @@ export function createNetworkElementClass(
       }
 
       const option = OPTION_BY_ATTRIBUTE.get(name);
-      if (
-        option?.definition.lifecycle === 'construction' &&
-        this.#activation.constructionResolved
-      ) {
+      if (option && !option.definition.live && this.#activation.constructionResolved) {
         const before = parseOptionAttribute(option, previous, []);
         const after = parseOptionAttribute(option, next, []);
         if (!Object.is(before, after)) {
@@ -332,9 +320,9 @@ export function createNetworkElementClass(
         reflected.push([entry.attribute, serializeOption(entry, value)]);
       }
 
-      let customColormap: Colormap | undefined;
+      let customColormap: Options['colormap'];
       if (Object.hasOwn(options, 'colormap') && options.colormap !== undefined) {
-        validateOption('colormap', options.colormap);
+        validateOptions({ colormap: options.colormap });
         customColormap = options.colormap;
       }
 
@@ -351,79 +339,66 @@ export function createNetworkElementClass(
     }
 
     setBorders(borders: Borders | null): void {
-      if (borders !== null) validateBorders(borders);
+      if (borders !== null) assertBorderShape(borders);
       this.#configuration.customBorders = borders;
       this.#configuration.customBordersRevision++;
       this.#requestViewUpdate();
     }
 
-    setColormap(next: Colormap): void {
-      validateOption('colormap', next);
-      this.#configuration.customColormap = next;
-      this.#configuration.customColormapRevision++;
-      this.#requestViewUpdate();
-    }
-
-    setBaseColor(color: RGBA): void {
-      this.setOptions({ baseColor: color });
-    }
-
-    setChannel(
-      channel: Channel,
-      values: Float32Array,
-      domain?: ChannelRange | null,
-      range?: ChannelRange,
-    ): void {
+    setChannel(channel: Channel, values: Float32Array | null, domain?: Domain | null): void {
       const definition = channelAttribute(channel);
-      const normalizes = channelNormalizes(definition);
+      if (values === null) {
+        this.#transaction(() => {
+          delete this.#input.directChannels[channel];
+          this.setAttribute(definition.attribute, '');
+          if (definition.domainAttribute) this.removeAttribute(definition.domainAttribute);
+          this.#requestViewUpdate();
+        });
+        return;
+      }
+
       assertFloat32Array(values, `${channel} values`);
-      const checkedDomain =
-        !normalizes || domain === undefined
+      const baseDomain =
+        !definition.normalized || domain === undefined
           ? undefined
           : domain === null
             ? null
-            : checkedRange(domain, 'domain');
-      const checkedOutput =
-        definition.map !== 'height' || range === undefined
-          ? undefined
-          : checkedRange(range, 'range');
+            : checkedDomain(domain, `${channel} domain`);
       this.#validateKnownChannelLength(definition.scope, channel, values);
 
       this.#transaction(() => {
         this.setAttribute(definition.attribute, '');
         if (definition.domainAttribute) this.removeAttribute(definition.domainAttribute);
-        if (definition.rangeAttribute) this.removeAttribute(definition.rangeAttribute);
         this.#input.directChannels[channel] = {
           values,
-          ...(normalizes && checkedDomain !== undefined ? { baseDomain: checkedDomain } : {}),
-          ...(definition.map === 'height' && checkedOutput ? { outputRange: checkedOutput } : {}),
+          ...(baseDomain !== undefined ? { baseDomain } : {}),
         };
         this.#requestViewUpdate();
       });
     }
 
-    clearChannel(channel: Channel): void {
+    setChannelDomain(channel: Channel, domain: Domain | null): void {
       const definition = channelAttribute(channel);
-      this.#transaction(() => {
-        delete this.#input.directChannels[channel];
-        this.setAttribute(definition.attribute, '');
-        if (definition.domainAttribute) this.removeAttribute(definition.domainAttribute);
-        if (definition.rangeAttribute) this.removeAttribute(definition.rangeAttribute);
-        this.#requestViewUpdate();
-      });
+      if (!definition.domainAttribute) return;
+      if (domain === null) this.removeAttribute(definition.domainAttribute);
+      else
+        this.setAttribute(definition.domainAttribute, serializeDomain(domain, `${channel} domain`));
     }
 
-    setChannelRange(channel: Channel, range: ChannelRange | null): void {
-      const definition = channelAttribute(channel);
-      if (!channelNormalizes(definition) || !definition.domainAttribute) return;
-      if (range === null) this.removeAttribute(definition.domainAttribute);
-      else this.setAttribute(definition.domainAttribute, serializeRange(range, `${channel} range`));
+    getChannelDomain(channel: Channel): Domain | null {
+      channelAttribute(channel);
+      return this.#liveNetwork()?.getChannelDomain(channel) ?? null;
     }
 
-    setProjection(mode: ProjectionMode): boolean {
-      assertProjectionMode(mode);
-      this.setAttribute('projection', mode);
-      return this.#projections[mode];
+    setProjection(mode: Projection, fallback = false): boolean {
+      assertProjection(mode);
+      const supported = this.#projections[mode];
+      const target =
+        !supported && fallback
+          ? (PROJECTIONS.find((candidate) => this.#projections[candidate]) ?? mode)
+          : mode;
+      this.setAttribute('projection', target);
+      return supported;
     }
 
     fit(animate?: boolean): void;
@@ -439,27 +414,19 @@ export function createNetworkElementClass(
       return this.#liveNetwork()?.reveal(item, options) ?? false;
     }
 
-    select(kind: 'vertex' | 'edge', index: number): void {
+    neighborhood(item: Item): readonly Item[] {
+      return this.#liveNetwork()?.neighborhood(item) ?? NO_ITEMS;
+    }
+
+    select(item: Item | null): void {
       const run = this.#activation;
       const network = this.#liveNetwork();
       if (!network || !run.data || !run.view) return;
-      this.#validateSelection(run.data, kind, index);
-      network.select(kind, index);
-      const next = [kind, index] as const;
+      const next = item === null ? null : checkedItem(run.data, item);
+      network.select(next);
       const changed = !sameItem(this.#interaction.selected, next);
       run.input.selected = next;
       this.#interaction = { ...this.#interaction, selected: next };
-      this.#updateChrome(run, changed);
-    }
-
-    clearSelection(): void {
-      const run = this.#activation;
-      const network = this.#liveNetwork();
-      if (!network || !run.data || !run.view) return;
-      network.clearSelection();
-      const changed = this.#interaction.selected !== null;
-      run.input.selected = null;
-      this.#interaction = { ...this.#interaction, selected: null };
       this.#updateChrome(run, changed);
     }
 
@@ -471,20 +438,20 @@ export function createNetworkElementClass(
       this.#liveNetwork()?.rotateBy(dx, dy);
     }
 
-    getPose(): CameraPose | null {
+    getPose(): Pose | null {
       return this.#liveNetwork()?.getPose() ?? null;
     }
 
-    setPose(pose: Partial<CameraPose>, options?: PoseOptions): boolean {
-      return this.#liveNetwork()?.setPose(pose, options) ?? false;
+    setPose(pose: Partial<Pose>, animate?: boolean): boolean {
+      return this.#liveNetwork()?.setPose(pose, animate) ?? false;
     }
 
     zoomBy(factor: number): void {
       this.#liveNetwork()?.zoomBy(factor);
     }
 
-    fadeIn(ms?: number): void {
-      this.#liveNetwork()?.fadeIn(ms);
+    orbit(active: boolean): boolean {
+      return this.#liveNetwork()?.orbit(active) ?? false;
     }
 
     pause(): void {
@@ -573,7 +540,11 @@ export function createNetworkElementClass(
         run.own(() => lease.release());
         this.#assertCurrent(run);
 
-        const options: Options = { ...construction.options, msaa: construction.msaa };
+        const options: Options = {
+          ...construction.options,
+          colormap: construction.colormap.fn,
+          msaa: construction.msaa,
+        };
         const network = await dependencies.createNetwork(lease.device, this.#shell.canvas, options);
         run.own(() => network.destroy());
         this.#assertCurrent(run);
@@ -588,12 +559,12 @@ export function createNetworkElementClass(
 
         const next = await this.#prepareInitialBorders(run);
         this.#assertCurrent(run);
-        applyView(network, null, next, construction.options);
+        applyView(network, null, next, construction);
         run.view = next;
         this.#configuration.lastProjection = next.projection;
         this.#reportWarnings(run, next.warnings);
 
-        if (run.input.selected) network.select(...run.input.selected);
+        if (run.input.selected) network.select(run.input.selected);
         this.#interaction = {
           hover: null,
           selected: run.input.selected,
@@ -602,7 +573,6 @@ export function createNetworkElementClass(
         this.#updateChrome(run);
         network.fit();
         this.#shell.showLive(data);
-        network.fadeIn();
         this.#syncPause(run);
         run.succeed();
         this.#dispatchPlainEvent('load');
@@ -614,23 +584,23 @@ export function createNetworkElementClass(
 
     #subscribeNetworkEvents(run: Activation, network: Network): void {
       run.own(
-        network.on('hover', (kind, index) => {
+        network.on('hover', (item) => {
           if (!this.#isCurrent(run)) return;
-          const hover = itemTuple(kind, index);
+          const hover = copyItem(item);
           this.#interaction = { ...this.#interaction, hover };
           this.#updateChrome(run);
-          this.#dispatchDetailEvent('hover', { kind, index });
+          this.#dispatchDetailEvent('hover', hover);
         }),
       );
       run.own(
-        network.on('select', (kind, index) => {
+        network.on('select', (item) => {
           if (!this.#isCurrent(run)) return;
-          const selected = itemTuple(kind, index);
+          const selected = copyItem(item);
           const changed = !sameItem(this.#interaction.selected, selected);
           run.input.selected = selected;
           this.#interaction = { ...this.#interaction, selected };
           this.#updateChrome(run, changed);
-          this.#dispatchDetailEvent('select', { kind, index });
+          this.#dispatchDetailEvent('select', selected);
         }),
       );
       run.own(
@@ -638,18 +608,24 @@ export function createNetworkElementClass(
           if (!this.#isCurrent(run)) return;
           this.#interaction = { ...this.#interaction, atFitView };
           this.#updateChrome(run);
-          this.#dispatchDetailEvent('zoom', { atFitView });
+          this.#dispatchDetailEvent('zoom', atFitView);
         }),
       );
       run.own(
-        network.on('deviceLost', (reason, message) => {
-          this.#onDeviceLost(run, reason, message);
-        }),
-      );
-      run.own(
-        network.on('pipelineError', (pipeline, cause) => {
+        network.on('orbit', (active) => {
           if (!this.#isCurrent(run)) return;
-          this.#dispatchDetailEvent('pipelineError', { pipeline, cause });
+          this.#dispatchDetailEvent('orbit', active);
+        }),
+      );
+      run.own(
+        network.on('deviceLost', (loss) => {
+          this.#onDeviceLost(run, loss);
+        }),
+      );
+      run.own(
+        network.on('pipelineError', ({ family, cause }) => {
+          if (!this.#isCurrent(run)) return;
+          this.#dispatchDetailEvent('pipelineError', { family, cause });
         }),
       );
     }
@@ -920,16 +896,6 @@ export function createNetworkElementClass(
       }
     }
 
-    #validateSelection(data: NetworkData, kind: unknown, index: number): void {
-      if (kind !== 'vertex' && kind !== 'edge') throw new TypeError('selection kind is invalid');
-      if (typeof index !== 'number' || !Number.isFinite(index)) {
-        throw new RangeError('selection index must be finite');
-      }
-      if (!Number.isInteger(index)) throw new RangeError('selection index must be an integer');
-      const count = kind === 'vertex' ? data.topology.vertexCount : data.topology.edges.length / 2;
-      if (index < 0 || index >= count) throw new RangeError('selection index is out of range');
-    }
-
     #reportWarnings(run: Activation, warnings: readonly ViewWarning[]): void {
       for (const warning of warnings) {
         if (run.warnings.has(warning.key)) continue;
@@ -961,7 +927,7 @@ export function createNetworkElementClass(
       }
     }
 
-    #onDeviceLost(run: Activation, reason: string, message: string): void {
+    #onDeviceLost(run: Activation, { reason, message }: Events['deviceLost']): void {
       if (!this.#isCurrent(run) || !this.isConnected) return;
       const recovering = this.#recoveries < DEVICE_RECOVERIES;
       this.#dispatchDetailEvent('deviceLost', { reason, message, recovering });
@@ -1001,7 +967,7 @@ export function createNetworkElementClass(
       const CustomEventConstructor = this.ownerDocument.defaultView?.CustomEvent ?? CustomEvent;
       this.dispatchEvent(
         new CustomEventConstructor(type, {
-          detail: Object.freeze(detail),
+          detail: typeof detail === 'object' && detail !== null ? Object.freeze(detail) : detail,
           bubbles: true,
           composed: true,
         }),
@@ -1045,6 +1011,31 @@ function observeNear(host: HTMLElement, update: (near: boolean) => void): () => 
   return () => observer.disconnect();
 }
 
+/** Reject payloads that are not typed arrays before Network validates the layout. */
+function assertBorderShape(borders: Borders): void {
+  const tag = (value: unknown) => Object.prototype.toString.call(value);
+  if (tag(borders?.vertices) !== '[object Uint8Array]') {
+    throw new TypeError('borders.vertices must be a Uint8Array');
+  }
+  if (tag(borders.indices) !== '[object Uint32Array]') {
+    throw new TypeError('borders.indices must be a Uint32Array');
+  }
+}
+
+/** Validate an item against the loaded topology and return an owned copy. */
+function checkedItem(data: NetworkData, item: Item): Item {
+  const kind: unknown = item?.kind;
+  const index: unknown = item?.index;
+  if (kind !== 'vertex' && kind !== 'edge') throw new TypeError('selection kind is invalid');
+  if (typeof index !== 'number' || !Number.isFinite(index)) {
+    throw new RangeError('selection index must be finite');
+  }
+  if (!Number.isInteger(index)) throw new RangeError('selection index must be an integer');
+  const count = kind === 'vertex' ? data.topology.vertexCount : data.topology.edges.length / 2;
+  if (index < 0 || index >= count) throw new RangeError('selection index is out of range');
+  return { kind, index };
+}
+
 function borderKey(view: ViewState): string | object {
   if (view.borders.kind === 'custom') return `custom:${view.borders.revision}`;
   return `${view.borders.kind}:${view.options.borders}`;
@@ -1066,20 +1057,17 @@ function borderChanged(previous: ViewState, next: ViewState): boolean {
   );
 }
 
-function itemTuple(
-  kind: 'vertex' | 'edge' | null,
-  index: number | null,
-): readonly ['vertex' | 'edge', number] | null {
-  return kind === null || index === null ? null : [kind, index];
+function copyItem(item: Item | null): Item | null {
+  return item === null ? null : { kind: item.kind, index: item.index };
 }
 
-function sameItem(
-  previous: readonly ['vertex' | 'edge', number] | null,
-  next: readonly ['vertex' | 'edge', number] | null,
-): boolean {
+function sameItem(previous: Item | null, next: Item | null): boolean {
   return (
     previous === next ||
-    (previous !== null && next !== null && previous[0] === next[0] && previous[1] === next[1])
+    (previous !== null &&
+      next !== null &&
+      previous.kind === next.kind &&
+      previous.index === next.index)
   );
 }
 

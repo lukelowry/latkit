@@ -1,50 +1,43 @@
 import { ITEM_EDGE_VISIBLE, ITEM_VERTEX_VISIBLE, type Uniforms } from './webgpu/uniforms.js';
-import {
-  effectiveRange,
-  finiteExtent,
-  linearNorm,
-  validateChannelRange,
-  type ChannelRange,
-} from './range.js';
+import { type Domain, effectiveRange, finiteExtent, linearNorm, validateDomain } from './range.js';
 
-/** Canonical ordered channel metadata shared by Network consumers. */
-export const CHANNEL_DEFINITIONS = Object.freeze([
-  Object.freeze({ key: 'vertexColor', scope: 'vertex', map: 'colormap' }),
-  Object.freeze({ key: 'vertexHeight', scope: 'vertex', map: 'height' }),
-  Object.freeze({ key: 'vertexSize', scope: 'vertex', map: 'size' }),
-  Object.freeze({ key: 'edgeColor', scope: 'edge', map: 'colormap' }),
-  Object.freeze({ key: 'edgeDash', scope: 'edge', map: 'dash' }),
-  Object.freeze({ key: 'vertexVisible', scope: 'vertex', map: 'visible' }),
-  Object.freeze({ key: 'edgeVisible', scope: 'edge', map: 'visible' }),
-] as const);
+/** Static metadata for one channel: its storage scope, shader map, display label, and whether it takes a domain. */
+export interface ChannelDefinition {
+  /** Storage cardinality: one value per vertex or per edge. */
+  readonly scope: 'vertex' | 'edge';
+  /** Shader interpretation of the packed stream. */
+  readonly map: 'colormap' | 'height' | 'size' | 'dash' | 'visible';
+  /** Display label a picker or legend shows. */
+  readonly label: string;
+  /** Whether values pass through an input domain; `dash` and `visible` are raw. */
+  readonly normalized: boolean;
+}
 
-/** Static metadata for one supported channel. */
-export type ChannelDefinition = (typeof CHANNEL_DEFINITIONS)[number];
+const definitions = {
+  vertexColor: { scope: 'vertex', map: 'colormap', label: 'Vertex Color', normalized: true },
+  vertexHeight: { scope: 'vertex', map: 'height', label: 'Vertex Height', normalized: true },
+  vertexSize: { scope: 'vertex', map: 'size', label: 'Vertex Size', normalized: true },
+  edgeColor: { scope: 'edge', map: 'colormap', label: 'Edge Color', normalized: true },
+  edgeDash: { scope: 'edge', map: 'dash', label: 'Edge Dash', normalized: false },
+  vertexVisible: { scope: 'vertex', map: 'visible', label: 'Vertex Visible', normalized: false },
+  edgeVisible: { scope: 'edge', map: 'visible', label: 'Edge Visible', normalized: false },
+} as const satisfies Record<string, ChannelDefinition>;
+
+for (const definition of Object.values(definitions)) Object.freeze(definition);
+
+/** Every rendering channel in canonical order, with its static metadata. */
+export const CHANNELS: Readonly<typeof definitions> = Object.freeze(definitions);
 
 /** Named per-vertex or per-edge data stream that can affect rendering. */
-export type Channel = ChannelDefinition['key'];
+export type Channel = keyof typeof CHANNELS;
 
-/** Storage cardinality used when packing channel data. */
-export type ChannelScope = ChannelDefinition['scope'];
-
-/** Shader interpretation for a packed channel stream. */
-export type ChannelMap = ChannelDefinition['map'];
-
-/** Channel definitions whose values pass through an input domain and normalization scalars. */
-export type NormalizedChannelDefinition = Extract<
-  ChannelDefinition,
-  { readonly map: 'colormap' | 'height' | 'size' }
->;
+/** Channels in canonical packing order. */
+export const CHANNEL_KEYS = Object.freeze(Object.keys(CHANNELS) as Channel[]);
 
 /** Channels whose values pass through an input domain and normalization scalars. */
-export type NormalizedChannel = NormalizedChannelDefinition['key'];
-
-/** Whether a channel consumes an input domain; `dash` and `visible` are raw. */
-export function channelNormalizes(
-  definition: ChannelDefinition,
-): definition is NormalizedChannelDefinition {
-  return definition.map !== 'dash' && definition.map !== 'visible';
-}
+export type NormalizedChannel = {
+  [Key in Channel]: (typeof CHANNELS)[Key]['normalized'] extends true ? Key : never;
+}[Channel];
 
 /** Storage slot assigned to one packed channel in the shared channel buffer. */
 export interface ChannelSlot {
@@ -53,11 +46,6 @@ export interface ChannelSlot {
   /** Number of float values stored for this channel. */
   readonly count: number;
 }
-
-/** Fast lookup for validating and resolving channel metadata. */
-const CHANNEL_BY_KEY = new Map<Channel, ChannelDefinition>(
-  CHANNEL_DEFINITIONS.map((definition) => [definition.key, definition]),
-);
 
 /** Shader mode value for an inactive channel. */
 const MODE_OFF = 0;
@@ -68,7 +56,7 @@ const MODE_COLORMAP = 1;
 /**
  * Computes a dense storage layout for the currently bound channels.
  *
- * Channels are packed in stable {@link CHANNEL_DEFINITIONS} order so uniform offsets stay
+ * Channels are packed in stable {@link CHANNELS} order so uniform offsets stay
  * deterministic across relayouts.
  */
 export function packBound(
@@ -78,18 +66,22 @@ export function packBound(
 ): { slot: Map<Channel, ChannelSlot>; words: number } {
   const slot = new Map<Channel, ChannelSlot>();
   let words = 0;
-  for (const def of CHANNEL_DEFINITIONS) {
-    if (!bound.has(def.key)) continue;
-    const count = def.scope === 'vertex' ? vertexCount : edgeCount;
-    slot.set(def.key, { offset: words, count });
+  for (const key of CHANNEL_KEYS) {
+    if (!bound.has(key)) continue;
+    const count = CHANNELS[key].scope === 'vertex' ? vertexCount : edgeCount;
+    slot.set(key, { offset: words, count });
     words += count;
   }
   return { slot, words };
 }
 
-/** Returns static metadata for a channel or throws on impossible input. */
-function channelDef(channel: Channel): ChannelDefinition {
-  const def = CHANNEL_BY_KEY.get(channel);
+/**
+ * The static metadata for a channel.
+ *
+ * @throws Error when `channel` names no channel.
+ */
+export function channelDefinition(channel: Channel): ChannelDefinition {
+  const def = Object.hasOwn(CHANNELS, channel) ? CHANNELS[channel] : undefined;
   if (!def) throw new Error(`unknown network channel ${String(channel)}`);
   return def;
 }
@@ -107,7 +99,7 @@ interface ChannelRenderer {
   writeChannel(channel: Channel, values: Float32Array): void;
 }
 
-/** Topology state required to validate channel cardinality. */
+/** Topology and display state the channel controller reads. */
 interface ChannelDeps {
   /** True once a topology has been loaded and channels can be sized. */
   loaded(): boolean;
@@ -117,25 +109,26 @@ interface ChannelDeps {
   edgeCount(): number;
   /** Current screen-space dash period selected by display options. */
   dashPeriodPx(): number;
+  /** Current output range for the height channel selected by display options. */
+  heightRange(): Domain;
 }
 
 /** Runtime channel controller returned to the network API. */
 export interface Channels {
   /** Bind or replace channel values. The array length must match the current topology. */
-  set(
-    channel: Channel,
-    values: Float32Array,
-    domain?: ChannelRange | null,
-    range?: ChannelRange,
-  ): void;
+  set(channel: Channel, values: Float32Array, domain?: Domain | null): void;
   /** Remove a channel and release its storage slot on the next relayout. */
   clear(channel: Channel): void;
   /** Clear all channels after topology replacement. */
   reset(): void;
   /** Override the input domain used by an active normalized channel. */
-  setRange(channel: Channel, range: ChannelRange | null): void;
+  setDomain(channel: Channel, domain: Domain | null): void;
+  /** The input domain a bound normalized channel is using, or null. */
+  domain(channel: Channel): Domain | null;
   /** Re-read the display dash period; a no-op while `edgeDash` is unbound. */
   refreshDashPeriod(): void;
+  /** Re-read the display height range; a no-op while `vertexHeight` is unbound. */
+  refreshHeightRange(): void;
   /** Return the last array bound to a channel, or null when unbound. */
   values(channel: Channel): Float32Array | null;
 }
@@ -150,13 +143,12 @@ export function createChannels(
   deps: ChannelDeps,
 ): Channels {
   const current = new Map<Channel, Float32Array>();
-  const data = new Map<Channel, ChannelRange>();
-  const domainOverride = new Map<Channel, ChannelRange>();
-  const output = new Map<Channel, ChannelRange>();
+  const data = new Map<Channel, Domain>();
+  const domainOverride = new Map<Channel, Domain>();
   const bound = new Set<Channel>();
 
   function countFor(channel: Channel): number {
-    return channelDef(channel).scope === 'vertex' ? deps.vertexCount() : deps.edgeCount();
+    return channelDefinition(channel).scope === 'vertex' ? deps.vertexCount() : deps.edgeCount();
   }
 
   function validateLength(channel: Channel, values: Float32Array): void {
@@ -169,17 +161,11 @@ export function createChannels(
     }
   }
 
-  function set(
-    channel: Channel,
-    values: Float32Array,
-    domain?: ChannelRange | null,
-    range?: ChannelRange,
-  ): void {
+  function set(channel: Channel, values: Float32Array, domain?: Domain | null): void {
     validateLength(channel, values);
-    const def = channelDef(channel);
+    const def = channelDefinition(channel);
     const isNew = !bound.has(channel);
-    const nextOutput = def.map === 'height' ? checkedRange(range ?? [0, 1], 'height range') : null;
-    const nextDomain = channelNormalizes(def) ? resolveDomain(def, values, domain) : null;
+    const nextDomain = def.normalized ? resolveDomain(channel, def, values, domain) : null;
     // The GPU upload copies synchronously, so the caller's array feeds it
     // directly; the CPU snapshot is refreshed only once the upload succeeded.
     if (isNew) {
@@ -198,7 +184,6 @@ export function createChannels(
       current.get(channel)!.set(values);
     }
     if (nextDomain) data.set(channel, nextDomain);
-    if (nextOutput) output.set(channel, nextOutput);
     setMode(channel, true);
     writeScalars(channel);
   }
@@ -216,7 +201,6 @@ export function createChannels(
     current.delete(channel);
     data.delete(channel);
     domainOverride.delete(channel);
-    output.delete(channel);
     bound.delete(channel);
     writeOffset(channel, 0);
     writeScalars(channel);
@@ -226,20 +210,19 @@ export function createChannels(
     current.clear();
     data.clear();
     domainOverride.clear();
-    output.clear();
     bound.clear();
-    for (const def of CHANNEL_DEFINITIONS) {
-      setMode(def.key, false);
-      writeOffset(def.key, 0);
-      writeScalars(def.key);
+    for (const key of CHANNEL_KEYS) {
+      setMode(key, false);
+      writeOffset(key, 0);
+      writeScalars(key);
     }
   }
 
-  function setRange(channel: Channel, range: ChannelRange | null): void {
-    if (!channelNormalizes(channelDef(channel))) return;
+  function setDomain(channel: Channel, domain: Domain | null): void {
+    if (!channelDefinition(channel).normalized) return;
     const previous = domainOverride.get(channel) ?? null;
-    if (range) {
-      const checked = checkedRange(range, `${channel} domain`);
+    if (domain) {
+      const checked = checkedDomain(domain, `${channel} domain`);
       if (sameRange(previous, checked)) return;
       domainOverride.set(channel, checked);
     } else {
@@ -247,6 +230,11 @@ export function createChannels(
       domainOverride.delete(channel);
     }
     writeScalars(channel);
+  }
+
+  function domain(channel: Channel): Domain | null {
+    if (!bound.has(channel) || !channelDefinition(channel).normalized) return null;
+    return effectiveRange(data.get(channel), domainOverride.get(channel));
   }
 
   function writeOffsets(
@@ -322,10 +310,10 @@ export function createChannels(
   }
 
   function writeScalars(channel: Channel): void {
-    const def = channelDef(channel);
-    if (!channelNormalizes(def)) return;
+    const def = channelDefinition(channel);
+    if (!def.normalized) return;
     if (!bound.has(channel)) {
-      writeNeutralScalars(def.key);
+      writeNeutralScalars(channel as NormalizedChannel);
       return;
     }
     const [lo, hi] = effectiveRange(data.get(channel), domainOverride.get(channel));
@@ -343,7 +331,7 @@ export function createChannels(
       }
       case 'height': {
         const [min, scale] = linearNorm(lo, hi);
-        const [outMin, outMax] = output.get(channel) ?? [0, 1];
+        const [outMin, outMax] = deps.heightRange();
         uniforms.channel.heightCenter = min;
         uniforms.channel.heightScale = scale;
         uniforms.channel.heightOutMin = outMin;
@@ -357,8 +345,8 @@ export function createChannels(
         break;
       }
       default:
-        /* v8 ignore next -- compile-time exhaustive channel map guard. */
-        def satisfies never;
+        /* v8 ignore next -- raw maps returned above. */
+        break;
     }
   }
 
@@ -392,8 +380,12 @@ export function createChannels(
     set,
     clear,
     reset,
-    setRange,
+    setDomain,
+    domain,
     refreshDashPeriod: () => setMode('edgeDash', bound.has('edgeDash')),
+    refreshHeightRange: () => {
+      if (bound.has('vertexHeight')) writeScalars('vertexHeight');
+    },
     values: (channel) => current.get(channel) ?? null,
   };
 }
@@ -404,28 +396,24 @@ function toggleBit(value: number, bit: number, on: boolean): number {
 }
 
 /** Tests range equality without allocating. */
-function sameRange(a: ChannelRange | null, b: ChannelRange): boolean {
+function sameRange(a: Domain | null, b: Domain): boolean {
   return a !== null && a[0] === b[0] && a[1] === b[1];
 }
 
 /** Resolves the channel input domain from an explicit range or value scans. */
 function resolveDomain(
+  channel: Channel,
   def: ChannelDefinition,
   values: Float32Array,
-  domain?: ChannelRange | null,
-): ChannelRange {
-  if (domain) return checkedRange(domain, `${def.key} domain`);
+  domain?: Domain | null,
+): Domain {
+  if (domain) return checkedDomain(domain, `${channel} domain`);
   if (def.map === 'height') return finiteExtent(values) ?? [0, 1];
   return [0, 1];
 }
 
-/** Copies a range tuple so callers cannot mutate stored normalization state. */
-function copyRange(range: ChannelRange): ChannelRange {
-  return [range[0], range[1]];
-}
-
-/** Validate and own a channel range before retaining it. */
-function checkedRange(range: ChannelRange, name: string): ChannelRange {
-  validateChannelRange(range, `network ${name}`);
-  return copyRange(range);
+/** Validate and own a domain before retaining it. */
+function checkedDomain(domain: Domain, name: string): Domain {
+  validateDomain(domain, `network ${name}`);
+  return [domain[0], domain[1]];
 }

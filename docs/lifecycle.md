@@ -43,16 +43,16 @@ Pass the same device to `createMonitor(device, monitorCanvas)` when both views s
 Browsers can lose a WebGPU device after creation. Both renderers surface this with a `deviceLost` event.
 
 ```ts
-network.on('deviceLost', (reason, message) => {
+network.on('deviceLost', ({ reason, message }) => {
   console.error(reason, message);
 });
 
-network.on('pipelineError', (family, cause) => {
+network.on('pipelineError', ({ family, cause }) => {
   console.error(`Unable to build ${family} shaders`, cause);
 });
 
-monitor.on('deviceLost', (info) => {
-  console.error(info.reason, info.message);
+monitor.on('deviceLost', ({ reason, message }) => {
+  console.error(reason, message);
 });
 ```
 

@@ -40,7 +40,7 @@ export type PlaneView = 'flat' | 'tilt';
 /**
  * A point on the camera's 5-D state manifold. Plane: [cx, cy, scale, pitch,
  * bearing]; globe: [lon, lat, dist, pitch, bearing]. Slot semantics are
- * projection-private; construct via `Projection.fit()` or `clone()`.
+ * projection-private; construct via `CameraProjection.fit()` or `clone()`.
  */
 export type CameraState = Float64Array;
 
@@ -58,7 +58,7 @@ export type Tangent = Float64Array;
  * lon/lat degrees (globe). Zoom is deliberately absent: its units are
  * projection-specific and it stays behind `Network.zoomBy`.
  */
-export interface CameraPose {
+export interface Pose {
   /** World x coordinate or longitude at the view anchor. */
   readonly centerX: number;
   /** World y coordinate or latitude at the view anchor. */
@@ -80,7 +80,7 @@ export interface PanSession {
  * state construction, screen-world mapping, interpolation/integration
  * primitives, and GPU uniform packing. Animation state lives outside.
  */
-export interface Projection {
+export interface CameraProjection {
   /**
    * State/tangent dimensionality. Slots 0/1 are the surface orientation,
    * ZOOM_SLOT the zoom scalar, 3+ projection extras.
@@ -133,13 +133,13 @@ export interface Projection {
   rotate(state: CameraState, dxPx: number, dyPx: number, vp: Viewport): void;
 
   /** Read the public pose from `state`. */
-  pose(state: CameraState): CameraPose;
+  pose(state: CameraState): Pose;
 
   /**
    * Merge a partial public pose into `state`, owning wrapping and clamping
    * for the active view (flat clamps pitch/bearing to rest).
    */
-  applyPose(state: CameraState, pose: Partial<CameraPose>): void;
+  applyPose(state: CameraState, pose: Partial<Pose>): void;
 
   /**
    * Screen pixels per graph-coordinate y unit at the view anchor.
@@ -173,7 +173,7 @@ export function rotateViewSlots(
 }
 
 /** Read the public pose out of the shared state slot convention. */
-export function statePose(s: CameraState): CameraPose {
+export function statePose(s: CameraState): Pose {
   return { centerX: s[0]!, centerY: s[1]!, pitch: s[3]!, bearing: s[4]! };
 }
 

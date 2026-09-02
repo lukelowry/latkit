@@ -2,16 +2,12 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import { parseNetwork, register } from '../src/index.js';
-import type { Network } from '@latkit/network';
+import type { Item, Network } from '@latkit/network';
 import type {
   NetworkData,
-  NetworkDeviceLostEventDetail,
   NetworkElement,
   NetworkElementEventMap,
-  NetworkItemEventDetail,
   NetworkJSON,
-  NetworkPipelineErrorEventDetail,
-  NetworkZoomEventDetail,
 } from '../src/index.js';
 
 type SharedNetworkMember = Extract<keyof NetworkElement, keyof Network>;
@@ -61,79 +57,78 @@ describe('embed package entrypoint', () => {
       readonly number[] | { readonly base64: string }
     >();
     expectTypeOf<NetworkElement['ready']>().toEqualTypeOf<Promise<void>>();
+    expectTypeOf<NetworkElement['data']>().toEqualTypeOf<NetworkData | null>();
   });
 
-  it('matches every intentionally exposed Network member exactly', () => {
+  it('mirrors every intentionally exposed Network member exactly', () => {
     expectTypeOf<SharedNetworkMember>().toEqualTypeOf<
       | 'projections'
       | 'geographic'
+      | 'orbiting'
       | 'setOptions'
       | 'setBorders'
-      | 'setColormap'
-      | 'setBaseColor'
       | 'setChannel'
-      | 'clearChannel'
-      | 'setChannelRange'
+      | 'setChannelDomain'
+      | 'getChannelDomain'
       | 'setProjection'
       | 'fit'
       | 'reveal'
+      | 'neighborhood'
       | 'select'
-      | 'clearSelection'
       | 'panBy'
       | 'rotateBy'
       | 'getPose'
       | 'setPose'
       | 'zoomBy'
-      | 'fadeIn'
+      | 'orbit'
       | 'pause'
       | 'resume'
     >();
 
     expectTypeOf<NetworkElement['projections']>().toEqualTypeOf<Network['projections']>();
+    expectTypeOf<NetworkElement['geographic']>().toEqualTypeOf<Network['geographic']>();
+    expectTypeOf<NetworkElement['orbiting']>().toEqualTypeOf<Network['orbiting']>();
     expectTypeOf<NetworkElement['setOptions']>().toEqualTypeOf<Network['setOptions']>();
     expectTypeOf<NetworkElement['setBorders']>().toEqualTypeOf<Network['setBorders']>();
-    expectTypeOf<NetworkElement['setColormap']>().toEqualTypeOf<Network['setColormap']>();
-    expectTypeOf<NetworkElement['setBaseColor']>().toEqualTypeOf<Network['setBaseColor']>();
     expectTypeOf<NetworkElement['setChannel']>().toEqualTypeOf<Network['setChannel']>();
-    expectTypeOf<NetworkElement['clearChannel']>().toEqualTypeOf<Network['clearChannel']>();
-    expectTypeOf<NetworkElement['setChannelRange']>().toEqualTypeOf<Network['setChannelRange']>();
+    expectTypeOf<NetworkElement['setChannelDomain']>().toEqualTypeOf<Network['setChannelDomain']>();
+    expectTypeOf<NetworkElement['getChannelDomain']>().toEqualTypeOf<Network['getChannelDomain']>();
     expectTypeOf<NetworkElement['setProjection']>().toEqualTypeOf<Network['setProjection']>();
     expectTypeOf<NetworkElement['fit']>().toEqualTypeOf<Network['fit']>();
     expectTypeOf<NetworkElement['reveal']>().toEqualTypeOf<Network['reveal']>();
+    expectTypeOf<NetworkElement['neighborhood']>().toEqualTypeOf<Network['neighborhood']>();
     expectTypeOf<NetworkElement['select']>().toEqualTypeOf<Network['select']>();
-    expectTypeOf<NetworkElement['clearSelection']>().toEqualTypeOf<Network['clearSelection']>();
     expectTypeOf<NetworkElement['panBy']>().toEqualTypeOf<Network['panBy']>();
     expectTypeOf<NetworkElement['rotateBy']>().toEqualTypeOf<Network['rotateBy']>();
     expectTypeOf<NetworkElement['getPose']>().toEqualTypeOf<Network['getPose']>();
     expectTypeOf<NetworkElement['setPose']>().toEqualTypeOf<Network['setPose']>();
     expectTypeOf<NetworkElement['zoomBy']>().toEqualTypeOf<Network['zoomBy']>();
-    expectTypeOf<NetworkElement['fadeIn']>().toEqualTypeOf<Network['fadeIn']>();
+    expectTypeOf<NetworkElement['orbit']>().toEqualTypeOf<Network['orbit']>();
     expectTypeOf<NetworkElement['pause']>().toEqualTypeOf<Network['pause']>();
     expectTypeOf<NetworkElement['resume']>().toEqualTypeOf<Network['resume']>();
   });
 
   it('publishes the exact typed DOM event map', () => {
     expectTypeOf<keyof NetworkElementEventMap>().toEqualTypeOf<
-      'load' | 'error' | 'hover' | 'select' | 'zoom' | 'deviceLost' | 'pipelineError'
+      'load' | 'error' | 'hover' | 'select' | 'zoom' | 'orbit' | 'deviceLost' | 'pipelineError'
     >();
     expectTypeOf<NetworkElementEventMap['load']>().toEqualTypeOf<Event>();
     expectTypeOf<NetworkElementEventMap['error']>().toEqualTypeOf<
       CustomEvent<{ readonly error: unknown }>
     >();
-    expectTypeOf<NetworkElementEventMap['hover']>().toEqualTypeOf<
-      CustomEvent<NetworkItemEventDetail>
-    >();
-    expectTypeOf<NetworkElementEventMap['select']>().toEqualTypeOf<
-      CustomEvent<NetworkItemEventDetail>
-    >();
-    expectTypeOf<NetworkElementEventMap['zoom']>().toEqualTypeOf<
-      CustomEvent<NetworkZoomEventDetail>
-    >();
+    expectTypeOf<NetworkElementEventMap['hover']>().toEqualTypeOf<CustomEvent<Item | null>>();
+    expectTypeOf<NetworkElementEventMap['select']>().toEqualTypeOf<CustomEvent<Item | null>>();
+    expectTypeOf<NetworkElementEventMap['zoom']>().toEqualTypeOf<CustomEvent<boolean>>();
+    expectTypeOf<NetworkElementEventMap['orbit']>().toEqualTypeOf<CustomEvent<boolean>>();
     expectTypeOf<NetworkElementEventMap['deviceLost']>().toEqualTypeOf<
-      CustomEvent<NetworkDeviceLostEventDetail>
+      CustomEvent<{
+        readonly reason: string;
+        readonly message: string;
+        readonly recovering: boolean;
+      }>
     >();
     expectTypeOf<NetworkElementEventMap['pipelineError']>().toEqualTypeOf<
-      CustomEvent<NetworkPipelineErrorEventDetail>
+      CustomEvent<{ readonly family: 'plane' | 'globe'; readonly cause: unknown }>
     >();
   });
 });

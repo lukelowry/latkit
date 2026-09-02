@@ -1,6 +1,6 @@
 import { Camera } from './camera.js';
-import { PROJECTIONS, type ProjectionMode } from '../projections.js';
-import type { CameraPose, PlaneView, Projection, Viewport } from './projection.js';
+import { PROJECTION_DEFS, type Projection } from '../projections.js';
+import type { Pose, PlaneView, CameraProjection, Viewport } from './projection.js';
 import type { Bounds } from '../topology/types.js';
 import type { CameraRegion } from '../webgpu/uniforms.js';
 
@@ -10,7 +10,7 @@ type Pending =
   | { readonly kind: 'reveal'; readonly bounds: Bounds; readonly animate: boolean }
   | {
       readonly kind: 'place';
-      readonly pose: CameraPose;
+      readonly pose: Pose;
       readonly px: number;
       readonly fitIntent: boolean;
     };
@@ -29,9 +29,9 @@ function usable(vp: Viewport): boolean {
 export class CameraRig {
   /** Camera bound to the active projection; identity changes on family switches. */
   camera: Camera;
-  /** Projection implementation currently used for camera math and uniform packing. */
-  private projection: Projection;
-  private modeValue: ProjectionMode = 'flat';
+  /** CameraProjection implementation currently used for camera math and uniform packing. */
+  private projection: CameraProjection;
+  private modeValue: Projection = 'flat';
   /** Topology bounds used for canonical fits; null before a scene loads. */
   private bounds: Bounds | null = null;
   /** Canonical fit/init required before the next rendered frame. */
@@ -45,12 +45,12 @@ export class CameraRig {
 
   /** Creates a rig with the flat projection as the initial mode. */
   constructor(private readonly region: CameraRegion) {
-    this.projection = PROJECTIONS.flat.create();
+    this.projection = PROJECTION_DEFS.flat.create();
     this.camera = new Camera(this.projection, region);
   }
 
   /** Public projection mode corresponding to the active projection implementation. */
-  get mode(): ProjectionMode {
+  get mode(): Projection {
     return this.modeValue;
   }
 
@@ -136,9 +136,9 @@ export class CameraRig {
    * settled pose and anchor scale carry into the new camera. A view is only
    * surrendered to the canonical fit while fit intent is active.
    */
-  switchTo(mode: ProjectionMode, vp: Viewport): void {
+  switchTo(mode: Projection, vp: Viewport): void {
     if (mode === this.modeValue) return;
-    const sameFamily = PROJECTIONS[this.modeValue].family === PROJECTIONS[mode].family;
+    const sameFamily = PROJECTION_DEFS[this.modeValue].family === PROJECTION_DEFS[mode].family;
     if (sameFamily) {
       this.modeValue = mode;
       this.camera.setView(mode as PlaneView);
@@ -153,7 +153,7 @@ export class CameraRig {
     const carried = ref !== null && !this.camera.fitIntent ? this.camera.carry(ref) : null;
     const fitIntent = this.camera.fitIntent;
     this.modeValue = mode;
-    this.projection = PROJECTIONS[mode].create();
+    this.projection = PROJECTION_DEFS[mode].create();
     this.camera = new Camera(this.projection, this.region);
     if (carried) {
       this.needsFit = false;

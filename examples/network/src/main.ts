@@ -1,11 +1,12 @@
-import {
-  COLORMAP_LABEL,
-  colormap,
-  colormapGradientCss,
-  type ColormapName,
-} from '@latkit/colormaps';
+import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
 import { requestDevice } from '@latkit/gpu';
-import { createNetwork, type Network, type ProjectionMode } from '@latkit/network';
+import {
+  createNetwork,
+  PROJECTIONS,
+  type Item,
+  type Network,
+  type Projection,
+} from '@latkit/network';
 import { TOPOLOGIES, type GeneratedTopology, type TopologyOption } from './topologies.js';
 import './style.css';
 
@@ -62,11 +63,8 @@ async function main(): Promise<void> {
   function applyChannels(): void {
     net.setChannel('vertexColor', current.color, [0, 1]);
 
-    if (current.size) net.setChannel('vertexSize', current.size, [0, 1]);
-    else net.clearChannel('vertexSize');
-
-    if (heightOn) net.setChannel('vertexHeight', current.color, [0, 1], [0, 1]);
-    else net.clearChannel('vertexHeight');
+    net.setChannel('vertexSize', current.size ?? null, [0, 1]);
+    net.setChannel('vertexHeight', heightOn ? current.color : null, [0, 1]);
   }
 
   function applyTopology(opt: TopologyOption): void {
@@ -79,10 +77,9 @@ async function main(): Promise<void> {
 
   net.load(current.topology);
   applyChannels();
-  net.fadeIn();
 
   const projections = wireProjections(net);
-  const cameraDemo = wireCameraDemo(net, projections);
+  wireOrbit(net);
   wireTopologies(
     () => currentId,
     (opt) => {
@@ -101,7 +98,6 @@ async function main(): Promise<void> {
 
   window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
-    cameraDemo.destroy();
     net.destroy();
     device.destroy();
   });
@@ -126,15 +122,12 @@ function wireTopologies(currentId: () => string, apply: (opt: TopologyOption) =>
 }
 
 interface ProjectionControls {
-  select(mode: ProjectionMode): boolean;
-  mode(): ProjectionMode;
   refresh(): void;
 }
 
 function wireProjections(net: Network): ProjectionControls {
-  const modes: readonly ProjectionMode[] = ['flat', 'tilt', 'globe'];
   const row = document.getElementById('projections') as HTMLElement;
-  const buttons = new Map<ProjectionMode, HTMLButtonElement>();
+  const buttons = new Map<Projection, HTMLButtonElement>();
 
   /** Sync pressed and disabled states with the network's live state. */
   function refresh(): void {
@@ -144,91 +137,31 @@ function wireProjections(net: Network): ProjectionControls {
     }
   }
 
-  function select(mode: ProjectionMode): boolean {
-    if (!net.setProjection(mode)) return false;
-    refresh();
-    return true;
-  }
-
-  for (const mode of modes) {
+  for (const mode of PROJECTIONS) {
     const btn = createButton(mode, mode === net.projection);
     btn.disabled = !net.projections[mode];
     btn.addEventListener('click', () => {
-      select(mode);
+      if (net.setProjection(mode)) refresh();
     });
     buttons.set(mode, btn);
     row.appendChild(btn);
   }
+  // Orbit promotes flat to tilt; mirror that in the buttons.
+  net.on('orbit', refresh);
 
-  return { select, mode: () => net.projection, refresh };
+  return { refresh };
 }
 
-/** Longitude drift for the globe spin, in degrees per millisecond (8 deg/s,
- *  the same rate the tilt bearing orbit resolves to). */
-const SPIN_DEG_PER_MS = 0.008;
-
-function wireCameraDemo(net: Network, { select, mode }: ProjectionControls): { destroy(): void } {
+function wireOrbit(net: Network): void {
   const row = document.getElementById('camera') as HTMLElement;
-  const projections = document.getElementById('projections') as HTMLElement;
-  const topologies = document.getElementById('topologies') as HTMLElement;
   const btn = createButton('auto rotate', false);
-  let frameId: number | null = null;
-  let previousTime = 0;
-
-  function stop(): void {
-    if (frameId === null) return;
-    cancelAnimationFrame(frameId);
-    frameId = null;
-    previousTime = 0;
-    setPressed(btn, false);
-  }
-
-  function frame(time: number): void {
-    if (frameId === null) return;
-    if (previousTime !== 0) {
-      const elapsed = Math.min(time - previousTime, 50);
-      if (mode() === 'globe') {
-        // Spin the globe about its axis: drift the pose longitude and let the
-        // camera chase ease it, holding latitude, pitch, and bearing as-is.
-        const pose = net.getPose();
-        if (pose) {
-          net.setPose({ centerX: pose.centerX + elapsed * SPIN_DEG_PER_MS }, { animate: true });
-        }
-      } else {
-        net.rotateBy(elapsed * 0.02, 0);
-      }
-    }
-    previousTime = time;
-    frameId = requestAnimationFrame(frame);
-  }
-
+  // Gestures on the canvas stop the orbit inside the renderer; the event keeps the button honest.
+  net.on('orbit', (active) => setPressed(btn, active));
   btn.addEventListener('click', () => {
-    if (frameId !== null) {
-      stop();
-      return;
-    }
-    if (mode() !== 'globe' && !select('tilt')) return;
-    setPressed(btn, true);
-    frameId = requestAnimationFrame(frame);
+    net.orbit(!net.orbiting);
   });
-  stage.addEventListener('pointerdown', stop);
-  stage.addEventListener('wheel', stop, { passive: true });
-  stage.addEventListener('keydown', stop);
-  projections.addEventListener('click', stop);
-  // A topology change can reset the projection, leaving the spin a no-op.
-  topologies.addEventListener('click', stop);
+  stage.addEventListener('keydown', () => net.orbit(false));
   row.appendChild(btn);
-
-  return {
-    destroy() {
-      stop();
-      stage.removeEventListener('pointerdown', stop);
-      stage.removeEventListener('wheel', stop);
-      stage.removeEventListener('keydown', stop);
-      projections.removeEventListener('click', stop);
-      topologies.removeEventListener('click', stop);
-    },
-  };
 }
 
 function wireToggles(net: Network, setHeight: (on: boolean) => void): void {
@@ -260,11 +193,11 @@ function wireColormaps(net: Network): void {
   for (let i = 0; i < EXAMPLE_COLORMAPS.length; i++) {
     const name = EXAMPLE_COLORMAPS[i]!;
     const fn = colormap(name);
-    const btn = createButton(COLORMAP_LABEL[name], i === 0);
+    const btn = createButton(COLORMAPS[name].label, i === 0);
     btn.classList.add('swatch');
-    btn.style.setProperty('--swatch', colormapGradientCss(name, 'to right'));
+    btn.style.setProperty('--swatch', gradient(name, 'to right'));
     btn.addEventListener('click', () => {
-      net.setColormap(fn);
+      net.setOptions({ colormap: fn });
       setActive(row, btn);
     });
     row.appendChild(btn);
@@ -304,7 +237,7 @@ function wireKeyboard(net: Network): void {
         net.zoomBy(1 / 1.2);
         break;
       case 'Escape':
-        net.clearSelection();
+        net.select(null);
         readoutEl.querySelector('.select')!.textContent = '-';
         break;
       default:
@@ -315,14 +248,14 @@ function wireKeyboard(net: Network): void {
 }
 
 function wirePicking(net: Network): void {
-  const describe = (kind: 'vertex' | 'edge' | null, index: number | null): string =>
-    kind === null ? '-' : `${kind} #${index}`;
+  const describe = (item: Item | null): string =>
+    item === null ? '-' : `${item.kind} #${item.index}`;
 
-  net.on('hover', (kind, index) => {
-    readoutEl.querySelector('.hover')!.textContent = describe(kind, index);
+  net.on('hover', (item) => {
+    readoutEl.querySelector('.hover')!.textContent = describe(item);
   });
-  net.on('select', (kind, index) => {
-    readoutEl.querySelector('.select')!.textContent = describe(kind, index);
+  net.on('select', (item) => {
+    readoutEl.querySelector('.select')!.textContent = describe(item);
   });
 }
 

@@ -2,8 +2,8 @@ import { bench, describe } from 'vitest';
 
 import { createGlobeProjection } from '../src/camera/globe.js';
 import { createPlaneProjection } from '../src/camera/plane.js';
-import type { Projection, Viewport } from '../src/camera/projection.js';
-import type { ProjectionMode } from '../src/projections.js';
+import type { CameraProjection, Viewport } from '../src/camera/projection.js';
+import type { Projection } from '../src/projections.js';
 import { createUniforms } from '../src/webgpu/uniforms.js';
 import { Picker } from '../src/pick/picker.js';
 import { prepareScene, type PreparedScene } from '../src/scene.js';
@@ -61,13 +61,13 @@ interface Rig {
 }
 
 function makeRig(
-  mode: ProjectionMode,
+  mode: Projection,
   topology: Topology,
   scene: PreparedScene,
   mutate?: (state: Float64Array) => void,
 ): Rig {
   const uniforms = createUniforms();
-  const proj: Projection =
+  const proj: CameraProjection =
     mode === 'flat'
       ? createPlaneProjection('flat')
       : mode === 'tilt'

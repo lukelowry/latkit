@@ -9,18 +9,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('packaged Natural Earth border loader', () => {
-  it('fetches both fixed assets concurrently, decodes little-endian indices, and caches success', async () => {
+describe('packaged border loader', () => {
+  it('fetches both assets concurrently, decodes little-endian indices, and caches success', async () => {
     const verticesGate = deferred<Response>();
     const indicesGate = deferred<Response>();
     const fetcher = vi.fn((input: URL | RequestInfo) =>
       requestUrl(input).endsWith('.vertices.bin') ? verticesGate.promise : indicesGate.promise,
     );
     vi.stubGlobal('fetch', fetcher);
-    const { loadNaturalEarthBorders } = await import('../src/borders.js');
+    const { loadBorders } = await import('../src/borders/load.js');
 
-    const first = loadNaturalEarthBorders();
-    const concurrent = loadNaturalEarthBorders();
+    const first = loadBorders();
+    const concurrent = loadBorders();
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(fetcher.mock.calls.map(([url]) => requestUrl(url))).toEqual([
       expect.stringMatching(/\/assets\/ne-50m-line-borders\.vertices\.bin$/),
@@ -40,7 +40,7 @@ describe('packaged Natural Earth border loader', () => {
     expect(decoded.vertices[0]).toBe(17);
     expect([...decoded.indices]).toEqual([0x01020304, 0xffffffff]);
 
-    const cached = await loadNaturalEarthBorders();
+    const cached = await loadBorders();
     expect(cached).toBe(decoded);
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
@@ -52,11 +52,11 @@ describe('packaged Natural Earth border loader', () => {
       requestUrl(input).endsWith('.vertices.bin') ? verticesGate.promise : indicesGate.promise,
     );
     vi.stubGlobal('fetch', fetcher);
-    const { loadNaturalEarthBorders } = await import('../src/borders.js');
+    const { loadBorders } = await import('../src/borders/load.js');
     const controller = new AbortController();
 
-    const cancelled = loadNaturalEarthBorders(controller.signal);
-    const survivor = loadNaturalEarthBorders();
+    const cancelled = loadBorders(controller.signal);
+    const survivor = loadBorders();
     const reason = new DOMException('superseded', 'AbortError');
     controller.abort(reason);
 
@@ -72,13 +72,11 @@ describe('packaged Natural Earth border loader', () => {
   it('rejects an already-aborted participant without starting a request', async () => {
     const fetcher = vi.fn();
     vi.stubGlobal('fetch', fetcher);
-    const { loadNaturalEarthBorders } = await import('../src/borders.js');
+    const { loadBorders } = await import('../src/borders/load.js');
     const controller = new AbortController();
     controller.abort();
 
-    await expect(loadNaturalEarthBorders(controller.signal)).rejects.toMatchObject({
-      name: 'AbortError',
-    });
+    await expect(loadBorders(controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -96,10 +94,10 @@ describe('packaged Natural Earth border loader', () => {
       );
     });
     vi.stubGlobal('fetch', fetcher);
-    const { loadNaturalEarthBorders } = await import('../src/borders.js');
+    const { loadBorders } = await import('../src/borders/load.js');
 
-    await expect(loadNaturalEarthBorders()).rejects.toThrow('returned HTTP 503');
-    const decoded = await loadNaturalEarthBorders();
+    await expect(loadBorders()).rejects.toThrow('returned HTTP 503');
+    const decoded = await loadBorders();
     expect(decoded.vertices).toBeInstanceOf(Uint8Array);
     expect(decoded.indices).toBeInstanceOf(Uint32Array);
     expect(fetcher).toHaveBeenCalledTimes(4);
@@ -115,10 +113,10 @@ describe('packaged Natural Earth border loader', () => {
       ),
     );
     vi.stubGlobal('fetch', fetcher);
-    const { loadNaturalEarthBorders } = await import('../src/borders.js');
+    const { loadBorders } = await import('../src/borders/load.js');
 
-    await expect(loadNaturalEarthBorders()).rejects.toThrow(message);
-    await expect(loadNaturalEarthBorders()).rejects.toThrow(message);
+    await expect(loadBorders()).rejects.toThrow(message);
+    await expect(loadBorders()).rejects.toThrow(message);
     expect(fetcher).toHaveBeenCalledTimes(4);
   });
 
@@ -131,9 +129,9 @@ describe('packaged Natural Earth border loader', () => {
       Promise.resolve(requestUrl(input).endsWith('.vertices.bin') ? vertices : indices),
     );
     vi.stubGlobal('fetch', fetcher);
-    const { loadNaturalEarthBorders } = await import('../src/borders.js');
+    const { loadBorders } = await import('../src/borders/load.js');
 
-    await expect(loadNaturalEarthBorders()).rejects.toThrow('returned HTTP 404');
+    await expect(loadBorders()).rejects.toThrow('returned HTTP 404');
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(vertexBody).not.toHaveBeenCalled();
     expect(indexBody).not.toHaveBeenCalled();

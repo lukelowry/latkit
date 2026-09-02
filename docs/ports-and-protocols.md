@@ -28,6 +28,9 @@ import { messagePort } from '@latkit/port';
 const port = messagePort(new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' }));
 ```
 
+Each constructor takes its target structurally, so a `Worker`, a webview API, or a socket passes as
+it is; `Port` is the one named type on that side of the surface.
+
 ## A protocol
 
 A protocol is one value both ends import: its name on the port, its request, reply, and event
@@ -78,8 +81,10 @@ search.on((state) => render(state));
 render(await search.call({ op: 'find', text: 'north' }));
 ```
 
-A call takes a `signal`; aborting it cancels the handler through its own `signal` and rejects the
-call with `AbortError`. A handler failure rejects that one call with the handler's message. Either
+A call takes `signal`, `progress`, and `transfer` as an inline options literal; aborting the signal
+cancels the handler through its own `signal` and rejects the call with `AbortError`. A handler
+failure rejects that one call with the handler's message. A reply whose buffers the handler
+relinquishes is wrapped with `transferred(value, buffers)`, for a reply or a streamed item. Either
 side may `close`; a transport failure closes every connection on the port with its reason. A call to
 a protocol no peer serves settles only when the transport closes, which is why both ends import one
 protocol value rather than agreeing on a name.
@@ -122,8 +127,12 @@ const model = await openModel(remote.source, {
 });
 ```
 
+Every connected side in `@latkit/remote` is a `Remote<T>`: what the peer serves, plus `close`.
+`connectSource` resolves a `RemoteSource`, a `Remote<Served>` with the `reopen` that continues the
+served lineage.
+
 A grid is served the same way: `serveGrid` publishes the header and answers windows of display text,
-and `connectGrid` hands the page a `Grid` it binds to a table.
+and `connectGrid` hands the page a `Grid` (with its `GridHeader`) it binds to a table.
 
 ## Serve results
 
@@ -141,12 +150,13 @@ const stop = serveResults(port, store); // `store` implements `Results` over wha
 import { collect } from '@latkit/model';
 import { connectResults } from '@latkit/remote';
 
-const results = connectResults(port);
+const results = connectResults(port); // a `Remote<Results>`
 monitor.load(await collect(results.read('bus', [0], signal), frames));
+results.close();
 ```
 
 A read selects signals by recorded-order index, or every recorded signal with `null`. A served side
-that must bound what one read asks for passes `maxSignals`; by default a selection is unbounded.
+that must bound what one read asks for passes `{ maxSignals }`; by default a selection is unbounded.
 
 ## Test across a port
 

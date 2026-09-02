@@ -112,17 +112,15 @@ export function serveGrid(port: Port, name: string): GridServer {
   };
 }
 
-/** A served grid as the client binds it: the `Grid` queries plus the header. */
-export type RemoteGrid = Grid & GridHeader;
-
 /**
- * Connect to one named grid: `onGrid` receives a fresh binding for every published header, null
- * when nothing is served. Returns the unsubscribe, which also closes the connection.
+ * Connect to one named grid: `onGrid` receives a fresh binding for every published header (the
+ * `Grid` queries plus the header), null when nothing is served. Returns the unsubscribe, which
+ * also closes the connection.
  */
 export function connectGrid(
   port: Port,
   name: string,
-  onGrid: (grid: RemoteGrid | null) => void,
+  onGrid: (grid: (Grid & GridHeader) | null) => void,
 ): () => void {
   const connection = connect(port, gridProtocol(name));
   let latest = -1;

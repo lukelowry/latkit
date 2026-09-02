@@ -20,17 +20,17 @@ import {
   type Uniforms,
 } from './uniforms.js';
 import type { PreparedScene } from '../scene.js';
-import type { Borders } from '../borders.js';
+import type { Borders } from '../borders/index.js';
 import { BorderBuffers } from './border-buffers.js';
 import { packBound, type Channel, type ChannelSlot } from '../channels.js';
 import { DEFAULT_OPTIONS } from '../options.js';
 
 import {
   PIPELINES,
-  PROJECTIONS,
+  PROJECTION_DEFS,
   type PipelineDef,
   type ProjectionFamily,
-  type ProjectionMode,
+  type Projection,
 } from '../projections.js';
 
 import { FrameResources } from './frame-resources.js';
@@ -264,14 +264,14 @@ export class Renderer {
   }
 
   /** Selects the active pipeline family for a mode, building it lazily if needed. */
-  useProjection(mode: ProjectionMode): void {
-    this.activeFamily = PROJECTIONS[mode].family;
+  useProjection(mode: Projection): void {
+    this.activeFamily = PROJECTION_DEFS[mode].family;
     void this.ensurePipelines(this.activeFamily);
   }
 
   /** Compiles a mode's pipeline family without changing the active one. */
-  warmProjection(mode: ProjectionMode): Promise<void> {
-    return this.ensurePipelines(PROJECTIONS[mode].family);
+  warmProjection(mode: Projection): Promise<void> {
+    return this.ensurePipelines(PROJECTION_DEFS[mode].family);
   }
 
   /** Returns the cached or in-flight build for one pipeline family. */

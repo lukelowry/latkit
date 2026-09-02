@@ -1,3 +1,5 @@
+import { CHANNELS, type Channel, type Item } from '@latkit/network';
+
 import type { ChannelBinding, InteractionState, ViewState } from './state.js';
 import { channelValues } from './state.js';
 import { CHANNEL_ATTRIBUTES } from './attributes.js';
@@ -53,23 +55,18 @@ function captionText(data: NetworkData, view: ViewState, interaction: Interactio
   return `${vertices} vertices · ${edges} edges`;
 }
 
-function describeItem(
-  data: NetworkData,
-  view: ViewState,
-  item: readonly ['vertex' | 'edge', number],
-): string {
-  const [kind, index] = item;
-  const label = itemLabel(data, kind, index);
-  const values = itemValues(view, kind, index);
+function describeItem(data: NetworkData, view: ViewState, item: Item): string {
+  const label = itemLabel(data, item);
+  const values = itemValues(view, item);
   return values.length === 0 ? label : `${label}; ${values.join('; ')}`;
 }
 
-function itemLabel(data: NetworkData, kind: 'vertex' | 'edge', index: number): string {
+function itemLabel(data: NetworkData, { kind, index }: Item): string {
   const labels = kind === 'vertex' ? data.labels?.vertex : data.labels?.edge;
   return labels?.[index] ?? `${humanizeName(kind)} ${index}`;
 }
 
-function itemValues(view: ViewState, kind: 'vertex' | 'edge', index: number): string[] {
+function itemValues(view: ViewState, { kind, index }: Item): string[] {
   const values: string[] = [];
   const seen = new Set<object>();
 
@@ -85,10 +82,10 @@ function itemValues(view: ViewState, kind: 'vertex' | 'edge', index: number): st
   return values;
 }
 
-function valueDescription(binding: ChannelBinding, channel: string, index: number): string {
+function valueDescription(binding: ChannelBinding, channel: Channel, index: number): string {
   const value = channelValues(binding)[index];
   const formatted = value === undefined ? 'unavailable' : formatNumber(value);
-  if (binding.kind === 'direct') return `${humanizeName(channel)}: ${formatted}`;
+  if (binding.kind === 'direct') return `${CHANNELS[channel].label}: ${formatted}`;
 
   const unit = binding.entry.field.unit;
   return `${binding.entry.field.label}: ${formatted}${unit ? ` ${unit}` : ''}`;

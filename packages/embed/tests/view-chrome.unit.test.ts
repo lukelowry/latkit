@@ -228,7 +228,7 @@ describe('semantic chrome', () => {
     h.chrome.update(data, fieldsFor(data), view, ALL_PROJECTIONS, NO_INTERACTION);
     expect(custom).toHaveBeenCalledTimes(17);
     h.chrome.update(data, fieldsFor(data), view, ALL_PROJECTIONS, {
-      hover: ['vertex', 1],
+      hover: { kind: 'vertex', index: 1 },
       selected: null,
       atFitView: true,
     });
@@ -269,7 +269,7 @@ describe('semantic chrome', () => {
       ALL_PROJECTIONS,
       {
         hover: null,
-        selected: ['vertex', 1],
+        selected: { kind: 'vertex', index: 1 },
         atFitView: false,
       },
       true,
@@ -420,11 +420,21 @@ describe('caption contract', () => {
     expect(output.textContent).toBe('3 vertices · 3 edges');
     expect(live.textContent).toBe('');
 
-    caption.update(data, view, { hover: ['vertex', 1], selected: null, atFitView: true }, false);
+    caption.update(
+      data,
+      view,
+      { hover: { kind: 'vertex', index: 1 }, selected: null, atFitView: true },
+      false,
+    );
     expect(output.textContent).toBe('Hover: Beta; Load: 30 MW; Capacity: 60 MW');
     expect(live.textContent).toBe('');
 
-    caption.update(data, view, { hover: null, selected: ['vertex', 1], atFitView: true }, true);
+    caption.update(
+      data,
+      view,
+      { hover: null, selected: { kind: 'vertex', index: 1 }, atFitView: true },
+      true,
+    );
     expect(output.textContent).toBe('Selected: Beta; Load: 30 MW; Capacity: 60 MW');
     expect(live.textContent).toBe('Selected Beta; Load: 30 MW; Capacity: 60 MW.');
   });
@@ -438,7 +448,12 @@ describe('caption contract', () => {
     const input = inputRevision(data, { vertexColor: direct(values) });
     const view = resolvedView(data, { controls: 'caption' }, { input });
 
-    caption.update(data, view, { hover: null, selected: ['vertex', 0], atFitView: true }, true);
+    caption.update(
+      data,
+      view,
+      { hover: null, selected: { kind: 'vertex', index: 0 }, atFitView: true },
+      true,
+    );
     expect(output.textContent).toBe('Selected: Vertex 0; Vertex Color: 1.5');
     expect(live.textContent).toBe('Selected Vertex 0; Vertex Color: 1.5.');
 
@@ -544,7 +559,7 @@ describe('canvas keyboard adapter', () => {
     ['-', 'zoomBy', [0.8]],
     ['_', 'zoomBy', [0.8]],
     ['Home', 'fit', [true]],
-    ['Escape', 'clearSelection', []],
+    ['Escape', 'select', [null]],
   ] as const)('handles %s with %s', (key, command, args) => {
     const canvas = document.createElement('canvas');
     const commands = commandSink();
@@ -579,7 +594,7 @@ interface ChromeHarness extends InteractionCommandSink {
   readonly panBy: ReturnType<typeof vi.fn>;
   readonly zoomBy: ReturnType<typeof vi.fn>;
   readonly fit: ReturnType<typeof vi.fn>;
-  readonly clearSelection: ReturnType<typeof vi.fn>;
+  readonly select: ReturnType<typeof vi.fn>;
 }
 
 function chromeHarness(): ChromeHarness {
@@ -587,8 +602,8 @@ function chromeHarness(): ChromeHarness {
   const panBy = vi.fn();
   const zoomBy = vi.fn();
   const fit = vi.fn();
-  const clearSelection = vi.fn();
-  Object.assign(host, { panBy, zoomBy, fit, clearSelection });
+  const select = vi.fn();
+  Object.assign(host, { panBy, zoomBy, fit, select });
   document.body.append(host);
   const setAttribute = vi.spyOn(host, 'setAttribute');
   const shell = createShell(host);
@@ -600,7 +615,7 @@ function chromeHarness(): ChromeHarness {
     panBy,
     zoomBy,
     fit,
-    clearSelection,
+    select,
   };
 }
 
@@ -699,6 +714,6 @@ function commandSink() {
     panBy: vi.fn(),
     zoomBy: vi.fn(),
     fit: vi.fn(),
-    clearSelection: vi.fn(),
+    select: vi.fn(),
   };
 }

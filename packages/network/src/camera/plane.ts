@@ -2,7 +2,7 @@ import type {
   CameraState,
   PanSession,
   PlaneView,
-  Projection,
+  CameraProjection,
   Vec2,
   Viewport,
 } from './projection.js';
@@ -35,7 +35,7 @@ const mix = (v: number): number => {
 };
 
 /** One planar camera: flat is pitch zero, tilt is its oblique target. */
-export function createPlaneProjection(initial: PlaneView): Projection {
+export function createPlaneProjection(initial: PlaneView): CameraProjection {
   let view = initial;
   const vpM = new Float32Array(16);
   const eye = new Float32Array(3);

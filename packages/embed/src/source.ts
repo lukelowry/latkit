@@ -1,4 +1,4 @@
-import type { Channel, ChannelRange } from '@latkit/network';
+import type { Channel, Domain, Item } from '@latkit/network';
 
 import type { NetworkData } from './data/types.js';
 import { parseNetwork } from './data/parse.js';
@@ -17,14 +17,14 @@ export interface InputRevision {
   /** Direct channel arrays are topology-dependent and live for one input revision. */
   readonly directChannels: Partial<Record<Channel, DirectChannelBinding>>;
   /** Programmatic or pointer selection retained through same-source recovery. */
-  selected: readonly ['vertex' | 'edge', number] | null;
+  selected: Item | null;
 }
 
 /** One direct Network-style channel binding retained by an input revision. */
 export interface DirectChannelBinding {
   readonly values: Float32Array;
-  readonly baseDomain?: ChannelRange | null;
-  readonly outputRange?: ChannelRange;
+  /** Input domain passed with the values; `null` asks Network to scan or default. */
+  readonly baseDomain?: Domain | null;
 }
 
 /** Create a fresh input revision, clearing topology-dependent state. */

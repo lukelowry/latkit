@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 
-import { validateBorders, type Borders } from '../borders.js';
+import { validateBorders, type Borders } from '../borders/index.js';
 
 /** GPU vertex/index storage for the optional geographic border overlay. */
 export class BorderBuffers {

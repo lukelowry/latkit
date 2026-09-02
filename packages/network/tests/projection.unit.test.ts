@@ -5,7 +5,7 @@ import { Camera } from '../src/camera/camera.js';
 import { CameraRig } from '../src/camera/rig.js';
 import { createUniforms } from '../src/webgpu/uniforms.js';
 import { createTangent, MAX_ZOOM_RATIO } from '../src/camera/projection.js';
-import type { CameraState, Projection, Viewport } from '../src/camera/projection.js';
+import type { CameraState, CameraProjection, Viewport } from '../src/camera/projection.js';
 import type { Bounds } from '../src/topology/types.js';
 import { VISUAL } from '../src/visual.js';
 
@@ -1017,7 +1017,7 @@ describe('Camera', () => {
     // Minimal 5-slot projection: linear algebra everywhere, near() in the
     // passed pixel tolerance. Exercises the dimension-blind Camera loops
     // without any real projection's wrap/clamp policies.
-    const proj: Projection = {
+    const proj: CameraProjection = {
       stateSize: 5,
       fit: () => Float64Array.of(0, 0, 1, 10, 20) as CameraState,
       clone: (s) => new Float64Array(s) as CameraState,

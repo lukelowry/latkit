@@ -1,3 +1,5 @@
+import type { Item } from '@latkit/network';
+
 const PAN_STEP = 24;
 export const ZOOM_IN_FACTOR = 1.25;
 export const ZOOM_OUT_FACTOR = 0.8;
@@ -7,7 +9,7 @@ export interface InteractionCommandSink {
   panBy(dx: number, dy: number): void;
   zoomBy(factor: number): void;
   fit(animate?: boolean): void;
-  clearSelection(): void;
+  select(item: Item | null): void;
 }
 
 /** Attach the stable keyboard command adapter to the focusable canvas. */
@@ -42,7 +44,7 @@ export function attachCanvasInteraction(
         commands.fit(true);
         break;
       case 'Escape':
-        commands.clearSelection();
+        commands.select(null);
         break;
       default:
         handled = false;

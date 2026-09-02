@@ -22,6 +22,16 @@ export interface Presentation<TCanvas extends PresentationCanvas = PresentationC
    */
   resize(width: number, height: number): boolean;
 
+  /**
+   * Report the canvas's device-pixel size and pixel ratio now, then on every change.
+   *
+   * A canvas that cannot be observed (OffscreenCanvas) reports once from its
+   * current size and never again. After `destroy()`, the listener never runs.
+   *
+   * @returns An idempotent function that stops observation.
+   */
+  observe(listener: (width: number, height: number, pixelRatio: number) => void): () => void;
+
   /** Unconfigures the context and restores the canvas's original backing size. */
   destroy(): void;
 }
@@ -151,6 +161,13 @@ export function createPresentation<TCanvas extends PresentationCanvas>(
     resize(width, height) {
       if (destroyed) return false;
       return resize(width, height);
+    },
+
+    observe(listener) {
+      if (destroyed) return () => {};
+      if (isHtmlCanvas(canvas)) return observeCanvas(canvas, listener);
+      listener(canvas.width, canvas.height, 1);
+      return () => {};
     },
 
     destroy() {

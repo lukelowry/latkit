@@ -60,6 +60,10 @@ remote.close(); // closes the connection when it is the current remote
 A run is one stream over the port: cancelling its signal aborts the runner on the serving side,
 and a peer that cannot run has no `runner`.
 
+Every connected side is a `Remote<T>`: what the peer serves, plus `close`. `connectSource`
+resolves a `RemoteSource`, a `Remote<Served>` with `reopen`; `connectResults` returns a
+`Remote<Results>`.
+
 ## Serve a grid
 
 A grid stays where its columns are; only the header and windows of display text cross.
@@ -103,9 +107,10 @@ const stop = serveResults(port, store); // `store` implements `Results` over wha
 import { collect } from '@latkit/model';
 import { connectResults } from '@latkit/remote';
 
-const results = connectResults(port);
+const results = connectResults(port); // a `Remote<Results>`
 const vm = await collect(results.read('bus', [0], signal), frames);
 monitor.load(vm);
+results.close(); // ends every read in flight
 ```
 
 A read selects signals by recorded-order index, or every recorded signal with `null`. The service

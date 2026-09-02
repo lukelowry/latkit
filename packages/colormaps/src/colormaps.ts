@@ -13,51 +13,47 @@ type CoefficientRows = readonly [Rgb01, Rgb01, Rgb01, Rgb01, Rgb01, Rgb01];
 export type Colormap = (t: number) => readonly [number, number, number];
 
 /**
- * High-level colormap family.
- *
- * Sequential maps encode magnitude. Diverging maps encode signed deviation
- * around a midpoint.
- */
-export type ColormapKind = 'sequential' | 'diverging';
-
-/** Supported CSS gradient directions for {@link colormapGradientCss}. */
-export type ColormapGradientDirection = 'to top' | 'to right';
-
-/**
- * Bundled colormap names in display order.
+ * Bundled colormap registry in display order.
  *
  * @remarks
- * The first group contains sequential maps for magnitude-like values. The
- * second group contains diverging maps for signed deviation around a midpoint.
+ * Each entry carries a human-readable `label` and a `kind`. Sequential maps
+ * encode magnitude; diverging maps encode signed deviation around a midpoint.
+ * Iterate `Object.keys(COLORMAPS)` for pickers: sequential maps come first.
  */
-export const COLORMAP_NAMES = [
-  'viridis',
-  'inferno',
-  'plasma',
-  'magma',
-  'cividis',
-  'turbo',
-  'grays',
-  'blues',
-  'reds',
-  'greens',
-  'amber',
-  'coolwarm',
-  'rdbu',
-  'spectral',
-  'piyg',
-  'icefire',
-  'berlin',
-  'rkb',
-  'mkg',
-  'purgreen',
-  'goldblue',
-  'tealpink',
-  'vermlime',
-] as const;
+export const COLORMAPS = Object.freeze({
+  // Sequential maps.
+  viridis: { label: 'Viridis', kind: 'sequential' },
+  inferno: { label: 'Inferno', kind: 'sequential' },
+  plasma: { label: 'Plasma', kind: 'sequential' },
+  magma: { label: 'Magma', kind: 'sequential' },
+  cividis: { label: 'Cividis', kind: 'sequential' },
+  turbo: { label: 'Turbo', kind: 'sequential' },
+  grays: { label: 'Grays', kind: 'sequential' },
+  blues: { label: 'Blues', kind: 'sequential' },
+  reds: { label: 'Reds', kind: 'sequential' },
+  greens: { label: 'Greens', kind: 'sequential' },
+  amber: { label: 'Amber', kind: 'sequential' },
+
+  // Diverging maps.
+  coolwarm: { label: 'Cool-Warm', kind: 'diverging' },
+  rdbu: { label: 'Red-Blue', kind: 'diverging' },
+  spectral: { label: 'Spectral', kind: 'diverging' },
+  piyg: { label: 'Pink-Green', kind: 'diverging' },
+  icefire: { label: 'Icefire', kind: 'diverging' },
+  berlin: { label: 'Berlin', kind: 'diverging' },
+  rkb: { label: 'Red-Blue Dark', kind: 'diverging' },
+  mkg: { label: 'Magenta-Green', kind: 'diverging' },
+  purgreen: { label: 'Purple-Green', kind: 'diverging' },
+  goldblue: { label: 'Gold-Blue', kind: 'diverging' },
+  tealpink: { label: 'Teal-Pink', kind: 'diverging' },
+  vermlime: { label: 'Vermilion-Lime', kind: 'diverging' },
+} as const satisfies Record<
+  string,
+  { readonly label: string; readonly kind: 'sequential' | 'diverging' }
+>);
 
 /** Name of a bundled colormap preset. */
-export type ColormapName = (typeof COLORMAP_NAMES)[number];
+export type ColormapName = keyof typeof COLORMAPS;
 
 function packCoefficients(rows: CoefficientRows): Float32Array {
   const out = new Float32Array(24);
@@ -190,73 +186,7 @@ const COEFFICIENTS = {
   goldblue: divergingBlack([0.95, 0.75, 0], [0, 0.3, 0.95]),
   tealpink: divergingBlack([0, 0.65, 0.65], [0.95, 0.45, 0.55]),
   vermlime: divergingBlack([0.95, 0.3, 0.1], [0.4, 0.85, 0]),
-} satisfies Readonly<Record<ColormapName, Float32Array>>;
-
-/** Family metadata for each bundled colormap. */
-export const COLORMAP_KIND: Readonly<Record<ColormapName, ColormapKind>> = {
-  viridis: 'sequential',
-  inferno: 'sequential',
-  plasma: 'sequential',
-  magma: 'sequential',
-  cividis: 'sequential',
-  turbo: 'sequential',
-  grays: 'sequential',
-  blues: 'sequential',
-  reds: 'sequential',
-  greens: 'sequential',
-  amber: 'sequential',
-
-  coolwarm: 'diverging',
-  rdbu: 'diverging',
-  spectral: 'diverging',
-  piyg: 'diverging',
-  icefire: 'diverging',
-  berlin: 'diverging',
-  rkb: 'diverging',
-  mkg: 'diverging',
-  purgreen: 'diverging',
-  goldblue: 'diverging',
-  tealpink: 'diverging',
-  vermlime: 'diverging',
-};
-
-/** Human-readable label for each bundled colormap. */
-export const COLORMAP_LABEL: Readonly<Record<ColormapName, string>> = {
-  viridis: 'Viridis',
-  inferno: 'Inferno',
-  plasma: 'Plasma',
-  magma: 'Magma',
-  cividis: 'Cividis',
-  turbo: 'Turbo',
-  grays: 'Grays',
-  blues: 'Blues',
-  reds: 'Reds',
-  greens: 'Greens',
-  amber: 'Amber',
-
-  coolwarm: 'Cool-Warm',
-  rdbu: 'Red-Blue',
-  spectral: 'Spectral',
-  piyg: 'Pink-Green',
-  icefire: 'Icefire',
-  berlin: 'Berlin',
-  rkb: 'Red-Blue Dark',
-  mkg: 'Magenta-Green',
-  purgreen: 'Purple-Green',
-  goldblue: 'Gold-Blue',
-  tealpink: 'Teal-Pink',
-  vermlime: 'Vermilion-Lime',
-};
-
-/**
- * Checks whether a bundled colormap is diverging.
- *
- * @param name - Bundled colormap name.
- * @returns True if the colormap is diverging; false otherwise.
- */
-export function isDiverging(name: ColormapName): boolean {
-  return COLORMAP_KIND[name] === 'diverging';
-}
+} satisfies Record<ColormapName, Float32Array>;
 
 /**
  * Returns a pure colormap function for a bundled preset.
@@ -284,15 +214,12 @@ export function colormap(name: ColormapName): Colormap {
  *
  * @example
  * ```ts
- * legend.style.background = colormapGradientCss('magma', 'to right');
+ * legend.style.background = gradient('magma', 'to right');
  * ```
  *
  * Use `to top` for vertical legends and `to right` for horizontal swatches.
  */
-export function colormapGradientCss(
-  name: ColormapName,
-  direction: ColormapGradientDirection = 'to top',
-): string {
+export function gradient(name: ColormapName, direction: 'to top' | 'to right' = 'to top'): string {
   const fn = colormap(name);
   const stops: string[] = [];
 

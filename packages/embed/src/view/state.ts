@@ -1,14 +1,13 @@
-import { COLORMAP_NAMES, colormap, type Colormap, type ColormapName } from '@latkit/colormaps';
+import { COLORMAPS, colormap, type Colormap, type ColormapName } from '@latkit/colormaps';
 import {
-  PROJECTION_MODES,
-  channelNormalizes,
-  finiteExtent,
+  PROJECTIONS,
   type Borders,
   type Channel,
-  type ChannelRange,
+  type Domain,
+  type Item,
   type Network,
-  type ProjectionMode,
-  type ResolvedOptions,
+  type Options,
+  type Projection,
 } from '@latkit/network';
 
 import type { NetworkData } from '../data/types.js';
@@ -17,10 +16,9 @@ import {
   CHANNEL_ATTRIBUTES,
   OPTION_ATTRIBUTES,
   parseControls,
+  parseDomain,
   parseOptionAttribute,
-  parseRange,
   quote,
-  channelAttribute,
   warning,
   type Control,
   type ControlSelection,
@@ -29,8 +27,10 @@ import {
 } from './attributes.js';
 import { fieldsFor, type FieldCatalog, type FieldEntry } from './fields.js';
 
-/** Runtime Network options represented directly by Embed view state. */
-export type ResolvedRuntimeOptions = Readonly<Pick<ResolvedOptions, RuntimeAttributeOption>>;
+/** Live Network options represented directly by Embed view state, fully resolved. */
+export type ResolvedRuntimeOptions = Readonly<{
+  [Key in RuntimeAttributeOption]: NonNullable<Options[Key]>;
+}>;
 
 /** Element-owned nonserializable configuration that survives activations. */
 export interface ElementConfiguration {
@@ -39,7 +39,7 @@ export interface ElementConfiguration {
   customBorders: Borders | null | undefined;
   customBordersRevision: number;
   consumerPaused: boolean;
-  lastProjection: ProjectionMode;
+  lastProjection: Projection;
 }
 
 /** Raw values captured from the element for one pure resolution pass. */
@@ -56,22 +56,25 @@ export type BorderBinding =
   | { readonly kind: 'natural-earth' }
   | { readonly kind: 'custom'; readonly data: Borders; readonly revision: number };
 
-/** One resolved declarative field or direct-array channel source. */
+/**
+ * One resolved declarative field or direct-array channel source.
+ *
+ * `baseDomain` is the input domain handed to Network with the values: a field's finite extent,
+ * a direct binding's retained domain, or `null`/`undefined` to let Network scan or default.
+ */
 export type ChannelBinding =
   | {
       readonly kind: 'field';
       readonly entry: FieldEntry;
-      readonly baseDomain: ChannelRange | null;
-      readonly domainOverride: ChannelRange | null;
-      readonly outputRange?: ChannelRange;
+      readonly baseDomain: Domain | null;
+      readonly domainOverride: Domain | null;
     }
   | {
       readonly kind: 'direct';
       readonly source: DirectChannelBinding;
       readonly values: Float32Array;
-      readonly baseDomain?: ChannelRange | null;
-      readonly domainOverride: ChannelRange | null;
-      readonly outputRange?: ChannelRange;
+      readonly baseDomain?: Domain | null;
+      readonly domainOverride: Domain | null;
     };
 
 /** Renderer-independent option state available before topology load. */
@@ -85,8 +88,8 @@ export interface OptionState {
 
 /** Complete effective element state applied to one loaded Network. */
 export interface ViewState extends OptionState {
-  readonly requestedProjection: ProjectionMode;
-  readonly projection: ProjectionMode;
+  readonly requestedProjection: Projection;
+  readonly projection: Projection;
   readonly channels: Readonly<Record<Channel, ChannelBinding | null>>;
   readonly controls: ReadonlySet<Control>;
   readonly controlsMode: ControlSelection['mode'];
@@ -94,12 +97,11 @@ export interface ViewState extends OptionState {
 
 /** Interaction state used by captions, navigation, and durable selection. */
 export interface InteractionState {
-  readonly hover: readonly ['vertex' | 'edge', number] | null;
-  readonly selected: readonly ['vertex' | 'edge', number] | null;
+  readonly hover: Item | null;
+  readonly selected: Item | null;
   readonly atFitView: boolean;
 }
 
-const COLORMAPS = new Set<string>(COLORMAP_NAMES);
 const DEFAULT_FIELD_CHANNEL: Channel = 'vertexColor';
 
 /** Resolve construction/runtime options without requiring loaded topology. */
@@ -109,14 +111,14 @@ export function resolveOptionState(
 ): OptionState {
   const warnings: ViewWarning[] = [];
   const runtime = {} as Record<RuntimeAttributeOption, unknown>;
-  let msaa: ResolvedOptions['msaa'] = undefined;
+  let msaa: OptionState['msaa'] = undefined;
 
   for (const entry of OPTION_ATTRIBUTES) {
     const value = parseOptionAttribute(entry, valueOf(attributes, entry.attribute), warnings);
-    if (entry.definition.lifecycle === 'construction') {
-      if (entry.option === 'msaa') msaa = value as ResolvedOptions['msaa'];
-    } else {
+    if (entry.definition.live) {
       (runtime as Record<string, unknown>)[entry.option] = value;
+    } else if (entry.option === 'msaa') {
+      msaa = value as OptionState['msaa'];
     }
   }
 
@@ -144,7 +146,7 @@ export function resolveView(
 
   for (const definition of CHANNEL_ATTRIBUTES) {
     channels[definition.key] = resolveChannel(
-      definition.key,
+      definition,
       fields,
       attributes,
       input.directChannels[definition.key],
@@ -173,7 +175,7 @@ export function resolveView(
 }
 
 /** Return the effective normalized input domain used by a bound channel. */
-export function effectiveChannelDomain(binding: ChannelBinding): ChannelRange {
+export function effectiveChannelDomain(binding: ChannelBinding): Domain {
   return binding.domainOverride ?? binding.baseDomain ?? [0, 1];
 }
 
@@ -212,7 +214,7 @@ function resolveColormap(
 
   const raw = valueOf(attributes, 'colormap');
   const name = raw === null ? 'viridis' : raw;
-  if (COLORMAPS.has(name)) {
+  if (Object.hasOwn(COLORMAPS, name)) {
     const typedName = name as ColormapName;
     return Object.freeze({ kind: 'named', name: typedName, fn: colormap(typedName) });
   }
@@ -250,10 +252,10 @@ function resolveBorders(
 function resolveRequestedProjection(
   attributes: AttributeValues,
   warnings: ViewWarning[],
-): ProjectionMode {
+): Projection {
   const raw = valueOf(attributes, 'projection');
   if (raw === null) return 'flat';
-  if ((PROJECTION_MODES as readonly string[]).includes(raw)) return raw as ProjectionMode;
+  if ((PROJECTIONS as readonly string[]).includes(raw)) return raw as Projection;
   warnings.push(
     warning('projection', raw, `Unknown projection ${quote(raw)}; using ${quote('flat')}.`),
   );
@@ -261,54 +263,38 @@ function resolveRequestedProjection(
 }
 
 function resolveEffectiveProjection(
-  requested: ProjectionMode,
-  previous: ProjectionMode,
+  requested: Projection,
+  previous: Projection,
   available: Network['projections'],
-): ProjectionMode {
+): Projection {
   if (available[requested]) return requested;
   if (available[previous]) return previous;
   return 'flat';
 }
 
 function resolveChannel(
-  channel: Channel,
+  definition: (typeof CHANNEL_ATTRIBUTES)[number],
   fields: FieldCatalog,
   attributes: AttributeValues,
   direct: DirectChannelBinding | undefined,
   warnings: ViewWarning[],
 ): ChannelBinding | null {
-  const definition = channelAttribute(channel);
-  const normalizes = channelNormalizes(definition);
+  const channel = definition.key;
   const domainOverride = definition.domainAttribute
-    ? parseRange(
+    ? parseDomain(
         definition.domainAttribute,
         valueOf(attributes, definition.domainAttribute),
         warnings,
       )
     : null;
-  const rangeOverride = definition.rangeAttribute
-    ? parseRange(
-        definition.rangeAttribute,
-        valueOf(attributes, definition.rangeAttribute),
-        warnings,
-      )
-    : null;
 
   if (direct) {
-    const baseDomain = normalizes
-      ? definition.map === 'height' && direct.baseDomain == null
-        ? (finiteExtent(direct.values) ?? ([0, 1] as const))
-        : copyOptionalRange(direct.baseDomain)
-      : null;
     return Object.freeze({
       kind: 'direct',
       source: direct,
       values: direct.values,
-      baseDomain,
+      baseDomain: definition.normalized ? copyOptionalDomain(direct.baseDomain) : null,
       domainOverride,
-      ...(definition.map === 'height'
-        ? { outputRange: rangeOverride ?? copyRange(direct.outputRange ?? [0, 1]) }
-        : {}),
     });
   }
 
@@ -344,9 +330,8 @@ function resolveChannel(
   return Object.freeze({
     kind: 'field',
     entry,
-    baseDomain: normalizes ? (copyOptionalRange(entry.extent) ?? null) : null,
+    baseDomain: definition.normalized ? (copyOptionalDomain(entry.extent) ?? null) : null,
     domainOverride,
-    ...(definition.map === 'height' ? { outputRange: rangeOverride ?? ([0, 1] as const) } : {}),
   });
 }
 
@@ -361,7 +346,7 @@ function resolveControls(
   if (selection.mode === 'explicit') return new Set(selection.controls);
 
   const controls = new Set<Control>(['caption', 'fit', 'zoom']);
-  if (PROJECTION_MODES.filter((mode) => available[mode]).length >= 2) controls.add('projection');
+  if (PROJECTIONS.filter((mode) => available[mode]).length >= 2) controls.add('projection');
 
   let colorPicker = false;
   let colorBinding = false;
@@ -385,12 +370,6 @@ function valueOf(attributes: AttributeValues, name: string): string | null {
   return attributes.get(name) ?? null;
 }
 
-function copyOptionalRange(
-  range: ChannelRange | null | undefined,
-): ChannelRange | null | undefined {
-  return range === undefined ? undefined : range === null ? null : copyRange(range);
-}
-
-function copyRange(range: ChannelRange): ChannelRange {
-  return [range[0], range[1]];
+function copyOptionalDomain(domain: Domain | null | undefined): Domain | null | undefined {
+  return domain === undefined ? undefined : domain === null ? null : [domain[0], domain[1]];
 }

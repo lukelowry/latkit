@@ -120,12 +120,44 @@ function makeHarness(
     canvas.height = nextHeight;
     return changed;
   });
+  // Mirrors the gpu package's HTML canvas observation: a device-pixel
+  // ResizeObserver with plain-box fallback, visualViewport resizes, and an
+  // initial layout-derived report.
+  const observe = (listener: (width: number, height: number, pixelRatio: number) => void) => {
+    const view = canvas.ownerDocument.defaultView;
+    const report = (entry?: ResizeObserverEntry): void => {
+      const ratio = view.devicePixelRatio;
+      const box = entry?.devicePixelContentBoxSize?.[0];
+      if (box) listener(box.inlineSize, box.blockSize, ratio);
+      else {
+        listener(
+          Math.round(canvas.clientWidth * ratio),
+          Math.round(canvas.clientHeight * ratio),
+          ratio,
+        );
+      }
+    };
+    const observer = new view.ResizeObserver((entries) => report(entries[entries.length - 1]));
+    try {
+      observer.observe(canvas as unknown as Element, { box: 'device-pixel-content-box' });
+    } catch {
+      observer.observe(canvas as unknown as Element);
+    }
+    const onViewportResize = (): void => report();
+    view.visualViewport?.addEventListener('resize', onViewportResize);
+    report();
+    return () => {
+      observer.disconnect();
+      view.visualViewport?.removeEventListener('resize', onViewportResize);
+    };
+  };
   const presentation = {
     canvas: canvas as unknown as HTMLCanvasElement,
     device: {} as GPUDevice,
     context: { canvas } as unknown as GPUCanvasContext,
     format: 'bgra8unorm',
     resize,
+    observe,
     destroy: vi.fn(),
   } satisfies Presentation<HTMLCanvasElement>;
   let animating = false;

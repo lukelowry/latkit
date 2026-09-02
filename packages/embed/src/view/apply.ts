@@ -1,39 +1,38 @@
-import {
-  channelNormalizes,
-  type Channel,
-  type ChannelRange,
-  type Network,
-  type Options,
-} from '@latkit/network';
+import type { Channel, Domain, Network, Options } from '@latkit/network';
 
 import {
   CHANNEL_ATTRIBUTES,
   OPTION_ATTRIBUTES,
-  channelAttribute,
   type RuntimeAttributeOption,
 } from './attributes.js';
 import {
   channelValues,
   type ChannelBinding,
-  type ResolvedRuntimeOptions,
+  type ColormapBinding,
+  type OptionState,
   type ViewState,
 } from './state.js';
 
-/** Apply only effective view changes to an already loaded Network. */
+/**
+ * Apply only effective view changes to an already loaded Network.
+ *
+ * `construction` is the option state the Network was created with; on the first application it
+ * stands in for the previous view so options already supplied at construction are not re-sent.
+ */
 export function applyView(
   network: Network,
   previous: ViewState | null,
   next: ViewState,
-  constructionOptions?: ResolvedRuntimeOptions,
+  construction?: OptionState,
 ): void {
-  applyOptions(network, previous?.options ?? constructionOptions, next.options);
-
-  if (!previous || !sameColormap(previous, next)) network.setColormap(next.colormap.fn);
+  const baseline = previous ?? construction;
+  applyOptions(network, baseline, next);
 
   for (const definition of CHANNEL_ATTRIBUTES) {
     applyChannel(
       network,
       definition.key,
+      definition.normalized,
       previous?.channels[definition.key] ?? null,
       next.channels[definition.key],
     );
@@ -47,20 +46,25 @@ export function applyView(
   }
 }
 
+/** Collect changed live options and the colormap into one `setOptions` patch. */
 function applyOptions(
   network: Network,
-  previous: ResolvedRuntimeOptions | undefined,
-  next: ResolvedRuntimeOptions,
+  previous: OptionState | undefined,
+  next: OptionState,
 ): void {
   const patch: Options = {};
   let changed = false;
 
   for (const entry of OPTION_ATTRIBUTES) {
-    if (entry.definition.lifecycle !== 'runtime') continue;
+    if (!entry.definition.live) continue;
     const key = entry.option as RuntimeAttributeOption;
-    const value = next[key];
-    if (previous && sameOption(previous[key], value)) continue;
+    const value = next.options[key];
+    if (previous && sameOption(previous.options[key], value)) continue;
     (patch as Record<string, unknown>)[key] = value;
+    changed = true;
+  }
+  if (!previous || !sameColormap(previous.colormap, next.colormap)) {
+    patch.colormap = next.colormap.fn;
     changed = true;
   }
   if (changed) network.setOptions(patch);
@@ -69,48 +73,38 @@ function applyOptions(
 function applyChannel(
   network: Network,
   channel: Channel,
+  normalized: boolean,
   previous: ChannelBinding | null,
   next: ChannelBinding | null,
 ): void {
   if (!next) {
-    if (previous) network.clearChannel(channel);
+    if (previous) network.setChannel(channel, null);
     return;
   }
 
-  const definition = channelAttribute(channel);
-  const normalizes = channelNormalizes(definition);
   const sourceChanged = !previous || !sameChannelSource(previous, next);
-  const baseChanged = !previous || !sameOptionalRange(previous.baseDomain, next.baseDomain);
-  const outputChanged = !previous || !sameOptionalRange(previous.outputRange, next.outputRange);
+  const baseChanged = !previous || !sameOptionalDomain(previous.baseDomain, next.baseDomain);
 
-  if (sourceChanged || baseChanged || outputChanged) {
-    if (!normalizes) {
-      network.setChannel(channel, channelValues(next));
-    } else if (definition.map === 'height') {
-      network.setChannel(channel, channelValues(next), next.baseDomain, next.outputRange);
-    } else {
-      network.setChannel(channel, channelValues(next), next.baseDomain);
-    }
-
-    if (normalizes) network.setChannelRange(channel, next.domainOverride);
+  if (sourceChanged || baseChanged) {
+    if (normalized) network.setChannel(channel, channelValues(next), next.baseDomain);
+    else network.setChannel(channel, channelValues(next));
+    if (normalized) network.setChannelDomain(channel, next.domainOverride);
     return;
   }
 
-  if (normalizes && !sameOptionalRange(previous.domainOverride, next.domainOverride)) {
-    network.setChannelRange(channel, next.domainOverride);
+  if (normalized && !sameOptionalDomain(previous.domainOverride, next.domainOverride)) {
+    network.setChannelDomain(channel, next.domainOverride);
   }
 }
 
-function sameColormap(previous: ViewState, next: ViewState): boolean {
-  if (previous.colormap.kind !== next.colormap.kind) return false;
-  if (previous.colormap.kind === 'named' && next.colormap.kind === 'named') {
-    return previous.colormap.name === next.colormap.name;
-  }
+function sameColormap(previous: ColormapBinding, next: ColormapBinding): boolean {
+  if (previous.kind !== next.kind) return false;
+  if (previous.kind === 'named' && next.kind === 'named') return previous.name === next.name;
   return (
-    previous.colormap.kind === 'custom' &&
-    next.colormap.kind === 'custom' &&
-    previous.colormap.fn === next.colormap.fn &&
-    previous.colormap.revision === next.colormap.revision
+    previous.kind === 'custom' &&
+    next.kind === 'custom' &&
+    previous.fn === next.fn &&
+    previous.revision === next.revision
   );
 }
 
@@ -128,9 +122,9 @@ function sameOption(previous: unknown, next: unknown): boolean {
   return Object.is(previous, next);
 }
 
-function sameOptionalRange(
-  previous: ChannelRange | null | undefined,
-  next: ChannelRange | null | undefined,
+function sameOptionalDomain(
+  previous: Domain | null | undefined,
+  next: Domain | null | undefined,
 ): boolean {
   if (previous === next) return true;
   if (!previous || !next) return false;
