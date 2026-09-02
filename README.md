@@ -15,13 +15,15 @@ Latkit is a TypeScript package family for interactive, browser-based WebGPU visu
 
 Install only the packages your application needs.
 
-| Package                                                                | Description                                           |
-| ---------------------------------------------------------------------- | ----------------------------------------------------- |
-| [`@latkit/network`](https://www.npmjs.com/package/@latkit/network)     | Interactive WebGPU network topology views             |
-| [`@latkit/monitor`](https://www.npmjs.com/package/@latkit/monitor)     | WebGPU time-series and signal monitor views           |
-| [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)             | Core WebGPU device and canvas presentation primitives |
-| [`@latkit/colormaps`](https://www.npmjs.com/package/@latkit/colormaps) | Named colormaps, labels, and CSS gradient helpers     |
-| [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | Columnar network model, series, and byte form         |
+| Package                                                                | Description                                                   |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------- |
+| [`@latkit/network`](https://www.npmjs.com/package/@latkit/network)     | Interactive WebGPU network topology views                     |
+| [`@latkit/monitor`](https://www.npmjs.com/package/@latkit/monitor)     | WebGPU time-series and signal monitor views                   |
+| [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)             | Core WebGPU device and canvas presentation primitives         |
+| [`@latkit/colormaps`](https://www.npmjs.com/package/@latkit/colormaps) | Named colormaps, labels, and CSS gradient helpers             |
+| [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | Columnar network model, series, and byte form                 |
+| [`@latkit/port`](https://www.npmjs.com/package/@latkit/port)           | Ports, frames, and typed request, reply, and stream protocols |
+| [`@latkit/remote`](https://www.npmjs.com/package/@latkit/remote)       | A model served across a port: source, runner, and grids       |
 
 ## Requirements
 

@@ -1,0 +1,36 @@
+{
+  "name": "@latkit/remote",
+  "version": "0.1.0",
+  "description": "A Latkit model served across a port: its source, its runner, and its grids.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lukelowry/latkit.git",
+    "directory": "packages/remote"
+  },
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --project @latkit/remote"
+  },
+  "dependencies": {
+    "@latkit/model": "workspace:*",
+    "@latkit/port": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

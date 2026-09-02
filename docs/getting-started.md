@@ -13,7 +13,7 @@ This guide gets a local Latkit checkout or downstream app to its first rendered 
 Install only the packages your app needs:
 
 ```sh
-npm install @latkit/model @latkit/colormaps @latkit/gpu @latkit/monitor @latkit/network
+npm install @latkit/model @latkit/colormaps @latkit/gpu @latkit/monitor @latkit/network @latkit/port @latkit/remote
 ```
 
 Most applications start with one renderer plus colormaps:
@@ -32,6 +32,12 @@ npm install @latkit/gpu @latkit/monitor @latkit/colormaps
 
 `@latkit/model`
 : Shared model primitives for the package family.
+
+`@latkit/port`
+: A port over workers, webviews, and sockets, and typed request, reply, and stream protocols over it.
+
+`@latkit/remote`
+: A model's source, runner, and grids served across a port.
 
 `@latkit/colormaps`
 : Named colormap data and helpers for gradients and scale metadata.

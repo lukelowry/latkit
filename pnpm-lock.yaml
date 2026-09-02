@@ -166,6 +166,17 @@ importers:
         specifier: ^26.1.0
         version: 26.1.0
 
+  packages/port: {}
+
+  packages/remote:
+    dependencies:
+      '@latkit/model':
+        specifier: workspace:*
+        version: link:../model
+      '@latkit/port':
+        specifier: workspace:*
+        version: link:../port
+
 packages:
 
   '@ampproject/remapping@2.3.0':

@@ -25,6 +25,12 @@ Both renderers use WebGPU resources internally. Public APIs stay imperative on p
 `@latkit/network`
 : Owns topology codecs, camera models, picking, input handling, and WebGPU rendering for network views.
 
+`@latkit/port`
+: Owns the boundary between two halves of one application: the `Port` over workers, webviews, and sockets, the binary frame that carries typed arrays intact, and the protocols served and connected over a port. Depends on nothing and knows nothing about models.
+
+`@latkit/remote`
+: Owns a model as it crosses a port: `serveSource` and `connectSource` for a source and its runner, `serveGrid` and `connectGrid` for a grid. Depends on `@latkit/model` and `@latkit/port`; it is the only package that knows both.
+
 ## Documentation boundary
 
 Human-authored docs live under `docs/`. Generated API reference is written to `docs/api/reference/` by TypeDoc and is intentionally ignored by git.
