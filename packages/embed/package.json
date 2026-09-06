@@ -1,6 +1,6 @@
 {
   "name": "@latkit/embed",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Declarative custom elements for Latkit: latkit-network and latkit-monitor.",
   "type": "module",
   "repository": {

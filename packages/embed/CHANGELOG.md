@@ -1,5 +1,18 @@
 # @latkit/embed
 
+## 0.8.0
+
+### Minor Changes
+
+- fd27b40: `latkit-network` reflects the controller's first paint and reads the new network options and channels from attributes.
+
+  - Added: the `painted` attribute and event, present once the bound canvas has shown a frame; `interaction`, `fit-padding-px` (one value or four), `fit-pitch`, `fit-bearing`, `vertex-shade`, and `edge-shade` attributes, mechanically from the registries.
+
+### Patch Changes
+
+- Updated dependencies [fd27b40]
+  - @latkit/network@0.9.0
+
 ## 0.7.1
 
 ### Patch Changes
