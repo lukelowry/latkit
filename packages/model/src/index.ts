@@ -21,6 +21,12 @@ export { createModel, elementAt, itemOf, validateTopology } from './model.js';
 export type { Domain } from './domain.js';
 export { extent, validateDomain } from './domain.js';
 
+export type { Colormap, RGBA } from './color.js';
+export { bakeColormap, validateRgba } from './color.js';
+
+export type { Emitter } from './emitter.js';
+export { createEmitter } from './emitter.js';
+
 export type { Series } from './series.js';
 export { frameAt, sample } from './series.js';
 

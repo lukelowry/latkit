@@ -53,4 +53,12 @@ Every barrel follows the same rules, so the surfaces stay small and alike:
 - A type is exported only when a caller must name it in a signature. Sub-shapes are reached by indexed access.
 - Validation lives at the boundary that throws. The standalone validators are the ones a host needs before a device exists: each renderer's `validateOptions`, and `validateTopology` and `validateDomain` in `@latkit/model`.
 - A controller outlives its canvas and its device. Everything a host gives it is retained across `detach` and `attach`, and a lost device is recovered inside the controller.
-- One home per type. `Topology`, `Item`, `Series`, and `Domain` are defined in `@latkit/model` and imported from there; no renderer re-exports them.
+- One home per type. `Topology`, `Item`, `Series`, `Domain`, `RGBA`, and `Colormap` are defined in `@latkit/model` and imported from there; no renderer re-exports them.
+
+Names follow one convention across every package and every layer, from option to uniform to shader:
+
+- The API spells out `vertex` and `edge`, kind first: `vertexScale`, `edgeBaseColor`. The uniform buffer and its shaders abbreviate a per-item word to `v`/`e` (`vHoverPx`, `v_hover_px`, `W_V_HOVER_PX`), so an option maps onto its word mechanically.
+- A raw value maps to a normalized `t` as `(x - min) * scale`; an output range is `outMin + t * outSpan`. `Scale` on an option means a user multiplier and nothing else.
+- Units travel with the name: `Px` (`_px`) is CSS pixels, `Ms` a duration, `Time` an epoch instant. Device pixels appear only as `viewport` and `backingScale`.
+- A bitmask is `<x>.flags` (`<x>_flags`) and its bits are `<X>_*`: `display.flags` with `DISPLAY_*`, `focus.flags` with `FOCUS_*`.
+- One word per visual: the extra disc or band around a focused item is a halo; the coordinate grid is the graticule.

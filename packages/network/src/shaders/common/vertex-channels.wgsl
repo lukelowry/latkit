@@ -19,18 +19,18 @@ fn colormap(t: f32) -> vec3f {
 
 fn vertex_norm_height(vi: u32) -> f32 {
   if (u.v_height_mode == 0u) { return 0.0; }
-  let t = clamp((rf(u.v_height_offset + vi) - u.height_center) * u.height_scale, 0.0, 1.0);
-  return u.height_out_min + t * u.height_out_scale;
+  let t = clamp((rf(u.v_height_offset + vi) - u.v_height_min) * u.v_height_scale, 0.0, 1.0);
+  return u.v_height_out_min + t * u.v_height_out_span;
 }
 
 fn vertex_size_scale(vi: u32) -> f32 {
   if (u.v_size_mode == 0u) { return 1.0; }
   let t = clamp((rf(u.v_size_offset + vi) - u.v_size_min) * u.v_size_scale, 0.0, 1.0);
-  return u.size_out_min + t * u.size_out_scale;
+  return u.v_size_out_min + t * u.v_size_out_span;
 }
 
 fn vertex_channel_color(vi: u32) -> vec4f {
-  if (u.v_color_mode == 0u) { return u.base_vertex_color; }
+  if (u.v_color_mode == 0u) { return u.v_base_color; }
   let t = (rf(u.v_color_offset + vi) - u.v_color_min) * u.v_color_scale;
   return vec4f(colormap(t), 1.0);
 }

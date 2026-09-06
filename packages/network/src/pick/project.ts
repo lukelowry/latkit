@@ -10,10 +10,10 @@ import {
   W_FLAT_TX,
   W_FLAT_TY,
   W_FOV_SCALE,
-  W_HEIGHT_OUT_MIN,
-  W_HEIGHT_OUT_SCALE,
-  W_HEIGHT_WORLD_SCALE,
-  W_VERTEX_SIZE,
+  W_V_HEIGHT_OUT_MIN,
+  W_V_HEIGHT_OUT_SPAN,
+  W_HEIGHT_AMPLITUDE,
+  W_V_RADIUS,
   W_V_HEIGHT_MODE,
   W_VIEWPORT_X,
   W_VIEWPORT_Y,
@@ -157,7 +157,7 @@ export function planeProjector(uniforms: Uniforms): Projector {
       const amount = f[W_DEPTH_MIX]!;
       out.wx = x;
       out.wy = y;
-      out.wz = amount * (VISUAL.tiltSurfaceLift * f[W_VERTEX_SIZE]! + h * f[W_HEIGHT_WORLD_SCALE]!);
+      out.wz = amount * (VISUAL.tiltSurfaceLift * f[W_V_RADIUS]! + h * f[W_HEIGHT_AMPLITUDE]!);
       if (amount === 0) {
         out.cx = x * f[W_FLAT_SX]! + f[W_FLAT_TX]!;
         out.cy = y * f[W_FLAT_SY]! + f[W_FLAT_TY]!;
@@ -166,9 +166,11 @@ export function planeProjector(uniforms: Uniforms): Projector {
       } else {
         projectVP(f, out);
       }
-      const scale = Math.max(Math.abs(f[W_HEIGHT_OUT_SCALE]!), 1e-6);
+      const scale = Math.max(Math.abs(f[W_V_HEIGHT_OUT_SPAN]!), 1e-6);
       const rank =
-        u[W_V_HEIGHT_MODE] === 0 ? 0 : Math.min(1, Math.max(0, (h - f[W_HEIGHT_OUT_MIN]!) / scale));
+        u[W_V_HEIGHT_MODE] === 0
+          ? 0
+          : Math.min(1, Math.max(0, (h - f[W_V_HEIGHT_OUT_MIN]!) / scale));
       out.cz -= rank * VISUAL.flatHeightDepthSpan * (1 - amount) * out.cw;
     },
     toScreen(p) {
@@ -180,8 +182,8 @@ export function planeProjector(uniforms: Uniforms): Projector {
     screenRadius(p) {
       const px =
         f[W_DEPTH_MIX] === 0
-          ? f[W_VERTEX_SIZE]! * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
-          : perspectivePx(f, p.cw, f[W_VERTEX_SIZE]!);
+          ? f[W_V_RADIUS]! * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
+          : perspectivePx(f, p.cw, f[W_V_RADIUS]!);
       return Math.min(px, VISUAL.maxVertexRadiusPx * f[W_BACKING_SCALE]!);
     },
     screenHalfWidth(p, baseWidth) {
@@ -209,7 +211,7 @@ export function globeProjector(uniforms: Uniforms): Projector {
       const la = y * DEG2RAD;
       const lo = x * DEG2RAD;
       const c = Math.cos(la);
-      const lift = 1 + VISUAL.globeSurfaceOffset + h * f[W_HEIGHT_WORLD_SCALE]!;
+      const lift = 1 + VISUAL.globeSurfaceOffset + h * f[W_HEIGHT_AMPLITUDE]!;
       out.wx = c * Math.cos(lo) * lift;
       out.wy = Math.sin(la) * lift;
       out.wz = -c * Math.sin(lo) * lift;
@@ -237,7 +239,7 @@ export function globeProjector(uniforms: Uniforms): Projector {
       return t >= 0.999;
     },
     screenRadius(p) {
-      const px = perspectivePx(f, p.cw, f[W_VERTEX_SIZE]! * VISUAL.globeVertexScale);
+      const px = perspectivePx(f, p.cw, f[W_V_RADIUS]! * VISUAL.globeVertexScale);
       return Math.min(px, VISUAL.maxVertexRadiusPx * f[W_BACKING_SCALE]!);
     },
     screenHalfWidth(p, baseWidth) {

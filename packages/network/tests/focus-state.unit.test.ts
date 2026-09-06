@@ -36,18 +36,18 @@ describe('FocusState', () => {
     expect(uniforms.focus.hoverColor).toBe(0x0000ff); // red packed low byte
     expect(uniforms.focus.selectedColor).toBe(0x00ff00);
     expect(uniforms.focus.hoverAlpha).toBeCloseTo(0.5);
-    expect(uniforms.focus.edgeSelectedUnderlayPx).toBe(5);
+    expect(uniforms.focus.eSelectedPx).toBe(5);
   });
 
   it('reports hover changes and writes the hovered ids', () => {
     const { uniforms, focus } = make();
     expect(focus.setHover('vertex', 12)).toBe(true);
-    expect(uniforms.focus.hoverVertex).toBe(12);
-    expect(uniforms.focus.hoverEdge).toBe(-1);
+    expect(uniforms.focus.vHoverId).toBe(12);
+    expect(uniforms.focus.eHoverId).toBe(-1);
 
     expect(focus.setHover('vertex', 12)).toBe(false); // same target
     expect(focus.setHover(null)).toBe(true);
-    expect(uniforms.focus.hoverVertex).toBe(-1);
+    expect(uniforms.focus.vHoverId).toBe(-1);
   });
 
   it('writes selected-edge endpoints in selected mode and clears them on deselect', () => {

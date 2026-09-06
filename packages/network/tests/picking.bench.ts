@@ -90,9 +90,9 @@ function makeRig(
   uniforms.frame.viewportX = VP.w;
   uniforms.frame.viewportY = VP.h;
   uniforms.frame.backingScale = 1;
-  uniforms.geometry.vertexSize = (xMax - xMin) * 0.0005;
-  uniforms.geometry.baseEdgeWidth = (xMax - xMin) * 0.0001;
-  uniforms.geometry.vertexLod = 2;
+  uniforms.geometry.vRadius = (xMax - xMin) * 0.0005;
+  uniforms.geometry.eHalfWidth = (xMax - xMin) * 0.0001;
+  uniforms.geometry.vLodPx = 2;
 
   const picker = new Picker({
     uniforms,

@@ -8,7 +8,7 @@ import { PIPELINES } from '../src/projections.js';
 
 describe('background graticule shader contract', () => {
   it('keeps the shared flag guard before derivative work', () => {
-    const guard = graticuleSrc.indexOf('fn grid_enabled()');
+    const guard = graticuleSrc.indexOf('fn graticule_enabled()');
     const cartesian = graticuleSrc.indexOf('fn cartesian_grid');
     const geographic = graticuleSrc.indexOf('fn geographic_graticule');
     const firstDerivative = graticuleSrc.indexOf('dpdx');
@@ -46,11 +46,13 @@ describe('background graticule shader contract', () => {
 
   it('clips the geographic ground to the world rect in both branches', () => {
     // Geographic coordinates end at ±180 x ±90; beyond them the plane shows
-    // the page background, gated on FLAG_GEOGRAPHIC so abstract topologies
+    // the page background, gated on DISPLAY_GEOGRAPHIC so abstract topologies
     // keep the unbounded ground. Coverage takes derivatives, so both samples
     // evaluate it before their discard.
     expect(planeBgSrc).toContain('const WORLD_EDGE_HALF = vec2f(180.0, 90.0);');
-    expect(planeBgSrc).toContain('if ((u.flags & FLAG_GEOGRAPHIC) == 0u) { return 1.0; }');
+    expect(planeBgSrc).toContain(
+      'if ((u.display_flags & DISPLAY_GEOGRAPHIC) == 0u) { return 1.0; }',
+    );
     const flatCover = planeBgSrc.indexOf('world_coverage(p)');
     const flatDiscard = planeBgSrc.indexOf('if (cover == 0.0) { discard; }');
     expect(flatCover).toBeGreaterThanOrEqual(0);

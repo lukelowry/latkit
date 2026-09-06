@@ -1,7 +1,7 @@
 import { extent, validateDomain, type Domain } from '@latkit/model';
 
 import { ITEM_EDGE_VISIBLE, ITEM_VERTEX_VISIBLE, type Uniforms } from './webgpu/uniforms.js';
-import { effectiveRange, linearNorm } from './range.js';
+import { effectiveDomain, linearNorm } from './normalize.js';
 
 /** Static metadata for one channel: its storage scope, shader map, display label, and whether it takes a domain. */
 export interface ChannelDefinition {
@@ -205,7 +205,7 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
 
   function domain(channel: Channel): Domain | null {
     if (!current.has(channel) || !channelDefinition(channel).normalized) return null;
-    return effectiveRange(data.get(channel), domainOverride.get(channel));
+    return effectiveDomain(data.get(channel), domainOverride.get(channel));
   }
 
   function writeOffset(channel: Channel, offset: number): void {
@@ -252,7 +252,7 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
         uniforms.channel.vSizeMode = on ? 1 : 0;
         break;
       case 'edgeDash':
-        uniforms.geometry.dashPeriod = on ? deps.dashPeriodPx() : 0;
+        uniforms.geometry.eDashPeriodPx = on ? deps.dashPeriodPx() : 0;
         break;
       case 'vertexVisible':
         uniforms.channel.itemFlags = toggleBit(uniforms.channel.itemFlags, ITEM_VERTEX_VISIBLE, on);
@@ -273,7 +273,7 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
       writeNeutralScalars(channel as NormalizedChannel);
       return;
     }
-    const [lo, hi] = effectiveRange(data.get(channel), domainOverride.get(channel));
+    const [lo, hi] = effectiveDomain(data.get(channel), domainOverride.get(channel));
     switch (def.map) {
       case 'colormap': {
         const [min, scale] = linearNorm(lo, hi);
@@ -289,10 +289,10 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
       case 'height': {
         const [min, scale] = linearNorm(lo, hi);
         const [outMin, outMax] = deps.heightRange();
-        uniforms.channel.heightCenter = min;
-        uniforms.channel.heightScale = scale;
-        uniforms.channel.heightOutMin = outMin;
-        uniforms.channel.heightOutScale = outMax - outMin;
+        uniforms.channel.vHeightMin = min;
+        uniforms.channel.vHeightScale = scale;
+        uniforms.channel.vHeightOutMin = outMin;
+        uniforms.channel.vHeightOutSpan = outMax - outMin;
         break;
       }
       case 'size': {
@@ -300,8 +300,8 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
         const [outMin, outMax] = deps.sizeRange();
         uniforms.channel.vSizeMin = min;
         uniforms.channel.vSizeScale = scale;
-        uniforms.channel.sizeOutMin = outMin;
-        uniforms.channel.sizeOutScale = outMax - outMin;
+        uniforms.channel.vSizeOutMin = outMin;
+        uniforms.channel.vSizeOutSpan = outMax - outMin;
         break;
       }
       default:
@@ -321,18 +321,18 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
         uniforms.channel.eColorScale = 0;
         break;
       case 'vertexHeight':
-        uniforms.channel.heightCenter = 0;
-        uniforms.channel.heightScale = 0;
-        uniforms.channel.heightOutMin = 0;
-        uniforms.channel.heightOutScale = 0;
+        uniforms.channel.vHeightMin = 0;
+        uniforms.channel.vHeightScale = 0;
+        uniforms.channel.vHeightOutMin = 0;
+        uniforms.channel.vHeightOutSpan = 0;
         break;
       case 'vertexSize': {
         // The output range stays live so picking pads by the same multiplier cap the shader uses.
         const [outMin, outMax] = deps.sizeRange();
         uniforms.channel.vSizeMin = 0;
         uniforms.channel.vSizeScale = 0;
-        uniforms.channel.sizeOutMin = outMin;
-        uniforms.channel.sizeOutScale = outMax - outMin;
+        uniforms.channel.vSizeOutMin = outMin;
+        uniforms.channel.vSizeOutSpan = outMax - outMin;
         break;
       }
       default:

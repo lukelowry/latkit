@@ -51,7 +51,6 @@ export class FakeRenderer {
     poles: false,
     borders: true,
     earthAxis: true,
-    layering: 'stacked',
   };
   borders: Borders | null = null;
   projectionMode: Projection = 'flat';

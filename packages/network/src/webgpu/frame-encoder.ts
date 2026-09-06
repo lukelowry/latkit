@@ -1,10 +1,9 @@
 /// <reference types="@webgpu/types" />
 
-import type { Layering } from '../options.js';
 import type { BorderBuffers } from './border-buffers.js';
 import type { VisualPipelines } from './pipelines.js';
 
-/** The passes one encoded frame draws, and how their items overlap. */
+/** The passes one encoded frame draws. */
 export interface FramePasses {
   /** Draw vertex billboards. */
   vertices: boolean;
@@ -16,8 +15,6 @@ export interface FramePasses {
   borders: boolean;
   /** Draw globe earth-axis indicator. */
   earthAxis: boolean;
-  /** Whether edges write depth (`depth`) or paint under everything but the surface (`stacked`). */
-  layering: Layering;
 }
 
 /** Counts required by instanced draw calls. */
@@ -48,7 +45,7 @@ export interface EncodeNetworkFrameInputs {
   topology: FrameTopology;
   /** Optional bound border buffers. */
   borders: BorderBuffers | null;
-  /** Pass visibility and layering resolved by the renderer. */
+  /** Pass visibility resolved by the renderer. */
   passes: FramePasses;
   /** Shared unit quad vertex buffer for billboard passes. */
   unitQuad: GPUBuffer;
@@ -76,7 +73,7 @@ export function encodeNetworkFrame(inputs: EncodeNetworkFrameInputs): void {
 
   // The background is the scene's surface (ground plane or sphere) and its
   // depth reference; it draws every frame in every projection.
-  rp.setPipeline(inputs.visual.bg);
+  rp.setPipeline(inputs.visual.background);
   rp.setBindGroup(0, inputs.channelsBindGroup);
   rp.draw(3);
 
@@ -100,14 +97,14 @@ export function encodeNetworkFrame(inputs: EncodeNetworkFrameInputs): void {
     rp.setBindGroup(1, inputs.topologyBindGroup);
     rp.setBindGroup(2, inputs.segmentsBindGroup);
 
-    rp.setPipeline(inputs.visual.edge[passes.layering]);
+    rp.setPipeline(inputs.visual.edge);
     rp.draw(4, inputs.topology.segmentCount);
 
     if (inputs.edgeFocusRanges.length > 0) {
       rp.setPipeline(inputs.visual.edgeHalo);
       drawFocusedEdges(rp, inputs);
 
-      rp.setPipeline(inputs.visual.edgeFocus[passes.layering]);
+      rp.setPipeline(inputs.visual.edgeFocus);
       drawFocusedEdges(rp, inputs);
     }
   }

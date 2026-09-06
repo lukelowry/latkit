@@ -1,17 +1,17 @@
 /// <reference types="@webgpu/types" />
 import { createPresentation, type DeviceLease, type Presentation } from '@latkit/gpu';
-import { extent, frameAt, sample, type Domain, type Series } from '@latkit/model';
-
-import { createEmitter } from './emitter.js';
 import {
-  OPTIONS,
-  own,
-  resolveOptions,
-  validateOptions,
-  type Colormap,
-  type Options,
+  bakeColormap,
+  createEmitter,
+  extent,
+  frameAt,
+  sample,
+  type Domain,
   type RGBA,
-} from './options.js';
+  type Series,
+} from '@latkit/model';
+
+import { OPTIONS, own, resolveOptions, validateOptions, type Options } from './options.js';
 import { COLORMAP_LUT_SIZE, LanePainter, SEGMENT_BUDGET, framesPerWindow } from './painter.js';
 
 export type { Options } from './options.js';
@@ -217,10 +217,10 @@ export function createMonitor(options: Options = {}): Monitor {
   const resolved = resolveOptions(options);
   const events = createEmitter<Events>();
 
-  let colormapLut = bakeColormap(resolved.colormap);
+  let colormapLut = bakeColormap(resolved.colormap, COLORMAP_LUT_SIZE);
   let lineWidthPx = resolved.lineWidthPx;
-  let pinnedRange: Domain | null = resolved.valueRange;
-  let effectiveRange: Domain = normalizeRange(pinnedRange);
+  let valueRange: Domain | null = resolved.valueRange;
+  let valueDomain: Domain = normalizeDomain(valueRange);
   let timeRange: Domain | null = resolved.timeRange;
   let focusColor: RGBA | null = resolved.focusColor;
   let unselectedAlpha = resolved.unselectedAlpha;
@@ -233,21 +233,21 @@ export function createMonitor(options: Options = {}): Monitor {
   let generation = 0;
   let binding: Binding | null = null;
 
-  /** The range that drives y and color together: pinned, or the signal's committed extent. */
-  function resolveRange(): Domain {
-    if (pinnedRange) return normalizeRange(pinnedRange);
+  /** The value domain that drives y and color together: pinned, or the signal's committed extent. */
+  function resolveValueDomain(): Domain {
+    if (valueRange) return normalizeDomain(valueRange);
     if (!bound) return [0, 1];
     const { series, signal } = bound;
     if (series.ranges)
-      return normalizeRange([series.ranges[signal * 2]!, series.ranges[signal * 2 + 1]!]);
-    return normalizeRange(bound.extent);
+      return normalizeDomain([series.ranges[signal * 2]!, series.ranges[signal * 2 + 1]!]);
+    return normalizeDomain(bound.extent);
   }
 
   /**
-   * The time window as an affine map over the normalized axis: `x = (xnorm - min) * scale`.
+   * The time window as an affine map over the normalized axis: `x = (xnorm - timeMin) * timeScale`.
    * Identity without a pinned window or a series.
    */
-  function resolveWindow(): readonly [min: number, scale: number] {
+  function resolveTimeMap(): readonly [min: number, scale: number] {
     if (!timeRange || !bound) return [0, 1];
     const { time } = bound.series;
     const t0 = time[0]!;
@@ -256,11 +256,11 @@ export function createMonitor(options: Options = {}): Monitor {
     return [(from - t0) / span, span / Math.max(to - from, 1e-9)];
   }
 
-  /** Adopt the resolved range; true when it moved. */
-  function refreshRange(): boolean {
-    const next = resolveRange();
-    if (next[0] === effectiveRange[0] && next[1] === effectiveRange[1]) return false;
-    effectiveRange = next;
+  /** Adopt the resolved value domain; true when it moved. */
+  function refreshValueDomain(): boolean {
+    const next = resolveValueDomain();
+    if (next[0] === valueDomain[0] && next[1] === valueDomain[1]) return false;
+    valueDomain = next;
     return true;
   }
 
@@ -276,26 +276,26 @@ export function createMonitor(options: Options = {}): Monitor {
 
   function writeUniforms(entry: Binding): void {
     const { painter } = entry;
-    const [min, max] = effectiveRange;
-    const [windowMin, windowScale] = resolveWindow();
+    const [min, max] = valueDomain;
+    const [timeMin, timeScale] = resolveTimeMap();
     const base = {
-      widthPx: painter.widthPx,
-      heightPx: painter.heightPx,
-      rangeMin: min,
-      rangeScale: 1 / (max - min),
-      windowMin,
-      windowScale,
+      viewportX: painter.width,
+      viewportY: painter.height,
+      valueMin: min,
+      valueScale: 1 / (max - min),
+      timeMin,
+      timeScale,
       focusColor: focusColor ?? ([0, 0, 0, -1] as const),
       alpha: selected === null ? 1 : unselectedAlpha,
     };
     painter.writeUniform('history', {
       ...base,
-      lineWidthPx: lineWidthPx * entry.backingScale,
+      lineWidth: lineWidthPx * entry.backingScale,
       elementCount: bound?.series.elementCount ?? 1,
     });
     painter.writeUniform('focus', {
       ...base,
-      lineWidthPx: lineWidthPx * entry.backingScale * 2.5,
+      lineWidth: lineWidthPx * entry.backingScale * 2.5,
       elementCount: 1,
     });
   }
@@ -391,14 +391,14 @@ export function createMonitor(options: Options = {}): Monitor {
     const { series, signal, validFrames } = bound;
     const { time } = series;
     // The cursor sits on the windowed axis; map it back to the series' full span.
-    const [windowMin, windowScale] = resolveWindow();
-    const xnorm = windowMin + x / windowScale;
+    const [timeMin, timeScale] = resolveTimeMap();
+    const xnorm = timeMin + x / timeScale;
     if (xnorm < 0 || xnorm > 1) return null;
     const t = time[0]! + xnorm * (time[time.length - 1]! - time[0]!);
     const frame = frameAt(time, t);
     if (frame >= validFrames) return null;
     const values = sample(series, signal, frame);
-    const [min, max] = effectiveRange;
+    const [min, max] = valueDomain;
     const scale = 1 / (max - min);
     let best = -1;
     let bestDist = Infinity;
@@ -688,7 +688,7 @@ export function createMonitor(options: Options = {}): Monitor {
       bound = state;
       if (selected !== null && selected >= series.elementCount) selected = null;
       gatherFocus(state, 0, committed);
-      refreshRange();
+      refreshValueDomain();
       if (binding) replayInto(binding);
     },
 
@@ -713,11 +713,11 @@ export function createMonitor(options: Options = {}): Monitor {
         ? committedExtent(state, 0, state.validFrames)
         : mergeExtent(state.extent, committedExtent(state, from, state.validFrames));
       gatherFocus(state, start, state.validFrames);
-      const rangeMoved = refreshRange();
+      const domainMoved = refreshValueDomain();
 
       const entry = binding;
       if (!entry) return;
-      if (rangeMoved) {
+      if (domainMoved) {
         writeUniforms(entry);
         uploadFocus(entry, 0, state.validFrames);
         scheduleRepaint(entry);
@@ -742,7 +742,7 @@ export function createMonitor(options: Options = {}): Monitor {
       state.signal = signal;
       state.extent = committedExtent(state, 0, state.validFrames);
       gatherFocus(state, 0, state.validFrames);
-      refreshRange();
+      refreshValueDomain();
       const entry = binding;
       if (!entry) return;
       writeUniforms(entry);
@@ -754,7 +754,8 @@ export function createMonitor(options: Options = {}): Monitor {
       if (destroyed) return;
       validateOptions(patch);
       // Sample the colormap before anything is applied: caller code may throw.
-      const lut = patch.colormap === undefined ? null : bakeColormap(patch.colormap);
+      const lut =
+        patch.colormap === undefined ? null : bakeColormap(patch.colormap, COLORMAP_LUT_SIZE);
       let uniformsDirty = false;
       let repaint = false;
       let present = false;
@@ -772,8 +773,8 @@ export function createMonitor(options: Options = {}): Monitor {
             repaint = true;
             break;
           case 'valueRange':
-            pinnedRange = own(patch.valueRange!);
-            if (refreshRange()) {
+            valueRange = own(patch.valueRange!);
+            if (refreshValueDomain()) {
               uniformsDirty = true;
               repaint = true;
             }
@@ -924,19 +925,6 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Bake a colormap into the rgba8 lookup the painter samples. */
-function bakeColormap(fn: Colormap): Uint8Array {
-  const lut = new Uint8Array(COLORMAP_LUT_SIZE * 4);
-  for (let i = 0; i < COLORMAP_LUT_SIZE; i++) {
-    const [r, g, b] = fn(i / (COLORMAP_LUT_SIZE - 1));
-    lut[i * 4] = channelByte(r);
-    lut[i * 4 + 1] = channelByte(g);
-    lut[i * 4 + 2] = channelByte(b);
-    lut[i * 4 + 3] = 255;
-  }
-  return lut;
-}
-
 /** The line-width scale that keeps CSS pixels honest after the device limit shrinks the backing. */
 function fittedBackingScale(canvas: HTMLCanvasElement, size: BackingSize): number {
   return size.ratio * Math.min(canvas.width / size.width, canvas.height / size.height);
@@ -983,10 +971,6 @@ function mergeExtent(a: Domain | null, b: Domain | null): Domain | null {
   return [Math.min(a[0], b[0]), Math.max(a[1], b[1])];
 }
 
-function channelByte(x: number): number {
-  return Math.round(Math.min(1, Math.max(0, x)) * 255);
-}
-
 function clamp01(x: number): number {
   return x < 0 ? 0 : x > 1 ? 1 : x;
 }
@@ -996,7 +980,7 @@ function clampFrameCount(n: number, frames: number): number {
   return Math.min(Math.max(0, Math.floor(n)), frames);
 }
 
-function normalizeRange(range: Domain | null): Domain {
+function normalizeDomain(range: Domain | null): Domain {
   if (!range) return [0, 1];
   const [min, max] = range;
   if (!Number.isFinite(min) || !Number.isFinite(max)) return [0, 1];

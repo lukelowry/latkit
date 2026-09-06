@@ -267,9 +267,9 @@ export function createPlaneProjection(initial: PlaneView): CameraProjection {
       region.depthMix = amount;
       if (amount === 0) return;
       build(s, vp);
-      region.setVP(vpM);
+      region.setViewProj(vpM);
       region.setCameraPos(eye[0], eye[1], eye[2]);
-      region.setViewBasis(viewM);
+      region.setCameraBasis(viewM);
     },
   };
 }

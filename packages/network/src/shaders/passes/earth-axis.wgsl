@@ -32,8 +32,8 @@ fn vs(
   let a = dir * (1.0 + GLOBE_SURFACE_OFFSET);
   let b = dir * EARTH_AXIS_RADIUS;
 
-  let clip_a = u.vp * vec4f(a, 1.0);
-  let clip_b = u.vp * vec4f(b, 1.0);
+  let clip_a = u.view_proj * vec4f(a, 1.0);
+  let clip_b = u.view_proj * vec4f(b, 1.0);
 
   // The screen-space ribbon expansion below is meaningless once an endpoint
   // reaches the camera plane, which a pitched low-altitude camera can do.

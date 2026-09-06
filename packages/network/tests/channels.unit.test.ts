@@ -88,18 +88,18 @@ describe('createChannels', () => {
 
     channels.set('vertexHeight', new Float32Array([2, 6, 10]), [2, 10]);
     expect(uniforms.channel.vHeightMode).toBe(1);
-    expect(uniforms.channel.heightCenter).toBe(2);
-    expect(uniforms.channel.heightScale).toBeCloseTo(1 / 8);
-    expect(uniforms.channel.heightOutMin).toBe(0);
-    expect(uniforms.channel.heightOutScale).toBe(1);
+    expect(uniforms.channel.vHeightMin).toBe(2);
+    expect(uniforms.channel.vHeightScale).toBeCloseTo(1 / 8);
+    expect(uniforms.channel.vHeightOutMin).toBe(0);
+    expect(uniforms.channel.vHeightOutSpan).toBe(1);
 
     channels.setDomain('vertexHeight', [4, 6]);
-    expect(uniforms.channel.heightCenter).toBe(4);
-    expect(uniforms.channel.heightScale).toBeCloseTo(1 / 2);
+    expect(uniforms.channel.vHeightMin).toBe(4);
+    expect(uniforms.channel.vHeightScale).toBeCloseTo(1 / 2);
 
     channels.setDomain('vertexHeight', null);
-    expect(uniforms.channel.heightCenter).toBe(2);
-    expect(uniforms.channel.heightScale).toBeCloseTo(1 / 8);
+    expect(uniforms.channel.vHeightMin).toBe(2);
+    expect(uniforms.channel.vHeightScale).toBeCloseTo(1 / 8);
 
     renderer.writeChannel.mockClear();
     channels.setDomain('vertexHeight', [2, 10]);
@@ -116,10 +116,10 @@ describe('createChannels', () => {
     channels.set('vertexHeight', new Float32Array([1, 2, 3]), domain);
     domain[0] = 100;
 
-    expect(uniforms.channel.heightCenter).toBe(1);
-    expect(uniforms.channel.heightScale).toBeCloseTo(1 / 2);
-    expect(uniforms.channel.heightOutMin).toBe(0);
-    expect(uniforms.channel.heightOutScale).toBe(2);
+    expect(uniforms.channel.vHeightMin).toBe(1);
+    expect(uniforms.channel.vHeightScale).toBeCloseTo(1 / 2);
+    expect(uniforms.channel.vHeightOutMin).toBe(0);
+    expect(uniforms.channel.vHeightOutSpan).toBe(2);
 
     const override: [number, number] = [2, 4];
     channels.setDomain('vertexHeight', override);
@@ -127,8 +127,8 @@ describe('createChannels', () => {
     override[1] = 40;
     channels.set('vertexHeight', new Float32Array([3, 4, 5]), [3, 5]);
 
-    expect(uniforms.channel.heightCenter).toBe(2);
-    expect(uniforms.channel.heightScale).toBeCloseTo(1 / 2);
+    expect(uniforms.channel.vHeightMin).toBe(2);
+    expect(uniforms.channel.vHeightScale).toBeCloseTo(1 / 2);
   });
 
   it('rejects invalid replacement domains before mutating CPU, GPU, or uniform state', () => {
@@ -245,8 +245,8 @@ describe('createChannels', () => {
 
     channels.set('vertexHeight', new Float32Array([Number.NaN, Infinity, -Infinity]), null);
 
-    expect(uniforms.channel.heightCenter).toBe(0);
-    expect(uniforms.channel.heightScale).toBe(1);
+    expect(uniforms.channel.vHeightMin).toBe(0);
+    expect(uniforms.channel.vHeightScale).toBe(1);
   });
 
   it('clears a channel idempotently to neutral uniforms and forgets range state', () => {
@@ -275,8 +275,8 @@ describe('createChannels', () => {
     channels.reset();
 
     expect(uniforms.channel.vHeightMode).toBe(0);
-    expect(uniforms.channel.heightScale).toBe(0);
-    expect(uniforms.channel.heightOutScale).toBe(0);
+    expect(uniforms.channel.vHeightScale).toBe(0);
+    expect(uniforms.channel.vHeightOutSpan).toBe(0);
     expect(uniforms.channel.eColorMode).toBe(0);
     expect(channels.values('vertexHeight')).toBeNull();
   });
@@ -285,10 +285,10 @@ describe('createChannels', () => {
     const { channels, uniforms } = make();
 
     channels.set('edgeDash', new Float32Array([1, 0]), [100, 200]);
-    expect(uniforms.geometry.dashPeriod).toBe(18);
+    expect(uniforms.geometry.eDashPeriodPx).toBe(18);
 
     channels.clear('edgeDash');
-    expect(uniforms.geometry.dashPeriod).toBe(0);
+    expect(uniforms.geometry.eDashPeriodPx).toBe(0);
   });
 
   it('refreshes the dash period only while edgeDash is bound', () => {
@@ -296,14 +296,14 @@ describe('createChannels', () => {
 
     display.dashPeriodPx = 6;
     channels.refreshDashPeriod();
-    expect(uniforms.geometry.dashPeriod).toBe(0);
+    expect(uniforms.geometry.eDashPeriodPx).toBe(0);
 
     channels.set('edgeDash', new Float32Array([1, 0]), [100, 200]);
-    expect(uniforms.geometry.dashPeriod).toBe(6);
+    expect(uniforms.geometry.eDashPeriodPx).toBe(6);
 
     display.dashPeriodPx = 9;
     channels.refreshDashPeriod();
-    expect(uniforms.geometry.dashPeriod).toBe(9);
+    expect(uniforms.geometry.eDashPeriodPx).toBe(9);
   });
 
   it('reports the effective domain of bound normalized channels and refreshes the height range', () => {
@@ -319,13 +319,13 @@ describe('createChannels', () => {
 
     display.heightRange = [1, 3];
     channels.refreshHeightRange();
-    expect(uniforms.channel.heightOutScale).toBe(0);
+    expect(uniforms.channel.vHeightOutSpan).toBe(0);
     channels.set('vertexHeight', new Float32Array([1, 2, 3]));
-    expect(uniforms.channel.heightOutMin).toBe(1);
-    expect(uniforms.channel.heightOutScale).toBe(2);
+    expect(uniforms.channel.vHeightOutMin).toBe(1);
+    expect(uniforms.channel.vHeightOutSpan).toBe(2);
     display.heightRange = [0, 4];
     channels.refreshHeightRange();
-    expect(uniforms.channel.heightOutScale).toBe(4);
+    expect(uniforms.channel.vHeightOutSpan).toBe(4);
     expect(channels.domain('vertexHeight')).toEqual([1, 3]);
   });
 

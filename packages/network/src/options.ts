@@ -1,22 +1,13 @@
 import { devices, type DevicePool } from '@latkit/gpu';
-import { validateDomain, type Domain } from '@latkit/model';
+import { validateDomain, validateRgba, type Colormap, type Domain, type RGBA } from '@latkit/model';
 
-import type { FocusEndpointMode, RGBA } from './focus-state.js';
-
-/** Function mapping a normalized scalar to normalized RGB channels. */
-export type Colormap = (t: number) => readonly [number, number, number];
+import type { FocusEndpointMode } from './focus-state.js';
 
 /** How camera motion is animated: following the user's preference, always reduced, or always full. */
 export type Motion = 'auto' | 'reduce' | 'full';
 
 /** What a plain wheel does: zoom the view, or scroll the page unless a modifier is held. */
 export type Wheel = 'zoom' | 'modifier';
-
-/**
- * How overlapping items resolve: `stacked` paints borders under edges under poles under vertices,
- * each hidden only by the surface; `depth` lets true depth decide between them.
- */
-export type Layering = 'stacked' | 'depth';
 
 /**
  * Network display options: the construction record and the live patch.
@@ -41,8 +32,6 @@ export interface Options {
   edges?: boolean;
   /** Draw height poles when a `vertexHeight` channel is active. @defaultValue `false`. */
   poles?: boolean;
-  /** How overlapping items resolve. @defaultValue `'stacked'`. */
-  layering?: Layering;
   /** Multiplier applied to the topology-derived vertex radius before its pixel cap. @defaultValue `1`. */
   vertexScale?: number;
   /** Multiplier applied to the topology-derived edge half-width before pixel clamps. @defaultValue `1`. */
@@ -74,9 +63,9 @@ export interface Options {
   /** Softness of the day/night terminator in shader units. @defaultValue `0.12`. */
   terminatorWidth?: number;
   /** Resting vertex color without a `vertexColor` channel. @defaultValue `[0.5, 0.5, 0.5, 1]`. */
-  baseVertexColor?: RGBA;
+  vertexBaseColor?: RGBA;
   /** Resting edge color without an `edgeColor` channel; `null` averages the endpoint colors. @defaultValue `null`. */
-  baseEdgeColor?: RGBA | null;
+  edgeBaseColor?: RGBA | null;
   /** Seeds the color lookup texture used by colormap channels. @defaultValue A neutral gray ramp. */
   colormap?: Colormap;
   /** Graticule line color as normalized RGBA. @defaultValue `[0.45, 0.48, 0.54, 1]`. */
@@ -173,7 +162,6 @@ const definitions = {
   vertices: { kind: 'boolean', default: true, live: true },
   edges: { kind: 'boolean', default: true, live: true },
   poles: { kind: 'boolean', default: false, live: true },
-  layering: { kind: 'enum', values: values('stacked', 'depth'), default: 'stacked', live: true },
   vertexScale: { kind: 'nonnegative', default: 1, live: true },
   edgeScale: { kind: 'nonnegative', default: 1, live: true },
   heightScale: { kind: 'nonnegative', default: 1, live: true },
@@ -189,8 +177,8 @@ const definitions = {
   nightFloor: { kind: 'finite', default: 0.55, live: true },
   surfaceNightFloor: { kind: 'finite', default: 0.1, live: true },
   terminatorWidth: { kind: 'nonnegative', default: 0.12, live: true },
-  baseVertexColor: { kind: 'rgba', default: tuple(0.5, 0.5, 0.5, 1), live: true },
-  baseEdgeColor: { kind: 'rgba', default: null, live: true, nullable: true },
+  vertexBaseColor: { kind: 'rgba', default: tuple(0.5, 0.5, 0.5, 1), live: true },
+  edgeBaseColor: { kind: 'rgba', default: null, live: true, nullable: true },
   colormap: { kind: 'colormap', default: neutralColormap, live: true },
   graticuleColor: { kind: 'rgba', default: tuple(0.45, 0.48, 0.54, 1), live: true },
   surfaceColor: { kind: 'rgba', default: tuple(0.15, 0.16, 0.19, 1), live: true },
@@ -294,7 +282,7 @@ function validateOptionValue(key: string, definition: OptionDefinition, value: u
       validateNumber(key, value, true);
       return;
     case 'rgba':
-      validateRgba(key, value);
+      validateRgba(value, `network option ${key}`);
       return;
     case 'domain':
       validateDomain(value, `network option ${key}`);
@@ -322,16 +310,6 @@ function validateNumber(key: string, value: unknown, nonnegative: boolean): void
   if (!Number.isFinite(value)) throw new RangeError(`network option ${key} must be finite`);
   if (nonnegative && value < 0) {
     throw new RangeError(`network option ${key} must be nonnegative`);
-  }
-}
-
-function validateRgba(key: string, value: unknown): void {
-  if (!Array.isArray(value) || value.length !== 4) typeError(key, 'an RGBA tuple');
-  for (const component of value) {
-    if (typeof component !== 'number') typeError(key, 'an RGBA tuple');
-    if (!Number.isFinite(component) || component < 0 || component > 1) {
-      throw new RangeError(`network option ${key} RGBA components must be finite and in [0, 1]`);
-    }
   }
 }
 

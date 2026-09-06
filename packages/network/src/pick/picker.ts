@@ -10,24 +10,24 @@ import {
   ITEM_EDGE_VISIBLE,
   ITEM_VERTEX_VISIBLE,
   W_BACKING_SCALE,
-  W_BASE_EDGE_WIDTH,
-  W_DASH_PERIOD,
+  W_E_HALF_WIDTH,
+  W_E_DASH_PERIOD_PX,
   W_DEPTH_MIX,
-  W_HEIGHT_CENTER,
-  W_HEIGHT_OUT_MIN,
-  W_HEIGHT_OUT_SCALE,
-  W_HEIGHT_SCALE,
-  W_HEIGHT_WORLD_SCALE,
+  W_V_HEIGHT_MIN,
+  W_V_HEIGHT_OUT_MIN,
+  W_V_HEIGHT_OUT_SPAN,
+  W_V_HEIGHT_SCALE,
+  W_HEIGHT_AMPLITUDE,
   W_ITEM_FLAGS,
-  W_VERTEX_LOD,
+  W_V_LOD_PX,
   W_VIEWPORT_X,
   W_VIEWPORT_Y,
   W_V_HEIGHT_MODE,
   W_V_SIZE_MIN,
   W_V_SIZE_MODE,
   W_V_SIZE_SCALE,
-  W_SIZE_OUT_MIN,
-  W_SIZE_OUT_SCALE,
+  W_V_SIZE_OUT_MIN,
+  W_V_SIZE_OUT_SPAN,
 } from '../webgpu/uniforms.js';
 import { SEGMENT_RECORD_WORDS } from '../segments/wire.js';
 import type { DecodedSegments } from '../segments/index.js';
@@ -378,7 +378,7 @@ export class Picker {
     const backingScale = this.f32[W_BACKING_SCALE]!;
     const cursorX = q.sx * dprX;
     const cursorY = q.sy * dprY;
-    const radiusDev = Math.max(1, q.radiusPx * Math.max(dprX, dprY));
+    const radiusDevPx = Math.max(1, q.radiusPx * Math.max(dprX, dprY));
 
     const region = this.queryRegion(q, scene, proj);
     if (!region) return miss;
@@ -386,7 +386,7 @@ export class Picker {
     const itemFlags = this.u32[W_ITEM_FLAGS]!;
     const heights = this.u32[W_V_HEIGHT_MODE] !== 0 ? this.deps.values('vertexHeight') : null;
     const sizes = this.u32[W_V_SIZE_MODE] !== 0 ? this.deps.values('vertexSize') : null;
-    const dashes = this.f32[W_DASH_PERIOD]! > 0 ? this.deps.values('edgeDash') : null;
+    const dashes = this.f32[W_E_DASH_PERIOD_PX]! > 0 ? this.deps.values('edgeDash') : null;
     const vertexVisible =
       itemFlags & ITEM_VERTEX_VISIBLE ? this.deps.values('vertexVisible') : null;
     const edgeVisible = itemFlags & ITEM_EDGE_VISIBLE ? this.deps.values('edgeVisible') : null;
@@ -399,7 +399,7 @@ export class Picker {
       scene,
       cursorX,
       cursorY,
-      radiusDev,
+      radiusDevPx,
       heights,
       sizes,
       dashes,
@@ -407,9 +407,9 @@ export class Picker {
       edgeVisible,
       vertices: q.vertices,
       poles,
-      lod: this.f32[W_VERTEX_LOD]! * backingScale,
-      dashPeriod: this.f32[W_DASH_PERIOD]! * backingScale,
-      baseEdgeWidth: this.f32[W_BASE_EDGE_WIDTH]!,
+      lod: this.f32[W_V_LOD_PX]! * backingScale,
+      dashPeriod: this.f32[W_E_DASH_PERIOD_PX]! * backingScale,
+      baseEdgeWidth: this.f32[W_E_HALF_WIDTH]!,
       bestVertexD2: Infinity,
       bestVertexId: -1,
       bestEdgeD2: Infinity,
@@ -458,7 +458,7 @@ export class Picker {
     // Largest screen overhang of any pickable primitive around its anchor: the vertex radius
     // cap times the size-channel multiplier cap the live `sizeRange` option sets.
     const billboardPadPx =
-      VISUAL.maxVertexRadiusPx * (this.f32[W_SIZE_OUT_MIN]! + this.f32[W_SIZE_OUT_SCALE]!);
+      VISUAL.maxVertexRadiusPx * (this.f32[W_V_SIZE_OUT_MIN]! + this.f32[W_V_SIZE_OUT_SPAN]!);
     let reachPx =
       q.radiusPx +
       billboardPadPx / Math.min(this.f32[W_VIEWPORT_X]! / vp.w, this.f32[W_VIEWPORT_Y]! / vp.h, 1);
@@ -542,10 +542,10 @@ export class Picker {
     // globe: radial units to surface degrees). Flat pays nothing.
     let pad = 0;
     if (heightsActive) {
-      const outMin = this.f32[W_HEIGHT_OUT_MIN]!;
-      const outScale = this.f32[W_HEIGHT_OUT_SCALE]!;
+      const outMin = this.f32[W_V_HEIGHT_OUT_MIN]!;
+      const outScale = this.f32[W_V_HEIGHT_OUT_SPAN]!;
       const maxAbsH = Math.max(Math.abs(outMin), Math.abs(outMin + outScale));
-      const hCoord = maxAbsH * this.f32[W_HEIGHT_WORLD_SCALE]! * proj.heightPadScale();
+      const hCoord = maxAbsH * this.f32[W_HEIGHT_AMPLITUDE]! * proj.heightPadScale();
       const ratio = jacMin > 0 ? jacMax / jacMin : Infinity;
       if (!(ratio <= JACOBIAN_RATIO_CAP)) return this.coverAll(scene);
       pad = hCoord * ratio * HEIGHT_PAD_SAFETY;
@@ -682,8 +682,8 @@ export class Picker {
   /** Decode normalized vertex height in the same range the shader uses. */
   private normHeight(heights: Float32Array | null, vi: number): number {
     if (!heights) return 0;
-    const t = clamp01((heights[vi]! - this.f32[W_HEIGHT_CENTER]!) * this.f32[W_HEIGHT_SCALE]!);
-    return this.f32[W_HEIGHT_OUT_MIN]! + t * this.f32[W_HEIGHT_OUT_SCALE]!;
+    const t = clamp01((heights[vi]! - this.f32[W_V_HEIGHT_MIN]!) * this.f32[W_V_HEIGHT_SCALE]!);
+    return this.f32[W_V_HEIGHT_OUT_MIN]! + t * this.f32[W_V_HEIGHT_OUT_SPAN]!;
   }
 
   /** Decode per-vertex size multiplier, or 1 when the channel is unbound. */
@@ -691,7 +691,7 @@ export class Picker {
     const sizes = state.sizes;
     if (!sizes) return 1;
     const t = clamp01((sizes[vi]! - this.f32[W_V_SIZE_MIN]!) * this.f32[W_V_SIZE_SCALE]!);
-    return this.f32[W_SIZE_OUT_MIN]! + t * this.f32[W_SIZE_OUT_SCALE]!;
+    return this.f32[W_V_SIZE_OUT_MIN]! + t * this.f32[W_V_SIZE_OUT_SPAN]!;
   }
 
   /** Test one vertex billboard and optional height pole against the cursor. */
@@ -711,7 +711,7 @@ export class Picker {
           const dx = state.cursorX - p.sx;
           const dy = state.cursorY - p.sy;
           const d2 = dx * dx + dy * dy;
-          const limit = state.radiusDev + radius;
+          const limit = state.radiusDevPx + radius;
           if (d2 <= limit * limit) acceptVertex(state, id, d2);
         }
       }
@@ -727,7 +727,7 @@ export class Picker {
       state.proj.toScreen(base);
       state.proj.toScreen(tip);
       const d2 = pointSegmentD2(state.cursorX, state.cursorY, base.sx, base.sy, tip.sx, tip.sy);
-      const limit = state.radiusDev + state.proj.poleHalfWidth(base);
+      const limit = state.radiusDevPx + state.proj.poleHalfWidth(base);
       if (d2 <= limit * limit) acceptVertex(state, id, d2);
     }
   }
@@ -777,7 +777,7 @@ export class Picker {
     }
 
     mixPoint(M, A, B, 0.5);
-    const limit = state.radiusDev + state.proj.screenHalfWidth(M, state.baseEdgeWidth);
+    const limit = state.radiusDevPx + state.proj.screenHalfWidth(M, state.baseEdgeWidth);
     if (d2 <= limit * limit) acceptEdge(state, edgeId, d2);
   }
 }
@@ -793,7 +793,7 @@ interface TestState {
   /** Cursor y in device px. */
   readonly cursorY: number;
   /** Pick target radius in device px. */
-  readonly radiusDev: number;
+  readonly radiusDevPx: number;
   /** Bound raw vertex-height channel values, if enabled. */
   readonly heights: Float32Array | null;
   /** Bound raw vertex-size channel values, if enabled. */

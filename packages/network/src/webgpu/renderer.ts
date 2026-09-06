@@ -1,22 +1,23 @@
 /// <reference types="@webgpu/types" />
 
 import type { Presentation } from '@latkit/gpu';
+import { bakeColormap } from '@latkit/model';
 import {
   UNIFORM_BUFFER_BYTES,
   hasSceneDepth,
   hasVertexHeightChannel,
-  FLAG_FOCUS_ENABLED,
-  FLAG_FOCUS_HOVER_ENDPOINTS,
-  FLAG_FOCUS_SELECTED_ENDPOINTS,
+  FOCUS_ENABLED,
+  FOCUS_HOVER_ENDPOINTS,
+  FOCUS_SELECTED_ENDPOINTS,
   W_FOCUS_FLAGS,
-  W_HOVER_EDGE,
+  W_E_HOVER_ID,
   W_HOVER_ENDPOINT_A,
   W_HOVER_ENDPOINT_B,
-  W_HOVER_VERTEX,
-  W_SELECTED_EDGE,
+  W_V_HOVER_ID,
+  W_E_SELECTED_ID,
   W_SELECTED_ENDPOINT_A,
   W_SELECTED_ENDPOINT_B,
-  W_SELECTED_VERTEX,
+  W_V_SELECTED_ID,
   type Uniforms,
 } from './uniforms.js';
 import type { PreparedScene } from '../scene.js';
@@ -40,20 +41,8 @@ import {
   type ProjectionPipelineSet,
 } from './pipelines.js';
 
-const COLORMAP_LUT_SIZE = 256;
-
-/** Sample the canonical default colormap for direct Renderer construction. */
-function defaultColormapLut(): Uint8Array {
-  const lut = new Uint8Array(COLORMAP_LUT_SIZE * 4);
-  for (let i = 0; i < COLORMAP_LUT_SIZE; i++) {
-    const [red, green, blue] = DEFAULT_OPTIONS.colormap(i / (COLORMAP_LUT_SIZE - 1));
-    lut[i * 4] = Math.round(red * 255);
-    lut[i * 4 + 1] = Math.round(green * 255);
-    lut[i * 4 + 2] = Math.round(blue * 255);
-    lut[i * 4 + 3] = 255;
-  }
-  return lut;
-}
+/** Entries in the one-dimensional colormap texture; `writeColormap` takes `COLORMAP_LUT_SIZE * 4` bytes. */
+export const COLORMAP_LUT_SIZE = 256;
 
 /** Uniform views the renderer uploads or inspects during a frame. */
 type FrameUniforms = Pick<Uniforms, 'raw' | 'rawF32' | 'rawI32' | 'rawU32'>;
@@ -99,7 +88,7 @@ export class Renderer {
   private readonly channelsBindGroupLayout: GPUBindGroupLayout;
   private readonly overlayPipelineLayout: GPUPipelineLayout;
   private readonly edgePipelineLayout: GPUPipelineLayout;
-  private readonly bgPipelineLayout: GPUPipelineLayout;
+  private readonly backgroundPipelineLayout: GPUPipelineLayout;
   private readonly warnedEmptyEdgeFocusRanges = new Set<number>();
 
   private readonly frameResources = new FrameResources();
@@ -150,7 +139,6 @@ export class Renderer {
     poles: DEFAULT_OPTIONS.poles,
     borders: DEFAULT_OPTIONS.borders,
     earthAxis: DEFAULT_OPTIONS.earthAxis,
-    layering: DEFAULT_OPTIONS.layering,
   };
 
   /** Allocates shared layouts, static geometry, uniforms, and the initial projection pipeline build. */
@@ -168,14 +156,14 @@ export class Renderer {
     this.sampleCount = msaaSampleCount ?? (devicePx > 7_000_000 ? 1 : 4);
 
     this.unitQuad = device.createBuffer({
-      label: 'unitQuad',
+      label: 'unit-quad',
       size: 32,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(this.unitQuad, 0, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]));
 
     this.edgeStrip = device.createBuffer({
-      label: 'edgeQuad',
+      label: 'edge-strip',
       size: 32,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
     });
@@ -200,7 +188,7 @@ export class Renderer {
       addressModeU: 'clamp-to-edge',
       addressModeV: 'clamp-to-edge',
     });
-    this.writeColormap(defaultColormapLut());
+    this.writeColormap(bakeColormap(DEFAULT_OPTIONS.colormap, COLORMAP_LUT_SIZE));
 
     this.channelsBindGroupLayout = device.createBindGroupLayout({
       label: 'channels-layout',
@@ -259,13 +247,13 @@ export class Renderer {
         this.segmentsBindGroupLayout,
       ],
     });
-    this.bgPipelineLayout = device.createPipelineLayout({
-      label: 'network-bg-pipeline-layout',
+    this.backgroundPipelineLayout = device.createPipelineLayout({
+      label: 'network-background-pipeline-layout',
       bindGroupLayouts: [this.channelsBindGroupLayout],
     });
 
     // Pipeline sets come from the family registry: one bundle per family
-    // carries the overlay prelude, the bg shader (which writes the
+    // carries the overlay prelude, the background shader (which writes the
     // depth all overlays occlusion-test against), and the border_world
     // snippet (final lifted position included). Builds are async and lazy: the
     // active family compiles off-thread while the topology loads, and
@@ -322,11 +310,11 @@ export class Renderer {
       sampleCount: this.sampleCount,
       overlayPipelineLayout: this.overlayPipelineLayout,
       edgePipelineLayout: this.edgePipelineLayout,
-      bgPipelineLayout: this.bgPipelineLayout,
+      backgroundPipelineLayout: this.backgroundPipelineLayout,
     });
   }
 
-  /** Updates the passes drawn, and their layering, when encoding future frames. */
+  /** Updates the passes drawn when encoding future frames. */
   setPasses(passes: Partial<FramePasses>): void {
     Object.assign(this.passes, passes);
   }
@@ -567,13 +555,13 @@ export class Renderer {
     if (
       !this.topology ||
       !this.passes.edges ||
-      (uniforms.rawU32[W_FOCUS_FLAGS]! & FLAG_FOCUS_ENABLED) === 0
+      (uniforms.rawU32[W_FOCUS_FLAGS]! & FOCUS_ENABLED) === 0
     ) {
       return;
     }
     const limit = this.topology.edgeCount;
-    pushUnique(out, uniforms.rawI32[W_SELECTED_EDGE]!, limit);
-    pushUnique(out, uniforms.rawI32[W_HOVER_EDGE]!, limit);
+    pushUnique(out, uniforms.rawI32[W_E_SELECTED_ID]!, limit);
+    pushUnique(out, uniforms.rawI32[W_E_HOVER_ID]!, limit);
   }
 
   /** Collects selected, hovered, and endpoint vertex ids from focus uniforms into the frame scratch. */
@@ -582,17 +570,17 @@ export class Renderer {
     out.length = 0;
     if (!this.topology || !this.passes.vertices) return;
     const flags = uniforms.rawU32[W_FOCUS_FLAGS]!;
-    if ((flags & FLAG_FOCUS_ENABLED) === 0) return;
+    if ((flags & FOCUS_ENABLED) === 0) return;
 
     const limit = this.topology.vertexCount;
     const ids = uniforms.rawI32;
-    pushUnique(out, ids[W_HOVER_VERTEX]!, limit);
-    pushUnique(out, ids[W_SELECTED_VERTEX]!, limit);
-    if ((flags & FLAG_FOCUS_HOVER_ENDPOINTS) !== 0) {
+    pushUnique(out, ids[W_V_HOVER_ID]!, limit);
+    pushUnique(out, ids[W_V_SELECTED_ID]!, limit);
+    if ((flags & FOCUS_HOVER_ENDPOINTS) !== 0) {
       pushUnique(out, ids[W_HOVER_ENDPOINT_A]!, limit);
       pushUnique(out, ids[W_HOVER_ENDPOINT_B]!, limit);
     }
-    if ((flags & FLAG_FOCUS_SELECTED_ENDPOINTS) !== 0) {
+    if ((flags & FOCUS_SELECTED_ENDPOINTS) !== 0) {
       pushUnique(out, ids[W_SELECTED_ENDPOINT_A]!, limit);
       pushUnique(out, ids[W_SELECTED_ENDPOINT_B]!, limit);
     }

@@ -10,8 +10,8 @@ describe('planar height shader contract', () => {
     expect(planeSrc).toContain('z * u.depth_mix');
     expect(planeSrc).toContain('FLAT_HEIGHT_DEPTH_SPAN * (1.0 - u.depth_mix)');
     expect(vertexSrc).toContain('let clip = project_overlay(world, h);');
-    expect(edgeSrc).toContain('var clip_a = project_overlay(wa, ha);');
-    expect(edgeSrc).toContain('var clip_b = project_overlay(wb, hb);');
+    expect(edgeSrc).toContain('let clip_a = project_overlay(wa, ha);');
+    expect(edgeSrc).toContain('let clip_b = project_overlay(wb, hb);');
   });
 
   it('clips camera-plane crossings to the shared positive-w floor before dividing', () => {

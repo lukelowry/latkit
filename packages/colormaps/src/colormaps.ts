@@ -1,16 +1,7 @@
+import type { Colormap } from '@latkit/model';
+
 type Rgb01 = readonly [number, number, number];
 type CoefficientRows = readonly [Rgb01, Rgb01, Rgb01, Rgb01, Rgb01, Rgb01];
-
-/**
- * Maps a normalized scalar to an RGB color.
- *
- * @param t - Normalized value. Values outside `[0, 1]` are clamped.
- * @returns RGB channels in `[0, 1]`.
- *
- * Input values are clamped to `[0, 1]`, and returned channels are also in
- * `[0, 1]`.
- */
-export type Colormap = (t: number) => readonly [number, number, number];
 
 /**
  * Bundled colormap registry in display order.

@@ -1490,13 +1490,13 @@ function makeProjectionRegion() {
     flatSy: 0,
     flatTx: 0,
     flatTy: 0,
-    setVP(m: Float32Array) {
+    setViewProj(m: Float32Array) {
       this.vp.set(m);
     },
     setCameraPos(x: number, y: number, z: number) {
       this.cameraPos = [x, y, z];
     },
-    setViewBasis(view: Float32Array) {
+    setCameraBasis(view: Float32Array) {
       this.viewBasis = [view[0]!, view[4]!, view[8]!, view[1]!, view[5]!, view[9]!];
     },
   };

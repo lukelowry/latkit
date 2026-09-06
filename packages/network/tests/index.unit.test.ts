@@ -69,8 +69,7 @@ describe('network package entrypoint', () => {
     expectTypeOf<Parameters<Network['reveal']>[1]>().toEqualTypeOf<
       { readonly neighbors?: boolean; readonly animate?: boolean } | undefined
     >();
-    expectTypeOf<Options['layering']>().toEqualTypeOf<'stacked' | 'depth' | undefined>();
-    expectTypeOf<Options['baseEdgeColor']>().toEqualTypeOf<
+    expectTypeOf<Options['edgeBaseColor']>().toEqualTypeOf<
       readonly [number, number, number, number] | null | undefined
     >();
     expectTypeOf<Options['motion']>().toEqualTypeOf<'auto' | 'reduce' | 'full' | undefined>();

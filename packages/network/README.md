@@ -67,9 +67,8 @@ construction. `OPTIONS` carries each option's default, validation kind, and whet
 ```ts
 network.setOptions({
   colormap: colormap('magma'),
-  baseVertexColor: [0.5, 0.5, 0.5, 1],
-  baseEdgeColor: null, // average the endpoint colors
-  layering: 'stacked', // vertices over poles over edges; 'depth' lets 3D occlusion decide
+  vertexBaseColor: [0.5, 0.5, 0.5, 1],
+  edgeBaseColor: null, // average the endpoint colors
   vertexScale: 1.25,
   edgeScale: 0.8,
   heightRange: [0, 0.8],

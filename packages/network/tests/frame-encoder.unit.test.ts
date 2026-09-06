@@ -28,12 +28,12 @@ function makeInputs(overrides: Partial<EncodeNetworkFrameInputs> = {}) {
       vertex: {} as GPURenderPipeline,
       vertexHalo: {} as GPURenderPipeline,
       vertexFocus: {} as GPURenderPipeline,
-      edge: { stacked: {} as GPURenderPipeline, depth: {} as GPURenderPipeline },
+      edge: {} as GPURenderPipeline,
       edgeHalo: {} as GPURenderPipeline,
-      edgeFocus: { stacked: {} as GPURenderPipeline, depth: {} as GPURenderPipeline },
+      edgeFocus: {} as GPURenderPipeline,
       pole: {} as GPURenderPipeline,
       borders: {} as GPURenderPipeline,
-      bg: {} as GPURenderPipeline,
+      background: {} as GPURenderPipeline,
       earthAxis: {} as GPURenderPipeline,
     },
     channelsBindGroup: {} as GPUBindGroup,
@@ -47,7 +47,6 @@ function makeInputs(overrides: Partial<EncodeNetworkFrameInputs> = {}) {
       poles: false,
       borders: false,
       earthAxis: false,
-      layering: 'stacked',
     },
     unitQuad: {} as GPUBuffer,
     edgeStrip: {} as GPUBuffer,
@@ -68,13 +67,12 @@ describe('encodeNetworkFrame edge draws', () => {
         poles: false,
         borders: false,
         earthAxis: false,
-        layering: 'stacked',
       },
     });
 
     encodeNetworkFrame(inputs);
 
-    expect(rp.setPipeline).toHaveBeenNthCalledWith(1, inputs.visual.bg);
+    expect(rp.setPipeline).toHaveBeenNthCalledWith(1, inputs.visual.background);
     expect(draw).toHaveBeenCalledWith(3);
   });
 
@@ -108,7 +106,6 @@ describe('encodeNetworkFrame edge draws', () => {
         poles: false,
         borders: false,
         earthAxis: false,
-        layering: 'stacked',
       },
     });
 
@@ -119,7 +116,7 @@ describe('encodeNetworkFrame edge draws', () => {
   });
 
   it('draws the earth axis after the background and before borders', () => {
-    const bg = { label: 'bg' } as unknown as GPURenderPipeline;
+    const background = { label: 'background' } as unknown as GPURenderPipeline;
     const earthAxis = { label: 'earthAxis' } as unknown as GPURenderPipeline;
     const borders = { label: 'borders' } as unknown as GPURenderPipeline;
     const borderBuffers = {
@@ -131,12 +128,12 @@ describe('encodeNetworkFrame edge draws', () => {
         vertex: {} as GPURenderPipeline,
         vertexHalo: {} as GPURenderPipeline,
         vertexFocus: {} as GPURenderPipeline,
-        edge: { stacked: {} as GPURenderPipeline, depth: {} as GPURenderPipeline },
+        edge: {} as GPURenderPipeline,
         edgeHalo: {} as GPURenderPipeline,
-        edgeFocus: { stacked: {} as GPURenderPipeline, depth: {} as GPURenderPipeline },
+        edgeFocus: {} as GPURenderPipeline,
         pole: {} as GPURenderPipeline,
         borders,
-        bg,
+        background,
         earthAxis,
       },
       borders: borderBuffers as never,
@@ -146,13 +143,12 @@ describe('encodeNetworkFrame edge draws', () => {
         poles: false,
         borders: true,
         earthAxis: true,
-        layering: 'stacked',
       },
     });
 
     encodeNetworkFrame(inputs);
 
-    expect(rp.setPipeline).toHaveBeenNthCalledWith(1, bg);
+    expect(rp.setPipeline).toHaveBeenNthCalledWith(1, background);
     expect(rp.setPipeline).toHaveBeenNthCalledWith(2, earthAxis);
     expect(rp.setPipeline).toHaveBeenNthCalledWith(3, borders);
     expect(draw).toHaveBeenCalledWith(3);

@@ -7,10 +7,10 @@ import { encodeSegments } from '../src/segments/index.js';
 import { prepareScene, type PreparedScene } from '../src/scene.js';
 import {
   createUniforms,
-  FLAG_FOCUS_ENABLED,
-  FLAG_FOCUS_HOVER_ENDPOINTS,
-  FLAG_FOCUS_SELECTED_ENDPOINTS,
-  FLAG_GRATICULE,
+  FOCUS_ENABLED,
+  FOCUS_HOVER_ENDPOINTS,
+  FOCUS_SELECTED_ENDPOINTS,
+  DISPLAY_GRATICULE,
 } from '../src/webgpu/uniforms.js';
 import { BORDER_VERTEX_STRIDE_BYTES } from '../src/borders/index.js';
 import { sampleTopology, singleEdgeTopology } from './fixtures/topology.js';
@@ -37,13 +37,15 @@ describe('Renderer resource lifecycle', () => {
     await flushGpuPromises();
 
     expect(h.device.buffers.map((buffer) => buffer.descriptor.label)).toEqual([
-      'unitQuad',
-      'edgeQuad',
+      'unit-quad',
+      'edge-strip',
       'uniforms',
     ]);
     expect(h.device.textures.map((texture) => texture.descriptor.label)).toEqual(['colormap-lut']);
     expect(h.device.queue.writeTexture).toHaveBeenCalledOnce();
-    expect(h.device.renderPipelines.map((pipeline) => pipeline.label)).toContain('plane-bg');
+    expect(h.device.renderPipelines.map((pipeline) => pipeline.label)).toContain(
+      'plane-background',
+    );
 
     renderer.destroy();
     expect(h.device.buffers.every((buffer) => buffer.destroyed)).toBe(true);
@@ -63,12 +65,12 @@ describe('Renderer resource lifecycle', () => {
       h.device.createRenderPipelineAsync.mock.calls.map(([descriptor]) => descriptor.label ?? '');
 
     // The shared planar family has nine; globe adds earth-axis for ten.
-    expect(labels().filter((label) => label.startsWith('plane-'))).toHaveLength(11);
+    expect(labels().filter((label) => label.startsWith('plane-'))).toHaveLength(9);
     renderer.useProjection('tilt');
     void renderer.warmProjection('flat');
-    expect(labels().filter((label) => label.startsWith('plane-'))).toHaveLength(11);
+    expect(labels().filter((label) => label.startsWith('plane-'))).toHaveLength(9);
     void renderer.warmProjection('globe');
-    expect(labels().filter((label) => label.startsWith('globe-'))).toHaveLength(12);
+    expect(labels().filter((label) => label.startsWith('globe-'))).toHaveLength(10);
 
     release({ label: 'compiled' } as GPURenderPipeline);
     await flushGpuPromises();
@@ -123,7 +125,7 @@ describe('Renderer resource lifecycle', () => {
 
     expect(ready).toHaveBeenCalledOnce();
     expect(
-      h.device.renderPipelines.filter((pipeline) => pipeline.label === 'globe-bg'),
+      h.device.renderPipelines.filter((pipeline) => pipeline.label === 'globe-background'),
     ).toHaveLength(1);
     renderer.destroy();
   });
@@ -273,20 +275,19 @@ describe('Renderer frame encoding', () => {
     await flushGpuPromises();
 
     const uniforms = createUniforms();
-    uniforms.light.flags = FLAG_GRATICULE;
-    uniforms.focus.flags =
-      FLAG_FOCUS_ENABLED | FLAG_FOCUS_HOVER_ENDPOINTS | FLAG_FOCUS_SELECTED_ENDPOINTS;
-    uniforms.focus.hoverVertex = 2;
-    uniforms.focus.selectedVertex = 2;
-    uniforms.focus.hoverEdge = 1;
-    uniforms.focus.selectedEdge = 1;
-    uniforms.focus.setEndpointIds(0, 2, 1, 2);
+    uniforms.display.flags = DISPLAY_GRATICULE;
+    uniforms.focus.flags = FOCUS_ENABLED | FOCUS_HOVER_ENDPOINTS | FOCUS_SELECTED_ENDPOINTS;
+    uniforms.focus.vHoverId = 2;
+    uniforms.focus.vSelectedId = 2;
+    uniforms.focus.eHoverId = 1;
+    uniforms.focus.eSelectedId = 1;
+    uniforms.focus.setEndpoints(0, 2, 1, 2);
 
     expect(renderer.render(uniforms)).toBe(true);
 
     const pass = h.device.encoders[0]!.passes[0]!;
     expect(pass.setPipeline).toHaveBeenCalledWith(
-      expect.objectContaining({ label: 'plane-bg' }) as GPURenderPipeline,
+      expect.objectContaining({ label: 'plane-background' }) as GPURenderPipeline,
     );
     expect(pass.draw).toHaveBeenCalledWith(4, 4);
     expect(pass.draw).toHaveBeenCalledWith(4, 3, 0, 1);
@@ -311,8 +312,8 @@ describe('Renderer frame encoding', () => {
     ]);
 
     const uniforms = createUniforms();
-    uniforms.focus.flags = FLAG_FOCUS_ENABLED;
-    uniforms.focus.hoverEdge = 0;
+    uniforms.focus.flags = FOCUS_ENABLED;
+    uniforms.focus.eHoverId = 0;
 
     renderer.render(uniforms);
     renderer.render(uniforms);

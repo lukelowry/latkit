@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 
-import type { Domain, Item } from '@latkit/model';
+import { bakeColormap, createEmitter, type Domain, type Item } from '@latkit/model';
 import { createPresentation, type DeviceLease, type Presentation } from '@latkit/gpu';
 
 import {
@@ -12,13 +12,14 @@ import {
 } from './topology/index.js';
 import { encodeSegments } from './segments/index.js';
 import { prepareScene, type PreparedScene } from './scene.js';
-import { Renderer } from './webgpu/renderer.js';
+import { COLORMAP_LUT_SIZE, Renderer } from './webgpu/renderer.js';
 import {
   createUniforms,
-  FLAG_BASE_EDGE_COLOR,
-  FLAG_DAYLIGHT,
-  FLAG_GEOGRAPHIC,
-  FLAG_GRATICULE,
+  DISPLAY_DAYLIGHT,
+  DISPLAY_EDGE_BASE_COLOR,
+  DISPLAY_GEOGRAPHIC,
+  DISPLAY_GRATICULE,
+  DISPLAY_VERTICES,
 } from './webgpu/uniforms.js';
 import { FocusState, type FocusStyle } from './focus-state.js';
 import { VISUAL } from './visual.js';
@@ -37,6 +38,7 @@ import { createSurface, type Surface } from './input/surface.js';
 import { type Pose, MAX_ZOOM_RATIO, type Viewport } from './camera/projection.js';
 import { createChannels, type Channel } from './channels.js';
 import { RenderLoop } from './webgpu/render-loop.js';
+import type { FramePasses } from './webgpu/frame-encoder.js';
 import {
   PROJECTION_DEFS,
   PROJECTIONS,
@@ -45,7 +47,6 @@ import {
   type Projection,
 } from './projections.js';
 import type { Borders } from './borders/index.js';
-import { createEmitter } from './emitter.js';
 import { edgeCountOf } from './topology/pack.js';
 import { adjacency, neighborhood, type Adjacency } from './topology/adjacency.js';
 import { createOrbit } from './orbit.js';
@@ -419,7 +420,6 @@ const DISPLAY_OPTIONS = [
   'vertices',
   'edges',
   'poles',
-  'layering',
   'vertexScale',
   'edgeScale',
   'heightScale',
@@ -431,7 +431,7 @@ const DISPLAY_OPTIONS = [
   'nightFloor',
   'surfaceNightFloor',
   'terminatorWidth',
-  'baseEdgeColor',
+  'edgeBaseColor',
   'motion',
   'animationMs',
   'orbitRate',
@@ -459,12 +459,6 @@ const PICK_GEOMETRY_OPTIONS: ReadonlySet<DisplayOption> = new Set<DisplayOption>
   'vertexLodPx',
   'dashPeriodPx',
 ]);
-
-/** Number of entries in the renderer's one-dimensional colormap texture. */
-const COLORMAP_LUT_SIZE = 256;
-
-/** Converts a clamped 0..1 color component into an 8-bit LUT value. */
-const u8 = (x: number): number => Math.round(Math.min(1, Math.max(0, x)) * 255);
 
 /**
  * Creates a WebGPU network controller.
@@ -640,7 +634,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   let topologyCharacteristicLength: number | null = null;
   let topologyGeographic = false;
   let projections = projectionAvailability(null, null, false);
-  let vertexSize = 0;
+  let vertexRadius = 0;
   /** The retained border payload, rebound on every attach. */
   let borders: Borders | null = null;
   /** The sampled colormap, retained so a new renderer starts from it; null keeps the default. */
@@ -905,7 +899,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     if (!projections[mode]) return false;
     if (mode === rig.mode) return true;
     rig.switchTo(mode, vp());
-    updateHeightWorldScale(vp());
+    updateHeightAmplitude(vp());
     binding?.renderer.useProjection(mode);
     cameraMoved();
     return true;
@@ -933,7 +927,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         onZoom: (atFitView) => stageFitNotice(atFitView),
         onBeforeFrame: (frameVp) => {
           daylight.refresh(display.sunTime ?? Date.now());
-          updateHeightWorldScale(frameVp);
+          updateHeightAmplitude(frameVp);
         },
         onFrame: (sizeSettled) => resolveHover(sizeSettled),
         onPaint: () => onSuccessfulPaint(),
@@ -1423,19 +1417,6 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     pendingFitNotice = { value: atFitView, scene: sceneGeneration };
   }
 
-  /** Samples a user colormap before any renderer state is mutated. */
-  function sampleColormap(fn: NonNullable<Options['colormap']>): Uint8Array {
-    const lut = new Uint8Array(COLORMAP_LUT_SIZE * 4);
-    for (let i = 0; i < COLORMAP_LUT_SIZE; i++) {
-      const [r, g, b] = fn(i / (COLORMAP_LUT_SIZE - 1));
-      lut[i * 4] = u8(r);
-      lut[i * 4 + 1] = u8(g);
-      lut[i * 4 + 2] = u8(b);
-      lut[i * 4 + 3] = 255;
-    }
-    return lut;
-  }
-
   /** Validate and apply one public runtime option patch as a single repaint. */
   function updateOptions(opts: Options): void {
     validateOptions(opts);
@@ -1445,31 +1426,31 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     repaint();
   }
 
-  /** The passes the renderer draws, and their layering: borders only over geographic coordinates. */
-  function passes() {
+  /** The passes the renderer draws: borders only over geographic coordinates. */
+  function passes(): FramePasses {
     return {
       vertices: display.vertices,
       edges: display.edges,
       poles: display.poles,
       borders: display.borders && topologyGeographic,
       earthAxis: display.earthAxis,
-      layering: display.layering,
     };
   }
 
   /** Applies construction or runtime display options. */
   function applyOptions(opts: Options, initial = false): boolean {
+    // The colormap is sampled before anything is applied: caller code may throw.
     const lut =
       opts.colormap && (!initial || opts.colormap !== DEFAULT_OPTIONS.colormap)
-        ? sampleColormap(opts.colormap)
+        ? bakeColormap(opts.colormap, COLORMAP_LUT_SIZE)
         : null;
     if (lut) {
       colormapLut = lut;
       binding?.renderer.writeColormap(lut);
     }
-    if (opts.baseVertexColor) uniforms.baseVertexColor.set(opts.baseVertexColor);
-    if (opts.baseEdgeColor) uniforms.baseEdgeColor.set(opts.baseEdgeColor);
-    if (opts.graticuleColor) uniforms.gridColor.set(opts.graticuleColor);
+    if (opts.vertexBaseColor) uniforms.vBaseColor.set(opts.vertexBaseColor);
+    if (opts.edgeBaseColor) uniforms.eBaseColor.set(opts.edgeBaseColor);
+    if (opts.graticuleColor) uniforms.graticuleColor.set(opts.graticuleColor);
     if (opts.surfaceColor) uniforms.surfaceColor.set(opts.surfaceColor);
     if (opts.borderColor) uniforms.borderColor.set(opts.borderColor);
     let pickGeometryChanged = false;
@@ -1526,20 +1507,22 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   function writeDisplayToUniforms(): void {
     // Daylight interprets coordinates as lon/lat degrees, so it arms only for
     // geographic topologies; every projection family shades when it is set.
-    // FLAG_GEOGRAPHIC tracks the topology alone: the plane background clips
+    // DISPLAY_GEOGRAPHIC tracks the topology alone: the plane background clips
     // its ground to the lon/lat world rect whenever coordinates are degrees.
-    uniforms.light.flags =
-      (display.daylight && topologyGeographic ? FLAG_DAYLIGHT : 0) |
-      (display.graticule ? FLAG_GRATICULE : 0) |
-      (topologyGeographic ? FLAG_GEOGRAPHIC : 0) |
-      (display.baseEdgeColor ? FLAG_BASE_EDGE_COLOR : 0);
+    // DISPLAY_VERTICES lets edges end at the discs the vertex pass draws.
+    uniforms.display.flags =
+      (display.daylight && topologyGeographic ? DISPLAY_DAYLIGHT : 0) |
+      (display.graticule ? DISPLAY_GRATICULE : 0) |
+      (topologyGeographic ? DISPLAY_GEOGRAPHIC : 0) |
+      (display.edgeBaseColor ? DISPLAY_EDGE_BASE_COLOR : 0) |
+      (display.vertices ? DISPLAY_VERTICES : 0);
     uniforms.light.nightFloor = display.nightFloor;
     uniforms.light.surfaceNightFloor = display.surfaceNightFloor;
     uniforms.light.terminatorWidth = display.terminatorWidth;
-    uniforms.geometry.vertexLod = display.vertexLodPx;
+    uniforms.geometry.vLodPx = display.vertexLodPx;
   }
 
-  /** Returns endpoint vertex ids for focus underlays, or [-1, -1] when invalid. */
+  /** Returns endpoint vertex ids for focus halos, or [-1, -1] when invalid. */
   function edgeEndpoints(edgeIndex: number): [number, number] {
     const edge = topology?.edges;
     if (!edge || edgeIndex < 0) return [-1, -1];
@@ -1549,23 +1532,23 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   }
 
   /** Updates projection-specific height amplitude from current viewport state. */
-  function updateHeightWorldScale(frameVp: Viewport): void {
+  function updateHeightAmplitude(frameVp: Viewport): void {
     if (!topology || !topologyBounds) return;
-    const scale = PROJECTION_DEFS[rig.mode].heightWorldScale(
+    const scale = PROJECTION_DEFS[rig.mode].heightAmplitude(
       topologyBounds,
       frameVp,
-      vertexSize * display.vertexScale,
+      vertexRadius * display.vertexScale,
     );
-    uniforms.geometry.heightWorldScale = scale * display.heightScale;
+    uniforms.geometry.heightAmplitude = scale * display.heightScale;
   }
 
   /** Writes topology-derived geometry sizes through the current display multipliers. */
   function writeGeometryScales(frameVp: Viewport): void {
     if (topologyCharacteristicLength === null) return;
-    uniforms.geometry.vertexSize = vertexSize * display.vertexScale;
-    uniforms.geometry.baseEdgeWidth =
-      topologyCharacteristicLength * VISUAL.baseEdgeWidthScale * display.edgeScale;
-    updateHeightWorldScale(frameVp);
+    uniforms.geometry.vRadius = vertexRadius * display.vertexScale;
+    uniforms.geometry.eHalfWidth =
+      topologyCharacteristicLength * VISUAL.edgeHalfWidthFraction * display.edgeScale;
+    updateHeightAmplitude(frameVp);
   }
 
   /** Computes projection support for the currently loaded topology shape. */
@@ -1704,7 +1687,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       binding?.renderer.useProjection('flat');
     }
 
-    vertexSize = info.characteristicLength * VISUAL.vertexSizeScale;
+    vertexRadius = info.characteristicLength * VISUAL.vertexRadiusFraction;
     writeGeometryScales(vp());
     // New bounds can change the geographic gates: daylight, ground clipping, borders.
     writeDisplayToUniforms();

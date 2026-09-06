@@ -114,7 +114,11 @@ importers:
         specifier: ^7.0.0
         version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
 
-  packages/colormaps: {}
+  packages/colormaps:
+    dependencies:
+      '@latkit/model':
+        specifier: workspace:*
+        version: link:../model
 
   packages/embed:
     dependencies:

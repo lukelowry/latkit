@@ -11,24 +11,24 @@ const PI = 3.14159265358979;
 const LOG2_10 = 3.32192809488736;
 const INV_LOG2_10 = 0.301029995663981;
 
-// The graticule line color is host-provided via u.grid_color (see uniforms.wgsl) so it tracks the
-// app theme; background shaders read u.grid_color.rgb directly.
-const GRID_CART_MIN_PX = 24.0;
+// The graticule line color is host-provided via u.graticule_color (see uniforms.wgsl) so it tracks the
+// app theme; background shaders read u.graticule_color.rgb directly.
+const GRATICULE_CART_MIN_PX = 24.0;
 
-const GRID_MINOR_WIDTH = 0.5;
-const GRID_MAJOR_WIDTH = 0.75;
-const GRID_REF_WIDTH = 1.0;
+const GRATICULE_MINOR_WIDTH = 0.5;
+const GRATICULE_MAJOR_WIDTH = 0.75;
+const GRATICULE_REF_WIDTH = 1.0;
 
-const GRID_MINOR_ALPHA = 0.10;
-const GRID_MAJOR_ALPHA = 0.25;
-const GRID_REF_ALPHA = 0.50;
+const GRATICULE_MINOR_ALPHA = 0.10;
+const GRATICULE_MAJOR_ALPHA = 0.25;
+const GRATICULE_REF_ALPHA = 0.50;
 
 const GEO_COARSE_SPACE = PI / 6.0;    // 30 degrees
 const GEO_MID_SPACE = PI / 18.0;      // 10 degrees
 const GEO_FINE_SPACE = PI / 180.0;    // 1 degree
 
-fn grid_enabled() -> bool {
-  return (u.flags & FLAG_GRATICULE) != 0u;
+fn graticule_enabled() -> bool {
+  return (u.display_flags & DISPLAY_GRATICULE) != 0u;
 }
 
 // Render one tier of gridlines at constant screen-space width.
@@ -57,26 +57,26 @@ fn decade_ceil(x: f32) -> f32 {
 }
 
 fn cartesian_grid(coord: vec2f) -> f32 {
-  if (!grid_enabled()) { return 0.0; }
+  if (!graticule_enabled()) { return 0.0; }
 
   let gx = length(vec2f(dpdx(coord.x), dpdy(coord.x)));
   let gy = length(vec2f(dpdx(coord.y), dpdy(coord.y)));
   let g = max(max(gx, gy), 1e-12);
 
-  let major = decade_ceil(g * css_px(GRID_CART_MIN_PX));
+  let major = decade_ceil(g * css_px(GRATICULE_CART_MIN_PX));
   let minor = major * 0.1;
 
   let major_alpha = max(
-    line_alpha(grid_dist(coord.x, major), gx, GRID_MAJOR_WIDTH, major, GRID_MAJOR_ALPHA),
-    line_alpha(grid_dist(coord.y, major), gy, GRID_MAJOR_WIDTH, major, GRID_MAJOR_ALPHA),
+    line_alpha(grid_dist(coord.x, major), gx, GRATICULE_MAJOR_WIDTH, major, GRATICULE_MAJOR_ALPHA),
+    line_alpha(grid_dist(coord.y, major), gy, GRATICULE_MAJOR_WIDTH, major, GRATICULE_MAJOR_ALPHA),
   );
   let minor_alpha = max(
-    line_alpha(grid_dist(coord.x, minor), gx, GRID_MINOR_WIDTH, minor, GRID_MINOR_ALPHA),
-    line_alpha(grid_dist(coord.y, minor), gy, GRID_MINOR_WIDTH, minor, GRID_MINOR_ALPHA),
+    line_alpha(grid_dist(coord.x, minor), gx, GRATICULE_MINOR_WIDTH, minor, GRATICULE_MINOR_ALPHA),
+    line_alpha(grid_dist(coord.y, minor), gy, GRATICULE_MINOR_WIDTH, minor, GRATICULE_MINOR_ALPHA),
   );
   let axis_alpha = max(
-    line_alpha(abs(coord.x), gx, GRID_REF_WIDTH, major, GRID_REF_ALPHA),
-    line_alpha(abs(coord.y), gy, GRID_REF_WIDTH, major, GRID_REF_ALPHA),
+    line_alpha(abs(coord.x), gx, GRATICULE_REF_WIDTH, major, GRATICULE_REF_ALPHA),
+    line_alpha(abs(coord.y), gy, GRATICULE_REF_WIDTH, major, GRATICULE_REF_ALPHA),
   );
 
   return max(max(major_alpha, minor_alpha), axis_alpha);
@@ -100,19 +100,19 @@ fn geo_tier(lon: f32, lat: f32, grad_lon: f32, grad_lat: f32, spacing: f32, widt
 }
 
 fn geographic_graticule(lon: f32, lat: f32) -> f32 {
-  if (!grid_enabled()) { return 0.0; }
+  if (!graticule_enabled()) { return 0.0; }
 
   let grad_lon = angular_grad(lon);
   let grad_lat = length(vec2f(dpdx(lat), dpdy(lat)));
 
-  let coarse = geo_tier(lon, lat, grad_lon, grad_lat, GEO_COARSE_SPACE, GRID_MAJOR_WIDTH, GRID_MAJOR_ALPHA);
-  let mid = geo_tier(lon, lat, grad_lon, grad_lat, GEO_MID_SPACE, GRID_MINOR_WIDTH, GRID_MINOR_ALPHA);
-  let fine = geo_tier(lon, lat, grad_lon, grad_lat, GEO_FINE_SPACE, GRID_MINOR_WIDTH, GRID_MINOR_ALPHA * 0.65);
+  let coarse = geo_tier(lon, lat, grad_lon, grad_lat, GEO_COARSE_SPACE, GRATICULE_MAJOR_WIDTH, GRATICULE_MAJOR_ALPHA);
+  let mid = geo_tier(lon, lat, grad_lon, grad_lat, GEO_MID_SPACE, GRATICULE_MINOR_WIDTH, GRATICULE_MINOR_ALPHA);
+  let fine = geo_tier(lon, lat, grad_lon, grad_lat, GEO_FINE_SPACE, GRATICULE_MINOR_WIDTH, GRATICULE_MINOR_ALPHA * 0.65);
 
   // Equator and prime meridian are solitary reference lines.
   let refs = max(
-    line_alpha(abs(lon), grad_lon, GRID_REF_WIDTH, PI, GRID_REF_ALPHA),
-    line_alpha(abs(lat), grad_lat, GRID_REF_WIDTH, PI, GRID_REF_ALPHA),
+    line_alpha(abs(lon), grad_lon, GRATICULE_REF_WIDTH, PI, GRATICULE_REF_ALPHA),
+    line_alpha(abs(lat), grad_lat, GRATICULE_REF_WIDTH, PI, GRATICULE_REF_ALPHA),
   );
 
   return max(max(coarse, mid), max(fine, refs));

@@ -66,7 +66,6 @@ describe('canonical Network semantics', () => {
       ['vertices', 'boolean', true, true],
       ['edges', 'boolean', true, true],
       ['poles', 'boolean', false, true],
-      ['layering', 'enum', 'stacked', true],
       ['vertexScale', 'nonnegative', 1, true],
       ['edgeScale', 'nonnegative', 1, true],
       ['heightScale', 'nonnegative', 1, true],
@@ -82,8 +81,8 @@ describe('canonical Network semantics', () => {
       ['nightFloor', 'finite', 0.55, true],
       ['surfaceNightFloor', 'finite', 0.1, true],
       ['terminatorWidth', 'nonnegative', 0.12, true],
-      ['baseVertexColor', 'rgba', [0.5, 0.5, 0.5, 1], true],
-      ['baseEdgeColor', 'rgba', null, true],
+      ['vertexBaseColor', 'rgba', [0.5, 0.5, 0.5, 1], true],
+      ['edgeBaseColor', 'rgba', null, true],
       ['colormap', 'colormap', '<colormap>', true],
       ['graticuleColor', 'rgba', [0.45, 0.48, 0.54, 1], true],
       ['surfaceColor', 'rgba', [0.15, 0.16, 0.19, 1], true],
@@ -110,9 +109,8 @@ describe('canonical Network semantics', () => {
     expect(OPTIONS.focusEndpointMode.values).toEqual(['off', 'selected', 'hover-selected']);
     expect(OPTIONS.motion.values).toEqual(['auto', 'reduce', 'full']);
     expect(OPTIONS.wheel.values).toEqual(['zoom', 'modifier']);
-    expect(OPTIONS.layering.values).toEqual(['stacked', 'depth']);
     expect(OPTIONS.sunTime.nullable).toBe(true);
-    expect(OPTIONS.baseEdgeColor.nullable).toBe(true);
+    expect(OPTIONS.edgeBaseColor.nullable).toBe(true);
     expect(typeof OPTIONS.devices.default.acquire).toBe('function');
   });
 
@@ -158,12 +156,11 @@ describe('Network option validation and resolution', () => {
       ['heightRange', [-1, 2]],
       ['vertexLodPx', 0],
       ['dashPeriodPx', 0],
-      ['baseVertexColor', [0, 1, 0.5, 1]],
-      ['baseEdgeColor', null],
-      ['baseEdgeColor', [0, 0, 0, 1]],
+      ['vertexBaseColor', [0, 1, 0.5, 1]],
+      ['edgeBaseColor', null],
+      ['edgeBaseColor', [0, 0, 0, 1]],
       ['sunTime', null],
       ['sunTime', Date.UTC(2026, 5, 21)],
-      ['layering', 'depth'],
       ['sizeRange', [1, 1]],
       ['animationMs', 0],
       ['focusEndpointMode', 'off'],
@@ -195,16 +192,15 @@ describe('Network option validation and resolution', () => {
     ['heightRange', [2, 1], RangeError],
     ['vertexLodPx', '2', TypeError],
     ['dashPeriodPx', -1, RangeError],
-    ['baseVertexColor', [0, 0, 0], TypeError],
-    ['baseVertexColor', [0, 0, 0, '1'], TypeError],
-    ['baseVertexColor', [0, 0, 0, Number.NaN], RangeError],
-    ['baseVertexColor', [0, 0, 0, 1.01], RangeError],
-    ['baseVertexColor', new Float32Array([0, 0, 0, 1]), TypeError],
-    ['baseVertexColor', null, TypeError],
-    ['baseEdgeColor', [0, 0, 0], TypeError],
+    ['vertexBaseColor', [0, 0, 0], TypeError],
+    ['vertexBaseColor', [0, 0, 0, '1'], TypeError],
+    ['vertexBaseColor', [0, 0, 0, Number.NaN], RangeError],
+    ['vertexBaseColor', [0, 0, 0, 1.01], RangeError],
+    ['vertexBaseColor', new Float32Array([0, 0, 0, 1]), TypeError],
+    ['vertexBaseColor', null, TypeError],
+    ['edgeBaseColor', [0, 0, 0], TypeError],
     ['sunTime', Number.NaN, RangeError],
     ['sunTime', '2026', TypeError],
-    ['layering', 'painterly', TypeError],
     ['sizeRange', [2, 1], RangeError],
     ['orbitRate', -1, RangeError],
     ['focusEndpointMode', 'hover', TypeError],
@@ -227,28 +223,28 @@ describe('Network option validation and resolution', () => {
   });
 
   it('returns a complete frozen record and owns supplied tuple values', () => {
-    const baseVertexColor: [number, number, number, number] = [0.1, 0.2, 0.3, 1];
+    const vertexBaseColor: [number, number, number, number] = [0.1, 0.2, 0.3, 1];
     const heightRange: [number, number] = [0, 2];
     const colormap = (t: number) => [t, 1 - t, 0.5] as const;
-    const resolved = resolveOptions({ baseVertexColor, heightRange, colormap, msaa: 4 });
+    const resolved = resolveOptions({ vertexBaseColor, heightRange, colormap, msaa: 4 });
 
     expect(Object.keys(resolved)).toEqual(Object.keys(OPTIONS));
     expect(Object.isFrozen(resolved)).toBe(true);
-    expect(Object.isFrozen(resolved.baseVertexColor)).toBe(true);
-    expect(resolved.baseVertexColor).not.toBe(baseVertexColor);
+    expect(Object.isFrozen(resolved.vertexBaseColor)).toBe(true);
+    expect(resolved.vertexBaseColor).not.toBe(vertexBaseColor);
     expect(resolved.heightRange).not.toBe(heightRange);
     expect(resolved.colormap).toBe(colormap);
     expect(resolved.msaa).toBe(4);
     expect(resolved.devices).toBe(OPTIONS.devices.default);
 
-    baseVertexColor[0] = 0.9;
+    vertexBaseColor[0] = 0.9;
     heightRange[1] = 9;
-    expect(resolved.baseVertexColor).toEqual([0.1, 0.2, 0.3, 1]);
+    expect(resolved.vertexBaseColor).toEqual([0.1, 0.2, 0.3, 1]);
     expect(resolved.heightRange).toEqual([0, 2]);
 
     const defaults = resolveOptions({});
     expect(defaults).toEqual(DEFAULT_OPTIONS);
-    expect(defaults.baseVertexColor).not.toBe(DEFAULT_OPTIONS.baseVertexColor);
-    expect(Object.isFrozen(defaults.baseVertexColor)).toBe(true);
+    expect(defaults.vertexBaseColor).not.toBe(DEFAULT_OPTIONS.vertexBaseColor);
+    expect(Object.isFrozen(defaults.vertexBaseColor)).toBe(true);
   });
 });

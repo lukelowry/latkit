@@ -1,11 +1,5 @@
 import { devices, type DevicePool } from '@latkit/gpu';
-import { validateDomain, type Domain } from '@latkit/model';
-
-/** Function mapping a normalized scalar to normalized RGB channels. */
-export type Colormap = (t: number) => readonly [number, number, number];
-
-/** Normalized RGBA color, each component in `[0, 1]`. */
-export type RGBA = readonly [number, number, number, number];
+import { validateDomain, validateRgba, type Colormap, type Domain, type RGBA } from '@latkit/model';
 
 /**
  * Monitor display options: the construction record and the live patch.
@@ -134,15 +128,7 @@ function validateOptionValue(key: string, definition: OptionDefinition, value: u
       validateDomain(value, `monitor option ${key}`);
       return;
     case 'rgba':
-      if (!Array.isArray(value) || value.length !== 4) typeError(key, 'an RGBA tuple');
-      for (const component of value) {
-        if (typeof component !== 'number') typeError(key, 'an RGBA tuple');
-        if (!Number.isFinite(component) || component < 0 || component > 1) {
-          throw new RangeError(
-            `monitor option ${key} RGBA components must be finite and in [0, 1]`,
-          );
-        }
-      }
+      validateRgba(value, `monitor option ${key}`);
       return;
     default:
       definition satisfies never;

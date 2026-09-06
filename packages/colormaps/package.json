@@ -26,6 +26,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --project @latkit/colormaps"
   },
+  "dependencies": {
+    "@latkit/model": "workspace:*"
+  },
   "publishConfig": {
     "access": "public"
   }
