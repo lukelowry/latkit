@@ -158,6 +158,28 @@ export function computeBounds(coords: Float32Array): Bounds {
 }
 
 /**
+ * Axis-aligned bounds of the finite pairs in an interleaved x/y array, for host-supplied
+ * positions that were never validated. All-non-finite input yields the origin.
+ */
+export function finiteBounds(coords: Float32Array): Bounds {
+  let xMin = Infinity;
+  let xMax = -Infinity;
+  let yMin = Infinity;
+  let yMax = -Infinity;
+  for (let i = 0; i + 1 < coords.length; i += 2) {
+    const x = coords[i]!;
+    const y = coords[i + 1]!;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    if (x < xMin) xMin = x;
+    if (x > xMax) xMax = x;
+    if (y < yMin) yMin = y;
+    if (y > yMax) yMax = y;
+  }
+  if (xMin > xMax) return { xMin: 0, xMax: 0, yMin: 0, yMax: 0 };
+  return { xMin, xMax, yMin, yMax };
+}
+
+/**
  * Whether two topologies describe the same geometry: the same counts, coordinate interpretation,
  * and array contents. Generated ring layouts compare equal to each other whatever their spelling.
  */

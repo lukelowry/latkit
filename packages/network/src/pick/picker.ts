@@ -31,6 +31,7 @@ import {
 import { SEGMENT_RECORD_WORDS } from '../segments/wire.js';
 import type { DecodedSegments } from '../segments/index.js';
 import type { PreparedScene } from '../scene.js';
+import { finiteBounds } from '../topology/pack.js';
 import type { Bounds } from '../topology/index.js';
 import type { Channel } from '../channels.js';
 import { VISUAL } from '../visual.js';
@@ -62,7 +63,10 @@ export interface PickerDeps {
    * projections through the same shader mirror used for rendering.
    */
   unproject(sx: number, sy: number, vp: Viewport): readonly [number, number] | null;
-  /** Raw bound channel values (the same arrays the GPU uploaded). */
+  /**
+   * Raw bound channel values (the same arrays the GPU uploaded). `vertexPosition` is where every
+   * vertex sits; nothing is pickable while it is unbound.
+   */
   values(channel: PickChannel): Float32Array | null;
 }
 
@@ -154,22 +158,31 @@ interface QueryCircle {
   readonly r: number;
 }
 
-/** Static topology and coord-space acceleration data used by exact picking. */
+/** Per-topology structure the picker walks; never changes while a topology is loaded. */
 interface Scene {
-  /** Number of vertices in `coords`. */
+  /** Number of vertices the position channel places. */
   readonly vertexCount: number;
   /** Number of encoded segment records. */
   readonly segmentCount: number;
-  /** Interleaved topology coordinates as x/y pairs. */
-  readonly coords: Float32Array;
   /** Validated segment views shared with the renderer's prepared scene. */
   readonly seg: DecodedSegments;
-  /** Topology coordinate bounds. */
+  /** Periodic x span, or 0 for non-wrapping coordinate spaces; decided by the topology's own layout. */
+  readonly wrapX: number;
+  /** Effective segment endpoints, four floats per segment, filled on every index build. */
+  readonly endpoints: Float32Array;
+}
+
+/**
+ * Coord-space acceleration over the positions in effect.
+ *
+ * Rebuilt only after positions settle: the grids and the bounds they cover follow the
+ * `vertexPosition` snapshot, so an animating layout never pays for indexing until it stops.
+ */
+interface Index {
+  /** Bounds of the indexed positions. */
   readonly bounds: Bounds;
   /** Diagonal extent used as the full-scene query radius. */
   readonly extent: number;
-  /** Periodic x span, or 0 for non-wrapping coordinate spaces. */
-  readonly wrapX: number;
   /** Coord-space grid over vertices. */
   readonly vertexGrid: Grid;
   /** Coord-space grid over segment records. */
@@ -177,26 +190,37 @@ interface Scene {
 }
 
 /**
- * Synchronous CPU picker over a static coord-space index.
+ * Synchronous CPU picker over the position channel and a coord-space index.
  *
- * The scene (vertex grid + segment grid over the encoded wire blobs) builds
- * once per topology; camera motion never touches it. A pick unprojects the
- * cursor, derives a conservative coord-space radius from a numerically
- * sampled screen-to-coord Jacobian, enumerates grid candidates, and runs
- * exact screen-space tests that mirror the render shaders: radius clamps, size
- * multipliers, height displacement, pole capsules, dash gaps, positive-w
- * clipping, horizon visibility, and vertex-beats-edge ranking.
+ * The scene (segment structure over the encoded wire blobs) builds once per topology and camera
+ * motion never touches it. Geometry comes from the `vertexPosition` snapshot at query time, so
+ * `locate` is always live. The index over that geometry rebuilds lazily and only once positions
+ * have held still for a frame: while a host writes positions every frame, picks report nothing
+ * rather than index moving geometry. A pick unprojects the cursor, derives a conservative
+ * coord-space radius from a numerically sampled screen-to-coord Jacobian, enumerates grid
+ * candidates, and runs exact screen-space tests that mirror the render shaders: radius clamps,
+ * size multipliers, height displacement, pole capsules, dash gaps, positive-w clipping, horizon
+ * visibility, and vertex-beats-edge ranking.
  */
 export class Picker {
   private scene: Scene | null = null;
+  private index: Index | null = null;
   private readonly projectors = new Map<ProjectionFamily, Projector>();
   private readonly f32: Float32Array;
   private readonly u32: Uint32Array;
+
+  /** Rendered frames seen, the clock position writes are dated against. */
+  private frameNo = 0;
+  /** Frame of the latest position write; the index is stale past it. */
+  private movedAt = -2;
+  /** The `movedAt` the current index was built for. */
+  private indexedAt = -2;
 
   // Scratch for exact tests; a pick allocates nothing.
   private readonly pA = createPoint();
   private readonly pB = createPoint();
   private readonly pM = createPoint();
+  private readonly ep = new Float32Array(4);
 
   /** Create a picker bound to live render dependencies. */
   constructor(private readonly deps: PickerDeps) {
@@ -205,41 +229,42 @@ export class Picker {
   }
 
   /**
-   * Build static picking indices without replacing the active scene.
+   * Build the static scene structure without replacing the active scene.
    *
    * This is the fallible half of scene replacement; callers commit the result
    * only once every other scene resource is ready.
    */
   prepareScene(scene: PreparedScene): Scene {
-    const { info, coords, segments } = scene;
-    const { bounds, vertexCount } = info;
+    const { info, segments } = scene;
     const { segmentCount } = segments.info;
-    const wrapX = isGeoBounds(bounds) ? 360 : 0;
     return {
-      vertexCount,
+      vertexCount: info.vertexCount,
       segmentCount,
-      coords,
       seg: segments,
-      bounds,
-      extent: Math.hypot(bounds.xMax - bounds.xMin, bounds.yMax - bounds.yMin) || 1,
-      wrapX,
-      vertexGrid: Grid.points(coords, vertexCount, bounds),
-      segmentGrid: Grid.segments(
-        segments.f32,
-        segments.recordsOffset,
-        SEGMENT_RECORD_WORDS,
-        4,
-        6,
-        segmentCount,
-        bounds,
-        wrapX,
-      ),
+      wrapX: isGeoBounds(info.bounds) ? 360 : 0,
+      endpoints: new Float32Array(segmentCount * 4),
     };
   }
 
   /** Replace (or clear) the active scene; never throws. */
   commitScene(scene: Scene | null): void {
     this.scene = scene;
+    this.index = null;
+  }
+
+  /** Count one rendered frame; called once per frame before hover resolves. */
+  frame(): void {
+    this.frameNo++;
+  }
+
+  /** Note a position write: the index is stale, and picks pause until positions hold still. */
+  moved(): void {
+    this.movedAt = this.frameNo;
+  }
+
+  /** True while positions changed since the previous frame began; picks report nothing. */
+  get moving(): boolean {
+    return this.movedAt >= this.frameNo - 1;
   }
 
   /** Best hit under the cursor; a vertex beats any edge. */
@@ -271,7 +296,15 @@ export class Picker {
   /** Project one item and retain whether its chosen anchor is on the visible surface. */
   locateDetail(item: PickResult, vp: Viewport): LocatedItem | null {
     const scene = this.scene;
-    if (!scene || !Number.isFinite(vp.w) || !Number.isFinite(vp.h) || vp.w <= 0 || vp.h <= 0) {
+    const positions = this.deps.values('vertexPosition');
+    if (
+      !scene ||
+      !positions ||
+      !Number.isFinite(vp.w) ||
+      !Number.isFinite(vp.h) ||
+      vp.w <= 0 ||
+      vp.h <= 0
+    ) {
       return null;
     }
 
@@ -291,12 +324,7 @@ export class Picker {
     if (kind === 'vertex') {
       if (id >= scene.vertexCount) return null;
       const p = this.pA;
-      proj.project(
-        p,
-        scene.coords[id * 2]!,
-        scene.coords[id * 2 + 1]!,
-        this.normHeight(heights, id),
-      );
+      proj.project(p, positions[id * 2]!, positions[id * 2 + 1]!, this.normHeight(heights, id));
       if (p.cw <= MIN_CLIP_W) return null;
       proj.toScreen(p);
       const x = p.sx / dprX;
@@ -307,7 +335,7 @@ export class Picker {
     }
 
     if (kind !== 'edge' || id >= scene.seg.info.edgeCount) return null;
-    const { edgeStarts, f32, u32, recordsOffset } = scene.seg;
+    const { edgeStarts, u32, recordsOffset } = scene.seg;
     const start = edgeStarts[id]!;
     const end = edgeStarts[id + 1]!;
     let visibleScore = Infinity;
@@ -317,6 +345,7 @@ export class Picker {
     let fallbackX = 0;
     let fallbackY = 0;
 
+    const ep = this.ep;
     for (let segment = start; segment < end; segment++) {
       const base = recordsOffset + segment * SEGMENT_RECORD_WORDS;
       const from = u32[base + 1]!;
@@ -328,8 +357,9 @@ export class Picker {
       const hTo = this.normHeight(heights, to);
       const A = this.pA;
       const B = this.pB;
-      proj.project(A, f32[base + 4]!, f32[base + 5]!, hFrom + (hTo - hFrom) * ta);
-      proj.project(B, f32[base + 6]!, f32[base + 7]!, hFrom + (hTo - hFrom) * tb);
+      segmentEndpoints(scene.seg, segment, positions, ep, 0);
+      proj.project(A, ep[0]!, ep[1]!, hFrom + (hTo - hFrom) * ta);
+      proj.project(B, ep[2]!, ep[3]!, hFrom + (hTo - hFrom) * tb);
       if (!clipPositiveW(A, B)) continue;
       proj.toScreen(A);
       proj.toScreen(B);
@@ -370,12 +400,26 @@ export class Picker {
 
   // Query core.
 
+  /** The index over the current positions, or null while they are still moving. */
+  private currentIndex(scene: Scene, positions: Float32Array): Index | null {
+    if (this.moving) return null;
+    if (!this.index || this.indexedAt !== this.movedAt) {
+      this.index = buildIndex(scene, positions);
+      this.indexedAt = this.movedAt;
+    }
+    return this.index;
+  }
+
   /** Run one query and return independently ranked best vertex and edge hits. */
   private query(q: PickQuery): { vertex: PickResult | null; edge: PickResult | null } {
     const scene = this.scene;
     const miss = { vertex: null, edge: null };
     if (!scene || q.vp.w <= 0 || q.vp.h <= 0) return miss;
     if (this.f32[W_VIEWPORT_X]! <= 0 || this.f32[W_VIEWPORT_Y]! <= 0) return miss;
+    const positions = this.deps.values('vertexPosition');
+    if (!positions) return miss;
+    const index = this.currentIndex(scene, positions);
+    if (!index) return miss;
 
     const proj = this.projector(this.deps.mode());
 
@@ -387,7 +431,7 @@ export class Picker {
     const cursorY = q.sy * dprY;
     const radiusDevPx = Math.max(1, q.radiusPx * Math.max(dprX, dprY));
 
-    const region = this.queryRegion(q, scene, proj);
+    const region = this.queryRegion(q, scene, index, proj);
     if (!region) return miss;
 
     const itemFlags = this.u32[W_ITEM_FLAGS]!;
@@ -404,6 +448,7 @@ export class Picker {
     const state: TestState = {
       proj,
       scene,
+      positions,
       cursorX,
       cursorY,
       radiusDevPx,
@@ -426,7 +471,7 @@ export class Picker {
     // accept functions make repeats idempotent. A region that covers the
     // scene (the horizon-band worst case) scans ids directly: same exact
     // tests, none of the cell-enumeration overhead.
-    if (region.length === 1 && region[0]!.r >= scene.extent) {
+    if (region.length === 1 && region[0]!.r >= index.extent) {
       if (q.vertices || poles) {
         for (let id = 0; id < scene.vertexCount; id++) this.testVertex(state, id);
       }
@@ -438,8 +483,8 @@ export class Picker {
       const testSegment = (id: number): void => this.testSegment(state, id);
       for (const circle of region) {
         for (const cx of this.seamMirrors(scene, circle.x, circle.r)) {
-          if (q.vertices || poles) scene.vertexGrid.each(cx, circle.y, circle.r, testVertex);
-          if (q.edges) scene.segmentGrid.each(cx, circle.y, circle.r, testSegment);
+          if (q.vertices || poles) index.vertexGrid.each(cx, circle.y, circle.r, testVertex);
+          if (q.edges) index.segmentGrid.each(cx, circle.y, circle.r, testSegment);
         }
       }
     }
@@ -457,7 +502,12 @@ export class Picker {
    *  of inflating one bounding circle to the whole scene. Degenerate poses
    *  clamp to the scene extent; the grid then degrades to a full scan,
    *  which stays exact. */
-  private queryRegion(q: PickQuery, scene: Scene, proj: Projector): readonly QueryCircle[] | null {
+  private queryRegion(
+    q: PickQuery,
+    scene: Scene,
+    index: Index,
+    proj: Projector,
+  ): readonly QueryCircle[] | null {
     const { vp } = q;
     let sx = q.sx;
     let sy = q.sy;
@@ -478,7 +528,7 @@ export class Picker {
       // overhang the surface's screen footprint, so the padded query below
       // must run regardless.
       const found = this.seedNearSurface(sx, sy, vp);
-      if (!found) return this.coverAll(scene);
+      if (!found) return coverAll(index);
       if (!heightsActive && found.offPx > reachPx) return null;
       sx = found.sx;
       sy = found.sy;
@@ -525,20 +575,20 @@ export class Picker {
         if (!probesOk) break;
       }
       if (probesOk) break;
-      if (attempt >= 1) return this.coverAll(scene);
+      if (attempt >= 1) return coverAll(index);
       const away = Math.hypot(cx - sx, cy - sy);
-      if (away < 1) return this.coverAll(scene);
+      if (away < 1) return coverAll(index);
       const push = Math.min(reachPx * 2, away);
       sx += ((cx - sx) / away) * push;
       sy += ((cy - sy) / away) * push;
       const pushed = this.deps.unproject(sx, sy, vp);
-      if (!pushed) return this.coverAll(scene);
+      if (!pushed) return coverAll(index);
       seed = pushed;
       reachPx += push;
       jacMax = 0;
       jacMin = Infinity;
     }
-    if (!(jacMax > 0) || !Number.isFinite(jacMax)) return this.coverAll(scene);
+    if (!(jacMax > 0) || !Number.isFinite(jacMax)) return coverAll(index);
 
     // Height displacement widens the footprint: walking the cursor ray up
     // the height shell moves its surface intersection by up to
@@ -553,79 +603,11 @@ export class Picker {
       const maxAbsH = Math.max(Math.abs(outMin), Math.abs(outMin + outScale));
       const hCoord = maxAbsH * this.f32[W_HEIGHT_AMPLITUDE]! * proj.heightPadScale();
       const ratio = jacMin > 0 ? jacMax / jacMin : Infinity;
-      if (!(ratio <= JACOBIAN_RATIO_CAP)) return this.coverAll(scene);
+      if (!(ratio <= JACOBIAN_RATIO_CAP)) return coverAll(index);
       pad = hCoord * ratio * HEIGHT_PAD_SAFETY;
     }
 
-    return this.circlesForHull(scene, seed[0], seed[1], vecs, pad);
-  }
-
-  /** Cover the probe-vector hull around the seed with query circles. Nearly
-   *  isotropic hulls get one circle; stretched hulls walk minor-radius
-   *  circles along the major axis (asymmetric because grazing stretch is
-   *  one-sided), so the enumerated area tracks the true footprint instead
-   *  of its bounding circle. */
-  private circlesForHull(
-    scene: Scene,
-    x: number,
-    y: number,
-    vecs: readonly (readonly [number, number])[],
-    pad: number,
-  ): readonly QueryCircle[] {
-    let major = 0;
-    let mx = 0;
-    let my = 0;
-    for (const [vx, vy] of vecs) {
-      const len = Math.hypot(vx, vy);
-      if (len > major) {
-        major = len;
-        mx = vx / len;
-        my = vy / len;
-      }
-    }
-
-    let along = 0; // farthest reach with the major direction
-    let against = 0; // farthest reach opposing it
-    let minor = 0; // farthest reach perpendicular to it
-    for (const [vx, vy] of vecs) {
-      const a = vx * mx + vy * my;
-      const p = Math.abs(vx * -my + vy * mx);
-      along = Math.max(along, a);
-      against = Math.max(against, -a);
-      minor = Math.max(minor, p);
-    }
-    along = along * JACOBIAN_SAFETY + pad;
-    against = against * JACOBIAN_SAFETY + pad;
-    minor = minor * JACOBIAN_SAFETY + pad;
-
-    const bounding = Math.max(along, against);
-    if (!Number.isFinite(bounding) || bounding > scene.extent) return [this.coverAllCircle(scene)];
-    if (bounding <= minor * ELLIPSE_THRESHOLD) {
-      return [{ x, y, r: bounding }];
-    }
-
-    const steps = Math.ceil((along + against) / minor);
-    if (steps > ELLIPSE_MAX_STEPS) return [this.coverAllCircle(scene)];
-    const circles: QueryCircle[] = [];
-    for (let i = 0; i <= steps; i++) {
-      const t = -against + ((along + against) * i) / steps;
-      circles.push({ x: x + mx * t, y: y + my * t, r: minor * 1.5 });
-    }
-    return circles;
-  }
-
-  /** Return the full-scene fallback as a one-circle query region. */
-  private coverAll(scene: Scene): readonly QueryCircle[] {
-    return [this.coverAllCircle(scene)];
-  }
-
-  /** Build a coord-space circle large enough to enumerate the whole scene. */
-  private coverAllCircle(scene: Scene): QueryCircle {
-    return {
-      x: (scene.bounds.xMin + scene.bounds.xMax) / 2,
-      y: (scene.bounds.yMin + scene.bounds.yMax) / 2,
-      r: scene.extent,
-    };
+    return circlesForHull(index, seed[0], seed[1], vecs, pad);
   }
 
   /** Nearest on-surface screen point to an off-surface cursor. Probes
@@ -703,8 +685,8 @@ export class Picker {
   /** Test one vertex billboard and optional height pole against the cursor. */
   private testVertex(state: TestState, id: number): void {
     if (state.vertexVisible && !(state.vertexVisible[id]! > 0)) return;
-    const x = state.scene.coords[id * 2]!;
-    const y = state.scene.coords[id * 2 + 1]!;
+    const x = state.positions[id * 2]!;
+    const y = state.positions[id * 2 + 1]!;
     const h = this.normHeight(state.heights, id);
 
     if (state.vertices) {
@@ -738,7 +720,7 @@ export class Picker {
 
   /** Test one encoded segment against the cursor in device-pixel space. */
   private testSegment(state: TestState, id: number): void {
-    const { u32, f32, recordsOffset } = state.scene.seg;
+    const { u32, recordsOffset } = state.scene.seg;
     const base = recordsOffset + id * SEGMENT_RECORD_WORDS;
     const edgeId = u32[base]!;
     if (state.edgeVisible && !(state.edgeVisible[edgeId]! > 0)) return;
@@ -751,10 +733,14 @@ export class Picker {
     const hFrom = this.normHeight(state.heights, from);
     const hTo = this.normHeight(state.heights, to);
 
+    // The index filled effective endpoints for every segment when it was built over these
+    // positions, so the exact test reads them back instead of resolving the record again.
+    const ep = state.scene.endpoints;
+    const at = id * 4;
     const A = this.pA;
     const B = this.pB;
-    state.proj.project(A, f32[base + 4]!, f32[base + 5]!, hFrom + (hTo - hFrom) * ta);
-    state.proj.project(B, f32[base + 6]!, f32[base + 7]!, hFrom + (hTo - hFrom) * tb);
+    state.proj.project(A, ep[at]!, ep[at + 1]!, hFrom + (hTo - hFrom) * ta);
+    state.proj.project(B, ep[at + 2]!, ep[at + 3]!, hFrom + (hTo - hFrom) * tb);
 
     if (!clipPositiveW(A, B)) return;
     state.proj.toScreen(A);
@@ -786,12 +772,127 @@ export class Picker {
   }
 }
 
+/**
+ * Effective endpoints of one segment as `[ax, ay, bx, by]` at `out[at..at + 4]`: the live
+ * position of the from or to vertex where the segment is the edge's own end, mirroring
+ * `segment_endpoint_coord`, and the baked bend coordinate otherwise.
+ */
+function segmentEndpoints(
+  seg: DecodedSegments,
+  id: number,
+  positions: Float32Array,
+  out: Float32Array,
+  at: number,
+): void {
+  const { u32, f32 } = seg;
+  const base = seg.recordsOffset + id * SEGMENT_RECORD_WORDS;
+  const tPack = u32[base + 3]!;
+  if ((tPack & 0xffff) === 0) {
+    const v = u32[base + 1]! * 2;
+    out[at] = positions[v]!;
+    out[at + 1] = positions[v + 1]!;
+  } else {
+    out[at] = f32[base + 4]!;
+    out[at + 1] = f32[base + 5]!;
+  }
+  if (tPack >>> 16 === 0xffff) {
+    const v = u32[base + 2]! * 2;
+    out[at + 2] = positions[v]!;
+    out[at + 3] = positions[v + 1]!;
+  } else {
+    out[at + 2] = f32[base + 6]!;
+    out[at + 3] = f32[base + 7]!;
+  }
+}
+
+/** Build the coord-space index over one position snapshot, filling the scene's endpoint scratch. */
+function buildIndex(scene: Scene, positions: Float32Array): Index {
+  const { endpoints, segmentCount } = scene;
+  for (let id = 0; id < segmentCount; id++) {
+    segmentEndpoints(scene.seg, id, positions, endpoints, id * 4);
+  }
+  const bounds = finiteBounds(positions);
+  return {
+    bounds,
+    extent: Math.hypot(bounds.xMax - bounds.xMin, bounds.yMax - bounds.yMin) || 1,
+    vertexGrid: Grid.points(positions, scene.vertexCount, bounds),
+    segmentGrid: Grid.segments(endpoints, 0, 4, 0, 2, segmentCount, bounds, scene.wrapX),
+  };
+}
+
+/** Cover the probe-vector hull around the seed with query circles. Nearly
+ *  isotropic hulls get one circle; stretched hulls walk minor-radius
+ *  circles along the major axis (asymmetric because grazing stretch is
+ *  one-sided), so the enumerated area tracks the true footprint instead
+ *  of its bounding circle. */
+function circlesForHull(
+  index: Index,
+  x: number,
+  y: number,
+  vecs: readonly (readonly [number, number])[],
+  pad: number,
+): readonly QueryCircle[] {
+  let major = 0;
+  let mx = 0;
+  let my = 0;
+  for (const [vx, vy] of vecs) {
+    const len = Math.hypot(vx, vy);
+    if (len > major) {
+      major = len;
+      mx = vx / len;
+      my = vy / len;
+    }
+  }
+
+  let along = 0; // farthest reach with the major direction
+  let against = 0; // farthest reach opposing it
+  let minor = 0; // farthest reach perpendicular to it
+  for (const [vx, vy] of vecs) {
+    const a = vx * mx + vy * my;
+    const p = Math.abs(vx * -my + vy * mx);
+    along = Math.max(along, a);
+    against = Math.max(against, -a);
+    minor = Math.max(minor, p);
+  }
+  along = along * JACOBIAN_SAFETY + pad;
+  against = against * JACOBIAN_SAFETY + pad;
+  minor = minor * JACOBIAN_SAFETY + pad;
+
+  const bounding = Math.max(along, against);
+  if (!Number.isFinite(bounding) || bounding > index.extent) return coverAll(index);
+  if (bounding <= minor * ELLIPSE_THRESHOLD) {
+    return [{ x, y, r: bounding }];
+  }
+
+  const steps = Math.ceil((along + against) / minor);
+  if (steps > ELLIPSE_MAX_STEPS) return coverAll(index);
+  const circles: QueryCircle[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = -against + ((along + against) * i) / steps;
+    circles.push({ x: x + mx * t, y: y + my * t, r: minor * 1.5 });
+  }
+  return circles;
+}
+
+/** The full-scene fallback: one circle large enough to enumerate everything indexed. */
+function coverAll(index: Index): readonly QueryCircle[] {
+  return [
+    {
+      x: (index.bounds.xMin + index.bounds.xMax) / 2,
+      y: (index.bounds.yMin + index.bounds.yMax) / 2,
+      r: index.extent,
+    },
+  ];
+}
+
 /** Mutable scratch state shared by exact primitive tests during one query. */
 interface TestState {
   /** Projection mirror for the active render mode. */
   readonly proj: Projector;
-  /** Static scene and coord-space indices. */
+  /** Static scene structure and the endpoint scratch the index filled. */
   readonly scene: Scene;
+  /** The `vertexPosition` snapshot the index was built over. */
+  readonly positions: Float32Array;
   /** Cursor x in device px. */
   readonly cursorX: number;
   /** Cursor y in device px. */

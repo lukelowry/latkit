@@ -4,12 +4,21 @@ import { boundsForItems, expandDegenerateBounds } from '../src/topology/subset-b
 import type { Topology } from '../src/topology/index.js';
 import { sampleTopology } from './fixtures/topology.js';
 
+/** Bounds over the topology's own layout. */
+function ownBounds(
+  topology: Topology,
+  items: Parameters<typeof boundsForItems>[2],
+  longitudeCenter: number | null,
+) {
+  return boundsForItems(topology, topology.vertexCoords!, items, longitudeCenter);
+}
+
 describe('subset topology bounds', () => {
   it('deduplicates valid items and ignores stale identities', () => {
     const topology = sampleTopology();
 
     expect(
-      boundsForItems(
+      ownBounds(
         topology,
         [
           { kind: 'vertex', index: 1 },
@@ -20,7 +29,7 @@ describe('subset topology bounds', () => {
         null,
       ),
     ).toEqual({ xMin: 10, xMax: 10, yMin: 0, yMax: 0 });
-    expect(boundsForItems(topology, [], null)).toBeNull();
+    expect(ownBounds(topology, [], null)).toBeNull();
   });
 
   it('includes edge endpoints and every polyline bend point', () => {
@@ -28,11 +37,31 @@ describe('subset topology bounds', () => {
       polylinePoints: new Float32Array([-30, -5, 40, 25]),
     });
 
-    expect(boundsForItems(topology, [{ kind: 'edge', index: 1 }], null)).toEqual({
+    expect(ownBounds(topology, [{ kind: 'edge', index: 1 }], null)).toEqual({
       xMin: -30,
       xMax: 40,
       yMin: -5,
       yMax: 25,
+    });
+  });
+
+  it('frames the positions in effect while polyline bends stay put', () => {
+    const topology = sampleTopology({
+      polylinePoints: new Float32Array([12, 2, 18, 4]),
+    });
+    const moved = new Float32Array([0, 0, 100, 100, 200, 210]);
+
+    expect(boundsForItems(topology, moved, [{ kind: 'vertex', index: 2 }], null)).toEqual({
+      xMin: 200,
+      xMax: 200,
+      yMin: 210,
+      yMax: 210,
+    });
+    expect(boundsForItems(topology, moved, [{ kind: 'edge', index: 1 }], null)).toEqual({
+      xMin: 12,
+      xMax: 200,
+      yMin: 2,
+      yMax: 210,
     });
   });
 
@@ -44,10 +73,10 @@ describe('subset topology bounds', () => {
       polylineStart: new Uint32Array([0, 0]),
     };
 
-    const globe = boundsForItems(topology, [{ kind: 'edge', index: 0 }], 0)!;
+    const globe = ownBounds(topology, [{ kind: 'edge', index: 0 }], 0)!;
     expect(globe.xMax - globe.xMin).toBeCloseTo(2);
     expect(Math.abs((globe.xMin + globe.xMax) / 2)).toBeCloseTo(180);
-    expect(boundsForItems(topology, [{ kind: 'edge', index: 0 }], null)).toEqual({
+    expect(ownBounds(topology, [{ kind: 'edge', index: 0 }], null)).toEqual({
       xMin: -179,
       xMax: 179,
       yMin: 5,
@@ -62,7 +91,7 @@ describe('subset topology bounds', () => {
       edges: new Uint32Array(0),
       polylineStart: new Uint32Array([0]),
     };
-    const forward = boundsForItems(
+    const forward = ownBounds(
       topology,
       [
         { kind: 'vertex', index: 0 },
@@ -71,7 +100,7 @@ describe('subset topology bounds', () => {
       ],
       0,
     );
-    const reverse = boundsForItems(
+    const reverse = ownBounds(
       topology,
       [
         { kind: 'vertex', index: 2 },
@@ -94,7 +123,7 @@ describe('subset topology bounds', () => {
       polylinePoints: new Float32Array([170, 0]),
     };
 
-    const bounds = boundsForItems(topology, [{ kind: 'edge', index: 0 }], 0)!;
+    const bounds = ownBounds(topology, [{ kind: 'edge', index: 0 }], 0)!;
     expect(bounds.xMax - bounds.xMin).toBeCloseTo(340);
   });
 

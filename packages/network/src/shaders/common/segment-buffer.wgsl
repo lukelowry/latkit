@@ -30,6 +30,14 @@ fn segment_record(i: u32) -> SegmentRecord {
   return seg;
 }
 
+// A segment endpoint in topology coordinates. An end that is the edge's own end is the vertex's
+// live position; a polyline bend keeps the coordinate the topology baked into the record.
+fn segment_endpoint_coord(seg: SegmentRecord, endpoint: u32) -> vec2f {
+  let at_vertex = select(seg.height_t.x == 0.0, seg.height_t.y == 1.0, endpoint == 1u);
+  if (!at_vertex) { return select(seg.a, seg.b, endpoint == 1u); }
+  return vertex_coord(select(seg.from_vertex, seg.to_vertex, endpoint == 1u));
+}
+
 fn segment_sphere_endpoint(i: u32, endpoint: u32) -> vec3f {
   let o = segments[SEG_SPHERE_ENDPOINTS] + i * SEGMENT_SPHERE_ENDPOINT_WORDS + endpoint * 3u;
   return vec3f(bitcast<f32>(segments[o]), bitcast<f32>(segments[o + 1u]), bitcast<f32>(segments[o + 2u]));

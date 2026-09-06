@@ -162,6 +162,11 @@ export class FakePicker {
   nextLocationVisible = true;
   lastLocate: readonly [PickResult, Viewport] | null = null;
   scene: PreparedScene | null = null;
+  /** Whether picks are paused for moving positions; the controller reads it, tests set it. */
+  moving = false;
+
+  frame = vi.fn();
+  moved = vi.fn();
 
   prepareScene = vi.fn((scene: PreparedScene) => scene);
 

@@ -17,25 +17,54 @@ describe('canonical Network semantics', () => {
   });
 
   it('publishes the exact ordered channel vocabulary as deeply frozen metadata', () => {
+    const scalar = { components: 1 } as const;
     expect(Object.entries(CHANNELS)).toEqual([
       [
         'vertexColor',
-        { scope: 'vertex', map: 'colormap', label: 'Vertex Color', normalized: true },
+        { scope: 'vertex', map: 'colormap', label: 'Vertex Color', normalized: true, ...scalar },
       ],
       [
         'vertexHeight',
-        { scope: 'vertex', map: 'height', label: 'Vertex Height', normalized: true },
+        { scope: 'vertex', map: 'height', label: 'Vertex Height', normalized: true, ...scalar },
       ],
-      ['vertexSize', { scope: 'vertex', map: 'size', label: 'Vertex Size', normalized: true }],
-      ['edgeColor', { scope: 'edge', map: 'colormap', label: 'Edge Color', normalized: true }],
-      ['edgeDash', { scope: 'edge', map: 'dash', label: 'Edge Dash', normalized: false }],
+      [
+        'vertexSize',
+        { scope: 'vertex', map: 'size', label: 'Vertex Size', normalized: true, ...scalar },
+      ],
+      [
+        'edgeColor',
+        { scope: 'edge', map: 'colormap', label: 'Edge Color', normalized: true, ...scalar },
+      ],
+      [
+        'edgeDash',
+        { scope: 'edge', map: 'dash', label: 'Edge Dash', normalized: false, ...scalar },
+      ],
       [
         'vertexVisible',
-        { scope: 'vertex', map: 'visible', label: 'Vertex Visible', normalized: false },
+        { scope: 'vertex', map: 'visible', label: 'Vertex Visible', normalized: false, ...scalar },
       ],
-      ['edgeVisible', { scope: 'edge', map: 'visible', label: 'Edge Visible', normalized: false }],
-      ['vertexShade', { scope: 'vertex', map: 'shade', label: 'Vertex Shade', normalized: false }],
-      ['edgeShade', { scope: 'edge', map: 'shade', label: 'Edge Shade', normalized: false }],
+      [
+        'edgeVisible',
+        { scope: 'edge', map: 'visible', label: 'Edge Visible', normalized: false, ...scalar },
+      ],
+      [
+        'vertexShade',
+        { scope: 'vertex', map: 'shade', label: 'Vertex Shade', normalized: false, ...scalar },
+      ],
+      [
+        'edgeShade',
+        { scope: 'edge', map: 'shade', label: 'Edge Shade', normalized: false, ...scalar },
+      ],
+      [
+        'vertexPosition',
+        {
+          scope: 'vertex',
+          map: 'position',
+          label: 'Vertex Position',
+          normalized: false,
+          components: 2,
+        },
+      ],
     ]);
     expect(Object.isFrozen(CHANNELS)).toBe(true);
     for (const definition of Object.values(CHANNELS)) {

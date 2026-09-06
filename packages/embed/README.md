@@ -120,8 +120,10 @@ Removing an attribute restores the option's default. An invalid value warns and 
 
 - `msaa`, read once when the controller is created (before the element connects);
 - one attribute per channel, `vertex-color`, `vertex-height`, `vertex-size`, `vertex-visible`,
-  `vertex-shade`, `edge-color`, `edge-dash`, `edge-visible`, and `edge-shade`, naming a field id
-  of the matching scope; an empty value unbinds;
+  `vertex-shade`, `vertex-position`, `edge-color`, `edge-dash`, `edge-visible`, and `edge-shade`,
+  naming a field id of the matching scope; an empty value unbinds (`vertex-position` takes a
+  field of `vertexCount * 2` interleaved `x, y` values, and an empty value restores the
+  topology's own layout);
 - `vertex-color-domain`, `vertex-height-domain`, `vertex-size-domain`, and `edge-color-domain`
   as `"min max"` for the normalized channels;
 - `projection`, applied with fallback after every load;

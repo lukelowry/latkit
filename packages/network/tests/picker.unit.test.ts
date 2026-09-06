@@ -25,7 +25,8 @@ import { mulberry32 } from './fixtures/random.js';
 
 const VP: Viewport = { w: 800, h: 600 };
 
-type PickChannel = 'vertexHeight' | 'vertexSize' | 'edgeDash' | 'vertexVisible' | 'edgeVisible';
+type PickChannel =
+  'vertexPosition' | 'vertexHeight' | 'vertexSize' | 'edgeDash' | 'vertexVisible' | 'edgeVisible';
 
 interface Setup {
   readonly mode: Projection;
@@ -101,7 +102,8 @@ function makeSetup(
   opts.mutate?.(state);
 
   const dpr = opts.dpr ?? 1;
-  const values = new Map<PickChannel, Float32Array>();
+  // The position channel is what the controller seeds at load: the picker places vertices by it.
+  const values = new Map<PickChannel, Float32Array>([['vertexPosition', coords.slice()]]);
   const pack = (): void => {
     proj.pack(state, uniforms.camera, VP);
     uniforms.frame.viewportX = VP.w * dpr;
@@ -189,6 +191,15 @@ function bindVertexVisibility(s: Setup, raw: Float32Array): void {
   s.uniforms.channel.itemFlags |= ITEM_VERTEX_VISIBLE;
 }
 
+/** Move vertices the way the controller does: rewrite the snapshot, note the write, let it settle. */
+function movePositions(s: Setup, positions: Float32Array, settle = true): void {
+  s.values.get('vertexPosition')!.set(positions);
+  s.picker.moved();
+  if (!settle) return;
+  s.picker.frame();
+  s.picker.frame();
+}
+
 function bindEdgeVisibility(s: Setup, raw: Float32Array): void {
   s.values.set('edgeVisible', raw);
   s.uniforms.channel.itemFlags |= ITEM_EDGE_VISIBLE;
@@ -268,7 +279,7 @@ function oraclePick(
     return { d2: dx * dx + dy * dy, t, len2 };
   };
 
-  const coords = s.topology.vertexCoords!;
+  const coords = s.values.get('vertexPosition')!;
   const A = createPoint(),
     B = createPoint(),
     M = createPoint();
@@ -323,18 +334,23 @@ function oraclePick(
       const edgeId = segU32[base]!;
       if (edgeVisible && !(edgeVisible[edgeId]! > 0)) continue;
       const tPack = segU32[base + 3]!;
-      const hFrom = normHeight(segU32[base + 1]!);
-      const hTo = normHeight(segU32[base + 2]!);
+      const from = segU32[base + 1]!;
+      const to = segU32[base + 2]!;
+      const hFrom = normHeight(from);
+      const hTo = normHeight(to);
+      // An edge's own ends follow the vertex positions; polyline bends keep their baked coords.
+      const atFrom = (tPack & 0xffff) === 0;
+      const atTo = tPack >>> 16 === 0xffff;
       projector.project(
         A,
-        segF32[base + 4]!,
-        segF32[base + 5]!,
+        atFrom ? coords[from * 2]! : segF32[base + 4]!,
+        atFrom ? coords[from * 2 + 1]! : segF32[base + 5]!,
         hFrom + (hTo - hFrom) * ((tPack & 0xffff) / 0xffff),
       );
       projector.project(
         B,
-        segF32[base + 6]!,
-        segF32[base + 7]!,
+        atTo ? coords[to * 2]! : segF32[base + 6]!,
+        atTo ? coords[to * 2 + 1]! : segF32[base + 7]!,
         hFrom + (hTo - hFrom) * ((tPack >>> 16) / 0xffff),
       );
 
@@ -574,6 +590,74 @@ describe('Picker behavior (flat)', () => {
     s.picker.commitScene(null);
     expect(s.picker.pick(s.query(400, 300, 50))).toBeNull();
   });
+
+  it('returns nothing while the position channel is unbound', () => {
+    const s = makeSetup('flat');
+    const v = s.screenAt(0, 0);
+    s.values.delete('vertexPosition');
+    expect(s.picker.pick(s.query(v.sx, v.sy))).toBeNull();
+    expect(s.picker.locate(['vertex', 12], VP)).toBeNull();
+  });
+
+  it('follows moved positions for vertices and edge ends while bends stay put', () => {
+    const s = makeSetup('flat');
+    const moved = s.topology.vertexCoords!.slice();
+    moved[12 * 2] = 3; // vertex 12 leaves the grid center for (3, 3)
+    moved[12 * 2 + 1] = 3;
+    movePositions(s, moved);
+
+    const was = s.screenAt(0, 0);
+    const now = s.screenAt(3, 3);
+    expect(s.picker.pick(s.query(was.sx, was.sy, 2, { edges: false }))).toBeNull();
+    expect(s.picker.pick(s.query(now.sx, now.sy))).toEqual(['vertex', 12]);
+    expect(s.picker.locate(['vertex', 12], VP)?.[0]).toBeCloseTo(now.sx);
+    expect(s.picker.locate(['vertex', 12], VP)?.[1]).toBeCloseTo(now.sy);
+
+    // The edge from vertex 12 to vertex 13 (at (2, 0)) now runs from (3, 3): its midpoint moved.
+    const mid = s.screenAt(2.5, 1.5);
+    const hit = s.picker.pick(s.query(mid.sx, mid.sy, 1, { vertices: false }));
+    expect(hit?.[0]).toBe('edge');
+    expect(s.topology.edges[hit![1] * 2]).toBe(12);
+
+    // The polyline edge 0 -> 24 keeps its bends at (-2, -1) and (1, 2) whatever vertex 0 does.
+    const polyline = s.topology.edges.length / 2 - 1;
+    const bent = s.topology.vertexCoords!.slice();
+    bent[0] = -4; // vertex 0 moves straight up its column
+    bent[1] = 4;
+    movePositions(s, bent);
+    const between = s.screenAt(-0.5, 0.5); // midway between the bends, off every grid line
+    expect(s.picker.pick(s.query(between.sx, between.sy, 1, { vertices: false }))).toEqual([
+      'edge',
+      polyline,
+    ]);
+    const oldStart = s.screenAt(-3, -2.5); // on the old first span, off the new one
+    expect(s.picker.pick(s.query(oldStart.sx, oldStart.sy, 1, { vertices: false }))).toBeNull();
+  });
+
+  it('pauses picking while positions move from frame to frame, then resumes', () => {
+    const s = makeSetup('flat');
+    const v = s.screenAt(0, 0);
+    const query = s.query(v.sx, v.sy);
+    expect(s.picker.moving).toBe(false);
+    expect(s.picker.pick(query)).toEqual(['vertex', 12]);
+
+    // A write this frame and one after the next frame keep the index stale.
+    movePositions(s, s.topology.vertexCoords!, false);
+    expect(s.picker.moving).toBe(true);
+    expect(s.picker.pick(query)).toBeNull();
+    expect(s.picker.pickAll(query)).toEqual([]);
+    expect(s.picker.locate(['vertex', 12], VP)?.[0]).toBeCloseTo(v.sx);
+    s.picker.frame();
+    movePositions(s, s.topology.vertexCoords!, false);
+    s.picker.frame();
+    expect(s.picker.moving).toBe(true);
+    expect(s.picker.pick(query)).toBeNull();
+
+    // Two frames without a write: the index rebuilds once and picks come back.
+    s.picker.frame();
+    expect(s.picker.moving).toBe(false);
+    expect(s.picker.pick(query)).toEqual(['vertex', 12]);
+  });
 });
 
 describe('Picker behavior (tilt)', () => {
@@ -761,6 +845,13 @@ describe('Picker matches the brute-force oracle', () => {
           for (let i = 0; i < edgeVisible.length; i++) edgeVisible[i] = rand() < 0.3 ? 0 : 1;
           bindEdgeVisibility(s, edgeVisible);
         }
+        // The plane families follow a moved layout; the globe draws the topology's own.
+        if (poseIndex % 3 !== 0 && mode !== 'globe') {
+          const moved = topology.vertexCoords!.slice();
+          for (let i = 0; i < moved.length; i++) moved[i] = moved[i]! + (rand() * 2 - 1) * 4;
+          movePositions(s, moved);
+        }
+        const positions = s.values.get('vertexPosition')!;
 
         for (let c = 0; c < 12; c++) {
           // Half the cursors aim near real geometry, half roam the viewport.
@@ -768,10 +859,7 @@ describe('Picker matches the brute-force oracle', () => {
           let sy: number;
           if (c % 2 === 0) {
             const vi = Math.floor(rand() * topology.vertexCount);
-            const at = s.screenAt(
-              topology.vertexCoords![vi * 2]!,
-              topology.vertexCoords![vi * 2 + 1]!,
-            );
+            const at = s.screenAt(positions[vi * 2]!, positions[vi * 2 + 1]!);
             sx = at.sx + (rand() * 2 - 1) * 15;
             sy = at.sy + (rand() * 2 - 1) * 15;
           } else {

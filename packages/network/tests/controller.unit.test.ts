@@ -120,7 +120,9 @@ describe('attach and detach', () => {
     expect(h.renderer.writeColormap).toHaveBeenCalledOnce();
     expect(h.renderer.bindTopology).toHaveBeenCalledOnce();
     expect(h.renderer.useProjection).toHaveBeenLastCalledWith('tilt');
+    // The position channel the load seeded replays first, then every host-bound channel.
     expect(h.renderer.channelWrites.map((write) => write.channel)).toEqual([
+      'vertexPosition',
       'vertexColor',
       'edgeDash',
     ]);
@@ -166,7 +168,10 @@ describe('attach and detach', () => {
     expect(h.pool.devices).toHaveLength(2);
     expect(h.deps.createPresentation).toHaveBeenLastCalledWith(h.device, next);
     expect(h.renderer.bindTopology).toHaveBeenCalledOnce();
-    expect(h.renderer.channelWrites.map((write) => write.channel)).toEqual(['vertexHeight']);
+    expect(h.renderer.channelWrites.map((write) => write.channel)).toEqual([
+      'vertexPosition',
+      'vertexHeight',
+    ]);
     expect(h.events.attached).toEqual([true, false, true]);
   });
 
@@ -309,7 +314,10 @@ describe('device loss', () => {
     expect(h.pool.releases).toHaveBeenCalledExactlyOnceWith(h.pool.devices[0]!.device);
     expect(h.deps.Renderer).toHaveBeenCalledTimes(2);
     expect(h.renderer.bindTopology).toHaveBeenCalledOnce();
-    expect(h.renderer.channelWrites.map((write) => write.channel)).toEqual(['vertexColor']);
+    expect(h.renderer.channelWrites.map((write) => write.channel)).toEqual([
+      'vertexPosition',
+      'vertexColor',
+    ]);
     expect(h.network.attached).toBe(true);
   });
 
@@ -1982,6 +1990,143 @@ describe('createNetwork controller', () => {
     expect(h.pool.devices[0]!.destroy).not.toHaveBeenCalled();
     expect(h.network.attached).toBe(false);
     expect(h.events.attached).toEqual([true]);
+  });
+});
+
+describe('vertex positions', () => {
+  it('seeds the position channel from the topology at load and replaces it in place', async () => {
+    const h = await makeHarness();
+    const topology = geographicTopology();
+    h.network.load(topology);
+
+    const seeded = h.picker.deps!.values('vertexPosition')!;
+    expect(seeded).toEqual(topology.vertexCoords);
+    expect(h.renderer.channelWrites.map((write) => write.channel)).toEqual(['vertexPosition']);
+    expect(h.picker.moved).toHaveBeenCalledOnce();
+    expect(h.network.getChannelDomain('vertexPosition')).toBeNull();
+
+    const moved = new Float32Array([1, 1, 2, 2, 3, 3]);
+    h.network.setChannel('vertexPosition', moved);
+    expect(h.picker.deps!.values('vertexPosition')).toBe(seeded);
+    expect(seeded).toEqual(moved);
+    expect(h.renderer.channelWrites.at(-1)).toMatchObject({ channel: 'vertexPosition' });
+    expect(h.picker.moved).toHaveBeenCalledTimes(2);
+
+    expect(() => h.network.setChannel('vertexPosition', new Float32Array(3))).toThrow(
+      'network channel vertexPosition length 3 != 6',
+    );
+  });
+
+  it('refuses positions before a topology loads', async () => {
+    const h = await makeHarness();
+    expect(() => h.network.setChannel('vertexPosition', new Float32Array(0))).toThrow(
+      'network topology must be loaded before binding channels',
+    );
+  });
+
+  it('withdraws the globe while positions override the layout and falls back from it', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    h.network.setProjection('globe');
+    expect(h.rig.mode).toBe('globe');
+    h.renderer.warmProjection.mockClear();
+
+    h.network.setChannel('vertexPosition', new Float32Array([1, 1, 2, 2, 3, 3]));
+
+    expect(h.network.projections).toEqual({ flat: true, tilt: true, globe: false });
+    expect(h.rig.mode).toBe('flat');
+    expect(h.renderer.useProjection).toHaveBeenLastCalledWith('flat');
+    expect(h.network.setProjection('globe')).toBe(false);
+    expect(h.network.setProjection('tilt')).toBe(true);
+
+    // Restoring the topology's layout re-seeds it and brings the globe back.
+    h.network.setChannel('vertexPosition', null);
+    expect(h.picker.deps!.values('vertexPosition')).toEqual(geographicTopology().vertexCoords);
+    expect(h.network.projections.globe).toBe(true);
+    expect(h.rig.mode).toBe('tilt');
+    expect(h.rig.setBounds).toHaveBeenLastCalledWith(
+      { xMin: -10, xMax: 10, yMin: -5, yMax: 5 },
+      false,
+    );
+    expect(h.network.setProjection('globe')).toBe(true);
+  });
+
+  it('loads a new topology with its own layout and the globe available again', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    h.network.setChannel('vertexPosition', new Float32Array([1, 1, 2, 2, 3, 3]));
+    expect(h.network.projections.globe).toBe(false);
+
+    h.network.load({ ...geographicTopology(), coordinateSpace: 'geographic' });
+
+    expect(h.network.projections.globe).toBe(true);
+    expect(h.picker.deps!.values('vertexPosition')).toEqual(geographicTopology().vertexCoords);
+  });
+
+  it('frames the positions in effect on a whole fit and reframes items by them', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    h.rig.setBounds.mockClear();
+
+    h.network.fit(true);
+    expect(h.rig.setBounds).not.toHaveBeenCalled();
+
+    h.network.setChannel('vertexPosition', new Float32Array([100, 50, 120, 50, 140, 60]));
+    h.network.fit(true);
+    expect(h.rig.setBounds).toHaveBeenLastCalledWith(
+      { xMin: 100, xMax: 140, yMin: 50, yMax: 60 },
+      false,
+    );
+    expect(h.rig.fit).toHaveBeenLastCalledWith({ w: 100, h: 80 }, true);
+
+    h.emitPointer({ kind: 'doubleTap', sx: 5, sy: 6, targetPx: 10, vp: { w: 100, h: 80 } });
+    expect(h.rig.setBounds).toHaveBeenCalledTimes(2);
+
+    h.network.fit([{ kind: 'vertex', index: 2 }]);
+    const framed = h.rig.moveTo.mock.calls.at(-1)![0];
+    expect(framed.xMin).toBeLessThanOrEqual(140);
+    expect(framed.xMax).toBeGreaterThanOrEqual(140);
+    expect(framed.yMin).toBeLessThanOrEqual(60);
+    expect(framed.yMax).toBeGreaterThanOrEqual(60);
+  });
+
+  it('pauses hover and taps while positions move, then re-picks on its own', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    const hovers: Array<Item | null> = [];
+    const selects: Array<Item | null> = [];
+    h.network.on('hover', (item) => hovers.push(item));
+    h.network.on('select', (item) => selects.push(item));
+
+    h.picker.nextHit = ['vertex', 1];
+    h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
+    h.loop.frame();
+    h.loop.paint();
+    await flushMicrotasks();
+    expect(hovers).toEqual([{ kind: 'vertex', index: 1 }]);
+    expect(h.picker.frame).toHaveBeenCalledOnce();
+
+    h.picker.moving = true;
+    h.picker.pick.mockClear();
+    h.loop.wake.mockClear();
+    h.loop.frame();
+    h.loop.paint();
+    await flushMicrotasks();
+    expect(h.picker.pick).not.toHaveBeenCalled();
+    expect(hovers).toEqual([{ kind: 'vertex', index: 1 }, null]);
+    expect(h.loop.wake).toHaveBeenCalled();
+
+    h.picker.nextHits = [['edge', 0]];
+    h.emitPointer({ kind: 'tap', sx: 5, sy: 6, targetPx: 10, vp: { w: 100, h: 80 } });
+    expect(h.picker.pickAll).not.toHaveBeenCalled();
+    expect(selects).toEqual([]);
+
+    h.picker.moving = false;
+    h.loop.frame();
+    h.loop.paint();
+    await flushMicrotasks();
+    expect(h.picker.pick).toHaveBeenCalledOnce();
+    expect(hovers).toEqual([{ kind: 'vertex', index: 1 }, null, { kind: 'vertex', index: 1 }]);
   });
 });
 

@@ -44,6 +44,13 @@ export interface ProjectionDef {
   /** Projection-space visual amplitude for the normalized height channel. */
   readonly heightAmplitude: (bounds: Bounds, vp: Viewport, vertexRadius: number) => number;
   /**
+   * The view places vertices by the `vertexPosition` channel.
+   *
+   * A view that draws precomputed geometry instead is unavailable while a bound position
+   * channel replaces the layout the topology carries.
+   */
+  readonly livePositions: boolean;
+  /**
    * X axis is periodic longitude.
    *
    * Item bounds then take the minimal covering arc nearest the view center;
@@ -77,7 +84,8 @@ export interface PipelineDef {
 // WGSL symbol contract
 //
 // Every overlay prelude must define:
-//   fn vertex_surface_world(id, pos) -> vec3f        vertex surface world position
+//   fn vertex_surface_world(id, pos) -> vec3f        vertex surface world position; pos is the
+//                                                    vertexPosition channel value
 //   fn segment_surface_world(seg, id, ep) -> vec3f   segment endpoint surface world position
 //   fn to_world(pos: vec2f) -> vec3f                 topology coords -> world
 //   fn displace_world(w: vec3f, h: f32) -> vec3f     base lift + height -> world
@@ -116,10 +124,10 @@ fn vertex_surface_world(_vertex_id: u32, pos: vec2f) -> vec3f {
 }
 `;
 
-/** WGSL adapter for planar segment endpoints already stored in graph coordinates. */
+/** WGSL adapter for planar segment endpoints: live vertex positions at edge ends, baked bends between. */
 const planarSegmentSurfaceWgsl = `
 fn segment_surface_world(seg: SegmentRecord, _segment_id: u32, endpoint: u32) -> vec3f {
-  return to_world(select(seg.a, seg.b, endpoint == 1u));
+  return to_world(segment_endpoint_coord(seg, endpoint));
 }
 `;
 
@@ -180,6 +188,7 @@ export const PROJECTION_DEFS = Object.freeze({
     family: 'plane',
     canUse: () => true,
     heightAmplitude: planeHeightAmplitude,
+    livePositions: true,
     wrapX: false,
   },
   tilt: {
@@ -188,6 +197,7 @@ export const PROJECTION_DEFS = Object.freeze({
     family: 'plane',
     canUse: () => true,
     heightAmplitude: planeHeightAmplitude,
+    livePositions: true,
     wrapX: false,
   },
   globe: {
@@ -196,6 +206,7 @@ export const PROJECTION_DEFS = Object.freeze({
     family: 'globe',
     canUse: canHostGlobe,
     heightAmplitude: () => VISUAL.globeHeightRadialScale,
+    livePositions: false,
     wrapX: true,
   },
 } satisfies Record<Projection, ProjectionDef>);

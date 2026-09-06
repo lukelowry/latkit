@@ -1,5 +1,5 @@
 // Shared uniform struct, prepended to all shader modules at pipeline creation time.
-// Total: 448 bytes (28 x 16, naturally aligned).
+// Total: 464 bytes (29 x 16, naturally aligned).
 //
 // Naming: per-item words carry a `v_`/`e_` prefix; `_px` values are CSS pixels (scale with
 // css_px); a bitmask is `<x>_flags` and its bits are `<X>_*`. Channel words map a raw value to a
@@ -121,6 +121,9 @@ struct Uniforms {
   // Shade channel addressing (bytes 440-447).
   v_shade_offset: u32,
   e_shade_offset: u32,
+
+  // Position channel addressing (bytes 448-451): interleaved x, y per vertex, always bound.
+  v_position_offset: u32,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;

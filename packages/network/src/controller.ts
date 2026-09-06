@@ -47,7 +47,7 @@ import {
   type Projection,
 } from './projections.js';
 import type { Borders } from './borders/index.js';
-import { edgeCountOf } from './topology/pack.js';
+import { edgeCountOf, finiteBounds } from './topology/pack.js';
 import { adjacency, neighborhood, type Adjacency } from './topology/adjacency.js';
 import { createOrbit } from './orbit.js';
 import { Picker, isPickChannel, type PickQuery, type PickResult } from './pick/picker.js';
@@ -126,7 +126,13 @@ export interface Network {
    * {@link Network.setProjection} call, `'flat'` before any.
    */
   readonly projection: Projection;
-  /** Projections currently supported by the loaded topology. */
+  /**
+   * Projections currently supported by the loaded topology.
+   *
+   * @remarks
+   * The globe draws the layout the topology carries, so it is unavailable while a bound
+   * `vertexPosition` channel replaces that layout; binding one on the globe falls back to flat.
+   */
   readonly projections: Readonly<Record<Projection, boolean>>;
   /**
    * Whether loaded coordinates are interpreted as geographic lon/lat degrees.
@@ -204,8 +210,18 @@ export interface Network {
    * `vertexVisible`, and `edgeVisible` channels ignore it. A null height
    * domain scans the finite extent of the values.
    *
+   * `vertexPosition` is where every vertex sits, as interleaved `x, y` pairs in topology
+   * coordinates. It is seeded from the topology at {@link Network.load} and rebinding it moves
+   * vertices, the ends of their edges, and their height poles without reloading anything; `null`
+   * restores the topology's own layout. Polyline bends stay where the topology put them, and
+   * globe availability, vertex radius, and the geographic interpretation stay the topology's.
+   * While positions change from one frame to the next, hover clears and picks find nothing;
+   * they resume one frame after the last write. {@link Network.fit} frames the positions in
+   * effect.
+   *
    * @param channel - Channel name to bind.
-   * @param values - Scalar values whose length matches the current topology, or `null` to clear.
+   * @param values - Values whose length matches the current topology (`vertexCount * 2` for
+   * `vertexPosition`), or `null` to clear.
    * @param domain - Input domain for normalized channels, or `null` for scanned/default behavior.
    * @throws Error when no topology is loaded or the array length is invalid.
    */
@@ -664,7 +680,9 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   let topologyBounds: Bounds | null = null;
   let topologyCharacteristicLength: number | null = null;
   let topologyGeographic = false;
-  let projections = projectionAvailability(null, null, false);
+  /** Whether a bound `vertexPosition` channel replaces the layout the topology carries. */
+  let layoutOverridden = false;
+  let projections = projectionAvailability(null, null, false, false);
   let vertexRadius = 0;
   /** The retained border payload, rebound on every attach. */
   let borders: Borders | null = null;
@@ -746,9 +764,10 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   });
 
   /**
-   * CPU picker over a static coordinate-space index.
+   * CPU picker over the position channel and a coordinate-space index.
    *
-   * Camera motion updates uniforms and unprojection but never mutates the index.
+   * Camera motion updates uniforms and unprojection but never mutates the index; a position
+   * write marks it stale, and it rebuilds once positions hold still.
    */
   const picker = new deps.Picker({
     uniforms,
@@ -757,6 +776,9 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     values: (channel) => channels.values(channel),
   });
   applyOptions(options, true);
+
+  /** The vertex positions in effect: the `vertexPosition` snapshot, bound whenever a topology is. */
+  const positions = (): Float32Array | null => channels.values('vertexPosition');
 
   /** Resolve viewport state and projection-aware bounds for item camera commands. */
   const resolveItemBounds = (items: readonly Item[]) => {
@@ -768,12 +790,23 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         rig.camera.pose()?.centerX ??
         0)
       : null;
+    const coords = positions();
     return {
       view,
       hasViewport,
-      bounds: topology ? boundsForItems(topology, items, center) : null,
+      bounds: topology && coords ? boundsForItems(topology, coords, items, center) : null,
     };
   };
+
+  /**
+   * Point the rig's canonical fit at the positions in effect before a whole-scene fit. The
+   * extent is scanned here, at fit time, never per position write.
+   */
+  function syncFitBounds(): void {
+    const coords = positions();
+    if (!layoutOverridden || !coords) return;
+    rig.setBounds(finiteBounds(coords), false);
+  }
 
   /** Whether an item's anchor already sits inside the reveal inset, clamped to a usable band. */
   const insideRevealInset = (item: Item, view: Viewport): boolean => {
@@ -883,12 +916,14 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         if (rig.camera.rotateBy(intent.dxPx, intent.dyPx, intent.vp)) bound.loop.wake();
         break;
       case 'tap':
-        if (!topology) break;
+        // A tap while positions move would only clear the selection; nothing is pickable.
+        if (!topology || picker.moving) break;
         cycleSelection(picker.pickAll(pickQueryAt(intent.sx, intent.sy, intent.targetPx)));
         break;
       case 'doubleTap':
         orbit.stop();
         if (!topology || !topologyBounds) break;
+        syncFitBounds();
         rig.fit(intent.vp, !reduced());
         bound.loop.wake();
         break;
@@ -1015,7 +1050,10 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
           updateHeightAmplitude(frameVp);
           beforeFrameShade(surface, frameVp, now);
         },
-        onFrame: (sizeSettled) => resolveHover(sizeSettled),
+        onFrame: (sizeSettled) => {
+          picker.frame();
+          resolveHover(sizeSettled);
+        },
         onPaint: () => onSuccessfulPaint(),
         animating: () => shadeAnimating,
       });
@@ -1293,7 +1331,8 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     },
 
     setChannel(channel, values, domain) {
-      if (values === null) channels.clear(channel);
+      if (channel === 'vertexPosition') setPositions(values);
+      else if (values === null) channels.clear(channel);
       else channels.set(channel, values, domain);
       if (isPickChannel(channel)) hoverDirty = true;
       repaint();
@@ -1399,6 +1438,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       if (!topology) return;
 
       if (typeof itemsOrAnimate === 'boolean') {
+        syncFitBounds();
         rig.fit(vp(), animated(itemsOrAnimate));
       } else {
         if (!topologyBounds) return;
@@ -1503,10 +1543,45 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       borders = null;
       rig.setBounds(null);
       picker.commitScene(null);
-      channels.reset();
+      layoutOverridden = false;
+      channels.reset(null);
       events.clear();
     },
   };
+
+  /**
+   * Bind vertex positions, or restore the topology's own layout with `null`.
+   *
+   * The globe draws precomputed geometry, so it leaves the availability set while the layout is
+   * overridden and comes back when the topology's layout is restored.
+   */
+  function setPositions(values: Float32Array | null): void {
+    if (!scene) throw new Error('network topology must be loaded before binding channels');
+    channels.set('vertexPosition', values ?? scene.coords);
+    picker.moved();
+    const overridden = values !== null;
+    if (overridden === layoutOverridden) return;
+    layoutOverridden = overridden;
+    if (!overridden && topologyBounds) rig.setBounds(topologyBounds, false);
+    projections = projectionAvailability(
+      topologyBounds,
+      topologyCharacteristicLength,
+      topologyGeographic,
+      layoutOverridden,
+    );
+    fallBackFromUnsupportedProjection();
+    warmInactiveProjections();
+  }
+
+  /** Leave a projection the availability set no longer holds, atomically across rig and renderer. */
+  function fallBackFromUnsupportedProjection(): void {
+    if (projections[rig.mode]) return;
+    orbit.stop();
+    rig.switchTo('flat', vp());
+    updateHeightAmplitude(vp());
+    binding?.renderer.useProjection('flat');
+    cameraMoved();
+  }
 
   const orbit = deps.createOrbit(
     api,
@@ -1738,15 +1813,18 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     updateHeightAmplitude(frameVp);
   }
 
-  /** Computes projection support for the currently loaded topology shape. */
+  /** Computes projection support for the currently loaded topology shape and layout source. */
   function projectionAvailability(
     bounds: Bounds | null,
     characteristicLength: number | null,
     geographic: boolean,
+    overridden: boolean,
   ): Network['projections'] {
     const availability = {} as Record<Projection, boolean>;
     for (const mode of PROJECTIONS) {
-      availability[mode] = PROJECTION_DEFS[mode].canUse(bounds, characteristicLength, geographic);
+      const def = PROJECTION_DEFS[mode];
+      availability[mode] =
+        (def.livePositions || !overridden) && def.canUse(bounds, characteristicLength, geographic);
     }
     return Object.freeze(availability);
   }
@@ -1775,6 +1853,14 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     if (!sizeSettled || rig.camera.isAnimating()) {
       hoverDirty = true;
       applyHover(null);
+      return;
+    }
+    if (picker.moving) {
+      // Positions changed since the previous frame: nothing is pickable until they hold still.
+      // One more frame after the last write re-picks under the pointer without it moving.
+      hoverDirty = true;
+      applyHover(null);
+      repaint();
       return;
     }
     if (!hoverDirty) return;
@@ -1856,10 +1942,12 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     // Geographic interpretation requires the caller's own coordinates: the
     // generated ring fallback must never read as lon/lat degrees.
     topologyGeographic = isGeographicTopology(next, info.bounds);
+    layoutOverridden = false;
     projections = projectionAvailability(
       topologyBounds,
       topologyCharacteristicLength,
       topologyGeographic,
+      false,
     );
 
     hoverDirty = true;
@@ -1881,7 +1969,10 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     binding?.renderer.setPasses(passes());
     syncSunTimer();
 
-    channels.reset();
+    // Every channel clears and the topology's layout seeds the position channel the shaders
+    // and picker place vertices by.
+    channels.reset(nextScene.coords);
+    picker.moved();
     // A fresh scene schedules its canonical fit on the rig, unless the caller keeps the pose.
     rig.setBounds(topologyBounds, fit);
     warmInactiveProjections();

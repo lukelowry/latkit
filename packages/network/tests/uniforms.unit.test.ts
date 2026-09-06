@@ -40,7 +40,8 @@ describe('uniform layout table', () => {
     expect(wordOf('backing_scale')).toBe(88);
     expect(wordOf('pointer_px')).toBe(108);
     expect(wordOf('v_shade_offset')).toBe(110);
-    expect(UNIFORM_BUFFER_BYTES).toBe(448);
+    expect(wordOf('v_position_offset')).toBe(112);
+    expect(UNIFORM_BUFFER_BYTES).toBe(464);
   });
 });
 
@@ -76,7 +77,7 @@ describe('createUniforms', () => {
     expect(Array.from(u.rawF32.slice(92, 95))).toEqual([1, 2, 3]);
     expect(Array.from(u.rawF32.slice(96, 99))).toEqual([4, 5, 6]);
     expect(u.rawF32[W_DEPTH_MIX]).toBe(0.25);
-    expect(u.rawF32.length).toBe(112);
+    expect(u.rawF32.length).toBe(116);
   });
 
   it('light region owns the sun direction and display flags', () => {
