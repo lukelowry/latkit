@@ -1,5 +1,33 @@
 # @latkit/network
 
+## 0.8.0
+
+### Minor Changes
+
+- 196e170: One durable controller. `createNetwork(options)` is synchronous and takes neither a device nor a canvas; `attach(canvas)` leases a device and paints every retained state, `detach()` keeps it, and a lost device is replaced inside the controller.
+
+  - Added: `attach`, `detach`, `attached`, the `attached` event, `recovering` on `deviceLost`, `load(topology, { fit })`, and the live `keyboard`, `motion`, and `wheel` options.
+  - Changed: the `zoom` event is `fit`; `contextmenu` carries `{ event, keyboard, clientX, clientY, items }` with the hits already resolved; loading the topology already loaded is a no-op; borders draw only over a geographic topology; every channel slot is allocated at load.
+  - Removed: the device and canvas arguments to `createNetwork`, and the `Topology`, `Item`, and `Domain` re-exports. Import them, and `validateTopology`, from `@latkit/model`.
+
+- 196e170: Policy is an option; intent is an argument. `reveal(item, { neighbors, animate })` takes its two intents inline and the `RevealOptions` type is gone.
+
+  - Added: `edgeBaseColor` (null averages the endpoint colors), `sizeRange` (the `vertexSize` channel's radius multipliers, the twin of `heightRange`), `sunTime` (null follows the clock), `animationMs`, `orbitRate`, `revealPaddingPx`, and `pickRadiusPx`.
+  - Renamed: `baseColor` is `vertexBaseColor`.
+  - Removed: `RevealOptions`, and with it `paddingPx` (now `revealPaddingPx`) and `center`; a visible item is left in place. `vertexLodPx` is gone: a vertex never zooms out of sight, its radius clamps to a 1.5 px floor the way an edge already keeps a 1 px half-width.
+
+### Patch Changes
+
+- 196e170: An edge ends at the rim of its endpoint discs instead of running under them, so a vertex always covers its own edges while true depth orders every other overlap. The edge shader discards fragments inside the disc the vertex pass draws, in every projection.
+
+  - Changed: edges and focused edges write depth; halos, borders, and the earth axis only test it. Items of one kind share one depth bias, so overlapping edges or discs blend in draw order instead of cutting each other's anti-aliased fringe.
+
+- Updated dependencies [196e170]
+- Updated dependencies [196e170]
+- Updated dependencies [196e170]
+  - @latkit/gpu@0.3.0
+  - @latkit/model@0.4.0
+
 ## 0.7.0
 
 ### Minor Changes

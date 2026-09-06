@@ -1,5 +1,23 @@
 # @latkit/embed
 
+## 0.7.1
+
+### Patch Changes
+
+- Updated dependencies [196e170]
+- Updated dependencies [196e170]
+- Updated dependencies [196e170]
+- Updated dependencies [196e170]
+- Updated dependencies [196e170]
+- Updated dependencies [196e170]
+- Updated dependencies [196e170]
+- Updated dependencies [196e170]
+- Updated dependencies [196e170]
+  - @latkit/colormaps@0.2.0
+  - @latkit/model@0.4.0
+  - @latkit/monitor@0.3.0
+  - @latkit/network@0.8.0
+
 ## 0.7.0
 
 ### Minor Changes

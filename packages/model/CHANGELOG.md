@@ -1,5 +1,12 @@
 # @latkit/model
 
+## 0.4.0
+
+### Minor Changes
+
+- 196e170: - Added: `RGBA` and `Colormap` types, `validateRgba`, `bakeColormap` with `COLORMAP_LUT_SIZE`, and `createEmitter`; the one home for the color vocabulary and the event dispatcher every renderer shares.
+- 196e170: Add `Domain`, the `[min, max]` every renderer takes, with `extent(values)` to scan one and `validateDomain(value, name)` to check one, and `validateTopology`, the topology check a host runs before a device exists (moved here from `@latkit/network`).
+
 ## 0.3.0
 
 ### Minor Changes

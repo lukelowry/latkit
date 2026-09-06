@@ -1,5 +1,18 @@
 # @latkit/colormaps
 
+## 0.2.0
+
+### Minor Changes
+
+- 196e170: - Removed: the `Colormap` type export; import it from `@latkit/model`, which `@latkit/colormaps` now depends on.
+- 196e170: `gradient` takes a colormap function as well as a name, so a legend for a custom transfer function renders through the same sampler as the presets.
+
+### Patch Changes
+
+- Updated dependencies [196e170]
+- Updated dependencies [196e170]
+  - @latkit/model@0.4.0
+
 ## 0.1.0
 
 ### Minor Changes
