@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { createGlobeProjection } from '../src/camera/globe.js';
 import { createPlaneProjection } from '../src/camera/plane.js';
-import type { CameraProjection, Viewport } from '../src/camera/projection.js';
+import {
+  DEFAULT_FIT_FRAME,
+  type CameraProjection,
+  type Viewport,
+} from '../src/camera/projection.js';
 import { PIPELINES, PROJECTION_DEFS, type Projection } from '../src/projections.js';
 import { createUniforms, type Uniforms } from '../src/webgpu/uniforms.js';
 import { createPoint, type Projector } from '../src/pick/project.js';
@@ -29,7 +33,7 @@ function setup(mode: Projection, mutate?: (state: Float64Array) => void): Setup 
     mode === 'globe'
       ? { xMin: -40, xMax: 40, yMin: -30, yMax: 30 }
       : { xMin: -10, xMax: 10, yMin: -10, yMax: 10 };
-  const state = proj.fit(bounds, VP) as Float64Array;
+  const state = proj.fit(bounds, VP, DEFAULT_FIT_FRAME) as Float64Array;
   mutate?.(state);
   proj.pack(state, uniforms.camera, VP);
   uniforms.frame.viewportX = VP.w;

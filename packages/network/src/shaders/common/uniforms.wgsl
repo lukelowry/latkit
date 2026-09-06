@@ -1,5 +1,5 @@
 // Shared uniform struct, prepended to all shader modules at pipeline creation time.
-// Total: 432 bytes (27 x 16, naturally aligned).
+// Total: 448 bytes (28 x 16, naturally aligned).
 //
 // Naming: per-item words carry a `v_`/`e_` prefix; `_px` values are CSS pixels (scale with
 // css_px); a bitmask is `<x>_flags` and its bits are `<X>_*`. Channel words map a raw value to a
@@ -114,6 +114,13 @@ struct Uniforms {
 
   // Resting edge color (bytes 416-431), read only under DISPLAY_EDGE_BASE_COLOR.
   e_base_color: vec4f,
+
+  // Pointer (bytes 432-439): canvas-local CSS px of the latest pointer, POINTER_NONE when absent.
+  pointer_px: vec2f,
+
+  // Shade channel addressing (bytes 440-447).
+  v_shade_offset: u32,
+  e_shade_offset: u32,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -134,6 +141,8 @@ const FOCUS_HOVER_ENDPOINTS:    u32 = 4u;
 
 const ITEM_VERTEX_VISIBLE: u32 = 1u;
 const ITEM_EDGE_VISIBLE:   u32 = 2u;
+const ITEM_VERTEX_SHADE:   u32 = 4u;
+const ITEM_EDGE_SHADE:     u32 = 8u;
 
 const ID_KIND_VERTEX: u32 = 1u;
 const ID_KIND_EDGE:   u32 = 2u;

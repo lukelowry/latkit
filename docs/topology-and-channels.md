@@ -72,9 +72,11 @@ Channels bind scalar values to vertices or edges after a topology is loaded.
 | `vertexHeight`  | `vertexCount` | Raises vertices and height poles             |
 | `vertexSize`    | `vertexCount` | Scales vertex billboards                     |
 | `vertexVisible` | `vertexCount` | Shows vertices whose value is greater than 0 |
+| `vertexShade`   | `vertexCount` | One scalar per vertex for the fragment shade |
 | `edgeColor`     | `edgeCount`   | Colors edges through the active colormap     |
 | `edgeDash`      | `edgeCount`   | Enables per-edge dash pattern values         |
 | `edgeVisible`   | `edgeCount`   | Shows edges whose value is greater than 0    |
+| `edgeShade`     | `edgeCount`   | One scalar per edge for the fragment shade   |
 
 ```ts
 network.load(topology);
@@ -88,7 +90,7 @@ network.setChannel('edgeVisible', energizedEdges);
 network.setChannel('edgeVisible', null);
 ```
 
-The third argument is the input domain. Pass `null` to auto-scan height values. The `heightRange` option is the output range `vertexHeight` maps onto. `setChannelDomain()` moves a bound channel's domain without re-uploading its values, and `getChannelDomain()` reads the domain in effect. Visibility channels are raw and domain-free: an unbound channel shows every item, while a bound channel shows only values greater than zero. Zero, negative values, and `NaN` hide the item in both rendering and hit testing. Passing `null` as the values clears the channel and restores all items.
+The third argument is the input domain. Pass `null` to auto-scan height values. The `heightRange` option is the output range `vertexHeight` maps onto. `setChannelDomain()` moves a bound channel's domain without re-uploading its values, and `getChannelDomain()` reads the domain in effect. Visibility channels are raw and domain-free: an unbound channel shows every item, while a bound channel shows only values greater than zero. Zero, negative values, and `NaN` hide the item in both rendering and hit testing. Passing `null` as the values clears the channel and restores all items. Shade channels are raw too: their values reach a fragment shade unchanged as `f.value`, and read as zero while unbound.
 
 `setChannel()` snapshots its typed array, so later caller mutations do not alter the bound rendering or picking state. Bind the array again to publish changes. `CHANNELS` lists every channel with its scope, display label, and whether it is normalized.
 

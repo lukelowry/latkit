@@ -1,9 +1,29 @@
 import { Camera } from './camera.js';
-import { DEFAULT_OPTIONS } from '../options.js';
+import { DEFAULT_OPTIONS, type Insets } from '../options.js';
 import { PROJECTION_DEFS, type Projection } from '../projections.js';
-import type { Pose, PlaneView, CameraProjection, Viewport } from './projection.js';
+import {
+  DEFAULT_FIT_FRAME,
+  type FitFrame,
+  type Pose,
+  type PlaneView,
+  type CameraProjection,
+  type Viewport,
+} from './projection.js';
 import type { Bounds } from '../topology/types.js';
 import type { CameraRegion } from '../webgpu/uniforms.js';
+
+/** The fit options the rig turns into a frame per viewport. */
+export interface FitOptions {
+  /** Inset in CSS px, or null for the default fill fraction. */
+  readonly paddingPx: Insets | null;
+  /** Pitch in degrees, or null for the view's own rest. */
+  readonly pitch: number | null;
+  /** Bearing in degrees clockwise from north. */
+  readonly bearing: number;
+}
+
+/** The least a padded fit may fill, so an inset larger than the canvas still shows something. */
+const MIN_FILL = 0.05;
 
 /** Camera command retained until the first frame with a usable viewport. */
 type Pending =
@@ -43,6 +63,12 @@ export class CameraRig {
   private fitStale = false;
   /** Last viewport a frame was ticked under; carries poses across hidden spells. */
   private readonly lastVp: Viewport = { w: 0, h: 0 };
+  /** The live fit options; every fit derives its frame from them. */
+  private fitOptions: FitOptions = {
+    paddingPx: DEFAULT_OPTIONS.fitPaddingPx,
+    pitch: DEFAULT_OPTIONS.fitPitch,
+    bearing: DEFAULT_OPTIONS.fitBearing,
+  };
 
   /** Duration of an animated fit, reveal, or pose; the live `animationMs` option. */
   animationMs = DEFAULT_OPTIONS.animationMs;
@@ -50,7 +76,47 @@ export class CameraRig {
   /** Creates a rig with the flat projection as the initial mode. */
   constructor(private readonly region: CameraRegion) {
     this.projection = PROJECTION_DEFS.flat.create();
-    this.camera = new Camera(this.projection, region, () => this.animationMs);
+    this.camera = this.createCamera();
+  }
+
+  /** A camera over the active projection that shares the rig's animation duration and fit frame. */
+  private createCamera(): Camera {
+    return new Camera(
+      this.projection,
+      this.region,
+      () => this.animationMs,
+      (vp) => this.frameFor(vp),
+    );
+  }
+
+  /**
+   * Change how fits frame the scene. A camera at fit re-lands on the next frame, as a resize
+   * would; an explored pose keeps its place and only its fit reference follows.
+   */
+  setFitOptions(options: FitOptions): void {
+    this.fitOptions = options;
+    if (this.camera.fitIntent) this.needsFit = true;
+    else this.fitStale = true;
+  }
+
+  /** The frame for one viewport: a pixel inset becomes a fill fraction and a centering shift. */
+  private frameFor(vp: Viewport): FitFrame {
+    const { paddingPx, pitch, bearing } = this.fitOptions;
+    if (paddingPx === null || !usable(vp)) {
+      if (pitch === null && bearing === 0) return DEFAULT_FIT_FRAME;
+      return { fill: DEFAULT_FIT_FRAME.fill, shiftPx: DEFAULT_FIT_FRAME.shiftPx, pitch, bearing };
+    }
+    const [top, right, bottom, left] =
+      typeof paddingPx === 'number' ? [paddingPx, paddingPx, paddingPx, paddingPx] : paddingPx;
+    return {
+      fill: [
+        Math.max(MIN_FILL, (vp.w - left - right) / vp.w),
+        Math.max(MIN_FILL, (vp.h - top - bottom) / vp.h),
+      ],
+      shiftPx: [(left - right) / 2, (top - bottom) / 2],
+      pitch,
+      bearing,
+    };
   }
 
   /** Public projection mode corresponding to the active projection implementation. */
@@ -153,7 +219,7 @@ export class CameraRig {
     const sameFamily = PROJECTION_DEFS[this.modeValue].family === PROJECTION_DEFS[mode].family;
     if (sameFamily) {
       this.modeValue = mode;
-      this.camera.setView(mode as PlaneView);
+      this.camera.setView(mode as PlaneView, usable(vp) ? vp : this.lastVp, this.bounds);
       this.fitStale = true;
       return;
     }
@@ -166,7 +232,7 @@ export class CameraRig {
     const fitIntent = this.camera.fitIntent;
     this.modeValue = mode;
     this.projection = PROJECTION_DEFS[mode].create();
-    this.camera = new Camera(this.projection, this.region, () => this.animationMs);
+    this.camera = this.createCamera();
     if (carried) {
       this.needsFit = false;
       this.pending = { kind: 'place', pose: carried.pose, px: carried.px, fitIntent };

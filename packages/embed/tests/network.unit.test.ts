@@ -367,6 +367,51 @@ describe('latkit-network', () => {
     expect(failed).toHaveBeenCalledOnce();
   });
 
+  it('reflects the first paint as a `painted` attribute and event', async () => {
+    const h = harness();
+    const element = h.network() as NetworkElement;
+    element.data = networkData();
+    const painted: boolean[] = [];
+    element.addEventListener('painted', (event) => painted.push(event.detail));
+    const network = await live(h, element);
+
+    expect(element.hasAttribute('painted')).toBe(false);
+    network.emit('painted', true);
+    expect(element.hasAttribute('painted')).toBe(true);
+    network.emit('painted', false);
+    expect(element.hasAttribute('painted')).toBe(false);
+    expect(painted).toEqual([true, false]);
+  });
+
+  it('parses inset, interaction, and fit attributes through the option registry', async () => {
+    const h = harness();
+    const element = h.network() as NetworkElement;
+    element.data = networkData();
+    element.setAttribute('interaction', 'inspect');
+    element.setAttribute('fit-padding-px', '96 32 160 32');
+    element.setAttribute('fit-pitch', '50');
+    element.setAttribute('fit-bearing', '-18');
+    const network = await live(h, element);
+
+    expect(patchesOf(network.setOptions)).toMatchObject({
+      interaction: 'inspect',
+      fitPaddingPx: [96, 32, 160, 32],
+      fitPitch: 50,
+      fitBearing: -18,
+    });
+
+    element.setAttribute('fit-padding-px', '24');
+    await flushMicrotasks();
+    expect(network.setOptions).toHaveBeenLastCalledWith({ fitPaddingPx: 24 });
+
+    element.setAttribute('fit-padding-px', '1 2');
+    await flushMicrotasks();
+    expect(network.setOptions).toHaveBeenLastCalledWith({ fitPaddingPx: null });
+    expect(h.deps.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Invalid fit-padding-px "1 2"'),
+    );
+  });
+
   it('detaches on disconnect, reattaches on reconnect without refetching, and pauses when far', async () => {
     const h = harness({ fetch: vi.fn(() => Promise.resolve(jsonResponse(serializedNetwork()))) });
     const element = h.network() as NetworkElement;

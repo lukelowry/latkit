@@ -65,7 +65,9 @@ A `pipelineError` identifies an asynchronous `plane` or `globe` projection-famil
 
 ## Pause and resume
 
-`pause()` stops animation and rendering for hidden panels or inactive tabs; `resume()` continues. A pause survives `detach` and holds the next binding. The network also pauses itself while the page is hidden.
+`pause()` stops animation and rendering for hidden panels or inactive tabs and clears any hover, so a concealed surface emits `hover` with `null` at once; `resume()` continues. A pause survives `detach` and holds the next binding. The network also pauses itself while the page is hidden.
+
+The `painted` event and property report the first successful frame after each attach and turn false again on detach. Neither `attached` nor a resolved `attach()` promises a frame: pipelines compile asynchronously, and `painted` is the signal a poster or placeholder should wait for.
 
 ## Release resources
 

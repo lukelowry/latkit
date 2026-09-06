@@ -66,12 +66,20 @@ export interface PickerDeps {
   values(channel: PickChannel): Float32Array | null;
 }
 
-/** Channels that alter projected hit geometry; color channels never affect picking. */
-export type PickChannel = Exclude<Channel, 'vertexColor' | 'edgeColor'>;
+/** Channels that alter projected hit geometry; color and shade channels never affect picking. */
+export type PickChannel = Exclude<
+  Channel,
+  'vertexColor' | 'edgeColor' | 'vertexShade' | 'edgeShade'
+>;
 
 /** Whether a channel change can move or hide pickable geometry. */
 export function isPickChannel(channel: Channel): channel is PickChannel {
-  return channel !== 'vertexColor' && channel !== 'edgeColor';
+  return (
+    channel !== 'vertexColor' &&
+    channel !== 'edgeColor' &&
+    channel !== 'vertexShade' &&
+    channel !== 'edgeShade'
+  );
 }
 
 /** One screen-space pick request against the current scene. */

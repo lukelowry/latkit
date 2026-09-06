@@ -6,10 +6,10 @@ import type {
   Vec2,
   Viewport,
 } from './projection.js';
+import type { Bounds } from '../topology/types.js';
 import {
   advanceViewSlots,
   deltaViewSlots,
-  FIT_PAD,
   FOV_SCALE,
   FOV_Y,
   MAX_ZOOM_RATIO,
@@ -33,6 +33,15 @@ const mix = (v: number): number => {
   const t = clamp(v / TILT_PITCH, 0, 1);
   return t * t * (3 - 2 * t);
 };
+
+/** Screen-aligned extent of the bounds once the camera turns by `bearing`; a degenerate axis reads as 1. */
+function rotatedExtent(bounds: Bounds, bearing: number): [number, number] {
+  const hw = (bounds.xMax - bounds.xMin) / 2 || 0.5;
+  const hh = (bounds.yMax - bounds.yMin) / 2 || 0.5;
+  const c = Math.abs(Math.cos(bearing * DEG2RAD));
+  const s = Math.abs(Math.sin(bearing * DEG2RAD));
+  return [2 * (hw * c + hh * s), 2 * (hw * s + hh * c)];
+}
 
 /** One planar camera: flat is pitch zero, tilt is its oblique target. */
 export function createPlaneProjection(initial: PlaneView): CameraProjection {
@@ -122,15 +131,15 @@ export function createPlaneProjection(initial: PlaneView): CameraProjection {
       valid = false;
     },
 
-    fit(bounds, vp): CameraState {
-      const bw = bounds.xMax - bounds.xMin || 1;
-      const bh = bounds.yMax - bounds.yMin || 1;
+    fit(bounds, vp, frame): CameraState {
+      const bearing = view === 'flat' ? 0 : wrap(frame.bearing);
+      const [bw, bh] = rotatedExtent(bounds, bearing);
       return Float64Array.of(
         (bounds.xMin + bounds.xMax) / 2,
         (bounds.yMin + bounds.yMax) / 2,
-        Math.min((vp.w * FIT_PAD) / bw, (vp.h * FIT_PAD) / bh),
-        view === 'flat' ? 0 : TILT_PITCH,
-        0,
+        Math.min((vp.w * frame.fill[0]) / bw, (vp.h * frame.fill[1]) / bh),
+        view === 'flat' ? 0 : clamp(frame.pitch ?? TILT_PITCH, 0, MAX_PITCH),
+        bearing,
       ) as CameraState;
     },
 

@@ -88,6 +88,8 @@ async function main(): Promise<void> {
   });
   wireColormaps(net);
   wirePicking(net);
+  // A console handle: try `network.setShade(...)` or `network.setOptions({ fitBearing: 30 })`.
+  Object.assign(window, { network: net });
 
   window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;

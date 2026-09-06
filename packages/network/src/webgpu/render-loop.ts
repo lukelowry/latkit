@@ -23,11 +23,13 @@ export interface RenderLoopDeps {
   onFrame?: (sizeSettled: boolean) => void;
   /**
    * Updates viewport-derived visual uniforms before hover picking and GPU
-   * submission observe them.
+   * submission observe them; `now` is the tick's timestamp.
    */
-  onBeforeFrame?: (vp: Viewport) => void;
+  onBeforeFrame?: (vp: Viewport, now: number) => void;
   /** Fires after a successful GPU submit rather than a skipped render attempt. */
   onPaint?: () => void;
+  /** Whether something besides the camera wants another frame. */
+  animating?: () => boolean;
 }
 
 /**
@@ -57,8 +59,9 @@ export class RenderLoop {
   private readonly rig: CameraRig;
   private readonly onZoom?: (atFitView: boolean) => void;
   private readonly onFrame?: (sizeSettled: boolean) => void;
-  private readonly onBeforeFrame?: (vp: Viewport) => void;
+  private readonly onBeforeFrame?: (vp: Viewport, now: number) => void;
   private readonly onPaint?: () => void;
+  private readonly animating?: () => boolean;
 
   // Loop state.
   private rafId = 0;
@@ -106,6 +109,7 @@ export class RenderLoop {
     this.onFrame = deps.onFrame;
     this.onBeforeFrame = deps.onBeforeFrame;
     this.onPaint = deps.onPaint;
+    this.animating = deps.animating;
     this.tick = this.tick.bind(this);
     this.tickRaf = this.tickRaf.bind(this);
 
@@ -214,8 +218,9 @@ export class RenderLoop {
     const frameVp = this.frameVp;
     frameVp.w = this.exactW / this.devicePixelRatio;
     frameVp.h = this.exactH / this.devicePixelRatio;
-    if (!this.rig.tick(performance.now(), frameVp)) return;
-    this.onBeforeFrame?.(frameVp);
+    const now = performance.now();
+    if (!this.rig.tick(now, frameVp)) return;
+    this.onBeforeFrame?.(frameVp, now);
 
     const fit = this.rig.isAtFitView();
     if (fit !== this.lastFit) {
@@ -244,7 +249,7 @@ export class RenderLoop {
     // A host callback may have scheduled a frame mid-tick; never stack a
     // second rAF on top of it.
     if (!this.rafId) {
-      if (this.rig.isAnimating() || !this.sizeSettled) {
+      if (this.rig.isAnimating() || this.animating?.() === true || !this.sizeSettled) {
         this.rafId = requestAnimationFrame(this.tickRaf);
       } else {
         // Trailing guard: catches notifications that arrive later in this

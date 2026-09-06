@@ -8,6 +8,9 @@ struct VOut {
   @location(3) @interpolate(flat) core_ratio: f32,
   // Vertex id, carried for focus and diagnostic shader paths.
   @location(4) @interpolate(flat) vertex_id: u32,
+  // World position and resolved focus state, handed to the host shade.
+  @location(5) @interpolate(flat) world: vec3f,
+  @location(6) @interpolate(flat) item_focus: u32,
 }
 
 struct ColorOut {
@@ -22,6 +25,8 @@ fn culled_vertex() -> VOut {
   out.focus = 0u;
   out.core_ratio = 1.0;
   out.vertex_id = 0u;
+  out.world = vec3f(0.0);
+  out.item_focus = 0u;
   return out;
 }
 
@@ -63,6 +68,8 @@ fn vs_vertex(quad: vec2f, inst: u32, role: u32) -> VOut {
   out.uv = quad;
   out.focus = state;
   out.core_ratio = r / max(outer, 0.001);
+  out.world = world;
+  out.item_focus = resolved_state;
   return out;
 }
 
@@ -95,7 +102,11 @@ fn vertex_fragment_alpha(uv: vec2f) -> f32 {
 fn vertex_fragment_color(v: VOut) -> vec4f {
   let alpha = vertex_fragment_alpha(v.uv);
   if (alpha < FRAGMENT_ALPHA_DISCARD) { discard; }
-  return vec4f(v.color.rgb, v.color.a * alpha);
+  let shaded = shade(Fragment(
+    v.color, v.pos.xy / u.backing_scale, v.world,
+    ID_KIND_VERTEX, v.vertex_id, v.item_focus, vertex_shade_val(v.vertex_id),
+  ));
+  return vec4f(shaded.rgb, shaded.a * alpha);
 }
 
 @fragment

@@ -2,7 +2,6 @@ import type { CameraProjection, CameraState, PanSession, Vec2, Viewport } from '
 import {
   advanceViewSlots,
   deltaViewSlots,
-  FIT_PAD,
   FOV_SCALE,
   MAX_ZOOM_RATIO,
   mixViewSlots,
@@ -68,10 +67,10 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
-/** Return the camera distance required to fit one angular half-extent. */
-function fitDistance(halfAngleRad: number, axisFovScale: number): number {
+/** Return the camera distance required to fit one angular half-extent into a filled fov extent. */
+function fitDistance(halfAngleRad: number, filledFovScale: number): number {
   const a = clamp(Math.abs(halfAngleRad), 1e-6, Math.PI * 0.49);
-  return SURFACE_R * (Math.cos(a) + Math.sin(a) / (FIT_PAD * axisFovScale));
+  return SURFACE_R * (Math.cos(a) + Math.sin(a) / filledFovScale);
 }
 
 /** Return zoom clearance above the rendered surface with a numeric floor. */
@@ -306,7 +305,7 @@ export function createGlobeProjection(): CameraProjection {
   return {
     stateSize: 5,
 
-    fit(b, vp): CameraState {
+    fit(b, vp, frame): CameraState {
       const centerLon = wrapLon((b.xMin + b.xMax) / 2);
       const centerLat = clampLat((b.yMin + b.yMax) / 2);
       const halfLon = Math.abs(b.xMax - b.xMin) * 0.5 * DEG2RAD;
@@ -315,13 +314,19 @@ export function createGlobeProjection(): CameraProjection {
       const aspect = Math.max(vp.w / Math.max(vp.h, 1), 1e-6);
       const dist = clamp(
         Math.max(
-          fitDistance(halfLon * latScale, FOV_SCALE * aspect),
-          fitDistance(halfLat, FOV_SCALE),
+          fitDistance(halfLon * latScale, frame.fill[0] * FOV_SCALE * aspect),
+          fitDistance(halfLat, frame.fill[1] * FOV_SCALE),
         ),
         MIN_DIST,
         MAX_DIST,
       );
-      return Float64Array.of(centerLon, centerLat, dist, 0, 0) as CameraState;
+      return Float64Array.of(
+        centerLon,
+        centerLat,
+        dist,
+        clampPitch(frame.pitch ?? 0),
+        wrap(frame.bearing),
+      ) as CameraState;
     },
 
     clone(s): CameraState {

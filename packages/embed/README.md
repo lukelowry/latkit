@@ -45,9 +45,9 @@ Every element renders a shadow `<canvas part="canvas">` positioned to fill the h
 `<slot>` for fallback content. The host is `display: block`; give it a size. Light-DOM children
 stay visible until a canvas is bound and hide while one is.
 
-Two attributes report state and are written by the element: `state` is `idle`, `loading`,
-`ready`, or `error` for the data source, and `attached` is present while a WebGPU canvas is bound.
-Style on either:
+Three attributes report state and are written by the element: `state` is `idle`, `loading`,
+`ready`, or `error` for the data source, `attached` is present while a WebGPU canvas is bound,
+and `painted` once that canvas has shown a frame. Style on any of them:
 
 ```css
 latkit-network {
@@ -55,6 +55,9 @@ latkit-network {
 }
 latkit-network[state='error'] {
   outline: 1px solid firebrick;
+}
+latkit-network:not([painted]) + .poster {
+  opacity: 1;
 }
 ```
 
@@ -117,8 +120,8 @@ Removing an attribute restores the option's default. An invalid value warns and 
 
 - `msaa`, read once when the controller is created (before the element connects);
 - one attribute per channel, `vertex-color`, `vertex-height`, `vertex-size`, `vertex-visible`,
-  `edge-color`, `edge-dash`, and `edge-visible`, naming a field id of the matching scope; an empty
-  value unbinds;
+  `vertex-shade`, `edge-color`, `edge-dash`, `edge-visible`, and `edge-shade`, naming a field id
+  of the matching scope; an empty value unbinds;
 - `vertex-color-domain`, `vertex-height-domain`, `vertex-size-domain`, and `edge-color-domain`
   as `"min max"` for the normalized channels;
 - `projection`, applied with fallback after every load;
@@ -140,6 +143,9 @@ Removing an attribute restores the option's default. An invalid value warns and 
   edge-dash="violated"
   keyboard
   wheel="modifier"
+  interaction="inspect"
+  fit-padding-px="96 32 160 32"
+  fit-pitch="50"
   borders
 ></latkit-network>
 
@@ -152,6 +158,7 @@ Everything imperative is the controller, unchanged:
 
 ```ts
 import type { NetworkElement } from '@latkit/embed';
+import { spotlight } from '@latkit/network/shades';
 
 const element = document.querySelector<NetworkElement>('latkit-network')!;
 await element.ready;
@@ -162,6 +169,7 @@ element.network.reveal({ kind: 'vertex', index: 1 }, { neighbors: true, animate:
 element.network.on('contextmenu', ({ clientX, clientY, items }) =>
   openMenu(clientX, clientY, items),
 );
+await element.network.setShade(spotlight({ radiusPx: 220 }));
 ```
 
 Controller events also arrive as bubbling, composed DOM events of the same name with the payload

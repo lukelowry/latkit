@@ -48,7 +48,7 @@ function rect(width: number, height: number, left = 0, top = 0): DOMRect {
   };
 }
 
-function harness(policy?: WheelPolicy) {
+function harness(policy?: WheelPolicy, navigable: () => boolean = () => true) {
   const element = document.createElement('canvas');
   element.setPointerCapture = vi.fn();
   element.releasePointerCapture = vi.fn();
@@ -57,10 +57,11 @@ function harness(policy?: WheelPolicy) {
     element,
     size: () => ({ w: bounds.width, h: bounds.height }),
     rect: () => bounds,
+    setNavigable: () => {},
     destroy: () => {},
   };
   const intents: Intent[] = [];
-  const handle = attachPointer(surface, (i) => intents.push(i), { wheel: policy });
+  const handle = attachPointer(surface, (i) => intents.push(i), { wheel: policy, navigable });
   return { element, intents, handle };
 }
 
@@ -883,6 +884,89 @@ describe('attachPointer rotation', () => {
     const rotate = h.intents.find((i) => i.kind === 'rotate');
     expect(rotate).toBeDefined();
     expect(rotate!.kind === 'rotate' ? rotate!.dxPx : 0).toBeCloseTo(45 * 2.5, 3);
+    h.handle.destroy();
+  });
+});
+
+describe('attachPointer inspection', () => {
+  const inspect = () => false;
+
+  it('leaves every wheel to the page and starts no transaction', () => {
+    const h = harness(() => 'zoom', inspect);
+
+    const wheeled = fireWheel(h.element, { deltaY: 120, ctrlKey: true });
+    expect(wheeled.defaultPrevented).toBe(false);
+    expect(h.intents).toEqual([]);
+    h.handle.destroy();
+  });
+
+  it('keeps hover and taps, turns a moved press into nothing, and never double-taps', () => {
+    const h = harness(undefined, inspect);
+
+    firePointer(h.element, 'pointermove', { clientX: 50, clientY: 50 });
+    firePointer(h.element, 'pointerdown', { clientX: 100, clientY: 100, timeStamp: 0 });
+    firePointer(h.element, 'pointerup', { clientX: 100, clientY: 100, timeStamp: 10 });
+    firePointer(h.element, 'pointerdown', { clientX: 100, clientY: 100, timeStamp: 100 });
+    firePointer(h.element, 'pointerup', { clientX: 100, clientY: 100, timeStamp: 110 });
+    firePointer(h.element, 'pointerdown', { clientX: 100, clientY: 100, timeStamp: 1000 });
+    firePointer(h.element, 'pointermove', { clientX: 130, clientY: 100, timeStamp: 1010 });
+    firePointer(h.element, 'pointerup', { clientX: 130, clientY: 100, timeStamp: 1020 });
+
+    expect(h.intents.map((intent) => intent.kind)).toEqual(['hover', 'tap', 'tap']);
+    expect(h.element.setPointerCapture).not.toHaveBeenCalled();
+    h.handle.destroy();
+  });
+
+  it('ignores a second finger, drops a moved secondary press, and suppresses the menu after it', () => {
+    const h = harness(undefined, inspect);
+    const touch = { pointerType: 'touch' } as const;
+
+    firePointer(h.element, 'pointerdown', { ...touch, pointerId: 1, clientX: 100, clientY: 100 });
+    firePointer(h.element, 'pointerdown', { ...touch, pointerId: 2, clientX: 200, clientY: 100 });
+    firePointer(h.element, 'pointermove', { ...touch, pointerId: 2, clientX: 260, clientY: 100 });
+    firePointer(h.element, 'pointerup', { ...touch, pointerId: 2, clientX: 260, clientY: 100 });
+    firePointer(h.element, 'pointerup', { ...touch, pointerId: 1, clientX: 100, clientY: 100 });
+    expect(h.intents.map((intent) => intent.kind)).toEqual(['tap']);
+    expect(h.intents[0]).toMatchObject({ sx: 100, sy: 100, targetPx: 22 });
+
+    firePointer(h.element, 'pointerdown', { button: 2, clientX: 100, clientY: 100 });
+    firePointer(h.element, 'pointermove', { button: 2, clientX: 120, clientY: 100 });
+    firePointer(h.element, 'pointerup', { button: 2, clientX: 120, clientY: 100 });
+    const menu = fireContextMenu(h.element, { clientX: 120, clientY: 100 });
+    expect(menu.defaultPrevented).toBe(true);
+    expect(h.intents.map((intent) => intent.kind)).toEqual(['tap']);
+
+    // A stationary secondary press still asks for a menu.
+    firePointer(h.element, 'pointerdown', { button: 2, clientX: 100, clientY: 100 });
+    firePointer(h.element, 'pointerup', { button: 2, clientX: 100, clientY: 100 });
+    fireContextMenu(h.element, { clientX: 100, clientY: 100 });
+    expect(h.intents.map((intent) => intent.kind)).toEqual(['tap', 'contextmenu']);
+    h.handle.destroy();
+  });
+
+  it('a browser-claimed touch cancels the pending tap', () => {
+    const h = harness(undefined, inspect);
+
+    firePointer(h.element, 'pointerdown', { pointerType: 'touch', clientX: 100, clientY: 100 });
+    firePointer(h.element, 'pointercancel', { pointerType: 'touch', clientX: 100, clientY: 100 });
+    firePointer(h.element, 'pointerup', { pointerType: 'touch', clientX: 100, clientY: 100 });
+
+    expect(h.intents.map((intent) => intent.kind)).toEqual(['hoverEnd']);
+    h.handle.destroy();
+  });
+
+  it('follows the live predicate: navigation resumes as soon as it says so', () => {
+    let navigable = false;
+    const h = harness(
+      () => 'zoom',
+      () => navigable,
+    );
+
+    fireWheel(h.element, { deltaY: 120 });
+    expect(h.intents).toEqual([]);
+    navigable = true;
+    fireWheel(h.element, { deltaY: 120 });
+    expect(h.intents.map((intent) => intent.kind)).toEqual(['navigationStart', 'zoom']);
     h.handle.destroy();
   });
 });

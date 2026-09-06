@@ -6,6 +6,8 @@
  * `(x - min) * scale`, and an output range as `outMin + t * outSpan`.
  */
 
+import { POINTER_NONE, SHADE_HOST_WORDS } from '../shade.js';
+
 /** Camera uniforms packed by the active projection each frame. */
 export interface CameraRegion {
   /** Writes the 4x4 view-projection matrix into words 0..15. */
@@ -51,7 +53,7 @@ interface DisplayRegion {
   flags: number;
 }
 
-/** Per-frame uniforms that change with canvas size. */
+/** Per-frame uniforms that change with canvas size and the pointer. */
 interface FrameRegion {
   /** Viewport width in device pixels. */
   viewportX: number;
@@ -59,6 +61,10 @@ interface FrameRegion {
   viewportY: number;
   /** Backing pixels per CSS pixel after device-limit fitting. */
   backingScale: number;
+  /** Latest pointer x in canvas-local CSS px; `POINTER_NONE` when absent. */
+  pointerX: number;
+  /** Latest pointer y in canvas-local CSS px; `POINTER_NONE` when absent. */
+  pointerY: number;
 }
 
 /** Geometry-scale uniforms derived from topology and display options. */
@@ -155,6 +161,10 @@ interface ChannelRegion {
   eVisibleOffset: number;
   /** `ITEM_*` bitmask of enabled raw item channels, shared with shaders and picking. */
   itemFlags: number;
+  /** Float-word offset for vertexShade channel storage. */
+  vShadeOffset: number;
+  /** Float-word offset for edgeShade channel storage. */
+  eShadeOffset: number;
 }
 
 /** CPU-side view of the packed uniform buffer shared with WGSL. */
@@ -191,10 +201,12 @@ export interface Uniforms {
   readonly surfaceColor: Float32Array;
   /** Geographic border tint; shaders keep per-tier alpha. */
   readonly borderColor: Float32Array;
+  /** The host shade block, uploaded beside `raw` each frame; `Shade.tick` writes it. */
+  readonly host: Float32Array<ArrayBuffer>;
 }
 
 /** Total byte length of the packed uniform buffer shared with WGSL. */
-export const UNIFORM_BUFFER_BYTES = 432;
+export const UNIFORM_BUFFER_BYTES = 448;
 
 /** Display flag bit for daylight shading; must match uniforms.wgsl. */
 export const DISPLAY_DAYLIGHT = 1;
@@ -222,6 +234,10 @@ export const FOCUS_HOVER_ENDPOINTS = 4;
 export const ITEM_VERTEX_VISIBLE = 1;
 /** Item flag bit for an enabled edgeVisible channel. */
 export const ITEM_EDGE_VISIBLE = 2;
+/** Item flag bit for an enabled vertexShade channel. */
+export const ITEM_VERTEX_SHADE = 4;
+/** Item flag bit for an enabled edgeShade channel. */
+export const ITEM_EDGE_SHADE = 8;
 
 /** WGSL uniform-address-space size and alignment per representable type. */
 const WGSL_TYPES = {
@@ -382,6 +398,18 @@ export const UNIFORM_LAYOUT: readonly UniformField[] = [
   { name: 'v_size_out_min', type: 'f32', word: 102, accessors: a('channel', 'vSizeOutMin') },
   { name: 'v_size_out_span', type: 'f32', word: 103, accessors: a('channel', 'vSizeOutSpan') },
   { name: 'e_base_color', type: 'vec4f', word: 104 },
+  {
+    name: 'pointer_px',
+    type: 'vec2f',
+    word: 108,
+    accessors: [
+      { region: 'frame', key: 'pointerX', view: 'f' },
+      { region: 'frame', key: 'pointerY', view: 'f', lane: 1 },
+    ],
+    init: [POINTER_NONE, POINTER_NONE],
+  },
+  { name: 'v_shade_offset', type: 'u32', word: 110, accessors: a('channel', 'vShadeOffset', 'u') },
+  { name: 'e_shade_offset', type: 'u32', word: 111, accessors: a('channel', 'eShadeOffset', 'u') },
 ];
 
 /**
@@ -569,5 +597,6 @@ export function createUniforms(): Uniforms {
     graticuleColor: vec4View('graticule_color'),
     surfaceColor: vec4View('surface_color'),
     borderColor: vec4View('border_color'),
+    host: new Float32Array(new ArrayBuffer(SHADE_HOST_WORDS * Float32Array.BYTES_PER_ELEMENT)),
   };
 }

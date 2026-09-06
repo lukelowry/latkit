@@ -16,6 +16,8 @@ export interface Surface {
   size(): Viewport;
   /** Canvas DOMRect for clientX/Y to canvas-local conversion. Reads fresh. */
   rect(): DOMRect;
+  /** Claim touch gestures for the camera, or hand them back to the page. */
+  setNavigable(on: boolean): void;
   /** Remove DOM listeners and restore Latkit-managed interaction styles. */
   destroy(): void;
 }
@@ -42,6 +44,9 @@ export function createSurface(canvas: HTMLCanvasElement): Surface {
       return { w: r.width, h: r.height };
     },
     rect: readRect,
+    setNavigable(on) {
+      canvas.style.touchAction = on ? 'none' : originalStyle.touchAction;
+    },
     destroy() {
       canvas.style.touchAction = originalStyle.touchAction;
       canvas.style.userSelect = originalStyle.userSelect;
