@@ -25,13 +25,9 @@ fn project_overlay(p: vec3f, h: f32) -> vec4f {
 
 fn screen_radius(clip: vec4f) -> f32 {
   if (u.depth_mix == 0.0) {
-    return min(
-      u.v_radius * abs(u.flat_sx) * u.viewport.x * 0.5,
-      css_px(MAX_VERTEX_RADIUS_PX),
-    );
+    return clamp_vertex_radius(u.v_radius * abs(u.flat_sx) * u.viewport.x * 0.5);
   }
-  let px = u.v_radius / (clip.w * u.fov_scale) * u.viewport.y * 0.5;
-  return min(px, css_px(MAX_VERTEX_RADIUS_PX));
+  return clamp_vertex_radius(u.v_radius / (clip.w * u.fov_scale) * u.viewport.y * 0.5);
 }
 
 fn screen_half_width(clip: vec4f, width: f32) -> f32 {

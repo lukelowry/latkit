@@ -37,7 +37,6 @@ function setup(mode: Projection, mutate?: (state: Float64Array) => void): Setup 
   uniforms.frame.backingScale = 1;
   uniforms.geometry.vRadius = 0.2;
   uniforms.geometry.eHalfWidth = 0.05;
-  uniforms.geometry.vLodPx = 2;
   return {
     uniforms,
     proj,

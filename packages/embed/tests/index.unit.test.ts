@@ -28,7 +28,7 @@ describe('embed package entrypoint', () => {
   });
 
   it('derives attribute names and parsers from an option registry', () => {
-    expect(htmlName('vertexLodPx')).toBe('vertex-lod-px');
+    expect(htmlName('dashPeriodPx')).toBe('dash-period-px');
     const attributes = optionAttributes({
       colormap: { kind: 'colormap', default: () => [0, 0, 0], live: true },
       devices: { kind: 'pool', default: {}, live: false },

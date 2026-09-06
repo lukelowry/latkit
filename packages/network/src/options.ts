@@ -42,8 +42,6 @@ export interface Options {
   heightRange?: Domain;
   /** Radius multipliers the normalized `vertexSize` channel maps onto. @defaultValue `[0.5, 2]`. */
   sizeRange?: Domain;
-  /** Vertex level-of-detail threshold in CSS pixels. @defaultValue `2`. */
-  vertexLodPx?: number;
   /** Screen-space edge dash period in CSS pixels. @defaultValue `12`. */
   dashPeriodPx?: number;
   /** Draw geographic border overlays; drawn only over a geographic topology. @defaultValue `true`. */
@@ -167,7 +165,6 @@ const definitions = {
   heightScale: { kind: 'nonnegative', default: 1, live: true },
   heightRange: { kind: 'domain', default: tuple(0, 1), live: true },
   sizeRange: { kind: 'domain', default: tuple(0.5, 2), live: true },
-  vertexLodPx: { kind: 'nonnegative', default: 2, live: true },
   dashPeriodPx: { kind: 'nonnegative', default: 12, live: true },
   borders: { kind: 'boolean', default: true, live: true },
   graticule: { kind: 'boolean', default: false, live: true },

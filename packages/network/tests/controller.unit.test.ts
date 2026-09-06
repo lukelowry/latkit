@@ -392,13 +392,12 @@ describe('createNetwork controller', () => {
     expect(h.loop.wake).toHaveBeenCalled();
   });
 
-  it('applies global geometry scales, CSS-pixel LOD, and the active dash period', async () => {
+  it('applies global geometry scales and the active dash period', async () => {
     const baseline = await makeHarness();
     baseline.network.load(geographicTopology());
     const h = await makeHarness({
       vertexScale: 2,
       edgeScale: 3,
-      vertexLodPx: 5,
       dashPeriodPx: 18,
     });
     h.network.load(geographicTopology());
@@ -409,7 +408,6 @@ describe('createNetwork controller', () => {
     expect(h.loop.uniforms.geometry.eHalfWidth).toBeCloseTo(
       baseline.loop.uniforms.geometry.eHalfWidth * 3,
     );
-    expect(h.loop.uniforms.geometry.vLodPx).toBe(5);
 
     const height = h.loop.uniforms.geometry.heightAmplitude;
     h.network.setOptions({ heightScale: 4 });

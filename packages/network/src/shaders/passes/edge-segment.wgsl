@@ -83,12 +83,11 @@ fn edge_fragment_alpha(d: f32) -> f32 {
 }
 
 // The disc radius the vertex pass draws for `vi` at `clip`, or zero when no disc is drawn there:
-// the vertex pass is off, the vertex is hidden, or it falls under the LOD floor.
+// the vertex pass is off or the vertex is hidden.
 fn endpoint_disc_px(vi: u32, clip: vec4f) -> f32 {
   if ((u.display_flags & DISPLAY_VERTICES) == 0u || clip.w <= MIN_CLIP_W) { return 0.0; }
   if (!vertex_visible(vi)) { return 0.0; }
-  let r = screen_radius(clip) * vertex_size_scale(vi);
-  return select(r, 0.0, r < css_px(u.v_lod_px));
+  return screen_radius(clip) * vertex_size_scale(vi);
 }
 
 // Screen-space capsule construction. `wa`/`wb` are the final world-space

@@ -46,9 +46,6 @@ fn vs_vertex(quad: vec2f, inst: u32, role: u32) -> VOut {
   let clip = project_overlay(world, h);
 
   let r = screen_radius(clip) * vertex_size_scale(inst);
-  if (r < css_px(u.v_lod_px)) {
-    return out;
-  }
 
   var halo_px = 0.0;
   if (role == ROLE_HALO) {

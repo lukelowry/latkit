@@ -19,7 +19,6 @@ import {
   W_V_HEIGHT_SCALE,
   W_HEIGHT_AMPLITUDE,
   W_ITEM_FLAGS,
-  W_V_LOD_PX,
   W_VIEWPORT_X,
   W_VIEWPORT_Y,
   W_V_HEIGHT_MODE,
@@ -176,7 +175,7 @@ interface Scene {
  * once per topology; camera motion never touches it. A pick unprojects the
  * cursor, derives a conservative coord-space radius from a numerically
  * sampled screen-to-coord Jacobian, enumerates grid candidates, and runs
- * exact screen-space tests that mirror the render shaders: LOD floor, size
+ * exact screen-space tests that mirror the render shaders: radius clamps, size
  * multipliers, height displacement, pole capsules, dash gaps, positive-w
  * clipping, horizon visibility, and vertex-beats-edge ranking.
  */
@@ -407,7 +406,6 @@ export class Picker {
       edgeVisible,
       vertices: q.vertices,
       poles,
-      lodDevPx: this.f32[W_V_LOD_PX]! * backingScale,
       dashPeriodDevPx: this.f32[W_E_DASH_PERIOD_PX]! * backingScale,
       eHalfWidth: this.f32[W_E_HALF_WIDTH]!,
       bestVertexD2: Infinity,
@@ -706,14 +704,12 @@ export class Picker {
       state.proj.project(p, x, y, h);
       if (state.proj.visible(p)) {
         const radius = state.proj.screenRadius(p) * this.sizeScale(state, id);
-        if (radius >= state.lodDevPx) {
-          state.proj.toScreen(p);
-          const dx = state.cursorX - p.sx;
-          const dy = state.cursorY - p.sy;
-          const d2 = dx * dx + dy * dy;
-          const limit = state.radiusDevPx + radius;
-          if (d2 <= limit * limit) acceptVertex(state, id, d2);
-        }
+        state.proj.toScreen(p);
+        const dx = state.cursorX - p.sx;
+        const dy = state.cursorY - p.sy;
+        const d2 = dx * dx + dy * dy;
+        const limit = state.radiusDevPx + radius;
+        if (d2 <= limit * limit) acceptVertex(state, id, d2);
       }
     }
 
@@ -808,8 +804,6 @@ interface TestState {
   readonly vertices: boolean;
   /** Whether height poles are eligible. */
   readonly poles: boolean;
-  /** Vertex radius LOD floor in device px. */
-  readonly lodDevPx: number;
   /** Dash period in device px; non-positive values disable dash rejection. */
   readonly dashPeriodDevPx: number;
   /** Base edge half-width in world or flat units, before projection scaling. */

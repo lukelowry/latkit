@@ -425,7 +425,6 @@ const DISPLAY_OPTIONS = [
   'heightScale',
   'heightRange',
   'sizeRange',
-  'vertexLodPx',
   'dashPeriodPx',
   'earthAxis',
   'nightFloor',
@@ -456,7 +455,6 @@ const PICK_GEOMETRY_OPTIONS: ReadonlySet<DisplayOption> = new Set<DisplayOption>
   'heightScale',
   'heightRange',
   'sizeRange',
-  'vertexLodPx',
   'dashPeriodPx',
 ]);
 
@@ -1503,7 +1501,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     focus.setStyle(focusStyle);
   }
 
-  /** Writes display flags, lighting scalars, and screen-space thresholds into uniforms. */
+  /** Writes display flags and lighting scalars into uniforms. */
   function writeDisplayToUniforms(): void {
     // Daylight interprets coordinates as lon/lat degrees, so it arms only for
     // geographic topologies; every projection family shades when it is set.
@@ -1519,7 +1517,6 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     uniforms.light.nightFloor = display.nightFloor;
     uniforms.light.surfaceNightFloor = display.surfaceNightFloor;
     uniforms.light.terminatorWidth = display.terminatorWidth;
-    uniforms.geometry.vLodPx = display.vertexLodPx;
   }
 
   /** Returns endpoint vertex ids for focus halos, or [-1, -1] when invalid. */

@@ -114,15 +114,15 @@ describe('createUniforms', () => {
     expect(view[88]).toBe(2);
   });
 
-  it('geometry region writes to bytes 120-139', () => {
+  it('geometry region writes to bytes 120-135', () => {
     const u = createUniforms();
     const view = new Float32Array(u.raw);
     u.geometry.vRadius = 0.08;
     expect(view[30]).toBeCloseTo(0.08);
     u.geometry.eHalfWidth = 0.012;
-    expect(view[32]).toBeCloseTo(0.012);
+    expect(view[31]).toBeCloseTo(0.012);
     u.geometry.heightAmplitude = 0.25;
-    expect(view[34]).toBeCloseTo(0.25);
+    expect(view[33]).toBeCloseTo(0.25);
   });
 
   it('highlight region writes ids and style values to their packed slots', () => {
@@ -133,10 +133,10 @@ describe('createUniforms', () => {
     u.focus.eHoverId = -1;
     u.focus.vSelectedId = 7;
     u.focus.eSelectedId = -1;
-    expect(iview[35]).toBe(42);
-    expect(iview[36]).toBe(-1);
-    expect(iview[37]).toBe(7);
-    expect(iview[38]).toBe(-1);
+    expect(iview[34]).toBe(42);
+    expect(iview[35]).toBe(-1);
+    expect(iview[36]).toBe(7);
+    expect(iview[37]).toBe(-1);
     u.focus.hoverColor = 0x06 | (0xb6 << 8) | (0xd4 << 16);
     u.focus.selectedColor = 0x9b | (0x23 << 8) | (0x35 << 16);
     u.focus.flags = 7;
@@ -148,15 +148,15 @@ describe('createUniforms', () => {
     u.focus.eSelectedPx = 5;
     u.focus.setEndpoints(1, 2, 3, 4);
     const uview = new Uint32Array(u.raw);
-    expect(uview[56]).toBe(0x06 | (0xb6 << 8) | (0xd4 << 16));
-    expect(uview[57]).toBe(0x9b | (0x23 << 8) | (0x35 << 16));
-    expect(uview[58]).toBe(7);
-    expect(fview[59]).toBeCloseTo(0.5);
-    expect(fview[60]).toBeCloseTo(0.82);
-    expect(fview[61]).toBeCloseTo(6);
-    expect(fview[62]).toBeCloseTo(7);
-    expect(fview[63]).toBeCloseTo(3.5);
-    expect(fview[64]).toBeCloseTo(5);
+    expect(uview[55]).toBe(0x06 | (0xb6 << 8) | (0xd4 << 16));
+    expect(uview[56]).toBe(0x9b | (0x23 << 8) | (0x35 << 16));
+    expect(uview[57]).toBe(7);
+    expect(fview[58]).toBeCloseTo(0.5);
+    expect(fview[59]).toBeCloseTo(0.82);
+    expect(fview[60]).toBeCloseTo(6);
+    expect(fview[61]).toBeCloseTo(7);
+    expect(fview[62]).toBeCloseTo(3.5);
+    expect(fview[63]).toBeCloseTo(5);
     expect(iview[68]).toBe(1);
     expect(iview[69]).toBe(2);
     expect(iview[70]).toBe(3);
@@ -181,12 +181,12 @@ describe('createUniforms', () => {
     u.channel.eColorOffset = 2000;
     u.channel.eDashOffset = 3000;
     u.channel.vHeightOffset = 4000;
-    expect(uview[39]).toBe(1000);
-    expect(uview[40]).toBe(2000);
-    expect(uview[41]).toBe(3000);
-    expect(uview[42]).toBe(4000);
+    expect(uview[38]).toBe(1000);
+    expect(uview[39]).toBe(2000);
+    expect(uview[40]).toBe(3000);
+    expect(uview[41]).toBe(4000);
     u.channel.vColorMin = 0.5;
-    expect(fview[44]).toBeCloseTo(0.5);
+    expect(fview[43]).toBeCloseTo(0.5);
     u.channel.vHeightMin = 1.5;
     u.channel.vHeightScale = 0.25;
     u.channel.vHeightOutMin = -1;
@@ -199,15 +199,15 @@ describe('createUniforms', () => {
     u.channel.vVisibleOffset = 6000;
     u.channel.eVisibleOffset = 7000;
     u.channel.itemFlags = ITEM_VERTEX_VISIBLE | ITEM_EDGE_VISIBLE;
-    expect(fview[49]).toBeCloseTo(1.5);
-    expect(fview[50]).toBeCloseTo(0.25);
-    expect(fview[65]).toBeCloseTo(-1);
-    expect(fview[66]).toBeCloseTo(2);
-    expect(uview[51]).toBe(1);
-    expect(uview[52]).toBe(5000);
-    expect(uview[53]).toBe(1);
-    expect(fview[54]).toBeCloseTo(0.3);
-    expect(fview[55]).toBeCloseTo(0.4);
+    expect(fview[48]).toBeCloseTo(1.5);
+    expect(fview[49]).toBeCloseTo(0.25);
+    expect(fview[64]).toBeCloseTo(-1);
+    expect(fview[65]).toBeCloseTo(2);
+    expect(uview[50]).toBe(1);
+    expect(uview[51]).toBe(5000);
+    expect(uview[52]).toBe(1);
+    expect(fview[53]).toBeCloseTo(0.3);
+    expect(fview[54]).toBeCloseTo(0.4);
     expect(uview[100]).toBe(6000);
     expect(uview[101]).toBe(7000);
     expect(uview[W_ITEM_FLAGS]).toBe(ITEM_VERTEX_VISIBLE | ITEM_EDGE_VISIBLE);
@@ -243,7 +243,6 @@ describe('createUniforms', () => {
     u.frame.viewportX = 640;
     u.frame.viewportY = 480;
     u.geometry.vRadius = 5;
-    u.geometry.vLodPx = 5.5;
     u.geometry.eHalfWidth = 5.75;
     u.geometry.eDashPeriodPx = 9;
     u.geometry.heightAmplitude = 6;
@@ -281,7 +280,6 @@ describe('createUniforms', () => {
     expect(u.frame.viewportX).toBe(640);
     expect(u.frame.viewportY).toBe(480);
     expect(u.geometry.vRadius).toBe(5);
-    expect(u.geometry.vLodPx).toBeCloseTo(5.5);
     expect(u.geometry.eHalfWidth).toBeCloseTo(5.75);
     expect(u.geometry.eDashPeriodPx).toBe(9);
     expect(u.geometry.heightAmplitude).toBe(6);

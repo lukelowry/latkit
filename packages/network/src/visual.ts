@@ -12,6 +12,8 @@ export const VISUAL = {
   minEdgeHalfWidthPx: 1,
   /** Maximum edge half-width after projection. */
   maxEdgeHalfWidthPx: 3,
+  /** Minimum billboard radius for vertices: a vertex never zooms out of sight. */
+  minVertexRadiusPx: 1.5,
   /** Maximum billboard radius for vertices. */
   maxVertexRadiusPx: 9,
   /** Angular vertex scale used by globe shaders. */
@@ -62,6 +64,7 @@ export const VISUAL = {
 export const VISUAL_WGSL = `
 const MIN_EDGE_HALF_WIDTH_PX: f32 = ${VISUAL.minEdgeHalfWidthPx};
 const MAX_EDGE_HALF_WIDTH_PX: f32 = ${VISUAL.maxEdgeHalfWidthPx};
+const MIN_VERTEX_RADIUS_PX: f32 = ${VISUAL.minVertexRadiusPx};
 const MAX_VERTEX_RADIUS_PX: f32 = ${VISUAL.maxVertexRadiusPx};
 const GLOBE_VERTEX_SCALE: f32 = ${VISUAL.globeVertexScale};
 const GLOBE_EDGE_SCALE: f32 = ${VISUAL.globeEdgeScale};
@@ -71,6 +74,11 @@ const FLAT_HEIGHT_DEPTH_SPAN: f32 = ${VISUAL.flatHeightDepthSpan};
 const SURFACE_DEPTH_SLACK_PX: f32 = ${VISUAL.surfaceDepthSlackPx};
 const MIN_CLIP_W: f32 = ${VISUAL.minClipW};
 const FRAGMENT_ALPHA_DISCARD: f32 = 0.001;
+
+// Screen-space vertex radius clamp shared by every screen_radius.
+fn clamp_vertex_radius(px: f32) -> f32 {
+  return clamp(px, css_px(MIN_VERTEX_RADIUS_PX), css_px(MAX_VERTEX_RADIUS_PX));
+}
 `;
 
 /**

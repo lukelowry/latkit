@@ -98,7 +98,7 @@ export interface Projector {
   toScreen(p: ProjectedPoint): void;
   /** Mirror of pick_visible: horizon / behind-camera rejection. */
   visible(p: ProjectedPoint): boolean;
-  /** Vertex px radius before per-vertex size scaling and the LOD floor. */
+  /** Vertex px radius after the visual clamp, before per-vertex size scaling. */
   screenRadius(p: ProjectedPoint): number;
   /** Edge half-width in device px after projection scaling and clamping. */
   screenHalfWidth(p: ProjectedPoint, halfWidth: number): number;
@@ -132,6 +132,15 @@ function projectVP(f: Float32Array, p: ProjectedPoint): void {
  */
 function perspectivePx(f: Float32Array, w: number, worldSize: number): number {
   return (worldSize / (w * f[W_FOV_SCALE]!)) * f[W_VIEWPORT_Y]! * 0.5;
+}
+
+/** Clamp a vertex radius to the visual shader's supported px range. */
+function clampRadius(f: Float32Array, px: number): number {
+  const backingScale = f[W_BACKING_SCALE]!;
+  return Math.min(
+    Math.max(px, VISUAL.minVertexRadiusPx * backingScale),
+    VISUAL.maxVertexRadiusPx * backingScale,
+  );
 }
 
 /** Clamp an edge half-width to the visual shader's supported px range. */
@@ -184,7 +193,7 @@ export function planeProjector(uniforms: Uniforms): Projector {
         f[W_DEPTH_MIX] === 0
           ? f[W_V_RADIUS]! * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
           : perspectivePx(f, p.cw, f[W_V_RADIUS]!);
-      return Math.min(px, VISUAL.maxVertexRadiusPx * f[W_BACKING_SCALE]!);
+      return clampRadius(f, px);
     },
     screenHalfWidth(p, halfWidth) {
       const px =
@@ -240,7 +249,7 @@ export function globeProjector(uniforms: Uniforms): Projector {
     },
     screenRadius(p) {
       const px = perspectivePx(f, p.cw, f[W_V_RADIUS]! * VISUAL.globeVertexScale);
-      return Math.min(px, VISUAL.maxVertexRadiusPx * f[W_BACKING_SCALE]!);
+      return clampRadius(f, px);
     },
     screenHalfWidth(p, halfWidth) {
       return clampHalfWidth(f, perspectivePx(f, p.cw, halfWidth * VISUAL.globeEdgeScale));

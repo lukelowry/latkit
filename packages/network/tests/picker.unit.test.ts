@@ -107,7 +107,6 @@ function makeSetup(
   pack();
   uniforms.geometry.vRadius = 0.2;
   uniforms.geometry.eHalfWidth = 0.05;
-  uniforms.geometry.vLodPx = 2;
 
   const picker = new Picker({
     uniforms,
@@ -280,14 +279,12 @@ function oraclePick(
       projector.project(A, x, y, h);
       if (projector.visible(A)) {
         const radius = projector.screenRadius(A) * sizeScale(id);
-        if (radius >= u.geometry.vLodPx * u.frame.backingScale) {
-          projector.toScreen(A);
-          const dx = cursorX - A.sx;
-          const dy = cursorY - A.sy;
-          const d2 = dx * dx + dy * dy;
-          const limit = radiusDevPx + radius;
-          if (d2 <= limit * limit) acceptVertex(id, d2);
-        }
+        projector.toScreen(A);
+        const dx = cursorX - A.sx;
+        const dy = cursorY - A.sy;
+        const d2 = dx * dx + dy * dy;
+        const limit = radiusDevPx + radius;
+        if (d2 <= limit * limit) acceptVertex(id, d2);
       }
     }
 
@@ -418,7 +415,7 @@ describe('Picker behavior (flat)', () => {
     expect(s.picker.pick(query)).toBeNull();
   });
 
-  it('drops vertices below the LOD floor while edges stay pickable', () => {
+  it('keeps a vertex pickable at its minimum radius when zoomed far out', () => {
     const s = makeSetup('flat', {
       mutate: (state) => {
         state[2] = state[2]! / 100;
@@ -426,8 +423,9 @@ describe('Picker behavior (flat)', () => {
     });
     s.pack();
     const v = s.screenAt(0, 0);
+    // Many vertices now share a few pixels; the nearest wins, and it is a vertex, not an edge.
     const hit = s.picker.pick(s.query(v.sx, v.sy, 4));
-    expect(hit?.[0]).toBe('edge');
+    expect(hit?.[0]).toBe('vertex');
   });
 
   it('rejects picks in dash gaps and accepts them on solid stretches', () => {
@@ -504,13 +502,24 @@ describe('Picker behavior (flat)', () => {
       ),
     ).toBeNull();
 
-    s.uniforms.geometry.vLodPx = VISUAL.maxVertexRadiusPx + 0.25;
-    expect(s.picker.pick(s.query(v.sx, v.sy, 0, { vertices: true, edges: false }))).toBeNull();
-    s.uniforms.geometry.vLodPx = VISUAL.maxVertexRadiusPx - 0.25;
-    expect(s.picker.pick(s.query(v.sx, v.sy, 0, { vertices: true, edges: false }))).toEqual([
-      'vertex',
-      12,
-    ]);
+    // Zoomed far out, a vertex keeps the minimum radius the shader draws, so it stays pickable.
+    s.uniforms.geometry.vRadius = 1e-6;
+    expect(
+      s.picker.pick(
+        s.query(v.sx + VISUAL.minVertexRadiusPx - 0.25, v.sy, 0, {
+          vertices: true,
+          edges: false,
+        }),
+      ),
+    ).toEqual(['vertex', 12]);
+    expect(
+      s.picker.pick(
+        s.query(v.sx + VISUAL.minVertexRadiusPx + 0.75, v.sy, 0, {
+          vertices: true,
+          edges: false,
+        }),
+      ),
+    ).toBeNull();
   });
 
   it('locates a stable anchor on a multi-segment edge', () => {

@@ -21,20 +21,19 @@ struct Uniforms {
   // Frame (bytes 112-119): device pixels.
   viewport: vec2f,
 
-  // Geometry (bytes 120-139)
+  // Geometry (bytes 120-135)
   v_radius: f32,
-  v_lod_px: f32,
   e_half_width: f32,
   e_dash_period_px: f32,
   height_amplitude: f32,
 
-  // Focus ids (bytes 140-155): -1 when none.
+  // Focus ids (bytes 136-151): -1 when none.
   v_hover_id: i32,
   e_hover_id: i32,
   v_selected_id: i32,
   e_selected_id: i32,
 
-  // Channel buffer addressing + normalization (bytes 156-223)
+  // Channel buffer addressing + normalization (bytes 152-219)
   v_color_offset: u32,
   e_color_offset: u32,
   e_dash_offset: u32,
@@ -53,7 +52,7 @@ struct Uniforms {
   v_size_min: f32,
   v_size_scale: f32,
 
-  // Focus style (bytes 224-287)
+  // Focus style (bytes 220-283)
   hover_color: u32,
   selected_color: u32,
   focus_flags: u32,
@@ -63,7 +62,7 @@ struct Uniforms {
   v_selected_px: f32,
   e_hover_px: f32,
   e_selected_px: f32,
-  // Height output range (bytes 260-267).
+  // Height output range (bytes 256-263).
   v_height_out_min: f32,
   v_height_out_span: f32,
   // xy = hovered edge endpoints, zw = selected edge endpoints.
