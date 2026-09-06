@@ -55,7 +55,8 @@ network.setChannel('vertexHeight', null);
 
 `vertexHeight` orders overlapping geometry by depth in `flat` and becomes physical lift as the
 camera tilts; the `heightRange` option is the output range it maps onto. `vertexVisible` and
-`edgeVisible` are raw masks: values greater than zero are visible. `edgeDash` is raw too. Every
+`edgeVisible` are raw masks: values greater than zero are visible. `edgeDash` is raw too, and so
+are `vertexShade` and `edgeShade`, which carry one scalar per item to a shade (below). Every
 channel slot is allocated when a topology loads, so rebinding never reallocates GPU storage.
 
 ## Options
@@ -81,11 +82,24 @@ network.setOptions({
   keyboard: true,
   motion: 'auto',
   wheel: 'modifier',
+  interaction: 'inspect',
+  fitPaddingPx: [96, 32, 160, 32],
+  fitPitch: 50,
+  fitBearing: -18,
 });
 ```
 
 A nullable option takes `null` to hand the decision back to the controller. The reference
 documents each option.
+
+`fitPaddingPx`, `fitPitch`, and `fitBearing` define the fit itself: the inset every fit keeps
+clear, in CSS pixels as one value or `[top, right, bottom, left]`, and the orientation it rests at
+in `tilt` and `globe`. Because the controller refits on every resize while the camera is at fit,
+a framed view stays framed with no work in the host.
+
+`interaction` says what input does. `'navigate'` moves the camera. `'inspect'` keeps hover, tap
+selection with cycling through overlapping items, and keyboard stepping, while wheel and touch
+scrolling stay the page's. `'none'` installs no listeners at all.
 
 ## Selection and navigation
 
@@ -120,6 +134,63 @@ if (pose) network.setPose({ bearing: pose.bearing + 30 }, true);
 `PROJECTIONS` to the first mode the loaded topology can host, and `orbit(true)` starts continuous
 rotation until a gesture or `orbit(false)` stops it.
 
+Under `interaction: 'inspect'` the arrow keys walk the selection along the topology: a vertex
+steps to the far end of the edge lying most in that direction, an edge steps to one of its
+endpoints, and with nothing selected the walk starts from the item nearest the center.
+
+A canvas that receives no pointer events itself, such as a backdrop under page content, reports
+the pointer with `setPointer`. It drives hover picking, `hover` events, and the shade's pointer
+exactly as the canvas's own pointer does:
+
+```ts
+document.addEventListener('pointermove', (e) => network.setPointer(e.clientX, e.clientY));
+document.addEventListener('pointerleave', () => network.setPointer(null));
+```
+
+## Shades
+
+A shade is a fragment hook: WGSL declaring `fn shade(f: Fragment) -> vec4f`, compiled into the
+vertex and edge passes, plus an optional `tick` that writes a 64-float `host` block before each
+frame. That is the whole cost of an effect on any graph: one small uniform upload per frame and
+nothing per item. `setShade` resolves once the active projection draws with the shade and
+rejects, keeping the previous one, when the WGSL fails to compile.
+
+```ts
+await network.setShade({
+  wgsl: `
+    fn shade(f: Fragment) -> vec4f {
+      let d = distance(f.px, u.pointer_px);
+      let lit = smoothstep(240.0, 0.0, d) * (0.4 + 0.6 * f.value);
+      return vec4f(mix(f.color.rgb, vec3f(1.0, 0.8, 0.5), lit), f.color.a);
+    }`,
+});
+```
+
+`Fragment` carries the color the pass would paint, the fragment's canvas-local CSS pixel and
+projection world position, the item's kind, index, and focus state, and its `vertexShade` or
+`edgeShade` channel value. `u.pointer_px` is the latest pointer in the same pixel space. A `tick`
+receives the frame's time, pointer, and viewport, and returns true to keep frames coming:
+
+```ts
+await network.setShade({
+  wgsl: 'fn shade(f: Fragment) -> vec4f { return mix(f.color, host[0], host[1].x); }',
+  tick(host, { timeMs }) {
+    host.set([1, 1, 1, 1, 0.5 + 0.5 * Math.sin(timeMs / 400)]);
+    return true;
+  },
+});
+await network.setShade(null);
+```
+
+`@latkit/network/shades` ships presets built on the same hook. `spotlight` is a soft light that
+follows the pointer and fades once it leaves:
+
+```ts
+import { spotlight } from '@latkit/network/shades';
+
+await network.setShade(spotlight({ radiusPx: 220, strength: 0.6, color: [1, 0.72, 0.3, 1] }));
+```
+
 ## Events
 
 Every event carries one payload:
@@ -131,6 +202,7 @@ network.on('contextmenu', ({ clientX, clientY, items }) => menu.open(clientX, cl
 network.on('fit', (atFitView) => (button.disabled = atFitView));
 network.on('orbit', (active) => (button.pressed = active));
 network.on('attached', (attached) => (canvas.hidden = !attached));
+network.on('painted', (painted) => (poster.hidden = painted));
 network.on('deviceLost', ({ message, recovering }) => !recovering && showFallback(message));
 network.on('pipelineError', ({ family, cause }) => console.error(family, cause));
 ```

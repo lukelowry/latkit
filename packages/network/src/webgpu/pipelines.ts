@@ -14,6 +14,7 @@ import segmentsSrc from '../shaders/common/segment-buffer.wgsl?raw';
 import graticuleSrc from '../shaders/common/graticule.wgsl?raw';
 import cameraRaySrc from '../shaders/common/camera-ray.wgsl?raw';
 import daylightSrc from '../shaders/common/daylight.wgsl?raw';
+import shadeSrc from '../shaders/common/shade.wgsl?raw';
 import coreVertexSrc from '../shaders/passes/vertex-billboard.wgsl?raw';
 import coreEdgeSrc from '../shaders/passes/edge-segment.wgsl?raw';
 import corePoleSrc from '../shaders/passes/height-pole.wgsl?raw';
@@ -66,6 +67,8 @@ export interface ProjectionPipelineFactoryOptions {
   edgePipelineLayout: GPUPipelineLayout;
   /** Pipeline layout for background, borders, and axis passes. */
   backgroundPipelineLayout: GPUPipelineLayout;
+  /** The host shade function, compiled after the shade prelude into the vertex and edge passes. */
+  shade: string;
 }
 
 /** Builds a one-target color attachment list with optional alpha blending. */
@@ -95,6 +98,7 @@ export async function buildProjectionPipelines(
     overlayPipelineLayout,
     edgePipelineLayout,
     backgroundPipelineLayout,
+    shade,
   } = options;
   const mod = (label: string, code: string) => device.createShaderModule({ label, code });
   // The shared solar terminator (daylight.wgsl) is universal; the family
@@ -104,14 +108,22 @@ export async function buildProjectionPipelines(
   const segmentsWgsl = SEGMENTS_WGSL_LAYOUT + segmentsSrc;
   const vertexGeometrySrc = topologyWgsl + def.vertexSurfaceWgsl;
   const segmentGeometrySrc = topologyWgsl + segmentsWgsl + def.segmentSurfaceWgsl;
+  // The host shade follows the channel helpers it may call and precedes the pass that calls it.
+  const shadeWgsl = `${shadeSrc}${shade}\n`;
   const vertSrc =
-    projectionPrelude + uniformsSrc + channelVertexSrc + vertexGeometrySrc + coreVertexSrc;
+    projectionPrelude +
+    uniformsSrc +
+    channelVertexSrc +
+    shadeWgsl +
+    vertexGeometrySrc +
+    coreVertexSrc;
   const edgeSrc =
     projectionPrelude +
     uniformsSrc +
     channelVertexSrc +
     segmentGeometrySrc +
     channelEdgeSrc +
+    shadeWgsl +
     coreEdgeSrc;
   const vertM = mod('vert', vertSrc);
   const edgeM = mod('edge', edgeSrc);
@@ -262,7 +274,9 @@ export async function buildProjectionPipelines(
     pendingBorders,
     pendingBackground,
     pendingEarthAxis,
-  ]);
+  ]).catch(async (cause: unknown) => {
+    throw await shaderFailure([vertM, edgeM], cause);
+  });
 
   return {
     visual: {
@@ -278,4 +292,23 @@ export async function buildProjectionPipelines(
       earthAxis,
     },
   };
+}
+
+/**
+ * The pipeline failure with every shader compilation error it can find attached, so a host shade
+ * fault names its line. Line numbers count from the top of the assembled module.
+ */
+async function shaderFailure(modules: readonly GPUShaderModule[], cause: unknown): Promise<Error> {
+  const lines: string[] = [];
+  for (const module of modules) {
+    const info = await module.getCompilationInfo?.();
+    for (const message of info?.messages ?? []) {
+      if (message.type === 'error') {
+        lines.push(`${module.label}:${message.lineNum}:${message.linePos} ${message.message}`);
+      }
+    }
+  }
+  const detail =
+    lines.length > 0 ? lines.join('\n') : cause instanceof Error ? cause.message : String(cause);
+  return new Error(`network shader build failed:\n${detail}`, { cause });
 }

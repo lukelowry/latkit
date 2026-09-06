@@ -1,5 +1,6 @@
 ﻿import type {
   CameraProjection,
+  FitFrame,
   Pose,
   CameraState,
   Tangent,
@@ -10,7 +11,7 @@
 } from './projection.js';
 import type { Bounds } from '../topology/types.js';
 import type { CameraRegion } from '../webgpu/uniforms.js';
-import { createTangent, ZOOM_SLOT } from './projection.js';
+import { createTangent, DEFAULT_FIT_FRAME, ZOOM_SLOT } from './projection.js';
 
 /** Cubic smoothstep: C1 at both ends, zero derivative at t=0 and t=1. */
 const smoothStep = (t: number): number => t * t * (3 - 2 * t);
@@ -118,11 +119,15 @@ export class Camera {
   /** Camera state at `lastDragT`, retained across too-dense spatial samples. */
   private readonly velocityState: CameraState;
 
-  /** Create a camera bound to a projection, its GPU camera region, and the live animation duration. */
+  /**
+   * Create a camera bound to a projection, its GPU camera region, the live animation duration,
+   * and the fit frame for a viewport.
+   */
   constructor(
     private readonly proj: CameraProjection,
     private readonly region: CameraRegion,
     private readonly animationMs: () => number = () => DEFAULT_ANIMATION_MS,
+    private readonly frame: (vp: Viewport) => FitFrame = () => DEFAULT_FIT_FRAME,
   ) {
     // Buffers are sized by the projection; the motion machinery is dimension-blind.
     this.current = new Float64Array(proj.stateSize) as CameraState;
@@ -133,9 +138,25 @@ export class Camera {
     this.scratchState = new Float64Array(proj.stateSize) as CameraState;
   }
 
+  /**
+   * The fitted state for `bounds`: filled and oriented per the frame, then shifted through the
+   * projection's own pan so an asymmetric inset stays centered in every projection.
+   */
+  private fitTo(bounds: Bounds, vp: Viewport): CameraState {
+    const frame = this.frame(vp);
+    const state = this.proj.fit(bounds, vp, frame);
+    const [dx, dy] = frame.shiftPx;
+    if (dx !== 0 || dy !== 0) {
+      const cx = vp.w / 2;
+      const cy = vp.h / 2;
+      this.proj.beginPan(state, cx, cy, vp).apply(state, dx, dy, cx + dx, cy + dy, vp);
+    }
+    return state;
+  }
+
   /** Place current, target, and fit state from graph bounds. */
   init(bounds: Bounds, vp: Viewport): void {
-    const s = this.proj.fit(bounds, vp);
+    const s = this.fitTo(bounds, vp);
     this.current.set(s);
     this.target.set(s);
     // Own a separate copy: state mutations must not leak into the fit reference.
@@ -185,14 +206,23 @@ export class Camera {
     return { pose: this.proj.pose(s), px: this.proj.pxPerWorld(s, vp) };
   }
 
-  /** Retarget one view of the current camera family without replacing state. */
-  setView(view: PlaneView): void {
+  /**
+   * Retarget one view of the current camera family without replacing state.
+   *
+   * An explored camera eases to the view's own rest; a camera at fit eases to the view's fit
+   * of `bounds` in `vp`, orientation and scale alike, so a framed orientation holds.
+   */
+  setView(view: PlaneView, vp: Viewport, bounds: Bounds | null): void {
     if (!this.proj.setView) return;
     const intent = this.fitIntent;
     // Interrupt to the settled destination, not the rendered transient, so a
     // mid-animation switch eases to the post-animation pose.
     this.interrupt(this.settled);
     this.proj.setView(view, this.target);
+    if (intent && bounds && validBounds(bounds) && validViewport(vp)) {
+      this.fit = this.fitTo(bounds, vp);
+      this.target.set(this.fit);
+    }
     this.fitIntent = intent;
   }
 
@@ -202,7 +232,7 @@ export class Camera {
    */
   refreshFit(bounds: Bounds, vp: Viewport): void {
     if (!validBounds(bounds) || !validViewport(vp)) return;
-    this.fit = this.proj.fit(bounds, vp);
+    this.fit = this.fitTo(bounds, vp);
   }
 
   /** True while self-driven motion (coast, fit) owns the rendered state. */
@@ -424,7 +454,7 @@ export class Camera {
 
   /** Animate from the current pose to a fresh fitted view. */
   fitView(bounds: Bounds, vp: Viewport): void {
-    const to = this.proj.fit(bounds, vp);
+    const to = this.fitTo(bounds, vp);
     const from = this.proj.clone(this.current);
     this.fit = to;
     this.motion = { kind: 'fitting', from, to, t0: performance.now() };
@@ -442,7 +472,7 @@ export class Camera {
     const fit = this.fit;
     if (!fit || !validBounds(bounds) || !validViewport(vp)) return false;
 
-    const to = this.proj.fit(bounds, vp);
+    const to = this.fitTo(bounds, vp);
     this.proj.zoom(to, 1, fit);
     const from = this.proj.clone(this.current);
     const changed = !sameState(from, to);
@@ -467,7 +497,7 @@ export class Camera {
   reveal(bounds: Bounds, vp: Viewport, animate: boolean): RevealResult {
     if (!this.fit || !validBounds(bounds) || !validViewport(vp)) return 'unavailable';
 
-    const to = this.proj.fit(bounds, vp);
+    const to = this.fitTo(bounds, vp);
     for (let i = ZOOM_SLOT; i < to.length; i++) to[i] = this.current[i]!;
     const changed = to[0] !== this.current[0] || to[1] !== this.current[1];
     if (!changed) return this.claimCurrent() ? 'claimed' : 'unchanged';

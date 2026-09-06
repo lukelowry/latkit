@@ -23,6 +23,10 @@
       "types": "./dist/borders.d.ts",
       "import": "./dist/borders.js"
     },
+    "./shades": {
+      "types": "./dist/shades.d.ts",
+      "import": "./dist/shades.js"
+    },
     "./assets/*": "./dist/assets/*"
   },
   "types": "./dist/index.d.ts",

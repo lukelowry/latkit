@@ -2,7 +2,11 @@ import { bench, describe } from 'vitest';
 
 import { createGlobeProjection } from '../src/camera/globe.js';
 import { createPlaneProjection } from '../src/camera/plane.js';
-import type { CameraProjection, Viewport } from '../src/camera/projection.js';
+import {
+  DEFAULT_FIT_FRAME,
+  type CameraProjection,
+  type Viewport,
+} from '../src/camera/projection.js';
 import type { Projection } from '../src/projections.js';
 import { createUniforms } from '../src/webgpu/uniforms.js';
 import { Picker } from '../src/pick/picker.js';
@@ -84,7 +88,7 @@ function makeRig(
     yMin = Math.min(yMin, coords[i * 2 + 1]!);
     yMax = Math.max(yMax, coords[i * 2 + 1]!);
   }
-  const state = proj.fit({ xMin, xMax, yMin, yMax }, VP) as Float64Array;
+  const state = proj.fit({ xMin, xMax, yMin, yMax }, VP, DEFAULT_FIT_FRAME) as Float64Array;
   mutate?.(state);
   proj.pack(state, uniforms.camera, VP);
   uniforms.frame.viewportX = VP.w;
@@ -199,7 +203,7 @@ describe('picking at 1M segments', () => {
       yMin = Math.min(yMin, coords[i * 2 + 1]!);
       yMax = Math.max(yMax, coords[i * 2 + 1]!);
     }
-    const state = proj.fit({ xMin, xMax, yMin, yMax }, VP) as Float64Array;
+    const state = proj.fit({ xMin, xMax, yMin, yMax }, VP, DEFAULT_FIT_FRAME) as Float64Array;
     state[3] = 85;
     let lo = 0;
     let hi = VP.h;

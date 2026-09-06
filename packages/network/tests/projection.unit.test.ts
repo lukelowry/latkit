@@ -4,8 +4,13 @@ import { createPlaneProjection, TILT_PITCH } from '../src/camera/plane.js';
 import { Camera } from '../src/camera/camera.js';
 import { CameraRig } from '../src/camera/rig.js';
 import { createUniforms } from '../src/webgpu/uniforms.js';
-import { createTangent, MAX_ZOOM_RATIO } from '../src/camera/projection.js';
-import type { CameraState, CameraProjection, Viewport } from '../src/camera/projection.js';
+import { createTangent, DEFAULT_FIT_FRAME, MAX_ZOOM_RATIO } from '../src/camera/projection.js';
+import type {
+  CameraState,
+  CameraProjection,
+  FitFrame,
+  Viewport,
+} from '../src/camera/projection.js';
 import type { Bounds } from '../src/topology/types.js';
 import { VISUAL } from '../src/visual.js';
 
@@ -69,14 +74,14 @@ describe('flat projection', () => {
   });
 
   it('fit centers on bounds', () => {
-    const s = proj.fit(bounds, vp);
+    const s = proj.fit(bounds, vp, DEFAULT_FIT_FRAME);
     expect(s[0]).toBeCloseTo(0, 6);
     expect(s[1]).toBeCloseTo(0, 6);
     expect(s[2]).toBeGreaterThan(0);
   });
 
   it('isAtFit true at fit state', () => {
-    const fit = proj.fit(bounds, vp);
+    const fit = proj.fit(bounds, vp, DEFAULT_FIT_FRAME);
     expect(proj.isAtFit(fit, fit)).toBe(true);
   });
 
@@ -173,7 +178,7 @@ describe('globe projection', () => {
   const geoBounds: Bounds = { xMin: -98, xMax: -96, yMin: 30, yMax: 32 };
 
   it('fit returns [lon, lat, dist, pitch, bearing] resting unrotated', () => {
-    const s = proj.fit(geoBounds, vp);
+    const s = proj.fit(geoBounds, vp, DEFAULT_FIT_FRAME);
     expect(s.length).toBe(5);
     expect(s[0]).toBeCloseTo(-97, 0);
     expect(s[1]).toBeCloseTo(31, 0);
@@ -224,7 +229,7 @@ describe('globe projection', () => {
   });
 
   it('fit round-trips through screenToWorld at center', () => {
-    const s = proj.fit(geoBounds, vp);
+    const s = proj.fit(geoBounds, vp, DEFAULT_FIT_FRAME);
     const center = proj.screenToWorld(s, vp.w / 2, vp.h / 2, vp);
     expect(center).not.toBeNull();
     expect(center![0]).toBeCloseTo(-97, 0);
@@ -271,7 +276,7 @@ describe('globe projection', () => {
   });
 
   it('isAtFit true at fit state', () => {
-    const fit = proj.fit(geoBounds, vp);
+    const fit = proj.fit(geoBounds, vp, DEFAULT_FIT_FRAME);
     expect(proj.isAtFit(fit, fit)).toBe(true);
   });
 
@@ -305,7 +310,7 @@ describe('globe projection', () => {
   });
 
   it('drag near pole is continuous', () => {
-    const s = proj.fit({ xMin: -1, xMax: 1, yMin: 85, yMax: 89 }, vp);
+    const s = proj.fit({ xMin: -1, xMax: 1, yMin: 85, yMax: 89 }, vp, DEFAULT_FIT_FRAME);
     const session = proj.beginPan(s, 400, 300, vp);
     const lons: number[] = [];
     for (let i = 0; i < 20; i++) {
@@ -318,7 +323,7 @@ describe('globe projection', () => {
   });
 
   it('snapToAnchor converges toward world point at screen position', () => {
-    const s = proj.fit(geoBounds, vp);
+    const s = proj.fit(geoBounds, vp, DEFAULT_FIT_FRAME);
     const sx = 500,
       sy = 250;
     const before = proj.screenToWorld(s, sx, sy, vp);
@@ -400,7 +405,7 @@ describe('globe projection', () => {
     expect(center).not.toBeNull();
     expect(center![0]).toBeCloseTo(-97, 0);
     expect(center![1]).toBeCloseTo(31, 0);
-    const fit = proj.fit(geoBounds, vp);
+    const fit = proj.fit(geoBounds, vp, DEFAULT_FIT_FRAME);
     expect(proj.isAtFit(s, fit)).toBe(false);
   });
 });
@@ -409,7 +414,7 @@ describe('tilt projection', () => {
   const proj = createPlaneProjection('tilt');
 
   function fitState() {
-    return proj.fit(bounds, vp);
+    return proj.fit(bounds, vp, DEFAULT_FIT_FRAME);
   }
 
   it('fit rests at the default oblique pitch so selecting tilt actually tilts', () => {
@@ -1501,3 +1506,167 @@ function makeProjectionRegion() {
     },
   };
 }
+
+describe('fit frames', () => {
+  const frame = (over: Partial<FitFrame>): FitFrame => ({ ...DEFAULT_FIT_FRAME, ...over });
+  const geo: Bounds = { xMin: -98, xMax: -96, yMin: 30, yMax: 32 };
+
+  it('plane fits fill the viewport by fraction and rest at the frame orientation', () => {
+    const flat = createPlaneProjection('flat');
+    const tilt = createPlaneProjection('tilt');
+
+    // 10 x 6 bounds in 800 x 600: the width binds at 80 px per unit.
+    expect(flat.fit(bounds, vp, frame({ fill: [1, 1] }))[2]).toBeCloseTo(80);
+    expect(flat.fit(bounds, vp, DEFAULT_FIT_FRAME)[2]).toBeCloseTo(80 * 0.85);
+
+    const flatTurned = flat.fit(bounds, vp, frame({ pitch: 40, bearing: 90 }));
+    expect(flatTurned[3]).toBe(0);
+    expect(flatTurned[4]).toBe(0);
+
+    // Bearings wrap into [0, 360) like every other camera bearing.
+    const tilted = tilt.fit(bounds, vp, frame({ pitch: 40, bearing: -18 }));
+    expect(tilted[3]).toBe(40);
+    expect(tilted[4]).toBe(342);
+    expect(tilt.fit(bounds, vp, DEFAULT_FIT_FRAME)[3]).toBe(TILT_PITCH);
+    expect(tilt.fit(bounds, vp, frame({ pitch: 500 }))[3]).toBe(85);
+  });
+
+  it('a turned plane fit frames the screen-aligned extent of the bounds', () => {
+    const tilt = createPlaneProjection('tilt');
+    const upright = tilt.fit(bounds, vp, frame({ fill: [1, 1] }));
+    // Turned a quarter, the 10-wide bounds stand 10 tall in a 600 px viewport.
+    const turned = tilt.fit(bounds, vp, frame({ fill: [1, 1], bearing: 90 }));
+    expect(upright[2]).toBeCloseTo(80);
+    expect(turned[2]).toBeCloseTo(60);
+  });
+
+  it('globe fits honor fill, pitch, and bearing', () => {
+    const globe = createGlobeProjection();
+    const loose = globe.fit(geo, vp, DEFAULT_FIT_FRAME);
+    const tight = globe.fit(geo, vp, frame({ fill: [1, 1] }));
+    expect(tight[2]).toBeLessThan(loose[2]);
+    expect(loose[3]).toBe(0);
+    expect(loose[4]).toBe(0);
+
+    const posed = globe.fit(geo, vp, frame({ pitch: 30, bearing: 200 }));
+    expect(posed[3]).toBe(30);
+    expect(posed[4]).toBe(200);
+  });
+
+  it('the camera centers an asymmetric inset by shifting through the projection pan', () => {
+    const proj = createPlaneProjection('flat');
+    const camera = new Camera(proj, createUniforms().camera, undefined, () =>
+      frame({ fill: [1, 0.5], shiftPx: [100, 150] }),
+    );
+    camera.init(bounds, vp);
+
+    expect(camera.current[2]).toBeCloseTo(Math.min(800 / 10, 300 / 6));
+    // The bounds center now sits 100 px right of and 150 px below the viewport center.
+    const [wx, wy] = proj.screenToWorld(camera.current, 500, 450, vp)!;
+    expect(wx).toBeCloseTo(0);
+    expect(wy).toBeCloseTo(0);
+    expect(camera.isAtFitView()).toBe(true);
+  });
+});
+
+describe('CameraRig fit options', () => {
+  const NOW = 1_000;
+
+  function makeRig() {
+    const rig = new CameraRig(createUniforms().camera);
+    rig.setBounds(bounds);
+    return rig;
+  }
+
+  it('turns a pixel inset into fill and shift per viewport and re-lands a camera at fit', () => {
+    const rig = makeRig();
+    rig.tick(NOW, vp);
+    expect(rig.camera.current[2]).toBeCloseTo(80 * 0.85);
+
+    rig.setFitOptions({ paddingPx: [100, 0, 0, 200], pitch: null, bearing: 0 });
+    expect(rig.pendingPlacement).toBe(true);
+    rig.tick(NOW + 16, vp);
+
+    // The clear box is 600 x 500 at (200, 100): 60 px per unit, centered at (500, 350).
+    expect(rig.camera.current[2]).toBeCloseTo(60);
+    const [wx, wy] = rig.camera.screenToWorld(500, 350, vp)!;
+    expect(wx).toBeCloseTo(0);
+    expect(wy).toBeCloseTo(0);
+    expect(rig.camera.isAtFitView()).toBe(true);
+    expect(rig.camera.fitIntent).toBe(true);
+  });
+
+  it('a resize under fit intent re-fits with the padded frame in the same tick', () => {
+    const rig = makeRig();
+    rig.setFitOptions({ paddingPx: [100, 0, 0, 200], pitch: null, bearing: 0 });
+    rig.tick(NOW, vp);
+
+    rig.tick(NOW + 16, { w: 400, h: 300 });
+    // The clear box is now 200 x 200 at (200, 100): 20 px per unit, centered at (300, 200).
+    expect(rig.camera.current[2]).toBeCloseTo(20);
+    const [wx, wy] = rig.camera.screenToWorld(300, 200, { w: 400, h: 300 })!;
+    expect(wx).toBeCloseTo(0);
+    expect(wy).toBeCloseTo(0);
+    expect(rig.camera.isAtFitView()).toBe(true);
+  });
+
+  it('a one-value inset pads every side and an oversized inset still shows the scene', () => {
+    const rig = makeRig();
+    rig.setFitOptions({ paddingPx: 100, pitch: null, bearing: 0 });
+    rig.tick(NOW, vp);
+    // 600 x 400 clear: 60 vs 66.7 px per unit.
+    expect(rig.camera.current[2]).toBeCloseTo(60);
+    const [wx, wy] = rig.camera.screenToWorld(400, 300, vp)!;
+    expect(wx).toBeCloseTo(0);
+    expect(wy).toBeCloseTo(0);
+
+    rig.setFitOptions({ paddingPx: 10_000, pitch: null, bearing: 0 });
+    rig.tick(NOW + 16, vp);
+    expect(rig.camera.current[2]).toBeGreaterThan(0);
+    expect(Number.isFinite(rig.camera.current[2])).toBe(true);
+  });
+
+  it('keeps an explored pose and only refreshes its fit reference', () => {
+    const rig = makeRig();
+    let now = performance.now();
+    rig.tick(now, vp);
+    rig.camera.zoomAt(4, vp.w / 2, vp.h / 2, vp);
+    for (let i = 0; i < 90; i++) {
+      now += 16.67;
+      rig.tick(now, vp);
+    }
+    const explored = Array.from(rig.camera.current);
+    expect(rig.camera.fitIntent).toBe(false);
+
+    rig.setFitOptions({ paddingPx: 50, pitch: null, bearing: 0 });
+    expect(rig.pendingPlacement).toBe(false);
+    rig.tick(now + 16, vp);
+    expect(Array.from(rig.camera.current)).toEqual(explored);
+    expect(rig.isAtFitView()).toBe(false);
+  });
+
+  it('the frame orientation carries into tilt and survives a family switch', () => {
+    const rig = new CameraRig(createUniforms().camera);
+    rig.setBounds({ xMin: -98, xMax: -96, yMin: 30, yMax: 32 });
+    rig.setFitOptions({ paddingPx: null, pitch: 30, bearing: -18 });
+    rig.tick(NOW, vp);
+    expect(rig.camera.current[3]).toBe(0); // flat has no orientation
+
+    // An in-family switch eases toward the frame's orientation rather than the view's own rest.
+    rig.switchTo('tilt', vp);
+    let now = NOW;
+    for (let i = 0; i < 90; i++) {
+      now += 16.67;
+      rig.tick(now, vp);
+    }
+    expect(rig.camera.current[3]).toBeCloseTo(30);
+    expect(rig.camera.current[4]).toBeCloseTo(342);
+    expect(rig.camera.isAtFitView()).toBe(true);
+
+    rig.switchTo('globe', vp);
+    rig.tick(now + 16, vp);
+    expect(rig.camera.current[3]).toBe(30);
+    expect(rig.camera.current[4]).toBe(342);
+    expect(rig.camera.isAtFitView()).toBe(true);
+  });
+});

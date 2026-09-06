@@ -14,11 +14,14 @@ export { CHANNELS } from './channels.js';
 export type { Channel } from './channels.js';
 
 export { OPTIONS, validateOptions } from './options.js';
-export type { Options } from './options.js';
+export type { Options, Interaction, Insets } from './options.js';
 
 export { PROJECTIONS } from './projections.js';
 export type { Projection } from './projections.js';
 export type { Pose } from './camera/projection.js';
+
+/** The host fragment hook `Network.setShade` installs; `@latkit/network/shades` ships presets. */
+export type { Shade, ShadeFrame } from './shade.js';
 
 /** Geographic border overlay payload; `@latkit/network/borders` loads the packaged one. */
 export type { Borders } from './borders/index.js';

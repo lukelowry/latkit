@@ -12,7 +12,7 @@ describe('channelLayout', () => {
   it('gives every channel a slot in registry order, sized by its scope', () => {
     const { offsets, words } = channelLayout(3, 2);
 
-    expect(words).toBe(4 * 3 + 3 * 2);
+    expect(words).toBe(5 * 3 + 4 * 2);
     expect(offsets).toEqual({
       vertexColor: 0,
       vertexHeight: 3,
@@ -21,6 +21,8 @@ describe('channelLayout', () => {
       edgeDash: 11,
       vertexVisible: 13,
       edgeVisible: 16,
+      vertexShade: 18,
+      edgeShade: 21,
     });
     expect(channelLayout(0, 0).words).toBe(0);
   });

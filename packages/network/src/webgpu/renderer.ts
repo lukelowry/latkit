@@ -25,6 +25,7 @@ import type { Borders } from '../borders/index.js';
 import { BorderBuffers } from './border-buffers.js';
 import { channelLayout, type Channel } from '../channels.js';
 import { DEFAULT_OPTIONS } from '../options.js';
+import { DEFAULT_SHADE_WGSL, SHADE_HOST_WORDS } from '../shade.js';
 
 import {
   PIPELINES,
@@ -42,7 +43,7 @@ import {
 } from './pipelines.js';
 
 /** Uniform views the renderer uploads or inspects during a frame. */
-type FrameUniforms = Pick<Uniforms, 'raw' | 'rawF32' | 'rawI32' | 'rawU32'>;
+type FrameUniforms = Pick<Uniforms, 'raw' | 'rawF32' | 'rawI32' | 'rawU32' | 'host'>;
 
 /**
  * Transparent clear color that lets the themed DOM behind the premultiplied
@@ -93,6 +94,10 @@ export class Renderer {
   private readonly buildingPipelines = new Map<ProjectionFamily, Promise<void>>();
   private readonly failedPipelines = new Set<ProjectionFamily>();
   private activeFamily: ProjectionFamily = 'plane';
+  /** The host shade every pipeline family compiles against. */
+  private shade: string;
+  /** Bumped by every shade change so a build against the old shade stands down when it lands. */
+  private shadeGeneration = 0;
   /**
    * MSAA is 4x or off because WebGPU permits only 1 and 4, and the sample
    * count is baked into every pipeline.
@@ -106,6 +111,8 @@ export class Renderer {
   private readonly unitQuad: GPUBuffer;
   private readonly edgeStrip: GPUBuffer;
   private readonly uniforms: GPUBuffer;
+  /** The host shade block, bound beside the uniforms so the layout never changes with the shade. */
+  private readonly host: GPUBuffer;
   /** Transfer-function texture sampled by color channels. */
   private readonly cmLut: GPUTexture;
   private readonly cmSampler: GPUSampler;
@@ -138,9 +145,13 @@ export class Renderer {
     earthAxis: DEFAULT_OPTIONS.earthAxis,
   };
 
-  /** Allocates shared layouts, static geometry, uniforms, and the initial projection pipeline build. */
-  constructor(presentation: Presentation, msaaSampleCount?: 1 | 4) {
+  /**
+   * Allocates shared layouts, static geometry, uniforms, and the initial projection pipeline
+   * build, compiled against `shade` or the identity shade.
+   */
+  constructor(presentation: Presentation, msaaSampleCount?: 1 | 4, shade: string | null = null) {
     this.presentation = presentation;
+    this.shade = shade ?? DEFAULT_SHADE_WGSL;
     const { device } = presentation;
     // 4x attachments at 4K-class resolutions cost ~265MB; above ~7M device
     // pixels (native 4K, or DPR-2 4K) the analytic shader AA carries 1x.
@@ -169,6 +180,11 @@ export class Renderer {
     this.uniforms = device.createBuffer({
       label: 'uniforms',
       size: UNIFORM_BUFFER_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    this.host = device.createBuffer({
+      label: 'shade-host',
+      size: SHADE_HOST_WORDS * Float32Array.BYTES_PER_ELEMENT,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -209,6 +225,11 @@ export class Renderer {
           binding: 3,
           visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
           sampler: { type: 'filtering' },
+        },
+        {
+          binding: 4,
+          visibility: GPUShaderStage.FRAGMENT,
+          buffer: { type: 'uniform' },
         },
       ],
     });
@@ -270,6 +291,36 @@ export class Renderer {
     return this.ensurePipelines(PROJECTION_DEFS[mode].family);
   }
 
+  /**
+   * Replace the host shade, or restore the identity shade with `null`.
+   *
+   * Resolves once the active family draws with it. Rejects with the compile error and keeps
+   * the current shade when the WGSL is invalid. Other cached families were compiled against the
+   * old shade, so they are dropped and rebuild lazily.
+   */
+  async setShade(wgsl: string | null): Promise<void> {
+    const next = wgsl ?? DEFAULT_SHADE_WGSL;
+    if (next === this.shade) return;
+    const previous = this.shade;
+    const generation = ++this.shadeGeneration;
+    const family = this.activeFamily;
+    this.shade = next;
+    let built: ProjectionPipelineSet;
+    try {
+      built = await this.buildPipelines(PIPELINES[family]);
+    } catch (error) {
+      if (generation === this.shadeGeneration) this.shade = previous;
+      throw error;
+    }
+    if (this.destroyed || generation !== this.shadeGeneration) return;
+    this.pipelines.clear();
+    this.buildingPipelines.clear();
+    this.failedPipelines.clear();
+    this.pipelines.set(family, built);
+    if (this.activeFamily !== family) void this.ensurePipelines(this.activeFamily);
+    this.onPipelinesReady?.();
+  }
+
   /** Returns the cached or in-flight build for one pipeline family. */
   private ensurePipelines(family: ProjectionFamily): Promise<void> {
     if (this.pipelines.has(family) || this.failedPipelines.has(family)) {
@@ -278,16 +329,17 @@ export class Renderer {
     const pending = this.buildingPipelines.get(family);
     if (pending) return pending;
 
+    const generation = this.shadeGeneration;
     const build = this.buildPipelines(PIPELINES[family]).then(
       (pipelines) => {
+        if (this.destroyed || generation !== this.shadeGeneration) return;
         this.buildingPipelines.delete(family);
-        if (this.destroyed) return;
         this.pipelines.set(family, pipelines);
         this.onPipelinesReady?.();
       },
       (error: unknown) => {
+        if (this.destroyed || generation !== this.shadeGeneration) return;
         this.buildingPipelines.delete(family);
-        if (this.destroyed) return;
         this.failedPipelines.add(family);
         this.onPipelineError?.(family, error);
         // Pipeline validation failing is a build-time shader bug; keep the
@@ -308,6 +360,7 @@ export class Renderer {
       overlayPipelineLayout: this.overlayPipelineLayout,
       edgePipelineLayout: this.edgePipelineLayout,
       backgroundPipelineLayout: this.backgroundPipelineLayout,
+      shade: this.shade,
     });
   }
 
@@ -483,6 +536,7 @@ export class Renderer {
     const polesRendered = this.computePolesRendered(uniforms);
 
     device.queue.writeBuffer(this.uniforms, 0, uniforms.raw);
+    device.queue.writeBuffer(this.host, 0, uniforms.host);
 
     const pw = canvas.width,
       ph = canvas.height;
@@ -592,6 +646,7 @@ export class Renderer {
     this.borders = null;
     this.unitQuad.destroy();
     this.uniforms.destroy();
+    this.host.destroy();
     this.edgeStrip.destroy();
     this.cmLut.destroy();
   }
@@ -606,6 +661,7 @@ export class Renderer {
         { binding: 1, resource: { buffer: channelBuf } },
         { binding: 2, resource: this.cmLut.createView() },
         { binding: 3, resource: this.cmSampler },
+        { binding: 4, resource: { buffer: this.host } },
       ],
     });
   }

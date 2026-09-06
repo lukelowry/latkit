@@ -22,6 +22,10 @@ struct VOut {
   // Endpoint discs in framebuffer pixels: xy center, z radius (zero when no disc is drawn).
   @location(9) @interpolate(flat) disc_a: vec3f,
   @location(10) @interpolate(flat) disc_b: vec3f,
+  // World position interpolated along the edge, and the edge's resolved focus state, for the
+  // host shade.
+  @location(11) world: vec3f,
+  @location(12) @interpolate(flat) item_focus: u32,
 }
 
 struct ColorOut {
@@ -42,6 +46,8 @@ fn culled_edge() -> VOut {
   out.dashed = 0u;
   out.disc_a = vec3f(0.0);
   out.disc_b = vec3f(0.0);
+  out.world = vec3f(0.0);
+  out.item_focus = 0u;
   return out;
 }
 
@@ -136,8 +142,10 @@ fn build_edge_capsule(
   out.disc_a = vec3f(screen_a.x, u.viewport.y - screen_a.y, ra);
   out.disc_b = vec3f(screen_b.x, u.viewport.y - screen_b.y, rb);
 
-  // Per-endpoint daylight; the rasterizer interpolates across the edge.
-  out.light = daylight(select(wa, wb, strip.x > 0.5));
+  // Per-endpoint daylight and world position; the rasterizer interpolates across the edge.
+  let endpoint = select(wa, wb, strip.x > 0.5);
+  out.light = daylight(endpoint);
+  out.world = endpoint;
 
   let tangent = dir / screen_len;
   let normal = vec2f(-tangent.y, tangent.x);
@@ -180,11 +188,11 @@ fn edge_common(
   hb: f32,
   role: u32,
 ) -> VOut {
+  let item_focus = edge_focus_state_for(i32(seg.edge_id));
   var focus_state = 0u;
   if (role == ROLE_FOCUS || role == ROLE_HALO) {
-    let resolved_focus_state = edge_focus_state_for(i32(seg.edge_id));
-    if (resolved_focus_state == 0u) { return culled_edge(); }
-    focus_state = resolved_focus_state;
+    if (item_focus == 0u) { return culled_edge(); }
+    focus_state = item_focus;
   }
   let clip_a = project_overlay(wa, ha);
   let clip_b = project_overlay(wb, hb);
@@ -197,6 +205,7 @@ fn edge_common(
     strip, seg.edge_id, wa, wb, clip_a, clip_b, ra, rb, role == ROLE_HALO, focus_state,
   );
   out.edge_color = edge_channel_color_from_vertices(seg.edge_id, vec2u(seg.from_vertex, seg.to_vertex));
+  out.item_focus = item_focus;
   if (u.e_dash_period_px > 0.0) {
     out.dashed = select(0u, 1u, edge_dash_val(seg.edge_id) < 0.5);
   }
@@ -248,7 +257,11 @@ fn edge_fragment_color(v: VOut) -> vec4f {
   // Sphere occlusion is the depth test against the bg-written surface depth.
   let alpha = edge_fragment_alpha(d);
   if (alpha < FRAGMENT_ALPHA_DISCARD) { discard; }
-  return vec4f(v.edge_color.rgb * v.light, v.edge_color.a * alpha);
+  let shaded = shade(Fragment(
+    vec4f(v.edge_color.rgb * v.light, v.edge_color.a), v.pos.xy / u.backing_scale, v.world,
+    ID_KIND_EDGE, v.edge_id, v.item_focus, edge_shade_val(v.edge_id),
+  ));
+  return vec4f(shaded.rgb, shaded.a * alpha);
 }
 
 @fragment

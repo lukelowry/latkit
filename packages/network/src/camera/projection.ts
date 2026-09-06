@@ -2,8 +2,31 @@ import type { CameraRegion } from '../webgpu/uniforms.js';
 import type { Bounds } from '../topology/types.js';
 import { turn, wrap } from './geo.js';
 
-/** Fraction of the viewport used when fitting graph bounds. */
+/** Fraction of the viewport a fit fills when no `fitPaddingPx` is set. */
 export const FIT_PAD = 0.85;
+
+/**
+ * How a fit fills and orients the viewport. The rig derives one per viewport from the
+ * `fitPaddingPx`, `fitPitch`, and `fitBearing` options; the camera hands it to every fit.
+ */
+export interface FitFrame {
+  /** Fraction of the viewport width and height the content may fill. */
+  readonly fill: readonly [number, number];
+  /** Content shift in CSS px that centers an asymmetric inset. */
+  readonly shiftPx: readonly [number, number];
+  /** Pitch in degrees, or null for the view's own rest. */
+  readonly pitch: number | null;
+  /** Bearing in degrees clockwise from north. */
+  readonly bearing: number;
+}
+
+/** The frame every fit uses before the fit options say otherwise. */
+export const DEFAULT_FIT_FRAME: FitFrame = Object.freeze({
+  fill: Object.freeze([FIT_PAD, FIT_PAD] as const),
+  shiftPx: Object.freeze([0, 0] as const),
+  pitch: null,
+  bearing: 0,
+});
 
 /** Vertical field of view shared by every perspective camera. */
 export const FOV_Y = 2 * Math.atan(1 / 3);
@@ -90,8 +113,8 @@ export interface CameraProjection {
   /** Retarget a view without replacing the camera state. */
   setView?(view: PlaneView, target: CameraState): void;
 
-  /** Return the state that frames `bounds` (graph coordinates) in `vp`. */
-  fit(bounds: Bounds, vp: Viewport): CameraState;
+  /** Return the state that frames `bounds` (graph coordinates) in `vp`, filled and oriented per `frame`. */
+  fit(bounds: Bounds, vp: Viewport, frame: FitFrame): CameraState;
 
   /** Return a detached copy of `state` with projection-owned storage. */
   clone(state: CameraState): CameraState;

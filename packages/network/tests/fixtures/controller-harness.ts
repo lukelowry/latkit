@@ -17,7 +17,7 @@ import type { Projection } from '../../src/projections.js';
 import type { Viewport } from '../../src/camera/projection.js';
 import type { Renderer } from '../../src/webgpu/renderer.js';
 import type { RenderLoop, RenderLoopDeps } from '../../src/webgpu/render-loop.js';
-import type { CameraRig } from '../../src/camera/rig.js';
+import type { CameraRig, FitOptions } from '../../src/camera/rig.js';
 import type { RevealResult } from '../../src/camera/camera.js';
 import type { Uniforms } from '../../src/webgpu/uniforms.js';
 import type { Borders } from '../../src/borders/index.js';
@@ -83,6 +83,18 @@ export class FakeRenderer {
 
   warmProjection = vi.fn((_mode: Projection): Promise<void> => Promise.resolve());
 
+  shade: string | null = null;
+  /** Set to reject the next setShade, as a bad WGSL would. */
+  nextShadeError: Error | null = null;
+
+  setShade = vi.fn((wgsl: string | null): Promise<void> => {
+    const error = this.nextShadeError;
+    this.nextShadeError = null;
+    if (error !== null) return Promise.reject(error);
+    this.shade = wgsl;
+    return Promise.resolve();
+  });
+
   destroy = vi.fn();
 }
 
@@ -119,6 +131,11 @@ export class FakeCameraRig {
 
   setBounds = vi.fn((bounds: Bounds | null, _fit?: boolean) => {
     this.bounds = bounds;
+  });
+
+  fitOptions: FitOptions | null = null;
+  setFitOptions = vi.fn((options: FitOptions) => {
+    this.fitOptions = options;
   });
 
   fit = vi.fn((_vp: Viewport, _animate: boolean) => {});
@@ -197,8 +214,8 @@ export class FakeRenderLoop {
   resume = vi.fn();
   destroy = vi.fn();
 
-  frame(vp: Viewport = this.viewport, sizeSettled = true): void {
-    this.deps?.onBeforeFrame?.(vp);
+  frame(vp: Viewport = this.viewport, sizeSettled = true, now = performance.now()): void {
+    this.deps?.onBeforeFrame?.(vp, now);
     this.deps?.onFrame?.(sizeSettled);
   }
 
@@ -209,11 +226,13 @@ export class FakeRenderLoop {
 
 export interface FakeSurface extends Surface {
   readonly destroy: ReturnType<typeof vi.fn>;
+  readonly setNavigable: ReturnType<typeof vi.fn>;
   viewport: Viewport;
 }
 
 function makeSurface(element: HTMLCanvasElement): FakeSurface {
   const destroy = vi.fn();
+  const setNavigable = vi.fn();
   return {
     element,
     viewport: { w: 100, h: 80 },
@@ -223,6 +242,7 @@ function makeSurface(element: HTMLCanvasElement): FakeSurface {
     rect() {
       return new DOMRect(0, 0, this.viewport.w, this.viewport.h);
     },
+    setNavigable,
     destroy,
   };
 }
@@ -357,6 +377,10 @@ export interface ControllerHarness {
   readonly wheelPolicy: WheelPolicy | null;
   /** The live pick radius the pointer adapter was given. */
   readonly pickRadiusPx: (() => number) | null;
+  /** The live navigation predicate the pointer adapter was given. */
+  readonly navigable: (() => boolean) | null;
+  /** The shade WGSL the renderer was constructed with, per construction. */
+  readonly rendererShades: (string | null)[];
   emitPointer(intent: Intent): void;
   emitKey(intent: KeyIntent): void;
   destroy(): void;
@@ -385,6 +409,8 @@ export async function createControllerHarness(
   let emitKey: ((intent: KeyIntent) => void) | null = null;
   let wheelPolicy: WheelPolicy | null = null;
   let pickRadiusPx: (() => number) | null = null;
+  let navigable: (() => boolean) | null = null;
+  const rendererShades: (string | null)[] = [];
   const pointerCleanup = { destroy: vi.fn() };
   const keyboardCleanup = { destroy: vi.fn() };
 
@@ -395,7 +421,10 @@ export async function createControllerHarness(
       presentations.push(presentation);
       return presentation;
     }),
-    Renderer: vi.fn(() => renderer as unknown as Renderer) as unknown as typeof Renderer,
+    Renderer: vi.fn((_presentation: Presentation, _msaa?: 1 | 4, shade: string | null = null) => {
+      rendererShades.push(shade);
+      return renderer as unknown as Renderer;
+    }) as unknown as typeof Renderer,
     RenderLoop: vi.fn(
       (renderLoopDeps: RenderLoopDeps) => loop.attach(renderLoopDeps) as unknown as RenderLoop,
     ) as unknown as typeof RenderLoop,
@@ -405,6 +434,7 @@ export async function createControllerHarness(
         emitPointer = emit;
         wheelPolicy = policy?.wheel ?? null;
         pickRadiusPx = policy?.pickRadiusPx ?? null;
+        navigable = policy?.navigable ?? null;
         return pointerCleanup;
       },
     ),
@@ -451,6 +481,10 @@ export async function createControllerHarness(
     get pickRadiusPx() {
       return pickRadiusPx;
     },
+    get navigable() {
+      return navigable;
+    },
+    rendererShades,
     loseDevice(info = {}, index = pool.devices.length - 1) {
       pool.devices[index]!.lost.resolve({
         reason: 'unknown',

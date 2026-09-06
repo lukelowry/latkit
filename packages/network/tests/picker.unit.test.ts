@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import { createGlobeProjection } from '../src/camera/globe.js';
 import { createPlaneProjection } from '../src/camera/plane.js';
-import type { CameraProjection, Viewport } from '../src/camera/projection.js';
+import {
+  DEFAULT_FIT_FRAME,
+  type CameraProjection,
+  type Viewport,
+} from '../src/camera/projection.js';
 import { PIPELINES, PROJECTION_DEFS, type Projection } from '../src/projections.js';
 import {
   createUniforms,
@@ -93,7 +97,7 @@ function makeSetup(
     yMin = Math.min(yMin, coords[i * 2 + 1]!);
     yMax = Math.max(yMax, coords[i * 2 + 1]!);
   }
-  const state = proj.fit({ xMin, xMax, yMin, yMax }, VP) as Float64Array;
+  const state = proj.fit({ xMin, xMax, yMin, yMax }, VP, DEFAULT_FIT_FRAME) as Float64Array;
   opts.mutate?.(state);
 
   const dpr = opts.dpr ?? 1;

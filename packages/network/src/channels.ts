@@ -1,6 +1,12 @@
 import { extent, validateDomain, type Domain } from '@latkit/model';
 
-import { ITEM_EDGE_VISIBLE, ITEM_VERTEX_VISIBLE, type Uniforms } from './webgpu/uniforms.js';
+import {
+  ITEM_EDGE_SHADE,
+  ITEM_EDGE_VISIBLE,
+  ITEM_VERTEX_SHADE,
+  ITEM_VERTEX_VISIBLE,
+  type Uniforms,
+} from './webgpu/uniforms.js';
 import { effectiveDomain, linearNorm } from './normalize.js';
 
 /** Static metadata for one channel: its storage scope, shader map, display label, and whether it takes a domain. */
@@ -8,10 +14,10 @@ export interface ChannelDefinition {
   /** Storage cardinality: one value per vertex or per edge. */
   readonly scope: 'vertex' | 'edge';
   /** Shader interpretation of the packed stream. */
-  readonly map: 'colormap' | 'height' | 'size' | 'dash' | 'visible';
+  readonly map: 'colormap' | 'height' | 'size' | 'dash' | 'visible' | 'shade';
   /** Display label a picker or legend shows. */
   readonly label: string;
-  /** Whether values pass through an input domain; `dash` and `visible` are raw. */
+  /** Whether values pass through an input domain; `dash`, `visible`, and `shade` are raw. */
   readonly normalized: boolean;
 }
 
@@ -23,6 +29,8 @@ const definitions = {
   edgeDash: { scope: 'edge', map: 'dash', label: 'Edge Dash', normalized: false },
   vertexVisible: { scope: 'vertex', map: 'visible', label: 'Vertex Visible', normalized: false },
   edgeVisible: { scope: 'edge', map: 'visible', label: 'Edge Visible', normalized: false },
+  vertexShade: { scope: 'vertex', map: 'shade', label: 'Vertex Shade', normalized: false },
+  edgeShade: { scope: 'edge', map: 'shade', label: 'Edge Shade', normalized: false },
 } as const satisfies Record<string, ChannelDefinition>;
 
 for (const definition of Object.values(definitions)) Object.freeze(definition);
@@ -231,6 +239,12 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
       case 'edgeVisible':
         uniforms.channel.eVisibleOffset = offset;
         break;
+      case 'vertexShade':
+        uniforms.channel.vShadeOffset = offset;
+        break;
+      case 'edgeShade':
+        uniforms.channel.eShadeOffset = offset;
+        break;
       default:
         /* v8 ignore next -- compile-time exhaustive Channel guard. */
         channel satisfies never;
@@ -259,6 +273,12 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
         break;
       case 'edgeVisible':
         uniforms.channel.itemFlags = toggleBit(uniforms.channel.itemFlags, ITEM_EDGE_VISIBLE, on);
+        break;
+      case 'vertexShade':
+        uniforms.channel.itemFlags = toggleBit(uniforms.channel.itemFlags, ITEM_VERTEX_SHADE, on);
+        break;
+      case 'edgeShade':
+        uniforms.channel.itemFlags = toggleBit(uniforms.channel.itemFlags, ITEM_EDGE_SHADE, on);
         break;
       default:
         /* v8 ignore next -- compile-time exhaustive Channel guard. */

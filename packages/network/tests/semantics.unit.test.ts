@@ -34,6 +34,8 @@ describe('canonical Network semantics', () => {
         { scope: 'vertex', map: 'visible', label: 'Vertex Visible', normalized: false },
       ],
       ['edgeVisible', { scope: 'edge', map: 'visible', label: 'Edge Visible', normalized: false }],
+      ['vertexShade', { scope: 'vertex', map: 'shade', label: 'Vertex Shade', normalized: false }],
+      ['edgeShade', { scope: 'edge', map: 'shade', label: 'Edge Shade', normalized: false }],
     ]);
     expect(Object.isFrozen(CHANNELS)).toBe(true);
     for (const definition of Object.values(CHANNELS)) {
@@ -103,11 +105,18 @@ describe('canonical Network semantics', () => {
       ['pickRadiusPx', 'nonnegative', 10, true],
       ['keyboard', 'boolean', true, true],
       ['wheel', 'enum', 'zoom', true],
+      ['interaction', 'enum', 'navigate', true],
+      ['fitPaddingPx', 'insets', null, true],
+      ['fitPitch', 'finite', null, true],
+      ['fitBearing', 'finite', 0, true],
     ]);
     expect(OPTIONS.msaa.values).toEqual([1, 4]);
     expect(OPTIONS.focusEndpointMode.values).toEqual(['off', 'selected', 'hover-selected']);
     expect(OPTIONS.motion.values).toEqual(['auto', 'reduce', 'full']);
     expect(OPTIONS.wheel.values).toEqual(['zoom', 'modifier']);
+    expect(OPTIONS.interaction.values).toEqual(['navigate', 'inspect', 'none']);
+    expect(OPTIONS.fitPaddingPx.nullable).toBe(true);
+    expect(OPTIONS.fitPitch.nullable).toBe(true);
     expect(OPTIONS.sunTime.nullable).toBe(true);
     expect(OPTIONS.edgeBaseColor.nullable).toBe(true);
     expect(typeof OPTIONS.devices.default.acquire).toBe('function');
@@ -167,6 +176,15 @@ describe('Network option validation and resolution', () => {
       ['motion', 'reduce'],
       ['keyboard', false],
       ['wheel', 'modifier'],
+      ['interaction', 'inspect'],
+      ['interaction', 'none'],
+      ['fitPaddingPx', null],
+      ['fitPaddingPx', 0],
+      ['fitPaddingPx', 24],
+      ['fitPaddingPx', [96, 32, 160, 32]],
+      ['fitPitch', null],
+      ['fitPitch', 50],
+      ['fitBearing', -18],
       ['devices', { acquire: () => Promise.reject(new Error('never')) }],
     ];
     for (const [key, value] of cases) {
@@ -207,6 +225,13 @@ describe('Network option validation and resolution', () => {
     ['motion', 'none', TypeError],
     ['keyboard', 'yes', TypeError],
     ['wheel', true, TypeError],
+    ['interaction', 'pan', TypeError],
+    ['fitPaddingPx', '24', TypeError],
+    ['fitPaddingPx', [1, 2], TypeError],
+    ['fitPaddingPx', -1, RangeError],
+    ['fitPaddingPx', [1, 2, 3, Number.NaN], RangeError],
+    ['fitPitch', Number.POSITIVE_INFINITY, RangeError],
+    ['fitBearing', '0', TypeError],
     ['devices', {}, TypeError],
   ] as const)('rejects invalid %s value %s with %s', (key, value, ErrorType) => {
     expect(() => validateOptions({ [key]: value } as unknown as Options)).toThrow(ErrorType);

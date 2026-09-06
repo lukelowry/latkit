@@ -3,7 +3,17 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { Domain, Item, Topology } from '@latkit/model';
 
 import * as entry from '../src/index.js';
-import type { Borders, Events, Network, Options, Pose, Projection } from '../src/index.js';
+import type {
+  Borders,
+  Events,
+  Insets,
+  Network,
+  Options,
+  Pose,
+  Projection,
+  Shade,
+  ShadeFrame,
+} from '../src/index.js';
 
 describe('network package entrypoint', () => {
   it('publishes exactly the controller factory, the three registries, and the option validator', () => {
@@ -37,6 +47,16 @@ describe('network package entrypoint', () => {
     expectTypeOf<Events['select']>().toEqualTypeOf<Item | null>();
     expectTypeOf<Events['fit']>().toEqualTypeOf<boolean>();
     expectTypeOf<Events['attached']>().toEqualTypeOf<boolean>();
+    expectTypeOf<Events['painted']>().toEqualTypeOf<boolean>();
+    expectTypeOf<Network['painted']>().toEqualTypeOf<boolean>();
+    expectTypeOf<Parameters<Network['setShade']>>().toEqualTypeOf<[shade: Shade | null]>();
+    expectTypeOf<ReturnType<Network['setShade']>>().toEqualTypeOf<Promise<void>>();
+    expectTypeOf<Shade['wgsl']>().toEqualTypeOf<string>();
+    expectTypeOf<ShadeFrame['pointerPx']>().toEqualTypeOf<readonly [number, number] | null>();
+    expectTypeOf<Options['interaction']>().toEqualTypeOf<
+      'navigate' | 'inspect' | 'none' | undefined
+    >();
+    expectTypeOf<Options['fitPaddingPx']>().toEqualTypeOf<Insets | null | undefined>();
     expectTypeOf<Events['deviceLost']>().toEqualTypeOf<{
       readonly reason: string;
       readonly message: string;

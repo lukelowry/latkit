@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PIPELINES } from '../src/projections.js';
 import { buildProjectionPipelines } from '../src/webgpu/pipelines.js';
+import { DEFAULT_SHADE_WGSL } from '../src/shade.js';
 
 describe('buildProjectionPipelines', () => {
   it('builds globe edge pipelines from direct segment entrypoints', async () => {
@@ -24,6 +25,7 @@ describe('buildProjectionPipelines', () => {
       overlayPipelineLayout: { label: 'overlay' } as unknown as GPUPipelineLayout,
       edgePipelineLayout: { label: 'edge-layout' } as unknown as GPUPipelineLayout,
       backgroundPipelineLayout: { label: 'background' } as unknown as GPUPipelineLayout,
+      shade: DEFAULT_SHADE_WGSL,
     });
 
     // Edges and vertices write depth; halos only test it.
@@ -114,6 +116,7 @@ describe('buildProjectionPipelines', () => {
       overlayPipelineLayout: { label: 'overlay' } as unknown as GPUPipelineLayout,
       edgePipelineLayout: { label: 'edge-layout' } as unknown as GPUPipelineLayout,
       backgroundPipelineLayout: { label: 'background' } as unknown as GPUPipelineLayout,
+      shade: DEFAULT_SHADE_WGSL,
     };
 
     const flat = await buildProjectionPipelines(PIPELINES.plane, options);

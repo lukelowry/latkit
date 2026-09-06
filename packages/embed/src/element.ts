@@ -25,7 +25,10 @@ export interface ElementSpec<C extends Controller, D> {
   readonly role: string;
   /** Observed attributes, in the order they are applied after a load. */
   readonly attributes: readonly string[];
-  /** Controller events forwarded as DOM events of the same name. */
+  /**
+   * Controller events forwarded as DOM events of the same name. `attached` and `painted` are
+   * also reflected as boolean attributes on the host.
+   */
   readonly events: readonly string[];
   create(host: HTMLElement, warn: Warn): C;
   parse(json: unknown): D;
@@ -186,15 +189,18 @@ export function defineShell<C extends Controller, D>(
       if (this.#controller) return this.#controller;
       const controller = spec.create(this, deps.warn);
       this.#controller = controller;
-      controller.on(
-        'attached' as never,
-        ((attached: boolean) => {
-          this.toggleAttribute('attached', attached);
-          this.#dispatch('attached', attached);
-        }) as never,
-      );
       for (const event of spec.events) {
-        if (event === 'attached') continue;
+        if (event !== 'attached' && event !== 'painted') continue;
+        controller.on(
+          event as never,
+          ((state: boolean) => {
+            this.toggleAttribute(event, state);
+            this.#dispatch(event, state);
+          }) as never,
+        );
+      }
+      for (const event of spec.events) {
+        if (event === 'attached' || event === 'painted') continue;
         controller.on(
           event as never,
           ((payload: unknown) => {

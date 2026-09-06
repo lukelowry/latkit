@@ -9,6 +9,12 @@ export type Motion = 'auto' | 'reduce' | 'full';
 /** What a plain wheel does: zoom the view, or scroll the page unless a modifier is held. */
 export type Wheel = 'zoom' | 'modifier';
 
+/** Where pointer, wheel, and keys go: the camera, item inspection only, or nowhere. */
+export type Interaction = 'navigate' | 'inspect' | 'none';
+
+/** A CSS-pixel inset: one value for every side, or `[top, right, bottom, left]`. */
+export type Insets = number | readonly [number, number, number, number];
+
 /**
  * Network display options: the construction record and the live patch.
  *
@@ -114,6 +120,18 @@ export interface Options {
   keyboard?: boolean;
   /** Whether a plain wheel zooms, or only a Ctrl or Meta wheel does while the page keeps scrolling. @defaultValue `'zoom'`. */
   wheel?: Wheel;
+  /**
+   * What input does. `'navigate'` moves the camera. `'inspect'` keeps hover, tap selection with
+   * cycling, and keyboard stepping along the topology, and leaves wheel and touch scrolling to the
+   * page. `'none'` installs no listeners at all. @defaultValue `'navigate'`.
+   */
+  interaction?: Interaction;
+  /** Inset every fit keeps clear, in CSS pixels; `null` keeps the default margin. @defaultValue `null`. */
+  fitPaddingPx?: Insets | null;
+  /** Pitch a fit rests at, in degrees; `null` is the view's own rest. Flat ignores it. @defaultValue `null`. */
+  fitPitch?: number | null;
+  /** Bearing a fit rests at, in degrees clockwise from north. Flat ignores it. @defaultValue `0`. */
+  fitBearing?: number;
 }
 
 /** Validation kind, default, whether `Network.setOptions` accepts the option live, and whether `null` is a value. */
@@ -132,6 +150,12 @@ export type OptionDefinition =
       readonly nullable?: true;
     }
   | { readonly kind: 'domain'; readonly default: Domain; readonly live: true }
+  | {
+      readonly kind: 'insets';
+      readonly default: Insets | null;
+      readonly live: true;
+      readonly nullable: true;
+    }
   | {
       readonly kind: 'enum';
       readonly values: readonly (string | number)[];
@@ -202,6 +226,15 @@ const definitions = {
   pickRadiusPx: { kind: 'nonnegative', default: 10, live: true },
   keyboard: { kind: 'boolean', default: true, live: true },
   wheel: { kind: 'enum', values: values('zoom', 'modifier'), default: 'zoom', live: true },
+  interaction: {
+    kind: 'enum',
+    values: values('navigate', 'inspect', 'none'),
+    default: 'navigate',
+    live: true,
+  },
+  fitPaddingPx: { kind: 'insets', default: null, live: true, nullable: true },
+  fitPitch: { kind: 'finite', default: null, live: true, nullable: true },
+  fitBearing: { kind: 'finite', default: 0, live: true },
 } as const satisfies Record<keyof Required<Options>, OptionDefinition>;
 
 for (const definition of Object.values(definitions)) Object.freeze(definition);
@@ -240,10 +273,7 @@ export function resolveOptions(options: Options): ResolvedOptions {
   const entries = Object.entries(OPTIONS).map(([key, definition]) => {
     const supplied = values[key];
     const value = supplied === undefined ? definition.default : supplied;
-    const owned =
-      (definition.kind === 'rgba' || definition.kind === 'domain') && value !== null
-        ? Object.freeze([...(value as readonly number[])])
-        : value;
+    const owned = Array.isArray(value) ? Object.freeze([...(value as readonly number[])]) : value;
     return [key, owned];
   });
   return Object.freeze(Object.fromEntries(entries)) as ResolvedOptions;
@@ -284,6 +314,14 @@ function validateOptionValue(key: string, definition: OptionDefinition, value: u
     case 'domain':
       validateDomain(value, `network option ${key}`);
       return;
+    case 'insets': {
+      const sides = typeof value === 'number' ? [value] : value;
+      if (!Array.isArray(sides) || (sides.length !== 1 && sides.length !== 4)) {
+        typeError(key, 'a number or [top, right, bottom, left]');
+      }
+      for (const side of sides) validateNumber(key, side, true);
+      return;
+    }
     case 'enum':
       if (!definition.values.includes(value as string | number)) {
         typeError(key, `one of ${definition.values.map(String).join(', ')}`);

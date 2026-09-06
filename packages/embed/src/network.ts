@@ -77,6 +77,7 @@ export interface NetworkElementEventMap {
   fit: CustomEvent<Events['fit']>;
   orbit: CustomEvent<Events['orbit']>;
   attached: CustomEvent<Events['attached']>;
+  painted: CustomEvent<Events['painted']>;
   deviceLost: CustomEvent<Events['deviceLost']>;
   pipelineError: CustomEvent<Events['pipelineError']>;
 }
@@ -238,6 +239,7 @@ const EVENTS: readonly (keyof Events)[] = Object.freeze([
   'fit',
   'orbit',
   'attached',
+  'painted',
   'deviceLost',
   'pipelineError',
 ]);

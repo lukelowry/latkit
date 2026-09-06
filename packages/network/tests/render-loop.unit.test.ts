@@ -79,8 +79,9 @@ interface Harness {
 function makeHarness(
   opts: {
     onFrame?: () => void;
-    onBeforeFrame?: (vp: { w: number; h: number }) => void;
+    onBeforeFrame?: (vp: { w: number; h: number }, now: number) => void;
     onPaint?: () => void;
+    animating?: () => boolean;
     onRigTick?: () => void;
     render?: () => boolean;
     pixelRatio?: number;
@@ -183,6 +184,7 @@ function makeHarness(
     onFrame: opts.onFrame,
     onBeforeFrame: opts.onBeforeFrame,
     onPaint: opts.onPaint,
+    animating: opts.animating,
   });
 
   return {
@@ -456,6 +458,32 @@ describe('RenderLoop scheduling', () => {
     h.setPendingPlacement(false);
     frame(); // subsequent guard goes quiet
     expect(h.renders.length).toBe(2);
+    expect(rafPending.size).toBe(0);
+  });
+});
+
+describe('RenderLoop outside animators', () => {
+  it('keeps framing while an outside animator asks for frames, then settles to one guard', () => {
+    let animating = true;
+    const times: number[] = [];
+    const h = makeHarness({
+      animating: () => animating,
+      onBeforeFrame: (_vp, now) => times.push(now),
+    });
+
+    h.loop.frameNow();
+    expect(h.renders).toHaveLength(1);
+    frame();
+    frame();
+    expect(h.renders).toHaveLength(3);
+    expect(times).toHaveLength(3);
+    expect(times.every((now) => now > 0)).toBe(true);
+
+    animating = false;
+    frame(); // the last animated frame arms a guard
+    expect(h.renders).toHaveLength(4);
+    frame(); // the guard sees nothing new and goes quiet
+    expect(h.renders).toHaveLength(4);
     expect(rafPending.size).toBe(0);
   });
 });

@@ -16,6 +16,7 @@ import {
   DISPLAY_VERTICES,
 } from '../src/webgpu/uniforms.js';
 import { VISUAL } from '../src/visual.js';
+import { POINTER_NONE, type Shade } from '../src/shade.js';
 import {
   createControllerHarness,
   deferred,
@@ -115,7 +116,7 @@ describe('attach and detach', () => {
     expect(h.events.attached).toEqual([true]);
     expect(h.pool.devices).toHaveLength(1);
     expect(h.deps.createPresentation).toHaveBeenCalledWith(h.device, h.canvas);
-    expect(h.deps.Renderer).toHaveBeenCalledWith(h.presentation, undefined);
+    expect(h.deps.Renderer).toHaveBeenCalledWith(h.presentation, undefined, null);
     expect(h.renderer.writeColormap).toHaveBeenCalledOnce();
     expect(h.renderer.bindTopology).toHaveBeenCalledOnce();
     expect(h.renderer.useProjection).toHaveBeenLastCalledWith('tilt');
@@ -126,7 +127,11 @@ describe('attach and detach', () => {
     expect(h.renderer.setBorders).toHaveBeenLastCalledWith(borders);
     expect(h.renderer.passes).toMatchObject({ vertices: false, borders: true });
     expect(h.loop.frameNow).toHaveBeenCalled();
-    expect(h.deps.attachKeyboard).toHaveBeenCalledWith(h.canvas, expect.any(Function));
+    expect(h.deps.attachKeyboard).toHaveBeenCalledWith(
+      h.canvas,
+      expect.any(Function),
+      expect.any(Function),
+    );
   });
 
   it('detaches without forgetting, and a second attach replays onto a new canvas', async () => {
@@ -378,7 +383,7 @@ describe('createNetwork controller', () => {
     expectRgbaClose(h.loop.uniforms.borderColor, [0.4, 0.5, 0.6, 1]);
     expect(h.renderer.writeColormap).toHaveBeenCalledOnce();
     expect(h.deps.Renderer).toHaveBeenCalledOnce();
-    expect(h.deps.Renderer).toHaveBeenCalledWith(h.presentation, 4);
+    expect(h.deps.Renderer).toHaveBeenCalledWith(h.presentation, 4, null);
   });
 
   it('threads setOptions through renderer state and projection flags', async () => {
@@ -429,7 +434,7 @@ describe('createNetwork controller', () => {
     h.network.setOptions({ msaa: 1, devices: fakePool(), vertices: false });
 
     expect(h.deps.Renderer).toHaveBeenCalledOnce();
-    expect(h.deps.Renderer).toHaveBeenCalledWith(h.presentation, 4);
+    expect(h.deps.Renderer).toHaveBeenCalledWith(h.presentation, 4, null);
     expect(h.renderer.passes.vertices).toBe(false);
     expect(h.renderer.setPasses).toHaveBeenCalledOnce();
     expect(h.loop.wake).toHaveBeenCalledOnce();
@@ -1977,5 +1982,203 @@ describe('createNetwork controller', () => {
     expect(h.pool.devices[0]!.destroy).not.toHaveBeenCalled();
     expect(h.network.attached).toBe(false);
     expect(h.events.attached).toEqual([true]);
+  });
+});
+
+describe('interaction, framing, painted, pointer, and shade', () => {
+  it('reports the first paint per attach as an event and a getter', async () => {
+    const h = await makeHarness();
+    const painted: boolean[] = [];
+    h.network.on('painted', (state) => painted.push(state));
+    h.network.load(geographicTopology());
+    expect(h.network.painted).toBe(false);
+
+    h.loop.paint();
+    h.loop.paint();
+    expect(h.network.painted).toBe(true);
+    h.network.detach();
+    expect(h.network.painted).toBe(false);
+    expect(painted).toEqual([true, false]);
+  });
+
+  it('attaches the adapters the interaction option asks for and hands touch to the page under inspect', async () => {
+    const h = await makeHarness({ interaction: 'none' });
+    expect(h.deps.attachPointer).not.toHaveBeenCalled();
+    expect(h.deps.attachKeyboard).not.toHaveBeenCalled();
+    expect(h.surface.setNavigable).toHaveBeenLastCalledWith(false);
+
+    h.network.setOptions({ interaction: 'inspect' });
+    expect(h.deps.attachPointer).toHaveBeenCalledOnce();
+    expect(h.deps.attachKeyboard).toHaveBeenCalledOnce();
+    expect(h.navigable?.()).toBe(false);
+    expect(h.surface.setNavigable).toHaveBeenLastCalledWith(false);
+
+    h.network.setOptions({ interaction: 'navigate' });
+    expect(h.navigable?.()).toBe(true);
+    expect(h.surface.setNavigable).toHaveBeenLastCalledWith(true);
+    expect(h.deps.attachPointer).toHaveBeenCalledOnce();
+
+    h.network.setOptions({ interaction: 'none' });
+    expect(h.pointerCleanup.destroy).toHaveBeenCalledOnce();
+    expect(h.keyboardCleanup.destroy).toHaveBeenCalledOnce();
+
+    // Keyboard stays off under any mode while the option is off.
+    h.network.setOptions({ interaction: 'inspect', keyboard: false });
+    expect(h.deps.attachPointer).toHaveBeenCalledTimes(2);
+    expect(h.deps.attachKeyboard).toHaveBeenCalledOnce();
+  });
+
+  it('walks the selection along the topology from the keyboard', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    const selects: Array<Item | null> = [];
+    h.network.on('select', (item) => selects.push(item));
+    const at: Record<string, readonly [number, number]> = {
+      vertex0: [10, 40],
+      vertex1: [50, 40],
+      vertex2: [90, 40],
+      edge0: [30, 40],
+      edge1: [70, 40],
+    };
+    h.picker.locate.mockImplementation((item) => at[`${item[0]}${item[1]}`] ?? null);
+
+    // Nothing selected: the walk starts from the item nearest the center.
+    h.picker.nextHit = ['vertex', 0];
+    h.emitKey({ kind: 'step', dx: 1, dy: 0 });
+    expect(h.picker.pick).toHaveBeenLastCalledWith(expect.objectContaining({ sx: 50, sy: 40 }));
+
+    h.emitKey({ kind: 'step', dx: 1, dy: 0 });
+    h.emitKey({ kind: 'step', dx: 1, dy: 0 });
+    h.emitKey({ kind: 'step', dx: 1, dy: 0 }); // nothing lies further right
+    h.emitKey({ kind: 'step', dx: -1, dy: 0 });
+    h.network.select({ kind: 'edge', index: 0 });
+    h.emitKey({ kind: 'step', dx: -1, dy: 0 });
+
+    expect(selects).toEqual([
+      { kind: 'vertex', index: 0 },
+      { kind: 'vertex', index: 1 },
+      { kind: 'vertex', index: 2 },
+      { kind: 'vertex', index: 1 },
+      { kind: 'vertex', index: 0 },
+    ]);
+  });
+
+  it('routes an external pointer through hover picking like the canvas pointer, and pause clears it', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    const hovers: Array<Item | null> = [];
+    h.network.on('hover', (item) => hovers.push(item));
+
+    h.picker.nextHit = ['edge', 1];
+    h.network.setPointer(30, 20);
+    h.loop.frame();
+    h.loop.paint();
+    await flushMicrotasks();
+    expect(h.picker.lastQuery).toMatchObject({ sx: 30, sy: 20, radiusPx: 10 });
+    expect(h.loop.uniforms.frame.pointerX).toBe(30);
+    expect(h.loop.uniforms.frame.pointerY).toBe(20);
+    expect(hovers).toEqual([{ kind: 'edge', index: 1 }]);
+
+    h.network.pause();
+    expect(hovers).toEqual([{ kind: 'edge', index: 1 }, null]);
+    h.network.resume();
+    h.loop.frame();
+    expect(h.loop.uniforms.frame.pointerX).toBe(POINTER_NONE);
+    expect(h.loop.uniforms.frame.pointerY).toBe(POINTER_NONE);
+
+    h.network.setPointer(30, 20);
+    h.network.setPointer(null);
+    h.network.setPointer(Number.NaN, 20);
+    h.loop.frame();
+    h.loop.paint();
+    await flushMicrotasks();
+    expect(hovers).toHaveLength(2);
+    expect(h.loop.uniforms.frame.pointerX).toBe(POINTER_NONE);
+  });
+
+  it('threads the fit options into the rig and invalidates hover when they change', async () => {
+    const h = await makeHarness({ fitPitch: 50 });
+    expect(h.rig.setFitOptions).toHaveBeenCalledWith({ paddingPx: null, pitch: 50, bearing: 0 });
+    h.network.load(geographicTopology());
+    h.picker.nextHit = ['vertex', 1];
+    h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
+    h.loop.frame();
+    expect(h.picker.pick).toHaveBeenCalledTimes(1);
+
+    h.network.setOptions({ fitPaddingPx: [96, 32, 160, 32], fitBearing: -18 });
+    expect(h.rig.fitOptions).toEqual({ paddingPx: [96, 32, 160, 32], pitch: 50, bearing: -18 });
+    h.loop.frame();
+    expect(h.picker.pick).toHaveBeenCalledTimes(2);
+
+    h.network.setOptions({ vertexScale: 2 });
+    expect(h.rig.setFitOptions).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains a shade across attaches, ticks it per frame, and keeps frames coming while it animates', async () => {
+    const h = await makeHarness({}, undefined, false);
+    const ticks: Array<{
+      pointer: number[] | null;
+      time: number;
+      viewport: { w: number; h: number };
+    }> = [];
+    let more = true;
+    const shade: Shade = {
+      wgsl: 'fn shade(f: Fragment) -> vec4f { return f.color; }',
+      tick(host, frame) {
+        ticks.push({
+          pointer: frame.pointerPx ? [...frame.pointerPx] : null,
+          time: frame.timeMs,
+          viewport: { ...frame.viewport },
+        });
+        host[0] = 1;
+        return more;
+      },
+    };
+
+    await h.network.setShade(shade);
+    expect(h.renderer.setShade).not.toHaveBeenCalled();
+    await h.network.attach(h.canvas);
+    expect(h.rendererShades.at(-1)).toBe(shade.wgsl);
+    h.network.load(geographicTopology());
+
+    h.emitPointer({ kind: 'hover', clientX: 12, clientY: 8, targetPx: 10 });
+    h.loop.frame(undefined, true, 123);
+    expect(ticks).toEqual([{ pointer: [12, 8], time: 123, viewport: { w: 100, h: 80 } }]);
+    expect(h.loop.uniforms.host[0]).toBe(1);
+    expect(h.loop.deps?.animating?.()).toBe(true);
+
+    more = false;
+    h.emitPointer({ kind: 'hoverEnd' });
+    h.loop.frame(undefined, true, 140);
+    expect(ticks[1]).toEqual({ pointer: null, time: 140, viewport: { w: 100, h: 80 } });
+    expect(h.loop.deps?.animating?.()).toBe(false);
+
+    // Removing the shade zeroes its block and stops ticking.
+    await h.network.setShade(null);
+    expect(h.loop.uniforms.host[0]).toBe(0);
+    h.loop.frame();
+    expect(ticks).toHaveLength(2);
+  });
+
+  it('installs a shade live through the renderer and restores the previous one when it fails', async () => {
+    const h = await makeHarness();
+    const good: Shade = { wgsl: 'good' };
+    await h.network.setShade(good);
+    expect(h.renderer.setShade).toHaveBeenCalledWith('good');
+    expect(h.loop.wake).toHaveBeenCalled();
+
+    h.renderer.nextShadeError = new Error('bad wgsl');
+    await expect(h.network.setShade({ wgsl: 'bad' })).rejects.toThrow('bad wgsl');
+
+    // The retained shade is still the good one: a new attach compiles it.
+    h.network.detach();
+    await h.network.attach(h.canvas);
+    expect(h.rendererShades.at(-1)).toBe('good');
+
+    await h.network.setShade(null);
+    expect(h.renderer.setShade).toHaveBeenLastCalledWith(null);
+    h.network.detach();
+    await h.network.attach(h.canvas);
+    expect(h.rendererShades.at(-1)).toBeNull();
   });
 });

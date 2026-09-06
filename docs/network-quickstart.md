@@ -74,6 +74,37 @@ The controller owns the input policy. The `keyboard` option attaches the key map
 network.setOptions({ keyboard: true, motion: 'auto', wheel: 'modifier' });
 ```
 
+`interaction: 'inspect'` goes further: the camera never moves, wheel and touch scrolling stay the page's, and the canvas keeps hover, tap selection, and arrow keys that walk the selection along the topology. `'none'` installs no listeners. A canvas that receives no pointer events, such as a backdrop under page content, reports the pointer with `setPointer(clientX, clientY)` and releases it with `setPointer(null)`; hover picking and `hover` events follow it as they would the canvas's own pointer.
+
+## Frame the fit
+
+The fit is the view every resize, `fit()`, Home key, and double-tap returns to. Three options define it: `fitPaddingPx` is the inset it keeps clear, one value or `[top, right, bottom, left]` in CSS pixels, and `fitPitch` and `fitBearing` are the orientation it rests at in `tilt` and `globe`. While the camera is at fit, a resize refits inside the frame that renders the new size, so a page never needs to reframe the view itself:
+
+```ts
+network.setOptions({ fitPaddingPx: [96, 32, 160, 32], fitPitch: 50, fitBearing: -18 });
+network.setProjection('tilt');
+```
+
+## Shade the fragments
+
+A shade is a WGSL function compiled into the vertex and edge passes. It receives what the pass would paint plus where and what the fragment is, and returns the color to paint. A `tick` may write a 64-float `host` block before each frame, so an effect costs one small upload per frame regardless of graph size. The `vertexShade` and `edgeShade` channels carry one scalar per item into it as `f.value`.
+
+```ts
+import { spotlight } from '@latkit/network/shades';
+
+await network.setShade(spotlight({ radiusPx: 220, strength: 0.6 }));
+
+await network.setShade({
+  wgsl: `
+    fn shade(f: Fragment) -> vec4f {
+      let d = distance(f.px, u.pointer_px);
+      return vec4f(mix(f.color.rgb, vec3f(1.0), smoothstep(200.0, 0.0, d) * f.value), f.color.a);
+    }`,
+});
+```
+
+`setShade` resolves once the active projection draws with the shade; a shade that fails to compile rejects with the compiler's message and leaves the previous shade in place. The `painted` event and property report the first frame shown after each attach, which is the right moment to drop a poster.
+
 ## Add interaction handlers
 
 Every event carries one payload. Use them to mirror hover and selection state into your app:

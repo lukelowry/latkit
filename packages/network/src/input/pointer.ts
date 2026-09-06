@@ -80,11 +80,17 @@ const POINTER = {
 /** Touch pick target floor, in CSS px: half of the Apple HIG 44pt diameter, as a radius. */
 const TOUCH_PICK_RADIUS_PX = 22;
 
-/** What the surface's input follows: the wheel policy and the live mouse pick radius. */
+/** What the surface's input follows: the wheel policy, the live mouse pick radius, and whether it navigates. */
 export interface PointerPolicy {
   readonly wheel: WheelPolicy;
   /** Mouse and pen pick radius in CSS px; touch uses at least {@link TOUCH_PICK_RADIUS_PX}. */
   readonly pickRadiusPx: () => number;
+  /**
+   * Whether gestures move the camera. When false, the surface only inspects: hover, taps, and
+   * context requests remain; a moved press is not a tap, a second pointer is ignored, and a wheel
+   * stays the page's.
+   */
+  readonly navigable: () => boolean;
 }
 
 /** Wheel delta normalization and zoom gain. */
@@ -228,6 +234,7 @@ export function attachPointer(
 ): { destroy(): void } {
   const wheel = policy.wheel ?? DEFAULT_WHEEL_POLICY;
   const mousePx = policy.pickRadiusPx ?? (() => 10);
+  const navigable = policy.navigable ?? (() => true);
   /** Target radius for tap/hover picking by pointer type, in CSS px. */
   const targetPxFor = (pointerType: string): number =>
     pointerType === 'touch' ? Math.max(TOUCH_PICK_RADIUS_PX, mousePx()) : mousePx();
@@ -404,6 +411,8 @@ export function attachPointer(
     }
 
     if (state.kind === 'pressed' || state.kind === 'dragging') {
+      // Inspection has no pinch: a second finger neither zooms nor cancels the first press.
+      if (!navigable()) return;
       const first = state.pointer;
       const second = slot(e, s);
       if (state.kind === 'dragging') {
@@ -461,6 +470,11 @@ export function attachPointer(
           state = { ...state, pointer: p, lastTime: e.timeStamp };
           return;
         }
+        // A press that moved is not a tap; without navigation there is nothing else it can be.
+        if (!navigable()) {
+          state = { kind: 'idle', lastTap: null };
+          return;
+        }
 
         capture(p.id);
         beginNavigation('pointer');
@@ -489,6 +503,13 @@ export function attachPointer(
         const p = { ...state.pointer, sx: s.sx, sy: s.sy };
         if (dx * dx + dy * dy <= DRAG_MOUSE_SQ) {
           state = { ...state, pointer: p };
+          return;
+        }
+        // A moved secondary press neither rotates nor opens a menu without navigation.
+        if (!navigable()) {
+          state = { kind: 'idle', lastTap: null };
+          release(p.id);
+          stageContextRelease('suppress');
           return;
         }
 
@@ -594,7 +615,9 @@ export function attachPointer(
       state = { kind: 'idle', lastTap: tap.next };
       release(e.pointerId);
       emit({ kind: 'tap', sx: s.sx, sy: s.sy, targetPx, vp: s.vp });
-      if (tap.doubleTap) emit({ kind: 'doubleTap', sx: s.sx, sy: s.sy, targetPx, vp: s.vp });
+      if (tap.doubleTap && navigable()) {
+        emit({ kind: 'doubleTap', sx: s.sx, sy: s.sy, targetPx, vp: s.vp });
+      }
       return;
     }
 
@@ -715,6 +738,8 @@ export function attachPointer(
   }
 
   function onWheel(e: WheelEvent): void {
+    // Without navigation every wheel stays the page's.
+    if (!navigable()) return;
     const gesture = wheel(e);
     // A wheel the policy declines stays the page's: no preventDefault, no transaction.
     if (gesture === 'none') return;

@@ -40,6 +40,7 @@ describe('Renderer resource lifecycle', () => {
       'unit-quad',
       'edge-strip',
       'uniforms',
+      'shade-host',
     ]);
     expect(h.device.textures.map((texture) => texture.descriptor.label)).toEqual(['colormap-lut']);
     expect(h.device.queue.writeTexture).toHaveBeenCalledOnce();
@@ -147,7 +148,8 @@ describe('Renderer resource lifecycle', () => {
       'network: failed to build the plane projection pipelines',
       expect.any(Error),
     );
-    expect(reported).toHaveBeenCalledWith('plane', failure);
+    expect(reported).toHaveBeenCalledWith('plane', expect.any(Error));
+    expect((reported.mock.calls[0]![1] as Error).cause).toBe(failure);
     expect(h.device.createRenderPipelineAsync).toHaveBeenCalledTimes(calls);
     renderer.destroy();
   });
@@ -155,13 +157,13 @@ describe('Renderer resource lifecycle', () => {
   it('allocates every channel slot with the topology and writes channels in place', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);
-    const topology = sampleTopology(); // 3 vertices, 2 edges: 4 vertex channels + 3 edge channels
+    const topology = sampleTopology(); // 3 vertices, 2 edges: 5 vertex channels + 4 edge channels
 
     renderer.bindTopology(preparedScene(topology));
     const channelBuffer = h.device.buffers.find(
       (buffer) => buffer.descriptor.label === 'channels',
     )!;
-    expect(channelBuffer.descriptor.size).toBe((4 * 3 + 3 * 2) * 4);
+    expect(channelBuffer.descriptor.size).toBe((5 * 3 + 4 * 2) * 4);
 
     const dashes = new Float32Array([1, 0]);
     renderer.writeChannel('edgeDash', dashes);
@@ -199,9 +201,9 @@ describe('Renderer resource lifecycle', () => {
       'assertStorageBufferFits',
     );
 
-    renderer.bindTopology(preparedScene(sampleTopology())); // channel storage needs 72 bytes
+    renderer.bindTopology(preparedScene(sampleTopology())); // channel storage needs 92 bytes
 
-    expect(fits.mock.calls.map(([label, bytes]) => [label, bytes])).toContainEqual(['channel', 72]);
+    expect(fits.mock.calls.map(([label, bytes]) => [label, bytes])).toContainEqual(['channel', 92]);
     renderer.destroy();
   });
 
@@ -344,6 +346,112 @@ describe('Renderer frame encoding', () => {
       (call) => call.method === 'setPipeline',
     ).map((call) => (call.args[0] as { label?: string }).label);
     expect(labels).toContain('plane-pole');
+    renderer.destroy();
+  });
+});
+
+describe('Renderer shade', () => {
+  const custom = 'fn shade(f: Fragment) -> vec4f { return f.color * 2.0; }';
+
+  it('compiles the host shade into the vertex and edge modules and uploads the host block', async () => {
+    const h = makeFakeGpu();
+    const renderer = new Renderer(h.presentation, 1, custom);
+    await flushGpuPromises();
+
+    const code = (label: string): string =>
+      h.device.shaderModules.find((module) => module.label === label)!.code;
+    expect(code('vert')).toContain('struct Fragment');
+    expect(code('vert')).toContain('return f.color * 2.0;');
+    expect(code('edge')).toContain('return f.color * 2.0;');
+    expect(code('edge')).toContain('fn edge_shade_val');
+    expect(code('pole')).not.toContain('struct Fragment');
+    expect(
+      [...h.device.bindGroupLayouts[0]!.entries].some(
+        (entry) => entry.binding === 4 && entry.visibility === GPUShaderStage.FRAGMENT,
+      ),
+    ).toBe(true);
+
+    renderer.bindTopology(preparedScene(sampleTopology()));
+    const uniforms = createUniforms();
+    uniforms.host[0] = 7;
+    expect(renderer.render(uniforms)).toBe(true);
+    const host = h.device.buffers.find((buffer) => buffer.descriptor.label === 'shade-host');
+    expect(host?.descriptor.size).toBe(256);
+    expect(h.device.queue.writeBuffer).toHaveBeenCalledWith(host, 0, uniforms.host);
+    renderer.destroy();
+    expect(host?.destroyed).toBe(true);
+  });
+
+  it('swaps in a new shade once its pipelines land and drops other families to rebuild lazily', async () => {
+    const h = makeFakeGpu();
+    const renderer = new Renderer(h.presentation, 1);
+    const ready = vi.fn();
+    renderer.onPipelinesReady = ready;
+    await flushGpuPromises();
+    await renderer.warmProjection('globe');
+    ready.mockClear();
+    const before = h.device.renderPipelines.length;
+
+    await renderer.setShade(custom);
+    expect(ready).toHaveBeenCalledOnce();
+    expect(h.device.renderPipelines.length - before).toBe(9);
+    const latest = (label: string): string =>
+      h.device.shaderModules.filter((module) => module.label === label).at(-1)!.code;
+    expect(latest('vert')).toContain('return f.color * 2.0;');
+
+    // The globe family was compiled against the old shade and rebuilds on demand.
+    await renderer.warmProjection('globe');
+    expect(h.device.renderPipelines.length - before).toBe(19);
+    expect(latest('vert')).toContain('return f.color * 2.0;');
+
+    // An unchanged shade builds nothing; null is the identity shade.
+    await renderer.setShade(custom);
+    expect(h.device.renderPipelines.length - before).toBe(19);
+    await renderer.setShade(null);
+    expect(h.device.renderPipelines.length - before).toBe(28);
+    expect(latest('vert')).toContain('return f.color;');
+    renderer.destroy();
+  });
+
+  it('rejects a shade that fails to compile, names the failure, and keeps the previous shade', async () => {
+    const h = makeFakeGpu();
+    const renderer = new Renderer(h.presentation, 1);
+    await flushGpuPromises();
+    renderer.bindTopology(preparedScene(sampleTopology()));
+    h.device.createRenderPipelineAsync.mockRejectedValueOnce(new Error('bad wgsl'));
+
+    await expect(
+      renderer.setShade('fn shade(f: Fragment) -> vec4f { return nope; }'),
+    ).rejects.toThrow('network shader build failed:\nbad wgsl');
+    expect(renderer.render(createUniforms())).toBe(true);
+
+    await renderer.warmProjection('globe');
+    const latest = h.device.shaderModules.filter((module) => module.label === 'vert').at(-1)!;
+    expect(latest.code).toContain('return f.color;');
+    renderer.destroy();
+  });
+
+  it('lets the latest shade win and discards builds that started under an older one', async () => {
+    const h = makeFakeGpu();
+    const renderer = new Renderer(h.presentation, 1);
+    const ready = vi.fn();
+    renderer.onPipelinesReady = ready;
+    await flushGpuPromises();
+    ready.mockClear();
+    const before = h.device.renderPipelines.length;
+
+    const stale = renderer.warmProjection('globe');
+    const first = renderer.setShade('fn shade(f: Fragment) -> vec4f { return vec4f(0.0); }');
+    const second = renderer.setShade(custom);
+    await Promise.all([stale, first, second]);
+
+    expect(ready).toHaveBeenCalledOnce();
+    const latest = h.device.shaderModules.filter((module) => module.label === 'vert').at(-1)!;
+    expect(latest.code).toContain('return f.color * 2.0;');
+    // The stale globe build never landed: warming builds it again under the new shade.
+    const built = h.device.renderPipelines.length - before;
+    await renderer.warmProjection('globe');
+    expect(h.device.renderPipelines.length - before).toBe(built + 10);
     renderer.destroy();
   });
 });

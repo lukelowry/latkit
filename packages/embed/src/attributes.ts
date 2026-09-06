@@ -53,6 +53,10 @@ export function parseOptionAttribute(definition: OptionDefinition, raw: string):
     }
     case 'domain':
       return decimalPair(raw) ?? undefined;
+    case 'insets': {
+      const parts = tokens(raw).map(decimal);
+      return parts.length === 1 ? parts[0] : parts.length === 4 ? parts : undefined;
+    }
     case 'enum':
       return definition.values?.every((value) => typeof value === 'number')
         ? decimal(raw.trim())

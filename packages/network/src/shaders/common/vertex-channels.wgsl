@@ -29,6 +29,11 @@ fn vertex_size_scale(vi: u32) -> f32 {
   return u.v_size_out_min + t * u.v_size_out_span;
 }
 
+fn vertex_shade_val(vi: u32) -> f32 {
+  if ((u.item_flags & ITEM_VERTEX_SHADE) == 0u) { return 0.0; }
+  return rf(u.v_shade_offset + vi);
+}
+
 fn vertex_channel_color(vi: u32) -> vec4f {
   if (u.v_color_mode == 0u) { return u.v_base_color; }
   let t = (rf(u.v_color_offset + vi) - u.v_color_min) * u.v_color_scale;

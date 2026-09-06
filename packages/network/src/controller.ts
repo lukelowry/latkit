@@ -61,6 +61,7 @@ import {
   type RuntimeOption,
 } from './options.js';
 import { boundsForItems, expandDegenerateBounds } from './topology/subset-bounds.js';
+import { POINTER_NONE, type Shade, type ShadeFrame } from './shade.js';
 
 export type { Options } from './options.js';
 
@@ -98,6 +99,8 @@ export type Events = {
   orbit: boolean;
   /** Bound to a canvas after {@link Network.attach}, or released from one. */
   attached: boolean;
+  /** True after the first successful frame since attach; false again when the canvas is released. */
+  painted: boolean;
   /**
    * The WebGPU device was lost. The controller releases it, leases a replacement, and replays
    * every retained state; `recovering` is false only when no replacement could be leased, and
@@ -140,6 +143,8 @@ export interface Network {
   readonly orbiting: boolean;
   /** Whether a canvas is bound and rendering. */
   readonly attached: boolean;
+  /** Whether a frame has been painted since attach. */
+  readonly painted: boolean;
 
   /**
    * Subscribe to a network event and receive an unsubscribe callback.
@@ -259,6 +264,28 @@ export interface Network {
    * @param item - Vertex or edge identity, or `null` to clear.
    */
   select(item: Item | null): void;
+  /**
+   * Report the pointer from outside the canvas, or its absence with `null`.
+   *
+   * It drives hover picking, `hover` events, and the shade's `u.pointer_px` exactly as the
+   * canvas's own pointer does; the latest report from either source wins. Meant for a canvas
+   * that receives no pointer events itself, such as a backdrop under page content.
+   *
+   * @param clientX - Client-space horizontal coordinate in CSS pixels, or `null` to release.
+   * @param clientY - Client-space vertical coordinate in CSS pixels.
+   */
+  setPointer(clientX: number, clientY: number): void;
+  setPointer(clientX: null): void;
+  /**
+   * Install a fragment shade, or remove it with `null`.
+   *
+   * Resolves once the active projection draws with it. Rejects, keeping the previous shade,
+   * when the WGSL does not compile. While detached it resolves at once and the shade is
+   * compiled on attach, where a fault surfaces as `pipelineError`.
+   *
+   * @param shade - The host shade, or `null` for the identity shade.
+   */
+  setShade(shade: Shade | null): Promise<void>;
 
   /**
    * Switch projection.
@@ -438,6 +465,10 @@ const DISPLAY_OPTIONS = [
   'pickRadiusPx',
   'keyboard',
   'wheel',
+  'interaction',
+  'fitPaddingPx',
+  'fitPitch',
+  'fitBearing',
 ] as const satisfies readonly RuntimeOption[];
 
 type DisplayOption = (typeof DISPLAY_OPTIONS)[number];
@@ -591,6 +622,8 @@ interface Binding {
   readonly renderer: Renderer;
   readonly loop: RenderLoop;
   readonly lifecycle: ControllerLifecycle;
+  /** The pointer and keyboard adapters, attached and released as the `interaction` option says. */
+  pointer: { destroy(): void } | null;
   keyboard: { destroy(): void } | null;
   sunTimer: ReturnType<typeof setInterval> | null;
   /** First-paint gate for pipeline warming. */
@@ -645,6 +678,18 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   let destroyed = false;
   let consumerPaused = false;
   let pageVisible = true;
+
+  /** The host shade, retained across attaches; the renderer compiles it. */
+  let shade: Shade | null = null;
+  /** Whether the shade's last tick asked for another frame. */
+  let shadeAnimating = false;
+  /** The pointer in canvas-local CSS px, reused so a frame allocates nothing for the shade. */
+  const pointerPx: [number, number] = [0, 0];
+  const shadeFrame: { -readonly [K in keyof ShadeFrame]: ShadeFrame[K] } = {
+    timeMs: 0,
+    pointerPx: null,
+    viewport: DETACHED_VIEWPORT,
+  };
 
   /** Latest physical hover point; converted through the current DOMRect per pick. */
   let hoverProbe: HoverProbe | null = null;
@@ -883,6 +928,12 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         orbit.stop();
         api.fit(true);
         break;
+      case 'step': {
+        const from = selectedItem();
+        const next = from ? stepAlong(from, intent.dx, intent.dy) : nearestToCenter();
+        if (next) commitUserSelection([next.kind, next.index]);
+        break;
+      }
       case 'clear':
         if (selectedItem()) commitUserSelection(null);
         break;
@@ -890,6 +941,42 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         /* v8 ignore next -- compile-time exhaustive keyboard intent guard. */
         intent satisfies never;
     }
+  }
+
+  /**
+   * The neighbor lying most in a unit screen direction: a vertex walks to the far end of one
+   * of its edges, an edge goes to one of its endpoints. Costs one locate per neighbor.
+   */
+  function stepAlong(from: Item, dx: number, dy: number): Item | null {
+    const origin = api.locate(from);
+    if (!origin) return null;
+    let best: Item | null = null;
+    let bestCos = 0;
+    for (const item of api.neighborhood(from)) {
+      if (item.kind === from.kind && item.index === from.index) continue;
+      if (from.kind === 'vertex' && item.kind === 'edge') continue;
+      const at = api.locate(item);
+      if (!at) continue;
+      const vx = at[0] - origin[0];
+      const vy = at[1] - origin[1];
+      const len = Math.hypot(vx, vy);
+      const cos = len > 0 ? (vx * dx + vy * dy) / len : 0;
+      if (cos > bestCos) {
+        best = item;
+        bestCos = cos;
+      }
+    }
+    return best;
+  }
+
+  /** The visible item nearest the canvas center, where a keyboard walk starts from nothing. */
+  function nearestToCenter(): Item | null {
+    const view = vp();
+    if (view.w <= 0 || view.h <= 0) return null;
+    const hit = picker.pick(
+      pickQueryAt(view.w / 2, view.h / 2, Math.hypot(view.w, view.h) / 2, view),
+    );
+    return hit ? itemOf(hit) : null;
   }
 
   /** Switch projection through the rig and renderer together; false when unsupported. */
@@ -914,7 +1001,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
 
       const presentation = deps.createPresentation(lease.device, canvas);
       lifecycle.add(() => presentation.destroy());
-      const renderer = new deps.Renderer(presentation, options.msaa);
+      const renderer = new deps.Renderer(presentation, options.msaa, shade?.wgsl ?? null);
       lifecycle.add(() => renderer.destroy());
 
       const loop = new deps.RenderLoop({
@@ -923,12 +1010,14 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         renderer,
         rig,
         onZoom: (atFitView) => stageFitNotice(atFitView),
-        onBeforeFrame: (frameVp) => {
+        onBeforeFrame: (frameVp, now) => {
           daylight.refresh(display.sunTime ?? Date.now());
           updateHeightAmplitude(frameVp);
+          beforeFrameShade(surface, frameVp, now);
         },
         onFrame: (sizeSettled) => resolveHover(sizeSettled),
         onPaint: () => onSuccessfulPaint(),
+        animating: () => shadeAnimating,
       });
       lifecycle.add(() => loop.destroy());
 
@@ -937,12 +1026,6 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         pipelineFailure = { family, cause };
         events.emit('pipelineError', pipelineFailure);
       };
-
-      const pointer = deps.attachPointer(surface, onPointerIntent, {
-        wheel: wheelPolicy,
-        pickRadiusPx: () => display.pickRadiusPx,
-      });
-      lifecycle.add(() => pointer.destroy());
 
       pageVisible = typeof document !== 'undefined' ? !document.hidden : true;
       const onVisibilityChange = (): void => {
@@ -961,6 +1044,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         renderer,
         loop,
         lifecycle,
+        pointer: null,
         keyboard: null,
         sunTimer: null,
         painted: false,
@@ -968,6 +1052,8 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         warming: false,
       };
       lifecycle.add(() => {
+        entry.pointer?.destroy();
+        entry.pointer = null;
         entry.keyboard?.destroy();
         entry.keyboard = null;
         if (entry.sunTimer !== null) clearInterval(entry.sunTimer);
@@ -1007,8 +1093,11 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     pendingFitNotice = undefined;
     readyFitNotice = undefined;
     focus.setHover(null);
+    shadeAnimating = false;
     entry.lifecycle.destroy();
-    if (!destroyed) events.emit('attached', false);
+    if (destroyed) return;
+    if (entry.painted) events.emit('painted', false);
+    events.emit('attached', false);
   }
 
   /** A device the platform lost: release it, say so, and lease a replacement. */
@@ -1041,15 +1130,68 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     else loop.pause();
   }
 
-  /** Attach or detach the keyboard map to follow the live `keyboard` option. */
-  function syncKeyboard(): void {
+  /** Whether gestures move the camera; the adapters read it per event. */
+  const navigable = (): boolean => display.interaction === 'navigate';
+
+  /**
+   * Follow the live `interaction` and `keyboard` options: which adapters listen, and whether
+   * touch belongs to the camera or the page.
+   */
+  function syncInteraction(): void {
     const entry = binding;
     if (!entry) return;
-    if (display.keyboard && !entry.keyboard) {
-      entry.keyboard = deps.attachKeyboard(entry.canvas, onKeyIntent);
-    } else if (!display.keyboard && entry.keyboard) {
+    const mode = display.interaction;
+    entry.surface.setNavigable(mode === 'navigate');
+    if (mode !== 'none' && !entry.pointer) {
+      entry.pointer = deps.attachPointer(entry.surface, onPointerIntent, {
+        wheel: wheelPolicy,
+        pickRadiusPx: () => display.pickRadiusPx,
+        navigable,
+      });
+    } else if (mode === 'none' && entry.pointer) {
+      // Destroying the adapter resets any gesture and ends hover.
+      entry.pointer.destroy();
+      entry.pointer = null;
+    }
+    const keys = display.keyboard && mode !== 'none';
+    if (keys && !entry.keyboard) {
+      entry.keyboard = deps.attachKeyboard(entry.canvas, onKeyIntent, navigable);
+    } else if (!keys && entry.keyboard) {
       entry.keyboard.destroy();
       entry.keyboard = null;
+    }
+  }
+
+  /** The pointer uniform and the shade's frame, written before the camera pose is uploaded. */
+  function beforeFrameShade(surface: Surface, frameVp: Viewport, now: number): void {
+    let present = false;
+    if (hoverProbe) {
+      const rect = surface.rect();
+      pointerPx[0] = hoverProbe.clientX - rect.left;
+      pointerPx[1] = hoverProbe.clientY - rect.top;
+      present = true;
+    }
+    uniforms.frame.pointerX = present ? pointerPx[0] : POINTER_NONE;
+    uniforms.frame.pointerY = present ? pointerPx[1] : POINTER_NONE;
+    if (!shade?.tick) {
+      shadeAnimating = false;
+      return;
+    }
+    shadeFrame.timeMs = now;
+    shadeFrame.pointerPx = present ? pointerPx : null;
+    shadeFrame.viewport = frameVp;
+    shadeAnimating = shade.tick(uniforms.host, shadeFrame) === true;
+  }
+
+  /** Forget the pointer and clear hover at once, off the frame path, for a surface gone inactive. */
+  function dropHover(): void {
+    hoverProbe = null;
+    hoverDirty = false;
+    pendingHoverNotice = undefined;
+    readyHoverNotice = undefined;
+    if (focus.setHover(null)) {
+      events.emit('hover', null);
+      repaint();
     }
   }
 
@@ -1088,6 +1230,10 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       return binding !== null;
     },
 
+    get painted() {
+      return binding?.painted ?? false;
+    },
+
     on(event, handler) {
       const unsubscribe = events.on(event, handler);
       if (event === 'pipelineError' && pipelineFailure) {
@@ -1114,7 +1260,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       const entry = bind(lease, canvas, own);
       binding = entry;
       try {
-        syncKeyboard();
+        syncInteraction();
         syncSunTimer();
         syncRenderLoopActivity();
         replayInto(entry);
@@ -1214,6 +1360,35 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       applySelection(item);
     },
 
+    setPointer(clientX: number | null, clientY?: number) {
+      // The public form of the hover intent: one probe, one pick, one uniform.
+      if (clientX === null) {
+        onPointerIntent({ kind: 'hoverEnd' });
+      } else if (Number.isFinite(clientX) && clientY !== undefined && Number.isFinite(clientY)) {
+        onPointerIntent({ kind: 'hover', clientX, clientY, targetPx: display.pickRadiusPx });
+      }
+    },
+
+    setShade(next) {
+      const previous = shade;
+      shade = next;
+      uniforms.host.fill(0);
+      shadeAnimating = false;
+      const bound = binding;
+      if (!bound) return Promise.resolve();
+      return bound.renderer.setShade(next?.wgsl ?? null).then(
+        () => {
+          if (binding !== bound) return;
+          warmInactiveProjections();
+          bound.loop.wake();
+        },
+        (error: unknown) => {
+          if (shade === next) shade = previous;
+          throw error;
+        },
+      );
+    },
+
     setProjection(mode, fallback = false) {
       if (switchProjection(mode)) return true;
       if (fallback) for (const candidate of PROJECTIONS) if (switchProjection(candidate)) break;
@@ -1303,6 +1478,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     pause() {
       consumerPaused = true;
       syncRenderLoopActivity();
+      dropHover();
     },
 
     resume() {
@@ -1380,6 +1556,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     const entry = binding;
     if (entry && !entry.painted) {
       entry.painted = true;
+      events.emit('painted', true);
       warmInactiveProjections();
     }
     let promoted = false;
@@ -1465,11 +1642,24 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     if (opts.sizeRange !== undefined || initial) channels.refreshSizeRange();
     if (opts.sunTime !== undefined) daylight.refresh(display.sunTime ?? Date.now(), true);
     if (opts.animationMs !== undefined) rig.animationMs = display.animationMs;
+    if (
+      opts.fitPaddingPx !== undefined ||
+      opts.fitPitch !== undefined ||
+      opts.fitBearing !== undefined
+    ) {
+      rig.setFitOptions({
+        paddingPx: display.fitPaddingPx,
+        pitch: display.fitPitch,
+        bearing: display.fitBearing,
+      });
+      // A camera at fit re-lands on the next frame, so the pointer is over new content.
+      pickGeometryChanged = true;
+    }
     applyFocusOptions(opts);
     binding?.renderer.setPasses(passes());
     writeDisplayToUniforms();
     writeGeometryScales(vp());
-    syncKeyboard();
+    syncInteraction();
     syncSunTimer();
     return pickGeometryChanged;
   }
