@@ -59,6 +59,6 @@ Names follow one convention across every package and every layer, from option to
 
 - The API spells out `vertex` and `edge`, kind first: `vertexScale`, `edgeBaseColor`. The uniform buffer and its shaders abbreviate a per-item word to `v`/`e` (`vHoverPx`, `v_hover_px`, `W_V_HOVER_PX`), so an option maps onto its word mechanically.
 - A raw value maps to a normalized `t` as `(x - min) * scale`; an output range is `outMin + t * outSpan`. `Scale` on an option means a user multiplier and nothing else.
-- Units travel with the name: `Px` (`_px`) is CSS pixels, `Ms` a duration, `Time` an epoch instant. Device pixels appear only as `viewport` and `backingScale`.
+- Units travel with the name: `Px` (`_px`) is CSS pixels, `Ms` a duration, `Time` an epoch instant. A device-pixel value says so, as `viewport`, `backingScale`, or a `DevPx` suffix, or its shader states once at the top that it works in device pixels.
 - A bitmask is `<x>.flags` (`<x>_flags`) and its bits are `<X>_*`: `display.flags` with `DISPLAY_*`, `focus.flags` with `FOCUS_*`.
 - One word per visual: the extra disc or band around a focused item is a halo; the coordinate grid is the graticule.

@@ -55,8 +55,9 @@ fn vs_pole(quad: vec2f, inst: u32) -> VOut {
   let offset = normal * quad.x * hw * 2.0 / u.viewport * clip.w;
 
   var out: VOut;
-  let z_bias = pole_sort_z_bias(inst) * (1.0 - u.depth_mix);
-  out.pos = vec4f(clip.xy + offset, clip.z + z_bias * clip.w, clip.w);
+  // Pole geometry owns height order; the edge band only breaks exact depth ties under a vertex.
+  let bias = z_bias(Z_BIAS_EDGE_BAND_OFFSET, vertex_focus_state_for(i32(inst)) != 0u);
+  out.pos = vec4f(clip.xy + offset, clip.z + bias * clip.w, clip.w);
   let base_color = vertex_channel_color(inst);
   out.color = vec4f(base_color.rgb * daylight(surface), base_color.a);
   out.uv_x = quad.x;

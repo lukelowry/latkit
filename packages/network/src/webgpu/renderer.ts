@@ -1,7 +1,7 @@
 /// <reference types="@webgpu/types" />
 
 import type { Presentation } from '@latkit/gpu';
-import { bakeColormap } from '@latkit/model';
+import { bakeColormap, COLORMAP_LUT_SIZE } from '@latkit/model';
 import {
   UNIFORM_BUFFER_BYTES,
   hasSceneDepth,
@@ -40,9 +40,6 @@ import {
   buildProjectionPipelines as buildProjectionPipelineSet,
   type ProjectionPipelineSet,
 } from './pipelines.js';
-
-/** Entries in the one-dimensional colormap texture; `writeColormap` takes `COLORMAP_LUT_SIZE * 4` bytes. */
-export const COLORMAP_LUT_SIZE = 256;
 
 /** Uniform views the renderer uploads or inspects during a frame. */
 type FrameUniforms = Pick<Uniforms, 'raw' | 'rawF32' | 'rawI32' | 'rawU32'>;
@@ -188,7 +185,7 @@ export class Renderer {
       addressModeU: 'clamp-to-edge',
       addressModeV: 'clamp-to-edge',
     });
-    this.writeColormap(bakeColormap(DEFAULT_OPTIONS.colormap, COLORMAP_LUT_SIZE));
+    this.writeColormap(bakeColormap(DEFAULT_OPTIONS.colormap));
 
     this.channelsBindGroupLayout = device.createBindGroupLayout({
       label: 'channels-layout',

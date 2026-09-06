@@ -101,7 +101,7 @@ export interface Projector {
   /** Vertex px radius before per-vertex size scaling and the LOD floor. */
   screenRadius(p: ProjectedPoint): number;
   /** Edge half-width in device px after projection scaling and clamping. */
-  screenHalfWidth(p: ProjectedPoint, baseWidth: number): number;
+  screenHalfWidth(p: ProjectedPoint, halfWidth: number): number;
   /** Pole hit half-width in device px at the projected anchor. */
   poleHalfWidth(p: ProjectedPoint): number;
   /** World-height to topology-coord conversion for query-footprint pads. */
@@ -115,7 +115,7 @@ function toScreen(f: Float32Array, p: ProjectedPoint): void {
   p.sy = (0.5 - p.cy * invW * 0.5) * f[W_VIEWPORT_Y]!;
 }
 
-/** Apply `clip = u.vp * vec4(world, 1)` using the column-major matrix at words 0-15. */
+/** Apply `clip = u.view_proj * vec4(world, 1)` using the column-major matrix at words 0-15. */
 function projectVP(f: Float32Array, p: ProjectedPoint): void {
   const { wx, wy, wz } = p;
   p.cx = f[0]! * wx + f[4]! * wy + f[8]! * wz + f[12]!;
@@ -186,11 +186,11 @@ export function planeProjector(uniforms: Uniforms): Projector {
           : perspectivePx(f, p.cw, f[W_V_RADIUS]!);
       return Math.min(px, VISUAL.maxVertexRadiusPx * f[W_BACKING_SCALE]!);
     },
-    screenHalfWidth(p, baseWidth) {
+    screenHalfWidth(p, halfWidth) {
       const px =
         f[W_DEPTH_MIX] === 0
-          ? baseWidth * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
-          : perspectivePx(f, p.cw, baseWidth);
+          ? halfWidth * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
+          : perspectivePx(f, p.cw, halfWidth);
       return clampHalfWidth(f, px);
     },
     poleHalfWidth(p) {
@@ -242,8 +242,8 @@ export function globeProjector(uniforms: Uniforms): Projector {
       const px = perspectivePx(f, p.cw, f[W_V_RADIUS]! * VISUAL.globeVertexScale);
       return Math.min(px, VISUAL.maxVertexRadiusPx * f[W_BACKING_SCALE]!);
     },
-    screenHalfWidth(p, baseWidth) {
-      return clampHalfWidth(f, perspectivePx(f, p.cw, baseWidth * VISUAL.globeEdgeScale));
+    screenHalfWidth(p, halfWidth) {
+      return clampHalfWidth(f, perspectivePx(f, p.cw, halfWidth * VISUAL.globeEdgeScale));
     },
     poleHalfWidth(p) {
       return polePx(f, this.screenRadius(p));

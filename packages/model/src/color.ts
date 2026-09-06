@@ -31,11 +31,14 @@ export function validateRgba(value: unknown, name = 'color'): asserts value is R
   }
 }
 
-/** Sample `colormap` into `size` opaque rgba8 texels, `size * 4` bytes, for a lookup texture. */
-export function bakeColormap(colormap: Colormap, size = 256): Uint8Array {
-  const lut = new Uint8Array(size * 4);
-  for (let i = 0; i < size; i++) {
-    const [r, g, b] = colormap(i / (size - 1));
+/** Texels in the colormap lookup texture every renderer samples; `bakeColormap` fills that many. */
+export const COLORMAP_LUT_SIZE = 256;
+
+/** Sample `colormap` into `COLORMAP_LUT_SIZE` opaque rgba8 texels for a lookup texture. */
+export function bakeColormap(colormap: Colormap): Uint8Array {
+  const lut = new Uint8Array(COLORMAP_LUT_SIZE * 4);
+  for (let i = 0; i < COLORMAP_LUT_SIZE; i++) {
+    const [r, g, b] = colormap(i / (COLORMAP_LUT_SIZE - 1));
     lut[i * 4] = byte(r);
     lut[i * 4 + 1] = byte(g);
     lut[i * 4 + 2] = byte(b);

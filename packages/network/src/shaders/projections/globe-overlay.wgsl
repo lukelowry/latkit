@@ -15,7 +15,7 @@ fn project_world(p: vec3f) -> vec4f { return u.view_proj * vec4f(p, 1.0); }
 
 fn project_overlay(p: vec3f, _h: f32) -> vec4f { return project_world(p); }
 
-// `vertex_size` is in coordinate degrees; convert through surface radians and
+// `v_radius` is in coordinate degrees; convert through surface radians and
 // cap in screen space so zoom reveals topology instead of inflating glyphs.
 fn screen_radius(clip: vec4f) -> f32 {
   let px = u.v_radius * GLOBE_VERTEX_SCALE / (clip.w * u.fov_scale) * u.viewport.y * 0.5;

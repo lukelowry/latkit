@@ -58,18 +58,7 @@ fn vs_vertex(quad: vec2f, inst: u32, role: u32) -> VOut {
 
   let outer = r + halo_px;
   let ndc_offset = quad * (outer + 1.0) * 2.0 / u.viewport * clip.w;
-  var z = clip.z;
-  let flat_bias = select(
-    Z_BIAS_VERTEX_BAND_OFFSET + jitter(inst),
-    Z_BIAS_VERTEX_BAND_OFFSET - Z_BIAS_SELECTION_LIFT,
-    state != 0u,
-  );
-  let depth_bias = mix(
-    flat_bias,
-    select(0.0, -Z_BIAS_SELECTION_LIFT, state != 0u),
-    u.depth_mix,
-  );
-  z += depth_bias * clip.w;
+  let z = clip.z + z_bias(Z_BIAS_VERTEX_BAND_OFFSET, state != 0u) * clip.w;
   out.pos = vec4f(clip.xy + ndc_offset, z, clip.w);
 
   let base_color = vertex_channel_color(inst);

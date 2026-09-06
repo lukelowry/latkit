@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 import type { Presentation } from '@latkit/gpu';
-import type { RGBA } from '@latkit/model';
+import { COLORMAP_LUT_SIZE, type RGBA } from '@latkit/model';
 
 import segmentWgsl from './gpu/segment.wgsl?raw';
 
@@ -17,7 +17,6 @@ import segmentWgsl from './gpu/segment.wgsl?raw';
 export const TARGET_VALUE_BYTES = 64 * 1024 * 1024;
 /** Segment instances submitted per rAF; bounds GPU work, not upload bytes. */
 export const SEGMENT_BUDGET = 4 * 1024 * 1024;
-export const COLORMAP_LUT_SIZE = 256;
 
 /** Frames per slab window: 64 MiB of f32 values, never fewer than one segment. */
 export function framesPerWindow(elementCount: number, capBytes = TARGET_VALUE_BYTES): number {

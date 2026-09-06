@@ -12,7 +12,7 @@ import {
 } from './topology/index.js';
 import { encodeSegments } from './segments/index.js';
 import { prepareScene, type PreparedScene } from './scene.js';
-import { COLORMAP_LUT_SIZE, Renderer } from './webgpu/renderer.js';
+import { Renderer } from './webgpu/renderer.js';
 import {
   createUniforms,
   DISPLAY_DAYLIGHT,
@@ -1442,7 +1442,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     // The colormap is sampled before anything is applied: caller code may throw.
     const lut =
       opts.colormap && (!initial || opts.colormap !== DEFAULT_OPTIONS.colormap)
-        ? bakeColormap(opts.colormap, COLORMAP_LUT_SIZE)
+        ? bakeColormap(opts.colormap)
         : null;
     if (lut) {
       colormapLut = lut;

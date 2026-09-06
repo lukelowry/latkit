@@ -7,7 +7,7 @@
 type StoredHandler = (payload: unknown) => void;
 
 /** The dispatcher {@link createEmitter} returns. */
-export interface Emitter<E extends object> {
+interface Emitter<E extends object> {
   /** Register a handler for one event and return its disposer. */
   on<K extends keyof E>(event: K, handler: (payload: E[K]) => void): () => void;
   /** Deliver a payload to a snapshot of the current handlers for an event. */

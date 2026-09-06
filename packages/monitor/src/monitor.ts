@@ -12,7 +12,7 @@ import {
 } from '@latkit/model';
 
 import { OPTIONS, own, resolveOptions, validateOptions, type Options } from './options.js';
-import { COLORMAP_LUT_SIZE, LanePainter, SEGMENT_BUDGET, framesPerWindow } from './painter.js';
+import { LanePainter, SEGMENT_BUDGET, framesPerWindow } from './painter.js';
 
 export type { Options } from './options.js';
 
@@ -217,7 +217,7 @@ export function createMonitor(options: Options = {}): Monitor {
   const resolved = resolveOptions(options);
   const events = createEmitter<Events>();
 
-  let colormapLut = bakeColormap(resolved.colormap, COLORMAP_LUT_SIZE);
+  let colormapLut = bakeColormap(resolved.colormap);
   let lineWidthPx = resolved.lineWidthPx;
   let valueRange: Domain | null = resolved.valueRange;
   let valueDomain: Domain = normalizeDomain(valueRange);
@@ -754,8 +754,7 @@ export function createMonitor(options: Options = {}): Monitor {
       if (destroyed) return;
       validateOptions(patch);
       // Sample the colormap before anything is applied: caller code may throw.
-      const lut =
-        patch.colormap === undefined ? null : bakeColormap(patch.colormap, COLORMAP_LUT_SIZE);
+      const lut = patch.colormap === undefined ? null : bakeColormap(patch.colormap);
       let uniformsDirty = false;
       let repaint = false;
       let present = false;

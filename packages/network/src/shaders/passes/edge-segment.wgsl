@@ -74,7 +74,8 @@ fn edge_dash_discard(v: VOut) -> bool {
 // True inside either endpoint disc, where the vertex pass paints over the edge.
 fn edge_disc_discard(v: VOut) -> bool {
   let p = v.pos.xy;
-  return distance(p, v.disc_a.xy) < v.disc_a.z || distance(p, v.disc_b.xy) < v.disc_b.z;
+  return (v.disc_a.z > 0.0 && distance(p, v.disc_a.xy) < v.disc_a.z) ||
+    (v.disc_b.z > 0.0 && distance(p, v.disc_b.xy) < v.disc_b.z);
 }
 
 fn edge_fragment_alpha(d: f32) -> f32 {
@@ -165,18 +166,7 @@ fn build_edge_capsule(
   let clip_t = clamp(t, 0.0, 1.0);
   let interp_clip = mix(clip_a, clip_b, clip_t);
   let ndc = screen_pos * 2.0 / u.viewport - vec2f(1.0);
-  var z = interp_clip.z;
-  let flat_bias = select(
-    Z_BIAS_EDGE_BAND_OFFSET + jitter(edge_id),
-    Z_BIAS_EDGE_BAND_OFFSET - Z_BIAS_SELECTION_LIFT,
-    focus_state != 0u,
-  );
-  let depth_bias = mix(
-    flat_bias,
-    select(0.0, -Z_BIAS_SELECTION_LIFT, focus_state != 0u),
-    u.depth_mix,
-  );
-  z += depth_bias * interp_clip.w;
+  let z = interp_clip.z + z_bias(Z_BIAS_EDGE_BAND_OFFSET, focus_state != 0u) * interp_clip.w;
   out.pos = vec4f(ndc * interp_clip.w, z, interp_clip.w);
   out.uv = vec2f(ext_t, side);
   return out;
@@ -200,8 +190,10 @@ fn edge_common(
   let clip_a = project_overlay(wa, ha);
   let clip_b = project_overlay(wb, hb);
   // Only a segment end that is the edge's own end sits on a vertex disc.
-  let ra = select(0.0, endpoint_disc_px(seg.from_vertex, clip_a), seg.height_t.x == 0.0);
-  let rb = select(0.0, endpoint_disc_px(seg.to_vertex, clip_b), seg.height_t.y == 1.0);
+  var ra = 0.0;
+  var rb = 0.0;
+  if (seg.height_t.x == 0.0) { ra = endpoint_disc_px(seg.from_vertex, clip_a); }
+  if (seg.height_t.y == 1.0) { rb = endpoint_disc_px(seg.to_vertex, clip_b); }
   var out = build_edge_capsule(
     strip, seg.edge_id, wa, wb, clip_a, clip_b, ra, rb, role == ROLE_HALO, focus_state,
   );

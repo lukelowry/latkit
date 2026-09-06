@@ -22,9 +22,8 @@ export type { Domain } from './domain.js';
 export { extent, validateDomain } from './domain.js';
 
 export type { Colormap, RGBA } from './color.js';
-export { bakeColormap, validateRgba } from './color.js';
+export { bakeColormap, COLORMAP_LUT_SIZE, validateRgba } from './color.js';
 
-export type { Emitter } from './emitter.js';
 export { createEmitter } from './emitter.js';
 
 export type { Series } from './series.js';

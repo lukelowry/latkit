@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bakeColormap, validateRgba } from '../src/index.js';
+import { bakeColormap, COLORMAP_LUT_SIZE, validateRgba } from '../src/index.js';
 
 describe('validateRgba', () => {
   it('accepts four finite components in [0, 1]', () => {
@@ -24,17 +24,18 @@ describe('validateRgba', () => {
 });
 
 describe('bakeColormap', () => {
-  it('samples the ramp into opaque rgba8 texels from 0 to 1 inclusive', () => {
-    const lut = bakeColormap((t) => [t, 1 - t, 0.5], 4);
+  it('samples the ramp into COLORMAP_LUT_SIZE opaque rgba8 texels from 0 to 1 inclusive', () => {
+    const lut = bakeColormap((t) => [t, 1 - t, 0.5]);
     expect(lut).toBeInstanceOf(Uint8Array);
-    expect(Array.from(lut)).toEqual([
-      0, 255, 128, 255, 85, 170, 128, 255, 170, 85, 128, 255, 255, 0, 128, 255,
-    ]);
+    expect(lut.length).toBe(COLORMAP_LUT_SIZE * 4);
+    expect(Array.from(lut.slice(0, 4))).toEqual([0, 255, 128, 255]);
+    const mid = (COLORMAP_LUT_SIZE / 2) * 4;
+    expect(Array.from(lut.slice(mid, mid + 4))).toEqual([128, 127, 128, 255]);
+    expect(Array.from(lut.slice(-4))).toEqual([255, 0, 128, 255]);
   });
 
-  it('clamps out-of-range channels and defaults to 256 entries', () => {
+  it('clamps out-of-range channels', () => {
     const lut = bakeColormap(() => [2, -1, 0.25]);
-    expect(lut.length).toBe(256 * 4);
     expect(Array.from(lut.slice(0, 4))).toEqual([255, 0, 64, 255]);
     expect(Array.from(lut.slice(-4))).toEqual([255, 0, 64, 255]);
   });

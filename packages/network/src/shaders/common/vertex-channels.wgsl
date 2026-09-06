@@ -34,11 +34,3 @@ fn vertex_channel_color(vi: u32) -> vec4f {
   let t = (rf(u.v_color_offset + vi) - u.v_color_min) * u.v_color_scale;
   return vec4f(colormap(t), 1.0);
 }
-
-// Pole geometry owns height order; this only breaks exact depth ties.
-fn pole_sort_z_bias(vi: u32) -> f32 {
-  if (vertex_focus_state_for(i32(vi)) != 0u) {
-    return Z_BIAS_EDGE_BAND_OFFSET - Z_BIAS_SELECTION_LIFT;
-  }
-  return Z_BIAS_EDGE_BAND_OFFSET + jitter(vi);
-}

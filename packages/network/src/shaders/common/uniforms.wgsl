@@ -143,20 +143,15 @@ const ROLE_BASE:  u32 = 0u;
 const ROLE_FOCUS: u32 = 1u;
 const ROLE_HALO:  u32 = 2u;
 
-// Small semantic biases sit on top of height-derived depth.
+// Small NDC biases that order items at identical depth: vertices over edges and poles, and a
+// focused item over its unfocused neighbors. Items of one kind share one bias, so ties between
+// them resolve in draw order under less-equal and their AA fringes blend instead of cutting.
 const Z_BIAS_VERTEX_BAND_OFFSET : f32 = -2.0e-6;
 const Z_BIAS_EDGE_BAND_OFFSET   : f32 = -1.0e-6;
 const Z_BIAS_SELECTION_LIFT     : f32 =  5.0e-7;
-const Z_BIAS_JITTER_AMPLITUDE   : f32 =  1.0e-7;
 
-// Deterministic per-instance NDC jitter, bounded to -Z_BIAS_JITTER_AMPLITUDE.
-// Tie-breaks primitives at literally identical depth.
-fn jitter(i: u32) -> f32 {
-  var h = i;
-  h = ((h >> 16u) ^ h) * 0x45d9f3bu;
-  h = ((h >> 16u) ^ h) * 0x45d9f3bu;
-  h = (h >> 16u) ^ h;
-  return -f32(h & 0xFFFu) * (Z_BIAS_JITTER_AMPLITUDE / 4096.0);
+fn z_bias(band: f32, focused: bool) -> f32 {
+  return select(band, band - Z_BIAS_SELECTION_LIFT, focused);
 }
 
 fn vertex_focus_state_for(id: i32) -> u32 {

@@ -407,9 +407,9 @@ export class Picker {
       edgeVisible,
       vertices: q.vertices,
       poles,
-      lod: this.f32[W_V_LOD_PX]! * backingScale,
-      dashPeriod: this.f32[W_E_DASH_PERIOD_PX]! * backingScale,
-      baseEdgeWidth: this.f32[W_E_HALF_WIDTH]!,
+      lodDevPx: this.f32[W_V_LOD_PX]! * backingScale,
+      dashPeriodDevPx: this.f32[W_E_DASH_PERIOD_PX]! * backingScale,
+      eHalfWidth: this.f32[W_E_HALF_WIDTH]!,
       bestVertexD2: Infinity,
       bestVertexId: -1,
       bestEdgeD2: Infinity,
@@ -706,7 +706,7 @@ export class Picker {
       state.proj.project(p, x, y, h);
       if (state.proj.visible(p)) {
         const radius = state.proj.screenRadius(p) * this.sizeScale(state, id);
-        if (radius >= state.lod) {
+        if (radius >= state.lodDevPx) {
           state.proj.toScreen(p);
           const dx = state.cursorX - p.sx;
           const dy = state.cursorY - p.sy;
@@ -770,14 +770,14 @@ export class Picker {
     mixPoint(M, A, B, t);
     if (!state.proj.visible(M)) return;
 
-    if (state.dashPeriod > 0 && state.dashes && state.dashes[edgeId]! < 0.5) {
+    if (state.dashPeriodDevPx > 0 && state.dashes && state.dashes[edgeId]! < 0.5) {
       const lenPx = Math.sqrt(len2);
-      const phase = (t * lenPx) / state.dashPeriod;
+      const phase = (t * lenPx) / state.dashPeriodDevPx;
       if (phase - Math.floor(phase) > 0.5) return;
     }
 
     mixPoint(M, A, B, 0.5);
-    const limit = state.radiusDevPx + state.proj.screenHalfWidth(M, state.baseEdgeWidth);
+    const limit = state.radiusDevPx + state.proj.screenHalfWidth(M, state.eHalfWidth);
     if (d2 <= limit * limit) acceptEdge(state, edgeId, d2);
   }
 }
@@ -809,11 +809,11 @@ interface TestState {
   /** Whether height poles are eligible. */
   readonly poles: boolean;
   /** Vertex radius LOD floor in device px. */
-  readonly lod: number;
+  readonly lodDevPx: number;
   /** Dash period in device px; non-positive values disable dash rejection. */
-  readonly dashPeriod: number;
-  /** Base edge width in world or flat units, before projection scaling. */
-  readonly baseEdgeWidth: number;
+  readonly dashPeriodDevPx: number;
+  /** Base edge half-width in world or flat units, before projection scaling. */
+  readonly eHalfWidth: number;
   /** Best vertex squared distance in device px. */
   bestVertexD2: number;
   /** Best vertex index, or -1 before any hit. */
