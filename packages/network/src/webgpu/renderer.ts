@@ -22,7 +22,7 @@ import {
 import type { PreparedScene } from '../scene.js';
 import type { Borders } from '../borders/index.js';
 import { BorderBuffers } from './border-buffers.js';
-import { packBound, type Channel, type ChannelSlot } from '../channels.js';
+import { channelLayout, type Channel } from '../channels.js';
 import { DEFAULT_OPTIONS } from '../options.js';
 
 import {
@@ -74,13 +74,16 @@ interface BoundTopology {
   readonly segmentCount: number;
 }
 
-/** Half-open segment range belonging to one focused edge. */
+/** Half-open segment range belonging to one focused edge; reused frame to frame. */
 interface EdgeFocusRange {
   /** First segment index to draw. */
-  readonly start: number;
+  start: number;
   /** Segment index immediately after the focused range. */
-  readonly end: number;
+  end: number;
 }
+
+/** The most ids a frame's focus can name: hover, selection, and two endpoints each. */
+const MAX_FOCUSED_VERTICES = 6;
 
 /**
  * Owns all GPU resources required to render a network scene.
@@ -129,8 +132,15 @@ export class Renderer {
   private segmentsBindGroup: GPUBindGroup | null = null;
   private channelBuf: GPUBuffer | null = null;
   private channelsBindGroup: GPUBindGroup | null = null;
-  private slots = new Map<Channel, ChannelSlot>();
+  /** Float-word offset of every channel's slot in the bound topology's storage. */
+  private channelOffsets: Readonly<Record<Channel, number>> | null = null;
   private borders: BorderBuffers | null = null;
+
+  // Per-frame focus scratch; a frame allocates nothing for its overlays.
+  private readonly focusedVertices: number[] = [];
+  private readonly focusedEdges: number[] = [];
+  private readonly edgeFocusRanges: EdgeFocusRange[] = [];
+  private edgeFocusRangeCount = 0;
 
   private bound = false;
   private destroyed = false;
@@ -348,8 +358,13 @@ export class Renderer {
 
     const topologyBytes = encoded.byteLength;
     const segmentBytes = encodedSegments.byteLength;
+    // Every channel owns a slot for the topology's lifetime, so a bind is one upload and the
+    // limits are checked once, here, rather than on every first binding.
+    const layout = channelLayout(info.vertexCount, info.edgeCount);
+    const channelBytes = Math.max(4, layout.words * Float32Array.BYTES_PER_ELEMENT);
     this.assertStorageBufferFits('topology', topologyBytes);
     this.assertStorageBufferFits('segment', segmentBytes);
+    this.assertStorageBufferFits('channel', channelBytes);
 
     let topologyBuffer: GPUBuffer | null = null;
     let segmentBuffer: GPUBuffer | null = null;
@@ -390,7 +405,7 @@ export class Renderer {
       });
       channelBuf = this.presentation.device.createBuffer({
         label: 'channels',
-        size: 4,
+        size: channelBytes,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
       const channelsBindGroup = this.createChannelsBindGroup(channelBuf);
@@ -424,7 +439,7 @@ export class Renderer {
       segmentCount: segmentInfo.segmentCount,
     };
     this.edgeSegStart = edgeSegStart;
-    this.slots.clear();
+    this.channelOffsets = layout.offsets;
     this.bound = true;
   }
 
@@ -445,63 +460,15 @@ export class Renderer {
     }
   }
 
-  /** Reallocates channel storage for the currently bound channel set. */
-  relayout(
-    bound: ReadonlySet<Channel>,
-    vertexCount: number,
-    edgeCount: number,
-    values?: ReadonlyMap<Channel, Float32Array>,
-  ): ReadonlyMap<Channel, ChannelSlot> {
-    if (!this.bound) throw new Error('network topology must be loaded before setting channels');
-    const { slot, words } = packBound(bound, vertexCount, edgeCount);
-    const bytes = Math.max(4, words * 4);
-    const limits = this.presentation.device.limits;
-    const maxStorageBytes = limits?.maxStorageBufferBindingSize ?? Number.POSITIVE_INFINITY;
-    const maxBufferBytes = limits?.maxBufferSize ?? Number.POSITIVE_INFINITY;
-    if (bytes > maxStorageBytes || bytes > maxBufferBytes) {
-      throw new Error(`network channel storage ${bytes} exceeds WebGPU limits`);
-    }
-
-    const nextChannelBuf = this.presentation.device.createBuffer({
-      label: 'channels',
-      size: bytes,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    try {
-      if (values) {
-        for (const [channel, channelValues] of values) {
-          const channelSlot = slot.get(channel);
-          if (!channelSlot) throw new Error(`network channel ${channel} has no storage slot`);
-          this.presentation.device.queue.writeBuffer(
-            nextChannelBuf,
-            channelSlot.offset * Float32Array.BYTES_PER_ELEMENT,
-            channelValues.buffer,
-            channelValues.byteOffset,
-            channelValues.byteLength,
-          );
-        }
-      }
-      const nextBindGroup = this.createChannelsBindGroup(nextChannelBuf);
-      const previousChannelBuf = this.channelBuf;
-      this.channelBuf = nextChannelBuf;
-      this.channelsBindGroup = nextBindGroup;
-      this.slots = slot;
-      previousChannelBuf?.destroy();
-      return this.slots;
-    } catch (error) {
-      nextChannelBuf.destroy();
-      throw error;
-    }
-  }
-
-  /** Writes one channel's values into its assigned storage slot. */
+  /** Writes one channel's values into its slot of the bound topology's storage. */
   writeChannel(channel: Channel, values: Float32Array): void {
-    const slot = this.slots.get(channel);
-    if (!slot || !this.channelBuf)
+    const offset = this.channelOffsets?.[channel];
+    if (offset === undefined || !this.channelBuf) {
       throw new Error(`network channel ${channel} has no storage slot`);
+    }
     this.presentation.device.queue.writeBuffer(
       this.channelBuf,
-      slot.offset * Float32Array.BYTES_PER_ELEMENT,
+      offset * Float32Array.BYTES_PER_ELEMENT,
       values.buffer,
       values.byteOffset,
       values.byteLength,
@@ -549,13 +516,17 @@ export class Renderer {
     const swapView = context.getCurrentTexture().createView();
     const encoder = device.createCommandEncoder();
 
-    const focusedEdges = this.visibility.edges ? this.focusedEdges(uniforms) : [];
-    const focusedVertices = this.visibility.vertices ? this.focusedVertices(uniforms) : [];
-    const edgeFocusRanges: EdgeFocusRange[] = [];
-    for (const edge of focusedEdges) {
-      const range = this.edgeSegmentRange(edge);
-      if (range.end > range.start) {
-        edgeFocusRanges.push(range);
+    this.collectFocusedEdges(uniforms);
+    this.collectFocusedVertices(uniforms);
+    this.edgeFocusRangeCount = 0;
+    for (const edge of this.focusedEdges) {
+      const start = this.edgeSegStart[edge] ?? 0;
+      const end = this.edgeSegStart[edge + 1] ?? start;
+      if (end > start) {
+        const range = (this.edgeFocusRanges[this.edgeFocusRangeCount] ??= { start: 0, end: 0 });
+        range.start = start;
+        range.end = end;
+        this.edgeFocusRangeCount++;
       } else if (!this.warnedEmptyEdgeFocusRanges.has(edge)) {
         this.warnedEmptyEdgeFocusRanges.add(edge);
         console.warn(
@@ -563,6 +534,7 @@ export class Renderer {
         );
       }
     }
+    this.edgeFocusRanges.length = this.edgeFocusRangeCount;
 
     encodeNetworkFrame({
       encoder,
@@ -581,8 +553,8 @@ export class Renderer {
       visibility: this.visibility,
       unitQuad: this.unitQuad,
       edgeStrip: this.edgeStrip,
-      focusedVertices,
-      edgeFocusRanges,
+      focusedVertices: this.focusedVertices,
+      edgeFocusRanges: this.edgeFocusRanges,
       polesRendered,
     });
 
@@ -599,48 +571,42 @@ export class Renderer {
     );
   }
 
-  /** Reads the selected and hovered edge ids from focus uniforms. */
-  private focusedEdges(uniforms: FrameUniforms): number[] {
-    if (!this.topology || (uniforms.rawU32[W_FOCUS_FLAGS]! & FLAG_FOCUS_ENABLED) === 0) return [];
-    return this.uniqueValid(
-      [uniforms.rawI32[W_SELECTED_EDGE]!, uniforms.rawI32[W_HOVER_EDGE]!],
-      this.topology.edgeCount,
-    );
+  /** Collects the selected and hovered edge ids from focus uniforms into the frame scratch. */
+  private collectFocusedEdges(uniforms: FrameUniforms): void {
+    const out = this.focusedEdges;
+    out.length = 0;
+    if (
+      !this.topology ||
+      !this.visibility.edges ||
+      (uniforms.rawU32[W_FOCUS_FLAGS]! & FLAG_FOCUS_ENABLED) === 0
+    ) {
+      return;
+    }
+    const limit = this.topology.edgeCount;
+    pushUnique(out, uniforms.rawI32[W_SELECTED_EDGE]!, limit);
+    pushUnique(out, uniforms.rawI32[W_HOVER_EDGE]!, limit);
   }
 
-  /** Reads selected, hovered, and endpoint vertex ids from focus uniforms. */
-  private focusedVertices(uniforms: FrameUniforms): number[] {
-    if (!this.topology) return [];
+  /** Collects selected, hovered, and endpoint vertex ids from focus uniforms into the frame scratch. */
+  private collectFocusedVertices(uniforms: FrameUniforms): void {
+    const out = this.focusedVertices;
+    out.length = 0;
+    if (!this.topology || !this.visibility.vertices) return;
     const flags = uniforms.rawU32[W_FOCUS_FLAGS]!;
-    if ((flags & FLAG_FOCUS_ENABLED) === 0) return [];
+    if ((flags & FLAG_FOCUS_ENABLED) === 0) return;
 
-    const ids = [uniforms.rawI32[W_HOVER_VERTEX]!, uniforms.rawI32[W_SELECTED_VERTEX]!];
+    const limit = this.topology.vertexCount;
+    const ids = uniforms.rawI32;
+    pushUnique(out, ids[W_HOVER_VERTEX]!, limit);
+    pushUnique(out, ids[W_SELECTED_VERTEX]!, limit);
     if ((flags & FLAG_FOCUS_HOVER_ENDPOINTS) !== 0) {
-      ids.push(uniforms.rawI32[W_HOVER_ENDPOINT_A]!, uniforms.rawI32[W_HOVER_ENDPOINT_B]!);
+      pushUnique(out, ids[W_HOVER_ENDPOINT_A]!, limit);
+      pushUnique(out, ids[W_HOVER_ENDPOINT_B]!, limit);
     }
     if ((flags & FLAG_FOCUS_SELECTED_ENDPOINTS) !== 0) {
-      ids.push(uniforms.rawI32[W_SELECTED_ENDPOINT_A]!, uniforms.rawI32[W_SELECTED_ENDPOINT_B]!);
+      pushUnique(out, ids[W_SELECTED_ENDPOINT_A]!, limit);
+      pushUnique(out, ids[W_SELECTED_ENDPOINT_B]!, limit);
     }
-    return this.uniqueValid(ids, this.topology.vertexCount);
-  }
-
-  /** Deduplicates valid non-negative integer ids below `limit`. */
-  private uniqueValid(ids: readonly number[], limit: number): number[] {
-    const out: number[] = [];
-    const seen = new Set<number>();
-    for (const id of ids) {
-      if (!Number.isInteger(id) || id < 0 || id >= limit || seen.has(id)) continue;
-      seen.add(id);
-      out.push(id);
-    }
-    return out;
-  }
-
-  /** Returns the half-open segment range for one edge. */
-  private edgeSegmentRange(edge: number): EdgeFocusRange {
-    const start = this.edgeSegStart[edge] ?? 0;
-    const end = this.edgeSegStart[edge + 1] ?? start;
-    return { start, end };
   }
 
   /** Releases all GPU resources owned by the renderer. */
@@ -679,7 +645,7 @@ export class Renderer {
     this.channelBuf?.destroy();
     this.channelBuf = null;
     this.channelsBindGroup = null;
-    this.slots.clear();
+    this.channelOffsets = null;
     this.topology = null;
     this.edgeSegStart = new Uint32Array(0);
     this.topologyBindGroup = null;
@@ -687,4 +653,11 @@ export class Renderer {
     this.warnedEmptyEdgeFocusRanges.clear();
     this.bound = false;
   }
+}
+
+/** Append a valid, unseen id below `limit`; the focus lists are at most six long. */
+function pushUnique(out: number[], id: number, limit: number): void {
+  if (!Number.isInteger(id) || id < 0 || id >= limit || out.length >= MAX_FOCUSED_VERTICES) return;
+  for (const seen of out) if (seen === id) return;
+  out.push(id);
 }

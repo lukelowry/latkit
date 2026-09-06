@@ -151,39 +151,60 @@ function nonNegativeInteger(value: unknown, what: string): number {
   return value;
 }
 
-function validateTopology(topology: Topology): void {
-  const vertexCount = nonNegativeInteger(topology.vertexCount, 'vertexCount');
+/** Reject non-finite geometry before it reaches bounds, sphere, and fit calculations. */
+function validateFinite(values: Float32Array, name: string): void {
+  for (const value of values) {
+    if (!Number.isFinite(value)) throw new Error(`invalid ${name}`);
+  }
+}
+
+/**
+ * Validate the CPU-side graph shape a `Topology` promises: counts, typed-array kinds, finite
+ * coordinates, endpoints within the vertex range, and a monotonic polyline offset table. The one
+ * validator every consumer shares, so a topology `createModel` accepts is one a renderer loads.
+ *
+ * @throws Error naming the first field that is invalid.
+ */
+export function validateTopology(topology: Topology): void {
+  const vertexCount = topology.vertexCount;
+  if (!Number.isSafeInteger(vertexCount) || vertexCount < 0) {
+    throw new Error('invalid vertex count');
+  }
   const coords = topology.vertexCoords;
   if (coords !== undefined) {
-    if (!isTypedArray(coords, 'Float32Array')) throw new Error('vertexCoords must be Float32Array');
-    if (coords.length !== 0 && coords.length !== vertexCount * 2) {
-      throw new Error('invalid vertexCoords length');
+    if (!isTypedArray(coords, 'Float32Array')) {
+      throw new Error('vertex coordinates must be Float32Array');
     }
+    if (coords.length !== 0 && coords.length !== vertexCount * 2) {
+      throw new Error('invalid vertex coordinate length');
+    }
+    validateFinite(coords, 'vertex coordinates');
   }
   const space = topology.coordinateSpace;
   if (space !== undefined && space !== 'cartesian' && space !== 'geographic') {
-    throw new Error('invalid coordinateSpace');
+    throw new Error('invalid coordinate space');
   }
   const edges = topology.edges;
   if (!isTypedArray(edges, 'Uint32Array')) throw new Error('edges must be Uint32Array');
-  if (edges.length % 2 !== 0) throw new Error('invalid edges length');
+  if (edges.length % 2 !== 0) throw new Error('invalid edge length');
   for (const endpoint of edges) {
     if (endpoint >= vertexCount) throw new Error('edge endpoint out of range');
   }
   const edgeCount = edges.length / 2;
   const points = topology.polylinePoints;
   if (points !== undefined && !isTypedArray(points, 'Float32Array')) {
-    throw new Error('polylinePoints must be Float32Array');
+    throw new Error('polyline points must be Float32Array');
   }
   const pointLength = points?.length ?? 0;
-  if (pointLength % 2 !== 0) throw new Error('invalid polylinePoints length');
+  if (pointLength % 2 !== 0) throw new Error('invalid polyline point length');
+  if (points) validateFinite(points, 'polyline points');
   const start = topology.polylineStart;
   if (!isTypedArray(start, 'Uint32Array')) throw new Error('polylineStart must be Uint32Array');
   if (start.length !== edgeCount + 1) throw new Error('invalid polylineStart length');
   if (start[0] !== 0) throw new Error('polylineStart must begin at zero');
   if (start[edgeCount] !== pointLength / 2) throw new Error('polylineStart terminal mismatch');
   for (let edge = 0; edge < edgeCount; edge++) {
-    if (start[edge + 1]! < start[edge]!) throw new Error('polylineStart is not monotonic');
+    if (start[edge + 1]! < start[edge]!) throw new Error('polylineStart must be monotonic');
   }
 }
 

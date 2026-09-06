@@ -1,6 +1,6 @@
 /**
- * The graph shape a network loads is `@latkit/model`'s `Topology`, re-exported here so every
- * internal module names one type.
+ * The graph shape a network loads is `@latkit/model`'s `Topology`, aliased here so every internal
+ * module names one type.
  *
  * @remarks
  * `vertexCoords` and `polylinePoints` are interleaved coordinate pairs. Flat and tilt projections

@@ -1,4 +1,4 @@
-import type { Topology } from '@latkit/network';
+import type { Topology } from '@latkit/model';
 
 /**
  * A synthetic power-grid-like network. Vertices are scattered over a

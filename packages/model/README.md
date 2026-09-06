@@ -16,8 +16,9 @@ Six nouns:
 | `Source`  | The same model as bytes: one core plus one shard per class, owned by whoever asks             |
 
 `Topology` and `Item` are field-for-field the shapes `@latkit/network` loads and picks, so a model
-never adapts for a renderer. The package has no dependencies, no state machines, no I/O, and no
-rendering.
+never adapts for a renderer. `Domain` is the `[min, max]` every renderer takes; `extent` scans one,
+`validateDomain` checks one, and `validateTopology` checks a topology, all before a device exists.
+The package has no dependencies, no state machines, no I/O, and no rendering.
 
 ## Produce a model
 
@@ -58,16 +59,19 @@ const model = createModel(
 ## Consume a model
 
 ```ts
-import { createGrid, elementAt, itemOf } from '@latkit/model';
+import { createGrid, elementAt, extent, itemOf } from '@latkit/model';
 
 network.load(model.topology);
 
 const bus = await model.load('bus');
 const vm = bus.columns.find((column) => column.id === 'Vm');
-if (vm?.kind === 'number') network.setChannel('vertexColor', Float32Array.from(vm.values));
+if (vm?.kind === 'number') {
+  const values = Float32Array.from(vm.values);
+  network.setChannel('vertexColor', values, extent(values));
+}
 
-network.on('pick', (item) => {
-  const ref = elementAt(model, item);
+network.on('select', (item) => {
+  const ref = item && elementAt(model, item);
   if (ref) console.log(bus.labels[ref.index]);
 });
 
@@ -77,16 +81,14 @@ const { rows, total } = await grid.window('north', { column: 'Vm', dir: 'desc' }
 
 ## Name what a host shows
 
-A `Field` is one quantity of a class: a numeric column, or a signal the class records. `fieldsOf`
-lists them in a stable order, columns first and then recorded signals in the order a `Series` packs
-them, and `fieldKey` keys a reference. A binding picker, a plot lane, and an inspector row all speak
-in fields, never in columns or arrays.
+A `Field` is one quantity of a class: a numeric column, or a signal the class records. A binding
+picker, a plot lane, and an inspector row all speak in fields, never in columns or arrays.
+`fieldsOf` lists a class's fields and `fieldKey` keys a reference to one.
 
 ```ts
 import { fieldKey, fieldsOf } from '@latkit/model';
 
-const bus = model.classes.find((cls) => cls.id === 'bus')!;
-const fields = fieldsOf(bus, await model.load('bus'), results.get('bus'));
+const fields = fieldsOf(spec, await model.load(spec.id), results);
 const bound = new Map(fields.map((field) => [fieldKey(field), field]));
 ```
 

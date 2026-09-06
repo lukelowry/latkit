@@ -1,7 +1,7 @@
 {
   "name": "@latkit/embed",
   "version": "0.7.0",
-  "description": "Self-contained browser embeds for Latkit.",
+  "description": "Declarative custom elements for Latkit: latkit-network and latkit-monitor.",
   "type": "module",
   "repository": {
     "type": "git",
@@ -40,7 +40,8 @@
   },
   "dependencies": {
     "@latkit/colormaps": "workspace:*",
-    "@latkit/gpu": "workspace:*",
+    "@latkit/model": "workspace:*",
+    "@latkit/monitor": "workspace:*",
     "@latkit/network": "workspace:*"
   },
   "devDependencies": {

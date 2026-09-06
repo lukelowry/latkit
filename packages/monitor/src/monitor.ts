@@ -1,48 +1,19 @@
 /// <reference types="@webgpu/types" />
-import { createPresentation } from '@latkit/gpu';
-import type { Series } from '@latkit/model';
+import { createPresentation, type DeviceLease, type Presentation } from '@latkit/gpu';
+import { extent, frameAt, sample, type Domain, type Series } from '@latkit/model';
 
-import { LanePainter, SEGMENT_BUDGET, COLORMAP_LUT_SIZE, framesPerWindow } from './painter.js';
+import { createEmitter } from './emitter.js';
+import {
+  OPTIONS,
+  ownDomain,
+  resolveOptions,
+  validateOptions,
+  type Colormap,
+  type Options,
+} from './options.js';
+import { COLORMAP_LUT_SIZE, LanePainter, SEGMENT_BUDGET, framesPerWindow } from './painter.js';
 
-/**
- * The packed samples a monitor loads: `@latkit/model`'s `Series`.
- *
- * @remarks
- * `values` is signal-major, `validFrames` lets append-heavy callers load a preallocated buffer
- * before all frames are ready, and `ranges` may be omitted, in which case the monitor scans the
- * committed frames. After writing more samples, call {@link Monitor.extend} to commit the new
- * frame frontier.
- */
-export type { Series };
-
-/**
- * Initial monitor display options.
- *
- * @remarks
- * These options seed the controller returned by {@link createMonitor}. Runtime
- * setters such as {@link Monitor.setValueRange} and {@link Monitor.setColormap}
- * can update the mutable parts later.
- */
-export interface Options {
-  /**
-   * Transfer function for normalized values.
-   *
-   * @defaultValue A neutral gray ramp.
-   */
-  colormap?: (t: number) => readonly [number, number, number];
-  /**
-   * Trace stroke width in CSS pixels.
-   *
-   * @defaultValue `1.5`.
-   */
-  lineWidthPx?: number;
-  /**
-   * Fixed value domain for vertical position and color.
-   *
-   * @defaultValue Auto-fit the active signal's finite extent.
-   */
-  valueRange?: readonly [number, number];
-}
+export type { Options } from './options.js';
 
 /** Nearest trace sample under a pointer interaction. */
 export interface Reading {
@@ -63,30 +34,42 @@ export interface Reading {
 }
 
 /**
- * Events emitted by a {@link Monitor} instance.
+ * Events emitted by a {@link Monitor} instance, keyed by name with their payload.
  *
  * @remarks
- * `hover` emits `null` when the pointer leaves the canvas. `pick` only emits
- * when a pointer-down interaction resolves to a reading.
+ * `hover` carries `null` when the pointer leaves the canvas. `select` reports the reading a
+ * pointer-down resolved to; the monitor selects that reading's element itself. Programmatic
+ * {@link Monitor.select} does not emit `select`.
  */
 export type Events = {
   /** Nearest reading while hovering, or null when the pointer leaves. */
   hover: Reading | null;
   /** Reading selected by a pointer-down interaction. */
-  pick: Reading;
-  /** WebGPU device-loss notification surfaced before rendering stops. */
-  deviceLost: { readonly reason: string; readonly message: string };
+  select: Reading;
+  /** Bound to a canvas after {@link Monitor.attach}, or released from one. */
+  attached: boolean;
+  /**
+   * The WebGPU device was lost. The controller releases it, leases a replacement, and replays
+   * every retained state; `recovering` is false only when no replacement could be leased, and
+   * the controller then stays detached.
+   */
+  deviceLost: { readonly reason: string; readonly message: string; readonly recovering: boolean };
 };
 
 /**
  * Imperative controller for a WebGPU signal monitor canvas.
  *
  * @remarks
- * The controller owns its renderer resources, but borrows both the device and
- * canvas supplied to {@link createMonitor}. Call {@link Monitor.destroy}
- * before releasing either borrowed resource.
+ * A controller outlives any canvas and any device. The series, the displayed signal, the
+ * committed frame frontier, the selection, and every option are retained on the CPU side;
+ * {@link Monitor.attach} leases a device, binds a canvas, and replays them, and
+ * {@link Monitor.detach} releases both while keeping every state for the next attach. The
+ * controller never removes a canvas or destroys a device.
  */
 export interface Monitor {
+  /** Whether a canvas is bound and painting. */
+  readonly attached: boolean;
+
   /**
    * Subscribe to a monitor event and receive an unsubscribe callback.
    *
@@ -97,6 +80,21 @@ export interface Monitor {
   on<K extends keyof Events>(event: K, handler: (payload: Events[K]) => void): () => void;
 
   /**
+   * Lease a device from the `devices` option and bind `canvas`, replaying every retained state.
+   *
+   * A newer `attach` or a `detach` supersedes an attach still awaiting its device, which then
+   * rejects with an `AbortError`. The previous canvas, if any, is released first.
+   *
+   * @param canvas - Borrowed canvas used for presentation and pointer interaction.
+   * @throws GpuUnavailableError when no device can be leased.
+   * @throws TypeError when the leased device does not provide Core WebGPU features and limits.
+   * @throws Error when canvas presentation or renderer initialization fails.
+   */
+  attach(canvas: HTMLCanvasElement): Promise<void>;
+  /** Release the device lease, renderer resources, and canvas listeners; every state stays. */
+  detach(): void;
+
+  /**
    * Bind a series and schedule its committed frames for painting.
    *
    * @param series - Packed monitor samples and time coordinates.
@@ -104,19 +102,18 @@ export interface Monitor {
    * @throws Error when the series shape or signal index is invalid.
    */
   load(series: Series, signal?: number): void;
-
   /**
    * Advance the committed frame frontier.
    *
-   * Pass `values` to replace the loaded sample buffer; otherwise mutate the
-   * existing buffer in place before calling.
+   * Pass `values` to replace the loaded sample buffer; otherwise mutate the existing buffer in
+   * place before calling. Frames below the frontier are treated as final: the auto-fit value
+   * range grows with the newly committed frames only.
    *
    * @param validFrames - Number of frames ready to draw, clamped to the series length.
    * @param values - Optional replacement buffer with the same length as the loaded series.
    * @throws Error when no series is loaded or the replacement buffer length differs.
    */
   extend(validFrames: number, values?: Float32Array): void;
-
   /**
    * Switch the displayed signal.
    *
@@ -125,47 +122,42 @@ export interface Monitor {
    */
   setSignal(signal: number): void;
   /**
-   * Override the value domain, or pass null to return to auto-fit.
+   * Update display options. `devices` remains construction-only.
    *
-   * @param range - Fixed `[min, max]` domain, or `null` for auto-fit.
+   * @param options - Partial display option patch.
+   * @throws TypeError or RangeError when any option is invalid; nothing is applied.
    */
-  setValueRange(range: readonly [number, number] | null): void;
+  setOptions(options: Options): void;
   /**
-   * Replace the transfer function used for trace color.
+   * Highlight one element with a foreground trace, or clear the selection with `null`, without
+   * emitting `select`. An element outside the loaded series is ignored.
    *
-   * @param fn - Function mapping normalized values in `[0, 1]` to RGB channels in `[0, 1]`.
+   * @param element - Element index to select, or `null` to clear.
    */
-  setColormap(fn: (t: number) => readonly [number, number, number]): void;
-  /**
-   * Highlight one element with a foreground trace, or pass null to clear focus.
-   *
-   * @param element - Element index to focus, or `null` to clear focus.
-   */
-  setFocus(element: number | null): void;
+  select(element: number | null): void;
   /** Clear the loaded series and blank the monitor. */
   clear(): void;
+
   /** Pause painting and pointer hover work until resumed. */
   pause(): void;
   /** Resume painting after a consumer pause. */
   resume(): void;
-  /** Release event handlers, canvas configuration, and renderer resources. */
+  /** Detach and forget every retained state; the controller cannot be used afterwards. */
   destroy(): void;
 }
 
-const ERROR_PREFIX = '@latkit/monitor';
-const DEFAULT_LINE_WIDTH_PX = 1.5;
-const NEUTRAL_RAMP = (t: number): readonly [number, number, number] => [t, t, t];
-
+/** Durable CPU-side state of the loaded series. */
 interface Bound {
   series: Series;
   signal: number;
   /** Per-frame x in `[0, 1]` over the series' full time extent. */
-  xnorm: Float32Array;
-  windowFrames: number;
-  /** Extend frontier: frames below it have been painted through extend/load. */
-  painted: number;
+  readonly xnorm: Float32Array;
   /** Committed frame count. Frames at and beyond this frontier are provisional. */
   validFrames: number;
+  /** Finite extent of the committed frames of `signal`, or null when none is finite. */
+  extent: Domain | null;
+  /** The selected element's committed values, gathered once and grown with the frontier. */
+  readonly focus: Float32Array;
 }
 
 /** Segment range [from, to) queued for chunked painting onto the history texture. */
@@ -175,155 +167,98 @@ interface PaintJob {
   cursor: number;
 }
 
+interface BackingSize {
+  readonly width: number;
+  readonly height: number;
+  readonly ratio: number;
+}
+
+/** Everything that exists only while a canvas is bound: the lease, the painter, and paint progress. */
+interface Binding {
+  readonly generation: number;
+  readonly canvas: HTMLCanvasElement;
+  readonly presentation: Presentation<HTMLCanvasElement>;
+  readonly painter: LanePainter;
+  readonly lifecycle: Lifecycle;
+  released: boolean;
+  rafId: number | null;
+  pendingSize: BackingSize | null;
+  backingScale: number;
+  windowFrames: number;
+  /** Window index whose slab is resident on the GPU; -1 forces re-upload. */
+  residentWindow: number;
+  job: PaintJob | null;
+  /** Frames whose segments have been queued onto the history texture. */
+  painted: number;
+  presentDirty: boolean;
+  cursor: { readonly x: number; readonly y: number } | null;
+  cursorDirty: boolean;
+}
+
 /**
- * Creates a WebGPU-backed monitor on a caller-owned canvas.
+ * Creates a WebGPU monitor controller.
  *
- * @param device - Core WebGPU device borrowed for the lifetime of the monitor.
- * @param canvas - Canvas borrowed for presentation and pointer interaction.
- * @param options - Initial display options.
- * @returns A controller for loading series data, subscribing to readings, and releasing renderer resources.
- * @throws TypeError when `device` does not provide Core WebGPU features and limits.
- * @throws Error when canvas presentation or renderer initialization fails.
+ * @param options - Initial display options and the device pool `attach` leases from.
+ * @returns A controller for loading series data, attaching canvases, and subscribing to readings.
+ * @throws TypeError or RangeError when any option is invalid; whatever the colormap throws.
  *
  * @example
  * ```ts
- * const canvas = document.querySelector<HTMLCanvasElement>('#monitor')!;
- * const monitor = await createMonitor(device, canvas, { valueRange: [0, 1] });
+ * const monitor = createMonitor({ valueRange: [0, 1] });
  * monitor.load(series, 0);
+ * await monitor.attach(canvas);
  * ```
  *
- * The returned controller never removes `canvas` or destroys `device`.
- * Destroy the monitor before either borrowed resource is released.
+ * The controller owns its renderer resources and the device lease it holds while attached, but
+ * never the canvas. Detach or destroy the controller before removing its canvas.
  */
-export async function createMonitor( // eslint-disable-line @typescript-eslint/require-await -- Preserve the public Promise contract.
-  device: GPUDevice,
-  canvas: HTMLCanvasElement,
-  options: Options = {},
-): Promise<Monitor> {
-  assertDeviceLimits(device);
-  const lifecycle = createControllerLifecycle();
-  try {
-    return createMonitorController(device, canvas, options, lifecycle);
-  } catch (error) {
-    lifecycle.destroy();
-    throw error;
-  }
-}
+export function createMonitor(options: Options = {}): Monitor {
+  const resolved = resolveOptions(options);
+  const events = createEmitter<Events>();
 
-function createMonitorController(
-  device: GPUDevice,
-  canvas: HTMLCanvasElement,
-  options: Options,
-  lifecycle: ControllerLifecycle,
-): Monitor {
-  const presentation = createPresentation(device, canvas, {
-    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
-  });
-  lifecycle.add(() => presentation.destroy());
-
-  const handlers = new Map<keyof Events, Set<(payload: never) => void>>();
-  lifecycle.add(() => handlers.clear());
-  const emit = <K extends keyof Events>(event: K, payload: Events[K]): void => {
-    for (const handler of handlers.get(event) ?? []) (handler as (p: Events[K]) => void)(payload);
-  };
-
-  let colormapFn = options.colormap ?? NEUTRAL_RAMP;
-  const lineWidthPx = options.lineWidthPx ?? DEFAULT_LINE_WIDTH_PX;
-  let pinnedRange: readonly [number, number] | null = options.valueRange
-    ? [...options.valueRange]
-    : null;
-  let effectiveRange: readonly [number, number] = normalizeRange(pinnedRange);
+  let colormapLut = bakeColormap(resolved.colormap);
+  let lineWidthPx = resolved.lineWidthPx;
+  let pinnedRange: Domain | null = resolved.valueRange;
+  let effectiveRange: Domain = normalizeRange(pinnedRange);
 
   let bound: Bound | null = null;
-  let job: PaintJob | null = null;
-  /** Window index whose slab is resident on the GPU; -1 forces re-upload. */
-  let residentWindow = -1;
-  let focusElement: number | null = null;
-  let presentDirty = false;
-  let dead = false;
-  let destroyed = false;
-  let paused = false;
-  let pendingSize: { width: number; height: number; devicePixelRatio: number } | null = null;
-  let rafId: number | null = null;
-  let lostForwarded = false;
-
-  let cursor: { x: number; y: number } | null = null;
-  let cursorDirty = false;
+  let selected: number | null = null;
   let lastReading: Reading | null = null;
+  let consumerPaused = false;
+  let destroyed = false;
+  let generation = 0;
+  let binding: Binding | null = null;
 
-  let backingScale = 1;
-
-  const fittedBackingScale = (width: number, height: number, ratio: number): number =>
-    ratio * Math.min(canvas.width / width, canvas.height / height);
-
-  const schedule = (): void => {
-    if (dead || paused || rafId !== null) return;
-    rafId = requestAnimationFrame(tick);
-  };
-
-  let ready = false;
-  let initialWidth = 1;
-  let initialHeight = 1;
-  let initialDevicePixelRatio = 1;
-  const stopObserving = presentation.observe((width, height, ratio) => {
-    const size = {
-      width: Math.max(1, width),
-      height: Math.max(1, height),
-      devicePixelRatio: ratio,
-    };
-    initialWidth = size.width;
-    initialHeight = size.height;
-    initialDevicePixelRatio = size.devicePixelRatio;
-    pendingSize = size;
-    if (ready) schedule();
-  });
-  lifecycle.add(stopObserving);
-
-  presentation.resize(initialWidth, initialHeight);
-  backingScale = fittedBackingScale(initialWidth, initialHeight, initialDevicePixelRatio);
-  const painter = new LanePainter(presentation, canvas.width, canvas.height);
-  lifecycle.add(() => painter.destroy());
-  pendingSize = null;
-  ready = true;
-
-  lifecycle.add(() => {
-    dead = true;
-    if (rafId !== null) cancelAnimationFrame(rafId);
-    rafId = null;
-  });
-
-  lifecycle.add(
-    forwardDeviceLoss(painter.device, (info) => {
-      if (dead || lostForwarded) return;
-      lostForwarded = true;
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      rafId = null;
-      dead = true;
-      emit('deviceLost', { reason: String(info.reason), message: info.message });
-    }),
-  );
-
-  function bakeColormap(): void {
-    const lut = new Uint8Array(COLORMAP_LUT_SIZE * 4);
-    for (let i = 0; i < COLORMAP_LUT_SIZE; i++) {
-      const [r, g, b] = colormapFn(i / (COLORMAP_LUT_SIZE - 1));
-      lut[i * 4] = channelByte(r);
-      lut[i * 4 + 1] = channelByte(g);
-      lut[i * 4 + 2] = channelByte(b);
-      lut[i * 4 + 3] = 255;
-    }
-    painter.writeColormap(lut);
-  }
-  bakeColormap();
-
-  /** The range that drives y and color together: pinned, or the signal's extent. */
-  function resolveRange(): readonly [number, number] {
+  /** The range that drives y and color together: pinned, or the signal's committed extent. */
+  function resolveRange(): Domain {
     if (pinnedRange) return normalizeRange(pinnedRange);
     if (!bound) return [0, 1];
-    return normalizeRange(seriesRange(bound.series, bound.signal, bound.validFrames));
+    const { series, signal } = bound;
+    if (series.ranges)
+      return normalizeRange([series.ranges[signal * 2]!, series.ranges[signal * 2 + 1]!]);
+    return normalizeRange(bound.extent);
   }
 
-  function writeUniforms(): void {
+  /** Adopt the resolved range; true when it moved. */
+  function refreshRange(): boolean {
+    const next = resolveRange();
+    if (next[0] === effectiveRange[0] && next[1] === effectiveRange[1]) return false;
+    effectiveRange = next;
+    return true;
+  }
+
+  /** Gather the selected element's values for frames [from, to) into the focus trace. */
+  function gatherFocus(state: Bound, from: number, to: number): void {
+    if (selected === null) return;
+    const { series, signal, focus } = state;
+    const elements = series.elementCount;
+    const base = signal * series.time.length * elements + selected;
+    for (let frame = from; frame < to; frame++)
+      focus[frame] = series.values[base + frame * elements]!;
+  }
+
+  function writeUniforms(entry: Binding): void {
+    const { painter } = entry;
     const [min, max] = effectiveRange;
     const base = {
       widthPx: painter.widthPx,
@@ -333,71 +268,71 @@ function createMonitorController(
     };
     painter.writeUniform('history', {
       ...base,
-      lineWidthPx: lineWidthPx * backingScale,
+      lineWidthPx: lineWidthPx * entry.backingScale,
       elementCount: bound?.series.elementCount ?? 1,
     });
     painter.writeUniform('focus', {
       ...base,
-      lineWidthPx: lineWidthPx * backingScale * 2.5,
+      lineWidthPx: lineWidthPx * entry.backingScale * 2.5,
       elementCount: 1,
     });
   }
 
+  /** Upload focus-trace frames [from, to) when an element is selected. */
+  function uploadFocus(entry: Binding, from: number, to: number): void {
+    if (!bound || selected === null || to <= from) return;
+    entry.painter.uploadFocus(bound.focus.subarray(from, to), bound.xnorm.subarray(from, to), from);
+  }
+
   /** Blank the history and queue the committed trajectory: [0, validFrames - 1). */
-  function scheduleRepaint(): void {
+  function scheduleRepaint(entry: Binding): void {
     if (!bound) return;
-    painter.clearHistory();
+    entry.painter.clearHistory();
     const segments = Math.max(0, bound.validFrames - 1);
-    job = segments > 0 ? { from: 0, to: segments, cursor: 0 } : null;
-    residentWindow = -1;
-    presentDirty = true;
-    schedule();
+    entry.job = segments > 0 ? { from: 0, to: segments, cursor: 0 } : null;
+    entry.residentWindow = -1;
+    entry.painted = bound.validFrames;
+    entry.presentDirty = true;
+    schedule(entry);
   }
 
   /** Queue segments [fromSeg, toSeg) without clearing. */
-  function scheduleAppend(fromSeg: number, toSeg: number): void {
+  function scheduleAppend(entry: Binding, fromSeg: number, toSeg: number): void {
     if (toSeg <= fromSeg) return;
+    const { job } = entry;
     if (job) {
       job.from = Math.min(job.from, fromSeg);
       job.to = Math.max(job.to, toSeg);
       job.cursor = Math.min(job.cursor, fromSeg);
     } else {
-      job = { from: fromSeg, to: toSeg, cursor: fromSeg };
+      entry.job = { from: fromSeg, to: toSeg, cursor: fromSeg };
     }
-    residentWindow = -1;
-    schedule();
-  }
-
-  function uploadFocusTrace(): void {
-    if (!bound || focusElement === null || bound.validFrames <= 0) return;
-    const { series, xnorm, validFrames } = bound;
-    const trace = new Float32Array(validFrames);
-    for (let f = 0; f < validFrames; f++)
-      trace[f] = sampleValue(series, bound.signal, f, focusElement);
-    painter.uploadFocus(trace, xnorm.subarray(0, validFrames));
+    entry.residentWindow = -1;
+    schedule(entry);
   }
 
   /** Paint up to SEGMENT_BUDGET instances of the queued job this frame. */
-  function paintChunk(): boolean {
-    if (!bound || !job) return false;
-    const { series, xnorm, windowFrames, validFrames } = bound;
+  function paintChunk(entry: Binding): boolean {
+    if (!bound || !entry.job) return false;
+    const { series, xnorm, validFrames } = bound;
     if (validFrames <= 1) {
-      job = null;
+      entry.job = null;
       return false;
     }
+    const { painter, windowFrames } = entry;
     const elementCount = series.elementCount;
-    const frames = validFrames;
     const segmentsPerWindow = windowFrames - 1;
     const signalBase = bound.signal * elementCount * series.time.length;
     let budget = SEGMENT_BUDGET;
     let progressed = false;
 
-    while (job && budget > 0) {
+    while (entry.job && budget > 0) {
+      const job = entry.job;
       const seg = job.cursor;
       const windowIndex = Math.floor(seg / segmentsPerWindow);
       const firstFrame = windowIndex * segmentsPerWindow;
-      const lastFrame = Math.min(firstFrame + windowFrames, frames);
-      if (residentWindow !== windowIndex) {
+      const lastFrame = Math.min(firstFrame + windowFrames, validFrames);
+      if (entry.residentWindow !== windowIndex) {
         painter.uploadWindow(
           series.values.subarray(
             signalBase + firstFrame * elementCount,
@@ -405,7 +340,7 @@ function createMonitorController(
           ),
           xnorm.subarray(firstFrame, lastFrame),
         );
-        residentWindow = windowIndex;
+        entry.residentWindow = windowIndex;
       }
       const windowSegEnd = Math.min(lastFrame - 1, job.to);
       const budgetSegs = Math.floor(budget / elementCount);
@@ -415,270 +350,469 @@ function createMonitorController(
       job.cursor += segCount;
       budget -= segCount * elementCount;
       progressed = true;
-      if (job.cursor >= job.to) job = null;
+      if (job.cursor >= job.to) entry.job = null;
     }
     return progressed;
   }
 
-  function scanReading(): Reading | null {
-    if (!bound || !cursor || bound.validFrames <= 0) return null;
-    const rect = canvas.getBoundingClientRect();
+  function focusInstances(): number {
+    if (!bound || selected === null) return 0;
+    return Math.max(0, bound.validFrames - 1);
+  }
+
+  function scanReading(entry: Binding): Reading | null {
+    if (!bound || !entry.cursor || bound.validFrames <= 0) return null;
+    const rect = entry.canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
-    const x = clamp01((cursor.x - rect.left) / rect.width);
-    const y = clamp01((cursor.y - rect.top) / rect.height);
+    const x = clamp01((entry.cursor.x - rect.left) / rect.width);
+    const y = clamp01((entry.cursor.y - rect.top) / rect.height);
     const { series, signal, validFrames } = bound;
-    const time = series.time;
+    const { time } = series;
     const t = time[0]! + x * (time[time.length - 1]! - time[0]!);
     const frame = frameAt(time, t);
     if (frame >= validFrames) return null;
-    const sample = sampleFrame(series, signal, frame);
+    const values = sample(series, signal, frame);
     const [min, max] = effectiveRange;
     const scale = 1 / (max - min);
     let best = -1;
     let bestDist = Infinity;
-    for (let e = 0; e < sample.length; e++) {
-      const v = sample[e]!;
-      if (Number.isNaN(v)) continue;
-      const yFrac = 1 - (v - min) * scale;
-      const dist = Math.abs(yFrac - y);
+    for (let element = 0; element < values.length; element++) {
+      const value = values[element]!;
+      if (Number.isNaN(value)) continue;
+      const dist = Math.abs(1 - (value - min) * scale - y);
       if (dist < bestDist) {
         bestDist = dist;
-        best = e;
+        best = element;
       }
     }
     if (best < 0) return null;
-    return { signal, element: best, frame, t: time[frame]!, value: sample[best]!, x, y };
+    return { signal, element: best, frame, t: time[frame]!, value: values[best]!, x, y };
   }
 
-  function emitHover(): void {
-    const reading = scanReading();
+  function emitHover(entry: Binding): void {
+    const reading = scanReading(entry);
     if (sameReading(reading, lastReading)) return;
     lastReading = reading;
-    emit('hover', reading);
+    events.emit('hover', reading);
   }
 
-  function tick(): void {
-    rafId = null;
-    if (dead || paused) return;
-    if (pendingSize) {
-      const { width, height, devicePixelRatio } = pendingSize;
-      pendingSize = null;
-      const resized = presentation.resize(width, height);
-      const nextBackingScale = fittedBackingScale(width, height, devicePixelRatio);
-      const scaleChanged = nextBackingScale !== backingScale;
-      backingScale = nextBackingScale;
+  function schedule(entry: Binding): void {
+    if (entry.released || consumerPaused || entry.rafId !== null) return;
+    entry.rafId = requestAnimationFrame(() => tick(entry));
+  }
+
+  function tick(entry: Binding): void {
+    entry.rafId = null;
+    if (entry.released || consumerPaused) return;
+    const { painter, presentation, canvas } = entry;
+    if (entry.pendingSize) {
+      const size = entry.pendingSize;
+      entry.pendingSize = null;
+      const resized = presentation.resize(size.width, size.height);
+      const nextScale = fittedBackingScale(canvas, size);
+      const scaleChanged = nextScale !== entry.backingScale;
+      entry.backingScale = nextScale;
       if (resized) painter.resize(canvas.width, canvas.height);
       if (resized || scaleChanged) {
         if (bound) {
-          writeUniforms();
-          scheduleRepaint();
+          writeUniforms(entry);
+          scheduleRepaint(entry);
         } else {
-          presentDirty = true;
+          entry.presentDirty = true;
         }
       }
     }
-    const progressed = paintChunk();
-    if (progressed || presentDirty) {
-      presentDirty = false;
+    const progressed = paintChunk(entry);
+    if (progressed || entry.presentDirty) {
+      entry.presentDirty = false;
       painter.present(focusInstances());
     }
-    if (cursorDirty) {
-      cursorDirty = false;
-      emitHover();
+    if (entry.cursorDirty) {
+      entry.cursorDirty = false;
+      emitHover(entry);
     }
-    if (job || presentDirty || cursorDirty) schedule();
+    if (entry.job || entry.presentDirty || entry.cursorDirty) schedule(entry);
   }
 
-  function focusInstances(): number {
-    if (!bound || focusElement === null) return 0;
-    return Math.max(0, bound.validFrames - 1);
+  /** Select without emitting; the caller has validated `next`. */
+  function applySelection(next: number | null): void {
+    if (next === selected) return;
+    selected = next;
+    if (bound) gatherFocus(bound, 0, bound.validFrames);
+    const entry = binding;
+    if (!entry) return;
+    if (bound) uploadFocus(entry, 0, bound.validFrames);
+    entry.presentDirty = true;
+    schedule(entry);
   }
 
-  const onPointerMove = (event: PointerEvent): void => {
-    cursor = { x: event.clientX, y: event.clientY };
-    cursorDirty = true;
-    schedule();
-  };
-  const onPointerLeave = (): void => {
-    cursor = null;
-    cursorDirty = true;
-    schedule();
-  };
-  const onPointerDown = (event: PointerEvent): void => {
-    cursor = { x: event.clientX, y: event.clientY };
-    const reading = scanReading();
-    if (reading) emit('pick', reading);
-  };
-  lifecycle.add(() => {
-    canvas.removeEventListener('pointermove', onPointerMove);
-    canvas.removeEventListener('pointerleave', onPointerLeave);
-    canvas.removeEventListener('pointerdown', onPointerDown);
-  });
-  canvas.addEventListener('pointermove', onPointerMove);
-  canvas.addEventListener('pointerleave', onPointerLeave);
-  canvas.addEventListener('pointerdown', onPointerDown);
+  /** Build every device-bound collaborator for one attach; on any failure nothing is kept. */
+  function bind(lease: DeviceLease, canvas: HTMLCanvasElement, own: number): Binding {
+    const lifecycle = createLifecycle();
+    // Registered first, so it runs last: nothing outlives the lease it paints on.
+    lifecycle.add(() => lease.release());
+    try {
+      const presentation = createPresentation(lease.device, canvas, {
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_DST,
+      });
+      lifecycle.add(() => presentation.destroy());
 
-  function requireBound(op: string): Bound {
-    if (!bound) throw new Error(`${ERROR_PREFIX}: ${op} before load`);
+      let entry: Binding | null = null;
+      let initial: BackingSize | null = null;
+      lifecycle.add(
+        presentation.observe((width, height, ratio) => {
+          const size = { width: Math.max(1, width), height: Math.max(1, height), ratio };
+          if (!entry) {
+            initial = size;
+            return;
+          }
+          entry.pendingSize = size;
+          schedule(entry);
+        }),
+      );
+      const size: BackingSize = initial ?? {
+        width: Math.max(1, canvas.width),
+        height: Math.max(1, canvas.height),
+        ratio: 1,
+      };
+      presentation.resize(size.width, size.height);
+      const painter = new LanePainter(presentation, canvas.width, canvas.height);
+      lifecycle.add(() => painter.destroy());
+
+      const built: Binding = {
+        generation: own,
+        canvas,
+        presentation,
+        painter,
+        lifecycle,
+        released: false,
+        rafId: null,
+        pendingSize: null,
+        backingScale: fittedBackingScale(canvas, size),
+        windowFrames: 2,
+        residentWindow: -1,
+        job: null,
+        painted: 0,
+        presentDirty: false,
+        cursor: null,
+        cursorDirty: false,
+      };
+      entry = built;
+
+      const onPointerMove = (event: PointerEvent): void => {
+        built.cursor = { x: event.clientX, y: event.clientY };
+        built.cursorDirty = true;
+        schedule(built);
+      };
+      const onPointerLeave = (): void => {
+        built.cursor = null;
+        built.cursorDirty = true;
+        schedule(built);
+      };
+      const onPointerDown = (event: PointerEvent): void => {
+        built.cursor = { x: event.clientX, y: event.clientY };
+        const reading = scanReading(built);
+        if (!reading) return;
+        applySelection(reading.element);
+        events.emit('select', reading);
+      };
+      canvas.addEventListener('pointermove', onPointerMove);
+      canvas.addEventListener('pointerleave', onPointerLeave);
+      canvas.addEventListener('pointerdown', onPointerDown);
+      lifecycle.add(() => {
+        canvas.removeEventListener('pointermove', onPointerMove);
+        canvas.removeEventListener('pointerleave', onPointerLeave);
+        canvas.removeEventListener('pointerdown', onPointerDown);
+      });
+
+      lifecycle.add(forwardDeviceLoss(lease.device, (info) => recover(own, info)));
+      // Registered last, so it runs first: every callback goes inert before resources go.
+      lifecycle.add(() => {
+        built.released = true;
+        if (built.rafId !== null) cancelAnimationFrame(built.rafId);
+        built.rafId = null;
+      });
+      return built;
+    } catch (error) {
+      lifecycle.destroy();
+      throw error;
+    }
+  }
+
+  /** Push every retained state into a freshly bound painter. */
+  function replayInto(entry: Binding): void {
+    entry.painter.writeColormap(colormapLut);
+    if (!bound) return;
+    const { series } = bound;
+    entry.windowFrames = framesPerWindow(
+      series.elementCount,
+      entry.painter.windowValueCapacity * 4,
+    );
+    entry.painter.reserve(series.elementCount, entry.windowFrames, series.time.length);
+    writeUniforms(entry);
+    uploadFocus(entry, 0, bound.validFrames);
+    scheduleRepaint(entry);
+  }
+
+  /** Release the current binding, if any, and say so. */
+  function release(): void {
+    const entry = binding;
+    if (!entry) return;
+    binding = null;
+    lastReading = null;
+    entry.lifecycle.destroy();
+    if (!destroyed) events.emit('attached', false);
+  }
+
+  /** A device the platform lost: release it, say so, and lease a replacement. */
+  function recover(own: number, info: GPUDeviceLostInfo): void {
+    const entry = binding;
+    if (!entry || entry.generation !== own || destroyed) return;
+    const { canvas } = entry;
+    release();
+    events.emit('deviceLost', {
+      reason: info.reason ?? 'unknown',
+      message: info.message || 'WebGPU device was lost',
+      recovering: true,
+    });
+    api.attach(canvas).catch((error: unknown) => {
+      // A newer attach or a detach overtook the recovery; it owns the outcome now.
+      if (isAbortError(error) || destroyed) return;
+      events.emit('deviceLost', {
+        reason: 'unavailable',
+        message: describe(error),
+        recovering: false,
+      });
+    });
+  }
+
+  function requireBound(operation: string): Bound {
+    if (!bound) throw new Error(`monitor: ${operation} before load`);
     return bound;
   }
 
-  function bindSeries(series: Series, signal: number, validFrames?: number): void {
-    validateSeries(series, signal);
-    const frames = series.time.length;
-    const committed = clampFrameCount(validFrames ?? series.validFrames ?? frames, frames);
-    const xnorm = new Float32Array(frames);
-    const t0 = time0(series.time);
-    const span = frames > 1 ? series.time[frames - 1]! - t0 : 1;
-    const scale = span > 0 ? 1 / span : 0;
-    for (let f = 0; f < frames; f++) xnorm[f] = (series.time[f]! - t0) * scale;
-    const windowFrames = framesPerWindow(series.elementCount, painter.windowValueCapacity * 4);
-    bound = {
-      series,
-      signal,
-      xnorm,
-      windowFrames,
-      painted: committed,
-      validFrames: committed,
-    };
-    painter.reserve(series.elementCount, windowFrames, frames);
-    effectiveRange = resolveRange();
-    writeUniforms();
-    if (focusElement !== null && focusElement < series.elementCount) uploadFocusTrace();
-    else focusElement = null;
-    scheduleRepaint();
-  }
+  const api: Monitor = {
+    get attached() {
+      return binding !== null;
+    },
 
-  return {
     on(event, handler) {
-      let set = handlers.get(event);
-      if (!set) {
-        set = new Set();
-        handlers.set(event, set);
+      return events.on(event, handler);
+    },
+
+    async attach(canvas) {
+      if (destroyed) throw new Error('monitor: the controller is destroyed');
+      const own = ++generation;
+      release();
+      const lease = await resolved.devices.acquire();
+      if (own !== generation || destroyed) {
+        lease.release();
+        throw superseded();
       }
-      set.add(handler as (payload: never) => void);
-      return () => set.delete(handler as (payload: never) => void);
+      try {
+        assertDeviceLimits(lease.device);
+      } catch (error) {
+        lease.release();
+        throw error;
+      }
+      const entry = bind(lease, canvas, own);
+      binding = entry;
+      try {
+        replayInto(entry);
+      } catch (error) {
+        binding = null;
+        entry.lifecycle.destroy();
+        throw error;
+      }
+      events.emit('attached', true);
+    },
+
+    detach() {
+      generation++;
+      release();
     },
 
     load(series, signal = 0) {
-      if (dead) return;
-      bindSeries(series, signal);
+      if (destroyed) return;
+      validateSeries(series, signal);
+      const frames = series.time.length;
+      const committed = clampFrameCount(series.validFrames ?? frames, frames);
+      const xnorm = new Float32Array(frames);
+      const t0 = series.time[0]!;
+      const span = frames > 1 ? series.time[frames - 1]! - t0 : 1;
+      const scale = span > 0 ? 1 / span : 0;
+      for (let frame = 0; frame < frames; frame++)
+        xnorm[frame] = (series.time[frame]! - t0) * scale;
+      const state: Bound = {
+        series,
+        signal,
+        xnorm,
+        validFrames: committed,
+        extent: null,
+        focus: new Float32Array(frames),
+      };
+      state.extent = committedExtent(state, 0, committed);
+      bound = state;
+      if (selected !== null && selected >= series.elementCount) selected = null;
+      gatherFocus(state, 0, committed);
+      refreshRange();
+      if (binding) replayInto(binding);
     },
 
     extend(validFrames, values) {
-      if (dead) return;
+      if (destroyed) return;
       const state = requireBound('extend');
+      const replaced = values !== undefined;
       if (values) {
         if (values.length !== state.series.values.length) {
           throw new Error(
-            `${ERROR_PREFIX}: extend values length ${values.length}, expected ${state.series.values.length}`,
+            `monitor: extend values length ${values.length}, expected ${state.series.values.length}`,
           );
         }
         state.series = { ...state.series, values };
       }
-
+      const from = state.validFrames;
       const to = clampFrameCount(validFrames, state.series.time.length);
-      state.validFrames = Math.max(state.validFrames, to);
+      if (to <= from && !replaced) return;
+      state.validFrames = Math.max(from, to);
+      const start = replaced ? 0 : from;
+      state.extent = replaced
+        ? committedExtent(state, 0, state.validFrames)
+        : mergeExtent(state.extent, committedExtent(state, from, state.validFrames));
+      gatherFocus(state, start, state.validFrames);
+      const rangeMoved = refreshRange();
 
-      if (pinnedRange === null) {
-        const next = resolveRange();
-        if (next[0] !== effectiveRange[0] || next[1] !== effectiveRange[1]) {
-          effectiveRange = next;
-          writeUniforms();
-          if (focusElement !== null) uploadFocusTrace();
-          state.painted = Math.max(state.painted, state.validFrames);
-          scheduleRepaint();
-          return;
-        }
+      const entry = binding;
+      if (!entry) return;
+      if (rangeMoved) {
+        writeUniforms(entry);
+        uploadFocus(entry, 0, state.validFrames);
+        scheduleRepaint(entry);
+        return;
       }
-
-      if (state.validFrames <= state.painted && state.painted > 0) return;
-      const fromSeg = Math.max(0, state.painted - 1);
-      state.painted = Math.max(state.painted, state.validFrames);
-      if (focusElement !== null) uploadFocusTrace();
-      scheduleAppend(fromSeg, Math.max(fromSeg, state.validFrames - 1));
-      presentDirty = true;
+      uploadFocus(entry, start, state.validFrames);
+      const fromSeg = Math.max(0, entry.painted - 1);
+      entry.painted = state.validFrames;
+      scheduleAppend(entry, fromSeg, Math.max(fromSeg, state.validFrames - 1));
+      entry.presentDirty = true;
+      schedule(entry);
     },
 
     setSignal(signal) {
-      if (dead) return;
+      if (destroyed) return;
       const state = requireBound('setSignal');
-      if (!Number.isInteger(signal) || signal < 0 || signal >= state.series.signalCount) {
-        throw new Error(
-          `${ERROR_PREFIX}: signal ${signal} out of [0, ${state.series.signalCount})`,
-        );
+      const count = state.series.signalCount;
+      if (!Number.isInteger(signal) || signal < 0 || signal >= count) {
+        throw new Error(`monitor: signal ${signal} out of [0, ${count})`);
       }
-      bindSeries(state.series, signal, state.validFrames);
+      if (signal === state.signal) return;
+      state.signal = signal;
+      state.extent = committedExtent(state, 0, state.validFrames);
+      gatherFocus(state, 0, state.validFrames);
+      refreshRange();
+      const entry = binding;
+      if (!entry) return;
+      writeUniforms(entry);
+      uploadFocus(entry, 0, state.validFrames);
+      scheduleRepaint(entry);
     },
 
-    setValueRange(range) {
-      if (dead) return;
-      pinnedRange = range ? [range[0], range[1]] : null;
-      const next = resolveRange();
-      if (next[0] === effectiveRange[0] && next[1] === effectiveRange[1]) return;
-      effectiveRange = next;
-      writeUniforms();
-      if (bound) scheduleRepaint();
+    setOptions(patch) {
+      if (destroyed) return;
+      validateOptions(patch);
+      // Sample the colormap before anything is applied: caller code may throw.
+      const lut = patch.colormap === undefined ? null : bakeColormap(patch.colormap);
+      let uniformsDirty = false;
+      let repaint = false;
+      for (const [key, definition] of Object.entries(OPTIONS)) {
+        if (!definition.live || patch[key as keyof Options] === undefined) continue;
+        switch (key as keyof Options) {
+          case 'colormap':
+            colormapLut = lut!;
+            repaint = true;
+            break;
+          case 'lineWidthPx':
+            if (patch.lineWidthPx === lineWidthPx) break;
+            lineWidthPx = patch.lineWidthPx!;
+            uniformsDirty = true;
+            repaint = true;
+            break;
+          case 'valueRange':
+            pinnedRange = ownDomain(patch.valueRange!);
+            if (refreshRange()) {
+              uniformsDirty = true;
+              repaint = true;
+            }
+            break;
+          case 'devices':
+            break;
+        }
+      }
+      const entry = binding;
+      if (!entry) return;
+      if (lut) entry.painter.writeColormap(lut);
+      if (uniformsDirty) writeUniforms(entry);
+      if (repaint && bound) scheduleRepaint(entry);
     },
 
-    setColormap(fn) {
-      if (dead) return;
-      colormapFn = fn;
-      bakeColormap();
-      if (bound) scheduleRepaint();
-    },
-
-    setFocus(element) {
-      if (dead) return;
+    select(element) {
+      if (destroyed) return;
       const next = element === null ? null : Math.floor(element);
-      if (next !== null && (!bound || next < 0 || next >= bound.series.elementCount)) return;
-      if (next === focusElement) return;
-      focusElement = next;
-      if (focusElement !== null) uploadFocusTrace();
-      presentDirty = true;
-      schedule();
+      if (next !== null && (!bound || !(next >= 0 && next < bound.series.elementCount))) return;
+      applySelection(next);
     },
 
     clear() {
-      if (dead) return;
+      if (destroyed) return;
       bound = null;
-      job = null;
-      residentWindow = -1;
-      focusElement = null;
+      selected = null;
       lastReading = null;
-      painter.clearHistory();
-      presentDirty = true;
-      schedule();
+      const entry = binding;
+      if (!entry) return;
+      entry.job = null;
+      entry.residentWindow = -1;
+      entry.painted = 0;
+      entry.painter.releaseSlabs();
+      entry.painter.clearHistory();
+      entry.presentDirty = true;
+      schedule(entry);
     },
 
     pause() {
-      paused = true;
-      if (rafId !== null) cancelAnimationFrame(rafId);
-      rafId = null;
+      consumerPaused = true;
+      const entry = binding;
+      if (!entry || entry.rafId === null) return;
+      cancelAnimationFrame(entry.rafId);
+      entry.rafId = null;
     },
 
     resume() {
-      if (dead || !paused) return;
-      paused = false;
-      schedule();
+      if (destroyed || !consumerPaused) return;
+      consumerPaused = false;
+      if (binding) schedule(binding);
     },
 
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      dead = true;
-      lifecycle.destroy();
+      release();
+      bound = null;
+      selected = null;
+      events.clear();
     },
   };
+
+  return api;
 }
 
-/** Idempotent cleanup stack for transactional controller construction. */
-interface ControllerLifecycle {
+/** Resources registered transactionally while a binding is constructed. */
+interface Lifecycle {
   add(cleanup: () => void): void;
   destroy(): void;
 }
 
-function createControllerLifecycle(): ControllerLifecycle {
+/** Creates an idempotent, reverse-order cleanup stack. */
+function createLifecycle(): Lifecycle {
   const cleanups: Array<() => void> = [];
   let destroyed = false;
 
@@ -693,7 +827,7 @@ function createControllerLifecycle(): ControllerLifecycle {
         try {
           cleanups[i]!();
         } catch {
-          // Continue so one cleanup cannot strand the remaining resources.
+          // Cleanup is best-effort so one resource cannot strand the remainder.
         }
       }
       cleanups.length = 0;
@@ -709,7 +843,7 @@ function assertDeviceLimits(device: GPUDevice): void {
   }
 }
 
-/** Relays one device-loss notification without retaining a destroyed monitor. */
+/** Relays one device-loss notification without retaining a released binding. */
 function forwardDeviceLoss(
   device: GPUDevice,
   listener: (info: GPUDeviceLostInfo) => void,
@@ -721,30 +855,76 @@ function forwardDeviceLoss(
   };
 }
 
+/** The rejection of an attach that a newer attach or a detach overtook. */
+function superseded(): DOMException {
+  return new DOMException('The attach was superseded.', 'AbortError');
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Bake a colormap into the rgba8 lookup the painter samples. */
+function bakeColormap(fn: Colormap): Uint8Array {
+  const lut = new Uint8Array(COLORMAP_LUT_SIZE * 4);
+  for (let i = 0; i < COLORMAP_LUT_SIZE; i++) {
+    const [r, g, b] = fn(i / (COLORMAP_LUT_SIZE - 1));
+    lut[i * 4] = channelByte(r);
+    lut[i * 4 + 1] = channelByte(g);
+    lut[i * 4 + 2] = channelByte(b);
+    lut[i * 4 + 3] = 255;
+  }
+  return lut;
+}
+
+/** The line-width scale that keeps CSS pixels honest after the device limit shrinks the backing. */
+function fittedBackingScale(canvas: HTMLCanvasElement, size: BackingSize): number {
+  return size.ratio * Math.min(canvas.width / size.width, canvas.height / size.height);
+}
+
 function validateSeries(series: Series, signal: number): void {
   const frames = series.time.length;
-  if (frames < 1) throw new Error(`${ERROR_PREFIX}: series time must include at least one frame`);
+  if (frames < 1) throw new Error('monitor: series time must include at least one frame');
   if (!Number.isInteger(series.elementCount) || series.elementCount <= 0) {
-    throw new Error(`${ERROR_PREFIX}: elementCount must be a positive integer`);
+    throw new Error('monitor: elementCount must be a positive integer');
   }
   if (!Number.isInteger(series.signalCount) || series.signalCount <= 0) {
-    throw new Error(`${ERROR_PREFIX}: signalCount must be a positive integer`);
+    throw new Error('monitor: signalCount must be a positive integer');
   }
   if (!Number.isInteger(signal) || signal < 0 || signal >= series.signalCount) {
-    throw new Error(`${ERROR_PREFIX}: signal ${signal} out of [0, ${series.signalCount})`);
+    throw new Error(`monitor: signal ${signal} out of [0, ${series.signalCount})`);
   }
   const expected = series.signalCount * frames * series.elementCount;
   if (series.values.length !== expected) {
-    throw new Error(`${ERROR_PREFIX}: values length ${series.values.length}, expected ${expected}`);
+    throw new Error(`monitor: values length ${series.values.length}, expected ${expected}`);
   }
   if (series.ranges && series.ranges.length < series.signalCount * 2) {
     throw new Error(
-      `${ERROR_PREFIX}: ranges length ${series.ranges.length}, expected at least ${series.signalCount * 2}`,
+      `monitor: ranges length ${series.ranges.length}, expected at least ${series.signalCount * 2}`,
     );
   }
   if (series.validFrames !== undefined && !Number.isFinite(series.validFrames)) {
-    throw new Error(`${ERROR_PREFIX}: validFrames must be finite`);
+    throw new Error('monitor: validFrames must be finite');
   }
+}
+
+/** Finite extent of the displayed signal over frames [from, to), or null when none is finite. */
+function committedExtent(state: Bound, from: number, to: number): Domain | null {
+  if (to <= from) return null;
+  const { series, signal } = state;
+  const elements = series.elementCount;
+  const base = signal * series.time.length * elements;
+  return extent(series.values.subarray(base + from * elements, base + to * elements));
+}
+
+function mergeExtent(a: Domain | null, b: Domain | null): Domain | null {
+  if (!a) return b;
+  if (!b) return a;
+  return [Math.min(a[0], b[0]), Math.max(a[1], b[1])];
 }
 
 function channelByte(x: number): number {
@@ -760,57 +940,7 @@ function clampFrameCount(n: number, frames: number): number {
   return Math.min(Math.max(0, Math.floor(n)), frames);
 }
 
-function time0(time: Float32Array | Float64Array): number {
-  return time.length > 0 ? time[0]! : 0;
-}
-
-function frameAt(time: Float32Array | Float64Array, t: number): number {
-  const frames = time.length;
-  if (frames <= 1 || t <= time[0]!) return 0;
-  if (t >= time[frames - 1]!) return frames - 1;
-  let lo = 0;
-  let hi = frames - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >>> 1;
-    if (time[mid]! <= t) lo = mid;
-    else hi = mid - 1;
-  }
-  return lo;
-}
-
-function sampleFrame(series: Series, signal: number, frame: number): Float32Array {
-  const start = signal * series.time.length * series.elementCount + frame * series.elementCount;
-  return series.values.subarray(start, start + series.elementCount);
-}
-
-function sampleValue(series: Series, signal: number, frame: number, element: number): number {
-  return series.values[
-    signal * series.time.length * series.elementCount + frame * series.elementCount + element
-  ]!;
-}
-
-function seriesRange(
-  series: Series,
-  signal: number,
-  validFrames: number,
-): readonly [number, number] | null {
-  if (series.ranges) {
-    return [series.ranges[signal * 2]!, series.ranges[signal * 2 + 1]!];
-  }
-  let lo = Infinity;
-  let hi = -Infinity;
-  const frames = Math.min(validFrames, series.time.length);
-  const base = signal * series.time.length * series.elementCount;
-  const count = frames * series.elementCount;
-  for (let i = 0; i < count; i++) {
-    const v = series.values[base + i]!;
-    if (v < lo) lo = v;
-    if (v > hi) hi = v;
-  }
-  return lo <= hi ? [lo, hi] : null;
-}
-
-function normalizeRange(range: readonly [number, number] | null): readonly [number, number] {
+function normalizeRange(range: Domain | null): Domain {
   if (!range) return [0, 1];
   const [min, max] = range;
   if (!Number.isFinite(min) || !Number.isFinite(max)) return [0, 1];

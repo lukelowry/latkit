@@ -1,15 +1,23 @@
+import { devices, type DevicePool } from '@latkit/gpu';
+import { validateDomain, type Domain } from '@latkit/model';
+
 import type { FocusEndpointMode, RGBA } from './focus-state.js';
-import { type Domain, validateDomain } from './range.js';
 
 /** Function mapping a normalized scalar to normalized RGB channels. */
 export type Colormap = (t: number) => readonly [number, number, number];
+
+/** How camera motion is animated: following the user's preference, always reduced, or always full. */
+export type Motion = 'auto' | 'reduce' | 'full';
+
+/** What a plain wheel does: zoom the view, or scroll the page unless a modifier is held. */
+export type Wheel = 'zoom' | 'modifier';
 
 /**
  * Network display options: the construction record and the live patch.
  *
  * @remarks
- * `msaa` is read once at construction. Every other field seeds the initial view and can be
- * patched later with `Network.setOptions`; `OPTIONS` says which and carries each default.
+ * `msaa` and `devices` are read once at construction. Every other field seeds the initial view and
+ * can be patched later with `Network.setOptions`; `OPTIONS` says which and carries each default.
  */
 export interface Options {
   /**
@@ -18,6 +26,8 @@ export interface Options {
    * @defaultValue Automatically selects `4` on typical displays and `1` on very large device-pixel surfaces.
    */
   msaa?: 1 | 4;
+  /** Where `Network.attach` leases its device. @defaultValue the realm-wide pool from `@latkit/gpu`. */
+  devices?: DevicePool;
   /** Draw vertex billboards. @defaultValue `true`. */
   vertices?: boolean;
   /** Draw edge segments. @defaultValue `true`. */
@@ -36,7 +46,7 @@ export interface Options {
   vertexLodPx?: number;
   /** Screen-space edge dash period in CSS pixels. @defaultValue `12`. */
   dashPeriodPx?: number;
-  /** Draw geographic border overlays. @defaultValue `true`. */
+  /** Draw geographic border overlays; drawn only over a geographic topology. @defaultValue `true`. */
   borders?: boolean;
   /** Draw projection graticule lines. @defaultValue `false`. */
   graticule?: boolean;
@@ -80,6 +90,20 @@ export interface Options {
   edgeSelectedPx?: number;
   /** Endpoint highlight mode for focused edges. @defaultValue `"selected"`. */
   focusEndpointMode?: FocusEndpointMode;
+  /**
+   * Camera and orbit motion. `'auto'` follows `prefers-reduced-motion`; under reduced motion every
+   * fit, reveal, and pose lands at once, drags do not coast, and `orbit(true)` is refused.
+   * @defaultValue `'auto'`.
+   */
+  motion?: Motion;
+  /**
+   * Attach the keyboard map to the canvas: arrows pan, Shift with arrows rotates, plus and minus
+   * zoom, Home fits, Escape clears the selection. The canvas becomes focusable when it is not.
+   * @defaultValue `true`.
+   */
+  keyboard?: boolean;
+  /** Whether a plain wheel zooms, or only a Ctrl or Meta wheel does while the page keeps scrolling. @defaultValue `'zoom'`. */
+  wheel?: Wheel;
 }
 
 /** Validation kind, default, and whether `Network.setOptions` accepts the option live. */
@@ -88,9 +112,14 @@ export type OptionDefinition =
   | { readonly kind: 'finite' | 'nonnegative'; readonly default: number; readonly live: true }
   | { readonly kind: 'rgba'; readonly default: RGBA; readonly live: true }
   | { readonly kind: 'domain'; readonly default: Domain; readonly live: true }
-  | { readonly kind: 'focus-endpoint'; readonly default: FocusEndpointMode; readonly live: true }
+  | {
+      readonly kind: 'enum';
+      readonly values: readonly (string | number)[];
+      readonly default: string | number | undefined;
+      readonly live: boolean;
+    }
   | { readonly kind: 'colormap'; readonly default: Colormap; readonly live: true }
-  | { readonly kind: 'msaa'; readonly default: undefined; readonly live: false };
+  | { readonly kind: 'pool'; readonly default: DevicePool; readonly live: false };
 
 /** Network's neutral transfer function before a consumer supplies a colormap. */
 const neutralColormap: Colormap = Object.freeze((t: number) => [t, t, t] as const);
@@ -100,8 +129,14 @@ function tuple<T extends readonly number[]>(...values: T): Readonly<T> {
   return Object.freeze(values);
 }
 
+/** Freeze an enumerated value list before exposing it through public metadata. */
+function values<const T extends readonly (string | number)[]>(...entries: T): T {
+  return Object.freeze(entries) as T;
+}
+
 const definitions = {
-  msaa: { kind: 'msaa', default: undefined, live: false },
+  msaa: { kind: 'enum', values: values(1, 4), default: undefined, live: false },
+  devices: { kind: 'pool', default: devices, live: false },
   vertices: { kind: 'boolean', default: true, live: true },
   edges: { kind: 'boolean', default: true, live: true },
   poles: { kind: 'boolean', default: false, live: true },
@@ -132,7 +167,15 @@ const definitions = {
   vertexSelectedPx: { kind: 'nonnegative', default: 7, live: true },
   edgeHoverPx: { kind: 'nonnegative', default: 3.5, live: true },
   edgeSelectedPx: { kind: 'nonnegative', default: 5, live: true },
-  focusEndpointMode: { kind: 'focus-endpoint', default: 'selected', live: true },
+  focusEndpointMode: {
+    kind: 'enum',
+    values: values('off', 'selected', 'hover-selected'),
+    default: 'selected',
+    live: true,
+  },
+  motion: { kind: 'enum', values: values('auto', 'reduce', 'full'), default: 'auto', live: true },
+  keyboard: { kind: 'boolean', default: true, live: true },
+  wheel: { kind: 'enum', values: values('zoom', 'modifier'), default: 'zoom', live: true },
 } as const satisfies Record<keyof Required<Options>, OptionDefinition>;
 
 for (const definition of Object.values(definitions)) Object.freeze(definition);
@@ -214,16 +257,18 @@ function validateOptionValue(key: string, definition: OptionDefinition, value: u
     case 'domain':
       validateDomain(value, `network option ${key}`);
       return;
-    case 'focus-endpoint':
-      if (value !== 'off' && value !== 'selected' && value !== 'hover-selected') {
-        typeError(key, 'a focus endpoint mode');
+    case 'enum':
+      if (!definition.values.includes(value as string | number)) {
+        typeError(key, `one of ${definition.values.map(String).join(', ')}`);
       }
       return;
     case 'colormap':
       if (typeof value !== 'function') typeError(key, 'a colormap function');
       return;
-    case 'msaa':
-      if (value !== 1 && value !== 4) typeError(key, '1 or 4');
+    case 'pool':
+      if (typeof (value as Partial<DevicePool> | null)?.acquire !== 'function') {
+        typeError(key, 'a device pool');
+      }
       return;
     default:
       definition satisfies never;

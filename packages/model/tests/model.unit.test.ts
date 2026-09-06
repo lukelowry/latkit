@@ -1,8 +1,54 @@
 import { describe, expect, it } from 'vitest';
 
-import { createModel, elementAt, itemOf } from '../src/index.js';
+import { createModel, elementAt, itemOf, validateTopology } from '../src/index.js';
 import type { Loader } from '../src/model.js';
 import { sampleData, sampleLoader, sampleModel } from './fixture.js';
+
+describe('validateTopology', () => {
+  const topology = () => sampleData().topology;
+
+  it('accepts a consistent topology and every declared coordinate space', () => {
+    expect(() => validateTopology(topology())).not.toThrow();
+    expect(() => validateTopology({ ...topology(), coordinateSpace: 'cartesian' })).not.toThrow();
+    expect(() =>
+      validateTopology({
+        vertexCount: 2,
+        edges: Uint32Array.of(0, 1),
+        polylineStart: Uint32Array.of(0, 0),
+      }),
+    ).not.toThrow();
+  });
+
+  it('names the first invalid field', () => {
+    const cases: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+      ['invalid vertex count', { vertexCount: -1 }],
+      ['invalid vertex count', { vertexCount: 1.5 }],
+      ['vertex coordinates must be Float32Array', { vertexCoords: [0, 0] }],
+      ['invalid vertex coordinate length', { vertexCoords: Float32Array.of(0, 0) }],
+      ['invalid vertex coordinates', { vertexCoords: Float32Array.of(0, 0, NaN, 1, 2, 2) }],
+      ['invalid coordinate space', { coordinateSpace: 'polar' }],
+      ['edges must be Uint32Array', { edges: [0, 1] }],
+      ['invalid edge length', { edges: Uint32Array.of(0, 1, 2) }],
+      ['edge endpoint out of range', { edges: Uint32Array.of(0, 9) }],
+      ['polyline points must be Float32Array', { polylinePoints: [1, 2] }],
+      ['invalid polyline point length', { polylinePoints: Float32Array.of(1) }],
+      ['invalid polyline points', { polylinePoints: Float32Array.of(1, Infinity) }],
+      ['polylineStart must be Uint32Array', { polylineStart: [0, 0, 1] }],
+      ['invalid polylineStart length', { polylineStart: Uint32Array.of(0, 0) }],
+      ['polylineStart must begin at zero', { polylineStart: Uint32Array.of(1, 1, 1) }],
+      ['polylineStart terminal mismatch', { polylineStart: Uint32Array.of(0, 0, 0) }],
+      [
+        'polylineStart must be monotonic',
+        { polylineStart: Uint32Array.of(0, 1, 0), polylinePoints: new Float32Array(0) },
+      ],
+    ];
+    for (const [message, patch] of cases) {
+      expect(() => validateTopology({ ...topology(), ...patch } as never), message).toThrow(
+        message,
+      );
+    }
+  });
+});
 
 describe('createModel', () => {
   it('exposes the data it was given', () => {

@@ -1,19 +1,17 @@
 /**
- * `@latkit/network` — a WebGPU network renderer behind one controller. `createNetwork` returns a
- * {@link Network}; three registries name what it speaks: `CHANNELS`, `OPTIONS`, `PROJECTIONS`.
+ * `@latkit/network` — a WebGPU network renderer behind one durable controller. `createNetwork`
+ * returns a {@link Network} that attaches to any canvas over a shared device pool; three
+ * registries name what it speaks: `CHANNELS`, `OPTIONS`, `PROJECTIONS`. `Topology`, `Item`, and
+ * `Domain` are `@latkit/model`'s.
  *
  * @packageDocumentation
  */
 
 export { createNetwork } from './controller.js';
-export type { Network, Events, Item, RevealOptions } from './controller.js';
-
-export type { Topology } from '@latkit/model';
-export { validateTopology } from './topology/validate.js';
+export type { Network, Events, RevealOptions } from './controller.js';
 
 export { CHANNELS } from './channels.js';
 export type { Channel } from './channels.js';
-export type { Domain } from './range.js';
 
 export { OPTIONS, validateOptions } from './options.js';
 export type { Options } from './options.js';

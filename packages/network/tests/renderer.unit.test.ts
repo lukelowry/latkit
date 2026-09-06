@@ -150,59 +150,56 @@ describe('Renderer resource lifecycle', () => {
     renderer.destroy();
   });
 
-  it('binds topology transactionally and replaces channel storage on relayout', async () => {
+  it('allocates every channel slot with the topology and writes channels in place', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);
-    const topology = sampleTopology();
+    const topology = sampleTopology(); // 3 vertices, 2 edges: 4 vertex channels + 3 edge channels
 
     renderer.bindTopology(preparedScene(topology));
-    const initialChannelBuffer = h.device.buffers.find(
+    const channelBuffer = h.device.buffers.find(
       (buffer) => buffer.descriptor.label === 'channels',
-    );
+    )!;
+    expect(channelBuffer.descriptor.size).toBe((4 * 3 + 3 * 2) * 4);
 
-    const slots = renderer.relayout(new Set(['vertexColor', 'edgeDash']), 3, 2);
-
-    expect(slots.get('vertexColor')).toEqual({ offset: 0, count: 3 });
-    expect(slots.get('edgeDash')).toEqual({ offset: 3, count: 2 });
-    expect(initialChannelBuffer?.destroyed).toBe(true);
-
-    const values = new Float32Array([1, 0]);
-    renderer.writeChannel('edgeDash', values);
+    const dashes = new Float32Array([1, 0]);
+    renderer.writeChannel('edgeDash', dashes);
+    // vertexColor, vertexHeight, vertexSize (3 each), edgeColor (2) precede edgeDash.
     expect(h.device.queue.writeBuffer).toHaveBeenLastCalledWith(
       expect.anything(),
-      12,
-      values.buffer,
-      values.byteOffset,
-      values.byteLength,
+      (3 * 3 + 2) * 4,
+      dashes.buffer,
+      dashes.byteOffset,
+      dashes.byteLength,
     );
+
+    const colors = new Float32Array([0, 0.5, 1]);
+    renderer.writeChannel('vertexColor', colors);
+    expect(h.device.queue.writeBuffer).toHaveBeenLastCalledWith(
+      expect.anything(),
+      0,
+      colors.buffer,
+      colors.byteOffset,
+      colors.byteLength,
+    );
+    expect(
+      h.device.buffers.filter((buffer) => buffer.descriptor.label === 'channels'),
+    ).toHaveLength(1);
+    expect(channelBuffer.destroyed).toBe(false);
 
     renderer.destroy();
   });
 
-  it('keeps previous channel storage when a transactional relayout upload fails', () => {
+  it('checks channel storage against the device limits when the topology binds', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);
-    const topology = sampleTopology();
-    renderer.bindTopology(preparedScene(topology));
-    const previous = h.device.buffers.find((buffer) => buffer.descriptor.label === 'channels')!;
-    const failure = new Error('queue rejected channel upload');
-    h.device.queue.writeBuffer.mockImplementationOnce(() => {
-      throw failure;
-    });
+    const fits = vi.spyOn(
+      renderer as unknown as { assertStorageBufferFits(label: string, bytes: number): void },
+      'assertStorageBufferFits',
+    );
 
-    expect(() =>
-      renderer.relayout(
-        new Set(['vertexColor']),
-        3,
-        2,
-        new Map([['vertexColor', new Float32Array([0, 0.5, 1])]]),
-      ),
-    ).toThrow(failure);
+    renderer.bindTopology(preparedScene(sampleTopology())); // channel storage needs 72 bytes
 
-    const attempted = h.device.buffers.at(-1)!;
-    expect(attempted).not.toBe(previous);
-    expect(attempted.destroyed).toBe(true);
-    expect(previous.destroyed).toBe(false);
+    expect(fits.mock.calls.map(([label, bytes]) => [label, bytes])).toContainEqual(['channel', 72]);
     renderer.destroy();
   });
 

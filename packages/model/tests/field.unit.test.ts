@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { type ClassData, type ClassSpec, fieldKey, fieldsOf, type Series } from '../src/index.js';
+import {
+  type ClassData,
+  type ClassSpec,
+  extent,
+  fieldKey,
+  fieldsOf,
+  type Series,
+  validateDomain,
+} from '../src/index.js';
 
 const spec: ClassSpec = {
   id: 'bus',
@@ -53,5 +61,42 @@ describe('fields', () => {
     const ref = { classId: 'bus', source: 'signal', id: 'P' } as const;
     expect(fieldKey(ref)).toBe(fieldKey({ ...ref }));
     expect(fieldKey(ref)).not.toBe(fieldKey({ ...ref, source: 'column' }));
+  });
+});
+
+describe('domain', () => {
+  it('scans the finite extent and reports null when nothing is finite', () => {
+    expect(extent(Float32Array.of(Number.NaN, -2, 5, Infinity))).toEqual([-2, 5]);
+    expect(extent(Float64Array.of(3))).toEqual([3, 3]);
+    expect(extent([Number.NaN, Infinity])).toBeNull();
+    expect(extent([])).toBeNull();
+  });
+
+  it.each([
+    [0, 1],
+    [-10, -2],
+    [3, 3],
+  ] as const)('accepts the finite ordered domain [%s, %s]', (minimum, maximum) => {
+    expect(() => validateDomain([minimum, maximum])).not.toThrow();
+  });
+
+  it.each([
+    [null, TypeError],
+    [[0], TypeError],
+    [[0, 1, 2], TypeError],
+    [['0', 1], TypeError],
+    [[0, Number.NaN], RangeError],
+    [[Number.NEGATIVE_INFINITY, 1], RangeError],
+    [[2, 1], RangeError],
+  ] as const)('rejects invalid domain %# with the semantic error class', (value, ErrorType) => {
+    expect(() => validateDomain(value)).toThrow(ErrorType);
+  });
+
+  it('names the domain in the failure without mutating the input', () => {
+    const domain = [2, 1];
+    expect(() => validateDomain(domain, 'vertex height range')).toThrow(
+      'vertex height range minimum must not exceed its maximum',
+    );
+    expect(domain).toEqual([2, 1]);
   });
 });

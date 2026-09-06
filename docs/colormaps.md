@@ -8,14 +8,14 @@
 import { colormap } from '@latkit/colormaps';
 
 network.setOptions({ colormap: colormap('viridis') });
-monitor.setColormap(colormap('magma'));
+monitor.setOptions({ colormap: colormap('magma') });
 ```
 
 The returned function accepts a normalized value in `[0, 1]` and returns RGB channels in `[0, 1]`.
 
 ## Build a legend
 
-`COLORMAPS` is a frozen registry keyed by colormap name. Use `COLORMAPS[name].label` for display text and `gradient()` for a CSS gradient that matches the same evaluator used by the renderers.
+`COLORMAPS` is a frozen registry keyed by colormap name. Use `COLORMAPS[name].label` for display text and `gradient()` for a CSS gradient that matches the same evaluator used by the renderers. `gradient()` also takes a colormap function, so a legend for a custom transfer function renders through the same sampler.
 
 ```ts
 import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';

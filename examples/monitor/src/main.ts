@@ -1,6 +1,6 @@
 import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
-import { requestDevice } from '@latkit/gpu';
-import { createMonitor, type Monitor, type Reading, type Series } from '@latkit/monitor';
+import type { Series } from '@latkit/model';
+import { createMonitor, type Reading } from '@latkit/monitor';
 import './style.css';
 
 const ELEMENT_COUNT = 192;
@@ -53,8 +53,6 @@ const rateInput = document.getElementById('rate') as HTMLInputElement;
 const rateValue = document.getElementById('rate-value') as HTMLOutputElement;
 
 let seed = 0x5eed1234;
-let device: GPUDevice | null = null;
-let monitor: Monitor | null = null;
 let series = createSeries();
 let frameCursor = 0;
 let currentSignal: SignalIndex = 0;
@@ -62,6 +60,13 @@ let selectedElement: number | null = null;
 let running = true;
 let timer: number | null = null;
 let lastHotRender = 0;
+
+// The controller holds the series and options before any canvas exists.
+const monitor = createMonitor({
+  lineWidthPx: 1.4,
+  valueRange: signalRange(currentSignal),
+  colormap: colormap(EXAMPLE_COLORMAPS[0]!),
+});
 
 const phase = new Float32Array(ELEMENT_COUNT);
 const band = new Float32Array(ELEMENT_COUNT);
@@ -87,35 +92,33 @@ function fail(message: string): void {
 async function main(): Promise<void> {
   wireChrome();
 
-  try {
-    device = await requestDevice();
-    monitor = await createMonitor(device, stage, {
-      lineWidthPx: 1.4,
-      valueRange: signalRange(currentSignal),
-      colormap: colormap(EXAMPLE_COLORMAPS[0]!),
-    });
-  } catch (error) {
-    device?.destroy();
-    device = null;
-    fail(error instanceof Error ? error.message : String(error));
-    return;
-  }
-
   monitor.load(series, currentSignal);
   monitor.on('hover', (reading) => {
     hoverReadout.textContent = describeReading(reading);
   });
-  monitor.on('pick', (reading) => {
+  // Pointer-down selects the nearest element inside the monitor; mirror it into the page.
+  monitor.on('select', (reading) => {
     selectedElement = reading.element;
     pickReadout.textContent = describeReading(reading);
-    monitor?.setFocus(selectedElement);
     renderSelected();
     renderHotList(performance.now(), true);
   });
-  monitor.on('deviceLost', (info) => {
+  monitor.on('deviceLost', ({ reason, message, recovering }) => {
+    if (recovering) {
+      statusEl.textContent = `device lost / ${reason} / recovering`;
+      return;
+    }
     setRunning(false);
-    statusEl.textContent = `device lost / ${info.reason}`;
+    statusEl.textContent = `device unavailable / ${message}`;
   });
+
+  try {
+    await monitor.attach(stage);
+  } catch (error) {
+    monitor.destroy();
+    fail(error instanceof Error ? error.message : String(error));
+    return;
+  }
 
   resetStream();
   setRunning(true);
@@ -123,10 +126,7 @@ async function main(): Promise<void> {
   window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
     stopTimer();
-    monitor?.destroy();
-    monitor = null;
-    device?.destroy();
-    device = null;
+    monitor.destroy();
   });
 }
 
@@ -152,7 +152,7 @@ function wireChrome(): void {
     button.setAttribute('aria-pressed', String(i === 0));
     button.style.setProperty('--swatch', gradient(name, 'to right'));
     button.addEventListener('click', () => {
-      monitor?.setColormap(colormap(name));
+      monitor.setOptions({ colormap: colormap(name) });
       setActive(colormapRow, button);
     });
     colormapRow.appendChild(button);
@@ -189,7 +189,7 @@ function resetStream(): void {
   selectedElement = null;
   hoverReadout.textContent = '-';
   pickReadout.textContent = '-';
-  monitor?.load(series, currentSignal);
+  monitor.load(series, currentSignal);
   applyRange();
   renderSelected();
   renderHotList(performance.now(), true);
@@ -199,10 +199,10 @@ function resetStream(): void {
 function setSignal(signal: SignalIndex): void {
   if (signal === currentSignal) return;
   currentSignal = signal;
-  monitor?.setSignal(signal);
+  monitor.setSignal(signal);
   applyRange();
   selectedElement = null;
-  monitor?.setFocus(null);
+  monitor.select(null);
   pickReadout.textContent = '-';
   for (const [index, button] of [...signalRow.querySelectorAll('button')].entries()) {
     button.setAttribute('aria-pressed', String(index === signal));
@@ -217,10 +217,10 @@ function setRunning(next: boolean): void {
   runToggle.setAttribute('aria-label', running ? 'Pause stream' : 'Resume stream');
   runToggle.title = running ? 'Pause stream' : 'Resume stream';
   if (running) {
-    monitor?.resume();
+    monitor.resume();
     restartTimer();
   } else {
-    monitor?.pause();
+    monitor.pause();
     stopTimer();
   }
   updateStatus();
@@ -238,7 +238,6 @@ function stopTimer(): void {
 }
 
 function tick(): void {
-  if (!monitor) return;
   if (frameCursor >= FRAME_COUNT) resetStream();
   writeFrame(frameCursor);
   frameCursor++;
@@ -290,7 +289,7 @@ function offset(signal: number, frame: number, element: number): number {
 }
 
 function applyRange(): void {
-  monitor?.setValueRange(autoRangeInput.checked ? null : signalRange(currentSignal));
+  monitor.setOptions({ valueRange: autoRangeInput.checked ? null : signalRange(currentSignal) });
 }
 
 function signalRange(signal: SignalIndex): readonly [number, number] {
@@ -310,7 +309,7 @@ function renderHotList(now: number, force = false): void {
     button.setAttribute('aria-pressed', String(item.element === selectedElement));
     button.addEventListener('click', () => {
       selectedElement = item.element;
-      monitor?.setFocus(item.element);
+      monitor.select(item.element);
       pickReadout.textContent = describeElement(item.element);
       renderSelected();
       renderHotList(performance.now(), true);

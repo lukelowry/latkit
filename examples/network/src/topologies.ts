@@ -1,4 +1,4 @@
-import type { Topology } from '@latkit/network';
+import type { Topology } from '@latkit/model';
 import { makeFakeNetwork } from './fake-network.js';
 
 /**

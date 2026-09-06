@@ -59,11 +59,19 @@ export class CameraRig {
     return this.needsFit || this.pending !== null;
   }
 
-  /** Replace the scene bounds; a new scene schedules its canonical fit. */
-  setBounds(bounds: Bounds | null): void {
+  /**
+   * Replace the scene bounds. A new scene schedules its canonical fit; with `fit` false a placed
+   * camera keeps its pose and only its fit reference follows the new bounds.
+   */
+  setBounds(bounds: Bounds | null, fit = true): void {
     this.bounds = bounds;
-    this.needsFit = bounds !== null;
     this.pending = null;
+    if (bounds === null) {
+      this.needsFit = false;
+      return;
+    }
+    if (fit || !this.camera.placed) this.needsFit = true;
+    else this.fitStale = true;
   }
 
   /** Fit the whole scene: animated when possible, else on the next sized frame. */

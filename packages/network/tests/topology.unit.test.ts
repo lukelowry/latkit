@@ -1,12 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
+import { validateTopology } from '@latkit/model';
+
 import topologySrc from '../src/shaders/common/topology-buffer.wgsl?raw';
-import {
-  W,
-  encodeTopology,
-  readEncodedTopologyInfo,
-  validateTopology,
-} from '../src/topology/index.js';
+import { W, encodeTopology, readEncodedTopologyInfo, sameTopology } from '../src/topology/index.js';
 import { HEADER_WORDS, MAGIC, WGSL_LAYOUT } from '../src/topology/wire.js';
 import {
   computeBounds,
@@ -114,25 +111,48 @@ describe('Topology', () => {
     expect(coords[1]).toBeCloseTo(0, 6);
   });
 
-  it('validates topology without encoding renderer storage', () => {
+  it('validates through the model vocabulary before encoding renderer storage', () => {
     expect(() => validateTopology(sampleTopology())).not.toThrow();
-    expect(() => validateTopology(sampleTopology({ edges: new Uint32Array([0, 1, 2]) }))).toThrow(
+    expect(() => encodeTopology(sampleTopology({ edges: new Uint32Array([0, 1, 2]) }))).toThrow(
       'invalid edge length',
     );
     expect(() =>
-      validateTopology(sampleTopology({ vertexCoords: new Float32Array([0, 0, NaN, 1, 2, 2]) })),
+      encodeTopology(sampleTopology({ vertexCoords: new Float32Array([0, 0, NaN, 1, 2, 2]) })),
     ).toThrow('invalid vertex coordinates');
-    expect(() =>
-      validateTopology(sampleTopology({ edges: [0, 1] as unknown as Uint32Array })),
-    ).toThrow('edges must be Uint32Array');
-  });
-
-  it('accepts declared coordinate spaces and rejects unknown values', () => {
-    expect(() => validateTopology(sampleTopology({ coordinateSpace: 'cartesian' }))).not.toThrow();
-    expect(() => validateTopology(sampleTopology({ coordinateSpace: 'geographic' }))).not.toThrow();
-    expect(() => validateTopology(sampleTopology({ coordinateSpace: 'polar' as never }))).toThrow(
+    expect(() => encodeTopology(sampleTopology({ coordinateSpace: 'polar' as never }))).toThrow(
       'invalid coordinate space',
     );
+  });
+
+  it('recognizes the same geometry whatever the spelling of absent sections', () => {
+    expect(sameTopology(sampleTopology(), sampleTopology())).toBe(true);
+    expect(
+      sameTopology(
+        { ...sampleTopology(), vertexCoords: undefined },
+        { ...sampleTopology(), vertexCoords: new Float32Array(0) },
+      ),
+    ).toBe(true);
+    expect(
+      sameTopology(
+        sampleTopology({ polylineStart: new Uint32Array([0, 0, 0]), polylinePoints: undefined }),
+        sampleTopology({
+          polylineStart: new Uint32Array([0, 0, 0]),
+          polylinePoints: new Float32Array(0),
+        }),
+      ),
+    ).toBe(true);
+    expect(sameTopology(sampleTopology(), sampleTopology({ coordinateSpace: 'cartesian' }))).toBe(
+      false,
+    );
+    expect(
+      sameTopology(sampleTopology(), sampleTopology({ edges: new Uint32Array([0, 1, 2, 1]) })),
+    ).toBe(false);
+    expect(
+      sameTopology(
+        sampleTopology(),
+        sampleTopology({ vertexCoords: new Float32Array([0, 0, 10, 0, 20, 11]) }),
+      ),
+    ).toBe(false);
   });
 
   it('reports caller-supplied coordinates only when rendering uses them', () => {

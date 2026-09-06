@@ -4,15 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "predev": "pnpm --filter @latkit/colormaps build && pnpm --filter @latkit/gpu build && pnpm --filter @latkit/network build && pnpm --filter @latkit/embed build",
+    "predev": "pnpm --filter @latkit/model --filter @latkit/colormaps --filter @latkit/gpu build && pnpm --filter @latkit/network --filter @latkit/monitor build && pnpm --filter @latkit/embed build",
     "dev": "vite --host 127.0.0.1 --port 5192",
-    "prebuild": "pnpm --filter @latkit/colormaps build && pnpm --filter @latkit/gpu build && pnpm --filter @latkit/network build && pnpm --filter @latkit/embed build",
+    "prebuild": "pnpm --filter @latkit/model --filter @latkit/colormaps --filter @latkit/gpu build && pnpm --filter @latkit/network --filter @latkit/monitor build && pnpm --filter @latkit/embed build",
     "build": "pnpm run typecheck && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "preview": "vite preview --host 127.0.0.1 --port 5192"
   },
   "dependencies": {
-    "@latkit/embed": "workspace:*"
+    "@latkit/embed": "workspace:*",
+    "@latkit/network": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

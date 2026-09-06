@@ -52,12 +52,17 @@ describe('canonical Network semantics', () => {
     const entries = Object.entries(OPTIONS).map(([key, definition]) => [
       key,
       definition.kind,
-      definition.kind === 'colormap' ? '<colormap>' : definition.default,
+      definition.kind === 'colormap'
+        ? '<colormap>'
+        : definition.kind === 'pool'
+          ? '<pool>'
+          : definition.default,
       definition.live,
     ]);
 
     expect(entries).toEqual([
-      ['msaa', 'msaa', undefined, false],
+      ['msaa', 'enum', undefined, false],
+      ['devices', 'pool', '<pool>', false],
       ['vertices', 'boolean', true, true],
       ['edges', 'boolean', true, true],
       ['poles', 'boolean', false, true],
@@ -88,8 +93,16 @@ describe('canonical Network semantics', () => {
       ['vertexSelectedPx', 'nonnegative', 7, true],
       ['edgeHoverPx', 'nonnegative', 3.5, true],
       ['edgeSelectedPx', 'nonnegative', 5, true],
-      ['focusEndpointMode', 'focus-endpoint', 'selected', true],
+      ['focusEndpointMode', 'enum', 'selected', true],
+      ['motion', 'enum', 'auto', true],
+      ['keyboard', 'boolean', true, true],
+      ['wheel', 'enum', 'zoom', true],
     ]);
+    expect(OPTIONS.msaa.values).toEqual([1, 4]);
+    expect(OPTIONS.focusEndpointMode.values).toEqual(['off', 'selected', 'hover-selected']);
+    expect(OPTIONS.motion.values).toEqual(['auto', 'reduce', 'full']);
+    expect(OPTIONS.wheel.values).toEqual(['zoom', 'modifier']);
+    expect(typeof OPTIONS.devices.default.acquire).toBe('function');
   });
 
   it('deeply freezes option metadata and defaults derived from it', () => {
@@ -137,6 +150,10 @@ describe('Network option validation and resolution', () => {
       ['focusEndpointMode', 'off'],
       ['focusEndpointMode', 'hover-selected'],
       ['colormap', (t: number) => [t, t, t] as const],
+      ['motion', 'reduce'],
+      ['keyboard', false],
+      ['wheel', 'modifier'],
+      ['devices', { acquire: () => Promise.reject(new Error('never')) }],
     ];
     for (const [key, value] of cases) {
       expect(
@@ -167,6 +184,11 @@ describe('Network option validation and resolution', () => {
     ['focusEndpointMode', 'hover', TypeError],
     ['colormap', 'viridis', TypeError],
     ['msaa', 2, TypeError],
+    ['msaa', '4', TypeError],
+    ['motion', 'none', TypeError],
+    ['keyboard', 'yes', TypeError],
+    ['wheel', true, TypeError],
+    ['devices', {}, TypeError],
   ] as const)('rejects invalid %s value %s with %s', (key, value, ErrorType) => {
     expect(() => validateOptions({ [key]: value } as unknown as Options)).toThrow(ErrorType);
   });
@@ -191,6 +213,7 @@ describe('Network option validation and resolution', () => {
     expect(resolved.heightRange).not.toBe(heightRange);
     expect(resolved.colormap).toBe(colormap);
     expect(resolved.msaa).toBe(4);
+    expect(resolved.devices).toBe(OPTIONS.devices.default);
 
     baseColor[0] = 0.9;
     heightRange[1] = 9;

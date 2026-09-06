@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createChannels, packBound, type Channel } from '../src/channels.js';
-import type { Domain } from '../src/range.js';
+import type { Domain } from '@latkit/model';
+import { channelLayout, createChannels } from '../src/channels.js';
 import { createUniforms, ITEM_EDGE_VISIBLE, ITEM_VERTEX_VISIBLE } from '../src/webgpu/uniforms.js';
 import { Renderer } from '../src/webgpu/renderer.js';
 import { encodeSegments } from '../src/segments/index.js';
@@ -8,40 +8,56 @@ import { prepareScene } from '../src/scene.js';
 import { encodeTopology } from '../src/topology/index.js';
 import { singleEdgeTopology } from './fixtures/topology.js';
 
-describe('packBound', () => {
-  it('packs bound channels in registry order with vertex and edge slot sizes', () => {
-    const bound = new Set<Channel>(['edgeDash', 'vertexSize', 'vertexColor']);
+describe('channelLayout', () => {
+  it('gives every channel a slot in registry order, sized by its scope', () => {
+    const { offsets, words } = channelLayout(3, 2);
 
-    const { slot, words } = packBound(bound, 3, 2);
-
-    expect(words).toBe(8);
-    expect(slot.get('vertexColor')).toEqual({ offset: 0, count: 3 });
-    expect(slot.get('vertexSize')).toEqual({ offset: 3, count: 3 });
-    expect(slot.get('edgeDash')).toEqual({ offset: 6, count: 2 });
-    expect(slot.has('vertexHeight')).toBe(false);
+    expect(words).toBe(4 * 3 + 3 * 2);
+    expect(offsets).toEqual({
+      vertexColor: 0,
+      vertexHeight: 3,
+      vertexSize: 6,
+      edgeColor: 9,
+      edgeDash: 11,
+      vertexVisible: 13,
+      edgeVisible: 16,
+    });
+    expect(channelLayout(0, 0).words).toBe(0);
   });
 });
 
 describe('createChannels', () => {
-  function make(loaded = true) {
+  function make(loaded = true, attached = true) {
     const uniforms = createUniforms();
-    const renderer = {
-      relayout: vi.fn(
-        (bound: ReadonlySet<Channel>, vertexCount: number, edgeCount: number) =>
-          packBound(bound, vertexCount, edgeCount).slot,
-      ),
-      writeChannel: vi.fn(),
-    };
+    const renderer = { writeChannel: vi.fn() };
     const display = { dashPeriodPx: 18, heightRange: [0, 1] as Domain };
-    const channels = createChannels(uniforms, renderer, {
+    let bound = attached;
+    const channels = createChannels(uniforms, {
       loaded: () => loaded,
       vertexCount: () => 3,
       edgeCount: () => 2,
       dashPeriodPx: () => display.dashPeriodPx,
       heightRange: () => display.heightRange,
+      renderer: () => (bound ? renderer : null),
     });
-    return { uniforms, renderer, channels, display };
+    channels.reset();
+    return { uniforms, renderer, channels, display, bind: (next: boolean) => (bound = next) };
   }
+
+  it('writes the static slot offsets for the loaded topology on reset', () => {
+    const { uniforms } = make();
+
+    expect(uniforms.channel.vColorOffset).toBe(0);
+    expect(uniforms.channel.vHeightOffset).toBe(3);
+    expect(uniforms.channel.vSizeOffset).toBe(6);
+    expect(uniforms.channel.eColorOffset).toBe(9);
+    expect(uniforms.channel.eDashOffset).toBe(11);
+    expect(uniforms.channel.vVisibleOffset).toBe(13);
+    expect(uniforms.channel.eVisibleOffset).toBe(16);
+
+    const { uniforms: unloaded } = make(false);
+    expect(unloaded.channel.eVisibleOffset).toBe(0);
+  });
 
   it('validates channel lengths without scanning values', () => {
     const { channels } = make();
@@ -80,6 +96,7 @@ describe('createChannels', () => {
     expect(uniforms.channel.heightCenter).toBe(2);
     expect(uniforms.channel.heightScale).toBeCloseTo(1 / 8);
 
+    renderer.writeChannel.mockClear();
     channels.setDomain('vertexHeight', [2, 10]);
     expect(renderer.writeChannel).not.toHaveBeenCalled();
     channels.setDomain('edgeColor', null);
@@ -127,7 +144,6 @@ describe('createChannels', () => {
     ];
 
     for (const [label, domain, ErrorType] of invalid) {
-      renderer.relayout.mockClear();
       renderer.writeChannel.mockClear();
       const uniformState = new Uint8Array(uniforms.raw).slice();
       const replacement = new Float32Array([4, 5, 6]);
@@ -137,7 +153,6 @@ describe('createChannels', () => {
       );
       expect(channels.values('vertexHeight'), label).toBe(retained);
       expect(new Uint8Array(uniforms.raw), label).toEqual(uniformState);
-      expect(renderer.relayout, label).not.toHaveBeenCalled();
       expect(renderer.writeChannel, label).not.toHaveBeenCalled();
     }
   });
@@ -145,7 +160,6 @@ describe('createChannels', () => {
   it('validates domain overrides atomically while edgeDash remains range-free', () => {
     const { channels, uniforms, renderer } = make();
     channels.set('vertexColor', new Float32Array([0, 0.5, 1]), [0, 1]);
-    renderer.relayout.mockClear();
     renderer.writeChannel.mockClear();
 
     const invalid: ReadonlyArray<readonly [unknown, typeof Error]> = [
@@ -159,23 +173,22 @@ describe('createChannels', () => {
       expect(() => channels.setDomain('vertexColor', range as Domain)).toThrow(ErrorType);
       expect(new Uint8Array(uniforms.raw)).toEqual(uniformState);
     }
-    expect(renderer.relayout).not.toHaveBeenCalled();
     expect(renderer.writeChannel).not.toHaveBeenCalled();
 
     expect(() => channels.setDomain('edgeDash', [Number.NaN, -Infinity] as Domain)).not.toThrow();
   });
 
-  it('updates existing channel values without reallocating storage', () => {
+  it('uploads every bind into the channel slot and refreshes the snapshot in place', () => {
     const { channels, renderer, uniforms } = make();
 
-    channels.set('vertexColor', new Float32Array([0, 0.5, 1]));
+    const first = new Float32Array([0, 0.5, 1]);
+    channels.set('vertexColor', first);
+    expect(renderer.writeChannel).toHaveBeenCalledExactlyOnceWith('vertexColor', first);
     const snapshot = channels.values('vertexColor');
-    renderer.relayout.mockClear();
     renderer.writeChannel.mockClear();
     const replacement = new Float32Array([1, 0.5, 0]);
     channels.set('vertexColor', replacement);
 
-    expect(renderer.relayout).not.toHaveBeenCalled();
     expect(renderer.writeChannel).toHaveBeenCalledExactlyOnceWith('vertexColor', replacement);
     // The CPU snapshot is refreshed in place rather than reallocated per update.
     expect(channels.values('vertexColor')).toBe(snapshot);
@@ -185,7 +198,7 @@ describe('createChannels', () => {
     expect(uniforms.channel.vColorScale).toBe(1);
   });
 
-  it('leaves CPU and uniform state unchanged when renderer mutations fail', () => {
+  it('leaves CPU and uniform state unchanged when the upload fails', () => {
     const { channels, renderer, uniforms } = make();
     const original = new Float32Array([0, 0.5, 1]);
     channels.set('vertexColor', original, [0, 1]);
@@ -200,14 +213,26 @@ describe('createChannels', () => {
     );
     expect(channels.values('vertexColor')).toBe(retained);
     expect(new Uint8Array(uniforms.raw)).toEqual(beforeReplacement);
+  });
 
-    const beforeClear = new Uint8Array(uniforms.raw).slice();
-    renderer.relayout.mockImplementationOnce(() => {
-      throw new Error('relayout failed');
-    });
-    expect(() => channels.clear('vertexColor')).toThrow('relayout failed');
-    expect(channels.values('vertexColor')).toBe(retained);
-    expect(new Uint8Array(uniforms.raw)).toEqual(beforeClear);
+  it('keeps snapshots while detached and uploads them all into the next renderer', () => {
+    const { channels, renderer, bind } = make(true, false);
+
+    channels.set('vertexHeight', new Float32Array([1, 2, 3]), null);
+    channels.set('edgeDash', new Float32Array([1, 0]));
+    expect(renderer.writeChannel).not.toHaveBeenCalled();
+    expect(channels.values('vertexHeight')).toEqual(new Float32Array([1, 2, 3]));
+
+    bind(true);
+    const next = { writeChannel: vi.fn() };
+    channels.upload(next);
+    expect(next.writeChannel.mock.calls).toEqual([
+      ['vertexHeight', channels.values('vertexHeight')],
+      ['edgeDash', channels.values('edgeDash')],
+    ]);
+
+    channels.set('edgeDash', new Float32Array([0, 1]));
+    expect(renderer.writeChannel).toHaveBeenCalledOnce();
   });
 
   it('falls back to a neutral height domain when no finite values are present', () => {
@@ -220,15 +245,17 @@ describe('createChannels', () => {
   });
 
   it('clears a channel idempotently to neutral uniforms and forgets range state', () => {
-    const { channels, uniforms } = make();
+    const { channels, uniforms, renderer } = make();
 
     channels.set('vertexSize', new Float32Array([Number.NaN, 2, 3]), [1, 3]);
     channels.setDomain('vertexSize', [1.5, 2.5]);
+    renderer.writeChannel.mockClear();
 
     channels.clear('vertexSize');
     expect(uniforms.channel.vSizeMode).toBe(0);
     expect(uniforms.channel.vSizeMin).toBe(0);
     expect(uniforms.channel.vSizeScale).toBe(0);
+    expect(renderer.writeChannel).not.toHaveBeenCalled();
 
     channels.clear('vertexSize');
     expect(channels.values('vertexSize')).toBeNull();
@@ -302,14 +329,14 @@ describe('createChannels', () => {
 
     channels.set('vertexVisible', new Float32Array([1, 0, Number.NaN]), [10, -10]);
     expect(uniforms.channel.itemFlags & ITEM_VERTEX_VISIBLE).toBe(ITEM_VERTEX_VISIBLE);
-    expect(uniforms.channel.vVisibleOffset).toBe(0);
+    expect(uniforms.channel.vVisibleOffset).toBe(13);
     expect(() =>
       channels.setDomain('vertexVisible', [Number.NaN, -Infinity] as Domain),
     ).not.toThrow();
 
     channels.set('edgeVisible', new Float32Array([0, 1]));
     expect(uniforms.channel.itemFlags & ITEM_EDGE_VISIBLE).toBe(ITEM_EDGE_VISIBLE);
-    expect(uniforms.channel.eVisibleOffset).toBe(3);
+    expect(uniforms.channel.eVisibleOffset).toBe(16);
 
     channels.clear('vertexVisible');
     expect(uniforms.channel.itemFlags & ITEM_VERTEX_VISIBLE).toBe(0);
@@ -350,39 +377,35 @@ describe('createChannels', () => {
   });
 });
 
-describe('Renderer channel relayout guard', () => {
-  it('throws when compact channel storage exceeds WebGPU limits', () => {
-    const renderer = Object.create(Renderer.prototype) as Renderer;
-    (renderer as any).bound = true;
-    (renderer as any).presentation = {
-      device: { limits: { maxStorageBufferBindingSize: 7, maxBufferSize: 1024 } },
-    };
-
-    expect(() => renderer.relayout(new Set<Channel>(['vertexColor']), 2, 0)).toThrow(
-      'network channel storage 8 exceeds WebGPU limits',
-    );
-  });
-
-  it('uploads channel values using byte offsets and byte lengths', () => {
+describe('Renderer channel storage', () => {
+  it('uploads channel values using the static slot offsets, byte offsets, and byte lengths', () => {
     const writeBuffer = vi.fn();
     const renderer = Object.create(Renderer.prototype) as Renderer;
     const channelBuf = {};
     (renderer as any).presentation = { device: { queue: { writeBuffer } } };
     (renderer as any).channelBuf = channelBuf;
-    (renderer as any).slots = new Map<Channel, { offset: number; count: number }>([
-      ['vertexColor', { offset: 2, count: 3 }],
-    ]);
+    (renderer as any).channelOffsets = channelLayout(3, 2).offsets;
     const source = new Float32Array([0, 1, 2, 3, 4]);
     const values = source.subarray(1, 4);
 
-    renderer.writeChannel('vertexColor', values);
+    renderer.writeChannel('vertexSize', values);
 
     expect(writeBuffer).toHaveBeenCalledWith(
       channelBuf,
-      8,
+      6 * 4,
       source.buffer,
       values.byteOffset,
       values.byteLength,
+    );
+  });
+
+  it('refuses a channel write before a topology binds', () => {
+    const renderer = Object.create(Renderer.prototype) as Renderer;
+    (renderer as any).channelOffsets = null;
+    (renderer as any).channelBuf = null;
+
+    expect(() => renderer.writeChannel('vertexColor', new Float32Array(3))).toThrow(
+      'network channel vertexColor has no storage slot',
     );
   });
 

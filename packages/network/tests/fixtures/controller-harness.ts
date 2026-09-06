@@ -1,15 +1,16 @@
 import { vi } from 'vitest';
-import type { Presentation } from '@latkit/gpu';
+import type { DeviceLease, DevicePool, Presentation } from '@latkit/gpu';
 
 import type { ControllerDeps, Events, Network, Options } from '../../src/controller.js';
 import { createNetworkWithDeps } from '../../src/controller.js';
 import { createOrbit } from '../../src/orbit.js';
-import { packBound, type Channel, type ChannelSlot } from '../../src/channels.js';
+import type { Channel } from '../../src/channels.js';
 import type { Bounds, EncodedTopology } from '../../src/topology/index.js';
 import type { EncodedSegments } from '../../src/segments/index.js';
 import type { PreparedScene } from '../../src/scene.js';
 import type { Surface } from '../../src/input/surface.js';
-import type { Intent } from '../../src/input/pointer.js';
+import type { Intent, WheelPolicy } from '../../src/input/pointer.js';
+import type { KeyIntent } from '../../src/input/keyboard.js';
 import type { Picker, PickerDeps, PickQuery, PickResult } from '../../src/pick/picker.js';
 import type { Projection } from '../../src/projections.js';
 import type { Viewport } from '../../src/camera/projection.js';
@@ -52,7 +53,6 @@ export class FakeRenderer {
   };
   borders: Borders | null = null;
   projectionMode: Projection = 'flat';
-  slots: ReadonlyMap<Channel, ChannelSlot> = new Map();
   encodedTopology: EncodedTopology | null = null;
   encodedSegments: EncodedSegments | null = null;
   channelWrites: Array<{ channel: Channel; values: Float32Array }> = [];
@@ -76,20 +76,6 @@ export class FakeRenderer {
     this.borders = borders;
   });
 
-  relayout = vi.fn(
-    (
-      bound: ReadonlySet<Channel>,
-      vertexCount: number,
-      edgeCount: number,
-      values?: ReadonlyMap<Channel, Float32Array>,
-    ): ReadonlyMap<Channel, ChannelSlot> => {
-      this.slots = packBound(bound, vertexCount, edgeCount).slot;
-      if (values)
-        for (const [channel, channelValues] of values) this.writeChannel(channel, channelValues);
-      return this.slots;
-    },
-  );
-
   writeChannel = vi.fn((channel: Channel, values: Float32Array) => {
     this.channelWrites.push({ channel, values });
   });
@@ -105,6 +91,7 @@ export class FakeRenderer {
 
 export class FakeCamera {
   current = Float64Array.of(0, 0, 1);
+  placed = true;
   screenToWorld = vi.fn(
     (_sx: number, _sy: number, _vp: Viewport): readonly [number, number] | null => [0, 0],
   );
@@ -132,7 +119,7 @@ export class FakeCameraRig {
   pendingPlacement = false;
   nextClaim = false;
 
-  setBounds = vi.fn((bounds: Bounds | null) => {
+  setBounds = vi.fn((bounds: Bounds | null, _fit?: boolean) => {
     this.bounds = bounds;
   });
 
@@ -277,9 +264,79 @@ function makePresentation(
   };
 }
 
+/** One fake device with its loss signal and destroy spy. */
+export interface FakeDevice {
+  readonly device: GPUDevice;
+  readonly lost: Deferred<GPUDeviceLostInfo>;
+  readonly destroy: ReturnType<typeof vi.fn>;
+}
+
+export function fakeDevice(limits: Partial<GPUSupportedLimits> = {}): FakeDevice {
+  const lost = deferred<GPUDeviceLostInfo>();
+  const destroy = vi.fn();
+  return {
+    device: { limits, lost: lost.promise, destroy } as unknown as GPUDevice,
+    lost,
+    destroy,
+  };
+}
+
+/** A pool that mints one fake device per acquisition and counts every lease release. */
+export interface FakePool extends DevicePool {
+  readonly devices: FakeDevice[];
+  readonly releases: ReturnType<typeof vi.fn>;
+  /** Hold the next acquisition until released; returns its release. */
+  hold(): () => void;
+  /** Reject the next acquisition with `error`. */
+  fail(error: unknown): void;
+}
+
+export function fakePool(): FakePool {
+  const devices: FakeDevice[] = [];
+  const releases = vi.fn();
+  let gate: Deferred<void> | null = null;
+  let failure: { readonly error: unknown } | null = null;
+  return {
+    devices,
+    releases,
+    hold() {
+      const held = deferred<void>();
+      gate = held;
+      return () => held.resolve();
+    },
+    fail(error) {
+      failure = { error };
+    },
+    async acquire(): Promise<DeviceLease> {
+      if (gate) {
+        const pending = gate;
+        gate = null;
+        await pending.promise;
+      }
+      if (failure) {
+        const { error } = failure;
+        failure = null;
+        throw error;
+      }
+      const entry = fakeDevice();
+      devices.push(entry);
+      let released = false;
+      return {
+        device: entry.device,
+        release: () => {
+          if (released) return;
+          released = true;
+          releases(entry.device);
+        },
+      };
+    },
+  };
+}
+
 export interface ControllerHarness {
   readonly network: Network;
   readonly deps: ControllerDeps;
+  readonly pool: FakePool;
   readonly renderer: FakeRenderer;
   readonly loop: FakeRenderLoop;
   readonly rig: FakeCameraRig;
@@ -287,55 +344,71 @@ export interface ControllerHarness {
   readonly canvas: HTMLCanvasElement;
   readonly surface: FakeSurface;
   readonly pointerCleanup: { destroy: ReturnType<typeof vi.fn> };
-  readonly device: GPUDevice;
-  readonly presentation: Presentation<HTMLCanvasElement>;
-  readonly deviceDestroy: ReturnType<typeof vi.fn>;
-  readonly deviceLost: Deferred<GPUDeviceLostInfo>;
+  readonly keyboardCleanup: { destroy: ReturnType<typeof vi.fn> };
+  readonly presentations: Presentation<HTMLCanvasElement>[];
   readonly events: {
     readonly deviceLost: Events['deviceLost'][];
+    readonly attached: boolean[];
   };
+  /** The device of the live binding. */
+  readonly device: GPUDevice;
+  readonly presentation: Presentation<HTMLCanvasElement>;
+  /** Lose the device of the live binding, or the one at `index`. */
+  loseDevice(info?: Partial<GPUDeviceLostInfo>, index?: number): void;
+  /** The wheel policy the pointer adapter was given. */
+  readonly wheelPolicy: WheelPolicy | null;
   emitPointer(intent: Intent): void;
+  emitKey(intent: KeyIntent): void;
   destroy(): void;
 }
 
 export async function createControllerHarness(
   options: Options = {},
   configure?: (deps: ControllerDeps) => void,
+  attach = true,
 ): Promise<ControllerHarness> {
   const canvas = document.createElement('canvas');
   canvas.setAttribute('width', '320');
   canvas.setAttribute('height', '180');
   document.body.append(canvas);
   const surface = makeSurface(canvas);
-  const deviceLost = deferred<GPUDeviceLostInfo>();
-  const deviceDestroy = vi.fn();
-  const device = {
-    limits: {},
-    lost: deviceLost.promise,
-    destroy: deviceDestroy,
-  } as unknown as GPUDevice;
-  const presentation = makePresentation(device, canvas);
+  const pool = fakePool();
+  const presentations: Presentation<HTMLCanvasElement>[] = [];
 
   const renderer = new FakeRenderer();
   const loop = new FakeRenderLoop();
   const rig = new FakeCameraRig();
   const picker = new FakePicker();
-  const events = { deviceLost: [] as Events['deviceLost'][] };
+  const events = { deviceLost: [] as Events['deviceLost'][], attached: [] as boolean[] };
 
   let emitPointer: ((intent: Intent) => void) | null = null;
+  let emitKey: ((intent: KeyIntent) => void) | null = null;
+  let wheelPolicy: WheelPolicy | null = null;
   const pointerCleanup = { destroy: vi.fn() };
+  const keyboardCleanup = { destroy: vi.fn() };
 
   const deps: ControllerDeps = {
     createSurface: vi.fn(() => surface),
-    createPresentation: vi.fn(() => presentation),
+    createPresentation: vi.fn((device: GPUDevice, target: HTMLCanvasElement) => {
+      const presentation = makePresentation(device, target);
+      presentations.push(presentation);
+      return presentation;
+    }),
     Renderer: vi.fn(() => renderer as unknown as Renderer) as unknown as typeof Renderer,
     RenderLoop: vi.fn(
       (renderLoopDeps: RenderLoopDeps) => loop.attach(renderLoopDeps) as unknown as RenderLoop,
     ) as unknown as typeof RenderLoop,
     CameraRig: vi.fn(() => rig as unknown as CameraRig) as unknown as typeof CameraRig,
-    attachPointer: vi.fn((_surface: Surface, emit: (intent: Intent) => void) => {
-      emitPointer = emit;
-      return pointerCleanup;
+    attachPointer: vi.fn(
+      (_surface: Surface, emit: (intent: Intent) => void, policy?: WheelPolicy) => {
+        emitPointer = emit;
+        wheelPolicy = policy ?? null;
+        return pointerCleanup;
+      },
+    ),
+    attachKeyboard: vi.fn((_canvas: HTMLCanvasElement, emit: (intent: KeyIntent) => void) => {
+      emitKey = emit;
+      return keyboardCleanup;
     }),
     Picker: vi.fn((pickerDeps: PickerDeps) => {
       picker.deps = pickerDeps;
@@ -345,12 +418,15 @@ export async function createControllerHarness(
   };
   configure?.(deps);
 
-  const network = await createNetworkWithDeps(device, canvas, options, deps);
+  const network = createNetworkWithDeps({ devices: pool, ...options }, deps);
   network.on('deviceLost', (loss) => events.deviceLost.push(loss));
+  network.on('attached', (state) => events.attached.push(state));
+  if (attach) await network.attach(canvas);
 
   return {
     network,
     deps,
+    pool,
     renderer,
     loop,
     rig,
@@ -358,14 +434,32 @@ export async function createControllerHarness(
     canvas,
     surface,
     pointerCleanup,
-    device,
-    presentation,
-    deviceDestroy,
-    deviceLost,
+    keyboardCleanup,
+    presentations,
     events,
+    get device() {
+      return pool.devices[pool.devices.length - 1]!.device;
+    },
+    get presentation() {
+      return presentations[presentations.length - 1]!;
+    },
+    get wheelPolicy() {
+      return wheelPolicy;
+    },
+    loseDevice(info = {}, index = pool.devices.length - 1) {
+      pool.devices[index]!.lost.resolve({
+        reason: 'unknown',
+        message: 'lost for test',
+        ...info,
+      } as GPUDeviceLostInfo);
+    },
     emitPointer(intent: Intent) {
       if (!emitPointer) throw new Error('pointer not attached');
       emitPointer(intent);
+    },
+    emitKey(intent: KeyIntent) {
+      if (!emitKey) throw new Error('keyboard not attached');
+      emitKey(intent);
     },
     destroy() {
       network.destroy();

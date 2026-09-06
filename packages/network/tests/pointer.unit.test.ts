@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   attachPointer,
   DEFAULT_WHEEL_POLICY,
+  MODIFIER_WHEEL_POLICY,
   type Intent,
   type WheelPolicy,
 } from '../src/input/pointer.js';
@@ -604,7 +605,7 @@ describe('attachPointer hover and cancellation', () => {
 describe('wheel policy and delta conversion', () => {
   it('aggregates a wheel burst into one debounced navigation lifecycle', () => {
     vi.useFakeTimers();
-    const h = harness({ isZoom: () => true });
+    const h = harness(() => 'zoom');
 
     fireWheel(h.element, { clientX: 410, clientY: 305, deltaY: 10 });
     vi.advanceTimersByTime(100);
@@ -624,13 +625,13 @@ describe('wheel policy and delta conversion', () => {
   });
 
   it('ignores horizontal zoom no-ops and wheel pans during pointer navigation', () => {
-    const zoom = harness({ isZoom: () => true });
+    const zoom = harness(() => 'zoom');
     fireWheel(zoom.element, { deltaX: 10, deltaY: 0, ctrlKey: true });
     fireWheel(zoom.element, { deltaY: 1_000_000 });
     expect(zoom.intents).toEqual([]);
     zoom.handle.destroy();
 
-    const pan = harness({ isZoom: () => false });
+    const pan = harness(() => 'pan');
     firePointer(pan.element, 'pointerdown', { clientX: 100, clientY: 100 });
     firePointer(pan.element, 'pointermove', { clientX: 110, clientY: 100 });
     fireWheel(pan.element, { deltaY: 0.5 });
@@ -641,7 +642,7 @@ describe('wheel policy and delta conversion', () => {
 
   it('keeps navigation active until overlapping pointer and wheel sources both end', () => {
     vi.useFakeTimers();
-    const h = harness({ isZoom: () => true });
+    const h = harness(() => 'zoom');
 
     firePointer(h.element, 'pointerdown', { clientX: 100, clientY: 100 });
     firePointer(h.element, 'pointermove', { clientX: 110, clientY: 100 });
@@ -677,7 +678,7 @@ describe('wheel policy and delta conversion', () => {
   });
 
   it('normalizes wheel pan deltas across pixel, line, and page modes', () => {
-    const h = harness({ isZoom: () => false });
+    const h = harness(() => 'pan');
 
     fireWheel(h.element, { deltaY: 120, deltaMode: 0 });
     fireWheel(h.element, { deltaY: 3, deltaMode: 1 });
@@ -694,7 +695,7 @@ describe('wheel policy and delta conversion', () => {
   });
 
   it('normalizes wheel zoom direction', () => {
-    const h = harness({ isZoom: () => true });
+    const h = harness(() => 'zoom');
 
     fireWheel(h.element, { deltaY: 120 });
     fireWheel(h.element, { deltaY: -120 });
@@ -703,6 +704,19 @@ describe('wheel policy and delta conversion', () => {
     expect(zooms[0]).toMatchObject({ kind: 'zoom' });
     expect(zooms[0]!.kind === 'zoom' ? zooms[0]!.factor : 0).toBeLessThan(1);
     expect(zooms[1]!.kind === 'zoom' ? zooms[1]!.factor : 0).toBeGreaterThan(1);
+    h.handle.destroy();
+  });
+
+  it('leaves a declined wheel to the page: no default prevented, no transaction', () => {
+    const h = harness(MODIFIER_WHEEL_POLICY);
+
+    const scrolled = fireWheel(h.element, { deltaY: 120 });
+    expect(scrolled.defaultPrevented).toBe(false);
+    expect(h.intents).toEqual([]);
+
+    const zoomed = fireWheel(h.element, { deltaY: 120, ctrlKey: true });
+    expect(zoomed.defaultPrevented).toBe(true);
+    expect(h.intents.map((intent) => intent.kind)).toEqual(['navigationStart', 'zoom']);
     h.handle.destroy();
   });
 });
@@ -720,7 +734,7 @@ describe('attachPointer rotation', () => {
 
     firePointer(h.element, 'pointerup', { button: 2, clientX: 102, clientY: 100 });
 
-    expect(h.intents).toEqual([{ kind: 'contextmenu', event }]);
+    expect(h.intents).toEqual([{ kind: 'contextmenu', event, keyboard: false }]);
     h.handle.destroy();
   });
 
@@ -732,7 +746,7 @@ describe('attachPointer rotation', () => {
     const event = fireContextMenu(h.element, { button: 2, clientX: 100, clientY: 100 });
 
     expect(event.defaultPrevented).toBe(true);
-    expect(h.intents).toEqual([{ kind: 'contextmenu', event }]);
+    expect(h.intents).toEqual([{ kind: 'contextmenu', event, keyboard: false }]);
     h.handle.destroy();
   });
 
@@ -746,18 +760,18 @@ describe('attachPointer rotation', () => {
 
     expect(h.intents).toEqual([]);
     const event = fireContextMenu(h.element);
-    expect(h.intents).toEqual([{ kind: 'contextmenu', event }]);
+    expect(h.intents).toEqual([{ kind: 'contextmenu', event, keyboard: true }]);
     h.handle.destroy();
     vi.useRealTimers();
   });
 
-  it('forwards keyboard contextmenu immediately while idle', () => {
+  it('forwards keyboard contextmenu immediately while idle, marked as keyboard', () => {
     const h = harness();
 
     const event = fireContextMenu(h.element, { clientX: 0, clientY: 0 });
 
     expect(event.defaultPrevented).toBe(true);
-    expect(h.intents).toEqual([{ kind: 'contextmenu', event }]);
+    expect(h.intents).toEqual([{ kind: 'contextmenu', event, keyboard: true }]);
     h.handle.destroy();
   });
 

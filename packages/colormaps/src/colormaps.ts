@@ -208,19 +208,23 @@ export function colormap(name: ColormapName): Colormap {
 /**
  * Builds a CSS `linear-gradient()` from the same evaluator as `colormap`.
  *
- * @param name - Bundled colormap name.
+ * @param map - Bundled colormap name, or any colormap function.
  * @param direction - CSS gradient direction. Default: `"to top"`.
  * @returns A CSS `linear-gradient()` string suitable for legends and swatches.
  *
  * @example
  * ```ts
  * legend.style.background = gradient('magma', 'to right');
+ * swatch.style.background = gradient((t) => [t, 0, 1 - t]);
  * ```
  *
  * Use `to top` for vertical legends and `to right` for horizontal swatches.
  */
-export function gradient(name: ColormapName, direction: 'to top' | 'to right' = 'to top'): string {
-  const fn = colormap(name);
+export function gradient(
+  map: ColormapName | Colormap,
+  direction: 'to top' | 'to right' = 'to top',
+): string {
+  const fn = typeof map === 'function' ? map : colormap(map);
   const stops: string[] = [];
 
   for (let i = 0; i <= 16; i++) {
@@ -258,5 +262,10 @@ function clamp01(value: number): number {
 }
 
 function rgbCss(r: number, g: number, b: number): string {
-  return `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
+  return `rgb(${byte(r)},${byte(g)},${byte(b)})`;
+}
+
+/** An 8-bit channel from a normalized value; non-finite output of a custom map reads as 0. */
+function byte(value: number): number {
+  return Number.isFinite(value) ? Math.round(clamp01(value) * 255) : 0;
 }

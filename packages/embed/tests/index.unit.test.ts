@@ -1,134 +1,63 @@
-import { readFile } from 'node:fs/promises';
+// @vitest-environment jsdom
+
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import { parseNetwork, register } from '../src/index.js';
-import type { Item, Network } from '@latkit/network';
-import type {
-  NetworkData,
-  NetworkElement,
-  NetworkElementEventMap,
-  NetworkJSON,
-} from '../src/index.js';
-
-type SharedNetworkMember = Extract<keyof NetworkElement, keyof Network>;
+import * as embed from '../src/index.js';
+import type { MonitorElement, NetworkElement } from '../src/index.js';
+import { htmlName, optionAttributes, parseOptionAttribute } from '../src/attributes.js';
 
 describe('embed package entrypoint', () => {
-  it('exports the side-effect-free data boundary', async () => {
-    const entrypoint = await import('../src/index.js');
-
-    expect(Object.keys(entrypoint)).toEqual(['parseNetwork', 'register']);
-    expect(parseNetwork).toBeTypeOf('function');
-    expect(register).toBeTypeOf('function');
-  });
-
-  it('publishes the root, registration, standalone, and stable asset subpaths', async () => {
-    const manifest = JSON.parse(
-      await readFile(new URL('../package.json', import.meta.url), 'utf8'),
-    ) as {
-      exports: Record<string, unknown>;
-      files: readonly string[];
-      sideEffects: readonly string[];
-      types: string;
-    };
-
-    expect(manifest.exports).toEqual({
-      '.': {
-        types: './dist/index.d.ts',
-        import: './dist/index.js',
-      },
-      './register': {
-        types: './dist/register.d.ts',
-        import: './dist/register.js',
-      },
-      './embed.js': {
-        types: './dist/register.d.ts',
-        import: './dist/embed.js',
-      },
-      './assets/*': './dist/assets/*',
-    });
-    expect(manifest.types).toBe('./dist/index.d.ts');
-    expect(manifest.files).toEqual(['dist', 'README.md']);
-    expect(manifest.sideEffects).toEqual(['./dist/register.js', './dist/embed.js']);
-  });
-
-  it('exposes exact decoded and serialized root types', () => {
-    expectTypeOf<ReturnType<typeof parseNetwork>>().toEqualTypeOf<NetworkData>();
-    expectTypeOf<NetworkJSON['topology']['edges']>().toMatchTypeOf<
-      readonly number[] | { readonly base64: string }
-    >();
+  it('exports registration, both parsers, and nothing else at runtime', () => {
+    expect(Object.keys(embed).sort()).toEqual(['parseNetwork', 'parseSeries', 'register']);
+    expectTypeOf<NetworkElement['network']>().not.toBeAny();
+    expectTypeOf<MonitorElement['monitor']>().not.toBeAny();
     expectTypeOf<NetworkElement['ready']>().toEqualTypeOf<Promise<void>>();
-    expectTypeOf<NetworkElement['data']>().toEqualTypeOf<NetworkData | null>();
   });
 
-  it('mirrors every intentionally exposed Network member exactly', () => {
-    expectTypeOf<SharedNetworkMember>().toEqualTypeOf<
-      | 'projections'
-      | 'geographic'
-      | 'orbiting'
-      | 'setOptions'
-      | 'setBorders'
-      | 'setChannel'
-      | 'setChannelDomain'
-      | 'getChannelDomain'
-      | 'setProjection'
-      | 'fit'
-      | 'reveal'
-      | 'neighborhood'
-      | 'select'
-      | 'panBy'
-      | 'rotateBy'
-      | 'getPose'
-      | 'setPose'
-      | 'zoomBy'
-      | 'orbit'
-      | 'pause'
-      | 'resume'
-    >();
+  it('registers both tags idempotently', () => {
+    embed.register();
+    const network = customElements.get('latkit-network');
+    const monitor = customElements.get('latkit-monitor');
 
-    expectTypeOf<NetworkElement['projections']>().toEqualTypeOf<Network['projections']>();
-    expectTypeOf<NetworkElement['geographic']>().toEqualTypeOf<Network['geographic']>();
-    expectTypeOf<NetworkElement['orbiting']>().toEqualTypeOf<Network['orbiting']>();
-    expectTypeOf<NetworkElement['setOptions']>().toEqualTypeOf<Network['setOptions']>();
-    expectTypeOf<NetworkElement['setBorders']>().toEqualTypeOf<Network['setBorders']>();
-    expectTypeOf<NetworkElement['setChannel']>().toEqualTypeOf<Network['setChannel']>();
-    expectTypeOf<NetworkElement['setChannelDomain']>().toEqualTypeOf<Network['setChannelDomain']>();
-    expectTypeOf<NetworkElement['getChannelDomain']>().toEqualTypeOf<Network['getChannelDomain']>();
-    expectTypeOf<NetworkElement['setProjection']>().toEqualTypeOf<Network['setProjection']>();
-    expectTypeOf<NetworkElement['fit']>().toEqualTypeOf<Network['fit']>();
-    expectTypeOf<NetworkElement['reveal']>().toEqualTypeOf<Network['reveal']>();
-    expectTypeOf<NetworkElement['neighborhood']>().toEqualTypeOf<Network['neighborhood']>();
-    expectTypeOf<NetworkElement['select']>().toEqualTypeOf<Network['select']>();
-    expectTypeOf<NetworkElement['panBy']>().toEqualTypeOf<Network['panBy']>();
-    expectTypeOf<NetworkElement['rotateBy']>().toEqualTypeOf<Network['rotateBy']>();
-    expectTypeOf<NetworkElement['getPose']>().toEqualTypeOf<Network['getPose']>();
-    expectTypeOf<NetworkElement['setPose']>().toEqualTypeOf<Network['setPose']>();
-    expectTypeOf<NetworkElement['zoomBy']>().toEqualTypeOf<Network['zoomBy']>();
-    expectTypeOf<NetworkElement['orbit']>().toEqualTypeOf<Network['orbit']>();
-    expectTypeOf<NetworkElement['pause']>().toEqualTypeOf<Network['pause']>();
-    expectTypeOf<NetworkElement['resume']>().toEqualTypeOf<Network['resume']>();
+    embed.register();
+
+    expect(network).toBeTypeOf('function');
+    expect(monitor).toBeTypeOf('function');
+    expect(customElements.get('latkit-network')).toBe(network);
+    expect(customElements.get('latkit-monitor')).toBe(monitor);
   });
 
-  it('publishes the exact typed DOM event map', () => {
-    expectTypeOf<keyof NetworkElementEventMap>().toEqualTypeOf<
-      'load' | 'error' | 'hover' | 'select' | 'zoom' | 'orbit' | 'deviceLost' | 'pipelineError'
-    >();
-    expectTypeOf<NetworkElementEventMap['load']>().toEqualTypeOf<Event>();
-    expectTypeOf<NetworkElementEventMap['error']>().toEqualTypeOf<
-      CustomEvent<{ readonly error: unknown }>
-    >();
-    expectTypeOf<NetworkElementEventMap['hover']>().toEqualTypeOf<CustomEvent<Item | null>>();
-    expectTypeOf<NetworkElementEventMap['select']>().toEqualTypeOf<CustomEvent<Item | null>>();
-    expectTypeOf<NetworkElementEventMap['zoom']>().toEqualTypeOf<CustomEvent<boolean>>();
-    expectTypeOf<NetworkElementEventMap['orbit']>().toEqualTypeOf<CustomEvent<boolean>>();
-    expectTypeOf<NetworkElementEventMap['deviceLost']>().toEqualTypeOf<
-      CustomEvent<{
-        readonly reason: string;
-        readonly message: string;
-        readonly recovering: boolean;
-      }>
-    >();
-    expectTypeOf<NetworkElementEventMap['pipelineError']>().toEqualTypeOf<
-      CustomEvent<{ readonly family: 'plane' | 'globe'; readonly cause: unknown }>
-    >();
+  it('derives attribute names and parsers from an option registry', () => {
+    expect(htmlName('vertexLodPx')).toBe('vertex-lod-px');
+    const attributes = optionAttributes({
+      colormap: { kind: 'colormap', default: () => [0, 0, 0], live: true },
+      devices: { kind: 'pool', default: {}, live: false },
+      edgeScale: { kind: 'nonnegative', default: 1, live: true },
+      msaa: { kind: 'enum', values: [1, 4], default: undefined, live: false },
+    });
+    expect(attributes.map((entry) => entry.attribute)).toEqual(['edge-scale', 'msaa']);
+
+    expect(parseOptionAttribute({ kind: 'boolean', default: false, live: true }, '')).toBe(true);
+    expect(parseOptionAttribute({ kind: 'boolean', default: false, live: true }, 'false')).toBe(
+      false,
+    );
+    expect(parseOptionAttribute({ kind: 'boolean', default: false, live: true }, 'yes')).toBe(
+      undefined,
+    );
+    expect(parseOptionAttribute({ kind: 'finite', default: 0, live: true }, ' 1e2 ')).toBe(100);
+    expect(parseOptionAttribute({ kind: 'finite', default: 0, live: true }, '0x10')).toBeNaN();
+    expect(parseOptionAttribute({ kind: 'rgba', default: [], live: true }, '1 0 0 1')).toEqual([
+      1, 0, 0, 1,
+    ]);
+    expect(parseOptionAttribute({ kind: 'rgba', default: [], live: true }, '1 0')).toBe(undefined);
+    expect(parseOptionAttribute({ kind: 'domain', default: null, live: true }, '0 5')).toEqual([
+      0, 5,
+    ]);
+    expect(
+      parseOptionAttribute({ kind: 'enum', values: [1, 4], default: undefined, live: false }, '4'),
+    ).toBe(4);
+    expect(
+      parseOptionAttribute({ kind: 'enum', values: ['a', 'b'], default: 'a', live: true }, 'b'),
+    ).toBe('b');
   });
 });

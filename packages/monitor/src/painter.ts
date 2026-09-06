@@ -213,19 +213,22 @@ export class LanePainter {
     this.device.queue.writeBuffer(this.#xnorm, 0, xnorm.buffer, xnorm.byteOffset, xnorm.byteLength);
   }
 
-  uploadFocus(values: Float32Array, xnorm: Float32Array): void {
+  /** Write focus-trace frames starting at `firstFrame`; the slices are views, never copies. */
+  uploadFocus(values: Float32Array, xnorm: Float32Array, firstFrame = 0): void {
     if (!this.#focusValues || !this.#focusXnorm)
       throw new Error('monitor painter: no slabs reserved');
+    if (values.length === 0) return;
+    const byteOffset = firstFrame * 4;
     this.device.queue.writeBuffer(
       this.#focusValues,
-      0,
+      byteOffset,
       values.buffer,
       values.byteOffset,
       values.byteLength,
     );
     this.device.queue.writeBuffer(
       this.#focusXnorm,
-      0,
+      byteOffset,
       xnorm.buffer,
       xnorm.byteOffset,
       xnorm.byteLength,

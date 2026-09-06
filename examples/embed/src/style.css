@@ -78,7 +78,6 @@ main {
 
 h1,
 h2,
-h3,
 p {
   margin-top: 0;
 }
@@ -92,6 +91,13 @@ h1 {
   line-height: 0.98;
 }
 
+h2 {
+  color: #edf1f5;
+  font-size: clamp(1.5rem, 4vw, 2.25rem);
+  font-weight: 520;
+  letter-spacing: -0.03em;
+}
+
 .intro > p:last-child {
   max-width: 68ch;
   margin-bottom: 0;
@@ -100,36 +106,73 @@ h1 {
   line-height: 1.65;
 }
 
-kbd {
-  padding: 0.12rem 0.36rem;
-  border: 1px solid #465365;
+code {
+  padding: 0.1rem 0.3rem;
   border-radius: 4px;
   background: #161c25;
   color: #e8edf3;
   font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
-  font-size: 0.85em;
+  font-size: 0.9em;
 }
 
-latkit-network {
-  --latkit-chrome-surface: rgb(10 17 26 / 84%);
-  --latkit-chrome-surface-strong: rgb(10 17 26 / 95%);
-  --latkit-chrome-control: rgb(28 42 57 / 90%);
-  --latkit-chrome-control-hover: #263a52;
-  --latkit-chrome-text: #f2f6fa;
-  --latkit-chrome-muted: #9fadc0;
-  --latkit-chrome-border: #405166;
-  --latkit-chrome-accent: #7cb8ff;
-  --latkit-chrome-focus: #ffffff;
-  --latkit-chrome-radius: 2px;
-  --latkit-chrome-shadow: 0 1px 3px rgb(0 0 0 / 28%);
-  --latkit-chrome-font: inherit;
+.toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+}
 
-  height: min(80vh, 800px);
-  min-height: 560px;
+.toolbar button {
+  padding: 6px 14px;
+  border: 1px solid #2a3543;
+  border-radius: 999px;
+  background: #101720;
+  color: #c7cdd7;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.toolbar button[aria-pressed='true'] {
+  border-color: #7cb8ff;
+  background: #1a2a3d;
+  color: #f2f6fa;
+}
+
+.toolbar button:focus-visible {
+  outline: 2px solid #7cb8ff;
+  outline-offset: 2px;
+}
+
+.readout {
+  margin-inline-start: auto;
+  color: #929eae;
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+}
+
+latkit-network,
+latkit-monitor {
   border: 1px solid #293442;
   border-radius: 14px;
   background: #0d1219;
   box-shadow: 0 28px 80px rgb(0 0 0 / 32%);
+}
+
+latkit-network {
+  block-size: min(80vh, 800px);
+  min-block-size: 480px;
+}
+
+latkit-monitor {
+  block-size: 320px;
+  margin-block-end: 12px;
+}
+
+latkit-network[state='error'],
+latkit-monitor[state='error'] {
+  border-color: #6e3a32;
 }
 
 .fallback {
@@ -163,62 +206,8 @@ latkit-network {
   color: #536173;
 }
 
-.recipes {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
-  margin-top: 68px;
-}
-
-.recipes-heading {
-  grid-column: 1 / -1;
-  margin-bottom: 4px;
-}
-
-.recipes h2 {
-  margin-bottom: 0;
-  color: #edf1f5;
-  font-size: clamp(1.5rem, 4vw, 2.25rem);
-  font-weight: 520;
-  letter-spacing: -0.03em;
-}
-
-.recipes article {
-  min-width: 0;
-  padding: 22px;
-  border: 1px solid #26303c;
-  border-radius: 12px;
-  background: rgb(16 22 30 / 78%);
-}
-
-.recipes h3 {
-  margin-bottom: 8px;
-  color: #e9edf2;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.recipes article > p {
-  min-height: 3em;
-  margin-bottom: 18px;
-  color: #98a4b4;
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-pre {
-  overflow-x: auto;
-  margin: 0;
-  padding: 16px;
-  border: 1px solid #202a36;
-  border-radius: 8px;
-  background: #090d13;
-  color: #c8d7e8;
-  font:
-    12px/1.6 ui-monospace,
-    'SFMono-Regular',
-    Consolas,
-    monospace;
+.pair {
+  margin-top: 56px;
 }
 
 @media (max-width: 760px) {
@@ -232,16 +221,7 @@ pre {
   }
 
   latkit-network {
-    height: 720px;
-    min-height: 520px;
-  }
-
-  .recipes {
-    grid-template-columns: 1fr;
-    margin-top: 52px;
-  }
-
-  .recipes article > p {
-    min-height: 0;
+    block-size: 560px;
+    min-block-size: 480px;
   }
 }
