@@ -1,5 +1,14 @@
 # @latkit/remote
 
+## 0.3.1
+
+### Patch Changes
+
+- 196e170: `connectSource` forwards a run's abort signal to the runner stream, so cancelling a run stops the serving side, and `reopen` transfers an owned copy of the bytes instead of a view over a buffer the caller may still hold.
+- Updated dependencies [196e170]
+- Updated dependencies [196e170]
+  - @latkit/model@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes
