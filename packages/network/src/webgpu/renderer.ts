@@ -34,7 +34,7 @@ import {
 } from '../projections.js';
 
 import { FrameResources } from './frame-resources.js';
-import { encodeNetworkFrame } from './frame-encoder.js';
+import { encodeNetworkFrame, type FramePasses } from './frame-encoder.js';
 import {
   buildProjectionPipelines as buildProjectionPipelineSet,
   type ProjectionPipelineSet,
@@ -144,12 +144,13 @@ export class Renderer {
 
   private bound = false;
   private destroyed = false;
-  private visibility = {
+  private passes: FramePasses = {
     vertices: DEFAULT_OPTIONS.vertices,
     edges: DEFAULT_OPTIONS.edges,
     poles: DEFAULT_OPTIONS.poles,
     borders: DEFAULT_OPTIONS.borders,
     earthAxis: DEFAULT_OPTIONS.earthAxis,
+    layering: DEFAULT_OPTIONS.layering,
   };
 
   /** Allocates shared layouts, static geometry, uniforms, and the initial projection pipeline build. */
@@ -325,19 +326,9 @@ export class Renderer {
     });
   }
 
-  /** Updates pass visibility flags used when encoding future frames. */
-  setVisible(opts: {
-    vertices?: boolean;
-    edges?: boolean;
-    poles?: boolean;
-    borders?: boolean;
-    earthAxis?: boolean;
-  }): void {
-    if (opts.vertices !== undefined) this.visibility.vertices = opts.vertices;
-    if (opts.edges !== undefined) this.visibility.edges = opts.edges;
-    if (opts.poles !== undefined) this.visibility.poles = opts.poles;
-    if (opts.borders !== undefined) this.visibility.borders = opts.borders;
-    if (opts.earthAxis !== undefined) this.visibility.earthAxis = opts.earthAxis;
+  /** Updates the passes drawn, and their layering, when encoding future frames. */
+  setPasses(passes: Partial<FramePasses>): void {
+    Object.assign(this.passes, passes);
   }
 
   /** Replaces the optional geographic border buffers. */
@@ -550,7 +541,7 @@ export class Renderer {
       segmentsBindGroup: this.segmentsBindGroup,
       topology: this.topology,
       borders: this.borders,
-      visibility: this.visibility,
+      passes: this.passes,
       unitQuad: this.unitQuad,
       edgeStrip: this.edgeStrip,
       focusedVertices: this.focusedVertices,
@@ -565,9 +556,7 @@ export class Renderer {
   /** Returns whether the height-pole pass has visible output for this frame. */
   private computePolesRendered(uniforms: FrameUniforms): boolean {
     return (
-      this.visibility.poles &&
-      hasSceneDepth(uniforms.rawF32) &&
-      hasVertexHeightChannel(uniforms.rawU32)
+      this.passes.poles && hasSceneDepth(uniforms.rawF32) && hasVertexHeightChannel(uniforms.rawU32)
     );
   }
 
@@ -577,7 +566,7 @@ export class Renderer {
     out.length = 0;
     if (
       !this.topology ||
-      !this.visibility.edges ||
+      !this.passes.edges ||
       (uniforms.rawU32[W_FOCUS_FLAGS]! & FLAG_FOCUS_ENABLED) === 0
     ) {
       return;
@@ -591,7 +580,7 @@ export class Renderer {
   private collectFocusedVertices(uniforms: FrameUniforms): void {
     const out = this.focusedVertices;
     out.length = 0;
-    if (!this.topology || !this.visibility.vertices) return;
+    if (!this.topology || !this.passes.vertices) return;
     const flags = uniforms.rawU32[W_FOCUS_FLAGS]!;
     if ((flags & FLAG_FOCUS_ENABLED) === 0) return;
 

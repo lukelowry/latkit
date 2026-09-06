@@ -135,6 +135,10 @@ interface ChannelRegion {
   vSizeMin: number;
   /** Vertex size input-domain reciprocal scale. */
   vSizeScale: number;
+  /** Vertex size output-range minimum multiplier. */
+  sizeOutMin: number;
+  /** Vertex size output-range span. */
+  sizeOutScale: number;
   /** Float-word offset for vertexVisible channel storage. */
   vVisibleOffset: number;
   /** Float-word offset for edgeVisible channel storage. */
@@ -167,6 +171,8 @@ export interface Uniforms {
   readonly channel: ChannelRegion;
   /** Resting vertex color when the vertexColor channel carries no signal. */
   readonly baseVertexColor: Float32Array;
+  /** Resting edge color when the edgeColor channel carries no signal; read only under FLAG_BASE_EDGE_COLOR. */
+  readonly baseEdgeColor: Float32Array;
   /** Shared graticule line color at bytes 304..319, RGBA in 0..1. */
   readonly gridColor: Float32Array;
   /** Tilt ground plane and globe sphere base tone at bytes 320..335. */
@@ -176,7 +182,7 @@ export interface Uniforms {
 }
 
 /** Total byte length of the packed uniform buffer shared with WGSL. */
-export const UNIFORM_BUFFER_BYTES = 416;
+export const UNIFORM_BUFFER_BYTES = 432;
 
 /** Display flag bit for daylight shading; must match uniforms.wgsl. */
 export const FLAG_DAYLIGHT = 1;
@@ -190,6 +196,8 @@ export const FLAG_GRATICULE = 2;
  * background clips its ground to the world rect on this bit.
  */
 export const FLAG_GEOGRAPHIC = 4;
+/** Display flag bit that paints edges without a color channel in `base_edge_color`. */
+export const FLAG_BASE_EDGE_COLOR = 8;
 /** Focus flag bit that enables hover/selection rendering. */
 export const FLAG_FOCUS_ENABLED = 1;
 /** Focus flag bit that includes selected edge endpoints. */
@@ -400,6 +408,9 @@ export const UNIFORM_LAYOUT: readonly UniformField[] = [
     word: 101,
     accessors: a('channel', 'eVisibleOffset', 'u'),
   },
+  { name: 'size_out_min', type: 'f32', word: 102, accessors: a('channel', 'sizeOutMin') },
+  { name: 'size_out_scale', type: 'f32', word: 103, accessors: a('channel', 'sizeOutScale') },
+  { name: 'base_edge_color', type: 'vec4f', word: 104 },
 ];
 
 /**
@@ -461,6 +472,8 @@ export const W_V_HEIGHT_MODE = wordOf('v_height_mode');
 export const W_V_SIZE_MODE = wordOf('v_size_mode');
 export const W_V_SIZE_MIN = wordOf('v_size_min');
 export const W_V_SIZE_SCALE = wordOf('v_size_scale');
+export const W_SIZE_OUT_MIN = wordOf('size_out_min');
+export const W_SIZE_OUT_SCALE = wordOf('size_out_scale');
 export const W_FOCUS_FLAGS = wordOf('focus_flags');
 export const W_HEIGHT_OUT_MIN = wordOf('height_out_min');
 export const W_HEIGHT_OUT_SCALE = wordOf('height_out_scale');
@@ -580,6 +593,7 @@ export function createUniforms(): Uniforms {
     focus: regions.focus as unknown as FocusRegion,
     channel: regions.channel as unknown as ChannelRegion,
     baseVertexColor: vec4View('base_vertex_color'),
+    baseEdgeColor: vec4View('base_edge_color'),
     gridColor: vec4View('grid_color'),
     surfaceColor: vec4View('surface_color'),
     borderColor: vec4View('border_color'),

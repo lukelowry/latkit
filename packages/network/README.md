@@ -67,20 +67,26 @@ construction. `OPTIONS` carries each option's default, validation kind, and whet
 ```ts
 network.setOptions({
   colormap: colormap('magma'),
-  baseColor: [0.5, 0.5, 0.5, 1],
+  baseVertexColor: [0.5, 0.5, 0.5, 1],
+  baseEdgeColor: null, // average the endpoint colors
+  layering: 'stacked', // vertices over poles over edges; 'depth' lets 3D occlusion decide
   vertexScale: 1.25,
   edgeScale: 0.8,
-  heightScale: 1.5,
   heightRange: [0, 0.8],
-  dashPeriodPx: 12,
+  sizeRange: [0.5, 2],
+  sunTime: null, // follow the clock, or pin an instant in ms since the epoch
+  animationMs: 500,
+  orbitRate: 1,
+  revealPaddingPx: 48,
+  pickRadiusPx: 10,
   keyboard: true,
   motion: 'auto',
   wheel: 'modifier',
 });
 ```
 
-`keyboard` attaches the canvas key map, `motion` follows `prefers-reduced-motion`, and `wheel`
-decides whether a plain wheel zooms or scrolls the page; the reference documents each.
+A nullable option takes `null` to hand the decision back to the controller. The reference
+documents each option.
 
 ## Selection and navigation
 
@@ -92,7 +98,7 @@ without changing zoom or projection, and with `neighbors` frames it with what to
 const item = { kind: 'vertex', index: 1 } as const;
 
 network.select(item);
-network.reveal(item, { paddingPx: 48, animate: true });
+network.reveal(item, { animate: true });
 network.reveal(item, { neighbors: true, animate: true });
 network.fit(network.neighborhood(item), true);
 network.select(null);

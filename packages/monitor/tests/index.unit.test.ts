@@ -15,7 +15,15 @@ describe('monitor package entrypoint', () => {
   it('re-exports the public controller factory, the option registry, and types', () => {
     expect(createMonitor).toBeTypeOf('function');
     expect(validateOptions).toBeTypeOf('function');
-    expect(Object.keys(OPTIONS)).toEqual(['devices', 'colormap', 'lineWidthPx', 'valueRange']);
+    expect(Object.keys(OPTIONS)).toEqual([
+      'devices',
+      'colormap',
+      'lineWidthPx',
+      'valueRange',
+      'timeRange',
+      'focusColor',
+      'unselectedAlpha',
+    ]);
     expect(Object.isFrozen(OPTIONS)).toBe(true);
     expect(OPTIONS.devices.live).toBe(false);
     expect(OPTIONS.valueRange).toMatchObject({ kind: 'domain', default: null, live: true });

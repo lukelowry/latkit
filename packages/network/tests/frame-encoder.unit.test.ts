@@ -28,9 +28,9 @@ function makeInputs(overrides: Partial<EncodeNetworkFrameInputs> = {}) {
       vertex: {} as GPURenderPipeline,
       vertexHalo: {} as GPURenderPipeline,
       vertexFocus: {} as GPURenderPipeline,
-      edge: {} as GPURenderPipeline,
+      edge: { stacked: {} as GPURenderPipeline, depth: {} as GPURenderPipeline },
       edgeHalo: {} as GPURenderPipeline,
-      edgeFocus: {} as GPURenderPipeline,
+      edgeFocus: { stacked: {} as GPURenderPipeline, depth: {} as GPURenderPipeline },
       pole: {} as GPURenderPipeline,
       borders: {} as GPURenderPipeline,
       bg: {} as GPURenderPipeline,
@@ -41,7 +41,14 @@ function makeInputs(overrides: Partial<EncodeNetworkFrameInputs> = {}) {
     segmentsBindGroup: {} as GPUBindGroup,
     topology: { vertexCount: 0, segmentCount: 7 },
     borders: null,
-    visibility: { vertices: false, edges: true, poles: false, borders: false, earthAxis: false },
+    passes: {
+      vertices: false,
+      edges: true,
+      poles: false,
+      borders: false,
+      earthAxis: false,
+      layering: 'stacked',
+    },
     unitQuad: {} as GPUBuffer,
     edgeStrip: {} as GPUBuffer,
     focusedVertices: [],
@@ -55,7 +62,14 @@ function makeInputs(overrides: Partial<EncodeNetworkFrameInputs> = {}) {
 describe('encodeNetworkFrame edge draws', () => {
   it('always draws the background surface before any overlay', () => {
     const { inputs, rp, draw } = makeInputs({
-      visibility: { vertices: false, edges: false, poles: false, borders: false, earthAxis: false },
+      passes: {
+        vertices: false,
+        edges: false,
+        poles: false,
+        borders: false,
+        earthAxis: false,
+        layering: 'stacked',
+      },
     });
 
     encodeNetworkFrame(inputs);
@@ -88,7 +102,14 @@ describe('encodeNetworkFrame edge draws', () => {
   it('does not bind the edge segment group for vertex-only frames', () => {
     const { inputs, rp, draw } = makeInputs({
       topology: { vertexCount: 3, segmentCount: 7 },
-      visibility: { vertices: true, edges: false, poles: false, borders: false, earthAxis: false },
+      passes: {
+        vertices: true,
+        edges: false,
+        poles: false,
+        borders: false,
+        earthAxis: false,
+        layering: 'stacked',
+      },
     });
 
     encodeNetworkFrame(inputs);
@@ -110,16 +131,23 @@ describe('encodeNetworkFrame edge draws', () => {
         vertex: {} as GPURenderPipeline,
         vertexHalo: {} as GPURenderPipeline,
         vertexFocus: {} as GPURenderPipeline,
-        edge: {} as GPURenderPipeline,
+        edge: { stacked: {} as GPURenderPipeline, depth: {} as GPURenderPipeline },
         edgeHalo: {} as GPURenderPipeline,
-        edgeFocus: {} as GPURenderPipeline,
+        edgeFocus: { stacked: {} as GPURenderPipeline, depth: {} as GPURenderPipeline },
         pole: {} as GPURenderPipeline,
         borders,
         bg,
         earthAxis,
       },
       borders: borderBuffers as never,
-      visibility: { vertices: false, edges: false, poles: false, borders: true, earthAxis: true },
+      passes: {
+        vertices: false,
+        edges: false,
+        poles: false,
+        borders: true,
+        earthAxis: true,
+        layering: 'stacked',
+      },
     });
 
     encodeNetworkFrame(inputs);

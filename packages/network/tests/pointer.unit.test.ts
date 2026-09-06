@@ -60,7 +60,7 @@ function harness(policy?: WheelPolicy) {
     destroy: () => {},
   };
   const intents: Intent[] = [];
-  const handle = attachPointer(surface, (i) => intents.push(i), policy);
+  const handle = attachPointer(surface, (i) => intents.push(i), { wheel: policy });
   return { element, intents, handle };
 }
 

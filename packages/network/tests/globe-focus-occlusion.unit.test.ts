@@ -28,7 +28,7 @@ describe('globe focus and occlusion shader contract', () => {
   });
 
   it('depth-tests halos against scene depth without writing it', () => {
-    const halo = pipelinesSrc.slice(pipelinesSrc.indexOf('const dsHalo'));
+    const halo = pipelinesSrc.slice(pipelinesSrc.indexOf('const dsOverlay'));
     expect(halo).toContain('depthWriteEnabled: false');
     expect(halo).toContain("depthCompare: 'less-equal'");
   });

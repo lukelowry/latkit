@@ -30,9 +30,21 @@ export interface UniformValues {
   readonly elementCount: number;
   readonly rangeMin: number;
   readonly rangeScale: number;
+  /** Time window over the normalized axis: `x = (xnorm - windowMin) * windowScale`. */
+  readonly windowMin: number;
+  readonly windowScale: number;
+  /** Focus trace tint, or an alpha below zero to brighten the trace's own color. */
+  readonly focusColor: readonly [number, number, number, number];
+  /** History trace alpha: `unselectedAlpha` while an element is selected, else 1. */
+  readonly alpha: number;
 }
 
-const UNIFORM_BYTES = 24; // size: vec2f, lineWidth: f32, elementCount: u32, rangeMin: f32, rangeScale: f32
+/**
+ * `struct Uniforms` in segment.wgsl: size vec2f (0), line_width (8), element_count (12),
+ * range_min (16), range_scale (20), window_min (24), window_scale (28), focus_color vec4f (32),
+ * alpha (48); the struct rounds to 64.
+ */
+const UNIFORM_BYTES = 64;
 
 export class LanePainter {
   readonly device: GPUDevice;
@@ -90,7 +102,7 @@ export class LanePainter {
         fragment: { module, entryPoint, targets: [{ format, blend }] },
         primitive: { topology: 'triangle-strip' },
       });
-    this.#historyPipeline = pipeline('monitor-history', 'fs_main');
+    this.#historyPipeline = pipeline('monitor-history', 'fs_history');
     this.#focusPipeline = pipeline('monitor-focus', 'fs_focus');
 
     this.#lut = device.createTexture({
@@ -193,6 +205,10 @@ export class LanePainter {
     u32[3] = u.elementCount;
     f32[4] = u.rangeMin;
     f32[5] = u.rangeScale;
+    f32[6] = u.windowMin;
+    f32[7] = u.windowScale;
+    f32.set(u.focusColor, 8);
+    f32[12] = u.alpha;
     this.device.queue.writeBuffer(
       target === 'history' ? this.#historyUniform : this.#focusUniform,
       0,

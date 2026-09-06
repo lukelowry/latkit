@@ -15,8 +15,8 @@ import { createTangent, ZOOM_SLOT } from './projection.js';
 /** Cubic smoothstep: C1 at both ends, zero derivative at t=0 and t=1. */
 const smoothStep = (t: number): number => t * t * (3 - 2 * t);
 
-/** Duration of the fit-to-bounds transition in ms. */
-const FIT_MS = 500;
+/** Animation duration before the rig supplies the live `animationMs` option. */
+const DEFAULT_ANIMATION_MS = 500;
 
 /** Coast decay rate per ms; 0.008 approximates exp(-1) in ~125ms. */
 const COAST_K = 0.008;
@@ -118,10 +118,11 @@ export class Camera {
   /** Camera state at `lastDragT`, retained across too-dense spatial samples. */
   private readonly velocityState: CameraState;
 
-  /** Create a camera bound to a projection and its GPU camera region. */
+  /** Create a camera bound to a projection, its GPU camera region, and the live animation duration. */
   constructor(
     private readonly proj: CameraProjection,
     private readonly region: CameraRegion,
+    private readonly animationMs: () => number = () => DEFAULT_ANIMATION_MS,
   ) {
     // Buffers are sized by the projection; the motion machinery is dimension-blind.
     this.current = new Float64Array(proj.stateSize) as CameraState;
@@ -509,7 +510,7 @@ export class Camera {
   tick(now: number, vp: Viewport): void {
     if (this.motion.kind === 'fitting') {
       // Fit drives `current` directly; chase is paused.
-      const t = Math.min(1, (now - this.motion.t0) / FIT_MS);
+      const t = Math.min(1, (now - this.motion.t0) / Math.max(this.animationMs(), 1));
       this.proj.mix(this.current, this.motion.from, this.motion.to, smoothStep(t));
       if (t >= 1) {
         this.target.set(this.current);

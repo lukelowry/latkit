@@ -36,7 +36,7 @@ async function main(): Promise<void> {
     daylight: true,
     graticule: false,
     borders: false,
-    baseColor: [0.36, 0.4, 0.46, 1],
+    baseVertexColor: [0.36, 0.4, 0.46, 1],
     colormap: colormap(EXAMPLE_COLORMAPS[0]!),
   });
 
@@ -163,7 +163,25 @@ function wireToggles(net: Network, setHeight: (on: boolean) => void): void {
     { label: 'graticule', on: false, apply: (v) => net.setOptions({ graticule: v }) },
     { label: 'earth axis', on: true, apply: (v) => net.setOptions({ earthAxis: v }) },
     { label: 'daylight', on: true, apply: (v) => net.setOptions({ daylight: v }) },
+    // A pinned sun holds the terminator still; null follows the clock.
+    {
+      label: 'noon sun',
+      on: false,
+      apply: (v) => net.setOptions({ sunTime: v ? Date.UTC(2026, 5, 21, 12) : null }),
+    },
     { label: 'height', on: false, apply: setHeight },
+    // Stacked layering keeps vertices over edges everywhere; depth lets 3D occlusion decide.
+    {
+      label: 'depth order',
+      on: false,
+      apply: (v) => net.setOptions({ layering: v ? 'depth' : 'stacked' }),
+    },
+    // A base edge color replaces the endpoint-color average.
+    {
+      label: 'muted edges',
+      on: false,
+      apply: (v) => net.setOptions({ baseEdgeColor: v ? [0.3, 0.32, 0.36, 1] : null }),
+    },
   ];
   const row = document.getElementById('toggles') as HTMLElement;
 

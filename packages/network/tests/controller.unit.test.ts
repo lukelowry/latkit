@@ -6,6 +6,7 @@ import type { Item } from '@latkit/model';
 
 import type { ControllerDeps, Events, Options } from '../src/controller.js';
 import {
+  FLAG_BASE_EDGE_COLOR,
   FLAG_DAYLIGHT,
   FLAG_FOCUS_ENABLED,
   FLAG_FOCUS_HOVER_ENDPOINTS,
@@ -122,7 +123,7 @@ describe('attach and detach', () => {
       'edgeDash',
     ]);
     expect(h.renderer.setBorders).toHaveBeenLastCalledWith(borders);
-    expect(h.renderer.visibility).toMatchObject({ vertices: false, borders: true });
+    expect(h.renderer.passes).toMatchObject({ vertices: false, borders: true });
     expect(h.loop.frameNow).toHaveBeenCalled();
     expect(h.deps.attachKeyboard).toHaveBeenCalledWith(h.canvas, expect.any(Function));
   });
@@ -354,14 +355,14 @@ describe('createNetwork controller', () => {
       earthAxis: false,
       graticule: true,
       daylight: false,
-      baseColor: [0.1, 0.2, 0.3, 1],
+      baseVertexColor: [0.1, 0.2, 0.3, 1],
       colormap: (t) => [t, 0, 1 - t],
       graticuleColor: [0.2, 0.3, 0.4, 1],
       surfaceColor: [0.3, 0.4, 0.5, 1],
       borderColor: [0.4, 0.5, 0.6, 1],
     });
 
-    expect(h.renderer.visibility).toMatchObject({
+    expect(h.renderer.passes).toMatchObject({
       vertices: false,
       edges: true,
       poles: false,
@@ -384,8 +385,8 @@ describe('createNetwork controller', () => {
 
     h.network.setOptions({ vertices: false, graticule: true, earthAxis: false });
 
-    expect(h.renderer.visibility.vertices).toBe(false);
-    expect(h.renderer.visibility.earthAxis).toBe(false);
+    expect(h.renderer.passes.vertices).toBe(false);
+    expect(h.renderer.passes.earthAxis).toBe(false);
     expect(h.loop.uniforms.light.flags & FLAG_GRATICULE).toBe(FLAG_GRATICULE);
     expect(h.loop.wake).toHaveBeenCalled();
   });
@@ -423,62 +424,62 @@ describe('createNetwork controller', () => {
 
   it('filters construction-only msaa and devices from live option patches', async () => {
     const h = await makeHarness({ msaa: 4 });
-    h.renderer.setVisible.mockClear();
+    h.renderer.setPasses.mockClear();
     h.loop.wake.mockClear();
 
     h.network.setOptions({ msaa: 1, devices: fakePool(), vertices: false });
 
     expect(h.deps.Renderer).toHaveBeenCalledOnce();
     expect(h.deps.Renderer).toHaveBeenCalledWith(h.presentation, 4);
-    expect(h.renderer.visibility.vertices).toBe(false);
-    expect(h.renderer.setVisible).toHaveBeenCalledOnce();
+    expect(h.renderer.passes.vertices).toBe(false);
+    expect(h.renderer.setPasses).toHaveBeenCalledOnce();
     expect(h.loop.wake).toHaveBeenCalledOnce();
   });
 
   it('keeps empty and construction-only live option patches inert', async () => {
     const h = await makeHarness({ msaa: 4 });
-    h.renderer.setVisible.mockClear();
+    h.renderer.setPasses.mockClear();
     h.loop.wake.mockClear();
 
     h.network.setOptions({});
     h.network.setOptions({ msaa: 1 });
 
-    expect(h.renderer.setVisible).not.toHaveBeenCalled();
+    expect(h.renderer.setPasses).not.toHaveBeenCalled();
     expect(h.loop.wake).not.toHaveBeenCalled();
   });
 
   it('validates a complete live patch before mutating renderer state', async () => {
     const h = await makeHarness();
-    h.renderer.setVisible.mockClear();
+    h.renderer.setPasses.mockClear();
     h.renderer.writeColormap.mockClear();
     h.loop.wake.mockClear();
     const uniformState = new Uint8Array(h.loop.uniforms.raw).slice();
-    const visibility = { ...h.renderer.visibility };
+    const passes = { ...h.renderer.passes };
 
     expect(() => h.network.setOptions({ vertices: false, terminatorWidth: -1 })).toThrow(
       RangeError,
     );
 
-    expect(h.renderer.visibility).toEqual(visibility);
+    expect(h.renderer.passes).toEqual(passes);
     expect(new Uint8Array(h.loop.uniforms.raw)).toEqual(uniformState);
-    expect(h.renderer.setVisible).not.toHaveBeenCalled();
+    expect(h.renderer.setPasses).not.toHaveBeenCalled();
     expect(h.renderer.writeColormap).not.toHaveBeenCalled();
     expect(h.loop.wake).not.toHaveBeenCalled();
   });
 
   it('samples a colormap completely before applying any part of its option patch', async () => {
     const h = await makeHarness();
-    h.renderer.setVisible.mockClear();
+    h.renderer.setPasses.mockClear();
     h.renderer.writeColormap.mockClear();
     h.loop.wake.mockClear();
     const uniformState = new Uint8Array(h.loop.uniforms.raw).slice();
-    const visibility = { ...h.renderer.visibility };
+    const passes = { ...h.renderer.passes };
     const failure = new Error('colormap failed');
 
     expect(() =>
       h.network.setOptions({
         vertices: false,
-        baseColor: [1, 0, 0, 1],
+        baseVertexColor: [1, 0, 0, 1],
         colormap: (t) => {
           if (t > 0) throw failure;
           return [0, 0, 0];
@@ -486,9 +487,9 @@ describe('createNetwork controller', () => {
       }),
     ).toThrow(failure);
 
-    expect(h.renderer.visibility).toEqual(visibility);
+    expect(h.renderer.passes).toEqual(passes);
     expect(new Uint8Array(h.loop.uniforms.raw)).toEqual(uniformState);
-    expect(h.renderer.setVisible).not.toHaveBeenCalled();
+    expect(h.renderer.setPasses).not.toHaveBeenCalled();
     expect(h.renderer.writeColormap).not.toHaveBeenCalled();
     expect(h.loop.wake).not.toHaveBeenCalled();
   });
@@ -748,7 +749,7 @@ describe('createNetwork controller', () => {
     h.loop.wake.mockClear();
 
     h.network.setBorders({ vertices: new Uint8Array(0), indices: new Uint32Array(0) });
-    h.network.setOptions({ colormap: (t) => [1 - t, t, 0.5], baseColor: [0.9, 0.8, 0.7, 1] });
+    h.network.setOptions({ colormap: (t) => [1 - t, t, 0.5], baseVertexColor: [0.9, 0.8, 0.7, 1] });
     h.network.setChannel('vertexColor', new Float32Array([0, 0.5, 1]));
     h.network.setChannelDomain('vertexColor', [0.2, 0.8]);
     expect(h.network.getChannelDomain('vertexColor')).toEqual([0.2, 0.8]);
@@ -764,20 +765,20 @@ describe('createNetwork controller', () => {
 
   it('draws borders only over a geographic topology', async () => {
     const h = await makeHarness();
-    expect(h.renderer.visibility.borders).toBe(false);
+    expect(h.renderer.passes.borders).toBe(false);
 
     h.network.load(geographicTopology());
-    expect(h.renderer.visibility.borders).toBe(true);
+    expect(h.renderer.passes.borders).toBe(true);
 
     h.network.setOptions({ borders: false });
-    expect(h.renderer.visibility.borders).toBe(false);
+    expect(h.renderer.passes.borders).toBe(false);
     h.network.setOptions({ borders: true });
-    expect(h.renderer.visibility.borders).toBe(true);
+    expect(h.renderer.passes.borders).toBe(true);
 
     h.network.load(nonGlobeTopology());
-    expect(h.renderer.visibility.borders).toBe(false);
+    expect(h.renderer.passes.borders).toBe(false);
     h.network.load(ringTopology());
-    expect(h.renderer.visibility.borders).toBe(false);
+    expect(h.renderer.passes.borders).toBe(false);
   });
 
   it('applies programmatic selection and clearing without emitting select events', async () => {
@@ -1164,7 +1165,7 @@ describe('createNetwork controller', () => {
     h.picker.pick.mockClear();
 
     h.network.setChannel('vertexColor', new Float32Array([0, 0.5, 1]));
-    h.network.setOptions({ daylight: false, baseColor: [0.2, 0.3, 0.4, 1] });
+    h.network.setOptions({ daylight: false, baseVertexColor: [0.2, 0.3, 0.4, 1] });
     h.loop.frame();
     expect(h.picker.pick).not.toHaveBeenCalled();
 
@@ -1473,20 +1474,19 @@ describe('createNetwork controller', () => {
     expect(h.network.reveal({ kind: 'vertex', index: 1 })).toBe(false);
 
     h.network.load(geographicTopology());
+    h.network.setOptions({ revealPaddingPx: 8 });
     h.rig.claim.mockClear();
     h.loop.wake.mockClear();
     h.picker.nextLocation = [50, 40];
     h.picker.nextLocationVisible = true;
 
-    expect(h.network.reveal({ kind: 'vertex', index: 1 }, { paddingPx: 8 })).toBe(true);
+    expect(h.network.reveal({ kind: 'vertex', index: 1 })).toBe(true);
     expect(h.rig.reveal).not.toHaveBeenCalled();
     expect(h.rig.claim).toHaveBeenCalledOnce();
     expect(h.loop.wake).not.toHaveBeenCalled();
 
     h.picker.nextLocation = [2, 40];
-    expect(h.network.reveal({ kind: 'vertex', index: 1 }, { paddingPx: 8, animate: true })).toBe(
-      true,
-    );
+    expect(h.network.reveal({ kind: 'vertex', index: 1 }, { animate: true })).toBe(true);
     expect(h.rig.reveal).toHaveBeenCalledOnce();
     const [bounds, view, animate] = h.rig.reveal.mock.calls[0]!;
     expect((bounds.xMin + bounds.xMax) / 2).toBeCloseTo(0);
@@ -1497,21 +1497,19 @@ describe('createNetwork controller', () => {
     expect(h.loop.wake).toHaveBeenCalledOnce();
   });
 
-  it('normalizes invalid reveal padding and caps oversized padding', async () => {
+  it('caps an oversized reveal padding to a usable central band', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
     h.picker.nextLocationVisible = true;
 
-    for (const paddingPx of [Number.NaN, -1]) {
-      h.rig.reveal.mockClear();
-      h.picker.nextLocation = [38, 40];
-      expect(h.network.reveal({ kind: 'vertex', index: 1 }, { paddingPx })).toBe(true);
-      expect(h.rig.reveal).toHaveBeenCalledOnce();
-    }
+    h.picker.nextLocation = [38, 40];
+    expect(h.network.reveal({ kind: 'vertex', index: 1 })).toBe(true);
+    expect(h.rig.reveal).toHaveBeenCalledOnce();
 
     h.rig.reveal.mockClear();
+    h.network.setOptions({ revealPaddingPx: 10_000 });
     h.picker.nextLocation = [50, 40];
-    expect(h.network.reveal({ kind: 'vertex', index: 1 }, { paddingPx: 10_000 })).toBe(true);
+    expect(h.network.reveal({ kind: 'vertex', index: 1 })).toBe(true);
     expect(h.rig.reveal).not.toHaveBeenCalled();
   });
 
@@ -1530,18 +1528,13 @@ describe('createNetwork controller', () => {
     expect(h.loop.wake).toHaveBeenCalledOnce();
   });
 
-  it('centers occluded items, supports explicit centering, and forwards hidden viewports', async () => {
+  it('centers occluded items and forwards hidden viewports', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
     h.picker.nextLocation = [50, 40];
     h.picker.nextLocationVisible = false;
 
     expect(h.network.reveal({ kind: 'edge', index: 0 })).toBe(true);
-    expect(h.rig.reveal).toHaveBeenCalledOnce();
-
-    h.rig.reveal.mockClear();
-    h.picker.nextLocationVisible = true;
-    expect(h.network.reveal({ kind: 'edge', index: 0 }, { center: true })).toBe(true);
     expect(h.rig.reveal).toHaveBeenCalledOnce();
 
     // The rig owns unusable-viewport deferral; the controller forwards as-is.
@@ -1608,7 +1601,7 @@ describe('createNetwork controller', () => {
     expect(h.network.neighborhood({ kind: 'vertex', index: 1 })).toEqual(first);
   });
 
-  it('reveals a populated neighborhood by fitting it and a lone item by centering it', async () => {
+  it('reveals a populated neighborhood by fitting it and a lone item like any other', async () => {
     const h = await makeHarness();
     h.network.load({
       vertexCount: 3,
@@ -1626,6 +1619,12 @@ describe('createNetwork controller', () => {
     expect(h.rig.moveTo.mock.calls[0]?.[2]).toBe(true);
     expect(h.rig.reveal).not.toHaveBeenCalled();
 
+    // A lone item is already inside the inset: left in place, never fitted or centered.
+    expect(h.network.reveal({ kind: 'vertex', index: 2 }, { neighbors: true })).toBe(true);
+    expect(h.rig.moveTo).toHaveBeenCalledOnce();
+    expect(h.rig.reveal).not.toHaveBeenCalled();
+
+    h.picker.nextLocationVisible = false;
     expect(h.network.reveal({ kind: 'vertex', index: 2 }, { neighbors: true })).toBe(true);
     expect(h.rig.moveTo).toHaveBeenCalledOnce();
     expect(h.rig.reveal).toHaveBeenCalledOnce();
@@ -1752,6 +1751,116 @@ describe('createNetwork controller', () => {
     h.loop.wake.mockClear();
     vi.advanceTimersByTime(30_000);
     expect(h.loop.wake).not.toHaveBeenCalled();
+  });
+
+  it('pins the sun to sunTime, refreshes it at once, and disarms the wake timer while pinned', async () => {
+    vi.useFakeTimers();
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    const noon = Date.UTC(2026, 5, 21, 12);
+    const midnight = Date.UTC(2026, 5, 21, 0);
+
+    h.network.setOptions({ sunTime: noon });
+    const pinned = [...h.loop.uniforms.rawF32.subarray(20, 23)];
+    h.loop.frame();
+    expect([...h.loop.uniforms.rawF32.subarray(20, 23)]).toEqual(pinned);
+
+    // A pinned sun never moves, so the idle wake has nothing to refresh.
+    h.loop.wake.mockClear();
+    vi.advanceTimersByTime(30_000);
+    expect(h.loop.wake).not.toHaveBeenCalled();
+
+    // A new instant lands without waiting for the refresh cadence.
+    h.network.setOptions({ sunTime: midnight });
+    expect([...h.loop.uniforms.rawF32.subarray(20, 23)]).not.toEqual(pinned);
+
+    h.network.setOptions({ sunTime: null });
+    h.loop.wake.mockClear();
+    vi.advanceTimersByTime(30_000);
+    expect(h.loop.wake).toHaveBeenCalledOnce();
+  });
+
+  it('paints edges in baseEdgeColor only while one is set', async () => {
+    const h = await makeHarness();
+    expect(h.loop.uniforms.light.flags & FLAG_BASE_EDGE_COLOR).toBe(0);
+
+    h.network.setOptions({ baseEdgeColor: [0.1, 0.2, 0.3, 1] });
+    expect(h.loop.uniforms.light.flags & FLAG_BASE_EDGE_COLOR).toBe(FLAG_BASE_EDGE_COLOR);
+    expect([...h.loop.uniforms.baseEdgeColor]).toEqual([
+      expect.closeTo(0.1, 6),
+      expect.closeTo(0.2, 6),
+      expect.closeTo(0.3, 6),
+      1,
+    ]);
+
+    h.network.setOptions({ baseEdgeColor: null });
+    expect(h.loop.uniforms.light.flags & FLAG_BASE_EDGE_COLOR).toBe(0);
+  });
+
+  it('routes layering to the renderer passes and retains it across attach', async () => {
+    const h = await makeHarness();
+    expect(h.renderer.passes.layering).toBe('stacked');
+
+    h.network.setOptions({ layering: 'depth' });
+    expect(h.renderer.passes.layering).toBe('depth');
+
+    h.network.detach();
+    await h.network.attach(h.canvas);
+    expect(h.renderer.passes.layering).toBe('depth');
+  });
+
+  it('maps the vertexSize channel onto the live sizeRange and pads picking by its maximum', async () => {
+    const h = await makeHarness({ sizeRange: [1, 3] });
+    expect(h.loop.uniforms.channel.sizeOutMin).toBe(1);
+    expect(h.loop.uniforms.channel.sizeOutScale).toBe(2);
+
+    h.network.load(geographicTopology());
+    h.network.setChannel('vertexSize', new Float32Array([0, 1, 2]));
+    h.emitPointer({ kind: 'hover', clientX: 5, clientY: 6, targetPx: 10 });
+    h.loop.frame();
+    h.picker.pick.mockClear();
+
+    h.network.setOptions({ sizeRange: [0.25, 0.75] });
+    expect(h.loop.uniforms.channel.sizeOutMin).toBe(0.25);
+    expect(h.loop.uniforms.channel.sizeOutScale).toBe(0.5);
+    h.loop.frame();
+    expect(h.picker.pick).toHaveBeenCalledOnce();
+  });
+
+  it('hands the live pick radius to the pointer adapter and hitTest', async () => {
+    const h = await makeHarness({ pickRadiusPx: 4 });
+    h.network.load(geographicTopology());
+    expect(h.pickRadiusPx?.()).toBe(4);
+
+    h.network.hitTest(5, 6);
+    expect(h.picker.lastQuery?.radiusPx).toBe(4);
+
+    h.network.setOptions({ pickRadiusPx: 12 });
+    expect(h.pickRadiusPx?.()).toBe(12);
+    h.network.hitTest(5, 6);
+    expect(h.picker.lastQuery?.radiusPx).toBe(12);
+  });
+
+  it('scales continuous rotation by orbitRate and hands animationMs to the rig', async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.stubGlobal('cancelAnimationFrame', () => {});
+    const h = await makeHarness({ orbitRate: 2, animationMs: 250 });
+    expect(h.rig.animationMs).toBe(250);
+    h.network.load(geographicTopology());
+
+    expect(h.network.orbit(true)).toBe(true);
+    frames.shift()?.(0);
+    frames.shift()?.(16);
+    expect(h.rig.camera.rotateBy).toHaveBeenLastCalledWith(0.64, 0, { w: 100, h: 80 });
+
+    h.network.setOptions({ orbitRate: 0.5, animationMs: 0 });
+    frames.shift()?.(32);
+    expect(h.rig.camera.rotateBy).toHaveBeenLastCalledWith(0.16, 0, { w: 100, h: 80 });
+    expect(h.rig.animationMs).toBe(0);
   });
 
   it('arms FLAG_DAYLIGHT only for geographic topologies', async () => {

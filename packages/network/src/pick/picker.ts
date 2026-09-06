@@ -26,6 +26,8 @@ import {
   W_V_SIZE_MIN,
   W_V_SIZE_MODE,
   W_V_SIZE_SCALE,
+  W_SIZE_OUT_MIN,
+  W_SIZE_OUT_SCALE,
 } from '../webgpu/uniforms.js';
 import { SEGMENT_RECORD_WORDS } from '../segments/wire.js';
 import type { DecodedSegments } from '../segments/index.js';
@@ -98,11 +100,6 @@ export interface LocatedItem {
   readonly visible: boolean;
 }
 
-/**
- * Largest screen overhang of any pickable primitive around its anchor:
- * vertex radius cap times the size-channel multiplier cap.
- */
-const BILLBOARD_PAD_PX = VISUAL.maxVertexRadiusPx * VISUAL.vertexSizeMaxMul;
 /**
  * Headroom on the sampled screen-to-coord Jacobian for curvature between
  * sample points. The brute-force parity property test polices this.
@@ -458,10 +455,13 @@ export class Picker {
     const { vp } = q;
     let sx = q.sx;
     let sy = q.sy;
+    // Largest screen overhang of any pickable primitive around its anchor: the vertex radius
+    // cap times the size-channel multiplier cap the live `sizeRange` option sets.
+    const billboardPadPx =
+      VISUAL.maxVertexRadiusPx * (this.f32[W_SIZE_OUT_MIN]! + this.f32[W_SIZE_OUT_SCALE]!);
     let reachPx =
       q.radiusPx +
-      BILLBOARD_PAD_PX /
-        Math.min(this.f32[W_VIEWPORT_X]! / vp.w, this.f32[W_VIEWPORT_Y]! / vp.h, 1);
+      billboardPadPx / Math.min(this.f32[W_VIEWPORT_X]! / vp.w, this.f32[W_VIEWPORT_Y]! / vp.h, 1);
 
     const heightsActive = this.f32[W_DEPTH_MIX]! > 0 && this.u32[W_V_HEIGHT_MODE] !== 0;
     let seed = this.deps.unproject(sx, sy, vp);
@@ -691,7 +691,7 @@ export class Picker {
     const sizes = state.sizes;
     if (!sizes) return 1;
     const t = clamp01((sizes[vi]! - this.f32[W_V_SIZE_MIN]!) * this.f32[W_V_SIZE_SCALE]!);
-    return VISUAL.vertexSizeMinMul + (VISUAL.vertexSizeMaxMul - VISUAL.vertexSizeMinMul) * t;
+    return this.f32[W_SIZE_OUT_MIN]! + t * this.f32[W_SIZE_OUT_SCALE]!;
   }
 
   /** Test one vertex billboard and optional height pole against the cursor. */

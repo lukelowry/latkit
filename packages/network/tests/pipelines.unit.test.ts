@@ -26,20 +26,32 @@ describe('buildProjectionPipelines', () => {
       bgPipelineLayout: { label: 'bg' } as unknown as GPUPipelineLayout,
     });
 
-    expect(pipelines.visual.edge).toMatchObject({
+    expect(pipelines.visual.edge.stacked).toMatchObject({
       label: 'globe-edge',
       layout: { label: 'edge-layout' },
       vertex: { entryPoint: 'vs' },
+      depthStencil: { depthWriteEnabled: false },
+    });
+    expect(pipelines.visual.edge.depth).toMatchObject({
+      label: 'globe-edge-depth',
+      layout: { label: 'edge-layout' },
+      vertex: { entryPoint: 'vs' },
+      depthStencil: { depthWriteEnabled: true },
     });
     expect(pipelines.visual.edgeHalo).toMatchObject({
       label: 'globe-edge-halo',
       layout: { label: 'edge-layout' },
       vertex: { entryPoint: 'vs_halo' },
     });
-    expect(pipelines.visual.edgeFocus).toMatchObject({
+    expect(pipelines.visual.edgeFocus.stacked).toMatchObject({
       label: 'globe-edge-focus',
       layout: { label: 'edge-layout' },
       vertex: { entryPoint: 'vs_focus' },
+      depthStencil: { depthWriteEnabled: false },
+    });
+    expect(pipelines.visual.edgeFocus.depth).toMatchObject({
+      label: 'globe-edge-focus-depth',
+      depthStencil: { depthWriteEnabled: true },
     });
     expect(pipelines.visual.vertex).toMatchObject({
       label: 'globe-vertex',

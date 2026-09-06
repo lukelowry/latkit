@@ -26,7 +26,7 @@ fn vertex_norm_height(vi: u32) -> f32 {
 fn vertex_size_scale(vi: u32) -> f32 {
   if (u.v_size_mode == 0u) { return 1.0; }
   let t = clamp((rf(u.v_size_offset + vi) - u.v_size_min) * u.v_size_scale, 0.0, 1.0);
-  return mix(SIZE_MIN_MUL, SIZE_MAX_MUL, t);
+  return u.size_out_min + t * u.size_out_scale;
 }
 
 fn vertex_channel_color(vi: u32) -> vec4f {

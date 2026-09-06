@@ -228,7 +228,7 @@ function oraclePick(
   const sizeScale = (vi: number): number => {
     if (!sizes) return 1;
     const t = clamp01((sizes[vi]! - u.channel.vSizeMin) * u.channel.vSizeScale);
-    return VISUAL.vertexSizeMinMul + (VISUAL.vertexSizeMaxMul - VISUAL.vertexSizeMinMul) * t;
+    return u.channel.sizeOutMin + t * u.channel.sizeOutScale;
   };
 
   let bestVertexD2 = Infinity,

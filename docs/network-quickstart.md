@@ -108,11 +108,11 @@ network.fit([{ kind: 'vertex', index: 0 }], true);
 Use `reveal()` when an item should become visible without changing camera zoom:
 
 ```ts
-network.reveal({ kind: 'vertex', index: 0 }, { paddingPx: 48, animate: true });
+network.reveal({ kind: 'vertex', index: 0 }, { animate: true });
 network.reveal({ kind: 'vertex', index: 0 }, { neighbors: true, animate: true });
 ```
 
-An item already visible inside the padded viewport is left in place. Pass `{ center: true }` to center it explicitly, or `{ neighbors: true }` to frame it with its neighborhood.
+An item already inside the `revealPaddingPx` inset is left in place; `{ neighbors: true }` frames it with its neighborhood instead.
 
 When your app removes the view, destroy the controller before removing its canvas:
 

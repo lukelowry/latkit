@@ -66,20 +66,24 @@ describe('canonical Network semantics', () => {
       ['vertices', 'boolean', true, true],
       ['edges', 'boolean', true, true],
       ['poles', 'boolean', false, true],
+      ['layering', 'enum', 'stacked', true],
       ['vertexScale', 'nonnegative', 1, true],
       ['edgeScale', 'nonnegative', 1, true],
       ['heightScale', 'nonnegative', 1, true],
       ['heightRange', 'domain', [0, 1], true],
+      ['sizeRange', 'domain', [0.5, 2], true],
       ['vertexLodPx', 'nonnegative', 2, true],
       ['dashPeriodPx', 'nonnegative', 12, true],
       ['borders', 'boolean', true, true],
       ['graticule', 'boolean', false, true],
       ['earthAxis', 'boolean', true, true],
       ['daylight', 'boolean', true, true],
+      ['sunTime', 'finite', null, true],
       ['nightFloor', 'finite', 0.55, true],
       ['surfaceNightFloor', 'finite', 0.1, true],
       ['terminatorWidth', 'nonnegative', 0.12, true],
-      ['baseColor', 'rgba', [0.5, 0.5, 0.5, 1], true],
+      ['baseVertexColor', 'rgba', [0.5, 0.5, 0.5, 1], true],
+      ['baseEdgeColor', 'rgba', null, true],
       ['colormap', 'colormap', '<colormap>', true],
       ['graticuleColor', 'rgba', [0.45, 0.48, 0.54, 1], true],
       ['surfaceColor', 'rgba', [0.15, 0.16, 0.19, 1], true],
@@ -95,6 +99,10 @@ describe('canonical Network semantics', () => {
       ['edgeSelectedPx', 'nonnegative', 5, true],
       ['focusEndpointMode', 'enum', 'selected', true],
       ['motion', 'enum', 'auto', true],
+      ['animationMs', 'nonnegative', 500, true],
+      ['orbitRate', 'nonnegative', 1, true],
+      ['revealPaddingPx', 'nonnegative', 48, true],
+      ['pickRadiusPx', 'nonnegative', 10, true],
       ['keyboard', 'boolean', true, true],
       ['wheel', 'enum', 'zoom', true],
     ]);
@@ -102,6 +110,9 @@ describe('canonical Network semantics', () => {
     expect(OPTIONS.focusEndpointMode.values).toEqual(['off', 'selected', 'hover-selected']);
     expect(OPTIONS.motion.values).toEqual(['auto', 'reduce', 'full']);
     expect(OPTIONS.wheel.values).toEqual(['zoom', 'modifier']);
+    expect(OPTIONS.layering.values).toEqual(['stacked', 'depth']);
+    expect(OPTIONS.sunTime.nullable).toBe(true);
+    expect(OPTIONS.baseEdgeColor.nullable).toBe(true);
     expect(typeof OPTIONS.devices.default.acquire).toBe('function');
   });
 
@@ -118,7 +129,8 @@ describe('canonical Network semantics', () => {
         definition.kind === 'domain' ||
         definition.kind === 'colormap'
       ) {
-        expect(Object.isFrozen(definition.default), key).toBe(true);
+        if (definition.default !== null)
+          expect(Object.isFrozen(definition.default), key).toBe(true);
       }
     }
 
@@ -146,7 +158,14 @@ describe('Network option validation and resolution', () => {
       ['heightRange', [-1, 2]],
       ['vertexLodPx', 0],
       ['dashPeriodPx', 0],
-      ['baseColor', [0, 1, 0.5, 1]],
+      ['baseVertexColor', [0, 1, 0.5, 1]],
+      ['baseEdgeColor', null],
+      ['baseEdgeColor', [0, 0, 0, 1]],
+      ['sunTime', null],
+      ['sunTime', Date.UTC(2026, 5, 21)],
+      ['layering', 'depth'],
+      ['sizeRange', [1, 1]],
+      ['animationMs', 0],
       ['focusEndpointMode', 'off'],
       ['focusEndpointMode', 'hover-selected'],
       ['colormap', (t: number) => [t, t, t] as const],
@@ -176,11 +195,18 @@ describe('Network option validation and resolution', () => {
     ['heightRange', [2, 1], RangeError],
     ['vertexLodPx', '2', TypeError],
     ['dashPeriodPx', -1, RangeError],
-    ['baseColor', [0, 0, 0], TypeError],
-    ['baseColor', [0, 0, 0, '1'], TypeError],
-    ['baseColor', [0, 0, 0, Number.NaN], RangeError],
-    ['baseColor', [0, 0, 0, 1.01], RangeError],
-    ['baseColor', new Float32Array([0, 0, 0, 1]), TypeError],
+    ['baseVertexColor', [0, 0, 0], TypeError],
+    ['baseVertexColor', [0, 0, 0, '1'], TypeError],
+    ['baseVertexColor', [0, 0, 0, Number.NaN], RangeError],
+    ['baseVertexColor', [0, 0, 0, 1.01], RangeError],
+    ['baseVertexColor', new Float32Array([0, 0, 0, 1]), TypeError],
+    ['baseVertexColor', null, TypeError],
+    ['baseEdgeColor', [0, 0, 0], TypeError],
+    ['sunTime', Number.NaN, RangeError],
+    ['sunTime', '2026', TypeError],
+    ['layering', 'painterly', TypeError],
+    ['sizeRange', [2, 1], RangeError],
+    ['orbitRate', -1, RangeError],
     ['focusEndpointMode', 'hover', TypeError],
     ['colormap', 'viridis', TypeError],
     ['msaa', 2, TypeError],
@@ -201,28 +227,28 @@ describe('Network option validation and resolution', () => {
   });
 
   it('returns a complete frozen record and owns supplied tuple values', () => {
-    const baseColor: [number, number, number, number] = [0.1, 0.2, 0.3, 1];
+    const baseVertexColor: [number, number, number, number] = [0.1, 0.2, 0.3, 1];
     const heightRange: [number, number] = [0, 2];
     const colormap = (t: number) => [t, 1 - t, 0.5] as const;
-    const resolved = resolveOptions({ baseColor, heightRange, colormap, msaa: 4 });
+    const resolved = resolveOptions({ baseVertexColor, heightRange, colormap, msaa: 4 });
 
     expect(Object.keys(resolved)).toEqual(Object.keys(OPTIONS));
     expect(Object.isFrozen(resolved)).toBe(true);
-    expect(Object.isFrozen(resolved.baseColor)).toBe(true);
-    expect(resolved.baseColor).not.toBe(baseColor);
+    expect(Object.isFrozen(resolved.baseVertexColor)).toBe(true);
+    expect(resolved.baseVertexColor).not.toBe(baseVertexColor);
     expect(resolved.heightRange).not.toBe(heightRange);
     expect(resolved.colormap).toBe(colormap);
     expect(resolved.msaa).toBe(4);
     expect(resolved.devices).toBe(OPTIONS.devices.default);
 
-    baseColor[0] = 0.9;
+    baseVertexColor[0] = 0.9;
     heightRange[1] = 9;
-    expect(resolved.baseColor).toEqual([0.1, 0.2, 0.3, 1]);
+    expect(resolved.baseVertexColor).toEqual([0.1, 0.2, 0.3, 1]);
     expect(resolved.heightRange).toEqual([0, 2]);
 
     const defaults = resolveOptions({});
     expect(defaults).toEqual(DEFAULT_OPTIONS);
-    expect(defaults.baseColor).not.toBe(DEFAULT_OPTIONS.baseColor);
-    expect(Object.isFrozen(defaults.baseColor)).toBe(true);
+    expect(defaults.baseVertexColor).not.toBe(DEFAULT_OPTIONS.baseVertexColor);
+    expect(Object.isFrozen(defaults.baseVertexColor)).toBe(true);
   });
 });

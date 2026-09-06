@@ -213,7 +213,7 @@ describe('latkit-network', () => {
     element.data = networkData();
     element.setAttribute('graticule', '');
     element.setAttribute('vertex-scale', '2');
-    element.setAttribute('base-color', '0.1 0.2 0.3 1');
+    element.setAttribute('base-vertex-color', '0.1 0.2 0.3 1');
     element.setAttribute('motion', 'reduce');
     element.setAttribute('colormap', 'viridis');
     element.setAttribute('vertex-color', 'load');
@@ -228,7 +228,7 @@ describe('latkit-network', () => {
     expect(patches).toMatchObject({
       graticule: true,
       vertexScale: 2,
-      baseColor: [0.1, 0.2, 0.3, 1],
+      baseVertexColor: [0.1, 0.2, 0.3, 1],
       motion: 'reduce',
     });
     expect(patches.colormap).toBeTypeOf('function');

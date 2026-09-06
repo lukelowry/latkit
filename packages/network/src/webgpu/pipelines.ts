@@ -1,6 +1,7 @@
 /// <reference types="@webgpu/types" />
 
 import { BORDER_VERTEX_STRIDE_BYTES } from '../borders/index.js';
+import type { Layering } from '../options.js';
 import type { PipelineDef } from '../projections.js';
 import { VISUAL_WGSL } from '../visual.js';
 import { WGSL_LAYOUT } from '../topology/wire.js';
@@ -22,6 +23,9 @@ import bordersSrc from '../shaders/passes/border-lines.wgsl?raw';
 /** Fragment entry flavor used by overlay passes. */
 type VisualFragmentKind = 'base' | 'underlay';
 
+/** One pipeline per layering: `stacked` edges never write depth, `depth` edges do. */
+export type LayeredPipeline = Readonly<Record<Layering, GPURenderPipeline>>;
+
 /** Render pipelines required to draw one projection mode. */
 export interface VisualPipelines {
   /** Base vertex billboard pass. */
@@ -30,12 +34,12 @@ export interface VisualPipelines {
   vertexHalo: GPURenderPipeline;
   /** Vertex focus foreground pass. */
   vertexFocus: GPURenderPipeline;
-  /** Base edge segment pass. */
-  edge: GPURenderPipeline;
+  /** Base edge segment pass, by layering. */
+  edge: LayeredPipeline;
   /** Edge focus underlay/halo pass. */
   edgeHalo: GPURenderPipeline;
-  /** Edge focus foreground pass. */
-  edgeFocus: GPURenderPipeline;
+  /** Edge focus foreground pass, by layering. */
+  edgeFocus: LayeredPipeline;
   /** Height pole pass for non-flat projections. */
   pole: GPURenderPipeline;
   /** Geographic border line-strip pass. */
@@ -119,14 +123,15 @@ export async function buildProjectionPipelines(
     'pole',
     projectionPrelude + uniformsSrc + channelVertexSrc + vertexGeometrySrc + corePoleSrc,
   );
-  // Every depth-writing pass tests against the bg-established depth the same
-  // way; halos only differ in leaving the depth buffer untouched.
+  // Every pass tests against the bg-established depth the same way. Opaque passes also write it;
+  // overlay passes (halos, and stacked edges) leave the depth buffer untouched, so nothing behind
+  // them is ever hidden by them.
   const dsOpaque: GPUDepthStencilState = {
     format: 'depth24plus',
     depthWriteEnabled: true,
     depthCompare: 'less-equal',
   };
-  const dsHalo: GPUDepthStencilState = {
+  const dsOverlay: GPUDepthStencilState = {
     format: 'depth24plus',
     depthWriteEnabled: false,
     depthCompare: 'less-equal',
@@ -243,28 +248,42 @@ export async function buildProjectionPipelines(
       })
     : Promise.resolve(undefined);
 
-  const [vertex, vertexHalo, vertexFocus, edge, edgeHalo, edgeFocus, pole, borders, bg, earthAxis] =
-    await Promise.all([
-      rpl('vertex', vertM),
-      rpl('vertex-halo', vertM, 'vs_halo', 'underlay', dsHalo),
-      rpl('vertex-focus', vertM, 'vs_focus', 'base'),
-      rpl('edge', edgeM, 'vs', 'base', dsOpaque, edgePipelineLayout),
-      rpl('edge-halo', edgeM, 'vs_halo', 'underlay', dsHalo, edgePipelineLayout),
-      rpl('edge-focus', edgeM, 'vs_focus', 'base', dsOpaque, edgePipelineLayout),
-      rpl('pole', poleM),
-      pendingBorders,
-      pendingBackground,
-      pendingEarthAxis,
-    ]);
+  const [
+    vertex,
+    vertexHalo,
+    vertexFocus,
+    edgeStacked,
+    edgeDepth,
+    edgeHalo,
+    edgeFocusStacked,
+    edgeFocusDepth,
+    pole,
+    borders,
+    bg,
+    earthAxis,
+  ] = await Promise.all([
+    rpl('vertex', vertM),
+    rpl('vertex-halo', vertM, 'vs_halo', 'underlay', dsOverlay),
+    rpl('vertex-focus', vertM, 'vs_focus', 'base'),
+    rpl('edge', edgeM, 'vs', 'base', dsOverlay, edgePipelineLayout),
+    rpl('edge-depth', edgeM, 'vs', 'base', dsOpaque, edgePipelineLayout),
+    rpl('edge-halo', edgeM, 'vs_halo', 'underlay', dsOverlay, edgePipelineLayout),
+    rpl('edge-focus', edgeM, 'vs_focus', 'base', dsOverlay, edgePipelineLayout),
+    rpl('edge-focus-depth', edgeM, 'vs_focus', 'base', dsOpaque, edgePipelineLayout),
+    rpl('pole', poleM),
+    pendingBorders,
+    pendingBackground,
+    pendingEarthAxis,
+  ]);
 
   return {
     visual: {
       vertex,
       vertexHalo,
       vertexFocus,
-      edge,
+      edge: { stacked: edgeStacked, depth: edgeDepth },
       edgeHalo,
-      edgeFocus,
+      edgeFocus: { stacked: edgeFocusStacked, depth: edgeFocusDepth },
       pole,
       borders,
       bg,

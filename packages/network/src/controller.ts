@@ -15,6 +15,7 @@ import { prepareScene, type PreparedScene } from './scene.js';
 import { Renderer } from './webgpu/renderer.js';
 import {
   createUniforms,
+  FLAG_BASE_EDGE_COLOR,
   FLAG_DAYLIGHT,
   FLAG_GEOGRAPHIC,
   FLAG_GRATICULE,
@@ -27,7 +28,6 @@ import {
   attachPointer,
   DEFAULT_WHEEL_POLICY,
   MODIFIER_WHEEL_POLICY,
-  MOUSE_PICK_RADIUS_PX,
   type HoverProbe,
   type Intent,
   type WheelPolicy,
@@ -62,21 +62,6 @@ import {
 import { boundsForItems, expandDegenerateBounds } from './topology/subset-bounds.js';
 
 export type { Options } from './options.js';
-
-/** Camera behavior for bringing one item into view. */
-export interface RevealOptions {
-  /** CSS-pixel inset that the item's anchor must clear. @defaultValue `48` */
-  readonly paddingPx?: number;
-  /** Center the item even when it is already visible inside the inset. @defaultValue `false` */
-  readonly center?: boolean;
-  /**
-   * Frame the item with its neighborhood: an edge with both endpoints, a vertex with its incident
-   * edges and their far ends. A lone item is centered at the current scale. @defaultValue `false`
-   */
-  readonly neighbors?: boolean;
-  /** Animate the camera move, subject to the `motion` option. @defaultValue `false` */
-  readonly animate?: boolean;
-}
 
 /**
  * Events emitted by a {@link Network} instance, keyed by name with their payload.
@@ -304,17 +289,20 @@ export interface Network {
   /**
    * Bring an item into view without changing selection, projection, or zoom.
    *
-   * Unless `center` is true, an item already visible inside the padded
-   * viewport is a no-op. The camera centers valid off-screen or occluded
-   * items while retaining the current scale, distance, tilt, and bearing.
-   * With `neighbors`, a populated neighborhood is fitted instead. Newer
-   * camera commands replace an in-progress reveal.
+   * An item already inside the `revealPaddingPx` inset is left in place; otherwise the camera
+   * centers it while retaining the current scale, distance, tilt, and bearing. With `neighbors`,
+   * a populated neighborhood is fitted instead. Newer camera commands replace an in-progress
+   * reveal.
    *
    * @param item - Vertex or edge identity in the loaded topology.
-   * @param options - Visibility inset, centering policy, neighborhood, and animation flag.
+   * @param options - `neighbors` frames the item with what touches it; `animate` eases the move,
+   * subject to the `motion` option. Both default to `false`.
    * @returns True for a valid item, including an already-visible no-op.
    */
-  reveal(item: Item, options?: RevealOptions): boolean;
+  reveal(
+    item: Item,
+    options?: { readonly neighbors?: boolean; readonly animate?: boolean },
+  ): boolean;
   /**
    * Read the camera pose the next {@link Network.setPose} would build on.
    *
@@ -416,9 +404,6 @@ const DEFAULT_CONTROLLER_DEPS: ControllerDeps = {
 /** Shared allocation-free result for invalid or empty public queries. */
 const NO_ITEMS: readonly Item[] = Object.freeze([]);
 
-/** Default CSS-pixel inset used by reveal visibility checks. */
-const DEFAULT_REVEAL_PADDING_PX = 48;
-
 /** Inset that keeps a keyboard context anchor inside the canvas. */
 const CONTEXT_INSET_PX = 8;
 
@@ -428,22 +413,30 @@ const DETACHED_VIEWPORT: Viewport = { w: 0, h: 0 };
 /** Runtime options mirrored one-to-one into controller display state. */
 const DISPLAY_OPTIONS = [
   'daylight',
+  'sunTime',
   'graticule',
   'borders',
   'vertices',
   'edges',
   'poles',
+  'layering',
   'vertexScale',
   'edgeScale',
   'heightScale',
   'heightRange',
+  'sizeRange',
   'vertexLodPx',
   'dashPeriodPx',
   'earthAxis',
   'nightFloor',
   'surfaceNightFloor',
   'terminatorWidth',
+  'baseEdgeColor',
   'motion',
+  'animationMs',
+  'orbitRate',
+  'revealPaddingPx',
+  'pickRadiusPx',
   'keyboard',
   'wheel',
 ] as const satisfies readonly RuntimeOption[];
@@ -462,6 +455,7 @@ const PICK_GEOMETRY_OPTIONS: ReadonlySet<DisplayOption> = new Set<DisplayOption>
   'edgeScale',
   'heightScale',
   'heightRange',
+  'sizeRange',
   'vertexLodPx',
   'dashPeriodPx',
 ]);
@@ -710,6 +704,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     edgeCount: () => (topology ? edgeCountOf(topology) : 0),
     dashPeriodPx: () => display.dashPeriodPx,
     heightRange: () => display.heightRange,
+    sizeRange: () => display.sizeRange,
     renderer: () => binding?.renderer ?? null,
   });
 
@@ -743,14 +738,14 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     };
   };
 
-  /** Normalize reveal padding and retain a usable central viewport band. */
-  const resolveRevealPadding = (paddingPx: number | undefined, view: Viewport): number => {
-    const requested =
-      paddingPx === undefined || !Number.isFinite(paddingPx) || paddingPx < 0
-        ? DEFAULT_REVEAL_PADDING_PX
-        : paddingPx;
+  /** Whether an item's anchor already sits inside the reveal inset, clamped to a usable band. */
+  const insideRevealInset = (item: Item, view: Viewport): boolean => {
+    const location = picker.locateDetail([item.kind, item.index], view);
+    if (!location?.visible) return false;
     const maximum = Math.max(0, (Math.min(view.w, view.h) - 2) / 2);
-    return Math.min(requested, maximum);
+    const padding = Math.min(display.revealPaddingPx, maximum);
+    const [x, y] = location.point;
+    return x >= padding && x <= view.w - padding && y >= padding && y <= view.h - padding;
   };
 
   /** Builds a pick query using current visibility and viewport state. */
@@ -937,7 +932,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         rig,
         onZoom: (atFitView) => stageFitNotice(atFitView),
         onBeforeFrame: (frameVp) => {
-          daylight.refresh();
+          daylight.refresh(display.sunTime ?? Date.now());
           updateHeightWorldScale(frameVp);
         },
         onFrame: (sizeSettled) => resolveHover(sizeSettled),
@@ -951,7 +946,10 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         events.emit('pipelineError', pipelineFailure);
       };
 
-      const pointer = deps.attachPointer(surface, onPointerIntent, wheelPolicy);
+      const pointer = deps.attachPointer(surface, onPointerIntent, {
+        wheel: wheelPolicy,
+        pickRadiusPx: () => display.pickRadiusPx,
+      });
       lifecycle.add(() => pointer.destroy());
 
       pageVisible = typeof document !== 'undefined' ? !document.hidden : true;
@@ -993,7 +991,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   /** Push every retained state into a freshly bound renderer and paint. */
   function replayInto({ renderer, loop }: Binding): void {
     if (colormapLut) renderer.writeColormap(colormapLut);
-    renderer.setVisible(visibility());
+    renderer.setPasses(passes());
     if (scene) {
       renderer.bindTopology(scene);
       renderer.useProjection(rig.mode);
@@ -1063,11 +1061,11 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     }
   }
 
-  /** Arm the periodic daylight wake only while shading is on and the topology is geographic. */
+  /** Arm the periodic daylight wake only while the sun follows the clock over a geographic topology. */
   function syncSunTimer(): void {
     const entry = binding;
     if (!entry) return;
-    const armed = display.daylight && topologyGeographic;
+    const armed = display.daylight && topologyGeographic && display.sunTime === null;
     if (armed && entry.sunTimer === null) {
       entry.sunTimer = setInterval(() => entry.loop.wake(), SUN_REFRESH_MS);
     } else if (!armed && entry.sunTimer !== null) {
@@ -1173,7 +1171,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       return channels.domain(channel);
     },
 
-    hitTest(clientX, clientY, radiusPx = MOUSE_PICK_RADIUS_PX) {
+    hitTest(clientX, clientY, radiusPx = display.pickRadiusPx) {
       const bound = binding;
       if (
         !bound ||
@@ -1248,40 +1246,24 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       cameraMoved();
     },
 
-    reveal(item, options = {}) {
+    reveal(item, { neighbors = false, animate = false } = {}) {
       if (!topology || !topologyBounds) return false;
-      const animate = animated(options.animate);
-      if (options.neighbors) {
-        const items = api.neighborhood(item);
-        if (items.length > 1) {
-          const { view, bounds } = resolveItemBounds(items);
-          if (!bounds) return false;
-          rig.moveTo(expandDegenerateBounds(bounds, topologyBounds, MAX_ZOOM_RATIO), view, animate);
-          cameraMoved();
-          return true;
-        }
-        return api.reveal(item, { ...options, neighbors: false, center: true });
-      }
-
-      const { view, hasViewport, bounds } = resolveItemBounds([item]);
+      const items = neighbors ? api.neighborhood(item) : [item];
+      const { view, hasViewport, bounds } = resolveItemBounds(items);
       if (!bounds) return false;
 
-      if (hasViewport && !options.center) {
-        const location = picker.locateDetail([item.kind, item.index], view);
-        const padding = resolveRevealPadding(options.paddingPx, view);
-        if (
-          location?.visible &&
-          location.point[0] >= padding &&
-          location.point[0] <= view.w - padding &&
-          location.point[1] >= padding &&
-          location.point[1] <= view.h - padding
-        ) {
-          if (rig.claim()) cameraMoved();
-          return true;
-        }
+      if (items.length > 1) {
+        rig.moveTo(
+          expandDegenerateBounds(bounds, topologyBounds, MAX_ZOOM_RATIO),
+          view,
+          animated(animate),
+        );
+      } else if (hasViewport && insideRevealInset(item, view)) {
+        if (rig.claim()) cameraMoved();
+        return true;
+      } else {
+        rig.reveal(bounds, view, animated(animate));
       }
-
-      rig.reveal(bounds, view, animate);
       cameraMoved();
       return true;
     },
@@ -1358,9 +1340,13 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     },
   };
 
-  const orbit = deps.createOrbit(api, (active) => {
-    if (!destroyed) events.emit('orbit', active);
-  });
+  const orbit = deps.createOrbit(
+    api,
+    (active) => {
+      if (!destroyed) events.emit('orbit', active);
+    },
+    { rate: () => display.orbitRate },
+  );
 
   /** Warms currently supported inactive projections in serial build order. */
   function warmInactiveProjections(): void {
@@ -1459,14 +1445,15 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     repaint();
   }
 
-  /** The pass visibility the renderer draws with: borders only over geographic coordinates. */
-  function visibility() {
+  /** The passes the renderer draws, and their layering: borders only over geographic coordinates. */
+  function passes() {
     return {
       vertices: display.vertices,
       edges: display.edges,
       poles: display.poles,
       borders: display.borders && topologyGeographic,
       earthAxis: display.earthAxis,
+      layering: display.layering,
     };
   }
 
@@ -1480,7 +1467,8 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       colormapLut = lut;
       binding?.renderer.writeColormap(lut);
     }
-    if (opts.baseColor) uniforms.baseVertexColor.set(opts.baseColor);
+    if (opts.baseVertexColor) uniforms.baseVertexColor.set(opts.baseVertexColor);
+    if (opts.baseEdgeColor) uniforms.baseEdgeColor.set(opts.baseEdgeColor);
     if (opts.graticuleColor) uniforms.gridColor.set(opts.graticuleColor);
     if (opts.surfaceColor) uniforms.surfaceColor.set(opts.surfaceColor);
     if (opts.borderColor) uniforms.borderColor.set(opts.borderColor);
@@ -1488,14 +1476,18 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     for (const key of DISPLAY_OPTIONS) {
       const value = opts[key];
       if (value === undefined || value === display[key]) continue;
-      (display as Record<DisplayOption, DisplayState[DisplayOption]>)[key] =
-        key === 'heightRange' ? [...(value as Domain)] : value;
+      (display as Record<DisplayOption, DisplayState[DisplayOption]>)[key] = (
+        Array.isArray(value) ? [...(value as readonly number[])] : value
+      ) as DisplayState[DisplayOption];
       if (PICK_GEOMETRY_OPTIONS.has(key)) pickGeometryChanged = true;
     }
     if (opts.dashPeriodPx !== undefined) channels.refreshDashPeriod();
     if (opts.heightRange !== undefined) channels.refreshHeightRange();
+    if (opts.sizeRange !== undefined || initial) channels.refreshSizeRange();
+    if (opts.sunTime !== undefined) daylight.refresh(display.sunTime ?? Date.now(), true);
+    if (opts.animationMs !== undefined) rig.animationMs = display.animationMs;
     applyFocusOptions(opts);
-    binding?.renderer.setVisible(visibility());
+    binding?.renderer.setPasses(passes());
     writeDisplayToUniforms();
     writeGeometryScales(vp());
     syncKeyboard();
@@ -1539,7 +1531,8 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     uniforms.light.flags =
       (display.daylight && topologyGeographic ? FLAG_DAYLIGHT : 0) |
       (display.graticule ? FLAG_GRATICULE : 0) |
-      (topologyGeographic ? FLAG_GEOGRAPHIC : 0);
+      (topologyGeographic ? FLAG_GEOGRAPHIC : 0) |
+      (display.baseEdgeColor ? FLAG_BASE_EDGE_COLOR : 0);
     uniforms.light.nightFloor = display.nightFloor;
     uniforms.light.surfaceNightFloor = display.surfaceNightFloor;
     uniforms.light.terminatorWidth = display.terminatorWidth;
@@ -1715,7 +1708,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     writeGeometryScales(vp());
     // New bounds can change the geographic gates: daylight, ground clipping, borders.
     writeDisplayToUniforms();
-    binding?.renderer.setVisible(visibility());
+    binding?.renderer.setPasses(passes());
     syncSunTimer();
 
     channels.reset();

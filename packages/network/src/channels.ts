@@ -98,6 +98,8 @@ interface ChannelDeps {
   dashPeriodPx(): number;
   /** Current output range for the height channel selected by display options. */
   heightRange(): Domain;
+  /** Current radius multiplier range for the size channel selected by display options. */
+  sizeRange(): Domain;
   /** The renderer holding the topology's channel storage, or null while detached. */
   renderer(): ChannelRenderer | null;
 }
@@ -118,6 +120,8 @@ export interface Channels {
   refreshDashPeriod(): void;
   /** Re-read the display height range; a no-op while `vertexHeight` is unbound. */
   refreshHeightRange(): void;
+  /** Re-read the display size range; a no-op while `vertexSize` is unbound. */
+  refreshSizeRange(): void;
   /** Return the retained snapshot bound to a channel, or null when unbound. */
   values(channel: Channel): Float32Array | null;
   /** Upload every bound snapshot into a renderer that has just bound the topology. */
@@ -293,8 +297,11 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
       }
       case 'size': {
         const [min, scale] = linearNorm(lo, hi);
+        const [outMin, outMax] = deps.sizeRange();
         uniforms.channel.vSizeMin = min;
         uniforms.channel.vSizeScale = scale;
+        uniforms.channel.sizeOutMin = outMin;
+        uniforms.channel.sizeOutScale = outMax - outMin;
         break;
       }
       default:
@@ -319,10 +326,15 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
         uniforms.channel.heightOutMin = 0;
         uniforms.channel.heightOutScale = 0;
         break;
-      case 'vertexSize':
+      case 'vertexSize': {
+        // The output range stays live so picking pads by the same multiplier cap the shader uses.
+        const [outMin, outMax] = deps.sizeRange();
         uniforms.channel.vSizeMin = 0;
         uniforms.channel.vSizeScale = 0;
+        uniforms.channel.sizeOutMin = outMin;
+        uniforms.channel.sizeOutScale = outMax - outMin;
         break;
+      }
       default:
         /* v8 ignore next -- compile-time exhaustive Channel guard. */
         channel satisfies never;
@@ -339,6 +351,7 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
     refreshHeightRange: () => {
       if (current.has('vertexHeight')) writeScalars('vertexHeight');
     },
+    refreshSizeRange: () => writeScalars('vertexSize'),
     values: (channel) => current.get(channel) ?? null,
     upload(renderer) {
       for (const [channel, values] of current) renderer.writeChannel(channel, values);

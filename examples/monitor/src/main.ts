@@ -49,6 +49,7 @@ const pickReadout = document.getElementById('pick-readout') as HTMLElement;
 const runToggle = document.getElementById('run-toggle') as HTMLButtonElement;
 const resetButton = document.getElementById('reset') as HTMLButtonElement;
 const autoRangeInput = document.getElementById('auto-range') as HTMLInputElement;
+const windowInput = document.getElementById('time-window') as HTMLInputElement;
 const rateInput = document.getElementById('rate') as HTMLInputElement;
 const rateValue = document.getElementById('rate-value') as HTMLOutputElement;
 
@@ -61,10 +62,15 @@ let running = true;
 let timer: number | null = null;
 let lastHotRender = 0;
 
+/** Seconds of history the sliding window shows. */
+const WINDOW_S = 20;
+
 // The controller holds the series and options before any canvas exists.
 const monitor = createMonitor({
   lineWidthPx: 1.4,
   valueRange: signalRange(currentSignal),
+  // Selecting an element dims the rest so its trace stands out.
+  unselectedAlpha: 0.35,
   colormap: colormap(EXAMPLE_COLORMAPS[0]!),
 });
 
@@ -161,6 +167,7 @@ function wireChrome(): void {
   runToggle.addEventListener('click', () => setRunning(!running));
   resetButton.addEventListener('click', resetStream);
   autoRangeInput.addEventListener('change', applyRange);
+  windowInput.addEventListener('change', applyWindow);
   rateInput.addEventListener('input', () => {
     rateValue.value = `${rateInput.value} hz`;
     if (running) restartTimer();
@@ -243,6 +250,7 @@ function tick(): void {
   frameCursor++;
   series = { ...series, validFrames: frameCursor };
   monitor.extend(frameCursor);
+  if (windowInput.checked) applyWindow();
   const now = performance.now();
   renderHotList(now);
   if (selectedElement !== null) renderSelected();
@@ -290,6 +298,16 @@ function offset(signal: number, frame: number, element: number): number {
 
 function applyRange(): void {
   monitor.setOptions({ valueRange: autoRangeInput.checked ? null : signalRange(currentSignal) });
+}
+
+/** Follow the newest frame with a sliding window, or show the whole series. */
+function applyWindow(): void {
+  if (!windowInput.checked) {
+    monitor.setOptions({ timeRange: null });
+    return;
+  }
+  const end = Math.max(WINDOW_S, (frameCursor - 1) * DT_SECONDS);
+  monitor.setOptions({ timeRange: [end - WINDOW_S, end] });
 }
 
 function signalRange(signal: SignalIndex): readonly [number, number] {

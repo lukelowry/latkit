@@ -101,7 +101,21 @@ function historyDraws() {
 
 function lastUniform(label = 'monitor-uniform'): Float32Array {
   const write = stub.log.writes.filter((w) => w.label === label).pop()!;
-  return new Float32Array(write.copy!.buffer, write.copy!.byteOffset, 6);
+  return new Float32Array(write.copy!.buffer, write.copy!.byteOffset, 13);
+}
+
+function mockRect(canvas: HTMLCanvasElement, width: number, height: number): void {
+  vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+    left: 0,
+    top: 0,
+    width,
+    height,
+    right: width,
+    bottom: height,
+    x: 0,
+    y: 0,
+    toJSON: () => ({}),
+  } as DOMRect);
 }
 
 function sample(series: Series, signal: number, frame: number): Float32Array {
@@ -812,6 +826,61 @@ describe('monitor', () => {
     canvas.dispatchEvent(new MouseEvent('pointermove', { clientX: 180, clientY: 50 }));
     await stub.frame();
     expect(events.hover).toHaveLength(2);
+  });
+
+  it('windows the time axis with timeRange and maps readings back through it', async () => {
+    const scope = await mount({ valueRange: [0, 10] });
+    const events = record(scope);
+    scope.load(makeSeries({ elements: 1, time: [0, 10, 20, 30, 40], signals: [[0, 1, 2, 3, 4]] }));
+    await settle();
+    expect(lastUniform()[6]).toBe(0);
+    expect(lastUniform()[7]).toBe(1);
+
+    stub.log.draws.length = 0;
+    scope.setOptions({ timeRange: [20, 40] });
+    await settle();
+    // The window covers the last half of the span: x = (xnorm - 0.5) * 2.
+    expect(lastUniform()[6]).toBeCloseTo(0.5, 6);
+    expect(lastUniform()[7]).toBeCloseTo(2, 6);
+    expect(historyDraws().length).toBeGreaterThan(0);
+
+    const canvas = canvasFor(scope);
+    mockRect(canvas, 200, 100);
+    canvas.dispatchEvent(new MouseEvent('pointermove', { clientX: 100, clientY: 50 }));
+    await stub.frame();
+    expect(events.hover[0]).toMatchObject({ frame: 3, t: 30 });
+
+    scope.setOptions({ timeRange: null });
+    await settle();
+    expect(lastUniform()[6]).toBe(0);
+    expect(lastUniform()[7]).toBe(1);
+  });
+
+  it('tints the focus trace with focusColor and dims the rest by unselectedAlpha', async () => {
+    const scope = await mount({ valueRange: [0, 10], unselectedAlpha: 0.25 });
+    scope.load(makeSeries({ elements: 2, time: [0, 1], signals: [[1, 2, 3, 4]] }));
+    await settle();
+    expect(lastUniform()[11]).toBe(-1);
+    expect(lastUniform()[12]).toBe(1);
+
+    stub.log.draws.length = 0;
+    scope.select(1);
+    await settle();
+    // Dimming lives in the history texture, so a selection repaints it at the new alpha.
+    expect(lastUniform()[12]).toBe(0.25);
+    expect(historyDraws().length).toBeGreaterThan(0);
+
+    scope.setOptions({ focusColor: [1, 0.5, 0, 1] });
+    await settle();
+    expect([...lastUniform('monitor-focus-uniform').subarray(8, 12)]).toEqual([1, 0.5, 0, 1]);
+
+    scope.setOptions({ unselectedAlpha: 1 });
+    await settle();
+    expect(lastUniform()[12]).toBe(1);
+
+    scope.select(null);
+    await settle();
+    expect(lastUniform()[12]).toBe(1);
   });
 
   it('recovers from device loss on a replacement device and says so, once per monitor', async () => {

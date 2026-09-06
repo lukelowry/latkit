@@ -9,7 +9,8 @@ import type { Bounds, EncodedTopology } from '../../src/topology/index.js';
 import type { EncodedSegments } from '../../src/segments/index.js';
 import type { PreparedScene } from '../../src/scene.js';
 import type { Surface } from '../../src/input/surface.js';
-import type { Intent, WheelPolicy } from '../../src/input/pointer.js';
+import type { Intent, PointerPolicy, WheelPolicy } from '../../src/input/pointer.js';
+import type { FramePasses } from '../../src/webgpu/frame-encoder.js';
 import type { KeyIntent } from '../../src/input/keyboard.js';
 import type { Picker, PickerDeps, PickQuery, PickResult } from '../../src/pick/picker.js';
 import type { Projection } from '../../src/projections.js';
@@ -44,12 +45,13 @@ export function flushMicrotasks(): Promise<void> {
 export class FakeRenderer {
   onPipelinesReady?: () => void;
   onPipelineError?: (family: 'plane' | 'globe', cause: unknown) => void;
-  visibility = {
+  passes: FramePasses = {
     vertices: true,
     edges: true,
     poles: false,
     borders: true,
     earthAxis: true,
+    layering: 'stacked',
   };
   borders: Borders | null = null;
   projectionMode: Projection = 'flat';
@@ -57,12 +59,8 @@ export class FakeRenderer {
   encodedSegments: EncodedSegments | null = null;
   channelWrites: Array<{ channel: Channel; values: Float32Array }> = [];
 
-  setVisible = vi.fn((opts: Options) => {
-    if (opts.vertices !== undefined) this.visibility.vertices = opts.vertices;
-    if (opts.edges !== undefined) this.visibility.edges = opts.edges;
-    if (opts.poles !== undefined) this.visibility.poles = opts.poles;
-    if (opts.borders !== undefined) this.visibility.borders = opts.borders;
-    if (opts.earthAxis !== undefined) this.visibility.earthAxis = opts.earthAxis;
+  setPasses = vi.fn((passes: Partial<FramePasses>) => {
+    Object.assign(this.passes, passes);
   });
 
   bindTopology = vi.fn((scene: PreparedScene) => {
@@ -118,6 +116,7 @@ export class FakeCameraRig {
   bounds: Bounds | null = null;
   pendingPlacement = false;
   nextClaim = false;
+  animationMs = 500;
 
   setBounds = vi.fn((bounds: Bounds | null, _fit?: boolean) => {
     this.bounds = bounds;
@@ -357,6 +356,8 @@ export interface ControllerHarness {
   loseDevice(info?: Partial<GPUDeviceLostInfo>, index?: number): void;
   /** The wheel policy the pointer adapter was given. */
   readonly wheelPolicy: WheelPolicy | null;
+  /** The live pick radius the pointer adapter was given. */
+  readonly pickRadiusPx: (() => number) | null;
   emitPointer(intent: Intent): void;
   emitKey(intent: KeyIntent): void;
   destroy(): void;
@@ -384,6 +385,7 @@ export async function createControllerHarness(
   let emitPointer: ((intent: Intent) => void) | null = null;
   let emitKey: ((intent: KeyIntent) => void) | null = null;
   let wheelPolicy: WheelPolicy | null = null;
+  let pickRadiusPx: (() => number) | null = null;
   const pointerCleanup = { destroy: vi.fn() };
   const keyboardCleanup = { destroy: vi.fn() };
 
@@ -400,9 +402,10 @@ export async function createControllerHarness(
     ) as unknown as typeof RenderLoop,
     CameraRig: vi.fn(() => rig as unknown as CameraRig) as unknown as typeof CameraRig,
     attachPointer: vi.fn(
-      (_surface: Surface, emit: (intent: Intent) => void, policy?: WheelPolicy) => {
+      (_surface: Surface, emit: (intent: Intent) => void, policy?: Partial<PointerPolicy>) => {
         emitPointer = emit;
-        wheelPolicy = policy ?? null;
+        wheelPolicy = policy?.wheel ?? null;
+        pickRadiusPx = policy?.pickRadiusPx ?? null;
         return pointerCleanup;
       },
     ),
@@ -445,6 +448,9 @@ export async function createControllerHarness(
     },
     get wheelPolicy() {
       return wheelPolicy;
+    },
+    get pickRadiusPx() {
+      return pickRadiusPx;
     },
     loseDevice(info = {}, index = pool.devices.length - 1) {
       pool.devices[index]!.lost.resolve({

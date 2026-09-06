@@ -37,8 +37,8 @@ export function sunDirection(date: Date): [number, number, number] {
 
 /** Owner of time-varying sun state: refreshes `light_dir` on a fixed cadence. */
 export interface Daylight {
-  /** Write the current sun direction if the refresh cadence has elapsed. */
-  refresh(now?: number): void;
+  /** Write the sun direction for `now` once the refresh cadence has elapsed, or at once when forced. */
+  refresh(now?: number, force?: boolean): void;
 }
 
 /**
@@ -52,8 +52,8 @@ export interface Daylight {
 export function createDaylight(light: LightRegion): Daylight {
   let stamp = -Infinity;
   return {
-    refresh(now = Date.now()) {
-      if (now - stamp < SUN_REFRESH_MS) return;
+    refresh(now = Date.now(), force = false) {
+      if (!force && now - stamp < SUN_REFRESH_MS) return;
       stamp = now;
       const [x, y, z] = sunDirection(new Date(now));
       light.setDir(x, y, z);

@@ -66,6 +66,9 @@ monitor.setOptions({
   colormap: colormap('viridis'),
   lineWidthPx: 2,
   valueRange: null, // fit the active signal's committed extent
+  timeRange: [t - 20, t], // a sliding window; null shows the whole series
+  focusColor: null, // brighten the selected trace's own color
+  unselectedAlpha: 0.35, // dim every other trace while one is selected
 });
 ```
 

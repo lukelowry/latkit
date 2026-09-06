@@ -13,11 +13,18 @@ export type Motion = 'auto' | 'reduce' | 'full';
 export type Wheel = 'zoom' | 'modifier';
 
 /**
+ * How overlapping items resolve: `stacked` paints borders under edges under poles under vertices,
+ * each hidden only by the surface; `depth` lets true depth decide between them.
+ */
+export type Layering = 'stacked' | 'depth';
+
+/**
  * Network display options: the construction record and the live patch.
  *
  * @remarks
  * `msaa` and `devices` are read once at construction. Every other field seeds the initial view and
  * can be patched later with `Network.setOptions`; `OPTIONS` says which and carries each default.
+ * An option marked nullable takes `null` to hand the decision back to the controller.
  */
 export interface Options {
   /**
@@ -34,6 +41,8 @@ export interface Options {
   edges?: boolean;
   /** Draw height poles when a `vertexHeight` channel is active. @defaultValue `false`. */
   poles?: boolean;
+  /** How overlapping items resolve. @defaultValue `'stacked'`. */
+  layering?: Layering;
   /** Multiplier applied to the topology-derived vertex radius before its pixel cap. @defaultValue `1`. */
   vertexScale?: number;
   /** Multiplier applied to the topology-derived edge half-width before pixel clamps. @defaultValue `1`. */
@@ -42,6 +51,8 @@ export interface Options {
   heightScale?: number;
   /** Output range the normalized `vertexHeight` channel maps onto. @defaultValue `[0, 1]`. */
   heightRange?: Domain;
+  /** Radius multipliers the normalized `vertexSize` channel maps onto. @defaultValue `[0.5, 2]`. */
+  sizeRange?: Domain;
   /** Vertex level-of-detail threshold in CSS pixels. @defaultValue `2`. */
   vertexLodPx?: number;
   /** Screen-space edge dash period in CSS pixels. @defaultValue `12`. */
@@ -54,6 +65,8 @@ export interface Options {
   earthAxis?: boolean;
   /** Enable solar-terminator daylight shading on geographic topologies. @defaultValue `true`. */
   daylight?: boolean;
+  /** The instant daylight is computed for, in milliseconds since the epoch; `null` follows the clock. @defaultValue `null`. */
+  sunTime?: number | null;
   /** Minimum brightness on the night side of overlay geometry. @defaultValue `0.55`. */
   nightFloor?: number;
   /** Minimum brightness on the night side of opaque surfaces. @defaultValue `0.1`. */
@@ -61,7 +74,9 @@ export interface Options {
   /** Softness of the day/night terminator in shader units. @defaultValue `0.12`. */
   terminatorWidth?: number;
   /** Resting vertex color without a `vertexColor` channel. @defaultValue `[0.5, 0.5, 0.5, 1]`. */
-  baseColor?: RGBA;
+  baseVertexColor?: RGBA;
+  /** Resting edge color without an `edgeColor` channel; `null` averages the endpoint colors. @defaultValue `null`. */
+  baseEdgeColor?: RGBA | null;
   /** Seeds the color lookup texture used by colormap channels. @defaultValue A neutral gray ramp. */
   colormap?: Colormap;
   /** Graticule line color as normalized RGBA. @defaultValue `[0.45, 0.48, 0.54, 1]`. */
@@ -96,6 +111,14 @@ export interface Options {
    * @defaultValue `'auto'`.
    */
   motion?: Motion;
+  /** Duration of an animated fit, reveal, or pose, in milliseconds. @defaultValue `500`. */
+  animationMs?: number;
+  /** Multiplier on the continuous rotation rate of `orbit`. @defaultValue `1`. */
+  orbitRate?: number;
+  /** Inset an item must clear before `reveal` leaves it in place, in CSS pixels. @defaultValue `48`. */
+  revealPaddingPx?: number;
+  /** Pick radius for mouse hover, taps, and `hitTest`, in CSS pixels; touch uses at least 22. @defaultValue `10`. */
+  pickRadiusPx?: number;
   /**
    * Attach the keyboard map to the canvas: arrows pan, Shift with arrows rotates, plus and minus
    * zoom, Home fits, Escape clears the selection. The canvas becomes focusable when it is not.
@@ -106,11 +129,21 @@ export interface Options {
   wheel?: Wheel;
 }
 
-/** Validation kind, default, and whether `Network.setOptions` accepts the option live. */
+/** Validation kind, default, whether `Network.setOptions` accepts the option live, and whether `null` is a value. */
 export type OptionDefinition =
   | { readonly kind: 'boolean'; readonly default: boolean; readonly live: true }
-  | { readonly kind: 'finite' | 'nonnegative'; readonly default: number; readonly live: true }
-  | { readonly kind: 'rgba'; readonly default: RGBA; readonly live: true }
+  | {
+      readonly kind: 'finite' | 'nonnegative';
+      readonly default: number | null;
+      readonly live: true;
+      readonly nullable?: true;
+    }
+  | {
+      readonly kind: 'rgba';
+      readonly default: RGBA | null;
+      readonly live: true;
+      readonly nullable?: true;
+    }
   | { readonly kind: 'domain'; readonly default: Domain; readonly live: true }
   | {
       readonly kind: 'enum';
@@ -140,20 +173,24 @@ const definitions = {
   vertices: { kind: 'boolean', default: true, live: true },
   edges: { kind: 'boolean', default: true, live: true },
   poles: { kind: 'boolean', default: false, live: true },
+  layering: { kind: 'enum', values: values('stacked', 'depth'), default: 'stacked', live: true },
   vertexScale: { kind: 'nonnegative', default: 1, live: true },
   edgeScale: { kind: 'nonnegative', default: 1, live: true },
   heightScale: { kind: 'nonnegative', default: 1, live: true },
   heightRange: { kind: 'domain', default: tuple(0, 1), live: true },
+  sizeRange: { kind: 'domain', default: tuple(0.5, 2), live: true },
   vertexLodPx: { kind: 'nonnegative', default: 2, live: true },
   dashPeriodPx: { kind: 'nonnegative', default: 12, live: true },
   borders: { kind: 'boolean', default: true, live: true },
   graticule: { kind: 'boolean', default: false, live: true },
   earthAxis: { kind: 'boolean', default: true, live: true },
   daylight: { kind: 'boolean', default: true, live: true },
+  sunTime: { kind: 'finite', default: null, live: true, nullable: true },
   nightFloor: { kind: 'finite', default: 0.55, live: true },
   surfaceNightFloor: { kind: 'finite', default: 0.1, live: true },
   terminatorWidth: { kind: 'nonnegative', default: 0.12, live: true },
-  baseColor: { kind: 'rgba', default: tuple(0.5, 0.5, 0.5, 1), live: true },
+  baseVertexColor: { kind: 'rgba', default: tuple(0.5, 0.5, 0.5, 1), live: true },
+  baseEdgeColor: { kind: 'rgba', default: null, live: true, nullable: true },
   colormap: { kind: 'colormap', default: neutralColormap, live: true },
   graticuleColor: { kind: 'rgba', default: tuple(0.45, 0.48, 0.54, 1), live: true },
   surfaceColor: { kind: 'rgba', default: tuple(0.15, 0.16, 0.19, 1), live: true },
@@ -174,6 +211,10 @@ const definitions = {
     live: true,
   },
   motion: { kind: 'enum', values: values('auto', 'reduce', 'full'), default: 'auto', live: true },
+  animationMs: { kind: 'nonnegative', default: 500, live: true },
+  orbitRate: { kind: 'nonnegative', default: 1, live: true },
+  revealPaddingPx: { kind: 'nonnegative', default: 48, live: true },
+  pickRadiusPx: { kind: 'nonnegative', default: 10, live: true },
   keyboard: { kind: 'boolean', default: true, live: true },
   wheel: { kind: 'enum', values: values('zoom', 'modifier'), default: 'zoom', live: true },
 } as const satisfies Record<keyof Required<Options>, OptionDefinition>;
@@ -195,7 +236,7 @@ export type RuntimeOption = OptionKeyByLive<true>;
 export type ResolvedOptions = Readonly<{
   [Key in keyof typeof OPTIONS]: undefined extends (typeof OPTIONS)[Key]['default']
     ? Options[Key] | undefined
-    : NonNullable<Options[Key]>;
+    : Exclude<Options[Key], undefined>;
 }>;
 
 /** Build the default record mechanically from the canonical definitions. */
@@ -215,7 +256,7 @@ export function resolveOptions(options: Options): ResolvedOptions {
     const supplied = values[key];
     const value = supplied === undefined ? definition.default : supplied;
     const owned =
-      definition.kind === 'rgba' || definition.kind === 'domain'
+      (definition.kind === 'rgba' || definition.kind === 'domain') && value !== null
         ? Object.freeze([...(value as readonly number[])])
         : value;
     return [key, owned];
@@ -241,6 +282,7 @@ export function validateOptions(options: Options): void {
 
 /** Validate one supplied value according to its canonical metadata. */
 function validateOptionValue(key: string, definition: OptionDefinition, value: unknown): void {
+  if (value === null && 'nullable' in definition && definition.nullable) return;
   switch (definition.kind) {
     case 'boolean':
       if (typeof value !== 'boolean') typeError(key, 'a boolean');

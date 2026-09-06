@@ -1,5 +1,5 @@
 // Shared uniform struct, prepended to all shader modules at pipeline creation time.
-// Total: 416 bytes (26 x 16, naturally aligned).
+// Total: 432 bytes (27 x 16, naturally aligned).
 
 struct Uniforms {
   // Camera (packed by the active projection) plus world lighting (bytes 0-111).
@@ -103,9 +103,17 @@ struct Uniforms {
   camera_up: vec3f,
   item_flags: u32,
 
-  // Raw item-channel addressing (bytes 400-407; struct pads to 416).
+  // Raw item-channel addressing (bytes 400-407).
   v_visible_offset: u32,
   e_visible_offset: u32,
+
+  // Vertex size output range (bytes 408-415): normalized domain t maps to
+  // size_out_min + t * size_out_scale radius multipliers.
+  size_out_min: f32,
+  size_out_scale: f32,
+
+  // Base edge color (bytes 416-431), read only under FLAG_BASE_EDGE_COLOR.
+  base_edge_color: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -114,9 +122,10 @@ fn css_px(value: f32) -> f32 {
   return value * u.backing_scale;
 }
 
-const FLAG_DAYLIGHT:   u32 = 1u;
-const FLAG_GRATICULE:  u32 = 2u;
-const FLAG_GEOGRAPHIC: u32 = 4u;
+const FLAG_DAYLIGHT:        u32 = 1u;
+const FLAG_GRATICULE:       u32 = 2u;
+const FLAG_GEOGRAPHIC:      u32 = 4u;
+const FLAG_BASE_EDGE_COLOR: u32 = 8u;
 
 const FOCUS_ENABLED:            u32 = 1u;
 const FOCUS_SELECTED_ENDPOINTS: u32 = 2u;

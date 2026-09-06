@@ -18,6 +18,10 @@ struct Uniforms {
   element_count: u32,
   range_min: f32,
   range_scale: f32,   // 1 / (max - min); drives y and the LUT coordinate together
+  window_min: f32,    // time window over the normalized axis: x = (xnorm - window_min) * window_scale
+  window_scale: f32,
+  focus_color: vec4f, // focus trace tint; alpha below zero keeps the brightened own color
+  alpha: f32,         // history trace alpha: unselectedAlpha while an element is selected, else 1
 };
 
 @group(0) @binding(0) var<uniform> U: Uniforms;
@@ -49,6 +53,10 @@ fn lut(t: f32) -> vec3f {
   return textureSampleLevel(cm_lut, cm_samp, vec2f(t, 0.5), 0.0).rgb;
 }
 
+fn window_x(x: f32) -> f32 {
+  return (x - U.window_min) * U.window_scale;
+}
+
 @vertex fn vs_main(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VSOut {
   let frame = ii / U.element_count;
   let element = ii % U.element_count;
@@ -63,8 +71,8 @@ fn lut(t: f32) -> vec3f {
 
   let t0 = clamp((v0 - U.range_min) * U.range_scale, 0.0, 1.0);
   let t1 = clamp((v1 - U.range_min) * U.range_scale, 0.0, 1.0);
-  let p0 = vec2f(xnorm[frame] * U.size.x, (1.0 - t0) * U.size.y);
-  let p1 = vec2f(xnorm[frame + 1u] * U.size.x, (1.0 - t1) * U.size.y);
+  let p0 = vec2f(window_x(xnorm[frame]) * U.size.x, (1.0 - t0) * U.size.y);
+  let p1 = vec2f(window_x(xnorm[frame + 1u]) * U.size.x, (1.0 - t1) * U.size.y);
 
   let dir = p1 - p0;
   let len = max(length(dir), 1e-6);
@@ -98,19 +106,21 @@ fn segment_distance(p: vec2f, a: vec2f, b: vec2f) -> f32 {
   return length(pa - ba * h);
 }
 
-fn feather(in: VSOut, color: vec3f) -> vec4f {
+fn feather(in: VSOut, color: vec3f, opacity: f32) -> vec4f {
   let dist = segment_distance(in.frag_px, in.seg_p0, in.seg_p1);
-  let alpha = clamp(in.hw_px - dist + 0.5, 0.0, 1.0);
+  let alpha = clamp(in.hw_px - dist + 0.5, 0.0, 1.0) * opacity;
   if (alpha <= 0.0) { discard; }
   return vec4f(color * alpha, alpha); // premultiplied
 }
 
-@fragment fn fs_main(in: VSOut) -> @location(0) vec4f {
-  return feather(in, in.color);
+@fragment fn fs_history(in: VSOut) -> @location(0) vec4f {
+  return feather(in, in.color, U.alpha);
 }
 
-// Focus overlay: the same segment, brightened toward white; the pass draws one
-// element's trace widened at present time and never touches the history texture.
+// Focus overlay: the same segment in the focus color, or brightened toward white; the pass
+// draws one element's trace widened at present time and never touches the history texture.
 @fragment fn fs_focus(in: VSOut) -> @location(0) vec4f {
-  return feather(in, mix(in.color, vec3f(1.0, 1.0, 1.0), 0.35));
+  let own = mix(in.color, vec3f(1.0, 1.0, 1.0), 0.35);
+  let color = select(own, U.focus_color.rgb, U.focus_color.a >= 0.0);
+  return feather(in, color, 1.0);
 }

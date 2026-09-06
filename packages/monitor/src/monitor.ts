@@ -5,11 +5,12 @@ import { extent, frameAt, sample, type Domain, type Series } from '@latkit/model
 import { createEmitter } from './emitter.js';
 import {
   OPTIONS,
-  ownDomain,
+  own,
   resolveOptions,
   validateOptions,
   type Colormap,
   type Options,
+  type RGBA,
 } from './options.js';
 import { COLORMAP_LUT_SIZE, LanePainter, SEGMENT_BUDGET, framesPerWindow } from './painter.js';
 
@@ -220,6 +221,9 @@ export function createMonitor(options: Options = {}): Monitor {
   let lineWidthPx = resolved.lineWidthPx;
   let pinnedRange: Domain | null = resolved.valueRange;
   let effectiveRange: Domain = normalizeRange(pinnedRange);
+  let timeRange: Domain | null = resolved.timeRange;
+  let focusColor: RGBA | null = resolved.focusColor;
+  let unselectedAlpha = resolved.unselectedAlpha;
 
   let bound: Bound | null = null;
   let selected: number | null = null;
@@ -237,6 +241,19 @@ export function createMonitor(options: Options = {}): Monitor {
     if (series.ranges)
       return normalizeRange([series.ranges[signal * 2]!, series.ranges[signal * 2 + 1]!]);
     return normalizeRange(bound.extent);
+  }
+
+  /**
+   * The time window as an affine map over the normalized axis: `x = (xnorm - min) * scale`.
+   * Identity without a pinned window or a series.
+   */
+  function resolveWindow(): readonly [min: number, scale: number] {
+    if (!timeRange || !bound) return [0, 1];
+    const { time } = bound.series;
+    const t0 = time[0]!;
+    const span = time[time.length - 1]! - t0 || 1;
+    const [from, to] = timeRange;
+    return [(from - t0) / span, span / Math.max(to - from, 1e-9)];
   }
 
   /** Adopt the resolved range; true when it moved. */
@@ -260,11 +277,16 @@ export function createMonitor(options: Options = {}): Monitor {
   function writeUniforms(entry: Binding): void {
     const { painter } = entry;
     const [min, max] = effectiveRange;
+    const [windowMin, windowScale] = resolveWindow();
     const base = {
       widthPx: painter.widthPx,
       heightPx: painter.heightPx,
       rangeMin: min,
       rangeScale: 1 / (max - min),
+      windowMin,
+      windowScale,
+      focusColor: focusColor ?? ([0, 0, 0, -1] as const),
+      alpha: selected === null ? 1 : unselectedAlpha,
     };
     painter.writeUniform('history', {
       ...base,
@@ -368,7 +390,11 @@ export function createMonitor(options: Options = {}): Monitor {
     const y = clamp01((entry.cursor.y - rect.top) / rect.height);
     const { series, signal, validFrames } = bound;
     const { time } = series;
-    const t = time[0]! + x * (time[time.length - 1]! - time[0]!);
+    // The cursor sits on the windowed axis; map it back to the series' full span.
+    const [windowMin, windowScale] = resolveWindow();
+    const xnorm = windowMin + x / windowScale;
+    if (xnorm < 0 || xnorm > 1) return null;
+    const t = time[0]! + xnorm * (time[time.length - 1]! - time[0]!);
     const frame = frameAt(time, t);
     if (frame >= validFrames) return null;
     const values = sample(series, signal, frame);
@@ -437,11 +463,18 @@ export function createMonitor(options: Options = {}): Monitor {
   /** Select without emitting; the caller has validated `next`. */
   function applySelection(next: number | null): void {
     if (next === selected) return;
+    const dimmed = (selected === null) !== (next === null) && unselectedAlpha !== 1;
     selected = next;
     if (bound) gatherFocus(bound, 0, bound.validFrames);
     const entry = binding;
     if (!entry) return;
     if (bound) uploadFocus(entry, 0, bound.validFrames);
+    if (dimmed && bound) {
+      // The history texture carries the trace alpha, so a dimming change repaints it.
+      writeUniforms(entry);
+      scheduleRepaint(entry);
+      return;
+    }
     entry.presentDirty = true;
     schedule(entry);
   }
@@ -724,6 +757,7 @@ export function createMonitor(options: Options = {}): Monitor {
       const lut = patch.colormap === undefined ? null : bakeColormap(patch.colormap);
       let uniformsDirty = false;
       let repaint = false;
+      let present = false;
       for (const [key, definition] of Object.entries(OPTIONS)) {
         if (!definition.live || patch[key as keyof Options] === undefined) continue;
         switch (key as keyof Options) {
@@ -738,8 +772,26 @@ export function createMonitor(options: Options = {}): Monitor {
             repaint = true;
             break;
           case 'valueRange':
-            pinnedRange = ownDomain(patch.valueRange!);
+            pinnedRange = own(patch.valueRange!);
             if (refreshRange()) {
+              uniformsDirty = true;
+              repaint = true;
+            }
+            break;
+          case 'timeRange':
+            timeRange = own(patch.timeRange!);
+            uniformsDirty = true;
+            repaint = true;
+            break;
+          case 'focusColor':
+            focusColor = own(patch.focusColor!);
+            uniformsDirty = true;
+            present = true;
+            break;
+          case 'unselectedAlpha':
+            if (patch.unselectedAlpha === unselectedAlpha) break;
+            unselectedAlpha = patch.unselectedAlpha!;
+            if (selected !== null) {
               uniformsDirty = true;
               repaint = true;
             }
@@ -753,6 +805,10 @@ export function createMonitor(options: Options = {}): Monitor {
       if (lut) entry.painter.writeColormap(lut);
       if (uniformsDirty) writeUniforms(entry);
       if (repaint && bound) scheduleRepaint(entry);
+      else if (present) {
+        entry.presentDirty = true;
+        schedule(entry);
+      }
     },
 
     select(element) {

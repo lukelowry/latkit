@@ -63,12 +63,12 @@ describe('Renderer resource lifecycle', () => {
       h.device.createRenderPipelineAsync.mock.calls.map(([descriptor]) => descriptor.label ?? '');
 
     // The shared planar family has nine; globe adds earth-axis for ten.
-    expect(labels().filter((label) => label.startsWith('plane-'))).toHaveLength(9);
+    expect(labels().filter((label) => label.startsWith('plane-'))).toHaveLength(11);
     renderer.useProjection('tilt');
     void renderer.warmProjection('flat');
-    expect(labels().filter((label) => label.startsWith('plane-'))).toHaveLength(9);
+    expect(labels().filter((label) => label.startsWith('plane-'))).toHaveLength(11);
     void renderer.warmProjection('globe');
-    expect(labels().filter((label) => label.startsWith('globe-'))).toHaveLength(10);
+    expect(labels().filter((label) => label.startsWith('globe-'))).toHaveLength(12);
 
     release({ label: 'compiled' } as GPURenderPipeline);
     await flushGpuPromises();
@@ -335,7 +335,7 @@ describe('Renderer frame encoding', () => {
     const uniforms = createUniforms();
     uniforms.channel.vHeightMode = 1;
     uniforms.camera.depthMix = 1;
-    renderer.setVisible({ poles: true });
+    renderer.setPasses({ poles: true });
 
     expect(renderer.render(uniforms)).toBe(true);
 

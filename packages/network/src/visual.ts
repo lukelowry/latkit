@@ -26,10 +26,6 @@ export const VISUAL = {
   globeSurfaceOffset: 0.001,
   /** Vertex radius as a fraction of the topology's characteristic length. */
   vertexSizeScale: 0.08,
-  /** Minimum multiplier for channel-driven vertex radius. */
-  vertexSizeMinMul: 0.5,
-  /** Maximum multiplier for channel-driven vertex radius. */
-  vertexSizeMaxMul: 2.0,
   /** Base edge half-width as a fraction of the characteristic length. */
   baseEdgeWidthScale: 0.012,
   /** Target peak height at fit for flat/tilt. */
@@ -69,8 +65,6 @@ export const VISUAL_WGSL = `
 const MIN_EDGE_HALF_WIDTH_PX: f32 = ${VISUAL.minEdgeHalfWidthPx};
 const MAX_EDGE_HALF_WIDTH_PX: f32 = ${VISUAL.maxEdgeHalfWidthPx};
 const MAX_VERTEX_RADIUS_PX: f32 = ${VISUAL.maxVertexRadiusPx};
-const SIZE_MIN_MUL: f32 = ${VISUAL.vertexSizeMinMul};
-const SIZE_MAX_MUL: f32 = ${VISUAL.vertexSizeMaxMul};
 const VERTEX_RING_PX: f32 = ${VISUAL.vertexRingPx};
 const GLOBE_VERTEX_SCALE: f32 = ${VISUAL.globeVertexScale};
 const GLOBE_EDGE_SCALE: f32 = ${VISUAL.globeEdgeScale};

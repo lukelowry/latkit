@@ -77,17 +77,15 @@ const POINTER = {
   doubleTapPx: 25,
 } as const;
 
-/** Default mouse/pen pick target radius, in CSS px. */
-export const MOUSE_PICK_RADIUS_PX = 10;
+/** Touch pick target floor, in CSS px: half of the Apple HIG 44pt diameter, as a radius. */
+const TOUCH_PICK_RADIUS_PX = 22;
 
-/** Pick target radii by pointer family, in CSS px. */
-const PICK = {
-  /** Mouse/pen click target floor; larger than the 2px LOD floor. */
-  mousePx: MOUSE_PICK_RADIUS_PX,
-
-  /** Touch click target. Half of Apple HIG 44pt diameter, expressed as radius. */
-  touchPx: 22,
-} as const;
+/** What the surface's input follows: the wheel policy and the live mouse pick radius. */
+export interface PointerPolicy {
+  readonly wheel: WheelPolicy;
+  /** Mouse and pen pick radius in CSS px; touch uses at least {@link TOUCH_PICK_RADIUS_PX}. */
+  readonly pickRadiusPx: () => number;
+}
 
 /** Wheel delta normalization and zoom gain. */
 const WHEEL = {
@@ -226,8 +224,13 @@ interface ScreenPoint {
 export function attachPointer(
   surface: Surface,
   emit: (i: Intent) => void,
-  wheel: WheelPolicy = DEFAULT_WHEEL_POLICY,
+  policy: Partial<PointerPolicy> = {},
 ): { destroy(): void } {
+  const wheel = policy.wheel ?? DEFAULT_WHEEL_POLICY;
+  const mousePx = policy.pickRadiusPx ?? (() => 10);
+  /** Target radius for tap/hover picking by pointer type, in CSS px. */
+  const targetPxFor = (pointerType: string): number =>
+    pointerType === 'touch' ? Math.max(TOUCH_PICK_RADIUS_PX, mousePx()) : mousePx();
   const element = surface.element;
   let state: State = { kind: 'idle', lastTap: null };
   let latestProbe: HoverProbe | null = null;
@@ -723,7 +726,7 @@ export function attachPointer(
     const rect = surface.rect();
     const s = screen(e, rect);
     latestProbe = containsClientPoint(rect, e.clientX, e.clientY)
-      ? { clientX: e.clientX, clientY: e.clientY, targetPx: PICK.mousePx }
+      ? { clientX: e.clientX, clientY: e.clientY, targetPx: mousePx() }
       : null;
 
     const zooming = gesture === 'zoom';
@@ -790,11 +793,6 @@ export function attachPointer(
       reset(false);
     },
   };
-}
-
-/** Target radius for tap/hover picking by pointer type, in CSS px. */
-function targetPxFor(pointerType: string): number {
-  return pointerType === 'touch' ? PICK.touchPx : PICK.mousePx;
 }
 
 /** Whether a pointer type can emit hover intents while idle. */

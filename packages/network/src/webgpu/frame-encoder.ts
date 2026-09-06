@@ -1,10 +1,11 @@
 /// <reference types="@webgpu/types" />
 
+import type { Layering } from '../options.js';
 import type { BorderBuffers } from './border-buffers.js';
 import type { VisualPipelines } from './pipelines.js';
 
-/** Layer flags resolved for a single encoded frame. */
-interface FrameVisibility {
+/** The passes one encoded frame draws, and how their items overlap. */
+export interface FramePasses {
   /** Draw vertex billboards. */
   vertices: boolean;
   /** Draw edge segments. */
@@ -15,6 +16,8 @@ interface FrameVisibility {
   borders: boolean;
   /** Draw globe earth-axis indicator. */
   earthAxis: boolean;
+  /** Whether edges write depth (`depth`) or paint under everything but the surface (`stacked`). */
+  layering: Layering;
 }
 
 /** Counts required by instanced draw calls. */
@@ -45,8 +48,8 @@ export interface EncodeNetworkFrameInputs {
   topology: FrameTopology;
   /** Optional bound border buffers. */
   borders: BorderBuffers | null;
-  /** Layer visibility resolved by the renderer. */
-  visibility: FrameVisibility;
+  /** Pass visibility and layering resolved by the renderer. */
+  passes: FramePasses;
   /** Shared unit quad vertex buffer for billboard passes. */
   unitQuad: GPUBuffer;
   /** Shared edge strip vertex buffer for segment passes. */
@@ -77,33 +80,34 @@ export function encodeNetworkFrame(inputs: EncodeNetworkFrameInputs): void {
   rp.setBindGroup(0, inputs.channelsBindGroup);
   rp.draw(3);
 
-  if (inputs.visibility.earthAxis && inputs.visual.earthAxis) {
+  const { passes } = inputs;
+  if (passes.earthAxis && inputs.visual.earthAxis) {
     rp.setPipeline(inputs.visual.earthAxis);
     rp.setBindGroup(0, inputs.channelsBindGroup);
     rp.draw(4, 2);
   }
 
-  if (inputs.visibility.borders && inputs.borders) {
+  if (passes.borders && inputs.borders) {
     rp.setPipeline(inputs.visual.borders);
     rp.setBindGroup(0, inputs.channelsBindGroup);
     inputs.borders.bind(rp);
     rp.drawIndexed(inputs.borders.indexCount);
   }
 
-  if (inputs.visibility.edges) {
+  if (passes.edges) {
     rp.setVertexBuffer(0, inputs.edgeStrip);
     rp.setBindGroup(0, inputs.channelsBindGroup);
     rp.setBindGroup(1, inputs.topologyBindGroup);
     rp.setBindGroup(2, inputs.segmentsBindGroup);
 
-    rp.setPipeline(inputs.visual.edge);
+    rp.setPipeline(inputs.visual.edge[passes.layering]);
     rp.draw(4, inputs.topology.segmentCount);
 
     if (inputs.edgeFocusRanges.length > 0) {
       rp.setPipeline(inputs.visual.edgeHalo);
       drawFocusedEdges(rp, inputs);
 
-      rp.setPipeline(inputs.visual.edgeFocus);
+      rp.setPipeline(inputs.visual.edgeFocus[passes.layering]);
       drawFocusedEdges(rp, inputs);
     }
   }
@@ -116,7 +120,7 @@ export function encodeNetworkFrame(inputs: EncodeNetworkFrameInputs): void {
     rp.draw(4, inputs.topology.vertexCount);
   }
 
-  if (inputs.visibility.vertices) {
+  if (passes.vertices) {
     rp.setPipeline(inputs.visual.vertex);
     rp.setVertexBuffer(0, inputs.unitQuad);
     rp.setBindGroup(0, inputs.channelsBindGroup);

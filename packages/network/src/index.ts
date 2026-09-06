@@ -8,7 +8,7 @@
  */
 
 export { createNetwork } from './controller.js';
-export type { Network, Events, RevealOptions } from './controller.js';
+export type { Network, Events } from './controller.js';
 
 export { CHANNELS } from './channels.js';
 export type { Channel } from './channels.js';

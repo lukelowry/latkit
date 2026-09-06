@@ -30,7 +30,11 @@ describe('createChannels', () => {
   function make(loaded = true, attached = true) {
     const uniforms = createUniforms();
     const renderer = { writeChannel: vi.fn() };
-    const display = { dashPeriodPx: 18, heightRange: [0, 1] as Domain };
+    const display = {
+      dashPeriodPx: 18,
+      heightRange: [0, 1] as Domain,
+      sizeRange: [0.5, 2] as Domain,
+    };
     let bound = attached;
     const channels = createChannels(uniforms, {
       loaded: () => loaded,
@@ -38,6 +42,7 @@ describe('createChannels', () => {
       edgeCount: () => 2,
       dashPeriodPx: () => display.dashPeriodPx,
       heightRange: () => display.heightRange,
+      sizeRange: () => display.sizeRange,
       renderer: () => (bound ? renderer : null),
     });
     channels.reset();
