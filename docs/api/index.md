@@ -14,10 +14,10 @@ The API reference is generated from the published package entrypoints with TypeD
 
 ## Common entrypoints
 
-- [`createNetwork`](reference/network/index.md#createnetwork) creates a network canvas controller; the `Network` interface on that page is everything a host does with it.
-- [`Topology`](reference/model/index.md), [`Item`](reference/model/index.md), and [`Series`](reference/model/index.md) are the shapes every renderer loads and returns, defined once in the model package.
-- [`createMonitor`](reference/monitor/index.md#createmonitor) creates a monitor canvas controller.
-- [`requestDevice`](reference/gpu/index.md#requestdevice) requests a native Core WebGPU device; [`createDevicePool`](reference/gpu/index.md#createdevicepool) shares one among many renderers.
+- [`createNetwork`](reference/network/index.md#createnetwork) creates a network controller that attaches to any canvas; the `Network` interface on that page is everything a host does with it.
+- [`Topology`](reference/model/index.md), [`Item`](reference/model/index.md), [`Series`](reference/model/index.md), and [`Domain`](reference/model/index.md) are the shapes every renderer loads and returns, defined once in the model package.
+- [`createMonitor`](reference/monitor/index.md#createmonitor) creates a monitor controller that attaches to any canvas.
+- [`devices`](reference/gpu/index.md#devices) is the realm-wide device pool every controller leases from; [`requestDevice`](reference/gpu/index.md#requestdevice) requests a native Core WebGPU device and [`createDevicePool`](reference/gpu/index.md#createdevicepool) makes a private pool.
 - [`createPresentation`](reference/gpu/index.md#createpresentation) configures a caller-owned canvas.
 - [`colormap`](reference/colormaps/index.md#colormap) returns a normalized color transfer function; [`COLORMAPS`](reference/colormaps/index.md#colormaps) names and labels every preset.
 - [`protocol`](reference/port/index.md#protocol) declares the contract both ends of a service import; [`serve`](reference/port/index.md#serve) answers it and [`connect`](reference/port/index.md#connect) calls it.

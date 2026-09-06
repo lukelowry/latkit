@@ -59,6 +59,9 @@ importers:
       '@latkit/embed':
         specifier: workspace:*
         version: link:../../packages/embed
+      '@latkit/network':
+        specifier: workspace:*
+        version: link:../../packages/network
     devDependencies:
       typescript:
         specifier: ^5.7.0
@@ -72,9 +75,9 @@ importers:
       '@latkit/colormaps':
         specifier: workspace:*
         version: link:../../packages/colormaps
-      '@latkit/gpu':
+      '@latkit/model':
         specifier: workspace:*
-        version: link:../../packages/gpu
+        version: link:../../packages/model
       '@latkit/monitor':
         specifier: workspace:*
         version: link:../../packages/monitor
@@ -94,9 +97,9 @@ importers:
       '@latkit/colormaps':
         specifier: workspace:*
         version: link:../../packages/colormaps
-      '@latkit/gpu':
+      '@latkit/model':
         specifier: workspace:*
-        version: link:../../packages/gpu
+        version: link:../../packages/model
       '@latkit/network':
         specifier: workspace:*
         version: link:../../packages/network
@@ -111,16 +114,23 @@ importers:
         specifier: ^7.0.0
         version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
 
-  packages/colormaps: {}
+  packages/colormaps:
+    dependencies:
+      '@latkit/model':
+        specifier: workspace:*
+        version: link:../model
 
   packages/embed:
     dependencies:
       '@latkit/colormaps':
         specifier: workspace:*
         version: link:../colormaps
-      '@latkit/gpu':
+      '@latkit/model':
         specifier: workspace:*
-        version: link:../gpu
+        version: link:../model
+      '@latkit/monitor':
+        specifier: workspace:*
+        version: link:../monitor
       '@latkit/network':
         specifier: workspace:*
         version: link:../network

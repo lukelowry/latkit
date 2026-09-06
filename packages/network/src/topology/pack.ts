@@ -1,5 +1,6 @@
+import { validateTopology } from '@latkit/model';
+
 import type { Bounds, Topology } from './types.js';
-import { validateTopology } from './validate.js';
 
 /** Cached generated layouts for topologies that omit explicit vertex coordinates. */
 const fallbackCoords = new WeakMap<Topology, Float32Array>();
@@ -154,6 +155,31 @@ export function computeBounds(coords: Float32Array): Bounds {
     if (y > yMax) yMax = y;
   }
   return { xMin, xMax, yMin, yMax };
+}
+
+/**
+ * Whether two topologies describe the same geometry: the same counts, coordinate interpretation,
+ * and array contents. Generated ring layouts compare equal to each other whatever their spelling.
+ */
+export function sameTopology(a: Topology, b: Topology): boolean {
+  if (a === b) return true;
+  if (a.vertexCount !== b.vertexCount || a.coordinateSpace !== b.coordinateSpace) return false;
+  const explicit = hasExplicitCoords(a);
+  if (explicit !== hasExplicitCoords(b)) return false;
+  if (explicit && !sameArray(a.vertexCoords!, b.vertexCoords!)) return false;
+  return (
+    sameArray(a.edges, b.edges) &&
+    sameArray(a.polylineStart, b.polylineStart) &&
+    sameArray(polylinePointsOf(a), polylinePointsOf(b))
+  );
+}
+
+/** Element-wise equality of two numeric arrays; validated topologies carry no NaN. */
+function sameArray(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index++) if (a[index] !== b[index]) return false;
+  return true;
 }
 
 /** Estimate a typical vertex spacing from bounds area and vertex count. */

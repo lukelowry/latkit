@@ -36,6 +36,12 @@ export function createDevicePool(options?: Options): DevicePool {
   return poolOver(() => requestDevice(options));
 }
 
+/**
+ * The realm-wide pool every renderer leases from unless given another: one device per page,
+ * requested by the first `acquire` and destroyed with the last release.
+ */
+export const devices: DevicePool = createDevicePool();
+
 /** Create a pool over an arbitrary device request; `createDevicePool` without the adapter step. */
 export function poolOver(request: () => Promise<GPUDevice>): DevicePool {
   let current: DeviceEntry | null = null;

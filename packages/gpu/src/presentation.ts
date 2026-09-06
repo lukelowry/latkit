@@ -230,7 +230,10 @@ function reportSize(
  * observes subsequent changes.
  *
  * The listener runs synchronously once, then directly from resize notifications.
- * Scheduling and backing-size policy remain the listener's responsibility.
+ * Scheduling and backing-size policy remain the listener's responsibility. A
+ * `device-pixel-content-box` observation already reports layout and pixel-ratio
+ * changes exactly; only when it is unavailable are the window, visual viewport,
+ * and pixel-ratio media query watched by hand.
  *
  * @returns An idempotent function that stops observation.
  */
@@ -241,46 +244,26 @@ export function observeCanvas(
   const view = canvasView(canvas);
   const Observer =
     view?.ResizeObserver ?? (typeof ResizeObserver === 'undefined' ? undefined : ResizeObserver);
-  const viewport = view?.visualViewport;
   let active = true;
   let observer: ResizeObserver | undefined;
-  let resolution: MediaQueryList | undefined;
+  let stopFallback: (() => void) | null = null;
 
   const report = (entry?: ResizeObserverEntry): void => {
     if (active) reportSize(canvas, view, listener, entry);
   };
-  const onViewportResize = (): void => report();
-  const onWindowResize = (): void => report();
-  function watchResolution(): void {
-    resolution?.removeEventListener('change', onResolutionChange);
-    resolution = view?.matchMedia?.(`(resolution: ${view.devicePixelRatio || 1}dppx)`);
-    resolution?.addEventListener('change', onResolutionChange, { once: true });
-  }
-  function onResolutionChange(): void {
-    if (!active) return;
-    watchResolution();
-    report();
-  }
   const stop = (): void => {
     if (!active) return;
     active = false;
     try {
       observer?.disconnect();
     } finally {
-      try {
-        viewport?.removeEventListener('resize', onViewportResize);
-      } finally {
-        try {
-          view?.removeEventListener?.('resize', onWindowResize);
-        } finally {
-          resolution?.removeEventListener('change', onResolutionChange);
-          resolution = undefined;
-        }
-      }
+      stopFallback?.();
+      stopFallback = null;
     }
   };
 
   try {
+    let exact = false;
     if (Observer) {
       const next = new Observer((entries: ResizeObserverEntry[]) =>
         report(entries[entries.length - 1]),
@@ -288,14 +271,12 @@ export function observeCanvas(
       observer = next;
       try {
         next.observe(canvas, { box: 'device-pixel-content-box' });
+        exact = true;
       } catch {
         next.observe(canvas);
       }
     }
-
-    viewport?.addEventListener('resize', onViewportResize);
-    view?.addEventListener?.('resize', onWindowResize);
-    watchResolution();
+    if (!exact) stopFallback = watchFallback(view, report);
     report();
   } catch (error) {
     try {
@@ -307,4 +288,40 @@ export function observeCanvas(
   }
 
   return stop;
+}
+
+/**
+ * Watch the size inputs a plain content-box observation misses: the visual viewport, the window,
+ * and the device pixel ratio through a media query re-armed after every change.
+ */
+function watchFallback(view: (Window & typeof globalThis) | null, report: () => void): () => void {
+  const viewport = view?.visualViewport;
+  let resolution: MediaQueryList | undefined;
+  const onResize = (): void => report();
+  const onResolutionChange = (): void => {
+    watchResolution();
+    report();
+  };
+  function watchResolution(): void {
+    resolution?.removeEventListener('change', onResolutionChange);
+    resolution = view?.matchMedia?.(`(resolution: ${view.devicePixelRatio || 1}dppx)`);
+    resolution?.addEventListener('change', onResolutionChange, { once: true });
+  }
+
+  viewport?.addEventListener('resize', onResize);
+  view?.addEventListener?.('resize', onResize);
+  watchResolution();
+
+  return () => {
+    try {
+      viewport?.removeEventListener('resize', onResize);
+    } finally {
+      try {
+        view?.removeEventListener?.('resize', onResize);
+      } finally {
+        resolution?.removeEventListener('change', onResolutionChange);
+        resolution = undefined;
+      }
+    }
+  };
 }

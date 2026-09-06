@@ -17,10 +17,12 @@ export interface OrbitTarget {
   setPose(pose: Partial<Pose>, animate?: boolean): boolean;
 }
 
-/** Frame scheduling seams, `requestAnimationFrame` unless a test injects its own. */
+/** Frame scheduling seams, `requestAnimationFrame` unless a test injects its own, and the live rate. */
 export interface OrbitFrames {
   readonly scheduleFrame?: (callback: FrameRequestCallback) => number;
   readonly cancelFrame?: (handle: number) => void;
+  /** Multiplier on the rotation rate; the `orbitRate` option. @defaultValue `() => 1` */
+  readonly rate?: () => number;
 }
 
 /** One orbit driver: idempotent start and stop, plus the current state. */
@@ -51,16 +53,18 @@ export function createOrbit(
   const scheduleFrame =
     frames.scheduleFrame ?? ((callback: FrameRequestCallback) => requestAnimationFrame(callback));
   const cancelFrame = frames.cancelFrame ?? ((handle: number) => cancelAnimationFrame(handle));
+  const rate = frames.rate ?? (() => 1);
   let frame: number | null = null;
   let previous: number | null = null;
 
   const advance = (elapsedMs: number): void => {
+    const scaled = elapsedMs * rate();
     if (target.projection !== 'globe') {
-      target.rotateBy(elapsedMs * TILT_PX_PER_MS, 0);
+      target.rotateBy(scaled * TILT_PX_PER_MS, 0);
       return;
     }
     const pose = target.getPose();
-    if (pose) target.setPose({ centerX: pose.centerX + elapsedMs * GLOBE_DEG_PER_MS }, true);
+    if (pose) target.setPose({ centerX: pose.centerX + scaled * GLOBE_DEG_PER_MS }, true);
   };
 
   const stop = (): void => {

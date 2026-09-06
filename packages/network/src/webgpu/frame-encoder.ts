@@ -3,8 +3,8 @@
 import type { BorderBuffers } from './border-buffers.js';
 import type { VisualPipelines } from './pipelines.js';
 
-/** Layer flags resolved for a single encoded frame. */
-interface FrameVisibility {
+/** The passes one encoded frame draws. */
+export interface FramePasses {
   /** Draw vertex billboards. */
   vertices: boolean;
   /** Draw edge segments. */
@@ -45,8 +45,8 @@ export interface EncodeNetworkFrameInputs {
   topology: FrameTopology;
   /** Optional bound border buffers. */
   borders: BorderBuffers | null;
-  /** Layer visibility resolved by the renderer. */
-  visibility: FrameVisibility;
+  /** Pass visibility resolved by the renderer. */
+  passes: FramePasses;
   /** Shared unit quad vertex buffer for billboard passes. */
   unitQuad: GPUBuffer;
   /** Shared edge strip vertex buffer for segment passes. */
@@ -73,24 +73,25 @@ export function encodeNetworkFrame(inputs: EncodeNetworkFrameInputs): void {
 
   // The background is the scene's surface (ground plane or sphere) and its
   // depth reference; it draws every frame in every projection.
-  rp.setPipeline(inputs.visual.bg);
+  rp.setPipeline(inputs.visual.background);
   rp.setBindGroup(0, inputs.channelsBindGroup);
   rp.draw(3);
 
-  if (inputs.visibility.earthAxis && inputs.visual.earthAxis) {
+  const { passes } = inputs;
+  if (passes.earthAxis && inputs.visual.earthAxis) {
     rp.setPipeline(inputs.visual.earthAxis);
     rp.setBindGroup(0, inputs.channelsBindGroup);
     rp.draw(4, 2);
   }
 
-  if (inputs.visibility.borders && inputs.borders) {
+  if (passes.borders && inputs.borders) {
     rp.setPipeline(inputs.visual.borders);
     rp.setBindGroup(0, inputs.channelsBindGroup);
     inputs.borders.bind(rp);
     rp.drawIndexed(inputs.borders.indexCount);
   }
 
-  if (inputs.visibility.edges) {
+  if (passes.edges) {
     rp.setVertexBuffer(0, inputs.edgeStrip);
     rp.setBindGroup(0, inputs.channelsBindGroup);
     rp.setBindGroup(1, inputs.topologyBindGroup);
@@ -116,7 +117,7 @@ export function encodeNetworkFrame(inputs: EncodeNetworkFrameInputs): void {
     rp.draw(4, inputs.topology.vertexCount);
   }
 
-  if (inputs.visibility.vertices) {
+  if (passes.vertices) {
     rp.setPipeline(inputs.visual.vertex);
     rp.setVertexBuffer(0, inputs.unitQuad);
     rp.setBindGroup(0, inputs.channelsBindGroup);

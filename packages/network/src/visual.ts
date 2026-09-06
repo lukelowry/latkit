@@ -12,10 +12,10 @@ export const VISUAL = {
   minEdgeHalfWidthPx: 1,
   /** Maximum edge half-width after projection. */
   maxEdgeHalfWidthPx: 3,
+  /** Minimum billboard radius for vertices: a vertex never zooms out of sight. */
+  minVertexRadiusPx: 1.5,
   /** Maximum billboard radius for vertices. */
   maxVertexRadiusPx: 9,
-  /** Focus ring thickness around vertex billboards. */
-  vertexRingPx: 6,
   /** Angular vertex scale used by globe shaders. */
   globeVertexScale: Math.PI / 180,
   /** Angular edge scale used by globe shaders. */
@@ -25,13 +25,9 @@ export const VISUAL = {
   /** Small radial lift that keeps globe overlays above the sphere. */
   globeSurfaceOffset: 0.001,
   /** Vertex radius as a fraction of the topology's characteristic length. */
-  vertexSizeScale: 0.08,
-  /** Minimum multiplier for channel-driven vertex radius. */
-  vertexSizeMinMul: 0.5,
-  /** Maximum multiplier for channel-driven vertex radius. */
-  vertexSizeMaxMul: 2.0,
+  vertexRadiusFraction: 0.08,
   /** Base edge half-width as a fraction of the characteristic length. */
-  baseEdgeWidthScale: 0.012,
+  edgeHalfWidthFraction: 0.012,
   /** Target peak height at fit for flat/tilt. */
   heightTargetPx: 40,
   /** Clip-depth span reserved for height order in the flat view. */
@@ -68,10 +64,8 @@ export const VISUAL = {
 export const VISUAL_WGSL = `
 const MIN_EDGE_HALF_WIDTH_PX: f32 = ${VISUAL.minEdgeHalfWidthPx};
 const MAX_EDGE_HALF_WIDTH_PX: f32 = ${VISUAL.maxEdgeHalfWidthPx};
+const MIN_VERTEX_RADIUS_PX: f32 = ${VISUAL.minVertexRadiusPx};
 const MAX_VERTEX_RADIUS_PX: f32 = ${VISUAL.maxVertexRadiusPx};
-const SIZE_MIN_MUL: f32 = ${VISUAL.vertexSizeMinMul};
-const SIZE_MAX_MUL: f32 = ${VISUAL.vertexSizeMaxMul};
-const VERTEX_RING_PX: f32 = ${VISUAL.vertexRingPx};
 const GLOBE_VERTEX_SCALE: f32 = ${VISUAL.globeVertexScale};
 const GLOBE_EDGE_SCALE: f32 = ${VISUAL.globeEdgeScale};
 const GLOBE_SURFACE_OFFSET: f32 = ${VISUAL.globeSurfaceOffset};
@@ -80,6 +74,11 @@ const FLAT_HEIGHT_DEPTH_SPAN: f32 = ${VISUAL.flatHeightDepthSpan};
 const SURFACE_DEPTH_SLACK_PX: f32 = ${VISUAL.surfaceDepthSlackPx};
 const MIN_CLIP_W: f32 = ${VISUAL.minClipW};
 const FRAGMENT_ALPHA_DISCARD: f32 = 0.001;
+
+// Screen-space vertex radius clamp shared by every screen_radius.
+fn clamp_vertex_radius(px: f32) -> f32 {
+  return clamp(px, css_px(MIN_VERTEX_RADIUS_PX), css_px(MAX_VERTEX_RADIUS_PX));
+}
 `;
 
 /**
@@ -88,8 +87,8 @@ const FRAGMENT_ALPHA_DISCARD: f32 = 0.001;
  * Channel normalization maps values into roughly [-1, 1]. This viewport-derived
  * budget keeps range changes from changing the apparent maximum displacement.
  */
-export function planeHeightWorldScale(bounds: Bounds, vp: Viewport, vertexSize: number): number {
-  const min = vertexSize * VISUAL.heightMinVertexRadii;
+export function planeHeightAmplitude(bounds: Bounds, vp: Viewport, vertexRadius: number): number {
+  const min = vertexRadius * VISUAL.heightMinVertexRadii;
   if (vp.w <= 0 || vp.h <= 0) return min;
 
   const bw = bounds.xMax - bounds.xMin || 1;

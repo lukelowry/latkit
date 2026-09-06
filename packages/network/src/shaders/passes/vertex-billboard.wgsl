@@ -25,9 +25,9 @@ fn culled_vertex() -> VOut {
   return out;
 }
 
-fn vertex_underlay_px(state: u32) -> f32 {
-  if (state == 1u) { return u.focus_vertex_hover_underlay_px; }
-  if (state == 2u) { return u.focus_vertex_selected_underlay_px; }
+fn vertex_halo_px(state: u32) -> f32 {
+  if (state == 1u) { return u.v_hover_px; }
+  if (state == 2u) { return u.v_selected_px; }
   return 0.0;
 }
 
@@ -46,30 +46,16 @@ fn vs_vertex(quad: vec2f, inst: u32, role: u32) -> VOut {
   let clip = project_overlay(world, h);
 
   let r = screen_radius(clip) * vertex_size_scale(inst);
-  if (r < css_px(u.vertex_lod)) {
-    return out;
-  }
 
-  var underlay_px = 0.0;
+  var halo_px = 0.0;
   if (role == ROLE_HALO) {
-    underlay_px = css_px(vertex_underlay_px(state));
-    if (underlay_px <= 0.0) { return out; }
+    halo_px = css_px(vertex_halo_px(state));
+    if (halo_px <= 0.0) { return out; }
   }
 
-  let outer = r + underlay_px;
+  let outer = r + halo_px;
   let ndc_offset = quad * (outer + 1.0) * 2.0 / u.viewport * clip.w;
-  var z = clip.z;
-  let flat_bias = select(
-    Z_BIAS_VERTEX_BAND_OFFSET + jitter(inst),
-    Z_BIAS_VERTEX_BAND_OFFSET - Z_BIAS_SELECTION_LIFT,
-    state != 0u,
-  );
-  let depth_bias = mix(
-    flat_bias,
-    select(0.0, -Z_BIAS_SELECTION_LIFT, state != 0u),
-    u.depth_mix,
-  );
-  z += depth_bias * clip.w;
+  let z = clip.z + z_bias(Z_BIAS_VERTEX_BAND_OFFSET, state != 0u) * clip.w;
   out.pos = vec4f(clip.xy + ndc_offset, z, clip.w);
 
   let base_color = vertex_channel_color(inst);
@@ -117,7 +103,7 @@ fn fs_color(v: VOut) -> ColorOut {
   return ColorOut(vertex_fragment_color(v));
 }
 
-fn vertex_underlay_fragment_color(v: VOut) -> vec4f {
+fn vertex_halo_fragment_color(v: VOut) -> vec4f {
   let d = length(v.uv);
   let aa = fwidth(d);
   if (d > 1.0) { discard; }
@@ -126,14 +112,14 @@ fn vertex_underlay_fragment_color(v: VOut) -> vec4f {
   let outer = 1.0 - smoothstep(1.0 - aa, 1.0, d);
   let selected = v.focus == 2u;
   let alpha = radial * outer *
-    select(u.focus_hover_alpha, u.focus_selected_alpha, selected);
+    select(u.hover_alpha, u.selected_alpha, selected);
   if (alpha < FRAGMENT_ALPHA_DISCARD) { discard; }
 
-  let packed = select(u.focus_hover_color, u.focus_selected_color, selected);
+  let packed = select(u.hover_color, u.selected_color, selected);
   return vec4f(unpack4x8unorm(packed).rgb, alpha);
 }
 
 @fragment
-fn fs_underlay_color(v: VOut) -> ColorOut {
-  return ColorOut(vertex_underlay_fragment_color(v));
+fn fs_halo(v: VOut) -> ColorOut {
+  return ColorOut(vertex_halo_fragment_color(v));
 }

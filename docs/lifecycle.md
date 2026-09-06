@@ -1,85 +1,79 @@
 # Lifecycle and failures
 
-Applications own Core WebGPU devices and canvases. Latkit renderers borrow both and own only their renderer-specific GPU resources and event bindings. Request a device when a view group mounts, share it across that group, and destroy it after every borrowing renderer has been destroyed.
+A controller outlives its canvas and its device. Create it when the data arrives, attach it when there is a canvas to draw on, detach when the canvas goes away, and destroy it when the view is gone for good.
+
+## Create, attach, detach
+
+`createNetwork()` and `createMonitor()` are synchronous and take neither a device nor a canvas. Everything given to a controller before `attach` is retained and painted onto the canvas:
+
+```ts
+import { createMonitor } from '@latkit/monitor';
+import { createNetwork } from '@latkit/network';
+
+const network = createNetwork({ graticule: true });
+network.load(topology);
+network.setChannel('vertexColor', load, [0, 1]);
+
+const monitor = createMonitor({ valueRange: [0, 1] });
+monitor.load(series);
+
+await network.attach(networkCanvas);
+await monitor.attach(monitorCanvas);
+```
+
+`attach` leases a device from the realm-wide pool in `@latkit/gpu`, so every controller on the page shares one device without owning it; the `devices` option names a private pool instead. A newer `attach` or a `detach` supersedes an attach still waiting for its device, which rejects with an `AbortError`.
+
+`detach()` returns the device and the canvas and keeps every state, so a view that moves between panels attaches again with nothing to reload:
+
+```ts
+network.detach();
+await network.attach(otherCanvas);
+```
+
+The `attached` property and event report the binding.
 
 ## Handle WebGPU support
 
-`requestDevice()` reports WebGPU availability and device-request failures. Renderer creation is separate and requires the native device explicitly.
+`attach` rejects with `GpuUnavailableError` when no Core device can be leased. Everything loaded before the attempt stays loaded.
 
 ```ts
-import { GpuUnavailableError, requestDevice } from '@latkit/gpu';
-import { createNetwork, type Network } from '@latkit/network';
-
-const networkCanvas = document.querySelector<HTMLCanvasElement>('#network');
-if (!networkCanvas) throw new Error('Missing #network canvas');
-
-let device: GPUDevice;
+import { GpuUnavailableError } from '@latkit/gpu';
 
 try {
-  device = await requestDevice();
+  await network.attach(canvas);
 } catch (error) {
-  if (error instanceof GpuUnavailableError) {
-    console.error(`WebGPU unavailable at ${error.stage}:`, error.message);
-  }
-  throw error;
-}
-
-let network: Network | undefined;
-
-try {
-  network = await createNetwork(device, networkCanvas);
-  network.load(topology);
-} catch (error) {
-  network?.destroy();
-  device.destroy();
-  throw error;
+  if (error instanceof GpuUnavailableError) showFallback(error.message);
+  else throw error;
 }
 ```
 
-Pass the same device to `createMonitor(device, monitorCanvas)` when both views share an application lifetime.
-
 ## Listen for device loss
 
-Browsers can lose a WebGPU device after creation. Both renderers surface this with a `deviceLost` event.
+A controller releases a lost device, leases a replacement, and paints its state again. `deviceLost` reports it; `recovering` is false only when no replacement could be leased, and the controller then stays detached until the next `attach`.
 
 ```ts
-network.on('deviceLost', ({ reason, message }) => {
-  console.error(reason, message);
+network.on('deviceLost', ({ message, recovering }) => {
+  if (!recovering) showFallback(message);
 });
 
 network.on('pipelineError', ({ family, cause }) => {
   console.error(`Unable to build ${family} shaders`, cause);
 });
-
-monitor.on('deviceLost', ({ reason, message }) => {
-  console.error(reason, message);
-});
 ```
 
-A lost device cannot be restored. Destroy every renderer borrowing it, request a new device, and recreate the views. A `pipelineError` identifies an asynchronous `plane` or `globe` projection-family failure; late subscribers receive the latest failure so applications can replace a canvas that never became renderable.
+A `pipelineError` identifies an asynchronous `plane` or `globe` projection-family failure; late subscribers receive the latest one.
 
-## Pause and resume rendering
+## Pause and resume
 
-Use `pause()` for hidden panels, inactive tabs inside your app, or temporary work that should stop animation. Use `resume()` when rendering should continue.
-
-```ts
-network.pause();
-network.resume();
-
-monitor.pause();
-monitor.resume();
-```
+`pause()` stops animation and rendering for hidden panels or inactive tabs; `resume()` continues. A pause survives `detach` and holds the next binding. The network also pauses itself while the page is hidden.
 
 ## Release resources
 
-Always destroy renderers before destroying their device:
+`destroy()` detaches and forgets everything; the controller cannot be used afterwards. It never removes the canvas.
 
 ```ts
 network.destroy();
-monitor.destroy();
-networkCanvas.remove();
-monitorCanvas.remove();
-device.destroy();
+canvas.remove();
 ```
 
-Destroying a renderer clears its event handlers, unconfigures its canvas, and releases its GPU resources. It never removes the borrowed canvas or destroys the borrowed device.
+The pooled device is destroyed when its last lease releases.

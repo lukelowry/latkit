@@ -50,7 +50,7 @@ fn globe_bg_sample(frag_pos: vec4f) -> GlobeBgSample {
   // derivative quad is well-defined even at the sphere edge. Guard at the
   // call site too, so graticule=false skips the lon/lat conversion work.
   var grid = 0.0;
-  if (grid_enabled()) {
+  if (graticule_enabled()) {
     let lat = asin(clamp(p_safe.y, -1.0, 1.0));
     let lon = atan2(-p_safe.z, p_safe.x);
     grid = geographic_graticule(lon, lat);
@@ -67,14 +67,14 @@ fn globe_bg_sample(frag_pos: vec4f) -> GlobeBgSample {
   let sin_e = max(-dot(rd, normal), 1e-3);
   let world_per_px = t * u.fov_scale * 2.0 / u.viewport.y;
   let slack = min(css_px(SURFACE_DEPTH_SLACK_PX) * world_per_px / sin_e, GLOBE_DEPTH_SLACK_MAX);
-  let clip = u.vp * vec4f(p_safe + rd * slack, 1.0);
+  let clip = u.view_proj * vec4f(p_safe + rd * slack, 1.0);
 
   let pole_mix = abs(normal.y);
   let base = mix(u.surface_color.rgb, u.surface_color.rgb * POLE_DARKEN, pole_mix);
 
   let surface_color = base * surface_daylight(normal);
-  let grid_color = u.grid_color.rgb * daylight(normal);
-  let color = mix(surface_color, grid_color, grid);
+  let graticule_rgb = u.graticule_color.rgb * daylight(normal);
+  let color = mix(surface_color, graticule_rgb, grid);
 
   var out: GlobeBgSample;
   out.color = vec4f(color, 1.0);

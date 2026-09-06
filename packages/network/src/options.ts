@@ -1,15 +1,21 @@
-import type { FocusEndpointMode, RGBA } from './focus-state.js';
-import { type Domain, validateDomain } from './range.js';
+import { devices, type DevicePool } from '@latkit/gpu';
+import { validateDomain, validateRgba, type Colormap, type Domain, type RGBA } from '@latkit/model';
 
-/** Function mapping a normalized scalar to normalized RGB channels. */
-export type Colormap = (t: number) => readonly [number, number, number];
+import type { FocusEndpointMode } from './focus-state.js';
+
+/** How camera motion is animated: following the user's preference, always reduced, or always full. */
+export type Motion = 'auto' | 'reduce' | 'full';
+
+/** What a plain wheel does: zoom the view, or scroll the page unless a modifier is held. */
+export type Wheel = 'zoom' | 'modifier';
 
 /**
  * Network display options: the construction record and the live patch.
  *
  * @remarks
- * `msaa` is read once at construction. Every other field seeds the initial view and can be
- * patched later with `Network.setOptions`; `OPTIONS` says which and carries each default.
+ * `msaa` and `devices` are read once at construction. Every other field seeds the initial view and
+ * can be patched later with `Network.setOptions`; `OPTIONS` says which and carries each default.
+ * An option marked nullable takes `null` to hand the decision back to the controller.
  */
 export interface Options {
   /**
@@ -18,6 +24,8 @@ export interface Options {
    * @defaultValue Automatically selects `4` on typical displays and `1` on very large device-pixel surfaces.
    */
   msaa?: 1 | 4;
+  /** Where `Network.attach` leases its device. @defaultValue the realm-wide pool from `@latkit/gpu`. */
+  devices?: DevicePool;
   /** Draw vertex billboards. @defaultValue `true`. */
   vertices?: boolean;
   /** Draw edge segments. @defaultValue `true`. */
@@ -32,11 +40,11 @@ export interface Options {
   heightScale?: number;
   /** Output range the normalized `vertexHeight` channel maps onto. @defaultValue `[0, 1]`. */
   heightRange?: Domain;
-  /** Vertex level-of-detail threshold in CSS pixels. @defaultValue `2`. */
-  vertexLodPx?: number;
+  /** Radius multipliers the normalized `vertexSize` channel maps onto. @defaultValue `[0.5, 2]`. */
+  sizeRange?: Domain;
   /** Screen-space edge dash period in CSS pixels. @defaultValue `12`. */
   dashPeriodPx?: number;
-  /** Draw geographic border overlays. @defaultValue `true`. */
+  /** Draw geographic border overlays; drawn only over a geographic topology. @defaultValue `true`. */
   borders?: boolean;
   /** Draw projection graticule lines. @defaultValue `false`. */
   graticule?: boolean;
@@ -44,6 +52,8 @@ export interface Options {
   earthAxis?: boolean;
   /** Enable solar-terminator daylight shading on geographic topologies. @defaultValue `true`. */
   daylight?: boolean;
+  /** The instant daylight is computed for, in milliseconds since the epoch; `null` follows the clock. @defaultValue `null`. */
+  sunTime?: number | null;
   /** Minimum brightness on the night side of overlay geometry. @defaultValue `0.55`. */
   nightFloor?: number;
   /** Minimum brightness on the night side of opaque surfaces. @defaultValue `0.1`. */
@@ -51,7 +61,9 @@ export interface Options {
   /** Softness of the day/night terminator in shader units. @defaultValue `0.12`. */
   terminatorWidth?: number;
   /** Resting vertex color without a `vertexColor` channel. @defaultValue `[0.5, 0.5, 0.5, 1]`. */
-  baseColor?: RGBA;
+  vertexBaseColor?: RGBA;
+  /** Resting edge color without an `edgeColor` channel; `null` averages the endpoint colors. @defaultValue `null`. */
+  edgeBaseColor?: RGBA | null;
   /** Seeds the color lookup texture used by colormap channels. @defaultValue A neutral gray ramp. */
   colormap?: Colormap;
   /** Graticule line color as normalized RGBA. @defaultValue `[0.45, 0.48, 0.54, 1]`. */
@@ -80,17 +92,54 @@ export interface Options {
   edgeSelectedPx?: number;
   /** Endpoint highlight mode for focused edges. @defaultValue `"selected"`. */
   focusEndpointMode?: FocusEndpointMode;
+  /**
+   * Camera and orbit motion. `'auto'` follows `prefers-reduced-motion`; under reduced motion every
+   * fit, reveal, and pose lands at once, drags do not coast, and `orbit(true)` is refused.
+   * @defaultValue `'auto'`.
+   */
+  motion?: Motion;
+  /** Duration of an animated fit, reveal, or pose, in milliseconds. @defaultValue `500`. */
+  animationMs?: number;
+  /** Multiplier on the continuous rotation rate of `orbit`. @defaultValue `1`. */
+  orbitRate?: number;
+  /** Inset an item must clear before `reveal` leaves it in place, in CSS pixels. @defaultValue `48`. */
+  revealPaddingPx?: number;
+  /** Pick radius for mouse hover, taps, and `hitTest`, in CSS pixels; touch uses at least 22. @defaultValue `10`. */
+  pickRadiusPx?: number;
+  /**
+   * Attach the keyboard map to the canvas: arrows pan, Shift with arrows rotates, plus and minus
+   * zoom, Home fits, Escape clears the selection. The canvas becomes focusable when it is not.
+   * @defaultValue `true`.
+   */
+  keyboard?: boolean;
+  /** Whether a plain wheel zooms, or only a Ctrl or Meta wheel does while the page keeps scrolling. @defaultValue `'zoom'`. */
+  wheel?: Wheel;
 }
 
-/** Validation kind, default, and whether `Network.setOptions` accepts the option live. */
+/** Validation kind, default, whether `Network.setOptions` accepts the option live, and whether `null` is a value. */
 export type OptionDefinition =
   | { readonly kind: 'boolean'; readonly default: boolean; readonly live: true }
-  | { readonly kind: 'finite' | 'nonnegative'; readonly default: number; readonly live: true }
-  | { readonly kind: 'rgba'; readonly default: RGBA; readonly live: true }
+  | {
+      readonly kind: 'finite' | 'nonnegative';
+      readonly default: number | null;
+      readonly live: true;
+      readonly nullable?: true;
+    }
+  | {
+      readonly kind: 'rgba';
+      readonly default: RGBA | null;
+      readonly live: true;
+      readonly nullable?: true;
+    }
   | { readonly kind: 'domain'; readonly default: Domain; readonly live: true }
-  | { readonly kind: 'focus-endpoint'; readonly default: FocusEndpointMode; readonly live: true }
+  | {
+      readonly kind: 'enum';
+      readonly values: readonly (string | number)[];
+      readonly default: string | number | undefined;
+      readonly live: boolean;
+    }
   | { readonly kind: 'colormap'; readonly default: Colormap; readonly live: true }
-  | { readonly kind: 'msaa'; readonly default: undefined; readonly live: false };
+  | { readonly kind: 'pool'; readonly default: DevicePool; readonly live: false };
 
 /** Network's neutral transfer function before a consumer supplies a colormap. */
 const neutralColormap: Colormap = Object.freeze((t: number) => [t, t, t] as const);
@@ -100,8 +149,14 @@ function tuple<T extends readonly number[]>(...values: T): Readonly<T> {
   return Object.freeze(values);
 }
 
+/** Freeze an enumerated value list before exposing it through public metadata. */
+function values<const T extends readonly (string | number)[]>(...entries: T): T {
+  return Object.freeze(entries) as T;
+}
+
 const definitions = {
-  msaa: { kind: 'msaa', default: undefined, live: false },
+  msaa: { kind: 'enum', values: values(1, 4), default: undefined, live: false },
+  devices: { kind: 'pool', default: devices, live: false },
   vertices: { kind: 'boolean', default: true, live: true },
   edges: { kind: 'boolean', default: true, live: true },
   poles: { kind: 'boolean', default: false, live: true },
@@ -109,16 +164,18 @@ const definitions = {
   edgeScale: { kind: 'nonnegative', default: 1, live: true },
   heightScale: { kind: 'nonnegative', default: 1, live: true },
   heightRange: { kind: 'domain', default: tuple(0, 1), live: true },
-  vertexLodPx: { kind: 'nonnegative', default: 2, live: true },
+  sizeRange: { kind: 'domain', default: tuple(0.5, 2), live: true },
   dashPeriodPx: { kind: 'nonnegative', default: 12, live: true },
   borders: { kind: 'boolean', default: true, live: true },
   graticule: { kind: 'boolean', default: false, live: true },
   earthAxis: { kind: 'boolean', default: true, live: true },
   daylight: { kind: 'boolean', default: true, live: true },
+  sunTime: { kind: 'finite', default: null, live: true, nullable: true },
   nightFloor: { kind: 'finite', default: 0.55, live: true },
   surfaceNightFloor: { kind: 'finite', default: 0.1, live: true },
   terminatorWidth: { kind: 'nonnegative', default: 0.12, live: true },
-  baseColor: { kind: 'rgba', default: tuple(0.5, 0.5, 0.5, 1), live: true },
+  vertexBaseColor: { kind: 'rgba', default: tuple(0.5, 0.5, 0.5, 1), live: true },
+  edgeBaseColor: { kind: 'rgba', default: null, live: true, nullable: true },
   colormap: { kind: 'colormap', default: neutralColormap, live: true },
   graticuleColor: { kind: 'rgba', default: tuple(0.45, 0.48, 0.54, 1), live: true },
   surfaceColor: { kind: 'rgba', default: tuple(0.15, 0.16, 0.19, 1), live: true },
@@ -132,7 +189,19 @@ const definitions = {
   vertexSelectedPx: { kind: 'nonnegative', default: 7, live: true },
   edgeHoverPx: { kind: 'nonnegative', default: 3.5, live: true },
   edgeSelectedPx: { kind: 'nonnegative', default: 5, live: true },
-  focusEndpointMode: { kind: 'focus-endpoint', default: 'selected', live: true },
+  focusEndpointMode: {
+    kind: 'enum',
+    values: values('off', 'selected', 'hover-selected'),
+    default: 'selected',
+    live: true,
+  },
+  motion: { kind: 'enum', values: values('auto', 'reduce', 'full'), default: 'auto', live: true },
+  animationMs: { kind: 'nonnegative', default: 500, live: true },
+  orbitRate: { kind: 'nonnegative', default: 1, live: true },
+  revealPaddingPx: { kind: 'nonnegative', default: 48, live: true },
+  pickRadiusPx: { kind: 'nonnegative', default: 10, live: true },
+  keyboard: { kind: 'boolean', default: true, live: true },
+  wheel: { kind: 'enum', values: values('zoom', 'modifier'), default: 'zoom', live: true },
 } as const satisfies Record<keyof Required<Options>, OptionDefinition>;
 
 for (const definition of Object.values(definitions)) Object.freeze(definition);
@@ -152,7 +221,7 @@ export type RuntimeOption = OptionKeyByLive<true>;
 export type ResolvedOptions = Readonly<{
   [Key in keyof typeof OPTIONS]: undefined extends (typeof OPTIONS)[Key]['default']
     ? Options[Key] | undefined
-    : NonNullable<Options[Key]>;
+    : Exclude<Options[Key], undefined>;
 }>;
 
 /** Build the default record mechanically from the canonical definitions. */
@@ -172,7 +241,7 @@ export function resolveOptions(options: Options): ResolvedOptions {
     const supplied = values[key];
     const value = supplied === undefined ? definition.default : supplied;
     const owned =
-      definition.kind === 'rgba' || definition.kind === 'domain'
+      (definition.kind === 'rgba' || definition.kind === 'domain') && value !== null
         ? Object.freeze([...(value as readonly number[])])
         : value;
     return [key, owned];
@@ -198,6 +267,7 @@ export function validateOptions(options: Options): void {
 
 /** Validate one supplied value according to its canonical metadata. */
 function validateOptionValue(key: string, definition: OptionDefinition, value: unknown): void {
+  if (value === null && 'nullable' in definition && definition.nullable) return;
   switch (definition.kind) {
     case 'boolean':
       if (typeof value !== 'boolean') typeError(key, 'a boolean');
@@ -209,21 +279,23 @@ function validateOptionValue(key: string, definition: OptionDefinition, value: u
       validateNumber(key, value, true);
       return;
     case 'rgba':
-      validateRgba(key, value);
+      validateRgba(value, `network option ${key}`);
       return;
     case 'domain':
       validateDomain(value, `network option ${key}`);
       return;
-    case 'focus-endpoint':
-      if (value !== 'off' && value !== 'selected' && value !== 'hover-selected') {
-        typeError(key, 'a focus endpoint mode');
+    case 'enum':
+      if (!definition.values.includes(value as string | number)) {
+        typeError(key, `one of ${definition.values.map(String).join(', ')}`);
       }
       return;
     case 'colormap':
       if (typeof value !== 'function') typeError(key, 'a colormap function');
       return;
-    case 'msaa':
-      if (value !== 1 && value !== 4) typeError(key, '1 or 4');
+    case 'pool':
+      if (typeof (value as Partial<DevicePool> | null)?.acquire !== 'function') {
+        typeError(key, 'a device pool');
+      }
       return;
     default:
       definition satisfies never;
@@ -235,16 +307,6 @@ function validateNumber(key: string, value: unknown, nonnegative: boolean): void
   if (!Number.isFinite(value)) throw new RangeError(`network option ${key} must be finite`);
   if (nonnegative && value < 0) {
     throw new RangeError(`network option ${key} must be nonnegative`);
-  }
-}
-
-function validateRgba(key: string, value: unknown): void {
-  if (!Array.isArray(value) || value.length !== 4) typeError(key, 'an RGBA tuple');
-  for (const component of value) {
-    if (typeof component !== 'number') typeError(key, 'an RGBA tuple');
-    if (!Number.isFinite(component) || component < 0 || component > 1) {
-      throw new RangeError(`network option ${key} RGBA components must be finite and in [0, 1]`);
-    }
   }
 }
 

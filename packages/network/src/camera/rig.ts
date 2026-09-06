@@ -1,4 +1,5 @@
 import { Camera } from './camera.js';
+import { DEFAULT_OPTIONS } from '../options.js';
 import { PROJECTION_DEFS, type Projection } from '../projections.js';
 import type { Pose, PlaneView, CameraProjection, Viewport } from './projection.js';
 import type { Bounds } from '../topology/types.js';
@@ -43,10 +44,13 @@ export class CameraRig {
   /** Last viewport a frame was ticked under; carries poses across hidden spells. */
   private readonly lastVp: Viewport = { w: 0, h: 0 };
 
+  /** Duration of an animated fit, reveal, or pose; the live `animationMs` option. */
+  animationMs = DEFAULT_OPTIONS.animationMs;
+
   /** Creates a rig with the flat projection as the initial mode. */
   constructor(private readonly region: CameraRegion) {
     this.projection = PROJECTION_DEFS.flat.create();
-    this.camera = new Camera(this.projection, region);
+    this.camera = new Camera(this.projection, region, () => this.animationMs);
   }
 
   /** Public projection mode corresponding to the active projection implementation. */
@@ -59,11 +63,19 @@ export class CameraRig {
     return this.needsFit || this.pending !== null;
   }
 
-  /** Replace the scene bounds; a new scene schedules its canonical fit. */
-  setBounds(bounds: Bounds | null): void {
+  /**
+   * Replace the scene bounds. A new scene schedules its canonical fit; with `fit` false a placed
+   * camera keeps its pose and only its fit reference follows the new bounds.
+   */
+  setBounds(bounds: Bounds | null, fit = true): void {
     this.bounds = bounds;
-    this.needsFit = bounds !== null;
     this.pending = null;
+    if (bounds === null) {
+      this.needsFit = false;
+      return;
+    }
+    if (fit || !this.camera.placed) this.needsFit = true;
+    else this.fitStale = true;
   }
 
   /** Fit the whole scene: animated when possible, else on the next sized frame. */
@@ -154,7 +166,7 @@ export class CameraRig {
     const fitIntent = this.camera.fitIntent;
     this.modeValue = mode;
     this.projection = PROJECTION_DEFS[mode].create();
-    this.camera = new Camera(this.projection, this.region);
+    this.camera = new Camera(this.projection, this.region, () => this.animationMs);
     if (carried) {
       this.needsFit = false;
       this.pending = { kind: 'place', pose: carried.pose, px: carried.px, fitIntent };

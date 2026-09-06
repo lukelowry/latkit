@@ -1,14 +1,13 @@
+import type { RGBA } from '@latkit/model';
+
 import type { Uniforms } from './webgpu/uniforms.js';
 import {
-  FLAG_FOCUS_ENABLED,
-  FLAG_FOCUS_HOVER_ENDPOINTS,
-  FLAG_FOCUS_SELECTED_ENDPOINTS,
+  FOCUS_ENABLED,
+  FOCUS_HOVER_ENDPOINTS,
+  FOCUS_SELECTED_ENDPOINTS,
 } from './webgpu/uniforms.js';
 
-/** Four normalized color channels in RGBA order, each expected in [0, 1]. */
-export type RGBA = readonly [number, number, number, number];
-
-/** Controls whether edge endpoint underlays are emitted for focus state. */
+/** Which focused edges also halo their endpoint vertices. */
 export type FocusEndpointMode = 'off' | 'selected' | 'hover-selected';
 
 type FocusKind = 'vertex' | 'edge';
@@ -17,9 +16,9 @@ type FocusKind = 'vertex' | 'edge';
 export interface FocusStyle {
   /** Whether hover and selection highlighting is enabled. */
   enabled: boolean;
-  /** Hover underlay color as normalized RGBA. */
+  /** Hover halo color as normalized RGBA. */
   hoverColor: RGBA;
-  /** Selection underlay color as normalized RGBA. */
+  /** Selection halo color as normalized RGBA. */
   selectedColor: RGBA;
   /** Extra multiplier applied to the hover color alpha channel. */
   hoverAlpha: number;
@@ -33,7 +32,7 @@ export interface FocusStyle {
   edgeHoverPx: number;
   /** Additional selection half-width around focused edges, in CSS px. */
   edgeSelectedPx: number;
-  /** Endpoint underlay mode for focused edges. */
+  /** Endpoint halo mode for focused edges. */
   endpointMode: FocusEndpointMode;
 }
 
@@ -84,8 +83,8 @@ export class FocusState {
     if (kind === this.hoverKind && nextIndex === this.hoverIndex) return false;
     this.hoverKind = kind;
     this.hoverIndex = nextIndex;
-    this.u.focus.hoverVertex = kind === 'vertex' ? nextIndex : -1;
-    this.u.focus.hoverEdge = kind === 'edge' ? nextIndex : -1;
+    this.u.focus.vHoverId = kind === 'vertex' ? nextIndex : -1;
+    this.u.focus.eHoverId = kind === 'edge' ? nextIndex : -1;
     this.writeEndpoints();
     return true;
   }
@@ -97,8 +96,8 @@ export class FocusState {
     if (nextV === this.selV && nextE === this.selE) return false;
     this.selV = nextV;
     this.selE = nextE;
-    this.u.focus.selectedVertex = nextV;
-    this.u.focus.selectedEdge = nextE;
+    this.u.focus.vSelectedId = nextV;
+    this.u.focus.eSelectedId = nextE;
     this.writeEndpoints();
     return true;
   }
@@ -110,10 +109,10 @@ export class FocusState {
     this.u.focus.flags = styleFlags(style);
     this.u.focus.hoverAlpha = clamp01(style.hoverAlpha * clamp01(style.hoverColor[3]));
     this.u.focus.selectedAlpha = clamp01(style.selectedAlpha * clamp01(style.selectedColor[3]));
-    this.u.focus.vertexHoverUnderlayPx = nonNegative(style.vertexHoverPx);
-    this.u.focus.vertexSelectedUnderlayPx = nonNegative(style.vertexSelectedPx);
-    this.u.focus.edgeHoverUnderlayPx = nonNegative(style.edgeHoverPx);
-    this.u.focus.edgeSelectedUnderlayPx = nonNegative(style.edgeSelectedPx);
+    this.u.focus.vHoverPx = nonNegative(style.vertexHoverPx);
+    this.u.focus.vSelectedPx = nonNegative(style.vertexSelectedPx);
+    this.u.focus.eHoverPx = nonNegative(style.edgeHoverPx);
+    this.u.focus.eSelectedPx = nonNegative(style.edgeSelectedPx);
   }
 
   private writeEndpoints(): void {
@@ -126,7 +125,7 @@ export class FocusState {
       (mode === 'selected' || mode === 'hover-selected') && this.selE >= 0
         ? this.edgeEndpoints(this.selE)
         : NO_ENDPOINTS;
-    this.u.focus.setEndpointIds(hoverA, hoverB, selectedA, selectedB);
+    this.u.focus.setEndpoints(hoverA, hoverB, selectedA, selectedB);
   }
 }
 
@@ -154,12 +153,12 @@ function packRgb(color: RGBA): number {
 /** Convert endpoint style choices into the shader focus flag bitfield. */
 function styleFlags(style: FocusStyle): number {
   if (!style.enabled) return 0;
-  let flags = FLAG_FOCUS_ENABLED;
+  let flags = FOCUS_ENABLED;
   if (style.endpointMode === 'selected' || style.endpointMode === 'hover-selected') {
-    flags |= FLAG_FOCUS_SELECTED_ENDPOINTS;
+    flags |= FOCUS_SELECTED_ENDPOINTS;
   }
   if (style.endpointMode === 'hover-selected') {
-    flags |= FLAG_FOCUS_HOVER_ENDPOINTS;
+    flags |= FOCUS_HOVER_ENDPOINTS;
   }
   return flags;
 }

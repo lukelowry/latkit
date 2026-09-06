@@ -105,4 +105,12 @@ describe('gradient', () => {
       expect(gradient(name)).toMatch(/^linear-gradient\(to top,/);
     }
   });
+
+  it('accepts a colormap function and clamps what it returns', () => {
+    const css = gradient((t) => [t * 2, -1, Number.NaN], 'to right');
+    expect(css).toMatch(/^linear-gradient\(to right,/);
+    expect(css).toMatch(/rgb\(0,0,0\) 0%/);
+    expect(css).toMatch(/rgb\(255,0,0\) 50%/);
+    expect(css).toMatch(/rgb\(255,0,0\) 100%/);
+  });
 });

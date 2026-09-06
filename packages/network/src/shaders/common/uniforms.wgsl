@@ -1,37 +1,39 @@
 // Shared uniform struct, prepended to all shader modules at pipeline creation time.
-// Total: 416 bytes (26 x 16, naturally aligned).
+// Total: 432 bytes (27 x 16, naturally aligned).
+//
+// Naming: per-item words carry a `v_`/`e_` prefix; `_px` values are CSS pixels (scale with
+// css_px); a bitmask is `<x>_flags` and its bits are `<X>_*`. Channel words map a raw value to a
+// normalized t as `(x - min) * scale`, and an output range as `out_min + t * out_span`.
 
 struct Uniforms {
   // Camera (packed by the active projection) plus world lighting (bytes 0-111).
-  // light_dir is owned by daylight state (src/daylight.ts); the display flag
-  // bitmask rides its pad lane.
-  vp: mat4x4f,
+  // light_dir is owned by daylight state (src/daylight.ts); display_flags ride its pad lane.
+  view_proj: mat4x4f,
   camera_pos: vec3f,
   fov_scale: f32,
   light_dir: vec3f,
-  flags: u32,
+  display_flags: u32,
   flat_sx: f32,
   flat_sy: f32,
   flat_tx: f32,
   flat_ty: f32,
 
-  // Frame (bytes 112-119)
+  // Frame (bytes 112-119): device pixels.
   viewport: vec2f,
 
-  // Geometry (bytes 120-139)
-  vertex_size: f32,
-  vertex_lod: f32,
-  base_edge_width: f32,
-  dash_period: f32,
-  height_world_scale: f32,
+  // Geometry (bytes 120-135)
+  v_radius: f32,
+  e_half_width: f32,
+  e_dash_period_px: f32,
+  height_amplitude: f32,
 
-  // Interaction (bytes 140-155)
-  hover_vertex: i32,
-  hover_edge: i32,
-  selected_vertex: i32,
-  selected_edge: i32,
+  // Focus ids (bytes 136-151): -1 when none.
+  v_hover_id: i32,
+  e_hover_id: i32,
+  v_selected_id: i32,
+  e_selected_id: i32,
 
-  // Channel buffer addressing + normalization (bytes 156-223)
+  // Channel buffer addressing + normalization (bytes 152-219)
   v_color_offset: u32,
   e_color_offset: u32,
   e_dash_offset: u32,
@@ -42,42 +44,41 @@ struct Uniforms {
   e_color_mode: u32,
   e_color_min: f32,
   e_color_scale: f32,
-  height_center: f32,
-  height_scale: f32,
+  v_height_min: f32,
+  v_height_scale: f32,
   v_height_mode: u32,
   v_size_offset: u32,
   v_size_mode: u32,
   v_size_min: f32,
   v_size_scale: f32,
 
-  // Focus style (bytes 224-287)
-  focus_hover_color: u32,
-  focus_selected_color: u32,
+  // Focus style (bytes 220-283)
+  hover_color: u32,
+  selected_color: u32,
   focus_flags: u32,
-  focus_hover_alpha: f32,
-  focus_selected_alpha: f32,
-  focus_vertex_hover_underlay_px: f32,
-  focus_vertex_selected_underlay_px: f32,
-  focus_edge_hover_underlay_px: f32,
-  focus_edge_selected_underlay_px: f32,
-  // Height output range (bytes 260-267): normalized domain t maps to
-  // height_out_min + t * height_out_scale.
-  height_out_min: f32,
-  height_out_scale: f32,
+  hover_alpha: f32,
+  selected_alpha: f32,
+  v_hover_px: f32,
+  v_selected_px: f32,
+  e_hover_px: f32,
+  e_selected_px: f32,
+  // Height output range (bytes 256-263).
+  v_height_out_min: f32,
+  v_height_out_span: f32,
   // xy = hovered edge endpoints, zw = selected edge endpoints.
-  focus_endpoint_ids: vec4i,
+  focus_endpoints: vec4i,
 
-  // Base vertex color (bytes 288-303)
-  base_vertex_color: vec4f,
+  // Resting vertex color without a vertexColor channel (bytes 288-303).
+  v_base_color: vec4f,
 
   // Background theme (bytes 304-351): the app's design tokens for the renderer's opaque geometry,
   // projected in so globe/tilt surfaces, the graticule and the geographic borders track the app
   // theme instead of hardcoded constants. The void/sky is NOT here - it stays a transparent clear so
   // the themed DOM bleeds through (see renderer.ts).
-  // grid_color    - the shared graticule line color.
-  // surface_color - the ground plane (flat/tilt) and globe sphere base tone.
-  // border_color  - the geographic border tint (coastlines/admin lines); per-tier alpha in borders.wgsl.
-  grid_color: vec4f,
+  // graticule_color - the graticule line color.
+  // surface_color   - the ground plane (flat/tilt) and globe sphere base tone.
+  // border_color    - the geographic border tint (coastlines/admin lines); per-tier alpha in borders.wgsl.
+  graticule_color: vec4f,
   surface_color: vec4f,
   border_color: vec4f,
 
@@ -92,7 +93,7 @@ struct Uniforms {
   surface_night_floor: f32,
 
   // Camera basis (bytes 368-399): the active camera's view-matrix right and
-  // up rows, packed by pack() beside vp/camera_pos. Ray helpers derive
+  // up rows, packed by pack() beside view_proj/camera_pos. Ray helpers derive
   // look = cross(camera_up, camera_right); no shader rebuilds a basis from
   // camera_pos. Valid whenever depth_mix > 0, the same staleness contract
   // camera_pos carries - flat never reads it.
@@ -103,9 +104,16 @@ struct Uniforms {
   camera_up: vec3f,
   item_flags: u32,
 
-  // Raw item-channel addressing (bytes 400-407; struct pads to 416).
+  // Raw item-channel addressing (bytes 400-407).
   v_visible_offset: u32,
   e_visible_offset: u32,
+
+  // Vertex size output range (bytes 408-415): radius multipliers.
+  v_size_out_min: f32,
+  v_size_out_span: f32,
+
+  // Resting edge color (bytes 416-431), read only under DISPLAY_EDGE_BASE_COLOR.
+  e_base_color: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -114,13 +122,18 @@ fn css_px(value: f32) -> f32 {
   return value * u.backing_scale;
 }
 
-const FLAG_DAYLIGHT:   u32 = 1u;
-const FLAG_GRATICULE:  u32 = 2u;
-const FLAG_GEOGRAPHIC: u32 = 4u;
+const DISPLAY_DAYLIGHT:        u32 = 1u;
+const DISPLAY_GRATICULE:       u32 = 2u;
+const DISPLAY_GEOGRAPHIC:      u32 = 4u;
+const DISPLAY_EDGE_BASE_COLOR: u32 = 8u;
+const DISPLAY_VERTICES:        u32 = 16u;
 
 const FOCUS_ENABLED:            u32 = 1u;
 const FOCUS_SELECTED_ENDPOINTS: u32 = 2u;
 const FOCUS_HOVER_ENDPOINTS:    u32 = 4u;
+
+const ITEM_VERTEX_VISIBLE: u32 = 1u;
+const ITEM_EDGE_VISIBLE:   u32 = 2u;
 
 const ID_KIND_VERTEX: u32 = 1u;
 const ID_KIND_EDGE:   u32 = 2u;
@@ -129,39 +142,31 @@ const ROLE_BASE:  u32 = 0u;
 const ROLE_FOCUS: u32 = 1u;
 const ROLE_HALO:  u32 = 2u;
 
-const ITEM_VERTEX_VISIBLE: u32 = 1u;
-const ITEM_EDGE_VISIBLE:   u32 = 2u;
-
-// Small semantic biases sit on top of height-derived depth.
+// Small NDC biases that order items at identical depth: vertices over edges and poles, and a
+// focused item over its unfocused neighbors. Items of one kind share one bias, so ties between
+// them resolve in draw order under less-equal and their AA fringes blend instead of cutting.
 const Z_BIAS_VERTEX_BAND_OFFSET : f32 = -2.0e-6;
 const Z_BIAS_EDGE_BAND_OFFSET   : f32 = -1.0e-6;
 const Z_BIAS_SELECTION_LIFT     : f32 =  5.0e-7;
-const Z_BIAS_JITTER_AMPLITUDE   : f32 =  1.0e-7;
 
-// Deterministic per-instance NDC jitter, bounded to -Z_BIAS_JITTER_AMPLITUDE.
-// Tie-breaks primitives at literally identical depth.
-fn jitter(i: u32) -> f32 {
-  var h = i;
-  h = ((h >> 16u) ^ h) * 0x45d9f3bu;
-  h = ((h >> 16u) ^ h) * 0x45d9f3bu;
-  h = (h >> 16u) ^ h;
-  return -f32(h & 0xFFFu) * (Z_BIAS_JITTER_AMPLITUDE / 4096.0);
+fn z_bias(band: f32, focused: bool) -> f32 {
+  return select(band, band - Z_BIAS_SELECTION_LIFT, focused);
 }
 
 fn vertex_focus_state_for(id: i32) -> u32 {
   if ((u.focus_flags & FOCUS_ENABLED) == 0u) { return 0u; }
-  if (id == u.selected_vertex) { return 2u; }
+  if (id == u.v_selected_id) { return 2u; }
   if ((u.focus_flags & FOCUS_SELECTED_ENDPOINTS) != 0u &&
-      (id == u.focus_endpoint_ids.z || id == u.focus_endpoint_ids.w)) { return 2u; }
-  if (id == u.hover_vertex) { return 1u; }
+      (id == u.focus_endpoints.z || id == u.focus_endpoints.w)) { return 2u; }
+  if (id == u.v_hover_id) { return 1u; }
   if ((u.focus_flags & FOCUS_HOVER_ENDPOINTS) != 0u &&
-      (id == u.focus_endpoint_ids.x || id == u.focus_endpoint_ids.y)) { return 1u; }
+      (id == u.focus_endpoints.x || id == u.focus_endpoints.y)) { return 1u; }
   return 0u;
 }
 
 fn edge_focus_state_for(id: i32) -> u32 {
   if ((u.focus_flags & FOCUS_ENABLED) == 0u) { return 0u; }
-  if (id == u.selected_edge) { return 2u; }
-  if (id == u.hover_edge) { return 1u; }
+  if (id == u.e_selected_id) { return 2u; }
+  if (id == u.e_hover_id) { return 1u; }
   return 0u;
 }

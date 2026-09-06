@@ -19,7 +19,7 @@ const WORLD_EDGE_HALF = vec2f(180.0, 90.0);
 // Screen-space coverage of the world rect: 1 inside, 0 outside, antialiased
 // over one pixel at the edge. Takes derivatives - evaluate before any discard.
 fn world_coverage(p: vec2f) -> f32 {
-  if ((u.flags & FLAG_GEOGRAPHIC) == 0u) { return 1.0; }
+  if ((u.display_flags & DISPLAY_GEOGRAPHIC) == 0u) { return 1.0; }
   let edge = max(abs(p.x) - WORLD_EDGE_HALF.x, abs(p.y) - WORLD_EDGE_HALF.y);
   let px = max(length(vec2f(dpdx(edge), dpdy(edge))), 1e-12);
   return clamp(0.5 - edge / px, 0.0, 1.0);
@@ -46,8 +46,8 @@ fn vs(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4f {
 // lines mixed on top - the exact composition globe-background uses.
 fn ground_color(p: vec3f, grid: f32) -> vec3f {
   let surface = u.surface_color.rgb * surface_daylight(p);
-  let grid_rgb = u.grid_color.rgb * daylight(p);
-  return mix(surface, grid_rgb, grid);
+  let graticule_rgb = u.graticule_color.rgb * daylight(p);
+  return mix(surface, graticule_rgb, grid);
 }
 
 fn flat_sample(frag_pos: vec4f) -> PlaneSample {
@@ -83,7 +83,7 @@ fn plane_sample(frag_pos: vec4f) -> PlaneSample {
   let sin_e = max(-rd.z, 1e-3);
   let world_per_px = t * u.fov_scale * 2.0 / u.viewport.y;
   let slack = css_px(SURFACE_DEPTH_SLACK_PX) * world_per_px / sin_e;
-  let clip = u.vp * vec4f(p + rd * slack, 1.0);
+  let clip = u.view_proj * vec4f(p + rd * slack, 1.0);
   return PlaneSample(vec4f(ground_color(p, grid), fade * cover), clamp(clip.z / clip.w, 0.0, 1.0));
 }
 

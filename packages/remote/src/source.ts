@@ -155,11 +155,11 @@ export async function connectSource(port: Port): Promise<RemoteSource> {
       if (!bytes(reply)) throw new Error('malformed source reply');
       return reply;
     };
+    // The caller keeps every buffer it passes in: a command is small enough to copy, and a run
+    // may be started again from the same bytes; the reopen bytes are copied once and the copy
+    // is transferred, so a large edited case still crosses without a second copy.
     const runner: Runner = {
-      run: (command, signal) =>
-        live()
-          ? runs.stream(command, { signal, transfer: [command.buffer as ArrayBuffer] })
-          : superseded(),
+      run: (command, signal) => (live() ? runs.stream(command, { signal }) : superseded()),
     };
     return {
       source: {
@@ -170,9 +170,10 @@ export async function connectSource(port: Port): Promise<RemoteSource> {
       ...(canRun && { runner }),
       async reopen(next) {
         if (!live()) throw new Error(SUPERSEDED);
+        const owned = next.slice();
         const reply = await calls.call(
-          { op: 'reopen', bytes: next },
-          { transfer: [next.buffer as ArrayBuffer] },
+          { op: 'reopen', bytes: owned },
+          { transfer: [owned.buffer as ArrayBuffer] },
         );
         return remote(++generation, runnable(reply));
       },

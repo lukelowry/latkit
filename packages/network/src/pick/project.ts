@@ -10,10 +10,10 @@ import {
   W_FLAT_TX,
   W_FLAT_TY,
   W_FOV_SCALE,
-  W_HEIGHT_OUT_MIN,
-  W_HEIGHT_OUT_SCALE,
-  W_HEIGHT_WORLD_SCALE,
-  W_VERTEX_SIZE,
+  W_V_HEIGHT_OUT_MIN,
+  W_V_HEIGHT_OUT_SPAN,
+  W_HEIGHT_AMPLITUDE,
+  W_V_RADIUS,
   W_V_HEIGHT_MODE,
   W_VIEWPORT_X,
   W_VIEWPORT_Y,
@@ -98,10 +98,10 @@ export interface Projector {
   toScreen(p: ProjectedPoint): void;
   /** Mirror of pick_visible: horizon / behind-camera rejection. */
   visible(p: ProjectedPoint): boolean;
-  /** Vertex px radius before per-vertex size scaling and the LOD floor. */
+  /** Vertex px radius after the visual clamp, before per-vertex size scaling. */
   screenRadius(p: ProjectedPoint): number;
   /** Edge half-width in device px after projection scaling and clamping. */
-  screenHalfWidth(p: ProjectedPoint, baseWidth: number): number;
+  screenHalfWidth(p: ProjectedPoint, halfWidth: number): number;
   /** Pole hit half-width in device px at the projected anchor. */
   poleHalfWidth(p: ProjectedPoint): number;
   /** World-height to topology-coord conversion for query-footprint pads. */
@@ -115,7 +115,7 @@ function toScreen(f: Float32Array, p: ProjectedPoint): void {
   p.sy = (0.5 - p.cy * invW * 0.5) * f[W_VIEWPORT_Y]!;
 }
 
-/** Apply `clip = u.vp * vec4(world, 1)` using the column-major matrix at words 0-15. */
+/** Apply `clip = u.view_proj * vec4(world, 1)` using the column-major matrix at words 0-15. */
 function projectVP(f: Float32Array, p: ProjectedPoint): void {
   const { wx, wy, wz } = p;
   p.cx = f[0]! * wx + f[4]! * wy + f[8]! * wz + f[12]!;
@@ -132,6 +132,15 @@ function projectVP(f: Float32Array, p: ProjectedPoint): void {
  */
 function perspectivePx(f: Float32Array, w: number, worldSize: number): number {
   return (worldSize / (w * f[W_FOV_SCALE]!)) * f[W_VIEWPORT_Y]! * 0.5;
+}
+
+/** Clamp a vertex radius to the visual shader's supported px range. */
+function clampRadius(f: Float32Array, px: number): number {
+  const backingScale = f[W_BACKING_SCALE]!;
+  return Math.min(
+    Math.max(px, VISUAL.minVertexRadiusPx * backingScale),
+    VISUAL.maxVertexRadiusPx * backingScale,
+  );
 }
 
 /** Clamp an edge half-width to the visual shader's supported px range. */
@@ -157,7 +166,7 @@ export function planeProjector(uniforms: Uniforms): Projector {
       const amount = f[W_DEPTH_MIX]!;
       out.wx = x;
       out.wy = y;
-      out.wz = amount * (VISUAL.tiltSurfaceLift * f[W_VERTEX_SIZE]! + h * f[W_HEIGHT_WORLD_SCALE]!);
+      out.wz = amount * (VISUAL.tiltSurfaceLift * f[W_V_RADIUS]! + h * f[W_HEIGHT_AMPLITUDE]!);
       if (amount === 0) {
         out.cx = x * f[W_FLAT_SX]! + f[W_FLAT_TX]!;
         out.cy = y * f[W_FLAT_SY]! + f[W_FLAT_TY]!;
@@ -166,9 +175,11 @@ export function planeProjector(uniforms: Uniforms): Projector {
       } else {
         projectVP(f, out);
       }
-      const scale = Math.max(Math.abs(f[W_HEIGHT_OUT_SCALE]!), 1e-6);
+      const scale = Math.max(Math.abs(f[W_V_HEIGHT_OUT_SPAN]!), 1e-6);
       const rank =
-        u[W_V_HEIGHT_MODE] === 0 ? 0 : Math.min(1, Math.max(0, (h - f[W_HEIGHT_OUT_MIN]!) / scale));
+        u[W_V_HEIGHT_MODE] === 0
+          ? 0
+          : Math.min(1, Math.max(0, (h - f[W_V_HEIGHT_OUT_MIN]!) / scale));
       out.cz -= rank * VISUAL.flatHeightDepthSpan * (1 - amount) * out.cw;
     },
     toScreen(p) {
@@ -180,15 +191,15 @@ export function planeProjector(uniforms: Uniforms): Projector {
     screenRadius(p) {
       const px =
         f[W_DEPTH_MIX] === 0
-          ? f[W_VERTEX_SIZE]! * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
-          : perspectivePx(f, p.cw, f[W_VERTEX_SIZE]!);
-      return Math.min(px, VISUAL.maxVertexRadiusPx * f[W_BACKING_SCALE]!);
+          ? f[W_V_RADIUS]! * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
+          : perspectivePx(f, p.cw, f[W_V_RADIUS]!);
+      return clampRadius(f, px);
     },
-    screenHalfWidth(p, baseWidth) {
+    screenHalfWidth(p, halfWidth) {
       const px =
         f[W_DEPTH_MIX] === 0
-          ? baseWidth * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
-          : perspectivePx(f, p.cw, baseWidth);
+          ? halfWidth * Math.abs(f[W_FLAT_SX]!) * f[W_VIEWPORT_X]! * 0.5
+          : perspectivePx(f, p.cw, halfWidth);
       return clampHalfWidth(f, px);
     },
     poleHalfWidth(p) {
@@ -209,7 +220,7 @@ export function globeProjector(uniforms: Uniforms): Projector {
       const la = y * DEG2RAD;
       const lo = x * DEG2RAD;
       const c = Math.cos(la);
-      const lift = 1 + VISUAL.globeSurfaceOffset + h * f[W_HEIGHT_WORLD_SCALE]!;
+      const lift = 1 + VISUAL.globeSurfaceOffset + h * f[W_HEIGHT_AMPLITUDE]!;
       out.wx = c * Math.cos(lo) * lift;
       out.wy = Math.sin(la) * lift;
       out.wz = -c * Math.sin(lo) * lift;
@@ -237,11 +248,11 @@ export function globeProjector(uniforms: Uniforms): Projector {
       return t >= 0.999;
     },
     screenRadius(p) {
-      const px = perspectivePx(f, p.cw, f[W_VERTEX_SIZE]! * VISUAL.globeVertexScale);
-      return Math.min(px, VISUAL.maxVertexRadiusPx * f[W_BACKING_SCALE]!);
+      const px = perspectivePx(f, p.cw, f[W_V_RADIUS]! * VISUAL.globeVertexScale);
+      return clampRadius(f, px);
     },
-    screenHalfWidth(p, baseWidth) {
-      return clampHalfWidth(f, perspectivePx(f, p.cw, baseWidth * VISUAL.globeEdgeScale));
+    screenHalfWidth(p, halfWidth) {
+      return clampHalfWidth(f, perspectivePx(f, p.cw, halfWidth * VISUAL.globeEdgeScale));
     },
     poleHalfWidth(p) {
       return polePx(f, this.screenRadius(p));

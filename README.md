@@ -19,7 +19,8 @@ Install only the packages your application needs.
 | ---------------------------------------------------------------------- | ------------------------------------------------------------- |
 | [`@latkit/network`](https://www.npmjs.com/package/@latkit/network)     | Interactive WebGPU network topology views                     |
 | [`@latkit/monitor`](https://www.npmjs.com/package/@latkit/monitor)     | WebGPU time-series and signal monitor views                   |
-| [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)             | Core WebGPU device and canvas presentation primitives         |
+| [`@latkit/embed`](https://www.npmjs.com/package/@latkit/embed)         | `latkit-network` and `latkit-monitor` custom elements         |
+| [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)             | Core WebGPU device pool and canvas presentation primitives    |
 | [`@latkit/colormaps`](https://www.npmjs.com/package/@latkit/colormaps) | Named colormaps, labels, and CSS gradient helpers             |
 | [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | Columnar network model, series, and byte form                 |
 | [`@latkit/port`](https://www.npmjs.com/package/@latkit/port)           | Ports, frames, and typed request, reply, and stream protocols |
@@ -36,60 +37,69 @@ Install only the packages your application needs.
 For network visualization:
 
 ```sh
-npm install @latkit/gpu @latkit/network @latkit/colormaps
+npm install @latkit/network @latkit/colormaps
 ```
 
 For monitor visualization:
 
 ```sh
-npm install @latkit/gpu @latkit/monitor @latkit/colormaps
+npm install @latkit/monitor @latkit/colormaps
+```
+
+For a tag instead of a controller:
+
+```sh
+npm install @latkit/embed
 ```
 
 ## Quick start
 
 ```ts
 import { colormap } from '@latkit/colormaps';
-import { requestDevice } from '@latkit/gpu';
-import { createNetwork, type Topology } from '@latkit/network';
+import { createNetwork } from '@latkit/network';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#network');
 if (!canvas) {
   throw new Error('Missing #network canvas.');
 }
 
-const topology: Topology = {
-  vertexCount: 3,
-  vertexCoords: new Float32Array([-96, 30, -95, 31, -94, 30]),
-  edges: new Uint32Array([0, 1, 1, 2]),
-  polylineStart: new Uint32Array([0, 0, 0]),
-};
-
-const device = await requestDevice();
-const network = await createNetwork(device, canvas, {
+const network = createNetwork({
   colormap: colormap('viridis'),
   graticule: true,
 });
 
-network.load(topology);
+network.load({
+  vertexCount: 3,
+  vertexCoords: new Float32Array([-96, 30, -95, 31, -94, 30]),
+  edges: new Uint32Array([0, 1, 1, 2]),
+  polylineStart: new Uint32Array([0, 0, 0]),
+});
 network.setChannel('vertexColor', new Float32Array([0.1, 0.8, 0.4]), [0, 1]);
+
+await network.attach(canvas);
+```
+
+The controller needs neither a device nor a canvas until `attach`, which leases a WebGPU device from a pool shared by every renderer on the page. Or, declaratively:
+
+```html
+<latkit-network src="network.json" colormap="viridis" vertex-color="load"></latkit-network>
+<script type="module">
+  import '@latkit/embed/register';
+</script>
 ```
 
 See the [network quickstart](https://latkit.readthedocs.io/en/latest/network-quickstart.html) and [monitor quickstart](https://latkit.readthedocs.io/en/latest/monitor-quickstart.html) for complete usage and lifecycle guidance.
 
 ## Examples
 
-Install the workspace dependencies, then run either example in a WebGPU-capable browser:
+Install the workspace dependencies, then run an example in a WebGPU-capable browser:
 
 ```sh
 pnpm install
-pnpm --filter @latkit/network-example dev
+pnpm --filter @latkit/network-example dev   # http://127.0.0.1:5188
+pnpm --filter @latkit/monitor-example dev   # http://127.0.0.1:5190
+pnpm --filter @latkit/embed-example dev     # http://127.0.0.1:5192
 ```
-
-```sh
-pnpm --filter @latkit/monitor-example dev
-```
-
-The network example runs at `http://127.0.0.1:5188`; the monitor example runs at `http://127.0.0.1:5190`.
 
 ## Documentation
 

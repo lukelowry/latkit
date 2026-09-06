@@ -105,9 +105,8 @@ function makeSetup(
     uniforms.frame.backingScale = dpr;
   };
   pack();
-  uniforms.geometry.vertexSize = 0.2;
-  uniforms.geometry.baseEdgeWidth = 0.05;
-  uniforms.geometry.vertexLod = 2;
+  uniforms.geometry.vRadius = 0.2;
+  uniforms.geometry.eHalfWidth = 0.05;
 
   const picker = new Picker({
     uniforms,
@@ -162,11 +161,11 @@ function bindHeights(
 ): void {
   s.values.set('vertexHeight', raw);
   s.uniforms.channel.vHeightMode = 1;
-  s.uniforms.channel.heightCenter = 0;
-  s.uniforms.channel.heightScale = 1;
-  s.uniforms.channel.heightOutMin = outMin;
-  s.uniforms.channel.heightOutScale = outScale;
-  s.uniforms.geometry.heightWorldScale = worldScale;
+  s.uniforms.channel.vHeightMin = 0;
+  s.uniforms.channel.vHeightScale = 1;
+  s.uniforms.channel.vHeightOutMin = outMin;
+  s.uniforms.channel.vHeightOutSpan = outScale;
+  s.uniforms.geometry.heightAmplitude = worldScale;
 }
 
 function bindSizes(s: Setup, raw: Float32Array): void {
@@ -178,7 +177,7 @@ function bindSizes(s: Setup, raw: Float32Array): void {
 
 function bindDash(s: Setup, raw: Float32Array): void {
   s.values.set('edgeDash', raw);
-  s.uniforms.geometry.dashPeriod = 12;
+  s.uniforms.geometry.eDashPeriodPx = 12;
 }
 
 function bindVertexVisibility(s: Setup, raw: Float32Array): void {
@@ -206,11 +205,11 @@ function oraclePick(
   const dprY = u.frame.viewportY / q.vp.h;
   const cursorX = q.sx * dprX;
   const cursorY = q.sy * dprY;
-  const radiusDev = Math.max(1, q.radiusPx * Math.max(dprX, dprY));
+  const radiusDevPx = Math.max(1, q.radiusPx * Math.max(dprX, dprY));
 
   const heights = u.channel.vHeightMode !== 0 ? (s.values.get('vertexHeight') ?? null) : null;
   const sizes = u.channel.vSizeMode !== 0 ? (s.values.get('vertexSize') ?? null) : null;
-  const dashes = u.geometry.dashPeriod > 0 ? (s.values.get('edgeDash') ?? null) : null;
+  const dashes = u.geometry.eDashPeriodPx > 0 ? (s.values.get('edgeDash') ?? null) : null;
   const vertexVisible =
     (u.channel.itemFlags & ITEM_VERTEX_VISIBLE) !== 0
       ? (s.values.get('vertexVisible') ?? null)
@@ -222,13 +221,13 @@ function oraclePick(
   const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
   const normHeight = (vi: number): number => {
     if (!heights) return 0;
-    const t = clamp01((heights[vi]! - u.channel.heightCenter) * u.channel.heightScale);
-    return u.channel.heightOutMin + t * u.channel.heightOutScale;
+    const t = clamp01((heights[vi]! - u.channel.vHeightMin) * u.channel.vHeightScale);
+    return u.channel.vHeightOutMin + t * u.channel.vHeightOutSpan;
   };
   const sizeScale = (vi: number): number => {
     if (!sizes) return 1;
     const t = clamp01((sizes[vi]! - u.channel.vSizeMin) * u.channel.vSizeScale);
-    return VISUAL.vertexSizeMinMul + (VISUAL.vertexSizeMaxMul - VISUAL.vertexSizeMinMul) * t;
+    return u.channel.vSizeOutMin + t * u.channel.vSizeOutSpan;
   };
 
   let bestVertexD2 = Infinity,
@@ -280,14 +279,12 @@ function oraclePick(
       projector.project(A, x, y, h);
       if (projector.visible(A)) {
         const radius = projector.screenRadius(A) * sizeScale(id);
-        if (radius >= u.geometry.vertexLod * u.frame.backingScale) {
-          projector.toScreen(A);
-          const dx = cursorX - A.sx;
-          const dy = cursorY - A.sy;
-          const d2 = dx * dx + dy * dy;
-          const limit = radiusDev + radius;
-          if (d2 <= limit * limit) acceptVertex(id, d2);
-        }
+        projector.toScreen(A);
+        const dx = cursorX - A.sx;
+        const dy = cursorY - A.sy;
+        const d2 = dx * dx + dy * dy;
+        const limit = radiusDevPx + radius;
+        if (d2 <= limit * limit) acceptVertex(id, d2);
       }
     }
 
@@ -298,7 +295,7 @@ function oraclePick(
         projector.toScreen(A);
         projector.toScreen(B);
         const { d2 } = segD2(cursorX, cursorY, A.sx, A.sy, B.sx, B.sy);
-        const limit = radiusDev + projector.poleHalfWidth(A);
+        const limit = radiusDevPx + projector.poleHalfWidth(A);
         if (d2 <= limit * limit) acceptVertex(id, d2);
       }
     }
@@ -350,13 +347,13 @@ function oraclePick(
       mixPoint(M, A, B, t);
       if (!projector.visible(M)) continue;
 
-      if (u.geometry.dashPeriod > 0 && dashes && dashes[edgeId]! < 0.5) {
-        const phase = (t * Math.sqrt(len2)) / (u.geometry.dashPeriod * u.frame.backingScale);
+      if (u.geometry.eDashPeriodPx > 0 && dashes && dashes[edgeId]! < 0.5) {
+        const phase = (t * Math.sqrt(len2)) / (u.geometry.eDashPeriodPx * u.frame.backingScale);
         if (phase - Math.floor(phase) > 0.5) continue;
       }
 
       mixPoint(M, A, B, 0.5);
-      const limit = radiusDev + projector.screenHalfWidth(M, u.geometry.baseEdgeWidth);
+      const limit = radiusDevPx + projector.screenHalfWidth(M, u.geometry.eHalfWidth);
       if (d2 <= limit * limit) acceptEdge(edgeId, d2);
     }
   }
@@ -418,7 +415,7 @@ describe('Picker behavior (flat)', () => {
     expect(s.picker.pick(query)).toBeNull();
   });
 
-  it('drops vertices below the LOD floor while edges stay pickable', () => {
+  it('keeps a vertex pickable at its minimum radius when zoomed far out', () => {
     const s = makeSetup('flat', {
       mutate: (state) => {
         state[2] = state[2]! / 100;
@@ -426,8 +423,9 @@ describe('Picker behavior (flat)', () => {
     });
     s.pack();
     const v = s.screenAt(0, 0);
+    // Many vertices now share a few pixels; the nearest wins, and it is a vertex, not an edge.
     const hit = s.picker.pick(s.query(v.sx, v.sy, 4));
-    expect(hit?.[0]).toBe('edge');
+    expect(hit?.[0]).toBe('vertex');
   });
 
   it('rejects picks in dash gaps and accepts them on solid stretches', () => {
@@ -474,7 +472,7 @@ describe('Picker behavior (flat)', () => {
 
   it('keeps capped billboard extent and LOD in CSS pixels at high DPR', () => {
     const s = makeSetup('flat', { dpr: 2 });
-    s.uniforms.geometry.vertexSize = 100;
+    s.uniforms.geometry.vRadius = 100;
     const v = s.screenAt(0, 0);
 
     expect(
@@ -504,13 +502,24 @@ describe('Picker behavior (flat)', () => {
       ),
     ).toBeNull();
 
-    s.uniforms.geometry.vertexLod = VISUAL.maxVertexRadiusPx + 0.25;
-    expect(s.picker.pick(s.query(v.sx, v.sy, 0, { vertices: true, edges: false }))).toBeNull();
-    s.uniforms.geometry.vertexLod = VISUAL.maxVertexRadiusPx - 0.25;
-    expect(s.picker.pick(s.query(v.sx, v.sy, 0, { vertices: true, edges: false }))).toEqual([
-      'vertex',
-      12,
-    ]);
+    // Zoomed far out, a vertex keeps the minimum radius the shader draws, so it stays pickable.
+    s.uniforms.geometry.vRadius = 1e-6;
+    expect(
+      s.picker.pick(
+        s.query(v.sx + VISUAL.minVertexRadiusPx - 0.25, v.sy, 0, {
+          vertices: true,
+          edges: false,
+        }),
+      ),
+    ).toEqual(['vertex', 12]);
+    expect(
+      s.picker.pick(
+        s.query(v.sx + VISUAL.minVertexRadiusPx + 0.75, v.sy, 0, {
+          vertices: true,
+          edges: false,
+        }),
+      ),
+    ).toBeNull();
   });
 
   it('locates a stable anchor on a multi-segment edge', () => {
@@ -616,7 +625,7 @@ describe('Picker behavior (globe)', () => {
         state[2] = 2;
       },
     });
-    s.uniforms.geometry.vertexSize = 2;
+    s.uniforms.geometry.vRadius = 2;
     const near = s.screenAt(0, 0);
     expect(s.picker.pick(s.query(near.sx, near.sy, 8, { edges: false }))).toEqual(['vertex', 0]);
     expect(s.picker.locateDetail(['vertex', 0], VP)?.visible).toBe(true);
@@ -652,7 +661,7 @@ describe('Picker behavior (globe)', () => {
         state[2] = 2;
       },
     });
-    s.uniforms.geometry.vertexSize = 2;
+    s.uniforms.geometry.vRadius = 2;
 
     const west = s.screenAt(179.5, 0);
     const east = s.screenAt(-179.5, 0);

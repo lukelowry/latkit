@@ -20,19 +20,19 @@ import corePoleSrc from '../shaders/passes/height-pole.wgsl?raw';
 import bordersSrc from '../shaders/passes/border-lines.wgsl?raw';
 
 /** Fragment entry flavor used by overlay passes. */
-type VisualFragmentKind = 'base' | 'underlay';
+type VisualFragmentKind = 'base' | 'halo';
 
 /** Render pipelines required to draw one projection mode. */
 export interface VisualPipelines {
   /** Base vertex billboard pass. */
   vertex: GPURenderPipeline;
-  /** Vertex focus underlay/halo pass. */
+  /** Vertex focus halo pass. */
   vertexHalo: GPURenderPipeline;
   /** Vertex focus foreground pass. */
   vertexFocus: GPURenderPipeline;
   /** Base edge segment pass. */
   edge: GPURenderPipeline;
-  /** Edge focus underlay/halo pass. */
+  /** Edge focus halo pass. */
   edgeHalo: GPURenderPipeline;
   /** Edge focus foreground pass. */
   edgeFocus: GPURenderPipeline;
@@ -41,7 +41,7 @@ export interface VisualPipelines {
   /** Geographic border line-strip pass. */
   borders: GPURenderPipeline;
   /** Projection background pass that also establishes depth. */
-  bg: GPURenderPipeline;
+  background: GPURenderPipeline;
   /** Earth-axis indicator pass for definitions that declare its shader. */
   earthAxis?: GPURenderPipeline;
 }
@@ -65,7 +65,7 @@ export interface ProjectionPipelineFactoryOptions {
   /** Pipeline layout for edge passes that also bind segment storage. */
   edgePipelineLayout: GPUPipelineLayout;
   /** Pipeline layout for background, borders, and axis passes. */
-  bgPipelineLayout: GPUPipelineLayout;
+  backgroundPipelineLayout: GPUPipelineLayout;
 }
 
 /** Builds a one-target color attachment list with optional alpha blending. */
@@ -73,9 +73,9 @@ function colorTargets(format: GPUTextureFormat, blend?: GPUBlendState): GPUColor
   return [{ format, blend }];
 }
 
-/** Selects the fragment entry point for base overlays versus focus underlays. */
+/** Selects the fragment entry point for base overlays versus focus halos. */
 function visualFragmentEntry(kind: VisualFragmentKind): string {
-  return kind === 'underlay' ? 'fs_underlay_color' : 'fs_color';
+  return kind === 'halo' ? 'fs_halo' : 'fs_color';
 }
 
 /**
@@ -94,7 +94,7 @@ export async function buildProjectionPipelines(
     sampleCount,
     overlayPipelineLayout,
     edgePipelineLayout,
-    bgPipelineLayout,
+    backgroundPipelineLayout,
   } = options;
   const mod = (label: string, code: string) => device.createShaderModule({ label, code });
   // The shared solar terminator (daylight.wgsl) is universal; the family
@@ -119,14 +119,15 @@ export async function buildProjectionPipelines(
     'pole',
     projectionPrelude + uniformsSrc + channelVertexSrc + vertexGeometrySrc + corePoleSrc,
   );
-  // Every depth-writing pass tests against the bg-established depth the same
-  // way; halos only differ in leaving the depth buffer untouched.
+  // Every pass tests against the background-established depth the same way. Opaque passes also
+  // write it; overlay passes (halos, borders, the earth axis) leave the depth buffer untouched, so
+  // nothing behind them is ever hidden by them.
   const dsOpaque: GPUDepthStencilState = {
     format: 'depth24plus',
     depthWriteEnabled: true,
     depthCompare: 'less-equal',
   };
-  const dsHalo: GPUDepthStencilState = {
+  const dsOverlay: GPUDepthStencilState = {
     format: 'depth24plus',
     depthWriteEnabled: false,
     depthCompare: 'less-equal',
@@ -167,15 +168,15 @@ export async function buildProjectionPipelines(
     label: `${def.family}-borders`,
     code: projectionPrelude + uniformsSrc + def.borderWorldWgsl + bordersSrc,
   });
-  const bgModule = mod(
-    `${def.family}-bg`,
+  const backgroundModule = mod(
+    `${def.family}-background`,
     VISUAL_WGSL +
       uniformsSrc +
       graticuleSrc +
       cameraRaySrc +
       daylightSrc +
       def.sunWgsl +
-      def.bgWgsl,
+      def.backgroundWgsl,
   );
   const earthAxisModule = def.earthAxisWgsl
     ? mod(`${def.family}-earth-axis`, projectionPrelude + uniformsSrc + def.earthAxisWgsl)
@@ -184,7 +185,7 @@ export async function buildProjectionPipelines(
   // Dispatch every pipeline before the sole await so driver compilation overlaps.
   const pendingBorders = device.createRenderPipelineAsync({
     label: `${def.family}-borders`,
-    layout: bgPipelineLayout,
+    layout: backgroundPipelineLayout,
     vertex: {
       module: borderModule,
       entryPoint: 'vs',
@@ -205,16 +206,16 @@ export async function buildProjectionPipelines(
       targets: colorTargets(format, blend),
     },
     primitive: { topology: 'line-strip', stripIndexFormat: 'uint32' },
-    depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less-equal' },
+    depthStencil: dsOverlay,
     multisample: ms,
   });
 
   const pendingBackground = device.createRenderPipelineAsync({
-    label: `${def.family}-bg`,
-    layout: bgPipelineLayout,
-    vertex: { module: bgModule, entryPoint: 'vs', buffers: [] },
+    label: `${def.family}-background`,
+    layout: backgroundPipelineLayout,
+    vertex: { module: backgroundModule, entryPoint: 'vs', buffers: [] },
     fragment: {
-      module: bgModule,
+      module: backgroundModule,
       entryPoint: 'fs_color',
       targets: colorTargets(format, blend),
     },
@@ -226,7 +227,7 @@ export async function buildProjectionPipelines(
   const pendingEarthAxis = earthAxisModule
     ? device.createRenderPipelineAsync({
         label: `${def.family}-earth-axis`,
-        layout: bgPipelineLayout,
+        layout: backgroundPipelineLayout,
         vertex: { module: earthAxisModule, entryPoint: 'vs', buffers: [] },
         fragment: {
           module: earthAxisModule,
@@ -234,28 +235,34 @@ export async function buildProjectionPipelines(
           targets: colorTargets(format, blend),
         },
         primitive: strip,
-        depthStencil: {
-          format: 'depth24plus',
-          depthWriteEnabled: false,
-          depthCompare: 'less-equal',
-        },
+        depthStencil: dsOverlay,
         multisample: ms,
       })
     : Promise.resolve(undefined);
 
-  const [vertex, vertexHalo, vertexFocus, edge, edgeHalo, edgeFocus, pole, borders, bg, earthAxis] =
-    await Promise.all([
-      rpl('vertex', vertM),
-      rpl('vertex-halo', vertM, 'vs_halo', 'underlay', dsHalo),
-      rpl('vertex-focus', vertM, 'vs_focus', 'base'),
-      rpl('edge', edgeM, 'vs', 'base', dsOpaque, edgePipelineLayout),
-      rpl('edge-halo', edgeM, 'vs_halo', 'underlay', dsHalo, edgePipelineLayout),
-      rpl('edge-focus', edgeM, 'vs_focus', 'base', dsOpaque, edgePipelineLayout),
-      rpl('pole', poleM),
-      pendingBorders,
-      pendingBackground,
-      pendingEarthAxis,
-    ]);
+  const [
+    vertex,
+    vertexHalo,
+    vertexFocus,
+    edge,
+    edgeHalo,
+    edgeFocus,
+    pole,
+    borders,
+    background,
+    earthAxis,
+  ] = await Promise.all([
+    rpl('vertex', vertM),
+    rpl('vertex-halo', vertM, 'vs_halo', 'halo', dsOverlay),
+    rpl('vertex-focus', vertM, 'vs_focus', 'base'),
+    rpl('edge', edgeM, 'vs', 'base', dsOpaque, edgePipelineLayout),
+    rpl('edge-halo', edgeM, 'vs_halo', 'halo', dsOverlay, edgePipelineLayout),
+    rpl('edge-focus', edgeM, 'vs_focus', 'base', dsOpaque, edgePipelineLayout),
+    rpl('pole', poleM),
+    pendingBorders,
+    pendingBackground,
+    pendingEarthAxis,
+  ]);
 
   return {
     visual: {
@@ -267,7 +274,7 @@ export async function buildProjectionPipelines(
       edgeFocus,
       pole,
       borders,
-      bg,
+      background,
       earthAxis,
     },
   };

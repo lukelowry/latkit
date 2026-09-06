@@ -1,12 +1,6 @@
 import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
-import { requestDevice } from '@latkit/gpu';
-import {
-  createNetwork,
-  PROJECTIONS,
-  type Item,
-  type Network,
-  type Projection,
-} from '@latkit/network';
+import type { Item } from '@latkit/model';
+import { createNetwork, PROJECTIONS, type Network, type Projection } from '@latkit/network';
 import { TOPOLOGIES, type GeneratedTopology, type TopologyOption } from './topologies.js';
 import './style.css';
 
@@ -36,29 +30,15 @@ async function main(): Promise<void> {
 
   setStatus(current);
 
-  let device: GPUDevice;
-  try {
-    device = await requestDevice();
-  } catch (err) {
-    fail(err instanceof Error ? err.message : String(err));
-    return;
-  }
-
-  let net: Network;
-  try {
-    net = await createNetwork(device, stage, {
-      msaa: 4,
-      daylight: true,
-      graticule: false,
-      borders: false,
-      baseColor: [0.36, 0.4, 0.46, 1],
-      colormap: colormap(EXAMPLE_COLORMAPS[0]!),
-    });
-  } catch (err) {
-    device.destroy();
-    fail(err instanceof Error ? err.message : String(err));
-    return;
-  }
+  // The controller needs neither a device nor a canvas: load first, attach when ready.
+  const net = createNetwork({
+    msaa: 4,
+    daylight: true,
+    graticule: false,
+    borders: false,
+    vertexBaseColor: [0.36, 0.4, 0.46, 1],
+    colormap: colormap(EXAMPLE_COLORMAPS[0]!),
+  });
 
   function applyChannels(): void {
     net.setChannel('vertexColor', current.color, [0, 1]);
@@ -78,6 +58,20 @@ async function main(): Promise<void> {
   net.load(current.topology);
   applyChannels();
 
+  try {
+    await net.attach(stage);
+  } catch (err) {
+    net.destroy();
+    fail(err instanceof Error ? err.message : String(err));
+    return;
+  }
+
+  net.on('deviceLost', ({ reason, message, recovering }) => {
+    statusEl.textContent = recovering
+      ? `device lost (${reason}); recovering`
+      : `device unavailable: ${message}`;
+  });
+
   const projections = wireProjections(net);
   wireOrbit(net);
   wireTopologies(
@@ -94,12 +88,10 @@ async function main(): Promise<void> {
   });
   wireColormaps(net);
   wirePicking(net);
-  wireKeyboard(net);
 
   window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
     net.destroy();
-    device.destroy();
   });
 }
 
@@ -155,12 +147,12 @@ function wireProjections(net: Network): ProjectionControls {
 function wireOrbit(net: Network): void {
   const row = document.getElementById('camera') as HTMLElement;
   const btn = createButton('auto rotate', false);
-  // Gestures on the canvas stop the orbit inside the renderer; the event keeps the button honest.
+  // Gestures and keys on the canvas stop the orbit inside the renderer; the event keeps the
+  // button honest, and reduced motion refuses to start it at all.
   net.on('orbit', (active) => setPressed(btn, active));
   btn.addEventListener('click', () => {
     net.orbit(!net.orbiting);
   });
-  stage.addEventListener('keydown', () => net.orbit(false));
   row.appendChild(btn);
 }
 
@@ -171,7 +163,19 @@ function wireToggles(net: Network, setHeight: (on: boolean) => void): void {
     { label: 'graticule', on: false, apply: (v) => net.setOptions({ graticule: v }) },
     { label: 'earth axis', on: true, apply: (v) => net.setOptions({ earthAxis: v }) },
     { label: 'daylight', on: true, apply: (v) => net.setOptions({ daylight: v }) },
+    // A pinned sun holds the terminator still; null follows the clock.
+    {
+      label: 'noon sun',
+      on: false,
+      apply: (v) => net.setOptions({ sunTime: v ? Date.UTC(2026, 5, 21, 12) : null }),
+    },
     { label: 'height', on: false, apply: setHeight },
+    // A base edge color replaces the endpoint-color average.
+    {
+      label: 'muted edges',
+      on: false,
+      apply: (v) => net.setOptions({ edgeBaseColor: v ? [0.3, 0.32, 0.36, 1] : null }),
+    },
   ];
   const row = document.getElementById('toggles') as HTMLElement;
 
@@ -204,49 +208,6 @@ function wireColormaps(net: Network): void {
   }
 }
 
-/** Screen pixels one arrow keypress pans or rotates by. */
-const KEY_PAN_PX = 48;
-
-function wireKeyboard(net: Network): void {
-  stage.addEventListener('keydown', (event) => {
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
-    // Shift + arrows rotates (bearing/pitch); plain arrows pan the view.
-    const move = (dx: number, dy: number): void => {
-      if (event.shiftKey) net.rotateBy(dx, dy);
-      else net.panBy(-dx, -dy);
-    };
-    switch (event.key) {
-      case 'ArrowLeft':
-        move(-KEY_PAN_PX, 0);
-        break;
-      case 'ArrowRight':
-        move(KEY_PAN_PX, 0);
-        break;
-      case 'ArrowUp':
-        move(0, -KEY_PAN_PX);
-        break;
-      case 'ArrowDown':
-        move(0, KEY_PAN_PX);
-        break;
-      case '+':
-      case '=':
-        net.zoomBy(1.2);
-        break;
-      case '-':
-      case '_':
-        net.zoomBy(1 / 1.2);
-        break;
-      case 'Escape':
-        net.select(null);
-        readoutEl.querySelector('.select')!.textContent = '-';
-        break;
-      default:
-        return;
-    }
-    event.preventDefault();
-  });
-}
-
 function wirePicking(net: Network): void {
   const describe = (item: Item | null): string =>
     item === null ? '-' : `${item.kind} #${item.index}`;
@@ -254,6 +215,7 @@ function wirePicking(net: Network): void {
   net.on('hover', (item) => {
     readoutEl.querySelector('.hover')!.textContent = describe(item);
   });
+  // Pointer taps and Escape both arrive here; the keyboard map is the controller's.
   net.on('select', (item) => {
     readoutEl.querySelector('.select')!.textContent = describe(item);
   });

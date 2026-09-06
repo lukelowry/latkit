@@ -1,5 +1,6 @@
 /// <reference types="@webgpu/types" />
 import type { Presentation } from '@latkit/gpu';
+import { COLORMAP_LUT_SIZE, type RGBA } from '@latkit/model';
 
 import segmentWgsl from './gpu/segment.wgsl?raw';
 
@@ -16,28 +17,75 @@ import segmentWgsl from './gpu/segment.wgsl?raw';
 export const TARGET_VALUE_BYTES = 64 * 1024 * 1024;
 /** Segment instances submitted per rAF; bounds GPU work, not upload bytes. */
 export const SEGMENT_BUDGET = 4 * 1024 * 1024;
-export const COLORMAP_LUT_SIZE = 256;
 
 /** Frames per slab window: 64 MiB of f32 values, never fewer than one segment. */
 export function framesPerWindow(elementCount: number, capBytes = TARGET_VALUE_BYTES): number {
   return Math.max(2, Math.floor(capBytes / 4 / elementCount));
 }
 
+/** The values `struct Uniforms` in segment.wgsl carries; pixel values are device pixels. */
 export interface UniformValues {
-  readonly widthPx: number;
-  readonly heightPx: number;
-  readonly lineWidthPx: number;
+  readonly viewportX: number;
+  readonly viewportY: number;
+  readonly lineWidth: number;
   readonly elementCount: number;
-  readonly rangeMin: number;
-  readonly rangeScale: number;
+  /** Value domain: `t = (value - valueMin) * valueScale` drives y and color together. */
+  readonly valueMin: number;
+  readonly valueScale: number;
+  /** Time window over the normalized axis: `x = (xnorm - timeMin) * timeScale`. */
+  readonly timeMin: number;
+  readonly timeScale: number;
+  /** Focus trace tint, or an alpha below zero to brighten the trace's own color. */
+  readonly focusColor: RGBA;
+  /** History trace alpha: `unselectedAlpha` while an element is selected, else 1. */
+  readonly alpha: number;
 }
 
-const UNIFORM_BYTES = 24; // size: vec2f, lineWidth: f32, elementCount: u32, rangeMin: f32, rangeScale: f32
+/** WGSL uniform-address-space size and alignment per member type used by the layout. */
+const WGSL_TYPES = {
+  f32: { size: 4, align: 4 },
+  u32: { size: 4, align: 4 },
+  vec2f: { size: 8, align: 8 },
+  vec4f: { size: 16, align: 16 },
+} as const;
+
+/**
+ * `struct Uniforms` in segment.wgsl, member for member. Byte offsets follow from WGSL's natural
+ * layout; the parity unit test pins the .wgsl struct text to this table.
+ */
+export const UNIFORM_LAYOUT = [
+  { name: 'viewport', type: 'vec2f' },
+  { name: 'line_width', type: 'f32' },
+  { name: 'element_count', type: 'u32' },
+  { name: 'value_min', type: 'f32' },
+  { name: 'value_scale', type: 'f32' },
+  { name: 'time_min', type: 'f32' },
+  { name: 'time_scale', type: 'f32' },
+  { name: 'focus_color', type: 'vec4f' },
+  { name: 'alpha', type: 'f32' },
+] as const satisfies readonly { name: string; type: keyof typeof WGSL_TYPES }[];
+
+/** Word offset of every layout member, and the struct's rounded byte length. */
+function packLayout(): { words: Record<string, number>; bytes: number } {
+  const words: Record<string, number> = {};
+  let cursor = 0;
+  for (const { name, type } of UNIFORM_LAYOUT) {
+    const { size, align } = WGSL_TYPES[type];
+    cursor = Math.ceil(cursor / align) * align;
+    words[name] = cursor / 4;
+    cursor += size;
+  }
+  return { words, bytes: Math.ceil(cursor / 16) * 16 };
+}
+
+const { words: W, bytes: UNIFORM_BYTES } = packLayout();
 
 export class LanePainter {
   readonly device: GPUDevice;
-  widthPx: number;
-  heightPx: number;
+  /** History texture width in device pixels. */
+  width: number;
+  /** History texture height in device pixels. */
+  height: number;
   /** Value capacity of one slab window, in floats, after device-limit clamping. */
   readonly windowValueCapacity: number;
 
@@ -62,13 +110,13 @@ export class LanePainter {
   #destroyed = false;
 
   /** Creates renderer resources against a borrowed presentation. */
-  constructor(presentation: Presentation, widthPx: number, heightPx: number) {
+  constructor(presentation: Presentation, width: number, height: number) {
     const { device, context, format } = presentation;
     this.device = device;
     this.#context = context;
     this.#format = format;
-    this.widthPx = widthPx;
-    this.heightPx = heightPx;
+    this.width = width;
+    this.height = height;
     this.windowValueCapacity = Math.floor(
       Math.min(
         TARGET_VALUE_BYTES,
@@ -90,7 +138,7 @@ export class LanePainter {
         fragment: { module, entryPoint, targets: [{ format, blend }] },
         primitive: { topology: 'triangle-strip' },
       });
-    this.#historyPipeline = pipeline('monitor-history', 'fs_main');
+    this.#historyPipeline = pipeline('monitor-history', 'fs_history');
     this.#focusPipeline = pipeline('monitor-focus', 'fs_focus');
 
     this.#lut = device.createTexture({
@@ -111,7 +159,7 @@ export class LanePainter {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    this.#history = this.#makeHistory(widthPx, heightPx);
+    this.#history = this.#makeHistory(width, height);
     this.#historyView = this.#history.createView();
   }
 
@@ -187,12 +235,16 @@ export class LanePainter {
   writeUniform(target: 'history' | 'focus', u: UniformValues): void {
     const f32 = new Float32Array(this.#uniformScratch);
     const u32 = new Uint32Array(this.#uniformScratch);
-    f32[0] = u.widthPx;
-    f32[1] = u.heightPx;
-    f32[2] = u.lineWidthPx;
-    u32[3] = u.elementCount;
-    f32[4] = u.rangeMin;
-    f32[5] = u.rangeScale;
+    f32[W.viewport!] = u.viewportX;
+    f32[W.viewport! + 1] = u.viewportY;
+    f32[W.line_width!] = u.lineWidth;
+    u32[W.element_count!] = u.elementCount;
+    f32[W.value_min!] = u.valueMin;
+    f32[W.value_scale!] = u.valueScale;
+    f32[W.time_min!] = u.timeMin;
+    f32[W.time_scale!] = u.timeScale;
+    f32.set(u.focusColor, W.focus_color!);
+    f32[W.alpha!] = u.alpha;
     this.device.queue.writeBuffer(
       target === 'history' ? this.#historyUniform : this.#focusUniform,
       0,
@@ -213,19 +265,22 @@ export class LanePainter {
     this.device.queue.writeBuffer(this.#xnorm, 0, xnorm.buffer, xnorm.byteOffset, xnorm.byteLength);
   }
 
-  uploadFocus(values: Float32Array, xnorm: Float32Array): void {
+  /** Write focus-trace frames starting at `firstFrame`; the slices are views, never copies. */
+  uploadFocus(values: Float32Array, xnorm: Float32Array, firstFrame = 0): void {
     if (!this.#focusValues || !this.#focusXnorm)
       throw new Error('monitor painter: no slabs reserved');
+    if (values.length === 0) return;
+    const byteOffset = firstFrame * 4;
     this.device.queue.writeBuffer(
       this.#focusValues,
-      0,
+      byteOffset,
       values.buffer,
       values.byteOffset,
       values.byteLength,
     );
     this.device.queue.writeBuffer(
       this.#focusXnorm,
-      0,
+      byteOffset,
       xnorm.buffer,
       xnorm.byteOffset,
       xnorm.byteLength,
@@ -288,7 +343,7 @@ export class LanePainter {
     encoder.copyTextureToTexture(
       { texture: this.#history },
       { texture: target },
-      { width: this.widthPx, height: this.heightPx },
+      { width: this.width, height: this.height },
     );
     if (focusInstances > 0 && this.#focusGroup) {
       const pass = encoder.beginRenderPass({
@@ -307,11 +362,11 @@ export class LanePainter {
    *
    * Prior content is discarded; the controller schedules a full repaint.
    */
-  resize(widthPx: number, heightPx: number): void {
+  resize(width: number, height: number): void {
     this.#history.destroy();
-    this.widthPx = widthPx;
-    this.heightPx = heightPx;
-    this.#history = this.#makeHistory(widthPx, heightPx);
+    this.width = width;
+    this.height = height;
+    this.#history = this.#makeHistory(width, height);
     this.#historyView = this.#history.createView();
   }
 

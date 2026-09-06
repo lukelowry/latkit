@@ -3,7 +3,7 @@ import { createPlaneProjection } from './camera/plane.js';
 import type { CameraProjection, Viewport } from './camera/projection.js';
 import { globeProjector, planeProjector, type Projector } from './pick/project.js';
 import type { Uniforms } from './webgpu/uniforms.js';
-import { VISUAL, planeHeightWorldScale } from './visual.js';
+import { VISUAL, planeHeightAmplitude } from './visual.js';
 import type { Bounds, Topology } from './topology/index.js';
 import { hasExplicitCoords } from './topology/pack.js';
 
@@ -42,7 +42,7 @@ export interface ProjectionDef {
     geographic: boolean,
   ) => boolean;
   /** Projection-space visual amplitude for the normalized height channel. */
-  readonly heightWorldScale: (bounds: Bounds, vp: Viewport, vertexSize: number) => number;
+  readonly heightAmplitude: (bounds: Bounds, vp: Viewport, vertexRadius: number) => number;
   /**
    * X axis is periodic longitude.
    *
@@ -67,7 +67,7 @@ export interface PipelineDef {
   /** WGSL body for `segment_surface_world()`. */
   readonly segmentSurfaceWgsl: string;
   /** Background shader source. It must write `frag_depth`. */
-  readonly bgWgsl: string;
+  readonly backgroundWgsl: string;
   /** WGSL body for `border_world()`, returning the final lifted world position. */
   readonly borderWorldWgsl: string;
   /** Optional extra pass drawn behind overlays (the globe's earth axis). */
@@ -95,7 +95,7 @@ export interface PipelineDef {
 //   border:  VISUAL_WGSL + overlayWgsl + daylight + sunWgsl + uniforms
 //            + borderWorldWgsl + borders
 //   bg:      VISUAL_WGSL + uniforms + graticule + camera-ray + daylight
-//            + sunWgsl + bgWgsl - no overlay prelude.
+//            + sunWgsl + backgroundWgsl - no overlay prelude.
 //
 // Conventions:
 //   u.depth_mix is 0 at flat rest and 1 for perspective/globe depth.
@@ -179,7 +179,7 @@ export const PROJECTION_DEFS = Object.freeze({
     create: () => createPlaneProjection('flat'),
     family: 'plane',
     canUse: () => true,
-    heightWorldScale: planeHeightWorldScale,
+    heightAmplitude: planeHeightAmplitude,
     wrapX: false,
   },
   tilt: {
@@ -187,7 +187,7 @@ export const PROJECTION_DEFS = Object.freeze({
     create: () => createPlaneProjection('tilt'),
     family: 'plane',
     canUse: () => true,
-    heightWorldScale: planeHeightWorldScale,
+    heightAmplitude: planeHeightAmplitude,
     wrapX: false,
   },
   globe: {
@@ -195,7 +195,7 @@ export const PROJECTION_DEFS = Object.freeze({
     create: createGlobeProjection,
     family: 'globe',
     canUse: canHostGlobe,
-    heightWorldScale: () => VISUAL.globeHeightRadialScale,
+    heightAmplitude: () => VISUAL.globeHeightRadialScale,
     wrapX: true,
   },
 } satisfies Record<Projection, ProjectionDef>);
@@ -207,14 +207,14 @@ export const PIPELINES = Object.freeze({
     projector: planeProjector,
     overlayWgsl: planeSrc,
     // Plane world coordinates are lon/lat degrees whenever daylight is armed
-    // (FLAG_DAYLIGHT is gated on isGeographicTopology), so the geographic
+    // (DISPLAY_DAYLIGHT is gated on isGeographicTopology), so the geographic
     // conversion is always meaningful here.
     sunWgsl: 'fn sun_normal(world: vec3f) -> vec3f { return geo_to_xyz(world.x, world.y); }\n',
     vertexSurfaceWgsl: planarVertexSurfaceWgsl,
     segmentSurfaceWgsl: planarSegmentSurfaceWgsl,
-    bgWgsl: planeBgSrc,
+    backgroundWgsl: planeBgSrc,
     borderWorldWgsl:
-      'fn border_world(lonlat: vec2f, ecef: vec3f) -> vec3f { return vec3f(lonlat, TILT_SURFACE_LIFT * u.vertex_size * u.depth_mix); }\n',
+      'fn border_world(lonlat: vec2f, ecef: vec3f) -> vec3f { return vec3f(lonlat, TILT_SURFACE_LIFT * u.v_radius * u.depth_mix); }\n',
   },
   globe: {
     family: 'globe',
@@ -225,7 +225,7 @@ export const PIPELINES = Object.freeze({
     sunWgsl: 'fn sun_normal(world: vec3f) -> vec3f { return normalize(world); }\n',
     vertexSurfaceWgsl: globeVertexSurfaceWgsl,
     segmentSurfaceWgsl: globeSegmentSurfaceWgsl,
-    bgWgsl: globeBgSrc,
+    backgroundWgsl: globeBgSrc,
     // ecef is unit-length in the border asset; the normalize is the same
     // defensive posture the shared shader carried before the lift moved here.
     borderWorldWgsl:

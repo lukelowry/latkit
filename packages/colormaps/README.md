@@ -23,3 +23,9 @@ button.style.background = gradient('viridis', 'to right');
 Colormap functions accept normalized values in `[0, 1]` and return RGB channels in `[0, 1]`.
 
 `COLORMAPS` is a frozen registry keyed by name. Each entry has a `label` and a `kind` (`'sequential'` or `'diverging'`); keys are in display order with sequential maps first.
+
+`gradient()` takes a name or a colormap function, so a legend for a custom transfer function samples the same way the renderers do:
+
+```ts
+legend.style.background = gradient((t) => [t, 0.5, 1 - t]);
+```

@@ -6,11 +6,20 @@
  */
 type StoredHandler = (payload: unknown) => void;
 
-export function createEmitter<E extends object>() {
+/** The dispatcher {@link createEmitter} returns. */
+interface Emitter<E extends object> {
+  /** Register a handler for one event and return its disposer. */
+  on<K extends keyof E>(event: K, handler: (payload: E[K]) => void): () => void;
+  /** Deliver a payload to a snapshot of the current handlers for an event. */
+  emit<K extends keyof E>(event: K, payload: E[K]): void;
+  /** Remove all registered handlers for all events. */
+  clear(): void;
+}
+
+export function createEmitter<E extends object>(): Emitter<E> {
   const listeners = new Map<keyof E, Set<StoredHandler>>();
   return {
-    /** Register a handler for one event and return its disposer. */
-    on<K extends keyof E>(event: K, handler: (payload: E[K]) => void): () => void {
+    on(event, handler) {
       let set = listeners.get(event);
       if (!set) listeners.set(event, (set = new Set()));
       set.add(handler as StoredHandler);
@@ -18,8 +27,7 @@ export function createEmitter<E extends object>() {
         set!.delete(handler as StoredHandler);
       };
     },
-    /** Deliver a payload to a snapshot of the current handlers for an event. */
-    emit<K extends keyof E>(event: K, payload: E[K]): void {
+    emit(event, payload) {
       const set = listeners.get(event);
       if (!set) return;
       for (const handler of [...set]) {
@@ -32,8 +40,7 @@ export function createEmitter<E extends object>() {
         }
       }
     },
-    /** Remove all registered handlers for all events. */
-    clear(): void {
+    clear() {
       listeners.clear();
     },
   };

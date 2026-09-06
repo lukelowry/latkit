@@ -32,8 +32,11 @@ export type Intent =
   | { kind: 'zoom'; factor: number; sx: number; sy: number; vp: Viewport }
   /** Right-drag or two-finger twist mapped to projection rotation pixels. */
   | { kind: 'rotate'; dxPx: number; dyPx: number; vp: Viewport }
-  /** Browser context request released after secondary-drag disambiguation. */
-  | { kind: 'contextmenu'; event: MouseEvent }
+  /**
+   * Browser context request released after secondary-drag disambiguation. `keyboard` is true when
+   * no secondary press preceded it: the Menu key, Shift+F10, or assistive input.
+   */
+  | { kind: 'contextmenu'; event: MouseEvent; keyboard: boolean }
   /** Click/tap hit request with a target radius in CSS px. */
   | { kind: 'tap'; sx: number; sy: number; targetPx: number; vp: Viewport }
   /** Second nearby tap inside the double-tap window. */
@@ -53,11 +56,11 @@ export interface HoverProbe {
   targetPx: number;
 }
 
-/** Decides whether a wheel event is zoom or pan for this surface. */
-export interface WheelPolicy {
-  /** Return true when the wheel event should zoom; otherwise it pans. */
-  isZoom(e: WheelEvent): boolean;
-}
+/**
+ * Decides what a wheel event does on this surface: zoom the view, pan it, or nothing, leaving the
+ * event to the page so a document scrolls past an embedded canvas.
+ */
+export type WheelPolicy = (e: WheelEvent) => 'zoom' | 'pan' | 'none';
 
 /** Gesture recognition thresholds and double-tap windows. */
 const POINTER = {
@@ -74,17 +77,15 @@ const POINTER = {
   doubleTapPx: 25,
 } as const;
 
-/** Default mouse/pen pick target radius, in CSS px. */
-export const MOUSE_PICK_RADIUS_PX = 10;
+/** Touch pick target floor, in CSS px: half of the Apple HIG 44pt diameter, as a radius. */
+const TOUCH_PICK_RADIUS_PX = 22;
 
-/** Pick target radii by pointer family, in CSS px. */
-const PICK = {
-  /** Mouse/pen click target floor; larger than the 2px LOD floor. */
-  mousePx: MOUSE_PICK_RADIUS_PX,
-
-  /** Touch click target. Half of Apple HIG 44pt diameter, expressed as radius. */
-  touchPx: 22,
-} as const;
+/** What the surface's input follows: the wheel policy and the live mouse pick radius. */
+export interface PointerPolicy {
+  readonly wheel: WheelPolicy;
+  /** Mouse and pen pick radius in CSS px; touch uses at least {@link TOUCH_PICK_RADIUS_PX}. */
+  readonly pickRadiusPx: () => number;
+}
 
 /** Wheel delta normalization and zoom gain. */
 const WHEEL = {
@@ -117,13 +118,14 @@ const DRAG_TOUCH_SQ = POINTER.dragTouchPx * POINTER.dragTouchPx;
 const DOUBLE_TAP_SQ = POINTER.doubleTapPx * POINTER.doubleTapPx;
 
 /** Default wheel policy: pinch/modified wheels zoom, pixel trackpads pan. */
-export const DEFAULT_WHEEL_POLICY: WheelPolicy = {
-  isZoom(e) {
-    if (e.ctrlKey || e.metaKey) return true;
-    if (e.deltaMode === 0 && (e.deltaX !== 0 || e.deltaY % 1 !== 0)) return false;
-    return true;
-  },
+export const DEFAULT_WHEEL_POLICY: WheelPolicy = (e) => {
+  if (e.ctrlKey || e.metaKey) return 'zoom';
+  if (e.deltaMode === 0 && (e.deltaX !== 0 || e.deltaY % 1 !== 0)) return 'pan';
+  return 'zoom';
 };
+
+/** Modifier wheel policy: only a Ctrl or Meta wheel zooms; a plain wheel scrolls the page. */
+export const MODIFIER_WHEEL_POLICY: WheelPolicy = (e) => (e.ctrlKey || e.metaKey ? 'zoom' : 'none');
 
 /** Active pointer snapshot in canvas-local CSS pixels. */
 interface PointerSlot {
@@ -222,8 +224,13 @@ interface ScreenPoint {
 export function attachPointer(
   surface: Surface,
   emit: (i: Intent) => void,
-  wheel: WheelPolicy = DEFAULT_WHEEL_POLICY,
+  policy: Partial<PointerPolicy> = {},
 ): { destroy(): void } {
+  const wheel = policy.wheel ?? DEFAULT_WHEEL_POLICY;
+  const mousePx = policy.pickRadiusPx ?? (() => 10);
+  /** Target radius for tap/hover picking by pointer type, in CSS px. */
+  const targetPxFor = (pointerType: string): number =>
+    pointerType === 'touch' ? Math.max(TOUCH_PICK_RADIUS_PX, mousePx()) : mousePx();
   const element = surface.element;
   let state: State = { kind: 'idle', lastTap: null };
   let latestProbe: HoverProbe | null = null;
@@ -575,7 +582,7 @@ export function attachPointer(
       const contextEvent = state.contextEvent;
       state = { kind: 'idle', lastTap: null };
       release(e.pointerId);
-      if (contextEvent) emit({ kind: 'contextmenu', event: contextEvent });
+      if (contextEvent) emit({ kind: 'contextmenu', event: contextEvent, keyboard: false });
       else stageContextRelease('emit');
       return;
     }
@@ -699,15 +706,18 @@ export function attachPointer(
     if (contextRelease !== null) {
       const action = contextRelease;
       clearContextRelease();
-      if (action === 'emit') emit({ kind: 'contextmenu', event: e });
+      if (action === 'emit') emit({ kind: 'contextmenu', event: e, keyboard: false });
       return;
     }
 
     // With no secondary-pointer transaction, this is keyboard or assistive input.
-    emit({ kind: 'contextmenu', event: e });
+    emit({ kind: 'contextmenu', event: e, keyboard: true });
   }
 
   function onWheel(e: WheelEvent): void {
+    const gesture = wheel(e);
+    // A wheel the policy declines stays the page's: no preventDefault, no transaction.
+    if (gesture === 'none') return;
     e.preventDefault();
     const px = pixelsForDelta(e.deltaX, e.deltaMode);
     const py = pixelsForDelta(e.deltaY, e.deltaMode);
@@ -716,10 +726,10 @@ export function attachPointer(
     const rect = surface.rect();
     const s = screen(e, rect);
     latestProbe = containsClientPoint(rect, e.clientX, e.clientY)
-      ? { clientX: e.clientX, clientY: e.clientY, targetPx: PICK.mousePx }
+      ? { clientX: e.clientX, clientY: e.clientY, targetPx: mousePx() }
       : null;
 
-    const zooming = wheel.isZoom(e);
+    const zooming = gesture === 'zoom';
     const factor = zooming ? Math.exp(-py * WHEEL.sensitivity) : 1;
     // Invalid, underflowed, and unit zooms must not begin or extend a wheel
     // transaction because they cannot change the camera.
@@ -783,11 +793,6 @@ export function attachPointer(
       reset(false);
     },
   };
-}
-
-/** Target radius for tap/hover picking by pointer type, in CSS px. */
-function targetPxFor(pointerType: string): number {
-  return pointerType === 'touch' ? PICK.touchPx : PICK.mousePx;
 }
 
 /** Whether a pointer type can emit hover intents while idle. */

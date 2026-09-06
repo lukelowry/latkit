@@ -4,16 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "predev": "pnpm --filter @latkit/colormaps build && pnpm --filter @latkit/gpu build && pnpm --filter @latkit/monitor build",
+    "predev": "pnpm --filter @latkit/model --filter @latkit/colormaps --filter @latkit/gpu build && pnpm --filter @latkit/monitor build",
     "dev": "vite --host 127.0.0.1 --port 5190",
-    "prebuild": "pnpm --filter @latkit/colormaps build && pnpm --filter @latkit/gpu build && pnpm --filter @latkit/monitor build",
+    "prebuild": "pnpm --filter @latkit/model --filter @latkit/colormaps --filter @latkit/gpu build && pnpm --filter @latkit/monitor build",
     "build": "pnpm run typecheck && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "preview": "vite preview --host 127.0.0.1 --port 5190"
   },
   "dependencies": {
     "@latkit/colormaps": "workspace:*",
-    "@latkit/gpu": "workspace:*",
+    "@latkit/model": "workspace:*",
     "@latkit/monitor": "workspace:*"
   },
   "devDependencies": {

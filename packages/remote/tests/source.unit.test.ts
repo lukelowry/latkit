@@ -185,6 +185,34 @@ describe('source service: run', () => {
     expect(new TextDecoder().decode(run.mock.calls[0]![0])).toBe('{}');
   });
 
+  it('leaves the caller its command and reopen bytes, so the same plan can run again', async () => {
+    const transfers: ArrayBuffer[][] = [];
+    const [server, client] = loopback();
+    const spied = {
+      ...client,
+      post: (message: unknown, transfer: readonly ArrayBuffer[] = []) => {
+        transfers.push([...transfer]);
+        client.post(message, transfer);
+      },
+    };
+    serveSource(
+      server,
+      { source: fixtureSource(), runner: { run: async function* () {} } },
+      { reopen: async () => ({ source: fixtureSource('Second') }) },
+    );
+    const remote = await connectSource(spied);
+    const command = new TextEncoder().encode('{"again":true}');
+    await collect(remote.runner!.run(command));
+    await collect(remote.runner!.run(command));
+    expect(command.byteLength).toBe(14);
+
+    const edited = new TextEncoder().encode('Second');
+    await remote.reopen(edited);
+    expect(edited.byteLength).toBe(6);
+    expect(transfers.flat()).toHaveLength(1);
+    expect(transfers.flat()[0]).not.toBe(edited.buffer);
+  });
+
   it('awaits the port drain between updates so backpressure reaches the wire', async () => {
     const [server, client] = loopback();
     const drain = vi.fn(async () => {});

@@ -69,21 +69,24 @@ original identity.
 
 ## Share one device
 
-Several renderers on one page borrow one device through the pool `createDevicePool()` returns.
-Leases count the borrowers, concurrent acquisitions coalesce into one request, the device is
-destroyed when the last lease releases, and a device the platform reports lost is retired so the
-next acquisition requests a replacement. The pool forwards `requestDevice()` options.
+Every Latkit controller leases its device from `devices`, the realm-wide pool: one device per
+page, requested by the first `acquire` and destroyed with the last release. Leases count the
+borrowers, concurrent acquisitions coalesce into one request, and a device the platform reports
+lost is retired so the next acquisition requests a replacement. `createDevicePool()` makes a
+private pool with the same rules and forwards `requestDevice()` options; hand it to a controller
+through its `devices` option.
 
 ```ts
-import { createDevicePool } from '@latkit/gpu';
-
-const devices = createDevicePool();
+import { createDevicePool, devices } from '@latkit/gpu';
 
 const lease = await devices.acquire();
-const network = await createNetwork(lease.device, canvas);
-// ...
-network.destroy();
-lease.release(); // the device outlives this lease only while another one holds it
+try {
+  // Borrow lease.device alongside the controllers on this page.
+} finally {
+  lease.release(); // the device outlives this lease only while another one holds it
+}
+
+const network = createNetwork({ devices: createDevicePool({ powerPreference: 'low-power' }) });
 ```
 
 ## Configure presentation

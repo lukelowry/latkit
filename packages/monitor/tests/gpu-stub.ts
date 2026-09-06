@@ -3,8 +3,11 @@
  *
  * Every buffer write, render pass, draw, and copy lands in a log the tests
  * assert against. The stub does not rasterize; tests verify the CPU/GPU
- * boundary that the shader consumes.
+ * boundary that the shader consumes. Its pool mints one device at a time and
+ * a replacement after that device is lost.
  */
+
+import type { DeviceLease, DevicePool } from '@latkit/gpu';
 
 export interface DrawRecord {
   readonly pipeline: string;
@@ -16,6 +19,8 @@ export interface DrawRecord {
 
 export interface WriteRecord {
   readonly label: string;
+  /** Destination byte offset inside the buffer. */
+  readonly offset: number;
   /** The source ArrayBuffer identity, for zero-copy assertions. */
   readonly source: ArrayBufferLike;
   readonly byteOffset: number;
@@ -52,6 +57,8 @@ export interface GpuLog {
   copies: number;
   submits: number;
   deviceDestroys: number;
+  leaseAcquires: number;
+  leaseReleases: number;
   contextConfigures: number;
   readonly contextConfigurations: GPUCanvasConfiguration[];
   contextUnconfigures: number;
@@ -61,19 +68,32 @@ export interface GpuLog {
 }
 
 export interface GpuStub {
-  /** One native device shared by every monitor created in a test. */
+  /** The first device; the pool hands it out until it is lost. */
   readonly device: GPUDevice;
+  /** Every device minted so far, in order. */
+  readonly devices: readonly GPUDevice[];
+  /** Leases the newest live device, minting a replacement after a loss. */
+  readonly pool: DevicePool;
   readonly log: GpuLog;
   setTextureLimit(limit: number): void;
   setConfigureError(error: Error): void;
   setContextAvailable(available: boolean): void;
   setDevicePixelObservationAvailable(available: boolean): void;
   setFormatError(error: Error): void;
+  /** Reject the next pool acquisition with `error`. */
+  failAcquire(error: unknown): void;
   resize(target: Element, devicePixels?: readonly [width: number, height: number]): void;
-  loseDevice(reason?: string, message?: string): void;
+  /** Lose `device` (the first one unless given), retiring it from the pool. */
+  loseDevice(reason?: string, message?: string, device?: GPUDevice): void;
   /** Run pending rAF callbacks once, then settle microtasks. */
   frame(): Promise<void>;
   teardown(): void;
+}
+
+interface DeviceEntry {
+  readonly device: GPUDevice;
+  readonly resolveLost: (info: { reason: string; message: string }) => void;
+  lost: boolean;
 }
 
 export function installGpuStub(): GpuStub {
@@ -87,6 +107,8 @@ export function installGpuStub(): GpuStub {
     copies: 0,
     submits: 0,
     deviceDestroys: 0,
+    leaseAcquires: 0,
+    leaseReleases: 0,
     contextConfigures: 0,
     contextConfigurations: [],
     contextUnconfigures: 0,
@@ -95,10 +117,11 @@ export function installGpuStub(): GpuStub {
     resizeObservations: [],
   };
 
-  let resolveLost: (info: { reason: string; message: string }) => void = () => {};
-  const lost = new Promise<{ reason: string; message: string }>((resolve) => {
-    resolveLost = resolve;
-  });
+  const limits = {
+    maxTextureDimension2D: 8192,
+    maxStorageBufferBindingSize: 128 * 1024 * 1024,
+    maxBufferSize: 256 * 1024 * 1024,
+  };
 
   const makeBuffer = (descriptor: { label?: string; size: number }) => {
     const record: BufferRecord = {
@@ -139,85 +162,121 @@ export function installGpuStub(): GpuStub {
     };
   };
 
-  const device = {
-    limits: {
-      maxTextureDimension2D: 8192,
-      maxStorageBufferBindingSize: 128 * 1024 * 1024,
-      maxBufferSize: 256 * 1024 * 1024,
-    },
-    lost,
-    destroy: () => {
-      log.deviceDestroys++;
-    },
-    createShaderModule: (descriptor: { code: string }) => ({ code: descriptor.code }),
-    createRenderPipeline: (descriptor: { label?: string }) => ({
-      label: descriptor.label ?? '',
-      getBindGroupLayout: () => ({}),
-    }),
-    createTexture: makeTexture,
-    createSampler: () => ({}),
-    createBuffer: makeBuffer,
-    createBindGroup: (descriptor: { label?: string }) => ({ label: descriptor.label ?? '' }),
-    createCommandEncoder: () => {
-      const encoder = {
-        beginRenderPass: (descriptor: {
-          colorAttachments: readonly { view: { __target: string }; loadOp: string }[];
-        }) => {
-          const attachment = descriptor.colorAttachments[0]!;
-          if (attachment.loadOp === 'clear') log.clears.push(attachment.view.__target);
-          let pipeline = '';
-          return {
-            setPipeline: (p: { label: string }) => {
-              pipeline = p.label;
-            },
-            setBindGroup: () => {},
-            draw: (vertexCount: number, instanceCount = 1, _firstVertex = 0, firstInstance = 0) => {
-              log.draws.push({
-                pipeline,
-                target: attachment.view.__target,
-                vertexCount,
-                instanceCount,
-                firstInstance,
-              });
-            },
-            end: () => {},
-          };
+  const devices: DeviceEntry[] = [];
+
+  const makeDevice = (): DeviceEntry => {
+    let resolveLost: (info: { reason: string; message: string }) => void = () => {};
+    const lost = new Promise<{ reason: string; message: string }>((resolve) => {
+      resolveLost = resolve;
+    });
+    const device = {
+      limits,
+      lost,
+      destroy: () => {
+        log.deviceDestroys++;
+      },
+      createShaderModule: (descriptor: { code: string }) => ({ code: descriptor.code }),
+      createRenderPipeline: (descriptor: { label?: string }) => ({
+        label: descriptor.label ?? '',
+        getBindGroupLayout: () => ({}),
+      }),
+      createTexture: makeTexture,
+      createSampler: () => ({}),
+      createBuffer: makeBuffer,
+      createBindGroup: (descriptor: { label?: string }) => ({ label: descriptor.label ?? '' }),
+      createCommandEncoder: () => {
+        const encoder = {
+          beginRenderPass: (descriptor: {
+            colorAttachments: readonly { view: { __target: string }; loadOp: string }[];
+          }) => {
+            const attachment = descriptor.colorAttachments[0]!;
+            if (attachment.loadOp === 'clear') log.clears.push(attachment.view.__target);
+            let pipeline = '';
+            return {
+              setPipeline: (p: { label: string }) => {
+                pipeline = p.label;
+              },
+              setBindGroup: () => {},
+              draw: (
+                vertexCount: number,
+                instanceCount = 1,
+                _firstVertex = 0,
+                firstInstance = 0,
+              ) => {
+                log.draws.push({
+                  pipeline,
+                  target: attachment.view.__target,
+                  vertexCount,
+                  instanceCount,
+                  firstInstance,
+                });
+              },
+              end: () => {},
+            };
+          },
+          copyTextureToTexture: () => {
+            log.copies++;
+          },
+          finish: () => ({}),
+        };
+        return encoder;
+      },
+      queue: {
+        writeBuffer: (
+          buffer: { label: string },
+          offset: number,
+          data: ArrayBufferLike | ArrayBufferView,
+          dataOffset = 0,
+          size?: number,
+        ) => {
+          const isView = ArrayBuffer.isView(data);
+          const source = isView ? (data as ArrayBufferView).buffer : (data as ArrayBufferLike);
+          const byteOffset = isView ? (data as ArrayBufferView).byteOffset : dataOffset;
+          const byteLength =
+            size ??
+            (isView
+              ? (data as ArrayBufferView).byteLength
+              : (data as ArrayBufferLike).byteLength - dataOffset);
+          const copy =
+            byteLength <= 1024
+              ? new Uint8Array(source.slice(byteOffset, byteOffset + byteLength) as ArrayBuffer)
+              : null;
+          log.writes.push({ label: buffer.label, offset, source, byteOffset, byteLength, copy });
         },
-        copyTextureToTexture: () => {
-          log.copies++;
+        writeTexture: (_dest: unknown, data: Uint8Array) => {
+          log.lutWrites.push(new Uint8Array(data));
         },
-        finish: () => ({}),
+        submit: () => {
+          log.submits++;
+        },
+      },
+    };
+    const entry: DeviceEntry = { device: device as unknown as GPUDevice, resolveLost, lost: false };
+    devices.push(entry);
+    return entry;
+  };
+
+  const first = makeDevice();
+  let acquireFailure: { readonly error: unknown } | null = null;
+
+  const pool: DevicePool = {
+    async acquire(): Promise<DeviceLease> {
+      log.leaseAcquires++;
+      if (acquireFailure) {
+        const { error } = acquireFailure;
+        acquireFailure = null;
+        throw error;
+      }
+      const live = [...devices].reverse().find((entry) => !entry.lost) ?? makeDevice();
+      let released = false;
+      return {
+        device: live.device,
+        release: () => {
+          if (released) return;
+          released = true;
+          log.leaseReleases++;
+        },
       };
-      return encoder;
-    },
-    queue: {
-      writeBuffer: (
-        buffer: { label: string },
-        _offset: number,
-        data: ArrayBufferLike | ArrayBufferView,
-        dataOffset = 0,
-        size?: number,
-      ) => {
-        const isView = ArrayBuffer.isView(data);
-        const source = isView ? (data as ArrayBufferView).buffer : (data as ArrayBufferLike);
-        const byteOffset = isView ? (data as ArrayBufferView).byteOffset : dataOffset;
-        const byteLength =
-          size ??
-          (isView
-            ? (data as ArrayBufferView).byteLength
-            : (data as ArrayBufferLike).byteLength - dataOffset);
-        const copy =
-          byteLength <= 1024
-            ? new Uint8Array(source.slice(byteOffset, byteOffset + byteLength) as ArrayBuffer)
-            : null;
-        log.writes.push({ label: buffer.label, source, byteOffset, byteLength, copy });
-      },
-      writeTexture: (_dest: unknown, data: Uint8Array) => {
-        log.lutWrites.push(new Uint8Array(data));
-      },
-      submit: () => {
-        log.submits++;
-      },
     },
   };
 
@@ -342,10 +401,14 @@ export function installGpuStub(): GpuStub {
   } as typeof HTMLCanvasElement.prototype.getContext;
 
   return {
-    device: device as unknown as GPUDevice,
+    device: first.device,
+    get devices() {
+      return devices.map((entry) => entry.device);
+    },
+    pool,
     log,
     setTextureLimit: (limit) => {
-      device.limits.maxTextureDimension2D = limit;
+      limits.maxTextureDimension2D = limit;
     },
     setConfigureError: (error) => {
       configureError = error;
@@ -358,6 +421,9 @@ export function installGpuStub(): GpuStub {
     },
     setFormatError: (error) => {
       formatError = error;
+    },
+    failAcquire: (error) => {
+      acquireFailure = { error };
     },
     resize: (target, devicePixels) => {
       const entry = {
@@ -376,8 +442,11 @@ export function installGpuStub(): GpuStub {
         }
       }
     },
-    loseDevice: (reason = 'unknown', message = 'lost') => {
-      resolveLost({ reason, message });
+    loseDevice: (reason = 'unknown', message = 'lost', device = first.device) => {
+      const entry = devices.find((candidate) => candidate.device === device);
+      if (!entry) throw new Error('unknown stub device');
+      entry.lost = true;
+      entry.resolveLost({ reason, message });
     },
     frame: async () => {
       const callbacks = [...pending.values()];

@@ -22,8 +22,8 @@ The example below has one signal, four frames, and two elements.
 
 ```ts
 import { colormap } from '@latkit/colormaps';
-import { requestDevice } from '@latkit/gpu';
-import { createMonitor, type Series } from '@latkit/monitor';
+import type { Series } from '@latkit/model';
+import { createMonitor } from '@latkit/monitor';
 
 const canvas = document.getElementById('monitor');
 if (!(canvas instanceof HTMLCanvasElement)) {
@@ -41,23 +41,33 @@ const series: Series = {
   validFrames: 0,
 };
 
-const device = await requestDevice();
-const monitor = await createMonitor(device, canvas, {
+const monitor = createMonitor({
   valueRange: [0, 1],
   colormap: colormap('magma'),
 });
 
 monitor.load(series, 0);
+await monitor.attach(canvas);
+
 series.values[0 * frameCount * elementCount + 0 * elementCount + 0] = 0.25;
 series.values[0 * frameCount * elementCount + 0 * elementCount + 1] = 0.75;
 monitor.extend(1);
 ```
 
-`extend(1)` tells the monitor that frame `0` is ready to draw. Later calls can commit more frames after you mutate or replace the values buffer.
+`createMonitor()` takes neither a device nor a canvas; `attach()` leases one from the shared pool and paints what the controller holds. See [Lifecycle and failures](lifecycle.md). `extend(1)` tells the monitor that frame `0` is ready to draw. Later calls commit more frames after you mutate or replace the values buffer; only the new segments are painted, and an auto-fit range (`valueRange: null`) grows from the newly committed frames alone.
+
+## Change what is shown
+
+Every display option is a live patch, and `setSignal` switches the displayed signal:
+
+```ts
+monitor.setOptions({ colormap: colormap('viridis'), lineWidthPx: 2, valueRange: null });
+monitor.setSignal(0);
+```
 
 ## Inspect readings
 
-Use hover and pick events to connect the monitor to the rest of your UI:
+Pointer-down selects the nearest element itself; `select(element | null)` does the same programmatically without emitting:
 
 ```ts
 monitor.on('hover', (reading) => {
@@ -65,22 +75,23 @@ monitor.on('hover', (reading) => {
   console.log(reading.element, reading.frame, reading.value);
 });
 
-monitor.on('pick', (reading) => {
-  monitor.setFocus(reading.element);
+monitor.on('select', (reading) => {
+  inspector.show(reading.element);
 });
+
+monitor.select(null);
 ```
 
-When the page removes the monitor, destroy the renderer before removing its canvas, and release the application-owned device last:
+When the page removes the monitor, destroy the controller before removing its canvas:
 
 ```ts
 monitor.destroy();
 canvas.remove();
-device.destroy();
 ```
 
 ## Run the full example
 
-The repository example streams synthetic signals, switches signal channels, ranks hot elements, and demonstrates picking:
+The repository example streams synthetic signals, switches signal channels, ranks hot elements, and demonstrates selection:
 
 ```sh
 pnpm --filter @latkit/monitor-example dev

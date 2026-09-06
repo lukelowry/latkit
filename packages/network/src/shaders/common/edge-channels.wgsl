@@ -18,6 +18,7 @@ fn edge_channel_color_from_vertices(ei: u32, ep: vec2u) -> vec4f {
     let t = (edge_color_val(ei) - u.e_color_min) * u.e_color_scale;
     return vec4f(colormap(t), 1.0);
   }
-  // Mode 0: average the endpoint colors.
+  // Mode 0: the base edge color when one is set, else the endpoint average.
+  if ((u.display_flags & DISPLAY_EDGE_BASE_COLOR) != 0u) { return u.e_base_color; }
   return (vertex_channel_color(ep.x) + vertex_channel_color(ep.y)) * 0.5;
 }

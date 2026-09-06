@@ -1,5 +1,7 @@
+import { extent, validateDomain, type Domain } from '@latkit/model';
+
 import { ITEM_EDGE_VISIBLE, ITEM_VERTEX_VISIBLE, type Uniforms } from './webgpu/uniforms.js';
-import { type Domain, effectiveRange, finiteExtent, linearNorm, validateDomain } from './range.js';
+import { effectiveDomain, linearNorm } from './normalize.js';
 
 /** Static metadata for one channel: its storage scope, shader map, display label, and whether it takes a domain. */
 export interface ChannelDefinition {
@@ -39,12 +41,12 @@ export type NormalizedChannel = {
   [Key in Channel]: (typeof CHANNELS)[Key]['normalized'] extends true ? Key : never;
 }[Channel];
 
-/** Storage slot assigned to one packed channel in the shared channel buffer. */
-export interface ChannelSlot {
-  /** Float-word offset from the beginning of the channel buffer. */
-  readonly offset: number;
-  /** Number of float values stored for this channel. */
-  readonly count: number;
+/** Where every channel lives in the one storage buffer a topology allocates. */
+export interface ChannelLayout {
+  /** Float-word offset of each channel from the beginning of the channel buffer. */
+  readonly offsets: Readonly<Record<Channel, number>>;
+  /** Total float words: every channel's slot, whether bound or not. */
+  readonly words: number;
 }
 
 /** Shader mode value for an inactive channel. */
@@ -54,25 +56,17 @@ const MODE_OFF = 0;
 const MODE_COLORMAP = 1;
 
 /**
- * Computes a dense storage layout for the currently bound channels.
- *
- * Channels are packed in stable {@link CHANNELS} order so uniform offsets stay
- * deterministic across relayouts.
+ * The static storage layout for a topology: every channel owns a slot in canonical
+ * {@link CHANNELS} order, so binding a channel is one upload and never a relayout.
  */
-export function packBound(
-  bound: ReadonlySet<Channel>,
-  vertexCount: number,
-  edgeCount: number,
-): { slot: Map<Channel, ChannelSlot>; words: number } {
-  const slot = new Map<Channel, ChannelSlot>();
+export function channelLayout(vertexCount: number, edgeCount: number): ChannelLayout {
+  const offsets = {} as Record<Channel, number>;
   let words = 0;
   for (const key of CHANNEL_KEYS) {
-    if (!bound.has(key)) continue;
-    const count = CHANNELS[key].scope === 'vertex' ? vertexCount : edgeCount;
-    slot.set(key, { offset: words, count });
-    words += count;
+    offsets[key] = words;
+    words += CHANNELS[key].scope === 'vertex' ? vertexCount : edgeCount;
   }
-  return { slot, words };
+  return { offsets, words };
 }
 
 /**
@@ -86,16 +80,9 @@ export function channelDefinition(channel: Channel): ChannelDefinition {
   return def;
 }
 
-/** Renderer callbacks used by the channel controller to own GPU storage. */
-interface ChannelRenderer {
-  /** Recreate channel storage and return the slot map for all bound channels. */
-  relayout(
-    bound: ReadonlySet<Channel>,
-    vertexCount: number,
-    edgeCount: number,
-    values?: ReadonlyMap<Channel, Float32Array>,
-  ): ReadonlyMap<Channel, ChannelSlot>;
-  /** Upload values into an already assigned channel slot. */
+/** The renderer surface the channel controller uploads into. */
+export interface ChannelRenderer {
+  /** Upload values into the channel's slot of the bound topology's storage. */
   writeChannel(channel: Channel, values: Float32Array): void;
 }
 
@@ -111,15 +98,19 @@ interface ChannelDeps {
   dashPeriodPx(): number;
   /** Current output range for the height channel selected by display options. */
   heightRange(): Domain;
+  /** Current radius multiplier range for the size channel selected by display options. */
+  sizeRange(): Domain;
+  /** The renderer holding the topology's channel storage, or null while detached. */
+  renderer(): ChannelRenderer | null;
 }
 
 /** Runtime channel controller returned to the network API. */
 export interface Channels {
   /** Bind or replace channel values. The array length must match the current topology. */
   set(channel: Channel, values: Float32Array, domain?: Domain | null): void;
-  /** Remove a channel and release its storage slot on the next relayout. */
+  /** Unbind a channel; its slot stays allocated and its mode turns off. */
   clear(channel: Channel): void;
-  /** Clear all channels after topology replacement. */
+  /** Clear every channel after topology replacement and write the new static offsets. */
   reset(): void;
   /** Override the input domain used by an active normalized channel. */
   setDomain(channel: Channel, domain: Domain | null): void;
@@ -129,23 +120,22 @@ export interface Channels {
   refreshDashPeriod(): void;
   /** Re-read the display height range; a no-op while `vertexHeight` is unbound. */
   refreshHeightRange(): void;
-  /** Return the last array bound to a channel, or null when unbound. */
+  /** Re-read the display size range; a no-op while `vertexSize` is unbound. */
+  refreshSizeRange(): void;
+  /** Return the retained snapshot bound to a channel, or null when unbound. */
   values(channel: Channel): Float32Array | null;
+  /** Upload every bound snapshot into a renderer that has just bound the topology. */
+  upload(renderer: ChannelRenderer): void;
 }
 
 /**
- * Creates the stateful channel controller that synchronizes CPU values,
+ * Creates the stateful channel controller that synchronizes CPU snapshots,
  * uniform normalization scalars, and renderer-owned GPU channel storage.
  */
-export function createChannels(
-  uniforms: Uniforms,
-  renderer: ChannelRenderer,
-  deps: ChannelDeps,
-): Channels {
+export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels {
   const current = new Map<Channel, Float32Array>();
   const data = new Map<Channel, Domain>();
   const domainOverride = new Map<Channel, Domain>();
-  const bound = new Set<Channel>();
 
   function countFor(channel: Channel): number {
     return channelDefinition(channel).scope === 'vertex' ? deps.vertexCount() : deps.edgeCount();
@@ -164,45 +154,24 @@ export function createChannels(
   function set(channel: Channel, values: Float32Array, domain?: Domain | null): void {
     validateLength(channel, values);
     const def = channelDefinition(channel);
-    const isNew = !bound.has(channel);
     const nextDomain = def.normalized ? resolveDomain(channel, def, values, domain) : null;
-    // The GPU upload copies synchronously, so the caller's array feeds it
-    // directly; the CPU snapshot is refreshed only once the upload succeeded.
-    if (isNew) {
-      const nextCurrent = new Map(current);
-      nextCurrent.set(channel, values);
-      const nextBound = new Set(bound);
-      nextBound.add(channel);
-      const slots = renderer.relayout(nextBound, deps.vertexCount(), deps.edgeCount(), nextCurrent);
-      writeOffsets(nextBound, slots);
-      // Own a snapshot so later caller mutation cannot alter bound state.
-      current.set(channel, values.slice());
-      bound.add(channel);
-    } else {
-      renderer.writeChannel(channel, values);
-      // Re-binds refresh the snapshot in place so animated updates never allocate.
-      current.get(channel)!.set(values);
-    }
+    // The GPU upload copies synchronously, so the caller's array feeds it directly; the CPU
+    // snapshot is refreshed only once the upload succeeded, so a failure leaves nothing changed.
+    deps.renderer()?.writeChannel(channel, values);
+    const snapshot = current.get(channel);
+    // Re-binds refresh the snapshot in place so animated updates never allocate.
+    if (snapshot) snapshot.set(values);
+    else current.set(channel, values.slice());
     if (nextDomain) data.set(channel, nextDomain);
     setMode(channel, true);
     writeScalars(channel);
   }
 
   function clear(channel: Channel): void {
-    if (bound.has(channel)) {
-      const nextCurrent = new Map(current);
-      nextCurrent.delete(channel);
-      const nextBound = new Set(bound);
-      nextBound.delete(channel);
-      const slots = renderer.relayout(nextBound, deps.vertexCount(), deps.edgeCount(), nextCurrent);
-      writeOffsets(nextBound, slots);
-    }
     setMode(channel, false);
     current.delete(channel);
     data.delete(channel);
     domainOverride.delete(channel);
-    bound.delete(channel);
-    writeOffset(channel, 0);
     writeScalars(channel);
   }
 
@@ -210,10 +179,12 @@ export function createChannels(
     current.clear();
     data.clear();
     domainOverride.clear();
-    bound.clear();
+    const layout = deps.loaded()
+      ? channelLayout(deps.vertexCount(), deps.edgeCount())
+      : channelLayout(0, 0);
     for (const key of CHANNEL_KEYS) {
       setMode(key, false);
-      writeOffset(key, 0);
+      writeOffset(key, layout.offsets[key]);
       writeScalars(key);
     }
   }
@@ -233,22 +204,8 @@ export function createChannels(
   }
 
   function domain(channel: Channel): Domain | null {
-    if (!bound.has(channel) || !channelDefinition(channel).normalized) return null;
-    return effectiveRange(data.get(channel), domainOverride.get(channel));
-  }
-
-  function writeOffsets(
-    channels: ReadonlySet<Channel>,
-    slots: ReadonlyMap<Channel, ChannelSlot>,
-  ): void {
-    for (const channel of channels) {
-      const slot = slots.get(channel);
-      if (!slot) throw new Error(`network channel ${channel} has no storage slot`);
-    }
-    for (const channel of channels) {
-      const slot = slots.get(channel)!;
-      writeOffset(channel, slot.offset);
-    }
+    if (!current.has(channel) || !channelDefinition(channel).normalized) return null;
+    return effectiveDomain(data.get(channel), domainOverride.get(channel));
   }
 
   function writeOffset(channel: Channel, offset: number): void {
@@ -295,7 +252,7 @@ export function createChannels(
         uniforms.channel.vSizeMode = on ? 1 : 0;
         break;
       case 'edgeDash':
-        uniforms.geometry.dashPeriod = on ? deps.dashPeriodPx() : 0;
+        uniforms.geometry.eDashPeriodPx = on ? deps.dashPeriodPx() : 0;
         break;
       case 'vertexVisible':
         uniforms.channel.itemFlags = toggleBit(uniforms.channel.itemFlags, ITEM_VERTEX_VISIBLE, on);
@@ -312,11 +269,11 @@ export function createChannels(
   function writeScalars(channel: Channel): void {
     const def = channelDefinition(channel);
     if (!def.normalized) return;
-    if (!bound.has(channel)) {
+    if (!current.has(channel)) {
       writeNeutralScalars(channel as NormalizedChannel);
       return;
     }
-    const [lo, hi] = effectiveRange(data.get(channel), domainOverride.get(channel));
+    const [lo, hi] = effectiveDomain(data.get(channel), domainOverride.get(channel));
     switch (def.map) {
       case 'colormap': {
         const [min, scale] = linearNorm(lo, hi);
@@ -332,16 +289,19 @@ export function createChannels(
       case 'height': {
         const [min, scale] = linearNorm(lo, hi);
         const [outMin, outMax] = deps.heightRange();
-        uniforms.channel.heightCenter = min;
-        uniforms.channel.heightScale = scale;
-        uniforms.channel.heightOutMin = outMin;
-        uniforms.channel.heightOutScale = outMax - outMin;
+        uniforms.channel.vHeightMin = min;
+        uniforms.channel.vHeightScale = scale;
+        uniforms.channel.vHeightOutMin = outMin;
+        uniforms.channel.vHeightOutSpan = outMax - outMin;
         break;
       }
       case 'size': {
         const [min, scale] = linearNorm(lo, hi);
+        const [outMin, outMax] = deps.sizeRange();
         uniforms.channel.vSizeMin = min;
         uniforms.channel.vSizeScale = scale;
+        uniforms.channel.vSizeOutMin = outMin;
+        uniforms.channel.vSizeOutSpan = outMax - outMin;
         break;
       }
       default:
@@ -361,15 +321,20 @@ export function createChannels(
         uniforms.channel.eColorScale = 0;
         break;
       case 'vertexHeight':
-        uniforms.channel.heightCenter = 0;
-        uniforms.channel.heightScale = 0;
-        uniforms.channel.heightOutMin = 0;
-        uniforms.channel.heightOutScale = 0;
+        uniforms.channel.vHeightMin = 0;
+        uniforms.channel.vHeightScale = 0;
+        uniforms.channel.vHeightOutMin = 0;
+        uniforms.channel.vHeightOutSpan = 0;
         break;
-      case 'vertexSize':
+      case 'vertexSize': {
+        // The output range stays live so picking pads by the same multiplier cap the shader uses.
+        const [outMin, outMax] = deps.sizeRange();
         uniforms.channel.vSizeMin = 0;
         uniforms.channel.vSizeScale = 0;
+        uniforms.channel.vSizeOutMin = outMin;
+        uniforms.channel.vSizeOutSpan = outMax - outMin;
         break;
+      }
       default:
         /* v8 ignore next -- compile-time exhaustive Channel guard. */
         channel satisfies never;
@@ -382,11 +347,15 @@ export function createChannels(
     reset,
     setDomain,
     domain,
-    refreshDashPeriod: () => setMode('edgeDash', bound.has('edgeDash')),
+    refreshDashPeriod: () => setMode('edgeDash', current.has('edgeDash')),
     refreshHeightRange: () => {
-      if (bound.has('vertexHeight')) writeScalars('vertexHeight');
+      if (current.has('vertexHeight')) writeScalars('vertexHeight');
     },
+    refreshSizeRange: () => writeScalars('vertexSize'),
     values: (channel) => current.get(channel) ?? null,
+    upload(renderer) {
+      for (const [channel, values] of current) renderer.writeChannel(channel, values);
+    },
   };
 }
 
@@ -408,7 +377,7 @@ function resolveDomain(
   domain?: Domain | null,
 ): Domain {
   if (domain) return checkedDomain(domain, `${channel} domain`);
-  if (def.map === 'height') return finiteExtent(values) ?? [0, 1];
+  if (def.map === 'height') return extent(values) ?? [0, 1];
   return [0, 1];
 }
 

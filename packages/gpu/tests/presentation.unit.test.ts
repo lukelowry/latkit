@@ -417,7 +417,7 @@ describe('observeCanvas', () => {
     };
   }
 
-  it('reports the initial size, exact device pixels, and visual viewport changes', () => {
+  it('reports the initial size and exact device pixels from the observer alone', () => {
     const h = observerView();
     const { canvas } = makeCanvas(null, h.view);
     const listener = vi.fn();
@@ -430,13 +430,41 @@ describe('observeCanvas', () => {
     } as unknown as ResizeObserverEntry);
     expect(listener).toHaveBeenNthCalledWith(2, 421, 211, 2);
 
+    // A device-pixel observation already reports layout and pixel-ratio changes; nothing else
+    // is watched, so nothing else can double-report them.
+    expect(h.addViewport).not.toHaveBeenCalled();
+    expect(h.addWindow).not.toHaveBeenCalled();
+    expect(h.matchMedia).not.toHaveBeenCalled();
+
+    stop();
+    stop();
+    expect(h.disconnect).toHaveBeenCalledOnce();
+    expect(h.removeViewport).not.toHaveBeenCalled();
+    expect(h.removeWindow).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the content box, plain observation, and the manual size watchers', () => {
+    const h = observerView({ rejectDeviceBox: true });
+    const { canvas } = makeCanvas(null, h.view);
+    const listener = vi.fn();
+
+    const stop = observeCanvas(canvas, listener);
+    expect(listener).toHaveBeenNthCalledWith(1, 400, 200, 2);
+    h.fire({ contentRect: { width: 123.25, height: 45.25 } } as ResizeObserverEntry);
+
+    expect(h.observe.mock.calls).toEqual([[canvas, { box: 'device-pixel-content-box' }], [canvas]]);
+    expect(listener).toHaveBeenLastCalledWith(247, 91, 2);
+
     Object.assign(canvas, { clientWidth: 220, clientHeight: 110 });
     h.fireViewport();
-    expect(listener).toHaveBeenNthCalledWith(3, 440, 220, 2);
+    expect(listener).toHaveBeenLastCalledWith(440, 220, 2);
+    Object.assign(canvas, { clientWidth: 230, clientHeight: 110 });
+    h.fireWindow();
+    expect(listener).toHaveBeenLastCalledWith(460, 220, 2);
 
     Object.assign(h.view, { devicePixelRatio: 1.5 });
     h.fireResolution();
-    expect(listener).toHaveBeenNthCalledWith(4, 330, 165, 1.5);
+    expect(listener).toHaveBeenLastCalledWith(345, 165, 1.5);
     expect(h.matchMedia).toHaveBeenLastCalledWith('(resolution: 1.5dppx)');
 
     stop();
@@ -445,19 +473,6 @@ describe('observeCanvas', () => {
     expect(h.removeViewport).toHaveBeenCalledOnce();
     expect(h.removeWindow).toHaveBeenCalledOnce();
     expect(h.removeResolution).toHaveBeenCalledTimes(2);
-  });
-
-  it('falls back to the content box and plain observation', () => {
-    const h = observerView({ rejectDeviceBox: true });
-    const { canvas } = makeCanvas(null, h.view);
-    const listener = vi.fn();
-
-    const stop = observeCanvas(canvas, listener);
-    h.fire({ contentRect: { width: 123.25, height: 45.25 } } as ResizeObserverEntry);
-
-    expect(h.observe.mock.calls).toEqual([[canvas, { box: 'device-pixel-content-box' }], [canvas]]);
-    expect(listener).toHaveBeenLastCalledWith(247, 91, 2);
-    stop();
   });
 
   it('maps logical device-pixel axes to physical canvas dimensions', () => {
@@ -474,8 +489,8 @@ describe('observeCanvas', () => {
     stop();
   });
 
-  it('removes installed observers when the initial listener fails', () => {
-    const h = observerView();
+  it('removes installed observers and watchers when the initial listener fails', () => {
+    const h = observerView({ rejectDeviceBox: true });
     const { canvas } = makeCanvas(null, h.view);
     const failure = new Error('listener failed');
 

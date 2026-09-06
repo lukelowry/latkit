@@ -35,9 +35,8 @@ function setup(mode: Projection, mutate?: (state: Float64Array) => void): Setup 
   uniforms.frame.viewportX = VP.w;
   uniforms.frame.viewportY = VP.h;
   uniforms.frame.backingScale = 1;
-  uniforms.geometry.vertexSize = 0.2;
-  uniforms.geometry.baseEdgeWidth = 0.05;
-  uniforms.geometry.vertexLod = 2;
+  uniforms.geometry.vRadius = 0.2;
+  uniforms.geometry.eHalfWidth = 0.05;
   return {
     uniforms,
     proj,
@@ -61,7 +60,7 @@ describe('pick projector parity', () => {
     s.uniforms.frame.viewportX = VP.w * 2;
     s.uniforms.frame.viewportY = VP.h * 2;
     s.uniforms.frame.backingScale = 2;
-    s.uniforms.geometry.vertexSize = 100;
+    s.uniforms.geometry.vRadius = 100;
     const projector = s.projector;
     const p = createPoint();
     projector.project(p, 0, 0, 0);
@@ -69,7 +68,7 @@ describe('pick projector parity', () => {
     expect(projector.screenRadius(p)).toBe(VISUAL.maxVertexRadiusPx * 2);
     expect(projector.screenHalfWidth(p, 0)).toBe(VISUAL.minEdgeHalfWidthPx * 2);
 
-    s.uniforms.geometry.vertexSize = 0;
+    s.uniforms.geometry.vRadius = 0;
     expect(projector.poleHalfWidth(p)).toBe(3);
   });
 
@@ -134,7 +133,7 @@ describe('pick projector parity', () => {
 
   it('tilt roundtrips through the camera ray cast', () => {
     const s = setup('tilt');
-    s.uniforms.geometry.vertexSize = 0; // zero base lift for an exact roundtrip
+    s.uniforms.geometry.vRadius = 0; // zero base lift for an exact roundtrip
     for (const [x, y] of [
       [0, 0],
       [-6, 2],
@@ -166,7 +165,7 @@ describe('pick projector parity', () => {
 
   it('globe roundtrips lon/lat through the camera ray cast', () => {
     const s = setup('globe');
-    s.uniforms.geometry.vertexSize = 0;
+    s.uniforms.geometry.vRadius = 0;
     // f32 uniform quantization of the VP matrix costs a few hundredths of a
     // degree on the inverse ray; the picker's Jacobian safety absorbs it.
     for (const [lon, lat] of [
@@ -208,7 +207,7 @@ describe('pick projector parity', () => {
 /** Bind a synthetic normalized-height mapping: h in [0, 1] passes through. */
 function uniformsHeightScale(uniforms: Uniforms, worldScale: number): void {
   uniforms.channel.vHeightMode = 1;
-  uniforms.channel.heightOutMin = 0;
-  uniforms.channel.heightOutScale = 1;
-  uniforms.geometry.heightWorldScale = worldScale;
+  uniforms.channel.vHeightOutMin = 0;
+  uniforms.channel.vHeightOutSpan = 1;
+  uniforms.geometry.heightAmplitude = worldScale;
 }

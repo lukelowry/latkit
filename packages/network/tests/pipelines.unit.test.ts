@@ -23,36 +23,57 @@ describe('buildProjectionPipelines', () => {
       sampleCount: 1,
       overlayPipelineLayout: { label: 'overlay' } as unknown as GPUPipelineLayout,
       edgePipelineLayout: { label: 'edge-layout' } as unknown as GPUPipelineLayout,
-      bgPipelineLayout: { label: 'bg' } as unknown as GPUPipelineLayout,
+      backgroundPipelineLayout: { label: 'background' } as unknown as GPUPipelineLayout,
     });
 
+    // Edges and vertices write depth; halos only test it.
     expect(pipelines.visual.edge).toMatchObject({
       label: 'globe-edge',
       layout: { label: 'edge-layout' },
       vertex: { entryPoint: 'vs' },
+      depthStencil: { depthWriteEnabled: true },
     });
     expect(pipelines.visual.edgeHalo).toMatchObject({
       label: 'globe-edge-halo',
       layout: { label: 'edge-layout' },
       vertex: { entryPoint: 'vs_halo' },
+      fragment: { entryPoint: 'fs_halo' },
+      depthStencil: { depthWriteEnabled: false },
     });
     expect(pipelines.visual.edgeFocus).toMatchObject({
       label: 'globe-edge-focus',
       layout: { label: 'edge-layout' },
       vertex: { entryPoint: 'vs_focus' },
+      depthStencil: { depthWriteEnabled: true },
     });
     expect(pipelines.visual.vertex).toMatchObject({
       label: 'globe-vertex',
       layout: { label: 'overlay' },
+      depthStencil: { depthWriteEnabled: true },
+    });
+    expect(pipelines.visual.vertexHalo).toMatchObject({
+      label: 'globe-vertex-halo',
+      fragment: { entryPoint: 'fs_halo' },
+      depthStencil: { depthWriteEnabled: false },
     });
     expect(pipelines.visual.pole).toMatchObject({
       label: 'globe-pole',
       layout: { label: 'overlay' },
     });
+    expect(pipelines.visual.background).toMatchObject({
+      label: 'globe-background',
+      layout: { label: 'background' },
+      depthStencil: { depthWriteEnabled: true },
+    });
+    expect(pipelines.visual.borders).toMatchObject({
+      label: 'globe-borders',
+      depthStencil: { depthWriteEnabled: false },
+    });
     expect(pipelines.visual.earthAxis).toMatchObject({
       label: 'globe-earth-axis',
-      layout: { label: 'bg' },
+      layout: { label: 'background' },
       vertex: { entryPoint: 'vs', buffers: [] },
+      depthStencil: { depthWriteEnabled: false },
     });
 
     const edgeModule = shaderModules.find((module) => module.label === 'edge');
@@ -92,7 +113,7 @@ describe('buildProjectionPipelines', () => {
       sampleCount: 1 as const,
       overlayPipelineLayout: { label: 'overlay' } as unknown as GPUPipelineLayout,
       edgePipelineLayout: { label: 'edge-layout' } as unknown as GPUPipelineLayout,
-      bgPipelineLayout: { label: 'bg' } as unknown as GPUPipelineLayout,
+      backgroundPipelineLayout: { label: 'background' } as unknown as GPUPipelineLayout,
     };
 
     const flat = await buildProjectionPipelines(PIPELINES.plane, options);

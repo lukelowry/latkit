@@ -460,9 +460,9 @@ export function createGlobeProjection(): CameraProjection {
 
     pack(s, region, vp) {
       buildVP(s, vp);
-      region.setVP(vpMatrix);
+      region.setViewProj(vpMatrix);
       region.setCameraPos(cameraPos[0], cameraPos[1], cameraPos[2]);
-      region.setViewBasis(viewM);
+      region.setCameraBasis(viewM);
       region.fovScale = effectiveFovScale(s);
       region.depthMix = 1;
     },

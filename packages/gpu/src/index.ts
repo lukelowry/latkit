@@ -2,7 +2,7 @@
 export { GpuUnavailableError, requestDevice } from './device.js';
 
 /** One device shared by many renderers through reference-counted leases. */
-export { createDevicePool } from './pool.js';
+export { createDevicePool, devices } from './pool.js';
 export type { DeviceLease, DevicePool } from './pool.js';
 
 /** WebGPU canvas configuration, sizing, and observation. */

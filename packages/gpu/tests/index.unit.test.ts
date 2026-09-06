@@ -30,9 +30,13 @@ describe('gpu package entrypoint', () => {
       'GpuUnavailableError',
       'createDevicePool',
       'createPresentation',
+      'devices',
       'requestDevice',
     ]);
     await expect(entrypoint.requestDevice()).rejects.toBeInstanceOf(entrypoint.GpuUnavailableError);
+    await expect(entrypoint.devices.acquire()).rejects.toBeInstanceOf(
+      entrypoint.GpuUnavailableError,
+    );
   });
 
   it('keeps the public types minimal and exact', () => {
