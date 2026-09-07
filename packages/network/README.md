@@ -224,6 +224,9 @@ network.on('deviceLost', ({ message, recovering }) => !recovering && showFallbac
 network.on('pipelineError', ({ family, cause }) => console.error(family, cause));
 ```
 
+`paint()` schedules a frame and resolves once it is painted, after a pending shade and a deferred
+camera placement. See the [lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html).
+
 ## Packaged borders
 
 `@latkit/network/borders` loads the Natural Earth 50m line borders as a `Borders` payload from the
