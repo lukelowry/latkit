@@ -2017,11 +2017,13 @@ describe('vertex positions', () => {
     );
   });
 
-  it('refuses positions before a topology loads', async () => {
+  it('refuses positions before a topology loads but clears like any channel', async () => {
     const h = await makeHarness();
     expect(() => h.network.setChannel('vertexPosition', new Float32Array(0))).toThrow(
       'network topology must be loaded before binding channels',
     );
+    expect(() => h.network.setChannel('vertexPosition', null)).not.toThrow();
+    expect(h.picker.moved).not.toHaveBeenCalled();
   });
 
   it('withdraws the globe while positions override the layout and falls back from it', async () => {

@@ -54,32 +54,19 @@ export class Grid {
   }
 
   /**
-   * Index segments read from a word-strided f32 view: endpoint a at
-   * `f32[base + aOffset]`, b at `f32[base + bOffset]` (xy pairs), with
-   * `base = recordsOffset + id * stride`. Positive `wrapX` enables seam handling
-   * for lon-periodic coord spaces.
+   * Index segments; `endpoint` writes `[ax, ay, bx, by]` for one id into `out`. Positive `wrapX`
+   * enables seam handling for lon-periodic coord spaces.
    */
   static segments(
-    f32: Float32Array,
-    recordsOffset: number,
-    stride: number,
-    aOffset: number,
-    bOffset: number,
     count: number,
     bounds: Bounds,
     wrapX: number,
+    endpoint: (id: number, out: Float32Array) => void,
   ): Grid {
+    const ep = new Float32Array(4);
     return Grid.build(count, bounds, (id, emit, geo) => {
-      const base = recordsOffset + id * stride;
-      geo.segment(
-        f32[base + aOffset]!,
-        f32[base + aOffset + 1]!,
-        f32[base + bOffset]!,
-        f32[base + bOffset + 1]!,
-        id,
-        emit,
-        wrapX,
-      );
+      endpoint(id, ep);
+      geo.segment(ep[0]!, ep[1]!, ep[2]!, ep[3]!, id, emit, wrapX);
     });
   }
 

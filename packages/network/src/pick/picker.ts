@@ -168,8 +168,6 @@ interface Scene {
   readonly seg: DecodedSegments;
   /** Periodic x span, or 0 for non-wrapping coordinate spaces; decided by the topology's own layout. */
   readonly wrapX: number;
-  /** Effective segment endpoints, four floats per segment, filled on every index build. */
-  readonly endpoints: Float32Array;
 }
 
 /**
@@ -242,7 +240,6 @@ export class Picker {
       segmentCount,
       seg: segments,
       wrapX: isGeoBounds(info.bounds) ? 360 : 0,
-      endpoints: new Float32Array(segmentCount * 4),
     };
   }
 
@@ -733,14 +730,12 @@ export class Picker {
     const hFrom = this.normHeight(state.heights, from);
     const hTo = this.normHeight(state.heights, to);
 
-    // The index filled effective endpoints for every segment when it was built over these
-    // positions, so the exact test reads them back instead of resolving the record again.
-    const ep = state.scene.endpoints;
-    const at = id * 4;
+    const ep = this.ep;
+    segmentEndpoints(state.scene.seg, id, state.positions, ep, 0);
     const A = this.pA;
     const B = this.pB;
-    state.proj.project(A, ep[at]!, ep[at + 1]!, hFrom + (hTo - hFrom) * ta);
-    state.proj.project(B, ep[at + 2]!, ep[at + 3]!, hFrom + (hTo - hFrom) * tb);
+    state.proj.project(A, ep[0]!, ep[1]!, hFrom + (hTo - hFrom) * ta);
+    state.proj.project(B, ep[2]!, ep[3]!, hFrom + (hTo - hFrom) * tb);
 
     if (!clipPositiveW(A, B)) return;
     state.proj.toScreen(A);
@@ -805,18 +800,16 @@ function segmentEndpoints(
   }
 }
 
-/** Build the coord-space index over one position snapshot, filling the scene's endpoint scratch. */
+/** Build the coord-space index over one position snapshot. */
 function buildIndex(scene: Scene, positions: Float32Array): Index {
-  const { endpoints, segmentCount } = scene;
-  for (let id = 0; id < segmentCount; id++) {
-    segmentEndpoints(scene.seg, id, positions, endpoints, id * 4);
-  }
   const bounds = finiteBounds(positions);
   return {
     bounds,
     extent: Math.hypot(bounds.xMax - bounds.xMin, bounds.yMax - bounds.yMin) || 1,
     vertexGrid: Grid.points(positions, scene.vertexCount, bounds),
-    segmentGrid: Grid.segments(endpoints, 0, 4, 0, 2, segmentCount, bounds, scene.wrapX),
+    segmentGrid: Grid.segments(scene.segmentCount, bounds, scene.wrapX, (id, out) =>
+      segmentEndpoints(scene.seg, id, positions, out, 0),
+    ),
   };
 }
 
@@ -889,7 +882,7 @@ function coverAll(index: Index): readonly QueryCircle[] {
 interface TestState {
   /** Projection mirror for the active render mode. */
   readonly proj: Projector;
-  /** Static scene structure and the endpoint scratch the index filled. */
+  /** Static scene structure. */
   readonly scene: Scene;
   /** The `vertexPosition` snapshot the index was built over. */
   readonly positions: Float32Array;

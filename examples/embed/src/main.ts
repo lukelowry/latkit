@@ -36,15 +36,34 @@ monitor.addEventListener('hover', (event) => {
 });
 
 // The imperative surface is the controller itself.
-for (const button of document.querySelectorAll<HTMLButtonElement>('[data-projection]')) {
-  button.addEventListener('click', () => {
+const projectionButtons = document.querySelectorAll<HTMLButtonElement>('[data-projection]');
+const reflectProjection = (): void => {
+  for (const button of projectionButtons) {
     const mode = button.dataset.projection as Projection;
-    if (!network.network.setProjection(mode)) return;
-    for (const other of document.querySelectorAll<HTMLButtonElement>('[data-projection]')) {
-      other.setAttribute('aria-pressed', String(other === button));
-    }
+    button.setAttribute('aria-pressed', String(network.network.projection === mode));
+    button.disabled = !network.network.projections[mode];
+  }
+};
+for (const button of projectionButtons) {
+  button.addEventListener('click', () => {
+    network.network.setProjection(button.dataset.projection as Projection);
+    reflectProjection();
   });
 }
+network.addEventListener('load', reflectProjection);
+
+// A pair field binds as the layout; removing the attribute restores the topology's own.
+const layout = document.querySelector<HTMLButtonElement>('#layout')!;
+layout.addEventListener('click', () => {
+  const on = !network.hasAttribute('vertex-position');
+  if (on) network.setAttribute('vertex-position', 'ring');
+  else network.removeAttribute('vertex-position');
+  layout.setAttribute('aria-pressed', String(on));
+  queueMicrotask(() => {
+    reflectProjection();
+    network.network.fit(true);
+  });
+});
 
 // Attributes stay declarative: change one and the element applies it.
 for (const button of document.querySelectorAll<HTMLButtonElement>('[data-signal]')) {

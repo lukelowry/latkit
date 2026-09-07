@@ -223,7 +223,8 @@ export interface Network {
    * @param values - Values whose length matches the current topology (`vertexCount * 2` for
    * `vertexPosition`), or `null` to clear.
    * @param domain - Input domain for normalized channels, or `null` for scanned/default behavior.
-   * @throws Error when no topology is loaded or the array length is invalid.
+   * @throws Error when values are given before a topology is loaded or their length is invalid;
+   * `null` is always accepted.
    */
   setChannel(channel: Channel, values: Float32Array | null, domain?: Domain | null): void;
   /**
@@ -1556,7 +1557,10 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
    * overridden and comes back when the topology's layout is restored.
    */
   function setPositions(values: Float32Array | null): void {
-    if (!scene) throw new Error('network topology must be loaded before binding channels');
+    if (!scene) {
+      if (values === null) return; // nothing to restore, as clearing any other channel
+      throw new Error('network topology must be loaded before binding channels');
+    }
     channels.set('vertexPosition', values ?? scene.coords);
     picker.moved();
     const overridden = values !== null;
