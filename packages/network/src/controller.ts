@@ -153,6 +153,16 @@ export interface Network {
   readonly painted: boolean;
 
   /**
+   * Schedule a frame and resolve once it is painted.
+   *
+   * @remarks
+   * Waits for a pending shade and a deferred camera placement, and for `resume()` while paused.
+   * Rejects with `InvalidStateError` while detached, with `AbortError` on detach, and with the
+   * cause of a pipeline failure for the active projection.
+   */
+  paint(): Promise<void>;
+
+  /**
    * Subscribe to a network event and receive an unsubscribe callback.
    *
    * @param event - Event name to observe.
@@ -602,6 +612,23 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
 }
 
+/** A promise settled from outside. */
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (reason: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -702,6 +729,17 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   let shade: Shade | null = null;
   /** Whether the shade's last tick asked for another frame. */
   let shadeAnimating = false;
+  /** The shade compile in flight; a paint request waits for it to settle. */
+  let shadeTask: Promise<void> | null = null;
+  /** The frame a host awaits; one promise serves every caller until it settles. */
+  let paintRequest: Deferred<void> | null = null;
+  /** Fail the awaited frame, cleared first so a request made in reaction is a new one. */
+  function rejectPaint(reason: unknown): void {
+    const request = paintRequest;
+    if (!request) return;
+    paintRequest = null;
+    request.reject(reason);
+  }
   /** The pointer in canvas-local CSS px, reused so a frame allocates nothing for the shade. */
   const pointerPx: [number, number] = [0, 0];
   const shadeFrame: { -readonly [K in keyof ShadeFrame]: ShadeFrame[K] } = {
@@ -1022,6 +1060,8 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     rig.switchTo(mode, vp());
     updateHeightAmplitude(vp());
     binding?.renderer.useProjection(mode);
+    if (pipelineFailure?.family === PROJECTION_DEFS[mode].family)
+      rejectPaint(pipelineFailure.cause);
     cameraMoved();
     return true;
   }
@@ -1060,9 +1100,12 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       });
       lifecycle.add(() => loop.destroy());
 
+      // A fresh renderer builds fresh pipelines; a failure from the last one no longer applies.
+      pipelineFailure = null;
       renderer.onPipelinesReady = () => loop.wake();
       renderer.onPipelineError = (family, cause) => {
         pipelineFailure = { family, cause };
+        if (family === PROJECTION_DEFS[rig.mode].family) rejectPaint(cause);
         events.emit('pipelineError', pipelineFailure);
       };
 
@@ -1123,6 +1166,8 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     const entry = binding;
     if (!entry) return;
     binding = null;
+    shadeTask = null;
+    rejectPaint(new DOMException('The canvas was detached before it painted.', 'AbortError'));
     orbit.stop();
     hoverProbe = null;
     navigationActive = false;
@@ -1273,6 +1318,21 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       return binding?.painted ?? false;
     },
 
+    paint() {
+      if (!binding) {
+        return Promise.reject(
+          new DOMException('The network is not attached.', 'InvalidStateError'),
+        );
+      }
+      const { promise } = (paintRequest ??= deferred());
+      if (pipelineFailure?.family === PROJECTION_DEFS[rig.mode].family) {
+        rejectPaint(pipelineFailure.cause);
+      } else {
+        repaint();
+      }
+      return promise;
+    },
+
     on(event, handler) {
       const unsubscribe = events.on(event, handler);
       if (event === 'pipelineError' && pipelineFailure) {
@@ -1416,17 +1476,25 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       shadeAnimating = false;
       const bound = binding;
       if (!bound) return Promise.resolve();
-      return bound.renderer.setShade(next?.wgsl ?? null).then(
+      const task: Promise<void> = bound.renderer.setShade(next?.wgsl ?? null).then(
         () => {
+          if (shadeTask === task) shadeTask = null;
           if (binding !== bound) return;
+          // The renderer dropped every failed family along with the old shade.
+          pipelineFailure = null;
           warmInactiveProjections();
           bound.loop.wake();
         },
         (error: unknown) => {
+          // A rejected shade rolls back; the retained one paints the next frame.
+          if (shadeTask === task) shadeTask = null;
           if (shade === next) shade = previous;
+          repaint();
           throw error;
         },
       );
+      shadeTask = task;
+      return task;
     },
 
     setProjection(mode, fallback = false) {
@@ -1632,6 +1700,12 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
    * mutations from mixing two scenes into one GPU submission.
    */
   function onSuccessfulPaint(): void {
+    // Cleared before any host event fires: a request a listener makes belongs to the next frame.
+    if (paintRequest && !rig.pendingPlacement && !shadeTask) {
+      const request = paintRequest;
+      paintRequest = null;
+      request.resolve();
+    }
     const entry = binding;
     if (entry && !entry.painted) {
       entry.painted = true;

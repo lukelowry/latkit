@@ -69,6 +69,13 @@ A `pipelineError` identifies an asynchronous `plane` or `globe` projection-famil
 
 The `painted` event and property report the first successful frame after each attach and turn false again on detach. Neither `attached` nor a resolved `attach()` promises a frame: pipelines compile asynchronously, and `painted` is the signal a poster or placeholder should wait for.
 
+`paint()` schedules a frame and resolves once it is painted, after a pending shade and a deferred camera placement, and after `resume()` while paused. It rejects while detached, with an `AbortError` on detach, and with the cause of a pipeline failure for the active projection.
+
+```ts
+network.setChannel('vertexColor', values, [0, 1]);
+await network.paint();
+```
+
 ## Release resources
 
 `destroy()` detaches and forgets everything; the controller cannot be used afterwards. It never removes the canvas.

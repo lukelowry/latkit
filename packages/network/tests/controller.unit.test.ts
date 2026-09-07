@@ -2329,3 +2329,152 @@ describe('interaction, framing, painted, pointer, and shade', () => {
     expect(h.rendererShades.at(-1)).toBeNull();
   });
 });
+
+describe('paint', () => {
+  it('schedules a frame and resolves on its paint, even after the first', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    h.loop.paint();
+    const done = vi.fn();
+    h.network.setPose({ centerX: 3 }, false);
+    const request = h.network.paint().then(done);
+    await flushMicrotasks();
+    expect(done).not.toHaveBeenCalled();
+    expect(h.loop.wake).toHaveBeenCalled();
+    h.loop.paint();
+    await request;
+    expect(done).toHaveBeenCalledOnce();
+  });
+
+  it('shares one promise between callers until it settles', async () => {
+    const h = await makeHarness();
+    const first = h.network.paint();
+    expect(h.network.paint()).toBe(first);
+    h.loop.paint();
+    await first;
+    const second = h.network.paint();
+    expect(second).not.toBe(first);
+    h.loop.paint();
+    await second;
+  });
+
+  it('does not acknowledge the old shade while its replacement compiles', async () => {
+    const h = await makeHarness();
+    const build = deferred<void>();
+    h.renderer.setShade.mockReturnValueOnce(build.promise);
+    const shade = h.network.setShade({ wgsl: 'next' });
+    const done = vi.fn();
+    const request = h.network.paint().then(done);
+    h.loop.paint();
+    await flushMicrotasks();
+    expect(done).not.toHaveBeenCalled();
+    build.resolve();
+    await shade;
+    await flushMicrotasks();
+    expect(done).not.toHaveBeenCalled();
+    h.loop.paint();
+    await request;
+    expect(done).toHaveBeenCalledOnce();
+  });
+
+  it('rejects on detach, while detached, and on active pipeline failure', async () => {
+    const h = await makeHarness();
+    const detached = expect(h.network.paint()).rejects.toMatchObject({ name: 'AbortError' });
+    h.network.detach();
+    await detached;
+    await expect(h.network.paint()).rejects.toMatchObject({ name: 'InvalidStateError' });
+    await h.network.attach(h.canvas);
+    const cause = new Error('pipeline failed');
+    const failed = expect(h.network.paint()).rejects.toBe(cause);
+    h.renderer.onPipelineError?.('plane', cause);
+    await failed;
+    await expect(h.network.paint()).rejects.toBe(cause);
+  });
+
+  it('rejects a pending request when the projection switches into a failed family', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    const cause = new Error('globe failed');
+    h.renderer.onPipelineError?.('globe', cause);
+    const request = h.network.paint();
+    h.loop.paint();
+    await request;
+    const pending = expect(h.network.paint()).rejects.toBe(cause);
+    expect(h.network.setProjection('globe')).toBe(true);
+    await pending;
+  });
+
+  it('forgets a pipeline failure on re-attach and on a shade that compiles', async () => {
+    const h = await makeHarness();
+    const cause = new Error('pipeline failed');
+    h.renderer.onPipelineError?.('plane', cause);
+    h.network.detach();
+    await h.network.attach(h.canvas);
+    const request = h.network.paint();
+    h.loop.paint();
+    await request;
+    h.renderer.onPipelineError?.('plane', cause);
+    await h.network.setShade({ wgsl: 'fixed' });
+    const next = h.network.paint();
+    h.loop.paint();
+    await next;
+  });
+
+  it('waits for deferred placement and a request made by a painted listener', async () => {
+    const h = await makeHarness();
+    const done = vi.fn();
+    let request!: Promise<void>;
+    h.network.on('painted', (value) => {
+      if (value)
+        request = h.network.paint().then(() => {
+          done();
+        });
+    });
+    h.loop.paint();
+    await flushMicrotasks();
+    expect(done).not.toHaveBeenCalled();
+    h.rig.pendingPlacement = true;
+    h.loop.paint();
+    await flushMicrotasks();
+    expect(done).not.toHaveBeenCalled();
+    h.rig.pendingPlacement = false;
+    h.loop.paint();
+    await request;
+    expect(done).toHaveBeenCalledOnce();
+  });
+
+  it('waits for a superseding shade instead of acknowledging the discarded one', async () => {
+    const h = await makeHarness();
+    const firstBuild = deferred<void>();
+    const secondBuild = deferred<void>();
+    h.renderer.setShade
+      .mockReturnValueOnce(firstBuild.promise)
+      .mockReturnValueOnce(secondBuild.promise);
+    const first = h.network.setShade({ wgsl: 'first' });
+    const done = vi.fn();
+    const request = h.network.paint().then(done);
+    const second = h.network.setShade({ wgsl: 'second' });
+    firstBuild.resolve();
+    await first;
+    await flushMicrotasks();
+    h.loop.paint();
+    await flushMicrotasks();
+    expect(done).not.toHaveBeenCalled();
+    secondBuild.resolve();
+    await second;
+    await flushMicrotasks();
+    h.loop.paint();
+    await request;
+    expect(done).toHaveBeenCalledOnce();
+  });
+
+  it('paints the retained shade after a rejected one', async () => {
+    const h = await makeHarness();
+    h.renderer.setShade.mockRejectedValueOnce(new Error('bad wgsl'));
+    const shade = h.network.setShade({ wgsl: 'bad' });
+    const request = h.network.paint();
+    await expect(shade).rejects.toThrow('bad wgsl');
+    h.loop.paint();
+    await request;
+  });
+});
