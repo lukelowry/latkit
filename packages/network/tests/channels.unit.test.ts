@@ -9,10 +9,10 @@ import { encodeTopology } from '../src/topology/index.js';
 import { singleEdgeTopology } from './fixtures/topology.js';
 
 describe('channelLayout', () => {
-  it('gives every channel a slot in registry order, sized by its scope', () => {
+  it('gives every channel a slot in registry order, sized by its scope and components', () => {
     const { offsets, words } = channelLayout(3, 2);
 
-    expect(words).toBe(5 * 3 + 4 * 2);
+    expect(words).toBe(5 * 3 + 4 * 2 + 2 * 3);
     expect(offsets).toEqual({
       vertexColor: 0,
       vertexHeight: 3,
@@ -23,12 +23,15 @@ describe('channelLayout', () => {
       edgeVisible: 16,
       vertexShade: 18,
       edgeShade: 21,
+      vertexPosition: 23,
     });
     expect(channelLayout(0, 0).words).toBe(0);
   });
 });
 
 describe('createChannels', () => {
+  const layout = new Float32Array([0, 0, 10, 0, 20, 10]);
+
   function make(loaded = true, attached = true) {
     const uniforms = createUniforms();
     const renderer = { writeChannel: vi.fn() };
@@ -47,7 +50,8 @@ describe('createChannels', () => {
       sizeRange: () => display.sizeRange,
       renderer: () => (bound ? renderer : null),
     });
-    channels.reset();
+    channels.reset(loaded ? layout : null);
+    renderer.writeChannel.mockClear();
     return { uniforms, renderer, channels, display, bind: (next: boolean) => (bound = next) };
   }
 
@@ -61,9 +65,41 @@ describe('createChannels', () => {
     expect(uniforms.channel.eDashOffset).toBe(11);
     expect(uniforms.channel.vVisibleOffset).toBe(13);
     expect(uniforms.channel.eVisibleOffset).toBe(16);
+    expect(uniforms.channel.vPositionOffset).toBe(23);
 
     const { uniforms: unloaded } = make(false);
     expect(unloaded.channel.eVisibleOffset).toBe(0);
+    expect(unloaded.channel.vPositionOffset).toBe(0);
+  });
+
+  it('seeds the position channel from the topology layout on reset and keeps it bound', () => {
+    const uniforms = createUniforms();
+    const renderer = { writeChannel: vi.fn() };
+    const channels = createChannels(uniforms, {
+      loaded: () => true,
+      vertexCount: () => 3,
+      edgeCount: () => 2,
+      dashPeriodPx: () => 12,
+      heightRange: () => [0, 1],
+      sizeRange: () => [0.5, 2],
+      renderer: () => renderer,
+    });
+
+    channels.reset(layout);
+    expect(renderer.writeChannel).toHaveBeenCalledExactlyOnceWith('vertexPosition', layout);
+    const seeded = channels.values('vertexPosition');
+    expect(seeded).toEqual(layout);
+    expect(seeded).not.toBe(layout);
+    expect(channels.domain('vertexPosition')).toBeNull();
+
+    // A rebind moves vertices in place: the same snapshot, new contents, one upload.
+    const moved = new Float32Array([1, 1, 11, 1, 21, 11]);
+    channels.set('vertexPosition', moved, [0, 1]);
+    expect(channels.values('vertexPosition')).toBe(seeded);
+    expect(seeded).toEqual(moved);
+
+    channels.reset(null);
+    expect(channels.values('vertexPosition')).toBeNull();
   });
 
   it('validates channel lengths without scanning values', () => {
@@ -74,6 +110,9 @@ describe('createChannels', () => {
     );
     expect(() => channels.set('edgeColor', new Float32Array(3), [0, 1])).toThrow(
       'network channel edgeColor length 3 != 2',
+    );
+    expect(() => channels.set('vertexPosition', new Float32Array(3))).toThrow(
+      'network channel vertexPosition length 3 != 6',
     );
   });
 
@@ -234,6 +273,7 @@ describe('createChannels', () => {
     const next = { writeChannel: vi.fn() };
     channels.upload(next);
     expect(next.writeChannel.mock.calls).toEqual([
+      ['vertexPosition', channels.values('vertexPosition')],
       ['vertexHeight', channels.values('vertexHeight')],
       ['edgeDash', channels.values('edgeDash')],
     ]);
@@ -274,7 +314,7 @@ describe('createChannels', () => {
     channels.set('vertexHeight', new Float32Array([1, 2, 3]), null);
     channels.set('edgeColor', new Float32Array([4, 5]), [4, 5]);
 
-    channels.reset();
+    channels.reset(null);
 
     expect(uniforms.channel.vHeightMode).toBe(0);
     expect(uniforms.channel.vHeightScale).toBe(0);
@@ -349,7 +389,7 @@ describe('createChannels', () => {
     expect(uniforms.channel.itemFlags & ITEM_VERTEX_VISIBLE).toBe(0);
     expect(uniforms.channel.itemFlags & ITEM_EDGE_VISIBLE).toBe(ITEM_EDGE_VISIBLE);
 
-    channels.reset();
+    channels.reset(null);
     expect(uniforms.channel.itemFlags).toBe(0);
   });
 
@@ -379,7 +419,7 @@ describe('createChannels', () => {
     channels.clear('vertexHeight');
     expect(channels.values('vertexHeight')).toBeNull();
 
-    channels.reset();
+    channels.reset(null);
     expect(channels.values('edgeDash')).toBeNull();
   });
 });

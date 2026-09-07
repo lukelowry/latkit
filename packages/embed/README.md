@@ -89,13 +89,17 @@ bytes. `parseNetwork` and `parseSeries` decode the same shapes for hosts that fe
     "coordinateSpace": "geographic",
     "edges": [0, 1]
   },
-  "fields": [{ "id": "voltage", "scope": "vertex", "values": [0.98, 1.02] }]
+  "fields": [
+    { "id": "voltage", "scope": "vertex", "values": [0.98, 1.02] },
+    { "id": "ring", "scope": "vertex", "components": 2, "values": [0, 1, 1, 0] }
+  ]
 }
 ```
 
-`polylineStart` defaults to straight edges. `fields` are static scalars over vertices or edges
-that channel attributes bind by id; the `data` property takes the decoded `NetworkData` shape
-(`Float32Array` and `Uint32Array` values).
+`polylineStart` defaults to straight edges. `fields` are static values over vertices or edges,
+one per item or, with `components: 2`, an interleaved pair; channel attributes bind them by id
+and shape. The `data` property takes the decoded `NetworkData` shape (`Float32Array` and
+`Uint32Array` values, `components` always present).
 
 ### `latkit-monitor`
 
@@ -120,8 +124,9 @@ Removing an attribute restores the option's default. An invalid value warns and 
 
 - `msaa`, read once when the controller is created (before the element connects);
 - one attribute per channel, `vertex-color`, `vertex-height`, `vertex-size`, `vertex-visible`,
-  `vertex-shade`, `edge-color`, `edge-dash`, `edge-visible`, and `edge-shade`, naming a field id
-  of the matching scope; an empty value unbinds;
+  `vertex-shade`, `vertex-position`, `edge-color`, `edge-dash`, `edge-visible`, and `edge-shade`,
+  naming a field id of the matching scope and shape; an empty value unbinds (`vertex-position`
+  takes a pair field, and an empty value restores the topology's own layout);
 - `vertex-color-domain`, `vertex-height-domain`, `vertex-size-domain`, and `edge-color-domain`
   as `"min max"` for the normalized channels;
 - `projection`, applied with fallback after every load;

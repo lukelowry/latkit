@@ -36,10 +36,14 @@ import {
   type NumericJSON,
 } from './json.js';
 
-/** One static scalar field over network vertices or edges, bound to channels by id. */
+/**
+ * One static field over network vertices or edges, bound to channels by id: a scalar per item,
+ * or with `components: 2` an interleaved pair, the shape `vertexPosition` takes.
+ */
 export interface NetworkField {
   readonly id: string;
   readonly scope: 'vertex' | 'edge';
+  readonly components: 1 | 2;
   readonly values: Float32Array;
 }
 
@@ -62,6 +66,8 @@ export interface NetworkJSON {
   readonly fields?: readonly {
     readonly id: string;
     readonly scope: 'vertex' | 'edge';
+    /** Values per item; defaults to 1. */
+    readonly components?: 1 | 2;
     readonly values: NumericJSON;
   }[];
 }
@@ -151,11 +157,17 @@ export function validateNetworkData(input: unknown): NetworkData {
     if (!isTypedArray(field.values, 'Float32Array')) {
       fail(`${path}.values`, 'must be a Float32Array');
     }
-    const expected = scope === 'vertex' ? topology.vertexCount : topology.edges.length / 2;
+    const count = scope === 'vertex' ? topology.vertexCount : topology.edges.length / 2;
+    const expected = count * components(field.components, path);
     const length = (field.values as Float32Array).length;
     if (length !== expected) fail(`${path}.values`, `length ${length} != ${expected}`);
   }
   return data as unknown as NetworkData;
+}
+
+function components(value: unknown, path: string): 1 | 2 {
+  if (value !== 1 && value !== 2) fail(`${path}.components`, 'must be 1 or 2');
+  return value;
 }
 
 function parseTopology(input: unknown): Topology {
@@ -191,9 +203,11 @@ function parseFields(input: unknown): readonly NetworkField[] {
     const source = record(item, path);
     const scope = string(required(source, 'scope', path), `${path}.scope`);
     if (scope !== 'vertex' && scope !== 'edge') fail(`${path}.scope`, 'must be "vertex" or "edge"');
+    const width = optional(source, 'components');
     return {
       id: string(required(source, 'id', path), `${path}.id`),
       scope,
+      components: width === undefined ? 1 : components(width, path),
       values: f32(required(source, 'values', path), `${path}.values`),
     };
   });
@@ -252,6 +266,8 @@ interface BorderState {
 /** The element spec for `latkit-network`. */
 export function networkSpec(deps: NetworkDeps): ElementSpec<Network, NetworkData> {
   const borders = new WeakMap<HTMLElement, BorderState>();
+  /** The `msaa` each controller was created from; only a later change warns. */
+  const constructed = new WeakMap<HTMLElement, string | null>();
 
   function borderState(host: HTMLElement): BorderState {
     let state = borders.get(host);
@@ -296,6 +312,7 @@ export function networkSpec(deps: NetworkDeps): ElementSpec<Network, NetworkData
 
     create(host, warn) {
       const raw = host.getAttribute('msaa');
+      constructed.set(host, raw);
       let msaa: 1 | 4 | undefined;
       if (raw === '1' || raw === '4') msaa = Number(raw) as 1 | 4;
       else if (raw !== null) warn(`Invalid msaa ${quote(raw)}; using the Network default.`);
@@ -313,9 +330,11 @@ export function networkSpec(deps: NetworkDeps): ElementSpec<Network, NetworkData
       const option = OPTION_BY_ATTRIBUTE.get(name);
       if (option) {
         if (!option.definition.live) {
-          context.warn(
-            `${name} is read when the network is created; set it before the element connects.`,
-          );
+          if (value !== constructed.get(context.host)) {
+            context.warn(
+              `${name} is read when the network is created; set it before the element connects.`,
+            );
+          }
           return;
         }
         const resolved = optionValue(option, value, context.warn);
@@ -397,10 +416,13 @@ function bindChannel(
     return;
   }
   if (!context.data) return; // applied again once the data source loads
-  const scope = CHANNELS[channel.key].scope;
-  const field = context.data.fields?.find((entry) => entry.id === id && entry.scope === scope);
+  const { scope, components: width } = CHANNELS[channel.key];
+  const field = context.data.fields?.find(
+    (entry) => entry.id === id && entry.scope === scope && entry.components === width,
+  );
   if (!field) {
-    context.warn(`No ${scope} field ${quote(id)} for ${channel.attribute}; leaving it unbound.`);
+    const shape = width === 1 ? scope : `${scope} pair`;
+    context.warn(`No ${shape} field ${quote(id)} for ${channel.attribute}; leaving it unbound.`);
     context.controller.setChannel(channel.key, null);
     return;
   }

@@ -19,9 +19,10 @@ export function networkData(): NetworkData {
   return {
     topology: topology(),
     fields: [
-      { id: 'load', scope: 'vertex', values: new Float32Array([10, 30, 20]) },
-      { id: 'capacity', scope: 'vertex', values: new Float32Array([40, 60, 80]) },
-      { id: 'flow', scope: 'edge', values: new Float32Array([4, 8, 6]) },
+      { id: 'load', scope: 'vertex', components: 1, values: new Float32Array([10, 30, 20]) },
+      { id: 'capacity', scope: 'vertex', components: 1, values: new Float32Array([40, 60, 80]) },
+      { id: 'flow', scope: 'edge', components: 1, values: new Float32Array([4, 8, 6]) },
+      { id: 'ring', scope: 'vertex', components: 2, values: new Float32Array([0, 1, 1, 0, 0, -1]) },
     ],
   };
 }
@@ -33,7 +34,10 @@ export function serializedNetwork(): Record<string, unknown> {
       vertexCoords: [-1, -1, 0, 1, 1, -1],
       edges: [0, 1, 1, 2, 2, 0],
     },
-    fields: [{ id: 'load', scope: 'vertex', values: [10, 30, 20] }],
+    fields: [
+      { id: 'load', scope: 'vertex', values: [10, 30, 20] },
+      { id: 'ring', scope: 'vertex', components: 2, values: [0, 1, 1, 0, 0, -1] },
+    ],
   };
 }
 

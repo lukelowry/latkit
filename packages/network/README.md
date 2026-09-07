@@ -59,6 +59,23 @@ camera tilts; the `heightRange` option is the output range it maps onto. `vertex
 are `vertexShade` and `edgeShade`, which carry one scalar per item to a shade (below). Every
 channel slot is allocated when a topology loads, so rebinding never reallocates GPU storage.
 
+`vertexPosition` is where every vertex sits, as interleaved `x, y` pairs in topology coordinates,
+the shape `vertexCoords` has. `load` seeds it from the topology, and rebinding it moves vertices,
+the ends of their edges, and their height poles without reloading anything; `null` restores the
+topology's own layout. A layout engine writes one array per frame and hands it over:
+
+```ts
+network.setChannel('vertexPosition', simulation.positions);
+network.fit(true); // frames the positions in effect
+network.setChannel('vertexPosition', null);
+```
+
+Polyline bends stay where the topology put them, and vertex radius, the geographic
+interpretation, and longitude wrapping stay the topology's. The globe draws the layout the
+topology carries, so `projections.globe` is false while positions override it; binding one on the
+globe falls back to flat. While positions change from one frame to the next, hover clears and
+picks find nothing, and they resume one frame after the last write; `locate` is always live.
+
 ## Options
 
 Every display option is a live patch through `setOptions`; only `msaa` and `devices` are fixed at

@@ -165,6 +165,8 @@ interface ChannelRegion {
   vShadeOffset: number;
   /** Float-word offset for edgeShade channel storage. */
   eShadeOffset: number;
+  /** Float-word offset for vertexPosition channel storage: interleaved `x, y` per vertex. */
+  vPositionOffset: number;
 }
 
 /** CPU-side view of the packed uniform buffer shared with WGSL. */
@@ -206,7 +208,7 @@ export interface Uniforms {
 }
 
 /** Total byte length of the packed uniform buffer shared with WGSL. */
-export const UNIFORM_BUFFER_BYTES = 448;
+export const UNIFORM_BUFFER_BYTES = 464;
 
 /** Display flag bit for daylight shading; must match uniforms.wgsl. */
 export const DISPLAY_DAYLIGHT = 1;
@@ -410,6 +412,12 @@ export const UNIFORM_LAYOUT: readonly UniformField[] = [
   },
   { name: 'v_shade_offset', type: 'u32', word: 110, accessors: a('channel', 'vShadeOffset', 'u') },
   { name: 'e_shade_offset', type: 'u32', word: 111, accessors: a('channel', 'eShadeOffset', 'u') },
+  {
+    name: 'v_position_offset',
+    type: 'u32',
+    word: 112,
+    accessors: a('channel', 'vPositionOffset', 'u'),
+  },
 ];
 
 /**

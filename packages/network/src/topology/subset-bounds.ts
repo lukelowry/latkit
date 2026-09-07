@@ -1,4 +1,4 @@
-import { edgeCountOf, polylinePointsOf, resolveVertexCoords } from './pack.js';
+import { edgeCountOf, polylinePointsOf } from './pack.js';
 import type { Bounds, Topology } from './types.js';
 
 /** Structural item identity kept internal to avoid coupling topology to the public controller. */
@@ -8,13 +8,15 @@ interface TopologyItem {
 }
 
 /**
- * Bounds of unique valid items in base topology coordinates.
+ * Bounds of unique valid items over the vertex positions in effect: `coords` is the interleaved
+ * `vertexPosition` snapshot, while polyline bends stay where the topology put them.
  *
  * A non-null longitude center enables exact circular x handling for globe
  * mode. The minimum covering arc is placed nearest that center.
  */
 export function boundsForItems(
   topology: Topology,
+  coords: Float32Array,
   items: readonly TopologyItem[],
   longitudeCenter: number | null,
 ): Bounds | null {
@@ -27,7 +29,6 @@ export function boundsForItems(
     else if (item.kind === 'edge' && item.index < edgeCount) edgeIds.add(item.index);
   }
 
-  const coords = resolveVertexCoords(topology);
   const points = polylinePointsOf(topology);
   const wrap = longitudeCenter !== null;
   const viewCenter = Number.isFinite(longitudeCenter) ? longitudeCenter! : 0;

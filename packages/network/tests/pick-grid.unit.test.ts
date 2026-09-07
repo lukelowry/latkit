@@ -72,15 +72,7 @@ describe('Grid segments', () => {
     bounds: Bounds,
     wrapX = 0,
   ): Grid {
-    // Pack endpoints in the encoded-record shape: 8-word stride, a at +4, b at +6.
-    const f32 = new Float32Array(segments.length * 8);
-    segments.forEach(([ax, ay, bx, by], i) => {
-      f32[i * 8 + 4] = ax;
-      f32[i * 8 + 5] = ay;
-      f32[i * 8 + 6] = bx;
-      f32[i * 8 + 7] = by;
-    });
-    return Grid.segments(f32, 0, 8, 4, 6, segments.length, bounds, wrapX);
+    return Grid.segments(segments.length, bounds, wrapX, (id, out) => out.set(segments[id]!));
   }
 
   it('covers randomized segments against a brute-force distance filter', () => {

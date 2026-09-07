@@ -64,19 +64,21 @@ if (network.projections.globe) {
 
 ## Channel arrays
 
-Channels bind scalar values to vertices or edges after a topology is loaded.
+Channels bind values to vertices or edges after a topology is loaded. Every channel is one scalar
+per item except `vertexPosition`, an interleaved `x, y` pair per vertex.
 
-| Channel         | Length        | Effect                                       |
-| --------------- | ------------- | -------------------------------------------- |
-| `vertexColor`   | `vertexCount` | Colors vertices through the active colormap  |
-| `vertexHeight`  | `vertexCount` | Raises vertices and height poles             |
-| `vertexSize`    | `vertexCount` | Scales vertex billboards                     |
-| `vertexVisible` | `vertexCount` | Shows vertices whose value is greater than 0 |
-| `vertexShade`   | `vertexCount` | One scalar per vertex for the fragment shade |
-| `edgeColor`     | `edgeCount`   | Colors edges through the active colormap     |
-| `edgeDash`      | `edgeCount`   | Enables per-edge dash pattern values         |
-| `edgeVisible`   | `edgeCount`   | Shows edges whose value is greater than 0    |
-| `edgeShade`     | `edgeCount`   | One scalar per edge for the fragment shade   |
+| Channel          | Length            | Effect                                       |
+| ---------------- | ----------------- | -------------------------------------------- |
+| `vertexColor`    | `vertexCount`     | Colors vertices through the active colormap  |
+| `vertexHeight`   | `vertexCount`     | Raises vertices and height poles             |
+| `vertexSize`     | `vertexCount`     | Scales vertex billboards                     |
+| `vertexVisible`  | `vertexCount`     | Shows vertices whose value is greater than 0 |
+| `vertexShade`    | `vertexCount`     | One scalar per vertex for the fragment shade |
+| `vertexPosition` | `vertexCount * 2` | Where every vertex sits, in topology coords  |
+| `edgeColor`      | `edgeCount`       | Colors edges through the active colormap     |
+| `edgeDash`       | `edgeCount`       | Enables per-edge dash pattern values         |
+| `edgeVisible`    | `edgeCount`       | Shows edges whose value is greater than 0    |
+| `edgeShade`      | `edgeCount`       | One scalar per edge for the fragment shade   |
 
 ```ts
 network.load(topology);
@@ -92,7 +94,20 @@ network.setChannel('edgeVisible', null);
 
 The third argument is the input domain. Pass `null` to auto-scan height values. The `heightRange` option is the output range `vertexHeight` maps onto. `setChannelDomain()` moves a bound channel's domain without re-uploading its values, and `getChannelDomain()` reads the domain in effect. Visibility channels are raw and domain-free: an unbound channel shows every item, while a bound channel shows only values greater than zero. Zero, negative values, and `NaN` hide the item in both rendering and hit testing. Passing `null` as the values clears the channel and restores all items. Shade channels are raw too: their values reach a fragment shade unchanged as `f.value`, and read as zero while unbound.
 
-`setChannel()` snapshots its typed array, so later caller mutations do not alter the bound rendering or picking state. Bind the array again to publish changes. `CHANNELS` lists every channel with its scope, display label, and whether it is normalized.
+`setChannel()` snapshots its typed array, so later caller mutations do not alter the bound rendering or picking state. Bind the array again to publish changes. `CHANNELS` lists every channel with its scope, display label, whether it is normalized, and its components per item.
+
+## Moving vertices
+
+`vertexPosition` is the layout the renderer draws. `load()` seeds it from `vertexCoords` (or the generated ring), and rebinding it moves vertices, the ends of their edges, and their height poles without reloading the topology. `null` restores the topology's own layout. Polyline bends stay where the topology put them.
+
+```ts
+network.load(topology);
+network.setChannel('vertexPosition', layout.positions); // vertexCount * 2 floats, x then y
+network.fit(true); // frames the positions in effect
+network.setChannel('vertexPosition', null); // back to vertexCoords
+```
+
+Rebinding costs one upload and no allocation, so a layout engine can hand over its array every frame. What the topology still owns: vertex radius and edge width, the geographic interpretation, longitude wrapping, and the globe. The globe draws the layout the topology carries, so `network.projections.globe` is false while positions override it, and binding positions on the globe falls back to flat. While positions change from one frame to the next, hover clears and `hitTest` finds nothing; picking resumes one frame after the last write. `locate()` is always live.
 
 ## Validation failures
 

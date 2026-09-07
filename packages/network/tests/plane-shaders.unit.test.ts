@@ -1,9 +1,29 @@
 import { describe, expect, it } from 'vitest';
+import segmentSrc from '../src/shaders/common/segment-buffer.wgsl?raw';
+import topologySrc from '../src/shaders/common/topology-buffer.wgsl?raw';
+import vertexChannelsSrc from '../src/shaders/common/vertex-channels.wgsl?raw';
 import edgeSrc from '../src/shaders/passes/edge-segment.wgsl?raw';
 import poleSrc from '../src/shaders/passes/height-pole.wgsl?raw';
 import vertexSrc from '../src/shaders/passes/vertex-billboard.wgsl?raw';
 import planeSrc from '../src/shaders/projections/plane-overlay.wgsl?raw';
+import { PIPELINES } from '../src/projections.js';
 import { VISUAL_WGSL } from '../src/visual.js';
+
+describe('vertex position shader contract', () => {
+  it('places vertices and plane edge ends by the position channel; the globe keeps sphere data', () => {
+    expect(vertexChannelsSrc).toContain('let o = u.v_position_offset + i * 2u;');
+    expect(topologySrc).not.toContain('vertex_coord');
+    expect(segmentSrc).toContain(
+      'return vertex_coord(select(seg.from_vertex, seg.to_vertex, endpoint == 1u));',
+    );
+    expect(PIPELINES.plane.vertexSurfaceWgsl).toContain('return to_world(pos);');
+    expect(PIPELINES.plane.segmentSurfaceWgsl).toContain(
+      'return to_world(segment_endpoint_coord(seg, endpoint));',
+    );
+    expect(PIPELINES.globe.vertexSurfaceWgsl).toContain('return vertex_sphere(vertex_id);');
+    expect(PIPELINES.globe.segmentSurfaceWgsl).not.toContain('segment_endpoint_coord');
+  });
+});
 
 describe('planar height shader contract', () => {
   it('moves height from flat depth into physical lift with one blend', () => {

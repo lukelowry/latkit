@@ -7,6 +7,13 @@
 
 fn rf(i: u32) -> f32 { return bitcast<f32>(channels[i]); }
 
+// Where a vertex sits in topology coordinates: the vertexPosition channel, seeded from the
+// topology at load and replaced by the host to move vertices without reloading anything.
+fn vertex_coord(i: u32) -> vec2f {
+  let o = u.v_position_offset + i * 2u;
+  return vec2f(rf(o), rf(o + 1u));
+}
+
 fn vertex_visible(vi: u32) -> bool {
   if ((u.item_flags & ITEM_VERTEX_VISIBLE) == 0u) { return true; }
   return rf(u.v_visible_offset + vi) > 0.0;

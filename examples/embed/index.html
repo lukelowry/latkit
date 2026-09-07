@@ -26,6 +26,7 @@
         <button type="button" data-projection="flat" aria-pressed="true">flat</button>
         <button type="button" data-projection="tilt" aria-pressed="false">tilt</button>
         <button type="button" data-projection="globe" aria-pressed="false">globe</button>
+        <button type="button" id="layout" aria-pressed="false">ring layout</button>
         <span id="hover" class="readout">hover: -</span>
       </div>
 
@@ -97,6 +98,15 @@
                 "id": "in-service",
                 "scope": "edge",
                 "values": [1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 1, 0, 0, 1]
+              },
+              {
+                "id": "ring",
+                "scope": "vertex",
+                "components": 2,
+                "values": [
+                  -82, 40, -84.41, 46, -91, 50.39, -100, 52, -109, 50.39, -115.59, 46, -118, 40,
+                  -115.59, 34, -109, 29.61, -100, 28, -91, 29.61, -84.41, 34
+                ]
               }
             ]
           }

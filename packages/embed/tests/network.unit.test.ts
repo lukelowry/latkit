@@ -46,8 +46,31 @@ describe('parseNetwork', () => {
     expect(data.topology.polylineStart).toEqual(new Uint32Array([0, 0, 0]));
     expect(data.topology.vertexCoords).toBeInstanceOf(Float32Array);
     expect(data.fields![0]!.values[1]).toBeNaN();
+    expect(data.fields![0]!.components).toBe(1);
     expect('vertexCoords' in data.topology).toBe(true);
     expect(Object.hasOwn(data.topology, 'polylinePoints')).toBe(false);
+  });
+
+  it('decodes a pair field as a layout', () => {
+    const data = parseNetwork(serializedNetwork());
+    expect(data.fields![1]).toEqual({
+      id: 'ring',
+      scope: 'vertex',
+      components: 2,
+      values: new Float32Array([0, 1, 1, 0, 0, -1]),
+    });
+    expect(() =>
+      parseNetwork({
+        topology: { vertexCount: 3, edges: [0, 1] },
+        fields: [{ id: 'xy', scope: 'vertex', components: 2, values: [1, 2, 3] }],
+      }),
+    ).toThrow('fields[0].values length 3 != 6');
+    expect(() =>
+      parseNetwork({
+        topology: { vertexCount: 3, edges: [0, 1] },
+        fields: [{ id: 'xyz', scope: 'vertex', components: 3, values: [] }],
+      }),
+    ).toThrow('fields[0].components must be 1 or 2');
   });
 
   it('names the failing path', () => {
@@ -87,15 +110,21 @@ describe('parseNetwork', () => {
     expect(() =>
       validateNetworkData({
         topology: topology(),
-        fields: [{ id: 'a', scope: 'vertex', values: [1, 2, 3] }],
+        fields: [{ id: 'a', scope: 'vertex', components: 1, values: [1, 2, 3] }],
       }),
     ).toThrow('fields[0].values must be a Float32Array');
     expect(() =>
       validateNetworkData({
         topology: topology(),
+        fields: [{ id: 'a', scope: 'vertex', values: new Float32Array(3) }],
+      }),
+    ).toThrow('fields[0].components must be 1 or 2');
+    expect(() =>
+      validateNetworkData({
+        topology: topology(),
         fields: [
-          { id: 'a', scope: 'edge', values: new Float32Array(3) },
-          { id: 'a', scope: 'vertex', values: new Float32Array(3) },
+          { id: 'a', scope: 'edge', components: 1, values: new Float32Array(3) },
+          { id: 'a', scope: 'vertex', components: 1, values: new Float32Array(3) },
         ],
       }),
     ).toThrow('fields[1].id duplicates "a"');
@@ -220,6 +249,7 @@ describe('latkit-network', () => {
     element.setAttribute('vertex-color-domain', '0 100');
     element.setAttribute('edge-color', 'flow');
     element.setAttribute('vertex-visible', 'capacity');
+    element.setAttribute('vertex-position', 'ring');
     element.setAttribute('projection', 'tilt');
 
     const network = await live(h, element);
@@ -247,8 +277,16 @@ describe('latkit-network', () => {
       networkData().fields![1]!.values,
       null,
     );
+    expect(network.setChannel).toHaveBeenCalledWith(
+      'vertexPosition',
+      networkData().fields![3]!.values,
+      null,
+    );
     expect(network.setChannelDomain).toHaveBeenCalledWith('vertexColor', [0, 100]);
     expect(network.setProjection).toHaveBeenCalledWith('tilt', true);
+    // After a load, channels bind before the projection applies, so a withdrawn globe falls back.
+    const calls = network.setChannel.mock.invocationCallOrder;
+    expect(Math.max(...calls)).toBeLessThan(network.setProjection.mock.invocationCallOrder.at(-1)!);
     expect(h.deps.warn).not.toHaveBeenCalled();
 
     network.setOptions.mockClear();
@@ -256,6 +294,7 @@ describe('latkit-network', () => {
     element.setAttribute('vertex-scale', 'big');
     element.removeAttribute('graticule');
     element.setAttribute('vertex-color', 'missing');
+    element.setAttribute('vertex-position', 'load');
     element.setAttribute('edge-color', '');
     element.setAttribute('vertex-color-domain', '5 1');
     element.setAttribute('colormap', 'nope');
@@ -265,12 +304,14 @@ describe('latkit-network', () => {
     expect(network.setOptions).toHaveBeenCalledWith({ vertexScale: 1 });
     expect(network.setOptions).toHaveBeenCalledWith({ graticule: false });
     expect(network.setChannel).toHaveBeenCalledWith('vertexColor', null);
+    expect(network.setChannel).toHaveBeenCalledWith('vertexPosition', null);
     expect(network.setChannel).toHaveBeenCalledWith('edgeColor', null);
     expect(network.setChannelDomain).toHaveBeenLastCalledWith('vertexColor', null);
     expect(vi.mocked(h.deps.warn).mock.calls.map((call) => call[0])).toEqual(
       expect.arrayContaining([
         expect.stringContaining('Invalid vertex-scale "big"'),
         expect.stringContaining('No vertex field "missing"'),
+        expect.stringContaining('No vertex pair field "load" for vertex-position'),
         expect.stringContaining('Invalid vertex-color-domain "5 1"'),
         expect.stringContaining('Unknown colormap "nope"'),
         expect.stringContaining('Unknown projection "orbit"'),
@@ -285,6 +326,7 @@ describe('latkit-network', () => {
     element.data = networkData();
     await live(h, element);
     expect(h.deps.createNetwork).toHaveBeenCalledWith({ msaa: 4 });
+    expect(h.deps.warn).not.toHaveBeenCalled();
 
     element.setAttribute('msaa', '1');
     await flushMicrotasks();

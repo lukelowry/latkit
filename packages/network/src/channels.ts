@@ -14,23 +14,74 @@ export interface ChannelDefinition {
   /** Storage cardinality: one value per vertex or per edge. */
   readonly scope: 'vertex' | 'edge';
   /** Shader interpretation of the packed stream. */
-  readonly map: 'colormap' | 'height' | 'size' | 'dash' | 'visible' | 'shade';
+  readonly map: 'colormap' | 'height' | 'size' | 'dash' | 'visible' | 'shade' | 'position';
   /** Display label a picker or legend shows. */
   readonly label: string;
-  /** Whether values pass through an input domain; `dash`, `visible`, and `shade` are raw. */
+  /** Whether values pass through an input domain; `dash`, `visible`, `shade`, and `position` are raw. */
   readonly normalized: boolean;
+  /** Float words per item: every channel is a scalar except `position`, an interleaved `x, y` pair. */
+  readonly components: 1 | 2;
 }
 
 const definitions = {
-  vertexColor: { scope: 'vertex', map: 'colormap', label: 'Vertex Color', normalized: true },
-  vertexHeight: { scope: 'vertex', map: 'height', label: 'Vertex Height', normalized: true },
-  vertexSize: { scope: 'vertex', map: 'size', label: 'Vertex Size', normalized: true },
-  edgeColor: { scope: 'edge', map: 'colormap', label: 'Edge Color', normalized: true },
-  edgeDash: { scope: 'edge', map: 'dash', label: 'Edge Dash', normalized: false },
-  vertexVisible: { scope: 'vertex', map: 'visible', label: 'Vertex Visible', normalized: false },
-  edgeVisible: { scope: 'edge', map: 'visible', label: 'Edge Visible', normalized: false },
-  vertexShade: { scope: 'vertex', map: 'shade', label: 'Vertex Shade', normalized: false },
-  edgeShade: { scope: 'edge', map: 'shade', label: 'Edge Shade', normalized: false },
+  vertexColor: {
+    scope: 'vertex',
+    map: 'colormap',
+    label: 'Vertex Color',
+    normalized: true,
+    components: 1,
+  },
+  vertexHeight: {
+    scope: 'vertex',
+    map: 'height',
+    label: 'Vertex Height',
+    normalized: true,
+    components: 1,
+  },
+  vertexSize: {
+    scope: 'vertex',
+    map: 'size',
+    label: 'Vertex Size',
+    normalized: true,
+    components: 1,
+  },
+  edgeColor: {
+    scope: 'edge',
+    map: 'colormap',
+    label: 'Edge Color',
+    normalized: true,
+    components: 1,
+  },
+  edgeDash: { scope: 'edge', map: 'dash', label: 'Edge Dash', normalized: false, components: 1 },
+  vertexVisible: {
+    scope: 'vertex',
+    map: 'visible',
+    label: 'Vertex Visible',
+    normalized: false,
+    components: 1,
+  },
+  edgeVisible: {
+    scope: 'edge',
+    map: 'visible',
+    label: 'Edge Visible',
+    normalized: false,
+    components: 1,
+  },
+  vertexShade: {
+    scope: 'vertex',
+    map: 'shade',
+    label: 'Vertex Shade',
+    normalized: false,
+    components: 1,
+  },
+  edgeShade: { scope: 'edge', map: 'shade', label: 'Edge Shade', normalized: false, components: 1 },
+  vertexPosition: {
+    scope: 'vertex',
+    map: 'position',
+    label: 'Vertex Position',
+    normalized: false,
+    components: 2,
+  },
 } as const satisfies Record<string, ChannelDefinition>;
 
 for (const definition of Object.values(definitions)) Object.freeze(definition);
@@ -71,8 +122,9 @@ export function channelLayout(vertexCount: number, edgeCount: number): ChannelLa
   const offsets = {} as Record<Channel, number>;
   let words = 0;
   for (const key of CHANNEL_KEYS) {
+    const def = CHANNELS[key];
     offsets[key] = words;
-    words += CHANNELS[key].scope === 'vertex' ? vertexCount : edgeCount;
+    words += (def.scope === 'vertex' ? vertexCount : edgeCount) * def.components;
   }
   return { offsets, words };
 }
@@ -118,8 +170,12 @@ export interface Channels {
   set(channel: Channel, values: Float32Array, domain?: Domain | null): void;
   /** Unbind a channel; its slot stays allocated and its mode turns off. */
   clear(channel: Channel): void;
-  /** Clear every channel after topology replacement and write the new static offsets. */
-  reset(): void;
+  /**
+   * Clear every channel after topology replacement, write the new static offsets, and seed
+   * `vertexPosition` with the layout the topology carries. Positions are the one channel that is
+   * always bound while a topology is loaded: the shaders read vertex placement from nowhere else.
+   */
+  reset(positions: Float32Array | null): void;
   /** Override the input domain used by an active normalized channel. */
   setDomain(channel: Channel, domain: Domain | null): void;
   /** The input domain a bound normalized channel is using, or null. */
@@ -146,7 +202,8 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
   const domainOverride = new Map<Channel, Domain>();
 
   function countFor(channel: Channel): number {
-    return channelDefinition(channel).scope === 'vertex' ? deps.vertexCount() : deps.edgeCount();
+    const def = channelDefinition(channel);
+    return (def.scope === 'vertex' ? deps.vertexCount() : deps.edgeCount()) * def.components;
   }
 
   function validateLength(channel: Channel, values: Float32Array): void {
@@ -183,7 +240,7 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
     writeScalars(channel);
   }
 
-  function reset(): void {
+  function reset(positions: Float32Array | null): void {
     current.clear();
     data.clear();
     domainOverride.clear();
@@ -195,6 +252,7 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
       writeOffset(key, layout.offsets[key]);
       writeScalars(key);
     }
+    if (positions) set('vertexPosition', positions);
   }
 
   function setDomain(channel: Channel, domain: Domain | null): void {
@@ -245,6 +303,9 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
       case 'edgeShade':
         uniforms.channel.eShadeOffset = offset;
         break;
+      case 'vertexPosition':
+        uniforms.channel.vPositionOffset = offset;
+        break;
       default:
         /* v8 ignore next -- compile-time exhaustive Channel guard. */
         channel satisfies never;
@@ -279,6 +340,9 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
         break;
       case 'edgeShade':
         uniforms.channel.itemFlags = toggleBit(uniforms.channel.itemFlags, ITEM_EDGE_SHADE, on);
+        break;
+      case 'vertexPosition':
+        // Always read while a topology is loaded; the slot offset is its only addressing.
         break;
       default:
         /* v8 ignore next -- compile-time exhaustive Channel guard. */

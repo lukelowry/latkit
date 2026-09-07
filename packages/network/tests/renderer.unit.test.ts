@@ -157,13 +157,14 @@ describe('Renderer resource lifecycle', () => {
   it('allocates every channel slot with the topology and writes channels in place', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);
-    const topology = sampleTopology(); // 3 vertices, 2 edges: 5 vertex channels + 4 edge channels
+    // 3 vertices, 2 edges: 5 scalar vertex channels, 4 edge channels, one vec2 position channel.
+    const topology = sampleTopology();
 
     renderer.bindTopology(preparedScene(topology));
     const channelBuffer = h.device.buffers.find(
       (buffer) => buffer.descriptor.label === 'channels',
     )!;
-    expect(channelBuffer.descriptor.size).toBe((5 * 3 + 4 * 2) * 4);
+    expect(channelBuffer.descriptor.size).toBe((5 * 3 + 4 * 2 + 2 * 3) * 4);
 
     const dashes = new Float32Array([1, 0]);
     renderer.writeChannel('edgeDash', dashes);
@@ -201,9 +202,12 @@ describe('Renderer resource lifecycle', () => {
       'assertStorageBufferFits',
     );
 
-    renderer.bindTopology(preparedScene(sampleTopology())); // channel storage needs 92 bytes
+    renderer.bindTopology(preparedScene(sampleTopology())); // channel storage needs 116 bytes
 
-    expect(fits.mock.calls.map(([label, bytes]) => [label, bytes])).toContainEqual(['channel', 92]);
+    expect(fits.mock.calls.map(([label, bytes]) => [label, bytes])).toContainEqual([
+      'channel',
+      116,
+    ]);
     renderer.destroy();
   });
 
