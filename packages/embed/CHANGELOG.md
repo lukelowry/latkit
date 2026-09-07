@@ -1,5 +1,12 @@
 # @latkit/embed
 
+## 0.9.1
+
+### Patch Changes
+
+- Updated dependencies [a90cb89]
+  - @latkit/network@0.10.1
+
 ## 0.9.0
 
 ### Minor Changes
