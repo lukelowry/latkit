@@ -1,5 +1,11 @@
 # @latkit/gpu
 
+## 0.3.1
+
+### Patch Changes
+
+- 2019574: Include the repository's MIT license in the published package tarballs.
+
 ## 0.3.0
 
 ### Minor Changes
