@@ -29,48 +29,43 @@ async function live(h: ReturnType<typeof harness>, element: HTMLElement): Promis
 }
 
 describe('parseSeries', () => {
-  it('decodes time as f64 and values as f32, with null gaps and base64 slots', () => {
+  it('decodes f64 samples and null gaps with exact time and base64 slots', async () => {
     const time = Float64Array.from([0, 0.5]);
     const base64 = btoa(String.fromCharCode(...new Uint8Array(time.buffer)));
-
     const parsed = parseSeries({
       time: { base64 },
-      values: [1, null, 3, 4],
+      values: [1e12, null, 1e12 + 0.125, 1e12 + 0.25],
       signalCount: 1,
       elementCount: 2,
-      ranges: [1, 4],
-      validFrames: 1,
     });
-
-    expect(parsed.time).toEqual(time);
-    expect(parsed.values).toBeInstanceOf(Float32Array);
-    expect(parsed.values[1]).toBeNaN();
-    expect(parsed.ranges).toEqual(new Float32Array([1, 4]));
-    expect(parsed.validFrames).toBe(1);
-    expect(parseSeries(serializedSeries())).toEqual(series());
+    const block = await parsed.read(0, {
+      frameOffset: 0,
+      frameCount: 2,
+      elementOffset: 0,
+      elementCount: 2,
+    });
+    expect(block.time).toEqual(time);
+    expect(block.values).toBeInstanceOf(Float64Array);
+    expect(block.values[1]).toBeNaN();
+    expect(block.values[2]).toBe(1e12 + 0.125);
+    expect(parsed.state.ranges).toEqual(Float64Array.of(1e12, 1e12 + 0.25));
   });
-
-  it('names the failing path', () => {
+  it('validates decoded series and names malformed input', () => {
     expect(() => parseSeries([])).toThrow('root must be an object');
     expect(() => parseSeries({ time: [0] })).toThrow('root.values is required');
     expect(() => parseSeries({ time: [0], values: [1], signalCount: 1, elementCount: 2 })).toThrow(
-      'values length 1 != 2',
+      '1 values for 1 frames',
     );
-    expect(() => parseSeries({ time: [], values: [], signalCount: 1, elementCount: 1 })).toThrow(
-      'time must include at least one frame',
-    );
+    expect(
+      parseSeries({ time: [], values: [], signalCount: 1, elementCount: 1 }).state.frameCount,
+    ).toBe(0);
     expect(() =>
       parseSeries({ time: [0], values: ['1'], signalCount: 1, elementCount: 1 }),
     ).toThrow('values[0] must be a number or null');
-    expect(() =>
-      parseSeries({ time: [0], values: [1], signalCount: 1, elementCount: 1, ranges: [0] }),
-    ).toThrow('ranges length 1 < 2');
-    expect(() => validateSeries({ ...series(), time: [0, 1, 2] })).toThrow(
-      'time must be a Float64Array',
+    expect(() => validateSeries({ ...series(), read: null })).toThrow(
+      'series.read must be a function',
     );
-    expect(() => validateSeries({ ...series(), validFrames: -1 })).toThrow(
-      'validFrames must not be negative',
-    );
+    expect(() => validateSeries({ ...series(), state: { frameCount: -1 } })).toThrow('frameCount');
   });
 });
 
@@ -87,7 +82,10 @@ describe('latkit-monitor', () => {
     const monitor = await live(h, element);
 
     expect(canvasOf(element).getAttribute('role')).toBe('img');
-    expect(monitor.load).toHaveBeenCalledExactlyOnceWith(series(), 1);
+    expect(monitor.load).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ elementCount: 2, signalCount: 2 }),
+      1,
+    );
     expect(monitor.attach).toHaveBeenCalledExactlyOnceWith(canvasOf(element));
     const patches = patchesOf(monitor.setOptions);
     expect(patches).toMatchObject({ lineWidthPx: 2.5, valueRange: [0, 12] });

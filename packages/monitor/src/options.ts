@@ -17,10 +17,12 @@ export interface Options {
   /** Trace stroke width in CSS pixels. @defaultValue `1.5`. */
   lineWidthPx?: number;
   /**
-   * Fixed value domain for vertical position and color, or `null` to fit the finite extent of the
+   * Fixed value domain for vertical position, or `null` to fit the finite extent of the
    * active signal's committed frames. @defaultValue `null`.
    */
   valueRange?: Domain | null;
+  /** Independent color domain; null follows the resolved value range. @defaultValue null. */
+  colorRange?: Domain | null;
   /** Time window shown across the canvas, or `null` for the series' full span. @defaultValue `null`. */
   timeRange?: Domain | null;
   /** Color of the selected element's trace, or `null` to brighten its own color. @defaultValue `null`. */
@@ -55,6 +57,7 @@ const definitions = {
   colormap: { kind: 'colormap', default: neutralColormap, live: true },
   lineWidthPx: { kind: 'nonnegative', default: 1.5, live: true },
   valueRange: { kind: 'domain', default: null, live: true, nullable: true },
+  colorRange: { kind: 'domain', default: null, live: true, nullable: true },
   timeRange: { kind: 'domain', default: null, live: true, nullable: true },
   focusColor: { kind: 'rgba', default: null, live: true, nullable: true },
   unselectedAlpha: { kind: 'nonnegative', default: 1, live: true },

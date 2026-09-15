@@ -1,4 +1,4 @@
-import type { Series, Topology } from '@latkit/model';
+import { createSeries, type Series, type Topology } from '@latkit/model';
 import type { Monitor, Events as MonitorEvents } from '@latkit/monitor';
 import type { Network, Events as NetworkEvents, Projection } from '@latkit/network';
 import { vi } from 'vitest';
@@ -42,12 +42,12 @@ export function serializedNetwork(): Record<string, unknown> {
 }
 
 export function series(): Series {
-  return {
+  return createSeries({
     time: Float64Array.from([0, 1, 2]),
     values: new Float32Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
     signalCount: 2,
     elementCount: 2,
-  };
+  });
 }
 
 export function serializedSeries(): Record<string, unknown> {
@@ -202,7 +202,6 @@ export function fakeMonitor(): FakeMonitor {
       on,
       ...spies,
       select: vi.fn(),
-      extend: vi.fn(),
       clear: vi.fn(),
       destroy: vi.fn(),
     } as unknown as Monitor,

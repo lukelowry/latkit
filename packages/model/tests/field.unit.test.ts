@@ -4,6 +4,7 @@ import {
   type ClassData,
   type ClassSpec,
   extent,
+  createSeries,
   fieldKey,
   fieldsOf,
   type Series,
@@ -31,13 +32,7 @@ const data: ClassData = {
 };
 
 function results(signalCount: number): Series {
-  return {
-    time: Float64Array.of(0),
-    elementCount: 2,
-    signalCount,
-    values: new Float32Array(signalCount * 2),
-    ranges: new Float32Array(signalCount * 2),
-  };
+  return createSeries({ elementCount: 2, signalCount });
 }
 
 describe('fields', () => {

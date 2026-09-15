@@ -20,6 +20,7 @@ describe('monitor package entrypoint', () => {
       'colormap',
       'lineWidthPx',
       'valueRange',
+      'colorRange',
       'timeRange',
       'focusColor',
       'unselectedAlpha',
@@ -33,7 +34,9 @@ describe('monitor package entrypoint', () => {
       ((t: number) => readonly [number, number, number]) | undefined
     >();
     expectTypeOf<Options['valueRange']>().toEqualTypeOf<Domain | null | undefined>();
-    expectTypeOf<Series['values']>().toEqualTypeOf<Float32Array>();
+    expectTypeOf<Awaited<ReturnType<Series['read']>>['values']>().toEqualTypeOf<
+      Float32Array | Float64Array
+    >();
     expectTypeOf<Events['hover']>().toEqualTypeOf<Reading | null>();
     expectTypeOf<Events['select']>().toEqualTypeOf<Reading>();
     expectTypeOf<Events['attached']>().toEqualTypeOf<boolean>();

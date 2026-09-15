@@ -1,5 +1,5 @@
 import { COLORMAPS, colormap, type ColormapName } from '@latkit/colormaps';
-import type { Series } from '@latkit/model';
+import { createSeries, validateSeries as checkSeries, type Series } from '@latkit/model';
 import {
   OPTIONS,
   createMonitor,
@@ -11,27 +11,15 @@ import {
 
 import { optionAttributes, parseOptionAttribute, type OptionAttribute } from './attributes.js';
 import type { ElementSpec, ShellElement, Warn } from './element.js';
-import {
-  f32,
-  f64,
-  fail,
-  integer,
-  isTypedArray,
-  optional,
-  quote,
-  record,
-  required,
-  type NumericJSON,
-} from './json.js';
+import { u32, f64, integer, optional, quote, record, required, type NumericJSON } from './json.js';
 
-/** JSON-compatible series input accepted by {@link parseSeries}; the shape of `Series`, encoded. */
+/** JSON-compatible series input accepted by {@link parseSeries}; signal-major samples, encoded. */
 export interface SeriesJSON {
   readonly time: NumericJSON;
   readonly values: NumericJSON;
   readonly signalCount: number;
   readonly elementCount: number;
-  readonly ranges?: NumericJSON;
-  readonly validFrames?: number;
+  readonly elements?: NumericJSON;
 }
 
 /** DOM events `latkit-monitor` dispatches; every controller event arrives with its payload as `detail`. */
@@ -44,6 +32,8 @@ export interface MonitorElementEventMap {
   select: CustomEvent<Events['select']>;
   attached: CustomEvent<Events['attached']>;
   deviceLost: CustomEvent<Events['deviceLost']>;
+  valueRange: CustomEvent<Events['valueRange']>;
+  rendered: Event;
 }
 
 /** The `latkit-monitor` element: a `Monitor` controller behind attributes and a data source. */
@@ -81,49 +71,25 @@ export interface MonitorDeps {
 /**
  * Parse and validate a JSON-compatible series.
  *
- * `time` decodes to f64, `values` and `ranges` to f32; number arrays may hold `null` for NaN, and
+ * `time` and `values` decode to f64; number arrays may hold `null` for NaN, and
  * every slot also accepts a little-endian base64 object.
  */
 export function parseSeries(input: unknown): Series {
   const source = record(input, 'root');
-  const rangesSlot = optional(source, 'ranges');
-  const validFramesSlot = optional(source, 'validFrames');
-  return validateSeries({
+  const elements = optional(source, 'elements');
+  return createSeries({
     time: f64(required(source, 'time', 'root'), 'time'),
-    values: f32(required(source, 'values', 'root'), 'values'),
+    values: f64(required(source, 'values', 'root'), 'values'),
     signalCount: integer(required(source, 'signalCount', 'root'), 'signalCount'),
     elementCount: integer(required(source, 'elementCount', 'root'), 'elementCount'),
-    ...(rangesSlot === undefined ? {} : { ranges: f32(rangesSlot, 'ranges') }),
-    ...(validFramesSlot === undefined
-      ? {}
-      : { validFrames: integer(validFramesSlot, 'validFrames') }),
+    ...(elements === undefined ? {} : { elements: u32(elements, 'elements') }),
   });
 }
 
-/** Validate an already-decoded series, as the `data` property receives it. */
+/** Validate an already-decoded series, as the data property receives it. */
 export function validateSeries(input: unknown): Series {
-  const data = record(input, 'data');
-  if (!isTypedArray(data.time, 'Float64Array')) fail('time', 'must be a Float64Array');
-  if (!isTypedArray(data.values, 'Float32Array')) fail('values', 'must be a Float32Array');
-  const time = data.time as Float64Array;
-  const values = data.values as Float32Array;
-  const signalCount = integer(data.signalCount, 'signalCount');
-  const elementCount = integer(data.elementCount, 'elementCount');
-  if (time.length < 1) fail('time', 'must include at least one frame');
-  if (signalCount < 1) fail('signalCount', 'must be positive');
-  if (elementCount < 1) fail('elementCount', 'must be positive');
-  const expected = signalCount * time.length * elementCount;
-  if (values.length !== expected) fail('values', `length ${values.length} != ${expected}`);
-  if (data.ranges !== undefined) {
-    if (!isTypedArray(data.ranges, 'Float32Array')) fail('ranges', 'must be a Float32Array');
-    const length = (data.ranges as Float32Array).length;
-    if (length < signalCount * 2) fail('ranges', `length ${length} < ${signalCount * 2}`);
-  }
-  if (data.validFrames !== undefined) {
-    const validFrames = integer(data.validFrames, 'validFrames');
-    if (validFrames < 0) fail('validFrames', 'must not be negative');
-  }
-  return data as unknown as Series;
+  checkSeries(input as Series);
+  return input as Series;
 }
 
 const OPTION_ATTRIBUTES = optionAttributes(OPTIONS);
@@ -143,6 +109,9 @@ const EVENTS: readonly (keyof Events)[] = Object.freeze([
   'select',
   'attached',
   'deviceLost',
+  'valueRange',
+  'rendered',
+  'error',
 ]);
 
 /** The element spec for `latkit-monitor`. */

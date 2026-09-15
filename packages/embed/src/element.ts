@@ -204,6 +204,10 @@ export function defineShell<C extends Controller, D>(
         controller.on(
           event as never,
           ((payload: unknown) => {
+            if (event === 'error') {
+              this.#fail(payload);
+              return;
+            }
             this.#dispatch(event, payload);
             if (event === 'deviceLost' && !(payload as { recovering: boolean }).recovering) {
               this.#fail(new Error(`@latkit/embed: ${(payload as { message: string }).message}`));

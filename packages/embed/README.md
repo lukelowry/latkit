@@ -107,9 +107,11 @@ and shape. The `data` property takes the decoded `NetworkData` shape (`Float32Ar
 { "time": [0, 1, 2], "values": [1, 2, 3, 4, 5, 6], "signalCount": 1, "elementCount": 2 }
 ```
 
-The shape is `@latkit/model`'s `Series`, encoded: `time` decodes to f64, `values` and the
-optional `ranges` to f32, and `validFrames` commits a frontier. The `data` property takes a
-`Series` directly.
+The JSON contains signal-major initial samples: both `time` and `values` decode to float64.
+Optional `elements` decodes to sorted uint32 class indices. All supplied frames are committed;
+ranges are computed from their finite samples. The `data` property takes a `Series` directly,
+including histories that append or read from a remote result. Use `color-range` to set the
+palette independently of `value-range`.
 
 ## Attributes
 

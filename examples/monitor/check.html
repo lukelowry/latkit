@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <link rel="icon" href="data:," />
+  <title>Monitor GPU checks</title>
+  <h1>Monitor GPU checks</h1>
+  <pre id="result">Running?</pre>
+  <script type="module">
+    import { checkGpu } from '../../packages/monitor/tests/gpu.browser.js';
+    try {
+      const checks = await checkGpu();
+      document.querySelector('#result').textContent = JSON.stringify(checks, null, 2);
+      document.body.dataset.result = 'passed';
+    } catch (error) {
+      document.querySelector('#result').textContent = error.stack || String(error);
+      document.body.dataset.result = 'failed';
+      console.error(error);
+    }
+  </script>
+</html>

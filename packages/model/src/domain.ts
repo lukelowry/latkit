@@ -39,3 +39,24 @@ export function validateDomain(value: unknown, name = 'domain'): asserts value i
     throw new RangeError(`${name} minimum must not exceed its maximum`);
   }
 }
+
+/** Normalize in f64, including domains whose subtraction overflows. */
+export function position(value: number, [min, max]: Domain): number {
+  if (!Number.isFinite(value)) return NaN;
+  if (min === max) return 0.5;
+  const span = max - min;
+  if (Number.isFinite(span)) return (value - min) / span;
+  const scale = Math.max(Math.abs(min), Math.abs(max));
+  return (value / scale - min / scale) / (max / scale - min / scale);
+}
+
+/** A finite increasing display interval, padded only when a signal is constant. */
+export function normalizeDomain(range: Domain | null): Domain {
+  if (!range || !Number.isFinite(range[0]) || !Number.isFinite(range[1])) return [0, 1];
+  if (range[0] !== range[1]) return range;
+  const padding = Math.max(0.5, Math.abs(range[0]) * Number.EPSILON * 4);
+  return [
+    Math.max(-Number.MAX_VALUE, range[0] - padding),
+    Math.min(Number.MAX_VALUE, range[1] + padding),
+  ];
+}

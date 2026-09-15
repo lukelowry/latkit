@@ -1,5 +1,5 @@
 import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
-import type { Series } from '@latkit/model';
+import { createSeries } from '@latkit/model';
 import { createMonitor, type Reading } from '@latkit/monitor';
 import './style.css';
 
@@ -54,8 +54,9 @@ const rateInput = document.getElementById('rate') as HTMLInputElement;
 const rateValue = document.getElementById('rate-value') as HTMLOutputElement;
 
 let seed = 0x5eed1234;
-let series = createSeries();
+let series = createSeries({ elementCount: ELEMENT_COUNT, signalCount: SIGNALS.length });
 let frameCursor = 0;
+let latest = new Float64Array(ELEMENT_COUNT * SIGNALS.length).fill(NaN);
 let currentSignal: SignalIndex = 0;
 let selectedElement: number | null = null;
 let running = true;
@@ -174,25 +175,11 @@ function wireChrome(): void {
   });
 }
 
-function createSeries(): Series {
-  const time = new Float64Array(FRAME_COUNT);
-  for (let frame = 0; frame < FRAME_COUNT; frame++) time[frame] = frame * DT_SECONDS;
-  const values = new Float32Array(SIGNALS.length * FRAME_COUNT * ELEMENT_COUNT);
-  values.fill(NaN);
-  return {
-    time,
-    values,
-    signalCount: SIGNALS.length,
-    elementCount: ELEMENT_COUNT,
-    validFrames: 0,
-  };
-}
-
 function resetStream(): void {
-  series.values.fill(NaN);
   anomaly.fill(0);
   frameCursor = 0;
-  series = { ...series, validFrames: 0 };
+  series = createSeries({ elementCount: ELEMENT_COUNT, signalCount: SIGNALS.length });
+  latest = new Float64Array(ELEMENT_COUNT * SIGNALS.length).fill(NaN);
   selectedElement = null;
   hoverReadout.textContent = '-';
   pickReadout.textContent = '-';
@@ -248,8 +235,14 @@ function tick(): void {
   if (frameCursor >= FRAME_COUNT) resetStream();
   writeFrame(frameCursor);
   frameCursor++;
-  series = { ...series, validFrames: frameCursor };
-  monitor.extend(frameCursor);
+  series.append({
+    resultId: 'example',
+    classId: 'sensor',
+    elementCount: ELEMENT_COUNT,
+    signalCount: SIGNALS.length,
+    time: Float64Array.of((frameCursor - 1) * DT_SECONDS),
+    values: latest,
+  });
   if (windowInput.checked) applyWindow();
   const now = performance.now();
   renderHotList(now);
@@ -258,6 +251,7 @@ function tick(): void {
 }
 
 function writeFrame(frame: number): void {
+  latest = new Float64Array(ELEMENT_COUNT * SIGNALS.length);
   const time = frame * DT_SECONDS;
   for (let element = 0; element < ELEMENT_COUNT; element++) {
     const b = band[element]!;
@@ -284,16 +278,12 @@ function writeFrame(frame: number): void {
   }
 }
 
-function setValue(signal: number, frame: number, element: number, value: number): void {
-  series.values[offset(signal, frame, element)] = value;
+function setValue(signal: number, _frame: number, element: number, value: number): void {
+  latest[signal * ELEMENT_COUNT + element] = value;
 }
 
-function valueAt(signal: number, frame: number, element: number): number {
-  return series.values[offset(signal, frame, element)]!;
-}
-
-function offset(signal: number, frame: number, element: number): number {
-  return signal * FRAME_COUNT * ELEMENT_COUNT + frame * ELEMENT_COUNT + element;
+function valueAt(signal: number, _frame: number, element: number): number {
+  return latest[signal * ELEMENT_COUNT + element]!;
 }
 
 function applyRange(): void {
