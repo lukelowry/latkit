@@ -93,27 +93,32 @@ failing, since the client already holds the newer header.
 
 ## Serve results
 
-What a run recorded stays where it was recorded; each read streams one class's batches, the same
-`RunFrames` the run itself streamed. Nothing is published ahead of a read: the batches describe
-their own shape, and `collect` folds them.
+A `Results` holds one result identified by `id`. Its classes expose `Series` histories:
+metadata and append notifications cross the port, and samples cross only when requested.
 
 ```ts
-// the side with the recording
+// Host: store implements Results over memory or a file.
 import { serveResults } from '@latkit/remote';
+const stop = serveResults(port, store);
 
-const stop = serveResults(port, store); // `store` implements `Results` over whatever it holds
-
-// the side that plots
-import { collect } from '@latkit/model';
+// Page: resultId is the id of the recording the host selected.
 import { connectResults } from '@latkit/remote';
+const results = connectResults(port, resultId);
+monitor.load(await results.series('bus'), 0);
 
-const results = connectResults(port); // a `Remote<Results>`
-const vm = await collect(results.read('bus', [0], signal), frames);
-monitor.load(vm);
-results.close(); // ends every read in flight
+// On teardown:
+results.close();
 ```
 
-A read selects signals by recorded-order index, or every recorded signal with `null`. The service
-awaits the port's drain between batches, and aborting the read's signal stops the serving side. A
-served side that must bound what one read asks for passes `{ maxSignals }`; by default a selection
-is unbounded, so a class with any number of recorded signals reads whole.
+Several results can share a port because each service is named by its result id.
+`series(classId)` is cached and follows committed appends automatically. Its `read` and `locate`
+methods accept cancellation signals. A locate call receives the captured frame count, so a
+concurrent append cannot change which timestamps that lookup includes.
+
+Sample windows are capped at 4 MiB by default; `serveResults(port, store, { maxBytes })` changes
+the cap. The service validates bounds before reading and copies borrowed samples before transfer.
+A producer's retained buffers remain usable.
+
+`results.read(classId, signals, signal)` also streams frame-major batches for export or collection.
+Signal indices are in recorded order; null selects every signal. `maxSignals` optionally bounds
+that selection. Closing either endpoint ends pending work and releases append subscriptions.

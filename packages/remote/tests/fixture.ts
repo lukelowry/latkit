@@ -44,6 +44,7 @@ export function fixtureSource(name = 'Fixture', closed?: () => void): Source {
 
 export const FRAMES: RunUpdate = {
   type: 'frames',
+  resultId: 'run',
   classId: 'bus',
   elementCount: 2,
   signalCount: 1,

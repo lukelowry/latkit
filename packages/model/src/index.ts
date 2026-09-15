@@ -19,7 +19,7 @@ export type {
 export { createModel, elementAt, itemOf, validateTopology } from './model.js';
 
 export type { Domain } from './domain.js';
-export { extent, validateDomain } from './domain.js';
+export { extent, position, normalizeDomain, validateDomain } from './domain.js';
 
 export type { Colormap, RGBA } from './color.js';
 export { bakeColormap, COLORMAP_LUT_SIZE, validateRgba } from './color.js';
@@ -27,7 +27,7 @@ export { bakeColormap, COLORMAP_LUT_SIZE, validateRgba } from './color.js';
 export { createEmitter } from './emitter.js';
 
 export type { Series } from './series.js';
-export { frameAt, sample } from './series.js';
+export { createSeries, frameAt, sample, validateSeries } from './series.js';
 
 export type { Field, FieldRef } from './field.js';
 export { fieldKey, fieldsOf } from './field.js';

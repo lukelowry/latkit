@@ -43,12 +43,12 @@ describe('colormap catalog', () => {
     }
   });
 
-  it('viridis endpoints match the reference polynomial output (0..255 rounded)', () => {
+  it('viridis endpoints match the published color table (0..255 rounded)', () => {
     const fn = colormap('viridis');
     const round255 = (t: number) => fn(t).map((c) => Math.round(c * 255));
-    // t=0: dark purple (71,1,85); t=1: (255,1,0).
-    expect(round255(0)).toEqual([71, 1, 85]);
-    expect(round255(1)).toEqual([255, 1, 0]);
+    // Viridis goes from dark purple to yellow.
+    expect(round255(0)).toEqual([68, 1, 84]);
+    expect(round255(1)).toEqual([253, 231, 37]);
   });
 });
 
@@ -90,10 +90,10 @@ describe('gradient', () => {
     expect(stops).toHaveLength(17);
   });
 
-  it('viridis endpoints match polynomial output', () => {
+  it('viridis endpoints match the published color table', () => {
     const css = gradient('viridis');
-    expect(css).toMatch(/rgb\(71,1,85\) 0%/);
-    expect(css).toMatch(/rgb\(255,1,0\) 100%/);
+    expect(css).toMatch(/rgb\(68,1,84\) 0%/);
+    expect(css).toMatch(/rgb\(253,231,37\) 100%/);
   });
 
   it('honors the direction parameter', () => {
@@ -113,4 +113,12 @@ describe('gradient', () => {
     expect(css).toMatch(/rgb\(255,0,0\) 50%/);
     expect(css).toMatch(/rgb\(255,0,0\) 100%/);
   });
+});
+
+it('uses the published perceptual palette endpoints instead of clipped polynomial fits', () => {
+  expect(colormap('viridis')(0)).toEqual([0.267004, 0.004874, 0.329415]);
+  expect(colormap('viridis')(1)).toEqual([0.993248, 0.906157, 0.143936]);
+  expect(colormap('inferno')(1)).toEqual([0.988362, 0.998364, 0.644924]);
+  expect(colormap('plasma')(1)).toEqual([0.940015, 0.975158, 0.131326]);
+  expect(colormap('magma')(1)).toEqual([0.987053, 0.991438, 0.749504]);
 });

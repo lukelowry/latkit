@@ -1,11 +1,6 @@
 # @latkit/monitor
 
-WebGPU signal monitor for Latkit: one controller, `Monitor`, and one registry, `OPTIONS`, that
-names what it displays.
-
-`@latkit/monitor` renders one selected signal from a packed time series into a caller-owned
-canvas. It is designed for append-heavy data: load a series once, mutate or replace the value
-buffer as frames commit, and call `extend()` to paint only the new frontier.
+WebGPU traces over one class's recorded signals. Load a `Series` once; committed appends update the plot automatically. The same API reads memory, files, or remote results.
 
 ## Install
 
@@ -17,71 +12,93 @@ npm install @latkit/monitor @latkit/model @latkit/colormaps
 
 ```ts
 import { colormap } from '@latkit/colormaps';
-import type { Series } from '@latkit/model';
+import { createSeries } from '@latkit/model';
 import { createMonitor } from '@latkit/monitor';
 
-const series: Series = {
-  time: Float64Array.from([0, 1, 2]),
-  values: new Float32Array([0.1, 0.4, 0.2, 0.5, 0.3, 0.6]),
-  signalCount: 1,
+const series = createSeries({
   elementCount: 2,
-};
+  signalCount: 1,
+  time: Float64Array.of(0, 1),
+  values: Float64Array.of(0.1, 0.4, 0.2, 0.5),
+});
+const monitor = createMonitor({
+  valueRange: [0, 1],
+  colorRange: [0.2, 0.8],
+  colormap: colormap('magma'),
+});
+monitor.load(series, 0);
+await monitor.attach(document.querySelector<HTMLCanvasElement>('#monitor')!);
 
-const monitor = createMonitor({ valueRange: [0, 1], colormap: colormap('magma') });
-monitor.load(series);
-
-const canvas = document.querySelector<HTMLCanvasElement>('#monitor')!;
-await monitor.attach(canvas);
-```
-
-The controller holds everything it is given; `attach` leases a shared device and paints it, and
-`detach` keeps it for the next canvas. See the [lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html).
-
-`Series` is `@latkit/model`'s, so a series `collect` folds from a run loads unchanged. Its values
-are signal-major:
-
-```ts
-values[signal * time.length * elementCount + frame * elementCount + element];
-```
-
-## Streaming
-
-`extend(validFrames)` commits frames after you have written them in place; pass a replacement
-buffer as the second argument when the buffer itself changed. Only the new segments are painted,
-and an auto-fit value range grows from the newly committed frames alone.
-
-```ts
-series.values.set(frameValues, frame * series.elementCount);
-monitor.extend(frame + 1);
-```
-
-## Options
-
-Every display option is a live patch through `setOptions`; only `devices` is fixed at
-construction. `OPTIONS` carries each option's default, validation kind, and whether it is live,
-and `validateOptions` checks a patch before a device exists.
-
-```ts
-monitor.setOptions({
-  colormap: colormap('viridis'),
-  lineWidthPx: 2,
-  valueRange: null, // fit the active signal's committed extent
-  timeRange: [t - 20, t], // a sliding window; null shows the whole series
-  focusColor: null, // brighten the selected trace's own color
-  unselectedAlpha: 0.35, // dim every other trace while one is selected
+series.append({
+  resultId: 'run-1',
+  classId: 'sensor',
+  elementCount: 2,
+  signalCount: 1,
+  time: Float64Array.of(2),
+  values: Float64Array.of(0.3, 0.6),
 });
 ```
 
-## Selection and readings
+Initial arrays use `[signal][frame][element]` order. Appended batches use
+`[frame][signal][element]` order, as a solver emits them. Both accept float32 or float64 values;
+time is always float64. Published buffers are borrowed and immutable: create a new batch for
+each append. No future timestamps or capacity slots are exposed.
 
-`setSignal` switches the displayed signal, `select` highlights one element with a foreground trace
-(`null` clears), and pointer-down selects the nearest reading itself. Every event carries one
-payload:
+`Series.read` returns a bounded window with a stride; the monitor handles this itself.
+For file-backed or remote recordings, use `monitor.load(await results.series(classId), signalIndex)`.
+The host owns the recording's resources.
+
+## Display options
+
+`setOptions` applies live patches; only `devices` is fixed at construction.
+`OPTIONS` holds defaults and validation rules.
 
 ```ts
-monitor.on('hover', (reading) => (readout.textContent = reading ? String(reading.value) : ''));
-monitor.on('select', (reading) => inspect(reading.element));
-monitor.on('attached', (attached) => (canvas.hidden = !attached));
-monitor.on('deviceLost', ({ message, recovering }) => !recovering && showFallback(message));
-monitor.select(null);
+monitor.setOptions({
+  valueRange: null, // fit committed values
+  colorRange: [0, 100], // keep colors comparable as the vertical axis changes
+  timeRange: [20, 40], // null shows all committed time
+  lineWidthPx: 2,
+  focusColor: null, // brighten the selected trace's own color
+  unselectedAlpha: 0.35,
+});
 ```
+
+`valueRange` controls geometry; `colorRange` controls the palette. A null color range follows the
+vertical range. Values and times are normalized in float64 before GPU upload. Nonfinite values
+break traces, and segments crossing the display boundary are clipped.
+
+History reads stay within a 1 MiB sample budget, including time. Selected traces have their own
+read window, so a wide class does not force tiny focus reads. When time and value mappings stay
+fixed, appends draw only the new segments. Changing either mapping requires replaying history;
+automatic ranges can therefore cause a replay as data grows. History and focus textures are
+retained, and changing opacity only composites them again.
+
+## Selection, events, and lifetime
+
+```ts
+monitor.setSignal(1);
+monitor.select(42); // class element index, including sparse recordings
+monitor.on('hover', (reading) => showReading(reading));
+monitor.on('select', (reading) => inspect(reading.element));
+monitor.on('valueRange', (range) => updateAxis(range));
+monitor.on('rendered', () => hideProgress());
+monitor.on('error', (error) => showError(error.message));
+monitor.on('deviceLost', ({ message, recovering }) => {
+  if (!recovering) showFallback(message);
+});
+```
+
+Pointer readings preserve the original numeric value. A newer pick, load, or detach cancels stale
+reads. `select(null)` clears selection. `pause()` stops work; `resume()` catches up.
+`clear()` drops the loaded series. `detach()` releases the canvas while retaining data and
+settings; `destroy()` releases the controller. See the
+[lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html).
+
+## GPU checks
+
+Run `pnpm --filter @latkit/monitor-example dev` and open
+`http://127.0.0.1:5190/check.html` in a browser with WebGPU. The check reads actual pixels for
+float64 normalization, clipping, nonlinear palettes, gaps, and focus opacity. It also captures
+WebGPU validation errors. These complement the unit tests for read budgets, append scheduling,
+and cancellation.

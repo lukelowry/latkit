@@ -11,7 +11,7 @@ Public APIs stay imperative on purpose: data often arrives from simulation, tele
 ## Package boundaries
 
 `@latkit/model`
-: Owns the immutable, columnar network model, its packed series, and its byte form, and with them the vocabulary the renderers speak: `Topology`, `Item`, `Series`, and `Domain`, with `validateTopology`, `validateDomain`, and `extent`. Depends on nothing.
+: Owns the immutable, columnar network model, its append-only sample histories, and its byte form, and with them the vocabulary the renderers speak: `Topology`, `Item`, `Series`, and `Domain`, with `validateTopology`, `validateDomain`, and `extent`. Depends on nothing.
 
 `@latkit/colormaps`
 : Owns color catalogs and formatting helpers. Rendering packages can consume this package without duplicating palette data.

@@ -6,3 +6,6 @@ docs/api/reference/
 .turbo/
 .DS_Store
 *.log
+
+output/
+.playwright-cli/

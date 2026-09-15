@@ -1,97 +1,86 @@
 # Create a monitor
 
-This tutorial creates a WebGPU monitor, loads a packed series, commits one frame, and listens for pointer readings.
-
-## Create a canvas
-
 The application owns the canvas and its layout:
 
 ```html
 <canvas id="monitor" style="display: block; width: 100%; height: 360px"></canvas>
 ```
 
-## Load a series
+## Load and append
 
-`Series.values` is signal-major:
-
-```text
-signal * frameCount * elementCount + frame * elementCount + element
-```
-
-The example below has one signal, four frames, and two elements.
+Create an empty history and load it once. Each append publishes actual samples and updates every
+subscriber, including the monitor.
 
 ```ts
 import { colormap } from '@latkit/colormaps';
-import type { Series } from '@latkit/model';
+import { createSeries } from '@latkit/model';
 import { createMonitor } from '@latkit/monitor';
 
-const canvas = document.getElementById('monitor');
-if (!(canvas instanceof HTMLCanvasElement)) {
-  throw new Error('Missing #monitor canvas.');
-}
-
-const frameCount = 4;
-const elementCount = 2;
-
-const series: Series = {
-  time: Float64Array.from([0, 1, 2, 3]),
-  values: new Float32Array(1 * frameCount * elementCount),
-  signalCount: 1,
-  elementCount,
-  validFrames: 0,
-};
-
+const canvas = document.querySelector<HTMLCanvasElement>('#monitor')!;
+const series = createSeries({ signalCount: 1, elementCount: 2 });
 const monitor = createMonitor({
   valueRange: [0, 1],
+  colorRange: [0, 1],
+  timeRange: [0, 10],
   colormap: colormap('magma'),
 });
-
 monitor.load(series, 0);
 await monitor.attach(canvas);
 
-series.values[0 * frameCount * elementCount + 0 * elementCount + 0] = 0.25;
-series.values[0 * frameCount * elementCount + 0 * elementCount + 1] = 0.75;
-monitor.extend(1);
+series.append({
+  resultId: 'run-1',
+  classId: 'sensor',
+  elementCount: 2,
+  signalCount: 1,
+  time: Float64Array.of(0, 1),
+  values: Float64Array.of(0.25, 0.75, 0.4, 0.6),
+});
 ```
 
-`createMonitor()` takes neither a device nor a canvas; `attach()` leases one from the shared pool and paints what the controller holds. See [Lifecycle and failures](lifecycle.md). `extend(1)` tells the monitor that frame `0` is ready to draw. Later calls commit more frames after you mutate or replace the values buffer; only the new segments are painted, and an auto-fit range (`valueRange: null`) grows from the newly committed frames alone.
+Batches use `values[frame * signalCount * elementCount + signal * elementCount + element]`.
+Their buffers remain immutable after append. Float32 and float64 values are accepted; time is
+float64, finite, and nondecreasing. Repeated timestamps are retained.
 
-## Change what is shown
+For a complete signal-major array, pass `time` and `values` to `createSeries`; its initial layout
+is `[signal][frame][element]`. For a file or remote result, load
+`await results.series(classId)` directly. The renderer reads bounded windows.
 
-Every display option is a live patch, and `setSignal` switches the displayed signal:
+## Change the display
 
 ```ts
-monitor.setOptions({ colormap: colormap('viridis'), lineWidthPx: 2, valueRange: null });
+monitor.setOptions({
+  colormap: colormap('viridis'),
+  lineWidthPx: 2,
+  valueRange: null,
+  colorRange: [0, 1],
+});
 monitor.setSignal(0);
+monitor.on('valueRange', (range) => updateAxis(range));
 ```
 
-## Inspect readings
+`valueRange` fits the vertical axis; `colorRange` fixes the palette independently. Null ranges
+use automatic fitting, with a null color range following the vertical range. Fixed mappings let
+appends draw only new segments. Changing a mapping replays history.
 
-Pointer-down selects the nearest element itself; `select(element | null)` does the same programmatically without emitting:
+## Inspect and clean up
 
 ```ts
 monitor.on('hover', (reading) => {
-  if (!reading) return;
-  console.log(reading.element, reading.frame, reading.value);
+  if (reading) console.log(reading.element, reading.frame, reading.value);
 });
-
-monitor.on('select', (reading) => {
-  inspector.show(reading.element);
-});
-
+monitor.on('select', (reading) => inspector.show(reading.element));
+monitor.on('error', (error) => showError(error.message));
 monitor.select(null);
-```
 
-When the page removes the monitor, destroy the controller before removing its canvas:
-
-```ts
+// When the view is removed:
 monitor.destroy();
 canvas.remove();
 ```
 
-## Run the full example
+Selection uses class element indices, including sparse recordings. Reads are cancelled when their
+view is replaced or detached. See [Lifecycle and failures](lifecycle.md).
 
-The repository example streams synthetic signals, switches signal channels, ranks hot elements, and demonstrates selection:
+## Run the full example
 
 ```sh
 pnpm --filter @latkit/monitor-example dev

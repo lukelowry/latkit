@@ -1,3 +1,4 @@
+import { PERCEPTUAL } from './perceptual.js';
 import type { Colormap } from '@latkit/model';
 
 type Rgb01 = readonly [number, number, number];
@@ -78,38 +79,6 @@ function divergingBlack(a: Rgb01, b: Rgb01): Float32Array {
 
 const COEFFICIENTS = {
   // Sequential perceptual maps.
-  viridis: packCoefficients([
-    [0.2777, 0.0054, 0.334],
-    [0.105, 0.6282, 0.2254],
-    [-0.3308, 0.1786, 1.6523],
-    [6.2288, -7.052, -1.316],
-    [-11.616, 14.201, -5.7557],
-    [7.8858, -7.9581, 4.4432],
-  ]),
-  inferno: packCoefficients([
-    [0.0002, 0.0016, 0.0139],
-    [0.1065, 0.0639, 0.7242],
-    [11.6024, -3.9728, -15.9423],
-    [-41.704, 17.4363, 44.3541],
-    [77.1629, -33.4024, -81.8093],
-    [-27.6685, 14.1791, 29.2463],
-  ]),
-  plasma: packCoefficients([
-    [0.0591, 0.0015, 0.5399],
-    [0.8493, 0.0263, -1.5191],
-    [-3.0926, 3.4178, 5.1599],
-    [15.8869, -14.6287, -15.8176],
-    [-23.6815, 21.2975, 20.4548],
-    [10.0689, -9.8108, -8.5088],
-  ]),
-  magma: packCoefficients([
-    [-0.0021, -0.0007, -0.0054],
-    [0.2517, 0.6775, 2.494],
-    [8.3537, -3.5777, 0.3145],
-    [-27.6687, 14.2647, -13.6492],
-    [52.1761, -27.9436, 12.9442],
-    [-26.9493, 17.0629, -1.2939],
-  ]),
   cividis: packCoefficients([
     [0, 0.13, 0.3],
     [0.69, 0.42, 0.32],
@@ -177,7 +146,9 @@ const COEFFICIENTS = {
   goldblue: divergingBlack([0.95, 0.75, 0], [0, 0.3, 0.95]),
   tealpink: divergingBlack([0, 0.65, 0.65], [0.95, 0.45, 0.55]),
   vermlime: divergingBlack([0.95, 0.3, 0.1], [0.4, 0.85, 0]),
-} satisfies Record<ColormapName, Float32Array>;
+} satisfies Record<Exclude<ColormapName, keyof typeof PERCEPTUAL>, Float32Array>;
+
+const maps = new Map<ColormapName, Colormap>();
 
 /**
  * Returns a pure colormap function for a bundled preset.
@@ -192,7 +163,32 @@ const COEFFICIENTS = {
  * ```
  */
 export function colormap(name: ColormapName): Colormap {
-  const coefficients = COEFFICIENTS[name];
+  const cached = maps.get(name);
+  if (cached) return cached;
+  const map = createColormap(name);
+  maps.set(name, map);
+  return map;
+}
+
+function createColormap(name: ColormapName): Colormap {
+  if (Object.hasOwn(PERCEPTUAL, name)) {
+    const table = PERCEPTUAL[name as keyof typeof PERCEPTUAL];
+    return (t) => {
+      const at = clamp01(t) * (table.length / 3 - 1),
+        left = Math.floor(at),
+        right = Math.min(left + 1, table.length / 3 - 1),
+        mix = at - left;
+      const a = left * 3,
+        b = right * 3,
+        weight = 1 - mix;
+      return [
+        table[a]! * weight + table[b]! * mix,
+        table[a + 1]! * weight + table[b + 1]! * mix,
+        table[a + 2]! * weight + table[b + 2]! * mix,
+      ];
+    };
+  }
+  const coefficients = COEFFICIENTS[name as keyof typeof COEFFICIENTS];
   return (t) => evaluateRgb01(coefficients, t);
 }
 

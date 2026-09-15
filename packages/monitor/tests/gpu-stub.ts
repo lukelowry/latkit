@@ -222,6 +222,7 @@ export function installGpuStub(): GpuStub {
         return encoder;
       },
       queue: {
+        onSubmittedWorkDone: () => Promise.resolve(),
         writeBuffer: (
           buffer: { label: string },
           offset: number,

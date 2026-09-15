@@ -14,6 +14,8 @@ export default defineConfig([
       '**/node_modules/**',
       '**/*.d.ts.map',
       'pnpm-lock.yaml',
+      'output/**',
+      '.playwright-cli/**',
     ],
   },
   {
