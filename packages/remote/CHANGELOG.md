@@ -1,5 +1,12 @@
 # @latkit/remote
 
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [b2631b8]
+  - @latkit/model@0.6.0
+
 ## 0.4.0
 
 ### Minor Changes

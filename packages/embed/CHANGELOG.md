@@ -1,5 +1,16 @@
 # @latkit/embed
 
+## 0.10.1
+
+### Patch Changes
+
+- Updated dependencies [b2631b8]
+- Updated dependencies [b2631b8]
+  - @latkit/model@0.6.0
+  - @latkit/network@0.10.3
+  - @latkit/monitor@0.4.1
+  - @latkit/colormaps@0.2.2
+
 ## 0.10.0
 
 ### Minor Changes
