@@ -89,10 +89,12 @@ monitor.on('deviceLost', ({ message, recovering }) => {
 });
 ```
 
-Pointer readings preserve the original numeric value. A newer pick, load, or detach cancels stale
-reads. `select(null)` clears selection. `pause()` stops work; `resume()` catches up.
-`clear()` drops the loaded series. `detach()` releases the canvas while retaining data and
-settings; `destroy()` releases the controller. See the
+`rendered` fires once everything committed is on screen, and never before the canvas has a layout
+size: a canvas kept at `display: none` until `rendered` would wait forever. Pointer readings
+preserve the original numeric value. A newer pick, load, or detach cancels stale reads.
+`select(null)` clears selection. `pause()` stops work; `resume()` catches up. `clear()` drops the
+loaded series. `detach()` releases the canvas while retaining data and settings; `destroy()`
+releases the controller. See the
 [lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html).
 
 ## GPU checks

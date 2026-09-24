@@ -3,11 +3,10 @@ import type { Viewport } from '../camera/projection.js';
 /**
  * Interaction and geometry helpers for a caller-owned canvas.
  *
- * The resize-to-render path lives in `RenderLoop`.
- * Co-locating that wiring with the loop is the only way to guarantee the
- * correct scheduler is used: the buffer/display contract, "the canvas
- * backing buffer matches its CSS-displayed size at paint time", is the
- * render loop's responsibility, so the render loop owns the timing.
+ * The resize-to-render path lives in `@latkit/gpu`'s `createFrameLoop`: the
+ * buffer/display contract, "the canvas backing buffer matches its
+ * CSS-displayed size at paint time", is the frame loop's responsibility, so
+ * the frame loop owns the timing.
  */
 export interface Surface {
   /** Caller-owned canvas used for presentation and input. */

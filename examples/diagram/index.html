@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='3' y='9' width='11' height='14' rx='2' fill='%232f6feb'/%3E%3Crect x='18' y='9' width='11' height='14' rx='2' fill='%232f6feb'/%3E%3Cpath d='M14 16h4' stroke='%232f6feb' stroke-width='2'/%3E%3C/svg%3E"
+    />
+    <title>@latkit/diagram example</title>
+  </head>
+  <body>
+    <canvas
+      id="stage"
+      tabindex="0"
+      role="application"
+      aria-label="Block diagram. Drag from a port to draw a wire, drag a block to move it, arrow keys nudge the selection, Tab walks the blocks, Delete proposes removing the selection, Escape cancels or clears."
+    ></canvas>
+
+    <aside id="hud" aria-label="Diagram controls">
+      <header>
+        <h1>latkit / diagram</h1>
+        <div id="summary" aria-live="polite">loading</div>
+      </header>
+
+      <section>
+        <span class="label" id="scenes-label">scene</span>
+        <div id="scenes" class="row" role="group" aria-labelledby="scenes-label"></div>
+      </section>
+
+      <section>
+        <span class="label" id="interaction-label">interaction</span>
+        <div id="interaction" class="row" role="group" aria-labelledby="interaction-label"></div>
+      </section>
+
+      <section>
+        <span class="label" id="routing-label">routing</span>
+        <div id="routing" class="row" role="group" aria-labelledby="routing-label"></div>
+      </section>
+
+      <section>
+        <span class="label" id="display-label">display</span>
+        <div id="display" class="row" role="group" aria-labelledby="display-label"></div>
+      </section>
+
+      <section>
+        <span class="label" id="motion-label">motion</span>
+        <div id="motion" class="row" role="group" aria-labelledby="motion-label"></div>
+      </section>
+
+      <section>
+        <span class="label" id="colormaps-label">colormap</span>
+        <div id="colormaps" class="row" role="group" aria-labelledby="colormaps-label"></div>
+      </section>
+
+      <section>
+        <span class="label" id="actions-label">document</span>
+        <div id="actions" class="row" role="group" aria-labelledby="actions-label"></div>
+      </section>
+
+      <p class="hint">
+        In edit mode, drag from a port to wire it, drag a wired input to move its wire, drag blocks
+        to place them, and press Delete to remove the selection. The document decides: a refused
+        edit leaves the diagram as it was.
+      </p>
+    </aside>
+
+    <aside id="palette" aria-labelledby="palette-label">
+      <header>
+        <h2 id="palette-label">components</h2>
+        <p class="hint">Drag onto the canvas, or click to add at the center.</p>
+      </header>
+      <div id="classes"></div>
+    </aside>
+
+    <footer id="statusbar">
+      <div class="field"><span class="key">hover</span><span class="value" id="hover">-</span></div>
+      <div class="field">
+        <span class="key">selection</span><span class="value" id="selection">-</span>
+      </div>
+      <div class="field grow">
+        <span class="key">last</span><span class="value" id="proposal" aria-live="polite">-</span>
+      </div>
+      <div class="field"><span class="key">frames</span><span class="value" id="fps">-</span></div>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -24,6 +24,15 @@ export interface Scan {
   frames: number;
   range: Domain | null;
 }
+/** What a lane reports to its host. */
+export interface LaneEvents {
+  error(error: Error): void;
+  range(range: Domain): void;
+  /** The latest committed history and selected trace have been presented. */
+  rendered(): void;
+  /** The lane has new work to show; the host calls `frame()` on its next frame. */
+  present(): void;
+}
 const READ_BYTES = 1024 * 1024;
 const FOCUS_FRAMES = 65536;
 
@@ -33,7 +42,7 @@ export class Lane {
   readonly #signalIndex: number;
   readonly #painter: LanePainter;
   readonly #scan: Scan;
-  readonly #events: { error(error: Error): void; range(range: Domain): void; rendered(): void };
+  readonly #events: LaneEvents;
   readonly #elements: number;
   readonly #frames: number;
   readonly #focusFrames: number;
@@ -57,7 +66,7 @@ export class Lane {
   #resolving: AbortController | null = null;
   #history: AbortController | null = null;
   #focus: AbortController | null = null;
-  #raf: number | null = null;
+  #wanted = false;
   #version = 0;
   #reported = -1;
 
@@ -67,7 +76,7 @@ export class Lane {
     painter: LanePainter,
     style: Style,
     scan: Scan,
-    events: { error(error: Error): void; range(range: Domain): void; rendered(): void },
+    events: LaneEvents,
   ) {
     this.#series = series;
     this.#signalIndex = signalIndex;
@@ -337,23 +346,31 @@ export class Lane {
   }
 
   #present(): void {
-    if (this.#paused || this.#destroyed || this.#raf !== null) return;
-    this.#raf = requestAnimationFrame(() => {
-      this.#raf = null;
-      if (this.#paused || this.#destroyed) return;
-      this.#painter.present(this.#selected === null ? 1 : this.#style.unselectedAlpha);
-      if (
-        !this.#resolving &&
-        !this.#history &&
-        !this.#focus &&
-        this.#painted >= this.#state.frameCount &&
-        (this.#selected === null || this.#focused >= this.#state.frameCount) &&
-        this.#reported !== this.#version
-      ) {
-        this.#reported = this.#version;
-        this.#events.rendered();
-      }
-    });
+    if (this.#paused || this.#destroyed) return;
+    // Wakes coalesce in the host's frame loop, so every request forwards.
+    this.#wanted = true;
+    this.#events.present();
+  }
+
+  /**
+   * Composite onto the canvas when the lane asked to since its last frame, and report `rendered`
+   * once everything committed is drawn. The host's frame loop calls this.
+   */
+  frame(): void {
+    if (!this.#wanted || this.#paused || this.#destroyed) return;
+    this.#wanted = false;
+    this.#painter.present(this.#selected === null ? 1 : this.#style.unselectedAlpha);
+    if (
+      !this.#resolving &&
+      !this.#history &&
+      !this.#focus &&
+      this.#painted >= this.#state.frameCount &&
+      (this.#selected === null || this.#focused >= this.#state.frameCount) &&
+      this.#reported !== this.#version
+    ) {
+      this.#reported = this.#version;
+      this.#events.rendered();
+    }
   }
 
   select(element: number | null): void {
@@ -441,8 +458,7 @@ export class Lane {
     this.#focus?.abort();
     this.#focus = null;
     this.#repaint = true;
-    if (this.#raf !== null) cancelAnimationFrame(this.#raf);
-    this.#raf = null;
+    this.#wanted = false;
   }
   resume(): void {
     if (!this.#destroyed) {

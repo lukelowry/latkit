@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 
-import type { GpuUnavailableError, Options, requestDevice } from '../src/index.js';
+import type {
+  Frame,
+  FrameLoop,
+  GpuUnavailableError,
+  Options,
+  createFrameLoop,
+  requestDevice,
+} from '../src/index.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -29,6 +36,7 @@ describe('gpu package entrypoint', () => {
     expect(Object.keys(entrypoint).sort()).toEqual([
       'GpuUnavailableError',
       'createDevicePool',
+      'createFrameLoop',
       'createPresentation',
       'devices',
       'requestDevice',
@@ -43,5 +51,12 @@ describe('gpu package entrypoint', () => {
     expectTypeOf<ReturnType<typeof requestDevice>>().toEqualTypeOf<Promise<GPUDevice>>();
     expectTypeOf<Options['powerPreference']>().toEqualTypeOf<GPUPowerPreference | undefined>();
     expectTypeOf<GpuUnavailableError['stage']>().toEqualTypeOf<'api' | 'adapter' | 'device'>();
+    expectTypeOf<Parameters<typeof createFrameLoop>[1]>().toEqualTypeOf<
+      (frame: Frame) => boolean
+    >();
+    expectTypeOf<ReturnType<typeof createFrameLoop>>().toEqualTypeOf<FrameLoop>();
+    expectTypeOf<keyof Frame>().toEqualTypeOf<
+      'now' | 'width' | 'height' | 'backingScale' | 'settled'
+    >();
   });
 });

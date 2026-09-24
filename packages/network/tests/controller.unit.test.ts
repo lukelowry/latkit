@@ -336,6 +336,49 @@ describe('device loss', () => {
     expect(h.network.attached).toBe(false);
   });
 
+  it('stays detached when a device-loss handler detaches', async () => {
+    const h = await makeHarness();
+    h.network.on('deviceLost', () => h.network.detach());
+
+    h.loseDevice({ reason: 'unknown', message: 'lost for test' });
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(h.events.deviceLost).toEqual([
+      { reason: 'unknown', message: 'lost for test', recovering: true },
+    ]);
+    expect(h.network.attached).toBe(false);
+    expect(h.events.attached).toEqual([true, false]);
+    expect(h.pool.devices).toHaveLength(1);
+    expect(h.deps.createPresentation).toHaveBeenCalledOnce();
+  });
+
+  it('lets an attach made from an attached handler win over the recovery', async () => {
+    const h = await makeHarness();
+    const next = document.createElement('canvas');
+    document.body.append(next);
+    let moved: Promise<void> | null = null;
+    h.network.on('attached', (state) => {
+      if (!state && !moved) moved = h.network.attach(next);
+    });
+
+    h.loseDevice({ reason: 'unknown', message: 'lost for test' });
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    await expect(moved).resolves.toBeUndefined();
+    expect(h.network.attached).toBe(true);
+    expect(h.events.attached).toEqual([true, false, true]);
+    // The host attached before the loss was reported, so nothing recovers.
+    expect(h.events.deviceLost).toEqual([
+      { reason: 'unknown', message: 'lost for test', recovering: false },
+    ]);
+    // One replacement lease, for the host's canvas; the lost canvas is never bound again.
+    expect(h.pool.devices).toHaveLength(2);
+    expect(h.deps.createPresentation).toHaveBeenCalledTimes(2);
+    expect(h.deps.createPresentation).toHaveBeenLastCalledWith(h.pool.devices[1]!.device, next);
+  });
+
   it('ignores a loss reported for a device it no longer holds', async () => {
     const h = await makeHarness();
     h.network.detach();
