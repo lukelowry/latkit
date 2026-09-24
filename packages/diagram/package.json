@@ -1,6 +1,6 @@
 {
   "name": "@latkit/diagram",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "WebGPU block-diagram renderer and editor surface for Latkit.",
   "type": "module",
   "repository": {
