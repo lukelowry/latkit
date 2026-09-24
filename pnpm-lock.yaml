@@ -54,6 +54,28 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@26.1.1)(jsdom@26.1.0)(yaml@2.9.0)
 
+  examples/diagram:
+    dependencies:
+      '@latkit/colormaps':
+        specifier: workspace:*
+        version: link:../../packages/colormaps
+      '@latkit/diagram':
+        specifier: workspace:*
+        version: link:../../packages/diagram
+      '@latkit/model':
+        specifier: workspace:*
+        version: link:../../packages/model
+    devDependencies:
+      '@webgpu/types':
+        specifier: ^0.1.71
+        version: 0.1.71
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^7.0.0
+        version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
+
   examples/embed:
     dependencies:
       '@latkit/embed':
@@ -119,6 +141,22 @@ importers:
       '@latkit/model':
         specifier: workspace:*
         version: link:../model
+
+  packages/diagram:
+    dependencies:
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../gpu
+      '@latkit/model':
+        specifier: workspace:*
+        version: link:../model
+      '@webgpu/types':
+        specifier: ^0.1.71
+        version: 0.1.71
+    devDependencies:
+      jsdom:
+        specifier: ^26.1.0
+        version: 26.1.0
 
   packages/embed:
     dependencies:

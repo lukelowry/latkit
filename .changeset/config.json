@@ -7,5 +7,10 @@
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": ["@latkit/embed-example", "@latkit/monitor-example", "@latkit/network-example"]
+  "ignore": [
+    "@latkit/diagram-example",
+    "@latkit/embed-example",
+    "@latkit/monitor-example",
+    "@latkit/network-example"
+  ]
 }

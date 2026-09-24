@@ -205,6 +205,81 @@ describe('monitor', () => {
     expect(history[1]!.destroyed).toBe(true);
   });
 
+  it('reallocates its history and reports rendered once per resize, at the exact size', async () => {
+    const monitor = await mount();
+    const canvas = canvasFor(monitor);
+    const rendered = vi.fn();
+    monitor.on('rendered', rendered);
+    monitor.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
+    await settle();
+    expect(rendered).toHaveBeenCalledOnce();
+    const history = () =>
+      stub.log.textures.filter((texture) => texture.label === 'monitor-history');
+    const allocated = history().length;
+    rendered.mockClear();
+
+    // The history repaints whole on any size change, so the backing store never rounds up: a
+    // rounded size would cost a second reallocation, repaint, and `rendered` when it snaps.
+    stub.resize(canvas, [401, 203]);
+    await stub.frame();
+    expect([canvas.width, canvas.height]).toEqual([401, 203]);
+
+    await settle();
+    expect([canvas.width, canvas.height]).toEqual([401, 203]);
+    expect(history()).toHaveLength(allocated + 1);
+    expect(history().at(-1)).toMatchObject({ width: 401, height: 203, destroyed: false });
+    expect(history().filter((texture) => !texture.destroyed)).toHaveLength(1);
+    expect(Array.from(lastUniform().slice(0, 2))).toEqual([401, 203]);
+    expect(rendered).toHaveBeenCalledOnce();
+    expect(stub.pendingFrames()).toBe(0);
+  });
+
+  it('waits for the canvas to have a layout size before presenting and reporting rendered', async () => {
+    const canvas = makeCanvas(0, 0);
+    const monitor = create();
+    const rendered = vi.fn();
+    monitor.on('rendered', rendered);
+    monitor.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
+    await monitor.attach(canvas);
+    await settle();
+    const presents = () => stub.log.draws.filter((draw) => draw.target === 'canvas');
+    expect(presents()).toHaveLength(0);
+    expect(rendered).not.toHaveBeenCalled();
+    expect(stub.pendingFrames()).toBe(0);
+
+    // The resize that gives the canvas area renders at once, unwoken.
+    stub.resize(canvas, [320, 180]);
+    await settle();
+    expect([canvas.width, canvas.height]).toEqual([320, 180]);
+    expect(presents()).not.toHaveLength(0);
+    expect(rendered).toHaveBeenCalledOnce();
+  });
+
+  it('drives cursor readings and lane presents from one frame loop per binding', async () => {
+    const monitor = await mount();
+    const events = record(monitor);
+    const canvas = canvasFor(monitor);
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 320, height: 180 }) as DOMRect;
+    monitor.load(makeSeries({ elements: 2, time: [0, 1], signals: [[0, 1, 1, 0]] }));
+    await settle();
+    expect(stub.pendingFrames()).toBe(0);
+
+    canvas.dispatchEvent(new MouseEvent('pointermove', { clientX: 10, clientY: 10 }));
+    monitor.select(1);
+    expect(stub.pendingFrames()).toBe(1);
+    await settle();
+    expect(events.hover).toHaveLength(1);
+    expect(events.hover[0]).toMatchObject({ frame: 0 });
+    expect(stub.log.draws.filter((d) => d.pipeline === 'monitor-focus')).toHaveLength(1);
+    expect(stub.pendingFrames()).toBe(0);
+
+    canvas.dispatchEvent(new MouseEvent('pointerleave'));
+    expect(stub.pendingFrames()).toBe(1);
+    monitor.detach();
+    expect(stub.pendingFrames()).toBe(0);
+    expect(events.hover).toHaveLength(1);
+  });
+
   it('allocates renderer textures from the device-limited backing size', async () => {
     stub.setTextureLimit(256);
     const canvas = makeCanvas(800, 400);
@@ -515,6 +590,40 @@ describe('monitor', () => {
     expect(events.attached).toEqual([false]);
     expect(scope.attached).toBe(false);
     expect(stub.log.leaseReleases).toBe(1);
+  });
+
+  it('lets a detach or attach made from a device-loss handler supersede the recovery', async () => {
+    const detaching = await mount();
+    const moving = await mount();
+    const detachingEvents = record(detaching);
+    const movingEvents = record(moving);
+    const old = canvasFor(moving);
+    const next = makeCanvas();
+    let moved: Promise<void> | null = null;
+    detaching.on('deviceLost', () => detaching.detach());
+    moving.on('attached', (state) => {
+      if (!state && !moved) moved = moving.attach(next);
+    });
+
+    stub.loseDevice('unknown', 'simulated');
+    await flush();
+    await settle();
+
+    // Each host's own call wins: no recovery lease, no rebinding of the old canvas.
+    await expect(moved).resolves.toBeUndefined();
+    expect(detaching.attached).toBe(false);
+    expect(detachingEvents.attached).toEqual([false]);
+    expect(moving.attached).toBe(true);
+    expect(movingEvents.attached).toEqual([false, true]);
+    expect(stub.log.leaseAcquires).toBe(3);
+    expect(canvasFor(detaching).getAttribute('width')).toBeNull();
+    expect(old.getAttribute('width')).toBeNull();
+    expect(next.getAttribute('width')).toBe('320');
+    // A recovery was still coming when `detaching` heard of the loss; `moving` had already
+    // attached anew from its `attached` handler, so nothing recovers there.
+    const loss = { reason: 'unknown', message: 'simulated' };
+    expect(detachingEvents.deviceLost).toEqual([{ ...loss, recovering: true }]);
+    expect(movingEvents.deviceLost).toEqual([{ ...loss, recovering: false }]);
   });
 
   it('ignores device loss after detach or destroy', async () => {

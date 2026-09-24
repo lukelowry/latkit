@@ -1,5 +1,12 @@
 /// <reference types="@webgpu/types" />
-import { createPresentation, type DeviceLease, type Presentation } from '@latkit/gpu';
+import {
+  createFrameLoop,
+  createPresentation,
+  type DeviceLease,
+  type Frame,
+  type FrameLoop,
+  type Presentation,
+} from '@latkit/gpu';
 import {
   bakeColormap,
   createEmitter,
@@ -28,9 +35,19 @@ export type Events = {
   select: Reading;
   error: Error;
   valueRange: Domain;
-  /** The latest committed history and selected trace have been submitted and presented. */
+  /**
+   * The latest committed history and selected trace have been submitted and presented. Like the
+   * network's `painted`, never before the canvas has a layout size: a canvas without area renders
+   * no frames, and the resize that gives it area presents and reports.
+   */
   rendered: undefined;
   attached: boolean;
+  /**
+   * The WebGPU device was lost. The monitor releases it, leases a replacement, and replays its
+   * retained state. `recovering` is false when the monitor stays detached: no replacement could
+   * be leased, or the host already detached or attached anew from its `attached` handler. A
+   * `detach` or `attach` from this handler also wins over the recovery.
+   */
   deviceLost: { readonly reason: string; readonly message: string; readonly recovering: boolean };
 };
 /** A durable view of one signal. Borrows its series and canvas; owns renderer resources. */
@@ -53,20 +70,15 @@ export interface Monitor {
   resume(): void;
   destroy(): void;
 }
-interface BackingSize {
-  readonly width: number;
-  readonly height: number;
-  readonly ratio: number;
-}
 interface Binding {
   readonly generation: number;
   readonly canvas: HTMLCanvasElement;
   readonly presentation: Presentation<HTMLCanvasElement>;
   readonly painter: LanePainter;
   readonly lifecycle: Lifecycle;
+  /** One frame loop per binding: backing size, cursor readings, and the lane's presents. */
+  readonly loop: FrameLoop;
   released: boolean;
-  rafId: number | null;
-  pendingSize: BackingSize | null;
   backingScale: number;
   cursor: { readonly x: number; readonly y: number } | null;
   cursorDirty: boolean;
@@ -133,6 +145,9 @@ export function createMonitor(options: Options = {}): Monitor {
       rendered: () => {
         if (entry.lane === lane && !entry.released) events.emit('rendered', undefined);
       },
+      present: () => {
+        if (entry.lane === lane && !entry.released) entry.loop.wake();
+      },
     });
     entry.lane = lane;
     entry.off = series.on('append', () => {
@@ -141,38 +156,37 @@ export function createMonitor(options: Options = {}): Monitor {
     lane.select(selected);
     if (!consumerPaused) lane.resume();
   }
-  function schedule(entry: Binding): void {
-    if (entry.released || consumerPaused || entry.rafId !== null) return;
-    entry.rafId = requestAnimationFrame(() => {
-      entry.rafId = null;
-      if (entry.released || consumerPaused) return;
-      if (entry.pendingSize) {
-        const size = entry.pendingSize;
-        entry.pendingSize = null;
-        const resized = entry.presentation.resize(size.width, size.height);
-        const scale = fittedBackingScale(entry.canvas, size);
-        const moved = entry.backingScale !== scale;
-        entry.backingScale = scale;
-        if (resized) entry.painter.resize(entry.canvas.width, entry.canvas.height);
-        if (resized || moved) {
-          cancelReadings(entry);
-          if (entry.lane) entry.lane.setStyle(style(entry), true);
-          else {
-            entry.painter.clearHistory();
-            entry.painter.clearFocus();
-            entry.painter.present();
-          }
-        }
+  /**
+   * Render one frame: adopt a backing size the loop changed (the painter's targets follow the
+   * canvas, and the lane repaints at the new size and line scale), resolve the latest cursor
+   * reading, then present what the lane asked to show.
+   */
+  function render(entry: Binding, frame: Frame): boolean {
+    if (entry.released || consumerPaused) return false;
+    const { canvas, painter } = entry;
+    const resized = canvas.width !== painter.width || canvas.height !== painter.height;
+    const moved = entry.backingScale !== frame.backingScale;
+    entry.backingScale = frame.backingScale;
+    if (resized) painter.resize(canvas.width, canvas.height);
+    if (resized || moved) {
+      cancelReadings(entry);
+      if (entry.lane) entry.lane.setStyle(style(entry), true);
+      else {
+        painter.clearHistory();
+        painter.clearFocus();
+        painter.present();
       }
-      if (entry.cursorDirty) {
-        entry.cursorDirty = false;
-        if (entry.cursor) void reading(entry, false);
-        else if (lastReading !== null) {
-          lastReading = null;
-          events.emit('hover', null);
-        }
+    }
+    if (entry.cursorDirty) {
+      entry.cursorDirty = false;
+      if (entry.cursor) void reading(entry, false);
+      else if (lastReading !== null) {
+        lastReading = null;
+        events.emit('hover', null);
       }
-    });
+    }
+    entry.lane?.frame();
+    return false;
   }
   async function reading(entry: Binding, selecting: boolean): Promise<void> {
     const cursor = entry.cursor,
@@ -228,36 +242,34 @@ export function createMonitor(options: Options = {}): Monitor {
         usage: GPUTextureUsage.RENDER_ATTACHMENT,
       });
       lifecycle.add(() => presentation.destroy());
-      let entry: Binding | null = null,
-        initial: BackingSize | null = null;
-      lifecycle.add(
-        presentation.observe((width, height, ratio) => {
-          const size = { width: Math.max(1, width), height: Math.max(1, height), ratio };
-          if (!entry) initial = size;
-          else {
-            entry.pendingSize = size;
-            schedule(entry);
-          }
-        }),
-      );
-      const size: BackingSize = initial ?? {
-        width: Math.max(1, canvas.width),
-        height: Math.max(1, canvas.height),
-        ratio: 1,
-      };
-      presentation.resize(size.width, size.height);
+      // Size the backing store before the painter allocates targets, as the loop's first frame
+      // would: from the laid-out size, since the first observation reports that too.
+      const ratio = (canvas.ownerDocument?.defaultView ?? globalThis.window)?.devicePixelRatio || 1;
+      const width = Math.max(1, Math.round(canvas.clientWidth * ratio));
+      const height = Math.max(1, Math.round(canvas.clientHeight * ratio));
+      presentation.resize(width, height);
       const painter = new LanePainter(presentation, canvas.width, canvas.height);
       lifecycle.add(() => painter.destroy());
+      let entry: Binding | null = null;
+      // The history targets match the canvas exactly and any size change repaints the whole
+      // history, so a backing store rounded up during a resize would only repaint it twice.
+      const loop = createFrameLoop(
+        presentation,
+        (frame) => (entry ? render(entry, frame) : false),
+        { quantize: false },
+      );
+      lifecycle.add(() => loop.destroy());
+      if (consumerPaused) loop.pause();
       const built: Binding = {
         generation: own,
         canvas,
         presentation,
         painter,
         lifecycle,
+        loop,
         released: false,
-        rafId: null,
-        pendingSize: null,
-        backingScale: fittedBackingScale(canvas, size),
+        // The loop's formula, so an unchanged size never reads as a moved scale on its first frame.
+        backingScale: Math.min(canvas.width / (width / ratio), canvas.height / (height / ratio)),
         cursor: null,
         cursorDirty: false,
         lane: null,
@@ -270,13 +282,13 @@ export function createMonitor(options: Options = {}): Monitor {
         built.hover?.abort();
         built.cursor = { x: event.clientX, y: event.clientY };
         built.cursorDirty = true;
-        schedule(built);
+        loop.wake();
       };
       const leave = () => {
         built.hover?.abort();
         built.cursor = null;
         built.cursorDirty = true;
-        schedule(built);
+        loop.wake();
       };
       const down = (event: PointerEvent) => {
         built.cursor = { x: event.clientX, y: event.clientY };
@@ -294,8 +306,6 @@ export function createMonitor(options: Options = {}): Monitor {
       lifecycle.add(() => {
         built.released = true;
         forgetLane(built);
-        if (built.rafId !== null) cancelAnimationFrame(built.rafId);
-        built.rafId = null;
       });
       return built;
     } catch (error) {
@@ -315,12 +325,16 @@ export function createMonitor(options: Options = {}): Monitor {
     const entry = binding;
     if (!entry || entry.generation !== own || destroyed) return;
     const canvas = entry.canvas;
+    // A detach or attach made from the `attached` or `deviceLost` handler bumps the generation;
+    // the host's call then owns the outcome, and the recovery stands aside.
+    const mark = generation;
     release();
     events.emit('deviceLost', {
       reason: info.reason ?? 'unknown',
       message: info.message || 'WebGPU device was lost',
-      recovering: true,
+      recovering: generation === mark && !destroyed,
     });
+    if (generation !== mark || destroyed) return;
     void api.attach(canvas).catch((error: unknown) => {
       if (isAbortError(error) || destroyed) return;
       events.emit('deviceLost', {
@@ -434,8 +448,7 @@ export function createMonitor(options: Options = {}): Monitor {
       if (!binding) return;
       cancelReadings(binding);
       binding.lane?.pause();
-      if (binding.rafId !== null) cancelAnimationFrame(binding.rafId);
-      binding.rafId = null;
+      binding.loop.pause();
     },
     resume() {
       if (destroyed || !consumerPaused) return;
@@ -443,7 +456,7 @@ export function createMonitor(options: Options = {}): Monitor {
       if (binding) {
         if (binding.lane) binding.lane.resume();
         else replay(binding);
-        schedule(binding);
+        binding.loop.resume();
       }
     },
     destroy() {
@@ -519,11 +532,6 @@ function isAbortError(error: unknown): boolean {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** The line-width scale that keeps CSS pixels honest after the device limit shrinks the backing. */
-function fittedBackingScale(canvas: HTMLCanvasElement, size: BackingSize): number {
-  return size.ratio * Math.min(canvas.width / size.width, canvas.height / size.height);
 }
 
 function clamp(x: number): number {

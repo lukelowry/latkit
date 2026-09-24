@@ -1,7 +1,13 @@
 /// <reference types="@webgpu/types" />
 
 import { bakeColormap, createEmitter, type Domain, type Item } from '@latkit/model';
-import { createPresentation, type DeviceLease, type Presentation } from '@latkit/gpu';
+import {
+  createFrameLoop,
+  createPresentation,
+  type DeviceLease,
+  type FrameLoop,
+  type Presentation,
+} from '@latkit/gpu';
 
 import {
   encodeTopology,
@@ -37,7 +43,7 @@ import { attachKeyboard, type KeyIntent } from './input/keyboard.js';
 import { createSurface, type Surface } from './input/surface.js';
 import { type Pose, MAX_ZOOM_RATIO, type Viewport } from './camera/projection.js';
 import { createChannels, type Channel } from './channels.js';
-import { RenderLoop } from './webgpu/render-loop.js';
+import { createFrameTick } from './webgpu/frame.js';
 import type { FramePasses } from './webgpu/frame-encoder.js';
 import {
   PROJECTION_DEFS,
@@ -103,8 +109,10 @@ export type Events = {
   painted: boolean;
   /**
    * The WebGPU device was lost. The controller releases it, leases a replacement, and replays
-   * every retained state; `recovering` is false only when no replacement could be leased, and
-   * the controller then stays detached.
+   * every retained state. `recovering` is false when the controller stays detached: no
+   * replacement could be leased, or the host already detached or attached anew from its
+   * `painted` or `attached` handler. A `detach` or `attach` from this handler also wins over the
+   * recovery.
    */
   deviceLost: { readonly reason: string; readonly message: string; readonly recovering: boolean };
   /** Asynchronous shader-pipeline build failure; rendering for that family is unavailable. */
@@ -436,7 +444,8 @@ export interface ControllerDeps {
   createSurface: typeof createSurface;
   createPresentation(device: GPUDevice, canvas: HTMLCanvasElement): Presentation<HTMLCanvasElement>;
   Renderer: typeof Renderer;
-  RenderLoop: typeof RenderLoop;
+  createFrameLoop: typeof createFrameLoop;
+  createFrameTick: typeof createFrameTick;
   CameraRig: typeof CameraRig;
   attachPointer: typeof attachPointer;
   attachKeyboard: typeof attachKeyboard;
@@ -448,7 +457,8 @@ const DEFAULT_CONTROLLER_DEPS: ControllerDeps = {
   createSurface,
   createPresentation,
   Renderer,
-  RenderLoop,
+  createFrameLoop,
+  createFrameTick,
   CameraRig,
   attachPointer,
   attachKeyboard,
@@ -664,7 +674,7 @@ interface Binding {
   readonly canvas: HTMLCanvasElement;
   readonly surface: Surface;
   readonly renderer: Renderer;
-  readonly loop: RenderLoop;
+  readonly loop: FrameLoop;
   readonly lifecycle: ControllerLifecycle;
   /** The pointer and keyboard adapters, attached and released as the `interaction` option says. */
   pointer: { destroy(): void } | null;
@@ -1080,8 +1090,8 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       const renderer = new deps.Renderer(presentation, options.msaa, shade?.wgsl ?? null);
       lifecycle.add(() => renderer.destroy());
 
-      const loop = new deps.RenderLoop({
-        presentation,
+      const tick = deps.createFrameTick({
+        canvas: presentation.canvas,
         uniforms,
         renderer,
         rig,
@@ -1097,7 +1107,10 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         },
         onPaint: () => onSuccessfulPaint(),
         animating: () => shadeAnimating,
+        // The shade's tick is host code: a pause, detach, or destroy from it ends the frame.
+        live: () => binding?.generation === own && !consumerPaused && pageVisible,
       });
+      const loop = deps.createFrameLoop(presentation, tick);
       lifecycle.add(() => loop.destroy());
 
       // A fresh renderer builds fresh pipelines; a failure from the last one no longer applies.
@@ -1112,7 +1125,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       pageVisible = typeof document !== 'undefined' ? !document.hidden : true;
       const onVisibilityChange = (): void => {
         pageVisible = !document.hidden;
-        syncRenderLoopActivity();
+        syncLoopActivity();
       };
       document.addEventListener('visibilitychange', onVisibilityChange);
       lifecycle.add(() => document.removeEventListener('visibilitychange', onVisibilityChange));
@@ -1189,12 +1202,16 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     const entry = binding;
     if (!entry || entry.generation !== own || destroyed) return;
     const { canvas } = entry;
+    // A detach or attach made from the `painted`, `attached`, or `deviceLost` handler bumps the
+    // generation; the host's call then owns the outcome, and the recovery stands aside.
+    const mark = generation;
     release();
     events.emit('deviceLost', {
       reason: info.reason ?? 'unknown',
       message: info.message || 'WebGPU device was lost',
-      recovering: true,
+      recovering: generation === mark && !destroyed,
     });
+    if (generation !== mark || destroyed) return;
     api.attach(canvas).catch((error: unknown) => {
       // A newer attach or a detach overtook the recovery; it owns the outcome now.
       if (isAbortError(error) || destroyed) return;
@@ -1207,7 +1224,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   }
 
   /** Keeps loop activity consistent with user pause and page visibility. */
-  function syncRenderLoopActivity(): void {
+  function syncLoopActivity(): void {
     const loop = binding?.loop;
     if (!loop) return;
     if (!consumerPaused && pageVisible) loop.resume();
@@ -1361,7 +1378,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       try {
         syncInteraction();
         syncSunTimer();
-        syncRenderLoopActivity();
+        syncLoopActivity();
         replayInto(entry);
       } catch (error) {
         binding = null;
@@ -1586,13 +1603,13 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
 
     pause() {
       consumerPaused = true;
-      syncRenderLoopActivity();
+      syncLoopActivity();
       dropHover();
     },
 
     resume() {
       consumerPaused = false;
-      syncRenderLoopActivity();
+      syncLoopActivity();
     },
 
     destroy() {

@@ -1,5 +1,5 @@
 import { vi } from 'vitest';
-import type { DeviceLease, DevicePool, Presentation } from '@latkit/gpu';
+import type { DeviceLease, DevicePool, Frame, FrameLoop, Presentation } from '@latkit/gpu';
 
 import type { ControllerDeps, Events, Network, Options } from '../../src/controller.js';
 import { createNetworkWithDeps } from '../../src/controller.js';
@@ -16,7 +16,7 @@ import type { Picker, PickerDeps, PickQuery, PickResult } from '../../src/pick/p
 import type { Projection } from '../../src/projections.js';
 import type { Viewport } from '../../src/camera/projection.js';
 import type { Renderer } from '../../src/webgpu/renderer.js';
-import type { RenderLoop, RenderLoopDeps } from '../../src/webgpu/render-loop.js';
+import { createFrameTick, type FrameTickDeps } from '../../src/webgpu/frame.js';
 import type { CameraRig, FitOptions } from '../../src/camera/rig.js';
 import type { RevealResult } from '../../src/camera/camera.js';
 import type { Uniforms } from '../../src/webgpu/uniforms.js';
@@ -202,14 +202,25 @@ export class FakePicker {
   );
 }
 
-export class FakeRenderLoop {
-  deps: RenderLoopDeps | null = null;
+/**
+ * A frame loop that never schedules: it records the frame tick's hooks and the render callback
+ * the controller built from them, and tests drive the hooks by hand.
+ */
+export class FakeFrameLoop {
+  deps: FrameTickDeps | null = null;
+  /** The render callback the controller handed `createFrameLoop`. */
+  render: ((frame: Frame) => boolean) | null = null;
   uniforms!: Uniforms;
   viewport: Viewport = { w: 100, h: 80 };
 
-  attach(deps: RenderLoopDeps): this {
+  tick(deps: FrameTickDeps): (frame: Frame) => boolean {
     this.deps = deps;
     this.uniforms = deps.uniforms;
+    return createFrameTick(deps);
+  }
+
+  attach(render: (frame: Frame) => boolean): this {
+    this.render = render;
     return this;
   }
 
@@ -361,7 +372,7 @@ export interface ControllerHarness {
   readonly deps: ControllerDeps;
   readonly pool: FakePool;
   readonly renderer: FakeRenderer;
-  readonly loop: FakeRenderLoop;
+  readonly loop: FakeFrameLoop;
   readonly rig: FakeCameraRig;
   readonly picker: FakePicker;
   readonly canvas: HTMLCanvasElement;
@@ -405,7 +416,7 @@ export async function createControllerHarness(
   const presentations: Presentation<HTMLCanvasElement>[] = [];
 
   const renderer = new FakeRenderer();
-  const loop = new FakeRenderLoop();
+  const loop = new FakeFrameLoop();
   const rig = new FakeCameraRig();
   const picker = new FakePicker();
   const events = { deviceLost: [] as Events['deviceLost'][], attached: [] as boolean[] };
@@ -430,9 +441,11 @@ export async function createControllerHarness(
       rendererShades.push(shade);
       return renderer as unknown as Renderer;
     }) as unknown as typeof Renderer,
-    RenderLoop: vi.fn(
-      (renderLoopDeps: RenderLoopDeps) => loop.attach(renderLoopDeps) as unknown as RenderLoop,
-    ) as unknown as typeof RenderLoop,
+    createFrameTick: vi.fn((tickDeps: FrameTickDeps) => loop.tick(tickDeps)),
+    createFrameLoop: vi.fn(
+      (_presentation: Presentation<HTMLCanvasElement>, render: (frame: Frame) => boolean) =>
+        loop.attach(render) as unknown as FrameLoop,
+    ),
     CameraRig: vi.fn(() => rig as unknown as CameraRig) as unknown as typeof CameraRig,
     attachPointer: vi.fn(
       (_surface: Surface, emit: (intent: Intent) => void, policy?: Partial<PointerPolicy>) => {

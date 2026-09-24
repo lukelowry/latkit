@@ -7,7 +7,7 @@
 [![CI](https://github.com/lukelowry/latkit/actions/workflows/ci.yml/badge.svg)](https://github.com/lukelowry/latkit/actions/workflows/ci.yml)
 [![Documentation Status](https://readthedocs.org/projects/latkit/badge/?version=latest)](https://latkit.readthedocs.io/en/latest/?badge=latest)
 
-Latkit is a TypeScript package family for interactive, browser-based WebGPU visualization of network topology and time-series data.
+Latkit is a TypeScript package family for interactive, browser-based WebGPU visualization of network topology, block diagrams, and time-series data.
 
 [Documentation](https://latkit.readthedocs.io/en/latest/) &middot; [Getting started](https://latkit.readthedocs.io/en/latest/getting-started.html) &middot; [API reference](https://latkit.readthedocs.io/en/latest/api/index.html) &middot; [Examples](./examples)
 
@@ -15,20 +15,21 @@ Latkit is a TypeScript package family for interactive, browser-based WebGPU visu
 
 Install only the packages your application needs.
 
-| Package                                                                | Description                                                   |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------- |
-| [`@latkit/network`](https://www.npmjs.com/package/@latkit/network)     | Interactive WebGPU network topology views                     |
-| [`@latkit/monitor`](https://www.npmjs.com/package/@latkit/monitor)     | WebGPU time-series and signal monitor views                   |
-| [`@latkit/embed`](https://www.npmjs.com/package/@latkit/embed)         | `latkit-network` and `latkit-monitor` custom elements         |
-| [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)             | Core WebGPU device pool and canvas presentation primitives    |
-| [`@latkit/colormaps`](https://www.npmjs.com/package/@latkit/colormaps) | Named colormaps, labels, and CSS gradient helpers             |
-| [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | Columnar network model, series, and byte form                 |
-| [`@latkit/port`](https://www.npmjs.com/package/@latkit/port)           | Ports, frames, and typed request, reply, and stream protocols |
-| [`@latkit/remote`](https://www.npmjs.com/package/@latkit/remote)       | A model served across a port: source, runner, grids, results  |
+| Package                                                                | Description                                                    |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------- |
+| [`@latkit/network`](https://www.npmjs.com/package/@latkit/network)     | Interactive WebGPU network topology views                      |
+| [`@latkit/monitor`](https://www.npmjs.com/package/@latkit/monitor)     | WebGPU time-series and signal monitor views                    |
+| [`@latkit/diagram`](https://www.npmjs.com/package/@latkit/diagram)     | WebGPU block diagrams with automatic layout and edit proposals |
+| [`@latkit/embed`](https://www.npmjs.com/package/@latkit/embed)         | `latkit-network` and `latkit-monitor` custom elements          |
+| [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)             | Core WebGPU device pool, canvas presentation, and frame loop   |
+| [`@latkit/colormaps`](https://www.npmjs.com/package/@latkit/colormaps) | Named colormaps, labels, and CSS gradient helpers              |
+| [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | Columnar network model, netlist, series, and byte form         |
+| [`@latkit/port`](https://www.npmjs.com/package/@latkit/port)           | Ports, frames, and typed request, reply, and stream protocols  |
+| [`@latkit/remote`](https://www.npmjs.com/package/@latkit/remote)       | A model served across a port: source, runner, grids, results   |
 
 ## Requirements
 
-- A WebGPU-capable browser for `@latkit/network` and `@latkit/monitor`
+- A WebGPU-capable browser for `@latkit/network`, `@latkit/monitor`, and `@latkit/diagram`
 - An ESM-capable bundler or development server
 - Node.js 24 when developing Latkit locally
 
@@ -44,6 +45,12 @@ For monitor visualization:
 
 ```sh
 npm install @latkit/monitor @latkit/colormaps
+```
+
+For block diagrams:
+
+```sh
+npm install @latkit/diagram @latkit/model @latkit/colormaps
 ```
 
 For a tag instead of a controller:
@@ -88,7 +95,7 @@ The controller needs neither a device nor a canvas until `attach`, which leases 
 </script>
 ```
 
-See the [network quickstart](https://latkit.readthedocs.io/en/latest/network-quickstart.html) and [monitor quickstart](https://latkit.readthedocs.io/en/latest/monitor-quickstart.html) for complete usage and lifecycle guidance.
+See the [network quickstart](https://latkit.readthedocs.io/en/latest/network-quickstart.html), [monitor quickstart](https://latkit.readthedocs.io/en/latest/monitor-quickstart.html), and [diagram quickstart](https://latkit.readthedocs.io/en/latest/diagram-quickstart.html) for complete usage and lifecycle guidance.
 
 ## Examples
 
@@ -99,6 +106,7 @@ pnpm install
 pnpm --filter @latkit/network-example dev   # http://127.0.0.1:5188
 pnpm --filter @latkit/monitor-example dev   # http://127.0.0.1:5190
 pnpm --filter @latkit/embed-example dev     # http://127.0.0.1:5192
+pnpm --filter @latkit/diagram-example dev   # http://127.0.0.1:5194
 ```
 
 ## Documentation

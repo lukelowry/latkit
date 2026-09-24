@@ -1,0 +1,346 @@
+:root {
+  color-scheme: dark;
+  --font: ui-monospace, 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+  --backdrop: #0b0e13;
+  --ink: #eef2f7;
+  --muted: #9aa3b1;
+  --panel: rgba(13, 16, 22, 0.86);
+  --line: rgba(255, 255, 255, 0.12);
+  --control: rgba(255, 255, 255, 0.05);
+  --control-hover: rgba(255, 255, 255, 0.1);
+  --active: #d2604c;
+  --active-bg: rgba(210, 96, 76, 0.18);
+  --active-ink: #ffffff;
+  --refused: #f08a78;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --backdrop: #f3f4f6;
+    --ink: #1a1c22;
+    --muted: #5b6270;
+    --panel: rgba(255, 255, 255, 0.9);
+    --line: rgba(20, 24, 32, 0.14);
+    --control: rgba(20, 24, 32, 0.04);
+    --control-hover: rgba(20, 24, 32, 0.09);
+    --active: #b3432f;
+    --active-bg: rgba(179, 67, 47, 0.12);
+    --active-ink: #7a2718;
+    --refused: #b3261e;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--backdrop);
+  color: var(--ink);
+  font-family: var(--font);
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* The canvas fills the viewport, so draw its focus ring inside the edge. */
+#stage:focus-visible {
+  outline-color: var(--active);
+  outline-offset: -2px;
+}
+
+#hud,
+#palette,
+#statusbar {
+  position: fixed;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  backdrop-filter: blur(14px);
+  font-size: 12px;
+  user-select: none;
+}
+
+#hud {
+  top: 16px;
+  left: 16px;
+  width: min(284px, calc(100vw - 32px));
+  max-height: calc(100vh - 84px);
+  padding: 14px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+#palette {
+  top: 16px;
+  right: 16px;
+  width: 196px;
+  max-height: calc(100vh - 84px);
+  padding: 14px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+header {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+h1,
+h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+#summary {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#classes {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#classes section {
+  gap: 6px;
+}
+
+.label {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+button {
+  min-height: 28px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--control);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    opacity 120ms ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--control-hover);
+}
+
+button.active {
+  border-color: var(--active);
+  background: var(--active-bg);
+  color: var(--active-ink);
+}
+
+button:disabled {
+  opacity: 0.36;
+  cursor: default;
+}
+
+button.swatch {
+  position: relative;
+  padding-left: 28px;
+}
+
+button.swatch::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--swatch);
+  transform: translateY(-50%);
+}
+
+/* A palette entry: the class title and its port count, dragged like the block it adds. */
+button.class {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  min-height: 34px;
+  padding: 8px 10px;
+  cursor: grab;
+  text-align: left;
+}
+
+button.class:active {
+  cursor: grabbing;
+}
+
+button.class .title {
+  font-weight: 650;
+}
+
+button.class .ports {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+#statusbar {
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 36px;
+  padding: 8px 14px;
+  overflow: hidden;
+}
+
+.field {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.field.grow {
+  flex: 1;
+}
+
+.field .key {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.field .value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#hover,
+#selection {
+  max-width: 24ch;
+}
+
+#fps {
+  min-width: 7ch;
+  font-variant-numeric: tabular-nums;
+}
+
+#proposal.refused {
+  color: var(--refused);
+}
+
+.fatal {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+}
+
+.fatal h2 {
+  margin: 0;
+  color: var(--active);
+}
+
+.fatal p {
+  margin: 0;
+}
+
+.fatal .hint {
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button {
+    transition: none;
+  }
+}
+
+@media (max-width: 900px) {
+  #palette {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  #hud {
+    top: auto;
+    right: 12px;
+    bottom: 64px;
+    left: 12px;
+    width: auto;
+    max-height: 46vh;
+  }
+
+  #statusbar {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+  }
+
+  #hover,
+  #selection {
+    max-width: 16ch;
+  }
+}

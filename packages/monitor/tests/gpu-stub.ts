@@ -87,6 +87,8 @@ export interface GpuStub {
   loseDevice(reason?: string, message?: string, device?: GPUDevice): void;
   /** Run pending rAF callbacks once, then settle microtasks. */
   frame(): Promise<void>;
+  /** The number of animation frames requested and not yet run or cancelled. */
+  pendingFrames(): number;
   teardown(): void;
 }
 
@@ -456,6 +458,7 @@ export function installGpuStub(): GpuStub {
       await Promise.resolve();
       await Promise.resolve();
     },
+    pendingFrames: () => pending.size,
     teardown: () => {
       HTMLCanvasElement.prototype.getContext = originals.getContext;
       for (const [key, descriptor] of Object.entries(originals)) {

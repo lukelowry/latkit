@@ -8,6 +8,10 @@ export type { DeviceLease, DevicePool } from './pool.js';
 /** WebGPU canvas configuration, sizing, and observation. */
 export { createPresentation } from './presentation.js';
 
+/** One canvas's frame scheduler. */
+export { createFrameLoop } from './frame.js';
+export type { Frame, FrameLoop } from './frame.js';
+
 /** Adapter-selection options. */
 export type { Options } from './device.js';
 

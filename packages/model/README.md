@@ -4,7 +4,7 @@ The immutable, columnar description of a network and its element classes that a 
 once and every latkit renderer and view consumes directly, plus the byte form that lets it cross a
 process boundary lazily.
 
-Six nouns:
+Seven nouns:
 
 | Noun      | What it is                                                                                |
 | --------- | ----------------------------------------------------------------------------------------- |
@@ -14,11 +14,13 @@ Six nouns:
 | A run     | What any engine emits: `RunUpdate`s whose frames `collect` into a `Series`                |
 | `Results` | What a run leaves behind: its recorded samples, read back class by class as those batches |
 | `Source`  | The same model as bytes: one core plus one shard per class, owned by whoever asks         |
+| `Netlist` | A block diagram's structure: blocks, the ports each owns, and the nets that join ports    |
 
 `Topology` and `Item` are field-for-field the shapes `@latkit/network` loads and picks, so a model
 never adapts for a renderer. `Domain` is the `[min, max]` every renderer takes; `extent` scans one,
 `validateDomain` checks one, and `validateTopology` checks a topology, all before a device exists.
-The package has no dependencies, I/O, or rendering.
+`Netlist` is likewise the shape `@latkit/diagram` loads, and `validateNetlist` checks one. The
+package has no dependencies, I/O, or rendering.
 
 ## Produce a model
 
@@ -77,6 +79,31 @@ network.on('select', (item) => {
 
 const grid = createGrid(bus.labels, bus.columns);
 const { rows, total } = await grid.window('north', { column: 'Vm', dir: 'desc' }, 0, 50);
+```
+
+## Describe a diagram
+
+A `Netlist` is a block diagram's structure as columns: blocks, the ports each block owns
+(`portStart` offsets), and the nets that join ports (`netStart` offsets into `netPorts`). A net has
+at most one `out` port, its driver, and a port joins at most one net. Placement is not structure;
+`blockKey` keeps each block's position, placement, and selection across reloads.
+
+```ts
+import { validateNetlist, type Netlist } from '@latkit/model';
+
+// TGOV1 drives pmech, IEEET1 drives efd, GENROU's speed feeds both back.
+const unit: Netlist = {
+  blockCount: 3,
+  blockKey: ['Genrou/1_1_genrou', 'Tgov1/1_1_tgov1', 'Ieeet1/1_1_ieeet1'],
+  blockTitle: ['GENROU', 'TGOV1', 'IEEET1'],
+  portStart: Uint32Array.of(0, 3, 5, 7),
+  portFlow: Uint8Array.of(0, 0, 1, /* tgov1 */ 0, 1, /* ieeet1 */ 0, 1),
+  portLabel: ['pmech', 'efd', 'speed', 'speed', 'pmech', 'speed', 'efd'],
+  netStart: Uint32Array.of(0, 2, 4, 7),
+  netPorts: Uint32Array.of(4, 0, /* efd */ 6, 1, /* speed */ 2, 3, 5),
+  netLabel: ['1_1_pmech', '1_1_efd', '1_1_speed'],
+};
+validateNetlist(unit);
 ```
 
 ## Name what a host shows

@@ -1,4 +1,4 @@
-/* global GPUTextureUsage, GPUBufferUsage, GPUMapMode */
+/* global GPUTextureUsage, GPUBufferUsage, GPUMapMode, requestAnimationFrame */
 import { createSeries, bakeColormap } from '../../model/src/index.ts';
 import { LanePainter } from '../src/painter.ts';
 import { Lane } from '../src/lane.ts';
@@ -61,6 +61,9 @@ export async function checkGpu() {
             rendered() {
               clearTimeout(timeout);
               resolve();
+            },
+            present() {
+              requestAnimationFrame(() => lane.frame());
             },
           },
         );

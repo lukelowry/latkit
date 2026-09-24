@@ -4,8 +4,8 @@ Core WebGPU device and canvas presentation primitives for Latkit.
 
 `@latkit/gpu` handles the environmental part of requesting a device and then
 returns the platform `GPUDevice` directly. It also provides the shared
-presentation implementation used by Latkit renderers. All exports come from the
-single `@latkit/gpu` entrypoint.
+presentation implementation and frame loop used by Latkit renderers. All exports
+come from the single `@latkit/gpu` entrypoint.
 
 ## Install
 
@@ -113,7 +113,8 @@ preserves aspect ratio when fitting oversized requests to the device limit,
 restores the original canvas size when destroyed, and never destroys its
 borrowed device. `presentation.observe()` reports device-pixel size and pixel
 ratio now and on every change of an HTML canvas (an `OffscreenCanvas` reports
-once) while leaving scheduling and resize policy to the renderer:
+once) while leaving scheduling and resize policy to the renderer, or to
+`createFrameLoop()` below:
 
 ```ts
 const stop = presentation.observe((width, height, pixelRatio) => {
@@ -121,4 +122,41 @@ const stop = presentation.observe((width, height, pixelRatio) => {
 });
 // ...
 stop();
+```
+
+## Drive frames
+
+`createFrameLoop()` schedules one canvas's frames: wakes coalesce into one animation frame, a
+resize re-renders before the next paint, and the backing store grows in steps of 64 device pixels
+while a resize is in flight and snaps exact once the size holds for three frames. `render`
+receives the same `Frame` every call (read it, never keep it) and returns true to be called again
+next frame:
+
+```ts
+import { createFrameLoop, createPresentation } from '@latkit/gpu';
+
+const presentation = createPresentation(device, canvas);
+const loop = createFrameLoop(presentation, ({ now, width, height, backingScale, settled }) => {
+  // Draw the frame at width x height CSS pixels into presentation.context.getCurrentTexture().
+  return animating(now); // true keeps frames coming; false waits for the next wake
+});
+
+loop.wake(); // after any change that should be drawn
+loop.pause(); // while the view is hidden; resume() schedules a frame
+loop.destroy(); // for good, and stop observing the canvas
+```
+
+Every size report after the synchronous first one renders a frame, woken or not, and that
+includes the observer's initial notification: be ready to draw the current state once the loop
+exists. A canvas without area skips its frame until a resize gives it one. A `render` that
+pauses or destroys the loop stops it, and wakes while paused are dropped: `resume()` schedules
+the next frame.
+
+A renderer that repaints everything whenever the backing size changes gains nothing from those
+steps and would repaint twice per resize (rounded up, then exact). It passes
+`{ quantize: false }` so the backing store follows the exact size on every frame and `settled` is
+always true:
+
+```ts
+const loop = createFrameLoop(presentation, render, { quantize: false });
 ```
