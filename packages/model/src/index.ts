@@ -18,7 +18,7 @@ export type {
 } from './model.js';
 export { createModel, elementAt, itemOf, validateTopology } from './model.js';
 
-export type { Netlist } from './netlist.js';
+export type { Netlist, Part } from './netlist.js';
 export { validateNetlist } from './netlist.js';
 
 export type { Domain } from './domain.js';

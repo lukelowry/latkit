@@ -151,12 +151,3 @@ includes the observer's initial notification: be ready to draw the current state
 exists. A canvas without area skips its frame until a resize gives it one. A `render` that
 pauses or destroys the loop stops it, and wakes while paused are dropped: `resume()` schedules
 the next frame.
-
-A renderer that repaints everything whenever the backing size changes gains nothing from those
-steps and would repaint twice per resize (rounded up, then exact). It passes
-`{ quantize: false }` so the backing store follows the exact size on every frame and `settled` is
-always true:
-
-```ts
-const loop = createFrameLoop(presentation, render, { quantize: false });
-```

@@ -244,6 +244,17 @@ describe('createChannels', () => {
     expect(uniforms.channel.vColorScale).toBe(1);
   });
 
+  it('stores float64 values as float32 and rejects other arrays', () => {
+    const { channels, renderer } = make();
+    channels.set('vertexColor', Float64Array.of(0, 0.5, 1));
+    const uploaded = renderer.writeChannel.mock.calls[0]![1] as Float32Array;
+    expect(uploaded).toBeInstanceOf(Float32Array);
+    expect(uploaded).toEqual(Float32Array.of(0, 0.5, 1));
+    expect(channels.values('vertexColor')).toEqual(Float32Array.of(0, 0.5, 1));
+    expect(() => channels.set('vertexColor', Int32Array.of(0, 1, 2) as never)).toThrow(TypeError);
+    expect(() => channels.set('vertexColor', [0, 1, 2] as never)).toThrow(TypeError);
+  });
+
   it('leaves CPU and uniform state unchanged when the upload fails', () => {
     const { channels, renderer, uniforms } = make();
     const original = new Float32Array([0, 0.5, 1]);

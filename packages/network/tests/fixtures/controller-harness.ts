@@ -231,6 +231,7 @@ export class FakeFrameLoop {
   destroy = vi.fn();
 
   frame(vp: Viewport = this.viewport, sizeSettled = true, now = performance.now()): void {
+    this.deps?.advance?.(now);
     this.deps?.onBeforeFrame?.(vp, now);
     this.deps?.onFrame?.(sizeSettled);
   }

@@ -980,6 +980,14 @@ describe('Scene visibility', () => {
     expect(routing(h.scene)).toBe(wires);
   });
 
+  it('shows only values above zero', () => {
+    const h = loaded(twoArea());
+    h.channels.set('blockVisible', Float32Array.of(-1, Number.NaN, 1));
+    h.scene.visibilityChanged();
+    expect([0, 1, 2].map((b) => h.scene.blockVisible(b))).toEqual([false, false, true]);
+    expect(h.scene.picker.pick(...center(h.scene, 1), 0)).not.toContain(block(1));
+  });
+
   it('frames only shown members, and no group when none shows', () => {
     const h = loaded(plant('steam'));
     const whole = frame(h.scene, 0);

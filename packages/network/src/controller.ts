@@ -208,7 +208,8 @@ export interface Network {
    */
   load(topology: Topology, options?: { readonly fit?: boolean }): void;
   /**
-   * Replace the optional geographic border overlay, drawn only over a geographic topology.
+   * Replace the optional geographic border overlay, drawn only over a geographic topology. The
+   * payload already set is a no-op.
    *
    * @param borders - Packed border geometry, or `null` to clear borders.
    * @throws Error when the geometry violates the border layout.
@@ -239,12 +240,16 @@ export interface Network {
    *
    * @param channel - Channel name to bind.
    * @param values - Values whose length matches the current topology (`vertexCount * 2` for
-   * `vertexPosition`), or `null` to clear.
+   * `vertexPosition`), stored as float32, or `null` to clear.
    * @param domain - Input domain for normalized channels, or `null` for scanned/default behavior.
    * @throws Error when values are given before a topology is loaded or their length is invalid;
-   * `null` is always accepted.
+   * TypeError when they are not a Float32Array or Float64Array. `null` is always accepted.
    */
-  setChannel(channel: Channel, values: Float32Array | null, domain?: Domain | null): void;
+  setChannel(
+    channel: Channel,
+    values: Float32Array | Float64Array | null,
+    domain?: Domain | null,
+  ): void;
   /**
    * Override the input domain used by a normalized channel.
    *
@@ -1095,6 +1100,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         uniforms,
         renderer,
         rig,
+        advance: (now) => orbit.advance(now),
         onZoom: (atFitView) => stageFitNotice(atFitView),
         onBeforeFrame: (frameVp, now) => {
           daylight.refresh(display.sunTime ?? Date.now());
@@ -1106,7 +1112,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
           resolveHover(sizeSettled);
         },
         onPaint: () => onSuccessfulPaint(),
-        animating: () => shadeAnimating,
+        animating: () => shadeAnimating || orbit.active,
         // The shade's tick is host code: a pause, detach, or destroy from it ends the frame.
         live: () => binding?.generation === own && !consumerPaused && pageVisible,
       });
@@ -1398,6 +1404,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     },
 
     setBorders(next) {
+      if (next === borders) return;
       // Validate through a renderer when one is bound; a detached controller validates at attach.
       binding?.renderer.setBorders(next);
       borders = next;
@@ -1409,9 +1416,12 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     },
 
     setChannel(channel, values, domain) {
-      if (channel === 'vertexPosition') setPositions(values);
-      else if (values === null) channels.clear(channel);
-      else channels.set(channel, values, domain);
+      if (channel === 'vertexPosition') {
+        if (values === null && !layoutOverridden) return;
+        setPositions(values);
+      } else if (values === null) {
+        if (!channels.clear(channel)) return;
+      } else channels.set(channel, values, domain);
       if (isPickChannel(channel)) hoverDirty = true;
       repaint();
     },
@@ -1597,8 +1607,9 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         orbit.stop();
         return false;
       }
-      if (!topology || reduced()) return false;
-      return orbit.start();
+      if (!topology || reduced() || !orbit.start()) return false;
+      repaint();
+      return true;
     },
 
     pause() {
@@ -1641,7 +1652,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
    * The globe draws precomputed geometry, so it leaves the availability set while the layout is
    * overridden and comes back when the topology's layout is restored.
    */
-  function setPositions(values: Float32Array | null): void {
+  function setPositions(values: Float32Array | Float64Array | null): void {
     if (!scene) {
       if (values === null) return; // nothing to restore, as clearing any other channel
       throw new Error('network topology must be loaded before binding channels');
@@ -1677,7 +1688,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     (active) => {
       if (!destroyed) events.emit('orbit', active);
     },
-    { rate: () => display.orbitRate },
+    () => display.orbitRate,
   );
 
   /** Warms currently supported inactive projections in serial build order. */

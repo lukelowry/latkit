@@ -1,3 +1,4 @@
+import { breathe } from './breathe.js';
 import { validateDomain, type Domain } from './domain.js';
 import { createEmitter } from './emitter.js';
 import type { RunFrames } from './run.js';
@@ -259,7 +260,7 @@ export function createSeries(input: {
         const start = signalIndex * chunk.signalStride + row * chunk.stride + elementOffset;
         if (count) values.set(chunk.values.subarray(start, start + count), f * count);
         if (f > 0 && f % Math.max(1, Math.floor(65536 / Math.max(1, count))) === 0) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          await breathe();
           signal?.throwIfAborted();
         }
       }

@@ -233,7 +233,7 @@ describe('source service: run', () => {
     expect(drain).toHaveBeenCalledTimes(2);
   });
 
-  it('cancelling aborts the runner and ends the stream without throwing', async () => {
+  it('cancelling aborts the runner and ends the stream with cancelled', async () => {
     const [server, client] = loopback();
     let aborted = false;
     serveSource(server, {
@@ -256,7 +256,7 @@ describe('source service: run', () => {
       updates.push(update);
       controller.abort();
     }
-    expect(updates).toEqual([{ type: 'started', id: 'r' }]);
+    expect(updates).toEqual([{ type: 'started', id: 'r' }, { type: 'cancelled' }]);
     await vi.waitFor(() => expect(aborted).toBe(true));
   });
 

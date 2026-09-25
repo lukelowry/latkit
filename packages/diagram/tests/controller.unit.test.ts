@@ -21,7 +21,6 @@ import {
 } from '../src/webgpu/buffers.js';
 import {
   DISPLAY_ARROWS,
-  DISPLAY_EDIT,
   DISPLAY_GRID,
   DISPLAY_JUNCTIONS,
   DISPLAY_LABELS,
@@ -755,6 +754,17 @@ describe('load', () => {
 });
 
 describe('channels', () => {
+  it('clears an unbound channel without a frame and still rejects an unknown one', async () => {
+    const h = await loaded();
+    h.loop.wake.mockClear();
+    h.diagram.setChannel('netColor', null);
+    expect(h.loop.wake).not.toHaveBeenCalled();
+    h.diagram.setChannel('netColor', Float32Array.of(0, 1));
+    h.diagram.setChannel('netColor', null);
+    expect(h.loop.wake).toHaveBeenCalledTimes(2);
+    expect(() => h.diagram.setChannel('vertexColor' as never, null)).toThrow(/unknown/);
+  });
+
   it('throws before a load unless clearing, and checks lengths', async () => {
     const h = await makeHarness();
     expect(() => h.diagram.setChannel('netColor', Float32Array.of(1))).toThrow(/loaded/);
@@ -1298,7 +1308,7 @@ describe('options', () => {
       colormap: red,
     });
     h.frame();
-    expect(h.renderer.mirrors.uniforms.u32[W_FLAGS]).toBe(DISPLAY_REDUCED | DISPLAY_EDIT);
+    expect(h.renderer.mirrors.uniforms.u32[W_FLAGS]).toBe(DISPLAY_REDUCED);
     expect(h.renderer.last!.glyphs).toBe(0);
     const lut = h.renderer.writeColormap.mock.lastCall![0];
     expect(Array.from(lut.subarray(lut.length - 4))).toEqual([255, 0, 0, 255]);
@@ -1352,6 +1362,27 @@ describe('options', () => {
     h.diagram.setOptions({ fontFamily: 'Fira Code' });
     h.frame();
     expect(h.rasterizer.draws.at(-1)!.font).toContain('Fira Code');
+  });
+
+  it('redraws text once a web font finishes loading, while attached', async () => {
+    const fonts = new EventTarget();
+    Object.defineProperty(document, 'fonts', { configurable: true, value: fonts });
+    try {
+      const h = await loaded();
+      const drawn = h.rasterizer.draws.length;
+      fonts.dispatchEvent(new Event('loadingdone'));
+      h.frame();
+      expect(h.rasterizer.draws.length).toBeGreaterThan(drawn);
+
+      h.diagram.detach();
+      const detached = h.rasterizer.draws.length;
+      h.loop.wake.mockClear();
+      fonts.dispatchEvent(new Event('loadingdone'));
+      expect(h.loop.wake).not.toHaveBeenCalled();
+      expect(h.rasterizer.draws).toHaveLength(detached);
+    } finally {
+      delete (document as { fonts?: unknown }).fonts;
+    }
   });
 
   it('re-fits a camera at its fit on new fit padding', async () => {

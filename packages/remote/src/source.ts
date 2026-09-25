@@ -52,6 +52,19 @@ function adopt(next: Served | Promise<Served>): Promise<Served> {
   return served;
 }
 
+/** A remote run's updates, ended with `cancelled` when an abort stops the stream first. */
+async function* settled(
+  updates: AsyncIterable<RunUpdate>,
+  signal: AbortSignal | undefined,
+): AsyncGenerator<RunUpdate> {
+  let ended = false;
+  for await (const update of updates) {
+    ended = update.type === 'done' || update.type === 'cancelled' || update.type === 'failed';
+    yield update;
+  }
+  if (!ended && signal?.aborted) yield { type: 'cancelled' };
+}
+
 /** A run that can no longer start: its remote was superseded. */
 function superseded(): AsyncIterable<RunUpdate> {
   return {
@@ -159,7 +172,8 @@ export async function connectSource(port: Port): Promise<RemoteSource> {
     // may be started again from the same bytes; the reopen bytes are copied once and the copy
     // is transferred, so a large edited case still crosses without a second copy.
     const runner: Runner = {
-      run: (command, signal) => (live() ? runs.stream(command, { signal }) : superseded()),
+      run: (command, signal) =>
+        live() ? settled(runs.stream(command, { signal }), signal) : superseded(),
     };
     return {
       source: {

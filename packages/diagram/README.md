@@ -111,19 +111,19 @@ channel clears too.
 | --------------- | ----- | ------------------------------------------------------------------- |
 | `blockPosition` | block | `x, y` top-left corner; a NaN pair hands a block back to its layout |
 | `blockColor`    | block | Normalized through its domain onto the colormap                     |
-| `blockVisible`  | block | `0` hides the block, its ports, and its labels                      |
+| `blockVisible`  | block | Above `0` shows the block, its ports, and its labels                |
 | `blockStatus`   | block | `0` none; `k > 0` rings the block in `statusColors[k - 1]`, clamped |
 | `blockShade`    | block | One scalar per block for a shade, as `Fragment.value`               |
 | `portStatus`    | port  | As `blockStatus`, per port                                          |
 | `netColor`      | net   | Normalized through its domain onto the colormap                     |
 | `netFlow`       | net   | Signed dash speed: `0` still, negative marches toward the driver    |
-| `netVisible`    | net   | `0` hides the net                                                   |
+| `netVisible`    | net   | Above `0` shows the net                                             |
 | `netShade`      | net   | One scalar per net for a shade, as `Fragment.value` on its wires    |
 
-`blockColor` and `netColor` take an input domain and normalize `[0, 1]` without one. Without them
-blocks fill with `blockBaseColor` and wires with `netBaseColor`. `setChannelDomain` moves a domain
-without re-uploading values, and `getChannelDomain` reads the one in effect; the other channels
-are raw and ignore a domain.
+`blockColor` and `netColor` take an input domain and normalize `[0, 1]` without one. Without them,
+or for a NaN value, blocks fill with `blockBaseColor` and wires with `netBaseColor`.
+`setChannelDomain` moves a domain without re-uploading values, and `getChannelDomain` reads the
+one in effect; the other channels are raw and ignore a domain.
 
 ```ts
 diagram.setChannel('blockColor', loading, [0, 1.2]);

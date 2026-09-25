@@ -1,11 +1,6 @@
 import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
-import {
-  createDiagram,
-  type Events,
-  type Interaction,
-  type Options,
-  type Part,
-} from '@latkit/diagram';
+import { createDiagram, type Events, type Interaction, type Options } from '@latkit/diagram';
+import type { Part } from '@latkit/model';
 import { CLASS_NAMES, CLASSES, isClassName, type ClassName, type PortSpec } from './classes.js';
 import {
   apply,

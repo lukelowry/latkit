@@ -108,10 +108,19 @@ describe('createChannels', () => {
       'diagram channel blockPosition length 3 != 6',
     );
     expect(() => channels.set('portStatus', [0, 0, 0, 0, 0, 0, 0] as never)).toThrow(TypeError);
+    expect(() => channels.set('netColor', Int32Array.of(1, 2) as never)).toThrow(TypeError);
     expect(() => channels.set('netColor', Float32Array.of(1, 2), [2, 1])).toThrow(RangeError);
     expect(channels.values('netColor')).toBeNull();
     expect(record(uniforms, 'netColor').on).toBe(0);
     expect(mirror.dirtyTo).toBe(0);
+  });
+
+  it('stores float64 values as float32', () => {
+    const { channels } = make();
+    channels.set('netColor', Float64Array.of(0.25, Number.NaN));
+    channels.set('blockPosition', Float64Array.of(1, 2, 3, 4, 5, 6));
+    expect(channels.values('netColor')).toEqual(Float32Array.of(0.25, Number.NaN));
+    expect(channels.values('blockPosition')).toEqual(Float32Array.of(1, 2, 3, 4, 5, 6));
   });
 
   it('writes a slot channel into its mirror slot and turns it on', () => {

@@ -82,11 +82,12 @@ for (const definition of Object.values(definitions)) Object.freeze(definition);
  *
  * @remarks
  * `blockPosition` places blocks: `x, y` top-left corners, a NaN pair handing a block back to its
- * automatic position. `blockVisible` and `netVisible` hide an item at `0`. `blockStatus` and
- * `portStatus` take integers: `0` is none, `k > 0` rings the item in status color `k`.
+ * automatic position. `blockVisible` and `netVisible` show only values above zero. `blockStatus`
+ * and `portStatus` take integers: `0` is none, `k > 0` rings the item in status color `k`.
  * `netFlow` is a signed dash speed: `0` still, negative marching toward the driver. The shade
  * channels reach a `Shade` as `Fragment.value`. `blockColor` and `netColor` normalize through
- * their domain, `[0, 1]` unless one is given, onto the colormap.
+ * their domain, `[0, 1]` unless one is given, onto the colormap. NaN is no value: a color,
+ * status, or flow channel draws an item whose value is NaN as it would unbound.
  */
 export const CHANNELS: Readonly<typeof definitions> = Object.freeze(definitions);
 
@@ -168,9 +169,9 @@ export interface Channels {
    * @throws Error before a load or for a wrong length; RangeError or TypeError for a bad domain.
    * Nothing changes when it throws.
    */
-  set(channel: Channel, values: Float32Array, domain?: Domain | null): void;
-  /** Unbind a channel; its slot stays allocated and turns off. */
-  clear(channel: Channel): void;
+  set(channel: Channel, values: Float32Array | Float64Array, domain?: Domain | null): void;
+  /** Unbind a channel; its slot stays allocated and turns off. False when nothing was bound. */
+  clear(channel: Channel): boolean;
   /**
    * Override the input domain of a normalized channel, or return to its own with `null`; a raw
    * channel ignores it.
@@ -226,11 +227,18 @@ export function createChannels(mirror: Mirror, uniforms: Uniforms): Channels {
     for (const channel of SLOTS) writeRecord(channel);
   }
 
-  function set(channel: Channel, values: Float32Array, domain?: Domain | null): void {
+  function set(
+    channel: Channel,
+    values: Float32Array | Float64Array,
+    domain?: Domain | null,
+  ): void {
     const def = channelDefinition(channel);
     if (!counts) throw new Error('diagram netlist must be loaded before binding channels');
-    if (Object.prototype.toString.call(values) !== '[object Float32Array]') {
-      throw new TypeError(`diagram channel ${channel} values must be a Float32Array`);
+    const tag = Object.prototype.toString.call(values);
+    if (tag !== '[object Float32Array]' && tag !== '[object Float64Array]') {
+      throw new TypeError(
+        `diagram channel ${channel} values must be a Float32Array or Float64Array`,
+      );
     }
     const expected = itemsOf(def.scope, counts) * def.components;
     if (values.length !== expected) {
@@ -241,7 +249,7 @@ export function createChannels(mirror: Mirror, uniforms: Uniforms): Channels {
     if (channel === 'blockPosition') {
       const snapshot = bound.get(channel);
       if (snapshot) snapshot.set(values);
-      else bound.set(channel, values.slice());
+      else bound.set(channel, Float32Array.from(values));
       return;
     }
     const offset = layout.offsets[SLOT[channel]]!;
@@ -256,12 +264,14 @@ export function createChannels(mirror: Mirror, uniforms: Uniforms): Channels {
     writeRecord(channel);
   }
 
-  function clear(channel: Channel): void {
+  function clear(channel: Channel): boolean {
     channelDefinition(channel);
+    if (!bound.has(channel) && !data.has(channel) && !override.has(channel)) return false;
     bound.delete(channel);
     data.delete(channel);
     override.delete(channel);
     if (channel !== 'blockPosition') writeRecord(channel);
+    return true;
   }
 
   function setDomain(channel: Channel, domain: Domain | null): void {

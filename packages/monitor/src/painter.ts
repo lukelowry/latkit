@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 import type { Presentation } from '@latkit/gpu';
-import { COLORMAP_LUT_SIZE, type RGBA } from '@latkit/model';
+import { COLORMAP_LUT_SIZE, position, type Domain, type RGBA } from '@latkit/model';
 import segmentWgsl from './gpu/segment.wgsl?raw';
 import compositeWgsl from './gpu/composite.wgsl?raw';
 
@@ -21,7 +21,22 @@ export interface UniformValues {
   readonly focusColor: RGBA;
 }
 
-/** Ordered uploads and draws over bounded history and focus slabs. Owns no device or canvas. */
+/** History and focus targets at one size, and the time and value ranges drawn into them. */
+interface Image {
+  readonly history: GPUTexture;
+  readonly focus: GPUTexture;
+  readonly historyView: GPUTextureView;
+  readonly focusView: GPUTextureView;
+  readonly width: number;
+  readonly height: number;
+  range: Domain | null;
+  domain: Domain | null;
+}
+
+/**
+ * Ordered uploads and draws over bounded history and focus slabs. Owns no device or canvas. The
+ * shown image stays on screen, mapped into the current view, while a rebuild draws its successor.
+ */
 export class LanePainter {
   readonly device: GPUDevice;
   readonly windowValueCapacity: number;
@@ -36,13 +51,11 @@ export class LanePainter {
   readonly #sampler: GPUSampler;
   readonly #historyUniform: GPUBuffer;
   readonly #focusUniform: GPUBuffer;
-  readonly #opacity: GPUBuffer;
+  readonly #compositeUniform: GPUBuffer;
   readonly #uniform = new ArrayBuffer(32);
-  readonly #alpha = new Float32Array(4);
-  #history: GPUTexture;
-  #focus: GPUTexture;
-  #historyView: GPUTextureView;
-  #focusView: GPUTextureView;
+  readonly #compositeValues = new Float32Array(8);
+  #shown: Image;
+  #drawing: Image | null = null;
   #compositeGroup: GPUBindGroup | null = null;
   #slabs: GPUBuffer[] = [];
   #historyGroup: GPUBindGroup | null = null;
@@ -85,19 +98,16 @@ export class LanePainter {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     this.#sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
-    const uniform = (label: string, size = 32) =>
+    const uniform = (label: string) =>
       device.createBuffer({
         label,
-        size,
+        size: 32,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
     this.#historyUniform = uniform('monitor-uniform');
     this.#focusUniform = uniform('monitor-focus-uniform');
-    this.#opacity = uniform('monitor-opacity', 16);
-    this.#history = this.#texture('monitor-history');
-    this.#focus = this.#texture('monitor-focus-history');
-    this.#historyView = this.#history.createView();
-    this.#focusView = this.#focus.createView();
+    this.#compositeUniform = uniform('monitor-composite');
+    this.#shown = this.#image();
     const composite = device.createShaderModule({
       label: 'monitor-composite',
       code: compositeWgsl,
@@ -108,6 +118,11 @@ export class LanePainter {
       vertex: { module: composite, entryPoint: 'vertex' },
       fragment: { module: composite, entryPoint: 'fragment', targets: [{ format }] },
     });
+  }
+
+  /** Whether draws land in an image not yet shown. */
+  get offscreen(): boolean {
+    return this.#drawing !== null;
   }
 
   writeColormap(lut: Uint8Array): void {
@@ -192,10 +207,15 @@ export class LanePainter {
   #draw(focus: boolean, instances: number, first: number): void {
     const group = focus ? this.#focusGroup : this.#historyGroup;
     if (!instances || !group) return;
+    const target = this.#drawing ?? this.#shown;
     const encoder = this.device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [
-        { view: focus ? this.#focusView : this.#historyView, loadOp: 'load', storeOp: 'store' },
+        {
+          view: focus ? target.focusView : target.historyView,
+          loadOp: 'load',
+          storeOp: 'store',
+        },
       ],
     });
     pass.setPipeline(focus ? this.#focusPipeline : this.#historyPipeline);
@@ -205,11 +225,44 @@ export class LanePainter {
     this.device.queue.submit([encoder.finish()]);
   }
 
-  clearHistory(): void {
-    this.#clear(this.#historyView);
+  /**
+   * Draw from nothing over `range` and `domain` at the current size: in place while nothing is
+   * shown, else into a new image that `commit` shows.
+   */
+  beginRebuild(range: Domain, domain: Domain): void {
+    let target: Image;
+    if (this.#shown.range === null) {
+      if (!this.#fits(this.#shown)) this.#show(this.#image());
+      target = this.#shown;
+    } else {
+      if (!this.#drawing || !this.#fits(this.#drawing)) {
+        this.#drop(this.#drawing);
+        this.#drawing = this.#image();
+      }
+      target = this.#drawing;
+    }
+    target.range = range;
+    target.domain = domain;
+    this.#clear(target.historyView);
+    this.#clear(target.focusView);
+  }
+  /** Show the image a rebuild drew. */
+  commit(): void {
+    if (!this.#drawing) return;
+    const drawn = this.#drawing;
+    this.#drawing = null;
+    this.#show(drawn);
+  }
+  /** Forget both images: nothing is shown until the next rebuild. */
+  reset(): void {
+    this.#drop(this.#drawing);
+    this.#drawing = null;
+    this.#shown.range = this.#shown.domain = null;
+    this.#clear(this.#shown.historyView);
+    this.#clear(this.#shown.focusView);
   }
   clearFocus(): void {
-    this.#clear(this.#focusView);
+    this.#clear((this.#drawing ?? this.#shown).focusView);
   }
   #clear(view: GPUTextureView): void {
     const encoder = this.device.createCommandEncoder();
@@ -221,15 +274,35 @@ export class LanePainter {
     this.device.queue.submit([encoder.finish()]);
   }
 
-  present(alpha = 1): void {
-    this.#alpha[0] = alpha;
-    this.device.queue.writeBuffer(this.#opacity, 0, this.#alpha);
+  /**
+   * Composite the shown image, mapped from the ranges it was drawn over into `range` and
+   * `domain`.
+   */
+  present(alpha = 1, range: Domain | null = null, domain: Domain | null = null): void {
+    const map = this.#compositeValues,
+      shown = this.#shown;
+    if (shown.range && shown.domain && range && domain) {
+      const x0 = position(range[0], shown.range),
+        x1 = position(range[1], shown.range);
+      const y0 = position(domain[0], shown.domain),
+        y1 = position(domain[1], shown.domain);
+      map[0] = x1 - x0;
+      map[1] = y1 - y0;
+      map[2] = x0;
+      map[3] = 1 - y1;
+    } else {
+      map[0] = map[1] = 1;
+      map[2] = map[3] = 0;
+    }
+    map[4] = alpha;
+    this.device.queue.writeBuffer(this.#compositeUniform, 0, map);
     this.#compositeGroup ??= this.device.createBindGroup({
       layout: this.#composite.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: this.#historyView },
-        { binding: 1, resource: this.#focusView },
-        { binding: 2, resource: { buffer: this.#opacity } },
+        { binding: 0, resource: shown.historyView },
+        { binding: 1, resource: shown.focusView },
+        { binding: 2, resource: { buffer: this.#compositeUniform } },
+        { binding: 3, resource: this.#sampler },
       ],
     });
     const encoder = this.device.createCommandEncoder();
@@ -250,16 +323,10 @@ export class LanePainter {
     this.device.queue.submit([encoder.finish()]);
   }
 
+  /** The size the next rebuild draws at; the shown image stretches to the canvas meanwhile. */
   resize(width: number, height: number): void {
-    this.#history.destroy();
-    this.#focus.destroy();
     this.width = width;
     this.height = height;
-    this.#history = this.#texture('monitor-history');
-    this.#focus = this.#texture('monitor-focus-history');
-    this.#historyView = this.#history.createView();
-    this.#focusView = this.#focus.createView();
-    this.#compositeGroup = null;
   }
   releaseSlabs(): void {
     for (const buffer of this.#slabs) buffer.destroy();
@@ -270,19 +337,44 @@ export class LanePainter {
     if (this.#destroyed) return;
     this.#destroyed = true;
     this.releaseSlabs();
-    this.#history.destroy();
-    this.#focus.destroy();
+    this.#drop(this.#drawing);
+    this.#drop(this.#shown);
     this.#lut.destroy();
-    this.#opacity.destroy();
+    this.#compositeUniform.destroy();
     this.#historyUniform.destroy();
     this.#focusUniform.destroy();
   }
-  #texture(label: string): GPUTexture {
-    return this.device.createTexture({
-      label,
-      size: { width: this.width, height: this.height },
-      format: this.#format,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    });
+  #show(image: Image): void {
+    this.#drop(this.#shown);
+    this.#shown = image;
+    this.#compositeGroup = null;
+  }
+  #fits(image: Image): boolean {
+    return image.width === this.width && image.height === this.height;
+  }
+  #drop(image: Image | null): void {
+    image?.history.destroy();
+    image?.focus.destroy();
+  }
+  #image(): Image {
+    const texture = (label: string) =>
+      this.device.createTexture({
+        label,
+        size: { width: this.width, height: this.height },
+        format: this.#format,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+      });
+    const history = texture('monitor-history');
+    const focus = texture('monitor-focus-history');
+    return {
+      history,
+      focus,
+      historyView: history.createView(),
+      focusView: focus.createView(),
+      width: this.width,
+      height: this.height,
+      range: null,
+      domain: null,
+    };
   }
 }

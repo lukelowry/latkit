@@ -63,7 +63,6 @@ import { Renderer } from './webgpu/renderer.js';
 import {
   createUniforms,
   DISPLAY_ARROWS,
-  DISPLAY_EDIT,
   DISPLAY_GRID,
   DISPLAY_JUNCTIONS,
   DISPLAY_LABELS,
@@ -261,12 +260,16 @@ export interface Diagram {
    *
    * @param channel - Channel name to bind.
    * @param values - One value per item of the channel's scope (two per block for
-   * `blockPosition`), or `null` to clear.
+   * `blockPosition`), stored as float32, or `null` to clear.
    * @param domain - Input domain for `blockColor` and `netColor`, or `null` for `[0, 1]`.
    * @throws Error when values are given before a netlist is loaded or their length is wrong;
-   * `null` is always accepted.
+   * TypeError when they are not a Float32Array or Float64Array. `null` is always accepted.
    */
-  setChannel(channel: Channel, values: Float32Array | null, domain?: Domain | null): void;
+  setChannel(
+    channel: Channel,
+    values: Float32Array | Float64Array | null,
+    domain?: Domain | null,
+  ): void;
   /**
    * Override the input domain of a colormap channel; raw channels accept it as a no-op.
    *
@@ -1312,8 +1315,7 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
       (opts.arrows ? DISPLAY_ARROWS : 0) |
       (opts.junctions ? DISPLAY_JUNCTIONS : 0) |
       (opts.labels ? DISPLAY_LABELS : 0) |
-      (motion ? 0 : DISPLAY_REDUCED) |
-      (opts.interaction === 'edit' ? DISPLAY_EDIT : 0);
+      (motion ? 0 : DISPLAY_REDUCED);
     uniforms.gridPitch = p?.metrics.grid ?? opts.gridPitch;
     uniforms.flowRate = opts.flowRate;
     writeOverlay();
@@ -1432,6 +1434,14 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
       };
       document.addEventListener('visibilitychange', onVisibilityChange);
       lifecycle.add(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+      // A web font that finishes loading replaces the fallback its glyphs were drawn in.
+      const fonts: FontFaceSet | undefined = document.fonts;
+      const onFontsLoaded = (): void => {
+        atlas.setFont(opts.fontFamily);
+        repaint();
+      };
+      fonts?.addEventListener('loadingdone', onFontsLoaded);
+      lifecycle.add(() => fonts?.removeEventListener('loadingdone', onFontsLoaded));
 
       lifecycle.add(forwardDeviceLoss(lease.device, (info) => recover(own, info)));
 
@@ -1639,8 +1649,9 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
     },
 
     setChannel(channel, values, domain) {
-      if (values === null) channels.clear(channel);
-      else channels.set(channel, values, domain);
+      if (values === null) {
+        if (!channels.clear(channel)) return;
+      } else channels.set(channel, values, domain);
       switch (channel) {
         case 'blockPosition':
           scene.placementChanged();

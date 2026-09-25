@@ -96,7 +96,7 @@ export function createMonitor(options: Options = {}): Monitor {
   let colormapLut = bakeColormap(resolved.colormap);
   let series: Series | null = null;
   let signalIndex = 0;
-  let scan: Scan = { frames: 0, range: null };
+  let scan: Scan = { frames: 0, range: null, domain: null };
   let selected: number | null = null;
   let lastReading: Reading | null = null;
   let consumerPaused = false,
@@ -128,10 +128,9 @@ export function createMonitor(options: Options = {}): Monitor {
   function replay(entry: Binding): void {
     forgetLane(entry);
     entry.painter.writeColormap(colormapLut);
+    entry.painter.reset();
     if (!series) {
       entry.painter.releaseSlabs();
-      entry.painter.clearHistory();
-      entry.painter.clearFocus();
       if (!consumerPaused) entry.painter.present();
       return;
     }
@@ -157,9 +156,9 @@ export function createMonitor(options: Options = {}): Monitor {
     if (!consumerPaused) lane.resume();
   }
   /**
-   * Render one frame: adopt a backing size the loop changed (the painter's targets follow the
-   * canvas, and the lane repaints at the new size and line scale), resolve the latest cursor
-   * reading, then present what the lane asked to show.
+   * Render one frame: adopt a backing size the loop changed (the shown image stretches to it, and
+   * the lane repaints at the new size and line scale once the size settles), resolve the latest
+   * cursor reading, then present what the lane asked to show.
    */
   function render(entry: Binding, frame: Frame): boolean {
     if (entry.released || consumerPaused) return false;
@@ -171,11 +170,7 @@ export function createMonitor(options: Options = {}): Monitor {
     if (resized || moved) {
       cancelReadings(entry);
       if (entry.lane) entry.lane.setStyle(style(entry), true);
-      else {
-        painter.clearHistory();
-        painter.clearFocus();
-        painter.present();
-      }
+      else painter.present();
     }
     if (entry.cursorDirty) {
       entry.cursorDirty = false;
@@ -185,7 +180,7 @@ export function createMonitor(options: Options = {}): Monitor {
         events.emit('hover', null);
       }
     }
-    entry.lane?.frame();
+    entry.lane?.frame(frame.settled);
     return false;
   }
   async function reading(entry: Binding, selecting: boolean): Promise<void> {
@@ -218,7 +213,7 @@ export function createMonitor(options: Options = {}): Monitor {
           applySelection(result.element);
           events.emit('select', result);
         }
-      } else if (!sameReading(result, lastReading)) {
+      } else if (!sameSample(result, lastReading)) {
         lastReading = result;
         events.emit('hover', result);
       }
@@ -251,13 +246,7 @@ export function createMonitor(options: Options = {}): Monitor {
       const painter = new LanePainter(presentation, canvas.width, canvas.height);
       lifecycle.add(() => painter.destroy());
       let entry: Binding | null = null;
-      // The history targets match the canvas exactly and any size change repaints the whole
-      // history, so a backing store rounded up during a resize would only repaint it twice.
-      const loop = createFrameLoop(
-        presentation,
-        (frame) => (entry ? render(entry, frame) : false),
-        { quantize: false },
-      );
+      const loop = createFrameLoop(presentation, (frame) => (entry ? render(entry, frame) : false));
       lifecycle.add(() => loop.destroy());
       if (consumerPaused) loop.pause();
       const built: Binding = {
@@ -394,7 +383,7 @@ export function createMonitor(options: Options = {}): Monitor {
       }
       series = next;
       signalIndex = index;
-      scan = { frames: 0, range: null };
+      scan = { frames: 0, range: null, domain: null };
       lastReading = null;
       if (selected !== null && storedElement(next, selected) === null) selected = null;
       if (binding) replay(binding);
@@ -440,7 +429,7 @@ export function createMonitor(options: Options = {}): Monitor {
       series = null;
       selected = null;
       lastReading = null;
-      scan = { frames: 0, range: null };
+      scan = { frames: 0, range: null, domain: null };
       if (binding) replay(binding);
     },
     pause() {
@@ -537,16 +526,9 @@ function describe(error: unknown): string {
 function clamp(x: number): number {
   return Math.max(0, Math.min(1, x));
 }
-function sameReading(a: Reading | null, b: Reading | null): boolean {
+function sameSample(a: Reading | null, b: Reading | null): boolean {
   return (
     a === b ||
-    (!!a &&
-      !!b &&
-      a.signal === b.signal &&
-      a.element === b.element &&
-      a.frame === b.frame &&
-      a.value === b.value &&
-      a.x === b.x &&
-      a.y === b.y)
+    (!!a && !!b && a.signal === b.signal && a.element === b.element && a.frame === b.frame)
   );
 }

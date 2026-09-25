@@ -70,9 +70,10 @@ break traces, and segments crossing the display boundary are clipped.
 
 History reads stay within a 1 MiB sample budget, including time. Selected traces have their own
 read window, so a wide class does not force tiny focus reads. When time and value mappings stay
-fixed, appends draw only the new segments. Changing either mapping requires replaying history;
-automatic ranges can therefore cause a replay as data grows. History and focus textures are
-retained, and changing opacity only composites them again.
+fixed, appends draw only the new segments; an automatic value range keeps a tenth of its span
+to spare and only grows, so most appends stay inside it. A changed mapping or canvas size replays
+history behind the last image, which stays on screen, rescaled, until the replay completes.
+History and focus textures are retained, and changing opacity only composites them again.
 
 ## Selection, events, and lifetime
 

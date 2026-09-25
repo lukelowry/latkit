@@ -81,7 +81,7 @@ describe('network package entrypoint', () => {
       readonly bearing: number;
     }>();
     expectTypeOf<Parameters<Network['setChannel']>>().toEqualTypeOf<
-      [channel: entry.Channel, values: Float32Array | null, domain?: Domain | null]
+      [channel: entry.Channel, values: Float32Array | Float64Array | null, domain?: Domain | null]
     >();
     expectTypeOf<ReturnType<Network['getChannelDomain']>>().toEqualTypeOf<Domain | null>();
     expectTypeOf<Parameters<Network['select']>>().toEqualTypeOf<[item: Item | null]>();

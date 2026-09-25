@@ -18,7 +18,9 @@ export interface Options {
   lineWidthPx?: number;
   /**
    * Fixed value domain for vertical position, or `null` to fit the finite extent of the
-   * active signal's committed frames. @defaultValue `null`.
+   * active signal's committed frames with a tenth of its span to spare on each side. The fit only
+   * grows until another series or signal loads, so appends inside it draw only new segments.
+   * @defaultValue `null`.
    */
   valueRange?: Domain | null;
   /** Independent color domain; null follows the resolved value range. @defaultValue null. */

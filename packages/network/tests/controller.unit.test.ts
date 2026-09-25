@@ -794,6 +794,22 @@ describe('createNetwork controller', () => {
     expect(h.renderer.useProjection).toHaveBeenCalledWith('flat');
   });
 
+  it('skips the borders already set and clearing an unbound channel', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    const borders = { vertices: new Uint8Array(0), indices: new Uint32Array(0) };
+    h.network.setBorders(borders);
+    h.renderer.setBorders.mockClear();
+    h.loop.wake.mockClear();
+
+    h.network.setBorders(borders);
+    h.network.setChannel('vertexColor', null);
+    h.network.setChannel('vertexPosition', null);
+    expect(h.renderer.setBorders).not.toHaveBeenCalled();
+    expect(h.loop.wake).not.toHaveBeenCalled();
+    expect(() => h.network.setChannel('blockColor' as never, null)).toThrow(/unknown/);
+  });
+
   it('routes display mutators through renderer, channels, uniforms, and repaint', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
@@ -1683,12 +1699,6 @@ describe('createNetwork controller', () => {
   });
 
   it('orbits through the internal driver, reports transitions, and stops on gestures', async () => {
-    const frames: FrameRequestCallback[] = [];
-    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
-      frames.push(callback);
-      return frames.length;
-    });
-    vi.stubGlobal('cancelAnimationFrame', () => {});
     const h = await makeHarness();
     const transitions: boolean[] = [];
     h.network.on('orbit', (active) => transitions.push(active));
@@ -1701,11 +1711,13 @@ describe('createNetwork controller', () => {
     expect(h.network.orbiting).toBe(true);
     expect(h.network.projection).toBe('tilt');
     expect(h.network.orbit(true)).toBe(true);
-    frames.shift()?.(0);
-    frames.shift()?.(16);
+    expect(h.loop.deps?.animating?.()).toBe(true);
+    h.loop.frame(undefined, true, 0);
+    h.loop.frame(undefined, true, 16);
     expect(h.rig.camera.rotateBy).toHaveBeenLastCalledWith(0.32, 0, { w: 100, h: 80 });
 
     h.emitPointer({ kind: 'navigationStart' });
+    expect(h.loop.deps?.animating?.()).toBe(false);
     expect(h.network.orbiting).toBe(false);
     expect(transitions).toEqual([true, false]);
 
@@ -1893,23 +1905,17 @@ describe('createNetwork controller', () => {
   });
 
   it('scales continuous rotation by orbitRate and hands animationMs to the rig', async () => {
-    const frames: FrameRequestCallback[] = [];
-    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
-      frames.push(callback);
-      return frames.length;
-    });
-    vi.stubGlobal('cancelAnimationFrame', () => {});
     const h = await makeHarness({ orbitRate: 2, animationMs: 250 });
     expect(h.rig.animationMs).toBe(250);
     h.network.load(geographicTopology());
 
     expect(h.network.orbit(true)).toBe(true);
-    frames.shift()?.(0);
-    frames.shift()?.(16);
+    h.loop.frame(undefined, true, 0);
+    h.loop.frame(undefined, true, 16);
     expect(h.rig.camera.rotateBy).toHaveBeenLastCalledWith(0.64, 0, { w: 100, h: 80 });
 
     h.network.setOptions({ orbitRate: 0.5, animationMs: 0 });
-    frames.shift()?.(32);
+    h.loop.frame(undefined, true, 32);
     expect(h.rig.camera.rotateBy).toHaveBeenLastCalledWith(0.16, 0, { w: 100, h: 80 });
     expect(h.rig.animationMs).toBe(0);
   });

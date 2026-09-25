@@ -59,8 +59,9 @@ monitor.on('valueRange', (range) => updateAxis(range));
 ```
 
 `valueRange` fits the vertical axis; `colorRange` fixes the palette independently. Null ranges
-use automatic fitting, with a null color range following the vertical range. Fixed mappings let
-appends draw only new segments. Changing a mapping replays history.
+use automatic fitting, with a null color range following the vertical range. Appends inside the
+current mapping draw only new segments. A new mapping or canvas size repaints the history behind
+the last image, which stays on screen, rescaled, until the repaint is complete.
 
 ## Inspect and clean up
 

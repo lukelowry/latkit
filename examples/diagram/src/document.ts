@@ -4,7 +4,7 @@
  * diagram's proposals become. Documents are immutable, so undo and redo are a stack of them.
  */
 
-import type { Part } from '@latkit/diagram';
+import type { Part } from '@latkit/model';
 import type { Netlist } from '@latkit/model';
 import { BUS, CLASSES, SIGNAL, type ClassName, type PortSpec } from './classes.js';
 

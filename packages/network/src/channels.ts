@@ -167,9 +167,12 @@ interface ChannelDeps {
 /** Runtime channel controller returned to the network API. */
 export interface Channels {
   /** Bind or replace channel values. The array length must match the current topology. */
-  set(channel: Channel, values: Float32Array, domain?: Domain | null): void;
-  /** Unbind a channel; its slot stays allocated and its mode turns off. */
-  clear(channel: Channel): void;
+  set(channel: Channel, values: Float32Array | Float64Array, domain?: Domain | null): void;
+  /**
+   * Unbind a channel; its slot stays allocated and its mode turns off. False when nothing was
+   * bound.
+   */
+  clear(channel: Channel): boolean;
   /**
    * Clear every channel after topology replacement, write the new static offsets, and seed
    * `vertexPosition` with the layout the topology carries. Positions are the one channel that is
@@ -206,9 +209,15 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
     return (def.scope === 'vertex' ? deps.vertexCount() : deps.edgeCount()) * def.components;
   }
 
-  function validateLength(channel: Channel, values: Float32Array): void {
+  function validateValues(channel: Channel, values: Float32Array | Float64Array): void {
     if (!deps.loaded()) {
       throw new Error('network topology must be loaded before binding channels');
+    }
+    const tag = Object.prototype.toString.call(values);
+    if (tag !== '[object Float32Array]' && tag !== '[object Float64Array]') {
+      throw new TypeError(
+        `network channel ${channel} values must be a Float32Array or Float64Array`,
+      );
     }
     const expected = countFor(channel);
     if (values.length !== expected) {
@@ -216,28 +225,36 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
     }
   }
 
-  function set(channel: Channel, values: Float32Array, domain?: Domain | null): void {
-    validateLength(channel, values);
+  function set(
+    channel: Channel,
+    values: Float32Array | Float64Array,
+    domain?: Domain | null,
+  ): void {
+    validateValues(channel, values);
     const def = channelDefinition(channel);
     const nextDomain = def.normalized ? resolveDomain(channel, def, values, domain) : null;
-    // The GPU upload copies synchronously, so the caller's array feeds it directly; the CPU
-    // snapshot is refreshed only once the upload succeeded, so a failure leaves nothing changed.
-    deps.renderer()?.writeChannel(channel, values);
+    // The GPU upload copies synchronously, so float32 values feed it directly; the CPU snapshot
+    // is refreshed only once the upload succeeded, so a failure leaves nothing changed.
+    const f32 = values instanceof Float32Array ? values : Float32Array.from(values);
+    deps.renderer()?.writeChannel(channel, f32);
     const snapshot = current.get(channel);
     // Re-binds refresh the snapshot in place so animated updates never allocate.
-    if (snapshot) snapshot.set(values);
-    else current.set(channel, values.slice());
+    if (snapshot) snapshot.set(f32);
+    else current.set(channel, f32 === values ? f32.slice() : f32);
     if (nextDomain) data.set(channel, nextDomain);
     setMode(channel, true);
     writeScalars(channel);
   }
 
-  function clear(channel: Channel): void {
+  function clear(channel: Channel): boolean {
+    channelDefinition(channel);
+    if (!current.has(channel) && !data.has(channel) && !domainOverride.has(channel)) return false;
     setMode(channel, false);
     current.delete(channel);
     data.delete(channel);
     domainOverride.delete(channel);
     writeScalars(channel);
+    return true;
   }
 
   function reset(positions: Float32Array | null): void {
@@ -457,7 +474,7 @@ function sameRange(a: Domain | null, b: Domain): boolean {
 function resolveDomain(
   channel: Channel,
   def: ChannelDefinition,
-  values: Float32Array,
+  values: Float32Array | Float64Array,
   domain?: Domain | null,
 ): Domain {
   if (domain) return checkedDomain(domain, `${channel} domain`);

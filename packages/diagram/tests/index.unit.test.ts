@@ -1,4 +1,4 @@
-import type { Domain, Netlist } from '@latkit/model';
+import type { Domain, Netlist, Part } from '@latkit/model';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import * as entry from '../src/index.js';
@@ -8,7 +8,6 @@ import type {
   Events,
   Interaction,
   Options,
-  Part,
   Pose,
   Shade,
   ShadeFrame,
@@ -69,7 +68,7 @@ describe('diagram package entrypoint', () => {
       [netlist: Netlist, options?: { readonly fit?: boolean }]
     >();
     expectTypeOf<Parameters<Diagram['setChannel']>>().toEqualTypeOf<
-      [channel: Channel, values: Float32Array | null, domain?: Domain | null]
+      [channel: Channel, values: Float32Array | Float64Array | null, domain?: Domain | null]
     >();
     expectTypeOf<ReturnType<Diagram['getChannelDomain']>>().toEqualTypeOf<Domain | null>();
     expectTypeOf<ReturnType<Diagram['arrange']>>().toEqualTypeOf<Float32Array>();

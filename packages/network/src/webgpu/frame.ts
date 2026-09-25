@@ -21,6 +21,8 @@ export interface FrameTickDeps {
   readonly renderer: Pick<Renderer, 'render'>;
   /** Camera authority ticked once per frame; owns all deferred placement. */
   readonly rig: Pick<CameraRig, 'tick' | 'isAnimating' | 'isAtFitView' | 'pendingPlacement'>;
+  /** Moves the camera by continuous motion, such as an orbit, before the camera tick. */
+  readonly advance?: (now: number) => void;
   /** Receives fit-view state transitions after the camera tick. */
   readonly onZoom?: (atFitView: boolean) => void;
   /**
@@ -53,7 +55,8 @@ export interface FrameTickDeps {
  *   eases, a deferred placement waits for a usable viewport, or an outside animator asks.
  */
 export function createFrameTick(deps: FrameTickDeps): (frame: Frame) => boolean {
-  const { canvas, uniforms, renderer, rig, onZoom, onBeforeFrame, onFrame, onPaint } = deps;
+  const { canvas, uniforms, renderer, rig, advance, onZoom, onBeforeFrame, onFrame, onPaint } =
+    deps;
   const animating = deps.animating ?? (() => false);
   const live = deps.live ?? (() => true);
   // Reused so a frame allocates nothing; the rig and hooks read it only during the call.
@@ -63,6 +66,7 @@ export function createFrameTick(deps: FrameTickDeps): (frame: Frame) => boolean 
   return (frame) => {
     vp.w = frame.width;
     vp.h = frame.height;
+    advance?.(frame.now);
     // Nothing loaded: nothing to draw, and nothing to wait for.
     if (!rig.tick(frame.now, vp)) return false;
     onBeforeFrame?.(vp, frame.now);
