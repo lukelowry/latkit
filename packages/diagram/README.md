@@ -111,19 +111,19 @@ channel clears too.
 | --------------- | ----- | ------------------------------------------------------------------- |
 | `blockPosition` | block | `x, y` top-left corner; a NaN pair hands a block back to its layout |
 | `blockColor`    | block | Normalized through its domain onto the colormap                     |
-| `blockVisible`  | block | `0` hides the block, its ports, and its labels                      |
+| `blockVisible`  | block | Above `0` shows the block, its ports, and its labels                |
 | `blockStatus`   | block | `0` none; `k > 0` rings the block in `statusColors[k - 1]`, clamped |
 | `blockShade`    | block | One scalar per block for a shade, as `Fragment.value`               |
 | `portStatus`    | port  | As `blockStatus`, per port                                          |
 | `netColor`      | net   | Normalized through its domain onto the colormap                     |
 | `netFlow`       | net   | Signed dash speed: `0` still, negative marches toward the driver    |
-| `netVisible`    | net   | `0` hides the net                                                   |
+| `netVisible`    | net   | Above `0` shows the net                                             |
 | `netShade`      | net   | One scalar per net for a shade, as `Fragment.value` on its wires    |
 
-`blockColor` and `netColor` take an input domain and normalize `[0, 1]` without one. Without them
-blocks fill with `blockBaseColor` and wires with `netBaseColor`. `setChannelDomain` moves a domain
-without re-uploading values, and `getChannelDomain` reads the one in effect; the other channels
-are raw and ignore a domain.
+`blockColor` and `netColor` take an input domain and normalize `[0, 1]` without one. Without them,
+or for a NaN value, blocks fill with `blockBaseColor` and wires with `netBaseColor`.
+`setChannelDomain` moves a domain without re-uploading values, and `getChannelDomain` reads the
+one in effect; the other channels are raw and ignore a domain.
 
 ```ts
 diagram.setChannel('blockColor', loading, [0, 1.2]);
@@ -417,7 +417,8 @@ positions to keep the arrangement.
 or `RangeError` naming the first invalid option. Everything given to the controller before
 `attach` is retained and painted onto the canvas, and `detach()` releases the device and the
 canvas while keeping every state. A newer `attach` or a `detach` supersedes an attach still
-waiting for its device, which rejects with an `AbortError`.
+waiting for its device, which then resolves `false`; attaching the canvas already bound or binding
+joins that attach.
 
 - `attach` rejects with `GpuUnavailableError` from `@latkit/gpu` when no device can be leased, and
   with a `TypeError` when the device reports fewer than five storage buffers in the vertex stage.
@@ -466,6 +467,7 @@ plants beside 900.
 
 ## Registries
 
-`CHANNELS` and `OPTIONS` are frozen and ordered. A picker iterates `Object.keys(CHANNELS)` and
-shows `CHANNELS[key].label`, and reads `scope`, `map`, `normalized`, and `components`; a settings
-form iterates `OPTIONS` and reads each entry's `kind`, `default`, and `live`.
+`CHANNELS` and `OPTIONS` are frozen and ordered, and every entry carries the `label` a control
+shows. A picker iterates `Object.keys(CHANNELS)` and reads `scope`, `map`, `normalized`, and
+`components`; a settings form iterates `OPTIONS` and reads each entry's `kind`, `default`, and
+`live`.

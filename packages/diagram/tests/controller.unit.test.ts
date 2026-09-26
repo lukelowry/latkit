@@ -21,7 +21,6 @@ import {
 } from '../src/webgpu/buffers.js';
 import {
   DISPLAY_ARROWS,
-  DISPLAY_EDIT,
   DISPLAY_GRID,
   DISPLAY_JUNCTIONS,
   DISPLAY_LABELS,
@@ -333,26 +332,24 @@ describe('attach, detach, and destroy', () => {
     h.diagram.destroy();
   });
 
-  it('rejects an attach overtaken by a newer attach or a detach with AbortError', async () => {
+  it('joins a repeat attach, and binds only the canvas of the newest one', async () => {
     const h = await makeHarness({}, false);
     const release = h.pool.hold();
     const first = h.diagram.attach(h.canvas);
-    const second = h.diagram.attach(h.canvas);
-    await second;
+    expect(h.diagram.attach(h.canvas)).toBe(first);
+    const other = document.createElement('canvas');
+    const second = h.diagram.attach(other);
+    expect(h.diagram.canvas).toBe(other);
     release();
-    await expect(first).rejects.toMatchObject({ name: 'AbortError' });
-    expect(h.diagram.attached).toBe(true);
-    expect(h.pool.releases).toHaveBeenCalledTimes(1);
+    await expect(first).resolves.toBe(false);
+    await expect(second).resolves.toBe(true);
     expect(h.renderers).toHaveLength(1);
+    expect(h.presentations.at(-1)!.canvas).toBe(other);
 
-    h.diagram.detach();
-    const held = h.pool.hold();
-    const third = h.diagram.attach(h.canvas);
-    h.diagram.detach();
-    held();
-    await expect(third).rejects.toMatchObject({ name: 'AbortError' });
+    h.diagram.detach(h.canvas);
+    expect(h.diagram.attached).toBe(true);
+    h.diagram.detach(other);
     expect(h.diagram.attached).toBe(false);
-    expect(h.pool.releases).toHaveBeenCalledTimes(3);
   });
 
   it('refuses a device without five vertex storage buffers and releases its lease', async () => {
@@ -401,60 +398,6 @@ describe('attach, detach, and destroy', () => {
       { reason: 'unavailable', message: 'no adapter', recovering: false },
     ]);
     expect(h.diagram.attached).toBe(false);
-  });
-
-  it('lets a detach from a device-loss handler stand', async () => {
-    const h = await loaded();
-    h.diagram.on('deviceLost', () => h.diagram.detach());
-    h.loseDevice();
-    await flushMicrotasks();
-    expect(h.emitted('deviceLost')).toEqual([
-      { reason: 'unknown', message: 'lost for test', recovering: true },
-    ]);
-    expect(h.diagram.attached).toBe(false);
-    expect(h.renderers).toHaveLength(1);
-    expect(h.pool.devices).toHaveLength(1);
-  });
-
-  it('reports no recovery when the attached handler already detached', async () => {
-    const h = await loaded();
-    h.diagram.on('attached', (attached) => {
-      if (!attached) h.diagram.detach();
-    });
-    h.loseDevice();
-    await flushMicrotasks();
-    expect(h.emitted('deviceLost')).toEqual([
-      { reason: 'unknown', message: 'lost for test', recovering: false },
-    ]);
-    expect(h.diagram.attached).toBe(false);
-    expect(h.pool.devices).toHaveLength(1);
-  });
-
-  it('lets an attach elsewhere from a device-loss handler win over the recovery', async () => {
-    const h = await loaded();
-    const other = document.createElement('canvas');
-    let moved: Promise<void> | null = null;
-    h.diagram.on('deviceLost', () => {
-      moved = h.diagram.attach(other);
-    });
-    h.loseDevice();
-    await flushMicrotasks();
-    await expect(moved).resolves.toBeUndefined();
-    expect(h.diagram.attached).toBe(true);
-    expect(h.presentations.at(-1)!.canvas).toBe(other);
-    expect(h.pool.devices).toHaveLength(2);
-    expect(h.emitted('attached')).toEqual([false, true]);
-  });
-
-  it('ignores the loss of a device a newer attach already replaced', async () => {
-    const h = await loaded();
-    h.diagram.detach();
-    await h.diagram.attach(h.canvas);
-    h.clearHeard();
-    h.loseDevice({}, 0);
-    await flushMicrotasks();
-    expect(h.heard).toEqual([]);
-    expect(h.diagram.attached).toBe(true);
   });
 
   it('pauses rendering while the page is hidden', async () => {
@@ -755,6 +698,17 @@ describe('load', () => {
 });
 
 describe('channels', () => {
+  it('clears an unbound channel without a frame and still rejects an unknown one', async () => {
+    const h = await loaded();
+    h.loop.wake.mockClear();
+    h.diagram.setChannel('netColor', null);
+    expect(h.loop.wake).not.toHaveBeenCalled();
+    h.diagram.setChannel('netColor', Float32Array.of(0, 1));
+    h.diagram.setChannel('netColor', null);
+    expect(h.loop.wake).toHaveBeenCalledTimes(2);
+    expect(() => h.diagram.setChannel('vertexColor' as never, null)).toThrow(/unknown/);
+  });
+
   it('throws before a load unless clearing, and checks lengths', async () => {
     const h = await makeHarness();
     expect(() => h.diagram.setChannel('netColor', Float32Array.of(1))).toThrow(/loaded/);
@@ -1298,7 +1252,7 @@ describe('options', () => {
       colormap: red,
     });
     h.frame();
-    expect(h.renderer.mirrors.uniforms.u32[W_FLAGS]).toBe(DISPLAY_REDUCED | DISPLAY_EDIT);
+    expect(h.renderer.mirrors.uniforms.u32[W_FLAGS]).toBe(DISPLAY_REDUCED);
     expect(h.renderer.last!.glyphs).toBe(0);
     const lut = h.renderer.writeColormap.mock.lastCall![0];
     expect(Array.from(lut.subarray(lut.length - 4))).toEqual([255, 0, 0, 255]);
@@ -1352,6 +1306,27 @@ describe('options', () => {
     h.diagram.setOptions({ fontFamily: 'Fira Code' });
     h.frame();
     expect(h.rasterizer.draws.at(-1)!.font).toContain('Fira Code');
+  });
+
+  it('redraws text once a web font finishes loading, while attached', async () => {
+    const fonts = new EventTarget();
+    Object.defineProperty(document, 'fonts', { configurable: true, value: fonts });
+    try {
+      const h = await loaded();
+      const drawn = h.rasterizer.draws.length;
+      fonts.dispatchEvent(new Event('loadingdone'));
+      h.frame();
+      expect(h.rasterizer.draws.length).toBeGreaterThan(drawn);
+
+      h.diagram.detach();
+      const detached = h.rasterizer.draws.length;
+      h.loop.wake.mockClear();
+      fonts.dispatchEvent(new Event('loadingdone'));
+      expect(h.loop.wake).not.toHaveBeenCalled();
+      expect(h.rasterizer.draws).toHaveLength(detached);
+    } finally {
+      delete (document as { fonts?: unknown }).fonts;
+    }
   });
 
   it('re-fits a camera at its fit on new fit padding', async () => {

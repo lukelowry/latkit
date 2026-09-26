@@ -8,6 +8,7 @@
  * new grid from freshly sampled columns.
  */
 
+import { breathe } from './breathe.js';
 import type { Column } from './model.js';
 
 /** Which column orders the rows, or `null` for the element label, and in which direction. */
@@ -77,33 +78,6 @@ function cellOf(column: Column, index: number): string {
 
 function abortError(): DOMException {
   return new DOMException('The grid query was cancelled.', 'AbortError');
-}
-
-/** The scheduler yield a browser may offer; a task-queue hop otherwise. */
-interface Yielding {
-  yield?(): Promise<void>;
-}
-
-/** Waiters for the one shared message channel, resolved in posting order. */
-let waiters: Array<() => void> = [];
-let channel: MessageChannel | null = null;
-
-/** Yield to the event loop, not just the microtask queue, so input and rendering stay responsive. */
-function breathe(): Promise<void> {
-  const scheduler = (globalThis as { scheduler?: Yielding }).scheduler;
-  if (typeof scheduler?.yield === 'function') return scheduler.yield();
-  return new Promise((resolve) => {
-    if (!channel) {
-      channel = new MessageChannel();
-      channel.port1.onmessage = () => {
-        const pending = waiters;
-        waiters = [];
-        for (const wake of pending) wake();
-      };
-    }
-    waiters.push(resolve);
-    channel.port2.postMessage(null);
-  });
 }
 
 function merge(

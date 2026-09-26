@@ -45,7 +45,7 @@ A page that wants a tag instead of a controller installs `@latkit/embed`.
 : A port over workers, webviews, and sockets, and typed request, reply, and stream protocols over it.
 
 `@latkit/remote`
-: A model's source, runner, and grids served across a port.
+: A model's source, runner, and results served across a port.
 
 `@latkit/colormaps`
 : Named colormap data and helpers for gradients and scale metadata.

@@ -12,6 +12,10 @@ export { createPresentation } from './presentation.js';
 export { createFrameLoop } from './frame.js';
 export type { Frame, FrameLoop } from './frame.js';
 
+/** One controller's attach lifecycle: supersession, joining, and recovery from device loss. */
+export { createAttachment } from './attachment.js';
+export type { Attachment } from './attachment.js';
+
 /** Adapter-selection options. */
 export type { Options } from './device.js';
 

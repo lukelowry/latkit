@@ -235,12 +235,12 @@ function oraclePick(
 
   const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
   const normHeight = (vi: number): number => {
-    if (!heights) return 0;
+    if (!heights || Number.isNaN(heights[vi])) return 0;
     const t = clamp01((heights[vi]! - u.channel.vHeightMin) * u.channel.vHeightScale);
     return u.channel.vHeightOutMin + t * u.channel.vHeightOutSpan;
   };
   const sizeScale = (vi: number): number => {
-    if (!sizes) return 1;
+    if (!sizes || Number.isNaN(sizes[vi])) return 1;
     const t = clamp01((sizes[vi]! - u.channel.vSizeMin) * u.channel.vSizeScale);
     return u.channel.vSizeOutMin + t * u.channel.vSizeOutSpan;
   };
@@ -676,6 +676,21 @@ describe('Picker behavior (tilt)', () => {
     ]);
     expect(s.picker.locate(['vertex', 12], VP)?.[0]).toBeCloseTo(lifted.sx);
     expect(s.picker.locate(['vertex', 12], VP)?.[1]).toBeCloseTo(lifted.sy);
+  });
+
+  it('picks a vertex whose height or size is NaN as if the channel were unbound', () => {
+    const s = makeSetup('tilt');
+    const heights = new Float32Array(25);
+    heights[12] = Number.NaN;
+    bindHeights(s, heights, 3);
+    const sizes = new Float32Array(25).fill(1);
+    sizes[12] = Number.NaN;
+    bindSizes(s, sizes);
+
+    const base = s.screenAt(0, 0, 0);
+    expect(s.picker.pick(s.query(base.sx, base.sy, 4, { edges: false }))).toEqual(['vertex', 12]);
+    expect(s.picker.locate(['vertex', 12], VP)?.[0]).toBeCloseTo(base.sx);
+    expect(s.picker.locate(['vertex', 12], VP)?.[1]).toBeCloseTo(base.sy);
   });
 
   it('picks poles along the base-to-tip column when enabled', () => {

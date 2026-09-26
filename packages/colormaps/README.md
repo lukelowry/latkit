@@ -1,6 +1,6 @@
 # @latkit/colormaps
 
-Colormap catalog for Latkit.
+Colormap catalog and CSS color parser for Latkit.
 
 ## Install
 
@@ -28,4 +28,11 @@ Colormap functions accept normalized values in `[0, 1]` and return RGB channels 
 
 ```ts
 legend.style.background = gradient((t) => [t, 0.5, 1 - t]);
+```
+
+`parseColor()` turns a CSS color into the `RGBA` every color option takes; with an element it
+resolves the color as that element computes it, so a theme's custom properties feed the renderers:
+
+```ts
+network.setOptions({ edgeBaseColor: parseColor('var(--edge)', document.body) ?? fallback });
 ```

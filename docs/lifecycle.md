@@ -26,7 +26,7 @@ await monitor.attach(monitorCanvas);
 await diagram.attach(diagramCanvas);
 ```
 
-`attach` leases a device from the realm-wide pool in `@latkit/gpu`, so every controller on the page shares one device without owning it; the `devices` option names a private pool instead. A newer `attach` or a `detach` supersedes an attach still waiting for its device, which rejects with an `AbortError`.
+`attach` leases a device from the realm-wide pool in `@latkit/gpu`, so every controller on the page shares one device without owning it; the `devices` option names a private pool instead. A newer `attach` or a `detach` supersedes an attach still waiting for its device, which then resolves `false`, and attaching the canvas already bound or binding joins that attach, so a host may call `attach` whenever its canvas becomes visible. `detach(canvas)` detaches only while that canvas is the current one, so a view that has lost its canvas cannot release another's.
 
 `detach()` returns the device and the canvas and keeps every state, so a view that moves between panels attaches again with nothing to reload:
 
@@ -35,7 +35,7 @@ network.detach();
 await network.attach(otherCanvas);
 ```
 
-The `attached` property and event report the binding.
+The `attached` property and event report the binding, and `canvas` names the canvas bound or binding.
 
 ## Handle WebGPU support
 

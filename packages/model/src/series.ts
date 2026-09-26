@@ -1,3 +1,4 @@
+import { breathe } from './breathe.js';
 import { validateDomain, type Domain } from './domain.js';
 import { createEmitter } from './emitter.js';
 import type { RunFrames } from './run.js';
@@ -259,7 +260,7 @@ export function createSeries(input: {
         const start = signalIndex * chunk.signalStride + row * chunk.stride + elementOffset;
         if (count) values.set(chunk.values.subarray(start, start + count), f * count);
         if (f > 0 && f % Math.max(1, Math.floor(65536 / Math.max(1, count))) === 0) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          await breathe();
           signal?.throwIfAborted();
         }
       }
@@ -289,20 +290,6 @@ export async function sample(
     signal,
   );
   return block.values.subarray(0, series.elementCount);
-}
-
-/** Last frame at or before t; repeated timestamps resolve to their last sample. */
-export function frameAt(time: Float64Array, t: number, head = time.length): number {
-  const n = Math.min(head, time.length);
-  if (n <= 1 || t < time[0]!) return 0;
-  let lo = 0,
-    hi = n;
-  while (lo < hi) {
-    const mid = lo + Math.floor((hi - lo) / 2);
-    if (time[mid]! <= t) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo - 1;
 }
 
 function index(value: number, name: string): void {

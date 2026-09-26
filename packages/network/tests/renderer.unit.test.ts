@@ -194,6 +194,40 @@ describe('Renderer resource lifecycle', () => {
     renderer.destroy();
   });
 
+  it('grows channel storage for series windows, keeping every word it holds', () => {
+    const h = makeFakeGpu();
+    const renderer = new Renderer(h.presentation);
+    renderer.bindTopology(preparedScene(sampleTopology()));
+    const fixed = 5 * 3 + 4 * 2 + 2 * 3;
+    const channels = () => h.device.buffers.filter((b) => b.descriptor.label === 'channels');
+    const [first] = channels();
+    const bindGroups = h.device.bindGroups.length;
+
+    renderer.reserve(fixed);
+    expect(channels()).toHaveLength(1);
+
+    renderer.reserve(fixed + 256 * 3);
+    const [, grown] = channels();
+    expect(grown!.descriptor.size).toBe((fixed + 256 * 3) * 4);
+    expect(grown!.descriptor.usage & GPUBufferUsage.COPY_SRC).toBe(GPUBufferUsage.COPY_SRC);
+    const copy = h.device.encoders.at(-1)!.copyBufferToBuffer;
+    expect(copy).toHaveBeenCalledExactlyOnceWith(first, 0, grown, 0, fixed * 4);
+    expect(first!.destroyed).toBe(true);
+    expect(h.device.bindGroups).toHaveLength(bindGroups + 1);
+
+    const frame = Float32Array.of(1, 2, 3);
+    renderer.writeWords(fixed + 3, frame);
+    expect(h.device.queue.writeBuffer).toHaveBeenLastCalledWith(
+      grown,
+      (fixed + 3) * 4,
+      frame.buffer,
+      frame.byteOffset,
+      frame.byteLength,
+    );
+
+    renderer.destroy();
+  });
+
   it('checks channel storage against the device limits when the topology binds', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);

@@ -3,6 +3,8 @@
  * its kebab-case name, parsed by the registry's own validation kind.
  */
 
+import { parseColor } from '@latkit/colormaps';
+
 /** The part of an option definition the HTML boundary reads. */
 export interface OptionDefinition {
   readonly kind: string;
@@ -37,8 +39,15 @@ export function optionAttributes<Key extends string>(
   );
 }
 
-/** Parse one attribute string by its option kind; `undefined` when it cannot be read. */
-export function parseOptionAttribute(definition: OptionDefinition, raw: string): unknown {
+/**
+ * Parse one attribute string by its option kind; `undefined` when it cannot be read. A color is
+ * four decimals or any CSS color, resolved as `element` computes it.
+ */
+export function parseOptionAttribute(
+  definition: OptionDefinition,
+  raw: string,
+  element: Element,
+): unknown {
   switch (definition.kind) {
     case 'boolean':
       if (raw === '' || raw === 'true') return true;
@@ -49,7 +58,10 @@ export function parseOptionAttribute(definition: OptionDefinition, raw: string):
       return decimal(raw.trim());
     case 'rgba': {
       const parts = tokens(raw);
-      return parts.length === 4 ? parts.map(decimal) : undefined;
+      if (parts.length === 4 && parts.every((part) => !Number.isNaN(decimal(part)))) {
+        return parts.map(decimal);
+      }
+      return parseColor(raw, element) ?? undefined;
     }
     case 'domain':
       return decimalPair(raw) ?? undefined;

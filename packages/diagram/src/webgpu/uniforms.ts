@@ -27,8 +27,6 @@ export const DISPLAY_JUNCTIONS = 4;
 export const DISPLAY_LABELS = 8;
 /** Display flag: motion is reduced; dashes stand still as chevrons, glows hold steady. */
 export const DISPLAY_REDUCED = 16;
-/** Display flag: the diagram is in `'edit'` interaction. */
-export const DISPLAY_EDIT = 32;
 
 /** Status colors the uniform block holds. */
 export const STATUS_COLORS = 4;

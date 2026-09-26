@@ -18,7 +18,7 @@ export type {
 } from './model.js';
 export { createModel, elementAt, itemOf, validateTopology } from './model.js';
 
-export type { Netlist } from './netlist.js';
+export type { Netlist, Part } from './netlist.js';
 export { validateNetlist } from './netlist.js';
 
 export type { Domain } from './domain.js';
@@ -30,7 +30,7 @@ export { bakeColormap, COLORMAP_LUT_SIZE, validateRgba } from './color.js';
 export { createEmitter } from './emitter.js';
 
 export type { Series } from './series.js';
-export { createSeries, frameAt, sample, validateSeries } from './series.js';
+export { createSeries, sample, validateSeries } from './series.js';
 
 export type { Field, FieldRef } from './field.js';
 export { fieldKey, fieldsOf } from './field.js';

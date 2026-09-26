@@ -18,7 +18,9 @@ export interface Options {
   lineWidthPx?: number;
   /**
    * Fixed value domain for vertical position, or `null` to fit the finite extent of the
-   * active signal's committed frames. @defaultValue `null`.
+   * active signal's committed frames with a tenth of its span to spare on each side. The fit only
+   * grows until another series or signal loads, so appends inside it draw only new segments.
+   * @defaultValue `null`.
    */
   valueRange?: Domain | null;
   /** Independent color domain; null follows the resolved value range. @defaultValue null. */
@@ -27,15 +29,23 @@ export interface Options {
   timeRange?: Domain | null;
   /** Color of the selected element's trace, or `null` to brighten its own color. @defaultValue `null`. */
   focusColor?: RGBA | null;
-  /** Alpha of every other trace while an element is selected. @defaultValue `1`. */
+  /** Alpha of every other trace while an element is selected, in `[0, 1]`. @defaultValue `1`. */
   unselectedAlpha?: number;
 }
 
-/** Validation kind, default, whether `Monitor.setOptions` accepts the option live, and whether `null` is a value. */
-export type OptionDefinition =
+/**
+ * Validation kind, default, whether `Monitor.setOptions` accepts the option live, whether `null` is
+ * a value, the label a control shows, and for a bounded number its inclusive `max`.
+ */
+export type OptionDefinition = { readonly label: string } & (
   | { readonly kind: 'pool'; readonly default: DevicePool; readonly live: false }
   | { readonly kind: 'colormap'; readonly default: Colormap; readonly live: true }
-  | { readonly kind: 'nonnegative'; readonly default: number; readonly live: true }
+  | {
+      readonly kind: 'nonnegative';
+      readonly default: number;
+      readonly live: true;
+      readonly max?: number;
+    }
   | {
       readonly kind: 'domain';
       readonly default: Domain | null;
@@ -47,25 +57,32 @@ export type OptionDefinition =
       readonly default: RGBA | null;
       readonly live: true;
       readonly nullable?: true;
-    };
+    }
+);
 
 /** Monitor's neutral transfer function before a consumer supplies a colormap. */
 const neutralColormap: Colormap = Object.freeze((t: number) => [t, t, t] as const);
 
 const definitions = {
-  devices: { kind: 'pool', default: devices, live: false },
-  colormap: { kind: 'colormap', default: neutralColormap, live: true },
-  lineWidthPx: { kind: 'nonnegative', default: 1.5, live: true },
-  valueRange: { kind: 'domain', default: null, live: true, nullable: true },
-  colorRange: { kind: 'domain', default: null, live: true, nullable: true },
-  timeRange: { kind: 'domain', default: null, live: true, nullable: true },
-  focusColor: { kind: 'rgba', default: null, live: true, nullable: true },
-  unselectedAlpha: { kind: 'nonnegative', default: 1, live: true },
+  devices: { kind: 'pool', default: devices, live: false, label: 'Device pool' },
+  colormap: { kind: 'colormap', default: neutralColormap, live: true, label: 'Colormap' },
+  lineWidthPx: { kind: 'nonnegative', default: 1.5, live: true, label: 'Line width' },
+  valueRange: { kind: 'domain', default: null, live: true, nullable: true, label: 'Value range' },
+  colorRange: { kind: 'domain', default: null, live: true, nullable: true, label: 'Color range' },
+  timeRange: { kind: 'domain', default: null, live: true, nullable: true, label: 'Time range' },
+  focusColor: { kind: 'rgba', default: null, live: true, nullable: true, label: 'Focus color' },
+  unselectedAlpha: {
+    kind: 'nonnegative',
+    default: 1,
+    live: true,
+    label: 'Unselected opacity',
+    max: 1,
+  },
 } as const satisfies Record<keyof Required<Options>, OptionDefinition>;
 
 for (const definition of Object.values(definitions)) Object.freeze(definition);
 
-/** Every option: its validation kind, default, and whether it is accepted live. */
+/** Every option: its validation kind, default, whether it is accepted live, label, and bounds. */
 export const OPTIONS: Readonly<typeof definitions> = Object.freeze(definitions);
 
 /** Fully resolved Monitor options. */
@@ -125,6 +142,9 @@ function validateOptionValue(key: string, definition: OptionDefinition, value: u
       if (typeof value !== 'number') typeError(key, 'a number');
       if (!Number.isFinite(value) || value < 0) {
         throw new RangeError(`monitor option ${key} must be finite and nonnegative`);
+      }
+      if ('max' in definition && value > definition.max!) {
+        throw new RangeError(`monitor option ${key} must be at most ${definition.max}`);
       }
       return;
     case 'domain':

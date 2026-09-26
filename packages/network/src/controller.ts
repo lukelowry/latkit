@@ -1,10 +1,10 @@
 /// <reference types="@webgpu/types" />
 
-import { bakeColormap, createEmitter, type Domain, type Item } from '@latkit/model';
+import { bakeColormap, createEmitter, type Domain, type Item, type Series } from '@latkit/model';
 import {
+  createAttachment,
   createFrameLoop,
   createPresentation,
-  type DeviceLease,
   type FrameLoop,
   type Presentation,
 } from '@latkit/gpu';
@@ -42,12 +42,13 @@ import {
 import { attachKeyboard, type KeyIntent } from './input/keyboard.js';
 import { createSurface, type Surface } from './input/surface.js';
 import { type Pose, MAX_ZOOM_RATIO, type Viewport } from './camera/projection.js';
-import { createChannels, type Channel } from './channels.js';
+import { CHANNELS, createChannels, isSeriesBinding, type Channel } from './channels.js';
+import { createPlayback } from './playback.js';
 import { createFrameTick } from './webgpu/frame.js';
 import type { FramePasses } from './webgpu/frame-encoder.js';
 import {
   PROJECTION_DEFS,
-  PROJECTIONS,
+  PROJECTION_MODES,
   isGeographicTopology,
   type ProjectionFamily,
   type Projection,
@@ -117,6 +118,11 @@ export type Events = {
   deviceLost: { readonly reason: string; readonly message: string; readonly recovering: boolean };
   /** Asynchronous shader-pipeline build failure; rendering for that family is unavailable. */
   pipelineError: { readonly family: ProjectionFamily; readonly cause: unknown };
+  /**
+   * A read of a series a channel follows failed. The channel keeps what it shows and reads again
+   * once the series appends or the channel is bound anew.
+   */
+  error: Error;
 };
 
 /**
@@ -157,6 +163,8 @@ export interface Network {
   readonly orbiting: boolean;
   /** Whether a canvas is bound and rendering. */
   readonly attached: boolean;
+  /** The canvas bound or binding, or null. */
+  readonly canvas: HTMLCanvasElement | null;
   /** Whether a frame has been painted since attach. */
   readonly painted: boolean;
 
@@ -181,18 +189,22 @@ export interface Network {
 
   /**
    * Lease a device from the `devices` option and bind `canvas`, replaying every retained state.
-   *
-   * A newer `attach` or a `detach` supersedes an attach still awaiting its device, which then
-   * rejects with an `AbortError`. The previous canvas, if any, is released first.
+   * The previous canvas, if any, is released first; attaching the canvas already bound or binding
+   * joins that attach.
    *
    * @param canvas - Borrowed canvas used for presentation and input.
+   * @returns True once bound; false when a newer `attach` or a `detach` took over first.
    * @throws GpuUnavailableError when no device can be leased.
    * @throws TypeError when the leased device does not provide Core WebGPU features and limits.
    * @throws Error when canvas presentation or renderer initialization fails.
    */
-  attach(canvas: HTMLCanvasElement): Promise<void>;
-  /** Release the device lease, renderer resources, and canvas listeners; every state stays. */
-  detach(): void;
+  attach(canvas: HTMLCanvasElement): Promise<boolean>;
+  /**
+   * Release the device lease, renderer resources, and canvas listeners; every state stays.
+   *
+   * @param canvas - Detach only while this canvas is the one bound or binding.
+   */
+  detach(canvas?: HTMLCanvasElement): void;
 
   /**
    * Bind a topology and schedule its first paint.
@@ -208,7 +220,8 @@ export interface Network {
    */
   load(topology: Topology, options?: { readonly fit?: boolean }): void;
   /**
-   * Replace the optional geographic border overlay, drawn only over a geographic topology.
+   * Replace the optional geographic border overlay, drawn only over a geographic topology. The
+   * payload already set is a no-op.
    *
    * @param borders - Packed border geometry, or `null` to clear borders.
    * @throws Error when the geometry violates the border layout.
@@ -228,6 +241,11 @@ export interface Network {
    * `vertexVisible`, and `edgeVisible` channels ignore it. A null height
    * domain scans the finite extent of the values.
    *
+   * A channel can instead follow one signal of a `Series` with one element per vertex or edge,
+   * or a sparse series whose unrecorded items take NaN. {@link Network.seek} picks the frame it
+   * shows, and a null `domain` follows the signal's recorded range as the series appends. Every
+   * channel but `vertexPosition` can follow a series. Nothing shows until the first frame is read.
+   *
    * `vertexPosition` is where every vertex sits, as interleaved `x, y` pairs in topology
    * coordinates. It is seeded from the topology at {@link Network.load} and rebinding it moves
    * vertices, the ends of their edges, and their height poles without reloading anything; `null`
@@ -239,12 +257,30 @@ export interface Network {
    *
    * @param channel - Channel name to bind.
    * @param values - Values whose length matches the current topology (`vertexCount * 2` for
-   * `vertexPosition`), or `null` to clear.
+   * `vertexPosition`), stored as float32; a series signal to follow; or `null` to clear.
    * @param domain - Input domain for normalized channels, or `null` for scanned/default behavior.
-   * @throws Error when values are given before a topology is loaded or their length is invalid;
-   * `null` is always accepted.
+   * @throws Error when values are given before a topology is loaded or their length is invalid,
+   * or a series' elements do not fit the channel's items; RangeError for a signal the series
+   * lacks; TypeError when values are neither a Float32Array, a Float64Array, nor a series binding,
+   * or `vertexPosition` is given a series. `null` is always accepted.
    */
-  setChannel(channel: Channel, values: Float32Array | null, domain?: Domain | null): void;
+  setChannel(
+    channel: Channel,
+    values:
+      Float32Array | Float64Array | { readonly series: Series; readonly signal: number } | null,
+    domain?: Domain | null,
+  ): void;
+  /**
+   * Show every series-bound channel at `time`: each item takes its latest sample at or before it,
+   * or its first before the recording starts.
+   *
+   * Frames around the playhead stay resident on the GPU, so a seek within them costs a word per
+   * channel; a seek beyond them keeps the current frame on screen until the frames it needs arrive.
+   *
+   * @param time - The playhead, in the series' time.
+   * @throws RangeError when `time` is not finite.
+   */
+  seek(time: number): void;
   /**
    * Override the input domain used by a normalized channel.
    *
@@ -552,56 +588,6 @@ export function createNetworkWithDeps(options: Options, deps: ControllerDeps): N
   return createNetworkController(resolveOptions(options), deps);
 }
 
-/** Rejects devices known not to meet the renderer's Core WebGPU limits. */
-function assertDeviceLimits(device: GPUDevice): void {
-  const vertexStorage = device.limits.maxStorageBuffersInVertexStage;
-  if (vertexStorage !== undefined && vertexStorage < 3) {
-    throw new TypeError('A Core WebGPU device is required');
-  }
-}
-
-/** Resources registered transactionally while a binding is constructed. */
-interface ControllerLifecycle {
-  add(cleanup: () => void): void;
-  destroy(): void;
-}
-
-/** Creates an idempotent, reverse-order cleanup stack. */
-function createControllerLifecycle(): ControllerLifecycle {
-  const cleanups: Array<() => void> = [];
-  let destroyed = false;
-
-  return {
-    add(cleanup) {
-      cleanups.push(cleanup);
-    },
-    destroy() {
-      if (destroyed) return;
-      destroyed = true;
-      for (let i = cleanups.length - 1; i >= 0; i--) {
-        try {
-          cleanups[i]!();
-        } catch {
-          // Cleanup is best-effort so one resource cannot strand the remainder.
-        }
-      }
-      cleanups.length = 0;
-    },
-  };
-}
-
-/** Relays one device-loss notification without retaining a released binding. */
-function forwardDeviceLoss(
-  device: GPUDevice,
-  listener: (info: GPUDeviceLostInfo) => void,
-): () => void {
-  let active: ((info: GPUDeviceLostInfo) => void) | undefined = listener;
-  void device.lost.then((info) => active?.(info));
-  return () => {
-    active = undefined;
-  };
-}
-
 /** Deliver a latched event payload to a late subscriber with emitter-equivalent error isolation. */
 function replay<Payload>(handler: (payload: Payload) => void, payload: Payload): void {
   try {
@@ -611,15 +597,6 @@ function replay<Payload>(handler: (payload: Payload) => void, payload: Payload):
       throw error;
     });
   }
-}
-
-/** The rejection of an attach that a newer attach or a detach overtook. */
-function superseded(): DOMException {
-  return new DOMException('The attach was superseded.', 'AbortError');
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError';
 }
 
 /** A promise settled from outside. */
@@ -637,10 +614,6 @@ function deferred<T>(): Deferred<T> {
     reject = rej;
   });
   return { promise, resolve, reject };
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Item identity from a pick result. */
@@ -669,13 +642,10 @@ function clampToRect(
 
 /** Everything one attach owns: released together, replaced together. */
 interface Binding {
-  /** The attach generation that created it; a stale device loss compares against it. */
-  readonly generation: number;
   readonly canvas: HTMLCanvasElement;
   readonly surface: Surface;
   readonly renderer: Renderer;
   readonly loop: FrameLoop;
-  readonly lifecycle: ControllerLifecycle;
   /** The pointer and keyboard adapters, attached and released as the `interaction` option says. */
   pointer: { destroy(): void } | null;
   keyboard: { destroy(): void } | null;
@@ -728,9 +698,8 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   let colormapLut: Uint8Array | null = null;
   let pipelineFailure: Events['pipelineError'] | null = null;
 
+  /** The binding in effect, set once its collaborators exist so its replay can draw. */
   let binding: Binding | null = null;
-  /** Bumped by every attach, detach, and destroy so an overtaken attach knows to stand down. */
-  let generation = 0;
   let destroyed = false;
   let consumerPaused = false;
   let pageVisible = true;
@@ -810,6 +779,29 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     heightRange: () => display.heightRange,
     sizeRange: () => display.sizeRange,
     renderer: () => binding?.renderer ?? null,
+  });
+
+  const playback = createPlayback({
+    fixedWords: () => channels.words,
+    items: (channel) =>
+      !topology
+        ? 0
+        : CHANNELS[channel].scope === 'vertex'
+          ? topology.vertexCount
+          : edgeCountOf(topology),
+    renderer: () => binding?.renderer ?? null,
+    moveTo: (channel, offset, view) => {
+      channels.moveTo(channel, offset, view);
+      if (isPickChannel(channel)) hoverDirty = true;
+      repaint();
+    },
+    hold: (channel) => channels.hold(channel),
+    appended: (channel) => {
+      if (!channels.refreshRecorded(channel)) return;
+      if (isPickChannel(channel)) hoverDirty = true;
+      repaint();
+    },
+    error: (error) => events.emit('error', error),
   });
 
   /**
@@ -1076,89 +1068,98 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     return true;
   }
 
-  /** Build every device-bound collaborator for one attach; on any failure nothing is kept. */
-  function bind(lease: DeviceLease, canvas: HTMLCanvasElement, own: number): Binding {
-    const lifecycle = createControllerLifecycle();
-    // Registered first, so it runs last: nothing outlives the lease it renders on.
-    lifecycle.add(() => lease.release());
-    try {
-      const surface = deps.createSurface(canvas);
-      lifecycle.add(() => surface.destroy());
-
-      const presentation = deps.createPresentation(lease.device, canvas);
-      lifecycle.add(() => presentation.destroy());
-      const renderer = new deps.Renderer(presentation, options.msaa, shade?.wgsl ?? null);
-      lifecycle.add(() => renderer.destroy());
-
-      const tick = deps.createFrameTick({
-        canvas: presentation.canvas,
-        uniforms,
-        renderer,
-        rig,
-        onZoom: (atFitView) => stageFitNotice(atFitView),
-        onBeforeFrame: (frameVp, now) => {
-          daylight.refresh(display.sunTime ?? Date.now());
-          updateHeightAmplitude(frameVp);
-          beforeFrameShade(surface, frameVp, now);
-        },
-        onFrame: (sizeSettled) => {
-          picker.frame();
-          resolveHover(sizeSettled);
-        },
-        onPaint: () => onSuccessfulPaint(),
-        animating: () => shadeAnimating,
-        // The shade's tick is host code: a pause, detach, or destroy from it ends the frame.
-        live: () => binding?.generation === own && !consumerPaused && pageVisible,
-      });
-      const loop = deps.createFrameLoop(presentation, tick);
-      lifecycle.add(() => loop.destroy());
-
-      // A fresh renderer builds fresh pipelines; a failure from the last one no longer applies.
-      pipelineFailure = null;
-      renderer.onPipelinesReady = () => loop.wake();
-      renderer.onPipelineError = (family, cause) => {
-        pipelineFailure = { family, cause };
-        if (family === PROJECTION_DEFS[rig.mode].family) rejectPaint(cause);
-        events.emit('pipelineError', pipelineFailure);
-      };
-
-      pageVisible = typeof document !== 'undefined' ? !document.hidden : true;
-      const onVisibilityChange = (): void => {
-        pageVisible = !document.hidden;
-        syncLoopActivity();
-      };
-      document.addEventListener('visibilitychange', onVisibilityChange);
-      lifecycle.add(() => document.removeEventListener('visibilitychange', onVisibilityChange));
-
-      lifecycle.add(forwardDeviceLoss(lease.device, (info) => recover(own, info)));
-
-      const entry: Binding = {
-        generation: own,
-        canvas,
-        surface,
-        renderer,
-        loop,
-        lifecycle,
-        pointer: null,
-        keyboard: null,
-        sunTimer: null,
-        painted: false,
-        warmRequested: false,
-        warming: false,
-      };
-      lifecycle.add(() => {
-        entry.pointer?.destroy();
-        entry.pointer = null;
-        entry.keyboard?.destroy();
-        entry.keyboard = null;
-        if (entry.sunTimer !== null) clearInterval(entry.sunTimer);
-        entry.sunTimer = null;
-      });
-      return entry;
-    } catch (error) {
-      lifecycle.destroy();
-      throw error;
+  /**
+   * Build every device-bound collaborator for one attach and replay every retained state into it;
+   * the attachment runs the cleanups in reverse if anything throws.
+   */
+  function bind(
+    device: GPUDevice,
+    canvas: HTMLCanvasElement,
+    cleanup: (release: () => void) => void,
+  ): Binding {
+    if ((device.limits.maxStorageBuffersInVertexStage ?? 3) < 3) {
+      throw new TypeError('A Core WebGPU device is required');
     }
+    const surface = deps.createSurface(canvas);
+    cleanup(() => surface.destroy());
+
+    const presentation = deps.createPresentation(device, canvas);
+    cleanup(() => presentation.destroy());
+    const renderer = new deps.Renderer(presentation, options.msaa, shade?.wgsl ?? null);
+    cleanup(() => renderer.destroy());
+
+    let entry: Binding | null = null;
+    const tick = deps.createFrameTick({
+      canvas: presentation.canvas,
+      uniforms,
+      renderer,
+      rig,
+      advance: (now) => orbit.advance(now),
+      onZoom: (atFitView) => stageFitNotice(atFitView),
+      onBeforeFrame: (frameVp, now) => {
+        daylight.refresh(display.sunTime ?? Date.now());
+        updateHeightAmplitude(frameVp);
+        beforeFrameShade(surface, frameVp, now);
+      },
+      onFrame: (sizeSettled) => {
+        picker.frame();
+        resolveHover(sizeSettled);
+      },
+      onPaint: () => onSuccessfulPaint(),
+      animating: () => shadeAnimating || orbit.active,
+      // The shade's tick is host code: a pause, detach, or destroy from it ends the frame.
+      live: () => entry !== null && binding === entry && !consumerPaused && pageVisible,
+    });
+    const loop = deps.createFrameLoop(presentation, tick);
+    cleanup(() => loop.destroy());
+
+    // A fresh renderer builds fresh pipelines; a failure from the last one no longer applies.
+    pipelineFailure = null;
+    renderer.onPipelinesReady = () => loop.wake();
+    renderer.onPipelineError = (family, cause) => {
+      pipelineFailure = { family, cause };
+      if (family === PROJECTION_DEFS[rig.mode].family) rejectPaint(cause);
+      events.emit('pipelineError', pipelineFailure);
+    };
+
+    pageVisible = typeof document !== 'undefined' ? !document.hidden : true;
+    const onVisibilityChange = (): void => {
+      pageVisible = !document.hidden;
+      syncLoopActivity();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    cleanup(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+
+    const built: Binding = {
+      canvas,
+      surface,
+      renderer,
+      loop,
+      pointer: null,
+      keyboard: null,
+      sunTimer: null,
+      painted: false,
+      warmRequested: false,
+      warming: false,
+    };
+    entry = built;
+    cleanup(() => {
+      built.pointer?.destroy();
+      built.pointer = null;
+      built.keyboard?.destroy();
+      built.keyboard = null;
+      if (built.sunTimer !== null) clearInterval(built.sunTimer);
+      built.sunTimer = null;
+    });
+    binding = built;
+    cleanup(() => {
+      if (binding === built) binding = null;
+    });
+    syncInteraction();
+    syncSunTimer();
+    syncLoopActivity();
+    replayInto(built);
+    return built;
   }
 
   /** Push every retained state into a freshly bound renderer and paint. */
@@ -1169,15 +1170,14 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       renderer.bindTopology(scene);
       renderer.useProjection(rig.mode);
       channels.upload(renderer);
+      playback.upload(renderer);
     }
     renderer.setBorders(borders);
     loop.frameNow();
   }
 
-  /** Release the current binding, if any, and say so. */
-  function release(): void {
-    const entry = binding;
-    if (!entry) return;
+  /** Forget what a released binding drew; the attachment then runs its cleanups. */
+  function releaseBinding(entry: Binding): void {
     binding = null;
     shadeTask = null;
     rejectPaint(new DOMException('The canvas was detached before it painted.', 'AbortError'));
@@ -1191,37 +1191,23 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     readyFitNotice = undefined;
     focus.setHover(null);
     shadeAnimating = false;
-    entry.lifecycle.destroy();
-    if (destroyed) return;
-    if (entry.painted) events.emit('painted', false);
-    events.emit('attached', false);
+    releasedPainted = entry.painted;
   }
 
-  /** A device the platform lost: release it, say so, and lease a replacement. */
-  function recover(own: number, info: GPUDeviceLostInfo): void {
-    const entry = binding;
-    if (!entry || entry.generation !== own || destroyed) return;
-    const { canvas } = entry;
-    // A detach or attach made from the `painted`, `attached`, or `deviceLost` handler bumps the
-    // generation; the host's call then owns the outcome, and the recovery stands aside.
-    const mark = generation;
-    release();
-    events.emit('deviceLost', {
-      reason: info.reason ?? 'unknown',
-      message: info.message || 'WebGPU device was lost',
-      recovering: generation === mark && !destroyed,
-    });
-    if (generation !== mark || destroyed) return;
-    api.attach(canvas).catch((error: unknown) => {
-      // A newer attach or a detach overtook the recovery; it owns the outcome now.
-      if (isAbortError(error) || destroyed) return;
-      events.emit('deviceLost', {
-        reason: 'unavailable',
-        message: describe(error),
-        recovering: false,
-      });
-    });
-  }
+  /** Whether the binding just released had painted, so `painted: false` precedes `attached: false`. */
+  let releasedPainted = false;
+
+  const attachment = createAttachment<Binding>({
+    devices: options.devices,
+    bind,
+    release: releaseBinding,
+    attached: (bound) => {
+      if (!bound && releasedPainted) events.emit('painted', false);
+      releasedPainted = false;
+      events.emit('attached', bound);
+    },
+    lost: (loss) => events.emit('deviceLost', loss),
+  });
 
   /** Keeps loop activity consistent with user pause and page visibility. */
   function syncLoopActivity(): void {
@@ -1331,6 +1317,10 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       return binding !== null;
     },
 
+    get canvas() {
+      return attachment.canvas;
+    },
+
     get painted() {
       return binding?.painted ?? false;
     },
@@ -1358,46 +1348,16 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       return unsubscribe;
     },
 
-    async attach(canvas) {
-      if (destroyed) throw new Error('network: the controller is destroyed');
-      const own = ++generation;
-      release();
-      const lease = await options.devices.acquire();
-      if (own !== generation || destroyed) {
-        lease.release();
-        throw superseded();
-      }
-      try {
-        assertDeviceLimits(lease.device);
-      } catch (error) {
-        lease.release();
-        throw error;
-      }
-      const entry = bind(lease, canvas, own);
-      binding = entry;
-      try {
-        syncInteraction();
-        syncSunTimer();
-        syncLoopActivity();
-        replayInto(entry);
-      } catch (error) {
-        binding = null;
-        entry.lifecycle.destroy();
-        throw error;
-      }
-      events.emit('attached', true);
-    },
+    attach: (canvas) => attachment.attach(canvas),
 
-    detach() {
-      generation++;
-      release();
-    },
+    detach: (canvas) => attachment.detach(canvas),
 
     load(next, loadOptions = {}) {
       loadTopology(next, loadOptions.fit ?? true);
     },
 
     setBorders(next) {
+      if (next === borders) return;
       // Validate through a renderer when one is bound; a detached controller validates at attach.
       binding?.renderer.setBorders(next);
       borders = next;
@@ -1409,11 +1369,28 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     },
 
     setChannel(channel, values, domain) {
-      if (channel === 'vertexPosition') setPositions(values);
-      else if (values === null) channels.clear(channel);
-      else channels.set(channel, values, domain);
+      if (isSeriesBinding(values)) {
+        channels.set(channel, values, domain);
+        playback.follow(channel, values.series, values.signal);
+      } else if (channel === 'vertexPosition') {
+        if (values === null && !layoutOverridden) return;
+        setPositions(values);
+      } else if (values === null) {
+        if (!channels.clear(channel)) return;
+        playback.stop(channel);
+      } else {
+        channels.set(channel, values, domain);
+        playback.stop(channel);
+      }
       if (isPickChannel(channel)) hoverDirty = true;
       repaint();
+    },
+
+    seek(time) {
+      if (typeof time !== 'number' || !Number.isFinite(time)) {
+        throw new RangeError('network seek time must be finite');
+      }
+      playback.seek(time);
     },
 
     setChannelDomain(channel, domain) {
@@ -1516,7 +1493,8 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
 
     setProjection(mode, fallback = false) {
       if (switchProjection(mode)) return true;
-      if (fallback) for (const candidate of PROJECTIONS) if (switchProjection(candidate)) break;
+      if (fallback)
+        for (const candidate of PROJECTION_MODES) if (switchProjection(candidate)) break;
       return false;
     },
 
@@ -1597,8 +1575,9 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
         orbit.stop();
         return false;
       }
-      if (!topology || reduced()) return false;
-      return orbit.start();
+      if (!topology || reduced() || !orbit.start()) return false;
+      repaint();
+      return true;
     },
 
     pause() {
@@ -1615,8 +1594,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      generation++;
-      release();
+      attachment.destroy();
       pendingHoverNotice = undefined;
       readyHoverNotice = undefined;
       pendingFitNotice = undefined;
@@ -1631,6 +1609,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       picker.commitScene(null);
       layoutOverridden = false;
       channels.reset(null);
+      playback.reset();
       events.clear();
     },
   };
@@ -1641,7 +1620,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
    * The globe draws precomputed geometry, so it leaves the availability set while the layout is
    * overridden and comes back when the topology's layout is restored.
    */
-  function setPositions(values: Float32Array | null): void {
+  function setPositions(values: Float32Array | Float64Array | null): void {
     if (!scene) {
       if (values === null) return; // nothing to restore, as clearing any other channel
       throw new Error('network topology must be loaded before binding channels');
@@ -1677,7 +1656,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     (active) => {
       if (!destroyed) events.emit('orbit', active);
     },
-    { rate: () => display.orbitRate },
+    () => display.orbitRate,
   );
 
   /** Warms currently supported inactive projections in serial build order. */
@@ -1692,7 +1671,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       try {
         while (entry.warmRequested && binding === entry && !destroyed) {
           entry.warmRequested = false;
-          for (const mode of PROJECTIONS) {
+          for (const mode of PROJECTION_MODES) {
             if (mode !== rig.mode && projections[mode]) {
               try {
                 await entry.renderer.warmProjection(mode);
@@ -1916,7 +1895,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     overridden: boolean,
   ): Network['projections'] {
     const availability = {} as Record<Projection, boolean>;
-    for (const mode of PROJECTIONS) {
+    for (const mode of PROJECTION_MODES) {
       const def = PROJECTION_DEFS[mode];
       availability[mode] =
         (def.livePositions || !overridden) && def.canUse(bounds, characteristicLength, geographic);
@@ -2067,6 +2046,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     // Every channel clears and the topology's layout seeds the position channel the shaders
     // and picker place vertices by.
     channels.reset(nextScene.coords);
+    playback.reset();
     picker.moved();
     // A fresh scene schedules its canonical fit on the rig, unless the caller keeps the pose.
     rig.setBounds(topologyBounds, fit);

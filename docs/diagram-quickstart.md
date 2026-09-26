@@ -62,7 +62,7 @@ diagram.setChannel('blockStatus', Float32Array.of(0, 0, 2)); // IEEET1 in error 
 diagram.setChannel('netFlow', null);
 ```
 
-Each call replaces what was bound, so a playback loop writes a new array per frame. `blockColor` works like `netColor` for blocks; `blockVisible` and `netVisible` hide an item at `0`; `blockStatus` and `portStatus` ring an item in a status color. Every channel but `blockPosition` clears when a new netlist loads.
+Each call replaces what was bound, so a playback loop writes a new array per frame. `blockColor` works like `netColor` for blocks; `blockVisible` and `netVisible` show only values above `0`; `blockStatus` and `portStatus` ring an item in a status color. Every channel but `blockPosition` clears when a new netlist loads.
 
 `blockPosition` places blocks: `x, y` top-left corners in diagram units, which are CSS pixels at zoom 1. A NaN pair hands a block back to its automatic position. Placements follow their blocks' keys through a load, so an edited netlist keeps every surviving block where it was placed:
 

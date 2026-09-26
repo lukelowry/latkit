@@ -196,16 +196,13 @@ describe('monitor', () => {
     await stub.frame();
     expect(canvas.width).toBe(401);
     expect(canvas.height).toBe(203);
-    const history = stub.log.textures.filter((texture) => texture.label === 'monitor-history');
-    expect(history).toHaveLength(2);
-    expect(history[0]).toMatchObject({ width: 200, height: 100, destroyed: true });
-    expect(history[1]).toMatchObject({ width: 401, height: 203, destroyed: false });
 
     monitor.destroy();
-    expect(history[1]!.destroyed).toBe(true);
+    const textures = stub.log.textures.filter((texture) => texture.label.startsWith('monitor-'));
+    expect(textures.every((texture) => texture.destroyed)).toBe(true);
   });
 
-  it('reallocates its history and reports rendered once per resize, at the exact size', async () => {
+  it('keeps its image through a resize and repaints once the size settles', async () => {
     const monitor = await mount();
     const canvas = canvasFor(monitor);
     const rendered = vi.fn();
@@ -216,13 +213,15 @@ describe('monitor', () => {
     const history = () =>
       stub.log.textures.filter((texture) => texture.label === 'monitor-history');
     const allocated = history().length;
+    const draws = historyDraws().length;
     rendered.mockClear();
 
-    // The history repaints whole on any size change, so the backing store never rounds up: a
-    // rounded size would cost a second reallocation, repaint, and `rendered` when it snaps.
     stub.resize(canvas, [401, 203]);
     await stub.frame();
-    expect([canvas.width, canvas.height]).toEqual([401, 203]);
+    expect([canvas.width, canvas.height]).toEqual([448, 256]);
+    expect(stub.log.draws.at(-1)).toMatchObject({ pipeline: 'monitor-composite' });
+    expect(historyDraws()).toHaveLength(draws);
+    expect(history()).toHaveLength(allocated);
 
     await settle();
     expect([canvas.width, canvas.height]).toEqual([401, 203]);
@@ -296,11 +295,11 @@ describe('monitor', () => {
 
     stub.resize(canvas, [600, 600]);
     await stub.frame();
-    history = stub.log.textures.filter((texture) => texture.label === 'monitor-history');
     expect(canvas.width).toBe(256);
     expect(canvas.height).toBe(256);
-    expect(history[1]).toMatchObject({ width: 256, height: 256 });
     await settle();
+    history = stub.log.textures.filter((texture) => texture.label === 'monitor-history');
+    expect(history.at(-1)).toMatchObject({ width: 256, height: 256, destroyed: false });
     expect(Array.from(lastUniform().slice(0, 3))).toEqual([256, 256, expect.closeTo(0.64, 5)]);
   });
 
@@ -499,28 +498,26 @@ describe('monitor', () => {
     expect(stub.log.contextConfigures).toBe(2);
     expect(historyDraws()).toHaveLength(1);
     expect(historyDraws()[0]).toMatchObject({ instanceCount: 2 * 2, firstInstance: 0 });
+    // The automatic range [1, 6] keeps a tenth of its span beyond each side: [0.5, 6.5].
     const focus = stub.log.writes.find((write) => write.label === 'monitor-focus-values')!;
-    expect([...new Float32Array(focus.copy!.buffer)]).toEqual([
-      0,
-      0,
-      Math.fround(0.4),
-      Math.fround(0.4),
-      Math.fround(0.8),
-      Math.fround(0.8),
-    ]);
+    expect([...new Float32Array(focus.copy!.buffer)]).toEqual(
+      [1, 1, 5, 5, 9, 9].map((twelfths) => Math.fround(twelfths / 12)),
+    );
     expect(stub.log.draws.filter((d) => d.pipeline === 'monitor-focus')).toHaveLength(1);
   });
 
-  it('rejects an attach overtaken by a newer attach or a detach and returns its lease', async () => {
+  it('binds only the canvas of the newest attach, and joins a repeat attach', async () => {
     const monitor = create();
     const first = makeCanvas();
     const second = makeCanvas();
 
     const overtaken = monitor.attach(first);
     const current = monitor.attach(second);
+    expect(monitor.attach(second)).toBe(current);
+    expect(monitor.canvas).toBe(second);
 
-    await expect(overtaken).rejects.toMatchObject({ name: 'AbortError' });
-    await current;
+    await expect(overtaken).resolves.toBe(false);
+    await expect(current).resolves.toBe(true);
     expect(monitor.attached).toBe(true);
     expect(stub.log.leaseAcquires).toBe(2);
     expect(stub.log.leaseReleases).toBe(1);
@@ -528,11 +525,10 @@ describe('monitor', () => {
     expect(second.getAttribute('width')).toBe('320');
     expect(first.getAttribute('width')).toBeNull();
 
-    const detached = monitor.attach(first);
-    monitor.detach();
-    await expect(detached).rejects.toMatchObject({ name: 'AbortError' });
+    monitor.detach(first);
+    expect(monitor.attached).toBe(true);
+    monitor.detach(second);
     expect(monitor.attached).toBe(false);
-    expect(stub.log.leaseReleases).toBe(3);
   });
 
   it('refuses to attach after destroy', async () => {
@@ -590,56 +586,6 @@ describe('monitor', () => {
     expect(events.attached).toEqual([false]);
     expect(scope.attached).toBe(false);
     expect(stub.log.leaseReleases).toBe(1);
-  });
-
-  it('lets a detach or attach made from a device-loss handler supersede the recovery', async () => {
-    const detaching = await mount();
-    const moving = await mount();
-    const detachingEvents = record(detaching);
-    const movingEvents = record(moving);
-    const old = canvasFor(moving);
-    const next = makeCanvas();
-    let moved: Promise<void> | null = null;
-    detaching.on('deviceLost', () => detaching.detach());
-    moving.on('attached', (state) => {
-      if (!state && !moved) moved = moving.attach(next);
-    });
-
-    stub.loseDevice('unknown', 'simulated');
-    await flush();
-    await settle();
-
-    // Each host's own call wins: no recovery lease, no rebinding of the old canvas.
-    await expect(moved).resolves.toBeUndefined();
-    expect(detaching.attached).toBe(false);
-    expect(detachingEvents.attached).toEqual([false]);
-    expect(moving.attached).toBe(true);
-    expect(movingEvents.attached).toEqual([false, true]);
-    expect(stub.log.leaseAcquires).toBe(3);
-    expect(canvasFor(detaching).getAttribute('width')).toBeNull();
-    expect(old.getAttribute('width')).toBeNull();
-    expect(next.getAttribute('width')).toBe('320');
-    // A recovery was still coming when `detaching` heard of the loss; `moving` had already
-    // attached anew from its `attached` handler, so nothing recovers there.
-    const loss = { reason: 'unknown', message: 'simulated' };
-    expect(detachingEvents.deviceLost).toEqual([{ ...loss, recovering: true }]);
-    expect(movingEvents.deviceLost).toEqual([{ ...loss, recovering: false }]);
-  });
-
-  it('ignores device loss after detach or destroy', async () => {
-    const first = await mount();
-    const second = await mount();
-    const firstEvents = record(first);
-    const secondEvents = record(second);
-    first.detach();
-    second.destroy();
-
-    stub.loseDevice('unknown', 'late loss');
-    await flush();
-
-    expect(firstEvents.deviceLost).toEqual([]);
-    expect(secondEvents.deviceLost).toEqual([]);
-    expect(stub.log.leaseAcquires).toBe(2);
   });
 
   it('clear blanks the canvas, drops the series, and releases the slabs', async () => {

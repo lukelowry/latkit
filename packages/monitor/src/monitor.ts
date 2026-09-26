@@ -1,8 +1,8 @@
 /// <reference types="@webgpu/types" />
 import {
+  createAttachment,
   createFrameLoop,
   createPresentation,
-  type DeviceLease,
   type Frame,
   type FrameLoop,
   type Presentation,
@@ -53,11 +53,19 @@ export type Events = {
 /** A durable view of one signal. Borrows its series and canvas; owns renderer resources. */
 export interface Monitor {
   readonly attached: boolean;
+  /** The canvas bound or binding, or null. */
+  readonly canvas: HTMLCanvasElement | null;
   on<K extends keyof Events>(event: K, handler: (payload: Events[K]) => void): () => void;
-  /** Lease a device and replay retained state. A newer attach/detach rejects this attach with AbortError. */
-  attach(canvas: HTMLCanvasElement): Promise<void>;
-  /** Release resources and subscriptions, retaining data, selection, and options. */
-  detach(): void;
+  /**
+   * Lease a device and replay retained state; attaching the canvas already bound or binding joins
+   * that attach. Resolves true once bound, false when a newer attach or a detach took over first.
+   */
+  attach(canvas: HTMLCanvasElement): Promise<boolean>;
+  /**
+   * Release resources and subscriptions, retaining data, selection, and options; with `canvas`,
+   * only while that canvas is the one bound or binding.
+   */
+  detach(canvas?: HTMLCanvasElement): void;
   /** Bind a series; committed appends are observed automatically. Loading it again retries failed work. */
   load(series: Series, signal?: number): void;
   setSignal(signal: number): void;
@@ -71,11 +79,9 @@ export interface Monitor {
   destroy(): void;
 }
 interface Binding {
-  readonly generation: number;
   readonly canvas: HTMLCanvasElement;
   readonly presentation: Presentation<HTMLCanvasElement>;
   readonly painter: LanePainter;
-  readonly lifecycle: Lifecycle;
   /** One frame loop per binding: backing size, cursor readings, and the lane's presents. */
   readonly loop: FrameLoop;
   released: boolean;
@@ -96,12 +102,12 @@ export function createMonitor(options: Options = {}): Monitor {
   let colormapLut = bakeColormap(resolved.colormap);
   let series: Series | null = null;
   let signalIndex = 0;
-  let scan: Scan = { frames: 0, range: null };
+  let scan: Scan = { frames: 0, range: null, domain: null };
   let selected: number | null = null;
   let lastReading: Reading | null = null;
   let consumerPaused = false,
-    destroyed = false,
-    generation = 0;
+    destroyed = false;
+  /** The binding in effect, set once its collaborators exist so its replay can draw. */
   let binding: Binding | null = null;
 
   const style = (entry: Binding): Style => ({
@@ -128,10 +134,9 @@ export function createMonitor(options: Options = {}): Monitor {
   function replay(entry: Binding): void {
     forgetLane(entry);
     entry.painter.writeColormap(colormapLut);
+    entry.painter.reset();
     if (!series) {
       entry.painter.releaseSlabs();
-      entry.painter.clearHistory();
-      entry.painter.clearFocus();
       if (!consumerPaused) entry.painter.present();
       return;
     }
@@ -157,9 +162,9 @@ export function createMonitor(options: Options = {}): Monitor {
     if (!consumerPaused) lane.resume();
   }
   /**
-   * Render one frame: adopt a backing size the loop changed (the painter's targets follow the
-   * canvas, and the lane repaints at the new size and line scale), resolve the latest cursor
-   * reading, then present what the lane asked to show.
+   * Render one frame: adopt a backing size the loop changed (the shown image stretches to it, and
+   * the lane repaints at the new size and line scale once the size settles), resolve the latest
+   * cursor reading, then present what the lane asked to show.
    */
   function render(entry: Binding, frame: Frame): boolean {
     if (entry.released || consumerPaused) return false;
@@ -171,11 +176,7 @@ export function createMonitor(options: Options = {}): Monitor {
     if (resized || moved) {
       cancelReadings(entry);
       if (entry.lane) entry.lane.setStyle(style(entry), true);
-      else {
-        painter.clearHistory();
-        painter.clearFocus();
-        painter.present();
-      }
+      else painter.present();
     }
     if (entry.cursorDirty) {
       entry.cursorDirty = false;
@@ -185,7 +186,7 @@ export function createMonitor(options: Options = {}): Monitor {
         events.emit('hover', null);
       }
     }
-    entry.lane?.frame();
+    entry.lane?.frame(frame.settled);
     return false;
   }
   async function reading(entry: Binding, selecting: boolean): Promise<void> {
@@ -218,7 +219,7 @@ export function createMonitor(options: Options = {}): Monitor {
           applySelection(result.element);
           events.emit('select', result);
         }
-      } else if (!sameReading(result, lastReading)) {
+      } else if (!sameSample(result, lastReading)) {
         lastReading = result;
         events.emit('hover', result);
       }
@@ -234,116 +235,92 @@ export function createMonitor(options: Options = {}): Monitor {
     selected = element;
     binding?.lane?.select(element);
   }
-  function bind(lease: DeviceLease, canvas: HTMLCanvasElement, own: number): Binding {
-    const lifecycle = createLifecycle();
-    lifecycle.add(() => lease.release());
-    try {
-      const presentation = createPresentation(lease.device, canvas, {
-        usage: GPUTextureUsage.RENDER_ATTACHMENT,
-      });
-      lifecycle.add(() => presentation.destroy());
-      // Size the backing store before the painter allocates targets, as the loop's first frame
-      // would: from the laid-out size, since the first observation reports that too.
-      const ratio = (canvas.ownerDocument?.defaultView ?? globalThis.window)?.devicePixelRatio || 1;
-      const width = Math.max(1, Math.round(canvas.clientWidth * ratio));
-      const height = Math.max(1, Math.round(canvas.clientHeight * ratio));
-      presentation.resize(width, height);
-      const painter = new LanePainter(presentation, canvas.width, canvas.height);
-      lifecycle.add(() => painter.destroy());
-      let entry: Binding | null = null;
-      // The history targets match the canvas exactly and any size change repaints the whole
-      // history, so a backing store rounded up during a resize would only repaint it twice.
-      const loop = createFrameLoop(
-        presentation,
-        (frame) => (entry ? render(entry, frame) : false),
-        { quantize: false },
-      );
-      lifecycle.add(() => loop.destroy());
-      if (consumerPaused) loop.pause();
-      const built: Binding = {
-        generation: own,
-        canvas,
-        presentation,
-        painter,
-        lifecycle,
-        loop,
-        released: false,
-        // The loop's formula, so an unchanged size never reads as a moved scale on its first frame.
-        backingScale: Math.min(canvas.width / (width / ratio), canvas.height / (height / ratio)),
-        cursor: null,
-        cursorDirty: false,
-        lane: null,
-        off: null,
-        hover: null,
-        pick: null,
-      };
-      entry = built;
-      const move = (event: PointerEvent) => {
-        built.hover?.abort();
-        built.cursor = { x: event.clientX, y: event.clientY };
-        built.cursorDirty = true;
-        loop.wake();
-      };
-      const leave = () => {
-        built.hover?.abort();
-        built.cursor = null;
-        built.cursorDirty = true;
-        loop.wake();
-      };
-      const down = (event: PointerEvent) => {
-        built.cursor = { x: event.clientX, y: event.clientY };
-        void reading(built, true);
-      };
-      canvas.addEventListener('pointermove', move);
-      canvas.addEventListener('pointerleave', leave);
-      canvas.addEventListener('pointerdown', down);
-      lifecycle.add(() => {
-        canvas.removeEventListener('pointermove', move);
-        canvas.removeEventListener('pointerleave', leave);
-        canvas.removeEventListener('pointerdown', down);
-      });
-      lifecycle.add(forwardDeviceLoss(lease.device, (info) => recover(own, info)));
-      lifecycle.add(() => {
-        built.released = true;
-        forgetLane(built);
-      });
-      return built;
-    } catch (error) {
-      lifecycle.destroy();
-      throw error;
+  /** Build what draws into `canvas` and replay into it; cleanups run in reverse on failure. */
+  function bind(
+    device: GPUDevice,
+    canvas: HTMLCanvasElement,
+    cleanup: (release: () => void) => void,
+  ): Binding {
+    if ((device.limits.maxStorageBuffersInVertexStage ?? 2) < 2) {
+      throw new TypeError('A Core WebGPU device is required');
     }
-  }
-  function release(): void {
-    const entry = binding;
-    if (!entry) return;
-    binding = null;
-    lastReading = null;
-    entry.lifecycle.destroy();
-    if (!destroyed) events.emit('attached', false);
-  }
-  function recover(own: number, info: GPUDeviceLostInfo): void {
-    const entry = binding;
-    if (!entry || entry.generation !== own || destroyed) return;
-    const canvas = entry.canvas;
-    // A detach or attach made from the `attached` or `deviceLost` handler bumps the generation;
-    // the host's call then owns the outcome, and the recovery stands aside.
-    const mark = generation;
-    release();
-    events.emit('deviceLost', {
-      reason: info.reason ?? 'unknown',
-      message: info.message || 'WebGPU device was lost',
-      recovering: generation === mark && !destroyed,
+    const presentation = createPresentation(device, canvas, {
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
-    if (generation !== mark || destroyed) return;
-    void api.attach(canvas).catch((error: unknown) => {
-      if (isAbortError(error) || destroyed) return;
-      events.emit('deviceLost', {
-        reason: 'unavailable',
-        message: describe(error),
-        recovering: false,
-      });
+    cleanup(() => presentation.destroy());
+    // Size the backing store before the painter allocates targets, as the loop's first frame
+    // would: from the laid-out size, since the first observation reports that too.
+    const ratio = (canvas.ownerDocument?.defaultView ?? globalThis.window)?.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round(canvas.clientWidth * ratio));
+    const height = Math.max(1, Math.round(canvas.clientHeight * ratio));
+    presentation.resize(width, height);
+    const painter = new LanePainter(presentation, canvas.width, canvas.height);
+    cleanup(() => painter.destroy());
+    let entry: Binding | null = null;
+    const loop = createFrameLoop(presentation, (frame) => (entry ? render(entry, frame) : false));
+    cleanup(() => loop.destroy());
+    if (consumerPaused) loop.pause();
+    const built: Binding = {
+      canvas,
+      presentation,
+      painter,
+      loop,
+      released: false,
+      // The loop's formula, so an unchanged size never reads as a moved scale on its first frame.
+      backingScale: Math.min(canvas.width / (width / ratio), canvas.height / (height / ratio)),
+      cursor: null,
+      cursorDirty: false,
+      lane: null,
+      off: null,
+      hover: null,
+      pick: null,
+    };
+    entry = built;
+    const move = (event: PointerEvent) => {
+      built.hover?.abort();
+      built.cursor = { x: event.clientX, y: event.clientY };
+      built.cursorDirty = true;
+      loop.wake();
+    };
+    const leave = () => {
+      built.hover?.abort();
+      built.cursor = null;
+      built.cursorDirty = true;
+      loop.wake();
+    };
+    const down = (event: PointerEvent) => {
+      built.cursor = { x: event.clientX, y: event.clientY };
+      void reading(built, true);
+    };
+    canvas.addEventListener('pointermove', move);
+    canvas.addEventListener('pointerleave', leave);
+    canvas.addEventListener('pointerdown', down);
+    cleanup(() => {
+      canvas.removeEventListener('pointermove', move);
+      canvas.removeEventListener('pointerleave', leave);
+      canvas.removeEventListener('pointerdown', down);
     });
+    cleanup(() => {
+      built.released = true;
+      forgetLane(built);
+    });
+    binding = built;
+    cleanup(() => {
+      if (binding === built) binding = null;
+    });
+    replay(built);
+    return built;
   }
+  const attachment = createAttachment<Binding>({
+    devices: resolved.devices,
+    bind,
+    release: () => {
+      binding = null;
+      lastReading = null;
+    },
+    attached: (bound) => events.emit('attached', bound),
+    lost: (loss) => events.emit('deviceLost', loss),
+  });
   function checkSignal(input: Series, index: number): void {
     if (!Number.isInteger(index) || index < 0 || index >= input.signalCount)
       throw new RangeError(`monitor: signal ${index} out of [0, ${input.signalCount})`);
@@ -353,37 +330,12 @@ export function createMonitor(options: Options = {}): Monitor {
     get attached() {
       return binding !== null;
     },
+    get canvas() {
+      return attachment.canvas;
+    },
     on: (event, handler) => events.on(event, handler),
-    async attach(canvas) {
-      if (destroyed) throw new Error('monitor: the controller is destroyed');
-      const own = ++generation;
-      release();
-      const lease = await resolved.devices.acquire();
-      if (own !== generation || destroyed) {
-        lease.release();
-        throw superseded();
-      }
-      try {
-        assertDeviceLimits(lease.device);
-      } catch (error) {
-        lease.release();
-        throw error;
-      }
-      const entry = bind(lease, canvas, own);
-      binding = entry;
-      try {
-        replay(entry);
-      } catch (error) {
-        binding = null;
-        entry.lifecycle.destroy();
-        throw error;
-      }
-      events.emit('attached', true);
-    },
-    detach() {
-      generation++;
-      release();
-    },
+    attach: (canvas) => attachment.attach(canvas),
+    detach: (canvas) => attachment.detach(canvas),
     load(next, index = 0) {
       if (destroyed) return;
       validateSeries(next);
@@ -394,7 +346,7 @@ export function createMonitor(options: Options = {}): Monitor {
       }
       series = next;
       signalIndex = index;
-      scan = { frames: 0, range: null };
+      scan = { frames: 0, range: null, domain: null };
       lastReading = null;
       if (selected !== null && storedElement(next, selected) === null) selected = null;
       if (binding) replay(binding);
@@ -440,7 +392,7 @@ export function createMonitor(options: Options = {}): Monitor {
       series = null;
       selected = null;
       lastReading = null;
-      scan = { frames: 0, range: null };
+      scan = { frames: 0, range: null, domain: null };
       if (binding) replay(binding);
     },
     pause() {
@@ -462,8 +414,7 @@ export function createMonitor(options: Options = {}): Monitor {
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      generation++;
-      release();
+      attachment.destroy();
       series = null;
       selected = null;
       events.clear();
@@ -471,82 +422,12 @@ export function createMonitor(options: Options = {}): Monitor {
   };
   return api;
 }
-/** Resources registered transactionally while a binding is constructed. */
-interface Lifecycle {
-  add(cleanup: () => void): void;
-  destroy(): void;
-}
-
-/** Creates an idempotent, reverse-order cleanup stack. */
-function createLifecycle(): Lifecycle {
-  const cleanups: Array<() => void> = [];
-  let destroyed = false;
-
-  return {
-    add(cleanup) {
-      cleanups.push(cleanup);
-    },
-    destroy() {
-      if (destroyed) return;
-      destroyed = true;
-      for (let i = cleanups.length - 1; i >= 0; i--) {
-        try {
-          cleanups[i]!();
-        } catch {
-          // Cleanup is best-effort so one resource cannot strand the remainder.
-        }
-      }
-      cleanups.length = 0;
-    },
-  };
-}
-
-/** Rejects devices known not to meet the renderer's Core WebGPU limits. */
-function assertDeviceLimits(device: GPUDevice): void {
-  const vertexStorage = device.limits.maxStorageBuffersInVertexStage;
-  if (vertexStorage !== undefined && vertexStorage < 2) {
-    throw new TypeError('A Core WebGPU device is required');
-  }
-}
-
-/** Relays one device-loss notification without retaining a released binding. */
-function forwardDeviceLoss(
-  device: GPUDevice,
-  listener: (info: GPUDeviceLostInfo) => void,
-): () => void {
-  let active: ((info: GPUDeviceLostInfo) => void) | undefined = listener;
-  void device.lost.then((info) => active?.(info));
-  return () => {
-    active = undefined;
-  };
-}
-
-/** The rejection of an attach that a newer attach or a detach overtook. */
-function superseded(): DOMException {
-  return new DOMException('The attach was superseded.', 'AbortError');
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError';
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function clamp(x: number): number {
   return Math.max(0, Math.min(1, x));
 }
-function sameReading(a: Reading | null, b: Reading | null): boolean {
+function sameSample(a: Reading | null, b: Reading | null): boolean {
   return (
     a === b ||
-    (!!a &&
-      !!b &&
-      a.signal === b.signal &&
-      a.element === b.element &&
-      a.frame === b.frame &&
-      a.value === b.value &&
-      a.x === b.x &&
-      a.y === b.y)
+    (!!a && !!b && a.signal === b.signal && a.element === b.element && a.frame === b.frame)
   );
 }

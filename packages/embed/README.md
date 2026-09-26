@@ -117,7 +117,8 @@ palette independently of `value-range`.
 
 Every live option of the underlying controller is an attribute under its kebab-case name, parsed
 by the option's own kind from `OPTIONS`: booleans take shorthand, `"true"`, or `"false"`; numbers
-are decimals; RGBA and domain values are space-separated numbers; enumerations take their token.
+are decimals; colors are four space-separated numbers or any CSS color `parseColor` reads, resolved
+on the element so `var()` works; domains are space-separated numbers; enumerations take their token.
 Removing an attribute restores the option's default. An invalid value warns and uses the default.
 
 `colormap` names a `@latkit/colormaps` preset on both elements.

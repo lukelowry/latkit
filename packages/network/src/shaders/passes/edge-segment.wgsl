@@ -207,7 +207,8 @@ fn edge_common(
   out.edge_color = edge_channel_color_from_vertices(seg.edge_id, vec2u(seg.from_vertex, seg.to_vertex));
   out.item_focus = item_focus;
   if (u.e_dash_period_px > 0.0) {
-    out.dashed = select(0u, 1u, edge_dash_val(seg.edge_id) < 0.5);
+    let dash = edge_dash_val(seg.edge_id);
+    out.dashed = select(0u, 1u, !no_value(dash) && dash < 0.5);
   }
   return out;
 }

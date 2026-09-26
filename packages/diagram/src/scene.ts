@@ -406,7 +406,7 @@ export class Scene implements PickSource {
     const nets = this.channels.values('netVisible');
     const { blockNetStart, blockNets, blockGroup, netGroup } = p;
     for (let block = 0; block < p.blockCount; block++) {
-      const shows = blocks === null || blocks[block] !== 0 ? 1 : 0;
+      const shows = visibleAt(blocks, block) ? 1 : 0;
       if (shows === this.blockShows[block]) continue;
       this.blockShows[block] = shows;
       this.markGroup(blockGroup[block]!);
@@ -415,7 +415,7 @@ export class Scene implements PickSource {
       }
     }
     for (let net = 0; net < p.netCount; net++) {
-      const shows = nets === null || nets[net] !== 0 ? 1 : 0;
+      const shows = visibleAt(nets, net) ? 1 : 0;
       if (shows === this.netShows[net]) continue;
       this.netShows[net] = shows;
       this.markRoute(net);
@@ -668,7 +668,7 @@ export class Scene implements PickSource {
     const box = emptyBox(this.box);
     const visible = this.channels.values('blockVisible');
     for (let block = 0; block < p.blockCount; block++) {
-      if (visible === null || visible[block] !== 0) this.addBlock(box, p, block);
+      if (visibleAt(visible, block)) this.addBlock(box, p, block);
     }
     for (let group = 0; group < p.groupCount; group++) this.addGroup(box, group);
     this.addEntries(box, 0, this.routes.capacity);
@@ -725,14 +725,12 @@ export class Scene implements PickSource {
 
   /** Whether a block is shown. */
   blockVisible(block: number): boolean {
-    const values = this.channels.values('blockVisible');
-    return values === null || values[block] !== 0;
+    return visibleAt(this.channels.values('blockVisible'), block);
   }
 
   /** Whether a net is shown. */
   netVisible(net: number): boolean {
-    const values = this.channels.values('netVisible');
-    return values === null || values[net] !== 0;
+    return visibleAt(this.channels.values('netVisible'), net);
   }
 
   /**
@@ -828,11 +826,11 @@ export class Scene implements PickSource {
     const nets = this.channels.values('netVisible');
     this.blockShows = new Uint8Array(blockCount);
     for (let block = 0; block < blockCount; block++) {
-      this.blockShows[block] = blocks === null || blocks[block] !== 0 ? 1 : 0;
+      this.blockShows[block] = visibleAt(blocks, block) ? 1 : 0;
     }
     this.netShows = new Uint8Array(netCount);
     for (let net = 0; net < netCount; net++) {
-      this.netShows[net] = nets === null || nets[net] !== 0 ? 1 : 0;
+      this.netShows[net] = visibleAt(nets, net) ? 1 : 0;
     }
 
     // Size the layout before routes bind: growing it replaces the store every view reads.
@@ -938,7 +936,7 @@ export class Scene implements PickSource {
     const drawn = this.positions;
     const visible = this.channels.values('blockVisible');
     const shows = (block: number): boolean =>
-      visible === null || visible.length !== prev.blockCount || visible[block] !== 0;
+      visible === null || visible.length !== prev.blockCount || visibleAt(visible, block);
     for (let block = 0; block < prev.blockCount; block++) {
       if (carried[block] || !shows(block)) continue;
       const x = drawn[2 * block]!;
@@ -1354,7 +1352,7 @@ export class Scene implements PickSource {
     const box = emptyBox(this.box);
     for (let at = p.groupStart[group]!; at < p.groupStart[group + 1]!; at++) {
       const block = p.groupBlocks[at]!;
-      if (visible === null || visible[block] !== 0) this.addBlock(box, p, block);
+      if (visibleAt(visible, block)) this.addBlock(box, p, block);
     }
     let x0 = Number.NaN;
     let y0 = Number.NaN;
@@ -1487,6 +1485,11 @@ function addPoint(box: Float64Array, x: number, y: number): void {
   if (y < box[1]!) box[1] = y;
   if (x > box[2]!) box[2] = x;
   if (y > box[3]!) box[3] = y;
+}
+
+/** Whether a visibility channel shows item `index`: unbound, or a value above zero. */
+function visibleAt(values: Float32Array | null, index: number): boolean {
+  return values === null || values[index]! > 0;
 }
 
 /** A box as a rectangle, or null when it holds nothing. */

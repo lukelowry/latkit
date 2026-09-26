@@ -103,25 +103,49 @@ export interface FakeNetwork extends Listeners<NetworkEvents> {
   failAttach(error: unknown): void;
 }
 
-export function fakeNetwork(): FakeNetwork {
-  const { on, emit } = listeners<NetworkEvents>();
+/** An attach lifecycle that joins a repeat attach and detaches a named canvas only while current. */
+function fakeAttachment(emit: (state: boolean) => void) {
   let attached = false;
+  let current: { readonly canvas: HTMLCanvasElement; readonly done: Promise<boolean> } | null =
+    null;
   let failure: { readonly error: unknown } | null = null;
-  const attach = vi.fn(async () => {
-    await Promise.resolve();
-    if (failure) {
-      const { error } = failure;
-      failure = null;
-      throw error;
-    }
-    attached = true;
-    emit('attached', true);
+  const attach = vi.fn((canvas: HTMLCanvasElement): Promise<boolean> => {
+    if (current?.canvas === canvas) return current.done;
+    const done = (async () => {
+      await Promise.resolve();
+      if (failure) {
+        const { error } = failure;
+        failure = null;
+        current = null;
+        throw error;
+      }
+      attached = true;
+      emit(true);
+      return true;
+    })();
+    current = { canvas, done };
+    return done;
   });
-  const detach = vi.fn(() => {
+  const detach = vi.fn((canvas?: HTMLCanvasElement) => {
+    if (canvas && current?.canvas !== canvas) return;
+    current = null;
     if (!attached) return;
     attached = false;
-    emit('attached', false);
+    emit(false);
   });
+  return {
+    attach,
+    detach,
+    attached: () => attached,
+    fail(error: unknown) {
+      failure = { error };
+    },
+  };
+}
+
+export function fakeNetwork(): FakeNetwork {
+  const { on, emit } = listeners<NetworkEvents>();
+  const { attach, detach, attached, fail } = fakeAttachment((state) => emit('attached', state));
   const spies = {
     attach,
     detach,
@@ -138,9 +162,7 @@ export function fakeNetwork(): FakeNetwork {
     ...spies,
     emit,
     geographic: true,
-    failAttach(error) {
-      failure = { error };
-    },
+    failAttach: fail,
     value: {
       projection: 'flat',
       projections: { flat: true, tilt: true, globe: false },
@@ -149,7 +171,7 @@ export function fakeNetwork(): FakeNetwork {
       },
       orbiting: false,
       get attached() {
-        return attached;
+        return attached();
       },
       on,
       ...spies,
@@ -172,17 +194,7 @@ export interface FakeMonitor extends Listeners<MonitorEvents> {
 
 export function fakeMonitor(): FakeMonitor {
   const { on, emit } = listeners<MonitorEvents>();
-  let attached = false;
-  const attach = vi.fn(async () => {
-    await Promise.resolve();
-    attached = true;
-    emit('attached', true);
-  });
-  const detach = vi.fn(() => {
-    if (!attached) return;
-    attached = false;
-    emit('attached', false);
-  });
+  const { attach, detach, attached } = fakeAttachment((state) => emit('attached', state));
   const spies = {
     attach,
     detach,
@@ -197,7 +209,7 @@ export function fakeMonitor(): FakeMonitor {
     emit,
     value: {
       get attached() {
-        return attached;
+        return attached();
       },
       on,
       ...spies,

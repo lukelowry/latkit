@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collect, createSeries, frameAt, sample, type RunFrames } from '../src/index.js';
+import { collect, createSeries, sample, type RunFrames } from '../src/index.js';
 
 function batch(time: number[], values: number[], signalCount = 2, elementCount = 2): RunFrames {
   return {
@@ -132,18 +132,6 @@ describe('collect', () => {
     expect(() => collect([batches[0]!, { ...batches[1]!, resultId: 'other' }])).toThrow(
       /different results/,
     );
-  });
-});
-
-describe('frameAt', () => {
-  const time = Float64Array.of(0, 1, 1, 2, 5);
-  it('finds the last event sample and honors a shorter head', () => {
-    expect(frameAt(time, -1)).toBe(0);
-    expect(frameAt(time, 1)).toBe(2);
-    expect(frameAt(time, 4.9)).toBe(3);
-    expect(frameAt(time, 99)).toBe(4);
-    expect(frameAt(time, 99, 2)).toBe(1);
-    expect(frameAt(new Float64Array(0), 3)).toBe(0);
   });
 });
 

@@ -464,17 +464,21 @@ describe('latkit-network', () => {
     expect(network.pause).toHaveBeenCalledOnce();
     h.near(element, true);
     expect(network.resume).toHaveBeenCalledTimes(2);
-    expect(network.attach).toHaveBeenCalledOnce();
+    // A repeat attach joins the canvas already bound.
+    expect(network.attach).toHaveBeenCalledTimes(2);
+    expect(element.network.attached).toBe(true);
 
     element.remove();
-    expect(network.detach).toHaveBeenCalledOnce();
+    expect(network.detach).toHaveBeenCalledExactlyOnceWith(
+      element.shadowRoot!.querySelector('canvas'),
+    );
     expect(element.hasAttribute('attached')).toBe(false);
     expect(h.observing.has(element)).toBe(false);
 
     document.body.append(element);
     h.near(element, true);
     await flushMicrotasks();
-    expect(network.attach).toHaveBeenCalledTimes(2);
+    expect(network.attach).toHaveBeenCalledTimes(3);
     expect(network.load).toHaveBeenCalledOnce();
     expect(h.deps.fetch).toHaveBeenCalledOnce();
     expect(element.hasAttribute('attached')).toBe(true);

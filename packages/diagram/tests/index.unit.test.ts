@@ -1,19 +1,11 @@
-import type { Domain, Netlist } from '@latkit/model';
+import type { Domain, Netlist, Part } from '@latkit/model';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import * as entry from '../src/index.js';
-import type {
-  Channel,
-  Diagram,
-  Events,
-  Interaction,
-  Options,
-  Part,
-  Pose,
-  Shade,
-  ShadeFrame,
-} from '../src/index.js';
+import type { Channel, Diagram, Events, Options, Pose, Shade, ShadeFrame } from '../src/index.js';
 import { twoArea } from './fixtures/netlists.js';
+
+type Interaction = NonNullable<Options['interaction']>;
 
 describe('diagram package entrypoint', () => {
   it('publishes exactly the controller factory, the two registries, and the option validator', () => {
@@ -69,7 +61,7 @@ describe('diagram package entrypoint', () => {
       [netlist: Netlist, options?: { readonly fit?: boolean }]
     >();
     expectTypeOf<Parameters<Diagram['setChannel']>>().toEqualTypeOf<
-      [channel: Channel, values: Float32Array | null, domain?: Domain | null]
+      [channel: Channel, values: Float32Array | Float64Array | null, domain?: Domain | null]
     >();
     expectTypeOf<ReturnType<Diagram['getChannelDomain']>>().toEqualTypeOf<Domain | null>();
     expectTypeOf<ReturnType<Diagram['arrange']>>().toEqualTypeOf<Float32Array>();
@@ -104,9 +96,11 @@ describe('diagram package entrypoint', () => {
     } | null>();
     expectTypeOf<Parameters<Diagram['setShade']>>().toEqualTypeOf<[shade: Shade | null]>();
     expectTypeOf<ShadeFrame['pointerPx']>().toEqualTypeOf<readonly [number, number] | null>();
-    expectTypeOf<Options['interaction']>().toEqualTypeOf<Interaction | undefined>();
     expectTypeOf<Interaction>().toEqualTypeOf<'edit' | 'navigate' | 'inspect' | 'none'>();
     expectTypeOf<Options['routing']>().toEqualTypeOf<'orthogonal' | 'straight' | undefined>();
+    expectTypeOf<ReturnType<Diagram['attach']>>().toEqualTypeOf<Promise<boolean>>();
+    expectTypeOf<Parameters<Diagram['detach']>>().toEqualTypeOf<[canvas?: HTMLCanvasElement]>();
+    expectTypeOf<Diagram['canvas']>().toEqualTypeOf<HTMLCanvasElement | null>();
     expectTypeOf<
       'ControllerDeps' extends keyof typeof entry ? true : false
     >().toEqualTypeOf<false>();

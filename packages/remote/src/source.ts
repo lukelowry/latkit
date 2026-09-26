@@ -1,81 +1,65 @@
 /**
  * A model source and its runner as port services. Only bytes cross: the core, class shards, and
- * the vendor source. A served lineage continues through `reopen`, which replaces what is served in
- * place and supersedes every earlier remote. A run is one stream call: the runner's updates are
- * its items, and cancelling the stream aborts the runner.
+ * the vendor source. A run is one stream call: the runner's updates are its items, and cancelling
+ * the stream aborts the runner.
  */
 
 import type { Runner, RunUpdate, Source } from '@latkit/model';
 import { connect, type Port, protocol, serve, transferred } from '@latkit/port';
-import { bytes, requests, str } from '@latkit/port/guard';
+import { bytes, requests, str, type Guard } from '@latkit/port/guard';
 
 import type { Remote } from './remote.js';
 
 /** What one side serves: a source and, when it has an engine, a runner. */
-export interface Served {
+export interface Served<Command = Uint8Array> {
   readonly source: Source;
-  readonly runner?: Runner;
-}
-
-/**
- * The far side of a served model: its source, its runner when the server can run, and the reopen
- * that supersedes this remote with the next.
- */
-export interface RemoteSource extends Remote<Served> {
-  reopen(bytes: Uint8Array): Promise<RemoteSource>;
+  readonly runner?: Runner<Command>;
 }
 
 type Request =
   | { readonly op: 'hello' }
   | { readonly op: 'core' }
   | { readonly op: 'class'; readonly id: string }
-  | { readonly op: 'bytes' }
-  | { readonly op: 'reopen'; readonly bytes: Uint8Array };
+  | { readonly op: 'bytes' };
 
 type Reply = Uint8Array | { readonly runnable: boolean };
 
 const SOURCE = protocol<Request, Reply>(
   'source',
-  requests<Request>({ hello: {}, core: {}, class: { id: str }, bytes: {}, reopen: { bytes } }),
+  requests<Request>({ hello: {}, core: {}, class: { id: str }, bytes: {} }),
 );
-const RUN = protocol<Uint8Array, RunUpdate>('source:run', bytes);
-const SUPERSEDED = 'this remote was superseded by reopen';
+const RUN = 'source:run';
 
-function runnable(reply: Reply): boolean {
-  return !bytes(reply) && reply.runnable === true;
-}
-
-/** Adopt a served pair; a rejected open is reported by the first request that awaits it. */
-function adopt(next: Served | Promise<Served>): Promise<Served> {
-  const served = Promise.resolve(next);
-  void served.catch(() => undefined);
-  return served;
-}
-
-/** A run that can no longer start: its remote was superseded. */
-function superseded(): AsyncIterable<RunUpdate> {
-  return {
-    [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(new Error(SUPERSEDED)) }),
-  };
+/** A remote run's updates, ended with `cancelled` when an abort stops the stream first. */
+async function* settled(
+  updates: AsyncIterable<RunUpdate>,
+  signal: AbortSignal | undefined,
+): AsyncGenerator<RunUpdate> {
+  let ended = false;
+  for await (const update of updates) {
+    ended = update.type === 'done' || update.type === 'cancelled' || update.type === 'failed';
+    yield update;
+  }
+  if (!ended && signal?.aborted) yield { type: 'cancelled' };
 }
 
 /**
- * Serve one model lineage on `port` until either side closes. Returns the server's own close.
+ * Serve one model on `port` until either side closes. Returns the server's own close.
  *
- * @param options - `reopen` continues the lineage, turning edited bytes into the next served
- * pair; without it a reopen request is refused. `onClose` fires once the service has ended.
+ * @param options - `command` guards what the peer sends a run, since the peer is untrusted; it
+ * defaults to bytes, and a structured command needs its own. `onClose` fires once the service has
+ * ended.
  */
-export function serveSource(
+export function serveSource<Command = Uint8Array>(
   port: Port,
-  initial: Served | Promise<Served>,
-  options: {
-    reopen?(bytes: Uint8Array): Promise<Served>;
-    onClose?(): void;
-  } = {},
+  initial: Served<Command> | Promise<Served<Command>>,
+  options: { readonly command?: Guard<Command>; onClose?(): void } = {},
 ): () => void {
-  let served: Promise<Served> | null = adopt(initial);
+  let served: Promise<Served<Command>> | null = Promise.resolve(initial);
+  // A rejected open is reported by the first request that awaits it.
+  void served.catch(() => undefined);
   let running = false;
-  const current = (): Promise<Served> =>
+  const current = (): Promise<Served<Command>> =>
     served ?? Promise.reject(new Error('the served model was closed'));
 
   function close(): void {
@@ -104,19 +88,13 @@ export function serveSource(
           return owned(await entry.source.class(request.id, signal));
         case 'bytes':
           return owned(await entry.source.bytes(signal));
-        case 'reopen': {
-          if (!options.reopen) throw new Error('this source cannot reopen');
-          const next = await options.reopen(request.bytes);
-          entry.source.close?.();
-          served = adopt(next);
-          return { runnable: next.runner !== undefined };
-        }
       }
     },
     { onClose: close },
   );
 
-  const runs = serve(port, RUN, async function* (command, signal) {
+  const run = protocol<Command, RunUpdate>(RUN, options.command ?? (bytes as Guard<Command>));
+  const runs = serve(port, run, async function* (command, signal) {
     const entry = await current();
     if (!entry.runner) throw new Error('this source cannot run');
     if (running) throw new Error('a run is already in progress');
@@ -134,62 +112,45 @@ export function serveSource(
   };
 }
 
-/**
- * Connect to the model a `serveSource` peer serves. Closing the remote closes the connection; a
- * remote that `reopen` superseded rejects every later request and owns nothing.
- */
-export async function connectSource(port: Port): Promise<RemoteSource> {
+/** Connect to the model a `serveSource` peer serves. Closing the remote closes the connection. */
+export async function connectSource<Command = Uint8Array>(
+  port: Port,
+): Promise<Remote<Served<Command>>> {
   const calls = connect(port, SOURCE);
-  const runs = connect(port, RUN);
-  let generation = 0;
-
-  const remote = (own: number, canRun: boolean): RemoteSource => {
-    const live = (): boolean => own === generation;
-    const ask = async (
-      request: Request,
-      signal?: AbortSignal,
-      progress?: (loaded: number, total: number) => void,
-    ): Promise<Uint8Array> => {
-      if (!live()) throw new Error(SUPERSEDED);
-      const reply = await calls.call(request, { signal, progress });
-      if (!bytes(reply)) throw new Error('malformed source reply');
-      return reply;
-    };
-    // The caller keeps every buffer it passes in: a command is small enough to copy, and a run
-    // may be started again from the same bytes; the reopen bytes are copied once and the copy
-    // is transferred, so a large edited case still crosses without a second copy.
-    const runner: Runner = {
-      run: (command, signal) => (live() ? runs.stream(command, { signal }) : superseded()),
-    };
-    return {
-      source: {
-        core: (signal, progress) => ask({ op: 'core' }, signal, progress),
-        class: (id, signal) => ask({ op: 'class', id }, signal),
-        bytes: (signal) => ask({ op: 'bytes' }, signal),
-      },
-      ...(canRun && { runner }),
-      async reopen(next) {
-        if (!live()) throw new Error(SUPERSEDED);
-        const owned = next.slice();
-        const reply = await calls.call(
-          { op: 'reopen', bytes: owned },
-          { transfer: [owned.buffer as ArrayBuffer] },
-        );
-        return remote(++generation, runnable(reply));
-      },
-      close() {
-        if (!live()) return;
-        calls.close();
-        runs.close();
-      },
-    };
+  const runs = connect(port, protocol<Command, RunUpdate>(RUN));
+  const ask = async (
+    request: Request,
+    signal?: AbortSignal,
+    progress?: (loaded: number, total: number) => void,
+  ): Promise<Uint8Array> => {
+    const reply = await calls.call(request, { signal, progress });
+    if (!bytes(reply)) throw new Error('malformed source reply');
+    return reply;
   };
 
+  let hello: Reply;
   try {
-    return remote(0, runnable(await calls.call({ op: 'hello' })));
+    hello = await calls.call({ op: 'hello' });
   } catch (error) {
     calls.close();
     runs.close();
     throw error;
   }
+  // The caller keeps every command it passes in: a command is small enough to copy, and a run may
+  // be started again from the same one.
+  const runner: Runner<Command> = {
+    run: (command, signal) => settled(runs.stream(command, { signal }), signal),
+  };
+  return {
+    source: {
+      core: (signal, progress) => ask({ op: 'core' }, signal, progress),
+      class: (id, signal) => ask({ op: 'class', id }, signal),
+      bytes: (signal) => ask({ op: 'bytes' }, signal),
+    },
+    ...(!bytes(hello) && hello.runnable && { runner }),
+    close() {
+      calls.close();
+      runs.close();
+    },
+  };
 }

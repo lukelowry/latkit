@@ -17,7 +17,7 @@ Public APIs stay imperative on purpose: data often arrives from simulation, tele
 : Owns color catalogs and formatting helpers. Rendering packages can consume this package without duplicating palette data.
 
 `@latkit/gpu`
-: Centralizes Core WebGPU device requests, typed availability failures, canvas presentation mechanics, and the device pool: `devices` is the realm-wide pool every renderer leases from unless given another, and `createDevicePool` makes a private one. It also owns the frame loop: `createFrameLoop` schedules one canvas's frames, re-renders before the next paint when the canvas resizes, and grows the backing store in steps of 64 device pixels while a resize is in flight, so every renderer drives its canvas the same way. The network and the diagram keep those steps; the monitor, which repaints its whole history on any size change, passes `{ quantize: false }` and follows the exact size. It returns native platform objects and takes ownership only of a pooled device, for exactly as long as a lease holds it.
+: Centralizes Core WebGPU device requests, typed availability failures, canvas presentation mechanics, and the device pool: `devices` is the realm-wide pool every renderer leases from unless given another, and `createDevicePool` makes a private one. It also owns the frame loop: `createFrameLoop` schedules one canvas's frames, re-renders before the next paint when the canvas resizes, and grows the backing store in steps of 64 device pixels while a resize is in flight, so every renderer drives its canvas the same way. `createAttachment` is the attach lifecycle every controller shares: supersession, joining a repeat attach, and recovery from device loss. It returns native platform objects and takes ownership only of a pooled device, for exactly as long as a lease holds it.
 
 `@latkit/monitor`
 : Owns monitor-specific state, WebGPU resources, and rendering behavior behind one `Monitor` controller and its `OPTIONS` registry.
@@ -35,7 +35,7 @@ Public APIs stay imperative on purpose: data often arrives from simulation, tele
 : Owns the boundary between two halves of one application: the `Port` over workers, webviews, and sockets, the binary frame that carries typed arrays intact, and the protocols served and connected over a port. Depends on nothing and knows nothing about models.
 
 `@latkit/remote`
-: Owns a model as it crosses a port: `serveSource` and `connectSource` for a source and its runner, `serveGrid` and `connectGrid` for a grid, `serveResults` and `connectResults` for what a run recorded. Depends on `@latkit/model` and `@latkit/port`; it is the only package that knows both. Formats stay outside it: a vendor turns its files into `RunFrames`, and the port carries only those.
+: Owns a model as it crosses a port: `serveSource` and `connectSource` for a source and its runner, `serveResults` and `connectResults` for what a run recorded. Depends on `@latkit/model` and `@latkit/port`; it is the only package that knows both. Formats stay outside it: a vendor turns its files into `RunFrames`, and the port carries only those.
 
 ## Documentation boundary
 
@@ -56,7 +56,7 @@ Every barrel follows the same rules, so the surfaces stay small and alike:
 - A type is exported only when a caller must name it in a signature. Sub-shapes are reached by indexed access.
 - Validation lives at the boundary that throws. The standalone validators are the ones a host needs before a device exists: each renderer's `validateOptions`, and `validateTopology`, `validateNetlist`, and `validateDomain` in `@latkit/model`.
 - A controller outlives its canvas and its device. Everything a host gives it is retained across `detach` and `attach`, and a lost device is recovered inside the controller.
-- One home per type. `Topology`, `Netlist`, `Item`, `Series`, `Domain`, `RGBA`, and `Colormap` are defined in `@latkit/model` and imported from there; no renderer re-exports them.
+- One home per type. `Topology`, `Netlist`, `Item`, `Part`, `Series`, `Domain`, `RGBA`, and `Colormap` are defined in `@latkit/model` and imported from there; no renderer re-exports them.
 
 Names follow one convention across every package and every layer, from option to uniform to shader:
 

@@ -1,11 +1,6 @@
 import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
-import {
-  createDiagram,
-  type Events,
-  type Interaction,
-  type Options,
-  type Part,
-} from '@latkit/diagram';
+import { createDiagram, type Events, type Options } from '@latkit/diagram';
+import type { Part } from '@latkit/model';
 import { CLASS_NAMES, CLASSES, isClassName, type ClassName, type PortSpec } from './classes.js';
 import {
   apply,
@@ -419,8 +414,11 @@ async function main(): Promise<void> {
     sceneRow.append(button);
   }
 
-  choice<Interaction>('interaction', ['edit', 'navigate', 'inspect', 'none'], 'edit', (mode) =>
-    diagram.setOptions({ interaction: mode }),
+  choice<NonNullable<Options['interaction']>>(
+    'interaction',
+    ['edit', 'navigate', 'inspect', 'none'],
+    'edit',
+    (mode) => diagram.setOptions({ interaction: mode }),
   );
   choice('routing', ['orthogonal', 'straight'] as const, 'orthogonal', (routing) =>
     diagram.setOptions({ routing }),

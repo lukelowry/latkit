@@ -131,8 +131,8 @@ function wireProjections(net: Network): ProjectionControls {
     }
   }
 
-  for (const mode of PROJECTIONS) {
-    const btn = createButton(mode, mode === net.projection);
+  for (const mode of Object.keys(PROJECTIONS) as Projection[]) {
+    const btn = createButton(PROJECTIONS[mode].label, mode === net.projection);
     btn.disabled = !net.projections[mode];
     btn.addEventListener('click', () => {
       if (net.setProjection(mode)) refresh();

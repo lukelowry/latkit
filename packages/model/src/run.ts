@@ -1,9 +1,9 @@
 import { createSeries, type Series } from './series.js';
 
-/** Executes vendor-encoded commands against one model. */
-export interface Runner {
+/** Executes vendor commands against one model: encoded bytes by default, or a vendor's own type. */
+export interface Runner<Command = Uint8Array> {
   /** Ends with one done, cancelled, or failed update; throws only when the runner breaks. */
-  run(command: Uint8Array, signal?: AbortSignal): AsyncIterable<RunUpdate>;
+  run(command: Command, signal?: AbortSignal): AsyncIterable<RunUpdate>;
 }
 
 /**

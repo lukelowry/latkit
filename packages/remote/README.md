@@ -1,9 +1,8 @@
 # @latkit/remote
 
-A `@latkit/model` model served across a `@latkit/port`: its source and runner as one served lineage,
-its grids as windows of display text, and its results as the batches a run streamed. Whichever side
-holds the data serves; the other side opens the same `Model`, runs the same `Runner`, binds the same
-`Grid`, and reads the same `Results`.
+A `@latkit/model` model served across a `@latkit/port`: its source and runner, and its results as
+the batches a run streamed. Whichever side holds the data serves; the other side opens the same
+`Model`, runs the same `Runner`, and reads the same `Results`.
 
 ## Install
 
@@ -26,15 +25,19 @@ const model = await vendor.open(bytes);
 serveSource(
   messagePort(self),
   { source: sourceOf(model), runner: engine.runnerFor(model) },
-  {
-    reopen: async (edited) => ({ source: sourceOf(await vendor.open(edited)) }),
-    onClose: () => self.close(),
-  },
+  { onClose: () => self.close() },
 );
 ```
 
-`reopen` continues the lineage: the peer sends edited bytes, the server serves the next model in
-place, and every earlier remote is superseded.
+A command is bytes by default. A vendor whose commands are structured names its type and guards it
+where the untrusted peer sends it, so neither side needs a codec:
+
+```ts
+import { bytes, object, optional, str } from '@latkit/port/guard';
+
+const isCommand = object<Command>({ app: str, params: optional(bytes) });
+serveSource<Command>(port, served, { command: isCommand });
+```
 
 ## Open it from the other side
 
@@ -53,43 +56,15 @@ if (remote.runner) {
   }
 }
 
-const next = await remote.reopen(editedBytes); // `remote` now owns nothing
-remote.close(); // closes the connection when it is the current remote
+remote.close();
 ```
 
 A run is one stream over the port: cancelling its signal aborts the runner on the serving side,
 and a peer that cannot run has no `runner`.
 
 Every connected side is a `Remote<T>`: what the peer serves, plus `close`. `connectSource`
-resolves a `RemoteSource`, a `Remote<Served>` with `reopen`; `connectResults` returns a
-`Remote<Results>`.
-
-## Serve a grid
-
-A grid stays where its columns are; only the header and windows of display text cross.
-
-```ts
-// the side with the data
-import { createGrid } from '@latkit/model';
-import { serveGrid } from '@latkit/remote';
-
-const grid = serveGrid(port, 'case');
-grid.set(createGrid(labels, columns), {
-  rowCount: labels.length,
-  columns: columns.map(({ id, label }) => ({ id, label })),
-});
-
-// the side with the table
-import { connectGrid } from '@latkit/remote';
-
-const stop = connectGrid(port, 'case', (remote) => {
-  if (!remote) return table.clear();
-  table.bind(remote); // a `Grid` plus its `GridHeader`
-});
-```
-
-Every `set` publishes a fresh binding; a window asked of a replaced grid answers empty rather than
-failing, since the client already holds the newer header.
+resolves a `Remote<Served>`, and `connectSource<Command>` one whose runner takes that command;
+`connectResults` returns a `Remote<Results>`.
 
 ## Serve results
 

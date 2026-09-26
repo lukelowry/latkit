@@ -18,7 +18,7 @@ export interface Frame {
   readonly backingScale: number;
   /**
    * False while a resize is in flight and the backing store is quantized up; it snaps exact once
-   * the size holds for a few frames. Always true for a loop that does not quantize.
+   * the size holds for a few frames.
    */
   readonly settled: boolean;
 }
@@ -56,9 +56,8 @@ interface MutableFrame {
 
 /**
  * Drive `render` for a presentation's canvas: coalesced wakes, a re-render before the next paint
- * whenever the canvas resizes, and (unless `quantize` is off) a backing store quantized up while a
- * resize is in flight that snaps exact once the size holds. `render` returns true to be called
- * again on the next frame.
+ * whenever the canvas resizes, and a backing store quantized up while a resize is in flight that
+ * snaps exact once the size holds. `render` returns true to be called again on the next frame.
  *
  * @remarks
  * Observation starts at once and ends with `destroy`. The observation's synchronous first report
@@ -71,19 +70,11 @@ interface MutableFrame {
  *
  * @param presentation - The configured canvas whose size the loop observes and sets.
  * @param render - Draws one frame and returns true to be called again on the next frame.
- * @param options - `quantize` rounds the backing store up to a multiple of 64 device pixels while
- * a resize is in flight, sparing size-matched attachments a reallocation per resize step. A
- * renderer that repaints everything on any size change passes `false`: the backing store then
- * follows the exact size on every frame, so one resize reallocates once instead of twice
- * (rounded up, then exact).
- * @defaultValue `{ quantize: true }`
  */
 export function createFrameLoop(
   presentation: Presentation<HTMLCanvasElement>,
   render: (frame: Frame) => boolean,
-  options?: { readonly quantize?: boolean },
 ): FrameLoop {
-  const quantize = options?.quantize ?? true;
   const { canvas } = presentation;
   const frame: MutableFrame = { now: 0, width: 0, height: 0, backingScale: 1, settled: true };
 
@@ -133,7 +124,7 @@ export function createFrameLoop(
     exactWidth = width;
     exactHeight = height;
 
-    const settled = !quantize || stableTicks >= RESIZE_SETTLE_TICKS;
+    const settled = stableTicks >= RESIZE_SETTLE_TICKS;
     frame.settled = settled;
     const targetWidth = settled ? width : Math.ceil(width / RESIZE_QUANTUM) * RESIZE_QUANTUM;
     const targetHeight = settled ? height : Math.ceil(height / RESIZE_QUANTUM) * RESIZE_QUANTUM;

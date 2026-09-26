@@ -57,6 +57,12 @@ export interface Netlist {
   readonly groupLabel?: readonly string[];
 }
 
+/** One piece of a netlist by index. Field-for-field the part `@latkit/diagram` picks. */
+export interface Part {
+  readonly kind: 'block' | 'port' | 'net' | 'group';
+  readonly index: number;
+}
+
 const NONE = 0xffffffff;
 
 /** Port flows: `0` in, `1` out, `2` both. */
