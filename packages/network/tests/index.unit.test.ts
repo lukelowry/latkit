@@ -1,12 +1,11 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import type { Domain, Item, Topology } from '@latkit/model';
+import type { Domain, Item, Series, Topology } from '@latkit/model';
 
 import * as entry from '../src/index.js';
 import type {
   Borders,
   Events,
-  Insets,
   Network,
   Options,
   Pose,
@@ -30,8 +29,10 @@ describe('network package entrypoint', () => {
     expectTypeOf<Parameters<typeof entry.createNetwork>>().toEqualTypeOf<[options?: Options]>();
     expectTypeOf<ReturnType<typeof entry.createNetwork>>().toEqualTypeOf<Network>();
     expectTypeOf<Parameters<Network['attach']>>().toEqualTypeOf<[canvas: HTMLCanvasElement]>();
-    expectTypeOf<ReturnType<Network['attach']>>().toEqualTypeOf<Promise<void>>();
+    expectTypeOf<ReturnType<Network['attach']>>().toEqualTypeOf<Promise<boolean>>();
+    expectTypeOf<Parameters<Network['detach']>>().toEqualTypeOf<[canvas?: HTMLCanvasElement]>();
     expectTypeOf<Network['attached']>().toEqualTypeOf<boolean>();
+    expectTypeOf<Network['canvas']>().toEqualTypeOf<HTMLCanvasElement | null>();
     expectTypeOf<Parameters<Network['load']>>().toEqualTypeOf<
       [topology: Topology, options?: { readonly fit?: boolean }]
     >();
@@ -56,7 +57,9 @@ describe('network package entrypoint', () => {
     expectTypeOf<Options['interaction']>().toEqualTypeOf<
       'navigate' | 'inspect' | 'none' | undefined
     >();
-    expectTypeOf<Options['fitPaddingPx']>().toEqualTypeOf<Insets | null | undefined>();
+    expectTypeOf<Options['fitPaddingPx']>().toEqualTypeOf<
+      number | readonly [number, number, number, number] | null | undefined
+    >();
     expectTypeOf<Events['deviceLost']>().toEqualTypeOf<{
       readonly reason: string;
       readonly message: string;
@@ -81,8 +84,15 @@ describe('network package entrypoint', () => {
       readonly bearing: number;
     }>();
     expectTypeOf<Parameters<Network['setChannel']>>().toEqualTypeOf<
-      [channel: entry.Channel, values: Float32Array | Float64Array | null, domain?: Domain | null]
+      [
+        channel: entry.Channel,
+        values:
+          Float32Array | Float64Array | { readonly series: Series; readonly signal: number } | null,
+        domain?: Domain | null,
+      ]
     >();
+    expectTypeOf<Parameters<Network['seek']>>().toEqualTypeOf<[time: number]>();
+    expectTypeOf<Events['error']>().toEqualTypeOf<Error>();
     expectTypeOf<ReturnType<Network['getChannelDomain']>>().toEqualTypeOf<Domain | null>();
     expectTypeOf<Parameters<Network['select']>>().toEqualTypeOf<[item: Item | null]>();
     expectTypeOf<Parameters<Network['orbit']>>().toEqualTypeOf<[active: boolean]>();

@@ -14,7 +14,7 @@ export { CHANNELS } from './channels.js';
 export type { Channel } from './channels.js';
 
 export { OPTIONS, validateOptions } from './options.js';
-export type { Interaction, Options } from './options.js';
+export type { Options } from './options.js';
 
 export type { Pose } from './camera.js';
 

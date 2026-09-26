@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Domain } from '@latkit/model';
+import { createSeries, type Domain } from '@latkit/model';
 import { channelLayout, createChannels } from '../src/channels.js';
 import { createUniforms, ITEM_EDGE_VISIBLE, ITEM_VERTEX_VISIBLE } from '../src/webgpu/uniforms.js';
 import { Renderer } from '../src/webgpu/renderer.js';
@@ -432,6 +432,139 @@ describe('createChannels', () => {
 
     channels.reset(null);
     expect(channels.values('edgeDash')).toBeNull();
+  });
+});
+
+describe('series-bound channels', () => {
+  function make() {
+    const uniforms = createUniforms();
+    const renderer = { writeChannel: vi.fn() };
+    const channels = createChannels(uniforms, {
+      loaded: () => true,
+      vertexCount: () => 3,
+      edgeCount: () => 2,
+      dashPeriodPx: () => 12,
+      heightRange: () => [0, 1],
+      sizeRange: () => [0.5, 2],
+      renderer: () => renderer,
+    });
+    channels.reset(new Float32Array(6));
+    renderer.writeChannel.mockClear();
+    return { uniforms, renderer, channels };
+  }
+
+  function series(elements: number, values: number[], sparse?: Uint32Array) {
+    const time = Float64Array.from({ length: values.length / elements }, (_, i) => i);
+    return createSeries({
+      elementCount: elements,
+      signalCount: 1,
+      time,
+      values: Float64Array.from(values),
+      ...(sparse && { elements: sparse }),
+    });
+  }
+
+  it('shows nothing until a frame is shown, following the recorded range', () => {
+    const { uniforms, renderer, channels } = make();
+    const recording = series(3, [2, 4, 6, 1, 9, 3]);
+
+    channels.set('vertexColor', { series: recording, signal: 0 });
+
+    expect(channels.values('vertexColor')).toEqual(new Float32Array(3).fill(NaN));
+    expect(renderer.writeChannel).toHaveBeenCalledExactlyOnceWith(
+      'vertexColor',
+      new Float32Array(3).fill(NaN),
+    );
+    expect(uniforms.channel.vColorMode).toBe(1);
+    expect(channels.domain('vertexColor')).toEqual([1, 9]);
+    expect(channels.words).toBe(5 * 3 + 4 * 2 + 2 * 3);
+
+    const frame = Float32Array.of(1, 9, 3);
+    channels.moveTo('vertexColor', 100, frame);
+    expect(uniforms.channel.vColorOffset).toBe(100);
+    expect(channels.values('vertexColor')).toBe(frame);
+  });
+
+  it('refreshes a followed recorded range, and keeps an explicit domain', () => {
+    const { channels } = make();
+    const live = createSeries({ elementCount: 3, signalCount: 1 });
+    channels.set('vertexColor', { series: live, signal: 0 });
+    channels.set('vertexHeight', { series: live, signal: 0 }, [0, 100]);
+    expect(channels.domain('vertexColor')).toEqual([0, 1]);
+
+    live.append({
+      elementCount: 3,
+      signalCount: 1,
+      time: Float64Array.of(0),
+      values: Float64Array.of(-2, 5, 8),
+    });
+    expect(channels.refreshRecorded('vertexColor')).toBe(true);
+    expect(channels.domain('vertexColor')).toEqual([-2, 8]);
+    expect(channels.refreshRecorded('vertexHeight')).toBe(false);
+    expect(channels.domain('vertexHeight')).toEqual([0, 100]);
+  });
+
+  it('holds the shown frame in the channel slot', () => {
+    const { uniforms, renderer, channels } = make();
+    channels.set('edgeColor', { series: series(2, [1, 2]), signal: 0 });
+    const window = Float32Array.of(7, 8);
+    channels.moveTo('edgeColor', 64, window);
+
+    channels.hold('edgeColor');
+
+    expect(uniforms.channel.eColorOffset).toBe(9);
+    expect(renderer.writeChannel).toHaveBeenLastCalledWith('edgeColor', Float32Array.of(7, 8));
+    const held = channels.values('edgeColor')!;
+    expect(held).not.toBe(window);
+    window[0] = 0;
+    expect(held).toEqual(Float32Array.of(7, 8));
+  });
+
+  it('gives an array bound after a series its own snapshot, back in the channel slot', () => {
+    const { uniforms, channels } = make();
+    channels.set('vertexSize', { series: series(3, [1, 2, 3]), signal: 0 });
+    const window = Float32Array.of(1, 2, 3);
+    channels.moveTo('vertexSize', 64, window);
+
+    channels.set('vertexSize', Float32Array.of(4, 5, 6));
+
+    expect(uniforms.channel.vSizeOffset).toBe(6);
+    expect(window).toEqual(Float32Array.of(1, 2, 3));
+    expect(channels.values('vertexSize')).toEqual(Float32Array.of(4, 5, 6));
+    expect(channels.domain('vertexSize')).toEqual([0, 1]);
+  });
+
+  it('accepts a sparse series inside the scope, and rejects what does not fit', () => {
+    const { channels } = make();
+    channels.set('edgeShade', { series: series(1, [5], Uint32Array.of(1)), signal: 0 });
+    expect(channels.values('edgeShade')).toEqual(Float32Array.of(NaN, NaN));
+
+    expect(() => channels.set('vertexColor', { series: series(2, [1, 2]), signal: 0 })).toThrow(
+      'network channel vertexColor series elements do not fit 3 items',
+    );
+    expect(() =>
+      channels.set('edgeColor', { series: series(1, [5], Uint32Array.of(2)), signal: 0 }),
+    ).toThrow('do not fit 2 items');
+    expect(() => channels.set('vertexColor', { series: series(3, [1, 2, 3]), signal: 1 })).toThrow(
+      RangeError,
+    );
+    expect(() =>
+      channels.set('vertexPosition', { series: series(3, [1, 2, 3]), signal: 0 }),
+    ).toThrow(new TypeError('network channel vertexPosition cannot follow a series'));
+    expect(() => channels.set('vertexColor', [1, 2, 3] as unknown as Float32Array)).toThrow(
+      TypeError,
+    );
+  });
+
+  it('clears a series-bound channel back to its own slot', () => {
+    const { uniforms, channels } = make();
+    channels.set('vertexColor', { series: series(3, [1, 2, 3]), signal: 0 });
+    channels.moveTo('vertexColor', 64, Float32Array.of(1, 2, 3));
+
+    expect(channels.clear('vertexColor')).toBe(true);
+    expect(uniforms.channel.vColorOffset).toBe(0);
+    expect(uniforms.channel.vColorMode).toBe(0);
+    expect(channels.values('vertexColor')).toBeNull();
   });
 });
 

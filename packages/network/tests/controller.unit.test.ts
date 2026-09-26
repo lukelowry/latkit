@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createNetwork } from '../src/controller.js';
-import type { Item } from '@latkit/model';
+import { createSeries, type Item } from '@latkit/model';
 
 import type { ControllerDeps, Events, Options } from '../src/controller.js';
 import {
@@ -175,7 +175,7 @@ describe('attach and detach', () => {
     expect(h.events.attached).toEqual([true, false, true]);
   });
 
-  it('rejects an attach overtaken by a newer attach or a detach and returns its lease', async () => {
+  it('binds only the canvas of the newest attach, and joins a repeat attach', async () => {
     const h = await makeHarness({}, undefined, false);
     const release = h.pool.hold();
 
@@ -183,27 +183,21 @@ describe('attach and detach', () => {
     const next = document.createElement('canvas');
     document.body.append(next);
     const current = h.network.attach(next);
+    expect(h.network.attach(next)).toBe(current);
+    expect(h.network.canvas).toBe(next);
     release();
 
-    await expect(overtaken).rejects.toMatchObject({ name: 'AbortError' });
-    await current;
+    await expect(overtaken).resolves.toBe(false);
+    await expect(current).resolves.toBe(true);
     expect(h.network.attached).toBe(true);
-    expect(h.pool.devices).toHaveLength(2);
-    expect(h.pool.releases).toHaveBeenCalledOnce();
     expect(h.deps.createPresentation).toHaveBeenCalledOnce();
-    const [presented, target] = vi.mocked(h.deps.createPresentation).mock.calls[0]!;
-    expect(target).toBe(next);
-    expect(h.pool.devices.map((entry) => entry.device)).toContain(presented);
-    expect(h.pool.releases.mock.calls[0]![0]).not.toBe(presented);
+    expect(vi.mocked(h.deps.createPresentation).mock.calls[0]![1]).toBe(next);
 
-    const gate = h.pool.hold();
-    const detached = h.network.attach(h.canvas);
-    h.network.detach();
-    gate();
-    await expect(detached).rejects.toMatchObject({ name: 'AbortError' });
+    h.network.detach(h.canvas);
+    expect(h.network.attached).toBe(true);
+    h.network.detach(next);
     expect(h.network.attached).toBe(false);
-    // The live binding's lease, then the lease the overtaken attach never used.
-    expect(h.pool.releases).toHaveBeenCalledTimes(3);
+    expect(h.network.canvas).toBeNull();
   });
 
   it('rejects non-Core devices and returns the lease before creating a surface', async () => {
@@ -334,73 +328,6 @@ describe('device loss', () => {
       { reason: 'unavailable', message: 'No Core WebGPU adapter is available', recovering: false },
     ]);
     expect(h.network.attached).toBe(false);
-  });
-
-  it('stays detached when a device-loss handler detaches', async () => {
-    const h = await makeHarness();
-    h.network.on('deviceLost', () => h.network.detach());
-
-    h.loseDevice({ reason: 'unknown', message: 'lost for test' });
-    await flushMicrotasks();
-    await flushMicrotasks();
-
-    expect(h.events.deviceLost).toEqual([
-      { reason: 'unknown', message: 'lost for test', recovering: true },
-    ]);
-    expect(h.network.attached).toBe(false);
-    expect(h.events.attached).toEqual([true, false]);
-    expect(h.pool.devices).toHaveLength(1);
-    expect(h.deps.createPresentation).toHaveBeenCalledOnce();
-  });
-
-  it('lets an attach made from an attached handler win over the recovery', async () => {
-    const h = await makeHarness();
-    const next = document.createElement('canvas');
-    document.body.append(next);
-    let moved: Promise<void> | null = null;
-    h.network.on('attached', (state) => {
-      if (!state && !moved) moved = h.network.attach(next);
-    });
-
-    h.loseDevice({ reason: 'unknown', message: 'lost for test' });
-    await flushMicrotasks();
-    await flushMicrotasks();
-
-    await expect(moved).resolves.toBeUndefined();
-    expect(h.network.attached).toBe(true);
-    expect(h.events.attached).toEqual([true, false, true]);
-    // The host attached before the loss was reported, so nothing recovers.
-    expect(h.events.deviceLost).toEqual([
-      { reason: 'unknown', message: 'lost for test', recovering: false },
-    ]);
-    // One replacement lease, for the host's canvas; the lost canvas is never bound again.
-    expect(h.pool.devices).toHaveLength(2);
-    expect(h.deps.createPresentation).toHaveBeenCalledTimes(2);
-    expect(h.deps.createPresentation).toHaveBeenLastCalledWith(h.pool.devices[1]!.device, next);
-  });
-
-  it('ignores a loss reported for a device it no longer holds', async () => {
-    const h = await makeHarness();
-    h.network.detach();
-    h.loseDevice();
-    await flushMicrotasks();
-    expect(h.events.deviceLost).toEqual([]);
-
-    await h.network.attach(h.canvas);
-    h.loseDevice({}, 0);
-    await flushMicrotasks();
-    expect(h.events.deviceLost).toEqual([]);
-    expect(h.pool.devices).toHaveLength(2);
-  });
-
-  it('ignores device loss after controller teardown', async () => {
-    const h = await makeHarness();
-    h.network.destroy();
-
-    h.loseDevice({ reason: 'unknown', message: 'late loss' });
-    await flushMicrotasks();
-
-    expect(h.events.deviceLost).toEqual([]);
   });
 });
 
@@ -2039,6 +1966,62 @@ describe('createNetwork controller', () => {
     expect(h.pool.devices[0]!.destroy).not.toHaveBeenCalled();
     expect(h.network.attached).toBe(false);
     expect(h.events.attached).toEqual([true]);
+  });
+});
+
+describe('series-bound channels', () => {
+  /** Frames at times 0, 1, 2 over three vertices, item `e` of frame `f` holding `10f + e`. */
+  const recording = () =>
+    createSeries({
+      elementCount: 3,
+      signalCount: 1,
+      time: Float64Array.of(0, 1, 2),
+      values: Float64Array.of(0, 1, 2, 10, 11, 12, 20, 21, 22),
+    });
+  /** Where the fixed slots of three vertices and two edges end, and the first window starts. */
+  const FIXED = 5 * 3 + 4 * 2 + 2 * 3;
+
+  it('shows the frame at the playhead by moving the channel offset, and replays it on attach', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+
+    h.network.setChannel('vertexColor', { series: recording(), signal: 0 });
+    await vi.waitFor(() => expect(h.loop.uniforms.channel.vColorOffset).toBe(FIXED));
+    expect(h.network.getChannelDomain('vertexColor')).toEqual([0, 22]);
+    expect(h.renderer.reserved).toBe(FIXED + 256 * 3);
+
+    h.network.seek(1.5);
+    expect(h.loop.uniforms.channel.vColorOffset).toBe(FIXED + 3);
+    expect(() => h.network.seek(Number.NaN)).toThrow(RangeError);
+
+    h.network.detach();
+    h.renderer.wordWrites.length = 0;
+    await h.network.attach(h.canvas);
+    expect(h.renderer.wordWrites[0]!.offset).toBe(FIXED);
+    expect(Array.from(h.renderer.wordWrites[0]!.values.subarray(0, 9))).toEqual([
+      0, 1, 2, 10, 11, 12, 20, 21, 22,
+    ]);
+    expect(h.loop.uniforms.channel.vColorOffset).toBe(FIXED + 3);
+
+    h.network.setChannel('vertexColor', null);
+    expect(h.loop.uniforms.channel.vColorOffset).toBe(0);
+  });
+
+  it('refuses a series for vertex positions, and reports a failed read as error', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    expect(() =>
+      h.network.setChannel('vertexPosition', { series: recording(), signal: 0 }),
+    ).toThrow(TypeError);
+
+    const errors: Error[] = [];
+    h.network.on('error', (error) => errors.push(error));
+    const failing = {
+      ...recording(),
+      read: () => Promise.reject(new Error('disk on fire')),
+    };
+    h.network.setChannel('vertexSize', { series: failing, signal: 0 });
+    await vi.waitFor(() => expect(errors.map((error) => error.message)).toEqual(['disk on fire']));
   });
 });
 

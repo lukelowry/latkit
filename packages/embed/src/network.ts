@@ -76,7 +76,10 @@ export interface NetworkJSON {
 export interface NetworkElementEventMap {
   /** The current data source is loaded. */
   load: Event;
-  /** The current data source or the canvas failed; `ready` rejects with the same error. */
+  /**
+   * The current data source, the canvas, or a series a channel follows failed; `ready` rejects
+   * with the same error.
+   */
   error: CustomEvent<{ readonly error: unknown }>;
   hover: CustomEvent<Events['hover']>;
   select: CustomEvent<Events['select']>;
@@ -256,6 +259,7 @@ const EVENTS: readonly (keyof Events)[] = Object.freeze([
   'painted',
   'deviceLost',
   'pipelineError',
+  'error',
 ]);
 
 interface BorderState {
@@ -337,7 +341,7 @@ export function networkSpec(deps: NetworkDeps): ElementSpec<Network, NetworkData
           }
           return;
         }
-        const resolved = optionValue(option, value, context.warn);
+        const resolved = optionValue(option, value, context.host, context.warn);
         context.controller.setOptions({ [option.option]: resolved } as Options);
         if (option.option === 'borders') syncBorders(context, value !== null && resolved === true);
         return;
@@ -348,7 +352,7 @@ export function networkSpec(deps: NetworkDeps): ElementSpec<Network, NetworkData
       }
       if (name === 'projection') {
         if (value === null) return;
-        if ((PROJECTIONS as readonly string[]).includes(value)) {
+        if (Object.hasOwn(PROJECTIONS, value)) {
           context.controller.setProjection(value as Projection, true);
         } else {
           context.warn(`Unknown projection ${quote(value)}; keeping the current one.`);
@@ -372,10 +376,11 @@ export function networkSpec(deps: NetworkDeps): ElementSpec<Network, NetworkData
 function optionValue(
   entry: OptionAttribute<keyof Options>,
   raw: string | null,
+  host: HTMLElement,
   warn: Warn,
 ): unknown {
   if (raw === null) return entry.definition.default;
-  const parsed = parseOptionAttribute(entry.definition, raw);
+  const parsed = parseOptionAttribute(entry.definition, raw, host);
   if (parsed !== undefined) {
     try {
       validateOptions({ [entry.option]: parsed } as Options);

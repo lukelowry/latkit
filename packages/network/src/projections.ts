@@ -13,11 +13,18 @@ import globeSrc from './shaders/projections/globe-overlay.wgsl?raw';
 import globeBgSrc from './shaders/projections/globe-background.wgsl?raw';
 import earthAxisSrc from './shaders/passes/earth-axis.wgsl?raw';
 
-/** Canonical projection modes supported by the network renderer. */
-export const PROJECTIONS = Object.freeze(['flat', 'tilt', 'globe'] as const);
+/** Every projection mode the network renders, in canonical order, with the label a control shows. */
+export const PROJECTIONS = Object.freeze({
+  flat: Object.freeze({ label: 'Flat' }),
+  tilt: Object.freeze({ label: 'Tilt' }),
+  globe: Object.freeze({ label: 'Globe' }),
+});
 
 /** Projection modes supported by the network renderer. */
-export type Projection = (typeof PROJECTIONS)[number];
+export type Projection = keyof typeof PROJECTIONS;
+
+/** Projection modes in canonical order. */
+export const PROJECTION_MODES = Object.freeze(Object.keys(PROJECTIONS) as Projection[]);
 
 /**
  * Projection families: modes in one family share a camera state manifold and

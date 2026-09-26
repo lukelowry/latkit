@@ -77,6 +77,17 @@ export class FakeRenderer {
     this.channelWrites.push({ channel, values });
   });
 
+  /** Float words the channel storage holds beyond the fixed slots, as `reserve` grew it. */
+  reserved = 0;
+  reserve = vi.fn((words: number) => {
+    this.reserved = Math.max(this.reserved, words);
+  });
+
+  wordWrites: Array<{ offset: number; values: Float32Array }> = [];
+  writeWords = vi.fn((offset: number, values: Float32Array) => {
+    this.wordWrites.push({ offset, values: values.slice() });
+  });
+
   useProjection = vi.fn((mode: Projection) => {
     this.projectionMode = mode;
   });

@@ -29,7 +29,7 @@ async function pump(until: () => boolean) {
   }
   expect(until()).toBe(true);
 }
-async function paint(action: () => void | Promise<void>) {
+async function paint(action: () => unknown) {
   let done = false;
   let error: Error | undefined;
   const off = monitor.on('rendered', () => {
@@ -176,6 +176,40 @@ it('reads a long focus independently of history blocks and before history finish
   expect(history()).toHaveLength(0);
   monitor.destroy();
   release();
+});
+
+it('folds a long repaint to two rows per bucket of frames, and draws appends raw', async () => {
+  const input = stream(Array.from({ length: 10000 }, (_, i) => i % 2));
+  monitor.setOptions({ timeRange: [0, 20000], valueRange: [0, 1] });
+  monitor.load(input.series);
+  await paint(() => monitor.attach(canvas()));
+  // 10000 frames over 320 device pixels: buckets of 31 frames, 323 of them, each two rows.
+  expect(history().reduce((n, d) => n + d.instanceCount, 0)).toBe(2 * 323 - 1);
+  const upload = stub.log.writes.filter((write) => write.label === 'monitor-values').at(-1)!;
+  expect(upload.byteLength).toBe(2 * 323 * 2 * 4);
+  const values = new Float32Array(upload.source, upload.byteOffset, upload.byteLength / 4);
+  // Each 31-frame bucket keeps both values in the order they came: the second starts on a 1.
+  expect(Array.from({ length: 4 }, (_, row) => values[row * 2])).toEqual([0, 1, 1, 0]);
+
+  await paint(() => input.push(Array.from({ length: 10 }, () => 0.5)));
+  expect(history().reduce((n, d) => n + d.instanceCount, 0)).toBe(2 * 323 - 1 + 10);
+});
+
+it('carries each folded window last row into the next, so every join draws once', async () => {
+  const reads: Window[] = [],
+    elements = 2000;
+  const time = Array.from({ length: 3200 }, (_, i) => i);
+  monitor.setOptions({ valueRange: [0, elements] });
+  monitor.load(source(elements, time, reads).series);
+  await paint(() => monitor.attach(canvas()));
+  // Buckets of 10 frames, several per read window, whole buckets only.
+  expect(reads.every((window) => window.frameOffset % 10 === 0)).toBe(true);
+  expect(history().reduce((n, d) => n + d.instanceCount, 0)).toBe(elements * (2 * 320 - 1));
+  const axes = stub.log.writes
+    .filter((write) => write.label === 'monitor-xnorm')
+    .map((write) => new Float32Array(write.copy!.buffer));
+  expect(axes.length).toBeGreaterThan(1);
+  for (let i = 1; i < axes.length; i++) expect(axes[i]![0]).toBe(axes[i - 1]!.at(-1));
 });
 
 it('appends only the new segments with a stable mapping, without clearing history', async () => {

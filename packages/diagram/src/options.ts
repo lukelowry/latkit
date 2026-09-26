@@ -114,10 +114,10 @@ export type Routing = NonNullable<Options['routing']>;
 export type Insets = number | readonly [number, number, number, number];
 
 /**
- * Validation kind, default, whether `Diagram.setOptions` accepts the option live, and whether
- * `null` is a value.
+ * Validation kind, default, whether `Diagram.setOptions` accepts the option live, whether `null`
+ * is a value, and the label a control shows.
  */
-export type OptionDefinition =
+export type OptionDefinition = { readonly label: string } & (
   | { readonly kind: 'boolean'; readonly default: boolean; readonly live: true }
   | { readonly kind: 'positive' | 'nonnegative'; readonly default: number; readonly live: true }
   | { readonly kind: 'rgba'; readonly default: RGBA; readonly live: true }
@@ -141,7 +141,8 @@ export type OptionDefinition =
     }
   | { readonly kind: 'colormap'; readonly default: Colormap; readonly live: true }
   | { readonly kind: 'font'; readonly default: string; readonly live: true }
-  | { readonly kind: 'pool'; readonly default: DevicePool; readonly live: false };
+  | { readonly kind: 'pool'; readonly default: DevicePool; readonly live: false }
+);
 
 /** The neutral transfer function before a consumer supplies a colormap. */
 const neutralColormap: Colormap = Object.freeze((t: number) => [t, t, t] as const);
@@ -162,64 +163,116 @@ function values<const T extends readonly string[]>(...entries: T): T {
 }
 
 const definitions = {
-  devices: { kind: 'pool', default: devices, live: false },
+  devices: { kind: 'pool', default: devices, live: false, label: 'Device pool' },
   interaction: {
     kind: 'enum',
     values: values('edit', 'navigate', 'inspect', 'none'),
     default: 'navigate',
     live: true,
+    label: 'Interaction',
   },
-  gridPitch: { kind: 'positive', default: 8, live: true },
-  grid: { kind: 'boolean', default: true, live: true },
-  snap: { kind: 'boolean', default: true, live: true },
+  gridPitch: { kind: 'positive', default: 8, live: true, label: 'Grid pitch' },
+  grid: { kind: 'boolean', default: true, live: true, label: 'Grid' },
+  snap: { kind: 'boolean', default: true, live: true, label: 'Snap to grid' },
   routing: {
     kind: 'enum',
     values: values('orthogonal', 'straight'),
     default: 'orthogonal',
     live: true,
+    label: 'Routing',
   },
-  labels: { kind: 'boolean', default: true, live: true },
-  arrows: { kind: 'boolean', default: true, live: true },
-  junctions: { kind: 'boolean', default: true, live: true },
+  labels: { kind: 'boolean', default: true, live: true, label: 'Labels' },
+  arrows: { kind: 'boolean', default: true, live: true, label: 'Arrows' },
+  junctions: { kind: 'boolean', default: true, live: true, label: 'Junctions' },
   fontFamily: {
     kind: 'font',
     default: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
     live: true,
+    label: 'Font',
   },
-  colormap: { kind: 'colormap', default: neutralColormap, live: true },
-  flowRate: { kind: 'nonnegative', default: 1, live: true },
-  motion: { kind: 'enum', values: values('auto', 'reduce', 'full'), default: 'auto', live: true },
-  animationMs: { kind: 'nonnegative', default: 300, live: true },
-  keyboard: { kind: 'boolean', default: true, live: true },
-  wheel: { kind: 'enum', values: values('zoom', 'modifier'), default: 'zoom', live: true },
-  pickRadiusPx: { kind: 'nonnegative', default: 8, live: true },
-  revealPaddingPx: { kind: 'nonnegative', default: 48, live: true },
-  fitPaddingPx: { kind: 'insets', default: null, live: true, nullable: true },
-  blockBaseColor: { kind: 'rgba', default: tuple(0.19, 0.2, 0.24, 1), live: true },
-  outlineColor: { kind: 'rgba', default: tuple(0.5, 0.53, 0.6, 1), live: true },
-  netBaseColor: { kind: 'rgba', default: tuple(0.62, 0.66, 0.72, 1), live: true },
-  textColor: { kind: 'rgba', default: tuple(0.9, 0.91, 0.93, 1), live: true },
-  gridColor: { kind: 'rgba', default: tuple(0.55, 0.58, 0.65, 0.35), live: true },
-  groupColor: { kind: 'rgba', default: tuple(0.55, 0.58, 0.65, 0.08), live: true },
-  hoverColor: { kind: 'rgba', default: tuple(0.72, 0.28, 0.18, 1), live: true },
-  selectedColor: { kind: 'rgba', default: tuple(0.72, 0.28, 0.18, 1), live: true },
+  colormap: { kind: 'colormap', default: neutralColormap, live: true, label: 'Colormap' },
+  flowRate: { kind: 'nonnegative', default: 1, live: true, label: 'Flow speed' },
+  motion: {
+    kind: 'enum',
+    values: values('auto', 'reduce', 'full'),
+    default: 'auto',
+    live: true,
+    label: 'Motion',
+  },
+  animationMs: { kind: 'nonnegative', default: 300, live: true, label: 'Animation duration' },
+  keyboard: { kind: 'boolean', default: true, live: true, label: 'Keyboard' },
+  wheel: {
+    kind: 'enum',
+    values: values('zoom', 'modifier'),
+    default: 'zoom',
+    live: true,
+    label: 'Wheel',
+  },
+  pickRadiusPx: { kind: 'nonnegative', default: 8, live: true, label: 'Pick radius' },
+  revealPaddingPx: { kind: 'nonnegative', default: 48, live: true, label: 'Reveal padding' },
+  fitPaddingPx: { kind: 'insets', default: null, live: true, nullable: true, label: 'Fit padding' },
+  blockBaseColor: {
+    kind: 'rgba',
+    default: tuple(0.19, 0.2, 0.24, 1),
+    live: true,
+    label: 'Block base color',
+  },
+  outlineColor: {
+    kind: 'rgba',
+    default: tuple(0.5, 0.53, 0.6, 1),
+    live: true,
+    label: 'Outline color',
+  },
+  netBaseColor: {
+    kind: 'rgba',
+    default: tuple(0.62, 0.66, 0.72, 1),
+    live: true,
+    label: 'Net base color',
+  },
+  textColor: { kind: 'rgba', default: tuple(0.9, 0.91, 0.93, 1), live: true, label: 'Text color' },
+  gridColor: {
+    kind: 'rgba',
+    default: tuple(0.55, 0.58, 0.65, 0.35),
+    live: true,
+    label: 'Grid color',
+  },
+  groupColor: {
+    kind: 'rgba',
+    default: tuple(0.55, 0.58, 0.65, 0.08),
+    live: true,
+    label: 'Group color',
+  },
+  hoverColor: {
+    kind: 'rgba',
+    default: tuple(0.72, 0.28, 0.18, 1),
+    live: true,
+    label: 'Hover color',
+  },
+  selectedColor: {
+    kind: 'rgba',
+    default: tuple(0.72, 0.28, 0.18, 1),
+    live: true,
+    label: 'Selection color',
+  },
   portColors: {
     kind: 'palette',
     default: palette([0.45, 0.7, 0.95, 1], [0.93, 0.72, 0.3, 1]),
     max: 8,
     live: true,
+    label: 'Port colors',
   },
   statusColors: {
     kind: 'palette',
     default: palette([0.96, 0.7, 0.2, 1], [0.92, 0.3, 0.28, 1]),
     max: 4,
     live: true,
+    label: 'Status colors',
   },
 } as const satisfies Record<keyof Required<Options>, OptionDefinition>;
 
 for (const definition of Object.values(definitions)) Object.freeze(definition);
 
-/** Every option: its validation kind, default, and whether it is accepted live. */
+/** Every option: its validation kind, default, whether it is accepted live, and label. */
 export const OPTIONS: Readonly<typeof definitions> = Object.freeze(definitions);
 
 /** Fully resolved diagram options: every field present, arrays owned and frozen. */

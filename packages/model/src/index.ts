@@ -30,7 +30,7 @@ export { bakeColormap, COLORMAP_LUT_SIZE, validateRgba } from './color.js';
 export { createEmitter } from './emitter.js';
 
 export type { Series } from './series.js';
-export { createSeries, frameAt, sample, validateSeries } from './series.js';
+export { createSeries, sample, validateSeries } from './series.js';
 
 export type { Field, FieldRef } from './field.js';
 export { fieldKey, fieldsOf } from './field.js';

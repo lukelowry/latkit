@@ -37,7 +37,7 @@ Latkit packages are ESM modules for modern browser applications. The rendering p
 | `@latkit/colormaps` | Named colormaps, labels, and CSS gradients                     |
 | `@latkit/model`     | Shared model primitives as the package family grows            |
 | `@latkit/port`      | Ports, frames, and typed request, reply, and stream protocols  |
-| `@latkit/remote`    | A model served across a port: source, runner, grids, results   |
+| `@latkit/remote`    | A model served across a port: source, runner, results          |
 
 ```{toctree}
 :maxdepth: 2

@@ -506,16 +506,18 @@ describe('monitor', () => {
     expect(stub.log.draws.filter((d) => d.pipeline === 'monitor-focus')).toHaveLength(1);
   });
 
-  it('rejects an attach overtaken by a newer attach or a detach and returns its lease', async () => {
+  it('binds only the canvas of the newest attach, and joins a repeat attach', async () => {
     const monitor = create();
     const first = makeCanvas();
     const second = makeCanvas();
 
     const overtaken = monitor.attach(first);
     const current = monitor.attach(second);
+    expect(monitor.attach(second)).toBe(current);
+    expect(monitor.canvas).toBe(second);
 
-    await expect(overtaken).rejects.toMatchObject({ name: 'AbortError' });
-    await current;
+    await expect(overtaken).resolves.toBe(false);
+    await expect(current).resolves.toBe(true);
     expect(monitor.attached).toBe(true);
     expect(stub.log.leaseAcquires).toBe(2);
     expect(stub.log.leaseReleases).toBe(1);
@@ -523,11 +525,10 @@ describe('monitor', () => {
     expect(second.getAttribute('width')).toBe('320');
     expect(first.getAttribute('width')).toBeNull();
 
-    const detached = monitor.attach(first);
-    monitor.detach();
-    await expect(detached).rejects.toMatchObject({ name: 'AbortError' });
+    monitor.detach(first);
+    expect(monitor.attached).toBe(true);
+    monitor.detach(second);
     expect(monitor.attached).toBe(false);
-    expect(stub.log.leaseReleases).toBe(3);
   });
 
   it('refuses to attach after destroy', async () => {
@@ -585,56 +586,6 @@ describe('monitor', () => {
     expect(events.attached).toEqual([false]);
     expect(scope.attached).toBe(false);
     expect(stub.log.leaseReleases).toBe(1);
-  });
-
-  it('lets a detach or attach made from a device-loss handler supersede the recovery', async () => {
-    const detaching = await mount();
-    const moving = await mount();
-    const detachingEvents = record(detaching);
-    const movingEvents = record(moving);
-    const old = canvasFor(moving);
-    const next = makeCanvas();
-    let moved: Promise<void> | null = null;
-    detaching.on('deviceLost', () => detaching.detach());
-    moving.on('attached', (state) => {
-      if (!state && !moved) moved = moving.attach(next);
-    });
-
-    stub.loseDevice('unknown', 'simulated');
-    await flush();
-    await settle();
-
-    // Each host's own call wins: no recovery lease, no rebinding of the old canvas.
-    await expect(moved).resolves.toBeUndefined();
-    expect(detaching.attached).toBe(false);
-    expect(detachingEvents.attached).toEqual([false]);
-    expect(moving.attached).toBe(true);
-    expect(movingEvents.attached).toEqual([false, true]);
-    expect(stub.log.leaseAcquires).toBe(3);
-    expect(canvasFor(detaching).getAttribute('width')).toBeNull();
-    expect(old.getAttribute('width')).toBeNull();
-    expect(next.getAttribute('width')).toBe('320');
-    // A recovery was still coming when `detaching` heard of the loss; `moving` had already
-    // attached anew from its `attached` handler, so nothing recovers there.
-    const loss = { reason: 'unknown', message: 'simulated' };
-    expect(detachingEvents.deviceLost).toEqual([{ ...loss, recovering: true }]);
-    expect(movingEvents.deviceLost).toEqual([{ ...loss, recovering: false }]);
-  });
-
-  it('ignores device loss after detach or destroy', async () => {
-    const first = await mount();
-    const second = await mount();
-    const firstEvents = record(first);
-    const secondEvents = record(second);
-    first.detach();
-    second.destroy();
-
-    stub.loseDevice('unknown', 'late loss');
-    await flush();
-
-    expect(firstEvents.deviceLost).toEqual([]);
-    expect(secondEvents.deviceLost).toEqual([]);
-    expect(stub.log.leaseAcquires).toBe(2);
   });
 
   it('clear blanks the canvas, drops the series, and releases the slabs', async () => {

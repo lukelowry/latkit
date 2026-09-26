@@ -51,7 +51,7 @@ The host owns the recording's resources.
 ## Display options
 
 `setOptions` applies live patches; only `devices` is fixed at construction.
-`OPTIONS` holds defaults and validation rules.
+`OPTIONS` holds each option's label, default, and validation rules.
 
 ```ts
 monitor.setOptions({
@@ -72,7 +72,10 @@ History reads stay within a 1 MiB sample budget, including time. Selected traces
 read window, so a wide class does not force tiny focus reads. When time and value mappings stay
 fixed, appends draw only the new segments; an automatic value range keeps a tenth of its span
 to spare and only grows, so most appends stay inside it. A changed mapping or canvas size replays
-history behind the last image, which stays on screen, rescaled, until the replay completes.
+history behind the last image, which stays on screen, rescaled, until the replay completes. A
+replay over more than two frames per device pixel draws each pixel column's extremes in the order
+they occurred, so its cost follows the canvas width, not the recording's length; appends and the
+selected trace draw every frame, and readings come from the full series.
 History and focus textures are retained, and changing opacity only composites them again.
 
 ## Selection, events, and lifetime

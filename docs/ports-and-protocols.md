@@ -128,11 +128,8 @@ const model = await openModel(remote.source, {
 ```
 
 Every connected side in `@latkit/remote` is a `Remote<T>`: what the peer serves, plus `close`.
-`connectSource` resolves a `RemoteSource`, a `Remote<Served>` with the `reopen` that continues the
-served lineage.
-
-A grid is served the same way: `serveGrid` publishes the header and answers windows of display text,
-and `connectGrid` hands the page a `Grid` (with its `GridHeader`) it binds to a table.
+`connectSource` resolves a `Remote<Served>`. A runner's command is bytes unless the vendor names its
+own type, which `serveSource<Command>` guards with the `command` option.
 
 ## Serve results
 

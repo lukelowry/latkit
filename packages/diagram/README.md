@@ -417,7 +417,8 @@ positions to keep the arrangement.
 or `RangeError` naming the first invalid option. Everything given to the controller before
 `attach` is retained and painted onto the canvas, and `detach()` releases the device and the
 canvas while keeping every state. A newer `attach` or a `detach` supersedes an attach still
-waiting for its device, which rejects with an `AbortError`.
+waiting for its device, which then resolves `false`; attaching the canvas already bound or binding
+joins that attach.
 
 - `attach` rejects with `GpuUnavailableError` from `@latkit/gpu` when no device can be leased, and
   with a `TypeError` when the device reports fewer than five storage buffers in the vertex stage.
@@ -466,6 +467,7 @@ plants beside 900.
 
 ## Registries
 
-`CHANNELS` and `OPTIONS` are frozen and ordered. A picker iterates `Object.keys(CHANNELS)` and
-shows `CHANNELS[key].label`, and reads `scope`, `map`, `normalized`, and `components`; a settings
-form iterates `OPTIONS` and reads each entry's `kind`, `default`, and `live`.
+`CHANNELS` and `OPTIONS` are frozen and ordered, and every entry carries the `label` a control
+shows. A picker iterates `Object.keys(CHANNELS)` and reads `scope`, `map`, `normalized`, and
+`components`; a settings form iterates `OPTIONS` and reads each entry's `kind`, `default`, and
+`live`.

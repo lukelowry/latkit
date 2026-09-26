@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { openModel, type RunUpdate } from '@latkit/model';
 import { connect, protocol } from '@latkit/port';
+import { bytes, object, optional, str } from '@latkit/port/guard';
 import { loopback, settle } from '@latkit/port/testing';
 
 import { connectSource, type Served, serveSource } from '../src/index.js';
@@ -65,31 +66,7 @@ describe('source service', () => {
     ]);
   });
 
-  it('reopen supersedes the old remote and serves the sibling from then on', async () => {
-    const [server, client] = loopback();
-    const closed = vi.fn();
-    serveSource(
-      server,
-      { source: fixtureSource('First', closed) },
-      {
-        reopen: async (bytes) => ({
-          source: fixtureSource(new TextDecoder().decode(bytes)),
-          runner: { run: vi.fn() },
-        }),
-      },
-    );
-    const first = await connectSource(client);
-    const second = await first.reopen(new TextEncoder().encode('Second'));
-    expect((await openModel(second.source)).name).toBe('Second');
-    expect(second.runner).toBeDefined(); // the sibling can run even though the first could not
-    expect(closed).toHaveBeenCalledOnce();
-    await expect(first.source.bytes()).rejects.toThrow(/superseded/);
-    await expect(first.reopen(new Uint8Array())).rejects.toThrow(/superseded/);
-    first.close(); // a superseded remote owns nothing
-    expect(new TextDecoder().decode(await second.source.bytes())).toBe('Second');
-  });
-
-  it('closing the current remote closes the service on both sides', async () => {
+  it('closing the remote closes the service on both sides', async () => {
     const [server, client] = loopback();
     const closed = vi.fn();
     const onClose = vi.fn();
@@ -143,7 +120,7 @@ describe('source service', () => {
     serveSource(server, { source: fixtureSource() });
     const raw = connect(client, protocol<unknown, unknown>('source'));
     await expect(raw.call({ op: 'class' })).rejects.toThrow(/malformed source request/);
-    await expect(raw.call({ op: 'reopen', bytes: 'text' })).rejects.toThrow(/malformed/);
+    await expect(raw.call({ op: 'reopen', bytes: new Uint8Array() })).rejects.toThrow(/malformed/);
     await expect(raw.call({ op: 'nope' })).rejects.toThrow(/malformed/);
     expect(await raw.call({ op: 'hello' })).toEqual({ runnable: false });
     const runs = connect(client, protocol<unknown, unknown>('source:run'));
@@ -185,7 +162,7 @@ describe('source service: run', () => {
     expect(new TextDecoder().decode(run.mock.calls[0]![0])).toBe('{}');
   });
 
-  it('leaves the caller its command and reopen bytes, so the same plan can run again', async () => {
+  it('leaves the caller its command, so the same plan can run again', async () => {
     const transfers: ArrayBuffer[][] = [];
     const [server, client] = loopback();
     const spied = {
@@ -195,22 +172,36 @@ describe('source service: run', () => {
         client.post(message, transfer);
       },
     };
-    serveSource(
-      server,
-      { source: fixtureSource(), runner: { run: async function* () {} } },
-      { reopen: async () => ({ source: fixtureSource('Second') }) },
-    );
+    serveSource(server, { source: fixtureSource(), runner: { run: async function* () {} } });
     const remote = await connectSource(spied);
     const command = new TextEncoder().encode('{"again":true}');
     await collect(remote.runner!.run(command));
     await collect(remote.runner!.run(command));
     expect(command.byteLength).toBe(14);
+    expect(transfers.flat()).toHaveLength(0);
+  });
 
-    const edited = new TextEncoder().encode('Second');
-    await remote.reopen(edited);
-    expect(edited.byteLength).toBe(6);
-    expect(transfers.flat()).toHaveLength(1);
-    expect(transfers.flat()[0]).not.toBe(edited.buffer);
+  it('runs a structured command the served side guards', async () => {
+    type Command = { readonly app: string; readonly params?: Uint8Array };
+    const isCommand = object<Command>({ app: str, params: optional(bytes) });
+    const [server, client] = loopback();
+    const run = vi.fn(async function* (_command: Command): AsyncIterable<RunUpdate> {
+      yield { type: 'done' };
+    });
+    serveSource<Command>(
+      server,
+      { source: fixtureSource(), runner: { run } },
+      { command: isCommand },
+    );
+    const remote = await connectSource<Command>(client);
+    const params = Uint8Array.of(1, 2, 3);
+    expect(await collect(remote.runner!.run({ app: 'powerflow', params }))).toEqual([
+      { type: 'done' },
+    ]);
+    expect(run.mock.calls[0]![0]).toEqual({ app: 'powerflow', params });
+    const raw = connect(client, protocol<unknown, RunUpdate>('source:run'));
+    await expect(collect(raw.stream({ app: 7 }))).rejects.toThrow(/malformed source:run request/);
+    await expect(collect(raw.stream(new Uint8Array()))).rejects.toThrow(/malformed/);
   });
 
   it('awaits the port drain between updates so backpressure reaches the wire', async () => {
@@ -297,17 +288,5 @@ describe('source service: run', () => {
     finish();
     expect((await first.next()).value).toEqual({ type: 'done' });
     expect((await first.next()).done).toBe(true);
-  });
-
-  it('a superseded remote cannot run', async () => {
-    const [server, client] = loopback();
-    serveSource(
-      server,
-      { source: fixtureSource(), runner: { run: vi.fn() } },
-      { reopen: async () => ({ source: fixtureSource() }) },
-    );
-    const first = await connectSource(client);
-    await first.reopen(new TextEncoder().encode('Second'));
-    await expect(collect(first.runner!.run(COMMAND))).rejects.toThrow(/superseded/);
   });
 });

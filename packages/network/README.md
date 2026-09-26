@@ -59,6 +59,14 @@ camera tilts; the `heightRange` option is the output range it maps onto. `vertex
 are `vertexShade` and `edgeShade`, which carry one scalar per item to a shade (below). Every
 channel slot is allocated when a topology loads, so rebinding never reallocates GPU storage.
 
+A channel can follow one signal of a recorded `Series` instead, and `seek` shows the frame at a
+playhead in every channel that does:
+
+```ts
+network.setChannel('vertexColor', { series: await results.series('bus'), signal: 0 }, null);
+transport.on('frame', (t) => network.seek(t));
+```
+
 `vertexPosition` is where every vertex sits, as interleaved `x, y` pairs in topology coordinates,
 the shape `vertexCoords` has. `load` seeds it from the topology, and rebinding it moves vertices,
 the ends of their edges, and their height poles without reloading anything; `null` restores the
@@ -222,6 +230,7 @@ network.on('attached', (attached) => (canvas.hidden = !attached));
 network.on('painted', (painted) => (poster.hidden = painted));
 network.on('deviceLost', ({ message, recovering }) => !recovering && showFallback(message));
 network.on('pipelineError', ({ family, cause }) => console.error(family, cause));
+network.on('error', (error) => console.error(error)); // a series a channel follows failed a read
 ```
 
 `paint()` schedules a frame and resolves once it is painted, after a pending shade and a deferred
@@ -241,10 +250,11 @@ network.setBorders(await loadBorders(signal));
 
 ## Registries
 
-`CHANNELS`, `OPTIONS`, and `PROJECTIONS` are frozen and ordered. A picker iterates
-`Object.keys(CHANNELS)` and shows `CHANNELS[key].label`; a settings form iterates `OPTIONS` and
-reads each entry's `default`, `kind`, and `live`; a projection control iterates `PROJECTIONS` and
-checks `network.projections[mode]`.
+`CHANNELS`, `OPTIONS`, and `PROJECTIONS` are frozen and ordered, and every entry carries the
+`label` a control shows. A picker iterates `Object.keys(CHANNELS)`; a settings form iterates
+`OPTIONS` and reads each entry's `default`, `kind`, `live`, and, for a bounded number, `min` and
+`max`, which a slider takes as its range; a projection control iterates `Object.keys(PROJECTIONS)`
+and checks `network.projections[mode]`.
 
 ## Data shape
 

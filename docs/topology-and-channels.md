@@ -96,6 +96,18 @@ The third argument is the input domain. Pass `null` to auto-scan height values. 
 
 `setChannel()` snapshots its typed array, so later caller mutations do not alter the bound rendering or picking state. Bind the array again to publish changes. `CHANNELS` lists every channel with its scope, display label, whether it is normalized, and its components per item.
 
+## Channels over time
+
+A channel can follow one signal of a `Series`, one element per vertex or edge, instead of holding an array; a sparse series leaves the items it never recorded with no value. `seek(time)` shows every such channel at the playhead, each item taking its latest sample at or before it. A null domain follows the signal's recorded range as the series appends.
+
+```ts
+const bus = await results.series('bus');
+network.setChannel('vertexColor', { series: bus, signal: voltage }, null);
+network.seek(transport.t); // on every transport frame
+```
+
+The frames around the playhead stay resident on the GPU, about 8 MiB per channel, and the next ones load while the current ones play, so a seek within them rewrites one word per channel and uploads nothing. A seek beyond them keeps the current frame on screen until the frames it needs arrive. A failed read emits `error`; the channel reads again once the series appends or is bound anew. Every channel but `vertexPosition` can follow a series.
+
 ## Moving vertices
 
 `vertexPosition` is the layout the renderer draws. `load()` seeds it from `vertexCoords` (or the generated ring), and rebinding it moves vertices, the ends of their edges, and their height poles without reloading the topology. `null` restores the topology's own layout. Polyline bends stay where the topology put them.

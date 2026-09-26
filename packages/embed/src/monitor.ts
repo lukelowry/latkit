@@ -138,7 +138,7 @@ export function monitorSpec(deps: MonitorDeps): ElementSpec<Monitor, Series> {
       const option = OPTION_BY_ATTRIBUTE.get(name);
       if (option) {
         context.controller.setOptions({
-          [option.option]: optionValue(option, value, context.warn),
+          [option.option]: optionValue(option, value, context.host, context.warn),
         } as Options);
         return;
       }
@@ -156,10 +156,11 @@ export function monitorSpec(deps: MonitorDeps): ElementSpec<Monitor, Series> {
 function optionValue(
   entry: OptionAttribute<keyof Options>,
   raw: string | null,
+  host: HTMLElement,
   warn: Warn,
 ): unknown {
   if (raw === null) return entry.definition.default;
-  const parsed = parseOptionAttribute(entry.definition, raw);
+  const parsed = parseOptionAttribute(entry.definition, raw, host);
   if (parsed !== undefined) {
     try {
       validateOptions({ [entry.option]: parsed } as Options);

@@ -1,4 +1,4 @@
-import { extent, validateDomain, type Domain } from '@latkit/model';
+import { extent, validateDomain, validateSeries, type Domain, type Series } from '@latkit/model';
 
 import {
   ITEM_EDGE_SHADE,
@@ -164,10 +164,37 @@ interface ChannelDeps {
   renderer(): ChannelRenderer | null;
 }
 
+/** One signal of a series a channel follows, one element per item of its scope. */
+export interface SeriesBinding {
+  readonly series: Series;
+  readonly signal: number;
+}
+
+/** Whether channel values name a series to follow rather than holding the values. */
+export function isSeriesBinding(values: unknown): values is SeriesBinding {
+  return typeof values === 'object' && values !== null && 'series' in values;
+}
+
 /** Runtime channel controller returned to the network API. */
 export interface Channels {
-  /** Bind or replace channel values. The array length must match the current topology. */
-  set(channel: Channel, values: Float32Array | Float64Array, domain?: Domain | null): void;
+  /** Float words the fixed slots take; what else the channel buffer holds starts here. */
+  readonly words: number;
+  /**
+   * Bind or replace channel values. An array's length must match the current topology. A series
+   * binding shows nothing, its own slot filled with NaN, until `moveTo` shows a frame; a null
+   * `domain` follows the signal's recorded range.
+   */
+  set(
+    channel: Channel,
+    values: Float32Array | Float64Array | SeriesBinding,
+    domain?: Domain | null,
+  ): void;
+  /** Show the values `offset` words into the channel buffer, which picking reads as `view`. */
+  moveTo(channel: Channel, offset: number, view: Float32Array): void;
+  /** Keep what a series-bound channel shows in its own slot, so what backed it can be rewritten. */
+  hold(channel: Channel): void;
+  /** Re-read the recorded range a series-bound channel's domain follows; false when none. */
+  refreshRecorded(channel: Channel): boolean;
   /**
    * Unbind a channel; its slot stays allocated and its mode turns off. False when nothing was
    * bound.
@@ -203,6 +230,11 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
   const current = new Map<Channel, Float32Array>();
   const data = new Map<Channel, Domain>();
   const domainOverride = new Map<Channel, Domain>();
+  /** Series-bound channels, and the NaN or held frame each keeps in its own slot. */
+  const following = new Map<Channel, { binding: SeriesBinding; slot: Float32Array }>();
+  /** Series-bound channels whose domain follows the recorded range. */
+  const recorded = new Set<Channel>();
+  let layout = channelLayout(0, 0);
 
   function countFor(channel: Channel): number {
     const def = channelDefinition(channel);
@@ -227,9 +259,13 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
 
   function set(
     channel: Channel,
-    values: Float32Array | Float64Array,
+    values: Float32Array | Float64Array | SeriesBinding,
     domain?: Domain | null,
   ): void {
+    if (isSeriesBinding(values)) {
+      follow(channel, values, domain);
+      return;
+    }
     validateValues(channel, values);
     const def = channelDefinition(channel);
     const nextDomain = def.normalized ? resolveDomain(channel, def, values, domain) : null;
@@ -237,6 +273,12 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
     // is refreshed only once the upload succeeded, so a failure leaves nothing changed.
     const f32 = values instanceof Float32Array ? values : Float32Array.from(values);
     deps.renderer()?.writeChannel(channel, f32);
+    if (following.delete(channel)) {
+      // The shown view belongs to the series' window; the array gets a snapshot of its own.
+      current.delete(channel);
+      recorded.delete(channel);
+      writeOffset(channel, layout.offsets[channel]);
+    }
     const snapshot = current.get(channel);
     // Re-binds refresh the snapshot in place so animated updates never allocate.
     if (snapshot) snapshot.set(f32);
@@ -246,10 +288,71 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
     writeScalars(channel);
   }
 
+  function follow(channel: Channel, binding: SeriesBinding, domain?: Domain | null): void {
+    if (!deps.loaded()) {
+      throw new Error('network topology must be loaded before binding channels');
+    }
+    const def = channelDefinition(channel);
+    if (def.components !== 1) {
+      throw new TypeError(`network channel ${channel} cannot follow a series`);
+    }
+    const { series, signal } = binding;
+    validateSeries(series);
+    if (!Number.isInteger(signal) || signal < 0 || signal >= series.signalCount) {
+      throw new RangeError(
+        `network channel ${channel} signal ${signal} out of [0, ${series.signalCount})`,
+      );
+    }
+    const items = countFor(channel);
+    const last = series.elements ? (series.elements.at(-1) ?? -1) : series.elementCount - 1;
+    if (series.elements ? last >= items : series.elementCount !== items) {
+      throw new Error(`network channel ${channel} series elements do not fit ${items} items`);
+    }
+    const nextDomain = def.normalized
+      ? domain
+        ? checkedDomain(domain, `${channel} domain`)
+        : recordedDomain(binding)
+      : null;
+    const slot = new Float32Array(items).fill(NaN);
+    deps.renderer()?.writeChannel(channel, slot);
+    following.set(channel, { binding, slot });
+    current.set(channel, slot);
+    if (domain) recorded.delete(channel);
+    else recorded.add(channel);
+    if (nextDomain) data.set(channel, nextDomain);
+    writeOffset(channel, layout.offsets[channel]);
+    setMode(channel, true);
+    writeScalars(channel);
+  }
+
+  function moveTo(channel: Channel, offset: number, view: Float32Array): void {
+    writeOffset(channel, offset);
+    current.set(channel, view);
+  }
+
+  function hold(channel: Channel): void {
+    const entry = following.get(channel);
+    const shown = current.get(channel);
+    if (!entry || !shown) return;
+    if (shown !== entry.slot) entry.slot.set(shown);
+    deps.renderer()?.writeChannel(channel, entry.slot);
+    moveTo(channel, layout.offsets[channel], entry.slot);
+  }
+
+  function refreshRecorded(channel: Channel): boolean {
+    const entry = following.get(channel);
+    if (!entry || !recorded.has(channel)) return false;
+    data.set(channel, recordedDomain(entry.binding));
+    writeScalars(channel);
+    return true;
+  }
+
   function clear(channel: Channel): boolean {
     channelDefinition(channel);
     if (!current.has(channel) && !data.has(channel) && !domainOverride.has(channel)) return false;
     setMode(channel, false);
+    if (following.delete(channel)) writeOffset(channel, layout.offsets[channel]);
+    recorded.delete(channel);
     current.delete(channel);
     data.delete(channel);
     domainOverride.delete(channel);
@@ -261,7 +364,9 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
     current.clear();
     data.clear();
     domainOverride.clear();
-    const layout = deps.loaded()
+    following.clear();
+    recorded.clear();
+    layout = deps.loaded()
       ? channelLayout(deps.vertexCount(), deps.edgeCount())
       : channelLayout(0, 0);
     for (const key of CHANNEL_KEYS) {
@@ -443,7 +548,13 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
   }
 
   return {
+    get words() {
+      return layout.words;
+    },
     set,
+    moveTo,
+    hold,
+    refreshRecorded,
     clear,
     reset,
     setDomain,
@@ -455,7 +566,10 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
     refreshSizeRange: () => writeScalars('vertexSize'),
     values: (channel) => current.get(channel) ?? null,
     upload(renderer) {
-      for (const [channel, values] of current) renderer.writeChannel(channel, values);
+      // A series-bound channel's own slot keeps its NaN or held frame; its window uploads apart.
+      for (const [channel, values] of current) {
+        renderer.writeChannel(channel, following.get(channel)?.slot ?? values);
+      }
     },
   };
 }
@@ -480,6 +594,16 @@ function resolveDomain(
   if (domain) return checkedDomain(domain, `${channel} domain`);
   if (def.map === 'height') return extent(values) ?? [0, 1];
   return [0, 1];
+}
+
+/** The recorded finite range of a series signal, or `[0, 1]` before anything finite is recorded. */
+function recordedDomain({ series, signal }: SeriesBinding): Domain {
+  const ranges = series.state.ranges;
+  const lo = ranges?.[signal * 2];
+  const hi = ranges?.[signal * 2 + 1];
+  return lo !== undefined && hi !== undefined && Number.isFinite(lo) && Number.isFinite(hi)
+    ? [lo, hi]
+    : [0, 1];
 }
 
 /** Validate and own a domain before retaining it. */

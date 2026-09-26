@@ -6,6 +6,7 @@ import {
   type RGBA,
   type Series,
 } from '@latkit/model';
+import { fold, type Envelope } from './envelope.js';
 import type { Reading } from './monitor.js';
 import { LanePainter, SEGMENT_BUDGET } from './painter.js';
 
@@ -73,6 +74,12 @@ export class Lane {
   #wanted = false;
   #version = 0;
   #reported = -1;
+  /** Folded repaints' scratch, kept across them: the envelope, and each element's carried row. */
+  #envelope: Envelope | null = null;
+  #carry: Float32Array | null = null;
+  /** The normalized time of the row a fold window carries in, and of the row it carries out. */
+  #carriedTime = 0;
+  #nextCarriedTime = 0;
 
   constructor(
     series: Series,
@@ -89,16 +96,18 @@ export class Lane {
     this.#scan = scan;
     this.#events = events;
     this.#state = series.state;
+    // At least three frames per window: a folded window uploads a bucket's two rows after the
+    // row it carries in.
     this.#elements = Math.max(
       1,
       Math.min(
         series.elementCount,
-        Math.floor(painter.windowValueCapacity / 2),
-        Math.floor((READ_BYTES - 16) / 16),
+        Math.floor(painter.windowValueCapacity / 3),
+        Math.floor(READ_BYTES / 24) - 1,
       ),
     );
     this.#frames = Math.max(
-      2,
+      3,
       Math.min(
         Math.floor(READ_BYTES / (8 + 8 * this.#elements)),
         Math.floor(painter.windowValueCapacity / this.#elements),
@@ -285,6 +294,101 @@ export class Lane {
         };
   }
 
+  /**
+   * Fold windows: whole buckets of frames, element chunks within each, sized to the read budget and
+   * to the rows a window uploads, its buckets' two each after the row it carries in.
+   */
+  *#foldWindows(from: number, to: number, bucket: number): Generator<Window> {
+    const elements = Math.max(
+      1,
+      Math.min(this.#elements, Math.floor(READ_BYTES / (8 * bucket)) - 1),
+    );
+    const buckets = Math.max(
+      1,
+      Math.min(
+        Math.floor(READ_BYTES / (8 * bucket * (elements + 1))),
+        Math.floor((this.#frames - 1) / 2),
+      ),
+    );
+    if (
+      !this.#envelope ||
+      this.#envelope.lo.length < elements ||
+      this.#envelope.time.length < 2 * buckets
+    ) {
+      this.#envelope = {
+        time: new Float64Array(2 * buckets),
+        values: new Float64Array(2 * buckets * elements),
+        lo: new Float64Array(elements),
+        hi: new Float64Array(elements),
+        loAt: new Uint32Array(elements),
+        hiAt: new Uint32Array(elements),
+      };
+    }
+    this.#carry ??= new Float32Array(this.#series.elementCount * 2);
+    const frames = buckets * bucket;
+    for (let f = from; f < to; f += frames)
+      for (let e = 0; e < this.#series.elementCount; e += elements)
+        yield {
+          frameOffset: f,
+          frameCount: Math.min(frames, to - f),
+          elementOffset: e,
+          elementCount: Math.min(elements, this.#series.elementCount - e),
+        };
+  }
+
+  /** Normalize a raw window into the upload arrays; returns the rows written. */
+  #fill(window: Window, block: Block, values: Float32Array, time: Float32Array): number {
+    for (let f = 0; f < window.frameCount; f++) {
+      time[f] = finiteCoordinate(position(block.time[f]!, this.#range));
+      for (let e = 0; e < window.elementCount; e++) {
+        const value = block.values[f * block.stride + e]!;
+        const at = (f * window.elementCount + e) * 2;
+        values[at] = finiteCoordinate(position(value, this.#domain));
+        values[at + 1] = finiteCoordinate(position(value, this.#colors));
+      }
+    }
+    return window.frameCount;
+  }
+
+  /**
+   * Fold a window into its buckets' extremes and normalize them after the row the previous window
+   * carried in, so the segment joining the two is drawn once; returns the rows written.
+   */
+  #fillFolded(window: Window, block: Block, bucket: number, carried: boolean): number {
+    const envelope = this.#envelope!,
+      carry = this.#carry!;
+    const { elementCount: elements, elementOffset: offset } = window;
+    const folded = fold(
+      block.time,
+      block.values,
+      block.stride,
+      window.frameCount,
+      elements,
+      bucket,
+      envelope,
+    );
+    const values = this.#values,
+      time = this.#time;
+    let row = 0;
+    if (carried) {
+      time[0] = this.#carriedTime;
+      values.set(carry.subarray(offset * 2, (offset + elements) * 2));
+      row = 1;
+    }
+    for (let i = 0; i < folded; i++, row++) {
+      time[row] = finiteCoordinate(position(envelope.time[i]!, this.#range));
+      for (let e = 0; e < elements; e++) {
+        const value = envelope.values[i * elements + e]!;
+        const at = (row * elements + e) * 2;
+        values[at] = finiteCoordinate(position(value, this.#domain));
+        values[at + 1] = finiteCoordinate(position(value, this.#colors));
+      }
+    }
+    this.#nextCarriedTime = time[row - 1]!;
+    carry.set(values.subarray((row - 1) * elements * 2, row * elements * 2), offset * 2);
+    return row;
+  }
+
   async #draw(focus: boolean, from: number, count: number, signal: AbortSignal): Promise<void> {
     const [start, end] = await this.#series.locate(this.#range, count, signal);
     signal.throwIfAborted();
@@ -296,7 +400,15 @@ export class Lane {
       end > count
     )
       throw new RangeError('series returned invalid time bounds');
-    const windows = this.#windows(Math.max(from, start - 1, 0), Math.min(count, end + 1), focus);
+    const first = Math.max(from, start - 1, 0),
+      last = Math.min(count, end + 1);
+    // A full history repaint over more than two frames per device pixel draws each bucket's
+    // extremes; appends and the selected trace draw every frame.
+    const bucket = focus || from > 0 ? 0 : Math.floor((last - first) / this.#painter.width);
+    const folding = bucket > 2;
+    const windows = folding
+      ? this.#foldWindows(first, last, bucket)
+      : this.#windows(first, last, focus);
     let next = windows.next();
     let pending = next.done ? null : this.#read(next.value, signal);
     let submitted = 0,
@@ -311,15 +423,10 @@ export class Lane {
       void pending?.catch(() => {});
       const values = focus ? this.#focusValues : this.#values;
       const time = focus ? this.#focusTime : this.#time;
-      for (let f = 0; f < window.frameCount; f++) {
-        time[f] = finiteCoordinate(position(block.time[f]!, this.#range));
-        for (let e = 0; e < window.elementCount; e++) {
-          const value = block.values[f * block.stride + e]!;
-          const at = (f * window.elementCount + e) * 2;
-          values[at] = finiteCoordinate(position(value, this.#domain));
-          values[at + 1] = finiteCoordinate(position(value, this.#colors));
-        }
-      }
+      if (folding && window.elementOffset === 0) this.#carriedTime = this.#nextCarriedTime;
+      const rows = folding
+        ? this.#fillFolded(window, block, bucket, window.frameOffset > first)
+        : this.#fill(window, block, values, time);
       this.#painter.writeUniform(focus ? 'focus' : 'history', {
         viewportX: this.#painter.width,
         viewportY: this.#painter.height,
@@ -327,9 +434,9 @@ export class Lane {
         elementCount: window.elementCount,
         focusColor: this.#style.focusColor ?? [0, 0, 0, -1],
       });
-      const data = values.subarray(0, window.frameCount * window.elementCount * 2);
-      const axis = time.subarray(0, window.frameCount);
-      const instances = (window.frameCount - 1) * window.elementCount;
+      const data = values.subarray(0, rows * window.elementCount * 2);
+      const axis = time.subarray(0, rows);
+      const instances = (rows - 1) * window.elementCount;
       if (focus) {
         this.#painter.uploadFocus(data, axis);
         this.#painter.drawFocus(instances);

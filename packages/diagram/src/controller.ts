@@ -8,9 +8,9 @@ import {
   type Netlist,
 } from '@latkit/model';
 import {
+  createAttachment,
   createFrameLoop,
   createPresentation,
-  type DeviceLease,
   type Frame,
   type FrameLoop,
   type Presentation,
@@ -179,6 +179,8 @@ export type Events = {
 export interface Diagram {
   /** Whether a canvas is bound and rendering. */
   readonly attached: boolean;
+  /** The canvas bound or binding, or null. */
+  readonly canvas: HTMLCanvasElement | null;
   /** Whether a frame has been painted since attach. */
   readonly painted: boolean;
 
@@ -193,20 +195,24 @@ export interface Diagram {
 
   /**
    * Lease a device from the `devices` option and bind `canvas`, replaying every retained state.
-   *
-   * A newer `attach` or a `detach` supersedes an attach still awaiting its device, which then
-   * rejects with an `AbortError`. The previous canvas, if any, is released first.
+   * The previous canvas, if any, is released first; attaching the canvas already bound or binding
+   * joins that attach.
    *
    * @param canvas - Borrowed canvas used for presentation and input.
+   * @returns True once bound; false when a newer `attach` or a `detach` took over first.
    * @throws GpuUnavailableError when no device can be leased.
    * @throws TypeError when the leased device does not provide Core WebGPU limits (five storage
    * buffers in the vertex stage).
    * @throws Error when the controller is destroyed, or canvas presentation or renderer
    * initialization fails.
    */
-  attach(canvas: HTMLCanvasElement): Promise<void>;
-  /** Release the device lease, renderer resources, and canvas listeners; every state stays. */
-  detach(): void;
+  attach(canvas: HTMLCanvasElement): Promise<boolean>;
+  /**
+   * Release the device lease, renderer resources, and canvas listeners; every state stays.
+   *
+   * @param canvas - Detach only while this canvas is the one bound or binding.
+   */
+  detach(canvas?: HTMLCanvasElement): void;
   /**
    * Schedule a frame and resolve once it is painted.
    *
@@ -500,14 +506,6 @@ export function createDiagramWithDeps(options: Options, deps: ControllerDeps): D
 /** Least storage buffers the vertex stage must bind: five in bind group 0. */
 const VERTEX_STORAGE_BUFFERS = 5;
 
-/** Reject devices known not to meet the renderer's Core WebGPU limits. */
-function assertDeviceLimits(device: GPUDevice): void {
-  const vertexStorage = device.limits.maxStorageBuffersInVertexStage;
-  if (vertexStorage !== undefined && vertexStorage < VERTEX_STORAGE_BUFFERS) {
-    throw new TypeError('A Core WebGPU device is required');
-  }
-}
-
 /** Strip construction-only values from one validated option patch. */
 function runtimeOptionPatch(options: Options): Options {
   const patch: Options = {};
@@ -519,47 +517,6 @@ function runtimeOptionPatch(options: Options): Options {
   return patch;
 }
 
-/** Resources registered transactionally while a binding is constructed. */
-interface ControllerLifecycle {
-  add(cleanup: () => void): void;
-  destroy(): void;
-}
-
-/** Create an idempotent, reverse-order cleanup stack. */
-function createControllerLifecycle(): ControllerLifecycle {
-  const cleanups: Array<() => void> = [];
-  let destroyed = false;
-  return {
-    add(cleanup) {
-      cleanups.push(cleanup);
-    },
-    destroy() {
-      if (destroyed) return;
-      destroyed = true;
-      for (let i = cleanups.length - 1; i >= 0; i--) {
-        try {
-          cleanups[i]!();
-        } catch {
-          // Cleanup is best-effort so one resource cannot strand the remainder.
-        }
-      }
-      cleanups.length = 0;
-    },
-  };
-}
-
-/** Relay one device-loss notification without retaining a released binding. */
-function forwardDeviceLoss(
-  device: GPUDevice,
-  listener: (info: GPUDeviceLostInfo) => void,
-): () => void {
-  let active: ((info: GPUDeviceLostInfo) => void) | undefined = listener;
-  void device.lost.then((info) => active?.(info));
-  return () => {
-    active = undefined;
-  };
-}
-
 /** Deliver a latched event payload to a late subscriber with emitter-equivalent error isolation. */
 function replay<Payload>(handler: (payload: Payload) => void, payload: Payload): void {
   try {
@@ -569,15 +526,6 @@ function replay<Payload>(handler: (payload: Payload) => void, payload: Payload):
       throw error;
     });
   }
-}
-
-/** The rejection of an attach that a newer attach or a detach overtook. */
-function superseded(): DOMException {
-  return new DOMException('The attach was superseded.', 'AbortError');
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError';
 }
 
 /** A promise settled from outside. */
@@ -595,10 +543,6 @@ function deferred<T>(): Deferred<T> {
     reject = rej;
   });
   return { promise, resolve, reject };
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** A plain wheel: a Ctrl or Meta wheel (a pinch) and a notched wheel zoom; a trackpad pans. */
@@ -637,13 +581,10 @@ interface Notice<T> {
 
 /** Everything one attach owns: released together, replaced together. */
 interface Binding {
-  /** The attach generation that created it; a stale device loss or frame compares against it. */
-  readonly generation: number;
   readonly canvas: HTMLCanvasElement;
   readonly surface: Surface;
   readonly renderer: Renderer;
   readonly loop: FrameLoop;
-  readonly lifecycle: ControllerLifecycle;
   /** The gesture and keyboard adapters, attached as the `interaction` and `keyboard` options say. */
   gestures: { cancel(): void; destroy(): void } | null;
   keyboard: { destroy(): void } | null;
@@ -675,9 +616,8 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
   let colormapLut = bakeColormap(opts.colormap);
   let pipelineFailure: Events['pipelineError'] | null = null;
 
+  /** The binding in effect, set once its collaborators exist so its first frame can draw. */
   let binding: Binding | null = null;
-  /** Bumped by every attach, detach, and destroy so an overtaken attach knows to stand down. */
-  let generation = 0;
   let destroyed = false;
   let consumerPaused = false;
   let pageVisible = true;
@@ -1263,9 +1203,8 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
    * overlay, text, submit. Returns whether anything still moves: camera easing, scene tweens or
    * ghosts, auto-pan, the shade's tick, a pulsing glow, or marching dashes.
    */
-  function drawFrame(own: number, frame: Frame): boolean {
-    const bound = binding;
-    if (!bound || bound.generation !== own || consumerPaused || !pageVisible) return false;
+  function drawFrame(bound: Binding, frame: Frame): boolean {
+    if (binding !== bound || consumerPaused || !pageVisible) return false;
     const now = frame.now;
     frameVp.w = frame.width;
     frameVp.h = frame.height;
@@ -1401,80 +1340,88 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
 
   // Binding.
 
-  /** Build every device-bound collaborator for one attach; on any failure nothing is kept. */
-  function bind(lease: DeviceLease, canvas: HTMLCanvasElement, own: number): Binding {
-    const lifecycle = createControllerLifecycle();
-    // Registered first, so it runs last: nothing outlives the lease it renders on.
-    lifecycle.add(() => lease.release());
-    try {
-      const surface = deps.createSurface(canvas);
-      lifecycle.add(() => surface.destroy());
-      const presentation = deps.createPresentation(lease.device, canvas);
-      lifecycle.add(() => presentation.destroy());
-      // A new renderer's buffers start at version -1: its first frame uploads every mirror.
-      const renderer = new deps.Renderer(presentation, mirrors, shade?.wgsl ?? null);
-      lifecycle.add(() => renderer.destroy());
-      renderer.writeColormap(colormapLut);
-      const loop = deps.createFrameLoop(presentation, (frame) => drawFrame(own, frame));
-      lifecycle.add(() => loop.destroy());
-
-      // A fresh renderer builds fresh pipelines; a failure from the last one no longer applies.
-      pipelineFailure = null;
-      renderer.onPipelinesReady = () => loop.wake();
-      renderer.onPipelineError = (cause) => {
-        pipelineFailure = { cause };
-        rejectPaint(cause);
-        events.emit('pipelineError', pipelineFailure);
-      };
-
-      pageVisible = typeof document !== 'undefined' ? !document.hidden : true;
-      const onVisibilityChange = (): void => {
-        pageVisible = !document.hidden;
-        syncLoopActivity();
-      };
-      document.addEventListener('visibilitychange', onVisibilityChange);
-      lifecycle.add(() => document.removeEventListener('visibilitychange', onVisibilityChange));
-      // A web font that finishes loading replaces the fallback its glyphs were drawn in.
-      const fonts: FontFaceSet | undefined = document.fonts;
-      const onFontsLoaded = (): void => {
-        atlas.setFont(opts.fontFamily);
-        repaint();
-      };
-      fonts?.addEventListener('loadingdone', onFontsLoaded);
-      lifecycle.add(() => fonts?.removeEventListener('loadingdone', onFontsLoaded));
-
-      lifecycle.add(forwardDeviceLoss(lease.device, (info) => recover(own, info)));
-
-      const entry: Binding = {
-        generation: own,
-        canvas,
-        surface,
-        renderer,
-        loop,
-        lifecycle,
-        gestures: null,
-        keyboard: null,
-        painted: false,
-        announced: false,
-        atFit: true,
-      };
-      lifecycle.add(() => {
-        entry.gestures?.destroy();
-        entry.gestures = null;
-        entry.keyboard?.destroy();
-        entry.keyboard = null;
-      });
-      return entry;
-    } catch (error) {
-      lifecycle.destroy();
-      throw error;
+  /**
+   * Build every device-bound collaborator for one attach and draw its first frame; the attachment
+   * runs the cleanups in reverse if anything throws.
+   */
+  function bind(
+    device: GPUDevice,
+    canvas: HTMLCanvasElement,
+    cleanup: (release: () => void) => void,
+  ): Binding {
+    const vertexStorage = device.limits.maxStorageBuffersInVertexStage ?? VERTEX_STORAGE_BUFFERS;
+    if (vertexStorage < VERTEX_STORAGE_BUFFERS) {
+      throw new TypeError('A Core WebGPU device is required');
     }
+    const surface = deps.createSurface(canvas);
+    cleanup(() => surface.destroy());
+    const presentation = deps.createPresentation(device, canvas);
+    cleanup(() => presentation.destroy());
+    // A new renderer's buffers start at version -1: its first frame uploads every mirror.
+    const renderer = new deps.Renderer(presentation, mirrors, shade?.wgsl ?? null);
+    cleanup(() => renderer.destroy());
+    renderer.writeColormap(colormapLut);
+    let entry: Binding | null = null;
+    const loop = deps.createFrameLoop(presentation, (frame) =>
+      entry ? drawFrame(entry, frame) : false,
+    );
+    cleanup(() => loop.destroy());
+
+    // A fresh renderer builds fresh pipelines; a failure from the last one no longer applies.
+    pipelineFailure = null;
+    renderer.onPipelinesReady = () => loop.wake();
+    renderer.onPipelineError = (cause) => {
+      pipelineFailure = { cause };
+      rejectPaint(cause);
+      events.emit('pipelineError', pipelineFailure);
+    };
+
+    pageVisible = typeof document !== 'undefined' ? !document.hidden : true;
+    const onVisibilityChange = (): void => {
+      pageVisible = !document.hidden;
+      syncLoopActivity();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    cleanup(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+    // A web font that finishes loading replaces the fallback its glyphs were drawn in.
+    const fonts: FontFaceSet | undefined = document.fonts;
+    const onFontsLoaded = (): void => {
+      atlas.setFont(opts.fontFamily);
+      repaint();
+    };
+    fonts?.addEventListener('loadingdone', onFontsLoaded);
+    cleanup(() => fonts?.removeEventListener('loadingdone', onFontsLoaded));
+
+    const built: Binding = {
+      canvas,
+      surface,
+      renderer,
+      loop,
+      gestures: null,
+      keyboard: null,
+      painted: false,
+      announced: false,
+      atFit: true,
+    };
+    entry = built;
+    cleanup(() => {
+      built.gestures?.destroy();
+      built.gestures = null;
+      built.keyboard?.destroy();
+      built.keyboard = null;
+    });
+    binding = built;
+    cleanup(() => {
+      if (binding === built) binding = null;
+    });
+    syncInteraction();
+    syncLoopActivity();
+    loop.frameNow();
+    return built;
   }
 
-  /** Release the current binding, if any, and say so. */
-  function release(): void {
-    const entry = binding;
-    if (!entry) return;
+  /** Forget what a released binding drew; the attachment then runs its cleanups. */
+  function releaseBinding(entry: Binding): void {
     binding = null;
     shadeTask = null;
     rejectPaint(new DOMException('The canvas was detached before it painted.', 'AbortError'));
@@ -1488,40 +1435,23 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
     readyPainted = null;
     focus.setHover(null);
     shadeAnimating = false;
-    entry.lifecycle.destroy();
-    if (destroyed) return;
-    if (entry.announced) events.emit('painted', false);
-    events.emit('attached', false);
+    releasedAnnounced = entry.announced;
   }
 
-  /**
-   * A device the platform lost: release it, say so, and lease a replacement, unless a host
-   * handler detached or attached anew meanwhile; that call owns the canvas then.
-   */
-  function recover(own: number, info: GPUDeviceLostInfo): void {
-    const entry = binding;
-    if (!entry || entry.generation !== own || destroyed) return;
-    const { canvas } = entry;
-    // A detach or attach bumps the generation; the `attached` and `deviceLost` handlers may call
-    // either, and the host's call must win.
-    const mark = generation;
-    release();
-    events.emit('deviceLost', {
-      reason: info.reason ?? 'unknown',
-      message: info.message || 'WebGPU device was lost',
-      recovering: generation === mark && !destroyed,
-    });
-    if (generation !== mark || destroyed) return;
-    api.attach(canvas).catch((error: unknown) => {
-      // A newer attach or a detach overtook the recovery; it owns the outcome now.
-      if (isAbortError(error) || destroyed) return;
-      events.emit('deviceLost', {
-        reason: 'unavailable',
-        message: describe(error),
-        recovering: false,
-      });
-    });
-  }
+  /** Whether `painted: true` reached the host for the binding just released. */
+  let releasedAnnounced = false;
+
+  const attachment = createAttachment<Binding>({
+    devices: opts.devices,
+    bind,
+    release: releaseBinding,
+    attached: (bound) => {
+      if (!bound && releasedAnnounced) events.emit('painted', false);
+      releasedAnnounced = false;
+      events.emit('attached', bound);
+    },
+    lost: (loss) => events.emit('deviceLost', loss),
+  });
 
   /** Keep loop activity consistent with user pause and page visibility. */
   function syncLoopActivity(): void {
@@ -1557,6 +1487,10 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
       return binding !== null;
     },
 
+    get canvas() {
+      return attachment.canvas;
+    },
+
     get painted() {
       return binding?.painted ?? false;
     },
@@ -1569,39 +1503,9 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
       return unsubscribe;
     },
 
-    async attach(canvas) {
-      if (destroyed) throw new Error('diagram: the controller is destroyed');
-      const own = ++generation;
-      release();
-      const lease = await opts.devices.acquire();
-      if (own !== generation || destroyed) {
-        lease.release();
-        throw superseded();
-      }
-      try {
-        assertDeviceLimits(lease.device);
-      } catch (error) {
-        lease.release();
-        throw error;
-      }
-      const entry = bind(lease, canvas, own);
-      binding = entry;
-      try {
-        syncInteraction();
-        syncLoopActivity();
-        entry.loop.frameNow();
-      } catch (error) {
-        binding = null;
-        entry.lifecycle.destroy();
-        throw error;
-      }
-      events.emit('attached', true);
-    },
+    attach: (canvas) => attachment.attach(canvas),
 
-    detach() {
-      generation++;
-      release();
-    },
+    detach: (canvas) => attachment.detach(canvas),
 
     paint() {
       if (!binding) {
@@ -1866,8 +1770,7 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      generation++;
-      release();
+      attachment.destroy();
       interactor.cancel();
       pendingHoverNotice = undefined;
       readyHoverNotice = undefined;

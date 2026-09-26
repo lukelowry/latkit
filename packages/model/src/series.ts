@@ -292,20 +292,6 @@ export async function sample(
   return block.values.subarray(0, series.elementCount);
 }
 
-/** Last frame at or before t; repeated timestamps resolve to their last sample. */
-export function frameAt(time: Float64Array, t: number, head = time.length): number {
-  const n = Math.min(head, time.length);
-  if (n <= 1 || t < time[0]!) return 0;
-  let lo = 0,
-    hi = n;
-  while (lo < hi) {
-    const mid = lo + Math.floor((hi - lo) / 2);
-    if (time[mid]! <= t) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo - 1;
-}
-
 function index(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 0)
     throw new RangeError(`${name} must be a nonnegative safe integer`);

@@ -14,7 +14,7 @@ export { CHANNELS } from './channels.js';
 export type { Channel } from './channels.js';
 
 export { OPTIONS, validateOptions } from './options.js';
-export type { Options, Interaction, Insets } from './options.js';
+export type { Options } from './options.js';
 
 export { PROJECTIONS } from './projections.js';
 export type { Projection } from './projections.js';

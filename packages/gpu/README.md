@@ -151,3 +151,28 @@ includes the observer's initial notification: be ready to draw the current state
 exists. A canvas without area skips its frame until a resize gives it one. A `render` that
 pauses or destroys the loop stops it, and wakes while paused are dropped: `resume()` schedules
 the next frame.
+
+## Attach a controller
+
+`createAttachment()` is the attach lifecycle every Latkit controller shares: supersession, joining a
+repeat attach, and recovery on a replacement device, as the [lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html)
+describes. A renderer supplies what one binding builds and what its release forgets:
+
+```ts
+import { createAttachment, devices } from '@latkit/gpu';
+
+const attachment = createAttachment({
+  devices,
+  bind(device, canvas, cleanup) {
+    const presentation = createPresentation(device, canvas);
+    cleanup(() => presentation.destroy()); // cleanups run in reverse on release
+    return presentation;
+  },
+  release: (presentation) => {}, // before the cleanups
+  attached: (bound) => emit('attached', bound),
+  lost: (loss) => emit('deviceLost', loss),
+});
+
+await attachment.attach(canvas); // false when a newer attach or a detach took over
+attachment.detach(canvas); // only while `canvas` is the current one
+```

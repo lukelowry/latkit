@@ -1,6 +1,6 @@
 # Colormaps
 
-`@latkit/colormaps` provides named transfer functions and a registry of labels and kinds that can be shared between network, monitor, and legend UI.
+`@latkit/colormaps` provides named transfer functions and a registry of labels and kinds that can be shared between network, monitor, and legend UI, and `parseColor`, which reads a CSS color into the `RGBA` every color option takes.
 
 ## Use a colormap
 
