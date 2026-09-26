@@ -147,6 +147,21 @@ describe('createAttachment', () => {
     expect(h.devices.releases).toHaveBeenCalledTimes(3);
   });
 
+  it('resolves false when a superseded acquisition later fails', async () => {
+    const h = harness();
+    const open = h.devices.hold();
+    const pending = h.attachment.attach(canvas());
+    h.attachment.detach();
+    h.devices.fail(new Error('old acquisition failed'));
+    open();
+    await expect(pending).resolves.toBe(false);
+    expect(h.attachment.canvas).toBeNull();
+    expect(h.log).toEqual([]);
+
+    h.devices.fail(null);
+    await expect(h.attachment.attach(canvas())).resolves.toBe(true);
+  });
+
   it('detaches with a canvas only while that canvas is the current one', async () => {
     const h = harness();
     const target = canvas();

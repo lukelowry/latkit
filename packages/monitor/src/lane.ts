@@ -404,7 +404,10 @@ export class Lane {
       last = Math.min(count, end + 1);
     // A full history repaint over more than two frames per device pixel draws each bucket's
     // extremes; appends and the selected trace draw every frame.
-    const bucket = focus || from > 0 ? 0 : Math.floor((last - first) / this.#painter.width);
+    const bucket =
+      focus || from > 0
+        ? 0
+        : Math.min(Math.floor(READ_BYTES / 16), Math.floor((last - first) / this.#painter.width));
     const folding = bucket > 2;
     const windows = folding
       ? this.#foldWindows(first, last, bucket)

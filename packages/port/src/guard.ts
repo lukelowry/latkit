@@ -62,10 +62,10 @@ export function optional<T>(inner: Guard<T>): Guard<T | undefined> {
  * An object whose every declared field passes its guard. Extra fields are ignored, as some hosts
  * merge their own keys into a payload.
  */
-export function object<T extends Record<string, unknown>>(shape: {
+export function object<T extends object>(shape: {
   readonly [F in keyof T]-?: Guard<T[F]>;
 }): Guard<T> {
-  const fields = Object.entries<Guard<unknown>>(shape);
+  const fields = Object.entries(shape as Readonly<Record<string, Guard<unknown>>>);
   return (value): value is T =>
     isRecord(value) && fields.every(([key, check]) => check(value[key]));
 }

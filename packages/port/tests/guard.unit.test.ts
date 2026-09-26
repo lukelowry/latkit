@@ -64,6 +64,21 @@ describe('guard', () => {
     expect(point(null)).toBe(false);
   });
 
+  it('accepts interfaces and keeps every field guard type checked', () => {
+    interface Command {
+      readonly app: string;
+      readonly params?: Uint8Array;
+    }
+    const check = object<Command>({ app: str, params: optional(bytes) });
+    expect(check({ app: 'run' })).toBe(true);
+    expect(check({ app: 'run', params: Uint8Array.of(1) })).toBe(true);
+    expect(check({ app: 1 })).toBe(false);
+    // @ts-expect-error Every field, including optional ones, needs its guard.
+    object<Command>({ app: str });
+    // @ts-expect-error The guard must match the declared field type.
+    object<Command>({ app: finite, params: optional(bytes) });
+  });
+
   it('guards collections with explicit limits', () => {
     expect(arrayOf(index, 2)([0, 1])).toBe(true);
     expect(arrayOf(index, 2)([0, 1, 2])).toBe(false);

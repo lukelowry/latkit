@@ -86,7 +86,8 @@ export function createAttachment<B>(spec: {
       bound = { binding, cleanups };
     } catch (error) {
       cleanup(cleanups);
-      if (own === generation) target = null;
+      if (own !== generation) return false;
+      target = null;
       throw error;
     }
     spec.attached(true);

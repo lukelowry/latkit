@@ -14,10 +14,10 @@ afterEach(() => {
   stub.teardown();
   document.body.replaceChildren();
 });
-function canvas() {
+function canvas(width = 320) {
   const element = document.createElement('canvas');
-  Object.defineProperties(element, { clientWidth: { value: 320 }, clientHeight: { value: 180 } });
-  element.getBoundingClientRect = () => ({ left: 0, top: 0, width: 320, height: 180 }) as DOMRect;
+  Object.defineProperties(element, { clientWidth: { value: width }, clientHeight: { value: 180 } });
+  element.getBoundingClientRect = () => ({ left: 0, top: 0, width, height: 180 }) as DOMRect;
   document.body.append(element);
   return element;
 }
@@ -193,6 +193,19 @@ it('folds a long repaint to two rows per bucket of frames, and draws appends raw
 
   await paint(() => input.push(Array.from({ length: 10 }, () => 0.5)));
   expect(history().reduce((n, d) => n + d.instanceCount, 0)).toBe(2 * 323 - 1 + 10);
+});
+
+it('keeps folded reads within budget even on a one-pixel canvas', async () => {
+  const reads: Window[] = [];
+  const time = Array.from({ length: 100000 }, (_, i) => i);
+  monitor.setOptions({ valueRange: [0, 1] });
+  monitor.load(source(1, time, reads).series);
+  await paint(() => monitor.attach(canvas(1)));
+  expect(reads.length).toBeGreaterThan(1);
+  expect(
+    reads.every((window) => window.frameCount * (window.elementCount + 1) * 8 <= 1024 * 1024),
+  ).toBe(true);
+  expect(reads.at(-1)!.frameOffset + reads.at(-1)!.frameCount).toBe(time.length);
 });
 
 it('carries each folded window last row into the next, so every join draws once', async () => {
