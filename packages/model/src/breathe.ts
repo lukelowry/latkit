@@ -3,9 +3,8 @@ interface Yielding {
   yield?(): Promise<void>;
 }
 
-/** Waiters for the one shared message channel, resolved in posting order. */
-let waiters: Array<() => void> = [];
-let channel: MessageChannel | null = null;
+/** Concurrent callers share the next fallback task; no resources remain once it finishes. */
+let pending: Promise<void> | null = null;
 
 /**
  * Yield to the event loop, not just the microtask queue, so input and rendering stay responsive;
@@ -14,16 +13,15 @@ let channel: MessageChannel | null = null;
 export function breathe(): Promise<void> {
   const scheduler = (globalThis as { scheduler?: Yielding }).scheduler;
   if (typeof scheduler?.yield === 'function') return scheduler.yield();
-  return new Promise((resolve) => {
-    if (!channel) {
-      channel = new MessageChannel();
-      channel.port1.onmessage = () => {
-        const pending = waiters;
-        waiters = [];
-        for (const wake of pending) wake();
-      };
-    }
-    waiters.push(resolve);
+  pending ??= new Promise<void>((resolve) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      channel.port1.close();
+      channel.port2.close();
+      pending = null;
+      resolve();
+    };
     channel.port2.postMessage(null);
   });
+  return pending;
 }

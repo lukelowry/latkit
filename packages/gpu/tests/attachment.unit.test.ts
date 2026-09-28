@@ -212,6 +212,19 @@ describe('createAttachment', () => {
     expect(order).toEqual(['last', 'first', 'lease']);
   });
 
+  it('returns the lease even when the release notification throws', async () => {
+    const h = harness();
+    await h.attachment.attach(canvas());
+    h.handlers.release = () => {
+      throw new Error('release handler failed');
+    };
+    expect(() => h.attachment.detach()).toThrow('release handler failed');
+    expect(h.attachment.canvas).toBeNull();
+    expect(h.attachment.binding).toBeNull();
+    expect(h.devices.releases).toHaveBeenCalledOnce();
+    expect(h.log).toContain('cleanup');
+  });
+
   it('surfaces a lease failure and forgets the canvas it was for', async () => {
     const h = harness();
     h.devices.fail(new Error('No Core WebGPU adapter is available'));
@@ -313,6 +326,110 @@ describe('createAttachment', () => {
     expect(h.lost).toEqual([{ reason: 'unknown', message: 'lost for test', recovering: false }]);
     expect(h.attachment.binding?.canvas).toBe(next);
     expect(h.devices.devices).toHaveLength(2);
+  });
+
+  it.each(['release', 'attached', 'lost'] as const)(
+    'honors canvas-scoped detach from the %s notification during recovery',
+    async (notification) => {
+      const h = harness();
+      const target = canvas();
+      await h.attachment.attach(target);
+      let observed: HTMLCanvasElement | null = null;
+      const detach = () => {
+        observed = h.attachment.canvas;
+        h.attachment.detach(target);
+      };
+      if (notification === 'attached') h.handlers.attached = (bound) => !bound && detach();
+      else h.handlers[notification] = detach;
+
+      h.devices.devices[0]!.lose();
+      await settle();
+
+      expect(observed).toBe(target);
+      expect(h.attachment.canvas).toBeNull();
+      expect(h.attachment.binding).toBeNull();
+      expect(h.devices.devices).toHaveLength(1);
+      expect(h.devices.releases).toHaveBeenCalledOnce();
+      expect(h.lost[0]!.recovering).toBe(notification === 'lost');
+    },
+  );
+
+  it.each(['release', 'attached', 'lost'] as const)(
+    'joins the pending recovery from the %s notification',
+    async (notification) => {
+      const h = harness();
+      const target = canvas();
+      const first = h.attachment.attach(target);
+      await first;
+      const open = h.devices.hold();
+      let joined: Promise<boolean> | null = null;
+      let result: boolean | undefined;
+      const join = () => {
+        joined = h.attachment.attach(target);
+        void joined.then((bound) => (result = bound));
+      };
+      if (notification === 'attached') h.handlers.attached = (bound) => !bound && join();
+      else h.handlers[notification] = join;
+
+      try {
+        h.devices.devices[0]!.lose();
+        await settle();
+        expect(joined).not.toBe(first);
+        expect(joined).toBe(h.attachment.attach(target));
+        expect(result).toBeUndefined();
+        expect(h.attachment.binding).toBeNull();
+        expect(h.lost[0]!.recovering).toBe(true);
+      } finally {
+        open();
+      }
+      await expect(joined).resolves.toBe(true);
+      expect(h.devices.devices).toHaveLength(2);
+      h.handlers.attached = () => {};
+      h.handlers.release = () => {};
+      h.attachment.destroy();
+    },
+  );
+
+  it('publishes the next canvas before releasing the previous binding', async () => {
+    const h = harness();
+    const previous = canvas();
+    const next = canvas();
+    await h.attachment.attach(previous);
+    let observed: HTMLCanvasElement | null = null;
+    let joined: Promise<boolean> | null = null;
+    h.handlers.release = () => {
+      observed = h.attachment.canvas;
+      h.attachment.detach(previous);
+      joined = h.attachment.attach(next);
+    };
+
+    const pending = h.attachment.attach(next);
+    expect(observed).toBe(next);
+    expect(joined).toBe(pending);
+    await expect(pending).resolves.toBe(true);
+    expect(h.devices.devices).toHaveLength(2);
+    h.handlers.release = () => {};
+    h.attachment.destroy();
+  });
+
+  it('settles a cancelled attach without waiting for device acquisition', async () => {
+    const h = harness();
+    const target = canvas();
+    const open = h.devices.hold();
+    let result: boolean | undefined;
+    const pending = h.attachment.attach(target);
+    void pending.then((bound) => (result = bound));
+    try {
+      h.attachment.detach(target);
+      await settle();
+      expect(result).toBe(false);
+      expect(h.devices.devices).toHaveLength(0);
+    } finally {
+      open();
+    }
+    await settle();
+    expect(h.devices.releases).toHaveBeenCalledOnce();
+    expect(h.attachment.binding).toBeNull();
   });
 
   it('ignores a loss for a device it no longer holds, and after destroy', async () => {
