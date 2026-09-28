@@ -1,5 +1,23 @@
 # @latkit/port
 
+## 0.6.0
+
+### Minor Changes
+
+- Let an engine offer its studies as forms any frontend draws, and record an input that names one.
+
+  - Added: `engine.studies`, the studies an engine offers as plain data, each an `Engine.Study`: a label, the `formats` it records, its `parameters` by kind (`number`, `text`, `flag`, `choice`, `element`, or `file`), and `groups`, one with a `switch` turning its parameters on and off. A subclass passes `studies` to the constructor and `offer`s one later, the return withdrawing it; `on('change')` tells.
+  - Added: `engine.shown(input)` and `engine.problems(model, input)`: what an input's form shows, and what is wrong with it by parameter.
+  - Added: once it offers a study, an engine records only an input that names one, `{ study, values }`. `record` checks the values against the form, throwing a `Refusal` at the parameter to fix before anything is recorded; `parse` gets each shown parameter's value, null for one left empty, and each switch's position; the recording's label defaults to the study's. A parameter marked `each` takes several values in a form, and a host records once for each.
+  - Added: an optional `engine.read(model, file)`, the input a saved file holds.
+  - Changed: `Refusal.at` may name a study's parameter by id.
+  - Changed: `serveEngine` carries the engine's studies and `read`. `connectEngine` resolves once the studies its peer offers are in, follows each change, and checks a study's form where it is.
+
+### Patch Changes
+
+- Updated dependencies
+  - @latkit/model@0.9.0
+
 ## 0.5.0
 
 ### Minor Changes

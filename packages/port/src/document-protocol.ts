@@ -2,7 +2,7 @@
  * The document wire contract. Commands address a revision and a client's monotonically increasing
  * sequence; updates carry changed schematic columns, never a vendor's private history objects.
  */
-import { validateNetlist, type Document, type Model } from '@latkit/model';
+import { validateNetlist, type Document, type Model, type Refusal } from '@latkit/model';
 
 import { check, type Check } from './check.js';
 import { encodeFrame } from './frame.js';
@@ -44,11 +44,7 @@ export type Receipt =
       readonly change: Document.Change | null;
     }
   | { readonly kind: 'conflict'; readonly version: Document.Version }
-  | {
-      readonly kind: 'refused';
-      readonly message: string;
-      readonly at: Document.Port | Model.Element | null;
-    }
+  | { readonly kind: 'refused'; readonly message: string; readonly at: Refusal['at'] }
   | { readonly kind: 'expired'; readonly message: string }
   | { readonly kind: 'busy'; readonly message: string };
 
@@ -93,6 +89,11 @@ const target: Check<Model.Element | string> = (value, name) => {
 const location: Check<Document.Port | Model.Element> = (value, name) => {
   if (typeof value === 'object' && value !== null && 'element' in value) port(value, name);
   else element(value, name);
+};
+/** What a refusal is about: a location, or a parameter by id. */
+const about: Check<Exclude<Refusal['at'], null>> = (value, name) => {
+  if (typeof value === 'string') check.string(value, name);
+  else location(value, name);
 };
 function typed<T extends ArrayBufferView>(kind: string): Check<T> {
   return (value, name) => {
@@ -316,7 +317,7 @@ type ReplyRequest<T = Reply> = T extends { readonly kind: infer K extends string
 const replyFields: Check<ReplyRequest> = check.requests<ReplyRequest>({
   accepted: { version, change: check.nullable(change) },
   conflict: { version },
-  refused: { message: check.string, at: check.nullable(location) },
+  refused: { message: check.string, at: check.nullable(about) },
   expired: { message: check.string },
   busy: { message: check.string },
   opened: { client: token, next: check.index, view },

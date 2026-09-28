@@ -87,7 +87,7 @@ const [engineServer, engineClient] = loopback();
 serveModel(modelServer, new Buses());
 serveEngine(engineServer, new Replay());
 const remote = await connectModel(modelClient);
-const engine = connectEngine(engineClient);
+const engine = await connectEngine(engineClient);
 
 describe('port', () => {
   bench('record across a port: 100 blocks of 80k values', async () => {

@@ -60,13 +60,13 @@ self.addEventListener('message', ({ data }) => {
 import { connectEngine, connectModel, messagePort } from '@latkit/port';
 
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
-const engine = connectEngine(messagePort(worker));
+const engine = await connectEngine(messagePort(worker));
 const { port1, port2 } = new MessageChannel();
 worker.postMessage({ open: { port: port2, bytes } }, [port2]);
 const model = await connectModel(messagePort(port1), {
   progress: (loaded, total) => bar.set(loaded / total),
 });
-const recording = engine.record(model, study, { id: 'fault-4' });
+const recording = engine.record(model, input, { id: 'fault-4' });
 network.setChannel('vertexColor', await recording.field(VM));
 recording.on('change', () => status(recording.state)); // waiting → recording → complete | stopped | failed
 
@@ -78,7 +78,9 @@ engine.close();
 A connected model or engine is a `Remote<T>`: the model or engine, plus `close`. The served engine
 checks every input with its own `parse`, queues what it cannot take at once and says how many wait
 ahead, and stops when the far recording stops. A model or an engine still opening can be served as
-a promise, so no early request is lost.
+a promise, so no early request is lost. A connected engine resolves once the studies its peer
+offers are in; it offers them too, following each change, and checks a study's form where it is,
+so a refusal comes before anything crosses.
 
 ## Serve a recording
 

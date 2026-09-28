@@ -1,6 +1,6 @@
 {
   "name": "@latkit/gpu",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "What every Latkit renderer shares: WebGPU devices, presentation, the frame loop, the attach lifecycle, channels, and colormap textures.",
   "type": "module",
   "repository": {

@@ -52,11 +52,11 @@ self.addEventListener('message', ({ data }) => {
 import { connectEngine, connectModel, connectRecording, messagePort } from '@latkit/port';
 
 const port = messagePort(worker);
-const engine = connectEngine(port);
+const engine = await connectEngine(port);
 const { port1, port2 } = new MessageChannel();
 worker.postMessage({ open: { port: port2, bytes } }, [port2]);
 const model = await connectModel(messagePort(port1), { progress });
-const recording = engine.record(model, study); // fills here as the worker's engine writes it
+const recording = engine.record(model, input); // fills here as the worker's engine writes it
 const kept = await connectRecording(port, model, 'fault-4'); // or opens the worker's own
 ```
 
@@ -66,7 +66,9 @@ came. An engine records any model it is given: a model its own realm serves is r
 lives, and any other is lent by its source, which the engine reads only as it needs, for as long
 as the recording lasts. Each recording crosses as the engine writes it, call by call, its frames
 handed over without a copy; the served engine checks every input, queues what it cannot take at
-once, and stops when the far recording stops. A kept recording opens with `Recording.from` against
+once, and stops when the far recording stops. The studies an engine offers cross with it:
+`connectEngine` resolves once they are in, and the connected engine follows each change and checks
+a study's form where it is. A kept recording opens with `Recording.from` against
 the model it records, its clock at hand and its samples read in windows of at most 4 MiB. A
 connected side is a `Remote<T>`: the model, engine, or recording, plus `close`.
 

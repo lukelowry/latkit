@@ -408,18 +408,6 @@ export declare namespace Document {
   }
 }
 
-/** An edit a document refuses: why, for the user, and the port or element it is about. */
-export class Refusal extends Error {
-  override readonly name = 'Refusal';
-
-  constructor(
-    message: string,
-    readonly at: Document.Port | Model.Element | null = null,
-  ) {
-    super(message);
-  }
-}
-
 /** A local index over one schematic; no lookup makes a remote call. */
 class Parts {
   /** The schematic `elementAt` and `partOf` last indexed, and the parts of its elements. */
