@@ -132,7 +132,8 @@ function lift(value: unknown, path: (string | number)[], out: Lifted[]): unknown
   }
   if (tag !== '[object Object]') throw new Error(`a frame cannot carry ${tag.slice(8, -1)}`);
   const record = value as Record<string, unknown>;
-  const copy: Record<string, unknown> = {};
+  // Keep every own key, including `__proto__`, as data while lifting nested arrays.
+  const copy = Object.create(null) as Record<string, unknown>;
   for (const key of Object.keys(record)) {
     path.push(key);
     copy[key] = lift(record[key], path, out);

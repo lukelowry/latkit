@@ -1,6 +1,6 @@
 {
   "name": "@latkit/port",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Where Latkit crosses a boundary: ports, frames, typed protocols, and a model and its recordings served across them.",
   "type": "module",
   "repository": {

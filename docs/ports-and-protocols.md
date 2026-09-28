@@ -197,3 +197,7 @@ serve(server, SEARCH, handler);
 const search = connect(client, SEARCH);
 client.fail('worker crashed'); // every connection on `client` closes with this reason
 ```
+
+## Edit a document across a port
+
+`serveDocument` and `connectDocument` expose asynchronous editing with a cached view, revision conflicts, reconnect replay, and immutable model snapshots. See [Document sessions](document-sessions.md) for the API, resource limits, and wire contract.

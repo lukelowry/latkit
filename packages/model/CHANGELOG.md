@@ -1,5 +1,17 @@
 # @latkit/model
 
+## 0.8.0
+
+### Minor Changes
+
+- Added asynchronous document sessions with cached views, shared schematic lookups, typed revision conflicts, and closable immutable model snapshots.
+- Added required `Document.inspect(element)` for native editable values, identity, and complete wiring, independently of model snapshots and diagram visibility. Document subclasses must implement this method.
+- Added `session.apply(base, ...operations)` for drafts checked against their inspected revision. Ordinary apply calls retain their existing behavior.
+
+### Patch Changes
+
+- Fixed failed document model opens so the next call retries without another edit. Concurrent readers share each attempt, and a superseded failure cannot invalidate a newer capture.
+
 ## 0.7.0
 
 ### Minor Changes

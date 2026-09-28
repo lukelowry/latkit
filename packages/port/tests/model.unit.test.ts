@@ -146,4 +146,22 @@ describe('model service', () => {
     );
     await expect(connectModel(client)).rejects.toThrow('no core');
   });
+  it('serves scoped snapshots alongside the default model and closes them independently', async () => {
+    const [server, client] = loopback();
+    serveModel(server, fixture('Default'));
+    serveModel(server, fixture('First'), { id: 'first' });
+    serveModel(server, fixture('Second'), { id: 'second' });
+    const [base, first, second] = await Promise.all([
+      connectModel(client),
+      connectModel(client, { id: 'first' }),
+      connectModel(client, { id: 'second' }),
+    ]);
+    expect([base.name, first.name, second.name]).toEqual(['Default', 'First', 'Second']);
+    first.close();
+    await expect(first.bytes()).rejects.toThrow('closed');
+    expect(new TextDecoder().decode(await second.bytes())).toBe('Second');
+    expect(new TextDecoder().decode(await base.bytes())).toBe('Default');
+    base.close();
+    second.close();
+  });
 });

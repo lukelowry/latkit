@@ -56,6 +56,7 @@ topology-and-channels
 colormaps
 lifecycle
 ports-and-protocols
+document-sessions
 ```
 
 ```{toctree}

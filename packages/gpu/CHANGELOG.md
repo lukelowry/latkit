@@ -1,5 +1,11 @@
 # @latkit/gpu
 
+## 0.5.1
+
+### Patch Changes
+
+- Updated dependency: `@latkit/model@0.8.0`.
+
 ## 0.5.0
 
 ### Minor Changes

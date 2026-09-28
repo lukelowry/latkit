@@ -1,5 +1,18 @@
 # @latkit/port
 
+## 0.4.0
+
+### Minor Changes
+
+- Added `serveDocument` and `connectDocument` over existing ports, with serialized edits and reads, bounded reconnect replay, incremental view events, and closable immutable model snapshots.
+- Added revision-bound document inspection with validated, bounded public payloads and cancellable queued reads. Explicit edit bases use the existing command and replay path.
+- Added optional scoped model service IDs while preserving the default model channel.
+
+### Patch Changes
+
+- Fixed framed transport to preserve dictionary keys such as `__proto__`, including inspection column names.
+- Updated dependency: `@latkit/model@0.8.0`.
+
 ## 0.3.0
 
 ### Minor Changes

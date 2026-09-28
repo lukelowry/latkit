@@ -14,9 +14,10 @@ const NONE = 0xffffffff;
 /**
  * A case open for editing: operations in the model's identities, one history that takes any of
  * them back, and the case as a block diagram. Subclass it for a format: `change` the case for some
- * operations, `revert` a change, describe the `schematic` and `palette`, and `open` the model of
- * the case as it stands; the base keeps the history of the last 200 steps, maps the schematic's
- * parts to elements, and opens the model a change calls for once a caller asks for it.
+ * operations, `revert` a change, `inspect` native values and wiring, describe the `schematic` and
+ * `palette`, and `open` the model of the case as it stands; the base keeps the history of the
+ * last 200 steps, maps the schematic's parts to elements, and opens the model a change calls
+ * for once a caller asks for it.
  */
 export abstract class Document {
   readonly #undo: Document.Change[] = [];
@@ -27,11 +28,12 @@ export abstract class Document {
     null;
   /** Values or structure changed since the model was last asked for. */
   #stale = false;
-  /** The schematic `elementAt` and `partOf` last indexed, and the parts of its elements. */
-  #indexed: {
-    readonly schematic: Document.Schematic;
-    readonly parts: Map<string, Document.Part>;
-  } | null = null;
+  readonly #parts = Document.parts(() => this.schematic);
+
+  /** Local lookups over a schematic or a getter for a changing schematic. */
+  static parts(source: Document.Schematic | (() => Document.Schematic)): Document.Parts {
+    return new Parts(typeof source === 'function' ? source : () => source);
+  }
 
   /** The document of `model`'s case, as it stands. */
   protected constructor(model: Model) {
@@ -87,68 +89,25 @@ export abstract class Document {
     return { undo: [...this.#undo].reverse(), redo: [...this.#redo].reverse() };
   }
 
-  /** The element a part of the schematic is: a block's, a net's, or a port's block; else null. */
+  /** The element drawn by a schematic part, or null. */
   elementAt(part: Document.Part): Model.Element | null {
-    const { blocks, nets, netlist } = this.schematic;
-    if (part.kind === 'block') return blocks[part.index] ?? null;
-    if (part.kind === 'net') return nets[part.index] ?? null;
-    if (part.kind === 'port') {
-      if (!Number.isSafeInteger(part.index) || part.index < 0) return null;
-      if (part.index >= netlist.portStart[netlist.blockCount]!) return null;
-      return blocks[ownerOf(netlist.portStart, part.index)] ?? null;
-    }
-    return null;
+    return this.#parts.elementAt(part);
   }
-
-  /** The block or net that shows an element; null when the diagram does not draw it. */
+  /** The schematic part drawing an element, or null. */
   partOf(element: Model.Element): Document.Part | null {
-    const schematic = this.schematic;
-    let indexed = this.#indexed;
-    if (indexed?.schematic !== schematic) {
-      const parts = new Map<string, Document.Part>();
-      schematic.blocks.forEach((block, index) => parts.set(keyOf(block), { kind: 'block', index }));
-      // A bus a tagged net stands for shows as that net.
-      schematic.nets.forEach((net, index) => {
-        if (net) parts.set(keyOf(net), { kind: 'net', index });
-      });
-      indexed = { schematic, parts };
-      this.#indexed = indexed;
-    }
-    return indexed.parts.get(keyOf(element)) ?? null;
+    return this.#parts.partOf(element);
   }
-
-  /** Port `index` of the schematic, as the case names it. */
+  /** A schematic port in the case's identities. */
   portAt(index: number): Document.Port {
-    const { blocks, netlist } = this.schematic;
-    return {
-      element: blocks[ownerOf(netlist.portStart, index)]!,
-      port: netlist.portLabel?.[index] ?? '',
-    };
+    return this.#parts.portAt(index);
   }
-
-  /**
-   * Per net of the schematic, the element of `ref.classId` whose recorded `ref` drives it, and
-   * `0xffffffff` for every other net: what `field.gather` takes to show `ref` over the nets.
-   */
-  drivers(ref: Model.FieldRef): Uint32Array {
-    const { sources } = this.schematic;
-    const drivers = new Uint32Array(sources.length).fill(NONE);
-    sources.forEach((source, net) => {
-      const field = source?.field;
-      if (field?.classId === ref.classId && field.kind === ref.kind && field.id === ref.id)
-        drivers[net] = source!.index;
-    });
-    return drivers;
-  }
-
-  /** The schematic's index of a port the case names; null when the diagram does not draw it. */
+  /** The schematic index of a port, or null. */
   portOf(port: Document.Port): number | null {
-    const block = this.partOf(port.element);
-    if (block?.kind !== 'block') return null;
-    const { portStart, portLabel } = this.schematic.netlist;
-    for (let index = portStart[block.index]!; index < portStart[block.index + 1]!; index++)
-      if (portLabel?.[index] === port.port) return index;
-    return null;
+    return this.#parts.portOf(port);
+  }
+  /** The elements whose recorded field drives each net. */
+  drivers(ref: Model.FieldRef): Uint32Array {
+    return this.#parts.drivers(ref);
   }
 
   /** An element's identity across edits; null when it has none. */
@@ -157,12 +116,20 @@ export abstract class Document {
   /** The element an identity names now; null when the case no longer has it. */
   abstract find(key: string): Model.Element | null;
 
+  /**
+   * Current editable values and wiring, including elements absent from the diagram. Return null
+   * only when the element does not exist. Read native indexes without opening a model; do not
+   * mutate the document. Values use the column names accepted by `set`.
+   */
+  abstract inspect(element: Model.Element): Document.Inspection | null;
+
   /** The case as bytes, as of the last change, the caller's own. */
   abstract bytes(signal?: AbortSignal): Promise<Uint8Array>;
 
   /**
    * The case as a model, as of the last change: the same model until values or structure change,
    * and then the model of the case as it stands, opened once however many changes came between.
+   * A failed open rejects its readers; the next call retries without requiring another edit.
    */
   model(signal?: AbortSignal): Promise<Model> {
     if (this.#stale) {
@@ -174,8 +141,12 @@ export abstract class Document {
         this.#model = model;
         return model;
       })();
-      // A superseded or failed open is reported by the callers of `model` that wait on it.
-      promise.catch(() => undefined);
+      // Readers receive the failure; only this attempt may make the current capture retryable.
+      void promise.catch(() => {
+        if (this.#opening?.promise !== promise) return;
+        this.#opening = null;
+        this.#stale = true;
+      });
       this.#opening = { promise, controller };
     }
     const opening = this.#opening;
@@ -216,6 +187,70 @@ export abstract class Document {
 
 /** What a document speaks: netlists and their parts, operations, changes, and schematics. */
 export declare namespace Document {
+  /** A revision belongs to one live document owner; a recreated owner has a new epoch. */
+  interface Version {
+    readonly epoch: string;
+    readonly revision: number;
+  }
+  /** An element in this revision, and its identity across edits when the format provides one. */
+  interface Reference {
+    readonly element: Model.Element;
+    readonly key: string | null;
+  }
+  /**
+   * One element's editable values and complete wiring in a single document revision. This is
+   * native document data, independent of displayed model columns or diagram visibility. Treat
+   * the result as read-only; implementations may reuse their indexed data.
+   */
+  interface Inspection extends Reference {
+    /** Column names accepted by `set`, with their current values; empty when none are editable. */
+    readonly values: Readonly<Record<string, Extract<Operation, { kind: 'set' }>['value']>>;
+    /** Every declared port, including unwired ports whose net is null. */
+    readonly ports: readonly { readonly name: string; readonly net: Reference | null }[];
+    /** For a net, the element ports on it; empty when none are connected. */
+    readonly members: readonly { readonly owner: Reference; readonly port: string }[];
+  }
+  /** An inspection and its revision, retained together when drafting an edit. */
+  interface InspectionResult {
+    readonly version: Version;
+    readonly inspection: Inspection | null;
+  }
+  /** The document state a session keeps locally, replaced before a change is announced. */
+  interface View {
+    readonly version: Version;
+    readonly schematic: Schematic;
+    readonly palette: readonly BlockClass[];
+    readonly history: Document['history'];
+  }
+  /** An immutable model held by a session's caller; close it once its readers and runs finish. */
+  type Snapshot = Model & { close(): void };
+  /** Local schematic lookup methods, shared by documents and sessions. */
+  type Parts = Pick<Document, 'elementAt' | 'partOf' | 'portAt' | 'portOf' | 'drivers'>;
+  /**
+   * An asynchronous editing boundary. Edits use an explicit base or the view's version at
+   * invocation and resolve after their accepted change is visible locally. Concurrent stale edits
+   * reject with `DocumentConflict`; they are never silently rebased. A snapshot stays immutable
+   * across edits.
+   */
+  interface Session extends Parts {
+    readonly view: View;
+    /** Apply against the cached view's revision at invocation. */
+    apply(...operations: Operation[]): Promise<Change | null>;
+    /** Apply a retained draft against the revision it inspected; the owner rejects stale bases. */
+    apply(base: Version, ...operations: Operation[]): Promise<Change | null>;
+    /**
+     * Inspect an element in the cached revision, or resolve a key within that revision. Missing
+     * elements return null inside the result; stale revisions reject with `DocumentConflict`.
+     * No model is opened. Later edits do not change the returned data or its version.
+     */
+    inspect(target: Model.Element | string, signal?: AbortSignal): Promise<InspectionResult>;
+    undo(): Promise<Change | null>;
+    redo(): Promise<Change | null>;
+    model(signal?: AbortSignal): Promise<Snapshot>;
+    bytes(signal?: AbortSignal): Promise<Uint8Array>;
+    on(event: 'change', listener: (change: Change) => void): () => void;
+  }
+
   /**
    * A block diagram's structure, columnar: blocks, the ports each block owns, and the nets that
    * join ports. The shape `@latkit/diagram` loads. Placement is not structure; it is a renderer's
@@ -382,6 +417,98 @@ export class Refusal extends Error {
     readonly at: Document.Port | Model.Element | null = null,
   ) {
     super(message);
+  }
+}
+
+/** A local index over one schematic; no lookup makes a remote call. */
+class Parts {
+  /** The schematic `elementAt` and `partOf` last indexed, and the parts of its elements. */
+  #indexed: {
+    readonly blocks: Document.Schematic['blocks'];
+    readonly nets: Document.Schematic['nets'];
+    readonly parts: Map<string, Document.Part>;
+  } | null = null;
+
+  constructor(readonly source: () => Document.Schematic) {}
+
+  get schematic(): Document.Schematic {
+    return this.source();
+  }
+
+  /** The element a part of the schematic is: a block's, a net's, or a port's block; else null. */
+  elementAt(part: Document.Part): Model.Element | null {
+    const { blocks, nets, netlist } = this.schematic;
+    if (part.kind === 'block') return blocks[part.index] ?? null;
+    if (part.kind === 'net') return nets[part.index] ?? null;
+    if (part.kind === 'port') {
+      if (!Number.isSafeInteger(part.index) || part.index < 0) return null;
+      if (part.index >= netlist.portStart[netlist.blockCount]!) return null;
+      return blocks[ownerOf(netlist.portStart, part.index)] ?? null;
+    }
+    return null;
+  }
+
+  /** The block or net that shows an element; null when the diagram does not draw it. */
+  partOf(element: Model.Element): Document.Part | null {
+    const schematic = this.schematic;
+    let indexed = this.#indexed;
+    if (indexed?.blocks !== schematic.blocks || indexed.nets !== schematic.nets) {
+      const parts = new Map<string, Document.Part>();
+      schematic.blocks.forEach((block, index) => parts.set(keyOf(block), { kind: 'block', index }));
+      // A bus a tagged net stands for shows as that net.
+      schematic.nets.forEach((net, index) => {
+        if (net) parts.set(keyOf(net), { kind: 'net', index });
+      });
+      indexed = { blocks: schematic.blocks, nets: schematic.nets, parts };
+      this.#indexed = indexed;
+    }
+    return indexed.parts.get(keyOf(element)) ?? null;
+  }
+
+  /** Port `index` of the schematic, as the case names it. */
+  portAt(index: number): Document.Port {
+    const { blocks, netlist } = this.schematic;
+    return {
+      element: blocks[ownerOf(netlist.portStart, index)]!,
+      port: netlist.portLabel?.[index] ?? '',
+    };
+  }
+
+  /**
+   * Per net of the schematic, the element of `ref.classId` whose recorded `ref` drives it, and
+   * `0xffffffff` for every other net: what `field.gather` takes to show `ref` over the nets.
+   */
+  drivers(ref: Model.FieldRef): Uint32Array {
+    const { sources } = this.schematic;
+    const drivers = new Uint32Array(sources.length).fill(NONE);
+    sources.forEach((source, net) => {
+      const field = source?.field;
+      if (field?.classId === ref.classId && field.kind === ref.kind && field.id === ref.id)
+        drivers[net] = source!.index;
+    });
+    return drivers;
+  }
+
+  /** The schematic's index of a port the case names; null when the diagram does not draw it. */
+  portOf(port: Document.Port): number | null {
+    const block = this.partOf(port.element);
+    if (block?.kind !== 'block') return null;
+    const { portStart, portLabel } = this.schematic.netlist;
+    for (let index = portStart[block.index]!; index < portStart[block.index + 1]!; index++)
+      if (portLabel?.[index] === port.port) return index;
+    return null;
+  }
+}
+
+/** An edit or read addressed a document version that is no longer current. */
+export class DocumentConflict extends Error {
+  override readonly name = 'DocumentConflict';
+
+  constructor(
+    readonly expected: Document.Version,
+    readonly actual: Document.Version,
+  ) {
+    super('The document changed; refresh the selection and try again.');
   }
 }
 

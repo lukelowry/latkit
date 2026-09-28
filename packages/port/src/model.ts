@@ -23,10 +23,11 @@ interface Opened {
   readonly home: string;
 }
 
-const MODEL = protocol<Request, Uint8Array | Opened>(
-  'model',
-  check.requests<Request>({ open: {}, class: { id: check.string }, bytes: {} }),
-);
+const modelProtocol = (id?: string) =>
+  protocol<Request, Uint8Array | Opened>(
+    id === undefined ? 'model' : `model:${id}`,
+    check.requests<Request>({ open: {}, class: { id: check.string }, bytes: {} }),
+  );
 
 const opened: Check<Opened> = check.object<Opened>({ core: check.bytes, home: check.string });
 
@@ -54,12 +55,13 @@ function token(): string {
  * A model still opening is served once it opens, so no early request is lost. A model opened from
  * packs serves them as they came, so a relay forwards them untouched.
  *
- * @param options - `onClose` fires once the service has ended.
+ * @param options - `id` selects a scoped service; omitted, the name stays `model`.
+ * `onClose` fires once the service has ended.
  */
 export function serveModel(
   port: Port,
   model: Model | Promise<Model>,
-  options: { onClose?(): void } = {},
+  options: { readonly id?: string; onClose?(): void } = {},
 ): () => void {
   let served: Promise<Model> | null = Promise.resolve(model);
   // A rejected open is reported by the first request that awaits it.
@@ -78,7 +80,7 @@ export function serveModel(
 
   const calls = serve(
     port,
-    MODEL,
+    modelProtocol(options.id),
     async (request, signal, progress) => {
       const source = (await current()).source();
       const owned = (data: Uint8Array) => transferred(data, [data.buffer as ArrayBuffer]);
@@ -103,13 +105,19 @@ export function serveModel(
  * Open the model a `serveModel` peer serves: its classes load across the port as they are asked
  * for. Closing it closes the connection.
  *
+ * @param options - `id` selects the matching scoped service; omit it for the default `model`.
+ *
  * @throws Error when the peer cannot open the model, or serves an inconsistent one.
  */
 export async function connectModel(
   port: Port,
-  options: { readonly signal?: AbortSignal; readonly progress?: Progress } = {},
+  options: {
+    readonly id?: string;
+    readonly signal?: AbortSignal;
+    readonly progress?: Progress;
+  } = {},
 ): Promise<Remote<Model>> {
-  const calls = connect(port, MODEL);
+  const calls = connect(port, modelProtocol(options.id));
   const ask = async (request: Request, signal?: AbortSignal): Promise<Uint8Array> => {
     const reply = await calls.call(request, { signal });
     check.bytes(reply, `model ${request.op} reply`);

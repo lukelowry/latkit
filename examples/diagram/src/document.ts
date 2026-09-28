@@ -206,6 +206,42 @@ export class DynamicsDocument extends Document {
     return this.#named.elements.get(key) ?? null;
   }
 
+  inspect(element: Model.Element): Document.Inspection | null {
+    const key = this.keyOf(element);
+    if (key === null) return null;
+    const built = build(this.#now.structure);
+    const { netlist, portNet, portDevice, blocks, nets } = built;
+    const reference = (element: Model.Element): Document.Reference => ({
+      element,
+      key: this.keyOf(element),
+    });
+    const block = built.members.get(element.classId)?.[element.index];
+    const net =
+      element.classId === 'signal'
+        ? element.index
+        : element.classId === 'bus'
+          ? built.signalIds.length + element.index
+          : null;
+    const ports: Document.Inspection['ports'][number][] = [];
+    const members: Document.Inspection['members'][number][] = [];
+    if (block !== undefined) {
+      for (let p = netlist.portStart[block]!; p < netlist.portStart[block + 1]!; p++) {
+        const connected = portNet[p]!;
+        ports.push({
+          name: netlist.portLabel![p]!,
+          net: connected < 0 ? null : reference(nets[connected]!),
+        });
+      }
+    }
+    if (net !== null) {
+      for (let i = netlist.netStart[net]!; i < netlist.netStart[net + 1]!; i++) {
+        const p = netlist.netPorts[i]!;
+        members.push({ owner: reference(blocks[portDevice[p]!]!), port: netlist.portLabel![p]! });
+      }
+    }
+    return { element, key, values: {}, ports, members };
+  }
+
   bytes(): Promise<Uint8Array> {
     return Promise.resolve(encode(this.#now));
   }
@@ -295,6 +331,8 @@ interface Built {
   readonly problems: readonly Document.Problem[];
   /** Per port: the device that owns it. */
   readonly portDevice: Uint32Array;
+  /** Per port: its net, or -1 while unwired; inspection follows wiring without scanning all nets. */
+  readonly portNet: Int32Array;
   /** Per class: its devices in case order, so element `i` of a class is device `members[i]`. */
   readonly members: ReadonlyMap<string, readonly number[]>;
   /** Signal and bus ids in id order, so element `i` of `signal` or `bus` has id `[i]`. */
@@ -479,6 +517,7 @@ function build(structure: Structure): Built {
     status,
     problems,
     portDevice,
+    portNet,
     members: new Map([...byClass].map(([cls, entry]) => [cls, entry.members])),
     signalIds,
     busIds,
