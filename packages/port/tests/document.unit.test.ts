@@ -5,11 +5,13 @@ import {
   connect,
   connectDocument,
   connectEngine,
+  connectModel,
   loopback,
   messagePort,
   protocol,
   serveDocument,
   serveEngine,
+  serveModel,
   type Port,
 } from '../src/index.js';
 import { DOCUMENT, type Reply, type Request, type Update } from '../src/document-protocol.js';
@@ -181,6 +183,202 @@ async function rawSetup(document = new Editable()) {
 }
 
 describe('document service', () => {
+  it('serves a model without opening an unused document factory', async () => {
+    const [server, client] = loopback();
+    const factory = vi.fn(() => new Editable());
+    const onClose = vi.fn();
+    const stop = serveDocument(server, factory, { onClose });
+    cleanups.push(stop, serveModel(server, new Fixture()));
+    const model = await connectModel(client);
+    cleanups.push(() => model.close());
+    expect((await model.load('bus')).labels).toEqual(['Bus 1', 'Bus 2']);
+    expect(factory).not.toHaveBeenCalled();
+    stop();
+    stop();
+    await settle(12);
+    expect(factory).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['sync', 'async'] as const)(
+    'opens a %s factory only after a valid open request',
+    async (kind) => {
+      const document = new Editable();
+      const factory = vi.fn(() => (kind === 'sync' ? document : Promise.resolve(document)));
+      const [server, client] = loopback();
+      cleanups.push(serveDocument(server, factory));
+      const calls = connect(client, DOCUMENT);
+      cleanups.push(() => calls.close());
+      const raw = calls as ReturnType<typeof connect<unknown, Reply>>;
+      await expect(raw.call({ op: 'open', client: 42 })).rejects.toThrow();
+      await expect(calls.call({ op: 'view' })).rejects.toThrow('Open the document');
+      expect(factory).not.toHaveBeenCalled();
+      expect(await calls.call({ op: 'open' })).toMatchObject({ kind: 'opened' });
+      expect(await calls.call({ op: 'view' })).toMatchObject({ kind: 'view' });
+      expect(factory).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['document', 'promise'] as const)(
+    'keeps eager initialization for a supplied %s',
+    async (kind) => {
+      const document = new Editable();
+      const on = vi.spyOn(document, 'on');
+      const [server, client] = loopback();
+      const source = kind === 'document' ? document : Promise.resolve(document);
+      cleanups.push(serveDocument(server, source));
+      await settle(12);
+      expect(on).toHaveBeenCalledTimes(1);
+      const session = await connectDocument(client);
+      cleanups.push(() => session.close());
+      await session.apply(set(5));
+      expect(document.state.value).toBe(5);
+      expect(on).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('shares initialization without letting one cancelled open cancel another', async () => {
+    const document = new Editable();
+    const on = vi.spyOn(document, 'on');
+    let resolve!: (document: Document) => void;
+    const pending = new Promise<Document>((done) => {
+      resolve = done;
+    });
+    const factory = vi.fn(() => pending);
+    const [server, client] = loopback();
+    cleanups.push(serveDocument(server, factory));
+    const calls = connect(client, DOCUMENT);
+    cleanups.push(() => calls.close());
+    const controller = new AbortController();
+    const first = calls.call({ op: 'open' }, { signal: controller.signal });
+    const second = calls.call({ op: 'open' });
+    await settle(12);
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(on).not.toHaveBeenCalled();
+    controller.abort();
+    await expect(first).rejects.toMatchObject({ name: 'AbortError' });
+    resolve(document);
+    expect(await second).toMatchObject({ kind: 'opened' });
+    expect(on).toHaveBeenCalledTimes(1);
+    expect(await calls.call({ op: 'view' })).toMatchObject({ kind: 'view' });
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['throw', 'reject'] as const)(
+    'shares a factory %s failure for the service lifetime',
+    async (kind) => {
+      const factory = vi.fn((): Document | Promise<Document> => {
+        const error = new Error('Cannot open the native file');
+        if (kind === 'throw') throw error;
+        return Promise.reject(error);
+      });
+      const [server, client] = loopback();
+      const stop = serveDocument(server, factory);
+      cleanups.push(stop);
+      const calls = connect(client, DOCUMENT);
+      cleanups.push(() => calls.close());
+      await Promise.all([
+        expect(calls.call({ op: 'open' })).rejects.toThrow('Cannot open the native file'),
+        expect(calls.call({ op: 'open' })).rejects.toThrow('Cannot open the native file'),
+      ]);
+      await expect(calls.call({ op: 'open' })).rejects.toThrow('Cannot open the native file');
+      expect(factory).toHaveBeenCalledTimes(1);
+      stop();
+
+      // A new registration makes its own attempt; failure is not cached by factory identity.
+      factory.mockReturnValue(new Editable());
+      const [nextServer, nextClient] = loopback();
+      cleanups.push(serveDocument(nextServer, factory));
+      const session = await connectDocument(nextClient);
+      cleanups.push(() => session.close());
+      expect(factory).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([false, true])(
+    'observes an eager promise rejection before any open (closed: %s)',
+    async (closed) => {
+      const [server, client] = loopback();
+      const stop = serveDocument(server, Promise.reject(new Error('Native file failed')));
+      cleanups.push(stop);
+      if (closed) stop();
+      // Cross an event-loop turn so an unobserved rejection would fail the test.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (!closed) await expect(connectDocument(client)).rejects.toThrow('Native file failed');
+    },
+  );
+
+  it('skips a scheduled factory when the service closes before invocation', async () => {
+    const factory = vi.fn(() => new Editable());
+    const [server, client] = loopback();
+    const stop = serveDocument(server, factory);
+    cleanups.push(stop);
+    const calls = connect(client, DOCUMENT);
+    cleanups.push(() => calls.close());
+    const opening = calls.call({ op: 'open' });
+    // The request lands first; closure runs before the factory's queued microtask.
+    queueMicrotask(stop);
+    await expect(opening).rejects.toThrow('closed');
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it.each(['service', 'client', 'transport'] as const)(
+    'does not acquire a late document after %s closure',
+    async (closedBy) => {
+      const document = new Editable();
+      const on = vi.spyOn(document, 'on');
+      let resolve!: (document: Document) => void;
+      const pending = new Promise<Document>((done) => {
+        resolve = done;
+      });
+      const factory = vi.fn(() => pending);
+      const [server, client] = loopback();
+      const onClose = vi.fn();
+      const stop = serveDocument(server, factory, { onClose });
+      cleanups.push(stop);
+      const calls = connect(client, DOCUMENT);
+      cleanups.push(() => calls.close());
+      const opening = expect(calls.call({ op: 'open' })).rejects.toThrow(/closed|connection lost/);
+      await settle(12);
+      expect(factory).toHaveBeenCalledTimes(1);
+      if (closedBy === 'service') stop();
+      else if (closedBy === 'client') calls.close();
+      else {
+        server.fail('connection lost');
+        client.fail('connection lost');
+      }
+      await opening;
+      resolve(document);
+      await settle(20);
+      expect(on).not.toHaveBeenCalled();
+      expect(onClose).toHaveBeenCalledTimes(1);
+
+      // The host still owns the loaded document and can serve it elsewhere.
+      const next = await setup(document);
+      await next.session.apply(set(8));
+      expect(document.state.value).toBe(8);
+      expect(on).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('observes a factory rejection after closure', async () => {
+    let reject!: (error: Error) => void;
+    const pending = new Promise<Document>((_resolve, fail) => {
+      reject = fail;
+    });
+    const factory = vi.fn(() => pending);
+    const [server, client] = loopback();
+    const stop = serveDocument(server, factory);
+    cleanups.push(stop);
+    const opening = expect(connectDocument(client)).rejects.toThrow('closed');
+    await settle(12);
+    expect(factory).toHaveBeenCalledTimes(1);
+    stop();
+    await opening;
+    reject(new Error('Native file failed after closure'));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+
   it('opens a cached view and applies, undoes, and redoes without leaking private history', async () => {
     const { session, document } = await setup();
     expect(session.view.schematic.positions).toBeInstanceOf(Float32Array);
@@ -305,10 +503,16 @@ describe('document service', () => {
     ).toMatchObject({ kind: 'conflict' });
   });
 
-  it.each(['request', 'reply'] as const)(
-    'recovers a lost %s on a new transport without duplicating the edit',
-    async (lost) => {
+  it.each([
+    { lost: 'request', lazy: false },
+    { lost: 'reply', lazy: false },
+    { lost: 'request', lazy: true },
+    { lost: 'reply', lazy: true },
+  ] as const)(
+    'recovers a lost $lost on a new transport without duplicating the edit (factory: $lazy)',
+    async ({ lost, lazy }) => {
       const document = new Editable();
+      const source = lazy ? () => document : document;
       const [server, client] = loopback();
       let disrupt = false;
       const fail = () => {
@@ -348,13 +552,13 @@ describe('document service', () => {
           client.post(message, transfer);
         },
       };
-      cleanups.push(serveDocument(serving, document));
+      cleanups.push(serveDocument(serving, source));
       const session = await connectDocument(calling);
       cleanups.push(() => session.close());
       disrupt = true;
       await expect(session.apply(set(6))).rejects.toThrow('connection lost');
       const [nextServer, nextClient] = loopback();
-      cleanups.push(serveDocument(nextServer, document));
+      cleanups.push(serveDocument(nextServer, source));
       expect(await connectDocument(nextClient, { resume: session })).toBe(session);
       expect(document.applied).toBe(1);
       expect([...(await session.bytes())]).toEqual([6]);
