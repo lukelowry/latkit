@@ -1,5 +1,13 @@
 # @latkit/network
 
+## 0.11.3
+
+### Patch Changes
+
+- Updated dependencies [ff717f0]
+  - @latkit/model@0.10.0
+  - @latkit/gpu@0.5.3
+
 ## 0.11.2
 
 ### Patch Changes
