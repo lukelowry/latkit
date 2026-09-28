@@ -77,7 +77,8 @@ connected side is a `Remote<T>`: the model, engine, or recording, plus `close`.
 ```ts
 import { connectDocument, serveDocument } from '@latkit/port';
 
-// Server or worker: keep the Document instance for the workspace's lifetime.
+// Server or worker: format is a Document.Format; retain its document across connections.
+const document = await format.open(nativeBytes);
 serveDocument(serverPort, document);
 
 // Browser: mutations are asynchronous; the view and schematic lookups are local.
@@ -85,6 +86,7 @@ const session = await connectDocument(clientPort);
 session.on('change', () => render(session.view.schematic));
 await session.apply({ kind: 'set', element, column: 'kv', value: 138 });
 await session.undo();
+const bytes = await session.bytes(); // Current native case; the host owns saving.
 const snapshot = await session.model();
 // Keep it until every reader or recording using it finishes.
 snapshot.close();
@@ -98,8 +100,11 @@ session.close();
 request. Each service invokes its factory at most once and shares its result or failure. Closing
 an unused service never invokes it; closing during loading prevents attachment without cancelling
 host-owned work. Supplied documents and promises remain supported. For reconnects or multiple
-clients, have the factory return the same workspace-owned document; see
+clients, have the factory return the same host-owned document; see
 [Lazy document loading](../../docs/document-sessions.md#lazy-document-loading).
+
+Opening a session, editing, and exporting native bytes do not build a model. `session.model()`
+requests an immutable snapshot only when needed; its bytes remain frozen across later edits.
 
 Each document has one serialized owner, retained across connections. Commands carry an owner epoch,
 base revision, and client sequence; stale indexed edits throw `DocumentConflict`. Refusals retain

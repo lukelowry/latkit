@@ -1,7 +1,7 @@
 /**
  * The example's format: an in-memory case in GridKit's shape (devices whose ports name a signal or
- * a bus by id), read as a `Model` and edited as a `Document`. A case is immutable, so a step keeps
- * the case it replaced, and taking the step back puts that case back.
+ * a bus by id), opened as a `Document` that produces immutable `Model` snapshots on demand.
+ * Each step keeps the native state it replaced, and taking the step back restores that state.
  */
 
 import { Document, Model, Refusal } from '@latkit/model';
@@ -43,10 +43,14 @@ export interface Structure {
 }
 
 /** A case as a model: a class per device class, its signals, and its buses, each bus a vertex. */
-export class DynamicsCase extends Model {
+class DynamicsModel extends Model {
   readonly structure: Structure;
 
-  constructor(structure: Structure, name: string = structure.scene) {
+  constructor(
+    private readonly snapshot: Snapshot,
+    name: string,
+  ) {
+    const { structure } = snapshot;
     const { members } = build(structure);
     super({
       format: 'dynamics',
@@ -73,12 +77,8 @@ export class DynamicsCase extends Model {
     this.structure = structure;
   }
 
-  override document(): Promise<DynamicsDocument> {
-    return Promise.resolve(new DynamicsDocument(this));
-  }
-
   bytes(): Promise<Uint8Array> {
-    return Promise.resolve(encode({ structure: this.structure, placements: new Map() }));
+    return Promise.resolve(encode(this.snapshot));
   }
 
   protected values(classId: string): Promise<Model.Values> {
@@ -122,10 +122,10 @@ export class DynamicsDocument extends Document {
     readonly elements: ReadonlyMap<string, Model.Element>;
   } | null = null;
 
-  constructor(model: DynamicsCase) {
-    super(model);
-    this.#name = model.name;
-    this.#now = { structure: model.structure, placements: new Map() };
+  constructor(structure: Structure, name: string = structure.scene) {
+    super();
+    this.#name = name;
+    this.#now = { structure, placements: new Map() };
   }
 
   get schematic(): Document.Schematic {
@@ -274,7 +274,7 @@ export class DynamicsDocument extends Document {
   }
 
   protected open(): Promise<Model> {
-    return Promise.resolve(new DynamicsCase(this.#now.structure, this.#name));
+    return Promise.resolve(new DynamicsModel(this.#now, this.#name));
   }
 }
 

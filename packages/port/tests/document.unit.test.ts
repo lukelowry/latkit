@@ -41,7 +41,7 @@ class Editable extends Document {
   #schematic: Document.Schematic;
 
   constructor() {
-    super(new Fixture('0'));
+    super();
     this.#schematic = this.describe();
   }
   get schematic(): Document.Schematic {
@@ -399,6 +399,7 @@ describe('document service', () => {
     expect(await session.apply(set(7))).toBeNull();
     expect(session.view.version.revision).toBe(3);
     expect(revisions).toEqual([1, 2, 3]);
+    expect(document.models).toEqual([]);
   });
 
   it('preserves refusal locations and leaves refused transactions and history unchanged', async () => {
@@ -419,6 +420,26 @@ describe('document service', () => {
     expect(session.view.version.revision).toBe(1);
   });
 
+  it('shares the first native model across clients and preserves snapshots after editing', async () => {
+    const { session, document } = await setup();
+    const { session: other } = await setup(document);
+    expect(document.models).toEqual([]);
+    const [first, second] = await Promise.all([session.model(), other.model()]);
+    expect(document.models).toHaveLength(1);
+    const decode = async (model: Model) => new TextDecoder().decode(await model.bytes());
+    expect(await decode(first)).toBe('0');
+    expect(await decode(second)).toBe('0');
+    await session.apply(set(7));
+    const next = await session.model();
+    expect(document.models).toHaveLength(2);
+    expect(await decode(next)).toBe('7');
+    expect(await decode(first)).toBe('0');
+    expect(await decode(second)).toBe('0');
+    first.close();
+    second.close();
+    next.close();
+  });
+
   it('keeps layout updates compact, retains the netlist, and reuses its immutable model', async () => {
     const { session, server, document } = await setup();
     const sent = vi.spyOn(server, 'post');
@@ -435,7 +456,7 @@ describe('document service', () => {
     expect([...session.view.schematic.positions].slice(0, 2)).toEqual([10, 20]);
     expect(document.schematic.positions.byteLength).toBe(16);
     expect(await session.model()).toBe(first);
-    expect(document.models).toHaveLength(0);
+    expect(document.models).toHaveLength(1);
     const updates = sent.mock.calls
       .map(([message]) => message as { kind: string; body: Update })
       .filter((message) => message.kind === 'event')

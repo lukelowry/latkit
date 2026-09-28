@@ -1,6 +1,6 @@
 /**
- * A document: a case open for editing, from its model. Operations name the model's elements; one
- * history takes any of them back; the case shows as a block diagram, and a model follows it.
+ * A document: a native case open for editing. It owns the current bytes and edit history,
+ * describes the case as a block diagram, and produces immutable models on demand.
  */
 
 import type { Model } from './model.js';
@@ -16,28 +16,21 @@ const NONE = 0xffffffff;
  * them back, and the case as a block diagram. Subclass it for a format: `change` the case for some
  * operations, `revert` a change, `inspect` native values and wiring, describe the `schematic` and
  * `palette`, and `open` the model of the case as it stands; the base keeps the history of the
- * last 200 steps, maps the schematic's parts to elements, and opens the model a change calls
- * for once a caller asks for it.
+ * last 200 steps, maps the schematic's parts to elements, and opens a model only when asked.
+ * A format opens or creates documents through `Document.Format`; the host owns their lifetime
+ * and saves their bytes. A model already produced stays immutable across later edits.
  */
 export abstract class Document {
   readonly #undo: Document.Change[] = [];
   readonly #redo: Document.Change[] = [];
   readonly #listeners = new Set<(change: Document.Change) => void>();
-  #model: Model;
   #opening: { readonly promise: Promise<Model>; readonly controller: AbortController } | null =
     null;
-  /** Values or structure changed since the model was last asked for. */
-  #stale = false;
   readonly #parts = Document.parts(() => this.schematic);
 
   /** Local lookups over a schematic or a getter for a changing schematic. */
   static parts(source: Document.Schematic | (() => Document.Schematic)): Document.Parts {
     return new Parts(typeof source === 'function' ? source : () => source);
-  }
-
-  /** The document of `model`'s case, as it stands. */
-  protected constructor(model: Model) {
-    this.#model = model;
   }
 
   /** The case as a block diagram, as of the last change. */
@@ -123,38 +116,33 @@ export abstract class Document {
    */
   abstract inspect(element: Model.Element): Document.Inspection | null;
 
-  /** The case as bytes, as of the last change, the caller's own. */
+  /** Current native bytes, including placement, for the host to save; the caller's own. */
   abstract bytes(signal?: AbortSignal): Promise<Uint8Array>;
 
   /**
-   * The case as a model, as of the last change: the same model until values or structure change,
-   * and then the model of the case as it stands, opened once however many changes came between.
-   * A failed open rejects its readers; the next call retries without requiring another edit.
+   * An immutable model of the current case, first opened when asked for. Readers share one open;
+   * layout changes keep it, and values or structure changes invalidate it. A failed open rejects
+   * its readers; the next call retries without requiring an edit. Cancelling one reader does not
+   * cancel the shared open.
    */
-  model(signal?: AbortSignal): Promise<Model> {
-    if (this.#stale) {
-      this.#stale = false;
+  async model(signal?: AbortSignal): Promise<Model> {
+    signal?.throwIfAborted();
+    if (this.#opening === null) {
       const controller = new AbortController();
       const promise = (async (): Promise<Model> => {
         const model = await this.open(controller.signal);
         controller.signal.throwIfAborted();
-        this.#model = model;
         return model;
       })();
-      // Readers receive the failure; only this attempt may make the current capture retryable.
+      // Only this attempt may clear the cached open; an older failure cannot invalidate a new one.
       void promise.catch(() => {
-        if (this.#opening?.promise !== promise) return;
-        this.#opening = null;
-        this.#stale = true;
+        if (this.#opening?.promise === promise) this.#opening = null;
       });
       this.#opening = { promise, controller };
     }
-    const opening = this.#opening;
-    if (!opening) return Promise.resolve(this.#model);
-    return opening.promise.then((model) => {
-      signal?.throwIfAborted();
-      return model;
-    });
+    const model = await this.#opening.promise;
+    signal?.throwIfAborted();
+    return model;
   }
 
   /** A step was made, taken back, or made again; the schematic already shows it. */
@@ -173,20 +161,43 @@ export abstract class Document {
   /** Take `change` back, returning the change that makes it again. */
   protected abstract revert(change: Document.Change): Document.Change;
 
-  /** The model of the case as it stands now. */
+  /**
+   * Capture an immutable model of the current case. Its values and native bytes must remain
+   * independent of later edits, even when they are loaded lazily.
+   */
   protected abstract open(signal: AbortSignal): Promise<Model>;
 
   #changed(change: Document.Change): void {
     if (change.scope !== 'layout') {
       this.#opening?.controller.abort();
-      this.#stale = true;
+      this.#opening = null;
     }
     for (const listener of [...this.#listeners]) listener(change);
   }
 }
 
-/** What a document speaks: netlists and their parts, operations, changes, and schematics. */
+/** What a document speaks: its format, netlists and their parts, operations, changes, and schematics. */
 export declare namespace Document {
+  /**
+   * A native format a host registers. Opening and creating both return an independent document;
+   * neither needs to build a model. The host owns files, permissions, document lifetime, and
+   * saving. Implementations honor an aborted signal by rejecting.
+   */
+  interface Format {
+    /** The format's identity, matching the models its documents produce. */
+    readonly id: string;
+    /** The name a host shows when choosing a format. */
+    readonly label: string;
+    /** Filename suffixes including the dot, preferred first; for example, `.case.json`. */
+    readonly extensions: readonly string[];
+    /** Open native bytes without modifying them; the returned document owns its editable state. */
+    open(bytes: Uint8Array, signal?: AbortSignal): Promise<Document>;
+    /**
+     * A new native document. `name` is the case's display name; its filename and destination are
+     * the host's choice. Absent when this format cannot create cases. Does not write a file.
+     */
+    create?(name: string, signal?: AbortSignal): Promise<Document>;
+  }
   /** A revision belongs to one live document owner; a recreated owner has a new epoch. */
   interface Version {
     readonly epoch: string;
@@ -246,7 +257,9 @@ export declare namespace Document {
     inspect(target: Model.Element | string, signal?: AbortSignal): Promise<InspectionResult>;
     undo(): Promise<Change | null>;
     redo(): Promise<Change | null>;
+    /** Capture an immutable model for views or execution; close it when its readers finish. */
     model(signal?: AbortSignal): Promise<Snapshot>;
+    /** Export current native bytes, including placement, for the host to save. */
     bytes(signal?: AbortSignal): Promise<Uint8Array>;
     on(event: 'change', listener: (change: Change) => void): () => void;
   }

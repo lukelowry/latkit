@@ -39,10 +39,6 @@ class Counter extends Document {
   readonly opened: number[] = [];
   #schematic = schematic();
 
-  constructor(model: Model) {
-    super(model);
-  }
-
   get schematic(): Document.Schematic {
     return this.#schematic;
   }
@@ -115,7 +111,7 @@ const set: Document.Operation = {
 
 describe('document', () => {
   it('keeps one history of steps it makes, takes back, and makes again', () => {
-    const document = new Counter(sampleModel());
+    const document = new Counter();
     const heard = vi.fn<(label: string) => void>();
     document.on('change', (change) => heard(change.label));
     expect(document.apply(set)).toMatchObject({ label: 'Set Vm', scope: 'values' });
@@ -145,7 +141,7 @@ describe('document', () => {
   });
 
   it('keeps the last 200 steps, forgetting the oldest', () => {
-    const document = new Counter(sampleModel());
+    const document = new Counter();
     for (let step = 0; step < 201; step++) document.apply(set);
     expect(document.history.undo).toHaveLength(200);
     while (document.undo());
@@ -154,7 +150,7 @@ describe('document', () => {
   });
 
   it('refuses an edit without changing anything, saying what it is about', () => {
-    const document = new Counter(sampleModel());
+    const document = new Counter();
     const heard = vi.fn();
     document.on('change', heard);
     const removing = () =>
@@ -173,10 +169,42 @@ describe('document', () => {
     expect(heard).not.toHaveBeenCalled();
   });
 
-  it('opens one model for the changes before it is asked for', async () => {
-    const model = sampleModel();
-    const document = new Counter(model);
-    expect(await document.model()).toBe(model);
+  it('creates, edits, saves, and reopens a document without building a model', async () => {
+    const format = {
+      id: sampleData().format,
+      label: 'Sample',
+      extensions: ['.sample'],
+      async open(bytes: Uint8Array) {
+        const document = new Counter();
+        document.revision = bytes[0];
+        return document;
+      },
+      async create() {
+        return new Counter();
+      },
+    } satisfies Document.Format;
+    const document = await format.create();
+    document.apply(set);
+    expect(document.inspect({ classId: 'bus', index: 0 })?.values).toEqual({ Vm: 1 });
+    const bytes = await document.bytes();
+    const reopened = await format.open(bytes);
+    expect(await reopened.bytes()).toEqual(bytes);
+    reopened.apply(set);
+    expect(await document.bytes()).toEqual(Uint8Array.of(1));
+    expect(await reopened.bytes()).toEqual(Uint8Array.of(2));
+    expect(bytes).toEqual(Uint8Array.of(1));
+    expect(document.opened).toEqual([]);
+    expect(reopened.opened).toEqual([]);
+    expect(reopened.history.undo).toHaveLength(1);
+  });
+
+  it('opens its first model lazily, shares it, and replaces it only after values change', async () => {
+    const document = new Counter();
+    expect(document.opened).toEqual([]);
+    const [model, shared] = await Promise.all([document.model(), document.model()]);
+    expect(model.id).toBe('sample-0');
+    expect(shared).toBe(model);
+    expect(document.opened).toEqual([0]);
     document.apply({
       kind: 'place',
       elements: [{ classId: 'gen', index: 0 }],
@@ -185,21 +213,42 @@ describe('document', () => {
     expect(await document.model()).toBe(model);
     document.apply(set);
     document.apply({ ...set, column: 'Va' });
-    expect(document.opened).toEqual([]);
+    expect(document.opened).toEqual([0]);
     const edited = await document.model();
     expect(edited).not.toBe(model);
     expect(edited.id).toBe('sample-2');
+    expect(model.id).toBe('sample-0');
     expect(await document.model()).toBe(edited);
-    expect(document.opened).toEqual([2]);
+    expect(document.opened).toEqual([0, 2]);
     document.undo();
     expect((await document.model()).id).toBe('sample-1');
-    expect(document.opened).toEqual([2, 1]);
-    await expect(document.model(AbortSignal.abort())).rejects.toMatchObject({ name: 'AbortError' });
+    expect(document.opened).toEqual([0, 2, 1]);
   });
 
-  it.each(['throw', 'reject'] as const)(
-    'retries a failed open (%s) and shares each attempt across readers',
-    async (failure) => {
+  it('skips a pre-aborted reader and does not let a cancelled reader cancel the shared open', async () => {
+    const document = new Counter();
+    const reason = new Error('Reader cancelled');
+    await expect(document.model(AbortSignal.abort(reason))).rejects.toBe(reason);
+    expect(document.opened).toEqual([]);
+    const controller = new AbortController();
+    const cancelled = document.model(controller.signal);
+    const kept = document.model();
+    controller.abort(reason);
+    await expect(cancelled).rejects.toBe(reason);
+    const model = await kept;
+    expect(model.id).toBe('sample-0');
+    expect(await document.model()).toBe(model);
+    expect(document.opened).toEqual([0]);
+  });
+
+  it.each([
+    { failure: 'throw', edited: false },
+    { failure: 'reject', edited: false },
+    { failure: 'throw', edited: true },
+    { failure: 'reject', edited: true },
+  ])(
+    'retries a failed open ($failure, edited: $edited) and shares each attempt across readers',
+    async ({ failure, edited }) => {
       const error = new Error('Temporary model failure');
       class Flaky extends Counter {
         attempts = 0;
@@ -211,8 +260,8 @@ describe('document', () => {
           return super.open();
         }
       }
-      const document = new Flaky(sampleModel());
-      document.apply(set);
+      const document = new Flaky();
+      if (edited) document.apply(set);
       const changes = vi.fn();
       document.on('change', changes);
       const failed = await Promise.allSettled([document.model(), document.model()]);
@@ -222,11 +271,11 @@ describe('document', () => {
       ]);
       expect(document.attempts).toBe(1);
       const [first, second] = await Promise.all([document.model(), document.model()]);
-      expect(first.id).toBe('sample-1');
+      expect(first.id).toBe(`sample-${Number(edited)}`);
       expect(second).toBe(first);
       expect(await document.model()).toBe(first);
       expect(document.attempts).toBe(2);
-      expect(document.history.undo).toHaveLength(1);
+      expect(document.history.undo).toHaveLength(Number(edited));
       expect(changes).not.toHaveBeenCalled();
     },
   );
@@ -240,7 +289,7 @@ describe('document', () => {
           return new Promise<Model>((resolve, reject) => attempts.push({ resolve, reject }));
         }
       }
-      const document = new Controlled(sampleModel());
+      const document = new Controlled();
       document.apply(set);
       const old = document.model();
       const rejected = expect(old).rejects.toThrow('Old capture failed');
@@ -264,7 +313,7 @@ describe('document', () => {
   );
 
   it('abandons an open a change supersedes, and opens the case as it stands next', async () => {
-    const document = new Counter(sampleModel());
+    const document = new Counter();
     document.apply(set);
     const superseded = document.model();
     document.apply({ ...set, column: 'Va' });
@@ -274,7 +323,7 @@ describe('document', () => {
   });
 
   it('maps parts to elements and back, a port to its block, and a port by name', () => {
-    const document = new Counter(sampleModel());
+    const document = new Counter();
     expect(document.elementAt({ kind: 'block', index: 1 })).toEqual({ classId: 'gen', index: 1 });
     expect(document.elementAt({ kind: 'net', index: 0 })).toEqual({ classId: 'bus', index: 0 });
     expect(document.elementAt({ kind: 'net', index: 1 })).toBeNull();
@@ -291,7 +340,7 @@ describe('document', () => {
   });
 
   it('finds the element of a field that drives each net', () => {
-    const document = new Counter(sampleModel());
+    const document = new Counter();
     expect([...document.drivers({ classId: 'gen', kind: 'signal', id: 'P' })]).toEqual([NONE, 0]);
     expect([...document.drivers({ classId: 'gen', kind: 'signal', id: 'Q' })]).toEqual([
       NONE,
@@ -300,7 +349,7 @@ describe('document', () => {
   });
 
   it('gives its identities, bytes, and palette as its format says', async () => {
-    const document = new Counter(sampleModel());
+    const document = new Counter();
     expect(document.keyOf({ classId: 'gen', index: 1 })).toBe('gen/1');
     expect(document.find('gen/1')).toEqual({ classId: 'gen', index: 1 });
     expect([...(await document.bytes())]).toEqual([0]);

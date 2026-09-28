@@ -1,16 +1,40 @@
 # Document sessions
 
-A format's synchronous `Document` remains the owner of native editing, validation, history, and
-model creation. `Document.Session` is its asynchronous consumer contract. `@latkit/port` serves
-that contract over a worker, a WebSocket, or any other `Port`.
+A native `Document` owns current case state, editing, validation, history, and model creation.
+`Document.Session` is its asynchronous consumer contract. `@latkit/port` serves that contract over
+a worker, a WebSocket, or any other `Port`.
+
+## Native document lifecycle
+
+A host registers a vendor's `Document.Format`, whose `open(bytes)` and optional `create(name)`
+both return a document. Opening a file and creating an untitled case lead to the same API:
+
+```ts
+const document = await format.open(nativeBytes);
+// Or, when format.create is available: await format.create('Untitled').
+
+const model = await document.model(); // Lazily capture a snapshot for views or execution.
+await saveFile(path, await document.bytes()); // The host chooses when and where to save.
+```
+
+Editing, inspection, undo, redo, and byte export do not require a model. A `Document` subclass
+calls `super()` without an initial model, retains independent native state, and implements its
+protected `open` to capture an immutable `Model`. The base shares concurrent model requests,
+keeps the snapshot through layout edits, and invalidates it on values or structure changes.
+
+Save `document.bytes()` (or `session.bytes()` across a port). `model.bytes()` remains the native
+bytes of that immutable snapshot, including any placement present when it was captured; later
+layout edits do not refresh those bytes. Models and recordings remain usable after later edits.
+Files, permissions, dirty state, autosave, and destinations belong to the host. A read-only catalog
+can serve packed models directly without exposing an editable document.
 
 ## Open, edit, and close
 
 ```ts
 import { connectDocument, serveDocument } from '@latkit/port';
 
-// Worker or server: retain this Document instance for the workspace's lifetime.
-const document = await model.document!();
+// Worker or server: retain this Document while the case is open, across connections.
+const document = await format.open(nativeBytes);
 const stopServing = serveDocument(serverPort, document);
 
 // Browser: Remote<Document.Session>, including close().
@@ -54,19 +78,19 @@ port. The same document can be served to multiple clients on separate ports.
 
 Pass a factory to serve a packed model immediately and load its native document only when editing
 opens. The factory returns a `Document` or `Promise<Document>`; the host retains that document for
-the workspace's lifetime, including across reconnects and multiple connections.
+as long as the case is open, including across reconnects and multiple connections.
 
 ```ts
 import type { Document } from '@latkit/model';
 import { serveDocument, serveModel, type Port } from '@latkit/port';
 
-// Workspace state, retained independently of any connection.
+// Open-case state, retained independently of any connection.
 let document: Promise<Document> | undefined;
 function getDocument(): Promise<Document> {
-  return (document ??= Promise.resolve().then(openNativeDocument));
+  return (document ??= readNativeBytes().then((bytes) => format.open(bytes)));
 }
 
-function serveWorkspace(port: Port): () => void {
+function serveCase(port: Port): () => void {
   const stopModel = serveModel(port, packedModel);
   const stopDocument = serveDocument(port, getDocument);
   return () => {
@@ -81,7 +105,7 @@ request. Other services on the port, malformed requests, and document reads or e
 never invoke it. Concurrent opens share one initialization attempt. Synchronous throws and promise
 rejections use the existing request error path; the failure remains cached for that registration.
 Retry initialization by registering a new service and, if the host caches a failed promise as in
-this example, resetting that failed host entry. Do not replace a successfully opened workspace's
+this example, resetting that failed host entry. Do not replace a successfully opened
 document during reconnect: its identity retains the epoch, history, and retry receipts.
 
 Closing before factory invocation skips loading. Closing during loading prevents late owner
@@ -90,8 +114,8 @@ Cancelling one request does not cancel shared initialization. The host controls 
 and resource lifetime. Supplied documents and promises keep their existing eager initialization;
 passing a promise cannot defer the work that already created it.
 
-This is a server API addition. Clients still use `connectDocument()` and the existing `document`
-service, `open` request, replies, and frame format.
+Both eager and lazy loading use `connectDocument()` and the same `document` service, requests,
+replies, and frame format.
 
 ## Inspect and edit a retained draft
 
@@ -161,8 +185,8 @@ Synchronous external changes are observed, but an external writer bypasses the r
 ## Snapshots and performance
 
 Model capture and native byte export run in the document's queue. Later queued edits cannot
-change an in-progress capture. The resulting `Model` must satisfy the existing immutable model
-contract, including its lazy class values and native bytes. If opening a model fails, the call
+change an in-progress capture. The resulting `Model` must satisfy the immutable model contract, including its lazy class values
+and native bytes. Its first capture is lazy too; connecting a session does not build a model. If opening a model fails, the call
 rejects and the next capture retries without an intervening edit or reconnect. A superseded
 capture's failure cannot invalidate a newer capture.
 

@@ -2,7 +2,7 @@ import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colorm
 import { createDiagram, type Events, type Options } from '@latkit/diagram';
 import { Refusal, type Document, type Model } from '@latkit/model';
 import { CLASSES, isClassName, type PortSpec } from './classes.js';
-import { DynamicsCase, type DynamicsDocument } from './document.js';
+import { DynamicsDocument } from './document.js';
 import { SCENES, type SceneOption } from './scenes.js';
 import { Simulation } from './simulate.js';
 import './style.css';
@@ -108,7 +108,7 @@ function nextPaint(): Promise<void> {
 
 /** A scene's case, open for editing. */
 function openScene(option: SceneOption): Promise<DynamicsDocument> {
-  return new DynamicsCase(option.build(), option.label).document();
+  return Promise.resolve(new DynamicsDocument(option.build(), option.label));
 }
 
 async function main(): Promise<void> {

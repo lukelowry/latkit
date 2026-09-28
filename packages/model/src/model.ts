@@ -1,11 +1,10 @@
 /**
- * The model: a network and its element classes, as a format reads them from a case. A format
- * subclasses it; a host asks the instance every question about the case, and an engine records
+ * The model: an immutable snapshot of a case's network and element classes. A format subclasses
+ * it; a document produces it on demand, a host asks it about the case, and an engine records
  * it. `Model.Topology` and `Model.Item` are field-for-field the shapes `@latkit/network` loads and
  * picks, so a model never adapts for a renderer.
  */
 
-import type { Document } from './document.js';
 import type { Domain } from './domain.js';
 import { checkRef, fieldOf } from './field.js';
 import { createGrid } from './grid.js';
@@ -18,8 +17,8 @@ const NONE = 0xffffffff;
 /**
  * A network and its element classes, as a format reads them from a case. Subclass it for a
  * format: describe the case to the constructor, give each class's `values` when asked and the
- * case's `bytes`, and, for a format that edits, its `document`. A host asks the instance where an
- * element sits, what a column holds, and for a class as a table; any engine records it.
+ * snapshot's native `bytes`. A document produces a model on demand; a host asks the instance
+ * where an element sits, what a column holds, and for a class as a table; any engine records it.
  *
  * @remarks
  * Immutable. `owners` names the class whose element `i` is vertex `i` and the class whose element
@@ -94,11 +93,8 @@ export abstract class Model {
    */
   protected abstract values(classId: string, signal: AbortSignal): Promise<Model.Values>;
 
-  /** The case as bytes, the caller's own. */
+  /** The native bytes of this immutable snapshot, the caller's own. */
   abstract bytes(signal?: AbortSignal): Promise<Uint8Array>;
-
-  /** The case open for editing; absent for a format that does not edit. */
-  document?(signal?: AbortSignal): Promise<Document>;
 
   /** The class `id` names, or undefined for a class the model lacks. */
   class(id: string): Model.Class | undefined {
