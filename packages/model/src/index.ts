@@ -10,7 +10,7 @@
 
 export { Model, validateTopology } from './model.js';
 export { Engine } from './engine.js';
-export { Document, Refusal } from './document.js';
+export { Document, DocumentConflict, Refusal } from './document.js';
 export { validateNetlist } from './netlist.js';
 export { Recording } from './recording.js';
 export { Series, validateSeries } from './series.js';

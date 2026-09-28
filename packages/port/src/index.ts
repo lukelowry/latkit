@@ -24,3 +24,5 @@ export { describeError } from './error.js';
 export { connectModel, serveModel } from './model.js';
 export { connectEngine, serveEngine } from './engine.js';
 export { connectRecording, serveRecording } from './recording.js';
+
+export { connectDocument, serveDocument } from './document.js';

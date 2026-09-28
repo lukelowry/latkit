@@ -70,6 +70,38 @@ once, and stops when the far recording stops. A kept recording opens with `Recor
 the model it records, its clock at hand and its samples read in windows of at most 4 MiB. A
 connected side is a `Remote<T>`: the model, engine, or recording, plus `close`.
 
+## Documents across a port
+
+```ts
+import { connectDocument, serveDocument } from '@latkit/port';
+
+// Server or worker: keep the Document instance for the workspace's lifetime.
+serveDocument(serverPort, document);
+
+// Browser: mutations are asynchronous; the view and schematic lookups are local.
+const session = await connectDocument(clientPort);
+session.on('change', () => render(session.view.schematic));
+await session.apply({ kind: 'set', element, column: 'kv', value: 138 });
+await session.undo();
+const snapshot = await session.model();
+// Keep it until every reader or recording using it finishes.
+snapshot.close();
+
+// On a new transport, reconcile a possibly lost edit acknowledgment.
+await connectDocument(newPort, { resume: session });
+session.close();
+```
+
+Each document has one serialized owner, retained across connections. Commands carry an owner epoch,
+base revision, and client sequence; stale indexed edits throw `DocumentConflict`. Refusals retain
+`Refusal.at`. Updates replace changed schematic columns; layout changes retain the netlist and
+model. A gap refreshes the cached view. Acknowledgments mean accepted in memory.
+
+Retry state, queues, snapshots, and slow-peer event buffers are bounded. Model snapshots reuse
+scoped model services (`serveModel` / `connectModel` accept an optional `id`) and the existing
+engine reference path. See [Document sessions](../../docs/document-sessions.md) for lifetime,
+reconnect, limits, and the `document` wire contract.
+
 ## A protocol
 
 Both ends import one value: the name on the port, the request, reply, and event types, and the

@@ -15,6 +15,7 @@ describe('model package entrypoint', () => {
   it('publishes the classes a format, an engine, and an editor build on, and the checks a host runs before a device exists', () => {
     expect(Object.keys(entry).sort()).toEqual([
       'Document',
+      'DocumentConflict',
       'Engine',
       'Model',
       'Recording',

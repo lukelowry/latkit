@@ -27,11 +27,12 @@ export abstract class Document {
     null;
   /** Values or structure changed since the model was last asked for. */
   #stale = false;
-  /** The schematic `elementAt` and `partOf` last indexed, and the parts of its elements. */
-  #indexed: {
-    readonly schematic: Document.Schematic;
-    readonly parts: Map<string, Document.Part>;
-  } | null = null;
+  readonly #parts = Document.parts(() => this.schematic);
+
+  /** Local lookups over a schematic or a getter for a changing schematic. */
+  static parts(source: Document.Schematic | (() => Document.Schematic)): Document.Parts {
+    return new Parts(typeof source === 'function' ? source : () => source);
+  }
 
   /** The document of `model`'s case, as it stands. */
   protected constructor(model: Model) {
@@ -87,68 +88,25 @@ export abstract class Document {
     return { undo: [...this.#undo].reverse(), redo: [...this.#redo].reverse() };
   }
 
-  /** The element a part of the schematic is: a block's, a net's, or a port's block; else null. */
+  /** The element drawn by a schematic part, or null. */
   elementAt(part: Document.Part): Model.Element | null {
-    const { blocks, nets, netlist } = this.schematic;
-    if (part.kind === 'block') return blocks[part.index] ?? null;
-    if (part.kind === 'net') return nets[part.index] ?? null;
-    if (part.kind === 'port') {
-      if (!Number.isSafeInteger(part.index) || part.index < 0) return null;
-      if (part.index >= netlist.portStart[netlist.blockCount]!) return null;
-      return blocks[ownerOf(netlist.portStart, part.index)] ?? null;
-    }
-    return null;
+    return this.#parts.elementAt(part);
   }
-
-  /** The block or net that shows an element; null when the diagram does not draw it. */
+  /** The schematic part drawing an element, or null. */
   partOf(element: Model.Element): Document.Part | null {
-    const schematic = this.schematic;
-    let indexed = this.#indexed;
-    if (indexed?.schematic !== schematic) {
-      const parts = new Map<string, Document.Part>();
-      schematic.blocks.forEach((block, index) => parts.set(keyOf(block), { kind: 'block', index }));
-      // A bus a tagged net stands for shows as that net.
-      schematic.nets.forEach((net, index) => {
-        if (net) parts.set(keyOf(net), { kind: 'net', index });
-      });
-      indexed = { schematic, parts };
-      this.#indexed = indexed;
-    }
-    return indexed.parts.get(keyOf(element)) ?? null;
+    return this.#parts.partOf(element);
   }
-
-  /** Port `index` of the schematic, as the case names it. */
+  /** A schematic port in the case's identities. */
   portAt(index: number): Document.Port {
-    const { blocks, netlist } = this.schematic;
-    return {
-      element: blocks[ownerOf(netlist.portStart, index)]!,
-      port: netlist.portLabel?.[index] ?? '',
-    };
+    return this.#parts.portAt(index);
   }
-
-  /**
-   * Per net of the schematic, the element of `ref.classId` whose recorded `ref` drives it, and
-   * `0xffffffff` for every other net: what `field.gather` takes to show `ref` over the nets.
-   */
-  drivers(ref: Model.FieldRef): Uint32Array {
-    const { sources } = this.schematic;
-    const drivers = new Uint32Array(sources.length).fill(NONE);
-    sources.forEach((source, net) => {
-      const field = source?.field;
-      if (field?.classId === ref.classId && field.kind === ref.kind && field.id === ref.id)
-        drivers[net] = source!.index;
-    });
-    return drivers;
-  }
-
-  /** The schematic's index of a port the case names; null when the diagram does not draw it. */
+  /** The schematic index of a port, or null. */
   portOf(port: Document.Port): number | null {
-    const block = this.partOf(port.element);
-    if (block?.kind !== 'block') return null;
-    const { portStart, portLabel } = this.schematic.netlist;
-    for (let index = portStart[block.index]!; index < portStart[block.index + 1]!; index++)
-      if (portLabel?.[index] === port.port) return index;
-    return null;
+    return this.#parts.portOf(port);
+  }
+  /** The elements whose recorded field drives each net. */
+  drivers(ref: Model.FieldRef): Uint32Array {
+    return this.#parts.drivers(ref);
   }
 
   /** An element's identity across edits; null when it has none. */
@@ -216,6 +174,37 @@ export abstract class Document {
 
 /** What a document speaks: netlists and their parts, operations, changes, and schematics. */
 export declare namespace Document {
+  /** A revision belongs to one live document owner; a recreated owner has a new epoch. */
+  interface Version {
+    readonly epoch: string;
+    readonly revision: number;
+  }
+  /** The document state a session keeps locally, replaced before a change is announced. */
+  interface View {
+    readonly version: Version;
+    readonly schematic: Schematic;
+    readonly palette: readonly BlockClass[];
+    readonly history: Document['history'];
+  }
+  /** An immutable model held by a session's caller; close it once its readers and runs finish. */
+  type Snapshot = Model & { close(): void };
+  /** Local schematic lookup methods, shared by documents and sessions. */
+  type Parts = Pick<Document, 'elementAt' | 'partOf' | 'portAt' | 'portOf' | 'drivers'>;
+  /**
+   * An asynchronous editing boundary. Edits use the view's version at invocation and resolve
+   * after their accepted change is visible locally. Concurrent stale edits reject with
+   * `DocumentConflict`; they are never silently rebased. A snapshot stays immutable across edits.
+   */
+  interface Session extends Parts {
+    readonly view: View;
+    apply(...operations: Operation[]): Promise<Change | null>;
+    undo(): Promise<Change | null>;
+    redo(): Promise<Change | null>;
+    model(signal?: AbortSignal): Promise<Snapshot>;
+    bytes(signal?: AbortSignal): Promise<Uint8Array>;
+    on(event: 'change', listener: (change: Change) => void): () => void;
+  }
+
   /**
    * A block diagram's structure, columnar: blocks, the ports each block owns, and the nets that
    * join ports. The shape `@latkit/diagram` loads. Placement is not structure; it is a renderer's
@@ -382,6 +371,98 @@ export class Refusal extends Error {
     readonly at: Document.Port | Model.Element | null = null,
   ) {
     super(message);
+  }
+}
+
+/** A local index over one schematic; no lookup makes a remote call. */
+class Parts {
+  /** The schematic `elementAt` and `partOf` last indexed, and the parts of its elements. */
+  #indexed: {
+    readonly blocks: Document.Schematic['blocks'];
+    readonly nets: Document.Schematic['nets'];
+    readonly parts: Map<string, Document.Part>;
+  } | null = null;
+
+  constructor(readonly source: () => Document.Schematic) {}
+
+  get schematic(): Document.Schematic {
+    return this.source();
+  }
+
+  /** The element a part of the schematic is: a block's, a net's, or a port's block; else null. */
+  elementAt(part: Document.Part): Model.Element | null {
+    const { blocks, nets, netlist } = this.schematic;
+    if (part.kind === 'block') return blocks[part.index] ?? null;
+    if (part.kind === 'net') return nets[part.index] ?? null;
+    if (part.kind === 'port') {
+      if (!Number.isSafeInteger(part.index) || part.index < 0) return null;
+      if (part.index >= netlist.portStart[netlist.blockCount]!) return null;
+      return blocks[ownerOf(netlist.portStart, part.index)] ?? null;
+    }
+    return null;
+  }
+
+  /** The block or net that shows an element; null when the diagram does not draw it. */
+  partOf(element: Model.Element): Document.Part | null {
+    const schematic = this.schematic;
+    let indexed = this.#indexed;
+    if (indexed?.blocks !== schematic.blocks || indexed.nets !== schematic.nets) {
+      const parts = new Map<string, Document.Part>();
+      schematic.blocks.forEach((block, index) => parts.set(keyOf(block), { kind: 'block', index }));
+      // A bus a tagged net stands for shows as that net.
+      schematic.nets.forEach((net, index) => {
+        if (net) parts.set(keyOf(net), { kind: 'net', index });
+      });
+      indexed = { blocks: schematic.blocks, nets: schematic.nets, parts };
+      this.#indexed = indexed;
+    }
+    return indexed.parts.get(keyOf(element)) ?? null;
+  }
+
+  /** Port `index` of the schematic, as the case names it. */
+  portAt(index: number): Document.Port {
+    const { blocks, netlist } = this.schematic;
+    return {
+      element: blocks[ownerOf(netlist.portStart, index)]!,
+      port: netlist.portLabel?.[index] ?? '',
+    };
+  }
+
+  /**
+   * Per net of the schematic, the element of `ref.classId` whose recorded `ref` drives it, and
+   * `0xffffffff` for every other net: what `field.gather` takes to show `ref` over the nets.
+   */
+  drivers(ref: Model.FieldRef): Uint32Array {
+    const { sources } = this.schematic;
+    const drivers = new Uint32Array(sources.length).fill(NONE);
+    sources.forEach((source, net) => {
+      const field = source?.field;
+      if (field?.classId === ref.classId && field.kind === ref.kind && field.id === ref.id)
+        drivers[net] = source!.index;
+    });
+    return drivers;
+  }
+
+  /** The schematic's index of a port the case names; null when the diagram does not draw it. */
+  portOf(port: Document.Port): number | null {
+    const block = this.partOf(port.element);
+    if (block?.kind !== 'block') return null;
+    const { portStart, portLabel } = this.schematic.netlist;
+    for (let index = portStart[block.index]!; index < portStart[block.index + 1]!; index++)
+      if (portLabel?.[index] === port.port) return index;
+    return null;
+  }
+}
+
+/** An edit or read addressed a document version that is no longer current. */
+export class DocumentConflict extends Error {
+  override readonly name = 'DocumentConflict';
+
+  constructor(
+    readonly expected: Document.Version,
+    readonly actual: Document.Version,
+  ) {
+    super('The document changed; refresh the selection and try again.');
   }
 }
 
