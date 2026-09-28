@@ -1,6 +1,8 @@
 import type { Netlist } from '@latkit/model';
 
-import type { Channels } from './channels.js';
+import type { Channels } from '@latkit/gpu';
+
+import type { Scope, SlotChannel } from './channels.js';
 import { netLabelBox, textWidth, type Rect } from './geometry.js';
 import { arrangeAll, arrangeUnits } from './layout/arrange.js';
 import { placeNew } from './layout/pack.js';
@@ -151,7 +153,11 @@ export class Scene implements PickSource {
   liveNetPorts = LIVE_NET_PORTS;
 
   private readonly structure: Mirror;
-  private readonly channels: Channels;
+  private readonly channels: Channels<SlotChannel, Scope>;
+  /** The channel slots and windows; sized by each load. */
+  private readonly channelMirror: Mirror;
+  /** The `blockPosition` channel: each block's placed corner, NaN where automatic. */
+  private placed: Float32Array | null = null;
   private readonly obstacles: RouteContext['obstacles'];
   private current: Prepared | null = null;
   /** Per block: the lane shift its routes read (`laneShifts`); empty before a load. */
@@ -240,11 +246,12 @@ export class Scene implements PickSource {
   private readonly box = new Float64Array(4);
   private readonly labelBox = new Float64Array(4);
 
-  constructor(mirrors: Mirrors, channels: Channels) {
+  constructor(mirrors: Mirrors, channels: Channels<SlotChannel, Scope>) {
     this.layout = mirrors.layout;
     this.wires = mirrors.wires;
     this.structure = mirrors.structure;
     this.channels = channels;
+    this.channelMirror = mirrors.channels;
     this.routes = new Routes(mirrors.wires, mirrors.layout);
     this.picker = new Picker(this);
     // The picker's query reads `this`; the router calls it bare.
@@ -254,6 +261,41 @@ export class Scene implements PickSource {
   /** The loaded netlist, prepared, or null before a load. */
   get prepared(): Prepared | null {
     return this.current;
+  }
+
+  /** The `blockPosition` channel: each block's placed top-left corner, NaN where automatic. */
+  get placement(): Float32Array | null {
+    return this.placed;
+  }
+
+  /**
+   * Bind the `blockPosition` channel as a copy of `values`, or clear it with null; false when
+   * clearing found nothing. A rebind refreshes the copy in place.
+   *
+   * @throws Error before a load or for a wrong length; TypeError for values of another kind.
+   */
+  place(values: Float32Array | Float64Array | null): boolean {
+    if (values === null) {
+      if (!this.placed) return false;
+      this.placed = null;
+      return true;
+    }
+    const p = this.current;
+    if (!p) throw new Error('diagram netlist must be loaded before binding channels');
+    const tag = Object.prototype.toString.call(values);
+    if (tag !== '[object Float32Array]' && tag !== '[object Float64Array]') {
+      throw new TypeError(
+        'diagram channel blockPosition values must be a Float32Array or Float64Array',
+      );
+    }
+    if (values.length !== 2 * p.blockCount) {
+      throw new Error(
+        `diagram channel blockPosition length ${values.length} != ${2 * p.blockCount}`,
+      );
+    }
+    if (this.placed?.length === values.length) this.placed.set(values);
+    else this.placed = Float32Array.from(values);
+    return true;
   }
 
   /** Per block: the lane shift every route of the loaded netlist reads; see `laneShifts`. */
@@ -327,7 +369,7 @@ export class Scene implements PickSource {
     if (kept === 0) auto = arrangeAll(next);
     else {
       const drawn = this.positions;
-      const placed = this.channels.values('blockPosition');
+      const placed = this.placed;
       auto = new Float32Array(2 * next.blockCount).fill(Number.NaN);
       const occupied = new Float32Array(2 * next.blockCount).fill(Number.NaN);
       if (placed) placement = new Float32Array(2 * next.blockCount).fill(Number.NaN);
@@ -354,11 +396,14 @@ export class Scene implements PickSource {
 
   /**
    * Forget the netlist and everything derived from it: routes, the pick index, the drag, tween,
-   * nudge hold, detached port, and ghosts. The structure, layout, and wires mirrors give their
-   * memory back and bump their versions. Channels are the caller's to reset.
+   * nudge hold, detached port, ghosts, placements, and every channel. The structure, layout,
+   * wires, and channels mirrors give their memory back and bump their versions.
    */
   clear(): void {
     this.current = null;
+    this.placed = null;
+    this.channels.load(null);
+    this.channelMirror.release();
     this.forgetMoves();
     this.sizeTables(0, 0, 0);
     this.ghostCount = 0;
@@ -388,7 +433,7 @@ export class Scene implements PickSource {
   placementChanged(): void {
     const p = this.current;
     if (!p) return;
-    const placement = this.channels.values('blockPosition');
+    const placement = this.placed;
     let moved = 0;
     for (let block = 0; block < p.blockCount; block++) {
       if (this.placeBlock(block, placement)) moved++;
@@ -453,7 +498,7 @@ export class Scene implements PickSource {
     }
     this.dragX = dx;
     this.dragY = dy;
-    const placement = this.channels.values('blockPosition');
+    const placement = this.placed;
     for (const block of this.dragBlocks!) this.placeBlock(block, placement);
     this.flush('incremental');
   }
@@ -554,7 +599,7 @@ export class Scene implements PickSource {
     const prior = this.tween;
     this.tween = null;
     if (prior?.hidden) this.unhide(prior.hidden);
-    const placement = this.channels.values('blockPosition');
+    const placement = this.placed;
 
     if (animate && this.motion && this.animationMs > 0 && moving.length > 0) {
       // Only blocks without a placement are seen moving; only their nets go quiet.
@@ -643,7 +688,7 @@ export class Scene implements PickSource {
         const { from, blocks } = tween;
         const shown = this.shown;
         const to = this.auto;
-        const placement = this.channels.values('blockPosition');
+        const placement = this.placed;
         for (const block of blocks) {
           const x = 2 * block;
           shown[x] = from[x]! + (to[x]! - from[x]!) * e;
@@ -778,8 +823,8 @@ export class Scene implements PickSource {
   /**
    * Make `next` the scene with automatic positions `auto`: every table sized, the structure
    * written, positions and routes laid down, group frames computed, the pick index marked for a
-   * rebuild. `resetChannels` resets every channel for new indices, binding `carried` (when
-   * given) as the `blockPosition` channel.
+   * rebuild. `resetChannels` resets every channel for new indices, placing blocks by `carried`
+   * (when given).
    */
   private bind(
     next: Prepared,
@@ -795,8 +840,9 @@ export class Scene implements PickSource {
     this.auto = auto;
     this.shown = auto.slice();
     if (resetChannels) {
-      this.channels.reset({ blocks: blockCount, ports: portCount, nets: netCount });
-      if (carried) this.channels.set('blockPosition', carried);
+      this.channels.load({ block: blockCount, port: portCount, net: netCount });
+      this.channelMirror.resize(this.channels.words);
+      this.placed = carried;
     }
     writeStructure(this.structure, next);
     this.sizeTables(blockCount, netCount, groupCount);
@@ -839,7 +885,7 @@ export class Scene implements PickSource {
     this.anchorBase = bases.anchor;
     this.layout.resize(bases.words);
     const f32 = this.layout.f32;
-    const placement = this.channels.values('blockPosition');
+    const placement = this.placed;
     for (let block = 0; block < blockCount; block++) {
       this.rest(block, placement);
       f32[2 * block] = this.restX;
@@ -1033,12 +1079,9 @@ export class Scene implements PickSource {
     return true;
   }
 
-  /** The placement snapshot to write placements into, binding a NaN-filled one when unbound. */
+  /** The placements to write into, binding NaN-filled ones when unbound. */
   private writablePlacement(p: Prepared): Float32Array {
-    const bound = this.channels.values('blockPosition');
-    if (bound) return bound;
-    this.channels.set('blockPosition', new Float32Array(2 * p.blockCount).fill(Number.NaN));
-    return this.channels.values('blockPosition')!;
+    return (this.placed ??= new Float32Array(2 * p.blockCount).fill(Number.NaN));
   }
 
   /** The valid blocks of `blocks`, each once, in order. */
@@ -1108,7 +1151,7 @@ export class Scene implements PickSource {
     this.dragBlocks = null;
     this.dragX = 0;
     this.dragY = 0;
-    const placement = this.channels.values('blockPosition');
+    const placement = this.placed;
     for (const block of blocks) this.placeBlock(block, placement);
     // The resting positions are written, so the index takes the blocks back before routing asks
     // it for obstacles; it re-indexes their group frames lazily, after the flush writes them.
@@ -1129,7 +1172,7 @@ export class Scene implements PickSource {
     if (!tween) return;
     this.tween = null;
     this.shown.set(this.auto);
-    const placement = this.channels.values('blockPosition');
+    const placement = this.placed;
     for (const block of tween.blocks) this.placeBlock(block, placement);
     if (tween.hidden) this.unhide(tween.hidden);
     this.flush(tween.still ? 'rebuild' : 'incremental');

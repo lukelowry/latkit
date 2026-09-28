@@ -1,5 +1,5 @@
 import { devices, type DevicePool } from '@latkit/gpu';
-import { validateRgba, type Colormap, type RGBA } from '@latkit/model';
+import { validateRgba, type Colormap, type RGBA } from '@latkit/colormaps';
 
 /**
  * Diagram options: the construction record and the live patch.

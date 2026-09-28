@@ -1,4 +1,4 @@
-import type { RGBA } from '@latkit/model';
+import type { RGBA } from '@latkit/colormaps';
 
 import type { Options } from './options.js';
 import type { Uniforms } from './webgpu/uniforms.js';

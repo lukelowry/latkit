@@ -1,7 +1,7 @@
 {
   "name": "@latkit/port",
   "version": "0.2.1",
-  "description": "Ports, frames, and typed request, reply, and stream protocols for Latkit.",
+  "description": "Where Latkit crosses a boundary: ports, frames, typed protocols, and a model and its recordings served across them.",
   "type": "module",
   "repository": {
     "type": "git",
@@ -18,14 +18,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./guard": {
-      "types": "./dist/guard.d.ts",
-      "import": "./dist/guard.js"
-    },
-    "./testing": {
-      "types": "./dist/testing.d.ts",
-      "import": "./dist/testing.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -33,6 +25,9 @@
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --project @latkit/port"
+  },
+  "dependencies": {
+    "@latkit/model": "workspace:*"
   },
   "publishConfig": {
     "access": "public"

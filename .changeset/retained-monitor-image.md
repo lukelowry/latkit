@@ -4,7 +4,6 @@
 '@latkit/monitor': minor
 '@latkit/network': minor
 '@latkit/diagram': minor
-'@latkit/remote': patch
 ---
 
 Keep the monitor's image on screen through repaints, and make NaN mean no value in every channel.
@@ -20,4 +19,3 @@ Keep the monitor's image on screen through repaints, and make NaN mean no value 
 - Changed: `createSeries` reads yield to the event loop without the 4 ms timer clamp.
 - Removed: `Part` from `@latkit/diagram`; import it from `@latkit/model`.
 - Removed: the `quantize` option of `createFrameLoop`. Every loop quantizes while a resize is in flight, and `settled` means the size has held.
-- Fixed: `@latkit/remote` ends an aborted run with a `cancelled` update, as `Runner` promises.

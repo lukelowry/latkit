@@ -111,10 +111,10 @@ diagram.on('connect', (wire) => {
 
 ## Arrange without a device
 
-`@latkit/diagram/layout` exports `arrange`, the same pure, deterministic layout the diagram shows, so a worker can compute positions before any canvas exists:
+`arrange` is the same pure, deterministic layout the diagram shows, so a worker can compute positions before any canvas exists; the package's one entrypoint loads there without a DOM or a device:
 
 ```ts
-import { arrange } from '@latkit/diagram/layout';
+import { arrange } from '@latkit/diagram';
 
 const positions = arrange(unit, { gridPitch: 8 }); // two floats per block: its top-left corner
 ```

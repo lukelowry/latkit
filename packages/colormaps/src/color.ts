@@ -1,4 +1,23 @@
-import type { RGBA } from '@latkit/model';
+/** Normalized RGBA color, each component in `[0, 1]`. */
+export type RGBA = readonly [number, number, number, number];
+
+/**
+ * Assert that `value` is four finite numbers in `[0, 1]`, naming it in the error.
+ *
+ * @throws TypeError when the value is not a four-number tuple; RangeError when a component is
+ * not finite or is outside `[0, 1]`.
+ */
+export function validateRgba(value: unknown, name = 'color'): asserts value is RGBA {
+  if (!Array.isArray(value) || value.length !== 4) {
+    throw new TypeError(`${name} must be an RGBA tuple`);
+  }
+  for (const component of value as readonly unknown[]) {
+    if (typeof component !== 'number') throw new TypeError(`${name} must be an RGBA tuple`);
+    if (!Number.isFinite(component) || component < 0 || component > 1) {
+      throw new RangeError(`${name} RGBA components must be finite and in [0, 1]`);
+    }
+  }
+}
 
 /**
  * An RGBA in `[0, 1]` from a CSS color: hex (`#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`),

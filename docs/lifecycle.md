@@ -16,7 +16,7 @@ network.load(topology);
 network.setChannel('vertexColor', load, [0, 1]);
 
 const monitor = createMonitor({ valueRange: [0, 1] });
-monitor.load(series);
+monitor.load({ series, signal: 0 });
 
 const diagram = createDiagram({ interaction: 'edit' });
 diagram.load(netlist);

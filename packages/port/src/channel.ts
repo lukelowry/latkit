@@ -100,8 +100,8 @@ export interface Service<Ev> {
  * Answer one peer's calls to `protocol` until either side closes.
  *
  * @remarks
- * When the protocol carries a guard, a request it refuses is answered with an error and never
- * reaches the handler. Between the items of a stream the service awaits the port's `drain`, so
+ * When the protocol carries a check, a request it refuses is answered with the check's error and
+ * never reaches the handler. Between the items of a stream the service awaits the port's `drain`, so
  * backpressure reaches the producer without any help from the handler.
  */
 export function serve<Req, Res, Ev = never>(
@@ -110,7 +110,8 @@ export function serve<Req, Res, Ev = never>(
   handle: Handler<Req, Res>,
   options: { readonly onClose?: () => void } = {},
 ): Service<Ev> {
-  const { name, guard } = protocol;
+  const { name } = protocol;
+  const check: ((value: unknown, name: string) => void) | undefined = protocol.check;
   const inflight = new Map<number, AbortController>();
   let open = true;
   const post = (envelope: Envelope, transfer?: readonly ArrayBuffer[]): void =>
@@ -132,7 +133,7 @@ export function serve<Req, Res, Ev = never>(
   }
 
   async function answer(id: number, body: unknown, signal: AbortSignal): Promise<void> {
-    if (guard && !guard(body)) throw new Error(`malformed ${name} request`);
+    check?.(body, `${name} request`);
     const progress: Progress = (loaded, total) => {
       if (!signal.aborted) post({ svc: name, kind: 'progress', id, loaded, total });
     };
@@ -194,6 +195,9 @@ export interface CallOptions {
   readonly progress?: Progress;
   readonly transfer?: readonly ArrayBuffer[];
 }
+
+/** The far side of a served `T`: the same surface, and the close that ends the connection to it. */
+export type Remote<T> = T & { close(): void };
 
 /** A connected side: call the peer, stream from it, listen to its events, or stop. */
 export interface Connection<Req, Res, Ev = never> {

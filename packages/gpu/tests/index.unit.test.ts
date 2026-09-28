@@ -35,9 +35,13 @@ describe('gpu package entrypoint', () => {
     const entrypoint = await import('../src/index.js');
 
     expect(Object.keys(entrypoint).sort()).toEqual([
+      'COLORMAP_LUT_SIZE',
       'GpuUnavailableError',
+      'bakeColormap',
       'createAttachment',
+      'createChannels',
       'createDevicePool',
+      'createEmitter',
       'createFrameLoop',
       'createPresentation',
       'devices',

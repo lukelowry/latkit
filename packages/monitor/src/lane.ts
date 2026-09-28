@@ -1,14 +1,10 @@
-import {
-  normalizeDomain,
-  position,
-  validateDomain,
-  type Domain,
-  type RGBA,
-  type Series,
-} from '@latkit/model';
+import type { RGBA } from '@latkit/colormaps';
+import { normalizeDomain, validateDomain, type Domain, type Series } from '@latkit/model';
+
 import { fold, span, type Envelope } from './envelope.js';
 import type { Reading } from './monitor.js';
 import { LanePainter, SEGMENT_BUDGET } from './painter.js';
+import { position } from './position.js';
 
 type Window = Parameters<Series['read']>[1];
 type Block = Awaited<ReturnType<Series['read']>>;

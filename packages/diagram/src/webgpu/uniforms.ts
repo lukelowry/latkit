@@ -4,7 +4,7 @@
  * in device pixels, so `viewport / backing_scale` is the CSS size.
  */
 
-import type { RGBA } from '@latkit/model';
+import type { RGBA } from '@latkit/colormaps';
 
 import type { ResolvedOptions } from '../options.js';
 import { POINTER_NONE, SHADE_HOST_WORDS } from '../shade.js';

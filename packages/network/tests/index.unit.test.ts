@@ -15,12 +15,14 @@ import type {
 } from '../src/index.js';
 
 describe('network package entrypoint', () => {
-  it('publishes exactly the controller factory, the three registries, and the option validator', () => {
+  it('publishes the controller factory, the three registries, the option validator, the packaged borders, and the spotlight shade', () => {
     expect(Object.keys(entry).sort()).toEqual([
       'CHANNELS',
       'OPTIONS',
       'PROJECTIONS',
       'createNetwork',
+      'loadBorders',
+      'spotlight',
       'validateOptions',
     ]);
   });

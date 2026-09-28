@@ -1,10 +1,15 @@
 // @vitest-environment jsdom
-import { createEmitter, createSeries, position, type Domain, type Series } from '@latkit/model';
+import { createSeries, type Domain, type Series } from '@latkit/model';
+import { createEmitter } from '@latkit/gpu';
+
+import { position } from '../src/position.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createMonitor, type Monitor, type Options, type Reading } from '../src/index.js';
 import { installGpuStub, type GpuStub } from './gpu-stub.js';
 type Window = Parameters<Series['read']>[1];
 let stub: GpuStub, monitor: Monitor;
+/** Show signal 0 of `series`, the one signal every series here holds. */
+const bind = (series: Series): void => monitor.load({ series, signal: 0 });
 beforeEach(() => {
   stub = installGpuStub();
   monitor = createMonitor({ devices: stub.pool });
@@ -48,15 +53,16 @@ async function paint(action: () => unknown) {
   }
 }
 function source(elements: number, time: number[], reads: Window[] = []) {
-  const events = createEmitter<{ append: undefined }>();
+  const events = createEmitter<{ change: undefined }>();
   const series: Series = {
+    signals: ['x'],
     elementCount: elements,
-    signalCount: 1,
     get state() {
       return {
         frameCount: time.length,
         timeRange: time.length ? ([time[0]!, time.at(-1)!] as const) : null,
         ranges: Float64Array.of(0, elements),
+        live: true,
       };
     },
     on: (event, listener) => events.on(event, listener),
@@ -83,15 +89,13 @@ function source(elements: number, time: number[], reads: Window[] = []) {
       };
     },
   };
-  return { series, append: () => events.emit('append', undefined) };
+  return { series, append: () => events.emit('change', undefined) };
 }
 /** A live series of one element and one signal, and reads that can be held or failed. */
 function stream(initial: number[]) {
-  const live = createSeries({ elementCount: 1, signalCount: 1 });
+  const live = createSeries({ signals: ['x'], elementCount: 1 });
   const push = (values: number[]): void => {
     live.append({
-      elementCount: 1,
-      signalCount: 1,
       time: Float64Array.from(values, (_, i) => live.state.frameCount + i),
       values: Float64Array.from(values),
     });
@@ -137,7 +141,7 @@ const focus = () => stub.log.draws.filter((draw) => draw.pipeline === 'monitor-f
 it('tiles every element within the read budget and focuses only the selected trace', async () => {
   const reads: Window[] = [],
     elements = 150000;
-  monitor.load(source(elements, [0, 0.03, 0.03, 0.2, 1], reads).series);
+  bind(source(elements, [0, 0.03, 0.03, 0.2, 1], reads).series);
   await paint(() => monitor.attach(canvas()));
   expect(history().reduce((n, draw) => n + draw.instanceCount, 0)).toBe(elements * 4);
   expect(reads.some((window) => window.elementOffset > 32)).toBe(true);
@@ -162,7 +166,7 @@ it('reads a long focus independently of history blocks and before history finish
   const blocked = new Promise<void>((resolve) => {
     release = resolve;
   });
-  monitor.load({
+  bind({
     ...input,
     async read(s, w, signal) {
       if (w.elementCount > 1) await blocked;
@@ -181,7 +185,7 @@ it('reads a long focus independently of history blocks and before history finish
 it('folds a long repaint to two rows per pixel column, and draws appends raw', async () => {
   const input = stream(Array.from({ length: 10000 }, (_, i) => i % 2));
   monitor.setOptions({ timeRange: [0, 20000], valueRange: [0, 1] });
-  monitor.load(input.series);
+  bind(input.series);
   await paint(() => monitor.attach(canvas()));
   // 10000 frames over the first 160 of 320 device pixels, each column two rows.
   expect(history().reduce((n, d) => n + d.instanceCount, 0)).toBe(2 * 160 - 1);
@@ -206,7 +210,7 @@ it('folds by pixel column, so frames after a crowded stretch draw one by one', a
   (stub.device.limits as { maxStorageBufferBindingSize: number }).maxStorageBufferBindingSize =
     64 * 8;
   monitor.setOptions({ timeRange: [0, 320], valueRange: [0, 1] });
-  monitor.load(source(1, time, reads).series);
+  bind(source(1, time, reads).series);
   await paint(() => monitor.attach(canvas()));
 
   const axes = stub.log.writes
@@ -225,7 +229,7 @@ it('keeps folded reads within budget even on a one-pixel canvas', async () => {
   const reads: Window[] = [];
   const time = Array.from({ length: 100000 }, (_, i) => i);
   monitor.setOptions({ valueRange: [0, 1] });
-  monitor.load(source(1, time, reads).series);
+  bind(source(1, time, reads).series);
   await paint(() => monitor.attach(canvas(1)));
   expect(reads.length).toBeGreaterThan(1);
   expect(
@@ -239,7 +243,7 @@ it('carries each folded window last row into the next, so every join draws once'
     elements = 2000;
   const time = Array.from({ length: 3200 }, (_, i) => i);
   monitor.setOptions({ valueRange: [0, elements] });
-  monitor.load(source(elements, time, reads).series);
+  bind(source(elements, time, reads).series);
   await paint(() => monitor.attach(canvas()));
   // Ten frames a pixel column, several columns per read window.
   expect(reads.every((window) => window.frameOffset % 10 === 0)).toBe(true);
@@ -259,7 +263,7 @@ it('paces a repaint by time and GPU work, not by how many uploads it takes', asy
   try {
     const elements = 2000;
     monitor.setOptions({ valueRange: [0, elements] });
-    monitor.load(
+    bind(
       source(
         elements,
         Array.from({ length: 3200 }, (_, i) => i),
@@ -287,7 +291,7 @@ it('appends only the new segments with a stable mapping, without clearing histor
     time = [0, 1, 2];
   const input = source(2, time, reads);
   monitor.setOptions({ timeRange: [0, 10], valueRange: [0, 2] });
-  monitor.load(input.series);
+  bind(input.series);
   await paint(() => monitor.attach(canvas()));
   const before = reads.length,
     clears = stub.log.clears.filter((t) => t === 'monitor-history').length;
@@ -303,7 +307,7 @@ it('appends only the new segments with a stable mapping, without clearing histor
 it('replays exact repeated times when automatic time mapping grows', async () => {
   const time = [0, 0.1, 0.1, 0.8],
     input = source(2, time);
-  monitor.load(input.series);
+  bind(input.series);
   await paint(() => monitor.attach(canvas()));
   time.push(1.7, 2);
   await paint(input.append);
@@ -321,7 +325,7 @@ it('ignores a locate that resolves after destroy even when the source ignores ab
   const input = source(2, [0, 1]).series;
   let finish!: () => void,
     started = false;
-  monitor.load({
+  bind({
     ...input,
     async locate(range, head) {
       started = true;
@@ -355,12 +359,12 @@ it('reports a read failure once and retries the same series cleanly', async () =
   };
   const error = vi.fn();
   monitor.on('error', error);
-  monitor.load(original);
+  bind(original);
   await monitor.attach(canvas());
   await pump(() => error.mock.calls.length > 0);
   expect(error).toHaveBeenCalledOnce();
   fail = false;
-  await paint(() => monitor.load(original));
+  await paint(() => bind(original));
   expect(history().reduce((n, d) => n + d.instanceCount, 0)).toBe(2);
 });
 
@@ -368,7 +372,7 @@ it('cancels pending reads on detach and replays on another canvas', async () => 
   const input = source(2, [0, 1]).series;
   let started = false,
     cancelled = false;
-  monitor.load({
+  bind({
     ...input,
     read: (_s, _w, signal) =>
       new Promise((_, reject) => {
@@ -387,7 +391,7 @@ it('cancels pending reads on detach and replays on another canvas', async () => 
   await pump(() => started);
   monitor.detach();
   expect(cancelled).toBe(true);
-  monitor.load(input);
+  bind(input);
   await paint(() => monitor.attach(canvas()));
 });
 
@@ -395,14 +399,14 @@ it('normalizes Float64 values before upload and maps color independently from he
   const base = 1e12,
     delta = 0.125;
   const series = createSeries({
+    signals: ['x'],
     elementCount: 2,
-    signalCount: 1,
     time: Float64Array.of(0, 1),
     values: Float64Array.of(base, base + delta, base + delta / 2, NaN),
   });
   const range = vi.fn<(range: Domain) => void>();
   monitor.on('valueRange', range);
-  monitor.load(series);
+  bind(series);
   const element = canvas();
   await paint(() => monitor.attach(element));
   const domain = range.mock.calls.at(-1)![0];
@@ -432,10 +436,10 @@ it('normalizes Float64 values before upload and maps color independently from he
 });
 
 it('keeps extreme finite times and constant Float64 values visible', async () => {
-  monitor.load(
+  bind(
     createSeries({
+      signals: ['x'],
       elementCount: 1,
-      signalCount: 1,
       time: Float64Array.of(-1e308, 0, 1e308),
       values: Float64Array.of(1e20, 1e20, 1e20),
     }),
@@ -446,10 +450,10 @@ it('keeps extreme finite times and constant Float64 values visible', async () =>
 });
 
 it('uses sparse class indices for selection and picking', async () => {
-  monitor.load(
+  bind(
     createSeries({
+      signals: ['x'],
       elementCount: 2,
-      signalCount: 1,
       elements: Uint32Array.of(4, 900),
       time: Float64Array.of(0, 1),
       values: Float64Array.of(0, 1, 0, 1),
@@ -470,7 +474,7 @@ it('does not let an obsolete hover clear the latest reading', async () => {
   const input = source(2, [0, 1, 2]).series;
   let delay = false;
   const pending: (() => void)[] = [];
-  monitor.load({
+  bind({
     ...input,
     async locate(range, head) {
       if (delay) await new Promise<void>((resolve) => pending.push(resolve));
@@ -496,7 +500,7 @@ it('does not let an obsolete hover clear the latest reading', async () => {
 
 it('updates opacity without rereading or repainting history', async () => {
   const reads: Window[] = [];
-  monitor.load(source(2, [0, 1], reads).series);
+  bind(source(2, [0, 1], reads).series);
   await paint(() => monitor.attach(canvas()));
   await paint(() => monitor.select(1));
   const before = reads.length,
@@ -532,7 +536,7 @@ it('catches up an unknown range after switching back from a fixed domain', async
   const range = vi.fn();
   monitor.on('valueRange', range);
   monitor.setOptions({ valueRange: [0, 100] });
-  monitor.load(series);
+  bind(series);
   await paint(() => monitor.attach(canvas()));
   time.push(2, 3);
   await paint(input.append);
@@ -541,7 +545,7 @@ it('catches up an unknown range after switching back from a fixed domain', async
 });
 
 it('validates live patches before changing the current mapping', async () => {
-  monitor.load(source(2, [0, 1]).series);
+  bind(source(2, [0, 1]).series);
   await paint(() => monitor.attach(canvas()));
   const before = history().length;
   for (const patch of [
@@ -559,7 +563,7 @@ it('draws appends inside the automatic range as a tail and repaints its growth o
   const ranges = vi.fn<(range: Domain) => void>();
   monitor.on('valueRange', ranges);
   monitor.setOptions({ timeRange: [0, 100] });
-  monitor.load(input.series);
+  bind(input.series);
   await paint(() => monitor.attach(canvas()));
   expect(ranges.mock.calls.map(([range]) => range)).toEqual([[-0.1, 1.1]]);
   const clears = stub.log.clears.filter((target) => target === 'monitor-history').length;
@@ -587,7 +591,7 @@ it('grows the automatic range only from recorded values', async () => {
   const input = stream([NaN, NaN]);
   const ranges = vi.fn<(range: Domain) => void>();
   monitor.on('valueRange', ranges);
-  monitor.load(input.series);
+  bind(input.series);
   await paint(() => monitor.attach(canvas()));
   await paint(() => input.push([100, 200]));
   expect(ranges.mock.calls.map(([range]) => range)).toEqual([
@@ -600,7 +604,7 @@ it('keeps the automatic range across a detach and attach', async () => {
   const input = stream([0, 1]);
   const ranges = vi.fn<(range: Domain) => void>();
   monitor.on('valueRange', ranges);
-  monitor.load(input.series);
+  bind(input.series);
   await paint(() => monitor.attach(canvas()));
   await paint(() => input.push([1.05]));
   monitor.detach();
@@ -612,10 +616,10 @@ it('keeps the automatic range across a detach and attach', async () => {
 });
 
 it('paints a newly loaded series in place of the last one', async () => {
-  monitor.load(stream([0, 1]).series);
+  bind(stream([0, 1]).series);
   await paint(() => monitor.attach(canvas()));
   const textures = historyTextures().length;
-  await paint(() => monitor.load(stream([5, 6, 7]).series));
+  await paint(() => bind(stream([5, 6, 7]).series));
   expect(historyTextures()).toHaveLength(textures);
   expect(history().at(-1)).toMatchObject({ instanceCount: 2 });
 });
@@ -625,7 +629,7 @@ it('retries a failed repaint once for an update queued meanwhile', async () => {
   const errors = vi.fn(),
     rendered = vi.fn();
   monitor.on('error', errors);
-  monitor.load(input.series);
+  bind(input.series);
   await paint(() => monitor.attach(canvas()));
   monitor.on('rendered', rendered);
   const [shown] = historyTextures();
@@ -650,7 +654,7 @@ it('stops after a failed retry until the next update', async () => {
   const input = stream([0, 1]);
   const errors = vi.fn();
   monitor.on('error', errors);
-  monitor.load(input.series);
+  bind(input.series);
   await paint(() => monitor.attach(canvas()));
   const [shown] = historyTextures();
   let reject: ((error: Error) => void) | null = null;
@@ -673,7 +677,7 @@ it('stops after a failed retry until the next update', async () => {
 });
 
 it('reports hover once per sample under the pointer', async () => {
-  monitor.load(source(2, [0, 1, 2]).series);
+  bind(source(2, [0, 1, 2]).series);
   const element = canvas();
   await paint(() => monitor.attach(element));
   const hover = vi.fn<(reading: Reading | null) => void>();

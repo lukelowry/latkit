@@ -45,7 +45,7 @@ export function series(): Series {
   return createSeries({
     time: Float64Array.from([0, 1, 2]),
     values: new Float32Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
-    signalCount: 2,
+    signals: ['load', 'flow'],
     elementCount: 2,
   });
 }
@@ -54,7 +54,7 @@ export function serializedSeries(): Record<string, unknown> {
   return {
     time: [0, 1, 2],
     values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-    signalCount: 2,
+    signals: ['load', 'flow'],
     elementCount: 2,
   };
 }
@@ -187,7 +187,6 @@ export interface FakeMonitor extends Listeners<MonitorEvents> {
   readonly detach: Spy;
   readonly load: Spy;
   readonly setOptions: Spy;
-  readonly setSignal: Spy;
   readonly pause: Spy;
   readonly resume: Spy;
 }
@@ -200,7 +199,6 @@ export function fakeMonitor(): FakeMonitor {
     detach,
     load: vi.fn(),
     setOptions: vi.fn(),
-    setSignal: vi.fn(),
     pause: vi.fn(),
     resume: vi.fn(),
   };

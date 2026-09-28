@@ -1,6 +1,8 @@
 # @latkit/colormaps
 
-Colormap catalog and CSS color parser for Latkit.
+The color vocabulary every Latkit renderer speaks: the `RGBA` a color option takes, the
+`Colormap` a colormap option takes, the `COLORMAPS` catalog, and a CSS color parser. It has no
+dependencies.
 
 ## Install
 
@@ -20,7 +22,8 @@ button.title = COLORMAPS.viridis.label;
 button.style.background = gradient('viridis', 'to right');
 ```
 
-Colormap functions accept normalized values in `[0, 1]` and return RGB channels in `[0, 1]`.
+A `Colormap` takes a normalized value in `[0, 1]` and returns RGB channels in `[0, 1]`; any
+function of that shape works wherever a renderer takes one.
 
 `COLORMAPS` is a frozen registry keyed by name. Each entry has a `label` and a `kind` (`'sequential'` or `'diverging'`); keys are in display order with sequential maps first.
 
@@ -36,3 +39,6 @@ resolves the color as that element computes it, so a theme's custom properties f
 ```ts
 network.setOptions({ edgeBaseColor: parseColor('var(--edge)', document.body) ?? fallback });
 ```
+
+`validateRgba(value, name)` is the check every color option runs, for a host that validates
+before a renderer exists.

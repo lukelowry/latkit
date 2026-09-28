@@ -36,7 +36,7 @@ The controller holds everything it is given; `attach` leases a shared device and
 `detach` keeps it for the next canvas. See the [lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html).
 
 `Topology` and `Item` are `@latkit/model`'s: a model's topology loads unchanged, and the item a
-pick returns is the item `elementAt` resolves. Loading the topology already loaded is a no-op;
+pick returns is the item `model.elementAt` resolves. Loading the topology already loaded is a no-op;
 `load(topology, { fit: false })` keeps a placed camera.
 
 ## Channels
@@ -59,11 +59,14 @@ camera tilts; the `heightRange` option is the output range it maps onto. `vertex
 are `vertexShade` and `edgeShade`, which carry one scalar per item to a shade (below). Every
 channel slot is allocated when a topology loads, so rebinding never reallocates GPU storage.
 
-A channel can follow one signal of a recorded `Series` instead, and `seek` shows the frame at a
-playhead in every channel that does:
+A channel can follow one signal of a `Series` instead, such as a model `Field`, and `seek` shows
+the frame at a playhead in every channel that does: every channel but `vertexPosition`, as each
+entry's `series` says. A column field binds the same way, as a series of one frame. The channels
+run on `@latkit/gpu`'s binder, as the diagram's do, so a channel behaves the same in both:
 
 ```ts
-network.setChannel('vertexColor', { series: await results.series('bus'), signal: 0 }, null);
+const vm = await model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }, recording);
+if (vm) network.setChannel('vertexColor', vm); // a null domain follows the recorded range
 transport.on('frame', (t) => network.seek(t));
 ```
 
@@ -207,11 +210,11 @@ await network.setShade({
 await network.setShade(null);
 ```
 
-`@latkit/network/shades` ships presets built on the same hook. `spotlight` is a soft light that
-follows the pointer and fades once it leaves:
+`spotlight` is a finished shade built on the same hook, a soft light that follows the pointer and
+fades once it leaves:
 
 ```ts
-import { spotlight } from '@latkit/network/shades';
+import { spotlight } from '@latkit/network';
 
 await network.setShade(spotlight({ radiusPx: 220, strength: 0.6, color: [1, 0.72, 0.3, 1] }));
 ```
@@ -238,12 +241,12 @@ camera placement. See the [lifecycle guide](https://latkit.readthedocs.io/en/lat
 
 ## Packaged borders
 
-`@latkit/network/borders` loads the Natural Earth 50m line borders as a `Borders` payload from the
-assets this package publishes under `@latkit/network/assets/*`. One request is shared by every
-caller in a module instance.
+`loadBorders` fetches the Natural Earth 50m line borders as a `Borders` payload from the assets
+this package publishes under `@latkit/network/assets/*`, so they cost nothing until asked for. One
+request is shared by every caller in a module instance.
 
 ```ts
-import { loadBorders } from '@latkit/network/borders';
+import { loadBorders } from '@latkit/network';
 
 network.setBorders(await loadBorders(signal));
 ```

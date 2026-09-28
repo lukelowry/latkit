@@ -4,10 +4,11 @@
  * key its offset in the store, so a seek within the window writes nothing. The window is two
  * halves; once the playhead passes into the later one, or past the last frame as the series
  * appends, the next frames load into the half already played, so steady playback reads ahead while
- * it plays.
+ * it plays. A sealed series takes a window of no more frames than it holds, so a constant, a
+ * sealed series of one frame, takes two slots.
  */
 
-import type { Series } from './series.js';
+import type { Series } from '@latkit/model';
 
 /** What one window takes in the store; its CPU copy takes as much again. */
 const WINDOW_BYTES = 8 * 1024 * 1024;
@@ -70,9 +71,18 @@ interface Bound<Key> {
   /** The slot shown, or -1 while the keys' own words hold what is shown. */
   shown: number;
   loading: AbortController | null;
-  /** A read failed; nothing is read again until the series appends or a key follows it anew. */
+  /** A read failed; nothing is read again until the series changes or a key follows it anew. */
   failed: boolean;
   off: () => void;
+}
+
+/**
+ * Slots a window of `items` values holds: about 8 MiB in 2 to 256 frames, an even count, and for
+ * a series sealed at `sealed` frames no more than it needs.
+ */
+function capacityOf(items: number, sealed: number | null): number {
+  const half = Math.max(1, Math.min(128, Math.floor(WINDOW_BYTES / 8 / Math.max(1, items))));
+  return 2 * (sealed === null ? half : Math.max(1, Math.min(half, Math.ceil(sealed / 2))));
 }
 
 /**
@@ -98,7 +108,8 @@ function slotAt(w: Window, time: number, head: number): number {
  *
  * @remarks
  * Each followed signal takes a window of about 8 MiB after the store's reserved words, 2 to 256
- * frames of `items(key)` values, plus a CPU copy as large whose views `show` hands to the keys.
+ * frames of `items(key)` values, plus a CPU copy as large whose views `show` hands to the keys; a
+ * sealed series' window holds no more frames than the series.
  */
 export function createPlayback<Key>(spec: {
   /** Words the store keeps before any window. */
@@ -117,28 +128,28 @@ export function createPlayback<Key>(spec: {
   show(key: Key, offset: number, view: Float32Array): void;
   /** Keep what `key` shows in its own words while the window under it is rewritten. */
   hold(key: Key): void;
-  /** The series `key` follows appended: its recorded range may have grown. */
-  appended(key: Key): void;
+  /** The series `key` follows changed: its recorded range may have grown. */
+  changed(key: Key): void;
   /** A read of the series `key` follows failed. */
   error(key: Key, cause: unknown): void;
 }): Playback<Key> {
   /** What each following key follows; keys following one signal share it. */
   const bounds = new Map<Key, Bound<Key>>();
-  /** Windows no signal holds, by the items they fit, reused before the store grows. */
-  const idle = new Map<number, Window[]>();
+  /** Windows no signal holds, by the items and slots they fit, reused before the store grows. */
+  const idle = new Map<string, Window[]>();
   /** Words the store must hold: its reserved words and every window. */
   let words = spec.reserved();
   let playhead = -Infinity;
 
-  function windowFor(items: number): Window {
-    const reused = idle.get(items)?.pop();
+  const shapeOf = (window: Pick<Window, 'items' | 'capacity'>): string =>
+    `${window.items}/${window.capacity}`;
+
+  function windowFor(items: number, capacity: number): Window {
+    const reused = idle.get(shapeOf({ items, capacity }))?.pop();
     if (reused) {
       reused.first = reused.count = reused.start = 0;
       return reused;
     }
-    // About 8 MiB per window, 2 to 256 slots, an even count.
-    const capacity =
-      2 * Math.max(1, Math.min(128, Math.floor(WINDOW_BYTES / 8 / Math.max(1, items))));
     const grown = words + capacity * items;
     // A store that cannot hold the window throws before anything changes.
     spec.store()?.reserve(grown);
@@ -342,9 +353,10 @@ export function createPlayback<Key>(spec: {
     bound.loading?.abort();
     bound.loading = null;
     bound.off();
-    const windows = idle.get(bound.window.items);
+    const shape = shapeOf(bound.window);
+    const windows = idle.get(shape);
     if (windows) windows.push(bound.window);
-    else idle.set(bound.window.items, [bound.window]);
+    else idle.set(shape, [bound.window]);
   }
 
   /** `key` joins `bound`, shown what it shows, and a failed read is tried again. */
@@ -370,20 +382,21 @@ export function createPlayback<Key>(spec: {
         }
       }
       stop(key);
+      const { live, frameCount } = series.state;
       const bound: Bound<Key> = {
         series,
         signal,
-        window: windowFor(items),
+        window: windowFor(items, capacityOf(items, live ? null : frameCount)),
         keys: [key],
         shown: -1,
         loading: null,
         failed: false,
         off: () => {},
       };
-      bound.off = series.on('append', () => {
+      bound.off = series.on('change', () => {
         if (!bound.keys.length) return;
         bound.failed = false;
-        for (const following of bound.keys) spec.appended(following);
+        for (const following of bound.keys) spec.changed(following);
         show(bound);
       });
       bounds.set(key, bound);

@@ -1,6 +1,7 @@
 /// <reference types="@webgpu/types" />
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CHANNELS } from '../src/channels.js';
 import { Renderer } from '../src/webgpu/renderer.js';
 import { encodeTopology, type Topology } from '../src/topology/index.js';
 import { encodeSegments } from '../src/segments/index.js';
@@ -27,6 +28,16 @@ afterEach(() => {
 
 function preparedScene(topology: Topology): PreparedScene {
   return prepareScene(encodeTopology(topology), encodeSegments(topology));
+}
+
+/** The channel words the network lays out for `topology`: a slot per channel. */
+function wordsOf(topology: Topology): number {
+  const edges = topology.edges.length / 2;
+  return Object.values(CHANNELS).reduce(
+    (words, { scope, components }) =>
+      words + (scope === 'vertex' ? topology.vertexCount : edges) * components,
+    0,
+  );
 }
 
 describe('Renderer resource lifecycle', () => {
@@ -160,15 +171,15 @@ describe('Renderer resource lifecycle', () => {
     // 3 vertices, 2 edges: 5 scalar vertex channels, 4 edge channels, one vec2 position channel.
     const topology = sampleTopology();
 
-    renderer.bindTopology(preparedScene(topology));
+    renderer.bindTopology(preparedScene(topology), wordsOf(topology));
     const channelBuffer = h.device.buffers.find(
       (buffer) => buffer.descriptor.label === 'channels',
     )!;
     expect(channelBuffer.descriptor.size).toBe((5 * 3 + 4 * 2 + 2 * 3) * 4);
 
     const dashes = new Float32Array([1, 0]);
-    renderer.writeChannel('edgeDash', dashes);
     // vertexColor, vertexHeight, vertexSize (3 each), edgeColor (2) precede edgeDash.
+    renderer.writeWords(3 * 3 + 2, dashes);
     expect(h.device.queue.writeBuffer).toHaveBeenLastCalledWith(
       expect.anything(),
       (3 * 3 + 2) * 4,
@@ -178,7 +189,7 @@ describe('Renderer resource lifecycle', () => {
     );
 
     const colors = new Float32Array([0, 0.5, 1]);
-    renderer.writeChannel('vertexColor', colors);
+    renderer.writeWords(0, colors);
     expect(h.device.queue.writeBuffer).toHaveBeenLastCalledWith(
       expect.anything(),
       0,
@@ -197,7 +208,7 @@ describe('Renderer resource lifecycle', () => {
   it('grows channel storage for series windows, keeping every word it holds', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);
-    renderer.bindTopology(preparedScene(sampleTopology()));
+    renderer.bindTopology(preparedScene(sampleTopology()), wordsOf(sampleTopology()));
     const fixed = 5 * 3 + 4 * 2 + 2 * 3;
     const channels = () => h.device.buffers.filter((b) => b.descriptor.label === 'channels');
     const [first] = channels();
@@ -236,7 +247,7 @@ describe('Renderer resource lifecycle', () => {
       'assertStorageBufferFits',
     );
 
-    renderer.bindTopology(preparedScene(sampleTopology())); // channel storage needs 116 bytes
+    renderer.bindTopology(preparedScene(sampleTopology()), wordsOf(sampleTopology())); // channel storage needs 116 bytes
 
     expect(fits.mock.calls.map(([label, bytes]) => [label, bytes])).toContainEqual([
       'channel',
@@ -251,15 +262,15 @@ describe('Renderer resource lifecycle', () => {
     const renderer = new Renderer(h.presentation);
     const topology = singleEdgeTopology();
 
-    expect(() => renderer.bindTopology(preparedScene(topology))).toThrow(
+    expect(() => renderer.bindTopology(preparedScene(topology), wordsOf(topology))).toThrow(
       'failed buffer network-segments',
     );
 
     expect(
       h.device.buffers.find((buffer) => buffer.descriptor.label === 'network-topology')?.destroyed,
     ).toBe(true);
-    expect(() => renderer.writeChannel('vertexColor', new Float32Array([1, 2]))).toThrow(
-      'network channel vertexColor has no storage slot',
+    expect(() => renderer.writeWords(0, new Float32Array([1, 2]))).toThrow(
+      'network channel storage is not bound',
     );
     renderer.destroy();
   });
@@ -269,7 +280,7 @@ describe('Renderer resource lifecycle', () => {
     const renderer = new Renderer(h.presentation);
     const topology = singleEdgeTopology();
 
-    expect(() => renderer.bindTopology(preparedScene(topology))).toThrow(
+    expect(() => renderer.bindTopology(preparedScene(topology), wordsOf(topology))).toThrow(
       'exceeds WebGPU buffer size limit',
     );
     renderer.destroy();
@@ -297,7 +308,7 @@ describe('Renderer frame encoding', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);
     const topology = sampleTopology();
-    renderer.bindTopology(preparedScene(topology));
+    renderer.bindTopology(preparedScene(topology), wordsOf(topology));
 
     expect(renderer.render(createUniforms())).toBe(false);
 
@@ -311,7 +322,7 @@ describe('Renderer frame encoding', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation, 1);
     const topology = sampleTopology();
-    renderer.bindTopology(preparedScene(topology));
+    renderer.bindTopology(preparedScene(topology), wordsOf(topology));
     await flushGpuPromises();
 
     const uniforms = createUniforms();
@@ -345,7 +356,7 @@ describe('Renderer frame encoding', () => {
     const renderer = new Renderer(h.presentation);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const topology = sampleTopology();
-    renderer.bindTopology(preparedScene(topology));
+    renderer.bindTopology(preparedScene(topology), wordsOf(topology));
     await flushGpuPromises();
     (renderer as unknown as { edgeSegStart: Uint32Array }).edgeSegStart = new Uint32Array([
       0, 0, 4,
@@ -369,7 +380,7 @@ describe('Renderer frame encoding', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation);
     const topology = sampleTopology();
-    renderer.bindTopology(preparedScene(topology));
+    renderer.bindTopology(preparedScene(topology), wordsOf(topology));
     renderer.useProjection('tilt');
     await flushGpuPromises();
 
@@ -409,7 +420,7 @@ describe('Renderer shade', () => {
       ),
     ).toBe(true);
 
-    renderer.bindTopology(preparedScene(sampleTopology()));
+    renderer.bindTopology(preparedScene(sampleTopology()), wordsOf(sampleTopology()));
     const uniforms = createUniforms();
     uniforms.host[0] = 7;
     expect(renderer.render(uniforms)).toBe(true);
@@ -455,7 +466,7 @@ describe('Renderer shade', () => {
     const h = makeFakeGpu();
     const renderer = new Renderer(h.presentation, 1);
     await flushGpuPromises();
-    renderer.bindTopology(preparedScene(sampleTopology()));
+    renderer.bindTopology(preparedScene(sampleTopology()), wordsOf(sampleTopology()));
     h.device.createRenderPipelineAsync.mockRejectedValueOnce(new Error('bad wgsl'));
 
     await expect(

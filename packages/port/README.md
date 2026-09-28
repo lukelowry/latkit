@@ -1,8 +1,9 @@
 # @latkit/port
 
-Where messages cross: a two-method port over workers, webviews, and sockets; one binary frame that
-carries typed arrays intact; and typed request, reply, and stream protocols served and connected
-over a port. No dependencies.
+Where latkit crosses a boundary: a two-method port over workers, webviews, sockets, and one thread;
+one binary frame that carries typed arrays intact; typed request, reply, and stream protocols with
+the checks their served side runs; and a `@latkit/model` model and its recordings served and
+connected across a port.
 
 ## Install
 
@@ -24,37 +25,62 @@ for more. `messagePort` wraps anything with the DOM message-target shape and car
 structured clone carries, transfer list included. `bytePort` wraps any channel that carries bytes
 faithfully and rides each message on one binary frame, so typed arrays view the received buffer in
 place even where structured clone does not survive. `socketPort` is `bytePort` over a browser
-`WebSocket` or a node `ws` socket, queueing posts until it opens. Each constructor takes its
-target structurally, so a `Worker`, a webview API, or a socket passes as it is; only `Port` is a
-named type.
+`WebSocket` or a node `ws` socket, queueing posts until it opens. `loopback()` is two ports wired
+to each other in one realm, every message crossing as a frame on a microtask: a client and a server
+on one thread, or a test's two ends, where `fail(reason)` delivers a transport failure. Each
+constructor takes its target structurally, so a `Worker`, a webview API, or a socket passes as it
+is; only `Port` is a named type.
 
 Every message is JSON values plus typed arrays (`Uint8Array` through `Float64Array`), anywhere in
 the value, on every transport. A service written against a worker runs unchanged against a socket.
-`messagePort` does not refuse what structured clone would carry beyond that; the framed `loopback`
-in `@latkit/port/testing` does.
+`messagePort` does not refuse what structured clone would carry beyond that; `loopback` does.
+
+## A model across a port
+
+```ts
+// the worker
+import { messagePort, serveModel, serveRecording } from '@latkit/port';
+
+serveModel(messagePort(self), model); // its bytes and, with an engine, its runs
+serveRecording(messagePort(self), recording); // a recording the worker keeps
+
+// the page
+import { connectModel, connectRecording } from '@latkit/port';
+
+const model = await connectModel(port, { progress });
+const run = model.run!(command, { id: 'fault-4' }); // runs on the worker, fills a recording here
+const kept = await connectRecording(port, 'fault-4'); // or opens the worker's own
+model.close();
+```
+
+Only a model's source crosses: the core, each class shard as it is first asked for, the vendor's
+bytes, and each run as a stream. The far side opens it with `openModel`, so it is the same `Model`;
+a recording opens with `openRecording`, its clock at hand and its samples read in windows. A
+connected side is a `Remote<T>`: the model or recording, plus `close`. A run's command is bytes
+unless the vendor names its own type, which `serveModel<Command>` checks with its `command` option.
 
 ## A protocol
 
 Both ends import one value: the name on the port, the request, reply, and event types, and the
-guard the served side checks requests with.
+check the served side runs on every request.
 
 ```ts
-import { protocol } from '@latkit/port';
-import { index, requests, str } from '@latkit/port/guard';
+import { check, protocol } from '@latkit/port';
 
 type Request =
   { readonly op: 'greet'; readonly name: string } | { readonly op: 'count'; readonly upTo: number };
 
 export const HELLO = protocol<Request, string, { readonly tick: number }>(
   'hello',
-  requests<Request>({ greet: { name: str }, count: { upTo: index } }),
+  check.requests<Request>({ greet: { name: check.string }, count: { upTo: check.index } }),
 );
 ```
 
-`@latkit/port/guard` holds the guards: `str`, `bool`, `finite`, `index`, `bounded`, `bytes`,
-`oneOf`, `nullable`, `optional`, `object`, `arrayOf`, `stringMap`, `keyedRecord`, and `requests`,
-whose shape map the compiler keeps exhaustive over the request union's `op`. A guarded request that
-fails is answered with an error and never reaches the handler.
+`check` holds the checks: `string`, `boolean`, `finite`, `index`, `bounded`, `bytes`, `oneOf`,
+`nullable`, `optional`, `object`, `array`, `stringMap`, `record`, and `requests`, whose shape map
+the compiler keeps exhaustive over the request union's `op` and exact in every field's type. A
+check returns when a value is what it claims and throws a `TypeError` naming what is wrong, so a
+refused request is answered with that reason and never reaches the handler.
 
 ## Serve and connect
 
@@ -98,24 +124,6 @@ for await (const frame of connect(port, FRAMES).stream(request, { signal })) pai
 
 Leaving the loop early, or aborting `signal`, cancels the handler and ends the iteration quietly. A
 handler failure ends it with that error. A reply whose buffers the handler relinquishes is wrapped
-with `transferred(value, buffers)`, for a reply or for a streamed item alike.
-
-The root exports `messagePort`, `bytePort`, `socketPort`, `protocol`, `serve`, `connect`,
-`transferred`, and `describeError`, with the types `Port`, `Protocol`, `Service`, and
-`Connection`. Call options (`signal`, `progress`, `transfer`) and a handler's shape are stated
-inline on `call`, `stream`, and `serve`; `Guard` lives with the guards in `@latkit/port/guard`.
-
-## Testing
-
-```ts
-import { loopback, settle } from '@latkit/port/testing';
-
-const [server, client] = loopback();
-serve(server, HELLO, handler);
-const hello = connect(client, HELLO);
-await settle(); // let microtask deliveries land
-client.fail('worker crashed'); // every connection on `client` closes with this reason
-```
-
-`loopback` frames every message, so a test payload that would not survive a byte port fails in the
-unit lane.
+with `transferred(value, buffers)`, for a reply or for a streamed item alike. Call options
+(`signal`, `progress`, `transfer`) and a handler's shape are stated inline on `call`, `stream`, and
+`serve`.

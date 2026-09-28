@@ -9,8 +9,7 @@
     "packages/diagram",
     "packages/monitor",
     "packages/network",
-    "packages/port",
-    "packages/remote"
+    "packages/port"
   ],
   "packageOptions": {
     "entryPoints": ["src/index.ts"],

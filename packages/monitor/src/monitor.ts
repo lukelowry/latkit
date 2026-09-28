@@ -7,13 +7,9 @@ import {
   type FrameLoop,
   type Presentation,
 } from '@latkit/gpu';
-import {
-  bakeColormap,
-  createEmitter,
-  validateSeries,
-  type Domain,
-  type Series,
-} from '@latkit/model';
+import type { Domain, Series } from '@latkit/model';
+import { bakeColormap, createEmitter } from '@latkit/gpu';
+import { validateSeries } from '@latkit/model';
 import { Lane, storedElement, type Scan, type Style } from './lane.js';
 import { OPTIONS, own, resolveOptions, validateOptions, type Options } from './options.js';
 import { LanePainter } from './painter.js';
@@ -67,9 +63,14 @@ export interface Monitor {
    * only while that canvas is the one bound or binding.
    */
   detach(canvas?: HTMLCanvasElement): void;
-  /** Bind a series; committed appends are observed automatically. Loading it again retries failed work. */
-  load(series: Series, signal?: number): void;
-  setSignal(signal: number): void;
+  /**
+   * Show one signal of a series, such as a model `Field`; committed appends are observed
+   * automatically. Loading it again retries failed work.
+   *
+   * @throws TypeError when `binding` is not a series binding; RangeError for a signal the series
+   * lacks.
+   */
+  load(binding: { readonly series: Series; readonly signal: number }): void;
   /** Validate the entire patch before changing anything. devices is construction-only. */
   setOptions(options: Options): void;
   /** Highlight a class element; an unrecorded index is ignored. */
@@ -156,7 +157,7 @@ export function createMonitor(options: Options = {}): Monitor {
       },
     });
     entry.lane = lane;
-    entry.off = series.on('append', () => {
+    entry.off = series.on('change', () => {
       if (entry.lane === lane) lane.update();
     });
     lane.select(selected);
@@ -322,9 +323,13 @@ export function createMonitor(options: Options = {}): Monitor {
     attached: (bound) => events.emit('attached', bound),
     lost: (loss) => events.emit('deviceLost', loss),
   });
-  function checkSignal(input: Series, index: number): void {
-    if (!Number.isInteger(index) || index < 0 || index >= input.signalCount)
-      throw new RangeError(`monitor: signal ${index} out of [0, ${input.signalCount})`);
+  function checkLoad(input: { readonly series: Series; readonly signal: number }): void {
+    if (!input || typeof input !== 'object')
+      throw new TypeError('monitor: load takes { series, signal }');
+    validateSeries(input.series);
+    const { series: next, signal: index } = input;
+    if (!Number.isInteger(index) || index < 0 || index >= next.signals.length)
+      throw new RangeError(`monitor: signal ${index} out of [0, ${next.signals.length})`);
   }
 
   const api: Monitor = {
@@ -337,10 +342,10 @@ export function createMonitor(options: Options = {}): Monitor {
     on: (event, handler) => events.on(event, handler),
     attach: (canvas) => attachment.attach(canvas),
     detach: (canvas) => attachment.detach(canvas),
-    load(next, index = 0) {
+    load(input) {
       if (destroyed) return;
-      validateSeries(next);
-      checkSignal(next, index);
+      checkLoad(input);
+      const { series: next, signal: index } = input;
       if (series === next && signalIndex === index) {
         binding?.lane?.update();
         return;
@@ -351,11 +356,6 @@ export function createMonitor(options: Options = {}): Monitor {
       lastReading = null;
       if (selected !== null && storedElement(next, selected) === null) selected = null;
       if (binding) replay(binding);
-    },
-    setSignal(index) {
-      if (destroyed) return;
-      if (!series) throw new Error('monitor: setSignal before load');
-      api.load(series, index);
     },
     setOptions(patch) {
       if (destroyed) return;

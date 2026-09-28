@@ -1,4 +1,4 @@
-import { validateRgba, type RGBA } from '@latkit/model';
+import { validateRgba, type RGBA } from '@latkit/colormaps';
 
 import { POINTER_NONE, type Shade } from '../shade.js';
 

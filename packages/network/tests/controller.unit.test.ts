@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createNetwork } from '../src/controller.js';
-import { createSeries, type Item } from '@latkit/model';
+import { createModel, createSeries, type Item } from '@latkit/model';
 
 import type { ControllerDeps, Events, Options } from '../src/controller.js';
 import {
@@ -753,7 +753,7 @@ describe('createNetwork controller', () => {
     expect(h.renderer.setBorders).toHaveBeenCalledTimes(2);
     expect(h.renderer.writeColormap).toHaveBeenCalled();
     expectRgbaClose(h.loop.uniforms.vBaseColor, [0.9, 0.8, 0.7, 1]);
-    expect(h.renderer.writeChannel).toHaveBeenCalledWith('vertexColor', expect.any(Float32Array));
+    expect(h.renderer.channelWrites.map((write) => write.channel)).toContain('vertexColor');
     expect(h.loop.wake).toHaveBeenCalledTimes(5);
   });
 
@@ -1973,8 +1973,8 @@ describe('series-bound channels', () => {
   /** Frames at times 0, 1, 2 over three vertices, item `e` of frame `f` holding `10f + e`. */
   const recording = () =>
     createSeries({
+      signals: ['x'],
       elementCount: 3,
-      signalCount: 1,
       time: Float64Array.of(0, 1, 2),
       values: Float64Array.of(0, 1, 2, 10, 11, 12, 20, 21, 22),
     });
@@ -1996,10 +1996,14 @@ describe('series-bound channels', () => {
 
     h.network.detach();
     h.renderer.wordWrites.length = 0;
+    h.renderer.channelWrites.length = 0;
     await h.network.attach(h.canvas);
-    expect(h.renderer.wordWrites[0]!.offset).toBe(FIXED);
-    expect(Array.from(h.renderer.wordWrites[0]!.values.subarray(0, 9))).toEqual([
-      0, 1, 2, 10, 11, 12, 20, 21, 22,
+    // The slots come back first, then the window after them.
+    const window = h.renderer.wordWrites.find((write) => write.offset === FIXED)!;
+    expect(Array.from(window.values.subarray(0, 9))).toEqual([0, 1, 2, 10, 11, 12, 20, 21, 22]);
+    expect(h.renderer.channelWrites.map((write) => write.channel)).toEqual([
+      'vertexPosition',
+      'vertexColor',
     ]);
     expect(h.loop.uniforms.channel.vColorOffset).toBe(FIXED + 3);
 
@@ -2023,6 +2027,50 @@ describe('series-bound channels', () => {
     expect(h.loop.uniforms.channel.vColorOffset).toBe(FIXED + 6);
     expect(h.network.getChannelDomain('vertexColor')).toEqual([0, 100]);
     expect(h.renderer.channelWrites).toHaveLength(writes);
+  });
+
+  it('binds a model field as a series: a column in two slots, a signal at the playhead', async () => {
+    const h = await makeHarness();
+    const topology = geographicTopology();
+    h.network.load(topology);
+    const model = createModel({
+      vendor: 'test',
+      id: 'grid',
+      name: 'Grid',
+      meta: {},
+      topology,
+      owners: { vertex: 'bus' },
+      classes: [
+        {
+          id: 'bus',
+          label: 'Bus',
+          count: 3,
+          columns: [{ kind: 'number', id: 'kv', label: 'kV' }],
+          signals: [{ id: 'Vm', label: 'Vm', unit: 'pu', recorded: true }],
+        },
+      ],
+      load: async () => ({ labels: ['a', 'b', 'c'], values: [Float64Array.of(115, 230, 345)] }),
+      bytes: async () => new Uint8Array(),
+    });
+
+    const kv = (await model.field({ classId: 'bus', kind: 'column', id: 'kv' }))!;
+    h.network.setChannel('vertexHeight', kv);
+    await vi.waitFor(() => expect(h.loop.uniforms.channel.vHeightOffset).toBe(FIXED));
+    expect(h.renderer.reserved).toBe(FIXED + 2 * 3);
+    expect(h.network.getChannelDomain('vertexHeight')).toEqual([115, 345]);
+
+    const recording = model.record({ id: 'run' });
+    recording.append({
+      time: Float64Array.of(0, 1),
+      values: { bus: Float32Array.of(1, 1, 1, 0.5, 1, 1.5) },
+    });
+    const vm = (await model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }, recording))!;
+    h.network.setChannel('vertexColor', vm);
+    await vi.waitFor(() => expect(h.loop.uniforms.channel.vColorOffset).toBe(FIXED + 2 * 3));
+    h.network.seek(1);
+    expect(h.loop.uniforms.channel.vColorOffset).toBe(FIXED + 2 * 3 + 3);
+    expect(h.loop.uniforms.channel.vHeightOffset).toBe(FIXED);
+    expect(h.network.getChannelDomain('vertexColor')).toEqual([0.5, 1.5]);
   });
 
   it('leaves a channel unbound when the device cannot hold its frames, and attaches again', async () => {

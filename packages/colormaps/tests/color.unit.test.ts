@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { parseColor } from '../src/index.js';
+import { parseColor, validateRgba } from '../src/index.js';
 
 const close = (actual: readonly number[] | null, expected: readonly number[], digits = 3) => {
   expect(actual).not.toBeNull();
@@ -133,3 +133,25 @@ function stubContext(
   } as unknown as Element;
   return { context, append, probes };
 }
+
+describe('validateRgba', () => {
+  it('accepts four finite components in [0, 1]', () => {
+    expect(() => validateRgba([0, 0.5, 1, 1])).not.toThrow();
+  });
+
+  it('rejects the wrong shape with a TypeError naming the value', () => {
+    expect(() => validateRgba([0, 0, 0], 'option x')).toThrow(
+      new TypeError('option x must be an RGBA tuple'),
+    );
+    expect(() => validateRgba(['0', 0, 0, 1])).toThrow(TypeError);
+    expect(() => validateRgba(null)).toThrow(TypeError);
+  });
+
+  it('rejects components outside [0, 1] or non-finite with a RangeError', () => {
+    expect(() => validateRgba([0, 0, 1.5, 1], 'option x')).toThrow(
+      new RangeError('option x RGBA components must be finite and in [0, 1]'),
+    );
+    expect(() => validateRgba([Number.NaN, 0, 0, 1])).toThrow(RangeError);
+    expect(() => validateRgba([-0.1, 0, 0, 1])).toThrow(RangeError);
+  });
+});

@@ -1,5 +1,11 @@
 import { PERCEPTUAL } from './perceptual.js';
-import type { Colormap } from '@latkit/model';
+
+/**
+ * Maps a normalized scalar to RGB channels in `[0, 1]`.
+ *
+ * @param t - Normalized value; implementations clamp it to `[0, 1]`.
+ */
+export type Colormap = (t: number) => readonly [number, number, number];
 
 type Rgb01 = readonly [number, number, number];
 type CoefficientRows = readonly [Rgb01, Rgb01, Rgb01, Rgb01, Rgb01, Rgb01];

@@ -130,12 +130,12 @@
           aria-label="Two synthetic signals over six elements"
           colormap="viridis"
           line-width-px="2"
-          signal="0"
+          signal="rising"
         >
           <script type="application/json">
             {
               "time": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-              "signalCount": 2,
+              "signals": ["rising", "falling"],
               "elementCount": 6,
               "values": [
                 0.1, 0.3, 0.5, 0.7, 0.9, 0.2, 0.15, 0.35, 0.55, 0.75, 0.85, 0.25, 0.2, 0.4, 0.6,
@@ -152,8 +152,8 @@
           <div class="fallback"><strong>Monitor unavailable without WebGPU.</strong></div>
         </latkit-monitor>
         <div class="toolbar" role="group" aria-label="signal">
-          <button type="button" data-signal="0" aria-pressed="true">signal 0</button>
-          <button type="button" data-signal="1" aria-pressed="false">signal 1</button>
+          <button type="button" data-signal="rising" aria-pressed="true">rising</button>
+          <button type="button" data-signal="falling" aria-pressed="false">falling</button>
           <span id="reading" class="readout">reading: -</span>
         </div>
       </section>

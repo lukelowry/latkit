@@ -1,24 +1,25 @@
 /**
- * A queryable table over a class's columns: free-text search over labels and formatted cells,
- * numeric-aware stable sort, and windows that format only the rows they return.
+ * A queryable table over one class: its columns and, at a time, its signals; free-text search
+ * over labels and formatted cells, numeric-aware stable sort, and windows that format only the
+ * rows they return. `Model.grid` makes one.
  *
  * @remarks
  * A grid is immutable over its inputs; full passes run cooperatively in chunks so a large class
- * never blocks the event loop. A host whose values move (a monitor table at a playhead) builds a
- * new grid from freshly sampled columns.
+ * never blocks the event loop. A table whose values move, a class at a playhead, asks the model for
+ * a grid at each time it shows.
  */
 
 import { breathe } from './breathe.js';
 import type { Column } from './model.js';
 
-/** Which column orders the rows, or `null` for the element label, and in which direction. */
-export interface GridSort {
-  readonly column: string | null;
+/** Which column orders the rows, by its index in `Grid.columns` or null for the label, and how. */
+interface GridSort {
+  readonly column: number | null;
   readonly dir: 'asc' | 'desc';
 }
 
 /** A filtered, sorted slice of rows plus the filtered total, for a scroll spacer. */
-export interface GridWindow {
+interface GridWindow {
   readonly rows: readonly {
     readonly index: number;
     readonly label: string;
@@ -29,6 +30,16 @@ export interface GridWindow {
 
 /** A query engine over one class. */
 export interface Grid {
+  /**
+   * What each cell of a row shows, in order: the class's columns, then the signals its recording
+   * holds at the grid's time.
+   */
+  readonly columns: readonly {
+    readonly kind: 'column' | 'signal';
+    readonly id: string;
+    readonly label: string;
+    readonly unit?: string;
+  }[];
   /** Rows `offset` through `offset + limit` under `query` and `sort`. */
   window(
     query: string,
@@ -124,20 +135,42 @@ async function sortIndices(
 }
 
 /**
- * Build a grid over one class's labels and columns.
+ * Build a grid over one class's labels, its columns, and the signals sampled at its time.
  *
- * @throws Error when a column's length differs from the label count or a column id repeats.
+ * @throws Error when a column's length differs from the label count or an id repeats in its kind.
  */
-export function createGrid(labels: readonly string[], columns: readonly Column[]): Grid {
+export function createGrid(
+  labels: readonly string[],
+  declared: readonly Column[],
+  signals: readonly Column[] = [],
+): Grid {
   const count = labels.length;
-  const ids = new Set<string>();
-  for (const column of columns) {
-    if (ids.has(column.id)) throw new Error(`column '${column.id}' repeats`);
-    ids.add(column.id);
-    if (column.values.length !== count) {
-      throw new Error(`column '${column.id}' has ${column.values.length} values for ${count} rows`);
+  const columns = [...declared, ...signals];
+  for (const [kind, list] of [
+    ['column', declared],
+    ['signal', signals],
+  ] as const) {
+    const ids = new Set<string>();
+    for (const column of list) {
+      if (ids.has(column.id)) throw new Error(`${kind} '${column.id}' repeats`);
+      ids.add(column.id);
+      if (column.values.length !== count) {
+        throw new Error(
+          `${kind} '${column.id}' has ${column.values.length} values for ${count} rows`,
+        );
+      }
     }
   }
+  const described: Grid['columns'] = Object.freeze(
+    columns.map((column, at) =>
+      Object.freeze({
+        kind: at < declared.length ? ('column' as const) : ('signal' as const),
+        id: column.id,
+        label: column.label,
+        ...(column.kind === 'number' && column.unit !== undefined && { unit: column.unit }),
+      }),
+    ),
+  );
   const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
   let disposed = false;
   let blobs: readonly string[] | null = null;
@@ -193,7 +226,7 @@ export function createGrid(labels: readonly string[], columns: readonly Column[]
     const key = `${sort.column === null ? 'label' : `column:${sort.column}`}\0${sort.dir}`;
     const cached = orders.get(key);
     if (cached) return cached;
-    const column = sort.column === null ? null : columns.find((c) => c.id === sort.column);
+    const column = sort.column === null ? null : columns[sort.column];
     if (column === undefined) return null;
     return once(`order:${key}`, async () => {
       let compare: (a: number, b: number) => number;
@@ -255,6 +288,7 @@ export function createGrid(labels: readonly string[], columns: readonly Column[]
   }
 
   return {
+    columns: described,
     async window(query, sort, offset, limit, signal) {
       const indices = await displayOrder(query, sort, signal);
       const total = indices ? indices.length : count;

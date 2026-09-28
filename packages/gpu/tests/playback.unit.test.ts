@@ -1,19 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createPlayback, createSeries, type Series } from '../src/index.js';
+import { createSeries, type Series } from '@latkit/model';
+
+import { createPlayback } from '../src/playback.js';
 
 const RESERVED = 100;
 
 /** A series of `frames` frames at times 0, 1, 2, …, where item `e` of frame `f` is `10f + e`. */
 function series(items: number, frames: number, elements?: Uint32Array) {
   const stored = elements?.length ?? items;
-  const live = createSeries({ elementCount: stored, signalCount: 1, elements });
+  const live = createSeries({ signals: ['a'], elementCount: stored, elements });
   const append = (count: number): void => {
     const from = live.state.frameCount;
     live.append({
-      elementCount: stored,
-      signalCount: 1,
-      ...(elements && { elements }),
       time: Float64Array.from({ length: count }, (_, i) => from + i),
       values: Float64Array.from(
         { length: count * stored },
@@ -40,6 +39,7 @@ function series(items: number, frames: number, elements?: Uint32Array) {
     series: wrapped,
     read,
     append,
+    seal: () => live.seal(),
     hold(): () => void {
       let open!: () => void;
       gate = new Promise<void>((resolve) => (open = resolve));
@@ -63,7 +63,7 @@ function harness(items: number) {
   const shows: Array<{ key: string; offset: number; view: number[] }> = [];
   const holds: string[] = [];
   const errors: Array<{ key: string; cause: unknown }> = [];
-  const appended = vi.fn();
+  const changed = vi.fn();
   const writes: Array<{ offset: number; values: number[] }> = [];
   const store: Store & { reserved: number } = {
     reserved: 0,
@@ -81,7 +81,7 @@ function harness(items: number) {
     store: () => current,
     show: (key, offset, view) => shows.push({ key, offset, view: Array.from(view) }),
     hold: (key) => holds.push(key),
-    appended,
+    changed,
     error: (key, cause) => errors.push({ key, cause }),
   });
   return {
@@ -89,7 +89,7 @@ function harness(items: number) {
     shows,
     holds,
     errors,
-    appended,
+    changed,
     writes,
     store,
     use: (next: Store | null) => (current = next),
@@ -174,7 +174,7 @@ describe('playback', () => {
     expect(h.holds).toEqual([]);
   });
 
-  it('reads on as a live series appends, and says it appended', async () => {
+  it('reads on as a live series appends, and says it changed', async () => {
     const h = harness(3);
     const s = series(3, 10);
     h.playback.follow('a', s.series, 0);
@@ -183,7 +183,7 @@ describe('playback', () => {
     s.read.mockClear();
 
     s.append(5);
-    expect(h.appended).toHaveBeenCalledExactlyOnceWith('a');
+    expect(h.changed).toHaveBeenCalledExactlyOnceWith('a');
     h.playback.seek(14);
     await vi.waitFor(() =>
       expect(h.shown()).toMatchObject({ offset: offsetOf(14), view: [140, 141, 142] }),
@@ -344,6 +344,26 @@ describe('playback', () => {
     h.playback.follow('a', s.series, 0);
     await vi.waitFor(() => expect(h.shows).toHaveLength(1));
     expect(h.store.reserved).toBe(RESERVED + 20 * 100_000);
+  });
+
+  it('sizes the window of a sealed series to its frames, so a constant takes two slots', async () => {
+    const h = harness(3);
+    const constant = series(3, 1);
+    constant.seal();
+    h.playback.follow('a', constant.series, 0);
+    await vi.waitFor(() => expect(h.shows).toHaveLength(1));
+    expect(h.store.reserved).toBe(RESERVED + 2 * 3);
+
+    const five = series(3, 5);
+    five.seal();
+    h.playback.follow('b', five.series, 0);
+    await vi.waitFor(() => expect(h.shows).toHaveLength(2));
+    expect(h.store.reserved).toBe(RESERVED + 2 * 3 + 6 * 3);
+    h.playback.seek(4);
+    expect(h.shown()).toMatchObject({ key: 'b', view: [40, 41, 42] });
+    h.playback.seek(99);
+    expect(h.shown()).toMatchObject({ key: 'b', view: [40, 41, 42] });
+    expect(five.read).toHaveBeenCalledOnce();
   });
 
   it('forgets every window on reset, starting again after the reserved words', async () => {

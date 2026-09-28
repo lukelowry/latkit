@@ -11,13 +11,24 @@ import {
 
 import { optionAttributes, parseOptionAttribute, type OptionAttribute } from './attributes.js';
 import type { ElementSpec, ShellElement, Warn } from './element.js';
-import { u32, f64, integer, optional, quote, record, required, type NumericJSON } from './json.js';
+import {
+  u32,
+  f64,
+  integer,
+  optional,
+  quote,
+  record,
+  required,
+  strings,
+  type NumericJSON,
+} from './json.js';
 
 /** JSON-compatible series input accepted by {@link parseSeries}; signal-major samples, encoded. */
 export interface SeriesJSON {
   readonly time: NumericJSON;
   readonly values: NumericJSON;
-  readonly signalCount: number;
+  /** The signals `values` holds, by id, in order. */
+  readonly signals: readonly string[];
   readonly elementCount: number;
   readonly elements?: NumericJSON;
 }
@@ -80,7 +91,7 @@ export function parseSeries(input: unknown): Series {
   return createSeries({
     time: f64(required(source, 'time', 'root'), 'time'),
     values: f64(required(source, 'values', 'root'), 'values'),
-    signalCount: integer(required(source, 'signalCount', 'root'), 'signalCount'),
+    signals: strings(required(source, 'signals', 'root'), 'signals'),
     elementCount: integer(required(source, 'elementCount', 'root'), 'elementCount'),
     ...(elements === undefined ? {} : { elements: u32(elements, 'elements') }),
   });
@@ -131,7 +142,7 @@ export function monitorSpec(deps: MonitorDeps): ElementSpec<Monitor, Series> {
     load(context) {
       const series = context.data!;
       const signal = signalValue(context.host.getAttribute('signal'), series, context.warn);
-      context.controller.load(series, signal);
+      context.controller.load({ series, signal });
     },
 
     apply(context, name, value) {
@@ -147,7 +158,8 @@ export function monitorSpec(deps: MonitorDeps): ElementSpec<Monitor, Series> {
         return;
       }
       if (name === 'signal' && context.data) {
-        context.controller.setSignal(signalValue(value, context.data, context.warn));
+        const series = context.data;
+        context.controller.load({ series, signal: signalValue(value, series, context.warn) });
       }
     },
   };
@@ -180,12 +192,12 @@ function colormapValue(raw: string | null, warn: Warn): NonNullable<Options['col
   return OPTIONS.colormap.default;
 }
 
-/** The `signal` attribute as an index into `series`, or signal 0. */
+/** The signal the `signal` attribute names in `series`, or its first. */
 function signalValue(raw: string | null, series: Series, warn: Warn): number {
   if (raw === null) return 0;
-  const signal = Number(raw.trim());
-  if (Number.isInteger(signal) && signal >= 0 && signal < series.signalCount) return signal;
-  warn(`Invalid signal ${quote(raw)}; showing signal 0.`);
+  const signal = series.signals.indexOf(raw.trim());
+  if (signal >= 0) return signal;
+  warn(`Unknown signal ${quote(raw)}; showing the first.`);
   return 0;
 }
 

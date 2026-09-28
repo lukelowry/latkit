@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { createSeries, type Colormap, type Netlist } from '@latkit/model';
+import type { Colormap } from '@latkit/colormaps';
+import { createSeries, type Netlist } from '@latkit/model';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SLOT, type SlotChannel } from '../src/channels.js';
@@ -832,8 +833,8 @@ describe('series-bound channels', () => {
   /** Two frames at times 0 and 1 over `elements` items, value `i` at flat index `i`. */
   const recording = (elements: number, values?: readonly number[]) =>
     createSeries({
+      signals: ['x'],
       elementCount: elements,
-      signalCount: 1,
       time: Float64Array.of(0, 1),
       values: Float64Array.from(values ?? Array.from({ length: 2 * elements }, (_, i) => i)),
     });
@@ -1694,8 +1695,8 @@ describe('the TwoArea example from DIAGRAM.md', () => {
   it('runs verbatim against the harness', async () => {
     const fakes = createFakes();
     const created: Diagram[] = [];
-    // The example's imports, bound to the harness: `@latkit/colormaps` is not a dependency of
-    // this package (and has no 'vik'), so a diverging stand-in plays its part.
+    // The example's imports, bound to the harness: `@latkit/colormaps` has no 'vik', so a diverging
+    // stand-in plays its part.
     const createDiagram = (options: Options): Diagram => {
       const diagram = fakes.create(options);
       created.push(diagram);

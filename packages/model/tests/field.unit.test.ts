@@ -1,61 +1,91 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  type ClassData,
-  type ClassSpec,
-  extent,
-  createSeries,
-  fieldKey,
-  fieldsOf,
-  type Series,
-  validateDomain,
-} from '../src/index.js';
+import { createSeries, extent, type Recording, validateDomain } from '../src/index.js';
+import { sampleModel } from './fixture.js';
 
-const spec: ClassSpec = {
-  id: 'bus',
-  label: 'Bus',
-  count: 2,
-  signals: [
-    { id: 'Vm', label: 'Voltage', unit: 'pu', recorded: true },
-    { id: 'Va', label: 'Angle', unit: 'deg', recorded: false },
-    { id: 'P', label: 'Power', unit: 'MW', recorded: true },
-  ],
-};
-
-const data: ClassData = {
-  labels: ['a', 'b'],
-  columns: [
-    { kind: 'number', id: 'kv', label: 'kV', unit: 'kV', values: Float64Array.of(1, 2) },
-    { kind: 'text', id: 'name', label: 'Name', values: ['a', 'b'] },
-    { kind: 'flag', id: 'gen', label: 'Generator', values: Uint8Array.of(1, 0) },
-  ],
-};
-
-function results(signalCount: number): Series {
-  return createSeries({ elementCount: 2, signalCount });
-}
-
-describe('fields', () => {
-  it('lists number columns then recorded signals, with a blank unit for an unlabelled column', () => {
-    expect(
-      fieldsOf(spec, data).map((field) => [field.source, field.id, field.label, field.unit]),
-    ).toEqual([
-      ['column', 'kv', 'kV', 'kV'],
-      ['signal', 'Vm', 'Voltage', 'pu'],
-      ['signal', 'P', 'Power', 'MW'],
-    ]);
-    expect(fieldsOf(spec, null).map((field) => field.id)).toEqual(['Vm', 'P']);
+describe('field', () => {
+  it('resolves a number column to a sealed series of one frame that holds at every time', async () => {
+    const model = sampleModel();
+    const vm = (await model.field({ classId: 'bus', kind: 'column', id: 'Vm' }))!;
+    expect(vm).toMatchObject({
+      ref: { classId: 'bus', kind: 'column', id: 'Vm' },
+      label: 'Voltage',
+      unit: 'pu',
+      signal: 0,
+      domain: [0.98, 1.02],
+    });
+    expect(vm.series.signals).toEqual(['Vm']);
+    expect(vm.series.state).toMatchObject({ frameCount: 1, live: false });
+    for (const time of [-5, 0, 1e9]) expect([...(await vm.at(time))]).toEqual([1.02, NaN, 0.98]);
+    await expect(vm.at(Number.NaN)).rejects.toThrow(RangeError);
   });
 
-  it('offers signals only when the results carry every recorded one', () => {
-    expect(fieldsOf(spec, data, results(2)).map((field) => field.id)).toEqual(['kv', 'Vm', 'P']);
-    expect(fieldsOf(spec, data, results(1)).map((field) => field.id)).toEqual(['kv']);
+  it('resolves one reference to one series, so renderers share its frames', async () => {
+    const model = sampleModel();
+    const ref = { classId: 'bus', kind: 'column', id: 'Vm' } as const;
+    const [a, b] = await Promise.all([model.field(ref), model.field(ref)]);
+    expect(a!.series).toBe(b!.series);
+    expect((await model.field(ref))!.series).toBe(a!.series);
   });
 
-  it('keys a reference stably', () => {
-    const ref = { classId: 'bus', source: 'signal', id: 'P' } as const;
-    expect(fieldKey(ref)).toBe(fieldKey({ ...ref }));
-    expect(fieldKey(ref)).not.toBe(fieldKey({ ...ref, source: 'column' }));
+  it('resolves a signal against a recording, reading at its clock and growing its domain', async () => {
+    const model = sampleModel();
+    const recording = model.record({ id: 'run' });
+    const vm = (await model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }, recording))!;
+    expect(vm).toMatchObject({ label: 'Voltage', unit: 'pu', signal: 0, domain: [0, 1] });
+    expect(vm.series).toBe(await recording.series('bus'));
+    expect([...(await vm.at(3))]).toEqual([NaN, NaN, NaN]);
+
+    recording.append({
+      time: Float64Array.of(0, 1),
+      values: { bus: Float32Array.of(1, 2, 3, 4, 5, 6) },
+    });
+    expect([...(await vm.at(-1))]).toEqual([1, 2, 3]);
+    expect([...(await vm.at(0.5))]).toEqual([1, 2, 3]);
+    expect([...(await vm.at(7))]).toEqual([4, 5, 6]);
+    expect(vm.domain).toEqual([1, 6]);
+    await expect(vm.at(1, AbortSignal.abort())).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('spreads a sparse series over every element of its class', async () => {
+    const model = sampleModel();
+    const sparse = createSeries({
+      signals: ['Vm'],
+      elementCount: 2,
+      elements: Uint32Array.of(0, 2),
+      time: Float64Array.of(0),
+      values: Float64Array.of(7, 9),
+    });
+    const recording: Recording = {
+      ...model.record({ id: 'sparse' }),
+      frameAt: () => 0,
+      series: async () => sparse,
+    };
+    const vm = (await model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }, recording))!;
+    const dense = await vm.at(0);
+    expect(dense).toBeInstanceOf(Float64Array);
+    expect([...dense]).toEqual([7, NaN, 9]);
+  });
+
+  it('resolves nothing it has no values for', async () => {
+    const model = sampleModel();
+    const recording = model.record({ id: 'run' });
+    const none = [
+      model.field({ classId: 'nope', kind: 'column', id: 'Vm' }),
+      model.field({ classId: 'bus', kind: 'column', id: 'nope' }),
+      model.field({ classId: 'bus', kind: 'column', id: 'zone' }),
+      model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }),
+      model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }, null),
+      model.field({ classId: 'bus', kind: 'signal', id: 'Va' }, recording),
+      model.field({ classId: 'area', kind: 'signal', id: 'P' }, recording),
+    ];
+    expect(await Promise.all(none)).toEqual(Array(none.length).fill(null));
+    await expect(model.field({ classId: 'bus', kind: 'value', id: 'Vm' } as never)).rejects.toThrow(
+      TypeError,
+    );
+    await expect(
+      model.field({ classId: 'bus', kind: 'column', id: 'Vm' }, null, AbortSignal.abort()),
+    ).rejects.toMatchObject({ name: 'AbortError' });
   });
 });
 

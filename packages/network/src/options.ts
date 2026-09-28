@@ -1,5 +1,6 @@
 import { devices, type DevicePool } from '@latkit/gpu';
-import { validateDomain, validateRgba, type Colormap, type Domain, type RGBA } from '@latkit/model';
+import { validateRgba, type Colormap, type RGBA } from '@latkit/colormaps';
+import { validateDomain, type Domain } from '@latkit/model';
 
 /**
  * Network display options: the construction record and the live patch.

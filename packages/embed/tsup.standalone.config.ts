@@ -2,7 +2,7 @@ import { defineConfig } from 'tsup';
 
 export default defineConfig({
   entry: {
-    embed: 'src/register.ts',
+    embed: 'src/script.ts',
   },
   format: ['esm'],
   dts: false,

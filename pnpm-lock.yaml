@@ -136,14 +136,13 @@ importers:
         specifier: ^7.0.0
         version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
 
-  packages/colormaps:
-    dependencies:
-      '@latkit/model':
-        specifier: workspace:*
-        version: link:../model
+  packages/colormaps: {}
 
   packages/diagram:
     dependencies:
+      '@latkit/colormaps':
+        specifier: workspace:*
+        version: link:../colormaps
       '@latkit/gpu':
         specifier: workspace:*
         version: link:../gpu
@@ -182,6 +181,12 @@ importers:
 
   packages/gpu:
     dependencies:
+      '@latkit/colormaps':
+        specifier: workspace:*
+        version: link:../colormaps
+      '@latkit/model':
+        specifier: workspace:*
+        version: link:../model
       '@webgpu/types':
         specifier: ^0.1.71
         version: 0.1.71
@@ -190,6 +195,9 @@ importers:
 
   packages/monitor:
     dependencies:
+      '@latkit/colormaps':
+        specifier: workspace:*
+        version: link:../colormaps
       '@latkit/gpu':
         specifier: workspace:*
         version: link:../gpu
@@ -206,6 +214,9 @@ importers:
 
   packages/network:
     dependencies:
+      '@latkit/colormaps':
+        specifier: workspace:*
+        version: link:../colormaps
       '@latkit/gpu':
         specifier: workspace:*
         version: link:../gpu
@@ -220,16 +231,11 @@ importers:
         specifier: ^26.1.0
         version: 26.1.0
 
-  packages/port: {}
-
-  packages/remote:
+  packages/port:
     dependencies:
       '@latkit/model':
         specifier: workspace:*
         version: link:../model
-      '@latkit/port':
-        specifier: workspace:*
-        version: link:../port
 
 packages:
 

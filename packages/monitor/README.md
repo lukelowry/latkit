@@ -1,6 +1,6 @@
 # @latkit/monitor
 
-WebGPU traces over one class's recorded signals. Load a `Series` once; committed appends update the plot automatically. The same API reads memory, files, or remote results.
+WebGPU traces over one class's recorded signals. Load one signal of a `Series`, such as a model `Field`, once; committed appends update the plot automatically. The same API reads memory, files, or remote recordings.
 
 ## Install
 
@@ -16,8 +16,8 @@ import { createSeries } from '@latkit/model';
 import { createMonitor } from '@latkit/monitor';
 
 const series = createSeries({
+  signals: ['load'],
   elementCount: 2,
-  signalCount: 1,
   time: Float64Array.of(0, 1),
   values: Float64Array.of(0.1, 0.4, 0.2, 0.5),
 });
@@ -26,27 +26,20 @@ const monitor = createMonitor({
   colorRange: [0.2, 0.8],
   colormap: colormap('magma'),
 });
-monitor.load(series, 0);
+monitor.load({ series, signal: 0 });
 await monitor.attach(document.querySelector<HTMLCanvasElement>('#monitor')!);
 
-series.append({
-  resultId: 'run-1',
-  classId: 'sensor',
-  elementCount: 2,
-  signalCount: 1,
-  time: Float64Array.of(2),
-  values: Float64Array.of(0.3, 0.6),
-});
+series.append({ time: Float64Array.of(2), values: Float64Array.of(0.3, 0.6) });
 ```
 
-Initial arrays use `[signal][frame][element]` order. Appended batches use
+Initial arrays use `[signal][frame][element]` order. Appended frames use
 `[frame][signal][element]` order, as a solver emits them. Both accept float32 or float64 values;
-time is always float64. Published buffers are borrowed and immutable: create a new batch for
+time is always float64. Published buffers are borrowed and immutable: create new arrays for
 each append. No future timestamps or capacity slots are exposed.
 
-`Series.read` returns a bounded window with a stride; the monitor handles this itself.
-For file-backed or remote recordings, use `monitor.load(await results.series(classId), signalIndex)`.
-The host owns the recording's resources.
+`Series.read` returns a bounded window with a stride; the monitor handles this itself. A model
+`Field` is a binding already, so a recorded signal loads as `monitor.load(field)`, from memory or
+across a port. The host owns the recording's resources.
 
 ## Display options
 
@@ -81,7 +74,7 @@ History and focus textures are retained, and changing opacity only composites th
 ## Selection, events, and lifetime
 
 ```ts
-monitor.setSignal(1);
+monitor.load({ series, signal: 1 }); // another signal of the same series
 monitor.select(42); // class element index, including sparse recordings
 monitor.on('hover', (reading) => showReading(reading));
 monitor.on('select', (reading) => inspect(reading.element));

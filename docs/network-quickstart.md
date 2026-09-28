@@ -90,7 +90,7 @@ network.setProjection('tilt');
 A shade is a WGSL function compiled into the vertex and edge passes. It receives what the pass would paint plus where and what the fragment is, and returns the color to paint. A `tick` may write a 64-float `host` block before each frame, so an effect costs one small upload per frame regardless of graph size. The `vertexShade` and `edgeShade` channels carry one scalar per item into it as `f.value`.
 
 ```ts
-import { spotlight } from '@latkit/network/shades';
+import { spotlight } from '@latkit/network';
 
 await network.setShade(spotlight({ radiusPx: 220, strength: 0.6 }));
 

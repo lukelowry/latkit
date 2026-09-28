@@ -1,6 +1,5 @@
 import { createMonitor } from '@latkit/monitor';
-import { createNetwork } from '@latkit/network';
-import { loadBorders } from '@latkit/network/borders';
+import { createNetwork, loadBorders } from '@latkit/network';
 
 import { defineShell, observeNear, type ShellDeps } from './element.js';
 import { monitorSpec, type MonitorDeps } from './monitor.js';

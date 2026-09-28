@@ -132,12 +132,13 @@ diagram.setChannel('blockStatus', Float32Array.of(0, 2, 0)); // TGOV1 in error r
 diagram.setChannel('blockColor', null);
 ```
 
-A channel can follow one signal of a recorded `Series` instead, and `seek` shows the frame at a
-playhead in every channel that does. Every channel but `blockPosition`, `blockVisible`, and
-`netVisible` can, since those re-lay the scene:
+A channel can follow one signal of a `Series` instead, such as a model `Field`, and `seek` shows
+the frame at a playhead in every channel that does. Every channel but `blockPosition`,
+`blockVisible`, and `netVisible` can, since those re-lay the scene, as each entry's `series` says.
+The channels run on `@latkit/gpu`'s binder, as the network's do:
 
 ```ts
-diagram.setChannel('netFlow', { series: await results.series('branch'), signal: 0 }, null);
+diagram.setChannel('netFlow', { series: flows, signal: 0 }); // one element per net
 transport.on('frame', (t) => diagram.seek(t));
 ```
 
@@ -398,11 +399,12 @@ frame's time, pointer, and viewport.
 
 ## Layout without a device
 
-`@latkit/diagram/layout` exports `arrange`, the same pure, deterministic layout the diagram shows,
-so a worker computes positions for a netlist before any canvas exists:
+`arrange` is the same pure, deterministic layout the diagram shows, so a worker computes positions
+for a netlist before any canvas exists; the package's one entrypoint loads there without a DOM or
+a device:
 
 ```ts
-import { arrange } from '@latkit/diagram/layout';
+import { arrange } from '@latkit/diagram';
 
 const positions = arrange(unit, { gridPitch: 8 }); // top-left per block, on the grid
 ```
@@ -478,6 +480,6 @@ plants beside 900.
 ## Registries
 
 `CHANNELS` and `OPTIONS` are frozen and ordered, and every entry carries the `label` a control
-shows. A picker iterates `Object.keys(CHANNELS)` and reads `scope`, `map`, `normalized`, and
-`components`; a settings form iterates `OPTIONS` and reads each entry's `kind`, `default`, and
+shows. A picker iterates `Object.keys(CHANNELS)` and reads `scope`, `map`, `normalized`,
+`components`, and `series`; a settings form iterates `OPTIONS` and reads each entry's `kind`, `default`, and
 `live`.

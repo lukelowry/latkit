@@ -1,5 +1,6 @@
 /**
- * A numeric interval, the one scan that produces it, and the one check every renderer runs on it.
+ * A numeric interval, the one scan that produces it, the one check every renderer runs on it, and
+ * the display interval a range shows as.
  */
 
 /** A numeric interval expressed as `[min, max]`: a channel's input domain or an output range. */
@@ -38,16 +39,6 @@ export function validateDomain(value: unknown, name = 'domain'): asserts value i
   if (minimum > maximum) {
     throw new RangeError(`${name} minimum must not exceed its maximum`);
   }
-}
-
-/** Normalize in f64, including domains whose subtraction overflows. */
-export function position(value: number, [min, max]: Domain): number {
-  if (!Number.isFinite(value)) return NaN;
-  if (min === max) return 0.5;
-  const span = max - min;
-  if (Number.isFinite(span)) return (value - min) / span;
-  const scale = Math.max(Math.abs(min), Math.abs(max));
-  return (value / scale - min / scale) / (max / scale - min / scale);
 }
 
 /** A finite increasing display interval, padded only when a signal is constant. */

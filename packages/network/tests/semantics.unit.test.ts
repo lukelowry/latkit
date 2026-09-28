@@ -17,7 +17,7 @@ describe('canonical Network semantics', () => {
   });
 
   it('publishes the exact ordered channel vocabulary as deeply frozen metadata', () => {
-    const scalar = { components: 1 } as const;
+    const scalar = { components: 1, series: true } as const;
     expect(Object.entries(CHANNELS)).toEqual([
       [
         'vertexColor',
@@ -63,6 +63,7 @@ describe('canonical Network semantics', () => {
           label: 'Vertex Position',
           normalized: false,
           components: 2,
+          series: false,
         },
       ],
     ]);

@@ -1,6 +1,9 @@
 /// <reference types="@webgpu/types" />
-import type { Presentation } from '@latkit/gpu';
-import { COLORMAP_LUT_SIZE, position, type Domain, type RGBA } from '@latkit/model';
+import type { RGBA } from '@latkit/colormaps';
+import { COLORMAP_LUT_SIZE, type Presentation } from '@latkit/gpu';
+import type { Domain } from '@latkit/model';
+
+import { position } from './position.js';
 import segmentWgsl from './gpu/segment.wgsl?raw';
 import compositeWgsl from './gpu/composite.wgsl?raw';
 

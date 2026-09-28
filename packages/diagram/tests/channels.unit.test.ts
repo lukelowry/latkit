@@ -1,20 +1,20 @@
 import { describe, expect, it } from 'vitest';
+import { createChannels } from '@latkit/gpu';
 import { createSeries } from '@latkit/model';
 
 import {
-  CHANNEL_KEYS,
   CHANNELS,
-  channelDefinition,
-  channelLayout,
-  createChannels,
+  channelRecord,
   SLOT,
+  SLOTTED,
   type Channel,
+  type Scope,
   type SlotChannel,
 } from '../src/channels.js';
 import { Mirror } from '../src/webgpu/buffers.js';
 import { createUniforms, W_CHANNELS } from '../src/webgpu/uniforms.js';
 
-const COUNTS = { blocks: 3, ports: 7, nets: 2 };
+const COUNTS = { block: 3, port: 7, net: 2 };
 
 /** A slot's uniform record: offset, on, min, scale. */
 function record(uniforms: ReturnType<typeof createUniforms>, channel: SlotChannel) {
@@ -23,18 +23,28 @@ function record(uniforms: ReturnType<typeof createUniforms>, channel: SlotChanne
   return { offset: u32[at], on: u32[at + 1], min: f32[at + 2], scale: f32[at + 3] };
 }
 
+/** The diagram's GPU channels as the controller builds them, over a channels mirror. */
 function make(counts: typeof COUNTS | null = COUNTS) {
   const mirror = new Mirror('channels', 'storage');
   const uniforms = createUniforms();
-  const channels = createChannels(mirror, uniforms);
-  channels.reset(counts);
+  const channels = createChannels<SlotChannel, Scope>({
+    name: 'diagram',
+    structure: 'netlist',
+    channels: SLOTTED,
+    store: () => mirror,
+    record: channelRecord(uniforms),
+    shown: () => {},
+    error: () => {},
+  });
+  channels.load(counts);
+  mirror.resize(channels.words);
   mirror.clean();
   return { mirror, uniforms, channels };
 }
 
 describe('CHANNELS', () => {
   it('names every channel in canonical order with its metadata', () => {
-    expect(CHANNEL_KEYS).toEqual([
+    expect(Object.keys(CHANNELS)).toEqual([
       'blockPosition',
       'blockColor',
       'blockVisible',
@@ -52,41 +62,35 @@ describe('CHANNELS', () => {
       label: 'Block Position',
       normalized: false,
       components: 2,
+      series: false,
     });
-    const normalized = CHANNEL_KEYS.filter((key) => CHANNELS[key].normalized);
-    expect(normalized).toEqual(['blockColor', 'netColor']);
+    const keys = Object.keys(CHANNELS) as Channel[];
+    expect(keys.filter((key) => CHANNELS[key].normalized)).toEqual(['blockColor', 'netColor']);
+    expect(keys.filter((key) => !CHANNELS[key].series)).toEqual([
+      'blockPosition',
+      'blockVisible',
+      'netVisible',
+    ]);
     expect(Object.isFrozen(CHANNELS)).toBe(true);
-    for (const key of CHANNEL_KEYS) expect(Object.isFrozen(CHANNELS[key])).toBe(true);
+    for (const key of keys) expect(Object.isFrozen(CHANNELS[key])).toBe(true);
   });
 
-  it('gives every channel but blockPosition a slot, in canonical order', () => {
-    expect(Object.keys(SLOT)).toEqual(CHANNEL_KEYS.slice(1));
+  it('gives every channel but blockPosition a GPU slot and a uniform record, in canonical order', () => {
+    expect(Object.keys(SLOTTED)).toEqual(Object.keys(CHANNELS).slice(1));
+    expect(Object.keys(SLOT)).toEqual(Object.keys(SLOTTED));
     expect(Object.values(SLOT)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
-  });
-
-  it('rejects an unknown channel', () => {
-    expect(() => channelDefinition('vertexColor' as Channel)).toThrow(
-      'unknown diagram channel vertexColor',
-    );
+    expect(SLOTTED.netColor).toBe(CHANNELS.netColor);
+    expect(Object.isFrozen(SLOTTED)).toBe(true);
   });
 });
 
-describe('channelLayout', () => {
-  it('sizes each slot by its scope', () => {
-    const { offsets, words } = channelLayout(COUNTS);
-    // blocks x4, port x1, nets x4
-    expect(offsets).toEqual([0, 3, 6, 9, 12, 19, 21, 23, 25]);
-    expect(words).toBe(4 * 3 + 7 + 4 * 2);
-    expect(channelLayout({ blocks: 0, ports: 0, nets: 0 }).words).toBe(0);
-  });
-});
-
-describe('createChannels', () => {
-  it('writes every slot offset, off, on reset', () => {
+describe('diagram channel records', () => {
+  it('writes every slot offset, off, on a load', () => {
     const { uniforms, mirror } = make();
-    expect(mirror.words).toBe(27);
-    const { offsets } = channelLayout(COUNTS);
-    for (const channel of CHANNEL_KEYS.slice(1) as SlotChannel[]) {
+    // blocks x4, port x1, nets x4
+    expect(mirror.words).toBe(4 * 3 + 7 + 4 * 2);
+    const offsets = [0, 3, 6, 9, 12, 19, 21, 23, 25];
+    for (const channel of Object.keys(SLOT) as SlotChannel[]) {
       expect(record(uniforms, channel)).toEqual({
         offset: offsets[SLOT[channel]],
         on: 0,
@@ -96,205 +100,53 @@ describe('createChannels', () => {
     }
   });
 
-  it('throws before a load and for a wrong length or type, changing nothing', () => {
-    const detached = make(null);
-    expect(() => detached.channels.set('netColor', new Float32Array(2))).toThrow(
-      'diagram netlist must be loaded before binding channels',
-    );
-    const { channels, uniforms, mirror } = make();
-    expect(() => channels.set('netColor', new Float32Array(3))).toThrow(
-      'diagram channel netColor length 3 != 2',
-    );
-    expect(() => channels.set('blockPosition', new Float32Array(3))).toThrow(
-      'diagram channel blockPosition length 3 != 6',
-    );
-    expect(() => channels.set('portStatus', [0, 0, 0, 0, 0, 0, 0] as never)).toThrow(TypeError);
-    expect(() => channels.set('netColor', Int32Array.of(1, 2) as never)).toThrow(TypeError);
-    expect(() => channels.set('netColor', Float32Array.of(1, 2), [2, 1])).toThrow(RangeError);
-    expect(channels.values('netColor')).toBeNull();
-    expect(record(uniforms, 'netColor').on).toBe(0);
-    expect(mirror.dirtyTo).toBe(0);
-  });
-
-  it('stores float64 values as float32', () => {
-    const { channels } = make();
-    channels.set('netColor', Float64Array.of(0.25, Number.NaN));
-    channels.set('blockPosition', Float64Array.of(1, 2, 3, 4, 5, 6));
-    expect(channels.values('netColor')).toEqual(Float32Array.of(0.25, Number.NaN));
-    expect(channels.values('blockPosition')).toEqual(Float32Array.of(1, 2, 3, 4, 5, 6));
-  });
-
-  it('writes a slot channel into its mirror slot and turns it on', () => {
+  it('writes a channel into its mirror slot, marks it for upload, and turns it on', () => {
     const { channels, uniforms, mirror } = make();
     channels.set('portStatus', Float32Array.of(0, 1, 0, 0, 2, 0, 0));
-    const offset = channelLayout(COUNTS).offsets[SLOT.portStatus]!;
-    expect(offset).toBe(12);
-    expect(Array.from(mirror.f32.subarray(offset, offset + 7))).toEqual([0, 1, 0, 0, 2, 0, 0]);
+    expect(Array.from(mirror.f32.subarray(12, 19))).toEqual([0, 1, 0, 0, 2, 0, 0]);
     expect([mirror.dirtyFrom, mirror.dirtyTo]).toEqual([12, 19]);
+    // Raw channels read through the identity so a generic read needs no branch.
     expect(record(uniforms, 'portStatus')).toEqual({ offset: 12, on: 1, min: 0, scale: 1 });
-    const values = channels.values('portStatus')!;
-    expect(Array.from(values)).toEqual([0, 1, 0, 0, 2, 0, 0]);
-    // The snapshot is the slot itself: a rebind refreshes it in place.
-    channels.set('portStatus', Float32Array.of(1, 1, 1, 1, 1, 1, 1));
-    expect(channels.values('portStatus')).toBe(values);
-    expect(values[0]).toBe(1);
   });
 
-  it('keeps blockPosition as a CPU snapshot only', () => {
-    const { channels, mirror } = make();
-    const positions = Float32Array.of(0, 0, 16, NaN, NaN, 32);
-    channels.set('blockPosition', positions);
-    expect(mirror.dirtyTo).toBe(0);
-    const snapshot = channels.values('blockPosition')!;
-    expect(snapshot).not.toBe(positions);
-    expect(Array.from(snapshot)).toEqual([0, 0, 16, NaN, NaN, 32]);
-    positions[0] = 99;
-    expect(snapshot[0]).toBe(0);
-    channels.clear('blockPosition');
-    expect(channels.values('blockPosition')).toBeNull();
-  });
-
-  it('normalizes colormap channels through an explicit domain, else [0, 1]', () => {
+  it('normalizes colormap channels through their domain, else [0, 1]', () => {
     const { channels, uniforms } = make();
     channels.set('netColor', Float32Array.of(-1, 1));
-    expect(channels.domain('netColor')).toEqual([0, 1]);
     expect(record(uniforms, 'netColor')).toMatchObject({ on: 1, min: 0, scale: 1 });
-
     channels.set('netColor', Float32Array.of(-1, 1), [-1, 1]);
-    expect(channels.domain('netColor')).toEqual([-1, 1]);
     expect(record(uniforms, 'netColor')).toMatchObject({ min: -1, scale: 0.5 });
-
-    // A rebind without a domain returns to [0, 1].
-    channels.set('netColor', Float32Array.of(-1, 1));
-    expect(channels.domain('netColor')).toEqual([0, 1]);
   });
 
-  it('overrides a domain until cleared, and ignores domains on raw channels', () => {
-    const { channels, uniforms } = make();
-    channels.set('blockColor', Float32Array.of(1, 2, 3), [0, 10]);
-    channels.setDomain('blockColor', [1, 3]);
-    expect(channels.domain('blockColor')).toEqual([1, 3]);
-    expect(record(uniforms, 'blockColor')).toMatchObject({ min: 1, scale: 0.5 });
-    // A rebind keeps the override over its own domain.
-    channels.set('blockColor', Float32Array.of(1, 2, 3), [0, 4]);
-    expect(channels.domain('blockColor')).toEqual([1, 3]);
-    channels.setDomain('blockColor', null);
-    expect(channels.domain('blockColor')).toEqual([0, 4]);
-    expect(record(uniforms, 'blockColor')).toMatchObject({ min: 0, scale: 0.25 });
-
-    channels.set('netFlow', Float32Array.of(1, -1), [5, 6]);
-    channels.setDomain('netFlow', [5, 6]);
-    expect(channels.domain('netFlow')).toBeNull();
-    expect(record(uniforms, 'netFlow')).toMatchObject({ on: 1, min: 0, scale: 1 });
-    expect(() => channels.setDomain('netColor', [3, 1])).toThrow(RangeError);
-  });
-
-  it('keeps a zero-width domain finite', () => {
-    const { channels, uniforms } = make();
-    channels.set('netColor', Float32Array.of(2, 2), [2, 2]);
-    expect(Number.isFinite(record(uniforms, 'netColor').scale)).toBe(true);
-  });
-
-  it('turns a slot off on clear, keeping its offset', () => {
-    const { channels, uniforms } = make();
-    channels.set('netVisible', Float32Array.of(0, 1));
-    channels.clear('netVisible');
-    expect(channels.values('netVisible')).toBeNull();
-    expect(record(uniforms, 'netVisible')).toEqual({ offset: 23, on: 0, min: 0, scale: 0 });
-    expect(channels.domain('netVisible')).toBeNull();
-  });
-
-  it('clears everything on reset and resizes the slots', () => {
-    const { channels, uniforms, mirror } = make();
-    channels.set('blockPosition', new Float32Array(6));
-    channels.set('blockShade', Float32Array.of(1, 2, 3));
-    channels.set('netColor', Float32Array.of(0, 1), [0, 2]);
-    channels.reset({ blocks: 1, ports: 2, nets: 3 });
-    for (const key of CHANNEL_KEYS) expect(channels.values(key)).toBeNull();
-    expect(channels.domain('netColor')).toBeNull();
-    expect(record(uniforms, 'netColor')).toEqual({ offset: 6, on: 0, min: 0, scale: 0 });
-    expect(mirror.words).toBe(4 * 1 + 2 + 4 * 3);
-    const version = mirror.version;
-    channels.reset(null);
-    expect(mirror.words).toBe(0);
-    // With no netlist the slots give their memory back.
-    expect(mirror.capacity).toBe(4);
-    expect(mirror.version).toBeGreaterThan(version);
-    expect(() => channels.set('blockShade', new Float32Array(0))).toThrow('must be loaded');
+  it('refuses a series for a visibility channel, whose change re-lays the scene', () => {
+    const { channels } = make();
+    const series = createSeries({
+      signals: ['x'],
+      elementCount: 3,
+      time: Float64Array.of(0),
+      values: Float64Array.of(1, 2, 3),
+    });
+    expect(() => channels.set('blockVisible', { series, signal: 0 })).toThrow(
+      new TypeError('diagram channel blockVisible cannot follow a series'),
+    );
+    expect(() => channels.set('blockColor', { series, signal: 0 })).not.toThrow();
+    expect(() => make(null).channels.set('netColor', new Float32Array(2))).toThrow(
+      'diagram netlist must be loaded before binding channels',
+    );
   });
 });
 
-describe('series-bound channels', () => {
-  /** `frames` frames over `elements` items, value `i` at flat index `i`, times 0, 1, 2, … */
-  const recording = (elements: number, frames = 2) =>
-    createSeries({
-      elementCount: elements,
-      signalCount: 1,
-      time: Float64Array.from({ length: frames }, (_, i) => i),
-      values: Float64Array.from({ length: frames * elements }, (_, i) => i),
-    });
-
-  it('refuses position and visibility channels, a missing signal, and elements that do not fit', () => {
-    const { channels } = make();
-    const series = recording(3);
-    for (const channel of ['blockPosition', 'blockVisible', 'netVisible'] as const) {
-      expect(() => channels.set(channel, { series, signal: 0 })).toThrow(TypeError);
-    }
-    expect(() => channels.set('blockColor', { series, signal: 1 })).toThrow(RangeError);
-    expect(() => channels.set('netColor', { series, signal: 0 })).toThrow('do not fit 2 items');
-    expect(() => make(null).channels.set('blockColor', { series, signal: 0 })).toThrow(
-      'must be loaded',
-    );
-  });
-
-  it('shows NaN until a frame shows, reads the frame in place, and holds what it shows', () => {
-    const { channels, uniforms, mirror } = make();
-    channels.set('blockColor', { series: recording(3), signal: 0 });
-    expect(record(uniforms, 'blockColor')).toMatchObject({ offset: 0, on: 1 });
-    expect(Array.from(channels.values('blockColor')!)).toEqual([NaN, NaN, NaN]);
-    expect(channels.domain('blockColor')).toEqual([0, 5]);
-
-    const at = channels.words;
-    const frame = Float32Array.of(3, 4, 5);
-    channels.reserve(at + 3);
-    channels.writeWords(at, frame);
-    channels.moveTo('blockColor', at, frame);
-    expect(record(uniforms, 'blockColor').offset).toBe(at);
-    expect(channels.values('blockColor')).toBe(frame);
-    expect(Array.from(mirror.f32.subarray(at, at + 3))).toEqual([3, 4, 5]);
-
-    channels.hold('blockColor');
-    expect(record(uniforms, 'blockColor').offset).toBe(0);
-    expect(Array.from(channels.values('blockColor')!)).toEqual([3, 4, 5]);
-    expect(Array.from(mirror.f32.subarray(0, 3))).toEqual([3, 4, 5]);
-  });
-
-  it('keeps what a channel shows when it follows the same signal, and its slot when an array replaces it', () => {
-    const { channels, uniforms } = make();
-    const series = recording(3);
-    channels.set('blockColor', { series, signal: 0 });
-    const frame = Float32Array.of(1, 2, 3);
-    channels.moveTo('blockColor', 50, frame);
-    channels.set('blockColor', { series, signal: 0 }, [0, 10]);
-    expect(record(uniforms, 'blockColor').offset).toBe(50);
-    expect(channels.values('blockColor')).toBe(frame);
-    expect(channels.domain('blockColor')).toEqual([0, 10]);
-    expect(channels.refreshRecorded('blockColor')).toBe(false);
-
-    channels.set('blockColor', Float32Array.of(7, 8, 9));
-    expect(record(uniforms, 'blockColor').offset).toBe(0);
-    expect(Array.from(channels.values('blockColor')!)).toEqual([7, 8, 9]);
-    expect(channels.domain('blockColor')).toEqual([0, 1]);
-  });
-
-  it('moves every slot view onto a grown mirror', () => {
-    const { channels, mirror } = make();
-    channels.set('blockVisible', Float32Array.of(1, 0, 1));
-    const before = channels.values('blockVisible')!;
-    channels.reserve(mirror.capacity + 1000);
-    const after = channels.values('blockVisible')!;
-    expect(after).not.toBe(before);
-    expect(after.buffer).toBe(mirror.f32.buffer);
-    expect(Array.from(after)).toEqual([1, 0, 1]);
+describe('Mirror as a channel store', () => {
+  it('grows to hold what it is asked, keeping its words, and marks what it writes', () => {
+    const mirror = new Mirror('channels', 'storage', 4);
+    mirror.writeWords(1, Float32Array.of(7, 8));
+    mirror.clean();
+    mirror.reserve(2);
+    expect(mirror.words).toBe(4);
+    mirror.reserve(4000);
+    expect(mirror.words).toBe(4000);
+    expect(Array.from(mirror.f32.subarray(1, 3))).toEqual([7, 8]);
+    mirror.clean();
+    mirror.writeWords(3000, Float32Array.of(1));
+    expect([mirror.dirtyFrom, mirror.dirtyTo]).toEqual([3000, 3001]);
   });
 });

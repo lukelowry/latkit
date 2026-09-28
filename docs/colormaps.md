@@ -1,6 +1,6 @@
 # Colormaps
 
-`@latkit/colormaps` provides named transfer functions and a registry of labels and kinds that can be shared between network, monitor, and legend UI, and `parseColor`, which reads a CSS color into the `RGBA` every color option takes.
+`@latkit/colormaps` is the color vocabulary every renderer speaks: the `RGBA` every color option takes, the `Colormap` every colormap option takes, a registry of named colormaps with labels and kinds to share between network, monitor, diagram, and legend UI, and `parseColor`, which reads a CSS color into an `RGBA`.
 
 ## Use a colormap
 
@@ -11,7 +11,7 @@ network.setOptions({ colormap: colormap('viridis') });
 monitor.setOptions({ colormap: colormap('magma') });
 ```
 
-The returned function accepts a normalized value in `[0, 1]` and returns RGB channels in `[0, 1]`.
+A `Colormap` takes a normalized value in `[0, 1]` and returns RGB channels in `[0, 1]`; any function of that shape works wherever a renderer takes one.
 
 ## Build a legend
 
@@ -44,3 +44,13 @@ const divergingNames = names.filter((name) => COLORMAPS[name].kind === 'divergin
 ```
 
 Use sequential maps for quantities like load or count. Use diverging maps for quantities where values above and below a reference point both matter.
+
+## Read and check colors
+
+`parseColor(css, element?)` reads hex, `rgb()`, `oklab()`, `oklch()`, `color(srgb …)`, and `transparent`; with an element it resolves any color that element computes, custom properties included, so a theme feeds the renderers. `validateRgba(value, name)` is the check every color option runs, for a host that validates before a renderer exists.
+
+```ts
+import { parseColor } from '@latkit/colormaps';
+
+network.setOptions({ edgeBaseColor: parseColor('var(--edge)', document.body) ?? fallback });
+```

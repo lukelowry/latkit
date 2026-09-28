@@ -1,16 +1,11 @@
 /// <reference types="@webgpu/types" />
 
+import { validateNetlist, type Domain, type Netlist, type Series } from '@latkit/model';
 import {
   bakeColormap,
-  createEmitter,
-  createPlayback,
-  validateNetlist,
-  type Domain,
-  type Netlist,
-  type Series,
-} from '@latkit/model';
-import {
   createAttachment,
+  createChannels,
+  createEmitter,
   createFrameLoop,
   createPresentation,
   type Frame,
@@ -19,7 +14,7 @@ import {
 } from '@latkit/gpu';
 
 import { Camera, type Pose, type Viewport } from './camera.js';
-import { createChannels, isSeriesBinding, type Channel, type SeriesBinding } from './channels.js';
+import { channelRecord, SLOTTED, type Channel, type Scope, type SlotChannel } from './channels.js';
 import { Focus } from './focus.js';
 import { snapTo, type Rect } from './geometry.js';
 import { attachGestures, type Gesture } from './input/gestures.js';
@@ -169,7 +164,7 @@ export type Events = {
   pipelineError: { readonly cause: unknown };
   /**
    * A read of the series `channel` follows failed. The channel keeps what it shows and reads again
-   * once the series appends or the channel is bound anew.
+   * once the series changes or the channel is bound anew.
    */
   error: { readonly channel: Channel; readonly cause: unknown };
 };
@@ -272,9 +267,10 @@ export interface Diagram {
    * its nets and moves its group's frame. `blockVisible` and `netVisible` re-route what they
    * touch. `domain` configures the colormap channels only; without one they normalize `[0, 1]`.
    *
-   * A channel can instead follow one signal of a `Series` with one element per item of its scope,
-   * or a sparse series whose unrecorded items take NaN. {@link Diagram.seek} picks the frame it
-   * shows, and a null `domain` follows the signal's recorded range as the series appends. Every
+   * A channel can instead follow one signal of a `Series`, such as a model `Field`, with one
+   * element per item of its scope, or a sparse series whose unrecorded items take NaN.
+   * {@link Diagram.seek} picks the frame it shows, and a null `domain` follows the signal's
+   * recorded range as the series appends. Every
    * channel but `blockPosition`, `blockVisible`, and `netVisible` can follow a series, as those
    * re-lay the scene. Channels following one signal share its frames; a new one shows nothing
    * until its first frame is read, while binding the signal a channel already follows keeps what
@@ -637,7 +633,19 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
   const events = createEmitter<Events>();
   const mirrors = createMirrors();
   const uniforms = createUniforms(mirrors.uniforms);
-  const channels = createChannels(mirrors.channels, uniforms);
+  /** The GPU channels: slots, and the windows of the series they follow, in the channels mirror. */
+  const channels = createChannels<SlotChannel, Scope>({
+    name: 'diagram',
+    structure: 'netlist',
+    channels: SLOTTED,
+    store: () => mirrors.channels,
+    record: channelRecord(uniforms),
+    shown: (channel) => {
+      if (channel === 'netFlow') refreshFlow();
+      repaint();
+    },
+    error: (channel, cause) => events.emit('error', { channel, cause }),
+  });
   const scene = new Scene(mirrors, channels);
   const focus = new Focus(mirrors.focus);
   const atlas = new Atlas(deps.createRasterizer(), opts.fontFamily);
@@ -731,22 +739,6 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
   /** Schedule a frame for a visual state change. */
   const repaint = (): void => binding?.loop.wake();
 
-  /** Series-bound channels: their windows live in the channel mirror after the slots. */
-  const playback = createPlayback<Channel>({
-    reserved: () => channels.words,
-    items: (channel) => channels.items(channel),
-    store: () => channels,
-    show: (channel, offset, view) => {
-      channels.moveTo(channel, offset, view);
-      if (channel === 'netFlow') refreshFlow();
-      repaint();
-    },
-    hold: (channel) => channels.hold(channel),
-    appended: (channel) => {
-      if (channels.refreshRecorded(channel)) repaint();
-    },
-    error: (channel, cause) => events.emit('error', { channel, cause }),
-  });
   /** The view moved: hover must be picked again. */
   const cameraMoved = (): void => {
     hoverDirty = true;
@@ -1510,19 +1502,6 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
     else loop.pause();
   }
 
-  /** Follow a series in a channel; frames that cannot be held leave it unbound. */
-  function followSeries(channel: Channel, binding: SeriesBinding, domain?: Domain | null): void {
-    channels.set(channel, binding, domain);
-    try {
-      playback.follow(channel, binding.series, binding.signal);
-    } catch (error) {
-      channels.clear(channel);
-      if (channel === 'netFlow') refreshFlow();
-      repaint();
-      throw error;
-    }
-  }
-
   /** Recompute whether any bound `netFlow` value is nonzero. */
   function refreshFlow(): void {
     const values = channels.values('netFlow');
@@ -1588,9 +1567,8 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
       // Drag indices name the old netlist.
       interactor.cancel();
       const hovered = focus.hover !== null;
+      // The load resets every channel; the series they followed go with them.
       const survivors = scene.load(netlist, opts.gridPitch, !reduced(), performance.now());
-      // The load reset every channel; the series they followed go with them.
-      playback.reset();
       const next = scene.prepared!;
       if (prev) focus.remap(prev, next, survivors);
       else focus.reset(next);
@@ -1617,43 +1595,41 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
     },
 
     setChannel(channel, values, domain) {
-      if (isSeriesBinding(values)) {
-        followSeries(channel, values, domain);
-      } else if (values === null) {
-        if (!channels.clear(channel)) return;
-        playback.stop(channel);
+      if (channel === 'blockPosition') {
+        if (values !== null && 'series' in values) {
+          throw new TypeError('diagram channel blockPosition cannot follow a series');
+        }
+        if (!scene.place(values)) return;
+        scene.placementChanged();
+        hoverDirty = true;
       } else {
-        channels.set(channel, values, domain);
-        playback.stop(channel);
-      }
-      switch (channel) {
-        case 'blockPosition':
-          scene.placementChanged();
-          hoverDirty = true;
-          break;
-        case 'blockVisible':
-        case 'netVisible':
-          scene.visibilityChanged();
-          hoverDirty = true;
-          break;
-        case 'netFlow':
-          refreshFlow();
-          break;
-        default:
-          break;
+        if (!channels.set(channel, values, domain)) return;
+        switch (channel) {
+          case 'blockVisible':
+          case 'netVisible':
+            scene.visibilityChanged();
+            hoverDirty = true;
+            break;
+          case 'netFlow':
+            refreshFlow();
+            break;
+          default:
+            break;
+        }
       }
       repaint();
     },
 
-    seek: (time) => playback.seek(time),
+    seek: (time) => channels.seek(time),
 
     setChannelDomain(channel, domain) {
-      channels.setDomain(channel, domain);
+      // Placements are raw: nothing maps them.
+      if (channel !== 'blockPosition') channels.setDomain(channel, domain);
       repaint();
     },
 
     getChannelDomain(channel) {
-      return channels.domain(channel);
+      return channel === 'blockPosition' ? null : channels.domain(channel);
     },
 
     arrange(parts, { animate = false } = {}) {
@@ -1862,8 +1838,6 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
       scene.clear();
       focus.reset(null);
       labels.reset(null);
-      channels.reset(null);
-      playback.reset();
       atlas.setFont(opts.fontFamily);
       camera.reset();
       events.clear();

@@ -1,5 +1,5 @@
 import type { Domain, Netlist, Part, Series } from '@latkit/model';
-import { describe, expect, expectTypeOf, it } from 'vitest';
+import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import * as entry from '../src/index.js';
 import type { Channel, Diagram, Events, Options, Pose, Shade, ShadeFrame } from '../src/index.js';
@@ -7,14 +7,30 @@ import { twoArea } from './fixtures/netlists.js';
 
 type Interaction = NonNullable<Options['interaction']>;
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe('diagram package entrypoint', () => {
-  it('publishes exactly the controller factory, the two registries, and the option validator', () => {
+  it('publishes the controller factory, the two registries, the option validator, and the layout', () => {
     expect(Object.keys(entry).sort()).toEqual([
       'CHANNELS',
       'OPTIONS',
+      'arrange',
       'createDiagram',
       'validateOptions',
     ]);
+  });
+
+  it('imports and arranges without a DOM or a device, as a worker does', async () => {
+    vi.stubGlobal('window', undefined);
+    vi.stubGlobal('document', undefined);
+    vi.stubGlobal('navigator', undefined);
+    vi.resetModules();
+
+    const worker = await import('../src/index.js');
+
+    expect(worker.arrange(twoArea())).toHaveLength(6);
   });
 
   it('freezes both registries and every definition in them', () => {

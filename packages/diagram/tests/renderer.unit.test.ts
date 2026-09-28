@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 
-import { bakeColormap, COLORMAP_LUT_SIZE } from '@latkit/model';
+import { bakeColormap, COLORMAP_LUT_SIZE } from '@latkit/gpu';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_OPTIONS } from '../src/options.js';

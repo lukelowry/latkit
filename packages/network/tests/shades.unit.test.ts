@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import * as entry from '../src/shades/index.js';
-import { spotlight } from '../src/shades/index.js';
+import { spotlight } from '../src/shades/spotlight.js';
 import { POINTER_NONE, SHADE_HOST_WORDS, type ShadeFrame } from '../src/shade.js';
 
 const viewport = { w: 800, h: 600 };
@@ -9,12 +8,6 @@ const viewport = { w: 800, h: 600 };
 function frame(timeMs: number, pointerPx: readonly [number, number] | null): ShadeFrame {
   return { timeMs, pointerPx, viewport };
 }
-
-describe('shades entrypoint', () => {
-  it('publishes exactly the presets', () => {
-    expect(Object.keys(entry).sort()).toEqual(['spotlight']);
-  });
-});
 
 describe('spotlight', () => {
   it('declares the shade hook and validates its options', () => {

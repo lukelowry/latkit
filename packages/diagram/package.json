@@ -18,10 +18,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./layout": {
-      "types": "./dist/layout.d.ts",
-      "import": "./dist/layout.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -32,6 +28,7 @@
     "bench": "vitest bench --run --project @latkit/diagram"
   },
   "dependencies": {
+    "@latkit/colormaps": "workspace:*",
     "@latkit/gpu": "workspace:*",
     "@latkit/model": "workspace:*",
     "@webgpu/types": "^0.1.71"

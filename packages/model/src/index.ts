@@ -1,48 +1,33 @@
 /**
- * `@latkit/model` — the immutable, columnar description of a network and its element classes that
- * a vendor produces once and every latkit renderer and view consumes directly, plus the byte form
- * that lets it cross a process boundary lazily.
+ * `@latkit/model` — the vocabulary every latkit package speaks: the model a vendor builds and the
+ * instance every question about it goes to, the recordings its runs fill and the fields a host
+ * binds, the structures renderers load and pick, and the sources that move a model or a recording
+ * across a boundary lazily.
  *
  * @packageDocumentation
  */
 
-export type {
-  ClassData,
-  ClassSpec,
-  Column,
-  ElementRef,
-  Item,
-  Model,
-  Signal,
-  Topology,
-} from './model.js';
-export { createModel, elementAt, itemOf, validateTopology } from './model.js';
+export type { Item, Model, Topology } from './model.js';
+export { createModel, validateTopology } from './model.js';
+
+export type { Source } from './source.js';
+export { openModel } from './source.js';
+
+export type { Recording, RecordingSource } from './recording.js';
+export { openRecording } from './recording.js';
+
+export type { Series } from './series.js';
+export { createSeries, validateSeries } from './series.js';
+
+export type { Field, FieldRef } from './field.js';
+
+export type { RunUpdate } from './run.js';
 
 export type { Netlist, Part } from './netlist.js';
 export { validateNetlist } from './netlist.js';
 
 export type { Domain } from './domain.js';
-export { extent, position, normalizeDomain, validateDomain } from './domain.js';
+export { extent, normalizeDomain, validateDomain } from './domain.js';
 
-export type { Colormap, RGBA } from './color.js';
-export { bakeColormap, COLORMAP_LUT_SIZE, validateRgba } from './color.js';
-
-export { createEmitter } from './emitter.js';
-
-export type { Series } from './series.js';
-export { createSeries, sample, validateSeries } from './series.js';
-
-export type { Playback } from './playback.js';
-export { createPlayback } from './playback.js';
-
-export type { Field, FieldRef } from './field.js';
-export { fieldKey, fieldsOf } from './field.js';
-
-export type { Results, RunFrames, Runner, RunUpdate } from './run.js';
-export { collect } from './run.js';
-
-export type { Grid, GridSort, GridWindow } from './grid.js';
-export { createGrid, formatNumber } from './grid.js';
-
-export type { Progress, Source } from './source.js';
-export { openModel, sourceOf } from './source.js';
+export type { Grid } from './grid.js';
+export { formatNumber } from './grid.js';

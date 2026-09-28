@@ -1,8 +1,6 @@
 /**
- * `@latkit/diagram/layout` -- the diagram's automatic layout without a device or a DOM, so a
- * worker computes exactly the positions the diagram shows.
- *
- * @packageDocumentation
+ * The diagram's automatic layout without a device or a DOM, so a worker computes exactly the
+ * positions the diagram shows.
  */
 
 import { validateNetlist, type Netlist } from '@latkit/model';

@@ -1,11 +1,7 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: {
-    index: 'src/index.ts',
-    guard: 'src/guard.ts',
-    testing: 'src/testing.ts',
-  },
+  entry: ['src/index.ts'],
   format: ['esm'],
   dts: true,
   sourcemap: true,

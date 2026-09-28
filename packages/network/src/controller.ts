@@ -1,15 +1,11 @@
 /// <reference types="@webgpu/types" />
 
+import type { Domain, Item, Series } from '@latkit/model';
 import {
   bakeColormap,
-  createEmitter,
-  createPlayback,
-  type Domain,
-  type Item,
-  type Series,
-} from '@latkit/model';
-import {
   createAttachment,
+  createChannels,
+  createEmitter,
   createFrameLoop,
   createPresentation,
   type FrameLoop,
@@ -49,13 +45,7 @@ import {
 import { attachKeyboard, type KeyIntent } from './input/keyboard.js';
 import { createSurface, type Surface } from './input/surface.js';
 import { type Pose, MAX_ZOOM_RATIO, type Viewport } from './camera/projection.js';
-import {
-  CHANNELS,
-  createChannels,
-  isSeriesBinding,
-  type Channel,
-  type SeriesBinding,
-} from './channels.js';
+import { CHANNELS, channelRecord, initialDomain, type Channel } from './channels.js';
 import { createFrameTick } from './webgpu/frame.js';
 import type { FramePasses } from './webgpu/frame-encoder.js';
 import {
@@ -66,7 +56,7 @@ import {
   type Projection,
 } from './projections.js';
 import type { Borders } from './borders/index.js';
-import { edgeCountOf, finiteBounds } from './topology/pack.js';
+import { finiteBounds } from './topology/pack.js';
 import { adjacency, neighborhood, type Adjacency } from './topology/adjacency.js';
 import { createOrbit } from './orbit.js';
 import { Picker, isPickChannel, type PickQuery, type PickResult } from './pick/picker.js';
@@ -132,7 +122,7 @@ export type Events = {
   pipelineError: { readonly family: ProjectionFamily; readonly cause: unknown };
   /**
    * A read of the series `channel` follows failed. The channel keeps what it shows and reads again
-   * once the series appends or the channel is bound anew.
+   * once the series changes or the channel is bound anew.
    */
   error: { readonly channel: Channel; readonly cause: unknown };
 };
@@ -253,8 +243,8 @@ export interface Network {
    * `vertexVisible`, and `edgeVisible` channels ignore it. A null height
    * domain scans the finite extent of the values.
    *
-   * A channel can instead follow one signal of a `Series` with one element per vertex or edge,
-   * or a sparse series whose unrecorded items take NaN. {@link Network.seek} picks the frame it
+   * A channel can instead follow one signal of a `Series`, such as a model `Field`, with one
+   * element per vertex or edge, or a sparse series whose unrecorded items take NaN. {@link Network.seek} picks the frame it
    * shows, and a null `domain` follows the signal's recorded range as the series appends. Every
    * channel but `vertexPosition` can follow a series. Channels following one signal share its
    * frames; a new one shows nothing until its first frame is read, while binding the signal a
@@ -786,37 +776,23 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   const wheelPolicy: WheelPolicy = (event) =>
     (display.wheel === 'modifier' ? MODIFIER_WHEEL_POLICY : DEFAULT_WHEEL_POLICY)(event);
 
-  const channels = createChannels(uniforms, {
-    loaded: () => topology !== null,
-    vertexCount: () => topology?.vertexCount ?? 0,
-    edgeCount: () => (topology ? edgeCountOf(topology) : 0),
-    dashPeriodPx: () => display.dashPeriodPx,
-    heightRange: () => display.heightRange,
-    sizeRange: () => display.sizeRange,
-    renderer: () => binding?.renderer ?? null,
-  });
-
-  const playback = createPlayback<Channel>({
-    reserved: () => channels.words,
-    items: (channel) =>
-      !topology
-        ? 0
-        : CHANNELS[channel].scope === 'vertex'
-          ? topology.vertexCount
-          : edgeCountOf(topology),
+  /** Every channel's slot in the renderer's channel storage, and the series they follow. */
+  const channels = createChannels<Channel, 'vertex' | 'edge'>({
+    name: 'network',
+    structure: 'topology',
+    channels: CHANNELS,
     store: () => binding?.renderer ?? null,
-    show: (channel, offset, view) => {
-      channels.moveTo(channel, offset, view);
-      if (isPickChannel(channel)) hoverDirty = true;
-      repaint();
-    },
-    hold: (channel) => channels.hold(channel),
-    appended: (channel) => {
-      if (!channels.refreshRecorded(channel)) return;
+    record: channelRecord(uniforms, {
+      dashPeriodPx: () => display.dashPeriodPx,
+      heightRange: () => display.heightRange,
+      sizeRange: () => display.sizeRange,
+    }),
+    shown: (channel) => {
       if (isPickChannel(channel)) hoverDirty = true;
       repaint();
     },
     error: (channel, cause) => events.emit('error', { channel, cause }),
+    initialDomain,
   });
 
   /**
@@ -1182,10 +1158,9 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     if (colormapLut) renderer.writeColormap(colormapLut);
     renderer.setPasses(passes());
     if (scene) {
-      renderer.bindTopology(scene);
+      renderer.bindTopology(scene, channels.words);
       renderer.useProjection(rig.mode);
-      channels.upload(renderer);
-      playback.upload();
+      channels.upload();
     }
     renderer.setBorders(borders);
     loop.frameNow();
@@ -1384,23 +1359,15 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     },
 
     setChannel(channel, values, domain) {
-      if (isSeriesBinding(values)) {
-        followSeries(channel, values, domain);
-      } else if (channel === 'vertexPosition') {
+      if (channel === 'vertexPosition' && (values === null || ArrayBuffer.isView(values))) {
         if (values === null && !layoutOverridden) return;
         setPositions(values);
-      } else if (values === null) {
-        if (!channels.clear(channel)) return;
-        playback.stop(channel);
-      } else {
-        channels.set(channel, values, domain);
-        playback.stop(channel);
-      }
+      } else if (!channels.set(channel, values, domain)) return;
       if (isPickChannel(channel)) hoverDirty = true;
       repaint();
     },
 
-    seek: (time) => playback.seek(time),
+    seek: (time) => channels.seek(time),
 
     setChannelDomain(channel, domain) {
       channels.setDomain(channel, domain);
@@ -1617,24 +1584,10 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       rig.setBounds(null);
       picker.commitScene(null);
       layoutOverridden = false;
-      channels.reset(null);
-      playback.reset();
+      channels.load(null);
       events.clear();
     },
   };
-
-  /** Follow a series in a channel; frames the device cannot hold leave it unbound. */
-  function followSeries(channel: Channel, binding: SeriesBinding, domain?: Domain | null): void {
-    channels.set(channel, binding, domain);
-    try {
-      playback.follow(channel, binding.series, binding.signal);
-    } catch (error) {
-      channels.clear(channel);
-      if (isPickChannel(channel)) hoverDirty = true;
-      repaint();
-      throw error;
-    }
-  }
 
   /**
    * Bind vertex positions, or restore the topology's own layout with `null`.
@@ -1808,9 +1761,9 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       ) as DisplayState[DisplayOption];
       if (PICK_GEOMETRY_OPTIONS.has(key)) pickGeometryChanged = true;
     }
-    if (opts.dashPeriodPx !== undefined) channels.refreshDashPeriod();
-    if (opts.heightRange !== undefined) channels.refreshHeightRange();
-    if (opts.sizeRange !== undefined || initial) channels.refreshSizeRange();
+    if (opts.dashPeriodPx !== undefined) channels.refresh('edgeDash');
+    if (opts.heightRange !== undefined) channels.refresh('vertexHeight');
+    if (opts.sizeRange !== undefined || initial) channels.refresh('vertexSize');
     if (opts.sunTime !== undefined) daylight.refresh(display.sunTime ?? Date.now(), true);
     if (opts.animationMs !== undefined) rig.animationMs = display.animationMs;
     if (
@@ -2021,10 +1974,11 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     const encodedSegments = encodeSegments(prepared);
     const nextScene = prepareScene(encoded, encodedSegments);
     const pickScene = picker.prepareScene(nextScene);
-    binding?.renderer.bindTopology(nextScene);
+    const info = nextScene.info;
+    const counts = { vertex: info.vertexCount, edge: info.edgeCount };
+    binding?.renderer.bindTopology(nextScene, channels.measure(counts));
     picker.commitScene(pickScene);
 
-    const info = nextScene.info;
     scene = nextScene;
     topology = next;
     topologyAdjacency = null;
@@ -2067,8 +2021,8 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
 
     // Every channel clears and the topology's layout seeds the position channel the shaders
     // and picker place vertices by.
-    channels.reset(nextScene.coords);
-    playback.reset();
+    channels.load(counts);
+    channels.set('vertexPosition', nextScene.coords);
     picker.moved();
     // A fresh scene schedules its canonical fit on the rig, unless the caller keeps the pose.
     rig.setBounds(topologyBounds, fit);

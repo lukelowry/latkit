@@ -1,9 +1,10 @@
-import { createModel, type ClassData, type Model } from '../src/index.js';
-import type { Loader } from '../src/model.js';
+import { createModel, type Model } from '../src/index.js';
+import type { ClassData, ClassValues, Description } from '../src/model.js';
 
 /** Three vertices in a line with two edges, buses owning vertices, branches owning edges, two
- *  generators anchored to vertices 0 and 2, and one area with no place on the canvas. */
-export function sampleData(): Omit<Model, keyof Loader> {
+ *  generators anchored to vertices 0 and 2, and one area with no place on the canvas. Buses record
+ *  their voltage and generators their power. */
+export function sampleData(): Description {
   return {
     vendor: 'test',
     id: 'sample',
@@ -23,24 +24,37 @@ export function sampleData(): Omit<Model, keyof Loader> {
         id: 'bus',
         label: 'Bus',
         count: 3,
+        columns: [
+          { kind: 'number', id: 'Vm', label: 'Voltage', unit: 'pu' },
+          { kind: 'text', id: 'zone', label: 'Zone', group: 'Location' },
+          { kind: 'flag', id: 'slack', label: 'Slack' },
+        ],
         signals: [
           { id: 'Vm', label: 'Voltage', unit: 'pu', recorded: true },
           { id: 'Va', label: 'Angle', unit: 'deg', recorded: false },
         ],
       },
-      { id: 'branch', label: 'Branch', count: 2, signals: [] },
+      {
+        id: 'branch',
+        label: 'Branch',
+        count: 2,
+        columns: [{ kind: 'flag', id: 'xfmr', label: 'Transformer' }],
+        signals: [],
+      },
       {
         id: 'gen',
         label: 'Generator',
         count: 2,
         anchor: { kind: 'vertex', index: Uint32Array.of(0, 2) },
+        columns: [],
         signals: [{ id: 'P', label: 'Power', unit: 'MW', recorded: true }],
       },
-      { id: 'area', label: 'Area', count: 1, signals: [] },
+      { id: 'area', label: 'Area', count: 1, columns: [], signals: [] },
     ],
   };
 }
 
+/** One class's data as the model joins it: its labels and declared columns with their values. */
 export function sampleClass(id: string): ClassData {
   switch (id) {
     case 'bus':
@@ -72,16 +86,25 @@ export function sampleClass(id: string): ClassData {
   }
 }
 
-export function sampleLoader(calls: string[] = []): Loader {
+/** One class's data as a vendor's loader returns it: labels and values in declared order. */
+export function sampleValues(id: string): ClassValues {
+  const data = sampleClass(id);
+  return { labels: data.labels, values: data.columns.map((column) => column.values) };
+}
+
+/** The fixture's loader, recording every class it is asked for. */
+export function sampleLoader(
+  calls: string[] = [],
+): Pick<Parameters<typeof createModel>[0], 'load' | 'bytes'> {
   return {
     load: async (id) => {
       calls.push(id);
-      return sampleClass(id);
+      return sampleValues(id);
     },
     bytes: async () => new TextEncoder().encode('{"case":"sample"}'),
   };
 }
 
 export function sampleModel(calls?: string[]): Model {
-  return createModel(sampleData(), sampleLoader(calls));
+  return createModel({ ...sampleData(), ...sampleLoader(calls) });
 }

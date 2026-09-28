@@ -1,15 +1,13 @@
 /**
- * The container under every pack: a 16-byte preamble, a JSON directory, then 8-byte-aligned typed
+ * The container under every pack: a 12-byte preamble, a JSON directory, then 8-byte-aligned typed
  * sections. Decoding validates the whole directory before exposing any view, and every section is
  * a zero-copy view into the received buffer.
  *
- * Layout: `LKM\0` · u16 version · u16 flags (0) · u32 directory bytes · u32 payload bytes ·
- * directory · padding · sections.
+ * Layout: `LKM\0` · u32 directory bytes · u32 payload bytes · directory · padding · sections.
  */
 
 const MAGIC = Uint8Array.of(0x4c, 0x4b, 0x4d, 0x00);
-const VERSION = 1;
-const PREAMBLE = 16;
+const PREAMBLE = 12;
 const MAX_DIRECTORY = 64 * 1024 * 1024;
 const ALIGN = 8;
 
@@ -68,10 +66,8 @@ export function encode<M>(
   const out = new Uint8Array(payloadOffset + payload);
   out.set(MAGIC);
   const view = new DataView(out.buffer);
-  view.setUint16(4, VERSION, true);
-  view.setUint16(6, 0, true);
-  view.setUint32(8, directory.byteLength, true);
-  view.setUint32(12, payload, true);
+  view.setUint32(4, directory.byteLength, true);
+  view.setUint32(8, payload, true);
   out.set(directory, PREAMBLE);
   sections.forEach(({ data }, index) => {
     out.set(
@@ -108,10 +104,8 @@ export function decode<M>(source: Uint8Array, kind: string): Decoded<M> {
     if (bytes[index] !== MAGIC[index]) throw new Error('not a pack');
   }
   const view = new DataView(buffer, bytes.byteOffset, PREAMBLE);
-  if (view.getUint16(4, true) !== VERSION) throw new Error('unsupported pack version');
-  if (view.getUint16(6, true) !== 0) throw new Error('unsupported pack flags');
-  const directoryBytes = view.getUint32(8, true);
-  const payloadBytes = view.getUint32(12, true);
+  const directoryBytes = view.getUint32(4, true);
+  const payloadBytes = view.getUint32(8, true);
   if (directoryBytes === 0 || directoryBytes > MAX_DIRECTORY)
     throw new Error('invalid pack directory');
   const payloadOffset = align(PREAMBLE + directoryBytes);

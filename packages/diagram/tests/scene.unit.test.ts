@@ -1,7 +1,9 @@
 import type { Netlist } from '@latkit/model';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createChannels, type Channels } from '../src/channels.js';
+import { createChannels, type Channels } from '@latkit/gpu';
+
+import { channelRecord, SLOTTED, type Scope, type SlotChannel } from '../src/channels.js';
 import { ceilTo, textWidth } from '../src/geometry.js';
 import { arrangeAll } from '../src/layout/arrange.js';
 import { UNIT_GAP } from '../src/layout/pack.js';
@@ -39,13 +41,21 @@ const block = (index: number): number => partId(PART_BLOCK, index);
 
 interface Harness {
   readonly mirrors: Mirrors;
-  readonly channels: Channels;
+  readonly channels: Channels<SlotChannel, Scope>;
   readonly scene: Scene;
 }
 
 function harness(): Harness {
   const mirrors = createMirrors();
-  const channels = createChannels(mirrors.channels, createUniforms(mirrors.uniforms));
+  const channels = createChannels<SlotChannel, Scope>({
+    name: 'diagram',
+    structure: 'netlist',
+    channels: SLOTTED,
+    store: () => mirrors.channels,
+    record: channelRecord(createUniforms(mirrors.uniforms)),
+    shown: () => {},
+    error: () => {},
+  });
   return { mirrors, channels, scene: new Scene(mirrors, channels) };
 }
 
@@ -327,15 +337,15 @@ describe('Scene.load', () => {
   it('clears every channel but the placements of surviving keys, since indices change', () => {
     const h = loaded(twoArea());
     h.channels.set('blockVisible', Float32Array.of(0, 1, 1));
-    h.channels.set('blockPosition', new Float32Array(6).fill(5));
+    h.scene.place(new Float32Array(6).fill(5));
     h.scene.load(plant('steam'), G, true, 0);
     expect(h.channels.values('blockVisible')).toBeNull();
     expect(h.scene.blockVisible(0)).toBe(true);
     // The plant's blocks carry TwoArea's keys: each keeps its placement.
-    expect(Array.from(h.channels.values('blockPosition')!)).toEqual([5, 5, 5, 5, 5, 5]);
+    expect(Array.from(h.scene.placement!)).toEqual([5, 5, 5, 5, 5, 5]);
     const { blockKey: _keys, ...bare } = plant('steam');
     h.scene.load(bare, G, true, 0);
-    expect(h.channels.values('blockPosition')).toBeNull();
+    expect(h.scene.placement).toBeNull();
   });
 
   it('keeps a moved block where it was placed across an edit, and places new blocks', () => {
@@ -348,7 +358,7 @@ describe('Scene.load', () => {
     h.scene.load(withReader(twoArea(), 2, 'Ieeest/1_1_ieeest'), G, true, 1);
     expect(Array.from(h.scene.positions.subarray(2, 4))).toEqual(Array.from(moved.positions));
     expect(Array.from(h.scene.positions.subarray(0, 2))).toEqual(Array.from(auto.subarray(0, 2)));
-    const placement = h.channels.values('blockPosition')!;
+    const placement = h.scene.placement!;
     expect(Array.from(placement.subarray(2, 4))).toEqual(Array.from(moved.positions));
     for (const i of [0, 1, 4, 5, 6, 7]) expect(Number.isNaN(placement[i])).toBe(true);
     expect(Number.isFinite(h.scene.positions[6]!)).toBe(true);
@@ -358,7 +368,7 @@ describe('Scene.load', () => {
     const order = [1, 2, 0];
     h.scene.load(reordered(order), G, true, 2);
     expect(Array.from(h.scene.positions.subarray(0, 2))).toEqual(Array.from(moved.positions));
-    const again = h.channels.values('blockPosition')!;
+    const again = h.scene.placement!;
     expect(Array.from(again.subarray(0, 2))).toEqual(Array.from(moved.positions));
     expect(Number.isNaN(again[2]) && Number.isNaN(again[4])).toBe(true);
   });
@@ -366,7 +376,7 @@ describe('Scene.load', () => {
   it('carries no placement channel when none was bound', () => {
     const h = loaded(twoArea());
     h.scene.load(withReader(twoArea(), 2, 'Ieeest/1_1_ieeest'), G, true, 1);
-    expect(h.channels.values('blockPosition')).toBeNull();
+    expect(h.scene.placement).toBeNull();
   });
 
   it('keeps the automatic positions of surviving keys and places new blocks clear of the rest', () => {
@@ -548,7 +558,7 @@ describe('Scene placement', () => {
     const placement = new Float32Array(6).fill(Number.NaN);
     placement[2] = 800;
     placement[3] = 400;
-    h.channels.set('blockPosition', placement);
+    h.scene.place(placement);
     h.scene.placementChanged();
     expect(Array.from(h.scene.positions)).toEqual([auto[0], auto[1], 800, 400, auto[4], auto[5]]);
     expect(h.scene.settled).toBeGreaterThan(settled);
@@ -561,16 +571,16 @@ describe('Scene placement', () => {
     // A pair with one NaN is no placement.
     placement[2] = Number.NaN;
     placement[3] = 5;
-    h.channels.set('blockPosition', placement);
+    h.scene.place(placement);
     h.scene.placementChanged();
     expect(Array.from(h.scene.positions)).toEqual(Array.from(auto));
     expect(h.scene.picker.pick(...center(h.scene, 1), 0)).toContain(block(1));
 
     placement[2] = 16;
     placement[3] = 640;
-    h.channels.set('blockPosition', placement);
+    h.scene.place(placement);
     h.scene.placementChanged();
-    h.channels.clear('blockPosition');
+    h.scene.place(null);
     h.scene.placementChanged();
     expect(Array.from(h.scene.positions)).toEqual(Array.from(auto));
   });
@@ -581,7 +591,7 @@ describe('Scene placement', () => {
     const placement = new Float32Array(6).fill(Number.NaN);
     placement[0] = 2000;
     placement[1] = 1000;
-    h.channels.set('blockPosition', placement);
+    h.scene.place(placement);
     h.scene.placementChanged();
     const after = frame(h.scene, 0);
     expect(after[2]).toBeGreaterThan(2000 + h.scene.prepared!.size[0]!);
@@ -624,7 +634,7 @@ describe('Scene drags', () => {
     expect(Array.from(moved.blocks)).toEqual([1]);
     expect(Array.from(moved.positions)).toEqual([auto[2]! + 3 * G, auto[3]! + 5 * G]);
     for (const v of moved.positions) expect(v % G).toBe(0);
-    const placement = h.channels.values('blockPosition')!;
+    const placement = h.scene.placement!;
     expect(Array.from(placement.subarray(2, 4))).toEqual(Array.from(moved.positions));
     expect(Number.isNaN(placement[0])).toBe(true);
     expect(Number.isNaN(placement[4])).toBe(true);
@@ -646,7 +656,7 @@ describe('Scene drags', () => {
     h.scene.drag(null, 0, 0);
     expect(Array.from(h.scene.positions)).toEqual(Array.from(auto));
     expect(routing(h.scene)).toBe(wires);
-    expect(h.channels.values('blockPosition')).toBeNull();
+    expect(h.scene.placement).toBeNull();
   });
 
   it('drags from a placement, and a new block set ends the old drag', () => {
@@ -669,9 +679,7 @@ describe('Scene drags', () => {
     expect(Array.from(moved.blocks)).toEqual([0]);
     expect(Array.from(moved.positions)).toEqual([auto[0]! + G, auto[1]! - G]);
     expect(Array.from(h.scene.positions.subarray(0, 2))).toEqual(Array.from(moved.positions));
-    expect(Array.from(h.channels.values('blockPosition')!.subarray(0, 2))).toEqual(
-      Array.from(moved.positions),
-    );
+    expect(Array.from(h.scene.placement!.subarray(0, 2))).toEqual(Array.from(moved.positions));
     const again = h.scene.nudge(Uint32Array.of(0), G, 0);
     expect(Array.from(again.positions)).toEqual([auto[0]! + 2 * G, auto[1]! - G]);
     expect(reaches(h.scene, 0, 0)).toBe(true);
@@ -853,16 +861,16 @@ describe('Scene.arrange', () => {
     const placement = new Float32Array(8).fill(Number.NaN);
     placement[0] = -400;
     placement[1] = -400;
-    h.channels.set('blockPosition', placement);
+    h.scene.place(placement);
     h.scene.placementChanged();
     h.scene.motion = false;
     const auto = h.scene.arrange(null, true, 0);
     expect(h.scene.animating).toBe(false);
     expect(Array.from(h.scene.positions.subarray(0, 2))).toEqual([-400, -400]);
     expect(Array.from(h.scene.positions.subarray(2))).toEqual(Array.from(auto.subarray(2)));
-    expect(Array.from(h.channels.values('blockPosition')!)).toEqual(Array.from(placement));
+    expect(Array.from(h.scene.placement!)).toEqual(Array.from(placement));
     // Writing NaN hands the block to the fresh layout.
-    h.channels.set('blockPosition', new Float32Array(8).fill(Number.NaN));
+    h.scene.place(new Float32Array(8).fill(Number.NaN));
     h.scene.placementChanged();
     expect(Array.from(h.scene.positions)).toEqual(Array.from(auto));
   });
@@ -974,8 +982,8 @@ describe('Scene visibility', () => {
     h.scene.visibilityChanged();
     expect(entries(h.scene, 1)).toEqual([]);
 
-    h.channels.clear('blockVisible');
-    h.channels.clear('netVisible');
+    h.channels.set('blockVisible', null);
+    h.channels.set('netVisible', null);
     h.scene.visibilityChanged();
     expect(routing(h.scene)).toBe(wires);
   });
@@ -998,7 +1006,7 @@ describe('Scene visibility', () => {
     h.scene.visibilityChanged();
     expect(frame(h.scene, 0).every(Number.isNaN)).toBe(true);
     expect(h.scene.picker.pick(whole[0]! + 4, whole[1]! + 4, 0)).toEqual([]);
-    h.channels.clear('blockVisible');
+    h.channels.set('blockVisible', null);
     h.scene.visibilityChanged();
     expect(frame(h.scene, 0)).toEqual(whole);
   });
@@ -1073,7 +1081,7 @@ describe('Scene groups', () => {
     h.channels.set('netVisible', visible);
     h.scene.visibilityChanged();
     expect(frame(h.scene, 0)[2]).toBeLessThan(whole[2]!);
-    h.channels.clear('netVisible');
+    h.channels.set('netVisible', null);
     h.scene.visibilityChanged();
     expect(frame(h.scene, 0)).toEqual(whole);
   });
@@ -1085,7 +1093,7 @@ describe('Scene groups', () => {
     h.channels.set('netVisible', Float32Array.of(1, 1, 0, 1));
     h.scene.visibilityChanged();
     expect(frame(h.scene, 0)[3]).toBeLessThan(whole[3]!);
-    h.channels.clear('netVisible');
+    h.channels.set('netVisible', null);
     h.scene.visibilityChanged();
     expect(frame(h.scene, 0)).toEqual(whole);
   });
@@ -1175,7 +1183,7 @@ describe('Scene routing and grid', () => {
     const placement = new Float32Array(6).fill(Number.NaN);
     placement[4] = 1000;
     placement[5] = 1000;
-    h.channels.set('blockPosition', placement);
+    h.scene.place(placement);
     h.scene.placementChanged();
     const settled = h.scene.settled;
     h.scene.setGrid(10);
@@ -1355,7 +1363,7 @@ describe('Scene picking', () => {
       if (round % 3 === 0) {
         placement[2 * b] = Math.round(next() * 400) * G;
         placement[2 * b + 1] = Math.round(next() * 400) * G;
-        h.channels.set('blockPosition', placement);
+        h.scene.place(placement);
         h.scene.placementChanged();
       } else if (round % 3 === 1) {
         const blocks = Uint32Array.of(b);
@@ -1366,7 +1374,7 @@ describe('Scene picking', () => {
         placement[2 * b + 1] = moved.positions[1]!;
       } else {
         h.scene.nudge(Uint32Array.of(b), G, G);
-        placement.set(h.channels.values('blockPosition')!);
+        placement.set(h.scene.placement!);
       }
       for (let other = 0; other < p.blockCount; other++) {
         const [cx, cy] = center(h.scene, other);

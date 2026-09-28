@@ -31,6 +31,7 @@ function makeSeries(input: {
 }): Series {
   const time = Float64Array.from(input.time);
   const signalCount = input.signals.length;
+  const signals = input.signals.map((_, signal) => `s${signal}`);
   const stride = time.length * input.elements;
   const values = new Float32Array(signalCount * stride);
   for (let signal = 0; signal < signalCount; signal++) {
@@ -39,7 +40,7 @@ function makeSeries(input: {
       throw new Error(`signal ${signal} has ${source.length} values, expected ${stride}`);
     values.set(source, signal * stride);
   }
-  return createSeries({ time, values, signalCount, elementCount: input.elements });
+  return createSeries({ time, values, signals, elementCount: input.elements });
 }
 
 /** A controller over the stub's pool, tracked for teardown. */
@@ -207,7 +208,10 @@ describe('monitor', () => {
     const canvas = canvasFor(monitor);
     const rendered = vi.fn();
     monitor.on('rendered', rendered);
-    monitor.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
+    monitor.load({
+      series: makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }),
+      signal: 0,
+    });
     await settle();
     expect(rendered).toHaveBeenCalledOnce();
     const history = () =>
@@ -238,7 +242,10 @@ describe('monitor', () => {
     const monitor = create();
     const rendered = vi.fn();
     monitor.on('rendered', rendered);
-    monitor.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
+    monitor.load({
+      series: makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }),
+      signal: 0,
+    });
     await monitor.attach(canvas);
     await settle();
     const presents = () => stub.log.draws.filter((draw) => draw.target === 'canvas');
@@ -259,7 +266,10 @@ describe('monitor', () => {
     const events = record(monitor);
     const canvas = canvasFor(monitor);
     canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 320, height: 180 }) as DOMRect;
-    monitor.load(makeSeries({ elements: 2, time: [0, 1], signals: [[0, 1, 1, 0]] }));
+    monitor.load({
+      series: makeSeries({ elements: 2, time: [0, 1], signals: [[0, 1, 1, 0]] }),
+      signal: 0,
+    });
     await settle();
     expect(stub.pendingFrames()).toBe(0);
 
@@ -289,7 +299,10 @@ describe('monitor', () => {
     expect(canvas.height).toBe(128);
     let history = stub.log.textures.filter((texture) => texture.label === 'monitor-history');
     expect(history[0]).toMatchObject({ width: 256, height: 128 });
-    monitor.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
+    monitor.load({
+      series: makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }),
+      signal: 0,
+    });
     await settle();
     expect(Array.from(lastUniform().slice(0, 3))).toEqual([256, 128, expect.closeTo(0.48, 5)]);
 
@@ -338,7 +351,10 @@ describe('monitor', () => {
     expect(stub.log.deviceDestroys).toBe(0);
     expect(firstCanvas.isConnected).toBe(true);
 
-    second.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
+    second.load({
+      series: makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }),
+      signal: 0,
+    });
     await settle();
     expect(historyDraws()).not.toHaveLength(0);
 
@@ -406,7 +422,10 @@ describe('monitor', () => {
 
   it('applies a live option patch completely or not at all', async () => {
     const monitor = await mount();
-    monitor.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
+    monitor.load({
+      series: makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }),
+      signal: 0,
+    });
     await settle();
     const lutWrites = stub.log.lutWrites.length;
     const uniform = Array.from(lastUniform());
@@ -440,7 +459,7 @@ describe('monitor', () => {
       ],
     });
 
-    monitor.load(series, 1);
+    monitor.load({ series, signal: 1 });
     monitor.select(1);
     monitor.setOptions({ lineWidthPx: 3 });
     expect(stub.log.writes).toHaveLength(0);
@@ -472,7 +491,7 @@ describe('monitor', () => {
     const events = record(monitor);
     const canvas = canvasFor(monitor);
     const series = makeSeries({ elements: 2, time: [0, 1, 2], signals: [[1, 2, 3, 4, 5, 6]] });
-    monitor.load(series);
+    monitor.load({ series, signal: 0 });
     monitor.select(0);
     await settle();
 
@@ -485,7 +504,7 @@ describe('monitor', () => {
     expect(stub.log.resizeDisconnects).toBe(1);
     expect(canvas.getAttribute('width')).toBeNull();
     expect(canvas.isConnected).toBe(true);
-    expect(() => monitor.setSignal(0)).not.toThrow();
+    expect(() => monitor.load({ series, signal: 0 })).not.toThrow();
 
     stub.log.draws.length = 0;
     stub.log.writes.length = 0;
@@ -543,8 +562,8 @@ describe('monitor', () => {
     const firstEvents = record(first);
     const secondEvents = record(second);
     const series = makeSeries({ elements: 1, time: [0, 1], signals: [[1, 2]] });
-    first.load(series);
-    second.load(series);
+    first.load({ series, signal: 0 });
+    second.load({ series, signal: 0 });
     await settle();
     stub.log.draws.length = 0;
 
@@ -591,7 +610,7 @@ describe('monitor', () => {
   it('clear blanks the canvas, drops the series, and releases the slabs', async () => {
     const scope = await mount();
     const series = makeSeries({ elements: 1, time: [0, 1], signals: [[1, 2]] });
-    scope.load(series);
+    scope.load({ series, signal: 0 });
     scope.select(0);
     await settle();
     stub.log.clears.length = 0;
@@ -605,7 +624,16 @@ describe('monitor', () => {
       stub.log.buffers.filter((b) => b.label === 'monitor-values').every((b) => b.destroyed),
     ).toBe(true);
     expect(stub.log.draws.filter((d) => d.pipeline === 'monitor-focus')).toHaveLength(0);
-    expect(() => scope.setSignal(0)).toThrow('before load');
+  });
+
+  it('refuses a load that is not a series binding, or names a signal the series lacks', () => {
+    const scope = create();
+    const series = makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] });
+    expect(() => scope.load(null as never)).toThrow(TypeError);
+    expect(() => scope.load(series as never)).toThrow(TypeError);
+    expect(() => scope.load({ series, signal: 1 })).toThrow(RangeError);
+    expect(() => scope.load({ series, signal: 0.5 })).toThrow(RangeError);
+    expect(() => scope.load({ series, signal: 0 })).not.toThrow();
   });
 
   it('pause holds painting and hover until resume, across a detach', async () => {
@@ -615,7 +643,7 @@ describe('monitor', () => {
     const series = makeSeries({ elements: 1, time: [0, 1], signals: [[1, 2]] });
 
     scope.pause();
-    scope.load(series);
+    scope.load({ series, signal: 0 });
     canvas.dispatchEvent(new MouseEvent('pointermove', { clientX: 10, clientY: 10 }));
     await settle();
     expect(historyDraws()).toHaveLength(0);

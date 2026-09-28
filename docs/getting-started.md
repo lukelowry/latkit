@@ -13,10 +13,10 @@ This guide gets a local Latkit checkout or downstream app to its first rendered 
 Install only the packages your app needs:
 
 ```sh
-npm install @latkit/model @latkit/colormaps @latkit/gpu @latkit/monitor @latkit/network @latkit/diagram @latkit/embed @latkit/port @latkit/remote
+npm install @latkit/model @latkit/colormaps @latkit/gpu @latkit/monitor @latkit/network @latkit/diagram @latkit/embed @latkit/port
 ```
 
-Most applications start with one renderer plus colormaps:
+Most applications start with one renderer plus its colors:
 
 ```sh
 npm install @latkit/network @latkit/colormaps
@@ -39,19 +39,16 @@ A page that wants a tag instead of a controller installs `@latkit/embed`.
 ## Choose a package
 
 `@latkit/model`
-: The columnar model and the vocabulary every renderer speaks: `Topology`, `Netlist`, `Item`, `Series`, `Domain`.
+: The model a vendor builds and every question about it: its runs, recordings, fields, and tables, and the vocabulary every renderer speaks: `Topology`, `Netlist`, `Item`, `Series`, `Domain`.
 
 `@latkit/port`
-: A port over workers, webviews, and sockets, and typed request, reply, and stream protocols over it.
-
-`@latkit/remote`
-: A model's source, runner, and results served across a port.
+: A port over workers, webviews, sockets, and one thread; typed request, reply, and stream protocols over it; and a model and its recordings served across it.
 
 `@latkit/colormaps`
-: Named colormap data and helpers for gradients and scale metadata.
+: `RGBA` and `Colormap`, the named colormap catalog with gradients and scale metadata, and a CSS color parser.
 
 `@latkit/gpu`
-: Core WebGPU device acquisition, the device pool every renderer leases from, canvas presentation, and the frame loop every renderer schedules its frames with. Renderers depend on it; applications rarely import it.
+: What every renderer shares: device acquisition and the pool every renderer leases from, canvas presentation, the frame loop, the attach lifecycle, and the channel binder behind every `setChannel`. Renderers depend on it; applications rarely import it.
 
 `@latkit/monitor`
 : A WebGPU signal monitor for time-oriented readings.
@@ -60,14 +57,14 @@ A page that wants a tag instead of a controller installs `@latkit/embed`.
 : A WebGPU renderer for interactive network topology views.
 
 `@latkit/diagram`
-: A WebGPU block-diagram renderer and editor surface: automatic layout, right-angle wires, live values on blocks and wires, and edits reported as proposals. `@latkit/diagram/layout` computes the same layout without a device.
+: A WebGPU block-diagram renderer and editor surface: automatic layout, right-angle wires, live values on blocks and wires, and edits reported as proposals. `arrange` computes the same layout without a device, in a worker too.
 
 `@latkit/embed`
 : `latkit-network` and `latkit-monitor`, the same controllers as custom elements.
 
 ## Use public entrypoints
 
-Use package entrypoints directly:
+Every package has one entrypoint, its root:
 
 ```ts
 import { colormap } from '@latkit/colormaps';
