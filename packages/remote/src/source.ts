@@ -44,13 +44,26 @@ async function* settled(
 }
 
 /**
- * Serve one model on `port` until either side closes. Returns the server's own close.
+ * Serve one model on `port` until either side closes; a run's command is bytes. Returns the
+ * server's own close.
  *
- * @param options - `command` guards what the peer sends a run, since the peer is untrusted; it
- * defaults to bytes, and a structured command needs its own. `onClose` fires once the service has
- * ended.
+ * @param options - `onClose` fires once the service has ended.
  */
-export function serveSource<Command = Uint8Array>(
+export function serveSource(
+  port: Port,
+  initial: Served | Promise<Served>,
+  options?: { onClose?(): void },
+): () => void;
+/**
+ * Serve one model whose runner takes a structured command. The peer is untrusted, so `command`
+ * guards what it sends a run.
+ */
+export function serveSource<Command>(
+  port: Port,
+  initial: Served<Command> | Promise<Served<Command>>,
+  options: { readonly command: Guard<Command>; onClose?(): void },
+): () => void;
+export function serveSource<Command>(
   port: Port,
   initial: Served<Command> | Promise<Served<Command>>,
   options: { readonly command?: Guard<Command>; onClose?(): void } = {},

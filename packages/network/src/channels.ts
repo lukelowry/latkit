@@ -181,8 +181,9 @@ export interface Channels {
   readonly words: number;
   /**
    * Bind or replace channel values. An array's length must match the current topology. A series
-   * binding shows nothing, its own slot filled with NaN, until `moveTo` shows a frame; a null
-   * `domain` follows the signal's recorded range.
+   * binding shows nothing, its own slot filled with NaN, until `moveTo` shows a frame, unless the
+   * channel follows that signal already and keeps what it shows; a null `domain` follows the
+   * signal's recorded range.
    */
   set(
     channel: Channel,
@@ -313,14 +314,17 @@ export function createChannels(uniforms: Uniforms, deps: ChannelDeps): Channels 
         ? checkedDomain(domain, `${channel} domain`)
         : recordedDomain(binding)
       : null;
-    const slot = new Float32Array(items).fill(NaN);
-    deps.renderer()?.writeChannel(channel, slot);
-    following.set(channel, { binding, slot });
-    current.set(channel, slot);
+    const previous = following.get(channel)?.binding;
+    if (previous?.series !== series || previous.signal !== signal) {
+      const slot = new Float32Array(items).fill(NaN);
+      deps.renderer()?.writeChannel(channel, slot);
+      following.set(channel, { binding, slot });
+      current.set(channel, slot);
+      writeOffset(channel, layout.offsets[channel]);
+    }
     if (domain) recorded.delete(channel);
     else recorded.add(channel);
     if (nextDomain) data.set(channel, nextDomain);
-    writeOffset(channel, layout.offsets[channel]);
     setMode(channel, true);
     writeScalars(channel);
   }

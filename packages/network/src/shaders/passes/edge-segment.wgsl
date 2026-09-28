@@ -208,7 +208,7 @@ fn edge_common(
   out.item_focus = item_focus;
   if (u.e_dash_period_px > 0.0) {
     let dash = edge_dash_val(seg.edge_id);
-    out.dashed = select(0u, 1u, !no_value(dash) && dash < 0.5);
+    out.dashed = select(0u, 1u, !is_nan(dash) && dash < 0.5);
   }
   return out;
 }

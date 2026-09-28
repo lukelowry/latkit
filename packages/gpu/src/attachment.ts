@@ -7,7 +7,7 @@ import type { DevicePool } from './pool.js';
 
 /** A controller's binding to one canvas at a time. */
 export interface Attachment<B> {
-  /** The canvas bound or requested, including during device recovery, or null. */
+  /** The canvas bound or binding, or null. */
   readonly canvas: HTMLCanvasElement | null;
   /** The live binding, or null while detached or still binding. */
   readonly binding: B | null;
@@ -15,7 +15,7 @@ export interface Attachment<B> {
    * Release the current binding, lease a device, and bind `canvas`. Attaching the canvas already
    * bound or binding joins that attach.
    *
-   * @returns True once bound; false as soon as a newer attach or a detach takes over first.
+   * @returns True once bound; false when a newer attach or a detach took over first.
    * @throws GpuUnavailableError when no device can be leased, and whatever `bind` throws.
    */
   attach(canvas: HTMLCanvasElement): Promise<boolean>;
@@ -29,10 +29,10 @@ export interface Attachment<B> {
  * Create the attach lifecycle a controller shares with every other.
  *
  * @remarks
- * A device the platform loses is released and a replacement leased for the same canvas, unless a
- * handler of `release`, `attached(false)`, or `lost` detached or attached anew first: that call
- * owns the outcome, and the loss reports `recovering: false`. Attaching the same canvas joins
- * the recovery request; its promise waits for the replacement binding.
+ * A device the platform loses is released and a replacement leased for the same canvas; attaching
+ * that canvas joins the recovery. A `release` or `attached(false)` handler that detaches or
+ * attaches another canvas takes over, and the loss reports `recovering: false`; a `lost` handler
+ * that does either takes over after it.
  */
 export function createAttachment<B>(spec: {
   readonly devices: DevicePool;

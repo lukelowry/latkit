@@ -106,7 +106,7 @@ network.setChannel('vertexColor', { series: bus, signal: voltage }, null);
 network.seek(transport.t); // on every transport frame
 ```
 
-The frames around the playhead stay resident on the GPU, about 8 MiB per channel, and the next ones load while the current ones play, so a seek within them rewrites one word per channel and uploads nothing. A seek beyond them keeps the current frame on screen until the frames it needs arrive. A failed read emits `error`; the channel reads again once the series appends or is bound anew. Every channel but `vertexPosition` can follow a series.
+The frames around the playhead stay resident on the GPU, about 8 MiB per signal with a CPU copy as large, shared by every channel following that signal, and the next ones load as the playhead advances or the series appends, so a seek within them rewrites one word per channel and uploads nothing. A seek beyond them keeps the current frame on screen until the frames it needs arrive. A failed read emits `error` with its channel, which reads again once the series appends or the channel is bound anew; binding the signal a channel already follows keeps what it shows. Every channel but `vertexPosition` can follow a series.
 
 ## Moving vertices
 

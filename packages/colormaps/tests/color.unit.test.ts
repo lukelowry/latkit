@@ -56,11 +56,34 @@ describe('parseColor', () => {
   it('resolves through a context element as it computes the color, and removes its probe', () => {
     const { context, append, probes } = stubContext({
       resolved: '#e8e8e8',
-      color: 'rgb(232, 232, 232)',
+      color: 'color(srgb 0.909804 0.909804 0.909804)',
     });
     close(parseColor('var(--edge)', context), [232 / 255, 232 / 255, 232 / 255, 1]);
     expect(append).toHaveBeenCalledOnce();
+    expect(probes[0]!.style.setProperty).toHaveBeenCalledWith(
+      'color',
+      'color-mix(in srgb, var(--latkit-color) 100%, transparent)',
+    );
     expect(probes[0]!.remove).toHaveBeenCalledOnce();
+  });
+
+  it('reads any color space the context computes, as the browser mixes it into sRGB', () => {
+    const { context } = stubContext({
+      resolved: 'lab(50% 40 60)',
+      color: 'color(srgb 0.75 0.33 0.1 / 0.5)',
+    });
+    expect(parseColor('lab(50% 40 60 / 0.5)', context)).toEqual([0.75, 0.33, 0.1, 0.5]);
+  });
+
+  it('probes inside the context shadow root, leaving its light DOM untouched', () => {
+    const shadow = vi.fn();
+    const { context, append } = stubContext(
+      { resolved: 'red', color: 'color(srgb 1 0 0)' },
+      { append: shadow },
+    );
+    expect(parseColor('red', context)).toEqual([1, 0, 0, 1]);
+    expect(shadow).toHaveBeenCalledOnce();
+    expect(append).not.toHaveBeenCalled();
   });
 
   it('reads a literal color without computing a style', () => {
@@ -80,8 +103,14 @@ describe('parseColor', () => {
 });
 
 /** A context element whose window computes `color` for a probe whose custom property reads `resolved`. */
-function stubContext(computed: { resolved: string; color: string }) {
-  const probes: { remove: ReturnType<typeof vi.fn> }[] = [];
+function stubContext(
+  computed: { resolved: string; color: string },
+  shadowRoot: { append: (...nodes: unknown[]) => void } | null = null,
+) {
+  const probes: {
+    style: { setProperty: ReturnType<typeof vi.fn> };
+    remove: ReturnType<typeof vi.fn>;
+  }[] = [];
   const append = vi.fn();
   const view = {
     getComputedStyle: () => ({
@@ -92,6 +121,7 @@ function stubContext(computed: { resolved: string; color: string }) {
   };
   const context = {
     append,
+    shadowRoot,
     ownerDocument: {
       defaultView: view,
       createElement: () => {

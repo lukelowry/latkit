@@ -178,21 +178,47 @@ it('reads a long focus independently of history blocks and before history finish
   release();
 });
 
-it('folds a long repaint to two rows per bucket of frames, and draws appends raw', async () => {
+it('folds a long repaint to two rows per pixel column, and draws appends raw', async () => {
   const input = stream(Array.from({ length: 10000 }, (_, i) => i % 2));
   monitor.setOptions({ timeRange: [0, 20000], valueRange: [0, 1] });
   monitor.load(input.series);
   await paint(() => monitor.attach(canvas()));
-  // 10000 frames over 320 device pixels: buckets of 31 frames, 323 of them, each two rows.
-  expect(history().reduce((n, d) => n + d.instanceCount, 0)).toBe(2 * 323 - 1);
+  // 10000 frames over the first 160 of 320 device pixels, each column two rows.
+  expect(history().reduce((n, d) => n + d.instanceCount, 0)).toBe(2 * 160 - 1);
   const upload = stub.log.writes.filter((write) => write.label === 'monitor-values').at(-1)!;
-  expect(upload.byteLength).toBe(2 * 323 * 2 * 4);
+  expect(upload.byteLength).toBe(2 * 160 * 2 * 4);
   const values = new Float32Array(upload.source, upload.byteOffset, upload.byteLength / 4);
-  // Each 31-frame bucket keeps both values in the order they came: the second starts on a 1.
+  // Each column keeps both values in the order they came: the second starts on a 1.
   expect(Array.from({ length: 4 }, (_, row) => values[row * 2])).toEqual([0, 1, 1, 0]);
 
   await paint(() => input.push(Array.from({ length: 10 }, () => 0.5)));
-  expect(history().reduce((n, d) => n + d.instanceCount, 0)).toBe(2 * 323 - 1 + 10);
+  expect(history().reduce((n, d) => n + d.instanceCount, 0)).toBe(2 * 160 - 1 + 10);
+});
+
+it('folds by pixel column, so frames after a crowded stretch draw one by one', async () => {
+  const reads: Window[] = [];
+  // Three thousand frames crowd the first column; then one frame per column for the rest.
+  const time = [
+    ...Array.from({ length: 3000 }, (_, i) => i / 6000),
+    ...Array.from({ length: 319 }, (_, i) => i + 1.5),
+  ];
+  // A value slab of 64 rows: a window's columns outgrow one upload and go on in the next.
+  (stub.device.limits as { maxStorageBufferBindingSize: number }).maxStorageBufferBindingSize =
+    64 * 8;
+  monitor.setOptions({ timeRange: [0, 320], valueRange: [0, 1] });
+  monitor.load(source(1, time, reads).series);
+  await paint(() => monitor.attach(canvas()));
+
+  const axes = stub.log.writes
+    .filter((write) => write.label === 'monitor-xnorm')
+    .map((write) => Array.from(new Float32Array(write.copy!.buffer)));
+  expect(axes.length).toBeGreaterThan(reads.length);
+  for (let i = 1; i < axes.length; i++) expect(axes[i]![0]).toBe(axes[i - 1]!.at(-1));
+  // Every sparse frame keeps its own row; each crowded window folds to two.
+  const drawn = new Set(axes.flat());
+  for (const t of time.slice(3000)) expect(drawn.has(Math.fround(t / 320))).toBe(true);
+  const crowded = Math.ceil(3000 / reads[0]!.frameCount);
+  expect(history().reduce((n, d) => n + d.instanceCount, 0)).toBe(2 * crowded + 319 - 1);
 });
 
 it('keeps folded reads within budget even on a one-pixel canvas', async () => {
@@ -215,9 +241,11 @@ it('carries each folded window last row into the next, so every join draws once'
   monitor.setOptions({ valueRange: [0, elements] });
   monitor.load(source(elements, time, reads).series);
   await paint(() => monitor.attach(canvas()));
-  // Buckets of 10 frames, several per read window, whole buckets only.
+  // Ten frames a pixel column, several columns per read window.
   expect(reads.every((window) => window.frameOffset % 10 === 0)).toBe(true);
-  expect(history().reduce((n, d) => n + d.instanceCount, 0)).toBe(elements * (2 * 320 - 1));
+  // Columns 0 to 318 hold ten frames each, 319 holds nine, and the last frame lands on the right
+  // edge alone: 641 rows.
+  expect(history().reduce((n, d) => n + d.instanceCount, 0)).toBe(elements * 640);
   const axes = stub.log.writes
     .filter((write) => write.label === 'monitor-xnorm')
     .map((write) => new Float32Array(write.copy!.buffer));

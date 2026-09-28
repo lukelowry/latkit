@@ -10,4 +10,4 @@ docs/api/reference/
 output/
 .playwright-cli/
 
-**/.impeccable/hook.cache.json
+.impeccable/

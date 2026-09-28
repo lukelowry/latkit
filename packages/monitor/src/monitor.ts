@@ -43,10 +43,11 @@ export type Events = {
   rendered: undefined;
   attached: boolean;
   /**
-   * The WebGPU device was lost. The monitor releases it, leases a replacement, and replays its
-   * retained state. `recovering` is false when the monitor stays detached: no replacement could
-   * be leased, or the host already detached or attached anew from its `attached` handler. A
-   * `detach` or `attach` from this handler also wins over the recovery.
+   * The WebGPU device was lost. The monitor releases it, leases a replacement for the same canvas,
+   * and replays its retained state; attaching that canvas joins the recovery. `recovering` is false
+   * when the monitor stays detached: no replacement could be leased, or an `attached` handler
+   * detached or attached another canvas first. A `detach` or another canvas's `attach` from this
+   * handler also ends the recovery.
    */
   deviceLost: { readonly reason: string; readonly message: string; readonly recovering: boolean };
 };

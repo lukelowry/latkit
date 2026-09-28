@@ -92,7 +92,10 @@ describe('network package entrypoint', () => {
       ]
     >();
     expectTypeOf<Parameters<Network['seek']>>().toEqualTypeOf<[time: number]>();
-    expectTypeOf<Events['error']>().toEqualTypeOf<Error>();
+    expectTypeOf<Events['error']>().toEqualTypeOf<{
+      readonly channel: entry.Channel;
+      readonly cause: unknown;
+    }>();
     expectTypeOf<ReturnType<Network['getChannelDomain']>>().toEqualTypeOf<Domain | null>();
     expectTypeOf<Parameters<Network['select']>>().toEqualTypeOf<[item: Item | null]>();
     expectTypeOf<Parameters<Network['orbit']>>().toEqualTypeOf<[active: boolean]>();

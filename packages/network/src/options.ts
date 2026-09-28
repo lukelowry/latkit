@@ -38,11 +38,11 @@ export interface Options {
   edges?: boolean;
   /** Draw height poles when a `vertexHeight` channel is active. @defaultValue `false`. */
   poles?: boolean;
-  /** Multiplier applied to the topology-derived vertex radius before its pixel cap, at most 8. @defaultValue `1`. */
+  /** Multiplier applied to the topology-derived vertex radius before its pixel cap. @defaultValue `1`. */
   vertexScale?: number;
-  /** Multiplier applied to the topology-derived edge half-width before pixel clamps, at most 8. @defaultValue `1`. */
+  /** Multiplier applied to the topology-derived edge half-width before pixel clamps. @defaultValue `1`. */
   edgeScale?: number;
-  /** Multiplier applied to vertex-height displacement, at most 8. @defaultValue `1`. */
+  /** Multiplier applied to vertex-height displacement. @defaultValue `1`. */
   heightScale?: number;
   /** Output range the normalized `vertexHeight` channel maps onto. @defaultValue `[0, 1]`. */
   heightRange?: Domain;
@@ -84,9 +84,9 @@ export interface Options {
   hoverColor?: RGBA;
   /** Selection highlight color. @defaultValue `[0.72, 0.28, 0.18, 1]`. */
   selectedColor?: RGBA;
-  /** Multiplier applied to hover color alpha. @defaultValue `0.5`. */
+  /** Multiplier applied to hover color alpha, in `[0, 1]`. @defaultValue `0.5`. */
   hoverAlpha?: number;
-  /** Multiplier applied to selection color alpha. @defaultValue `0.82`. */
+  /** Multiplier applied to selection color alpha, in `[0, 1]`. @defaultValue `0.82`. */
   selectedAlpha?: number;
   /** Additional hover radius around vertices in CSS pixels. @defaultValue `6`. */
   vertexHoverPx?: number;
@@ -196,9 +196,9 @@ const definitions = {
   vertices: { kind: 'boolean', default: true, live: true, label: 'Vertices' },
   edges: { kind: 'boolean', default: true, live: true, label: 'Edges' },
   poles: { kind: 'boolean', default: false, live: true, label: 'Height poles' },
-  vertexScale: { kind: 'nonnegative', default: 1, live: true, label: 'Vertex size', max: 8 },
-  edgeScale: { kind: 'nonnegative', default: 1, live: true, label: 'Edge width', max: 8 },
-  heightScale: { kind: 'nonnegative', default: 1, live: true, label: 'Height scale', max: 8 },
+  vertexScale: { kind: 'nonnegative', default: 1, live: true, label: 'Vertex size' },
+  edgeScale: { kind: 'nonnegative', default: 1, live: true, label: 'Edge width' },
+  heightScale: { kind: 'nonnegative', default: 1, live: true, label: 'Height scale' },
   heightRange: { kind: 'domain', default: tuple(0, 1), live: true, label: 'Height range' },
   sizeRange: { kind: 'domain', default: tuple(0.5, 2), live: true, label: 'Size range' },
   dashPeriodPx: { kind: 'nonnegative', default: 12, live: true, label: 'Dash period' },
@@ -275,8 +275,14 @@ const definitions = {
     live: true,
     label: 'Selection color',
   },
-  hoverAlpha: { kind: 'nonnegative', default: 0.5, live: true, label: 'Hover opacity' },
-  selectedAlpha: { kind: 'nonnegative', default: 0.82, live: true, label: 'Selection opacity' },
+  hoverAlpha: { kind: 'nonnegative', default: 0.5, live: true, label: 'Hover opacity', max: 1 },
+  selectedAlpha: {
+    kind: 'nonnegative',
+    default: 0.82,
+    live: true,
+    label: 'Selection opacity',
+    max: 1,
+  },
   vertexHoverPx: { kind: 'nonnegative', default: 6, live: true, label: 'Vertex hover halo' },
   vertexSelectedPx: { kind: 'nonnegative', default: 7, live: true, label: 'Vertex selection halo' },
   edgeHoverPx: { kind: 'nonnegative', default: 3.5, live: true, label: 'Edge hover halo' },

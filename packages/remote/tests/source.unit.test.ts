@@ -188,6 +188,9 @@ describe('source service: run', () => {
     const run = vi.fn(async function* (_command: Command): AsyncIterable<RunUpdate> {
       yield { type: 'done' };
     });
+    const _unguarded = () =>
+      // @ts-expect-error A structured command is served only with its guard.
+      serveSource<Command>(server, { source: fixtureSource(), runner: { run } });
     serveSource<Command>(
       server,
       { source: fixtureSource(), runner: { run } },

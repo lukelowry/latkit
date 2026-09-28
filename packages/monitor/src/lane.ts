@@ -6,7 +6,7 @@ import {
   type RGBA,
   type Series,
 } from '@latkit/model';
-import { fold, type Envelope } from './envelope.js';
+import { fold, span, type Envelope } from './envelope.js';
 import type { Reading } from './monitor.js';
 import { LanePainter, SEGMENT_BUDGET } from './painter.js';
 
@@ -80,6 +80,9 @@ export class Lane {
   /** The normalized time of the row a fold window carries in, and of the row it carries out. */
   #carriedTime = 0;
   #nextCarriedTime = 0;
+  /** The device-pixel column of the history image a time falls in, which a fold keeps apart. */
+  readonly #column = (time: number): number =>
+    Math.floor(position(time, this.#range) * this.#painter.width);
 
   constructor(
     series: Series,
@@ -295,8 +298,8 @@ export class Lane {
   }
 
   /**
-   * Fold windows: whole buckets of frames, element chunks within each, sized to the read budget and
-   * to the rows a window uploads, its buckets' two each after the row it carries in.
+   * Fold windows: frames enough for as many pixel columns, at `bucket` frames each, as one upload
+   * holds after the row it carries in, and element chunks within each, sized to the read budget.
    */
   *#foldWindows(from: number, to: number, bucket: number): Generator<Window> {
     const elements = Math.max(
@@ -310,14 +313,10 @@ export class Lane {
         Math.floor((this.#frames - 1) / 2),
       ),
     );
-    if (
-      !this.#envelope ||
-      this.#envelope.lo.length < elements ||
-      this.#envelope.time.length < 2 * buckets
-    ) {
+    if (!this.#envelope || this.#envelope.lo.length < elements) {
       this.#envelope = {
-        time: new Float64Array(2 * buckets),
-        values: new Float64Array(2 * buckets * elements),
+        time: new Float64Array(this.#frames),
+        values: new Float64Array(this.#frames * elements),
         lo: new Float64Array(elements),
         hi: new Float64Array(elements),
         loAt: new Uint32Array(elements),
@@ -351,10 +350,17 @@ export class Lane {
   }
 
   /**
-   * Fold a window into its buckets' extremes and normalize them after the row the previous window
-   * carried in, so the segment joining the two is drawn once; returns the rows written.
+   * Fold rows `[from, to)` of a window into its buckets' extremes and normalize them after the row
+   * carried in, at normalized time `carried`, from the upload before, so the segment joining the
+   * two is drawn once; returns the rows written.
    */
-  #fillFolded(window: Window, block: Block, bucket: number, carried: boolean): number {
+  #fillFolded(
+    window: Window,
+    block: Block,
+    from: number,
+    to: number,
+    carried: number | null,
+  ): number {
     const envelope = this.#envelope!,
       carry = this.#carry!;
     const { elementCount: elements, elementOffset: offset } = window;
@@ -362,16 +368,17 @@ export class Lane {
       block.time,
       block.values,
       block.stride,
-      window.frameCount,
+      from,
+      to,
       elements,
-      bucket,
+      this.#column,
       envelope,
     );
     const values = this.#values,
       time = this.#time;
     let row = 0;
-    if (carried) {
-      time[0] = this.#carriedTime;
+    if (carried !== null) {
+      time[0] = carried;
       values.set(carry.subarray(offset * 2, (offset + elements) * 2));
       row = 1;
     }
@@ -402,7 +409,7 @@ export class Lane {
       throw new RangeError('series returned invalid time bounds');
     const first = Math.max(from, start - 1, 0),
       last = Math.min(count, end + 1);
-    // A full history repaint over more than two frames per device pixel draws each bucket's
+    // A full history repaint over more than two frames per device pixel draws each pixel column's
     // extremes; appends and the selected trace draw every frame.
     const bucket =
       focus || from > 0
@@ -427,34 +434,51 @@ export class Lane {
       const values = focus ? this.#focusValues : this.#values;
       const time = focus ? this.#focusTime : this.#time;
       if (folding && window.elementOffset === 0) this.#carriedTime = this.#nextCarriedTime;
-      const rows = folding
-        ? this.#fillFolded(window, block, bucket, window.frameOffset > first)
-        : this.#fill(window, block, values, time);
-      this.#painter.writeUniform(focus ? 'focus' : 'history', {
-        viewportX: this.#painter.width,
-        viewportY: this.#painter.height,
-        lineWidth: this.#style.lineWidth * (focus ? 2.5 : 1),
-        elementCount: window.elementCount,
-        focusColor: this.#style.focusColor ?? [0, 0, 0, -1],
-      });
-      const data = values.subarray(0, rows * window.elementCount * 2);
-      const axis = time.subarray(0, rows);
-      const instances = (rows - 1) * window.elementCount;
-      if (focus) {
-        this.#painter.uploadFocus(data, axis);
-        this.#painter.drawFocus(instances);
-      } else {
-        this.#painter.uploadWindow(data, axis);
-        this.#painter.drawHistory(instances);
-      }
-      if (!this.#painter.offscreen) this.#present();
-      segments += instances;
-      if (++submitted >= 4 || segments >= SEGMENT_BUDGET) {
-        // Bounded GPU batches, with source prefetch overlapped across the wait.
-        await this.#painter.device.queue.onSubmittedWorkDone();
-        signal.throwIfAborted();
-        await yieldFrame(signal);
-        submitted = segments = 0;
+      // A folded window whose columns outgrow one upload goes on in the next.
+      for (let f = 0; f < window.frameCount;) {
+        let rows: number;
+        if (folding) {
+          // Nothing carries into the first row; a window's later uploads carry their own last row.
+          const carried =
+            window.frameOffset + f === first
+              ? null
+              : f > 0
+                ? this.#nextCarriedTime
+                : this.#carriedTime;
+          const room = this.#frames - (carried === null ? 0 : 1);
+          const to = span(block.time, f, window.frameCount, this.#column, room);
+          rows = this.#fillFolded(window, block, f, to, carried);
+          f = to;
+        } else {
+          rows = this.#fill(window, block, values, time);
+          f = window.frameCount;
+        }
+        this.#painter.writeUniform(focus ? 'focus' : 'history', {
+          viewportX: this.#painter.width,
+          viewportY: this.#painter.height,
+          lineWidth: this.#style.lineWidth * (focus ? 2.5 : 1),
+          elementCount: window.elementCount,
+          focusColor: this.#style.focusColor ?? [0, 0, 0, -1],
+        });
+        const data = values.subarray(0, rows * window.elementCount * 2);
+        const axis = time.subarray(0, rows);
+        const instances = (rows - 1) * window.elementCount;
+        if (focus) {
+          this.#painter.uploadFocus(data, axis);
+          this.#painter.drawFocus(instances);
+        } else {
+          this.#painter.uploadWindow(data, axis);
+          this.#painter.drawHistory(instances);
+        }
+        if (!this.#painter.offscreen) this.#present();
+        segments += instances;
+        if (++submitted >= 4 || segments >= SEGMENT_BUDGET) {
+          // Bounded GPU batches, with source prefetch overlapped across the wait.
+          await this.#painter.device.queue.onSubmittedWorkDone();
+          signal.throwIfAborted();
+          await yieldFrame(signal);
+          submitted = segments = 0;
+        }
       }
     }
   }

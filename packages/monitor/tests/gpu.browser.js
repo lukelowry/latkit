@@ -54,7 +54,7 @@ export async function checkGpu() {
             unselectedAlpha: 0.2,
             ...options,
           },
-          { frames: 0, range: null },
+          { frames: 0, range: null, domain: null },
           {
             error: reject,
             range() {},
@@ -63,7 +63,7 @@ export async function checkGpu() {
               resolve();
             },
             present() {
-              requestAnimationFrame(() => lane.frame());
+              requestAnimationFrame(() => lane.frame(true));
             },
           },
         );
@@ -125,6 +125,18 @@ export async function checkGpu() {
     );
     image = await render([NaN, 0.5]);
     check('missing samples break traces', image.count === 0, image.count);
+    // A thousand frames crowd the first tenth; the sparse zigzag after them keeps every sample.
+    const crowded = Array.from({ length: 1000 }, (_, i) => i / 10000);
+    const sparse = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
+    image = await render(
+      [...crowded.map(() => 0.5), ...sparse.map((_, i) => (i % 2 ? 0.1 : 0.9))],
+      {},
+      1,
+      null,
+      [...crowded, ...sparse],
+    );
+    pixel = image.pixel(83, 64);
+    check('folded repaints keep sparse samples after a crowded stretch', pixel[3] > 200, pixel);
     image = await render([0.25, 0.75, 0.25, 0.75], {}, 2, 0);
     const selected = image.pixel(64, 96),
       other = image.pixel(64, 32);

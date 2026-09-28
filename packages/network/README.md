@@ -230,7 +230,7 @@ network.on('attached', (attached) => (canvas.hidden = !attached));
 network.on('painted', (painted) => (poster.hidden = painted));
 network.on('deviceLost', ({ message, recovering }) => !recovering && showFallback(message));
 network.on('pipelineError', ({ family, cause }) => console.error(family, cause));
-network.on('error', (error) => console.error(error)); // a series a channel follows failed a read
+network.on('error', ({ channel, cause }) => console.error(channel, cause)); // a series read failed
 ```
 
 `paint()` schedules a frame and resolves once it is painted, after a pending shade and a deferred

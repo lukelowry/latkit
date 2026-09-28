@@ -1,7 +1,8 @@
 /**
- * Series-bound channels: each keeps a window of frames resident on the GPU after the fixed channel
- * slots, and a seek moves the channel's offset word to the frame it shows. The window is two
- * halves; once the playhead passes into the later one, the next frames load into the half already
+ * Series-bound channels: each followed signal keeps a window of frames resident on the GPU after the
+ * fixed channel slots, shared by every channel following it, and a seek moves each channel's offset
+ * word to the frame it shows. The window is two halves; once the playhead passes into the later
+ * one, or past the last frame as the series appends, the next frames load into the half already
  * played, so steady playback reads ahead while it plays.
  */
 
@@ -9,7 +10,7 @@ import type { Series } from '@latkit/model';
 
 import type { Channel } from './channels.js';
 
-/** What one channel's window may take on the GPU. */
+/** What one window takes on the GPU; its CPU copy, which picking reads, takes as much again. */
 const WINDOW_BYTES = 8 * 1024 * 1024;
 /** What one series read may carry, time included. */
 const READ_BYTES = 1024 * 1024;
@@ -36,11 +37,11 @@ interface PlaybackDeps {
   hold(channel: Channel): void;
   /** The series appended: its recorded range may have grown. */
   appended(channel: Channel): void;
-  /** A series read failed. */
-  error(error: Error): void;
+  /** A read of the series `channel` follows failed. */
+  error(channel: Channel, cause: unknown): void;
 }
 
-/** Resident frames of one channel, in two halves of a ring of slots. */
+/** Resident frames of one signal, in two halves of a ring of slots. */
 interface Window {
   /** Word offset of slot 0 in the channel buffer. */
   readonly base: number;
@@ -57,27 +58,32 @@ interface Window {
   first: number;
   /** Frames resident, in order from `first`. */
   count: number;
-  /** The slot of the first resident position: 0 or half the capacity. */
+  /** The slot of the first resident position. */
   start: number;
 }
 
-/** One channel following one series signal. */
+/** One series signal and the channels following it. */
 interface Bound {
-  readonly channel: Channel;
   readonly series: Series;
   readonly signal: number;
   readonly window: Window;
-  /** The slot shown, or -1 while the channel's own slot holds what is shown. */
+  /** Every channel following it; the first stands for it wherever the bound is visited once. */
+  readonly channels: Channel[];
+  /** The slot shown, or -1 while the channels' own slots hold what is shown. */
   shown: number;
   loading: AbortController | null;
-  /** A read failed; nothing is read again until the series appends or the channel is bound anew. */
+  /** A read failed; nothing is read again until the series appends or a channel binds it anew. */
   failed: boolean;
   off: () => void;
 }
 
 /** Series-bound channels and the playhead that picks their frames. */
 export interface Playback {
-  /** Follow one signal of a series in a channel, replacing whatever the channel followed. */
+  /**
+   * Follow one signal of a series in a channel, replacing whatever the channel followed. Following
+   * the signal it already follows keeps what it shows; a signal another channel follows shares
+   * that channel's frames. Either reads again after a failure.
+   */
   follow(channel: Channel, series: Series, signal: number): void;
   /** Stop following in a channel. */
   stop(channel: Channel): void;
@@ -108,17 +114,20 @@ export function slotAt(w: Window, time: number, head: number): number {
 
 /** Create the playback for one controller's channels. */
 export function createPlayback(deps: PlaybackDeps): Playback {
+  /** What each series-bound channel follows; channels following one signal share it. */
   const bounds = new Map<Channel, Bound>();
-  /** Every window allocated since the topology loaded; a channel keeps its region when it stops. */
-  const windows = new Map<Channel, Window>();
+  /** Windows no signal holds, by the items they fit, reused before the channel buffer grows. */
+  const idle = new Map<number, Window[]>();
   /** Words the channel buffer must hold: the fixed slots and every window. */
   let words = 0;
   let playhead = -Infinity;
 
-  function windowFor(channel: Channel): Window {
-    const known = windows.get(channel);
-    if (known) return known;
-    const items = deps.items(channel);
+  function windowFor(items: number): Window {
+    const reused = idle.get(items)?.pop();
+    if (reused) {
+      reused.first = reused.count = reused.start = 0;
+      return reused;
+    }
     // About 8 MiB per window, 2 to 256 slots, an even count.
     const capacity =
       2 * Math.max(1, Math.min(128, Math.floor(WINDOW_BYTES / 8 / Math.max(1, items))));
@@ -137,7 +146,6 @@ export function createPlayback(deps: PlaybackDeps): Playback {
       start: 0,
     };
     words += capacity * items;
-    windows.set(channel, window);
     deps.renderer()?.reserve(words);
     return window;
   }
@@ -146,36 +154,57 @@ export function createPlayback(deps: PlaybackDeps): Playback {
   function show(bound: Bound): void {
     const w = bound.window;
     const head = bound.series.state.frameCount;
+    const half = w.capacity / 2;
     const position = slotAt(w, playhead, head);
     if (position >= 0) {
       const slot = (w.start + position) % w.capacity;
       if (slot !== bound.shown) {
         bound.shown = slot;
-        deps.moveTo(bound.channel, w.base + slot * w.items, w.views[slot]!);
+        for (const channel of bound.channels) {
+          deps.moveTo(channel, w.base + slot * w.items, w.views[slot]!);
+        }
       }
       // In the later half of a full window: the next frames load into the half already played.
-      const half = w.capacity / 2;
       if (
         position >= half &&
         w.count === w.capacity &&
         w.first + w.count < head &&
         !bound.loading
       ) {
-        w.first += half;
-        w.count -= half;
-        w.start = (w.start + half) % w.capacity;
+        advance(bound);
         void read(bound, Math.min(half, head - w.first - w.count));
       }
       return;
     }
     if (bound.loading || bound.failed || head === 0) return;
     const last = w.count > 0 ? w.time[(w.start + w.count - 1) % w.capacity]! : Infinity;
-    if (w.count < w.capacity && playhead >= last) {
-      // The series grew past a window with room left: read on from where it ends.
-      void read(bound, Math.min(w.capacity - w.count, head - w.first - w.count));
+    const behind = head - w.first - w.count;
+    const room = w.capacity - w.count;
+    if (playhead >= last && behind <= Math.max(room, half)) {
+      // Past the last frame, as a live series appends: read on, into the half already played
+      // when the window has no room left for what follows.
+      if (behind > room) advance(bound);
+      void read(bound, behind);
     } else {
       void reload(bound, head);
     }
+  }
+
+  /** Keep what `bound` shows in its channels' own slots, so its window can be rewritten. */
+  function hold(bound: Bound): void {
+    if (bound.shown < 0) return;
+    for (const channel of bound.channels) deps.hold(channel);
+    bound.shown = -1;
+  }
+
+  /** Drop the half of the window played first, holding a frame shown from it. */
+  function advance(bound: Bound): void {
+    const w = bound.window;
+    const half = w.capacity / 2;
+    if (bound.shown >= 0 && (bound.shown - w.start + w.capacity) % w.capacity < half) hold(bound);
+    w.first += half;
+    w.count -= half;
+    w.start = (w.start + half) % w.capacity;
   }
 
   /** Read a window around the playhead: a quarter behind it, the rest ahead. */
@@ -191,8 +220,7 @@ export function createPlayback(deps: PlaybackDeps): Playback {
         frame = Math.max(0, end - 1);
       }
       const first = Math.max(0, Math.min(frame - Math.floor(w.capacity / 4), head - w.capacity));
-      if (bound.shown >= 0) deps.hold(bound.channel);
-      bound.shown = -1;
+      hold(bound);
       w.first = first;
       w.count = 0;
       w.start = 0;
@@ -224,19 +252,21 @@ export function createPlayback(deps: PlaybackDeps): Playback {
   async function fill(bound: Bound, signal: AbortSignal, frames: number): Promise<void> {
     const { series, window: w } = bound;
     const elements = series.elementCount;
+    const sparse = series.elements;
     const chunk = Math.max(1, Math.min(elements, Math.floor(READ_BYTES / 16)));
     const step = Math.max(1, Math.floor(READ_BYTES / (8 * (chunk + 1))));
     for (let done = 0; done < frames; done += step) {
       const count = Math.min(step, frames - done);
       const position = w.count;
       for (let e = 0; e === 0 || e < elements; e += chunk) {
+        const columns = Math.min(chunk, elements - e);
         const block = await series.read(
           bound.signal,
           {
             frameOffset: w.first + position,
             frameCount: count,
             elementOffset: e,
-            elementCount: Math.min(chunk, elements - e),
+            elementCount: columns,
           },
           signal,
         );
@@ -249,13 +279,15 @@ export function createPlayback(deps: PlaybackDeps): Playback {
           const at = slot * w.items;
           if (e === 0) {
             w.time[slot] = block.time[f]!;
-            if (series.elements) w.values.fill(NaN, at, at + w.items);
+            if (sparse) w.values.fill(NaN, at, at + w.items);
           }
           const row = f * block.stride;
-          const columns = Math.min(chunk, elements - e);
+          if (!sparse) {
+            w.values.set(block.values.subarray(row, row + columns), at + e);
+            continue;
+          }
           for (let c = 0; c < columns; c++) {
-            const item = series.elements ? series.elements[e + c]! : e + c;
-            w.values[at + item] = block.values[row + c]!;
+            w.values[at + sparse[e + c]!] = block.values[row + c]!;
           }
         }
       }
@@ -283,7 +315,7 @@ export function createPlayback(deps: PlaybackDeps): Playback {
   function fail(bound: Bound, job: AbortController, error: unknown): void {
     if (job.signal.aborted || bound.loading !== job) return;
     bound.failed = true;
-    deps.error(error instanceof Error ? error : new Error(String(error)));
+    for (const channel of bound.channels) deps.error(channel, error);
   }
 
   /** End a read; show again at the playhead, which may have moved on while it ran. */
@@ -297,30 +329,55 @@ export function createPlayback(deps: PlaybackDeps): Playback {
     const bound = bounds.get(channel);
     if (!bound) return;
     bounds.delete(channel);
+    bound.channels.splice(bound.channels.indexOf(channel), 1);
+    if (bound.channels.length) return;
     bound.loading?.abort();
     bound.loading = null;
     bound.off();
+    const windows = idle.get(bound.window.items);
+    if (windows) windows.push(bound.window);
+    else idle.set(bound.window.items, [bound.window]);
+  }
+
+  /** A channel joins `bound`, shown what it shows, and a failed read is tried again. */
+  function join(channel: Channel, bound: Bound): void {
+    if (bounds.get(channel) !== bound) {
+      stop(channel);
+      bounds.set(channel, bound);
+      bound.channels.push(channel);
+      const w = bound.window;
+      if (bound.shown >= 0) {
+        deps.moveTo(channel, w.base + bound.shown * w.items, w.views[bound.shown]!);
+      }
+    }
+    bound.failed = false;
+    show(bound);
   }
 
   return {
     follow(channel, series, signal) {
+      const items = deps.items(channel);
+      for (const bound of bounds.values()) {
+        if (bound.series === series && bound.signal === signal && bound.window.items === items) {
+          join(channel, bound);
+          return;
+        }
+      }
       stop(channel);
-      const window = windowFor(channel);
-      window.first = window.count = window.start = 0;
       const bound: Bound = {
-        channel,
         series,
         signal,
-        window,
+        window: windowFor(items),
+        channels: [channel],
         shown: -1,
         loading: null,
         failed: false,
         off: () => {},
       };
       bound.off = series.on('append', () => {
-        if (bounds.get(channel) !== bound) return;
+        if (!bound.channels.length) return;
         bound.failed = false;
-        deps.appended(channel);
+        for (const shown of bound.channels) deps.appended(shown);
         show(bound);
       });
       bounds.set(channel, bound);
@@ -331,19 +388,21 @@ export function createPlayback(deps: PlaybackDeps): Playback {
 
     seek(time) {
       playhead = time;
-      for (const bound of bounds.values()) show(bound);
+      for (const [channel, bound] of bounds) if (bound.channels[0] === channel) show(bound);
     },
 
     upload(renderer) {
       renderer.reserve(words);
-      for (const bound of bounds.values()) {
-        renderer.writeWords(bound.window.base, bound.window.values);
+      for (const [channel, bound] of bounds) {
+        if (bound.channels[0] === channel) {
+          renderer.writeWords(bound.window.base, bound.window.values);
+        }
       }
     },
 
     reset() {
       for (const channel of [...bounds.keys()]) stop(channel);
-      windows.clear();
+      idle.clear();
       words = deps.fixedWords();
     },
   };

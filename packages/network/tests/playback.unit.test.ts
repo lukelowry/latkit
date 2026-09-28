@@ -60,7 +60,7 @@ function series(items: number, frames: number, elements?: Uint32Array) {
 function harness(items: number) {
   const moves: Array<{ channel: Channel; offset: number; view: number[] }> = [];
   const holds: Channel[] = [];
-  const errors: Error[] = [];
+  const errors: Array<{ channel: Channel; cause: unknown }> = [];
   const appended = vi.fn();
   const writes: Array<{ offset: number; values: number[] }> = [];
   const renderer: PlaybackRenderer & { reserved: number } = {
@@ -80,7 +80,7 @@ function harness(items: number) {
     moveTo: (channel, offset, view) => moves.push({ channel, offset, view: Array.from(view) }),
     hold: (channel) => holds.push(channel),
     appended,
-    error: (error) => errors.push(error),
+    error: (channel, cause) => errors.push({ channel, cause }),
   });
   playback.reset();
   return {
@@ -206,10 +206,10 @@ describe('series-bound channels', () => {
   it('reports a failed read once, and reads again only after the series appends', async () => {
     const h = harness(3);
     const s = series(3, 10);
-    s.fail(new Error('disk on fire'));
+    const cause = new Error('disk on fire');
+    s.fail(cause);
     h.playback.follow('vertexColor', s.series, 0);
-    await vi.waitFor(() => expect(h.errors).toHaveLength(1));
-    expect(h.errors[0]!.message).toBe('disk on fire');
+    await vi.waitFor(() => expect(h.errors).toEqual([{ channel: 'vertexColor', cause }]));
 
     h.playback.seek(3);
     h.playback.seek(4);
@@ -219,6 +219,67 @@ describe('series-bound channels', () => {
     s.fail(null);
     s.append(1);
     await vi.waitFor(() => expect(h.shown()).toMatchObject({ offset: offsetOf(4) }));
+  });
+
+  it('reads on one appended frame at a time while the playhead follows a live head', async () => {
+    const h = harness(3);
+    // Exactly one full window of 256 frames.
+    const s = series(3, 256);
+    h.playback.follow('vertexColor', s.series, 0);
+    h.playback.seek(255);
+    await vi.waitFor(() => expect(h.shown().view).toEqual([2550, 2551, 2552]));
+    s.read.mockClear();
+
+    for (let frame = 256; frame < 266; frame++) {
+      s.append(1);
+      h.playback.seek(frame);
+      await vi.waitFor(() =>
+        expect(h.shown().view).toEqual([10 * frame, 10 * frame + 1, 10 * frame + 2]),
+      );
+    }
+    expect(s.read.mock.calls.map(([, window]) => window.frameCount)).toEqual(Array(10).fill(1));
+    expect(h.holds).toEqual([]);
+  });
+
+  it('shares one window among the channels following one signal', async () => {
+    const h = harness(3);
+    const s = series(3, 10);
+    h.playback.follow('vertexColor', s.series, 0);
+    h.playback.follow('vertexSize', s.series, 0);
+    await vi.waitFor(() => expect(h.moves).toHaveLength(2));
+    expect(h.moves.map(({ channel, offset }) => [channel, offset])).toEqual([
+      ['vertexColor', offsetOf(0)],
+      ['vertexSize', offsetOf(0)],
+    ]);
+    expect(s.read).toHaveBeenCalledOnce();
+    expect(h.renderer.reserved).toBe(FIXED + 256 * 3);
+
+    h.playback.seek(4);
+    expect(h.moves.slice(-2).map(({ offset }) => offset)).toEqual([offsetOf(4), offsetOf(4)]);
+    h.playback.stop('vertexColor');
+    h.playback.seek(5);
+    expect(h.moves.at(-1)).toMatchObject({ channel: 'vertexSize', offset: offsetOf(5) });
+    expect(h.moves).toHaveLength(5);
+  });
+
+  it('keeps what a channel shows when it follows the same signal again, and retries a failure', async () => {
+    const h = harness(3);
+    const s = series(3, 10);
+    h.playback.follow('vertexColor', s.series, 0);
+    h.playback.seek(5);
+    await vi.waitFor(() => expect(h.shown()).toMatchObject({ offset: offsetOf(5) }));
+    const moves = h.moves.length;
+    h.playback.follow('vertexColor', s.series, 0);
+    expect(h.moves).toHaveLength(moves);
+    expect(s.read).toHaveBeenCalledOnce();
+
+    const failing = series(3, 10);
+    failing.fail(new Error('disk on fire'));
+    h.playback.follow('vertexColor', failing.series, 0);
+    await vi.waitFor(() => expect(h.errors).toHaveLength(1));
+    failing.fail(null);
+    h.playback.follow('vertexColor', failing.series, 0);
+    await vi.waitFor(() => expect(h.shown()).toMatchObject({ view: [50, 51, 52] }));
   });
 
   it('stops a read in flight, and a new binding reuses the channel window', async () => {

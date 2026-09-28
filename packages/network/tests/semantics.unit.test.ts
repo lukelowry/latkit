@@ -159,7 +159,8 @@ describe('canonical Network semantics', () => {
     for (const [key, definition] of Object.entries(OPTIONS)) {
       expect(definition.label, key).toMatch(/^[A-Z][a-z]*( [a-z]+)*$/);
     }
-    expect(OPTIONS.vertexScale).toMatchObject({ label: 'Vertex size', max: 8 });
+    expect(OPTIONS.vertexScale).not.toHaveProperty('max');
+    expect(OPTIONS.hoverAlpha).toMatchObject({ label: 'Hover opacity', max: 1 });
     expect(OPTIONS.nightFloor).toMatchObject({ label: 'Night brightness', min: 0, max: 1 });
   });
 
@@ -201,7 +202,8 @@ describe('Network option validation and resolution', () => {
       ['vertices', false],
       ['nightFloor', 0],
       ['nightFloor', 1],
-      ['vertexScale', 8],
+      ['vertexScale', 12],
+      ['hoverAlpha', 1],
       ['terminatorWidth', 0],
       ['heightScale', 0],
       ['heightRange', [-1, 2]],
@@ -247,7 +249,8 @@ describe('Network option validation and resolution', () => {
     ['nightFloor', 1.01, RangeError],
     ['surfaceNightFloor', 2, RangeError],
     ['terminatorWidth', 1.5, RangeError],
-    ['vertexScale', 8.5, RangeError],
+    ['hoverAlpha', 1.01, RangeError],
+    ['selectedAlpha', 2, RangeError],
     ['terminatorWidth', -0.01, RangeError],
     ['vertexScale', -0.01, RangeError],
     ['edgeScale', Number.NaN, RangeError],

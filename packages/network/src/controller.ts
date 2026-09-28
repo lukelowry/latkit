@@ -109,20 +109,20 @@ export type Events = {
   /** True after the first successful frame since attach; false again when the canvas is released. */
   painted: boolean;
   /**
-   * The WebGPU device was lost. The controller releases it, leases a replacement, and replays
-   * every retained state. `recovering` is false when the controller stays detached: no
-   * replacement could be leased, or the host already detached or attached anew from its
-   * `painted` or `attached` handler. A `detach` or `attach` from this handler also wins over the
-   * recovery.
+   * The WebGPU device was lost. The controller releases it, leases a replacement for the same
+   * canvas, and replays every retained state; attaching that canvas joins the recovery.
+   * `recovering` is false when the controller stays detached: no replacement could be leased, or a
+   * `painted` or `attached` handler detached or attached another canvas first. A `detach` or
+   * another canvas's `attach` from this handler also ends the recovery.
    */
   deviceLost: { readonly reason: string; readonly message: string; readonly recovering: boolean };
   /** Asynchronous shader-pipeline build failure; rendering for that family is unavailable. */
   pipelineError: { readonly family: ProjectionFamily; readonly cause: unknown };
   /**
-   * A read of a series a channel follows failed. The channel keeps what it shows and reads again
+   * A read of the series `channel` follows failed. The channel keeps what it shows and reads again
    * once the series appends or the channel is bound anew.
    */
-  error: Error;
+  error: { readonly channel: Channel; readonly cause: unknown };
 };
 
 /**
@@ -244,7 +244,9 @@ export interface Network {
    * A channel can instead follow one signal of a `Series` with one element per vertex or edge,
    * or a sparse series whose unrecorded items take NaN. {@link Network.seek} picks the frame it
    * shows, and a null `domain` follows the signal's recorded range as the series appends. Every
-   * channel but `vertexPosition` can follow a series. Nothing shows until the first frame is read.
+   * channel but `vertexPosition` can follow a series. Channels following one signal share its
+   * frames; a new one shows nothing until its first frame is read, while binding the signal a
+   * channel already follows keeps what it shows.
    *
    * `vertexPosition` is where every vertex sits, as interleaved `x, y` pairs in topology
    * coordinates. It is seeded from the topology at {@link Network.load} and rebinding it moves
@@ -801,7 +803,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       if (isPickChannel(channel)) hoverDirty = true;
       repaint();
     },
-    error: (error) => events.emit('error', error),
+    error: (channel, cause) => events.emit('error', { channel, cause }),
   });
 
   /**

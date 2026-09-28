@@ -2007,6 +2007,24 @@ describe('series-bound channels', () => {
     expect(h.loop.uniforms.channel.vColorOffset).toBe(0);
   });
 
+  it('shares a signal between channels, and keeps what a channel shows when bound to it again', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    const series = recording();
+    h.network.setChannel('vertexColor', { series, signal: 0 });
+    h.network.setChannel('vertexSize', { series, signal: 0 }, [0, 30]);
+    await vi.waitFor(() => expect(h.loop.uniforms.channel.vSizeOffset).toBe(FIXED));
+    expect(h.loop.uniforms.channel.vColorOffset).toBe(FIXED);
+    expect(h.renderer.reserved).toBe(FIXED + 256 * 3);
+
+    h.network.seek(2);
+    const writes = h.renderer.channelWrites.length;
+    h.network.setChannel('vertexColor', { series, signal: 0 }, [0, 100]);
+    expect(h.loop.uniforms.channel.vColorOffset).toBe(FIXED + 6);
+    expect(h.network.getChannelDomain('vertexColor')).toEqual([0, 100]);
+    expect(h.renderer.channelWrites).toHaveLength(writes);
+  });
+
   it('refuses a series for vertex positions, and reports a failed read as error', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
@@ -2014,14 +2032,12 @@ describe('series-bound channels', () => {
       h.network.setChannel('vertexPosition', { series: recording(), signal: 0 }),
     ).toThrow(TypeError);
 
-    const errors: Error[] = [];
+    const errors: Array<Events['error']> = [];
     h.network.on('error', (error) => errors.push(error));
-    const failing = {
-      ...recording(),
-      read: () => Promise.reject(new Error('disk on fire')),
-    };
+    const cause = new Error('disk on fire');
+    const failing = { ...recording(), read: () => Promise.reject(cause) };
     h.network.setChannel('vertexSize', { series: failing, signal: 0 });
-    await vi.waitFor(() => expect(errors.map((error) => error.message)).toEqual(['disk on fire']));
+    await vi.waitFor(() => expect(errors).toEqual([{ channel: 'vertexSize', cause }]));
   });
 });
 

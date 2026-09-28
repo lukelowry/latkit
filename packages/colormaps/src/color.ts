@@ -3,9 +3,9 @@ import type { RGBA } from '@latkit/model';
 /**
  * An RGBA in `[0, 1]` from a CSS color: hex (`#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`),
  * `rgb()`/`rgba()` in either syntax, `oklab()`, `oklch()`, `color(srgb …)`,
- * `color(srgb-linear …)`, or `transparent`. With `context`, any other color is resolved as that
- * element computes it, so custom properties, named colors, and `color-mix()` work too. Colors
- * outside sRGB clamp into it.
+ * `color(srgb-linear …)`, or `transparent`. With `context`, any other color that element can
+ * compute resolves too, custom properties and every color space included. Colors outside sRGB
+ * clamp into it.
  *
  * @param css - A CSS color.
  * @param context - The element whose custom properties the color reads.
@@ -32,17 +32,19 @@ function parse(css: string): RGBA | null {
 }
 
 /**
- * The color a probe inside `context` computes, or null when it is none. The probe reads the color
- * through a custom property, which computes empty when a `var()` in it is undefined.
+ * The color a probe inside `context` computes, in sRGB, or null when it is none. The probe reads
+ * the color through a custom property, which computes empty when a `var()` in it is undefined, and
+ * mixes it alone in sRGB, which the browser serializes as `color(srgb …)` whatever its space.
  */
 function computed(css: string, context: Element): string | null {
   const view = context.ownerDocument.defaultView;
   if (!view) return null;
   const probe = context.ownerDocument.createElement('span');
   probe.style.setProperty('--latkit-color', css);
-  probe.style.setProperty('color', 'var(--latkit-color)');
+  probe.style.setProperty('color', 'color-mix(in srgb, var(--latkit-color) 100%, transparent)');
   probe.style.display = 'none';
-  context.append(probe);
+  // A shadow root inherits the host's properties and keeps its light DOM untouched.
+  (context.shadowRoot ?? context).append(probe);
   const style = view.getComputedStyle(probe);
   const resolved = style.getPropertyValue('--latkit-color').trim();
   const color = style.color;

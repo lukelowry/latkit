@@ -26,7 +26,7 @@ await monitor.attach(monitorCanvas);
 await diagram.attach(diagramCanvas);
 ```
 
-`attach` leases a device from the realm-wide pool in `@latkit/gpu`, so every controller on the page shares one device without owning it; the `devices` option names a private pool instead. A newer `attach` or a `detach` supersedes an attach still waiting for its device, which then resolves `false`, and attaching the canvas already bound or binding joins that attach, so a host may call `attach` whenever its canvas becomes visible. `detach(canvas)` detaches only while that canvas is the current one, so a view that has lost its canvas cannot release another's.
+`attach` leases a device from the realm-wide pool in `@latkit/gpu`, so every controller on the page shares one device without owning it; the `devices` option names a private pool instead. A newer `attach` or a `detach` supersedes an attach still waiting for its device, which resolves `false` at once, and attaching the canvas already bound or binding joins that attach, so a host may call `attach` whenever its canvas becomes visible. `detach(canvas)` detaches only while that canvas is the current one, so a view that has lost its canvas cannot release another's.
 
 `detach()` returns the device and the canvas and keeps every state, so a view that moves between panels attaches again with nothing to reload:
 
@@ -54,7 +54,7 @@ try {
 
 ## Listen for device loss
 
-A controller releases a lost device, leases a replacement, and paints its state again. `deviceLost` reports it; `recovering` is false when the controller stays detached: no replacement could be leased, or a handler of `attached: false` or `deviceLost` detached or attached anew first. The controller then stays detached until the next `attach`.
+A controller releases a lost device, leases a replacement for the same canvas, and paints its state again; `canvas` still names that canvas meanwhile, and attaching it joins the recovery. `deviceLost` reports it; `recovering` is false when the controller stays detached: no replacement could be leased, or a handler of `attached: false` detached or attached another canvas first. The controller then stays detached until the next `attach`.
 
 ```ts
 network.on('deviceLost', ({ message, recovering }) => {

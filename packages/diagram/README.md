@@ -422,10 +422,10 @@ joins that attach.
 
 - `attach` rejects with `GpuUnavailableError` from `@latkit/gpu` when no device can be leased, and
   with a `TypeError` when the device reports fewer than five storage buffers in the vertex stage.
-- On device loss the controller releases the device, leases a replacement, and paints again;
-  `deviceLost` reports it, with `recovering` false when the controller stays detached: no
-  replacement could be leased, or a handler of `attached: false` or `deviceLost` detached or
-  attached anew first.
+- On device loss the controller releases the device, leases a replacement for the same canvas,
+  and paints again; `deviceLost` reports it, with `recovering` false when the controller stays
+  detached: no replacement could be leased, or a handler of `attached: false` detached or attached
+  another canvas first.
 - `pipelineError` reports a shader-pipeline build that failed; nothing draws until a later
   `setShade` succeeds, and late subscribers receive the latest failure.
 - `painted` turns true after the first successful frame since attach and false on detach.

@@ -76,10 +76,7 @@ export interface NetworkJSON {
 export interface NetworkElementEventMap {
   /** The current data source is loaded. */
   load: Event;
-  /**
-   * The current data source, the canvas, or a series a channel follows failed; `ready` rejects
-   * with the same error.
-   */
+  /** The current data source or the canvas failed; `ready` rejects with the same error. */
   error: CustomEvent<{ readonly error: unknown }>;
   hover: CustomEvent<Events['hover']>;
   select: CustomEvent<Events['select']>;
@@ -259,7 +256,6 @@ const EVENTS: readonly (keyof Events)[] = Object.freeze([
   'painted',
   'deviceLost',
   'pipelineError',
-  'error',
 ]);
 
 interface BorderState {
