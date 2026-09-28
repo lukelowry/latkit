@@ -57,6 +57,20 @@ describe('frame', () => {
     expect(decodeFrame(buffer(encodeFrame(undefined)))).toBeUndefined();
   });
 
+  it('round-trips dictionary keys that also name object properties', () => {
+    for (const value of ['column', { nested: true }, Uint8Array.of(1, 2)]) {
+      const message = Object.fromEntries<unknown>([
+        ['__proto__', value],
+        ['constructor', 3],
+      ]);
+      const decoded = decodeFrame(buffer(encodeFrame(message))) as Record<string, unknown>;
+      expect(Object.getPrototypeOf(decoded)).toBe(Object.prototype);
+      expect(Object.hasOwn(decoded, '__proto__')).toBe(true);
+      expect(decoded['__proto__']).toEqual(value);
+      expect(decoded['constructor']).toBe(3);
+    }
+  });
+
   it('refuses binary it cannot carry and objects that are not plain', () => {
     expect(() => encodeFrame({ view: new DataView(new ArrayBuffer(8)) })).toThrow(
       'a frame cannot carry DataView',

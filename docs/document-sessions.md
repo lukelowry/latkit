@@ -50,6 +50,45 @@ They share `Document.parts(schematicOrGetter)` with the local document implement
 One document service occupies a port. Engine services and scoped model services can share that
 port. The same document can be served to multiple clients on separate ports.
 
+## Inspect and edit a retained draft
+
+```ts
+const { version, inspection } = await session.inspect('bus/12', signal);
+if (inspection !== null) {
+  // Keep the version with the form while the user edits its values.
+  const value = await editVoltage(inspection.values.kv);
+  await session.apply(version, {
+    kind: 'set',
+    element: inspection.element,
+    column: 'kv',
+    value,
+  });
+}
+```
+
+`inspect(elementOrKey, signal?)` returns `{ version, inspection }`. The owner resolves keys and
+reads values and wiring together in its serialized queue, against the cached view's revision at
+invocation. A stale read rejects with `DocumentConflict`; a missing element returns
+`inspection: null`. An existing element may have `key: null` when its format supplies no persistent
+identity. Results remain independent of later edits, including undo and redo.
+
+`Document.Inspection` contains the element and key, editable `values` keyed by the column names
+accepted by `set`, declared `ports` with their connected net or null, and a net's `members` with
+owner references and port names. Wiring includes elements absent from the diagram. These values
+belong to the native document and need not be displayed model columns.
+
+Native subclasses implement synchronous `inspect(element)` using their native indexes, returning
+null only for a missing element. Inspection must not mutate the document or open a model. Local
+results may borrow indexed data; consumers treat them as read-only. The port copies only public
+fields, validates scalar values before serialization, and returns detached data to the caller.
+Inspection creates no model lease, history entry, revision, or subscription.
+
+Use `apply(version, ...operations)` to submit a retained draft. The owner checks that exact base,
+including changes that arrived while the user edited the form. This uses the existing command,
+sequence, and retry path. Ordinary `apply(...operations)` still captures the current cached view
+at invocation. No local compare-and-apply helper is needed, and a conflict never silently rebases
+indexes or overwrites newer values. Even a layout change makes an older draft stale.
+
 ## Ordering and conflicts
 
 Every live document has one owner, one serialized queue, and a version:
@@ -63,11 +102,11 @@ revision, including undo, redo, and layout changes. No-ops and refusals do not i
 History is shared by the document: undo reverses the latest document edit, regardless of which
 client made it.
 
-The facade captures an edit's base version and copies its operation arguments **at invocation**.
-Await dependent edits. Two concurrent edits based on the same revision can conflict; the second
+The facade copies an edit's explicit base, or captures the cached view's version, together with
+its operation arguments **at invocation**. Await dependent edits. Two concurrent edits based on the same revision can conflict; the second
 is never silently rebased onto potentially different element indexes. A UI retaining indexes in
-an unsubmitted draft must refresh its selection after structural changes; the facade cannot infer
-which past view an arbitrary caller-provided index came from.
+an unsubmitted draft must retain that draft's version and pass it to `apply`. The facade cannot
+infer which past view an arbitrary caller-provided index came from.
 
 A `DocumentConflict` includes `expected` and `actual` versions. The facade refreshes its view
 before throwing it. A vendor refusal remains a `Refusal`, including `at` for highlighting.
@@ -80,7 +119,9 @@ Synchronous external changes are observed, but an external writer bypasses the r
 
 Model capture and native byte export run in the document's queue. Later queued edits cannot
 change an in-progress capture. The resulting `Model` must satisfy the existing immutable model
-contract, including its lazy class values and native bytes.
+contract, including its lazy class values and native bytes. If opening a model fails, the call
+rejects and the next capture retries without an intervening edit or reconnect. A superseded
+capture's failure cannot invalidate a newer capture.
 
 Models travel through the existing model service, with a separate service name per live
 snapshot. Core packs load first, class shards load on demand, and an engine in the serving realm
@@ -105,15 +146,20 @@ gap makes the facade request a fresh view. Snapshot recovery emits a `change` wi
 
 The first implementation has explicit resource bounds:
 
-| Resource                                         | Bound                                    |
-| ------------------------------------------------ | ---------------------------------------- |
-| Logical client identities per document           | 64; detached identities evicted first    |
-| Receipt retention                                | Latest completed command per client      |
-| Queued work per owner or client facade           | 256 calls                                |
-| Queued encoded command payloads per owner        | 8 MiB                                    |
-| One command                                      | 256 operations and 1 MiB encoded         |
-| Live model snapshots per connection              | 32; close old snapshots to release slots |
-| Pending outgoing view events per slow connection | 1                                        |
+| Resource                                         | Bound                                      |
+| ------------------------------------------------ | ------------------------------------------ |
+| Logical client identities per document           | 64; detached identities evicted first      |
+| Receipt retention                                | Latest completed command per client        |
+| Queued work per owner or client facade           | 256 calls                                  |
+| Queued encoded command payloads per owner        | 8 MiB                                      |
+| One command                                      | 256 operations and 1 MiB encoded           |
+| One inspection payload                           | 1 MiB encoded; 4,096 values and ports each |
+| Live model snapshots per connection              | 32; close old snapshots to release slots   |
+| Pending outgoing view events per slow connection | 1                                          |
+
+Oversized inspections reject explicitly and never silently truncate values or wiring. Members
+also share the one-million-element bound used by schematic arrays. Very large adjacency lists
+will need a paginated read contract rather than an ever-larger inspection reply.
 
 Overload rejects work before mutation. A `busy` edit reply does not consume its sequence;
 a caller can retry after demand falls. The host must additionally bound the number of open
@@ -175,14 +221,15 @@ the frame format or introduce another transport.
 The envelope's numeric `id` correlates one transport call. The pair `(client, sequence)` identifies
 a logical edit across reconnects. These are separate identities.
 
-| Request                                        | Reply                                  |
-| ---------------------------------------------- | -------------------------------------- |
-| `open { client? }`                             | `opened { client, next, view }`        |
-| `view`                                         | `view { view }`                        |
-| `apply { client, sequence, base, operations }` | Edit receipt                           |
-| `undo / redo { client, sequence, base }`       | Edit receipt                           |
-| `model { base }`                               | `model { version, id }` or conflict    |
-| `bytes { base }`                               | `bytes { version, bytes }` or conflict |
+| Request                                        | Reply                                            |
+| ---------------------------------------------- | ------------------------------------------------ |
+| `open { client? }`                             | `opened { client, next, view }`                  |
+| `view`                                         | `view { view }`                                  |
+| `inspect { base, target }`                     | `inspection { version, inspection }` or conflict |
+| `apply { client, sequence, base, operations }` | Edit receipt                                     |
+| `undo / redo { client, sequence, base }`       | Edit receipt                                     |
+| `model { base }`                               | `model { version, id }` or conflict              |
+| `bytes { base }`                               | `bytes { version, bytes }` or conflict           |
 
 Edit receipts are `accepted { version, change }`, `refused { message, at }`,
 `conflict { version }`, `expired { message }`, or `busy { message }`.

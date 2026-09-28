@@ -60,6 +60,17 @@ class Counter extends Document {
     return classId && index ? { classId, index: Number(index) } : null;
   }
 
+  inspect(element: Model.Element): Document.Inspection | null {
+    if (this.partOf(element) === null) return null;
+    return {
+      element,
+      key: this.keyOf(element),
+      values: { Vm: this.revision },
+      ports: [],
+      members: [],
+    };
+  }
+
   bytes(): Promise<Uint8Array> {
     return Promise.resolve(Uint8Array.of(this.revision));
   }
@@ -185,6 +196,72 @@ describe('document', () => {
     expect(document.opened).toEqual([2, 1]);
     await expect(document.model(AbortSignal.abort())).rejects.toMatchObject({ name: 'AbortError' });
   });
+
+  it.each(['throw', 'reject'] as const)(
+    'retries a failed open (%s) and shares each attempt across readers',
+    async (failure) => {
+      const error = new Error('Temporary model failure');
+      class Flaky extends Counter {
+        attempts = 0;
+        protected override open(): Promise<Model> {
+          if (++this.attempts === 1) {
+            if (failure === 'throw') throw error;
+            return Promise.reject(error);
+          }
+          return super.open();
+        }
+      }
+      const document = new Flaky(sampleModel());
+      document.apply(set);
+      const changes = vi.fn();
+      document.on('change', changes);
+      const failed = await Promise.allSettled([document.model(), document.model()]);
+      expect(failed).toEqual([
+        { status: 'rejected', reason: error },
+        { status: 'rejected', reason: error },
+      ]);
+      expect(document.attempts).toBe(1);
+      const [first, second] = await Promise.all([document.model(), document.model()]);
+      expect(first.id).toBe('sample-1');
+      expect(second).toBe(first);
+      expect(await document.model()).toBe(first);
+      expect(document.attempts).toBe(2);
+      expect(document.history.undo).toHaveLength(1);
+      expect(changes).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['pending', 'complete'] as const)(
+    'does not let an older failure invalidate a newer %s capture',
+    async (state) => {
+      const attempts: { resolve(model: Model): void; reject(error: Error): void }[] = [];
+      class Controlled extends Counter {
+        protected override open(): Promise<Model> {
+          return new Promise<Model>((resolve, reject) => attempts.push({ resolve, reject }));
+        }
+      }
+      const document = new Controlled(sampleModel());
+      document.apply(set);
+      const old = document.model();
+      const rejected = expect(old).rejects.toThrow('Old capture failed');
+      document.apply({ ...set, column: 'Va' });
+      const current = document.model();
+      const model = sampleModel();
+      if (state === 'complete') {
+        attempts[1].resolve(model);
+        await current;
+      }
+      attempts[0].reject(new Error('Old capture failed'));
+      await rejected;
+      const joined = document.model();
+      expect(attempts).toHaveLength(2);
+      if (state === 'pending') attempts[1].resolve(model);
+      expect(await current).toBe(model);
+      expect(await joined).toBe(model);
+      expect(await document.model()).toBe(model);
+      expect(attempts).toHaveLength(2);
+    },
+  );
 
   it('abandons an open a change supersedes, and opens the case as it stands next', async () => {
     const document = new Counter(sampleModel());

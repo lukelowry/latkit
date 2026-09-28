@@ -252,12 +252,16 @@ validateNetlist(unit);
 
 ## Asynchronous editing
 
-`Document.Session` exposes asynchronous apply, undo, redo, model capture, and native byte export.
+`Document.Session` exposes asynchronous apply, undo, redo, inspection, model capture, and native
+byte export. `inspect(elementOrKey)` returns current editable values and wiring with their revision,
+without opening a model. Submit a retained draft with `apply(version, ...operations)` so the owner
+rejects intervening changes; ordinary `apply(...operations)` uses the current cached view.
 Its `view` caches the schematic, palette, history metadata, and `{ epoch, revision }` version.
 Stale edits reject with `DocumentConflict`; accepted edits resolve after the view includes them.
 A `Document.Snapshot` is an immutable model with `close()` to release its resources.
 
 Sessions and local documents share `Document.parts(schematicOrGetter)` for synchronous
 `elementAt`, `partOf`, `portAt`, `portOf`, and `drivers` lookups. Native vendor implementations
-continue subclassing the synchronous `Document`. See [Document sessions](../../docs/document-sessions.md)
+continue subclassing the synchronous `Document`, implementing `inspect(element)` alongside native
+editing and identity lookups. See [Document sessions](../../docs/document-sessions.md)
 for serving that document through `@latkit/port` and the persistence boundary.

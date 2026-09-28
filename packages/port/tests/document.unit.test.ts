@@ -48,12 +48,42 @@ class Editable extends Document {
   get palette(): readonly Document.BlockClass[] {
     return [{ classId: 'bus', label: 'Bus', group: 'Network', ports: [] }];
   }
-  keyOf(element: Model.Element): string {
-    return `${element.classId}/${element.index}`;
+  keyOf(element: Model.Element): string | null {
+    const { classId, index } = element;
+    const count = classId === 'bus' ? this.state.count : classId === 'signal' ? 1 : 0;
+    return Number.isInteger(index) && index >= 0 && index < count ? `${classId}/${index}` : null;
   }
   find(key: string): Model.Element | null {
-    const index = Number(key.split('/')[1]);
-    return index < this.state.count ? { classId: 'bus', index } : null;
+    const [classId, at] = key.split('/');
+    const element = { classId, index: Number(at) };
+    return this.keyOf(element) === key ? element : null;
+  }
+  inspect(element: Model.Element): Document.Inspection | null {
+    const key = this.keyOf(element);
+    if (key === null) return null;
+    const net = { element: { classId: 'signal', index: 0 }, key: 'signal/0' };
+    return {
+      element,
+      key,
+      values:
+        element.classId === 'bus'
+          ? { kv: this.state.value, enabled: true, label: 'Bus', limit: null }
+          : {},
+      ports:
+        element.classId === 'bus'
+          ? [
+              { name: 'voltage', net },
+              { name: 'unused', net: null },
+            ]
+          : [],
+      members:
+        element.classId === 'signal'
+          ? Array.from({ length: this.state.count }, (_, index) => ({
+              owner: { element: { classId: 'bus', index }, key: `bus/${index}` },
+              port: 'voltage',
+            }))
+          : [],
+    };
   }
   bytes(): Promise<Uint8Array> {
     return Promise.resolve(Uint8Array.of(this.state.value));
@@ -411,6 +441,33 @@ describe('document service', () => {
     second.close();
   });
 
+  it('recovers a failed native snapshot without an edit, reconnect, or leaked model lease', async () => {
+    class Flaky extends Editable {
+      attempts = 0;
+      protected override open(): Promise<Model> {
+        if (++this.attempts === 1) return Promise.reject(new Error('Temporary model failure'));
+        return super.open();
+      }
+    }
+    const before = hosted.size;
+    const document = new Flaky();
+    const { session } = await setup(document);
+    await session.apply(set(3));
+    const version = session.view.version;
+    await expect(session.model()).rejects.toThrow('Temporary model failure');
+    expect(hosted.size).toBe(before);
+    const model = await session.model();
+    expect(new TextDecoder().decode(await model.bytes())).toBe('3');
+    expect(await session.model()).toBe(model);
+    expect(document.attempts).toBe(2);
+    expect(session.view.version).toEqual(version);
+    expect(session.view.history.undo).toHaveLength(1);
+    expect(hosted.size).toBe(before + 1);
+    model.close();
+    await settle(12);
+    expect(hosted.size).toBe(before);
+  });
+
   it('records a captured model in its serving realm even after later edits', async () => {
     const { document, server, client, session } = await setup();
     await session.apply(set(3));
@@ -536,6 +593,10 @@ describe('document service', () => {
     expect(document.schematic.netlist.portStart.byteLength).toBe(12);
     expect(document.schematic.positions.byteLength).toBe(16);
     expect([...(await session.bytes())]).toEqual([0]);
+    const inspected = await session.inspect('bus/0');
+    expect(inspected.inspection?.ports[0].net?.key).toBe('signal/0');
+    await session.apply(inspected.version, set(7));
+    expect((await session.inspect('bus/0')).inspection?.values.kv).toBe(7);
   });
 
   it('rejects reads with a stale base as a typed document conflict', async () => {
@@ -731,4 +792,253 @@ describe('document service', () => {
     expect((await calls.call(commands[9])).kind).toBe('accepted');
     expect(document.applied).toBe(1);
   });
+});
+
+describe('document inspection', () => {
+  it('reads native values and complete wiring by element or key without opening a model', async () => {
+    const { document, session, client } = await setup();
+    const model = vi.spyOn(document, 'model');
+    const events = vi.fn();
+    session.on('change', events);
+    const sent = vi.spyOn(client, 'post');
+    const first = await session.inspect({ classId: 'bus', index: 0 });
+    expect(first).toEqual({
+      version: session.view.version,
+      inspection: {
+        element: { classId: 'bus', index: 0 },
+        key: 'bus/0',
+        values: { kv: 0, enabled: true, label: 'Bus', limit: null },
+        ports: [
+          { name: 'voltage', net: { element: { classId: 'signal', index: 0 }, key: 'signal/0' } },
+          { name: 'unused', net: null },
+        ],
+        members: [],
+      },
+    });
+    expect(await session.inspect('bus/0')).toEqual(first);
+    expect(session.partOf({ classId: 'signal', index: 0 })).toBeNull();
+    const net = await session.inspect('signal/0');
+    expect(net.inspection?.members).toEqual([
+      { owner: { element: { classId: 'bus', index: 0 }, key: 'bus/0' }, port: 'voltage' },
+      { owner: { element: { classId: 'bus', index: 1 }, key: 'bus/1' }, port: 'voltage' },
+    ]);
+    expect(
+      sent.mock.calls.map(([message]) => (message as { body: { op: string } }).body.op),
+    ).toEqual(['inspect', 'inspect', 'inspect']);
+    expect(events).not.toHaveBeenCalled();
+    expect(session.view.history).toEqual({ undo: [], redo: [] });
+    await session.apply(first.version, set(3));
+    expect((await session.inspect('bus/0')).inspection?.values.kv).toBe(3);
+    await session.undo();
+    expect((await session.inspect('bus/0')).inspection?.values.kv).toBe(0);
+    await session.redo();
+    expect((await session.inspect('bus/0')).inspection?.values.kv).toBe(3);
+    expect(first.inspection?.values.kv).toBe(0);
+    expect(first.version.revision).toBe(0);
+    expect(model).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes missing elements from anonymous elements and follows structural undo', async () => {
+    const { session, document } = await setup();
+    expect((await session.inspect('bus/2')).inspection).toBeNull();
+    expect((await session.inspect({ classId: 'missing', index: 0 })).inspection).toBeNull();
+    await session.apply({ kind: 'insert', classId: 'bus', at: null });
+    expect((await session.inspect('bus/2')).inspection?.element.index).toBe(2);
+    await session.undo();
+    expect((await session.inspect('bus/2')).inspection).toBeNull();
+    await session.redo();
+    expect((await session.inspect('bus/2')).inspection?.element.index).toBe(2);
+    const anonymous = { ...document.inspect({ classId: 'bus', index: 0 })!, key: null };
+    vi.spyOn(document, 'inspect').mockReturnValue(anonymous);
+    expect((await session.inspect({ classId: 'bus', index: 0 })).inspection).toEqual(anonymous);
+  });
+
+  it('rejects a retained draft on the owner even when the local view has already advanced', async () => {
+    const { session, document } = await setup();
+    const draft = await session.inspect('bus/0');
+    const other = await setup(document);
+    await other.session.apply(set(5));
+    await settle(12);
+    expect(session.view.version.revision).toBe(1);
+    await expect(session.apply(draft.version, set(9))).rejects.toMatchObject({
+      name: 'DocumentConflict',
+      expected: draft.version,
+      actual: session.view.version,
+    });
+    expect(document.state.value).toBe(5);
+    await session.apply(set(6));
+    expect(document.state.value).toBe(6);
+    const foreign = { ...session.view.version, epoch: 'another-owner' };
+    await expect(session.apply(foreign, set(9))).rejects.toBeInstanceOf(DocumentConflict);
+    const current = { ...session.view.version };
+    const editing = session.apply(current, set(7));
+    current.revision = 99;
+    await editing;
+    expect(document.state.value).toBe(7);
+  });
+
+  it('captures inspection targets at invocation and rejects stale reads before resolving indexes', async () => {
+    const { document, session } = await setup();
+    const target = { classId: 'bus', index: 0 };
+    const reading = session.inspect(target);
+    target.index = 999;
+    expect((await reading).inspection?.element.index).toBe(0);
+    const inspect = vi.spyOn(document, 'inspect');
+    document.apply(set(2));
+    await expect(session.inspect('bus/0')).rejects.toBeInstanceOf(DocumentConflict);
+    expect(inspect).not.toHaveBeenCalled();
+    expect(session.view.version.revision).toBe(1);
+  });
+
+  it('serializes inspection with edits and cancels queued reads before native inspection', async () => {
+    const { document, session } = await setup();
+    await session.apply(set(1));
+    let release!: () => void;
+    document.opening = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const capture = session.model();
+    await settle(12);
+    const inspect = vi.spyOn(document, 'inspect');
+    const controller = new AbortController();
+    const cancelled = session.inspect('bus/0', controller.signal);
+    await settle(12);
+    controller.abort();
+    await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+    const editing = session.apply(set(2));
+    await settle(12);
+    const stale = session.inspect('bus/0');
+    const rejected = expect(stale).rejects.toBeInstanceOf(DocumentConflict);
+    release();
+    (await capture).close();
+    await editing;
+    await rejected;
+    expect(inspect).not.toHaveBeenCalled();
+    expect((await session.inspect('bus/0')).inspection?.values.kv).toBe(2);
+    await expect(session.inspect('bus/0', AbortSignal.abort())).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    session.close();
+    await expect(session.inspect('bus/0')).rejects.toThrow('closed');
+  });
+
+  it('copies only public fields without retaining or exposing provider-owned objects', async () => {
+    const { document, session } = await setup();
+    const native = {
+      element: { classId: 'bus', index: 0, privateIndex: new Map() },
+      key: 'bus/0',
+      values: { kv: 4, ['__proto__']: 'ordinary column' },
+      ports: [
+        {
+          name: 'voltage',
+          net: { element: { classId: 'signal', index: 0 }, key: 'signal/0', secret: true },
+        },
+      ],
+      members: [
+        {
+          owner: { element: { classId: 'bus', index: 1 }, key: 'bus/1', secret: true },
+          port: 'voltage',
+        },
+      ],
+      privateFunction() {},
+    };
+    vi.spyOn(document, 'inspect').mockReturnValue(native);
+    const { inspection } = await session.inspect('bus/0');
+    expect(inspection).not.toHaveProperty('privateFunction');
+    expect(inspection!.element).not.toHaveProperty('privateIndex');
+    expect(inspection!.ports[0].net).not.toHaveProperty('secret');
+    expect(inspection!.members[0].owner).not.toHaveProperty('secret');
+    expect(inspection!.values['__proto__']).toBe('ordinary column');
+    native.values.kv = 8;
+    native.element.index = 8;
+    expect(inspection!.values.kv).toBe(4);
+    expect(inspection!.element.index).toBe(0);
+    Object.assign(inspection!.values, { kv: 12 });
+    Object.assign(inspection!.ports[0].net!.element, { index: 12 });
+    expect(native.values.kv).toBe(8);
+    expect(native.ports[0].net.element.index).toBe(0);
+  });
+
+  it('rejects malformed inspection requests before calling the native adapter', async () => {
+    const { document, client, opened } = await rawSetup();
+    const inspect = vi.spyOn(document, 'inspect');
+    const raw = connect(client, protocol<unknown, unknown>('document'));
+    cleanups.push(() => raw.close());
+    for (const target of [
+      null,
+      [],
+      { classId: 'bus', index: -1 },
+      { classId: 'bus', index: 0.5 },
+      'x'.repeat(65537),
+    ]) {
+      await expect(
+        raw.call({ op: 'inspect', base: opened.view.version, target }),
+      ).rejects.toThrow();
+    }
+    await expect(
+      raw.call({ op: 'inspect', base: { epoch: '', revision: 0 }, target: 'bus/0' }),
+    ).rejects.toThrow();
+    expect(inspect).not.toHaveBeenCalled();
+  });
+
+  it('validates native scalars and bounds before a byte transport can normalize or send them', async () => {
+    const { document, session } = await setup();
+    const native = document.inspect({ classId: 'bus', index: 0 })!;
+    const inspect = vi.spyOn(document, 'inspect');
+    for (const value of [Infinity, NaN]) {
+      inspect.mockReturnValue({ ...native, values: { kv: value } });
+      await expect(session.inspect('bus/0')).rejects.toThrow('finite');
+    }
+    inspect.mockReturnValue({
+      ...native,
+      values: Object.fromEntries(Array.from({ length: 4097 }, (_, i) => [String(i), 1])),
+    });
+    await expect(session.inspect('bus/0')).rejects.toThrow('4096');
+    inspect.mockReturnValue({
+      ...native,
+      ports: Array.from({ length: 4097 }, () => ({ name: 'p', net: null })),
+    });
+    await expect(session.inspect('bus/0')).rejects.toThrow('4096');
+    inspect.mockReturnValue({
+      ...native,
+      values: Object.fromEntries(
+        Array.from({ length: 17 }, (_, i) => [String(i), 'x'.repeat(65536)]),
+      ),
+    });
+    await expect(session.inspect('bus/0')).rejects.toThrow('1 MiB');
+    inspect.mockReturnValue(native);
+    expect((await session.inspect('bus/0')).inspection).toEqual(native);
+  });
+
+  it.each(['values', 'ports', 'members', 'revision'] as const)(
+    'validates peer inspection %s before exposing them',
+    async (fault) => {
+      const [server, client] = loopback();
+      const malformed: Port = {
+        ...server,
+        post(message, transfer) {
+          const envelope = message as {
+            kind: string;
+            body: { kind: string; version: Document.Version; inspection: Record<string, unknown> };
+          };
+          if (envelope.kind === 'reply' && envelope.body?.kind === 'inspection') {
+            if (fault === 'revision')
+              envelope.body.version = { ...envelope.body.version, revision: 99 };
+            else if (fault === 'values') envelope.body.inspection.values = { kv: [] };
+            else if (fault === 'ports')
+              envelope.body.inspection.ports = [{ name: 'p', net: { key: 'signal/0' } }];
+            else
+              envelope.body.inspection.members = [
+                { owner: { element: { classId: 'bus', index: -1 }, key: null }, port: 'p' },
+              ];
+          }
+          server.post(message, transfer);
+        },
+      };
+      cleanups.push(serveDocument(malformed, new Editable()));
+      const session = await connectDocument(client);
+      cleanups.push(() => session.close());
+      await expect(session.inspect('bus/0')).rejects.toThrow();
+    },
+  );
 });

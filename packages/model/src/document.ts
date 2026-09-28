@@ -14,9 +14,10 @@ const NONE = 0xffffffff;
 /**
  * A case open for editing: operations in the model's identities, one history that takes any of
  * them back, and the case as a block diagram. Subclass it for a format: `change` the case for some
- * operations, `revert` a change, describe the `schematic` and `palette`, and `open` the model of
- * the case as it stands; the base keeps the history of the last 200 steps, maps the schematic's
- * parts to elements, and opens the model a change calls for once a caller asks for it.
+ * operations, `revert` a change, `inspect` native values and wiring, describe the `schematic` and
+ * `palette`, and `open` the model of the case as it stands; the base keeps the history of the
+ * last 200 steps, maps the schematic's parts to elements, and opens the model a change calls
+ * for once a caller asks for it.
  */
 export abstract class Document {
   readonly #undo: Document.Change[] = [];
@@ -115,12 +116,20 @@ export abstract class Document {
   /** The element an identity names now; null when the case no longer has it. */
   abstract find(key: string): Model.Element | null;
 
+  /**
+   * Current editable values and wiring, including elements absent from the diagram. Return null
+   * only when the element does not exist. Read native indexes without opening a model; do not
+   * mutate the document. Values use the column names accepted by `set`.
+   */
+  abstract inspect(element: Model.Element): Document.Inspection | null;
+
   /** The case as bytes, as of the last change, the caller's own. */
   abstract bytes(signal?: AbortSignal): Promise<Uint8Array>;
 
   /**
    * The case as a model, as of the last change: the same model until values or structure change,
    * and then the model of the case as it stands, opened once however many changes came between.
+   * A failed open rejects its readers; the next call retries without requiring another edit.
    */
   model(signal?: AbortSignal): Promise<Model> {
     if (this.#stale) {
@@ -132,8 +141,12 @@ export abstract class Document {
         this.#model = model;
         return model;
       })();
-      // A superseded or failed open is reported by the callers of `model` that wait on it.
-      promise.catch(() => undefined);
+      // Readers receive the failure; only this attempt may make the current capture retryable.
+      void promise.catch(() => {
+        if (this.#opening?.promise !== promise) return;
+        this.#opening = null;
+        this.#stale = true;
+      });
       this.#opening = { promise, controller };
     }
     const opening = this.#opening;
@@ -179,6 +192,29 @@ export declare namespace Document {
     readonly epoch: string;
     readonly revision: number;
   }
+  /** An element in this revision, and its identity across edits when the format provides one. */
+  interface Reference {
+    readonly element: Model.Element;
+    readonly key: string | null;
+  }
+  /**
+   * One element's editable values and complete wiring in a single document revision. This is
+   * native document data, independent of displayed model columns or diagram visibility. Treat
+   * the result as read-only; implementations may reuse their indexed data.
+   */
+  interface Inspection extends Reference {
+    /** Column names accepted by `set`, with their current values; empty when none are editable. */
+    readonly values: Readonly<Record<string, Extract<Operation, { kind: 'set' }>['value']>>;
+    /** Every declared port, including unwired ports whose net is null. */
+    readonly ports: readonly { readonly name: string; readonly net: Reference | null }[];
+    /** For a net, the element ports on it; empty when none are connected. */
+    readonly members: readonly { readonly owner: Reference; readonly port: string }[];
+  }
+  /** An inspection and its revision, retained together when drafting an edit. */
+  interface InspectionResult {
+    readonly version: Version;
+    readonly inspection: Inspection | null;
+  }
   /** The document state a session keeps locally, replaced before a change is announced. */
   interface View {
     readonly version: Version;
@@ -191,13 +227,23 @@ export declare namespace Document {
   /** Local schematic lookup methods, shared by documents and sessions. */
   type Parts = Pick<Document, 'elementAt' | 'partOf' | 'portAt' | 'portOf' | 'drivers'>;
   /**
-   * An asynchronous editing boundary. Edits use the view's version at invocation and resolve
-   * after their accepted change is visible locally. Concurrent stale edits reject with
-   * `DocumentConflict`; they are never silently rebased. A snapshot stays immutable across edits.
+   * An asynchronous editing boundary. Edits use an explicit base or the view's version at
+   * invocation and resolve after their accepted change is visible locally. Concurrent stale edits
+   * reject with `DocumentConflict`; they are never silently rebased. A snapshot stays immutable
+   * across edits.
    */
   interface Session extends Parts {
     readonly view: View;
+    /** Apply against the cached view's revision at invocation. */
     apply(...operations: Operation[]): Promise<Change | null>;
+    /** Apply a retained draft against the revision it inspected; the owner rejects stale bases. */
+    apply(base: Version, ...operations: Operation[]): Promise<Change | null>;
+    /**
+     * Inspect an element in the cached revision, or resolve a key within that revision. Missing
+     * elements return null inside the result; stale revisions reject with `DocumentConflict`.
+     * No model is opened. Later edits do not change the returned data or its version.
+     */
+    inspect(target: Model.Element | string, signal?: AbortSignal): Promise<InspectionResult>;
     undo(): Promise<Change | null>;
     redo(): Promise<Change | null>;
     model(signal?: AbortSignal): Promise<Snapshot>;

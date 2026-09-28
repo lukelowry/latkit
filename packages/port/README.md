@@ -97,6 +97,11 @@ base revision, and client sequence; stale indexed edits throw `DocumentConflict`
 `Refusal.at`. Updates replace changed schematic columns; layout changes retain the netlist and
 model. A gap refreshes the cached view. Acknowledgments mean accepted in memory.
 
+`session.inspect(elementOrKey, signal?)` returns `{ version, inspection }`: editable values and
+complete wiring read together without materializing a model. Retain the revision with a form and
+submit through `session.apply(version, ...operations)`; the owner rejects stale drafts. Inspections
+copy only public fields and are bounded to 1 MiB; the service and frame format remain unchanged.
+
 Retry state, queues, snapshots, and slow-peer event buffers are bounded. Model snapshots reuse
 scoped model services (`serveModel` / `connectModel` accept an optional `id`) and the existing
 engine reference path. See [Document sessions](../../docs/document-sessions.md) for lifetime,

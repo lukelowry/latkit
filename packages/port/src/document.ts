@@ -18,6 +18,7 @@ import {
   checkReply,
   checkSchematicLengths,
   checkUpdate,
+  publicInspection,
   sameVersion,
   type Command,
   type Receipt,
@@ -121,6 +122,17 @@ export function serveDocument(
         if (request.op === 'view') return { kind: 'view', view: current.view };
         const version = current.view.version;
         if (!sameVersion(request.base, version)) return { kind: 'conflict', version };
+        if (request.op === 'inspect') {
+          const element =
+            typeof request.target === 'string'
+              ? current.document.find(request.target)
+              : request.target;
+          const inspected = element === null ? null : current.document.inspect(element);
+          const inspection = inspected === null ? null : publicInspection(inspected);
+          if (!sameVersion(version, current.view.version))
+            return { kind: 'conflict', version: current.view.version };
+          return { kind: 'inspection', version, inspection };
+        }
         if (request.op === 'bytes') {
           const bytes = await current.document.bytes(signal);
           signal.throwIfAborted();
@@ -261,8 +273,17 @@ class Connected implements Document.Session {
     }
   }
 
-  apply(...operations: Document.Operation[]): Promise<Document.Change | null> {
-    return this.#edit({ op: 'apply', operations });
+  apply(...operations: Document.Operation[]): Promise<Document.Change | null>;
+  apply(
+    base: Document.Version,
+    ...operations: Document.Operation[]
+  ): Promise<Document.Change | null>;
+  apply(
+    first?: Document.Version | Document.Operation,
+    ...rest: Document.Operation[]
+  ): Promise<Document.Change | null> {
+    if (first && 'epoch' in first) return this.#edit({ op: 'apply', operations: rest }, first);
+    return this.#edit({ op: 'apply', operations: first ? [first, ...rest] : rest });
   }
   undo(): Promise<Document.Change | null> {
     return this.#edit({ op: 'undo' });
@@ -271,9 +292,9 @@ class Connected implements Document.Session {
     return this.#edit({ op: 'redo' });
   }
 
-  #edit(edit: Edit): Promise<Document.Change | null> {
+  #edit(edit: Edit, base: Document.Version = this.view.version): Promise<Document.Change | null> {
     // Capture indexes and their base together, before waiting behind another call.
-    const draft = structuredClone({ ...edit, base: this.view.version });
+    const draft = structuredClone({ ...edit, base });
     return this.#queue.run(async () => {
       this.#available();
       if (this.#pending) throw new Error('Reconnect the document to resolve its pending edit.');
@@ -312,6 +333,27 @@ class Connected implements Document.Session {
         if (this.#failure !== null) throw this.#failure;
         return receipt.change;
     }
+  }
+
+  async inspect(
+    target: Model.Element | string,
+    signal?: AbortSignal,
+  ): Promise<Document.InspectionResult> {
+    this.#available();
+    const request = structuredClone({ op: 'inspect' as const, base: this.view.version, target });
+    DOCUMENT.check?.(request, 'document inspection request');
+    const calls = this.#calls!;
+    const reply = await this.#ask(request, signal);
+    if (calls !== this.#calls || calls.closed !== null)
+      throw new Error('The document disconnected.');
+    if (reply.kind === 'conflict') {
+      await this.#refresh();
+      throw new DocumentConflict(request.base, reply.version);
+    }
+    if (reply.kind !== 'inspection') throw new Error('Expected a document inspection reply.');
+    if (!sameVersion(request.base, reply.version))
+      throw new Error('The document inspection does not match the requested revision.');
+    return { version: reply.version, inspection: reply.inspection };
   }
 
   async model(signal?: AbortSignal): Promise<Document.Snapshot> {

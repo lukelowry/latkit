@@ -5,11 +5,14 @@
 import { validateNetlist, type Document, type Model } from '@latkit/model';
 
 import { check, type Check } from './check.js';
+import { encodeFrame } from './frame.js';
 import { protocol } from './protocol.js';
 
 const MAX_ELEMENTS = 1_000_000;
 export const MAX_OPERATIONS = 256;
 export const MAX_COMMAND_BYTES = 1 << 20;
+const MAX_INSPECTION_ENTRIES = 4096;
+const MAX_INSPECTION_BYTES = 1 << 20;
 
 type Address = {
   readonly client: string;
@@ -26,6 +29,11 @@ export type Request =
   | Command
   | { readonly op: 'open'; readonly client?: string }
   | { readonly op: 'view' }
+  | {
+      readonly op: 'inspect';
+      readonly base: Document.Version;
+      readonly target: Model.Element | string;
+    }
   | { readonly op: 'model'; readonly base: Document.Version }
   | { readonly op: 'bytes'; readonly base: Document.Version };
 
@@ -53,6 +61,7 @@ export type Reply =
       readonly view: Document.View;
     }
   | { readonly kind: 'view'; readonly view: Document.View }
+  | ({ readonly kind: 'inspection' } & Document.InspectionResult)
   | { readonly kind: 'model'; readonly version: Document.Version; readonly id: string }
   | { readonly kind: 'bytes'; readonly version: Document.Version; readonly bytes: Uint8Array };
 
@@ -77,6 +86,10 @@ export const version: Check<Document.Version> = check.object({
 });
 const element: Check<Model.Element> = check.object({ classId: check.string, index: check.index });
 const port: Check<Document.Port> = check.object({ element, port: check.string });
+const target: Check<Model.Element | string> = (value, name) => {
+  if (typeof value === 'string') check.string(value, name);
+  else element(value, name);
+};
 const location: Check<Document.Port | Model.Element> = (value, name) => {
   if (typeof value === 'object' && value !== null && 'element' in value) port(value, name);
   else element(value, name);
@@ -141,6 +154,7 @@ export const DOCUMENT = protocol<Request, Reply, Update>(
   check.requests<Request>({
     open: { client: check.optional(token) },
     view: {},
+    inspect: { base: version, target },
     apply: { ...address, operations: check.array(operation, MAX_OPERATIONS) },
     undo: address,
     redo: address,
@@ -148,6 +162,59 @@ export const DOCUMENT = protocol<Request, Reply, Update>(
     bytes: { base: version },
   }),
 );
+
+const reference: Check<Document.Reference> = check.object({
+  element,
+  key: check.nullable(check.string),
+});
+const values: Check<Document.Inspection['values']> = (value, name) => {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length > MAX_INSPECTION_ENTRIES
+  )
+    throw new TypeError(`${name} must be a map of at most ${MAX_INSPECTION_ENTRIES} values`);
+  for (const [key, entry] of Object.entries(value)) {
+    check.string(key, `${name} key`);
+    scalar(entry, `${name}.${key}`);
+  }
+};
+const inspectionFields: Check<Document.Inspection> = check.object({
+  element,
+  key: check.nullable(check.string),
+  values,
+  ports: check.array(
+    check.object({ name: check.string, net: check.nullable(reference) }),
+    MAX_INSPECTION_ENTRIES,
+  ),
+  members: check.array(check.object({ owner: reference, port: check.string }), MAX_ELEMENTS),
+});
+function checkInspectionSize(value: Document.Inspection): void {
+  if (encodeFrame(value).byteLength > MAX_INSPECTION_BYTES)
+    throw new RangeError('A document inspection exceeds 1 MiB.');
+}
+const inspection: Check<Document.Inspection> = (value, name) => {
+  inspectionFields(value, name);
+  checkInspectionSize(value as Document.Inspection);
+};
+
+/** Copy public fields only: private provider data and shared native indexes stay with the owner. */
+export function publicInspection(value: Document.Inspection): Document.Inspection {
+  inspectionFields(value, 'document inspection');
+  const copy = ({ element: { classId, index }, key }: Document.Reference): Document.Reference => ({
+    element: { classId, index },
+    key,
+  });
+  const result: Document.Inspection = {
+    ...copy(value),
+    values: Object.fromEntries(Object.entries(value.values)),
+    ports: value.ports.map(({ name, net }) => ({ name, net: net === null ? null : copy(net) })),
+    members: value.members.map(({ owner, port }) => ({ owner: copy(owner), port })),
+  };
+  checkInspectionSize(result);
+  return result;
+}
 
 const change: Check<Document.Change> = check.object({
   label: check.string,
@@ -254,6 +321,7 @@ const replyFields: Check<ReplyRequest> = check.requests<ReplyRequest>({
   busy: { message: check.string },
   opened: { client: token, next: check.index, view },
   view: { view },
+  inspection: { version, inspection: check.nullable(inspection) },
   model: { version, id: token },
   bytes: { version, bytes: check.bytes },
 });
