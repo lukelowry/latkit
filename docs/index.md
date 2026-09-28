@@ -27,17 +27,16 @@ Latkit packages are ESM modules for modern browser applications. The rendering p
 
 ## Packages
 
-| Package             | Use it for                                                     |
-| ------------------- | -------------------------------------------------------------- |
-| `@latkit/network`   | Interactive WebGPU network topology views                      |
-| `@latkit/monitor`   | WebGPU time-series and signal monitor views                    |
-| `@latkit/diagram`   | WebGPU block diagrams with automatic layout and edit proposals |
-| `@latkit/embed`     | `latkit-network` and `latkit-monitor` custom elements          |
-| `@latkit/gpu`       | Core WebGPU device, shared device leases, presentation, frames |
-| `@latkit/colormaps` | Named colormaps, labels, and CSS gradients                     |
-| `@latkit/model`     | Shared model primitives as the package family grows            |
-| `@latkit/port`      | Ports, frames, and typed request, reply, and stream protocols  |
-| `@latkit/remote`    | A model served across a port: source, runner, grids, results   |
+| Package             | Use it for                                                          |
+| ------------------- | ------------------------------------------------------------------- |
+| `@latkit/network`   | Interactive WebGPU network topology views                           |
+| `@latkit/monitor`   | WebGPU time-series and signal monitor views                         |
+| `@latkit/diagram`   | WebGPU block diagrams with automatic layout and edit proposals      |
+| `@latkit/embed`     | `latkit-network` and `latkit-monitor` custom elements               |
+| `@latkit/gpu`       | What every renderer shares: devices, frames, attach, channels       |
+| `@latkit/colormaps` | Colors and colormaps: `RGBA`, the catalog, gradients, and a parser  |
+| `@latkit/model`     | `Model`, `Engine`, and `Document` to subclass, and their recordings |
+| `@latkit/port`      | Ports, frames, protocols, and models and engines served across them |
 
 ```{toctree}
 :maxdepth: 2

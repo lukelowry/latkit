@@ -1,7 +1,7 @@
 {
   "name": "@latkit/colormaps",
   "version": "0.2.2",
-  "description": "Colormap catalog for Latkit.",
+  "description": "Colors and colormaps for Latkit: RGBA and Colormap, the colormap catalog, and a CSS color parser.",
   "type": "module",
   "repository": {
     "type": "git",
@@ -25,9 +25,6 @@
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --project @latkit/colormaps"
-  },
-  "dependencies": {
-    "@latkit/model": "workspace:*"
   },
   "publishConfig": {
     "access": "public"

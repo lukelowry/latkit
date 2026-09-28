@@ -72,7 +72,12 @@ describe('OPTIONS', () => {
   it('suffixes only CSS-pixel options with Px; the grid pitch is in diagram units', () => {
     const px = Object.keys(OPTIONS).filter((key) => key.endsWith('Px'));
     expect(px.sort()).toEqual(['fitPaddingPx', 'pickRadiusPx', 'revealPaddingPx']);
-    expect(OPTIONS.gridPitch).toEqual({ kind: 'positive', default: 8, live: true });
+    expect(OPTIONS.gridPitch).toEqual({
+      kind: 'positive',
+      default: 8,
+      live: true,
+      label: 'Grid pitch',
+    });
   });
 
   it('carries the documented defaults', () => {

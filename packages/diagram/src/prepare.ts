@@ -5,7 +5,7 @@
  * page draws them.
  */
 
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 
 import { ceilTo, metrics, textWidth, type Metrics } from './geometry.js';
 import { LINE } from './text/metrics.js';
@@ -35,7 +35,7 @@ export const BAND_BOTTOM = 2;
 /** A validated netlist with everything derived once per load. */
 export interface Prepared {
   /** The netlist this was derived from; borrowed, never changed. */
-  readonly netlist: Netlist;
+  readonly netlist: Document.Netlist;
   /** The sizing constants of the grid it was prepared at. */
   readonly metrics: Metrics;
   readonly blockCount: number;
@@ -101,7 +101,7 @@ export interface Prepared {
  * @param netlist - A netlist `validateNetlist` accepts.
  * @param grid - The grid pitch in diagram units.
  */
-export function prepare(netlist: Netlist, grid: number): Prepared {
+export function prepare(netlist: Document.Netlist, grid: number): Prepared {
   const m = metrics(grid);
   const { blockCount, portStart, portFlow, netStart, netPorts } = netlist;
   const portCount = portStart[blockCount]!;
@@ -410,7 +410,7 @@ function blockNetTable(
 }
 
 /** Whether two netlists are the same content: counts, every column, and every label. */
-export function sameNetlist(a: Netlist, b: Netlist): boolean {
+export function sameNetlist(a: Document.Netlist, b: Document.Netlist): boolean {
   if (a === b) return true;
   return (
     a.blockCount === b.blockCount &&

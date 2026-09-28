@@ -1,19 +1,6 @@
 import { devices, type DevicePool } from '@latkit/gpu';
-import { validateDomain, validateRgba, type Colormap, type Domain, type RGBA } from '@latkit/model';
-
-import type { FocusEndpointMode } from './focus-state.js';
-
-/** How camera motion is animated: following the user's preference, always reduced, or always full. */
-export type Motion = 'auto' | 'reduce' | 'full';
-
-/** What a plain wheel does: zoom the view, or scroll the page unless a modifier is held. */
-export type Wheel = 'zoom' | 'modifier';
-
-/** Where pointer, wheel, and keys go: the camera, item inspection only, or nowhere. */
-export type Interaction = 'navigate' | 'inspect' | 'none';
-
-/** A CSS-pixel inset: one value for every side, or `[top, right, bottom, left]`. */
-export type Insets = number | readonly [number, number, number, number];
+import { validateRgba, type Colormap, type RGBA } from '@latkit/colormaps';
+import { validateDomain, type Domain } from '@latkit/model';
 
 /**
  * Network display options: the construction record and the live patch.
@@ -60,11 +47,11 @@ export interface Options {
   daylight?: boolean;
   /** The instant daylight is computed for, in milliseconds since the epoch; `null` follows the clock. @defaultValue `null`. */
   sunTime?: number | null;
-  /** Minimum brightness on the night side of overlay geometry. @defaultValue `0.55`. */
+  /** Minimum brightness on the night side of overlay geometry, in `[0, 1]`. @defaultValue `0.55`. */
   nightFloor?: number;
-  /** Minimum brightness on the night side of opaque surfaces. @defaultValue `0.1`. */
+  /** Minimum brightness on the night side of opaque surfaces, in `[0, 1]`. @defaultValue `0.1`. */
   surfaceNightFloor?: number;
-  /** Softness of the day/night terminator in shader units. @defaultValue `0.12`. */
+  /** Softness of the day/night terminator in shader units, at most 1. @defaultValue `0.12`. */
   terminatorWidth?: number;
   /** Resting vertex color without a `vertexColor` channel. @defaultValue `[0.5, 0.5, 0.5, 1]`. */
   vertexBaseColor?: RGBA;
@@ -84,9 +71,9 @@ export interface Options {
   hoverColor?: RGBA;
   /** Selection highlight color. @defaultValue `[0.72, 0.28, 0.18, 1]`. */
   selectedColor?: RGBA;
-  /** Multiplier applied to hover color alpha. @defaultValue `0.5`. */
+  /** Multiplier applied to hover color alpha, in `[0, 1]`. @defaultValue `0.5`. */
   hoverAlpha?: number;
-  /** Multiplier applied to selection color alpha. @defaultValue `0.82`. */
+  /** Multiplier applied to selection color alpha, in `[0, 1]`. @defaultValue `0.82`. */
   selectedAlpha?: number;
   /** Additional hover radius around vertices in CSS pixels. @defaultValue `6`. */
   vertexHoverPx?: number;
@@ -96,14 +83,14 @@ export interface Options {
   edgeHoverPx?: number;
   /** Additional selection half-width around edges in CSS pixels. @defaultValue `5`. */
   edgeSelectedPx?: number;
-  /** Endpoint highlight mode for focused edges. @defaultValue `"selected"`. */
-  focusEndpointMode?: FocusEndpointMode;
+  /** Which focused edges also halo their endpoint vertices. @defaultValue `"selected"`. */
+  focusEndpointMode?: 'off' | 'selected' | 'hover-selected';
   /**
    * Camera and orbit motion. `'auto'` follows `prefers-reduced-motion`; under reduced motion every
    * fit, reveal, and pose lands at once, drags do not coast, and `orbit(true)` is refused.
    * @defaultValue `'auto'`.
    */
-  motion?: Motion;
+  motion?: 'auto' | 'reduce' | 'full';
   /** Duration of an animated fit, reveal, or pose, in milliseconds. @defaultValue `500`. */
   animationMs?: number;
   /** Multiplier on the continuous rotation rate of `orbit`. @defaultValue `1`. */
@@ -119,29 +106,40 @@ export interface Options {
    */
   keyboard?: boolean;
   /** Whether a plain wheel zooms, or only a Ctrl or Meta wheel does while the page keeps scrolling. @defaultValue `'zoom'`. */
-  wheel?: Wheel;
+  wheel?: 'zoom' | 'modifier';
   /**
    * What input does. `'navigate'` moves the camera. `'inspect'` keeps hover, tap selection with
    * cycling, and keyboard stepping along the topology, and leaves wheel and touch scrolling to the
    * page. `'none'` installs no listeners at all. @defaultValue `'navigate'`.
    */
-  interaction?: Interaction;
-  /** Inset every fit keeps clear, in CSS pixels; `null` keeps the default margin. @defaultValue `null`. */
-  fitPaddingPx?: Insets | null;
+  interaction?: 'navigate' | 'inspect' | 'none';
+  /**
+   * Inset every fit keeps clear, in CSS pixels: one for every side, or
+   * `[top, right, bottom, left]`; `null` keeps the default margin. @defaultValue `null`.
+   */
+  fitPaddingPx?: number | readonly [number, number, number, number] | null;
   /** Pitch a fit rests at, in degrees; `null` is the view's own rest. Flat ignores it. @defaultValue `null`. */
   fitPitch?: number | null;
   /** Bearing a fit rests at, in degrees clockwise from north. Flat ignores it. @defaultValue `0`. */
   fitBearing?: number;
 }
 
-/** Validation kind, default, whether `Network.setOptions` accepts the option live, and whether `null` is a value. */
-export type OptionDefinition =
+/** A CSS-pixel inset: one value for every side, or `[top, right, bottom, left]`. */
+export type Insets = NonNullable<Options['fitPaddingPx']>;
+
+/**
+ * Validation kind, default, whether `Network.setOptions` accepts the option live, whether `null` is
+ * a value, the label a control shows, and for a bounded number its inclusive `min` and `max`.
+ */
+export type OptionDefinition = { readonly label: string } & (
   | { readonly kind: 'boolean'; readonly default: boolean; readonly live: true }
   | {
       readonly kind: 'finite' | 'nonnegative';
       readonly default: number | null;
       readonly live: true;
       readonly nullable?: true;
+      readonly min?: number;
+      readonly max?: number;
     }
   | {
       readonly kind: 'rgba';
@@ -163,7 +161,8 @@ export type OptionDefinition =
       readonly live: boolean;
     }
   | { readonly kind: 'colormap'; readonly default: Colormap; readonly live: true }
-  | { readonly kind: 'pool'; readonly default: DevicePool; readonly live: false };
+  | { readonly kind: 'pool'; readonly default: DevicePool; readonly live: false }
+);
 
 /** Network's neutral transfer function before a consumer supplies a colormap. */
 const neutralColormap: Colormap = Object.freeze((t: number) => [t, t, t] as const);
@@ -179,67 +178,149 @@ function values<const T extends readonly (string | number)[]>(...entries: T): T 
 }
 
 const definitions = {
-  msaa: { kind: 'enum', values: values(1, 4), default: undefined, live: false },
-  devices: { kind: 'pool', default: devices, live: false },
-  vertices: { kind: 'boolean', default: true, live: true },
-  edges: { kind: 'boolean', default: true, live: true },
-  poles: { kind: 'boolean', default: false, live: true },
-  vertexScale: { kind: 'nonnegative', default: 1, live: true },
-  edgeScale: { kind: 'nonnegative', default: 1, live: true },
-  heightScale: { kind: 'nonnegative', default: 1, live: true },
-  heightRange: { kind: 'domain', default: tuple(0, 1), live: true },
-  sizeRange: { kind: 'domain', default: tuple(0.5, 2), live: true },
-  dashPeriodPx: { kind: 'nonnegative', default: 12, live: true },
-  borders: { kind: 'boolean', default: true, live: true },
-  graticule: { kind: 'boolean', default: false, live: true },
-  earthAxis: { kind: 'boolean', default: true, live: true },
-  daylight: { kind: 'boolean', default: true, live: true },
-  sunTime: { kind: 'finite', default: null, live: true, nullable: true },
-  nightFloor: { kind: 'finite', default: 0.55, live: true },
-  surfaceNightFloor: { kind: 'finite', default: 0.1, live: true },
-  terminatorWidth: { kind: 'nonnegative', default: 0.12, live: true },
-  vertexBaseColor: { kind: 'rgba', default: tuple(0.5, 0.5, 0.5, 1), live: true },
-  edgeBaseColor: { kind: 'rgba', default: null, live: true, nullable: true },
-  colormap: { kind: 'colormap', default: neutralColormap, live: true },
-  graticuleColor: { kind: 'rgba', default: tuple(0.45, 0.48, 0.54, 1), live: true },
-  surfaceColor: { kind: 'rgba', default: tuple(0.15, 0.16, 0.19, 1), live: true },
-  borderColor: { kind: 'rgba', default: tuple(0.52, 0.5, 0.49, 1), live: true },
-  focusEnabled: { kind: 'boolean', default: true, live: true },
-  hoverColor: { kind: 'rgba', default: tuple(0.72, 0.28, 0.18, 1), live: true },
-  selectedColor: { kind: 'rgba', default: tuple(0.72, 0.28, 0.18, 1), live: true },
-  hoverAlpha: { kind: 'nonnegative', default: 0.5, live: true },
-  selectedAlpha: { kind: 'nonnegative', default: 0.82, live: true },
-  vertexHoverPx: { kind: 'nonnegative', default: 6, live: true },
-  vertexSelectedPx: { kind: 'nonnegative', default: 7, live: true },
-  edgeHoverPx: { kind: 'nonnegative', default: 3.5, live: true },
-  edgeSelectedPx: { kind: 'nonnegative', default: 5, live: true },
+  msaa: {
+    kind: 'enum',
+    values: values(1, 4),
+    default: undefined,
+    live: false,
+    label: 'Antialiasing',
+  },
+  devices: { kind: 'pool', default: devices, live: false, label: 'Device pool' },
+  vertices: { kind: 'boolean', default: true, live: true, label: 'Vertices' },
+  edges: { kind: 'boolean', default: true, live: true, label: 'Edges' },
+  poles: { kind: 'boolean', default: false, live: true, label: 'Height poles' },
+  vertexScale: { kind: 'nonnegative', default: 1, live: true, label: 'Vertex size' },
+  edgeScale: { kind: 'nonnegative', default: 1, live: true, label: 'Edge width' },
+  heightScale: { kind: 'nonnegative', default: 1, live: true, label: 'Height scale' },
+  heightRange: { kind: 'domain', default: tuple(0, 1), live: true, label: 'Height range' },
+  sizeRange: { kind: 'domain', default: tuple(0.5, 2), live: true, label: 'Size range' },
+  dashPeriodPx: { kind: 'nonnegative', default: 12, live: true, label: 'Dash period' },
+  borders: { kind: 'boolean', default: true, live: true, label: 'Borders' },
+  graticule: { kind: 'boolean', default: false, live: true, label: 'Graticule' },
+  earthAxis: { kind: 'boolean', default: true, live: true, label: 'Earth axis' },
+  daylight: { kind: 'boolean', default: true, live: true, label: 'Daylight' },
+  sunTime: { kind: 'finite', default: null, live: true, nullable: true, label: 'Sun time' },
+  nightFloor: {
+    kind: 'finite',
+    default: 0.55,
+    live: true,
+    label: 'Night brightness',
+    min: 0,
+    max: 1,
+  },
+  surfaceNightFloor: {
+    kind: 'finite',
+    default: 0.1,
+    live: true,
+    label: 'Surface night brightness',
+    min: 0,
+    max: 1,
+  },
+  terminatorWidth: {
+    kind: 'nonnegative',
+    default: 0.12,
+    live: true,
+    label: 'Terminator width',
+    max: 1,
+  },
+  vertexBaseColor: {
+    kind: 'rgba',
+    default: tuple(0.5, 0.5, 0.5, 1),
+    live: true,
+    label: 'Vertex base color',
+  },
+  edgeBaseColor: {
+    kind: 'rgba',
+    default: null,
+    live: true,
+    nullable: true,
+    label: 'Edge base color',
+  },
+  colormap: { kind: 'colormap', default: neutralColormap, live: true, label: 'Colormap' },
+  graticuleColor: {
+    kind: 'rgba',
+    default: tuple(0.45, 0.48, 0.54, 1),
+    live: true,
+    label: 'Graticule color',
+  },
+  surfaceColor: {
+    kind: 'rgba',
+    default: tuple(0.15, 0.16, 0.19, 1),
+    live: true,
+    label: 'Surface color',
+  },
+  borderColor: {
+    kind: 'rgba',
+    default: tuple(0.52, 0.5, 0.49, 1),
+    live: true,
+    label: 'Border color',
+  },
+  focusEnabled: { kind: 'boolean', default: true, live: true, label: 'Highlight focus' },
+  hoverColor: {
+    kind: 'rgba',
+    default: tuple(0.72, 0.28, 0.18, 1),
+    live: true,
+    label: 'Hover color',
+  },
+  selectedColor: {
+    kind: 'rgba',
+    default: tuple(0.72, 0.28, 0.18, 1),
+    live: true,
+    label: 'Selection color',
+  },
+  hoverAlpha: { kind: 'nonnegative', default: 0.5, live: true, label: 'Hover opacity', max: 1 },
+  selectedAlpha: {
+    kind: 'nonnegative',
+    default: 0.82,
+    live: true,
+    label: 'Selection opacity',
+    max: 1,
+  },
+  vertexHoverPx: { kind: 'nonnegative', default: 6, live: true, label: 'Vertex hover halo' },
+  vertexSelectedPx: { kind: 'nonnegative', default: 7, live: true, label: 'Vertex selection halo' },
+  edgeHoverPx: { kind: 'nonnegative', default: 3.5, live: true, label: 'Edge hover halo' },
+  edgeSelectedPx: { kind: 'nonnegative', default: 5, live: true, label: 'Edge selection halo' },
   focusEndpointMode: {
     kind: 'enum',
     values: values('off', 'selected', 'hover-selected'),
     default: 'selected',
     live: true,
+    label: 'Endpoint highlight',
   },
-  motion: { kind: 'enum', values: values('auto', 'reduce', 'full'), default: 'auto', live: true },
-  animationMs: { kind: 'nonnegative', default: 500, live: true },
-  orbitRate: { kind: 'nonnegative', default: 1, live: true },
-  revealPaddingPx: { kind: 'nonnegative', default: 48, live: true },
-  pickRadiusPx: { kind: 'nonnegative', default: 10, live: true },
-  keyboard: { kind: 'boolean', default: true, live: true },
-  wheel: { kind: 'enum', values: values('zoom', 'modifier'), default: 'zoom', live: true },
+  motion: {
+    kind: 'enum',
+    values: values('auto', 'reduce', 'full'),
+    default: 'auto',
+    live: true,
+    label: 'Motion',
+  },
+  animationMs: { kind: 'nonnegative', default: 500, live: true, label: 'Animation duration' },
+  orbitRate: { kind: 'nonnegative', default: 1, live: true, label: 'Orbit speed' },
+  revealPaddingPx: { kind: 'nonnegative', default: 48, live: true, label: 'Reveal padding' },
+  pickRadiusPx: { kind: 'nonnegative', default: 10, live: true, label: 'Pick radius' },
+  keyboard: { kind: 'boolean', default: true, live: true, label: 'Keyboard' },
+  wheel: {
+    kind: 'enum',
+    values: values('zoom', 'modifier'),
+    default: 'zoom',
+    live: true,
+    label: 'Wheel',
+  },
   interaction: {
     kind: 'enum',
     values: values('navigate', 'inspect', 'none'),
     default: 'navigate',
     live: true,
+    label: 'Interaction',
   },
-  fitPaddingPx: { kind: 'insets', default: null, live: true, nullable: true },
-  fitPitch: { kind: 'finite', default: null, live: true, nullable: true },
-  fitBearing: { kind: 'finite', default: 0, live: true },
+  fitPaddingPx: { kind: 'insets', default: null, live: true, nullable: true, label: 'Fit padding' },
+  fitPitch: { kind: 'finite', default: null, live: true, nullable: true, label: 'Fit pitch' },
+  fitBearing: { kind: 'finite', default: 0, live: true, label: 'Fit bearing' },
 } as const satisfies Record<keyof Required<Options>, OptionDefinition>;
 
 for (const definition of Object.values(definitions)) Object.freeze(definition);
 
-/** Every option: its validation kind, default, and whether it is accepted live. */
+/** Every option: its validation kind, default, whether it is accepted live, label, and bounds. */
 export const OPTIONS: Readonly<typeof definitions> = Object.freeze(definitions);
 
 /** Option keys selected by whether they are accepted live. */
@@ -303,10 +384,14 @@ function validateOptionValue(key: string, definition: OptionDefinition, value: u
       if (typeof value !== 'boolean') typeError(key, 'a boolean');
       return;
     case 'finite':
-      validateNumber(key, value, false);
-      return;
     case 'nonnegative':
-      validateNumber(key, value, true);
+      validateNumber(key, value, definition.kind === 'nonnegative');
+      if ('min' in definition && (value as number) < definition.min!) {
+        throw new RangeError(`network option ${key} must be at least ${definition.min}`);
+      }
+      if ('max' in definition && (value as number) > definition.max!) {
+        throw new RangeError(`network option ${key} must be at most ${definition.max}`);
+      }
       return;
     case 'rgba':
       validateRgba(value, `network option ${key}`);

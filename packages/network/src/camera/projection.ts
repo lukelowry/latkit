@@ -78,8 +78,8 @@ export type Tangent = Float64Array;
 
 /**
  * Projection-independent camera pose. Center is world units (plane) or
- * lon/lat degrees (globe). Zoom is deliberately absent: its units are
- * projection-specific and it stays behind `Network.zoomBy`.
+ * lon/lat degrees (globe). Zoom is apart: its units are projection-specific,
+ * so a host's `Camera` carries it as pixels per world unit at the anchor.
  */
 export interface Pose {
   /** World x coordinate or longitude at the view anchor. */

@@ -1,23 +1,20 @@
 /// <reference types="@webgpu/types" />
 
+import { type Document, type Domain, type Series, validateNetlist } from '@latkit/model';
 import {
   bakeColormap,
+  createAttachment,
+  createChannels,
   createEmitter,
-  validateNetlist,
-  type Domain,
-  type Netlist,
-} from '@latkit/model';
-import {
   createFrameLoop,
   createPresentation,
-  type DeviceLease,
   type Frame,
   type FrameLoop,
   type Presentation,
 } from '@latkit/gpu';
 
-import { Camera, type Pose, type Viewport } from './camera.js';
-import { createChannels, type Channel } from './channels.js';
+import { CameraRig, type Pose, type Viewport } from './camera.js';
+import { channelRecord, SLOTTED, type Channel, type Scope, type SlotChannel } from './channels.js';
 import { Focus } from './focus.js';
 import { snapTo, type Rect } from './geometry.js';
 import { attachGestures, type Gesture } from './input/gestures.js';
@@ -63,7 +60,6 @@ import { Renderer } from './webgpu/renderer.js';
 import {
   createUniforms,
   DISPLAY_ARROWS,
-  DISPLAY_EDIT,
   DISPLAY_GRID,
   DISPLAY_JUNCTIONS,
   DISPLAY_LABELS,
@@ -154,10 +150,11 @@ export type Events = {
   /** True after the first successful frame since attach; false again when the canvas is released. */
   painted: boolean;
   /**
-   * The WebGPU device was lost. The controller releases it, leases a replacement, and replays
-   * every retained state. `recovering` is false when the controller stays detached: no
-   * replacement could be leased, or the host already detached or attached anew from its
-   * `attached` handler. A `detach` or `attach` from this handler also wins over the recovery.
+   * The WebGPU device was lost. The controller releases it, leases a replacement for the same
+   * canvas, and replays every retained state; attaching that canvas joins the recovery.
+   * `recovering` is false when the controller stays detached: no replacement could be leased, or a
+   * `painted` or `attached` handler detached or attached another canvas first. A `detach` or
+   * another canvas's `attach` from this handler also ends the recovery.
    */
   deviceLost: { readonly reason: string; readonly message: string; readonly recovering: boolean };
   /**
@@ -165,7 +162,48 @@ export type Events = {
    * {@link Diagram.setShade} succeeds. The latest failure replays to late subscribers.
    */
   pipelineError: { readonly cause: unknown };
+  /**
+   * A read of the series `channel` follows failed. The channel keeps what it shows and reads again
+   * once the series changes or the channel is bound anew.
+   */
+  error: { readonly channel: Channel; readonly cause: unknown };
 };
+
+/** Where the view looks from, as one value a host keeps and restores. */
+export interface Camera {
+  /** Diagram x at the viewport center. */
+  readonly centerX: number;
+  /** Diagram y at the viewport center; y grows downward. */
+  readonly centerY: number;
+  /** CSS pixels per diagram unit; `1` is actual size. */
+  readonly scale: number;
+  /** It follows the fit view: a resize or a reload keeps it fitted. */
+  readonly fit: boolean;
+}
+
+/**
+ * Check `camera` field by field, and return the pose it names, or null for none.
+ *
+ * @throws TypeError or RangeError naming the first field that is invalid.
+ */
+function checkCamera(camera: Partial<Camera>): Partial<Pose> | null {
+  if (!camera || typeof camera !== 'object') throw new TypeError('camera must be an object');
+  const { centerX, centerY, scale, fit } = camera;
+  if (centerX !== undefined && !Number.isFinite(centerX))
+    throw new RangeError('camera.centerX must be a finite number');
+  if (centerY !== undefined && !Number.isFinite(centerY))
+    throw new RangeError('camera.centerY must be a finite number');
+  if (scale !== undefined && !(Number.isFinite(scale) && scale > 0))
+    throw new RangeError('camera.scale must be a finite number greater than 0');
+  if (fit !== undefined && typeof fit !== 'boolean')
+    throw new TypeError('camera.fit must be a boolean');
+  if (centerX === undefined && centerY === undefined && scale === undefined) return null;
+  return {
+    ...(centerX !== undefined && { centerX }),
+    ...(centerY !== undefined && { centerY }),
+    ...(scale !== undefined && { zoom: scale }),
+  };
+}
 
 /**
  * Imperative controller for a WebGPU block-diagram canvas.
@@ -180,6 +218,8 @@ export type Events = {
 export interface Diagram {
   /** Whether a canvas is bound and rendering. */
   readonly attached: boolean;
+  /** The canvas bound or binding, or null. */
+  readonly canvas: HTMLCanvasElement | null;
   /** Whether a frame has been painted since attach. */
   readonly painted: boolean;
 
@@ -194,20 +234,24 @@ export interface Diagram {
 
   /**
    * Lease a device from the `devices` option and bind `canvas`, replaying every retained state.
-   *
-   * A newer `attach` or a `detach` supersedes an attach still awaiting its device, which then
-   * rejects with an `AbortError`. The previous canvas, if any, is released first.
+   * The previous canvas, if any, is released first; attaching the canvas already bound or binding
+   * joins that attach.
    *
    * @param canvas - Borrowed canvas used for presentation and input.
+   * @returns True once bound; false when a newer `attach` or a `detach` took over first.
    * @throws GpuUnavailableError when no device can be leased.
    * @throws TypeError when the leased device does not provide Core WebGPU limits (five storage
    * buffers in the vertex stage).
    * @throws Error when the controller is destroyed, or canvas presentation or renderer
    * initialization fails.
    */
-  attach(canvas: HTMLCanvasElement): Promise<void>;
-  /** Release the device lease, renderer resources, and canvas listeners; every state stays. */
-  detach(): void;
+  attach(canvas: HTMLCanvasElement): Promise<boolean>;
+  /**
+   * Release the device lease, renderer resources, and canvas listeners; every state stays.
+   *
+   * @param canvas - Detach only while this canvas is the one bound or binding.
+   */
+  detach(canvas?: HTMLCanvasElement): void;
   /**
    * Schedule a frame and resolve once it is painted.
    *
@@ -241,7 +285,7 @@ export interface Diagram {
    * pass `false` to keep a placed camera's pose. @defaultValue `{ fit: true }`
    * @throws Error naming the first invalid netlist field; nothing changes.
    */
-  load(netlist: Netlist, options?: { readonly fit?: boolean }): void;
+  load(netlist: Document.Netlist, options?: { readonly fit?: boolean }): void;
   /**
    * Update options. `devices` remains construction-only; a new `gridPitch` re-sizes and
    * re-arranges (placements keep their values), a new `interaction` abandons a gesture in flight.
@@ -259,14 +303,42 @@ export interface Diagram {
    * its nets and moves its group's frame. `blockVisible` and `netVisible` re-route what they
    * touch. `domain` configures the colormap channels only; without one they normalize `[0, 1]`.
    *
+   * A channel can instead follow one signal of a `Series`, such as a model's field, with one
+   * element per item of its scope, or a sparse series whose unrecorded items take NaN.
+   * {@link Diagram.seek} picks the frame it shows, and a null `domain` follows the signal's
+   * recorded range as the series appends. Every channel but `blockPosition`, `blockVisible`, and
+   * `netVisible` can follow a series, as those re-lay the scene. Channels following one signal
+   * share its frames; a new one shows nothing until its first frame is read, while binding the
+   * signal a channel already follows keeps what it shows.
+   *
    * @param channel - Channel name to bind.
    * @param values - One value per item of the channel's scope (two per block for
-   * `blockPosition`), or `null` to clear.
-   * @param domain - Input domain for `blockColor` and `netColor`, or `null` for `[0, 1]`.
-   * @throws Error when values are given before a netlist is loaded or their length is wrong;
-   * `null` is always accepted.
+   * `blockPosition`), stored as float32; a series signal to follow; or `null` to clear.
+   * @param domain - Input domain for `blockColor` and `netColor`, or `null` for `[0, 1]`, or for
+   * a series the signal's recorded range.
+   * @throws Error when values are given before a netlist is loaded or their length is wrong, or a
+   * series' elements do not fit the channel's items; RangeError for a signal the series lacks;
+   * TypeError when values are neither a Float32Array, a Float64Array, nor a series binding, or a
+   * position or visibility channel is given a series. `null` is always accepted.
    */
-  setChannel(channel: Channel, values: Float32Array | null, domain?: Domain | null): void;
+  setChannel(
+    channel: Channel,
+    values:
+      Float32Array | Float64Array | { readonly series: Series; readonly signal: number } | null,
+    domain?: Domain | null,
+  ): void;
+  /**
+   * Show every series-bound channel at `time`: each item takes its latest sample at or before it,
+   * or its first before the recording starts.
+   *
+   * Frames around the playhead stay resident, so a seek within them rewrites one word per
+   * channel; a seek beyond them keeps the current frame on screen until the frames it needs
+   * arrive.
+   *
+   * @param time - The playhead, in the series' time.
+   * @throws RangeError when `time` is not finite.
+   */
+  seek(time: number): void;
   /**
    * Override the input domain of a colormap channel; raw channels accept it as a no-op.
    *
@@ -385,21 +457,22 @@ export interface Diagram {
    */
   toDiagram(clientX: number, clientY: number): readonly [x: number, y: number] | null;
   /**
-   * Read the camera pose the next {@link Diagram.setPose} builds on.
+   * The camera as a value to keep and restore.
    *
-   * @returns The current pose, or null before a load or before the camera is placed.
+   * @returns The camera, or null before a load or before the camera is placed.
    */
-  getPose(): Pose | null;
+  getCamera(): Camera | null;
   /**
-   * Merge a partial pose, its zoom clamped to the limits the content sets. Before the camera is
-   * placed the pose is kept and applied over its first fit.
+   * Move the camera in one step: a fit when `fit` is true, else the center and scale it names,
+   * the scale clamped to the limits the content sets. Before the camera is placed the placement is
+   * kept and applied over its first fit.
    *
-   * @param pose - Pose fields to change; omitted fields keep their value.
-   * @param animate - If true, ease toward the pose, subject to the `motion` option.
+   * @param camera - Fields to change; omitted fields keep their value.
+   * @param animate - If true, ease toward the camera, subject to the `motion` option.
    * @returns True when the camera changed; false before a load.
-   * @throws RangeError naming a pose field that is not finite, or a zoom that is not positive.
+   * @throws TypeError or RangeError naming a field that is invalid.
    */
-  setPose(pose: Partial<Pose>, animate?: boolean): boolean;
+  setCamera(camera: Partial<Camera>, animate?: boolean): boolean;
   /**
    * Drag the content by screen pixels: positive `dx` moves it right, positive `dy` moves it down.
    *
@@ -497,14 +570,6 @@ export function createDiagramWithDeps(options: Options, deps: ControllerDeps): D
 /** Least storage buffers the vertex stage must bind: five in bind group 0. */
 const VERTEX_STORAGE_BUFFERS = 5;
 
-/** Reject devices known not to meet the renderer's Core WebGPU limits. */
-function assertDeviceLimits(device: GPUDevice): void {
-  const vertexStorage = device.limits.maxStorageBuffersInVertexStage;
-  if (vertexStorage !== undefined && vertexStorage < VERTEX_STORAGE_BUFFERS) {
-    throw new TypeError('A Core WebGPU device is required');
-  }
-}
-
 /** Strip construction-only values from one validated option patch. */
 function runtimeOptionPatch(options: Options): Options {
   const patch: Options = {};
@@ -516,47 +581,6 @@ function runtimeOptionPatch(options: Options): Options {
   return patch;
 }
 
-/** Resources registered transactionally while a binding is constructed. */
-interface ControllerLifecycle {
-  add(cleanup: () => void): void;
-  destroy(): void;
-}
-
-/** Create an idempotent, reverse-order cleanup stack. */
-function createControllerLifecycle(): ControllerLifecycle {
-  const cleanups: Array<() => void> = [];
-  let destroyed = false;
-  return {
-    add(cleanup) {
-      cleanups.push(cleanup);
-    },
-    destroy() {
-      if (destroyed) return;
-      destroyed = true;
-      for (let i = cleanups.length - 1; i >= 0; i--) {
-        try {
-          cleanups[i]!();
-        } catch {
-          // Cleanup is best-effort so one resource cannot strand the remainder.
-        }
-      }
-      cleanups.length = 0;
-    },
-  };
-}
-
-/** Relay one device-loss notification without retaining a released binding. */
-function forwardDeviceLoss(
-  device: GPUDevice,
-  listener: (info: GPUDeviceLostInfo) => void,
-): () => void {
-  let active: ((info: GPUDeviceLostInfo) => void) | undefined = listener;
-  void device.lost.then((info) => active?.(info));
-  return () => {
-    active = undefined;
-  };
-}
-
 /** Deliver a latched event payload to a late subscriber with emitter-equivalent error isolation. */
 function replay<Payload>(handler: (payload: Payload) => void, payload: Payload): void {
   try {
@@ -566,15 +590,6 @@ function replay<Payload>(handler: (payload: Payload) => void, payload: Payload):
       throw error;
     });
   }
-}
-
-/** The rejection of an attach that a newer attach or a detach overtook. */
-function superseded(): DOMException {
-  return new DOMException('The attach was superseded.', 'AbortError');
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError';
 }
 
 /** A promise settled from outside. */
@@ -592,10 +607,6 @@ function deferred<T>(): Deferred<T> {
     reject = rej;
   });
   return { promise, resolve, reject };
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** A plain wheel: a Ctrl or Meta wheel (a pinch) and a notched wheel zoom; a trackpad pans. */
@@ -634,13 +645,10 @@ interface Notice<T> {
 
 /** Everything one attach owns: released together, replaced together. */
 interface Binding {
-  /** The attach generation that created it; a stale device loss or frame compares against it. */
-  readonly generation: number;
   readonly canvas: HTMLCanvasElement;
   readonly surface: Surface;
   readonly renderer: Renderer;
   readonly loop: FrameLoop;
-  readonly lifecycle: ControllerLifecycle;
   /** The gesture and keyboard adapters, attached as the `interaction` and `keyboard` options say. */
   gestures: { cancel(): void; destroy(): void } | null;
   keyboard: { destroy(): void } | null;
@@ -661,20 +669,31 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
   const events = createEmitter<Events>();
   const mirrors = createMirrors();
   const uniforms = createUniforms(mirrors.uniforms);
-  const channels = createChannels(mirrors.channels, uniforms);
+  /** The GPU channels: slots, and the windows of the series they follow, in the channels mirror. */
+  const channels = createChannels<SlotChannel, Scope>({
+    name: 'diagram',
+    structure: 'netlist',
+    channels: SLOTTED,
+    store: () => mirrors.channels,
+    record: channelRecord(uniforms),
+    shown: (channel) => {
+      if (channel === 'netFlow') refreshFlow();
+      repaint();
+    },
+    error: (channel, cause) => events.emit('error', { channel, cause }),
+  });
   const scene = new Scene(mirrors, channels);
   const focus = new Focus(mirrors.focus);
   const atlas = new Atlas(deps.createRasterizer(), opts.fontFamily);
   const labels = new Labels(mirrors.glyphs, atlas);
-  const camera = new Camera();
+  const camera = new CameraRig();
 
   /** The sampled colormap, written into every renderer an attach builds. */
   let colormapLut = bakeColormap(opts.colormap);
   let pipelineFailure: Events['pipelineError'] | null = null;
 
+  /** The binding in effect, set once its collaborators exist so its first frame can draw. */
   let binding: Binding | null = null;
-  /** Bumped by every attach, detach, and destroy so an overtaken attach knows to stand down. */
-  let generation = 0;
   let destroyed = false;
   let consumerPaused = false;
   let pageVisible = true;
@@ -755,6 +774,7 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
 
   /** Schedule a frame for a visual state change. */
   const repaint = (): void => binding?.loop.wake();
+
   /** The view moved: hover must be picked again. */
   const cameraMoved = (): void => {
     hoverDirty = true;
@@ -1260,9 +1280,8 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
    * overlay, text, submit. Returns whether anything still moves: camera easing, scene tweens or
    * ghosts, auto-pan, the shade's tick, a pulsing glow, or marching dashes.
    */
-  function drawFrame(own: number, frame: Frame): boolean {
-    const bound = binding;
-    if (!bound || bound.generation !== own || consumerPaused || !pageVisible) return false;
+  function drawFrame(bound: Binding, frame: Frame): boolean {
+    if (binding !== bound || consumerPaused || !pageVisible) return false;
     const now = frame.now;
     frameVp.w = frame.width;
     frameVp.h = frame.height;
@@ -1312,8 +1331,7 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
       (opts.arrows ? DISPLAY_ARROWS : 0) |
       (opts.junctions ? DISPLAY_JUNCTIONS : 0) |
       (opts.labels ? DISPLAY_LABELS : 0) |
-      (motion ? 0 : DISPLAY_REDUCED) |
-      (opts.interaction === 'edit' ? DISPLAY_EDIT : 0);
+      (motion ? 0 : DISPLAY_REDUCED);
     uniforms.gridPitch = p?.metrics.grid ?? opts.gridPitch;
     uniforms.flowRate = opts.flowRate;
     writeOverlay();
@@ -1399,72 +1417,88 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
 
   // Binding.
 
-  /** Build every device-bound collaborator for one attach; on any failure nothing is kept. */
-  function bind(lease: DeviceLease, canvas: HTMLCanvasElement, own: number): Binding {
-    const lifecycle = createControllerLifecycle();
-    // Registered first, so it runs last: nothing outlives the lease it renders on.
-    lifecycle.add(() => lease.release());
-    try {
-      const surface = deps.createSurface(canvas);
-      lifecycle.add(() => surface.destroy());
-      const presentation = deps.createPresentation(lease.device, canvas);
-      lifecycle.add(() => presentation.destroy());
-      // A new renderer's buffers start at version -1: its first frame uploads every mirror.
-      const renderer = new deps.Renderer(presentation, mirrors, shade?.wgsl ?? null);
-      lifecycle.add(() => renderer.destroy());
-      renderer.writeColormap(colormapLut);
-      const loop = deps.createFrameLoop(presentation, (frame) => drawFrame(own, frame));
-      lifecycle.add(() => loop.destroy());
-
-      // A fresh renderer builds fresh pipelines; a failure from the last one no longer applies.
-      pipelineFailure = null;
-      renderer.onPipelinesReady = () => loop.wake();
-      renderer.onPipelineError = (cause) => {
-        pipelineFailure = { cause };
-        rejectPaint(cause);
-        events.emit('pipelineError', pipelineFailure);
-      };
-
-      pageVisible = typeof document !== 'undefined' ? !document.hidden : true;
-      const onVisibilityChange = (): void => {
-        pageVisible = !document.hidden;
-        syncLoopActivity();
-      };
-      document.addEventListener('visibilitychange', onVisibilityChange);
-      lifecycle.add(() => document.removeEventListener('visibilitychange', onVisibilityChange));
-
-      lifecycle.add(forwardDeviceLoss(lease.device, (info) => recover(own, info)));
-
-      const entry: Binding = {
-        generation: own,
-        canvas,
-        surface,
-        renderer,
-        loop,
-        lifecycle,
-        gestures: null,
-        keyboard: null,
-        painted: false,
-        announced: false,
-        atFit: true,
-      };
-      lifecycle.add(() => {
-        entry.gestures?.destroy();
-        entry.gestures = null;
-        entry.keyboard?.destroy();
-        entry.keyboard = null;
-      });
-      return entry;
-    } catch (error) {
-      lifecycle.destroy();
-      throw error;
+  /**
+   * Build every device-bound collaborator for one attach and draw its first frame; the attachment
+   * runs the cleanups in reverse if anything throws.
+   */
+  function bind(
+    device: GPUDevice,
+    canvas: HTMLCanvasElement,
+    cleanup: (release: () => void) => void,
+  ): Binding {
+    const vertexStorage = device.limits.maxStorageBuffersInVertexStage ?? VERTEX_STORAGE_BUFFERS;
+    if (vertexStorage < VERTEX_STORAGE_BUFFERS) {
+      throw new TypeError('A Core WebGPU device is required');
     }
+    const surface = deps.createSurface(canvas);
+    cleanup(() => surface.destroy());
+    const presentation = deps.createPresentation(device, canvas);
+    cleanup(() => presentation.destroy());
+    // A new renderer's buffers start at version -1: its first frame uploads every mirror.
+    const renderer = new deps.Renderer(presentation, mirrors, shade?.wgsl ?? null);
+    cleanup(() => renderer.destroy());
+    renderer.writeColormap(colormapLut);
+    let entry: Binding | null = null;
+    const loop = deps.createFrameLoop(presentation, (frame) =>
+      entry ? drawFrame(entry, frame) : false,
+    );
+    cleanup(() => loop.destroy());
+
+    // A fresh renderer builds fresh pipelines; a failure from the last one no longer applies.
+    pipelineFailure = null;
+    renderer.onPipelinesReady = () => loop.wake();
+    renderer.onPipelineError = (cause) => {
+      pipelineFailure = { cause };
+      rejectPaint(cause);
+      events.emit('pipelineError', pipelineFailure);
+    };
+
+    pageVisible = typeof document !== 'undefined' ? !document.hidden : true;
+    const onVisibilityChange = (): void => {
+      pageVisible = !document.hidden;
+      syncLoopActivity();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    cleanup(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+    // A web font that finishes loading replaces the fallback its glyphs were drawn in.
+    const fonts: FontFaceSet | undefined = document.fonts;
+    const onFontsLoaded = (): void => {
+      atlas.setFont(opts.fontFamily);
+      repaint();
+    };
+    fonts?.addEventListener('loadingdone', onFontsLoaded);
+    cleanup(() => fonts?.removeEventListener('loadingdone', onFontsLoaded));
+
+    const built: Binding = {
+      canvas,
+      surface,
+      renderer,
+      loop,
+      gestures: null,
+      keyboard: null,
+      painted: false,
+      announced: false,
+      atFit: true,
+    };
+    entry = built;
+    cleanup(() => {
+      built.gestures?.destroy();
+      built.gestures = null;
+      built.keyboard?.destroy();
+      built.keyboard = null;
+    });
+    binding = built;
+    cleanup(() => {
+      if (binding === built) binding = null;
+    });
+    syncInteraction();
+    syncLoopActivity();
+    loop.frameNow();
+    return built;
   }
 
-  /** Release the current binding, if any, and say so. */
-  function release(): void {
-    const entry = binding;
-    if (!entry) return;
+  /** Forget what a released binding drew; the attachment then runs its cleanups. */
+  function releaseBinding(entry: Binding): void {
     binding = null;
     shadeTask = null;
     rejectPaint(new DOMException('The canvas was detached before it painted.', 'AbortError'));
@@ -1478,40 +1512,23 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
     readyPainted = null;
     focus.setHover(null);
     shadeAnimating = false;
-    entry.lifecycle.destroy();
-    if (destroyed) return;
-    if (entry.announced) events.emit('painted', false);
-    events.emit('attached', false);
+    releasedAnnounced = entry.announced;
   }
 
-  /**
-   * A device the platform lost: release it, say so, and lease a replacement, unless a host
-   * handler detached or attached anew meanwhile; that call owns the canvas then.
-   */
-  function recover(own: number, info: GPUDeviceLostInfo): void {
-    const entry = binding;
-    if (!entry || entry.generation !== own || destroyed) return;
-    const { canvas } = entry;
-    // A detach or attach bumps the generation; the `attached` and `deviceLost` handlers may call
-    // either, and the host's call must win.
-    const mark = generation;
-    release();
-    events.emit('deviceLost', {
-      reason: info.reason ?? 'unknown',
-      message: info.message || 'WebGPU device was lost',
-      recovering: generation === mark && !destroyed,
-    });
-    if (generation !== mark || destroyed) return;
-    api.attach(canvas).catch((error: unknown) => {
-      // A newer attach or a detach overtook the recovery; it owns the outcome now.
-      if (isAbortError(error) || destroyed) return;
-      events.emit('deviceLost', {
-        reason: 'unavailable',
-        message: describe(error),
-        recovering: false,
-      });
-    });
-  }
+  /** Whether `painted: true` reached the host for the binding just released. */
+  let releasedAnnounced = false;
+
+  const attachment = createAttachment<Binding>({
+    devices: opts.devices,
+    bind,
+    release: releaseBinding,
+    attached: (bound) => {
+      if (!bound && releasedAnnounced) events.emit('painted', false);
+      releasedAnnounced = false;
+      events.emit('attached', bound);
+    },
+    lost: (loss) => events.emit('deviceLost', loss),
+  });
 
   /** Keep loop activity consistent with user pause and page visibility. */
   function syncLoopActivity(): void {
@@ -1547,6 +1564,10 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
       return binding !== null;
     },
 
+    get canvas() {
+      return attachment.canvas;
+    },
+
     get painted() {
       return binding?.painted ?? false;
     },
@@ -1559,39 +1580,9 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
       return unsubscribe;
     },
 
-    async attach(canvas) {
-      if (destroyed) throw new Error('diagram: the controller is destroyed');
-      const own = ++generation;
-      release();
-      const lease = await opts.devices.acquire();
-      if (own !== generation || destroyed) {
-        lease.release();
-        throw superseded();
-      }
-      try {
-        assertDeviceLimits(lease.device);
-      } catch (error) {
-        lease.release();
-        throw error;
-      }
-      const entry = bind(lease, canvas, own);
-      binding = entry;
-      try {
-        syncInteraction();
-        syncLoopActivity();
-        entry.loop.frameNow();
-      } catch (error) {
-        binding = null;
-        entry.lifecycle.destroy();
-        throw error;
-      }
-      events.emit('attached', true);
-    },
+    attach: (canvas) => attachment.attach(canvas),
 
-    detach() {
-      generation++;
-      release();
-    },
+    detach: (canvas) => attachment.detach(canvas),
 
     paint() {
       if (!binding) {
@@ -1612,6 +1603,7 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
       // Drag indices name the old netlist.
       interactor.cancel();
       const hovered = focus.hover !== null;
+      // The load resets every channel; the series they followed go with them.
       const survivors = scene.load(netlist, opts.gridPitch, !reduced(), performance.now());
       const next = scene.prepared!;
       if (prev) focus.remap(prev, next, survivors);
@@ -1639,34 +1631,41 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
     },
 
     setChannel(channel, values, domain) {
-      if (values === null) channels.clear(channel);
-      else channels.set(channel, values, domain);
-      switch (channel) {
-        case 'blockPosition':
-          scene.placementChanged();
-          hoverDirty = true;
-          break;
-        case 'blockVisible':
-        case 'netVisible':
-          scene.visibilityChanged();
-          hoverDirty = true;
-          break;
-        case 'netFlow':
-          refreshFlow();
-          break;
-        default:
-          break;
+      if (channel === 'blockPosition') {
+        if (values !== null && 'series' in values) {
+          throw new TypeError('diagram channel blockPosition cannot follow a series');
+        }
+        if (!scene.place(values)) return;
+        scene.placementChanged();
+        hoverDirty = true;
+      } else {
+        if (!channels.set(channel, values, domain)) return;
+        switch (channel) {
+          case 'blockVisible':
+          case 'netVisible':
+            scene.visibilityChanged();
+            hoverDirty = true;
+            break;
+          case 'netFlow':
+            refreshFlow();
+            break;
+          default:
+            break;
+        }
       }
       repaint();
     },
 
+    seek: (time) => channels.seek(time),
+
     setChannelDomain(channel, domain) {
-      channels.setDomain(channel, domain);
+      // Placements are raw: nothing maps them.
+      if (channel !== 'blockPosition') channels.setDomain(channel, domain);
       repaint();
     },
 
     getChannelDomain(channel) {
-      return channels.domain(channel);
+      return channel === 'blockPosition' ? null : channels.domain(channel);
     },
 
     arrange(parts, { animate = false } = {}) {
@@ -1782,14 +1781,26 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
       return [snapTo(x, grid), snapTo(y, grid)];
     },
 
-    getPose() {
+    getCamera() {
       if (!scene.prepared || !camera.placed) return null;
-      return camera.pose;
+      const { centerX, centerY, zoom } = camera.pose;
+      return Object.freeze({ centerX, centerY, scale: zoom, fit: camera.following });
     },
 
-    setPose(pose, animate = false) {
+    setCamera(next, animate = false) {
+      const pose = checkCamera(next);
       if (!scene.prepared) return false;
-      if (!camera.setPose(pose, animated(animate), opts.animationMs)) return false;
+      if (next.fit === true) {
+        fitAll(animate);
+        return true;
+      }
+      if (pose) {
+        if (!camera.setPose(pose, animated(animate), opts.animationMs)) return false;
+      } else if (next.fit === false && camera.following) {
+        camera.leaveFit();
+      } else {
+        return false;
+      }
       cameraMoved();
       return true;
     },
@@ -1855,8 +1866,7 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      generation++;
-      release();
+      attachment.destroy();
       interactor.cancel();
       pendingHoverNotice = undefined;
       readyHoverNotice = undefined;
@@ -1876,7 +1886,6 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
       scene.clear();
       focus.reset(null);
       labels.reset(null);
-      channels.reset(null);
       atlas.setFont(opts.fontFamily);
       camera.reset();
       events.clear();

@@ -1,23 +1,8 @@
 import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
-import {
-  createDiagram,
-  type Events,
-  type Interaction,
-  type Options,
-  type Part,
-} from '@latkit/diagram';
-import { CLASS_NAMES, CLASSES, isClassName, type ClassName, type PortSpec } from './classes.js';
-import {
-  apply,
-  build,
-  describe,
-  History,
-  positionsOf,
-  Refusal,
-  type Built,
-  type Doc,
-  type Edit,
-} from './document.js';
+import { createDiagram, type Events, type Options } from '@latkit/diagram';
+import { Refusal, type Document, type Model } from '@latkit/model';
+import { CLASSES, isClassName, type PortSpec } from './classes.js';
+import { DynamicsCase, type DynamicsDocument } from './document.js';
 import { SCENES, type SceneOption } from './scenes.js';
 import { Simulation } from './simulate.js';
 import './style.css';
@@ -121,13 +106,18 @@ function nextPaint(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
 }
 
+/** A scene's case, open for editing. */
+function openScene(option: SceneOption): Promise<DynamicsDocument> {
+  return new DynamicsCase(option.build(), option.label).document();
+}
+
 async function main(): Promise<void> {
   let scene: SceneOption = SCENES[0]!;
-  const first = scene.build();
-  const history = new History({ structure: first, placements: new Map() });
-  let built: Built = build(first);
+  let doc = await openScene(scene);
+  /** Stops following the previous scene's document. */
+  let unfollow = (): void => {};
   let simulating = false;
-  let simulation: { readonly built: Built; readonly run: Simulation } | null = null;
+  let simulation: { readonly netlist: Document.Netlist; readonly run: Simulation } | null = null;
   let simulationFrame = 0;
   /** Bumped per scene switch, so a slower switch never lands over a newer one. */
   let sceneGeneration = 0;
@@ -138,8 +128,11 @@ async function main(): Promise<void> {
   for (const button of [undoButton, redoButton]) button.removeAttribute('aria-pressed');
 
   function syncHistory(): void {
-    undoButton.disabled = !history.canUndo;
-    redoButton.disabled = !history.canRedo;
+    const { undo, redo } = doc.history;
+    undoButton.disabled = undo.length === 0;
+    redoButton.disabled = redo.length === 0;
+    undoButton.title = undo[0] ? `undo ${undo[0].label}` : '';
+    redoButton.title = redo[0] ? `redo ${redo[0].label}` : '';
   }
 
   const diagram = createDiagram({
@@ -155,9 +148,9 @@ async function main(): Promise<void> {
 
   // ---- status ----
 
-  const describePart = (part: Part): string => describe(history.current, built, part);
+  const describePart = (part: Document.Part): string => doc.describe(part);
 
-  function describeParts(parts: readonly Part[]): string {
+  function describeParts(parts: readonly Document.Part[]): string {
     if (parts.length === 0) return '-';
     if (parts.length === 1) return describePart(parts[0]!);
     const blocks = parts.filter((part) => part.kind === 'block').length;
@@ -167,7 +160,7 @@ async function main(): Promise<void> {
   }
 
   function setSummary(): void {
-    const { netlist } = built;
+    const { netlist } = doc.schematic;
     const nets = netlist.netStart.length - 1;
     summaryEl.textContent =
       `${scene.label}: ${netlist.blockCount.toLocaleString()} blocks / ` +
@@ -179,58 +172,58 @@ async function main(): Promise<void> {
     proposalEl.classList.toggle('refused', refused);
   }
 
-  function setSelection(parts: readonly Part[]): void {
+  function setSelection(parts: readonly Document.Part[]): void {
     selectionEl.textContent = describeParts(parts);
   }
 
   // ---- the document on the diagram ----
 
-  function simulationFor(current: Built): Simulation {
-    if (simulation?.built !== current) {
-      simulation = { built: current, run: new Simulation(current) };
+  function simulationFor(schematic: Document.Schematic): Simulation {
+    if (simulation?.netlist !== schematic.netlist) {
+      simulation = { netlist: schematic.netlist, run: new Simulation(schematic) };
     }
     return simulation.run;
   }
 
   function writeSimulation(now: number): void {
-    const run = simulationFor(built);
+    const run = simulationFor(doc.schematic);
     diagram.setChannel('netFlow', run.flow);
     diagram.setChannel('netColor', run.at(now), [-1, 1]);
   }
 
   /**
-   * Show a document: load its netlist without moving the camera, then write its placements. A
-   * load keeps every surviving block where it was, placement included, but a new block arrives
-   * unplaced (an insert, an undone delete) and an unchanged netlist loads nothing (clearing the
-   * placements, an undone move), so the document's placements follow every load; the diagram
-   * moves only blocks whose pair differs. The load clears every other channel, so the
-   * simulation's are written again. Returns false when the diagram refused the netlist.
+   * Show the document after a step. A structural step loads its netlist without moving the
+   * camera, which keeps every surviving block where it was; the load clears every other channel,
+   * so the port status and the simulation are written again. Every step writes the placements: a
+   * new block arrives unplaced (an insert, an undone delete) and an unchanged netlist loads nothing
+   * (an undone move), so the diagram moves only blocks whose pair differs.
    */
-  function show(doc: Doc): boolean {
-    const next = build(doc.structure);
-    try {
-      diagram.load(next.netlist, { fit: false });
-    } catch (error) {
-      console.error(`${LOG} the document built a netlist the diagram rejects:`, error);
-      return false;
+  function show(change: Document.Change): void {
+    const { netlist, positions, status } = doc.schematic;
+    if (change.scope === 'structure') {
+      try {
+        diagram.load(netlist, { fit: false });
+      } catch (error) {
+        console.error(`${LOG} the diagram rejects the document's netlist:`, error);
+      }
+      diagram.setChannel('portStatus', status);
+      if (simulating) writeSimulation(performance.now());
+      setSummary();
     }
-    built = next;
-    diagram.setChannel('blockPosition', positionsOf(doc, next));
-    if (simulating) writeSimulation(performance.now());
-    setSummary();
-    return true;
+    diagram.setChannel('blockPosition', positions);
+    syncHistory();
   }
 
-  /** Put the diagram's placements back to the current document's: a refused move snaps back. */
+  /** Put the diagram's placements back to the document's: a refused move snaps back. */
   function restore(): void {
-    diagram.setChannel('blockPosition', positionsOf(history.current, built));
+    diagram.setChannel('blockPosition', doc.schematic.positions);
   }
 
-  /** One undoable step: accepted edits load, refusals leave the document and restore the view. */
-  function propose(edits: readonly Edit[]): Doc | null {
-    let result: ReturnType<typeof apply>;
+  /** One undoable step: the document shows it, or refuses it and the view snaps back. */
+  function propose(...operations: Document.Operation[]): Document.Change | null {
+    let change: Document.Change | null;
     try {
-      result = apply(history.current, built, edits);
+      change = doc.apply(...operations);
     } catch (error) {
       if (error instanceof Refusal) {
         note(`refused: ${error.message}`, true);
@@ -241,50 +234,40 @@ async function main(): Promise<void> {
       restore();
       return null;
     }
-    if (result.summary === '') {
+    if (change === null) {
       note('nothing to change');
       restore();
       return null;
     }
-    if (!show(result.doc)) {
-      note('refused: the edit would build an invalid netlist (see the console)', true);
-      restore();
-      return null;
-    }
-    history.commit(result.doc);
-    note(result.summary);
-    syncHistory();
-    return result.doc;
+    note(change.label);
+    return change;
   }
 
   function undo(): void {
-    const doc = history.undo();
-    if (!doc) return;
-    if (!show(doc)) console.error(`${LOG} undo could not show the previous document`);
-    note('undo');
-    syncHistory();
+    const change = doc.undo();
+    if (change) note(`undo ${change.label}`);
   }
 
   function redo(): void {
-    const doc = history.redo();
-    if (!doc) return;
-    if (!show(doc)) console.error(`${LOG} redo could not show the next document`);
-    note('redo');
-    syncHistory();
+    const change = doc.redo();
+    if (change) note(`redo ${change.label}`);
   }
 
   /** Add a class where a client point lands on the diagram, and select it. */
-  function insertAt(cls: ClassName, clientX: number, clientY: number): void {
+  function insertAt(classId: string, clientX: number, clientY: number): void {
     const at = diagram.toDiagram(clientX, clientY);
     if (at === null) {
-      console.error(`${LOG} cannot place ${cls}: the diagram has no camera yet (not attached?)`);
+      console.error(
+        `${LOG} cannot place ${classId}: the diagram has no camera yet (not attached?)`,
+      );
       note('refused: the canvas is not ready', true);
       return;
     }
-    if (propose([{ kind: 'insert', cls, at }]) === null) return;
-    const inserted: Part = { kind: 'block', index: built.netlist.blockCount - 1 };
-    diagram.select([inserted]);
-    setSelection([inserted]);
+    const inserted = propose({ kind: 'insert', classId, at })?.created[0];
+    const part = inserted && doc.partOf(inserted);
+    if (!part) return;
+    diagram.select([part]);
+    setSelection([part]);
     stage.focus();
   }
 
@@ -293,22 +276,24 @@ async function main(): Promise<void> {
     summaryEl.textContent = `building ${option.label}`;
     await nextPaint();
     if (generation !== sceneGeneration) return;
-    scene = option;
     const t0 = performance.now();
-    const structure = initial ? first : option.build();
-    const doc: Doc = { structure, placements: new Map() };
-    const next = build(structure);
+    const next = initial ? doc : await openScene(option);
+    if (generation !== sceneGeneration) return;
+    const { netlist, status } = next.schematic;
     const t1 = performance.now();
     try {
-      diagram.load(next.netlist, { fit: initial });
+      diagram.load(netlist, { fit: initial });
     } catch (error) {
       console.error(`${LOG} scene ${option.id} built a netlist the diagram rejects:`, error);
       summaryEl.textContent = `scene ${option.label} failed: ${errorMessage(error)}`;
       return;
     }
     const t2 = performance.now();
-    built = next;
-    history.reset(doc);
+    scene = option;
+    doc = next;
+    unfollow();
+    unfollow = doc.on('change', show);
+    diagram.setChannel('portStatus', status);
     // Block keys carry the scene, so no block survived: the load arranged the scene afresh and
     // dropped the selection with the old blocks.
     if (!initial) diagram.fit();
@@ -319,28 +304,50 @@ async function main(): Promise<void> {
     syncHistory();
     note(`${option.label} loaded`);
     console.info(
-      `${LOG} ${option.id}: ${next.netlist.blockCount} blocks; document + netlist ` +
+      `${LOG} ${option.id}: ${netlist.blockCount} blocks; document + netlist ` +
         `${(t1 - t0).toFixed(1)} ms, load ${(t2 - t1).toFixed(1)} ms, ` +
         `fit + channels ${(t3 - t2).toFixed(1)} ms`,
     );
   }
 
-  // ---- proposals ----
+  // ---- proposals, in the case's own terms ----
 
   diagram.on('connect', ({ from, to, replaces }: Events['connect']) => {
+    const unwire: Document.Operation[] =
+      replaces === null ? [] : [{ kind: 'disconnect', port: doc.portAt(replaces) }];
     if (to === null) {
-      if (replaces !== null) propose([{ kind: 'disconnect', port: replaces }]);
+      if (replaces !== null) propose(...unwire);
       else note('released over empty canvas: drag a class from the palette to add a block');
       return;
     }
-    const connect: Edit = { kind: 'connect', from, to };
-    propose(replaces === null ? [connect] : [{ kind: 'disconnect', port: replaces }, connect]);
+    // Every net of the schematic is a signal or a bus of the case.
+    const target = to.kind === 'port' ? doc.portAt(to.index) : { net: doc.elementAt(to)! };
+    propose(...unwire, { kind: 'connect', from: doc.portAt(from), to: target });
   });
   diagram.on('move', ({ blocks, positions }) => {
-    propose([{ kind: 'move', blocks, positions }]);
+    const elements = doc.schematic.blocks;
+    propose({ kind: 'place', elements: Array.from(blocks, (b) => elements[b]!), positions });
   });
   diagram.on('delete', (parts) => {
-    if (propose([{ kind: 'delete', parts }]) === null) return;
+    const { netlist, blocks } = doc.schematic;
+    const removed = new Set<number>();
+    const elements: Model.Element[] = [];
+    for (const part of parts) {
+      if (part.kind === 'block') removed.add(part.index);
+      else if (part.kind === 'group') {
+        netlist.blockGroup?.forEach((group, b) => {
+          if (group === part.index) removed.add(b);
+        });
+      } else if (part.kind === 'net') elements.push(doc.elementAt(part)!);
+    }
+    for (const b of removed) elements.push(blocks[b]!);
+    // A port goes with its block; a port of a block that stays is unwired.
+    const unwire = parts.flatMap((part): Document.Operation[] => {
+      if (part.kind !== 'port') return [];
+      const port = doc.portAt(part.index);
+      return removed.has(doc.partOf(port.element)!.index) ? [] : [{ kind: 'disconnect', port }];
+    });
+    if (propose(...unwire, { kind: 'remove', elements }) === null) return;
     diagram.select([]);
     setSelection([]);
   });
@@ -419,8 +426,11 @@ async function main(): Promise<void> {
     sceneRow.append(button);
   }
 
-  choice<Interaction>('interaction', ['edit', 'navigate', 'inspect', 'none'], 'edit', (mode) =>
-    diagram.setOptions({ interaction: mode }),
+  choice<NonNullable<Options['interaction']>>(
+    'interaction',
+    ['edit', 'navigate', 'inspect', 'none'],
+    'edit',
+    (mode) => diagram.setOptions({ interaction: mode }),
   );
   choice('routing', ['orthogonal', 'straight'] as const, 'orthogonal', (routing) =>
     diagram.setOptions({ routing }),
@@ -460,7 +470,7 @@ async function main(): Promise<void> {
         writeSimulation(performance.now());
         const step = (now: number): void => {
           if (!simulating) return;
-          diagram.setChannel('netColor', simulationFor(built).at(now), [-1, 1]);
+          diagram.setChannel('netColor', simulationFor(doc.schematic).at(now), [-1, 1]);
           simulationFrame = requestAnimationFrame(step);
         };
         simulationFrame = requestAnimationFrame(step);
@@ -475,7 +485,10 @@ async function main(): Promise<void> {
   arrangeButton.addEventListener('click', () => {
     // Placements are the document's: clearing them is an undoable step that hands every block
     // back to the automatic layout, which `arrange` then recomputes (not part of the document).
-    const unplaced = history.current.placements.size > 0 && propose([{ kind: 'unplace' }]) !== null;
+    const { blocks, positions } = doc.schematic;
+    const placed = blocks.filter((_, b) => !Number.isNaN(positions[2 * b]!));
+    const unplaced =
+      placed.length > 0 && propose({ kind: 'place', elements: placed, positions: null }) !== null;
     diagram.arrange(undefined, { animate: true });
     note(unplaced ? 'arranged; placements cleared (undo restores them)' : 'arranged');
   });
@@ -503,9 +516,9 @@ async function main(): Promise<void> {
 
   // ---- palette ----
 
-  buildPalette((cls) => {
+  buildPalette(doc.palette, (classId) => {
     const rect = stage.getBoundingClientRect();
-    insertAt(cls, rect.left + rect.width / 2, rect.top + rect.height / 2);
+    insertAt(classId, rect.left + rect.width / 2, rect.top + rect.height / 2);
   });
   stage.addEventListener('dragover', (event) => {
     if (!event.dataTransfer?.types.includes(CLASS_MIME)) return;
@@ -513,10 +526,10 @@ async function main(): Promise<void> {
     event.dataTransfer.dropEffect = 'copy';
   });
   stage.addEventListener('drop', (event) => {
-    const cls = event.dataTransfer?.getData(CLASS_MIME) ?? '';
-    if (!isClassName(cls)) return;
+    const classId = event.dataTransfer?.getData(CLASS_MIME) ?? '';
+    if (classId === '') return;
     event.preventDefault();
-    insertAt(cls, event.clientX, event.clientY);
+    insertAt(classId, event.clientX, event.clientY); // the document refuses a class it lacks
   });
 
   window.addEventListener('pagehide', (event) => {
@@ -555,50 +568,58 @@ async function main(): Promise<void> {
   }
 }
 
-function buildPalette(add: (cls: ClassName) => void): void {
+function buildPalette(
+  palette: readonly Document.BlockClass[],
+  add: (classId: string) => void,
+): void {
   const container = document.getElementById('classes') as HTMLElement;
-  const categories = new Map<string, ClassName[]>();
-  for (const cls of CLASS_NAMES) {
-    const category = CLASSES[cls].category;
-    categories.set(category, [...(categories.get(category) ?? []), cls]);
-  }
-  for (const [category, classes] of categories) {
+  const groups = new Map<string, Document.BlockClass[]>();
+  for (const entry of palette) groups.set(entry.group, [...(groups.get(entry.group) ?? []), entry]);
+  for (const [group, entries] of groups) {
     const section = document.createElement('section');
     const label = document.createElement('span');
     label.className = 'label';
-    label.textContent = category;
+    label.textContent = group;
     section.append(label);
-    for (const cls of classes) section.append(paletteItem(cls, add));
+    for (const entry of entries) section.append(paletteItem(entry, add));
     container.append(section);
   }
 }
 
-function paletteItem(cls: ClassName, add: (cls: ClassName) => void): HTMLButtonElement {
-  const spec = CLASSES[cls];
-  const ports: readonly PortSpec[] = spec.ports;
-  const count = (flow: PortSpec['flow']): number =>
-    ports.filter((port) => port.flow === flow).length;
+function paletteItem(
+  entry: Document.BlockClass,
+  add: (classId: string) => void,
+): HTMLButtonElement {
+  const count = (flow: Document.BlockClass['ports'][number]['flow']): number =>
+    entry.ports.filter((port) => port.flow === flow).length;
+  const specs: readonly PortSpec[] = isClassName(entry.classId) ? CLASSES[entry.classId].ports : [];
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'class';
   button.draggable = true;
   const title = document.createElement('span');
   title.className = 'title';
-  title.textContent = spec.title;
+  title.textContent = entry.label;
   const shape = document.createElement('span');
   shape.className = 'ports';
   const parts = [`${count('in')} in`, `${count('out')} out`];
-  if (count('both') > 0) parts.push('bus');
+  if (count('bus') > 0) parts.push('bus');
   shape.textContent = parts.join(' / ');
   button.append(title, shape);
-  button.title = ports.map((port) => `${port.name} (${port.flow}): ${port.description}`).join('\n');
-  button.setAttribute('aria-label', `Add ${spec.title}: ${parts.join(', ')}`);
+  button.title = entry.ports
+    .map((port) => {
+      const said = `${port.name} (${port.flow}${port.required ? ', required' : ''})`;
+      const description = specs.find((spec) => spec.name === port.name)?.description;
+      return description ? `${said}: ${description}` : said;
+    })
+    .join('\n');
+  button.setAttribute('aria-label', `Add ${entry.label}: ${parts.join(', ')}`);
   button.addEventListener('dragstart', (event) => {
-    event.dataTransfer?.setData(CLASS_MIME, cls);
-    event.dataTransfer?.setData('text/plain', spec.title);
+    event.dataTransfer?.setData(CLASS_MIME, entry.classId);
+    event.dataTransfer?.setData('text/plain', entry.label);
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copy';
   });
-  button.addEventListener('click', () => add(cls));
+  button.addEventListener('click', () => add(entry.classId));
   return button;
 }
 

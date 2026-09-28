@@ -4,7 +4,7 @@ Use this guide when adapting real network data to `@latkit/network`.
 
 ## Topology arrays
 
-`Topology` is the CPU-side graph shape passed to `network.load()`.
+`Model.Topology` is the CPU-side graph shape passed to `network.load()`.
 
 | Field             | Length            | Meaning                                              |
 | ----------------- | ----------------- | ---------------------------------------------------- |
@@ -23,7 +23,7 @@ but coordinates must still fit those bounds.
 For straight edges with no bend points, use a zero-filled `polylineStart` with `edgeCount + 1` entries:
 
 ```ts
-const topology: Topology = {
+const topology: Model.Topology = {
   vertexCount: 4,
   vertexCoords: new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]),
   edges: new Uint32Array([0, 1, 1, 2, 2, 3]),
@@ -34,7 +34,7 @@ const topology: Topology = {
 For a bent edge, place the intermediate points in `polylinePoints` and use `polylineStart` to mark the range for each edge:
 
 ```ts
-const topology: Topology = {
+const topology: Model.Topology = {
   vertexCount: 2,
   vertexCoords: new Float32Array([-96, 30, -94, 31]),
   edges: new Uint32Array([0, 1]),
@@ -58,7 +58,7 @@ network.load(topology);
 
 console.log(network.geographic);
 if (network.projections.globe) {
-  network.setProjection('globe');
+  network.setCamera({ projection: 'globe' });
 }
 ```
 
@@ -92,9 +92,21 @@ network.setChannel('edgeVisible', energizedEdges);
 network.setChannel('edgeVisible', null);
 ```
 
-The third argument is the input domain. Pass `null` to auto-scan height values. The `heightRange` option is the output range `vertexHeight` maps onto. `setChannelDomain()` moves a bound channel's domain without re-uploading its values, and `getChannelDomain()` reads the domain in effect. Visibility channels are raw and domain-free: an unbound channel shows every item, while a bound channel shows only values greater than zero. Zero, negative values, and `NaN` hide the item in both rendering and hit testing. Passing `null` as the values clears the channel and restores all items. Shade channels are raw too: their values reach a fragment shade unchanged as `f.value`, and read as zero while unbound.
+The third argument is the input domain. Pass `null` to auto-scan height values. The `heightRange` option is the output range `vertexHeight` maps onto. `setChannelDomain()` moves a bound channel's domain without re-uploading its values, and `getChannelDomain()` reads the domain in effect. Visibility channels are raw and domain-free: an unbound channel shows every item, while a bound channel shows only values greater than zero. Zero, negative values, and `NaN` hide the item in both rendering and hit testing. `NaN` is no value everywhere: a color, height, size, or dash channel draws its item as if the channel were unbound. Passing `null` as the values clears the channel and restores all items. Shade channels are raw too: their values reach a fragment shade unchanged as `f.value`, and read as zero while unbound.
 
-`setChannel()` snapshots its typed array, so later caller mutations do not alter the bound rendering or picking state. Bind the array again to publish changes. `CHANNELS` lists every channel with its scope, display label, whether it is normalized, and its components per item.
+`setChannel()` snapshots its typed array, so later caller mutations do not alter the bound rendering or picking state. Bind the array again to publish changes. `CHANNELS` lists every channel with its scope, display label, whether it is normalized, its components per item, and whether it can follow a series.
+
+## Channels over time
+
+A channel can follow one signal of a `Series`, one element per vertex or edge, instead of holding an array; a sparse series leaves the items it never recorded with no value. A model's field is such a binding already, and a column field is a sealed series of one frame, whose window takes two slots. `seek(time)` shows every such channel at the playhead, each item taking its latest sample at or before it. A null domain follows the signal's recorded range as the series appends.
+
+```ts
+const vm = await recording.field({ classId: 'bus', kind: 'signal', id: 'Vm' });
+if (vm) network.setChannel('vertexColor', vm);
+network.seek(transport.t); // on every transport frame
+```
+
+The frames around the playhead stay resident on the GPU, about 8 MiB per signal with a CPU copy as large, shared by every channel following that signal, and the next ones load as the playhead advances or the series appends, so a seek within them rewrites one word per channel and uploads nothing. A seek beyond them keeps the current frame on screen until the frames it needs arrive. A failed read emits `error` with its channel, which reads again once the series changes or the channel is bound anew; binding the signal a channel already follows keeps what it shows. Every channel whose `CHANNELS` entry says `series` can follow one: all but `vertexPosition` here. The network and the diagram bind channels through the same `createChannels` in `@latkit/gpu`, so a channel behaves the same in both.
 
 ## Moving vertices
 

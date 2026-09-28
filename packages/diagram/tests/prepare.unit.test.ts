@@ -1,4 +1,4 @@
-import { validateNetlist, type Netlist } from '@latkit/model';
+import { type Document, validateNetlist } from '@latkit/model';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -129,7 +129,7 @@ describe('prepare', () => {
   });
 
   it('reaches above and around a top tag', () => {
-    const netlist: Netlist = {
+    const netlist: Document.Netlist = {
       ...twoArea(),
       netStyle: Uint8Array.of(0, 0, 1),
       portSide: Uint8Array.of(0, 0, 1, 0, 1, SIDE_TOP, 1),
@@ -333,7 +333,7 @@ describe('sameNetlist', () => {
 
   it('tells apart any changed column, label, or count', () => {
     const base = twoArea();
-    const changed: readonly Partial<Netlist>[] = [
+    const changed: readonly Partial<Document.Netlist>[] = [
       { blockTitle: ['GENROU', 'TGOV1', 'IEEEST'] },
       { blockKey: undefined },
       { portFlow: Uint8Array.of(0, 0, 1, 0, 1, 0, 2) },

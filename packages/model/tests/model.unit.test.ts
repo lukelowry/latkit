@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { createModel, elementAt, itemOf, validateTopology } from '../src/index.js';
-import type { Loader } from '../src/model.js';
-import { sampleData, sampleLoader, sampleModel } from './fixture.js';
+import { type Model, validateTopology } from '../src/index.js';
+import { Sample, sampleClass, sampleData, sampleModel, sampleValues } from './fixture.js';
 
 describe('validateTopology', () => {
   const topology = () => sampleData().topology;
@@ -50,110 +49,112 @@ describe('validateTopology', () => {
   });
 });
 
-describe('createModel', () => {
-  it('exposes the data it was given', () => {
+describe('Model', () => {
+  const build = (patch: Partial<Model.Description>) => () =>
+    new Sample({ description: { ...sampleData(), ...patch } });
+  const withClass = (id: string, patch: Record<string, unknown>) =>
+    build({
+      classes: sampleData().classes.map((spec) =>
+        spec.id === id ? ({ ...spec, ...patch } as typeof spec) : spec,
+      ),
+    });
+
+  it('exposes the description it was given, and each class by id', () => {
     const model = sampleModel();
-    expect(model.vendor).toBe('test');
+    expect(model.format).toBe('test');
     expect(model.classes.map((spec) => spec.id)).toEqual(['bus', 'branch', 'gen', 'area']);
     expect(model.meta).toEqual({ freqBase: 60, note: 'fixture', live: true, empty: null });
+    expect(model.class('gen')).toBe(model.classes[2]);
+    expect(model.class('nope')).toBeUndefined();
   });
 
-  it('rejects inconsistent data at construction', () => {
-    const loader = sampleLoader();
+  it('rejects an inconsistent description at construction', () => {
     const data = sampleData();
-    const build = (patch: Partial<typeof data>) => () => createModel({ ...data, ...patch }, loader);
-
     expect(build({ id: '' })).toThrow(/model id/);
+    expect(build({ format: '' })).toThrow(/model format/);
     expect(build({ owners: { vertex: 'nope' } })).toThrow(/owner 'nope'/);
     expect(build({ topology: { ...data.topology, edges: Uint32Array.of(0, 9) } })).toThrow(
       /out of range/,
     );
     expect(build({ classes: [...data.classes, data.classes[0]!] })).toThrow(/duplicate class/);
-    expect(
-      build({
-        classes: data.classes.map((spec) =>
-          spec.id === 'bus'
-            ? { ...spec, anchor: { kind: 'vertex', index: Uint32Array.of(0, 1, 2) } }
-            : spec,
-        ),
-      }),
-    ).toThrow(/must not declare an anchor/);
-    expect(
-      build({
-        classes: data.classes.map((spec) => (spec.id === 'bus' ? { ...spec, count: 2 } : spec)),
-      }),
-    ).toThrow(/one element per vertex/);
     expect(build({ meta: { bad: [1] as unknown as number } })).toThrow(/meta 'bad'/);
     expect(
-      build({
-        classes: data.classes.map((spec) =>
-          spec.id === 'gen'
-            ? {
-                ...spec,
-                signals: [{ id: 'P', label: 'P', unit: 1 as unknown as string, recorded: true }],
-              }
-            : spec,
-        ),
+      withClass('bus', { anchor: { kind: 'vertex', index: Uint32Array.of(0, 1, 2) } }),
+    ).toThrow(/must not declare an anchor/);
+    expect(withClass('bus', { count: 2 })).toThrow(/one element per vertex/);
+    expect(
+      withClass('gen', {
+        signals: [{ id: 'P', label: 'P', unit: 1 as unknown as string, recorded: true }],
       }),
     ).toThrow(/malformed/);
-    expect(
-      build({
-        classes: data.classes.map((spec) =>
-          spec.id === 'gen'
-            ? { ...spec, anchor: { kind: 'vertex', index: Uint32Array.of(0, 7) } }
-            : spec,
-        ),
-      }),
-    ).toThrow(/beyond the topology/);
-    expect(
-      build({
-        classes: data.classes.map((spec) =>
-          spec.id === 'gen' ? { ...spec, signals: [...spec.signals, ...spec.signals] } : spec,
-        ),
-      }),
-    ).toThrow(/repeats signal 'P'/);
+    expect(withClass('gen', { anchor: { kind: 'vertex', index: Uint32Array.of(0, 7) } })).toThrow(
+      /beyond the topology/,
+    );
+    const gen = data.classes[2]!;
+    expect(withClass('gen', { signals: [...gen.signals, ...gen.signals] })).toThrow(
+      /repeats signal 'P'/,
+    );
   });
 
-  it('loads a class once and shares it', async () => {
+  it('rejects columns a class declares badly', () => {
+    expect(withClass('area', { columns: undefined })).toThrow(/columns must be an array/);
+    expect(
+      withClass('area', {
+        columns: [
+          { kind: 'number', id: 'x', label: 'X' },
+          { kind: 'flag', id: 'x', label: 'X' },
+        ],
+      }),
+    ).toThrow(/repeats column 'x'/);
+    expect(withClass('area', { columns: [{ kind: 'date', id: 'x', label: 'X' }] })).toThrow(
+      /column 'x' is malformed/,
+    );
+    expect(
+      withClass('area', { columns: [{ kind: 'text', id: 'x', label: 'X', unit: 'kV' }] }),
+    ).toThrow(/column 'x' is malformed/);
+    expect(withClass('area', { columns: [{ kind: 'number', id: '', label: 'X' }] })).toThrow(
+      /column id must be non-empty/,
+    );
+  });
+
+  it('loads a class once, joining its values to the columns its spec declares', async () => {
     const calls: string[] = [];
     const model = sampleModel(calls);
     const [a, b] = await Promise.all([model.load('bus'), model.load('bus')]);
     expect(a).toBe(b);
     expect(await model.load('bus')).toBe(a);
     expect(calls).toEqual(['bus']);
+    expect(a).toEqual(sampleClass('bus'));
+    expect(a.columns[1]).toMatchObject({ kind: 'text', group: 'Location' });
   });
 
-  it('rejects an unknown class and malformed class data', async () => {
+  it('rejects an unknown class and values that disagree with the spec', async () => {
     await expect(sampleModel().load('nope')).rejects.toThrow(/unknown class/);
-    const bad: Loader = {
-      load: async () => ({ labels: ['x'], columns: [] }),
-      bytes: async () => new Uint8Array(),
-    };
-    await expect(createModel(sampleData(), bad).load('bus')).rejects.toThrow(
-      /one label per element/,
+    const loading = (values: unknown) =>
+      new Sample({ values: () => Promise.resolve(values as Model.Values) }).load('bus');
+    await expect(loading({ labels: ['x'], values: [] })).rejects.toThrow(/one label per element/);
+    await expect(loading({ labels: ['a', 'b', 'c'], values: [] })).rejects.toThrow(
+      /every declared column/,
     );
-    const badFlag: Loader = {
-      load: async () => ({
-        labels: ['a', 'b', 'c'],
-        columns: [{ kind: 'flag', id: 'f', label: 'f', values: Uint8Array.of(0, 1, 2) }],
-      }),
-      bytes: async () => new Uint8Array(),
-    };
-    await expect(createModel(sampleData(), badFlag).load('bus')).rejects.toThrow(/only 0 or 1/);
+    const bus = sampleValues('bus');
+    await expect(
+      loading({ ...bus, values: [new Float32Array(3), ...bus.values.slice(1)] }),
+    ).rejects.toThrow(/column 'Vm' has the wrong kind or length/);
+    await expect(
+      loading({ ...bus, values: [...bus.values.slice(0, 2), Uint8Array.of(0, 1, 2)] }),
+    ).rejects.toThrow(/only 0 or 1/);
   });
 
   it('lets one caller abort without cancelling the shared load', async () => {
     let release!: () => void;
     let aborted = false;
-    const loader: Loader = {
-      load: (id, signal) =>
+    const model = new Sample({
+      values: (id, signal) =>
         new Promise((resolve) => {
-          signal?.addEventListener('abort', () => (aborted = true));
-          release = () => resolve(sampleLoader().load(id));
+          signal.addEventListener('abort', () => (aborted = true));
+          release = () => resolve(sampleValues(id));
         }),
-      bytes: async () => new Uint8Array(),
-    };
-    const model = createModel(sampleData(), loader);
+    });
     const controller = new AbortController();
     const first = model.load('bus', controller.signal);
     const second = model.load('bus');
@@ -166,17 +167,15 @@ describe('createModel', () => {
 
   it('aborts the underlying load once every caller has abandoned it', async () => {
     let aborted = false;
-    const loader: Loader = {
-      load: (_id, signal) =>
+    const model = new Sample({
+      values: (_id, signal) =>
         new Promise((_resolve, reject) => {
-          signal?.addEventListener('abort', () => {
+          signal.addEventListener('abort', () => {
             aborted = true;
             reject(new DOMException('aborted', 'AbortError'));
           });
         }),
-      bytes: async () => new Uint8Array(),
-    };
-    const model = createModel(sampleData(), loader);
+    });
     const controller = new AbortController();
     const load = model.load('bus', controller.signal);
     controller.abort();
@@ -184,7 +183,7 @@ describe('createModel', () => {
     expect(aborted).toBe(true);
   });
 
-  it('delegates bytes to the loader', async () => {
+  it('gives the bytes its format gives', async () => {
     const bytes = await sampleModel().bytes();
     expect(new TextDecoder().decode(bytes)).toBe('{"case":"sample"}');
   });
@@ -194,17 +193,18 @@ describe('elementAt and itemOf', () => {
   const model = sampleModel();
 
   it('resolves picks through the owners', () => {
-    expect(elementAt(model, { kind: 'vertex', index: 1 })).toEqual({ classId: 'bus', index: 1 });
-    expect(elementAt(model, { kind: 'edge', index: 0 })).toEqual({ classId: 'branch', index: 0 });
-    expect(elementAt(model, { kind: 'vertex', index: 3 })).toBeNull();
+    expect(model.elementAt({ kind: 'vertex', index: 1 })).toEqual({ classId: 'bus', index: 1 });
+    expect(model.elementAt({ kind: 'edge', index: 0 })).toEqual({ classId: 'branch', index: 0 });
+    expect(model.elementAt({ kind: 'vertex', index: 3 })).toBeNull();
+    expect(model.elementAt({ kind: 'vertex', index: 0.5 })).toBeNull();
   });
 
   it('resolves elements by identity for owners and through anchors otherwise', () => {
-    expect(itemOf(model, { classId: 'bus', index: 2 })).toEqual({ kind: 'vertex', index: 2 });
-    expect(itemOf(model, { classId: 'branch', index: 1 })).toEqual({ kind: 'edge', index: 1 });
-    expect(itemOf(model, { classId: 'gen', index: 1 })).toEqual({ kind: 'vertex', index: 2 });
-    const unplaced = createModel(
-      {
+    expect(model.itemOf({ classId: 'bus', index: 2 })).toEqual({ kind: 'vertex', index: 2 });
+    expect(model.itemOf({ classId: 'branch', index: 1 })).toEqual({ kind: 'edge', index: 1 });
+    expect(model.itemOf({ classId: 'gen', index: 1 })).toEqual({ kind: 'vertex', index: 2 });
+    const unplaced = new Sample({
+      description: {
         ...sampleData(),
         classes: sampleData().classes.map((spec) =>
           spec.id === 'gen'
@@ -212,10 +212,28 @@ describe('elementAt and itemOf', () => {
             : spec,
         ),
       },
-      sampleLoader(),
-    );
-    expect(itemOf(unplaced, { classId: 'gen', index: 0 })).toBeNull();
-    expect(itemOf(model, { classId: 'area', index: 0 })).toBeNull();
-    expect(itemOf(model, { classId: 'gen', index: 2 })).toBeNull();
+    });
+    expect(unplaced.itemOf({ classId: 'gen', index: 0 })).toBeNull();
+    expect(model.itemOf({ classId: 'area', index: 0 })).toBeNull();
+    expect(model.itemOf({ classId: 'gen', index: 2 })).toBeNull();
+    expect(model.itemOf({ classId: 'nope', index: 0 })).toBeNull();
+  });
+});
+
+describe('fields', () => {
+  it('lists what field resolves: number columns, then the signals a recording holds', async () => {
+    const model = sampleModel();
+    expect(model.fields('bus')).toEqual([
+      { ref: { classId: 'bus', kind: 'column', id: 'Vm' }, label: 'Voltage', unit: 'pu' },
+      { ref: { classId: 'bus', kind: 'signal', id: 'Vm' }, label: 'Voltage', unit: 'pu' },
+    ]);
+    expect(model.fields('gen')).toEqual([
+      { ref: { classId: 'gen', kind: 'signal', id: 'P' }, label: 'Power', unit: 'MW' },
+    ]);
+    expect(model.fields('branch')).toEqual([]);
+    expect(model.fields('nowhere')).toEqual([]);
+    expect(model.fields('bus')).toBe(model.fields('bus'));
+    expect(Object.isFrozen(model.fields('bus')[0]!.ref)).toBe(true);
+    expect(await model.field(model.fields('bus')[0]!.ref)).not.toBeNull();
   });
 });

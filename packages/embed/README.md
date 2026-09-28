@@ -8,8 +8,7 @@ fills its box, a data source, an attribute for every option, and the controller 
 
 ## Register the elements
 
-The package root is side-effect free. Import the registration entry when automatic registration
-is appropriate:
+The package root is side-effect free and Node-safe; `register()` defines both tags:
 
 ```html
 <latkit-network src="network.json" colormap="viridis" vertex-color="voltage" borders>
@@ -17,20 +16,13 @@ is appropriate:
 </latkit-network>
 
 <script type="module">
-  import '@latkit/embed/register';
+  import { register } from '@latkit/embed';
+  register();
 </script>
 ```
 
-Applications that prefer explicit setup call `register()` from the Node-safe root:
-
-```ts
-import { register } from '@latkit/embed';
-
-register();
-```
-
-`register()` is idempotent and defines both tags in the current browser realm. The minified
-`dist/embed.js` bundles every Latkit dependency and registers on evaluation:
+`register()` is idempotent and defines both tags in the current browser realm. For a page without
+a bundler, the minified `embed.js` file bundles every Latkit dependency and registers as it loads:
 
 ```html
 <script type="module" src="https://cdn.jsdelivr.net/npm/@latkit/embed/dist/embed.js"></script>
@@ -104,20 +96,22 @@ and shape. The `data` property takes the decoded `NetworkData` shape (`Float32Ar
 ### `latkit-monitor`
 
 ```json
-{ "time": [0, 1, 2], "values": [1, 2, 3, 4, 5, 6], "signalCount": 1, "elementCount": 2 }
+{ "time": [0, 1, 2], "values": [1, 2, 3, 4, 5, 6], "signals": ["load"], "elementCount": 2 }
 ```
 
-The JSON contains signal-major initial samples: both `time` and `values` decode to float64.
+The JSON contains signal-major initial samples of the signals it names: both `time` and
+`values` decode to float64.
 Optional `elements` decodes to sorted uint32 class indices. All supplied frames are committed;
 ranges are computed from their finite samples. The `data` property takes a `Series` directly,
-including histories that append or read from a remote result. Use `color-range` to set the
+including histories that append or read from a remote recording. Use `color-range` to set the
 palette independently of `value-range`.
 
 ## Attributes
 
 Every live option of the underlying controller is an attribute under its kebab-case name, parsed
 by the option's own kind from `OPTIONS`: booleans take shorthand, `"true"`, or `"false"`; numbers
-are decimals; RGBA and domain values are space-separated numbers; enumerations take their token.
+are decimals; colors are four space-separated numbers or any CSS color `parseColor` reads, resolved
+on the element so `var()` works; domains are space-separated numbers; enumerations take their token.
 Removing an attribute restores the option's default. An invalid value warns and uses the default.
 
 `colormap` names a `@latkit/colormaps` preset on both elements.
@@ -135,7 +129,7 @@ Removing an attribute restores the option's default. An invalid value warns and 
 - `borders`, which also loads the packaged Natural Earth geometry when the topology is
   geographic.
 
-`latkit-monitor` adds `signal`, the displayed signal index.
+`latkit-monitor` adds `signal`, the id of the displayed signal; the first shows without one.
 
 ```html
 <latkit-network
@@ -156,7 +150,12 @@ Removing an attribute restores the option's default. An invalid value warns and 
   borders
 ></latkit-network>
 
-<latkit-monitor src="series.json" signal="1" value-range="0 1" line-width-px="2"></latkit-monitor>
+<latkit-monitor
+  src="series.json"
+  signal="load"
+  value-range="0 1"
+  line-width-px="2"
+></latkit-monitor>
 ```
 
 ## The controller
@@ -165,12 +164,12 @@ Everything imperative is the controller, unchanged:
 
 ```ts
 import type { NetworkElement } from '@latkit/embed';
-import { spotlight } from '@latkit/network/shades';
+import { spotlight } from '@latkit/network';
 
 const element = document.querySelector<NetworkElement>('latkit-network')!;
 await element.ready;
 
-element.network.setProjection('globe', true);
+if (element.network.projections.globe) element.network.setCamera({ projection: 'globe' });
 element.network.select({ kind: 'vertex', index: 1 });
 element.network.reveal({ kind: 'vertex', index: 1 }, { neighbors: true, animate: true });
 element.network.on('contextmenu', ({ clientX, clientY, items }) =>

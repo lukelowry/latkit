@@ -4,29 +4,6 @@ import { canOrbit, createOrbit, type OrbitTarget } from '../src/orbit.js';
 import type { Pose } from '../src/camera/projection.js';
 import type { Projection } from '../src/projections.js';
 
-/** A manual frame scheduler: `step(time)` runs the pending callback once. */
-function scheduler() {
-  let pending: FrameRequestCallback | null = null;
-  let handle = 0;
-  return {
-    scheduleFrame: vi.fn((callback: FrameRequestCallback) => {
-      pending = callback;
-      return ++handle;
-    }),
-    cancelFrame: vi.fn(() => {
-      pending = null;
-    }),
-    step(time: number) {
-      const callback = pending;
-      pending = null;
-      callback?.(time);
-    },
-    get pending() {
-      return pending !== null;
-    },
-  };
-}
-
 /** A projection-honoring camera stub. */
 function target(initial: Projection, modes: Partial<Record<Projection, boolean>> = {}) {
   const projections: Record<Projection, boolean> = {
@@ -66,11 +43,11 @@ describe('canOrbit', () => {
 
 describe('createOrbit', () => {
   it('promotes flat to tilt, drags by elapsed time, clamps stalls, and reports transitions', () => {
-    const frames = scheduler();
     const onChange = vi.fn();
     const net = target('flat');
-    const driver = createOrbit(net, onChange, frames);
+    const driver = createOrbit(net, onChange);
 
+    driver.advance(50); // inactive: nothing moves
     expect(driver.active).toBe(false);
     expect(driver.start()).toBe(true);
     expect(driver.start()).toBe(true); // idempotent
@@ -78,61 +55,57 @@ describe('createOrbit', () => {
     expect(driver.active).toBe(true);
     expect(onChange).toHaveBeenCalledExactlyOnceWith(true);
 
-    frames.step(100); // first frame only anchors time
+    driver.advance(100); // first frame only anchors time
     expect(net.rotateBy).not.toHaveBeenCalled();
-    frames.step(116);
+    driver.advance(116);
     expect(net.rotateBy).toHaveBeenLastCalledWith(0.32, 0);
-    frames.step(1000); // an 884 ms stall advances as 50 ms
+    driver.advance(1000); // an 884 ms stall advances as 50 ms
     expect(net.rotateBy).toHaveBeenLastCalledWith(expect.closeTo(1, 6), 0);
 
     driver.stop();
+    driver.advance(1016);
     expect(driver.active).toBe(false);
-    expect(frames.pending).toBe(false);
+    expect(net.rotateBy).toHaveBeenCalledTimes(2);
     expect(onChange).toHaveBeenLastCalledWith(false);
     driver.stop(); // idempotent
     expect(onChange).toHaveBeenCalledTimes(2);
   });
 
   it('declines to start when no 3D projection is available', () => {
-    const frames = scheduler();
     const onChange = vi.fn();
     const net = target('flat', { tilt: false, globe: false });
-    const driver = createOrbit(net, onChange, frames);
+    const driver = createOrbit(net, onChange);
 
     expect(driver.start()).toBe(false);
     expect(driver.active).toBe(false);
     expect(net.projection).toBe('flat');
-    expect(frames.scheduleFrame).not.toHaveBeenCalled();
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it('drifts globe longitude and re-anchors time on restart', () => {
-    const frames = scheduler();
+  it('drifts globe longitude at its rate and re-anchors time on restart', () => {
     const net = target('globe');
-    const driver = createOrbit(net, vi.fn(), frames);
+    const driver = createOrbit(net, vi.fn(), () => 2);
 
     expect(driver.start()).toBe(true);
     expect(net.setProjection).not.toHaveBeenCalled(); // globe keeps its projection
-    frames.step(10);
+    driver.advance(10);
     driver.stop();
-    expect(frames.cancelFrame).toHaveBeenCalledOnce();
 
     driver.start();
-    frames.step(500); // anchors again: no drift from the stale 10 ms timestamp
+    driver.advance(500); // anchors again: no drift from the stale 10 ms timestamp
     expect(net.setPose).not.toHaveBeenCalled();
-    frames.step(516);
-    expect(net.setPose).toHaveBeenCalledExactlyOnceWith({ centerX: -89.872 }, true);
+    driver.advance(516);
+    expect(net.setPose).toHaveBeenCalledExactlyOnceWith({ centerX: -89.744 }, true);
     expect(net.rotateBy).not.toHaveBeenCalled();
   });
 
   it('accepts zero as the first frame timestamp', () => {
-    const frames = scheduler();
     const net = target('tilt');
-    const driver = createOrbit(net, vi.fn(), frames);
+    const driver = createOrbit(net, vi.fn());
 
     driver.start();
-    frames.step(0);
-    frames.step(16);
+    driver.advance(0);
+    driver.advance(16);
 
     expect(net.rotateBy).toHaveBeenCalledExactlyOnceWith(0.32, 0);
   });

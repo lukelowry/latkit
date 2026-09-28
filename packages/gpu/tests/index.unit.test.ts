@@ -2,6 +2,7 @@ import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 
 import type {
+  Attachment,
   Frame,
   FrameLoop,
   GpuUnavailableError,
@@ -34,8 +35,13 @@ describe('gpu package entrypoint', () => {
     const entrypoint = await import('../src/index.js');
 
     expect(Object.keys(entrypoint).sort()).toEqual([
+      'COLORMAP_LUT_SIZE',
       'GpuUnavailableError',
+      'bakeColormap',
+      'createAttachment',
+      'createChannels',
       'createDevicePool',
+      'createEmitter',
       'createFrameLoop',
       'createPresentation',
       'devices',
@@ -58,5 +64,9 @@ describe('gpu package entrypoint', () => {
     expectTypeOf<keyof Frame>().toEqualTypeOf<
       'now' | 'width' | 'height' | 'backingScale' | 'settled'
     >();
+    expectTypeOf<keyof Attachment<unknown>>().toEqualTypeOf<
+      'canvas' | 'binding' | 'attach' | 'detach' | 'destroy'
+    >();
+    expectTypeOf<ReturnType<Attachment<unknown>['attach']>>().toEqualTypeOf<Promise<boolean>>();
   });
 });

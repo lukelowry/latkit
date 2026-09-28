@@ -37,27 +37,53 @@ describe('embed package entrypoint', () => {
     });
     expect(attributes.map((entry) => entry.attribute)).toEqual(['edge-scale', 'msaa']);
 
-    expect(parseOptionAttribute({ kind: 'boolean', default: false, live: true }, '')).toBe(true);
-    expect(parseOptionAttribute({ kind: 'boolean', default: false, live: true }, 'false')).toBe(
-      false,
-    );
-    expect(parseOptionAttribute({ kind: 'boolean', default: false, live: true }, 'yes')).toBe(
-      undefined,
-    );
-    expect(parseOptionAttribute({ kind: 'finite', default: 0, live: true }, ' 1e2 ')).toBe(100);
-    expect(parseOptionAttribute({ kind: 'finite', default: 0, live: true }, '0x10')).toBeNaN();
-    expect(parseOptionAttribute({ kind: 'rgba', default: [], live: true }, '1 0 0 1')).toEqual([
-      1, 0, 0, 1,
-    ]);
-    expect(parseOptionAttribute({ kind: 'rgba', default: [], live: true }, '1 0')).toBe(undefined);
-    expect(parseOptionAttribute({ kind: 'domain', default: null, live: true }, '0 5')).toEqual([
-      0, 5,
-    ]);
     expect(
-      parseOptionAttribute({ kind: 'enum', values: [1, 4], default: undefined, live: false }, '4'),
+      parseOptionAttribute({ kind: 'boolean', default: false, live: true }, '', document.body),
+    ).toBe(true);
+    expect(
+      parseOptionAttribute({ kind: 'boolean', default: false, live: true }, 'false', document.body),
+    ).toBe(false);
+    expect(
+      parseOptionAttribute({ kind: 'boolean', default: false, live: true }, 'yes', document.body),
+    ).toBe(undefined);
+    expect(
+      parseOptionAttribute({ kind: 'finite', default: 0, live: true }, ' 1e2 ', document.body),
+    ).toBe(100);
+    expect(
+      parseOptionAttribute({ kind: 'finite', default: 0, live: true }, '0x10', document.body),
+    ).toBeNaN();
+    expect(
+      parseOptionAttribute({ kind: 'rgba', default: [], live: true }, '1 0 0 1', document.body),
+    ).toEqual([1, 0, 0, 1]);
+    expect(
+      parseOptionAttribute({ kind: 'rgba', default: [], live: true }, '1 0', document.body),
+    ).toBe(undefined);
+    expect(
+      parseOptionAttribute({ kind: 'rgba', default: [], live: true }, '#ff0000', document.body),
+    ).toEqual([1, 0, 0, 1]);
+    expect(
+      parseOptionAttribute(
+        { kind: 'rgba', default: [], live: true },
+        'rgb(0 0 255 / 50%)',
+        document.body,
+      ),
+    ).toEqual([0, 0, 1, 0.5]);
+    expect(
+      parseOptionAttribute({ kind: 'domain', default: null, live: true }, '0 5', document.body),
+    ).toEqual([0, 5]);
+    expect(
+      parseOptionAttribute(
+        { kind: 'enum', values: [1, 4], default: undefined, live: false },
+        '4',
+        document.body,
+      ),
     ).toBe(4);
     expect(
-      parseOptionAttribute({ kind: 'enum', values: ['a', 'b'], default: 'a', live: true }, 'b'),
+      parseOptionAttribute(
+        { kind: 'enum', values: ['a', 'b'], default: 'a', live: true },
+        'b',
+        document.body,
+      ),
     ).toBe('b');
   });
 });

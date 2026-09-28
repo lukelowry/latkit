@@ -173,19 +173,26 @@ export class Camera {
   }
 
   /**
-   * Place the camera from a carried pose and anchor scale over fresh bounds.
+   * Place the camera from a pose and anchor scale over fresh bounds, where given.
    *
    * The pose merges through `applyPose` and the scale lands through the same
-   * `zoom` clamps gestures use; the carried `fitIntent` is restored.
+   * `zoom` clamps gestures use; `fitIntent` says whether it still follows the fit view.
    */
-  place(pose: Pose, pxPerWorld: number, fitIntent: boolean, bounds: Bounds, vp: Viewport): void {
+  place(
+    pose: Partial<Pose>,
+    pxPerWorld: number | null,
+    fitIntent: boolean,
+    bounds: Bounds,
+    vp: Viewport,
+  ): void {
     this.init(bounds, vp);
-    if (Number.isFinite(pxPerWorld) && pxPerWorld > 0) {
-      this.proj.applyPose(this.target, pose);
+    // A carrier whose scale is unusable leaves the fit as it landed.
+    if (pxPerWorld !== null && !(Number.isFinite(pxPerWorld) && pxPerWorld > 0)) return;
+    this.proj.applyPose(this.target, pose);
+    if (pxPerWorld !== null)
       this.proj.zoom(this.target, pxPerWorld / this.proj.pxPerWorld(this.target, vp), this.fit);
-      this.current.set(this.target);
-      this.fitIntent = fitIntent;
-    }
+    this.current.set(this.target);
+    this.fitIntent = fitIntent;
   }
 
   /** The state all in-flight motion is heading toward (fit destination, else target). */
@@ -287,6 +294,24 @@ export class Camera {
   setPose(pose: Partial<Pose>, animate: boolean): boolean {
     if (!this.fit) return false;
     if (!this.mutateTarget((s) => this.proj.applyPose(s, pose))) return false;
+    this.anchor = null;
+    if (!animate) this.current.set(this.target);
+    return true;
+  }
+
+  /**
+   * Merge a partial pose and an anchor scale in one step, easing through the chase when animated.
+   * False before placement, under an unusable viewport, or when the clamped result changes
+   * nothing.
+   */
+  moveToPose(pose: Partial<Pose>, px: number | null, vp: Viewport, animate: boolean): boolean {
+    const fit = this.fit;
+    if (!fit || !validViewport(vp)) return false;
+    const moved = this.mutateTarget((state) => {
+      this.proj.applyPose(state, pose);
+      if (px !== null) this.proj.zoom(state, px / this.proj.pxPerWorld(state, vp), fit);
+    });
+    if (!moved) return false;
     this.anchor = null;
     if (!animate) this.current.set(this.target);
     return true;

@@ -1,7 +1,8 @@
 /**
  * Continuous rotation behind `Network.orbit`: a flat view promotes to tilt, a planar view drags
- * horizontally, and a globe drifts longitude at a visually matched rate. The driver owns motion
- * and frame timing; the controller stops it on the first pointer or wheel gesture.
+ * horizontally, and a globe drifts longitude at a visually matched rate. The driver owns motion;
+ * the view's frame loop advances it, and the controller stops it on the first pointer or wheel
+ * gesture.
  */
 
 import type { Pose } from './camera/projection.js';
@@ -17,20 +18,14 @@ export interface OrbitTarget {
   setPose(pose: Partial<Pose>, animate?: boolean): boolean;
 }
 
-/** Frame scheduling seams, `requestAnimationFrame` unless a test injects its own, and the live rate. */
-export interface OrbitFrames {
-  readonly scheduleFrame?: (callback: FrameRequestCallback) => number;
-  readonly cancelFrame?: (handle: number) => void;
-  /** Multiplier on the rotation rate; the `orbitRate` option. @defaultValue `() => 1` */
-  readonly rate?: () => number;
-}
-
-/** One orbit driver: idempotent start and stop, plus the current state. */
+/** One orbit driver: idempotent start and stop, the current state, and its per-frame advance. */
 export interface Orbit {
   readonly active: boolean;
   /** Begin rotating, promoting a flat view to tilt; false when no 3D projection is available. */
   start(): boolean;
   stop(): void;
+  /** Rotate by the time since the previous frame; a start or stop re-anchors the time. */
+  advance(now: number): void;
 }
 
 /** Frames longer than this (a background tab waking up) advance as if they were this long. */
@@ -44,20 +39,19 @@ export function canOrbit(view: Pick<OrbitTarget, 'projection' | 'projections'>):
   return view.projection !== 'flat' || view.projections.tilt;
 }
 
-/** Create the rotation driver for one target; `onChange` observes every start and stop. */
+/**
+ * Create the rotation driver for one target; `onChange` observes every start and stop, and `rate`
+ * multiplies the rotation rate (the `orbitRate` option).
+ */
 export function createOrbit(
   target: OrbitTarget,
   onChange: (active: boolean) => void,
-  frames: OrbitFrames = {},
+  rate: () => number = () => 1,
 ): Orbit {
-  const scheduleFrame =
-    frames.scheduleFrame ?? ((callback: FrameRequestCallback) => requestAnimationFrame(callback));
-  const cancelFrame = frames.cancelFrame ?? ((handle: number) => cancelAnimationFrame(handle));
-  const rate = frames.rate ?? (() => 1);
-  let frame: number | null = null;
+  let active = false;
   let previous: number | null = null;
 
-  const advance = (elapsedMs: number): void => {
+  const move = (elapsedMs: number): void => {
     const scaled = elapsedMs * rate();
     if (target.projection !== 'globe') {
       target.rotateBy(scaled * TILT_PX_PER_MS, 0);
@@ -67,33 +61,29 @@ export function createOrbit(
     if (pose) target.setPose({ centerX: pose.centerX + scaled * GLOBE_DEG_PER_MS }, true);
   };
 
-  const stop = (): void => {
-    if (frame === null) return;
-    cancelFrame(frame);
-    frame = null;
-    previous = null;
-    onChange(false);
-  };
-
-  const tick: FrameRequestCallback = (time) => {
-    if (frame === null) return;
-    if (previous !== null) advance(Math.min(time - previous, MAX_FRAME_MS));
-    previous = time;
-    frame = scheduleFrame(tick);
-  };
-
   return {
     get active() {
-      return frame !== null;
+      return active;
     },
     start() {
-      if (frame !== null) return true;
+      if (active) return true;
       if (!canOrbit(target)) return false;
       if (target.projection === 'flat') target.setProjection('tilt');
-      frame = scheduleFrame(tick);
+      active = true;
+      previous = null;
       onChange(true);
       return true;
     },
-    stop,
+    stop() {
+      if (!active) return;
+      active = false;
+      previous = null;
+      onChange(false);
+    },
+    advance(now) {
+      if (!active) return;
+      if (previous !== null) move(Math.min(now - previous, MAX_FRAME_MS));
+      previous = now;
+    },
   };
 }

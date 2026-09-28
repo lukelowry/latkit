@@ -141,6 +141,17 @@ export class Mirror {
     this.count = n + 1;
   }
 
+  /** Grow to hold `words` words in use, keeping what it holds: the store a channel writes. */
+  reserve(words: number): void {
+    if (words > this.words) this.resize(words);
+  }
+
+  /** Write float words `offset` words in, marking them for upload. */
+  writeWords(offset: number, values: Float32Array): void {
+    this.f32.set(values, offset);
+    this.touch(offset, offset + values.length);
+  }
+
   /** Mark every word in use for upload. */
   touchAll(): void {
     this.dirtyRanges[0] = 0;

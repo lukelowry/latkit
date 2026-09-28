@@ -35,7 +35,7 @@ describe('parseSeries', () => {
     const parsed = parseSeries({
       time: { base64 },
       values: [1e12, null, 1e12 + 0.125, 1e12 + 0.25],
-      signalCount: 1,
+      signals: ['P'],
       elementCount: 2,
     });
     const block = await parsed.read(0, {
@@ -53,18 +53,34 @@ describe('parseSeries', () => {
   it('validates decoded series and names malformed input', () => {
     expect(() => parseSeries([])).toThrow('root must be an object');
     expect(() => parseSeries({ time: [0] })).toThrow('root.values is required');
-    expect(() => parseSeries({ time: [0], values: [1], signalCount: 1, elementCount: 2 })).toThrow(
+    expect(() => parseSeries({ time: [0], values: [1], signals: ['P'], elementCount: 2 })).toThrow(
       '1 values for 1 frames',
     );
     expect(
-      parseSeries({ time: [], values: [], signalCount: 1, elementCount: 1 }).state.frameCount,
+      parseSeries({ time: [], values: [], signals: ['P'], elementCount: 1 }).state.frameCount,
     ).toBe(0);
     expect(() =>
-      parseSeries({ time: [0], values: ['1'], signalCount: 1, elementCount: 1 }),
+      parseSeries({ time: [0], values: ['1'], signals: ['P'], elementCount: 1 }),
     ).toThrow('values[0] must be a number or null');
-    expect(() => validateSeries({ ...series(), read: null })).toThrow(
-      'series.read must be a function',
+    expect(() => parseSeries({ time: [0], values: [1], signals: 'P', elementCount: 1 })).toThrow(
+      'signals must be an array of strings',
     );
+    expect(() => parseSeries({ time: [0], values: [1], signals: [1], elementCount: 1 })).toThrow(
+      'signals[0] must be a string',
+    );
+    expect(() =>
+      parseSeries({ time: [0], values: [1, 2], signals: ['P', 'P'], elementCount: 1 }),
+    ).toThrow('unique');
+    const made = series();
+    const plain = {
+      signals: made.signals,
+      elementCount: made.elementCount,
+      state: made.state,
+      locate: made.locate.bind(made),
+      on: made.on.bind(made),
+      read: null,
+    };
+    expect(() => validateSeries(plain)).toThrow('series.read must be a function');
     expect(() => validateSeries({ ...series(), state: { frameCount: -1 } })).toThrow('frameCount');
   });
 });
@@ -73,7 +89,7 @@ describe('latkit-monitor', () => {
   it('loads an inline series with the signal attribute and attaches near the viewport', async () => {
     const h = harness();
     const element = h.monitor() as MonitorElement;
-    element.setAttribute('signal', '1');
+    element.setAttribute('signal', 'flow');
     element.setAttribute('line-width-px', '2.5');
     element.setAttribute('value-range', '0 12');
     element.setAttribute('colormap', 'magma');
@@ -82,10 +98,13 @@ describe('latkit-monitor', () => {
     const monitor = await live(h, element);
 
     expect(canvasOf(element).getAttribute('role')).toBe('img');
-    expect(monitor.load).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ elementCount: 2, signalCount: 2 }),
-      1,
-    );
+    expect(monitor.load).toHaveBeenLastCalledWith({
+      series: expect.objectContaining({ elementCount: 2, signals: ['load', 'flow'] }) as unknown,
+      signal: 1,
+    });
+    // Applying the attribute after the load binds the same signal again, which the monitor keeps.
+    const bindings = monitor.load.mock.calls.map(([binding]) => binding as { signal: number });
+    expect(bindings.every(({ signal }) => signal === 1)).toBe(true);
     expect(monitor.attach).toHaveBeenCalledExactlyOnceWith(canvasOf(element));
     const patches = patchesOf(monitor.setOptions);
     expect(patches).toMatchObject({ lineWidthPx: 2.5, valueRange: [0, 12] });
@@ -103,20 +122,20 @@ describe('latkit-monitor', () => {
     const monitor = await live(h, element);
     monitor.setOptions.mockClear();
 
-    element.setAttribute('signal', '1');
+    element.setAttribute('signal', 'flow');
     element.setAttribute('value-range', 'auto');
     element.removeAttribute('line-width-px');
     await flushMicrotasks();
 
-    expect(monitor.setSignal).toHaveBeenCalledWith(1);
+    expect(monitor.load).toHaveBeenLastCalledWith({ series: element.data, signal: 1 });
     expect(monitor.setOptions).toHaveBeenCalledWith({ valueRange: null });
     expect(monitor.setOptions).toHaveBeenCalledWith({ lineWidthPx: 1.5 });
     expect(h.deps.warn).toHaveBeenCalledWith(expect.stringContaining('Invalid value-range "auto"'));
 
-    element.setAttribute('signal', '7');
+    element.setAttribute('signal', '1');
     await flushMicrotasks();
-    expect(monitor.setSignal).toHaveBeenLastCalledWith(0);
-    expect(h.deps.warn).toHaveBeenCalledWith(expect.stringContaining('Invalid signal "7"'));
+    expect(monitor.load).toHaveBeenLastCalledWith({ series: element.data, signal: 0 });
+    expect(h.deps.warn).toHaveBeenCalledWith(expect.stringContaining('Unknown signal "1"'));
   });
 
   it('forwards controller events and detaches on disconnect', async () => {

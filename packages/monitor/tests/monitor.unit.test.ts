@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { createSeries, type Series } from '@latkit/model';
+import { Series } from '@latkit/model';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createMonitor,
@@ -31,6 +31,7 @@ function makeSeries(input: {
 }): Series {
   const time = Float64Array.from(input.time);
   const signalCount = input.signals.length;
+  const signals = input.signals.map((_, signal) => `s${signal}`);
   const stride = time.length * input.elements;
   const values = new Float32Array(signalCount * stride);
   for (let signal = 0; signal < signalCount; signal++) {
@@ -39,7 +40,7 @@ function makeSeries(input: {
       throw new Error(`signal ${signal} has ${source.length} values, expected ${stride}`);
     values.set(source, signal * stride);
   }
-  return createSeries({ time, values, signalCount, elementCount: input.elements });
+  return Series.create({ time, values, signals, elementCount: input.elements });
 }
 
 /** A controller over the stub's pool, tracked for teardown. */
@@ -196,33 +197,35 @@ describe('monitor', () => {
     await stub.frame();
     expect(canvas.width).toBe(401);
     expect(canvas.height).toBe(203);
-    const history = stub.log.textures.filter((texture) => texture.label === 'monitor-history');
-    expect(history).toHaveLength(2);
-    expect(history[0]).toMatchObject({ width: 200, height: 100, destroyed: true });
-    expect(history[1]).toMatchObject({ width: 401, height: 203, destroyed: false });
 
     monitor.destroy();
-    expect(history[1]!.destroyed).toBe(true);
+    const textures = stub.log.textures.filter((texture) => texture.label.startsWith('monitor-'));
+    expect(textures.every((texture) => texture.destroyed)).toBe(true);
   });
 
-  it('reallocates its history and reports rendered once per resize, at the exact size', async () => {
+  it('keeps its image through a resize and repaints once the size settles', async () => {
     const monitor = await mount();
     const canvas = canvasFor(monitor);
     const rendered = vi.fn();
     monitor.on('rendered', rendered);
-    monitor.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
+    monitor.load({
+      series: makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }),
+      signal: 0,
+    });
     await settle();
     expect(rendered).toHaveBeenCalledOnce();
     const history = () =>
       stub.log.textures.filter((texture) => texture.label === 'monitor-history');
     const allocated = history().length;
+    const draws = historyDraws().length;
     rendered.mockClear();
 
-    // The history repaints whole on any size change, so the backing store never rounds up: a
-    // rounded size would cost a second reallocation, repaint, and `rendered` when it snaps.
     stub.resize(canvas, [401, 203]);
     await stub.frame();
-    expect([canvas.width, canvas.height]).toEqual([401, 203]);
+    expect([canvas.width, canvas.height]).toEqual([448, 256]);
+    expect(stub.log.draws.at(-1)).toMatchObject({ pipeline: 'monitor-composite' });
+    expect(historyDraws()).toHaveLength(draws);
+    expect(history()).toHaveLength(allocated);
 
     await settle();
     expect([canvas.width, canvas.height]).toEqual([401, 203]);
@@ -239,7 +242,10 @@ describe('monitor', () => {
     const monitor = create();
     const rendered = vi.fn();
     monitor.on('rendered', rendered);
-    monitor.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
+    monitor.load({
+      series: makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }),
+      signal: 0,
+    });
     await monitor.attach(canvas);
     await settle();
     const presents = () => stub.log.draws.filter((draw) => draw.target === 'canvas');
@@ -260,7 +266,10 @@ describe('monitor', () => {
     const events = record(monitor);
     const canvas = canvasFor(monitor);
     canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 320, height: 180 }) as DOMRect;
-    monitor.load(makeSeries({ elements: 2, time: [0, 1], signals: [[0, 1, 1, 0]] }));
+    monitor.load({
+      series: makeSeries({ elements: 2, time: [0, 1], signals: [[0, 1, 1, 0]] }),
+      signal: 0,
+    });
     await settle();
     expect(stub.pendingFrames()).toBe(0);
 
@@ -290,17 +299,20 @@ describe('monitor', () => {
     expect(canvas.height).toBe(128);
     let history = stub.log.textures.filter((texture) => texture.label === 'monitor-history');
     expect(history[0]).toMatchObject({ width: 256, height: 128 });
-    monitor.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
+    monitor.load({
+      series: makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }),
+      signal: 0,
+    });
     await settle();
     expect(Array.from(lastUniform().slice(0, 3))).toEqual([256, 128, expect.closeTo(0.48, 5)]);
 
     stub.resize(canvas, [600, 600]);
     await stub.frame();
-    history = stub.log.textures.filter((texture) => texture.label === 'monitor-history');
     expect(canvas.width).toBe(256);
     expect(canvas.height).toBe(256);
-    expect(history[1]).toMatchObject({ width: 256, height: 256 });
     await settle();
+    history = stub.log.textures.filter((texture) => texture.label === 'monitor-history');
+    expect(history.at(-1)).toMatchObject({ width: 256, height: 256, destroyed: false });
     expect(Array.from(lastUniform().slice(0, 3))).toEqual([256, 256, expect.closeTo(0.64, 5)]);
   });
 
@@ -339,7 +351,10 @@ describe('monitor', () => {
     expect(stub.log.deviceDestroys).toBe(0);
     expect(firstCanvas.isConnected).toBe(true);
 
-    second.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
+    second.load({
+      series: makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }),
+      signal: 0,
+    });
     await settle();
     expect(historyDraws()).not.toHaveLength(0);
 
@@ -407,7 +422,10 @@ describe('monitor', () => {
 
   it('applies a live option patch completely or not at all', async () => {
     const monitor = await mount();
-    monitor.load(makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }));
+    monitor.load({
+      series: makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }),
+      signal: 0,
+    });
     await settle();
     const lutWrites = stub.log.lutWrites.length;
     const uniform = Array.from(lastUniform());
@@ -441,7 +459,7 @@ describe('monitor', () => {
       ],
     });
 
-    monitor.load(series, 1);
+    monitor.load({ series, signal: 1 });
     monitor.select(1);
     monitor.setOptions({ lineWidthPx: 3 });
     expect(stub.log.writes).toHaveLength(0);
@@ -473,7 +491,7 @@ describe('monitor', () => {
     const events = record(monitor);
     const canvas = canvasFor(monitor);
     const series = makeSeries({ elements: 2, time: [0, 1, 2], signals: [[1, 2, 3, 4, 5, 6]] });
-    monitor.load(series);
+    monitor.load({ series, signal: 0 });
     monitor.select(0);
     await settle();
 
@@ -486,7 +504,7 @@ describe('monitor', () => {
     expect(stub.log.resizeDisconnects).toBe(1);
     expect(canvas.getAttribute('width')).toBeNull();
     expect(canvas.isConnected).toBe(true);
-    expect(() => monitor.setSignal(0)).not.toThrow();
+    expect(() => monitor.load({ series, signal: 0 })).not.toThrow();
 
     stub.log.draws.length = 0;
     stub.log.writes.length = 0;
@@ -499,28 +517,26 @@ describe('monitor', () => {
     expect(stub.log.contextConfigures).toBe(2);
     expect(historyDraws()).toHaveLength(1);
     expect(historyDraws()[0]).toMatchObject({ instanceCount: 2 * 2, firstInstance: 0 });
+    // The automatic range [1, 6] keeps a tenth of its span beyond each side: [0.5, 6.5].
     const focus = stub.log.writes.find((write) => write.label === 'monitor-focus-values')!;
-    expect([...new Float32Array(focus.copy!.buffer)]).toEqual([
-      0,
-      0,
-      Math.fround(0.4),
-      Math.fround(0.4),
-      Math.fround(0.8),
-      Math.fround(0.8),
-    ]);
+    expect([...new Float32Array(focus.copy!.buffer)]).toEqual(
+      [1, 1, 5, 5, 9, 9].map((twelfths) => Math.fround(twelfths / 12)),
+    );
     expect(stub.log.draws.filter((d) => d.pipeline === 'monitor-focus')).toHaveLength(1);
   });
 
-  it('rejects an attach overtaken by a newer attach or a detach and returns its lease', async () => {
+  it('binds only the canvas of the newest attach, and joins a repeat attach', async () => {
     const monitor = create();
     const first = makeCanvas();
     const second = makeCanvas();
 
     const overtaken = monitor.attach(first);
     const current = monitor.attach(second);
+    expect(monitor.attach(second)).toBe(current);
+    expect(monitor.canvas).toBe(second);
 
-    await expect(overtaken).rejects.toMatchObject({ name: 'AbortError' });
-    await current;
+    await expect(overtaken).resolves.toBe(false);
+    await expect(current).resolves.toBe(true);
     expect(monitor.attached).toBe(true);
     expect(stub.log.leaseAcquires).toBe(2);
     expect(stub.log.leaseReleases).toBe(1);
@@ -528,11 +544,10 @@ describe('monitor', () => {
     expect(second.getAttribute('width')).toBe('320');
     expect(first.getAttribute('width')).toBeNull();
 
-    const detached = monitor.attach(first);
-    monitor.detach();
-    await expect(detached).rejects.toMatchObject({ name: 'AbortError' });
+    monitor.detach(first);
+    expect(monitor.attached).toBe(true);
+    monitor.detach(second);
     expect(monitor.attached).toBe(false);
-    expect(stub.log.leaseReleases).toBe(3);
   });
 
   it('refuses to attach after destroy', async () => {
@@ -547,8 +562,8 @@ describe('monitor', () => {
     const firstEvents = record(first);
     const secondEvents = record(second);
     const series = makeSeries({ elements: 1, time: [0, 1], signals: [[1, 2]] });
-    first.load(series);
-    second.load(series);
+    first.load({ series, signal: 0 });
+    second.load({ series, signal: 0 });
     await settle();
     stub.log.draws.length = 0;
 
@@ -592,66 +607,16 @@ describe('monitor', () => {
     expect(stub.log.leaseReleases).toBe(1);
   });
 
-  it('lets a detach or attach made from a device-loss handler supersede the recovery', async () => {
-    const detaching = await mount();
-    const moving = await mount();
-    const detachingEvents = record(detaching);
-    const movingEvents = record(moving);
-    const old = canvasFor(moving);
-    const next = makeCanvas();
-    let moved: Promise<void> | null = null;
-    detaching.on('deviceLost', () => detaching.detach());
-    moving.on('attached', (state) => {
-      if (!state && !moved) moved = moving.attach(next);
-    });
-
-    stub.loseDevice('unknown', 'simulated');
-    await flush();
-    await settle();
-
-    // Each host's own call wins: no recovery lease, no rebinding of the old canvas.
-    await expect(moved).resolves.toBeUndefined();
-    expect(detaching.attached).toBe(false);
-    expect(detachingEvents.attached).toEqual([false]);
-    expect(moving.attached).toBe(true);
-    expect(movingEvents.attached).toEqual([false, true]);
-    expect(stub.log.leaseAcquires).toBe(3);
-    expect(canvasFor(detaching).getAttribute('width')).toBeNull();
-    expect(old.getAttribute('width')).toBeNull();
-    expect(next.getAttribute('width')).toBe('320');
-    // A recovery was still coming when `detaching` heard of the loss; `moving` had already
-    // attached anew from its `attached` handler, so nothing recovers there.
-    const loss = { reason: 'unknown', message: 'simulated' };
-    expect(detachingEvents.deviceLost).toEqual([{ ...loss, recovering: true }]);
-    expect(movingEvents.deviceLost).toEqual([{ ...loss, recovering: false }]);
-  });
-
-  it('ignores device loss after detach or destroy', async () => {
-    const first = await mount();
-    const second = await mount();
-    const firstEvents = record(first);
-    const secondEvents = record(second);
-    first.detach();
-    second.destroy();
-
-    stub.loseDevice('unknown', 'late loss');
-    await flush();
-
-    expect(firstEvents.deviceLost).toEqual([]);
-    expect(secondEvents.deviceLost).toEqual([]);
-    expect(stub.log.leaseAcquires).toBe(2);
-  });
-
-  it('clear blanks the canvas, drops the series, and releases the slabs', async () => {
+  it('loading null blanks the canvas, drops the series, and releases the slabs', async () => {
     const scope = await mount();
     const series = makeSeries({ elements: 1, time: [0, 1], signals: [[1, 2]] });
-    scope.load(series);
+    scope.load({ series, signal: 0 });
     scope.select(0);
     await settle();
     stub.log.clears.length = 0;
     stub.log.draws.length = 0;
 
-    scope.clear();
+    scope.load(null);
     await settle();
 
     expect(stub.log.clears).toContain('monitor-history');
@@ -659,7 +624,17 @@ describe('monitor', () => {
       stub.log.buffers.filter((b) => b.label === 'monitor-values').every((b) => b.destroyed),
     ).toBe(true);
     expect(stub.log.draws.filter((d) => d.pipeline === 'monitor-focus')).toHaveLength(0);
-    expect(() => scope.setSignal(0)).toThrow('before load');
+  });
+
+  it('refuses a load that is not a series binding, or names a signal the series lacks', () => {
+    const scope = create();
+    const series = makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] });
+    expect(() => scope.load(undefined as never)).toThrow(TypeError);
+    expect(() => scope.load(null)).not.toThrow();
+    expect(() => scope.load(series as never)).toThrow(TypeError);
+    expect(() => scope.load({ series, signal: 1 })).toThrow(RangeError);
+    expect(() => scope.load({ series, signal: 0.5 })).toThrow(RangeError);
+    expect(() => scope.load({ series, signal: 0 })).not.toThrow();
   });
 
   it('pause holds painting and hover until resume, across a detach', async () => {
@@ -669,7 +644,7 @@ describe('monitor', () => {
     const series = makeSeries({ elements: 1, time: [0, 1], signals: [[1, 2]] });
 
     scope.pause();
-    scope.load(series);
+    scope.load({ series, signal: 0 });
     canvas.dispatchEvent(new MouseEvent('pointermove', { clientX: 10, clientY: 10 }));
     await settle();
     expect(historyDraws()).toHaveLength(0);

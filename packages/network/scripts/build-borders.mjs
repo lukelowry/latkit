@@ -1,6 +1,6 @@
 /**
  * Build the packaged geographic border assets (`packages/network/assets/ne-50m-line-borders.*.bin`)
- * that `@latkit/network/borders` loads, in the renderer's `Borders` binary format.
+ * that `loadBorders` in `@latkit/network` loads, in the renderer's `Borders` binary format.
  *
  * Format:
  *   - `*.vertices.bin` — 24-byte vertices: float32 longitude/latitude, float32 unit-sphere ECEF

@@ -1,5 +1,5 @@
 import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
-import { createSeries } from '@latkit/model';
+import { Series } from '@latkit/model';
 import { createMonitor, type Reading } from '@latkit/monitor';
 import './style.css';
 
@@ -54,7 +54,9 @@ const rateInput = document.getElementById('rate') as HTMLInputElement;
 const rateValue = document.getElementById('rate-value') as HTMLOutputElement;
 
 let seed = 0x5eed1234;
-let series = createSeries({ elementCount: ELEMENT_COUNT, signalCount: SIGNALS.length });
+const SIGNAL_IDS = SIGNALS.map((signal) => signal.id);
+
+let series = Series.create({ signals: SIGNAL_IDS, elementCount: ELEMENT_COUNT });
 let frameCursor = 0;
 let latest = new Float64Array(ELEMENT_COUNT * SIGNALS.length).fill(NaN);
 let currentSignal: SignalIndex = 0;
@@ -99,7 +101,7 @@ function fail(message: string): void {
 async function main(): Promise<void> {
   wireChrome();
 
-  monitor.load(series, currentSignal);
+  monitor.load({ series, signal: currentSignal });
   monitor.on('hover', (reading) => {
     hoverReadout.textContent = describeReading(reading);
   });
@@ -178,12 +180,12 @@ function wireChrome(): void {
 function resetStream(): void {
   anomaly.fill(0);
   frameCursor = 0;
-  series = createSeries({ elementCount: ELEMENT_COUNT, signalCount: SIGNALS.length });
+  series = Series.create({ signals: SIGNAL_IDS, elementCount: ELEMENT_COUNT });
   latest = new Float64Array(ELEMENT_COUNT * SIGNALS.length).fill(NaN);
   selectedElement = null;
   hoverReadout.textContent = '-';
   pickReadout.textContent = '-';
-  monitor.load(series, currentSignal);
+  monitor.load({ series, signal: currentSignal });
   applyRange();
   renderSelected();
   renderHotList(performance.now(), true);
@@ -193,7 +195,7 @@ function resetStream(): void {
 function setSignal(signal: SignalIndex): void {
   if (signal === currentSignal) return;
   currentSignal = signal;
-  monitor.setSignal(signal);
+  monitor.load({ series, signal });
   applyRange();
   selectedElement = null;
   monitor.select(null);
@@ -235,14 +237,7 @@ function tick(): void {
   if (frameCursor >= FRAME_COUNT) resetStream();
   writeFrame(frameCursor);
   frameCursor++;
-  series.append({
-    resultId: 'example',
-    classId: 'sensor',
-    elementCount: ELEMENT_COUNT,
-    signalCount: SIGNALS.length,
-    time: Float64Array.of((frameCursor - 1) * DT_SECONDS),
-    values: latest,
-  });
+  series.append({ time: Float64Array.of((frameCursor - 1) * DT_SECONDS), values: latest });
   if (windowInput.checked) applyWindow();
   const now = performance.now();
   renderHotList(now);

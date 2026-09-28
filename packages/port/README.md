@@ -1,8 +1,9 @@
 # @latkit/port
 
-Where messages cross: a two-method port over workers, webviews, and sockets; one binary frame that
-carries typed arrays intact; and typed request, reply, and stream protocols served and connected
-over a port. No dependencies.
+Where latkit crosses a boundary: a two-method port over workers, webviews, sockets, and one thread;
+one binary frame that carries typed arrays intact; typed request, reply, and stream protocols with
+the checks their served side runs; and `@latkit/model` models, engines, and recordings served and
+connected across a port.
 
 ## Install
 
@@ -24,37 +25,73 @@ for more. `messagePort` wraps anything with the DOM message-target shape and car
 structured clone carries, transfer list included. `bytePort` wraps any channel that carries bytes
 faithfully and rides each message on one binary frame, so typed arrays view the received buffer in
 place even where structured clone does not survive. `socketPort` is `bytePort` over a browser
-`WebSocket` or a node `ws` socket, queueing posts until it opens. Each constructor takes its
-target structurally, so a `Worker`, a webview API, or a socket passes as it is; only `Port` is a
-named type.
+`WebSocket` or a node `ws` socket, queueing posts until it opens. `loopback()` is two ports wired
+to each other in one realm, every message crossing as a frame on a microtask: a client and a server
+on one thread, or a test's two ends, where `fail(reason)` delivers a transport failure. Each
+constructor takes its target structurally, so a `Worker`, a webview API, or a socket passes as it
+is; only `Port` is a named type.
 
 Every message is JSON values plus typed arrays (`Uint8Array` through `Float64Array`), anywhere in
 the value, on every transport. A service written against a worker runs unchanged against a socket.
-`messagePort` does not refuse what structured clone would carry beyond that; the framed `loopback`
-in `@latkit/port/testing` does.
+`messagePort` does not refuse what structured clone would carry beyond that; `loopback` does.
+
+## Models, engines, and recordings across a port
+
+```ts
+// the worker: cases parse here, and the engine records here
+import { messagePort, serveEngine, serveModel, serveRecording } from '@latkit/port';
+
+serveEngine(messagePort(self), new GridkitEngine(server)); // records any model a peer gives it
+serveRecording(messagePort(self), recording); // a recording the worker keeps
+self.addEventListener('message', ({ data }) => {
+  // one case per channel, its packs served as they are asked for
+  if (data.open) serveModel(messagePort(data.open.port), new GridkitCase(data.open.bytes));
+});
+
+// the page
+import { connectEngine, connectModel, connectRecording, messagePort } from '@latkit/port';
+
+const port = messagePort(worker);
+const engine = connectEngine(port);
+const { port1, port2 } = new MessageChannel();
+worker.postMessage({ open: { port: port2, bytes } }, [port2]);
+const model = await connectModel(messagePort(port1), { progress });
+const recording = engine.record(model, study); // fills here as the worker's engine writes it
+const kept = await connectRecording(port, model, 'fault-4'); // or opens the worker's own
+```
+
+Only sources and recorder calls cross. A model's core crosses at once and each class shard as it is
+first asked for, with the case's bytes on request; a model opened from packs serves them as they
+came. An engine records any model it is given: a model its own realm serves is recorded where it
+lives, and any other is lent by its source, which the engine reads only as it needs, for as long
+as the recording lasts. Each recording crosses as the engine writes it, call by call, its frames
+handed over without a copy; the served engine checks every input, queues what it cannot take at
+once, and stops when the far recording stops. A kept recording opens with `Recording.from` against
+the model it records, its clock at hand and its samples read in windows of at most 4 MiB. A
+connected side is a `Remote<T>`: the model, engine, or recording, plus `close`.
 
 ## A protocol
 
 Both ends import one value: the name on the port, the request, reply, and event types, and the
-guard the served side checks requests with.
+check the served side runs on every request.
 
 ```ts
-import { protocol } from '@latkit/port';
-import { index, requests, str } from '@latkit/port/guard';
+import { check, protocol } from '@latkit/port';
 
 type Request =
   { readonly op: 'greet'; readonly name: string } | { readonly op: 'count'; readonly upTo: number };
 
 export const HELLO = protocol<Request, string, { readonly tick: number }>(
   'hello',
-  requests<Request>({ greet: { name: str }, count: { upTo: index } }),
+  check.requests<Request>({ greet: { name: check.string }, count: { upTo: check.index } }),
 );
 ```
 
-`@latkit/port/guard` holds the guards: `str`, `bool`, `finite`, `index`, `bounded`, `bytes`,
-`oneOf`, `nullable`, `optional`, `object`, `arrayOf`, `stringMap`, `keyedRecord`, and `requests`,
-whose shape map the compiler keeps exhaustive over the request union's `op`. A guarded request that
-fails is answered with an error and never reaches the handler.
+`check` holds the checks: `string`, `boolean`, `finite`, `index`, `bounded`, `bytes`, `oneOf`,
+`nullable`, `optional`, `object`, `array`, `stringMap`, `record`, and `requests`, whose shape map
+the compiler keeps exhaustive over the request union's `op` and exact in every field's type. A
+check returns when a value is what it claims and throws a `TypeError` naming what is wrong, so a
+refused request is answered with that reason and never reaches the handler.
 
 ## Serve and connect
 
@@ -90,7 +127,7 @@ port's `drain` between items so backpressure reaches the producer.
 
 ```ts
 serve(port, FRAMES, async function* (request, signal) {
-  for await (const frame of engine.run(request, signal)) yield frame;
+  for await (const frame of frames(request, signal)) yield frame;
 });
 
 for await (const frame of connect(port, FRAMES).stream(request, { signal })) paint(frame);
@@ -98,24 +135,6 @@ for await (const frame of connect(port, FRAMES).stream(request, { signal })) pai
 
 Leaving the loop early, or aborting `signal`, cancels the handler and ends the iteration quietly. A
 handler failure ends it with that error. A reply whose buffers the handler relinquishes is wrapped
-with `transferred(value, buffers)`, for a reply or for a streamed item alike.
-
-The root exports `messagePort`, `bytePort`, `socketPort`, `protocol`, `serve`, `connect`,
-`transferred`, and `describeError`, with the types `Port`, `Protocol`, `Service`, and
-`Connection`. Call options (`signal`, `progress`, `transfer`) and a handler's shape are stated
-inline on `call`, `stream`, and `serve`; `Guard` lives with the guards in `@latkit/port/guard`.
-
-## Testing
-
-```ts
-import { loopback, settle } from '@latkit/port/testing';
-
-const [server, client] = loopback();
-serve(server, HELLO, handler);
-const hello = connect(client, HELLO);
-await settle(); // let microtask deliveries land
-client.fail('worker crashed'); // every connection on `client` closes with this reason
-```
-
-`loopback` frames every message, so a test payload that would not survive a byte port fails in the
-unit lane.
+with `transferred(value, buffers)`, for a reply or for a streamed item alike. Call options
+(`signal`, `progress`, `transfer`) and a handler's shape are stated inline on `call`, `stream`, and
+`serve`.

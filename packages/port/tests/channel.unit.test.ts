@@ -1,9 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { connect, describeError, messagePort, protocol, serve, transferred } from '../src/index.js';
-import { requests, str } from '../src/guard.js';
+import {
+  check,
+  connect,
+  describeError,
+  loopback,
+  messagePort,
+  protocol,
+  serve,
+  transferred,
+} from '../src/index.js';
 import type { MessageTarget } from '../src/port.js';
-import { loopback, settle } from '../src/testing.js';
+import { settle } from './fixture.js';
 
 type Echo = { readonly text: string; readonly delayMs?: number };
 type Count = { readonly upTo: number };
@@ -102,16 +110,23 @@ describe('serve and connect', () => {
     expect(await connection.call({ text: 'ok' })).toBe('ok');
   });
 
-  it('a guard refuses a malformed request before the handler and keeps serving', async () => {
+  it('a check refuses a request before the handler, saying why, and keeps serving', async () => {
     type Op = { readonly op: 'echo'; readonly text: string };
-    const GUARDED = protocol<Op, string>('guarded', requests<Op>({ echo: { text: str } }));
+    const GUARDED = protocol<Op, string>(
+      'guarded',
+      check.requests<Op>({ echo: { text: check.string } }),
+    );
     const [server, client] = loopback();
     const handler = vi.fn(async (request: Op) => request.text);
     serve(server, GUARDED, handler);
     const raw = connect(client, protocol<unknown, unknown>('guarded'));
-    await expect(raw.call({ op: 'echo', text: 5 })).rejects.toThrow('malformed guarded request');
-    await expect(raw.call({ op: 'nope' })).rejects.toThrow('malformed guarded request');
-    await expect(raw.call('echo')).rejects.toThrow('malformed guarded request');
+    await expect(raw.call({ op: 'echo', text: 5 })).rejects.toThrow(
+      'guarded request.text must be a string of at most 65536 characters',
+    );
+    await expect(raw.call({ op: 'nope' })).rejects.toThrow(
+      'guarded request.op must be one of echo',
+    );
+    await expect(raw.call('echo')).rejects.toThrow('guarded request must be an object');
     expect(handler).not.toHaveBeenCalled();
     expect(await connect(client, GUARDED).call({ op: 'echo', text: 'ok' })).toBe('ok');
   });

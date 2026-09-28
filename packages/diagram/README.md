@@ -1,7 +1,7 @@
 # @latkit/diagram
 
 WebGPU block-diagram renderer and editor surface for Latkit: one controller, `Diagram`, and two
-registries that name what it speaks, `CHANNELS` and `OPTIONS`. It draws a `Netlist` (blocks, the
+registries that name what it speaks, `CHANNELS` and `OPTIONS`. It draws a `Document.Netlist` (blocks, the
 ports each block owns, and the nets that join ports) with automatic layout, right-angle wires,
 live values on blocks and wires, and in-canvas text. It reports what the user tried to change as
 proposals and never edits a netlist itself.
@@ -20,9 +20,9 @@ both back.
 ```ts
 import { colormap } from '@latkit/colormaps';
 import { createDiagram } from '@latkit/diagram';
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 
-const unit: Netlist = {
+const unit: Document.Netlist = {
   blockCount: 3,
   blockKey: ['Genrou/1_1_genrou', 'Tgov1/1_1_tgov1', 'Ieeet1/1_1_ieeet1'],
   blockTitle: ['GENROU', 'TGOV1', 'IEEET1'],
@@ -52,8 +52,8 @@ the [lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html).
 
 ## The netlist
 
-`Netlist` and `validateNetlist` are `@latkit/model`'s, so an engine builds a netlist without a GPU
-package. It is columnar, like `Topology`. Counts are derived: the port count is
+`Document.Netlist` and `validateNetlist` are `@latkit/model`'s, so a format builds a netlist without
+a GPU package. It is columnar, like `Model.Topology`. Counts are derived: the port count is
 `portStart[blockCount]` and the net count is `netStart.length - 1`. `0xffffffff` marks "none"
 wherever an index may be absent.
 
@@ -111,25 +111,36 @@ channel clears too.
 | --------------- | ----- | ------------------------------------------------------------------- |
 | `blockPosition` | block | `x, y` top-left corner; a NaN pair hands a block back to its layout |
 | `blockColor`    | block | Normalized through its domain onto the colormap                     |
-| `blockVisible`  | block | `0` hides the block, its ports, and its labels                      |
+| `blockVisible`  | block | Above `0` shows the block, its ports, and its labels                |
 | `blockStatus`   | block | `0` none; `k > 0` rings the block in `statusColors[k - 1]`, clamped |
 | `blockShade`    | block | One scalar per block for a shade, as `Fragment.value`               |
 | `portStatus`    | port  | As `blockStatus`, per port                                          |
 | `netColor`      | net   | Normalized through its domain onto the colormap                     |
 | `netFlow`       | net   | Signed dash speed: `0` still, negative marches toward the driver    |
-| `netVisible`    | net   | `0` hides the net                                                   |
+| `netVisible`    | net   | Above `0` shows the net                                             |
 | `netShade`      | net   | One scalar per net for a shade, as `Fragment.value` on its wires    |
 
-`blockColor` and `netColor` take an input domain and normalize `[0, 1]` without one. Without them
-blocks fill with `blockBaseColor` and wires with `netBaseColor`. `setChannelDomain` moves a domain
-without re-uploading values, and `getChannelDomain` reads the one in effect; the other channels
-are raw and ignore a domain.
+`blockColor` and `netColor` take an input domain and normalize `[0, 1]` without one. Without them,
+or for a NaN value, blocks fill with `blockBaseColor` and wires with `netBaseColor`.
+`setChannelDomain` moves a domain without re-uploading values, and `getChannelDomain` reads the
+one in effect; the other channels are raw and ignore a domain.
 
 ```ts
 diagram.setChannel('blockColor', loading, [0, 1.2]);
 diagram.setChannelDomain('blockColor', [0, 2]);
 diagram.setChannel('blockStatus', Float32Array.of(0, 2, 0)); // TGOV1 in error red
 diagram.setChannel('blockColor', null);
+```
+
+A channel can follow one signal of a `Series` instead, such as a model's field, and `seek` shows
+the frame at a playhead in every channel that does. Every channel but `blockPosition`,
+`blockVisible`, and `netVisible` can, since those re-lay the scene, as each entry's `series` says.
+The channels run on `@latkit/gpu`'s binder, as the network's do:
+
+```ts
+diagram.setChannel('netFlow', { series: flows, signal: 0 }); // one element per net
+diagram.setChannel('netColor', speed.gather(document.drivers(speed.ref))); // each net's driver
+transport.on('frame', (t) => diagram.seek(t));
 ```
 
 `blockPosition` pairs are top-left corners in diagram units, which are CSS pixels at zoom 1 with
@@ -237,7 +248,7 @@ document.addEventListener('pointerleave', () => diagram.setPointer(null));
 
 ## Selection and navigation
 
-A `Part` is `{ kind, index }` with `kind` one of `'block'`, `'port'`, `'net'`, or `'group'`.
+A `Document.Part` is `{ kind, index }` with `kind` one of `'block'`, `'port'`, `'net'`, or `'group'`.
 `select` replaces the selection without emitting; `reveal` brings a part into view without
 changing zoom, and with `neighbors` frames it with what touches it (a part that touches nothing is
 revealed as without it); `fit(parts)` frames some parts.
@@ -263,9 +274,10 @@ diagram.select([]);
   blocks.
 - `toDiagram(clientX, clientY)` returns the diagram point under a client point, snapped when
   `snap` is on: where a palette drop lands.
-- `getPose()` and `setPose(pose, animate)` read and write `{ centerX, centerY, zoom }`, where zoom
-  is CSS pixels per diagram unit, clamped from the smaller of a quarter of the fit zoom and 0.25
-  up to 8. `getPose()` is null before a load.
+- `getCamera()` and `setCamera(camera, animate)` read and write `{ centerX, centerY, scale, fit }`,
+  the network's camera without its projection: `scale` is CSS pixels per diagram unit, clamped from
+  the smaller of a quarter of the fit scale and 0.25 up to 8, and `fit: true` fits the diagram.
+  `getCamera()` is null before a load.
 - `panBy(dx, dy)` drags the content by CSS pixels and `zoomBy(factor)` zooms about the center.
 
 While the camera is at its fit view, a resize keeps it fitted. An empty netlist is a diagram too:
@@ -289,6 +301,7 @@ diagram.on('attached', (attached) => (canvas.hidden = !attached));
 diagram.on('painted', (painted) => (poster.hidden = painted));
 diagram.on('deviceLost', ({ message, recovering }) => !recovering && showFallback(message));
 diagram.on('pipelineError', ({ cause }) => console.error(cause));
+diagram.on('error', ({ channel, cause }) => console.error(channel, cause)); // a series read failed
 ```
 
 User gestures produce `select`, `contextmenu`, `open`, `connect`, `move`, and `delete`;
@@ -323,7 +336,7 @@ without one, and an undone move changes no structure, so the host keeps its plac
 ```ts
 const placed = new Map<string, readonly [number, number]>();
 
-function show(netlist: Netlist): void {
+function show(netlist: Document.Netlist): void {
   diagram.load(netlist, { fit: false });
   const positions = new Float32Array(2 * netlist.blockCount).fill(Number.NaN);
   netlist.blockKey?.forEach((key, b) => positions.set(placed.get(key) ?? [NaN, NaN], 2 * b));
@@ -388,11 +401,12 @@ frame's time, pointer, and viewport.
 
 ## Layout without a device
 
-`@latkit/diagram/layout` exports `arrange`, the same pure, deterministic layout the diagram shows,
-so a worker computes positions for a netlist before any canvas exists:
+`arrange` is the same pure, deterministic layout the diagram shows, so a worker computes positions
+for a netlist before any canvas exists; the package's one entrypoint loads there without a DOM or
+a device:
 
 ```ts
-import { arrange } from '@latkit/diagram/layout';
+import { arrange } from '@latkit/diagram';
 
 const positions = arrange(unit, { gridPitch: 8 }); // top-left per block, on the grid
 ```
@@ -417,14 +431,15 @@ positions to keep the arrangement.
 or `RangeError` naming the first invalid option. Everything given to the controller before
 `attach` is retained and painted onto the canvas, and `detach()` releases the device and the
 canvas while keeping every state. A newer `attach` or a `detach` supersedes an attach still
-waiting for its device, which rejects with an `AbortError`.
+waiting for its device, which then resolves `false`; attaching the canvas already bound or binding
+joins that attach.
 
 - `attach` rejects with `GpuUnavailableError` from `@latkit/gpu` when no device can be leased, and
   with a `TypeError` when the device reports fewer than five storage buffers in the vertex stage.
-- On device loss the controller releases the device, leases a replacement, and paints again;
-  `deviceLost` reports it, with `recovering` false when the controller stays detached: no
-  replacement could be leased, or a handler of `attached: false` or `deviceLost` detached or
-  attached anew first.
+- On device loss the controller releases the device, leases a replacement for the same canvas,
+  and paints again; `deviceLost` reports it, with `recovering` false when the controller stays
+  detached: no replacement could be leased, or a handler of `attached: false` detached or attached
+  another canvas first.
 - `pipelineError` reports a shader-pipeline build that failed; nothing draws until a later
   `setShade` succeeds, and late subscribers receive the latest failure.
 - `painted` turns true after the first successful frame since attach and false on detach.
@@ -466,6 +481,7 @@ plants beside 900.
 
 ## Registries
 
-`CHANNELS` and `OPTIONS` are frozen and ordered. A picker iterates `Object.keys(CHANNELS)` and
-shows `CHANNELS[key].label`, and reads `scope`, `map`, `normalized`, and `components`; a settings
-form iterates `OPTIONS` and reads each entry's `kind`, `default`, and `live`.
+`CHANNELS` and `OPTIONS` are frozen and ordered, and every entry carries the `label` a control
+shows. A picker iterates `Object.keys(CHANNELS)` and reads `scope`, `map`, `normalized`,
+`components`, and `series`; a settings form iterates `OPTIONS` and reads each entry's `kind`, `default`, and
+`live`.

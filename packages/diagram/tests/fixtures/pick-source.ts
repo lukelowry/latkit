@@ -4,7 +4,7 @@
  * with per-net slots, so picking is tested without the scene or the router.
  */
 
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 
 import type { PickSource } from '../../src/pick/picker.js';
 import { prepare, type Prepared } from '../../src/prepare.js';
@@ -33,12 +33,12 @@ export class FakeSource implements PickSource {
   readonly hiddenNets = new Set<number>();
   private readonly slots = new Map<number, { start: number; count: number }>();
 
-  constructor(netlist?: Netlist, grid = 8) {
+  constructor(netlist?: Document.Netlist, grid = 8) {
     if (netlist) this.load(netlist, grid);
   }
 
   /** Prepare a netlist and size the layout for it: every position and frame NaN, no wires. */
-  load(netlist: Netlist, grid = 8): Prepared {
+  load(netlist: Document.Netlist, grid = 8): Prepared {
     const p = prepare(netlist, grid);
     this.prepared = p;
     this.layout.resize(layoutBases(p).words);

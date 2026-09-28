@@ -81,8 +81,6 @@ function makeHarness(
     limit?: number;
     clientWidth?: number;
     view?: Record<string, unknown>;
-    /** The loop's `quantize` option; omitted, the loop gets no options at all. */
-    quantize?: boolean;
   } = {},
 ): Harness {
   const canvas = {
@@ -122,15 +120,11 @@ function makeHarness(
 
   const frames: Frame[] = [];
   const identities: Frame[] = [];
-  const loop = createFrameLoop(
-    presentation,
-    (frame) => {
-      frames.push({ ...frame });
-      identities.push(frame);
-      return options.render?.(frame) ?? false;
-    },
-    options.quantize === undefined ? undefined : { quantize: options.quantize },
-  );
+  const loop = createFrameLoop(presentation, (frame) => {
+    frames.push({ ...frame });
+    identities.push(frame);
+    return options.render?.(frame) ?? false;
+  });
 
   return {
     loop,
@@ -300,47 +294,6 @@ describe('createFrameLoop resize', () => {
     // An unsettled size keeps frames coming though render returned false; settled, it stops.
     expect(h.frames).toHaveLength(5);
     expect(rafPending.size).toBe(0);
-  });
-
-  it('sizes the backing store exactly on every frame when quantize is off', async () => {
-    const h = makeHarness({ quantize: false });
-    h.loop.frameNow();
-    expect(h.canvas.width).toBe(200);
-
-    h.canvas.clientWidth = 210;
-    h.fireResize();
-    await drain();
-    expect(h.frames).toHaveLength(2);
-    expect(h.frames[1]).toMatchObject({ width: 210, height: 100, backingScale: 1, settled: true });
-    expect([h.canvas.width, h.canvas.height]).toEqual([210, 100]);
-    // Settled at once: no settle frames follow, so the resize reallocated once.
-    expect(rafPending.size).toBe(0);
-    expect(h.resize.mock.calls).toEqual([
-      [200, 100],
-      [210, 100],
-    ]);
-
-    // Each further step follows exactly, where a quantizing loop would stay in its 256 bucket.
-    h.canvas.clientWidth = 240;
-    h.fireResize();
-    await drain();
-    expect(h.canvas.width).toBe(240);
-    expect(h.frames.at(-1)).toMatchObject({ width: 240, settled: true });
-    expect(h.resize).toHaveBeenCalledTimes(3);
-    expect(rafPending.size).toBe(0);
-  });
-
-  it('quantizes by default and when asked', async () => {
-    for (const quantize of [undefined, true]) {
-      const h = makeHarness({ quantize });
-      h.loop.frameNow();
-      h.canvas.clientWidth = 210;
-      h.fireResize();
-      await drain();
-      expect(h.frames.at(-1)).toMatchObject({ width: 210, settled: false });
-      expect(h.canvas.width).toBe(256);
-      h.loop.destroy();
-    }
   });
 
   it('cancels a queued frame when a resize flushes', async () => {

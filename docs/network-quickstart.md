@@ -12,11 +12,11 @@ The application owns the canvas. Give it a stable display size before attaching 
 
 ## Build a topology
 
-`Topology` uses dense typed arrays. `vertexCoords` stores two numbers per vertex. `edges` stores endpoint pairs. `polylineStart` stores one offset per edge plus a terminal offset.
+`Model.Topology` uses dense typed arrays. `vertexCoords` stores two numbers per vertex. `edges` stores endpoint pairs. `polylineStart` stores one offset per edge plus a terminal offset.
 
 ```ts
 import { colormap } from '@latkit/colormaps';
-import type { Topology } from '@latkit/model';
+import type { Model } from '@latkit/model';
 import { createNetwork } from '@latkit/network';
 
 const canvas = document.getElementById('network');
@@ -24,7 +24,7 @@ if (!(canvas instanceof HTMLCanvasElement)) {
   throw new Error('Missing #network canvas.');
 }
 
-const topology: Topology = {
+const topology: Model.Topology = {
   vertexCount: 3,
   vertexCoords: new Float32Array([-96, 30, -95, 31, -94, 30]),
   coordinateSpace: 'geographic',
@@ -55,16 +55,20 @@ Pan and rotation use the same CSS-pixel deltas as pointer gestures; zoom is mult
 network.panBy(24, 0);
 network.zoomBy(1.2);
 
-network.setProjection('tilt');
+network.setCamera({ projection: 'tilt' });
 network.rotateBy(18, -8);
 
-const pose = network.getPose();
-if (pose) {
-  network.setPose({ bearing: pose.bearing + 30 }, true);
+const camera = network.getCamera();
+if (camera) {
+  network.setCamera({ bearing: camera.bearing + 30 }, true);
 }
+
+// A bookmark is the whole camera: projection, pose, scale, and whether it follows the fit.
+const saved = network.getCamera();
+if (saved) network.setCamera(saved);
 ```
 
-`rotateBy()` changes bearing and pitch in `tilt` and `globe`; it is a no-op in `flat`. `getPose()` returns the pose the next `setPose()` call builds on. Read `network.projection` for the active mode, and pass `setProjection(mode, true)` to fall back to the first projection the loaded topology can host. `orbit(true)` starts continuous rotation until a gesture or `orbit(false)` stops it.
+`rotateBy()` changes bearing and pitch in `tilt` and `globe`; it is a no-op in `flat`. `getCamera()` is the camera as a value to keep, null until a canvas has had a size, while `projection` names the projection shown before then too; `setCamera()` moves the camera in one step, a projection switch keeping the pose it is given; it returns false for a projection the topology cannot show, which `projections` says ahead. `orbit(true)` starts continuous rotation until a gesture or `orbit(false)` stops it.
 
 ## Keyboard, motion, and wheel
 
@@ -82,7 +86,7 @@ The fit is the view every resize, `fit()`, Home key, and double-tap returns to. 
 
 ```ts
 network.setOptions({ fitPaddingPx: [96, 32, 160, 32], fitPitch: 50, fitBearing: -18 });
-network.setProjection('tilt');
+network.setCamera({ projection: 'tilt' });
 ```
 
 ## Shade the fragments
@@ -90,7 +94,7 @@ network.setProjection('tilt');
 A shade is a WGSL function compiled into the vertex and edge passes. It receives what the pass would paint plus where and what the fragment is, and returns the color to paint. A `tick` may write a 64-float `host` block before each frame, so an effect costs one small upload per frame regardless of graph size. The `vertexShade` and `edgeShade` channels carry one scalar per item into it as `f.value`.
 
 ```ts
-import { spotlight } from '@latkit/network/shades';
+import { spotlight } from '@latkit/network';
 
 await network.setShade(spotlight({ radiusPx: 220, strength: 0.6 }));
 
@@ -119,7 +123,7 @@ const unsubscribeContext = network.on('contextmenu', ({ clientX, clientY, items,
 });
 
 if (network.projections.globe) {
-  network.setProjection('globe');
+  network.setCamera({ projection: 'globe' });
 }
 
 network.setOptions({ edges: true, vertices: true, daylight: true });

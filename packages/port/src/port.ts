@@ -42,7 +42,7 @@ export interface MessageTarget {
  * @remarks
  * Structured clone carries more than a frame does (a `Map`, a `Date`), and nothing here refuses
  * it. Hold to JSON values plus typed arrays so a service moves between transports unchanged; the
- * framed `loopback` in `@latkit/port/testing` catches what strays.
+ * framed `loopback` catches what strays.
  */
 export function messagePort(target: MessageTarget): Port {
   return {
@@ -176,4 +176,44 @@ export function socketPort(socket: SocketTarget): Port {
       }
     },
   });
+}
+
+/** One end of a loopback pair: a port, and the transport failure a test injects. */
+interface LoopbackPort extends Port {
+  /** Deliver a transport failure to this end's subscribers, as a crashed peer would. */
+  fail(reason: string): void;
+}
+
+/**
+ * Two ports wired to each other in one realm: a client and a server on one thread, or a test's two
+ * ends. Each message crosses as a frame and lands on a microtask, like a real message channel, so
+ * a payload that would not survive a byte port fails here too.
+ */
+export function loopback(): [LoopbackPort, LoopbackPort] {
+  type Subscriber = {
+    readonly message: (value: unknown) => void;
+    readonly close?: (reason: string) => void;
+  };
+  const subscribers = [new Set<Subscriber>(), new Set<Subscriber>()] as const;
+  const end = (mine: 0 | 1): LoopbackPort => {
+    const peer = subscribers[mine === 0 ? 1 : 0];
+    return {
+      post(message) {
+        const frame = encodeFrame(message);
+        queueMicrotask(() => {
+          const decoded = decodeFrame(frame.buffer as ArrayBuffer);
+          for (const subscriber of [...peer]) subscriber.message(decoded);
+        });
+      },
+      subscribe(onMessage, onClose) {
+        const subscriber: Subscriber = { message: onMessage, close: onClose };
+        subscribers[mine].add(subscriber);
+        return () => void subscribers[mine].delete(subscriber);
+      },
+      fail(reason) {
+        for (const subscriber of [...subscribers[mine]]) subscriber.close?.(reason);
+      },
+    };
+  };
+  return [end(0), end(1)];
 }

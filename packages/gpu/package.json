@@ -1,7 +1,7 @@
 {
   "name": "@latkit/gpu",
   "version": "0.4.0",
-  "description": "Core WebGPU device and presentation primitives for Latkit.",
+  "description": "What every Latkit renderer shares: WebGPU devices, presentation, the frame loop, the attach lifecycle, channels, and colormap textures.",
   "type": "module",
   "repository": {
     "type": "git",
@@ -27,6 +27,8 @@
     "test": "vitest run --project @latkit/gpu"
   },
   "dependencies": {
+    "@latkit/colormaps": "workspace:*",
+    "@latkit/model": "workspace:*",
     "@webgpu/types": "^0.1.71"
   },
   "publishConfig": {

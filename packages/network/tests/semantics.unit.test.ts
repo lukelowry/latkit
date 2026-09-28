@@ -8,7 +8,7 @@ import { PROJECTION_DEFS } from '../src/projections.js';
 describe('canonical Network semantics', () => {
   it('derives every public semantic union from its exhaustive registry', () => {
     expectTypeOf<keyof typeof CHANNELS>().toEqualTypeOf<Channel>();
-    expectTypeOf<(typeof PROJECTIONS)[number]>().toEqualTypeOf<Projection>();
+    expectTypeOf<keyof typeof PROJECTIONS>().toEqualTypeOf<Projection>();
     expectTypeOf<keyof typeof OPTIONS>().toEqualTypeOf<keyof Required<Options>>();
     expectTypeOf<keyof ResolvedOptions>().toEqualTypeOf<keyof Options>();
     expectTypeOf<ResolvedOptions['msaa']>().toEqualTypeOf<1 | 4 | undefined>();
@@ -17,7 +17,7 @@ describe('canonical Network semantics', () => {
   });
 
   it('publishes the exact ordered channel vocabulary as deeply frozen metadata', () => {
-    const scalar = { components: 1 } as const;
+    const scalar = { components: 1, series: true } as const;
     expect(Object.entries(CHANNELS)).toEqual([
       [
         'vertexColor',
@@ -63,6 +63,7 @@ describe('canonical Network semantics', () => {
           label: 'Vertex Position',
           normalized: false,
           components: 2,
+          series: false,
         },
       ],
     ]);
@@ -72,11 +73,18 @@ describe('canonical Network semantics', () => {
     }
   });
 
-  it('keeps the public projection tuple and private implementation registry in parity', () => {
-    expect(PROJECTIONS).toEqual(['flat', 'tilt', 'globe']);
+  it('keeps the public projection registry and private implementation registry in parity', () => {
+    expect(PROJECTIONS).toEqual({
+      flat: { label: 'Flat' },
+      tilt: { label: 'Tilt' },
+      globe: { label: 'Globe' },
+    });
     expect(Object.isFrozen(PROJECTIONS)).toBe(true);
-    expect(Object.keys(PROJECTION_DEFS)).toEqual([...PROJECTIONS]);
-    for (const mode of PROJECTIONS) expect(PROJECTION_DEFS[mode].mode).toBe(mode);
+    for (const entry of Object.values(PROJECTIONS)) expect(Object.isFrozen(entry)).toBe(true);
+    expect(Object.keys(PROJECTION_DEFS)).toEqual(Object.keys(PROJECTIONS));
+    for (const mode of Object.keys(PROJECTIONS) as Projection[]) {
+      expect(PROJECTION_DEFS[mode].mode).toBe(mode);
+    }
   });
 
   it('publishes the exact option defaults, validation kinds, and liveness', () => {
@@ -149,6 +157,12 @@ describe('canonical Network semantics', () => {
     expect(OPTIONS.sunTime.nullable).toBe(true);
     expect(OPTIONS.edgeBaseColor.nullable).toBe(true);
     expect(typeof OPTIONS.devices.default.acquire).toBe('function');
+    for (const [key, definition] of Object.entries(OPTIONS)) {
+      expect(definition.label, key).toMatch(/^[A-Z][a-z]*( [a-z]+)*$/);
+    }
+    expect(OPTIONS.vertexScale).not.toHaveProperty('max');
+    expect(OPTIONS.hoverAlpha).toMatchObject({ label: 'Hover opacity', max: 1 });
+    expect(OPTIONS.nightFloor).toMatchObject({ label: 'Night brightness', min: 0, max: 1 });
   });
 
   it('deeply freezes option metadata and defaults derived from it', () => {
@@ -187,7 +201,10 @@ describe('Network option validation and resolution', () => {
       ['msaa', 1],
       ['msaa', 4],
       ['vertices', false],
-      ['nightFloor', -3],
+      ['nightFloor', 0],
+      ['nightFloor', 1],
+      ['vertexScale', 12],
+      ['hoverAlpha', 1],
       ['terminatorWidth', 0],
       ['heightScale', 0],
       ['heightRange', [-1, 2]],
@@ -229,6 +246,12 @@ describe('Network option validation and resolution', () => {
     ['nightFloor', '0.2', TypeError],
     ['nightFloor', Number.NaN, RangeError],
     ['nightFloor', Infinity, RangeError],
+    ['nightFloor', -0.01, RangeError],
+    ['nightFloor', 1.01, RangeError],
+    ['surfaceNightFloor', 2, RangeError],
+    ['terminatorWidth', 1.5, RangeError],
+    ['hoverAlpha', 1.01, RangeError],
+    ['selectedAlpha', 2, RangeError],
     ['terminatorWidth', -0.01, RangeError],
     ['vertexScale', -0.01, RangeError],
     ['edgeScale', Number.NaN, RangeError],

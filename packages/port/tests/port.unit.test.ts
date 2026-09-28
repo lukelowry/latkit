@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { bytePort, messagePort, socketPort } from '../src/index.js';
 import type { MessageTarget, SocketTarget } from '../src/port.js';
-import { settle } from '../src/testing.js';
+import { settle } from './fixture.js';
 
 type Listener = (event: never) => void;
 

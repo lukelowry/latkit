@@ -1,7 +1,7 @@
 {
   "name": "@latkit/model",
   "version": "0.6.0",
-  "description": "Immutable columnar network model, its series, and its byte form for Latkit.",
+  "description": "The vocabulary every Latkit package speaks: the columnar network model, its recordings and fields, and the sources that move them.",
   "type": "module",
   "repository": {
     "type": "git",
@@ -24,7 +24,8 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --project @latkit/model"
+    "test": "vitest run --project @latkit/model",
+    "bench": "vitest bench --run --project @latkit/model"
   },
   "publishConfig": {
     "access": "public"

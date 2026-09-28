@@ -1,134 +1,561 @@
 /**
- * The model: an immutable, columnar description of a network and its element classes, built once
- * by a vendor and consumed directly by every latkit renderer and view.
- *
- * @remarks
- * A model is a value plus one lazy, cached loader. `Topology` and `Item` are field-for-field the
- * shapes `@latkit/network` loads and picks, so a model never adapts for a renderer.
+ * The model: a network and its element classes, as a format reads them from a case. A format
+ * subclasses it; a host asks the instance every question about the case, and an engine records
+ * it. `Model.Topology` and `Model.Item` are field-for-field the shapes `@latkit/network` loads and
+ * picks, so a model never adapts for a renderer.
  */
 
-/** CPU-side graph shape. Field-for-field the topology `@latkit/network` loads. */
-export interface Topology {
-  /** Number of logical graph vertices. */
-  readonly vertexCount: number;
-  /** Optional `x, y` or `lon, lat` coordinates, two f32 values per vertex. */
-  readonly vertexCoords?: Float32Array;
-  /** How coordinates are interpreted; omitted means inferred from their bounds. */
-  readonly coordinateSpace?: 'cartesian' | 'geographic';
-  /** Edge endpoint vertex indices stored as `[from0, to0, from1, to1, ...]`. */
-  readonly edges: Uint32Array;
-  /** Per-edge offsets into `polylinePoints`, `edgeCount + 1` long, beginning at zero. */
-  readonly polylineStart: Uint32Array;
-  /** Optional intermediate `x, y` points for every edge polyline. */
-  readonly polylinePoints?: Float32Array;
-}
-
-/** One topology primitive. Field-for-field the item `@latkit/network` picks. */
-export interface Item {
-  readonly kind: 'vertex' | 'edge';
-  readonly index: number;
-}
-
-/** One element of one class. */
-export interface ElementRef {
-  readonly classId: string;
-  readonly index: number;
-}
-
-/**
- * One attribute over every element of a class.
- *
- * @remarks
- * A missing value is `NaN` in a number column and `null` in a text column; a flag is always `0`
- * or `1`. `group` is an optional inspector section; columns without one form the first section.
- */
-export type Column =
-  | {
-      readonly kind: 'number';
-      readonly id: string;
-      readonly label: string;
-      readonly unit?: string;
-      readonly group?: string;
-      readonly values: Float64Array;
-    }
-  | {
-      readonly kind: 'text';
-      readonly id: string;
-      readonly label: string;
-      readonly group?: string;
-      readonly values: readonly (string | null)[];
-    }
-  | {
-      readonly kind: 'flag';
-      readonly id: string;
-      readonly label: string;
-      readonly group?: string;
-      readonly values: Uint8Array;
-    };
-
-/** One quantity a run can record for every element of a class. */
-export interface Signal {
-  readonly id: string;
-  readonly label: string;
-  readonly unit: string;
-  /** Whether a run of this model records the signal. */
-  readonly recorded: boolean;
-}
-
-/** One element class: what is always known about it before its data loads. */
-export interface ClassSpec {
-  readonly id: string;
-  readonly label: string;
-  readonly count: number;
-  /**
-   * Where each element sits on the topology: `index[i]` is the vertex or edge of element `i`, or
-   * `0xffffffff` when element `i` has no place. An owner class (see `Model.owners`) is anchored by
-   * identity and must not declare one; a class with no place on the canvas omits it.
-   */
-  readonly anchor?: { readonly kind: 'vertex' | 'edge'; readonly index: Uint32Array };
-  readonly signals: readonly Signal[];
-}
-
-/** One element class's data: a display label per element and its attribute columns. */
-export interface ClassData {
-  readonly labels: readonly string[];
-  readonly columns: readonly Column[];
-}
-
-/** What a model loads lazily: class data on demand and the vendor's canonical bytes. */
-export interface Loader {
-  /** Resolve one class's data. */
-  load(classId: string, signal?: AbortSignal): Promise<ClassData>;
-  /** The vendor's canonical bytes, for editing and for engines. */
-  bytes(signal?: AbortSignal): Promise<Uint8Array>;
-}
-
-/**
- * A network with element classes.
- *
- * @remarks
- * Immutable. `owners` names the class whose element `i` is vertex `i` and the class whose element
- * `i` is edge `i`; either may be absent. `load` caches, coalesces concurrent callers, and lets
- * each caller abort independently; it rejects for an unknown class.
- */
-export interface Model extends Loader {
-  readonly vendor: string;
-  readonly id: string;
-  readonly name: string;
-  readonly meta: Readonly<Record<string, number | string | boolean | null>>;
-  readonly topology: Topology;
-  readonly owners: { readonly vertex?: string; readonly edge?: string };
-  readonly classes: readonly ClassSpec[];
-}
+import type { Document } from './document.js';
+import type { Domain } from './domain.js';
+import { checkRef, fieldOf } from './field.js';
+import { createGrid } from './grid.js';
+import { decodeCore, encodeCore } from './pack/core.js';
+import { decodeShard, encodeShard } from './pack/shard.js';
+import { Series } from './series.js';
 
 const NONE = 0xffffffff;
 
-type Data = Omit<Model, keyof Loader>;
+/**
+ * A network and its element classes, as a format reads them from a case. Subclass it for a
+ * format: describe the case to the constructor, give each class's `values` when asked and the
+ * case's `bytes`, and, for a format that edits, its `document`. A host asks the instance where an
+ * element sits, what a column holds, and for a class as a table; any engine records it.
+ *
+ * @remarks
+ * Immutable. `owners` names the class whose element `i` is vertex `i` and the class whose element
+ * `i` is edge `i`; either may be absent. Class values load once, shared by concurrent callers,
+ * each of whom may abort without cancelling the others.
+ */
+export abstract class Model {
+  /** The format that read the case, such as `gridkit`. */
+  readonly format: string;
+  readonly id: string;
+  readonly name: string;
+  readonly meta: Readonly<Record<string, number | string | boolean | null>>;
+  readonly topology: Model.Topology;
+  readonly owners: { readonly vertex?: string; readonly edge?: string };
+  readonly classes: readonly Model.Class[];
+  readonly #byId = new Map<string, Model.Class>();
+  readonly #owners: Record<'vertex' | 'edge', string | null> = { vertex: null, edge: null };
+  /** Each class's fields as `fields` lists them. */
+  readonly #listed = new Map<string, readonly Pick<Model.Field, 'ref' | 'label' | 'unit'>[]>();
+  readonly #loaded = new Map<string, Model.Data>();
+  readonly #pending = new Map<string, Pending>();
+  /** Each resolved number column's sealed one-frame series, by class and column. */
+  readonly #constants = new Map<string, Series>();
+
+  /**
+   * Check the description once: unique ids, declared columns and signals, anchors within the
+   * topology, owners with one element per item, and a consistent topology.
+   *
+   * @throws Error naming the first thing that is inconsistent.
+   */
+  constructor(description: Model.Description) {
+    nonEmptyString(description.format, 'model format');
+    nonEmptyString(description.id, 'model id');
+    if (typeof description.name !== 'string') throw new Error('model name must be a string');
+    const meta = description.meta ?? {};
+    for (const [key, value] of Object.entries(meta)) {
+      if (value !== null && !['number', 'string', 'boolean'].includes(typeof value)) {
+        throw new Error(`meta '${key}' must be a number, string, boolean, or null`);
+      }
+    }
+    validateTopology(description.topology);
+    if (!Array.isArray(description.classes as unknown)) throw new Error('classes must be an array');
+    const owners = description.owners ?? {};
+    for (const kind of ['vertex', 'edge'] as const) {
+      const owner = owners[kind];
+      if (owner === undefined) continue;
+      if (!description.classes.some((spec) => spec.id === owner)) {
+        throw new Error(`${kind} owner '${String(owner)}' is not a class`);
+      }
+      this.#owners[kind] = owner;
+    }
+    for (const spec of description.classes) {
+      if (this.#byId.has(spec.id)) throw new Error(`duplicate class id '${spec.id}'`);
+      const owner =
+        this.#owners.vertex === spec.id ? 'vertex' : this.#owners.edge === spec.id ? 'edge' : null;
+      validateSpec(spec, description.topology, owner);
+      this.#byId.set(spec.id, spec);
+      this.#listed.set(spec.id, listing(spec));
+    }
+    this.format = description.format;
+    this.id = description.id;
+    this.name = description.name;
+    this.meta = meta;
+    this.topology = description.topology;
+    this.owners = owners;
+    this.classes = description.classes;
+  }
+
+  /**
+   * One class's labels and column values, in the order its spec declares the columns. Asked once
+   * per class; `signal` aborts once no caller wants it.
+   */
+  protected abstract values(classId: string, signal: AbortSignal): Promise<Model.Values>;
+
+  /** The case as bytes, the caller's own. */
+  abstract bytes(signal?: AbortSignal): Promise<Uint8Array>;
+
+  /** The case open for editing; absent for a format that does not edit. */
+  document?(signal?: AbortSignal): Promise<Document>;
+
+  /** The class `id` names, or undefined for a class the model lacks. */
+  class(id: string): Model.Class | undefined {
+    return this.#byId.get(id);
+  }
+
+  /**
+   * One class's labels and its columns with their values, checked against its spec.
+   *
+   * @throws Error for a class the model lacks, or values that do not match the spec.
+   */
+  load(classId: string, signal?: AbortSignal): Promise<Model.Data> {
+    if (signal?.aborted) return Promise.reject(abortError());
+    const data = this.#loaded.get(classId);
+    if (data) return Promise.resolve(data);
+    const spec = this.#byId.get(classId);
+    if (!spec) return Promise.reject(new Error(`unknown class '${classId}'`));
+    let entry = this.#pending.get(classId);
+    if (!entry || entry.controller.signal.aborted) entry = this.#begin(spec);
+    return this.#subscribe(classId, entry, signal);
+  }
+
+  /** The element a picked item is, through the owners; null when nothing owns that item. */
+  elementAt(item: Model.Item): Model.Element | null {
+    const classId = this.#owners[item.kind] ?? undefined;
+    const spec = classId === undefined ? undefined : this.#byId.get(classId);
+    if (!spec || !Number.isSafeInteger(item.index) || item.index < 0 || item.index >= spec.count)
+      return null;
+    return { classId: spec.id, index: item.index };
+  }
+
+  /**
+   * Where an element sits on the topology: by identity for an owner class, else through its
+   * class's anchor; null when it has no place.
+   */
+  itemOf(element: Model.Element): Model.Item | null {
+    const spec = this.#byId.get(element.classId);
+    if (
+      !spec ||
+      !Number.isSafeInteger(element.index) ||
+      element.index < 0 ||
+      element.index >= spec.count
+    )
+      return null;
+    if (this.#owners.vertex === spec.id) return { kind: 'vertex', index: element.index };
+    if (this.#owners.edge === spec.id) return { kind: 'edge', index: element.index };
+    if (!spec.anchor) return null;
+    const index = spec.anchor.index[element.index]!;
+    return index === NONE ? null : { kind: spec.anchor.kind, index };
+  }
+
+  /**
+   * Every field of class `classId`, in declared order: its number columns, which `field`
+   * resolves, then its recorded signals, which a recording's `field` resolves. Empty for a class
+   * the model lacks.
+   */
+  fields(classId: string): readonly Pick<Model.Field, 'ref' | 'label' | 'unit'>[] {
+    return this.#listed.get(classId) ?? [];
+  }
+
+  /**
+   * A number column resolved to the `{ series, signal }` a renderer binds: a sealed series of one
+   * frame, which holds at every time. Null when the model has no such column; a signal is a
+   * recording's to resolve. One reference resolves to one series, so the renderers binding it
+   * share it.
+   *
+   * @throws TypeError when `ref` is not a field reference.
+   */
+  async field(ref: Model.FieldRef, signal?: AbortSignal): Promise<Model.Field | null> {
+    checkRef(ref);
+    signal?.throwIfAborted();
+    const spec = this.#byId.get(ref.classId);
+    const declared =
+      ref.kind === 'column' ? spec?.columns.find((column) => column.id === ref.id) : undefined;
+    if (!spec || declared?.kind !== 'number') return null;
+    const series = await this.#constant(spec, declared.id, signal);
+    return fieldOf(ref, declared.label, declared.unit ?? '', series, 0, spec.count, always);
+  }
+
+  /**
+   * One class as a table of its labels and columns; a recording's `grid` adds the signals it
+   * records, at a time.
+   *
+   * @throws Error for a class the model lacks.
+   */
+  async grid(classId: string, signal?: AbortSignal): Promise<Model.Grid> {
+    if (!this.#byId.has(classId)) throw new Error(`unknown class '${classId}'`);
+    const data = await this.load(classId, signal);
+    signal?.throwIfAborted();
+    return createGrid(data.labels, data.columns);
+  }
+
+  /** The model as a source: its description packed, and each class's values packed when asked. */
+  source(): Model.Source {
+    return {
+      core: (signal) =>
+        Promise.resolve().then(() => {
+          signal?.throwIfAborted();
+          return encodeCore(this);
+        }),
+      class: async (id, signal) => encodeShard(await this.load(id, signal)),
+      bytes: async (signal) => (await this.bytes(signal)).slice(),
+    };
+  }
+
+  /**
+   * The model a source holds, its classes unpacked as they load.
+   *
+   * @throws Error when the core is not a valid pack or describes an inconsistent model.
+   */
+  static async from(
+    source: Model.Source,
+    options: {
+      readonly signal?: AbortSignal;
+      readonly progress?: (loaded: number, total: number) => void;
+    } = {},
+  ): Promise<Model> {
+    const core = await source.core(options.signal, options.progress);
+    return new Unpacked(decodeCore(core), core, source);
+  }
+
+  #begin(spec: Model.Class): Pending {
+    const controller = new AbortController();
+    const settle = (): void => {
+      if (this.#pending.get(spec.id) === entry) this.#pending.delete(spec.id);
+    };
+    const entry: Pending = {
+      controller,
+      subscribers: 0,
+      promise: this.values(spec.id, controller.signal).then(
+        (values) => {
+          controller.signal.throwIfAborted();
+          const data = join(spec, values);
+          this.#loaded.set(spec.id, data);
+          settle();
+          return data;
+        },
+        (error: unknown) => {
+          settle();
+          throw error;
+        },
+      ),
+    };
+    this.#pending.set(spec.id, entry);
+    return entry;
+  }
+
+  /** One shared load per class; each caller may abort without cancelling the others. */
+  #subscribe(classId: string, entry: Pending, signal?: AbortSignal): Promise<Model.Data> {
+    entry.subscribers++;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const release = (): void => {
+        signal?.removeEventListener('abort', abort);
+        entry.subscribers--;
+        if (entry.subscribers === 0 && this.#pending.get(classId) === entry)
+          entry.controller.abort();
+      };
+      const abort = (): void => {
+        if (settled) return;
+        settled = true;
+        release();
+        reject(abortError());
+      };
+      signal?.addEventListener('abort', abort, { once: true });
+      entry.promise.then(
+        (data) => {
+          if (settled) return;
+          settled = true;
+          release();
+          resolve(data);
+        },
+        (error: unknown) => {
+          if (settled) return;
+          settled = true;
+          release();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        },
+      );
+    });
+  }
+
+  /** Number column `id` of `spec` as a sealed series of one frame, made once. */
+  async #constant(spec: Model.Class, id: string, signal?: AbortSignal): Promise<Series> {
+    const key = `${spec.id}\0${id}`;
+    const known = this.#constants.get(key);
+    if (known) return known;
+    const data = await this.load(spec.id, signal);
+    let series = this.#constants.get(key);
+    if (!series) {
+      const column = data.columns.find((candidate) => candidate.id === id)!;
+      const made = Series.create({
+        signals: [id],
+        elementCount: spec.count,
+        time: Float64Array.of(0),
+        values: column.values as Float64Array,
+      });
+      made.seal();
+      series = made;
+      this.#constants.set(key, series);
+    }
+    return series;
+  }
+}
+
+/** What a model speaks: its description, topology, classes, values, fields, grids, and source. */
+export declare namespace Model {
+  /** What a model is before any class loads: what a format gives the constructor. */
+  interface Description {
+    readonly format: string;
+    readonly id: string;
+    readonly name: string;
+    readonly meta?: Readonly<Record<string, number | string | boolean | null>>;
+    readonly topology: Topology;
+    readonly owners?: { readonly vertex?: string; readonly edge?: string };
+    readonly classes: readonly Class[];
+  }
+  /** CPU-side graph shape. Field-for-field the topology `@latkit/network` loads. */
+  interface Topology {
+    /** Number of logical graph vertices. */
+    readonly vertexCount: number;
+    /** Optional `x, y` or `lon, lat` coordinates, two f32 values per vertex. */
+    readonly vertexCoords?: Float32Array;
+    /** How coordinates are interpreted; omitted means inferred from their bounds. */
+    readonly coordinateSpace?: 'cartesian' | 'geographic';
+    /** Edge endpoint vertex indices stored as `[from0, to0, from1, to1, ...]`. */
+    readonly edges: Uint32Array;
+    /** Per-edge offsets into `polylinePoints`, `edgeCount + 1` long, beginning at zero. */
+    readonly polylineStart: Uint32Array;
+    /** Optional intermediate `x, y` points for every edge polyline. */
+    readonly polylinePoints?: Float32Array;
+  }
+  /** One topology primitive. Field-for-field the item `@latkit/network` picks. */
+  interface Item {
+    readonly kind: 'vertex' | 'edge';
+    readonly index: number;
+  }
+  /** One element of one class. */
+  interface Element {
+    readonly classId: string;
+    readonly index: number;
+  }
+  /** One element class: what is always known about it before its values load. */
+  interface Class {
+    readonly id: string;
+    readonly label: string;
+    readonly count: number;
+    /**
+     * Where each element sits on the topology: `index[i]` is the vertex or edge of element `i`, or
+     * `0xffffffff` when element `i` has no place. An owner class is anchored by identity and must
+     * not declare one; a class with no place on the canvas omits it.
+     */
+    readonly anchor?: { readonly kind: 'vertex' | 'edge'; readonly index: Uint32Array };
+    /** Its columns; its values hold theirs in this order. */
+    readonly columns: readonly Column[];
+    readonly signals: readonly Signal[];
+  }
+  /**
+   * An attribute every element of a class has. A missing value is `NaN` in a number column and
+   * `null` in a text column; a flag is always `0` or `1`. `group` is an optional inspector
+   * section; columns without one form the first section.
+   */
+  type Column =
+    | {
+        readonly kind: 'number';
+        readonly id: string;
+        readonly label: string;
+        readonly unit?: string;
+        readonly group?: string;
+      }
+    | {
+        readonly kind: 'text';
+        readonly id: string;
+        readonly label: string;
+        readonly group?: string;
+      }
+    | {
+        readonly kind: 'flag';
+        readonly id: string;
+        readonly label: string;
+        readonly group?: string;
+      };
+  /** A quantity an engine can record for every element of a class. */
+  interface Signal {
+    readonly id: string;
+    readonly label: string;
+    readonly unit: string;
+    /** Whether a recording of the model holds it. */
+    readonly recorded: boolean;
+  }
+  /** One class's labels and column values in declared order: what a format's `values` gives. */
+  interface Values {
+    readonly labels: readonly string[];
+    readonly values: readonly (Float64Array | readonly (string | null)[] | Uint8Array)[];
+  }
+  /** One class's labels and its columns with their values: what `load` resolves. */
+  interface Data {
+    readonly labels: readonly string[];
+    readonly columns: readonly (
+      | (Extract<Column, { kind: 'number' }> & { readonly values: Float64Array })
+      | (Extract<Column, { kind: 'text' }> & { readonly values: readonly (string | null)[] })
+      | (Extract<Column, { kind: 'flag' }> & { readonly values: Uint8Array })
+    )[];
+  }
+  /** Which quantity of a class: a number column or a signal. Plain data a host persists. */
+  interface FieldRef {
+    readonly classId: string;
+    readonly kind: 'column' | 'signal';
+    readonly id: string;
+  }
+  /**
+   * A column resolved by its model, or a signal by the recording that records it: the
+   * `{ series, signal }` every renderer binds, and what it is.
+   */
+  interface Field {
+    readonly ref: FieldRef;
+    readonly label: string;
+    readonly unit: string;
+    /** A signal's series in the recording; a column's is sealed with one frame. */
+    readonly series: Series;
+    /** The field's index in `series.signals`. */
+    readonly signal: number;
+    /** `normalizeDomain` over every committed value; it grows while the recording is live. */
+    readonly domain: Domain;
+    /**
+     * Every element's value at `time`: the latest frame at or before it, the first before the
+     * recording starts, NaN where an element has no value. The array is borrowed; never mutate
+     * it.
+     *
+     * @throws RangeError when `time` is not finite.
+     */
+    at(time: number, signal?: AbortSignal): Promise<Float32Array | Float64Array>;
+    /**
+     * The field over other items: item `i` holds element `elements[i]` of the class, NaN for
+     * `0xffffffff` or an element its series does not hold. It keeps this field's clock and
+     * recorded range, so a view colors a value the way every other view of the field does: a
+     * diagram's nets over the elements that drive them, a monitor's chosen few, one element's
+     * value in an inspector. Nothing is read until something reads it.
+     *
+     * @throws RangeError for an element outside the class.
+     */
+    gather(elements: ArrayLike<number>): Field;
+  }
+  /** A class as a table: search, sort, and windows that format only the rows they return. */
+  interface Grid {
+    /**
+     * What each cell of a row shows, in order: the class's columns, then, in a recording's grid,
+     * the signals it records at the grid's time.
+     */
+    readonly columns: readonly {
+      readonly kind: 'column' | 'signal';
+      readonly id: string;
+      readonly label: string;
+      readonly unit?: string;
+    }[];
+    /** Rows `offset` through `offset + limit` under `query` and `sort`, and the filtered total. */
+    window(
+      query: string,
+      sort: GridSort | null,
+      offset: number,
+      limit: number,
+      signal?: AbortSignal,
+    ): Promise<{
+      readonly rows: readonly {
+        readonly index: number;
+        readonly label: string;
+        readonly cells: readonly string[];
+      }[];
+      readonly total: number;
+    }>;
+    /** The display position of element `index` under `query` and `sort`; null when filtered out. */
+    locate(
+      index: number,
+      query: string,
+      sort: GridSort | null,
+      signal?: AbortSignal,
+    ): Promise<number | null>;
+    /** Drop every cache; pending and later queries reject with `AbortError`. */
+    dispose(): void;
+  }
+  /** Which column orders a grid, by its index in `Grid.columns` or null for the label, and how. */
+  interface GridSort {
+    readonly column: number | null;
+    readonly dir: 'asc' | 'desc';
+  }
+  /**
+   * A model held elsewhere: its description packed, and each class's values packed when asked.
+   * Every buffer it returns is the caller's; a transport may detach it. A source that holds
+   * resources releases them in `close`.
+   */
+  interface Source {
+    core(
+      signal?: AbortSignal,
+      progress?: (loaded: number, total: number) => void,
+    ): Promise<Uint8Array>;
+    class(id: string, signal?: AbortSignal): Promise<Uint8Array>;
+    bytes(signal?: AbortSignal): Promise<Uint8Array>;
+    close?(): void;
+  }
+}
+
+/**
+ * A model a source holds: its classes unpacked from the shards the source gives, and served again
+ * as they came, so a relay forwards packs untouched.
+ */
+class Unpacked extends Model {
+  /** The core it opened from, whose sections its description views. */
+  readonly #core: Uint8Array;
+  readonly #source: Model.Source;
+
+  constructor(description: Model.Description, core: Uint8Array, source: Model.Source) {
+    super(description);
+    this.#core = core;
+    this.#source = source;
+  }
+
+  protected async values(classId: string, signal: AbortSignal): Promise<Model.Values> {
+    return decodeShard(await this.#source.class(classId, signal), this.class(classId)!);
+  }
+
+  bytes(signal?: AbortSignal): Promise<Uint8Array> {
+    return this.#source.bytes(signal);
+  }
+
+  /** The source it opened from: no class decoded, checked, or packed again; never its `close`. */
+  override source(): Model.Source {
+    const source = this.#source;
+    return {
+      core: (signal) =>
+        Promise.resolve().then(() => {
+          signal?.throwIfAborted();
+          return this.#core.slice();
+        }),
+      class: (id, signal) => source.class(id, signal),
+      bytes: (signal) => source.bytes(signal),
+    };
+  }
+}
 
 interface Pending {
   readonly controller: AbortController;
-  readonly promise: Promise<ClassData>;
+  readonly promise: Promise<Model.Data>;
   subscribers: number;
+}
+
+/** Each class's fields as `fields` lists them: number columns, then recorded signals. */
+function listing(spec: Model.Class): readonly Pick<Model.Field, 'ref' | 'label' | 'unit'>[] {
+  const entry = (kind: Model.FieldRef['kind'], id: string, label: string, unit: string) =>
+    Object.freeze({ ref: Object.freeze({ classId: spec.id, kind, id }), label, unit });
+  return Object.freeze([
+    ...spec.columns.flatMap((column) =>
+      column.kind === 'number' ? [entry('column', column.id, column.label, column.unit ?? '')] : [],
+    ),
+    ...spec.signals.flatMap((declared) =>
+      declared.recorded ? [entry('signal', declared.id, declared.label, declared.unit)] : [],
+    ),
+  ]);
 }
 
 function abortError(): DOMException {
@@ -151,6 +578,12 @@ function nonNegativeInteger(value: unknown, what: string): number {
   return value;
 }
 
+/** A column's frame is its only one, whatever the time. */
+function always(time: number): number {
+  if (!Number.isFinite(time)) throw new RangeError('time must be finite');
+  return 0;
+}
+
 /** Reject non-finite geometry before it reaches bounds, sphere, and fit calculations. */
 function validateFinite(values: Float32Array, name: string): void {
   for (const value of values) {
@@ -159,13 +592,13 @@ function validateFinite(values: Float32Array, name: string): void {
 }
 
 /**
- * Validate the CPU-side graph shape a `Topology` promises: counts, typed-array kinds, finite
+ * Validate the CPU-side graph shape a `Model.Topology` promises: counts, typed-array kinds, finite
  * coordinates, endpoints within the vertex range, and a monotonic polyline offset table. The one
- * validator every consumer shares, so a topology `createModel` accepts is one a renderer loads.
+ * validator every consumer shares, so a topology a model accepts is one a renderer loads.
  *
  * @throws Error naming the first field that is invalid.
  */
-export function validateTopology(topology: Topology): void {
+export function validateTopology(topology: Model.Topology): void {
   const vertexCount = topology.vertexCount;
   if (!Number.isSafeInteger(vertexCount) || vertexCount < 0) {
     throw new Error('invalid vertex count');
@@ -208,18 +641,40 @@ export function validateTopology(topology: Topology): void {
   }
 }
 
-function validateSpec(spec: ClassSpec, topology: Topology, owner: 'vertex' | 'edge' | null): void {
+function validateSpec(
+  spec: Model.Class,
+  topology: Model.Topology,
+  owner: 'vertex' | 'edge' | null,
+): void {
   const id = nonEmptyString(spec.id, 'class id');
   if (typeof spec.label !== 'string') throw new Error(`class '${id}' label must be a string`);
   const count = nonNegativeInteger(spec.count, `class '${id}' count`);
+  if (!Array.isArray(spec.columns as unknown)) {
+    throw new Error(`class '${id}' columns must be an array`);
+  }
+  const columns = new Set<string>();
+  for (const column of spec.columns) {
+    const columnId = nonEmptyString(column.id, `class '${id}' column id`);
+    if (columns.has(columnId)) throw new Error(`class '${id}' repeats column '${columnId}'`);
+    columns.add(columnId);
+    const unit = (column as { readonly unit?: unknown }).unit;
+    if (
+      (column.kind !== 'number' && column.kind !== 'text' && column.kind !== 'flag') ||
+      typeof column.label !== 'string' ||
+      (column.group !== undefined && typeof column.group !== 'string') ||
+      (unit !== undefined && (column.kind !== 'number' || typeof unit !== 'string'))
+    ) {
+      throw new Error(`class '${id}' column '${columnId}' is malformed`);
+    }
+  }
   if (!Array.isArray(spec.signals as unknown)) {
     throw new Error(`class '${id}' signals must be an array`);
   }
-  const ids = new Set<string>();
+  const signals = new Set<string>();
   for (const signal of spec.signals) {
     const signalId = nonEmptyString(signal.id, `class '${id}' signal id`);
-    if (ids.has(signalId)) throw new Error(`class '${id}' repeats signal '${signalId}'`);
-    ids.add(signalId);
+    if (signals.has(signalId)) throw new Error(`class '${id}' repeats signal '${signalId}'`);
+    signals.add(signalId);
     if (
       typeof signal.label !== 'string' ||
       typeof signal.unit !== 'string' ||
@@ -253,178 +708,30 @@ function validateSpec(spec: ClassSpec, topology: Topology, owner: 'vertex' | 'ed
   }
 }
 
-function validateData(spec: ClassSpec, data: ClassData): void {
+/** One class's values joined to the columns its spec declares, once they check out. */
+function join(spec: Model.Class, data: Model.Values): Model.Data {
+  if (!data || typeof data !== 'object') throw new Error(`class '${spec.id}' data is malformed`);
   if (!Array.isArray(data.labels) || data.labels.length !== spec.count) {
     throw new Error(`class '${spec.id}' data must carry one label per element`);
   }
-  if (!Array.isArray(data.columns as unknown)) {
-    throw new Error(`class '${spec.id}' columns must be an array`);
+  if (!Array.isArray(data.values as unknown) || data.values.length !== spec.columns.length) {
+    throw new Error(`class '${spec.id}' data must carry the values of every declared column`);
   }
-  const ids = new Set<string>();
-  for (const column of data.columns) {
-    const id = nonEmptyString(column.id, `class '${spec.id}' column id`);
-    if (ids.has(id)) throw new Error(`class '${spec.id}' repeats column '${id}'`);
-    ids.add(id);
+  const columns = spec.columns.map((declared, at): Model.Data['columns'][number] => {
+    const values = data.values[at];
     const ok =
-      column.kind === 'number'
-        ? isTypedArray(column.values, 'Float64Array')
-        : column.kind === 'text'
-          ? Array.isArray(column.values)
-          : column.kind === 'flag' && isTypedArray(column.values, 'Uint8Array');
-    if (!ok || column.values.length !== spec.count) {
-      throw new Error(`class '${spec.id}' column '${id}' has the wrong kind or length`);
+      declared.kind === 'number'
+        ? isTypedArray(values, 'Float64Array')
+        : declared.kind === 'text'
+          ? Array.isArray(values)
+          : isTypedArray(values, 'Uint8Array');
+    if (!ok || values!.length !== spec.count) {
+      throw new Error(`class '${spec.id}' column '${declared.id}' has the wrong kind or length`);
     }
-    if (column.kind === 'flag' && column.values.some((flag) => flag > 1)) {
-      throw new Error(`class '${spec.id}' flag column '${id}' must hold only 0 or 1`);
+    if (declared.kind === 'flag' && (values as Uint8Array).some((flag) => flag > 1)) {
+      throw new Error(`class '${spec.id}' flag column '${declared.id}' must hold only 0 or 1`);
     }
-  }
-}
-
-/**
- * Build a model from its data and its loader.
- *
- * @remarks
- * The one place a model is validated: unique ids, anchors within the topology, owners with one
- * element per item, a consistent topology, and every loaded class the shape its spec promised.
- * Vendors and the unpacker both build models here.
- *
- * @throws Error when the data is inconsistent.
- */
-export function createModel(model: Data, loader: Loader): Model {
-  nonEmptyString(model.vendor, 'model vendor');
-  nonEmptyString(model.id, 'model id');
-  if (typeof model.name !== 'string') throw new Error('model name must be a string');
-  for (const [key, value] of Object.entries(model.meta)) {
-    if (value !== null && !['number', 'string', 'boolean'].includes(typeof value)) {
-      throw new Error(`meta '${key}' must be a number, string, boolean, or null`);
-    }
-  }
-  validateTopology(model.topology);
-  if (!Array.isArray(model.classes as unknown)) throw new Error('classes must be an array');
-  const owners: Record<'vertex' | 'edge', string | null> = { vertex: null, edge: null };
-  for (const kind of ['vertex', 'edge'] as const) {
-    const owner = model.owners[kind];
-    if (owner === undefined) continue;
-    if (!model.classes.some((spec) => spec.id === owner)) {
-      throw new Error(`${kind} owner '${String(owner)}' is not a class`);
-    }
-    owners[kind] = owner;
-  }
-  const byId = new Map<string, ClassSpec>();
-  for (const spec of model.classes) {
-    if (byId.has(spec.id)) throw new Error(`duplicate class id '${spec.id}'`);
-    const owner = owners.vertex === spec.id ? 'vertex' : owners.edge === spec.id ? 'edge' : null;
-    validateSpec(spec, model.topology, owner);
-    byId.set(spec.id, spec);
-  }
-
-  const loaded = new Map<string, ClassData>();
-  const pending = new Map<string, Pending>();
-
-  function begin(spec: ClassSpec): Pending {
-    const controller = new AbortController();
-    const settle = (): void => {
-      if (pending.get(spec.id) === entry) pending.delete(spec.id);
-    };
-    const entry: Pending = {
-      controller,
-      subscribers: 0,
-      promise: loader.load(spec.id, controller.signal).then(
-        (data) => {
-          controller.signal.throwIfAborted();
-          validateData(spec, data);
-          loaded.set(spec.id, data);
-          settle();
-          return data;
-        },
-        (error: unknown) => {
-          settle();
-          throw error;
-        },
-      ),
-    };
-    pending.set(spec.id, entry);
-    return entry;
-  }
-
-  /** One shared load per class; each caller may abort without cancelling the others. */
-  function subscribe(classId: string, entry: Pending, signal?: AbortSignal): Promise<ClassData> {
-    entry.subscribers++;
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const release = (): void => {
-        signal?.removeEventListener('abort', abort);
-        entry.subscribers--;
-        if (entry.subscribers === 0 && pending.get(classId) === entry) entry.controller.abort();
-      };
-      const abort = (): void => {
-        if (settled) return;
-        settled = true;
-        release();
-        reject(abortError());
-      };
-      signal?.addEventListener('abort', abort, { once: true });
-      entry.promise.then(
-        (data) => {
-          if (settled) return;
-          settled = true;
-          release();
-          resolve(data);
-        },
-        (error: unknown) => {
-          if (settled) return;
-          settled = true;
-          release();
-          reject(error instanceof Error ? error : new Error(String(error)));
-        },
-      );
-    });
-  }
-
-  return {
-    vendor: model.vendor,
-    id: model.id,
-    name: model.name,
-    meta: model.meta,
-    topology: model.topology,
-    owners: model.owners,
-    classes: model.classes,
-    load(classId, signal) {
-      if (signal?.aborted) return Promise.reject(abortError());
-      const data = loaded.get(classId);
-      if (data) return Promise.resolve(data);
-      const spec = byId.get(classId);
-      if (!spec) return Promise.reject(new Error(`unknown class '${classId}'`));
-      let entry = pending.get(classId);
-      if (!entry || entry.controller.signal.aborted) entry = begin(spec);
-      return subscribe(classId, entry, signal);
-    },
-    bytes: (signal) => loader.bytes(signal),
-  };
-}
-
-/** The element a picked item is, through the model's owners; null when nothing owns that kind. */
-export function elementAt(model: Pick<Model, 'owners' | 'classes'>, item: Item): ElementRef | null {
-  const classId = model.owners[item.kind];
-  if (classId === undefined) return null;
-  const spec = model.classes.find((candidate) => candidate.id === classId);
-  if (!spec || !Number.isSafeInteger(item.index) || item.index < 0 || item.index >= spec.count) {
-    return null;
-  }
-  return { classId, index: item.index };
-}
-
-/** Where an element sits on the topology: by identity for an owner class, else through its
- *  class's anchor; null when it has no place. */
-export function itemOf(model: Pick<Model, 'owners' | 'classes'>, ref: ElementRef): Item | null {
-  const spec = model.classes.find((candidate) => candidate.id === ref.classId);
-  if (!spec || !Number.isSafeInteger(ref.index) || ref.index < 0 || ref.index >= spec.count) {
-    return null;
-  }
-  for (const kind of ['vertex', 'edge'] as const) {
-    if (model.owners[kind] === ref.classId) return { kind, index: ref.index };
-  }
-  if (!spec.anchor) return null;
-  const index = spec.anchor.index[ref.index]!;
-  return index === NONE ? null : { kind: spec.anchor.kind, index };
+    return { ...declared, values } as Model.Data['columns'][number];
+  });
+  return { labels: data.labels, columns };
 }

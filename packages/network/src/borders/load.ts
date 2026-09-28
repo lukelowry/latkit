@@ -1,10 +1,8 @@
 /**
- * `@latkit/network/borders` — the packaged Natural Earth 50m line borders (coastlines, land
- * boundaries, state and province lines) in the `Borders` layout the renderer consumes. Loaded from
- * the package's own assets and decoded once per module instance; every caller shares the one
- * request, and a caller's abort ends only its own participation.
- *
- * @packageDocumentation
+ * The packaged Natural Earth 50m line borders (coastlines, land boundaries, state and province
+ * lines) in the `Borders` layout the renderer consumes. Loaded from the package's own assets and
+ * decoded once per module instance; every caller shares the one request, and a caller's abort ends
+ * only its own participation.
  */
 
 import { type Borders, validateBorders } from './index.js';

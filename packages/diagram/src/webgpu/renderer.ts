@@ -1,7 +1,7 @@
 /// <reference types="@webgpu/types" />
 
 import type { Presentation } from '@latkit/gpu';
-import { bakeColormap, COLORMAP_LUT_SIZE } from '@latkit/model';
+import { bakeColormap, COLORMAP_LUT_SIZE } from '@latkit/gpu';
 
 import { DEFAULT_OPTIONS } from '../options.js';
 import { DEFAULT_SHADE_WGSL } from '../shade.js';

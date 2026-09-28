@@ -11,10 +11,9 @@ export type State = 'idle' | 'loading' | 'ready' | 'error';
 
 /** The controller surface the shell drives; `Network` and `Monitor` both satisfy it. */
 export interface Controller {
-  readonly attached: boolean;
   on(event: never, handler: (payload: never) => void): () => void;
-  attach(canvas: HTMLCanvasElement): Promise<void>;
-  detach(): void;
+  attach(canvas: HTMLCanvasElement): Promise<boolean>;
+  detach(canvas?: HTMLCanvasElement): void;
   pause(): void;
   resume(): void;
 }
@@ -113,7 +112,6 @@ export function defineShell<C extends Controller, D>(
     #readySettled = false;
     #stopNear: (() => void) | null = null;
     #near = false;
-    #attaching = false;
     #attachFailed = false;
     readonly #pending = new Set<string>();
     #flushQueued = false;
@@ -158,7 +156,7 @@ export function defineShell<C extends Controller, D>(
       this.#stopNear?.();
       this.#stopNear = null;
       this.#near = false;
-      this.#controller?.detach();
+      this.#controller?.detach(this.#canvas);
     }
 
     attributeChangedCallback(name: string, previous: string | null, next: string | null): void {
@@ -265,29 +263,14 @@ export function defineShell<C extends Controller, D>(
       this.#ensureController().resume();
     }
 
+    /** Attach while near; a repeat attach joins the one bound or binding. */
     #ensureAttached(): void {
       const controller = this.#ensureController();
-      if (
-        !this.isConnected ||
-        !this.#near ||
-        controller.attached ||
-        this.#attaching ||
-        this.#attachFailed
-      ) {
-        return;
-      }
-      this.#attaching = true;
-      controller.attach(this.#canvas).then(
-        () => {
-          this.#attaching = false;
-        },
-        (error: unknown) => {
-          this.#attaching = false;
-          if (isAbortError(error)) return;
-          this.#attachFailed = true;
-          this.#fail(error);
-        },
-      );
+      if (!this.isConnected || !this.#near || this.#attachFailed) return;
+      controller.attach(this.#canvas).catch((error: unknown) => {
+        this.#attachFailed = true;
+        this.#fail(error);
+      });
     }
 
     /** Forget the current source; the next approach to the viewport resolves the new one. */
@@ -459,8 +442,4 @@ function deferred(): Deferred {
 
 function superseded(): DOMException {
   return new DOMException('The source was replaced.', 'AbortError');
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError';
 }

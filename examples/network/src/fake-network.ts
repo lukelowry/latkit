@@ -1,4 +1,4 @@
-import type { Topology } from '@latkit/model';
+import type { Model } from '@latkit/model';
 
 /**
  * A synthetic power-grid-like network. Vertices are scattered over a
@@ -9,7 +9,7 @@ import type { Topology } from '@latkit/model';
  * Returns the Topology plus per-vertex signals to drive the color/size channels.
  */
 export interface FakeNetwork {
-  readonly topology: Topology;
+  readonly topology: Model.Topology;
   readonly vertexCount: number;
   readonly edgeCount: number;
   /** Per-vertex scalar in [0, 1] for the vertexColor channel. */
@@ -164,7 +164,7 @@ function wire(pts: Pt[], random: () => number): Edge[] {
 }
 
 /** Pack points + edges into the network wire-format Topology. */
-function encode(pts: Pt[], edges: Edge[]): Topology {
+function encode(pts: Pt[], edges: Edge[]): Model.Topology {
   const vertexCoords = new Float32Array(pts.length * 2);
   for (let i = 0; i < pts.length; i++) {
     vertexCoords[i * 2] = pts[i]!.x;

@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Topology } from '@latkit/model';
+import type { Model } from '@latkit/model';
 
 import { adjacency, neighborhood } from '../src/topology/adjacency.js';
 
 /** Three vertices: 0-1, 1-2, a self-loop on 2, and one edge whose far endpoint is out of range. */
-const TOPOLOGY: Topology = {
+const TOPOLOGY: Model.Topology = {
   vertexCount: 3,
   edges: Uint32Array.of(0, 1, 1, 2, 2, 2, 1, 9),
   polylineStart: new Uint32Array(5),

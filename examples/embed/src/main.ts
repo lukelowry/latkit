@@ -1,7 +1,9 @@
-import '@latkit/embed/register';
+import { register } from '@latkit/embed';
 import type { Projection } from '@latkit/network';
 
 import './style.css';
+
+register();
 
 const network = document.querySelector('latkit-network');
 const monitor = document.querySelector('latkit-monitor');
@@ -46,7 +48,7 @@ const reflectProjection = (): void => {
 };
 for (const button of projectionButtons) {
   button.addEventListener('click', () => {
-    network.network.setProjection(button.dataset.projection as Projection);
+    network.network.setCamera({ projection: button.dataset.projection as Projection });
     reflectProjection();
   });
 }

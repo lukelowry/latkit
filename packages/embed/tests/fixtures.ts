@@ -1,12 +1,12 @@
-import { createSeries, type Series, type Topology } from '@latkit/model';
+import { type Model, Series } from '@latkit/model';
 import type { Monitor, Events as MonitorEvents } from '@latkit/monitor';
-import type { Network, Events as NetworkEvents, Projection } from '@latkit/network';
+import type { Camera, Network, Events as NetworkEvents } from '@latkit/network';
 import { vi } from 'vitest';
 
 import { createElementClasses, type ElementDeps } from '../src/define.js';
 import type { NetworkData } from '../src/network.js';
 
-export function topology(): Topology {
+export function topology(): Model.Topology {
   return {
     vertexCount: 3,
     vertexCoords: new Float32Array([-1, -1, 0, 1, 1, -1]),
@@ -42,10 +42,10 @@ export function serializedNetwork(): Record<string, unknown> {
 }
 
 export function series(): Series {
-  return createSeries({
+  return Series.create({
     time: Float64Array.from([0, 1, 2]),
     values: new Float32Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
-    signalCount: 2,
+    signals: ['load', 'flow'],
     elementCount: 2,
   });
 }
@@ -54,7 +54,7 @@ export function serializedSeries(): Record<string, unknown> {
   return {
     time: [0, 1, 2],
     values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-    signalCount: 2,
+    signals: ['load', 'flow'],
     elementCount: 2,
   };
 }
@@ -94,7 +94,7 @@ export interface FakeNetwork extends Listeners<NetworkEvents> {
   readonly setOptions: Spy;
   readonly setChannel: Spy;
   readonly setChannelDomain: Spy;
-  readonly setProjection: Spy;
+  readonly setCamera: Spy;
   readonly setBorders: Spy;
   readonly pause: Spy;
   readonly resume: Spy;
@@ -103,25 +103,49 @@ export interface FakeNetwork extends Listeners<NetworkEvents> {
   failAttach(error: unknown): void;
 }
 
-export function fakeNetwork(): FakeNetwork {
-  const { on, emit } = listeners<NetworkEvents>();
+/** An attach lifecycle that joins a repeat attach and detaches a named canvas only while current. */
+function fakeAttachment(emit: (state: boolean) => void) {
   let attached = false;
+  let current: { readonly canvas: HTMLCanvasElement; readonly done: Promise<boolean> } | null =
+    null;
   let failure: { readonly error: unknown } | null = null;
-  const attach = vi.fn(async () => {
-    await Promise.resolve();
-    if (failure) {
-      const { error } = failure;
-      failure = null;
-      throw error;
-    }
-    attached = true;
-    emit('attached', true);
+  const attach = vi.fn((canvas: HTMLCanvasElement): Promise<boolean> => {
+    if (current?.canvas === canvas) return current.done;
+    const done = (async () => {
+      await Promise.resolve();
+      if (failure) {
+        const { error } = failure;
+        failure = null;
+        current = null;
+        throw error;
+      }
+      attached = true;
+      emit(true);
+      return true;
+    })();
+    current = { canvas, done };
+    return done;
   });
-  const detach = vi.fn(() => {
+  const detach = vi.fn((canvas?: HTMLCanvasElement) => {
+    if (canvas && current?.canvas !== canvas) return;
+    current = null;
     if (!attached) return;
     attached = false;
-    emit('attached', false);
+    emit(false);
   });
+  return {
+    attach,
+    detach,
+    attached: () => attached,
+    fail(error: unknown) {
+      failure = { error };
+    },
+  };
+}
+
+export function fakeNetwork(): FakeNetwork {
+  const { on, emit } = listeners<NetworkEvents>();
+  const { attach, detach, attached, fail } = fakeAttachment((state) => emit('attached', state));
   const spies = {
     attach,
     detach,
@@ -129,7 +153,7 @@ export function fakeNetwork(): FakeNetwork {
     setOptions: vi.fn(),
     setChannel: vi.fn(),
     setChannelDomain: vi.fn(),
-    setProjection: vi.fn((mode: Projection) => mode !== 'globe'),
+    setCamera: vi.fn((camera: Partial<Camera>) => camera.projection !== 'globe'),
     setBorders: vi.fn(),
     pause: vi.fn(),
     resume: vi.fn(),
@@ -138,18 +162,15 @@ export function fakeNetwork(): FakeNetwork {
     ...spies,
     emit,
     geographic: true,
-    failAttach(error) {
-      failure = { error };
-    },
+    failAttach: fail,
     value: {
-      projection: 'flat',
       projections: { flat: true, tilt: true, globe: false },
       get geographic() {
         return fake.geographic;
       },
       orbiting: false,
       get attached() {
-        return attached;
+        return attached();
       },
       on,
       ...spies,
@@ -165,30 +186,18 @@ export interface FakeMonitor extends Listeners<MonitorEvents> {
   readonly detach: Spy;
   readonly load: Spy;
   readonly setOptions: Spy;
-  readonly setSignal: Spy;
   readonly pause: Spy;
   readonly resume: Spy;
 }
 
 export function fakeMonitor(): FakeMonitor {
   const { on, emit } = listeners<MonitorEvents>();
-  let attached = false;
-  const attach = vi.fn(async () => {
-    await Promise.resolve();
-    attached = true;
-    emit('attached', true);
-  });
-  const detach = vi.fn(() => {
-    if (!attached) return;
-    attached = false;
-    emit('attached', false);
-  });
+  const { attach, detach, attached } = fakeAttachment((state) => emit('attached', state));
   const spies = {
     attach,
     detach,
     load: vi.fn(),
     setOptions: vi.fn(),
-    setSignal: vi.fn(),
     pause: vi.fn(),
     resume: vi.fn(),
   };
@@ -197,7 +206,7 @@ export function fakeMonitor(): FakeMonitor {
     emit,
     value: {
       get attached() {
-        return attached;
+        return attached();
       },
       on,
       ...spies,

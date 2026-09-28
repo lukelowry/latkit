@@ -1,6 +1,8 @@
+import type { Model } from '@latkit/model';
+
 /**
- * The graph shape a network loads is `@latkit/model`'s `Topology`, aliased here so every internal
- * module names one type.
+ * The graph shape a network loads is `@latkit/model`'s `Model.Topology`, aliased here so every
+ * internal module names one type.
  *
  * @remarks
  * `vertexCoords` and `polylinePoints` are interleaved coordinate pairs. Flat and tilt projections
@@ -9,7 +11,7 @@
  * `polylineStart` holds `edgeCount + 1` offsets into `polylinePoints`, beginning at `0`, monotonic,
  * and ending at the point count; straight edges use a zero-filled table.
  */
-export type { Topology } from '@latkit/model';
+export type Topology = Model.Topology;
 
 /** Axis-aligned bounds for topology vertex coordinates. */
 export interface Bounds {

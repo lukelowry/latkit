@@ -1,16 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { openModel, sourceOf, type Source } from '../src/index.js';
-import { sampleClass, sampleModel } from './fixture.js';
+import { Model } from '../src/index.js';
+import { Sample, sampleClass, sampleData, sampleModel, sampleValues } from './fixture.js';
 
-describe('sourceOf and openModel', () => {
+describe('model.source and Model.from', () => {
   it('round-trips a model through bytes with classes still lazy', async () => {
     const calls: string[] = [];
-    const source = sourceOf(sampleModel(calls));
-    const model = await openModel(source);
+    const original = sampleModel(calls);
+    const model = await Model.from(original.source());
     expect(calls).toEqual([]);
 
-    expect(model.vendor).toBe('test');
+    expect(model.format).toBe('test');
     expect(model.name).toBe('Sample');
     expect(model.meta).toEqual({ freqBase: 60, note: 'fixture', live: true, empty: null });
     expect(model.owners).toEqual({ vertex: 'bus', edge: 'branch' });
@@ -20,28 +20,55 @@ describe('sourceOf and openModel', () => {
     expect(Array.from(model.topology.edges)).toEqual([0, 1, 1, 2]);
     expect(Array.from(model.topology.polylinePoints!)).toEqual([-94.5, 30.5]);
     expect(model.classes.map((spec) => spec.id)).toEqual(['bus', 'branch', 'gen', 'area']);
-    expect(model.classes[0]!.anchor).toBeUndefined();
-    expect(Array.from(model.classes[2]!.anchor!.index)).toEqual([0, 2]);
-    expect(model.classes[3]!.anchor).toBeUndefined();
-    expect(model.classes[0]!.signals).toEqual(sampleModel().classes[0]!.signals);
+    expect(model.class('bus')!.anchor).toBeUndefined();
+    expect(Array.from(model.class('gen')!.anchor!.index)).toEqual([0, 2]);
+    expect(model.class('area')!.anchor).toBeUndefined();
+    expect(model.class('bus')!.signals).toEqual(original.class('bus')!.signals);
+    expect(model.class('bus')!.columns).toEqual(original.class('bus')!.columns);
 
     const bus = await model.load('bus');
     expect(calls).toEqual(['bus']);
-    const expected = sampleClass('bus');
-    expect(bus.labels).toEqual(expected.labels);
-    expect(bus.columns.map((column) => column.kind)).toEqual(['number', 'text', 'flag']);
-    expect(Array.from(bus.columns[0]!.values as Float64Array)).toEqual([1.02, NaN, 0.98]);
-    expect(bus.columns[0]).toMatchObject({ unit: 'pu' });
-    expect(bus.columns[1]).toMatchObject({ group: 'Location', values: ['A', null, 'B'] });
-    expect(Array.from(bus.columns[2]!.values as Uint8Array)).toEqual([1, 0, 0]);
+    expect(bus).toEqual(sampleClass('bus'));
     expect((await model.load('gen')).columns).toEqual([]);
 
     expect(new TextDecoder().decode(await model.bytes())).toBe('{"case":"sample"}');
   });
 
+  it('packs only what a column declares, and every model part packs again', async () => {
+    const model = await Model.from(sampleModel().source());
+    const again = await Model.from(model.source());
+    expect(again.class('bus')!.columns).toEqual([
+      { kind: 'number', id: 'Vm', label: 'Voltage', unit: 'pu' },
+      { kind: 'text', id: 'zone', label: 'Zone', group: 'Location' },
+      { kind: 'flag', id: 'slack', label: 'Slack' },
+    ]);
+    expect(await again.load('bus')).toEqual(sampleClass('bus'));
+  });
+
+  it('serves a model it opened from as it came: packs relayed untouched', async () => {
+    const packed = sampleModel().source();
+    const shard = await packed.class('bus');
+    const bytes = await packed.bytes();
+    const source: Model.Source = {
+      core: packed.core,
+      class: vi.fn(async () => shard),
+      bytes: vi.fn(async () => bytes),
+    };
+    const model = await Model.from(source);
+    const relayed = model.source();
+    expect(await relayed.class('bus')).toBe(shard);
+    expect(await relayed.bytes()).toBe(bytes);
+    expect(source.class).toHaveBeenCalledOnce();
+    const core = await relayed.core();
+    expect(core).toEqual(await packed.core());
+    expect(core.buffer).not.toBe(model.topology.edges.buffer);
+    await expect(relayed.core(AbortSignal.abort())).rejects.toMatchObject({ name: 'AbortError' });
+    expect(relayed.close).toBeUndefined();
+  });
+
   it('hands out buffers the caller owns', async () => {
     const original = sampleModel();
-    const source = sourceOf(original);
+    const source = original.source();
     const bytes = await source.bytes();
     bytes[0] = 0;
     expect((await original.bytes())[0]).toBe(0x7b);
@@ -51,51 +78,64 @@ describe('sourceOf and openModel', () => {
   });
 
   it('reads sections as views into the received buffer', async () => {
-    const core = await sourceOf(sampleModel()).core();
-    const model = await openModel({ ...stub(), core: async () => core });
+    const core = await sampleModel().source().core();
+    const model = await Model.from({ ...stub(), core: async () => core });
     expect(model.topology.edges.buffer).toBe(core.buffer);
   });
 
   it('rejects a core that is not a pack or describes an inconsistent model', async () => {
-    await expect(openModel({ ...stub(), core: async () => new Uint8Array(3) })).rejects.toThrow(
+    await expect(Model.from({ ...stub(), core: async () => new Uint8Array(3) })).rejects.toThrow(
       /truncated/,
     );
     await expect(
-      openModel({ ...stub(), core: async () => new TextEncoder().encode('LKM\0garbage.....') }),
+      Model.from({ ...stub(), core: async () => new TextEncoder().encode('LKM\0garbage.....') }),
     ).rejects.toThrow();
-    const core = await sourceOf(sampleModel()).core();
-    const flipped = core.slice();
-    flipped[5] = 9; // version
-    await expect(openModel({ ...stub(), core: async () => flipped })).rejects.toThrow(/version/);
   });
 
-  it('rejects a shard that does not match its spec', async () => {
-    const shard = await sourceOf(sampleModel()).class('gen');
-    const source: Source = {
-      ...stub(),
-      core: sourceOf(sampleModel()).core,
-      class: async () => shard,
-    };
-    const model = await openModel(source);
-    await expect(model.load('bus')).rejects.toThrow(/one label per element/);
+  it('rejects a shard that does not hold the columns its spec declares', async () => {
+    const packed = sampleModel().source();
+    const shard = await packed.class('gen');
+    const model = await Model.from({ ...stub(), core: packed.core, class: async () => shard });
+    await expect(model.load('bus')).rejects.toThrow(/does not hold the columns its spec declares/);
+    // The same columns in another order: every count agrees, every column is misplaced.
+    const swap = <T>([first, second, ...rest]: readonly T[]): T[] => [second!, first!, ...rest];
+    const reordered = new Sample({
+      description: {
+        ...sampleData(),
+        classes: sampleData().classes.map((spec) =>
+          spec.id === 'bus' ? { ...spec, columns: swap(spec.columns) } : spec,
+        ),
+      },
+      values: async (id) => {
+        const values = sampleValues(id);
+        return id === 'bus' ? { ...values, values: swap(values.values) } : values;
+      },
+    });
+    const swapped = await reordered.source().class('bus');
+    const other = await Model.from({ ...stub(), core: packed.core, class: async () => swapped });
+    await expect(other.load('bus')).rejects.toThrow(/does not hold the columns/);
   });
 
-  it('forwards abort signals and progress', async () => {
+  it('refuses a core read once aborted, and forwards abort signals and progress', async () => {
+    await expect(sampleModel().source().core(AbortSignal.abort())).rejects.toMatchObject({
+      name: 'AbortError',
+    });
     const seen: string[] = [];
-    const source: Source = {
+    const packed = sampleModel().source();
+    const source: Model.Source = {
       core: async (signal, progress) => {
         seen.push(`core:${signal?.aborted ?? 'none'}`);
         progress?.(1, 2);
-        return sourceOf(sampleModel()).core();
+        return packed.core();
       },
       class: async (id, signal) => {
         seen.push(`class:${id}:${signal?.aborted ?? 'none'}`);
-        return sourceOf(sampleModel()).class(id);
+        return packed.class(id);
       },
       bytes: async () => new Uint8Array(),
     };
     const progress: [number, number][] = [];
-    const model = await openModel(source, {
+    const model = await Model.from(source, {
       signal: new AbortController().signal,
       progress: (loaded, total) => progress.push([loaded, total]),
     });
@@ -105,7 +145,7 @@ describe('sourceOf and openModel', () => {
   });
 });
 
-function stub(): Source {
+function stub(): Model.Source {
   return {
     core: async () => new Uint8Array(),
     class: async () => new Uint8Array(),

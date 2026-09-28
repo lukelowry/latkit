@@ -13,10 +13,10 @@ npm install @latkit/network @latkit/model @latkit/colormaps
 
 ```ts
 import { colormap } from '@latkit/colormaps';
-import type { Topology } from '@latkit/model';
+import type { Model } from '@latkit/model';
 import { createNetwork } from '@latkit/network';
 
-const topology: Topology = {
+const topology: Model.Topology = {
   vertexCount: 3,
   vertexCoords: new Float32Array([-96, 30, -95, 31, -94, 30]),
   coordinateSpace: 'geographic',
@@ -35,8 +35,8 @@ await network.attach(canvas);
 The controller holds everything it is given; `attach` leases a shared device and paints it, and
 `detach` keeps it for the next canvas. See the [lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html).
 
-`Topology` and `Item` are `@latkit/model`'s: a model's topology loads unchanged, and the item a
-pick returns is the item `elementAt` resolves. Loading the topology already loaded is a no-op;
+`Model.Topology` and `Model.Item` are `@latkit/model`'s: a model's topology loads unchanged, and the item a
+pick returns is the item `model.elementAt` resolves. Loading the topology already loaded is a no-op;
 `load(topology, { fit: false })` keeps a placed camera.
 
 ## Channels
@@ -58,6 +58,17 @@ camera tilts; the `heightRange` option is the output range it maps onto. `vertex
 `edgeVisible` are raw masks: values greater than zero are visible. `edgeDash` is raw too, and so
 are `vertexShade` and `edgeShade`, which carry one scalar per item to a shade (below). Every
 channel slot is allocated when a topology loads, so rebinding never reallocates GPU storage.
+
+A channel can follow one signal of a `Series` instead, such as a model's field, and `seek` shows
+the frame at a playhead in every channel that does: every channel but `vertexPosition`, as each
+entry's `series` says. A column field binds the same way, as a series of one frame. The channels
+run on `@latkit/gpu`'s binder, as the diagram's do, so a channel behaves the same in both:
+
+```ts
+const vm = await recording.field({ classId: 'bus', kind: 'signal', id: 'Vm' });
+if (vm) network.setChannel('vertexColor', vm); // a null domain follows the recorded range
+transport.on('frame', (t) => network.seek(t));
+```
 
 `vertexPosition` is where every vertex sits, as interleaved `x, y` pairs in topology coordinates,
 the shape `vertexCoords` has. `load` seeds it from the topology, and rebinding it moves vertices,
@@ -140,16 +151,20 @@ Navigation takes CSS-pixel deltas and multiplicative zoom:
 network.panBy(24, 0);
 network.zoomBy(1.2);
 
-network.setProjection('tilt');
+network.setCamera({ projection: 'tilt' });
 network.rotateBy(18, -8);
 
-const pose = network.getPose();
-if (pose) network.setPose({ bearing: pose.bearing + 30 }, true);
+const camera = network.getCamera();
+if (camera) network.setCamera({ bearing: camera.bearing + 30 }, true);
 ```
 
-`network.projection` reports the active mode, `setProjection(mode, true)` falls back through
-`PROJECTIONS` to the first mode the loaded topology can host, and `orbit(true)` starts continuous
-rotation until a gesture or `orbit(false)` stops it.
+The camera is one value, `{ projection, centerX, centerY, pitch, bearing, scale, fit }`, where
+`scale` is CSS pixels per world unit at the view anchor and `fit` says it follows the fit view: keep
+`getCamera()` as a bookmark and `setCamera()` restores it in one step, a projection switch keeping
+the pose it is given. `getCamera()` is null until a canvas has had a size; `projection` names the
+projection shown before then too. `setCamera` returns false for a projection the topology cannot
+show, which `projections` says ahead, and `orbit(true)` starts continuous rotation until a gesture
+or `orbit(false)` stops it.
 
 Under `interaction: 'inspect'` the arrow keys walk the selection along the topology: a vertex
 steps to the far end of the edge lying most in that direction, an edge steps to one of its
@@ -199,11 +214,11 @@ await network.setShade({
 await network.setShade(null);
 ```
 
-`@latkit/network/shades` ships presets built on the same hook. `spotlight` is a soft light that
-follows the pointer and fades once it leaves:
+`spotlight` is a finished shade built on the same hook, a soft light that follows the pointer and
+fades once it leaves:
 
 ```ts
-import { spotlight } from '@latkit/network/shades';
+import { spotlight } from '@latkit/network';
 
 await network.setShade(spotlight({ radiusPx: 220, strength: 0.6, color: [1, 0.72, 0.3, 1] }));
 ```
@@ -222,6 +237,7 @@ network.on('attached', (attached) => (canvas.hidden = !attached));
 network.on('painted', (painted) => (poster.hidden = painted));
 network.on('deviceLost', ({ message, recovering }) => !recovering && showFallback(message));
 network.on('pipelineError', ({ family, cause }) => console.error(family, cause));
+network.on('error', ({ channel, cause }) => console.error(channel, cause)); // a series read failed
 ```
 
 `paint()` schedules a frame and resolves once it is painted, after a pending shade and a deferred
@@ -229,22 +245,23 @@ camera placement. See the [lifecycle guide](https://latkit.readthedocs.io/en/lat
 
 ## Packaged borders
 
-`@latkit/network/borders` loads the Natural Earth 50m line borders as a `Borders` payload from the
-assets this package publishes under `@latkit/network/assets/*`. One request is shared by every
-caller in a module instance.
+`loadBorders` fetches the Natural Earth 50m line borders as a `Borders` payload from the assets
+this package publishes under `@latkit/network/assets/*`, so they cost nothing until asked for. One
+request is shared by every caller in a module instance.
 
 ```ts
-import { loadBorders } from '@latkit/network/borders';
+import { loadBorders } from '@latkit/network';
 
 network.setBorders(await loadBorders(signal));
 ```
 
 ## Registries
 
-`CHANNELS`, `OPTIONS`, and `PROJECTIONS` are frozen and ordered. A picker iterates
-`Object.keys(CHANNELS)` and shows `CHANNELS[key].label`; a settings form iterates `OPTIONS` and
-reads each entry's `default`, `kind`, and `live`; a projection control iterates `PROJECTIONS` and
-checks `network.projections[mode]`.
+`CHANNELS`, `OPTIONS`, and `PROJECTIONS` are frozen and ordered, and every entry carries the
+`label` a control shows. A picker iterates `Object.keys(CHANNELS)`; a settings form iterates
+`OPTIONS` and reads each entry's `default`, `kind`, `live`, and, for a bounded number, `min` and
+`max`, which a slider takes as its range; a projection control iterates `Object.keys(PROJECTIONS)`
+and checks `network.projections[mode]`.
 
 ## Data shape
 

@@ -1,12 +1,13 @@
 # Ports and protocols
 
 `@latkit/port` carries messages between the two halves of one application: a page and its worker,
-an extension host and its webview, a browser and a server. `@latkit/remote` uses it to serve a
-`@latkit/model` model, and what a run of it recorded, from whichever half holds the data.
+an extension host and its webview, a browser and a server. It serves `@latkit/model` models,
+engines, and recordings from whichever half holds them, and carries any protocol an application
+declares itself.
 
 ## A port
 
-A `Port` posts messages, delivers the peer's, and says when its transport ended. Three constructors
+A `Port` posts messages, delivers the peer's, and says when its transport ended. Four constructors
 cover the boundaries applications meet:
 
 | Constructor   | Over                                                    | Carries                                    |
@@ -14,13 +15,14 @@ cover the boundaries applications meet:
 | `messagePort` | a `Worker`, a worker's global scope, any message target | structured clone, with a transfer list     |
 | `bytePort`    | any channel that carries bytes faithfully               | one binary frame per message               |
 | `socketPort`  | a browser `WebSocket` or a node `ws` socket             | frames; posts queue until the socket opens |
+| `loopback`    | nothing: two ports wired to each other in one realm     | frames, delivered on a microtask           |
 
 Every message is JSON values plus typed arrays (`Uint8Array` through `Float64Array`), anywhere in
 the value. That is what one binary frame carries, and holding to it on every transport means a
 service written against a worker runs unchanged against a socket. A frame decodes its typed arrays
-as views into the received buffer, so a topology or a run's samples cross without a copy on the
-receiving side. `messagePort` does not refuse what structured clone would carry beyond that value
-model; the framed `loopback` in `@latkit/port/testing` does.
+as views into the received buffer, so a topology or a recording's samples cross without a copy on
+the receiving side. `messagePort` does not refuse what structured clone would carry beyond that value
+model; the framed `loopback` does, so a test or a same-thread client catches what strays.
 
 ```ts
 import { messagePort } from '@latkit/port';
@@ -31,15 +33,91 @@ const port = messagePort(new Worker(new URL('./worker.ts', import.meta.url), { t
 Each constructor takes its target structurally, so a `Worker`, a webview API, or a socket passes as
 it is; `Port` is the one named type on that side of the surface.
 
-## A protocol
+## Serve a model and an engine
 
-A protocol is one value both ends import: its name on the port, its request, reply, and event
-types, and the guard the served side checks requests with. Guards come from `@latkit/port/guard`;
-`requests` keeps the map exhaustive over the request union's `op`.
+The half that holds a model serves it; the other half connects and gets the same `Model`, its
+classes loading across the port as they are asked for: the core at once, one shard per class as it
+is first asked for, and the case's bytes on request. A model opened from packs serves them as they
+came, so a relay decodes nothing. One model is served per port; a worker that holds several serves
+each on a channel of its own.
+
+An engine is served on its own and records any model it is given. A model its realm serves is
+recorded where it lives; any other is lent by its source for as long as the recording lasts, the
+engine reading only what it needs. Each recording fills on the caller's side as the engine writes
+it, call by call, an append's buffers handed over without a copy.
 
 ```ts
-import { protocol } from '@latkit/port';
-import { index, requests, str } from '@latkit/port/guard';
+// worker.ts
+import { messagePort, serveEngine, serveModel } from '@latkit/port';
+
+serveEngine(messagePort(self), new GridkitEngine(server));
+// Each case arrives with a channel of its own.
+self.addEventListener('message', ({ data }) => {
+  if (data.open) serveModel(messagePort(data.open.port), new GridkitCase(data.open.bytes));
+});
+
+// page.ts
+import { connectEngine, connectModel, messagePort } from '@latkit/port';
+
+const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+const engine = connectEngine(messagePort(worker));
+const { port1, port2 } = new MessageChannel();
+worker.postMessage({ open: { port: port2, bytes } }, [port2]);
+const model = await connectModel(messagePort(port1), {
+  progress: (loaded, total) => bar.set(loaded / total),
+});
+const recording = engine.record(model, study, { id: 'fault-4' });
+network.setChannel('vertexColor', await recording.field(VM));
+recording.on('change', () => status(recording.state)); // waiting → recording → complete | stopped | failed
+
+// On teardown:
+model.close();
+engine.close();
+```
+
+A connected model or engine is a `Remote<T>`: the model or engine, plus `close`. The served engine
+checks every input with its own `parse`, queues what it cannot take at once and says how many wait
+ahead, and stops when the far recording stops. A model or an engine still opening can be served as
+a promise, so no early request is lost.
+
+## Serve a recording
+
+A `Recording` is every signal an engine recorded for one model, every class on one clock. Served
+by its id, it crosses the port as its source: each class's shape, then its changes from the first,
+carrying its clock, where it stands, and its log, and sample windows only when read. The far side
+opens it with `Recording.from` against the model it records, which checks that it fits, so
+`frameAt`, `timeAt`, and every series' `locate` answer there at once.
+
+```ts
+// Host: a recording its engine fills, or any other Recording.
+import { serveRecording } from '@latkit/port';
+const stop = serveRecording(port, recording);
+
+// Page: the id of the recording the host selected, and the model it records.
+import { connectRecording } from '@latkit/port';
+const remote = await connectRecording(port, model, recordingId);
+const vm = await remote.field({ classId: 'bus', kind: 'signal', id: 'Vm' });
+monitor.load(vm);
+
+// On teardown:
+remote.close();
+```
+
+Several recordings can share a port because each service is named by its id. A sample window
+carries at most 4 MiB, time included, and a series on the far side asks for at most 1 MiB at a time,
+however large the window it is asked for. A window outside the committed frames is refused on the
+far side before it crosses, and samples cross as copies the receiver owns, so a producer's retained
+buffers stay usable. Closing either endpoint ends pending reads and the changes.
+
+## A protocol
+
+An application's own services are protocols: one value both ends import, with its name on the port,
+its request, reply, and event types, and the check the served side runs on every request. `check`
+holds the checks a request is composed from; `check.requests` keeps the map exhaustive over the
+request union's `op`, and the compiler keeps every field's check the field's type.
+
+```ts
+import { check, protocol } from '@latkit/port';
 
 export type SearchRequest =
   | { readonly op: 'find'; readonly text: string }
@@ -52,15 +130,18 @@ export interface SearchState {
 
 export const SEARCH = protocol<SearchRequest, SearchState, SearchState>(
   'search',
-  requests<SearchRequest>({ find: { text: str }, select: { index } }),
+  check.requests<SearchRequest>({ find: { text: check.string }, select: { index: check.index } }),
 );
 ```
+
+A check returns when a value is what it claims and throws a `TypeError` naming what is wrong when it
+is not: a refused `select` says `search request.index must be a nonnegative safe integer`.
 
 ## Serve and connect
 
 The half with the data serves; the other half connects. Several protocols share one port, and each
-side sees only its own. A request the guard refuses is answered with an error and never reaches the
-handler.
+side sees only its own. A request the check refuses is answered with the check's error and never
+reaches the handler.
 
 ```ts
 // worker.ts
@@ -96,87 +177,23 @@ port's `drain` between items so backpressure reaches the producer. Leaving the l
 aborting the signal cancels the handler and ends the iteration quietly.
 
 ```ts
-serve(port, FRAMES, async function* (request, signal) {
-  for await (const frame of engine.run(request, signal)) yield frame;
+serve(port, LINES, async function* (request, signal) {
+  for await (const line of tail(request.path, signal)) yield line;
 });
 
-for await (const frame of connect(port, FRAMES).stream(request, { signal })) paint(frame);
+for await (const line of connect(port, LINES).stream(request, { signal })) print(line);
 ```
-
-## Serve a model
-
-`@latkit/remote` serves a `Source` and, when the serving side has an engine, a `Runner`. Only bytes
-cross: the core, one shard per class as it is first asked for, and the vendor source. A run is one
-stream. The connecting side opens the same `Model` the serving side holds.
-
-```ts
-// worker.ts
-import { sourceOf } from '@latkit/model';
-import { messagePort } from '@latkit/port';
-import { serveSource } from '@latkit/remote';
-
-serveSource(messagePort(self), { source: sourceOf(model) });
-
-// page.ts
-import { openModel } from '@latkit/model';
-import { connectSource } from '@latkit/remote';
-
-const remote = await connectSource(port);
-const model = await openModel(remote.source, {
-  progress: (loaded, total) => bar.set(loaded / total),
-});
-```
-
-Every connected side in `@latkit/remote` is a `Remote<T>`: what the peer serves, plus `close`.
-`connectSource` resolves a `RemoteSource`, a `Remote<Served>` with the `reopen` that continues the
-served lineage.
-
-A grid is served the same way: `serveGrid` publishes the header and answers windows of display text,
-and `connectGrid` hands the page a `Grid` (with its `GridHeader`) it binds to a table.
-
-## Serve results
-
-A `Results` holds one result identified by `id`. Its classes expose `Series` histories:
-metadata and append notifications cross the port, and samples cross only when requested.
-
-```ts
-// Host: store implements Results over memory or a file.
-import { serveResults } from '@latkit/remote';
-const stop = serveResults(port, store);
-
-// Page: resultId is the id of the recording the host selected.
-import { connectResults } from '@latkit/remote';
-const results = connectResults(port, resultId);
-monitor.load(await results.series('bus'), 0);
-
-// On teardown:
-results.close();
-```
-
-Several results can share a port because each service is named by its result id.
-`series(classId)` is cached and follows committed appends automatically. Its `read` and `locate`
-methods accept cancellation signals. A locate call receives the captured frame count, so a
-concurrent append cannot change which timestamps that lookup includes.
-
-Sample windows are capped at 4 MiB by default; `serveResults(port, store, { maxBytes })` changes
-the cap. The service validates bounds before reading and copies borrowed samples before transfer.
-A producer's retained buffers remain usable.
-
-`results.read(classId, signals, signal)` also streams frame-major batches for export or collection.
-Signal indices are in recorded order; null selects every signal. `maxSignals` optionally bounds
-that selection. Closing either endpoint ends pending work and releases append subscriptions.
 
 ## Test across a port
 
-`@latkit/port/testing` provides an in-memory pair whose messages cross as frames, so a payload that
-would not survive a byte port fails in the unit lane.
+`loopback()` is a pair of ports whose messages cross as frames, so a payload that would not survive
+a byte port fails in the unit lane, and `fail(reason)` on either end delivers a transport failure.
 
 ```ts
-import { loopback, settle } from '@latkit/port/testing';
+import { connect, loopback, serve } from '@latkit/port';
 
 const [server, client] = loopback();
 serve(server, SEARCH, handler);
 const search = connect(client, SEARCH);
-await settle();
 client.fail('worker crashed'); // every connection on `client` closes with this reason
 ```

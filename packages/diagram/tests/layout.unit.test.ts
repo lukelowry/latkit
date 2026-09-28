@@ -1,4 +1,4 @@
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 import { describe, expect, it } from 'vitest';
 
 import { ceilTo, textWidth } from '../src/geometry.js';
@@ -42,7 +42,7 @@ import {
 const G = 8;
 
 /** A netlist prepared at the default grid and arranged. */
-function laid(netlist: Netlist, grid = G): { p: Prepared; positions: Float32Array } {
+function laid(netlist: Document.Netlist, grid = G): { p: Prepared; positions: Float32Array } {
   const p = prepare(netlist, grid);
   return { p, positions: arrangeAll(p) };
 }
@@ -195,12 +195,12 @@ describe('shapeOf', () => {
   });
 
   it('keys units apart by the labels their ports root', () => {
-    const renamed = (prefix: string): Netlist => {
+    const renamed = (prefix: string): Document.Netlist => {
       const netlist = plant('steam');
       return { ...netlist, netLabel: netlist.netLabel!.map((l) => l.replace('1_1_', prefix)) };
     };
     const all = Uint32Array.of(0, 1, 2);
-    const key = (netlist: Netlist): string => shapeOf(prepare(netlist, G), all).key;
+    const key = (netlist: Document.Netlist): string => shapeOf(prepare(netlist, G), all).key;
     // Labels of one width keep a shape; wider ones, which lay out wider, do not.
     expect(key(renamed('9_9_'))).toBe(key(plant('steam')));
     expect(key(renamed('1234_1_'))).not.toBe(key(plant('steam')));
@@ -370,7 +370,7 @@ describe('layerUnit', () => {
 
   it('opens a column gap wide enough for the labels of the wires leaving it', () => {
     /** A netlist with every wire's label `extra` longer. */
-    const longer = (netlist: Netlist, extra: string): Netlist => ({
+    const longer = (netlist: Document.Netlist, extra: string): Document.Netlist => ({
       ...netlist,
       netLabel: netlist.netLabel!.map((label) => label + extra),
     });
@@ -669,7 +669,7 @@ describe('placeNew', () => {
 
   it('puts a new reader right of its driver, level with it', () => {
     const before = laid(twoArea());
-    const netlist: Netlist = {
+    const netlist: Document.Netlist = {
       ...twoArea(),
       blockCount: 4,
       blockKey: [...twoArea().blockKey!, 'scope'],

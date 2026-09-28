@@ -1,4 +1,4 @@
-import type { Topology } from '@latkit/model';
+import type { Model } from '@latkit/model';
 import { makeFakeNetwork } from './fake-network.js';
 
 /**
@@ -7,7 +7,7 @@ import { makeFakeNetwork } from './fake-network.js';
  * simply omits it, and the host clears the vertexSize channel on switch.
  */
 export interface GeneratedTopology {
-  readonly topology: Topology;
+  readonly topology: Model.Topology;
   readonly vertexCount: number;
   readonly edgeCount: number;
   /** Per-vertex scalar in [0, 1] for the vertexColor channel. */
@@ -173,6 +173,6 @@ function buildGrid(spec: GridSpec): GeneratedTopology {
   }
   for (let v = 0; v < vertexCount; v++) color[v] = color[v]! / maxD;
 
-  const topology: Topology = { vertexCount, vertexCoords, edges, polylineStart };
+  const topology: Model.Topology = { vertexCount, vertexCoords, edges, polylineStart };
   return { topology, vertexCount, edgeCount, color };
 }

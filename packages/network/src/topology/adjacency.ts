@@ -3,7 +3,7 @@
  * topology so `Network.neighborhood` answers without a scan.
  */
 
-import type { Item } from '@latkit/model';
+import type { Model } from '@latkit/model';
 import type { Topology } from './types.js';
 
 /** Incident edges per vertex: CSR over a topology's edge pairs. */
@@ -53,8 +53,8 @@ export function adjacency(topology: Topology): Adjacency {
  * The item plus what touches it: an edge with both endpoints, a vertex with its incident edges
  * and their far ends.
  */
-export function neighborhood(within: Adjacency, item: Item): Item[] {
-  const items: Item[] = [item];
+export function neighborhood(within: Adjacency, item: Model.Item): Model.Item[] {
+  const items: Model.Item[] = [item];
   const { edges, offsets, incident } = within;
   if (item.kind === 'edge') {
     const from = edges[item.index * 2];

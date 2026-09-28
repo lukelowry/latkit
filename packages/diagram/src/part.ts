@@ -3,11 +3,10 @@
  * picking store it as, so a set of parts is a set of numbers and a part id fits a u32.
  */
 
-/** A pickable piece of a diagram: a block, a port, a net, or a group, by index. */
-export interface Part {
-  readonly kind: 'block' | 'port' | 'net' | 'group';
-  readonly index: number;
-}
+import type { Document } from '@latkit/model';
+
+/** The part `@latkit/diagram` picks: `@latkit/model`'s `Document.Part`, named once for every internal module. */
+export type Part = Document.Part;
 
 /** Part kind codes, shared with the shaders' `PART_*` constants and the pick index. */
 export const PART_BLOCK = 0;

@@ -106,7 +106,6 @@ const DISPLAY_ARROWS: u32 = 2u;
 const DISPLAY_JUNCTIONS: u32 = 4u;
 const DISPLAY_LABELS: u32 = 8u;
 const DISPLAY_REDUCED: u32 = 16u;
-const DISPLAY_EDIT: u32 = 32u;
 
 // focus_buf bits.
 const FOCUS_HOVER: u32 = 1u;
@@ -364,23 +363,28 @@ fn channel(slot: u32, i: u32) -> f32 {
   return channel_buf[u.channels[slot].x + i];
 }
 
-// A colormap channel's value through its domain, clamped to [0, 1].
-fn channel_t(slot: u32, i: u32) -> f32 {
-  let record = u.channels[slot];
-  return clamp((channel(slot, i) - bitcast<f32>(record.z)) * bitcast<f32>(record.w), 0.0, 1.0);
+// Whether item `i` has a value on `slot`: the channel is bound and the value is not NaN, which is
+// no value. An item without one draws as it does on an unbound channel.
+fn has_value(slot: u32, i: u32) -> bool {
+  return channel_on(slot) && !is_nan(channel(slot, i));
+}
+
+// A visibility channel shows only values above zero.
+fn shows(slot: u32, i: u32) -> bool {
+  return !channel_on(slot) || (has_value(slot, i) && channel(slot, i) > 0.0);
 }
 
 fn block_visible(b: u32) -> bool {
-  return !channel_on(SLOT_BLOCK_VISIBLE) || channel(SLOT_BLOCK_VISIBLE, b) != 0.0;
+  return shows(SLOT_BLOCK_VISIBLE, b);
 }
 
 fn net_visible(n: u32) -> bool {
-  return !channel_on(SLOT_NET_VISIBLE) || channel(SLOT_NET_VISIBLE, n) != 0.0;
+  return shows(SLOT_NET_VISIBLE, n);
 }
 
 // A status channel's integer; 0 is none.
 fn status_of(slot: u32, i: u32) -> u32 {
-  if (!channel_on(slot)) { return 0u; }
+  if (!has_value(slot, i)) { return 0u; }
   return u32(max(round(channel(slot, i)), 0.0));
 }
 
@@ -390,9 +394,9 @@ fn shade_value(slot: u32, i: u32) -> f32 {
   return channel(slot, i);
 }
 
-// A net's signed dash speed; 0 when unbound.
+// A net's signed dash speed; 0 without a value.
 fn net_flow(n: u32) -> f32 {
-  if (!channel_on(SLOT_NET_FLOW)) { return 0.0; }
+  if (!has_value(SLOT_NET_FLOW, n)) { return 0.0; }
   return channel(SLOT_NET_FLOW, n);
 }
 
@@ -427,16 +431,21 @@ fn colormap(t: f32) -> vec4f {
   return textureSampleLevel(colormap_tex, linear_sampler, vec2f(x, 0.5), 0.0);
 }
 
-// A block's fill: its blockColor through the colormap, else the base color.
-fn block_fill(b: u32) -> vec4f {
-  if (!channel_on(SLOT_BLOCK_COLOR)) { return u.block_base_color; }
-  return vec4f(colormap(channel_t(SLOT_BLOCK_COLOR, b)).rgb, u.block_base_color.a);
+// A colormap channel's value for item `i` through its domain onto the colormap at `base`'s alpha,
+// else `base`.
+fn channel_color(slot: u32, i: u32, base: vec4f) -> vec4f {
+  if (!has_value(slot, i)) { return base; }
+  let record = u.channels[slot];
+  let t = (channel(slot, i) - bitcast<f32>(record.z)) * bitcast<f32>(record.w);
+  return vec4f(colormap(t).rgb, base.a);
 }
 
-// A net's wire color: its netColor through the colormap, else the base color.
+fn block_fill(b: u32) -> vec4f {
+  return channel_color(SLOT_BLOCK_COLOR, b, u.block_base_color);
+}
+
 fn net_color(n: u32) -> vec4f {
-  if (!channel_on(SLOT_NET_COLOR)) { return u.net_base_color; }
-  return vec4f(colormap(channel_t(SLOT_NET_COLOR, n)).rgb, u.net_base_color.a);
+  return channel_color(SLOT_NET_COLOR, n, u.net_base_color);
 }
 
 // How far a group has turned into a solid tile: 0 while its frame is wide on screen, 1 once it

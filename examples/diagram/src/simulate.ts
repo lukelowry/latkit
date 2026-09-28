@@ -3,8 +3,7 @@
  * rings down and recurs, with every plant swinging at its own mode. Buses carry no value.
  */
 
-import { SIGNAL } from './classes.js';
-import type { Built } from './document.js';
+import type { Document } from '@latkit/model';
 
 /** Seconds between disturbances. */
 const PERIOD = 12;
@@ -20,7 +19,7 @@ function hash(i: number): number {
   return (x >>> 0) / 0x100000000;
 }
 
-/** Per-net values for one netlist: `netColor` deviations in [-1, 1] and a constant `netFlow`. */
+/** Per-net values for one schematic: `netColor` deviations in [-1, 1] and a constant `netFlow`. */
 export class Simulation {
   /** `netFlow`: signals march from their driver; buses are tags and stand still. */
   readonly flow: Float32Array;
@@ -29,21 +28,23 @@ export class Simulation {
   readonly #frequency: Float32Array;
   readonly #phase: Float32Array;
 
-  constructor(built: Built) {
-    const { netlist, netKind, portDevice } = built;
-    const count = netKind.length;
+  constructor({ netlist, nets }: Document.Schematic) {
+    const count = nets.length;
     this.flow = new Float32Array(count);
     this.#color = new Float32Array(count);
     this.#amplitude = new Float32Array(count);
     this.#frequency = new Float32Array(count);
     this.#phase = new Float32Array(count);
+    const { blockCount, portStart, netStart, netPorts, blockGroup } = netlist;
+    const portBlock = new Uint32Array(portStart[blockCount]!);
+    for (let b = 0; b < blockCount; b++) portBlock.fill(b, portStart[b]!, portStart[b + 1]!);
     for (let n = 0; n < count; n++) {
-      if (netKind[n] !== SIGNAL) continue;
-      const first = netlist.netPorts[netlist.netStart[n]!];
+      if (nets[n]?.classId !== 'signal') continue;
+      const first = netPorts[netStart[n]!];
       if (first === undefined) continue;
       // Signals of one plant share its electromechanical mode.
-      const block = portDevice[first]!;
-      const group = netlist.blockGroup?.[block];
+      const block = portBlock[first]!;
+      const group = blockGroup?.[block];
       const mode = group === undefined || group === 0xffffffff ? 0x40000000 + block : group;
       this.flow[n] = 1;
       this.#amplitude[n] = 0.45 + 0.55 * hash(n * 7 + 3);

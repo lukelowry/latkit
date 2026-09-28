@@ -4,7 +4,7 @@ import type { DeviceLease, DevicePool, Frame, FrameLoop, Presentation } from '@l
 import type { ControllerDeps, Events, Network, Options } from '../../src/controller.js';
 import { createNetworkWithDeps } from '../../src/controller.js';
 import { createOrbit } from '../../src/orbit.js';
-import type { Channel } from '../../src/channels.js';
+import { CHANNELS, type Channel } from '../../src/channels.js';
 import type { Bounds, EncodedTopology } from '../../src/topology/index.js';
 import type { EncodedSegments } from '../../src/segments/index.js';
 import type { PreparedScene } from '../../src/scene.js';
@@ -14,7 +14,7 @@ import type { FramePasses } from '../../src/webgpu/frame-encoder.js';
 import type { KeyIntent } from '../../src/input/keyboard.js';
 import type { Picker, PickerDeps, PickQuery, PickResult } from '../../src/pick/picker.js';
 import type { Projection } from '../../src/projections.js';
-import type { Viewport } from '../../src/camera/projection.js';
+import type { Pose, Viewport } from '../../src/camera/projection.js';
 import type { Renderer } from '../../src/webgpu/renderer.js';
 import { createFrameTick, type FrameTickDeps } from '../../src/webgpu/frame.js';
 import type { CameraRig, FitOptions } from '../../src/camera/rig.js';
@@ -56,15 +56,26 @@ export class FakeRenderer {
   projectionMode: Projection = 'flat';
   encodedTopology: EncodedTopology | null = null;
   encodedSegments: EncodedSegments | null = null;
+  /** Writes that began at a channel's slot, by channel, as the channels made them. */
   channelWrites: Array<{ channel: Channel; values: Float32Array }> = [];
+  /** Each channel's slot start in the storage the last topology bound. */
+  private slots = new Map<number, Channel>();
 
   setPasses = vi.fn((passes: Partial<FramePasses>) => {
     Object.assign(this.passes, passes);
   });
 
-  bindTopology = vi.fn((scene: PreparedScene) => {
+  bindTopology = vi.fn((scene: PreparedScene, _channelWords: number) => {
     this.encodedTopology = scene.topology;
     this.encodedSegments = scene.segments.encoded;
+    // The slots in registry order, as the channels lay them out.
+    this.slots = new Map();
+    let words = 0;
+    for (const [channel, definition] of Object.entries(CHANNELS)) {
+      this.slots.set(words, channel as Channel);
+      const items = definition.scope === 'vertex' ? scene.info.vertexCount : scene.info.edgeCount;
+      words += items * definition.components;
+    }
   });
 
   writeColormap = vi.fn((_lut: Uint8Array) => {});
@@ -73,8 +84,17 @@ export class FakeRenderer {
     this.borders = borders;
   });
 
-  writeChannel = vi.fn((channel: Channel, values: Float32Array) => {
-    this.channelWrites.push({ channel, values });
+  /** Float words the channel storage holds beyond the fixed slots, as `reserve` grew it. */
+  reserved = 0;
+  reserve = vi.fn((words: number) => {
+    this.reserved = Math.max(this.reserved, words);
+  });
+
+  wordWrites: Array<{ offset: number; values: Float32Array }> = [];
+  writeWords = vi.fn((offset: number, values: Float32Array) => {
+    this.wordWrites.push({ offset, values: values.slice() });
+    const channel = this.slots.get(offset);
+    if (channel) this.channelWrites.push({ channel, values });
   });
 
   useProjection = vi.fn((mode: Projection) => {
@@ -147,6 +167,12 @@ export class FakeCameraRig {
     this.mode = mode;
     this.camera = new FakeCamera();
   });
+
+  capture = vi.fn((_vp: Viewport) =>
+    this.bounds === null ? null : { pose: this.camera.pose(), px: 1, fit: false },
+  );
+  place = vi.fn((_pose: Partial<Pose>, _px: number | null, _vp: Viewport, _animate: boolean) => {});
+  leaveFit = vi.fn();
 
   tick = vi.fn((_now: number, _vp: Viewport): boolean => this.bounds !== null);
   isAnimating = vi.fn(() => this.camera.isAnimating());
@@ -231,6 +257,7 @@ export class FakeFrameLoop {
   destroy = vi.fn();
 
   frame(vp: Viewport = this.viewport, sizeSettled = true, now = performance.now()): void {
+    this.deps?.advance?.(now);
     this.deps?.onBeforeFrame?.(vp, now);
     this.deps?.onFrame?.(sizeSettled);
   }

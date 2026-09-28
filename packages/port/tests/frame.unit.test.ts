@@ -10,12 +10,11 @@ function buffer(frame: Uint8Array): ArrayBuffer {
 /** A frame with a caller-written header, for exercising the decoder's checks. */
 function forge(header: string, payload = new Uint8Array(8)): ArrayBuffer {
   const encoded = new TextEncoder().encode(header);
-  const start = Math.ceil((12 + encoded.byteLength) / 8) * 8;
+  const start = Math.ceil((8 + encoded.byteLength) / 8) * 8;
   const frame = new Uint8Array(start + payload.byteLength);
   frame.set([0x4c, 0x4b, 0x50, 0x46], 0);
-  frame[4] = 1;
-  new DataView(frame.buffer).setUint32(8, encoded.byteLength, true);
-  frame.set(encoded, 12);
+  new DataView(frame.buffer).setUint32(4, encoded.byteLength, true);
+  frame.set(encoded, 8);
   frame.set(payload, start);
   return frame.buffer;
 }
@@ -70,12 +69,9 @@ describe('frame', () => {
     expect(() => encodeFrame(new Map())).toThrow('a frame cannot carry Map');
   });
 
-  it('rejects a frame that is truncated, foreign, or from another version', () => {
+  it('rejects a frame that is truncated or foreign', () => {
     expect(() => decodeFrame(new ArrayBuffer(2))).toThrow('frame is truncated');
     expect(() => decodeFrame(new ArrayBuffer(16))).toThrow('frame is not a latkit port frame');
-    const frame = encodeFrame({ ok: true });
-    frame[4] = 2;
-    expect(() => decodeFrame(buffer(frame))).toThrow('frame version 2 is not supported');
   });
 
   it('rejects a header or an array that overruns the frame', () => {

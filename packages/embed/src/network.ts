@@ -1,5 +1,5 @@
 import { COLORMAPS, colormap, type ColormapName } from '@latkit/colormaps';
-import { validateTopology, type Domain, type Topology } from '@latkit/model';
+import { type Domain, type Model, validateTopology } from '@latkit/model';
 import {
   CHANNELS,
   OPTIONS,
@@ -49,7 +49,7 @@ export interface NetworkField {
 
 /** Decoded, renderer-ready network input. */
 export interface NetworkData {
-  readonly topology: Topology;
+  readonly topology: Model.Topology;
   readonly fields?: readonly NetworkField[];
 }
 
@@ -72,7 +72,7 @@ export interface NetworkJSON {
   }[];
 }
 
-/** DOM events `latkit-network` dispatches; every controller event arrives with its payload as `detail`. */
+/** DOM events `latkit-network` dispatches: its own `load` and `error`, and controller events with their payloads as `detail`. */
 export interface NetworkElementEventMap {
   /** The current data source is loaded. */
   load: Event;
@@ -139,7 +139,7 @@ export function parseNetwork(input: unknown): NetworkData {
 /** Validate already-decoded network data, as the `data` property receives it. */
 export function validateNetworkData(input: unknown): NetworkData {
   const data = record(input, 'data');
-  const topology = record(data.topology, 'topology') as unknown as Topology;
+  const topology = record(data.topology, 'topology') as unknown as Model.Topology;
   validateTopology(topology);
   const fields = data.fields;
   if (fields === undefined) return data as unknown as NetworkData;
@@ -170,7 +170,7 @@ function components(value: unknown, path: string): 1 | 2 {
   return value;
 }
 
-function parseTopology(input: unknown): Topology {
+function parseTopology(input: unknown): Model.Topology {
   const source = record(input, 'topology');
   const vertexCount = integer(required(source, 'vertexCount', 'topology'), 'topology.vertexCount');
   const coordsSlot = optional(source, 'vertexCoords');
@@ -337,7 +337,7 @@ export function networkSpec(deps: NetworkDeps): ElementSpec<Network, NetworkData
           }
           return;
         }
-        const resolved = optionValue(option, value, context.warn);
+        const resolved = optionValue(option, value, context.host, context.warn);
         context.controller.setOptions({ [option.option]: resolved } as Options);
         if (option.option === 'borders') syncBorders(context, value !== null && resolved === true);
         return;
@@ -348,11 +348,16 @@ export function networkSpec(deps: NetworkDeps): ElementSpec<Network, NetworkData
       }
       if (name === 'projection') {
         if (value === null) return;
-        if ((PROJECTIONS as readonly string[]).includes(value)) {
-          context.controller.setProjection(value as Projection, true);
-        } else {
+        if (!Object.hasOwn(PROJECTIONS, value)) {
           context.warn(`Unknown projection ${quote(value)}; keeping the current one.`);
+          return;
         }
+        // One the data cannot show falls back to the first it can, flat at worst.
+        const shown = context.controller.projections;
+        const projection = shown[value as Projection]
+          ? (value as Projection)
+          : ((Object.keys(PROJECTIONS) as Projection[]).find((mode) => shown[mode]) ?? 'flat');
+        context.controller.setCamera({ projection });
         return;
       }
       const channel = CHANNEL_BY_ATTRIBUTE.get(name);
@@ -372,10 +377,11 @@ export function networkSpec(deps: NetworkDeps): ElementSpec<Network, NetworkData
 function optionValue(
   entry: OptionAttribute<keyof Options>,
   raw: string | null,
+  host: HTMLElement,
   warn: Warn,
 ): unknown {
   if (raw === null) return entry.definition.default;
-  const parsed = parseOptionAttribute(entry.definition, raw);
+  const parsed = parseOptionAttribute(entry.definition, raw, host);
   if (parsed !== undefined) {
     try {
       validateOptions({ [entry.option]: parsed } as Options);

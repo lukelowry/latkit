@@ -1,7 +1,7 @@
 /// <reference types="@webgpu/types" />
 
 import type { Presentation } from '@latkit/gpu';
-import { bakeColormap, COLORMAP_LUT_SIZE } from '@latkit/model';
+import { bakeColormap, COLORMAP_LUT_SIZE } from '@latkit/gpu';
 import {
   UNIFORM_BUFFER_BYTES,
   hasSceneDepth,
@@ -23,7 +23,6 @@ import {
 import type { PreparedScene } from '../scene.js';
 import type { Borders } from '../borders/index.js';
 import { BorderBuffers } from './border-buffers.js';
-import { channelLayout, type Channel } from '../channels.js';
 import { DEFAULT_OPTIONS } from '../options.js';
 import { DEFAULT_SHADE_WGSL, SHADE_HOST_WORDS } from '../shade.js';
 
@@ -124,9 +123,10 @@ export class Renderer {
   private segmentBuffer: GPUBuffer | null = null;
   private segmentsBindGroup: GPUBindGroup | null = null;
   private channelBuf: GPUBuffer | null = null;
+  /** Float words the channel buffer holds: the fixed slots, then any series windows. */
+  private channelWords = 0;
   private channelsBindGroup: GPUBindGroup | null = null;
   /** Float-word offset of every channel's slot in the bound topology's storage. */
-  private channelOffsets: Readonly<Record<Channel, number>> | null = null;
   private borders: BorderBuffers | null = null;
 
   // Per-frame focus scratch; a frame allocates nothing for its overlays.
@@ -377,8 +377,11 @@ export class Renderer {
     previous?.destroy();
   }
 
-  /** Uploads and binds an already validated prepared scene. */
-  bindTopology(scene: PreparedScene): void {
+  /**
+   * Uploads and binds an already validated prepared scene, with channel storage of `channelWords`
+   * float words: every channel's slot, as the channels lay them out.
+   */
+  bindTopology(scene: PreparedScene, channelWords: number): void {
     const encoded = scene.topology;
     const encodedSegments = scene.segments.encoded;
     const info = scene.info;
@@ -387,10 +390,9 @@ export class Renderer {
 
     const topologyBytes = encoded.byteLength;
     const segmentBytes = encodedSegments.byteLength;
-    // Every channel owns a slot for the topology's lifetime, so a bind is one upload and the
+    // Every channel owns a slot for the topology's lifetime, so a bind is one write and the
     // limits are checked once, here, rather than on every first binding.
-    const layout = channelLayout(info.vertexCount, info.edgeCount);
-    const channelBytes = Math.max(4, layout.words * Float32Array.BYTES_PER_ELEMENT);
+    const channelBytes = Math.max(4, channelWords * Float32Array.BYTES_PER_ELEMENT);
     this.assertStorageBufferFits('topology', topologyBytes);
     this.assertStorageBufferFits('segment', segmentBytes);
     this.assertStorageBufferFits('channel', channelBytes);
@@ -435,7 +437,7 @@ export class Renderer {
       channelBuf = this.presentation.device.createBuffer({
         label: 'channels',
         size: channelBytes,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
       });
       const channelsBindGroup = this.createChannelsBindGroup(channelBuf);
       next = {
@@ -461,6 +463,7 @@ export class Renderer {
     this.segmentBuffer = next.segmentBuffer;
     this.segmentsBindGroup = next.segmentsBindGroup;
     this.channelBuf = next.channelBuf;
+    this.channelWords = channelBytes / Float32Array.BYTES_PER_ELEMENT;
     this.channelsBindGroup = next.channelsBindGroup;
     this.topology = {
       vertexCount: info.vertexCount,
@@ -468,7 +471,6 @@ export class Renderer {
       segmentCount: segmentInfo.segmentCount,
     };
     this.edgeSegStart = edgeSegStart;
-    this.channelOffsets = layout.offsets;
     this.bound = true;
   }
 
@@ -489,12 +491,9 @@ export class Renderer {
     }
   }
 
-  /** Writes one channel's values into its slot of the bound topology's storage. */
-  writeChannel(channel: Channel, values: Float32Array): void {
-    const offset = this.channelOffsets?.[channel];
-    if (offset === undefined || !this.channelBuf) {
-      throw new Error(`network channel ${channel} has no storage slot`);
-    }
+  /** Writes float words `offset` words into the channel storage. */
+  writeWords(offset: number, values: Float32Array): void {
+    if (!this.channelBuf) throw new Error('network channel storage is not bound');
     this.presentation.device.queue.writeBuffer(
       this.channelBuf,
       offset * Float32Array.BYTES_PER_ELEMENT,
@@ -502,6 +501,36 @@ export class Renderer {
       values.byteOffset,
       values.byteLength,
     );
+  }
+
+  /**
+   * Grows the channel storage to hold `words` float words, keeping every word it holds. A no-op
+   * when it already does, or while no topology is bound.
+   */
+  reserve(words: number): void {
+    const previous = this.channelBuf;
+    if (!previous || words <= this.channelWords) return;
+    const bytes = words * Float32Array.BYTES_PER_ELEMENT;
+    this.assertStorageBufferFits('channel', bytes);
+    const { device } = this.presentation;
+    const grown = device.createBuffer({
+      label: 'channels',
+      size: bytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    });
+    const encoder = device.createCommandEncoder();
+    encoder.copyBufferToBuffer(
+      previous,
+      0,
+      grown,
+      0,
+      this.channelWords * Float32Array.BYTES_PER_ELEMENT,
+    );
+    device.queue.submit([encoder.finish()]);
+    this.channelsBindGroup = this.createChannelsBindGroup(grown);
+    this.channelBuf = grown;
+    this.channelWords = words;
+    previous.destroy();
   }
 
   /** Uploads a baked colormap with `COLORMAP_LUT_SIZE * 4` RGBA bytes. */
@@ -674,8 +703,8 @@ export class Renderer {
     this.segmentBuffer = null;
     this.channelBuf?.destroy();
     this.channelBuf = null;
+    this.channelWords = 0;
     this.channelsBindGroup = null;
-    this.channelOffsets = null;
     this.topology = null;
     this.edgeSegStart = new Uint32Array(0);
     this.topologyBindGroup = null;

@@ -5,17 +5,16 @@
  * goes and no placeholder can collide with a value.
  *
  * @remarks
- * Layout: bytes 0-3 are the ASCII magic `LKPF`, byte 4 the format version (1), bytes 5-7 zero,
- * bytes 8-11 the header length as a little-endian `u32`, then the UTF-8 JSON header
- * `{ body, arrays: [{ path, kind, bytes }] }`, then each array at the next 8-byte boundary. JSON
- * carries the body, so JSON values plus typed arrays are the whole value model: `undefined`
- * properties vanish, `NaN` becomes `null`, and any other binary or non-plain object is refused.
+ * Layout: bytes 0-3 are the ASCII magic `LKPF`, bytes 4-7 the header length as a little-endian
+ * `u32`, then the UTF-8 JSON header `{ body, arrays: [{ path, kind, bytes }] }`, then each array at
+ * the next 8-byte boundary. JSON carries the body, so JSON values plus typed arrays are the whole
+ * value model: `undefined` properties vanish, `NaN` becomes `null`, and any other binary or
+ * non-plain object is refused.
  */
 
 const MAGIC = Uint8Array.of(0x4c, 0x4b, 0x50, 0x46); // 'LKPF'
-const VERSION = 1;
-/** Magic (4), version (1), reserved (3), header length (4). */
-const PREFIX = 12;
+/** Magic (4), header length (4). */
+const PREFIX = 8;
 const ALIGNMENT = 8;
 
 type Kind = 'u8' | 'i8' | 'u16' | 'i16' | 'u32' | 'i32' | 'f32' | 'f64';
@@ -217,8 +216,7 @@ export function encodeFrame(message: unknown): Uint8Array {
   });
   const frame = new Uint8Array(length);
   frame.set(MAGIC, 0);
-  frame[4] = VERSION;
-  new DataView(frame.buffer).setUint32(8, encoded.byteLength, true);
+  new DataView(frame.buffer).setUint32(4, encoded.byteLength, true);
   frame.set(encoded, PREFIX);
   lifted.forEach(({ array }, at) => {
     frame.set(new Uint8Array(array.buffer, array.byteOffset, array.byteLength), offsets[at]);
@@ -229,7 +227,7 @@ export function encodeFrame(message: unknown): Uint8Array {
 /**
  * Decode a frame produced by `encodeFrame`; typed arrays view `buffer` in place.
  *
- * @throws Error when the buffer is not a frame of this version or disagrees with its own header.
+ * @throws Error when the buffer is not a frame or disagrees with its own header.
  */
 export function decodeFrame(buffer: ArrayBuffer): unknown {
   if (buffer.byteLength < PREFIX) throw new Error('frame is truncated');
@@ -237,9 +235,7 @@ export function decodeFrame(buffer: ArrayBuffer): unknown {
   if (!MAGIC.every((byte, at) => prefix[at] === byte)) {
     throw new Error('frame is not a latkit port frame');
   }
-  const version = prefix[4];
-  if (version !== VERSION) throw new Error(`frame version ${version} is not supported`);
-  const headerBytes = new DataView(buffer).getUint32(8, true);
+  const headerBytes = new DataView(buffer).getUint32(4, true);
   if (PREFIX + headerBytes > buffer.byteLength) throw new Error('frame header overruns the frame');
   const header = parseHeader(new TextDecoder().decode(new Uint8Array(buffer, PREFIX, headerBytes)));
   let offset = align(PREFIX + headerBytes);

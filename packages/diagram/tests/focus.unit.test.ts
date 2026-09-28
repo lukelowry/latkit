@@ -1,4 +1,4 @@
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 import { describe, expect, it } from 'vitest';
 
 import { Focus } from '../src/focus.js';
@@ -20,7 +20,7 @@ const port = (index: number): number => partId(PART_PORT, index);
 const net = (index: number): number => partId(PART_NET, index);
 const group = (index: number): number => partId(PART_GROUP, index);
 
-function setup(netlist: Netlist = system(2)): {
+function setup(netlist: Document.Netlist = system(2)): {
   readonly mirror: Mirror;
   readonly focus: Focus;
   readonly p: Prepared;

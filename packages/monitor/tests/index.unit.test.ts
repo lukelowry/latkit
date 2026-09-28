@@ -30,6 +30,9 @@ describe('monitor package entrypoint', () => {
     expect(OPTIONS.valueRange).toMatchObject({ kind: 'domain', default: null, live: true });
     expectTypeOf<Parameters<typeof createMonitor>>().toEqualTypeOf<[options?: Options]>();
     expectTypeOf<Monitor extends { element: unknown } ? true : false>().toEqualTypeOf<false>();
+    expectTypeOf<Parameters<Monitor['load']>>().toEqualTypeOf<
+      [binding: { readonly series: Series; readonly signal: number } | null]
+    >();
     expectTypeOf<Options['colormap']>().toEqualTypeOf<
       ((t: number) => readonly [number, number, number]) | undefined
     >();
@@ -39,6 +42,7 @@ describe('monitor package entrypoint', () => {
     >();
     expectTypeOf<Events['hover']>().toEqualTypeOf<Reading | null>();
     expectTypeOf<Events['select']>().toEqualTypeOf<Reading>();
+    expectTypeOf<Events['contextmenu']['reading']>().toEqualTypeOf<Reading | null>();
     expectTypeOf<Events['attached']>().toEqualTypeOf<boolean>();
   });
 

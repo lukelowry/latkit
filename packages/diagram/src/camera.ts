@@ -77,7 +77,7 @@ function easeInOutCubic(t: number): number {
  * Content-free bounds never unplace a camera: it keeps its pose, or takes the origin at actual
  * size when it has none, so points keep mapping on an empty diagram. Only `reset` unplaces it.
  */
-export class Camera {
+export class CameraRig {
   private centerX = 0;
   private centerY = 0;
   private zoom = 0;
@@ -117,6 +117,16 @@ export class Camera {
   /** Whether a pose has been placed. */
   get placed(): boolean {
     return this.isPlaced;
+  }
+
+  /** Whether it follows the fit view: set by a fit, cleared by any exploration. */
+  get following(): boolean {
+    return this.fitIntent;
+  }
+
+  /** Stop following the fit view where the camera stands. */
+  leaveFit(): void {
+    this.fitIntent = false;
   }
 
   /** Whether an eased move is in flight. */

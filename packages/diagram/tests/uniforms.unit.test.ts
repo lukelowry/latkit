@@ -12,7 +12,6 @@ import {
   CHANNEL_SLOTS,
   createUniforms,
   DISPLAY_ARROWS,
-  DISPLAY_EDIT,
   DISPLAY_GRID,
   DISPLAY_JUNCTIONS,
   DISPLAY_LABELS,
@@ -121,7 +120,6 @@ describe('WGSL constants', () => {
     ['DISPLAY_JUNCTIONS', DISPLAY_JUNCTIONS],
     ['DISPLAY_LABELS', DISPLAY_LABELS],
     ['DISPLAY_REDUCED', DISPLAY_REDUCED],
-    ['DISPLAY_EDIT', DISPLAY_EDIT],
     ...Object.entries(SLOT).map(
       ([channel, slot]) => [`SLOT_${wgslName(channel)}`, slot] as [string, number],
     ),
@@ -215,14 +213,14 @@ describe('createUniforms', () => {
 
   it('keeps flags, grid pitch, and flow rate as properties over their words', () => {
     const uniforms = createUniforms();
-    uniforms.flags = DISPLAY_GRID | DISPLAY_EDIT;
+    uniforms.flags = DISPLAY_GRID | DISPLAY_REDUCED;
     uniforms.gridPitch = 8;
     uniforms.flowRate = 0.5;
-    expect(uniforms.mirror.u32[word('flags')]).toBe(33);
+    expect(uniforms.mirror.u32[word('flags')]).toBe(17);
     expect(uniforms.mirror.f32[word('grid_pitch')]).toBe(8);
     expect(uniforms.mirror.f32[W_GRID_PITCH]).toBe(8);
     expect(uniforms.mirror.f32[word('flow_rate')]).toBe(0.5);
-    expect([uniforms.flags, uniforms.gridPitch, uniforms.flowRate]).toEqual([33, 8, 0.5]);
+    expect([uniforms.flags, uniforms.gridPitch, uniforms.flowRate]).toEqual([17, 8, 0.5]);
   });
 
   it('writes theme colors and palettes with their counts', () => {

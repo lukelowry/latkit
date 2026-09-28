@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { createGrid, formatNumber, type Column } from '../src/index.js';
-import { sampleClass } from './fixture.js';
+import { formatNumber, type Model } from '../src/index.js';
+import { createGrid } from '../src/grid.js';
+import { byHand, sampleClass, sampleModel } from './fixture.js';
+
+type Column = Model.Data['columns'][number];
 
 describe('formatNumber', () => {
   it('applies the shared number rule', () => {
@@ -38,38 +41,38 @@ describe('createGrid', () => {
 
   it('sorts numerically with missing values last in both directions', async () => {
     const grid = createGrid(bus.labels, bus.columns);
-    const asc = await grid.window('', { column: 'Vm', dir: 'asc' }, 0, 10);
+    const asc = await grid.window('', { column: 0, dir: 'asc' }, 0, 10);
     expect(asc.rows.map((r) => r.index)).toEqual([2, 0, 1]);
-    const desc = await grid.window('', { column: 'Vm', dir: 'desc' }, 0, 10);
+    const desc = await grid.window('', { column: 0, dir: 'desc' }, 0, 10);
     expect(desc.rows.map((r) => r.index)).toEqual([0, 2, 1]);
-    const text = await grid.window('', { column: 'zone', dir: 'desc' }, 0, 10);
+    const text = await grid.window('', { column: 1, dir: 'desc' }, 0, 10);
     expect(text.rows.map((r) => r.index)).toEqual([2, 0, 1]);
-    const flags = await grid.window('', { column: 'slack', dir: 'desc' }, 0, 10);
+    const flags = await grid.window('', { column: 2, dir: 'desc' }, 0, 10);
     expect(flags.rows.map((r) => r.index)).toEqual([0, 1, 2]);
   });
 
   it('keeps a label sort and a column sort in separate caches', async () => {
     const grid = createGrid(['b', 'a'], [{ kind: 'text', id: '', label: 'x', values: ['a', 'b'] }]);
     const byLabel = await grid.window('', { column: null, dir: 'asc' }, 0, 10);
-    const byColumn = await grid.window('', { column: '', dir: 'asc' }, 0, 10);
+    const byColumn = await grid.window('', { column: 0, dir: 'asc' }, 0, 10);
     expect(byLabel.rows.map((r) => r.index)).toEqual([1, 0]);
     expect(byColumn.rows.map((r) => r.index)).toEqual([0, 1]);
   });
 
-  it('sorts by label when the sort column is null and ignores unknown columns', async () => {
+  it('sorts by label when the sort column is null and ignores a column it lacks', async () => {
     const grid = createGrid(bus.labels, bus.columns);
     const byLabel = await grid.window('', { column: null, dir: 'asc' }, 0, 10);
     expect(byLabel.rows.map((r) => r.label)).toEqual(['Middle', 'North', 'South']);
-    const unknown = await grid.window('', { column: 'nope', dir: 'asc' }, 0, 10);
+    const unknown = await grid.window('', { column: 9, dir: 'asc' }, 0, 10);
     expect(unknown.rows.map((r) => r.index)).toEqual([0, 1, 2]);
   });
 
   it('windows and locates under a combined filter and sort', async () => {
     const grid = createGrid(bus.labels, bus.columns);
-    const window = await grid.window('o', { column: 'Vm', dir: 'asc' }, 1, 1);
+    const window = await grid.window('o', { column: 0, dir: 'asc' }, 1, 1);
     expect(window.total).toBe(2);
     expect(window.rows.map((r) => r.index)).toEqual([0]);
-    expect(await grid.locate(0, 'o', { column: 'Vm', dir: 'asc' })).toBe(1);
+    expect(await grid.locate(0, 'o', { column: 0, dir: 'asc' })).toBe(1);
     expect(await grid.locate(1, 'o', null)).toBeNull();
     expect(await grid.locate(1, '', null)).toBe(1);
     expect(await grid.locate(9, '', null)).toBeNull();
@@ -82,10 +85,10 @@ describe('createGrid', () => {
     for (let i = 0; i < count; i++) values[i] = i % 7;
     const columns: Column[] = [{ kind: 'number', id: 'v', label: 'v', values }];
     const grid = createGrid(labels, columns);
-    const { rows, total } = await grid.window('', { column: 'v', dir: 'asc' }, 0, 3);
+    const { rows, total } = await grid.window('', { column: 0, dir: 'asc' }, 0, 3);
     expect(total).toBe(count);
     expect(rows.map((r) => r.index)).toEqual([0, 7, 14]);
-    expect(await grid.locate(7, '', { column: 'v', dir: 'asc' })).toBe(1);
+    expect(await grid.locate(7, '', { column: 0, dir: 'asc' })).toBe(1);
   });
 
   it('rejects after dispose and on a caller abort', async () => {
@@ -104,6 +107,60 @@ describe('createGrid', () => {
       createGrid(['a'], [{ kind: 'number', id: 'x', label: 'x', values: Float64Array.of(1, 2) }]),
     ).toThrow(/2 values for 1 rows/);
     const column: Column = { kind: 'flag', id: 'x', label: 'x', values: Uint8Array.of(1) };
-    expect(() => createGrid(['a'], [column, column])).toThrow(/repeats/);
+    expect(() => createGrid(['a'], [column, column])).toThrow("column 'x' repeats");
+    const signal: Column = { kind: 'number', id: 'x', label: 'x', values: Float64Array.of(1) };
+    expect(() => createGrid(['a'], [], [signal, signal])).toThrow("signal 'x' repeats");
+    // A column and a signal may share an id: the grid tells them apart by kind.
+    expect(createGrid(['a'], [column], [signal]).columns.map((c) => c.kind)).toEqual([
+      'column',
+      'signal',
+    ]);
+  });
+
+  it('describes each column it shows, in cell order', () => {
+    const grid = createGrid(bus.labels, bus.columns);
+    expect(grid.columns).toEqual([
+      { kind: 'column', id: 'Vm', label: 'Voltage', unit: 'pu' },
+      { kind: 'column', id: 'zone', label: 'Zone' },
+      { kind: 'column', id: 'slack', label: 'Slack' },
+    ]);
+    expect(Object.isFrozen(grid.columns)).toBe(true);
+  });
+});
+
+describe('model.grid and recording.grid', () => {
+  it('tables a class by its columns', async () => {
+    const grid = await sampleModel().grid('bus');
+    expect(grid.columns.map((column) => column.id)).toEqual(['Vm', 'zone', 'slack']);
+    const { rows } = await grid.window('', null, 0, 10);
+    expect(rows.map((row) => row.cells)).toEqual([
+      ['1.02', 'A', 'true'],
+      ['', '', 'false'],
+      ['0.98', 'B', 'false'],
+    ]);
+  });
+
+  it('adds every signal the recording holds, sampled at a time', async () => {
+    const model = sampleModel();
+    const { recording, recorder } = byHand(model);
+    recorder.append(Float64Array.of(0, 1), { bus: Float32Array.of(1, 2, 3, 4, 5, 6) });
+    const grid = await recording.grid('bus', 0.5);
+    // The column and the signal share an id; the grid tells them apart by kind.
+    expect(grid.columns.slice(3)).toEqual([
+      { kind: 'signal', id: 'Vm', label: 'Voltage', unit: 'pu' },
+    ]);
+    const { rows } = await grid.window('', { column: 3, dir: 'desc' }, 0, 10);
+    expect(rows.map((row) => row.cells[3])).toEqual(['3', '2', '1']);
+    expect((await recording.grid('gen', 1)).columns).toEqual([
+      { kind: 'signal', id: 'P', label: 'Power', unit: 'MW' },
+    ]);
+  });
+
+  it('refuses a class it lacks and a time that is not finite', async () => {
+    const model = sampleModel();
+    await expect(model.grid('nope')).rejects.toThrow("unknown class 'nope'");
+    const { recording } = byHand(model);
+    await expect(recording.grid('nope', 0)).rejects.toThrow("unknown class 'nope'");
+    await expect(recording.grid('bus', Number.NaN)).rejects.toThrow(RangeError);
   });
 });

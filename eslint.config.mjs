@@ -50,6 +50,8 @@ export default defineConfig([
         },
       ],
       '@typescript-eslint/unbound-method': 'off',
+      // A class's types live under it in a type-only `declare namespace`: `Document.Operation`.
+      '@typescript-eslint/no-namespace': ['error', { allowDeclarations: true }],
     },
   },
   {

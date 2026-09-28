@@ -1,11 +1,12 @@
 # @latkit/gpu
 
-Core WebGPU device and canvas presentation primitives for Latkit.
+What every Latkit renderer shares: Core WebGPU devices and the pool they are leased from, canvas
+presentation, the frame loop, the attach lifecycle, the channels a renderer binds values and series
+to, the colormap lookup texture, and controller events.
 
-`@latkit/gpu` handles the environmental part of requesting a device and then
-returns the platform `GPUDevice` directly. It also provides the shared
-presentation implementation and frame loop used by Latkit renderers. All exports
-come from the single `@latkit/gpu` entrypoint.
+`@latkit/gpu` handles the environmental part of requesting a device and then returns the platform
+`GPUDevice` directly. Applications rarely import it beyond the device pool; a renderer is built on
+the rest. All exports come from the single `@latkit/gpu` entrypoint.
 
 ## Install
 
@@ -152,11 +153,66 @@ exists. A canvas without area skips its frame until a resize gives it one. A `re
 pauses or destroys the loop stops it, and wakes while paused are dropped: `resume()` schedules
 the next frame.
 
-A renderer that repaints everything whenever the backing size changes gains nothing from those
-steps and would repaint twice per resize (rounded up, then exact). It passes
-`{ quantize: false }` so the backing store follows the exact size on every frame and `settled` is
-always true:
+## Attach a controller
+
+`createAttachment()` is the attach lifecycle every Latkit controller shares: supersession, joining a
+repeat attach, and recovery on a replacement device, as the [lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html)
+describes. A renderer supplies what one binding builds and what its release forgets:
 
 ```ts
-const loop = createFrameLoop(presentation, render, { quantize: false });
+import { createAttachment, devices } from '@latkit/gpu';
+
+const attachment = createAttachment({
+  devices,
+  bind(device, canvas, cleanup) {
+    const presentation = createPresentation(device, canvas);
+    cleanup(() => presentation.destroy()); // cleanups run in reverse on release
+    return presentation;
+  },
+  release: (presentation) => {}, // before the cleanups
+  attached: (bound) => emit('attached', bound),
+  lost: (loss) => emit('deviceLost', loss),
+});
+
+await attachment.attach(canvas); // false when a newer attach or a detach took over
+attachment.detach(canvas); // only while `canvas` is the current one
 ```
+
+## Bind channels
+
+`createChannels()` is the channel binder every renderer's `setChannel` runs on. A renderer hands it
+its registry (each channel's scope, components, whether it is normalized, and whether it can follow
+a series), the store its shaders read (`reserve` and `writeWords`), and how a channel's record
+reaches its uniforms: the word its values start at, whether it is bound, and the
+`(value - min) * scale` its values map through.
+
+```ts
+import { createChannels } from '@latkit/gpu';
+
+const channels = createChannels<Channel, 'vertex' | 'edge'>({
+  name: 'network',
+  structure: 'topology',
+  channels: CHANNELS,
+  store: () => renderer, // null while detached: the CPU keeps every value, and upload() restores it
+  record: (channel, offset, bound, min, scale) => writeUniforms(channel, offset, bound, min, scale),
+  shown: () => loop.wake(), // a followed channel shows another frame
+  error: (channel, cause) => emit('error', { channel, cause }),
+});
+
+channels.load({ vertex: vertexCount, edge: edgeCount }); // a slot per channel
+channels.set('vertexColor', values, [0, 1]);
+channels.set('vertexHeight', { series, signal: 0 }); // follows the signal; the domain follows its range
+channels.seek(t); // every followed channel at the playhead
+```
+
+Every channel owns a slot for as long as a load holds, so binding one is one write and never a
+relayout. A followed signal's frames stay resident in a window of the store after the slots, shared
+by every channel following that signal, and the next ones load as the playhead advances or the
+series appends, so a seek within them rewrites one word per channel.
+
+## Colormaps and events
+
+`bakeColormap(colormap)` samples a `Colormap` into `COLORMAP_LUT_SIZE` opaque rgba8 texels, the
+lookup texture every renderer's shaders map normalized values through. `createEmitter()` is the
+typed event dispatcher behind every controller's `on`: listeners run in order, and one that throws
+rethrows on a microtask while the rest still run.

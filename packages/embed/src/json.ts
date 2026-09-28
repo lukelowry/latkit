@@ -86,6 +86,12 @@ export function string(input: unknown, path: string): string {
   return input;
 }
 
+/** Require an array of strings. */
+export function strings(input: unknown, path: string): string[] {
+  if (!Array.isArray(input)) fail(path, 'must be an array of strings');
+  return (input as unknown[]).map((entry, at) => string(entry, `${path}[${at}]`));
+}
+
 /** Require a non-null record. */
 export function record(input: unknown, path: string): Record<string, unknown> {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) {

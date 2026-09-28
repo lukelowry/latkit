@@ -283,10 +283,13 @@ describe('latkit-network', () => {
       null,
     );
     expect(network.setChannelDomain).toHaveBeenCalledWith('vertexColor', [0, 100]);
-    expect(network.setProjection).toHaveBeenCalledWith('tilt', true);
+    expect(network.setCamera).toHaveBeenCalledWith({ projection: 'tilt' });
     // After a load, channels bind before the projection applies, so a withdrawn globe falls back.
     const calls = network.setChannel.mock.invocationCallOrder;
-    expect(Math.max(...calls)).toBeLessThan(network.setProjection.mock.invocationCallOrder.at(-1)!);
+    expect(Math.max(...calls)).toBeLessThan(network.setCamera.mock.invocationCallOrder.at(-1)!);
+    element.setAttribute('projection', 'globe');
+    await flushMicrotasks();
+    expect(network.setCamera).toHaveBeenLastCalledWith({ projection: 'flat' });
     expect(h.deps.warn).not.toHaveBeenCalled();
 
     network.setOptions.mockClear();
@@ -464,17 +467,21 @@ describe('latkit-network', () => {
     expect(network.pause).toHaveBeenCalledOnce();
     h.near(element, true);
     expect(network.resume).toHaveBeenCalledTimes(2);
-    expect(network.attach).toHaveBeenCalledOnce();
+    // A repeat attach joins the canvas already bound.
+    expect(network.attach).toHaveBeenCalledTimes(2);
+    expect(element.network.attached).toBe(true);
 
     element.remove();
-    expect(network.detach).toHaveBeenCalledOnce();
+    expect(network.detach).toHaveBeenCalledExactlyOnceWith(
+      element.shadowRoot!.querySelector('canvas'),
+    );
     expect(element.hasAttribute('attached')).toBe(false);
     expect(h.observing.has(element)).toBe(false);
 
     document.body.append(element);
     h.near(element, true);
     await flushMicrotasks();
-    expect(network.attach).toHaveBeenCalledTimes(2);
+    expect(network.attach).toHaveBeenCalledTimes(3);
     expect(network.load).toHaveBeenCalledOnce();
     expect(h.deps.fetch).toHaveBeenCalledOnce();
     expect(element.hasAttribute('attached')).toBe(true);

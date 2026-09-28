@@ -666,7 +666,7 @@ export class Picker {
 
   /** Decode normalized vertex height in the same range the shader uses. */
   private normHeight(heights: Float32Array | null, vi: number): number {
-    if (!heights) return 0;
+    if (!heights || Number.isNaN(heights[vi])) return 0;
     const t = clamp01((heights[vi]! - this.f32[W_V_HEIGHT_MIN]!) * this.f32[W_V_HEIGHT_SCALE]!);
     return this.f32[W_V_HEIGHT_OUT_MIN]! + t * this.f32[W_V_HEIGHT_OUT_SPAN]!;
   }
@@ -674,7 +674,7 @@ export class Picker {
   /** Decode per-vertex size multiplier, or 1 when the channel is unbound. */
   private sizeScale(state: TestState, vi: number): number {
     const sizes = state.sizes;
-    if (!sizes) return 1;
+    if (!sizes || Number.isNaN(sizes[vi])) return 1;
     const t = clamp01((sizes[vi]! - this.f32[W_V_SIZE_MIN]!) * this.f32[W_V_SIZE_SCALE]!);
     return this.f32[W_V_SIZE_OUT_MIN]! + t * this.f32[W_V_SIZE_OUT_SPAN]!;
   }

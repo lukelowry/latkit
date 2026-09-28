@@ -1,4 +1,4 @@
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 import { describe, expect, it } from 'vitest';
 
 import { netLabelBox, textWidth } from '../src/geometry.js';
@@ -610,7 +610,10 @@ describe('routeOrthogonal', () => {
 
   it('mirrors a flow that runs right to left', () => {
     // Flipped blocks: the driver's output on its left, the reader's input on its right.
-    const netlist: Netlist = { ...twoArea(), portSide: Uint8Array.of(1, 1, 0, 1, 0, 1, 0) };
+    const netlist: Document.Netlist = {
+      ...twoArea(),
+      portSide: Uint8Array.of(1, 1, 0, 1, 0, 1, 0),
+    };
     const placed = columns(netlist, [[0], [1, 2]]); // GENROU left, TGOV1/IEEET1 right
     for (let net = 0; net < 3; net++) {
       const out = route(placed, net);
@@ -660,7 +663,10 @@ describe('routeOrthogonal', () => {
   });
 
   it('keeps coordinates free of negative zero', () => {
-    const netlist: Netlist = { ...twoArea(), portSide: Uint8Array.of(1, 1, 0, 1, 0, 1, 0) };
+    const netlist: Document.Netlist = {
+      ...twoArea(),
+      portSide: Uint8Array.of(1, 1, 0, 1, 0, 1, 0),
+    };
     const placed = columns(netlist, [[0], [1, 2]], { x: -64 });
     for (let net = 0; net < 3; net++) {
       for (const s of route(placed, net).segments) {
@@ -1015,7 +1021,7 @@ describe('Routes', () => {
 });
 
 describe('net labels', () => {
-  const arranged: readonly (readonly [string, () => Netlist])[] = [
+  const arranged: readonly (readonly [string, () => Document.Netlist])[] = [
     ['steam plant', () => plant('steam')],
     ['PSS plant', () => plant('steamPss')],
     ['renewable plant', () => plant('renewable')],

@@ -19,14 +19,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./borders": {
-      "types": "./dist/borders.d.ts",
-      "import": "./dist/borders.js"
-    },
-    "./shades": {
-      "types": "./dist/shades.d.ts",
-      "import": "./dist/shades.js"
-    },
     "./assets/*": "./dist/assets/*"
   },
   "types": "./dist/index.d.ts",
@@ -37,6 +29,7 @@
     "bench": "vitest bench --run --project @latkit/network"
   },
   "dependencies": {
+    "@latkit/colormaps": "workspace:*",
     "@latkit/gpu": "workspace:*",
     "@latkit/model": "workspace:*",
     "@webgpu/types": "^0.1.71"

@@ -1,51 +1,22 @@
 /**
- * A queryable table over a class's columns: free-text search over labels and formatted cells,
- * numeric-aware stable sort, and windows that format only the rows they return.
+ * A queryable table over one class: its columns and, at a time, its signals; free-text search
+ * over labels and formatted cells, numeric-aware stable sort, and windows that format only the
+ * rows they return. `Model.grid` makes one.
  *
  * @remarks
  * A grid is immutable over its inputs; full passes run cooperatively in chunks so a large class
- * never blocks the event loop. A host whose values move (a monitor table at a playhead) builds a
- * new grid from freshly sampled columns.
+ * never blocks the event loop. A table whose values move, a class at a playhead, asks the model for
+ * a grid at each time it shows.
  */
 
-import type { Column } from './model.js';
+import { breathe } from './breathe.js';
+import type { Model } from './model.js';
 
-/** Which column orders the rows, or `null` for the element label, and in which direction. */
-export interface GridSort {
-  readonly column: string | null;
-  readonly dir: 'asc' | 'desc';
-}
+/** A column with its values: a class's own, or a signal sampled at the grid's time. */
+type Column = Model.Data['columns'][number];
 
-/** A filtered, sorted slice of rows plus the filtered total, for a scroll spacer. */
-export interface GridWindow {
-  readonly rows: readonly {
-    readonly index: number;
-    readonly label: string;
-    readonly cells: readonly string[];
-  }[];
-  readonly total: number;
-}
-
-/** A query engine over one class. */
-export interface Grid {
-  /** Rows `offset` through `offset + limit` under `query` and `sort`. */
-  window(
-    query: string,
-    sort: GridSort | null,
-    offset: number,
-    limit: number,
-    signal?: AbortSignal,
-  ): Promise<GridWindow>;
-  /** The display position of element `index` under `query` and `sort`, or null when filtered out. */
-  locate(
-    index: number,
-    query: string,
-    sort: GridSort | null,
-    signal?: AbortSignal,
-  ): Promise<number | null>;
-  /** Drop every cache; pending and later queries reject with `AbortError`. */
-  dispose(): void;
-}
+/** One window of rows. */
+type GridWindow = Awaited<ReturnType<Model.Grid['window']>>;
 
 const CHUNK = 4096;
 
@@ -77,33 +48,6 @@ function cellOf(column: Column, index: number): string {
 
 function abortError(): DOMException {
   return new DOMException('The grid query was cancelled.', 'AbortError');
-}
-
-/** The scheduler yield a browser may offer; a task-queue hop otherwise. */
-interface Yielding {
-  yield?(): Promise<void>;
-}
-
-/** Waiters for the one shared message channel, resolved in posting order. */
-let waiters: Array<() => void> = [];
-let channel: MessageChannel | null = null;
-
-/** Yield to the event loop, not just the microtask queue, so input and rendering stay responsive. */
-function breathe(): Promise<void> {
-  const scheduler = (globalThis as { scheduler?: Yielding }).scheduler;
-  if (typeof scheduler?.yield === 'function') return scheduler.yield();
-  return new Promise((resolve) => {
-    if (!channel) {
-      channel = new MessageChannel();
-      channel.port1.onmessage = () => {
-        const pending = waiters;
-        waiters = [];
-        for (const wake of pending) wake();
-      };
-    }
-    waiters.push(resolve);
-    channel.port2.postMessage(null);
-  });
 }
 
 function merge(
@@ -150,20 +94,42 @@ async function sortIndices(
 }
 
 /**
- * Build a grid over one class's labels and columns.
+ * Build a grid over one class's labels, its columns, and the signals sampled at its time.
  *
- * @throws Error when a column's length differs from the label count or a column id repeats.
+ * @throws Error when a column's length differs from the label count or an id repeats in its kind.
  */
-export function createGrid(labels: readonly string[], columns: readonly Column[]): Grid {
+export function createGrid(
+  labels: readonly string[],
+  declared: readonly Column[],
+  signals: readonly Column[] = [],
+): Model.Grid {
   const count = labels.length;
-  const ids = new Set<string>();
-  for (const column of columns) {
-    if (ids.has(column.id)) throw new Error(`column '${column.id}' repeats`);
-    ids.add(column.id);
-    if (column.values.length !== count) {
-      throw new Error(`column '${column.id}' has ${column.values.length} values for ${count} rows`);
+  const columns = [...declared, ...signals];
+  for (const [kind, list] of [
+    ['column', declared],
+    ['signal', signals],
+  ] as const) {
+    const ids = new Set<string>();
+    for (const column of list) {
+      if (ids.has(column.id)) throw new Error(`${kind} '${column.id}' repeats`);
+      ids.add(column.id);
+      if (column.values.length !== count) {
+        throw new Error(
+          `${kind} '${column.id}' has ${column.values.length} values for ${count} rows`,
+        );
+      }
     }
   }
+  const described: Model.Grid['columns'] = Object.freeze(
+    columns.map((column, at) =>
+      Object.freeze({
+        kind: at < declared.length ? ('column' as const) : ('signal' as const),
+        id: column.id,
+        label: column.label,
+        ...(column.kind === 'number' && column.unit !== undefined && { unit: column.unit }),
+      }),
+    ),
+  );
   const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
   let disposed = false;
   let blobs: readonly string[] | null = null;
@@ -214,12 +180,12 @@ export function createGrid(labels: readonly string[], columns: readonly Column[]
   }
 
   /** Display order under one sort, or null for an unknown column. */
-  async function orderFor(sort: GridSort): Promise<Uint32Array | null> {
+  async function orderFor(sort: Model.GridSort): Promise<Uint32Array | null> {
     const dir = sort.dir === 'asc' ? 1 : -1;
     const key = `${sort.column === null ? 'label' : `column:${sort.column}`}\0${sort.dir}`;
     const cached = orders.get(key);
     if (cached) return cached;
-    const column = sort.column === null ? null : columns.find((c) => c.id === sort.column);
+    const column = sort.column === null ? null : columns[sort.column];
     if (column === undefined) return null;
     return once(`order:${key}`, async () => {
       let compare: (a: number, b: number) => number;
@@ -260,7 +226,7 @@ export function createGrid(labels: readonly string[], columns: readonly Column[]
   /** Source indices in display order, or null for natural order. */
   async function displayOrder(
     query: string,
-    sort: GridSort | null,
+    sort: Model.GridSort | null,
     signal?: AbortSignal,
   ): Promise<Uint32Array | null> {
     if (disposed) throw abortError();
@@ -281,6 +247,7 @@ export function createGrid(labels: readonly string[], columns: readonly Column[]
   }
 
   return {
+    columns: described,
     async window(query, sort, offset, limit, signal) {
       const indices = await displayOrder(query, sort, signal);
       const total = indices ? indices.length : count;

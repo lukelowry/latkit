@@ -66,6 +66,8 @@ export class FakeCommandEncoder {
     return pass as unknown as GPURenderPassEncoder;
   });
 
+  copyBufferToBuffer = vi.fn();
+
   finish = vi.fn(() => ({ label: 'command-buffer' }) as unknown as GPUCommandBuffer);
 }
 
@@ -179,7 +181,7 @@ export interface FakeGpuHarness {
 
 export function installWebGpuConstants(): void {
   Object.assign(globalThis, {
-    GPUBufferUsage: { COPY_DST: 8, INDEX: 16, VERTEX: 32, UNIFORM: 64, STORAGE: 128 },
+    GPUBufferUsage: { COPY_SRC: 4, COPY_DST: 8, INDEX: 16, VERTEX: 32, UNIFORM: 64, STORAGE: 128 },
     GPUShaderStage: { VERTEX: 1, FRAGMENT: 2 },
     GPUTextureUsage: { COPY_DST: 2, TEXTURE_BINDING: 4, RENDER_ATTACHMENT: 16 },
   });

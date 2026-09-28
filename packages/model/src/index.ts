@@ -1,45 +1,20 @@
 /**
- * `@latkit/model` — the immutable, columnar description of a network and its element classes that
- * a vendor produces once and every latkit renderer and view consumes directly, plus the byte form
- * that lets it cross a process boundary lazily.
+ * `@latkit/model` — what a format, an engine, and an editor implement, and what they make. A
+ * format subclasses `Model` for its cases and `Document` to edit them; an engine subclasses
+ * `Engine` to record a model; a `Recording` is what an engine fills, and a `Series` is what every
+ * view follows. Every other type lives under the class that speaks it: `Model.Topology`,
+ * `Engine.Recorder`, `Document.Operation`.
  *
  * @packageDocumentation
  */
 
-export type {
-  ClassData,
-  ClassSpec,
-  Column,
-  ElementRef,
-  Item,
-  Model,
-  Signal,
-  Topology,
-} from './model.js';
-export { createModel, elementAt, itemOf, validateTopology } from './model.js';
-
-export type { Netlist } from './netlist.js';
+export { Model, validateTopology } from './model.js';
+export { Engine } from './engine.js';
+export { Document, Refusal } from './document.js';
 export { validateNetlist } from './netlist.js';
+export { Recording } from './recording.js';
+export { Series, validateSeries } from './series.js';
 
 export type { Domain } from './domain.js';
-export { extent, position, normalizeDomain, validateDomain } from './domain.js';
-
-export type { Colormap, RGBA } from './color.js';
-export { bakeColormap, COLORMAP_LUT_SIZE, validateRgba } from './color.js';
-
-export { createEmitter } from './emitter.js';
-
-export type { Series } from './series.js';
-export { createSeries, frameAt, sample, validateSeries } from './series.js';
-
-export type { Field, FieldRef } from './field.js';
-export { fieldKey, fieldsOf } from './field.js';
-
-export type { Results, RunFrames, Runner, RunUpdate } from './run.js';
-export { collect } from './run.js';
-
-export type { Grid, GridSort, GridWindow } from './grid.js';
-export { createGrid, formatNumber } from './grid.js';
-
-export type { Progress, Source } from './source.js';
-export { openModel, sourceOf } from './source.js';
+export { extent, normalizeDomain, validateDomain } from './domain.js';
+export { formatNumber } from './grid.js';

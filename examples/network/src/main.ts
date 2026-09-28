@@ -1,5 +1,5 @@
 import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
-import type { Item } from '@latkit/model';
+import type { Model } from '@latkit/model';
 import { createNetwork, PROJECTIONS, type Network, type Projection } from '@latkit/network';
 import { TOPOLOGIES, type GeneratedTopology, type TopologyOption } from './topologies.js';
 import './style.css';
@@ -131,11 +131,11 @@ function wireProjections(net: Network): ProjectionControls {
     }
   }
 
-  for (const mode of PROJECTIONS) {
-    const btn = createButton(mode, mode === net.projection);
+  for (const mode of Object.keys(PROJECTIONS) as Projection[]) {
+    const btn = createButton(PROJECTIONS[mode].label, mode === net.projection);
     btn.disabled = !net.projections[mode];
     btn.addEventListener('click', () => {
-      if (net.setProjection(mode)) refresh();
+      if (net.setCamera({ projection: mode })) refresh();
     });
     buttons.set(mode, btn);
     row.appendChild(btn);
@@ -211,7 +211,7 @@ function wireColormaps(net: Network): void {
 }
 
 function wirePicking(net: Network): void {
-  const describe = (item: Item | null): string =>
+  const describe = (item: Model.Item | null): string =>
     item === null ? '-' : `${item.kind} #${item.index}`;
 
   net.on('hover', (item) => {

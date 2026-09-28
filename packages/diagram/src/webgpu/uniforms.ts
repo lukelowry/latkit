@@ -4,7 +4,7 @@
  * in device pixels, so `viewport / backing_scale` is the CSS size.
  */
 
-import type { RGBA } from '@latkit/model';
+import type { RGBA } from '@latkit/colormaps';
 
 import type { ResolvedOptions } from '../options.js';
 import { POINTER_NONE, SHADE_HOST_WORDS } from '../shade.js';
@@ -27,8 +27,6 @@ export const DISPLAY_JUNCTIONS = 4;
 export const DISPLAY_LABELS = 8;
 /** Display flag: motion is reduced; dashes stand still as chevrons, glows hold steady. */
 export const DISPLAY_REDUCED = 16;
-/** Display flag: the diagram is in `'edit'` interaction. */
-export const DISPLAY_EDIT = 32;
 
 /** Status colors the uniform block holds. */
 export const STATUS_COLORS = 4;
