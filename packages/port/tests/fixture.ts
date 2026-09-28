@@ -70,7 +70,7 @@ export function fixture(name = 'Fixture'): Fixture {
 
 /**
  * An engine that runs `script` for each recording, noting every model and input it is given;
- * `parse` checks an input, as a real engine's does.
+ * `parse` checks an input, as a real engine's does, and `studies` are what it offers.
  */
 export class Scripted extends Engine {
   readonly inputs: unknown[] = [];
@@ -80,11 +80,19 @@ export class Scripted extends Engine {
 
   constructor(
     script: (recorder: Engine.Recorder, input: unknown, model: Model) => Promise<void>,
-    options: { readonly concurrency?: number; readonly parse?: (input: unknown) => unknown } = {},
+    options: {
+      readonly concurrency?: number;
+      readonly parse?: (input: unknown) => unknown;
+      readonly studies?: readonly Engine.Study[];
+    } = {},
   ) {
-    super({ concurrency: options.concurrency ?? 1 });
+    super({ concurrency: options.concurrency ?? 1, studies: options.studies });
     this.#script = script;
     this.#parse = options.parse ?? ((input) => input);
+  }
+
+  override offer(study: Engine.Study): () => void {
+    return super.offer(study);
   }
 
   protected parse(input: unknown): unknown {

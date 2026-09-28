@@ -96,13 +96,13 @@ export class GridkitEngine extends Engine {
     super({ concurrency: Infinity }); // the server keeps its own queue
   }
 
-  protected parse(input: unknown): Study {
-    return checkStudy(input);
+  protected parse(input: unknown): Input {
+    return checkInput(input);
   }
 
-  protected async execute(model: Model, study: Study, recorder: Engine.Recorder): Promise<void> {
-    recorder.declare({ span: [0, study.duration], expectedFrames: framesOf(study) });
-    for await (const update of solve(this.server, model, study, recorder.signal)) {
+  protected async execute(model: Model, input: Input, recorder: Engine.Recorder): Promise<void> {
+    recorder.declare({ span: [0, input.duration], expectedFrames: framesOf(input) });
+    for await (const update of solve(this.server, model, input, recorder.signal)) {
       if (update.kind === 'queued') recorder.wait(update.ahead);
       else if (update.kind === 'running') recorder.start();
       else if (update.kind === 'log') recorder.log(update.level, update.message);
@@ -115,7 +115,7 @@ export class GridkitEngine extends Engine {
 }
 
 const engine = new GridkitEngine(new URL('/api/', location.href));
-const recording = engine.record(model, study, { label: 'Fault at bus 5' });
+const recording = engine.record(model, input, { label: 'Fault at bus 5' });
 recording.on('change', () => status.show(recording.state)); // waiting, recording, then how it ended
 stop.onclick = () => recording.stop();
 ```
@@ -127,6 +127,38 @@ element`, signals in the order its class declares them. The recorder takes the b
 `span`, `expectedFrames`, and `log` are what the engine declared and said; `frameAt(time)` and
 `timeAt(frame)` read the clock. `recording.model` is the model it records, whatever becomes of the
 case since, so its results never attach to another revision.
+
+## Offer studies
+
+An engine describes what a host may record as studies: plain data any frontend lists and draws as
+forms, each a label and its parameters by kind (`number`, `text`, `flag`, `choice`, `element`, or
+`file`), some in groups a switch turns on and off. Once it offers a study, an engine records only
+an input that names one: `record` checks its values against the form before `parse` sees them,
+throwing a `Refusal` at the parameter to fix, and `shown` and `problems` answer a form as the user
+types, on either side of a port.
+
+```ts
+const SIMULATION: Engine.Study = {
+  id: 'dynamic-simulation',
+  label: 'Dynamic Simulation',
+  formats: ['gridkit'],
+  groups: [{ id: 'fault', label: 'Fault', switch: 'off' }],
+  parameters: [
+    { id: 'tmax', kind: 'number', label: 'End time', unit: 's', above: 0, default: 10 },
+    { id: 'bus', group: 'fault', kind: 'element', classId: 'bus', label: 'Bus' },
+  ],
+};
+
+super({ concurrency: Infinity, studies: [SIMULATION] }); // `offer` adds one later
+
+const input = { study: 'dynamic-simulation', values: { fault: true, bus } };
+engine.shown(input); // tmax, then bus
+engine.problems(model, input); // {} when it records as it stands
+engine.record(model, input); // labelled 'Dynamic Simulation'
+```
+
+`parse` gets each shown parameter's value, null for one left empty, and each switch's position. A
+parameter marked `each` takes several values in a form, and a host records once for each.
 
 ## Bind a field
 

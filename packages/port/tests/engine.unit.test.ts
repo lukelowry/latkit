@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Engine, Model } from '@latkit/model';
+import { Refusal, type Engine, type Model } from '@latkit/model';
 
 import {
   connect,
@@ -8,10 +8,39 @@ import {
   connectModel,
   loopback,
   protocol,
+  serve,
   serveEngine,
   serveModel,
 } from '../src/index.js';
 import { ended, Fixture, fixture, FRAMES, Scripted, settle } from './fixture.js';
+
+const SIMULATION: Engine.Study = {
+  id: 'simulation',
+  label: 'Simulation',
+  formats: ['test'],
+  groups: [{ id: 'fault', label: 'Fault', switch: 'off' }],
+  parameters: [
+    { id: 'tmax', kind: 'number', label: 'End time', above: 0, default: 10 },
+    { id: 'bus', group: 'fault', kind: 'element', classId: 'bus', label: 'Bus' },
+  ],
+};
+
+const SWEEP: Engine.Study = {
+  id: 'sweep',
+  label: 'Sweep',
+  parameters: [{ id: 'bus', kind: 'element', classId: 'bus', label: 'Bus', each: true }],
+};
+
+/** A scripted engine that reads a saved file's text as an end time. */
+class Reader extends Scripted {
+  readonly files: string[] = [];
+
+  read(model: Model, file: Engine.File): Promise<Engine.Input> {
+    this.files.push(`${model.name}: ${file.name}`);
+    const tmax = Number(new TextDecoder().decode(file.bytes));
+    return Promise.resolve({ study: 'simulation', values: { tmax } });
+  }
+}
 
 describe('engine service', () => {
   it('records a model its realm serves where it lives, filling a recording on the far side', async () => {
@@ -30,7 +59,7 @@ describe('engine service', () => {
     serveModel(modelServer, served);
     serveEngine(engineServer, engine);
     const model = await connectModel(modelClient);
-    const remote = connectEngine(engineClient);
+    const remote = await connectEngine(engineClient);
     const opens = source.mock.calls.length;
 
     const heard: string[] = [];
@@ -79,7 +108,7 @@ describe('engine service', () => {
       recorder.append(FRAMES.time.slice(), { bus: FRAMES.values.bus.slice() });
     });
     serveEngine(server, engine);
-    const recording = connectEngine(client).record(local, null);
+    const recording = (await connectEngine(client)).record(local, null);
     await ended(recording);
     expect(recording.state).toMatchObject({ status: 'complete', frameCount: 1 });
     expect(recording.model).toBe(local);
@@ -98,7 +127,7 @@ describe('engine service', () => {
         kept = model;
       }),
     );
-    await ended(connectEngine(client).record(fixture(), null));
+    await ended((await connectEngine(client)).record(fixture(), null));
     await expect(kept.bytes()).rejects.toThrow('the model is no longer lent');
   });
 
@@ -116,7 +145,7 @@ describe('engine service', () => {
     const values = Float32Array.of(3, 4);
     serveEngine(spied, new Scripted(async (recorder) => recorder.append(time, { bus: values })));
     const clientTransfers: ArrayBuffer[][] = [];
-    const remote = connectEngine({
+    const remote = await connectEngine({
       ...client,
       post: (message: unknown, transfer: readonly ArrayBuffer[] = []) => {
         clientTransfers.push([...transfer]);
@@ -157,7 +186,7 @@ describe('engine service', () => {
         },
       ),
     );
-    const remote = connectEngine(client);
+    const remote = await connectEngine(client);
     const refused = remote.record(fixture(), 'bad');
     await ended(refused);
     expect(refused.state).toMatchObject({
@@ -187,7 +216,7 @@ describe('engine service', () => {
         recorder.signal.throwIfAborted();
       }),
     );
-    const recording = connectEngine(client).record(fixture(), null);
+    const recording = (await connectEngine(client)).record(fixture(), null);
     await vi.waitFor(() => expect(recording.state.frameCount).toBe(1));
     recording.stop();
     expect(recording.state.status).toBe('stopped');
@@ -199,7 +228,7 @@ describe('engine service', () => {
     const [server, client] = loopback();
     const finish: (() => void)[] = [];
     serveEngine(server, new Scripted(() => new Promise<void>((resolve) => finish.push(resolve))));
-    const remote = connectEngine(client);
+    const remote = await connectEngine(client);
     const first = remote.record(fixture(), 1);
     const second = remote.record(fixture(), 2);
     await vi.waitFor(() => expect(second.state).toMatchObject({ status: 'waiting', ahead: 0 }));
@@ -222,7 +251,7 @@ describe('engine service', () => {
         recorder.log('info', 'b');
       }),
     );
-    await ended(connectEngine(client).record(fixture(), null));
+    await ended((await connectEngine(client)).record(fixture(), null));
     // Start, two lines: three calls, each awaited before the next crosses.
     expect(drain).toHaveBeenCalledTimes(3);
   });
@@ -250,27 +279,26 @@ describe('engine service', () => {
         readiness.push(true);
       }),
     );
-    const recording = connectEngine(client).record(fixture(), null);
+    const recording = (await connectEngine(client)).record(fixture(), null);
     await ended(recording);
     expect(readiness).toEqual([false, true]);
     expect(recording.log).toHaveLength(40);
   });
 
-  it('serves an engine that is still opening, and fails recordings of one that cannot', async () => {
+  it('serves an engine that is still opening, and refuses a connection to one that cannot', async () => {
     const [server, client] = loopback();
     let release!: (engine: Scripted) => void;
     serveEngine(server, new Promise<Scripted>((resolve) => (release = resolve)));
-    const recording = connectEngine(client).record(fixture(), null);
+    const connecting = connectEngine(client);
     await settle();
     release(new Scripted(async (recorder) => recorder.log('info', 'late')));
+    const recording = (await connecting).record(fixture(), null);
     await ended(recording);
     expect(recording.log).toEqual([{ level: 'info', message: 'late' }]);
 
     const [failing, failed] = loopback();
     serveEngine(failing, Promise.reject(new Error('no solver')));
-    const refused = connectEngine(failed).record(fixture(), null);
-    await ended(refused);
-    expect(refused.state).toMatchObject({ status: 'failed', error: 'no solver' });
+    await expect(connectEngine(failed)).rejects.toThrow('no solver');
   });
 
   it('refuses a request its check refuses, saying why', async () => {
@@ -285,13 +313,23 @@ describe('engine service', () => {
       'engine:record request.home must be a string',
     );
     await expect(stream('record')).rejects.toThrow('engine:record request must be an object');
+    const asks = connect(client, protocol<unknown, unknown>('engine:studies'));
+    await expect(asks.call({ op: 'list' })).rejects.toThrow(
+      'engine:studies request.op must be one of studies, read',
+    );
+    await expect(asks.call({ op: 'read', file: { name: 'a' }, lent: 1 })).rejects.toThrow(
+      'engine:studies request.file.bytes must be a Uint8Array',
+    );
+    await expect(
+      asks.call({ op: 'read', file: { name: 'a', bytes: Uint8Array.of(1) }, lent: 1 }),
+    ).rejects.toThrow('the served engine reads no files');
   });
 
   it('ends when either side closes', async () => {
     const [server, client] = loopback();
     const onClose = vi.fn();
     serveEngine(server, new Scripted(async () => {}), { onClose });
-    const remote = connectEngine(client);
+    const remote = await connectEngine(client);
     remote.close();
     await settle();
     expect(onClose).toHaveBeenCalledOnce();
@@ -304,10 +342,109 @@ describe('engine service', () => {
 
     const [otherServer, otherClient] = loopback();
     const stop = serveEngine(otherServer, new Scripted(() => new Promise<void>(() => {})));
-    const waiting = connectEngine(otherClient).record(fixture(), null);
+    const waiting = (await connectEngine(otherClient)).record(fixture(), null);
     await vi.waitFor(() => expect(waiting.state.status).toBe('recording'));
     stop();
     await ended(waiting);
     expect(waiting.state).toMatchObject({ status: 'failed', error: 'The service was closed.' });
+  });
+
+  it('offers what the served engine offers, checking a form here before anything crosses', async () => {
+    const [server, client] = loopback();
+    const engine = new Scripted(async () => {}, { studies: [SIMULATION] });
+    serveEngine(server, engine);
+    const posted: unknown[] = [];
+    const remote = await connectEngine({
+      ...client,
+      post: (message: unknown, transfer?: readonly ArrayBuffer[]) => {
+        posted.push(message);
+        client.post(message, transfer);
+      },
+    });
+    expect(remote.studies).toEqual(engine.studies);
+    const model = fixture();
+    const input = (values: Engine.Values): Engine.Input => ({ study: 'simulation', values });
+    expect(remote.shown(input({ fault: true })).map((parameter) => parameter.id)).toEqual([
+      'tmax',
+      'bus',
+    ]);
+    expect(remote.problems(model, input({ tmax: 0 }))).toEqual({
+      tmax: 'End time must be greater than 0.',
+    });
+    const crossed = posted.length;
+    expect(() => remote.record(model, input({ tmax: 0 }))).toThrow(Refusal);
+    expect(posted).toHaveLength(crossed);
+
+    const bus = { classId: 'bus', index: 1 };
+    const recording = remote.record(model, input({ tmax: 5, fault: true, bus }));
+    await ended(recording);
+    expect(recording.state.status).toBe('complete');
+    expect(recording.label).toBe('Simulation');
+    expect(engine.inputs).toEqual([
+      { study: 'simulation', values: { fault: true, tmax: 5, bus: { classId: 'bus', index: 1 } } },
+    ]);
+  });
+
+  it('follows each study its peer offers or withdraws, in order, keeping one that did not change', async () => {
+    const [server, client] = loopback();
+    const engine = new Scripted(async () => {}, { studies: [SIMULATION] });
+    serveEngine(server, engine);
+    const remote = await connectEngine(client);
+    const heard = vi.fn();
+    remote.on('change', heard);
+    const [kept] = remote.studies;
+    const withdraw = engine.offer(SWEEP);
+    await vi.waitFor(() =>
+      expect(remote.studies.map((study) => study.id)).toEqual(['simulation', 'sweep']),
+    );
+    expect(remote.studies[0]).toBe(kept);
+    engine.offer({ ...SIMULATION, label: 'Transient' });
+    await vi.waitFor(() => expect(remote.studies[0]!.label).toBe('Transient'));
+    withdraw();
+    await vi.waitFor(() => expect(remote.studies.map((study) => study.id)).toEqual(['simulation']));
+    expect(heard).toHaveBeenCalledTimes(3);
+    expect(() => remote.record(fixture(), { study: 'sweep', values: {} })).toThrow(
+      "No study 'sweep' is offered.",
+    );
+  });
+
+  it('orders a change that overtakes the first offer by its revision', async () => {
+    const [server, client] = loopback();
+    const service = serve(server, protocol<unknown, unknown, unknown>('engine:studies'), () => {
+      service.emit({ revision: 2, studies: [SIMULATION, SWEEP], reads: false });
+      return Promise.resolve({ revision: 1, studies: [SIMULATION], reads: false });
+    });
+    const remote = await connectEngine(client);
+    expect(remote.studies.map((study) => study.id)).toEqual(['simulation', 'sweep']);
+  });
+
+  it('refuses a connection to an engine that offers a study that is not well formed', async () => {
+    const [server, client] = loopback();
+    serve(server, protocol<unknown, unknown>('engine:studies'), () =>
+      Promise.resolve({
+        revision: 0,
+        studies: [{ id: 's', label: 'S', parameters: [{ id: 'a', kind: 'date', label: 'A' }] }],
+        reads: false,
+      }),
+    );
+    await expect(connectEngine(client)).rejects.toThrow("study 's' parameter 'a' is malformed");
+  });
+
+  it('reads a saved file with the served engine, lending the model it reads against', async () => {
+    const [server, client] = loopback();
+    const reader = new Reader(async () => {}, { studies: [SIMULATION] });
+    serveEngine(server, reader);
+    const remote = await connectEngine(client);
+    const bytes = new TextEncoder().encode('7');
+    expect(await remote.read!(fixture('Local'), { name: 'saved.json', bytes })).toEqual({
+      study: 'simulation',
+      values: { tmax: 7 },
+    });
+    expect(reader.files).toEqual(['Local: saved.json']);
+    expect(bytes.byteLength).toBe(1);
+
+    const [plainServer, plainClient] = loopback();
+    serveEngine(plainServer, new Scripted(async () => {}));
+    expect((await connectEngine(plainClient)).read).toBeUndefined();
   });
 });

@@ -115,6 +115,7 @@ class Editable extends Document {
     const created: Model.Element[] = [];
     for (const operation of operations) {
       if (operation.kind === 'remove') throw new Refusal('Keep this bus', operation.elements[0]);
+      if (operation.kind === 'record') throw new Refusal('Nothing records here', operation.signal);
       if (operation.kind === 'set') {
         if (typeof operation.value !== 'number')
           throw new Refusal('A number is required', operation.element);
@@ -408,6 +409,9 @@ describe('document service', () => {
         elements: [{ classId: 'bus', index: 1 }],
       }),
     ).rejects.toMatchObject({ name: 'Refusal', at: { classId: 'bus', index: 1 } });
+    await expect(
+      session.apply({ kind: 'record', classId: 'bus', signal: 'Vm', recorded: true }),
+    ).rejects.toMatchObject({ name: 'Refusal', at: 'Vm' });
     expect(document.state.value).toBe(0);
     expect(session.view.version.revision).toBe(0);
     expect(session.view.history.undo).toEqual([]);
@@ -685,7 +689,7 @@ describe('document service', () => {
       expect(new TextDecoder().decode(await model.bytes())).toBe('3');
     });
     cleanups.push(serveEngine(server, engine));
-    const remote = connectEngine(client);
+    const remote = await connectEngine(client);
     cleanups.push(() => remote.close());
     const recording = remote.record(snapshot, null);
     await session.apply(set(4));
