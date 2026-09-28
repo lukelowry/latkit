@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
-import type { Colormap, Netlist } from '@latkit/model';
+import { createSeries, type Colormap, type Netlist } from '@latkit/model';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Diagram, Options } from '../src/controller.js';
+import { SLOT, type SlotChannel } from '../src/channels.js';
+import type { Diagram, Events, Options } from '../src/controller.js';
 import { snapTo } from '../src/geometry.js';
 import type { Part } from '../src/part.js';
 import { DEFAULT_SHADE_WGSL, SHADE_HOST_WORDS, type Shade, type ShadeFrame } from '../src/shade.js';
@@ -26,6 +27,7 @@ import {
   DISPLAY_LABELS,
   DISPLAY_REDUCED,
   UNIFORM_LAYOUT,
+  W_CHANNELS,
   W_FLAGS,
 } from '../src/webgpu/uniforms.js';
 import {
@@ -817,6 +819,79 @@ describe('channels', () => {
     h.diagram.setOptions({ motion: 'full' });
     h.diagram.setChannel('netFlow', Float32Array.of(0, 0));
     expect(h.frame()).toBe(false);
+  });
+});
+
+describe('series-bound channels', () => {
+  /** A slot channel's uniform record: the word it reads from and whether it is on. */
+  function slot(h: ControllerHarness, channel: SlotChannel) {
+    const at = W_CHANNELS + 4 * SLOT[channel];
+    const { u32 } = h.renderer.mirrors.uniforms;
+    return { offset: u32[at]!, on: u32[at + 1]! };
+  }
+  /** Two frames at times 0 and 1 over `elements` items, value `i` at flat index `i`. */
+  const recording = (elements: number, values?: readonly number[]) =>
+    createSeries({
+      elementCount: elements,
+      signalCount: 1,
+      time: Float64Array.of(0, 1),
+      values: Float64Array.from(values ?? Array.from({ length: 2 * elements }, (_, i) => i)),
+    });
+
+  it('shows a followed series at the playhead, and marches dashes as its flow does', async () => {
+    const h = await loaded({ motion: 'full' });
+    h.diagram.setChannel('netFlow', { series: recording(2, [0, 0, 0, -1]), signal: 0 });
+    const own = slot(h, 'netFlow').offset;
+    await vi.waitFor(() => expect(slot(h, 'netFlow').offset).not.toBe(own));
+    expect(h.frame()).toBe(false);
+    h.diagram.seek(1);
+    expect(h.frame()).toBe(true);
+    h.diagram.seek(0);
+    expect(h.frame()).toBe(false);
+    expect(() => h.diagram.seek(Number.NaN)).toThrow(RangeError);
+  });
+
+  it('shares a signal between channels, and keeps what one shows when bound to it again', async () => {
+    const h = await loaded();
+    const series = recording(4);
+    h.diagram.setChannel('blockColor', { series, signal: 0 });
+    h.diagram.setChannel('blockStatus', { series, signal: 0 });
+    await vi.waitFor(() =>
+      expect(slot(h, 'blockStatus').offset).toBe(slot(h, 'blockColor').offset),
+    );
+    expect(h.diagram.getChannelDomain('blockColor')).toEqual([0, 7]);
+
+    h.diagram.seek(1);
+    const shown = slot(h, 'blockColor').offset;
+    expect(slot(h, 'blockStatus').offset).toBe(shown);
+    h.diagram.setChannel('blockColor', { series, signal: 0 }, [0, 10]);
+    expect(slot(h, 'blockColor').offset).toBe(shown);
+    expect(h.diagram.getChannelDomain('blockColor')).toEqual([0, 10]);
+  });
+
+  it('refuses a series for position and visibility, and reports a failed read as error', async () => {
+    const h = await loaded();
+    for (const channel of ['blockPosition', 'blockVisible', 'netVisible'] as const) {
+      expect(() => h.diagram.setChannel(channel, { series: recording(4), signal: 0 })).toThrow(
+        TypeError,
+      );
+    }
+    const errors: Array<Events['error']> = [];
+    h.diagram.on('error', (error) => errors.push(error));
+    const cause = new Error('disk on fire');
+    const failing = { ...recording(4), read: () => Promise.reject(cause) };
+    h.diagram.setChannel('blockColor', { series: failing, signal: 0 });
+    await vi.waitFor(() => expect(errors).toEqual([{ channel: 'blockColor', cause }]));
+  });
+
+  it('forgets every followed series when a new netlist loads', async () => {
+    const h = await loaded();
+    h.diagram.setChannel('blockColor', { series: recording(4), signal: 0 });
+    await vi.waitFor(() => expect(slot(h, 'blockColor').offset).not.toBe(0));
+    h.diagram.load(grouped());
+    expect(slot(h, 'blockColor')).toEqual({ offset: 0, on: 0 });
+    h.diagram.seek(1);
+    expect(slot(h, 'blockColor')).toEqual({ offset: 0, on: 0 });
   });
 });
 

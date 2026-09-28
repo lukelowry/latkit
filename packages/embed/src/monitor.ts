@@ -22,7 +22,7 @@ export interface SeriesJSON {
   readonly elements?: NumericJSON;
 }
 
-/** DOM events `latkit-monitor` dispatches; every controller event arrives with its payload as `detail`. */
+/** DOM events `latkit-monitor` dispatches: its own `load` and `error`, and controller events with their payloads as `detail`. */
 export interface MonitorElementEventMap {
   /** The current data source is loaded. */
   load: Event;

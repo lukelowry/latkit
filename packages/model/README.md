@@ -156,6 +156,10 @@ Previous states remain unchanged. A null range array means the extents are unkno
 means that signal has no finite samples. Optional sorted `elements` maps stored columns to class
 indices. `on('append', listener)` returns an unsubscribe function.
 
+`createPlayback` keeps the frames of a series around a playhead resident in a renderer's store.
+The network and the diagram build their series-bound channels on it, so a host binds
+`{ series, signal }` to a channel and calls `seek` rather than using it directly.
+
 A disk store or remote recording implements the same `Results` interface:
 
 ```ts

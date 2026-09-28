@@ -253,6 +253,35 @@ it('carries each folded window last row into the next, so every join draws once'
   for (let i = 1; i < axes.length; i++) expect(axes[i]![0]).toBe(axes[i - 1]!.at(-1));
 });
 
+it('paces a repaint by time and GPU work, not by how many uploads it takes', async () => {
+  // Frozen time: only the GPU budget could yield, so every upload lands within a frame or two.
+  const now = vi.spyOn(performance, 'now').mockReturnValue(0);
+  try {
+    const elements = 2000;
+    monitor.setOptions({ valueRange: [0, elements] });
+    monitor.load(
+      source(
+        elements,
+        Array.from({ length: 3200 }, (_, i) => i),
+      ).series,
+    );
+    let rendered = false;
+    monitor.on('rendered', () => (rendered = true));
+    await monitor.attach(canvas());
+    let frames = 0;
+    for (; !rendered && frames < 10; frames++) {
+      await stub.frame();
+      for (let m = 0; m < 20; m++) await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(rendered).toBe(true);
+    expect(history().length).toBeGreaterThan(40);
+    expect(frames).toBeLessThan(5);
+  } finally {
+    now.mockRestore();
+  }
+});
+
 it('appends only the new segments with a stable mapping, without clearing history', async () => {
   const reads: Window[] = [],
     time = [0, 1, 2];

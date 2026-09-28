@@ -2,13 +2,6 @@ import { devices, type DevicePool } from '@latkit/gpu';
 import { validateRgba, type Colormap, type RGBA } from '@latkit/model';
 
 /**
- * What input does. `'edit'` adds drawing wires, moving blocks, and proposing deletions to
- * `'navigate'`, which moves the camera; `'inspect'` keeps hover, taps, and keyboard selection and
- * leaves the wheel and touch scrolling to the page; `'none'` installs no listeners at all.
- */
-export type Interaction = 'edit' | 'navigate' | 'inspect' | 'none';
-
-/**
  * Diagram options: the construction record and the live patch.
  *
  * @remarks
@@ -19,8 +12,13 @@ export type Interaction = 'edit' | 'navigate' | 'inspect' | 'none';
 export interface Options {
   /** Where `Diagram.attach` leases its device. @defaultValue the realm-wide pool from `@latkit/gpu`. */
   devices?: DevicePool;
-  /** What input does. @defaultValue `'navigate'` */
-  interaction?: Interaction;
+  /**
+   * What input does. `'edit'` adds drawing wires, moving blocks, and proposing deletions to
+   * `'navigate'`, which moves the camera; `'inspect'` keeps hover, taps, and keyboard selection and
+   * leaves the wheel and touch scrolling to the page; `'none'` installs no listeners at all.
+   * @defaultValue `'navigate'`
+   */
+  interaction?: 'edit' | 'navigate' | 'inspect' | 'none';
   /**
    * Grid pitch in diagram units, which are CSS pixels only at zoom 1: the grid scales with the
    * view. Every block size, port pitch, and text size derives from it, so changing it re-sizes
@@ -109,6 +107,9 @@ export interface Options {
 
 /** How wires run. */
 export type Routing = NonNullable<Options['routing']>;
+
+/** What input does. */
+export type Interaction = NonNullable<Options['interaction']>;
 
 /** A CSS-pixel inset: one value for every side, or `[top, right, bottom, left]`. */
 export type Insets = number | readonly [number, number, number, number];

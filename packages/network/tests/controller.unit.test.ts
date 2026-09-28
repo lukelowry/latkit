@@ -2025,6 +2025,25 @@ describe('series-bound channels', () => {
     expect(h.renderer.channelWrites).toHaveLength(writes);
   });
 
+  it('leaves a channel unbound when the device cannot hold its frames, and attaches again', async () => {
+    const h = await makeHarness();
+    h.network.load(geographicTopology());
+    vi.spyOn(h.renderer, 'reserve').mockImplementationOnce(() => {
+      throw new Error('channel storage exceeds the binding limit');
+    });
+
+    expect(() => h.network.setChannel('vertexColor', { series: recording(), signal: 0 })).toThrow(
+      'binding limit',
+    );
+    expect(h.network.getChannelDomain('vertexColor')).toBeNull();
+    h.network.seek(1);
+    expect(h.loop.uniforms.channel.vColorOffset).toBe(0);
+
+    h.network.detach();
+    await expect(h.network.attach(h.canvas)).resolves.toBe(true);
+    expect(h.renderer.reserved).toBe(FIXED);
+  });
+
   it('refuses a series for vertex positions, and reports a failed read as error', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());

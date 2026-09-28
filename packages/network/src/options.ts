@@ -1,20 +1,6 @@
 import { devices, type DevicePool } from '@latkit/gpu';
 import { validateDomain, validateRgba, type Colormap, type Domain, type RGBA } from '@latkit/model';
 
-import type { FocusEndpointMode } from './focus-state.js';
-
-/** How camera motion is animated: following the user's preference, always reduced, or always full. */
-export type Motion = 'auto' | 'reduce' | 'full';
-
-/** What a plain wheel does: zoom the view, or scroll the page unless a modifier is held. */
-export type Wheel = 'zoom' | 'modifier';
-
-/** Where pointer, wheel, and keys go: the camera, item inspection only, or nowhere. */
-export type Interaction = 'navigate' | 'inspect' | 'none';
-
-/** A CSS-pixel inset: one value for every side, or `[top, right, bottom, left]`. */
-export type Insets = number | readonly [number, number, number, number];
-
 /**
  * Network display options: the construction record and the live patch.
  *
@@ -96,14 +82,14 @@ export interface Options {
   edgeHoverPx?: number;
   /** Additional selection half-width around edges in CSS pixels. @defaultValue `5`. */
   edgeSelectedPx?: number;
-  /** Endpoint highlight mode for focused edges. @defaultValue `"selected"`. */
-  focusEndpointMode?: FocusEndpointMode;
+  /** Which focused edges also halo their endpoint vertices. @defaultValue `"selected"`. */
+  focusEndpointMode?: 'off' | 'selected' | 'hover-selected';
   /**
    * Camera and orbit motion. `'auto'` follows `prefers-reduced-motion`; under reduced motion every
    * fit, reveal, and pose lands at once, drags do not coast, and `orbit(true)` is refused.
    * @defaultValue `'auto'`.
    */
-  motion?: Motion;
+  motion?: 'auto' | 'reduce' | 'full';
   /** Duration of an animated fit, reveal, or pose, in milliseconds. @defaultValue `500`. */
   animationMs?: number;
   /** Multiplier on the continuous rotation rate of `orbit`. @defaultValue `1`. */
@@ -119,20 +105,26 @@ export interface Options {
    */
   keyboard?: boolean;
   /** Whether a plain wheel zooms, or only a Ctrl or Meta wheel does while the page keeps scrolling. @defaultValue `'zoom'`. */
-  wheel?: Wheel;
+  wheel?: 'zoom' | 'modifier';
   /**
    * What input does. `'navigate'` moves the camera. `'inspect'` keeps hover, tap selection with
    * cycling, and keyboard stepping along the topology, and leaves wheel and touch scrolling to the
    * page. `'none'` installs no listeners at all. @defaultValue `'navigate'`.
    */
-  interaction?: Interaction;
-  /** Inset every fit keeps clear, in CSS pixels; `null` keeps the default margin. @defaultValue `null`. */
-  fitPaddingPx?: Insets | null;
+  interaction?: 'navigate' | 'inspect' | 'none';
+  /**
+   * Inset every fit keeps clear, in CSS pixels: one for every side, or
+   * `[top, right, bottom, left]`; `null` keeps the default margin. @defaultValue `null`.
+   */
+  fitPaddingPx?: number | readonly [number, number, number, number] | null;
   /** Pitch a fit rests at, in degrees; `null` is the view's own rest. Flat ignores it. @defaultValue `null`. */
   fitPitch?: number | null;
   /** Bearing a fit rests at, in degrees clockwise from north. Flat ignores it. @defaultValue `0`. */
   fitBearing?: number;
 }
+
+/** A CSS-pixel inset: one value for every side, or `[top, right, bottom, left]`. */
+export type Insets = NonNullable<Options['fitPaddingPx']>;
 
 /**
  * Validation kind, default, whether `Network.setOptions` accepts the option live, whether `null` is

@@ -72,7 +72,7 @@ export interface NetworkJSON {
   }[];
 }
 
-/** DOM events `latkit-network` dispatches; every controller event arrives with its payload as `detail`. */
+/** DOM events `latkit-network` dispatches: its own `load` and `error`, and controller events with their payloads as `detail`. */
 export interface NetworkElementEventMap {
   /** The current data source is loaded. */
   load: Event;

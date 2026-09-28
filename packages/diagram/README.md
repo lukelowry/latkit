@@ -132,6 +132,15 @@ diagram.setChannel('blockStatus', Float32Array.of(0, 2, 0)); // TGOV1 in error r
 diagram.setChannel('blockColor', null);
 ```
 
+A channel can follow one signal of a recorded `Series` instead, and `seek` shows the frame at a
+playhead in every channel that does. Every channel but `blockPosition`, `blockVisible`, and
+`netVisible` can, since those re-lay the scene:
+
+```ts
+diagram.setChannel('netFlow', { series: await results.series('branch'), signal: 0 }, null);
+transport.on('frame', (t) => diagram.seek(t));
+```
+
 `blockPosition` pairs are top-left corners in diagram units, which are CSS pixels at zoom 1 with
 `y` growing downward. A write takes effect at once: placed blocks move, their nets re-route, and
 their group frames follow. `blockVisible` and `netVisible` re-route what they touch, and hidden
@@ -289,6 +298,7 @@ diagram.on('attached', (attached) => (canvas.hidden = !attached));
 diagram.on('painted', (painted) => (poster.hidden = painted));
 diagram.on('deviceLost', ({ message, recovering }) => !recovering && showFallback(message));
 diagram.on('pipelineError', ({ cause }) => console.error(cause));
+diagram.on('error', ({ channel, cause }) => console.error(channel, cause)); // a series read failed
 ```
 
 User gestures produce `select`, `contextmenu`, `open`, `connect`, `move`, and `delete`;

@@ -32,6 +32,9 @@ export { createEmitter } from './emitter.js';
 export type { Series } from './series.js';
 export { createSeries, sample, validateSeries } from './series.js';
 
+export type { Playback } from './playback.js';
+export { createPlayback } from './playback.js';
+
 export type { Field, FieldRef } from './field.js';
 export { fieldKey, fieldsOf } from './field.js';
 

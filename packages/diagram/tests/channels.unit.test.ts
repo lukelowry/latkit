@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createSeries } from '@latkit/model';
 
 import {
   CHANNEL_KEYS,
@@ -220,5 +221,80 @@ describe('createChannels', () => {
     expect(mirror.capacity).toBe(4);
     expect(mirror.version).toBeGreaterThan(version);
     expect(() => channels.set('blockShade', new Float32Array(0))).toThrow('must be loaded');
+  });
+});
+
+describe('series-bound channels', () => {
+  /** `frames` frames over `elements` items, value `i` at flat index `i`, times 0, 1, 2, … */
+  const recording = (elements: number, frames = 2) =>
+    createSeries({
+      elementCount: elements,
+      signalCount: 1,
+      time: Float64Array.from({ length: frames }, (_, i) => i),
+      values: Float64Array.from({ length: frames * elements }, (_, i) => i),
+    });
+
+  it('refuses position and visibility channels, a missing signal, and elements that do not fit', () => {
+    const { channels } = make();
+    const series = recording(3);
+    for (const channel of ['blockPosition', 'blockVisible', 'netVisible'] as const) {
+      expect(() => channels.set(channel, { series, signal: 0 })).toThrow(TypeError);
+    }
+    expect(() => channels.set('blockColor', { series, signal: 1 })).toThrow(RangeError);
+    expect(() => channels.set('netColor', { series, signal: 0 })).toThrow('do not fit 2 items');
+    expect(() => make(null).channels.set('blockColor', { series, signal: 0 })).toThrow(
+      'must be loaded',
+    );
+  });
+
+  it('shows NaN until a frame shows, reads the frame in place, and holds what it shows', () => {
+    const { channels, uniforms, mirror } = make();
+    channels.set('blockColor', { series: recording(3), signal: 0 });
+    expect(record(uniforms, 'blockColor')).toMatchObject({ offset: 0, on: 1 });
+    expect(Array.from(channels.values('blockColor')!)).toEqual([NaN, NaN, NaN]);
+    expect(channels.domain('blockColor')).toEqual([0, 5]);
+
+    const at = channels.words;
+    const frame = Float32Array.of(3, 4, 5);
+    channels.reserve(at + 3);
+    channels.writeWords(at, frame);
+    channels.moveTo('blockColor', at, frame);
+    expect(record(uniforms, 'blockColor').offset).toBe(at);
+    expect(channels.values('blockColor')).toBe(frame);
+    expect(Array.from(mirror.f32.subarray(at, at + 3))).toEqual([3, 4, 5]);
+
+    channels.hold('blockColor');
+    expect(record(uniforms, 'blockColor').offset).toBe(0);
+    expect(Array.from(channels.values('blockColor')!)).toEqual([3, 4, 5]);
+    expect(Array.from(mirror.f32.subarray(0, 3))).toEqual([3, 4, 5]);
+  });
+
+  it('keeps what a channel shows when it follows the same signal, and its slot when an array replaces it', () => {
+    const { channels, uniforms } = make();
+    const series = recording(3);
+    channels.set('blockColor', { series, signal: 0 });
+    const frame = Float32Array.of(1, 2, 3);
+    channels.moveTo('blockColor', 50, frame);
+    channels.set('blockColor', { series, signal: 0 }, [0, 10]);
+    expect(record(uniforms, 'blockColor').offset).toBe(50);
+    expect(channels.values('blockColor')).toBe(frame);
+    expect(channels.domain('blockColor')).toEqual([0, 10]);
+    expect(channels.refreshRecorded('blockColor')).toBe(false);
+
+    channels.set('blockColor', Float32Array.of(7, 8, 9));
+    expect(record(uniforms, 'blockColor').offset).toBe(0);
+    expect(Array.from(channels.values('blockColor')!)).toEqual([7, 8, 9]);
+    expect(channels.domain('blockColor')).toEqual([0, 1]);
+  });
+
+  it('moves every slot view onto a grown mirror', () => {
+    const { channels, mirror } = make();
+    channels.set('blockVisible', Float32Array.of(1, 0, 1));
+    const before = channels.values('blockVisible')!;
+    channels.reserve(mirror.capacity + 1000);
+    const after = channels.values('blockVisible')!;
+    expect(after).not.toBe(before);
+    expect(after.buffer).toBe(mirror.f32.buffer);
+    expect(Array.from(after)).toEqual([1, 0, 1]);
   });
 });

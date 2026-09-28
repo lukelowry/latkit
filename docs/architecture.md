@@ -11,7 +11,7 @@ Public APIs stay imperative on purpose: data often arrives from simulation, tele
 ## Package boundaries
 
 `@latkit/model`
-: Owns the immutable, columnar network model, its append-only sample histories, and its byte form, and with them the vocabulary the renderers speak: `Topology`, `Item`, `Series`, and `Domain`, with `validateTopology`, `validateDomain`, and `extent`. `Netlist` and `validateNetlist` are the block-diagram counterpart of `Topology`, so an engine builds a netlist without importing a GPU package. Depends on nothing.
+: Owns the immutable, columnar network model, its append-only sample histories, and its byte form, and with them the vocabulary the renderers speak: `Topology`, `Item`, `Series`, and `Domain`, with `validateTopology`, `validateDomain`, and `extent`. `Netlist` and `validateNetlist` are the block-diagram counterpart of `Topology`, so an engine builds a netlist without importing a GPU package. `createPlayback` keeps the frames of a `Series` around a playhead resident in a renderer's store, so every renderer follows a recording the same way without the model knowing any of them. Depends on nothing.
 
 `@latkit/colormaps`
 : Owns color catalogs and formatting helpers. Rendering packages can consume this package without duplicating palette data.

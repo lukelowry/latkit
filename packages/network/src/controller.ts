@@ -1,6 +1,13 @@
 /// <reference types="@webgpu/types" />
 
-import { bakeColormap, createEmitter, type Domain, type Item, type Series } from '@latkit/model';
+import {
+  bakeColormap,
+  createEmitter,
+  createPlayback,
+  type Domain,
+  type Item,
+  type Series,
+} from '@latkit/model';
 import {
   createAttachment,
   createFrameLoop,
@@ -42,8 +49,13 @@ import {
 import { attachKeyboard, type KeyIntent } from './input/keyboard.js';
 import { createSurface, type Surface } from './input/surface.js';
 import { type Pose, MAX_ZOOM_RATIO, type Viewport } from './camera/projection.js';
-import { CHANNELS, createChannels, isSeriesBinding, type Channel } from './channels.js';
-import { createPlayback } from './playback.js';
+import {
+  CHANNELS,
+  createChannels,
+  isSeriesBinding,
+  type Channel,
+  type SeriesBinding,
+} from './channels.js';
 import { createFrameTick } from './webgpu/frame.js';
 import type { FramePasses } from './webgpu/frame-encoder.js';
 import {
@@ -262,9 +274,10 @@ export interface Network {
    * `vertexPosition`), stored as float32; a series signal to follow; or `null` to clear.
    * @param domain - Input domain for normalized channels, or `null` for scanned/default behavior.
    * @throws Error when values are given before a topology is loaded or their length is invalid,
-   * or a series' elements do not fit the channel's items; RangeError for a signal the series
-   * lacks; TypeError when values are neither a Float32Array, a Float64Array, nor a series binding,
-   * or `vertexPosition` is given a series. `null` is always accepted.
+   * a series' elements do not fit the channel's items, or the device cannot hold a series' frames,
+   * which leaves the channel unbound; RangeError for a signal the series lacks; TypeError when
+   * values are neither a Float32Array, a Float64Array, nor a series binding, or `vertexPosition` is
+   * given a series. `null` is always accepted.
    */
   setChannel(
     channel: Channel,
@@ -783,16 +796,16 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     renderer: () => binding?.renderer ?? null,
   });
 
-  const playback = createPlayback({
-    fixedWords: () => channels.words,
+  const playback = createPlayback<Channel>({
+    reserved: () => channels.words,
     items: (channel) =>
       !topology
         ? 0
         : CHANNELS[channel].scope === 'vertex'
           ? topology.vertexCount
           : edgeCountOf(topology),
-    renderer: () => binding?.renderer ?? null,
-    moveTo: (channel, offset, view) => {
+    store: () => binding?.renderer ?? null,
+    show: (channel, offset, view) => {
       channels.moveTo(channel, offset, view);
       if (isPickChannel(channel)) hoverDirty = true;
       repaint();
@@ -1172,7 +1185,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       renderer.bindTopology(scene);
       renderer.useProjection(rig.mode);
       channels.upload(renderer);
-      playback.upload(renderer);
+      playback.upload();
     }
     renderer.setBorders(borders);
     loop.frameNow();
@@ -1372,8 +1385,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
 
     setChannel(channel, values, domain) {
       if (isSeriesBinding(values)) {
-        channels.set(channel, values, domain);
-        playback.follow(channel, values.series, values.signal);
+        followSeries(channel, values, domain);
       } else if (channel === 'vertexPosition') {
         if (values === null && !layoutOverridden) return;
         setPositions(values);
@@ -1388,12 +1400,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       repaint();
     },
 
-    seek(time) {
-      if (typeof time !== 'number' || !Number.isFinite(time)) {
-        throw new RangeError('network seek time must be finite');
-      }
-      playback.seek(time);
-    },
+    seek: (time) => playback.seek(time),
 
     setChannelDomain(channel, domain) {
       channels.setDomain(channel, domain);
@@ -1615,6 +1622,19 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       events.clear();
     },
   };
+
+  /** Follow a series in a channel; frames the device cannot hold leave it unbound. */
+  function followSeries(channel: Channel, binding: SeriesBinding, domain?: Domain | null): void {
+    channels.set(channel, binding, domain);
+    try {
+      playback.follow(channel, binding.series, binding.signal);
+    } catch (error) {
+      channels.clear(channel);
+      if (isPickChannel(channel)) hoverDirty = true;
+      repaint();
+      throw error;
+    }
+  }
 
   /**
    * Bind vertex positions, or restore the topology's own layout with `null`.

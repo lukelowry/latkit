@@ -38,6 +38,8 @@ export interface LaneEvents {
 }
 const READ_BYTES = 1024 * 1024;
 const FOCUS_FRAMES = 65536;
+/** Main-thread work between yields: about half a frame at 60 Hz. */
+const SLICE_MS = 8;
 /** The margin an automatic value domain keeps beyond the recorded extent, per side, of its span. */
 const HEADROOM = 0.1;
 
@@ -161,7 +163,7 @@ export class Lane {
     if (!this.#style.valueRange && !state.ranges && state.frameCount > this.#scan.frames) {
       let min = this.#scan.range?.[0] ?? Infinity,
         max = this.#scan.range?.[1] ?? -Infinity;
-      let reads = 0;
+      let slice = performance.now();
       for (let f = this.#scan.frames; f < state.frameCount; f += this.#frames)
         for (let e = 0; e < this.#series.elementCount; e += this.#elements) {
           const window = {
@@ -171,9 +173,10 @@ export class Lane {
             elementCount: Math.min(this.#elements, this.#series.elementCount - e),
           };
           const block = await this.#read(window, signal);
-          if (++reads % 4 === 0) {
+          if (performance.now() - slice >= SLICE_MS) {
             await new Promise<void>((resolve) => setTimeout(resolve, 0));
             signal.throwIfAborted();
+            slice = performance.now();
           }
           for (let row = 0; row < window.frameCount; row++)
             for (let column = 0; column < window.elementCount; column++) {
@@ -421,8 +424,8 @@ export class Lane {
       : this.#windows(first, last, focus);
     let next = windows.next();
     let pending = next.done ? null : this.#read(next.value, signal);
-    let submitted = 0,
-      segments = 0;
+    let segments = 0,
+      slice = performance.now();
     while (!next.done && pending) {
       const window = next.value;
       const block = await pending;
@@ -472,12 +475,14 @@ export class Lane {
         }
         if (!this.#painter.offscreen) this.#present();
         segments += instances;
-        if (++submitted >= 4 || segments >= SEGMENT_BUDGET) {
-          // Bounded GPU batches, with source prefetch overlapped across the wait.
+        if (segments >= SEGMENT_BUDGET || performance.now() - slice >= SLICE_MS) {
+          // Bounded GPU batches and main-thread slices, with source prefetch overlapped across the
+          // wait.
           await this.#painter.device.queue.onSubmittedWorkDone();
           signal.throwIfAborted();
           await yieldFrame(signal);
-          submitted = segments = 0;
+          segments = 0;
+          slice = performance.now();
         }
       }
     }

@@ -1,5 +1,6 @@
 import type { RGBA } from '@latkit/model';
 
+import type { Options } from './options.js';
 import type { Uniforms } from './webgpu/uniforms.js';
 import {
   FOCUS_ENABLED,
@@ -8,7 +9,7 @@ import {
 } from './webgpu/uniforms.js';
 
 /** Which focused edges also halo their endpoint vertices. */
-export type FocusEndpointMode = 'off' | 'selected' | 'hover-selected';
+export type FocusEndpointMode = NonNullable<Options['focusEndpointMode']>;
 
 type FocusKind = 'vertex' | 'edge';
 

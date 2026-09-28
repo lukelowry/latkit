@@ -1,4 +1,4 @@
-import { validateDomain, type Domain } from '@latkit/model';
+import { validateDomain, validateSeries, type Domain, type Series } from '@latkit/model';
 
 import type { Mirror } from './webgpu/buffers.js';
 import type { Uniforms } from './webgpu/uniforms.js';
@@ -156,22 +156,56 @@ export function channelDefinition(channel: Channel): ChannelDefinition {
   return def;
 }
 
+/** One signal of a series a channel follows, one element per item of its scope. */
+export interface SeriesBinding {
+  readonly series: Series;
+  readonly signal: number;
+}
+
+/** Whether channel values name a series to follow rather than holding the values. */
+export function isSeriesBinding(values: unknown): values is SeriesBinding {
+  return typeof values === 'object' && values !== null && 'series' in values;
+}
+
 /** Channel values, domains, and slot records for one controller. */
 export interface Channels {
+  /** Float words the slots take; what else the mirror holds starts here. */
+  readonly words: number;
   /**
    * Size every slot for `counts`, clear every channel, write offsets; null (before a load, or
    * after a destroy) leaves no slots and gives the mirror's memory back.
    */
   reset(counts: Counts | null): void;
   /**
-   * Validate the length for the loaded counts and bind, replacing what was bound.
+   * Validate for the loaded counts and bind, replacing what was bound. A series binding shows
+   * nothing, its slot filled with NaN, until `moveTo` shows a frame, unless the channel follows
+   * that signal already and keeps what it shows; a null `domain` follows the signal's recorded
+   * range.
    *
-   * @throws Error before a load or for a wrong length; RangeError or TypeError for a bad domain.
-   * Nothing changes when it throws.
+   * @throws Error before a load, for a wrong length, or for series elements that do not fit;
+   * RangeError for a signal the series lacks; TypeError for values of another kind, or a position
+   * or visibility channel given a series; RangeError or TypeError for a bad domain. Nothing changes
+   * when it throws.
    */
-  set(channel: Channel, values: Float32Array | Float64Array, domain?: Domain | null): void;
+  set(
+    channel: Channel,
+    values: Float32Array | Float64Array | SeriesBinding,
+    domain?: Domain | null,
+  ): void;
   /** Unbind a channel; its slot stays allocated and turns off. False when nothing was bound. */
   clear(channel: Channel): boolean;
+  /** Items of the channel's scope in the loaded netlist, or 0 before one. */
+  items(channel: Channel): number;
+  /** Grow the mirror to hold `words` float words, keeping what it holds. */
+  reserve(words: number): void;
+  /** Write float words `offset` words into the mirror. */
+  writeWords(offset: number, values: Float32Array): void;
+  /** Show a series-bound channel the values `offset` words into the mirror, read as `view`. */
+  moveTo(channel: Channel, offset: number, view: Float32Array): void;
+  /** Keep what a series-bound channel shows in its own slot, so the words it read can change. */
+  hold(channel: Channel): void;
+  /** Re-read the recorded range a series-bound channel's domain follows; false when none. */
+  refreshRecorded(channel: Channel): boolean;
   /**
    * Override the input domain of a normalized channel, or return to its own with `null`; a raw
    * channel ignores it.
@@ -198,21 +232,41 @@ export function createChannels(mirror: Mirror, uniforms: Uniforms): Channels {
   const bound = new Map<Channel, Float32Array>();
   const data = new Map<Channel, Domain>();
   const override = new Map<Channel, Domain>();
+  /** Series-bound channels and the signal each follows. */
+  const following = new Map<SlotChannel, SeriesBinding>();
+  /** Series-bound channels whose domain follows the recorded range. */
+  const recorded = new Set<SlotChannel>();
+  /** The word a series-bound channel reads from, when not its own slot. */
+  const shown = new Map<SlotChannel, number>();
 
   function writeRecord(channel: SlotChannel): void {
     const slot = SLOT[channel];
+    const offset = shown.get(channel) ?? layout.offsets[slot]!;
     const snapshot = bound.get(channel);
     if (!snapshot) {
-      uniforms.setChannel(slot, layout.offsets[slot]!, false, 0, 0);
+      uniforms.setChannel(slot, offset, false, 0, 0);
       return;
     }
     if (!CHANNELS[channel].normalized) {
       // Raw channels read through the identity so a generic read needs no branch.
-      uniforms.setChannel(slot, layout.offsets[slot]!, true, 0, 1);
+      uniforms.setChannel(slot, offset, true, 0, 1);
       return;
     }
     const [min, max] = override.get(channel) ?? data.get(channel) ?? UNIT;
-    uniforms.setChannel(slot, layout.offsets[slot]!, true, min, 1 / Math.max(max - min, 1e-12));
+    uniforms.setChannel(slot, offset, true, min, 1 / Math.max(max - min, 1e-12));
+  }
+
+  /** The view of a channel's own slot in the mirror, as it is now. */
+  function slotView(channel: SlotChannel, length: number): Float32Array {
+    const offset = layout.offsets[SLOT[channel]]!;
+    return mirror.f32.subarray(offset, offset + length);
+  }
+
+  /** Drop what a channel followed; its own slot is what it reads again. */
+  function unfollow(channel: SlotChannel): boolean {
+    shown.delete(channel);
+    recorded.delete(channel);
+    return following.delete(channel);
   }
 
   function reset(next: Counts | null): void {
@@ -221,6 +275,9 @@ export function createChannels(mirror: Mirror, uniforms: Uniforms): Channels {
     bound.clear();
     data.clear();
     override.clear();
+    following.clear();
+    recorded.clear();
+    shown.clear();
     // With no netlist the slots give their memory back.
     if (next) mirror.resize(layout.words);
     else mirror.release();
@@ -229,9 +286,13 @@ export function createChannels(mirror: Mirror, uniforms: Uniforms): Channels {
 
   function set(
     channel: Channel,
-    values: Float32Array | Float64Array,
+    values: Float32Array | Float64Array | SeriesBinding,
     domain?: Domain | null,
   ): void {
+    if (isSeriesBinding(values)) {
+      follow(channel, values, domain);
+      return;
+    }
     const def = channelDefinition(channel);
     if (!counts) throw new Error('diagram netlist must be loaded before binding channels');
     const tag = Object.prototype.toString.call(values);
@@ -255,13 +316,53 @@ export function createChannels(mirror: Mirror, uniforms: Uniforms): Channels {
     const offset = layout.offsets[SLOT[channel]]!;
     mirror.f32.set(values, offset);
     mirror.touch(offset, offset + values.length);
-    if (!bound.has(channel))
-      bound.set(channel, mirror.f32.subarray(offset, offset + values.length));
+    if (unfollow(channel) || !bound.has(channel))
+      bound.set(channel, slotView(channel, values.length));
     if (def.normalized) {
       if (nextDomain) data.set(channel, nextDomain);
       else data.delete(channel);
     }
     writeRecord(channel);
+  }
+
+  function follow(channel: Channel, binding: SeriesBinding, domain?: Domain | null): void {
+    const def = channelDefinition(channel);
+    if (!counts) throw new Error('diagram netlist must be loaded before binding channels');
+    // A position or visibility change re-lays the scene: those channels take arrays only.
+    if (def.map === 'position' || def.map === 'visible') {
+      throw new TypeError(`diagram channel ${channel} cannot follow a series`);
+    }
+    const { series, signal } = binding;
+    validateSeries(series);
+    if (!Number.isInteger(signal) || signal < 0 || signal >= series.signalCount) {
+      throw new RangeError(
+        `diagram channel ${channel} signal ${signal} out of [0, ${series.signalCount})`,
+      );
+    }
+    const items = itemsOf(def.scope, counts);
+    const last = series.elements ? (series.elements.at(-1) ?? -1) : series.elementCount - 1;
+    if (series.elements ? last >= items : series.elementCount !== items) {
+      throw new Error(`diagram channel ${channel} series elements do not fit ${items} items`);
+    }
+    const nextDomain = def.normalized
+      ? domain
+        ? checkedDomain(channel, domain)
+        : recordedDomain(binding)
+      : null;
+    const slot = channel as SlotChannel;
+    const previous = following.get(slot);
+    if (previous?.series !== series || previous.signal !== signal) {
+      unfollow(slot);
+      const offset = layout.offsets[SLOT[slot]]!;
+      mirror.f32.fill(NaN, offset, offset + items);
+      mirror.touch(offset, offset + items);
+      bound.set(slot, slotView(slot, items));
+      following.set(slot, binding);
+    }
+    if (domain) recorded.delete(slot);
+    else recorded.add(slot);
+    if (nextDomain) data.set(slot, nextDomain);
+    writeRecord(slot);
   }
 
   function clear(channel: Channel): boolean {
@@ -270,7 +371,49 @@ export function createChannels(mirror: Mirror, uniforms: Uniforms): Channels {
     bound.delete(channel);
     data.delete(channel);
     override.delete(channel);
-    if (channel !== 'blockPosition') writeRecord(channel);
+    if (channel !== 'blockPosition') {
+      unfollow(channel);
+      writeRecord(channel);
+    }
+    return true;
+  }
+
+  function reserve(words: number): void {
+    if (words <= mirror.words) return;
+    const grows = words > mirror.capacity;
+    mirror.resize(words);
+    if (!grows) return;
+    // A grown mirror is a new store: the slots read from their own words move with it.
+    for (const [channel, view] of bound) {
+      if (channel === 'blockPosition' || shown.has(channel)) continue;
+      bound.set(channel, slotView(channel, view.length));
+    }
+  }
+
+  function moveTo(channel: Channel, offset: number, view: Float32Array): void {
+    const slot = channel as SlotChannel;
+    shown.set(slot, offset);
+    bound.set(slot, view);
+    writeRecord(slot);
+  }
+
+  function hold(channel: Channel): void {
+    const slot = channel as SlotChannel;
+    const view = bound.get(slot);
+    if (!view || !shown.delete(slot)) return;
+    const offset = layout.offsets[SLOT[slot]]!;
+    mirror.f32.set(view, offset);
+    mirror.touch(offset, offset + view.length);
+    bound.set(slot, slotView(slot, view.length));
+    writeRecord(slot);
+  }
+
+  function refreshRecorded(channel: Channel): boolean {
+    const slot = channel as SlotChannel;
+    const binding = following.get(slot);
+    if (!binding || !recorded.has(slot)) return false;
+    data.set(slot, recordedDomain(binding));
+    writeRecord(slot);
     return true;
   }
 
@@ -288,17 +431,39 @@ export function createChannels(mirror: Mirror, uniforms: Uniforms): Channels {
 
   reset(null);
   return {
+    get words() {
+      return layout.words;
+    },
     reset,
     set,
     clear,
     setDomain,
     domain: domainOf,
     values: (channel) => bound.get(channel) ?? null,
+    items: (channel) => (counts ? itemsOf(channelDefinition(channel).scope, counts) : 0),
+    reserve,
+    writeWords(offset, values) {
+      mirror.f32.set(values, offset);
+      mirror.touch(offset, offset + values.length);
+    },
+    moveTo,
+    hold,
+    refreshRecorded,
   };
 }
 
 /** The default input domain of a colormap channel. */
 const UNIT: Domain = Object.freeze([0, 1] as const);
+
+/** The recorded finite range of a series signal, or `[0, 1]` before anything finite is recorded. */
+function recordedDomain({ series, signal }: SeriesBinding): Domain {
+  const ranges = series.state.ranges;
+  const lo = ranges?.[signal * 2];
+  const hi = ranges?.[signal * 2 + 1];
+  return lo !== undefined && hi !== undefined && Number.isFinite(lo) && Number.isFinite(hi)
+    ? [lo, hi]
+    : UNIT;
+}
 
 /** Items of one scope in a netlist of `counts`. */
 function itemsOf(scope: ChannelDefinition['scope'], counts: Counts): number {

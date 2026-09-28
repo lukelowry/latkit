@@ -74,7 +74,7 @@ fixed, appends draw only the new segments; an automatic value range keeps a tent
 to spare and only grows, so most appends stay inside it. A changed mapping or canvas size replays
 history behind the last image, which stays on screen, rescaled, until the replay completes. A
 replay over more than two frames per device pixel draws each pixel column's extremes in the order
-they occurred, so its cost follows the canvas width, not the recording's length; appends and the
+they occurred, so its drawing follows the canvas width, not the recording's length; appends and the
 selected trace draw every frame, and readings come from the full series.
 History and focus textures are retained, and changing opacity only composites them again.
 
