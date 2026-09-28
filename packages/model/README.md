@@ -1,15 +1,15 @@
 # @latkit/model
 
-What a format, an engine, and an editor implement, and what they make. A format subclasses
-`Model` to read its cases and `Document` to edit them; an engine subclasses `Engine` to record any
-model; a `Recording` is what an engine fills, one model's for good, and a `Series` is what every
-view follows. It has no dependencies, I/O, or rendering.
+What a format, an engine, and an editor implement, and what they make. A native format opens or
+creates a `Document` through `Document.Format`. The document owns editing and produces immutable
+`Model` snapshots on demand; an `Engine` records a model, a `Recording` holds its results, and a
+`Series` is what every view follows. It has no dependencies, I/O, or rendering.
 
 | Class       | What it is                                                                               |
 | ----------- | ---------------------------------------------------------------------------------------- |
-| `Model`     | A case as a format reads it: topology, element classes, their values loaded on demand    |
+| `Model`     | An immutable case snapshot: topology, element classes, values loaded on demand           |
 | `Engine`    | What records any model it is given: a solver, a simulator, an analysis, a feed           |
-| `Document`  | A case open for editing: operations, one history, and the case as a block diagram        |
+| `Document`  | A native case open for editing: current bytes, history, schematic, and model snapshots   |
 | `Recording` | Every signal an engine records for a model, each class's series on one clock             |
 | `Series`    | A history a view follows: signals over time for an element axis, read in bounded windows |
 
@@ -20,17 +20,18 @@ shapes `@latkit/network` loads and picks, as `Document.Netlist` and `Document.Pa
 for display. `validateTopology`, `validateNetlist`, `validateSeries`, and `validateDomain` check
 what a host builds before a device exists.
 
-## Read a case
+## Implement a model snapshot
 
-A format subclasses `Model`: it describes the case to the constructor, which checks it once, gives
-each class's values when asked, and the case's bytes. Each class declares its columns and signals up
-front. Owner classes are the ones whose element `i` is vertex `i` or edge `i`; any other class may
+A format subclasses `Model` to represent an immutable snapshot produced by a document. It describes
+the case to the constructor, which checks it once, and supplies each class's values and the
+snapshot's native bytes when asked. Those values and bytes must remain independent of later edits.
+Each class declares its columns and signals up front. Owner classes are the ones whose element `i` is vertex `i` or edge `i`; any other class may
 anchor each element to a topology item, `0xffffffff` marking an element with no place.
 
 ```ts
 import { Model } from '@latkit/model';
 
-export class GridkitCase extends Model {
+export class GridkitModel extends Model {
   readonly #case: Parsed;
 
   constructor(bytes: Uint8Array) {
@@ -56,12 +57,56 @@ export class GridkitCase extends Model {
 }
 ```
 
-## Ask the model
+## Register a native format
 
-Every question about a case is a method on its model.
+A host registers native formats through `Document.Format`. Both `open` and optional `create`
+return a document, ready to edit or save without building a model. The id matches `model.format`;
+filename extensions include the dot, preferred first.
 
 ```ts
-const model = new GridkitCase(bytes);
+import { Document } from '@latkit/model';
+
+const gridkit: Document.Format = {
+  id: 'gridkit',
+  label: 'GridKit',
+  extensions: ['.case.json'],
+  async open(bytes, signal) {
+    signal?.throwIfAborted();
+    return new GridkitDocument(bytes);
+  },
+  async create(name, signal) {
+    signal?.throwIfAborted();
+    return new GridkitDocument(encodeEmptyCase(name));
+  },
+};
+
+const document = await gridkit.open(bytes);
+const model = await document.model(); // First immutable snapshot, built only when requested.
+const currentBytes = await document.bytes(); // What the host saves.
+
+if (gridkit.create) {
+  const untitled = await gridkit.create('Untitled');
+  // The same document API: edit, undo, model, and bytes. No file has been written.
+  await saveFile(chosenPath, await untitled.bytes()); // Host-owned I/O.
+}
+```
+
+`GridkitDocument` is the format's native `Document` subclass. Its constructor calls `super()` and
+retains independent native state; its protected `open` captures a `GridkitModel` when requested.
+`open` does not modify the caller's bytes, and both factories reject when their signal is aborted.
+The name passed to `create` is the case's display name; the host chooses its filename and destination.
+
+Check `format.create` before offering New Case. The host decides which sources allow editing,
+retains the document while the case is open, and saves `document.bytes()`. A public read-only catalog
+can serve packed models directly through `Model.from` without opening a native document. The same
+native format works on a server, in a worker, or in an editor extension; it does not own storage.
+
+## Ask the model
+
+Queries over an immutable case snapshot are methods on its model.
+
+```ts
+const model = await document.model();
 network.load(model.topology);
 network.on('select', (item) => {
   const element = item && model.elementAt(item); // the element a pick is
@@ -77,7 +122,8 @@ const { rows, total } = await grid.window('north', { column: 0, dir: 'desc' }, 0
 A grid's `columns` say what each cell shows: the class's columns, and in a recording's grid every
 signal it records, at a time. A sort names a column by its index there, or `null` for the label.
 `formatNumber` is the rule its cells follow, for any number shown beside them. A model is immutable:
-any number of views and documents share one.
+views and recordings can keep a snapshot while its document continues editing. `model.bytes()`
+belongs to that snapshot; save the current case through `document.bytes()` instead.
 
 ## Record it
 
@@ -184,14 +230,15 @@ interval over every committed value; a gathered field keeps it, so each view col
 
 ## Edit it
 
-A format that edits gives its model a `document`: a `Document` subclass that makes operations true
-as one change, reverts a change, and describes its schematic. The base keeps one history of the
-last 200 steps, maps the schematic's parts to elements and back, finds the element that drives each
-net, and opens the model a change calls for once `model()` asks. Record that model to record the
-case as it stands.
+A native format opens a `Document` subclass that makes operations true as one change, reverts a
+change, and describes its schematic. Its constructor needs no initial model. The base keeps one
+history of the last 200 steps, maps the schematic's parts to elements and back, and finds the
+element that drives each net. `model()` builds and caches an immutable snapshot on demand; layout
+changes keep it, while values or structure changes invalidate it. Concurrent readers share one
+open, and a failed open can be retried. Record that model to record the case as it stands.
 
 ```ts
-const document = await model.document!();
+const document = await gridkit.open(bytes);
 diagram.load(document.schematic.netlist);
 diagram.on('move', ({ blocks, positions }) =>
   document.apply({
@@ -294,6 +341,6 @@ A `Document.Snapshot` is an immutable model with `close()` to release its resour
 
 Sessions and local documents share `Document.parts(schematicOrGetter)` for synchronous
 `elementAt`, `partOf`, `portAt`, `portOf`, and `drivers` lookups. Native vendor implementations
-continue subclassing the synchronous `Document`, implementing `inspect(element)` alongside native
+subclass `Document`, implementing synchronous `inspect(element)` alongside native
 editing and identity lookups. See [Document sessions](../../docs/document-sessions.md)
 for serving that document through `@latkit/port` and the persistence boundary.
