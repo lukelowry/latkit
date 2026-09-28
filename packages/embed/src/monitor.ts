@@ -1,5 +1,5 @@
 import { COLORMAPS, colormap, type ColormapName } from '@latkit/colormaps';
-import { createSeries, validateSeries as checkSeries, type Series } from '@latkit/model';
+import { Series, validateSeries as checkSeries } from '@latkit/model';
 import {
   OPTIONS,
   createMonitor,
@@ -88,7 +88,7 @@ export interface MonitorDeps {
 export function parseSeries(input: unknown): Series {
   const source = record(input, 'root');
   const elements = optional(source, 'elements');
-  return createSeries({
+  return Series.create({
     time: f64(required(source, 'time', 'root'), 'time'),
     values: f64(required(source, 'values', 'root'), 'values'),
     signals: strings(required(source, 'signals', 'root'), 'signals'),

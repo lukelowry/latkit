@@ -5,7 +5,7 @@
  * recording what it was asked to do.
  */
 
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 
 import type { Focus } from '../../src/focus.js';
 import type { Rect } from '../../src/geometry.js';
@@ -176,7 +176,7 @@ export interface PressOptions {
 }
 
 /** A context over `netlist` with blocks at `placed` top-lefts, and everything it recorded. */
-export function harness(netlist: Netlist | null, placed: readonly number[] = []) {
+export function harness(netlist: Document.Netlist | null, placed: readonly number[] = []) {
   const prepared = netlist ? prepare(netlist, GRID) : null;
   const scene = new FakeScene(prepared, placed);
   const focus = new FakeFocus();

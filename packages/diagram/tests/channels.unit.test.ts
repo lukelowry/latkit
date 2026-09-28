@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createChannels } from '@latkit/gpu';
-import { createSeries } from '@latkit/model';
+import { Series } from '@latkit/model';
 
 import {
   CHANNELS,
@@ -119,7 +119,7 @@ describe('diagram channel records', () => {
 
   it('refuses a series for a visibility channel, whose change re-lays the scene', () => {
     const { channels } = make();
-    const series = createSeries({
+    const series = Series.create({
       signals: ['x'],
       elementCount: 3,
       time: Float64Array.of(0),

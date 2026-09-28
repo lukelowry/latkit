@@ -16,6 +16,8 @@ export interface PortSpec {
   readonly flow: Flow;
   readonly kind: typeof SIGNAL | typeof BUS;
   readonly description: string;
+  /** Leaving it unwired is a problem: a device sits on a bus, and some inputs have no default. */
+  readonly required: boolean;
 }
 
 /** One device class. */
@@ -30,15 +32,15 @@ export interface ClassSpec {
 }
 
 function bus(description: string): PortSpec {
-  return { name: 'bus', flow: 'both', kind: BUS, description };
+  return { name: 'bus', flow: 'both', kind: BUS, description, required: true };
 }
 
-function input(name: string, description: string): PortSpec {
-  return { name, flow: 'in', kind: SIGNAL, description };
+function input(name: string, description: string, required = false): PortSpec {
+  return { name, flow: 'in', kind: SIGNAL, description, required };
 }
 
 function output(name: string, description: string): PortSpec {
-  return { name, flow: 'out', kind: SIGNAL, description };
+  return { name, flow: 'out', kind: SIGNAL, description, required: false };
 }
 
 export const CLASSES = {
@@ -93,7 +95,7 @@ export const CLASSES = {
     json: 'Ieeest',
     category: 'Stabilizer',
     ports: [
-      input('input', 'Required stabilizer input signal'),
+      input('input', 'Required stabilizer input signal', true),
       output('output', 'Limited stabilizer output signal'),
     ],
   },
@@ -156,10 +158,4 @@ export const CLASS_NAMES = Object.keys(CLASSES) as ClassName[];
 /** Whether a string names a known class (for data dropped from outside the page). */
 export function isClassName(value: string): value is ClassName {
   return Object.prototype.hasOwnProperty.call(CLASSES, value);
-}
-
-/** The index of a class's port by name, or -1. */
-export function portIndex(cls: ClassName, name: string): number {
-  const ports: readonly PortSpec[] = CLASSES[cls].ports;
-  return ports.findIndex((port) => port.name === name);
 }

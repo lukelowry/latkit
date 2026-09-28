@@ -1,5 +1,5 @@
 import { COLORMAPS, colormap, type ColormapName } from '@latkit/colormaps';
-import { validateTopology, type Domain, type Topology } from '@latkit/model';
+import { type Domain, type Model, validateTopology } from '@latkit/model';
 import {
   CHANNELS,
   OPTIONS,
@@ -49,7 +49,7 @@ export interface NetworkField {
 
 /** Decoded, renderer-ready network input. */
 export interface NetworkData {
-  readonly topology: Topology;
+  readonly topology: Model.Topology;
   readonly fields?: readonly NetworkField[];
 }
 
@@ -139,7 +139,7 @@ export function parseNetwork(input: unknown): NetworkData {
 /** Validate already-decoded network data, as the `data` property receives it. */
 export function validateNetworkData(input: unknown): NetworkData {
   const data = record(input, 'data');
-  const topology = record(data.topology, 'topology') as unknown as Topology;
+  const topology = record(data.topology, 'topology') as unknown as Model.Topology;
   validateTopology(topology);
   const fields = data.fields;
   if (fields === undefined) return data as unknown as NetworkData;
@@ -170,7 +170,7 @@ function components(value: unknown, path: string): 1 | 2 {
   return value;
 }
 
-function parseTopology(input: unknown): Topology {
+function parseTopology(input: unknown): Model.Topology {
   const source = record(input, 'topology');
   const vertexCount = integer(required(source, 'vertexCount', 'topology'), 'topology.vertexCount');
   const coordsSlot = optional(source, 'vertexCoords');

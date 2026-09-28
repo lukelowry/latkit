@@ -38,26 +38,30 @@ the value, on every transport. A service written against a worker runs unchanged
 ## A model across a port
 
 ```ts
-// the worker
+// the worker: the case parses here, and its engine records here
 import { messagePort, serveModel, serveRecording } from '@latkit/port';
 
-serveModel(messagePort(self), model); // its bytes and, with an engine, its runs
+const model = new GridkitCase(bytes);
+model.engine = new GridkitEngine(server);
+serveModel(messagePort(self), model); // its packs and, with an engine, its recordings
 serveRecording(messagePort(self), recording); // a recording the worker keeps
 
 // the page
 import { connectModel, connectRecording } from '@latkit/port';
 
 const model = await connectModel(port, { progress });
-const run = model.run!(command, { id: 'fault-4' }); // runs on the worker, fills a recording here
+const recording = model.record(study); // the worker's engine records, filling a recording here
 const kept = await connectRecording(port, 'fault-4'); // or opens the worker's own
 model.close();
 ```
 
-Only a model's source crosses: the core, each class shard as it is first asked for, the vendor's
-bytes, and each run as a stream. The far side opens it with `openModel`, so it is the same `Model`;
-a recording opens with `openRecording`, its clock at hand and its samples read in windows. A
-connected side is a `Remote<T>`: the model or recording, plus `close`. A run's command is bytes
-unless the vendor names its own type, which `serveModel<Command>` checks with its `command` option.
+Only a model's source crosses: the core, each class shard as it is first asked for, the case's
+bytes, and each recording as the served engine writes it, call by call, its frames handed over
+without a copy. The far side opens it with `Model.from`, so it is the same `Model`, and its engine
+records on the served one, which checks every input, queues what it cannot take at once, and
+stops when the far recording stops. A kept recording opens with `Recording.from`, its clock at hand
+and its samples read in windows of at most 4 MiB. A connected side is a `Remote<T>`: the model or
+recording, plus `close`.
 
 ## A protocol
 
@@ -116,7 +120,7 @@ port's `drain` between items so backpressure reaches the producer.
 
 ```ts
 serve(port, FRAMES, async function* (request, signal) {
-  for await (const frame of engine.run(request, signal)) yield frame;
+  for await (const frame of frames(request, signal)) yield frame;
 });
 
 for await (const frame of connect(port, FRAMES).stream(request, { signal })) paint(frame);

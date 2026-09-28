@@ -1,72 +1,181 @@
 /**
- * Series: append-only histories over an element axis and time, read in bounded windows. Every
- * series keeps its frames on a clock, the times it committed as the chunks they came in, and a
- * recording's classes share one clock, so frame `f` is one instant in every one of them. A series
- * holds its values itself, or reads them from wherever its recording is held.
+ * Series: histories over an element axis and time, read in bounded windows, and what every view
+ * follows. Every series keeps its frames on a clock, the times committed as the chunks they came
+ * in, and a recording's classes share one clock, so frame `f` is one instant in every one of them.
+ * A series holds its samples itself, reads them from wherever its recording is held, or gathers
+ * them from another series over other items.
  */
 
 import { breathe } from './breathe.js';
 import { validateDomain, type Domain } from './domain.js';
 import { listeners } from './listeners.js';
 
-/** An append-only history over one class's elements and signals. */
-export interface Series {
+/** The most one read asks for, time included: within any port's cap. */
+const READ_BYTES = 1 << 20;
+
+/** The most elements one read spans: one frame of them is half of `READ_BYTES` in f64. */
+const READ_ELEMENTS = READ_BYTES / 16;
+
+/** How far apart two gathered elements may sit and still share a read. */
+const GAP = 64;
+
+/** An element no item holds. */
+const NONE = 0xffffffff;
+
+type Values = Float32Array | Float64Array;
+
+/**
+ * A history a view follows: signals over time for an element axis, read in bounded windows. A
+ * subclass holds the samples and publishes what it holds; the base checks every read and tells
+ * the listeners. `Series.create` holds samples in memory for their creator to append.
+ */
+export abstract class Series {
   /** The signals it holds, by id; a read names one by its index here. */
   readonly signals: readonly string[];
   readonly elementCount: number;
-  /** Sorted, unique class indices; omitted for the dense axis starting at zero. */
+  /** Sorted, unique class indices of the stored elements; absent for the dense axis from zero. */
   readonly elements?: Uint32Array;
-  /** Published atomically after each change; a previous state never changes. */
-  readonly state: {
-    readonly frameCount: number;
-    readonly timeRange: Domain | null;
-    /** Per-signal finite min/max pairs; NaN pairs for missing signals, null if unknown. */
-    readonly ranges: Float64Array | null;
-    /** Whether frames may still follow; false once sealed. */
-    readonly live: boolean;
-  };
+  #state: Series.State;
+  readonly #changes = listeners();
+
   /**
-   * Borrow immutable samples. Values are addressed by `frame * stride + element`.
-   * A transport must copy borrowed buffers before transferring them.
+   * @throws RangeError or TypeError when the shape is invalid.
    */
-  read(
+  protected constructor(shape: Series.Shape) {
+    this.signals = signalIds(shape.signals);
+    index(shape.elementCount, 'elementCount');
+    this.elementCount = shape.elementCount;
+    if (shape.elements !== undefined) {
+      const elements = shape.elements;
+      if (!(elements instanceof Uint32Array) || elements.length !== shape.elementCount)
+        throw new RangeError('series elements must contain one class index per stored element');
+      for (let i = 1; i < elements.length; i++)
+        if (elements[i]! <= elements[i - 1]!)
+          throw new RangeError('series elements must be sorted and unique');
+      this.elements = elements.slice();
+    }
+    this.#state = Object.freeze({
+      frameCount: 0,
+      timeRange: null,
+      ranges: new Float64Array(this.signals.length * 2).fill(NaN),
+      live: true,
+    });
+  }
+
+  /** Published atomically after each change; a previous state never changes. */
+  get state(): Series.State {
+    return this.#state;
+  }
+
+  /**
+   * Borrow one signal's samples in `window`, addressed `frame * stride + element`. Never mutate
+   * them; a transport copies them before transferring them.
+   *
+   * @throws RangeError for a signal it lacks or a window beyond the committed frames.
+   */
+  async read(
     signalIndex: number,
-    window: {
-      readonly frameOffset: number;
-      readonly frameCount: number;
-      readonly elementOffset: number;
-      readonly elementCount: number;
-    },
+    window: Series.Window,
     signal?: AbortSignal,
-  ): Promise<{
-    readonly time: Float64Array;
-    readonly values: Float32Array | Float64Array;
-    readonly stride: number;
-  }>;
-  /** Half-open interval of times in the inclusive range, within frameCount committed frames. */
-  locate(
+  ): Promise<Series.Block> {
+    signal?.throwIfAborted();
+    if (
+      checkRead(signalIndex, window, this.signals.length, this.state.frameCount, this.elementCount)
+    )
+      return {
+        time: new Float64Array(0),
+        values: new Float64Array(0),
+        stride: window.elementCount,
+      };
+    return this.fetch(signalIndex, window, signal);
+  }
+
+  /**
+   * The half-open frames, among the first `frameCount`, whose times fall in the inclusive `range`.
+   *
+   * @throws RangeError or TypeError for a bad range, or more frames than are committed.
+   */
+  abstract locate(
     range: Domain,
     frameCount: number,
     signal?: AbortSignal,
   ): Promise<readonly [number, number]>;
+
   /** Its state changed: frames were appended, or it was sealed. Appends keep what was committed. */
-  on(event: 'change', listener: () => void): () => void;
+  on(_event: 'change', listener: () => void): () => void {
+    return this.#changes.on(listener);
+  }
+
+  /** Read a checked, nonempty window of committed frames. */
+  protected abstract fetch(
+    signalIndex: number,
+    window: Series.Window,
+    signal?: AbortSignal,
+  ): Promise<Series.Block>;
+
+  /** Publish what it holds now, and tell every listener. */
+  protected publish(state: Series.State): void {
+    this.#state = Object.freeze({ ...state });
+    this.#changes.emit();
+  }
+
+  /** Stop telling listeners. */
+  protected silence(): void {
+    this.#changes.clear();
+  }
+
+  /**
+   * A series held in memory for its creator to append to and seal. Initial samples are
+   * signal-major, `values[(signal * frames + frame) * elements + element]`; appended frames are
+   * frame-major, `values[(frame * signals + signal) * elements + element]`. Buffers are taken, not
+   * copied: never mutate or detach them after handing them over.
+   *
+   * @throws RangeError or TypeError when the shape or the initial samples are invalid.
+   */
+  static create(
+    input: Series.Shape & { readonly time?: Float64Array; readonly values?: Values },
+  ): Series & {
+    /** Commit frames after those committed; nothing changes when they are invalid. */
+    append(frames: { readonly time: Float64Array; readonly values: Values }): void;
+    /** No frame follows. */
+    seal(): void;
+  } {
+    return new Held(input);
+  }
 }
 
-/** The frames, elements, and signal a read asks for. */
-export type Window = Parameters<Series['read']>[1];
-
-/** What a read returns. */
-export type Block = Awaited<ReturnType<Series['read']>>;
-
-/** A series' shape: its signals and its element axis. */
-export interface Shape {
-  readonly signals: readonly string[];
-  readonly elementCount: number;
-  readonly elements?: Uint32Array;
+/** A series' shape and state, and the windows it reads. */
+export declare namespace Series {
+  /** Its signals and its element axis. */
+  interface Shape {
+    readonly signals: readonly string[];
+    readonly elementCount: number;
+    /** Sorted, unique class indices; omitted for the dense axis from zero. */
+    readonly elements?: Uint32Array;
+  }
+  /** Where a series stands. */
+  interface State {
+    readonly frameCount: number;
+    readonly timeRange: Domain | null;
+    /** Per-signal finite min/max pairs; NaN pairs for a signal with none yet; null if unknown. */
+    readonly ranges: Float64Array | null;
+    /** Whether frames may still follow; false once sealed. */
+    readonly live: boolean;
+  }
+  /** The frames and elements a read asks for. */
+  interface Window {
+    readonly frameOffset: number;
+    readonly frameCount: number;
+    readonly elementOffset: number;
+    readonly elementCount: number;
+  }
+  /** What a read returns: one row of `stride` values per frame. */
+  interface Block {
+    readonly time: Float64Array;
+    readonly values: Float32Array | Float64Array;
+    readonly stride: number;
+  }
 }
-
-type Values = Float32Array | Float64Array;
 
 /** The frames one or more series share: their times, as the chunks they were committed in. */
 export class Clock {
@@ -149,6 +258,18 @@ export class Clock {
     return this.#times[chunk]![frame - this.#firsts[chunk]!]!;
   }
 
+  /** The times of committed frames `from` up to `to`, copied a chunk at a time. */
+  slice(from: number, to: number): Float64Array {
+    const out = new Float64Array(to - from);
+    for (let chunk = this.chunkOf(from), at = from; at < to; chunk++) {
+      const first = this.#firsts[chunk]!;
+      const end = Math.min(to, first + this.#times[chunk]!.length);
+      out.set(this.#times[chunk]!.subarray(at - first, end - first), at - from);
+      at = end;
+    }
+    return out;
+  }
+
   /** How many of the first `frameCount` frames come before `time`, or at it too when `upper`. */
   bound(time: number, upper: boolean, frameCount: number): number {
     let lo = 0,
@@ -169,85 +290,44 @@ export class Clock {
   }
 }
 
-/** A series its owner publishes: after each change, with the ranges its values reach. */
-interface Published {
-  readonly series: Series;
-  /** Publish what the clock holds now with `ranges`, and tell every listener. */
-  publish(ranges: Float64Array | null): void;
-  /** Stop telling listeners. */
-  clear(): void;
-}
+/** A series whose frames are a clock's: it locates by that clock, and publishes what it holds. */
+abstract class Clocked extends Series {
+  readonly #clock: Clock;
 
-/**
- * The series every kind shares over `clock`: its shape, its published state, `locate`, and its
- * listeners, reading a checked window of committed frames through `read`.
- */
-function shell(
-  clock: Clock,
-  shape: Shape,
-  read: (signalIndex: number, window: Window, signal?: AbortSignal) => Promise<Block>,
-): Published {
-  const signals = signalIds(shape.signals);
-  const { elementCount } = shape;
-  index(elementCount, 'elementCount');
-  const elements = shape.elements?.slice();
-  const changes = listeners();
-  let state: Series['state'] = snapshot(new Float64Array(signals.length * 2).fill(NaN));
-
-  function snapshot(ranges: Float64Array | null): Series['state'] {
-    return Object.freeze({
-      frameCount: clock.frameCount,
-      timeRange: clock.timeRange,
-      ranges,
-      live: clock.live,
-    });
+  constructor(clock: Clock, shape: Series.Shape) {
+    super(shape);
+    this.#clock = clock;
   }
 
-  const series: Series = {
-    signals,
-    elementCount,
-    ...(elements && { elements }),
-    get state() {
-      return state;
-    },
-    on: (_event, listener) => changes.on(listener),
-    // eslint-disable-next-line @typescript-eslint/require-await -- preserve async errors for the Series contract
-    async locate(range, frameCount, signal) {
-      signal?.throwIfAborted();
-      validateDomain(range, 'series lookup');
-      index(frameCount, 'frameCount');
-      if (frameCount > state.frameCount) throw new RangeError('lookup exceeds committed frames');
-      return [clock.bound(range[0], false, frameCount), clock.bound(range[1], true, frameCount)];
-    },
-    async read(signalIndex, window, signal) {
-      signal?.throwIfAborted();
-      index(signalIndex, 'signal');
-      if (signalIndex >= signals.length) throw new RangeError(`signal ${signalIndex} out of range`);
-      const { frameOffset, frameCount, elementOffset, elementCount: count } = window;
-      for (const [key, value] of Object.entries({
-        frameOffset,
-        frameCount,
-        elementOffset,
-        elementCount: count,
-      }))
-        index(value, key);
-      if (frameOffset + frameCount > state.frameCount || elementOffset + count > elementCount)
-        throw new RangeError('sample window exceeds the committed series');
-      if (!frameCount)
-        return { time: new Float64Array(0), values: new Float64Array(0), stride: count };
-      return read(signalIndex, window, signal);
-    },
-  };
-  validateSeries(series);
+  protected get clock(): Clock {
+    return this.#clock;
+  }
 
-  return {
-    series,
-    publish(ranges) {
-      state = snapshot(ranges);
-      changes.emit();
-    },
-    clear: () => changes.clear(),
-  };
+  // eslint-disable-next-line @typescript-eslint/require-await -- preserve async errors for the Series contract
+  async locate(
+    range: Domain,
+    frameCount: number,
+    signal?: AbortSignal,
+  ): Promise<readonly [number, number]> {
+    signal?.throwIfAborted();
+    validateDomain(range, 'series lookup');
+    index(frameCount, 'frameCount');
+    if (frameCount > this.state.frameCount) throw new RangeError('lookup exceeds committed frames');
+    return [
+      this.#clock.bound(range[0], false, frameCount),
+      this.#clock.bound(range[1], true, frameCount),
+    ];
+  }
+
+  /** Publish what the clock holds now with `ranges`, and tell every listener. */
+  protected settle(ranges: Float64Array | null): void {
+    this.publish({
+      frameCount: this.#clock.frameCount,
+      timeRange: this.#clock.timeRange,
+      ranges,
+      live: this.#clock.live,
+    });
+  }
 }
 
 /** One chunk of a series' values; `values` null reads NaN for that chunk's frames. */
@@ -257,47 +337,84 @@ interface Lane {
   readonly signalStride: number;
 }
 
-/** A series whose frames are a clock's: its owner adds one lane per chunk the clock commits. */
-export interface Track {
-  readonly series: Series;
+/**
+ * A series over a clock that holds its values: its owner adds one lane per chunk the clock
+ * commits. Reads within one chunk lend the lane itself; reads across chunks copy.
+ */
+export class Tracked extends Clocked {
+  readonly #lanes: (Lane | null)[] = [];
+  #ranges: Float64Array;
+  #wide = false;
+
+  constructor(clock: Clock, shape: Series.Shape) {
+    super(clock, shape);
+    this.#ranges = new Float64Array(this.signals.length * 2).fill(NaN);
+  }
+
   /** Check frame-major `values` for `frames` frames, changing nothing. */
-  admit(values: unknown, frames: number): Values;
+  admit(values: unknown, frames: number): Values {
+    if (!(values instanceof Float32Array || values instanceof Float64Array))
+      throw new TypeError('frames require f32 or f64 values');
+    if (values.length !== frames * this.elementCount * this.signals.length)
+      throw new RangeError(`frames carry ${values.length} values for ${frames} frames`);
+    return values;
+  }
+
   /**
    * Add the lane of the chunk the clock just committed: frame-major, signal-major when `packed`,
    * or NaN throughout when `values` is null.
    */
-  push(values: Values | null, frames: number, packed: boolean): void;
-  /** Publish what the clock and the lanes hold now, and tell every listener. */
-  publish(): void;
-}
-
-/**
- * The series over `clock` with `shape` that holds its values, empty until its owner pushes lanes.
- *
- * @throws RangeError or TypeError when the shape is invalid.
- */
-export function track(clock: Clock, shape: Shape): Track {
-  const signalCount = signalIds(shape.signals).length;
-  const { elementCount } = shape;
-  const lanes: (Lane | null)[] = [];
-  let ranges = new Float64Array(signalCount * 2).fill(NaN);
-  let wide = false;
-
-  function nan(length: number): Values {
-    return (wide ? new Float64Array(length) : new Float32Array(length)).fill(NaN);
+  push(values: Values | null, frames: number, packed: boolean): void {
+    if (!values) {
+      this.#lanes.push({ values: null, stride: 0, signalStride: 0 });
+      return;
+    }
+    const { elementCount } = this;
+    const signalCount = this.signals.length;
+    const stride = packed ? elementCount : elementCount * signalCount;
+    const signalStride = packed ? frames * elementCount : elementCount;
+    const next = this.#ranges.slice();
+    for (let s = 0; s < signalCount; s++) {
+      let min = Number.isNaN(next[s * 2]) ? Infinity : next[s * 2]!;
+      let max = Number.isNaN(next[s * 2 + 1]) ? -Infinity : next[s * 2 + 1]!;
+      for (let f = 0; f < frames; f++) {
+        const at = s * signalStride + f * stride;
+        for (let e = 0; e < elementCount; e++) {
+          const value = values[at + e]!;
+          if (!Number.isFinite(value)) continue;
+          if (value < min) min = value;
+          if (value > max) max = value;
+        }
+      }
+      next[s * 2] = min <= max ? min : NaN;
+      next[s * 2 + 1] = min <= max ? max : NaN;
+    }
+    this.#ranges = next;
+    this.#lanes.push({ values, stride, signalStride });
+    this.#wide ||= values instanceof Float64Array;
   }
 
-  const published = shell(clock, shape, async (signalIndex, window, signal) => {
+  /** Publish what the clock and the lanes hold now, and tell every listener. */
+  update(): void {
+    this.settle(this.#ranges);
+  }
+
+  protected async fetch(
+    signalIndex: number,
+    window: Series.Window,
+    signal?: AbortSignal,
+  ): Promise<Series.Block> {
     const { frameOffset, frameCount, elementOffset, elementCount: count } = window;
+    const clock = this.clock;
     let chunk = clock.chunkOf(frameOffset);
     let first = clock.firstOf(chunk);
     let times = clock.timesOf(chunk);
-    let lane = lanes[chunk]!;
+    let lane = this.#lanes[chunk]!;
     if (frameOffset + frameCount <= first + times.length) {
       const f = frameOffset - first;
       const time = times.subarray(f, f + frameCount);
       if (!count) return { time, values: new Float64Array(0), stride: count };
-      if (!lane.values) return { time, values: nan(frameCount * count), stride: count };
+      if (!lane.values) return { time, values: this.#nan(frameCount * count), stride: count };
       const start = signalIndex * lane.signalStride + f * lane.stride + elementOffset;
       return {
         time,
@@ -306,7 +423,7 @@ export function track(clock: Clock, shape: Shape): Track {
       };
     }
     const time = new Float64Array(frameCount);
-    const values = wide
+    const values = this.#wide
       ? new Float64Array(frameCount * count)
       : new Float32Array(frameCount * count);
     for (let f = 0; f < frameCount; f++) {
@@ -314,7 +431,7 @@ export function track(clock: Clock, shape: Shape): Track {
         chunk++;
         first = clock.firstOf(chunk);
         times = clock.timesOf(chunk);
-        lane = lanes[chunk]!;
+        lane = this.#lanes[chunk]!;
       }
       const row = frameOffset + f - first;
       time[f] = times[row]!;
@@ -329,82 +446,233 @@ export function track(clock: Clock, shape: Shape): Track {
       }
     }
     return { time, values, stride: count };
-  });
+  }
 
-  return {
-    series: published.series,
-    admit(values, frames) {
-      if (!(values instanceof Float32Array || values instanceof Float64Array))
-        throw new TypeError('frames require f32 or f64 values');
-      if (values.length !== frames * elementCount * signalCount)
-        throw new RangeError(`frames carry ${values.length} values for ${frames} frames`);
-      return values;
-    },
-    push(values, frames, packed) {
-      if (!values) {
-        lanes.push({ values: null, stride: 0, signalStride: 0 });
-        return;
-      }
-      const stride = packed ? elementCount : elementCount * signalCount;
-      const signalStride = packed ? frames * elementCount : elementCount;
-      const next = ranges.slice();
-      for (let s = 0; s < signalCount; s++) {
-        let min = Number.isNaN(next[s * 2]) ? Infinity : next[s * 2]!;
-        let max = Number.isNaN(next[s * 2 + 1]) ? -Infinity : next[s * 2 + 1]!;
-        for (let f = 0; f < frames; f++) {
-          const at = s * signalStride + f * stride;
-          for (let e = 0; e < elementCount; e++) {
-            const value = values[at + e]!;
-            if (!Number.isFinite(value)) continue;
-            if (value < min) min = value;
-            if (value > max) max = value;
-          }
-        }
-        next[s * 2] = min <= max ? min : NaN;
-        next[s * 2 + 1] = min <= max ? max : NaN;
-      }
-      ranges = next;
-      lanes.push({ values, stride, signalStride });
-      wide ||= values instanceof Float64Array;
-    },
-    publish: () => published.publish(ranges),
-  };
+  #nan(length: number): Values {
+    return (this.#wide ? new Float64Array(length) : new Float32Array(length)).fill(NaN);
+  }
+}
+
+/** A series in memory that its creator appends to over a clock of its own. */
+class Held extends Tracked {
+  constructor(input: Series.Shape & { readonly time?: Float64Array; readonly values?: Values }) {
+    super(new Clock(), input);
+    if (input.time === undefined && input.values === undefined) return;
+    if (!input.time || !input.values)
+      throw new TypeError('initial time and values must be supplied together');
+    const time = this.clock.admit(input.time);
+    const values = this.admit(input.values, time.length);
+    if (!time.length) return;
+    this.clock.commit(time);
+    this.push(values, time.length, true);
+    this.update();
+  }
+
+  append(frames: { readonly time: Float64Array; readonly values: Values }): void {
+    const time = this.clock.admit(frames.time);
+    const values = this.admit(frames.values, time.length);
+    if (!time.length) return;
+    this.clock.commit(time);
+    this.push(values, time.length, false);
+    this.update();
+  }
+
+  seal(): void {
+    if (this.clock.seal()) this.update();
+  }
 }
 
 /**
- * The series over `clock` with `shape` whose values are held elsewhere: `read` fetches a checked
- * window, and its owner publishes the ranges the holder reports.
- *
- * @throws RangeError or TypeError when the shape is invalid.
+ * A series over a clock whose values are held elsewhere: `read` fetches them in windows no larger
+ * than `READ_BYTES`, however large the window asked for, and its owner publishes the ranges the
+ * holder reports.
  */
-export function sourced(
-  clock: Clock,
-  shape: Shape,
-  read: (signalIndex: number, window: Window, signal?: AbortSignal) => Promise<Block>,
-): Published {
-  const published = shell(clock, shape, async (signalIndex, window, signal) => {
-    const block = await read(signalIndex, window, signal);
-    signal?.throwIfAborted();
-    checkBlock(block, window);
-    return block;
-  });
-  const signalCount = published.series.signals.length;
-  return {
-    series: published.series,
-    publish(ranges) {
-      if (
-        ranges !== null &&
-        (!(ranges instanceof Float64Array) || ranges.length !== signalCount * 2)
-      )
-        throw new RangeError('series ranges must contain one f64 pair per signal');
-      published.publish(ranges);
-    },
-    clear: published.clear,
-  };
+export class Sourced extends Clocked {
+  readonly #read: (
+    signalIndex: number,
+    window: Series.Window,
+    signal?: AbortSignal,
+  ) => Promise<Series.Block>;
+
+  constructor(
+    clock: Clock,
+    shape: Series.Shape,
+    read: (
+      signalIndex: number,
+      window: Series.Window,
+      signal?: AbortSignal,
+    ) => Promise<Series.Block>,
+  ) {
+    super(clock, shape);
+    this.#read = read;
+  }
+
+  /**
+   * Publish what the clock holds now with the ranges its holder reports.
+   *
+   * @throws RangeError when `ranges` is not one f64 pair per signal.
+   */
+  follow(ranges: Float64Array | null): void {
+    if (
+      ranges !== null &&
+      (!(ranges instanceof Float64Array) || ranges.length !== this.signals.length * 2)
+    )
+      throw new RangeError('series ranges must contain one f64 pair per signal');
+    this.settle(ranges);
+  }
+
+  /** Stop telling listeners. */
+  forget(): void {
+    this.silence();
+  }
+
+  protected async fetch(
+    signalIndex: number,
+    window: Series.Window,
+    signal?: AbortSignal,
+  ): Promise<Series.Block> {
+    const { frameOffset, frameCount, elementOffset, elementCount } = window;
+    if (frameCount * (elementCount + 1) * 8 <= READ_BYTES) {
+      const block = await this.#read(signalIndex, window, signal);
+      signal?.throwIfAborted();
+      checkBlock(block, window);
+      return block;
+    }
+    // A window larger than one read: frames and elements in pieces, into one block of its own.
+    const span = Math.min(elementCount, READ_ELEMENTS);
+    const step = Math.max(1, Math.floor(READ_BYTES / (8 * (span + 1))));
+    const time = new Float64Array(frameCount);
+    const values = new Float64Array(frameCount * elementCount);
+    for (let done = 0; done < frameCount; done += step) {
+      const frames = Math.min(step, frameCount - done);
+      for (let from = 0; from === 0 || from < elementCount; from += span) {
+        const count = Math.min(span, elementCount - from);
+        const piece = {
+          frameOffset: frameOffset + done,
+          frameCount: frames,
+          elementOffset: elementOffset + from,
+          elementCount: count,
+        };
+        const block = await this.#read(signalIndex, piece, signal);
+        signal?.throwIfAborted();
+        checkBlock(block, piece);
+        if (from === 0) time.set(block.time, done);
+        for (let f = 0; f < frames; f++)
+          values.set(
+            block.values.subarray(f * block.stride, f * block.stride + count),
+            (done + f) * elementCount + from,
+          );
+      }
+    }
+    return { time, values, stride: elementCount };
+  }
+}
+
+/**
+ * Signal `signalIndex` of `source` over other items: item `i` holds class element `picks[i]`, NaN
+ * for `0xffffffff` or an element a sparse source does not hold. It shares the source's clock,
+ * changes, and recorded range, and reads the source in runs of the elements a window needs.
+ */
+export class Gathered extends Series {
+  readonly #source: Series;
+  readonly #signal: number;
+  /** Each item's position on the source's element axis, or -1. */
+  readonly #positions: Int32Array;
+  #seen: Series.State | null = null;
+  #derived: Series.State | null = null;
+
+  constructor(source: Series, signalIndex: number, picks: Uint32Array) {
+    super({ signals: [source.signals[signalIndex]!], elementCount: picks.length });
+    this.#source = source;
+    this.#signal = signalIndex;
+    const stored = source.elements;
+    this.#positions = Int32Array.from(picks, (element) =>
+      element === NONE ? -1 : stored ? positionOf(stored, element) : element,
+    );
+  }
+
+  override get state(): Series.State {
+    const current = this.#source.state;
+    if (current !== this.#seen || !this.#derived) {
+      this.#seen = current;
+      const at = this.#signal * 2;
+      this.#derived = Object.freeze({
+        frameCount: current.frameCount,
+        timeRange: current.timeRange,
+        ranges: current.ranges && current.ranges.slice(at, at + 2),
+        live: current.live,
+      });
+    }
+    return this.#derived;
+  }
+
+  locate(
+    range: Domain,
+    frameCount: number,
+    signal?: AbortSignal,
+  ): Promise<readonly [number, number]> {
+    return this.#source.locate(range, frameCount, signal);
+  }
+
+  override on(event: 'change', listener: () => void): () => void {
+    return this.#source.on(event, listener);
+  }
+
+  protected async fetch(
+    _signalIndex: number,
+    window: Series.Window,
+    signal?: AbortSignal,
+  ): Promise<Series.Block> {
+    const { frameOffset, frameCount, elementOffset, elementCount } = window;
+    const positions = this.#positions;
+    // The window's items in source order, split into runs of nearby elements read side by side,
+    // each in windows under `READ_BYTES`; a window of none reads its times alone.
+    const runs: { from: number; to: number; items: number[] }[] = [];
+    const items = Array.from({ length: elementCount }, (_, item) => item)
+      .filter((item) => positions[elementOffset + item]! >= 0)
+      .sort((a, b) => positions[elementOffset + a]! - positions[elementOffset + b]!);
+    for (const item of items) {
+      const position = positions[elementOffset + item]!;
+      const run = runs.at(-1);
+      if (run && position - run.to <= GAP && position + 1 - run.from <= READ_ELEMENTS) {
+        run.to = Math.max(run.to, position + 1);
+        run.items.push(item);
+      } else runs.push({ from: position, to: position + 1, items: [item] });
+    }
+    if (!runs.length) runs.push({ from: 0, to: 0, items: [] });
+    const time = new Float64Array(frameCount);
+    const values = new Float64Array(frameCount * elementCount).fill(NaN);
+    await Promise.all(
+      runs.map(async ({ from, to, items: run }) => {
+        const span = to - from;
+        const step = Math.max(1, Math.floor(READ_BYTES / (8 * (span + 1))));
+        for (let done = 0; done < frameCount; done += step) {
+          const frames = Math.min(step, frameCount - done);
+          const block = await this.#source.read(
+            this.#signal,
+            {
+              frameOffset: frameOffset + done,
+              frameCount: frames,
+              elementOffset: from,
+              elementCount: span,
+            },
+            signal,
+          );
+          time.set(block.time, done);
+          for (const item of run) {
+            const column = positions[elementOffset + item]! - from;
+            for (let f = 0; f < frames; f++)
+              values[(done + f) * elementCount + item] = block.values[f * block.stride + column]!;
+          }
+        }
+      }),
+    );
+    return { time, values, stride: elementCount };
+  }
 }
 
 /** Check that a block read from elsewhere is the window asked for. */
-function checkBlock(block: Block, window: Window): void {
+function checkBlock(block: Series.Block, window: Series.Window): void {
   const required =
     window.frameCount && window.elementCount
       ? (window.frameCount - 1) * block.stride + window.elementCount
@@ -422,8 +690,46 @@ function checkBlock(block: Block, window: Window): void {
 }
 
 /**
+ * Check a read of one of `signals` signals within `frames` committed frames and `elements`
+ * elements; true when it asks for no frame at all.
+ */
+function checkRead(
+  signalIndex: number,
+  window: Series.Window,
+  signals: number,
+  frames: number,
+  elements: number,
+): boolean {
+  index(signalIndex, 'signal');
+  if (signalIndex >= signals) throw new RangeError(`signal ${signalIndex} out of range`);
+  const { frameOffset, frameCount, elementOffset, elementCount } = window;
+  for (const [key, value] of Object.entries({
+    frameOffset,
+    frameCount,
+    elementOffset,
+    elementCount,
+  }))
+    index(value, key);
+  if (frameOffset + frameCount > frames || elementOffset + elementCount > elements)
+    throw new RangeError('sample window exceeds the committed series');
+  return frameCount === 0;
+}
+
+/** Where class element `element` sits on a sparse axis, or -1 when it holds none. */
+function positionOf(elements: Uint32Array, element: number): number {
+  let lo = 0,
+    hi = elements.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (elements[mid]! < element) lo = mid + 1;
+    else hi = mid;
+  }
+  return elements[lo] === element ? lo : -1;
+}
+
+/**
  * Check a series' shape and published state without reading samples: what a renderer runs on a
- * series it is given, and what a series made elsewhere must pass.
+ * series it is given, however it was made.
  *
  * @throws TypeError or RangeError naming the first thing that is wrong.
  */
@@ -431,7 +737,7 @@ export function validateSeries(series: Series): void {
   if (!series || typeof series !== 'object') throw new TypeError('series must be an object');
   signalIds(series.signals);
   index(series.elementCount, 'elementCount');
-  const state = series.state as Series['state'] | undefined;
+  const state = series.state as Series.State | undefined;
   if (!state || typeof state !== 'object') throw new TypeError('series state must be an object');
   index(state.frameCount, 'frameCount');
   if (typeof state.live !== 'boolean') throw new TypeError('series live must be a boolean');
@@ -456,56 +762,6 @@ export function validateSeries(series: Series): void {
   }
   for (const key of ['read', 'locate', 'on'] as const)
     if (typeof series[key] !== 'function') throw new TypeError(`series.${key} must be a function`);
-}
-
-/**
- * Create an in-memory series. Optional initial samples are signal-major; appended frames are
- * frame-major, `values[(frame * signals + signal) * elements + element]`. Buffers are borrowed:
- * never mutate or detach them after publication. Reads inside one append are zero-copy views.
- *
- * @throws RangeError or TypeError when the shape or the initial samples are invalid.
- */
-export function createSeries(input: {
-  readonly signals: readonly string[];
-  readonly elementCount: number;
-  readonly elements?: Uint32Array;
-  readonly time?: Float64Array;
-  readonly values?: Float32Array | Float64Array;
-}): Series & {
-  /** Commit frames after those committed; nothing changes when they are invalid. */
-  append(frames: {
-    readonly time: Float64Array;
-    readonly values: Float32Array | Float64Array;
-  }): void;
-  /** No frame follows. */
-  seal(): void;
-} {
-  const clock = new Clock();
-  const history = track(clock, input);
-  if (input.time !== undefined || input.values !== undefined) {
-    if (!input.time || !input.values)
-      throw new TypeError('initial time and values must be supplied together');
-    const time = clock.admit(input.time);
-    const values = history.admit(input.values, time.length);
-    if (time.length) {
-      clock.commit(time);
-      history.push(values, time.length, true);
-      history.publish();
-    }
-  }
-  return Object.assign(history.series, {
-    append(frames: { readonly time: Float64Array; readonly values: Values }) {
-      const time = clock.admit(frames.time);
-      const values = history.admit(frames.values, time.length);
-      if (!time.length) return;
-      clock.commit(time);
-      history.push(values, time.length, false);
-      history.publish();
-    },
-    seal() {
-      if (clock.seal()) history.publish();
-    },
-  });
 }
 
 /** The signal ids of a series: distinct, non-empty strings, as a frozen copy. */

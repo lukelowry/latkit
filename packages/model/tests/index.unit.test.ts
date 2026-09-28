@@ -12,15 +12,17 @@ describe('model package entrypoint', () => {
     expect(manifest.dependencies).toBeUndefined();
   });
 
-  it('publishes the model, the sources that move it, the series vocabulary, and the checks a host runs before a device exists', () => {
+  it('publishes the classes a format, an engine, and an editor build on, and the checks a host runs before a device exists', () => {
     expect(Object.keys(entry).sort()).toEqual([
-      'createModel',
-      'createSeries',
+      'Document',
+      'Engine',
+      'Model',
+      'Recording',
+      'Refusal',
+      'Series',
       'extent',
       'formatNumber',
       'normalizeDomain',
-      'openModel',
-      'openRecording',
       'validateDomain',
       'validateNetlist',
       'validateSeries',

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import type { Colormap } from '@latkit/colormaps';
-import { createSeries, type Netlist } from '@latkit/model';
+import { type Document, Series } from '@latkit/model';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SLOT, type SlotChannel } from '../src/channels.js';
@@ -56,7 +56,7 @@ const group = (index: number): Part => ({ kind: 'group', index });
  * Ports: 0 SRC.y (out), 1 GAIN.u (in), 2 GAIN.y (out), 3 SINK.u (in), 4 SCOPE.u (in).
  * Nets: 0 a [0, 1], 1 b [2, 3].
  */
-function edit(): Netlist {
+function edit(): Document.Netlist {
   return build({
     blocks: [
       { key: 'src', title: 'SRC', ports: [{ name: 'y', flow: 'out' }] },
@@ -94,7 +94,7 @@ function edit(): Netlist {
  * `edit` after SRC was removed and EXTRA added reading GAIN: blocks GAIN 0, SINK 1, SCOPE 2,
  * EXTRA 3; one net [GAIN.y, SINK.u, EXTRA.u].
  */
-function edited(): Netlist {
+function edited(): Document.Netlist {
   return build({
     blocks: [
       {
@@ -123,7 +123,7 @@ function edited(): Netlist {
 }
 
 /** Two blocks in one group, wired. */
-function grouped(): Netlist {
+function grouped(): Document.Netlist {
   return build({
     blocks: [
       { key: 'a', title: 'A', group: 0, ports: [{ name: 'y', flow: 'out' }] },
@@ -152,7 +152,7 @@ async function makeHarness(options: Options = {}, attach = true): Promise<Contro
 /** Attached, `netlist` loaded, one frame painted, nothing heard yet. */
 async function loaded(
   options: Options = {},
-  netlist: Netlist = edit(),
+  netlist: Document.Netlist = edit(),
 ): Promise<ControllerHarness> {
   const h = await makeHarness(options);
   h.diagram.load(netlist);
@@ -832,7 +832,7 @@ describe('series-bound channels', () => {
   }
   /** Two frames at times 0 and 1 over `elements` items, value `i` at flat index `i`. */
   const recording = (elements: number, values?: readonly number[]) =>
-    createSeries({
+    Series.create({
       signals: ['x'],
       elementCount: elements,
       time: Float64Array.of(0, 1),
@@ -880,7 +880,8 @@ describe('series-bound channels', () => {
     const errors: Array<Events['error']> = [];
     h.diagram.on('error', (error) => errors.push(error));
     const cause = new Error('disk on fire');
-    const failing = { ...recording(4), read: () => Promise.reject(cause) };
+    const failing = recording(4);
+    vi.spyOn(failing, 'read').mockRejectedValue(cause);
     h.diagram.setChannel('blockColor', { series: failing, signal: 0 });
     await vi.waitFor(() => expect(errors).toEqual([{ channel: 'blockColor', cause }]));
   });
@@ -1712,7 +1713,7 @@ describe('the TwoArea example from DIAGRAM.md', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     // TGOV1 drives pmech, IEEET1 drives efd, GENROU's speed feeds both back.
-    const unit: Netlist = {
+    const unit: Document.Netlist = {
       blockCount: 3,
       blockKey: ['Genrou/1_1_genrou', 'Tgov1/1_1_tgov1', 'Ieeet1/1_1_ieeet1'],
       blockTitle: ['GENROU', 'TGOV1', 'IEEET1'],

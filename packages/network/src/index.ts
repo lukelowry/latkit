@@ -1,8 +1,8 @@
 /**
  * `@latkit/network` — a WebGPU network renderer behind one durable controller. `createNetwork`
  * returns a {@link Network} that attaches to any canvas over a shared device pool; three
- * registries name what it speaks: `CHANNELS`, `OPTIONS`, `PROJECTIONS`. `Topology`, `Item`, and
- * `Domain` are `@latkit/model`'s.
+ * registries name what it speaks: `CHANNELS`, `OPTIONS`, `PROJECTIONS`. `Model.Topology`,
+ * `Model.Item`, and `Domain` are `@latkit/model`'s.
  *
  * @packageDocumentation
  */

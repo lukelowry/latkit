@@ -13,10 +13,10 @@ npm install @latkit/network @latkit/model @latkit/colormaps
 
 ```ts
 import { colormap } from '@latkit/colormaps';
-import type { Topology } from '@latkit/model';
+import type { Model } from '@latkit/model';
 import { createNetwork } from '@latkit/network';
 
-const topology: Topology = {
+const topology: Model.Topology = {
   vertexCount: 3,
   vertexCoords: new Float32Array([-96, 30, -95, 31, -94, 30]),
   coordinateSpace: 'geographic',
@@ -35,7 +35,7 @@ await network.attach(canvas);
 The controller holds everything it is given; `attach` leases a shared device and paints it, and
 `detach` keeps it for the next canvas. See the [lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html).
 
-`Topology` and `Item` are `@latkit/model`'s: a model's topology loads unchanged, and the item a
+`Model.Topology` and `Model.Item` are `@latkit/model`'s: a model's topology loads unchanged, and the item a
 pick returns is the item `model.elementAt` resolves. Loading the topology already loaded is a no-op;
 `load(topology, { fit: false })` keeps a placed camera.
 
@@ -59,7 +59,7 @@ camera tilts; the `heightRange` option is the output range it maps onto. `vertex
 are `vertexShade` and `edgeShade`, which carry one scalar per item to a shade (below). Every
 channel slot is allocated when a topology loads, so rebinding never reallocates GPU storage.
 
-A channel can follow one signal of a `Series` instead, such as a model `Field`, and `seek` shows
+A channel can follow one signal of a `Series` instead, such as a model's field, and `seek` shows
 the frame at a playhead in every channel that does: every channel but `vertexPosition`, as each
 entry's `series` says. A column field binds the same way, as a series of one frame. The channels
 run on `@latkit/gpu`'s binder, as the diagram's do, so a channel behaves the same in both:

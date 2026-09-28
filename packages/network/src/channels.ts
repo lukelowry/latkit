@@ -4,7 +4,7 @@
  * them: slots, series, and domains.
  */
 
-import { extent, type Domain } from '@latkit/model';
+import { extent, normalizeDomain, type Domain } from '@latkit/model';
 
 import {
   ITEM_EDGE_SHADE,
@@ -207,9 +207,12 @@ export function channelRecord(
   };
 }
 
-/** The domain values bound without one map through: a height's own extent, else `[0, 1]`. */
+/**
+ * The domain values bound without one map through: a height's own extent, padded as a field's
+ * `domain` pads it, else `[0, 1]`.
+ */
 export function initialDomain(channel: Channel, values: Float32Array | Float64Array): Domain {
-  return channel === 'vertexHeight' ? (extent(values) ?? [0, 1]) : [0, 1];
+  return channel === 'vertexHeight' ? normalizeDomain(extent(values)) : [0, 1];
 }
 
 /** Set or clear one u32 flag while keeping JavaScript bit operations unsigned. */

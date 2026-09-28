@@ -24,7 +24,8 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --project @latkit/port"
+    "test": "vitest run --project @latkit/port",
+    "bench": "vitest bench --run --project @latkit/port"
   },
   "dependencies": {
     "@latkit/model": "workspace:*"

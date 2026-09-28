@@ -4,7 +4,7 @@
  * with blocks in a row.
  */
 
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 
 import type { Prepared } from '../../src/prepare.js';
 import { layoutBases, Mirror } from '../../src/webgpu/buffers.js';
@@ -21,7 +21,7 @@ export interface BulkText {
 }
 
 /** `blocks` blocks of one labeled `out` port each; the first `nets` ports are each a net. */
-export function bulk(blocks: number, text: BulkText): Netlist {
+export function bulk(blocks: number, text: BulkText): Document.Netlist {
   return {
     blockCount: blocks,
     blockTitle: new Array<string>(blocks).fill(text.title),
@@ -58,7 +58,7 @@ function randomText(next: () => number, most: number, blank: number): string {
  * to twelve ports on random sides, each maybe labeled and maybe alone on a tag net with a label.
  * Texts mix narrow, wide, and combined graphemes; about one in four is empty.
  */
-export function randomBlocks(blocks: number, seed = 1): Netlist {
+export function randomBlocks(blocks: number, seed = 1): Document.Netlist {
   const next = random(seed);
   const portStart = new Uint32Array(blocks + 1);
   const flow: number[] = [];

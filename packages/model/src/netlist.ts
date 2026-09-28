@@ -1,67 +1,8 @@
 /**
- * The netlist: a block diagram's structure as columns, the shape `@latkit/diagram` loads, the way
- * `Topology` is the shape `@latkit/network` loads.
+ * The one check a netlist runs before a renderer loads it: what `Document.Netlist` promises.
  */
 
-/**
- * A block diagram's structure, columnar like `Topology`: blocks, the ports each block owns, and
- * the nets that join ports. Placement is not structure; it is a renderer's position channel, so a
- * drag or a layout never rebuilds a netlist.
- *
- * @remarks
- * `0xffffffff` marks "none" wherever an index may be absent. Counts are derived: the port count is
- * `portStart[blockCount]`, the net count `netStart.length - 1`.
- */
-export interface Netlist {
-  /** Number of blocks. */
-  readonly blockCount: number;
-  /**
-   * Identity across loads, unique per block: a reload keeps the automatic position, the
-   * placement, and the selection of every block whose key survives. Without keys, a changed
-   * netlist starts over.
-   */
-  readonly blockKey?: readonly string[];
-  /** Block `b` owns ports `portStart[b]` up to `portStart[b + 1]`; `blockCount + 1` long, from 0. */
-  readonly portStart: Uint32Array;
-  /** Per port: `0` in, `1` out, `2` both (an undirected terminal). */
-  readonly portFlow: Uint8Array;
-  /** Per port: a compatibility class; only ports of one kind share a net. @defaultValue all `0` */
-  readonly portKind?: Uint8Array;
-  /** Per port: `0` left, `1` right, `2` top, `3` bottom. @defaultValue in left, out right, both top */
-  readonly portSide?: Uint8Array;
-  /**
-   * Net `n` joins `netPorts[netStart[n]]` up to `netPorts[netStart[n + 1]]`: at most one `out`
-   * port, its driver, and every port on at most one net. `netStart` begins at 0.
-   */
-  readonly netStart: Uint32Array;
-  /** The ports of every net, net after net, as `netStart` delimits them. */
-  readonly netPorts: Uint32Array;
-  /** Per net: `0` drawn as wires, `1` as a tag at each port, for a net too wide to wire (a bus). */
-  readonly netStyle?: Uint8Array;
-  /** Per block: its group, or `0xffffffff`. A group is framed, arranged, and moved as one. */
-  readonly blockGroup?: Uint32Array;
-  /** Number of groups. @defaultValue `0` */
-  readonly groupCount?: number;
-  /** Per block: the heading drawn inside it, between its ports' labels, such as its class. */
-  readonly blockTitle?: readonly string[];
-  /** Per block: the name drawn under it, such as its id. */
-  readonly blockLabel?: readonly string[];
-  /**
-   * Per port: the name drawn beside it inside its block; a top or bottom port's name sits in a
-   * band along that edge.
-   */
-  readonly portLabel?: readonly string[];
-  /** Per net: the name drawn on its wire, or in each of its tags. */
-  readonly netLabel?: readonly string[];
-  /** Per group: the name drawn in its frame's header. */
-  readonly groupLabel?: readonly string[];
-}
-
-/** One piece of a netlist by index. Field-for-field the part `@latkit/diagram` picks. */
-export interface Part {
-  readonly kind: 'block' | 'port' | 'net' | 'group';
-  readonly index: number;
-}
+import type { Document } from './document.js';
 
 const NONE = 0xffffffff;
 
@@ -130,11 +71,11 @@ function optionalStrings(value: unknown, name: string, length: number): void {
 /**
  * Check what a netlist promises: counts, typed-array kinds, offset tables, ranges, one driver and
  * one kind per net, one net per port, unique keys, and label lengths. The one validator every
- * consumer shares, so a netlist an engine builds is one a renderer loads.
+ * consumer shares, so a netlist a format builds is one a renderer loads.
  *
  * @throws Error naming the first field that is invalid.
  */
-export function validateNetlist(netlist: Netlist): void {
+export function validateNetlist(netlist: Document.Netlist): void {
   const blockCount = count(netlist.blockCount, 'block count');
   const portStart = offsets(netlist.portStart, 'portStart', blockCount + 1);
   const portCount = portStart[blockCount]!;

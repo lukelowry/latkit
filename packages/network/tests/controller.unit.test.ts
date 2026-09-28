@@ -2,7 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createNetwork } from '../src/controller.js';
-import { createModel, createSeries, type Item } from '@latkit/model';
+import { Engine, Model, Series } from '@latkit/model';
 
 import type { ControllerDeps, Events, Options } from '../src/controller.js';
 import {
@@ -778,7 +778,7 @@ describe('createNetwork controller', () => {
   it('applies programmatic selection and clearing without emitting select events', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
-    const selects: Array<Item | null> = [];
+    const selects: Array<Model.Item | null> = [];
     h.network.on('select', (item) => selects.push(item));
 
     h.network.select({ kind: 'vertex', index: 1 });
@@ -793,8 +793,8 @@ describe('createNetwork controller', () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
 
-    const hovers: Array<Item | null> = [];
-    const selects: Array<Item | null> = [];
+    const hovers: Array<Model.Item | null> = [];
+    const selects: Array<Model.Item | null> = [];
     h.network.on('hover', (item) => hovers.push(item));
     h.network.on('select', (item) => selects.push(item));
 
@@ -971,7 +971,7 @@ describe('createNetwork controller', () => {
   it('routes keyboard intents through the public camera verbs and clears the selection', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
-    const selects: Array<Item | null> = [];
+    const selects: Array<Model.Item | null> = [];
     h.network.on('select', (item) => selects.push(item));
 
     h.emitKey({ kind: 'pan', dx: 48, dy: 0 });
@@ -1063,8 +1063,8 @@ describe('createNetwork controller', () => {
   it('clears hover and selection from pointer exits and empty taps', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
-    const hovers: Array<Item | null> = [];
-    const selects: Array<Item | null> = [];
+    const hovers: Array<Model.Item | null> = [];
+    const selects: Array<Model.Item | null> = [];
     h.network.on('hover', (item) => hovers.push(item));
     h.network.on('select', (item) => selects.push(item));
 
@@ -1249,7 +1249,7 @@ describe('createNetwork controller', () => {
   it('cycles stacked tap hits after current vertex or edge selections', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
-    const selects: Array<Item | null> = [];
+    const selects: Array<Model.Item | null> = [];
     h.network.on('select', (item) => selects.push(item));
 
     h.picker.nextHits = [
@@ -1972,7 +1972,7 @@ describe('createNetwork controller', () => {
 describe('series-bound channels', () => {
   /** Frames at times 0, 1, 2 over three vertices, item `e` of frame `f` holding `10f + e`. */
   const recording = () =>
-    createSeries({
+    Series.create({
       signals: ['x'],
       elementCount: 3,
       time: Float64Array.of(0, 1, 2),
@@ -2033,25 +2033,36 @@ describe('series-bound channels', () => {
     const h = await makeHarness();
     const topology = geographicTopology();
     h.network.load(topology);
-    const model = createModel({
-      vendor: 'test',
-      id: 'grid',
-      name: 'Grid',
-      meta: {},
-      topology,
-      owners: { vertex: 'bus' },
-      classes: [
-        {
-          id: 'bus',
-          label: 'Bus',
-          count: 3,
-          columns: [{ kind: 'number', id: 'kv', label: 'kV' }],
-          signals: [{ id: 'Vm', label: 'Vm', unit: 'pu', recorded: true }],
-        },
-      ],
-      load: async () => ({ labels: ['a', 'b', 'c'], values: [Float64Array.of(115, 230, 345)] }),
-      bytes: async () => new Uint8Array(),
-    });
+    class Grid extends Model {
+      constructor() {
+        super({
+          format: 'test',
+          id: 'grid',
+          name: 'Grid',
+          topology,
+          owners: { vertex: 'bus' },
+          classes: [
+            {
+              id: 'bus',
+              label: 'Bus',
+              count: 3,
+              columns: [{ kind: 'number', id: 'kv', label: 'kV' }],
+              signals: [{ id: 'Vm', label: 'Vm', unit: 'pu', recorded: true }],
+            },
+          ],
+        });
+      }
+      protected values(): Promise<Model.Values> {
+        return Promise.resolve({
+          labels: ['a', 'b', 'c'],
+          values: [Float64Array.of(115, 230, 345)],
+        });
+      }
+      bytes(): Promise<Uint8Array> {
+        return Promise.resolve(new Uint8Array());
+      }
+    }
+    const model = new Grid();
 
     const kv = (await model.field({ classId: 'bus', kind: 'column', id: 'kv' }))!;
     h.network.setChannel('vertexHeight', kv);
@@ -2059,11 +2070,21 @@ describe('series-bound channels', () => {
     expect(h.renderer.reserved).toBe(FIXED + 2 * 3);
     expect(h.network.getChannelDomain('vertexHeight')).toEqual([115, 345]);
 
-    const recording = model.record({ id: 'run' });
-    recording.append({
-      time: Float64Array.of(0, 1),
-      values: { bus: Float32Array.of(1, 1, 1, 0.5, 1, 1.5) },
-    });
+    class Replay extends Engine {
+      constructor() {
+        super();
+      }
+      protected parse(input: unknown): unknown {
+        return input;
+      }
+      protected execute(_model: Model, _input: unknown, recorder: Engine.Recorder): Promise<void> {
+        recorder.append(Float64Array.of(0, 1), { bus: Float32Array.of(1, 1, 1, 0.5, 1, 1.5) });
+        return Promise.resolve();
+      }
+    }
+    model.engine = new Replay();
+    const recording = model.record(null);
+    await vi.waitFor(() => expect(recording.state.status).toBe('complete'));
     const vm = (await model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }, recording))!;
     h.network.setChannel('vertexColor', vm);
     await vi.waitFor(() => expect(h.loop.uniforms.channel.vColorOffset).toBe(FIXED + 2 * 3));
@@ -2102,7 +2123,8 @@ describe('series-bound channels', () => {
     const errors: Array<Events['error']> = [];
     h.network.on('error', (error) => errors.push(error));
     const cause = new Error('disk on fire');
-    const failing = { ...recording(), read: () => Promise.reject(cause) };
+    const failing = recording();
+    vi.spyOn(failing, 'read').mockRejectedValue(cause);
     h.network.setChannel('vertexSize', { series: failing, signal: 0 });
     await vi.waitFor(() => expect(errors).toEqual([{ channel: 'vertexSize', cause }]));
   });
@@ -2210,8 +2232,8 @@ describe('vertex positions', () => {
   it('pauses hover and taps while positions move, then re-picks on its own', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
-    const hovers: Array<Item | null> = [];
-    const selects: Array<Item | null> = [];
+    const hovers: Array<Model.Item | null> = [];
+    const selects: Array<Model.Item | null> = [];
     h.network.on('hover', (item) => hovers.push(item));
     h.network.on('select', (item) => selects.push(item));
 
@@ -2293,7 +2315,7 @@ describe('interaction, framing, painted, pointer, and shade', () => {
   it('walks the selection along the topology from the keyboard', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
-    const selects: Array<Item | null> = [];
+    const selects: Array<Model.Item | null> = [];
     h.network.on('select', (item) => selects.push(item));
     const at: Record<string, readonly [number, number]> = {
       vertex0: [10, 40],
@@ -2328,7 +2350,7 @@ describe('interaction, framing, painted, pointer, and shade', () => {
   it('routes an external pointer through hover picking like the canvas pointer, and pause clears it', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
-    const hovers: Array<Item | null> = [];
+    const hovers: Array<Model.Item | null> = [];
     h.network.on('hover', (item) => hovers.push(item));
 
     h.picker.nextHit = ['edge', 1];

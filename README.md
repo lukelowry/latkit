@@ -15,16 +15,16 @@ Latkit is a TypeScript package family for interactive, browser-based WebGPU visu
 
 Install only the packages your application needs.
 
-| Package                                                                | Description                                                          |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| [`@latkit/network`](https://www.npmjs.com/package/@latkit/network)     | Interactive WebGPU network topology views                            |
-| [`@latkit/monitor`](https://www.npmjs.com/package/@latkit/monitor)     | WebGPU time-series and signal monitor views                          |
-| [`@latkit/diagram`](https://www.npmjs.com/package/@latkit/diagram)     | WebGPU block diagrams with automatic layout and edit proposals       |
-| [`@latkit/embed`](https://www.npmjs.com/package/@latkit/embed)         | `latkit-network` and `latkit-monitor` custom elements                |
-| [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)             | What every renderer shares: devices, frames, attach, channels        |
-| [`@latkit/colormaps`](https://www.npmjs.com/package/@latkit/colormaps) | Colors and colormaps: `RGBA`, the catalog, gradients, and a parser   |
-| [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | The network model, its runs, recordings, and fields, and its sources |
-| [`@latkit/port`](https://www.npmjs.com/package/@latkit/port)           | Ports, frames, protocols, and a model served across them             |
+| Package                                                                | Description                                                         |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| [`@latkit/network`](https://www.npmjs.com/package/@latkit/network)     | Interactive WebGPU network topology views                           |
+| [`@latkit/monitor`](https://www.npmjs.com/package/@latkit/monitor)     | WebGPU time-series and signal monitor views                         |
+| [`@latkit/diagram`](https://www.npmjs.com/package/@latkit/diagram)     | WebGPU block diagrams with automatic layout and edit proposals      |
+| [`@latkit/embed`](https://www.npmjs.com/package/@latkit/embed)         | `latkit-network` and `latkit-monitor` custom elements               |
+| [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)             | What every renderer shares: devices, frames, attach, channels       |
+| [`@latkit/colormaps`](https://www.npmjs.com/package/@latkit/colormaps) | Colors and colormaps: `RGBA`, the catalog, gradients, and a parser  |
+| [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | `Model`, `Engine`, and `Document` to subclass, and their recordings |
+| [`@latkit/port`](https://www.npmjs.com/package/@latkit/port)           | Ports, frames, protocols, and a model served across them            |
 
 ## Requirements
 

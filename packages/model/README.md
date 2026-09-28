@@ -1,199 +1,236 @@
 # @latkit/model
 
-The vocabulary every latkit package speaks: the immutable, columnar model of a network and its
-element classes that a vendor builds once, the instance every question about it goes to, the
-recordings its runs fill and the fields a host binds, and the sources that move a model or a
-recording across a boundary lazily. It has no dependencies, I/O, or rendering.
+What a format, an engine, and an editor implement, and what they make. A format subclasses
+`Model` to read its cases and `Document` to edit them; an engine subclasses `Engine` to record a
+model; a `Recording` is what an engine fills, and a `Series` is what every view follows. It has no
+dependencies, I/O, or rendering.
 
-| Noun        | What it is                                                                                |
-| ----------- | ----------------------------------------------------------------------------------------- |
-| `Model`     | The instance: topology, owners, classes that declare their columns and signals, lazy data |
-| `Recording` | One run's output: a `Series` per recorded class, every class on one clock                 |
-| `Series`    | Append-only samples over one element axis and time, read in bounded windows               |
-| `Field`     | One number column or signal, resolved to the `{ series, signal }` every renderer binds    |
-| `Grid`      | One class as a table: search, sort, and windows of formatted rows                         |
-| A run       | What an engine emits, `RunUpdate`s, and the recording they fill                           |
-| `Source`    | The same model as bytes and an engine; a `RecordingSource` is a recording held elsewhere  |
-| `Netlist`   | A block diagram's structure: blocks, the ports each owns, and the nets that join ports    |
+| Class       | What it is                                                                               |
+| ----------- | ---------------------------------------------------------------------------------------- |
+| `Model`     | A case as a format reads it: topology, element classes, their values loaded on demand    |
+| `Engine`    | What records a model: a solver, a simulator, an analysis, a feed                         |
+| `Document`  | A case open for editing: operations, one history, and the case as a block diagram        |
+| `Recording` | Every signal an engine records for a model, each class's series on one clock             |
+| `Series`    | A history a view follows: signals over time for an element axis, read in bounded windows |
 
-`Topology` and `Item` are field-for-field the shapes `@latkit/network` loads and picks, as `Netlist`
-and `Part` are for `@latkit/diagram`, so a model never adapts for a renderer. `Domain` is the
-`[min, max]` every renderer takes; `extent` scans one and `normalizeDomain` pads one for display.
-`validateTopology`, `validateNetlist`, `validateSeries`, and `validateDomain` check what a host
-builds before a device exists.
+Every other type lives under the class that speaks it: `Model.Topology` and `Model.Item` are the
+shapes `@latkit/network` loads and picks, as `Document.Netlist` and `Document.Part` are for
+`@latkit/diagram`; `Engine.Recorder` is how an engine writes; `Document.Operation` is one edit.
+`Domain` is the `[min, max]` every renderer takes; `extent` scans one and `normalizeDomain` pads one
+for display. `validateTopology`, `validateNetlist`, `validateSeries`, and `validateDomain` check
+what a host builds before a device exists.
 
-## Produce a model
+## Read a case
 
-A vendor builds a model with `createModel`; there is no interface to implement. Each class declares
-its columns and signals up front, and the loader returns its labels and column values in that
-order. Owner classes are the ones whose element `i` is vertex `i` or edge `i`; any other class may
-anchor each element to a topology item, `0xffffffff` marking an element with no place. A model with
-an engine runs; `run` yields a run's updates and ends with one done, cancelled, or failed.
+A format subclasses `Model`: it describes the case to the constructor, which checks it once, gives
+each class's values when asked, and the case's bytes. Each class declares its columns and signals up
+front. Owner classes are the ones whose element `i` is vertex `i` or edge `i`; any other class may
+anchor each element to a topology item, `0xffffffff` marking an element with no place.
 
 ```ts
-import { createModel } from '@latkit/model';
+import { Model } from '@latkit/model';
 
-const model = createModel({
-  vendor: 'gridkit',
-  id: caseId,
-  name: 'IEEE 14',
-  meta: { freqBase: 60 },
-  topology,
-  owners: { vertex: 'bus', edge: 'branch' },
-  classes: [
-    {
-      id: 'bus',
-      label: 'Bus',
-      count: 14,
-      columns: [{ kind: 'number', id: 'baseKV', label: 'Base kV', unit: 'kV' }],
-      signals: [{ id: 'Vm', label: 'Voltage', unit: 'pu', recorded: true }],
-    },
-    {
-      id: 'gen',
-      label: 'Generator',
-      count: 5,
-      anchor: { kind: 'vertex', index: genBus },
-      columns: [],
-      signals: [{ id: 'P', label: 'Power', unit: 'MW', recorded: true }],
-    },
-  ],
-  load: async (classId) => ({ labels: labelsOf(classId), values: valuesOf(classId) }),
-  bytes: async () => caseBytes,
-  run: (command, signal) => engine.run(command, signal), // omitted when the model cannot run
-});
+export class GridkitCase extends Model {
+  readonly #case: Parsed;
+
+  constructor(bytes: Uint8Array) {
+    const parsed = parse(bytes);
+    super({
+      format: 'gridkit',
+      id: parsed.digest,
+      name: parsed.name,
+      topology: parsed.topology,
+      owners: { vertex: 'bus', edge: 'branch' },
+      classes: parsed.classes, // columns and signals declared before any values load
+    });
+    this.#case = parsed;
+  }
+
+  protected values(classId: string): Promise<Model.Values> {
+    return Promise.resolve(this.#case.values(classId)); // labels, and values in declared order
+  }
+
+  bytes(): Promise<Uint8Array> {
+    return Promise.resolve(this.#case.bytes());
+  }
+}
 ```
 
 ## Ask the model
 
-Every question about a model is a method on it.
+Every question about a case is a method on its model.
 
 ```ts
+const model = new GridkitCase(bytes);
 network.load(model.topology);
 network.on('select', (item) => {
-  const ref = item && model.elementAt(item); // the element a pick is
-  if (ref) inspect(ref);
+  const element = item && model.elementAt(item); // the element a pick is
+  if (element) inspect(element);
 });
 model.itemOf({ classId: 'gen', index: 2 }); // where it sits: { kind: 'vertex', index: 7 }
 
-const spec = model.class('bus')!; // columns and signals, declared before any data loads
 const bus = await model.load('bus'); // labels and columns, loaded once and shared
-
 const grid = await model.grid('bus'); // the class as a table
 const { rows, total } = await grid.window('north', { column: 0, dir: 'desc' }, 0, 50);
-const now = await model.grid('bus', { recording, time: t }); // its signals too, sampled at t
 ```
 
 A grid's `columns` say what each cell shows: the class's columns, then, at a time, every signal
 the recording holds. A sort names a column by its index there, or `null` for the label.
 `formatNumber` is the rule its cells follow, for any number shown beside them.
 
-## Run the model
+## Record it
 
-A run fills one recording, which holds every class that records a signal. Iterate the run to run
-it: each update as it arrives, frames already appended, ending with one done, cancelled, or failed,
-after which the recording is sealed. Leaving the loop early cancels it; an aborted signal ends it
-as cancelled.
+An engine subclasses `Engine`: `parse` checks an input from a host or a peer, and `execute` records
+a model for one through its recorder, resolving once complete; throwing fails the recording. Attach
+it to a model at any time, and `record` runs it: the input is checked at once, and the recording
+returned waits its turn, then fills as the engine computes. An engine records as many at once as
+its `concurrency` allows and queues the rest, telling each how many wait before it.
 
 ```ts
-const run = model.run!(command, { id: study.id, span: [0, 20], expectedFrames: 2000, signal });
-network.setChannel('vertexColor', await model.field(VM, run.recording));
-for await (const update of run) {
-  if (update.type === 'queued') showQueue(update.ahead);
-  else if (update.type === 'log') print(update);
-  else if (update.type !== 'frames' && update.type !== 'running') end(update); // done, cancelled, or failed
+import { Engine, type Model } from '@latkit/model';
+
+export class GridkitEngine extends Engine {
+  constructor(readonly server: URL) {
+    super({ concurrency: Infinity }); // the server keeps its own queue
+  }
+
+  protected parse(input: unknown): Study {
+    return checkStudy(input);
+  }
+
+  protected async execute(model: Model, study: Study, recorder: Engine.Recorder): Promise<void> {
+    recorder.declare({ span: [0, study.duration], expectedFrames: framesOf(study) });
+    for await (const update of solve(this.server, model, study, recorder.signal)) {
+      if (update.kind === 'queued') recorder.wait(update.ahead);
+      else if (update.kind === 'running') recorder.start();
+      else if (update.kind === 'log') recorder.log(update.level, update.message);
+      else {
+        await recorder.ready; // go at the pace of whoever reads the frames
+        recorder.append(update.time, update.values);
+      }
+    }
+  }
 }
+
+model.engine = new GridkitEngine(new URL('/api/', location.href));
+const recording = model.record(study, { label: 'Fault at bus 5' });
+recording.on('change', () => status.show(recording.state)); // waiting, recording, then how it ended
+stop.onclick = () => recording.stop();
 ```
 
-`model.record(header)` makes the same recording empty, for frames that come from anywhere else:
-`append({ time, values })` commits a block for every class at once, a class it leaves out reading
-NaN over it, and `seal()` ends it. A block's values are frame-major per class,
-`values[classId][(frame * signals + signal) * elements + element]`, signals in the order
-`recording.series(classId)` lists them. `recording.state` publishes `frameCount`, `timeRange`, and
-`live` together, `on('change')` follows appends and the seal, and `frameAt(time)` and
-`timeAt(frame)` read the clock at once.
+`append(time, values)` commits frames for every recorded class at once, a class it leaves out
+reading NaN over them; a class's values are frame-major, `(frame * signals + signal) * elements +
+element`, signals in the order its class declares them. The recorder takes the buffers.
+`recording.state` publishes `status`, `ahead`, `frameCount`, `timeRange`, and `error` together;
+`span`, `expectedFrames`, and `log` are what the engine declared and said; `frameAt(time)` and
+`timeAt(frame)` read the clock.
 
 ## Bind a field
 
-A `Field` is one number column or one recorded signal, resolved to the `{ series, signal }` every
-renderer binds: a column's series is sealed with one frame, which holds at every time. A picker
-lists a class's fields from its declared `columns` and `signals` without loading anything; a
-`FieldRef` is the plain data a host persists.
+A field is one number column or one recorded signal, resolved to the `{ series, signal }` every
+renderer binds: a column's series is sealed with one frame, which holds at every time. `fields`
+lists what a class can bind; a `Model.FieldRef` is the plain data a host persists.
 
 ```ts
 const vm = await model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }, recording);
-const kv = await model.field({ classId: 'bus', kind: 'column', id: 'baseKV' });
-if (vm) network.setChannel('vertexColor', vm); // frames stay on the GPU; the domain follows
-if (kv) network.setChannel('vertexHeight', kv);
-if (vm) monitor.load(vm);
+network.setChannel('vertexColor', vm); // frames stay on the GPU; the domain follows; null unbinds
+monitor.load(vm);
 network.seek(t);
 const values = await vm?.at(t); // every bus at t, NaN where one has no value
+
+// The same field over other items: a diagram's nets over the elements that drive them.
+diagram.setChannel('netColor', vm?.gather(drivers) ?? null);
 ```
 
 A field resolves to null when the model or the recording has no values for it. One reference
 resolves to one series, so the renderers binding it share its frames, and `domain` is the display
-interval over every committed value.
+interval over every committed value; a gathered field keeps it, so each view colors a value alike.
+
+## Edit it
+
+A format that edits gives its model a `document`: a `Document` subclass that makes operations true
+as one change, reverts a change, and describes its schematic. The base keeps one history of the
+last 200 steps, maps the schematic's parts to elements and back, and opens the model a change calls
+for once `model()` asks, keeping the engine.
+
+```ts
+const document = await model.document!();
+diagram.load(document.schematic.netlist);
+diagram.on('move', ({ blocks, positions }) =>
+  document.apply({
+    kind: 'place',
+    elements: Array.from(blocks, (block) => document.schematic.blocks[block]!),
+    positions,
+  }),
+);
+document.on('change', async (change) => {
+  if (change.scope === 'structure') diagram.load(document.schematic.netlist, { fit: false });
+  diagram.setChannel('blockPosition', document.schematic.positions);
+  if (change.scope !== 'layout') show(await document.model());
+});
+undo.onclick = () => document.undo();
+```
+
+An edit the case refuses throws `Refusal`, saying why and what it is about, and changes nothing.
 
 ## Keep a history
 
-`createSeries` is an in-memory history for samples that are not a run of a model. Initial `time`
-and `values` are signal-major; appends are frame-major. Buffers are borrowed, never mutated or
-detached after publication, and reads within one append are zero-copy views.
+`Series.create` is an in-memory history for samples that are not a recording of a model. Initial
+`time` and `values` are signal-major; appends are frame-major. Buffers are taken, never mutated or
+detached after publication, and reads within one append are zero-copy views. A source of samples
+held anywhere else subclasses `Series`: it publishes what it holds and fetches checked windows.
 
 ```ts
-import { createSeries } from '@latkit/model';
+import { Series } from '@latkit/model';
 
-const series = createSeries({ signals: ['temperature'], elementCount: 3 });
+const series = Series.create({ signals: ['temperature'], elementCount: 3 });
 series.append({ time: Float64Array.of(0), values: Float32Array.of(21, 22, 23) });
 monitor.load({ series, signal: 0 });
 series.seal(); // no frame follows
 ```
 
 `read(signal, window)` borrows a bounded, strided window, and `locate([from, to], frameCount)`
-returns the half-open frame interval holding those times within a captured head. Only request
-committed frames. `state.ranges` holds each signal's finite extent, a NaN pair while it has none.
+returns the half-open frame interval holding those times within a captured head. `state.ranges`
+holds each signal's finite extent, a NaN pair while it has none.
 
-## Move a model or a recording
+## Move a case or a recording
 
-Everything lazy opens from a source. A model's `Source` is its bytes, one core plus one shard per
-class, and its engine; a `RecordingSource` is a recording's declaration, its clock as it grows, and
-sample windows on demand. `source()` makes one from the instance, and `openModel` and
-`openRecording` open one from anywhere: a file, a fetch, or `@latkit/port`, which serves exactly
+Everything lazy opens from a source. A model's `Model.Source` is its core and one shard per class,
+packed on demand, and its bytes; a `Recording.Source` is a recording's classes, its changes as it
+grows, and sample windows on demand. `source()` makes one from the instance, and `Model.from` and
+`Recording.from` open one from anywhere: a file, a fetch, or `@latkit/port`, which serves exactly
 these across a port.
 
 ```ts
-import { openModel, openRecording } from '@latkit/model';
-
 // pack, for example when staging a library at build time
 const source = model.source();
 await write('core.bin', await source.core());
 for (const spec of model.classes) await write(`${spec.id}.bin`, await source.class(spec.id));
 
 // unpack, classes still lazy
-const opened = await openModel(
+const opened = await Model.from(
   { core: fetchCore, class: fetchShard, bytes: fetchCase },
   { signal, progress: (loaded, total) => bar.set(loaded / total) },
 );
-
-// a recording held elsewhere: its clock at hand, its samples read on demand
-const results = await openRecording(resultsFile(path));
 ```
 
 The pack format is private: a small JSON directory, the core's declaring every class's columns and
 signals, followed by 8-byte-aligned typed sections, so unpacking is a set of typed-array views into
-the received buffer.
+the received buffer. A series held elsewhere reads it in windows of at most 1 MiB, however large
+the window asked for.
 
 ## Describe a diagram
 
-A `Netlist` is a block diagram's structure as columns: blocks, the ports each block owns
+A `Document.Netlist` is a block diagram's structure as columns: blocks, the ports each block owns
 (`portStart` offsets), and the nets that join ports (`netStart` offsets into `netPorts`). A net has
 at most one `out` port, its driver, and a port joins at most one net. Placement is not structure;
 `blockKey` keeps each block's position, placement, and selection across reloads.
 
 ```ts
-import { validateNetlist, type Netlist } from '@latkit/model';
+import { validateNetlist, type Document } from '@latkit/model';
 
 // TGOV1 drives pmech, IEEET1 drives efd, GENROU's speed feeds both back.
-const unit: Netlist = {
+const unit: Document.Netlist = {
   blockCount: 3,
   blockKey: ['Genrou/1_1_genrou', 'Tgov1/1_1_tgov1', 'Ieeet1/1_1_ieeet1'],
   blockTitle: ['GENROU', 'TGOV1', 'IEEET1'],

@@ -4,7 +4,7 @@
  * systems of plants, a synthetic scale netlist, and seeded random ones.
  */
 
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 
 const NONE = 0xffffffff;
 
@@ -41,7 +41,7 @@ export interface NetlistSpec {
 const FLOW = { in: 0, out: 1, both: 2 } as const;
 
 /** Build a columnar netlist from named blocks, ports and nets. */
-export function build(spec: NetlistSpec): Netlist {
+export function build(spec: NetlistSpec): Document.Netlist {
   const blockCount = spec.blocks.length;
   const portStart = new Uint32Array(blockCount + 1);
   for (let b = 0; b < blockCount; b++)
@@ -103,7 +103,7 @@ export function build(spec: NetlistSpec): Netlist {
  * Ports: GENROU 0 pmech (in), 1 efd (in), 2 speed (out); TGOV1 3 speed (in), 4 pmech (out);
  * IEEET1 5 speed (in), 6 efd (out). Nets: 0 pmech [4, 0], 1 efd [6, 1], 2 speed [2, 3, 5].
  */
-export function twoArea(): Netlist {
+export function twoArea(): Document.Netlist {
   return {
     blockCount: 3,
     blockKey: ['Genrou/1_1_genrou', 'Tgov1/1_1_tgov1', 'Ieeet1/1_1_ieeet1'],
@@ -118,7 +118,7 @@ export function twoArea(): Netlist {
 }
 
 /** The empty netlist. */
-export function empty(): Netlist {
+export function empty(): Document.Netlist {
   return {
     blockCount: 0,
     portStart: Uint32Array.of(0),
@@ -267,7 +267,7 @@ function addPlant(
 }
 
 /** One plant alone, grouped as group 0, with its bus as a tag net. */
-export function plant(kind: Plant, prefix = '1_1'): Netlist {
+export function plant(kind: Plant, prefix = '1_1'): Document.Netlist {
   const blocks: BlockSpec[] = [];
   const nets: NetSpec[] = [];
   const members = addPlant(kind, prefix, 0, blocks, nets);
@@ -286,7 +286,7 @@ export function system(
   plants: number,
   shapes: readonly Plant[] = ['steam', 'steamPss', 'renewable', 'classical'],
   buses = Math.max(1, Math.ceil(plants / 2)),
-): Netlist {
+): Document.Netlist {
   const blocks: BlockSpec[] = [];
   const nets: NetSpec[] = [];
   const groups: string[] = [];
@@ -307,7 +307,7 @@ export function system(
 }
 
 /** About 36k blocks from four plant shapes: the EastWest signal diagram's scale. */
-export function scale(plants = 13_100): Netlist {
+export function scale(plants = 13_100): Document.Netlist {
   return system(plants);
 }
 
@@ -324,7 +324,7 @@ export function random(seed: number): () => number {
  * A random valid netlist: blocks with one to five ports, nets of one driver and one to three
  * readers of the same kind, some ports left unwired; no groups, keys `b<i>`.
  */
-export function randomNetlist(blockCount: number, seed = 1): Netlist {
+export function randomNetlist(blockCount: number, seed = 1): Document.Netlist {
   const next = random(seed);
   const blocks: BlockSpec[] = [];
   for (let b = 0; b < blockCount; b++) {

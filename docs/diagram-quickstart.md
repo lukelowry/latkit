@@ -12,21 +12,21 @@ The application owns the canvas. Give it a stable display size before attaching 
 
 ## Build a netlist
 
-A `Netlist` from `@latkit/model` is a block diagram's structure as columns: blocks, the ports each block owns, and the nets that join ports. `portStart` has one offset per block plus a terminal one, so block `b` owns ports `portStart[b]` up to `portStart[b + 1]`. `portFlow` marks each port `0` in, `1` out, or `2` both. `netStart` offsets into `netPorts` the same way, one net after another. A net has at most one `out` port, its driver.
+A `Document.Netlist` from `@latkit/model` is a block diagram's structure as columns: blocks, the ports each block owns, and the nets that join ports. `portStart` has one offset per block plus a terminal one, so block `b` owns ports `portStart[b]` up to `portStart[b + 1]`. `portFlow` marks each port `0` in, `1` out, or `2` both. `netStart` offsets into `netPorts` the same way, one net after another. A net has at most one `out` port, its driver.
 
 This netlist is one generator unit: TGOV1 drives GENROU's `pmech`, IEEET1 drives its `efd`, and GENROU's `speed` feeds both back.
 
 ```ts
 import { colormap } from '@latkit/colormaps';
 import { createDiagram } from '@latkit/diagram';
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 
 const canvas = document.getElementById('diagram');
 if (!(canvas instanceof HTMLCanvasElement)) {
   throw new Error('Missing #diagram canvas.');
 }
 
-const unit: Netlist = {
+const unit: Document.Netlist = {
   blockCount: 3,
   blockKey: ['Genrou/1_1_genrou', 'Tgov1/1_1_tgov1', 'Ieeet1/1_1_ieeet1'],
   blockTitle: ['GENROU', 'TGOV1', 'IEEET1'],
@@ -82,7 +82,7 @@ diagram.on('move', ({ blocks, positions }) => console.log(blocks, positions));
 diagram.on('delete', (parts) => console.log('delete', parts));
 ```
 
-A `Part` is `{ kind, index }` with `kind` one of `'block'`, `'port'`, `'net'`, or `'group'`. `connect` names ports by index: `from` is the wire's fixed end, `to` is the port or net it ended on (`null` over empty canvas), and `replaces` is the port whose wire the user picked up, or `null` for a new wire. `move` lists the blocks and the top-left corners they came to rest at, already shown there: each block's corner before the move plus the move's offset, which is snapped to the grid when `snap` is on. `'navigate'` moves only the camera, `'inspect'` keeps hover, taps, and keyboard selection while the page keeps its scrolling, and `'none'` installs no listeners.
+A `Document.Part` is `{ kind, index }` with `kind` one of `'block'`, `'port'`, `'net'`, or `'group'`. `connect` names ports by index: `from` is the wire's fixed end, `to` is the port or net it ended on (`null` over empty canvas), and `replaces` is the port whose wire the user picked up, or `null` for a new wire. `move` lists the blocks and the top-left corners they came to rest at, already shown there: each block's corner before the move plus the move's offset, which is snapped to the grid when `snap` is on. `'navigate'` moves only the camera, `'inspect'` keeps hover, taps, and keyboard selection while the page keeps its scrolling, and `'none'` installs no listeners.
 
 ## Apply proposals
 
@@ -91,7 +91,7 @@ The diagram never edits its netlist. A host decides what to accept, builds the n
 ```ts
 const placed = new Map<string, readonly [number, number]>();
 
-function show(netlist: Netlist): void {
+function show(netlist: Document.Netlist): void {
   diagram.load(netlist, { fit: false });
   const positions = new Float32Array(2 * netlist.blockCount).fill(Number.NaN);
   netlist.blockKey?.forEach((key, b) => positions.set(placed.get(key) ?? [NaN, NaN], 2 * b));
@@ -107,7 +107,7 @@ diagram.on('connect', (wire) => {
 });
 ```
 
-`doc` stands for the host's own document: `connect` adds the wire to its model when it accepts it, and `netlist()` builds the `Netlist` to show. Surviving blocks keep their place and selection across the load, new blocks land beside what they connect to, and removed blocks fade out. Give each block a key that means the same block in every netlist the host shows; a host that switches to an unrelated diagram gives it keys of its own, so nothing carries over and the new diagram is arranged whole. A palette drop inserts a block at `diagram.toDiagram(event.clientX, event.clientY)`, the snapped diagram point under the pointer. Undo is the host's: it restores a move by writing the old corner or NaN, and a structural edit by loading the previous netlist.
+`doc` stands for the host's own document: `connect` adds the wire to its model when it accepts it, and `netlist()` builds the netlist to show. Surviving blocks keep their place and selection across the load, new blocks land beside what they connect to, and removed blocks fade out. Give each block a key that means the same block in every netlist the host shows; a host that switches to an unrelated diagram gives it keys of its own, so nothing carries over and the new diagram is arranged whole. A palette drop inserts a block at `diagram.toDiagram(event.clientX, event.clientY)`, the snapped diagram point under the pointer. Undo is the host's: it restores a move by writing the old corner or NaN, and a structural edit by loading the previous netlist. A format that edits its cases gives this whole loop as a `Document` from `@latkit/model`: operations in the model's identities, one history, and the schematic to draw.
 
 ## Arrange without a device
 

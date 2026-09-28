@@ -1,6 +1,6 @@
 # @latkit/monitor
 
-WebGPU traces over one class's recorded signals. Load one signal of a `Series`, such as a model `Field`, once; committed appends update the plot automatically. The same API reads memory, files, or remote recordings.
+WebGPU traces over one class's recorded signals. Load one signal of a `Series`, such as a model's field, once; committed appends update the plot automatically. The same API reads memory, files, or remote recordings.
 
 ## Install
 
@@ -12,10 +12,10 @@ npm install @latkit/monitor @latkit/model @latkit/colormaps
 
 ```ts
 import { colormap } from '@latkit/colormaps';
-import { createSeries } from '@latkit/model';
+import { Series } from '@latkit/model';
 import { createMonitor } from '@latkit/monitor';
 
-const series = createSeries({
+const series = Series.create({
   signals: ['load'],
   elementCount: 2,
   time: Float64Array.of(0, 1),
@@ -37,8 +37,8 @@ Initial arrays use `[signal][frame][element]` order. Appended frames use
 time is always float64. Published buffers are borrowed and immutable: create new arrays for
 each append. No future timestamps or capacity slots are exposed.
 
-`Series.read` returns a bounded window with a stride; the monitor handles this itself. A model
-`Field` is a binding already, so a recorded signal loads as `monitor.load(field)`, from memory or
+`Series.read` returns a bounded window with a stride; the monitor handles this itself. A model's
+field is a binding already, so a recorded signal loads as `monitor.load(field)`, from memory or
 across a port. The host owns the recording's resources.
 
 ## Display options
@@ -89,8 +89,8 @@ monitor.on('deviceLost', ({ message, recovering }) => {
 `rendered` fires once everything committed is on screen, and never before the canvas has a layout
 size: a canvas kept at `display: none` until `rendered` would wait forever. Pointer readings
 preserve the original numeric value. A newer pick, load, or detach cancels stale reads.
-`select(null)` clears selection. `pause()` stops work; `resume()` catches up. `clear()` drops the
-loaded series. `detach()` releases the canvas while retaining data and settings; `destroy()`
+`select(null)` clears selection. `pause()` stops work; `resume()` catches up. `load(null)` drops
+the loaded series. `detach()` releases the canvas while retaining data and settings; `destroy()`
 releases the controller. See the
 [lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html).
 

@@ -4,13 +4,13 @@
  * dictionary in the directory plus a u32 index section, zero meaning null.
  */
 
-import type { ClassData, ClassSpec, ClassValues, Column } from '../model.js';
+import type { Model } from '../model.js';
 import { decode, encode, type Section, typed } from './container.js';
 
 const KIND = 'latkit-model-shard';
 
 interface ColumnMeta {
-  readonly kind: Column['kind'];
+  readonly kind: Model.Column['kind'];
   readonly id: string;
   readonly section: string;
   readonly dictionary?: readonly string[];
@@ -22,7 +22,7 @@ interface Meta {
 }
 
 /** Pack one class's data. Returned bytes are the caller's. */
-export function encodeShard(data: ClassData): Uint8Array {
+export function encodeShard(data: Model.Data): Uint8Array {
   const sections: { id: string; data: Section }[] = [];
   const columns = data.columns.map((column, index): ColumnMeta => {
     const entry: ColumnMeta = { kind: column.kind, id: column.id, section: `column.${index}` };
@@ -58,14 +58,14 @@ function isStrings(value: unknown): value is readonly string[] {
  *
  * @throws Error when the shard is not a valid pack or holds other columns than `spec` declares.
  */
-export function decodeShard(bytes: Uint8Array, spec: ClassSpec): ClassValues {
+export function decodeShard(bytes: Uint8Array, spec: Model.Class): Model.Values {
   const pack = decode<{ labels?: unknown; columns?: unknown }>(bytes, KIND);
   const { labels, columns } = pack.meta;
   if (!isStrings(labels) || !Array.isArray(columns)) throw new Error('invalid shard directory');
   const mismatch = (): Error =>
     new Error(`shard for class '${spec.id}' does not hold the columns its spec declares`);
   if (columns.length !== spec.columns.length) throw mismatch();
-  const values = spec.columns.map((declared, at): Column['values'] => {
+  const values = spec.columns.map((declared, at): Model.Values['values'][number] => {
     const entry = columns[at] as Partial<ColumnMeta> | null;
     if (
       entry === null ||

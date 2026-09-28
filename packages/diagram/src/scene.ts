@@ -1,4 +1,4 @@
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 
 import type { Channels } from '@latkit/gpu';
 
@@ -349,7 +349,7 @@ export class Scene implements PickSource {
    * @param motion - Whether motion is allowed; stored in `motion`.
    * @param now - The time ghosts start fading, in ms.
    */
-  load(netlist: Netlist, grid: number, motion: boolean, now: number): Uint32Array {
+  load(netlist: Document.Netlist, grid: number, motion: boolean, now: number): Uint32Array {
     const next = prepare(netlist, grid);
     const prev = this.current;
     const survivors = new Uint32Array(next.blockCount).fill(NONE);

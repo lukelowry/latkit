@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { createModel, validateTopology } from '../src/index.js';
-import { sampleClass, sampleData, sampleLoader, sampleModel, sampleValues } from './fixture.js';
-
-type Input = Parameters<typeof createModel>[0];
+import { type Model, validateTopology } from '../src/index.js';
+import { Sample, sampleClass, sampleData, sampleModel, sampleValues } from './fixture.js';
 
 describe('validateTopology', () => {
   const topology = () => sampleData().topology;
@@ -51,9 +49,9 @@ describe('validateTopology', () => {
   });
 });
 
-describe('createModel', () => {
-  const build = (patch: Partial<Input>) => () =>
-    createModel({ ...sampleData(), ...sampleLoader(), ...patch });
+describe('Model', () => {
+  const build = (patch: Partial<Model.Description>) => () =>
+    new Sample({ description: { ...sampleData(), ...patch } });
   const withClass = (id: string, patch: Record<string, unknown>) =>
     build({
       classes: sampleData().classes.map((spec) =>
@@ -63,7 +61,7 @@ describe('createModel', () => {
 
   it('exposes the description it was given, and each class by id', () => {
     const model = sampleModel();
-    expect(model.vendor).toBe('test');
+    expect(model.format).toBe('test');
     expect(model.classes.map((spec) => spec.id)).toEqual(['bus', 'branch', 'gen', 'area']);
     expect(model.meta).toEqual({ freqBase: 60, note: 'fixture', live: true, empty: null });
     expect(model.class('gen')).toBe(model.classes[2]);
@@ -73,6 +71,7 @@ describe('createModel', () => {
   it('rejects an inconsistent description at construction', () => {
     const data = sampleData();
     expect(build({ id: '' })).toThrow(/model id/);
+    expect(build({ format: '' })).toThrow(/model format/);
     expect(build({ owners: { vertex: 'nope' } })).toThrow(/owner 'nope'/);
     expect(build({ topology: { ...data.topology, edges: Uint32Array.of(0, 9) } })).toThrow(
       /out of range/,
@@ -132,9 +131,7 @@ describe('createModel', () => {
   it('rejects an unknown class and values that disagree with the spec', async () => {
     await expect(sampleModel().load('nope')).rejects.toThrow(/unknown class/);
     const loading = (values: unknown) =>
-      createModel({ ...sampleData(), ...sampleLoader(), load: async () => values as never }).load(
-        'bus',
-      );
+      new Sample({ values: () => Promise.resolve(values as Model.Values) }).load('bus');
     await expect(loading({ labels: ['x'], values: [] })).rejects.toThrow(/one label per element/);
     await expect(loading({ labels: ['a', 'b', 'c'], values: [] })).rejects.toThrow(
       /every declared column/,
@@ -151,12 +148,10 @@ describe('createModel', () => {
   it('lets one caller abort without cancelling the shared load', async () => {
     let release!: () => void;
     let aborted = false;
-    const model = createModel({
-      ...sampleData(),
-      ...sampleLoader(),
-      load: (id, signal) =>
+    const model = new Sample({
+      values: (id, signal) =>
         new Promise((resolve) => {
-          signal?.addEventListener('abort', () => (aborted = true));
+          signal.addEventListener('abort', () => (aborted = true));
           release = () => resolve(sampleValues(id));
         }),
     });
@@ -172,12 +167,10 @@ describe('createModel', () => {
 
   it('aborts the underlying load once every caller has abandoned it', async () => {
     let aborted = false;
-    const model = createModel({
-      ...sampleData(),
-      ...sampleLoader(),
-      load: (_id, signal) =>
+    const model = new Sample({
+      values: (_id, signal) =>
         new Promise((_resolve, reject) => {
-          signal?.addEventListener('abort', () => {
+          signal.addEventListener('abort', () => {
             aborted = true;
             reject(new DOMException('aborted', 'AbortError'));
           });
@@ -190,7 +183,7 @@ describe('createModel', () => {
     expect(aborted).toBe(true);
   });
 
-  it('delegates bytes to the loader', async () => {
+  it('gives the bytes its format gives', async () => {
     const bytes = await sampleModel().bytes();
     expect(new TextDecoder().decode(bytes)).toBe('{"case":"sample"}');
   });
@@ -210,24 +203,37 @@ describe('elementAt and itemOf', () => {
     expect(model.itemOf({ classId: 'bus', index: 2 })).toEqual({ kind: 'vertex', index: 2 });
     expect(model.itemOf({ classId: 'branch', index: 1 })).toEqual({ kind: 'edge', index: 1 });
     expect(model.itemOf({ classId: 'gen', index: 1 })).toEqual({ kind: 'vertex', index: 2 });
-    const unplaced = createModel({
-      ...sampleData(),
-      ...sampleLoader(),
-      classes: sampleData().classes.map((spec) =>
-        spec.id === 'gen'
-          ? { ...spec, anchor: { kind: 'vertex', index: Uint32Array.of(0xffffffff, 2) } }
-          : spec,
-      ),
+    const unplaced = new Sample({
+      description: {
+        ...sampleData(),
+        classes: sampleData().classes.map((spec) =>
+          spec.id === 'gen'
+            ? { ...spec, anchor: { kind: 'vertex', index: Uint32Array.of(0xffffffff, 2) } }
+            : spec,
+        ),
+      },
     });
     expect(unplaced.itemOf({ classId: 'gen', index: 0 })).toBeNull();
     expect(model.itemOf({ classId: 'area', index: 0 })).toBeNull();
     expect(model.itemOf({ classId: 'gen', index: 2 })).toBeNull();
     expect(model.itemOf({ classId: 'nope', index: 0 })).toBeNull();
   });
+});
 
-  it('answers without the model to hand, as a pick handler detached from it does', () => {
-    const { elementAt, itemOf } = model;
-    expect(elementAt({ kind: 'vertex', index: 2 })).toEqual({ classId: 'bus', index: 2 });
-    expect(itemOf({ classId: 'gen', index: 0 })).toEqual({ kind: 'vertex', index: 0 });
+describe('fields', () => {
+  it('lists what field resolves: number columns, then the signals a recording holds', async () => {
+    const model = sampleModel();
+    expect(model.fields('bus')).toEqual([
+      { ref: { classId: 'bus', kind: 'column', id: 'Vm' }, label: 'Voltage', unit: 'pu' },
+      { ref: { classId: 'bus', kind: 'signal', id: 'Vm' }, label: 'Voltage', unit: 'pu' },
+    ]);
+    expect(model.fields('gen')).toEqual([
+      { ref: { classId: 'gen', kind: 'signal', id: 'P' }, label: 'Power', unit: 'MW' },
+    ]);
+    expect(model.fields('branch')).toEqual([]);
+    expect(model.fields('nowhere')).toEqual([]);
+    expect(model.fields('bus')).toBe(model.fields('bus'));
+    expect(Object.isFrozen(model.fields('bus')[0]!.ref)).toBe(true);
+    expect(await model.field(model.fields('bus')[0]!.ref)).not.toBeNull();
   });
 });

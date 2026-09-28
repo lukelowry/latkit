@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createSeries, type Domain } from '@latkit/model';
+import { type Domain, Engine, Model, Series } from '@latkit/model';
 
 import { createChannels } from '../src/index.js';
 
@@ -75,7 +75,7 @@ function harness(options: { loaded?: boolean; store?: boolean } = {}) {
 
 /** `frames` frames over `elements` items at times 0, 1, 2, …, item `e` of frame `f` being 10f + e. */
 function recording(elements: number, frames: number, sparse?: Uint32Array) {
-  return createSeries({
+  return Series.create({
     signals: ['x', 'y'],
     elementCount: elements,
     time: Float64Array.from({ length: frames }, (_, f) => f),
@@ -359,7 +359,7 @@ describe('followed series', () => {
 
   it('follows the recorded range as it grows, and keeps a domain it was given', async () => {
     const h = harness();
-    const live = createSeries({ signals: ['x'], elementCount: 3 });
+    const live = Series.create({ signals: ['x'], elementCount: 3 });
     h.channels.set('color', { series: live, signal: 0 });
     h.channels.set('height', { series: live, signal: 0 }, [0, 100]);
     expect(h.channels.domain('color')).toEqual([0, 1]);
@@ -370,6 +370,68 @@ describe('followed series', () => {
     expect(h.channels.domain('height')).toEqual([0, 100]);
     expect(h.shown).toHaveBeenCalledWith('color');
     await vi.waitFor(() => expect(h.shown).toHaveBeenCalledWith('height'));
+  });
+
+  it('pads a constant recorded range the way a field domain does', () => {
+    const h = harness();
+    const flat = Series.create({ signals: ['x'], elementCount: 3 });
+    h.channels.set('color', { series: flat, signal: 0 });
+    flat.append({ time: Float64Array.of(0), values: Float64Array.of(4, 4, 4) });
+    expect(h.channels.domain('color')).toEqual([3.5, 4.5]);
+    expect(h.record('color')).toMatchObject({ min: 3.5, scale: 1 });
+  });
+
+  it('follows a field gathered over another item axis, frame by frame', async () => {
+    class Plant extends Model {
+      constructor() {
+        super({
+          format: 'test',
+          id: 'plant',
+          name: 'Plant',
+          topology: { vertexCount: 0, edges: new Uint32Array(0), polylineStart: Uint32Array.of(0) },
+          classes: [
+            {
+              id: 'gen',
+              label: 'Generator',
+              count: 5,
+              columns: [],
+              signals: [{ id: 'P', label: 'Power', unit: 'MW', recorded: true }],
+            },
+          ],
+        });
+      }
+      protected values(): Promise<Model.Values> {
+        return Promise.resolve({ labels: ['a', 'b', 'c', 'd', 'e'], values: [] });
+      }
+      bytes(): Promise<Uint8Array> {
+        return Promise.resolve(new Uint8Array(0));
+      }
+    }
+    class Twice extends Engine {
+      constructor() {
+        super();
+      }
+      protected parse(input: unknown): unknown {
+        return input;
+      }
+      protected execute(_model: Model, _input: unknown, recorder: Engine.Recorder): Promise<void> {
+        recorder.append(Float64Array.of(0, 1), {
+          gen: Float32Array.of(0, 1, 2, 3, 4, 10, 11, 12, 13, 14),
+        });
+        return Promise.resolve();
+      }
+    }
+    const model = new Plant();
+    model.engine = new Twice();
+    const recording = model.record(null);
+    await vi.waitFor(() => expect(recording.state.status).toBe('complete'));
+    const power = (await model.field({ classId: 'gen', kind: 'signal', id: 'P' }, recording))!;
+    const h = harness();
+    h.channels.set('color', power.gather([4, 0xffffffff, 0]));
+    expect(h.channels.domain('color')).toEqual([0, 14]);
+    await vi.waitFor(() => expect(Array.from(h.channels.values('color')!)).toEqual([4, NaN, 0]));
+    h.channels.seek(1);
+    expect(Array.from(h.channels.values('color')!)).toEqual([14, NaN, 10]);
   });
 
   it('keeps what a channel shows when it follows the same signal again', async () => {
@@ -458,14 +520,8 @@ describe('followed series', () => {
 
   it('says when a read fails', async () => {
     const h = harness();
-    const series = recording(3, 4);
-    const failing = {
-      ...series,
-      get state() {
-        return series.state;
-      },
-      read: () => Promise.reject(new Error('gone')),
-    };
+    const failing = recording(3, 4);
+    vi.spyOn(failing, 'read').mockRejectedValue(new Error('gone'));
     h.channels.set('color', { series: failing, signal: 0 });
     await vi.waitFor(() => expect(h.error).toHaveBeenCalledWith('color', new Error('gone')));
   });

@@ -4,7 +4,7 @@
  * including what the router and the scene draw around it (routes, labels, group frames).
  */
 
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 
 import { textWidth } from '../../src/geometry.js';
 import { NONE, type Prepared } from '../../src/prepare.js';
@@ -15,7 +15,7 @@ import { build, CLASSES, type NetSpec } from './netlists.js';
 import { contextOf, Recorder } from './route-scenes.js';
 
 /** `count` copies of `netlist` in one netlist; keys and labels gain a `#copy` suffix. */
-export function tile(netlist: Netlist, count: number): Netlist {
+export function tile(netlist: Document.Netlist, count: number): Document.Netlist {
   const blocks = netlist.blockCount;
   const ports = netlist.portStart[blocks]!;
   const nets = netlist.netStart.length - 1;
@@ -71,7 +71,7 @@ export function tile(netlist: Netlist, count: number): Netlist {
 }
 
 /** A grouped steam plant (GENROU, TGOV1, IEEET1, bus tag) with its blocks listed in `order`. */
-export function steamIn(order: readonly ('GENROU' | 'TGOV1' | 'IEEET1')[]): Netlist {
+export function steamIn(order: readonly ('GENROU' | 'TGOV1' | 'IEEET1')[]): Document.Netlist {
   const at = (cls: string): number => order.indexOf(cls as 'GENROU');
   const nets: NetSpec[] = [
     {
@@ -178,7 +178,7 @@ export function straight(prepared: Prepared, positions: Float32Array, net: numbe
 }
 
 /** The net labeled `label`. */
-export function netNamed(netlist: Netlist, label: string): number {
+export function netNamed(netlist: Document.Netlist, label: string): number {
   const net = netlist.netLabel?.indexOf(label) ?? -1;
   if (net < 0) throw new Error(`fixture: no net ${label}`);
   return net;
@@ -307,7 +307,7 @@ export function overlappingPair(
 }
 
 /** The first block titled `title` at or after block `from`. */
-export function blockTitled(netlist: Netlist, title: string, from = 0): number {
+export function blockTitled(netlist: Document.Netlist, title: string, from = 0): number {
   const block = netlist.blockTitle?.indexOf(title, from) ?? -1;
   if (block < 0) throw new Error(`fixture: no block ${title}`);
   return block;

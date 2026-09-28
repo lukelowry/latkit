@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 
-import type { Domain, Item, Series } from '@latkit/model';
+import type { Domain, Model, Series } from '@latkit/model';
 import {
   bakeColormap,
   createAttachment,
@@ -83,9 +83,9 @@ export type { Options } from './options.js';
  */
 export type Events = {
   /** Hovered vertex or edge, or null after hover exit. */
-  hover: Item | null;
+  hover: Model.Item | null;
   /** User-selected vertex or edge, or null after a clearing tap or Escape. */
-  select: Item | null;
+  select: Model.Item | null;
   /**
    * A context request on the canvas, released after right-drag disambiguation, with what a menu
    * needs: where to open and what it is about.
@@ -100,7 +100,7 @@ export type Events = {
     readonly keyboard: boolean;
     readonly clientX: number;
     readonly clientY: number;
-    readonly items: readonly Item[];
+    readonly items: readonly Model.Item[];
   };
   /** Whether the camera sits at the fit view, after a fit transition or gesture. */
   fit: boolean;
@@ -243,12 +243,12 @@ export interface Network {
    * `vertexVisible`, and `edgeVisible` channels ignore it. A null height
    * domain scans the finite extent of the values.
    *
-   * A channel can instead follow one signal of a `Series`, such as a model `Field`, with one
-   * element per vertex or edge, or a sparse series whose unrecorded items take NaN. {@link Network.seek} picks the frame it
-   * shows, and a null `domain` follows the signal's recorded range as the series appends. Every
-   * channel but `vertexPosition` can follow a series. Channels following one signal share its
-   * frames; a new one shows nothing until its first frame is read, while binding the signal a
-   * channel already follows keeps what it shows.
+   * A channel can instead follow one signal of a `Series`, such as a model's field, with one
+   * element per vertex or edge, or a sparse series whose unrecorded items take NaN.
+   * {@link Network.seek} picks the frame it shows, and a null `domain` follows the signal's
+   * recorded range as the series appends. Every channel but `vertexPosition` can follow a series.
+   * Channels following one signal share its frames; a new one shows nothing until its first frame
+   * is read, while binding the signal a channel already follows keeps what it shows.
    *
    * `vertexPosition` is where every vertex sits, as interleaved `x, y` pairs in topology
    * coordinates. It is seeded from the topology at {@link Network.load} and rebinding it moves
@@ -315,7 +315,7 @@ export interface Network {
    * @param radiusPx - Optional search radius in CSS pixels.
    * @returns Matching visible items in pick priority order.
    */
-  hitTest(clientX: number, clientY: number, radiusPx?: number): readonly Item[];
+  hitTest(clientX: number, clientY: number, radiusPx?: number): readonly Model.Item[];
   /**
    * Project an item to a client-space CSS-pixel anchor without changing focus.
    *
@@ -325,7 +325,7 @@ export interface Network {
    * @param item - Vertex or edge identity in the loaded topology.
    * @returns The projected client coordinate, or null for an invalid or unprojectable item.
    */
-  locate(item: Item): readonly [clientX: number, clientY: number] | null;
+  locate(item: Model.Item): readonly [clientX: number, clientY: number] | null;
   /**
    * The item plus what touches it in the loaded topology: an edge with both
    * endpoints, a vertex with its incident edges and their far ends.
@@ -333,13 +333,13 @@ export interface Network {
    * @param item - Vertex or edge identity in the loaded topology.
    * @returns The neighborhood, beginning with `item`; empty before a topology is loaded.
    */
-  neighborhood(item: Item): readonly Item[];
+  neighborhood(item: Model.Item): readonly Model.Item[];
   /**
    * Select an item, or clear the selection with `null`, without emitting `select`.
    *
    * @param item - Vertex or edge identity, or `null` to clear.
    */
-  select(item: Item | null): void;
+  select(item: Model.Item | null): void;
   /**
    * Report the pointer from outside the canvas, or its absence with `null`.
    *
@@ -389,7 +389,7 @@ export interface Network {
    * @param items - Vertex and edge identities to frame.
    * @param animate - If true, animate toward the subset view.
    */
-  fit(items: readonly Item[], animate?: boolean): void;
+  fit(items: readonly Model.Item[], animate?: boolean): void;
   /**
    * Bring an item into view without changing selection, projection, or zoom.
    *
@@ -404,7 +404,7 @@ export interface Network {
    * @returns True for a valid item, including an already-visible no-op.
    */
   reveal(
-    item: Item,
+    item: Model.Item,
     options?: { readonly neighbors?: boolean; readonly animate?: boolean },
   ): boolean;
   /**
@@ -508,7 +508,7 @@ const DEFAULT_CONTROLLER_DEPS: ControllerDeps = {
 };
 
 /** Shared allocation-free result for invalid or empty public queries. */
-const NO_ITEMS: readonly Item[] = Object.freeze([]);
+const NO_ITEMS: readonly Model.Item[] = Object.freeze([]);
 
 /** Inset that keeps a keyboard context anchor inside the canvas. */
 const CONTEXT_INSET_PX = 8;
@@ -622,7 +622,7 @@ function deferred<T>(): Deferred<T> {
 }
 
 /** Item identity from a pick result. */
-function itemOf(hit: PickResult): Item {
+function itemOf(hit: PickResult): Model.Item {
   return { kind: hit[0], index: hit[1] };
 }
 
@@ -743,9 +743,9 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     readonly scene: number;
   }
   /** Focus change awaiting a successful frame submission. */
-  let pendingHoverNotice: VersionedNotice<Item | null> | undefined;
+  let pendingHoverNotice: VersionedNotice<Model.Item | null> | undefined;
   /** Latest submitted focus change awaiting post-tick delivery. */
-  let readyHoverNotice: VersionedNotice<Item | null> | undefined;
+  let readyHoverNotice: VersionedNotice<Model.Item | null> | undefined;
   /** Fit-state transition awaiting a successful frame submission. */
   let pendingFitNotice: VersionedNotice<boolean> | undefined;
   /** Latest submitted fit-state transition awaiting post-tick delivery. */
@@ -813,7 +813,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   const positions = (): Float32Array | null => channels.values('vertexPosition');
 
   /** Resolve viewport state and projection-aware bounds for item camera commands. */
-  const resolveItemBounds = (items: readonly Item[]) => {
+  const resolveItemBounds = (items: readonly Model.Item[]) => {
     const view = vp();
     const hasViewport =
       Number.isFinite(view.w) && Number.isFinite(view.h) && view.w > 0 && view.h > 0;
@@ -841,7 +841,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   }
 
   /** Whether an item's anchor already sits inside the reveal inset, clamped to a usable band. */
-  const insideRevealInset = (item: Item, view: Viewport): boolean => {
+  const insideRevealInset = (item: Model.Item, view: Viewport): boolean => {
     const location = picker.locateDetail([item.kind, item.index], view);
     if (!location?.visible) return false;
     const maximum = Math.max(0, (Math.min(view.w, view.h) - 2) / 2);
@@ -867,7 +867,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   });
 
   /** The selected item, if any. */
-  function selectedItem(): Item | null {
+  function selectedItem(): Model.Item | null {
     if (focus.selectedVertex >= 0) return { kind: 'vertex', index: focus.selectedVertex };
     if (focus.selectedEdge >= 0) return { kind: 'edge', index: focus.selectedEdge };
     return null;
@@ -1014,10 +1014,10 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
    * The neighbor lying most in a unit screen direction: a vertex walks to the far end of one
    * of its edges, an edge goes to one of its endpoints. Costs one locate per neighbor.
    */
-  function stepAlong(from: Item, dx: number, dy: number): Item | null {
+  function stepAlong(from: Model.Item, dx: number, dy: number): Model.Item | null {
     const origin = api.locate(from);
     if (!origin) return null;
-    let best: Item | null = null;
+    let best: Model.Item | null = null;
     let bestCos = 0;
     for (const item of api.neighborhood(from)) {
       if (item.kind === from.kind && item.index === from.index) continue;
@@ -1037,7 +1037,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   }
 
   /** The visible item nearest the canvas center, where a keyboard walk starts from nothing. */
-  function nearestToCenter(): Item | null {
+  function nearestToCenter(): Model.Item | null {
     const view = vp();
     if (view.w <= 0 || view.h <= 0) return null;
     const hit = picker.pick(
@@ -1474,7 +1474,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       return false;
     },
 
-    fit(itemsOrAnimate: readonly Item[] | boolean = false, animate: boolean = false) {
+    fit(itemsOrAnimate: readonly Model.Item[] | boolean = false, animate: boolean = false) {
       if (!topology) return;
 
       if (typeof itemsOrAnimate === 'boolean') {
@@ -1930,7 +1930,7 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
   }
 
   /** Applies programmatic selection without emitting a select event. */
-  function applySelection(item: Item | null): void {
+  function applySelection(item: Model.Item | null): void {
     const changed = item ? focus.select(item.kind, item.index) : focus.select(null);
     if (changed) repaint();
   }

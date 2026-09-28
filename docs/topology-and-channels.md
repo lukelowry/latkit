@@ -4,7 +4,7 @@ Use this guide when adapting real network data to `@latkit/network`.
 
 ## Topology arrays
 
-`Topology` is the CPU-side graph shape passed to `network.load()`.
+`Model.Topology` is the CPU-side graph shape passed to `network.load()`.
 
 | Field             | Length            | Meaning                                              |
 | ----------------- | ----------------- | ---------------------------------------------------- |
@@ -23,7 +23,7 @@ but coordinates must still fit those bounds.
 For straight edges with no bend points, use a zero-filled `polylineStart` with `edgeCount + 1` entries:
 
 ```ts
-const topology: Topology = {
+const topology: Model.Topology = {
   vertexCount: 4,
   vertexCoords: new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]),
   edges: new Uint32Array([0, 1, 1, 2, 2, 3]),
@@ -34,7 +34,7 @@ const topology: Topology = {
 For a bent edge, place the intermediate points in `polylinePoints` and use `polylineStart` to mark the range for each edge:
 
 ```ts
-const topology: Topology = {
+const topology: Model.Topology = {
   vertexCount: 2,
   vertexCoords: new Float32Array([-96, 30, -94, 31]),
   edges: new Uint32Array([0, 1]),
@@ -98,7 +98,7 @@ The third argument is the input domain. Pass `null` to auto-scan height values. 
 
 ## Channels over time
 
-A channel can follow one signal of a `Series`, one element per vertex or edge, instead of holding an array; a sparse series leaves the items it never recorded with no value. A model `Field` is such a binding already, and a column field is a sealed series of one frame, whose window takes two slots. `seek(time)` shows every such channel at the playhead, each item taking its latest sample at or before it. A null domain follows the signal's recorded range as the series appends.
+A channel can follow one signal of a `Series`, one element per vertex or edge, instead of holding an array; a sparse series leaves the items it never recorded with no value. A model's field is such a binding already, and a column field is a sealed series of one frame, whose window takes two slots. `seek(time)` shows every such channel at the playhead, each item taking its latest sample at or before it. A null domain follows the signal's recorded range as the series appends.
 
 ```ts
 const vm = await model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }, recording);

@@ -24,7 +24,8 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --project @latkit/model"
+    "test": "vitest run --project @latkit/model",
+    "bench": "vitest bench --run --project @latkit/model"
   },
   "publishConfig": {
     "access": "public"

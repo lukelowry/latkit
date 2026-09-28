@@ -10,54 +10,13 @@
  */
 
 import { breathe } from './breathe.js';
-import type { Column } from './model.js';
+import type { Model } from './model.js';
 
-/** Which column orders the rows, by its index in `Grid.columns` or null for the label, and how. */
-interface GridSort {
-  readonly column: number | null;
-  readonly dir: 'asc' | 'desc';
-}
+/** A column with its values: a class's own, or a signal sampled at the grid's time. */
+type Column = Model.Data['columns'][number];
 
-/** A filtered, sorted slice of rows plus the filtered total, for a scroll spacer. */
-interface GridWindow {
-  readonly rows: readonly {
-    readonly index: number;
-    readonly label: string;
-    readonly cells: readonly string[];
-  }[];
-  readonly total: number;
-}
-
-/** A query engine over one class. */
-export interface Grid {
-  /**
-   * What each cell of a row shows, in order: the class's columns, then the signals its recording
-   * holds at the grid's time.
-   */
-  readonly columns: readonly {
-    readonly kind: 'column' | 'signal';
-    readonly id: string;
-    readonly label: string;
-    readonly unit?: string;
-  }[];
-  /** Rows `offset` through `offset + limit` under `query` and `sort`. */
-  window(
-    query: string,
-    sort: GridSort | null,
-    offset: number,
-    limit: number,
-    signal?: AbortSignal,
-  ): Promise<GridWindow>;
-  /** The display position of element `index` under `query` and `sort`, or null when filtered out. */
-  locate(
-    index: number,
-    query: string,
-    sort: GridSort | null,
-    signal?: AbortSignal,
-  ): Promise<number | null>;
-  /** Drop every cache; pending and later queries reject with `AbortError`. */
-  dispose(): void;
-}
+/** One window of rows. */
+type GridWindow = Awaited<ReturnType<Model.Grid['window']>>;
 
 const CHUNK = 4096;
 
@@ -143,7 +102,7 @@ export function createGrid(
   labels: readonly string[],
   declared: readonly Column[],
   signals: readonly Column[] = [],
-): Grid {
+): Model.Grid {
   const count = labels.length;
   const columns = [...declared, ...signals];
   for (const [kind, list] of [
@@ -161,7 +120,7 @@ export function createGrid(
       }
     }
   }
-  const described: Grid['columns'] = Object.freeze(
+  const described: Model.Grid['columns'] = Object.freeze(
     columns.map((column, at) =>
       Object.freeze({
         kind: at < declared.length ? ('column' as const) : ('signal' as const),
@@ -221,7 +180,7 @@ export function createGrid(
   }
 
   /** Display order under one sort, or null for an unknown column. */
-  async function orderFor(sort: GridSort): Promise<Uint32Array | null> {
+  async function orderFor(sort: Model.GridSort): Promise<Uint32Array | null> {
     const dir = sort.dir === 'asc' ? 1 : -1;
     const key = `${sort.column === null ? 'label' : `column:${sort.column}`}\0${sort.dir}`;
     const cached = orders.get(key);
@@ -267,7 +226,7 @@ export function createGrid(
   /** Source indices in display order, or null for natural order. */
   async function displayOrder(
     query: string,
-    sort: GridSort | null,
+    sort: Model.GridSort | null,
     signal?: AbortSignal,
   ): Promise<Uint32Array | null> {
     if (disposed) throw abortError();

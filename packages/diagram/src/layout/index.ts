@@ -3,7 +3,7 @@
  * positions the diagram shows.
  */
 
-import { validateNetlist, type Netlist } from '@latkit/model';
+import { type Document, validateNetlist } from '@latkit/model';
 
 import { prepare } from '../prepare.js';
 import { arrangeAll } from './arrange.js';
@@ -27,7 +27,10 @@ const DEFAULT_GRID = 8;
  * @throws Error when the netlist is invalid.
  * @throws RangeError when `gridPitch` is not a finite number greater than 0.
  */
-export function arrange(netlist: Netlist, options?: { readonly gridPitch?: number }): Float32Array {
+export function arrange(
+  netlist: Document.Netlist,
+  options?: { readonly gridPitch?: number },
+): Float32Array {
   const grid: unknown = options?.gridPitch ?? DEFAULT_GRID;
   if (typeof grid !== 'number' || !Number.isFinite(grid) || grid <= 0) {
     throw new RangeError('diagram arrange gridPitch must be a finite number greater than 0');

@@ -1,6 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import type { Domain, Item, Series, Topology } from '@latkit/model';
+import type { Domain, Model, Series } from '@latkit/model';
 
 import * as entry from '../src/index.js';
 import type {
@@ -36,7 +36,7 @@ describe('network package entrypoint', () => {
     expectTypeOf<Network['attached']>().toEqualTypeOf<boolean>();
     expectTypeOf<Network['canvas']>().toEqualTypeOf<HTMLCanvasElement | null>();
     expectTypeOf<Parameters<Network['load']>>().toEqualTypeOf<
-      [topology: Topology, options?: { readonly fit?: boolean }]
+      [topology: Model.Topology, options?: { readonly fit?: boolean }]
     >();
     expectTypeOf<Parameters<Network['setProjection']>>().toEqualTypeOf<
       [mode: Projection, fallback?: boolean]
@@ -46,8 +46,8 @@ describe('network package entrypoint', () => {
       readonly family: 'plane' | 'globe';
       readonly cause: unknown;
     }>();
-    expectTypeOf<Events['hover']>().toEqualTypeOf<Item | null>();
-    expectTypeOf<Events['select']>().toEqualTypeOf<Item | null>();
+    expectTypeOf<Events['hover']>().toEqualTypeOf<Model.Item | null>();
+    expectTypeOf<Events['select']>().toEqualTypeOf<Model.Item | null>();
     expectTypeOf<Events['fit']>().toEqualTypeOf<boolean>();
     expectTypeOf<Events['attached']>().toEqualTypeOf<boolean>();
     expectTypeOf<Events['painted']>().toEqualTypeOf<boolean>();
@@ -72,7 +72,7 @@ describe('network package entrypoint', () => {
       readonly keyboard: boolean;
       readonly clientX: number;
       readonly clientY: number;
-      readonly items: readonly Item[];
+      readonly items: readonly Model.Item[];
     }>();
     expectTypeOf<Parameters<Network['rotateBy']>>().toEqualTypeOf<[dx: number, dy: number]>();
     expectTypeOf<ReturnType<Network['getPose']>>().toEqualTypeOf<Pose | null>();
@@ -99,7 +99,7 @@ describe('network package entrypoint', () => {
       readonly cause: unknown;
     }>();
     expectTypeOf<ReturnType<Network['getChannelDomain']>>().toEqualTypeOf<Domain | null>();
-    expectTypeOf<Parameters<Network['select']>>().toEqualTypeOf<[item: Item | null]>();
+    expectTypeOf<Parameters<Network['select']>>().toEqualTypeOf<[item: Model.Item | null]>();
     expectTypeOf<Parameters<Network['orbit']>>().toEqualTypeOf<[active: boolean]>();
     expectTypeOf<Parameters<Network['reveal']>[1]>().toEqualTypeOf<
       { readonly neighbors?: boolean; readonly animate?: boolean } | undefined
@@ -111,7 +111,7 @@ describe('network package entrypoint', () => {
     expectTypeOf<Options['wheel']>().toEqualTypeOf<'zoom' | 'modifier' | undefined>();
     expectTypeOf<Parameters<Network['setBorders']>[0]>().toEqualTypeOf<Borders | null>();
     expectTypeOf<'element' extends keyof Network ? true : false>().toEqualTypeOf<false>();
-    expectTypeOf<Item>().toEqualTypeOf<{
+    expectTypeOf<Model.Item>().toEqualTypeOf<{
       readonly kind: 'vertex' | 'edge';
       readonly index: number;
     }>();

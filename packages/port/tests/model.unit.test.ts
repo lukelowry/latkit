@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { RunUpdate } from '@latkit/model';
+import type { Engine } from '@latkit/model';
 
-import { check, connect, connectModel, loopback, protocol, serveModel } from '../src/index.js';
-import { collect, fixture, FRAMES, settle, withSource } from './fixture.js';
+import { connect, connectModel, loopback, protocol, serveModel } from '../src/index.js';
+import { ended, Fixture, fixture, FRAMES, Scripted, settle } from './fixture.js';
 
 describe('model service', () => {
   it('serves a model across the port, its classes loading as they are asked for', async () => {
@@ -11,21 +11,18 @@ describe('model service', () => {
     serveModel(server, fixture('Fixture'));
 
     const model = await connectModel(client);
-    expect(model).toMatchObject({ vendor: 'test', id: 'fixture', name: 'Fixture' });
+    expect(model).toMatchObject({ format: 'test', id: 'fixture', name: 'Fixture' });
     expect(model.classes.map((spec) => spec.id)).toEqual(['bus', 'line']);
     expect((await model.load('bus')).labels).toEqual(['Bus 1', 'Bus 2']);
     expect(new TextDecoder().decode(await model.bytes())).toBe('Fixture');
-    expect(model.run).toBeUndefined();
+    expect(model.engine).toBeNull();
     model.close();
   });
 
   it('serves a model that is still opening, so no early request is lost', async () => {
     const [server, client] = loopback();
     let release!: () => void;
-    serveModel(
-      server,
-      new Promise<ReturnType<typeof fixture>>((resolve) => (release = () => resolve(fixture()))),
-    );
+    serveModel(server, new Promise<Fixture>((resolve) => (release = () => resolve(fixture()))));
     const opening = connectModel(client);
     await settle();
     release();
@@ -43,14 +40,16 @@ describe('model service', () => {
     const [server, client] = loopback();
     serveModel(
       server,
-      withSource(fixture(), (own) => ({
-        ...own,
-        core: async (_signal, progress) => {
-          progress?.(5, 10);
-          progress?.(10, 10);
-          return own.core();
-        },
-      })),
+      new Fixture('Fixture', {
+        source: (own) => ({
+          ...own,
+          core: async (_signal, progress) => {
+            progress?.(5, 10);
+            progress?.(10, 10);
+            return own.core();
+          },
+        }),
+      }),
     );
     const progress = vi.fn();
     await connectModel(client, { progress });
@@ -62,18 +61,12 @@ describe('model service', () => {
 
   it('closing the model closes the service on both sides', async () => {
     const [server, client] = loopback();
-    const closed = vi.fn();
     const onClose = vi.fn();
-    serveModel(
-      server,
-      withSource(fixture(), (own) => ({ ...own, close: closed })),
-      { onClose },
-    );
+    serveModel(server, fixture(), { onClose });
     const model = await connectModel(client);
     model.close();
     await expect(model.bytes()).rejects.toThrow(/closed/);
     await settle();
-    expect(closed).toHaveBeenCalledOnce();
     expect(onClose).toHaveBeenCalledOnce();
   });
 
@@ -82,11 +75,10 @@ describe('model service', () => {
     let release!: () => void;
     const stop = serveModel(
       server,
-      withSource(fixture(), (own) => ({
-        ...own,
+      new Fixture('Fixture', {
         bytes: () =>
           new Promise<Uint8Array>((resolve) => (release = () => resolve(new Uint8Array()))),
-      })),
+      }),
     );
     const model = await connectModel(client);
     const pending = model.bytes();
@@ -101,12 +93,11 @@ describe('model service', () => {
     const [server, client] = loopback();
     serveModel(
       server,
-      withSource(fixture(), (own) => ({
-        ...own,
+      new Fixture('Fixture', {
         bytes: async () => {
           throw new Error('disk on fire');
         },
-      })),
+      }),
     );
     const model = await connectModel(client);
     await expect(model.bytes()).rejects.toThrow('disk on fire');
@@ -124,179 +115,232 @@ describe('model service', () => {
       'model request.op must be one of open, class, bytes',
     );
     await expect(raw.call('open')).rejects.toThrow('model request must be an object');
-    expect(await raw.call({ op: 'open' })).toMatchObject({ runnable: false });
-    const runs = connect(client, protocol<unknown, unknown>('model:run'));
-    await expect(runs.call('not bytes')).rejects.toThrow('model:run request must be a Uint8Array');
+    expect(await raw.call({ op: 'open' })).toMatchObject({ recordable: false });
   });
 
   it('rejects the connect when the model cannot produce its core', async () => {
     const [server, client] = loopback();
     serveModel(
       server,
-      withSource(fixture(), (own) => ({
-        ...own,
-        core: async () => {
-          throw new Error('no core');
-        },
-      })),
+      new Fixture('Fixture', {
+        source: (own) => ({
+          ...own,
+          core: async () => {
+            throw new Error('no core');
+          },
+        }),
+      }),
     );
     await expect(connectModel(client)).rejects.toThrow('no core');
   });
 });
 
-const COMMAND = new TextEncoder().encode('{}');
-
-describe('model service: runs', () => {
-  it('runs on the served engine, filling a recording on the far side', async () => {
+describe('model service: recordings', () => {
+  it('records with the served engine, filling a recording on the far side', async () => {
     const [server, client] = loopback();
-    const engine = vi.fn(async function* (_command: Uint8Array): AsyncIterable<RunUpdate> {
-      yield { type: 'queued', ahead: 2 };
-      yield { type: 'running' };
-      yield FRAMES;
-      yield { type: 'log', level: 'warn', message: 'step halved' };
-      yield { type: 'done' };
+    const engine = new Scripted(async (recorder) => {
+      recorder.wait(2);
+      recorder.start();
+      recorder.declare({ span: [0, 1], expectedFrames: 2 });
+      await recorder.ready;
+      recorder.append(FRAMES.time.slice(), { bus: FRAMES.values.bus.slice() });
+      recorder.log('warn', 'step halved');
     });
     serveModel(server, fixture('Fixture', engine));
     const model = await connectModel(client);
+    expect(model.engine).not.toBeNull();
 
-    const run = model.run!(COMMAND, { id: 'study' });
-    expect(await collect(run)).toEqual([
-      { type: 'queued', ahead: 2 },
-      { type: 'running' },
-      FRAMES,
-      { type: 'log', level: 'warn', message: 'step halved' },
-      { type: 'done' },
-    ]);
-    expect(new TextDecoder().decode(engine.mock.calls[0]![0])).toBe('{}');
-    expect(run.recording.state).toEqual({ frameCount: 1, timeRange: [0.5, 0.5], live: false });
-    const bus = (await run.recording.series('bus'))!;
-    expect([...bus.state.ranges!]).toEqual([1, 2]);
+    const heard: string[] = [];
+    const recording = model.record({ app: 'dynamic' }, { id: 'study', label: 'Study' });
+    recording.on('change', () => heard.push(`${recording.state.status}:${recording.state.ahead}`));
+    await ended(recording);
+    expect(engine.inputs).toEqual([{ app: 'dynamic' }]);
+    expect(recording).toMatchObject({
+      id: 'study',
+      label: 'Study',
+      span: [0, 1],
+      expectedFrames: 2,
+    });
+    expect(recording.state).toEqual({
+      status: 'complete',
+      ahead: 0,
+      frameCount: 1,
+      timeRange: [0.5, 0.5],
+      error: null,
+    });
+    expect(recording.log).toEqual([{ level: 'warn', message: 'step halved' }]);
+    expect(heard).toContain('waiting:2');
+    expect([...recording.series('bus')!.state.ranges!]).toEqual([1, 2]);
   });
 
-  it('leaves the caller its command, so the same plan can run again', async () => {
-    const transfers: ArrayBuffer[][] = [];
+  it('hands a recording’s frames over without a copy, and leaves the caller its input', async () => {
     const [server, client] = loopback();
+    const transfers: ArrayBuffer[][] = [];
     const spied = {
-      ...client,
+      ...server,
       post: (message: unknown, transfer: readonly ArrayBuffer[] = []) => {
         transfers.push([...transfer]);
-        client.post(message, transfer);
+        server.post(message, transfer);
       },
     };
+    const time = Float64Array.of(0);
+    const values = Float32Array.of(3, 4);
+    serveModel(
+      spied,
+      fixture('Fixture', new Scripted(async (recorder) => recorder.append(time, { bus: values }))),
+    );
+    const clientTransfers: ArrayBuffer[][] = [];
+    const model = await connectModel({
+      ...client,
+      post: (message: unknown, transfer: readonly ArrayBuffer[] = []) => {
+        clientTransfers.push([...transfer]);
+        client.post(message, transfer);
+      },
+    });
+    const input = { edits: Uint8Array.of(1, 2, 3) };
+    const recording = model.record(input);
+    await ended(recording);
+    expect(transfers.flat()).toEqual(expect.arrayContaining([time.buffer, values.buffer]));
+    expect(input.edits.byteLength).toBe(3);
+    expect(clientTransfers.flat()).toHaveLength(0);
+    expect([...(await recording.series('bus')!.read(0, all(1, 2))).values]).toEqual([3, 4]);
+  });
+
+  it('fails a recording with why the served engine refused its input or failed', async () => {
+    const [server, client] = loopback();
     serveModel(
       server,
-      fixture('Fixture', async function* () {
-        yield { type: 'done' } as const;
-      }),
-    );
-    const model = await connectModel(spied);
-    const command = new TextEncoder().encode('{"again":true}');
-    await collect(model.run!(command, { id: 'first' }));
-    await collect(model.run!(command, { id: 'second' }));
-    expect(command.byteLength).toBe(14);
-    expect(transfers.flat()).toHaveLength(0);
-  });
-
-  it('runs a structured command the served side checks', async () => {
-    type Command = { readonly app: string; readonly params?: Uint8Array };
-    const isCommand = check.object<Command>({
-      app: check.string,
-      params: check.optional(check.bytes),
-    });
-    const [server, client] = loopback();
-    const engine = vi.fn(async function* (_command: Command): AsyncIterable<RunUpdate> {
-      yield { type: 'done' };
-    });
-    const model = fixture<Command>('Fixture', engine);
-    const _unchecked = () =>
-      // @ts-expect-error A structured command is served only with its check.
-      serveModel<Command>(server, model);
-    serveModel<Command>(server, model, { command: isCommand });
-    const remote = await connectModel<Command>(client);
-    const params = Uint8Array.of(1, 2, 3);
-    expect(await collect(remote.run!({ app: 'powerflow', params }, { id: 'run' }))).toEqual([
-      { type: 'done' },
-    ]);
-    expect(engine.mock.calls[0]![0]).toEqual({ app: 'powerflow', params });
-    const raw = connect(client, protocol<unknown, RunUpdate>('model:run'));
-    await expect(collect(raw.stream({ app: 7 }))).rejects.toThrow(
-      'model:run request.app must be a string',
-    );
-  });
-
-  it('awaits the port drain between updates, so backpressure reaches the wire', async () => {
-    const [server, client] = loopback();
-    const drain = vi.fn(async () => {});
-    serveModel(
-      { ...server, drain },
-      fixture('Fixture', async function* () {
-        yield { type: 'running' } as const;
-        yield { type: 'done' } as const;
-      }),
+      fixture(
+        'Fixture',
+        new Scripted(
+          async (recorder) => {
+            recorder.append(FRAMES.time.slice(), { bus: FRAMES.values.bus.slice() });
+            throw new Error('engine crashed');
+          },
+          {
+            parse: (input) => {
+              if (input !== 'good') throw new TypeError('the engine takes only good input');
+              return input;
+            },
+          },
+        ),
+      ),
     );
     const model = await connectModel(client);
-    await collect(model.run!(COMMAND, { id: 'run' }));
-    expect(drain).toHaveBeenCalledTimes(2);
+    const refused = model.record('bad');
+    await ended(refused);
+    expect(refused.state).toMatchObject({
+      status: 'failed',
+      error: 'the engine takes only good input',
+    });
+    const crashed = model.record('good');
+    await ended(crashed);
+    expect(crashed.state).toMatchObject({
+      status: 'failed',
+      error: 'engine crashed',
+      frameCount: 1,
+    });
   });
 
-  it('aborts the engine when the run is cancelled, and ends it cancelled', async () => {
+  it('stops the served engine when the far recording stops, keeping what arrived', async () => {
     const [server, client] = loopback();
     let aborted = false;
     serveModel(
       server,
-      fixture('Fixture', async function* (_command, signal) {
-        yield { type: 'running' } as const;
-        await new Promise<void>((resolve) =>
-          signal.addEventListener('abort', () => resolve(), { once: true }),
-        );
-        aborted = true;
-      }),
+      fixture(
+        'Fixture',
+        new Scripted(async (recorder) => {
+          recorder.append(FRAMES.time.slice(), { bus: FRAMES.values.bus.slice() });
+          await new Promise<void>((resolve) =>
+            recorder.signal.addEventListener('abort', () => resolve(), { once: true }),
+          );
+          aborted = true;
+          recorder.signal.throwIfAborted();
+        }),
+      ),
     );
     const model = await connectModel(client);
-    const controller = new AbortController();
-    const updates: RunUpdate[] = [];
-    for await (const update of model.run!(COMMAND, { id: 'run', signal: controller.signal })) {
-      updates.push(update);
-      controller.abort();
-    }
-    expect(updates).toEqual([{ type: 'running' }, { type: 'cancelled' }]);
+    const recording = model.record(null);
+    await vi.waitFor(() => expect(recording.state.frameCount).toBe(1));
+    recording.stop();
+    expect(recording.state.status).toBe('stopped');
     await vi.waitFor(() => expect(aborted).toBe(true));
+    expect(recording.state).toMatchObject({ status: 'stopped', frameCount: 1 });
   });
 
-  it('ends a run with the error its engine throws', async () => {
+  it('queues what the served engine cannot take at once, and each learns its place', async () => {
     const [server, client] = loopback();
+    const finish: (() => void)[] = [];
     serveModel(
       server,
-      fixture('Fixture', async function* () {
-        yield { type: 'running' } as const;
-        throw new Error('engine crashed');
-      }),
+      fixture('Fixture', new Scripted(() => new Promise<void>((resolve) => finish.push(resolve)))),
     );
     const model = await connectModel(client);
-    await expect(collect(model.run!(COMMAND, { id: 'run' }))).rejects.toThrow('engine crashed');
+    const first = model.record(1);
+    const second = model.record(2);
+    await vi.waitFor(() => expect(second.state).toMatchObject({ status: 'waiting', ahead: 0 }));
+    expect(first.state.status).toBe('recording');
+    finish.shift()!();
+    await ended(first);
+    await vi.waitFor(() => expect(second.state.status).toBe('recording'));
+    finish.shift()!();
+    await ended(second);
+    expect(second.state.status).toBe('complete');
   });
 
-  it('refuses a second run while one is live', async () => {
+  it('awaits the port drain between recorder calls, so backpressure reaches the wire', async () => {
     const [server, client] = loopback();
-    let finish!: () => void;
+    const drain = vi.fn(async () => {});
     serveModel(
-      server,
-      fixture('Fixture', async function* () {
-        yield { type: 'running' } as const;
-        await new Promise<void>((resolve) => {
-          finish = resolve;
-        });
-        yield { type: 'done' } as const;
-      }),
+      { ...server, drain },
+      fixture(
+        'Fixture',
+        new Scripted(async (recorder) => {
+          recorder.log('info', 'a');
+          recorder.log('info', 'b');
+        }),
+      ),
     );
     const model = await connectModel(client);
-    const first = model.run!(COMMAND, { id: 'first' })[Symbol.asyncIterator]();
-    expect((await first.next()).value).toEqual({ type: 'running' });
-    await expect(collect(model.run!(COMMAND, { id: 'second' }))).rejects.toThrow(
-      /already in progress/,
+    await ended(model.record(null));
+    // Start, two lines: three calls, each awaited before the next crosses.
+    expect(drain).toHaveBeenCalledTimes(3);
+  });
+
+  it('tells an engine it is not ready while its calls wait on the port', async () => {
+    const [server, client] = loopback();
+    let release!: () => void;
+    let blocked = true;
+    const readiness: boolean[] = [];
+    serveModel(
+      {
+        ...server,
+        drain: () =>
+          blocked ? new Promise<void>((resolve) => (release = () => resolve())) : Promise.resolve(),
+      },
+      fixture(
+        'Fixture',
+        new Scripted(async (recorder: Engine.Recorder) => {
+          for (let i = 0; i < 40; i++) recorder.log('info', String(i));
+          let ready = false;
+          void recorder.ready.then(() => (ready = true));
+          await settle();
+          readiness.push(ready);
+          blocked = false;
+          release();
+          await recorder.ready;
+          readiness.push(true);
+        }),
+      ),
     );
-    finish();
-    expect((await first.next()).value).toEqual({ type: 'done' });
-    expect((await first.next()).done).toBe(true);
+    const model = await connectModel(client);
+    const recording = model.record(null);
+    await ended(recording);
+    expect(readiness).toEqual([false, true]);
+    expect(recording.log).toHaveLength(40);
   });
 });
+
+function all(frameCount: number, elementCount: number) {
+  return { frameOffset: 0, frameCount, elementOffset: 0, elementCount };
+}

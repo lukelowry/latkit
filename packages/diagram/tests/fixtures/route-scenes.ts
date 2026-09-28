@@ -3,7 +3,7 @@
  * obstacle queries, a writer that records what a router writes, and checks every route must pass.
  */
 
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 
 import { laneShifts } from '../../src/layout/shapes.js';
 import { prepare, type Prepared } from '../../src/prepare.js';
@@ -33,7 +33,7 @@ export interface ColumnOptions {
  * Blocks in no column stay at NaN.
  */
 export function columns(
-  netlist: Netlist,
+  netlist: Document.Netlist,
   cols: readonly (readonly number[])[],
   options: ColumnOptions = {},
 ): Placed {
@@ -99,7 +99,7 @@ export function plantColumns(plants: number): number[][][] {
  * feedback lanes.
  */
 export function shelf(
-  netlist: Netlist,
+  netlist: Document.Netlist,
   units: readonly (readonly (readonly number[])[])[],
   perRow: number,
   grid = 8,
@@ -122,7 +122,7 @@ export function shelf(
 }
 
 /** Place blocks on a coarse grid of cells, `across` per row, each cell `cell` units square. */
-export function scatter(netlist: Netlist, across: number, cell: number, grid = 8): Placed {
+export function scatter(netlist: Document.Netlist, across: number, cell: number, grid = 8): Placed {
   const prepared = prepare(netlist, grid);
   const positions = new Float32Array(2 * prepared.blockCount);
   for (let b = 0; b < prepared.blockCount; b++) {

@@ -1,9 +1,9 @@
 /**
  * `@latkit/diagram` -- a WebGPU block-diagram renderer and editor surface behind one durable
  * controller. `createDiagram` returns a {@link Diagram} that attaches to any canvas over a shared
- * device pool; two registries name what it speaks: `CHANNELS` and `OPTIONS`. `Netlist`, `Part`,
- * and `Domain` are `@latkit/model`'s; `arrange` lays a netlist out without a device or a DOM, so
- * a worker imports this same entrypoint.
+ * device pool; two registries name what it speaks: `CHANNELS` and `OPTIONS`. `Document.Netlist`,
+ * `Document.Part`, and `Domain` are `@latkit/model`'s; `arrange` lays a netlist out without a
+ * device or a DOM, so a worker imports this same entrypoint.
  *
  * @packageDocumentation
  */

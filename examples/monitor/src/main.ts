@@ -1,5 +1,5 @@
 import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
-import { createSeries } from '@latkit/model';
+import { Series } from '@latkit/model';
 import { createMonitor, type Reading } from '@latkit/monitor';
 import './style.css';
 
@@ -56,7 +56,7 @@ const rateValue = document.getElementById('rate-value') as HTMLOutputElement;
 let seed = 0x5eed1234;
 const SIGNAL_IDS = SIGNALS.map((signal) => signal.id);
 
-let series = createSeries({ signals: SIGNAL_IDS, elementCount: ELEMENT_COUNT });
+let series = Series.create({ signals: SIGNAL_IDS, elementCount: ELEMENT_COUNT });
 let frameCursor = 0;
 let latest = new Float64Array(ELEMENT_COUNT * SIGNALS.length).fill(NaN);
 let currentSignal: SignalIndex = 0;
@@ -180,7 +180,7 @@ function wireChrome(): void {
 function resetStream(): void {
   anomaly.fill(0);
   frameCursor = 0;
-  series = createSeries({ signals: SIGNAL_IDS, elementCount: ELEMENT_COUNT });
+  series = Series.create({ signals: SIGNAL_IDS, elementCount: ELEMENT_COUNT });
   latest = new Float64Array(ELEMENT_COUNT * SIGNALS.length).fill(NaN);
   selectedElement = null;
   hoverReadout.textContent = '-';

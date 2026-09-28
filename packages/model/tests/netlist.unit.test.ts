@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { validateNetlist, type Netlist } from '../src/index.js';
+import { validateNetlist, type Document } from '../src/index.js';
+
+type Netlist = Document.Netlist;
 
 /** One TwoArea generator unit: TGOV1 drives pmech, IEEET1 drives efd, GENROU's speed feeds both. */
 function twoArea(): Netlist {

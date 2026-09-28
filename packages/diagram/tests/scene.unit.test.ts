@@ -1,4 +1,4 @@
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createChannels, type Channels } from '@latkit/gpu';
@@ -59,7 +59,7 @@ function harness(): Harness {
   return { mirrors, channels, scene: new Scene(mirrors, channels) };
 }
 
-function loaded(netlist: Netlist, now = 0): Harness {
+function loaded(netlist: Document.Netlist, now = 0): Harness {
   const h = harness();
   h.scene.load(netlist, G, true, now);
   return h;
@@ -203,7 +203,7 @@ function portsOf(p: Prepared, nets: readonly number[]): number {
  * the next one's `aux` input: net `i` joins reader `i - 1`'s output and reader `i`'s `aux`.
  * Reader `i` is block `i + 1`, with ports `in`, `aux`, `out`.
  */
-function broadcast(readers: number): Netlist {
+function broadcast(readers: number): Document.Netlist {
   const blocks: BlockSpec[] = [{ key: 'ref', title: 'REF', ports: [{ name: 'out', flow: 'out' }] }];
   const wide: (readonly [number, string])[] = [[0, 'out']];
   const chain: NetSpec[] = [];
@@ -241,7 +241,7 @@ function drawnNets(p: Prepared): number[] {
 }
 
 /** `netlist` with one more block, one `in` port reading `net`, keyed `key`. */
-function withReader(netlist: Netlist, net: number, key: string): Netlist {
+function withReader(netlist: Document.Netlist, net: number, key: string): Document.Netlist {
   const blocks = netlist.blockCount;
   const ports = netlist.portStart[blocks]!;
   const end = netlist.netStart[net + 1]!;
@@ -268,7 +268,7 @@ function withReader(netlist: Netlist, net: number, key: string): Netlist {
 }
 
 /** TwoArea with its blocks listed as `order` (new block `i` is old block `order[i]`). */
-function reordered(order: readonly number[]): Netlist {
+function reordered(order: readonly number[]): Document.Netlist {
   const netlist = twoArea();
   const old = netlist.portStart;
   const portStart = new Uint32Array(order.length + 1);

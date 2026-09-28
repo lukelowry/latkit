@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createSeries, validateSeries, type Series } from '../src/index.js';
+import { Series, validateSeries } from '../src/index.js';
+import { Clock } from '../src/series.js';
 
 /** Frames at `time` over two elements and two signals, frame-major as a run appends them. */
 function frames(time: number[], values: number[]) {
@@ -20,7 +21,7 @@ async function at(series: Series, signal: number, frame: number): Promise<number
 
 describe('series', () => {
   it('names its signals and reads appends without transposing them, packing only reads across them', async () => {
-    const series = createSeries({ signals: ['P', 'Q'], elementCount: 2 });
+    const series = Series.create({ signals: ['P', 'Q'], elementCount: 2 });
     expect(series.signals).toEqual(['P', 'Q']);
     expect(Object.isFrozen(series.signals)).toBe(true);
     const first = frames([0, 1], [1, 2, 10, 20, 3, 4, 30, 40]);
@@ -38,7 +39,7 @@ describe('series', () => {
   });
 
   it('publishes a state only once an append commits, and keeps the one before', async () => {
-    const series = createSeries({ signals: ['P', 'Q'], elementCount: 2 });
+    const series = Series.create({ signals: ['P', 'Q'], elementCount: 2 });
     const before = series.state;
     let published = before;
     const off = series.on('change', () => (published = series.state));
@@ -52,7 +53,7 @@ describe('series', () => {
   });
 
   it('seals once: live turns false, listeners hear it, and nothing appends after', () => {
-    const series = createSeries({ signals: ['P'], elementCount: 1 });
+    const series = Series.create({ signals: ['P'], elementCount: 1 });
     series.append({ time: Float64Array.of(0), values: Float32Array.of(1) });
     const changed = vi.fn();
     series.on('change', changed);
@@ -71,7 +72,7 @@ describe('series', () => {
     const base = 1e12,
       delta = 0.01;
     const values = Float64Array.of(base, base + delta, 3, 4);
-    const series = createSeries({
+    const series = Series.create({
       signals: ['a', 'b'],
       elementCount: 1,
       time: Float64Array.of(0, 1),
@@ -84,7 +85,7 @@ describe('series', () => {
   });
 
   it('locates complete repeated timestamps across appends at a captured head', async () => {
-    const series = createSeries({ signals: ['a'], elementCount: 1 });
+    const series = Series.create({ signals: ['a'], elementCount: 1 });
     series.append({ time: Float64Array.of(0, 1, 1), values: Float32Array.of(1, 2, 3) });
     const head = series.state.frameCount;
     series.append({ time: Float64Array.of(1, 2), values: Float32Array.of(4, 5) });
@@ -97,7 +98,7 @@ describe('series', () => {
   });
 
   it('rejects an invalid append without changing published data', () => {
-    const series = createSeries({ signals: ['P', 'Q'], elementCount: 2 });
+    const series = Series.create({ signals: ['P', 'Q'], elementCount: 2 });
     series.append(frames([1], [1, 2, 3, 4]));
     const state = series.state;
     expect(() => series.append(frames([0], [1, 2, 3, 4]))).toThrow(/nondecreasing/);
@@ -114,7 +115,7 @@ describe('series', () => {
   });
 
   it('validates read bounds and cancellation', async () => {
-    const series = createSeries({ signals: ['P', 'Q'], elementCount: 2 });
+    const series = Series.create({ signals: ['P', 'Q'], elementCount: 2 });
     series.append(frames([0], [1, 2, 3, 4]));
     await expect(series.read(2, window(0, 1))).rejects.toThrow(/signal/);
     await expect(series.read(0, window(1, 1))).rejects.toThrow(/exceeds/);
@@ -131,7 +132,7 @@ describe('series', () => {
   });
 
   it('keeps sparse class indices stable and ignores every nonfinite value in ranges', () => {
-    const series = createSeries({
+    const series = Series.create({
       signals: ['a'],
       elementCount: 2,
       elements: Uint32Array.of(3, 500),
@@ -143,43 +144,65 @@ describe('series', () => {
     expect(series.elements).toEqual(Uint32Array.of(3, 500));
     expect([...series.state.ranges!]).toEqual([7, 7]);
     expect(() =>
-      createSeries({ signals: ['a'], elementCount: 2, elements: Uint32Array.of(3, 3) }),
+      Series.create({ signals: ['a'], elementCount: 2, elements: Uint32Array.of(3, 3) }),
     ).toThrow(/unique/);
   });
 
   it('refuses signal ids that are missing, empty, or repeated', () => {
-    expect(() => createSeries({ signals: 2 as unknown as string[], elementCount: 1 })).toThrow(
+    expect(() => Series.create({ signals: 2 as unknown as string[], elementCount: 1 })).toThrow(
       /array of ids/,
     );
-    expect(() => createSeries({ signals: [''], elementCount: 1 })).toThrow(/non-empty/);
-    expect(() => createSeries({ signals: ['a', 'a'], elementCount: 1 })).toThrow(/unique/);
+    expect(() => Series.create({ signals: [''], elementCount: 1 })).toThrow(/non-empty/);
+    expect(() => Series.create({ signals: ['a', 'a'], elementCount: 1 })).toThrow(/unique/);
     expect(() =>
-      createSeries({ signals: ['a'], elementCount: 1, time: Float64Array.of(0) }),
+      Series.create({ signals: ['a'], elementCount: 1, time: Float64Array.of(0) }),
     ).toThrow(/together/);
   });
 });
 
 describe('validateSeries', () => {
-  const series = () => createSeries({ signals: ['a', 'b'], elementCount: 1 });
+  const series = () => Series.create({ signals: ['a', 'b'], elementCount: 1 });
+  /** A series as a plain object: what a renderer may be handed from anywhere. */
+  const plain = (patch: Record<string, unknown>): Series => {
+    const made = series();
+    return {
+      signals: made.signals,
+      elementCount: made.elementCount,
+      state: made.state,
+      read: made.read.bind(made),
+      locate: made.locate.bind(made),
+      on: made.on.bind(made),
+      ...patch,
+    } as unknown as Series;
+  };
 
-  it('accepts what createSeries publishes and names the first field that is wrong', () => {
+  it('accepts what Series.create publishes and names the first field that is wrong', () => {
     expect(() => validateSeries(series())).not.toThrow();
+    expect(() => validateSeries(plain({}))).not.toThrow();
     expect(() => validateSeries(null as unknown as Series)).toThrow(/must be an object/);
-    expect(() => validateSeries({ ...series(), signals: ['a', 1] } as never)).toThrow(/signals/);
-    expect(() => validateSeries({ ...series(), state: { frameCount: -1 } } as never)).toThrow(
-      /frameCount/,
+    expect(() => validateSeries(plain({ signals: ['a', 1] }))).toThrow(/signals/);
+    expect(() => validateSeries(plain({ state: { frameCount: -1 } }))).toThrow(/frameCount/);
+    expect(() => validateSeries(plain({ state: { ...series().state, live: 'yes' } }))).toThrow(
+      /live must be a boolean/,
     );
     expect(() =>
-      validateSeries({ ...series(), state: { ...series().state, live: 'yes' } } as never),
-    ).toThrow(/live must be a boolean/);
-    expect(() =>
-      validateSeries({ ...series(), state: { ...series().state, timeRange: [0, 1] } }),
+      validateSeries(plain({ state: { ...series().state, timeRange: [0, 1] } })),
     ).toThrow(/timeRange must be null exactly when/);
     expect(() =>
-      validateSeries({ ...series(), state: { ...series().state, ranges: new Float64Array(2) } }),
+      validateSeries(plain({ state: { ...series().state, ranges: new Float64Array(2) } })),
     ).toThrow(/one f64 pair per signal/);
-    expect(() => validateSeries({ ...series(), read: null } as never)).toThrow(
-      'series.read must be a function',
-    );
+    expect(() => validateSeries(plain({ read: null }))).toThrow('series.read must be a function');
+  });
+});
+
+describe('Clock', () => {
+  it('copies committed times across chunks', () => {
+    const clock = new Clock();
+    for (const chunk of [[0, 1], [2], [3, 4, 5]])
+      clock.commit(clock.admit(Float64Array.from(chunk)));
+    expect([...clock.slice(1, 5)]).toEqual([1, 2, 3, 4]);
+    expect([...clock.slice(0, 6)]).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(clock.slice(6, 6).length).toBe(0);
+    expect(new Clock().slice(0, 0).length).toBe(0);
   });
 });

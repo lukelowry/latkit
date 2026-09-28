@@ -1,19 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { openRecording, type Series } from '../src/index.js';
-import { sourceOf } from '../src/recording.js';
-import type { RunFrames } from '../src/run.js';
-import { sampleModel } from './fixture.js';
-
-/** Frames at `time`: buses record Vm over three elements, generators P over two. */
-function block(time: number[], values: Partial<Record<'bus' | 'gen', number[]>>): RunFrames {
-  return {
-    time: Float64Array.from(time),
-    values: Object.fromEntries(
-      Object.entries(values).map(([classId, list]) => [classId, Float32Array.from(list)]),
-    ),
-  };
-}
+import { Recording, type Series } from '../src/index.js';
+import { block, byHand, ended, Player, sampleModel } from './fixture.js';
 
 /** The next item `iterator` yields. */
 async function take<T>(iterator: AsyncIterator<T>): Promise<T> {
@@ -40,39 +28,47 @@ async function values(series: Series): Promise<number[]> {
 }
 
 describe('recording', () => {
-  it('declares what it covers and records every class that records a signal', async () => {
-    const recording = sampleModel().record({ id: 'run', span: [0, 10], expectedFrames: 100 });
+  it('holds every class that records a signal, and what its engine declares', () => {
+    const { recording, recorder } = byHand(sampleModel(), { id: 'run' });
     expect(recording).toMatchObject({
       id: 'run',
       label: 'run',
-      span: [0, 10],
-      expectedFrames: 100,
-      classes: ['bus', 'gen'],
-    });
-    expect(recording.state).toEqual({ frameCount: 0, timeRange: null, live: true });
-    const bus = await recording.series('bus');
-    expect(bus).toMatchObject({ signals: ['Vm'], elementCount: 3 });
-    expect((await recording.series('gen'))!.signals).toEqual(['P']);
-    expect(await recording.series('branch')).toBeNull();
-    expect(await recording.series('nope')).toBeNull();
-    expect(await recording.series('bus')).toBe(bus);
-    await expect(recording.series('bus', AbortSignal.abort())).rejects.toMatchObject({
-      name: 'AbortError',
-    });
-    expect(sampleModel().record({ id: 'bare', label: 'Bare' })).toMatchObject({
-      label: 'Bare',
       span: null,
       expectedFrames: null,
+      classes: ['bus', 'gen'],
     });
+    expect(recording.state).toEqual({
+      status: 'recording',
+      ahead: 0,
+      frameCount: 0,
+      timeRange: null,
+      error: null,
+    });
+    recorder.declare({ span: [0, 10], expectedFrames: 100 });
+    expect(recording).toMatchObject({ span: [0, 10], expectedFrames: 100 });
+    recorder.declare({ expectedFrames: null });
+    expect(recording).toMatchObject({ span: [0, 10], expectedFrames: null });
+    const bus = recording.series('bus')!;
+    expect(bus).toMatchObject({ signals: ['Vm'], elementCount: 3 });
+    expect(recording.series('gen')!.signals).toEqual(['P']);
+    expect(recording.series('branch')).toBeNull();
+    expect(recording.series('bus')).toBe(bus);
+    expect(byHand(sampleModel(), { label: 'Bare' }).recording).toMatchObject({ label: 'Bare' });
   });
 
   it('commits every class on one clock, a class a block leaves out reading NaN there', async () => {
-    const recording = sampleModel().record({ id: 'run' });
-    const bus = (await recording.series('bus'))!;
-    const gen = (await recording.series('gen'))!;
-    recording.append(block([0, 1], { bus: [1, 2, 3, 4, 5, 6], gen: [10, 20, 30, 40] }));
-    recording.append(block([2], { bus: [7, 8, 9] }));
-    expect(recording.state).toEqual({ frameCount: 3, timeRange: [0, 2], live: true });
+    const { recording, recorder } = byHand(sampleModel());
+    const bus = recording.series('bus')!;
+    const gen = recording.series('gen')!;
+    const first = block([0, 1], { bus: [1, 2, 3, 4, 5, 6], gen: [10, 20, 30, 40] });
+    recorder.append(first.time, first.values);
+    const second = block([2], { bus: [7, 8, 9] });
+    recorder.append(second.time, second.values);
+    expect(recording.state).toMatchObject({
+      frameCount: 3,
+      timeRange: [0, 2],
+      status: 'recording',
+    });
     for (const series of [bus, gen]) expect(series.state.frameCount).toBe(3);
     expect(await values(bus)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect(await values(gen)).toEqual([10, 20, 30, 40, NaN, NaN]);
@@ -87,10 +83,11 @@ describe('recording', () => {
   });
 
   it('finds the frame at a time on its own clock, and the time of a frame', () => {
-    const recording = sampleModel().record({ id: 'run' });
+    const { recording, recorder } = byHand(sampleModel());
     expect(recording.frameAt(5)).toBe(-1);
-    recording.append(block([0, 1, 1], { bus: [0, 0, 0, 1, 1, 1, 2, 2, 2] }));
-    recording.append(block([2.5], {}));
+    const frames = block([0, 1, 1], { bus: [0, 0, 0, 1, 1, 1, 2, 2, 2] });
+    recorder.append(frames.time, frames.values);
+    recorder.append(Float64Array.of(2.5), {});
     expect(recording.frameAt(-4)).toBe(0);
     expect(recording.frameAt(0.5)).toBe(0);
     expect(recording.frameAt(1)).toBe(2);
@@ -102,67 +99,131 @@ describe('recording', () => {
     expect(() => recording.timeAt(0.5)).toThrow(RangeError);
   });
 
-  it('changes every series before itself, once per append and once when sealed', async () => {
-    const recording = sampleModel().record({ id: 'run' });
-    const bus = (await recording.series('bus'))!;
+  it('changes every series before itself, once per append and once when it ends', async () => {
+    const { recording, recorder, complete } = byHand(sampleModel());
+    const bus = recording.series('bus')!;
     const heard: string[] = [];
     bus.on('change', () => heard.push(`bus:${bus.state.frameCount}`));
-    recording.on('change', () => heard.push(`recording:${recording.state.frameCount}`));
-    recording.append(block([0], { bus: [1, 2, 3] }));
-    recording.append(block([], {}));
-    recording.seal();
-    recording.seal();
-    expect(heard).toEqual(['bus:1', 'recording:1', 'bus:1', 'recording:1']);
-    expect(recording.state.live).toBe(false);
+    recording.on('change', () =>
+      heard.push(`recording:${recording.state.frameCount}:${recording.state.status}`),
+    );
+    const frames = block([0], { bus: [1, 2, 3] });
+    recorder.append(frames.time, frames.values);
+    recorder.append(new Float64Array(0), {});
+    await complete();
+    recording.stop();
+    expect(heard).toEqual(['bus:1', 'recording:1:recording', 'bus:1', 'recording:1:complete']);
     expect(bus.state.live).toBe(false);
-    expect(() => recording.append(block([1], { bus: [1, 2, 3] }))).toThrow(/sealed/);
+    expect(() => recorder.append(frames.time, frames.values)).toThrow(/ended/);
   });
 
-  it('refuses a block that does not fit, changing nothing', () => {
-    const recording = sampleModel().record({ id: 'run' });
-    recording.append(block([1], { bus: [1, 2, 3] }));
+  it('refuses frames that do not fit, changing nothing', () => {
+    const { recording, recorder } = byHand(sampleModel());
+    const frames = block([1], { bus: [1, 2, 3] });
+    recorder.append(frames.time, frames.values);
     const state = recording.state;
     const changed = vi.fn();
     recording.on('change', changed);
-    expect(() => recording.append(block([2], { bus: [1, 2] }))).toThrow(/carry 2 values/);
-    expect(() => recording.append(block([2], { branch: [1, 2] } as never))).toThrow(
+    expect(() => recorder.append(Float64Array.of(2), { bus: Float32Array.of(1, 2) })).toThrow(
+      /carry 2 values/,
+    );
+    expect(() => recorder.append(Float64Array.of(2), { branch: Float32Array.of(1, 2) })).toThrow(
       /does not record class 'branch'/,
     );
-    expect(() => recording.append(block([0], { bus: [1, 2, 3] }))).toThrow(/nondecreasing/);
-    expect(() => recording.append({ time: Float64Array.of(2), values: null as never })).toThrow(
-      /map class ids/,
-    );
-    expect(() => recording.append(null as never)).toThrow(/must be an object/);
+    expect(() => recorder.append(Float64Array.of(0), frames.values)).toThrow(/nondecreasing/);
+    expect(() => recorder.append(Float64Array.of(2), null as never)).toThrow(/map class ids/);
+    expect(() => recorder.append([2] as never, frames.values)).toThrow(/f64 time/);
     expect(recording.state).toBe(state);
     expect(changed).not.toHaveBeenCalled();
   });
 
-  it('refuses a header it cannot hold', () => {
+  it('refuses what an engine declares that it cannot hold', () => {
+    const { recorder } = byHand(sampleModel());
+    expect(() => recorder.declare({ span: [2, 1] })).toThrow(RangeError);
+    expect(() => recorder.declare({ expectedFrames: -1 })).toThrow(/expectedFrames/);
+    expect(() => recorder.wait(-1)).toThrow(/ahead/);
+    expect(() => recorder.log('loud' as never, 'x')).toThrow(/level and a message/);
+  });
+
+  it('keeps its engine’s log and says how it failed, keeping its frames', async () => {
+    const { recording, recorder, fail } = byHand(sampleModel());
+    recorder.log('info', 'start');
+    recorder.log('warn', 'slow');
+    const frames = block([0], { bus: [1, 2, 3] });
+    recorder.append(frames.time, frames.values);
+    await fail('diverged');
+    expect(recording.log).toEqual([
+      { level: 'info', message: 'start' },
+      { level: 'warn', message: 'slow' },
+    ]);
+    expect(recording.state).toMatchObject({ status: 'failed', error: 'diverged', frameCount: 1 });
+    recorder.log('info', 'after');
+    expect(recording.log).toHaveLength(2);
+  });
+
+  it('waits its turn behind an engine’s concurrency, saying how many wait before it', async () => {
     const model = sampleModel();
-    expect(() => model.record({ id: '' })).toThrow(/id must be non-empty/);
-    expect(() => model.record({ id: 'run', label: 3 as never })).toThrow(/label must be a string/);
-    expect(() => model.record({ id: 'run', span: [2, 1] })).toThrow(RangeError);
-    expect(() => model.record({ id: 'run', expectedFrames: -1 })).toThrow(/expectedFrames/);
+    model.engine = new Player([block([0], { bus: [1, 2, 3] }), block([1], { bus: [4, 5, 6] })]);
+    const first = model.record(2);
+    const second = model.record(1);
+    const third = model.record(1);
+    expect(first.state).toMatchObject({ status: 'recording', ahead: 0 });
+    expect(second.state).toMatchObject({ status: 'waiting', ahead: 0 });
+    expect(third.state).toMatchObject({ status: 'waiting', ahead: 1 });
+    third.stop();
+    expect(third.state.status).toBe('stopped');
+    await ended(first);
+    expect(first.state).toMatchObject({ status: 'complete', frameCount: 2, timeRange: [0, 1] });
+    expect(first.span).toEqual([0, 10]);
+    expect(first.log).toEqual([{ level: 'info', message: 'appended 2' }]);
+    await ended(second);
+    expect(second.state).toMatchObject({ status: 'complete', frameCount: 1 });
+    expect(third.state.frameCount).toBe(0);
+  });
+
+  it('stops where it is when its host stops it, and its engine stops too', async () => {
+    const model = sampleModel();
+    const { recording, recorder } = byHand(model);
+    recorder.append(Float64Array.of(0), { bus: Float32Array.of(1, 2, 3) });
+    recording.stop();
+    expect(recorder.signal.aborted).toBe(true);
+    expect(recording.state).toMatchObject({ status: 'stopped', frameCount: 1, error: null });
+    expect(recording.series('bus')!.state.live).toBe(false);
+    expect(() => recorder.append(Float64Array.of(1), { bus: Float32Array.of(4, 5, 6) })).toThrow(
+      /ended/,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(recording.state.status).toBe('stopped');
+    model.engine = new Player([block([0], { bus: [1, 2, 3] })]);
+    const next = model.record(1);
+    await ended(next);
+    expect(next.state.status).toBe('complete');
+  });
+
+  it('refuses at once an input its engine refuses, or a model with none', () => {
+    const model = sampleModel();
+    expect(() => model.record(1)).toThrow(/no engine/);
+    model.engine = new Player([]);
+    expect(() => model.record('many')).toThrow(/how many blocks/);
   });
 });
 
-describe('recording.source and openRecording', () => {
+describe('recording.source and Recording.from', () => {
   it('describes the recording, and hands out windows the caller owns', async () => {
-    const recording = sampleModel().record({ id: 'run', label: 'Run', span: [0, 9] });
-    recording.append(block([0, 1], { bus: [1, 2, 3, 4, 5, 6], gen: [10, 20, 30, 40] }));
+    const { recording, recorder } = byHand(sampleModel(), { id: 'run', label: 'Run' });
+    const frames = block([0, 1], { bus: [1, 2, 3, 4, 5, 6], gen: [10, 20, 30, 40] });
+    recorder.append(frames.time, frames.values);
     const source = recording.source();
 
     expect(await source.describe()).toEqual({
       id: 'run',
       label: 'Run',
-      span: [0, 9],
-      expectedFrames: null,
       classes: [
         { classId: 'bus', signals: ['Vm'], elementCount: 3 },
         { classId: 'gen', signals: ['P'], elementCount: 2 },
       ],
     });
-    const bus = (await recording.series('bus'))!;
+    const bus = recording.series('bus')!;
     const lent = await bus.read(0, {
       frameOffset: 0,
       frameCount: 2,
@@ -192,39 +253,40 @@ describe('recording.source and openRecording', () => {
     ).rejects.toThrow("recording 'run' has no class 'branch'");
   });
 
-  it('streams its clock from the first frame, then each change, until the seal', async () => {
-    const recording = sampleModel().record({ id: 'run' });
-    recording.append(block([0, 1], { bus: [1, 2, 3, 4, 5, 6] }));
+  it('streams its clock and log from the first frame, then each change, until it ends', async () => {
+    const { recording, recorder, complete } = byHand(sampleModel());
+    const frames = block([0, 1], { bus: [1, 2, 3, 4, 5, 6] });
+    recorder.append(frames.time, frames.values);
+    recorder.log('info', 'one');
     const changes = recording.source().changes()[Symbol.asyncIterator]();
 
     const first = await take(changes);
     expect([...first.time]).toEqual([0, 1]);
-    expect(first.live).toBe(true);
+    expect(first).toMatchObject({ status: 'recording', ahead: 0, error: null, span: null });
+    expect(first.log).toEqual([{ level: 'info', message: 'one' }]);
     expect([...first.ranges['bus']!]).toEqual([1, 6]);
     expect([...first.ranges['gen']!]).toEqual([NaN, NaN]);
 
     const next = take(changes);
-    recording.append(block([2], { gen: [7, 8] }));
+    recorder.append(Float64Array.of(2), { gen: Float32Array.of(7, 8) });
     const second = await next;
     expect([...second.time]).toEqual([2]);
+    expect(second.log).toEqual([]);
     expect([...second.ranges['gen']!]).toEqual([7, 8]);
 
-    recording.seal();
-    const last = await take(changes);
-    expect(last.time.length).toBe(0);
-    expect(last.live).toBe(false);
+    const declared = take(changes);
+    recorder.declare({ span: [0, 5] });
+    expect((await declared).span).toEqual([0, 5]);
+
+    const last = take(changes);
+    await complete();
+    expect(await last).toMatchObject({ status: 'complete' });
+    expect((await last).time.length).toBe(0);
     expect((await changes.next()).done).toBe(true);
   });
 
-  it('refuses to describe a class the recording lists but cannot resolve', async () => {
-    const recording = sampleModel().record({ id: 'run' });
-    const broken = { ...recording, series: async () => null };
-    const source = sourceOf(broken);
-    await expect(source.describe()).rejects.toThrow("recording 'run' has no series for 'bus'");
-  });
-
   it('ends its changes when their signal aborts', async () => {
-    const recording = sampleModel().record({ id: 'run' });
+    const { recording } = byHand(sampleModel());
     const controller = new AbortController();
     const changes = recording.source().changes(controller.signal)[Symbol.asyncIterator]();
     await changes.next();
@@ -234,22 +296,30 @@ describe('recording.source and openRecording', () => {
   });
 
   it('opens a recording held elsewhere, its clock at hand and its samples read on demand', async () => {
-    const origin = sampleModel().record({ id: 'run', expectedFrames: 10 });
-    origin.append(block([0, 1, 1], { bus: [1, 2, 3, 4, 5, 6, 7, 8, 9], gen: [1, 2, 3, 4, 5, 6] }));
+    const { recording: origin, recorder } = byHand(sampleModel(), { id: 'run' });
+    recorder.declare({ expectedFrames: 10 });
+    const frames = block([0, 1, 1], { bus: [1, 2, 3, 4, 5, 6, 7, 8, 9], gen: [1, 2, 3, 4, 5, 6] });
+    recorder.append(frames.time, frames.values);
     const source = origin.source();
     const read = vi.spyOn(source, 'read');
 
-    const mirror = await openRecording(source);
+    const mirror = await Recording.from(source);
     expect(mirror).toMatchObject({
       id: 'run',
       label: 'run',
       expectedFrames: 10,
       classes: ['bus', 'gen'],
     });
-    expect(mirror.state).toEqual({ frameCount: 3, timeRange: [0, 1], live: true });
+    expect(mirror.state).toEqual({
+      status: 'recording',
+      ahead: 0,
+      frameCount: 3,
+      timeRange: [0, 1],
+      error: null,
+    });
     expect(mirror.frameAt(1)).toBe(2);
     expect(mirror.timeAt(1)).toBe(1);
-    const bus = (await mirror.series('bus'))!;
+    const bus = mirror.series('bus')!;
     expect(bus).toMatchObject({ signals: ['Vm'], elementCount: 3 });
     expect([...bus.state.ranges!]).toEqual([1, 9]);
     expect(await bus.locate([1, 1], 3)).toEqual([1, 3]);
@@ -259,42 +329,50 @@ describe('recording.source and openRecording', () => {
     mirror.close();
   });
 
-  it('follows the recording it mirrors, every series changing before it', async () => {
-    const origin = sampleModel().record({ id: 'run' });
-    const mirror = await openRecording(origin.source());
-    expect(mirror.state).toEqual({ frameCount: 0, timeRange: null, live: true });
-    const gen = (await mirror.series('gen'))!;
+  it('follows the recording it mirrors, its log and its end, every series changing first', async () => {
+    const { recording: origin, recorder, fail } = byHand(sampleModel());
+    const mirror = await Recording.from(origin.source());
+    expect(mirror.state).toMatchObject({ frameCount: 0, timeRange: null, status: 'recording' });
+    const gen = mirror.series('gen')!;
     const heard: string[] = [];
     gen.on('change', () => heard.push(`gen:${gen.state.frameCount}`));
     mirror.on('change', () => heard.push(`recording:${mirror.state.frameCount}`));
 
-    origin.append(block([0, 2], { gen: [1, 2, 3, 4] }));
+    recorder.append(Float64Array.of(0, 2), { gen: Float32Array.of(1, 2, 3, 4) });
     await vi.waitFor(() => expect(mirror.state.frameCount).toBe(2));
     expect(heard).toEqual(['gen:2', 'recording:2']);
     expect([...gen.state.ranges!]).toEqual([1, 4]);
     expect(mirror.timeAt(1)).toBe(2);
 
-    origin.seal();
-    await vi.waitFor(() => expect(mirror.state.live).toBe(false));
+    recorder.log('error', 'singular');
+    await fail('diverged');
+    await ended(mirror);
+    expect(mirror.state).toMatchObject({ status: 'failed', error: 'diverged' });
+    expect(mirror.log).toEqual([{ level: 'error', message: 'singular' }]);
     expect(gen.state.live).toBe(false);
     mirror.close();
   });
 
-  it('closes its source and stops following when closed', async () => {
-    const origin = sampleModel().record({ id: 'run' });
+  it('stops following when stopped, and closes its source when closed', async () => {
+    const { recording: origin, recorder } = byHand(sampleModel());
     const source = origin.source();
     const close = vi.fn();
-    const mirror = await openRecording({ ...source, close });
-    mirror.close();
-    expect(close).toHaveBeenCalledOnce();
-    origin.append(block([0], { bus: [1, 2, 3] }));
+    const mirror = await Recording.from({ ...source, close });
+    mirror.stop();
+    expect(mirror.state.status).toBe('stopped');
+    expect(mirror.series('bus')!.state.live).toBe(false);
+    recorder.append(Float64Array.of(0), { bus: Float32Array.of(1, 2, 3) });
     await Promise.resolve();
     await Promise.resolve();
     expect(mirror.state.frameCount).toBe(0);
+    expect(close).not.toHaveBeenCalled();
+    mirror.close();
+    mirror.close();
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it('refuses a source that describes an invalid recording or sends a bad change', async () => {
-    const origin = sampleModel().record({ id: 'run' });
+    const { recording: origin } = byHand(sampleModel(), { id: 'run' });
     const source = origin.source();
     const described = await source.describe();
     const close = vi.fn();
@@ -303,37 +381,52 @@ describe('recording.source and openRecording', () => {
       close,
       describe: async () => value as typeof described,
     });
-    await expect(openRecording(describing({ ...described, id: '' }))).rejects.toThrow(
+    await expect(Recording.from(describing({ ...described, id: '' }))).rejects.toThrow(
       'recording id must be non-empty',
     );
     await expect(
-      openRecording(
+      Recording.from(
         describing({ ...described, classes: [described.classes[0], described.classes[0]] }),
       ),
     ).rejects.toThrow('name each class once');
     await expect(
-      openRecording(
+      Recording.from(
         describing({ ...described, classes: [{ classId: 'bus', signals: [], elementCount: -1 }] }),
       ),
     ).rejects.toThrow(RangeError);
     expect(close).toHaveBeenCalled();
 
+    const good = {
+      time: Float64Array.of(0),
+      ranges: {},
+      status: 'recording',
+      ahead: 0,
+      error: null,
+      span: null,
+      expectedFrames: null,
+      log: [],
+    };
     const changing = (change: unknown) => ({
       ...source,
       async *changes() {
         yield change as never;
       },
     });
-    await expect(openRecording(changing({ time: [0], live: true, ranges: {} }))).rejects.toThrow(
+    await expect(Recording.from(changing({ ...good, time: [0] }))).rejects.toThrow(
       'frames require f64 time',
     );
     await expect(
-      openRecording(
-        changing({ time: Float64Array.of(0), live: true, ranges: { bus: Float64Array.of(1) } }),
-      ),
+      Recording.from(changing({ ...good, ranges: { bus: Float64Array.of(1) } })),
     ).rejects.toThrow('one f64 pair per signal');
+    await expect(Recording.from(changing({ ...good, status: 'done' }))).rejects.toThrow(
+      'where its recording stands',
+    );
+    await expect(Recording.from(changing({ ...good, log: [{ level: 'x' }] }))).rejects.toThrow(
+      'lines logged',
+    );
+    await expect(Recording.from(changing({ ...good, span: [3, 1] }))).rejects.toThrow(RangeError);
     await expect(
-      openRecording({
+      Recording.from({
         ...source,
         // eslint-disable-next-line require-yield
         async *changes() {
@@ -341,23 +434,52 @@ describe('recording.source and openRecording', () => {
         },
       }),
     ).rejects.toThrow('ended before its clock');
-    await expect(openRecording(source, AbortSignal.abort())).rejects.toMatchObject({
+    await expect(Recording.from(source, AbortSignal.abort())).rejects.toMatchObject({
       name: 'AbortError',
     });
   });
 
   it('refuses a window a source returns that is not the one asked for', async () => {
-    const origin = sampleModel().record({ id: 'run' });
-    origin.append(block([0], { bus: [1, 2, 3] }));
+    const { recording: origin, recorder } = byHand(sampleModel());
+    recorder.append(Float64Array.of(0), { bus: Float32Array.of(1, 2, 3) });
     const source = origin.source();
-    const mirror = await openRecording({
+    const mirror = await Recording.from({
       ...source,
       read: async () => ({ time: Float64Array.of(0, 1), values: new Float32Array(3), stride: 3 }),
     });
-    const bus = (await mirror.series('bus'))!;
+    const bus = mirror.series('bus')!;
     await expect(
       bus.read(0, { frameOffset: 0, frameCount: 1, elementOffset: 0, elementCount: 3 }),
     ).rejects.toThrow('invalid samples block');
+    mirror.close();
+  });
+
+  it('reads a window larger than one read in pieces, each within the bound', async () => {
+    const model = sampleModel();
+    const { recording: origin, recorder } = byHand(model);
+    const frames = 50_000;
+    const values = new Float32Array(frames * 3);
+    for (let i = 0; i < values.length; i++) values[i] = i;
+    recorder.append(
+      Float64Array.from({ length: frames }, (_, frame) => frame),
+      { bus: values },
+    );
+    const source = origin.source();
+    const read = vi.spyOn(source, 'read');
+    const mirror = await Recording.from(source);
+    const bus = mirror.series('bus')!;
+    const block = await bus.read(0, {
+      frameOffset: 0,
+      frameCount: frames,
+      elementOffset: 0,
+      elementCount: 3,
+    });
+    expect(block.stride).toBe(3);
+    expect(block.values[3 * (frames - 1) + 2]).toBe(3 * (frames - 1) + 2);
+    expect(block.time[frames - 1]).toBe(frames - 1);
+    expect(read.mock.calls.length).toBeGreaterThan(1);
+    for (const [, , window] of read.mock.calls)
+      expect(window.frameCount * (window.elementCount + 1) * 8).toBeLessThanOrEqual(1 << 20);
     mirror.close();
   });
 });

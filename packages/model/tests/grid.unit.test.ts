@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { formatNumber } from '../src/index.js';
+import { formatNumber, type Model } from '../src/index.js';
 import { createGrid } from '../src/grid.js';
-import type { Column } from '../src/model.js';
-import { sampleClass, sampleModel } from './fixture.js';
+import { byHand, sampleClass, sampleModel } from './fixture.js';
+
+type Column = Model.Data['columns'][number];
 
 describe('formatNumber', () => {
   it('applies the shared number rule', () => {
@@ -141,11 +142,8 @@ describe('model.grid', () => {
 
   it('adds every signal the recording holds, sampled at a time', async () => {
     const model = sampleModel();
-    const recording = model.record({ id: 'run' });
-    recording.append({
-      time: Float64Array.of(0, 1),
-      values: { bus: Float32Array.of(1, 2, 3, 4, 5, 6) },
-    });
+    const { recording, recorder } = byHand(model);
+    recorder.append(Float64Array.of(0, 1), { bus: Float32Array.of(1, 2, 3, 4, 5, 6) });
     const grid = await model.grid('bus', { recording, time: 0.5 });
     // The column and the signal share an id; the grid tells them apart by kind.
     expect(grid.columns.slice(3)).toEqual([
@@ -161,7 +159,7 @@ describe('model.grid', () => {
   it('refuses a class it lacks and a time that is not finite', async () => {
     const model = sampleModel();
     await expect(model.grid('nope')).rejects.toThrow("unknown class 'nope'");
-    const recording = model.record({ id: 'run' });
+    const { recording } = byHand(model);
     await expect(model.grid('bus', { recording, time: Number.NaN })).rejects.toThrow(RangeError);
   });
 });

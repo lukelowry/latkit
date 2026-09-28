@@ -31,7 +31,7 @@ describe('monitor package entrypoint', () => {
     expectTypeOf<Parameters<typeof createMonitor>>().toEqualTypeOf<[options?: Options]>();
     expectTypeOf<Monitor extends { element: unknown } ? true : false>().toEqualTypeOf<false>();
     expectTypeOf<Parameters<Monitor['load']>>().toEqualTypeOf<
-      [binding: { readonly series: Series; readonly signal: number }]
+      [binding: { readonly series: Series; readonly signal: number } | null]
     >();
     expectTypeOf<Options['colormap']>().toEqualTypeOf<
       ((t: number) => readonly [number, number, number]) | undefined

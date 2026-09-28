@@ -1,5 +1,5 @@
 /* global GPUTextureUsage, GPUBufferUsage, GPUMapMode, requestAnimationFrame */
-import { createSeries } from '../../model/src/index.ts';
+import { Series } from '../../model/src/index.ts';
 import { bakeColormap } from '../../gpu/src/colormap.ts';
 import { LanePainter } from '../src/painter.ts';
 import { Lane } from '../src/lane.ts';
@@ -33,7 +33,7 @@ export async function checkGpu() {
         128,
       );
       painter.writeColormap(bakeColormap(map));
-      const series = createSeries({
+      const series = Series.create({
         signals: ['x'],
         elementCount,
         time: Float64Array.from(time),

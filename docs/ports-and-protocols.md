@@ -2,7 +2,7 @@
 
 `@latkit/port` carries messages between the two halves of one application: a page and its worker,
 an extension host and its webview, a browser and a server. It serves a `@latkit/model` model, and
-what a run of it recorded, from whichever half holds the data, and carries any protocol an
+what its engine recorded, from whichever half holds the data, and carries any protocol an
 application declares itself.
 
 ## A port
@@ -20,8 +20,8 @@ cover the boundaries applications meet:
 Every message is JSON values plus typed arrays (`Uint8Array` through `Float64Array`), anywhere in
 the value. That is what one binary frame carries, and holding to it on every transport means a
 service written against a worker runs unchanged against a socket. A frame decodes its typed arrays
-as views into the received buffer, so a topology or a run's samples cross without a copy on the
-receiving side. `messagePort` does not refuse what structured clone would carry beyond that value
+as views into the received buffer, so a topology or a recording's samples cross without a copy on
+the receiving side. `messagePort` does not refuse what structured clone would carry beyond that value
 model; the framed `loopback` does, so a test or a same-thread client catches what strays.
 
 ```ts
@@ -36,44 +36,45 @@ it is; `Port` is the one named type on that side of the surface.
 ## Serve a model
 
 The half that holds a model serves it; the other half connects and gets the same `Model`, its
-classes loading across the port as they are asked for. Only bytes and run updates cross: the core,
-one shard per class as it is first asked for, the vendor's bytes, and each run as one stream. A
-model with an engine runs on it from the far side, filling a recording there.
+classes loading across the port as they are asked for. Only packs and recorder calls cross: the
+core, one shard per class as it is first asked for, the case's bytes, and each recording as the
+served engine writes it. A model with an engine records on it from the far side, filling a
+recording there; an append's buffers are handed over without a copy.
 
 ```ts
 // worker.ts
-import { createModel } from '@latkit/model';
 import { messagePort, serveModel } from '@latkit/port';
 
-const model = createModel({ ...description, load, bytes, run: engine.run });
+const model = new GridkitCase(bytes);
+model.engine = new GridkitEngine(server);
 serveModel(messagePort(self), model);
 
 // page.ts
 import { connectModel } from '@latkit/port';
 
 const model = await connectModel(port, { progress: (loaded, total) => bar.set(loaded / total) });
-const run = model.run!(command, { id: 'fault-4', span: [0, 20], signal });
-network.setChannel('vertexColor', await model.field(VM, run.recording));
-for await (const update of run) status(update); // queued · running · log · done | cancelled | failed
+const recording = model.record(study, { id: 'fault-4' });
+network.setChannel('vertexColor', await model.field(VM, recording));
+recording.on('change', () => status(recording.state)); // waiting · recording · complete | stopped | failed
 
 // On teardown:
 model.close();
 ```
 
-A connected model is a `Remote<Model>`: the model, plus `close`. A run's command is bytes unless
-the vendor names its own type, which `serveModel<Command>` checks with the `command` option; one
-run goes at a time, and cancelling it aborts the engine. A model still opening can be served as a
-promise, so no early request is lost.
+A connected model is a `Remote<Model>`: the model, plus `close`. Its engine records on the served
+one, which checks every input with its own `parse`, queues what it cannot take at once and says
+how many wait ahead, and stops when the far recording stops. A model still opening can be served
+as a promise, so no early request is lost.
 
 ## Serve a recording
 
-A `Recording` is one run's output, every class on one clock. Served by its id, it crosses the port
-as its source: its declaration and each class's shape, its clock from the first frame and then each
-change, and sample windows only when read. The far side opens it with `openRecording`, so
-`frameAt`, `timeAt`, and every series' `locate` answer there at once.
+A `Recording` is every signal an engine recorded, every class on one clock. Served by its id, it
+crosses the port as its source: each class's shape, then its changes from the first, carrying its
+clock, where it stands, and its log, and sample windows only when read. The far side opens it with
+`Recording.from`, so `frameAt`, `timeAt`, and every series' `locate` answer there at once.
 
 ```ts
-// Host: the recording a run fills, or any other Recording.
+// Host: a recording its engine fills, or any other Recording.
 import { serveRecording } from '@latkit/port';
 const stop = serveRecording(port, recording);
 
@@ -81,17 +82,17 @@ const stop = serveRecording(port, recording);
 import { connectRecording } from '@latkit/port';
 const remote = await connectRecording(port, recordingId);
 const vm = await model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }, remote);
-if (vm) monitor.load(vm);
+monitor.load(vm);
 
 // On teardown:
 remote.close();
 ```
 
-Several recordings can share a port because each service is named by its id. Sample windows are
-capped at 4 MiB by default; `serveRecording(port, recording, { maxBytes })` changes the cap. A
-window outside the committed frames is refused on the far side before it crosses, and samples cross
-as copies the receiver owns, so a producer's retained buffers stay usable. Closing either endpoint
-ends pending reads and the changes.
+Several recordings can share a port because each service is named by its id. A sample window
+carries at most 4 MiB, time included, and a series on the far side asks for at most 1 MiB at a time,
+however large the window it is asked for. A window outside the committed frames is refused on the
+far side before it crosses, and samples cross as copies the receiver owns, so a producer's retained
+buffers stay usable. Closing either endpoint ends pending reads and the changes.
 
 ## A protocol
 
@@ -161,11 +162,11 @@ port's `drain` between items so backpressure reaches the producer. Leaving the l
 aborting the signal cancels the handler and ends the iteration quietly.
 
 ```ts
-serve(port, FRAMES, async function* (request, signal) {
-  for await (const frame of engine.run(request, signal)) yield frame;
+serve(port, LINES, async function* (request, signal) {
+  for await (const line of tail(request.path, signal)) yield line;
 });
 
-for await (const frame of connect(port, FRAMES).stream(request, { signal })) paint(frame);
+for await (const line of connect(port, LINES).stream(request, { signal })) print(line);
 ```
 
 ## Test across a port

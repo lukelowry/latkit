@@ -1,7 +1,7 @@
 # @latkit/diagram
 
 WebGPU block-diagram renderer and editor surface for Latkit: one controller, `Diagram`, and two
-registries that name what it speaks, `CHANNELS` and `OPTIONS`. It draws a `Netlist` (blocks, the
+registries that name what it speaks, `CHANNELS` and `OPTIONS`. It draws a `Document.Netlist` (blocks, the
 ports each block owns, and the nets that join ports) with automatic layout, right-angle wires,
 live values on blocks and wires, and in-canvas text. It reports what the user tried to change as
 proposals and never edits a netlist itself.
@@ -20,9 +20,9 @@ both back.
 ```ts
 import { colormap } from '@latkit/colormaps';
 import { createDiagram } from '@latkit/diagram';
-import type { Netlist } from '@latkit/model';
+import type { Document } from '@latkit/model';
 
-const unit: Netlist = {
+const unit: Document.Netlist = {
   blockCount: 3,
   blockKey: ['Genrou/1_1_genrou', 'Tgov1/1_1_tgov1', 'Ieeet1/1_1_ieeet1'],
   blockTitle: ['GENROU', 'TGOV1', 'IEEET1'],
@@ -52,8 +52,8 @@ the [lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html).
 
 ## The netlist
 
-`Netlist` and `validateNetlist` are `@latkit/model`'s, so an engine builds a netlist without a GPU
-package. It is columnar, like `Topology`. Counts are derived: the port count is
+`Document.Netlist` and `validateNetlist` are `@latkit/model`'s, so a format builds a netlist without
+a GPU package. It is columnar, like `Model.Topology`. Counts are derived: the port count is
 `portStart[blockCount]` and the net count is `netStart.length - 1`. `0xffffffff` marks "none"
 wherever an index may be absent.
 
@@ -132,13 +132,14 @@ diagram.setChannel('blockStatus', Float32Array.of(0, 2, 0)); // TGOV1 in error r
 diagram.setChannel('blockColor', null);
 ```
 
-A channel can follow one signal of a `Series` instead, such as a model `Field`, and `seek` shows
+A channel can follow one signal of a `Series` instead, such as a model's field, and `seek` shows
 the frame at a playhead in every channel that does. Every channel but `blockPosition`,
 `blockVisible`, and `netVisible` can, since those re-lay the scene, as each entry's `series` says.
 The channels run on `@latkit/gpu`'s binder, as the network's do:
 
 ```ts
 diagram.setChannel('netFlow', { series: flows, signal: 0 }); // one element per net
+diagram.setChannel('netColor', speed.gather(drivers)); // each net, the element that drives it
 transport.on('frame', (t) => diagram.seek(t));
 ```
 
@@ -247,7 +248,7 @@ document.addEventListener('pointerleave', () => diagram.setPointer(null));
 
 ## Selection and navigation
 
-A `Part` is `{ kind, index }` with `kind` one of `'block'`, `'port'`, `'net'`, or `'group'`.
+A `Document.Part` is `{ kind, index }` with `kind` one of `'block'`, `'port'`, `'net'`, or `'group'`.
 `select` replaces the selection without emitting; `reveal` brings a part into view without
 changing zoom, and with `neighbors` frames it with what touches it (a part that touches nothing is
 revealed as without it); `fit(parts)` frames some parts.
@@ -334,7 +335,7 @@ without one, and an undone move changes no structure, so the host keeps its plac
 ```ts
 const placed = new Map<string, readonly [number, number]>();
 
-function show(netlist: Netlist): void {
+function show(netlist: Document.Netlist): void {
   diagram.load(netlist, { fit: false });
   const positions = new Float32Array(2 * netlist.blockCount).fill(Number.NaN);
   netlist.blockKey?.forEach((key, b) => positions.set(placed.get(key) ?? [NaN, NaN], 2 * b));

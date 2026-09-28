@@ -13,11 +13,11 @@ and updates every subscriber, including the monitor.
 
 ```ts
 import { colormap } from '@latkit/colormaps';
-import { createSeries } from '@latkit/model';
+import { Series } from '@latkit/model';
 import { createMonitor } from '@latkit/monitor';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#monitor')!;
-const series = createSeries({ signals: ['load'], elementCount: 2 });
+const series = Series.create({ signals: ['load'], elementCount: 2 });
 const monitor = createMonitor({
   valueRange: [0, 1],
   colorRange: [0, 1],
@@ -34,8 +34,8 @@ Appends use `values[(frame * signals + signal) * elements + element]`. Their buf
 immutable after append. Float32 and float64 values are accepted; time is float64, finite, and
 nondecreasing. Repeated timestamps are retained.
 
-For a complete signal-major array, pass `time` and `values` to `createSeries`; its initial layout
-is `[signal][frame][element]`. A recorded signal of a model loads as its `Field`, from memory or
+For a complete signal-major array, pass `time` and `values` to `Series.create`; its initial layout
+is `[signal][frame][element]`. A recorded signal of a model loads as its field, from memory or
 a remote recording: `monitor.load(field)`. The renderer reads bounded windows.
 
 ## Change the display

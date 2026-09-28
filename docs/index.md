@@ -27,16 +27,16 @@ Latkit packages are ESM modules for modern browser applications. The rendering p
 
 ## Packages
 
-| Package             | Use it for                                                           |
-| ------------------- | -------------------------------------------------------------------- |
-| `@latkit/network`   | Interactive WebGPU network topology views                            |
-| `@latkit/monitor`   | WebGPU time-series and signal monitor views                          |
-| `@latkit/diagram`   | WebGPU block diagrams with automatic layout and edit proposals       |
-| `@latkit/embed`     | `latkit-network` and `latkit-monitor` custom elements                |
-| `@latkit/gpu`       | What every renderer shares: devices, frames, attach, channels        |
-| `@latkit/colormaps` | Colors and colormaps: `RGBA`, the catalog, gradients, and a parser   |
-| `@latkit/model`     | The network model, its runs, recordings, and fields, and its sources |
-| `@latkit/port`      | Ports, frames, protocols, and a model served across them             |
+| Package             | Use it for                                                          |
+| ------------------- | ------------------------------------------------------------------- |
+| `@latkit/network`   | Interactive WebGPU network topology views                           |
+| `@latkit/monitor`   | WebGPU time-series and signal monitor views                         |
+| `@latkit/diagram`   | WebGPU block diagrams with automatic layout and edit proposals      |
+| `@latkit/embed`     | `latkit-network` and `latkit-monitor` custom elements               |
+| `@latkit/gpu`       | What every renderer shares: devices, frames, attach, channels       |
+| `@latkit/colormaps` | Colors and colormaps: `RGBA`, the catalog, gradients, and a parser  |
+| `@latkit/model`     | `Model`, `Engine`, and `Document` to subclass, and their recordings |
+| `@latkit/port`      | Ports, frames, protocols, and a model served across them            |
 
 ```{toctree}
 :maxdepth: 2

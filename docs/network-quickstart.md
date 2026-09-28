@@ -12,11 +12,11 @@ The application owns the canvas. Give it a stable display size before attaching 
 
 ## Build a topology
 
-`Topology` uses dense typed arrays. `vertexCoords` stores two numbers per vertex. `edges` stores endpoint pairs. `polylineStart` stores one offset per edge plus a terminal offset.
+`Model.Topology` uses dense typed arrays. `vertexCoords` stores two numbers per vertex. `edges` stores endpoint pairs. `polylineStart` stores one offset per edge plus a terminal offset.
 
 ```ts
 import { colormap } from '@latkit/colormaps';
-import type { Topology } from '@latkit/model';
+import type { Model } from '@latkit/model';
 import { createNetwork } from '@latkit/network';
 
 const canvas = document.getElementById('network');
@@ -24,7 +24,7 @@ if (!(canvas instanceof HTMLCanvasElement)) {
   throw new Error('Missing #network canvas.');
 }
 
-const topology: Topology = {
+const topology: Model.Topology = {
   vertexCount: 3,
   vertexCoords: new Float32Array([-96, 30, -95, 31, -94, 30]),
   coordinateSpace: 'geographic',

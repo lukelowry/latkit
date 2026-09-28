@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
-import { createSeries, type Domain, type Series } from '@latkit/model';
-import { createEmitter } from '@latkit/gpu';
+import { type Domain, Series } from '@latkit/model';
 
 import { position } from '../src/position.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -52,48 +51,111 @@ async function paint(action: () => unknown) {
     fail();
   }
 }
+/** A series whose frames are the times a test lists, each element's value its index. */
+class Listed extends Series {
+  readonly #time: number[];
+  readonly #reads: Window[];
+
+  constructor(elements: number, time: number[], reads: Window[]) {
+    super({ signals: ['x'], elementCount: elements });
+    this.#time = time;
+    this.#reads = reads;
+  }
+
+  override get state(): Series.State {
+    const time = this.#time;
+    return {
+      frameCount: time.length,
+      timeRange: time.length ? ([time[0]!, time.at(-1)!] as const) : null,
+      ranges: Float64Array.of(0, this.elementCount),
+      live: true,
+    };
+  }
+
+  /** Tell every listener the listed times grew. */
+  grew(): void {
+    this.publish(this.state);
+  }
+
+  async locate(
+    range: Domain,
+    head: number,
+    signal?: AbortSignal,
+  ): Promise<readonly [number, number]> {
+    signal?.throwIfAborted();
+    const time = this.#time;
+    let start = 0,
+      end = 0;
+    while (start < head && time[start]! < range[0]) start++;
+    while (end < head && time[end]! <= range[1]) end++;
+    return [start, end];
+  }
+
+  protected async fetch(_: number, window: Window, signal?: AbortSignal): Promise<Series.Block> {
+    signal?.throwIfAborted();
+    this.#reads.push(window);
+    return {
+      time: Float64Array.from(
+        this.#time.slice(window.frameOffset, window.frameOffset + window.frameCount),
+      ),
+      values: Float32Array.from(
+        { length: window.frameCount * window.elementCount },
+        (_, i) => window.elementOffset + (i % window.elementCount),
+      ),
+      stride: window.elementCount,
+    };
+  }
+}
 function source(elements: number, time: number[], reads: Window[] = []) {
-  const events = createEmitter<{ change: undefined }>();
-  const series: Series = {
-    signals: ['x'],
-    elementCount: elements,
-    get state() {
-      return {
-        frameCount: time.length,
-        timeRange: time.length ? ([time[0]!, time.at(-1)!] as const) : null,
-        ranges: Float64Array.of(0, elements),
-        live: true,
-      };
-    },
-    on: (event, listener) => events.on(event, listener),
-    async locate(range, head, signal) {
-      signal?.throwIfAborted();
-      let start = 0,
-        end = 0;
-      while (start < head && time[start]! < range[0]) start++;
-      while (end < head && time[end]! <= range[1]) end++;
-      return [start, end];
-    },
-    async read(_, window, signal) {
-      signal?.throwIfAborted();
-      reads.push(window);
-      return {
-        time: Float64Array.from(
-          time.slice(window.frameOffset, window.frameOffset + window.frameCount),
-        ),
-        values: Float32Array.from(
-          { length: window.frameCount * window.elementCount },
-          (_, i) => window.elementOffset + (i % window.elementCount),
-        ),
-        stride: window.elementCount,
-      };
-    },
-  };
-  return { series, append: () => events.emit('change', undefined) };
+  const series = new Listed(elements, time, reads);
+  return { series, append: () => series.grew() };
+}
+/** `series` with what `overrides` gives in place of its own state, read, or locate. */
+function behaving(
+  series: Series,
+  overrides: {
+    readonly state?: Series.State;
+    read?(signalIndex: number, window: Window, signal?: AbortSignal): Promise<Series.Block>;
+    locate?(range: Domain, head: number, signal?: AbortSignal): Promise<readonly [number, number]>;
+  },
+): Series {
+  class Behaving extends Series {
+    constructor() {
+      super({
+        signals: series.signals,
+        elementCount: series.elementCount,
+        ...(series.elements && { elements: series.elements }),
+      });
+    }
+    override get state(): Series.State {
+      return 'state' in overrides ? overrides.state! : series.state;
+    }
+    override on(event: 'change', listener: () => void): () => void {
+      return series.on(event, listener);
+    }
+    override read(
+      signalIndex: number,
+      window: Window,
+      signal?: AbortSignal,
+    ): Promise<Series.Block> {
+      return overrides.read
+        ? overrides.read(signalIndex, window, signal)
+        : series.read(signalIndex, window, signal);
+    }
+    locate(range: Domain, head: number, signal?: AbortSignal): Promise<readonly [number, number]> {
+      return overrides.locate
+        ? overrides.locate(range, head, signal)
+        : series.locate(range, head, signal);
+    }
+    protected fetch(): Promise<Series.Block> {
+      return Promise.reject(new Error('a behaving series reads through its own'));
+    }
+  }
+  return new Behaving();
 }
 /** A live series of one element and one signal, and reads that can be held or failed. */
 function stream(initial: number[]) {
-  const live = createSeries({ signals: ['x'], elementCount: 1 });
+  const live = Series.create({ signals: ['x'], elementCount: 1 });
   const push = (values: number[]): void => {
     live.append({
       time: Float64Array.from(values, (_, i) => live.state.frameCount + i),
@@ -106,13 +168,7 @@ function stream(initial: number[]) {
     if (gate) await gate;
     return live.read(...args);
   });
-  const series: Series = {
-    ...live,
-    get state() {
-      return live.state;
-    },
-    read,
-  };
+  const series = behaving(live, { read });
   return {
     series,
     push,
@@ -166,13 +222,14 @@ it('reads a long focus independently of history blocks and before history finish
   const blocked = new Promise<void>((resolve) => {
     release = resolve;
   });
-  bind({
-    ...input,
-    async read(s, w, signal) {
-      if (w.elementCount > 1) await blocked;
-      return input.read(s, w, signal);
-    },
-  });
+  bind(
+    behaving(input, {
+      async read(s, w, signal) {
+        if (w.elementCount > 1) await blocked;
+        return input.read(s, w, signal);
+      },
+    }),
+  );
   await monitor.attach(canvas());
   monitor.select(149999);
   await pump(() => focus().reduce((n, d) => n + d.instanceCount, 0) === 99999);
@@ -325,16 +382,17 @@ it('ignores a locate that resolves after destroy even when the source ignores ab
   const input = source(2, [0, 1]).series;
   let finish!: () => void,
     started = false;
-  bind({
-    ...input,
-    async locate(range, head) {
-      started = true;
-      await new Promise<void>((resolve) => {
-        finish = resolve;
-      });
-      return input.locate(range, head);
-    },
-  });
+  bind(
+    behaving(input, {
+      async locate(range, head) {
+        started = true;
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        return input.locate(range, head);
+      },
+    }),
+  );
   await monitor.attach(canvas());
   await pump(() => started);
   monitor.destroy();
@@ -350,13 +408,12 @@ it('ignores a locate that resolves after destroy even when the source ignores ab
 it('reports a read failure once and retries the same series cleanly', async () => {
   const input = source(2, [0, 1]).series;
   let fail = true;
-  const original = {
-    ...input,
+  const original = behaving(input, {
     async read(s: number, w: Window, signal?: AbortSignal) {
       if (fail) throw new Error('read failed');
       return input.read(s, w, signal);
     },
-  };
+  });
   const error = vi.fn();
   monitor.on('error', error);
   bind(original);
@@ -372,21 +429,22 @@ it('cancels pending reads on detach and replays on another canvas', async () => 
   const input = source(2, [0, 1]).series;
   let started = false,
     cancelled = false;
-  bind({
-    ...input,
-    read: (_s, _w, signal) =>
-      new Promise((_, reject) => {
-        started = true;
-        signal!.addEventListener(
-          'abort',
-          () => {
-            cancelled = true;
-            reject(new DOMException('Aborted', 'AbortError'));
-          },
-          { once: true },
-        );
-      }),
-  });
+  bind(
+    behaving(input, {
+      read: (_s, _w, signal) =>
+        new Promise((_, reject) => {
+          started = true;
+          signal!.addEventListener(
+            'abort',
+            () => {
+              cancelled = true;
+              reject(new DOMException('Aborted', 'AbortError'));
+            },
+            { once: true },
+          );
+        }),
+    }),
+  );
   await monitor.attach(canvas());
   await pump(() => started);
   monitor.detach();
@@ -398,7 +456,7 @@ it('cancels pending reads on detach and replays on another canvas', async () => 
 it('normalizes Float64 values before upload and maps color independently from height', async () => {
   const base = 1e12,
     delta = 0.125;
-  const series = createSeries({
+  const series = Series.create({
     signals: ['x'],
     elementCount: 2,
     time: Float64Array.of(0, 1),
@@ -437,7 +495,7 @@ it('normalizes Float64 values before upload and maps color independently from he
 
 it('keeps extreme finite times and constant Float64 values visible', async () => {
   bind(
-    createSeries({
+    Series.create({
       signals: ['x'],
       elementCount: 1,
       time: Float64Array.of(-1e308, 0, 1e308),
@@ -451,7 +509,7 @@ it('keeps extreme finite times and constant Float64 values visible', async () =>
 
 it('uses sparse class indices for selection and picking', async () => {
   bind(
-    createSeries({
+    Series.create({
       signals: ['x'],
       elementCount: 2,
       elements: Uint32Array.of(4, 900),
@@ -474,13 +532,14 @@ it('does not let an obsolete hover clear the latest reading', async () => {
   const input = source(2, [0, 1, 2]).series;
   let delay = false;
   const pending: (() => void)[] = [];
-  bind({
-    ...input,
-    async locate(range, head) {
-      if (delay) await new Promise<void>((resolve) => pending.push(resolve));
-      return input.locate(range, head);
-    },
-  });
+  bind(
+    behaving(input, {
+      async locate(range, head) {
+        if (delay) await new Promise<void>((resolve) => pending.push(resolve));
+        return input.locate(range, head);
+      },
+    }),
+  );
   const element = canvas();
   await paint(() => monitor.attach(element));
   delay = true;
@@ -514,8 +573,7 @@ it('catches up an unknown range after switching back from a fixed domain', async
   const reads: Window[] = [],
     time = [0, 1],
     input = source(2, time, reads);
-  const series: Series = {
-    ...input.series,
+  const series = behaving(input.series, {
     get state() {
       return { ...input.series.state, ranges: null };
     },
@@ -532,7 +590,7 @@ it('catches up an unknown range after switching back from a fixed domain', async
         ),
       };
     },
-  };
+  });
   const range = vi.fn();
   monitor.on('valueRange', range);
   monitor.setOptions({ valueRange: [0, 100] });

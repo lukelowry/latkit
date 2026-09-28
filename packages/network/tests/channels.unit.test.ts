@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createChannels } from '@latkit/gpu';
-import { createSeries, type Domain } from '@latkit/model';
+import { type Domain, Series } from '@latkit/model';
 
 import { CHANNELS, channelRecord, initialDomain, type Channel } from '../src/channels.js';
 import { createUniforms, ITEM_EDGE_VISIBLE, ITEM_VERTEX_VISIBLE } from '../src/webgpu/uniforms.js';
@@ -141,6 +141,8 @@ describe('network channel records', () => {
     channels.set('vertexSize', Float32Array.of(5, 6, 7));
     expect(channels.domain('vertexSize')).toEqual([0, 1]);
     expect(initialDomain('edgeColor', Float32Array.of(4, 9))).toEqual([0, 1]);
+    // A height of one value is padded, as a field's domain is.
+    expect(initialDomain('vertexHeight', Float32Array.of(3, 3, Number.NaN))).toEqual([2.5, 3.5]);
   });
 
   it('keeps the size output range live even while the size channel is unbound', () => {
@@ -199,7 +201,7 @@ describe('network channel records', () => {
     expect(store.writeWords).toHaveBeenLastCalledWith(23, layout);
     expect(() =>
       channels.set('vertexPosition', {
-        series: createSeries({ signals: ['x'], elementCount: 3 }),
+        series: Series.create({ signals: ['x'], elementCount: 3 }),
         signal: 0,
       }),
     ).toThrow(new TypeError('network channel vertexPosition cannot follow a series'));

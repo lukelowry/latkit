@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createSeries, type Series } from '@latkit/model';
+import { Series } from '@latkit/model';
 
 import { createPlayback } from '../src/playback.js';
 
@@ -9,7 +9,7 @@ const RESERVED = 100;
 /** A series of `frames` frames at times 0, 1, 2, …, where item `e` of frame `f` is `10f + e`. */
 function series(items: number, frames: number, elements?: Uint32Array) {
   const stored = elements?.length ?? items;
-  const live = createSeries({ signals: ['a'], elementCount: stored, elements });
+  const live = Series.create({ signals: ['a'], elementCount: stored, elements });
   const append = (count: number): void => {
     const from = live.state.frameCount;
     live.append({
@@ -23,20 +23,14 @@ function series(items: number, frames: number, elements?: Uint32Array) {
   if (frames > 0) append(frames);
   let gate: Promise<void> | null = null;
   let failure: Error | null = null;
-  const read = vi.fn<Series['read']>(async (...args) => {
+  const own = live.read.bind(live);
+  const read = vi.spyOn(live, 'read').mockImplementation(async (...args) => {
     if (gate) await gate;
     if (failure) throw failure;
-    return live.read(...args);
+    return own(...args);
   });
-  const wrapped: Series = {
-    ...live,
-    get state() {
-      return live.state;
-    },
-    read,
-  };
   return {
-    series: wrapped,
+    series: live as Series,
     read,
     append,
     seal: () => live.seal(),

@@ -1,4 +1,4 @@
-import type { Domain, Netlist, Part, Series } from '@latkit/model';
+import type { Document, Domain, Series } from '@latkit/model';
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import * as entry from '../src/index.js';
@@ -74,7 +74,7 @@ describe('diagram package entrypoint', () => {
     expectTypeOf<Parameters<typeof entry.createDiagram>>().toEqualTypeOf<[options?: Options]>();
     expectTypeOf<ReturnType<typeof entry.createDiagram>>().toEqualTypeOf<Diagram>();
     expectTypeOf<Parameters<Diagram['load']>>().toEqualTypeOf<
-      [netlist: Netlist, options?: { readonly fit?: boolean }]
+      [netlist: Document.Netlist, options?: { readonly fit?: boolean }]
     >();
     expectTypeOf<Parameters<Diagram['setChannel']>>().toEqualTypeOf<
       [
@@ -91,8 +91,10 @@ describe('diagram package entrypoint', () => {
     }>();
     expectTypeOf<ReturnType<Diagram['getChannelDomain']>>().toEqualTypeOf<Domain | null>();
     expectTypeOf<ReturnType<Diagram['arrange']>>().toEqualTypeOf<Float32Array>();
-    expectTypeOf<Parameters<Diagram['select']>>().toEqualTypeOf<[parts: readonly Part[]]>();
-    expectTypeOf<ReturnType<Diagram['hitTest']>>().toEqualTypeOf<readonly Part[]>();
+    expectTypeOf<Parameters<Diagram['select']>>().toEqualTypeOf<
+      [parts: readonly Document.Part[]]
+    >();
+    expectTypeOf<ReturnType<Diagram['hitTest']>>().toEqualTypeOf<readonly Document.Part[]>();
     expectTypeOf<ReturnType<Diagram['locate']>>().toEqualTypeOf<
       readonly [clientX: number, clientY: number] | null
     >();
@@ -105,12 +107,12 @@ describe('diagram package entrypoint', () => {
       readonly centerY: number;
       readonly zoom: number;
     }>();
-    expectTypeOf<Part>().toEqualTypeOf<{
+    expectTypeOf<Document.Part>().toEqualTypeOf<{
       readonly kind: 'block' | 'port' | 'net' | 'group';
       readonly index: number;
     }>();
-    expectTypeOf<Events['hover']>().toEqualTypeOf<Part | null>();
-    expectTypeOf<Events['select']>().toEqualTypeOf<readonly Part[]>();
+    expectTypeOf<Events['hover']>().toEqualTypeOf<Document.Part | null>();
+    expectTypeOf<Events['select']>().toEqualTypeOf<readonly Document.Part[]>();
     expectTypeOf<Events['pipelineError']>().toEqualTypeOf<{ readonly cause: unknown }>();
     expectTypeOf<Events['move']>().toEqualTypeOf<{
       readonly blocks: Uint32Array;

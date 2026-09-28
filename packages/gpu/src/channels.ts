@@ -5,7 +5,13 @@
  * supplies its registry, its store, and how a channel's record reaches its uniforms.
  */
 
-import { validateDomain, validateSeries, type Domain, type Series } from '@latkit/model';
+import {
+  normalizeDomain,
+  validateDomain,
+  validateSeries,
+  type Domain,
+  type Series,
+} from '@latkit/model';
 
 import { createPlayback } from './playback.js';
 
@@ -376,12 +382,8 @@ function isFollowing(values: unknown): values is Following {
   return typeof values === 'object' && values !== null && 'series' in values;
 }
 
-/** The recorded finite range of a series signal, or `[0, 1]` before anything finite is recorded. */
+/** A series signal's recorded range as the display interval a field's `domain` reports. */
 function recordedDomain({ series, signal }: Following): Domain {
   const ranges = series.state.ranges;
-  const lo = ranges?.[signal * 2];
-  const hi = ranges?.[signal * 2 + 1];
-  return lo !== undefined && hi !== undefined && Number.isFinite(lo) && Number.isFinite(hi)
-    ? [lo, hi]
-    : UNIT;
+  return normalizeDomain(ranges && [ranges[signal * 2]!, ranges[signal * 2 + 1]!]);
 }

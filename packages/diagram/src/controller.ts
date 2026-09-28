@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 
-import { validateNetlist, type Domain, type Netlist, type Series } from '@latkit/model';
+import { type Document, type Domain, type Series, validateNetlist } from '@latkit/model';
 import {
   bakeColormap,
   createAttachment,
@@ -249,7 +249,7 @@ export interface Diagram {
    * pass `false` to keep a placed camera's pose. @defaultValue `{ fit: true }`
    * @throws Error naming the first invalid netlist field; nothing changes.
    */
-  load(netlist: Netlist, options?: { readonly fit?: boolean }): void;
+  load(netlist: Document.Netlist, options?: { readonly fit?: boolean }): void;
   /**
    * Update options. `devices` remains construction-only; a new `gridPitch` re-sizes and
    * re-arranges (placements keep their values), a new `interaction` abandons a gesture in flight.
@@ -267,14 +267,13 @@ export interface Diagram {
    * its nets and moves its group's frame. `blockVisible` and `netVisible` re-route what they
    * touch. `domain` configures the colormap channels only; without one they normalize `[0, 1]`.
    *
-   * A channel can instead follow one signal of a `Series`, such as a model `Field`, with one
+   * A channel can instead follow one signal of a `Series`, such as a model's field, with one
    * element per item of its scope, or a sparse series whose unrecorded items take NaN.
    * {@link Diagram.seek} picks the frame it shows, and a null `domain` follows the signal's
-   * recorded range as the series appends. Every
-   * channel but `blockPosition`, `blockVisible`, and `netVisible` can follow a series, as those
-   * re-lay the scene. Channels following one signal share its frames; a new one shows nothing
-   * until its first frame is read, while binding the signal a channel already follows keeps what
-   * it shows.
+   * recorded range as the series appends. Every channel but `blockPosition`, `blockVisible`, and
+   * `netVisible` can follow a series, as those re-lay the scene. Channels following one signal
+   * share its frames; a new one shows nothing until its first frame is read, while binding the
+   * signal a channel already follows keeps what it shows.
    *
    * @param channel - Channel name to bind.
    * @param values - One value per item of the channel's scope (two per block for

@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { createModel, openModel, type Source } from '../src/index.js';
-import { sampleClass, sampleData, sampleLoader, sampleModel, sampleValues } from './fixture.js';
+import { Model } from '../src/index.js';
+import { Sample, sampleClass, sampleData, sampleModel, sampleValues } from './fixture.js';
 
-describe('source and openModel', () => {
+describe('model.source and Model.from', () => {
   it('round-trips a model through bytes with classes still lazy', async () => {
     const calls: string[] = [];
     const original = sampleModel(calls);
-    const model = await openModel(original.source());
+    const model = await Model.from(original.source());
     expect(calls).toEqual([]);
 
-    expect(model.vendor).toBe('test');
+    expect(model.format).toBe('test');
     expect(model.name).toBe('Sample');
     expect(model.meta).toEqual({ freqBase: 60, note: 'fixture', live: true, empty: null });
     expect(model.owners).toEqual({ vertex: 'bus', edge: 'branch' });
@@ -35,8 +35,8 @@ describe('source and openModel', () => {
   });
 
   it('packs only what a column declares, and every model part packs again', async () => {
-    const model = await openModel(sampleModel().source());
-    const again = await openModel(model.source());
+    const model = await Model.from(sampleModel().source());
+    const again = await Model.from(model.source());
     expect(again.class('bus')!.columns).toEqual([
       { kind: 'number', id: 'Vm', label: 'Voltage', unit: 'pu' },
       { kind: 'text', id: 'zone', label: 'Zone', group: 'Location' },
@@ -58,39 +58,40 @@ describe('source and openModel', () => {
 
   it('reads sections as views into the received buffer', async () => {
     const core = await sampleModel().source().core();
-    const model = await openModel({ ...stub(), core: async () => core });
+    const model = await Model.from({ ...stub(), core: async () => core });
     expect(model.topology.edges.buffer).toBe(core.buffer);
   });
 
   it('rejects a core that is not a pack or describes an inconsistent model', async () => {
-    await expect(openModel({ ...stub(), core: async () => new Uint8Array(3) })).rejects.toThrow(
+    await expect(Model.from({ ...stub(), core: async () => new Uint8Array(3) })).rejects.toThrow(
       /truncated/,
     );
     await expect(
-      openModel({ ...stub(), core: async () => new TextEncoder().encode('LKM\0garbage.....') }),
+      Model.from({ ...stub(), core: async () => new TextEncoder().encode('LKM\0garbage.....') }),
     ).rejects.toThrow();
   });
 
   it('rejects a shard that does not hold the columns its spec declares', async () => {
     const packed = sampleModel().source();
     const shard = await packed.class('gen');
-    const model = await openModel({ ...stub(), core: packed.core, class: async () => shard });
+    const model = await Model.from({ ...stub(), core: packed.core, class: async () => shard });
     await expect(model.load('bus')).rejects.toThrow(/does not hold the columns its spec declares/);
     // The same columns in another order: every count agrees, every column is misplaced.
     const swap = <T>([first, second, ...rest]: readonly T[]): T[] => [second!, first!, ...rest];
-    const reordered = createModel({
-      ...sampleData(),
-      ...sampleLoader(),
-      classes: sampleData().classes.map((spec) =>
-        spec.id === 'bus' ? { ...spec, columns: swap(spec.columns) } : spec,
-      ),
-      load: async (id) => {
+    const reordered = new Sample({
+      description: {
+        ...sampleData(),
+        classes: sampleData().classes.map((spec) =>
+          spec.id === 'bus' ? { ...spec, columns: swap(spec.columns) } : spec,
+        ),
+      },
+      values: async (id) => {
         const values = sampleValues(id);
         return id === 'bus' ? { ...values, values: swap(values.values) } : values;
       },
     });
     const swapped = await reordered.source().class('bus');
-    const other = await openModel({ ...stub(), core: packed.core, class: async () => swapped });
+    const other = await Model.from({ ...stub(), core: packed.core, class: async () => swapped });
     await expect(other.load('bus')).rejects.toThrow(/does not hold the columns/);
   });
 
@@ -100,7 +101,7 @@ describe('source and openModel', () => {
     });
     const seen: string[] = [];
     const packed = sampleModel().source();
-    const source: Source = {
+    const source: Model.Source = {
       core: async (signal, progress) => {
         seen.push(`core:${signal?.aborted ?? 'none'}`);
         progress?.(1, 2);
@@ -113,7 +114,7 @@ describe('source and openModel', () => {
       bytes: async () => new Uint8Array(),
     };
     const progress: [number, number][] = [];
-    const model = await openModel(source, {
+    const model = await Model.from(source, {
       signal: new AbortController().signal,
       progress: (loaded, total) => progress.push([loaded, total]),
     });
@@ -123,7 +124,7 @@ describe('source and openModel', () => {
   });
 });
 
-function stub(): Source {
+function stub(): Model.Source {
   return {
     core: async () => new Uint8Array(),
     class: async () => new Uint8Array(),

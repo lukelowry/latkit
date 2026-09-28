@@ -64,18 +64,17 @@ export interface Monitor {
    */
   detach(canvas?: HTMLCanvasElement): void;
   /**
-   * Show one signal of a series, such as a model `Field`; committed appends are observed
-   * automatically. Loading it again retries failed work.
+   * Show one signal of a series, such as a model field, or nothing with null; committed appends
+   * are observed automatically. Loading it again retries failed work.
    *
    * @throws TypeError when `binding` is not a series binding; RangeError for a signal the series
    * lacks.
    */
-  load(binding: { readonly series: Series; readonly signal: number }): void;
+  load(binding: { readonly series: Series; readonly signal: number } | null): void;
   /** Validate the entire patch before changing anything. devices is construction-only. */
   setOptions(options: Options): void;
   /** Highlight a class element; an unrecorded index is ignored. */
   select(element: number | null): void;
-  clear(): void;
   pause(): void;
   resume(): void;
   destroy(): void;
@@ -344,6 +343,14 @@ export function createMonitor(options: Options = {}): Monitor {
     detach: (canvas) => attachment.detach(canvas),
     load(input) {
       if (destroyed) return;
+      if (input === null) {
+        series = null;
+        selected = null;
+        lastReading = null;
+        scan = { frames: 0, range: null, domain: null };
+        if (binding) replay(binding);
+        return;
+      }
       checkLoad(input);
       const { series: next, signal: index } = input;
       if (series === next && signalIndex === index) {
@@ -387,14 +394,6 @@ export function createMonitor(options: Options = {}): Monitor {
       )
         return;
       applySelection(next);
-    },
-    clear() {
-      if (destroyed) return;
-      series = null;
-      selected = null;
-      lastReading = null;
-      scan = { frames: 0, range: null, domain: null };
-      if (binding) replay(binding);
     },
     pause() {
       consumerPaused = true;

@@ -1,23 +1,18 @@
 /**
- * A recording served across a port: its declaration and clock arrive with the connection, so
+ * A recording served across a port: its classes and clock arrive with the connection, so
  * `frameAt`, `timeAt`, and every series' `locate` answer on the far side at once, and only sample
- * windows travel afterwards. The recording's own source is what crosses: `openRecording` does the
+ * windows travel afterwards. The recording's own source is what crosses: `Recording.from` does the
  * rest on the far side.
  */
 
-import { openRecording, type Recording, type RecordingSource } from '@latkit/model';
+import { Recording, type Series } from '@latkit/model';
 
 import { connect, serve, transferred, type Remote } from './channel.js';
 import { check } from './check.js';
 import type { Port } from './port.js';
 import { protocol } from './protocol.js';
 
-type Window = Parameters<RecordingSource['read']>[2];
-type Description = Awaited<ReturnType<RecordingSource['describe']>>;
-type Change = RecordingSource['changes'] extends (signal?: AbortSignal) => AsyncIterable<infer C>
-  ? C
-  : never;
-type Block = Awaited<ReturnType<RecordingSource['read']>>;
+type Description = Awaited<ReturnType<Recording.Source['describe']>>;
 
 type Request =
   | { readonly op: 'describe' }
@@ -26,11 +21,14 @@ type Request =
       readonly op: 'read';
       readonly classId: string;
       readonly signalIndex: number;
-      readonly window: Window;
+      readonly window: Series.Window;
     };
 
+/** The most one sample window carries, time included: four times what any latkit reader asks. */
+const MAX_BYTES = 4 << 20;
+
 const recordingProtocol = (id: string) =>
-  protocol<Request, Description | Change | Block>(
+  protocol<Request, Description | Recording.Change | Series.Block>(
     `recording:${id}`,
     check.requests<Request>({
       describe: {},
@@ -38,7 +36,7 @@ const recordingProtocol = (id: string) =>
       read: {
         classId: check.string,
         signalIndex: check.index,
-        window: check.object<Window>({
+        window: check.object<Series.Window>({
           frameOffset: check.index,
           frameCount: check.index,
           elementOffset: check.index,
@@ -49,20 +47,17 @@ const recordingProtocol = (id: string) =>
   );
 
 /**
- * Serve one recording until either side closes. Sample windows are capped at `maxBytes` (4 MiB by
- * default), time included. Returns the server's own close.
+ * Serve one recording until either side closes. A sample window carries at most 4 MiB, time
+ * included. Returns the server's own close.
  *
- * @throws Error when the recording has no id; RangeError when `maxBytes` is below 16.
+ * @throws Error when the recording has no id.
  */
 export function serveRecording(
   port: Port,
   recording: Recording,
-  options: { readonly maxBytes?: number; onClose?(): void } = {},
+  options: { onClose?(): void } = {},
 ): () => void {
   if (!recording?.id) throw new Error('a recording needs an id');
-  const maxBytes = options.maxBytes ?? 4 * 1024 * 1024;
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 16)
-    throw new RangeError('maxBytes must be an integer of at least 16');
   const source = recording.source();
   const service = serve(
     port,
@@ -75,8 +70,8 @@ export function serveRecording(
           return owned(source.changes(signal));
         case 'read': {
           const { frameCount, elementCount } = request.window;
-          if (frameCount * (elementCount + 1) * 8 > maxBytes)
-            return Promise.reject(new RangeError('sample window exceeds maxBytes'));
+          if (frameCount * (elementCount + 1) * 8 > MAX_BYTES)
+            return Promise.reject(new RangeError('sample window exceeds 4 MiB'));
           return source
             .read(request.classId, request.signalIndex, request.window, signal)
             .then((block) =>
@@ -99,7 +94,7 @@ export function serveRecording(
 }
 
 /** Each change as the caller's own: its buffers cross without a copy. */
-async function* owned(changes: AsyncIterable<Change>) {
+async function* owned(changes: AsyncIterable<Recording.Change>) {
   for await (const change of changes) {
     const buffers = [change.time.buffer as ArrayBuffer];
     for (const range of Object.values(change.ranges))
@@ -109,9 +104,9 @@ async function* owned(changes: AsyncIterable<Change>) {
 }
 
 /**
- * Open the recording a `serveRecording` peer serves as `id`: its clock and every class's shape
- * arrive before this resolves, and its series follow the peer's changes until it is closed, which
- * closes the connection.
+ * Open the recording a `serveRecording` peer serves as `id`: its classes and clock arrive before
+ * this resolves, and its series follow the peer's changes until it is stopped; closing it closes
+ * the connection.
  *
  * @throws Error when `id` is empty, or the peer cannot open the recording.
  */
@@ -122,17 +117,20 @@ export async function connectRecording(
 ): Promise<Remote<Recording>> {
   if (!id) throw new Error('a recording needs an id');
   const connection = connect(port, recordingProtocol(id));
-  return openRecording(
+  return Recording.from(
     {
       describe: (describing) =>
         connection.call({ op: 'describe' }, { signal: describing }) as Promise<Description>,
       changes: (following) =>
-        connection.stream({ op: 'changes' }, { signal: following }) as AsyncIterable<Change>,
+        connection.stream(
+          { op: 'changes' },
+          { signal: following },
+        ) as AsyncIterable<Recording.Change>,
       read: (classId, signalIndex, window, reading) =>
         connection.call(
           { op: 'read', classId, signalIndex, window },
           { signal: reading },
-        ) as Promise<Block>,
+        ) as Promise<Series.Block>,
       close: () => connection.close(),
     },
     signal,

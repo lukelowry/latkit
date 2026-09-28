@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { createSeries, type Series } from '@latkit/model';
+import { Series } from '@latkit/model';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createMonitor,
@@ -40,7 +40,7 @@ function makeSeries(input: {
       throw new Error(`signal ${signal} has ${source.length} values, expected ${stride}`);
     values.set(source, signal * stride);
   }
-  return createSeries({ time, values, signals, elementCount: input.elements });
+  return Series.create({ time, values, signals, elementCount: input.elements });
 }
 
 /** A controller over the stub's pool, tracked for teardown. */
@@ -607,7 +607,7 @@ describe('monitor', () => {
     expect(stub.log.leaseReleases).toBe(1);
   });
 
-  it('clear blanks the canvas, drops the series, and releases the slabs', async () => {
+  it('loading null blanks the canvas, drops the series, and releases the slabs', async () => {
     const scope = await mount();
     const series = makeSeries({ elements: 1, time: [0, 1], signals: [[1, 2]] });
     scope.load({ series, signal: 0 });
@@ -616,7 +616,7 @@ describe('monitor', () => {
     stub.log.clears.length = 0;
     stub.log.draws.length = 0;
 
-    scope.clear();
+    scope.load(null);
     await settle();
 
     expect(stub.log.clears).toContain('monitor-history');
@@ -629,7 +629,8 @@ describe('monitor', () => {
   it('refuses a load that is not a series binding, or names a signal the series lacks', () => {
     const scope = create();
     const series = makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] });
-    expect(() => scope.load(null as never)).toThrow(TypeError);
+    expect(() => scope.load(undefined as never)).toThrow(TypeError);
+    expect(() => scope.load(null)).not.toThrow();
     expect(() => scope.load(series as never)).toThrow(TypeError);
     expect(() => scope.load({ series, signal: 1 })).toThrow(RangeError);
     expect(() => scope.load({ series, signal: 0.5 })).toThrow(RangeError);

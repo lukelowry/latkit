@@ -4,52 +4,26 @@
  * way a signal does: its series is sealed with one frame, which holds at every time.
  */
 
-import { normalizeDomain, type Domain } from './domain.js';
-import type { Series } from './series.js';
+import { normalizeDomain } from './domain.js';
+import type { Model } from './model.js';
+import { Gathered, type Series } from './series.js';
 
-/** Which quantity of a class: a number column or a signal. Plain data a host persists. */
-export interface FieldRef {
-  readonly classId: string;
-  readonly kind: 'column' | 'signal';
-  readonly id: string;
-}
-
-/**
- * A field resolved against a model and, for a signal, a recording: the `{ series, signal }` every
- * renderer binds.
- */
-export interface Field {
-  readonly ref: FieldRef;
-  readonly label: string;
-  readonly unit: string;
-  /** A signal's series in the recording; a column's is sealed with one frame. */
-  readonly series: Series;
-  /** The field's index in `series.signals`. */
-  readonly signal: number;
-  /** `normalizeDomain` over every committed value; it grows while the recording is live. */
-  readonly domain: Domain;
-  /**
-   * Every element's value at `time`: the latest frame at or before it, the first before the
-   * recording starts, NaN where an element has no value. The array is borrowed; never mutate it.
-   *
-   * @throws RangeError when `time` is not finite.
-   */
-  at(time: number, signal?: AbortSignal): Promise<Float32Array | Float64Array>;
-}
+/** An element no item holds. */
+const NONE = 0xffffffff;
 
 /**
  * The field `ref` names over signal `index` of `series`, for a class of `count` elements, whose
  * frame at a time is `frameAt`'s.
  */
 export function fieldOf(
-  ref: FieldRef,
+  ref: Model.FieldRef,
   label: string,
   unit: string,
   series: Series,
   index: number,
   count: number,
   frameAt: (time: number) => number,
-): Field {
+): Model.Field {
   return {
     ref: Object.freeze({ classId: ref.classId, kind: ref.kind, id: ref.id }),
     label,
@@ -81,6 +55,24 @@ export function fieldOf(
       elements.forEach((element, at) => (dense[element] = values[at]!));
       return dense;
     },
+    gather(elements) {
+      const picks = new Uint32Array(elements.length);
+      for (let item = 0; item < elements.length; item++) {
+        const element = elements[item]!;
+        if (element !== NONE && !(Number.isSafeInteger(element) && element >= 0 && element < count))
+          throw new RangeError(`element ${element} is not one of the class's ${count}`);
+        picks[item] = element;
+      }
+      return fieldOf(
+        ref,
+        label,
+        unit,
+        new Gathered(series, index, picks),
+        0,
+        picks.length,
+        frameAt,
+      );
+    },
   };
 }
 
@@ -89,7 +81,7 @@ export function fieldOf(
  *
  * @throws TypeError when it is not.
  */
-export function checkRef(ref: FieldRef): void {
+export function checkRef(ref: Model.FieldRef): void {
   if (
     !ref ||
     typeof ref !== 'object' ||

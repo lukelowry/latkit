@@ -71,9 +71,16 @@ describe('parseSeries', () => {
     expect(() =>
       parseSeries({ time: [0], values: [1, 2], signals: ['P', 'P'], elementCount: 1 }),
     ).toThrow('unique');
-    expect(() => validateSeries({ ...series(), read: null })).toThrow(
-      'series.read must be a function',
-    );
+    const made = series();
+    const plain = {
+      signals: made.signals,
+      elementCount: made.elementCount,
+      state: made.state,
+      locate: made.locate.bind(made),
+      on: made.on.bind(made),
+      read: null,
+    };
+    expect(() => validateSeries(plain)).toThrow('series.read must be a function');
     expect(() => validateSeries({ ...series(), state: { frameCount: -1 } })).toThrow('frameCount');
   });
 });
