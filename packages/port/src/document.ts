@@ -39,16 +39,19 @@ const MAX_SNAPSHOTS = 32;
  * sessions so reads and edits share its queue. Acknowledgments are in-memory acceptance.
  *
  * @remarks
+ * A factory runs on the first open request, at most once per service. Requests share its result
+ * or failure. Supplied documents and promises retain eager initialization. Reuse the same document
+ * across connections to retain its history and retry receipts.
+ *
  * Closing releases this connection's model snapshots. It does not dispose the document or erase
- * its history. The host owns document lifetime, authentication, and durable storage.
+ * its history, or cancel host-owned loading. A pending open cannot attach after closure. The host
+ * owns document lifetime, authentication, and durable storage.
  */
 export function serveDocument(
   port: Port,
-  document: Document | Promise<Document>,
+  source: Document | Promise<Document> | (() => Document | Promise<Document>),
   options: { onClose?(): void } = {},
 ): () => void {
-  const opening = Promise.resolve(document).then(ownerOf);
-  void opening.catch(() => undefined);
   let owner: Owner | null = null;
   let client: string | null = null;
   let off = (): void => undefined;
@@ -56,6 +59,27 @@ export function serveDocument(
   let pending: Update | null = null;
   let flushing = false;
   const models = new Map<Model, { readonly id: string; readonly close: () => void }>();
+
+  function assertOpen(): void {
+    if (closed) throw new Error('The document service was closed.');
+  }
+  function acquire(document: Document): Owner {
+    assertOpen();
+    return ownerOf(document);
+  }
+  let opening: Promise<Owner> | undefined =
+    typeof source === 'function' ? undefined : Promise.resolve(source).then(acquire);
+  // Observe eager failures; requests still receive the original rejection.
+  void opening?.catch(() => undefined);
+
+  function openOwner(): Promise<Owner> {
+    return (opening ??= Promise.resolve()
+      .then(() => {
+        assertOpen();
+        return typeof source === 'function' ? source() : source;
+      })
+      .then(acquire));
+  }
 
   function cleanup(): void {
     if (closed) return;
@@ -101,9 +125,14 @@ export function serveDocument(
     port,
     DOCUMENT,
     async (request, signal) => {
-      owner = await opening;
       signal.throwIfAborted();
-      if (closed) throw new Error('The document service was closed.');
+      assertOpen();
+      if (client === null && request.op !== 'open')
+        throw new Error('Open the document before using it.');
+      const opened = await openOwner();
+      signal.throwIfAborted();
+      assertOpen();
+      owner = opened;
       if (request.op === 'apply' || request.op === 'undo' || request.op === 'redo') {
         if (request.client !== client) throw new Error('Open this document client before editing.');
         return owner.commit(request, signal);
@@ -118,7 +147,6 @@ export function serveDocument(
           off = current.on(publish);
           return { kind: 'opened', client, next: opened.next, view: current.view };
         }
-        if (client === null) throw new Error('Open the document before reading it.');
         if (request.op === 'view') return { kind: 'view', view: current.view };
         const version = current.view.version;
         if (!sameVersion(request.base, version)) return { kind: 'conflict', version };

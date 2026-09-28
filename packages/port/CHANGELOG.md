@@ -1,5 +1,13 @@
 # @latkit/port
 
+## 0.5.0
+
+### Minor Changes
+
+- Accept a lazy document factory in `serveDocument`. Initialize once on the first open request,
+  share the result or failure, and prevent owner creation or client attachment after closure.
+  Existing document and promise sources remain supported; the document wire protocol is unchanged.
+
 ## 0.4.0
 
 ### Minor Changes

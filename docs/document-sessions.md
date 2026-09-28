@@ -50,6 +50,49 @@ They share `Document.parts(schematicOrGetter)` with the local document implement
 One document service occupies a port. Engine services and scoped model services can share that
 port. The same document can be served to multiple clients on separate ports.
 
+## Lazy document loading
+
+Pass a factory to serve a packed model immediately and load its native document only when editing
+opens. The factory returns a `Document` or `Promise<Document>`; the host retains that document for
+the workspace's lifetime, including across reconnects and multiple connections.
+
+```ts
+import type { Document } from '@latkit/model';
+import { serveDocument, serveModel, type Port } from '@latkit/port';
+
+// Workspace state, retained independently of any connection.
+let document: Promise<Document> | undefined;
+function getDocument(): Promise<Document> {
+  return (document ??= Promise.resolve().then(openNativeDocument));
+}
+
+function serveWorkspace(port: Port): () => void {
+  const stopModel = serveModel(port, packedModel);
+  const stopDocument = serveDocument(port, getDocument);
+  return () => {
+    stopDocument();
+    stopModel();
+  };
+}
+```
+
+Each `serveDocument` registration invokes its factory at most once, on its first valid `open`
+request. Other services on the port, malformed requests, and document reads or edits before open
+never invoke it. Concurrent opens share one initialization attempt. Synchronous throws and promise
+rejections use the existing request error path; the failure remains cached for that registration.
+Retry initialization by registering a new service and, if the host caches a failed promise as in
+this example, resetting that failed host entry. Do not replace a successfully opened workspace's
+document during reconnect: its identity retains the epoch, history, and retry receipts.
+
+Closing before factory invocation skips loading. Closing during loading prevents late owner
+creation or client attachment, but does not cancel host-owned work or dispose the eventual document.
+Cancelling one request does not cancel shared initialization. The host controls loading cancellation
+and resource lifetime. Supplied documents and promises keep their existing eager initialization;
+passing a promise cannot defer the work that already created it.
+
+This is a server API addition. Clients still use `connectDocument()` and the existing `document`
+service, `open` request, replies, and frame format.
+
 ## Inspect and edit a retained draft
 
 ```ts

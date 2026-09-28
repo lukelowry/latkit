@@ -92,6 +92,13 @@ await connectDocument(newPort, { resume: session });
 session.close();
 ```
 
+`serveDocument(port, () => openNativeDocument())` defers loading until the first document open
+request. Each service invokes its factory at most once and shares its result or failure. Closing
+an unused service never invokes it; closing during loading prevents attachment without cancelling
+host-owned work. Supplied documents and promises remain supported. For reconnects or multiple
+clients, have the factory return the same workspace-owned document; see
+[Lazy document loading](../../docs/document-sessions.md#lazy-document-loading).
+
 Each document has one serialized owner, retained across connections. Commands carry an owner epoch,
 base revision, and client sequence; stale indexed edits throw `DocumentConflict`. Refusals retain
 `Refusal.at`. Updates replace changed schematic columns; layout changes retain the netlist and
