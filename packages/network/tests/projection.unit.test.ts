@@ -1144,6 +1144,50 @@ describe('CameraRig', () => {
     expect(rig.camera.current.length).toBe(5);
   });
 
+  it('captures the camera a host keeps, landing a deferred fit first', () => {
+    const empty = new CameraRig(createUniforms().camera);
+    expect(empty.capture(vp)).toBeNull();
+    const { rig } = makeRig();
+    expect(rig.capture(hidden)).toBeNull();
+    const captured = rig.capture(vp)!;
+    expect(rig.pendingPlacement).toBe(false);
+    expect(captured.fit).toBe(true);
+    expect(captured.px).toBeGreaterThan(0);
+    rig.tick(NOW, vp);
+    expect(rig.capture(hidden)).toEqual(captured);
+  });
+
+  it('places a camera where a host asks: now, or exactly on the first sized frame', () => {
+    const { rig } = makeRig();
+    rig.tick(NOW, vp);
+    const fit = rig.capture(vp)!;
+    rig.place({ centerX: 1 }, fit.px * 2, vp, false);
+    const placed = rig.capture(vp)!;
+    expect(placed.pose.centerX).toBeCloseTo(1);
+    expect(placed.px).toBeCloseTo(fit.px * 2);
+    expect(placed.fit).toBe(false);
+
+    const { rig: later } = makeRig();
+    later.place({ centerX: -1 }, null, hidden, false);
+    expect(later.camera.placed).toBe(false);
+    later.tick(NOW, vp);
+    expect(later.capture(vp)!.pose.centerX).toBeCloseTo(-1);
+    expect(later.capture(vp)!.fit).toBe(false);
+
+    later.fit(vp, false);
+    expect(later.capture(vp)!.fit).toBe(true);
+    later.leaveFit();
+    expect(later.capture(vp)!.fit).toBe(false);
+  });
+
+  it('keeps a pitch a host places across a projection switch', () => {
+    const { rig } = makeRig();
+    rig.tick(NOW, vp);
+    rig.switchTo('tilt', vp);
+    rig.place({ pitch: 20 }, null, vp, false);
+    expect(rig.capture(vp)!.pose.pitch).toBeCloseTo(20);
+  });
+
   it('defers the canonical fit until the first usable viewport', () => {
     const { rig } = makeRig();
     rig.tick(NOW, hidden);

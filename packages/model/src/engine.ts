@@ -1,10 +1,11 @@
 /**
- * An engine: what records a model. Attach one to a model; the model's `record` runs it in turn,
- * and a transport runs it into a recorder that forwards.
+ * An engine: what records a model. A host has it record any model into a recording; a transport
+ * has it record into a recorder that forwards.
  */
 
 import type { Domain } from './domain.js';
 import type { Model } from './model.js';
+import { begin, type Recording } from './recording.js';
 
 /** One recording waiting its turn. */
 interface Waiting {
@@ -15,9 +16,9 @@ interface Waiting {
 
 /**
  * What records a model: a simulator, a solver, an analysis, a feed. Subclass it: `parse` what an
- * input may be, and `execute` one, writing frames through the recorder. Attach it to a model,
- * whose `record` runs it; the base runs as many at once as its concurrency allows and queues the
- * rest in order, telling each how many wait before it.
+ * input may be, and `execute` one, writing frames through the recorder. One engine records any
+ * model it is given; the base runs as many recordings at once as its concurrency allows and
+ * queues the rest in order, telling each how many wait before it.
  */
 export abstract class Engine {
   /** Recordings it makes at once; the rest wait their turn, in order. */
@@ -37,15 +38,54 @@ export abstract class Engine {
   }
 
   /**
-   * Record `model` for `input` into `recorder`, in turn: `input` is checked at once, and this
-   * resolves once the recording is complete, or rejects with why it failed or stopped. A model's
-   * `record` calls it with the recorder of the recording it returns; a transport calls it with a
-   * recorder that forwards.
+   * Record `model` for `input`: `input` is checked at once, and the recording returned waits its
+   * turn, then fills as the engine computes, holding every class of `model` that records a signal.
    *
    * @throws TypeError or RangeError for an input the engine refuses, before anything is recorded.
    */
-  record(model: Model, input: unknown, recorder: Engine.Recorder): Promise<void> {
+  record(
+    model: Model,
+    input: unknown,
+    options?: { readonly id?: string; readonly label?: string },
+  ): Recording;
+  /**
+   * Record `model` for `input` into `recorder`, such as one a transport forwards: `input` is
+   * checked at once, and this resolves once the recording is complete, or rejects with why it
+   * failed or stopped.
+   *
+   * @throws TypeError or RangeError for an input the engine refuses, before anything is recorded.
+   */
+  record(model: Model, input: unknown, recorder: Engine.Recorder): Promise<void>;
+  record(
+    model: Model,
+    input: unknown,
+    into: Engine.Recorder | { readonly id?: string; readonly label?: string } = {},
+  ): Recording | Promise<void> {
     const parsed = this.parse(input);
+    if (isRecorder(into)) return this.#take(model, parsed, into);
+    return begin(model, into, (recorder) => this.#take(model, parsed, recorder));
+  }
+
+  /**
+   * An input as this engine takes it, from a host or a peer: checked, and the engine's own.
+   *
+   * @throws TypeError or RangeError naming what is wrong.
+   */
+  protected abstract parse(input: unknown): unknown;
+
+  /**
+   * Record `model` for an input `parse` returned: declare what the recording spans, append frames
+   * as they are computed, and log along the way; resolve once it is complete. Throwing fails the
+   * recording; `recorder.signal` aborts when its host stops it.
+   */
+  protected abstract execute(
+    model: Model,
+    input: unknown,
+    recorder: Engine.Recorder,
+  ): Promise<void>;
+
+  /** Execute `parsed` into `recorder` in turn: at once while a turn is free, else in queue order. */
+  #take(model: Model, parsed: unknown, recorder: Engine.Recorder): Promise<void> {
     const { signal } = recorder;
     return new Promise<void>((resolve, reject) => {
       const start = (): void => {
@@ -90,24 +130,6 @@ export abstract class Engine {
       this.#tell();
     });
   }
-
-  /**
-   * An input as this engine takes it, from a host or a peer: checked, and the engine's own.
-   *
-   * @throws TypeError or RangeError naming what is wrong.
-   */
-  protected abstract parse(input: unknown): unknown;
-
-  /**
-   * Record `model` for an input `parse` returned: declare what the recording spans, append frames
-   * as they are computed, and log along the way; resolve once it is complete. Throwing fails the
-   * recording; `recorder.signal` aborts when its host stops it.
-   */
-  protected abstract execute(
-    model: Model,
-    input: unknown,
-    recorder: Engine.Recorder,
-  ): Promise<void>;
 
   /** Start the next recording waiting, if a turn is free. */
   #next(): void {
@@ -165,6 +187,11 @@ export declare namespace Engine {
     /** A line for the recording's log. */
     log(level: 'info' | 'warn' | 'error', message: string): void;
   }
+}
+
+/** Whether `into` is a recorder to write through, rather than a recording's header. */
+function isRecorder(into: object): into is Engine.Recorder {
+  return typeof (into as Partial<Engine.Recorder>).append === 'function';
 }
 
 /** Why `signal` aborted, as an error. */

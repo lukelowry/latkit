@@ -42,6 +42,7 @@ describe('monitor package entrypoint', () => {
     >();
     expectTypeOf<Events['hover']>().toEqualTypeOf<Reading | null>();
     expectTypeOf<Events['select']>().toEqualTypeOf<Reading>();
+    expectTypeOf<Events['contextmenu']['reading']>().toEqualTypeOf<Reading | null>();
     expectTypeOf<Events['attached']>().toEqualTypeOf<boolean>();
   });
 

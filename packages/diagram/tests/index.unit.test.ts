@@ -2,7 +2,7 @@ import type { Document, Domain, Series } from '@latkit/model';
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import * as entry from '../src/index.js';
-import type { Channel, Diagram, Events, Options, Pose, Shade, ShadeFrame } from '../src/index.js';
+import type { Camera, Channel, Diagram, Events, Options, Shade, ShadeFrame } from '../src/index.js';
 import { twoArea } from './fixtures/netlists.js';
 
 type Interaction = NonNullable<Options['interaction']>;
@@ -64,7 +64,7 @@ describe('diagram package entrypoint', () => {
     expect(diagram.arrange()).toHaveLength(6);
     expect(diagram.hitTest(5, 5)).toEqual([]);
     expect(diagram.locate({ kind: 'block', index: 0 })).toBeNull();
-    expect(diagram.getPose()).toBeNull();
+    expect(diagram.getCamera()).toBeNull();
     diagram.destroy();
     expect(() => entry.createDiagram({ gridPitch: 0 })).toThrow(RangeError);
     expect(() => entry.validateOptions({ interaction: 'draw' as Interaction })).toThrow(TypeError);
@@ -101,11 +101,12 @@ describe('diagram package entrypoint', () => {
     expectTypeOf<ReturnType<Diagram['toDiagram']>>().toEqualTypeOf<
       readonly [x: number, y: number] | null
     >();
-    expectTypeOf<ReturnType<Diagram['getPose']>>().toEqualTypeOf<Pose | null>();
-    expectTypeOf<Pose>().toEqualTypeOf<{
+    expectTypeOf<ReturnType<Diagram['getCamera']>>().toEqualTypeOf<Camera | null>();
+    expectTypeOf<Camera>().toEqualTypeOf<{
       readonly centerX: number;
       readonly centerY: number;
-      readonly zoom: number;
+      readonly scale: number;
+      readonly fit: boolean;
     }>();
     expectTypeOf<Document.Part>().toEqualTypeOf<{
       readonly kind: 'block' | 'port' | 'net' | 'group';

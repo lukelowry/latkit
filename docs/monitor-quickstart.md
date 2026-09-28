@@ -61,7 +61,8 @@ the last image, which stays on screen, rescaled, until the repaint is complete.
 monitor.on('hover', (reading) => {
   if (reading) console.log(reading.element, reading.frame, reading.value);
 });
-monitor.on('select', (reading) => inspector.show(reading.element));
+monitor.on('select', (reading) => inspector.show(reading.element)); // the primary button alone
+monitor.on('contextmenu', ({ clientX, clientY, reading }) => menu.open(clientX, clientY, reading));
 monitor.on('error', (error) => showError(error.message));
 monitor.select(null);
 

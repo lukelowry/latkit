@@ -8,6 +8,9 @@ import type { Model } from './model.js';
 /** Steps a history keeps; making one more forgets the oldest. */
 const DEPTH = 200;
 
+/** A net no element of a field drives. */
+const NONE = 0xffffffff;
+
 /**
  * A case open for editing: operations in the model's identities, one history that takes any of
  * them back, and the case as a block diagram. Subclass it for a format: `change` the case for some
@@ -123,6 +126,21 @@ export abstract class Document {
     };
   }
 
+  /**
+   * Per net of the schematic, the element of `ref.classId` whose recorded `ref` drives it, and
+   * `0xffffffff` for every other net: what `field.gather` takes to show `ref` over the nets.
+   */
+  drivers(ref: Model.FieldRef): Uint32Array {
+    const { sources } = this.schematic;
+    const drivers = new Uint32Array(sources.length).fill(NONE);
+    sources.forEach((source, net) => {
+      const field = source?.field;
+      if (field?.classId === ref.classId && field.kind === ref.kind && field.id === ref.id)
+        drivers[net] = source!.index;
+    });
+    return drivers;
+  }
+
   /** The schematic's index of a port the case names; null when the diagram does not draw it. */
   portOf(port: Document.Port): number | null {
     const block = this.partOf(port.element);
@@ -144,19 +162,15 @@ export abstract class Document {
 
   /**
    * The case as a model, as of the last change: the same model until values or structure change,
-   * and then one with the engine the model before it had, opened once however many changes came
-   * between.
+   * and then the model of the case as it stands, opened once however many changes came between.
    */
   model(signal?: AbortSignal): Promise<Model> {
     if (this.#stale) {
       this.#stale = false;
-      const previous = this.#opening;
       const controller = new AbortController();
       const promise = (async (): Promise<Model> => {
-        const before = previous ? await previous.promise.catch(() => this.#model) : this.#model;
         const model = await this.open(controller.signal);
         controller.signal.throwIfAborted();
-        model.engine = before.engine;
         this.#model = model;
         return model;
       })();

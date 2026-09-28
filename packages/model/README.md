@@ -1,14 +1,14 @@
 # @latkit/model
 
 What a format, an engine, and an editor implement, and what they make. A format subclasses
-`Model` to read its cases and `Document` to edit them; an engine subclasses `Engine` to record a
-model; a `Recording` is what an engine fills, and a `Series` is what every view follows. It has no
-dependencies, I/O, or rendering.
+`Model` to read its cases and `Document` to edit them; an engine subclasses `Engine` to record any
+model; a `Recording` is what an engine fills, one model's for good, and a `Series` is what every
+view follows. It has no dependencies, I/O, or rendering.
 
 | Class       | What it is                                                                               |
 | ----------- | ---------------------------------------------------------------------------------------- |
 | `Model`     | A case as a format reads it: topology, element classes, their values loaded on demand    |
-| `Engine`    | What records a model: a solver, a simulator, an analysis, a feed                         |
+| `Engine`    | What records any model it is given: a solver, a simulator, an analysis, a feed           |
 | `Document`  | A case open for editing: operations, one history, and the case as a block diagram        |
 | `Recording` | Every signal an engine records for a model, each class's series on one clock             |
 | `Series`    | A history a view follows: signals over time for an element axis, read in bounded windows |
@@ -74,17 +74,19 @@ const grid = await model.grid('bus'); // the class as a table
 const { rows, total } = await grid.window('north', { column: 0, dir: 'desc' }, 0, 50);
 ```
 
-A grid's `columns` say what each cell shows: the class's columns, then, at a time, every signal
-the recording holds. A sort names a column by its index there, or `null` for the label.
-`formatNumber` is the rule its cells follow, for any number shown beside them.
+A grid's `columns` say what each cell shows: the class's columns, and in a recording's grid every
+signal it records, at a time. A sort names a column by its index there, or `null` for the label.
+`formatNumber` is the rule its cells follow, for any number shown beside them. A model is immutable:
+any number of views and documents share one.
 
 ## Record it
 
 An engine subclasses `Engine`: `parse` checks an input from a host or a peer, and `execute` records
-a model for one through its recorder, resolving once complete; throwing fails the recording. Attach
-it to a model at any time, and `record` runs it: the input is checked at once, and the recording
-returned waits its turn, then fills as the engine computes. An engine records as many at once as
-its `concurrency` allows and queues the rest, telling each how many wait before it.
+the model it is given for one through its recorder, resolving once complete; throwing fails the
+recording. One engine records any model, so a host keeps one per solver, whatever cases and
+revisions it opens: `record` checks the input at once, and the recording returned waits its turn,
+then fills as the engine computes. An engine records as many at once as its `concurrency` allows and
+queues the rest, telling each how many wait before it.
 
 ```ts
 import { Engine, type Model } from '@latkit/model';
@@ -112,8 +114,8 @@ export class GridkitEngine extends Engine {
   }
 }
 
-model.engine = new GridkitEngine(new URL('/api/', location.href));
-const recording = model.record(study, { label: 'Fault at bus 5' });
+const engine = new GridkitEngine(new URL('/api/', location.href));
+const recording = engine.record(model, study, { label: 'Fault at bus 5' });
 recording.on('change', () => status.show(recording.state)); // waiting, recording, then how it ended
 stop.onclick = () => recording.stop();
 ```
@@ -123,26 +125,28 @@ reading NaN over them; a class's values are frame-major, `(frame * signals + sig
 element`, signals in the order its class declares them. The recorder takes the buffers.
 `recording.state` publishes `status`, `ahead`, `frameCount`, `timeRange`, and `error` together;
 `span`, `expectedFrames`, and `log` are what the engine declared and said; `frameAt(time)` and
-`timeAt(frame)` read the clock.
+`timeAt(frame)` read the clock. `recording.model` is the model it records, whatever becomes of the
+case since, so its results never attach to another revision.
 
 ## Bind a field
 
 A field is one number column or one recorded signal, resolved to the `{ series, signal }` every
-renderer binds: a column's series is sealed with one frame, which holds at every time. `fields`
-lists what a class can bind; a `Model.FieldRef` is the plain data a host persists.
+renderer binds: a column's series is sealed with one frame, which holds at every time. A model
+resolves its columns, and a recording its signals and its model's columns; `fields` lists what a
+class can bind, and a `Model.FieldRef` is the plain data a host persists.
 
 ```ts
-const vm = await model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }, recording);
+const vm = await recording.field({ classId: 'bus', kind: 'signal', id: 'Vm' });
 network.setChannel('vertexColor', vm); // frames stay on the GPU; the domain follows; null unbinds
 monitor.load(vm);
 network.seek(t);
 const values = await vm?.at(t); // every bus at t, NaN where one has no value
 
 // The same field over other items: a diagram's nets over the elements that drive them.
-diagram.setChannel('netColor', vm?.gather(drivers) ?? null);
+diagram.setChannel('netColor', vm ? vm.gather(document.drivers(vm.ref)) : null);
 ```
 
-A field resolves to null when the model or the recording has no values for it. One reference
+A field resolves to null when there are no values for it. One reference
 resolves to one series, so the renderers binding it share its frames, and `domain` is the display
 interval over every committed value; a gathered field keeps it, so each view colors a value alike.
 
@@ -150,8 +154,9 @@ interval over every committed value; a gathered field keeps it, so each view col
 
 A format that edits gives its model a `document`: a `Document` subclass that makes operations true
 as one change, reverts a change, and describes its schematic. The base keeps one history of the
-last 200 steps, maps the schematic's parts to elements and back, and opens the model a change calls
-for once `model()` asks, keeping the engine.
+last 200 steps, maps the schematic's parts to elements and back, finds the element that drives each
+net, and opens the model a change calls for once `model()` asks. Record that model to record the
+case as it stands.
 
 ```ts
 const document = await model.document!();
@@ -199,7 +204,8 @@ Everything lazy opens from a source. A model's `Model.Source` is its core and on
 packed on demand, and its bytes; a `Recording.Source` is a recording's classes, its changes as it
 grows, and sample windows on demand. `source()` makes one from the instance, and `Model.from` and
 `Recording.from` open one from anywhere: a file, a fetch, or `@latkit/port`, which serves exactly
-these across a port.
+these across a port. A recording opens against the model it records, which checks it fits; a model
+opened from packs serves them again as they came, so a relay decodes nothing.
 
 ```ts
 // pack, for example when staging a library at build time

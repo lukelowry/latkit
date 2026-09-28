@@ -24,7 +24,7 @@ Install only the packages your application needs.
 | [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)             | What every renderer shares: devices, frames, attach, channels       |
 | [`@latkit/colormaps`](https://www.npmjs.com/package/@latkit/colormaps) | Colors and colormaps: `RGBA`, the catalog, gradients, and a parser  |
 | [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | `Model`, `Engine`, and `Document` to subclass, and their recordings |
-| [`@latkit/port`](https://www.npmjs.com/package/@latkit/port)           | Ports, frames, protocols, and a model served across them            |
+| [`@latkit/port`](https://www.npmjs.com/package/@latkit/port)           | Ports, frames, protocols, and models and engines served across them |
 
 ## Requirements
 

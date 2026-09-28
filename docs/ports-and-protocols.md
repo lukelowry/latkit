@@ -1,9 +1,9 @@
 # Ports and protocols
 
 `@latkit/port` carries messages between the two halves of one application: a page and its worker,
-an extension host and its webview, a browser and a server. It serves a `@latkit/model` model, and
-what its engine recorded, from whichever half holds the data, and carries any protocol an
-application declares itself.
+an extension host and its webview, a browser and a server. It serves `@latkit/model` models,
+engines, and recordings from whichever half holds them, and carries any protocol an application
+declares itself.
 
 ## A port
 
@@ -33,55 +33,70 @@ const port = messagePort(new Worker(new URL('./worker.ts', import.meta.url), { t
 Each constructor takes its target structurally, so a `Worker`, a webview API, or a socket passes as
 it is; `Port` is the one named type on that side of the surface.
 
-## Serve a model
+## Serve a model and an engine
 
 The half that holds a model serves it; the other half connects and gets the same `Model`, its
-classes loading across the port as they are asked for. Only packs and recorder calls cross: the
-core, one shard per class as it is first asked for, the case's bytes, and each recording as the
-served engine writes it. A model with an engine records on it from the far side, filling a
-recording there; an append's buffers are handed over without a copy.
+classes loading across the port as they are asked for: the core at once, one shard per class as it
+is first asked for, and the case's bytes on request. A model opened from packs serves them as they
+came, so a relay decodes nothing. One model is served per port; a worker that holds several serves
+each on a channel of its own.
+
+An engine is served on its own and records any model it is given. A model its realm serves is
+recorded where it lives; any other is lent by its source for as long as the recording lasts, the
+engine reading only what it needs. Each recording fills on the caller's side as the engine writes
+it, call by call, an append's buffers handed over without a copy.
 
 ```ts
 // worker.ts
-import { messagePort, serveModel } from '@latkit/port';
+import { messagePort, serveEngine, serveModel } from '@latkit/port';
 
-const model = new GridkitCase(bytes);
-model.engine = new GridkitEngine(server);
-serveModel(messagePort(self), model);
+serveEngine(messagePort(self), new GridkitEngine(server));
+// Each case arrives with a channel of its own.
+self.addEventListener('message', ({ data }) => {
+  if (data.open) serveModel(messagePort(data.open.port), new GridkitCase(data.open.bytes));
+});
 
 // page.ts
-import { connectModel } from '@latkit/port';
+import { connectEngine, connectModel, messagePort } from '@latkit/port';
 
-const model = await connectModel(port, { progress: (loaded, total) => bar.set(loaded / total) });
-const recording = model.record(study, { id: 'fault-4' });
-network.setChannel('vertexColor', await model.field(VM, recording));
-recording.on('change', () => status(recording.state)); // waiting · recording · complete | stopped | failed
+const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
+const engine = connectEngine(messagePort(worker));
+const { port1, port2 } = new MessageChannel();
+worker.postMessage({ open: { port: port2, bytes } }, [port2]);
+const model = await connectModel(messagePort(port1), {
+  progress: (loaded, total) => bar.set(loaded / total),
+});
+const recording = engine.record(model, study, { id: 'fault-4' });
+network.setChannel('vertexColor', await recording.field(VM));
+recording.on('change', () => status(recording.state)); // waiting → recording → complete | stopped | failed
 
 // On teardown:
 model.close();
+engine.close();
 ```
 
-A connected model is a `Remote<Model>`: the model, plus `close`. Its engine records on the served
-one, which checks every input with its own `parse`, queues what it cannot take at once and says
-how many wait ahead, and stops when the far recording stops. A model still opening can be served
-as a promise, so no early request is lost.
+A connected model or engine is a `Remote<T>`: the model or engine, plus `close`. The served engine
+checks every input with its own `parse`, queues what it cannot take at once and says how many wait
+ahead, and stops when the far recording stops. A model or an engine still opening can be served as
+a promise, so no early request is lost.
 
 ## Serve a recording
 
-A `Recording` is every signal an engine recorded, every class on one clock. Served by its id, it
-crosses the port as its source: each class's shape, then its changes from the first, carrying its
-clock, where it stands, and its log, and sample windows only when read. The far side opens it with
-`Recording.from`, so `frameAt`, `timeAt`, and every series' `locate` answer there at once.
+A `Recording` is every signal an engine recorded for one model, every class on one clock. Served
+by its id, it crosses the port as its source: each class's shape, then its changes from the first,
+carrying its clock, where it stands, and its log, and sample windows only when read. The far side
+opens it with `Recording.from` against the model it records, which checks that it fits, so
+`frameAt`, `timeAt`, and every series' `locate` answer there at once.
 
 ```ts
 // Host: a recording its engine fills, or any other Recording.
 import { serveRecording } from '@latkit/port';
 const stop = serveRecording(port, recording);
 
-// Page: the id of the recording the host selected.
+// Page: the id of the recording the host selected, and the model it records.
 import { connectRecording } from '@latkit/port';
-const remote = await connectRecording(port, recordingId);
-const vm = await model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }, remote);
+const remote = await connectRecording(port, model, recordingId);
+const vm = await remote.field({ classId: 'bus', kind: 'signal', id: 'Vm' });
 monitor.load(vm);
 
 // On teardown:

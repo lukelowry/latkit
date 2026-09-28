@@ -348,11 +348,16 @@ export function networkSpec(deps: NetworkDeps): ElementSpec<Network, NetworkData
       }
       if (name === 'projection') {
         if (value === null) return;
-        if (Object.hasOwn(PROJECTIONS, value)) {
-          context.controller.setProjection(value as Projection, true);
-        } else {
+        if (!Object.hasOwn(PROJECTIONS, value)) {
           context.warn(`Unknown projection ${quote(value)}; keeping the current one.`);
+          return;
         }
+        // One the data cannot show falls back to the first it can, flat at worst.
+        const shown = context.controller.projections;
+        const projection = shown[value as Projection]
+          ? (value as Projection)
+          : ((Object.keys(PROJECTIONS) as Projection[]).find((mode) => shown[mode]) ?? 'flat');
+        context.controller.setCamera({ projection });
         return;
       }
       const channel = CHANNEL_BY_ATTRIBUTE.get(name);

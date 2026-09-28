@@ -42,7 +42,7 @@ A page that wants a tag instead of a controller installs `@latkit/embed`.
 : The classes a format, an engine, and an editor implement, `Model`, `Engine`, and `Document`, what they make, `Recording` and `Series`, and every question about a case: its recordings, fields, and tables, and the vocabulary every renderer speaks: `Model.Topology`, `Document.Netlist`, `Series`, `Domain`.
 
 `@latkit/port`
-: A port over workers, webviews, sockets, and one thread; typed request, reply, and stream protocols over it; and a model and its recordings served across it.
+: A port over workers, webviews, sockets, and one thread; typed request, reply, and stream protocols over it; and models, engines, and recordings served across it.
 
 `@latkit/colormaps`
 : `RGBA` and `Colormap`, the named colormap catalog with gradients and scale metadata, and a CSS color parser.

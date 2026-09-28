@@ -2,7 +2,7 @@
 
 Where latkit crosses a boundary: a two-method port over workers, webviews, sockets, and one thread;
 one binary frame that carries typed arrays intact; typed request, reply, and stream protocols with
-the checks their served side runs; and a `@latkit/model` model and its recordings served and
+the checks their served side runs; and `@latkit/model` models, engines, and recordings served and
 connected across a port.
 
 ## Install
@@ -35,33 +35,40 @@ Every message is JSON values plus typed arrays (`Uint8Array` through `Float64Arr
 the value, on every transport. A service written against a worker runs unchanged against a socket.
 `messagePort` does not refuse what structured clone would carry beyond that; `loopback` does.
 
-## A model across a port
+## Models, engines, and recordings across a port
 
 ```ts
-// the worker: the case parses here, and its engine records here
-import { messagePort, serveModel, serveRecording } from '@latkit/port';
+// the worker: cases parse here, and the engine records here
+import { messagePort, serveEngine, serveModel, serveRecording } from '@latkit/port';
 
-const model = new GridkitCase(bytes);
-model.engine = new GridkitEngine(server);
-serveModel(messagePort(self), model); // its packs and, with an engine, its recordings
+serveEngine(messagePort(self), new GridkitEngine(server)); // records any model a peer gives it
 serveRecording(messagePort(self), recording); // a recording the worker keeps
+self.addEventListener('message', ({ data }) => {
+  // one case per channel, its packs served as they are asked for
+  if (data.open) serveModel(messagePort(data.open.port), new GridkitCase(data.open.bytes));
+});
 
 // the page
-import { connectModel, connectRecording } from '@latkit/port';
+import { connectEngine, connectModel, connectRecording, messagePort } from '@latkit/port';
 
-const model = await connectModel(port, { progress });
-const recording = model.record(study); // the worker's engine records, filling a recording here
-const kept = await connectRecording(port, 'fault-4'); // or opens the worker's own
-model.close();
+const port = messagePort(worker);
+const engine = connectEngine(port);
+const { port1, port2 } = new MessageChannel();
+worker.postMessage({ open: { port: port2, bytes } }, [port2]);
+const model = await connectModel(messagePort(port1), { progress });
+const recording = engine.record(model, study); // fills here as the worker's engine writes it
+const kept = await connectRecording(port, model, 'fault-4'); // or opens the worker's own
 ```
 
-Only a model's source crosses: the core, each class shard as it is first asked for, the case's
-bytes, and each recording as the served engine writes it, call by call, its frames handed over
-without a copy. The far side opens it with `Model.from`, so it is the same `Model`, and its engine
-records on the served one, which checks every input, queues what it cannot take at once, and
-stops when the far recording stops. A kept recording opens with `Recording.from`, its clock at hand
-and its samples read in windows of at most 4 MiB. A connected side is a `Remote<T>`: the model or
-recording, plus `close`.
+Only sources and recorder calls cross. A model's core crosses at once and each class shard as it is
+first asked for, with the case's bytes on request; a model opened from packs serves them as they
+came. An engine records any model it is given: a model its own realm serves is recorded where it
+lives, and any other is lent by its source, which the engine reads only as it needs, for as long
+as the recording lasts. Each recording crosses as the engine writes it, call by call, its frames
+handed over without a copy; the served engine checks every input, queues what it cannot take at
+once, and stops when the far recording stops. A kept recording opens with `Recording.from` against
+the model it records, its clock at hand and its samples read in windows of at most 4 MiB. A
+connected side is a `Remote<T>`: the model, engine, or recording, plus `close`.
 
 ## A protocol
 

@@ -11,11 +11,12 @@ describe('port package entrypoint', () => {
     expect(Object.keys(manifest.exports)).toEqual(['.']);
   });
 
-  it('publishes the transports, the protocol machinery, its checks, and the model and recording services', () => {
+  it('publishes the transports, the protocol machinery, its checks, and the model, engine, and recording services', () => {
     expect(Object.keys(entry).sort()).toEqual([
       'bytePort',
       'check',
       'connect',
+      'connectEngine',
       'connectModel',
       'connectRecording',
       'describeError',
@@ -23,6 +24,7 @@ describe('port package entrypoint', () => {
       'messagePort',
       'protocol',
       'serve',
+      'serveEngine',
       'serveModel',
       'serveRecording',
       'socketPort',

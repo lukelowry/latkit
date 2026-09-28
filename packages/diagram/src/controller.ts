@@ -13,7 +13,7 @@ import {
   type Presentation,
 } from '@latkit/gpu';
 
-import { Camera, type Pose, type Viewport } from './camera.js';
+import { CameraRig, type Pose, type Viewport } from './camera.js';
 import { channelRecord, SLOTTED, type Channel, type Scope, type SlotChannel } from './channels.js';
 import { Focus } from './focus.js';
 import { snapTo, type Rect } from './geometry.js';
@@ -168,6 +168,42 @@ export type Events = {
    */
   error: { readonly channel: Channel; readonly cause: unknown };
 };
+
+/** Where the view looks from, as one value a host keeps and restores. */
+export interface Camera {
+  /** Diagram x at the viewport center. */
+  readonly centerX: number;
+  /** Diagram y at the viewport center; y grows downward. */
+  readonly centerY: number;
+  /** CSS pixels per diagram unit; `1` is actual size. */
+  readonly scale: number;
+  /** It follows the fit view: a resize or a reload keeps it fitted. */
+  readonly fit: boolean;
+}
+
+/**
+ * Check `camera` field by field, and return the pose it names, or null for none.
+ *
+ * @throws TypeError or RangeError naming the first field that is invalid.
+ */
+function checkCamera(camera: Partial<Camera>): Partial<Pose> | null {
+  if (!camera || typeof camera !== 'object') throw new TypeError('camera must be an object');
+  const { centerX, centerY, scale, fit } = camera;
+  if (centerX !== undefined && !Number.isFinite(centerX))
+    throw new RangeError('camera.centerX must be a finite number');
+  if (centerY !== undefined && !Number.isFinite(centerY))
+    throw new RangeError('camera.centerY must be a finite number');
+  if (scale !== undefined && !(Number.isFinite(scale) && scale > 0))
+    throw new RangeError('camera.scale must be a finite number greater than 0');
+  if (fit !== undefined && typeof fit !== 'boolean')
+    throw new TypeError('camera.fit must be a boolean');
+  if (centerX === undefined && centerY === undefined && scale === undefined) return null;
+  return {
+    ...(centerX !== undefined && { centerX }),
+    ...(centerY !== undefined && { centerY }),
+    ...(scale !== undefined && { zoom: scale }),
+  };
+}
 
 /**
  * Imperative controller for a WebGPU block-diagram canvas.
@@ -421,21 +457,22 @@ export interface Diagram {
    */
   toDiagram(clientX: number, clientY: number): readonly [x: number, y: number] | null;
   /**
-   * Read the camera pose the next {@link Diagram.setPose} builds on.
+   * The camera as a value to keep and restore.
    *
-   * @returns The current pose, or null before a load or before the camera is placed.
+   * @returns The camera, or null before a load or before the camera is placed.
    */
-  getPose(): Pose | null;
+  getCamera(): Camera | null;
   /**
-   * Merge a partial pose, its zoom clamped to the limits the content sets. Before the camera is
-   * placed the pose is kept and applied over its first fit.
+   * Move the camera in one step: a fit when `fit` is true, else the center and scale it names,
+   * the scale clamped to the limits the content sets. Before the camera is placed the placement is
+   * kept and applied over its first fit.
    *
-   * @param pose - Pose fields to change; omitted fields keep their value.
-   * @param animate - If true, ease toward the pose, subject to the `motion` option.
+   * @param camera - Fields to change; omitted fields keep their value.
+   * @param animate - If true, ease toward the camera, subject to the `motion` option.
    * @returns True when the camera changed; false before a load.
-   * @throws RangeError naming a pose field that is not finite, or a zoom that is not positive.
+   * @throws TypeError or RangeError naming a field that is invalid.
    */
-  setPose(pose: Partial<Pose>, animate?: boolean): boolean;
+  setCamera(camera: Partial<Camera>, animate?: boolean): boolean;
   /**
    * Drag the content by screen pixels: positive `dx` moves it right, positive `dy` moves it down.
    *
@@ -649,7 +686,7 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
   const focus = new Focus(mirrors.focus);
   const atlas = new Atlas(deps.createRasterizer(), opts.fontFamily);
   const labels = new Labels(mirrors.glyphs, atlas);
-  const camera = new Camera();
+  const camera = new CameraRig();
 
   /** The sampled colormap, written into every renderer an attach builds. */
   let colormapLut = bakeColormap(opts.colormap);
@@ -1744,14 +1781,26 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
       return [snapTo(x, grid), snapTo(y, grid)];
     },
 
-    getPose() {
+    getCamera() {
       if (!scene.prepared || !camera.placed) return null;
-      return camera.pose;
+      const { centerX, centerY, zoom } = camera.pose;
+      return Object.freeze({ centerX, centerY, scale: zoom, fit: camera.following });
     },
 
-    setPose(pose, animate = false) {
+    setCamera(next, animate = false) {
+      const pose = checkCamera(next);
       if (!scene.prepared) return false;
-      if (!camera.setPose(pose, animated(animate), opts.animationMs)) return false;
+      if (next.fit === true) {
+        fitAll(animate);
+        return true;
+      }
+      if (pose) {
+        if (!camera.setPose(pose, animated(animate), opts.animationMs)) return false;
+      } else if (next.fit === false && camera.following) {
+        camera.leaveFit();
+      } else {
+        return false;
+      }
       cameraMoved();
       return true;
     },

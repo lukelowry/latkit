@@ -75,6 +75,50 @@ import { POINTER_NONE, type Shade, type ShadeFrame } from './shade.js';
 export type { Options } from './options.js';
 
 /**
+ * Where the view looks from, as one value a host keeps and restores: its projection, the pose at
+ * the view anchor, the zoom, and whether it follows the fit view.
+ */
+export interface Camera {
+  readonly projection: Projection;
+  /** World x coordinate or longitude at the view anchor. */
+  readonly centerX: number;
+  /** World y coordinate or latitude at the view anchor. */
+  readonly centerY: number;
+  /** Tilt off nadir, in degrees. */
+  readonly pitch: number;
+  /** Heading, in degrees clockwise from north. */
+  readonly bearing: number;
+  /** CSS pixels per world unit at the view anchor: zoom in units every projection shares. */
+  readonly scale: number;
+  /** It follows the fit view: a resize or a reload keeps it fitted. */
+  readonly fit: boolean;
+}
+
+/**
+ * Check `camera` field by field, and return the pose fields it names, or null for none.
+ *
+ * @throws TypeError or RangeError naming the first field that is invalid.
+ */
+function checkCamera(camera: Partial<Camera>): Partial<Pose> | null {
+  if (!camera || typeof camera !== 'object') throw new TypeError('camera must be an object');
+  const { projection, scale, fit } = camera;
+  if (projection !== undefined && !PROJECTION_MODES.includes(projection))
+    throw new TypeError(`camera.projection must be one of ${PROJECTION_MODES.join(', ')}`);
+  if (scale !== undefined && !(Number.isFinite(scale) && scale > 0))
+    throw new RangeError('camera.scale must be a finite number greater than 0');
+  if (fit !== undefined && typeof fit !== 'boolean')
+    throw new TypeError('camera.fit must be a boolean');
+  let pose: { -readonly [K in keyof Pose]?: number } | null = null;
+  for (const key of ['centerX', 'centerY', 'pitch', 'bearing'] as const) {
+    const value = camera[key];
+    if (value === undefined) continue;
+    if (!Number.isFinite(value)) throw new RangeError(`camera.${key} must be a finite number`);
+    (pose ??= {})[key] = value;
+  }
+  return pose;
+}
+
+/**
  * Events emitted by a {@link Network} instance, keyed by name with their payload.
  *
  * @remarks
@@ -138,8 +182,9 @@ export type Events = {
  */
 export interface Network {
   /**
-   * Active projection: the destination of the last accepted
-   * {@link Network.setProjection} call, `'flat'` before any.
+   * The projection the camera shows, known before any canvas has a size: the last one
+   * {@link Network.setCamera} switched to, `'flat'` before any. An orbit from flat tilts it, and a
+   * topology or `vertexPosition` binding it cannot show returns it to flat.
    */
   readonly projection: Projection;
   /**
@@ -364,15 +409,6 @@ export interface Network {
   setShade(shade: Shade | null): Promise<void>;
 
   /**
-   * Switch projection.
-   *
-   * @param mode - Projection to activate.
-   * @param fallback - When `mode` is unsupported, switch instead to the first
-   * supported projection in canonical order.
-   * @returns True when the loaded topology supports `mode`.
-   */
-  setProjection(mode: Projection, fallback?: boolean): boolean;
-  /**
    * Fit the loaded topology into the current viewport.
    *
    * @param animate - If true, animate toward the fit view when a viewport is available.
@@ -408,24 +444,27 @@ export interface Network {
     options?: { readonly neighbors?: boolean; readonly animate?: boolean },
   ): boolean;
   /**
-   * Read the camera pose the next {@link Network.setPose} would build on.
+   * The camera as a value to keep and restore: where it settles, with a deferred placement landed
+   * first against the live or last viewport.
    *
-   * @returns The current pose, or null before a topology is loaded or the
-   * camera is placed.
+   * @returns The camera, or null before a topology is loaded and a canvas has had a size;
+   * `projection` answers before then.
    */
-  getPose(): Pose | null;
+  getCamera(): Camera | null;
   /**
-   * Merge a partial camera pose, wrapped and clamped per the active view.
+   * Move the camera in one step: a projection it names, then a fit when `fit` is true, else the
+   * pose and scale it names, wrapped and clamped per the view. A projection switch keeps the pose
+   * given, not the projection's rest. Before a topology loads only a projection applies; while no
+   * canvas has a size the placement waits for the first frame that does. Placing or fitting stops
+   * an orbit.
    *
-   * With `animate` the camera eases toward the pose; otherwise it is placed
-   * immediately. Fields the view cannot host (flat pitch/bearing) clamp to
-   * their resting value.
-   *
-   * @param pose - Pose fields to change; omitted fields keep their value.
-   * @param animate - If true, ease toward the pose.
-   * @returns True when the pose was accepted and changed camera state.
+   * @param camera - Fields to change; omitted fields keep their value.
+   * @param animate - If true, ease toward the pose, subject to the `motion` option.
+   * @returns False for a projection the topology cannot show, or a placement with no topology;
+   * nothing changes then.
+   * @throws TypeError or RangeError naming a field that is invalid.
    */
-  setPose(pose: Partial<Pose>, animate?: boolean): boolean;
+  setCamera(camera: Partial<Camera>, animate?: boolean): boolean;
   /**
    * Drag the content by screen pixels: positive `dx` moves it right, positive `dy` moves it down.
    *
@@ -1467,13 +1506,6 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       return task;
     },
 
-    setProjection(mode, fallback = false) {
-      if (switchProjection(mode)) return true;
-      if (fallback)
-        for (const candidate of PROJECTION_MODES) if (switchProjection(candidate)) break;
-      return false;
-    },
-
     fit(itemsOrAnimate: readonly Model.Item[] | boolean = false, animate: boolean = false) {
       if (!topology) return;
 
@@ -1515,14 +1547,39 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       return true;
     },
 
-    getPose() {
+    getCamera() {
       if (!topology) return null;
-      return rig.camera.pose();
+      const captured = rig.capture(vp());
+      if (!captured) return null;
+      const { centerX, centerY, pitch, bearing } = captured.pose;
+      return Object.freeze({
+        projection: rig.mode,
+        centerX,
+        centerY,
+        pitch,
+        bearing,
+        scale: captured.px,
+        fit: captured.fit,
+      });
     },
 
-    setPose(pose, animate = false) {
-      if (!topology) return false;
-      if (!rig.camera.setPose(pose, animated(animate))) return false;
+    setCamera(camera, animate = false) {
+      const pose = checkCamera(camera);
+      const { projection, scale, fit } = camera;
+      const placing = pose !== null || scale !== undefined;
+      if (projection !== undefined && !projections[projection]) return false;
+      if (!topology && (placing || fit !== undefined)) return false;
+      if (projection !== undefined) switchProjection(projection);
+      if (!topology || (!placing && fit === undefined)) return true;
+      orbit.stop();
+      if (fit === true) {
+        syncFitBounds();
+        rig.fit(vp(), animated(animate));
+      } else if (placing) {
+        rig.place(pose ?? {}, scale ?? null, vp(), animated(animate));
+      } else {
+        rig.leaveFit();
+      }
       cameraMoved();
       return true;
     },
@@ -1626,8 +1683,24 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
     cameraMoved();
   }
 
+  // The orbit drives the camera directly: a host placement stops it, its own moves must not.
   const orbit = deps.createOrbit(
-    api,
+    {
+      get projection() {
+        return rig.mode;
+      },
+      get projections() {
+        return projections;
+      },
+      setProjection: switchProjection,
+      rotateBy: (dx, dy) => api.rotateBy(dx, dy),
+      getPose: () => (topology ? rig.camera.pose() : null),
+      setPose: (pose, animate = false) => {
+        if (!topology || !rig.camera.setPose(pose, animated(animate))) return false;
+        cameraMoved();
+        return true;
+      },
+    },
     (active) => {
       if (!destroyed) events.emit('orbit', active);
     },

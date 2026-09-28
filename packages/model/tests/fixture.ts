@@ -212,8 +212,7 @@ export function byHand(
   fail(message: string): Promise<void>;
 } {
   const hand = new Hand();
-  model.engine = hand;
-  const recording = model.record(null, header);
+  const recording = hand.record(model, null, header);
   const { recorder, resolve, reject } = hand.last;
   return {
     recording,

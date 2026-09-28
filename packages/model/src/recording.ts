@@ -1,21 +1,24 @@
 /**
- * A recording: every signal an engine records for a model, each class's series on one clock so
- * frame `f` is one instant in each of them. `Model.record` begins one; `Recording.from` opens one
- * held elsewhere, across a port or in a file.
+ * A recording: every signal an engine records for one model, each class's series on one clock so
+ * frame `f` is one instant in each of them. `Engine.record` begins one; `Recording.from` opens one
+ * held elsewhere, across a port or in a file, against the model it records.
  */
 
 import { validateDomain, type Domain } from './domain.js';
 import type { Engine } from './engine.js';
+import { checkRef, fieldOf } from './field.js';
+import { createGrid } from './grid.js';
 import { listeners } from './listeners.js';
+import type { Model } from './model.js';
 import { Clock, Sourced, Tracked, type Series } from './series.js';
 
 /**
- * Begin a recording over `classes`, and `fill` it through the recorder it is given; what `fill`
- * throws at once propagates, and nothing is recorded. Only `Model.record` calls it.
+ * Begin a recording of `model`, holding every class that records a signal, and `fill` it through
+ * the recorder it is given. Only `Engine.record` calls it.
  */
 export let begin: (
+  model: Model,
   header: { readonly id?: string; readonly label?: string },
-  classes: readonly (Series.Shape & { readonly classId: string })[],
   fill: (recorder: Engine.Recorder) => Promise<void>,
 ) => Recording;
 
@@ -31,11 +34,14 @@ const LEVELS: readonly Recording.Entry['level'][] = ['info', 'warn', 'error'];
 let recordings = 0;
 
 /**
- * Every signal an engine records for a model, each class's series on one clock. It exists before
- * its first frame, so a host binds its fields at once and they follow it as frames arrive; its
- * state says whether it waits, records, or ended, and why.
+ * Every signal an engine records for one model, each class's series on one clock. It exists
+ * before its first frame, so a host binds its fields at once and they follow it as frames arrive;
+ * its state says whether it waits, records, or ended, and why. It stays the recording of its
+ * model: its fields and grids read that model, whatever becomes of the case since.
  */
 export class Recording {
+  /** The model it records: the case exactly as it was recorded. */
+  readonly model: Model;
   readonly id: string;
   readonly label: string;
   /** The classes it records, in model order; `series` resolves each. */
@@ -56,11 +62,13 @@ export class Recording {
   #halt: () => void = () => undefined;
 
   private constructor(
+    model: Model,
     id: string,
     label: string,
     clock: Clock,
     series: ReadonlyMap<string, Series>,
   ) {
+    this.model = model;
     this.id = id;
     this.label = label;
     this.classes = Object.freeze([...series.keys()]);
@@ -111,6 +119,60 @@ export class Recording {
   /** One class's history on this clock, or null for a class it does not record. */
   series(classId: string): Series | null {
     return this.#series.get(classId) ?? null;
+  }
+
+  /**
+   * A signal it records, or a column of its model, resolved to the `{ series, signal }` a
+   * renderer binds; null when neither has values for it. A signal reads at this recording's clock,
+   * and one reference resolves to one series, so the renderers binding it share its frames.
+   *
+   * @throws TypeError when `ref` is not a field reference.
+   */
+  async field(ref: Model.FieldRef, signal?: AbortSignal): Promise<Model.Field | null> {
+    checkRef(ref);
+    if (ref.kind === 'column') return this.model.field(ref, signal);
+    signal?.throwIfAborted();
+    const spec = this.model.class(ref.classId);
+    const declared = spec?.signals.find((candidate) => candidate.id === ref.id);
+    const series = this.#series.get(ref.classId);
+    const index = declared && series ? series.signals.indexOf(declared.id) : -1;
+    if (!spec || !declared || !series || index < 0) return null;
+    return fieldOf(ref, declared.label, declared.unit, series, index, spec.count, (time) =>
+      this.frameAt(time),
+    );
+  }
+
+  /**
+   * One class of its model as a table: its labels and columns, then every signal it records for
+   * the class, sampled at `time`.
+   *
+   * @throws Error for a class its model lacks; RangeError when `time` is not finite.
+   */
+  async grid(classId: string, time: number, signal?: AbortSignal): Promise<Model.Grid> {
+    const spec = this.model.class(classId);
+    if (!spec) throw new Error(`unknown class '${classId}'`);
+    if (!Number.isFinite(time)) throw new RangeError('grid time must be finite');
+    const data = await this.model.load(classId, signal);
+    const sampled = await Promise.all(
+      spec.signals.map(async (declared): Promise<Model.Data['columns'][number] | null> => {
+        const field = await this.field({ classId, kind: 'signal', id: declared.id }, signal);
+        if (!field) return null;
+        const values = await field.at(time, signal);
+        return {
+          kind: 'number',
+          id: declared.id,
+          label: declared.label,
+          unit: declared.unit,
+          values: values instanceof Float64Array ? values : Float64Array.from(values),
+        };
+      }),
+    );
+    signal?.throwIfAborted();
+    return createGrid(
+      data.labels,
+      data.columns,
+      sampled.filter((column) => column !== null),
+    );
   }
 
   /**
@@ -166,19 +228,20 @@ export class Recording {
   }
 
   /**
-   * Open the recording `source` holds: its classes and clock arrive before this resolves, so
-   * `frameAt`, `timeAt`, and every series' `locate` answer at once, and a series reads its samples
-   * from the source. It follows the source until stopped; closing it closes the source.
+   * Open the recording of `model` that `source` holds: its classes and clock arrive before this
+   * resolves, so `frameAt`, `timeAt`, and every series' `locate` answer at once, and a series reads
+   * its samples from the source. It follows the source until stopped; closing it closes the source.
    *
-   * @throws Error, TypeError, or RangeError when the source describes an invalid recording, and
-   * whatever the source throws; the source is closed then too.
+   * @throws Error, TypeError, or RangeError when the source describes an invalid recording or one
+   * that does not fit `model`, and whatever the source throws; the source is closed then too.
    */
   static async from(
+    model: Model,
     source: Recording.Source,
     signal?: AbortSignal,
   ): Promise<Recording & { close(): void }> {
     try {
-      return await Recording.#open(source, signal);
+      return await Recording.#open(model, source, signal);
     } catch (error) {
       source.close?.();
       throw error;
@@ -186,6 +249,7 @@ export class Recording {
   }
 
   static async #open(
+    model: Model,
     source: Recording.Source,
     signal?: AbortSignal,
   ): Promise<Recording & { close(): void }> {
@@ -205,14 +269,13 @@ export class Recording {
       const classId = entry?.classId;
       if (typeof classId !== 'string' || classId === '' || mirrors.has(classId))
         throw new Error('a recording source must name each class once');
-      mirrors.set(
-        classId,
-        new Sourced(clock, entry, (signalIndex, window, reading) =>
-          source.read(classId, signalIndex, window, reading),
-        ),
+      const mirror = new Sourced(clock, entry, (signalIndex, window, reading) =>
+        source.read(classId, signalIndex, window, reading),
       );
+      fits(model, classId, mirror);
+      mirrors.set(classId, mirror);
     }
-    const recording = new Recording(id, label, clock, mirrors);
+    const recording = new Recording(model, id, label, clock, mirrors);
 
     /** Commit one change, checked whole before anything moves. */
     const apply = (change: unknown): void => {
@@ -312,12 +375,16 @@ export class Recording {
   }
 
   static {
-    begin = (header, classes, fill) => {
+    begin = (model, header, fill) => {
       const id = header.id ?? `recording-${++recordings}`;
       const clock = new Clock();
       const tracks = new Map<string, Tracked>();
-      for (const { classId, ...shape } of classes) tracks.set(classId, new Tracked(clock, shape));
-      const recording = new Recording(id, header.label ?? id, clock, tracks);
+      for (const spec of model.classes) {
+        const signals = spec.signals.filter((signal) => signal.recorded).map((signal) => signal.id);
+        if (signals.length)
+          tracks.set(spec.id, new Tracked(clock, { signals, elementCount: spec.count }));
+      }
+      const recording = new Recording(model, id, header.label ?? id, clock, tracks);
       const control = new AbortController();
       const ended = (): boolean => !live(recording.#state.status);
       /** Seal the clock and every series, and say how it ended. */
@@ -517,6 +584,28 @@ export declare namespace Recording {
 /** Whether a recording in `status` may still grow. */
 function live(status: Recording.State['status']): boolean {
   return status === 'waiting' || status === 'recording';
+}
+
+/**
+ * Check that the series a source holds for `classId` is one `model` records: a class it declares,
+ * signals that class declares, and elements within it.
+ *
+ * @throws Error naming what does not fit.
+ */
+function fits(model: Model, classId: string, series: Series): void {
+  const spec = model.class(classId);
+  if (!spec) throw new Error(`the recording holds class '${classId}', which its model lacks`);
+  for (const id of series.signals)
+    if (!spec.signals.some((declared) => declared.id === id))
+      throw new Error(
+        `the recording holds signal '${id}', which class '${classId}' does not declare`,
+      );
+  const { elements } = series;
+  const fitsCount = elements
+    ? elements.length === 0 || elements[elements.length - 1]! < spec.count
+    : series.elementCount === spec.count;
+  if (!fitsCount)
+    throw new Error(`the recording's '${classId}' elements do not fit its model's ${spec.count}`);
 }
 
 function isEntry(value: unknown): value is Recording.Entry {

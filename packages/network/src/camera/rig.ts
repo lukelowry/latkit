@@ -25,16 +25,21 @@ export interface FitOptions {
 /** The least a padded fit may fill, so an inset larger than the canvas still shows something. */
 const MIN_FILL = 0.05;
 
-/** Camera command retained until the first frame with a usable viewport. */
+/**
+ * Camera command retained until the first frame with a usable viewport: a move, a reveal, a view
+ * carried across a projection switch (which eases to the new view's rest), or a camera placed
+ * exactly where a host asked.
+ */
 type Pending =
   | { readonly kind: 'move'; readonly bounds: Bounds; readonly animate: boolean }
   | { readonly kind: 'reveal'; readonly bounds: Bounds; readonly animate: boolean }
   | {
-      readonly kind: 'place';
+      readonly kind: 'carry';
       readonly pose: Pose;
       readonly px: number;
       readonly fitIntent: boolean;
-    };
+    }
+  | { readonly kind: 'place'; readonly pose: Partial<Pose>; readonly px: number | null };
 
 /** Camera math requires a finite, non-empty CSS-pixel viewport. */
 function usable(vp: Viewport): boolean {
@@ -190,6 +195,38 @@ export class CameraRig {
   }
 
   /**
+   * The camera a host keeps: the settled pose, the anchor scale, and fit intent, with deferred
+   * placement landed first against the live or last viewport. Null before a scene is placed.
+   */
+  capture(
+    vp: Viewport,
+  ): { readonly pose: Pose; readonly px: number; readonly fit: boolean } | null {
+    const ref = usable(vp) ? vp : usable(this.lastVp) ? this.lastVp : null;
+    if (!this.bounds || ref === null) return null;
+    this.apply(ref);
+    const carried = this.camera.carry(ref);
+    return carried && { pose: carried.pose, px: carried.px, fit: this.camera.fitIntent };
+  }
+
+  /**
+   * Place the camera at `pose` and anchor scale `px`, where given, exactly: now under a usable
+   * viewport, else on the first sized frame, after any canonical fit. Placing leaves the fit view.
+   */
+  place(pose: Partial<Pose>, px: number | null, vp: Viewport, animate: boolean): void {
+    if (usable(vp) && this.bounds && this.camera.placed && !this.needsFit && !this.pending) {
+      this.camera.moveToPose(pose, px, vp, animate);
+      return;
+    }
+    this.pending = { kind: 'place', pose, px };
+    if (usable(vp) && this.bounds) this.apply(vp);
+  }
+
+  /** Stop following the fit view where the camera stands. */
+  leaveFit(): void {
+    this.camera.fitIntent = false;
+  }
+
+  /**
    * Let the rendered pose supersede stale motion and deferred moves: a
    * claimed camera cancels all deferred placement, an idle one only drops
    * deferred moves.
@@ -235,7 +272,7 @@ export class CameraRig {
     this.camera = this.createCamera();
     if (carried) {
       this.needsFit = false;
-      this.pending = { kind: 'place', pose: carried.pose, px: carried.px, fitIntent };
+      this.pending = { kind: 'carry', pose: carried.pose, px: carried.px, fitIntent };
     } else {
       this.needsFit = true;
     }
@@ -277,9 +314,10 @@ export class CameraRig {
     return this.camera.isAtFitView();
   }
 
-  /** Drop a deferred move or reveal while preserving fits and pose carries. */
+  /** Drop a deferred move or reveal while preserving fits, carries, and placements. */
   private dropDeferredMove(): void {
-    if (this.pending && this.pending.kind !== 'place') this.pending = null;
+    if (this.pending && (this.pending.kind === 'move' || this.pending.kind === 'reveal'))
+      this.pending = null;
   }
 
   /** Apply the canonical fit and any pending command under a sized viewport. */
@@ -300,10 +338,13 @@ export class CameraRig {
       case 'reveal':
         this.camera.reveal(pending.bounds, vp, pending.animate);
         break;
-      case 'place':
+      case 'carry':
         this.camera.place(pending.pose, pending.px, pending.fitIntent, bounds, vp);
         // Let the incoming view ease fields it prefers at rest (tilt's pitch).
         this.projection.setView?.(this.modeValue as PlaneView, this.camera.target);
+        break;
+      case 'place':
+        this.camera.place(pending.pose, pending.px, false, bounds, vp);
         break;
     }
   }

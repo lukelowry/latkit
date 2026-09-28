@@ -1,6 +1,6 @@
 import { type Model, Series } from '@latkit/model';
 import type { Monitor, Events as MonitorEvents } from '@latkit/monitor';
-import type { Network, Events as NetworkEvents, Projection } from '@latkit/network';
+import type { Camera, Network, Events as NetworkEvents } from '@latkit/network';
 import { vi } from 'vitest';
 
 import { createElementClasses, type ElementDeps } from '../src/define.js';
@@ -94,7 +94,7 @@ export interface FakeNetwork extends Listeners<NetworkEvents> {
   readonly setOptions: Spy;
   readonly setChannel: Spy;
   readonly setChannelDomain: Spy;
-  readonly setProjection: Spy;
+  readonly setCamera: Spy;
   readonly setBorders: Spy;
   readonly pause: Spy;
   readonly resume: Spy;
@@ -153,7 +153,7 @@ export function fakeNetwork(): FakeNetwork {
     setOptions: vi.fn(),
     setChannel: vi.fn(),
     setChannelDomain: vi.fn(),
-    setProjection: vi.fn((mode: Projection) => mode !== 'globe'),
+    setCamera: vi.fn((camera: Partial<Camera>) => camera.projection !== 'globe'),
     setBorders: vi.fn(),
     pause: vi.fn(),
     resume: vi.fn(),
@@ -164,7 +164,6 @@ export function fakeNetwork(): FakeNetwork {
     geographic: true,
     failAttach: fail,
     value: {
-      projection: 'flat',
       projections: { flat: true, tilt: true, globe: false },
       get geographic() {
         return fake.geographic;

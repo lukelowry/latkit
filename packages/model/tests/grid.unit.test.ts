@@ -128,7 +128,7 @@ describe('createGrid', () => {
   });
 });
 
-describe('model.grid', () => {
+describe('model.grid and recording.grid', () => {
   it('tables a class by its columns', async () => {
     const grid = await sampleModel().grid('bus');
     expect(grid.columns.map((column) => column.id)).toEqual(['Vm', 'zone', 'slack']);
@@ -144,14 +144,14 @@ describe('model.grid', () => {
     const model = sampleModel();
     const { recording, recorder } = byHand(model);
     recorder.append(Float64Array.of(0, 1), { bus: Float32Array.of(1, 2, 3, 4, 5, 6) });
-    const grid = await model.grid('bus', { recording, time: 0.5 });
+    const grid = await recording.grid('bus', 0.5);
     // The column and the signal share an id; the grid tells them apart by kind.
     expect(grid.columns.slice(3)).toEqual([
       { kind: 'signal', id: 'Vm', label: 'Voltage', unit: 'pu' },
     ]);
     const { rows } = await grid.window('', { column: 3, dir: 'desc' }, 0, 10);
     expect(rows.map((row) => row.cells[3])).toEqual(['3', '2', '1']);
-    expect((await model.grid('gen', { recording, time: 1 })).columns).toEqual([
+    expect((await recording.grid('gen', 1)).columns).toEqual([
       { kind: 'signal', id: 'P', label: 'Power', unit: 'MW' },
     ]);
   });
@@ -160,6 +160,7 @@ describe('model.grid', () => {
     const model = sampleModel();
     await expect(model.grid('nope')).rejects.toThrow("unknown class 'nope'");
     const { recording } = byHand(model);
-    await expect(model.grid('bus', { recording, time: Number.NaN })).rejects.toThrow(RangeError);
+    await expect(recording.grid('nope', 0)).rejects.toThrow("unknown class 'nope'");
+    await expect(recording.grid('bus', Number.NaN)).rejects.toThrow(RangeError);
   });
 });

@@ -1,8 +1,8 @@
 /**
  * `@latkit/port` — where latkit crosses a boundary: a two-method port over workers, webviews,
  * sockets, and one thread; one binary frame that carries typed arrays intact; typed request,
- * reply, and stream protocols with the checks a served side runs; and a model and its recordings
- * served and connected across a port.
+ * reply, and stream protocols with the checks a served side runs; and models, engines, and
+ * recordings served and connected across a port.
  *
  * @packageDocumentation
  */
@@ -22,4 +22,5 @@ export { connect, serve, transferred } from './channel.js';
 export { describeError } from './error.js';
 
 export { connectModel, serveModel } from './model.js';
+export { connectEngine, serveEngine } from './engine.js';
 export { connectRecording, serveRecording } from './recording.js';

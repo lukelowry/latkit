@@ -2,10 +2,10 @@
  * A recording served across a port: its classes and clock arrive with the connection, so
  * `frameAt`, `timeAt`, and every series' `locate` answer on the far side at once, and only sample
  * windows travel afterwards. The recording's own source is what crosses: `Recording.from` does the
- * rest on the far side.
+ * rest on the far side, against the model the recording records.
  */
 
-import { Recording, type Series } from '@latkit/model';
+import { Recording, type Model, type Series } from '@latkit/model';
 
 import { connect, serve, transferred, type Remote } from './channel.js';
 import { check } from './check.js';
@@ -104,20 +104,22 @@ async function* owned(changes: AsyncIterable<Recording.Change>) {
 }
 
 /**
- * Open the recording a `serveRecording` peer serves as `id`: its classes and clock arrive before
- * this resolves, and its series follow the peer's changes until it is stopped; closing it closes
- * the connection.
+ * Open the recording of `model` a `serveRecording` peer serves as `id`: its classes and clock
+ * arrive before this resolves, and its series follow the peer's changes until it is stopped;
+ * closing it closes the connection.
  *
- * @throws Error when `id` is empty, or the peer cannot open the recording.
+ * @throws Error when `id` is empty, the peer cannot open the recording, or it does not fit `model`.
  */
 export async function connectRecording(
   port: Port,
+  model: Model,
   id: string,
   signal?: AbortSignal,
 ): Promise<Remote<Recording>> {
   if (!id) throw new Error('a recording needs an id');
   const connection = connect(port, recordingProtocol(id));
   return Recording.from(
+    model,
     {
       describe: (describing) =>
         connection.call({ op: 'describe' }, { signal: describing }) as Promise<Description>,

@@ -139,7 +139,7 @@ The channels run on `@latkit/gpu`'s binder, as the network's do:
 
 ```ts
 diagram.setChannel('netFlow', { series: flows, signal: 0 }); // one element per net
-diagram.setChannel('netColor', speed.gather(drivers)); // each net, the element that drives it
+diagram.setChannel('netColor', speed.gather(document.drivers(speed.ref))); // each net's driver
 transport.on('frame', (t) => diagram.seek(t));
 ```
 
@@ -274,9 +274,10 @@ diagram.select([]);
   blocks.
 - `toDiagram(clientX, clientY)` returns the diagram point under a client point, snapped when
   `snap` is on: where a palette drop lands.
-- `getPose()` and `setPose(pose, animate)` read and write `{ centerX, centerY, zoom }`, where zoom
-  is CSS pixels per diagram unit, clamped from the smaller of a quarter of the fit zoom and 0.25
-  up to 8. `getPose()` is null before a load.
+- `getCamera()` and `setCamera(camera, animate)` read and write `{ centerX, centerY, scale, fit }`,
+  the network's camera without its projection: `scale` is CSS pixels per diagram unit, clamped from
+  the smaller of a quarter of the fit scale and 0.25 up to 8, and `fit: true` fits the diagram.
+  `getCamera()` is null before a load.
 - `panBy(dx, dy)` drags the content by CSS pixels and `zoomBy(factor)` zooms about the center.
 
 While the camera is at its fit view, a resize keeps it fitted. An empty netlist is a diagram too:

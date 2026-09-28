@@ -1,18 +1,16 @@
 /**
  * The model: a network and its element classes, as a format reads them from a case. A format
- * subclasses it; a host asks the instance every question about the case, and records it with an
- * attached engine. `Model.Topology` and `Model.Item` are field-for-field the shapes
- * `@latkit/network` loads and picks, so a model never adapts for a renderer.
+ * subclasses it; a host asks the instance every question about the case, and an engine records
+ * it. `Model.Topology` and `Model.Item` are field-for-field the shapes `@latkit/network` loads and
+ * picks, so a model never adapts for a renderer.
  */
 
 import type { Document } from './document.js';
 import type { Domain } from './domain.js';
-import type { Engine } from './engine.js';
 import { checkRef, fieldOf } from './field.js';
 import { createGrid } from './grid.js';
 import { decodeCore, encodeCore } from './pack/core.js';
 import { decodeShard, encodeShard } from './pack/shard.js';
-import { begin, type Recording } from './recording.js';
 import { Series } from './series.js';
 
 const NONE = 0xffffffff;
@@ -21,13 +19,12 @@ const NONE = 0xffffffff;
  * A network and its element classes, as a format reads them from a case. Subclass it for a
  * format: describe the case to the constructor, give each class's `values` when asked and the
  * case's `bytes`, and, for a format that edits, its `document`. A host asks the instance where an
- * element sits, what a field holds, and for a class as a table, and records it with the engine
- * attached to it.
+ * element sits, what a column holds, and for a class as a table; any engine records it.
  *
  * @remarks
- * Immutable but for its engine. `owners` names the class whose element `i` is vertex `i` and the
- * class whose element `i` is edge `i`; either may be absent. Class values load once, shared by
- * concurrent callers, each of whom may abort without cancelling the others.
+ * Immutable. `owners` names the class whose element `i` is vertex `i` and the class whose element
+ * `i` is edge `i`; either may be absent. Class values load once, shared by concurrent callers,
+ * each of whom may abort without cancelling the others.
  */
 export abstract class Model {
   /** The format that read the case, such as `gridkit`. */
@@ -38,15 +35,8 @@ export abstract class Model {
   readonly topology: Model.Topology;
   readonly owners: { readonly vertex?: string; readonly edge?: string };
   readonly classes: readonly Model.Class[];
-  /**
-   * What records it: attach one at any time, and `record` runs it. A recording keeps the engine it
-   * began with.
-   */
-  engine: Engine | null = null;
   readonly #byId = new Map<string, Model.Class>();
   readonly #owners: Record<'vertex' | 'edge', string | null> = { vertex: null, edge: null };
-  /** Each class that records a signal, as the series its recordings hold. */
-  readonly #recorded: readonly (Series.Shape & { readonly classId: string })[];
   /** Each class's fields as `fields` lists them. */
   readonly #listed = new Map<string, readonly Pick<Model.Field, 'ref' | 'label' | 'unit'>[]>();
   readonly #loaded = new Map<string, Model.Data>();
@@ -96,10 +86,6 @@ export abstract class Model {
     this.topology = description.topology;
     this.owners = owners;
     this.classes = description.classes;
-    this.#recorded = description.classes.flatMap((spec) => {
-      const signals = spec.signals.filter((signal) => signal.recorded).map((signal) => signal.id);
-      return signals.length ? [{ classId: spec.id, signals, elementCount: spec.count }] : [];
-    });
   }
 
   /**
@@ -165,102 +151,44 @@ export abstract class Model {
   }
 
   /**
-   * Every field of class `classId` that `field` can resolve, in declared order: its number
-   * columns, then the signals a recording holds. Empty for a class the model lacks.
+   * Every field of class `classId`, in declared order: its number columns, which `field`
+   * resolves, then its recorded signals, which a recording's `field` resolves. Empty for a class
+   * the model lacks.
    */
   fields(classId: string): readonly Pick<Model.Field, 'ref' | 'label' | 'unit'>[] {
     return this.#listed.get(classId) ?? [];
   }
 
   /**
-   * A number column, or a signal of `recording`, resolved to the `{ series, signal }` a renderer
-   * binds; null when the model or the recording has no values for it. One reference resolves to
-   * one series, so the renderers binding it share its frames.
+   * A number column resolved to the `{ series, signal }` a renderer binds: a sealed series of one
+   * frame, which holds at every time. Null when the model has no such column; a signal is a
+   * recording's to resolve. One reference resolves to one series, so the renderers binding it
+   * share it.
    *
    * @throws TypeError when `ref` is not a field reference.
    */
-  async field(
-    ref: Model.FieldRef,
-    recording: Recording | null = null,
-    signal?: AbortSignal,
-  ): Promise<Model.Field | null> {
+  async field(ref: Model.FieldRef, signal?: AbortSignal): Promise<Model.Field | null> {
     checkRef(ref);
     signal?.throwIfAborted();
     const spec = this.#byId.get(ref.classId);
-    if (!spec) return null;
-    if (ref.kind === 'column') {
-      const declared = spec.columns.find((column) => column.id === ref.id);
-      if (declared?.kind !== 'number') return null;
-      const series = await this.#constant(spec, declared.id, signal);
-      return fieldOf(ref, declared.label, declared.unit ?? '', series, 0, spec.count, always);
-    }
-    const declared = spec.signals.find((candidate) => candidate.id === ref.id);
-    if (!declared || !recording) return null;
-    const series = recording.series(spec.id);
-    const index = series ? series.signals.indexOf(declared.id) : -1;
-    if (!series || index < 0) return null;
-    return fieldOf(ref, declared.label, declared.unit, series, index, spec.count, (time) =>
-      recording.frameAt(time),
-    );
+    const declared =
+      ref.kind === 'column' ? spec?.columns.find((column) => column.id === ref.id) : undefined;
+    if (!spec || declared?.kind !== 'number') return null;
+    const series = await this.#constant(spec, declared.id, signal);
+    return fieldOf(ref, declared.label, declared.unit ?? '', series, 0, spec.count, always);
   }
 
   /**
-   * One class as a table: its labels and columns, and at `at` every signal `at.recording` records
-   * for it, sampled at `at.time`.
+   * One class as a table of its labels and columns; a recording's `grid` adds the signals it
+   * records, at a time.
    *
-   * @throws Error for a class the model lacks; RangeError when `at.time` is not finite.
+   * @throws Error for a class the model lacks.
    */
-  async grid(
-    classId: string,
-    at: { readonly recording: Recording; readonly time: number } | null = null,
-    signal?: AbortSignal,
-  ): Promise<Model.Grid> {
-    const spec = this.#byId.get(classId);
-    if (!spec) throw new Error(`unknown class '${classId}'`);
-    if (at && !Number.isFinite(at.time)) throw new RangeError('grid time must be finite');
+  async grid(classId: string, signal?: AbortSignal): Promise<Model.Grid> {
+    if (!this.#byId.has(classId)) throw new Error(`unknown class '${classId}'`);
     const data = await this.load(classId, signal);
-    const sampled = at
-      ? await Promise.all(
-          spec.signals.map(async (declared): Promise<Model.Data['columns'][number] | null> => {
-            const field = await this.field(
-              { classId, kind: 'signal', id: declared.id },
-              at.recording,
-              signal,
-            );
-            if (!field) return null;
-            const values = await field.at(at.time, signal);
-            return {
-              kind: 'number',
-              id: declared.id,
-              label: declared.label,
-              unit: declared.unit,
-              values: values instanceof Float64Array ? values : Float64Array.from(values),
-            };
-          }),
-        )
-      : [];
     signal?.throwIfAborted();
-    return createGrid(
-      data.labels,
-      data.columns,
-      sampled.filter((column) => column !== null),
-    );
-  }
-
-  /**
-   * Record the model with its engine: `input` is the engine's to check, at once, and the
-   * recording returned waits its turn, then fills as the engine computes, holding every class
-   * that records a signal.
-   *
-   * @throws Error when no engine is attached; what the engine throws for an input it refuses.
-   */
-  record(
-    input: unknown,
-    options: { readonly id?: string; readonly label?: string } = {},
-  ): Recording {
-    const engine = this.engine;
-    if (!engine) throw new Error(`model '${this.id}' has no engine attached`);
-    return begin(options, this.#recorded, (recorder) => engine.record(this, input, recorder));
+    return createGrid(data.labels, data.columns);
   }
 
   /** The model as a source: its description packed, and each class's values packed when asked. */
@@ -288,7 +216,8 @@ export abstract class Model {
       readonly progress?: (loaded: number, total: number) => void;
     } = {},
   ): Promise<Model> {
-    return new Unpacked(decodeCore(await source.core(options.signal, options.progress)), source);
+    const core = await source.core(options.signal, options.progress);
+    return new Unpacked(decodeCore(core), core, source);
   }
 
   #begin(spec: Model.Class): Pending {
@@ -481,8 +410,8 @@ export declare namespace Model {
     readonly id: string;
   }
   /**
-   * A field resolved against a model and, for a signal, a recording: the `{ series, signal }`
-   * every renderer binds, and what it is.
+   * A column resolved by its model, or a signal by the recording that records it: the
+   * `{ series, signal }` every renderer binds, and what it is.
    */
   interface Field {
     readonly ref: FieldRef;
@@ -516,8 +445,8 @@ export declare namespace Model {
   /** A class as a table: search, sort, and windows that format only the rows they return. */
   interface Grid {
     /**
-     * What each cell of a row shows, in order: the class's columns, then the signals its
-     * recording holds at the grid's time.
+     * What each cell of a row shows, in order: the class's columns, then, in a recording's grid,
+     * the signals it records at the grid's time.
      */
     readonly columns: readonly {
       readonly kind: 'column' | 'signal';
@@ -571,12 +500,18 @@ export declare namespace Model {
   }
 }
 
-/** A model a source holds: its classes unpacked from the shards the source gives. */
+/**
+ * A model a source holds: its classes unpacked from the shards the source gives, and served again
+ * as they came, so a relay forwards packs untouched.
+ */
 class Unpacked extends Model {
+  /** The core it opened from, whose sections its description views. */
+  readonly #core: Uint8Array;
   readonly #source: Model.Source;
 
-  constructor(description: Model.Description, source: Model.Source) {
+  constructor(description: Model.Description, core: Uint8Array, source: Model.Source) {
     super(description);
+    this.#core = core;
     this.#source = source;
   }
 
@@ -586,6 +521,20 @@ class Unpacked extends Model {
 
   bytes(signal?: AbortSignal): Promise<Uint8Array> {
     return this.#source.bytes(signal);
+  }
+
+  /** The source it opened from: no class decoded, checked, or packed again; never its `close`. */
+  override source(): Model.Source {
+    const source = this.#source;
+    return {
+      core: (signal) =>
+        Promise.resolve().then(() => {
+          signal?.throwIfAborted();
+          return this.#core.slice();
+        }),
+      class: (id, signal) => source.class(id, signal),
+      bytes: (signal) => source.bytes(signal),
+    };
   }
 }
 

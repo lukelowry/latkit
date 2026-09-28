@@ -78,6 +78,7 @@ monitor.load({ series, signal: 1 }); // another signal of the same series
 monitor.select(42); // class element index, including sparse recordings
 monitor.on('hover', (reading) => showReading(reading));
 monitor.on('select', (reading) => inspect(reading.element));
+monitor.on('contextmenu', ({ clientX, clientY, reading }) => openMenu(clientX, clientY, reading));
 monitor.on('valueRange', (range) => updateAxis(range));
 monitor.on('rendered', () => hideProgress());
 monitor.on('error', (error) => showError(error.message));
@@ -88,7 +89,10 @@ monitor.on('deviceLost', ({ message, recovering }) => {
 
 `rendered` fires once everything committed is on screen, and never before the canvas has a layout
 size: a canvas kept at `display: none` until `rendered` would wait forever. Pointer readings
-preserve the original numeric value. A newer pick, load, or detach cancels stale reads.
+preserve the original numeric value. Only the primary button selects; a context menu, from the
+pointer or the keyboard, suppresses the native one and reports the sample under the pointer, or
+the one last hovered, as the network and the diagram report their parts. A newer pick, load, or
+detach cancels stale reads.
 `select(null)` clears selection. `pause()` stops work; `resume()` catches up. `load(null)` drops
 the loaded series. `detach()` releases the canvas while retaining data and settings; `destroy()`
 releases the controller. See the

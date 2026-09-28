@@ -2,7 +2,7 @@ import { bench, describe } from 'vitest';
 
 import { Engine, Model, type Recording } from '@latkit/model';
 
-import { connectModel, loopback, serveModel } from '../src/index.js';
+import { connectEngine, connectModel, loopback, serveEngine, serveModel } from '../src/index.js';
 
 const ELEMENTS = 2000;
 const SIGNALS = 4;
@@ -81,14 +81,16 @@ function ended(recording: Recording): Promise<void> {
   });
 }
 
-const served = new Buses();
-served.engine = new Replay();
-const [server, client] = loopback();
-serveModel(server, served);
-const remote = await connectModel(client);
+// The engine's realm serves the model too, so every recording records it where it lives.
+const [modelServer, modelClient] = loopback();
+const [engineServer, engineClient] = loopback();
+serveModel(modelServer, new Buses());
+serveEngine(engineServer, new Replay());
+const remote = await connectModel(modelClient);
+const engine = connectEngine(engineClient);
 
 describe('port', () => {
   bench('record across a port: 100 blocks of 80k values', async () => {
-    await ended(remote.record(null));
+    await ended(engine.record(remote, null));
   });
 });

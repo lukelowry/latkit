@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { Engine, type Model } from '../src/index.js';
+import { Engine } from '../src/index.js';
 import { block, ended, Player, sampleModel } from './fixture.js';
 
 /** A recorder that notes every call, as a transport's forwarding one would. */
@@ -110,17 +110,18 @@ describe('engine', () => {
     expect(new Idle(Infinity).concurrency).toBe(Infinity);
   });
 
-  it('is what a model records with, attached at any time', async () => {
-    const model: Model = sampleModel();
+  it('records any model it is given, each recording of the model it was given', async () => {
     const engine = new Player(blocks);
-    const record = vi.spyOn(engine, 'record');
-    model.engine = engine;
-    const recording = model.record(2, { id: 'fault', label: 'Fault' });
-    expect(record).toHaveBeenCalledOnce();
+    const [first, second] = [sampleModel(), sampleModel()];
+    const recording = engine.record(first, 2, { id: 'fault', label: 'Fault' });
+    const other = engine.record(second, 1);
     expect(recording).toMatchObject({ id: 'fault', label: 'Fault', classes: ['bus', 'gen'] });
-    await ended(recording);
+    expect(recording.model).toBe(first);
+    expect(other.model).toBe(second);
+    expect(other.state).toMatchObject({ status: 'waiting', ahead: 0 });
+    await Promise.all([ended(recording), ended(other)]);
     expect(recording.state).toMatchObject({ status: 'complete', frameCount: 2 });
-    model.engine = null;
-    expect(() => model.record(2)).toThrow(/no engine/);
+    expect(other.state).toMatchObject({ status: 'complete', frameCount: 1 });
+    expect(() => engine.record(first, 'many')).toThrow(/how many blocks/);
   });
 });

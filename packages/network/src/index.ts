@@ -18,7 +18,7 @@ export type { Options } from './options.js';
 
 export { PROJECTIONS } from './projections.js';
 export type { Projection } from './projections.js';
-export type { Pose } from './camera/projection.js';
+export type { Camera } from './controller.js';
 
 /** The host fragment hook `Network.setShade` installs, and the finished shades built on it. */
 export type { Shade, ShadeFrame } from './shade.js';

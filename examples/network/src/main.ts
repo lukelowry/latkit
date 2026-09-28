@@ -135,7 +135,7 @@ function wireProjections(net: Network): ProjectionControls {
     const btn = createButton(PROJECTIONS[mode].label, mode === net.projection);
     btn.disabled = !net.projections[mode];
     btn.addEventListener('click', () => {
-      if (net.setProjection(mode)) refresh();
+      if (net.setCamera({ projection: mode })) refresh();
     });
     buttons.set(mode, btn);
     row.appendChild(btn);

@@ -169,7 +169,7 @@ import { spotlight } from '@latkit/network';
 const element = document.querySelector<NetworkElement>('latkit-network')!;
 await element.ready;
 
-element.network.setProjection('globe', true);
+if (element.network.projections.globe) element.network.setCamera({ projection: 'globe' });
 element.network.select({ kind: 'vertex', index: 1 });
 element.network.reveal({ kind: 'vertex', index: 1 }, { neighbors: true, animate: true });
 element.network.on('contextmenu', ({ clientX, clientY, items }) =>

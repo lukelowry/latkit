@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { Model } from '../src/index.js';
 import { Sample, sampleClass, sampleData, sampleModel, sampleValues } from './fixture.js';
@@ -43,6 +43,27 @@ describe('model.source and Model.from', () => {
       { kind: 'flag', id: 'slack', label: 'Slack' },
     ]);
     expect(await again.load('bus')).toEqual(sampleClass('bus'));
+  });
+
+  it('serves a model it opened from as it came: packs relayed untouched', async () => {
+    const packed = sampleModel().source();
+    const shard = await packed.class('bus');
+    const bytes = await packed.bytes();
+    const source: Model.Source = {
+      core: packed.core,
+      class: vi.fn(async () => shard),
+      bytes: vi.fn(async () => bytes),
+    };
+    const model = await Model.from(source);
+    const relayed = model.source();
+    expect(await relayed.class('bus')).toBe(shard);
+    expect(await relayed.bytes()).toBe(bytes);
+    expect(source.class).toHaveBeenCalledOnce();
+    const core = await relayed.core();
+    expect(core).toEqual(await packed.core());
+    expect(core.buffer).not.toBe(model.topology.edges.buffer);
+    await expect(relayed.core(AbortSignal.abort())).rejects.toMatchObject({ name: 'AbortError' });
+    expect(relayed.close).toBeUndefined();
   });
 
   it('hands out buffers the caller owns', async () => {

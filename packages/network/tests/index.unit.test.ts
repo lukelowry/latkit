@@ -5,10 +5,10 @@ import type { Domain, Model, Series } from '@latkit/model';
 import * as entry from '../src/index.js';
 import type {
   Borders,
+  Camera,
   Events,
   Network,
   Options,
-  Pose,
   Projection,
   Shade,
   ShadeFrame,
@@ -38,8 +38,8 @@ describe('network package entrypoint', () => {
     expectTypeOf<Parameters<Network['load']>>().toEqualTypeOf<
       [topology: Model.Topology, options?: { readonly fit?: boolean }]
     >();
-    expectTypeOf<Parameters<Network['setProjection']>>().toEqualTypeOf<
-      [mode: Projection, fallback?: boolean]
+    expectTypeOf<Parameters<Network['setCamera']>>().toEqualTypeOf<
+      [camera: Partial<Camera>, animate?: boolean]
     >();
     expectTypeOf<Network['geographic']>().toEqualTypeOf<boolean>();
     expectTypeOf<Events['pipelineError']>().toEqualTypeOf<{
@@ -75,15 +75,16 @@ describe('network package entrypoint', () => {
       readonly items: readonly Model.Item[];
     }>();
     expectTypeOf<Parameters<Network['rotateBy']>>().toEqualTypeOf<[dx: number, dy: number]>();
-    expectTypeOf<ReturnType<Network['getPose']>>().toEqualTypeOf<Pose | null>();
-    expectTypeOf<Parameters<Network['setPose']>>().toEqualTypeOf<
-      [pose: Partial<Pose>, animate?: boolean]
-    >();
-    expectTypeOf<Pose>().toEqualTypeOf<{
+    expectTypeOf<Network['projection']>().toEqualTypeOf<Projection>();
+    expectTypeOf<ReturnType<Network['getCamera']>>().toEqualTypeOf<Camera | null>();
+    expectTypeOf<Camera>().toEqualTypeOf<{
+      readonly projection: Projection;
       readonly centerX: number;
       readonly centerY: number;
       readonly pitch: number;
       readonly bearing: number;
+      readonly scale: number;
+      readonly fit: boolean;
     }>();
     expectTypeOf<Parameters<Network['setChannel']>>().toEqualTypeOf<
       [

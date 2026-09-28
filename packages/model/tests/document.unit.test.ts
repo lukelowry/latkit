@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { Document, type Model, Refusal } from '../src/index.js';
-import { Player, Sample, sampleData, sampleModel } from './fixture.js';
+import { Sample, sampleData, sampleModel } from './fixture.js';
+
+const NONE = 0xffffffff;
 
 /**
  * Two blocks, a generator and its governor, joined by one wired net; the generator's first port is
@@ -160,10 +162,8 @@ describe('document', () => {
     expect(heard).not.toHaveBeenCalled();
   });
 
-  it('opens one model for the changes before it is asked for, keeping the engine', async () => {
+  it('opens one model for the changes before it is asked for', async () => {
     const model = sampleModel();
-    const engine = new Player([]);
-    model.engine = engine;
     const document = new Counter(model);
     expect(await document.model()).toBe(model);
     document.apply({
@@ -178,7 +178,6 @@ describe('document', () => {
     const edited = await document.model();
     expect(edited).not.toBe(model);
     expect(edited.id).toBe('sample-2');
-    expect(edited.engine).toBe(engine);
     expect(await document.model()).toBe(edited);
     expect(document.opened).toEqual([2]);
     document.undo();
@@ -212,6 +211,15 @@ describe('document', () => {
     expect(document.portOf({ element: { classId: 'gen', index: 1 }, port: 'speed' })).toBe(2);
     expect(document.portOf({ element: { classId: 'gen', index: 1 }, port: 'bus' })).toBeNull();
     expect(document.portOf({ element: { classId: 'bus', index: 0 }, port: 'bus' })).toBeNull();
+  });
+
+  it('finds the element of a field that drives each net', () => {
+    const document = new Counter(sampleModel());
+    expect([...document.drivers({ classId: 'gen', kind: 'signal', id: 'P' })]).toEqual([NONE, 0]);
+    expect([...document.drivers({ classId: 'gen', kind: 'signal', id: 'Q' })]).toEqual([
+      NONE,
+      NONE,
+    ]);
   });
 
   it('gives its identities, bytes, and palette as its format says', async () => {

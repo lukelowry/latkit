@@ -17,7 +17,7 @@ export type { Channel } from './channels.js';
 export { OPTIONS, validateOptions } from './options.js';
 export type { Options } from './options.js';
 
-export type { Pose } from './camera.js';
+export type { Camera } from './controller.js';
 
 /** The host fragment hook `Diagram.setShade` installs. */
 export type { Shade, ShadeFrame } from './shade.js';

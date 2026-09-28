@@ -528,6 +528,46 @@ it('uses sparse class indices for selection and picking', async () => {
   expect([...uploaded('monitor-focus-values')]).toEqual(Array(4).fill(Math.fround(1 / 12)));
 });
 
+it('answers a secondary click with a context menu at the sample under it, selecting nothing', async () => {
+  bind(
+    Series.create({
+      signals: ['x'],
+      elementCount: 2,
+      time: Float64Array.of(0, 1),
+      values: Float64Array.of(0, 1, 0, 1),
+    }),
+  );
+  const element = canvas();
+  await paint(() => monitor.attach(element));
+  const picked = vi.fn();
+  const menus = vi.fn();
+  monitor.on('select', picked);
+  monitor.on('contextmenu', menus);
+  element.dispatchEvent(new MouseEvent('pointerdown', { button: 2, clientX: 1, clientY: 1 }));
+  const asked = new MouseEvent('contextmenu', {
+    button: 2,
+    clientX: 1,
+    clientY: 1,
+    cancelable: true,
+  });
+  element.dispatchEvent(asked);
+  expect(asked.defaultPrevented).toBe(true);
+  await pump(() => menus.mock.calls.length > 0);
+  expect(menus.mock.calls[0]![0]).toMatchObject({
+    event: asked,
+    keyboard: false,
+    clientX: 1,
+    clientY: 1,
+    reading: { element: 1 },
+  });
+  expect(picked).not.toHaveBeenCalled();
+
+  const keyed = new MouseEvent('contextmenu', { cancelable: true });
+  element.dispatchEvent(keyed);
+  expect(keyed.defaultPrevented).toBe(true);
+  expect(menus.mock.calls[1]![0]).toMatchObject({ event: keyed, keyboard: true, reading: null });
+});
+
 it('does not let an obsolete hover clear the latest reading', async () => {
   const input = source(2, [0, 1, 2]).series;
   let delay = false;

@@ -107,7 +107,7 @@ describe('attach and detach', () => {
     h.network.setChannel('vertexColor', new Float32Array([0, 0.5, 1]), [0, 1]);
     h.network.setChannel('edgeDash', new Float32Array([1, 0]));
     h.network.setBorders(borders);
-    h.network.setProjection('tilt');
+    h.network.setCamera({ projection: 'tilt' });
     h.network.setOptions({ vertices: false });
 
     await h.network.attach(h.canvas);
@@ -577,7 +577,7 @@ describe('createNetwork controller', () => {
     expect(h.network.projections.globe).toBe(true);
 
     const boundsWrites = h.rig.setBounds.mock.calls.length;
-    h.network.setProjection('globe');
+    h.network.setCamera({ projection: 'globe' });
     expect(h.rig.setBounds).toHaveBeenCalledTimes(boundsWrites);
     expect(h.loop.uniforms.geometry.vRadius).toBeCloseTo(vertexSize);
   });
@@ -687,7 +687,7 @@ describe('createNetwork controller', () => {
     const h = await makeHarness();
     h.network.load(nonGlobeTopology());
 
-    expect(h.network.setProjection('globe')).toBe(false);
+    expect(h.network.setCamera({ projection: 'globe' })).toBe(false);
     expect(h.rig.switchTo).not.toHaveBeenCalledWith('globe', expect.anything());
     expect(h.renderer.useProjection).not.toHaveBeenCalledWith('globe');
   });
@@ -696,7 +696,7 @@ describe('createNetwork controller', () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
 
-    expect(h.network.setProjection('tilt')).toBe(true);
+    expect(h.network.setCamera({ projection: 'tilt' })).toBe(true);
     expect(h.rig.switchTo).toHaveBeenCalledWith('tilt', { w: 100, h: 80 });
     expect(h.renderer.useProjection).toHaveBeenCalledWith('tilt');
     expect(h.loop.wake).toHaveBeenCalled();
@@ -708,11 +708,11 @@ describe('createNetwork controller', () => {
 
     h.rig.switchTo.mockClear();
     h.renderer.useProjection.mockClear();
-    expect(h.network.setProjection('flat')).toBe(true);
+    expect(h.network.setCamera({ projection: 'flat' })).toBe(true);
     expect(h.rig.switchTo).not.toHaveBeenCalled();
     expect(h.renderer.useProjection).not.toHaveBeenCalled();
 
-    expect(h.network.setProjection('globe')).toBe(true);
+    expect(h.network.setCamera({ projection: 'globe' })).toBe(true);
     h.rig.switchTo.mockClear();
     h.renderer.useProjection.mockClear();
     h.network.load(nonGlobeTopology());
@@ -1023,7 +1023,7 @@ describe('createNetwork controller', () => {
     h.network.fit(true);
     h.network.fit([{ kind: 'vertex', index: 1 }], true);
     h.network.reveal({ kind: 'vertex', index: 1 }, { animate: true });
-    h.network.setPose({ bearing: 90 }, true);
+    h.network.setCamera({ bearing: 90 }, true);
     h.emitPointer({ kind: 'dragStart', sx: 1, sy: 2, vp: { w: 100, h: 80 }, time: 10 });
     h.emitPointer({ kind: 'dragEnd', coast: true, time: 30 });
     h.emitPointer({ kind: 'doubleTap', sx: 50, sy: 40, targetPx: 10, vp: { w: 100, h: 80 } });
@@ -1031,7 +1031,7 @@ describe('createNetwork controller', () => {
     expect(h.rig.fit.mock.calls.map((call) => call[1])).toEqual([false, false]);
     expect(h.rig.moveTo.mock.calls[0]?.[2]).toBe(false);
     expect(h.rig.reveal.mock.calls[0]?.[2]).toBe(false);
-    expect(h.rig.camera.setPose).toHaveBeenCalledWith({ bearing: 90 }, false);
+    expect(h.rig.place).toHaveBeenCalledWith({ bearing: 90 }, null, { w: 100, h: 80 }, false);
     expect(h.rig.camera.endDrag).toHaveBeenCalledWith(false, 30);
     expect(h.network.orbit(true)).toBe(false);
     expect(h.network.orbiting).toBe(false);
@@ -1182,7 +1182,7 @@ describe('createNetwork controller', () => {
     const callbackStates: boolean[] = [];
     h.network.on('hover', () => {
       callbackStates.push(insidePaint);
-      h.network.setProjection('tilt');
+      h.network.setCamera({ projection: 'tilt' });
       h.network.load(nonGlobeTopology());
     });
 
@@ -1210,7 +1210,7 @@ describe('createNetwork controller', () => {
     h.network.on('hover', () => hoverNotices++);
     h.network.on('fit', (atFit) => {
       notices.push({ atFit, insidePaint });
-      h.network.setProjection('tilt');
+      h.network.setCamera({ projection: 'tilt' });
       h.network.load(nonGlobeTopology());
     });
 
@@ -1367,13 +1367,14 @@ describe('createNetwork controller', () => {
     h.network.panBy(1, 2);
     h.network.rotateBy(1, 2);
     h.network.zoomBy(2);
-    expect(h.network.getPose()).toBeNull();
-    expect(h.network.setPose({ centerX: 1 })).toBe(false);
+    expect(h.network.getCamera()).toBeNull();
+    expect(h.network.setCamera({ centerX: 1 })).toBe(false);
+    expect(h.network.setCamera({ fit: true })).toBe(false);
     expect(h.rig.fit).not.toHaveBeenCalled();
     expect(h.rig.camera.panBy).not.toHaveBeenCalled();
     expect(h.rig.camera.rotateBy).not.toHaveBeenCalled();
     expect(h.rig.camera.zoomAt).not.toHaveBeenCalled();
-    expect(h.rig.camera.setPose).not.toHaveBeenCalled();
+    expect(h.rig.place).not.toHaveBeenCalled();
 
     h.network.load(geographicTopology());
     h.network.fit(true);
@@ -1388,11 +1389,30 @@ describe('createNetwork controller', () => {
     expect(h.rig.camera.rotateBy).toHaveBeenCalledWith(5, 6, { w: 100, h: 80 });
     expect(h.rig.camera.zoomAt).toHaveBeenCalledWith(1.25, 50, 40, { w: 100, h: 80 });
 
-    expect(h.network.getPose()).toEqual({ centerX: 0, centerY: 0, pitch: 0, bearing: 0 });
+    expect(h.network.getCamera()).toEqual({
+      projection: 'flat',
+      centerX: 0,
+      centerY: 0,
+      pitch: 0,
+      bearing: 0,
+      scale: 1,
+      fit: false,
+    });
     h.loop.wake.mockClear();
-    expect(h.network.setPose({ bearing: 90 }, true)).toBe(true);
-    expect(h.rig.camera.setPose).toHaveBeenCalledWith({ bearing: 90 }, true);
+    expect(h.network.setCamera({ bearing: 90, scale: 3 }, true)).toBe(true);
+    expect(h.rig.place).toHaveBeenCalledWith({ bearing: 90 }, 3, { w: 100, h: 80 }, true);
     expect(h.loop.wake).toHaveBeenCalled();
+    expect(h.network.setCamera({ fit: true, centerX: 5 })).toBe(true);
+    expect(h.rig.fit).toHaveBeenLastCalledWith({ w: 100, h: 80 }, false);
+    expect(h.rig.place).toHaveBeenCalledOnce();
+    expect(h.network.setCamera({ fit: false })).toBe(true);
+    expect(h.rig.leaveFit).toHaveBeenCalledOnce();
+    expect(() => h.network.setCamera({ scale: 0 })).toThrow(RangeError);
+    expect(() => h.network.setCamera({ pitch: Number.NaN })).toThrow(
+      'camera.pitch must be a finite number',
+    );
+    expect(() => h.network.setCamera({ projection: 'orbit' as never })).toThrow(TypeError);
+    expect(() => h.network.setCamera({ fit: 1 as never })).toThrow('camera.fit must be a boolean');
   });
 
   it('defers camera commands issued while detached to the rig', async () => {
@@ -1567,17 +1587,26 @@ describe('createNetwork controller', () => {
     expect(revealBounds && (revealBounds.xMin + revealBounds.xMax) / 2).toBeCloseTo(181);
   });
 
-  it('falls back through the canonical projection order only when asked', async () => {
+  it('switches only to a projection the topology can show, keeping the one it has', async () => {
     const h = await makeHarness();
     h.network.load(nonGlobeTopology());
-    h.network.setProjection('tilt');
+    expect(h.network.setCamera({ projection: 'tilt' })).toBe(true);
 
-    expect(h.network.setProjection('globe')).toBe(false);
+    expect(h.network.setCamera({ projection: 'globe', centerX: 3 })).toBe(false);
     expect(h.network.projection).toBe('tilt');
-    expect(h.network.setProjection('globe', true)).toBe(false);
+    expect(h.network.getCamera()?.projection).toBe('tilt');
+    expect(h.rig.place).not.toHaveBeenCalled();
+  });
+
+  it('switches projection before a topology loads, and moves the camera only after', async () => {
+    const h = await makeHarness();
     expect(h.network.projection).toBe('flat');
-    expect(h.network.setProjection('tilt', true)).toBe(true);
+    expect(h.network.setCamera({ projection: 'tilt' })).toBe(true);
+    expect(h.rig.switchTo).toHaveBeenCalledWith('tilt', { w: 100, h: 80 });
+    expect(h.network.setCamera({ projection: 'flat', centerX: 1 })).toBe(false);
+    // The projection answers before there is a camera to keep.
     expect(h.network.projection).toBe('tilt');
+    expect(h.network.getCamera()).toBeNull();
   });
 
   it('answers neighborhoods from a per-topology adjacency', async () => {
@@ -2082,10 +2111,9 @@ describe('series-bound channels', () => {
         return Promise.resolve();
       }
     }
-    model.engine = new Replay();
-    const recording = model.record(null);
+    const recording = new Replay().record(model, null);
     await vi.waitFor(() => expect(recording.state.status).toBe('complete'));
-    const vm = (await model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }, recording))!;
+    const vm = (await recording.field({ classId: 'bus', kind: 'signal', id: 'Vm' }))!;
     h.network.setChannel('vertexColor', vm);
     await vi.waitFor(() => expect(h.loop.uniforms.channel.vColorOffset).toBe(FIXED + 2 * 3));
     h.network.seek(1);
@@ -2166,7 +2194,7 @@ describe('vertex positions', () => {
   it('withdraws the globe while positions override the layout and falls back from it', async () => {
     const h = await makeHarness();
     h.network.load(geographicTopology());
-    h.network.setProjection('globe');
+    h.network.setCamera({ projection: 'globe' });
     expect(h.rig.mode).toBe('globe');
     h.renderer.warmProjection.mockClear();
 
@@ -2175,8 +2203,8 @@ describe('vertex positions', () => {
     expect(h.network.projections).toEqual({ flat: true, tilt: true, globe: false });
     expect(h.rig.mode).toBe('flat');
     expect(h.renderer.useProjection).toHaveBeenLastCalledWith('flat');
-    expect(h.network.setProjection('globe')).toBe(false);
-    expect(h.network.setProjection('tilt')).toBe(true);
+    expect(h.network.setCamera({ projection: 'globe' })).toBe(false);
+    expect(h.network.setCamera({ projection: 'tilt' })).toBe(true);
 
     // Restoring the topology's layout re-seeds it and brings the globe back.
     h.network.setChannel('vertexPosition', null);
@@ -2187,7 +2215,7 @@ describe('vertex positions', () => {
       { xMin: -10, xMax: 10, yMin: -5, yMax: 5 },
       false,
     );
-    expect(h.network.setProjection('globe')).toBe(true);
+    expect(h.network.setCamera({ projection: 'globe' })).toBe(true);
   });
 
   it('loads a new topology with its own layout and the globe available again', async () => {
@@ -2473,7 +2501,7 @@ describe('paint', () => {
     h.network.load(geographicTopology());
     h.loop.paint();
     const done = vi.fn();
-    h.network.setPose({ centerX: 3 }, false);
+    h.network.setCamera({ centerX: 3 });
     const request = h.network.paint().then(done);
     await flushMicrotasks();
     expect(done).not.toHaveBeenCalled();
@@ -2537,7 +2565,7 @@ describe('paint', () => {
     h.loop.paint();
     await request;
     const pending = expect(h.network.paint()).rejects.toBe(cause);
-    expect(h.network.setProjection('globe')).toBe(true);
+    expect(h.network.setCamera({ projection: 'globe' })).toBe(true);
     await pending;
   });
 

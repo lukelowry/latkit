@@ -25,7 +25,7 @@ describe('recording service', () => {
   it('opens with the header, the clock, and every class, so lookups answer on the far side', async () => {
     const [server, client] = loopback();
     serveRecording(server, recorded().recording);
-    const remote = await connectRecording(client, 'run');
+    const remote = await connectRecording(client, fixture(), 'run');
     expect(remote).toMatchObject({
       id: 'run',
       label: 'Run',
@@ -60,7 +60,7 @@ describe('recording service', () => {
     const [server, client] = loopback();
     const { recording: local, recorder, complete } = recorded();
     serveRecording(server, local);
-    const remote = await connectRecording(client, 'run');
+    const remote = await connectRecording(client, fixture(), 'run');
     const bus = remote.series('bus')!;
     const heard: string[] = [];
     bus.on('change', () => heard.push(`bus:${bus.state.frameCount}:${bus.state.live}`));
@@ -97,7 +97,7 @@ describe('recording service', () => {
     const [server, client] = loopback();
     const { recording: local, recorder } = byHand(fixture(), { id: 'run' });
     serveRecording(server, local);
-    const opening = connectRecording(client, 'run');
+    const opening = connectRecording(client, fixture(), 'run');
     for (let frame = 0; frame < 6; frame++) {
       recorder.append(Float64Array.of(frame), { bus: Float32Array.of(frame, -frame) });
       await Promise.resolve();
@@ -122,7 +122,7 @@ describe('recording service', () => {
     const values = Float64Array.of(1e12, 1e12 + 0.125, 1e12 + 0.25, 1e12 + 0.375);
     recorder.append(Float64Array.of(0, 1), { bus: values });
     serveRecording(server, local);
-    const bus = (await connectRecording(client, 'run')).series('bus')!;
+    const bus = (await connectRecording(client, fixture(), 'run')).series('bus')!;
     const block = await bus.read(0, {
       frameOffset: 0,
       frameCount: 2,
@@ -156,7 +156,7 @@ describe('recording service', () => {
     await expect(
       connection.call({ op: 'read', classId: 'bus', signalIndex: 0, window: window(0, frames, 2) }),
     ).rejects.toThrow('4 MiB');
-    const bus = (await connectRecording(client, 'run')).series('bus')!;
+    const bus = (await connectRecording(client, fixture(), 'run')).series('bus')!;
     await expect(bus.read(1, window(0, 1))).rejects.toThrow('signal 1 out of range');
     await expect(bus.read(0, window(frames, 1))).rejects.toThrow('committed');
     expect(read).not.toHaveBeenCalled();
@@ -197,8 +197,8 @@ describe('recording service', () => {
     });
     const [server, client] = loopback();
     serveRecording(server, local);
-    const remote = await connectRecording(client, 'run');
-    const field = (await model.field({ classId: 'meter', kind: 'signal', id: 'x' }, remote))!;
+    const remote = await connectRecording(client, model, 'run');
+    const field = (await remote.field({ classId: 'meter', kind: 'signal', id: 'x' }))!;
     const values = await field.at(0);
     expect(values.length).toBe(count);
     expect([values[0], values[65_536], values[count - 1]]).toEqual([0, 65_536, count - 1]);
@@ -230,14 +230,14 @@ describe('recording service', () => {
   it('ends reads when either side closes', async () => {
     const [server, client] = loopback();
     const stop = serveRecording(server, recorded().recording);
-    const remote = await connectRecording(client, 'run');
+    const remote = await connectRecording(client, fixture(), 'run');
     const bus = remote.series('bus')!;
     stop();
     await expect(bus.read(0, all(bus))).rejects.toThrow(/service was closed/);
 
     const [otherServer, otherClient] = loopback();
     serveRecording(otherServer, recorded().recording);
-    const other = await connectRecording(otherClient, 'run');
+    const other = await connectRecording(otherClient, fixture(), 'run');
     const otherBus = other.series('bus')!;
     other.close();
     await expect(otherBus.read(0, all(otherBus))).rejects.toThrow(/connection was closed/);
@@ -252,8 +252,8 @@ describe('recording service', () => {
       describe: () => Promise.reject(new Error('gone')),
     });
     serveRecording(server, local);
-    await expect(connectRecording(client, 'run')).rejects.toThrow('gone');
+    await expect(connectRecording(client, fixture(), 'run')).rejects.toThrow('gone');
     expect(() => serveRecording(server, { id: '' } as unknown as Recording)).toThrow(/needs an id/);
-    await expect(connectRecording(client, '')).rejects.toThrow(/needs an id/);
+    await expect(connectRecording(client, fixture(), '')).rejects.toThrow(/needs an id/);
   });
 });

@@ -101,16 +101,16 @@ function ended(recording: Recording): Promise<void> {
 }
 
 const model = new Bench();
-model.engine = new Replay();
-const sealed = model.record({ frames: blocks, paced: false });
-const chunky = model.record({ frames: single, paced: false });
+const engine = new Replay();
+const sealed = engine.record(model, { frames: blocks, paced: false });
+const chunky = engine.record(model, { frames: single, paced: false });
 await Promise.all([ended(sealed), ended(chunky)]);
-const bus = (await model.field({ classId: 'bus', kind: 'signal', id: 'b' }, sealed))!;
+const bus = (await sealed.field({ classId: 'bus', kind: 'signal', id: 'b' }))!;
 const meter = (await model.field({ classId: 'meter', kind: 'column', id: 'x' }))!;
 
 describe('model data plane', () => {
   bench('append 1000 frames of 2000 elements x 4 signals in 100 blocks', async () => {
-    await ended(model.record({ frames: blocks, paced: false }));
+    await ended(engine.record(model, { frames: blocks, paced: false }));
   });
 
   bench('read one block of one signal: 10 frames x 2000 elements', async () => {
@@ -140,7 +140,7 @@ describe('model data plane', () => {
   });
 
   bench('grid at a time: 2000 elements, a column and 4 signals', async () => {
-    const grid = await model.grid('bus', { recording: sealed, time: 555 });
+    const grid = await sealed.grid('bus', 555);
     await grid.window('', null, 0, 50);
     grid.dispose();
   });
@@ -152,7 +152,7 @@ describe('model data plane', () => {
   });
 
   bench('record through the engine: 100 blocks', async () => {
-    await ended(model.record({ frames: blocks, paced: true }));
+    await ended(engine.record(model, { frames: blocks, paced: true }));
   });
 
   bench('gather 500 of 2000 elements and read 128 frames of them', async () => {

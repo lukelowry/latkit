@@ -28,7 +28,20 @@ export interface Reading {
 /** Controller events. Programmatic selection does not emit select. */
 export type Events = {
   hover: Reading | null;
+  /** The primary button picked a sample; other buttons select nothing. */
   select: Reading;
+  /**
+   * A context menu was asked for, and the native one suppressed: by the pointer, with the sample
+   * under it, resolved against the series shown when it was asked; or by the keyboard, at the
+   * sample last hovered, else the canvas center. Nothing is selected.
+   */
+  contextmenu: {
+    readonly event: MouseEvent;
+    readonly keyboard: boolean;
+    readonly clientX: number;
+    readonly clientY: number;
+    readonly reading: Reading | null;
+  };
   error: Error;
   valueRange: Domain;
   /**
@@ -93,6 +106,7 @@ interface Binding {
   off: (() => void) | null;
   hover: AbortController | null;
   pick: AbortController | null;
+  context: AbortController | null;
 }
 
 /** Create a monitor without acquiring a device or reading samples until attach. */
@@ -124,6 +138,8 @@ export function createMonitor(options: Options = {}): Monitor {
     entry.hover = null;
     entry.pick?.abort();
     entry.pick = null;
+    entry.context?.abort();
+    entry.context = null;
   }
   function forgetLane(entry: Binding): void {
     cancelReadings(entry);
@@ -181,7 +197,7 @@ export function createMonitor(options: Options = {}): Monitor {
     }
     if (entry.cursorDirty) {
       entry.cursorDirty = false;
-      if (entry.cursor) void reading(entry, false);
+      if (entry.cursor) void reading(entry, 'hover');
       else if (lastReading !== null) {
         lastReading = null;
         events.emit('hover', null);
@@ -190,16 +206,23 @@ export function createMonitor(options: Options = {}): Monitor {
     entry.lane?.frame(frame.settled);
     return false;
   }
-  async function reading(entry: Binding, selecting: boolean): Promise<void> {
+  /**
+   * Read the sample under the cursor for a hover, a pick, or a context menu, dropping the answer
+   * when a newer ask, another series, or a release supersedes it.
+   */
+  async function reading(
+    entry: Binding,
+    kind: 'hover' | 'pick' | 'context',
+    menu?: MouseEvent,
+  ): Promise<void> {
     const cursor = entry.cursor,
       lane = entry.lane;
     if (!cursor || !lane || consumerPaused) return;
     const rect = entry.canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
-    const key = selecting ? 'pick' : 'hover';
-    entry[key]?.abort();
+    entry[kind]?.abort();
     const job = new AbortController();
-    entry[key] = job;
+    entry[kind] = job;
     try {
       const result = await lane.reading(
         clamp((cursor.x - rect.left) / rect.width),
@@ -208,27 +231,35 @@ export function createMonitor(options: Options = {}): Monitor {
       );
       if (
         job.signal.aborted ||
-        entry[key] !== job ||
+        entry[kind] !== job ||
         entry.released ||
         entry.lane !== lane ||
         consumerPaused ||
-        (!selecting && entry.cursor !== cursor)
+        (kind === 'hover' && entry.cursor !== cursor)
       )
         return;
-      if (selecting) {
+      if (kind === 'pick') {
         if (result) {
           applySelection(result.element);
           events.emit('select', result);
         }
+      } else if (kind === 'context') {
+        events.emit('contextmenu', {
+          event: menu!,
+          keyboard: false,
+          clientX: cursor.x,
+          clientY: cursor.y,
+          reading: result,
+        });
       } else if (!sameSample(result, lastReading)) {
         lastReading = result;
         events.emit('hover', result);
       }
     } catch (error) {
-      if (!job.signal.aborted && entry[key] === job && !entry.released)
+      if (!job.signal.aborted && entry[kind] === job && !entry.released)
         events.emit('error', error instanceof Error ? error : new Error(String(error)));
     } finally {
-      if (entry[key] === job) entry[key] = null;
+      if (entry[kind] === job) entry[kind] = null;
     }
   }
   function applySelection(element: number | null): void {
@@ -275,6 +306,7 @@ export function createMonitor(options: Options = {}): Monitor {
       off: null,
       hover: null,
       pick: null,
+      context: null,
     };
     entry = built;
     const move = (event: PointerEvent) => {
@@ -289,17 +321,45 @@ export function createMonitor(options: Options = {}): Monitor {
       built.cursorDirty = true;
       loop.wake();
     };
+    /** A secondary press came first: the next context menu is the pointer's, not the keyboard's. */
+    let secondary = false;
     const down = (event: PointerEvent) => {
+      // Only the primary button picks; a secondary press is answered by its context menu.
+      if (event.button !== 0) {
+        secondary ||= event.button === 2;
+        return;
+      }
       built.cursor = { x: event.clientX, y: event.clientY };
-      void reading(built, true);
+      void reading(built, 'pick');
+    };
+    const menu = (event: MouseEvent) => {
+      event.preventDefault();
+      const pointer = secondary || event.button === 2;
+      secondary = false;
+      if (pointer) {
+        built.cursor = { x: event.clientX, y: event.clientY };
+        void reading(built, 'context', event);
+        return;
+      }
+      const rect = canvas.getBoundingClientRect();
+      const anchor = lastReading;
+      events.emit('contextmenu', {
+        event,
+        keyboard: true,
+        clientX: rect.left + (anchor ? anchor.x : 0.5) * rect.width,
+        clientY: rect.top + (anchor ? anchor.y : 0.5) * rect.height,
+        reading: anchor,
+      });
     };
     canvas.addEventListener('pointermove', move);
     canvas.addEventListener('pointerleave', leave);
     canvas.addEventListener('pointerdown', down);
+    canvas.addEventListener('contextmenu', menu);
     cleanup(() => {
       canvas.removeEventListener('pointermove', move);
       canvas.removeEventListener('pointerleave', leave);
       canvas.removeEventListener('pointerdown', down);
+      canvas.removeEventListener('contextmenu', menu);
     });
     cleanup(() => {
       built.released = true;

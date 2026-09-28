@@ -63,24 +63,23 @@ export class Fixture extends Model {
   }
 }
 
-/** The fixture, with `engine` attached when given. */
-export function fixture(name = 'Fixture', engine?: Engine): Fixture {
-  const model = new Fixture(name);
-  if (engine) model.engine = engine;
-  return model;
+/** The fixture. */
+export function fixture(name = 'Fixture'): Fixture {
+  return new Fixture(name);
 }
 
 /**
- * An engine that runs `script` for each recording, noting every input it is given; `parse`
- * checks an input, as a real engine's does.
+ * An engine that runs `script` for each recording, noting every model and input it is given;
+ * `parse` checks an input, as a real engine's does.
  */
 export class Scripted extends Engine {
   readonly inputs: unknown[] = [];
-  readonly #script: (recorder: Engine.Recorder, input: unknown) => Promise<void>;
+  readonly models: Model[] = [];
+  readonly #script: (recorder: Engine.Recorder, input: unknown, model: Model) => Promise<void>;
   readonly #parse: (input: unknown) => unknown;
 
   constructor(
-    script: (recorder: Engine.Recorder, input: unknown) => Promise<void>,
+    script: (recorder: Engine.Recorder, input: unknown, model: Model) => Promise<void>,
     options: { readonly concurrency?: number; readonly parse?: (input: unknown) => unknown } = {},
   ) {
     super({ concurrency: options.concurrency ?? 1 });
@@ -92,9 +91,10 @@ export class Scripted extends Engine {
     return this.#parse(input);
   }
 
-  protected execute(_model: Model, input: unknown, recorder: Engine.Recorder): Promise<void> {
+  protected execute(model: Model, input: unknown, recorder: Engine.Recorder): Promise<void> {
     this.inputs.push(input);
-    return this.#script(recorder, input);
+    this.models.push(model);
+    return this.#script(recorder, input, model);
   }
 }
 
@@ -115,7 +115,7 @@ export function byHand(
 } {
   let recorder!: Engine.Recorder;
   let resolve!: () => void;
-  model.engine = new Scripted(
+  const engine = new Scripted(
     (given) =>
       new Promise<void>((done, reject) => {
         recorder = given;
@@ -124,7 +124,7 @@ export function byHand(
       }),
     { concurrency: Infinity },
   );
-  const recording = model.record(null, header);
+  const recording = engine.record(model, null, header);
   return {
     recording,
     recorder,

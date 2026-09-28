@@ -65,7 +65,7 @@ entry's `series` says. A column field binds the same way, as a series of one fra
 run on `@latkit/gpu`'s binder, as the diagram's do, so a channel behaves the same in both:
 
 ```ts
-const vm = await model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }, recording);
+const vm = await recording.field({ classId: 'bus', kind: 'signal', id: 'Vm' });
 if (vm) network.setChannel('vertexColor', vm); // a null domain follows the recorded range
 transport.on('frame', (t) => network.seek(t));
 ```
@@ -151,16 +151,20 @@ Navigation takes CSS-pixel deltas and multiplicative zoom:
 network.panBy(24, 0);
 network.zoomBy(1.2);
 
-network.setProjection('tilt');
+network.setCamera({ projection: 'tilt' });
 network.rotateBy(18, -8);
 
-const pose = network.getPose();
-if (pose) network.setPose({ bearing: pose.bearing + 30 }, true);
+const camera = network.getCamera();
+if (camera) network.setCamera({ bearing: camera.bearing + 30 }, true);
 ```
 
-`network.projection` reports the active mode, `setProjection(mode, true)` falls back through
-`PROJECTIONS` to the first mode the loaded topology can host, and `orbit(true)` starts continuous
-rotation until a gesture or `orbit(false)` stops it.
+The camera is one value, `{ projection, centerX, centerY, pitch, bearing, scale, fit }`, where
+`scale` is CSS pixels per world unit at the view anchor and `fit` says it follows the fit view: keep
+`getCamera()` as a bookmark and `setCamera()` restores it in one step, a projection switch keeping
+the pose it is given. `getCamera()` is null until a canvas has had a size; `projection` names the
+projection shown before then too. `setCamera` returns false for a projection the topology cannot
+show, which `projections` says ahead, and `orbit(true)` starts continuous rotation until a gesture
+or `orbit(false)` stops it.
 
 Under `interaction: 'inspect'` the arrow keys walk the selection along the topology: a vertex
 steps to the far end of the edge lying most in that direction, an edge steps to one of its

@@ -48,7 +48,7 @@ const reflectProjection = (): void => {
 };
 for (const button of projectionButtons) {
   button.addEventListener('click', () => {
-    network.network.setProjection(button.dataset.projection as Projection);
+    network.network.setCamera({ projection: button.dataset.projection as Projection });
     reflectProjection();
   });
 }

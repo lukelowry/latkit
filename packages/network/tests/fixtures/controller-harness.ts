@@ -14,7 +14,7 @@ import type { FramePasses } from '../../src/webgpu/frame-encoder.js';
 import type { KeyIntent } from '../../src/input/keyboard.js';
 import type { Picker, PickerDeps, PickQuery, PickResult } from '../../src/pick/picker.js';
 import type { Projection } from '../../src/projections.js';
-import type { Viewport } from '../../src/camera/projection.js';
+import type { Pose, Viewport } from '../../src/camera/projection.js';
 import type { Renderer } from '../../src/webgpu/renderer.js';
 import { createFrameTick, type FrameTickDeps } from '../../src/webgpu/frame.js';
 import type { CameraRig, FitOptions } from '../../src/camera/rig.js';
@@ -167,6 +167,12 @@ export class FakeCameraRig {
     this.mode = mode;
     this.camera = new FakeCamera();
   });
+
+  capture = vi.fn((_vp: Viewport) =>
+    this.bounds === null ? null : { pose: this.camera.pose(), px: 1, fit: false },
+  );
+  place = vi.fn((_pose: Partial<Pose>, _px: number | null, _vp: Viewport, _animate: boolean) => {});
+  leaveFit = vi.fn();
 
   tick = vi.fn((_now: number, _vp: Viewport): boolean => this.bounds !== null);
   isAnimating = vi.fn(() => this.camera.isAnimating());

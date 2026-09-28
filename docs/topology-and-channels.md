@@ -58,7 +58,7 @@ network.load(topology);
 
 console.log(network.geographic);
 if (network.projections.globe) {
-  network.setProjection('globe');
+  network.setCamera({ projection: 'globe' });
 }
 ```
 
@@ -101,7 +101,7 @@ The third argument is the input domain. Pass `null` to auto-scan height values. 
 A channel can follow one signal of a `Series`, one element per vertex or edge, instead of holding an array; a sparse series leaves the items it never recorded with no value. A model's field is such a binding already, and a column field is a sealed series of one frame, whose window takes two slots. `seek(time)` shows every such channel at the playhead, each item taking its latest sample at or before it. A null domain follows the signal's recorded range as the series appends.
 
 ```ts
-const vm = await model.field({ classId: 'bus', kind: 'signal', id: 'Vm' }, recording);
+const vm = await recording.field({ classId: 'bus', kind: 'signal', id: 'Vm' });
 if (vm) network.setChannel('vertexColor', vm);
 network.seek(transport.t); // on every transport frame
 ```

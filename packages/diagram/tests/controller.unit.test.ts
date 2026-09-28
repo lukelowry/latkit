@@ -219,7 +219,7 @@ describe('createDiagram construction', () => {
     h.diagram.select([block(1)]);
     expect(h.diagram.hitTest(100, 100)).toEqual([]);
     expect(h.diagram.locate(block(1))).toBeNull();
-    expect(h.diagram.getPose()).toBeNull();
+    expect(h.diagram.getCamera()).toBeNull();
     expect(h.diagram.toDiagram(100, 100)).toBeNull();
 
     await h.diagram.attach(h.canvas);
@@ -233,7 +233,7 @@ describe('createDiagram construction', () => {
     expect(h.renderer.last!.glyphs).toBeGreaterThan(0);
     expect(flags(h, block(1)) & FOCUS_SELECTED).toBe(FOCUS_SELECTED);
     expect(h.diagram.getChannelDomain('netColor')).toEqual([0, 2]);
-    expect(h.diagram.getPose()).not.toBeNull();
+    expect(h.diagram.getCamera()).not.toBeNull();
   });
 });
 
@@ -311,7 +311,7 @@ describe('attach, detach, and destroy', () => {
     // Listeners were cleared: destroy announces nothing.
     expect(h.heard).toEqual([]);
     await expect(h.diagram.attach(h.canvas)).rejects.toThrow(/destroyed/);
-    expect(h.diagram.getPose()).toBeNull();
+    expect(h.diagram.getCamera()).toBeNull();
 
     // No netlist remains to answer from, and nothing it grew stays allocated.
     expect(h.diagram.neighborhood(block(0))).toEqual([]);
@@ -506,30 +506,30 @@ describe('load', () => {
   it('fits the camera once a viewport exists, or keeps a placed pose with fit false', async () => {
     const h = await makeHarness({}, false);
     h.diagram.load(edit());
-    expect(h.diagram.getPose()).toBeNull();
+    expect(h.diagram.getCamera()).toBeNull();
     await h.diagram.attach(h.canvas);
     h.frame();
-    const pose = h.diagram.getPose()!;
-    expect(pose.zoom).toBeGreaterThan(0);
+    const pose = h.diagram.getCamera()!;
+    expect(pose.scale).toBeGreaterThan(0);
 
     h.diagram.panBy(50, 0);
-    const panned = h.diagram.getPose()!;
+    const panned = h.diagram.getCamera()!;
     h.diagram.load(edited(), { fit: false });
     h.frame();
-    expect(h.diagram.getPose()).toEqual(panned);
+    expect(h.diagram.getCamera()).toEqual(panned);
     h.diagram.load(edit());
     h.frame();
-    expect(h.diagram.getPose()!.centerX).not.toBe(panned.centerX);
+    expect(h.diagram.getCamera()!.centerX).not.toBe(panned.centerX);
   });
 
   it('throws naming an invalid field and leaves the prior view intact', async () => {
     const h = await loaded();
     h.diagram.select([block(2)]);
-    const pose = h.diagram.getPose();
+    const pose = h.diagram.getCamera();
     const auto = h.diagram.arrange([]);
     const broken = { ...edit(), portStart: Uint32Array.of(0, 1, 3) };
     expect(() => h.diagram.load(broken)).toThrow(/portStart/);
-    expect(h.diagram.getPose()).toEqual(pose);
+    expect(h.diagram.getCamera()).toEqual(pose);
     expect(h.diagram.arrange([])).toEqual(auto);
     h.frame();
     expect(h.renderer.last).toMatchObject({ blocks: 4, ports: 5 });
@@ -626,19 +626,19 @@ describe('load', () => {
   it('keeps the camera working on an empty netlist, for a first block dropped in', async () => {
     const h = await makeHarness();
     h.diagram.load(empty());
-    expect(h.diagram.getPose()).toEqual({ centerX: 0, centerY: 0, zoom: 1 });
+    expect(h.diagram.getCamera()).toMatchObject({ centerX: 0, centerY: 0, scale: 1 });
     await h.settle();
     expect(h.renderer.mirrors.uniforms.u32[W_FLAGS]! & DISPLAY_GRID).toBe(DISPLAY_GRID);
     expect(h.diagram.toDiagram(LEFT + WIDTH / 2, TOP + HEIGHT / 2)).toEqual([0, 0]);
     expect(h.diagram.hitTest(LEFT + 100, TOP + 100)).toEqual([]);
     h.diagram.panBy(80, 40);
-    expect(h.diagram.getPose()).toEqual({ centerX: -80, centerY: -40, zoom: 1 });
+    expect(h.diagram.getCamera()).toMatchObject({ centerX: -80, centerY: -40, scale: 1 });
     h.diagram.zoomBy(2);
-    expect(h.diagram.getPose()).toEqual({ centerX: -80, centerY: -40, zoom: 2 });
-    expect(h.diagram.setPose({ centerX: 8 })).toBe(true);
+    expect(h.diagram.getCamera()).toMatchObject({ centerX: -80, centerY: -40, scale: 2 });
+    expect(h.diagram.setCamera({ centerX: 8 })).toBe(true);
     // Nothing to fit: the view stays.
     h.diagram.fit(true);
-    expect(h.diagram.getPose()).toEqual({ centerX: 8, centerY: -40, zoom: 2 });
+    expect(h.diagram.getCamera()).toMatchObject({ centerX: 8, centerY: -40, scale: 2 });
 
     // A palette drop: the host adds a block where the pointer let go and loads the result.
     const drop = h.diagram.toDiagram(LEFT + 300, TOP + 200)!;
@@ -647,22 +647,22 @@ describe('load', () => {
     h.diagram.load(one, { fit: false });
     h.diagram.setChannel('blockPosition', Float32Array.of(drop[0], drop[1]));
     h.frame();
-    expect(h.diagram.getPose()).toEqual({ centerX: 8, centerY: -40, zoom: 2 });
+    expect(h.diagram.getCamera()).toMatchObject({ centerX: 8, centerY: -40, scale: 2 });
     const [sx, sy] = [(drop[0] - 8) * 2 + WIDTH / 2, (drop[1] + 40) * 2 + HEIGHT / 2];
     expect(h.diagram.hitTest(LEFT + sx + 10, TOP + sy + 10)).toEqual([block(0)]);
 
     // Emptied again, the camera keeps its pose.
     h.diagram.load(empty());
-    expect(h.diagram.getPose()).toEqual({ centerX: 8, centerY: -40, zoom: 2 });
+    expect(h.diagram.getCamera()).toMatchObject({ centerX: 8, centerY: -40, scale: 2 });
     expect(h.diagram.toDiagram(LEFT + 300, TOP + 200)).toEqual(drop);
   });
 
   it('places the camera of an empty netlist loaded while detached', async () => {
     const h = await makeHarness({}, false);
     h.diagram.load(twoArea());
-    expect(h.diagram.getPose()).toBeNull();
+    expect(h.diagram.getCamera()).toBeNull();
     h.diagram.load(empty());
-    expect(h.diagram.getPose()).toEqual({ centerX: 0, centerY: 0, zoom: 1 });
+    expect(h.diagram.getCamera()).toMatchObject({ centerX: 0, centerY: 0, scale: 1 });
     expect(h.diagram.toDiagram(LEFT, TOP)).toBeNull();
     await h.diagram.attach(h.canvas);
     expect(h.diagram.toDiagram(LEFT + WIDTH / 2, TOP + HEIGHT / 2)).toEqual([0, 0]);
@@ -931,10 +931,10 @@ describe('arrange', () => {
     expect(h.frame({ now: now + 1000 })).toBe(false);
     expect(h.at(block(1))).toEqual(placed);
     const [gx, gy] = h.at(block(0));
-    const pose = h.diagram.getPose()!;
+    const pose = h.diagram.getCamera()!;
     // GAIN's center now sits at its fresh top-left plus half its size.
     const top = h.diagram.toDiagram(gx + LEFT, gy + TOP)!;
-    expect(Math.abs(top[0] - fresh[0]!)).toBeLessThan(200 / pose.zoom);
+    expect(Math.abs(top[0] - fresh[0]!)).toBeLessThan(200 / pose.scale);
     expect(h.diagram.getChannelDomain('blockPosition')).toBeNull();
     expect(h.emitted('move')).toEqual([]);
   });
@@ -1007,9 +1007,9 @@ describe('queries and the camera', () => {
 
   it('reveals a part in place, centered, or with its neighbors', async () => {
     const h = await loaded();
-    const pose = h.diagram.getPose()!;
+    const pose = h.diagram.getCamera()!;
     expect(h.diagram.reveal(block(2))).toBe(true);
-    expect(h.diagram.getPose()).toEqual(pose);
+    expect(h.diagram.getCamera()).toEqual(pose);
 
     h.diagram.panBy(-5000, 0);
     expect(h.at(block(2))[0]).toBeLessThan(0);
@@ -1017,7 +1017,7 @@ describe('queries and the camera', () => {
     const [cx, cy] = h.at(block(2));
     expect(cx).toBeCloseTo(WIDTH / 2, 6);
     expect(cy).toBeCloseTo(HEIGHT / 2, 6);
-    expect(h.diagram.getPose()!.zoom).toBe(pose.zoom);
+    expect(h.diagram.getCamera()!.scale).toBe(pose.scale);
 
     h.diagram.panBy(-5000, 0);
     expect(h.diagram.reveal(block(1), { neighbors: true })).toBe(true);
@@ -1035,7 +1035,7 @@ describe('queries and the camera', () => {
 
   it('fits everything or some parts, and tells the host about fit transitions after frames', async () => {
     const h = await loaded({ motion: 'reduce' });
-    const pose = h.diagram.getPose()!;
+    const pose = h.diagram.getCamera()!;
     h.diagram.panBy(120, 40);
     expect(h.emitted('fit')).toEqual([]);
     await h.settle();
@@ -1043,17 +1043,17 @@ describe('queries and the camera', () => {
 
     h.diagram.fit(true);
     await h.settle();
-    expect(h.diagram.getPose()).toEqual(pose);
+    expect(h.diagram.getCamera()).toEqual(pose);
     expect(h.emitted('fit')).toEqual([false, true]);
 
     h.diagram.fit([block(3)]);
-    expect(h.diagram.getPose()!.zoom).toBeGreaterThan(pose.zoom);
+    expect(h.diagram.getCamera()!.scale).toBeGreaterThan(pose.scale);
     const [sx, sy] = h.at(block(3));
     expect(Math.abs(sx - WIDTH / 2)).toBeLessThan(2);
     expect(Math.abs(sy - HEIGHT / 2)).toBeLessThan(40);
-    const framed = h.diagram.getPose();
+    const framed = h.diagram.getCamera();
     h.diagram.fit([block(42)]);
-    expect(h.diagram.getPose()).toEqual(framed);
+    expect(h.diagram.getCamera()).toEqual(framed);
     // Framing some parts leaves the fit view.
     await h.settle();
     expect(h.emitted('fit')).toEqual([false, true, false]);
@@ -1061,41 +1061,41 @@ describe('queries and the camera', () => {
 
   it('frames parts and neighborhoods without redefining the fit view', async () => {
     const h = await loaded({ motion: 'reduce' });
-    const pose = h.diagram.getPose()!;
+    const pose = h.diagram.getCamera()!;
     h.diagram.fit([block(3)]);
     await h.settle();
     expect(h.emitted('fit')).toEqual([false]);
-    const framed = h.diagram.getPose()!;
+    const framed = h.diagram.getCamera()!;
     expect(framed).not.toEqual(pose);
 
     // A resize keeps the framed pose: only the fit view follows the canvas.
     await h.settle({ width: WIDTH - 200 });
     await h.settle();
-    expect(h.diagram.getPose()).toEqual(framed);
+    expect(h.diagram.getCamera()).toEqual(framed);
     expect(h.emitted('fit')).toEqual([false]);
 
     // The fit view is still everything.
     h.diagram.fit();
     await h.settle();
-    expect(h.diagram.getPose()).toEqual(pose);
+    expect(h.diagram.getCamera()).toEqual(pose);
     expect(h.emitted('fit')).toEqual([false, true]);
 
     h.diagram.reveal(block(1), { neighbors: true });
     await h.settle();
     expect(h.emitted('fit')).toEqual([false, true, false]);
     // A grid change re-fits a camera at the fit view only.
-    const neighbors = h.diagram.getPose()!;
+    const neighbors = h.diagram.getCamera()!;
     h.diagram.setOptions({ gridPitch: 10 });
-    expect(h.diagram.getPose()).toEqual(neighbors);
+    expect(h.diagram.getCamera()).toEqual(neighbors);
   });
 
   it('stops a camera move in flight when revealing a part already in view', async () => {
     const h = await loaded({ motion: 'full', animationMs: 200 });
-    const fitted = h.diagram.getPose()!;
+    const fitted = h.diagram.getCamera()!;
     // An idle camera stays at its fit.
     expect(h.diagram.reveal(block(0))).toBe(true);
     await h.settle();
-    expect(h.diagram.getPose()).toEqual(fitted);
+    expect(h.diagram.getCamera()).toEqual(fitted);
     expect(h.emitted('fit')).toEqual([]);
 
     h.diagram.fit([block(3)], true);
@@ -1104,7 +1104,8 @@ describe('queries and the camera', () => {
     await h.settle({ now });
     expect(h.frame({ now: now + 100 })).toBe(false);
     expect(h.frame({ now: now + 1000 })).toBe(false);
-    expect(h.diagram.getPose()).toEqual(fitted);
+    // Where it was fitted, but no longer following the fit.
+    expect(h.diagram.getCamera()).toEqual({ ...fitted, fit: false });
     const [x, y] = h.at(block(0));
     expect(x).toBeGreaterThan(0);
     expect(x).toBeLessThan(WIDTH);
@@ -1113,20 +1114,20 @@ describe('queries and the camera', () => {
     // The interrupted camera no longer follows its fit.
     expect(h.emitted('fit')).toEqual([]);
     await h.settle({ now: now + 1100, width: WIDTH - 200 });
-    expect(h.diagram.getPose()).toEqual(fitted);
+    expect(h.diagram.getCamera()).toEqual({ ...fitted, fit: false });
   });
 
   it('eases a fit when motion allows', async () => {
     const h = await loaded({ motion: 'full', animationMs: 200 });
-    const pose = h.diagram.getPose()!;
+    const pose = h.diagram.getCamera()!;
     h.diagram.panBy(200, 0);
     h.diagram.fit(true);
     const now = performance.now();
     expect(h.frame({ now })).toBe(true);
-    expect(h.diagram.getPose()!.centerX).not.toBe(pose.centerX);
+    expect(h.diagram.getCamera()!.centerX).not.toBe(pose.centerX);
     expect(h.frame({ now: now + 100 })).toBe(true);
     expect(h.frame({ now: now + 300 })).toBe(false);
-    expect(h.diagram.getPose()!.centerX).toBeCloseTo(pose.centerX, 6);
+    expect(h.diagram.getCamera()!.centerX).toBeCloseTo(pose.centerX, 6);
   });
 
   it('converts client points to snapped diagram points', async () => {
@@ -1141,25 +1142,35 @@ describe('queries and the camera', () => {
     expect(ux % G).not.toBe(0);
   });
 
-  it('reads and sets the pose, clamping zoom, and pans and zooms by screen amounts', async () => {
+  it('reads and sets the camera, clamping its scale, and pans and zooms by screen amounts', async () => {
     const h = await makeHarness();
-    expect(h.diagram.getPose()).toBeNull();
-    expect(h.diagram.setPose({ zoom: 2 })).toBe(false);
+    expect(h.diagram.getCamera()).toBeNull();
+    expect(h.diagram.setCamera({ scale: 2 })).toBe(false);
     h.diagram.load(edit());
     h.frame();
-    const pose = h.diagram.getPose()!;
-    expect(h.diagram.setPose({ zoom: 1000 })).toBe(true);
-    expect(h.diagram.getPose()!.zoom).toBe(8);
-    expect(h.diagram.setPose({ zoom: 1000 })).toBe(false);
-    expect(() => h.diagram.setPose({ centerX: Number.NaN })).toThrow(RangeError);
-    expect(h.diagram.setPose({ centerX: 10, centerY: 20, zoom: 1 })).toBe(true);
-    expect(h.diagram.getPose()).toEqual({ centerX: 10, centerY: 20, zoom: 1 });
+    const pose = h.diagram.getCamera()!;
+    expect(h.diagram.setCamera({ scale: 1000 })).toBe(true);
+    expect(h.diagram.getCamera()!.scale).toBe(8);
+    expect(h.diagram.setCamera({ scale: 1000 })).toBe(false);
+    expect(() => h.diagram.setCamera({ centerX: Number.NaN })).toThrow(RangeError);
+    expect(h.diagram.setCamera({ centerX: 10, centerY: 20, scale: 1 })).toBe(true);
+    expect(h.diagram.getCamera()).toMatchObject({ centerX: 10, centerY: 20, scale: 1 });
 
     h.diagram.panBy(30, -10);
-    expect(h.diagram.getPose()).toEqual({ centerX: -20, centerY: 30, zoom: 1 });
+    expect(h.diagram.getCamera()).toMatchObject({ centerX: -20, centerY: 30, scale: 1 });
     h.diagram.zoomBy(2);
-    expect(h.diagram.getPose()).toEqual({ centerX: -20, centerY: 30, zoom: 2 });
-    expect(pose.zoom).toBeGreaterThan(0);
+    expect(h.diagram.getCamera()).toMatchObject({ centerX: -20, centerY: 30, scale: 2 });
+    expect(pose.scale).toBeGreaterThan(0);
+
+    // A camera that follows the fit is restored by fitting, not by the pose it had.
+    expect(h.diagram.setCamera({ ...pose, centerX: 999 })).toBe(true);
+    expect(h.diagram.getCamera()).toEqual(pose);
+    expect(h.diagram.setCamera({ fit: false })).toBe(true);
+    expect(h.diagram.getCamera()).toEqual({ ...pose, fit: false });
+    expect(h.diagram.setCamera({ fit: false })).toBe(false);
+    expect(h.diagram.setCamera({})).toBe(false);
+    expect(() => h.diagram.setCamera({ scale: -1 })).toThrow('camera.scale must be');
+    expect(() => h.diagram.setCamera({ fit: 'yes' as never })).toThrow(TypeError);
   });
 });
 
@@ -1408,11 +1419,11 @@ describe('options', () => {
 
   it('re-fits a camera at its fit on new fit padding', async () => {
     const h = await loaded();
-    const pose = h.diagram.getPose()!;
+    const pose = h.diagram.getCamera()!;
     h.diagram.setOptions({ fitPaddingPx: 150 });
-    expect(h.diagram.getPose()!.zoom).toBeLessThan(pose.zoom);
+    expect(h.diagram.getCamera()!.scale).toBeLessThan(pose.scale);
     h.diagram.setOptions({ fitPaddingPx: null });
-    expect(h.diagram.getPose()!.zoom).toBeCloseTo(pose.zoom, 9);
+    expect(h.diagram.getCamera()!.scale).toBeCloseTo(pose.scale, 9);
   });
 
   it('attaches the adapters the interaction and keyboard options ask for', async () => {
@@ -1450,7 +1461,7 @@ describe('gestures', () => {
   it('drags a block and proposes its snapped resting place', async () => {
     const h = await loaded({ interaction: 'edit' });
     const auto = h.diagram.arrange([]);
-    const zoom = h.diagram.getPose()!.zoom;
+    const zoom = h.diagram.getCamera()!.scale;
     const from = h.at(block(2));
     h.drag(from, [from[0] + 61, from[1] + 43]);
     expect(h.emitted('select')).toEqual([[block(2)]]);
@@ -1469,7 +1480,7 @@ describe('gestures', () => {
   it('reports the raw release point and offset when snap is off', async () => {
     const h = await loaded({ interaction: 'edit', snap: false });
     const auto = h.diagram.arrange([]);
-    const zoom = h.diagram.getPose()!.zoom;
+    const zoom = h.diagram.getCamera()!.scale;
     const from = h.at(block(2));
     h.drag(from, [from[0] + 61, from[1] + 43]);
     const [move] = h.emitted('move');
@@ -1490,12 +1501,12 @@ describe('gestures', () => {
     h.diagram.detach();
     await h.diagram.attach(h.canvas);
     h.frame();
-    const pose = h.diagram.getPose();
+    const pose = h.diagram.getCamera();
     const from = h.at(block(2));
     h.drag(from, [from[0] + 61, from[1] + 43]);
     // A move, not a pan: the Space released with the old adapter.
     expect(h.emitted('move')).toHaveLength(1);
-    expect(h.diagram.getPose()).toEqual(pose);
+    expect(h.diagram.getCamera()).toEqual(pose);
   });
 
   it('draws a wire from an out port to a compatible in port', async () => {
@@ -1652,10 +1663,10 @@ describe('gestures', () => {
 
   it('pans on a navigate drag, opens on a double tap, and fits on Home', async () => {
     const h = await loaded({ motion: 'full' });
-    const pose = h.diagram.getPose()!;
+    const pose = h.diagram.getCamera()!;
     const from = h.at(block(1));
     h.drag(from, [from[0] + 50, from[1] + 20]);
-    expect(h.diagram.getPose()!.centerX).toBeCloseTo(pose.centerX - 50 / pose.zoom, 6);
+    expect(h.diagram.getCamera()!.centerX).toBeCloseTo(pose.centerX - 50 / pose.scale, 6);
     expect(h.emitted('move')).toEqual([]);
     await h.settle();
     expect(h.emitted('fit')).toEqual([false]);
@@ -1670,7 +1681,7 @@ describe('gestures', () => {
     await h.settle({ now });
     await h.settle({ now: now + 1000 });
     expect(h.emitted('fit')).toEqual([false, true]);
-    expect(h.diagram.getPose()!.centerX).toBeCloseTo(pose.centerX, 6);
+    expect(h.diagram.getCamera()!.centerX).toBeCloseTo(pose.centerX, 6);
   });
 
   it('answers a context request with the parts under the pointer', async () => {

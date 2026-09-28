@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { Camera, type Viewport } from '../src/camera.js';
+import { CameraRig, type Viewport } from '../src/camera.js';
 import type { Rect } from '../src/geometry.js';
 
 const VP: Viewport = { w: 800, h: 600 };
@@ -9,8 +9,8 @@ const NONE: Viewport = { w: 0, h: 0 };
 const CONTENT: Rect = [0, 0, 400, 200];
 
 /** A camera placed at the default fit of `CONTENT` in `VP`. */
-function placed(): Camera {
-  const camera = new Camera();
+function placed(): CameraRig {
+  const camera = new CameraRig();
   camera.setBounds(CONTENT, true);
   camera.tick(0, VP);
   return camera;
@@ -18,7 +18,7 @@ function placed(): Camera {
 
 describe('placement', () => {
   it('stays unplaced with zoom 0 until a viewport has area', () => {
-    const camera = new Camera();
+    const camera = new CameraRig();
     expect(camera.placed).toBe(false);
     expect(camera.pose).toEqual({ centerX: 0, centerY: 0, zoom: 0 });
 
@@ -70,7 +70,7 @@ describe('placement', () => {
   });
 
   it('places even without `fit` when the camera has no pose yet', () => {
-    const camera = new Camera();
+    const camera = new CameraRig();
     camera.setBounds(CONTENT, false);
     camera.tick(0, VP);
     expect(camera.pose).toEqual({ centerX: 200, centerY: 100, zoom: 1.8 });
@@ -85,7 +85,7 @@ describe('placement', () => {
   });
 
   it('applies a pose requested before placement over the placing fit', () => {
-    const camera = new Camera();
+    const camera = new CameraRig();
     camera.setBounds(CONTENT, true);
     expect(camera.setPose({ zoom: 2 }, true, 300)).toBe(true);
     expect(camera.setPose({ centerX: 10 }, false, 0)).toBe(true);
@@ -228,7 +228,7 @@ describe('fit', () => {
 
 describe('content-free bounds', () => {
   it('place an unplaced camera at once, at the origin at actual size, without a viewport', () => {
-    const camera = new Camera();
+    const camera = new CameraRig();
     camera.setBounds(null, true);
     expect(camera.placed).toBe(true);
     expect(camera.pose).toEqual({ centerX: 0, centerY: 0, zoom: 1 });
@@ -246,7 +246,7 @@ describe('content-free bounds', () => {
   });
 
   it('apply a pose requested before placement over the origin', () => {
-    const camera = new Camera();
+    const camera = new CameraRig();
     expect(camera.setPose({ centerX: 10, zoom: 2 }, false, 0)).toBe(true);
     camera.setBounds(null, false);
     expect(camera.pose).toEqual({ centerX: 10, centerY: 0, zoom: 2 });
@@ -338,7 +338,7 @@ describe('moveTo', () => {
   });
 
   it('defers until the camera is placed and a viewport has area, then lands without easing', () => {
-    const camera = new Camera();
+    const camera = new CameraRig();
     camera.setBounds(CONTENT, true);
     camera.setPose({ zoom: 2 }, false, 0);
     camera.moveTo([0, 0, 100, 100], NONE, true, 300);
@@ -441,7 +441,7 @@ describe('zoom limits', () => {
   });
 
   it('caps the fit of tiny content at the closest zoom', () => {
-    const camera = new Camera();
+    const camera = new CameraRig();
     camera.setBounds([10, 10, 12, 12], true);
     camera.tick(0, VP);
     expect(camera.pose).toEqual({ centerX: 11, centerY: 11, zoom: 8 });

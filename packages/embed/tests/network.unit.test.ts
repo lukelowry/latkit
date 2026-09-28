@@ -283,10 +283,13 @@ describe('latkit-network', () => {
       null,
     );
     expect(network.setChannelDomain).toHaveBeenCalledWith('vertexColor', [0, 100]);
-    expect(network.setProjection).toHaveBeenCalledWith('tilt', true);
+    expect(network.setCamera).toHaveBeenCalledWith({ projection: 'tilt' });
     // After a load, channels bind before the projection applies, so a withdrawn globe falls back.
     const calls = network.setChannel.mock.invocationCallOrder;
-    expect(Math.max(...calls)).toBeLessThan(network.setProjection.mock.invocationCallOrder.at(-1)!);
+    expect(Math.max(...calls)).toBeLessThan(network.setCamera.mock.invocationCallOrder.at(-1)!);
+    element.setAttribute('projection', 'globe');
+    await flushMicrotasks();
+    expect(network.setCamera).toHaveBeenLastCalledWith({ projection: 'flat' });
     expect(h.deps.warn).not.toHaveBeenCalled();
 
     network.setOptions.mockClear();

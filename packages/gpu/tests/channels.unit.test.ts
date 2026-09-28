@@ -421,11 +421,9 @@ describe('followed series', () => {
         return Promise.resolve();
       }
     }
-    const model = new Plant();
-    model.engine = new Twice();
-    const recording = model.record(null);
+    const recording = new Twice().record(new Plant(), null);
     await vi.waitFor(() => expect(recording.state.status).toBe('complete'));
-    const power = (await model.field({ classId: 'gen', kind: 'signal', id: 'P' }, recording))!;
+    const power = (await recording.field({ classId: 'gen', kind: 'signal', id: 'P' }))!;
     const h = harness();
     h.channels.set('color', power.gather([4, 0xffffffff, 0]));
     expect(h.channels.domain('color')).toEqual([0, 14]);

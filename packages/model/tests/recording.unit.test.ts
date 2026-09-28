@@ -29,7 +29,9 @@ async function values(series: Series): Promise<number[]> {
 
 describe('recording', () => {
   it('holds every class that records a signal, and what its engine declares', () => {
-    const { recording, recorder } = byHand(sampleModel(), { id: 'run' });
+    const model = sampleModel();
+    const { recording, recorder } = byHand(model, { id: 'run' });
+    expect(recording.model).toBe(model);
     expect(recording).toMatchObject({
       id: 'run',
       label: 'run',
@@ -163,10 +165,10 @@ describe('recording', () => {
 
   it('waits its turn behind an engine’s concurrency, saying how many wait before it', async () => {
     const model = sampleModel();
-    model.engine = new Player([block([0], { bus: [1, 2, 3] }), block([1], { bus: [4, 5, 6] })]);
-    const first = model.record(2);
-    const second = model.record(1);
-    const third = model.record(1);
+    const engine = new Player([block([0], { bus: [1, 2, 3] }), block([1], { bus: [4, 5, 6] })]);
+    const first = engine.record(model, 2);
+    const second = engine.record(model, 1);
+    const third = engine.record(model, 1);
     expect(first.state).toMatchObject({ status: 'recording', ahead: 0 });
     expect(second.state).toMatchObject({ status: 'waiting', ahead: 0 });
     expect(third.state).toMatchObject({ status: 'waiting', ahead: 1 });
@@ -194,17 +196,13 @@ describe('recording', () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(recording.state.status).toBe('stopped');
-    model.engine = new Player([block([0], { bus: [1, 2, 3] })]);
-    const next = model.record(1);
+    const next = new Player([block([0], { bus: [1, 2, 3] })]).record(model, 1);
     await ended(next);
     expect(next.state.status).toBe('complete');
   });
 
-  it('refuses at once an input its engine refuses, or a model with none', () => {
-    const model = sampleModel();
-    expect(() => model.record(1)).toThrow(/no engine/);
-    model.engine = new Player([]);
-    expect(() => model.record('many')).toThrow(/how many blocks/);
+  it('refuses at once an input its engine refuses, recording nothing', () => {
+    expect(() => new Player([]).record(sampleModel(), 'many')).toThrow(/how many blocks/);
   });
 });
 
@@ -303,7 +301,7 @@ describe('recording.source and Recording.from', () => {
     const source = origin.source();
     const read = vi.spyOn(source, 'read');
 
-    const mirror = await Recording.from(source);
+    const mirror = await Recording.from(origin.model, source);
     expect(mirror).toMatchObject({
       id: 'run',
       label: 'run',
@@ -331,7 +329,7 @@ describe('recording.source and Recording.from', () => {
 
   it('follows the recording it mirrors, its log and its end, every series changing first', async () => {
     const { recording: origin, recorder, fail } = byHand(sampleModel());
-    const mirror = await Recording.from(origin.source());
+    const mirror = await Recording.from(origin.model, origin.source());
     expect(mirror.state).toMatchObject({ frameCount: 0, timeRange: null, status: 'recording' });
     const gen = mirror.series('gen')!;
     const heard: string[] = [];
@@ -357,7 +355,7 @@ describe('recording.source and Recording.from', () => {
     const { recording: origin, recorder } = byHand(sampleModel());
     const source = origin.source();
     const close = vi.fn();
-    const mirror = await Recording.from({ ...source, close });
+    const mirror = await Recording.from(origin.model, { ...source, close });
     mirror.stop();
     expect(mirror.state.status).toBe('stopped');
     expect(mirror.series('bus')!.state.live).toBe(false);
@@ -381,16 +379,18 @@ describe('recording.source and Recording.from', () => {
       close,
       describe: async () => value as typeof described,
     });
-    await expect(Recording.from(describing({ ...described, id: '' }))).rejects.toThrow(
-      'recording id must be non-empty',
-    );
+    await expect(
+      Recording.from(origin.model, describing({ ...described, id: '' })),
+    ).rejects.toThrow('recording id must be non-empty');
     await expect(
       Recording.from(
+        origin.model,
         describing({ ...described, classes: [described.classes[0], described.classes[0]] }),
       ),
     ).rejects.toThrow('name each class once');
     await expect(
       Recording.from(
+        origin.model,
         describing({ ...described, classes: [{ classId: 'bus', signals: [], elementCount: -1 }] }),
       ),
     ).rejects.toThrow(RangeError);
@@ -412,21 +412,23 @@ describe('recording.source and Recording.from', () => {
         yield change as never;
       },
     });
-    await expect(Recording.from(changing({ ...good, time: [0] }))).rejects.toThrow(
+    await expect(Recording.from(origin.model, changing({ ...good, time: [0] }))).rejects.toThrow(
       'frames require f64 time',
     );
     await expect(
-      Recording.from(changing({ ...good, ranges: { bus: Float64Array.of(1) } })),
+      Recording.from(origin.model, changing({ ...good, ranges: { bus: Float64Array.of(1) } })),
     ).rejects.toThrow('one f64 pair per signal');
-    await expect(Recording.from(changing({ ...good, status: 'done' }))).rejects.toThrow(
-      'where its recording stands',
-    );
-    await expect(Recording.from(changing({ ...good, log: [{ level: 'x' }] }))).rejects.toThrow(
-      'lines logged',
-    );
-    await expect(Recording.from(changing({ ...good, span: [3, 1] }))).rejects.toThrow(RangeError);
     await expect(
-      Recording.from({
+      Recording.from(origin.model, changing({ ...good, status: 'done' })),
+    ).rejects.toThrow('where its recording stands');
+    await expect(
+      Recording.from(origin.model, changing({ ...good, log: [{ level: 'x' }] })),
+    ).rejects.toThrow('lines logged');
+    await expect(Recording.from(origin.model, changing({ ...good, span: [3, 1] }))).rejects.toThrow(
+      RangeError,
+    );
+    await expect(
+      Recording.from(origin.model, {
         ...source,
         // eslint-disable-next-line require-yield
         async *changes() {
@@ -434,16 +436,54 @@ describe('recording.source and Recording.from', () => {
         },
       }),
     ).rejects.toThrow('ended before its clock');
-    await expect(Recording.from(source, AbortSignal.abort())).rejects.toMatchObject({
+    await expect(Recording.from(origin.model, source, AbortSignal.abort())).rejects.toMatchObject({
       name: 'AbortError',
     });
+  });
+
+  it('refuses a source that does not fit the model it records', async () => {
+    const { recording: origin } = byHand(sampleModel());
+    const source = origin.source();
+    const described = await source.describe();
+    const holding = (classes: readonly unknown[]) => ({
+      ...source,
+      describe: async () => ({ ...described, classes: classes as typeof described.classes }),
+    });
+    await expect(
+      Recording.from(
+        origin.model,
+        holding([{ classId: 'nope', signals: ['Vm'], elementCount: 3 }]),
+      ),
+    ).rejects.toThrow("class 'nope', which its model lacks");
+    await expect(
+      Recording.from(origin.model, holding([{ classId: 'bus', signals: ['Q'], elementCount: 3 }])),
+    ).rejects.toThrow("signal 'Q', which class 'bus' does not declare");
+    await expect(
+      Recording.from(origin.model, holding([{ classId: 'bus', signals: ['Vm'], elementCount: 4 }])),
+    ).rejects.toThrow("do not fit its model's 3");
+    await expect(
+      Recording.from(
+        origin.model,
+        holding([
+          { classId: 'bus', signals: ['Vm'], elementCount: 1, elements: Uint32Array.of(3) },
+        ]),
+      ),
+    ).rejects.toThrow("do not fit its model's 3");
+    const sparse = await Recording.from(
+      origin.model,
+      holding([
+        { classId: 'bus', signals: ['Vm'], elementCount: 2, elements: Uint32Array.of(0, 2) },
+      ]),
+    );
+    expect(sparse.model).toBe(origin.model);
+    sparse.close();
   });
 
   it('refuses a window a source returns that is not the one asked for', async () => {
     const { recording: origin, recorder } = byHand(sampleModel());
     recorder.append(Float64Array.of(0), { bus: Float32Array.of(1, 2, 3) });
     const source = origin.source();
-    const mirror = await Recording.from({
+    const mirror = await Recording.from(origin.model, {
       ...source,
       read: async () => ({ time: Float64Array.of(0, 1), values: new Float32Array(3), stride: 3 }),
     });
@@ -466,7 +506,7 @@ describe('recording.source and Recording.from', () => {
     );
     const source = origin.source();
     const read = vi.spyOn(source, 'read');
-    const mirror = await Recording.from(source);
+    const mirror = await Recording.from(origin.model, source);
     const bus = mirror.series('bus')!;
     const block = await bus.read(0, {
       frameOffset: 0,
