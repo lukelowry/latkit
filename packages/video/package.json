@@ -1,6 +1,6 @@
 {
   "name": "@latkit/video",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Deterministic video exports of Latkit network, diagram, and monitor scenes.",
   "type": "module",
   "license": "MIT",
