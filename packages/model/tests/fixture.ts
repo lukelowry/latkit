@@ -1,4 +1,4 @@
-import { Engine, Model, type Recording } from '../src/index.js';
+import { Engine, Model, type Recording, type Series } from '../src/index.js';
 
 /** Three vertices in a line with two edges, buses owning vertices, branches owning edges, two
  *  generators anchored to vertices 0 and 2, and one area with no place on the canvas. Buses record
@@ -141,9 +141,13 @@ export class Player extends Engine {
 
   constructor(
     blocks: readonly Block[],
-    options: { readonly concurrency?: number; readonly failure?: string } = {},
+    options: {
+      readonly concurrency?: number;
+      readonly failure?: string;
+      readonly store?: () => Series.Store;
+    } = {},
   ) {
-    super({ concurrency: options.concurrency ?? 1 });
+    super({ concurrency: options.concurrency ?? 1, store: options.store });
     this.#blocks = blocks;
     this.#failure = options.failure ?? null;
   }

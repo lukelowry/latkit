@@ -361,6 +361,21 @@ it('appends only the new segments with a stable mapping, without clearing histor
   expect(history().reduce((n, d) => n + d.instanceCount, 0)).toBe(8);
 });
 
+it('stretches a live series’ time extent, laying its history out again only past it', async () => {
+  const time = [0, 1],
+    input = source(1, time);
+  bind(input.series);
+  await paint(() => monitor.attach(canvas()));
+  expect([...uploaded('monitor-xnorm')]).toEqual([0, 1]);
+  time.push(1.5);
+  await paint(input.append);
+  expect([...uploaded('monitor-xnorm')]).toEqual([0, 0.5, 0.75]);
+  const clears = stub.log.clears.filter((target) => target === 'monitor-history').length;
+  time.push(1.9);
+  await paint(input.append);
+  expect(stub.log.clears.filter((target) => target === 'monitor-history')).toHaveLength(clears);
+});
+
 it('replays exact repeated times when automatic time mapping grows', async () => {
   const time = [0, 0.1, 0.1, 0.8],
     input = source(2, time);

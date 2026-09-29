@@ -1,6 +1,6 @@
 /**
  * One in-memory owner per document. Connections borrow it; disconnecting releases their model
- * services, not the document, revision, or bounded retry receipts.
+ * services, not the document, its version, or bounded retry receipts.
  */
 import { Document, Refusal } from '@latkit/model';
 
@@ -54,37 +54,6 @@ export class Serial {
   }
 }
 
-/** Compare public columns, preserving unchanged buffers on both sides of the boundary. */
-function equal(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) return false;
-  if (ArrayBuffer.isView(a) || ArrayBuffer.isView(b)) {
-    if (
-      !ArrayBuffer.isView(a) ||
-      !ArrayBuffer.isView(b) ||
-      Object.prototype.toString.call(a) !== Object.prototype.toString.call(b) ||
-      a.byteLength !== b.byteLength
-    )
-      return false;
-    const left = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
-    const right = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
-    for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
-    return true;
-  }
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (!equal(a[i], b[i])) return false;
-    return true;
-  }
-  const left = a as Record<string, unknown>;
-  const right = b as Record<string, unknown>;
-  const keys = Object.keys(left);
-  return (
-    keys.length === Object.keys(right).length &&
-    keys.every((key) => Object.hasOwn(right, key) && equal(left[key], right[key]))
-  );
-}
-
 function historyOf(document: Document): Document['history'] {
   const { undo, redo } = document.history;
   return { undo: undo.map(publicChange), redo: redo.map(publicChange) };
@@ -117,9 +86,9 @@ export class Owner {
   constructor(document: Document) {
     this.document = document;
     this.#view = {
-      version: { epoch: globalThis.crypto.randomUUID(), revision: 0 },
-      schematic: structuredClone(document.schematic),
-      palette: structuredClone(document.palette),
+      version: document.version,
+      schematic: document.schematic,
+      palette: document.palette,
       history: historyOf(document),
     };
     document.on('change', (change) => {
@@ -232,20 +201,15 @@ export class Owner {
 
   #advance(change: Document.Change): void {
     const from = this.#view.version;
-    if (from.revision === Number.MAX_SAFE_INTEGER)
-      throw new Error('The document revision is exhausted.');
-    const to = { epoch: from.epoch, revision: from.revision + 1 };
+    const to = this.document.version;
     const current = this.document.schematic;
     const before = this.#view.schematic;
     const patch: Partial<Document.Schematic> = {};
-    // A layout edit never changes the netlist or element indexing.
-    for (const key of change.scope === 'layout' ? LAYOUT_KEYS : KEYS) {
-      if (!equal(before[key], current[key]))
-        Object.assign(patch, { [key]: structuredClone(current[key]) });
-    }
-    const palette = equal(this.#view.palette, this.document.palette)
-      ? undefined
-      : structuredClone(this.document.palette);
+    // A document replaces the parts a change changes; a layout edit keeps the netlist and indexing.
+    for (const key of change.scope === 'layout' ? LAYOUT_KEYS : KEYS)
+      if (before[key] !== current[key]) Object.assign(patch, { [key]: current[key] });
+    const palette =
+      this.#view.palette === this.document.palette ? undefined : this.document.palette;
     const history = historyOf(this.document);
     const update: Update = {
       kind: 'update',

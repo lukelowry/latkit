@@ -7,25 +7,33 @@
 
 import { Recording, type Model, type Series } from '@latkit/model';
 
-import { connect, serve, transferred, type Remote } from './channel.js';
-import { check } from './check.js';
+import { connect, serve, transferred, type Remote, type Transferred } from './channel.js';
+import { check, type Check } from './check.js';
 import type { Port } from './port.js';
 import { protocol } from './protocol.js';
 
 type Description = Awaited<ReturnType<Recording.Source['describe']>>;
 
+/** One window of one class's signal, as a peer asks for it. */
+interface Read {
+  readonly classId: string;
+  readonly signalIndex: number;
+  readonly window: Series.Window;
+}
+
 type Request =
-  | { readonly op: 'describe' }
-  | { readonly op: 'changes' }
-  | {
-      readonly op: 'read';
-      readonly classId: string;
-      readonly signalIndex: number;
-      readonly window: Series.Window;
-    };
+  { readonly op: 'describe' } | { readonly op: 'changes' } | ({ readonly op: 'read' } & Read);
 
 /** The most one sample window carries, time included: four times what any latkit reader asks. */
 const MAX_BYTES = 4 << 20;
+
+/** A sample window as a peer asks for it. */
+export const WINDOW: Check<Series.Window> = check.object<Series.Window>({
+  frameOffset: check.index,
+  frameCount: check.index,
+  elementOffset: check.index,
+  elementCount: check.index,
+});
 
 const recordingProtocol = (id: string) =>
   protocol<Request, Description | Recording.Change | Series.Block>(
@@ -33,18 +41,24 @@ const recordingProtocol = (id: string) =>
     check.requests<Request>({
       describe: {},
       changes: {},
-      read: {
-        classId: check.string,
-        signalIndex: check.index,
-        window: check.object<Series.Window>({
-          frameOffset: check.index,
-          frameCount: check.index,
-          elementOffset: check.index,
-          elementCount: check.index,
-        }),
-      },
+      read: { classId: check.string, signalIndex: check.index, window: WINDOW },
     }),
   );
+
+/** One window `source` holds, handed over: at most 4 MiB, time included. */
+export function readWindow(
+  source: Recording.Source,
+  { classId, signalIndex, window }: Read,
+  signal: AbortSignal,
+): Promise<Transferred<Series.Block>> {
+  if (window.frameCount * (window.elementCount + 1) * 8 > MAX_BYTES)
+    return Promise.reject(new RangeError('sample window exceeds 4 MiB'));
+  return source
+    .read(classId, signalIndex, window, signal)
+    .then((block) =>
+      transferred(block, [block.time.buffer as ArrayBuffer, block.values.buffer as ArrayBuffer]),
+    );
+}
 
 /**
  * Serve one recording until either side closes. A sample window carries at most 4 MiB, time
@@ -68,19 +82,8 @@ export function serveRecording(
           return source.describe(signal);
         case 'changes':
           return owned(source.changes(signal));
-        case 'read': {
-          const { frameCount, elementCount } = request.window;
-          if (frameCount * (elementCount + 1) * 8 > MAX_BYTES)
-            return Promise.reject(new RangeError('sample window exceeds 4 MiB'));
-          return source
-            .read(request.classId, request.signalIndex, request.window, signal)
-            .then((block) =>
-              transferred(block, [
-                block.time.buffer as ArrayBuffer,
-                block.values.buffer as ArrayBuffer,
-              ]),
-            );
-        }
+        case 'read':
+          return readWindow(source, request, signal);
       }
     },
     {
@@ -94,7 +97,7 @@ export function serveRecording(
 }
 
 /** Each change as the caller's own: its buffers cross without a copy. */
-async function* owned(changes: AsyncIterable<Recording.Change>) {
+export async function* owned(changes: AsyncIterable<Recording.Change>) {
   for await (const change of changes) {
     const buffers = [change.time.buffer as ArrayBuffer];
     for (const range of Object.values(change.ranges))

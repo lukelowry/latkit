@@ -143,7 +143,7 @@ export function createMonitor(options: Options = {}): Monitor {
   let colormapLut = bakeColormap(resolved.colormap);
   let series: Series | null = null;
   let signalIndex = 0;
-  let scan: Scan = { frames: 0, range: null, domain: null };
+  let scan: Scan = { frames: 0, range: null, domain: null, time: null };
   let selected: number | null = null;
   let lastReading: Reading | null = null;
   let playhead: number | null = null;
@@ -570,7 +570,7 @@ export function createMonitor(options: Options = {}): Monitor {
         series = null;
         selected = null;
         lastReading = null;
-        scan = { frames: 0, range: null, domain: null };
+        scan = { frames: 0, range: null, domain: null, time: null };
         if (binding) replay(binding);
         return;
       }
@@ -582,7 +582,7 @@ export function createMonitor(options: Options = {}): Monitor {
       }
       series = next;
       signalIndex = index;
-      scan = { frames: 0, range: null, domain: null };
+      scan = { frames: 0, range: null, domain: null, time: null };
       lastReading = null;
       if (selected !== null && storedElement(next, selected) === null) selected = null;
       if (binding) replay(binding);

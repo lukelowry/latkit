@@ -85,25 +85,39 @@ export class Plot {
     this.#painter.reset();
     this.#dirty = true;
     this.#selected = selected;
+    this.#layout(this.valueRange, true);
     if (!series) {
       this.#painter.releaseSlabs();
       return;
     }
-    const lane = new Lane(series, signal, this.#painter, this.#style(), scan, this.#events);
+    const lane = new Lane(series, signal, this.#painter, this.#style(), scan, {
+      ...this.#events,
+      range: (domain) => {
+        // Resolve the gutter before rebuilding history, including offscreen preparation.
+        this.#layout(domain);
+        this.#events.range(domain);
+      },
+    });
     this.#lane = lane;
     if (observe) this.#off = series.on('change', () => lane.update());
     lane.select(selected);
   }
   configure(options: ResolvedOptions, scale: number, colormap?: Uint8Array): boolean {
-    const resized = this.axes.configure(options, scale);
-    if (!resized && options === this.#options && scale === this.#scale && !colormap) return false;
+    const changed = options !== this.#options || scale !== this.#scale || !!colormap;
     this.#options = options;
     this.#scale = scale;
-    if (resized) this.#painter.resize(this.axes.rect.width, this.axes.rect.height);
+    const resized = this.#layout(this.valueRange);
+    if (!resized && !changed) return false;
     if (colormap) this.#painter.writeColormap(colormap);
     this.#lane?.setStyle(this.#style(), resized || !!colormap);
     this.#dirty = true;
     return true;
+  }
+  /** Lay the axes out for `value`, the gutter measured afresh when `reset`; true when it resized. */
+  #layout(value: Domain, reset = false): boolean {
+    const resized = this.axes.configure(this.#options, this.#scale, value, reset);
+    if (resized) this.#painter.resize(this.axes.rect.width, this.axes.rect.height);
+    return resized;
   }
   async setShade(wgsl: string | null): Promise<void> {
     await this.#painter.setShade(wgsl);

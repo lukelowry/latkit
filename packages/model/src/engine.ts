@@ -1,15 +1,16 @@
 /**
- * An engine: what records a model. A host has it record any model into a recording; a transport
- * has it record into a recorder that forwards. The studies it offers are the forms a host fills to
- * name an input.
+ * An engine: what records a model. A host has it record any model into a recording, held where
+ * the engine runs and served from there across a port. The studies it offers are the forms a host
+ * fills to name an input.
  */
 
 import type { Domain } from './domain.js';
 import { checkStudy, problemsOf, shownOf, valuesOf } from './form.js';
 import { listeners } from './listeners.js';
 import type { Model } from './model.js';
-import { begin, type Recording } from './recording.js';
+import { hold, type Recording } from './recording.js';
 import { Refusal } from './refusal.js';
+import type { Series } from './series.js';
 
 /** One recording waiting its turn. */
 interface Waiting {
@@ -22,9 +23,10 @@ interface Waiting {
  * What records a model: a simulator, a solver, an analysis, a feed. Subclass it: `parse` what an
  * input may be, and `execute` one, writing frames through the recorder. One engine records any
  * model it is given; the base runs as many recordings at once as its concurrency allows and
- * queues the rest in order, telling each how many wait before it. Once it offers a study, an
- * engine records only an input that names one it offers, `{ study, values }`, and the base checks
- * the values against that study's form before `parse` sees them.
+ * queues the rest in order, telling each how many wait before it, and keeps each recording's
+ * frames in the store its host gives it. Once it offers a study, an engine records only an input
+ * that names one it offers, `{ study, values }`, and the base checks the values against that
+ * study's form before `parse` sees them.
  */
 export abstract class Engine {
   /** Recordings it makes at once; the rest wait their turn, in order. */
@@ -37,19 +39,26 @@ export abstract class Engine {
   /** Whether it has offered a study, and so records only an input that names one. */
   #offering = false;
   readonly #changes = listeners();
+  readonly #store: (() => Series.Store) | undefined;
 
   /**
    * @param options - `concurrency`: recordings it makes at once, `Infinity` for an engine that
-   * queues for itself; `studies`: what it offers from the start. @defaultValue `{ concurrency: 1 }`
+   * queues for itself; `studies`: what it offers from the start; `store`: a store for each
+   * recording's frames, in memory when absent. @defaultValue `{ concurrency: 1 }`
    * @throws RangeError when `concurrency` is below one; Error naming what is inconsistent in a
    * study's form.
    */
   protected constructor(
-    options: { readonly concurrency?: number; readonly studies?: readonly Engine.Study[] } = {},
+    options: {
+      readonly concurrency?: number;
+      readonly studies?: readonly Engine.Study[];
+      readonly store?: () => Series.Store;
+    } = {},
   ) {
     const concurrency = options.concurrency ?? 1;
     if (!(concurrency >= 1)) throw new RangeError('an engine records at least one model at once');
     this.concurrency = concurrency;
+    this.#store = options.store;
     for (const study of options.studies ?? []) this.#offer(study);
   }
 
@@ -95,27 +104,13 @@ export abstract class Engine {
   record(
     model: Model,
     input: unknown,
-    options?: { readonly id?: string; readonly label?: string },
-  ): Recording;
-  /**
-   * Record `model` for `input` into `recorder`, such as one a transport forwards: `input` is
-   * checked at once, and this resolves once the recording is complete, or rejects with why it
-   * failed or stopped.
-   *
-   * @throws Refusal, TypeError, or RangeError for an input the engine refuses, before anything is
-   * recorded.
-   */
-  record(model: Model, input: unknown, recorder: Engine.Recorder): Promise<void>;
-  record(
-    model: Model,
-    input: unknown,
-    into: Engine.Recorder | { readonly id?: string; readonly label?: string } = {},
-  ): Recording | Promise<void> {
+    options: { readonly id?: string; readonly label?: string } = {},
+  ): Recording {
     const study = this.#offering ? this.#check(model, input) : null;
     const parsed = this.parse(study ? study.input : input);
-    if (isRecorder(into)) return this.#take(model, parsed, into);
-    const header = study && into.label === undefined ? { ...into, label: study.label } : into;
-    return begin(model, header, (recorder) => this.#take(model, parsed, recorder));
+    const header =
+      study && options.label === undefined ? { ...options, label: study.label } : options;
+    return this.begin(model, parsed, header);
   }
 
   /**
@@ -132,6 +127,19 @@ export abstract class Engine {
    */
   protected offer(study: Engine.Study): () => void {
     return this.#offer(study);
+  }
+
+  /**
+   * The recording `record` returns for an input `parse` returned: by default one held here, which
+   * waits its turn, then executes, its frames in the engine's store. An engine whose recordings are
+   * held elsewhere, such as one served across a port, begins one that follows them there.
+   */
+  protected begin(
+    model: Model,
+    input: unknown,
+    header: { readonly id?: string; readonly label?: string },
+  ): Recording {
+    return hold(model, header, (recorder) => this.#take(model, input, recorder), this.#store?.());
   }
 
   /**
@@ -262,7 +270,7 @@ export declare namespace Engine {
     readonly signal: AbortSignal;
     /**
      * Resolves once the recording can take more frames: await it between appends to go at the
-     * pace of whoever reads them, such as a port. A recording in memory is always ready.
+     * pace of the store that keeps them. A recording in memory is always ready.
      */
     readonly ready: Promise<void>;
     /**
@@ -366,10 +374,17 @@ export declare namespace Engine {
     /** A file a user gives; `extensions`, such as `csv`, are what its name may end in. */
     | { readonly kind: 'file'; readonly extensions?: readonly string[] }
   );
-  /** A file a user gives, whole. */
+  /**
+   * A file a user gives: its name and size, its bytes read as a reader asks for them. A browser
+   * `File` is one as it is; lent across a port, its bytes cross only as they are read.
+   */
   interface File {
     readonly name: string;
-    readonly bytes: Uint8Array;
+    readonly size: number;
+    /** Its bytes from `start` up to `end`. */
+    slice(start: number, end: number): { arrayBuffer(): Promise<ArrayBuffer> };
+    /** Every byte, in order, read as the stream is. */
+    stream(): ReadableStream<Uint8Array>;
   }
   /**
    * A value by kind: a number, text, a flag, a choice's id, an element, or a file; a list where
@@ -390,11 +405,6 @@ export declare namespace Engine {
     readonly study: string;
     readonly values: Values;
   }
-}
-
-/** Whether `into` is a recorder to write through, rather than a recording's header. */
-function isRecorder(into: object): into is Engine.Recorder {
-  return typeof (into as Partial<Engine.Recorder>).append === 'function';
 }
 
 /** Whether `value` names a study and gives its values. */

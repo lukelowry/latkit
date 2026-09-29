@@ -1,4 +1,4 @@
-import { Engine, Model, type Recording } from '@latkit/model';
+import { Engine, Model, type Recording, type Series } from '@latkit/model';
 
 /** Let every queued microtask-delivered message land. */
 export async function settle(rounds = 4): Promise<void> {
@@ -70,7 +70,8 @@ export function fixture(name = 'Fixture'): Fixture {
 
 /**
  * An engine that runs `script` for each recording, noting every model and input it is given;
- * `parse` checks an input, as a real engine's does, and `studies` are what it offers.
+ * `parse` checks an input, as a real engine's does, `studies` are what it offers, and `store`
+ * keeps each recording's frames.
  */
 export class Scripted extends Engine {
   readonly inputs: unknown[] = [];
@@ -84,9 +85,14 @@ export class Scripted extends Engine {
       readonly concurrency?: number;
       readonly parse?: (input: unknown) => unknown;
       readonly studies?: readonly Engine.Study[];
+      readonly store?: () => Series.Store;
     } = {},
   ) {
-    super({ concurrency: options.concurrency ?? 1, studies: options.studies });
+    super({
+      concurrency: options.concurrency ?? 1,
+      studies: options.studies,
+      store: options.store,
+    });
     this.#script = script;
     this.#parse = options.parse ?? ((input) => input);
   }
@@ -108,6 +114,23 @@ export class Scripted extends Engine {
 
 /** One frame over the two buses at 0.5. */
 export const FRAMES = { time: Float64Array.of(0.5), values: { bus: Float32Array.of(1, 2) } };
+
+/** A store that keeps its lanes in memory and says whether it was closed. */
+export function kept(): Series.Store & { closed: boolean } {
+  const lanes: (Float32Array | Float64Array)[] = [];
+  return {
+    closed: false,
+    put: (values) => lanes.push(values) - 1,
+    get: (lane, { offset, count, rows, stride }) =>
+      Promise.resolve({
+        values: lanes[lane]!.subarray(offset, offset + (rows - 1) * stride + count),
+        stride,
+      }),
+    close() {
+      this.closed = true;
+    },
+  };
+}
 
 /**
  * A recording of `model` a test writes by hand: its recorder, and what ends it, each resolving

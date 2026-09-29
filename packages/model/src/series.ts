@@ -176,6 +176,51 @@ export declare namespace Series {
     readonly values: Float32Array | Float64Array;
     readonly stride: number;
   }
+  /**
+   * Where a series held here keeps its values: one lane for each chunk its clock commits, written
+   * once, then read by rows. In memory unless its host keeps them elsewhere, such as on disk.
+   */
+  interface Store {
+    /** Keep `values` as the next lane, taking the buffer; the lane's number, counting from 0. */
+    put(values: Float32Array | Float64Array): number;
+    /**
+     * `rows` rows of `count` values of `lane`, the first at `offset` and each `stride` values
+     * after the one before: a view of the lane with them `stride` apart, or rows of their own.
+     */
+    get(
+      lane: number,
+      at: {
+        readonly offset: number;
+        readonly count: number;
+        readonly rows: number;
+        readonly stride: number;
+      },
+      signal?: AbortSignal,
+    ): Promise<Pick<Block, 'values' | 'stride'>>;
+    /** Resolves once it can take more lanes; absent for a store that always can. */
+    readonly ready?: Promise<void>;
+    /** Let every lane go. */
+    close(): void;
+  }
+}
+
+/** A store that holds its lanes in memory and lends each as it is. */
+export function memoryStore(): Series.Store {
+  let lanes: Values[] | null = [];
+  return {
+    put: (values) => lanes!.push(values) - 1,
+    get(lane, { offset, count, rows, stride }) {
+      const values = lanes?.[lane];
+      if (!values) return Promise.reject(new Error('the series was closed'));
+      return Promise.resolve({
+        values: values.subarray(offset, offset + (rows - 1) * stride + count),
+        stride,
+      });
+    },
+    close() {
+      lanes = null;
+    },
+  };
 }
 
 /** The frames one or more series share: their times, as the chunks they were committed in. */
@@ -331,24 +376,27 @@ abstract class Clocked extends Series {
   }
 }
 
-/** One chunk of a series' values; `values` null reads NaN for that chunk's frames. */
+/** One chunk's lane in the store, and how its values lie in it. */
 interface Lane {
-  readonly values: Values | null;
+  readonly lane: number;
   readonly stride: number;
   readonly signalStride: number;
 }
 
 /**
  * A series over a clock that holds its values: its owner adds one lane per chunk the clock
- * commits. Reads within one chunk lend the lane itself; reads across chunks copy.
+ * commits, kept in `store`. Reads within one chunk get the rows as the store gives them; reads
+ * across chunks copy.
  */
 export class Tracked extends Clocked {
   readonly #lanes: (Lane | null)[] = [];
+  readonly #store: Series.Store;
   #ranges: Float64Array;
   #wide = false;
 
-  constructor(clock: Clock, shape: Series.Shape) {
+  constructor(clock: Clock, shape: Series.Shape, store: Series.Store = memoryStore()) {
     super(clock, shape);
+    this.#store = store;
     this.#ranges = new Float64Array(this.signals.length * 2).fill(NaN);
   }
 
@@ -362,14 +410,11 @@ export class Tracked extends Clocked {
   }
 
   /**
-   * Add the lane of the chunk the clock just committed: frame-major, signal-major when `packed`,
-   * or NaN throughout when `values` is null.
+   * Store the next chunk and return what commits its lane and ranges once every class is
+   * stored. Values are frame-major, signal-major when `packed`, or NaN when null.
    */
-  push(values: Values | null, frames: number, packed: boolean): void {
-    if (!values) {
-      this.#lanes.push({ values: null, stride: 0, signalStride: 0 });
-      return;
-    }
+  stage(values: Values | null, frames: number, packed: boolean): () => void {
+    if (!values) return () => void this.#lanes.push(null);
     const { elementCount } = this;
     const signalCount = this.signals.length;
     const stride = packed ? elementCount : elementCount * signalCount;
@@ -390,9 +435,13 @@ export class Tracked extends Clocked {
       next[s * 2] = min <= max ? min : NaN;
       next[s * 2 + 1] = min <= max ? max : NaN;
     }
-    this.#ranges = next;
-    this.#lanes.push({ values, stride, signalStride });
-    this.#wide ||= values instanceof Float64Array;
+    const wide = values instanceof Float64Array;
+    const lane = this.#store.put(values);
+    return () => {
+      this.#ranges = next;
+      this.#wide ||= wide;
+      this.#lanes.push({ lane, stride, signalStride });
+    };
   }
 
   /** Publish what the clock and the lanes hold now, and tell every listener. */
@@ -408,45 +457,70 @@ export class Tracked extends Clocked {
     const { frameOffset, frameCount, elementOffset, elementCount: count } = window;
     const clock = this.clock;
     let chunk = clock.chunkOf(frameOffset);
-    let first = clock.firstOf(chunk);
-    let times = clock.timesOf(chunk);
-    let lane = this.#lanes[chunk]!;
+    const first = clock.firstOf(chunk);
+    const times = clock.timesOf(chunk);
     if (frameOffset + frameCount <= first + times.length) {
       const f = frameOffset - first;
       const time = times.subarray(f, f + frameCount);
       if (!count) return { time, values: new Float64Array(0), stride: count };
-      if (!lane.values) return { time, values: this.#nan(frameCount * count), stride: count };
-      const start = signalIndex * lane.signalStride + f * lane.stride + elementOffset;
-      return {
-        time,
-        values: lane.values.subarray(start, start + (frameCount - 1) * lane.stride + count),
-        stride: lane.stride,
-      };
+      const rows = await this.#rows(
+        chunk,
+        signalIndex,
+        f,
+        frameCount,
+        elementOffset,
+        count,
+        signal,
+      );
+      return rows
+        ? { time, ...rows }
+        : { time, values: this.#nan(frameCount * count), stride: count };
     }
     const time = new Float64Array(frameCount);
     const values = this.#wide
       ? new Float64Array(frameCount * count)
       : new Float32Array(frameCount * count);
-    for (let f = 0; f < frameCount; f++) {
-      if (frameOffset + f >= first + times.length) {
-        chunk++;
-        first = clock.firstOf(chunk);
-        times = clock.timesOf(chunk);
-        lane = this.#lanes[chunk]!;
-      }
-      const row = frameOffset + f - first;
-      time[f] = times[row]!;
-      if (count && !lane.values) values.fill(NaN, f * count, (f + 1) * count);
-      else if (count) {
-        const start = signalIndex * lane.signalStride + row * lane.stride + elementOffset;
-        values.set(lane.values!.subarray(start, start + count), f * count);
-      }
-      if (f > 0 && f % Math.max(1, Math.floor(65536 / Math.max(1, count))) === 0) {
+    for (let done = 0, copied = 0; done < frameCount; chunk++) {
+      const f = frameOffset + done - clock.firstOf(chunk);
+      const chunkTimes = clock.timesOf(chunk);
+      const frames = Math.min(chunkTimes.length - f, frameCount - done);
+      time.set(chunkTimes.subarray(f, f + frames), done);
+      const rows = count
+        ? await this.#rows(chunk, signalIndex, f, frames, elementOffset, count, signal)
+        : null;
+      if (count && !rows) values.fill(NaN, done * count, (done + frames) * count);
+      for (let row = 0; rows && row < frames; row++)
+        values.set(
+          rows.values.subarray(row * rows.stride, row * rows.stride + count),
+          (done + row) * count,
+        );
+      done += frames;
+      if ((copied += frames * count) >= 65536) {
+        copied = 0;
         await breathe();
         signal?.throwIfAborted();
       }
     }
     return { time, values, stride: count };
+  }
+
+  /**
+   * One signal's `rows` rows of `chunk`, from its row `f`, as the store gives them; null for a
+   * chunk that reads NaN.
+   */
+  async #rows(
+    chunk: number,
+    signalIndex: number,
+    f: number,
+    rows: number,
+    elementOffset: number,
+    count: number,
+    signal?: AbortSignal,
+  ): Promise<Pick<Series.Block, 'values' | 'stride'> | null> {
+    const lane = this.#lanes[chunk];
+    if (!lane) return null;
+    const offset = signalIndex * lane.signalStride + f * lane.stride + elementOffset;
+    return this.#store.get(lane.lane, { offset, count, rows, stride: lane.stride }, signal);
   }
 
   #nan(length: number): Values {
@@ -464,8 +538,9 @@ class Held extends Tracked {
     const time = this.clock.admit(input.time);
     const values = this.admit(input.values, time.length);
     if (!time.length) return;
+    const commit = this.stage(values, time.length, true);
     this.clock.commit(time);
-    this.push(values, time.length, true);
+    commit();
     this.update();
   }
 
@@ -473,8 +548,9 @@ class Held extends Tracked {
     const time = this.clock.admit(frames.time);
     const values = this.admit(frames.values, time.length);
     if (!time.length) return;
+    const commit = this.stage(values, time.length, false);
     this.clock.commit(time);
-    this.push(values, time.length, false);
+    commit();
     this.update();
   }
 

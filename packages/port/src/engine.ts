@@ -1,18 +1,21 @@
 /**
- * An engine served across a port: a peer records any model with it, and the recording fills on
- * the peer's side as the engine writes it, call by call, its frames handed over without a copy. A
- * model the engine's realm serves crosses by reference and is recorded where it lives; any other
- * is lent by its source, which the engine reads only as it needs. The studies it offers cross with
+ * An engine served across a port: a peer records any model with it, and each recording is held
+ * where the engine runs, its frames in the engine's store. The peer follows a recording's changes,
+ * its times and ranges, as they come, and reads the frames it draws a window at a time; it lets a
+ * recording go by closing it, and every one of them goes with the port. A model the engine's realm
+ * serves crosses by reference and is recorded where it lives; any other is lent by its source, and
+ * a file by its bytes, which the engine reads only as it needs. The studies it offers cross with
  * it, and follow it.
  */
 
-import { Engine, Model, type Domain } from '@latkit/model';
+import { Engine, Model, Recording, type Series } from '@latkit/model';
 
 import { connect, serve, transferred, type Connection, type Remote } from './channel.js';
 import { check, type Check } from './check.js';
 import { homeOf, hosted } from './model.js';
 import type { Port } from './port.js';
 import { protocol } from './protocol.js';
+import { owned, readWindow, WINDOW } from './recording.js';
 
 /**
  * A model a peer lends: the key of the source it lends, and, for a model a realm serves, the token
@@ -23,14 +26,32 @@ interface Loan {
   readonly home?: string;
 }
 
-/** A recording a peer asks for: the engine's input, and the model it lends. */
+/** A file a peer lends: its name and size, and the key its bytes are read by. */
+interface LentFile {
+  readonly lent: number;
+  readonly name: string;
+  readonly size: number;
+}
+
+/** A recording a peer asks for: the number it knows the run by, the input, and the model it lends. */
 interface Request extends Loan {
+  readonly run: number;
   readonly input: unknown;
 }
 
+/** What a peer asks of a run: a window of its frames, or to let it go. */
+type Run =
+  | {
+      readonly op: 'read';
+      readonly run: number;
+      readonly classId: string;
+      readonly signalIndex: number;
+      readonly window: Series.Window;
+    }
+  | { readonly op: 'release'; readonly run: number };
+
 /** What a peer asks besides a recording: the studies offered, or the input a saved file holds. */
-type Ask =
-  { readonly op: 'studies' } | ({ readonly op: 'read'; readonly file: Engine.File } & Loan);
+type Ask = { readonly op: 'studies' } | ({ readonly op: 'read'; readonly file: LentFile } & Loan);
 
 /**
  * The studies an engine offers as of `revision`, which grows with each change, and whether it
@@ -42,40 +63,40 @@ interface Offer {
   readonly reads: boolean;
 }
 
-/** One call the engine made on its recorder, as it crosses. */
-type Call =
-  | {
-      readonly call: 'declare';
-      readonly extent: { readonly span?: Domain | null; readonly expectedFrames?: number | null };
-    }
-  | { readonly call: 'wait'; readonly ahead: number }
-  | { readonly call: 'start' }
-  | {
-      readonly call: 'append';
-      readonly time: Float64Array;
-      readonly values: Readonly<Record<string, Float32Array | Float64Array>>;
-    }
-  | { readonly call: 'log'; readonly level: 'info' | 'warn' | 'error'; readonly message: string };
-
-/** One read of a lent model's source. */
+/** One read of what a peer lends. */
 type Borrow =
   | { readonly op: 'core'; readonly key: number }
   | { readonly op: 'class'; readonly key: number; readonly id: string }
-  | { readonly op: 'bytes'; readonly key: number };
+  | { readonly op: 'bytes'; readonly key: number }
+  | { readonly op: 'file'; readonly key: number; readonly start: number; readonly end: number };
 
 /** An input is the served engine's to check: its own `parse` is the check. */
 const input: Check<unknown> = () => undefined;
 
 const loan = { lent: check.index, home: check.optional(check.string) };
 
-const RECORD = protocol<Request, Call>('engine:record', check.object<Request>({ input, ...loan }));
+const lentFile = check.object<LentFile>({
+  lent: check.index,
+  name: check.string,
+  size: check.index,
+});
+
+const RECORD = protocol<Request, Recording.Change>(
+  'engine:record',
+  check.object<Request>({ run: check.index, input, ...loan }),
+);
+
+const RUNS = protocol<Run, Series.Block | undefined>(
+  'engine:runs',
+  check.requests<Run>({
+    read: { run: check.index, classId: check.string, signalIndex: check.index, window: WINDOW },
+    release: { run: check.index },
+  }),
+);
 
 const STUDIES = protocol<Ask, Offer | Engine.Input, Offer>(
   'engine:studies',
-  check.requests<Ask>({
-    studies: {},
-    read: { file: check.object<Engine.File>({ name: check.string, bytes: check.bytes }), ...loan },
-  }),
+  check.requests<Ask>({ studies: {}, read: { file: lentFile, ...loan } }),
 );
 
 const BORROW = protocol<Borrow, Uint8Array>(
@@ -84,8 +105,12 @@ const BORROW = protocol<Borrow, Uint8Array>(
     core: { key: check.index },
     class: { key: check.index, id: check.string },
     bytes: { key: check.index },
+    file: { key: check.index, start: check.index, end: check.index },
   }),
 );
+
+/** The most one read of a lent file carries. */
+const SLICE = 4 << 20;
 
 /** Studies one offer carries at most. */
 const MAX_STUDIES = 4096;
@@ -109,9 +134,6 @@ const values: Check<Engine.Values> = (value, name) => {
 
 const saved: Check<Engine.Input> = check.object<Engine.Input>({ study: check.string, values });
 
-/** Calls a forwarding recorder holds before it says it is not ready for more. */
-const BACKLOG = 16;
-
 /**
  * Serve `engine` on `port` until either side closes: a peer records any model with it, and learns
  * the studies it offers, following each change. Returns the server's own close.
@@ -120,7 +142,8 @@ const BACKLOG = 16;
  * An engine still opening is served once it opens. A model this realm serves with `serveModel` is
  * recorded in place; any other is opened from the source its peer lends, its classes read only as
  * the engine asks for them. The engine checks every input, queues what it cannot take at once, and
- * stops a recording when its peer stops it.
+ * stops a recording when its peer stops following it. Each recording is held here until its peer
+ * lets it go or either side closes.
  *
  * @param options - `onClose` fires once the service has ended.
  */
@@ -135,6 +158,8 @@ export function serveEngine(
   const current = (): Promise<Engine> =>
     served ?? Promise.reject(new Error('the served engine was closed'));
   const lent = connect(port, BORROW);
+  /** Each recording the peer asked for, by its run, until the peer lets it go. */
+  const recordings = new Map<number, Recording>();
   let revision = 0;
   let off = (): void => undefined;
 
@@ -143,8 +168,11 @@ export function serveEngine(
     served = null;
     off();
     records.close();
+    runs.close();
     asks.close();
     lent.close();
+    for (const recording of recordings.values()) recording.close();
+    recordings.clear();
     options.onClose?.();
   }
 
@@ -163,9 +191,37 @@ export function serveEngine(
   const records = serve(
     port,
     RECORD,
-    async function* (request, signal) {
+    async function* ({ run, input, ...loan }, signal) {
       const engine = await current();
-      yield* forward(engine, await modelOf(request, signal), request.input, signal);
+      const model = await modelOf(loan, signal);
+      signal.throwIfAborted();
+      if (recordings.has(run)) throw new Error(`run ${run} is already recorded`);
+      const borrow = (value: unknown): unknown =>
+        isLent(value) ? borrowedFile(lent, value) : value;
+      const recording = engine.record(model, eachValue(input, borrow));
+      recordings.set(run, recording);
+      try {
+        yield* owned(recording.source().changes(signal));
+      } finally {
+        // A peer that stops following stops the recording; one that ended stays until let go.
+        recording.stop();
+      }
+    },
+    { onClose: close },
+  );
+
+  const runs = serve(
+    port,
+    RUNS,
+    (request, signal) => {
+      const recording = recordings.get(request.run);
+      if (request.op === 'release') {
+        recordings.delete(request.run);
+        recording?.close();
+        return Promise.resolve(undefined);
+      }
+      if (!recording) return Promise.reject(new Error(`run ${request.run} was let go`));
+      return readWindow(recording.source(), request, signal);
     },
     { onClose: close },
   );
@@ -177,7 +233,7 @@ export function serveEngine(
       const engine = await current();
       if (request.op === 'studies') return offer(engine);
       if (!engine.read) throw new Error('the served engine reads no files');
-      return engine.read(await modelOf(request, signal), request.file, signal);
+      return engine.read(await modelOf(request, signal), borrowedFile(lent, request.file), signal);
     },
     { onClose: close },
   );
@@ -210,102 +266,109 @@ function borrowed(lent: Connection<Borrow, Uint8Array>, key: number): Model.Sour
   };
 }
 
-/**
- * Record `model` for `input` on `engine`, yielding each recorder call as the engine makes it; an
- * append's buffers cross without a copy, since a recorder takes them.
- */
-async function* forward(engine: Engine, model: Model, input: unknown, signal: AbortSignal) {
-  const queue: Call[] = [];
-  let taken = 0;
-  let wake = null as (() => void) | null;
-  let settled = null as { readonly error: Error | null } | null;
-  let ready = Promise.resolve();
-  let release = null as (() => void) | null;
-  const push = (call: Call): void => {
-    queue.push(call);
-    if (!release && queue.length - taken >= BACKLOG)
-      ready = new Promise<void>((resolve) => (release = resolve));
-    const pending = wake;
-    wake = null;
-    pending?.();
+/** The file a peer lends, its bytes read across the port a slice at a time as they are asked for. */
+function borrowedFile(
+  lent: Connection<Borrow, Uint8Array>,
+  { lent: key, name, size }: LentFile,
+): Engine.File {
+  const read = async (start: number, end: number): Promise<Uint8Array> => {
+    const reply = await lent.call({ op: 'file', key, start, end });
+    check.bytes(reply, 'engine file reply');
+    return reply;
   };
-  const recorder: Engine.Recorder = {
-    signal,
-    get ready() {
-      return ready;
-    },
-    declare: (extent) =>
-      push({
-        call: 'declare',
-        extent: {
-          ...(extent.span !== undefined && { span: extent.span }),
-          ...(extent.expectedFrames !== undefined && { expectedFrames: extent.expectedFrames }),
+  return {
+    name,
+    size,
+    slice(start, end) {
+      // Match File/Blob slicing, including negative offsets and fractional bounds.
+      const offset = (value: number): number => {
+        const integer = Number.isFinite(value) ? Math.trunc(value) : 0;
+        return integer < 0 ? Math.max(size + integer, 0) : Math.min(integer, size);
+      };
+      const from = offset(start);
+      const to = Math.max(from, offset(end));
+      return {
+        async arrayBuffer() {
+          const bytes = new Uint8Array(to - from);
+          for (let at = from; at < to; at += SLICE)
+            bytes.set(await read(at, Math.min(at + SLICE, to)), at - from);
+          return bytes.buffer;
         },
-      }),
-    wait: (ahead) => push({ call: 'wait', ahead }),
-    start: () => push({ call: 'start' }),
-    append: (time, values) => push({ call: 'append', time, values }),
-    log: (level, message) => push({ call: 'log', level, message }),
+      };
+    },
+    stream() {
+      let at = 0;
+      return new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          if (at >= size) return controller.close();
+          const end = Math.min(at + SLICE, size);
+          controller.enqueue(await read(at, end));
+          at = end;
+        },
+      });
+    },
   };
-  void engine
-    .record(model, input, recorder)
-    .then(
-      () => (settled = { error: null }),
-      (error: unknown) =>
-        (settled = { error: error instanceof Error ? error : new Error('the engine failed') }),
-    )
-    .finally(() => {
-      const pending = wake;
-      wake = null;
-      pending?.();
-    });
-  for (;;) {
-    while (taken < queue.length) {
-      const call = queue[taken]!;
-      queue[taken++] = undefined as never;
-      if (release && queue.length - taken < BACKLOG / 2) {
-        release();
-        release = null;
-      }
-      yield call.call === 'append' ? transferred(call, buffersOf(call)) : call;
-    }
-    queue.length = taken = 0;
-    if (settled) {
-      if (settled.error !== null) throw settled.error;
-      return;
-    }
-    await new Promise<void>((resolve) => (wake = resolve));
-  }
-}
-
-/** Each buffer an append carries, once. */
-function buffersOf(call: Extract<Call, { call: 'append' }>): ArrayBuffer[] {
-  const buffers = new Set<ArrayBuffer>([call.time.buffer as ArrayBuffer]);
-  for (const values of Object.values(call.values)) buffers.add(values.buffer as ArrayBuffer);
-  return [...buffers];
 }
 
 /**
- * An engine served elsewhere: it offers what its peer offers, and every recording crosses to it,
- * lending the model it records.
+ * `input` with `each` applied to every value its study gives it, a list's one by one: how the
+ * files in it are lent, and borrowed. Any other input is as it is.
+ */
+function eachValue(input: unknown, each: (value: unknown) => unknown): unknown {
+  if (typeof input !== 'object' || input === null) return input;
+  const { values } = input as Partial<Engine.Input>;
+  if (typeof values !== 'object' || values === null || Array.isArray(values)) return input;
+  return {
+    ...input,
+    values: Object.fromEntries(
+      Object.entries(values).map(([id, value]) => [
+        id,
+        Array.isArray(value) ? (value as readonly unknown[]).map(each) : each(value),
+      ]),
+    ),
+  };
+}
+
+function isFile(value: unknown): value is Engine.File {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as Engine.File).slice === 'function' &&
+    typeof (value as Engine.File).stream === 'function'
+  );
+}
+
+function isLent(value: unknown): value is LentFile {
+  if (typeof value !== 'object' || value === null) return false;
+  const { lent, name, size } = value as Partial<LentFile>;
+  return Number.isSafeInteger(lent) && typeof name === 'string' && Number.isSafeInteger(size);
+}
+
+/**
+ * An engine served elsewhere: it offers what its peer offers, and every recording is held there,
+ * lending the model it records and the files its input gives.
  */
 class Connected extends Engine {
-  readonly #records: Connection<Request, Call>;
+  readonly #records: Connection<Request, Recording.Change>;
+  readonly #runs: Connection<Run, Series.Block | undefined>;
   readonly #asks: Connection<Ask, Offer | Engine.Input, Offer>;
-  readonly #loans: Map<number, Model.Source>;
+  readonly #loans: Map<number, Model.Source | Engine.File>;
   /** Each study the peer offers, as it crossed, and what withdraws this engine's offer of it. */
   readonly #mirrored = new Map<string, { readonly as: string; readonly withdraw: () => void }>();
   #revision = -1;
   #lent = 0;
+  #run = 0;
 
   constructor(
-    records: Connection<Request, Call>,
+    records: Connection<Request, Recording.Change>,
+    runs: Connection<Run, Series.Block | undefined>,
     asks: Connection<Ask, Offer | Engine.Input, Offer>,
-    loans: Map<number, Model.Source>,
+    loans: Map<number, Model.Source | Engine.File>,
   ) {
     // The served engine queues for itself, and says where a recording stands in its queue.
     super({ concurrency: Infinity });
     this.#records = records;
+    this.#runs = runs;
     this.#asks = asks;
     this.#loans = loans;
   }
@@ -332,35 +395,49 @@ class Connected extends Engine {
     return input;
   }
 
-  protected async execute(model: Model, input: unknown, recorder: Engine.Recorder): Promise<void> {
+  /** The recording the peer holds, followed here: it records nothing itself. */
+  protected override begin(
+    model: Model,
+    input: unknown,
+    header: { readonly id?: string; readonly label?: string },
+  ): Recording {
+    const run = ++this.#run;
+    return Recording.follow(model, header, {
+      changes: (signal) => this.#follow(run, model, input, signal),
+      read: (classId, signalIndex, window, signal) =>
+        this.#runs.call(
+          { op: 'read', run, classId, signalIndex, window },
+          { signal },
+        ) as Promise<Series.Block>,
+      close: () => void this.#runs.call({ op: 'release', run }).catch(() => undefined),
+    });
+  }
+
+  protected execute(): Promise<void> {
+    return Promise.reject(new Error('the peer records what a connected engine is asked to'));
+  }
+
+  /**
+   * Have the peer record `model` for `input` as `run`, lending what it reads until the recording
+   * ends, and follow it.
+   */
+  async *#follow(
+    run: number,
+    model: Model,
+    input: unknown,
+    signal?: AbortSignal,
+  ): AsyncGenerator<Recording.Change> {
     const loan = this.#lend(model);
     try {
-      for await (const item of this.#records.stream(
-        { input, ...loan.request },
-        { signal: recorder.signal },
+      const lent = eachValue(input, (value) => (isFile(value) ? loan.file(value) : value));
+      for await (const change of this.#records.stream(
+        { run, input: lent, ...loan.request },
+        { signal },
       )) {
-        const call = item as Partial<Call> | null;
-        switch (call?.call) {
-          case 'declare':
-            recorder.declare(call.extent ?? {});
-            break;
-          case 'wait':
-            recorder.wait(call.ahead!);
-            break;
-          case 'start':
-            recorder.start();
-            break;
-          case 'append':
-            recorder.append(call.time!, call.values!);
-            break;
-          case 'log':
-            recorder.log(call.level!, call.message!);
-            break;
-          default:
-            throw new TypeError('a served engine sent a call no recorder takes');
-        }
+        const status = (change as Partial<Recording.Change> | null)?.status;
+        if (status !== 'waiting' && status !== 'recording') loan.end();
+        yield change;
       }
-      recorder.signal.throwIfAborted();
     } finally {
       loan.end();
     }
@@ -369,7 +446,10 @@ class Connected extends Engine {
   async #read(model: Model, file: Engine.File, signal?: AbortSignal): Promise<Engine.Input> {
     const loan = this.#lend(model);
     try {
-      const reply = await this.#asks.call({ op: 'read', file, ...loan.request }, { signal });
+      const reply = await this.#asks.call(
+        { op: 'read', file: loan.file(file), ...loan.request },
+        { signal },
+      );
       saved(reply, 'engine read reply');
       return reply;
     } finally {
@@ -377,14 +457,23 @@ class Connected extends Engine {
     }
   }
 
-  /** Lend `model` for as long as one request lasts. */
-  #lend(model: Model): { readonly request: Loan; end(): void } {
-    const lent = ++this.#lent;
-    this.#loans.set(lent, model.source());
+  /** Lend `model`, and each file asked, for as long as one request lasts. */
+  #lend(model: Model): { readonly request: Loan; file(file: Engine.File): LentFile; end(): void } {
+    const keys: number[] = [];
+    const lend = (loaned: Model.Source | Engine.File): number => {
+      const key = ++this.#lent;
+      this.#loans.set(key, loaned);
+      keys.push(key);
+      return key;
+    };
+    const lent = lend(model.source());
     const home = homeOf(model);
     return {
       request: home === undefined ? { lent } : { lent, home },
-      end: () => void this.#loans.delete(lent),
+      file: (file) => ({ lent: lend(file), name: file.name, size: file.size }),
+      end: () => {
+        for (const key of keys) this.#loans.delete(key);
+      },
     };
   }
 }
@@ -393,33 +482,44 @@ class Connected extends Engine {
  * The engine a `serveEngine` peer serves, once the studies it offers are in: it offers them too,
  * following each change, and answers `shown` and `problems` here. It records any model it is
  * given, a model the peer serves where it lives and any other through the source this side lends
- * while it records, and reads saved files when the peer's engine does. Closing it closes the
- * connection.
+ * while it records. Each recording is held by the peer and followed here, its frames read a window
+ * at a time; closing a recording lets the peer let it go. It reads saved files when the peer's
+ * engine does. Closing it closes the connection.
  *
  * @throws Error when the peer's engine cannot open, or offers a study that is not well formed.
  */
 export async function connectEngine(port: Port, signal?: AbortSignal): Promise<Remote<Engine>> {
   const records = connect(port, RECORD);
+  const runs = connect(port, RUNS);
   const asks = connect(port, STUDIES);
-  const loans = new Map<number, Model.Source>();
+  const loans = new Map<number, Model.Source | Engine.File>();
   const lending = serve(port, BORROW, async (request, signal) => {
-    const source = loans.get(request.key);
-    if (!source) throw new Error('the model is no longer lent');
-    const data =
-      request.op === 'class'
-        ? await source.class(request.id, signal)
-        : request.op === 'core'
-          ? await source.core(signal)
-          : await source.bytes(signal);
+    const loaned = loans.get(request.key);
+    let data: Uint8Array;
+    if (request.op === 'file') {
+      if (!loaned || 'core' in loaned) throw new Error('the file is no longer lent');
+      if (request.end - request.start > SLICE)
+        throw new RangeError('a file read carries at most 4 MiB');
+      data = new Uint8Array(await loaned.slice(request.start, request.end).arrayBuffer());
+    } else {
+      if (!loaned || !('core' in loaned)) throw new Error('the model is no longer lent');
+      data =
+        request.op === 'class'
+          ? await loaned.class(request.id, signal)
+          : request.op === 'core'
+            ? await loaned.core(signal)
+            : await loaned.bytes(signal);
+    }
     return transferred(data, [data.buffer as ArrayBuffer]);
   });
   const close = (): void => {
     records.close();
+    runs.close();
     asks.close();
     lending.close();
   };
   try {
-    const engine = new Connected(records, asks, loans);
+    const engine = new Connected(records, runs, asks, loans);
     // A change can overtake the reply to the first ask; the revision orders them.
     asks.on((offer) => {
       try {
