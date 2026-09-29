@@ -56,17 +56,20 @@ const engine = await connectEngine(port);
 const { port1, port2 } = new MessageChannel();
 worker.postMessage({ open: { port: port2, bytes } }, [port2]);
 const model = await connectModel(messagePort(port1), { progress });
-const recording = engine.record(model, input); // fills here as the worker's engine writes it
+const recording = engine.record(model, input); // held by the worker, followed here
 const kept = await connectRecording(port, model, 'fault-4'); // or opens the worker's own
 ```
 
-Only sources and recorder calls cross. A model's core crosses at once and each class shard as it is
-first asked for, with the case's bytes on request; a model opened from packs serves them as they
-came. An engine records any model it is given: a model its own realm serves is recorded where it
-lives, and any other is lent by its source, which the engine reads only as it needs, for as long
-as the recording lasts. Each recording crosses as the engine writes it, call by call, its frames
-handed over without a copy; the served engine checks every input, queues what it cannot take at
-once, and stops when the far recording stops. The studies an engine offers cross with it:
+Only sources, changes, and the windows read cross. A model's core crosses at once and each class
+shard as it is first asked for, with the case's bytes on request; a model opened from packs serves
+them as they came. An engine records any model it is given: a model its own realm serves is
+recorded where it lives, and any other is lent by its source, which the engine reads only as it
+needs, for as long as the recording lasts; a file an input gives is lent the same way, its bytes
+crossing only as the engine reads them. Each recording is held where the engine runs, its frames
+in the engine's store: the far side follows its changes, its clock, ranges, state, and log, reads
+its frames a window of at most 4 MiB at a time, and lets it go by closing it, as the port's close
+lets every one go. The served engine checks every input, queues what it cannot take at once, and
+stops when the far recording stops. The studies an engine offers cross with it:
 `connectEngine` resolves once they are in, and the connected engine follows each change and checks
 a study's form where it is. A kept recording opens with `Recording.from` against
 the model it records, its clock at hand and its samples read in windows of at most 4 MiB. A
@@ -106,10 +109,11 @@ clients, have the factory return the same host-owned document; see
 Opening a session, editing, and exporting native bytes do not build a model. `session.model()`
 requests an immutable snapshot only when needed; its bytes remain frozen across later edits.
 
-Each document has one serialized owner, retained across connections. Commands carry an owner epoch,
-base revision, and client sequence; stale indexed edits throw `DocumentConflict`. Refusals retain
-`Refusal.at`. Updates replace changed schematic columns; layout changes retain the netlist and
-model. A gap refreshes the cached view. Acknowledgments mean accepted in memory.
+Each document has one serialized owner, retained across connections. Commands carry the
+document's epoch, base revision, and client sequence; stale indexed edits throw
+`DocumentConflict`. Refusals retain `Refusal.at`. Updates carry the schematic parts a change
+replaced, compared by identity; layout changes retain the netlist and model. A gap refreshes the
+cached view. Acknowledgments mean accepted in memory.
 
 `session.inspect(elementOrKey, signal?)` returns `{ version, inspection }`: editable values and
 complete wiring read together without materializing a model. Retain the revision with a form and

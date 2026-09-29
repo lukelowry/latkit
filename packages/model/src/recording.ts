@@ -1,7 +1,8 @@
 /**
  * A recording: every signal an engine records for one model, each class's series on one clock so
  * frame `f` is one instant in each of them. `Engine.record` begins one; `Recording.from` opens one
- * held elsewhere, across a port or in a file, against the model it records.
+ * held elsewhere, across a port or in a file, against the model it records, and `Recording.follow`
+ * follows one an engine records elsewhere.
  */
 
 import { validateDomain, type Domain } from './domain.js';
@@ -10,17 +11,20 @@ import { checkRef, fieldOf } from './field.js';
 import { createGrid } from './grid.js';
 import { listeners } from './listeners.js';
 import type { Model } from './model.js';
-import { Clock, Sourced, Tracked, type Series } from './series.js';
+import { Clock, memoryStore, Sourced, Tracked, type Series } from './series.js';
 
 /**
- * Begin a recording of `model`, holding every class that records a signal, and `fill` it through
- * the recorder it is given. Only `Engine.record` calls it.
+ * Begin a recording of `model` held here, every class that records a signal kept in `store`, and
+ * `fill` it through the recorder it is given. Only `Engine` calls it.
  */
-export let begin: (
+export let hold: (
   model: Model,
   header: { readonly id?: string; readonly label?: string },
   fill: (recorder: Engine.Recorder) => Promise<void>,
+  store?: Series.Store,
 ) => Recording;
+
+const READY = Promise.resolve();
 
 const STATUSES: readonly Recording.State['status'][] = [
   'waiting',
@@ -60,6 +64,8 @@ export class Recording {
   readonly #series: ReadonlyMap<string, Series>;
   readonly #changes = listeners();
   #halt: () => void = () => undefined;
+  #release: () => void = () => undefined;
+  #closed = false;
 
   private constructor(
     model: Model,
@@ -183,6 +189,18 @@ export class Recording {
     this.#halt();
   }
 
+  /**
+   * Stop, and let go of its frames and whatever holds them, a store or a source; nothing reads
+   * them after.
+   */
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#halt();
+    this.#changes.clear();
+    this.#release();
+  }
+
   /** It changed: frames, where it stands, what it spans, or its log. Every series changes first. */
   on(_event: 'change', listener: () => void): () => void {
     return this.#changes.on(listener);
@@ -239,30 +257,67 @@ export class Recording {
     model: Model,
     source: Recording.Source,
     signal?: AbortSignal,
-  ): Promise<Recording & { close(): void }> {
+  ): Promise<Recording> {
+    let recording: Recording | null = null;
     try {
-      return await Recording.#open(model, source, signal);
+      signal?.throwIfAborted();
+      const described = await source.describe(signal);
+      signal?.throwIfAborted();
+      if (!described || typeof described !== 'object')
+        throw new TypeError('a recording source must describe its recording');
+      const { id, label, classes } = described;
+      if (typeof id !== 'string' || id === '') throw new Error('recording id must be non-empty');
+      if (typeof label !== 'string') throw new TypeError('recording label must be a string');
+      if (!Array.isArray(classes as unknown))
+        throw new TypeError('a recording source must list its classes');
+      const opened = Recording.#open(model, id, label, classes, source, signal);
+      recording = opened.recording;
+      await opened.first;
+      return recording;
     } catch (error) {
-      source.close?.();
+      if (recording) recording.close();
+      else source.close?.();
       throw error;
     }
   }
 
-  static async #open(
+  /**
+   * Follow the recording of `model` an engine makes elsewhere, such as across a port, as `source`
+   * gives it: it holds every class of `model` that records a signal, as `Engine.record` does, so it
+   * exists before its first change, takes each change as it comes, and reads its samples from the
+   * source. A source that fails or ends before the recording does fails it. It follows the source
+   * until stopped; closing it closes the source.
+   */
+  static follow(
     model: Model,
-    source: Recording.Source,
+    header: { readonly id?: string; readonly label?: string },
+    source: Omit<Recording.Source, 'describe'>,
+  ): Recording {
+    const id = header.id ?? `recording-${++recordings}`;
+    const { recording, first } = Recording.#open(
+      model,
+      id,
+      header.label ?? id,
+      shapesOf(model),
+      source,
+    );
+    void first.catch(() => undefined);
+    return recording;
+  }
+
+  /**
+   * The recording of `model` whose `classes` `source` holds, following its changes from now until
+   * stopped; `first` settles once the first is taken, or with why none was. `signal` aborts the
+   * wait for the first.
+   */
+  static #open(
+    model: Model,
+    id: string,
+    label: string,
+    classes: readonly (Series.Shape & { readonly classId: string })[],
+    source: Omit<Recording.Source, 'describe'>,
     signal?: AbortSignal,
-  ): Promise<Recording & { close(): void }> {
-    signal?.throwIfAborted();
-    const described = await source.describe(signal);
-    signal?.throwIfAborted();
-    if (!described || typeof described !== 'object')
-      throw new TypeError('a recording source must describe its recording');
-    const { id, label, classes } = described;
-    if (typeof id !== 'string' || id === '') throw new Error('recording id must be non-empty');
-    if (typeof label !== 'string') throw new TypeError('recording label must be a string');
-    if (!Array.isArray(classes as unknown))
-      throw new TypeError('a recording source must list its classes');
+  ): { readonly recording: Recording; readonly first: Promise<void> } {
     const clock = new Clock();
     const mirrors = new Map<string, Sourced>();
     for (const entry of classes) {
@@ -324,66 +379,67 @@ export class Recording {
     };
 
     const following = new AbortController();
-    const changes = source.changes(following.signal)[Symbol.asyncIterator]();
-    /** Stop following the source, keeping what it holds. */
-    const halt = (): void => {
-      if (following.signal.aborted) return;
+    /** Stop following the source, keeping what it holds, and end the recording if it is live. */
+    const end = (status: 'stopped' | 'failed', error: string | null): void => {
       following.abort();
-      if (live(recording.#state.status)) {
-        clock.seal();
-        for (const mirror of mirrors.values()) mirror.follow(mirror.state.ranges);
-        recording.#set({ status: 'stopped', ahead: 0 });
-      }
+      if (!live(recording.#state.status)) return;
+      clock.seal();
+      for (const mirror of mirrors.values()) mirror.follow(mirror.state.ranges);
+      recording.#set({ status, ahead: 0, error });
     };
+    recording.#halt = () => end('stopped', null);
+    recording.#release = () => {
+      for (const mirror of mirrors.values()) mirror.forget();
+      source.close?.();
+    };
+    let taken!: () => void;
+    let refused!: (error: unknown) => void;
+    const first = new Promise<void>((resolve, reject) => {
+      taken = resolve;
+      refused = reject;
+    });
     const abort = (): void => following.abort(signal?.reason);
     signal?.addEventListener('abort', abort, { once: true });
-    try {
-      const first = await changes.next();
-      signal?.throwIfAborted();
-      if (first.done) throw new Error('a recording source ended before its clock');
-      apply(first.value);
-    } catch (error) {
-      following.abort();
-      throw error;
-    } finally {
-      signal?.removeEventListener('abort', abort);
-    }
     void (async () => {
-      // A source that breaks or closes leaves the recording with what it had.
+      let started = false;
+      let failure: unknown = null;
       try {
-        for (;;) {
-          const next = await changes.next();
-          if (next.done) return;
-          apply(next.value);
+        for await (const change of source.changes(following.signal)) {
+          following.signal.throwIfAborted();
+          apply(change);
+          if (!started) {
+            started = true;
+            signal?.removeEventListener('abort', abort);
+            taken();
+          }
         }
-      } catch {
-        following.abort();
+        if (live(recording.#state.status))
+          failure = new Error(
+            started
+              ? 'the recording source ended before the recording did'
+              : 'a recording source ended before its clock',
+          );
+      } catch (error) {
+        failure = error;
+      } finally {
+        signal?.removeEventListener('abort', abort);
       }
+      // Stopped, the source ends however it ends; otherwise, one that fails fails the recording.
+      if (following.signal.aborted) failure = following.signal.reason;
+      else if (failure !== null)
+        end('failed', failure instanceof Error ? failure.message : 'the recording source failed');
+      if (!started) refused(failure);
     })();
-    recording.#halt = halt;
-    let closed = false;
-    return Object.assign(recording, {
-      close() {
-        if (closed) return;
-        closed = true;
-        halt();
-        recording.#changes.clear();
-        for (const mirror of mirrors.values()) mirror.forget();
-        source.close?.();
-      },
-    });
+    return { recording, first };
   }
 
   static {
-    begin = (model, header, fill) => {
+    hold = (model, header, fill, store = memoryStore()) => {
       const id = header.id ?? `recording-${++recordings}`;
       const clock = new Clock();
       const tracks = new Map<string, Tracked>();
-      for (const spec of model.classes) {
-        const signals = spec.signals.filter((signal) => signal.recorded).map((signal) => signal.id);
-        if (signals.length)
-          tracks.set(spec.id, new Tracked(clock, { signals, elementCount: spec.count }));
-      }
+      for (const shape of shapesOf(model))
+        tracks.set(shape.classId, new Tracked(clock, shape, store));
       const recording = new Recording(model, id, header.label ?? id, clock, tracks);
       const control = new AbortController();
       const ended = (): boolean => !live(recording.#state.status);
@@ -395,7 +451,9 @@ export class Recording {
       };
       const recorder: Engine.Recorder = {
         signal: control.signal,
-        ready: Promise.resolve(),
+        get ready() {
+          return store.ready ?? READY;
+        },
         declare(extent) {
           if (ended()) return;
           const span = extent.span === undefined ? recording.#span : checkedSpan(extent.span);
@@ -429,9 +487,13 @@ export class Recording {
             lanes.set(track, track.admit(block, admitted.length));
           }
           if (!admitted.length) return;
+          // Store every lane before publishing any clock or range: a failed write must not
+          // expose a frame whose other classes were never stored.
+          const commits = [...tracks.values()].map((track) =>
+            track.stage(lanes.get(track) ?? null, admitted.length, false),
+          );
           clock.commit(admitted);
-          for (const track of tracks.values())
-            track.push(lanes.get(track) ?? null, admitted.length, false);
+          for (const commit of commits) commit();
           for (const track of tracks.values()) track.update();
           recording.#set({ status: 'recording', ahead: 0 });
         },
@@ -448,6 +510,7 @@ export class Recording {
         control.abort();
         end('stopped', null);
       };
+      recording.#release = () => store.close();
       void fill(recorder).then(
         () => end('complete', null),
         (error: unknown) =>
@@ -584,6 +647,14 @@ export declare namespace Recording {
 /** Whether a recording in `status` may still grow. */
 function live(status: Recording.State['status']): boolean {
   return status === 'waiting' || status === 'recording';
+}
+
+/** Each class of `model` that records a signal, and the signals it records: what an engine keeps. */
+function shapesOf(model: Model): (Series.Shape & { readonly classId: string })[] {
+  return model.classes.flatMap((spec) => {
+    const signals = spec.signals.filter((signal) => signal.recorded).map((signal) => signal.id);
+    return signals.length ? [{ classId: spec.id, signals, elementCount: spec.count }] : [];
+  });
 }
 
 /**

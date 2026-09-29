@@ -286,7 +286,7 @@ describe('engine studies', () => {
     const model = sampleModel();
     const problems = (values: Engine.Values) =>
       engine.problems(model, { study: 'simulation', values });
-    const file = (name: string) => ({ name, bytes: Uint8Array.of(1) });
+    const file = (name: string) => new File([Uint8Array.of(1)], name);
     expect(problems({})).toEqual({});
     expect(problems({ tmax: null })).toEqual({ tmax: 'End time is required.' });
     expect(problems({ tmax: NaN })).toEqual({ tmax: 'End time must be a number.' });
@@ -371,18 +371,7 @@ describe('engine studies', () => {
     });
     expect(record(5)).toThrow(TypeError);
     expect(record({ study: 'simulation' })).toThrow(TypeError);
-    const recorder: Engine.Recorder = {
-      signal: new AbortController().signal,
-      ready: Promise.resolve(),
-      declare() {},
-      wait() {},
-      start() {},
-      append() {},
-      log() {},
-    };
-    expect(() =>
-      engine.record(model, { study: 'simulation', values: { tmax: 0 } }, recorder),
-    ).toThrow(Refusal);
+    expect(record({ study: 'simulation', values: { tmax: 0 } })).toThrow(Refusal);
     expect(engine.parsed).toEqual([]);
   });
 

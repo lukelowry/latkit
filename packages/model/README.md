@@ -132,7 +132,9 @@ the model it is given for one through its recorder, resolving once complete; thr
 recording. One engine records any model, so a host keeps one per solver, whatever cases and
 revisions it opens: `record` checks the input at once, and the recording returned waits its turn,
 then fills as the engine computes. An engine records as many at once as its `concurrency` allows and
-queues the rest, telling each how many wait before it.
+queues the rest, telling each how many wait before it. Each recording keeps its frames in the
+`store` its host gives the engine, in memory unless the host keeps them elsewhere, such as on disk,
+and `recording.close()` lets them go.
 
 ```ts
 import { Engine, type Model } from '@latkit/model';
@@ -153,7 +155,7 @@ export class GridkitEngine extends Engine {
       else if (update.kind === 'running') recorder.start();
       else if (update.kind === 'log') recorder.log(update.level, update.message);
       else {
-        await recorder.ready; // go at the pace of whoever reads the frames
+        await recorder.ready; // go at the pace of the store that keeps the frames
         recorder.append(update.time, update.values);
       }
     }
@@ -256,6 +258,10 @@ undo.onclick = () => document.undo();
 ```
 
 An edit the case refuses throws `Refusal`, saying why and what it is about, and changes nothing.
+`document.version` advances for each successful edit, undo, and redo. Document implementations
+replace changed schematic parts and retain unchanged parts by identity; published parts must not
+be mutated. Keep the same palette array until the palette changes, so sessions can send only the
+parts that changed.
 
 ## Keep a history
 
@@ -335,7 +341,8 @@ validateNetlist(unit);
 byte export. `inspect(elementOrKey)` returns current editable values and wiring with their revision,
 without opening a model. Submit a retained draft with `apply(version, ...operations)` so the owner
 rejects intervening changes; ordinary `apply(...operations)` uses the current cached view.
-Its `view` caches the schematic, palette, history metadata, and `{ epoch, revision }` version.
+Its `view` caches the schematic, palette, history metadata, and `{ epoch, revision }` version, the
+document's own `document.version`.
 Stale edits reject with `DocumentConflict`; accepted edits resolve after the view includes them.
 A `Document.Snapshot` is an immutable model with `close()` to release its resources.
 

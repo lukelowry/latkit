@@ -33,7 +33,7 @@ export function createMonitorRenderer(target: RenderTarget, scene: Scene): Scene
     plot.load(
       scene.series,
       scene.signal,
-      { frames: 0, range: null, domain: null },
+      { frames: 0, range: null, domain: null, time: null },
       scene.selected ?? null,
       false,
     );

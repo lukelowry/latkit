@@ -22,6 +22,8 @@ export interface Scan {
   range: Domain | null;
   /** The automatic value domain: the recorded extent with headroom, never shrinking. */
   domain: Domain | null;
+  /** The automatic time domain: a live series' extent, stretched as it grows; the extent after. */
+  time: Domain | null;
 }
 /** What a lane reports to its host. */
 export interface LaneEvents {
@@ -202,7 +204,9 @@ export class Lane {
         : [state.ranges[at]!, state.ranges[at + 1]!];
     if (!this.#style.valueRange && recorded)
       this.#scan.domain = grow(this.#scan.domain, normalizeDomain(recorded));
-    const range = normalizeDomain(this.#style.timeRange ?? state.timeRange);
+    if (!this.#style.timeRange && state.timeRange)
+      this.#scan.time = state.live ? stretch(this.#scan.time, state.timeRange) : state.timeRange;
+    const range = normalizeDomain(this.#style.timeRange ?? this.#scan.time);
     const domain = normalizeDomain(this.#style.valueRange ?? this.#scan.domain);
     const colors = normalizeDomain(this.#style.colorRange ?? domain);
     const changed =
@@ -213,13 +217,13 @@ export class Lane {
     this.#colors = colors;
     this.#state = state;
     this.#resolved = true;
+    if (domainChanged || this.#reported < 0) this.#events.range(domain);
     if (changed || this.#repaint) {
       this.#painted = this.#focused = 0;
       this.#painter.beginRebuild(range, domain);
       this.#repaint = false;
       this.#focusRepaint = false;
     }
-    if (domainChanged || this.#reported < 0) this.#events.range(domain);
   }
 
   #startHistory(): void {
@@ -344,13 +348,33 @@ export class Lane {
 
   /** Normalize a raw window into the upload arrays; returns the rows written. */
   #fill(window: Window, block: Block, values: Float32Array, time: Float32Array): number {
+    const low = this.#domain[0],
+      span = this.#domain[1] - low;
+    const colorLow = this.#colors[0],
+      colorSpan = this.#colors[1] - colorLow;
+    const affine = Number.isFinite(span) && span > 0;
+    const colorAffine = Number.isFinite(colorSpan) && colorSpan > 0;
+    const shared = equal(this.#domain, this.#colors);
     for (let f = 0; f < window.frameCount; f++) {
       time[f] = finiteCoordinate(position(block.time[f]!, this.#range));
+      const source = f * block.stride,
+        target = f * window.elementCount * 2;
       for (let e = 0; e < window.elementCount; e++) {
-        const value = block.values[f * block.stride + e]!;
-        const at = (f * window.elementCount + e) * 2;
-        values[at] = finiteCoordinate(position(value, this.#domain));
-        values[at + 1] = finiteCoordinate(position(value, this.#colors));
+        const value = block.values[source + e]!;
+        const at = target + e * 2;
+        if (!Number.isFinite(value)) {
+          values[at] = values[at + 1] = NaN;
+          continue;
+        }
+        const coordinate = finiteCoordinate(
+          affine ? (value - low) / span : position(value, this.#domain),
+        );
+        values[at] = coordinate;
+        values[at + 1] = shared
+          ? coordinate
+          : finiteCoordinate(
+              colorAffine ? (value - colorLow) / colorSpan : position(value, this.#colors),
+            );
       }
     }
     return window.frameCount;
@@ -725,6 +749,15 @@ function grow(domain: Domain | null, [lo, hi]: Domain): Domain {
     Math.max(-Number.MAX_VALUE, Math.min(domain?.[0] ?? lo, lo - pad)),
     Math.min(Number.MAX_VALUE, Math.max(domain?.[1] ?? hi, hi + pad)),
   ];
+}
+/**
+ * A live series' time extent: kept while its frames fit, else grown to the larger of what they
+ * need and twice what it spanned, so its history rebuilds O(log n) times, not per append.
+ */
+function stretch(range: Domain | null, [lo, hi]: Domain): Domain {
+  if (range && range[0] === lo && hi <= range[1]) return range;
+  const doubled = range ? lo + 2 * (range[1] - range[0]) : -Infinity;
+  return [lo, Number.isFinite(doubled) && doubled > hi ? doubled : hi];
 }
 function equal(a: readonly number[] | null, b: readonly number[] | null): boolean {
   return a === b || (!!a && !!b && a.length === b.length && a.every((value, i) => value === b[i]));

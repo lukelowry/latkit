@@ -43,6 +43,9 @@ export class Axes {
   #dirty = true;
   #layoutWidth = 0;
   #layoutHeight = 0;
+  #layoutValue: Domain = [0, 1];
+  /** The widest value label laid out since the last reset: the gutter only grows while a series streams. */
+  #columns = 0;
   #time: Domain | null = null;
   #value: Domain | null = null;
   #rect: Rect;
@@ -93,18 +96,28 @@ export class Axes {
   get rect(): Rect {
     return this.#rect;
   }
-  configure(options: ResolvedOptions, scale: number): boolean {
+  configure(
+    options: ResolvedOptions,
+    scale: number,
+    value: Domain = this.#layoutValue,
+    reset = false,
+  ): boolean {
     if (
+      !reset &&
       options === this.#settings &&
       scale === this.#scale &&
       this.#layoutWidth === this.#target.width &&
-      this.#layoutHeight === this.#target.height
+      this.#layoutHeight === this.#target.height &&
+      this.#layoutValue[0] === value[0] &&
+      this.#layoutValue[1] === value[1]
     )
       return false;
     if (options.fontFamily !== this.#settings.fontFamily) this.atlas.setFont(options.fontFamily);
     this.#dirty = true;
     this.#settings = options;
     this.#scale = scale;
+    this.#layoutValue = value;
+    if (reset) this.#columns = 0;
     const next = this.#layout(),
       previous = this.#rect;
     this.#rect = next;
@@ -121,15 +134,27 @@ export class Axes {
       font = o.fontSizePx * s;
     this.#layoutWidth = width;
     this.#layoutHeight = height;
-    // Stable gutters: numeric changes never shift the data rectangle.
-    const columns = Math.max(
-      13,
-      ...(o.valueAxis?.ticks?.map((t) => glyphMetrics.columns(t.label ?? '')) ?? []),
-    );
-    const left =
-      o.valueAxis === null ? 0 : Math.ceil(font * glyphMetrics.advance * columns + 10 * s);
     const top = o.valueAxis === null ? 0 : Math.ceil(font * 1.8);
     const bottom = o.timeAxis === null ? 0 : Math.ceil(font * 3.4 + 4 * s);
+    // Measure the labels that are actually drawn. This runs only when the domain,
+    // font, options or canvas size changes, never for playhead-only frames.
+    let columns = this.#columns;
+    if (o.valueAxis) {
+      const value = this.#layoutValue;
+      const offset = tickOffset(value, o.valueAxis);
+      const domain: Domain = [value[0] - offset, value[1] - offset];
+      const axis = { ...o.valueAxis, minSpacingPx: o.valueAxis.minSpacingPx ?? o.fontSizePx * 2.5 };
+      for (const tick of ticks(value, Math.max(1, height - top - bottom) / s, axis))
+        columns = Math.max(
+          columns,
+          glyphMetrics.columns(tick.label ?? formatTick(tick.value - offset, domain, axis)),
+        );
+    }
+    this.#columns = columns;
+    const left =
+      o.valueAxis === null
+        ? 0
+        : Math.min(Math.ceil(width / 3), Math.ceil(font * glyphMetrics.advance * columns + 10 * s));
     const x = Math.min(left, Math.max(0, width - 1)),
       y = Math.min(top, Math.max(0, height - 1));
     return { x, y, width: Math.max(1, width - x), height: Math.max(1, height - y - bottom) };

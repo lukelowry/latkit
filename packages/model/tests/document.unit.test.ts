@@ -140,6 +140,21 @@ describe('document', () => {
     ]);
   });
 
+  it('counts each step made, taken back, or made again in a version of its own', () => {
+    const document = new Counter();
+    const opened = document.version;
+    expect(opened.revision).toBe(0);
+    expect(document.apply(set)).not.toBeNull();
+    expect(document.version).toEqual({ epoch: opened.epoch, revision: 1 });
+    document.undo();
+    document.redo();
+    expect(document.version).toEqual({ epoch: opened.epoch, revision: 3 });
+    expect(document.redo()).toBeNull();
+    expect(document.version.revision).toBe(3);
+    expect(opened.revision).toBe(0);
+    expect(new Counter().version.epoch).not.toBe(opened.epoch);
+  });
+
   it('keeps the last 200 steps, forgetting the oldest', () => {
     const document = new Counter();
     for (let step = 0; step < 201; step++) document.apply(set);

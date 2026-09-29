@@ -158,14 +158,16 @@ indexes or overwrites newer values. Even a layout change makes an older draft st
 
 ## Ordering and conflicts
 
-Every live document has one owner, one serialized queue, and a version:
+Every live document has one owner, one serialized queue, and a version, the document's own
+`document.version`:
 
 ```ts
-{ epoch: 'owner-uuid', revision: 12 }
+{ epoch: 'document-uuid', revision: 12 }
 ```
 
-The epoch changes when the document owner is recreated. A successful change increments the
-revision, including undo, redo, and layout changes. No-ops and refusals do not increment it.
+The epoch is new with each document, so a document opened again starts a new one. A successful
+change increments the revision, including undo, redo, and layout changes. No-ops and refusals do
+not increment it.
 History is shared by the document: undo reverses the latest document edit, regardless of which
 client made it.
 

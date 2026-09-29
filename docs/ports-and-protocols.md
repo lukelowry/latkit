@@ -43,8 +43,10 @@ each on a channel of its own.
 
 An engine is served on its own and records any model it is given. A model its realm serves is
 recorded where it lives; any other is lent by its source for as long as the recording lasts, the
-engine reading only what it needs. Each recording fills on the caller's side as the engine writes
-it, call by call, an append's buffers handed over without a copy.
+engine reading only what it needs, and a file an input gives is lent the same way. Each recording
+is held where the engine runs, its frames in the engine's store; the caller's side follows its
+changes as they come and reads its frames a window at a time, and closing it lets the engine's
+side let it go.
 
 ```ts
 // worker.ts
@@ -71,6 +73,7 @@ network.setChannel('vertexColor', await recording.field(VM));
 recording.on('change', () => status(recording.state)); // waiting → recording → complete | stopped | failed
 
 // On teardown:
+recording.close();
 model.close();
 engine.close();
 ```

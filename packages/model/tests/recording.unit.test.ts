@@ -523,3 +523,102 @@ describe('recording.source and Recording.from', () => {
     mirror.close();
   });
 });
+
+describe('Recording.follow', () => {
+  it('ignores an opening signal after the first change has been received', async () => {
+    const { recording: origin, recorder, complete } = byHand(sampleModel());
+    const opening = new AbortController();
+    const mirror = await Recording.from(origin.model, origin.source(), opening.signal);
+    opening.abort();
+    recorder.append(Float64Array.of(0), { bus: Float32Array.of(1, 2, 3) });
+    await complete();
+    await vi.waitFor(() => expect(mirror.state.status).toBe('complete'));
+    expect(mirror.state.frameCount).toBe(1);
+    mirror.close();
+  });
+
+  it('does not apply a pending source change after being stopped', async () => {
+    const { recording: origin } = byHand(sampleModel());
+    const first = await take(origin.source().changes()[Symbol.asyncIterator]());
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => (release = resolve));
+    const finished = vi.fn();
+    const mirror = Recording.follow(
+      origin.model,
+      {},
+      {
+        ...origin.source(),
+        async *changes() {
+          try {
+            await waiting;
+            yield first;
+          } finally {
+            finished();
+          }
+        },
+      },
+    );
+    mirror.stop();
+    release();
+    await vi.waitFor(() => expect(finished).toHaveBeenCalledOnce());
+    expect(mirror.state.status).toBe('stopped');
+    mirror.close();
+    origin.close();
+  });
+
+  it('follows a recording made elsewhere from before its first change, shaped as its model', async () => {
+    const { recording: origin, recorder, complete } = byHand(sampleModel());
+    const { changes, read } = origin.source();
+    const close = vi.fn();
+    const here = Recording.follow(origin.model, { id: 'here' }, { changes, read, close });
+    expect(here).toMatchObject({ id: 'here', label: 'here', classes: ['bus', 'gen'] });
+    expect(here.state).toMatchObject({ status: 'waiting', frameCount: 0 });
+    const frames = block([0, 1], { bus: [1, 2, 3, 4, 5, 6] });
+    recorder.append(frames.time, frames.values);
+    await vi.waitFor(() => expect(here.state.frameCount).toBe(2));
+    expect(await values(here.series('bus')!)).toEqual([1, 2, 3, 4, 5, 6]);
+    await complete();
+    await ended(here);
+    expect(here.state).toMatchObject({ status: 'complete', frameCount: 2 });
+    here.close();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('fails when its source fails or ends before the recording does, keeping what it had', async () => {
+    const model = sampleModel();
+    const unread = (): Promise<never> => Promise.reject(new Error('unread'));
+    const broken = Recording.follow(
+      model,
+      {},
+      {
+        // eslint-disable-next-line require-yield
+        async *changes() {
+          throw new Error('the socket closed');
+        },
+        read: unread,
+      },
+    );
+    await ended(broken);
+    expect(broken.state).toMatchObject({ status: 'failed', error: 'the socket closed' });
+
+    const { recording: origin, recorder } = byHand(model);
+    recorder.append(Float64Array.of(0), { bus: Float32Array.of(1, 2, 3) });
+    const first = await take(origin.source().changes()[Symbol.asyncIterator]());
+    const cut = Recording.follow(
+      model,
+      {},
+      {
+        async *changes() {
+          yield first;
+        },
+        read: unread,
+      },
+    );
+    await ended(cut);
+    expect(cut.state).toMatchObject({
+      status: 'failed',
+      error: 'the recording source ended before the recording did',
+      frameCount: 1,
+    });
+  });
+});

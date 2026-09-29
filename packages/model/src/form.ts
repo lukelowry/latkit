@@ -349,17 +349,17 @@ function checkWhen(
   }
 }
 
-/** A value `parse` keeps: lists, elements, and files copied, so the caller's own may change. */
+/**
+ * A value `parse` keeps: lists and elements copied, so the caller's own may change; a file is the
+ * handle it reads through.
+ */
 function copy(value: Engine.Value): Engine.Value {
   if (Array.isArray(value)) return Object.freeze((value as readonly Entry[]).map(copyEntry));
   return copyEntry(value as Entry);
 }
 
 function copyEntry(value: Entry): Entry {
-  if (typeof value !== 'object') return value;
-  return 'bytes' in value
-    ? Object.freeze({ name: value.name, bytes: value.bytes })
-    : Object.freeze({ classId: value.classId, index: value.index });
+  return isElement(value) ? Object.freeze({ classId: value.classId, index: value.index }) : value;
 }
 
 /** Whether `value` leaves a parameter empty: absent, null, empty text, or an empty list. */
@@ -417,7 +417,10 @@ function isFile(value: unknown): value is Engine.File {
   return (
     isRecord(value) &&
     typeof value.name === 'string' &&
-    Object.prototype.toString.call(value.bytes) === '[object Uint8Array]'
+    Number.isSafeInteger(value.size) &&
+    (value.size as number) >= 0 &&
+    typeof value.slice === 'function' &&
+    typeof value.stream === 'function'
   );
 }
 

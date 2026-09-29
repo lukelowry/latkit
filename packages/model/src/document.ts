@@ -16,14 +16,19 @@ const NONE = 0xffffffff;
  * them back, and the case as a block diagram. Subclass it for a format: `change` the case for some
  * operations, `revert` a change, `inspect` native values and wiring, describe the `schematic` and
  * `palette`, and `open` the model of the case as it stands; the base keeps the history of the
- * last 200 steps, maps the schematic's parts to elements, and opens a model only when asked.
- * A format opens or creates documents through `Document.Format`; the host owns their lifetime
- * and saves their bytes. A model already produced stays immutable across later edits.
+ * last 200 steps and the version it has reached, maps the schematic's parts to elements, and opens
+ * a model only when asked. A format opens or creates documents through `Document.Format`; the host
+ * owns their lifetime and saves their bytes. A model already produced stays immutable across later
+ * edits.
  */
 export abstract class Document {
   readonly #undo: Document.Change[] = [];
   readonly #redo: Document.Change[] = [];
   readonly #listeners = new Set<(change: Document.Change) => void>();
+  #version: Document.Version = Object.freeze({
+    epoch: globalThis.crypto.randomUUID(),
+    revision: 0,
+  });
   #opening: { readonly promise: Promise<Model>; readonly controller: AbortController } | null =
     null;
   readonly #parts = Document.parts(() => this.schematic);
@@ -33,11 +38,22 @@ export abstract class Document {
     return new Parts(typeof source === 'function' ? source : () => source);
   }
 
-  /** The case as a block diagram, as of the last change. */
+  /**
+   * The case as a block diagram, as of the last change. Its parts never change: a change replaces
+   * those it changes and keeps every other as the same object.
+   */
   abstract get schematic(): Document.Schematic;
 
-  /** The classes a diagram can add as blocks, in palette order. */
+  /** The classes a diagram can add as blocks, in palette order: the same array until they change. */
   abstract get palette(): readonly Document.BlockClass[];
+
+  /**
+   * Which state of the case this is: its epoch is new with each document, and each step made,
+   * taken back, or made again is the next revision.
+   */
+  get version(): Document.Version {
+    return this.#version;
+  }
 
   /**
    * Make `operations` true as one step, or return null when the case already agrees. A refused
@@ -168,6 +184,8 @@ export abstract class Document {
   protected abstract open(signal: AbortSignal): Promise<Model>;
 
   #changed(change: Document.Change): void {
+    const { epoch, revision } = this.#version;
+    this.#version = Object.freeze({ epoch, revision: revision + 1 });
     if (change.scope !== 'layout') {
       this.#opening?.controller.abort();
       this.#opening = null;
@@ -198,7 +216,7 @@ export declare namespace Document {
      */
     create?(name: string, signal?: AbortSignal): Promise<Document>;
   }
-  /** A revision belongs to one live document owner; a recreated owner has a new epoch. */
+  /** Which state of one document: a document opened again starts a new epoch. */
   interface Version {
     readonly epoch: string;
     readonly revision: number;

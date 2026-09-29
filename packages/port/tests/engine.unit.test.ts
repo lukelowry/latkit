@@ -12,7 +12,7 @@ import {
   serveEngine,
   serveModel,
 } from '../src/index.js';
-import { ended, Fixture, fixture, FRAMES, Scripted, settle } from './fixture.js';
+import { ended, Fixture, fixture, FRAMES, kept, Scripted, settle } from './fixture.js';
 
 const SIMULATION: Engine.Study = {
   id: 'simulation',
@@ -31,14 +31,31 @@ const SWEEP: Engine.Study = {
   parameters: [{ id: 'bus', kind: 'element', classId: 'bus', label: 'Bus', each: true }],
 };
 
+const IMPORT: Engine.Study = {
+  id: 'import',
+  label: 'Import',
+  parameters: [{ id: 'results', kind: 'file', label: 'Results', extensions: ['arrow'] }],
+};
+
+/** Both of the buses at one frame. */
+const WINDOW = { frameOffset: 0, frameCount: 1, elementOffset: 0, elementCount: 2 };
+
+/** A file's text, read as its stream gives it. */
+async function textOf(file: Engine.File): Promise<string> {
+  const reader = file.stream().getReader();
+  let text = '';
+  for (let read = await reader.read(); !read.done; read = await reader.read())
+    text += new TextDecoder().decode(read.value);
+  return text;
+}
+
 /** A scripted engine that reads a saved file's text as an end time. */
 class Reader extends Scripted {
   readonly files: string[] = [];
 
-  read(model: Model, file: Engine.File): Promise<Engine.Input> {
+  async read(model: Model, file: Engine.File): Promise<Engine.Input> {
     this.files.push(`${model.name}: ${file.name}`);
-    const tmax = Number(new TextDecoder().decode(file.bytes));
-    return Promise.resolve({ study: 'simulation', values: { tmax } });
+    return { study: 'simulation', values: { tmax: Number(await textOf(file)) } };
   }
 }
 
@@ -62,9 +79,7 @@ describe('engine service', () => {
     const remote = await connectEngine(engineClient);
     const opens = source.mock.calls.length;
 
-    const heard: string[] = [];
     const recording = remote.record(model, { app: 'dynamic' }, { id: 'study', label: 'Study' });
-    recording.on('change', () => heard.push(`${recording.state.status}:${recording.state.ahead}`));
     await ended(recording);
     expect(engine.inputs).toEqual([{ app: 'dynamic' }]);
     expect(engine.models).toEqual([served]);
@@ -85,7 +100,6 @@ describe('engine service', () => {
       error: null,
     });
     expect(recording.log).toEqual([{ level: 'warn', message: 'step halved' }]);
-    expect(heard).toContain('waiting:2');
     expect([...recording.series('bus')!.state.ranges!]).toEqual([1, 2]);
   });
 
@@ -131,42 +145,134 @@ describe('engine service', () => {
     await expect(kept.bytes()).rejects.toThrow('the model is no longer lent');
   });
 
-  it('hands a recording’s frames over without a copy, and leaves the caller its input', async () => {
+  it('keeps a recording’s frames where the engine runs, a window crossing when read', async () => {
     const [server, client] = loopback();
-    const transfers: ArrayBuffer[][] = [];
+    const posted: { svc: string; kind: string; body?: object }[] = [];
     const spied = {
       ...server,
-      post: (message: unknown, transfer: readonly ArrayBuffer[] = []) => {
-        transfers.push([...transfer]);
+      post: (message: unknown, transfer?: readonly ArrayBuffer[]) => {
+        posted.push(message as (typeof posted)[number]);
         server.post(message, transfer);
       },
     };
-    const time = Float64Array.of(0);
-    const values = Float32Array.of(3, 4);
-    serveEngine(spied, new Scripted(async (recorder) => recorder.append(time, { bus: values })));
-    const clientTransfers: ArrayBuffer[][] = [];
-    const remote = await connectEngine({
-      ...client,
-      post: (message: unknown, transfer: readonly ArrayBuffer[] = []) => {
-        clientTransfers.push([...transfer]);
-        client.post(message, transfer);
-      },
-    });
+    const store = kept();
+    const engine = new Scripted(
+      async (recorder) => recorder.append(Float64Array.of(0), { bus: Float32Array.of(3, 4) }),
+      { store: () => store },
+    );
+    serveEngine(spied, engine);
+    const remote = await connectEngine(client);
     const input = { edits: Uint8Array.of(1, 2, 3) };
     const recording = remote.record(fixture(), input);
     await ended(recording);
-    expect(transfers.flat()).toEqual(expect.arrayContaining([time.buffer, values.buffer]));
     expect(input.edits.byteLength).toBe(3);
     expect(recording.state.frameCount).toBe(1);
-    const block = await recording.series('bus')!.read(0, {
-      frameOffset: 0,
-      frameCount: 1,
-      elementOffset: 0,
-      elementCount: 2,
-    });
+    const changes = posted.filter(({ svc, kind }) => svc === 'engine:record' && kind === 'yield');
+    expect(changes.length).toBeGreaterThan(0);
+    expect(changes.every(({ body }) => !('values' in body!))).toBe(true);
+    const block = await recording.series('bus')!.read(0, WINDOW);
     expect([...block.values]).toEqual([3, 4]);
-    // Only the lent core crossed from this side, handed over.
-    expect(clientTransfers.flat()).toHaveLength(1);
+    expect(posted.some(({ svc, kind }) => svc === 'engine:runs' && kind === 'reply')).toBe(true);
+    recording.close();
+    await vi.waitFor(() => expect(store.closed).toBe(true));
+  });
+
+  it('lets each recording go once its peer closes it, and every one with the port', async () => {
+    const [server, client] = loopback();
+    const stores: ReturnType<typeof kept>[] = [];
+    serveEngine(
+      server,
+      new Scripted(
+        async (recorder) =>
+          recorder.append(FRAMES.time.slice(), { bus: FRAMES.values.bus.slice() }),
+        {
+          concurrency: 2,
+          store: () => stores[stores.push(kept()) - 1]!,
+        },
+      ),
+    );
+    const remote = await connectEngine(client);
+    const [first, second] = [remote.record(fixture(), null), remote.record(fixture(), null)];
+    await Promise.all([ended(first), ended(second)]);
+    const runs = connect(client, protocol<unknown, unknown>('engine:runs'));
+    await expect(
+      runs.call({ op: 'read', run: 9, classId: 'bus', signalIndex: 0, window: WINDOW }),
+    ).rejects.toThrow('run 9 was let go');
+    first.close();
+    await vi.waitFor(() => expect(stores.map((store) => store.closed)).toEqual([true, false]));
+    await expect(
+      runs.call({ op: 'read', run: 1, classId: 'bus', signalIndex: 0, window: WINDOW }),
+    ).rejects.toThrow('run 1 was let go');
+    expect([...(await second.series('bus')!.read(0, WINDOW)).values]).toEqual([1, 2]);
+    remote.close();
+    await vi.waitFor(() => expect(stores.map((store) => store.closed)).toEqual([true, true]));
+  });
+
+  it('lends each file its input gives, its bytes crossing only as the engine reads them', async () => {
+    const [server, client] = loopback();
+    serveEngine(
+      server,
+      new Scripted(
+        async (recorder, input) => {
+          const file = (input as Engine.Input).values['results'] as Engine.File;
+          const middle = new TextDecoder().decode(await file.slice(1, 3).arrayBuffer());
+          recorder.log('info', `${file.name} ${file.size}: ${await textOf(file)} ${middle}`);
+        },
+        { studies: [IMPORT] },
+      ),
+    );
+    const remote = await connectEngine(client);
+    const file = new File(['abcd'], 'run.arrow');
+    const sliced = vi.spyOn(file, 'slice');
+    const recording = remote.record(fixture(), { study: 'import', values: { results: file } });
+    await ended(recording);
+    expect(recording.state.error).toBeNull();
+    expect(recording.log).toEqual([{ level: 'info', message: 'run.arrow 4: abcd bc' }]);
+    expect(sliced.mock.calls).toEqual([
+      [1, 3],
+      [0, 4],
+    ]);
+  });
+
+  it('preserves browser file slice semantics across a port', async () => {
+    const [server, client] = loopback();
+    const bounds = [
+      [-2, 4],
+      [0, -1],
+      [1.8, 3.9],
+      [NaN, Infinity],
+      [-Infinity, 2],
+      [3, 1],
+      [0.5, 2.5],
+      [1.5, 3.5],
+      [-2.5, 4],
+      [-1.5, 4],
+    ];
+    const file = new File(['abcd'], 'run.arrow');
+    // File API [Clamp] results, also checked in Chrome. Older Node 24 releases
+    // truncate these bounds, so their File.slice cannot be the test oracle.
+    const expected = ['cd', 'abc', 'cd', 'abcd', 'ab', '', 'ab', 'cd', 'cd', 'cd'];
+    serveEngine(
+      server,
+      new Scripted(
+        async (recorder, input) => {
+          const remoteFile = (input as Engine.Input).values['results'] as Engine.File;
+          for (const [start, end] of bounds)
+            recorder.log(
+              'info',
+              new TextDecoder().decode(await remoteFile.slice(start!, end!).arrayBuffer()),
+            );
+        },
+        { studies: [IMPORT] },
+      ),
+    );
+    const remote = await connectEngine(client);
+    const recording = remote.record(fixture(), { study: 'import', values: { results: file } });
+    await ended(recording);
+    expect(recording.state.error).toBeNull();
+    expect(recording.log.map(({ message }) => message)).toEqual(expected);
+    recording.close();
+    remote.close();
   });
 
   it('fails a recording with why the served engine refused its input or failed', async () => {
@@ -231,8 +337,8 @@ describe('engine service', () => {
     const remote = await connectEngine(client);
     const first = remote.record(fixture(), 1);
     const second = remote.record(fixture(), 2);
+    await vi.waitFor(() => expect(first.state.status).toBe('recording'));
     await vi.waitFor(() => expect(second.state).toMatchObject({ status: 'waiting', ahead: 0 }));
-    expect(first.state.status).toBe('recording');
     finish.shift()!();
     await ended(first);
     await vi.waitFor(() => expect(second.state.status).toBe('recording'));
@@ -241,26 +347,10 @@ describe('engine service', () => {
     expect(second.state.status).toBe('complete');
   });
 
-  it('awaits the port drain between recorder calls, so backpressure reaches the wire', async () => {
-    const [server, client] = loopback();
-    const drain = vi.fn(async () => {});
-    serveEngine(
-      { ...server, drain },
-      new Scripted(async (recorder) => {
-        recorder.log('info', 'a');
-        recorder.log('info', 'b');
-      }),
-    );
-    await ended((await connectEngine(client)).record(fixture(), null));
-    // Start, two lines: three calls, each awaited before the next crosses.
-    expect(drain).toHaveBeenCalledTimes(3);
-  });
-
-  it('tells an engine it is not ready while its calls wait on the port', async () => {
+  it('sends a slow peer what changed since it last caught up, whatever the engine did between', async () => {
     const [server, client] = loopback();
     let release!: () => void;
     let blocked = true;
-    const readiness: boolean[] = [];
     serveEngine(
       {
         ...server,
@@ -269,20 +359,16 @@ describe('engine service', () => {
       },
       new Scripted(async (recorder: Engine.Recorder) => {
         for (let i = 0; i < 40; i++) recorder.log('info', String(i));
-        let ready = false;
-        void recorder.ready.then(() => (ready = true));
         await settle();
-        readiness.push(ready);
         blocked = false;
         release();
-        await recorder.ready;
-        readiness.push(true);
       }),
     );
     const recording = (await connectEngine(client)).record(fixture(), null);
     await ended(recording);
-    expect(readiness).toEqual([false, true]);
-    expect(recording.log).toHaveLength(40);
+    expect(recording.log.map(({ message }) => message)).toEqual(
+      Array.from({ length: 40 }, (_, i) => String(i)),
+    );
   });
 
   it('serves an engine that is still opening, and refuses a connection to one that cannot', async () => {
@@ -306,22 +392,30 @@ describe('engine service', () => {
     serveEngine(server, new Scripted(async () => {}));
     const raw = connect(client, protocol<unknown, unknown>('engine:record'));
     const stream = (request: unknown) => raw.stream(request)[Symbol.asyncIterator]().next();
-    await expect(stream({ input: 1 })).rejects.toThrow(
+    await expect(stream({ input: 1, lent: 1 })).rejects.toThrow(
+      'engine:record request.run must be a nonnegative safe integer',
+    );
+    await expect(stream({ run: 1, input: 1 })).rejects.toThrow(
       'engine:record request.lent must be a nonnegative safe integer',
     );
-    await expect(stream({ input: 1, lent: 1, home: 5 })).rejects.toThrow(
+    await expect(stream({ run: 1, input: 1, lent: 1, home: 5 })).rejects.toThrow(
       'engine:record request.home must be a string',
     );
     await expect(stream('record')).rejects.toThrow('engine:record request must be an object');
+    const runs = connect(client, protocol<unknown, unknown>('engine:runs'));
+    await expect(runs.call({ op: 'read', run: 1, classId: 'bus', signalIndex: 0 })).rejects.toThrow(
+      'engine:runs request.window must be an object',
+    );
+    await expect(runs.call({ op: 'release', run: 1 })).resolves.toBeUndefined();
     const asks = connect(client, protocol<unknown, unknown>('engine:studies'));
     await expect(asks.call({ op: 'list' })).rejects.toThrow(
       'engine:studies request.op must be one of studies, read',
     );
     await expect(asks.call({ op: 'read', file: { name: 'a' }, lent: 1 })).rejects.toThrow(
-      'engine:studies request.file.bytes must be a Uint8Array',
+      'engine:studies request.file.lent must be a nonnegative safe integer',
     );
     await expect(
-      asks.call({ op: 'read', file: { name: 'a', bytes: Uint8Array.of(1) }, lent: 1 }),
+      asks.call({ op: 'read', file: { lent: 2, name: 'a', size: 1 }, lent: 1 }),
     ).rejects.toThrow('the served engine reads no files');
   });
 
@@ -435,13 +529,11 @@ describe('engine service', () => {
     const reader = new Reader(async () => {}, { studies: [SIMULATION] });
     serveEngine(server, reader);
     const remote = await connectEngine(client);
-    const bytes = new TextEncoder().encode('7');
-    expect(await remote.read!(fixture('Local'), { name: 'saved.json', bytes })).toEqual({
+    expect(await remote.read!(fixture('Local'), new File(['7'], 'saved.json'))).toEqual({
       study: 'simulation',
       values: { tmax: 7 },
     });
     expect(reader.files).toEqual(['Local: saved.json']);
-    expect(bytes.byteLength).toBe(1);
 
     const [plainServer, plainClient] = loopback();
     serveEngine(plainServer, new Scripted(async () => {}));
