@@ -280,10 +280,13 @@ function borrowedFile(
     name,
     size,
     slice(start, end) {
-      // Match File/Blob slicing, including negative offsets and fractional bounds.
+      // File API uses Web IDL [Clamp]: round to nearest, ties to even. Clamp to the
+      // file's extent first, since every offset beyond it selects the same endpoint.
       const offset = (value: number): number => {
-        const integer = Number.isFinite(value) ? Math.trunc(value) : 0;
-        return integer < 0 ? Math.max(size + integer, 0) : Math.min(integer, size);
+        const bounded = Number.isNaN(value) ? 0 : Math.max(-size, Math.min(value, size));
+        const floor = Math.floor(bounded);
+        const integer = bounded - floor === 0.5 ? floor + Math.abs(floor % 2) : Math.round(bounded);
+        return integer < 0 ? size + integer : integer;
       };
       const from = offset(start);
       const to = Math.max(from, offset(end));

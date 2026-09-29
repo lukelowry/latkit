@@ -243,13 +243,15 @@ describe('engine service', () => {
       [NaN, Infinity],
       [-Infinity, 2],
       [3, 1],
+      [0.5, 2.5],
+      [1.5, 3.5],
+      [-2.5, 4],
+      [-1.5, 4],
     ];
     const file = new File(['abcd'], 'run.arrow');
-    const expected = await Promise.all(
-      bounds.map(async ([start, end]) =>
-        new TextDecoder().decode(await file.slice(start!, end!).arrayBuffer()),
-      ),
-    );
+    // File API [Clamp] results, also checked in Chrome. Older Node 24 releases
+    // truncate these bounds, so their File.slice cannot be the test oracle.
+    const expected = ['cd', 'abc', 'cd', 'abcd', 'ab', '', 'ab', 'cd', 'cd', 'cd'];
     serveEngine(
       server,
       new Scripted(
