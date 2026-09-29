@@ -105,3 +105,20 @@ Run `pnpm --filter @latkit/monitor-example dev` and open
 float64 normalization, clipping, nonlinear palettes, gaps, and focus opacity. It also captures
 WebGPU validation errors. These complement the unit tests for read budgets, append scheduling,
 and cancellation.
+
+## Video export
+
+`snapshot()` captures a portable renderer-owned `Scene`: static data and style are copied; series remain borrowed. Pass snapshots to `@latkit/video`, which owns the worker, sample reads, rendering, and encoding.
+
+```ts
+import { exportVideo } from '@latkit/video';
+
+const video = await exportVideo({
+  views: [monitor.snapshot()],
+  timeRange: [0, 10],
+  width: 1920,
+  height: 1080,
+});
+```
+
+See [the video package](../video/README.md) for composition, streamed output, cancellation, and snapshot semantics. Advanced hosts can render a `Scene` against a `RenderTarget` through `createMonitorRenderer`; normal applications use `exportVideo`.

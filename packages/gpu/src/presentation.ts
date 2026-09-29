@@ -1,10 +1,13 @@
 /// <reference types="@webgpu/types" />
+import type { RenderTarget } from './target.js';
 
 /** Canvas types accepted by a WebGPU presentation context. */
 export type PresentationCanvas = GPUCanvasContext['canvas'];
 
 /** A configured WebGPU canvas binding. */
-export interface Presentation<TCanvas extends PresentationCanvas = PresentationCanvas> {
+export interface Presentation<
+  TCanvas extends PresentationCanvas = PresentationCanvas,
+> extends RenderTarget {
   /** Borrowed canvas configured by this presentation binding. */
   readonly canvas: TCanvas;
   /** Borrowed device used to configure the canvas. */
@@ -153,6 +156,13 @@ export function createPresentation<TCanvas extends PresentationCanvas>(
   let destroyed = false;
 
   return {
+    get width() {
+      return canvas.width;
+    },
+    get height() {
+      return canvas.height;
+    },
+    texture: () => context.getCurrentTexture(),
     canvas,
     device,
     context,

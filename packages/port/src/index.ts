@@ -26,3 +26,5 @@ export { connectEngine, serveEngine } from './engine.js';
 export { connectRecording, serveRecording } from './recording.js';
 
 export { connectDocument, serveDocument } from './document.js';
+
+export { serveSeries, connectSeries } from './series.js';

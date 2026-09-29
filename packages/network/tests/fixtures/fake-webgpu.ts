@@ -215,6 +215,13 @@ export function makeFakeGpu(
       context,
       device: device as unknown as GPUDevice,
       format: 'bgra8unorm',
+      get width() {
+        return canvas.width;
+      },
+      get height() {
+        return canvas.height;
+      },
+      texture: () => context.getCurrentTexture(),
       resize: vi.fn(),
       observe: vi.fn((listener: (width: number, height: number, pixelRatio: number) => void) => {
         listener(canvas.width, canvas.height, 1);

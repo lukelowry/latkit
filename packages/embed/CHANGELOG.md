@@ -1,5 +1,14 @@
 # @latkit/embed
 
+## 0.11.4
+
+### Patch Changes
+
+- Updated dependencies
+  - @latkit/model@0.10.1
+  - @latkit/network@0.12.0
+  - @latkit/monitor@0.6.0
+
 ## 0.11.3
 
 ### Patch Changes

@@ -89,35 +89,20 @@ describe('Renderer resource lifecycle', () => {
     renderer.destroy();
   });
 
-  it('selects 1x pipelines by default on huge device-pixel screens', async () => {
-    vi.stubGlobal('screen', { width: 4000, height: 2400 });
-    vi.stubGlobal('devicePixelRatio', 1);
-    const h = makeFakeGpu();
-
+  it('selects 1x pipelines on large render targets without browser globals', async () => {
+    const h = makeFakeGpu({ width: 4000, height: 2400 });
     const renderer = new Renderer(h.presentation);
     await flushGpuPromises();
-
     expect(h.device.renderPipelines[0]?.multisample?.count).toBe(1);
     renderer.destroy();
   });
 
-  it("uses the canvas window's display for automatic multisampling", async () => {
-    vi.stubGlobal('screen', { width: 100, height: 100 });
-    vi.stubGlobal('devicePixelRatio', 1);
+  it('keeps 4x multisampling on a small target regardless of the host screen', async () => {
+    vi.stubGlobal('screen', { width: 8000, height: 4000 });
     const h = makeFakeGpu();
-    Object.assign(h.canvas, {
-      ownerDocument: {
-        defaultView: {
-          screen: { width: 2000, height: 1000 },
-          devicePixelRatio: 2,
-        },
-      },
-    });
-
     const renderer = new Renderer(h.presentation);
     await flushGpuPromises();
-
-    expect(h.device.renderPipelines[0]?.multisample?.count).toBe(1);
+    expect(h.device.renderPipelines[0]?.multisample?.count).toBe(4);
     renderer.destroy();
   });
 

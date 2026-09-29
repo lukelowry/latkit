@@ -45,7 +45,8 @@ import { routePreview } from './route/orthogonal.js';
 import { Scene } from './scene.js';
 import type { Shade, ShadeFrame } from './shade.js';
 import { Atlas, canvasRasterizer, type Rasterizer } from './text/atlas.js';
-import { Labels } from './text/labels.js';
+import { Labels, textRuns } from './text/labels.js';
+import type { Scene as SceneSnapshot } from './snapshot.js';
 import {
   createMirrors,
   layoutBases,
@@ -216,6 +217,8 @@ function checkCamera(camera: Partial<Camera>): Partial<Pose> | null {
  * what the user draws, moves, or deletes arrives as a proposal event.
  */
 export interface Diagram {
+  /** Copy this view for rendering independently; series remain borrowed. */
+  snapshot(): SceneSnapshot;
   /** Whether a canvas is bound and rendering. */
   readonly attached: boolean;
   /** The canvas bound or binding, or null. */
@@ -1560,6 +1563,23 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
 
   /** Public controller facade; every change is a repaint away from the canvas. */
   const api: Diagram = {
+    snapshot() {
+      if (!scene.prepared) throw new Error('Load a diagram before taking a snapshot');
+      for (const glyph of textRuns(scene.prepared).graphemes) atlas.cell(glyph);
+      const { devices: _devices, colormap: _colormap, ...style } = opts;
+      return {
+        kind: 'diagram',
+        netlist: structuredClone(scene.prepared.netlist),
+        channels: { ...channels.snapshot(), blockPosition: { values: scene.positions.slice() } },
+        options: { ...structuredClone(style), motion: reduced() ? 'reduce' : 'full' },
+        colormap: colormapLut.slice(),
+        camera: api.getCamera(),
+        viewport: [frameVp.w, frameVp.h],
+        selected: [...focus.selection].map(partOf),
+        glyphs: atlas.snapshot(),
+        ...(shade ? { shade: { wgsl: shade.wgsl, uniforms: uniforms.host.slice() } } : {}),
+      };
+    },
     get attached() {
       return binding !== null;
     },

@@ -226,3 +226,18 @@ describe('canvasRasterizer', () => {
     ]);
   });
 });
+
+it('restores a sealed snapshot without rasterizing or sharing pixels', () => {
+  const atlas = new Atlas(
+    { draw: (_text, _font, width, height) => new Uint8ClampedArray(width * height).fill(255) },
+    'monospace',
+  );
+  const cell = atlas.cell('A');
+  const snapshot = atlas.snapshot();
+  const restored = Atlas.from(snapshot);
+  expect(restored.cell('A')).toBe(cell);
+  expect(restored.pixels).toEqual(atlas.pixels);
+  snapshot.pixels.fill(0);
+  expect(restored.pixels).toEqual(atlas.pixels);
+  expect(restored.cell('unknown')).toBe(0);
+});

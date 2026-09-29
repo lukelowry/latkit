@@ -485,3 +485,20 @@ plants beside 900.
 shows. A picker iterates `Object.keys(CHANNELS)` and reads `scope`, `map`, `normalized`,
 `components`, and `series`; a settings form iterates `OPTIONS` and reads each entry's `kind`, `default`, and
 `live`.
+
+## Video export
+
+`snapshot()` captures a portable renderer-owned `Scene`: static data and style are copied; series remain borrowed. Pass snapshots to `@latkit/video`, which owns the worker, sample reads, rendering, and encoding.
+
+```ts
+import { exportVideo } from '@latkit/video';
+
+const video = await exportVideo({
+  views: [diagram.snapshot()],
+  timeRange: [0, 10],
+  width: 1920,
+  height: 1080,
+});
+```
+
+See [the video package](../video/README.md) for composition, streamed output, cancellation, and snapshot semantics. Advanced hosts can render a `Scene` against a `RenderTarget` through `createDiagramRenderer`; normal applications use `exportVideo`.

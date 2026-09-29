@@ -33,6 +33,17 @@ interface Following {
   readonly signal: number;
 }
 
+/** A channel binding, with copied static values and borrowed series. */
+export interface ChannelBinding {
+  readonly values:
+    Float32Array | Float64Array | { readonly series: Series; readonly signal: number };
+  readonly domain?: Domain | null;
+}
+/** Bindings retained in a scene snapshot. */
+export type ChannelBindings<Channel extends string> = Readonly<
+  Partial<Record<Channel, ChannelBinding>>
+>;
+
 /** A renderer's channels: a slot each, bound or following, and the domains they map through. */
 export interface Channels<Channel extends string, Scope extends string> {
   /** Float words the slots take in the store; the windows of followed series come after them. */
@@ -68,6 +79,10 @@ export interface Channels<Channel extends string, Scope extends string> {
    * @throws RangeError when `time` is not finite.
    */
   seek(time: number): void;
+  /** Await the samples selected at time. */
+  prepare(time: number, signal?: AbortSignal): Promise<void>;
+  /** Copy static bindings and domains; series remain borrowed. */
+  snapshot(): ChannelBindings<Channel>;
   /**
    * Override the domain of a normalized channel, or return to its own with null; a raw channel
    * ignores it.
@@ -347,6 +362,18 @@ export function createChannels<Channel extends string, Scope extends string>(spe
       return true;
     },
     seek: (time) => playback.seek(time),
+    prepare: (time, signal) => playback.prepare(time, signal),
+    snapshot() {
+      return Object.fromEntries(
+        [...bound].map(([channel, entry]) => [
+          channel,
+          {
+            values: entry.following ? { ...entry.following } : entry.own.slice(),
+            domain: (overrides.get(channel) ?? entry.data)?.slice() ?? null,
+          },
+        ]),
+      ) as ChannelBindings<Channel>;
+    },
     setDomain(channel, domain) {
       if (!definitionOf(channel).normalized) return;
       const previous = overrides.get(channel) ?? null;

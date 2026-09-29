@@ -27,3 +27,6 @@ export { spotlight } from './shades/spotlight.js';
 /** Geographic border overlay payload, and the packaged one. */
 export type { Borders } from './borders/index.js';
 export { loadBorders } from './borders/load.js';
+
+export type { Scene } from './snapshot.js';
+export { createNetworkRenderer } from './render.js';

@@ -4,6 +4,8 @@ struct Composite {
   scale: vec2f,
   offset: vec2f,
   opacity: f32,
+  cursor: f32,
+  pixel: f32,
 };
 @group(0) @binding(0) var history: texture_2d<f32>;
 @group(0) @binding(1) var focus: texture_2d<f32>;
@@ -23,5 +25,7 @@ struct VSOut {
   if (any(uv < vec2f(0.0)) || any(uv > vec2f(1.0))) { return vec4f(0.0); }
   let h = textureSampleLevel(history, image_samp, uv, 0.0) * U.opacity;
   let f = textureSampleLevel(focus, image_samp, uv, 0.0);
-  return f + h * (1.0 - f.a);
+  let image = f + h * (1.0 - f.a);
+  let cursor = select(0.0, 0.8, U.cursor >= 0.0 && U.cursor <= 1.0 && abs(in.uv.x - U.cursor) < U.pixel);
+  return vec4f(vec3f(cursor) + image.rgb * (1.0 - cursor), cursor + image.a * (1.0 - cursor));
 }

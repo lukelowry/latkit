@@ -1,3 +1,4 @@
+import type { Scene as SceneSnapshot } from './snapshot.js';
 /// <reference types="@webgpu/types" />
 
 import type { Domain, Model, Series } from '@latkit/model';
@@ -181,6 +182,8 @@ export type Events = {
  * every state for the next attach. The controller never removes a canvas or destroys a device.
  */
 export interface Network {
+  /** Capture an owned scene description, borrowing only series data. */
+  snapshot(): SceneSnapshot;
   /**
    * The projection the camera shows, known before any canvas has a size: the last one
    * {@link Network.setCamera} switched to, `'flat'` before any. An orbit from flat tilts it, and a
@@ -703,6 +706,7 @@ interface Binding {
 /** Creates the controller: every state lives here, and a binding borrows it for one attach. */
 function createNetworkController(options: ResolvedOptions, deps: ControllerDeps): Network {
   const events = createEmitter<Events>();
+  let snapshotOptions: Options = {};
   const uniforms = createUniforms();
   const rig = new deps.CameraRig(uniforms.camera);
   const daylight = createDaylight(uniforms.light);
@@ -1326,6 +1330,30 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
 
   /** Public controller facade; all methods keep state changes behind repaint gates. */
   const api: Network = {
+    snapshot() {
+      if (!topology) throw new DOMException('No network is loaded', 'InvalidStateError');
+      const { devices: _devices, colormap: _colormap, ...style } = snapshotOptions;
+      style.sunTime ??= Date.now();
+      const view = vp();
+      return {
+        kind: 'network',
+        topology: structuredClone(topology),
+        channels: channels.snapshot(),
+        camera: api.getCamera(),
+        viewport: [view.w, view.h],
+        options: structuredClone(style),
+        colormap: (colormapLut ?? bakeColormap(options.colormap)).slice(),
+        borders: borders ? structuredClone(borders) : null,
+        orbit: orbit.active,
+        selected:
+          focus.selectedVertex >= 0
+            ? { kind: 'vertex', index: focus.selectedVertex }
+            : focus.selectedEdge >= 0
+              ? { kind: 'edge', index: focus.selectedEdge }
+              : null,
+        shade: shade ? { wgsl: shade.wgsl, uniforms: uniforms.host.slice() } : undefined,
+      };
+    },
     get projection() {
       return rig.mode;
     },
@@ -1816,6 +1844,17 @@ function createNetworkController(options: ResolvedOptions, deps: ControllerDeps)
       opts.colormap && (!initial || opts.colormap !== DEFAULT_OPTIONS.colormap)
         ? bakeColormap(opts.colormap)
         : null;
+    snapshotOptions = {
+      ...snapshotOptions,
+      ...Object.fromEntries(
+        Object.entries(opts)
+          .filter(([, value]) => value !== undefined)
+          .map(([key, value]) => [
+            key,
+            Array.isArray(value) ? [...(value as readonly unknown[])] : value,
+          ]),
+      ),
+    };
     if (lut) {
       colormapLut = lut;
       binding?.renderer.writeColormap(lut);

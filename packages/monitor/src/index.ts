@@ -12,3 +12,6 @@ export type { Events, Monitor, Reading } from './monitor.js';
 
 export { OPTIONS, validateOptions } from './options.js';
 export type { Options } from './options.js';
+
+export type { Scene } from './snapshot.js';
+export { createMonitorRenderer } from './render.js';

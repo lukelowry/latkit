@@ -1,3 +1,4 @@
+import type { Scene } from './snapshot.js';
 /// <reference types="@webgpu/types" />
 import {
   createAttachment,
@@ -62,6 +63,8 @@ export type Events = {
 };
 /** A durable view of one signal. Borrows its series and canvas; owns renderer resources. */
 export interface Monitor {
+  /** Capture display settings and the borrowed signal binding. */
+  snapshot(): Scene;
   readonly attached: boolean;
   /** The canvas bound or binding, or null. */
   readonly canvas: HTMLCanvasElement | null;
@@ -392,6 +395,26 @@ export function createMonitor(options: Options = {}): Monitor {
   }
 
   const api: Monitor = {
+    snapshot() {
+      if (!series) throw new DOMException('No monitor series is loaded', 'InvalidStateError');
+      const { devices: _devices, colormap: _colormap, ...style } = settings;
+      return {
+        kind: 'monitor',
+        series,
+        signal: signalIndex,
+        options: structuredClone(style),
+        colormap: colormapLut.slice(),
+        selected,
+        ...(binding
+          ? {
+              viewport: [
+                binding.canvas.width / binding.backingScale,
+                binding.canvas.height / binding.backingScale,
+              ] as const,
+            }
+          : {}),
+      };
+    },
     get attached() {
       return binding !== null;
     },

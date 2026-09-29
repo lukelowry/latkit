@@ -34,6 +34,8 @@ export interface Playback<Key> {
    * @throws RangeError when `time` is not finite.
    */
   seek(time: number): void;
+  /** Await the samples at time; concurrent seeks supersede this preparation. */
+  prepare(time: number, signal?: AbortSignal): Promise<void>;
   /** Write every window into the store again, as into one just created. */
   upload(): void;
   /** Stop following for every key and forget every window, as for a new layout of the store. */
@@ -73,6 +75,7 @@ interface Bound<Key> {
   loading: AbortController | null;
   /** A read failed; nothing is read again until the series changes or a key follows it anew. */
   failed: boolean;
+  failure?: unknown;
   off: () => void;
 }
 
@@ -140,6 +143,48 @@ export function createPlayback<Key>(spec: {
   /** Words the store must hold: its reserved words and every window. */
   let words = spec.reserved();
   let playhead = -Infinity;
+  const waiting = new Set<() => void>();
+  const notify = (): void => {
+    for (const check of [...waiting]) check();
+  };
+  function seek(time: number): void {
+    if (!Number.isFinite(time)) throw new RangeError('seek time must be finite');
+    playhead = time;
+    for (const [key, bound] of bounds) if (bound.keys[0] === key) show(bound);
+    notify();
+  }
+  function prepare(time: number, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    seek(time);
+    return new Promise<void>((resolve, reject) => {
+      const finish = (error?: unknown): void => {
+        waiting.delete(check);
+        signal?.removeEventListener('abort', aborted);
+        if (error !== undefined)
+          reject(
+            error instanceof Error
+              ? error
+              : new Error('Series preparation failed', { cause: error }),
+          );
+        else resolve();
+      };
+      const aborted = (): void => finish(signal!.reason);
+      const check = (): void => {
+        if (signal?.aborted) return aborted();
+        if (playhead !== time)
+          return finish(new DOMException('Frame preparation was superseded', 'AbortError'));
+        for (const bound of bounds.values()) {
+          if (bound.failed) return finish(bound.failure ?? new Error('Series read failed'));
+          const head = bound.series.state.frameCount;
+          if (head > 0 && slotAt(bound.window, time, head) < 0) return;
+        }
+        finish();
+      };
+      waiting.add(check);
+      signal?.addEventListener('abort', aborted, { once: true });
+      check();
+    });
+  }
 
   const shapeOf = (window: Pick<Window, 'items' | 'capacity'>): string =>
     `${window.items}/${window.capacity}`;
@@ -313,6 +358,7 @@ export function createPlayback<Key>(spec: {
       upload(w, position, count);
       w.count += count;
       show(bound);
+      notify();
     }
   }
 
@@ -334,6 +380,8 @@ export function createPlayback<Key>(spec: {
   function fail(bound: Bound<Key>, job: AbortController, error: unknown): void {
     if (job.signal.aborted || bound.loading !== job) return;
     bound.failed = true;
+    bound.failure = error;
+    notify();
     for (const key of bound.keys) spec.error(key, error);
   }
 
@@ -342,6 +390,7 @@ export function createPlayback<Key>(spec: {
     if (bound.loading !== job) return;
     bound.loading = null;
     if (!job.signal.aborted && !bound.failed) show(bound);
+    notify();
   }
 
   function stop(key: Key): void {
@@ -357,6 +406,7 @@ export function createPlayback<Key>(spec: {
     const windows = idle.get(shape);
     if (windows) windows.push(bound.window);
     else idle.set(shape, [bound.window]);
+    if (waiting.size) queueMicrotask(notify);
   }
 
   /** `key` joins `bound`, shown what it shows, and a failed read is tried again. */
@@ -405,11 +455,8 @@ export function createPlayback<Key>(spec: {
 
     stop,
 
-    seek(time) {
-      if (!Number.isFinite(time)) throw new RangeError('seek time must be finite');
-      playhead = time;
-      for (const [key, bound] of bounds) if (bound.keys[0] === key) show(bound);
-    },
+    seek,
+    prepare,
 
     upload() {
       const store = spec.store();
@@ -421,6 +468,8 @@ export function createPlayback<Key>(spec: {
     },
 
     reset() {
+      playhead = -Infinity;
+      notify();
       for (const key of [...bounds.keys()]) stop(key);
       idle.clear();
       words = spec.reserved();

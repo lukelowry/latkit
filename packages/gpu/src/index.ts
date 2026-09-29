@@ -39,3 +39,7 @@ export type { Options } from './device.js';
 
 /** Configured WebGPU canvas binding. */
 export type { Presentation } from './presentation.js';
+
+export { createRenderTarget } from './target.js';
+export type { RenderTarget, SceneRenderer } from './target.js';
+export type { ChannelBinding, ChannelBindings } from './channels.js';

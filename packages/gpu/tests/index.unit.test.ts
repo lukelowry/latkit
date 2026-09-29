@@ -44,6 +44,7 @@ describe('gpu package entrypoint', () => {
       'createEmitter',
       'createFrameLoop',
       'createPresentation',
+      'createRenderTarget',
       'devices',
       'requestDevice',
     ]);

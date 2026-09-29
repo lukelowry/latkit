@@ -113,8 +113,9 @@ export abstract class Series {
     signal?: AbortSignal,
   ): Promise<Series.Block>;
 
-  /** Publish what it holds now, and tell every listener. */
+  /** Check and publish what it holds now, then tell every listener. */
   protected publish(state: Series.State): void {
+    checkState(state, this.signals.length);
     this.#state = Object.freeze({ ...state });
     this.#changes.emit();
   }
@@ -737,22 +738,7 @@ export function validateSeries(series: Series): void {
   if (!series || typeof series !== 'object') throw new TypeError('series must be an object');
   signalIds(series.signals);
   index(series.elementCount, 'elementCount');
-  const state = series.state as Series.State | undefined;
-  if (!state || typeof state !== 'object') throw new TypeError('series state must be an object');
-  index(state.frameCount, 'frameCount');
-  if (typeof state.live !== 'boolean') throw new TypeError('series live must be a boolean');
-  if (state.timeRange !== null) validateDomain(state.timeRange, 'series timeRange');
-  if ((state.frameCount === 0) !== (state.timeRange === null))
-    throw new RangeError('series timeRange must be null exactly when there are no frames');
-  const ranges = state.ranges;
-  if (ranges !== null) {
-    if (!(ranges instanceof Float64Array) || ranges.length !== series.signals.length * 2)
-      throw new RangeError('series ranges must contain one f64 pair per signal');
-    for (let i = 0; i < ranges.length; i += 2) {
-      if (Number.isNaN(ranges[i]) && Number.isNaN(ranges[i + 1])) continue;
-      validateDomain([ranges[i]!, ranges[i + 1]!], 'series range');
-    }
-  }
+  checkState(series.state, series.signals.length);
   if (series.elements) {
     if (!(series.elements instanceof Uint32Array) || series.elements.length !== series.elementCount)
       throw new RangeError('series elements must contain one class index per stored element');
@@ -762,6 +748,25 @@ export function validateSeries(series: Series): void {
   }
   for (const key of ['read', 'locate', 'on'] as const)
     if (typeof series[key] !== 'function') throw new TypeError(`series.${key} must be a function`);
+}
+
+/** Validate a state before publishing it or accepting a foreign series. */
+function checkState(state: Series.State, signalCount: number): void {
+  if (!state || typeof state !== 'object') throw new TypeError('series state must be an object');
+  index(state.frameCount, 'frameCount');
+  if (typeof state.live !== 'boolean') throw new TypeError('series live must be a boolean');
+  if (state.timeRange !== null) validateDomain(state.timeRange, 'series timeRange');
+  if ((state.frameCount === 0) !== (state.timeRange === null))
+    throw new RangeError('series timeRange must be null exactly when there are no frames');
+  const ranges = state.ranges;
+  if (ranges !== null) {
+    if (!(ranges instanceof Float64Array) || ranges.length !== signalCount * 2)
+      throw new RangeError('series ranges must contain one f64 pair per signal');
+    for (let i = 0; i < ranges.length; i += 2) {
+      if (Number.isNaN(ranges[i]) && Number.isNaN(ranges[i + 1])) continue;
+      validateDomain([ranges[i]!, ranges[i + 1]!], 'series range');
+    }
+  }
 }
 
 /** The signal ids of a series: distinct, non-empty strings, as a frozen copy. */

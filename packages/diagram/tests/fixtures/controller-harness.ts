@@ -185,6 +185,13 @@ function makePresentation(
     device,
     context: { canvas } as unknown as GPUCanvasContext,
     format: 'bgra8unorm',
+    get width() {
+      return canvas.width;
+    },
+    get height() {
+      return canvas.height;
+    },
+    texture: vi.fn<() => GPUTexture>(),
     resize: vi.fn(() => false),
     observe: vi.fn(() => () => {}),
     destroy: vi.fn(),

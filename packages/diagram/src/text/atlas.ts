@@ -4,6 +4,7 @@
  * the cell's texels from `atlas_cols` and `atlas_cell` alone.
  */
 
+import type { Scene } from '../snapshot.js';
 import { GLYPH_WIDE } from '../webgpu/buffers.js';
 import { ADVANCE, isWide, LINE } from './metrics.js';
 import { sdf } from './sdf.js';
@@ -68,6 +69,9 @@ const MAX_HEIGHT = 4096;
 /** The blank cell: all texels zero, far outside every glyph. */
 const BLANK = 0;
 
+/** A copied glyph atlas that preserves text appearance across realms. */
+type AtlasSnapshot = NonNullable<Scene['glyphs']>;
+
 /**
  * The runtime glyph atlas: one SDF cell per grapheme, rasterized on first use into an r8 texture
  * that grows by doubling, with the dirty rows a renderer uploads.
@@ -113,6 +117,28 @@ export class Atlas {
   constructor(rasterizer: Rasterizer | null, fontFamily: string) {
     this.rasterizer = rasterizer;
     this.family = fontFamily;
+  }
+
+  /** Copy pre-rasterized glyphs so another realm preserves the exact font. */
+  snapshot(): AtlasSnapshot {
+    return { fontFamily: this.family, pixels: this.pixels.slice(), cells: [...this.cells] };
+  }
+
+  /** A sealed atlas; unknown glyphs are blank. */
+  static from(snapshot: AtlasSnapshot): Atlas {
+    if (
+      snapshot.pixels.length % WIDTH ||
+      snapshot.pixels.length < WIDTH * MIN_HEIGHT ||
+      snapshot.pixels.length > WIDTH * MAX_HEIGHT
+    ) {
+      throw new RangeError('Invalid diagram glyph atlas');
+    }
+    const atlas = new Atlas(null, snapshot.fontFamily);
+    atlas.pixels = snapshot.pixels.slice();
+    atlas.height = atlas.pixels.length / WIDTH;
+    atlas.dirtyTo = atlas.height;
+    for (const [text, cell] of snapshot.cells) atlas.cells.set(text, cell);
+    return atlas;
   }
 
   /** The font family glyphs are rasterized in. */

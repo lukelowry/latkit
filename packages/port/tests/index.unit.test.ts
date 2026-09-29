@@ -20,6 +20,7 @@ describe('port package entrypoint', () => {
       'connectEngine',
       'connectModel',
       'connectRecording',
+      'connectSeries',
       'describeError',
       'loopback',
       'messagePort',
@@ -29,6 +30,7 @@ describe('port package entrypoint', () => {
       'serveEngine',
       'serveModel',
       'serveRecording',
+      'serveSeries',
       'socketPort',
       'transferred',
     ]);

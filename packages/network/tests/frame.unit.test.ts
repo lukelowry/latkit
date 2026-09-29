@@ -204,6 +204,13 @@ describe('createFrameTick on the shared frame loop', () => {
       device: {} as GPUDevice,
       context: {} as GPUCanvasContext,
       format: 'bgra8unorm',
+      get width() {
+        return canvas.width;
+      },
+      get height() {
+        return canvas.height;
+      },
+      texture: vi.fn<() => GPUTexture>(),
       resize: vi.fn((width: number, height: number) => {
         h.canvas.width = width;
         h.canvas.height = height;

@@ -372,3 +372,55 @@ describe('playback', () => {
     expect(h.shown().offset).toBe(offsetOf(0));
   });
 });
+
+describe('frame preparation', () => {
+  it('waits for delayed reads and exposes the requested sample before resolving', async () => {
+    const h = harness(3),
+      s = series(3, 10);
+    const release = s.hold();
+    h.playback.follow('a', s.series, 0);
+    let ready = false;
+    const pending = h.playback.prepare(4.5).then(() => {
+      ready = true;
+    });
+    await Promise.resolve();
+    expect(ready).toBe(false);
+    release();
+    await pending;
+    expect(h.shown().view).toEqual([40, 41, 42]);
+  });
+  it('rejects a failed source instead of exporting the last successful frame', async () => {
+    const h = harness(3),
+      s = series(3, 10);
+    s.fail(new Error('source failed'));
+    h.playback.follow('a', s.series, 0);
+    await expect(h.playback.prepare(4)).rejects.toThrow('source failed');
+  });
+  it('cancels stalled preparation and allows subsequent seeks', async () => {
+    const h = harness(3),
+      s = series(3, 10);
+    const release = s.hold();
+    h.playback.follow('a', s.series, 0);
+    const abort = new AbortController();
+    const pending = h.playback.prepare(4, abort.signal);
+    abort.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    const superseded = h.playback.prepare(5);
+    const next = h.playback.prepare(6);
+    await expect(superseded).rejects.toMatchObject({ name: 'AbortError' });
+    release();
+    await next;
+    expect(h.shown().view).toEqual([60, 61, 62]);
+  });
+});
+
+it('settles preparation when the last stalled binding is removed', async () => {
+  const h = harness(3),
+    s = series(3, 10);
+  const release = s.hold();
+  h.playback.follow('a', s.series, 0);
+  const pending = h.playback.prepare(4);
+  h.playback.stop('a');
+  await pending;
+  release();
+});

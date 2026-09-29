@@ -303,6 +303,13 @@ function makePresentation(
     device,
     context: { canvas } as unknown as GPUCanvasContext,
     format: 'bgra8unorm',
+    get width() {
+      return canvas.width;
+    },
+    get height() {
+      return canvas.height;
+    },
+    texture: vi.fn<() => GPUTexture>(),
     resize: vi.fn((nextWidth: number, nextHeight: number) => {
       if (destroyed) return false;
       const changed = canvas.width !== nextWidth || canvas.height !== nextHeight;

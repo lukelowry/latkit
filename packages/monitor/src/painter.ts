@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 import type { RGBA } from '@latkit/colormaps';
-import { COLORMAP_LUT_SIZE, type Presentation } from '@latkit/gpu';
+import { COLORMAP_LUT_SIZE, type RenderTarget } from '@latkit/gpu';
 import type { Domain } from '@latkit/model';
 
 import { position } from './position.js';
@@ -45,7 +45,7 @@ export class LanePainter {
   readonly windowValueCapacity: number;
   width: number;
   height: number;
-  readonly #context: GPUCanvasContext;
+  readonly #target: RenderTarget;
   readonly #format: GPUTextureFormat;
   readonly #historyPipeline: GPURenderPipeline;
   readonly #focusPipeline: GPURenderPipeline;
@@ -65,10 +65,10 @@ export class LanePainter {
   #focusGroup: GPUBindGroup | null = null;
   #destroyed = false;
 
-  constructor(presentation: Presentation, width: number, height: number) {
-    const { device, context, format } = presentation;
+  constructor(presentation: RenderTarget, width: number, height: number) {
+    const { device, format } = presentation;
     this.device = device;
-    this.#context = context;
+    this.#target = presentation;
     this.#format = format;
     this.width = width;
     this.height = height;
@@ -281,7 +281,12 @@ export class LanePainter {
    * Composite the shown image, mapped from the ranges it was drawn over into `range` and
    * `domain`.
    */
-  present(alpha = 1, range: Domain | null = null, domain: Domain | null = null): void {
+  present(
+    alpha = 1,
+    range: Domain | null = null,
+    domain: Domain | null = null,
+    cursor: number | null = null,
+  ): void {
     const map = this.#compositeValues,
       shown = this.#shown;
     if (shown.range && shown.domain && range && domain) {
@@ -298,6 +303,8 @@ export class LanePainter {
       map[2] = map[3] = 0;
     }
     map[4] = alpha;
+    map[5] = cursor ?? -1;
+    map[6] = 1 / this.width;
     this.device.queue.writeBuffer(this.#compositeUniform, 0, map);
     this.#compositeGroup ??= this.device.createBindGroup({
       layout: this.#composite.getBindGroupLayout(0),
@@ -312,7 +319,7 @@ export class LanePainter {
     const pass = encoder.beginRenderPass({
       colorAttachments: [
         {
-          view: this.#context.getCurrentTexture().createView(),
+          view: this.#target.texture().createView(),
           clearValue: [0, 0, 0, 0],
           loadOp: 'clear',
           storeOp: 'store',

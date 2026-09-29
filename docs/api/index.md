@@ -11,6 +11,7 @@ The API reference is generated from the published package entrypoints with TypeD
 | [`@latkit/colormaps`](reference/colormaps/index.md) | `RGBA`, `Colormap`, the `COLORMAPS` registry, gradients, and `parseColor`                              |
 | [`@latkit/model`](reference/model/index.md)         | `Model`, `Engine`, and `Document` to subclass, `Recording` and `Series`, and the shapes renderers load |
 | [`@latkit/port`](reference/port/index.md)           | Ports, protocols and their checks, and models, engines, and recordings served across a port            |
+| [`@latkit/video`](reference/video/index.md)         | `exportVideo`, renderer-owned scenes, composition, progress, and streamed output                       |
 
 ## Common entrypoints
 
