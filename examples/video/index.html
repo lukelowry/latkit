@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Latkit video exports</title>
+    <style>
+      body {
+        margin: 32px;
+        background: #101723;
+        color: #e3eaf2;
+        font: 16px system-ui;
+      }
+      button,
+      a {
+        color: inherit;
+      }
+      button {
+        padding: 10px 18px;
+        background: #253952;
+        border: 1px solid #4e6785;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      video {
+        width: min(100%, 960px);
+        display: block;
+        margin: 12px 0;
+      }
+      canvas {
+        width: 640px;
+        height: 400px;
+      }
+      #source {
+        position: absolute;
+        left: -10000px;
+      }
+      pre {
+        white-space: pre-wrap;
+      }
+      article {
+        margin: 32px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Latkit video exports</h1>
+    <p>
+      Network signals, globe orbit, diagram flow, and synchronized monitor history. Rendered and
+      encoded inside the package worker.
+    </p>
+    <button id="export">Export proof videos</button>
+    <pre id="status">Ready</pre>
+    <section id="results"></section>
+    <div id="source"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

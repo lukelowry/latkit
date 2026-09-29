@@ -1,0 +1,44 @@
+{
+  "name": "@latkit/video",
+  "version": "0.1.0",
+  "description": "Deterministic video exports of Latkit network, diagram, and monitor scenes.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lukelowry/latkit.git",
+    "directory": "packages/video"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --project @latkit/video"
+  },
+  "dependencies": {
+    "@latkit/diagram": "workspace:*",
+    "@latkit/gpu": "workspace:*",
+    "@latkit/model": "workspace:*",
+    "@latkit/monitor": "workspace:*",
+    "@latkit/network": "workspace:*",
+    "@latkit/port": "workspace:*",
+    "mediabunny": "^1.60.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.71"
+  }
+}

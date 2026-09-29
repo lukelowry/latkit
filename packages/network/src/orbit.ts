@@ -31,8 +31,8 @@ export interface Orbit {
 /** Frames longer than this (a background tab waking up) advance as if they were this long. */
 const MAX_FRAME_MS = 50;
 /** Screen-space drag rate for planar views, visually matched to the globe drift below. */
-const TILT_PX_PER_MS = 0.02;
-const GLOBE_DEG_PER_MS = 0.008;
+export const TILT_PX_PER_MS = 0.02;
+export const GLOBE_DEG_PER_MS = 0.008;
 
 /** Whether continuous rotation can run: any 3D view, or a flat view whose topology offers tilt. */
 export function canOrbit(view: Pick<OrbitTarget, 'projection' | 'projections'>): boolean {

@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 
-import type { Presentation } from '@latkit/gpu';
+import type { RenderTarget } from '@latkit/gpu';
 import { bakeColormap, COLORMAP_LUT_SIZE } from '@latkit/gpu';
 import {
   UNIFORM_BUFFER_BYTES,
@@ -78,7 +78,7 @@ const MAX_FOCUSED_VERTICES = 6;
  * before replacing the current scene.
  */
 export class Renderer {
-  private readonly presentation: Presentation;
+  private readonly presentation: RenderTarget;
 
   private readonly topologyBindGroupLayout: GPUBindGroupLayout;
   private readonly segmentsBindGroupLayout: GPUBindGroupLayout;
@@ -149,19 +149,14 @@ export class Renderer {
    * Allocates shared layouts, static geometry, uniforms, and the initial projection pipeline
    * build, compiled against `shade` or the identity shade.
    */
-  constructor(presentation: Presentation, msaaSampleCount?: 1 | 4, shade: string | null = null) {
+  constructor(presentation: RenderTarget, msaaSampleCount?: 1 | 4, shade: string | null = null) {
     this.presentation = presentation;
     this.shade = shade ?? DEFAULT_SHADE_WGSL;
     const { device } = presentation;
     // 4x attachments at 4K-class resolutions cost ~265MB; above ~7M device
     // pixels (native 4K, or DPR-2 4K) the analytic shader AA carries 1x.
-    const { canvas } = presentation;
-    const view = 'ownerDocument' in canvas ? canvas.ownerDocument?.defaultView : null;
-    const display = view?.screen ?? (typeof screen === 'undefined' ? undefined : screen);
-    const pixelRatio =
-      view?.devicePixelRatio ?? (typeof devicePixelRatio === 'undefined' ? 1 : devicePixelRatio);
-    const devicePx = display ? display.width * display.height * pixelRatio ** 2 : 0;
-    this.sampleCount = msaaSampleCount ?? (devicePx > 7_000_000 ? 1 : 4);
+    this.sampleCount =
+      msaaSampleCount ?? (presentation.width * presentation.height > 7_000_000 ? 1 : 4);
 
     this.unitQuad = device.createBuffer({
       label: 'unit-quad',
@@ -561,18 +556,16 @@ export class Renderer {
       !this.channelsBindGroup
     )
       return false;
-    const { device, context, canvas } = this.presentation;
+    const { device, width: pw, height: ph } = this.presentation;
     const polesRendered = this.computePolesRendered(uniforms);
 
     device.queue.writeBuffer(this.uniforms, 0, uniforms.raw);
     device.queue.writeBuffer(this.host, 0, uniforms.host);
 
-    const pw = canvas.width,
-      ph = canvas.height;
     this.frameResources.ensureSize(device, this.presentation.format, this.sampleCount, pw, ph);
     const visual = pipelines.visual;
 
-    const swapView = context.getCurrentTexture().createView();
+    const swapView = this.presentation.texture().createView();
     const encoder = device.createCommandEncoder();
 
     this.collectFocusedEdges(uniforms);

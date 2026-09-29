@@ -216,3 +216,7 @@ series appends, so a seek within them rewrites one word per channel.
 lookup texture every renderer's shaders map normalized values through. `createEmitter()` is the
 typed event dispatcher behind every controller's `on`: listeners run in order, and one that throws
 rethrows on a microtask while the rest still run.
+
+## Render targets
+
+`RenderTarget` is a device, format, dimensions, and `texture()` for the next frame. `Presentation` implements it for a canvas; `createRenderTarget(device, width, height)` owns a fixed texture for offscreen composition. Destroy a fixed target after the renderers borrowing it are destroyed. `SceneRenderer.prepare(sourceTime, signal)` waits for channel samples; `draw(outputTimeMs)` advances visual animation. These are the shared primitives used by `@latkit/video`.

@@ -24,3 +24,6 @@ export type { Shade, ShadeFrame } from './shade.js';
 
 /** The diagram's automatic layout, without a device or a DOM. */
 export { arrange } from './layout/index.js';
+
+export type { Scene } from './snapshot.js';
+export { createDiagramRenderer } from './render.js';

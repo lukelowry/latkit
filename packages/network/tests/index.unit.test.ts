@@ -21,6 +21,7 @@ describe('network package entrypoint', () => {
       'OPTIONS',
       'PROJECTIONS',
       'createNetwork',
+      'createNetworkRenderer',
       'loadBorders',
       'spotlight',
       'validateOptions',

@@ -112,6 +112,13 @@ function makeHarness(
     device: {} as GPUDevice,
     context: { canvas } as unknown as GPUCanvasContext,
     format: 'bgra8unorm',
+    get width() {
+      return canvas.width;
+    },
+    get height() {
+      return canvas.height;
+    },
+    texture: vi.fn<() => GPUTexture>(),
     resize,
     // The real observation, so the loop is tested against what a presentation reports.
     observe: (listener) => observeCanvas(element, listener),

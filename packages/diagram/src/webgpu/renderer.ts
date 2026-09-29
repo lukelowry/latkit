@@ -1,6 +1,6 @@
 /// <reference types="@webgpu/types" />
 
-import type { Presentation } from '@latkit/gpu';
+import type { RenderTarget } from '@latkit/gpu';
 import { bakeColormap, COLORMAP_LUT_SIZE } from '@latkit/gpu';
 
 import { DEFAULT_OPTIONS } from '../options.js';
@@ -124,7 +124,7 @@ export class Renderer {
   /** Called when the build a renderer starts with fails; a failed `setShade` rejects instead. */
   onPipelineError?: (cause: unknown) => void;
 
-  private readonly presentation: Presentation<HTMLCanvasElement>;
+  private readonly presentation: RenderTarget;
   private readonly mirrors: Mirrors;
   private readonly sharedLayout: GPUBindGroupLayout;
   private readonly instanceLayout: GPUBindGroupLayout;
@@ -161,11 +161,7 @@ export class Renderer {
    * Allocate the shared layouts, the colormap, and the sampler, and start building every pass
    * against `shadeWgsl`, or the identity shade.
    */
-  constructor(
-    presentation: Presentation<HTMLCanvasElement>,
-    mirrors: Mirrors,
-    shadeWgsl: string | null,
-  ) {
+  constructor(presentation: RenderTarget, mirrors: Mirrors, shadeWgsl: string | null) {
     this.presentation = presentation;
     this.mirrors = mirrors;
     this.shade = shadeWgsl ?? DEFAULT_SHADE_WGSL;
@@ -311,7 +307,7 @@ export class Renderer {
   render(counts: DrawCounts, atlas: AtlasPixels): boolean {
     const pipelines = this.pipelines;
     if (this.destroyed || !pipelines) return false;
-    const { device, context } = this.presentation;
+    const { device } = this.presentation;
     const { shadows } = this;
 
     let rebind = this.upload(shadows.uniforms, true);
@@ -330,7 +326,7 @@ export class Renderer {
       label: 'diagram-frame',
       colorAttachments: [
         {
-          view: context.getCurrentTexture().createView(),
+          view: this.presentation.texture().createView(),
           clearValue: TRANSPARENT,
           loadOp: 'clear',
           storeOp: 'store',

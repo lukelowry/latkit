@@ -18,6 +18,7 @@ describe('diagram package entrypoint', () => {
       'OPTIONS',
       'arrange',
       'createDiagram',
+      'createDiagramRenderer',
       'validateOptions',
     ]);
   });

@@ -189,3 +189,17 @@ handler failure ends it with that error. A reply whose buffers the handler relin
 with `transferred(value, buffers)`, for a reply or for a streamed item alike. Call options
 (`signal`, `progress`, `transfer`) and a handler's shape are stated inline on `call`, `stream`, and
 `serve`.
+
+## Series
+
+`serveSeries` / `connectSeries` expose a standalone `Series` without transferring its sample store. Reads are bounded and borrowed sample buffers are copied before transfer. Closing the connection leaves the source owned by its host.
+
+```ts
+const stop = serveSeries(port, series, { id: 'voltage', snapshot: true });
+const remote = await connectSeries(port, { id: 'voltage', signal });
+const block = await remote.read(0, window, signal);
+remote.close();
+stop();
+```
+
+`snapshot: true` pins the committed prefix at serve time and reports a sealed remote history. Without it, the connection follows appended frames and sealing. A failed live connection stops appends, preserves its last valid state, and rejects subsequent reads and lookups with the original failure. IDs allow multiple histories to share a port.

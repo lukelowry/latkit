@@ -25,6 +25,7 @@ Install only the packages your application needs.
 | [`@latkit/colormaps`](https://www.npmjs.com/package/@latkit/colormaps) | Colors and colormaps: `RGBA`, the catalog, gradients, and a parser  |
 | [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | `Model`, `Engine`, and `Document` to subclass, and their recordings |
 | [`@latkit/port`](https://www.npmjs.com/package/@latkit/port)           | Ports, frames, protocols, and models and engines served across them |
+| [`@latkit/video`](./packages/video)                                    | Worker-based video export of network, diagram, and monitor scenes   |
 
 ## Requirements
 

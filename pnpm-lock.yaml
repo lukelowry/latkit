@@ -136,6 +136,40 @@ importers:
         specifier: ^7.0.0
         version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
 
+  examples/video:
+    dependencies:
+      '@latkit/colormaps':
+        specifier: workspace:*
+        version: link:../../packages/colormaps
+      '@latkit/diagram':
+        specifier: workspace:*
+        version: link:../../packages/diagram
+      '@latkit/model':
+        specifier: workspace:*
+        version: link:../../packages/model
+      '@latkit/monitor':
+        specifier: workspace:*
+        version: link:../../packages/monitor
+      '@latkit/network':
+        specifier: workspace:*
+        version: link:../../packages/network
+      '@latkit/video':
+        specifier: workspace:*
+        version: link:../../packages/video
+    devDependencies:
+      '@webgpu/types':
+        specifier: ^0.1.71
+        version: 0.1.71
+      mediabunny:
+        specifier: ^1.60.0
+        version: 1.60.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^7.0.0
+        version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
+
   packages/colormaps: {}
 
   packages/diagram:
@@ -236,6 +270,34 @@ importers:
       '@latkit/model':
         specifier: workspace:*
         version: link:../model
+
+  packages/video:
+    dependencies:
+      '@latkit/diagram':
+        specifier: workspace:*
+        version: link:../diagram
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../gpu
+      '@latkit/model':
+        specifier: workspace:*
+        version: link:../model
+      '@latkit/monitor':
+        specifier: workspace:*
+        version: link:../monitor
+      '@latkit/network':
+        specifier: workspace:*
+        version: link:../network
+      '@latkit/port':
+        specifier: workspace:*
+        version: link:../port
+      mediabunny:
+        specifier: ^1.60.0
+        version: 1.60.0
+    devDependencies:
+      '@webgpu/types':
+        specifier: ^0.1.71
+        version: 0.1.71
 
 packages:
 
@@ -944,6 +1006,12 @@ packages:
 
   '@types/deep-eql@4.0.2':
     resolution: {integrity: sha512-c9h9dVVMigMPc4bwTvC5dxqtqJZwQPePsWjPlpSOnojbor6pGqdk541lfA7AqFQr5pB1BRdq0juY9db81BwyFw==}
+
+  '@types/dom-mediacapture-transform@0.1.12':
+    resolution: {integrity: sha512-d7/QsLRwF864A5mgIM/YrfiglHoYn7zgCcAoJgW404r+2DwnNr7EBbLnCWpmOMgH8y0te73L1AV6H1bmauaWFw==}
+
+  '@types/dom-webcodecs@0.1.13':
+    resolution: {integrity: sha512-O5hkiFIcjjszPIYyUSyvScyvrBoV3NOEEZx/pMlsu44TKzWNkLVBBxnxJz42in5n3QIolYOcBYFCPZZ0h8SkwQ==}
 
   '@types/esrecurse@4.3.1':
     resolution: {integrity: sha512-xJBAbDifo5hpffDBuHl0Y8ywswbiAp/Wi7Y/GtAgSlZyIABppyurxVueOPE8LUQOxdlgi6Zqce7uoEpqNTeiUw==}
@@ -1675,6 +1743,9 @@ packages:
 
   mdurl@2.0.0:
     resolution: {integrity: sha512-Lf+9+2r+Tdp5wXDXC4PcIBjTDtq4UKjCPMQhKIuzpJNW0b96kVqSwW0bT7FhRSfmAiFYgP+SCRvdrDozfh0U5w==}
+
+  mediabunny@1.60.0:
+    resolution: {integrity: sha512-CRQ/2D+qUF9w2IyjbjTxxSLEG+PeWeD4whb43UpUBpeNomWb/ffn+ngKgqJSPZ+bmO66MX2yBJQITZ6ijfRjug==}
 
   merge2@1.4.1:
     resolution: {integrity: sha512-8q7VEgMJW4J8tcfVPy8g09NcQwZdbwFEqhe/WZkoIzjn/3TGDwtOCYtXGxA3O8tPzpczCCDgv+P2P5y00ZJOOg==}
@@ -2852,6 +2923,12 @@ snapshots:
 
   '@types/deep-eql@4.0.2': {}
 
+  '@types/dom-mediacapture-transform@0.1.12':
+    dependencies:
+      '@types/dom-webcodecs': 0.1.13
+
+  '@types/dom-webcodecs@0.1.13': {}
+
   '@types/esrecurse@4.3.1': {}
 
   '@types/estree@1.0.9': {}
@@ -3696,6 +3773,11 @@ snapshots:
       uc.micro: 2.1.0
 
   mdurl@2.0.0: {}
+
+  mediabunny@1.60.0:
+    dependencies:
+      '@types/dom-mediacapture-transform': 0.1.12
+      '@types/dom-webcodecs': 0.1.13
 
   merge2@1.4.1: {}
 

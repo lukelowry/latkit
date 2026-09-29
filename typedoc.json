@@ -9,7 +9,8 @@
     "packages/diagram",
     "packages/monitor",
     "packages/network",
-    "packages/port"
+    "packages/port",
+    "packages/video"
   ],
   "packageOptions": {
     "entryPoints": ["src/index.ts"],
