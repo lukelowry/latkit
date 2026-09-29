@@ -1,5 +1,12 @@
 # @latkit/gpu
 
+## 0.7.1
+
+### Patch Changes
+
+- Updated dependencies [be20b0b]
+  - @latkit/model@0.11.0
+
 ## 0.7.0
 
 ### Minor Changes

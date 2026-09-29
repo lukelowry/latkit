@@ -1,5 +1,18 @@
 # @latkit/video
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [be20b0b]
+- Updated dependencies [be20b0b]
+  - @latkit/monitor@0.7.1
+  - @latkit/model@0.11.0
+  - @latkit/port@0.8.0
+  - @latkit/diagram@0.3.2
+  - @latkit/gpu@0.7.1
+  - @latkit/network@0.12.2
+
 ## 0.1.1
 
 ### Patch Changes
