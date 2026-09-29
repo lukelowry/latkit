@@ -16,6 +16,15 @@ describe('monitor package entrypoint', () => {
     expect(createMonitor).toBeTypeOf('function');
     expect(validateOptions).toBeTypeOf('function');
     expect(Object.keys(OPTIONS)).toEqual([
+      'interaction',
+      'timeAxis',
+      'valueAxis',
+      'fontFamily',
+      'fontSizePx',
+      'textColor',
+      'axisColor',
+      'gridColor',
+      'cursorColor',
       'devices',
       'colormap',
       'lineWidthPx',

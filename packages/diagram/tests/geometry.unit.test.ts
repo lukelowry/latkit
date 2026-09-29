@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { ceilTo, metrics, snapTo, textWidth } from '../src/geometry.js';
-import { LINE } from '../src/text/metrics.js';
+import { glyphMetrics } from '@latkit/gpu';
+const { line: LINE } = glyphMetrics;
 
 describe('metrics', () => {
   it('derives every size from the grid pitch', () => {

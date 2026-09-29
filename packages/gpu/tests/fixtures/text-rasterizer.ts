@@ -3,7 +3,7 @@
  * centered in its cell, and every call is recorded.
  */
 
-import type { GlyphRasterizer } from '@latkit/gpu';
+import { type GlyphRasterizer as Rasterizer } from '../../src/index.js';
 
 /** One recorded draw. */
 export interface Draw {
@@ -14,7 +14,7 @@ export interface Draw {
 }
 
 /** A rasterizer drawing a centered solid box half the cell's size, with its calls. */
-export function fakeRasterizer(): GlyphRasterizer & { readonly draws: Draw[] } {
+export function fakeRasterizer(): Rasterizer & { readonly draws: Draw[] } {
   const draws: Draw[] = [];
   return {
     draws,

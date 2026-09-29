@@ -11,7 +11,7 @@ let stub: GpuStub, monitor: Monitor;
 const bind = (series: Series): void => monitor.load({ series, signal: 0 });
 beforeEach(() => {
   stub = installGpuStub();
-  monitor = createMonitor({ devices: stub.pool });
+  monitor = createMonitor({ devices: stub.pool, timeAxis: null, valueAxis: null });
 });
 afterEach(() => {
   monitor.destroy();
@@ -568,7 +568,7 @@ it('answers a secondary click with a context menu at the sample under it, select
   expect(menus.mock.calls[1]![0]).toMatchObject({ event: keyed, keyboard: true, reading: null });
 });
 
-it('does not let an obsolete hover clear the latest reading', async () => {
+it('coalesces hover reads and never publishes an obsolete reading', async () => {
   const input = source(2, [0, 1, 2]).series;
   let delay = false;
   const pending: (() => void)[] = [];
@@ -588,11 +588,13 @@ it('does not let an obsolete hover clear the latest reading', async () => {
   element.dispatchEvent(new MouseEvent('pointermove', { clientX: 10, clientY: 100 }));
   await pump(() => pending.length === 1);
   element.dispatchEvent(new MouseEvent('pointermove', { clientX: 200, clientY: 10 }));
+  await stub.frame();
+  expect(pending).toHaveLength(1); // one source request in flight
+  pending[0]!();
   await pump(() => pending.length === 2);
   pending[1]!();
   await pump(() => hover.mock.calls.length === 1);
   expect(hover.mock.calls[0]![0]).toMatchObject({ frame: 1, element: 1 });
-  pending[0]!();
   for (let i = 0; i < 20; i++) await Promise.resolve();
   expect(hover).toHaveBeenCalledOnce();
 });

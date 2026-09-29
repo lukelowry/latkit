@@ -21,7 +21,8 @@ import type { KeyIntent } from '../../src/input/keyboard.js';
 import type { Surface } from '../../src/input/surface.js';
 import type { Part } from '../../src/part.js';
 import type { DrawCounts, Mirrors } from '../../src/webgpu/buffers.js';
-import type { AtlasPixels, Renderer } from '../../src/webgpu/renderer.js';
+import type { GlyphAtlas } from '@latkit/gpu';
+import type { Renderer } from '../../src/webgpu/renderer.js';
 import { fakeRasterizer } from './text-rasterizer.js';
 
 /** The canvas's CSS size and its client offset. */
@@ -74,10 +75,9 @@ export class FakeRenderer {
     this.shade = shade;
   }
 
-  render = vi.fn((counts: DrawCounts, atlas: AtlasPixels): boolean => {
+  render = vi.fn((counts: DrawCounts, _atlas: GlyphAtlas): boolean => {
     if (!this.ready) return false;
     this.frames.push({ ...counts });
-    atlas.clean();
     return true;
   });
 

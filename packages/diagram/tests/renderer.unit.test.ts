@@ -1,3 +1,4 @@
+import type { GlyphAtlas } from '@latkit/gpu';
 /// <reference types="@webgpu/types" />
 
 import { bakeColormap, COLORMAP_LUT_SIZE } from '@latkit/gpu';
@@ -18,7 +19,7 @@ import {
   type DrawCounts,
   type Mirrors,
 } from '../src/webgpu/buffers.js';
-import { PASSES, passSource, Renderer, type AtlasPixels } from '../src/webgpu/renderer.js';
+import { PASSES, passSource, Renderer } from '../src/webgpu/renderer.js';
 import { createUniforms, DISPLAY_GRID } from '../src/webgpu/uniforms.js';
 import {
   flushGpuPromises,
@@ -42,20 +43,18 @@ const NO_COUNTS: DrawCounts = { groups: 0, wires: 0, blocks: 0, ports: 0, glyphs
 const ALL_COUNTS: DrawCounts = { groups: 1, wires: 5, blocks: 3, ports: 7, glyphs: 3, overlay: 1 };
 
 /** A stand-in atlas: `height` rows of 16 px, with a clean spy. */
-function fakeAtlas(height = 4): AtlasPixels & { clean: ReturnType<typeof vi.fn> } {
+function fakeAtlas(height = 4): GlyphAtlas & { dirtyFrom: number; dirtyTo: number } {
   const atlas = {
     width: 16,
     height,
     pixels: new Uint8Array(16 * height),
     version: 0,
+    revision: 0,
     dirtyFrom: 0,
     dirtyTo: height,
-    clean: vi.fn(() => {
-      atlas.dirtyFrom = 0;
-      atlas.dirtyTo = 0;
-    }),
+    changedRows: () => [atlas.dirtyFrom, atlas.dirtyTo] as const,
   };
-  return atlas;
+  return atlas as unknown as GlyphAtlas & { dirtyFrom: number; dirtyTo: number };
 }
 
 /** Mirrors with the TwoArea unit's structure, a layout, and a handful of instance entries. */
@@ -257,7 +256,6 @@ describe('Renderer frames', () => {
     expect(h.device.buffers).toHaveLength(0);
     expect(h.device.queue.submit).not.toHaveBeenCalled();
     expect(mirrors.structure.dirtyTo).toBeGreaterThan(0);
-    expect(atlas.clean).not.toHaveBeenCalled();
 
     await flushGpuPromises();
     expect(onReady).toHaveBeenCalledOnce();
@@ -362,7 +360,8 @@ describe('Renderer frames', () => {
 
   it('reallocates, uploads whole, and rebinds a mirror whose version changed', async () => {
     const { h, renderer, mirrors } = await ready();
-    renderer.render(NO_COUNTS, fakeAtlas());
+    const atlas = fakeAtlas();
+    renderer.render(NO_COUNTS, atlas);
     const sharedGroups = h.device.bindGroups.filter(
       (group) => group.label === 'diagram-shared-group',
     );
@@ -371,7 +370,7 @@ describe('Renderer frames', () => {
     h.device.queue.writeBuffer.mockClear();
 
     mirrors.structure.resize(mirrors.structure.capacity + 100);
-    renderer.render(NO_COUNTS, fakeAtlas());
+    renderer.render(NO_COUNTS, atlas);
 
     const [, replacement] = h.device.buffersLabeled('diagram structure');
     expect(old.destroyed).toBe(true);
@@ -383,7 +382,7 @@ describe('Renderer frames', () => {
 
     // Growing an instance mirror rebinds only its own group 1.
     mirrors.glyphs.resize(mirrors.glyphs.capacity * 4);
-    renderer.render(NO_COUNTS, fakeAtlas());
+    renderer.render(NO_COUNTS, atlas);
     expect(
       h.device.bindGroups.filter((group) => group.label === 'diagram-shared-group'),
     ).toHaveLength(2);
@@ -479,7 +478,7 @@ describe('Renderer frames', () => {
     renderer.destroy();
   });
 
-  it('uploads the atlas by version and by dirty rows, then cleans it', async () => {
+  it('uploads glyph revisions independently and skips unchanged content', async () => {
     const { h, renderer } = await ready();
     const atlas = fakeAtlas(4);
     renderer.render(NO_COUNTS, atlas);
@@ -496,11 +495,11 @@ describe('Renderer frames', () => {
       { offset: 0, bytesPerRow: 16, rowsPerImage: 4 },
       [16, 4],
     ]);
-    expect(atlas.clean).toHaveBeenCalledOnce();
 
     renderer.render(NO_COUNTS, atlas);
     expect(atlasWrites()).toHaveLength(1);
 
+    atlas.revision++;
     atlas.dirtyFrom = 1;
     atlas.dirtyTo = 3;
     renderer.render(NO_COUNTS, atlas);
@@ -518,6 +517,7 @@ describe('Renderer frames', () => {
     atlas.height = 8;
     atlas.pixels = new Uint8Array(16 * 8);
     atlas.version = 1;
+    atlas.revision++;
     renderer.render(NO_COUNTS, atlas);
     const replaced = h.device.texturesLabeled('diagram atlas');
     expect(replaced).toHaveLength(2);
@@ -527,11 +527,11 @@ describe('Renderer frames', () => {
     renderer.destroy();
   });
 
-  it('binds a one-row atlas before any glyph is rasterized', async () => {
+  it('binds a blank atlas before any glyph is rasterized', async () => {
     const { h, renderer } = await ready();
-    renderer.render(NO_COUNTS, fakeAtlas(0));
+    renderer.render(NO_COUNTS, fakeAtlas(1));
     expect(h.device.texturesLabeled('diagram atlas')[0]!.descriptor.size).toEqual([16, 1]);
-    expect(h.device.queue.writeTexture).toHaveBeenCalledOnce(); // the colormap only
+    expect(h.device.queue.writeTexture).toHaveBeenCalledTimes(2); // colormap and blank glyphs
     renderer.destroy();
   });
 

@@ -3,7 +3,8 @@
  * derives from one grid pitch, so a diagram at any pitch is the same diagram scaled.
  */
 
-import { ADVANCE, columns, LINE } from './text/metrics.js';
+import { glyphMetrics } from '@latkit/gpu';
+const { advance: ADVANCE, columns, line: LINE } = glyphMetrics;
 
 /** An axis-aligned rectangle in diagram units: `[x0, y0, x1, y1]`, y down. */
 export type Rect = readonly [x0: number, y0: number, x1: number, y1: number];

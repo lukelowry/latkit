@@ -10,7 +10,8 @@ import { textWidth } from '../../src/geometry.js';
 import { NONE, type Prepared } from '../../src/prepare.js';
 import { routeOrthogonal } from '../../src/route/orthogonal.js';
 import { routeStraight } from '../../src/route/straight.js';
-import { LINE } from '../../src/text/metrics.js';
+import { glyphMetrics } from '@latkit/gpu';
+const { line: LINE } = glyphMetrics;
 import { build, CLASSES, type NetSpec } from './netlists.js';
 import { contextOf, Recorder } from './route-scenes.js';
 

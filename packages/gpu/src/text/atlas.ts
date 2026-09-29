@@ -1,16 +1,14 @@
 /**
- * The runtime glyph atlas. Diagram text is monospace, so every glyph fits one fixed cell (a wide
+ * The runtime glyph atlas. Latkit text is monospace, so every glyph fits one fixed cell (a wide
  * glyph two adjacent ones) and a cell index is all a glyph instance needs: the glyph pass finds
  * the cell's texels from `atlas_cols` and `atlas_cell` alone.
  */
 
-import type { Scene } from '../snapshot.js';
-import { GLYPH_WIDE } from '../webgpu/buffers.js';
-import { ADVANCE, isWide, LINE } from './metrics.js';
+import { ADVANCE, isWide, LINE, glyphMetrics } from './metrics.js';
 import { sdf } from './sdf.js';
 
 /** Draws single glyphs for the atlas. */
-export interface Rasterizer {
+export interface GlyphRasterizer {
   /** Draw one glyph centered in a cell of `width` x `height` px with the given font; alpha. */
   draw(text: string, font: string, width: number, height: number): Uint8ClampedArray;
 }
@@ -19,7 +17,7 @@ export interface Rasterizer {
 type Context2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
 /** A Canvas2D rasterizer (OffscreenCanvas, else a detached canvas); null without either. */
-export function canvasRasterizer(): Rasterizer | null {
+export function createGlyphRasterizer(): GlyphRasterizer | null {
   let canvas: OffscreenCanvas | HTMLCanvasElement;
   let context: Context2D | null;
   if (typeof OffscreenCanvas === 'function') {
@@ -60,33 +58,37 @@ export function canvasRasterizer(): Rasterizer | null {
 const FONT_PX = 40;
 /** SDF radius in px; also the margin around a glyph's advance box in its cell. */
 const SDF_PX = 6;
-/** Atlas texture width in px. */
+/** GlyphAtlas texture width in px. */
 const WIDTH = 1024;
 /** Initial atlas height in px: four rows of cells, room for printable ASCII. */
 const MIN_HEIGHT = 256;
-/** Largest atlas height in px; a full atlas answers the blank cell. */
+/** Largest atlas height in px; exhaustion throws. */
 const MAX_HEIGHT = 4096;
 /** The blank cell: all texels zero, far outside every glyph. */
 const BLANK = 0;
 
 /** A copied glyph atlas that preserves text appearance across realms. */
-type AtlasSnapshot = NonNullable<Scene['glyphs']>;
+export interface GlyphSnapshot {
+  readonly fontFamily: string;
+  readonly pixels: Uint8Array;
+  readonly cells: readonly (readonly [string, number])[];
+}
 
 /**
  * The runtime glyph atlas: one SDF cell per grapheme, rasterized on first use into an r8 texture
- * that grows by doubling, with the dirty rows a renderer uploads.
+ * that grows by doubling, with revisioned rows each renderer uploads.
  *
  * @remarks
  * Cell `c` sits at column `c % cols`, row `floor(c / cols)`; its texels start at
  * `(column * cellWidth, row * cellHeight)`. A wide glyph takes cells `c` and `c + 1` of one row and
- * answers `c | GLYPH_WIDE`. Cell 0 is blank, and so is every whitespace grapheme.
+ * answers `c | glyphMetrics.wideBit`. Cell 0 is blank, and so is every whitespace grapheme.
  */
-export class Atlas {
+export class GlyphAtlas {
   /** Font px glyphs are rasterized at (40). */
   readonly fontPx: number = FONT_PX;
   /** The SDF radius in px (6). */
   readonly sdfPx: number = SDF_PX;
-  /** Atlas texture width in px (1024). */
+  /** GlyphAtlas texture width in px (1024). */
   readonly width: number = WIDTH;
   /** Cell width in px: `ceil(ADVANCE * fontPx) + 2 * sdfPx`, rounded up to 4. */
   readonly cellWidth: number = Math.ceil((Math.ceil(ADVANCE * FONT_PX) + 2 * SDF_PX) / 4) * 4;
@@ -94,7 +96,7 @@ export class Atlas {
   readonly cellHeight: number = Math.ceil(LINE * FONT_PX) + 2 * SDF_PX;
   /** Cells per atlas row. */
   readonly cols: number = Math.floor(WIDTH / this.cellWidth);
-  /** Atlas texture height in px, growing by doubling to 4096. */
+  /** GlyphAtlas texture height in px, growing by doubling to 4096. */
   height = MIN_HEIGHT;
   /** r8 texels, `width * height`, row-major. */
   pixels: Uint8Array<ArrayBuffer> = new Uint8Array(WIDTH * MIN_HEIGHT);
@@ -102,11 +104,12 @@ export class Atlas {
   version = 0;
   /** Bumped when the font changes: every cell index handed out before is stale. */
   generation = 0;
-  /** Dirty texel rows `[dirtyFrom, dirtyTo)` since the last upload; empty when equal. */
-  dirtyFrom = 0;
-  dirtyTo = MIN_HEIGHT;
+  /** Monotonic content revision; each texture tracks its own last upload. */
+  revision = 1;
+  private readonly rows = new Float64Array(MAX_HEIGHT).fill(1);
+  private sealed = false;
 
-  private readonly rasterizer: Rasterizer | null;
+  private readonly rasterizer: GlyphRasterizer | null;
   private family: string;
   private readonly cells = new Map<string, number>();
   /** The next unused cell. */
@@ -114,30 +117,44 @@ export class Atlas {
   /** Last-column cells wide glyphs skipped, for narrow ones. */
   private readonly spares: number[] = [];
 
-  constructor(rasterizer: Rasterizer | null, fontFamily: string) {
+  constructor(fontFamily: string, rasterizer: GlyphRasterizer | null = createGlyphRasterizer()) {
     this.rasterizer = rasterizer;
     this.family = fontFamily;
   }
 
   /** Copy pre-rasterized glyphs so another realm preserves the exact font. */
-  snapshot(): AtlasSnapshot {
+  snapshot(): GlyphSnapshot {
     return { fontFamily: this.family, pixels: this.pixels.slice(), cells: [...this.cells] };
   }
 
-  /** A sealed atlas; unknown glyphs are blank. */
-  static from(snapshot: AtlasSnapshot): Atlas {
+  /** A sealed atlas; missing glyphs fail explicitly. */
+  static from(snapshot: GlyphSnapshot): GlyphAtlas {
     if (
       snapshot.pixels.length % WIDTH ||
       snapshot.pixels.length < WIDTH * MIN_HEIGHT ||
       snapshot.pixels.length > WIDTH * MAX_HEIGHT
     ) {
-      throw new RangeError('Invalid diagram glyph atlas');
+      throw new RangeError('Invalid glyph atlas');
     }
-    const atlas = new Atlas(null, snapshot.fontFamily);
+    const atlas = new GlyphAtlas(snapshot.fontFamily, null);
     atlas.pixels = snapshot.pixels.slice();
     atlas.height = atlas.pixels.length / WIDTH;
-    atlas.dirtyTo = atlas.height;
-    for (const [text, cell] of snapshot.cells) atlas.cells.set(text, cell);
+    atlas.sealed = true;
+    for (const [text, cell] of snapshot.cells) {
+      const index = cell & ~glyphMetrics.wideBit;
+      const wide = (cell & glyphMetrics.wideBit) !== 0;
+      if (
+        typeof text !== 'string' ||
+        !Number.isInteger(cell) ||
+        cell < 0 ||
+        cell > 0xffffffff ||
+        index >= atlas.cols * Math.floor(atlas.height / atlas.cellHeight) ||
+        (wide && (index === 0 || index % atlas.cols === atlas.cols - 1))
+      ) {
+        throw new RangeError('Invalid glyph cell');
+      }
+      atlas.cells.set(text, cell);
+    }
     return atlas;
   }
 
@@ -146,19 +163,29 @@ export class Atlas {
     return this.family;
   }
 
-  /** Forget the dirty rows after an upload. */
-  clean(): void {
-    this.dirtyFrom = 0;
-    this.dirtyTo = 0;
+  /** Texel rows changed since a consumer's revision; never consumes another texture's edits. */
+  changedRows(since: number): readonly [number, number] {
+    if (since >= this.revision) return [0, 0];
+    let from = this.height,
+      to = 0;
+    for (let row = 0; row < this.height; row++) {
+      if (this.rows[row]! > since) {
+        from = Math.min(from, row);
+        to = row + 1;
+      }
+    }
+    return [from, to];
   }
 
   /**
    * The cell of a grapheme, rasterizing it on first use; bit 31 marks a wide (two-cell) glyph;
-   * a blank cell (0, the space) when the atlas is full or no rasterizer exists.
+   * a blank cell (0) for whitespace or when no rasterizer exists.
    */
   cell(grapheme: string): number {
     const known = this.cells.get(grapheme);
     if (known !== undefined) return known;
+    if (this.sealed && grapheme.trim())
+      throw new RangeError(`Glyph snapshot does not contain ${JSON.stringify(grapheme)}`);
     const cell = this.rasterize(grapheme);
     this.cells.set(grapheme, cell);
     return cell;
@@ -169,6 +196,7 @@ export class Atlas {
    * and the generation. The same family rasterizes again, for a web font that finished loading.
    */
   setFont(fontFamily: string): void {
+    if (this.sealed) throw new Error('Cannot change the font of a sealed glyph snapshot');
     this.family = fontFamily;
     this.cells.clear();
     this.next = 1;
@@ -177,8 +205,7 @@ export class Atlas {
     this.pixels = new Uint8Array(WIDTH * MIN_HEIGHT);
     this.version++;
     this.generation++;
-    this.dirtyFrom = 0;
-    this.dirtyTo = MIN_HEIGHT;
+    this.touchRows(0, MIN_HEIGHT);
   }
 
   /** Allocate and fill the cell of a grapheme not seen since the last font change. */
@@ -186,7 +213,6 @@ export class Atlas {
     if (!this.rasterizer || grapheme.trim() === '') return BLANK;
     const wide = isWide(grapheme.codePointAt(0)!);
     const cell = this.allocate(wide);
-    if (cell === BLANK) return BLANK;
     const span = wide ? 2 : 1;
     const w = span * this.cellWidth;
     const h = this.cellHeight;
@@ -198,32 +224,31 @@ export class Atlas {
       this.pixels.set(field.subarray(y * w, (y + 1) * w), (y0 + y) * WIDTH + x0);
     }
     this.touchRows(y0, y0 + h);
-    return wide ? (cell | GLYPH_WIDE) >>> 0 : cell;
+    return wide ? (cell | glyphMetrics.wideBit) >>> 0 : cell;
   }
 
-  /** The first free cell (two in one row when `wide`), growing the texture; blank when full. */
+  /** The first free cell (two in one row when `wide`), growing the texture or throwing at capacity. */
   private allocate(wide: boolean): number {
     if (!wide && this.spares.length > 0) return this.spares.pop()!;
     let cell = this.next;
-    if (!this.reserve(cell)) return BLANK;
+    this.reserve(cell);
     if (wide && cell % this.cols === this.cols - 1) {
       // A wide glyph cannot straddle rows: keep the last column for a narrow glyph.
       this.spares.push(cell);
       this.next = ++cell;
-      if (!this.reserve(cell)) return BLANK;
+      this.reserve(cell);
     }
     this.next = cell + (wide ? 2 : 1);
     return cell;
   }
 
-  /** Grow the texture until it has cell `cell`'s row; false when it cannot grow that far. */
-  private reserve(cell: number): boolean {
+  /** Grow the texture until it has the requested cell's row, with a fixed memory ceiling. */
+  private reserve(cell: number): void {
     const row = Math.floor(cell / this.cols);
     while (row >= Math.floor(this.height / this.cellHeight)) {
-      if (this.height >= MAX_HEIGHT) return false;
+      if (this.height >= MAX_HEIGHT) throw new RangeError('Glyph atlas capacity exceeded');
       this.grow();
     }
-    return true;
   }
 
   /** Double the texture height, keeping every cell. */
@@ -234,18 +259,11 @@ export class Atlas {
     this.pixels = pixels;
     this.height = height;
     this.version++;
-    this.dirtyFrom = 0;
-    this.dirtyTo = height;
+    this.touchRows(0, height);
   }
 
   /** Mark texel rows `[from, to)` for upload, merged with what is already dirty. */
   private touchRows(from: number, to: number): void {
-    if (this.dirtyFrom >= this.dirtyTo) {
-      this.dirtyFrom = from;
-      this.dirtyTo = to;
-      return;
-    }
-    if (from < this.dirtyFrom) this.dirtyFrom = from;
-    if (to > this.dirtyTo) this.dirtyTo = to;
+    this.rows.fill(++this.revision, from, to);
   }
 }

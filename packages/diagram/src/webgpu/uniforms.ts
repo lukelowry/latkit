@@ -1,3 +1,4 @@
+import type { GlyphAtlas } from '@latkit/gpu';
 /**
  * CPU side of `struct Uniforms` in `shaders/common.wgsl`: one table of fields, the word offsets it
  * implies, and typed setters over the uniform mirror. `Px` values are CSS pixels; `viewport` is
@@ -119,16 +120,11 @@ export const W_HOST = wordOf('host');
 /** Seconds after which the shader clock wraps, keeping f32 time precise. */
 const TIME_WRAP_S = 3600;
 
-/** The atlas geometry the glyph pass samples by; an `Atlas` is one. */
-export interface AtlasShape {
-  readonly cols: number;
-  readonly fontPx: number;
-  readonly sdfPx: number;
-  readonly width: number;
-  readonly height: number;
-  readonly cellWidth: number;
-  readonly cellHeight: number;
-}
+/** The atlas geometry the glyph pass samples by; an `GlyphAtlas` is one. */
+export type AtlasShape = Pick<
+  GlyphAtlas,
+  'cols' | 'fontPx' | 'sdfPx' | 'width' | 'height' | 'cellWidth' | 'cellHeight'
+>;
 
 /** The options the uniform block carries colors for. */
 export type ColorOptions = Pick<

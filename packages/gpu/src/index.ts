@@ -43,3 +43,14 @@ export type { Presentation } from './presentation.js';
 export { createRenderTarget } from './target.js';
 export type { RenderTarget, SceneRenderer } from './target.js';
 export type { ChannelBinding, ChannelBindings } from './channels.js';
+
+/** Monospace SDF glyphs shared by canvas and offscreen renderers. */
+export { GlyphAtlas, createGlyphRasterizer } from './text/atlas.js';
+export type { GlyphRasterizer, GlyphSnapshot } from './text/atlas.js';
+export { createGlyphTexture } from './text/texture.js';
+export type { GlyphTexture } from './text/texture.js';
+export { glyphMetrics } from './text/metrics.js';
+export { glyphShader } from './text/shader.js';
+
+/** Compiler diagnostics shared by renderer shade hooks. */
+export { shaderFailure } from './shader.js';

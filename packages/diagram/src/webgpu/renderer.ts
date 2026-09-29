@@ -1,11 +1,18 @@
 /// <reference types="@webgpu/types" />
 
-import type { RenderTarget } from '@latkit/gpu';
-import { bakeColormap, COLORMAP_LUT_SIZE } from '@latkit/gpu';
+import {
+  bakeColormap,
+  shaderFailure,
+  type RenderTarget,
+  type GlyphAtlas,
+  COLORMAP_LUT_SIZE,
+  createGlyphTexture,
+  glyphShader,
+  type GlyphTexture,
+} from '@latkit/gpu';
 
 import { DEFAULT_OPTIONS } from '../options.js';
 import { DEFAULT_SHADE_WGSL } from '../shade.js';
-import type { Atlas } from '../text/atlas.js';
 import {
   GLYPH_WORDS,
   OVERLAY_WORDS,
@@ -68,14 +75,8 @@ export function passSource(name: PassName, shade: string = DEFAULT_SHADE_WGSL): 
   if (!pass) throw new RangeError(`diagram: no render pass named ${String(name)}`);
   return pass.shaded
     ? `${commonSrc}\n${shadeSrc}\n${shade}\n${pass.source}`
-    : `${commonSrc}\n${pass.source}`;
+    : `${commonSrc}\n${name === 'glyph' ? glyphShader : ''}\n${pass.source}`;
 }
-
-/** The atlas state a frame uploads; an `Atlas` is one. */
-export type AtlasPixels = Pick<
-  Atlas,
-  'width' | 'height' | 'pixels' | 'version' | 'dirtyFrom' | 'dirtyTo' | 'clean'
->;
 
 /** Premultiplied-alpha "over": every pass outputs premultiplied color onto a transparent clear. */
 const PREMULTIPLIED_OVER: GPUBlendState = {
@@ -134,10 +135,7 @@ export class Renderer {
   private readonly sampler: GPUSampler;
   private readonly shadows: { readonly [K in keyof Mirrors]: Shadow };
 
-  private atlasTexture: GPUTexture | null = null;
-  private atlasVersion = -1;
-  private atlasWidth = 0;
-  private atlasHeight = 0;
+  private readonly glyphTexture: GlyphTexture;
   private shared: GPUBindGroup | null = null;
   private readonly instanceGroups: Record<InstanceMirror, GPUBindGroup | null> = {
     wires: null,
@@ -163,6 +161,7 @@ export class Renderer {
    */
   constructor(presentation: RenderTarget, mirrors: Mirrors, shadeWgsl: string | null) {
     this.presentation = presentation;
+    this.glyphTexture = createGlyphTexture(presentation.device, 'diagram atlas');
     this.mirrors = mirrors;
     this.shade = shadeWgsl ?? DEFAULT_SHADE_WGSL;
     const { device } = presentation;
@@ -304,7 +303,7 @@ export class Renderer {
    *
    * @throws Error when a mirror outgrows the device's buffer limits.
    */
-  render(counts: DrawCounts, atlas: AtlasPixels): boolean {
+  render(counts: DrawCounts, atlas: GlyphAtlas): boolean {
     const pipelines = this.pipelines;
     if (this.destroyed || !pipelines) return false;
     const { device } = this.presentation;
@@ -315,7 +314,7 @@ export class Renderer {
     rebind = this.upload(shadows.layout, false) || rebind;
     rebind = this.upload(shadows.channels, false) || rebind;
     rebind = this.upload(shadows.focus, false) || rebind;
-    rebind = this.uploadAtlas(atlas) || rebind;
+    rebind = this.glyphTexture.sync(atlas) || rebind;
     if (rebind || !this.shared) this.shared = this.createSharedGroup();
     this.syncInstances('wires');
     this.syncInstances('glyphs');
@@ -359,8 +358,7 @@ export class Renderer {
       shadow.buffer?.destroy();
       shadow.buffer = null;
     }
-    this.atlasTexture?.destroy();
-    this.atlasTexture = null;
+    this.glyphTexture.destroy();
     this.colormap.destroy();
     this.shared = null;
     this.instanceGroups.wires = null;
@@ -443,7 +441,7 @@ export class Renderer {
     try {
       return await Promise.all(pending);
     } catch (cause) {
-      throw await shaderFailure(modules, cause);
+      throw await shaderFailure('diagram', modules, cause);
     }
   }
 
@@ -513,53 +511,6 @@ export class Renderer {
     });
   }
 
-  /**
-   * Bring the atlas texture up to date: a new texture and a full upload when the atlas's version
-   * or size changed, else its dirty rows; then clean it. Returns whether the texture was replaced.
-   */
-  private uploadAtlas(atlas: AtlasPixels): boolean {
-    const { device } = this.presentation;
-    // Never zero-sized: an empty atlas still binds a one-row texture.
-    const width = Math.max(atlas.width, 1);
-    const height = Math.max(atlas.height, 1);
-    let replaced = false;
-    let from = atlas.dirtyFrom;
-    let to = atlas.dirtyTo;
-    if (
-      !this.atlasTexture ||
-      this.atlasVersion !== atlas.version ||
-      this.atlasWidth !== width ||
-      this.atlasHeight !== height
-    ) {
-      const texture = device.createTexture({
-        label: 'diagram atlas',
-        size: [width, height],
-        format: 'r8unorm',
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-      });
-      this.atlasTexture?.destroy();
-      this.atlasTexture = texture;
-      this.atlasVersion = atlas.version;
-      this.atlasWidth = width;
-      this.atlasHeight = height;
-      replaced = true;
-      from = 0;
-      to = atlas.height;
-    }
-    from = Math.max(0, from);
-    to = Math.min(to, atlas.height, Math.floor(atlas.pixels.length / Math.max(atlas.width, 1)));
-    if (atlas.width > 0 && to > from) {
-      device.queue.writeTexture(
-        { texture: this.atlasTexture, origin: [0, from] },
-        atlas.pixels as Uint8Array<ArrayBuffer>,
-        { offset: from * atlas.width, bytesPerRow: atlas.width, rowsPerImage: to - from },
-        [atlas.width, to - from],
-      );
-    }
-    atlas.clean();
-    return replaced;
-  }
-
   /** Bind group 0 over the current buffers and textures. */
   private createSharedGroup(): GPUBindGroup {
     const { shadows } = this;
@@ -573,7 +524,7 @@ export class Renderer {
         { binding: 3, resource: { buffer: shadows.channels.buffer! } },
         { binding: 4, resource: { buffer: shadows.focus.buffer! } },
         { binding: 5, resource: this.colormap.createView() },
-        { binding: 6, resource: this.atlasTexture!.createView() },
+        { binding: 6, resource: this.glyphTexture.view },
         { binding: 7, resource: this.sampler },
       ],
     });
@@ -629,23 +580,4 @@ function whole(count: number): number {
 /** `bytes` rounded up to a multiple of 16. */
 function align16(bytes: number): number {
   return Math.ceil(bytes / 16) * 16;
-}
-
-/**
- * The pipeline failure with every shader compilation error it can find attached, so a host shade
- * fault names its line. Line numbers count from the top of the assembled module.
- */
-async function shaderFailure(modules: readonly GPUShaderModule[], cause: unknown): Promise<Error> {
-  const lines: string[] = [];
-  for (const module of modules) {
-    const info = await module.getCompilationInfo?.();
-    for (const message of info?.messages ?? []) {
-      if (message.type === 'error') {
-        lines.push(`${module.label}:${message.lineNum}:${message.linePos} ${message.message}`);
-      }
-    }
-  }
-  const detail =
-    lines.length > 0 ? lines.join('\n') : cause instanceof Error ? cause.message : String(cause);
-  return new Error(`diagram shader build failed:\n${detail}`, { cause });
 }

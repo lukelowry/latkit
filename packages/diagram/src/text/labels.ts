@@ -34,8 +34,9 @@ import {
   ROLE_TITLE,
   type Mirror,
 } from '../webgpu/buffers.js';
-import type { Atlas } from './atlas.js';
-import { ADVANCE, isWide, LINE } from './metrics.js';
+import type { GlyphAtlas } from '@latkit/gpu';
+import { glyphMetrics } from '@latkit/gpu';
+const { advance: ADVANCE, isWide, line: LINE } = glyphMetrics;
 
 /**
  * Every text run of a prepared netlist, as columns: what each run hangs from, where its line
@@ -381,7 +382,7 @@ export function textRuns(prepared: Prepared): Runs {
  */
 export class Labels {
   private readonly mirror: Mirror;
-  private readonly atlas: Atlas;
+  private readonly atlas: GlyphAtlas;
   private prepared: Prepared | null = null;
   /** The bound netlist's runs, or null until an update first needs them. */
   private runs: Runs | null = null;
@@ -402,7 +403,7 @@ export class Labels {
   private legible = 0;
   private glyphCount = 0;
 
-  constructor(mirror: Mirror, atlas: Atlas) {
+  constructor(mirror: Mirror, atlas: GlyphAtlas) {
     this.mirror = mirror;
     this.atlas = atlas;
   }

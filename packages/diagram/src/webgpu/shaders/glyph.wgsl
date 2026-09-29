@@ -93,7 +93,6 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) i: u32) -> VOut {
 fn fs(v: VOut) -> @location(0) vec4f {
   // Sample and differentiate before anything branches: fwidth needs uniform control flow.
   let d = textureSampleLevel(atlas_tex, linear_sampler, v.uv, 0.0).r;
-  let w = max(fwidth(d) * GLYPH_SOFTNESS, 1e-4);
-  let coverage = smoothstep(0.5 - w, 0.5 + w, d);
+  let coverage = glyph_coverage(d);
   return premultiply(layer(v.color, coverage));
 }

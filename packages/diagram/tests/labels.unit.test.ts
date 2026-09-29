@@ -12,9 +12,10 @@ import {
   SIDE_TOP,
   type Prepared,
 } from '../src/prepare.js';
-import { Atlas } from '../src/text/atlas.js';
+import { GlyphAtlas } from '@latkit/gpu';
 import { GLYPH_CAP, Labels, textRuns, type Runs } from '../src/text/labels.js';
-import { ADVANCE, LINE } from '../src/text/metrics.js';
+import { glyphMetrics } from '@latkit/gpu';
+const { advance: ADVANCE, line: LINE } = glyphMetrics;
 import {
   ANCHOR_BLOCK,
   ANCHOR_GROUP,
@@ -108,7 +109,7 @@ function setup(prepared: Prepared) {
   const layout = rowLayout(prepared);
   const glyphs = new Mirror('glyphs', 'storage');
   const raster = fakeRasterizer();
-  const atlas = new Atlas(raster, 'mono');
+  const atlas = new GlyphAtlas('mono', raster);
   const labels = new Labels(glyphs, atlas);
   labels.reset(prepared);
   return { layout, glyphs, raster, atlas, labels };
@@ -662,7 +663,7 @@ describe('Labels', () => {
     const prepared = prepare(twoArea(), 8);
     const layout = rowLayout(prepared);
     const glyphs = new Mirror('glyphs', 'storage');
-    const labels = new Labels(glyphs, new Atlas(null, 'mono'));
+    const labels = new Labels(glyphs, new GlyphAtlas('mono', null));
     labels.reset(prepared);
     expect(labels.update(EVERYWHERE, 1, layout, true, false)).toBe(0);
   });

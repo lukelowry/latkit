@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { random } from './fixtures/netlists.js';
+import { random } from './fixtures/random.js';
 import { sdf } from '../src/text/sdf.js';
 
 /** Decode a texel to its signed distance in px, positive outside. */

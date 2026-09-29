@@ -193,7 +193,6 @@ const TILE_START_PX: f32 = 96.0;
 const TILE_FULL_PX: f32 = 40.0;
 const PREVIEW_DASH_PX: f32 = 6.0;
 const PREVIEW_GAP_PX: f32 = 4.0;
-const GLYPH_SOFTNESS: f32 = 0.7;
 
 // ---------------------------------------------------------------------------------------------
 // Display and transforms

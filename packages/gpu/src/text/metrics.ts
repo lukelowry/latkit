@@ -288,3 +288,12 @@ export function columns(text: string): number {
   }
   return total;
 }
+
+/** Fixed monospace geometry used by every glyph renderer. */
+export const glyphMetrics = Object.freeze({
+  advance: ADVANCE,
+  line: LINE,
+  wideBit: 0x80000000,
+  columns,
+  isWide,
+});

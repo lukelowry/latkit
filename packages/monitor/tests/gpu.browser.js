@@ -1,8 +1,7 @@
-/* global GPUTextureUsage, GPUBufferUsage, GPUMapMode, requestAnimationFrame */
+/* global GPUTextureUsage, GPUBufferUsage, GPUMapMode */
 import { Series } from '../../model/src/index.ts';
 import { bakeColormap } from '../../gpu/src/colormap.ts';
-import { LanePainter } from '../src/painter.ts';
-import { Lane } from '../src/lane.ts';
+import { createMonitorRenderer } from '../src/render.ts';
 
 /** Real GPU pixel checks, run by examples/monitor/check.html. */
 export async function checkGpu() {
@@ -27,50 +26,36 @@ export async function checkGpu() {
         format: 'rgba8unorm',
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
       });
-      const painter = new LanePainter(
-        { device, context: { getCurrentTexture: () => output }, format: 'rgba8unorm' },
-        128,
-        128,
-      );
-      painter.writeColormap(bakeColormap(map));
       const series = Series.create({
         signals: ['x'],
         elementCount,
         time: Float64Array.from(time),
         values: Float64Array.from(values),
       });
-      let lane;
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(Error('render timeout')), 5000);
-        lane = new Lane(
+      const renderer = createMonitorRenderer(
+        { device, width: 128, height: 128, texture: () => output, format: 'rgba8unorm' },
+        {
+          kind: 'monitor',
           series,
-          0,
-          painter,
-          {
+          signal: 0,
+          selected,
+          cursor: false,
+          colormap: bakeColormap(map),
+          options: {
+            timeAxis: null,
+            valueAxis: null,
             valueRange: [0, 1],
             timeRange: [0, 1],
             colorRange: null,
-            lineWidth: 3,
+            lineWidthPx: options.lineWidth ?? 3,
             focusColor: [1, 0, 0, 1],
             unselectedAlpha: 0.2,
             ...options,
           },
-          { frames: 0, range: null, domain: null },
-          {
-            error: reject,
-            range() {},
-            rendered() {
-              clearTimeout(timeout);
-              resolve();
-            },
-            present() {
-              requestAnimationFrame(() => lane.frame(true));
-            },
-          },
-        );
-        lane.select(selected);
-        lane.resume();
-      });
+        },
+      );
+      await renderer.prepare(0, AbortSignal.timeout(5000));
+      renderer.draw(0);
       const buffer = device.createBuffer({
         size: 128 * 128 * 4,
         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
@@ -82,8 +67,7 @@ export async function checkGpu() {
       const pixels = new Uint8Array(buffer.getMappedRange()).slice();
       buffer.unmap();
       buffer.destroy();
-      lane.destroy();
-      painter.destroy();
+      renderer.destroy();
       output.destroy();
       return {
         pixel(x, y) {

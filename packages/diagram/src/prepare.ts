@@ -8,7 +8,8 @@
 import type { Document } from '@latkit/model';
 
 import { ceilTo, metrics, textWidth, type Metrics } from './geometry.js';
-import { LINE } from './text/metrics.js';
+import { glyphMetrics } from '@latkit/gpu';
+const { line: LINE } = glyphMetrics;
 
 /** The "none" index wherever an index may be absent. */
 export const NONE = 0xffffffff;

@@ -2,6 +2,25 @@ import { devices, type DevicePool } from '@latkit/gpu';
 import { validateRgba, type Colormap, type RGBA } from '@latkit/colormaps';
 import { validateDomain, type Domain } from '@latkit/model';
 
+/** A fixed tick; omitted labels use the axis's numeric formatter. */
+export interface Tick {
+  readonly value: number;
+  readonly label?: string;
+}
+/** Serializable axis policy, shared by interactive and exported views. */
+export interface Axis {
+  readonly label?: string;
+  /** Omit for automatic ticks; an empty list draws no ticks or gridlines. */
+  readonly ticks?: readonly Tick[];
+  /** Minimum automatic tick spacing in CSS pixels. @defaultValue 72 */
+  readonly minSpacingPx?: number;
+  readonly format?: 'auto' | 'fixed' | 'scientific' | 'engineering';
+  /** Fractional digits; automatic when omitted. Range 0 to 12. */
+  readonly precision?: number;
+  /** Draw gridlines at ticks. @defaultValue true */
+  readonly grid?: boolean;
+}
+
 /**
  * Monitor display options: the construction record and the live patch.
  *
@@ -11,6 +30,24 @@ import { validateDomain, type Domain } from '@latkit/model';
  * option marked nullable takes `null` to hand the decision back to the controller.
  */
 export interface Options {
+  /** Enable drag, pinch, and wheel navigation. @defaultValue false */
+  interaction?: boolean;
+  /** Time axis, or null to hide it. An object replaces its previous configuration. */
+  timeAxis?: Axis | null;
+  /** Value axis, or null to hide it. An object replaces its previous configuration. */
+  valueAxis?: Axis | null;
+  /** Monospace family for GPU labels. @defaultValue 'monospace' */
+  fontFamily?: string;
+  /** Label size in CSS pixels, from 1 to 128. @defaultValue 12 */
+  fontSizePx?: number;
+  /** Label color. @defaultValue [0.65, 0.68, 0.72, 1] */
+  textColor?: RGBA;
+  /** Axis strokes. @defaultValue [0.5, 0.55, 0.6, 0.5] */
+  axisColor?: RGBA;
+  /** Gridline color. @defaultValue [0.5, 0.55, 0.6, 0.15] */
+  gridColor?: RGBA;
+  /** Playhead color. @defaultValue [1, 1, 1, 0.8] */
+  cursorColor?: RGBA;
   /** Where `Monitor.attach` leases its device. @defaultValue the realm-wide pool from `@latkit/gpu`. */
   devices?: DevicePool;
   /** Transfer function for normalized values. @defaultValue A neutral gray ramp. */
@@ -39,6 +76,9 @@ export interface Options {
  * a value, the label a control shows, and for a bounded number its inclusive `max`.
  */
 export type OptionDefinition = { readonly label: string } & (
+  | { readonly kind: 'axis'; readonly default: Axis; readonly live: true; readonly nullable: true }
+  | { readonly kind: 'boolean'; readonly default: boolean; readonly live: true }
+  | { readonly kind: 'string'; readonly default: string; readonly live: true }
   | { readonly kind: 'pool'; readonly default: DevicePool; readonly live: false }
   | { readonly kind: 'colormap'; readonly default: Colormap; readonly live: true }
   | {
@@ -46,6 +86,7 @@ export type OptionDefinition = { readonly label: string } & (
       readonly default: number;
       readonly live: true;
       readonly max?: number;
+      readonly min?: number;
     }
   | {
       readonly kind: 'domain';
@@ -65,6 +106,54 @@ export type OptionDefinition = { readonly label: string } & (
 const neutralColormap: Colormap = Object.freeze((t: number) => [t, t, t] as const);
 
 const definitions = {
+  interaction: { kind: 'boolean', default: false, live: true, label: 'Interaction' },
+  timeAxis: {
+    kind: 'axis',
+    default: Object.freeze({}),
+    live: true,
+    nullable: true,
+    label: 'Time axis',
+  },
+  valueAxis: {
+    kind: 'axis',
+    default: Object.freeze({}),
+    live: true,
+    nullable: true,
+    label: 'Value axis',
+  },
+  fontFamily: { kind: 'string', default: 'monospace', live: true, label: 'Font family' },
+  fontSizePx: {
+    kind: 'nonnegative',
+    default: 12,
+    min: 1,
+    max: 128,
+    live: true,
+    label: 'Font size',
+  },
+  textColor: {
+    kind: 'rgba',
+    default: Object.freeze([0.65, 0.68, 0.72, 1] as const),
+    live: true,
+    label: 'Text color',
+  },
+  axisColor: {
+    kind: 'rgba',
+    default: Object.freeze([0.5, 0.55, 0.6, 0.5] as const),
+    live: true,
+    label: 'Axis color',
+  },
+  gridColor: {
+    kind: 'rgba',
+    default: Object.freeze([0.5, 0.55, 0.6, 0.15] as const),
+    live: true,
+    label: 'Grid color',
+  },
+  cursorColor: {
+    kind: 'rgba',
+    default: Object.freeze([1, 1, 1, 0.8] as const),
+    live: true,
+    label: 'Playhead color',
+  },
   devices: { kind: 'pool', default: devices, live: false, label: 'Device pool' },
   colormap: { kind: 'colormap', default: neutralColormap, live: true, label: 'Colormap' },
   lineWidthPx: { kind: 'nonnegative', default: 1.5, live: true, label: 'Line width' },
@@ -102,14 +191,9 @@ export function resolveOptions(options: Options): ResolvedOptions {
       (definition.kind === 'domain' || definition.kind === 'rgba') && value !== null
         ? Object.freeze([...(value as readonly number[])])
         : value;
-    return [key, owned];
+    return [key, definition.kind === 'axis' ? ownAxis(value as Axis | null) : owned];
   });
   return Object.freeze(Object.fromEntries(entries)) as ResolvedOptions;
-}
-
-/** Copy a tuple the caller may still mutate; `null` stays `null`. */
-export function own<T extends readonly number[]>(tuple: T | null): T | null {
-  return tuple === null ? null : (Object.freeze([...tuple]) as unknown as T);
 }
 
 /**
@@ -131,6 +215,16 @@ export function validateOptions(options: Options): void {
 function validateOptionValue(key: string, definition: OptionDefinition, value: unknown): void {
   if (value === null && 'nullable' in definition && definition.nullable) return;
   switch (definition.kind) {
+    case 'boolean':
+      if (typeof value !== 'boolean') typeError(key, 'a boolean');
+      return;
+    case 'axis':
+      validateAxis(key, value);
+      return;
+    case 'string':
+      if (typeof value !== 'string' || !value.trim() || value.length > 1024)
+        typeError(key, 'a nonempty string of at most 1024 characters');
+      return;
     case 'pool':
       if (typeof (value as Partial<DevicePool> | null)?.acquire !== 'function') {
         typeError(key, 'a device pool');
@@ -144,6 +238,8 @@ function validateOptionValue(key: string, definition: OptionDefinition, value: u
       if (!Number.isFinite(value) || value < 0) {
         throw new RangeError(`monitor option ${key} must be finite and nonnegative`);
       }
+      if ('min' in definition && value < definition.min!)
+        throw new RangeError(`monitor option ${key} must be at least ${definition.min}`);
       if ('max' in definition && value > definition.max!) {
         throw new RangeError(`monitor option ${key} must be at most ${definition.max}`);
       }
@@ -161,4 +257,54 @@ function validateOptionValue(key: string, definition: OptionDefinition, value: u
 
 function typeError(key: string, expected: string): never {
   throw new TypeError(`monitor option ${key} must be ${expected}`);
+}
+
+function ownAxis(axis: Axis | null): Axis | null {
+  if (axis === null) return null;
+  return Object.freeze({
+    ...axis,
+    ...(axis.ticks
+      ? {
+          ticks: Object.freeze(axis.ticks.map((tick) => Object.freeze({ ...tick }))),
+        }
+      : {}),
+  });
+}
+function validateAxis(key: string, value: unknown): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    typeError(key, 'an axis object or null');
+  const axis = value as Axis;
+  const label = (text: unknown) => {
+    if (text !== undefined && (typeof text !== 'string' || text.length > 256))
+      typeError(key, 'labels of at most 256 characters');
+  };
+  label(axis.label);
+  if (
+    axis.minSpacingPx !== undefined &&
+    (!Number.isFinite(axis.minSpacingPx) || axis.minSpacingPx < 1)
+  )
+    throw new RangeError(`${key}.minSpacingPx must be at least 1`);
+  if (
+    axis.precision !== undefined &&
+    (!Number.isInteger(axis.precision) || axis.precision < 0 || axis.precision > 12)
+  )
+    throw new RangeError(`${key}.precision must be an integer from 0 to 12`);
+  if (
+    axis.format !== undefined &&
+    !['auto', 'fixed', 'scientific', 'engineering'].includes(axis.format)
+  )
+    typeError(key, 'a supported numeric format');
+  if (axis.grid !== undefined && typeof axis.grid !== 'boolean')
+    typeError(key, 'a boolean grid option');
+  if (axis.ticks !== undefined) {
+    if (!Array.isArray(axis.ticks) || axis.ticks.length > 128)
+      throw new RangeError(`${key}.ticks must contain at most 128 ticks`);
+    let previous = -Infinity;
+    for (const tick of axis.ticks as readonly Tick[]) {
+      if (!tick || !Number.isFinite(tick.value) || tick.value <= previous)
+        throw new RangeError(`${key}.ticks must be finite and strictly increasing`);
+      previous = tick.value;
+      label(tick.label);
+    }
+  }
 }

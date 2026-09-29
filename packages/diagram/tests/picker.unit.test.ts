@@ -4,7 +4,8 @@ import { textWidth } from '../src/geometry.js';
 import { PART_BLOCK, PART_GROUP, PART_NET, PART_PORT, partId } from '../src/part.js';
 import { Picker } from '../src/pick/picker.js';
 import { NONE, SIDE_TOP } from '../src/prepare.js';
-import { LINE } from '../src/text/metrics.js';
+import { glyphMetrics } from '@latkit/gpu';
+const { line: LINE } = glyphMetrics;
 import { FakeSource } from './fixtures/pick-source.js';
 import { build, plant, random, randomNetlist, twoArea } from './fixtures/netlists.js';
 
