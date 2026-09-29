@@ -44,7 +44,7 @@ import { NONE, sameNetlist, type Prepared } from './prepare.js';
 import { routePreview } from './route/orthogonal.js';
 import { Scene } from './scene.js';
 import type { Shade, ShadeFrame } from './shade.js';
-import { Atlas, canvasRasterizer, type Rasterizer } from './text/atlas.js';
+import { GlyphAtlas, createGlyphRasterizer, type GlyphRasterizer } from '@latkit/gpu';
 import { Labels, textRuns } from './text/labels.js';
 import type { Scene as SceneSnapshot } from './snapshot.js';
 import {
@@ -530,7 +530,7 @@ export interface ControllerDeps {
   attachGestures: typeof attachGestures;
   attachKeyboard: typeof attachKeyboard;
   /** The glyph rasterizer the atlas draws with, or null to draw no text. */
-  createRasterizer(): Rasterizer | null;
+  createRasterizer(): GlyphRasterizer | null;
 }
 
 const DEFAULT_CONTROLLER_DEPS: ControllerDeps = {
@@ -540,7 +540,7 @@ const DEFAULT_CONTROLLER_DEPS: ControllerDeps = {
   createFrameLoop,
   attachGestures,
   attachKeyboard,
-  createRasterizer: canvasRasterizer,
+  createRasterizer: createGlyphRasterizer,
 };
 
 /**
@@ -687,7 +687,7 @@ function createDiagramController(initial: ResolvedOptions, deps: ControllerDeps)
   });
   const scene = new Scene(mirrors, channels);
   const focus = new Focus(mirrors.focus);
-  const atlas = new Atlas(deps.createRasterizer(), opts.fontFamily);
+  const atlas = new GlyphAtlas(opts.fontFamily, deps.createRasterizer());
   const labels = new Labels(mirrors.glyphs, atlas);
   const camera = new CameraRig();
 

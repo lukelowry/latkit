@@ -81,3 +81,47 @@ pnpm --filter @latkit/monitor-example dev
 ```
 
 Open `http://127.0.0.1:5190`.
+
+## Axes and export
+
+Axes render inside the GPU plot and are preserved by video exports:
+
+```ts
+monitor.setOptions({
+  timeAxis: { label: 'Time (s)' },
+  valueAxis: { label: 'Response (p.u.)', precision: 2 },
+  gridColor: [0.5, 0.55, 0.6, 0.15],
+});
+monitor.seek(2.5);
+const scene = monitor.snapshot();
+```
+
+Use `timeAxis: null` and `valueAxis: null` to reclaim the gutters for an unlabeled plot.
+`monitor.toData(clientX, clientY)` uses the same rectangle as traces and ticks; points in a gutter
+return `null`. The host still provides an accessible canvas name and any keyboard controls.
+
+## Navigate and shade
+
+```ts
+monitor.setOptions({ interaction: true }); // drag, wheel, and two-pointer pinch
+monitor.pan(40, 0); // move the plotted image by CSS pixels
+monitor.zoom(1.25, { clientX: event.clientX, clientY: event.clientY });
+monitor.zoom(0.8); // centered on the plot
+monitor.fit(); // restore automatic time and value ranges
+
+await monitor.setShade({
+  wgsl: `fn shade(f: Fragment) -> vec4f {
+    let pulse = 0.85 + 0.15 * sin(f.time * 2.0);
+    return vec4f(f.color.rgb * pulse, f.color.a);
+  }`,
+  tick: () => true,
+});
+await monitor.setShade(null); // restore normal composition
+```
+
+Navigation remaps retained history immediately and refines after the gesture settles. The same
+ranges drive labels, exact readings, and snapshots. Interaction defaults to false; the host can
+use the methods for keyboard controls. Shading changes only plot composition, with no history
+reads. Snapshots preserve WGSL and freeze JavaScript tick uniforms; exported shader time follows
+the output video clock. See the [package README](https://github.com/lukelowry/latkit/tree/main/packages/monitor)
+for the fragment and lifecycle contracts.

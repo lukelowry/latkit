@@ -12,7 +12,8 @@ import { units } from '../src/layout/units.js';
 import { PART_BLOCK, PART_NET, partId } from '../src/part.js';
 import { NONE, prepare, STYLE_WIRE, type Prepared } from '../src/prepare.js';
 import { NUDGE_SETTLE_MS, Scene } from '../src/scene.js';
-import { LINE } from '../src/text/metrics.js';
+import { glyphMetrics } from '@latkit/gpu';
+const { line: LINE } = glyphMetrics;
 import {
   BLOCK_WORDS,
   createMirrors,

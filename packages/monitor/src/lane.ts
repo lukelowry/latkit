@@ -72,6 +72,11 @@ export class Lane {
   #wanted = false;
   #version = 0;
   #reported = -1;
+  #failure: Error | null = null;
+  #resolved = false;
+  readonly #waiters = new Set<() => void>();
+  #sample: { frame: number; time: number; values: Float64Array } | null = null;
+  #located: { time: number; frame: number; count: number } | null = null;
   /** Folded repaints' scratch, kept across them: the envelope, and each element's carried row. */
   #envelope: Envelope | null = null;
   #carry: Float32Array | null = null;
@@ -126,6 +131,7 @@ export class Lane {
   /** Queue a snapshot of the series; `frame` starts it once the current one is drawn. */
   update(): void {
     this.#pending = true;
+    this.#failure = null;
     this.#version++;
     this.#present();
   }
@@ -206,6 +212,7 @@ export class Lane {
     this.#domain = domain;
     this.#colors = colors;
     this.#state = state;
+    this.#resolved = true;
     if (changed || this.#repaint) {
       this.#painted = this.#focused = 0;
       this.#painter.beginRebuild(range, domain);
@@ -322,10 +329,11 @@ export class Lane {
         hiAt: new Uint32Array(elements),
       };
     }
-    this.#carry ??= new Float32Array(this.#series.elementCount * 2);
+    if (!this.#carry || this.#carry.length < elements * 2)
+      this.#carry = new Float32Array(elements * 2);
     const frames = buckets * bucket;
-    for (let f = from; f < to; f += frames)
-      for (let e = 0; e < this.#series.elementCount; e += elements)
+    for (let e = 0; e < this.#series.elementCount; e += elements)
+      for (let f = from; f < to; f += frames)
         yield {
           frameOffset: f,
           frameCount: Math.min(frames, to - f),
@@ -362,7 +370,7 @@ export class Lane {
   ): number {
     const envelope = this.#envelope!,
       carry = this.#carry!;
-    const { elementCount: elements, elementOffset: offset } = window;
+    const { elementCount: elements } = window;
     const folded = fold(
       block.time,
       block.values,
@@ -378,7 +386,7 @@ export class Lane {
     let row = 0;
     if (carried !== null) {
       time[0] = carried;
-      values.set(carry.subarray(offset * 2, (offset + elements) * 2));
+      values.set(carry.subarray(0, elements * 2));
       row = 1;
     }
     for (let i = 0; i < folded; i++, row++) {
@@ -391,7 +399,7 @@ export class Lane {
       }
     }
     this.#nextCarriedTime = time[row - 1]!;
-    carry.set(values.subarray((row - 1) * elements * 2, row * elements * 2), offset * 2);
+    carry.set(values.subarray((row - 1) * elements * 2, row * elements * 2));
     return row;
   }
 
@@ -432,7 +440,7 @@ export class Lane {
       void pending?.catch(() => {});
       const values = focus ? this.#focusValues : this.#values;
       const time = focus ? this.#focusTime : this.#time;
-      if (folding && window.elementOffset === 0) this.#carriedTime = this.#nextCarriedTime;
+      if (folding) this.#carriedTime = this.#nextCarriedTime;
       // A folded window whose columns outgrow one upload goes on in the next.
       for (let f = 0; f < window.frameCount;) {
         let rows: number;
@@ -489,6 +497,7 @@ export class Lane {
     // Wakes coalesce in the host's frame loop, so every request forwards.
     this.#wanted = true;
     this.#events.present();
+    for (const wake of this.#waiters) wake();
   }
 
   /**
@@ -496,7 +505,7 @@ export class Lane {
    * rebuild, report `rendered` once everything committed is drawn, and start the queued snapshot
    * once nothing is in flight and the canvas size has `settled`. The host's frame loop calls this.
    */
-  frame(settled: boolean): void {
+  frame(settled: boolean, present: () => void): void {
     if (!this.#wanted || this.#paused || this.#destroyed) return;
     this.#wanted = false;
     const idle = !this.#resolving && !this.#history && !this.#focus;
@@ -506,11 +515,7 @@ export class Lane {
       this.#painted >= this.#state.frameCount &&
       (this.#selected === null || this.#focused >= this.#state.frameCount);
     if (complete) this.#painter.commit();
-    this.#painter.present(
-      this.#selected === null ? 1 : this.#style.unselectedAlpha,
-      this.#range,
-      this.#domain,
-    );
+    present();
     if (complete && !this.#pending && this.#reported !== this.#version) {
       this.#reported = this.#version;
       this.#events.rendered();
@@ -519,6 +524,50 @@ export class Lane {
       if (settled) this.#start();
       else this.#present();
     }
+  }
+
+  get resolved(): boolean {
+    return this.#resolved;
+  }
+  get timeRange(): Domain {
+    return this.#range;
+  }
+  get valueRange(): Domain {
+    return this.#domain;
+  }
+
+  /** Drive the same bounded scheduler offscreen without presenting intermediate frames. */
+  async prepare(signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    if (this.#paused) this.resume();
+    while (!this.#destroyed) {
+      if (this.#failure) throw this.#failure;
+      this.frame(true, () => {});
+      if (!this.#pending && this.#reported === this.#version) return;
+      await new Promise<void>((resolve, reject) => {
+        const clean = () => {
+          this.#waiters.delete(wake);
+          signal.removeEventListener('abort', abort);
+        };
+        const wake = () => {
+          clean();
+          resolve();
+        };
+        const abort = () => {
+          clean();
+          reject(
+            signal.reason instanceof Error
+              ? signal.reason
+              : new DOMException('Monitor preparation aborted', 'AbortError'),
+          );
+        };
+        this.#waiters.add(wake);
+        signal.addEventListener('abort', abort, { once: true });
+        if (signal.aborted) abort();
+      });
+      signal.throwIfAborted();
+    }
+    throw new DOMException('Monitor closed', 'AbortError');
   }
 
   select(element: number | null): void {
@@ -561,25 +610,51 @@ export class Lane {
       this.#present();
     }
   }
-  async reading(x: number, y: number, signal: AbortSignal): Promise<Reading | null> {
-    const state = this.#state,
-      domain = this.#domain;
-    const t = this.#range[0] * (1 - x) + this.#range[1] * x;
-    const [, end] = await this.#series.locate([t, t], state.frameCount, signal);
-    signal.throwIfAborted();
-    const frame = end - 1;
+  async reading(
+    x: number,
+    y: number,
+    signal: AbortSignal,
+    range: Domain = this.#range,
+    domain: Domain = this.#domain,
+  ): Promise<Reading | null> {
+    const state = this.#state;
+    const t = range[0] * (1 - x) + range[1] * x;
+    if (state.timeRange && (t < state.timeRange[0] || t > state.timeRange[1])) return null;
+    let frame =
+      this.#located?.time === t && this.#located.count === state.frameCount
+        ? this.#located.frame
+        : null;
+    if (frame === null) {
+      const [, end] = await this.#series.locate([t, t], state.frameCount, signal);
+      signal.throwIfAborted();
+      frame = end - 1;
+      if (!Number.isSafeInteger(frame))
+        throw new RangeError('Series returned an invalid sample frame');
+      this.#located = { time: t, frame, count: state.frameCount };
+    }
     if (frame < 0 || frame >= state.frameCount) return null;
+    const cached = this.#sample?.frame === frame ? this.#sample : null;
+    const values =
+      cached?.values ??
+      (this.#series.elementCount * 8 <= READ_BYTES
+        ? new Float64Array(this.#series.elementCount)
+        : null);
+    let sampleTime = cached?.time ?? 0;
     let best: Reading | null = null,
       distance = Infinity;
     for (let e = 0; e < this.#series.elementCount; e += this.#elements) {
       const count = Math.min(this.#elements, this.#series.elementCount - e);
-      const block = await this.#read(
-        { frameOffset: frame, frameCount: 1, elementOffset: e, elementCount: count },
-        signal,
-      );
+      const block = cached
+        ? { time: [cached.time], values: cached.values.subarray(e, e + count) }
+        : await this.#read(
+            { frameOffset: frame, frameCount: 1, elementOffset: e, elementCount: count },
+            signal,
+          );
+      if (!cached && values) values.set(block.values.subarray(0, count), e);
+      sampleTime = block.time[0]!;
       for (let i = 0; i < count; i++) {
         const value = block.values[i]!;
-        if (!Number.isFinite(value)) continue;
+        if (!Number.isFinite(value) || value < domain[0] || value > domain[1]) continue;
         const d = Math.abs(1 - position(value, domain) - y);
         if (d < distance) {
           distance = d;
@@ -595,6 +670,7 @@ export class Lane {
         }
       }
     }
+    if (values) this.#sample = { frame, time: sampleTime, values };
     return best;
   }
   pause(): void {
@@ -617,11 +693,15 @@ export class Lane {
   destroy(): void {
     this.pause();
     this.#destroyed = true;
+    this.#sample = null;
+    for (const wake of this.#waiters) wake();
   }
   #report(error: unknown, signal: AbortSignal): void {
     if (signal.aborted || this.#destroyed) return;
     this.#repaint = true;
-    this.#events.error(error instanceof Error ? error : new Error(String(error)));
+    this.#failure = error instanceof Error ? error : new Error(String(error));
+    this.#events.error(this.#failure);
+    for (const wake of this.#waiters) wake();
   }
 }
 

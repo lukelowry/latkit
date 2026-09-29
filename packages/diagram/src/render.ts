@@ -6,7 +6,7 @@ import { resolveOptions, validateOptions } from './options.js';
 import { idOf } from './part.js';
 import { Scene as LayoutScene } from './scene.js';
 import type { Scene } from './snapshot.js';
-import { Atlas, canvasRasterizer } from './text/atlas.js';
+import { GlyphAtlas } from '@latkit/gpu';
 import { Labels } from './text/labels.js';
 import { createMirrors } from './webgpu/buffers.js';
 import { Renderer } from './webgpu/renderer.js';
@@ -59,8 +59,8 @@ export async function createDiagramRenderer(
     focus.reset(prepared);
     focus.select((snapshot.selected ?? []).map(idOf));
     const atlas = snapshot.glyphs
-      ? Atlas.from(snapshot.glyphs)
-      : new Atlas(canvasRasterizer(), opts.fontFamily);
+      ? GlyphAtlas.from(snapshot.glyphs)
+      : new GlyphAtlas(opts.fontFamily);
     const labels = new Labels(mirrors.glyphs, atlas);
     labels.reset(prepared);
     const camera = new CameraRig();

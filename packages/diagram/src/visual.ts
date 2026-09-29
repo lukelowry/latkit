@@ -60,8 +60,6 @@ export const VISUAL = Object.freeze({
   previewDashPx: 6,
   /** Wire preview gap length. */
   previewGapPx: 4,
-  /** Glyph edge softness: the SDF smoothing band in `fwidth` units. */
-  glyphSoftness: 0.7,
   /** Radius a wire being drawn finds its target within, at least. */
   wireTargetPx: 16,
   /** Distance from an edge within which a drag pans the view toward it. */
@@ -102,7 +100,6 @@ export const SHADER_VISUALS = Object.freeze([
   'tileFullPx',
   'previewDashPx',
   'previewGapPx',
-  'glyphSoftness',
 ] as const satisfies readonly (keyof typeof VISUAL)[]);
 
 /** The WGSL constant name of a camelCase key: `wireHalfWidthPx` is `WIRE_HALF_WIDTH_PX`. */

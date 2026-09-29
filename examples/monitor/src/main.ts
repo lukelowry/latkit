@@ -70,7 +70,10 @@ const WINDOW_S = 20;
 
 // The controller holds the series and options before any canvas exists.
 const monitor = createMonitor({
+  interaction: true,
   lineWidthPx: 1.4,
+  timeAxis: { label: 'Time (s)' },
+  valueAxis: { label: 'Temperature (C)', precision: 1 },
   valueRange: signalRange(currentSignal),
   // Selecting an element dims the rest so its trace stands out.
   unselectedAlpha: 0.35,
@@ -105,7 +108,7 @@ async function main(): Promise<void> {
   monitor.on('hover', (reading) => {
     hoverReadout.textContent = describeReading(reading);
   });
-  // Pointer-down selects the nearest element inside the monitor; mirror it into the page.
+  // A click selects the nearest element inside the monitor; mirror it into the page.
   monitor.on('select', (reading) => {
     selectedElement = reading.element;
     pickReadout.textContent = describeReading(reading);
@@ -167,6 +170,28 @@ function wireChrome(): void {
     colormapRow.appendChild(button);
   }
 
+  document.getElementById('fit')!.addEventListener('click', () => {
+    autoRangeInput.checked = true;
+    windowInput.checked = false;
+    monitor.fit();
+  });
+  document.getElementById('shade')!.addEventListener('change', (event) => {
+    const enabled = (event.target as HTMLInputElement).checked;
+    void monitor
+      .setShade(
+        enabled
+          ? {
+              wgsl: `fn shade(f: Fragment) -> vec4f {
+        let high = smoothstep(0.55, 0.85, f.point.y);
+        let pulse = 0.75 + 0.25 * sin(f.time * 2.0);
+        return vec4f(mix(f.color.rgb, vec3f(1.0, 0.4, 0.15), high * pulse), f.color.a);
+      }`,
+              tick: () => true,
+            }
+          : null,
+      )
+      .catch((error) => fail(String(error)));
+  });
   runToggle.addEventListener('click', () => setRunning(!running));
   resetButton.addEventListener('click', resetStream);
   autoRangeInput.addEventListener('change', applyRange);
@@ -282,7 +307,11 @@ function valueAt(signal: number, _frame: number, element: number): number {
 }
 
 function applyRange(): void {
-  monitor.setOptions({ valueRange: autoRangeInput.checked ? null : signalRange(currentSignal) });
+  const signal = SIGNALS[currentSignal];
+  monitor.setOptions({
+    valueRange: autoRangeInput.checked ? null : signalRange(currentSignal),
+    valueAxis: { label: `${signal.label} (${signal.unit})`, precision: signal.decimals },
+  });
 }
 
 /** Follow the newest frame with a sliding window, or show the whole series. */

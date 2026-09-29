@@ -36,6 +36,7 @@ describe('gpu package entrypoint', () => {
 
     expect(Object.keys(entrypoint).sort()).toEqual([
       'COLORMAP_LUT_SIZE',
+      'GlyphAtlas',
       'GpuUnavailableError',
       'bakeColormap',
       'createAttachment',
@@ -43,10 +44,15 @@ describe('gpu package entrypoint', () => {
       'createDevicePool',
       'createEmitter',
       'createFrameLoop',
+      'createGlyphRasterizer',
+      'createGlyphTexture',
       'createPresentation',
       'createRenderTarget',
       'devices',
+      'glyphMetrics',
+      'glyphShader',
       'requestDevice',
+      'shaderFailure',
     ]);
     await expect(entrypoint.requestDevice()).rejects.toBeInstanceOf(entrypoint.GpuUnavailableError);
     await expect(entrypoint.devices.acquire()).rejects.toBeInstanceOf(

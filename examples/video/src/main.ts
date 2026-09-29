@@ -145,6 +145,8 @@ async function run(): Promise<void> {
     timeRange: [0, 6],
     valueRange: [0, 1],
     lineWidthPx: 1.5,
+    timeAxis: { label: 'Time (s)' },
+    valueAxis: { label: 'Response (p.u.)', precision: 2 },
   });
   const diagram = createDiagram({ colormap: colormap('turbo'), motion: 'full', flowRate: 2 });
   try {

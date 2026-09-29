@@ -1,13 +1,19 @@
-import { normalizeDomain } from '@latkit/model';
 import { bakeColormap, type RenderTarget, type SceneRenderer } from '@latkit/gpu';
+import { validateSeries } from '@latkit/model';
 import { resolveOptions } from './options.js';
-import { Lane } from './lane.js';
-import { LanePainter } from './painter.js';
-import { position } from './position.js';
+import { SHADE_HOST_WORDS } from './shade.js';
+import { Plot } from './plot.js';
 import type { Scene } from './snapshot.js';
 
-/** Render a monitor's history once and advance its playhead without rereading that history. */
+/** Render the same plot as a live monitor, then advance its playhead without rereading history. */
 export function createMonitorRenderer(target: RenderTarget, scene: Scene): SceneRenderer {
+  validateSeries(scene.series);
+  if (
+    !Number.isInteger(scene.signal) ||
+    scene.signal < 0 ||
+    scene.signal >= scene.series.signals.length
+  )
+    throw new RangeError('Monitor scene signal is out of range');
   if (scene.series.state.frameCount === 0)
     throw new RangeError('Cannot render an empty monitor series');
   const options = resolveOptions(scene.options ?? {});
@@ -15,87 +21,79 @@ export function createMonitorRenderer(target: RenderTarget, scene: Scene): Scene
     scene.viewport && scene.viewport[0] > 0 && scene.viewport[1] > 0
       ? Math.min(target.width / scene.viewport[0], target.height / scene.viewport[1])
       : 1;
-  const painter = new LanePainter(target, target.width, target.height);
-  painter.writeColormap(scene.colormap ?? bakeColormap(options.colormap));
-  let resolve!: () => void;
-  let reject!: (error: unknown) => void;
-  const ready = new Promise<void>((yes, no) => {
-    resolve = yes;
-    reject = no;
-  });
-  void ready.catch(() => undefined);
-  let dead = false,
-    queued = false,
-    started = false,
-    prepared = false;
-  const lane = new Lane(
-    scene.series,
-    scene.signal,
-    painter,
-    {
-      timeRange: options.timeRange,
-      valueRange: options.valueRange,
-      colorRange: options.colorRange,
-      lineWidth: options.lineWidthPx * scale,
-      focusColor: options.focusColor,
-      unselectedAlpha: options.unselectedAlpha,
-    },
-    { frames: 0, range: null, domain: null },
-    {
-      error: reject,
-      range: () => {},
-      rendered: resolve,
-      present() {
-        if (queued || dead) return;
-        queued = true;
-        queueMicrotask(() => {
-          queued = false;
-          if (!dead) lane.frame(true);
-        });
-      },
-    },
+  const plot = new Plot(
+    target,
+    options,
+    scene.colormap ?? bakeColormap(options.colormap),
+    scale,
+    { error: () => {}, range: () => {}, rendered: () => {}, present: () => {} },
+    scene.glyphs,
   );
-  lane.select(scene.selected ?? null);
-  let time = 0;
-  const range = normalizeDomain(options.timeRange ?? scene.series.state.timeRange);
+  try {
+    plot.load(
+      scene.series,
+      scene.signal,
+      { frames: 0, range: null, domain: null },
+      scene.selected ?? null,
+      false,
+    );
+  } catch (error) {
+    plot.destroy();
+    throw error;
+  }
+  const host = new Float32Array(SHADE_HOST_WORDS);
+  if (scene.shade) {
+    if (scene.shade.uniforms.length !== SHADE_HOST_WORDS) {
+      plot.destroy();
+      throw new RangeError('Monitor shade uniforms must contain 64 floats');
+    }
+    host.set(scene.shade.uniforms);
+  }
+  // Observe failures immediately; prepare reports them to the caller without an unhandled rejection.
+  let failure: Error | null = null;
+  let ready = false;
+  const closed = new AbortController();
+  const shadeReady = plot
+    .setShade(scene.shade?.wgsl ?? null)
+    .catch((error: unknown) => {
+      failure = error instanceof Error ? error : new Error(String(error));
+    })
+    .then(() => {
+      ready = true;
+    });
   return {
-    async prepare(next, signal) {
+    async prepare(time, signal) {
+      if (!Number.isFinite(time)) throw new RangeError('Monitor source time must be finite');
       signal.throwIfAborted();
-      if (!started) {
-        started = true;
-        lane.resume();
-      }
-      if (!prepared) {
+      closed.signal.throwIfAborted();
+      if (!ready) {
+        const waitSignal = AbortSignal.any([signal, closed.signal]);
         await new Promise<void>((resolve, reject) => {
-          const aborted = (): void =>
+          const abort = () =>
             reject(
-              signal.reason instanceof Error
-                ? signal.reason
+              waitSignal.reason instanceof Error
+                ? waitSignal.reason
                 : new DOMException('Monitor preparation aborted', 'AbortError'),
             );
-          signal.addEventListener('abort', aborted, { once: true });
-          void ready
-            .then(resolve, reject)
-            .finally(() => signal.removeEventListener('abort', aborted));
+          waitSignal.addEventListener('abort', abort, { once: true });
+          void shadeReady.then(() => {
+            waitSignal.removeEventListener('abort', abort);
+            resolve();
+          });
+          if (waitSignal.aborted) abort();
         });
-        signal.throwIfAborted();
-        prepared = true;
       }
-      time = next;
+      signal.throwIfAborted();
+      closed.signal.throwIfAborted();
+      if (failure) throw failure;
+      await plot.prepare(signal);
+      signal.throwIfAborted();
+      plot.seek(scene.cursor === false ? null : time);
     },
-    draw() {
-      painter.present(
-        scene.selected == null ? 1 : options.unselectedAlpha,
-        null,
-        null,
-        scene.cursor === false ? null : position(time, range),
-      );
-    },
-    destroy() {
-      dead = true;
-      lane.destroy();
-      painter.destroy();
-      reject(new DOMException('Monitor renderer closed', 'AbortError'));
+    draw: (timeMs) => plot.draw(timeMs, host),
+    destroy: () => {
+      closed.abort(new DOMException('Monitor closed', 'AbortError'));
+      plot.destroy();
     },
   };
 }

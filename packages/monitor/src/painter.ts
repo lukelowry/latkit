@@ -1,7 +1,9 @@
 /// <reference types="@webgpu/types" />
 import type { RGBA } from '@latkit/colormaps';
-import { COLORMAP_LUT_SIZE, type RenderTarget } from '@latkit/gpu';
+import { COLORMAP_LUT_SIZE, shaderFailure, type RenderTarget } from '@latkit/gpu';
 import type { Domain } from '@latkit/model';
+
+import { DEFAULT_SHADE_WGSL, POINTER_NONE, type ShadeFrame } from './shade.js';
 
 import { position } from './position.js';
 import segmentWgsl from './gpu/segment.wgsl?raw';
@@ -22,6 +24,13 @@ export interface UniformValues {
   readonly lineWidth: number;
   readonly elementCount: number;
   readonly focusColor: RGBA;
+}
+
+export interface Composition extends ShadeFrame {
+  readonly host: Float32Array;
+  readonly scale: number;
+  readonly originX: number;
+  readonly originY: number;
 }
 
 /** History and focus targets at one size, and the time and value ranges drawn into them. */
@@ -45,18 +54,20 @@ export class LanePainter {
   readonly windowValueCapacity: number;
   width: number;
   height: number;
-  readonly #target: RenderTarget;
-  readonly #format: GPUTextureFormat;
   readonly #historyPipeline: GPURenderPipeline;
   readonly #focusPipeline: GPURenderPipeline;
-  readonly #composite: GPURenderPipeline;
+  #composite: GPURenderPipeline;
+  readonly #identity: GPURenderPipeline;
+  readonly #format: GPUTextureFormat;
+  #shade = DEFAULT_SHADE_WGSL;
+  #generation = 0;
   readonly #lut: GPUTexture;
   readonly #sampler: GPUSampler;
   readonly #historyUniform: GPUBuffer;
   readonly #focusUniform: GPUBuffer;
   readonly #compositeUniform: GPUBuffer;
   readonly #uniform = new ArrayBuffer(32);
-  readonly #compositeValues = new Float32Array(8);
+  readonly #compositeValues = new Float32Array(80);
   #shown: Image;
   #drawing: Image | null = null;
   #compositeGroup: GPUBindGroup | null = null;
@@ -68,8 +79,8 @@ export class LanePainter {
   constructor(presentation: RenderTarget, width: number, height: number) {
     const { device, format } = presentation;
     this.device = device;
-    this.#target = presentation;
     this.#format = format;
+    this.#checkSize(width, height);
     this.width = width;
     this.height = height;
     this.windowValueCapacity = Math.floor(
@@ -89,7 +100,7 @@ export class LanePainter {
         label,
         layout: 'auto',
         vertex: { module, entryPoint: 'vs_main' },
-        fragment: { module, entryPoint, targets: [{ format, blend }] },
+        fragment: { module, entryPoint, targets: [{ format: 'rgba8unorm', blend }] },
         primitive: { topology: 'triangle-strip' },
       });
     this.#historyPipeline = pipeline('monitor-history', 'fs_history');
@@ -101,26 +112,64 @@ export class LanePainter {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     this.#sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
-    const uniform = (label: string) =>
+    const uniform = (label: string, size = 32) =>
       device.createBuffer({
         label,
-        size: 32,
+        size,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
     this.#historyUniform = uniform('monitor-uniform');
     this.#focusUniform = uniform('monitor-focus-uniform');
-    this.#compositeUniform = uniform('monitor-composite');
+    this.#compositeUniform = uniform('monitor-composite', this.#compositeValues.byteLength);
     this.#shown = this.#image();
-    const composite = device.createShaderModule({
+    this.#composite = this.#identity = device.createRenderPipeline(
+      this.#descriptor(DEFAULT_SHADE_WGSL),
+    );
+  }
+
+  #descriptor(wgsl: string): GPURenderPipelineDescriptor {
+    const module = this.device.createShaderModule({
       label: 'monitor-composite',
-      code: compositeWgsl,
+      code: `${compositeWgsl}\n${wgsl}`,
     });
-    this.#composite = device.createRenderPipeline({
+    return {
       label: 'monitor-composite',
       layout: 'auto',
-      vertex: { module: composite, entryPoint: 'vertex' },
-      fragment: { module: composite, entryPoint: 'fragment', targets: [{ format }] },
-    });
+      vertex: { module, entryPoint: 'vertex' },
+      fragment: {
+        module,
+        entryPoint: 'fragment',
+        targets: [
+          {
+            format: this.#format,
+            blend: {
+              color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+              alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  /** Compile off the render path. A failure or superseded build never replaces a working shade. */
+  async setShade(wgsl: string | null): Promise<void> {
+    const generation = ++this.#generation;
+    const next = wgsl ?? DEFAULT_SHADE_WGSL;
+    if (this.#destroyed || next === this.#shade) return;
+    let pipeline = this.#identity;
+    if (next !== DEFAULT_SHADE_WGSL) {
+      const descriptor = this.#descriptor(next);
+      try {
+        pipeline = await this.device.createRenderPipelineAsync(descriptor);
+      } catch (cause) {
+        throw await shaderFailure('monitor', [descriptor.vertex.module], cause);
+      }
+    }
+    if (this.#destroyed || generation !== this.#generation) return;
+    this.#composite = pipeline;
+    this.#shade = next;
+    this.#compositeGroup = null;
   }
 
   /** Whether draws land in an image not yet shown. */
@@ -138,20 +187,33 @@ export class LanePainter {
   }
 
   reserve(elements: number, historyFrames: number, focusFrames: number): void {
-    this.releaseSlabs();
+    let index = 0,
+      replaced = false;
     const make = (label: string, size: number) => {
+      size = Math.max(8, size);
+      if (
+        size >
+        Math.min(this.device.limits.maxStorageBufferBindingSize, this.device.limits.maxBufferSize)
+      )
+        throw new RangeError('Monitor sample buffer exceeds device limits');
+      const at = index++,
+        previous = this.#slabs[at];
+      if (previous && previous.size >= size) return previous;
+      replaced = true;
       const buffer = this.device.createBuffer({
         label,
         size: Math.max(8, size),
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
-      this.#slabs.push(buffer);
+      previous?.destroy();
+      this.#slabs[at] = buffer;
       return buffer;
     };
     const values = make('monitor-values', elements * historyFrames * 8);
     const time = make('monitor-xnorm', historyFrames * 4);
     const focus = make('monitor-focus-values', focusFrames * 8);
     const focusTime = make('monitor-focus-xnorm', focusFrames * 4);
+    if (!replaced && this.#historyGroup && this.#focusGroup) return;
     const group = (
       pipeline: GPURenderPipeline,
       uniform: GPUBuffer,
@@ -281,11 +343,12 @@ export class LanePainter {
    * Composite the shown image, mapped from the ranges it was drawn over into `range` and
    * `domain`.
    */
-  present(
+  compose(
+    pass: GPURenderPassEncoder,
     alpha = 1,
     range: Domain | null = null,
     domain: Domain | null = null,
-    cursor: number | null = null,
+    frame?: Composition,
   ): void {
     const map = this.#compositeValues,
       shown = this.#shown;
@@ -303,8 +366,16 @@ export class LanePainter {
       map[2] = map[3] = 0;
     }
     map[4] = alpha;
-    map[5] = cursor ?? -1;
-    map[6] = 1 / this.width;
+    map[5] = ((frame?.timeMs ?? 0) % 3_600_000) / 1000;
+    map[8] = frame?.viewport.w ?? this.width;
+    map[9] = frame?.viewport.h ?? this.height;
+    map[10] = frame?.pointerPx?.[0] ?? POINTER_NONE;
+    map[11] = frame?.pointerPx?.[1] ?? POINTER_NONE;
+    map[12] = frame?.originX ?? 0;
+    map[13] = frame?.originY ?? 0;
+    map[14] = this.width / (frame?.scale ?? 1);
+    map[15] = this.height / (frame?.scale ?? 1);
+    if (frame) map.set(frame.host, 16);
     this.device.queue.writeBuffer(this.#compositeUniform, 0, map);
     this.#compositeGroup ??= this.device.createBindGroup({
       layout: this.#composite.getBindGroupLayout(0),
@@ -315,26 +386,14 @@ export class LanePainter {
         { binding: 3, resource: this.#sampler },
       ],
     });
-    const encoder = this.device.createCommandEncoder();
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: this.#target.texture().createView(),
-          clearValue: [0, 0, 0, 0],
-          loadOp: 'clear',
-          storeOp: 'store',
-        },
-      ],
-    });
     pass.setPipeline(this.#composite);
     pass.setBindGroup(0, this.#compositeGroup);
     pass.draw(3);
-    pass.end();
-    this.device.queue.submit([encoder.finish()]);
   }
 
   /** The size the next rebuild draws at; the shown image stretches to the canvas meanwhile. */
   resize(width: number, height: number): void {
+    this.#checkSize(width, height);
     this.width = width;
     this.height = height;
   }
@@ -346,6 +405,7 @@ export class LanePainter {
   destroy(): void {
     if (this.#destroyed) return;
     this.#destroyed = true;
+    this.#generation++;
     this.releaseSlabs();
     this.#drop(this.#drawing);
     this.#drop(this.#shown);
@@ -366,12 +426,26 @@ export class LanePainter {
     image?.history.destroy();
     image?.focus.destroy();
   }
+  #checkSize(width: number, height: number): void {
+    const limit = this.device.limits.maxTextureDimension2D;
+    // Two shown and two rebuilding rgba8 targets: at most 256 MiB in total.
+    if (
+      !Number.isInteger(width) ||
+      !Number.isInteger(height) ||
+      width < 1 ||
+      height < 1 ||
+      width > limit ||
+      height > limit ||
+      width * height * 16 > 256 * 1024 * 1024
+    )
+      throw new RangeError('Monitor plot exceeds its 256 MiB texture budget or device limits');
+  }
   #image(): Image {
     const texture = (label: string) =>
       this.device.createTexture({
         label,
         size: { width: this.width, height: this.height },
-        format: this.#format,
+        format: 'rgba8unorm',
         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
       });
     const history = texture('monitor-history');

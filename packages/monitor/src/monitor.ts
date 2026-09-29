@@ -11,9 +11,13 @@ import {
 import type { Domain, Series } from '@latkit/model';
 import { bakeColormap, createEmitter } from '@latkit/gpu';
 import { validateSeries } from '@latkit/model';
-import { Lane, storedElement, type Scan, type Style } from './lane.js';
-import { OPTIONS, own, resolveOptions, validateOptions, type Options } from './options.js';
-import { LanePainter } from './painter.js';
+import { storedElement, type Scan } from './lane.js';
+import { OPTIONS, resolveOptions, validateOptions, type Options } from './options.js';
+import { createInteraction } from './interaction.js';
+import { transformRange } from './view.js';
+import { SHADE_HOST_WORDS, type Shade, type ShadeFrame } from './shade.js';
+import { Plot } from './plot.js';
+import { snapshotGlyphs } from './axes.js';
 export type { Options } from './options.js';
 
 /** Exact sample selected by a pointer; element is the original class index. */
@@ -91,6 +95,24 @@ export interface Monitor {
   setOptions(options: Options): void;
   /** Highlight a class element; an unrecorded index is ignored. */
   select(element: number | null): void;
+  /** Move or hide the simulation playhead without rereading history. */
+  seek(time: number | null): void;
+  /** Translate the displayed plot by CSS pixels. Source refinement waits for movement to settle. */
+  pan(dx: number, dy: number): void;
+  /** Zoom both axes; a factor above 1 zooms in. Omit the client-coordinate anchor for the plot center. */
+  zoom(factor: number, anchor?: { readonly clientX: number; readonly clientY: number }): void;
+  /** Restore automatic time and value ranges. */
+  fit(): void;
+  /**
+   * Compile a composed-trace shade, or reset with null. Failed builds keep the previous shade.
+   * Detached controllers retain it and compile on attach, reporting failures through error.
+   */
+  setShade(shade: Shade | null): Promise<void>;
+  /** Map viewport client coordinates to data, or null outside the plot or before preparation. */
+  toData(
+    clientX: number,
+    clientY: number,
+  ): { readonly time: number; readonly value: number } | null;
   pause(): void;
   resume(): void;
   destroy(): void;
@@ -98,15 +120,16 @@ export interface Monitor {
 interface Binding {
   readonly canvas: HTMLCanvasElement;
   readonly presentation: Presentation<HTMLCanvasElement>;
-  readonly painter: LanePainter;
+  readonly plot: Plot;
   /** One frame loop per binding: backing size, cursor readings, and the lane's presents. */
   readonly loop: FrameLoop;
   released: boolean;
   backingScale: number;
+  refinement: ReturnType<typeof setTimeout> | null;
+  interaction: ReturnType<typeof createInteraction> | null;
+  shadeReady: boolean;
   cursor: { readonly x: number; readonly y: number } | null;
   cursorDirty: boolean;
-  lane: Lane | null;
-  off: (() => void) | null;
   hover: AbortController | null;
   pick: AbortController | null;
   context: AbortController | null;
@@ -123,19 +146,23 @@ export function createMonitor(options: Options = {}): Monitor {
   let scan: Scan = { frames: 0, range: null, domain: null };
   let selected: number | null = null;
   let lastReading: Reading | null = null;
+  let playhead: number | null = null;
+  let shade: Shade | null = null;
+  let shadeVersion = 0;
+  const host = new Float32Array(SHADE_HOST_WORDS);
+  const pointer: [number, number] = [0, 0];
+  const shadeFrame: { -readonly [K in keyof ShadeFrame]: ShadeFrame[K] } = {
+    timeMs: 0,
+    pointerPx: null,
+    viewport: { w: 0, h: 0 },
+  };
+  const viewport = { w: 0, h: 0 };
+  shadeFrame.viewport = viewport;
   let consumerPaused = false,
     destroyed = false;
   /** The binding in effect, set once its collaborators exist so its replay can draw. */
   let binding: Binding | null = null;
 
-  const style = (entry: Binding): Style => ({
-    timeRange: settings.timeRange,
-    valueRange: settings.valueRange,
-    colorRange: settings.colorRange,
-    lineWidth: settings.lineWidthPx * entry.backingScale,
-    focusColor: settings.focusColor,
-    unselectedAlpha: settings.unselectedAlpha,
-  });
   function cancelReadings(entry: Binding): void {
     entry.hover?.abort();
     entry.hover = null;
@@ -144,42 +171,14 @@ export function createMonitor(options: Options = {}): Monitor {
     entry.context?.abort();
     entry.context = null;
   }
-  function forgetLane(entry: Binding): void {
-    cancelReadings(entry);
-    entry.off?.();
-    entry.off = null;
-    entry.lane?.destroy();
-    entry.lane = null;
-  }
   function replay(entry: Binding): void {
-    forgetLane(entry);
-    entry.painter.writeColormap(colormapLut);
-    entry.painter.reset();
-    if (!series) {
-      entry.painter.releaseSlabs();
-      if (!consumerPaused) entry.painter.present();
-      return;
+    cancelReadings(entry);
+    entry.plot.load(series, signalIndex, scan, selected);
+    entry.plot.seek(playhead);
+    if (!consumerPaused) {
+      entry.plot.lane?.resume();
+      entry.loop.wake();
     }
-    const lane = new Lane(series, signalIndex, entry.painter, style(entry), scan, {
-      error: (error) => {
-        if (entry.lane === lane && !entry.released) events.emit('error', error);
-      },
-      range: (range) => {
-        if (entry.lane === lane && !entry.released) events.emit('valueRange', range);
-      },
-      rendered: () => {
-        if (entry.lane === lane && !entry.released) events.emit('rendered', undefined);
-      },
-      present: () => {
-        if (entry.lane === lane && !entry.released) entry.loop.wake();
-      },
-    });
-    entry.lane = lane;
-    entry.off = series.on('change', () => {
-      if (entry.lane === lane) lane.update();
-    });
-    lane.select(selected);
-    if (!consumerPaused) lane.resume();
   }
   /**
    * Render one frame: adopt a backing size the loop changed (the shown image stretches to it, and
@@ -188,26 +187,37 @@ export function createMonitor(options: Options = {}): Monitor {
    */
   function render(entry: Binding, frame: Frame): boolean {
     if (entry.released || consumerPaused) return false;
-    const { canvas, painter } = entry;
-    const resized = canvas.width !== painter.width || canvas.height !== painter.height;
-    const moved = entry.backingScale !== frame.backingScale;
     entry.backingScale = frame.backingScale;
-    if (resized) painter.resize(canvas.width, canvas.height);
-    if (resized || moved) {
-      cancelReadings(entry);
-      if (entry.lane) entry.lane.setStyle(style(entry), true);
-      else painter.present();
-    }
+    if (entry.plot.configure(settings, entry.backingScale)) cancelReadings(entry);
+    const cursorChanged = entry.cursorDirty;
     if (entry.cursorDirty) {
       entry.cursorDirty = false;
-      if (entry.cursor) void reading(entry, 'hover');
+      if (entry.cursor && !entry.interaction?.active) void reading(entry, 'hover');
       else if (lastReading !== null) {
         lastReading = null;
         events.emit('hover', null);
       }
     }
-    entry.lane?.frame(frame.settled);
-    return false;
+    shadeFrame.timeMs = frame.now;
+    viewport.w = frame.width;
+    viewport.h = frame.height;
+    if (entry.cursor) {
+      const rect = entry.canvas.getBoundingClientRect();
+      pointer[0] = entry.cursor.x - rect.left;
+      pointer[1] = entry.cursor.y - rect.top;
+      shadeFrame.pointerPx = pointer;
+    } else shadeFrame.pointerPx = null;
+    const tick = entry.shadeReady ? shade?.tick : undefined;
+    const animate = tick?.(host, shadeFrame) ?? false;
+    entry.plot.frame(
+      frame.settled,
+      frame.now,
+      host,
+      shadeFrame.pointerPx,
+      !!tick || (cursorChanged && shade !== null),
+      entry.refinement === null && !entry.interaction?.active,
+    );
+    return animate;
   }
   /**
    * Read the sample under the cursor for a hover, a pick, or a context menu, dropping the answer
@@ -219,24 +229,54 @@ export function createMonitor(options: Options = {}): Monitor {
     menu?: MouseEvent,
   ): Promise<void> {
     const cursor = entry.cursor,
-      lane = entry.lane;
+      lane = entry.plot.lane;
     if (!cursor || !lane || consumerPaused) return;
+    if (kind === 'hover' && entry.hover) return;
     const rect = entry.canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
+    const point = entry.plot.point(
+      ((cursor.x - rect.left) / rect.width) * entry.canvas.width,
+      ((cursor.y - rect.top) / rect.height) * entry.canvas.height,
+    );
+    if (!point) {
+      if (kind === 'hover' && lastReading !== null) {
+        lastReading = null;
+        events.emit('hover', null);
+      }
+      if (kind === 'context')
+        events.emit('contextmenu', {
+          event: menu!,
+          keyboard: false,
+          clientX: cursor.x,
+          clientY: cursor.y,
+          reading: null,
+        });
+      return;
+    }
     entry[kind]?.abort();
     const job = new AbortController();
     entry[kind] = job;
     try {
-      const result = await lane.reading(
-        clamp((cursor.x - rect.left) / rect.width),
-        clamp((cursor.y - rect.top) / rect.height),
+      const sample = await lane.reading(
+        point.x,
+        point.y,
         job.signal,
+        entry.plot.timeRange,
+        entry.plot.valueRange,
       );
+      const plot = entry.plot.axes.rect;
+      const result = sample
+        ? {
+            ...sample,
+            x: (plot.x + sample.x * plot.width) / entry.canvas.width,
+            y: (plot.y + sample.y * plot.height) / entry.canvas.height,
+          }
+        : null;
       if (
         job.signal.aborted ||
         entry[kind] !== job ||
         entry.released ||
-        entry.lane !== lane ||
+        entry.plot.lane !== lane ||
         consumerPaused ||
         (kind === 'hover' && entry.cursor !== cursor)
       )
@@ -263,12 +303,22 @@ export function createMonitor(options: Options = {}): Monitor {
         events.emit('error', error instanceof Error ? error : new Error(String(error)));
     } finally {
       if (entry[kind] === job) entry[kind] = null;
+      if (
+        kind === 'hover' &&
+        !entry.released &&
+        entry.cursor !== cursor &&
+        entry.cursor &&
+        !consumerPaused
+      ) {
+        entry.cursorDirty = true;
+        entry.loop.wake();
+      }
     }
   }
   function applySelection(element: number | null): void {
     if (element === selected) return;
     selected = element;
-    binding?.lane?.select(element);
+    binding?.plot.select(element);
   }
   /** Build what draws into `canvas` and replay into it; cleanups run in reverse on failure. */
   function bind(
@@ -289,31 +339,62 @@ export function createMonitor(options: Options = {}): Monitor {
     const width = Math.max(1, Math.round(canvas.clientWidth * ratio));
     const height = Math.max(1, Math.round(canvas.clientHeight * ratio));
     presentation.resize(width, height);
-    const painter = new LanePainter(presentation, canvas.width, canvas.height);
-    cleanup(() => painter.destroy());
     let entry: Binding | null = null;
-    const loop = createFrameLoop(presentation, (frame) => (entry ? render(entry, frame) : false));
+    const scale = Math.min(canvas.width / (width / ratio), canvas.height / (height / ratio));
+    const plot = new Plot(presentation, settings, colormapLut, scale, {
+      error: (error) => {
+        if (entry && !entry.released) events.emit('error', error);
+      },
+      range: (range) => {
+        if (entry && !entry.released) events.emit('valueRange', range);
+      },
+      rendered: () => {
+        if (entry && !entry.released) events.emit('rendered', undefined);
+      },
+      present: () => {
+        if (entry && !entry.released) entry.loop.wake();
+      },
+    });
+    cleanup(() => plot.destroy());
+    const loop = createFrameLoop(presentation, (frame) => {
+      if (!entry) return false;
+      try {
+        return render(entry, frame);
+      } catch (error) {
+        attachment.detach(canvas);
+        events.emit('error', error instanceof Error ? error : new Error(String(error)));
+        return false;
+      }
+    });
     cleanup(() => loop.destroy());
     if (consumerPaused) loop.pause();
     const built: Binding = {
       canvas,
       presentation,
-      painter,
+      plot,
       loop,
       released: false,
       // The loop's formula, so an unchanged size never reads as a moved scale on its first frame.
       backingScale: Math.min(canvas.width / (width / ratio), canvas.height / (height / ratio)),
+      refinement: null,
+      interaction: null,
+      shadeReady: shade === null,
       cursor: null,
       cursorDirty: false,
-      lane: null,
-      off: null,
       hover: null,
       pick: null,
       context: null,
     };
     entry = built;
+    const fonts = canvas.ownerDocument?.fonts;
+    const refreshFont = () => {
+      if (built.released) return;
+      plot.refreshFont();
+      loop.wake();
+    };
+    fonts?.addEventListener('loadingdone', refreshFont);
+    cleanup(() => fonts?.removeEventListener('loadingdone', refreshFont));
     const move = (event: PointerEvent) => {
-      built.hover?.abort();
       built.cursor = { x: event.clientX, y: event.clientY };
       built.cursorDirty = true;
       loop.wake();
@@ -327,13 +408,7 @@ export function createMonitor(options: Options = {}): Monitor {
     /** A secondary press came first: the next context menu is the pointer's, not the keyboard's. */
     let secondary = false;
     const down = (event: PointerEvent) => {
-      // Only the primary button picks; a secondary press is answered by its context menu.
-      if (event.button !== 0) {
-        secondary ||= event.button === 2;
-        return;
-      }
-      built.cursor = { x: event.clientX, y: event.clientY };
-      void reading(built, 'pick');
+      secondary ||= event.button === 2;
     };
     const menu = (event: MouseEvent) => {
       event.preventDefault();
@@ -354,6 +429,21 @@ export function createMonitor(options: Options = {}): Monitor {
         reading: anchor,
       });
     };
+    built.interaction = createInteraction(canvas, {
+      enabled: () => settings.interaction && !consumerPaused,
+      contains: (x, y) => clientPoint(built, x, y) !== null && !!built.plot.lane?.resolved,
+      pan: (dx, dy) => api.pan(dx, dy),
+      zoom: (factor, anchor) => api.zoom(factor, anchor),
+      pick: (event) => {
+        built.cursor = { x: event.clientX, y: event.clientY };
+        void reading(built, 'pick');
+      },
+      settled: () => {
+        built.cursorDirty = true;
+        loop.wake();
+      },
+    });
+    cleanup(() => built.interaction?.destroy());
     canvas.addEventListener('pointermove', move);
     canvas.addEventListener('pointerleave', leave);
     canvas.addEventListener('pointerdown', down);
@@ -366,13 +456,29 @@ export function createMonitor(options: Options = {}): Monitor {
     });
     cleanup(() => {
       built.released = true;
-      forgetLane(built);
+      if (built.refinement !== null) clearTimeout(built.refinement);
+      cancelReadings(built);
     });
     binding = built;
     cleanup(() => {
       if (binding === built) binding = null;
     });
     replay(built);
+    if (shade) {
+      const version = shadeVersion;
+      void plot.setShade(shade.wgsl).then(
+        () => {
+          if (!built.released && version === shadeVersion) {
+            built.shadeReady = true;
+            loop.wake();
+          }
+        },
+        (error: unknown) => {
+          if (!built.released && version === shadeVersion)
+            events.emit('error', error instanceof Error ? error : new Error(String(error)));
+        },
+      );
+    }
     return built;
   }
   const attachment = createAttachment<Binding>({
@@ -394,6 +500,30 @@ export function createMonitor(options: Options = {}): Monitor {
       throw new RangeError(`monitor: signal ${index} out of [0, ${next.signals.length})`);
   }
 
+  function clientPoint(entry: Binding, x: number, y: number) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const rect = entry.canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return entry.plot.point(
+      ((x - rect.left) / rect.width) * entry.canvas.width,
+      ((y - rect.top) / rect.height) * entry.canvas.height,
+    );
+  }
+  function moveView(timeRange: Domain, valueRange: Domain): void {
+    const entry = binding;
+    if (!entry) return;
+    settings = { ...settings, timeRange, valueRange };
+    cancelReadings(entry);
+    entry.cursorDirty = true;
+    entry.plot.configure(settings, entry.backingScale);
+    if (entry.refinement !== null) clearTimeout(entry.refinement);
+    entry.refinement = setTimeout(() => {
+      entry.refinement = null;
+      if (!entry.released) entry.loop.wake();
+    }, 120);
+    entry.loop.wake();
+  }
+
   const api: Monitor = {
     snapshot() {
       if (!series) throw new DOMException('No monitor series is loaded', 'InvalidStateError');
@@ -402,9 +532,19 @@ export function createMonitor(options: Options = {}): Monitor {
         kind: 'monitor',
         series,
         signal: signalIndex,
-        options: structuredClone(style),
+        options: structuredClone({
+          ...style,
+          timeRange: binding?.plot.lane?.resolved
+            ? binding.plot.timeRange
+            : (style.timeRange ?? series.state.timeRange),
+          valueRange: binding?.plot.lane?.resolved
+            ? binding.plot.valueRange
+            : (style.valueRange ?? scan.domain),
+        }),
+        glyphs: binding ? binding.plot.axes.snapshot() : snapshotGlyphs(settings),
         colormap: colormapLut.slice(),
         selected,
+        ...(shade ? { shade: { wgsl: shade.wgsl, uniforms: host.slice() } } : {}),
         ...(binding
           ? {
               viewport: [
@@ -437,7 +577,7 @@ export function createMonitor(options: Options = {}): Monitor {
       checkLoad(input);
       const { series: next, signal: index } = input;
       if (series === next && signalIndex === index) {
-        binding?.lane?.update();
+        binding?.plot.lane?.update();
         return;
       }
       series = next;
@@ -458,14 +598,20 @@ export function createMonitor(options: Options = {}): Monitor {
       for (const key of Object.keys(OPTIONS) as (keyof Options)[]) {
         if (key === 'devices' || patch[key] === undefined) continue;
         const value = patch[key];
-        Object.assign(next, { [key]: Array.isArray(value) ? own(value) : value });
+        Object.assign(next, { [key]: value });
       }
-      settings = next;
+      settings = resolveOptions(next);
       if (lut) colormapLut = lut;
       if (binding) {
         cancelReadings(binding);
-        if (lut) binding.painter.writeColormap(lut);
-        binding.lane?.setStyle(style(binding), lut !== null);
+        binding.plot.configure(settings, binding.backingScale, lut ?? undefined);
+        binding.interaction?.sync();
+        if (patch.timeRange !== undefined || patch.valueRange !== undefined) {
+          if (binding.refinement !== null) clearTimeout(binding.refinement);
+          binding.refinement = null;
+          binding.interaction?.cancel();
+        }
+        binding.loop.wake();
       }
     },
     select(element) {
@@ -478,18 +624,113 @@ export function createMonitor(options: Options = {}): Monitor {
         return;
       applySelection(next);
     },
+    seek(time) {
+      if (time !== null && !Number.isFinite(time))
+        throw new RangeError('Monitor playhead must be finite or null');
+      if (destroyed || time === playhead) return;
+      playhead = time;
+      binding?.plot.seek(time);
+      binding?.loop.wake();
+    },
+    pan(dx, dy) {
+      if (!Number.isFinite(dx) || !Number.isFinite(dy))
+        throw new RangeError('Monitor pan must be finite');
+      const entry = binding;
+      if (destroyed || !entry?.plot.lane?.resolved || (dx === 0 && dy === 0)) return;
+      const rect = entry.canvas.getBoundingClientRect(),
+        plot = entry.plot.axes.rect;
+      if (rect.width <= 0 || rect.height <= 0) return;
+      moveView(
+        transformRange(
+          entry.plot.timeRange,
+          1,
+          0.5,
+          (-dx * entry.canvas.width) / rect.width / plot.width,
+        ),
+        transformRange(
+          entry.plot.valueRange,
+          1,
+          0.5,
+          (dy * entry.canvas.height) / rect.height / plot.height,
+        ),
+      );
+    },
+    zoom(factor, anchor) {
+      if (!Number.isFinite(factor) || factor <= 0)
+        throw new RangeError('Monitor zoom factor must be finite and positive');
+      const entry = binding;
+      if (destroyed || !entry?.plot.lane?.resolved || factor === 1) return;
+      const point = anchor
+        ? clientPoint(entry, anchor.clientX, anchor.clientY)
+        : { x: 0.5, y: 0.5 };
+      if (!point) return;
+      moveView(
+        transformRange(entry.plot.timeRange, factor, point.x),
+        transformRange(entry.plot.valueRange, factor, 1 - point.y),
+      );
+    },
+    fit() {
+      api.setOptions({ timeRange: null, valueRange: null });
+    },
+    async setShade(next) {
+      if (destroyed) return;
+      if (
+        next !== null &&
+        (typeof next.wgsl !== 'string' ||
+          (next.tick !== undefined && typeof next.tick !== 'function'))
+      )
+        throw new TypeError('Monitor shade requires WGSL and an optional tick function');
+      const owned = next ? { wgsl: next.wgsl, tick: next.tick } : null;
+      const version = ++shadeVersion;
+      while (binding) {
+        const entry = binding;
+        try {
+          await entry.plot.setShade(owned?.wgsl ?? null);
+        } catch (error) {
+          if (version === shadeVersion && !entry.released) {
+            // Also restores an initial attach compile superseded by this failed request.
+            await entry.plot.setShade(shade?.wgsl ?? null);
+            entry.shadeReady = true;
+            entry.loop.wake();
+          }
+          throw error;
+        }
+        if (destroyed || version !== shadeVersion) return;
+        if (binding === entry) {
+          entry.shadeReady = true;
+          break;
+        }
+      }
+      if (destroyed || version !== shadeVersion) return;
+      shade = owned;
+      host.fill(0);
+      binding?.loop.wake();
+    },
+    toData(clientX, clientY) {
+      if (!binding?.plot.lane?.resolved || !series) return null;
+      const point = clientPoint(binding, clientX, clientY);
+      if (!point) return null;
+      const time = binding.plot.timeRange,
+        value = binding.plot.valueRange;
+      return {
+        time: time[0] * (1 - point.x) + time[1] * point.x,
+        value: value[0] * point.y + value[1] * (1 - point.y),
+      };
+    },
     pause() {
       consumerPaused = true;
       if (!binding) return;
       cancelReadings(binding);
-      binding.lane?.pause();
+      binding.interaction?.sync();
+      binding.plot.lane?.pause();
       binding.loop.pause();
     },
     resume() {
       if (destroyed || !consumerPaused) return;
       consumerPaused = false;
       if (binding) {
-        if (binding.lane) binding.lane.resume();
+        binding.interaction?.sync();
+        if (binding.plot.lane) binding.plot.lane.resume();
         else replay(binding);
         binding.loop.resume();
       }
@@ -497,6 +738,8 @@ export function createMonitor(options: Options = {}): Monitor {
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      shadeVersion++;
+      shade = null;
       attachment.destroy();
       series = null;
       selected = null;
@@ -504,9 +747,6 @@ export function createMonitor(options: Options = {}): Monitor {
     },
   };
   return api;
-}
-function clamp(x: number): number {
-  return Math.max(0, Math.min(1, x));
 }
 function sameSample(a: Reading | null, b: Reading | null): boolean {
   return (

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { ADVANCE, columns, isWide, LINE } from '../src/text/metrics.js';
-import { random } from './fixtures/netlists.js';
+import { glyphMetrics } from '../src/index.js';
+const { advance: ADVANCE, columns, isWide, line: LINE } = glyphMetrics;
+import { random } from './fixtures/random.js';
 
 describe('text metrics', () => {
   it('fixes the monospace advance and line height', () => {

@@ -296,7 +296,14 @@ describe('assembled pass modules', () => {
   });
 
   it.each(assembled)('$pass.name differentiates only at the top of fs', ({ module }) => {
-    expect(nonUniformDerivatives(module)).toEqual([]);
+    expect(nonUniformDerivatives(module)).toEqual(
+      module.includes('fn glyph_coverage') ? ['glyph_coverage'] : [],
+    );
+    if (module.includes('fn glyph_coverage')) {
+      const fs = functionsOf(module).get('fs')!.body;
+      expect(fs.indexOf('glyph_coverage(')).toBeGreaterThanOrEqual(0);
+      expect(fs.slice(0, fs.indexOf('glyph_coverage('))).not.toMatch(/\b(if|for|loop|switch)\b/);
+    }
   });
 
   it.each(assembled)('$pass.name builds every Fragment in field order', ({ pass, module }) => {

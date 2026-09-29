@@ -161,7 +161,12 @@ describe('monitor', () => {
     const monitor = create();
     await monitor.attach(canvas);
 
-    expect(createElement).not.toHaveBeenCalledWith('canvas');
+    // A detached Canvas2D glyph rasterizer is permitted; no extra canvas enters the host.
+    expect(
+      createElement.mock.results.every(
+        (result) => !(result.value instanceof HTMLCanvasElement) || !result.value.isConnected,
+      ),
+    ).toBe(true);
     expect(canvas.parentElement).toBe(host);
     expect('element' in monitor).toBe(false);
     monitor.destroy();
@@ -204,7 +209,7 @@ describe('monitor', () => {
   });
 
   it('keeps its image through a resize and repaints once the size settles', async () => {
-    const monitor = await mount();
+    const monitor = await mount({ timeAxis: null, valueAxis: null });
     const canvas = canvasFor(monitor);
     const rendered = vi.fn();
     monitor.on('rendered', rendered);
@@ -273,7 +278,7 @@ describe('monitor', () => {
     await settle();
     expect(stub.pendingFrames()).toBe(0);
 
-    canvas.dispatchEvent(new MouseEvent('pointermove', { clientX: 10, clientY: 10 }));
+    canvas.dispatchEvent(new MouseEvent('pointermove', { clientX: 120, clientY: 50 }));
     monitor.select(1);
     expect(stub.pendingFrames()).toBe(1);
     await settle();
@@ -292,7 +297,7 @@ describe('monitor', () => {
   it('allocates renderer textures from the device-limited backing size', async () => {
     stub.setTextureLimit(256);
     const canvas = makeCanvas(800, 400);
-    const monitor = create();
+    const monitor = create({ timeAxis: null, valueAxis: null });
     await monitor.attach(canvas);
 
     expect(canvas.width).toBe(256);
@@ -645,7 +650,7 @@ describe('monitor', () => {
 
     scope.pause();
     scope.load({ series, signal: 0 });
-    canvas.dispatchEvent(new MouseEvent('pointermove', { clientX: 10, clientY: 10 }));
+    canvas.dispatchEvent(new MouseEvent('pointermove', { clientX: 120, clientY: 50 }));
     await settle();
     expect(historyDraws()).toHaveLength(0);
     expect(events.hover).toEqual([]);
@@ -663,5 +668,72 @@ describe('monitor', () => {
     scope.resume();
     await settle();
     expect(historyDraws()).toHaveLength(1);
+  });
+  it('keeps pointer anchors and readings in the displayed view before history refinement', async () => {
+    const scope = await mount({
+      timeRange: [0, 10],
+      valueRange: [0, 10],
+      timeAxis: null,
+      valueAxis: null,
+    });
+    const canvas = canvasFor(scope);
+    canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 320, height: 180 }) as DOMRect;
+    const series = makeSeries({ elements: 1, time: [0, 5, 10], signals: [[0, 5, 10]] });
+    scope.load({ series, signal: 0 });
+    await settle();
+    const read = vi.spyOn(series, 'read');
+    const anchor = scope.toData(160, 90);
+    scope.zoom(2, { clientX: 160, clientY: 90 });
+    expect(scope.toData(160, 90)).toEqual(anchor);
+    scope.pan(32, 0);
+    expect(scope.toData(160, 90)?.time).toBeCloseTo(4.5);
+    await stub.frame();
+    expect(read).not.toHaveBeenCalled();
+    expect(scope.snapshot().options?.timeRange?.[0]).toBeCloseTo(2);
+    expect(scope.snapshot().options?.timeRange?.[1]).toBeCloseTo(7);
+    scope.setOptions({ valueRange: [5, 5] });
+    await settle();
+    expect(scope.snapshot().options?.valueRange).toEqual([4.5, 5.5]);
+    expect(() => scope.zoom(0)).toThrow(RangeError);
+    expect(() => scope.pan(Infinity, 0)).toThrow(RangeError);
+    scope.fit();
+    await settle();
+    expect(scope.snapshot().options?.timeRange).toEqual([0, 10]);
+  });
+
+  it('keeps working shade uniforms on failure and drops superseded compiles across detach', async () => {
+    const scope = await mount();
+    scope.load({ series: makeSeries({ elements: 1, time: [0, 1], signals: [[0, 1]] }), signal: 0 });
+    const original = {
+      wgsl: 'fn shade(f: Fragment) -> vec4f { return f.color; }',
+      tick: (host: Float32Array) => {
+        host[0] = 7;
+        return false;
+      },
+    };
+    await scope.setShade(original);
+    await settle();
+    const compile = vi.spyOn(stub.device, 'createRenderPipelineAsync');
+    compile.mockRejectedValueOnce(new Error('invalid WGSL'));
+    await expect(scope.setShade({ wgsl: 'invalid' })).rejects.toThrow('invalid WGSL');
+    expect(scope.snapshot().shade?.wgsl).toBe(original.wgsl);
+    expect(scope.snapshot().shade?.uniforms[0]).toBe(7);
+    let finish!: (value: GPURenderPipeline) => void;
+    compile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const old = scope.setShade({ wgsl: 'older build' });
+    await scope.setShade(null);
+    finish({ getBindGroupLayout: () => ({}) } as unknown as GPURenderPipeline);
+    await old;
+    expect(scope.snapshot().shade).toBeUndefined();
+    scope.detach();
+    await scope.setShade(original);
+    await scope.attach(canvasFor(scope));
+    await settle();
+    expect(scope.snapshot().shade?.uniforms[0]).toBe(7);
   });
 });

@@ -9,7 +9,8 @@ import {
   STYLE_WIRE,
   type Prepared,
 } from '../prepare.js';
-import { LINE } from '../text/metrics.js';
+import { glyphMetrics } from '@latkit/gpu';
+const { line: LINE } = glyphMetrics;
 import {
   layoutBases,
   WIRE_EMPTY,

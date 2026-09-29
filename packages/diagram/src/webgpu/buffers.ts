@@ -7,6 +7,7 @@
  * `shaders/common.wgsl`, and a unit test holds the two to the same values.
  */
 
+import { glyphMetrics } from '@latkit/gpu';
 import { NONE, type Prepared } from '../prepare.js';
 
 /**
@@ -300,7 +301,7 @@ export const ROLE_TAG = 3;
 export const ROLE_NET = 4;
 export const ROLE_GROUP = 5;
 /** Cell bit 31: a wide glyph spanning two atlas cells. */
-export const GLYPH_WIDE = 0x80000000;
+export const GLYPH_WIDE = glyphMetrics.wideBit;
 
 // overlay: OVERLAY_WORDS per entry.
 

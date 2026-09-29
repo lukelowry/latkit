@@ -1,3 +1,4 @@
+import { shaderFailure } from '@latkit/gpu';
 /// <reference types="@webgpu/types" />
 
 import { BORDER_VERTEX_STRIDE_BYTES } from '../borders/index.js';
@@ -275,7 +276,7 @@ export async function buildProjectionPipelines(
     pendingBackground,
     pendingEarthAxis,
   ]).catch(async (cause: unknown) => {
-    throw await shaderFailure([vertM, edgeM], cause);
+    throw await shaderFailure('network', [vertM, edgeM], cause);
   });
 
   return {
@@ -292,23 +293,4 @@ export async function buildProjectionPipelines(
       earthAxis,
     },
   };
-}
-
-/**
- * The pipeline failure with every shader compilation error it can find attached, so a host shade
- * fault names its line. Line numbers count from the top of the assembled module.
- */
-async function shaderFailure(modules: readonly GPUShaderModule[], cause: unknown): Promise<Error> {
-  const lines: string[] = [];
-  for (const module of modules) {
-    const info = await module.getCompilationInfo?.();
-    for (const message of info?.messages ?? []) {
-      if (message.type === 'error') {
-        lines.push(`${module.label}:${message.lineNum}:${message.linePos} ${message.message}`);
-      }
-    }
-  }
-  const detail =
-    lines.length > 0 ? lines.join('\n') : cause instanceof Error ? cause.message : String(cause);
-  return new Error(`network shader build failed:\n${detail}`, { cause });
 }

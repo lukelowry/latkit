@@ -220,3 +220,34 @@ rethrows on a microtask while the rest still run.
 ## Render targets
 
 `RenderTarget` is a device, format, dimensions, and `texture()` for the next frame. `Presentation` implements it for a canvas; `createRenderTarget(device, width, height)` owns a fixed texture for offscreen composition. Destroy a fixed target after the renderers borrowing it are destroyed. `SceneRenderer.prepare(sourceTime, signal)` waits for channel samples; `draw(outputTimeMs)` advances visual animation. These are the shared primitives used by `@latkit/video`.
+
+## Shared glyphs
+
+Diagram and Monitor share the same monospace SDF atlas, rasterizer, texture synchronization,
+and WGSL coverage function. Layout, anchors, culling, and tick policy belong to each renderer.
+
+```ts
+import { GlyphAtlas, createGlyphTexture, glyphMetrics, glyphShader } from '@latkit/gpu';
+
+const atlas = new GlyphAtlas('ui-monospace, monospace');
+const cell = atlas.cell('A');
+const texture = createGlyphTexture(device);
+texture.sync(atlas);
+// Bind texture.view, and append glyphShader to the renderer's WGSL.
+// glyph_coverage(distance) must run in uniform fragment control flow.
+const advance = glyphMetrics.advance * 12;
+
+const captured = atlas.snapshot();
+const restored = GlyphAtlas.from(captured); // identical pixels and cell indices in another realm
+texture.destroy();
+```
+
+Rasterization happens once per grapheme and font generation. Each texture remembers its own
+revision, so consumers cannot clear each other's pending updates. Only changed rows upload;
+unchanged frames upload nothing. An atlas is capped at 4 MiB of r8 pixels. Exhaustion and missing
+glyphs in a sealed snapshot throw explicitly. Snapshots own copied pixels; rasterization can use
+an injected `GlyphRasterizer` or the built-in Canvas2D implementation. All exports remain at the
+package root.
+
+Renderer shade compilers use `shaderFailure(label, modules, cause)` for one diagnostic format,
+including shader source locations, while each renderer owns its pipeline and fragment contract.

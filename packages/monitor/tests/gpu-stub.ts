@@ -182,6 +182,10 @@ export function installGpuStub(): GpuStub {
         label: descriptor.label ?? '',
         getBindGroupLayout: () => ({}),
       }),
+      createRenderPipelineAsync: async (descriptor: { label?: string }) => ({
+        label: descriptor.label ?? '',
+        getBindGroupLayout: () => ({}),
+      }),
       createTexture: makeTexture,
       createSampler: () => ({}),
       createBuffer: makeBuffer,
@@ -199,6 +203,8 @@ export function installGpuStub(): GpuStub {
                 pipeline = p.label;
               },
               setBindGroup: () => {},
+              setViewport: () => {},
+              setScissorRect: () => {},
               draw: (
                 vertexCount: number,
                 instanceCount = 1,
@@ -246,8 +252,8 @@ export function installGpuStub(): GpuStub {
               : null;
           log.writes.push({ label: buffer.label, offset, source, byteOffset, byteLength, copy });
         },
-        writeTexture: (_dest: unknown, data: Uint8Array) => {
-          log.lutWrites.push(new Uint8Array(data));
+        writeTexture: (dest: { texture: { label: string } }, data: Uint8Array) => {
+          if (dest.texture.label === 'monitor-lut') log.lutWrites.push(new Uint8Array(data));
         },
         submit: () => {
           log.submits++;
