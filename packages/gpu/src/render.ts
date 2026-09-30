@@ -1,3 +1,4 @@
+import type { Colormap } from './colors/colormap.js';
 import type {
   AggregateBlock,
   AggregateQuery,
@@ -55,6 +56,8 @@ export type QueryResult<Q extends Query> =
 /** Methods and returned GPU descriptors are scoped to this frame. Queries must be consumed or returned. */
 export interface Preparation extends FrameInfo {
   readonly signal: AbortSignal;
+  /** Frame-scoped shared binding; defaults to grayscale. Use Gpu.colormapLayout. */
+  colormap(value?: Colormap): GPUBindGroup;
   text(request: TextRequest): Promise<readonly TextPage[]>;
   extent(request: ExtentRequest): Promise<import('@latkit/model').Domain | null>;
   fields(request: FieldsRequest): AsyncIterable<GpuPage>;

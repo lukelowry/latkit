@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Latkit color catalog</title>
+    <link rel="icon" href="data:," />
+  </head>
+  <body class="color-gallery">
+    <main>
+      <header>
+        <a href="/">Back to network</a>
+        <h1>Color catalog</h1>
+        <p>Compare the same palette in a CPU image, a CSS legend, and a WebGPU shader.</p>
+      </header>
+      <div class="controls">
+        <label
+          >Show
+          <select id="kind">
+            <option value="all">All families</option>
+            <option>sequential</option>
+            <option>diverging</option>
+            <option>cyclic</option>
+            <option>categorical</option>
+            <option>multihue</option>
+          </select></label
+        ><button id="reverse" aria-pressed="false">Reverse palettes</button
+        ><button id="background" aria-pressed="false">Light background</button
+        ><span id="status" role="status">Preparing GPU previews...</span>
+      </div>
+      <div class="palette-head" aria-hidden="true">
+        <span>Palette</span><span>CPU</span><span>CSS</span><span>GPU</span>
+      </div>
+      <div id="catalog"></div>
+      <footer>
+        Continuous maps interpolate between samples. Cyclic maps wrap; categorical palettes retain
+        hard boundaries. The alpha diagnostic below the catalog checks transparent interpolation.
+      </footer>
+    </main>
+    <script type="module" src="/src/colors.ts"></script>
+  </body>
+</html>

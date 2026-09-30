@@ -1,6 +1,5 @@
 import type { Domain, LinksQuery, Queryable, RowSelection, SampleWindow } from '@latkit/model';
-import type { DataHit, FieldInput, TextFont } from '@latkit/gpu';
-import type { Colormap, RGBA } from '@latkit/colormaps';
+import type { Colormap, DataHit, FieldInput, RGBA, TextFont } from '@latkit/gpu';
 
 export type Position = FieldInput | { readonly x: FieldInput; readonly y: FieldInput };
 export type ScaleDomain = Domain | 'auto' | { readonly window: SampleWindow };

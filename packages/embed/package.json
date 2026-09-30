@@ -31,7 +31,6 @@
     "test": "vitest run --project @latkit/embed"
   },
   "dependencies": {
-    "@latkit/colormaps": "workspace:*",
     "@latkit/model": "workspace:*",
     "@latkit/monitor": "workspace:*",
     "@latkit/network": "workspace:*"

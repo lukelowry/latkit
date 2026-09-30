@@ -1,4 +1,4 @@
-import { fieldShader, textShader, strokeShader, type Gpu } from '@latkit/gpu';
+import { colormapShader, fieldShader, textShader, strokeShader, type Gpu } from '@latkit/gpu';
 import common from './common.wgsl';
 import prepare from './prepare.wgsl';
 import draw from './draw.wgsl';
@@ -66,13 +66,7 @@ async function create(
     type: GPUBufferBindingType = 'read-only-storage',
   ) => ({ binding, visibility, buffer: { type } });
   const compute = d.createBindGroupLayout({
-    entries: [
-      uniform(0, C),
-      uniform(1, C),
-      storage(2, C, 'storage'),
-      { binding: 3, visibility: C, texture: { sampleType: 'float' } },
-      { binding: 4, visibility: C, sampler: { type: 'filtering' } },
-    ],
+    entries: [uniform(0, C), uniform(1, C), storage(2, C, 'storage')],
   });
   const drawLayout = d.createBindGroupLayout({
     entries: [
@@ -107,7 +101,7 @@ async function create(
   const bg = d.createBindGroupLayout({ entries: [uniform(0, V | F)] });
   const prep = d.createShaderModule({
     label: 'network field preparation',
-    code: common + fieldShader({ group: 0 }) + prepare,
+    code: common + fieldShader({ group: 0 }) + colormapShader({ group: 2 }) + prepare,
   });
   const shape = d.createShaderModule({
     label: 'network geometry',
@@ -129,7 +123,9 @@ async function create(
           .join('; '),
       );
   }
-  const computeLayout = d.createPipelineLayout({ bindGroupLayouts: [gpu.fieldLayout, compute] });
+  const computeLayout = d.createPipelineLayout({
+    bindGroupLayouts: [gpu.fieldLayout, compute, gpu.colormapLayout],
+  });
   const blend: GPUBlendState = {
     color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
     alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },

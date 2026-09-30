@@ -61,3 +61,13 @@ export type { Camera2D, Bounds2D, Insets } from './camera.js';
 
 export { clipStroke, strokeShader } from './stroke.js';
 export type { ClipPoint } from './stroke.js';
+
+export type { RGBA } from './colors/color.js';
+export { validateRgba } from './colors/color.js';
+export type { Colormap, ColormapKind, ColormapOptions, ColorStop } from './colors/colormap.js';
+export { createColormap, reverseColormap } from './colors/colormap.js';
+export { sampleColormap } from './colors/sampling.js';
+export { parseColor, resolveColor, colorCss, colormapCss } from './colors/css.js';
+export { colormaps } from './colors/catalog.js';
+export type { ColormapName } from './colors/catalog.js';
+export { colormapShader } from './colors/shader.js';

@@ -20,7 +20,6 @@
     "test:browser": "pnpm --filter @latkit/network... build && esbuild tests/fixture.ts tests/paths-fixture.ts --format=esm --outdir=dist && node tests/browser/run.mjs --headed --keep-open"
   },
   "dependencies": {
-    "@latkit/colormaps": "workspace:*",
     "@latkit/gpu": "workspace:*",
     "@latkit/model": "workspace:*",
     "@webgpu/types": "^0.1.71"

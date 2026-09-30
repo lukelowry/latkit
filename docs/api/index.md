@@ -1,30 +1,26 @@
 # API reference
 
-The API reference is generated from the published package entrypoints with TypeDoc. Start with the package page that matches the renderer or helper you are using.
+All public imports use package roots. `@latkit/colormaps` and `@latkit/port` have been removed; there are no compatibility exports.
 
-| Package                                             | Public surface                                                                                         |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| [`@latkit/network`](reference/network/index.md)     | The `Network` controller and its `CHANNELS`, `OPTIONS`, and `PROJECTIONS` registries                   |
-| [`@latkit/monitor`](reference/monitor/index.md)     | Monitor renderer, readings, events, and display options                                                |
-| [`@latkit/diagram`](reference/diagram/index.md)     | The `Diagram` controller, its `CHANNELS` and `OPTIONS` registries, and `arrange`                       |
-| [`@latkit/gpu`](reference/gpu/index.md)             | What every renderer shares: devices, presentation, frames, attach, channels, colormap textures         |
-| [`@latkit/colormaps`](reference/colormaps/index.md) | `RGBA`, `Colormap`, the `COLORMAPS` registry, gradients, and `parseColor`                              |
-| [`@latkit/model`](reference/model/index.md)         | `Model`, `Engine`, and `Document` to subclass, `Recording` and `Series`, and the shapes renderers load |
-| [`@latkit/port`](reference/port/index.md)           | Ports, protocols and their checks, and models, engines, and recordings served across a port            |
-| [`@latkit/video`](reference/video/index.md)         | `exportVideo`, renderer-owned scenes, composition, progress, and streamed output                       |
+| Package                                         | Current surface                                                                          |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| [`@latkit/model`](reference/model/index.md)     | Native `Model`, `Document`, `Recording`, schema, query, and service contracts            |
+| [`@latkit/connect`](reference/connect/index.md) | `connect`, `serve`, connections, and transport implementations                           |
+| [`@latkit/gpu`](reference/gpu/index.md)         | `Gpu`, frame preparation, resources, native fields, text, strokes, colors, and colormaps |
+| [`@latkit/network`](reference/network/index.md) | `createNetwork`, `Network`, native field bindings, camera, styling, and input            |
+
+Monitor, diagram, embed, and video await migration. Their older APIs do not represent the new shared contract. The generated reference requires those packages to typecheck before a full documentation build.
 
 ## Common entrypoints
 
-- [`createNetwork`](reference/network/index.md#createnetwork) creates a network controller that attaches to any canvas; the `Network` interface on that page is everything a host does with it.
-- [`Model`](reference/model/index.md) is what a format subclasses and the instance every question goes to: `field` resolves a column a renderer binds, and `grid` tables a class. An engine subclasses `Engine` and records any model into a `Recording` of it, which resolves the signals it holds; an editor subclasses `Document`.
-- `Model.Topology`, `Model.Item`, `Series`, and [`Domain`](reference/model/index.md#domain) are the shapes every renderer loads and returns, defined once in the [model package](reference/model/index.md).
-- [`createMonitor`](reference/monitor/index.md#createmonitor) creates a monitor controller that attaches to any canvas.
-- [`createDiagram`](reference/diagram/index.md#creatediagram) creates a block-diagram controller that attaches to any canvas; the `Diagram` interface on that page is everything a host does with it. `Document.Netlist`, in the [model package](reference/model/index.md), is the shape it loads.
-- [`devices`](reference/gpu/index.md#devices) is the realm-wide device pool every controller leases from; [`requestDevice`](reference/gpu/index.md#requestdevice) requests a native Core WebGPU device and [`createDevicePool`](reference/gpu/index.md#createdevicepool) makes a private pool.
-- [`createPresentation`](reference/gpu/index.md#createpresentation) configures a caller-owned canvas; [`createFrameLoop`](reference/gpu/index.md#createframeloop) schedules its frames.
-- [`colormap`](reference/colormaps/index.md#colormap) returns a normalized color transfer function; [`COLORMAPS`](reference/colormaps/index.md#colormaps) names and labels every preset.
-- [`protocol`](reference/port/index.md#protocol) declares the contract both ends of a service import; [`serve`](reference/port/index.md#serve) answers it and [`connect`](reference/port/index.md#connect) calls it.
-- [`connectModel`](reference/port/index.md#connectmodel) opens the model a `serveModel` peer serves, [`connectEngine`](reference/port/index.md#connectengine) the engine a `serveEngine` peer serves, and [`connectRecording`](reference/port/index.md#connectrecording) the recording a `serveRecording` peer serves.
+- `createGpu` owns shared resource budgets, caching, and submission.
+- `createCanvasView` schedules a renderer onto an application-owned canvas.
+- `createNetwork` borrows native model sources and a GPU; `attachNetworkInput` connects DOM gestures.
+- `colormaps` provides 46 immutable palette values. `createColormap` authors a value; `reverseColormap` reverses it.
+- `parseColor` parses absolute CSS colors without a DOM. `resolveColor` explicitly resolves an element's context.
+- `colormapCss` and `sampleColormap` use the same rendering table as `colormapShader`, `Gpu.colormapLayout`, and `Preparation.colormap`.
+
+See [network usage](../network-quickstart.md) and [the color contract](../colormaps.md) for examples.
 
 ```{toctree}
 :maxdepth: 2

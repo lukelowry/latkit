@@ -111,6 +111,26 @@ The layout uses three read-only storage bindings regardless of field count: a de
 
 Pages and their buffers are read-only. They can share native allocations; do not mutate or destroy them. Paging removes the single-binding limit, not the total working-set limit. Renderers still select bounded visible data and implement their own culling/level of detail.
 
+## Colors and colormaps
+
+Colors use normalized, sRGB-encoded `RGBA` with straight alpha. `Colormap` is immutable data, shared across renderers. The root exports `colormaps` (46 lazy sample tables), `createColormap`, `reverseColormap`, `sampleColormap`, `colorCss`, `colormapCss`, `parseColor`, and `resolveColor`.
+
+```ts
+import { colormaps, colormapShader, colormapCss } from '@latkit/gpu';
+
+legend.style.backgroundImage = colormapCss(colormaps.viridis, { direction: 'to right' });
+// Pipeline layout includes gpu.colormapLayout at group 1.
+const wgsl = colormapShader({ group: 1 }); // colormapColor(t), paletteColor(index)
+// In prepare():
+const colors = frame.colormap(colormaps.viridis);
+// In encode():
+pass.setBindGroup(1, colors);
+```
+
+CPU sampling, CSS legends, and WGSL use the same premultiplied RGBA8 rendering table. Continuous values clamp, cyclic values wrap with a closed seam, and categorical values select hard bins. WGSL returns straight RGBA; the output pass owns compositing. Authoring supports explicit colors, one-time callbacks, and stops interpolated in Oklab, sRGB, or linear-light sRGB. Palette textures and bindings reuse the existing GPU cache and remain protected through submission. No model transformation or renderer-specific palette cache is involved.
+
+See [the color contract and catalog](../../docs/colormaps.md) for semantics, source provenance, regeneration, and usage. Pure color helpers work without a DOM or a WebGPU device; `resolveColor` is the explicit DOM boundary. Bundlers can omit the entire unused catalog and color parser; accessing catalog metadata does not decode samples.
+
 ## Shared strokes
 
 `clipStroke(a, b)` clips homogeneous endpoints against WebGPU near/far planes and positive W, returning the visible parameter interval or `null`. `strokeShader()` supplies the matching `stroke_clip`, round-cap `stroke_distance`, and pixel-space `stroke_dash` helpers. Renderers own connectivity and path layout; these helpers keep clipping, widths, and hit geometry consistent without creating another rendering owner.

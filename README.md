@@ -15,17 +15,16 @@ Latkit is a TypeScript package family for interactive, browser-based WebGPU visu
 
 Install only the packages your application needs.
 
-| Package                                                                | Description                                                         |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| [`@latkit/network`](https://www.npmjs.com/package/@latkit/network)     | Interactive WebGPU network topology views                           |
-| [`@latkit/monitor`](https://www.npmjs.com/package/@latkit/monitor)     | WebGPU time-series and signal monitor views                         |
-| [`@latkit/diagram`](https://www.npmjs.com/package/@latkit/diagram)     | WebGPU block diagrams with automatic layout and edit proposals      |
-| [`@latkit/embed`](https://www.npmjs.com/package/@latkit/embed)         | `latkit-network` and `latkit-monitor` custom elements               |
-| [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)             | What every renderer shares: devices, frames, attach, channels       |
-| [`@latkit/colormaps`](https://www.npmjs.com/package/@latkit/colormaps) | Colors and colormaps: `RGBA`, the catalog, gradients, and a parser  |
-| [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | `Model`, `Engine`, and `Document` to subclass, and their recordings |
-| [`@latkit/port`](https://www.npmjs.com/package/@latkit/port)           | Ports, frames, protocols, and models and engines served across them |
-| [`@latkit/video`](./packages/video)                                    | Worker-based video export of network, diagram, and monitor scenes   |
+| Package                                                            | Description                                                         |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| [`@latkit/network`](https://www.npmjs.com/package/@latkit/network) | Interactive WebGPU network topology views                           |
+| [`@latkit/monitor`](https://www.npmjs.com/package/@latkit/monitor) | WebGPU time-series and signal monitor views                         |
+| [`@latkit/diagram`](https://www.npmjs.com/package/@latkit/diagram) | WebGPU block diagrams with automatic layout and edit proposals      |
+| [`@latkit/embed`](https://www.npmjs.com/package/@latkit/embed)     | `latkit-network` and `latkit-monitor` custom elements               |
+| [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)         | Shared WebGPU resources, fields, text, colors, and frame submission |
+| [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)     | Native model, document, recording, and query contracts              |
+| [`@latkit/connect`](./packages/connect)                            | Transport for native model services and acquisitions                |
+| [`@latkit/video`](./packages/video)                                | Worker-based video export of network, diagram, and monitor scenes   |
 
 ## Requirements
 
@@ -33,82 +32,55 @@ Install only the packages your application needs.
 - An ESM-capable bundler or development server
 - Node.js 24 when developing Latkit locally
 
-## Installation
+## Current migration
 
-For network visualization:
+`model`, `connect`, `gpu`, and `network` use the new contracts. `monitor`, `diagram`, `embed`, and `video` still need migration. The old `port` and `colormaps` packages have been deleted; there are no compatibility exports. Colors and colormaps now come from `@latkit/gpu`.
 
-```sh
-npm install @latkit/network @latkit/colormaps
-```
+## Network usage
 
-For monitor visualization:
-
-```sh
-npm install @latkit/monitor @latkit/colormaps
-```
-
-For block diagrams:
-
-```sh
-npm install @latkit/diagram @latkit/model @latkit/colormaps
-```
-
-For a tag instead of a controller:
-
-```sh
-npm install @latkit/embed
-```
-
-## Quick start
+Given an acquired document with a `node` type containing `position` and `load` fields, and a `line` type exposing pair endpoints:
 
 ```ts
-import { colormap } from '@latkit/colormaps';
-import { createNetwork } from '@latkit/network';
+import { createGpu, createCanvasView, colormaps } from '@latkit/gpu';
+import { createNetwork, attachNetworkInput } from '@latkit/network';
 
-const canvas = document.querySelector<HTMLCanvasElement>('#network');
-if (!canvas) {
-  throw new Error('Missing #network canvas.');
-}
-
+const gpu = await createGpu();
 const network = createNetwork({
-  colormap: colormap('viridis'),
-  graticule: true,
+  gpu,
+  data: {
+    source: document,
+    coordinates: 'geographic',
+    vertices: {
+      node: {
+        position: 'position',
+        color: { field: 'load', domain: [0, 1], colormap: colormaps.viridis },
+      },
+    },
+    edges: { line: { connectivity: { kind: 'endpoints', layout: 'pair' } } },
+  },
 });
+const view = createCanvasView({ gpu, canvas, renderer: network, onError: console.error });
+const detach = attachNetworkInput({ network, canvas });
+view.request();
 
-network.load({
-  vertexCount: 3,
-  vertexCoords: new Float32Array([-96, 30, -95, 31, -94, 30]),
-  edges: new Uint32Array([0, 1, 1, 2]),
-  polylineStart: new Uint32Array([0, 0, 0]),
-});
-network.setChannel('vertexColor', new Float32Array([0.1, 0.8, 0.4]), [0, 1]);
-
-await network.attach(canvas);
+// When the application closes the view:
+detach();
+view.destroy();
+network.destroy();
+gpu.destroy();
+// The application separately releases its borrowed document acquisition.
 ```
 
-The controller needs neither a device nor a canvas until `attach`, which leases a WebGPU device from a pool shared by every renderer on the page. Or, declaratively:
-
-```html
-<latkit-network src="network.json" colormap="viridis" vertex-color="load"></latkit-network>
-<script type="module">
-  import { register } from '@latkit/embed';
-  register();
-</script>
-```
-
-See the [network quickstart](https://latkit.readthedocs.io/en/latest/network-quickstart.html), [monitor quickstart](https://latkit.readthedocs.io/en/latest/monitor-quickstart.html), and [diagram quickstart](https://latkit.readthedocs.io/en/latest/diagram-quickstart.html) for complete usage and lifecycle guidance.
+See [network usage](packages/network/README.md), [shared GPU preparation](packages/gpu/README.md), and [colors and colormaps](docs/colormaps.md) for the current APIs.
 
 ## Examples
 
-Install the workspace dependencies, then run an example in a WebGPU-capable browser:
-
 ```sh
 pnpm install
-pnpm --filter @latkit/network-example dev   # http://127.0.0.1:5188
-pnpm --filter @latkit/monitor-example dev   # http://127.0.0.1:5190
-pnpm --filter @latkit/embed-example dev     # http://127.0.0.1:5192
-pnpm --filter @latkit/diagram-example dev   # http://127.0.0.1:5194
+pnpm --filter @latkit/network-example dev
 ```
+
+Open `http://127.0.0.1:5188/` for the network demo and `/colors.html` for the color catalog. The gallery compares all 46 maps in CPU, CSS, and WebGPU. Other package examples await migration.
 
 ## Documentation
 

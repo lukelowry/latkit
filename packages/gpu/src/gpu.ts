@@ -1,6 +1,7 @@
 import type { Query, Queryable, Version } from '@latkit/model';
 import { BufferData } from './buffers.js';
 import { Buffers, type BufferResource } from './owned-buffer.js';
+import { Colormaps } from './colors/preparation.js';
 import { Images } from './images.js';
 import { TextAtlas } from './text-atlas.js';
 import type { TextInput, TextMetrics, TextOptions } from './text.js';
@@ -43,6 +44,7 @@ export interface Gpu {
   readonly budget: Budget;
   readonly fieldLayout: GPUBindGroupLayout;
   readonly textLayout: GPUBindGroupLayout;
+  readonly colormapLayout: GPUBindGroupLayout;
   measureText(input: TextInput, options?: { readonly signal?: AbortSignal }): Promise<TextMetrics>;
   stats(): GpuStats;
   render(options: RenderOptions): Promise<void>;
@@ -99,12 +101,14 @@ class Owner implements Gpu {
   readonly budget: Budget;
   readonly fieldLayout: GPUBindGroupLayout;
   readonly textLayout: GPUBindGroupLayout;
+  readonly colormapLayout: GPUBindGroupLayout;
   private readonly memory: Memory;
   private readonly reads: Reads;
   private readonly uploader: Uploader;
   private readonly fields: Fields;
   private readonly textures: Textures;
   private readonly images: Images;
+  private readonly colormaps: Colormaps;
   private readonly text: TextAtlas;
   private readonly buffers: Buffers;
   private readonly stopped = new AbortController();
@@ -138,6 +142,8 @@ class Owner implements Gpu {
     );
     this.textures = new Textures(device, this.memory);
     this.images = new Images(device, this.memory);
+    this.colormaps = new Colormaps(device, this.memory, this.images, this.uploader);
+    this.colormapLayout = this.colormaps.layout;
     this.buffers = new Buffers(device, this.memory);
     this.text = new TextAtlas(
       device,
@@ -304,6 +310,10 @@ class Owner implements Gpu {
       ...info,
       signal,
       query: read,
+      colormap: (value) => {
+        assertPreparing();
+        return this.colormaps.prepare(value, scope);
+      },
       text: (request) => {
         assertPreparing();
         const task = this.text.prepare(request, scope, signal);

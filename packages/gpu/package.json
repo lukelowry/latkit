@@ -8,7 +8,8 @@
   "sideEffects": false,
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "exports": {
     ".": {
@@ -26,9 +27,11 @@
   },
   "dependencies": {
     "@latkit/model": "workspace:*",
-    "@webgpu/types": "^0.1.71"
+    "@webgpu/types": "^0.1.71",
+    "culori": "4.0.2"
   },
   "devDependencies": {
-    "@latkit/connect": "workspace:*"
+    "@latkit/connect": "workspace:*",
+    "@types/culori": "^4.0.1"
   }
 }

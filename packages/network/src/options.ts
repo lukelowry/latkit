@@ -1,5 +1,4 @@
-import { validateRgba, type RGBA } from '@latkit/colormaps';
-import { GpuError, type Insets } from '@latkit/gpu';
+import { GpuError, validateRgba, type Insets, type RGBA } from '@latkit/gpu';
 
 export interface Options {
   readonly msaa?: 1 | 4;

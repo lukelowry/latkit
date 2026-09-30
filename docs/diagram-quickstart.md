@@ -1,5 +1,7 @@
 # Create a block diagram
 
+> Migration note: this guide describes the earlier APIs. `@latkit/colormaps` has been removed; colors now belong to `@latkit/gpu`. See [colors and colormaps](colormaps.md), [network usage](network-quickstart.md), and the current package READMEs. Monitor and diagram are not migrated yet.
+
 This tutorial creates a WebGPU block diagram, loads a netlist, binds live values to its wires, and turns the user's edits into a new netlist.
 
 ## Create a canvas

@@ -1,5 +1,12 @@
-import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
-import { createGpu, createCanvasView } from '@latkit/gpu';
+import {
+  createGpu,
+  createCanvasView,
+  colormaps,
+  colormapCss,
+  reverseColormap,
+  type Colormap,
+  type ColormapName,
+} from '@latkit/gpu';
 import { ExampleSource, vector } from './source.js';
 import {
   createNetwork,
@@ -13,12 +20,6 @@ import {
 } from '@latkit/network';
 import { TOPOLOGIES, type TopologyOption } from './topologies.js';
 import './style.css';
-
-const EXAMPLE_COLORMAPS = [
-  'viridis',
-  'magma',
-  'cividis',
-] as const satisfies readonly ColormapName[];
 
 const stage = document.getElementById('stage') as HTMLCanvasElement;
 const statusEl = document.getElementById('status') as HTMLElement;
@@ -67,7 +68,7 @@ async function main(): Promise<void> {
   let heightOn = false,
     geodesic = true,
     bordersOn = false;
-  let colors = colormap(EXAMPLE_COLORMAPS[0]!);
+  let colors = colormaps.viridis;
   let borders: ExampleSource | undefined;
   const fields = (): VertexOptions => ({
     position: 'position',
@@ -179,8 +180,8 @@ async function main(): Promise<void> {
       { label: 'surface poles', on: false, apply: (on) => net.setOptions({ poles: on }) },
     ],
   );
-  wireColormaps((name) => {
-    colors = colormap(name);
+  wireColormaps((value) => {
+    colors = value;
     net.setVertex('node', fields());
   });
   wirePicking(net);
@@ -315,20 +316,47 @@ function wireToggles(net: Network, setHeight: (on: boolean) => void, extra: Togg
   }
 }
 
-function wireColormaps(set: (name: ColormapName) => void): void {
-  const row = document.getElementById('colormaps') as HTMLElement;
-
-  for (let i = 0; i < EXAMPLE_COLORMAPS.length; i++) {
-    const name = EXAMPLE_COLORMAPS[i]!;
-    const btn = createButton(COLORMAPS[name].label, i === 0);
-    btn.classList.add('swatch');
-    btn.style.setProperty('--swatch', gradient(name, 'to right'));
-    btn.addEventListener('click', () => {
-      set(name);
-      setActive(row, btn);
-    });
-    row.appendChild(btn);
+function wireColormaps(set: (value: Colormap) => void): void {
+  const row = document.getElementById('colormaps')!;
+  const select = document.createElement('select');
+  select.setAttribute('aria-labelledby', 'colormaps-label');
+  const groups = new Map<string, HTMLOptGroupElement>();
+  for (const [name, map] of Object.entries(colormaps)) {
+    // Load is a continuous quantity; categorical palettes remain available in the gallery.
+    if (map.kind === 'categorical') continue;
+    let group = groups.get(map.kind);
+    if (!group) {
+      group = document.createElement('optgroup');
+      group.label = map.kind;
+      groups.set(map.kind, group);
+      select.append(group);
+    }
+    group.append(new Option(map.label ?? name, name));
   }
+  select.value = 'viridis';
+  const reverse = createButton('reverse', false);
+  const swatch = document.createElement('div');
+  swatch.className = 'palette-preview';
+  let reversed = false;
+  const update = (): void => {
+    const map = colormaps[select.value as ColormapName];
+    const value = reversed ? reverseColormap(map) : map;
+    swatch.style.background = colormapCss(value, { direction: 'to right' });
+    set(value);
+  };
+  reverse.onclick = () => {
+    reversed = !reversed;
+    setPressed(reverse, reversed);
+    update();
+  };
+  select.onchange = update;
+  const gallery = document.createElement('a');
+  gallery.href = '/colors.html';
+  gallery.target = '_blank';
+  gallery.rel = 'noopener';
+  gallery.textContent = 'compare all palettes';
+  row.append(select, reverse, swatch, gallery);
+  update();
 }
 
 function wirePicking(net: Network): void {

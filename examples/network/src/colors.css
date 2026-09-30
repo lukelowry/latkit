@@ -1,0 +1,115 @@
+@import './style.css';
+html:has(.color-gallery),
+body.color-gallery {
+  min-height: 100vh;
+  height: auto;
+  overflow: auto;
+}
+.color-gallery {
+  --paper: #090c11;
+  background: var(--paper);
+  color: var(--ink);
+  color-scheme: dark;
+}
+.color-gallery.light {
+  --paper: #f2f3f5;
+  --ink: #161b25;
+  --muted: #475569;
+  --line: #bcc4d0;
+  --control: #e1e6ed;
+  color-scheme: light;
+}
+.color-gallery main {
+  max-width: 1200px;
+  margin: auto;
+  padding: 32px;
+}
+.color-gallery header {
+  margin-bottom: 24px;
+}
+.color-gallery h1 {
+  margin: 20px 0 8px;
+  font: 600 28px/1.2 var(--font);
+}
+.color-gallery p,
+.color-gallery footer {
+  color: var(--muted);
+  max-width: 75ch;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.color-gallery .controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 20px;
+  font-size: 12px;
+}
+.color-gallery select {
+  background: var(--paper);
+  color-scheme: inherit;
+}
+.color-gallery button {
+  min-height: 32px;
+}
+.color-gallery #status {
+  color: var(--muted);
+}
+.palette-head,
+.palette-row {
+  display: grid;
+  grid-template-columns: 150px repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  align-items: center;
+}
+.palette-head {
+  position: sticky;
+  top: 0;
+  padding: 12px 0;
+  background: var(--paper);
+  color: var(--muted);
+  font-size: 12px;
+  z-index: 1;
+}
+.palette-row {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.palette-row[hidden] {
+  display: none;
+}
+.palette-name {
+  font-size: 13px;
+}
+.palette-name small {
+  display: block;
+  padding-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.palette-row canvas,
+.palette-css {
+  display: block;
+  width: 100%;
+  height: 28px;
+}
+.color-gallery footer {
+  margin-top: 32px;
+}
+@media (max-width: 640px) {
+  .color-gallery main {
+    padding: 16px;
+  }
+  .palette-head,
+  .palette-row {
+    grid-template-columns: 90px repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .palette-name {
+    font-size: 11px;
+  }
+  .palette-name small {
+    font-size: 9px;
+  }
+}

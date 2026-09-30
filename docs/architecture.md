@@ -1,5 +1,7 @@
 # Architecture
 
+> Migration note: this guide describes the earlier APIs. `@latkit/colormaps` has been removed; colors now belong to `@latkit/gpu`. See [colors and colormaps](colormaps.md), [network usage](network-quickstart.md), and the current package READMEs. Monitor and diagram are not migrated yet.
+
 Latkit is organized as a small monorepo. Each published package owns a single public entrypoint and emits bundled ESM plus TypeScript declarations.
 
 ## Runtime shape

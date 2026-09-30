@@ -1,5 +1,7 @@
 # Getting started
 
+> Migration note: this guide describes the earlier APIs. `@latkit/colormaps` has been removed; colors now belong to `@latkit/gpu`. See [colors and colormaps](colormaps.md), [network usage](network-quickstart.md), and the current package READMEs. Monitor and diagram are not migrated yet.
+
 This guide gets a local Latkit checkout or downstream app to its first rendered view.
 
 ## Prerequisites

@@ -12,8 +12,6 @@ struct Page {
 @group(1) @binding(0) var<uniform> u: Uniforms;
 @group(1) @binding(1) var<uniform> page: Page;
 @group(1) @binding(2) var<storage, read_write> output: array<vec4f>;
-@group(1) @binding(3) var ramp: texture_2d<f32>;
-@group(1) @binding(4) var rampSampler: sampler;
 
 fn scalar(slot: u32, row: u32, fallback: f32) -> f32 {
   if (slot == 0xffffffffu || !fieldValid(slot, row, 0u)) { return fallback; }
@@ -34,7 +32,7 @@ fn scaled(slot: u32, row: u32, d: vec4f, fallback: f32) -> f32 {
 fn color(row:u32, base:vec4f) -> vec4f {
   let v = scalar(page.slots1.x,row,3.402823e38);
   if (v == 3.402823e38) { return base; }
-  return textureSampleLevel(ramp,rampSampler,vec2f(clamp((v-page.color.x)*page.color.y,0.0,1.0),0.5),0.0);
+  return colormapColor((v-page.color.x)*page.color.y);
 }
 @compute @workgroup_size(64)
 fn vertices(@builtin(global_invocation_id) id: vec3u) {

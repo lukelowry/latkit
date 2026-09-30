@@ -1,7 +1,7 @@
 /* global document, GPUBufferUsage, GPUMapMode */
 import { createGpu, createCanvasView, createRenderTarget } from '@latkit/gpu';
 import { createNetwork, attachNetworkInput } from '@latkit/network';
-import { colormap } from '@latkit/colormaps';
+import { colormaps } from '@latkit/gpu';
 import { PathSource, featureSource, vectors } from '../../dist/paths-fixture.js';
 import { GraphSource } from '../../dist/fixture.js';
 
@@ -27,7 +27,7 @@ function data(source, labels = true) {
     vertices: {
       node: {
         position: 'location',
-        color: { field: 'signal', domain: [0, 1], colormap: colormap('viridis') },
+        color: { field: 'signal', domain: [0, 1], colormap: colormaps.viridis },
         size: { field: 'weight', domain: [0, 1], range: [0.7, 1.5] },
         labels: labels ? { field: 'name', size: 11, maxCount: 45 } : null,
       },
@@ -53,7 +53,7 @@ function data(source, labels = true) {
           role: 'node',
           to: 'node',
         },
-        color: { field: 'signal', domain: [0, 1], colormap: colormap('viridis') },
+        color: { field: 'signal', domain: [0, 1], colormap: colormaps.viridis },
       },
     },
   };
@@ -66,7 +66,7 @@ function channelBindings() {
     },
     height: el('channel-z').checked ? { field: 'z', domain: [0, 1], range: [0, 1] } : null,
     color: el('channel-color').checked
-      ? { field: 'signal', domain: [0, 1], colormap: colormap('viridis') }
+      ? { field: 'signal', domain: [0, 1], colormap: colormaps.viridis }
       : null,
   };
 }
@@ -78,7 +78,7 @@ function updateChannels() {
   network.setVertex('node', channelBindings());
   network.setEdge('line', {
     color: el('channel-color').checked
-      ? { field: 'signal', domain: [0, 1], colormap: colormap('viridis') }
+      ? { field: 'signal', domain: [0, 1], colormap: colormaps.viridis }
       : null,
   });
 }

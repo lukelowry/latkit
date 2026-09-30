@@ -7,6 +7,8 @@ import {
   rowCount,
 } from '../../dist/index.js';
 
+import { checkColors } from './colors.js';
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -281,6 +283,7 @@ export async function check() {
     atlasReadback.destroy();
     checks.push('unaligned pixel rows and incremental texture upload');
 
+    checks.push(await checkColors(gpu, output));
     gpu.trim();
     const rows = 1_000_000;
     const large = {

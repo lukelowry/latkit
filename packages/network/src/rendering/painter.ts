@@ -1,7 +1,6 @@
 import {
   BufferData,
   GpuError,
-  TextureData,
   rowCount,
   type BufferResource,
   type Encoding,
@@ -10,7 +9,6 @@ import {
   type TextureResource,
   type TextPage,
 } from '@latkit/gpu';
-import type { Colormap } from '@latkit/colormaps';
 import type { Camera } from '../camera.js';
 import { indexKey } from '../geometry/rows.js';
 import { DEG, turn } from '../camera.js';
@@ -62,6 +60,7 @@ interface Command {
   readonly tessellation?: GPUBindGroup;
 }
 interface Compute {
+  readonly colors: GPUBindGroup;
   readonly fields: GPUBindGroup;
   readonly group: GPUBindGroup;
   readonly count: number;
@@ -80,22 +79,6 @@ export interface Paint {
   readonly globe: boolean;
   readonly indirect?: GPUBuffer;
   readonly drawCalls: number;
-}
-const ramps = new WeakMap<Colormap, TextureData>();
-const gray: Colormap = (t) => [t, t, t];
-function ramp(map: Colormap = gray): TextureData {
-  let texture = ramps.get(map);
-  if (texture) return texture;
-  texture = new TextureData({ width: 256, height: 1 });
-  for (let i = 0; i < 256; i++) {
-    const c = map(i / 255);
-    for (let j = 0; j < 3; j++)
-      texture.bytes[i * 4 + j] = Math.round(Math.max(0, Math.min(1, c[j])) * 255);
-    texture.bytes[i * 4 + 3] = 255;
-  }
-  texture.touch();
-  ramps.set(map, texture);
-  return texture;
 }
 function sun(time: number): readonly [number, number, number] {
   const date = new Date(time),
@@ -117,7 +100,6 @@ export class Painter {
   private buffers = new Map<object, BufferResource>();
   private textures: { key: string; depth: TextureResource; color?: TextureResource } | undefined;
   private readonly dummy: BufferResource;
-  private readonly sampler: GPUSampler;
   private focusData = new BufferData({ size: 16, label: 'network endpoint focus' });
   private focusKey = '';
   private focusGeometry?: Geometry;
@@ -129,7 +111,6 @@ export class Painter {
       usage: GPUBufferUsage.STORAGE,
       label: 'network empty binding',
     });
-    this.sampler = gpu.device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
   }
   private output(key: object, bytes: number): BufferResource {
     let result = this.buffers.get(key);
@@ -374,7 +355,7 @@ export class Painter {
           );
         }
         pf.set([origin('visible'), origin('shade'), origin('dash'), 0], 32);
-        const colormap = frame.texture(ramp(config.color?.colormap));
+        const colors = frame.colormap(config.color?.colormap);
         const output = edge
           ? edgeBuffers.get(bank as EdgeBank)!
           : vertexBuffers.get(bank as VertexBank)!;
@@ -390,11 +371,9 @@ export class Painter {
             { binding: 0, resource: styleUniform },
             { binding: 1, resource: frame.uniforms(pf) },
             { binding: 2, resource: output },
-            { binding: 3, resource: colormap.createView() },
-            { binding: 4, resource: this.sampler },
           ],
         });
-        compute.push({ fields: page.bindGroup, group, count: rowCount(page.rows), edge });
+        compute.push({ colors, fields: page.bindGroup, group, count: rowCount(page.rows), edge });
       }
     };
     for (const bank of geometry.vertices)
@@ -590,6 +569,7 @@ export class Painter {
       compute.setPipeline(command.edge ? paint.pipelines.edge : paint.pipelines.vertex);
       compute.setBindGroup(0, command.fields);
       compute.setBindGroup(1, command.group);
+      compute.setBindGroup(2, command.colors);
       compute.dispatchWorkgroups(Math.ceil(command.count / 64));
     }
     compute.end();

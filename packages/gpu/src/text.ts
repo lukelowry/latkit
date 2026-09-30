@@ -1,3 +1,4 @@
+import type { RGBA } from './colors/color.js';
 /** Font identity includes a revision for an application replacing a loaded font face. */
 export interface TextFont {
   readonly family: string;
@@ -19,8 +20,8 @@ export interface TextMetrics {
 export interface TextRun extends TextInput {
   readonly position: readonly [number, number];
   readonly size: number;
-  /** Straight RGBA. The shader returns premultiplied color. */
-  readonly color?: readonly [number, number, number, number];
+  /** sRGB-encoded straight RGBA. The shader returns premultiplied color. */
+  readonly color?: RGBA;
   /** Renderer-local anchor identifier; a shader may use it to apply a dynamic transform. */
   readonly anchor?: number;
 }

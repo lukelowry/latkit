@@ -135,22 +135,27 @@ button:disabled {
   cursor: default;
 }
 
-button.swatch {
-  position: relative;
-  padding-left: 28px;
+select {
+  flex: 1;
+  min-width: 0;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0d1016;
+  color: var(--ink);
+  font: inherit;
+  color-scheme: dark;
 }
-
-button.swatch::before {
-  content: '';
-  position: absolute;
-  left: 8px;
-  top: 50%;
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  background: var(--swatch);
-  transform: translateY(-50%);
+.palette-preview {
+  width: 100%;
+  height: 16px;
+}
+a {
+  color: var(--muted);
+  text-underline-offset: 3px;
+}
+a:hover {
+  color: var(--ink);
 }
 
 .pick {

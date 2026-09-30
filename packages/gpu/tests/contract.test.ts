@@ -8,6 +8,16 @@ describe('public contract and allocation boundaries', () => {
   it('exports one clean root with no legacy channel, device-pool, or playback facades', () => {
     expect(Object.keys(api).sort()).toEqual(
       [
+        'validateRgba',
+        'createColormap',
+        'reverseColormap',
+        'sampleColormap',
+        'parseColor',
+        'resolveColor',
+        'colorCss',
+        'colormapCss',
+        'colormaps',
+        'colormapShader',
         'BufferData',
         'TextureData',
         'GpuError',

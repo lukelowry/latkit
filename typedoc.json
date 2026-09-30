@@ -4,12 +4,11 @@
   "entryPointStrategy": "packages",
   "entryPoints": [
     "packages/model",
-    "packages/colormaps",
     "packages/gpu",
     "packages/diagram",
     "packages/monitor",
     "packages/network",
-    "packages/port",
+    "packages/connect",
     "packages/video"
   ],
   "packageOptions": {

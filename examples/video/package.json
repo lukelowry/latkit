@@ -14,8 +14,7 @@
     "@latkit/model": "workspace:*",
     "@latkit/network": "workspace:*",
     "@latkit/diagram": "workspace:*",
-    "@latkit/monitor": "workspace:*",
-    "@latkit/colormaps": "workspace:*"
+    "@latkit/monitor": "workspace:*"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.71",

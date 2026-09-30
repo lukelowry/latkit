@@ -28,7 +28,6 @@
     "bench": "vitest bench --run --project @latkit/diagram"
   },
   "dependencies": {
-    "@latkit/colormaps": "workspace:*",
     "@latkit/gpu": "workspace:*",
     "@latkit/model": "workspace:*",
     "@webgpu/types": "^0.1.71"

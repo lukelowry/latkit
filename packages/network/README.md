@@ -3,6 +3,7 @@
 One network view over borrowed model `Queryable` sources and the shared `Gpu`. Native indices and row numbers remain authoritative for selection, neighborhoods, field bindings, and labels. Destroying a view does not close its sources or GPU.
 
 ```ts
+import { colormaps } from '@latkit/gpu';
 import { createNetwork, attachNetworkInput } from '@latkit/network';
 
 const network = createNetwork({
@@ -13,7 +14,10 @@ const network = createNetwork({
     vertices: {
       location: {
         position: 'coordinates',
-        color: { field: { source: recording, from: 'location', field: 'signal' } },
+        color: {
+          field: { source: recording, from: 'location', field: 'signal' },
+          colormap: colormaps.viridis,
+        },
         labels: { field: 'name', maxCount: 120 },
       },
     },
