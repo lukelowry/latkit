@@ -206,6 +206,16 @@ row counts and empty aggregate results. Rows are never repeated across blocks;
 sample tiles cover the requested frame/row rectangle exactly once. Schema/data/index versions must
 remain coherent throughout the stream. Separate queries do not implicitly share a pinned version.
 
+A coordinate-range window may request context: { before: 1, after: 1 } to include neighboring
+observations for continuity across its boundaries. Omitted counts are zero; counts must be
+nonnegative safe integers. The inclusive interval includes all duplicate boundary coordinates.
+Context counts individual frames strictly outside it, choosing the nearest retained frames on each
+side even when the interval contains no observations. Extra context clips to retained bounds and
+never waits for future frames; the base interval still rejects expired when it overlaps evicted
+observations. An empty recording has no context. Sample and aggregate queries use the same expanded
+window, resolved against their pinned read. Implementations should locate bounds through their
+coordinate index, without scanning observations or copying numeric payloads merely to add context.
+
 maxBlockBytes is bounded by Schema.limits.maxBlockBytes. blockByteLength gives the exact contract
 accounting: exposed byte-range unions, UTF-8 metadata including keys, eight bytes per number, and
 one byte per boolean/null. Shared metadata objects are counted once. This deliberately differs from transport framing and allocated memory.

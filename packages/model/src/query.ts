@@ -78,13 +78,27 @@ export interface RowsQuery extends FieldSelection {
 
 export type SampleWindow =
   | { readonly kind: 'frames'; readonly offset: number; readonly count: number }
-  | { readonly kind: 'range'; readonly between: Domain }
+  | {
+      readonly kind: 'range';
+      readonly between: Domain;
+      /**
+       * Extra retained frames strictly before/after the inclusive interval; omitted counts are zero.
+       * Counts are nonnegative safe integers, measured in frames, not distinct coordinates.
+       * Include every boundary duplicate inside the interval. With no interior frames, use the
+       * immediate predecessor/successor at the insertion point. Clip context to retained bounds;
+       * it never causes expired by itself. The base interval's expiration rules still apply.
+       * Resolve both boundaries and context against the same pinned read, without waiting for
+       * future frames. Aggregates include these same context frames when requested.
+       */
+      readonly context?: { readonly before?: number; readonly after?: number };
+    }
   | { readonly kind: 'at'; readonly value: number };
 
 /**
  * Sampled numeric fields. At selects the last duplicate coordinate; before first is empty.
  * Native floating-point observations may be nonfinite; aggregates exclude them.
- * Evicted ranges reject expired. Future frame ranges reject invalid-input. No silent truncation.
+ * Evicted base ranges reject expired. Future frame ranges reject invalid-input.
+ * Only optional range context clips to retained bounds; requested data is never silently truncated.
  */
 export interface SamplesQuery extends FieldSelection {
   readonly kind: 'samples';

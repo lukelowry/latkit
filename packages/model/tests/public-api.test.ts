@@ -34,7 +34,7 @@ function publicUsage(
       kind: 'samples',
       from: 'Node',
       select: ['output'],
-      window: { kind: 'at', value: 0 },
+      window: { kind: 'range', between: [0, 1], context: { before: 1, after: 1 } },
     }),
   ).toEqualTypeOf<AsyncIterable<QueryHeader | SamplesBlock>>();
   const input: Input = {

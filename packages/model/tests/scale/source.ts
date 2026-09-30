@@ -21,11 +21,11 @@ import type {
   NumericColumn,
   SampleColumn,
   Update,
-  SampleWindow,
   RequestOptions,
 } from '../../src/index.js';
 import { blockByteLength, blockBuffers, validateQuery } from '../../src/index.js';
 import { text } from '../data.js';
+import { selectFrames } from '../source.js';
 import { Store, failure, axisAt, axisLength, slice, interrupt } from './store.js';
 import type { State } from './store.js';
 export const schema: Schema = {
@@ -193,40 +193,6 @@ export abstract class ScaleSource implements Queryable {
     }
     return rows;
   }
-  private selectFrames(
-    read: Read,
-    window: SampleWindow,
-  ): { frames: readonly Frame[]; offset: number } {
-    const frames = read.frames ?? [],
-      first = read.firstFrame ?? 0;
-    if (window.kind === 'frames') {
-      if (window.offset < first) throw failure('expired');
-      if (window.offset + window.count > (read.frameCount ?? 0)) throw failure('invalid-input');
-      return {
-        frames: frames.slice(window.offset - first, window.offset - first + window.count),
-        offset: window.offset,
-      };
-    }
-    if (window.kind === 'at') {
-      if (read.firstCoordinate !== undefined && window.value < read.firstCoordinate)
-        return { frames: [], offset: first };
-      let i = frames.length - 1;
-      while (i >= 0 && frames[i].coordinate > window.value) i--;
-      if (i < 0 && first > 0) throw failure('expired');
-      return { frames: i < 0 ? [] : [frames[i]], offset: first + Math.max(0, i) };
-    }
-    if (
-      read.evictedThrough !== undefined &&
-      window.between[0] <= read.evictedThrough &&
-      window.between[1] >= (read.firstCoordinate ?? -Infinity)
-    )
-      throw failure('expired');
-    let start = 0;
-    while (start < frames.length && frames[start].coordinate < window.between[0]) start++;
-    let end = start;
-    while (end < frames.length && frames[end].coordinate <= window.between[1]) end++;
-    return { frames: frames.slice(start, end), offset: first + start };
-  }
   private value(read: Read, field: string, row: number, frame?: Frame): number {
     return field === 'value' ? this.store.at(read.state, row) : frame!.values[row];
   }
@@ -281,7 +247,7 @@ export abstract class ScaleSource implements Queryable {
         query.where?.some((f) => f.field === 'output') ||
         query.orderBy?.some((o) => o.field === 'output');
       const frame = sampled
-        ? this.selectFrames(read, { kind: 'at', value: query.at! }).frames[0]
+        ? selectFrames(read, { kind: 'at', value: query.at! }).frames[0]
         : undefined;
       let rows = this.rows(read, query.rows, !!sampled);
       if (sampled && !frame) rows = { kind: 'range', offset: 0, count: 0 };
@@ -336,7 +302,7 @@ export abstract class ScaleSource implements Queryable {
         position += count;
       }
     } else if (query.kind === 'samples') {
-      const { frames, offset } = this.selectFrames(read, query.window),
+      const { frames, offset } = selectFrames(read, query.window),
         rows = this.rows(read, query.rows, true);
       for (let f = 0; f < frames.length; f++)
         for (let row = 0; row < axisLength(rows);) {
@@ -368,7 +334,7 @@ export abstract class ScaleSource implements Queryable {
         }
     } else if (query.kind === 'aggregate') {
       const rows = this.rows(read, query.rows, !!query.window),
-        frames = query.window ? this.selectFrames(read, query.window).frames : [undefined];
+        frames = query.window ? selectFrames(read, query.window).frames : [undefined];
       for (const field of query.select) {
         let count = 0,
           min = Infinity,

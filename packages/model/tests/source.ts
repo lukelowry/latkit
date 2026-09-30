@@ -41,15 +41,17 @@ export interface Frame {
   coordinate: number;
   values: Readonly<Record<string, Float64Array>>;
 }
-export interface ReadState {
+interface FrameRead<F> {
+  readonly frames?: readonly F[];
+  readonly firstFrame?: number;
+  readonly frameCount?: number;
+  readonly firstCoordinate?: number;
+  readonly evictedThrough?: number;
+}
+export interface ReadState extends FrameRead<Frame> {
   inputs: Inputs;
   version: string;
   schema: Schema;
-  frames?: readonly Frame[];
-  firstFrame?: number;
-  frameCount?: number;
-  firstCoordinate?: number;
-  evictedThrough?: number;
   coverage?: ReadonlyMap<string, RowAxis>;
 }
 export const axisLength = (rows: RowAxis): number =>
@@ -127,10 +129,10 @@ export function coveredRows(
       .sort((a, b) => a - b),
   );
 }
-export function selectFrames(
-  state: ReadState,
+export function selectFrames<F extends { readonly coordinate: number }>(
+  state: FrameRead<F>,
   window: SampleWindow,
-): { frames: readonly Frame[]; offset: number } {
+): { frames: readonly F[]; offset: number } {
   const frames = state.frames ?? [];
   const first = state.firstFrame ?? 0;
   if (window.kind === 'frames') {
@@ -144,8 +146,7 @@ export function selectFrames(
   if (window.kind === 'at') {
     if (state.firstCoordinate !== undefined && window.value < state.firstCoordinate)
       return { frames: [], offset: first };
-    let i = frames.length - 1;
-    while (i >= 0 && frames[i].coordinate > window.value) i--;
+    const i = coordinateBound(frames, window.value, true) - 1;
     if (i < 0 && first > 0) throw failure('expired');
     return { frames: i < 0 ? [] : [frames[i]], offset: i < 0 ? first : first + i };
   }
@@ -155,11 +156,28 @@ export function selectFrames(
     window.between[1] >= (state.firstCoordinate ?? -Infinity)
   )
     throw failure('expired');
-  let start = 0;
-  while (start < frames.length && frames[start].coordinate < window.between[0]) start++;
-  let end = start;
-  while (end < frames.length && frames[end].coordinate <= window.between[1]) end++;
+  let start = coordinateBound(frames, window.between[0], false);
+  let end = coordinateBound(frames, window.between[1], true);
+  start -= Math.min(start, window.context?.before ?? 0);
+  end += Math.min(frames.length - end, window.context?.after ?? 0);
   return { frames: frames.slice(start, end), offset: first + start };
+}
+
+/** Binary searches the pinned coordinate index; numeric payloads are never inspected/copied. */
+function coordinateBound(
+  frames: readonly { readonly coordinate: number }[],
+  coordinate: number,
+  upper: boolean,
+): number {
+  let start = 0;
+  let end = frames.length;
+  while (start < end) {
+    const middle = start + Math.floor((end - start) / 2);
+    const value = frames[middle].coordinate;
+    if (value < coordinate || (upper && value === coordinate)) start = middle + 1;
+    else end = middle;
+  }
+  return start;
 }
 
 export abstract class Source implements Queryable {

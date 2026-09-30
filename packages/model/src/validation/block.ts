@@ -119,19 +119,24 @@ export function validateBlock(
         c.issue(['coordinates'], 'Expected Float64Array.');
       else {
         frames = block.coordinates.length;
-        for (let i = 0; i < frames; i++)
-          if (
-            !Number.isFinite(block.coordinates[i]) ||
-            (i > 0 && block.coordinates[i] < block.coordinates[i - 1])
-          ) {
+        const range = query.window.kind === 'range' ? query.window : undefined;
+        let before = 0;
+        let after = 0;
+        for (let i = 0; i < frames; i++) {
+          const coordinate = block.coordinates[i];
+          if (!Number.isFinite(coordinate) || (i > 0 && coordinate < block.coordinates[i - 1])) {
             c.issue(['coordinates', i], 'Coordinates must be finite and nondecreasing.');
             break;
           }
-        if (query.window.kind === 'range') {
-          const { between } = query.window;
-          if (block.coordinates.some((t) => t < between[0] || t > between[1]))
-            c.issue(['coordinates'], 'Coordinates lie outside the requested interval.');
+          if (range) {
+            if (coordinate < range.between[0]) before++;
+            else if (coordinate > range.between[1]) after++;
+          }
         }
+        // A block can bound context counts, but nearest neighbors and total coverage across
+        // frame/row tiles require whole-stream checks against the source's pinned frame index.
+        if (range && (before > (range.context?.before ?? 0) || after > (range.context?.after ?? 0)))
+          c.issue(['coordinates'], 'Coordinates exceed the requested interval and context.');
         if (
           query.window.kind === 'at' &&
           (frames !== 1 || block.coordinates[0] > query.window.value)

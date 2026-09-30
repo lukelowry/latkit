@@ -170,12 +170,20 @@ function selection(c: Check, value: unknown, path: Path, from: string): void {
 
 function window(c: Check, value: unknown, path: Path): void {
   const w = c.object(value, path);
+  if (own(w, 'context') && w.kind !== 'range')
+    c.issue([...path, 'context'], 'Context requires a coordinate range.');
   if (w.kind === 'frames') {
     const a = c.integer(w.offset, [...path, 'offset']);
     const b = c.integer(w.count, [...path, 'count']);
     if (a && b && !Number.isSafeInteger((w.offset as number) + (w.count as number)))
       c.issue(path, 'Frame range exceeds safe integer precision.');
   } else if (w.kind === 'range') {
+    if (own(w, 'context')) {
+      const contextPath = [...path, 'context'];
+      const context = c.object(w.context, contextPath);
+      c.optional(context, 'before', c.integer.bind(c), contextPath);
+      c.optional(context, 'after', c.integer.bind(c), contextPath);
+    }
     const pair = c.array(w.between, [...path, 'between']);
     if (pair.length !== 2) c.issue([...path, 'between'], 'Expected an inclusive coordinate pair.');
     if (
