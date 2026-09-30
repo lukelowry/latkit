@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Latkit GPU contract checks</title>
+<script type="importmap">
+  { "imports": { "@latkit/model": "/packages/model/dist/index.js" } }
+</script>
+<script>
+  globalThis.gpuCheck = import('./check.js').then((module) => module.check());
+  gpuCheck.then(
+    (result) => {
+      document.body.textContent = JSON.stringify(result);
+    },
+    (error) => {
+      document.body.textContent = String(error.stack);
+    },
+  );
+</script>
+<body>
+  Running real WebGPU checks...
+</body>

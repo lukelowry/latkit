@@ -221,15 +221,16 @@ importers:
 
   packages/gpu:
     dependencies:
-      '@latkit/colormaps':
-        specifier: workspace:*
-        version: link:../colormaps
       '@latkit/model':
         specifier: workspace:*
         version: link:../model
       '@webgpu/types':
         specifier: ^0.1.71
         version: 0.1.71
+    devDependencies:
+      '@latkit/connect':
+        specifier: workspace:*
+        version: link:../connect
 
   packages/model: {}
 

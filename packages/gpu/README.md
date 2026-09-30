@@ -1,253 +1,155 @@
 # @latkit/gpu
 
-What every Latkit renderer shares: Core WebGPU devices and the pool they are leased from, canvas
-presentation, the frame loop, the attach lifecycle, the channels a renderer binds values and series
-to, the colormap lookup texture, and controller events.
+Shared WebGPU plumbing for native Latkit data. This package replaces the previous GPU package outright. It has no `Series`, channel controller, device-pool facade, renderer scene format, or compatibility entry point.
 
-`@latkit/gpu` handles the environmental part of requesting a device and then returns the platform
-`GPUDevice` directly. Applications rarely import it beyond the device pool; a renderer is built on
-the rest. All exports come from the single `@latkit/gpu` entrypoint.
+Import the public API from `@latkit/gpu`. Renderers own geometry, layout, cameras, styles, interaction, and source subscriptions. Applications own model acquisitions. GPU resources and frame execution belong to `Gpu`.
 
-## Install
+```ts
+import { createGpu, createRenderTarget } from '@latkit/gpu';
+
+const gpu = await createGpu({
+  budget: {
+    cpuBytes: 64 * 1024 ** 2,
+    gpuBytes: 256 * 1024 ** 2,
+    stagingBytes: 16 * 1024 ** 2,
+  },
+});
+const target = createRenderTarget({ gpu, width: 1920, height: 1080 });
+
+// A renderer implements the interface below and borrows this Gpu.
+await gpu.render({
+  timeMs: 500,
+  views: [{ renderer, target, at: 12.5 }],
+  signal,
+});
+
+await gpu.idle();
+renderer.destroy();
+target.destroy();
+gpu.destroy();
+```
+
+`at` uses the model axis units. `timeMs` is presentation animation time. Each view may have a different coordinate. `FrameInfo.width/height` are physical target pixels; `viewport` describes logical pixels and display scale. Offscreen views default to one logical pixel per target pixel.
+
+## Rendering contract
+
+```ts
+interface Renderer {
+  prepare(frame: Preparation): Promise<void>;
+  encode(frame: Encoding): void;
+  destroy(): void;
+}
+```
+
+Preparation acquires data, pipelines, and resources. Encoding is synchronous, may create render and compute passes on the supplied encoder, and never submits. `Gpu.render` prepares all requested views, checks coherence, then encodes them in order and submits once. Its optional `encode` callback appends composition or copy commands to the same encoder.
+
+Queries must be exhausted or explicitly returned before preparation resolves. Preparation methods and GPU page descriptors are frame-scoped. Do not store them for use by later frames; requesting the same data again reuses resident resources. Input descriptors, model blocks, and published application field values must remain immutable.
+
+One renderer represents one view. Concurrent use of the same renderer rejects `busy`; separate views can prepare concurrently. Cancellation interrupts shared-read consumers independently. An uncooperative renderer remains busy until its own preparation settles, preventing a later call from racing its state. Failed or cancelled preparation never submits a partial frame. Already submitted commands cannot be cancelled.
+
+`render()` resolves after submission. `idle()` waits for managed submissions already in flight. Resource pins remain until queue completion. The owner bounds in-flight submissions (default two), and uses distinct ranges or copy-on-write allocations for data that must coexist.
+
+The executable [browser fixture](tests/browser/check.js) demonstrates complete compute, render, uniform, and readback implementations.
+
+## Native data and identity
+
+`FieldBinding` is `FieldSelection` plus a borrowed `Queryable`. It carries no lifecycle. A renderer reads it directly:
+
+```ts
+const { source, ...selection } = binding;
+
+for await (const block of frame.query(source, {
+  kind: 'rows',
+  ...selection,
+  at: frame.at,
+})) {
+  if (block.kind === 'schema') {
+    // This header is authoritative for this iteration.
+    continue;
+  }
+
+  const pages = frame.upload(block, {
+    select: selection.select,
+    float64: 'relative',
+  });
+  // Build this frame's bindings/draws from pages.
+}
+```
+
+`frame.query` preserves query-specific result types and accepts every current model query kind. It does not reinterpret document or recording ownership. A remote `Queryable` from `@latkit/connect` works identically; connect is only a test dependency here.
+
+Equivalent requests from the same acquisition share a bounded stream and cached native blocks. Small selections are keyed by value; typed selections and arrays longer than 64 items use immutable object identity, avoiding a scan or serialization of large index arrays on every frame. Distinct acquisitions are never deduplicated by matching version strings. Concurrent consumers apply backpressure to each other; one consumer leaving does not cancel the others. Completed prefixes are replayable while resident. Once a prefix is evicted, a later reader starts its own query.
+
+Each query must emit one coherent header/version. All queries from the same source in a frame must agree on that version. Later live appends do not invalidate immutable results already acquired. A new query observing another version rejects that frame with `conflict`; the controller may retry. Retain sources explicitly for deterministic export across many frames. No retention acquisition is created implicitly and no supplied source is closed.
+
+Source publications conservatively invalidate cached requests for subsequent reads. Controllers subscribe to source changes and request redraws. The shared cache does not impose playback or redraw policy. All model query validation can be enabled with `validate: true`; header coherence, byte bounds, and GPU upload shape checks are always enforced.
+
+`Index` and `RowAxis` remain native. `assertIndex` checks document, type, and index version. Ranges require no row array; sparse pages supply a GPU row map. Equal array lengths never imply identity. `FieldValues` accepts application-owned numeric, vector, or boolean columns with explicit row identity. `frame.values()` uploads them under the `value` field without fabricating a model query. `DataHit` supplies the same source/index/row vocabulary for renderer-specific picking.
+
+## GPU columns
+
+`GpuPage` describes bounded device-local pages. It preserves source index, physical row order, the row position within the input block, and absolute sample frame numbers. Numerical bindings use scalar offsets/strides and separate validity bitmaps. Numeric vectors preserve components. Boolean values remain packed bits; their offsets/strides use bit units. `columnShader` provides shared addressing and bit tests. Renderers declare their own storage bindings and geometry record layouts.
+
+- Float32, Int32, and Uint32 slices upload directly where their stride/span is economical and fits a binding. Integers are never narrowed to Float32.
+- Float64 value columns require an explicit `relative` or `float32` policy. Relative encoding subtracts a per-page, per-component Float64 origin before narrowing. Finite overflow rejects `precision`; it never silently becomes infinity. Source payload remains authoritative for exact readout.
+- Sample coordinates always use relative encoding. Their origins are independent of viewport and style domains.
+- Nulls remain validity bits. Nonfinite sampled values remain numerical observations and are not used as null sentinels. Rendering policy decides how to display them.
+- Oversized or excessively padded numeric tiles are packed into bounded pages. Boolean values remain bit-packed. Unsupported text/list uploads reject; those columns still flow through `frame.query` for renderer-specific preparation.
+
+Cached GPU input bindings are read-only. Do not write them from shaders or call native `destroy` on their buffers. Native buffers can contain unrelated suballocations; always respect the returned binding offset and size.
+
+Geometry-specific culling and level of detail remain renderer responsibilities. Paging removes the single-binding size requirement; it does not make a working set larger than the entire budget renderable at once. Select a bounded working set or process explicit batches.
+
+## Mutable data and owned resources
+
+`BufferData` provides mutable renderer bytes with a bounded dirty-range journal. `TextureData` does the same for `r8unorm` and `rgba8unorm` pixel rows, covering glyph atlases, colormaps, and images without prescribing text rasterization or color semantics.
+
+```ts
+const layout = new BufferData({ size: 8192 });
+layout.write({ offset: 4000, data: new Float32Array([x, y]) });
+const binding = frame.buffer(layout);
+
+const atlas = new TextureData({ width: 512, height: 512, format: 'r8unorm' });
+atlas.write({ x, y, width, height, data: glyphPixels });
+const texture = frame.texture(atlas);
+
+const uniform = frame.uniforms(new Float32Array([scale, offset, 0, 0]));
+```
+
+Create persistent data outside preparation. After editing `bytes` directly, call `touch`. Each consumer tracks its own revision; there is no globally cleared dirty flag. Unchanged data is reused, dirty regions update when safe, and data still referenced by a frame uses copy-on-write. Mutating data during preparation rejects the frame. Uniform contents are dedicated to the frame, so successive views cannot overwrite earlier draw parameters.
+
+`gpu.buffer(descriptor)` and `gpu.texture(descriptor)` allocate explicitly owned native working/output resources. Pass them through `frame.buffer` or `frame.texture` when encoding will use them, including resources used in the final encode callback. Call their wrapper's `destroy`, which releases the owner while preserving submitted frame references. Native device operations remain available for specialized work; directly allocated resources and external targets are outside the managed budget and remain the caller's responsibility.
+
+Managed textures support the uncompressed formats listed in `resources.ts`, including common color and depth formats. Unsupported formats reject instead of receiving guessed memory accounting. Native validation and device feature requirements still apply.
+
+## Budgets and device lifetime
+
+Defaults are 64 MiB cached CPU data, 256 MiB managed GPU storage, 16 MiB temporary staging, and 4096 cache entries. Pages and query blocks default to at most 1 MiB, constrained further by device and configured limits.
+
+CPU accounting deduplicates whole borrowed backing allocations and charges metadata estimates. Tiny slices of disproportionately large backing may be copied into bounded allocations; ordinary fitting native blocks remain borrowed. Numeric conversion, bitmap padding, and bounded copies consume staging budget. GPU accounting includes complete buffer slabs, unused slab capacity, working/output buffers, textures/mips/samples, and resources still referenced by submitted work. GPU pressure evicts eligible GPU cache entries rather than discarding unrelated query data.
+
+These are managed allocation bounds, not process memory or driver-memory measurements. Application-owned `BufferData`/`TextureData`, model storage, external native objects, browser canvas storage, JavaScript engine overhead, and opaque pipeline/driver allocations are outside the byte totals. Pipeline cache entries are count-bounded. Texture byte accounting is texel-based; implementation-dependent depth storage is conservative.
+
+`stats()` exposes allocation, query, cache-hit, upload, staging, submission, eviction, and peak counters. A compatible Float32 upload may require no extra JavaScript numeric copy; CPU-to-GPU transfer still occurs. `trim()` evicts unpinned caches. Admission rejects `resource-limit` when the live working set cannot fit; it never silently discards requested rows or exceeds the configured bound.
+
+An explicitly supplied `GPUDevice` is borrowed; a requested device is owned. Required native features and limits are checked or requested at creation. One `Gpu` represents one device generation. Loss cancels pending preparation, invalidates resources, and is exposed through `lost`. Recreate owners and renderer resources explicitly for recovery; old native handles never silently move to another device.
+
+## Canvas and worker use
+
+`createPresentation({ gpu, canvas })` configures HTML or offscreen canvas output. It owns configuration/backing-size changes and restores them on destruction. `createRenderTarget` owns a resizable texture target. Both implement the same borrowed `RenderTarget` contract.
+
+`createCanvasView({ gpu, canvas, renderer, onError, onLost })` adds DOM observation and coalesced animation-frame scheduling. `request({ at, timeMs })` updates the requested coordinate/time; omitted fields preserve their previous settings. `request()` redraws. Canvas resizing waits until preparation completes, preserving the displayed frame while data is loading. `pause`, `resume`, and `destroy` govern only scheduling/presentation. Device loss is reported to the host. The renderer, Gpu, and model sources remain independently owned. Worker/offscreen callers use `gpu.render` directly and need no DOM globals beyond WebGPU.
+
+## Validation and remaining migration
 
 ```sh
-npm install @latkit/gpu
+pnpm --filter @latkit/gpu typecheck
+pnpm --filter @latkit/gpu build
+pnpm --filter @latkit/gpu test
+pnpm --filter @latkit/gpu test:browser
+pnpm --filter @latkit/gpu benchmark
 ```
 
-## Request a device
+Browser checks require a Chromium executable; set `LATKIT_BROWSER` if it is not found automatically. They verify actual GPU computation/readback, nullable strided columns, Float64 rebasing, independent view uniforms, incremental pixel uploads, and one million rows. Reports go to `output/gpu-browser.json`. The 100k/1m/4m-row benchmark separately measures JavaScript plumbing with a byte-addressable fake device; those numbers are not GPU timings.
 
-```ts
-import { requestDevice } from '@latkit/gpu';
-
-const device = await requestDevice();
-
-try {
-  console.log(device.limits);
-
-  void device.lost.then((info) => {
-    console.error('GPU device lost:', info.reason, info.message);
-  });
-} finally {
-  device.destroy();
-}
-```
-
-`requestDevice()` requests Core WebGPU and leaves the adapter power preference
-to the browser. Pass `powerPreference` only when the application has a specific
-reason to override that choice:
-
-```ts
-const device = await requestDevice({
-  powerPreference: 'high-performance',
-});
-```
-
-## Handle availability
-
-```ts
-import { GpuUnavailableError, requestDevice } from '@latkit/gpu';
-
-try {
-  const device = await requestDevice();
-
-  try {
-    // Create renderers that borrow device.
-  } finally {
-    device.destroy();
-  }
-} catch (error) {
-  if (error instanceof GpuUnavailableError) {
-    console.error(`WebGPU unavailable at ${error.stage}:`, error.message);
-  } else {
-    throw error;
-  }
-}
-```
-
-Only API absence, a null adapter, and device-request rejection use
-`GpuUnavailableError`. Other platform and programming failures retain their
-original identity.
-
-## Share one device
-
-Every Latkit controller leases its device from `devices`, the realm-wide pool: one device per
-page, requested by the first `acquire` and destroyed with the last release. Leases count the
-borrowers, concurrent acquisitions coalesce into one request, and a device the platform reports
-lost is retired so the next acquisition requests a replacement. `createDevicePool()` makes a
-private pool with the same rules and forwards `requestDevice()` options; hand it to a controller
-through its `devices` option.
-
-```ts
-import { createDevicePool, devices } from '@latkit/gpu';
-
-const lease = await devices.acquire();
-try {
-  // Borrow lease.device alongside the controllers on this page.
-} finally {
-  lease.release(); // the device outlives this lease only while another one holds it
-}
-
-const network = createNetwork({ devices: createDevicePool({ powerPreference: 'low-power' }) });
-```
-
-## Configure presentation
-
-Renderer implementations can configure either an `HTMLCanvasElement` or an
-`OffscreenCanvas` through the same primitive:
-
-```ts
-import { createPresentation } from '@latkit/gpu';
-
-const presentation = createPresentation(device, canvas);
-presentation.resize(800, 450);
-
-try {
-  const texture = presentation.context.getCurrentTexture();
-  // Encode rendering commands for texture.
-} finally {
-  presentation.destroy();
-}
-```
-
-`Presentation` owns its context configuration and backing-size changes. It
-preserves aspect ratio when fitting oversized requests to the device limit,
-restores the original canvas size when destroyed, and never destroys its
-borrowed device. `presentation.observe()` reports device-pixel size and pixel
-ratio now and on every change of an HTML canvas (an `OffscreenCanvas` reports
-once) while leaving scheduling and resize policy to the renderer, or to
-`createFrameLoop()` below:
-
-```ts
-const stop = presentation.observe((width, height, pixelRatio) => {
-  presentation.resize(width, height);
-});
-// ...
-stop();
-```
-
-## Drive frames
-
-`createFrameLoop()` schedules one canvas's frames: wakes coalesce into one animation frame, a
-resize re-renders before the next paint, and the backing store grows in steps of 64 device pixels
-while a resize is in flight and snaps exact once the size holds for three frames. `render`
-receives the same `Frame` every call (read it, never keep it) and returns true to be called again
-next frame:
-
-```ts
-import { createFrameLoop, createPresentation } from '@latkit/gpu';
-
-const presentation = createPresentation(device, canvas);
-const loop = createFrameLoop(presentation, ({ now, width, height, backingScale, settled }) => {
-  // Draw the frame at width x height CSS pixels into presentation.context.getCurrentTexture().
-  return animating(now); // true keeps frames coming; false waits for the next wake
-});
-
-loop.wake(); // after any change that should be drawn
-loop.pause(); // while the view is hidden; resume() schedules a frame
-loop.destroy(); // for good, and stop observing the canvas
-```
-
-Every size report after the synchronous first one renders a frame, woken or not, and that
-includes the observer's initial notification: be ready to draw the current state once the loop
-exists. A canvas without area skips its frame until a resize gives it one. A `render` that
-pauses or destroys the loop stops it, and wakes while paused are dropped: `resume()` schedules
-the next frame.
-
-## Attach a controller
-
-`createAttachment()` is the attach lifecycle every Latkit controller shares: supersession, joining a
-repeat attach, and recovery on a replacement device, as the [lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html)
-describes. A renderer supplies what one binding builds and what its release forgets:
-
-```ts
-import { createAttachment, devices } from '@latkit/gpu';
-
-const attachment = createAttachment({
-  devices,
-  bind(device, canvas, cleanup) {
-    const presentation = createPresentation(device, canvas);
-    cleanup(() => presentation.destroy()); // cleanups run in reverse on release
-    return presentation;
-  },
-  release: (presentation) => {}, // before the cleanups
-  attached: (bound) => emit('attached', bound),
-  lost: (loss) => emit('deviceLost', loss),
-});
-
-await attachment.attach(canvas); // false when a newer attach or a detach took over
-attachment.detach(canvas); // only while `canvas` is the current one
-```
-
-## Bind channels
-
-`createChannels()` is the channel binder every renderer's `setChannel` runs on. A renderer hands it
-its registry (each channel's scope, components, whether it is normalized, and whether it can follow
-a series), the store its shaders read (`reserve` and `writeWords`), and how a channel's record
-reaches its uniforms: the word its values start at, whether it is bound, and the
-`(value - min) * scale` its values map through.
-
-```ts
-import { createChannels } from '@latkit/gpu';
-
-const channels = createChannels<Channel, 'vertex' | 'edge'>({
-  name: 'network',
-  structure: 'topology',
-  channels: CHANNELS,
-  store: () => renderer, // null while detached: the CPU keeps every value, and upload() restores it
-  record: (channel, offset, bound, min, scale) => writeUniforms(channel, offset, bound, min, scale),
-  shown: () => loop.wake(), // a followed channel shows another frame
-  error: (channel, cause) => emit('error', { channel, cause }),
-});
-
-channels.load({ vertex: vertexCount, edge: edgeCount }); // a slot per channel
-channels.set('vertexColor', values, [0, 1]);
-channels.set('vertexHeight', { series, signal: 0 }); // follows the signal; the domain follows its range
-channels.seek(t); // every followed channel at the playhead
-```
-
-Every channel owns a slot for as long as a load holds, so binding one is one write and never a
-relayout. A followed signal's frames stay resident in a window of the store after the slots, shared
-by every channel following that signal, and the next ones load as the playhead advances or the
-series appends, so a seek within them rewrites one word per channel.
-
-## Colormaps and events
-
-`bakeColormap(colormap)` samples a `Colormap` into `COLORMAP_LUT_SIZE` opaque rgba8 texels, the
-lookup texture every renderer's shaders map normalized values through. `createEmitter()` is the
-typed event dispatcher behind every controller's `on`: listeners run in order, and one that throws
-rethrows on a microtask while the rest still run.
-
-## Render targets
-
-`RenderTarget` is a device, format, dimensions, and `texture()` for the next frame. `Presentation` implements it for a canvas; `createRenderTarget(device, width, height)` owns a fixed texture for offscreen composition. Destroy a fixed target after the renderers borrowing it are destroyed. `SceneRenderer.prepare(sourceTime, signal)` waits for channel samples; `draw(outputTimeMs)` advances visual animation. These are the shared primitives used by `@latkit/video`.
-
-## Shared glyphs
-
-Diagram and Monitor share the same monospace SDF atlas, rasterizer, texture synchronization,
-and WGSL coverage function. Layout, anchors, culling, and tick policy belong to each renderer.
-
-```ts
-import { GlyphAtlas, createGlyphTexture, glyphMetrics, glyphShader } from '@latkit/gpu';
-
-const atlas = new GlyphAtlas('ui-monospace, monospace');
-const cell = atlas.cell('A');
-const texture = createGlyphTexture(device);
-texture.sync(atlas);
-// Bind texture.view, and append glyphShader to the renderer's WGSL.
-// glyph_coverage(distance) must run in uniform fragment control flow.
-const advance = glyphMetrics.advance * 12;
-
-const captured = atlas.snapshot();
-const restored = GlyphAtlas.from(captured); // identical pixels and cell indices in another realm
-texture.destroy();
-```
-
-Rasterization happens once per grapheme and font generation. Each texture remembers its own
-revision, so consumers cannot clear each other's pending updates. Only changed rows upload;
-unchanged frames upload nothing. An atlas is capped at 4 MiB of r8 pixels. Exhaustion and missing
-glyphs in a sealed snapshot throw explicitly. Snapshots own copied pixels; rasterization can use
-an injected `GlyphRasterizer` or the built-in Canvas2D implementation. All exports remain at the
-package root.
-
-Renderer shade compilers use `shaderFailure(label, modules, cause)` for one diagnostic format,
-including shader source locations, while each renderer owns its pipeline and fragment contract.
+The renderer packages still require migration to this contract. Their old GPU imports intentionally fail. Model coverage/envelope queries are separate contract work; this package consumes the current model query surface and does not invent hidden substitutes. Rasterization, geometry packing, routing, culling, interaction, and video encoding remain outside this package.
