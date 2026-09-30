@@ -1,7 +1,7 @@
 import type { Gpu } from './gpu.js';
 import { GpuError } from './error.js';
 import { createPresentation, type Presentation } from './presentation.js';
-import type { Renderer } from './render.js';
+import type { Invalidation, Renderer } from './render.js';
 
 export interface CanvasView {
   readonly presentation: Presentation;
@@ -79,7 +79,10 @@ export function createCanvasView(options: {
       })
       .then(
         () => {
-          if (!closed && !own.signal.aborted) options.onRendered?.();
+          if (!closed && !own.signal.aborted) {
+            if (renderer.animating) wanted = true;
+            options.onRendered?.();
+          }
         },
         (error) => {
           if (!closed && !own.signal.aborted) {
@@ -93,11 +96,14 @@ export function createCanvasView(options: {
         schedule();
       });
   };
-  const invalidate = (): void => {
+  const invalidate = (change: Invalidation = 'replace'): void => {
     wanted = true;
-    active?.abort(new DOMException('Canvas frame superseded', 'AbortError'));
+    if (change === 'replace')
+      active?.abort(new DOMException('Canvas frame superseded', 'AbortError'));
     schedule();
   };
+  const resize = (): void => invalidate('replace');
+  let unsubscribe: (() => void) | undefined;
   let observer: ResizeObserver | undefined;
   let ratio: MediaQueryList | undefined;
   const watchRatio = (): void => {
@@ -115,7 +121,8 @@ export function createCanvasView(options: {
     if (raf) view.cancelAnimationFrame(raf);
     try {
       observer?.disconnect();
-      view.removeEventListener('resize', invalidate);
+      view.removeEventListener('resize', resize);
+      unsubscribe?.();
       ratio?.removeEventListener('change', onRatio);
     } finally {
       presentation.destroy();
@@ -123,14 +130,15 @@ export function createCanvasView(options: {
   };
   try {
     if (typeof ResizeObserver !== 'undefined') {
-      observer = new ResizeObserver(invalidate);
+      observer = new ResizeObserver(resize);
       try {
         observer.observe(canvas, { box: 'device-pixel-content-box' });
       } catch {
         observer.observe(canvas);
       }
     }
-    view.addEventListener('resize', invalidate);
+    view.addEventListener('resize', resize);
+    unsubscribe = renderer.on?.('invalidate', invalidate);
     watchRatio();
     invalidate();
   } catch (error) {

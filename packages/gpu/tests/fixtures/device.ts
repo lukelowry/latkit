@@ -76,6 +76,7 @@ export function fakeDevice(
   };
   const device = {
     limits: {
+      maxStorageBuffersPerShaderStage: 8,
       maxBufferSize: 256 * 1024 ** 2,
       maxStorageBufferBindingSize: 128 * 1024 ** 2,
       maxUniformBufferBindingSize: 65536,
@@ -93,6 +94,9 @@ export function fakeDevice(
     destroy: vi.fn(() =>
       loss.resolve({ reason: 'destroyed', message: 'destroyed' } as GPUDeviceLostInfo),
     ),
+    createSampler: vi.fn(() => ({})),
+    createBindGroupLayout: vi.fn((descriptor: GPUBindGroupLayoutDescriptor) => ({ descriptor })),
+    createBindGroup: vi.fn((descriptor: GPUBindGroupDescriptor) => ({ descriptor })),
     createBuffer: vi.fn((descriptor: GPUBufferDescriptor) => {
       let destroyed = false;
       const bytes = new Uint8Array(descriptor.size);

@@ -208,3 +208,41 @@ it('releases presentation when DOM observation cannot be installed', async () =>
   expect(fixture.frames.size).toBe(0);
   gpu.destroy();
 });
+
+it('subscribes to renderer invalidation and schedules animation without cancelling refresh', async () => {
+  const fake = fakeDevice(),
+    gpu = await createGpu({ device: fake.device }),
+    fixture = canvasFixture(fake.device),
+    gate = deferred<void>();
+  let notify!: (change: import('../src/index.js').Invalidation) => void;
+  let signal!: AbortSignal;
+  const off = vi.fn(),
+    error = vi.fn();
+  const render = {
+    ...renderer(async (frame) => {
+      signal = frame.signal;
+      await gate.promise;
+    }),
+    animating: true,
+    on: (_event: 'invalidate', listener: typeof notify) => {
+      notify = listener;
+      return off;
+    },
+  };
+  const view = createCanvasView({ gpu, canvas: fixture.canvas, renderer: render, onError: error });
+  fixture.tick();
+  await settle();
+  notify('refresh');
+  expect(signal.aborted).toBe(false);
+  gate.resolve();
+  await settle();
+  expect(fixture.frames.size).toBe(1);
+  fixture.tick();
+  await settle();
+  expect(fixture.frames.size).toBe(1);
+  view.destroy();
+  expect(off).toHaveBeenCalled();
+  expect(fixture.frames.size).toBe(0);
+  expect(error).not.toHaveBeenCalled();
+  gpu.destroy();
+});

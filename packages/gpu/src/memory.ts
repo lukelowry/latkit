@@ -21,6 +21,7 @@ export interface GpuStats {
   readonly uploads: number;
   readonly uploadedBytes: number;
   readonly uploadHits: number;
+  readonly gpuCopiedBytes: number;
   readonly allocations: number;
   readonly submissions: number;
   readonly evictions: number;
@@ -73,6 +74,7 @@ export class Memory {
   uploads = 0;
   uploadedBytes = 0;
   uploadHits = 0;
+  gpuCopiedBytes = 0;
   allocations = 0;
   submissions = 0;
   evictions = 0;
@@ -101,6 +103,7 @@ export class Memory {
       uploads: this.uploads,
       uploadedBytes: this.uploadedBytes,
       uploadHits: this.uploadHits,
+      gpuCopiedBytes: this.gpuCopiedBytes,
       allocations: this.allocations,
       submissions: this.submissions,
       evictions: this.evictions,
@@ -168,6 +171,19 @@ export class Memory {
     }
   }
 
+  async stageAsync<T>(bytes: number, work: () => Promise<T>): Promise<T> {
+    if (this.staging + bytes > this.budget.stagingBytes)
+      throw new GpuError('resource-limit', 'Staging budget exceeded');
+    this.staging += bytes;
+    this.staged += bytes;
+    this.peakStaging = Math.max(this.peakStaging, this.staging);
+    try {
+      return await work();
+    } finally {
+      this.staging -= bytes;
+    }
+  }
+
   private evict(kind?: 'gpu'): boolean {
     let oldest: Entry | undefined;
     for (const entry of this.entries)
@@ -199,7 +215,11 @@ export class Memory {
   }
 
   trim(): void {
-    for (const entry of [...this.entries]) if (!entry.pins) this.remove(entry);
+    let previous: number;
+    do {
+      previous = this.entries.size;
+      for (const entry of [...this.entries]) if (!entry.pins) this.remove(entry);
+    } while (this.entries.size < previous);
   }
   destroy(): void {
     for (const entry of [...this.entries]) this.remove(entry);

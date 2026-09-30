@@ -26,7 +26,12 @@ export class Allocator {
     readonly memory: Memory,
   ) {}
 
-  allocate(size: number, usage: GPUBufferUsageFlags, label: string): Allocation {
+  allocate(
+    size: number,
+    usage: GPUBufferUsageFlags,
+    label: string,
+    exclude?: ReadonlySet<GPUBuffer>,
+  ): Allocation {
     size = align(Math.max(4, size), 4);
     const limits = this.device.limits;
     if (
@@ -41,9 +46,10 @@ export class Allocator {
       usage & GPUBufferUsage.UNIFORM ? limits.minUniformBufferOffsetAlignment : 4,
     );
     usage |= GPUBufferUsage.COPY_DST;
+    if (usage & GPUBufferUsage.STORAGE) usage |= GPUBufferUsage.COPY_SRC;
     let found: { slab: Slab; index: number; start: number } | undefined;
     for (const slab of this.slabs) {
-      if (slab.usage !== usage) continue;
+      if (slab.usage !== usage || exclude?.has(slab.buffer)) continue;
       const index = slab.free.findIndex(
         (span) => align(span.offset, alignment) + size <= span.offset + span.size,
       );
@@ -56,6 +62,7 @@ export class Allocator {
       const preferred = Math.min(
         1024 ** 2,
         limits.maxBufferSize,
+        usage & GPUBufferUsage.STORAGE ? limits.maxStorageBufferBindingSize : limits.maxBufferSize,
         Math.floor(this.memory.budget.gpuBytes / 8),
       );
       const capacity = align(Math.max(size, preferred), 4);

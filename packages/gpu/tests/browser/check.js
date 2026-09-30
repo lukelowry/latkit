@@ -1,9 +1,8 @@
-/* global GPUBufferUsage, GPUMapMode */
+/* global GPUBufferUsage, GPUMapMode, GPUShaderStage */
 import {
   createGpu,
   createRenderTarget,
-  columnShader,
-  BufferData,
+  fieldShader,
   TextureData,
   rowCount,
 } from '../../dist/index.js';
@@ -25,85 +24,66 @@ export async function check() {
   try {
     const module = device.createShaderModule({
       code:
-        columnShader +
+        fieldShader({ group: 0 }) +
         `
-      struct Info { offset: u32, rowStride: u32, frameStride: u32, components: u32,
-        rows: u32, frames: u32, destination: u32, masked: u32,
-        maskOffset: u32, maskRowStride: u32, maskFrameStride: u32, pad: u32 }
-      @group(0) @binding(0) var<storage, read> values: array<f32>;
-      @group(0) @binding(1) var<storage, read> valid: array<u32>;
-      @group(0) @binding(2) var<storage, read_write> output: array<f32>;
-      @group(0) @binding(3) var<uniform> info: Info;
+      struct Info { rows: u32, frames: u32, destination: u32, slot: u32 }
+      @group(1) @binding(0) var<storage, read_write> output: array<f32>;
+      @group(1) @binding(1) var<uniform> info: Info;
       @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id: vec3u) {
-        if (id.x >= info.rows * info.frames * info.components) { return; }
-        let component = id.x % info.components;
-        let row = (id.x / info.components) % info.rows;
-        let frame = id.x / (info.components * info.rows);
-        let bit = info.maskOffset + row * info.maskRowStride + frame * info.maskFrameStride;
+        if (id.x >= info.rows * info.frames) { return; }
+        let row = id.x % info.rows; let frame = id.x / info.rows;
         var value = -999.0;
-        if (info.masked == 0u || validityBit(valid[bit / 32u], bit)) {
-          value = values[columnIndex(ColumnAddress(info.offset, info.rowStride, info.frameStride, info.components), row, frame, component)];
-        }
+        if (fieldValid(info.slot, row, frame)) { value = fieldFloat(info.slot, row, frame, 0u); }
         output[info.destination + id.x] = value;
       }`,
     });
+    const resultLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      ],
+    });
     const pipeline = await gpu.computePipeline({
-      layout: 'auto',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [gpu.fieldLayout, resultLayout] }),
       compute: { module, entryPoint: 'main' },
     });
 
-    async function readColumns(block, policy) {
+    async function readColumns(block, policy, owner = gpu, renderTarget = output) {
       const count =
         rowCount(block.rows) * (block.kind === 'samples' ? block.coordinates.length : 1);
-      const result = gpu.buffer({
+      const result = owner.buffer({
         size: count * 4,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
       });
-      const readback = gpu.buffer({
+      const readback = owner.buffer({
         size: count * 4,
         usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
       });
-      const dummy = new BufferData({ size: 4 });
       let groups = [],
         expected = [];
       const renderer = {
         async prepare(frame) {
           const destination = frame.buffer(result);
           frame.buffer(readback);
-          const absentMask = frame.buffer(dummy);
-          const pages = frame.upload(block, { select: ['value'], float64: policy });
+          const pages = frame.upload(block, {
+            select: Object.keys(block.columns),
+            float64: policy,
+          });
           groups = [];
           expected = [];
           for (const page of pages) {
             const column = page.columns.value;
             const rows = rowCount(page.rows),
               frames = page.samples?.count ?? 1;
-            const info = frame.uniforms(
-              Uint32Array.of(
-                column.offset,
-                column.rowStride,
-                column.frameStride,
-                1,
-                rows,
-                frames,
-                expected.length,
-                column.validity ? 1 : 0,
-                column.validity?.offset ?? 0,
-                column.validity?.rowStride ?? 0,
-                column.validity?.frameStride ?? 0,
-                0,
-              ),
-            );
+            const info = frame.uniforms(Uint32Array.of(rows, frames, expected.length, column.slot));
             const group = device.createBindGroup({
-              layout: pipeline.getBindGroupLayout(0),
+              layout: resultLayout,
               entries: [
-                { binding: 0, resource: column.binding },
-                { binding: 1, resource: column.validity?.binding ?? absentMask },
-                { binding: 2, resource: destination },
-                { binding: 3, resource: info },
+                { binding: 0, resource: destination },
+                { binding: 1, resource: info },
               ],
             });
-            groups.push({ group, count: rows * frames });
+            groups.push({ group, fields: page.bindGroup, count: rows * frames });
             const native = block.columns.value;
             const frameStart = page.samples ? page.samples.firstFrame - block.firstFrame : 0;
             for (let f = 0; f < frames; f++)
@@ -123,8 +103,9 @@ export async function check() {
         encode(frame) {
           const pass = frame.encoder.beginComputePass();
           pass.setPipeline(pipeline);
-          for (const { group, count } of groups) {
-            pass.setBindGroup(0, group);
+          for (const { group, fields, count } of groups) {
+            pass.setBindGroup(0, fields);
+            pass.setBindGroup(1, group);
             pass.dispatchWorkgroups(Math.ceil(count / 64));
           }
           pass.end();
@@ -132,7 +113,7 @@ export async function check() {
         },
         destroy() {},
       };
-      await gpu.render({ timeMs: 0, views: [{ renderer, target: output }] });
+      await owner.render({ timeMs: 0, views: [{ renderer, target: renderTarget }] });
       await readback.buffer.mapAsync(GPUMapMode.READ);
       const actual = new Float32Array(readback.buffer.getMappedRange());
       for (let i = 0; i < count; i++)
@@ -141,7 +122,7 @@ export async function check() {
           'Column mismatch at ' + i + ': ' + actual[i] + ' != ' + expected[i],
         );
       readback.buffer.unmap();
-      await gpu.idle();
+      await owner.idle();
       result.destroy();
       readback.destroy();
       return renderer;
@@ -328,6 +309,31 @@ export async function check() {
       'Float32 numeric payload was unnecessarily materialized',
     );
     checks.push('one million rows, paged compute and full numerical readback');
+    const fragmented = await createGpu({ device, pageBytes: 8 * 1024 ** 2 });
+    const fragmentedTarget = createRenderTarget({ gpu: fragmented, width: 16, height: 16 });
+    const consolidation = {
+      ...large,
+      rows: { kind: 'range', offset: 0, count: 65536 },
+      columns: Object.fromEntries(
+        Array.from({ length: 10 }, (_, i) => [
+          i ? 'extra' + i : 'value',
+          {
+            kind: 'numeric',
+            offset: 0,
+            length: 65536,
+            values: Float32Array.from({ length: 65536 }, (_, row) => row + i),
+          },
+        ]),
+      ),
+    };
+    await readColumns(consolidation, undefined, fragmented, fragmentedTarget);
+    const copied = fragmented.stats().gpuCopiedBytes;
+    assert(copied > 0, 'Fragmented fields did not exercise GPU consolidation');
+    await readColumns(consolidation, undefined, fragmented, fragmentedTarget);
+    assert(fragmented.stats().gpuCopiedBytes === copied, 'Resident consolidation was repeated');
+    fragmentedTarget.destroy();
+    fragmented.destroy();
+    checks.push('ten fragmented fields, native GPU consolidation and resident reuse');
     const validation = await device.popErrorScope();
     assert(
       !validation && !failures.length,

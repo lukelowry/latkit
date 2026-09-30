@@ -14,9 +14,10 @@ import type {
   SamplesBlock,
   SamplesQuery,
 } from '@latkit/model';
+import type { TextRequest, TextPage } from './text.js';
 import type { BufferResource } from './owned-buffer.js';
 import type { BufferData } from './buffers.js';
-import type { FieldValues } from './binding.js';
+import type { FieldValues, FieldsRequest } from './binding.js';
 import type { GpuPage, UploadOptions } from './columns.js';
 import type { TextureData } from './texture-data.js';
 import type { TextureResource } from './resources.js';
@@ -54,6 +55,8 @@ export type QueryResult<Q extends Query> =
 /** Methods and returned GPU descriptors are scoped to this frame. Queries must be consumed or returned. */
 export interface Preparation extends FrameInfo {
   readonly signal: AbortSignal;
+  text(request: TextRequest): Promise<readonly TextPage[]>;
+  fields(request: FieldsRequest): AsyncIterable<GpuPage>;
   query<Q extends Query>(source: Queryable, query: Q): AsyncIterable<QueryResult<Q>>;
   upload(block: RowsBlock | SamplesBlock, options: UploadOptions): readonly GpuPage[];
   values(
@@ -72,11 +75,17 @@ export interface Encoding extends FrameInfo {
   readonly target: GPUTextureView;
 }
 
+export type Invalidation = 'refresh' | 'replace';
+
 /** A renderer represents one view and borrows its Gpu and sources. */
 export interface Renderer {
   prepare(frame: Preparation): Promise<void>;
   /** Synchronous. Encode any number of passes; never submit the queue. */
   encode(frame: Encoding): void;
+  /** Notification after whole-frame submission. Must not throw or start another render synchronously. */
+  submitted?(frame: FrameInfo): void;
+  readonly animating?: boolean;
+  on?(event: 'invalidate', listener: (change: Invalidation) => void): () => void;
   destroy(): void;
 }
 

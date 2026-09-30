@@ -1,6 +1,6 @@
 import type {
   BooleanColumn,
-  FieldSelection,
+  RowSelection,
   Index,
   NumericColumn,
   Queryable,
@@ -9,8 +9,23 @@ import type {
 } from '@latkit/model';
 import { GpuError, integer } from './error.js';
 
-export interface FieldBinding extends FieldSelection {
+export interface FieldBinding {
   readonly source: Queryable;
+  readonly from: string;
+  readonly field: string;
+  /** Explicit coverage for a partial overlay. Omitted means every draw row is required. */
+  readonly rows?: RowSelection;
+}
+
+export type FieldInput = string | FieldBinding | FieldValues;
+
+export interface FieldsRequest {
+  /** Default acquisition for string fields. Omit when every input is explicit. */
+  readonly source?: Queryable;
+  readonly index: Index;
+  readonly rows: RowAxis;
+  readonly fields: Readonly<Record<string, FieldInput>>;
+  readonly float64: 'relative' | 'float32';
 }
 
 /** Immutable application values, in explicitly identified physical row order. */

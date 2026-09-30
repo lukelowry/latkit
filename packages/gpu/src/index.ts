@@ -6,6 +6,7 @@ export type { GpuErrorCode } from './error.js';
 export type { Budget, GpuStats } from './memory.js';
 export type {
   Renderer,
+  Invalidation,
   Preparation,
   Encoding,
   FrameInfo,
@@ -15,10 +16,10 @@ export type {
   RenderOptions,
   QueryResult,
 } from './render.js';
-export type { FieldBinding, FieldValues, DataHit } from './binding.js';
+export type { FieldBinding, FieldInput, FieldsRequest, FieldValues, DataHit } from './binding.js';
 export { sameIndex, assertIndex, rowCount, rowAt } from './binding.js';
-export type { GpuColumn, GpuBitmap, GpuPage, UploadOptions } from './columns.js';
-export { columnShader } from './columns.js';
+export type { GpuField, GpuPage, UploadOptions } from './columns.js';
+export { fieldShader } from './field-shader.js';
 export { TextureData } from './texture-data.js';
 export type { PixelRegion } from './texture-data.js';
 export { BufferData } from './buffers.js';
@@ -31,3 +32,17 @@ export { createPresentation } from './presentation.js';
 export type { Canvas, Presentation } from './presentation.js';
 export { createCanvasView } from './canvas.js';
 export type { CanvasView } from './canvas.js';
+
+export type {
+  TextInput,
+  TextOptions,
+  TextFont,
+  TextMetrics,
+  TextRun,
+  TextRequest,
+  TextPage,
+  TextRasterizer,
+  TextBitmap,
+} from './text.js';
+export { createTextRasterizer } from './text-rasterizer.js';
+export { textShader } from './text-shader.js';

@@ -2,6 +2,7 @@ import { expect, it } from 'vitest';
 import type { SamplesBlock } from '@latkit/model';
 import { createGpu, type GpuPage } from '../src/index.js';
 import { fakeDevice } from './fixtures/device.js';
+import { field, rowMap } from './fixtures/fields.js';
 import { draw } from './fixtures/render.js';
 
 it('shares frame coordinates across row tiles and physical row maps across frame tiles', async () => {
@@ -31,10 +32,12 @@ it('shares frame coordinates across row tiles and physical row maps across frame
   await draw(gpu, (frame) => {
     pages = frame.upload(block, { select: ['value'] });
   });
-  expect(pages).toHaveLength(6);
-  expect(pages[0].samples?.coordinates.binding).toBe(pages[1].samples?.coordinates.binding);
-  expect(pages[0].rowMap).toBe(pages[2].rowMap);
-  expect(pages[0].rowMap).toBe(pages[4].rowMap);
-  expect(gpu.stats().uploadedBytes).toBe(24 * 4 + 8 * 4 + 3 * 4);
+  expect(pages).toHaveLength(24);
+  expect(field(pages[0], pages[0].samples!.coordinates).binding).toEqual(
+    field(pages[1], pages[1].samples!.coordinates).binding,
+  );
+  expect(rowMap(pages[0])).toEqual(rowMap(pages[8]));
+  expect(rowMap(pages[0])).toEqual(rowMap(pages[16]));
+  expect(gpu.stats().uploadedBytes).toBe(24 * 4 + 8 * 4 + 3 * 4 + 24 * 160);
   gpu.destroy();
 });

@@ -17,6 +17,9 @@ const executable =
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   ].find(existsSync);
 if (!executable) throw new Error('Set LATKIT_BROWSER to a Chromium executable');
+const headed = process.argv.includes('--headed'),
+  keepOpen = process.argv.includes('--keep-open');
+if (keepOpen && !headed) throw new Error('--keep-open requires --headed');
 const profile = await mkdtemp(path.join(tmpdir(), 'latkit-gpu-'));
 const server = createServer(async (request, response) => {
   try {
@@ -38,7 +41,7 @@ const port = server.address().port;
 const child = spawn(
   executable,
   [
-    '--headless=new',
+    ...(headed ? ['--new-window', '--window-size=1440,1100'] : ['--headless=new']),
     '--no-first-run',
     '--no-default-browser-check',
     '--enable-unsafe-webgpu',
@@ -47,7 +50,7 @@ const child = spawn(
     '--user-data-dir=' + profile,
     'about:blank',
   ],
-  { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true },
+  { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: !headed },
 );
 let stderr = '';
 child.stderr.on('data', (chunk) => {
@@ -134,6 +137,22 @@ try {
     JSON.stringify(result.result.value, null, 2) + '\n',
   );
   console.log(JSON.stringify(result.result.value, null, 2));
+  await mkdir(path.join(root, 'output/playwright'), { recursive: true });
+  const screenshot = await call('Page.captureScreenshot', {
+    format: 'png',
+    captureBeyondViewport: true,
+  });
+  await writeFile(
+    path.join(root, 'output/playwright/gpu-foundation.png'),
+    Buffer.from(screenshot.data, 'base64'),
+  );
+  if (keepOpen) {
+    console.log(
+      'Visible GPU fixture: http://127.0.0.1:' + port + '/packages/gpu/tests/browser/check.html',
+    );
+    console.log('Browser debugging port: ' + debugging);
+    await new Promise((resolve) => child.once('exit', resolve));
+  }
 } finally {
   socket?.close();
   child.kill();

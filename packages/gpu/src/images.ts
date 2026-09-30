@@ -18,6 +18,28 @@ export class Images {
     private readonly memory: Memory,
   ) {}
 
+  write(
+    texture: GPUTexture,
+    data: Uint8Array<ArrayBuffer>,
+    region: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      stride: number;
+      offset?: number;
+    },
+  ): void {
+    this.device.queue.writeTexture(
+      { texture, origin: [region.x, region.y] },
+      data,
+      { offset: region.offset ?? 0, bytesPerRow: region.stride, rowsPerImage: region.height },
+      [region.width, region.height],
+    );
+    this.memory.uploads++;
+    this.memory.uploadedBytes += region.stride * region.height;
+  }
+
   upload(data: TextureData, scope: UploadScope): GPUTexture {
     if (Math.max(data.width, data.height) > this.device.limits.maxTextureDimension2D)
       throw new GpuError('resource-limit', 'Image exceeds the device texture limit');
@@ -78,14 +100,14 @@ export class Images {
         const [from, to] = data.changedRows(resident.version);
         if (to > from) {
           const stride = data.width * data.channels;
-          this.device.queue.writeTexture(
-            { texture: resident.texture, origin: [0, from] },
-            data.bytes,
-            { offset: from * stride, bytesPerRow: stride, rowsPerImage: to - from },
-            [data.width, to - from],
-          );
-          this.memory.uploads++;
-          this.memory.uploadedBytes += stride * (to - from);
+          this.write(resident.texture, data.bytes, {
+            x: 0,
+            y: from,
+            width: data.width,
+            height: to - from,
+            stride,
+            offset: from * stride,
+          });
         }
         resident.version = version;
         scope.use(resident.entry);

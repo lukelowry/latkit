@@ -1,0 +1,67 @@
+import { GpuError, interruptible } from './error.js';
+import type { TextRasterizer } from './text.js';
+
+/** Uses the browser's shaping engine, including ligatures, fallback fonts and bidirectional runs. */
+export function createTextRasterizer(): TextRasterizer {
+  return {
+    async rasterize(input, options) {
+      const { pixelsPerEm, maxWidth, maxHeight, signal } = options;
+      signal.throwIfAborted();
+      if (input.text.length > 4096 || /[\r\n]/u.test(input.text))
+        throw new GpuError('invalid-input', 'Text runs must be bounded single lines');
+      const font = `${input.font?.style ?? 'normal'} ${input.font?.weight ?? 400} ${pixelsPerEm}px ${input.font?.family ?? 'sans-serif'}`;
+      const fonts =
+        (globalThis as typeof globalThis & { fonts?: FontFaceSet }).fonts ??
+        globalThis.document?.fonts;
+      if (fonts) await interruptible(fonts.load(font, input.text), signal);
+      const canvas =
+        typeof OffscreenCanvas !== 'undefined'
+          ? new OffscreenCanvas(1, 1)
+          : globalThis.document?.createElement('canvas');
+      if (!canvas)
+        throw new GpuError(
+          'unavailable',
+          'Supply a TextRasterizer in environments without Canvas2D',
+        );
+      const context = canvas.getContext('2d', { willReadFrequently: true }) as
+        CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
+      if (!context) throw new GpuError('unavailable', 'Canvas2D text rasterization is unavailable');
+      const configure = (): void => {
+        context.font = font;
+        context.textAlign = 'left';
+        context.textBaseline = 'alphabetic';
+        context.direction = input.direction ?? 'ltr';
+        context.fillStyle = '#fff';
+      };
+      configure();
+      const metrics = context.measureText(input.text);
+      const left = Math.floor(-metrics.actualBoundingBoxLeft),
+        top = Math.floor(-metrics.actualBoundingBoxAscent);
+      const width = Math.max(1, Math.ceil(metrics.actualBoundingBoxRight) - left),
+        height = Math.max(1, Math.ceil(metrics.actualBoundingBoxDescent) - top);
+      if (width > maxWidth || height > maxHeight)
+        throw new GpuError(
+          'resource-limit',
+          'Shaped text exceeds the atlas page; split long lines before preparing text',
+        );
+      canvas.width = width;
+      canvas.height = height;
+      configure();
+      context.fillText(input.text, -left, -top);
+      const rgba = context.getImageData(0, 0, width, height).data,
+        coverage = new Uint8Array(width * height);
+      for (let i = 0; i < coverage.length; i++) coverage[i] = rgba[i * 4 + 3];
+      signal.throwIfAborted();
+      return {
+        width,
+        height,
+        coverage,
+        left: left / pixelsPerEm,
+        top: top / pixelsPerEm,
+        advance: metrics.width / pixelsPerEm,
+        ascent: metrics.actualBoundingBoxAscent / pixelsPerEm,
+        descent: metrics.actualBoundingBoxDescent / pixelsPerEm,
+      };
+    },
+  };
+}

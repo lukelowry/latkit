@@ -2,6 +2,7 @@ import { expect, it } from 'vitest';
 import type { RowsBlock } from '@latkit/model';
 import { createGpu, type GpuPage } from '../src/index.js';
 import { bytes, fakeDevice } from './fixtures/device.js';
+import { field } from './fixtures/fields.js';
 import { draw } from './fixtures/render.js';
 
 it('keeps boolean values and null validity as separate packed bitmaps', async () => {
@@ -30,10 +31,10 @@ it('keeps boolean values and null validity as separate packed bitmaps', async ()
   });
   const column = page.columns.visible;
   expect(column.type).toBe('boolean');
-  expect(column.offset).toBe(2);
-  expect(bytes(column.binding)[0]).toBe(0b00010100);
-  expect(column.validity?.offset).toBe(2);
-  expect(bytes(column.validity!.binding)[0]).toBe(0b00001100);
-  expect(gpu.stats().uploadedBytes).toBe(8);
+  expect(field(page, 'visible').offset).toBe(2);
+  expect(bytes(field(page, 'visible').binding)[0]).toBe(0b00010100);
+  expect(field(page, 'visible').validity?.offset).toBe(2);
+  expect(bytes(field(page, 'visible').validity!.binding)[0]).toBe(0b00001100);
+  expect(gpu.stats().uploadedBytes).toBe(104);
   gpu.destroy();
 });

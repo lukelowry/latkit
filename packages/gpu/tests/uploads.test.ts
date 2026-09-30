@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RowsBlock, SamplesBlock } from '@latkit/model';
 import { BufferData, createGpu, type GpuPage } from '../src/index.js';
 import { bytes, fakeDevice, record } from './fixtures/device.js';
+import { field } from './fixtures/fields.js';
 import { draw, renderer, target } from './fixtures/render.js';
 
 function block(values: Float32Array | Float64Array | Int32Array | Uint32Array): RowsBlock {
@@ -30,7 +31,7 @@ describe('native numeric uploads', () => {
     await draw(gpu, (frame) => {
       page = frame.upload(value, { select: ['value'] })[0];
     });
-    expect(f32(page.columns.value.binding)).toEqual([10, 20]);
+    expect(f32(field(page).binding)).toEqual([10, 20]);
     expect(fake.queue.writeBuffer.mock.calls[0][2]).toBe(source.buffer);
     expect(fake.queue.writeBuffer.mock.calls[0][3]).toBe(4);
     expect(gpu.stats().peakStagingBytes).toBe(0);
@@ -60,7 +61,7 @@ describe('native numeric uploads', () => {
     await gpu.render(request);
     await gpu.idle();
     expect(new Set(pages).size).toBe(1);
-    expect(gpu.stats().uploads).toBe(1);
+    expect(gpu.stats().uploads).toBe(2);
     expect(gpu.stats().uploadHits).toBe(3);
     gpu.destroy();
   });
@@ -72,7 +73,7 @@ describe('native numeric uploads', () => {
     await draw(gpu, (frame) => {
       page = frame.upload(block(Uint32Array.of(0xffffffff, 16777217)), { select: ['value'] })[0];
     });
-    const data = bytes(page.columns.value.binding);
+    const data = bytes(field(page).binding);
     expect(page.columns.value.type).toBe('uint32');
     expect([...new Uint32Array(data.buffer, data.byteOffset, 2)]).toEqual([0xffffffff, 16777217]);
     gpu.destroy();
@@ -107,39 +108,39 @@ describe('native numeric uploads', () => {
       page = frame.upload(value, { select: ['value'] })[0];
     });
     expect(page.rows).toEqual(value.rows);
-    expect(page.columns.value.rowStride).toBe(1);
-    expect(page.columns.value.frameStride).toBe(4);
-    expect(f32(page.columns.value.binding)).toEqual([10, 20, 99, 99, 30, 40]);
-    expect(bytes(page.columns.value.validity!.binding)[0]).toBe(0b0111);
+    expect(field(page).rowStride).toBe(1);
+    expect(field(page).frameStride).toBe(4);
+    expect(f32(field(page).binding)).toEqual([10, 20, 99, 99, 30, 40]);
+    expect(bytes(field(page).validity!.binding)[0]).toBe(0b0111);
     expect(page.samples?.firstFrame).toBe(900);
     expect(page.samples?.coordinates.origin?.[0]).toBe(1e12);
-    expect(f32(page.samples!.coordinates.binding)).toEqual([0, 0.25]);
-    expect(gpu.stats().uploadedBytes).toBeLessThan(100);
+    expect(f32(field(page, page.samples!.coordinates).binding)).toEqual([0, 0.25]);
+    expect(gpu.stats().uploadedBytes).toBeLessThan(300);
     gpu.destroy();
   });
 
   it('tiles above device binding limits instead of rejecting the complete dataset', async () => {
     const fake = fakeDevice({
       limits: {
-        maxStorageBufferBindingSize: 64,
-        maxBufferSize: 128,
+        maxStorageBufferBindingSize: 256,
+        maxBufferSize: 256,
         minStorageBufferOffsetAlignment: 16,
       },
     });
     const gpu = await createGpu({ device: fake.device });
-    const values = Float32Array.from({ length: 41 }, (_, i) => i + 1);
+    const values = Float32Array.from({ length: 81 }, (_, i) => i + 1);
     let pages: readonly GpuPage[] = [];
     await draw(gpu, (frame) => {
       pages = frame.upload(block(values), { select: ['value'] });
     });
     expect(pages).toHaveLength(3);
-    expect(pages.flatMap((page) => f32(page.columns.value.binding))).toEqual([...values]);
+    expect(pages.flatMap((page) => f32(field(page).binding))).toEqual([...values]);
     expect(pages.map((page) => page.rows)).toEqual([
-      { kind: 'range', offset: 0, count: 16 },
-      { kind: 'range', offset: 16, count: 16 },
-      { kind: 'range', offset: 32, count: 9 },
+      { kind: 'range', offset: 0, count: 32 },
+      { kind: 'range', offset: 32, count: 32 },
+      { kind: 'range', offset: 64, count: 17 },
     ]);
-    expect(fake.buffers.every((buffer) => buffer.size <= 128)).toBe(true);
+    expect(fake.buffers.every((buffer) => buffer.size <= 256)).toBe(true);
     gpu.destroy();
   });
 
@@ -157,7 +158,7 @@ describe('native numeric uploads', () => {
       page = frame.upload(value, { select: ['value'], float64: 'relative' })[0];
     });
     expect(page.columns.value.origin?.[0]).toBe(1e12);
-    expect(f32(page.columns.value.binding)).toEqual([0, 0.25, 0.5]);
+    expect(f32(field(page).binding)).toEqual([0, 0.25, 0.5]);
     gpu.destroy();
   });
 
@@ -187,8 +188,8 @@ describe('native numeric uploads', () => {
       page = frame.upload(value, { select: ['value'], float64: 'relative' })[0];
     });
     expect([...page.columns.value.origin!]).toEqual([1e12, 1e12 + 1]);
-    expect(f32(page.columns.value.binding)).toEqual([0, 0, 0, 0]);
-    expect(bytes(page.columns.value.validity!.binding)[0]).toBe(1);
+    expect(f32(field(page).binding)).toEqual([0, 0, 0, 0]);
+    expect(bytes(field(page).validity!.binding)[0]).toBe(1);
     gpu.destroy();
   });
 

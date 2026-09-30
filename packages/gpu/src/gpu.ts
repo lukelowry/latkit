@@ -2,8 +2,11 @@ import type { Query, Queryable, Version } from '@latkit/model';
 import { BufferData } from './buffers.js';
 import { Buffers, type BufferResource } from './owned-buffer.js';
 import { Images } from './images.js';
+import { TextAtlas } from './text-atlas.js';
+import type { TextInput, TextMetrics, TextOptions } from './text.js';
 import { TextureData } from './texture-data.js';
 import { Allocator } from './allocation.js';
+import { Fields } from './fields.js';
 import { Reads } from './data.js';
 import { GpuError, integer, interruptible } from './error.js';
 import { Memory, type Budget, type Entry, type GpuStats } from './memory.js';
@@ -16,6 +19,7 @@ import {
   type Renderer,
   type RenderOptions,
 } from './render.js';
+import type { CopyJob } from './field-pages.js';
 import { Uploader, type UploadScope } from './uploads.js';
 
 export interface GpuOptions {
@@ -30,12 +34,16 @@ export interface GpuOptions {
   readonly maxFramesInFlight?: number;
   /** Full model boundary validation. Coherence and upload bounds are always checked. */
   readonly validate?: boolean;
+  readonly text?: TextOptions;
 }
 
 export interface Gpu {
   readonly device: GPUDevice;
   readonly lost: Promise<GPUDeviceLostInfo>;
   readonly budget: Budget;
+  readonly fieldLayout: GPUBindGroupLayout;
+  readonly textLayout: GPUBindGroupLayout;
+  measureText(input: TextInput, options?: { readonly signal?: AbortSignal }): Promise<TextMetrics>;
   stats(): GpuStats;
   render(options: RenderOptions): Promise<void>;
   buffer(descriptor: GPUBufferDescriptor): BufferResource;
@@ -89,11 +97,15 @@ export async function createGpu(options: GpuOptions = {}): Promise<Gpu> {
 class Owner implements Gpu {
   readonly lost: Promise<GPUDeviceLostInfo>;
   readonly budget: Budget;
+  readonly fieldLayout: GPUBindGroupLayout;
+  readonly textLayout: GPUBindGroupLayout;
   private readonly memory: Memory;
   private readonly reads: Reads;
   private readonly uploader: Uploader;
+  private readonly fields: Fields;
   private readonly textures: Textures;
   private readonly images: Images;
+  private readonly text: TextAtlas;
   private readonly buffers: Buffers;
   private readonly stopped = new AbortController();
   private readonly busy = new Set<Renderer>();
@@ -117,6 +129,8 @@ class Owner implements Gpu {
       this.memory,
       options.pageBytes ?? 1024 ** 2,
     );
+    this.fieldLayout = this.uploader.fieldPages.layout;
+    this.fields = new Fields(this.memory, this.uploader);
     this.reads = new Reads(
       this.memory,
       integer(options.maxBlockBytes ?? 1024 ** 2, 'block bytes', 1),
@@ -125,9 +139,30 @@ class Owner implements Gpu {
     this.textures = new Textures(device, this.memory);
     this.images = new Images(device, this.memory);
     this.buffers = new Buffers(device, this.memory);
+    this.text = new TextAtlas(
+      device,
+      this.memory,
+      this.textures,
+      this.images,
+      this.uploader,
+      this.stopped.signal,
+      options.text,
+    );
+    this.textLayout = this.text.layout;
     this.lost = device.lost;
     void this.lost.then((info) =>
       this.stop(new GpuError('device-lost', info.message || 'GPU device lost')),
+    );
+  }
+
+  measureText(
+    input: TextInput,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<TextMetrics> {
+    this.assertLive();
+    return this.text.measure(
+      input,
+      AbortSignal.any([this.stopped.signal, ...(options.signal ? [options.signal] : [])]),
     );
   }
 
@@ -185,9 +220,11 @@ class Owner implements Gpu {
     for (const renderer of renderers) this.busy.add(renderer);
     const held = new Set<Entry>();
     const checks: (() => void)[] = [];
+    const copies = new Set<CopyJob>();
     const versions = new Map<Queryable, Version>();
     const subscriptions: (() => void)[] = [];
     const iterators = new Set<AsyncIterator<unknown>>();
+    const tasks = new Set<Promise<unknown>>();
     let phase: 'prepare' | 'encode' | 'closed' = 'prepare';
     let submitted = false;
     let preparation: Promise<unknown> = Promise.resolve();
@@ -196,6 +233,10 @@ class Owner implements Gpu {
       if (phase !== 'prepare') throw new GpuError('closed', 'Frame preparation is finished');
     };
     const scope: UploadScope = {
+      copy: (job) => {
+        assertPreparing();
+        if (job.pending) copies.add(job);
+      },
       use: (entry) => {
         assertPreparing();
         if (!held.has(entry)) {
@@ -211,6 +252,18 @@ class Owner implements Gpu {
     const release = (): void => {
       for (const entry of held) entry.unpin();
       held.clear();
+    };
+    const observed = new Set<Queryable>();
+    const observe = (source: Queryable): void => {
+      assertPreparing();
+      if (observed.has(source)) return;
+      observed.add(source);
+      subscriptions.push(
+        source.on('change', (change) => {
+          if (change.kind === 'closed')
+            cancelled.abort(new GpuError('closed', 'A frame source was closed'));
+        }),
+      );
     };
     const read = <Q extends Query>(source: Queryable, query: Q): AsyncIterable<QueryResult<Q>> => {
       const reads = this.reads;
@@ -235,12 +288,7 @@ class Owner implements Gpu {
                   );
                 if (previous === undefined) {
                   versions.set(source, version);
-                  subscriptions.push(
-                    source.on('change', (change) => {
-                      if (change.kind === 'closed')
-                        cancelled.abort(new GpuError('closed', 'A frame source was closed'));
-                    }),
-                  );
+                  observe(source);
                 }
               }
               yield next.value as QueryResult<Q>;
@@ -256,6 +304,42 @@ class Owner implements Gpu {
       ...info,
       signal,
       query: read,
+      text: (request) => {
+        assertPreparing();
+        const task = this.text.prepare(request, scope, signal);
+        tasks.add(task);
+        void task.then(
+          () => tasks.delete(task),
+          () => tasks.delete(task),
+        );
+        return task;
+      },
+      fields: (request) => {
+        const fields = this.fields;
+        return {
+          async *[Symbol.asyncIterator]() {
+            assertPreparing();
+            const iterator = fields.prepare(
+              request,
+              { query: read, signal, at: info.at, observe },
+              scope,
+            );
+            iterators.add(iterator);
+            try {
+              for (;;) {
+                assertPreparing();
+                const next = await interruptible(iterator.next(), signal);
+                assertPreparing();
+                if (next.done) return;
+                yield next.value;
+              }
+            } finally {
+              iterators.delete(iterator);
+              void iterator.return(undefined).catch(() => {});
+            }
+          },
+        };
+      },
       upload: (block, uploadOptions) => {
         assertPreparing();
         return this.uploader.upload(block, uploadOptions, scope);
@@ -282,6 +366,13 @@ class Owner implements Gpu {
       },
     });
     try {
+      for (const renderer of renderers) {
+        const off = renderer.on?.('invalidate', (change) => {
+          if (change === 'replace' && !submitted)
+            cancelled.abort(new DOMException('Renderer frame superseded', 'AbortError'));
+        });
+        if (off) subscriptions.push(off);
+      }
       while (this.pending.size >= this.maxFrames)
         await interruptible(Promise.race(this.pending), signal);
       const jobs = options.views.map((view, i) =>
@@ -292,8 +383,8 @@ class Owner implements Gpu {
       while (this.pending.size >= this.maxFrames)
         await interruptible(Promise.race(this.pending), signal);
       assertPreparing();
-      if (iterators.size)
-        throw new GpuError('invalid-input', 'Preparation left query iterators open');
+      if (iterators.size || tasks.size)
+        throw new GpuError('invalid-input', 'Preparation left asynchronous work open');
       for (const check of checks) check();
       for (const [i, view] of options.views.entries()) {
         if (
@@ -307,6 +398,16 @@ class Owner implements Gpu {
       }
       phase = 'encode';
       const encoder = this.device.createCommandEncoder({ label: 'latkit frame' });
+      const encodedCopies = [...copies].filter((job) => job.pending);
+      for (const job of encodedCopies)
+        for (const copy of job.copies)
+          encoder.copyBufferToBuffer(
+            copy.source.buffer,
+            copy.source.offset ?? 0,
+            copy.target.buffer,
+            copy.target.offset ?? 0,
+            copy.source.size!,
+          );
       const targets = new Map<object, GPUTextureView>();
       for (const [i, view] of options.views.entries()) {
         signal.throwIfAborted();
@@ -325,6 +426,10 @@ class Owner implements Gpu {
       signal.throwIfAborted();
       this.device.queue.submit([encoder.finish()]);
       submitted = true;
+      for (const job of encodedCopies) {
+        job.pending = false;
+        for (const copy of job.copies) this.memory.gpuCopiedBytes += copy.source.size!;
+      }
       this.memory.submissions++;
       const done = this.device.queue.onSubmittedWorkDone();
       this.pending.add(done);
@@ -339,6 +444,16 @@ class Owner implements Gpu {
           this.stop(error);
         },
       );
+      const failures: unknown[] = [];
+      for (const [i, view] of options.views.entries()) {
+        try {
+          view.renderer.submitted?.(infos[i]);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length)
+        throw new AggregateError(failures, 'Frame submitted, but a renderer notification failed');
     } catch (error) {
       cancelled.abort(error);
       throw error;
