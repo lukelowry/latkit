@@ -172,6 +172,12 @@ importers:
 
   packages/colormaps: {}
 
+  packages/connect:
+    dependencies:
+      '@latkit/model-new':
+        specifier: workspace:*
+        version: link:../model_new
+
   packages/diagram:
     dependencies:
       '@latkit/colormaps':
@@ -226,6 +232,8 @@ importers:
         version: 0.1.71
 
   packages/model: {}
+
+  packages/model_new: {}
 
   packages/monitor:
     dependencies:
