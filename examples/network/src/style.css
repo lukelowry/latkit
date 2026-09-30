@@ -75,7 +75,8 @@ body {
   letter-spacing: 0;
 }
 
-#status {
+#status,
+#metrics {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.35;

@@ -1,7 +1,17 @@
 import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
-import type { Model } from '@latkit/model';
-import { createNetwork, PROJECTIONS, type Network, type Projection } from '@latkit/network';
-import { TOPOLOGIES, type GeneratedTopology, type TopologyOption } from './topologies.js';
+import { createGpu, createCanvasView } from '@latkit/gpu';
+import { ExampleSource, vector } from './source.js';
+import {
+  createNetwork,
+  attachNetworkInput,
+  PROJECTIONS,
+  type Network,
+  type NetworkData,
+  type NetworkItem,
+  type Projection,
+  type VertexOptions,
+} from '@latkit/network';
+import { TOPOLOGIES, type TopologyOption } from './topologies.js';
 import './style.css';
 
 const EXAMPLE_COLORMAPS = [
@@ -14,91 +24,190 @@ const stage = document.getElementById('stage') as HTMLCanvasElement;
 const statusEl = document.getElementById('status') as HTMLElement;
 const readoutEl = document.getElementById('readout') as HTMLElement;
 
-function fail(message: string): void {
-  const box = document.createElement('div');
-  box.className = 'fatal';
-  box.innerHTML =
-    `<h2>Cannot render</h2><p>${message}</p>` +
-    '<p class="hint">This example needs a browser with WebGPU support.</p>';
-  stage.replaceWith(box);
+function fail(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  statusEl.textContent = message;
+  statusEl.setAttribute('role', 'alert');
+  console.error(error);
+}
+
+async function loadBorders(signal: AbortSignal): Promise<ExampleSource> {
+  const urls = [
+    new URL('../../../packages/network/tests/assets/borders.points.bin', import.meta.url),
+    new URL('../../../packages/network/tests/assets/borders.offsets.bin', import.meta.url),
+  ];
+  const [points, offsets] = await Promise.all(
+    urls.map(async (url) => {
+      const response = await fetch(url, { signal });
+      if (!response.ok) throw new Error('Could not load native border data');
+      return response.arrayBuffer();
+    }),
+  );
+  const starts = new Int32Array(offsets!);
+  return new ExampleSource({
+    border: {
+      count: starts.length - 1,
+      columns: {
+        points: {
+          kind: 'list',
+          offset: 0,
+          length: starts.length - 1,
+          offsets: starts,
+          values: vector(new Float32Array(points!)),
+        },
+      },
+    },
+  });
 }
 
 async function main(): Promise<void> {
+  const lifetime = new AbortController();
   let currentId = TOPOLOGIES[0]!.id;
-  let current: GeneratedTopology = TOPOLOGIES[0]!.build();
-  let heightOn = false;
-
-  setStatus(current);
-
-  // The controller needs neither a device nor a canvas: load first, attach when ready.
+  let current = TOPOLOGIES[0]!.build();
+  let heightOn = false,
+    geodesic = true,
+    bordersOn = false;
+  let colors = colormap(EXAMPLE_COLORMAPS[0]!);
+  let borders: ExampleSource | undefined;
+  const fields = (): VertexOptions => ({
+    position: 'position',
+    color: { field: 'load', domain: [0, 1], colormap: colors },
+    size: current.tables.node!.columns.degree
+      ? { field: 'degree', domain: [0, 1], range: [0.6, 2] }
+      : null,
+    height: heightOn ? { field: 'load', domain: [0, 1], range: [0, 0.18] } : null,
+  });
+  const data = (): NetworkData => ({
+    source: current,
+    coordinates: 'geographic',
+    vertices: { node: fields() },
+    edges: {
+      line: {
+        connectivity: { kind: 'endpoints', layout: 'pair' },
+        ...(current.tables.line!.columns.bends ? { bends: 'bends' } : {}),
+        curve: geodesic ? 'geodesic' : 'linear',
+      },
+    },
+    paths:
+      bordersOn && borders
+        ? {
+            border: {
+              source: borders,
+              points: 'points',
+              widthPx: 0.8,
+              baseColor: [0.4, 0.55, 0.65, 0.7],
+            },
+          }
+        : {},
+  });
+  const gpu = await createGpu();
   const net = createNetwork({
-    msaa: 4,
-    daylight: true,
-    graticule: false,
-    borders: false,
-    vertexBaseColor: [0.36, 0.4, 0.46, 1],
-    colormap: colormap(EXAMPLE_COLORMAPS[0]!),
+    gpu,
+    data: data(),
+    options: {
+      msaa: 4,
+      daylight: true,
+      graticule: false,
+      hover: 'auto',
+      poles: false,
+      fitPaddingPx: [48, 48, 48, window.innerWidth > 640 ? 320 : 48],
+      vertexBaseColor: [0.36, 0.4, 0.46, 1],
+    },
   });
-
-  function applyChannels(): void {
-    net.setChannel('vertexColor', current.color, [0, 1]);
-
-    net.setChannel('vertexSize', current.size ?? null, [0, 1]);
-    net.setChannel('vertexHeight', heightOn ? current.color : null, [0, 1]);
-  }
-
-  function applyTopology(opt: TopologyOption): void {
-    current = opt.build();
-    currentId = opt.id;
-    setStatus(current);
-    net.load(current.topology);
-    applyChannels();
-  }
-
-  net.load(current.topology);
-  applyChannels();
-
-  try {
-    await net.attach(stage);
-  } catch (err) {
-    net.destroy();
-    fail(err instanceof Error ? err.message : String(err));
-    return;
-  }
-
-  net.on('deviceLost', ({ reason, message, recovering }) => {
-    statusEl.textContent = recovering
-      ? `device lost (${reason}); recovering`
-      : `device unavailable: ${message}`;
+  const view = createCanvasView({
+    gpu,
+    canvas: stage,
+    renderer: net,
+    onError: fail,
+    onLost: (info) => fail(new Error('GPU unavailable: ' + info.message)),
+    onRendered: () => {
+      const stats = net.stats();
+      statusEl.textContent = `${stats.vertices.toLocaleString()} vertices / ${stats.edges.toLocaleString()} edges`;
+      document.getElementById('metrics')!.textContent =
+        `${stats.prepareMs.toFixed(1)} ms prepare / ${stats.drawCalls} draws / hover ${stats.hover}`;
+      projections.refresh();
+    },
   });
-
+  const detach = attachNetworkInput({ network: net, canvas: stage });
   const projections = wireProjections(net);
   wireOrbit(net);
+  const fitButton = createButton('fit', false);
+  fitButton.onclick = () => net.fit({ animate: true });
+  document.getElementById('camera')!.append(fitButton);
   wireTopologies(
     () => currentId,
     (opt) => {
-      applyTopology(opt);
-      // Loading can drop projection support and fall back to flat.
-      projections.refresh();
+      const previous = current;
+      current = opt.build();
+      currentId = opt.id;
+      net.setOptions({
+        vertexRadiusPx: current.tables.node!.count >= 100000 ? 1.4 : 4,
+        edgeWidthPx: current.tables.node!.count >= 100000 ? 0.5 : 1.4,
+      });
+      net.setData(data());
+      net.setCamera({ fit: true });
+      void previous.close();
+      readoutEl.querySelector('.hover')!.textContent = '-';
+      readoutEl.querySelector('.select')!.textContent = '-';
     },
   );
-  wireToggles(net, (on) => {
-    heightOn = on;
-    applyChannels();
+  wireToggles(
+    net,
+    (on) => {
+      heightOn = on;
+      net.setVertex('node', fields());
+    },
+    [
+      {
+        label: 'geodesics',
+        on: true,
+        apply: (on) => {
+          geodesic = on;
+          net.setEdge('line', { curve: on ? 'geodesic' : 'linear' });
+        },
+      },
+      {
+        label: 'borders',
+        on: false,
+        apply: async (on) => {
+          if (on && !borders) borders = await loadBorders(lifetime.signal);
+          lifetime.signal.throwIfAborted();
+          bordersOn = on;
+          net.setData(data());
+        },
+      },
+      { label: 'surface poles', on: false, apply: (on) => net.setOptions({ poles: on }) },
+    ],
+  );
+  wireColormaps((name) => {
+    colors = colormap(name);
+    net.setVertex('node', fields());
   });
-  wireColormaps(net);
   wirePicking(net);
-  // A console handle: try `network.setShade(...)` or `network.setOptions({ fitBearing: 30 })`.
-  Object.assign(window, { network: net });
-
-  window.addEventListener('pagehide', (event) => {
-    if (event.persisted) return;
-    net.destroy();
+  Object.assign(window, {
+    network: net,
+    networkExample: {
+      gpu,
+      view,
+      get source() {
+        return current;
+      },
+    },
   });
-}
-
-function setStatus(topology: GeneratedTopology): void {
-  statusEl.textContent = `${topology.vertexCount.toLocaleString()} vertices / ${topology.edgeCount.toLocaleString()} edges`;
+  view.request();
+  const dispose = (): void => {
+    lifetime.abort();
+    detach();
+    view.destroy();
+    net.destroy();
+    void current.close();
+    void borders?.close();
+    gpu.destroy();
+  };
+  window.addEventListener('pagehide', (event) => {
+    if (!event.persisted) dispose();
+  });
+  import.meta.hot?.dispose(dispose);
 }
 
 function wireTopologies(currentId: () => string, apply: (opt: TopologyOption) => void): void {
@@ -158,8 +267,14 @@ function wireOrbit(net: Network): void {
   row.appendChild(btn);
 }
 
-function wireToggles(net: Network, setHeight: (on: boolean) => void): void {
-  const specs: { label: string; on: boolean; apply: (v: boolean) => void }[] = [
+interface Toggle {
+  label: string;
+  on: boolean;
+  apply: (value: boolean) => void | Promise<void>;
+}
+function wireToggles(net: Network, setHeight: (on: boolean) => void, extra: Toggle[]): void {
+  const specs: Toggle[] = [
+    ...extra,
     { label: 'vertices', on: true, apply: (v) => net.setOptions({ vertices: v }) },
     { label: 'edges', on: true, apply: (v) => net.setOptions({ edges: v }) },
     { label: 'graticule', on: false, apply: (v) => net.setOptions({ graticule: v }) },
@@ -185,25 +300,31 @@ function wireToggles(net: Network, setHeight: (on: boolean) => void): void {
     const btn = createButton(spec.label, spec.on);
     let on = spec.on;
     btn.addEventListener('click', () => {
-      on = !on;
-      spec.apply(on);
-      setPressed(btn, on);
+      btn.disabled = true;
+      void Promise.resolve()
+        .then(() => spec.apply(!on))
+        .then(() => {
+          on = !on;
+          setPressed(btn, on);
+        }, fail)
+        .finally(() => {
+          btn.disabled = false;
+        });
     });
     row.appendChild(btn);
   }
 }
 
-function wireColormaps(net: Network): void {
+function wireColormaps(set: (name: ColormapName) => void): void {
   const row = document.getElementById('colormaps') as HTMLElement;
 
   for (let i = 0; i < EXAMPLE_COLORMAPS.length; i++) {
     const name = EXAMPLE_COLORMAPS[i]!;
-    const fn = colormap(name);
     const btn = createButton(COLORMAPS[name].label, i === 0);
     btn.classList.add('swatch');
     btn.style.setProperty('--swatch', gradient(name, 'to right'));
     btn.addEventListener('click', () => {
-      net.setOptions({ colormap: fn });
+      set(name);
       setActive(row, btn);
     });
     row.appendChild(btn);
@@ -211,8 +332,8 @@ function wireColormaps(net: Network): void {
 }
 
 function wirePicking(net: Network): void {
-  const describe = (item: Model.Item | null): string =>
-    item === null ? '-' : `${item.kind} #${item.index}`;
+  const describe = (item: NetworkItem | null): string =>
+    item === null ? '-' : `${item.index.type} / row ${item.row}`;
 
   net.on('hover', (item) => {
     readoutEl.querySelector('.hover')!.textContent = describe(item);
@@ -242,4 +363,4 @@ function setActive(row: HTMLElement, active: HTMLButtonElement): void {
   }
 }
 
-void main();
+void main().catch(fail);

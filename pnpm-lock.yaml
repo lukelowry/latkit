@@ -119,6 +119,9 @@ importers:
       '@latkit/colormaps':
         specifier: workspace:*
         version: link:../../packages/colormaps
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../../packages/gpu
       '@latkit/model':
         specifier: workspace:*
         version: link:../../packages/model
@@ -268,12 +271,6 @@ importers:
         specifier: ^0.1.71
         version: 0.1.71
 
-  packages/port:
-    dependencies:
-      '@latkit/model':
-        specifier: workspace:*
-        version: link:../model
-
   packages/video:
     dependencies:
       '@latkit/diagram':
@@ -291,9 +288,6 @@ importers:
       '@latkit/network':
         specifier: workspace:*
         version: link:../network
-      '@latkit/port':
-        specifier: workspace:*
-        version: link:../port
       mediabunny:
         specifier: ^1.60.0
         version: 1.60.0

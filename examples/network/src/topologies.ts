@@ -1,26 +1,11 @@
-import type { Model } from '@latkit/model';
+import { ExampleSource, numeric, vector } from './source.js';
 import { makeFakeNetwork } from './fake-network.js';
-
-/**
- * A topology plus the per-vertex signals that drive the color/size channels.
- * `size` is optional: a topology that reads better at a uniform vertex size
- * simply omits it, and the host clears the vertexSize channel on switch.
- */
-export interface GeneratedTopology {
-  readonly topology: Model.Topology;
-  readonly vertexCount: number;
-  readonly edgeCount: number;
-  /** Per-vertex scalar in [0, 1] for the vertexColor channel. */
-  readonly color: Float32Array;
-  /** Per-vertex scalar in [0, 1] for the vertexSize channel; omitted when uniform. */
-  readonly size?: Float32Array;
-}
 
 /** One entry in the topology chooser: a label and a lazy builder. */
 export interface TopologyOption {
   readonly id: string;
   readonly label: string;
-  readonly build: () => GeneratedTopology;
+  readonly build: () => ExampleSource;
 }
 
 export const TOPOLOGIES: readonly TopologyOption[] = [
@@ -30,15 +15,8 @@ export const TOPOLOGIES: readonly TopologyOption[] = [
 ];
 
 /** The existing synthetic power grid (nearest-neighbour mesh + bent corridors). */
-function powerGrid(): GeneratedTopology {
-  const f = makeFakeNetwork();
-  return {
-    topology: f.topology,
-    vertexCount: f.vertexCount,
-    edgeCount: f.edgeCount,
-    color: f.load,
-    size: f.degree,
-  };
+function powerGrid(): ExampleSource {
+  return makeFakeNetwork();
 }
 
 /**
@@ -47,7 +25,7 @@ function powerGrid(): GeneratedTopology {
  * columns curve as lat/lon lines on the sphere), and the three geodesics span
  * the box as long great-circle arcs. 30 vertices, 52 edges.
  */
-function grid(): GeneratedTopology {
+function grid(): ExampleSource {
   return buildGrid({
     cols: 6,
     rows: 5,
@@ -66,11 +44,11 @@ function grid(): GeneratedTopology {
 
 /**
  * A dense ~100k-vertex square lattice over a wide lon/lat box for the scale
- * stress test (interactive retessellation on camera move, GPU pick latency at
+ * stress test (cached native field uploads and bounded CPU picking at
  * ~200k edges). Grid-mesh edges plus a handful of box-spanning geodesics.
  * Built in O(vertexCount): grid neighbours are O(1) per vertex.
  */
-function grid100k(): GeneratedTopology {
+function grid100k(): ExampleSource {
   const cols = 400;
   const rows = 250; // 100,000 vertices
   const midC = cols >> 1;
@@ -111,7 +89,7 @@ interface GridSpec {
  * globe projection is what bends them into great-circle arcs. Color is the
  * normalized distance from the box center.
  */
-function buildGrid(spec: GridSpec): GeneratedTopology {
+function buildGrid(spec: GridSpec): ExampleSource {
   const { cols, rows, lonMin, lonMax, latMin, latMax, geodesics } = spec;
   const vertexCount = cols * rows;
   const idx = (c: number, r: number): number => r * cols + c;
@@ -156,9 +134,6 @@ function buildGrid(spec: GridSpec): GeneratedTopology {
     e++;
   }
 
-  // Straight edges: no polyline points, so polylineStart is all zeros.
-  const polylineStart = new Uint32Array(edgeCount + 1);
-
   // Color: normalized distance from the box center.
   const lonC = (lonMin + lonMax) / 2;
   const latC = (latMin + latMax) / 2;
@@ -173,6 +148,8 @@ function buildGrid(spec: GridSpec): GeneratedTopology {
   }
   for (let v = 0; v < vertexCount; v++) color[v] = color[v]! / maxD;
 
-  const topology: Model.Topology = { vertexCount, vertexCoords, edges, polylineStart };
-  return { topology, vertexCount, edgeCount, color };
+  return new ExampleSource({
+    node: { count: vertexCount, columns: { position: vector(vertexCoords), load: numeric(color) } },
+    line: { count: edgeCount, columns: {}, endpoints: { component: 'node', rows: edges } },
+  });
 }

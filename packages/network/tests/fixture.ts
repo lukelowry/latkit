@@ -1,3 +1,4 @@
+import { validateQuery } from '@latkit/model';
 import type {
   Query,
   Queryable,
@@ -135,6 +136,8 @@ export class GraphSource implements Queryable {
     query: Query,
     options?: QueryOptions,
   ): AsyncGenerator<QueryHeader | QueryBlock> {
+    const issues = validateQuery(this.schema, query);
+    if (issues.length) throw new Error(JSON.stringify(issues));
     this.queries++;
     if (query.kind === 'links') this.linksQueries++;
     options?.signal?.throwIfAborted();

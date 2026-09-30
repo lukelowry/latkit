@@ -1,30 +1,22 @@
 # @latkit/network example
 
-A Vite example for the published shape of [`@latkit/network`](../../packages/network).
-It renders synthetic network topologies with WebGPU and exercises projections,
-programmatic camera rotation and pose control, channels, colormaps, layer
-visibility, lighting, and picking. The camera animation is off by default; use
-**auto rotate** to start it - on the globe it spins the earth about its axis,
-elsewhere it orbits the tilt camera - then click again or interact with the
-canvas to stop it.
+A standalone host for the native `@latkit/model`, `@latkit/gpu`, and `@latkit/network` APIs, with `@latkit/colormaps` for color scales.
 
-## Run
+The power grid, small geographic grid, and 100,000-vertex grid generate native columns and binary connection endpoints directly. `ExampleSource` implements immutable `Queryable` acquisitions. There is no legacy topology or channel conversion. The host owns the source, GPU, canvas view, and input attachment; the renderer borrows them.
 
-Requires a browser with WebGPU support.
+Controls cover flat/tilt/globe projections, orbit, fit, colormaps, height, geodesics, detailed borders, lighting, surface poles, visibility, and native-row picking. Automatic hover uses the renderer's bounded policy. The status shows submitted frame statistics.
 
 ```sh
 pnpm install
 pnpm --filter @latkit/network-example dev
 ```
 
-The dev script builds `@latkit/gpu` and `@latkit/network` first, then starts Vite at
-http://127.0.0.1:5188.
+Open http://127.0.0.1:5188. The script builds dependencies before starting Vite. `pnpm --filter @latkit/network-example build` checks types and produces the production bundle.
 
-## Build
+The detailed border toggle loads the same native Natural Earth fixture as the network package's headed demonstration; Vite includes the binary assets in the production build. To open that separate recording/channel and performance demonstration:
 
 ```sh
-pnpm --filter @latkit/network-example build
+pnpm --filter @latkit/network test:browser
 ```
 
-The example depends on `@latkit/gpu` and `@latkit/network` through workspace
-package links, so it consumes the same `dist` entrypoints a downstream app would use.
+See [the network API](../../packages/network/README.md) for complete bindings and ownership details.

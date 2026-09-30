@@ -133,7 +133,7 @@ export async function readGeometry(
       kind: 'rows',
       from: type,
       select: [],
-      rows: options.rows,
+      ...(options.rows ? { rows: options.rows } : {}),
     })) {
       if (block.kind === 'schema') {
         schema = block.schema;
@@ -253,8 +253,12 @@ export async function readGeometry(
     };
     const query =
       options.connectivity.kind === 'links'
-        ? { ...options.connectivity, from: type, rows: options.rows }
-        : { kind: 'endpoints' as const, from: type, rows: options.rows };
+        ? { ...options.connectivity, from: type, ...(options.rows ? { rows: options.rows } : {}) }
+        : {
+            kind: 'endpoints' as const,
+            from: type,
+            ...(options.rows ? { rows: options.rows } : {}),
+          };
     let pending: { row: number; total: number; next: number; ends: [Index, number][] } | undefined;
     for await (const block of frame.query(data.source, query)) {
       if (block.kind === 'schema') continue;
@@ -331,7 +335,7 @@ export async function readGeometry(
       kind: 'rows',
       from: type,
       select: [],
-      rows: options.rows,
+      ...(options.rows ? { rows: options.rows } : {}),
     })) {
       if (block.kind === 'schema') continue;
       if (index) assertIndex(index, block.index);

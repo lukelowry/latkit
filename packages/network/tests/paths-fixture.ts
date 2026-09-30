@@ -1,3 +1,4 @@
+import { validateQuery } from '@latkit/model';
 import type {
   Column,
   Queryable,
@@ -77,6 +78,8 @@ export class PathSource implements Queryable {
     query: Query,
     options?: QueryOptions,
   ): AsyncGenerator<QueryHeader | QueryBlock> {
+    const issues = validateQuery(this.schema, query);
+    if (issues.length) throw new Error(JSON.stringify(issues));
     this.queries++;
     options?.signal?.throwIfAborted();
     yield { kind: 'schema', version: this.version, schema: this.schema };

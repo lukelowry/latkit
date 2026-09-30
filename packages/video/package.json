@@ -32,7 +32,6 @@
     "@latkit/model": "workspace:*",
     "@latkit/monitor": "workspace:*",
     "@latkit/network": "workspace:*",
-    "@latkit/port": "workspace:*",
     "mediabunny": "^1.60.0"
   },
   "publishConfig": {
