@@ -1,6 +1,13 @@
 import type { Index, RowAxis, Version } from '@latkit/model';
 
-export interface GpuField {
+export type GpuField = GpuValueField | GpuListField;
+export interface GpuListField {
+  readonly kind: 'list';
+  readonly slot: number;
+  readonly items: GpuValueField;
+}
+export interface GpuValueField {
+  readonly kind: 'value';
   readonly slot: number;
   readonly type: 'float32' | 'int32' | 'uint32' | 'boolean';
   readonly components: number;
@@ -10,6 +17,8 @@ export interface GpuField {
 
 /** One shader layout for queried fields, native rows/samples, and application values. Frame-scoped. */
 export interface GpuPage {
+  /** Available for fields requested through FieldsRequest.read. */
+  readonly native?: import('./binding.js').NativeFields;
   readonly version?: Version;
   readonly index: Index;
   readonly rows: RowAxis;
@@ -20,7 +29,7 @@ export interface GpuPage {
   readonly samples?: {
     readonly firstFrame: number;
     readonly count: number;
-    readonly coordinates: GpuField;
+    readonly coordinates: GpuValueField;
   };
 }
 

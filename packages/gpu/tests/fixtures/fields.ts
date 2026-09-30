@@ -1,4 +1,4 @@
-import type { GpuField, GpuPage } from '../../src/index.js';
+import type { GpuField, GpuValueField, GpuPage } from '../../src/index.js';
 import { bytes } from './device.js';
 
 function bindings(page: GpuPage): GPUBufferBinding[] {
@@ -34,10 +34,13 @@ export function field(page: GpuPage, selected: string | GpuField = 'value') {
   return {
     binding: {
       buffer: banks[f[0]].buffer,
-      offset: item.type === 'boolean' ? Math.floor(f[1] / 32) * 4 : f[1] * 4,
-      size: item.type === 'boolean' ? Math.ceil(((f[1] % 32) + span) / 32) * 4 : span * 4,
+      offset: (item as GpuValueField).type === 'boolean' ? Math.floor(f[1] / 32) * 4 : f[1] * 4,
+      size:
+        (item as GpuValueField).type === 'boolean'
+          ? Math.ceil(((f[1] % 32) + span) / 32) * 4
+          : span * 4,
     },
-    offset: item.type === 'boolean' ? f[1] % 32 : 0,
+    offset: (item as GpuValueField).type === 'boolean' ? f[1] % 32 : 0,
     rowStride: f[2],
     frameStride: f[3],
     validity: mask(6),
@@ -53,7 +56,7 @@ export function rowMap(page: GpuPage): GPUBufferBinding | undefined {
 export function values(page: GpuPage, name = 'value'): number[] {
   const descriptor = field(page, name),
     data = bytes(descriptor.binding),
-    type = page.columns[name].type;
+    type = (page.columns[name] as GpuValueField).type;
   const view =
     type === 'uint32'
       ? new Uint32Array(data.buffer, data.byteOffset, data.byteLength / 4)

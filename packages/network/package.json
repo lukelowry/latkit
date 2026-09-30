@@ -1,43 +1,28 @@
 {
   "name": "@latkit/network",
-  "version": "0.12.2",
-  "description": "WebGPU network renderer for Latkit, with the view policy and packaged borders every host shares.",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Native model network rendering over the shared Latkit GPU pipeline.",
   "type": "module",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/lukelowry/latkit.git",
-    "directory": "packages/network"
-  },
   "license": "MIT",
   "sideEffects": false,
-  "files": [
-    "dist",
-    "README.md"
-  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./assets/*": "./dist/assets/*"
+    }
   },
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsup && node scripts/copy-assets.mjs",
+    "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --project @latkit/network",
-    "bench": "vitest bench --run --project @latkit/network"
+    "test:browser": "pnpm --filter @latkit/network... build && esbuild tests/fixture.ts tests/paths-fixture.ts --format=esm --outdir=dist && node tests/browser/run.mjs --headed --keep-open"
   },
   "dependencies": {
     "@latkit/colormaps": "workspace:*",
     "@latkit/gpu": "workspace:*",
     "@latkit/model": "workspace:*",
     "@webgpu/types": "^0.1.71"
-  },
-  "devDependencies": {
-    "jsdom": "^26.1.0"
-  },
-  "publishConfig": {
-    "access": "public"
   }
 }

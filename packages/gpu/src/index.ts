@@ -16,9 +16,18 @@ export type {
   RenderOptions,
   QueryResult,
 } from './render.js';
-export type { FieldBinding, FieldInput, FieldsRequest, FieldValues, DataHit } from './binding.js';
+export type {
+  FieldBinding,
+  FieldInput,
+  FieldColumn,
+  ExtentRequest,
+  FieldsRequest,
+  FieldValues,
+  NativeFields,
+  DataHit,
+} from './binding.js';
 export { sameIndex, assertIndex, rowCount, rowAt } from './binding.js';
-export type { GpuField, GpuPage, UploadOptions } from './columns.js';
+export type { GpuField, GpuValueField, GpuListField, GpuPage, UploadOptions } from './columns.js';
 export { fieldShader } from './field-shader.js';
 export { TextureData } from './texture-data.js';
 export type { PixelRegion } from './texture-data.js';
@@ -46,3 +55,9 @@ export type {
 } from './text.js';
 export { createTextRasterizer } from './text-rasterizer.js';
 export { textShader } from './text-shader.js';
+
+export { fitCamera, cameraPoint, worldPoint, zoomCamera } from './camera.js';
+export type { Camera2D, Bounds2D, Insets } from './camera.js';
+
+export { clipStroke, strokeShader } from './stroke.js';
+export type { ClipPoint } from './stroke.js';

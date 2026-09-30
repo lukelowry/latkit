@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Latkit | Network foundation</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: dark;
+        font: 14px system-ui;
+        background: #080f18;
+        color: #dce7ef;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+      }
+      header {
+        padding: 22px 28px;
+        border-bottom: 1px solid #263242;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 4px 0;
+      }
+      small {
+        color: #8197ac;
+      }
+      .badge {
+        color: #69d6bd;
+        font-size: 12px;
+        letter-spacing: 0.09em;
+      }
+      main {
+        padding: 20px 28px;
+      }
+      .toolbar {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 16px;
+      }
+      button,
+      select {
+        background: #162333;
+        color: #e1eaf1;
+        border: 1px solid #344458;
+        border-radius: 5px;
+        padding: 8px 14px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #23364c;
+      }
+      input[type='number'] {
+        width: 70px;
+        padding: 6px;
+      }
+      #hover-state {
+        color: #a9bbcc;
+      }
+      input {
+        accent-color: #69d6bd;
+      }
+      .canvas-wrap {
+        position: relative;
+        height: 66vh;
+        min-height: 380px;
+        border: 1px solid #2d4054;
+        border-radius: 8px;
+        overflow: hidden;
+        background: #060b12;
+      }
+      canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      .hint {
+        position: absolute;
+        bottom: 14px;
+        left: 18px;
+        font-size: 12px;
+        color: #8a9eae;
+        pointer-events: none;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 12px;
+        margin: 18px 0;
+      }
+      .stat {
+        padding: 14px 16px;
+        background: #111e2c;
+        border: 1px solid #243447;
+        border-radius: 6px;
+      }
+      .stat b {
+        display: block;
+        font-size: 22px;
+        font-weight: 500;
+        margin-bottom: 5px;
+      }
+      .stat span {
+        font-size: 12px;
+        color: #8da4b7;
+      }
+      pre {
+        white-space: pre-wrap;
+        color: #9bb2c5;
+        font-size: 12px;
+        line-height: 1.6;
+        max-height: 360px;
+        overflow: auto;
+      }
+      .status {
+        color: #69d6bd;
+      }
+      #error {
+        color: #ff9d8c;
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "@latkit/gpu": "/packages/gpu/dist/index.js",
+          "@latkit/model": "/packages/model/dist/index.js",
+          "@latkit/colormaps": "/packages/colormaps/dist/index.js",
+          "@latkit/network": "/packages/network/dist/index.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <header>
+      <div>
+        <div class="badge">LATKIT / NETWORK FOUNDATION</div>
+        <h1>Native data. One rendering pipeline.</h1>
+        <small
+          >Interactive WebGPU checkpoint &middot; native field pages &middot; shared text
+          atlas</small
+        >
+      </div>
+      <div id="status" class="status">Starting WebGPU...</div>
+    </header>
+    <main>
+      <div class="toolbar">
+        <select id="size" aria-label="Graph size">
+          <option value="900">900 vertices</option>
+          <option value="10000">10,000 vertices</option>
+          <option value="100000">100,000 vertices</option>
+        </select>
+        <button id="flat">Flat</button><button id="tilt">Tilt</button
+        ><button id="globe">Globe</button><button id="fit">Fit</button
+        ><button id="orbit">Orbit</button><button id="labels">Labels</button>
+        <label>Recording <input id="time" type="range" min="0" max="15" value="0" /></label
+        ><output id="time-value" for="time">0 s</output>
+        <button id="benchmark">Render benchmark</button>
+        <button id="hover-benchmark">Hover benchmark</button>
+      </div>
+      <div class="toolbar" role="group" aria-label="Recording channels">
+        <span>Recording drives</span>
+        <label><input id="channel-color" type="checkbox" checked /> Color</label>
+        <label><input id="channel-x" type="checkbox" /> X position</label>
+        <label><input id="channel-y" type="checkbox" /> Y position</label>
+        <label><input id="channel-z" type="checkbox" /> Z (height)</label>
+        <small>Combine channels, then scrub the recording. Z uses normalized height.</small>
+      </div>
+      <div class="toolbar" role="group" aria-label="Interaction and display">
+        <label><input id="geodesic" type="checkbox" /> Geodesic edges</label>
+        <label><input id="borders" type="checkbox" /> Detailed borders</label>
+        <button id="features">Geometry features</button>
+        <button id="paths-benchmark">Path benchmark</button>
+        <label><input id="poles" type="checkbox" /> Surface poles</label>
+        <label
+          >Hover
+          <select id="hover-mode">
+            <option value="auto">Automatic</option>
+            <option value="on">Always on</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+        <label
+          >Budget
+          <input id="hover-budget" type="number" min="0.1" step="0.1" value="2" required />
+          ms</label
+        >
+        <output id="hover-state" aria-live="polite">Ready</output>
+        <small
+          >Automatic hover pauses during motion or when its budget is reached. Click selection stays
+          available.</small
+        >
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="graph" aria-label="Interactive network graph"></canvas>
+        <div class="hint">
+          Drag to pan &middot; wheel to zoom &middot; Shift + drag to rotate &middot; click a vertex
+          to select
+        </div>
+      </div>
+      <div class="stats">
+        <div class="stat"><b id="vertices">&mdash;</b><span>vertices</span></div>
+        <div class="stat"><b id="edges">&mdash;</b><span>edges</span></div>
+        <div class="stat"><b id="prepare">&mdash;</b><span>prepare / frame</span></div>
+        <div class="stat"><b id="memory">&mdash;</b><span>managed GPU memory</span></div>
+        <div class="stat"><b id="queries">&mdash;</b><span>source queries</span></div>
+      </div>
+      <div id="error"></div>
+      <pre id="report">
+Checking shaders, row identity, offscreen pixels, camera uploads and multi-page connectivity...</pre>
+    </main>
+    <script type="module" src="./check.js"></script>
+  </body>
+</html>

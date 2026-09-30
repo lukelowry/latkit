@@ -30,7 +30,7 @@ it('keeps boolean values and null validity as separate packed bitmaps', async ()
     page = frame.upload(block, { select: ['visible'] })[0];
   });
   const column = page.columns.visible;
-  expect(column.type).toBe('boolean');
+  expect(column.kind === 'value' && column.type).toBe('boolean');
   expect(field(page, 'visible').offset).toBe(2);
   expect(bytes(field(page, 'visible').binding)[0]).toBe(0b00010100);
   expect(field(page, 'visible').validity?.offset).toBe(2);

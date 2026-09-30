@@ -1,34 +1,34 @@
-import type { Viewport } from './camera/projection.js';
+import type { Viewport } from '@latkit/gpu';
 
-/** What a shade's tick sees each frame. */
 export interface ShadeFrame {
-  /** The frame's timestamp, in milliseconds. */
   readonly timeMs: number;
-  /** Latest pointer in canvas-local CSS px, from the canvas or `setPointer`, or null. */
   readonly pointerPx: readonly [number, number] | null;
-  /** The frame's viewport in CSS px. */
   readonly viewport: Viewport;
 }
-
-/**
- * A host fragment hook for the vertex and edge passes.
- *
- * @remarks
- * `wgsl` declares `fn shade(f: Fragment) -> vec4f` and may read `host` and `u.pointer_px`; the
- * prelude in `shaders/common/shade.wgsl` documents `Fragment`. `tick` writes the 64-float `host`
- * block before a frame and returns true to keep frames coming, so an effect costs the same on any
- * graph: one small uniform upload per frame and nothing per item.
- */
 export interface Shade {
+  /** Defines the WGSL shade function. The host uniform contains sixteen four-component vectors. */
   readonly wgsl: string;
   tick?(host: Float32Array, frame: ShadeFrame): boolean;
 }
-
-/** Floats in the host block: `array<vec4f, 16>`. */
-export const SHADE_HOST_WORDS = 64;
-
-/** Where `u.pointer_px` sits when no pointer is present: far enough that any falloff is zero. */
-export const POINTER_NONE = -1e6;
-
-/** The identity shade every renderer starts with. */
-export const DEFAULT_SHADE_WGSL = 'fn shade(f: Fragment) -> vec4f { return f.color; }\n';
+export const DEFAULT_SHADE = 'fn shade(f: Fragment) -> vec4f { return f.color; }';
+export function spotlight(
+  options: { radiusPx?: number; strength?: number; color?: readonly [number, number, number] } = {},
+): Shade {
+  const { radiusPx = 200, strength = 0.65, color = [1, 0.75, 0.35] } = options;
+  if (
+    !Number.isFinite(radiusPx) ||
+    radiusPx <= 0 ||
+    !Number.isFinite(strength) ||
+    strength < 0 ||
+    strength > 1 ||
+    color.some((v) => !Number.isFinite(v) || v < 0 || v > 1)
+  )
+    throw new RangeError('Invalid spotlight');
+  return {
+    wgsl: 'fn shade(f: Fragment) -> vec4f { let a = (1.0 - smoothstep(0.0, host[0].x, distance(f.px, u.pointer.xy))) * host[0].y; return vec4f(mix(f.color.rgb, host[1].rgb, a), f.color.a); }',
+    tick(host) {
+      host.set([radiusPx, strength, 0, 0, ...color, 1]);
+      return false;
+    },
+  };
+}

@@ -74,7 +74,7 @@ describe('native numeric uploads', () => {
       page = frame.upload(block(Uint32Array.of(0xffffffff, 16777217)), { select: ['value'] })[0];
     });
     const data = bytes(field(page).binding);
-    expect(page.columns.value.type).toBe('uint32');
+    expect((page.columns.value as import('../src/index.js').GpuValueField).type).toBe('uint32');
     expect([...new Uint32Array(data.buffer, data.byteOffset, 2)]).toEqual([0xffffffff, 16777217]);
     gpu.destroy();
   });
@@ -157,7 +157,7 @@ describe('native numeric uploads', () => {
     await draw(gpu, (frame) => {
       page = frame.upload(value, { select: ['value'], float64: 'relative' })[0];
     });
-    expect(page.columns.value.origin?.[0]).toBe(1e12);
+    expect((page.columns.value as import('../src/index.js').GpuValueField).origin?.[0]).toBe(1e12);
     expect(f32(field(page).binding)).toEqual([0, 0.25, 0.5]);
     gpu.destroy();
   });
@@ -187,7 +187,10 @@ describe('native numeric uploads', () => {
     await draw(gpu, (frame) => {
       page = frame.upload(value, { select: ['value'], float64: 'relative' })[0];
     });
-    expect([...page.columns.value.origin!]).toEqual([1e12, 1e12 + 1]);
+    expect([...(page.columns.value as import('../src/index.js').GpuValueField).origin!]).toEqual([
+      1e12,
+      1e12 + 1,
+    ]);
     expect(f32(field(page).binding)).toEqual([0, 0, 0, 0]);
     expect(bytes(field(page).validity!.binding)[0]).toBe(1);
     gpu.destroy();

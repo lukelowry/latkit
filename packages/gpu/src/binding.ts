@@ -1,11 +1,13 @@
 import type {
   BooleanColumn,
+  ListColumn,
   RowSelection,
   Index,
   NumericColumn,
   Queryable,
   RowAxis,
   VectorColumn,
+  SampleWindow,
 } from '@latkit/model';
 import { GpuError, integer } from './error.js';
 
@@ -17,6 +19,13 @@ export interface FieldBinding {
   readonly rows?: RowSelection;
 }
 
+/** Native numeric columns accepted by the shared field pipeline. List items are non-nullable. */
+export type FieldColumn =
+  | NumericColumn
+  | VectorColumn
+  | BooleanColumn
+  | (ListColumn & { readonly values: NumericColumn | VectorColumn });
+
 export type FieldInput = string | FieldBinding | FieldValues;
 
 export interface FieldsRequest {
@@ -26,13 +35,17 @@ export interface FieldsRequest {
   readonly rows: RowAxis;
   readonly fields: Readonly<Record<string, FieldInput>>;
   readonly float64: 'relative' | 'float32';
+  /** Native fields also needed by CPU geometry or interaction. Shares the upload's resolved columns. */
+  readonly read?: readonly string[];
+  /** Aliases to upload; defaults to all fields. Native-only control fields need no duplicate GPU allocation. */
+  readonly upload?: readonly string[];
 }
 
 /** Immutable application values, in explicitly identified physical row order. */
 export interface FieldValues {
   readonly index: Index;
   readonly rows: RowAxis;
-  readonly values: NumericColumn | VectorColumn | BooleanColumn;
+  readonly values: FieldColumn;
 }
 
 export interface DataHit {
@@ -74,4 +87,24 @@ export function sliceRows(rows: RowAxis, offset: number, count: number): RowAxis
   return rows.kind === 'range'
     ? { kind: 'range', offset: rows.offset + offset, count }
     : { kind: 'indices', values: rows.values.subarray(offset, offset + count) };
+}
+
+/** Borrowed immutable data before float conversion. Presence is distinct from validity.
+ * A GPU page may reference a larger native tile; address columns using this object's rows. */
+export interface NativeFields {
+  readonly index: Index;
+  readonly rows: RowAxis;
+  readonly columns: Readonly<Record<string, FieldColumn>>;
+  readonly presence: Readonly<Record<string, Uint8Array>>;
+  /** Call during preparation. Keeps backing allocations in the Gpu budget until idempotent release. */
+  retain(): () => void;
+}
+
+/** Finite scalar extent over the complete selected mapping. Null means no finite values. */
+export interface ExtentRequest {
+  readonly source?: Queryable;
+  readonly index: Index;
+  readonly rows: RowAxis;
+  readonly field: FieldInput;
+  readonly window?: SampleWindow;
 }

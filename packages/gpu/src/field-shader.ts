@@ -59,6 +59,18 @@ fn fieldBool(slot: u32, row: u32, frame: u32) -> bool {
   let f = latkitFields.fields[slot];
   return latkitBit(f.bank, f.offset + row * f.rowStride + frame * f.frameStride);
 }
+fn fieldListLength(slot:u32,row:u32)->u32 {
+  if (!fieldValid(slot,row,0u)) { return 0u; }
+  return fieldUint(slot,row+1u,0u,0u)-fieldUint(slot,row,0u,0u);
+}
+fn fieldListFloat(slot:u32,row:u32,item:u32,lane:u32)->f32 {
+  let list=latkitFields.fields[slot];
+  let first=fieldUint(slot,row,0u,0u)-list.reserved1;
+  return fieldFloat(list.reserved0,first+item,0u,lane);
+}
+fn fieldListVec2f(slot:u32,row:u32,item:u32)->vec2f {
+  return vec2f(fieldListFloat(slot,row,item,0u),fieldListFloat(slot,row,item,1u));
+}
 fn fieldVec2f(slot: u32, row: u32, frame: u32) -> vec2f {
   return vec2f(fieldFloat(slot, row, frame, 0u), fieldFloat(slot, row, frame, 1u));
 }

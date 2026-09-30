@@ -314,6 +314,20 @@ class Owner implements Gpu {
         );
         return task;
       },
+      extent: (request) => {
+        assertPreparing();
+        const task = this.fields.extent(
+          request,
+          { query: read, signal, at: info.at, observe },
+          scope,
+        );
+        tasks.add(task);
+        void task.then(
+          () => tasks.delete(task),
+          () => tasks.delete(task),
+        );
+        return task;
+      },
       fields: (request) => {
         const fields = this.fields;
         return {

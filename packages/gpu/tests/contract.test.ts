@@ -13,6 +13,8 @@ describe('public contract and allocation boundaries', () => {
         'GpuError',
         'assertIndex',
         'fieldShader',
+        'clipStroke',
+        'strokeShader',
         'textShader',
         'createTextRasterizer',
         'createCanvasView',
@@ -22,6 +24,10 @@ describe('public contract and allocation boundaries', () => {
         'rowAt',
         'rowCount',
         'sameIndex',
+        'fitCamera',
+        'cameraPoint',
+        'worldPoint',
+        'zoomCamera',
       ].sort(),
     );
   });

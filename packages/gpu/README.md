@@ -65,6 +65,21 @@ Fields batch compatible requests by acquisition, type, selection, and static/sam
 
 Every input must match the draw `Index` (document, type, index version). Equal lengths do not establish identity. The draw `RowAxis` remains authoritative. Explicit binding `rows` define a partial overlay; rows outside that coverage have `fieldPresent == false`. Omitted coverage requires every draw row to be readable. Native uncaptured/expired/closed errors propagate. A present null has `fieldPresent == true` and `fieldValid == false`; missing observations are never fabricated. Prefer physical row selections for repeated overlays; ID selections require native resolution.
 
+Use `read: ['position', 'bends']` to share resolved native columns with CPU geometry or interaction. `upload` optionally selects the aliases needed by shaders; other aliases remain native-only. This avoids uploading control lists that a renderer only needs to compile its geometry. Retain native fields through their `retain()` lease when interaction outlives preparation.
+
+```ts
+const extent = await frame.extent({
+  source: recording,
+  index,
+  rows,
+  field: 'temperature',
+  window: { kind: 'frames', offset: 0, count: 120 },
+});
+// Domain | null: complete selected mapping, ignoring null/missing/nonfinite values.
+```
+
+Extents use the same source observation, query cache, and budgets as fields. Native aggregate queries are used when supported; bounded row/sample queries provide the fallback. A constant extent remains `[value, value]`; renderers choose its visual mapping. Omit `window` for the current frame coordinate.
+
 Static fields survive append/evict invalidations and retain their GPU columns independently of sampled values. Data/structure changes invalidate affected types; schema/replace invalidate all fields. Cache hits do not reinterpret an old static header as a new source version. Fresh queries from the same source in a frame must agree on their authoritative version. Changes during multi-query preparation can reject `conflict`; retained acquisitions provide deterministic export. GPU never implicitly retains or closes a source.
 
 `frame.query(source, query)` supports every native model query, including topology and sampled tiles. Its bounded multicast cache applies backpressure to concurrent readers. `@latkit/connect` acquisitions use the identical contract; no renderer transport adapter exists. Model boundary validation is optional (`validate: true`); header consistency, byte bounds, identity and upload shape checks are always enforced.
@@ -83,7 +98,7 @@ const layout = gpu.device.createPipelineLayout({
 pass.setBindGroup(0, page.bindGroup);
 ```
 
-`GpuPage` exposes native index/rows, local row offset, named `GpuField` descriptors, one bind group, and optional absolute sample frame metadata. Each `GpuField` exposes its slot, physical type, component count, and optional Float64 origin. Shader access uses `fieldPresent`, `fieldValid`, `fieldFloat`, `fieldInt`, `fieldUint`, `fieldBool`, `fieldVec2f/3f/4f`, and `fieldRow`. Value loads require valid local row/frame/component addresses; check masks before using values. Sample coordinates have their own slot and are addressed with row zero.
+`GpuPage` exposes native index/rows, local row offset, named `GpuField` descriptors, one bind group, and optional absolute sample frame metadata. `GpuField` is discriminated by `kind`: a value descriptor exposes its slot, physical type, component count, and optional Float64 origin; a list descriptor exposes the parent slot and an `items` value descriptor. Shader access uses `fieldPresent`, `fieldValid`, `fieldFloat`, `fieldInt`, `fieldUint`, `fieldBool`, `fieldVec2f/3f/4f`, and `fieldRow`. Value loads require valid local row/frame/component addresses; check masks before using values. Sample coordinates have their own slot and are addressed with row zero.
 
 The layout uses three read-only storage bindings regardless of field count: a descriptor table and two payload banks. Normal columns stay in shared slab allocations. If independent resident columns span more banks, a bounded GPU copy consolidates the page before render passes in the same command submission. Consolidated pages are cached. There is no per-field bind group or public legacy raw-column path.
 
@@ -91,9 +106,14 @@ The layout uses three read-only storage bindings regardless of field count: a de
 - Float64 requires an explicit `relative` or `float32` policy. Relative encoding subtracts a per-page, per-component Float64 origin before narrowing. Rebase camera/domain parameters against that origin in JavaScript Float64 too. Finite overflow rejects `precision`.
 - Sample coordinates always use relative encoding. Their origin is independent of value origins.
 - Vectors retain components, booleans remain bit-packed, validity and overlay presence remain distinct. Nonfinite observations are not null sentinels.
-- Text/list model columns remain available through native queries. Numeric field upload rejects them. Text content then enters the shared text API below.
+- Static lists of non-nullable numeric scalars or vectors retain native offsets and child spans. Use `fieldListLength(slot, row)`, `fieldListFloat(slot, row, item, lane)`, or `fieldListVec2f(slot, row, item)` after checking parent masks. Float64 policy applies to list items too. Variable payload size participates in page admission; a single cell exceeding the bound rejects `resource-limit`. Nested lists, nullable items, and sampled lists are not supported by field upload.
+- Text and other model columns remain available through native queries. Text content enters the shared text API below.
 
 Pages and their buffers are read-only. They can share native allocations; do not mutate or destroy them. Paging removes the single-binding limit, not the total working-set limit. Renderers still select bounded visible data and implement their own culling/level of detail.
+
+## Shared strokes
+
+`clipStroke(a, b)` clips homogeneous endpoints against WebGPU near/far planes and positive W, returning the visible parameter interval or `null`. `strokeShader()` supplies the matching `stroke_clip`, round-cap `stroke_distance`, and pixel-space `stroke_dash` helpers. Renderers own connectivity and path layout; these helpers keep clipping, widths, and hit geometry consistent without creating another rendering owner.
 
 ## Shared text and atlas
 

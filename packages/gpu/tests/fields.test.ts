@@ -82,7 +82,9 @@ it('aligns reordered multi-block inputs and explicit sparse observations without
   });
   expect(values(page)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   expect(bytes(field(page, 'overlay').presence!.binding)[0]).toBe(0b1010);
-  expect(page.columns.overlay.origin?.[0]).toBe(1e12 + 1);
+  expect((page.columns.overlay as import('../src/index.js').GpuValueField).origin?.[0]).toBe(
+    1e12 + 1,
+  );
   await expect(
     draw(gpu, async (frame) => {
       for await (const _page of frame.fields({
@@ -122,8 +124,8 @@ it('keeps boolean/vector types even when an explicit overlay has no rows', async
       page = result;
   });
   expect(source.requests).toHaveLength(0);
-  expect(page.columns.visible.type).toBe('boolean');
-  expect(page.columns.position.components).toBe(2);
+  expect((page.columns.visible as import('../src/index.js').GpuValueField).type).toBe('boolean');
+  expect((page.columns.position as import('../src/index.js').GpuValueField).components).toBe(2);
   expect(bytes(field(page, 'position').presence!.binding)[0]).toBe(0);
   gpu.destroy();
 });

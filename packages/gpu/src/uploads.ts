@@ -18,6 +18,7 @@ export interface UploadScope {
   copy(job: CopyJob): void;
 }
 interface NumericView {
+  items?: NumericView;
   values: NumericArray | Uint8Array;
   boolean?: true;
   offset: number;
@@ -150,7 +151,10 @@ export class Uploader {
       view.presence = block.presence?.[name];
       if (view.presence && view.presence.length * 8 < count)
         throw new GpuError('invalid-input', 'Presence bitmap does not cover rows');
-      if (view.values instanceof Float64Array && !options.float64)
+      if (
+        (view.values instanceof Float64Array || view.items?.values instanceof Float64Array) &&
+        !options.float64
+      )
         throw new GpuError(
           'precision',
           'Float64 field ' + name + ' requires an explicit encoding policy',
@@ -170,7 +174,36 @@ export class Uploader {
       views.some(([, view]) => view.boolean) ? limit * 8 - 31 : Infinity,
     );
     const tileFrames = Math.min(frames, Math.floor(limit / (tileRows * cellBytes)));
-    const pageCount = Math.ceil(count / tileRows) * Math.ceil(frames / tileFrames);
+    const rowRanges: [number, number][] = [];
+    const lists = views.filter(([, view]) => view.items);
+    for (let row = 0; row < count;) {
+      let nr = Math.min(tileRows, count - row);
+      if (lists.length) {
+        const fits = (n: number) =>
+          (n + 1) * cellBytes +
+            lists.reduce(
+              (sum, [, view]) =>
+                sum +
+                (view.values[view.offset + row + n] - view.values[view.offset + row]) *
+                  view.items!.components *
+                  8,
+              0,
+            ) <=
+          limit;
+        let lo = 0,
+          hi = nr;
+        while (lo < hi) {
+          const mid = Math.ceil((lo + hi) / 2);
+          if (fits(mid)) lo = mid;
+          else hi = mid - 1;
+        }
+        nr = lo;
+        if (!nr) throw new GpuError('resource-limit', 'A list cell exceeds the GPU page bound');
+      }
+      rowRanges.push([row, nr]);
+      row += nr;
+    }
+    const pageCount = rowRanges.length * Math.ceil(frames / tileFrames);
     const dependencies = new Set<Entry>();
     const copies: CopyJob[] = [];
     const allocations: Allocation[] = [];
@@ -239,8 +272,7 @@ export class Uploader {
             ),
           };
         }
-        for (let row = 0; row < count; row += tileRows) {
-          const nr = Math.min(tileRows, count - row);
+        for (const [row, nr] of rowRanges) {
           let rowTile = rowTiles.get(row);
           if (!rowTile) {
             const rows = sliceRows(block.rows, row, nr);
@@ -257,8 +289,60 @@ export class Uploader {
             string,
             EncodedColumn
           >;
-          for (const [name, view] of views)
-            columns[name] = column(view, row, nr, frame, nf, options.float64);
+          for (const [name, view] of views) {
+            if (!view.items) columns[name] = column(view, row, nr, frame, nf, options.float64);
+            else {
+              const first = view.values[view.offset + row],
+                end = view.values[view.offset + row + nr];
+              let child: NumericView =
+                end > first
+                  ? view.items
+                  : {
+                      values: new Float32Array(view.items.components),
+                      offset: 0,
+                      components: view.items.components,
+                      rowStride: view.items.components,
+                      frameStride: 0,
+                    };
+              let childRow = end > first ? first : 0;
+              if (
+                end > first &&
+                child.values instanceof Float64Array &&
+                (view.validity || view.presence)
+              ) {
+                const validity = this.memory.stage(Math.ceil((end - first) / 8), () => {
+                  const mask = new Uint8Array(Math.ceil((end - first) / 8));
+                  for (let r = 0; r < nr; r++) {
+                    const v = view.validity,
+                      at = v ? v.offset + (row + r) * v.rowStride : 0;
+                    const valid =
+                      (!v || !!(v.values[at >>> 3] & (1 << (at & 7)))) &&
+                      (!view.presence ||
+                        !!(view.presence[(row + r) >>> 3] & (1 << ((row + r) & 7))));
+                    if (valid)
+                      for (
+                        let i = view.values[view.offset + row + r] - first;
+                        i < view.values[view.offset + row + r + 1] - first;
+                        i++
+                      )
+                        mask[i >>> 3] |= 1 << (i & 7);
+                  }
+                  return mask;
+                });
+                child = {
+                  ...child,
+                  offset: child.offset + first * child.rowStride,
+                  validity: { values: validity, offset: 0, rowStride: 1, frameStride: 0 },
+                };
+                childRow = 0;
+              }
+              columns[name] = {
+                ...column(view, row, nr + 1, 0, 1, options.float64),
+                listBase: first,
+                items: column(child, childRow, Math.max(1, end - first), 0, 1, options.float64),
+              };
+            }
+          }
           pages.push(
             this.fieldPages.build(
               {
@@ -372,6 +456,38 @@ export class Uploader {
   }
 
   private view(column: Column, rows: number, frames: number, sampled: boolean): NumericView {
+    if (column.kind === 'list') {
+      if (sampled || (column.values.kind !== 'numeric' && column.values.kind !== 'vector'))
+        throw new GpuError('unsupported', 'Lists require static numeric or vector items');
+      const offset = integer(column.offset, 'list offset');
+      if (
+        !(column.offsets instanceof Int32Array) ||
+        rows > column.length ||
+        offset + rows >= column.offsets.length ||
+        (column.validity && offset + rows > column.validity.length * 8) ||
+        column.values.validity
+      )
+        throw new GpuError('invalid-input', 'Invalid list slice or nullable list items');
+      let previous = column.offsets[offset];
+      for (let i = offset; i <= offset + rows; i++) {
+        const next = column.offsets[i];
+        if (next < previous || next < 0 || next > column.values.length)
+          throw new GpuError('invalid-input', 'List offsets exceed child bounds');
+        previous = next;
+      }
+      const items = this.view(column.values, column.values.length, 1, false);
+      return {
+        values: column.offsets,
+        offset,
+        components: 1,
+        rowStride: 1,
+        frameStride: 0,
+        items,
+        validity: column.validity
+          ? { values: column.validity, offset, rowStride: 1, frameStride: 0 }
+          : undefined,
+      };
+    }
     if (column.kind === 'boolean') {
       if (sampled) throw new GpuError('invalid-input', 'Sampled fields must be numeric');
       const offset = integer(column.offset, 'boolean offset');

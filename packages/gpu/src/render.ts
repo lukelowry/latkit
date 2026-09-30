@@ -17,7 +17,7 @@ import type {
 import type { TextRequest, TextPage } from './text.js';
 import type { BufferResource } from './owned-buffer.js';
 import type { BufferData } from './buffers.js';
-import type { FieldValues, FieldsRequest } from './binding.js';
+import type { ExtentRequest, FieldValues, FieldsRequest } from './binding.js';
 import type { GpuPage, UploadOptions } from './columns.js';
 import type { TextureData } from './texture-data.js';
 import type { TextureResource } from './resources.js';
@@ -56,6 +56,7 @@ export type QueryResult<Q extends Query> =
 export interface Preparation extends FrameInfo {
   readonly signal: AbortSignal;
   text(request: TextRequest): Promise<readonly TextPage[]>;
+  extent(request: ExtentRequest): Promise<import('@latkit/model').Domain | null>;
   fields(request: FieldsRequest): AsyncIterable<GpuPage>;
   query<Q extends Query>(source: Queryable, query: Q): AsyncIterable<QueryResult<Q>>;
   upload(block: RowsBlock | SamplesBlock, options: UploadOptions): readonly GpuPage[];

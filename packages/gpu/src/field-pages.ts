@@ -1,5 +1,5 @@
 import type { Index, RowAxis, Version } from '@latkit/model';
-import type { GpuField, GpuPage } from './columns.js';
+import type { GpuField, GpuValueField, GpuPage } from './columns.js';
 import type { Allocation, Allocator } from './allocation.js';
 import { GpuError } from './error.js';
 import { rowCount } from './binding.js';
@@ -12,7 +12,9 @@ export interface Bitmap {
   readonly frameStride: number;
 }
 export interface Column extends Bitmap {
-  readonly type: GpuField['type'];
+  readonly type: GpuValueField['type'];
+  readonly items?: Column;
+  readonly listBase?: number;
   readonly components: number;
   readonly origin?: Float64Array;
   readonly validity?: Bitmap;
@@ -67,7 +69,8 @@ export class FieldPages {
     copies: CopyJob[],
   ): GpuPage {
     const columns = Object.values(input.columns);
-    const fields = input.samples ? [...columns, input.samples.coordinates] : columns;
+    const fields = input.samples ? [...columns, input.samples.coordinates] : [...columns];
+    for (const column of columns) if (column.items) fields.push(column.items);
     const regions: GPUBufferBinding[] = [];
     const add = (binding: GPUBufferBinding | undefined): void => {
       if (
@@ -137,7 +140,7 @@ export class FieldPages {
           at.word * (field.type === 'boolean' ? 32 : 1) + field.offset,
           field.rowStride,
           field.frameStride,
-          ['float32', 'int32', 'uint32', 'boolean'].indexOf(field.type),
+          field.items ? 4 : ['float32', 'int32', 'uint32', 'boolean'].indexOf(field.type),
           field.components,
         ],
         offset,
@@ -155,7 +158,19 @@ export class FieldPages {
           );
         }
       }
-      return { slot, type: field.type, components: field.components, origin: field.origin };
+      if (field.items) {
+        const child = fields.indexOf(field.items);
+        words[offset + 14] = child;
+        words[offset + 15] = field.listBase ?? 0;
+        return { kind: 'list', slot, items: descriptor(field.items, child) as GpuValueField };
+      }
+      return {
+        kind: 'value',
+        slot,
+        type: field.type,
+        components: field.components,
+        origin: field.origin,
+      };
     };
     const described: Record<string, GpuField> = Object.create(null) as Record<string, GpuField>;
     Object.entries(input.columns).forEach(([name, field], slot) => {
@@ -163,7 +178,7 @@ export class FieldPages {
     });
     const samples = input.samples && {
       ...input.samples,
-      coordinates: descriptor(input.samples.coordinates, columns.length),
+      coordinates: descriptor(input.samples.coordinates, columns.length) as GpuValueField,
     };
     const metadata = allocate(words.byteLength, 'field descriptors').binding;
     this.allocator.write(metadata, words);
