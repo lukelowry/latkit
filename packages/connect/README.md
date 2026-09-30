@@ -173,3 +173,11 @@ integration tests in their owning applications.
 Run pnpm --filter @latkit/connect build, typecheck and test. @latkit/model-new is its only runtime
 dependency. The old @latkit/port and its consumers remain unchanged; migration should consume this
 contract directly rather than add a compatibility layer.
+
+## Scale benchmark
+
+Run pnpm --filter @latkit/connect bench:scale for independently verified 100K, 1M and 4M-row workloads.
+The harness covers local calls, message and framed transports, a real Node worker, and loopback TCP.
+It reports timings, payload-copy counters and sampled memory to output/model-connect-performance.json.
+See tests/scale/README.md for methodology, repeat settings, deterministic assertions and remaining
+coverage. Ordinary tests enforce correctness and bounds without machine-dependent speed thresholds.

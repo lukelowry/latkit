@@ -282,3 +282,10 @@ Run pnpm --filter @latkit/model-new build, typecheck, and test. No old package i
    retained allocations, time to first block, cancellation latency, and GPU upload counts. Replace
    the old package only after those implementations demonstrate both correctness and the expected
    performance. Keep this candidate private until then.
+
+## Large-data verification
+
+The test-only paged ModelService in tests/scale runs million-row ownership, copy-on-write and command
+isolation checks. Its independent oracle is also used across five connect paths. Run the separate
+benchmark with pnpm --filter @latkit/connect bench:scale; methodology and scope are documented in
+../connect/tests/scale/README.md. No scale fixture is exported by this package.
