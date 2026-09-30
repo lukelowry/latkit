@@ -212,7 +212,9 @@ describe('recording binding and observation coverage', () => {
     async (action) => {
       const model = new FixtureModel();
       const recording = await model.monitor(monitor({ kind: 'command', id: 'unused' }));
-      const rejected = expect(recording.ready).rejects.toMatchObject({ code: 'aborted' });
+      const rejected = expect(recording.ready).rejects.toMatchObject({
+        code: action === 'close' ? 'closed' : 'aborted',
+      });
       if (action === 'reset') await model.reset();
       else await recording[action]();
       await rejected;
@@ -298,7 +300,7 @@ describe('recording binding and observation coverage', () => {
       });
     expect(await collect(recording.query(samples({ kind: 'at', value: -1 })))).toEqual([]);
     const controller = new AbortController();
-    recording.readGate = new Promise(() => {});
+    recording.source.readGate = new Promise(() => {});
     const iterator = recording
       .query(samples({ kind: 'frames', offset: 1, count: 1 }), { signal: controller.signal })
       [Symbol.asyncIterator]();

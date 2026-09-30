@@ -1,5 +1,6 @@
 import { failure } from './errors.js';
-export type Kind = 'service' | 'document' | 'model' | 'recording' | 'resource' | 'stream';
+export type Kind =
+  'service' | 'document' | 'model' | 'recording' | 'resource' | 'queryable' | 'stream';
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw failure('invalid-input', 'Expected an object.');
@@ -22,7 +23,7 @@ export function integer(value: unknown): value is number {
 }
 export function validateState(kind: Kind, state: Record<string, unknown>): void {
   if (kind === 'stream') return;
-  text(state.id);
+  if (kind !== 'queryable') text(state.id);
   const allowed =
     kind === 'service'
       ? ['id', 'label', 'formats']
@@ -34,6 +35,7 @@ export function validateState(kind: Kind, state: Record<string, unknown>): void 
             ? [
                 'id',
                 'scope',
+                'modelId',
                 'documentId',
                 'documentVersion',
                 'status',
@@ -45,7 +47,9 @@ export function validateState(kind: Kind, state: Record<string, unknown>): void 
                 'error',
                 'version',
               ]
-            : ['id', 'name', 'mediaType'];
+            : kind === 'queryable'
+              ? ['version']
+              : ['id', 'name', 'mediaType'];
   if (Object.keys(state).some((key) => !allowed.includes(key)))
     throw failure('invalid-input', 'Unknown state property.');
   if (kind === 'service') {
@@ -86,11 +90,13 @@ export function validateState(kind: Kind, state: Record<string, unknown>): void 
             throw failure('invalid-input');
     }
   }
+  if (kind === 'queryable') text(state.version);
   if (kind === 'recording') {
+    if (state.modelId !== null) text(state.modelId);
     text(state.documentId);
     text(state.version);
     if (state.documentVersion !== null) text(state.documentVersion);
-    if (!['armed', 'monitoring', 'stopped', 'failed', 'closed'].includes(String(state.status)))
+    if (!['armed', 'monitoring', 'stopped', 'failed'].includes(String(state.status)))
       throw failure('invalid-input');
     if (
       !integer(state.firstFrame) ||

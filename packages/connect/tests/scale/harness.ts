@@ -4,10 +4,10 @@ import { Worker, MessageChannel } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { build } from 'tsup';
 import { connect, serve, messagePort, byteTransport } from '../../src/index.js';
-import type { ModelService } from '@latkit/model-new';
-import { ScaleService } from '../../../model_new/tests/scale/service.js';
-import type { Metrics } from '../../../model_new/tests/scale/store.js';
-import { deferred } from '../../../model_new/tests/scale/store.js';
+import type { ModelService } from '@latkit/model';
+import { ScaleService } from '../../../model/tests/scale/service.js';
+import type { Metrics } from '../../../model/tests/scale/store.js';
+import { deferred } from '../../../model/tests/scale/store.js';
 import { socketPair } from './socket.js';
 import type { SocketMetrics } from './socket.js';
 export const modes = ['local', 'message', 'framed', 'worker', 'socket'] as const;
@@ -31,7 +31,7 @@ export async function prepareWorker(): Promise<string> {
     platform: 'node',
     target: 'node24',
     bundle: true,
-    noExternal: ['@latkit/model-new'],
+    noExternal: ['@latkit/model'],
     config: false,
     dts: false,
     silent: true,
@@ -54,11 +54,12 @@ export async function harness(
       pause: async (value) => native.pause(value),
       socket,
       async close() {
-        native.pause(false);
         for (const core of [...native.cores.values()]) {
           for (const model of [...core.models]) await model.close();
           for (const document of [...core.documents]) await document.close();
         }
+        await native.capturesRegistry.close();
+        native.pause(false);
       },
     };
   if (mode === 'worker') {

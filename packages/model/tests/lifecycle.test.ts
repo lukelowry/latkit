@@ -148,7 +148,7 @@ describe('command-scoped monitoring', () => {
       expect(capture.documentVersion).toBe(acceptedVersion);
     });
     const completion = model.call({ routine: 'solve', values: {} }, { id: 'a' });
-    expect(capture.inputs()).toBe(model.document.state);
+    expect(capture.source.inputs()).toBe(model.document.state);
     model.start('a');
     model.complete('a');
     await completion;
@@ -163,8 +163,8 @@ describe('command-scoped monitoring', () => {
     const live = await model.monitor(config({ kind: 'live' }));
     const pa = model.call({ routine: 'solve', values: {} }, { id: 'a' });
     const pb = model.call({ routine: 'solve', values: {} }, { id: 'b' });
-    expect(a.inputs()).toBe(b.inputs());
-    const pinned = a.inputs();
+    expect(a.source.inputs()).toBe(b.source.inputs());
+    const pinned = a.source.inputs();
     await model.document.edit([{ kind: 'set', id: 'n1', values: { value: 100 } }]);
     await model.document.replace();
     expect(a.status).toBe('monitoring');
@@ -175,7 +175,7 @@ describe('command-scoped monitoring', () => {
     await Promise.all([pa, pb]);
     expect(first((await collect(a.query(sampleQuery())))[0])).toBe(2);
     expect(first((await collect(b.query(sampleQuery())))[0])).toBe(3);
-    expect(a.inputs()).toBe(pinned);
+    expect(a.source.inputs()).toBe(pinned);
     expect(live.frameCount).toBe(0);
     expect((await a.commands({ limit: 10 })).items.map((e) => e.id)).toEqual(['a']);
     expect((await b.commands({ limit: 10 })).items.map((e) => e.id)).toEqual(['b']);
@@ -226,8 +226,8 @@ describe('command-scoped monitoring', () => {
     const armed = await model.monitor(config({ kind: 'command', id: 'later' }));
     await model.reset();
     expect(model.document).toBe(document);
-    expect(armed.status).toBe('closed');
-    expect(await armed.done).toMatchObject({ reason: 'reset' });
+    expect(armed.status).toBe('stopped');
+    expect(await armed.done).toMatchObject({ reason: 'model-reset' });
     await model.close();
     await model.close();
     await expect(model.document.replace()).rejects.toMatchObject({ code: 'closed' });
@@ -260,7 +260,7 @@ describe('retention and tiled reads', () => {
         }
     }
     expect(cells.size).toBe(8);
-    expect(capture.copiedBytes).toBe(0);
+    expect(capture.source.copiedBytes).toBe(0);
     await capture.close();
     expect(first(old)).toBe(1);
     await expect(collect(capture.query(q))).rejects.toMatchObject({ code: 'closed' });

@@ -133,10 +133,10 @@ describe('coherent range context', () => {
           expect(
             validateBlock(await recording.describe(), query, block, { maxBlockBytes: 1024 }),
           ).toEqual([]);
-          const native = recording.stateForRead().frames![block.firstFrame].values.output;
+          const native = recording.source.stateForRead().frames![block.firstFrame].values.output;
           expect(block.columns.output.values.buffer).toBe(native.buffer);
         }
-        expect(recording.copiedBytes).toBe(0);
+        expect(recording.source.copiedBytes).toBe(0);
         const aggregate = await collect(
           recording.query({
             kind: 'aggregate',

@@ -1,8 +1,8 @@
 import { MessageChannel } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 import { connect, serve, messagePort } from '../src/index.js';
-import { FixtureService, MemoryFile, collect } from '../../model_new/tests/fixture.js';
-import { axisValues } from '../../model_new/tests/source.js';
+import { FixtureService, MemoryFile, collect } from '../../model/tests/fixture.js';
+import { axisValues } from '../../model/tests/source.js';
 async function open(service = new FixtureService()) {
   const { port1, port2 } = new MessageChannel();
   const serving = serve(messagePort(port2), service);

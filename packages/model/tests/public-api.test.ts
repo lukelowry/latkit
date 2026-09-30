@@ -8,6 +8,7 @@ import type {
   Model,
   ModelService,
   Queryable,
+  Recording,
   QueryHeader,
   RowsBlock,
   SamplesBlock,
@@ -45,6 +46,9 @@ function publicUsage(
   const command: Command = { routine: 'solve', values: { file: input, count: 10 } };
   void model.call?.(command, { id: 'command' });
   void service.open();
+  expectTypeOf(service.recording('id')).toEqualTypeOf<Promise<Recording>>();
+  expectTypeOf(source.retain({ maxBytes: 1024 })).toEqualTypeOf<Promise<Queryable>>();
+  expectTypeOf(source.close()).toEqualTypeOf<Promise<void>>();
   const edits: readonly Edit[] = [
     { kind: 'add-component', type: 'Node', as: 'a', values: { position: [1, 2] } },
     {

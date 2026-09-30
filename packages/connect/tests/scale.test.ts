@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { setTimeout } from 'node:timers/promises';
 import { harness, modes, prepareWorker, until } from './scale/harness.js';
-import { verifyRows, verifySamples, inputAt } from '../../model_new/tests/scale/verify.js';
-import type { NumericColumn, QueryHeader, RowsBlock } from '@latkit/model-new';
+import { verifyRows, verifySamples, inputAt } from '../../model/tests/scale/verify.js';
+import type { NumericColumn, QueryHeader, RowsBlock } from '@latkit/model';
 const query = { kind: 'rows', from: 'Node', select: ['value'] } as const;
 const fields = [{ from: 'Node', select: ['output'] }];
 beforeAll(async () => {
@@ -145,6 +145,8 @@ describe.each(modes)('large model over %s', (mode) => {
       await independent.close();
       await document.close();
       await other.close();
+      await verifySamples(recording, rows, 3);
+      await recording.close();
       expect(await run.metrics()).toMatchObject({
         models: 0,
         acquisitions: 0,
@@ -199,6 +201,7 @@ describe.each(modes)('large model over %s', (mode) => {
       await held.return?.();
       await model.close();
       await document.close();
+      await recording.close();
       expect(values[0]).toBe(inputAt(0) * 2 + 5);
       expect((await run.metrics()).frameBytes).toBe(0);
     } finally {
@@ -254,6 +257,7 @@ describe.each(modes)('large model over %s', (mode) => {
       await verifyRows(document, 1, {}, { ...query, limit: 1 });
       await document.close();
       await model.close();
+      await recording.close();
       expect(await run.metrics()).toMatchObject({
         models: 0,
         acquisitions: 0,
@@ -337,7 +341,54 @@ describe.each(modes)('large model over %s', (mode) => {
         if (block.kind !== 'schema') expect(block.columns.output.values[0]).toBe(23);
       await model.close();
       await document.close();
+      await recording.close();
+      await later.close();
       expect((await run.metrics()).frameBytes).toBe(0);
+    } finally {
+      await run.close();
+    }
+  }, 30_000);
+  it('retains a native frame through rolling eviction, producer closure and independent reacquisition', async () => {
+    const rows = 1_000_003,
+      run = await harness(mode, rows);
+    try {
+      const document = await run.service.open(),
+        model = await run.service.model(document.id);
+      const recording = await model.monitor!({
+        scope: { kind: 'live' },
+        fields,
+        retain: { kind: 'rolling', frames: 1, bytes: rows * 8 + 8, onLimit: 'fail' },
+      });
+      await model.call!({ routine: 'advance', values: { frames: 1, factor: 2 } });
+      const before = await run.metrics();
+      const source = await recording.retain({
+        window: { kind: 'frames', offset: 0, count: 1 },
+        maxBytes: 32 * 1024 * 1024,
+      });
+      const nested = await source.retain();
+      const after = await run.metrics();
+      expect(after.blocks).toBe(before.blocks);
+      expect(after.ownedCopiedBytes).toBe(before.ownedCopiedBytes);
+      expect(after.frameBytes).toBe(rows * 8 + 8);
+      const other = await run.service.recording(recording.id);
+      await recording.close();
+      await model.call!({ routine: 'advance', values: { frames: 2, factor: 2 } });
+      expect(other.firstFrame).toBe(2);
+      expect((await run.metrics()).frameBytes).toBe(2 * (rows * 8 + 8));
+      await model.close();
+      await document.close();
+      await other.close();
+      await source.close();
+      await expect(run.service.recording(recording.id)).rejects.toMatchObject({ code: 'closed' });
+      expect((await run.metrics()).frameBytes).toBe(rows * 8 + 8);
+      await verifySamples(nested, rows, 1);
+      await nested.close();
+      expect(await run.metrics()).toMatchObject({
+        models: 0,
+        acquisitions: 0,
+        activeReads: 0,
+        frameBytes: 0,
+      });
     } finally {
       await run.close();
     }

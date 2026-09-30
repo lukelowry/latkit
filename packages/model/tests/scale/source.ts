@@ -1,6 +1,7 @@
 import { setImmediate } from 'node:timers/promises';
 import type {
   Queryable,
+  RetainOptions,
   Schema,
   Query,
   QueryHeader,
@@ -25,7 +26,8 @@ import type {
 } from '../../src/index.js';
 import { blockByteLength, blockBuffers, validateQuery } from '../../src/index.js';
 import { text } from '../data.js';
-import { selectFrames } from '../source.js';
+import type { FrameRead } from '../source.js';
+import { selectFrames, retainFrames } from '../source.js';
 import { Store, failure, axisAt, axisLength, slice, interrupt } from './store.js';
 import type { State } from './store.js';
 export const schema: Schema = {
@@ -47,7 +49,7 @@ export interface Frame {
   readonly coordinate: number;
   readonly values: Float64Array;
 }
-export interface Read {
+export interface Read extends FrameRead<Frame> {
   readonly state: State;
   readonly version: string;
   readonly schema: Schema;
@@ -59,6 +61,7 @@ export interface Read {
   readonly evictedThrough?: number;
 }
 export abstract class ScaleSource implements Queryable {
+  private sourceClosed = false;
   abstract readonly version: string;
   abstract pin(): Read;
   readonly reads = new Map<AbortController, () => Promise<unknown>>();
@@ -67,11 +70,45 @@ export abstract class ScaleSource implements Queryable {
     readonly store: Store,
     readonly gate: () => Promise<void> | undefined,
   ) {}
+  async retain(options: RetainOptions = {}): Promise<Queryable> {
+    const read = retainFrames(this.pin(), options);
+    // Reserve the lazily materialized base plus distinct edited pages. No scan or query is run.
+    const backing = new Map<object, number>([[this.store, this.store.rows * 8]]);
+    for (const values of read.state.pages.values())
+      backing.set(values.buffer, values.buffer.byteLength);
+    for (const frame of read.frames ?? []) {
+      backing.set(frame, 8);
+      backing.set(frame.values.buffer, frame.values.buffer.byteLength);
+    }
+    if (read.coverage?.kind === 'indices')
+      backing.set(read.coverage.values.buffer, read.coverage.values.buffer.byteLength);
+    if (read.grant?.frames) backing.set(read.grant.frames, read.grant.frames.length * 8);
+    const store = this.store;
+    const release = store.retention.acquire(backing, options.maxBytes);
+    const releaseFrames = store.retainFrames(read.frames ?? []);
+    this.store.retentions++;
+    this.store.stats.acquisitions++;
+    return new RetainedScaleSource(this.store, this.gate, read, () => {
+      release();
+      releaseFrames();
+      store.retentions--;
+      store.stats.acquisitions--;
+      store.onRelease();
+    });
+  }
+  async close(): Promise<void> {
+    if (this.sourceClosed) return;
+    this.sourceClosed = true;
+    await this.cancel();
+    this.publish({ kind: 'closed' });
+    this.listeners.clear();
+  }
   async describe(options?: RequestOptions): Promise<Schema> {
     if (options?.signal?.aborted) throw failure('aborted');
     return this.pin().schema;
   }
   on(_event: 'change', listener: (value: Update) => void): () => void {
+    if (this.sourceClosed) throw failure('closed');
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
@@ -380,5 +417,30 @@ function matches(value: number, filter: Filter): boolean {
       return value >= filter.value;
     case 'contains':
       return false;
+  }
+}
+
+class RetainedScaleSource extends ScaleSource {
+  readonly version: string;
+  private closing?: Promise<void>;
+  constructor(
+    store: Store,
+    gate: () => Promise<void> | undefined,
+    private readState: Read | undefined,
+    private readonly release: () => void,
+  ) {
+    super(store, gate);
+    this.version = readState!.version;
+  }
+  pin(): Read {
+    if (!this.readState) throw failure('closed');
+    return this.readState;
+  }
+  override close(): Promise<void> {
+    return (this.closing ??= (async () => {
+      this.readState = undefined;
+      await super.close();
+      this.release();
+    })());
   }
 }

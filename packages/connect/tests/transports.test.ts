@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { MessageChannel } from 'node:worker_threads';
 import { connect, serve, messagePort, webSocket, byteTransport } from '../src/index.js';
-import { FixtureService, collect } from '../../model_new/tests/fixture.js';
+import { FixtureService, collect } from '../../model/tests/fixture.js';
 import { decodeFrame, limits } from '../src/internal/frame.js';
 import { Peer } from '../src/internal/peer.js';
 import { deferred } from './fixture.js';

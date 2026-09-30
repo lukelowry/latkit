@@ -10,6 +10,8 @@ import type {
   NumericColumn,
   Query,
   Queryable,
+  RetainOptions,
+  RequestOptions,
   QueryBlock,
   QueryHeader,
   QueryOptions,
@@ -27,8 +29,9 @@ import type {
 } from '../src/index.js';
 import { blockBuffers, blockByteLength, validateQuery } from '../src/index.js';
 import { text } from './data.js';
+import { RetainedBudget, retainOptions } from './retention.js';
 
-export function failure(code: Failure['code'], message = code): Failure {
+export function failure(code: Failure['code'], message: string = code): Failure {
   return Object.assign(new Error(message), { code });
 }
 export interface Inputs {
@@ -41,7 +44,8 @@ export interface Frame {
   coordinate: number;
   values: Readonly<Record<string, Float64Array>>;
 }
-interface FrameRead<F> {
+export interface FrameRead<F> {
+  readonly grant?: FrameRead<{ readonly coordinate: number }>;
   readonly frames?: readonly F[];
   readonly firstFrame?: number;
   readonly frameCount?: number;
@@ -49,6 +53,7 @@ interface FrameRead<F> {
   readonly evictedThrough?: number;
 }
 export interface ReadState extends FrameRead<Frame> {
+  backing?: ReadonlyMap<object, number>;
   inputs: Inputs;
   version: string;
   schema: Schema;
@@ -133,6 +138,20 @@ export function selectFrames<F extends { readonly coordinate: number }>(
   state: FrameRead<F>,
   window: SampleWindow,
 ): { frames: readonly F[]; offset: number } {
+  if (state.grant) {
+    const selected = selectFrames(state.grant, window);
+    const first = state.firstFrame ?? 0,
+      end = state.frameCount ?? 0;
+    if (selected.offset < first || selected.offset + selected.frames.length > end)
+      throw failure('invalid-input', 'Query exceeds retained coverage.');
+    return {
+      frames: (state.frames ?? []).slice(
+        selected.offset - first,
+        selected.offset - first + selected.frames.length,
+      ),
+      offset: selected.offset,
+    };
+  }
   const frames = state.frames ?? [];
   const first = state.firstFrame ?? 0;
   if (window.kind === 'frames') {
@@ -163,6 +182,35 @@ export function selectFrames<F extends { readonly coordinate: number }>(
   return { frames: frames.slice(start, end), offset: first + start };
 }
 
+/** Preserve only the immutable coordinate index outside a narrowed grant, never excluded payloads. */
+export function retainFrames<F extends { readonly coordinate: number }, S extends FrameRead<F>>(
+  state: S,
+  options: RetainOptions,
+): S {
+  retainOptions(options);
+  if (!state.frames) {
+    if (options.window) throw failure('invalid-input', 'Input sources have no observation window.');
+    return state;
+  }
+  const selected = options.window
+    ? selectFrames(state, options.window)
+    : { frames: state.frames, offset: state.firstFrame ?? 0 };
+  const grant = state.grant ?? {
+    frames: state.frames.map((f) => ({ coordinate: f.coordinate })),
+    firstFrame: state.firstFrame,
+    frameCount: state.frameCount,
+    firstCoordinate: state.firstCoordinate,
+    evictedThrough: state.evictedThrough,
+  };
+  return {
+    ...state,
+    frames: selected.frames,
+    firstFrame: selected.offset,
+    frameCount: selected.offset + selected.frames.length,
+    grant,
+  };
+}
+
 /** Binary searches the pinned coordinate index; numeric payloads are never inspected/copied. */
 function coordinateBound(
   frames: readonly { readonly coordinate: number }[],
@@ -183,17 +231,48 @@ function coordinateBound(
 export abstract class Source implements Queryable {
   abstract readonly version: string;
   abstract stateForRead(): ReadState;
+  private sourceClosed = false;
+  constructor(readonly retention = new RetainedBudget()) {}
   pulls = 0;
   released = 0;
   copiedBytes = 0;
   /** Test gate simulating a genuinely pending backend read. */
   readGate?: Promise<void>;
   private listeners = new Set<(change: Update) => void>();
-  private reads = new Set<AbortController>();
-  async describe(): Promise<Schema> {
+  private reads = new Map<AbortController, () => Promise<unknown>>();
+  async describe(options?: RequestOptions): Promise<Schema> {
+    if (this.sourceClosed) throw failure('closed');
+    if (options?.signal?.aborted) throw failure('aborted');
     return this.stateForRead().schema;
   }
+  async retain(options: RetainOptions = {}): Promise<Queryable> {
+    if (this.sourceClosed) throw failure('closed');
+    const state = retainFrames(this.stateForRead(), options);
+    const backing = new Map<object, number>([
+      [state.inputs.values.buffer, state.inputs.values.buffer.byteLength],
+      [state.inputs.ids, state.inputs.ids.reduce((n, id) => n + id.length * 2, 0)],
+    ]);
+    for (const frame of state.frames ?? []) {
+      backing.set(frame, 8);
+      for (const values of Object.values(frame.values))
+        backing.set(values.buffer, values.buffer.byteLength);
+    }
+    for (const axis of state.coverage?.values() ?? [])
+      if (axis.kind === 'indices') backing.set(axis.values.buffer, axis.values.buffer.byteLength);
+    if (state.grant?.frames) backing.set(state.grant.frames, state.grant.frames.length * 8);
+    for (const [key, bytes] of state.backing ?? []) backing.set(key, bytes);
+    const release = this.retention.acquire(backing, options.maxBytes);
+    return new RetainedSource(state, this.retention, release, this.executor);
+  }
+  async close(): Promise<void> {
+    if (this.sourceClosed) return;
+    this.sourceClosed = true;
+    this.cancelReads();
+    this.publish({ kind: 'closed' });
+    this.listeners.clear();
+  }
   on(_event: 'change', listener: (change: Update) => void): () => void {
+    if (this.sourceClosed) throw failure('closed');
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
@@ -203,7 +282,10 @@ export abstract class Source implements Queryable {
     for (const listener of this.listeners) listener(change);
   }
   cancelReads(): void {
-    for (const read of this.reads) read.abort();
+    for (const [read, stop] of this.reads) {
+      read.abort();
+      void stop().catch(() => undefined);
+    }
   }
   query(query: RowsQuery, options?: QueryOptions): AsyncIterable<QueryHeader | RowsBlock>;
   query(query: SamplesQuery, options?: QueryOptions): AsyncIterable<QueryHeader | SamplesBlock>;
@@ -212,12 +294,35 @@ export abstract class Source implements Queryable {
   query(query: AggregateQuery, options?: QueryOptions): AsyncIterable<QueryHeader | AggregateBlock>;
   query(query: Query, options?: QueryOptions): AsyncIterable<QueryHeader | QueryBlock>;
   query(query: Query, options: QueryOptions = {}): AsyncIterable<QueryHeader | QueryBlock> {
-    return this.read(query, options);
+    return {
+      [Symbol.asyncIterator]: () => {
+        const controller = new AbortController();
+        const iterator = this.read(query, options, controller, () => iterator.return(undefined));
+        return {
+          next: async () => {
+            if (options.signal?.aborted) throw failure('aborted');
+            return iterator.next();
+          },
+          return: () => {
+            controller.abort();
+            return iterator.return(undefined);
+          },
+          throw: async (error: unknown) => {
+            controller.abort();
+            await iterator.return(undefined);
+            throw error;
+          },
+        };
+      },
+    };
   }
   private async *read(
     query: Query,
     options: QueryOptions,
-  ): AsyncIterable<QueryHeader | QueryBlock> {
+    controller: AbortController,
+    stop: () => Promise<unknown>,
+  ): AsyncGenerator<QueryHeader | QueryBlock> {
+    if (this.sourceClosed) throw failure('closed');
     if (options.signal?.aborted) throw failure('aborted');
     // No await between pinning schema, inputs, frame coverage, and version.
     const state = this.stateForRead();
@@ -227,10 +332,12 @@ export abstract class Source implements Queryable {
         failure(issues[0].code === 'unsupported' ? 'unsupported' : 'invalid-input'),
         { issues },
       );
-    const controller = new AbortController();
-    const abort = (): void => controller.abort();
+    const abort = (): void => {
+      controller.abort();
+      void stop().catch(() => undefined);
+    };
     options.signal?.addEventListener('abort', abort, { once: true });
-    this.reads.add(controller);
+    this.reads.set(controller, stop);
     const blocks = this.blocks(query, state, options);
     try {
       yield { kind: 'schema', schema: state.schema, version: state.version };
@@ -249,6 +356,13 @@ export abstract class Source implements Queryable {
       this.reads.delete(controller);
       this.released++;
     }
+  }
+  protected get executor(): (
+    query: Query,
+    state: ReadState,
+    options: QueryOptions,
+  ) => Generator<QueryBlock> {
+    return this.blocks;
   }
   protected *blocks(query: Query, state: ReadState, options: QueryOptions): Generator<QueryBlock> {
     if (query.kind === 'rows') yield* this.rows(query, state, options);
@@ -478,4 +592,40 @@ async function interruptible(task: Promise<void>, signal: AbortSignal): Promise<
       },
     );
   });
+}
+
+class RetainedSource extends Source {
+  readonly version: string;
+  constructor(
+    private state: ReadState | undefined,
+    override readonly retention: RetainedBudget,
+    private readonly release: () => void,
+    private readonly execute: (
+      query: Query,
+      state: ReadState,
+      options: QueryOptions,
+    ) => Generator<QueryBlock>,
+  ) {
+    super();
+    this.version = state!.version;
+  }
+  protected override get executor() {
+    return this.execute;
+  }
+  protected override *blocks(
+    query: Query,
+    state: ReadState,
+    options: QueryOptions,
+  ): Generator<QueryBlock> {
+    yield* this.execute.call(this, query, state, options);
+  }
+  stateForRead(): ReadState {
+    if (!this.state) throw failure('closed');
+    return this.state;
+  }
+  override async close(): Promise<void> {
+    await super.close();
+    this.state = undefined;
+    this.release();
+  }
 }

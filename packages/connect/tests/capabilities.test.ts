@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import type { Command, Document, Model, ModelService, Resource } from '@latkit/model-new';
+import type { Command, Document, Model, ModelService, Resource } from '@latkit/model';
 import { connect, serve } from '../src/index.js';
 import {
   FixtureModel,
@@ -7,7 +7,7 @@ import {
   MemoryFile,
   collect,
   readBytes,
-} from '../../model_new/tests/fixture.js';
+} from '../../model/tests/fixture.js';
 import { open, transports, deferred } from './fixture.js';
 const failure = (code: 'busy' | 'unsupported' | 'invalid-input') =>
   Object.assign(new Error(code), { code });
@@ -24,6 +24,7 @@ it('supports a live-only exclusive peer without formats, editing, parsing or per
     },
     describe: document.describe.bind(document),
     query: document.query.bind(document),
+    retain: document.retain.bind(document),
     on: document.on.bind(document),
     close: document.close.bind(document),
   });
@@ -31,6 +32,7 @@ it('supports a live-only exclusive peer without formats, editing, parsing or per
     id: 'peer',
     label: 'Live peer',
     formats: [],
+    recording: native.recording.bind(native),
     async open(input) {
       if (input) throw failure('unsupported');
       return readonly(await native.open());
@@ -243,7 +245,7 @@ it('keeps read-only resource capabilities and exact byte ranges through reverse 
     await connection.close();
   }
 });
-it('reclaims nested recordings when their model closes', async () => {
+it('keeps recordings usable after model closure until explicitly released', async () => {
   const connection = await open(undefined, false, { limits: { maxReferences: 8 } });
   try {
     const document = await connection.remote.open();
@@ -257,7 +259,9 @@ it('reclaims nested recordings when their model closes', async () => {
       await recording.ready;
       await model.close();
       expect((await recording.done).status).toBe('stopped');
-      expect(recording.status).toBe('closed');
+      expect(recording.status).toBe('stopped');
+      expect(await recording.describe()).toBeDefined();
+      await recording.close();
     }
     await document.close();
   } finally {
@@ -318,7 +322,7 @@ it('closes newly created native models if the connection cannot publish another 
   }
 });
 
-it('releases recordings after repeated resets while retaining the model and document', async () => {
+it('preserves recordings across resets and reclaims explicitly released acquisitions', async () => {
   const connection = await open(undefined, false, { limits: { maxReferences: 6 } });
   try {
     const document = await connection.remote.open();
@@ -331,8 +335,10 @@ it('releases recordings after repeated resets while retaining the model and docu
       });
       await recording.ready;
       await model.reset();
-      expect(recording.status).toBe('closed');
-      expect(await recording.done).toMatchObject({ reason: 'reset' });
+      expect(recording.status).toBe('stopped');
+      expect(await recording.describe()).toBeDefined();
+      await recording.close();
+      expect(await recording.done).toMatchObject({ reason: 'model-reset' });
     }
     await model.close();
     await document.close();

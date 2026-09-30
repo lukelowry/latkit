@@ -89,6 +89,10 @@ describe('large paged native implementation', () => {
       document.version,
     );
     await model.close();
+    await verifySamples(first, 100_003, 3);
+    await first.close();
+    expect(service.stats.frameBytes).toBe(3 * (100_003 * 8 + 8));
+    await second.close();
     expect(service.stats.frameBytes).toBe(0);
     await document.close();
   });

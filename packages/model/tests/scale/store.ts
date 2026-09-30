@@ -1,4 +1,5 @@
 import type { Index, RowAxis, RowSelection } from '../../src/index.js';
+import { RetainedBudget } from '../retention.js';
 import { failure, axisAt, axisLength } from '../source.js';
 export { failure, axisAt, axisLength };
 export interface Metrics {
@@ -42,6 +43,11 @@ export interface State {
 /** Deliberately simple deterministic data, checked independently by the test oracle. */
 export class Store {
   readonly index: Index;
+  retentions = 0;
+  onRelease: () => void = () => undefined;
+  retainFrames: (frames: readonly { coordinate: number; values: Float64Array }[]) => () => void =
+    () => () =>
+      undefined;
   private base = new Map<number, Float64Array>();
   state: State = { version: '1', pages: new Map() };
   constructor(
@@ -49,6 +55,7 @@ export class Store {
     readonly rows: number,
     readonly pageRows: number,
     readonly stats: Metrics,
+    readonly retention = new RetainedBudget(),
   ) {
     if (
       !Number.isSafeInteger(rows) ||

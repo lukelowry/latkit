@@ -1,5 +1,6 @@
 import type { Document } from './document.js';
 import type { Input } from './input.js';
+import type { Recording } from './recording.js';
 import type { Model } from './model.js';
 import type { RequestOptions } from './types.js';
 export type OpenInput =
@@ -27,4 +28,7 @@ export interface ModelService {
   document(id: string, options?: RequestOptions): Promise<Document>;
   /** Independent compute context retaining the named document. May reject busy for exclusive peers. */
   model(documentId: string, options?: RequestOptions): Promise<Model>;
+  /** Independent acquisition of an authorized recording. Unknown/released IDs reject closed.
+   * No archival policy is implied; IDs are not access grants. */
+  recording(id: string, options?: RequestOptions): Promise<Recording>;
 }

@@ -53,6 +53,7 @@ export type {
   QueryHeader,
   FieldSelection,
   QueryOptions,
+  RetainOptions,
   Query,
   RowsQuery,
   SamplesQuery,

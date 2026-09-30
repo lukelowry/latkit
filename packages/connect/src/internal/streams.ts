@@ -1,4 +1,4 @@
-import type { WritePart } from '@latkit/model-new';
+import type { WritePart } from '@latkit/model';
 import { failure } from './errors.js';
 import { record, integer } from './validation.js';
 export function bytes(

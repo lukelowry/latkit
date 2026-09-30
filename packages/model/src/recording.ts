@@ -37,12 +37,18 @@ export interface MonitorConfig {
   readonly diagnostics?: { readonly bytes: number };
 }
 
-export type RecordingStatus = 'armed' | 'monitoring' | 'stopped' | 'failed' | 'closed';
+export type RecordingStatus = 'armed' | 'monitoring' | 'stopped' | 'failed';
 export type RecordingOutcome =
   | {
       readonly status: 'stopped';
       readonly reason:
-        'requested' | 'command-finished' | 'document-changed' | 'limit' | 'reset' | 'closed';
+        | 'requested'
+        | 'command-finished'
+        | 'document-changed'
+        | 'limit'
+        | 'model-reset'
+        | 'model-closed'
+        | 'released';
     }
   | { readonly status: 'failed'; readonly error: Failure };
 
@@ -56,16 +62,18 @@ export type RecordingOutcome =
  */
 export interface Recording extends Queryable {
   readonly id: string;
+  /** Producer identity, never an ownership link; null when no producer is known. */
+  readonly modelId: string | null;
   readonly scope: MonitorScope;
   readonly documentId: string;
-  /** Null while armed/unbound; describe/query/export reject busy until bound; use ready to await binding. */
+  /** Null while armed/unbound; describe/query/retain/export reject busy until bound; use ready to await binding. */
   readonly documentVersion: Version | null;
   readonly status: RecordingStatus;
   readonly fields: readonly RecordedFields[] | null;
   readonly axis: Axis | null;
   /** Resolve after publishing bound inputs/schema/coverage/axis. Reject on binding failure or any
-   * stop/reset/close before binding (aborted). Implementations observe rejection internally so an
-   * unused ready promise does not cause an unhandled rejection; callers still observe rejection. */
+   * capture termination before binding (aborted), or release of this acquisition (closed).
+   * Observe rejection internally so unused promises do not cause unhandled rejections. */
   readonly ready: Promise<void>;
   readonly firstFrame: number;
   /** Total admitted frames, including evicted frames. Retained interval: [firstFrame, frameCount). */
@@ -73,7 +81,8 @@ export interface Recording extends Queryable {
   /** Retained coordinate interval; null when no frames are retained. */
   readonly range: Domain | null;
   readonly error: Failure | null;
-  /** Connection loss rejects if the terminal outcome is unknown. Otherwise resolves, including failure. */
+  /** Shared capture outcome. Unsettled waits reject closed on acquisition release, disconnected on
+   * connection loss. Already settled ready/done promises never change. */
   readonly done: Promise<RecordingOutcome>;
   /**
    * Invocation order. Content inputs retain metadata, not streams. History freezes when capture ends.
@@ -103,6 +112,9 @@ export interface Recording extends Queryable {
   stop(): Promise<void>;
   /** Consistent retained inputs, schema, observations, and provenance. Media type identifies format. */
   export(options?: RequestOptions): Promise<Export>;
-  /** Release retention; returned blocks remain valid. Preserve settled outcome. Idempotent. */
+  /** Release this acquisition and cancel its direct queries; emit a local closed change. Other
+   * acquisitions and retained Queryables survive. Last acquisition ends capture with released and
+   * releases unretained data. Preserve settled promises; reject unresolved ready/done with closed.
+   * Observe rejections internally. Idempotent; closing is not a shared capture status. */
   close(): Promise<void>;
 }

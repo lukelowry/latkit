@@ -8,7 +8,7 @@ not shipped and do not add public APIs, a production solver, or a general query 
 From the repository root:
 
 ```sh
-pnpm exec vitest run --project @latkit/model-new --project @latkit/connect
+pnpm exec vitest run --project @latkit/model --project @latkit/connect
 pnpm --filter @latkit/connect bench:scale
 ```
 
@@ -32,7 +32,7 @@ The benchmark runs serially with exposed GC between scenarios. It uses only exis
 
 ## Fixture and independent checks
 
-The implementation lives in packages/model_new/tests/scale:
+The implementation lives in packages/model/tests/scale:
 
 - store.ts: lazy 8,192-row numeric pages, generated stable IDs, immutable published data, and page
   copies for edits. Acquisitions and Models share this storage.
@@ -49,6 +49,8 @@ compound scenarios. They cover shared editing with pinned reads/commands, single
 transferable ownership, sparse identity reads, filtered ordering, aggregation, empty results,
 backpressure, genuine blocked-pull/command cancellation, rolling eviction, retained borrowed views,
 concurrent readers with a 32 KiB connection budget, and connection shutdown during active work.
+Million-row retained reads are checked after rolling eviction, Model/Document closure and release of
+all Recording handles; nested acquisitions release independently without duplicating native payloads.
 Worker control messages are confined to the fixture harness; no diagnostics or pause methods are
 added to the public contract. The TCP channel handles fragmented and coalesced length-prefixed frames
 under a fixed allocation bound. It supplies transport errors as disconnected failures. A local hard
@@ -58,7 +60,8 @@ close may produce a TCP reset; the shutdown test checks native cleanup after tha
 
 The report records environment and configuration, cold and repeated warm scan timings, first data
 block latency, throughput, per-block bytes, sparse read latency, single-edit latency, command time,
-sample-read time, blocked-pull cancellation latency, copy counters and sampled memory. Every timed
+sample-read time, retained acquisition time, retained reads after producer closure, blocked-pull
+cancellation latency, copy counters and sampled memory. Every timed
 scan includes all canonical validation and independent per-cell checks. Timings therefore describe
 this complete verified consumption path, not raw transfer bandwidth or solver speed.
 
@@ -70,6 +73,8 @@ Deterministic assertions, rather than speed thresholds, enforce the important al
 - Two edits in one page copy that page once; arming monitors does not clone input arrays.
 - Two recordings of one command share the same output backing.
 - Retention admits complete frames and stays within its configured native observation budget.
+- Acquiring a retained Queryable executes no query and copies no numeric payload; shared native
+  backing stays allocated only until its final retaining acquisition is released.
 - Closing/cancelling leaves no active fixture queries, Models, acquisitions or retained frames.
 
 Counters distinguish input-page generation, page copies, owned payload copies and sparse gathers.
@@ -86,7 +91,9 @@ process-memory guarantees. Consumer-held borrowed buffers can outlive native ret
 This fixture has one numeric component type, one input and one observed field. It advertises only
 rows, aggregate and (on recordings) samples. Its simple filter/sort implementation uses temporary
 selection arrays; sparse captures retain and honestly charge full native frame allocations. Neither
-choice is a proposed production query planner. Its stream export is test-only, not an archive codec.
+choice is a proposed production query planner. Retained input admission conservatively reserves
+the lazily generated base plus distinct edited pages; defaults are 256 MiB per grant and 512 MiB
+shared across the fixture service. Those fixture defaults are not mandated by the public contract. Its stream export is test-only, not an archive codec.
 
 The existing small conformance fixtures remain responsible for broad layout/connectivity coverage.
 Before production cutover, reuse these checks against a real implementation and add:

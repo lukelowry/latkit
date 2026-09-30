@@ -33,6 +33,16 @@ export interface FieldSelection {
   readonly rows?: RowSelection;
 }
 
+/** Acquisition limits, independent of later query cancellation. */
+export interface RetainOptions extends RequestOptions {
+  /** Sampled sources only. Omitted retains all currently available observations. */
+  readonly window?: SampleWindow;
+  /** Protected native backing and indexes, including whole allocations behind slices.
+   * Implementations impose finite defaults and shared limits, deduplicating shared backing.
+   * Admission may reserve storage conservatively; this is not a process-memory limit. */
+  readonly maxBytes?: number;
+}
+
 export interface Queryable {
   readonly version: Version;
   describe(options?: RequestOptions): Promise<Schema>;
@@ -51,6 +61,20 @@ export interface Queryable {
   query(query: LinksQuery, options?: QueryOptions): AsyncIterable<QueryHeader | LinksBlock>;
   query(query: AggregateQuery, options?: QueryOptions): AsyncIterable<QueryHeader | AggregateBlock>;
   query(query: Query, options?: QueryOptions): AsyncIterable<QueryHeader | QueryBlock>;
+  /**
+   * Atomically acquire fixed schema, inputs, row identities and observation coverage without
+   * executing queries. Resolve window/context once. Appends and eviction never alter this grant.
+   * Queries resolve against the fixed observation index and reject invalid-input if any selected
+   * frame lies outside the grant; never silently clip to narrower coverage. Retaining again creates
+   * an independent acquisition of the same version, optionally narrowed. No data-change events.
+   * Survives the originating acquisition and Model reset/close. Signal governs acquisition only.
+   * Unknown/evicted coverage rejects; failed or cancelled admission leaves no retained resources.
+   */
+  retain(options?: RetainOptions): Promise<Queryable>;
+  /** Release only this acquisition and cancel its direct queries. Independent retained sources and
+   * already returned blocks remain valid. Remote acquisitions still require their transport.
+   * Emit a local closed change; later operations reject closed. Idempotent. */
+  close(): Promise<void>;
   /** Publish before notification. Listeners must not throw. */
   on(event: 'change', listener: (change: Update) => void): () => void;
 }

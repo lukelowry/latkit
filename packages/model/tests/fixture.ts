@@ -34,6 +34,9 @@ import type {
   RowAxis,
   Schema,
 } from '../src/index.js';
+import { RetainedBudget } from './retention.js';
+import { Recordings } from './acquisitions.js';
+import type { RecordingAcquisition } from './acquisitions.js';
 import { Source, axisLength, failure, selectRows } from './source.js';
 import type { Frame, Inputs, ReadState } from './source.js';
 export { failure } from './source.js';
@@ -84,8 +87,9 @@ export class FixtureDocument extends Source implements Document {
   constructor(
     readonly editable = true,
     shared?: FixtureDocument,
+    retention = shared?.retention ?? new RetainedBudget(),
   ) {
-    super();
+    super(retention);
     if (shared) this.core = shared.core;
     else {
       const id = 'fixture-document-' + nextDocument++;
@@ -403,8 +407,11 @@ function decodeValues(bytes: Uint8Array): Float64Array {
 
 export class FixtureRecording extends Source implements Recording {
   readonly id: string;
+  readonly modelId: string;
+  private disposed = false;
   readonly documentId: string;
   readonly scope: MonitorConfig['scope'];
+  ending?: Extract<RecordingOutcome, { status: 'stopped' }>['reason'];
   status: RecordingStatus = 'armed';
   documentVersion: string | null = null;
   fields: readonly RecordedFields[] | null = null;
@@ -430,9 +437,10 @@ export class FixtureRecording extends Source implements Recording {
     readonly config: MonitorConfig,
     readonly model: FixtureModel,
   ) {
-    super();
+    super(model.document.retention);
     this.scope = config.scope;
-    this.id = 'capture-' + model.recordings.length;
+    this.id = crypto.randomUUID();
+    this.modelId = model.id;
     this.documentId = model.document.id;
     this.ready = new Promise((resolve, reject) => {
       this.bound = resolve;
@@ -449,7 +457,7 @@ export class FixtureRecording extends Source implements Recording {
       : null;
   }
   inputs(): Inputs {
-    if (this.status === 'closed') throw failure('closed');
+    if (this.disposed) throw failure('closed');
     if (!this.pinned) throw failure('busy');
     return this.pinned;
   }
@@ -566,7 +574,7 @@ export class FixtureRecording extends Source implements Recording {
     if (this.status !== 'armed' && this.status !== 'monitoring') return;
     if (!this.pinned) this.unbound(failure('aborted'));
     this.status = 'stopped';
-    this.settle({ status: 'stopped', reason });
+    this.settle({ status: 'stopped', reason: this.ending ?? reason });
     this.publish({ kind: 'status' });
   }
   fail(error: Failure): void {
@@ -581,7 +589,7 @@ export class FixtureRecording extends Source implements Recording {
     offset?: number;
     limit: number;
   }): Promise<{ version: string; items: readonly CommandEntry[]; total: number }> {
-    if (this.status === 'closed') throw failure('closed');
+    if (this.disposed) throw failure('closed');
     if (
       !Number.isSafeInteger(page.limit) ||
       page.limit <= 0 ||
@@ -601,17 +609,17 @@ export class FixtureRecording extends Source implements Recording {
     firstSequence: null;
     discardedThrough: null;
   }> {
-    if (this.status === 'closed') throw failure('closed');
+    if (this.disposed) throw failure('closed');
     return { version: this.version, items: [], firstSequence: null, discardedThrough: null };
   }
   async stop(): Promise<void> {
     this.finish('requested');
   }
   async close(): Promise<void> {
-    if (this.status === 'closed') return;
-    this.finish('closed');
+    if (this.disposed) return;
+    this.finish('released');
+    this.disposed = true;
     this.cancelReads();
-    this.status = 'closed';
     this.frames = [];
     this.pinned = null;
     this.publish({ kind: 'closed' });
@@ -673,6 +681,7 @@ export class FixtureModel implements Model {
   constructor(
     readonly editable = true,
     document?: FixtureDocument,
+    readonly capturesRegistry = new Recordings(),
   ) {
     this.document = document ? document.acquire() : new FixtureDocument(editable);
     this.documentId = this.document.id;
@@ -696,7 +705,10 @@ export class FixtureModel implements Model {
   private emit(event: string, value?: unknown): void {
     for (const listener of this.listeners.get(event) ?? []) listener(value);
   }
-  async monitor(config: MonitorConfig, options?: RequestOptions): Promise<FixtureRecording> {
+  async monitor(
+    config: MonitorConfig,
+    options?: RequestOptions,
+  ): Promise<RecordingAcquisition<FixtureRecording>> {
     this.check();
     if (options?.signal?.aborted) throw failure('aborted');
     if (config.scope.kind === 'command' && this.used.has(config.scope.id))
@@ -707,7 +719,7 @@ export class FixtureModel implements Model {
       if (recording.error) throw recording.error;
     }
     this.recordings.push(recording);
-    return recording;
+    return this.capturesRegistry.add(recording);
   }
   call(command: Command, options: CallOptions = {}): Promise<CommandResult> {
     this.check();
@@ -807,17 +819,17 @@ export class FixtureModel implements Model {
   }
   async reset(): Promise<void> {
     this.check();
-    for (const capture of this.recordings) capture.finish('reset');
+    for (const capture of this.recordings) capture.ending = 'model-reset';
     for (const id of this.work.keys()) this.cancel(id);
-    for (const capture of this.recordings) await capture.close();
+    for (const capture of this.recordings) capture.finish('model-reset');
     this.emit('reset');
   }
   async close(): Promise<void> {
     if (this.closed) return;
     this.document.cancelReads();
-    for (const capture of this.recordings) capture.finish('closed');
+    for (const capture of this.recordings) capture.ending = 'model-closed';
     for (const id of this.work.keys()) this.cancel(id);
-    for (const capture of this.recordings) await capture.close();
+    for (const capture of this.recordings) capture.finish('model-closed');
     this.closed = true;
     this.document.core.models.delete(this);
     await this.document.close();
@@ -838,12 +850,14 @@ export function readOnlyDocument(): Document {
     },
     close: () => doc.close(),
     describe: doc.describe.bind(doc),
+    retain: doc.retain.bind(doc),
     query: doc.query.bind(doc),
     on: doc.on.bind(doc),
   };
 }
 
 export class FixtureService implements ModelService {
+  readonly retention = new RetainedBudget();
   readonly id = 'fixture';
   readonly label = 'Fixture';
   readonly formats = [
@@ -859,8 +873,12 @@ export class FixtureService implements ModelService {
   ];
   readonly documents = new Map<string, FixtureDocument>();
   readonly models: FixtureModel[] = [];
+  readonly capturesRegistry = new Recordings();
+  async recording(id: string, options?: RequestOptions): Promise<Recording> {
+    return this.capturesRegistry.acquire(id, options);
+  }
   async open(input?: OpenInput, options?: RequestOptions): Promise<Document> {
-    const document = new FixtureDocument();
+    const document = new FixtureDocument(true, undefined, this.retention);
     try {
       if (options?.signal?.aborted) throw failure('aborted');
       if (input?.kind === 'resource') await document.load(input.resource, options);
@@ -886,7 +904,7 @@ export class FixtureService implements ModelService {
     return this.live(id).acquire();
   }
   async model(id: string): Promise<FixtureModel> {
-    const model = new FixtureModel(true, this.live(id));
+    const model = new FixtureModel(true, this.live(id), this.capturesRegistry);
     this.models.push(model);
     return model;
   }

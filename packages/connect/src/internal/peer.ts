@@ -53,7 +53,7 @@ export class Peer {
   private cleanup: Promise<void> | undefined;
   constructor(
     readonly transport: Transport,
-    options: ConnectOptions,
+    options: Omit<ConnectOptions, 'kind'>,
   ) {
     this.bounds = limits(options.limits);
     limitTransport(transport, this.bounds);
@@ -75,7 +75,7 @@ export class Peer {
     if (options.signal?.aborted) abort();
     else
       queueMicrotask(() => {
-        void this.send({ kind: 'hello', version: 1, limits: this.bounds }).catch((error) =>
+        void this.send({ kind: 'hello', version: 2, limits: this.bounds }).catch((error) =>
           this.end(errorValue(error)),
         );
       });
@@ -183,7 +183,7 @@ export class Peer {
       throw failure('invalid-input', 'Invalid envelope.');
     const m = message as Record<string, unknown>;
     if (m.kind === 'hello') {
-      if (this.welcomed || m.version !== 1 || !m.limits || typeof m.limits !== 'object')
+      if (this.welcomed || m.version !== 2 || !m.limits || typeof m.limits !== 'object')
         throw failure('unsupported', 'Unsupported connect handshake.');
       const remote = limits(m.limits as Partial<Limits>);
       for (const key of Object.keys(this.bounds) as (keyof Limits)[])

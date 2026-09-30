@@ -174,9 +174,9 @@ importers:
 
   packages/connect:
     dependencies:
-      '@latkit/model-new':
+      '@latkit/model':
         specifier: workspace:*
-        version: link:../model_new
+        version: link:../model
 
   packages/diagram:
     dependencies:
@@ -232,8 +232,6 @@ importers:
         version: 0.1.71
 
   packages/model: {}
-
-  packages/model_new: {}
 
   packages/monitor:
     dependencies:

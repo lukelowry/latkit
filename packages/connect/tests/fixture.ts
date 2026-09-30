@@ -1,7 +1,7 @@
 import { MessageChannel } from 'node:worker_threads';
 import { connect, serve, messagePort, byteTransport } from '../src/index.js';
 import type { ConnectOptions, Transport } from '../src/index.js';
-import { FixtureService } from '../../model_new/tests/fixture.js';
+import { FixtureService } from '../../model/tests/fixture.js';
 export function transports(framed = false): [Transport, Transport] {
   const { port1, port2 } = new MessageChannel();
   const pair = [messagePort(port1), messagePort(port2)];

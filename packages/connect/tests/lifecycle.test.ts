@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { Document, MonitorConfig } from '@latkit/model-new';
+import type { Document, MonitorConfig } from '@latkit/model';
 import {
   FixtureService,
   MemoryFile,
   collect,
   byteStream,
   readBytes,
-} from '../../model_new/tests/fixture.js';
+} from '../../model/tests/fixture.js';
 import { open, deferred } from './fixture.js';
 const rows = { kind: 'rows', from: 'Node', select: ['value'] } as const;
 const config = (id: string): MonitorConfig => ({

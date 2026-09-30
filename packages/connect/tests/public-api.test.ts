@@ -1,7 +1,7 @@
 import { expect, expectTypeOf, it } from 'vitest';
 import * as api from '../src/index.js';
-import type { Connection, Transport, ByteChannel } from '../src/index.js';
-import type { Document, Model, ModelService } from '@latkit/model-new';
+import type { Connection, QueryableConnection, Transport, ByteChannel } from '../src/index.js';
+import type { Document, Model, ModelService, Recording, Queryable } from '@latkit/model';
 it('exposes only connection and transport entry points at runtime', () => {
   expect(Object.keys(api).sort()).toEqual([
     'byteTransport',
@@ -23,6 +23,10 @@ function usage(
   expectTypeOf(connection).toExtend<ModelService>();
   expectTypeOf(connection.open()).toEqualTypeOf<Promise<Document>>();
   expectTypeOf(connection.model('document')).toEqualTypeOf<Promise<Model>>();
+  expectTypeOf(connection.recording('recording')).toEqualTypeOf<Promise<Recording>>();
+  expectTypeOf(api.connect(transport, { kind: 'queryable' })).toEqualTypeOf<
+    Promise<QueryableConnection>
+  >();
   void api.serve(transport, service);
   void api.connect(api.messagePort(worker));
   void api.connect(api.messagePort(scope));
@@ -34,3 +38,20 @@ function usage(
   void connection.models;
 }
 void usage;
+
+function queryableUsage(
+  connection: QueryableConnection,
+  transport: Transport,
+  source: Queryable,
+): void {
+  expectTypeOf(connection).toExtend<Queryable>();
+  expectTypeOf(source.retain()).toEqualTypeOf<Promise<Queryable>>();
+  void api.serve(transport, source, { kind: 'queryable' });
+  // @ts-expect-error A read capability cannot acquire compute contexts.
+  void connection.model;
+  // @ts-expect-error A read capability cannot edit or stop its source.
+  void connection.stop;
+  // @ts-expect-error A Queryable requires explicit capability selection.
+  void api.serve(transport, source);
+}
+void queryableUsage;

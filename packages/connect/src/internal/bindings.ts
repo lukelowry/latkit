@@ -12,14 +12,15 @@ import type {
   QueryHeader,
   Queryable,
   QueryOptions,
+  RetainOptions,
   MonitorConfig,
   Edit,
   ResourceRead,
   ResourceWrite,
   SaveOptions,
   Schema,
-} from '@latkit/model-new';
-import { blockBuffers, validateBlock, validateQuery, validateSchema } from '@latkit/model-new';
+} from '@latkit/model';
+import { blockBuffers, validateBlock, validateQuery, validateSchema } from '@latkit/model';
 import type { Peer, Reply } from './peer.js';
 import {
   aborted,
@@ -36,7 +37,7 @@ import { inspect, transferable } from './frame.js';
 import type { Kind } from './validation.js';
 import { record, recordOrEmpty, text, array, integer, validateState } from './validation.js';
 import { bytes, parts, checkedParts, readable } from './streams.js';
-type Instance = ModelService | Document | Model | Recording | Resource;
+type Instance = ModelService | Document | Model | Recording | Resource | Queryable;
 interface Reference {
   ref: number;
   kind: Kind;
@@ -65,21 +66,24 @@ interface Remote {
   ready?: Deferred<void>;
   done?: Deferred<unknown>;
   closed: boolean;
+  closedNotified?: boolean;
 }
 const methods: Record<Kind, readonly string[]> = {
-  service: ['open', 'document', 'model'],
-  document: ['describe', 'query', 'edit', 'save', 'reload', 'attach', 'export', 'close'],
+  service: ['open', 'document', 'model', 'recording'],
+  document: ['describe', 'query', 'retain', 'edit', 'save', 'reload', 'attach', 'export', 'close'],
   model: ['parse', 'validate', 'call', 'monitor', 'reset', 'close'],
-  recording: ['describe', 'query', 'commands', 'diagnostics', 'stop', 'export', 'close'],
+  recording: ['describe', 'query', 'retain', 'commands', 'diagnostics', 'stop', 'export', 'close'],
   resource: ['stat', 'read', 'write', 'close'],
+  queryable: ['describe', 'query', 'retain', 'close'],
   stream: ['next', 'close'],
 };
 const required: Record<Kind, readonly string[]> = {
-  service: ['open', 'document', 'model'],
-  document: ['describe', 'query', 'close'],
+  service: ['open', 'document', 'model', 'recording'],
+  document: ['describe', 'query', 'retain', 'close'],
   model: ['reset', 'close'],
-  recording: ['describe', 'query', 'commands', 'diagnostics', 'stop', 'close'],
+  recording: ['describe', 'query', 'retain', 'commands', 'diagnostics', 'stop', 'close'],
   resource: ['stat', 'read', 'close'],
+  queryable: ['describe', 'query', 'retain', 'close'],
   stream: ['next', 'close'],
 };
 /** Known interfaces only: no arbitrary object reflection or user-selected method paths. */
@@ -91,12 +95,12 @@ export class Bindings {
   private earlyBytes = 0;
   constructor(
     readonly peer: Peer,
-    service?: ModelService,
+    root?: { kind: 'service' | 'queryable'; value: ModelService | Queryable },
   ) {
-    if (service)
+    if (root)
       this.locals.set(0, {
-        kind: 'service',
-        value: service,
+        kind: root.kind,
+        value: root.value,
         controller: new AbortController(),
         off: [],
         state: {},
@@ -105,12 +109,25 @@ export class Bindings {
     peer.event = this.event.bind(this);
     peer.orphan = this.orphan.bind(this);
     peer.dispose = this.dispose.bind(this);
+    if (root?.kind === 'queryable') {
+      const source = root.value as Queryable;
+      const entry = this.locals.get(0)!;
+      entry.state = this.metadata('queryable', source);
+      entry.off.push(
+        source.on('change', (change) => {
+          if (change.kind === 'closed') {
+            void peer.close();
+            return;
+          }
+          entry.state = this.metadata('queryable', source);
+          peer.notify(0, 'change', entry.state, change);
+        }),
+      );
+    }
   }
-  async connectService(): Promise<ModelService> {
-    return this.importReference(
-      await this.peer.call(0, 'describe', null),
-      'service',
-    ) as ModelService;
+  async connectRoot(kind: 'service' | 'queryable'): Promise<ModelService | Queryable> {
+    return this.importReference(await this.peer.call(0, 'acquire', { kind }), kind) as
+      ModelService | Queryable;
   }
   private checkLimit(stream = false): void {
     if (
@@ -134,6 +151,7 @@ export class Bindings {
               ? [
                   'id',
                   'scope',
+                  'modelId',
                   'documentId',
                   'documentVersion',
                   'status',
@@ -145,7 +163,9 @@ export class Bindings {
                   'error',
                   'version',
                 ]
-              : ['id', 'name', 'mediaType'];
+              : kind === 'queryable'
+                ? ['version']
+                : ['id', 'name', 'mediaType'];
     const state: Record<string, unknown> = {};
     for (const key of keys)
       if (v[key] !== undefined)
@@ -182,53 +202,59 @@ export class Bindings {
       entry.state = state;
       this.peer.notify(ref, event, patch, payload);
     };
-    if (kind === 'document') {
-      const document = value as Document;
-      entry.off.push(
-        document.on('change', (update) => publish('change', update)),
-        document.on('saved', (saved) => publish('saved', saved)),
-      );
-    }
-    if (kind === 'recording') {
-      const recording = value as Recording;
-      entry.off.push(recording.on('change', (update) => publish('change', update)));
-      void recording.ready.then(
-        () => publish('ready'),
-        (error) => publish('ready-error', encodeError(error)),
-      );
-      void recording.done.then(
-        (outcome) =>
-          publish(
-            'done',
-            outcome.status === 'failed'
-              ? { ...outcome, error: encodeError(outcome.error) }
-              : outcome,
+    try {
+      if (kind === 'document') {
+        const document = value as Document;
+        entry.off.push(document.on('change', (update) => publish('change', update)));
+        entry.off.push(document.on('saved', (saved) => publish('saved', saved)));
+      }
+      if (kind === 'queryable')
+        entry.off.push((value as Queryable).on('change', (update) => publish('change', update)));
+      if (kind === 'recording') {
+        const recording = value as Recording;
+        entry.off.push(recording.on('change', (update) => publish('change', update)));
+        void recording.ready.then(
+          () => publish('ready'),
+          (error) => publish('ready-error', encodeError(error)),
+        );
+        void recording.done.then(
+          (outcome) =>
+            publish(
+              'done',
+              outcome.status === 'failed'
+                ? { ...outcome, error: encodeError(outcome.error) }
+                : outcome,
+            ),
+          (error) => publish('done-error', encodeError(error)),
+        );
+      }
+      if (kind === 'model') {
+        const model = value as Model;
+        entry.off.push(model.on('routines', () => publish('routines')));
+        entry.off.push(model.on('reset', () => publish('reset')));
+        entry.off.push(
+          model.on('command', (event) =>
+            publish(
+              'command',
+              event.kind === 'failed' ? { ...event, error: encodeError(event.error) } : event,
+            ),
           ),
-        (error) => publish('done-error', encodeError(error)),
-      );
-    }
-    if (kind === 'model') {
-      const model = value as Model;
-      entry.off.push(
-        model.on('routines', () => publish('routines')),
-        model.on('reset', () => publish('reset')),
-        model.on('command', (event) =>
-          publish(
-            'command',
-            event.kind === 'failed' ? { ...event, error: encodeError(event.error) } : event,
-          ),
+        );
+        entry.off.push(model.on('diagnostic', (event) => publish('diagnostic', event)));
+      }
+      return {
+        ref,
+        kind,
+        state: entry.state,
+        methods: methods[kind].filter(
+          (method) => typeof (value as unknown as Record<string, unknown>)[method] === 'function',
         ),
-        model.on('diagnostic', (event) => publish('diagnostic', event)),
-      );
+      };
+    } catch (error) {
+      for (const off of entry.off) off();
+      this.locals.delete(ref);
+      throw error;
     }
-    return {
-      ref,
-      kind,
-      state: entry.state,
-      methods: methods[kind].filter(
-        (method) => typeof (value as unknown as Record<string, unknown>)[method] === 'function',
-      ),
-    };
   }
   private exportStream(
     iterator: AsyncIterator<unknown>,
@@ -300,7 +326,12 @@ export class Bindings {
       output.ready = remote.ready.promise;
       output.done = remote.done.promise;
     }
-    if (expected === 'document' || expected === 'recording' || expected === 'model')
+    if (
+      expected === 'document' ||
+      expected === 'recording' ||
+      expected === 'queryable' ||
+      expected === 'model'
+    )
       output.on = (event: string, listener: (value: unknown) => void): (() => void) => {
         if (remote.closed) throw failure('closed');
         const listeners = remote.listeners.get(event) ?? new Set();
@@ -337,6 +368,7 @@ export class Bindings {
         if (remote.closed) throw failure('closed');
         const options = recordOrEmpty(
           args[
+            method === 'retain' ||
             method === 'describe' ||
             method === 'reset' ||
             method === 'stop' ||
@@ -399,6 +431,9 @@ export class Bindings {
             case 'stat':
               encoded = null;
               break;
+            case 'retain':
+              encoded = { window: options.window, maxBytes: options.maxBytes };
+              break;
             case 'reload':
               encoded = { discardChanges: options.discardChanges };
               break;
@@ -421,7 +456,9 @@ export class Bindings {
           if (method === 'open' || method === 'document')
             return this.importReference(result, 'document');
           if (method === 'model') return this.importReference(result, 'model');
-          if (method === 'monitor') return this.importReference(result, 'recording');
+          if (method === 'retain') return this.importReference(result, 'queryable');
+          if (method === 'monitor' || method === 'recording')
+            return this.importReference(result, 'recording');
           if (method === 'read') return readable(this.importStream(result, signal));
           if (method === 'export') {
             const data = record(result);
@@ -481,6 +518,7 @@ export class Bindings {
       return;
     }
     if (remote.closed) return;
+    if (event === 'change' && record(value).kind === 'closed') remote.closedNotified = true;
     if (event === 'released') {
       this.closeRemote(remote);
       return;
@@ -523,6 +561,10 @@ export class Bindings {
     remote.closed = true;
     remote.ready?.reject(failure('closed'));
     remote.done?.reject(failure('closed'));
+    if (!remote.closedNotified) {
+      remote.closedNotified = true;
+      for (const listener of remote.listeners.get('change') ?? []) listener({ kind: 'closed' });
+    }
     remote.listeners.clear();
     this.remotes.delete(remote.reference.ref);
   }
@@ -750,7 +792,10 @@ export class Bindings {
         if (ended) return { done: true, value: undefined };
         aborted(options.signal);
         try {
-          const result = await (await start()).next();
+          const stream = await start();
+          if (remote.closed) throw failure('closed');
+          const result = await stream.next();
+          if (remote.closed) throw failure('closed');
           if (result.done) {
             if (!header) throw failure('invalid-input', 'Missing query header.');
             ended = true;
@@ -810,17 +855,21 @@ export class Bindings {
     credit: number,
   ): Promise<Reply> {
     const entry = this.locals.get(ref);
-    if (!entry) throw failure('closed');
+    if (!entry || (entry.closing && method !== 'close')) throw failure('closed');
+    if (method !== 'close') signal = AbortSignal.any([signal, entry.controller.signal]);
     aborted(signal);
-    if (entry.kind === 'service' && method === 'describe')
+    if (ref === 0 && method === 'acquire') {
+      if (record(args).kind !== entry.kind)
+        throw failure('unsupported', 'Connection capability mismatch.');
       return {
         value: {
           ref: 0,
-          kind: 'service',
-          state: this.metadata('service', entry.value!),
-          methods: [...methods.service],
+          kind: entry.kind,
+          state: this.metadata(entry.kind, entry.value!),
+          methods: [...methods[entry.kind]],
         },
       };
+    }
     if (!methods[entry.kind].includes(method))
       throw failure('unsupported', 'Unknown contract method.');
     if (method === 'close') {
@@ -876,6 +925,20 @@ export class Bindings {
       const result = this.exportStream(iterator, ref, controller, buffers === 'owned', bound);
       return { value: result, discard: () => this.release(result.ref) };
     }
+    if (method === 'retain') {
+      const options = record(args);
+      if (options.maxBytes !== undefined && (!integer(options.maxBytes) || options.maxBytes < 1))
+        throw failure('invalid-input');
+      const retained = await source.retain({ ...options, signal } as RetainOptions);
+      try {
+        aborted(signal);
+        const descriptor = this.exportReference('queryable', retained);
+        return { value: descriptor, discard: () => this.release(descriptor.ref) };
+      } catch (error) {
+        await retained.close();
+        throw error;
+      }
+    }
     if (method === 'describe') return { value: await source.describe({ signal }) };
     if (method === 'export') {
       const operation = (value as Document).export;
@@ -892,17 +955,21 @@ export class Bindings {
     }
     if (entry.kind === 'service') {
       const service = value as ModelService;
-      let result: Document | Model;
+      let result: Document | Model | Recording;
       if (method === 'open')
         result = await service.open(this.decodeInput(args, true, signal), { signal });
       else if (method === 'document') result = await service.document(text(args), { signal });
+      else if (method === 'recording') result = await service.recording(text(args), { signal });
       else result = await service.model(text(args), { signal });
       if (signal.aborted) {
         await result.close();
         throw failure('aborted');
       }
       try {
-        const descriptor = this.exportReference(method === 'model' ? 'model' : 'document', result);
+        const descriptor = this.exportReference(
+          method === 'model' ? 'model' : method === 'recording' ? 'recording' : 'document',
+          result,
+        );
         return { value: descriptor, discard: () => this.release(descriptor.ref) };
       } catch (error) {
         await result.close();
@@ -953,11 +1020,6 @@ export class Bindings {
       const model = value as Model;
       if (method === 'reset') {
         await model.reset();
-        await Promise.all(
-          [...this.locals]
-            .filter(([, child]) => child.parent === ref)
-            .map(([id]) => this.release(id)),
-        );
         return { value: null };
       }
       if (method === 'parse') {
@@ -990,7 +1052,7 @@ export class Bindings {
           throw failure('aborted');
         }
         try {
-          const descriptor = this.exportReference('recording', recording, ref);
+          const descriptor = this.exportReference('recording', recording);
           return { value: descriptor, discard: () => this.release(descriptor.ref) };
         } catch (error) {
           await recording.close();
@@ -1127,11 +1189,9 @@ export class Bindings {
   }
   private async dispose(): Promise<void> {
     for (const remote of this.remotes.values()) {
-      remote.dispose?.();
       remote.ready?.reject(failure('disconnected'));
       remote.done?.reject(failure('disconnected'));
-      remote.closed = true;
-      remote.listeners.clear();
+      this.closeRemote(remote);
     }
     this.remotes.clear();
     this.early.clear();
@@ -1139,6 +1199,7 @@ export class Bindings {
     for (const entry of this.locals.values()) entry.controller.abort();
     const refs = [...this.locals.keys()].filter((ref) => ref !== 0);
     await Promise.allSettled(refs.map((ref) => this.release(ref)));
+    for (const off of this.locals.get(0)?.off ?? []) off();
     this.locals.clear();
   }
 }

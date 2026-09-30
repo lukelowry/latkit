@@ -30,19 +30,22 @@ export interface Model {
    */
   call?(command: Command, options?: CallOptions): Promise<CommandResult>;
   /**
-   * Resolve once armed. Command scope registers interest without pinning inputs; live scope binds
+   * Create a recording and return its first independent acquisition. Resolve once armed. Command scope registers interest without pinning inputs; live scope binds
    * now. Command IDs must not have been submitted previously; late registration rejects conflict.
    * Cancelled/rejected setup leaves no active capture. After resolution, use stop/close.
    * Binding checks routine monitoring support and current schema/row coverage independently of call.
    * Admission may reject resource-limit for shared input/native working-memory budgets.
    */
   monitor?(config: MonitorConfig, options?: RequestOptions): Promise<Recording>;
-  /** Cancel this context's commands and close its recordings. Reinitialize computation against
-   * current inputs; never edit or replace the shared Document. New work rejects busy until ready. */
+  /** Cancel commands, finish captures with model-reset after final publication, and reinitialize
+   * computation against current inputs. Preserve Recording and retained Queryable acquisitions.
+   * Never edit the shared Document. New work rejects busy until ready; do not wait for readers. */
   reset(): Promise<void>;
   on(event: 'routines' | 'reset', listener: () => void): () => void;
   on(event: 'command', listener: (event: CommandEvent) => void): () => void;
   on(event: 'diagnostic', listener: (diagnostic: Diagnostic) => void): () => void;
-  /** Cancel work and release this context and its document retention. Later operations reject closed. Idempotent. */
+  /** Cancel work, finish captures with model-closed after final publication, and release this context
+   * and its document retention. Preserve independent data acquisitions; do not wait for readers.
+   * Later operations reject closed. Idempotent. */
   close(): Promise<void>;
 }

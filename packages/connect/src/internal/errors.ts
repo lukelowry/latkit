@@ -1,4 +1,4 @@
-import type { Failure } from '@latkit/model-new';
+import type { Failure } from '@latkit/model';
 const codes = new Set<Failure['code']>([
   'conflict',
   'expired',

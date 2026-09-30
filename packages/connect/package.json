@@ -23,6 +23,6 @@
     "bench:scale": "vitest run --config vitest.scale.config.ts"
   },
   "dependencies": {
-    "@latkit/model-new": "workspace:*"
+    "@latkit/model": "workspace:*"
   }
 }

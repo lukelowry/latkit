@@ -42,34 +42,51 @@ class Connectivity extends Source {
   ) {
     super();
   }
-  stateForRead(): ReadState {
-    return { inputs: this.inputs, version: this.version, schema: this.schema };
+  stateForRead() {
+    const native = {
+      inputs: this.inputs,
+      index: this.index,
+      targetIndex: this.targetIndex,
+      connectionIndex: this.connectionIndex,
+      offsets: this.offsets,
+      componentType: this.componentType,
+      componentRow: this.componentRow,
+      port: this.port,
+    };
+    const backing = new Map<object, number>(
+      [this.offsets, this.componentType, this.componentRow, this.port].map((a) => [
+        a.buffer,
+        a.buffer.byteLength,
+      ]),
+    );
+    return { inputs: this.inputs, version: this.version, schema: this.schema, native, backing };
   }
   protected override *blocks(
     query: Query,
     state: ReadState,
     options: QueryOptions,
   ): Generator<QueryBlock> {
+    const native = (state as ReturnType<Connectivity['stateForRead']>).native;
     if (query.kind === 'endpoints') {
       const connections: Inputs = {
-        ...this.inputs,
-        index: this.connectionIndex,
-        ids: Array.from({ length: this.offsets.length - 1 }, (_, i) => 'r' + i),
+        ...native.inputs,
+        index: native.connectionIndex,
+        ids: Array.from({ length: native.offsets.length - 1 }, (_, i) => 'r' + i),
       };
       const involved = query.involving?.components.map((id) => {
-        const node = this.inputs.ids.indexOf(id);
+        const node = native.inputs.ids.indexOf(id);
         const hub = ['h0', 'h1', 'h2', 'h3'].indexOf(id);
         if (node < 0 && hub < 0) throw failure('invalid-input');
         return { type: node < 0 ? 1 : 0, row: node < 0 ? hub : node };
       });
       for (const row of axisValues(selectRows(connections, query.rows))) {
-        const start = this.offsets[row],
-          end = this.offsets[row + 1];
+        const start = native.offsets[row],
+          end = native.offsets[row + 1];
         if (
           involved &&
           !Array.from({ length: end - start }, (_, i) => start + i).some((i) =>
             involved.some(
-              (ref) => ref.type === this.componentType[i] && ref.row === this.componentRow[i],
+              (ref) => ref.type === native.componentType[i] && ref.row === native.componentRow[i],
             ),
           )
         )
@@ -82,18 +99,18 @@ class Connectivity extends Source {
               kind: 'endpoints',
               version: state.version,
               schemaVersion: state.schema.version,
-              index: this.connectionIndex,
+              index: native.connectionIndex,
               connections: new Uint32Array([row]),
               offsets: new Int32Array([0, count]),
               firstEndpoint: new Uint32Array([first - start]),
               totalEndpoints: new Uint32Array([end - start]),
-              componentIndexes: [this.index, this.targetIndex],
-              componentType: this.componentType.subarray(first, first + count),
-              componentRow: this.componentRow.subarray(first, first + count),
+              componentIndexes: [native.index, native.targetIndex],
+              componentType: native.componentType.subarray(first, first + count),
+              componentRow: native.componentRow.subarray(first, first + count),
               portNames: ['a', 'b', null],
-              port: this.port.subarray(first, first + count),
+              port: native.port.subarray(first, first + count),
               roleNames: ['node', 'hub'],
-              role: this.componentType.subarray(first, first + count),
+              role: native.componentType.subarray(first, first + count),
             };
             if (
               blockByteLength(block) <=
@@ -110,28 +127,28 @@ class Connectivity extends Source {
     } else if (query.kind === 'links') {
       const inputs =
         query.from === 'Node'
-          ? this.inputs
-          : { ...this.inputs, index: this.targetIndex, ids: ['h0', 'h1', 'h2', 'h3'] };
+          ? native.inputs
+          : { ...native.inputs, index: native.targetIndex, ids: ['h0', 'h1', 'h2', 'h3'] };
       const rows = selectRows(inputs, query.rows);
       for (const row of axisValues(rows)) {
         const targets = query.ports.map((port) => {
           const found: number[] = [];
-          for (let connection = 0; connection < this.offsets.length - 1; connection++) {
-            const start = this.offsets[connection],
-              end = this.offsets[connection + 1];
+          for (let connection = 0; connection < native.offsets.length - 1; connection++) {
+            const start = native.offsets[connection],
+              end = native.offsets[connection + 1];
             for (let i = start; i < end; i++)
               if (
-                this.componentType[i] === 0 &&
-                this.componentRow[i] === row &&
-                this.port[i] === ['a', 'b'].indexOf(port)
+                native.componentType[i] === 0 &&
+                native.componentRow[i] === row &&
+                native.port[i] === ['a', 'b'].indexOf(port)
               ) {
                 for (let j = start; j < end; j++)
                   if (
                     j !== i &&
-                    this.componentType[j] === (query.to === 'Node' ? 0 : 1) &&
-                    query.role === (this.componentType[j] === 0 ? 'node' : 'hub')
+                    native.componentType[j] === (query.to === 'Node' ? 0 : 1) &&
+                    query.role === (native.componentType[j] === 0 ? 'node' : 'hub')
                   )
-                    found.push(this.componentRow[j]);
+                    found.push(native.componentRow[j]);
               }
           }
           if (found.length > 1) throw failure('invalid-input');
@@ -141,9 +158,9 @@ class Connectivity extends Source {
           kind: 'links',
           version: state.version,
           schemaVersion: state.schema.version,
-          index: this.index,
+          index: native.index,
           rows: compactRows([row]),
-          targetIndex: query.to === 'Node' ? this.index : this.targetIndex,
+          targetIndex: query.to === 'Node' ? native.index : native.targetIndex,
           source: new Uint32Array([targets[0] ?? 0]),
           target: new Uint32Array([targets[1] ?? 0]),
           validity: new Uint8Array([targets.every((value) => value !== undefined) ? 1 : 0]),
@@ -206,4 +223,18 @@ it('rejects ambiguous links instead of silently choosing a target', async () => 
     new Uint32Array([0, 2, 2]),
   );
   await expect(collect(source.query(links))).rejects.toMatchObject({ code: 'invalid-input' });
+});
+
+it('retains native connectivity and its query implementation independently', async () => {
+  const native = new Connectivity(),
+    source = await native.retain(),
+    nested = await source.retain();
+  await source.close();
+  await native.close();
+  const blocks = await collect(nested.query(endpoints));
+  expect(blocks.flatMap((b) => [...b.connections])).toEqual([0, 1, 2]);
+  expect(blockBuffers(blocks[0])).toContain(native.componentRow.buffer);
+  expect((await collect(nested.query(links)))[0].validity[0]).toBe(1);
+  await nested.close();
+  expect(native.retention.bytes).toBe(0);
 });

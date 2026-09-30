@@ -6,9 +6,9 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { it } from 'vitest';
 import { harness, modes, prepareWorker, until } from './harness.js';
-import { verifyRows, verifySamples, inputAt } from '../../../model_new/tests/scale/verify.js';
-import type { ScanResult } from '../../../model_new/tests/scale/verify.js';
-import type { Metrics } from '../../../model_new/tests/scale/store.js';
+import { verifyRows, verifySamples, inputAt } from '../../../model/tests/scale/verify.js';
+import type { ScanResult } from '../../../model/tests/scale/verify.js';
+import type { Metrics } from '../../../model/tests/scale/store.js';
 const median = (values: number[]) => {
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
@@ -113,6 +113,16 @@ it('measures independently checked scans, capture, edits and cancellation at sca
         const captureMetrics = await run.metrics();
         assert.equal(captureMetrics.frameBytes, 3 * (rows * 8 + 8));
         sample();
+        const retainStart = performance.now();
+        const source = await recording.retain({
+          window: { kind: 'frames', offset: 0, count: 1 },
+          maxBytes: 1024 * 1024 * 1024,
+        });
+        const retainMs = performance.now() - retainStart;
+        const retainedMetrics = await run.metrics();
+        assert.equal(copied(retainedMetrics), copied(captureMetrics));
+        assert.equal(retainedMetrics.blocks, captureMetrics.blocks);
+        assert.equal(retainedMetrics.frameBytes, captureMetrics.frameBytes);
         await mirror.close();
         await recording.close();
         const iterator = document
@@ -130,6 +140,10 @@ it('measures independently checked scans, capture, edits and cancellation at sca
         await run.pause(false);
         await model.close();
         await document.close();
+        const retainedSamples = await verifySamples(source, rows, 1, 0, 2, (row) =>
+          row ? inputAt(row) : 57,
+        );
+        await source.close();
         const final = await run.metrics();
         assert.equal(final.activeReads, 0);
         assert.equal(final.openedReads, final.releasedReads);
@@ -154,6 +168,8 @@ it('measures independently checked scans, capture, edits and cancellation at sca
           commandMs,
           samples: observed,
           sharedCaptureBytes: captureMetrics.frameBytes,
+          retainMs,
+          retainedSamples,
           cancelMs,
           memory: {
             processRssBaseline: memoryBefore.rss,
@@ -174,6 +190,7 @@ it('measures independently checked scans, capture, edits and cancellation at sca
             firstBlockMs: +row.borrowed.medianFirstBlockMs.toFixed(2),
             commandMs: +commandMs.toFixed(2),
             cancelMs: +cancelMs.toFixed(2),
+            retainMs: +retainMs.toFixed(2),
           }),
         );
       } finally {
@@ -186,8 +203,8 @@ it('measures independently checked scans, capture, edits and cancellation at sca
   const root = fileURLToPath(new URL('../../../../', import.meta.url));
   const hash = createHash('sha256');
   for (const directory of [
-    'packages/model_new/src',
-    'packages/model_new/tests/scale',
+    'packages/model/src',
+    'packages/model/tests/scale',
     'packages/connect/src',
     'packages/connect/tests/scale',
   ]) {

@@ -1,7 +1,7 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import type { MessagePort } from 'node:worker_threads';
 import { serve, messagePort } from '../../src/index.js';
-import { ScaleService } from '../../../model_new/tests/scale/service.js';
+import { ScaleService } from '../../../model/tests/scale/service.js';
 const data = workerData as { rows: number; pageRows: number; port: MessagePort };
 const service = new ScaleService(data.rows, data.pageRows);
 parentPort!.on(

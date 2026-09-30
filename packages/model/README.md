@@ -10,19 +10,28 @@ contract. The package remains private while implementation and integration work 
 
 ## Boundaries and ownership
 
-| Interface    | Responsibility                                                                 | Lifetime                                                            |
-| ------------ | ------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
-| ModelService | Implementation identity, formats, open a Document, acquire a Document or Model | Application-managed service                                         |
-| Document     | Schema, queries, domain edits, optional persistence                            | Each acquisition closes independently; Models retain shared inputs  |
-| Model        | Routines, optional parsing and validation, commands, monitoring, reset         | One independent compute context or exclusive live-peer binding      |
-| Recording    | Queryable captured data, command provenance, diagnostics, export               | Model-owned; stop preserves data, close releases it                 |
-| Resource     | Access to one application-owned byte sequence                                  | Distinct grant per lend; recipient closes after use or failed setup |
-| Queryable    | Discovery and bounded canonical query streams                                  | Implemented directly by Document and Recording                      |
+| Interface    | Responsibility                                                                            | Lifetime                                                            |
+| ------------ | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| ModelService | Implementation identity, formats, open a Document, acquire a Document, Model or Recording | Application-managed service                                         |
+| Document     | Schema, queries, domain edits, optional persistence                                       | Each acquisition closes independently; Models retain shared inputs  |
+| Model        | Routines, optional parsing and validation, commands, monitoring, reset                    | One independent compute context or exclusive live-peer binding      |
+| Recording    | Queryable captured data, command provenance, diagnostics, export                          | Each acquisition closes independently; stop ends shared capture     |
+| Resource     | Access to one application-owned byte sequence                                             | Distinct grant per lend; recipient closes after use or failed setup |
+| Queryable    | Discovery, bounded query streams and independent retained reads                           | Document, Recording or an independently retained source             |
 
 Document.close() releases its acquisition and reads. Other acquisitions and Models remain usable.
-Model.reset() cancels that context's work and closes its recordings; shared Document inputs are
-unchanged. Model.close() also releases its Document retention. The final retention disposes native
-state and closes its Resource grant. IDs alone do not grant authority to another application.
+Model.reset() cancels commands and finishes captures with model-reset; Model.close() finishes them
+with model-closed and releases compute/input retention. Both wait for final output publication,
+without waiting for readers. Existing Recording acquisitions and retained Queryables remain usable.
+Native implementation storage owns shared data. ModelService authorizes/provisions acquisitions;
+it is not a second storage or execution layer. IDs alone never grant access.
+
+Recording.stop() ends capture for every acquisition. Recording.close() releases only that acquisition,
+cancels its direct queries, and emits a local closed change. Unresolved ready/done waits reject closed;
+settled promises remain settled. There is no shared closed capture status. Releasing the final
+Recording acquisition ends remaining capture with released and releases unretained storage.
+Retained Queryables keep their selected data independently. Released/unknown recording IDs reject
+closed; this contract does not imply a durable archive. Resource grants close when no longer needed.
 
 ModelService does not require a file or parser. A live/co-simulation implementation may expose
 formats: [], Document.format: null, no edit/persistence methods, and only live routines and
@@ -95,6 +104,49 @@ reports command outcomes; done reports capture outcome. A command ID is unique f
 lifetime, including reset and rejected calls. Arm monitors before submitting that ID. Reuse rejects
 conflict; failed acceptance fails matching armed monitors. Never retry unknown side effects after a
 lost reply.
+
+## Independent recording and read lifetimes
+
+Acquire another authorized handle through service.recording(recording.id). Its close does not release
+the original acquisition. recording.modelId identifies the producer without requiring its existence.
+A separate application or worker can keep consuming a Recording after the producing Model closes.
+
+For a coherent multi-query operation, acquire the same Queryable interface at a fixed version:
+
+```ts
+const source = await recording.retain({
+  window: { kind: 'range', between: [100, 200], context: { before: 1, after: 1 } },
+  maxBytes: 512 * 1024 * 1024,
+});
+try {
+  for await (const block of source.query({
+    kind: 'samples',
+    from: 'Node',
+    select: ['output'],
+    window: { kind: 'range', between: [100, 200] },
+  })) {
+    if (block.kind !== 'schema') console.log(block.coordinates, block.columns.output);
+  }
+} finally {
+  await source.close();
+}
+```
+
+retain fixes schema, input values, row identities and available observation coverage atomically.
+Omitting window retains currently available observations; input-only sources reject a window.
+Range context resolves once at acquisition. Queries resolve against that fixed observation index
+and reject invalid-input if any selected frame lies outside the grant. They never clip missing
+selected frames to the grant. Appends cannot expand it, and rolling eviction cannot expire it.
+Already-evicted requested coverage rejects expired during acquisition. A nested retain is independent
+and can only preserve or narrow coverage. Retained sources emit closed only, with no data changes.
+
+Admission performs no query execution or result materialization. Native page/index references can be
+shared; acquiring data does not require duplicating its payload. maxBytes accounts for protected
+backing and indexes, including whole allocations behind sparse slices. Implementations impose finite
+default and shared budgets and deduplicate shared backing in global accounting. Conservative storage
+reservations are allowed; resource-limit leaves no acquisition. The signal applies to admission only.
+Closing a source cancels its direct queries; independently retained children and issued blocks survive.
+Implementations remain responsible for native storage, paging, and ownership conversion when needed.
 
 ## Shared editing and persistence
 

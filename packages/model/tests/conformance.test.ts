@@ -45,6 +45,8 @@ queryConformance('native transferred query blocks', async () => {
       return model.document.version;
     },
     describe: model.document.describe.bind(model.document),
+    retain: model.document.retain.bind(model.document),
+    close: model.document.close.bind(model.document),
     query: forward as Queryable['query'],
     on: model.document.on.bind(model.document),
   };

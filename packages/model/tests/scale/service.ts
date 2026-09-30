@@ -29,6 +29,8 @@ import type {
   RowAxis,
   Routine,
 } from '../../src/index.js';
+import { RetainedBudget } from '../retention.js';
+import { Recordings } from '../acquisitions.js';
 import { ScaleSource, schema } from './source.js';
 import type { Read, Frame } from './source.js';
 import { Store, metrics, deferred, failure, interrupt } from './store.js';
@@ -45,11 +47,18 @@ export class ScaleService implements ModelService {
   readonly formats = [];
   readonly stats: Metrics = metrics();
   readonly cores = new Map<string, Core>();
+  readonly capturesRegistry = new Recordings((delta) => {
+    this.stats.acquisitions += delta;
+  });
+  async recording(id: string, options?: RequestOptions): Promise<Recording> {
+    return this.capturesRegistry.acquire(id, options);
+  }
   private waiting?: ReturnType<typeof deferred<void>>;
   private held = new Map<Frame, number>();
   constructor(
     readonly rows = 1_000_000,
     readonly pageRows = 8192,
+    readonly retention = new RetainedBudget(),
   ) {}
   get gate(): Promise<void> | undefined {
     return this.waiting?.promise;
@@ -73,9 +82,18 @@ export class ScaleService implements ModelService {
     const id = crypto.randomUUID();
     const core: Core = {
       service: this,
-      store: new Store(id, this.rows, this.pageRows, this.stats),
+      store: new Store(id, this.rows, this.pageRows, this.stats, this.retention),
       documents: new Set(),
       models: new Set(),
+    };
+    core.store.onRelease = () => this.release(core);
+    core.store.retainFrames = (frames) => {
+      for (const frame of frames) this.hold(frame);
+      let retained: readonly Frame[] | undefined = frames;
+      return () => {
+        for (const frame of retained ?? []) this.drop(frame);
+        retained = undefined;
+      };
     };
     this.cores.set(id, core);
     return new ScaleDocument(core);
@@ -93,7 +111,7 @@ export class ScaleService implements ModelService {
     return new ScaleModel(this.core(id, options));
   }
   release(core: Core): void {
-    if (!core.documents.size && !core.models.size) {
+    if (!core.documents.size && !core.models.size && !core.store.retentions) {
       this.cores.delete(core.store.id);
       core.store.clear();
     }
@@ -214,6 +232,7 @@ export class ScaleModel implements Model {
   private listeners = new Map<string, Set<(value: unknown) => void>>();
   private closed = false;
   private resetting = false;
+  private closing?: Promise<void>;
   private coordinate = 0;
   constructor(readonly core: Core) {
     core.models.add(this);
@@ -264,7 +283,7 @@ export class ScaleModel implements Model {
         throw recording.error;
       }
     }
-    return recording;
+    return this.core.service.capturesRegistry.add(recording);
   }
   async call(command: Command, options: CallOptions = {}): Promise<CommandResult> {
     this.check();
@@ -382,11 +401,11 @@ export class ScaleModel implements Model {
     this.check();
     this.resetting = true;
     try {
+      for (const r of this.recordings) r.ending = 'model-reset';
       for (const work of this.work.values()) work.controller.abort();
       await Promise.allSettled([...this.work.values()].map((w) => w.promise));
       for (const r of [...this.recordings]) {
-        r.finish('reset');
-        await r.close();
+        r.finish('model-reset');
       }
       this.coordinate = 0;
     } finally {
@@ -394,20 +413,25 @@ export class ScaleModel implements Model {
     }
     this.emit('reset');
   }
-  async close(): Promise<void> {
-    if (this.closed) return;
-    for (const work of this.work.values()) work.controller.abort();
-    await Promise.allSettled([...this.work.values()].map((w) => w.promise));
-    for (const r of [...this.recordings]) await r.close();
-    this.closed = true;
-    this.listeners.clear();
-    this.core.models.delete(this);
-    this.core.service.stats.models--;
-    this.core.service.release(this.core);
+  close(): Promise<void> {
+    return (this.closing ??= (async () => {
+      this.closed = true;
+      for (const r of this.recordings) r.ending = 'model-closed';
+      for (const work of this.work.values()) work.controller.abort();
+      await Promise.allSettled([...this.work.values()].map((w) => w.promise));
+      for (const r of [...this.recordings]) r.finish('model-closed');
+      this.listeners.clear();
+      this.core.models.delete(this);
+      this.core.service.stats.models--;
+      this.core.service.release(this.core);
+    })());
   }
 }
 class ScaleRecording extends ScaleSource implements Recording {
   readonly id = crypto.randomUUID();
+  readonly modelId: string;
+  private disposed = false;
+  ending?: Extract<RecordingOutcome, { status: 'stopped' }>['reason'];
   readonly scope: MonitorScope;
   readonly documentId: string;
   documentVersion: string | null = null;
@@ -433,7 +457,10 @@ class ScaleRecording extends ScaleSource implements Recording {
     readonly model: ScaleModel,
     readonly config: MonitorConfig,
   ) {
-    super(model.core.store, () => model.core.service.gate);
+    const service = model.core.service;
+    super(model.core.store, () => service.gate);
+    this.modelId = model.id;
+    this.store.retentions++;
     this.scope = config.scope;
     this.documentId = model.documentId;
   }
@@ -441,7 +468,7 @@ class ScaleRecording extends ScaleSource implements Recording {
     return this.frames.length ? [this.frames[0].coordinate, this.frames.at(-1)!.coordinate] : null;
   }
   pin(): Read {
-    if (this.status === 'closed') throw failure('closed');
+    if (this.disposed) throw failure('closed');
     if (!this.state) throw failure('busy');
     return {
       state: this.state,
@@ -527,7 +554,8 @@ class ScaleRecording extends ScaleSource implements Recording {
     if (this.status !== 'armed' && this.status !== 'monitoring') return;
     if (!this.state) this.bound.reject(failure('aborted'));
     this.status = 'stopped';
-    this.completed.resolve({ status: 'stopped', reason });
+    this.completed.resolve({ status: 'stopped', reason: this.ending ?? reason });
+    this.model.recordings.delete(this);
     this.publish({ kind: 'status' });
   }
   fail(error: Failure): void {
@@ -541,19 +569,21 @@ class ScaleRecording extends ScaleSource implements Recording {
     this.finish('requested');
   }
   async close(): Promise<void> {
-    if (this.status === 'closed') return;
-    this.finish('closed');
+    if (this.disposed) return;
+    this.disposed = true;
+    this.finish('released');
     await this.cancel();
-    this.status = 'closed';
     for (const frame of this.frames) this.model.core.service.drop(frame);
     this.frames = [];
     this.state = undefined;
+    this.store.retentions--;
+    this.store.onRelease();
     this.model.recordings.delete(this);
     this.publish({ kind: 'closed' });
     this.listeners.clear();
   }
   async commands(page: { offset?: number; limit: number }, options?: RequestOptions) {
-    if (this.status === 'closed') throw failure('closed');
+    if (this.disposed) throw failure('closed');
     if (options?.signal?.aborted) throw failure('aborted');
     return {
       version: this.version,
@@ -562,7 +592,7 @@ class ScaleRecording extends ScaleSource implements Recording {
     };
   }
   async diagnostics(_page: { after?: number; limit: number }, options?: RequestOptions) {
-    if (this.status === 'closed') throw failure('closed');
+    if (this.disposed) throw failure('closed');
     if (options?.signal?.aborted) throw failure('aborted');
     return {
       version: this.version,

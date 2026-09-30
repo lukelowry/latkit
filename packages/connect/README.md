@@ -1,6 +1,6 @@
 # @latkit/connect
 
-Remote access to the @latkit/model-new contract. Five runtime exports from one root:
+Remote access to the @latkit/model contract. Five runtime exports from one root:
 connect, serve, messagePort, webSocket and byteTransport. No port compatibility layer, model
 re-exports, transport-shaped document objects, domain cache or data conversion facade.
 
@@ -14,13 +14,15 @@ re-exports, transport-shaped document objects, domain cache or data conversion f
 | webSocket(socket, limits?)                 | Ordered binary WebSocket frames and bounded send buffering                  |
 | byteTransport(channel, limits?)            | The same binary framing over a custom message-oriented ByteChannel          |
 | Connection                                 | ModelService plus close() and closed                                        |
+| QueryableConnection                        | Queryable plus closed; close releases the connection                        |
+| QueryableConnectOptions                    | Explicit kind: queryable capability plus cancellation and limits            |
 | Transport                                  | Ordered reliable send/subscribe/close with declared transfer support        |
 | ByteChannel                                | Ordered complete binary messages with send/subscribe/close                  |
 | ConnectOptions / ConnectionLimits          | Cancellation and negotiated resource bounds                                 |
 | MessageTarget / SocketTarget / FrameLimits | Structural adapter inputs and frame bounds                                  |
 
 The host supplies a transport and gets the same interfaces used locally. The serving application
-supplies a native ModelService; connect does not implement domain editing, routines or storage.
+supplies a native ModelService or an explicit Queryable capability; connect does not implement domain editing, routines or storage.
 Use a service scoped to the authenticated application's authority. Authentication, document catalogs,
 access policy, process launch and reconnect decisions belong to the deployment.
 
@@ -36,7 +38,7 @@ await serve(messagePort(self), service);
 
 ```ts
 import { connect, messagePort } from '@latkit/connect';
-import type { Resource } from '@latkit/model-new';
+import type { Resource } from '@latkit/model';
 
 async function useWorker(worker: Worker, resource: Resource) {
   const remote = await connect(messagePort(worker));
@@ -77,6 +79,50 @@ ModelService. Message adapter close detaches its listeners and closes a MessageP
 it does not terminate a Worker owned by the host. Use dedicated message targets. Worker termination
 is not universally observable through the browser Worker API; the host must close/abort its
 Connection when it terminates the worker.
+
+## Read-only consumers
+
+A consumer that only needs data connects to a Queryable capability. The mode is explicit on both
+sides; mismatched capabilities reject unsupported. This exposes only version, describe, query,
+retain, change events and close, even when the native object is a Document or Recording.
+No mutation, command, capture-control or storage methods cross this boundary.
+
+```ts
+// Host: fix the data needed by this consumer, then lend that acquisition.
+const source = await recording.retain({
+  window: { kind: 'range', between: [100, 200], context: { before: 1, after: 1 } },
+  maxBytes: 512 * 1024 * 1024,
+});
+try {
+  await serve(workerTransport, source, { kind: 'queryable', signal });
+} finally {
+  await source.close();
+}
+```
+
+```ts
+// Consumer: use the same query vocabulary as local code.
+const source = await connect(hostTransport, { kind: 'queryable', signal });
+try {
+  for await (const block of source.query({
+    kind: 'samples',
+    from: 'Node',
+    select: ['output'],
+    window: { kind: 'range', between: [100, 200] },
+  })) {
+    if (block.kind !== 'schema') console.log(block.coordinates, block.columns.output);
+  }
+} finally {
+  await source.close();
+}
+```
+
+serve borrows the root; it never closes the supplied acquisition. Closing the root in its owner
+ends its connection and releases that peer's acquired children. A directly supplied live Queryable
+can publish changes; use retain first when the consumer requires fixed data. Remote retain calls
+acquire explicit owned references, without serializing functions or collecting query results.
+Closing a parent Document, Recording or retained acquisition leaves independently acquired children
+usable on the same connection. Closing the connection releases all acquisitions belonging to it.
 
 ## File-free and live use
 
@@ -121,7 +167,7 @@ a raw TCP stream needs message framing supplied by its channel. Transport.close(
 pending I/O. Custom transports are responsible for bounding allocations before handing messages to
 connect; the built-in byte decoder tightens its limits when connection bounds are negotiated.
 
-Wire protocol version 1 is internal to this candidate package. Unsupported versions fail explicitly.
+Wire protocol version 2 is internal to this candidate package. Unsupported versions fail explicitly.
 This is a connection protocol, not a Recording archive format. Direct message transport is for trusted
 local structured-clone peers; socket framing validates lengths, metadata, typed views and nesting
 before constructing canonical blocks. Application authorization is still required at the service.
@@ -148,8 +194,11 @@ No universal zero-copy promise is made. Storage copy parts travel as ranges rath
 Query iterator return/throw/AbortSignal cancels a pending pull and releases its remote iterator.
 Content and export stream cancellation propagates in both directions. Native implementations must
 honor their cancellation and close contracts. Input preflight validation uses temporary non-consuming
-grants and cannot lock or read the caller's content stream. Closing a Model releases its nested
-recordings; closing a Document acquisition leaves other acquisitions intact.
+grants and cannot lock or read the caller's content stream. Closing/resetting a Model finishes capture
+without disposing independently acquired Recordings or Queryables. remote.recording(id) acquires a
+separate authorized handle, including across connections while the native Recording remains retained.
+Closing a Document acquisition leaves other acquisitions intact. Connection loss releases only that
+peer's references; other clients' Recording acquisitions and retained data remain usable.
 
 Metadata updates arrive before event listeners run. Recording readiness and completion are delivered
 even when they precede the monitor reply. Failure code, message, target and issues survive transport;
@@ -165,12 +214,13 @@ reconnection. Applications explicitly acquire references and re-lend resources a
 
 Tests exercise direct messages and binary framing, shared documents across clients, independent
 Models, resource range reads and incremental writes, live-only exclusive peers, capture readiness,
-owned buffers, repeated acquire/release, bounded streams, cancellation and disconnect cleanup.
+owned buffers, retained coverage and lifetime, read-only capability allowlists, repeated acquire/release,
+bounded streams, cancellation and disconnect cleanup.
 Socket adapter tests exercise ordering, backpressure, close and the full service protocol using an
 in-process socket pair. Actual deployment sockets, browser workers and production storage require
 integration tests in their owning applications.
 
-Run pnpm --filter @latkit/connect build, typecheck and test. @latkit/model-new is its only runtime
+Run pnpm --filter @latkit/connect build, typecheck and test. @latkit/model is its only runtime
 dependency. The old @latkit/port and its consumers remain unchanged; migration should consume this
 contract directly rather than add a compatibility layer.
 
