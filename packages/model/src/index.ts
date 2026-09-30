@@ -1,22 +1,89 @@
-/**
- * `@latkit/model` — what a format, an engine, and an editor implement, and what they make. An
- * engine subclasses `Engine`: it keeps a vendor's cases, opening each as a `Document` through its
- * `Document.Format` and handing out `Document.Session`s on it, and records any model, offering
- * its studies as forms. A document produces immutable `Model` snapshots on demand; a `Recording`
- * is what an engine fills, and a `Series` is what every view follows. Every other type lives
- * under the class that speaks it: `Model.Topology`, `Engine.Case`, `Document.Operation`.
- *
- * @packageDocumentation
- */
-
-export { Model, validateTopology } from './model.js';
-export { Engine } from './engine.js';
-export { Document, DocumentConflict } from './document.js';
-export { Refusal } from './refusal.js';
-export { validateNetlist } from './netlist.js';
-export { Recording } from './recording.js';
-export { Series, validateSeries } from './series.js';
-
-export type { Domain } from './domain.js';
-export { extent, normalizeDomain, validateDomain } from './domain.js';
-export { formatNumber } from './grid.js';
+/** Public Model/Document/Recording contracts and explicit boundary validation. */
+export type { ModelService, Format, OpenInput } from './service.js';
+export type { Input, InputMetadata } from './input.js';
+export type { Resource, ResourceInfo, ResourceRead, ResourceWrite, WritePart } from './resource.js';
+export type { SavedDocument, SaveTarget, SaveOptions, ReloadOptions } from './document.js';
+export type { Model, CallOptions } from './model.js';
+export type { Document, ElementReference, Endpoint, Edit, Change } from './document.js';
+export type {
+  DataType,
+  NumericType,
+  NumericArray,
+  Index,
+  RowSelection,
+  RowAxis,
+  Column,
+  NumericColumn,
+  SampleColumn,
+  BooleanColumn,
+  TextColumn,
+  VectorColumn,
+  ListColumn,
+} from './data.js';
+export type {
+  Schema,
+  ComponentDefinition,
+  ComponentPort,
+  ConnectionDefinition,
+  ConnectionRole,
+  TableDefinition,
+  FieldDefinition,
+} from './schema.js';
+export type {
+  Routine,
+  Parameter,
+  InputValue,
+  Command,
+  CommandResult,
+  CommandEntry,
+  CommandEvent,
+  Diagnostic,
+} from './routine.js';
+export type {
+  MonitorScope,
+  Retention,
+  RecordedFields,
+  MonitorConfig,
+  Recording,
+  RecordingStatus,
+  RecordingOutcome,
+} from './recording.js';
+export type {
+  Queryable,
+  QueryHeader,
+  FieldSelection,
+  QueryOptions,
+  Query,
+  RowsQuery,
+  SamplesQuery,
+  SampleWindow,
+  EndpointsQuery,
+  LinksQuery,
+  AggregateQuery,
+  Filter,
+  QueryBlock,
+  RowsBlock,
+  SamplesBlock,
+  EndpointsBlock,
+  LinksBlock,
+  AggregateBlock,
+  Update,
+} from './query.js';
+export type {
+  Version,
+  Domain,
+  Axis,
+  Scalar,
+  Value,
+  Bound,
+  Bounds,
+  RequestOptions,
+  ProblemTarget,
+  Problem,
+  Export,
+  Failure,
+} from './types.js';
+export { blockBuffers, blockByteLength } from './buffers.js';
+export { validateSchema } from './validation/schema.js';
+export { validateQuery } from './validation/query.js';
+export { validateBlock } from './validation/block.js';

@@ -1,358 +1,291 @@
 # @latkit/model
 
-What a format, an engine, and an editor implement, and what they make. An `Engine` is a vendor: it
-keeps the vendor's cases, opens each as a `Document` through its `Document.Format`, and hands out
-`Document.Session`s on them; it records any model into a `Recording`. A document produces
-immutable `Model` snapshots on demand, and a `Series` is what every view follows. It has no
-dependencies, I/O, or rendering.
+The model contract: one root import, native domain interfaces and five
+explicit boundary utilities. Documents have shared identity and independent acquisitions. Models
+retain a Document and own computation. Recordings retain captured inputs and observations.
+ModelService provisions these objects without becoming another execution layer.
 
-| Class       | What it is                                                                               |
-| ----------- | ---------------------------------------------------------------------------------------- |
-| `Model`     | An immutable case snapshot: topology, element classes, values loaded on demand           |
-| `Engine`    | A vendor: keeps its cases, opens them as sessions, and records any model it is given     |
-| `Document`  | A native case open for editing: current bytes, history, schematic, and model snapshots   |
-| `Recording` | Every signal an engine records for a model, each class's series on one clock             |
-| `Series`    | A history a view follows: signals over time for an element axis, read in bounded windows |
+This package replaces the previous model implementation. Consumers still require migration to this
+contract. The package remains private while implementation and integration work continues.
 
-Every other type lives under the class that speaks it: `Model.Topology` and `Model.Item` are the
-shapes `@latkit/network` loads and picks, as `Document.Netlist` and `Document.Part` are for
-`@latkit/diagram`; `Engine.Recorder` is how an engine writes, and `Engine.Cases` where it keeps
-its cases; `Document.Session` is how a host edits a case, and `Document.Operation` is one edit.
-`Domain` is the `[min, max]` every renderer takes; `extent` scans one and `normalizeDomain` pads one
-for display. `validateTopology`, `validateNetlist`, `validateSeries`, and `validateDomain` check
-what a host builds before a device exists.
+## Boundaries and ownership
 
-## Implement a model snapshot
+| Interface    | Responsibility                                                                 | Lifetime                                                            |
+| ------------ | ------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| ModelService | Implementation identity, formats, open a Document, acquire a Document or Model | Application-managed service                                         |
+| Document     | Schema, queries, domain edits, optional persistence                            | Each acquisition closes independently; Models retain shared inputs  |
+| Model        | Routines, optional parsing and validation, commands, monitoring, reset         | One independent compute context or exclusive live-peer binding      |
+| Recording    | Queryable captured data, command provenance, diagnostics, export               | Model-owned; stop preserves data, close releases it                 |
+| Resource     | Access to one application-owned byte sequence                                  | Distinct grant per lend; recipient closes after use or failed setup |
+| Queryable    | Discovery and bounded canonical query streams                                  | Implemented directly by Document and Recording                      |
 
-A format subclasses `Model` to represent an immutable snapshot produced by a document. It describes
-the case to the constructor, which checks it once, and supplies each class's values and the
-snapshot's native bytes when asked. Those values and bytes must remain independent of later edits.
-Each class declares its columns and signals up front. Owner classes are the ones whose element `i` is vertex `i` or edge `i`; any other class may
-anchor each element to a topology item, `0xffffffff` marking an element with no place.
+Document.close() releases its acquisition and reads. Other acquisitions and Models remain usable.
+Model.reset() cancels that context's work and closes its recordings; shared Document inputs are
+unchanged. Model.close() also releases its Document retention. The final retention disposes native
+state and closes its Resource grant. IDs alone do not grant authority to another application.
+
+ModelService does not require a file or parser. A live/co-simulation implementation may expose
+formats: [], Document.format: null, no edit/persistence methods, and only live routines and
+monitoring. model(documentId) may reject busy when an external peer permits only one binding.
+The same Model interface works locally, through @latkit/connect, or as a supplied native object.
+Scheduling, synchronization with an external peer, and supported operations remain implementation
+behavior; the contract does not require isolated solving or independent clocks.
+
+## Host usage
+
+An implementation supplies ModelService through ordinary interface implementation. Connection
+establishment belongs to @latkit/connect. No registration helper or generic engine wrapper is needed.
 
 ```ts
-import { Model } from '@latkit/model';
+import type { ModelService } from '@latkit/model';
 
-export class GridkitModel extends Model {
-  readonly #case: Parsed;
+async function analyze(service: ModelService) {
+  const document = await service.open(); // Optional source; may be hardcoded or live.
+  const model = await service.model(document.id);
+  try {
+    const schema = await document.describe();
+    if (!model.call || !model.monitor) return schema;
 
-  constructor(bytes: Uint8Array) {
-    const parsed = parse(bytes);
-    super({
-      format: 'gridkit',
-      id: parsed.digest,
-      name: parsed.name,
-      topology: parsed.topology,
-      owners: { vertex: 'bus', edge: 'branch' },
-      classes: parsed.classes, // columns and signals declared before any values load
+    const id = crypto.randomUUID();
+    const recording = await model.monitor({
+      scope: { kind: 'command', id },
+      fields: [{ from: 'Node', select: ['output'] }],
+      retain: { kind: 'all', bytes: 64 * 1024 * 1024, onLimit: 'fail' },
     });
-    this.#case = parsed;
-  }
+    try {
+      await model.call({ routine: 'solve', values: {} }, { id });
+      await recording.ready;
+      const outcome = await recording.done;
+      if (outcome.status === 'failed') throw outcome.error;
 
-  protected values(classId: string): Promise<Model.Values> {
-    return Promise.resolve(this.#case.values(classId)); // labels, and values in declared order
-  }
-
-  bytes(): Promise<Uint8Array> {
-    return Promise.resolve(this.#case.bytes());
-  }
-}
-```
-
-## Keep a vendor's cases
-
-An engine keeps its cases in the formats it opens. A `Document.Format` is how: `open` and optional
-`create` return a document, ready to edit without building a model, and keep nothing themselves.
-The id matches `model.format`; name extensions include the dot, preferred first. The store is the
-host's: bytes by name, each read and written with a tag, so a write replaces only what the engine
-last read or wrote. A directory, a bucket, and memory are each one.
-
-```ts
-import { Engine, type Document } from '@latkit/model';
-
-const gridkit: Document.Format = {
-  id: 'gridkit',
-  label: 'GridKit',
-  extensions: ['.case.json'],
-  async open(bytes, signal) {
-    signal?.throwIfAborted();
-    return new GridkitDocument(bytes);
-  },
-  async create(title, signal) {
-    signal?.throwIfAborted();
-    return new GridkitDocument(encodeEmptyCase(title));
-  },
-};
-
-class GridkitEngine extends Engine {
-  constructor(cases: Engine.Cases) {
-    super({ concurrency: 4, studies: STUDIES, formats: [gridkit], cases });
-  }
-  // parse and execute, as below
-}
-
-const engine = new GridkitEngine(directory); // the host's store
-await engine.cases(); // [{ name: 'ieee39.case.json', format: 'gridkit', saved: null }, ...]
-const session = await engine.open('ieee39.case.json'); // one document per case, for every session
-const created = await engine.create('new.case.json', { title: 'Untitled' }); // kept at once
-const imported = await engine.create('copy.case.json', { file }); // a user's file, as gridkit opens it
-await engine.save('ieee39.case.json', session.view.version); // exactly that version
-```
-
-`GridkitDocument` is the format's native `Document` subclass. Its constructor calls `super()` and
-retains independent native state; its protected `open` captures a `GridkitModel` when requested.
-`open` does not modify the caller's bytes, and both factories reject when their signal is aborted.
-The title passed to `create` is the case's display name; its name among the engine's cases is the
-host's choice. Check `engine.formats[i].creates` before offering New Case.
-
-Every session on a case shares the one document the engine holds for it. A document with unsaved
-edits stays open until it is saved; clean ones no session uses stay open while their bytes fit the
-engine's `idleBytes` budget, so reopening a case is instant. `engine.cases()` reports the version
-each open document last saved. A public read-only catalog can serve packed models directly through
-`Model.from` without an engine.
-
-## Ask the model
-
-Queries over an immutable case snapshot are methods on its model.
-
-```ts
-const model = await session.model();
-network.load(model.topology);
-network.on('select', (item) => {
-  const element = item && model.elementAt(item); // the element a pick is
-  if (element) inspect(element);
-});
-model.itemOf({ classId: 'gen', index: 2 }); // where it sits: { kind: 'vertex', index: 7 }
-
-const bus = await model.load('bus'); // labels and columns, loaded once and shared
-const grid = await model.grid('bus'); // the class as a table
-const { rows, total } = await grid.window('north', { column: 0, dir: 'desc' }, 0, 50);
-```
-
-A grid's `columns` say what each cell shows: the class's columns, and in a recording's grid every
-signal it records, at a time. A sort names a column by its index there, or `null` for the label.
-`formatNumber` is the rule its cells follow, for any number shown beside them. A model is immutable:
-views and recordings can keep a snapshot while its document continues editing. `model.bytes()`
-belongs to that snapshot; keep the current case with `engine.save` instead.
-
-## Record it
-
-An engine subclasses `Engine`: `parse` checks an input from a host or a peer, and `execute` records
-the model it is given for one through its recorder, resolving once complete; throwing fails the
-recording. One engine records any model, so a host keeps one per solver, whatever cases and
-revisions it opens: `record` checks the input at once, and the recording returned waits its turn,
-then fills as the engine computes. An engine records as many at once as its `concurrency` allows and
-queues the rest, telling each how many wait before it. Each recording keeps its frames in the
-`store` its host gives the engine, in memory unless the host keeps them elsewhere, such as on disk,
-and `recording.close()` lets them go.
-
-```ts
-import { Engine, type Model } from '@latkit/model';
-
-export class GridkitEngine extends Engine {
-  constructor(readonly solver: Solver) {
-    super({ concurrency: 4 }); // solvers it runs at once; the rest wait their turn
-  }
-
-  protected parse(input: unknown): Input {
-    return checkInput(input);
-  }
-
-  protected async execute(model: Model, input: Input, recorder: Engine.Recorder): Promise<void> {
-    recorder.declare({ span: [0, input.duration], expectedFrames: framesOf(input) });
-    for await (const update of this.solver.run(model, input, recorder.signal)) {
-      if (update.kind === 'log') recorder.log(update.level, update.message);
-      else {
-        await recorder.ready; // go at the pace of the store that keeps the frames
-        recorder.append(update.time, update.values);
+      for await (const block of recording.query({
+        kind: 'samples',
+        from: 'Node',
+        select: ['output'],
+        window: {
+          kind: 'frames',
+          offset: recording.firstFrame,
+          count: recording.frameCount - recording.firstFrame,
+        },
+      })) {
+        if (block.kind === 'schema') continue;
+        // Canonical columns: consume their offsets, validity and independent strides directly.
+        console.log(block.coordinates, block.columns.output);
       }
+      return schema;
+    } finally {
+      await recording.close();
     }
+  } finally {
+    await model.close();
+    await document.close();
   }
 }
-
-const engine = new GridkitEngine(solver);
-const recording = engine.record(model, input, { label: 'Fault at bus 5' });
-recording.on('change', () => status.show(recording.state)); // waiting, recording, then how it ended
-stop.onclick = () => recording.stop();
 ```
 
-`append(time, values)` commits frames for every recorded class at once, a class it leaves out
-reading NaN over them; a class's values are frame-major, `(frame * signals + signal) * elements +
-element`, signals in the order its class declares them. The recorder takes the buffers.
-`recording.state` publishes `status`, `ahead`, `frameCount`, `timeRange`, and `error` together;
-`span`, `expectedFrames`, and `log` are what the engine declared and said; `frameAt(time)` and
-`timeAt(frame)` read the clock. `recording.model` is the model it records, whatever becomes of the
-case since, so its results never attach to another revision.
+Discover routine IDs, parameters and modes through model.routines. An isolated routine pins inputs
+at command acceptance; arming a monitor does not pin them. A queued command already retains its
+input version. Later edits or reloads cannot alter it. Routine.monitoring declares command and/or
+live capture support; isolation does not promise parallel execution.
 
-## Offer studies
+Live monitoring uses scope: { kind: 'live' }, binds immediately and ends before inputs change.
+Isolated output never enters live capture. stop() stops capture independently of command cancellation.
+Command-scoped recording ends after terminal output flush, including failed commands. commands()
+reports command outcomes; done reports capture outcome. A command ID is unique for the entire Model
+lifetime, including reset and rejected calls. Arm monitors before submitting that ID. Reuse rejects
+conflict; failed acceptance fails matching armed monitors. Never retry unknown side effects after a
+lost reply.
 
-An engine describes what a host may record as studies: plain data any frontend lists and draws as
-forms, each a label and its parameters by kind (`number`, `text`, `flag`, `choice`, `element`, or
-`file`), some in groups a switch turns on and off. Once it offers a study, an engine records only
-an input that names one: `record` checks its values against the form before `parse` sees them,
-throwing a `Refusal` at the parameter to fix, and `shown` and `problems` answer a form as the user
-types, on either side of a port.
+## Shared editing and persistence
 
 ```ts
-const SIMULATION: Engine.Study = {
-  id: 'dynamic-simulation',
-  label: 'Dynamic Simulation',
-  formats: ['gridkit'],
-  groups: [{ id: 'fault', label: 'Fault', switch: 'off' }],
-  parameters: [
-    { id: 'tmax', kind: 'number', label: 'End time', unit: 's', above: 0, default: 10 },
-    { id: 'bus', group: 'fault', kind: 'element', classId: 'bus', label: 'Bus' },
-  ],
-};
+import type { ModelService, Resource } from '@latkit/model';
 
-super({ concurrency: Infinity, studies: [SIMULATION] }); // `offer` adds one later
-
-const input = { study: 'dynamic-simulation', values: { fault: true, bus } };
-engine.shown(input); // tmax, then bus
-engine.problems(model, input); // {} when it records as it stands
-engine.record(model, input); // labelled 'Dynamic Simulation'
+async function edit(service: ModelService, resource: Resource) {
+  const document = await service.open({ kind: 'resource', resource });
+  try {
+    if (!document.edit || !document.save) throw new Error('Editing and saving are unavailable');
+    const change = await document.edit([
+      { kind: 'add-component', as: 'new', type: 'Node', values: { value: 3 } },
+    ]);
+    const assignedId = change.created.new;
+    await document.edit([
+      { kind: 'assert', id: assignedId, values: { value: 3 } },
+      { kind: 'set', id: assignedId, values: { value: 4 } },
+    ]);
+    const saved = await document.save();
+    console.log(saved.version === document.version); // Dirty state after any concurrent edits.
+  } finally {
+    await document.close();
+  }
+}
 ```
 
-`parse` gets each shown parameter's value, null for one left empty, and each switch's position. A
-parameter marked `each` takes several values in a form, and a host records once for each.
+open() creates a logical document; document(id) explicitly joins one. Reopening the same source
+never implicitly joins shared mutable inputs. Implementations may share immutable parsing/storage
+caches. Queries pin coherent versions without requiring eager full-file loading or cloning inputs.
 
-## Bind a field
+Edits are atomic batches. Assertions inspect pre-edit inputs; aliases resolve throughout the batch;
+validation checks the final domain structure. Removals never silently cascade. Change reports native
+assigned identities, not undo instructions. Failed assertions are conflict; invalid domain inputs
+are invalid-input. History, styling and application catalogs remain outside the contract.
 
-A field is one number column or one recorded signal, resolved to the `{ series, signal }` every
-renderer binds: a column's series is sealed with one frame, which holds at every time. A model
-resolves its columns, and a recording its signals and its model's columns; `fields` lists what a
-class can bind, and a `Model.FieldRef` is the plain data a host persists.
+Input also accepts an implementation-defined reference or a one-use content stream. File parameters
+use the same Input carrier. validate() performs preflight without consuming content. Command
+provenance retains InputMetadata rather than live grants or replay promises. An explicit empty input
+selects a creatable format; omitted input is implementation-defined.
+
+Resource exposes stat(), tagged range read(), optional conditional write(), and close(). A tag identifies
+exact stored bytes, independently of Document.version. Applications implement storage and access;
+Document implementations define format parsing, serialization and reusable ranges. No filesystem,
+whole-workspace access, file picker or app save dialog crosses this boundary.
+
+write({ base, parts }) consumes ordered copy/data parts. Copy ranges address the immutable base;
+data carries literal bytes. The resource stages separately and publishes atomically only if the base
+still matches. base: null requires an absent destination and forbids copy parts. A full rewrite is
+simply all data parts. If storage cannot guarantee conditional publication, omit write.
+
+save() pins current inputs at acceptance and serializes saves while editing can continue. saved is
+published only after commit and names that input version, which may already differ from the current
+version. save({ to: { resource, base } }) retargets shared persistence only after success; failed setup
+closes the new grant. A lost response may have committed and must not trigger an automatic retry.
+
+reload() reads the current bound resource atomically; dirty inputs require discardChanges: true.
+Edits or binding changes arriving during the read reject conflict even with discard requested.
+attach(resource) restores access to the same resource identity after its host disconnects, without
+changing inputs or the saved baseline. If storage changed while disconnected, the next save still
+fails its base check. Export streams the current version independently of bound storage. Neither
+persistent history nor a portable archive codec is implied.
+
+Each acquisition exposes change and saved events after metadata publication. A consumer computes
+dirty state using saved === null || saved.version !== document.version. Closing a Resource grant
+cancels its I/O without deleting storage. Applications lend a separate grant to every recipient.
+
+## Schema and physical format
+
+Schema describes components, connections, ordinary tables, numeric/text/boolean/reference fields,
+fixed numeric vectors, lists, ports, roles, and supported edits. Optional spatial metadata identifies
+domain coordinates, never application styling. Bounds use lower/upper edges with explicit
+inclusivity. Diagnostic targets distinguish elements, fields, ports, parameters, and structural paths.
+
+IDs are document-wide domain identities and never identify an unrelated entity later in the same
+Document lifetime, including reload. Index = { document, type, version } names a physical row
+numbering. Input value edits preserve it; changes to membership/numbering replace it. Reload invalidates earlier document indices; Model.reset() preserves them. Recordings retain their original index definitions. Source
+implementations reject stale indices; validators cannot infer source membership from metadata alone.
+
+Rows query by IDs, physical range, or versioned Uint32 indices. A cached range may carry an Index too.
+Returned RowAxis uses an allocation-free range or explicit Uint32 indices when needed. Physical order is the default.
+Stable ID strings are emitted only when requested, as UTF-8 columns. Endpoints use columnar CSR
+segments, including partial segments of very large relationships. Links optionally project two
+ports through a declared connection type, with explicit missing/ambiguous semantics. No object-per-
+endpoint topology, implicit geometry, or mandatory lexical sort is required.
+
+Columns use a small Arrow-compatible physical subset, not Arrow JS objects or Arrow IPC:
+
+- Numeric values use Float32Array, Float64Array, Int32Array, or Uint32Array.
+- Boolean values and validity use least-significant-bit-first bitmaps.
+- Text uses UTF-8 bytes with signed 32-bit offsets and a terminal offset.
+- Vectors address numeric child slices; lists address child columns through signed 32-bit offsets.
+- Column offset applies to both values and validity. Child addressing is defined in data.ts.
+- List items and vector lanes are non-nullable; parent values may be null. Nesting is limited to 32.
+- Input numbers and sample coordinates are finite. Native sampled floats may be nonfinite;
+  aggregates exclude nonfinite values. Null payloads and sample stride padding are ignored.
+
+One physical row axis fits Uint32; one column slice/offset fits signed Int32. Larger datasets must
+partition their types/blocks. Strings or lists larger than a block's bound reject resource-limit.
+These limits are explicit and do not silently downcast identities or offsets.
+
+## Streaming, buffers, and retention
+
+Each query iteration fixes one version on first pull, and releases request resources on completion,
+return, throw, or abort. Aborting must also interrupt a pending pull. A stream may fail after yielding
+valid blocks; consumers must not treat a partial stream as complete. Exactly one QueryHeader precedes
+data, including empty reads. It pins Schema and data Version atomically; describe() is for discovery,
+not a prerequisite or substitute for this header. Empty reads have no data blocks, except requested
+row counts and empty aggregate results. Rows are never repeated across blocks;
+sample tiles cover the requested frame/row rectangle exactly once. Schema/data/index versions must
+remain coherent throughout the stream. Separate queries do not implicitly share a pinned version.
+
+maxBlockBytes is bounded by Schema.limits.maxBlockBytes. blockByteLength gives the exact contract
+accounting: exposed byte-range unions, UTF-8 metadata including keys, eight bytes per number, and
+one byte per boolean/null. Shared metadata objects are counted once. This deliberately differs from transport framing and allocated memory.
+blockBuffers returns deduplicated backing allocations, which can be much larger than the views.
+Owned blocks must also fit the same bound when counting full backing allocations; a thin slice of
+a large retained buffer is not an owned block. Bounds are checked before column value scans. Schema
+headers and transport envelopes require separate metadata limits at the transport boundary.
+
+Default borrowed blocks remain immutable and valid after eviction/close. Neither side may detach
+their backing. For buffers: 'owned', the implementation must relinquish every backing allocation and
+all aliases; no SharedArrayBuffer or alias into another block may remain. The consumer can then
+transfer blockBuffers(block). Asking for owned data can require a copy when storage retains it.
+Contiguous borrowed reads can expose native subarrays; sparse gathers, sorting, and ownership
+conversion may copy. This contract permits zero-copy paths without claiming every path is zero-copy.
+
+Recording.fields exposes the actual captured rows and fields after binding, and Recording.axis names
+the coordinate and optional unit. Output declarations in Document do not imply readable observations.
+For sampled reads, omitted rows mean the physical-order intersection of selected fields' coverage;
+explicit rows must be captured for every selected field. Each SampleColumn has its own strides, so
+different field orientations need no shared-layout repacking. Coordinates are domain-neutral.
+
+retain.bytes bounds observations and sample indexing for one recording. Complete frames are admitted
+atomically. Rolling retention never renumbers logical frames. Shared pinned inputs and command
+provenance use implementation-level budgets and must not be cloned/charged once per monitor.
+Provenance cannot be silently evicted; exhaustion fails capture. Diagnostics use an optional bounded
+ring with firstSequence and discardedThrough reporting. Without diagnostics retention, diagnostics() returns an empty page.
+Consumer-held borrowed buffers can outlive retention and keep allocations alive: retain.bytes is
+not a total process-memory guarantee.
+
+## Runtime utilities and verification
+
+Only five functions are exported at runtime:
 
 ```ts
-const vm = await recording.field({ classId: 'bus', kind: 'signal', id: 'Vm' });
-network.setChannel('vertexColor', vm); // frames stay on the GPU; the domain follows; null unbinds
-monitor.load(vm);
-network.seek(t);
-const values = await vm?.at(t); // every bus at t, NaN where one has no value
-
-// The same field over other items: a diagram's nets over the elements that drive them.
-diagram.setChannel('netColor', vm ? vm.gather(session.drivers(vm.ref)) : null);
+validateSchema(candidate); // readonly Problem[]; no mutation
+validateQuery(schema, candidateQuery); // schema must already be validated
+validateBlock(schema, query, candidateBlock, queryOptions);
+blockByteLength(block);
+blockBuffers(block);
 ```
 
-A field resolves to null when there are no values for it. One reference
-resolves to one series, so the renderers binding it share its frames, and `domain` is the display
-interval over every committed value; a gathered field keeps it, so each view colors a value alike.
+Validation is explicit boundary work, not a hidden scan on every local read. It checks declared
+layouts, dictionaries, masks, coordinates, strides, selected fields, known index associations,
+capabilities, and payload limits. It does not prove exclusive ownership, native referential integrity,
+edit atomicity, whole-stream coverage, cancellation responsiveness, or solver isolation. Those are
+implementation obligations exercised by behavioral tests.
 
-## Edit it
+The tests include deliberately narrow test implementations, not a production in-memory Model. They
+exercise numeric filtering/sorting/pagination/aggregation, schema headers and empty reads, atomic
+numeric edits, native assigned IDs, queued/running cancellation, command isolation, recording readiness,
+sparse captured coverage, coordinate windows, retention, tiled coverage, pending reads, and ownership.
+A native CSR fixture derives endpoint segments and missing/ambiguous links from its stored arrays.
+Nested buffers and independent field strides have separate layout fixtures. Persistence tests exercise
+shared acquisitions, incremental writes, interrupted commits, saved baselines and storage conflicts.
+The separate @latkit/connect package tests remote behavior over message and framed transports. Allocation assertions
+cover contiguous borrowed reads, sparse gathers, ownership copies, and backing/view accounting.
 
-A host edits a case through a `Document.Session`, whether the engine is in its realm or across a
-port: asynchronous apply, undo, redo, inspection, model capture, and native byte export, every call
-in the one queue of the document it is on. Its `view` holds the schematic, palette, history
-metadata, `{ epoch, revision }` version, the document's own `document.version`, and `saved`, the
-version its engine last kept, which `on('saved')` hears change whichever session saved; schematic
-lookups (`elementAt`, `partOf`, `portAt`, `portOf`, `drivers`) are local and synchronous.
+Run pnpm --filter @latkit/model build, typecheck, and test.
 
-```ts
-const session = await engine.open('ieee39.case.json');
-diagram.load(session.view.schematic.netlist);
-diagram.on('move', ({ blocks, positions }) =>
-  session.apply({
-    kind: 'place',
-    elements: Array.from(blocks, (block) => session.view.schematic.blocks[block]!),
-    positions,
-  }),
-);
-session.on('change', async (change) => {
-  const { schematic } = session.view;
-  if (change.scope === 'structure') diagram.load(schematic.netlist, { fit: false });
-  diagram.setChannel('blockPosition', schematic.positions);
-  if (change.scope !== 'layout') show(await session.model());
-});
-undo.onclick = () => session.undo();
-```
+## Remaining implementation and migration work
 
-An edit uses an explicit base or the view's version at invocation. One the case refuses rejects
-with `Refusal`, saying why and what it is about, and changes nothing; one made against a revision
-gone by rejects with `DocumentConflict`, and never silently rebases. `inspect(elementOrKey)`
-returns current editable values and wiring with their revision, without opening a model; submit a
-retained draft with `apply(version, ...operations)`. `model()` captures an immutable snapshot,
-shared by concurrent readers; layout changes keep it, while values or structure changes invalidate
-it. Close a model once its readers finish, and `session.close()` once the case is no longer
-wanted. Record the model to record the case as it stands.
+1. Implement a real model against this contract and run the same behavioral obligations against
+   native editing, live routines, command cancellation during queued/running work, import diagnostics,
+   and large segmented connectivity. Test fixtures cover their advertised narrow schemas; they are not a production query engine.
+2. Integrate @latkit/connect with actual worker/socket deployment and application-owned Resource
+   implementations. Supply authentication, authorization scopes, conditional storage commits and
+   reconnection policy in that deployment; migrate consumers without a port compatibility facade.
+3. Specify and implement a portable Recording archive with format versioning, bounds validation,
+   indexed streaming reads, retained original inputs/schema, command provenance, and diagnostic gaps.
+   Export currently identifies native formats by media type; it does not define an archive codec.
+4. Move the GPU/playback query cache and index mapping into one shared consumption path. Reimplement
+   network, diagram, monitor, and other consumers directly against Queryable and these columns.
+   Application document history/layout/catalog state stays outside the contract.
+5. Measure large real datasets across local, worker, socket, and archive paths: copied bytes,
+   retained allocations, time to first block, cancellation latency, and GPU upload counts. Complete
+   consumer migration and verify correctness and performance before publishing this package.
 
-A native format subclasses `Document`: it makes operations true as one change, reverts a change,
-describes its schematic, and implements synchronous `inspect(element)` alongside its identity
-lookups. Its constructor needs no initial model. The base keeps one history of the last 200 steps,
-maps the schematic's parts to elements and back, and finds the element that drives each net.
-`document.version` advances for each successful edit, undo, and redo. Document implementations
-replace changed schematic parts and retain unchanged parts by identity; published parts must not
-be mutated. Keep the same palette array until the palette changes, so sessions send only the parts
-that changed. See [Document sessions](../../docs/document-sessions.md) for what an engine keeps
-open, ordering, and the wire contract.
+## Large-data verification
 
-## Keep a history
-
-`Series.create` is an in-memory history for samples that are not a recording of a model. Initial
-`time` and `values` are signal-major; appends are frame-major. Buffers are taken, never mutated or
-detached after publication, and reads within one append are zero-copy views. A source of samples
-held anywhere else subclasses `Series`: it publishes what it holds and fetches checked windows.
-
-```ts
-import { Series } from '@latkit/model';
-
-const series = Series.create({ signals: ['temperature'], elementCount: 3 });
-series.append({ time: Float64Array.of(0), values: Float32Array.of(21, 22, 23) });
-monitor.load({ series, signal: 0 });
-series.seal(); // no frame follows
-```
-
-`read(signal, window)` borrows a bounded, strided window, and `locate([from, to], frameCount)`
-returns the half-open frame interval holding those times within a captured head. `state.ranges`
-holds each signal's finite extent, a NaN pair while it has none.
-
-## Move a case or a recording
-
-Everything lazy opens from a source. A model's `Model.Source` is its core and one shard per class,
-packed on demand, and its bytes; a `Recording.Source` is a recording's classes, its changes as it
-grows, and sample windows on demand. `source()` makes one from the instance, and `Model.from` and
-`Recording.from` open one from anywhere: a file, a fetch, or `@latkit/port`, which serves exactly
-these across a port. A recording opens against the model it records, which checks it fits; a model
-opened from packs serves them again as they came, so a relay decodes nothing.
-
-```ts
-// pack, for example when staging a library at build time
-const source = model.source();
-await write('core.bin', await source.core());
-for (const spec of model.classes) await write(`${spec.id}.bin`, await source.class(spec.id));
-
-// unpack, classes still lazy
-const opened = await Model.from(
-  { core: fetchCore, class: fetchShard, bytes: fetchCase },
-  { signal, progress: (loaded, total) => bar.set(loaded / total) },
-);
-```
-
-The pack format is private: a small JSON directory, the core's declaring every class's columns and
-signals, followed by 8-byte-aligned typed sections, so unpacking is a set of typed-array views into
-the received buffer. A series held elsewhere reads it in windows of at most 1 MiB, however large
-the window asked for.
-
-## Describe a diagram
-
-A `Document.Netlist` is a block diagram's structure as columns: blocks, the ports each block owns
-(`portStart` offsets), and the nets that join ports (`netStart` offsets into `netPorts`). A net has
-at most one `out` port, its driver, and a port joins at most one net. Placement is not structure;
-`blockKey` keeps each block's position, placement, and selection across reloads.
-
-```ts
-import { validateNetlist, type Document } from '@latkit/model';
-
-// TGOV1 drives pmech, IEEET1 drives efd, GENROU's speed feeds both back.
-const unit: Document.Netlist = {
-  blockCount: 3,
-  blockKey: ['Genrou/1_1_genrou', 'Tgov1/1_1_tgov1', 'Ieeet1/1_1_ieeet1'],
-  blockTitle: ['GENROU', 'TGOV1', 'IEEET1'],
-  portStart: Uint32Array.of(0, 3, 5, 7),
-  portFlow: Uint8Array.of(0, 0, 1, /* tgov1 */ 0, 1, /* ieeet1 */ 0, 1),
-  portLabel: ['pmech', 'efd', 'speed', 'speed', 'pmech', 'speed', 'efd'],
-  netStart: Uint32Array.of(0, 2, 4, 7),
-  netPorts: Uint32Array.of(4, 0, /* efd */ 6, 1, /* speed */ 2, 3, 5),
-  netLabel: ['1_1_pmech', '1_1_efd', '1_1_speed'],
-};
-validateNetlist(unit);
-```
+The test-only paged ModelService in tests/scale runs million-row ownership, copy-on-write and command
+isolation checks. Its independent oracle is also used across five connect paths. Run the separate
+benchmark with pnpm --filter @latkit/connect bench:scale; methodology and scope are documented in
+../connect/tests/scale/README.md. No scale fixture is exported by this package.
