@@ -1,98 +1,70 @@
 /**
- * Remote document editing over the same ports as models and engines. The owner is retained by
- * the document; a connected session owns its cached view, pending retry, and model leases.
+ * A case's document across a port: each session is a service of its own, `document:<id>`, on the
+ * port of the engine that holds the case. The served side runs every call through the session it
+ * serves, so a peer's edits and reads share the document's queue with every other session on it,
+ * and tells its peer the schematic columns each step replaced. The connected side keeps the view
+ * and answers local lookups without a call. A model a session captures crosses as a model service
+ * of its own, so the engine beside it records it where it lives.
  */
 import { Document, DocumentConflict, Refusal, type Model } from '@latkit/model';
 
+import { connect, serve, transferred, type Connection, type Transferred } from './channel.js';
 import {
-  connect,
-  serve,
-  transferred,
-  type Connection,
-  type Remote,
-  type Transferred,
-} from './channel.js';
-import {
-  DOCUMENT,
-  MAX_COMMAND_BYTES,
   checkReply,
+  checkSaved,
   checkSchematicLengths,
   checkUpdate,
+  documentProtocol,
+  publicChange,
+  publicHistory,
   publicInspection,
+  publicView,
+  requests,
   sameVersion,
-  type Command,
-  type Receipt,
+  type Event,
   type Reply,
   type Request,
   type Update,
 } from './document-protocol.js';
-import { ownerOf, Serial, type Owner } from './document-owner.js';
-import { encodeFrame } from './frame.js';
 import { connectModel, serveModel } from './model.js';
 import type { Port } from './port.js';
 
+/** Models one connection keeps served at once. */
 const MAX_SNAPSHOTS = 32;
+/** Updates a connection holds while it opens, before it knows the view they follow. */
+const MAX_EARLY = 256;
+/** The schematic columns a step may replace, and those a layout step may. */
+const KEYS = ['netlist', 'blocks', 'nets', 'sources', 'status', 'positions', 'problems'] as const;
+const LAYOUT_KEYS = ['sources', 'status', 'positions', 'problems'] as const;
 
 /**
- * Serve a document, retaining its owner and retry receipts across connections. One document
- * service occupies a port; model and engine services may share it. While served, mutate through
- * sessions so reads and edits share its queue. Acknowledgments are in-memory acceptance.
- *
- * @remarks
- * A factory runs on the first open request, at most once per service. Requests share its result
- * or failure. Supplied documents and promises retain eager initialization. Reuse the same document
- * across connections to retain its history and retry receipts.
- *
- * Closing releases this connection's model snapshots. It does not dispose the document or erase
- * its history, or cancel host-owned loading. A pending open cannot attach after closure. The host
- * owns document lifetime, authentication, and durable storage.
+ * Serve `session` on `port` as document `id` until either side closes; the session closes with
+ * the service. Returns the server's own close.
  */
-export function serveDocument(
+export function serveSession(
   port: Port,
-  source: Document | Promise<Document> | (() => Document | Promise<Document>),
+  session: Document.Session,
+  id: string,
   options: { onClose?(): void } = {},
 ): () => void {
-  let owner: Owner | null = null;
-  let client: string | null = null;
-  let off = (): void => undefined;
+  let open = false;
   let closed = false;
+  /** The view the peer has, as of the last update sent or waiting to be. */
+  let told: Document.View | null = null;
   let pending: Update | null = null;
   let flushing = false;
+  let off = (): void => undefined;
   const models = new Map<Model, { readonly id: string; readonly close: () => void }>();
-
-  function assertOpen(): void {
-    if (closed) throw new Error('The document service was closed.');
-  }
-  function acquire(document: Document): Owner {
-    assertOpen();
-    return ownerOf(document);
-  }
-  let opening: Promise<Owner> | undefined =
-    typeof source === 'function' ? undefined : Promise.resolve(source).then(acquire);
-  // Observe eager failures; requests still receive the original rejection.
-  void opening?.catch(() => undefined);
-
-  function openOwner(): Promise<Owner> {
-    return (opening ??= Promise.resolve()
-      .then(() => {
-        assertOpen();
-        return typeof source === 'function' ? source() : source;
-      })
-      .then(acquire));
-  }
 
   function cleanup(): void {
     if (closed) return;
     closed = true;
     pending = null;
     off();
-    if (client) owner?.detach(client, close);
     for (const snapshot of [...models.values()]) snapshot.close();
     models.clear();
+    session.close();
     options.onClose?.();
-  }
-  function close(): void {
-    service.close();
   }
 
   async function flush(): Promise<void> {
@@ -106,126 +78,161 @@ export function serveDocument(
         service.emit(update);
       }
     } catch {
-      close();
+      service.close();
     } finally {
       flushing = false;
     }
   }
-  function publish(update: Update): void {
+
+  /** Tell the peer what `change` replaced. A slow peer keeps only the newest update; the revision
+   *  gap it then sees makes it ask for the whole view. */
+  function follow(change: Document.Change): void {
+    const before = told!;
+    const current = session.view;
+    const schematic: Partial<Document.Schematic> = {};
+    for (const key of change.scope === 'layout' ? LAYOUT_KEYS : KEYS)
+      if (before.schematic[key] !== current.schematic[key])
+        Object.assign(schematic, { [key]: current.schematic[key] });
+    told = current;
+    const update: Update = {
+      kind: 'update',
+      from: before.version,
+      to: current.version,
+      change: publicChange(change),
+      schematic,
+      ...(before.palette === current.palette ? {} : { palette: current.palette }),
+      history: publicHistory(current.history),
+    };
     if (!port.drain) {
       service.emit(update);
       return;
     }
-    // A slow peer retains only the newest update; a revision gap requests a fresh view.
     pending = update;
     if (!flushing) void flush();
   }
 
+  /** What an edit's receipt says when it made `change`, or nothing, against `base`. */
+  const accepted = (base: Document.Version, change: Document.Change | null): Reply => ({
+    kind: 'accepted',
+    version: change ? { epoch: base.epoch, revision: base.revision + 1 } : base,
+    change: change && publicChange(change),
+  });
+
+  async function answer(
+    request: Request,
+    signal: AbortSignal,
+  ): Promise<Reply | Transferred<Reply>> {
+    if (request.op === 'open') {
+      if (open) throw new Error('This document connection is already open.');
+      open = true;
+      told = session.view;
+      const offChange = session.on('change', follow);
+      const offSaved = session.on('saved', (version) => service.emit({ kind: 'saved', version }));
+      off = () => {
+        offChange();
+        offSaved();
+      };
+      return { kind: 'opened', view: publicView(told) };
+    }
+    if (!open) throw new Error('Open the document before using it.');
+    if (request.op === 'view') return { kind: 'view', view: publicView(session.view) };
+    const base = request.base;
+    const version = session.view.version;
+    if (!sameVersion(base, version)) return { kind: 'conflict', version };
+    // Each call below captures the view's revision, which is `base`, before anything can run.
+    switch (request.op) {
+      case 'apply':
+        return accepted(base, await session.apply(base, ...request.operations));
+      case 'undo':
+        return accepted(base, await session.undo());
+      case 'redo':
+        return accepted(base, await session.redo());
+      case 'inspect': {
+        const { inspection } = await session.inspect(request.target, signal);
+        return {
+          kind: 'inspection',
+          version: base,
+          inspection: inspection && publicInspection(inspection),
+        };
+      }
+      case 'bytes': {
+        const bytes = await session.bytes(signal);
+        return transferred<Reply>({ kind: 'bytes', version: base, bytes }, [
+          bytes.buffer as ArrayBuffer,
+        ]);
+      }
+      case 'model':
+        return {
+          kind: 'model',
+          version: base,
+          id: serveSnapshot(await session.model(signal), signal),
+        };
+    }
+  }
+
+  /** The id `model` is served under on this connection, served now unless it is. */
+  function serveSnapshot(model: Model, signal: AbortSignal): string {
+    const known = models.get(model);
+    if (known) return known.id;
+    if (models.size >= MAX_SNAPSHOTS)
+      throw new Error('Close an old document model before opening another (limit 32).');
+    const snapshot = globalThis.crypto.randomUUID();
+    const close = serveModel(port, model, { id: snapshot, onClose: () => models.delete(model) });
+    models.set(model, { id: snapshot, close });
+    // A call cancelled before its reply leaves no service behind.
+    signal.addEventListener('abort', close, { once: true });
+    return snapshot;
+  }
+
   const service = serve(
     port,
-    DOCUMENT,
+    documentProtocol(id),
     async (request, signal) => {
       signal.throwIfAborted();
-      assertOpen();
-      if (client === null && request.op !== 'open')
-        throw new Error('Open the document before using it.');
-      const opened = await openOwner();
-      signal.throwIfAborted();
-      assertOpen();
-      owner = opened;
-      if (request.op === 'apply' || request.op === 'undo' || request.op === 'redo') {
-        if (request.client !== client) throw new Error('Open this document client before editing.');
-        return owner.commit(request, signal);
+      if (closed) throw new Error('The document service was closed.');
+      try {
+        return await answer(request, signal);
+      } catch (error) {
+        if (error instanceof DocumentConflict) return { kind: 'conflict', version: error.actual };
+        if (
+          error instanceof Refusal &&
+          (request.op === 'apply' || request.op === 'undo' || request.op === 'redo')
+        )
+          return { kind: 'refused', message: error.message, at: structuredClone(error.at) };
+        throw error;
       }
-      return owner.queue.run(async (): Promise<Reply | Transferred<Reply>> => {
-        signal.throwIfAborted();
-        const current = owner!;
-        if (request.op === 'open') {
-          if (client !== null) throw new Error('This document connection is already open.');
-          const opened = current.open(request.client, close);
-          client = opened.id;
-          off = current.on(publish);
-          return { kind: 'opened', client, next: opened.next, view: current.view };
-        }
-        if (request.op === 'view') return { kind: 'view', view: current.view };
-        const version = current.view.version;
-        if (!sameVersion(request.base, version)) return { kind: 'conflict', version };
-        if (request.op === 'inspect') {
-          const element =
-            typeof request.target === 'string'
-              ? current.document.find(request.target)
-              : request.target;
-          const inspected = element === null ? null : current.document.inspect(element);
-          const inspection = inspected === null ? null : publicInspection(inspected);
-          if (!sameVersion(version, current.view.version))
-            return { kind: 'conflict', version: current.view.version };
-          return { kind: 'inspection', version, inspection };
-        }
-        if (request.op === 'bytes') {
-          const bytes = await current.document.bytes(signal);
-          signal.throwIfAborted();
-          if (!sameVersion(version, current.view.version))
-            return { kind: 'conflict', version: current.view.version };
-          return transferred<Reply>({ kind: 'bytes', version, bytes }, [
-            bytes.buffer as ArrayBuffer,
-          ]);
-        }
-        const model = await current.document.model(signal);
-        signal.throwIfAborted();
-        if (!sameVersion(version, current.view.version))
-          return { kind: 'conflict', version: current.view.version };
-        let snapshot = models.get(model);
-        if (!snapshot) {
-          if (models.size >= MAX_SNAPSHOTS)
-            throw new Error('Close an old document model before opening another (limit 32).');
-          const id = globalThis.crypto.randomUUID();
-          const stop = serveModel(port, model, {
-            id,
-            onClose: () => {
-              models.delete(model);
-            },
-          });
-          snapshot = { id, close: stop };
-          models.set(model, snapshot);
-          signal.addEventListener('abort', stop, { once: true });
-        }
-        return { kind: 'model', version, id: snapshot.id };
-      });
     },
     { onClose: cleanup },
   );
-  return close;
+  return () => service.close();
 }
 
-type Calls = Connection<Request, Reply, Update>;
+type Calls = Connection<Request, Reply, Event>;
 interface Snapshot {
-  readonly promise: Promise<Remote<Model>>;
+  readonly promise: Promise<Model>;
   readers: number;
   claimed: boolean;
   readonly controller: AbortController;
 }
-type Edit =
-  | { readonly op: 'apply'; readonly operations: readonly Document.Operation[] }
-  | { readonly op: 'undo' }
-  | { readonly op: 'redo' };
 
-/** The facade survives a reconnect; transport calls and model leases do not. */
+/** A session across a port: its view kept here, its calls answered where the document is. */
 class Connected implements Document.Session {
-  readonly #queue = new Serial();
-  readonly #listeners = new Set<(change: Document.Change) => void>();
+  readonly #port: Port;
+  readonly #calls: Calls;
+  readonly #changes = new Set<(change: Document.Change) => void>();
+  readonly #saves = new Set<(version: Document.Version) => void>();
   readonly #models = new Map<string, Snapshot>();
-  #calls: Calls | null = null;
-  #port: Port | null = null;
+  readonly #parts = Document.parts(() => this.view.schematic);
   #view: Document.View | null = null;
-  #client: string | undefined;
-  #next = 1;
-  #pending: Command | null = null;
   #updates = Promise.resolve();
   #off = (): void => undefined;
   #closed = false;
-  #attaching = false;
   #failure: Error | null = null;
-  readonly #parts = Document.parts(() => this.view.schematic);
+
+  constructor(port: Port, id: string) {
+    this.#port = port;
+    this.#calls = connect(port, documentProtocol(id));
+  }
 
   get view(): Document.View {
     if (!this.#view) throw new Error('The document has not opened.');
@@ -248,57 +255,23 @@ class Connected implements Document.Session {
     return this.#parts.drivers(ref);
   }
 
-  async attach(port: Port, signal?: AbortSignal): Promise<void> {
-    if (this.#closed) throw new Error('The document session was closed.');
-    if (this.#attaching) throw new Error('The document session is already connecting.');
-    this.#attaching = true;
-    this.#off();
-    this.#calls?.close();
-    try {
-      // Settle the previous transport's work before assigning a replacement.
-      await this.#queue.run(() => undefined);
-      await this.#updates;
-      if (this.#closed) throw new Error('The document session was closed.');
-      for (const model of this.#models.values())
-        void model.promise.then(
-          (value) => value.close(),
-          () => undefined,
-        );
-      this.#models.clear();
-      this.#failure = null;
-      this.#port = port;
-      const calls = connect(port, DOCUMENT);
-      this.#calls = calls;
-      let ready = false;
-      let overflow = false;
-      const early: Update[] = [];
-      this.#off = calls.on((update) => {
-        if (ready) this.#receive(update, calls);
-        else if (early.length < 256) early.push(update);
-        else overflow = true;
-      });
-      const reply = await this.#ask(
-        { op: 'open', ...(this.#client ? { client: this.#client } : {}) },
-        signal,
-      );
-      if (this.#closed) throw new Error('The document session was closed.');
-      if (reply.kind !== 'opened') throw new Error('Expected a document open reply.');
-      this.#client = reply.client;
-      this.#next = reply.next;
-      this.#install(reply.view);
-      ready = true;
-      for (const update of early) this.#receive(update, calls);
-      await this.#updates;
-      if (overflow) await this.#refresh();
-      // Recover the exact command whose acknowledgment may have been lost.
-      if (this.#pending) await this.#send(this.#pending);
-    } catch (error) {
-      this.#off();
-      this.#calls?.close();
-      throw error;
-    } finally {
-      this.#attaching = false;
-    }
+  async open(signal?: AbortSignal): Promise<void> {
+    const calls = this.#calls;
+    let ready = false;
+    let overflow = false;
+    const early: Event[] = [];
+    this.#off = calls.on((event) => {
+      if (ready) this.#receive(event);
+      else if (early.length < MAX_EARLY) early.push(event);
+      else overflow = true;
+    });
+    const reply = await this.#ask({ op: 'open' }, signal);
+    if (reply.kind !== 'opened') throw new Error('Expected a document open reply.');
+    this.#install(reply.view);
+    ready = true;
+    for (const event of early) this.#receive(event);
+    await this.#updates;
+    if (overflow) await this.#refresh();
   }
 
   apply(...operations: Document.Operation[]): Promise<Document.Change | null>;
@@ -310,56 +283,44 @@ class Connected implements Document.Session {
     first?: Document.Version | Document.Operation,
     ...rest: Document.Operation[]
   ): Promise<Document.Change | null> {
-    if (first && 'epoch' in first) return this.#edit({ op: 'apply', operations: rest }, first);
-    return this.#edit({ op: 'apply', operations: first ? [first, ...rest] : rest });
+    const based = first !== undefined && 'epoch' in first;
+    const operations = based || first === undefined ? rest : [first, ...rest];
+    return this.#edit((base) => ({ op: 'apply', base, operations }), based ? first : undefined);
   }
   undo(): Promise<Document.Change | null> {
-    return this.#edit({ op: 'undo' });
+    return this.#edit((base) => ({ op: 'undo', base }));
   }
   redo(): Promise<Document.Change | null> {
-    return this.#edit({ op: 'redo' });
+    return this.#edit((base) => ({ op: 'redo', base }));
   }
 
-  #edit(edit: Edit, base: Document.Version = this.view.version): Promise<Document.Change | null> {
-    // Capture indexes and their base together, before waiting behind another call.
-    const draft = structuredClone({ ...edit, base });
-    return this.#queue.run(async () => {
-      this.#available();
-      if (this.#pending) throw new Error('Reconnect the document to resolve its pending edit.');
-      const command: Command = { ...draft, client: this.#client!, sequence: this.#next };
-      DOCUMENT.check?.(command, 'document command');
-      if (encodeFrame(command).byteLength > MAX_COMMAND_BYTES)
-        throw new RangeError('A document command exceeds 1 MiB.');
-      this.#pending = command;
-      return this.#send(command);
-    });
-  }
-
-  async #send(command: Command): Promise<Document.Change | null> {
-    const reply = await this.#ask(command);
-    if (!['accepted', 'conflict', 'refused', 'expired', 'busy'].includes(reply.kind))
-      throw new Error('Expected a document edit receipt.');
-    this.#pending = null;
-    if (reply.kind !== 'busy') this.#next = Math.max(this.#next, command.sequence + 1);
+  /** Send the edit `make` makes against `base`, the view's revision when absent, captured now. */
+  async #edit(
+    make: (base: Document.Version) => Extract<Request, { op: 'apply' | 'undo' | 'redo' }>,
+    base?: Document.Version,
+  ): Promise<Document.Change | null> {
+    this.#available();
+    // Capture indexes and their base together, before anything else can run.
+    const request = structuredClone(make(base ?? this.view.version));
+    requests(request, 'document edit');
+    const reply = await this.#ask(request);
     await this.#updates;
-    const receipt = reply as Receipt;
-    switch (receipt.kind) {
+    switch (reply.kind) {
       case 'refused':
-        throw new Refusal(receipt.message, receipt.at);
-      case 'expired':
-      case 'busy':
-        throw new Error(receipt.message);
+        throw new Refusal(reply.message, reply.at);
       case 'conflict':
         await this.#refresh();
-        throw new DocumentConflict(command.base, receipt.version);
+        throw new DocumentConflict(request.base, reply.version);
       case 'accepted':
         if (
-          this.view.version.epoch !== receipt.version.epoch ||
-          this.view.version.revision < receipt.version.revision
+          this.view.version.epoch !== reply.version.epoch ||
+          this.view.version.revision < reply.version.revision
         )
           await this.#refresh();
         if (this.#failure !== null) throw this.#failure;
-        return receipt.change;
+        return reply.change;
+      default:
+        throw new Error('Expected a document edit receipt.');
     }
   }
 
@@ -369,11 +330,8 @@ class Connected implements Document.Session {
   ): Promise<Document.InspectionResult> {
     this.#available();
     const request = structuredClone({ op: 'inspect' as const, base: this.view.version, target });
-    DOCUMENT.check?.(request, 'document inspection request');
-    const calls = this.#calls!;
+    requests(request, 'document inspection request');
     const reply = await this.#ask(request, signal);
-    if (calls !== this.#calls || calls.closed !== null)
-      throw new Error('The document disconnected.');
     if (reply.kind === 'conflict') {
       await this.#refresh();
       throw new DocumentConflict(request.base, reply.version);
@@ -384,14 +342,10 @@ class Connected implements Document.Session {
     return { version: reply.version, inspection: reply.inspection };
   }
 
-  async model(signal?: AbortSignal): Promise<Document.Snapshot> {
+  async model(signal?: AbortSignal): Promise<Model> {
     this.#available();
     const base = this.view.version;
-    const calls = this.#calls!;
-    const port = this.#port!;
     const reply = await this.#ask({ op: 'model', base }, signal);
-    if (calls !== this.#calls || calls.closed !== null)
-      throw new Error('The document disconnected.');
     if (reply.kind === 'conflict') {
       await this.#refresh();
       throw new DocumentConflict(base, reply.version);
@@ -401,9 +355,10 @@ class Connected implements Document.Session {
     let snapshot = this.#models.get(id);
     if (!snapshot) {
       const controller = new AbortController();
-      const promise = connectModel(port, { id, signal: controller.signal })
+      const promise = connectModel(this.#port, { id, signal: controller.signal })
         .then((model) => {
-          const close = model.close;
+          // Closing it forgets it here too, so the next capture of the same model connects again.
+          const close = model.close.bind(model);
           return Object.assign(model, {
             close: () => {
               if (this.#models.get(id)?.promise === promise) this.#models.delete(id);
@@ -449,9 +404,15 @@ class Connected implements Document.Session {
     return reply.bytes;
   }
 
-  on(_event: 'change', listener: (change: Document.Change) => void): () => void {
-    this.#listeners.add(listener);
-    return () => void this.#listeners.delete(listener);
+  on(event: 'change', listener: (change: Document.Change) => void): () => void;
+  on(event: 'saved', listener: (version: Document.Version) => void): () => void;
+  on(
+    event: 'change' | 'saved',
+    listener: ((change: Document.Change) => void) | ((version: Document.Version) => void),
+  ): () => void {
+    const listeners = (event === 'saved' ? this.#saves : this.#changes) as Set<typeof listener>;
+    listeners.add(listener);
+    return () => void listeners.delete(listener);
   }
 
   close(): void {
@@ -464,21 +425,19 @@ class Connected implements Document.Session {
         () => undefined,
       );
     this.#models.clear();
-    this.#calls?.close();
-    this.#listeners.clear();
-    this.#pending = null;
+    this.#calls.close();
+    this.#changes.clear();
+    this.#saves.clear();
   }
 
   #available(): void {
     if (this.#closed) throw new Error('The document session was closed.');
-    if (this.#attaching) throw new Error('The document session is reconnecting.');
     if (this.#failure !== null) throw this.#failure;
-    if (!this.#calls || this.#calls.closed !== null)
-      throw new Error('The document disconnected; reconnect before continuing.');
+    if (this.#calls.closed !== null) throw new Error('The document disconnected.');
   }
 
   async #ask(request: Request, signal?: AbortSignal): Promise<Reply> {
-    const reply = await this.#calls!.call(request, { signal });
+    const reply = await this.#calls.call(request, { signal });
     checkReply(reply, 'document reply');
     return reply;
   }
@@ -499,13 +458,23 @@ class Connected implements Document.Session {
       return;
     this.#view = view;
     if (previous && !sameVersion(previous.version, view.version))
-      this.#notify({ label: 'Refresh document', scope: 'structure', created: [] });
+      tell(this.#changes, { label: 'Refresh document', scope: 'structure', created: [] });
+    if (previous && !sameVersion(previous.saved, view.saved)) tell(this.#saves, view.saved);
   }
 
-  #receive(update: Update, calls: Calls): void {
+  /** Take `event` in turn after those before it: a version the engine kept, or a step. */
+  #receive(event: Event): void {
+    const calls = this.#calls;
     this.#updates = this.#updates
       .then(async () => {
-        if (this.#calls !== calls || calls.closed !== null) return;
+        if (calls.closed !== null) return;
+        if (event.kind === 'saved') {
+          checkSaved(event, 'document saved event');
+          this.#view = { ...this.view, saved: event.version };
+          tell(this.#saves, event.version);
+          return;
+        }
+        const update: Update = event;
         checkUpdate(update, 'document update');
         if (
           update.from.epoch !== update.to.epoch ||
@@ -536,26 +505,30 @@ class Connected implements Document.Session {
         checkSchematicLengths(schematic);
         this.#view = {
           version: update.to,
+          saved: current.saved,
           schematic,
           palette: update.palette ?? current.palette,
           history: update.history,
         };
-        this.#notify(update.change);
+        tell(this.#changes, update.change);
       })
       .catch((error: unknown) => {
         this.#failure = error instanceof Error ? error : new Error(String(error));
         calls.close();
       });
   }
+}
 
-  #notify(change: Document.Change): void {
-    // Consumer callbacks must not turn an acknowledged edit into a failed mutation.
-    for (const listener of [...this.#listeners]) {
-      try {
-        listener(change);
-      } catch {
-        /* A UI listener owns its errors. */
-      }
+/** Tell each of `listeners` of `event`: a listener's failure must not turn an accepted edit into a
+ *  failed one, so each owns its errors. */
+function tell<T>(listeners: ReadonlySet<(event: T) => void>, event: T): void {
+  for (const listener of [...listeners]) {
+    try {
+      listener(event);
+    } catch (error) {
+      queueMicrotask(() => {
+        throw error;
+      });
     }
   }
 }
@@ -579,22 +552,20 @@ function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 }
 
 /**
- * Open a document session with a locally cached view. Pass the same facade as `resume` on a new
- * port to recover a lost acknowledgment before editing again. Pending edits keep their original
- * identity and base. Resuming an evicted client fails explicitly; it never retries as a new edit.
- *
- * @remarks
- * Up to 64 client identities are retained per live document, evicting detached clients first.
- * Each retains its latest receipt; older sequences are refused. Close model snapshots when done
- * (at most 32 live models per connection). Closing the session closes all of its snapshots.
+ * The session `serveSession` serves on `port` as document `id`, its view cached here once this
+ * resolves. Closing it closes its models, and the session where the document is.
  */
-export async function connectDocument(
+export async function connectSession(
   port: Port,
-  options: { readonly signal?: AbortSignal; readonly resume?: Remote<Document.Session> } = {},
-): Promise<Remote<Document.Session>> {
-  const session = options.resume ?? new Connected();
-  if (!(session instanceof Connected))
-    throw new TypeError('Resume a session created by connectDocument.');
-  await session.attach(port, options.signal);
-  return session;
+  id: string,
+  signal?: AbortSignal,
+): Promise<Document.Session> {
+  const session = new Connected(port, id);
+  try {
+    await session.open(signal);
+    return session;
+  } catch (error) {
+    session.close();
+    throw error;
+  }
 }

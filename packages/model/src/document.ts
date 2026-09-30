@@ -17,9 +17,9 @@ const NONE = 0xffffffff;
  * operations, `revert` a change, `inspect` native values and wiring, describe the `schematic` and
  * `palette`, and `open` the model of the case as it stands; the base keeps the history of the
  * last 200 steps and the version it has reached, maps the schematic's parts to elements, and opens
- * a model only when asked. A format opens or creates documents through `Document.Format`; the host
- * owns their lifetime and saves their bytes. A model already produced stays immutable across later
- * edits.
+ * a model only when asked. A format opens or creates documents through `Document.Format`; an
+ * engine holds them, one per case, and every host edits one through a `Document.Session`. A model
+ * already produced stays immutable across later edits.
  */
 export abstract class Document {
   readonly #undo: Document.Change[] = [];
@@ -132,7 +132,7 @@ export abstract class Document {
    */
   abstract inspect(element: Model.Element): Document.Inspection | null;
 
-  /** Current native bytes, including placement, for the host to save; the caller's own. */
+  /** Current native bytes, including placement, for its engine to keep; the caller's own. */
   abstract bytes(signal?: AbortSignal): Promise<Uint8Array>;
 
   /**
@@ -179,7 +179,8 @@ export abstract class Document {
 
   /**
    * Capture an immutable model of the current case. Its values and native bytes must remain
-   * independent of later edits, even when they are loaded lazily.
+   * independent of later edits, even when they are loaded lazily. Every reader of the document
+   * shares it, so it holds nothing its `close` lets go of.
    */
   protected abstract open(signal: AbortSignal): Promise<Model>;
 
@@ -197,24 +198,21 @@ export abstract class Document {
 /** What a document speaks: its format, netlists and their parts, operations, changes, and schematics. */
 export declare namespace Document {
   /**
-   * A native format a host registers. Opening and creating both return an independent document;
-   * neither needs to build a model. The host owns files, permissions, document lifetime, and
-   * saving. Implementations honor an aborted signal by rejecting.
+   * A native format, as an engine opens its cases in it. Opening and creating both return an
+   * independent document; neither needs to build a model, and neither keeps anything: the engine
+   * holds the document and keeps its bytes. Implementations honor an aborted signal by rejecting.
    */
   interface Format {
     /** The format's identity, matching the models its documents produce. */
     readonly id: string;
     /** The name a host shows when choosing a format. */
     readonly label: string;
-    /** Filename suffixes including the dot, preferred first; for example, `.case.json`. */
+    /** Case name suffixes including the dot, preferred first; for example, `.case.json`. */
     readonly extensions: readonly string[];
     /** Open native bytes without modifying them; the returned document owns its editable state. */
     open(bytes: Uint8Array, signal?: AbortSignal): Promise<Document>;
-    /**
-     * A new native document. `name` is the case's display name; its filename and destination are
-     * the host's choice. Absent when this format cannot create cases. Does not write a file.
-     */
-    create?(name: string, signal?: AbortSignal): Promise<Document>;
+    /** A new, empty case titled `title`. Absent when this format cannot create cases. */
+    create?(title: string, signal?: AbortSignal): Promise<Document>;
   }
   /** Which state of one document: a document opened again starts a new epoch. */
   interface Version {
@@ -244,42 +242,56 @@ export declare namespace Document {
     readonly version: Version;
     readonly inspection: Inspection | null;
   }
-  /** The document state a session keeps locally, replaced before a change is announced. */
+  /** The document state a session sees, replaced before a change or a save is announced. */
   interface View {
     readonly version: Version;
+    /**
+     * The version its engine last kept: the case holds unsaved edits while `version` is past it.
+     */
+    readonly saved: Version;
     readonly schematic: Schematic;
     readonly palette: readonly BlockClass[];
     readonly history: Document['history'];
   }
-  /** An immutable model held by a session's caller; close it once its readers and runs finish. */
-  type Snapshot = Model & { close(): void };
   /** Local schematic lookup methods, shared by documents and sessions. */
   type Parts = Pick<Document, 'elementAt' | 'partOf' | 'portAt' | 'portOf' | 'drivers'>;
   /**
-   * An asynchronous editing boundary. Edits use an explicit base or the view's version at
-   * invocation and resolve after their accepted change is visible locally. Concurrent stale edits
-   * reject with `DocumentConflict`; they are never silently rebased. A snapshot stays immutable
-   * across edits.
+   * How a host edits a case its engine holds, in the engine's realm or across a port. Every call
+   * waits its turn in the one queue of the document the session is on, shared by every session on
+   * it. Edits use an explicit base or the view's version at invocation and resolve after their
+   * accepted change is visible in the view. Stale edits and reads reject with `DocumentConflict`;
+   * they are never silently rebased. A model it captures stays immutable across edits.
    */
   interface Session extends Parts {
     readonly view: View;
-    /** Apply against the cached view's revision at invocation. */
+    /** Apply against the view's revision at invocation. */
     apply(...operations: Operation[]): Promise<Change | null>;
-    /** Apply a retained draft against the revision it inspected; the owner rejects stale bases. */
+    /** Apply a retained draft against the revision it inspected; a stale base is refused. */
     apply(base: Version, ...operations: Operation[]): Promise<Change | null>;
     /**
-     * Inspect an element in the cached revision, or resolve a key within that revision. Missing
+     * Inspect an element in the view's revision, or resolve a key within that revision. Missing
      * elements return null inside the result; stale revisions reject with `DocumentConflict`.
      * No model is opened. Later edits do not change the returned data or its version.
      */
     inspect(target: Model.Element | string, signal?: AbortSignal): Promise<InspectionResult>;
     undo(): Promise<Change | null>;
     redo(): Promise<Change | null>;
-    /** Capture an immutable model for views or execution; close it when its readers finish. */
-    model(signal?: AbortSignal): Promise<Snapshot>;
-    /** Export current native bytes, including placement, for the host to save. */
+    /**
+     * Capture an immutable model for views or execution; its engine records it where it lives.
+     * Close it once its readers finish.
+     */
+    model(signal?: AbortSignal): Promise<Model>;
+    /** Export current native bytes, including placement. */
     bytes(signal?: AbortSignal): Promise<Uint8Array>;
+    /** A step was made, taken back, or made again; the view already shows it. */
     on(event: 'change', listener: (change: Change) => void): () => void;
+    /** Its engine kept `version` of the case, whichever session saved it; the view shows it. */
+    on(event: 'saved', listener: (version: Version) => void): () => void;
+    /**
+     * Let the case go: its engine keeps the document or not, and the session's calls reject from
+     * then on. A session across a port closes its connection.
+     */
+    close(): void;
   }
 
   /**

@@ -7,7 +7,7 @@
 
 import { Model } from '@latkit/model';
 
-import { connect, serve, transferred, type Remote } from './channel.js';
+import { connect, serve, transferred } from './channel.js';
 import { check, type Check } from './check.js';
 import type { Port } from './port.js';
 import { protocol, type Progress } from './protocol.js';
@@ -40,6 +40,15 @@ const homes = new WeakMap<Model, string>();
 /** The token `model`'s server knows it by, or undefined for a model no peer serves. */
 export function homeOf(model: Model): string | undefined {
   return homes.get(model);
+}
+
+/**
+ * `model`, known to live where a realm serves it as `home`: a model a relay borrows keeps the
+ * token it arrived with, so the realm it lives in records it in place however many hops away.
+ */
+export function homed(model: Model, home: string | undefined): Model {
+  if (home !== undefined) homes.set(model, home);
+  return model;
 }
 
 /** A token no two served models in any realm share. */
@@ -103,7 +112,7 @@ export function serveModel(
 
 /**
  * Open the model a `serveModel` peer serves: its classes load across the port as they are asked
- * for. Closing it closes the connection.
+ * for. Closing the model closes the connection.
  *
  * @param options - `id` selects the matching scoped service; omit it for the default `model`.
  *
@@ -116,7 +125,7 @@ export async function connectModel(
     readonly signal?: AbortSignal;
     readonly progress?: Progress;
   } = {},
-): Promise<Remote<Model>> {
+): Promise<Model> {
   const calls = connect(port, modelProtocol(options.id));
   const ask = async (request: Request, signal?: AbortSignal): Promise<Uint8Array> => {
     const reply = await calls.call(request, { signal });
@@ -133,9 +142,9 @@ export async function connectModel(
       core: () => Promise.resolve(reply.core),
       class: (id, signal) => ask({ op: 'class', id }, signal),
       bytes: (signal) => ask({ op: 'bytes' }, signal),
+      close: () => calls.close(),
     });
-    homes.set(model, reply.home);
-    return Object.assign(model, { close: () => calls.close() });
+    return homed(model, reply.home);
   } catch (error) {
     calls.close();
     throw error;

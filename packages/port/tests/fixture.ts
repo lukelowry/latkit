@@ -1,4 +1,4 @@
-import { Engine, Model, type Recording, type Series } from '@latkit/model';
+import { Document, Engine, Model, Refusal, type Recording, type Series } from '@latkit/model';
 
 /** Let every queued microtask-delivered message land. */
 export async function settle(rounds = 4): Promise<void> {
@@ -70,8 +70,8 @@ export function fixture(name = 'Fixture'): Fixture {
 
 /**
  * An engine that runs `script` for each recording, noting every model and input it is given;
- * `parse` checks an input, as a real engine's does, `studies` are what it offers, and `store`
- * keeps each recording's frames.
+ * `parse` checks an input, as a real engine's does, `studies` are what it offers, `store` keeps
+ * each recording's frames, and `formats`, `cases`, and `idleBytes` are the cases it keeps.
  */
 export class Scripted extends Engine {
   readonly inputs: unknown[] = [];
@@ -86,12 +86,18 @@ export class Scripted extends Engine {
       readonly parse?: (input: unknown) => unknown;
       readonly studies?: readonly Engine.Study[];
       readonly store?: () => Series.Store;
+      readonly formats?: readonly Document.Format[];
+      readonly cases?: Engine.Cases;
+      readonly idleBytes?: number;
     } = {},
   ) {
     super({
       concurrency: options.concurrency ?? 1,
       studies: options.studies,
       store: options.store,
+      formats: options.formats,
+      cases: options.cases,
+      idleBytes: options.idleBytes,
     });
     this.#script = script;
     this.#parse = options.parse ?? ((input) => input);
@@ -110,6 +116,30 @@ export class Scripted extends Engine {
     this.models.push(model);
     return this.#script(recorder, input, model);
   }
+}
+
+/** Cases kept in memory, each tagged by the write that made it. */
+export function memory(initial: Record<string, readonly number[]> = {}) {
+  const kept = new Map<string, { readonly bytes: Uint8Array; readonly tag: string }>();
+  let writes = 0;
+  for (const [name, bytes] of Object.entries(initial))
+    kept.set(name, { bytes: Uint8Array.from(bytes), tag: `t${++writes}` });
+  const store: Engine.Cases = {
+    list: () => Promise.resolve([...kept.keys()]),
+    read(name) {
+      const entry = kept.get(name);
+      if (!entry) return Promise.reject(new Error(`No case ${name}.`));
+      return Promise.resolve({ bytes: entry.bytes.slice(), tag: entry.tag });
+    },
+    write(name, bytes, tag) {
+      if ((kept.get(name)?.tag ?? null) !== tag)
+        return Promise.reject(new Error(`The case ${name} changed.`));
+      const next = `t${++writes}`;
+      kept.set(name, { bytes: bytes.slice(), tag: next });
+      return Promise.resolve(next);
+    },
+  };
+  return { store, kept, bytes: (name: string) => [...(kept.get(name)?.bytes ?? [])] };
 }
 
 /** One frame over the two buses at 0.5. */
@@ -178,3 +208,152 @@ export function ended(recording: Recording): Promise<void> {
     check();
   });
 }
+
+interface State {
+  readonly value: number;
+  readonly count: number;
+  readonly positions: Float32Array;
+}
+interface Step extends Document.Change {
+  readonly before: State;
+  readonly privateInverse: () => void;
+}
+
+/**
+ * A case of one number and a row of buses, editable in every way a test needs: `set` changes its
+ * value, `insert` adds a bus, `place` pins blocks, and `remove` and `record` are refused. Its steps
+ * keep a private inverse, as a vendor's may; `opening` holds a model open until it resolves.
+ */
+export class Editable extends Document {
+  state: State = { value: 0, count: 2, positions: new Float32Array(4).fill(NaN) };
+  applied = 0;
+  readonly models: Model[] = [];
+  opening: Promise<void> | null = null;
+  #schematic: Document.Schematic;
+
+  constructor() {
+    super();
+    this.#schematic = this.describe();
+  }
+  get schematic(): Document.Schematic {
+    return this.#schematic;
+  }
+  get palette(): readonly Document.BlockClass[] {
+    return [{ classId: 'bus', label: 'Bus', group: 'Network', ports: [] }];
+  }
+  keyOf(element: Model.Element): string | null {
+    const { classId, index } = element;
+    const count = classId === 'bus' ? this.state.count : classId === 'signal' ? 1 : 0;
+    return Number.isInteger(index) && index >= 0 && index < count ? `${classId}/${index}` : null;
+  }
+  find(key: string): Model.Element | null {
+    const [classId, at] = key.split('/');
+    const element = { classId, index: Number(at) };
+    return this.keyOf(element) === key ? element : null;
+  }
+  inspect(element: Model.Element): Document.Inspection | null {
+    const key = this.keyOf(element);
+    if (key === null) return null;
+    const net = { element: { classId: 'signal', index: 0 }, key: 'signal/0' };
+    return {
+      element,
+      key,
+      values:
+        element.classId === 'bus'
+          ? { kv: this.state.value, enabled: true, label: 'Bus', limit: null }
+          : {},
+      ports:
+        element.classId === 'bus'
+          ? [
+              { name: 'voltage', net },
+              { name: 'unused', net: null },
+            ]
+          : [],
+      members:
+        element.classId === 'signal'
+          ? Array.from({ length: this.state.count }, (_, index) => ({
+              owner: { element: { classId: 'bus', index }, key: `bus/${index}` },
+              port: 'voltage',
+            }))
+          : [],
+    };
+  }
+  bytes(): Promise<Uint8Array> {
+    return Promise.resolve(Uint8Array.of(this.state.value));
+  }
+
+  describe(): Document.Schematic {
+    return {
+      netlist: {
+        blockCount: this.state.count,
+        portStart: new Uint32Array(this.state.count + 1),
+        portFlow: new Uint8Array(),
+        netStart: Uint32Array.of(0),
+        netPorts: new Uint32Array(),
+      },
+      blocks: Array.from({ length: this.state.count }, (_, index) => ({ classId: 'bus', index })),
+      nets: [],
+      sources: [],
+      status: new Float32Array(),
+      positions: this.state.positions,
+      problems: [],
+    };
+  }
+  protected change(operations: readonly Document.Operation[]): Step | null {
+    const before = this.state;
+    let next = before;
+    let scope: Document.Change['scope'] = 'values';
+    const created: Model.Element[] = [];
+    for (const operation of operations) {
+      if (operation.kind === 'remove') throw new Refusal('Keep this bus', operation.elements[0]);
+      if (operation.kind === 'record') throw new Refusal('Nothing records here', operation.signal);
+      if (operation.kind === 'set') {
+        if (typeof operation.value !== 'number')
+          throw new Refusal('A number is required', operation.element);
+        next = { ...next, value: operation.value };
+      } else if (operation.kind === 'insert') {
+        created.push({ classId: 'bus', index: next.count });
+        next = {
+          ...next,
+          count: next.count + 1,
+          positions: new Float32Array((next.count + 1) * 2).fill(NaN),
+        };
+        scope = 'structure';
+      } else if (operation.kind === 'place') {
+        const positions = next.positions.slice();
+        operation.elements.forEach((element, i) => {
+          positions[element.index * 2] = operation.positions?.[i * 2] ?? NaN;
+          positions[element.index * 2 + 1] = operation.positions?.[i * 2 + 1] ?? NaN;
+        });
+        next = { ...next, positions };
+        scope = 'layout';
+      }
+    }
+    if (next === before || (scope === 'values' && next.value === before.value)) return null;
+    this.applied++;
+    this.state = next;
+    this.#schematic =
+      scope === 'structure' ? this.describe() : { ...this.#schematic, positions: next.positions };
+    return { label: 'Edit', scope, created, before, privateInverse() {} };
+  }
+  protected revert(change: Document.Change): Step {
+    const before = this.state;
+    this.state = (change as Step).before;
+    this.#schematic = this.describe();
+    return { label: 'Undo edit', scope: change.scope, created: [], before, privateInverse() {} };
+  }
+  protected async open(): Promise<Model> {
+    const value = this.state.value;
+    await this.opening;
+    const model = new Fixture(String(value));
+    this.models.push(model);
+    return model;
+  }
+}
+/** An edit that sets the first bus to `value`. */
+export const set = (value: number): Document.Operation => ({
+  kind: 'set',
+  element: { classId: 'bus', index: 0 },
+  column: 'kv',
+  value,
+});

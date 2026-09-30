@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { Refusal, type Engine, type Model } from '@latkit/model';
+import { Refusal, type Document, type Engine, type Model } from '@latkit/model';
 
 import {
   connect,
@@ -12,7 +12,18 @@ import {
   serveEngine,
   serveModel,
 } from '../src/index.js';
-import { ended, Fixture, fixture, FRAMES, kept, Scripted, settle } from './fixture.js';
+import {
+  Editable,
+  ended,
+  Fixture,
+  fixture,
+  FRAMES,
+  kept,
+  memory,
+  Scripted,
+  set,
+  settle,
+} from './fixture.js';
 
 const SIMULATION: Engine.Study = {
   id: 'simulation',
@@ -57,6 +68,43 @@ class Reader extends Scripted {
     this.files.push(`${model.name}: ${file.name}`);
     return { study: 'simulation', values: { tmax: Number(await textOf(file)) } };
   }
+}
+
+/** The format of an engine's test cases, noting every document it opens or makes. */
+function editables(): { readonly format: Document.Format; readonly opened: Editable[] } {
+  const opened: Editable[] = [];
+  const made = (value: number): Promise<Document> => {
+    const document = new Editable();
+    document.state = { ...document.state, value };
+    opened.push(document);
+    return Promise.resolve(document);
+  };
+  return {
+    opened,
+    format: {
+      id: 'test',
+      label: 'Test',
+      extensions: ['.case'],
+      open: (bytes) => made(bytes[0] ?? 0),
+      create: (title) => made(title.length),
+    },
+  };
+}
+
+/** An engine keeping `initial` cases in memory, on one side of a loopback, and a peer of it. */
+async function keeper(initial: Record<string, readonly number[]> = {}, idleBytes?: number) {
+  const { format, opened } = editables();
+  const kept = memory(initial);
+  const engine = new Scripted(async () => undefined, {
+    formats: [format],
+    cases: kept.store,
+    ...(idleBytes === undefined ? {} : { idleBytes }),
+  });
+  const [server, client] = loopback();
+  const onClose = vi.fn();
+  serveEngine(server, engine, { onClose });
+  const remote = await connectEngine(client);
+  return { engine, opened, server, client, remote, onClose, ...kept };
 }
 
 describe('engine service', () => {
@@ -204,7 +252,7 @@ describe('engine service', () => {
       runs.call({ op: 'read', run: 1, classId: 'bus', signalIndex: 0, window: WINDOW }),
     ).rejects.toThrow('run 1 was let go');
     expect([...(await second.series('bus')!.read(0, WINDOW)).values]).toEqual([1, 2]);
-    remote.close();
+    await remote.close();
     await vi.waitFor(() => expect(stores.map((store) => store.closed)).toEqual([true, true]));
   });
 
@@ -272,7 +320,7 @@ describe('engine service', () => {
     expect(recording.state.error).toBeNull();
     expect(recording.log.map(({ message }) => message)).toEqual(expected);
     recording.close();
-    remote.close();
+    await remote.close();
   });
 
   it('fails a recording with why the served engine refused its input or failed', async () => {
@@ -424,15 +472,11 @@ describe('engine service', () => {
     const onClose = vi.fn();
     serveEngine(server, new Scripted(async () => {}), { onClose });
     const remote = await connectEngine(client);
-    remote.close();
+    await remote.close();
     await settle();
     expect(onClose).toHaveBeenCalledOnce();
-    const recording = remote.record(fixture(), null);
-    await ended(recording);
-    expect(recording.state).toMatchObject({
-      status: 'failed',
-      error: 'The connection was closed.',
-    });
+    expect(() => remote.record(fixture(), null)).toThrow('The engine was closed.');
+    await expect(remote.open('a.case')).rejects.toThrow(/closed/);
 
     const [otherServer, otherClient] = loopback();
     const stop = serveEngine(otherServer, new Scripted(() => new Promise<void>(() => {})));
@@ -505,8 +549,8 @@ describe('engine service', () => {
   it('orders a change that overtakes the first offer by its revision', async () => {
     const [server, client] = loopback();
     const service = serve(server, protocol<unknown, unknown, unknown>('engine:studies'), () => {
-      service.emit({ revision: 2, studies: [SIMULATION, SWEEP], reads: false });
-      return Promise.resolve({ revision: 1, studies: [SIMULATION], reads: false });
+      service.emit({ revision: 2, studies: [SIMULATION, SWEEP], reads: false, formats: [] });
+      return Promise.resolve({ revision: 1, studies: [SIMULATION], reads: false, formats: [] });
     });
     const remote = await connectEngine(client);
     expect(remote.studies.map((study) => study.id)).toEqual(['simulation', 'sweep']);
@@ -519,6 +563,7 @@ describe('engine service', () => {
         revision: 0,
         studies: [{ id: 's', label: 'S', parameters: [{ id: 'a', kind: 'date', label: 'A' }] }],
         reads: false,
+        formats: [],
       }),
     );
     await expect(connectEngine(client)).rejects.toThrow("study 's' parameter 'a' is malformed");
@@ -538,5 +583,84 @@ describe('engine service', () => {
     const [plainServer, plainClient] = loopback();
     serveEngine(plainServer, new Scripted(async () => {}));
     expect((await connectEngine(plainClient)).read).toBeUndefined();
+  });
+  it('offers the formats its cases are in, and lists the cases it keeps', async () => {
+    const { remote } = await keeper({ 'b.case': [2], 'a.case': [1], 'notes.txt': [0] });
+    expect(remote.formats).toEqual([
+      { id: 'test', label: 'Test', extensions: ['.case'], creates: true },
+    ]);
+    expect(await remote.cases()).toEqual([
+      { name: 'a.case', format: 'test', saved: null },
+      { name: 'b.case', format: 'test', saved: null },
+    ]);
+  });
+
+  it('opens a case as a session on the one document the engine holds, for every peer', async () => {
+    const { engine, opened, remote } = await keeper({ 'a.case': [3] });
+    const [server, client] = loopback();
+    serveEngine(server, engine);
+    const other = await connectEngine(client);
+    const [first, second] = await Promise.all([remote.open('a.case'), other.open('a.case')]);
+    expect(opened).toHaveLength(1);
+    await first.apply(set(8));
+    await vi.waitFor(() => expect(second.view.version.revision).toBe(1));
+    expect([...(await second.bytes())]).toEqual([8]);
+    const model = await second.model();
+    const recording = other.record(model, null);
+    await ended(recording);
+    expect(recording.state.status).toBe('complete');
+    expect(engine.models[0]).toBe(opened[0]!.models[0]);
+  });
+
+  it('creates a case titled or from a file its peer lends, keeping it at once', async () => {
+    const { remote, client, bytes } = await keeper();
+    const titled = await remote.create('new.case', { title: 'abc' });
+    expect(bytes('new.case')).toEqual([3]);
+    expect(titled.view.version.revision).toBe(0);
+    const copied = await remote.create('copy.case', {
+      file: new File([Uint8Array.of(9)], 'copy.case'),
+    });
+    expect(bytes('copy.case')).toEqual([9]);
+    expect([...(await copied.bytes())]).toEqual([9]);
+    await expect(remote.create('new.case', { title: 'again' })).rejects.toThrow('exists');
+    const raw = connect(client, protocol<unknown, unknown>('engine:cases'));
+    await expect(raw.call({ op: 'create', name: 'x.case' })).rejects.toThrow(
+      'titled, or read from a file',
+    );
+    await expect(raw.call({ op: 'open' })).rejects.toThrow(
+      'engine:cases request.name must be a string',
+    );
+  });
+
+  it('saves the version a peer names, refusing one gone by', async () => {
+    const { remote, bytes } = await keeper({ 'a.case': [1] });
+    const session = await remote.open('a.case');
+    await session.apply(set(5));
+    const five = session.view.version;
+    expect(await remote.save('a.case', five)).toEqual({
+      name: 'a.case',
+      format: 'test',
+      saved: five,
+    });
+    expect(bytes('a.case')).toEqual([5]);
+    await session.apply(set(6));
+    await expect(remote.save('a.case', five)).rejects.toThrow('The document changed');
+    expect(bytes('a.case')).toEqual([5]);
+    expect((await remote.cases())[0]!.saved).toEqual(five);
+  });
+
+  it('lets every session go with the port, keeping unsaved edits where the engine holds them', async () => {
+    const { engine, server, client, remote, onClose } = await keeper({ 'a.case': [1] }, 0);
+    const session = await remote.open('a.case');
+    await session.apply(set(2));
+    server.fail('connection lost');
+    client.fail('connection lost');
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalled());
+    await expect(session.bytes()).rejects.toThrow();
+    const [nextServer, nextClient] = loopback();
+    serveEngine(nextServer, engine);
+    const again = await (await connectEngine(nextClient)).open('a.case');
+    expect(again.view.version).toEqual(session.view.version);
+    expect([...(await again.bytes())]).toEqual([2]);
   });
 });

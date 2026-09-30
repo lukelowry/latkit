@@ -201,7 +201,15 @@ export abstract class Model {
   }
 
   /**
-   * The model a source holds, its classes unpacked as they load.
+   * Let go of what it holds once nothing reads it: a model opened from a source closes the source,
+   * such as a connection across a port; one made here holds nothing to let go of.
+   */
+  close(): void {
+    // A model made here holds nothing beyond itself.
+  }
+
+  /**
+   * The model a source holds, its classes unpacked as they load. Closing it closes the source.
    *
    * @throws Error when the core is not a valid pack or describes an inconsistent model.
    */
@@ -517,6 +525,10 @@ class Unpacked extends Model {
 
   bytes(signal?: AbortSignal): Promise<Uint8Array> {
     return this.#source.bytes(signal);
+  }
+
+  override close(): void {
+    this.#source.close?.();
   }
 
   /** The source it opened from: no class decoded, checked, or packed again; never its `close`. */

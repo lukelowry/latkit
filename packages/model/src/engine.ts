@@ -1,16 +1,23 @@
 /**
- * An engine: what records a model. A host has it record any model into a recording, held where
- * the engine runs and served from there across a port. The studies it offers are the forms a host
- * fills to name an input.
+ * An engine: a vendor, as a host reaches it. It keeps the vendor's cases, opens them for editing,
+ * and records any model into a recording, each held where the engine runs and served from there
+ * across a port. The studies it offers are the forms a host fills to name an input.
  */
 
+import type { Document } from './document.js';
 import type { Domain } from './domain.js';
 import { checkStudy, problemsOf, shownOf, valuesOf } from './form.js';
+import { Holdings } from './holdings.js';
 import { listeners } from './listeners.js';
 import type { Model } from './model.js';
 import { hold, type Recording } from './recording.js';
 import { Refusal } from './refusal.js';
 import type { Series } from './series.js';
+
+/** Bytes of clean cases an engine keeps open for no one, unless its host says otherwise. */
+const IDLE_BYTES = 256 << 20;
+
+const NO_FORMATS: readonly Engine.Format[] = Object.freeze([]);
 
 /** One recording waiting its turn. */
 interface Waiting {
@@ -20,13 +27,15 @@ interface Waiting {
 }
 
 /**
- * What records a model: a simulator, a solver, an analysis, a feed. Subclass it: `parse` what an
- * input may be, and `execute` one, writing frames through the recorder. One engine records any
- * model it is given; the base runs as many recordings at once as its concurrency allows and
- * queues the rest in order, telling each how many wait before it, and keeps each recording's
- * frames in the store its host gives it. Once it offers a study, an engine records only an input
- * that names one it offers, `{ study, values }`, and the base checks the values against that
- * study's form before `parse` sees them.
+ * A vendor: a simulator, a solver, an analysis, a feed, and the cases it reads. Subclass it:
+ * `parse` what an input may be, and `execute` one, writing frames through the recorder; give it
+ * the formats its cases are in and the store that keeps them, and it keeps them too. One engine
+ * records any model it is given; the base runs as many recordings at once as its concurrency
+ * allows and queues the rest in order, telling each how many wait before it, and keeps each
+ * recording's frames in the store its host gives it. Once it offers a study, an engine records only
+ * an input that names one it offers, `{ study, values }`, and the base checks the values against
+ * that study's form before `parse` sees them. A case opens as a `Document.Session` on the one
+ * document the engine holds for it, so every model a session makes is recorded where it lives.
  */
 export abstract class Engine {
   /** Recordings it makes at once; the rest wait their turn, in order. */
@@ -40,31 +49,129 @@ export abstract class Engine {
   #offering = false;
   readonly #changes = listeners();
   readonly #store: (() => Series.Store) | undefined;
+  readonly #holdings: Holdings | null;
+  /** Every recording it made that may still grow. */
+  readonly #recordings = new Set<Recording>();
+  /** Every recording it computes or queues, until it settles. */
+  readonly #work = new Set<Promise<void>>();
+  #closing: Promise<void> | null = null;
 
   /**
    * @param options - `concurrency`: recordings it makes at once, `Infinity` for an engine that
    * queues for itself; `studies`: what it offers from the start; `store`: a store for each
-   * recording's frames, in memory when absent. @defaultValue `{ concurrency: 1 }`
-   * @throws RangeError when `concurrency` is below one; Error naming what is inconsistent in a
-   * study's form.
+   * recording's frames, in memory when absent; `formats`: the formats its cases are in; `cases`:
+   * the store that keeps them, none when absent; `idleBytes`: the bytes of clean cases it keeps
+   * open for no one, 256 MiB when absent. @defaultValue `{ concurrency: 1 }`
+   * @throws RangeError when `concurrency` is below one or `idleBytes` below zero; Error naming
+   * what is inconsistent in a study's form, or in its formats.
    */
   protected constructor(
     options: {
       readonly concurrency?: number;
       readonly studies?: readonly Engine.Study[];
       readonly store?: () => Series.Store;
+      readonly formats?: readonly Document.Format[];
+      readonly cases?: Engine.Cases;
+      readonly idleBytes?: number;
     } = {},
   ) {
     const concurrency = options.concurrency ?? 1;
     if (!(concurrency >= 1)) throw new RangeError('an engine records at least one model at once');
     this.concurrency = concurrency;
     this.#store = options.store;
+    this.#holdings =
+      options.formats || options.cases
+        ? new Holdings(
+            options.formats ?? [],
+            options.cases ?? null,
+            options.idleBytes ?? IDLE_BYTES,
+          )
+        : null;
     for (const study of options.studies ?? []) this.#offer(study);
   }
 
   /** The studies it offers, in order: what a host lists, draws as forms, and records by name. */
   get studies(): readonly Engine.Study[] {
     return this.#offered;
+  }
+
+  /** The formats its cases are in: what a host offers to create or import. */
+  get formats(): readonly Engine.Format[] {
+    return this.#holdings?.formats ?? NO_FORMATS;
+  }
+
+  /**
+   * The cases it keeps in a format it opens, by name, with the version each open one last saved.
+   * None for an engine that keeps no cases.
+   */
+  cases(signal?: AbortSignal): Promise<readonly Engine.Case[]> {
+    try {
+      return this.#holdings ? this.#holdings.list(signal) : Promise.resolve([]);
+    } catch (error) {
+      return Promise.reject(asError(error));
+    }
+  }
+
+  /**
+   * A session on case `name`: the document the engine holds open on it, opened unless it is.
+   * Every session on a case shares that one document, its history, and its queue; closing the
+   * session lets the engine keep the document or not.
+   *
+   * @throws Error when it keeps no such case, no format it opens claims the name, or the case
+   * does not open.
+   */
+  open(name: string, signal?: AbortSignal): Promise<Document.Session> {
+    try {
+      return this.#held().open(name, signal);
+    } catch (error) {
+      return Promise.reject(asError(error));
+    }
+  }
+
+  /**
+   * A new case at `name`, in the format its extension names, kept at once: empty and titled
+   * `from.title`, or what `from.file` holds as that format opens it. A session on it.
+   *
+   * @throws Error when the name is taken or no format claims it, the format cannot create a case,
+   * or refuses the file.
+   */
+  create(
+    name: string,
+    from: { readonly title: string } | { readonly file: Engine.File },
+    signal?: AbortSignal,
+  ): Promise<Document.Session> {
+    try {
+      return this.#held().create(name, from, signal);
+    } catch (error) {
+      return Promise.reject(asError(error));
+    }
+  }
+
+  /**
+   * Keep case `name` as its document stands at `version`: the version its sessions count as saved
+   * from then on.
+   *
+   * @throws DocumentConflict when the document is no longer at `version`; Error when the case is
+   * not open, or its store refuses the bytes, such as when the case changed outside the engine.
+   */
+  save(name: string, version: Document.Version, signal?: AbortSignal): Promise<Engine.Case> {
+    try {
+      return this.#held().save(name, version, signal);
+    } catch (error) {
+      return Promise.reject(asError(error));
+    }
+  }
+
+  /**
+   * Stop: every recording it may still grow stops, every session on its cases closes, and it
+   * resolves once its work has ended. It records and opens nothing after.
+   */
+  close(): Promise<void> {
+    this.#closing ??= (async () => {
+      for (const recording of [...this.#recordings]) recording.stop();
+      await Promise.allSettled([...this.#work, this.#holdings?.close()]);
+    })();
+    return this.#closing;
   }
 
   /** Its studies changed: one was offered, taken over, or withdrawn. */
@@ -106,11 +213,21 @@ export abstract class Engine {
     input: unknown,
     options: { readonly id?: string; readonly label?: string } = {},
   ): Recording {
+    if (this.#closing) throw new Error('The engine was closed.');
     const study = this.#offering ? this.#check(model, input) : null;
     const parsed = this.parse(study ? study.input : input);
     const header =
       study && options.label === undefined ? { ...options, label: study.label } : options;
-    return this.begin(model, parsed, header);
+    const recording = this.begin(model, parsed, header);
+    if (live(recording)) {
+      this.#recordings.add(recording);
+      const off = recording.on('change', () => {
+        if (live(recording)) return;
+        off();
+        this.#recordings.delete(recording);
+      });
+    }
+    return recording;
   }
 
   /**
@@ -139,7 +256,18 @@ export abstract class Engine {
     input: unknown,
     header: { readonly id?: string; readonly label?: string },
   ): Recording {
-    return hold(model, header, (recorder) => this.#take(model, input, recorder), this.#store?.());
+    return hold(
+      model,
+      header,
+      (recorder) => {
+        const taking = this.#take(model, input, recorder);
+        this.#work.add(taking);
+        const settled = (): void => void this.#work.delete(taking);
+        void taking.then(settled, settled);
+        return taking;
+      },
+      this.#store?.(),
+    );
   }
 
   /**
@@ -161,6 +289,13 @@ export abstract class Engine {
     input: unknown,
     recorder: Engine.Recorder,
   ): Promise<void>;
+
+  /** The cases it holds, while it holds any and is open. */
+  #held(): Holdings {
+    if (this.#closing) throw new Error('The engine was closed.');
+    if (!this.#holdings) throw new Error('The engine keeps no cases.');
+    return this.#holdings;
+  }
 
   #offer(study: Engine.Study): () => void {
     const kept = checkStudy(study);
@@ -259,8 +394,61 @@ export abstract class Engine {
   }
 }
 
-/** What an engine writes through, and the studies it offers. */
+/** What an engine writes through, the studies it offers, and the cases it keeps. */
 export declare namespace Engine {
+  /** A format an engine's cases are in, as a host offers it to create or import. */
+  interface Format {
+    /** The format's identity, as its models name it. */
+    readonly id: string;
+    readonly label: string;
+    /** Name suffixes including the dot, preferred first, such as `.case.json`. */
+    readonly extensions: readonly string[];
+    /** Whether it makes an empty case, as well as opening one. */
+    readonly creates: boolean;
+  }
+  /** A case an engine keeps. */
+  interface Case {
+    /** Its name among the engine's cases, such as `models/ieee39.case.json`. */
+    readonly name: string;
+    /** The format its extension names. */
+    readonly format: string;
+    /**
+     * The version of its open document it last saved; its document holds unsaved edits while its
+     * version is past this one. Null while the engine does not hold it open.
+     */
+    readonly saved: Document.Version | null;
+  }
+  /**
+   * Where an engine keeps its cases: bytes by name, each read or written with the tag the store
+   * gives what it holds, so a write replaces only what the engine last read or wrote. A host gives
+   * it; a directory, a bucket, and memory are each one. Names are the store's to check.
+   */
+  interface Cases {
+    /** The name of every case it keeps, in any order. */
+    list(signal?: AbortSignal): Promise<readonly string[]>;
+    /**
+     * Case `name`'s bytes, the caller's own, and the tag of what they are.
+     *
+     * @throws Error when it keeps no such case.
+     */
+    read(
+      name: string,
+      signal?: AbortSignal,
+    ): Promise<{ readonly bytes: Uint8Array; readonly tag: string }>;
+    /**
+     * Keep `bytes` as case `name` in one step: in place of what `tag` names, or where there is no
+     * such case when `tag` is null. Resolves with the new content's tag.
+     *
+     * @throws Error saying why when the case is no longer what `tag` names, or exists when `tag`
+     * is null; what it kept is unchanged.
+     */
+    write(
+      name: string,
+      bytes: Uint8Array,
+      tag: string | null,
+      signal?: AbortSignal,
+    ): Promise<string>;
+  }
   /**
    * A recording as its engine writes it. Every call before the engine resolves is in order; once
    * it ends, an append throws and the rest do nothing.
@@ -417,6 +605,16 @@ function isInput(value: unknown): value is Engine.Input {
     values !== null &&
     !Array.isArray(values)
   );
+}
+
+/** Whether `recording` may still grow. */
+function live(recording: Recording): boolean {
+  const { status } = recording.state;
+  return status === 'waiting' || status === 'recording';
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 /** Why `signal` aborted, as an error. */

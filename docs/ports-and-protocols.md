@@ -33,15 +33,16 @@ const port = messagePort(new Worker(new URL('./worker.ts', import.meta.url), { t
 Each constructor takes its target structurally, so a `Worker`, a webview API, or a socket passes as
 it is; `Port` is the one named type on that side of the surface.
 
-## Serve a model and an engine
+## Serve an engine
 
-The half that holds a model serves it; the other half connects and gets the same `Model`, its
-classes loading across the port as they are asked for: the core at once, one shard per class as it
-is first asked for, and the case's bytes on request. A model opened from packs serves them as they
-came, so a relay decodes nothing. One model is served per port; a worker that holds several serves
-each on a channel of its own.
+An engine is a vendor: served on one port, it carries all of it. The half that holds the cases
+and the solver serves the engine; the other half connects and gets an `Engine` whose cases,
+studies, and recordings are the peer's. A case it opens is a `Document.Session` on the document the
+peer holds, served as a document service of its own on the same port, so the case never crosses:
+only its view, the edits made to it, and the models it captures do, a model's core at once and one
+shard per class as it is first asked for.
 
-An engine is served on its own and records any model it is given. A model its realm serves is
+An engine records any model it is given. A model its realm serves, as every session's is, is
 recorded where it lives; any other is lent by its source for as long as the recording lasts, the
 engine reading only what it needs, and a file an input gives is lent the same way. Each recording
 is held where the engine runs, its frames in the engine's store; the caller's side follows its
@@ -49,25 +50,20 @@ changes as they come and reads its frames a window at a time, and closing it let
 side let it go.
 
 ```ts
-// worker.ts
-import { messagePort, serveEngine, serveModel } from '@latkit/port';
+// worker.ts: the cases and the solver are here.
+import { messagePort, serveEngine } from '@latkit/port';
 
-serveEngine(messagePort(self), new GridkitEngine(server));
-// Each case arrives with a channel of its own.
-self.addEventListener('message', ({ data }) => {
-  if (data.open) serveModel(messagePort(data.open.port), new GridkitCase(data.open.bytes));
-});
+serveEngine(messagePort(self), new GridkitEngine(cases, lanes));
 
 // page.ts
-import { connectEngine, connectModel, messagePort } from '@latkit/port';
+import { connectEngine, messagePort } from '@latkit/port';
 
 const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
 const engine = await connectEngine(messagePort(worker));
-const { port1, port2 } = new MessageChannel();
-worker.postMessage({ open: { port: port2, bytes } }, [port2]);
-const model = await connectModel(messagePort(port1), {
-  progress: (loaded, total) => bar.set(loaded / total),
-});
+engine.formats; // what it opens and creates
+await engine.cases(); // what it keeps
+const session = await engine.open('ieee39.case.json');
+const model = await session.model();
 const recording = engine.record(model, input, { id: 'fault-4' });
 network.setChannel('vertexColor', await recording.field(VM));
 recording.on('change', () => status(recording.state)); // waiting → recording → complete | stopped | failed
@@ -75,15 +71,32 @@ recording.on('change', () => status(recording.state)); // waiting → recording 
 // On teardown:
 recording.close();
 model.close();
-engine.close();
+session.close();
+await engine.close();
 ```
 
-A connected model or engine is a `Remote<T>`: the model or engine, plus `close`. The served engine
-checks every input with its own `parse`, queues what it cannot take at once and says how many wait
-ahead, and stops when the far recording stops. A model or an engine still opening can be served as
-a promise, so no early request is lost. A connected engine resolves once the studies its peer
-offers are in; it offers them too, following each change, and checks a study's form where it is,
-so a refusal comes before anything crosses.
+The served engine checks every input with its own `parse`, queues what it cannot take at once and
+says how many wait ahead, and stops when the far recording stops. A connected engine resolves once
+the studies and formats its peer offers are in; it offers them too, following each change, and
+checks a study's form where it is, so a refusal comes before anything crosses. Closing it stops
+what it follows and closes the connection; the peer lets go of every recording and session the
+connection held, and keeps each case's unsaved edits.
+
+## Serve a model
+
+A model outside any engine, such as one a catalog holds, is served on its own: the other half
+connects and gets the same `Model`, its classes loading across the port as they are asked for. A
+model opened from packs serves them as they came, so a relay decodes nothing. One model is served
+per port or per scoped id; closing the connected model closes its connection.
+
+```ts
+import { connectModel, serveModel } from '@latkit/port';
+
+serveModel(port, catalogModel);
+const model = await connectModel(peerPort, {
+  progress: (loaded, total) => bar.set(loaded / total),
+});
+```
 
 ## Serve a recording
 
@@ -203,6 +216,9 @@ const search = connect(client, SEARCH);
 client.fail('worker crashed'); // every connection on `client` closes with this reason
 ```
 
-## Edit a document across a port
+## Edit a case across a port
 
-`serveDocument` and `connectDocument` expose asynchronous editing with a cached view, revision conflicts, reconnect replay, and immutable model snapshots. See [Document sessions](document-sessions.md) for the API, resource limits, and wire contract.
+`engine.open` and `engine.create` on a connected engine answer with a session on the peer's
+document: asynchronous editing with a view kept on this side, revision conflicts, and immutable
+model snapshots recorded where they live. See [Document sessions](document-sessions.md) for the
+API, what the engine keeps open, resource limits, and the wire contract.

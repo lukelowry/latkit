@@ -1,386 +1,88 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Document, DocumentConflict, Refusal, type Model } from '@latkit/model';
+import { DocumentConflict, type Document, type Engine, type Model } from '@latkit/model';
 
 import {
   connect,
-  connectDocument,
   connectEngine,
-  connectModel,
   loopback,
   messagePort,
   protocol,
-  serveDocument,
   serveEngine,
-  serveModel,
   type Port,
 } from '../src/index.js';
-import { DOCUMENT, type Reply, type Request, type Update } from '../src/document-protocol.js';
+import { documentProtocol, type Reply, type Update } from '../src/document-protocol.js';
 import { hosted } from '../src/model.js';
-import { ended, Fixture, Scripted, settle } from './fixture.js';
+import { Editable, ended, Fixture, memory, Scripted, set, settle } from './fixture.js';
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
   for (const close of cleanups.splice(0)) close();
 });
 
-interface State {
-  readonly value: number;
-  readonly count: number;
-  readonly positions: Float32Array;
-}
-interface Step extends Document.Change {
-  readonly before: State;
-  readonly privateInverse: () => void;
+/** The engine's own cases protocol, as a raw peer speaks it. */
+const CASES = protocol<unknown, { readonly session: string }>('engine:cases');
+
+/**
+ * An engine keeping one case, `a.case`, which opens as `document`; `idleBytes` is its budget for
+ * clean cases no one uses.
+ */
+function keeping(document: Editable, idleBytes?: number): Scripted {
+  const format: Document.Format = {
+    id: 'test',
+    label: 'Test',
+    extensions: ['.case'],
+    open: () => Promise.resolve(document),
+  };
+  return new Scripted(async () => undefined, {
+    formats: [format],
+    cases: memory({ 'a.case': [0] }).store,
+    ...(idleBytes === undefined ? {} : { idleBytes }),
+  });
 }
 
-class Editable extends Document {
-  state: State = { value: 0, count: 2, positions: new Float32Array(4).fill(NaN) };
-  applied = 0;
-  readonly models: Model[] = [];
-  opening: Promise<void> | null = null;
-  #schematic: Document.Schematic;
-
-  constructor() {
-    super();
-    this.#schematic = this.describe();
-  }
-  get schematic(): Document.Schematic {
-    return this.#schematic;
-  }
-  get palette(): readonly Document.BlockClass[] {
-    return [{ classId: 'bus', label: 'Bus', group: 'Network', ports: [] }];
-  }
-  keyOf(element: Model.Element): string | null {
-    const { classId, index } = element;
-    const count = classId === 'bus' ? this.state.count : classId === 'signal' ? 1 : 0;
-    return Number.isInteger(index) && index >= 0 && index < count ? `${classId}/${index}` : null;
-  }
-  find(key: string): Model.Element | null {
-    const [classId, at] = key.split('/');
-    const element = { classId, index: Number(at) };
-    return this.keyOf(element) === key ? element : null;
-  }
-  inspect(element: Model.Element): Document.Inspection | null {
-    const key = this.keyOf(element);
-    if (key === null) return null;
-    const net = { element: { classId: 'signal', index: 0 }, key: 'signal/0' };
-    return {
-      element,
-      key,
-      values:
-        element.classId === 'bus'
-          ? { kv: this.state.value, enabled: true, label: 'Bus', limit: null }
-          : {},
-      ports:
-        element.classId === 'bus'
-          ? [
-              { name: 'voltage', net },
-              { name: 'unused', net: null },
-            ]
-          : [],
-      members:
-        element.classId === 'signal'
-          ? Array.from({ length: this.state.count }, (_, index) => ({
-              owner: { element: { classId: 'bus', index }, key: `bus/${index}` },
-              port: 'voltage',
-            }))
-          : [],
-    };
-  }
-  bytes(): Promise<Uint8Array> {
-    return Promise.resolve(Uint8Array.of(this.state.value));
-  }
-
-  describe(): Document.Schematic {
-    return {
-      netlist: {
-        blockCount: this.state.count,
-        portStart: new Uint32Array(this.state.count + 1),
-        portFlow: new Uint8Array(),
-        netStart: Uint32Array.of(0),
-        netPorts: new Uint32Array(),
-      },
-      blocks: Array.from({ length: this.state.count }, (_, index) => ({ classId: 'bus', index })),
-      nets: [],
-      sources: [],
-      status: new Float32Array(),
-      positions: this.state.positions,
-      problems: [],
-    };
-  }
-  protected change(operations: readonly Document.Operation[]): Step | null {
-    const before = this.state;
-    let next = before;
-    let scope: Document.Change['scope'] = 'values';
-    const created: Model.Element[] = [];
-    for (const operation of operations) {
-      if (operation.kind === 'remove') throw new Refusal('Keep this bus', operation.elements[0]);
-      if (operation.kind === 'record') throw new Refusal('Nothing records here', operation.signal);
-      if (operation.kind === 'set') {
-        if (typeof operation.value !== 'number')
-          throw new Refusal('A number is required', operation.element);
-        next = { ...next, value: operation.value };
-      } else if (operation.kind === 'insert') {
-        created.push({ classId: 'bus', index: next.count });
-        next = {
-          ...next,
-          count: next.count + 1,
-          positions: new Float32Array((next.count + 1) * 2).fill(NaN),
-        };
-        scope = 'structure';
-      } else if (operation.kind === 'place') {
-        const positions = next.positions.slice();
-        operation.elements.forEach((element, i) => {
-          positions[element.index * 2] = operation.positions?.[i * 2] ?? NaN;
-          positions[element.index * 2 + 1] = operation.positions?.[i * 2 + 1] ?? NaN;
-        });
-        next = { ...next, positions };
-        scope = 'layout';
-      }
-    }
-    if (next === before || (scope === 'values' && next.value === before.value)) return null;
-    this.applied++;
-    this.state = next;
-    this.#schematic =
-      scope === 'structure' ? this.describe() : { ...this.#schematic, positions: next.positions };
-    return { label: 'Edit', scope, created, before, privateInverse() {} };
-  }
-  protected revert(change: Document.Change): Step {
-    const before = this.state;
-    this.state = (change as Step).before;
-    this.#schematic = this.describe();
-    return { label: 'Undo edit', scope: change.scope, created: [], before, privateInverse() {} };
-  }
-  protected async open(): Promise<Model> {
-    const value = this.state.value;
-    await this.opening;
-    const model = new Fixture(String(value));
-    this.models.push(model);
-    return model;
-  }
-}
-const set = (value: number): Document.Operation => ({
-  kind: 'set',
-  element: { classId: 'bus', index: 0 },
-  column: 'kv',
-  value,
-});
-async function setup(document = new Editable()) {
+/** A peer of `engine`, its side of the port through `wrap`, with a session on `a.case`. */
+async function peer(engine: Engine, wrap: (server: Port) => Port = (server) => server) {
   const [server, client] = loopback();
-  const stop = serveDocument(server, document);
-  cleanups.push(stop);
-  const session = await connectDocument(client);
+  cleanups.push(serveEngine(wrap(server), engine));
+  const remote = await connectEngine(client);
+  cleanups.push(() => void remote.close());
+  const session = await remote.open('a.case');
   cleanups.push(() => session.close());
-  return { document, server, client, session, stop };
+  return { server, client, remote, session };
 }
+
+async function setup(document = new Editable(), idleBytes?: number) {
+  const engine = keeping(document, idleBytes);
+  return { document, engine, ...(await peer(engine)) };
+}
+
+/** A peer that speaks the document protocol itself, its session opened. */
 async function rawSetup(document = new Editable()) {
+  const engine = keeping(document);
   const [server, client] = loopback();
-  cleanups.push(serveDocument(server, document));
-  const calls = connect(client, DOCUMENT);
-  cleanups.push(() => calls.close());
+  cleanups.push(serveEngine(server, engine));
+  const cases = connect(client, CASES);
+  const { session } = await cases.call({ op: 'open', name: 'a.case' });
+  const calls = connect(client, documentProtocol(session));
+  cleanups.push(() => {
+    calls.close();
+    cases.close();
+  });
   const opened = await calls.call({ op: 'open' });
   if (opened.kind !== 'opened') throw new Error('not opened');
-  return { document, server, client, calls, opened };
+  return { document, engine, server, client, session, calls, opened };
 }
 
-describe('document service', () => {
-  it('serves a model without opening an unused document factory', async () => {
-    const [server, client] = loopback();
-    const factory = vi.fn(() => new Editable());
-    const onClose = vi.fn();
-    const stop = serveDocument(server, factory, { onClose });
-    cleanups.push(stop, serveModel(server, new Fixture()));
-    const model = await connectModel(client);
-    cleanups.push(() => model.close());
-    expect((await model.load('bus')).labels).toEqual(['Bus 1', 'Bus 2']);
-    expect(factory).not.toHaveBeenCalled();
-    stop();
-    stop();
-    await settle(12);
-    expect(factory).not.toHaveBeenCalled();
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
+/** The document updates a side posted. */
+function updatesOf(sent: { mock: { calls: unknown[][] } }): Update[] {
+  return sent.mock.calls
+    .map(([message]) => message as { kind: string; svc: string; body: Update })
+    .filter((message) => message.kind === 'event' && message.svc.startsWith('document:'))
+    .map((message) => message.body);
+}
 
-  it.each(['sync', 'async'] as const)(
-    'opens a %s factory only after a valid open request',
-    async (kind) => {
-      const document = new Editable();
-      const factory = vi.fn(() => (kind === 'sync' ? document : Promise.resolve(document)));
-      const [server, client] = loopback();
-      cleanups.push(serveDocument(server, factory));
-      const calls = connect(client, DOCUMENT);
-      cleanups.push(() => calls.close());
-      const raw = calls as ReturnType<typeof connect<unknown, Reply>>;
-      await expect(raw.call({ op: 'open', client: 42 })).rejects.toThrow();
-      await expect(calls.call({ op: 'view' })).rejects.toThrow('Open the document');
-      expect(factory).not.toHaveBeenCalled();
-      expect(await calls.call({ op: 'open' })).toMatchObject({ kind: 'opened' });
-      expect(await calls.call({ op: 'view' })).toMatchObject({ kind: 'view' });
-      expect(factory).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  it.each(['document', 'promise'] as const)(
-    'keeps eager initialization for a supplied %s',
-    async (kind) => {
-      const document = new Editable();
-      const on = vi.spyOn(document, 'on');
-      const [server, client] = loopback();
-      const source = kind === 'document' ? document : Promise.resolve(document);
-      cleanups.push(serveDocument(server, source));
-      await settle(12);
-      expect(on).toHaveBeenCalledTimes(1);
-      const session = await connectDocument(client);
-      cleanups.push(() => session.close());
-      await session.apply(set(5));
-      expect(document.state.value).toBe(5);
-      expect(on).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  it('shares initialization without letting one cancelled open cancel another', async () => {
-    const document = new Editable();
-    const on = vi.spyOn(document, 'on');
-    let resolve!: (document: Document) => void;
-    const pending = new Promise<Document>((done) => {
-      resolve = done;
-    });
-    const factory = vi.fn(() => pending);
-    const [server, client] = loopback();
-    cleanups.push(serveDocument(server, factory));
-    const calls = connect(client, DOCUMENT);
-    cleanups.push(() => calls.close());
-    const controller = new AbortController();
-    const first = calls.call({ op: 'open' }, { signal: controller.signal });
-    const second = calls.call({ op: 'open' });
-    await settle(12);
-    expect(factory).toHaveBeenCalledTimes(1);
-    expect(on).not.toHaveBeenCalled();
-    controller.abort();
-    await expect(first).rejects.toMatchObject({ name: 'AbortError' });
-    resolve(document);
-    expect(await second).toMatchObject({ kind: 'opened' });
-    expect(on).toHaveBeenCalledTimes(1);
-    expect(await calls.call({ op: 'view' })).toMatchObject({ kind: 'view' });
-    expect(factory).toHaveBeenCalledTimes(1);
-  });
-
-  it.each(['throw', 'reject'] as const)(
-    'shares a factory %s failure for the service lifetime',
-    async (kind) => {
-      const factory = vi.fn((): Document | Promise<Document> => {
-        const error = new Error('Cannot open the native file');
-        if (kind === 'throw') throw error;
-        return Promise.reject(error);
-      });
-      const [server, client] = loopback();
-      const stop = serveDocument(server, factory);
-      cleanups.push(stop);
-      const calls = connect(client, DOCUMENT);
-      cleanups.push(() => calls.close());
-      await Promise.all([
-        expect(calls.call({ op: 'open' })).rejects.toThrow('Cannot open the native file'),
-        expect(calls.call({ op: 'open' })).rejects.toThrow('Cannot open the native file'),
-      ]);
-      await expect(calls.call({ op: 'open' })).rejects.toThrow('Cannot open the native file');
-      expect(factory).toHaveBeenCalledTimes(1);
-      stop();
-
-      // A new registration makes its own attempt; failure is not cached by factory identity.
-      factory.mockReturnValue(new Editable());
-      const [nextServer, nextClient] = loopback();
-      cleanups.push(serveDocument(nextServer, factory));
-      const session = await connectDocument(nextClient);
-      cleanups.push(() => session.close());
-      expect(factory).toHaveBeenCalledTimes(2);
-    },
-  );
-
-  it.each([false, true])(
-    'observes an eager promise rejection before any open (closed: %s)',
-    async (closed) => {
-      const [server, client] = loopback();
-      const stop = serveDocument(server, Promise.reject(new Error('Native file failed')));
-      cleanups.push(stop);
-      if (closed) stop();
-      // Cross an event-loop turn so an unobserved rejection would fail the test.
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      if (!closed) await expect(connectDocument(client)).rejects.toThrow('Native file failed');
-    },
-  );
-
-  it('skips a scheduled factory when the service closes before invocation', async () => {
-    const factory = vi.fn(() => new Editable());
-    const [server, client] = loopback();
-    const stop = serveDocument(server, factory);
-    cleanups.push(stop);
-    const calls = connect(client, DOCUMENT);
-    cleanups.push(() => calls.close());
-    const opening = calls.call({ op: 'open' });
-    // The request lands first; closure runs before the factory's queued microtask.
-    queueMicrotask(stop);
-    await expect(opening).rejects.toThrow('closed');
-    expect(factory).not.toHaveBeenCalled();
-  });
-
-  it.each(['service', 'client', 'transport'] as const)(
-    'does not acquire a late document after %s closure',
-    async (closedBy) => {
-      const document = new Editable();
-      const on = vi.spyOn(document, 'on');
-      let resolve!: (document: Document) => void;
-      const pending = new Promise<Document>((done) => {
-        resolve = done;
-      });
-      const factory = vi.fn(() => pending);
-      const [server, client] = loopback();
-      const onClose = vi.fn();
-      const stop = serveDocument(server, factory, { onClose });
-      cleanups.push(stop);
-      const calls = connect(client, DOCUMENT);
-      cleanups.push(() => calls.close());
-      const opening = expect(calls.call({ op: 'open' })).rejects.toThrow(/closed|connection lost/);
-      await settle(12);
-      expect(factory).toHaveBeenCalledTimes(1);
-      if (closedBy === 'service') stop();
-      else if (closedBy === 'client') calls.close();
-      else {
-        server.fail('connection lost');
-        client.fail('connection lost');
-      }
-      await opening;
-      resolve(document);
-      await settle(20);
-      expect(on).not.toHaveBeenCalled();
-      expect(onClose).toHaveBeenCalledTimes(1);
-
-      // The host still owns the loaded document and can serve it elsewhere.
-      const next = await setup(document);
-      await next.session.apply(set(8));
-      expect(document.state.value).toBe(8);
-      expect(on).toHaveBeenCalledTimes(1);
-    },
-  );
-
-  it('observes a factory rejection after closure', async () => {
-    let reject!: (error: Error) => void;
-    const pending = new Promise<Document>((_resolve, fail) => {
-      reject = fail;
-    });
-    const factory = vi.fn(() => pending);
-    const [server, client] = loopback();
-    const stop = serveDocument(server, factory);
-    cleanups.push(stop);
-    const opening = expect(connectDocument(client)).rejects.toThrow('closed');
-    await settle(12);
-    expect(factory).toHaveBeenCalledTimes(1);
-    stop();
-    await opening;
-    reject(new Error('Native file failed after closure'));
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  });
-
-  it('opens a cached view and applies, undoes, and redoes without leaking private history', async () => {
+describe('case sessions across a port', () => {
+  it('opens a view and applies, undoes, and redoes without leaking private history', async () => {
     const { session, document } = await setup();
     expect(session.view.schematic.positions).toBeInstanceOf(Float32Array);
     expect(session.view.schematic.positions[0]).toBeNaN();
@@ -420,9 +122,9 @@ describe('document service', () => {
     expect(session.view.version.revision).toBe(1);
   });
 
-  it('shares the first native model across clients and preserves snapshots after editing', async () => {
-    const { session, document } = await setup();
-    const { session: other } = await setup(document);
+  it('shares the one document and its first model across peers, keeping snapshots after edits', async () => {
+    const { session, document, engine } = await setup();
+    const { session: other } = await peer(engine);
     expect(document.models).toEqual([]);
     const [first, second] = await Promise.all([session.model(), other.model()]);
     expect(document.models).toHaveLength(1);
@@ -430,7 +132,8 @@ describe('document service', () => {
     expect(await decode(first)).toBe('0');
     expect(await decode(second)).toBe('0');
     await session.apply(set(7));
-    const next = await session.model();
+    await vi.waitFor(() => expect(other.view.version.revision).toBe(1));
+    const next = await other.model();
     expect(document.models).toHaveLength(2);
     expect(await decode(next)).toBe('7');
     expect(await decode(first)).toBe('0');
@@ -457,12 +160,9 @@ describe('document service', () => {
     expect(document.schematic.positions.byteLength).toBe(16);
     expect(await session.model()).toBe(first);
     expect(document.models).toHaveLength(1);
-    const updates = sent.mock.calls
-      .map(([message]) => message as { kind: string; body: Update })
-      .filter((message) => message.kind === 'event')
-      .map((message) => message.body);
+    const updates = updatesOf(sent);
     expect(updates).toHaveLength(1);
-    expect(Object.keys(updates[0].schematic)).toEqual(['positions']);
+    expect(Object.keys(updates[0]!.schematic)).toEqual(['positions']);
     first.close();
   });
 
@@ -485,144 +185,55 @@ describe('document service', () => {
     expect([...session.view.schematic.positions].slice(0, 2)).toEqual([2, 3]);
   });
 
-  it('replays a receipt before checking revision, rejects reused identities, and bounds replay', async () => {
+  it('refuses an edit sent again after it landed, so none applies twice', async () => {
     const { calls, opened, document } = await rawSetup();
-    const command: Request = {
-      op: 'apply',
-      client: opened.client,
-      sequence: 1,
-      base: opened.view.version,
-      operations: [set(4)],
-    };
-    const receipt = await calls.call(command);
-    expect(await calls.call({ ...command })).toEqual(receipt);
-    await expect(calls.call({ ...command, operations: [set(5)] })).rejects.toThrow('reused');
-    expect(document.applied).toBe(1);
-    const view = await calls.call({ op: 'view' });
-    if (view.kind !== 'view') throw new Error('not a view');
-    await calls.call({ op: 'undo', client: opened.client, sequence: 2, base: view.view.version });
-    expect(await calls.call(command)).toMatchObject({ kind: 'expired' });
-    expect(document.state.value).toBe(0);
-  });
-
-  it('deduplicates no-ops and refusals, and reports stale epochs', async () => {
-    const { calls, opened } = await rawSetup();
-    const command = {
-      op: 'apply' as const,
-      client: opened.client,
-      sequence: 1,
-      base: opened.view.version,
-      operations: [set(0)],
-    };
-    expect(await calls.call(command)).toMatchObject({ kind: 'accepted', change: null });
-    expect(await calls.call(command)).toMatchObject({ kind: 'accepted', change: null });
-    const refused = {
-      ...command,
-      sequence: 2,
-      operations: [{ kind: 'remove' as const, elements: [{ classId: 'bus', index: 0 }] }],
-    };
-    expect(await calls.call(refused)).toMatchObject({ kind: 'refused' });
-    expect(await calls.call(refused)).toMatchObject({ kind: 'refused' });
+    const edit = { op: 'apply' as const, base: opened.view.version, operations: [set(4)] };
+    expect(await calls.call(edit)).toEqual({
+      kind: 'accepted',
+      version: { ...opened.view.version, revision: 1 },
+      change: { label: 'Edit', scope: 'values', created: [] },
+    });
+    expect(await calls.call(edit)).toEqual({
+      kind: 'conflict',
+      version: { ...opened.view.version, revision: 1 },
+    });
     expect(
-      await calls.call({ ...command, sequence: 3, base: { epoch: 'another-owner', revision: 0 } }),
+      await calls.call({ ...edit, operations: [set(0)], base: { epoch: 'x', revision: 1 } }),
     ).toMatchObject({ kind: 'conflict' });
+    expect(document.applied).toBe(1);
+    expect(document.state.value).toBe(4);
   });
-
-  it.each([
-    { lost: 'request', lazy: false },
-    { lost: 'reply', lazy: false },
-    { lost: 'request', lazy: true },
-    { lost: 'reply', lazy: true },
-  ] as const)(
-    'recovers a lost $lost on a new transport without duplicating the edit (factory: $lazy)',
-    async ({ lost, lazy }) => {
-      const document = new Editable();
-      const source = lazy ? () => document : document;
-      const [server, client] = loopback();
-      let disrupt = false;
-      const fail = () => {
-        server.fail('connection lost');
-        client.fail('connection lost');
-      };
-      const serving: Port = {
-        ...server,
-        post(message, transfer) {
-          const envelope = message as { kind: string; body?: { kind?: string } };
-          if (disrupt && lost === 'reply' && envelope.kind === 'event') return;
-          if (
-            disrupt &&
-            lost === 'reply' &&
-            envelope.kind === 'reply' &&
-            envelope.body?.kind === 'accepted'
-          ) {
-            fail();
-            return;
-          }
-          server.post(message, transfer);
-        },
-      };
-      const calling: Port = {
-        ...client,
-        post(message, transfer) {
-          const envelope = message as { kind: string; body?: { op?: string } };
-          if (
-            disrupt &&
-            lost === 'request' &&
-            envelope.kind === 'call' &&
-            envelope.body?.op === 'apply'
-          ) {
-            fail();
-            return;
-          }
-          client.post(message, transfer);
-        },
-      };
-      cleanups.push(serveDocument(serving, source));
-      const session = await connectDocument(calling);
-      cleanups.push(() => session.close());
-      disrupt = true;
-      await expect(session.apply(set(6))).rejects.toThrow('connection lost');
-      const [nextServer, nextClient] = loopback();
-      cleanups.push(serveDocument(nextServer, source));
-      expect(await connectDocument(nextClient, { resume: session })).toBe(session);
-      expect(document.applied).toBe(1);
-      expect([...(await session.bytes())]).toEqual([6]);
-      await session.apply(set(7));
-      expect(document.applied).toBe(2);
-    },
-  );
 
   it('refreshes an observer after an event gap and never rolls its view backward', async () => {
-    const { document, session } = await setup();
-    const [server, client] = loopback();
-    let saved: unknown;
-    const filtered: Port = {
+    const { engine, session } = await setup();
+    let held: unknown;
+    let release!: () => void;
+    const { session: observer } = await peer(engine, (server) => ({
       ...server,
       post(message, transfer) {
         const envelope = message as { kind: string; body?: Update };
-        if (envelope.kind === 'event' && envelope.body?.to.revision === 1) {
-          saved = message;
+        if (envelope.kind === 'event' && envelope.body?.to?.revision === 1) {
+          release = () => server.post(message, transfer);
+          held = message;
           return;
         }
         server.post(message, transfer);
       },
-    };
-    cleanups.push(serveDocument(filtered, document));
-    const observer = await connectDocument(client);
-    cleanups.push(() => observer.close());
+    }));
     await session.apply(set(1));
     await session.apply(set(2));
     await vi.waitFor(() => expect(observer.view.version.revision).toBe(2));
-    server.post(saved);
+    expect(held).toBeDefined();
+    release();
     await settle(12);
     expect(observer.view.version.revision).toBe(2);
     expect([...(await observer.bytes())]).toEqual([2]);
   });
 
-  it('rejects malformed and oversized commands before the vendor sees them', async () => {
+  it('rejects malformed commands before the document sees them', async () => {
     const { calls, opened, document } = await rawSetup();
     const raw = calls as ReturnType<typeof connect<unknown, Reply>>;
-    const base = { client: opened.client, sequence: 1, base: opened.view.version };
+    const base = { base: opened.view.version };
     for (const request of [
       { ...base, op: 'nope' },
       { ...base, op: 'apply', operations: [{ ...set(1), value: {} }] },
@@ -632,12 +243,8 @@ describe('document service', () => {
         operations: [{ kind: 'place', elements: [], positions: Float32Array.of(1) }],
       },
       { ...base, op: 'apply', operations: Array.from({ length: 257 }, () => set(1)) },
-      { ...base, op: 'undo', sequence: -1 },
-      {
-        ...base,
-        op: 'apply',
-        operations: Array.from({ length: 20 }, () => ({ ...set(1), column: 'x'.repeat(65536) })),
-      },
+      { op: 'undo', base: { epoch: '', revision: 0 } },
+      { op: 'apply', operations: [set(1)] },
     ])
       await expect(raw.call(request)).rejects.toThrow();
     expect(document.applied).toBe(0);
@@ -697,21 +304,25 @@ describe('document service', () => {
     expect(hosted.size).toBe(before);
   });
 
-  it('records a captured model in its serving realm even after later edits', async () => {
-    const { document, server, client, session } = await setup();
-    await session.apply(set(3));
-    const snapshot = await session.model();
+  it('records a captured model where the engine holds it, even after later edits', async () => {
+    const document = new Editable();
     let release!: () => void;
     const wait = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const engine = new Scripted(async (_recorder, _input, model) => {
-      await wait;
-      expect(new TextDecoder().decode(await model.bytes())).toBe('3');
-    });
-    cleanups.push(serveEngine(server, engine));
-    const remote = await connectEngine(client);
-    cleanups.push(() => remote.close());
+    const engine = new Scripted(
+      async (_recorder, _input, model) => {
+        await wait;
+        expect(new TextDecoder().decode(await model.bytes())).toBe('3');
+      },
+      {
+        formats: [{ id: 'test', label: 'Test', extensions: ['.case'], open: async () => document }],
+        cases: memory({ 'a.case': [0] }).store,
+      },
+    );
+    const { remote, session } = await peer(engine);
+    await session.apply(set(3));
+    const snapshot = await session.model();
     const recording = remote.record(snapshot, null);
     await session.apply(set(4));
     release();
@@ -721,44 +332,10 @@ describe('document service', () => {
     snapshot.close();
   });
 
-  it('cancels an edit waiting behind a read without consuming its sequence', async () => {
-    const { document, calls, opened } = await rawSetup();
-    await calls.call({
-      op: 'apply',
-      client: opened.client,
-      sequence: 1,
-      base: opened.view.version,
-      operations: [set(1)],
-    });
-    const reply = await calls.call({ op: 'view' });
-    if (reply.kind !== 'view') throw new Error('not a view');
-    let release!: () => void;
-    document.opening = new Promise((resolve) => {
-      release = resolve;
-    });
-    const reading = calls.call({ op: 'model', base: reply.view.version });
-    await settle(12);
-    const controller = new AbortController();
-    const command: Request = {
-      op: 'apply',
-      client: opened.client,
-      sequence: 2,
-      base: reply.view.version,
-      operations: [set(2)],
-    };
-    const editing = calls.call(command, { signal: controller.signal });
-    controller.abort();
-    await expect(editing).rejects.toMatchObject({ name: 'AbortError' });
-    release();
-    await reading;
-    expect(document.state.value).toBe(1);
-    expect((await calls.call(command)).kind).toBe('accepted');
-  });
-
-  it('releases model services on snapshot/session close and bounds retained snapshots', async () => {
+  it('releases model services on snapshot and session close, and bounds retained snapshots', async () => {
     const before = hosted.size;
     const { session } = await setup();
-    const snapshots: Document.Snapshot[] = [];
+    const snapshots: Model[] = [];
     for (let value = 1; value <= 32; value++) {
       await session.apply(set(value));
       snapshots.push(await session.model());
@@ -766,7 +343,7 @@ describe('document service', () => {
     expect(hosted.size).toBe(before + 32);
     await session.apply(set(33));
     await expect(session.model()).rejects.toThrow('limit 32');
-    snapshots[0].close();
+    snapshots[0]!.close();
     await settle(12);
     const next = await session.model();
     expect(hosted.size).toBe(before + 32);
@@ -776,34 +353,31 @@ describe('document service', () => {
     await expect(next.bytes()).rejects.toThrow(/closed/);
   });
 
-  it('expires detached clients safely instead of retrying against a fresh identity', async () => {
-    const { document, session } = await setup();
-    // A server close detaches the identity while leaving the facade resumable.
-    const connections: (() => void)[] = [];
-    for (let i = 0; i < 64; i++) {
-      const [server, client] = loopback();
-      const stop = serveDocument(server, document);
-      connections.push(stop);
-      const next = await connectDocument(client);
-      next.close();
-      await settle(12);
-    }
-    // Original client is still attached and cannot be evicted.
-    await session.apply(set(1));
-    connections.forEach((stop) => stop());
-    const old = await rawSetup(document);
-    old.calls.close();
-    await settle(12);
-    for (let i = 0; i < 64; i++) {
-      const fresh = await rawSetup(document);
-      fresh.calls.close();
-      await settle(12);
-    }
-    const [server, client] = loopback();
-    cleanups.push(serveDocument(server, document));
-    const calls = connect(client, DOCUMENT);
-    cleanups.push(() => calls.close());
-    await expect(calls.call({ op: 'open', client: old.opened.client })).rejects.toThrow('expired');
+  it('lets the engine let a case go once its last session closes', async () => {
+    const { engine, session, remote } = await setup(new Editable(), 0);
+    await session.apply(set(5));
+    await remote.save('a.case', session.view.version);
+    expect((await remote.cases())[0]!.saved).toEqual(session.view.version);
+    session.close();
+    await vi.waitFor(async () => expect((await engine.cases())[0]!.saved).toBeNull());
+    const again = await remote.open('a.case');
+    cleanups.push(() => again.close());
+    expect([...(await again.bytes())]).toEqual([5]);
+  });
+
+  it('tells every peer on a case what its engine keeps, whichever saved it', async () => {
+    const { engine, session, remote } = await setup();
+    const { session: other } = await peer(engine);
+    expect(other.view.saved).toEqual(other.view.version);
+    const heard = vi.fn();
+    other.on('saved', heard);
+    await session.apply(set(3));
+    await vi.waitFor(() => expect(other.view.version.revision).toBe(1));
+    expect(other.view.saved).not.toEqual(other.view.version);
+    await remote.save('a.case', session.view.version);
+    await vi.waitFor(() => expect(heard).toHaveBeenCalledWith(session.view.version));
+    expect(other.view.saved).toEqual(other.view.version);
+    await vi.waitFor(() => expect(session.view.saved).toEqual(session.view.version));
   });
 
   it('works over a real MessageChannel without detaching live schematic or operation arrays', async () => {
@@ -813,9 +387,10 @@ describe('document service', () => {
       channel.port2.close();
     });
     const document = new Editable();
-    cleanups.push(serveDocument(messagePort(channel.port1), document));
-    const session = await connectDocument(messagePort(channel.port2));
-    cleanups.push(() => session.close());
+    cleanups.push(serveEngine(messagePort(channel.port1), keeping(document)));
+    const remote = await connectEngine(messagePort(channel.port2));
+    cleanups.push(() => void remote.close());
+    const session = await remote.open('a.case');
     const positions = Float32Array.of(4, 5);
     await session.apply({ kind: 'place', elements: [{ classId: 'bus', index: 0 }], positions });
     expect([...positions]).toEqual([4, 5]);
@@ -823,7 +398,7 @@ describe('document service', () => {
     expect(document.schematic.positions.byteLength).toBe(16);
     expect([...(await session.bytes())]).toEqual([0]);
     const inspected = await session.inspect('bus/0');
-    expect(inspected.inspection?.ports[0].net?.key).toBe('signal/0');
+    expect(inspected.inspection?.ports[0]!.net?.key).toBe('signal/0');
     await session.apply(inspected.version, set(7));
     expect((await session.inspect('bus/0')).inspection?.values.kv).toBe(7);
   });
@@ -836,13 +411,21 @@ describe('document service', () => {
     expect(session.view.version.revision).toBe(1);
   });
 
-  it('requires opening and validates a peer view before exposing it', async () => {
-    const { client } = await setup();
-    const raw = connect(client, protocol<unknown, unknown>('document'));
-    cleanups.push(() => raw.close());
-    await expect(raw.call({ op: 'apply', operations: [] })).rejects.toThrow();
+  it('requires opening once and validates a peer view before exposing it', async () => {
+    const [opening, peerSide] = loopback();
+    cleanups.push(serveEngine(opening, keeping(new Editable())));
+    const cases = connect(peerSide, CASES);
+    const { session: id } = await cases.call({ op: 'open', name: 'a.case' });
+    const raw = connect(peerSide, protocol<unknown, unknown>(`document:${id}`));
+    cleanups.push(() => {
+      raw.close();
+      cases.close();
+    });
+    await expect(raw.call({ op: 'view' })).rejects.toThrow('Open the document');
+    expect(await raw.call({ op: 'open' })).toMatchObject({ kind: 'opened' });
+    await expect(raw.call({ op: 'open' })).rejects.toThrow('already open');
     const document = new Editable();
-    document.schematic.positions[0] = NaN;
+    const engine = keeping(document);
     const [server, target] = loopback();
     const malformed: Port = {
       ...server,
@@ -856,9 +439,12 @@ describe('document service', () => {
         server.post(message, transfer);
       },
     };
-    cleanups.push(serveDocument(malformed, document));
-    await expect(connectDocument(target)).rejects.toThrow('inconsistent lengths');
+    cleanups.push(serveEngine(malformed, engine));
+    const remote = await connectEngine(target);
+    cleanups.push(() => void remote.close());
+    await expect(remote.open('a.case')).rejects.toThrow('inconsistent lengths');
   });
+
   it('cancels an unclaimed model download promptly and releases its service', async () => {
     let started!: () => void;
     let release!: () => void;
@@ -939,24 +525,23 @@ describe('document service', () => {
   });
 
   it('coalesces a slow observer to one pending event and refreshes its revision gap', async () => {
-    const { document, session } = await setup();
-    const [server, client] = loopback();
+    const { engine, session } = await setup();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     let events = 0;
-    const slow: Port = {
+    let slow = false;
+    const { session: observer } = await peer(engine, (server) => ({
       ...server,
-      drain: () => gate,
+      drain: () => (slow ? gate : Promise.resolve()),
       post(message, transfer) {
-        if ((message as { kind: string }).kind === 'event') events++;
+        const envelope = message as { kind: string; svc: string };
+        if (envelope.kind === 'event' && envelope.svc.startsWith('document:')) events++;
         server.post(message, transfer);
       },
-    };
-    cleanups.push(serveDocument(slow, document));
-    const observer = await connectDocument(client);
-    cleanups.push(() => observer.close());
+    }));
+    slow = true;
     for (let value = 1; value <= 20; value++) await session.apply(set(value));
     expect(events).toBe(0);
     release();
@@ -964,62 +549,11 @@ describe('document service', () => {
     expect(events).toBe(1);
   });
 
-  it('does not reopen a session closed while reconnecting', async () => {
-    const { document, session } = await setup();
-    const [server, client] = loopback();
-    cleanups.push(serveDocument(server, document));
-    const reconnecting = connectDocument(client, { resume: session });
-    session.close();
-    await expect(reconnecting).rejects.toThrow('closed');
-  });
-
-  it('does not replay a pending command into a recreated document owner', async () => {
-    const { session, stop } = await setup();
-    const epoch = session.view.version.epoch;
-    stop();
-    await settle(12);
-    const document = new Editable();
-    const [server, client] = loopback();
-    cleanups.push(serveDocument(server, document));
-    await expect(connectDocument(client, { resume: session })).rejects.toThrow('expired');
-    const fresh = await setup(document);
-    expect(fresh.session.view.version.epoch).not.toBe(epoch);
-    expect(document.applied).toBe(0);
-  });
-
   it('rejects nonfinite client input before a byte transport can normalize it to null', async () => {
     const { session, document } = await setup();
     await expect(session.apply(set(Infinity))).rejects.toThrow('finite');
     expect(document.applied).toBe(0);
     await session.apply(set(2));
-  });
-  it('bounds retained command bytes and leaves a busy command sequence available for retry', async () => {
-    const { document, calls, opened } = await rawSetup();
-    const initial = { client: opened.client, sequence: 1, base: opened.view.version };
-    const edited = await calls.call({ ...initial, op: 'apply', operations: [set(1)] });
-    if (edited.kind !== 'accepted') throw new Error('not accepted');
-    let release!: () => void;
-    document.opening = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const reading = calls.call({ op: 'model', base: edited.version });
-    await settle(12);
-    const operations = Array.from({ length: 14 }, () => ({ ...set(1), column: 'x'.repeat(65536) }));
-    const commands = Array.from({ length: 10 }, (_, index) => ({
-      op: 'apply' as const,
-      client: opened.client,
-      sequence: index + 2,
-      base: edited.version,
-      operations,
-    }));
-    const pending = commands.map((command) => calls.call(command));
-    expect(await pending[9]).toMatchObject({ kind: 'busy' });
-    release();
-    await reading;
-    const replies = await Promise.all(pending);
-    expect(replies.slice(0, 9).every((reply) => reply.kind === 'accepted')).toBe(true);
-    expect((await calls.call(commands[9])).kind).toBe('accepted');
-    expect(document.applied).toBe(1);
   });
 });
 
@@ -1082,13 +616,12 @@ describe('document inspection', () => {
     expect((await session.inspect({ classId: 'bus', index: 0 })).inspection).toEqual(anonymous);
   });
 
-  it('rejects a retained draft on the owner even when the local view has already advanced', async () => {
-    const { session, document } = await setup();
+  it('rejects a retained draft even when the local view has already advanced', async () => {
+    const { session, document, engine } = await setup();
     const draft = await session.inspect('bus/0');
-    const other = await setup(document);
+    const other = await peer(engine);
     await other.session.apply(set(5));
-    await settle(12);
-    expect(session.view.version.revision).toBe(1);
+    await vi.waitFor(() => expect(session.view.version.revision).toBe(1));
     await expect(session.apply(draft.version, set(9))).rejects.toMatchObject({
       name: 'DocumentConflict',
       expected: draft.version,
@@ -1175,24 +708,23 @@ describe('document inspection', () => {
     const { inspection } = await session.inspect('bus/0');
     expect(inspection).not.toHaveProperty('privateFunction');
     expect(inspection!.element).not.toHaveProperty('privateIndex');
-    expect(inspection!.ports[0].net).not.toHaveProperty('secret');
-    expect(inspection!.members[0].owner).not.toHaveProperty('secret');
+    expect(inspection!.ports[0]!.net).not.toHaveProperty('secret');
+    expect(inspection!.members[0]!.owner).not.toHaveProperty('secret');
     expect(inspection!.values['__proto__']).toBe('ordinary column');
     native.values.kv = 8;
     native.element.index = 8;
     expect(inspection!.values.kv).toBe(4);
     expect(inspection!.element.index).toBe(0);
     Object.assign(inspection!.values, { kv: 12 });
-    Object.assign(inspection!.ports[0].net!.element, { index: 12 });
+    Object.assign(inspection!.ports[0]!.net!.element, { index: 12 });
     expect(native.values.kv).toBe(8);
-    expect(native.ports[0].net.element.index).toBe(0);
+    expect(native.ports[0]!.net.element.index).toBe(0);
   });
 
   it('rejects malformed inspection requests before calling the native adapter', async () => {
-    const { document, client, opened } = await rawSetup();
+    const { document, calls, opened } = await rawSetup();
     const inspect = vi.spyOn(document, 'inspect');
-    const raw = connect(client, protocol<unknown, unknown>('document'));
-    cleanups.push(() => raw.close());
+    const raw = calls as ReturnType<typeof connect<unknown, Reply>>;
     for (const target of [
       null,
       [],
@@ -1242,8 +774,8 @@ describe('document inspection', () => {
   it.each(['values', 'ports', 'members', 'revision'] as const)(
     'validates peer inspection %s before exposing them',
     async (fault) => {
-      const [server, client] = loopback();
-      const malformed: Port = {
+      const engine = keeping(new Editable());
+      const { session } = await peer(engine, (server) => ({
         ...server,
         post(message, transfer) {
           const envelope = message as {
@@ -1263,10 +795,7 @@ describe('document inspection', () => {
           }
           server.post(message, transfer);
         },
-      };
-      cleanups.push(serveDocument(malformed, new Editable()));
-      const session = await connectDocument(client);
-      cleanups.push(() => session.close());
+      }));
       await expect(session.inspect('bus/0')).rejects.toThrow();
     },
   );

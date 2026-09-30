@@ -1,10 +1,10 @@
 /**
- * `@latkit/model` — what a format, an engine, and an editor implement, and what they make. A
- * format opens native documents through `Document.Format`; each document produces immutable
- * `Model` snapshots on demand. An engine subclasses `Engine` to record a model, offering its
- * studies as forms; a `Recording` is what an engine fills, and a `Series` is what every view
- * follows. Every other type lives under the class that speaks it: `Model.Topology`,
- * `Engine.Study`, `Document.Operation`.
+ * `@latkit/model` — what a format, an engine, and an editor implement, and what they make. An
+ * engine subclasses `Engine`: it keeps a vendor's cases, opening each as a `Document` through its
+ * `Document.Format` and handing out `Document.Session`s on it, and records any model, offering
+ * its studies as forms. A document produces immutable `Model` snapshots on demand; a `Recording`
+ * is what an engine fills, and a `Series` is what every view follows. Every other type lives
+ * under the class that speaks it: `Model.Topology`, `Engine.Case`, `Document.Operation`.
  *
  * @packageDocumentation
  */

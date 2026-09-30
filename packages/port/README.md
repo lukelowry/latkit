@@ -2,8 +2,9 @@
 
 Where latkit crosses a boundary: a two-method port over workers, webviews, sockets, and one thread;
 one binary frame that carries typed arrays intact; typed request, reply, and stream protocols with
-the checks their served side runs; and `@latkit/model` models, engines, and recordings served and
-connected across a port.
+the checks their served side runs; and `@latkit/model` engines, models, and recordings served and
+connected across a port. A served engine carries all of a vendor on one port: its studies, its
+recordings, and a session on each case a peer opens.
 
 ## Install
 
@@ -35,95 +36,77 @@ Every message is JSON values plus typed arrays (`Uint8Array` through `Float64Arr
 the value, on every transport. A service written against a worker runs unchanged against a socket.
 `messagePort` does not refuse what structured clone would carry beyond that; `loopback` does.
 
-## Models, engines, and recordings across a port
+## Engines, models, and recordings across a port
 
 ```ts
-// the worker: cases parse here, and the engine records here
-import { messagePort, serveEngine, serveModel, serveRecording } from '@latkit/port';
+// the worker or the server: the cases and the solver are here
+import { serveEngine, serveRecording, socketPort } from '@latkit/port';
 
-serveEngine(messagePort(self), new GridkitEngine(server)); // records any model a peer gives it
-serveRecording(messagePort(self), recording); // a recording the worker keeps
-self.addEventListener('message', ({ data }) => {
-  // one case per channel, its packs served as they are asked for
-  if (data.open) serveModel(messagePort(data.open.port), new GridkitCase(data.open.bytes));
-});
+serveEngine(socketPort(socket), engine); // one engine, every peer on a port of its own
+serveRecording(port, recording); // a recording kept on its own
 
 // the page
-import { connectEngine, connectModel, connectRecording, messagePort } from '@latkit/port';
+import { connectEngine, connectRecording, socketPort } from '@latkit/port';
 
-const port = messagePort(worker);
-const engine = await connectEngine(port);
-const { port1, port2 } = new MessageChannel();
-worker.postMessage({ open: { port: port2, bytes } }, [port2]);
-const model = await connectModel(messagePort(port1), { progress });
-const recording = engine.record(model, input); // held by the worker, followed here
-const kept = await connectRecording(port, model, 'fault-4'); // or opens the worker's own
+const engine = await connectEngine(socketPort(new WebSocket('/engine')));
+const session = await engine.open('ieee39.case.json'); // a session on the peer's document
+const model = await session.model(); // its snapshot, packs loading as they are asked for
+const recording = engine.record(model, input); // recorded where the model lives, followed here
+await engine.save('ieee39.case.json', session.view.version);
+const kept = await connectRecording(port, model, 'fault-4'); // or open a kept recording
 ```
 
-Only sources, changes, and the windows read cross. A model's core crosses at once and each class
-shard as it is first asked for, with the case's bytes on request; a model opened from packs serves
-them as they came. An engine records any model it is given: a model its own realm serves is
+Only views, edits, sources, changes, and the windows read cross; a case never does. A case a
+connected engine opens or creates is a session on the one document the peer's engine holds for it,
+served on the same port as a document service of its own; a model the session captures is served
+beside it, its core at once and each class shard as it is first asked for, and the engine records
+it where it lives. An engine records any model it is given: a model its own realm serves is
 recorded where it lives, and any other is lent by its source, which the engine reads only as it
-needs, for as long as the recording lasts; a file an input gives is lent the same way, its bytes
-crossing only as the engine reads them. Each recording is held where the engine runs, its frames
-in the engine's store: the far side follows its changes, its clock, ranges, state, and log, reads
-its frames a window of at most 4 MiB at a time, and lets it go by closing it, as the port's close
-lets every one go. The served engine checks every input, queues what it cannot take at once, and
-stops when the far recording stops. The studies an engine offers cross with it:
-`connectEngine` resolves once they are in, and the connected engine follows each change and checks
-a study's form where it is. A kept recording opens with `Recording.from` against
-the model it records, its clock at hand and its samples read in windows of at most 4 MiB. A
-connected side is a `Remote<T>`: the model, engine, or recording, plus `close`.
+needs, for as long as the recording lasts; a file an input gives, or one a case is created from, is
+lent the same way, its bytes crossing only as the engine reads them. Each recording is held where
+the engine runs, its frames in the engine's store: the far side follows its changes, its clock,
+ranges, state, and log, reads its frames a window of at most 4 MiB at a time, and lets it go by
+closing it, as the port's close lets every one go. The served engine checks every input, queues
+what it cannot take at once, and stops when the far recording stops. The studies and formats an
+engine offers cross with it: `connectEngine` resolves once they are in, and the connected engine
+follows each change and checks a study's form where it is. A kept recording opens with
+`Recording.from` against the model it records. A connected engine, model, or recording closes with
+its own `close`.
 
-## Documents across a port
+## Cases across a port
 
 ```ts
-import { connectDocument, serveDocument } from '@latkit/port';
-
-// Server or worker: format is a Document.Format; retain its document across connections.
-const document = await format.open(nativeBytes);
-serveDocument(serverPort, document);
-
-// Browser: mutations are asynchronous; the view and schematic lookups are local.
-const session = await connectDocument(clientPort);
+const session = await engine.open('ieee39.case.json');
 session.on('change', () => render(session.view.schematic));
 await session.apply({ kind: 'set', element, column: 'kv', value: 138 });
 await session.undo();
-const bytes = await session.bytes(); // Current native case; the host owns saving.
+const bytes = await session.bytes(); // the case as it stands, for a download
 const snapshot = await session.model();
 // Keep it until every reader or recording using it finishes.
 snapshot.close();
-
-// On a new transport, reconcile a possibly lost edit acknowledgment.
-await connectDocument(newPort, { resume: session });
-session.close();
+session.close(); // the peer's engine keeps the case open or not
 ```
-
-`serveDocument(port, () => openNativeDocument())` defers loading until the first document open
-request. Each service invokes its factory at most once and shares its result or failure. Closing
-an unused service never invokes it; closing during loading prevents attachment without cancelling
-host-owned work. Supplied documents and promises remain supported. For reconnects or multiple
-clients, have the factory return the same host-owned document; see
-[Lazy document loading](../../docs/document-sessions.md#lazy-document-loading).
 
 Opening a session, editing, and exporting native bytes do not build a model. `session.model()`
 requests an immutable snapshot only when needed; its bytes remain frozen across later edits.
 
-Each document has one serialized owner, retained across connections. Commands carry the
-document's epoch, base revision, and client sequence; stale indexed edits throw
-`DocumentConflict`. Refusals retain `Refusal.at`. Updates carry the schematic parts a change
-replaced, compared by identity; layout changes retain the netlist and model. A gap refreshes the
-cached view. Acknowledgments mean accepted in memory.
+Every call waits its turn in the one queue of the peer's document, shared by every session on the
+case. Edits and reads carry the revision they were made against; one made against a revision gone
+by throws `DocumentConflict` and never applies, so an edit sent again after it landed never applies
+twice. Refusals retain `Refusal.at`. Updates carry the schematic parts a change replaced, compared
+by identity; layout changes retain the netlist and model. A gap refreshes the view.
+Acknowledgments mean accepted in memory; `engine.save` makes a version durable, and every session
+on the case hears it through `view.saved` and its `saved` event.
 
 `session.inspect(elementOrKey, signal?)` returns `{ version, inspection }`: editable values and
 complete wiring read together without materializing a model. Retain the revision with a form and
-submit through `session.apply(version, ...operations)`; the owner rejects stale drafts. Inspections
-copy only public fields and are bounded to 1 MiB; the service and frame format remain unchanged.
+submit through `session.apply(version, ...operations)`; a stale draft is refused. Inspections
+copy only public fields and are bounded to 1 MiB.
 
-Retry state, queues, snapshots, and slow-peer event buffers are bounded. Model snapshots reuse
-scoped model services (`serveModel` / `connectModel` accept an optional `id`) and the existing
-engine reference path. See [Document sessions](../../docs/document-sessions.md) for lifetime,
-reconnect, limits, and the `document` wire contract.
+Queues, snapshots, and slow-peer update buffers are bounded. Model snapshots reuse scoped model
+services (`serveModel` / `connectModel` accept an optional `id`). See
+[Document sessions](../../docs/document-sessions.md) for what an engine keeps open, limits, and the
+wire contract.
 
 ## A protocol
 

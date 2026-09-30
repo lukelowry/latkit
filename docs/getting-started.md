@@ -39,7 +39,7 @@ A page that wants a tag instead of a controller installs `@latkit/embed`.
 ## Choose a package
 
 `@latkit/model`
-: Native formats register `Document.Format` to open or create documents. `Document` owns editing and current bytes, `Model` is an immutable snapshot for views and execution, and `Engine` produces recordings. It also defines `Recording`, `Series`, and the vocabulary renderers speak: `Model.Topology`, `Document.Netlist`, and `Domain`.
+: `Engine` is a vendor: it keeps cases in the formats it opens through `Document.Format`, hands out a `Document.Session` on each, and produces recordings. `Document` owns editing and current bytes, and `Model` is an immutable snapshot for views and execution. It also defines `Recording`, `Series`, and the vocabulary renderers speak: `Model.Topology`, `Document.Netlist`, and `Domain`.
 
 `@latkit/port`
 : A port over workers, webviews, sockets, and one thread; typed request, reply, and stream protocols over it; and documents, models, engines, and recordings served across it.

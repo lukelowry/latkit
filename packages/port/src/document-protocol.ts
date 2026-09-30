@@ -1,42 +1,39 @@
 /**
- * The document wire contract. Commands address a revision and a client's monotonically increasing
- * sequence; updates carry changed schematic columns, never a vendor's private history objects.
+ * The wire contract of a case's document across a port: each session is a service of its own,
+ * `document:<id>`, on the port of the engine that holds the case. Edits and reads name the revision
+ * they were made against; updates carry the schematic columns a step replaced, never a vendor's
+ * private history objects.
  */
 import { validateNetlist, type Document, type Model, type Refusal } from '@latkit/model';
 
 import { check, type Check } from './check.js';
 import { encodeFrame } from './frame.js';
-import { protocol } from './protocol.js';
+import { protocol, type Protocol } from './protocol.js';
 
 const MAX_ELEMENTS = 1_000_000;
-export const MAX_OPERATIONS = 256;
-export const MAX_COMMAND_BYTES = 1 << 20;
+const MAX_OPERATIONS = 256;
 const MAX_INSPECTION_ENTRIES = 4096;
 const MAX_INSPECTION_BYTES = 1 << 20;
 
-type Address = {
-  readonly client: string;
-  readonly sequence: number;
-  readonly base: Document.Version;
-};
-export type Command = Address &
-  (
-    | { readonly op: 'apply'; readonly operations: readonly Document.Operation[] }
-    | { readonly op: 'undo' }
-    | { readonly op: 'redo' }
-  );
 export type Request =
-  | Command
-  | { readonly op: 'open'; readonly client?: string }
+  | { readonly op: 'open' }
   | { readonly op: 'view' }
   | {
       readonly op: 'inspect';
       readonly base: Document.Version;
       readonly target: Model.Element | string;
     }
+  | {
+      readonly op: 'apply';
+      readonly base: Document.Version;
+      readonly operations: readonly Document.Operation[];
+    }
+  | { readonly op: 'undo'; readonly base: Document.Version }
+  | { readonly op: 'redo'; readonly base: Document.Version }
   | { readonly op: 'model'; readonly base: Document.Version }
   | { readonly op: 'bytes'; readonly base: Document.Version };
 
+/** How an edit went: made, refused by the document, or made against a revision gone by. */
 export type Receipt =
   | {
       readonly kind: 'accepted';
@@ -44,22 +41,18 @@ export type Receipt =
       readonly change: Document.Change | null;
     }
   | { readonly kind: 'conflict'; readonly version: Document.Version }
-  | { readonly kind: 'refused'; readonly message: string; readonly at: Refusal['at'] }
-  | { readonly kind: 'expired'; readonly message: string }
-  | { readonly kind: 'busy'; readonly message: string };
+  | { readonly kind: 'refused'; readonly message: string; readonly at: Refusal['at'] };
 
 export type Reply =
   | Receipt
-  | {
-      readonly kind: 'opened';
-      readonly client: string;
-      readonly next: number;
-      readonly view: Document.View;
-    }
+  | { readonly kind: 'opened'; readonly view: Document.View }
   | { readonly kind: 'view'; readonly view: Document.View }
   | ({ readonly kind: 'inspection' } & Document.InspectionResult)
   | { readonly kind: 'model'; readonly version: Document.Version; readonly id: string }
   | { readonly kind: 'bytes'; readonly version: Document.Version; readonly bytes: Uint8Array };
+
+/** What a document service tells its peer between calls: a step, or a version its engine kept. */
+export type Event = Update | Saved;
 
 export interface Update {
   readonly kind: 'update';
@@ -71,7 +64,14 @@ export interface Update {
   readonly history: Document['history'];
 }
 
-const token: Check<string> = (value, name) => {
+/** The engine kept `version` of the case, whichever session saved it. */
+export interface Saved {
+  readonly kind: 'saved';
+  readonly version: Document.Version;
+}
+
+/** An identity a peer names: a session, a snapshot, a document epoch. */
+export const token: Check<string> = (value, name) => {
   check.string(value, name);
   if (value.length === 0 || value.length > 128)
     throw new TypeError(`${name} must be 1 to 128 characters`);
@@ -149,20 +149,23 @@ const operation: Check<Document.Operation> = (value, name) => {
     for (const coordinate of op.positions) check.finite(coordinate, `${name}.positions`);
   }
 };
-const address = { client: token, sequence: check.index, base: version };
-export const DOCUMENT = protocol<Request, Reply, Update>(
-  'document',
-  check.requests<Request>({
-    open: { client: check.optional(token) },
-    view: {},
-    inspect: { base: version, target },
-    apply: { ...address, operations: check.array(operation, MAX_OPERATIONS) },
-    undo: address,
-    redo: address,
-    model: { base: version },
-    bytes: { base: version },
-  }),
-);
+
+/** Every request a document service answers, checked before the session sees it. */
+export const requests: Check<Request> = check.requests<Request>({
+  open: {},
+  view: {},
+  inspect: { base: version, target },
+  apply: { base: version, operations: check.array(operation, MAX_OPERATIONS) },
+  undo: { base: version },
+  redo: { base: version },
+  model: { base: version },
+  bytes: { base: version },
+});
+
+/** The protocol of document session `id`, on its engine's port. */
+export function documentProtocol(id: string): Protocol<Request, Reply, Event> {
+  return protocol<Request, Reply, Event>(`document:${id}`, requests);
+}
 
 const reference: Check<Document.Reference> = check.object({
   element,
@@ -288,7 +291,13 @@ export function checkSchematicLengths(value: Document.Schematic): void {
   )
     throw new TypeError('document schematic columns have inconsistent lengths');
 }
-const viewFields: Check<Document.View> = check.object({ version, schematic, palette, history });
+const viewFields: Check<Document.View> = check.object({
+  version,
+  saved: version,
+  schematic,
+  palette,
+  history,
+});
 const view: Check<Document.View> = (value, name) => {
   viewFields(value, name);
   checkSchematicLengths((value as Document.View).schematic);
@@ -301,6 +310,10 @@ const patch: Check<Partial<Document.Schematic>> = check.object({
   status: check.optional(floats),
   positions: check.optional(floats),
   problems: check.optional(schematicFields.problems),
+});
+export const checkSaved: Check<Saved> = check.object({
+  kind: check.oneOf(['saved'] as const),
+  version,
 });
 export const checkUpdate: Check<Update> = check.object({
   kind: check.oneOf(['update'] as const),
@@ -318,9 +331,7 @@ const replyFields: Check<ReplyRequest> = check.requests<ReplyRequest>({
   accepted: { version, change: check.nullable(change) },
   conflict: { version },
   refused: { message: check.string, at: check.nullable(about) },
-  expired: { message: check.string },
-  busy: { message: check.string },
-  opened: { client: token, next: check.index, view },
+  opened: { view },
   view: { view },
   inspection: { version, inspection: check.nullable(inspection) },
   model: { version, id: token },
@@ -343,4 +354,19 @@ export function publicChange(value: Document.Change): Document.Change {
     scope: value.scope,
     created: value.created.map(({ classId, index }) => ({ classId, index })),
   };
+}
+
+/** A view as it crosses: its history's public metadata only. */
+export function publicView(value: Document.View): Document.View {
+  return {
+    version: value.version,
+    saved: value.saved,
+    schematic: value.schematic,
+    palette: value.palette,
+    history: publicHistory(value.history),
+  };
+}
+
+export function publicHistory(value: Document['history']): Document['history'] {
+  return { undo: value.undo.map(publicChange), redo: value.redo.map(publicChange) };
 }

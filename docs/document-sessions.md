@@ -1,44 +1,40 @@
 # Document sessions
 
-A native `Document` owns current case state, editing, validation, history, and model creation.
-`Document.Session` is its asynchronous consumer contract. `@latkit/port` serves that contract over
-a worker, a WebSocket, or any other `Port`.
+A native `Document` owns current case state, editing, validation, history, and model creation. An
+`Engine` holds the documents of the cases it keeps, one per case, and hands out
+`Document.Session`s on them: the one way a host reads and edits a case, in the engine's realm or
+across a port. A session across a port is a document service of its own on the engine's port, so
+the case never leaves the realm that holds it, and every model a session captures is recorded
+there by reference.
 
-## Native document lifecycle
+## Keep a vendor's cases
 
-A host registers a vendor's `Document.Format`, whose `open(bytes)` and optional `create(name)`
-both return a document. Opening a file and creating an untitled case lead to the same API:
+A vendor's engine takes the formats its cases are in and the store that keeps them. The store is
+bytes by name, each read and written with a tag, so a write replaces only what the engine last read
+or wrote; a directory, a bucket, and memory are each one.
 
 ```ts
-const document = await format.open(nativeBytes);
-// Or, when format.create is available: await format.create('Untitled').
+import { Engine, type Document } from '@latkit/model';
 
-const model = await document.model(); // Lazily capture a snapshot for views or execution.
-await saveFile(path, await document.bytes()); // The host chooses when and where to save.
+class GridkitEngine extends Engine {
+  constructor(cases: Engine.Cases, store: () => Series.Store) {
+    super({ concurrency: 4, studies: STUDIES, store, formats: [gridkit], cases });
+  }
+  // parse and execute, as any engine
+}
+
+const engine = new GridkitEngine(directory('/workspace'), laneFiles('/runs'));
+await engine.cases(); // [{ name: 'ieee39.case.json', format: 'gridkit', saved: null }, ...]
 ```
 
-Editing, inspection, undo, redo, and byte export do not require a model. A `Document` subclass
-calls `super()` without an initial model, retains independent native state, and implements its
-protected `open` to capture an immutable `Model`. The base shares concurrent model requests,
-keeps the snapshot through layout edits, and invalidates it on values or structure changes.
+A `Document.Format` is how an engine opens and creates documents. Both `open(bytes)` and optional
+`create(title)` return a document that needs no model and keeps nothing: the engine holds it and
+keeps its bytes.
 
-Save `document.bytes()` (or `session.bytes()` across a port). `model.bytes()` remains the native
-bytes of that immutable snapshot, including any placement present when it was captured; later
-layout edits do not refresh those bytes. Models and recordings remain usable after later edits.
-Files, permissions, dirty state, autosave, and destinations belong to the host. A read-only catalog
-can serve packed models directly without exposing an editable document.
-
-## Open, edit, and close
+## Open, edit, save, and close
 
 ```ts
-import { connectDocument, serveDocument } from '@latkit/port';
-
-// Worker or server: retain this Document while the case is open, across connections.
-const document = await format.open(nativeBytes);
-const stopServing = serveDocument(serverPort, document);
-
-// Browser: Remote<Document.Session>, including close().
-const session = await connectDocument(clientPort);
+const session = await engine.open('ieee39.case.json');
 const unsubscribe = session.on('change', (change) => {
   render(session.view.schematic, change.scope);
 });
@@ -52,70 +48,64 @@ await session.apply({
 await session.undo();
 await session.redo();
 
-const bytes = await session.bytes(); // Current native document, including placement.
+const saved = await engine.save('ieee39.case.json', session.view.version);
 const snapshot = await session.model();
 try {
-  const table = await snapshot.load('bus');
-  inspect(table);
+  const recording = engine.record(snapshot, input); // recorded where it lives
+  await settled(recording);
 } finally {
   snapshot.close();
 }
 
 unsubscribe();
 session.close();
-stopServing();
 ```
 
-`view` contains the version, schematic, palette, and public undo/redo metadata. Treat it and its
-typed arrays as read-only. Vendor-specific inverse operations never cross the boundary.
-`elementAt`, `partOf`, `portAt`, `portOf`, and `drivers` are synchronous local lookups.
-They share `Document.parts(schematicOrGetter)` with the local document implementation.
+`engine.create(name, { title })` makes a new case in the format its name's extension names and keeps
+it at once; `engine.create(name, { file })` does the same with the bytes of a file, such as one a
+user picked. Both resolve with a session on the new case.
 
-One document service occupies a port. Engine services and scoped model services can share that
-port. The same document can be served to multiple clients on separate ports.
-
-## Lazy document loading
-
-Pass a factory to serve a packed model immediately and load its native document only when editing
-opens. The factory returns a `Document` or `Promise<Document>`; the host retains that document for
-as long as the case is open, including across reconnects and multiple connections.
+Across a port, the same calls reach the same engine:
 
 ```ts
-import type { Document } from '@latkit/model';
-import { serveDocument, serveModel, type Port } from '@latkit/port';
+import { connectEngine, serveEngine } from '@latkit/port';
 
-// Open-case state, retained independently of any connection.
-let document: Promise<Document> | undefined;
-function getDocument(): Promise<Document> {
-  return (document ??= readNativeBytes().then((bytes) => format.open(bytes)));
-}
+// Where the cases and the solver are: one engine, served to every peer.
+serveEngine(serverPort, engine);
 
-function serveCase(port: Port): () => void {
-  const stopModel = serveModel(port, packedModel);
-  const stopDocument = serveDocument(port, getDocument);
-  return () => {
-    stopDocument();
-    stopModel();
-  };
-}
+// The page: an Engine whose cases are the peer's.
+const remote = await connectEngine(clientPort);
+const session = await remote.open('ieee39.case.json');
+const model = await session.model();
+const recording = remote.record(model, input); // the peer records its own model in place
 ```
 
-Each `serveDocument` registration invokes its factory at most once, on its first valid `open`
-request. Other services on the port, malformed requests, and document reads or edits before open
-never invoke it. Concurrent opens share one initialization attempt. Synchronous throws and promise
-rejections use the existing request error path; the failure remains cached for that registration.
-Retry initialization by registering a new service and, if the host caches a failed promise as in
-this example, resetting that failed host entry. Do not replace a successfully opened
-document during reconnect: its identity retains the epoch, history, and retry receipts.
+`view` holds the version, the version its engine last kept (`saved`), the schematic, the palette,
+and public undo and redo metadata; the case holds unsaved edits while `version` is past `saved`.
+Treat it and its typed arrays as read-only. Vendor-specific inverse operations never cross the
+boundary.
+`elementAt`, `partOf`, `portAt`, `portOf`, and `drivers` are synchronous local lookups. They share
+`Document.parts(schematicOrGetter)` with the native document.
 
-Closing before factory invocation skips loading. Closing during loading prevents late owner
-creation or client attachment, but does not cancel host-owned work or dispose the eventual document.
-Cancelling one request does not cancel shared initialization. The host controls loading cancellation
-and resource lifetime. Supplied documents and promises keep their existing eager initialization;
-passing a promise cannot defer the work that already created it.
+## What the engine keeps open
 
-Both eager and lazy loading use `connectDocument()` and the same `document` service, requests,
-replies, and frame format.
+Every session on a case shares the one document the engine holds for it: its history, its queue,
+and its models. The engine opens a case on the first session and reads its bytes once. A document
+with unsaved edits stays open whatever becomes of its sessions, until it is saved; a clean one no
+session uses stays open while the idle cases' bytes fit the engine's budget (`idleBytes`, 256 MiB
+unless its host says otherwise), the least recently opened let go first, so opening it again is
+instant. `engine.cases()` reports, for each case it keeps, the version its open document last
+saved; a document holds unsaved edits while its version is past that one.
+
+`engine.save(name, version)` writes the document as it stands at `version`, in the document's queue,
+so the bytes are exactly that version's, and every session on the case hears it: its view's `saved`
+becomes `version`, and its `saved` listeners are told, whichever session saved and wherever each
+is. It refuses a version the document has moved past with
+`DocumentConflict`, and a case its store no longer holds as the engine last read or wrote it with
+the store's own error: the case changed outside the engine, and nothing is overwritten.
+
+`engine.close()` closes every session on its cases, stops every recording it may still grow, and
+resolves once its work has ended.
 
 ## Inspect and edit a retained draft
 
@@ -133,11 +123,11 @@ if (inspection !== null) {
 }
 ```
 
-`inspect(elementOrKey, signal?)` returns `{ version, inspection }`. The owner resolves keys and
-reads values and wiring together in its serialized queue, against the cached view's revision at
-invocation. A stale read rejects with `DocumentConflict`; a missing element returns
-`inspection: null`. An existing element may have `key: null` when its format supplies no persistent
-identity. Results remain independent of later edits, including undo and redo.
+`inspect(elementOrKey, signal?)` returns `{ version, inspection }`. The document resolves keys and
+reads values and wiring together in its queue, against the view's revision at invocation. A stale
+read rejects with `DocumentConflict`; a missing element returns `inspection: null`. An existing
+element may have `key: null` when its format supplies no persistent identity. Results remain
+independent of later edits, including undo and redo.
 
 `Document.Inspection` contains the element and key, editable `values` keyed by the column names
 accepted by `set`, declared `ports` with their connected net or null, and a net's `members` with
@@ -145,21 +135,18 @@ owner references and port names. Wiring includes elements absent from the diagra
 belong to the native document and need not be displayed model columns.
 
 Native subclasses implement synchronous `inspect(element)` using their native indexes, returning
-null only for a missing element. Inspection must not mutate the document or open a model. Local
-results may borrow indexed data; consumers treat them as read-only. The port copies only public
-fields, validates scalar values before serialization, and returns detached data to the caller.
-Inspection creates no model lease, history entry, revision, or subscription.
+null only for a missing element. Inspection must not mutate the document or open a model. Results
+in the engine's realm may borrow indexed data, which callers treat as read-only; across a port only
+public fields cross, validated and bounded, as detached data.
 
-Use `apply(version, ...operations)` to submit a retained draft. The owner checks that exact base,
-including changes that arrived while the user edited the form. This uses the existing command,
-sequence, and retry path. Ordinary `apply(...operations)` still captures the current cached view
-at invocation. No local compare-and-apply helper is needed, and a conflict never silently rebases
-indexes or overwrites newer values. Even a layout change makes an older draft stale.
+Use `apply(version, ...operations)` to submit a retained draft. The document checks that exact base,
+including changes that arrived while the user edited the form, and a conflict never silently
+rebases indexes or overwrites newer values. Ordinary `apply(...operations)` takes the view's version
+at invocation. Even a layout change makes an older draft stale.
 
 ## Ordering and conflicts
 
-Every live document has one owner, one serialized queue, and a version, the document's own
-`document.version`:
+Every document has one queue, and a version, the document's own `document.version`:
 
 ```ts
 { epoch: 'document-uuid', revision: 12 }
@@ -167,114 +154,78 @@ Every live document has one owner, one serialized queue, and a version, the docu
 
 The epoch is new with each document, so a document opened again starts a new one. A successful
 change increments the revision, including undo, redo, and layout changes. No-ops and refusals do
-not increment it.
-History is shared by the document: undo reverses the latest document edit, regardless of which
-client made it.
+not increment it. History is shared by the document: undo reverses the latest document edit,
+regardless of which session made it.
 
-The facade copies an edit's explicit base, or captures the cached view's version, together with
-its operation arguments **at invocation**. Await dependent edits. Two concurrent edits based on the same revision can conflict; the second
-is never silently rebased onto potentially different element indexes. A UI retaining indexes in
-an unsubmitted draft must retain that draft's version and pass it to `apply`. The facade cannot
-infer which past view an arbitrary caller-provided index came from.
+A session takes an edit's explicit base, or the view's version, together with its operation
+arguments **at invocation**, and every call waits its turn in the document's queue. Await dependent
+edits and reads: a call made before an earlier edit lands still names the revision before it, and
+rejects with `DocumentConflict` rather than acting on indexes that may have moved. The view refreshes
+before the conflict is thrown. A vendor refusal remains a `Refusal`, including `at` for highlighting.
+An accepted edit resolves after the view includes at least its accepted revision.
 
-A `DocumentConflict` includes `expected` and `actual` versions. The facade refreshes its view
-before throwing it. A vendor refusal remains a `Refusal`, including `at` for highlighting.
-An accepted edit resolves after the local view includes at least its accepted revision.
+An edit names its base revision, so it applies at most once: sent again after it landed, it names a
+revision gone by and conflicts. A session whose connection failed with an edit in flight cannot
+know whether the edit landed; open the case again and read the view, which is the truth.
+Acknowledgments mean **accepted in memory**; `engine.save` is what makes a version durable.
 
-All edits and native reads must go through the served sessions while the document is served.
-Synchronous external changes are observed, but an external writer bypasses the read/edit queue.
+All edits and reads of a document an engine holds go through its sessions. A host that edits the
+native document directly bypasses the queue.
 
 ## Snapshots and performance
 
-Model capture and native byte export run in the document's queue. Later queued edits cannot
-change an in-progress capture. The resulting `Model` must satisfy the immutable model contract, including its lazy class values
-and native bytes. Its first capture is lazy too; connecting a session does not build a model. If opening a model fails, the call
-rejects and the next capture retries without an intervening edit or reconnect. A superseded
-capture's failure cannot invalidate a newer capture.
+Model capture and native byte export run in the document's queue. Later queued edits cannot change
+an in-progress capture. The resulting `Model` must satisfy the immutable model contract, including
+its lazy class values and native bytes. Its first capture is lazy too; opening a session does not
+build a model. If opening a model fails, the call rejects and the next capture retries without an
+intervening edit or reconnect. A superseded capture's failure cannot invalidate a newer capture.
 
-Models travel through the existing model service, with a separate service name per live
-snapshot. Core packs load first, class shards load on demand, and an engine in the serving realm
-can use the existing hosted-model token to run the original model in place.
+Across a port, a model crosses as a model service of its own, `model:<snapshot-uuid>`: its core
+first, class shards on demand. The engine beside the document records it where it lives, from the
+token the served model carries, so no case bytes move to record it. Close a model once its readers
+and recordings finish; closing the session closes every model it captured.
 
 Layout changes preserve the model and element indexing. Their view updates omit the netlist,
-blocks, and nets. Other changes send only schematic fields whose values differ. Unchanged
-columns retain their client-side identities. A changed column is currently sent in full; this
-is not yet a sparse range-patch protocol. View buffers are copied, never transferred away from
-the live document.
+blocks, and nets. Other changes send only schematic fields whose values differ, compared by
+identity. Unchanged columns retain their client-side identities. A changed column is sent in full.
+View buffers are copied, never transferred away from the live document.
 
-Repeated `model()` calls can return the same cached snapshot, including after layout edits.
-Its close affects every reference to that cached snapshot; close it after all consumers and
-recordings using it have finished. Different document model versions remain separately usable.
-Closing or reconnecting the session releases all its remote snapshot services. Cancelling one
-download does not cancel another reader's shared download; the last unclaimed reader releases
-the unused service.
+Repeated `model()` calls can return the same cached snapshot, including after layout edits. Its
+close affects every reference to that snapshot; close it after all consumers and recordings using it
+have finished. Different document model versions remain separately usable. Cancelling one download
+does not cancel another reader's shared download; the last unclaimed reader releases the unused
+service.
 
-Slow peers with transport backpressure retain only their newest pending view event. A revision
-gap makes the facade request a fresh view. Snapshot recovery emits a `change` with scope
+Slow peers with transport backpressure retain only their newest pending view update. A revision gap
+makes the session request a fresh view, and the view's refresh emits a `change` with scope
 `structure` and label `Refresh document`, because intermediate changes are no longer available.
 
-The first implementation has explicit resource bounds:
+| Resource                                       | Bound                                      |
+| ---------------------------------------------- | ------------------------------------------ |
+| Calls waiting on one document                  | 256; more are refused until it drains      |
+| One edit                                       | 256 operations                             |
+| One inspection payload                         | 1 MiB encoded; 4,096 values and ports each |
+| Live model snapshots per session across a port | 32; close old snapshots to release slots   |
+| Pending outgoing view updates per slow session | 1                                          |
+| Clean cases kept open for no session           | `idleBytes` of their bytes, 256 MiB        |
 
-| Resource                                         | Bound                                      |
-| ------------------------------------------------ | ------------------------------------------ |
-| Logical client identities per document           | 64; detached identities evicted first      |
-| Receipt retention                                | Latest completed command per client        |
-| Queued work per owner or client facade           | 256 calls                                  |
-| Queued encoded command payloads per owner        | 8 MiB                                      |
-| One command                                      | 256 operations and 1 MiB encoded           |
-| One inspection payload                           | 1 MiB encoded; 4,096 values and ports each |
-| Live model snapshots per connection              | 32; close old snapshots to release slots   |
-| Pending outgoing view events per slow connection | 1                                          |
-
-Oversized inspections reject explicitly and never silently truncate values or wiring. Members
-also share the one-million-element bound used by schematic arrays. Very large adjacency lists
-will need a paginated read contract rather than an ever-larger inspection reply.
-
-Overload rejects work before mutation. A `busy` edit reply does not consume its sequence;
-a caller can retry after demand falls. The host must additionally bound the number of open
-documents, workers, connections, and solver runs.
-
-## Reconnect and recovery
-
-```ts
-// After transport loss, obtain a new port routed to the same retained Document.
-await connectDocument(newPort, { resume: session });
-// The same facade now has the current view and has reconciled its uncertain edit.
-```
-
-The facade keeps at most one edit whose acknowledgment is uncertain. Resuming replays the exact
-client identity, sequence, base, and operations. The owner recognizes a duplicate before checking
-the base revision and returns the original receipt. Reusing an identity with another payload is
-rejected. A resumed client takes over its previous connection.
-
-The facade serializes commands from one client, so retaining its latest receipt is sufficient
-to recover a lost acknowledgment. Older sequences and evicted client identities fail explicitly.
-They never restart as fresh commands. A new process or document owner also rejects the old
-client identity. The application must resolve that recovery boundary before submitting new edits.
-
-A failed edit call during disconnection does not establish whether the edit committed. Resume
-the existing session to reconcile it. If the recovered command was refused or conflicted,
-reconnect reports that outcome. A deliberately closed facade cannot be resumed.
-
-Acknowledgments currently mean **accepted in memory**. They do not promise disk persistence or
-recovery after a process restart. A page reload also loses the facade's in-memory pending command.
-Aborting or disconnecting a request cannot reverse a mutation already accepted by the owner.
+Oversized inspections reject explicitly and never silently truncate values or wiring. Members also
+share the one-million-element bound used by schematic arrays.
 
 ## Wire contract
 
-This adds the `document` service to the existing Latkit protocol envelope. It does not change
-the frame format or introduce another transport.
+Each session across a port is its own service, `document:<session-id>`, on the engine's port. The
+engine's `engine:cases` service lists cases, opens and creates them, answering with the session's
+id, and saves them. Neither changes the frame format or adds a transport.
 
 ```json
 {
-  "svc": "document",
+  "svc": "document:6f0c…",
   "kind": "call",
   "id": 42,
   "body": {
     "op": "apply",
-    "client": "client-uuid",
-    "sequence": 7,
-    "base": { "epoch": "owner-uuid", "revision": 12 },
+    "base": { "epoch": "document-uuid", "revision": 12 },
     "operations": [
       {
         "kind": "set",
@@ -287,33 +238,26 @@ the frame format or introduce another transport.
 }
 ```
 
-The envelope's numeric `id` correlates one transport call. The pair `(client, sequence)` identifies
-a logical edit across reconnects. These are separate identities.
+| Request                          | Reply                                |
+| -------------------------------- | ------------------------------------ |
+| `open`                           | `opened { view }`                    |
+| `view`                           | `view { view }`                      |
+| `inspect { base, target }`       | `inspection { version, inspection }` |
+| `apply { base, operations }`     | Edit receipt                         |
+| `undo { base }`, `redo { base }` | Edit receipt                         |
+| `model { base }`                 | `model { version, id }`              |
+| `bytes { base }`                 | `bytes { version, bytes }`           |
 
-| Request                                        | Reply                                            |
-| ---------------------------------------------- | ------------------------------------------------ |
-| `open { client? }`                             | `opened { client, next, view }`                  |
-| `view`                                         | `view { view }`                                  |
-| `inspect { base, target }`                     | `inspection { version, inspection }` or conflict |
-| `apply { client, sequence, base, operations }` | Edit receipt                                     |
-| `undo / redo { client, sequence, base }`       | Edit receipt                                     |
-| `model { base }`                               | `model { version, id }` or conflict              |
-| `bytes { base }`                               | `bytes { version, bytes }` or conflict           |
+Edit receipts are `accepted { version, change }` or `refused { message, at }`; any request made
+against a revision gone by is answered `conflict { version }`. No-op acceptance has `change: null`.
+Unexpected failures use the channel's error envelope.
 
-Edit receipts are `accepted { version, change }`, `refused { message, at }`,
-`conflict { version }`, `expired { message }`, or `busy { message }`.
-Accepted, refused, and conflicting commands consume their sequence and retain their receipt.
-No-op acceptance has `change: null`. Unexpected failures use the existing channel error envelope.
+Events carry `saved { version }` when the engine keeps a version of the case, and
+`update { from, to, change, schematic, palette?, history }`, where `schematic` contains
+only replaced fields. Receipts do not duplicate those column payloads. The session validates
+replies and events, ignores already-installed revisions, and refreshes on gaps.
 
-Events carry `update { from, to, change, schematic, palette?, history }`, where `schematic`
-contains only replaced fields. Receipts do not duplicate those column payloads. The client
-validates replies and events, ignores already-installed revisions, and resynchronizes on gaps.
-
-Snapshot model services are named `model:<snapshot-uuid>`; standalone model services retain
-the default `model` name. Both `serveModel` and `connectModel` accept an optional `id` to select
-a scoped service. Existing model/engine APIs remain compatible.
-
-On a worker/message port, the envelope uses structured clone. On a WebSocket or byte port, one
+On a worker or message port, the envelope uses structured clone. On a WebSocket or byte port, one
 message is one binary frame:
 
 ```text
@@ -324,26 +268,18 @@ typed-array data, each section aligned to 8 bytes
 ```
 
 Typed arrays stay binary, including NaN placement markers inside float arrays. JSON scalars follow
-JSON rules; application edits reject nonfinite numeric scalars before sending. The frame has no
-version byte or separate protocol version. Wire compatibility is defined by the Latkit package
-version; peers must use compatible package releases. The service name is simply `document`.
+JSON rules; sessions reject nonfinite numeric scalars before sending. The frame has no version byte
+or separate protocol version. Wire compatibility is defined by the Latkit package version; peers
+must use compatible package releases.
 
 ## Scaling beyond one process
 
-Retain one authoritative owner per document and distribute different documents across workers.
-Route reconnects to the owning worker. Keep rendering, text drafts, and drag previews local, and
-send completed transactions. Give editing and solver execution separate budgets.
+One engine process holds a case's one document, and every session on the case reaches it through
+that engine's port, so a host routes a case's peers to the engine that keeps it. Distribute
+different cases across engines, give editing and solver execution separate budgets, and keep
+rendering, text drafts, and drag previews local, sending completed transactions.
 
-For durable failover, use a transactional edit journal and checkpoints. Persist the accepted
-command identity and result with the document change before acknowledging durable acceptance.
-Recovery must restore history and the replay window together, or explicitly start a new epoch.
-Use ownership leases with fencing so an old worker cannot continue committing after reassignment.
-
-As cases grow, extend providers with cheap immutable snapshot capture and precise changed ranges.
-That lets expensive model materialization leave the mutation queue and makes large position or
-value updates proportional to the edit. Store immutable model/result shards by content hash and
-serve bulk results on separately budgeted channels or sockets.
-
-The current protocol uses optimistic concurrency and shared history. Simultaneous collaborative
-editing would additionally need stable operation identities and defined merge/undo semantics.
-Multiple backend replicas alone do not supply those semantics.
+For durable failover, persist accepted edits with the document change in a transactional journal
+before acknowledging them, and recover history together with it or start a new epoch. As cases
+grow, cheap immutable snapshot capture and precise changed ranges let model materialization leave
+the queue and make large position or value updates proportional to the edit.

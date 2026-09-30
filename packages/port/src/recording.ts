@@ -7,7 +7,7 @@
 
 import { Recording, type Model, type Series } from '@latkit/model';
 
-import { connect, serve, transferred, type Remote, type Transferred } from './channel.js';
+import { connect, serve, transferred, type Transferred } from './channel.js';
 import { check, type Check } from './check.js';
 import type { Port } from './port.js';
 import { protocol } from './protocol.js';
@@ -118,7 +118,7 @@ export async function connectRecording(
   model: Model,
   id: string,
   signal?: AbortSignal,
-): Promise<Remote<Recording>> {
+): Promise<Recording> {
   if (!id) throw new Error('a recording needs an id');
   const connection = connect(port, recordingProtocol(id));
   return Recording.from(

@@ -1,21 +1,23 @@
 # @latkit/model
 
-What a format, an engine, and an editor implement, and what they make. A native format opens or
-creates a `Document` through `Document.Format`. The document owns editing and produces immutable
-`Model` snapshots on demand; an `Engine` records a model, a `Recording` holds its results, and a
-`Series` is what every view follows. It has no dependencies, I/O, or rendering.
+What a format, an engine, and an editor implement, and what they make. An `Engine` is a vendor: it
+keeps the vendor's cases, opens each as a `Document` through its `Document.Format`, and hands out
+`Document.Session`s on them; it records any model into a `Recording`. A document produces
+immutable `Model` snapshots on demand, and a `Series` is what every view follows. It has no
+dependencies, I/O, or rendering.
 
 | Class       | What it is                                                                               |
 | ----------- | ---------------------------------------------------------------------------------------- |
 | `Model`     | An immutable case snapshot: topology, element classes, values loaded on demand           |
-| `Engine`    | What records any model it is given: a solver, a simulator, an analysis, a feed           |
+| `Engine`    | A vendor: keeps its cases, opens them as sessions, and records any model it is given     |
 | `Document`  | A native case open for editing: current bytes, history, schematic, and model snapshots   |
 | `Recording` | Every signal an engine records for a model, each class's series on one clock             |
 | `Series`    | A history a view follows: signals over time for an element axis, read in bounded windows |
 
 Every other type lives under the class that speaks it: `Model.Topology` and `Model.Item` are the
 shapes `@latkit/network` loads and picks, as `Document.Netlist` and `Document.Part` are for
-`@latkit/diagram`; `Engine.Recorder` is how an engine writes; `Document.Operation` is one edit.
+`@latkit/diagram`; `Engine.Recorder` is how an engine writes, and `Engine.Cases` where it keeps
+its cases; `Document.Session` is how a host edits a case, and `Document.Operation` is one edit.
 `Domain` is the `[min, max]` every renderer takes; `extent` scans one and `normalizeDomain` pads one
 for display. `validateTopology`, `validateNetlist`, `validateSeries`, and `validateDomain` check
 what a host builds before a device exists.
@@ -57,14 +59,16 @@ export class GridkitModel extends Model {
 }
 ```
 
-## Register a native format
+## Keep a vendor's cases
 
-A host registers native formats through `Document.Format`. Both `open` and optional `create`
-return a document, ready to edit or save without building a model. The id matches `model.format`;
-filename extensions include the dot, preferred first.
+An engine keeps its cases in the formats it opens. A `Document.Format` is how: `open` and optional
+`create` return a document, ready to edit without building a model, and keep nothing themselves.
+The id matches `model.format`; name extensions include the dot, preferred first. The store is the
+host's: bytes by name, each read and written with a tag, so a write replaces only what the engine
+last read or wrote. A directory, a bucket, and memory are each one.
 
 ```ts
-import { Document } from '@latkit/model';
+import { Engine, type Document } from '@latkit/model';
 
 const gridkit: Document.Format = {
   id: 'gridkit',
@@ -74,39 +78,45 @@ const gridkit: Document.Format = {
     signal?.throwIfAborted();
     return new GridkitDocument(bytes);
   },
-  async create(name, signal) {
+  async create(title, signal) {
     signal?.throwIfAborted();
-    return new GridkitDocument(encodeEmptyCase(name));
+    return new GridkitDocument(encodeEmptyCase(title));
   },
 };
 
-const document = await gridkit.open(bytes);
-const model = await document.model(); // First immutable snapshot, built only when requested.
-const currentBytes = await document.bytes(); // What the host saves.
-
-if (gridkit.create) {
-  const untitled = await gridkit.create('Untitled');
-  // The same document API: edit, undo, model, and bytes. No file has been written.
-  await saveFile(chosenPath, await untitled.bytes()); // Host-owned I/O.
+class GridkitEngine extends Engine {
+  constructor(cases: Engine.Cases) {
+    super({ concurrency: 4, studies: STUDIES, formats: [gridkit], cases });
+  }
+  // parse and execute, as below
 }
+
+const engine = new GridkitEngine(directory); // the host's store
+await engine.cases(); // [{ name: 'ieee39.case.json', format: 'gridkit', saved: null }, ...]
+const session = await engine.open('ieee39.case.json'); // one document per case, for every session
+const created = await engine.create('new.case.json', { title: 'Untitled' }); // kept at once
+const imported = await engine.create('copy.case.json', { file }); // a user's file, as gridkit opens it
+await engine.save('ieee39.case.json', session.view.version); // exactly that version
 ```
 
 `GridkitDocument` is the format's native `Document` subclass. Its constructor calls `super()` and
 retains independent native state; its protected `open` captures a `GridkitModel` when requested.
 `open` does not modify the caller's bytes, and both factories reject when their signal is aborted.
-The name passed to `create` is the case's display name; the host chooses its filename and destination.
+The title passed to `create` is the case's display name; its name among the engine's cases is the
+host's choice. Check `engine.formats[i].creates` before offering New Case.
 
-Check `format.create` before offering New Case. The host decides which sources allow editing,
-retains the document while the case is open, and saves `document.bytes()`. A public read-only catalog
-can serve packed models directly through `Model.from` without opening a native document. The same
-native format works on a server, in a worker, or in an editor extension; it does not own storage.
+Every session on a case shares the one document the engine holds for it. A document with unsaved
+edits stays open until it is saved; clean ones no session uses stay open while their bytes fit the
+engine's `idleBytes` budget, so reopening a case is instant. `engine.cases()` reports the version
+each open document last saved. A public read-only catalog can serve packed models directly through
+`Model.from` without an engine.
 
 ## Ask the model
 
 Queries over an immutable case snapshot are methods on its model.
 
 ```ts
-const model = await document.model();
+const model = await session.model();
 network.load(model.topology);
 network.on('select', (item) => {
   const element = item && model.elementAt(item); // the element a pick is
@@ -123,7 +133,7 @@ A grid's `columns` say what each cell shows: the class's columns, and in a recor
 signal it records, at a time. A sort names a column by its index there, or `null` for the label.
 `formatNumber` is the rule its cells follow, for any number shown beside them. A model is immutable:
 views and recordings can keep a snapshot while its document continues editing. `model.bytes()`
-belongs to that snapshot; save the current case through `document.bytes()` instead.
+belongs to that snapshot; keep the current case with `engine.save` instead.
 
 ## Record it
 
@@ -140,8 +150,8 @@ and `recording.close()` lets them go.
 import { Engine, type Model } from '@latkit/model';
 
 export class GridkitEngine extends Engine {
-  constructor(readonly server: URL) {
-    super({ concurrency: Infinity }); // the server keeps its own queue
+  constructor(readonly solver: Solver) {
+    super({ concurrency: 4 }); // solvers it runs at once; the rest wait their turn
   }
 
   protected parse(input: unknown): Input {
@@ -150,10 +160,8 @@ export class GridkitEngine extends Engine {
 
   protected async execute(model: Model, input: Input, recorder: Engine.Recorder): Promise<void> {
     recorder.declare({ span: [0, input.duration], expectedFrames: framesOf(input) });
-    for await (const update of solve(this.server, model, input, recorder.signal)) {
-      if (update.kind === 'queued') recorder.wait(update.ahead);
-      else if (update.kind === 'running') recorder.start();
-      else if (update.kind === 'log') recorder.log(update.level, update.message);
+    for await (const update of this.solver.run(model, input, recorder.signal)) {
+      if (update.kind === 'log') recorder.log(update.level, update.message);
       else {
         await recorder.ready; // go at the pace of the store that keeps the frames
         recorder.append(update.time, update.values);
@@ -162,7 +170,7 @@ export class GridkitEngine extends Engine {
   }
 }
 
-const engine = new GridkitEngine(new URL('/api/', location.href));
+const engine = new GridkitEngine(solver);
 const recording = engine.record(model, input, { label: 'Fault at bus 5' });
 recording.on('change', () => status.show(recording.state)); // waiting, recording, then how it ended
 stop.onclick = () => recording.stop();
@@ -223,7 +231,7 @@ network.seek(t);
 const values = await vm?.at(t); // every bus at t, NaN where one has no value
 
 // The same field over other items: a diagram's nets over the elements that drive them.
-diagram.setChannel('netColor', vm ? vm.gather(document.drivers(vm.ref)) : null);
+diagram.setChannel('netColor', vm ? vm.gather(session.drivers(vm.ref)) : null);
 ```
 
 A field resolves to null when there are no values for it. One reference
@@ -232,36 +240,50 @@ interval over every committed value; a gathered field keeps it, so each view col
 
 ## Edit it
 
-A native format opens a `Document` subclass that makes operations true as one change, reverts a
-change, and describes its schematic. Its constructor needs no initial model. The base keeps one
-history of the last 200 steps, maps the schematic's parts to elements and back, and finds the
-element that drives each net. `model()` builds and caches an immutable snapshot on demand; layout
-changes keep it, while values or structure changes invalidate it. Concurrent readers share one
-open, and a failed open can be retried. Record that model to record the case as it stands.
+A host edits a case through a `Document.Session`, whether the engine is in its realm or across a
+port: asynchronous apply, undo, redo, inspection, model capture, and native byte export, every call
+in the one queue of the document it is on. Its `view` holds the schematic, palette, history
+metadata, `{ epoch, revision }` version, the document's own `document.version`, and `saved`, the
+version its engine last kept, which `on('saved')` hears change whichever session saved; schematic
+lookups (`elementAt`, `partOf`, `portAt`, `portOf`, `drivers`) are local and synchronous.
 
 ```ts
-const document = await gridkit.open(bytes);
-diagram.load(document.schematic.netlist);
+const session = await engine.open('ieee39.case.json');
+diagram.load(session.view.schematic.netlist);
 diagram.on('move', ({ blocks, positions }) =>
-  document.apply({
+  session.apply({
     kind: 'place',
-    elements: Array.from(blocks, (block) => document.schematic.blocks[block]!),
+    elements: Array.from(blocks, (block) => session.view.schematic.blocks[block]!),
     positions,
   }),
 );
-document.on('change', async (change) => {
-  if (change.scope === 'structure') diagram.load(document.schematic.netlist, { fit: false });
-  diagram.setChannel('blockPosition', document.schematic.positions);
-  if (change.scope !== 'layout') show(await document.model());
+session.on('change', async (change) => {
+  const { schematic } = session.view;
+  if (change.scope === 'structure') diagram.load(schematic.netlist, { fit: false });
+  diagram.setChannel('blockPosition', schematic.positions);
+  if (change.scope !== 'layout') show(await session.model());
 });
-undo.onclick = () => document.undo();
+undo.onclick = () => session.undo();
 ```
 
-An edit the case refuses throws `Refusal`, saying why and what it is about, and changes nothing.
+An edit uses an explicit base or the view's version at invocation. One the case refuses rejects
+with `Refusal`, saying why and what it is about, and changes nothing; one made against a revision
+gone by rejects with `DocumentConflict`, and never silently rebases. `inspect(elementOrKey)`
+returns current editable values and wiring with their revision, without opening a model; submit a
+retained draft with `apply(version, ...operations)`. `model()` captures an immutable snapshot,
+shared by concurrent readers; layout changes keep it, while values or structure changes invalidate
+it. Close a model once its readers finish, and `session.close()` once the case is no longer
+wanted. Record the model to record the case as it stands.
+
+A native format subclasses `Document`: it makes operations true as one change, reverts a change,
+describes its schematic, and implements synchronous `inspect(element)` alongside its identity
+lookups. Its constructor needs no initial model. The base keeps one history of the last 200 steps,
+maps the schematic's parts to elements and back, and finds the element that drives each net.
 `document.version` advances for each successful edit, undo, and redo. Document implementations
 replace changed schematic parts and retain unchanged parts by identity; published parts must not
-be mutated. Keep the same palette array until the palette changes, so sessions can send only the
-parts that changed.
+be mutated. Keep the same palette array until the palette changes, so sessions send only the parts
+that changed. See [Document sessions](../../docs/document-sessions.md) for what an engine keeps
+open, ordering, and the wire contract.
 
 ## Keep a history
 
@@ -334,20 +356,3 @@ const unit: Document.Netlist = {
 };
 validateNetlist(unit);
 ```
-
-## Asynchronous editing
-
-`Document.Session` exposes asynchronous apply, undo, redo, inspection, model capture, and native
-byte export. `inspect(elementOrKey)` returns current editable values and wiring with their revision,
-without opening a model. Submit a retained draft with `apply(version, ...operations)` so the owner
-rejects intervening changes; ordinary `apply(...operations)` uses the current cached view.
-Its `view` caches the schematic, palette, history metadata, and `{ epoch, revision }` version, the
-document's own `document.version`.
-Stale edits reject with `DocumentConflict`; accepted edits resolve after the view includes them.
-A `Document.Snapshot` is an immutable model with `close()` to release its resources.
-
-Sessions and local documents share `Document.parts(schematicOrGetter)` for synchronous
-`elementAt`, `partOf`, `portAt`, `portOf`, and `drivers` lookups. Native vendor implementations
-subclass `Document`, implementing synchronous `inspect(element)` alongside native
-editing and identity lookups. See [Document sessions](../../docs/document-sessions.md)
-for serving that document through `@latkit/port` and the persistence boundary.
