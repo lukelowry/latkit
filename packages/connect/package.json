@@ -1,0 +1,36 @@
+{
+  "name": "@latkit/connect",
+  "version": "0.0.0",
+  "description": "Models, their monitors, and canonical streams across process boundaries.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lukelowry/latkit.git",
+    "directory": "packages/connect"
+  },
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "bench:scale": "vitest run --config vitest.scale.config.ts"
+  },
+  "dependencies": {
+    "@latkit/model": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

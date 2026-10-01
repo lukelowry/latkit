@@ -1,7 +1,7 @@
 {
   "name": "@latkit/gpu",
   "version": "0.7.1",
-  "description": "What every Latkit renderer shares: WebGPU devices, presentation, the frame loop, the attach lifecycle, channels, and colormap textures.",
+  "description": "Bounded WebGPU rendering and native Latkit column preparation.",
   "type": "module",
   "repository": {
     "type": "git",
@@ -12,7 +12,8 @@
   "sideEffects": false,
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "exports": {
     ".": {
@@ -24,12 +25,18 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --project @latkit/gpu"
+    "test": "vitest run --config vitest.config.ts",
+    "test:browser": "node tests/browser/run.mjs",
+    "benchmark": "vitest bench --config vitest.config.ts --run"
   },
   "dependencies": {
-    "@latkit/colormaps": "workspace:*",
     "@latkit/model": "workspace:*",
-    "@webgpu/types": "^0.1.71"
+    "@webgpu/types": "^0.1.71",
+    "culori": "4.0.2"
+  },
+  "devDependencies": {
+    "@latkit/connect": "workspace:*",
+    "@types/culori": "^4.0.1"
   },
   "publishConfig": {
     "access": "public"

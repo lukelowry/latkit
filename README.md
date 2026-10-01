@@ -5,142 +5,80 @@
 # Latkit
 
 [![CI](https://github.com/lukelowry/latkit/actions/workflows/ci.yml/badge.svg)](https://github.com/lukelowry/latkit/actions/workflows/ci.yml)
-[![Documentation Status](https://readthedocs.org/projects/latkit/badge/?version=latest)](https://latkit.readthedocs.io/en/latest/?badge=latest)
+[![Documentation Status](https://readthedocs.org/projects/latkit/badge/?version=latest)](https://latkit.readthedocs.io/en/latest/)
 
-Latkit is a TypeScript package family for interactive, browser-based WebGPU visualization of network topology, block diagrams, and time-series data.
+TypeScript tools for WebGPU network views, time-series plots, and video export.
 
-[Documentation](https://latkit.readthedocs.io/en/latest/) &middot; [Getting started](https://latkit.readthedocs.io/en/latest/getting-started.html) &middot; [API reference](https://latkit.readthedocs.io/en/latest/api/index.html) &middot; [Examples](./examples)
+[Documentation](https://latkit.readthedocs.io/en/latest/) ? [API reference](https://latkit.readthedocs.io/en/latest/api/index.html) ? [Examples](examples)
+
+## Install
+
+```sh
+npm install @latkit/gpu @latkit/network
+```
+
+Use an ESM bundler and a WebGPU-capable browser. Supply your data through a
+`Queryable` from [`@latkit/model`](packages/model).
+
+## Draw a network
+
+Here, `source` has a `node` type with a two-component `position` field and a
+numeric `load` field. `canvas` is an application-owned HTML canvas with a CSS size.
+
+```ts
+import { createGpu, createCanvasView, colormaps } from '@latkit/gpu';
+import { createNetwork, attachNetworkInput } from '@latkit/network';
+
+const gpu = await createGpu();
+const network = createNetwork({
+  gpu,
+  data: {
+    source,
+    coordinates: 'cartesian',
+    vertices: {
+      node: {
+        position: 'position',
+        color: { field: 'load', domain: [0, 1], colormap: colormaps.viridis },
+      },
+    },
+  },
+});
+const view = createCanvasView({ gpu, canvas, renderer: network, onError: console.error });
+const detach = attachNetworkInput({ network, canvas });
+view.request();
+
+// On teardown:
+detach();
+view.destroy();
+network.destroy();
+gpu.destroy();
+await source.close();
+```
 
 ## Packages
 
-Install only the packages your application needs.
+| Package                     | Use                                              |
+| --------------------------- | ------------------------------------------------ |
+| [model](packages/model)     | Data interfaces, queries, recordings, validation |
+| [connect](packages/connect) | Models over workers and sockets                  |
+| [gpu](packages/gpu)         | Shared rendering, fields, text, colors           |
+| [network](packages/network) | Network topology and geographic views            |
+| [monitor](packages/monitor) | Time-series plots and live telemetry             |
+| [video](packages/video)     | MP4 and WebM export                              |
+| [diagram](packages/diagram) | Planned API; private, no runtime yet             |
 
-| Package                                                                | Description                                                         |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| [`@latkit/network`](https://www.npmjs.com/package/@latkit/network)     | Interactive WebGPU network topology views                           |
-| [`@latkit/monitor`](https://www.npmjs.com/package/@latkit/monitor)     | WebGPU time-series and signal monitor views                         |
-| [`@latkit/diagram`](https://www.npmjs.com/package/@latkit/diagram)     | WebGPU block diagrams with automatic layout and edit proposals      |
-| [`@latkit/embed`](https://www.npmjs.com/package/@latkit/embed)         | `latkit-network` and `latkit-monitor` custom elements               |
-| [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)             | What every renderer shares: devices, frames, attach, channels       |
-| [`@latkit/colormaps`](https://www.npmjs.com/package/@latkit/colormaps) | Colors and colormaps: `RGBA`, the catalog, gradients, and a parser  |
-| [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)         | `Model`, `Engine`, and `Document` to subclass, and their recordings |
-| [`@latkit/port`](https://www.npmjs.com/package/@latkit/port)           | Ports, frames, protocols, and models and engines served across them |
-| [`@latkit/video`](./packages/video)                                    | Worker-based video export of network, diagram, and monitor scenes   |
+## Develop
 
-## Requirements
-
-- A WebGPU-capable browser for `@latkit/network`, `@latkit/monitor`, and `@latkit/diagram`
-- An ESM-capable bundler or development server
-- Node.js 24 when developing Latkit locally
-
-## Installation
-
-For network visualization:
-
-```sh
-npm install @latkit/network @latkit/colormaps
-```
-
-For monitor visualization:
-
-```sh
-npm install @latkit/monitor @latkit/colormaps
-```
-
-For block diagrams:
-
-```sh
-npm install @latkit/diagram @latkit/model @latkit/colormaps
-```
-
-For a tag instead of a controller:
-
-```sh
-npm install @latkit/embed
-```
-
-## Quick start
-
-```ts
-import { colormap } from '@latkit/colormaps';
-import { createNetwork } from '@latkit/network';
-
-const canvas = document.querySelector<HTMLCanvasElement>('#network');
-if (!canvas) {
-  throw new Error('Missing #network canvas.');
-}
-
-const network = createNetwork({
-  colormap: colormap('viridis'),
-  graticule: true,
-});
-
-network.load({
-  vertexCount: 3,
-  vertexCoords: new Float32Array([-96, 30, -95, 31, -94, 30]),
-  edges: new Uint32Array([0, 1, 1, 2]),
-  polylineStart: new Uint32Array([0, 0, 0]),
-});
-network.setChannel('vertexColor', new Float32Array([0.1, 0.8, 0.4]), [0, 1]);
-
-await network.attach(canvas);
-```
-
-The controller needs neither a device nor a canvas until `attach`, which leases a WebGPU device from a pool shared by every renderer on the page. Or, declaratively:
-
-```html
-<latkit-network src="network.json" colormap="viridis" vertex-color="load"></latkit-network>
-<script type="module">
-  import { register } from '@latkit/embed';
-  register();
-</script>
-```
-
-See the [network quickstart](https://latkit.readthedocs.io/en/latest/network-quickstart.html), [monitor quickstart](https://latkit.readthedocs.io/en/latest/monitor-quickstart.html), and [diagram quickstart](https://latkit.readthedocs.io/en/latest/diagram-quickstart.html) for complete usage and lifecycle guidance.
-
-## Examples
-
-Install the workspace dependencies, then run an example in a WebGPU-capable browser:
+Requires Node.js 24 and pnpm 10.30.
 
 ```sh
 pnpm install
-pnpm --filter @latkit/network-example dev   # http://127.0.0.1:5188
-pnpm --filter @latkit/monitor-example dev   # http://127.0.0.1:5190
-pnpm --filter @latkit/embed-example dev     # http://127.0.0.1:5192
-pnpm --filter @latkit/diagram-example dev   # http://127.0.0.1:5194
-```
-
-## Documentation
-
-The full guides and generated TypeScript API reference are published on [Read the Docs](https://latkit.readthedocs.io/en/latest/). Documentation sources live in [`docs/`](./docs) and use MyST Markdown with Sphinx.
-
-Build the documentation locally with:
-
-```sh
+pnpm --filter @latkit/network-example dev
+pnpm quality
+pnpm build:examples
 pnpm docs:build
 ```
 
-## Development
+See [release checks](docs/release-process.md) for browser tests and packaging.
 
-```sh
-pnpm install
-pnpm quality
-```
-
-The `quality` command checks formatting, linting, types, and tests across the workspace. See the [release process](https://latkit.readthedocs.io/en/latest/release-process.html) for package publishing details.
-
-## Related work
-
-Selected related projects include:
-
-- [`sgwt`](https://pypi.org/project/sgwt/)
-- [`esapp`](https://pypi.org/project/esapp/)
-- [`ORNL/GridKit`](https://github.com/ORNL/GridKit)
-
-## Author
-
-Latkit is developed by [Luke Lowery](https://lukelowry.github.io/) and began during his PhD studies at Texas A&M University. See his [Google Scholar profile](https://scholar.google.com/citations?user=CTynuRMAAAAJ&hl=en) for publications and the [author page](https://latkit.readthedocs.io/en/latest/about-author.html) for more information.
-
-## License
-
-Latkit packages are released under the [MIT License](./LICENSE).
+Created by [Luke Lowery](https://lukelowry.github.io/). [MIT License](LICENSE).

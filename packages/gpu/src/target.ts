@@ -1,52 +1,79 @@
-/// <reference types="@webgpu/types" />
+import type { Gpu } from './gpu.js';
+import { GpuError, integer } from './error.js';
+import { targetResources, type RenderTarget } from './render.js';
 
-/** A renderer's output, independent of a canvas, DOM, or frame scheduler. */
-export interface RenderTarget {
-  readonly device: GPUDevice;
-  readonly format: GPUTextureFormat;
+export interface TargetSize {
   readonly width: number;
   readonly height: number;
-  /** Texture receiving the next frame. A canvas target acquires its current texture here. */
-  texture(): GPUTexture;
 }
-
-/** A fixed texture target owned by the caller, suitable for composition in a worker. */
-export function createRenderTarget(
-  device: GPUDevice,
-  width: number,
-  height: number,
-  format: GPUTextureFormat = 'rgba8unorm',
-): RenderTarget & { destroy(): void } {
-  if (
-    ![width, height].every(
-      (n) => Number.isSafeInteger(n) && n > 0 && n <= device.limits.maxTextureDimension2D,
-    )
-  )
-    throw new RangeError('Render target dimensions exceed the device limits');
-  const texture = device.createTexture({
-    label: 'latkit-render-target',
-    size: [width, height],
-    format,
-    usage:
-      GPUTextureUsage.RENDER_ATTACHMENT |
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_SRC,
-  });
-  return {
-    device,
-    format,
-    width,
-    height,
-    texture: () => texture,
-    destroy: () => texture.destroy(),
-  };
-}
-
-/** One prepared scene, borrowed by its host until destroy. */
-export interface SceneRenderer {
-  /** Prepare samples at the source's simulation time, in seconds. */
-  prepare(sourceTimeSeconds: number, signal: AbortSignal): Promise<void>;
-  /** Draw at elapsed output time, in milliseconds, for visual animation. */
-  draw(outputTimeMs: number): void;
+export interface TextureTarget extends RenderTarget {
+  resize(size: TargetSize): void;
   destroy(): void;
+}
+
+export function createRenderTarget(
+  options: TargetSize & {
+    readonly gpu: Gpu;
+    readonly format?: GPUTextureFormat;
+    readonly label?: string;
+  },
+): TextureTarget {
+  const { gpu } = options;
+  const format = options.format ?? 'rgba8unorm';
+  const allocate = (size: TargetSize) => {
+    integer(size.width, 'target width', 1, gpu.device.limits.maxTextureDimension2D);
+    integer(size.height, 'target height', 1, gpu.device.limits.maxTextureDimension2D);
+    return gpu.texture({
+      label: options.label ?? 'render target',
+      size: [size.width, size.height],
+      format,
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT |
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_SRC,
+    });
+  };
+  let resource = allocate(options);
+  let width = options.width,
+    height = options.height,
+    closed = false;
+  const assertLive = (): void => {
+    if (closed) throw new GpuError('closed', 'Render target is closed');
+  };
+  const target: TextureTarget = {
+    device: gpu.device,
+    format,
+    get width() {
+      return width;
+    },
+    get height() {
+      return height;
+    },
+    texture() {
+      assertLive();
+      return resource.texture;
+    },
+    resize(size) {
+      assertLive();
+      if (width === size.width && height === size.height) return;
+      const next = allocate(size);
+      const previous = resource;
+      resource = next;
+      width = size.width;
+      height = size.height;
+      previous.destroy();
+    },
+    destroy() {
+      if (!closed) {
+        closed = true;
+        resource.destroy();
+        targetResources.delete(target);
+      }
+    },
+  };
+  targetResources.set(target, () => {
+    assertLive();
+    return resource;
+  });
+  return target;
 }

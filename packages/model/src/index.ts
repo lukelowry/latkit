@@ -1,22 +1,92 @@
-/**
- * `@latkit/model` — what a format, an engine, and an editor implement, and what they make. A
- * format opens native documents through `Document.Format`; each document produces immutable
- * `Model` snapshots on demand. An engine subclasses `Engine` to record a model, offering its
- * studies as forms; a `Recording` is what an engine fills, and a `Series` is what every view
- * follows. Every other type lives under the class that speaks it: `Model.Topology`,
- * `Engine.Study`, `Document.Operation`.
- *
- * @packageDocumentation
- */
+/** Public Model/Recording contracts and explicit boundary validation. */
+export type { Model } from './model.js';
+export type { Recording, RecordingStatus } from './recording.js';
+export type {
+  Routine,
+  Parameter,
+  Input,
+  InputValue,
+  Command,
+  CommandResult,
+  Diagnostic,
+} from './routine.js';
+export type {
+  DataType,
+  NumericType,
+  NumericArray,
+  Index,
+  RowSelection,
+  RowAxis,
+  Column,
+  NumericColumn,
+  SampleColumn,
+  BooleanColumn,
+  TextColumn,
+  VectorColumn,
+  ListColumn,
+} from './data.js';
+export type {
+  Schema,
+  ComponentDefinition,
+  ComponentPort,
+  ConnectionDefinition,
+  ConnectionRole,
+  TableDefinition,
+  FieldDefinition,
+} from './schema.js';
+export type {
+  Queryable,
+  QueryHeader,
+  FieldSelection,
+  QueryOptions,
+  RetainOptions,
+  Query,
+  RowsQuery,
+  SamplesQuery,
+  SampleWindow,
+  SampleRange,
+  EnvelopeQuery,
+  EnvelopeBlock,
+  EnvelopeColumn,
+  EndpointsQuery,
+  LinksQuery,
+  AggregateQuery,
+  Filter,
+  QueryBlock,
+  RowsBlock,
+  SamplesBlock,
+  EndpointsBlock,
+  LinksBlock,
+  AggregateBlock,
+  Update,
+} from './query.js';
+export type {
+  Version,
+  Domain,
+  Axis,
+  Scalar,
+  Value,
+  Bound,
+  Bounds,
+  RequestOptions,
+  ProblemTarget,
+  Problem,
+  Export,
+  Failure,
+} from './types.js';
+export { blockBuffers, blockByteLength } from './buffers.js';
+export { validateSchema } from './validation/schema.js';
+export { validateQuery } from './validation/query.js';
+export { validateBlock } from './validation/block.js';
 
-export { Model, validateTopology } from './model.js';
-export { Engine } from './engine.js';
-export { Document, DocumentConflict } from './document.js';
-export { Refusal } from './refusal.js';
-export { validateNetlist } from './netlist.js';
-export { Recording } from './recording.js';
-export { Series, validateSeries } from './series.js';
-
-export type { Domain } from './domain.js';
-export { extent, normalizeDomain, validateDomain } from './domain.js';
-export { formatNumber } from './grid.js';
+export {
+  sameIndex,
+  assertIndex,
+  rowCount,
+  rowAt,
+  sliceRows,
+  bitAt,
+  numberAt,
+  textAt,
+  sampleAt,
+} from './access.js';

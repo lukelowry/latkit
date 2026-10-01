@@ -1,126 +1,48 @@
-# Topology and channels
+# Data bindings
 
-Use this guide when adapting real network data to `@latkit/network`.
+Renderers read native `Queryable` fields. Mapping keys name model types.
 
-## Topology arrays
-
-`Model.Topology` is the CPU-side graph shape passed to `network.load()`.
-
-| Field             | Length            | Meaning                                              |
-| ----------------- | ----------------- | ---------------------------------------------------- |
-| `vertexCount`     | `1` number        | Number of logical graph vertices                     |
-| `vertexCoords`    | `vertexCount * 2` | Optional interleaved `x, y` or `lon, lat` values     |
-| `coordinateSpace` | N/A               | Optional `'cartesian'` or `'geographic'` declaration |
-| `edges`           | `edgeCount * 2`   | Endpoint vertex indices as `from, to` pairs          |
-| `polylineStart`   | `edgeCount + 1`   | Offset table into `polylinePoints`                   |
-| `polylinePoints`  | `pointCount * 2`  | Optional bend points for edge polylines              |
-
-Omit `vertexCoords` to use the generated unit-ring layout. Generated coordinates are always
-abstract. Caller-supplied coordinates inside longitude and latitude bounds are inferred geographic
-unless `coordinateSpace: 'cartesian'` opts out. `coordinateSpace: 'geographic'` documents intent,
-but coordinates must still fit those bounds.
-
-For straight edges with no bend points, use a zero-filled `polylineStart` with `edgeCount + 1` entries:
+## Positions and connections
 
 ```ts
-const topology: Model.Topology = {
-  vertexCount: 4,
-  vertexCoords: new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]),
-  edges: new Uint32Array([0, 1, 1, 2, 2, 3]),
-  polylineStart: new Uint32Array([0, 0, 0, 0]),
+const data = {
+  source,
+  coordinates: 'geographic' as const,
+  vertices: { node: { position: 'coordinates' } },
+  edges: {
+    line: { connectivity: { kind: 'endpoints' as const, layout: 'pair' as const } },
+  },
 };
 ```
 
-For a bent edge, place the intermediate points in `polylinePoints` and use `polylineStart` to mark the range for each edge:
+Geographic positions are longitude/latitude in degrees. Cartesian positions use
+application units. Positions can be two-component vectors or separate
+`{ x: 'longitude', y: 'latitude' }` fields.
+
+Connections expose native endpoints. Use `pair` for two endpoints and `star`
+for several. Paths and bends use lists of two-component vectors.
+
+## Style by field
 
 ```ts
-const topology: Model.Topology = {
-  vertexCount: 2,
-  vertexCoords: new Float32Array([-96, 30, -94, 31]),
-  edges: new Uint32Array([0, 1]),
-  polylineStart: new Uint32Array([0, 2]),
-  polylinePoints: new Float32Array([-95.5, 30.8, -94.8, 31.1]),
-};
+network.setVertex('node', {
+  color: {
+    field: { source: recording, from: 'node', field: 'temperature' },
+    domain: [0, 100],
+    colormap: colormaps.thermal,
+  },
+  size: { field: 'capacity', domain: [0, 1000], range: [3, 12] },
+  labels: { field: 'name', maxCount: 100 },
+});
+view.request({ at: 12 });
 ```
 
-## Projection support
+A string names a field on the mapping's source and type. An explicit binding
+selects another source. Native indices and sampled coordinates must align.
+Use immutable bindings and publish changes through renderer setters.
 
-All projections use resolved vertex coordinates for topology fit bounds. Flat and tilt accept
-arbitrary coordinates. Globe additionally requires a geographic interpretation, longitude in
-`[-180, 180]`, latitude in `[-90, 90]`, a non-trivial geographic span, and a characteristic length
-small enough for globe rendering. Item-specific edge framing still includes that edge's polyline
-bends.
+Omitted domains use finite values across the displayed mapping. Explicit domains
+keep scales stable during playback. Missing values keep style defaults.
 
-Read support after `load()`:
-
-```ts
-network.load(topology);
-
-console.log(network.geographic);
-if (network.projections.globe) {
-  network.setCamera({ projection: 'globe' });
-}
-```
-
-## Channel arrays
-
-Channels bind values to vertices or edges after a topology is loaded. Every channel is one scalar
-per item except `vertexPosition`, an interleaved `x, y` pair per vertex.
-
-| Channel          | Length            | Effect                                       |
-| ---------------- | ----------------- | -------------------------------------------- |
-| `vertexColor`    | `vertexCount`     | Colors vertices through the active colormap  |
-| `vertexHeight`   | `vertexCount`     | Raises vertices and height poles             |
-| `vertexSize`     | `vertexCount`     | Scales vertex billboards                     |
-| `vertexVisible`  | `vertexCount`     | Shows vertices whose value is greater than 0 |
-| `vertexShade`    | `vertexCount`     | One scalar per vertex for the fragment shade |
-| `vertexPosition` | `vertexCount * 2` | Where every vertex sits, in topology coords  |
-| `edgeColor`      | `edgeCount`       | Colors edges through the active colormap     |
-| `edgeDash`       | `edgeCount`       | Enables per-edge dash pattern values         |
-| `edgeVisible`    | `edgeCount`       | Shows edges whose value is greater than 0    |
-| `edgeShade`      | `edgeCount`       | One scalar per edge for the fragment shade   |
-
-```ts
-network.load(topology);
-
-network.setChannel('vertexColor', vertexLoad, [0, 1]);
-network.setChannel('edgeColor', edgeStress, [0, 100]);
-network.setChannel('vertexHeight', vertexLoad, null);
-network.setOptions({ heightRange: [0, 0.8] });
-network.setChannel('vertexVisible', energizedVertices);
-network.setChannel('edgeVisible', energizedEdges);
-network.setChannel('edgeVisible', null);
-```
-
-The third argument is the input domain. Pass `null` to auto-scan height values. The `heightRange` option is the output range `vertexHeight` maps onto. `setChannelDomain()` moves a bound channel's domain without re-uploading its values, and `getChannelDomain()` reads the domain in effect. Visibility channels are raw and domain-free: an unbound channel shows every item, while a bound channel shows only values greater than zero. Zero, negative values, and `NaN` hide the item in both rendering and hit testing. `NaN` is no value everywhere: a color, height, size, or dash channel draws its item as if the channel were unbound. Passing `null` as the values clears the channel and restores all items. Shade channels are raw too: their values reach a fragment shade unchanged as `f.value`, and read as zero while unbound.
-
-`setChannel()` snapshots its typed array, so later caller mutations do not alter the bound rendering or picking state. Bind the array again to publish changes. `CHANNELS` lists every channel with its scope, display label, whether it is normalized, its components per item, and whether it can follow a series.
-
-## Channels over time
-
-A channel can follow one signal of a `Series`, one element per vertex or edge, instead of holding an array; a sparse series leaves the items it never recorded with no value. A model's field is such a binding already, and a column field is a sealed series of one frame, whose window takes two slots. `seek(time)` shows every such channel at the playhead, each item taking its latest sample at or before it. A null domain follows the signal's recorded range as the series appends.
-
-```ts
-const vm = await recording.field({ classId: 'bus', kind: 'signal', id: 'Vm' });
-if (vm) network.setChannel('vertexColor', vm);
-network.seek(transport.t); // on every transport frame
-```
-
-The frames around the playhead stay resident on the GPU, about 8 MiB per signal with a CPU copy as large, shared by every channel following that signal, and the next ones load as the playhead advances or the series appends, so a seek within them rewrites one word per channel and uploads nothing. A seek beyond them keeps the current frame on screen until the frames it needs arrive. A failed read emits `error` with its channel, which reads again once the series changes or the channel is bound anew; binding the signal a channel already follows keeps what it shows. Every channel whose `CHANNELS` entry says `series` can follow one: all but `vertexPosition` here. The network and the diagram bind channels through the same `createChannels` in `@latkit/gpu`, so a channel behaves the same in both.
-
-## Moving vertices
-
-`vertexPosition` is the layout the renderer draws. `load()` seeds it from `vertexCoords` (or the generated ring), and rebinding it moves vertices, the ends of their edges, and their height poles without reloading the topology. `null` restores the topology's own layout. Polyline bends stay where the topology put them.
-
-```ts
-network.load(topology);
-network.setChannel('vertexPosition', layout.positions); // vertexCount * 2 floats, x then y
-network.fit(true); // frames the positions in effect
-network.setChannel('vertexPosition', null); // back to vertexCoords
-```
-
-Rebinding costs one upload and no allocation, so a layout engine can hand over its array every frame. What the topology still owns: vertex radius and edge width, the geographic interpretation, longitude wrapping, and the globe. The globe draws the layout the topology carries, so `network.projections.globe` is false while positions override it, and binding positions on the globe falls back to flat. While positions change from one frame to the next, hover clears and `hitTest` finds nothing; picking resumes one frame after the last write. `locate()` is always live.
-
-## Validation failures
-
-`network.load()` throws if lengths, endpoints, or polyline offsets are invalid. `setChannel()` throws if no topology is loaded or the channel length does not match the current topology.
+Selections and hits retain source, index, and physical row identity.
+Do not reuse row indices after their source index version changes.

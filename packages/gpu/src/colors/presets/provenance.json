@@ -1,0 +1,350 @@
+{
+  "files": {
+    "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm_listed.py": "ddad3698f5129ceb1792a445371286c08bc9080298e657b3054aea19c9659ef9",
+    "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm.py": "3ee608024529cf8bb86a2523bdd5799e321f1b427f31063da4cd98cf78f7297b",
+    "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/batlow.txt": "918dd393177e126685437f234f4c1f7c8a446437c1c68820f3bc1a8423e91bd1",
+    "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/devon.txt": "b9573d181e49ead6e6daef40641b82b04116e2f9dacb94b4a9fdd3afc2f55dd0",
+    "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/oslo.txt": "4e29e907d1a07e05481ee6856efe4b5266d85f89eea8c82affde764aacaf1f89",
+    "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/lajolla.txt": "7541ff8f5267045b8fc716c53d2fa9153882fe23471c74f8c3692ff57aef1971",
+    "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/turku.txt": "49961085d0836dc7a8ca6eb78f005b05db791dc11050f565841cb535324e012d",
+    "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/vik.txt": "60c2abfbffdfd9e7567cfeea1387bfe270eb036efe7262fdd7bf713058bacae2",
+    "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/broc.txt": "f4404b8badae36fd33af4879e42bb27ce6c7c09496e5b85452ff6ebd2eac9f44",
+    "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/cork.txt": "44e22ae0750cb398575980c680110569bdbc2ffd2155bd8999d6452b4c0784e0",
+    "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/romaO.txt": "5946167e7ce80161f7f12c7ceae34730e06c42a31fa0000057b2bd785c04c74a",
+    "https://raw.githubusercontent.com/matplotlib/cmocean/59c35002c3aa5296b65d9646e52604c627441eb6/cmocean/rgb/thermal-rgb.txt": "98b285203ca06e1aadcead34cbf247957c24e480bee5f187a20c1aafe3c81f47",
+    "https://raw.githubusercontent.com/matplotlib/cmocean/59c35002c3aa5296b65d9646e52604c627441eb6/cmocean/rgb/haline-rgb.txt": "8f54ed333074adf75a689d12d6a92ff75066f441013e1148361570f393389214",
+    "https://raw.githubusercontent.com/matplotlib/cmocean/59c35002c3aa5296b65d9646e52604c627441eb6/cmocean/rgb/deep-rgb.txt": "040df9fb34f8aa0aef581d38bc5c39c5bd96810608e6a9cdfd9ecc3fda1160c3",
+    "https://raw.githubusercontent.com/matplotlib/cmocean/59c35002c3aa5296b65d9646e52604c627441eb6/cmocean/rgb/amp-rgb.txt": "7545759b98c0ea0cff60a97b7d97f92fae3f762cfef99ad41d1d2f160c31030d",
+    "https://raw.githubusercontent.com/matplotlib/cmocean/59c35002c3aa5296b65d9646e52604c627441eb6/cmocean/rgb/balance-rgb.txt": "8abbfe7ac4753be904b0c15534882da94ca22b63e25a468c0654637977b7c1cd",
+    "https://raw.githubusercontent.com/matplotlib/cmocean/59c35002c3aa5296b65d9646e52604c627441eb6/cmocean/rgb/phase-rgb.txt": "69779b9e6384b85731f99c9fc1b2adf5a05f274bc45c56b99eb6bf6a1e457ee3",
+    "https://raw.githubusercontent.com/mwaskom/seaborn/9521ea1f29b5ce1df1aa2ed6f65f3bd1c63884bb/seaborn/cm.py": "f209b5441c841725b417bb24af50edfd428fdb9bab142b01f72418db9f0cb4c0",
+    "https://raw.githubusercontent.com/d3/d3-scale-chromatic/2c52792197299346b7bdb94322bb4dff8f554fea/src/categorical/Tableau10.js": "28421b3596d670e2e7d835f176d81f23851d98c46e561fa94e35b7d473cfde1b",
+    "https://raw.githubusercontent.com/d3/d3-scale-chromatic/2c52792197299346b7bdb94322bb4dff8f554fea/src/categorical/Dark2.js": "aaafcd2d320c52281d4013c0d8fe3b28d4efa916d9aa38f6508fca1599330485",
+    "https://raw.githubusercontent.com/d3/d3-scale-chromatic/2c52792197299346b7bdb94322bb4dff8f554fea/src/categorical/Set2.js": "ee6efe017b121c1f78232bc7cbd59ab59291d4342c3fc4e57c9559afd867470b",
+    "https://raw.githubusercontent.com/d3/d3-scale-chromatic/2c52792197299346b7bdb94322bb4dff8f554fea/src/categorical/Paired.js": "4af3dd9cf70ed09f79d98bd9cac1c1513cdec911e9d3128e94a0a6abb585faa5"
+  },
+  "palettes": {
+    "amber": {
+      "label": "Amber",
+      "kind": "sequential",
+      "count": 2,
+      "source": "Latkit: sRGB amber ramp",
+      "sha256": "82f40ab0a09f54322a9afe843f84b7369e541191c736971ef842dd7201c3fae1"
+    },
+    "amp": {
+      "label": "Amp",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/cmocean/59c35002c3aa5296b65d9646e52604c627441eb6/cmocean/rgb/amp-rgb.txt",
+      "sha256": "7abbc2c51fe179fcd14b77803e433bc536c94aead1c2dd9f18c7190c5c931a49"
+    },
+    "batlow": {
+      "label": "Batlow",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/batlow.txt",
+      "sha256": "f063f2f7fe52a8a2366756d3e630296a2f3771dfdbfb8ea60af3f547920b8412"
+    },
+    "cividis": {
+      "label": "Cividis",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm_listed.py",
+      "sha256": "31af0a8973c7ea1342ffa657f4ed98f971beaadad918ffc513930db86622613b"
+    },
+    "crest": {
+      "label": "Crest",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/mwaskom/seaborn/9521ea1f29b5ce1df1aa2ed6f65f3bd1c63884bb/seaborn/cm.py",
+      "sha256": "d7191bb82b54920a5cb95077a130060fa92614ae42111236dfcf15abd57b8b41"
+    },
+    "deep": {
+      "label": "Deep",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/cmocean/59c35002c3aa5296b65d9646e52604c627441eb6/cmocean/rgb/deep-rgb.txt",
+      "sha256": "fdf32caf0d59217e4b2f7ac90adeeb4326b25e3bfac8769263702d3164564d36"
+    },
+    "devon": {
+      "label": "Devon",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/devon.txt",
+      "sha256": "eb00acb02e921d5eee52088dd324308d7534be3c07b351ebb0795d25ecaca640"
+    },
+    "flare": {
+      "label": "Flare",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/mwaskom/seaborn/9521ea1f29b5ce1df1aa2ed6f65f3bd1c63884bb/seaborn/cm.py",
+      "sha256": "a6dc719a713e87ac628f2319ab9211c3eb383875ae7c05c0ee09c08ca382f2ff"
+    },
+    "grays": {
+      "label": "Grays",
+      "kind": "sequential",
+      "count": 2,
+      "source": "Latkit: sRGB black to white",
+      "sha256": "a070a6f84e2bcf6e28084c9a6abb90a2981689b8417e9ab6b1b0bcb1e99d4bf4"
+    },
+    "haline": {
+      "label": "Haline",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/cmocean/59c35002c3aa5296b65d9646e52604c627441eb6/cmocean/rgb/haline-rgb.txt",
+      "sha256": "630cd7a02990929b3aed78c2b6f7173b07b94a1457b9b6b44dd5edbe04762944"
+    },
+    "inferno": {
+      "label": "Inferno",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm_listed.py",
+      "sha256": "0af14089c97cbdae1b72a91fe65db9275469bd03b6ce0c6ddb6fda0a76e62577"
+    },
+    "lajolla": {
+      "label": "Lajolla",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/lajolla.txt",
+      "sha256": "660a531bbfd38fe00d138cad4874b3bb131f8e2813e5c2a4a7229660d9fd64cb"
+    },
+    "magma": {
+      "label": "Magma",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm_listed.py",
+      "sha256": "a4397e6ac4f998a50f1ecaa6ba56a135db03a5cfb629b98b257e55c1daad86e5"
+    },
+    "mako": {
+      "label": "Mako",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/mwaskom/seaborn/9521ea1f29b5ce1df1aa2ed6f65f3bd1c63884bb/seaborn/cm.py",
+      "sha256": "17b9ef8fedf38a6775b88b6be9e986be99a6f4b5fbdd3d48085ed7c03d170363"
+    },
+    "oslo": {
+      "label": "Oslo",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/oslo.txt",
+      "sha256": "213a9fe2ac20c1e4ee2b0e0424f6458efe25eb4d38aa36d4500943964536858d"
+    },
+    "plasma": {
+      "label": "Plasma",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm_listed.py",
+      "sha256": "d0642dbee6567b05c1d5fffdec78a23605dbd5a95ae20e6878f7cfba93a738fa"
+    },
+    "rocket": {
+      "label": "Rocket",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/mwaskom/seaborn/9521ea1f29b5ce1df1aa2ed6f65f3bd1c63884bb/seaborn/cm.py",
+      "sha256": "8a39b6ad214708606994670dc92e7e36f49c7a3df5b239fbd39c8f21bf9be2fd"
+    },
+    "thermal": {
+      "label": "Thermal",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/cmocean/59c35002c3aa5296b65d9646e52604c627441eb6/cmocean/rgb/thermal-rgb.txt",
+      "sha256": "cb9bf83d3c09d0de626842d0fbd6f282d362f7b18dae77f24007042ef47e508b"
+    },
+    "turku": {
+      "label": "Turku",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/turku.txt",
+      "sha256": "9ab16da74ba65f189b0340c0b0588b0dea4917b5eb9150858155274919315bf0"
+    },
+    "viridis": {
+      "label": "Viridis",
+      "kind": "sequential",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm_listed.py",
+      "sha256": "e92462537267940df9419465e4107f0577981d42edd77345bfbd6694b0bad5aa"
+    },
+    "balance": {
+      "label": "Balance",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/cmocean/59c35002c3aa5296b65d9646e52604c627441eb6/cmocean/rgb/balance-rgb.txt",
+      "sha256": "d2fc7f6444a949e101fd4a400c2c654e1b2d95bab034c1fb029efd71a373ab84"
+    },
+    "berlin": {
+      "label": "Berlin",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm_listed.py",
+      "sha256": "cfdfe8d24c1909f39daccc44df29d588867c33914cbbd7ec3e2fd255ac5841c7"
+    },
+    "brbg": {
+      "label": "Brown / Green",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm.py",
+      "sha256": "158004128f36a74d029e60ce65c783437816d20c4ac5e574cedc19c46ac9c994"
+    },
+    "broc": {
+      "label": "Broc",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/broc.txt",
+      "sha256": "3151855b102539556aea93c913b5d8b35e2816389988a8fb60f7b27791accc7f"
+    },
+    "coolwarm": {
+      "label": "Cool / Warm",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm.py",
+      "sha256": "bb26b26557757a986114faac45fe0e7f807c91d82fb2141e7bfaac56c3eacfa1"
+    },
+    "cork": {
+      "label": "Cork",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/cork.txt",
+      "sha256": "b58ebcbdd804a1abe6566145e494cde622692de2e4f0b2d1f202e9f9e52cb8cc"
+    },
+    "icefire": {
+      "label": "Icefire",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/mwaskom/seaborn/9521ea1f29b5ce1df1aa2ed6f65f3bd1c63884bb/seaborn/cm.py",
+      "sha256": "e9226e29e7339b78b03e058559930b4950034078482e27e445eb3873e9b1a92a"
+    },
+    "managua": {
+      "label": "Managua",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm_listed.py",
+      "sha256": "bfdb2f22c8f0716a3443aa8104712d45692b6bb1efacfb38057337c9a45afb3f"
+    },
+    "piyg": {
+      "label": "Pink / Green",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm.py",
+      "sha256": "47ceaefdb93b4a9b3f1d1d917231bd7a35be18ce45c0f2953e297f68021dd637"
+    },
+    "puor": {
+      "label": "Purple / Orange",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm.py",
+      "sha256": "ec28aec593688d46f2e98f5f4f50d3d8d4bdea7ec4c27c9a1dd3c28d546d9d1a"
+    },
+    "rdbu": {
+      "label": "Red / Blue",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm.py",
+      "sha256": "4cdbf608a0230071be851c3f01a5a6204e458da8df0df0b2aa948a0d7b2736e1"
+    },
+    "spectral": {
+      "label": "Spectral",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm.py",
+      "sha256": "91ee0904963ca53936b8665351b0634d179c197d780c74378b1a2240ba6de135"
+    },
+    "vanimo": {
+      "label": "Vanimo",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm_listed.py",
+      "sha256": "d783b3077d0a06504b2578b9a7ff6460a3da4f995827b819cdb9cf3272bdd252"
+    },
+    "vik": {
+      "label": "Vik",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/vik.txt",
+      "sha256": "ddfc0138df402032cef88b31e02db8f844535f4361793920395c4585773b8273"
+    },
+    "vlag": {
+      "label": "Vlag",
+      "kind": "diverging",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/mwaskom/seaborn/9521ea1f29b5ce1df1aa2ed6f65f3bd1c63884bb/seaborn/cm.py",
+      "sha256": "1b2a6b76661ad584127ef432c119247acc1bebc1bcecd2a414f5d20f6d3f12f0"
+    },
+    "phase": {
+      "label": "Phase",
+      "kind": "cyclic",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/cmocean/59c35002c3aa5296b65d9646e52604c627441eb6/cmocean/rgb/phase-rgb.txt",
+      "sha256": "15f271c9cf613e0dc58246f1bbf38b6c6cf8d4bfc8d4414d4b7c4393ed952fa2"
+    },
+    "romao": {
+      "label": "RomaO",
+      "kind": "cyclic",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/callumrollo/cmcrameri/78f02a088fa3c4fb4cb8aa92bd8e52389ab9d09a/cmcrameri/cmaps/romaO.txt",
+      "sha256": "83e355e2952cd274487a47217ed84964f459ead7d18e2bf043d79769c17783c8"
+    },
+    "twilight": {
+      "label": "Twilight",
+      "kind": "cyclic",
+      "count": 510,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm_listed.py",
+      "sha256": "fe9e43fd405590598c35ed4f987493142a8e8019e708636bc06b4e8c6aba4041"
+    },
+    "dark2": {
+      "label": "Dark2",
+      "kind": "categorical",
+      "count": 8,
+      "source": "https://raw.githubusercontent.com/d3/d3-scale-chromatic/2c52792197299346b7bdb94322bb4dff8f554fea/src/categorical/Dark2.js",
+      "sha256": "b034c6b5e3d312d0ce78e22f643dff06793e774b9cf26e348ea851436a6e9490"
+    },
+    "okabeito": {
+      "label": "Okabe-Ito",
+      "kind": "categorical",
+      "count": 8,
+      "source": "https://jfly.uni-koeln.de/color/#pallet",
+      "sha256": "e2b45dd14ad7d3657a85d3f96af5f69a8e4fe73138978c5a1132cb2ca88d7579"
+    },
+    "paired": {
+      "label": "Paired",
+      "kind": "categorical",
+      "count": 12,
+      "source": "https://raw.githubusercontent.com/d3/d3-scale-chromatic/2c52792197299346b7bdb94322bb4dff8f554fea/src/categorical/Paired.js",
+      "sha256": "8db592d6fbe34631e217e82be34aa2129317d7c590efa546c867f17457b01151"
+    },
+    "set2": {
+      "label": "Set2",
+      "kind": "categorical",
+      "count": 8,
+      "source": "https://raw.githubusercontent.com/d3/d3-scale-chromatic/2c52792197299346b7bdb94322bb4dff8f554fea/src/categorical/Set2.js",
+      "sha256": "7215ecb49c02a921e9dd929128e56c2d2ba358c70712972f81bcf2a5ce9ea149"
+    },
+    "tab10": {
+      "label": "Tab10",
+      "kind": "categorical",
+      "count": 10,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm.py",
+      "sha256": "fd525257b532ca78aee969a4c9bd6c5a4785c3eeaa13c6f239c1f93b9598ca62"
+    },
+    "tab20": {
+      "label": "Tab20",
+      "kind": "categorical",
+      "count": 20,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm.py",
+      "sha256": "a454e6f7b6a984986362896cbe8c88ae3ffc440fb734a0252d1f24fafb4685b2"
+    },
+    "tableau10": {
+      "label": "Tableau10",
+      "kind": "categorical",
+      "count": 10,
+      "source": "https://raw.githubusercontent.com/d3/d3-scale-chromatic/2c52792197299346b7bdb94322bb4dff8f554fea/src/categorical/Tableau10.js",
+      "sha256": "a8ba079518a5e3dc0b351d7df665cd2bedc9b892e2b6f2ea06a6d563f6667925"
+    },
+    "turbo": {
+      "label": "Turbo",
+      "kind": "multihue",
+      "count": 256,
+      "source": "https://raw.githubusercontent.com/matplotlib/matplotlib/4aeb773422464799998d900198b35cb80e94b3e1/lib/matplotlib/_cm_listed.py",
+      "sha256": "6f85913ded7def1a43463968a191a0b94cf82c12086ea3177c05ee50fec3b1d4"
+    }
+  }
+}

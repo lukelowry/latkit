@@ -1,22 +1,4 @@
-import type { Model } from '@latkit/model';
-
-/**
- * A synthetic power-grid-like network. Vertices are scattered over a
- * continental-US longitude/latitude box (so the globe projection can host it),
- * wired into a connected mesh of nearest-neighbour "lines" plus a handful of
- * long polyline "transmission corridors" that bend around the terrain.
- *
- * Returns the Topology plus per-vertex signals to drive the color/size channels.
- */
-export interface FakeNetwork {
-  readonly topology: Model.Topology;
-  readonly vertexCount: number;
-  readonly edgeCount: number;
-  /** Per-vertex scalar in [0, 1] for the vertexColor channel. */
-  readonly load: Float32Array;
-  /** Per-vertex scalar in [0, 1] for the vertexSize channel (hubs run large). */
-  readonly degree: Float32Array;
-}
+import { ExampleSource, numeric, vector } from './source.js';
 
 // Continental-US-ish window, in degrees. Stays inside the globe's lon/lat bounds.
 const LON_MIN = -124;
@@ -42,22 +24,14 @@ interface Edge {
   bends: Pt[]; // intermediate polyline points; empty for a straight line
 }
 
-export function makeFakeNetwork(): FakeNetwork {
+export function makeFakeNetwork(): ExampleSource {
   const random = createRandom(SEED);
   const pts = scatter(random);
   const edges = wire(pts, random);
 
-  const topology = encode(pts, edges);
   const degree = degreeSignal(pts.length, edges);
   const load = loadSignal(pts, degree);
-
-  return {
-    topology,
-    vertexCount: pts.length,
-    edgeCount: edges.length,
-    load,
-    degree,
-  };
+  return encode(pts, edges, load, degree);
 }
 
 /** Jittered grid sampling: one point per cell, randomly thinned. */
@@ -163,8 +137,8 @@ function wire(pts: Pt[], random: () => number): Edge[] {
   return edges;
 }
 
-/** Pack points + edges into the network wire-format Topology. */
-function encode(pts: Pt[], edges: Edge[]): Model.Topology {
+/** Generate native component columns and connection endpoints. */
+function encode(pts: Pt[], edges: Edge[], load: Float32Array, degree: Float32Array): ExampleSource {
   const vertexCoords = new Float32Array(pts.length * 2);
   for (let i = 0; i < pts.length; i++) {
     vertexCoords[i * 2] = pts[i]!.x;
@@ -172,28 +146,40 @@ function encode(pts: Pt[], edges: Edge[]): Model.Topology {
   }
 
   const edgeIndices = new Uint32Array(edges.length * 2);
-  const polylineStart = new Uint32Array(edges.length + 1);
+  const offsets = new Int32Array(edges.length + 1);
   const bendPts: number[] = [];
   let cursor = 0;
   for (let e = 0; e < edges.length; e++) {
     const edge = edges[e]!;
     edgeIndices[e * 2] = edge.a;
     edgeIndices[e * 2 + 1] = edge.b;
-    polylineStart[e] = cursor;
+    offsets[e] = cursor;
     for (const p of edge.bends) {
       bendPts.push(p.x, p.y);
       cursor += 1;
     }
   }
-  polylineStart[edges.length] = cursor;
+  offsets[edges.length] = cursor;
 
-  return {
-    vertexCount: pts.length,
-    vertexCoords,
-    edges: edgeIndices,
-    polylineStart,
-    polylinePoints: cursor > 0 ? new Float32Array(bendPts) : undefined,
-  };
+  return new ExampleSource({
+    node: {
+      count: pts.length,
+      columns: { position: vector(vertexCoords), load: numeric(load), degree: numeric(degree) },
+    },
+    line: {
+      count: edges.length,
+      columns: {
+        bends: {
+          kind: 'list',
+          offset: 0,
+          length: edges.length,
+          offsets,
+          values: vector(new Float32Array(bendPts)),
+        },
+      },
+      endpoints: { component: 'node', rows: edgeIndices },
+    },
+  });
 }
 
 /** Normalised vertex degree in [0, 1]. */

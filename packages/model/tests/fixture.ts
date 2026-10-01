@@ -1,256 +1,348 @@
-import { Engine, Model, type Recording, type Series } from '../src/index.js';
-
-/** Three vertices in a line with two edges, buses owning vertices, branches owning edges, two
- *  generators anchored to vertices 0 and 2, and one area with no place on the canvas. Buses record
- *  their voltage and generators their power. */
-export function sampleData(): Model.Description {
-  return {
-    format: 'test',
-    id: 'sample',
-    name: 'Sample',
-    meta: { freqBase: 60, note: 'fixture', live: true, empty: null },
-    topology: {
-      vertexCount: 3,
-      vertexCoords: Float32Array.of(-96, 30, -95, 31, -94, 30),
-      coordinateSpace: 'geographic',
-      edges: Uint32Array.of(0, 1, 1, 2),
-      polylineStart: Uint32Array.of(0, 0, 1),
-      polylinePoints: Float32Array.of(-94.5, 30.5),
+/** Test implementations, deliberately not exported by the package. */
+import type {
+  Command,
+  CommandResult,
+  Diagnostic,
+  Domain,
+  Export,
+  Failure,
+  FieldSelection,
+  Model,
+  QueryBlock,
+  QueryHeader,
+  Recording,
+  RecordingStatus,
+  RequestOptions,
+  Routine,
+  RowAxis,
+  Schema,
+} from '../src/index.js';
+import { RetainedBudget } from './retention.js';
+import { Source, failure, selectRows } from './source.js';
+import type { Frame, Inputs, ReadState } from './source.js';
+export { failure } from './source.js';
+export const fixtureSchema: Schema = {
+  queries: ['rows', 'aggregate'],
+  limits: { maxBlockBytes: 4096 },
+  components: {
+    Node: {
+      fields: {
+        value: { type: 'float64' },
+        output: { type: 'float64', sampled: true },
+        other: { type: 'float64', sampled: true },
+      },
     },
-    owners: { vertex: 'bus', edge: 'branch' },
-    classes: [
-      {
-        id: 'bus',
-        label: 'Bus',
-        count: 3,
-        columns: [
-          { kind: 'number', id: 'Vm', label: 'Voltage', unit: 'pu' },
-          { kind: 'text', id: 'zone', label: 'Zone', group: 'Location' },
-          { kind: 'flag', id: 'slack', label: 'Slack' },
-        ],
-        signals: [
-          { id: 'Vm', label: 'Voltage', unit: 'pu', recorded: true },
-          { id: 'Va', label: 'Angle', unit: 'deg', recorded: false },
-        ],
-      },
-      {
-        id: 'branch',
-        label: 'Branch',
-        count: 2,
-        columns: [{ kind: 'flag', id: 'xfmr', label: 'Transformer' }],
-        signals: [],
-      },
-      {
-        id: 'gen',
-        label: 'Generator',
-        count: 2,
-        anchor: { kind: 'vertex', index: Uint32Array.of(0, 2) },
-        columns: [],
-        signals: [{ id: 'P', label: 'Power', unit: 'MW', recorded: true }],
-      },
-      { id: 'area', label: 'Area', count: 1, columns: [], signals: [] },
-    ],
-  };
+  },
+  connections: {},
+};
+export async function collect<B extends QueryBlock>(
+  source: AsyncIterable<QueryHeader | B>,
+): Promise<B[]> {
+  const values: B[] = [];
+  for await (const value of source) if (value.kind !== 'schema') values.push(value as B);
+  return values;
 }
-
-/** One class's data as the model joins it: its labels and declared columns with their values. */
-export function sampleClass(id: string): Model.Data {
-  switch (id) {
-    case 'bus':
-      return {
-        labels: ['North', 'Middle', 'South'],
-        columns: [
-          {
-            kind: 'number',
-            id: 'Vm',
-            label: 'Voltage',
-            unit: 'pu',
-            values: Float64Array.of(1.02, NaN, 0.98),
-          },
-          { kind: 'text', id: 'zone', label: 'Zone', group: 'Location', values: ['A', null, 'B'] },
-          { kind: 'flag', id: 'slack', label: 'Slack', values: Uint8Array.of(1, 0, 0) },
-        ],
-      };
-    case 'branch':
-      return {
-        labels: ['North-Middle', 'Middle-South'],
-        columns: [{ kind: 'flag', id: 'xfmr', label: 'Transformer', values: Uint8Array.of(0, 1) }],
-      };
-    case 'gen':
-      return { labels: ['G1', 'G2'], columns: [] };
-    case 'area':
-      return { labels: ['Texas'], columns: [] };
-    default:
-      throw new Error(`no fixture class '${id}'`);
-  }
-}
-
-/** One class's values as a format gives them: labels and values in declared order. */
-export function sampleValues(id: string): Model.Values {
-  const data = sampleClass(id);
-  return { labels: data.labels, values: data.columns.map((column) => column.values) };
-}
-
-/**
- * The fixture as a model, recording every class it is asked for; `values` replaces how it gives
- * a class's values.
- */
-export class Sample extends Model {
-  readonly calls: string[];
-  readonly #values: (classId: string, signal: AbortSignal) => Promise<Model.Values>;
-
-  constructor(
-    options: {
-      readonly calls?: string[];
-      readonly description?: Model.Description;
-      readonly values?: (classId: string, signal: AbortSignal) => Promise<Model.Values>;
-    } = {},
-  ) {
-    super(options.description ?? sampleData());
-    this.calls = options.calls ?? [];
-    this.#values = options.values ?? ((classId) => Promise.resolve(sampleValues(classId)));
-  }
-
-  protected values(classId: string, signal: AbortSignal): Promise<Model.Values> {
-    this.calls.push(classId);
-    return this.#values(classId, signal);
-  }
-
-  bytes(): Promise<Uint8Array> {
-    return Promise.resolve(new TextEncoder().encode('{"case":"sample"}'));
-  }
-}
-
-export function sampleModel(calls?: string[]): Sample {
-  return new Sample({ calls });
-}
-
-/** One block of frames an engine appends: its times, and each class's values frame-major. */
-export interface Block {
-  readonly time: Float64Array;
-  readonly values: Readonly<Record<string, Float32Array | Float64Array>>;
-}
-
-/**
- * An engine that appends `blocks` in turn, a microtask apart, for an input that is a number: how
- * many of them to append before it throws `failure`, or all of them.
- */
-export class Player extends Engine {
-  readonly #blocks: readonly Block[];
-  readonly #failure: string | null;
-
-  constructor(
-    blocks: readonly Block[],
-    options: {
-      readonly concurrency?: number;
-      readonly failure?: string;
-      readonly store?: () => Series.Store;
-    } = {},
-  ) {
-    super({ concurrency: options.concurrency ?? 1, store: options.store });
-    this.#blocks = blocks;
-    this.#failure = options.failure ?? null;
-  }
-
-  protected parse(input: unknown): number {
-    if (typeof input !== 'number' || !Number.isSafeInteger(input) || input < 0)
-      throw new TypeError('an input is how many blocks to append');
-    return input;
-  }
-
-  protected async execute(_model: Model, count: number, recorder: Engine.Recorder): Promise<void> {
-    recorder.declare({ span: [0, 10], expectedFrames: this.#blocks.length });
-    for (const { time, values } of this.#blocks.slice(0, count)) {
-      await recorder.ready;
-      recorder.signal.throwIfAborted();
-      recorder.append(time, values);
+export async function readBytes(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(result.value);
+      size += result.value.length;
     }
-    if (this.#failure !== null && count < this.#blocks.length) throw new Error(this.#failure);
-    recorder.log('info', `appended ${count}`);
+  } finally {
+    await reader.cancel();
+    reader.releaseLock();
   }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
 }
-
-/** A recording an engine keeps open by hand: its recorder, and what ends it. */
-interface Open {
-  readonly recorder: Engine.Recorder;
-  resolve(): void;
-  reject(error: Error): void;
-}
-
-/** An engine a test drives by hand: every recording it makes stays open until the test ends it. */
-class Hand extends Engine {
-  readonly #open: Open[] = [];
-
-  constructor() {
-    super({ concurrency: Infinity });
-  }
-
-  /** The recorder of the recording it made last, and how the test ends it. */
-  get last(): Open {
-    return this.#open.at(-1)!;
-  }
-
-  protected parse(input: unknown): unknown {
-    return input;
-  }
-
-  protected execute(_model: Model, _input: unknown, recorder: Engine.Recorder): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.#open.push({ recorder, resolve, reject });
-      recorder.signal.addEventListener('abort', () => reject(new Error('stopped')));
-    });
-  }
-}
-
-/**
- * A recording of `model` a test writes by hand: its recorder, and what ends it, each resolving
- * once the recording says it ended.
- */
-export function byHand(
-  model: Model,
-  header: { readonly id?: string; readonly label?: string } = {},
-): {
-  readonly recording: Recording;
-  readonly recorder: Engine.Recorder;
-  complete(): Promise<void>;
-  fail(message: string): Promise<void>;
-} {
-  const hand = new Hand();
-  const recording = hand.record(model, null, header);
-  const { recorder, resolve, reject } = hand.last;
-  return {
-    recording,
-    recorder,
-    complete() {
-      resolve();
-      return ended(recording);
+export function byteStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
     },
-    fail(message) {
-      reject(new Error(message));
-      return ended(recording);
-    },
-  };
-}
-
-/** Resolves once `recording` has ended. */
-export function ended(recording: Recording): Promise<void> {
-  return new Promise((resolve) => {
-    const check = (): void => {
-      if (recording.state.status === 'waiting' || recording.state.status === 'recording') return;
-      off();
-      resolve();
-    };
-    const off = recording.on('change', check);
-    check();
   });
 }
 
-/** Frame-major values for `frames` frames of a class: one signal per element, in order. */
-export function block(time: readonly number[], values: Record<string, readonly number[]>): Block {
-  return {
-    time: Float64Array.from(time),
-    values: Object.fromEntries(
-      Object.entries(values).map(([classId, list]) => [classId, Float32Array.from(list)]),
-    ),
-  };
+/** Each field a monitor streams, and the rows it streams them for. */
+function coverageOf(fields: readonly FieldSelection[], inputs: Inputs): Map<string, RowAxis> {
+  if (!fields.length) throw failure('invalid-input', 'A monitor streams at least one field.');
+  const coverage = new Map<string, RowAxis>();
+  for (const selection of fields) {
+    if (selection.from !== 'Node' || !selection.select.length) throw failure('invalid-input');
+    const rows = selectRows(inputs, selection.rows);
+    for (const field of selection.select) {
+      if (!fixtureSchema.components.Node.fields[field]?.sampled || coverage.has(field))
+        throw failure('invalid-input');
+      coverage.set(field, rows);
+    }
+  }
+  return coverage;
+}
+
+/** A command waiting its turn or running. Tests drive the running one with frame() and finish(). */
+interface Work {
+  readonly routine: Routine;
+  readonly resolve: (result: CommandResult) => void;
+  readonly reject: (error: Failure) => void;
+  cleanup: () => void;
+  inputs?: Inputs;
+  monitors: readonly FixtureRecording[];
+  frames: number;
+}
+let nextModel = 0;
+export class FixtureModel extends Source implements Model {
+  readonly id = 'fixture-' + nextModel++;
+  readonly name = 'Fixture';
+  readonly routines: readonly Routine[] = [
+    { id: 'solve', label: 'Solve', parameters: [], records: true },
+    { id: 'check', label: 'Check', parameters: [] },
+  ];
+  inputs: Inputs;
+  readonly monitors = new Set<FixtureRecording>();
+  /** Commands in the order given; the first one is running. */
+  readonly queue: Work[] = [];
+  private counter = 1;
+  private nextId = 5;
+  private closed = false;
+  constructor(retention = new RetainedBudget()) {
+    super(retention);
+    this.inputs = {
+      version: '1',
+      index: { source: this.id, type: 'Node', version: '1' },
+      ids: ['n1', 'n2', 'n3', 'n4'],
+      values: new Float64Array([1, 2, 3, 4]),
+    };
+  }
+  get version(): string {
+    return this.inputs.version;
+  }
+  stateForRead(): ReadState {
+    if (this.closed) throw failure('closed');
+    return { inputs: this.inputs, version: this.version, schema: fixtureSchema };
+  }
+  private check(options?: RequestOptions): void {
+    if (this.closed) throw failure('closed');
+    if (options?.signal?.aborted) throw failure('aborted');
+  }
+  /** Test control: its application replaced the file, so the data and its identities are new. */
+  replace(values: Float64Array = new Float64Array([1, 2, 3, 4])): void {
+    this.check();
+    const version = String(++this.counter);
+    this.inputs = {
+      version,
+      index: { source: this.id, type: 'Node', version },
+      ids: Array.from(values, () => 'n' + this.nextId++),
+      values,
+    };
+    this.publish({ kind: 'replace', version });
+  }
+  async monitor(
+    fields: readonly FieldSelection[],
+    options?: RequestOptions,
+  ): Promise<FixtureRecording> {
+    this.check(options);
+    const recording = new FixtureRecording(this, coverageOf(fields, this.inputs));
+    this.monitors.add(recording);
+    return recording;
+  }
+  run(command: Command, options: RequestOptions = {}): Promise<CommandResult> {
+    try {
+      this.check(options);
+    } catch (error) {
+      return Promise.reject(error as Error);
+    }
+    const routine = this.routines.find((entry) => entry.id === command.routine);
+    if (!routine)
+      return Promise.reject(
+        Object.assign(failure('invalid-input', 'Unknown routine.'), {
+          issues: [
+            {
+              code: 'invalid-input',
+              message: 'Unknown routine.',
+              target: { kind: 'path', path: ['routine'] },
+            },
+          ],
+        }),
+      );
+    return new Promise<CommandResult>((resolve, reject) => {
+      const work: Work = { routine, resolve, reject, cleanup: () => {}, monitors: [], frames: 0 };
+      const abort = (): void => this.settle(work, 'cancelled', failure('aborted'));
+      options.signal?.addEventListener('abort', abort, { once: true });
+      work.cleanup = () => options.signal?.removeEventListener('abort', abort);
+      this.queue.push(work);
+      if (this.queue.length === 1) this.start(work);
+    });
+  }
+  /** Test control: the running command computes one frame at `coordinate`. */
+  frame(coordinate: number): void {
+    const work = this.running();
+    const output = work.inputs!.values.map((value) => value + coordinate);
+    const frame = { coordinate, values: { output, other: output.map((value) => value * 10) } };
+    work.frames++;
+    for (const monitor of work.monitors) monitor.append(frame);
+  }
+  /** Test control: the running command ends, failing with `error` when given. */
+  finish(error?: Failure): void {
+    this.settle(this.running(), error ? 'failed' : 'complete', error);
+  }
+  private running(): Work {
+    const work = this.queue[0];
+    if (!work) throw new Error('No fixture command is running.');
+    return work;
+  }
+  /** It runs on the data current as it starts, and every monitor open then streams it. */
+  private start(work: Work): void {
+    work.inputs = this.inputs;
+    work.monitors = work.routine.records ? [...this.monitors] : [];
+    for (const monitor of work.monitors) monitor.start(this.inputs);
+  }
+  private settle(work: Work, status: 'complete' | 'cancelled' | 'failed', error?: Failure): void {
+    const position = this.queue.indexOf(work);
+    if (position < 0) return;
+    this.queue.splice(position, 1);
+    work.cleanup();
+    for (const monitor of work.monitors) monitor.end(status, error);
+    if (error) work.reject(error);
+    else work.resolve({ frames: work.frames });
+    if (position === 0 && this.queue.length) this.start(this.queue[0]);
+  }
+  override async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    // Queued commands first, so cancelling the running one starts nothing.
+    for (const work of [...this.queue].reverse())
+      this.settle(work, 'cancelled', failure('aborted'));
+    await super.close();
+  }
+}
+
+export class FixtureRecording extends Source implements Recording {
+  status: RecordingStatus = 'idle';
+  progress: number | null = null;
+  diagnostics: readonly Diagnostic[] = [];
+  version = '0';
+  private inputs: Inputs;
+  private recorded: Frame[] = [];
+  private firstCoordinate?: number;
+  private disposed = false;
+  private readonly schema: Schema;
+  constructor(
+    readonly model: FixtureModel,
+    readonly coverage: ReadonlyMap<string, RowAxis>,
+  ) {
+    super(model.retention);
+    this.inputs = model.inputs;
+    const { fields } = fixtureSchema.components.Node;
+    this.schema = {
+      ...fixtureSchema,
+      queries: ['rows', 'samples', 'aggregate'],
+      axis: { name: 'time', unit: 's' },
+      components: {
+        Node: {
+          fields: Object.fromEntries(
+            Object.entries(fields).filter(
+              ([name, definition]) => !definition.sampled || coverage.has(name),
+            ),
+          ),
+        },
+      },
+    };
+  }
+  get frames(): number {
+    return this.recorded.length;
+  }
+  get range(): Domain | null {
+    const last = this.recorded.at(-1);
+    return last ? [this.recorded[0].coordinate, last.coordinate] : null;
+  }
+  stateForRead(): ReadState {
+    if (this.disposed) throw failure('closed');
+    return {
+      inputs: this.inputs,
+      version: this.version,
+      schema: this.schema,
+      frames: this.recorded.slice(),
+      firstFrame: 0,
+      frameCount: this.recorded.length,
+      firstCoordinate: this.firstCoordinate,
+      coverage: this.coverage,
+    };
+  }
+  /** A command starts it over, on the data that command runs on. */
+  start(inputs: Inputs): void {
+    if (this.disposed) return;
+    this.inputs = inputs;
+    this.recorded = [];
+    this.firstCoordinate = undefined;
+    this.diagnostics = [];
+    this.status = 'running';
+    this.version = String(Number(this.version) + 1);
+    this.publish({ kind: 'replace', version: this.version });
+    this.publish({ kind: 'status' });
+  }
+  append(frame: Frame): void {
+    if (this.disposed || this.status !== 'running') return;
+    const last = this.recorded.at(-1);
+    if (last && frame.coordinate < last.coordinate) throw new Error('Fixture frames go forward.');
+    this.firstCoordinate ??= frame.coordinate;
+    this.recorded.push({
+      coordinate: frame.coordinate,
+      values: Object.fromEntries(
+        [...this.coverage.keys()].map((field) => [field, frame.values[field]]),
+      ),
+    });
+    this.version = String(Number(this.version) + 1);
+    this.publish({
+      kind: 'append',
+      version: this.version,
+      frames: { offset: this.recorded.length - 1, count: 1 },
+    });
+  }
+  end(status: 'complete' | 'cancelled' | 'failed', error?: Failure): void {
+    if (this.disposed) return;
+    this.status = status;
+    if (status === 'failed' && error)
+      this.diagnostics = [
+        ...this.diagnostics,
+        { code: error.code, message: error.message, severity: 'error' },
+      ];
+    this.publish({ kind: 'status' });
+  }
+  async export(): Promise<Export> {
+    const { inputs, frames } = this.stateForRead();
+    const bytes = new TextEncoder().encode(
+      JSON.stringify({
+        inputs: [...inputs.values],
+        frames: frames!.map((frame) => [
+          frame.coordinate,
+          Object.fromEntries(
+            Object.entries(frame.values).map(([field, values]) => [field, [...values]]),
+          ),
+        ]),
+      }),
+    );
+    return {
+      version: this.version,
+      mediaType: 'application/vnd.latkit.test+json',
+      stream: byteStream(bytes),
+    };
+  }
+  override async close(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.model.monitors.delete(this);
+    this.recorded = [];
+    await super.close();
+  }
 }

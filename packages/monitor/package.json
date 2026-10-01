@@ -1,7 +1,7 @@
 {
   "name": "@latkit/monitor",
   "version": "0.7.1",
-  "description": "WebGPU trace monitor for Latkit.",
+  "description": "Progressive native observation rendering on the shared Latkit GPU.",
   "type": "module",
   "repository": {
     "type": "git",
@@ -24,17 +24,15 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --project @latkit/monitor",
-    "bench": "vitest bench --run --project @latkit/monitor"
+    "test": "vitest run --config vitest.config.ts",
+    "test:browser": "tsup tests/fixture.ts --config false --format esm --out-dir tests/browser/generated --external @latkit/model && node tests/browser/run.mjs"
   },
   "dependencies": {
-    "@latkit/colormaps": "workspace:*",
-    "@latkit/gpu": "workspace:*",
     "@latkit/model": "workspace:*",
-    "@webgpu/types": "^0.1.71"
+    "@latkit/gpu": "workspace:*"
   },
   "devDependencies": {
-    "jsdom": "^26.1.0"
+    "@webgpu/types": "^0.1.71"
   },
   "publishConfig": {
     "access": "public"

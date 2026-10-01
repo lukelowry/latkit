@@ -1,253 +1,81 @@
 # @latkit/gpu
 
-What every Latkit renderer shares: Core WebGPU devices and the pool they are leased from, canvas
-presentation, the frame loop, the attach lifecycle, the channels a renderer binds values and series
-to, the colormap lookup texture, and controller events.
+Shared WebGPU rendering, native fields, text, colors, and resource management.
 
-`@latkit/gpu` handles the environmental part of requesting a device and then returns the platform
-`GPUDevice` directly. Applications rarely import it beyond the device pool; a renderer is built on
-the rest. All exports come from the single `@latkit/gpu` entrypoint.
-
-## Install
-
-```sh
-npm install @latkit/gpu
-```
-
-## Request a device
+## Display a renderer
 
 ```ts
-import { requestDevice } from '@latkit/gpu';
+import { createGpu, createCanvasView } from '@latkit/gpu';
 
-const device = await requestDevice();
+const gpu = await createGpu();
+const renderer = createYourRenderer(gpu);
+const view = createCanvasView({ gpu, renderer, canvas, onError: console.error });
+view.request({ at: 12 });
 
+view.pause();
+view.resume();
+
+// On teardown:
+view.destroy();
+renderer.destroy();
+gpu.destroy();
+```
+
+`createYourRenderer` is your factory, such as a configured network or monitor.
+The view borrows the renderer and GPU. Give the canvas an explicit CSS size.
+
+## Render offscreen
+
+```ts
+import { createRenderTarget } from '@latkit/gpu';
+
+const target = createRenderTarget({ gpu, width: 1920, height: 1080 });
 try {
-  console.log(device.limits);
-
-  void device.lost.then((info) => {
-    console.error('GPU device lost:', info.reason, info.message);
+  await gpu.render({
+    views: [{ renderer, target, at: 12 }],
+    timeMs: 0,
+    completion: 'complete',
   });
+  await gpu.idle();
 } finally {
-  device.destroy();
+  target.destroy();
 }
 ```
 
-`requestDevice()` requests Core WebGPU and leaves the adapter power preference
-to the browser. Pass `powerPreference` only when the application has a specific
-reason to override that choice:
+`at` is a model coordinate; `timeMs` is animation time.
+`completion: 'complete'` drains progressive preparation before final output.
+Retain source data when output must stay fixed.
+
+## Compose views
 
 ```ts
-const device = await requestDevice({
-  powerPreference: 'high-performance',
+import { createComposition } from '@latkit/gpu';
+
+const combined = createComposition({
+  gpu,
+  views: [
+    { renderer: network, region: { x: 0, y: 0, width: 1, height: 0.6 } },
+    { renderer: monitor, region: { x: 0, y: 0.6, width: 1, height: 0.4 } },
+  ],
 });
 ```
 
-## Handle availability
+Regions are normalized with a top-left origin. Destroy the composition separately
+from its children.
 
-```ts
-import { GpuUnavailableError, requestDevice } from '@latkit/gpu';
+## Implement a renderer
 
-try {
-  const device = await requestDevice();
+A `Renderer` prepares resources asynchronously, encodes commands synchronously,
+and releases its own resources in `destroy()`. GPU owns submission.
+Use `submitted()` to publish picking state only after a successful submission.
 
-  try {
-    // Create renderers that borrow device.
-  } finally {
-    device.destroy();
-  }
-} catch (error) {
-  if (error instanceof GpuUnavailableError) {
-    console.error(`WebGPU unavailable at ${error.stage}:`, error.message);
-  } else {
-    throw error;
-  }
-}
-```
+Use frame methods for fields, uploads, text, colormaps, buffers, and textures.
+Frame descriptors expire with the frame. Reuse immutable input identities to reuse
+cached resources. `BufferData` and `TextureData` track mutable application data.
 
-Only API absence, a null adapter, and device-request rejection use
-`GpuUnavailableError`. Other platform and programming failures retain their
-original identity.
+`gpu.stats()` reports managed storage and work. Limits fail with
+`resource-limit`; device loss requires recreating the GPU and renderers.
 
-## Share one device
-
-Every Latkit controller leases its device from `devices`, the realm-wide pool: one device per
-page, requested by the first `acquire` and destroyed with the last release. Leases count the
-borrowers, concurrent acquisitions coalesce into one request, and a device the platform reports
-lost is retired so the next acquisition requests a replacement. `createDevicePool()` makes a
-private pool with the same rules and forwards `requestDevice()` options; hand it to a controller
-through its `devices` option.
-
-```ts
-import { createDevicePool, devices } from '@latkit/gpu';
-
-const lease = await devices.acquire();
-try {
-  // Borrow lease.device alongside the controllers on this page.
-} finally {
-  lease.release(); // the device outlives this lease only while another one holds it
-}
-
-const network = createNetwork({ devices: createDevicePool({ powerPreference: 'low-power' }) });
-```
-
-## Configure presentation
-
-Renderer implementations can configure either an `HTMLCanvasElement` or an
-`OffscreenCanvas` through the same primitive:
-
-```ts
-import { createPresentation } from '@latkit/gpu';
-
-const presentation = createPresentation(device, canvas);
-presentation.resize(800, 450);
-
-try {
-  const texture = presentation.context.getCurrentTexture();
-  // Encode rendering commands for texture.
-} finally {
-  presentation.destroy();
-}
-```
-
-`Presentation` owns its context configuration and backing-size changes. It
-preserves aspect ratio when fitting oversized requests to the device limit,
-restores the original canvas size when destroyed, and never destroys its
-borrowed device. `presentation.observe()` reports device-pixel size and pixel
-ratio now and on every change of an HTML canvas (an `OffscreenCanvas` reports
-once) while leaving scheduling and resize policy to the renderer, or to
-`createFrameLoop()` below:
-
-```ts
-const stop = presentation.observe((width, height, pixelRatio) => {
-  presentation.resize(width, height);
-});
-// ...
-stop();
-```
-
-## Drive frames
-
-`createFrameLoop()` schedules one canvas's frames: wakes coalesce into one animation frame, a
-resize re-renders before the next paint, and the backing store grows in steps of 64 device pixels
-while a resize is in flight and snaps exact once the size holds for three frames. `render`
-receives the same `Frame` every call (read it, never keep it) and returns true to be called again
-next frame:
-
-```ts
-import { createFrameLoop, createPresentation } from '@latkit/gpu';
-
-const presentation = createPresentation(device, canvas);
-const loop = createFrameLoop(presentation, ({ now, width, height, backingScale, settled }) => {
-  // Draw the frame at width x height CSS pixels into presentation.context.getCurrentTexture().
-  return animating(now); // true keeps frames coming; false waits for the next wake
-});
-
-loop.wake(); // after any change that should be drawn
-loop.pause(); // while the view is hidden; resume() schedules a frame
-loop.destroy(); // for good, and stop observing the canvas
-```
-
-Every size report after the synchronous first one renders a frame, woken or not, and that
-includes the observer's initial notification: be ready to draw the current state once the loop
-exists. A canvas without area skips its frame until a resize gives it one. A `render` that
-pauses or destroys the loop stops it, and wakes while paused are dropped: `resume()` schedules
-the next frame.
-
-## Attach a controller
-
-`createAttachment()` is the attach lifecycle every Latkit controller shares: supersession, joining a
-repeat attach, and recovery on a replacement device, as the [lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html)
-describes. A renderer supplies what one binding builds and what its release forgets:
-
-```ts
-import { createAttachment, devices } from '@latkit/gpu';
-
-const attachment = createAttachment({
-  devices,
-  bind(device, canvas, cleanup) {
-    const presentation = createPresentation(device, canvas);
-    cleanup(() => presentation.destroy()); // cleanups run in reverse on release
-    return presentation;
-  },
-  release: (presentation) => {}, // before the cleanups
-  attached: (bound) => emit('attached', bound),
-  lost: (loss) => emit('deviceLost', loss),
-});
-
-await attachment.attach(canvas); // false when a newer attach or a detach took over
-attachment.detach(canvas); // only while `canvas` is the current one
-```
-
-## Bind channels
-
-`createChannels()` is the channel binder every renderer's `setChannel` runs on. A renderer hands it
-its registry (each channel's scope, components, whether it is normalized, and whether it can follow
-a series), the store its shaders read (`reserve` and `writeWords`), and how a channel's record
-reaches its uniforms: the word its values start at, whether it is bound, and the
-`(value - min) * scale` its values map through.
-
-```ts
-import { createChannels } from '@latkit/gpu';
-
-const channels = createChannels<Channel, 'vertex' | 'edge'>({
-  name: 'network',
-  structure: 'topology',
-  channels: CHANNELS,
-  store: () => renderer, // null while detached: the CPU keeps every value, and upload() restores it
-  record: (channel, offset, bound, min, scale) => writeUniforms(channel, offset, bound, min, scale),
-  shown: () => loop.wake(), // a followed channel shows another frame
-  error: (channel, cause) => emit('error', { channel, cause }),
-});
-
-channels.load({ vertex: vertexCount, edge: edgeCount }); // a slot per channel
-channels.set('vertexColor', values, [0, 1]);
-channels.set('vertexHeight', { series, signal: 0 }); // follows the signal; the domain follows its range
-channels.seek(t); // every followed channel at the playhead
-```
-
-Every channel owns a slot for as long as a load holds, so binding one is one write and never a
-relayout. A followed signal's frames stay resident in a window of the store after the slots, shared
-by every channel following that signal, and the next ones load as the playhead advances or the
-series appends, so a seek within them rewrites one word per channel.
-
-## Colormaps and events
-
-`bakeColormap(colormap)` samples a `Colormap` into `COLORMAP_LUT_SIZE` opaque rgba8 texels, the
-lookup texture every renderer's shaders map normalized values through. `createEmitter()` is the
-typed event dispatcher behind every controller's `on`: listeners run in order, and one that throws
-rethrows on a microtask while the rest still run.
-
-## Render targets
-
-`RenderTarget` is a device, format, dimensions, and `texture()` for the next frame. `Presentation` implements it for a canvas; `createRenderTarget(device, width, height)` owns a fixed texture for offscreen composition. Destroy a fixed target after the renderers borrowing it are destroyed. `SceneRenderer.prepare(sourceTime, signal)` waits for channel samples; `draw(outputTimeMs)` advances visual animation. These are the shared primitives used by `@latkit/video`.
-
-## Shared glyphs
-
-Diagram and Monitor share the same monospace SDF atlas, rasterizer, texture synchronization,
-and WGSL coverage function. Layout, anchors, culling, and tick policy belong to each renderer.
-
-```ts
-import { GlyphAtlas, createGlyphTexture, glyphMetrics, glyphShader } from '@latkit/gpu';
-
-const atlas = new GlyphAtlas('ui-monospace, monospace');
-const cell = atlas.cell('A');
-const texture = createGlyphTexture(device);
-texture.sync(atlas);
-// Bind texture.view, and append glyphShader to the renderer's WGSL.
-// glyph_coverage(distance) must run in uniform fragment control flow.
-const advance = glyphMetrics.advance * 12;
-
-const captured = atlas.snapshot();
-const restored = GlyphAtlas.from(captured); // identical pixels and cell indices in another realm
-texture.destroy();
-```
-
-Rasterization happens once per grapheme and font generation. Each texture remembers its own
-revision, so consumers cannot clear each other's pending updates. Only changed rows upload;
-unchanged frames upload nothing. An atlas is capped at 4 MiB of r8 pixels. Exhaustion and missing
-glyphs in a sealed snapshot throw explicitly. Snapshots own copied pixels; rasterization can use
-an injected `GlyphRasterizer` or the built-in Canvas2D implementation. All exports remain at the
-package root.
-
-Renderer shade compilers use `shaderFailure(label, modules, cause)` for one diagnostic format,
-including shader source locations, while each renderer owns its pipeline and fragment contract.
+[Colors](../../docs/colormaps.md) ?
+[Lifecycle](../../docs/lifecycle.md) ?
+[API](https://latkit.readthedocs.io/en/latest/api/reference/gpu/index.html)

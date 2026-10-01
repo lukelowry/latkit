@@ -1,56 +1,46 @@
-# Colormaps
+# Colors and colormaps
 
-`@latkit/colormaps` is the color vocabulary every renderer speaks: the `RGBA` every color option takes, the `Colormap` every colormap option takes, a registry of named colormaps with labels and kinds to share between network, monitor, diagram, and legend UI, and `parseColor`, which reads a CSS color into an `RGBA`.
-
-## Use a colormap
+Import all color helpers from `@latkit/gpu`.
 
 ```ts
-import { colormap } from '@latkit/colormaps';
+import { colormaps, colormapCss, reverseColormap, sampleColormap } from '@latkit/gpu';
 
-network.setOptions({ colormap: colormap('viridis') });
-monitor.setOptions({ colormap: colormap('magma') });
+network.setVertex('node', {
+  color: { field: 'temperature', domain: [250, 350], colormap: colormaps.thermal },
+});
+legend.style.backgroundImage = colormapCss(colormaps.thermal, { direction: 'to right' });
+const reversed = reverseColormap(colormaps.thermal);
+const rgba = sampleColormap(colormaps.thermal, 0.5);
 ```
 
-A `Colormap` takes a normalized value in `[0, 1]` and returns RGB channels in `[0, 1]`; any function of that shape works wherever a renderer takes one.
+Use sequential maps for magnitude, diverging maps for a center, cyclic maps for
+phase, and categorical maps for labels. The catalog contains 46 maps, including
+`viridis`, `cividis`, `thermal`, `balance`, `phase`, and `okabeito`.
 
-## Build a legend
-
-`COLORMAPS` is a frozen registry keyed by colormap name. Use `COLORMAPS[name].label` for display text and `gradient()` for a CSS gradient that matches the same evaluator used by the renderers. `gradient()` also takes a colormap function, so a legend for a custom transfer function renders through the same sampler.
+## Create a palette
 
 ```ts
-import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
+import { createColormap, parseColor } from '@latkit/gpu';
 
-for (const name of Object.keys(COLORMAPS) as ColormapName[]) {
-  const button = document.createElement('button');
-  button.type = 'button';
-  button.title = COLORMAPS[name].label;
-  button.style.background = gradient(name, 'to right');
-  button.addEventListener('click', () => network.setOptions({ colormap: colormap(name) }));
-  picker.appendChild(button);
-}
+const temperature = createColormap({
+  kind: 'diverging',
+  interpolation: 'oklab',
+  stops: [
+    { at: 0, color: parseColor('#2166ac')! },
+    { at: 0.5, color: parseColor('#f7f7f7')! },
+    { at: 1, color: parseColor('#b2182b')! },
+  ],
+});
 ```
 
-Registry keys are in display order: sequential maps first, then diverging maps. `gradient()` defaults to `'to top'` for vertical legends; pass `'to right'` for horizontal swatches.
+Keep palettes immutable and reuse their identity.
+RGBA components are in `[0, 1]`, with sRGB color and straight alpha.
+CPU, CSS, and GPU sampling share a quantized rendering table.
+Continuous inputs clamp; cyclic inputs wrap; categories use hard bins.
 
-## Choose sequential or diverging maps
+`parseColor` parses literals without a DOM. Use
+`resolveColor('var(--accent)', element)` for contextual CSS.
 
-Sequential maps encode magnitude. Diverging maps encode signed deviation around a midpoint. Each registry entry reports its family through `kind`.
-
-```ts
-import { COLORMAPS, type ColormapName } from '@latkit/colormaps';
-
-const names = Object.keys(COLORMAPS) as ColormapName[];
-const divergingNames = names.filter((name) => COLORMAPS[name].kind === 'diverging');
-```
-
-Use sequential maps for quantities like load or count. Use diverging maps for quantities where values above and below a reference point both matter.
-
-## Read and check colors
-
-`parseColor(css, element?)` reads hex, `rgb()`, `oklab()`, `oklch()`, `color(srgb …)`, and `transparent`; with an element it resolves any color that element computes, custom properties included, so a theme feeds the renderers. `validateRgba(value, name)` is the check every color option runs, for a host that validates before a renderer exists.
-
-```ts
-import { parseColor } from '@latkit/colormaps';
-
-network.setOptions({ edgeBaseColor: parseColor('var(--edge)', document.body) ?? fallback });
-```
+Palette licenses are in
+[THIRD_PARTY_NOTICES](https://github.com/lukelowry/latkit/blob/main/packages/gpu/THIRD_PARTY_NOTICES.md).
+The network example's `/colors.html` previews the full catalog.
