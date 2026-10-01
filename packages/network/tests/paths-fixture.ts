@@ -47,7 +47,6 @@ export class PathSource implements Queryable {
       else components[name] = { fields };
     }
     this.schema = {
-      version: 'paths-schema-1',
       limits: { maxBlockBytes: 4 * 1024 * 1024 },
       queries: ['rows', 'endpoints'],
       components,
@@ -55,7 +54,7 @@ export class PathSource implements Queryable {
     };
   }
   index(type: string): Index {
-    return { document: 'paths-fixture', type, version: 'rows-1' };
+    return { source: 'paths-fixture', type, version: 'rows-1' };
   }
   describe(): Promise<Schema> {
     return Promise.resolve(this.schema);
@@ -97,7 +96,7 @@ export class PathSource implements Queryable {
       if (selection?.kind === 'indices') n = 1;
       const row = selected[first],
         index = this.index(query.from),
-        base = { version: this.version, schemaVersion: this.schema.version, index };
+        base = { version: this.version, index };
       if (query.kind === 'rows') {
         let size = 0;
         n = 0;

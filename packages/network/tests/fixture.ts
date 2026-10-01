@@ -62,7 +62,6 @@ export class GraphSource implements Queryable {
       ),
     );
     this.schema = {
-      version: 'schema-1',
       limits: { maxBlockBytes: Math.max(65536, blockRows * 32) },
       queries: ['rows', 'links'],
       axis: { name: 'time', unit: 's' },
@@ -113,7 +112,7 @@ export class GraphSource implements Queryable {
     return values;
   }
   index(type: string) {
-    return { document: this.document, type, version: type + '-rows-1' };
+    return { source: this.document, type, version: type + '-rows-1' };
   }
   describe(): Promise<Schema> {
     return Promise.resolve(this.schema);
@@ -160,7 +159,6 @@ export class GraphSource implements Queryable {
       const base = {
         kind: query.kind,
         version: this.version,
-        schemaVersion: this.schema.version,
         index,
         rows,
       };

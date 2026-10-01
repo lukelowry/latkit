@@ -59,6 +59,8 @@ export class Telemetry implements Queryable {
     options?.signal?.throwIfAborted();
     if (this.closed) fail('closed', 'Telemetry acquisition is closed');
   }
+  // Promise rejection is part of the Queryable contract.
+  // eslint-disable-next-line @typescript-eslint/require-await
   async describe(options?: RequestOptions): Promise<Schema> {
     this.check(options);
     return this.schema;
@@ -82,6 +84,8 @@ export class Telemetry implements Queryable {
       this.listeners.delete(listener);
     };
   }
+  // Promise rejection is part of the Queryable contract.
+  // eslint-disable-next-line @typescript-eslint/require-await
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -115,6 +119,8 @@ export class Telemetry implements Queryable {
       Math.min(end, lower(window.between[1], true) + (window.context?.after ?? 0)),
     ];
   }
+  // Promise rejection is part of the Queryable contract.
+  // eslint-disable-next-line @typescript-eslint/require-await
   async retain(options: RetainOptions = {}): Promise<Queryable> {
     this.check(options);
     const end = this.first + this.frames.length;

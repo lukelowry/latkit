@@ -40,10 +40,14 @@ describe('native example telemetry', () => {
     const source = new Telemetry(['x', 'y'], 1, 1);
     source.append(Float64Array.of(1, 2));
     const read = source.query(query)[Symbol.asyncIterator]();
-    expect((await read.next()).value.version).toBe('1');
+    const header = await read.next();
+    if (header.done) throw new Error('Expected schema');
+    expect(header.value.version).toBe('1');
     const retained = await source.retain();
     source.append(Float64Array.of(3, 4));
-    expect((await read.next()).value.firstFrame).toBe(0);
+    const sample = await read.next();
+    if (sample.done || sample.value.kind !== 'samples') throw new Error('Expected samples');
+    expect(sample.value.firstFrame).toBe(0);
     expect((await read.next()).done).toBe(true);
     await source.close();
     expect((await collect(retained)).length).toBe(2);
