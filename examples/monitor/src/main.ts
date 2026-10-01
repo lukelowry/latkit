@@ -1,6 +1,13 @@
-import { COLORMAPS, colormap, gradient, type ColormapName } from '@latkit/colormaps';
-import { Series } from '@latkit/model';
-import { createMonitor, type Reading } from '@latkit/monitor';
+import {
+  createGpu,
+  createCanvasView,
+  colormaps,
+  colormapCss,
+  type ColormapName,
+  type CanvasView,
+} from '@latkit/gpu';
+import { createMonitor, attachMonitorInput, type Monitor, type Reading } from '@latkit/monitor';
+import { Telemetry } from './source.js';
 import './style.css';
 
 const ELEMENT_COUNT = 192;
@@ -56,7 +63,10 @@ const rateValue = document.getElementById('rate-value') as HTMLOutputElement;
 let seed = 0x5eed1234;
 const SIGNAL_IDS = SIGNALS.map((signal) => signal.id);
 
-let series = Series.create({ signals: SIGNAL_IDS, elementCount: ELEMENT_COUNT });
+let source = new Telemetry(SIGNAL_IDS, ELEMENT_COUNT, DT_SECONDS);
+let palette: ColormapName = EXAMPLE_COLORMAPS[0];
+let monitor: Monitor;
+let view: CanvasView;
 let frameCursor = 0;
 let latest = new Float64Array(ELEMENT_COUNT * SIGNALS.length).fill(NaN);
 let currentSignal: SignalIndex = 0;
@@ -68,17 +78,22 @@ let lastHotRender = 0;
 /** Seconds of history the sliding window shows. */
 const WINDOW_S = 20;
 
-// The controller holds the series and options before any canvas exists.
-const monitor = createMonitor({
-  interaction: true,
-  lineWidthPx: 1.4,
-  timeAxis: { label: 'Time (s)' },
-  valueAxis: { label: 'Temperature (C)', precision: 1 },
-  valueRange: signalRange(currentSignal),
-  // Selecting an element dims the rest so its trace stands out.
-  unselectedAlpha: 0.35,
-  colormap: colormap(EXAMPLE_COLORMAPS[0]!),
-});
+function data() {
+  const signal = SIGNALS[currentSignal];
+  return {
+    source,
+    window: { kind: 'range' as const, between: [0, FRAME_COUNT * DT_SECONDS] as const },
+    traces: {
+      telemetry: {
+        from: 'sensor',
+        field: signal.id,
+        widthPx: 1.4,
+        color: { field: signal.id, domain: signal.range, colormap: colormaps[palette] },
+        shade: signal.id,
+      },
+    },
+  };
+}
 
 const phase = new Float32Array(ELEMENT_COUNT);
 const band = new Float32Array(ELEMENT_COUNT);
@@ -102,43 +117,58 @@ function fail(message: string): void {
 }
 
 async function main(): Promise<void> {
-  wireChrome();
-
-  monitor.load({ series, signal: currentSignal });
+  const gpu = await createGpu();
+  monitor = createMonitor({
+    gpu,
+    data: data(),
+    options: {
+      coordinateAxis: { label: 'Time (s)' },
+      valueAxis: { label: 'Temperature (C)', precision: 1 },
+      valueDomain: signalRange(currentSignal),
+      unselectedAlpha: 0.35,
+    },
+  });
+  view = createCanvasView({
+    gpu,
+    canvas: stage,
+    renderer: monitor,
+    onError: (error) => {
+      setRunning(false);
+      statusEl.textContent = String(error);
+    },
+    onLost: (info) => {
+      setRunning(false);
+      statusEl.textContent = `GPU unavailable: ${info.message}`;
+    },
+  });
+  const detachInput = attachMonitorInput({ monitor, canvas: stage });
   monitor.on('hover', (reading) => {
     hoverReadout.textContent = describeReading(reading);
   });
-  // A click selects the nearest element inside the monitor; mirror it into the page.
   monitor.on('select', (reading) => {
-    selectedElement = reading.element;
+    selectedElement = reading?.row ?? null;
     pickReadout.textContent = describeReading(reading);
     renderSelected();
     renderHotList(performance.now(), true);
   });
-  monitor.on('deviceLost', ({ reason, message, recovering }) => {
-    if (recovering) {
-      statusEl.textContent = `device lost / ${reason} / recovering`;
-      return;
-    }
-    setRunning(false);
-    statusEl.textContent = `device unavailable / ${message}`;
+  stage.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    selectedElement = null;
+    pickReadout.textContent = '-';
+    renderSelected();
+    renderHotList(performance.now(), true);
   });
-
-  try {
-    await monitor.attach(stage);
-  } catch (error) {
-    monitor.destroy();
-    fail(error instanceof Error ? error.message : String(error));
-    return;
-  }
-
+  wireChrome();
   resetStream();
   setRunning(true);
-
   window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
     stopTimer();
+    detachInput();
+    view.destroy();
     monitor.destroy();
+    void source.close();
+    gpu.destroy();
   });
 }
 
@@ -159,12 +189,13 @@ function wireChrome(): void {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'swatch';
-    button.title = COLORMAPS[name].label;
-    button.setAttribute('aria-label', COLORMAPS[name].label);
+    button.title = colormaps[name].label ?? name;
+    button.setAttribute('aria-label', colormaps[name].label ?? name);
     button.setAttribute('aria-pressed', String(i === 0));
-    button.style.setProperty('--swatch', gradient(name, 'to right'));
+    button.style.setProperty('--swatch', colormapCss(colormaps[name], { direction: 'to right' }));
     button.addEventListener('click', () => {
-      monitor.setOptions({ colormap: colormap(name) });
+      palette = name;
+      monitor.setTrace('telemetry', data().traces.telemetry);
       setActive(colormapRow, button);
     });
     colormapRow.appendChild(button);
@@ -173,7 +204,8 @@ function wireChrome(): void {
   document.getElementById('fit')!.addEventListener('click', () => {
     autoRangeInput.checked = true;
     windowInput.checked = false;
-    monitor.fit();
+    applyRange();
+    applyWindow();
   });
   document.getElementById('shade')!.addEventListener('change', (event) => {
     const enabled = (event.target as HTMLInputElement).checked;
@@ -181,12 +213,15 @@ function wireChrome(): void {
       .setShade(
         enabled
           ? {
-              wgsl: `fn shade(f: Fragment) -> vec4f {
-        let high = smoothstep(0.55, 0.85, f.point.y);
-        let pulse = 0.75 + 0.25 * sin(f.time * 2.0);
-        return vec4f(mix(f.color.rgb, vec3f(1.0, 0.4, 0.15), high * pulse), f.color.a);
+              wgsl: `fn shade(f: ShadeFragment) -> vec4f {
+        let domain = shadeContext.parameters[0];
+        let high = smoothstep(0.55, 0.85, (f.value - domain.x) / (domain.y - domain.x));
+        return vec4f(mix(f.color.rgb, vec3f(1.0, 0.4, 0.15), high * 0.85), f.color.a);
       }`,
-              tick: () => true,
+              tick: (parameters) => {
+                parameters.set(signalRange(currentSignal));
+                return false;
+              },
             }
           : null,
       )
@@ -205,12 +240,22 @@ function wireChrome(): void {
 function resetStream(): void {
   anomaly.fill(0);
   frameCursor = 0;
-  series = Series.create({ signals: SIGNAL_IDS, elementCount: ELEMENT_COUNT });
+  const previous = source;
+  source = new Telemetry(SIGNAL_IDS, ELEMENT_COUNT, DT_SECONDS);
   latest = new Float64Array(ELEMENT_COUNT * SIGNALS.length).fill(NaN);
   selectedElement = null;
   hoverReadout.textContent = '-';
   pickReadout.textContent = '-';
-  monitor.load({ series, signal: currentSignal });
+  monitor.setData(data());
+  void previous.close();
+  monitor.select(null);
+  // Show useful history immediately, then append one native frame per timer tick.
+  for (let frame = 0; frame < 40; frame++) {
+    writeFrame(frame);
+    source.append(latest);
+    frameCursor++;
+  }
+  applyWindow();
   applyRange();
   renderSelected();
   renderHotList(performance.now(), true);
@@ -220,7 +265,7 @@ function resetStream(): void {
 function setSignal(signal: SignalIndex): void {
   if (signal === currentSignal) return;
   currentSignal = signal;
-  monitor.load({ series, signal });
+  monitor.setTrace('telemetry', data().traces.telemetry);
   applyRange();
   selectedElement = null;
   monitor.select(null);
@@ -238,10 +283,8 @@ function setRunning(next: boolean): void {
   runToggle.setAttribute('aria-label', running ? 'Pause stream' : 'Resume stream');
   runToggle.title = running ? 'Pause stream' : 'Resume stream';
   if (running) {
-    monitor.resume();
     restartTimer();
   } else {
-    monitor.pause();
     stopTimer();
   }
   updateStatus();
@@ -262,8 +305,7 @@ function tick(): void {
   if (frameCursor >= FRAME_COUNT) resetStream();
   writeFrame(frameCursor);
   frameCursor++;
-  series.append({ time: Float64Array.of((frameCursor - 1) * DT_SECONDS), values: latest });
-  if (windowInput.checked) applyWindow();
+  source.append(latest);
   const now = performance.now();
   renderHotList(now);
   if (selectedElement !== null) renderSelected();
@@ -309,19 +351,21 @@ function valueAt(signal: number, _frame: number, element: number): number {
 function applyRange(): void {
   const signal = SIGNALS[currentSignal];
   monitor.setOptions({
-    valueRange: autoRangeInput.checked ? null : signalRange(currentSignal),
+    valueDomain: autoRangeInput.checked ? 'auto' : signalRange(currentSignal),
     valueAxis: { label: `${signal.label} (${signal.unit})`, precision: signal.decimals },
   });
 }
 
-/** Follow the newest frame with a sliding window, or show the whole series. */
+/** Follow is renderer-owned; appending never resets data or rebuilds bindings. */
 function applyWindow(): void {
-  if (!windowInput.checked) {
-    monitor.setOptions({ timeRange: null });
-    return;
-  }
-  const end = Math.max(WINDOW_S, (frameCursor - 1) * DT_SECONDS);
-  monitor.setOptions({ timeRange: [end - WINDOW_S, end] });
+  monitor.setOptions({ follow: windowInput.checked ? { span: WINDOW_S } : null });
+  const end = Math.max(DT_SECONDS, (frameCursor - 1) * DT_SECONDS);
+  monitor.setWindow({
+    kind: 'range',
+    between: windowInput.checked
+      ? [Math.max(0, end - WINDOW_S), end]
+      : [0, FRAME_COUNT * DT_SECONDS],
+  });
 }
 
 function signalRange(signal: SignalIndex): readonly [number, number] {
@@ -341,7 +385,12 @@ function renderHotList(now: number, force = false): void {
     button.setAttribute('aria-pressed', String(item.element === selectedElement));
     button.addEventListener('click', () => {
       selectedElement = item.element;
-      monitor.select(item.element);
+      monitor.select({
+        source,
+        index: source.index,
+        row: item.element,
+        field: SIGNALS[currentSignal].id,
+      });
       pickReadout.textContent = describeElement(item.element);
       renderSelected();
       renderHotList(performance.now(), true);
@@ -399,7 +448,7 @@ function describeElement(element: number): string {
 
 function describeReading(reading: Reading | null): string {
   if (!reading) return '-';
-  return `element ${reading.element} / ${formatValue(reading.value, reading.signal as SignalIndex)} / ${reading.t.toFixed(1)}s`;
+  return `element ${reading.row} / ${formatValue(reading.value, SIGNALS.findIndex((signal) => signal.id === reading.field) as SignalIndex)} / ${reading.coordinate.toFixed(1)}s`;
 }
 
 function formatValue(value: number, signal: SignalIndex): string {
@@ -427,4 +476,4 @@ function clamp01(value: number): number {
   return value < 0 ? 0 : value > 1 ? 1 : value;
 }
 
-void main();
+void main().catch((error) => fail(error instanceof Error ? error.message : String(error)));

@@ -107,7 +107,7 @@ export class ExampleSource implements Queryable {
   readonly bytes: number;
   constructor(
     readonly tables: Readonly<Record<string, Table>>,
-    readonly document = crypto.randomUUID(),
+    readonly source = crypto.randomUUID(),
   ) {
     const components: Record<string, Schema['components'][string]> = {};
     const connections: Record<string, Schema['connections'][string]> = {};
@@ -132,7 +132,6 @@ export class ExampleSource implements Queryable {
         };
     }
     this.schema = {
-      version: '1',
       queries: ['rows', 'endpoints'],
       limits: { maxBlockBytes: 1024 * 1024 },
       components,
@@ -140,7 +139,7 @@ export class ExampleSource implements Queryable {
     };
   }
   index(type: string): Index {
-    return { document: this.document, type, version: '1' };
+    return { source: this.source, type, version: '1' };
   }
   private check(options?: RequestOptions): void {
     options?.signal?.throwIfAborted();
@@ -160,7 +159,7 @@ export class ExampleSource implements Queryable {
       if (!Number.isSafeInteger(maxBytes) || maxBytes < 0)
         failure('invalid-input', 'Invalid retain budget');
       if (this.bytes > maxBytes) failure('resource-limit', 'Retain budget exceeded');
-      return new ExampleSource(this.tables, this.document);
+      return new ExampleSource(this.tables, this.source);
     });
   }
   close(): Promise<void> {
@@ -203,7 +202,7 @@ export class ExampleSource implements Queryable {
     } else {
       if (
         selection?.index &&
-        (selection.index.document !== index.document ||
+        (selection.index.source !== index.source ||
           selection.index.type !== index.type ||
           selection.index.version !== index.version)
       )
@@ -288,7 +287,7 @@ export class ExampleSource implements Queryable {
           }
       let block: QueryBlock;
       for (;;) {
-        const base = { version: this.version, schemaVersion: this.schema.version, index };
+        const base = { version: this.version, index };
         if (query.kind === 'rows') {
           block = {
             ...base,

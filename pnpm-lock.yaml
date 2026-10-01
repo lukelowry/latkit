@@ -91,6 +91,9 @@ importers:
 
   examples/monitor:
     dependencies:
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../../packages/gpu
       '@latkit/model':
         specifier: workspace:*
         version: link:../../packages/model
