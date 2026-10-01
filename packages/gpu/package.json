@@ -1,6 +1,6 @@
 {
   "name": "@latkit/gpu",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Bounded WebGPU rendering and native Latkit column preparation.",
   "type": "module",
   "repository": {
