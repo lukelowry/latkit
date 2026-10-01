@@ -18,7 +18,9 @@
       >
       <div class="header-actions">
         <span id="engine-state" class="engine-state">Starting renderer</span
-        ><button id="toggle-controls" class="mobile-toggle" aria-expanded="false">Controls</button
+        ><button id="toggle-controls" aria-expanded="true" aria-controls="controls">Controls</button
+        ><button id="toggle-inspector" aria-expanded="false" aria-controls="inspector">
+          Inspector</button
         ><a href="https://github.com/lukelowry/latkit" target="_blank" rel="noreferrer"
           >Source <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 12 12 4M4 4h8v8" /></svg
         ></a>
@@ -26,10 +28,6 @@
     </header>
     <main id="studio" class="studio">
       <aside class="sidebar" aria-label="Diagram controls">
-        <section class="intro">
-          <h1>A space for connected ideas.</h1>
-          <p>Explore a scene. Move a block.<br />Make a connection.</p>
-        </section>
         <fieldset id="controls" disabled>
           <legend class="sr-only">Presentation controls</legend>
           <section class="control-section">
@@ -73,6 +71,39 @@
           <details class="control-section" open>
             <summary>Appearance</summary>
             <label class="field"
+              >Theme<select id="theme">
+                <option value="system">System</option>
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+              </select></label
+            ><label class="field"
+              >Density<select id="density">
+                <option value="comfortable">Comfortable</option>
+                <option value="compact">Compact</option>
+                <option value="spacious">Spacious</option>
+              </select></label
+            ><label class="field"
+              >Titles<select id="title-position">
+                <option value="center">Centered</option>
+                <option value="header">Header</option>
+              </select></label
+            ><label class="field"
+              >Corners<select id="radius">
+                <option value="8">Soft</option>
+                <option value="3">Subtle</option>
+                <option value="16">Round</option>
+              </select></label
+            ><label class="field"
+              >Ports<select id="port-marker">
+                <option value="directional">Directional</option>
+                <option value="circle">Circle</option>
+                <option value="diamond">Diamond</option>
+              </select></label
+            >
+            <div class="toggle-row">
+              <label><input id="port-labels" type="checkbox" checked />Port labels</label>
+            </div>
+            <label class="field"
               >Shape<select id="shape">
                 <option value="rounded">Rounded</option>
                 <option value="rectangle">Rectangle</option>
@@ -105,7 +136,30 @@
             </div>
           </details>
           <details class="control-section">
+            <summary>Interaction</summary>
+            <label class="field"
+              >Drag canvas<select id="background-drag">
+                <option value="select">Select</option>
+                <option value="pan">Pan</option>
+              </select></label
+            ><label class="field"
+              >New wire drop<select id="free-drop">
+                <option value="cancel">Leave unchanged</option>
+                <option value="create">Create process</option>
+              </select></label
+            >
+            <div class="toggle-row">
+              <label><input id="auto-pan" type="checkbox" checked />Edge panning</label>
+            </div>
+          </details>
+          <details class="control-section">
             <summary>Rendering</summary>
+            <label class="field"
+              >Detail<select id="detail">
+                <option value="auto">Adaptive</option>
+                <option value="full">Always show</option>
+              </select></label
+            >
             <label class="field"
               >Antialiasing<select id="msaa">
                 <option value="4">4× MSAA</option>
@@ -134,7 +188,10 @@
             >
           </details>
         </fieldset>
-        <div class="sidebar-foot">Synthetic scenes. Real interactions.</div>
+        <div class="sidebar-foot">
+          Drag ports to connect. Drag an occupied input to reconnect; drop on empty space to
+          disconnect.
+        </div>
       </aside>
       <section class="workspace" aria-labelledby="scene-title">
         <div class="workspace-heading">
@@ -203,7 +260,7 @@
           ><span class="performance-tail"><strong id="prepare">—</strong> ms preparation</span>
         </div>
       </section>
-      <aside class="inspector" aria-label="Inspector">
+      <aside id="inspector" class="inspector" aria-label="Inspector">
         <nav class="inspector-tabs" aria-label="Inspector panels">
           <button data-tab="inspect" aria-pressed="true">Inspect</button
           ><button data-tab="features" aria-pressed="false">Explore</button
@@ -215,7 +272,7 @@
               <rect x="8" y="8" width="28" height="28" rx="5" />
               <path d="m26 25 14 6-7 2-2 7Z" />
             </svg>
-            <h2>Pick something.</h2>
+            <h2>Selection</h2>
             <p>Select a block, port, connection, or group to inspect it.</p>
           </div>
           <form id="selection-form" hidden>
@@ -247,7 +304,7 @@
           </section>
         </section>
         <section id="tab-features" class="inspector-content" hidden>
-          <h2>Try the whole toolkit.</h2>
+          <h2>Explore the diagram</h2>
           <ul class="feature-list">
             <li>
               <strong>Make it yours</strong>

@@ -21,7 +21,7 @@ export function boundary(node: Node, toward: Point): Point {
         ? 1 / (Math.abs(dx) / rx + Math.abs(dy) / ry)
         : 1 / Math.max(Math.abs(dx) / rx, Math.abs(dy) / ry);
   if (node.shape === 'rounded' && Number.isFinite(factor)) {
-    const radius = Math.min(5, rx, ry),
+    const radius = Math.min(node.radius, rx, ry),
       px = dx * factor,
       py = dy * factor;
     if (Math.abs(px) > rx - radius && Math.abs(py) > ry - radius) {
@@ -42,7 +42,7 @@ export function contains(node: Node, p: Point): boolean {
   const x = Math.abs((p[0] - node.x - node.width / 2) / (node.width / 2)),
     y = Math.abs((p[1] - node.y - node.height / 2) / (node.height / 2));
   if (node.shape === 'rounded') {
-    const radius = Math.min(5, node.width / 2, node.height / 2),
+    const radius = Math.min(node.radius, node.width / 2, node.height / 2),
       qx = Math.abs(p[0] - node.x - node.width / 2) - node.width / 2 + radius,
       qy = Math.abs(p[1] - node.y - node.height / 2) - node.height / 2 + radius;
     return Math.hypot(Math.max(0, qx), Math.max(0, qy)) + Math.min(Math.max(qx, qy), 0) <= radius;
@@ -162,9 +162,9 @@ export function orthogonal(
   const start = y.indexOf(a[1]) * width + x.indexOf(a[0]),
     end = y.indexOf(b[1]) * width + x.indexOf(b[0]);
   const heap = new Heap(),
-    costs = new Map<number, number>([[start, 0]]),
+    costs = new Map<number, number>([[start * 3, 0]]),
     prev = new Map<number, number>();
-  heap.push(start, 0);
+  heap.push(start * 3, 0);
   let visits = 0;
   for (let current = heap.pop(); current; current = heap.pop()) {
     if ((visits++ & 63) === 0) signal.throwIfAborted();
@@ -172,14 +172,16 @@ export function orthogonal(
       throw new GpuError('resource-limit', 'Orthogonal route search exceeded budget');
     const id = current.id,
       cost = costs.get(id)!;
-    if (id === end) {
+    const vertex = Math.floor(id / 3),
+      direction = id % 3;
+    if (vertex === end) {
       const path: Point[] = [];
       for (let at: number | undefined = id; at !== undefined; at = prev.get(at))
-        path.push([x[at % width], y[Math.floor(at / width)]]);
+        path.push([x[Math.floor(at / 3) % width], y[Math.floor(Math.floor(at / 3) / width)]]);
       return simplify(path.reverse());
     }
-    const ix = id % width,
-      iy = Math.floor(id / width),
+    const ix = vertex % width,
+      iy = Math.floor(vertex / width),
       p: Point = [x[ix], y[iy]];
     for (const [nx, ny] of [
       [ix - 1, iy],
@@ -189,9 +191,14 @@ export function orthogonal(
     ]) {
       if (nx < 0 || ny < 0 || nx >= width || ny >= y.length) continue;
       const q: Point = [x[nx], y[ny]],
-        nid = ny * width + nx;
+        axis = nx === ix ? 2 : 1,
+        nid = (ny * width + nx) * 3 + axis;
       if (obstacles.some((r) => blocked(p, q, r))) continue;
-      const next = cost + Math.abs(q[0] - p[0]) + Math.abs(q[1] - p[1]);
+      const next =
+        cost +
+        Math.abs(q[0] - p[0]) +
+        Math.abs(q[1] - p[1]) +
+        (direction && direction !== axis ? clearance : 0);
       if (next >= (costs.get(nid) ?? Infinity)) continue;
       costs.set(nid, next);
       prev.set(nid, id);
@@ -211,61 +218,99 @@ function simplify(path: readonly Point[]): Point[] {
   }
   return out;
 }
-/** Split shared collinear trunks into unique drawable segments. */
-function segments(paths: readonly (readonly Point[])[]): { paths: Point[][]; junctions: Point[] } {
-  const lines = new Map<string, { axis: number; fixed: number; parts: [number, number][] }>(),
-    diagonals: Point[][] = [];
-  for (const path of paths)
+/** Merge shared trunks while retaining distance and direction from each route's root. */
+function segments(paths: readonly (readonly Point[])[]): {
+  paths: Point[][];
+  offsets: number[];
+  junctions: Point[];
+} {
+  type Part = { start: number; end: number; offset: number };
+  const lines = new Map<string, { axis: number; fixed: number; parts: Part[] }>(),
+    out: Point[][] = [],
+    offsets: number[] = [];
+  for (const path of paths) {
+    let offset = 0;
     for (let i = 1; i < path.length; i++) {
       const a = path[i - 1],
-        b = path[i];
-      if (a[0] === b[0] && a[1] === b[1]) continue;
+        b = path[i],
+        length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (!length) continue;
       if (a[0] !== b[0] && a[1] !== b[1]) {
-        diagonals.push([a, b]);
-        continue;
+        out.push([a, b]);
+        offsets.push(offset);
+      } else {
+        const axis = a[0] === b[0] ? 1 : 0,
+          fixed = a[1 - axis],
+          key = axis + ':' + fixed;
+        const line = lines.get(key) ?? { axis, fixed, parts: [] };
+        line.parts.push({ start: a[axis], end: b[axis], offset });
+        lines.set(key, line);
       }
-      const axis = a[0] === b[0] ? 1 : 0,
-        fixed = a[1 - axis],
-        key = axis + ':' + fixed;
-      const line = lines.get(key) ?? { axis, fixed, parts: [] };
-      line.parts.push([Math.min(a[axis], b[axis]), Math.max(a[axis], b[axis])]);
-      lines.set(key, line);
+      offset += length;
     }
-  const out = diagonals;
+  }
   for (const line of lines.values()) {
-    const events = new Map<number, number>();
-    for (const [a, b] of line.parts) {
-      events.set(a, (events.get(a) ?? 0) + 1);
-      events.set(b, (events.get(b) ?? 0) - 1);
+    const events = new Map<number, { add: Part[]; remove: Part[] }>();
+    const event = (at: number) => {
+      let value = events.get(at);
+      if (!value) {
+        value = { add: [], remove: [] };
+        events.set(at, value);
+      }
+      return value;
+    };
+    for (const part of line.parts) {
+      event(Math.min(part.start, part.end)).add.push(part);
+      event(Math.max(part.start, part.end)).remove.push(part);
     }
-    const points = [...events.keys()].sort((a, b) => a - b);
-    let active = 0;
+    const points = [...events.keys()].sort((a, b) => a - b),
+      active = new Set<Part>();
     for (let i = 0; i < points.length - 1; i++) {
-      active += events.get(points[i])!;
-      if (active > 0)
-        out.push(
-          line.axis === 0
-            ? [
-                [points[i], line.fixed],
-                [points[i + 1], line.fixed],
-              ]
-            : [
-                [line.fixed, points[i]],
-                [line.fixed, points[i + 1]],
-              ],
-        );
+      const value = events.get(points[i])!;
+      for (const part of value.remove) active.delete(part);
+      for (const part of value.add) active.add(part);
+      let chosen: Part | undefined,
+        distance = Infinity;
+      for (const part of active) {
+        const start = part.start < part.end ? points[i] : points[i + 1];
+        const next = part.offset + Math.abs(start - part.start);
+        if (next < distance) {
+          chosen = part;
+          distance = next;
+        }
+      }
+      if (!chosen) continue;
+      const a = chosen.start < chosen.end ? points[i] : points[i + 1];
+      const b = chosen.start < chosen.end ? points[i + 1] : points[i];
+      out.push(
+        line.axis === 0
+          ? [
+              [a, line.fixed],
+              [b, line.fixed],
+            ]
+          : [
+              [line.fixed, a],
+              [line.fixed, b],
+            ],
+      );
+      offsets.push(distance);
     }
   }
   const degree = new Map<string, { p: Point; n: number }>();
   for (const path of out)
     for (const p of path) {
-      const key = p.join(',');
-      const v = degree.get(key) ?? { p, n: 0 };
-      v.n++;
-      degree.set(key, v);
+      const key = p.join(','),
+        value = degree.get(key) ?? { p, n: 0 };
+      value.n++;
+      degree.set(key, value);
     }
-  return { paths: out, junctions: [...degree.values()].filter((v) => v.n >= 3).map((v) => v.p) };
+  return {
+    paths: out,
+    offsets,
+    junctions: [...degree.values()].filter((v) => v.n >= 3).map((v) => v.p),
+  };
 }
+
 export async function geometry(
   scene: Scene,
   options: Required<Options>,
@@ -274,6 +319,7 @@ export async function geometry(
   previous?: Scene,
   work = new Work(signal, limits.prepareMs),
 ): Promise<void> {
+  scene.portSizePx = options.portSizePx;
   scene.bytes -= scene.routeBytes;
   scene.routeBytes = 0;
   for (const node of scene.nodes) {
@@ -397,6 +443,7 @@ export async function geometry(
       n.width !== p.width ||
       n.height !== p.height ||
       n.shape !== p.shape ||
+      n.radius !== p.radius ||
       n.ports.length !== p.ports.length ||
       n.ports.some((port, j) => {
         const before = p.ports[j];
@@ -454,10 +501,13 @@ export async function geometry(
       JSON.stringify(old.endpoints) === JSON.stringify(edge.endpoints)
     ) {
       edge.paths = old.paths;
+      edge.offsets = old.offsets;
       edge.arrows = old.arrows;
       edge.junctions = old.junctions;
       edge.anchor = old.anchor;
-      edge.bounds = old.bounds;
+      edge.bounds = union(
+        old.paths.flatMap((path) => path.map((p) => [p[0], p[1], p[0], p[1]] as Rect)),
+      );
     } else {
       const preferred = edge.endpoints[rootEndpoint(scene, edge)];
       const root = ends.includes(preferred) ? preferred : ends[0],
@@ -558,6 +608,7 @@ export async function geometry(
         throw new GpuError('resource-limit', 'Too many route points');
       const merged = segments(paths);
       edge.paths = edge.options.appearance === 'tag' ? [] : merged.paths;
+      edge.offsets = edge.options.appearance === 'tag' ? all.map(() => 0) : merged.offsets;
       edge.junctions = merged.junctions;
       edge.arrows = arrows;
       edge.anchor = all[0].position;
@@ -571,9 +622,28 @@ export async function geometry(
           ],
         ]);
     }
+    if (edge.options.appearance === 'tag')
+      edge.bounds = union(
+        edge.paths.flatMap((path) => {
+          const p = path.at(-1)!;
+          return [
+            [path[0][0], path[0][1], path[0][0], path[0][1]],
+            [p[0], p[1] - edge.label.height - 3, p[0] + edge.label.width + 6, p[1] + 3],
+          ] as Rect[];
+        }),
+      );
     routePoints += edge.paths.reduce((n, p) => n + p.length, 0);
     if (routePoints > limits.routePoints)
       throw new GpuError('resource-limit', 'Too many route points');
+  }
+  for (const edge of scene.edges) {
+    edge.labelBounds = [];
+    if (!edge.visible || !options.labels || !edge.label.runs.length) continue;
+    if (edge.options.appearance === 'tag')
+      edge.labelBounds = edge.paths.map((path) => {
+        const p = path.at(-1)!;
+        return [p[0], p[1] - edge.label.height - 3, p[0] + edge.label.width + 6, p[1] + 3];
+      });
   }
   const labels = new SpatialIndex(limits.pickingBytes);
   for (let i = 0; i < scene.nodes.length; i++)
@@ -581,6 +651,7 @@ export async function geometry(
   for (const edge of scene.edges)
     if (
       edge.visible &&
+      options.labels &&
       edge.paths.length &&
       edge.label.runs.length &&
       edge.options.appearance !== 'tag'
@@ -608,10 +679,15 @@ export async function geometry(
           }
         }
       edge.anchor = anchor;
-      if (chosen) {
-        labels.add(chosen);
-        edge.bounds = union([edge.bounds, chosen]);
-      }
+      const box = chosen ?? [
+        anchor[0] + 4,
+        anchor[1] - edge.label.height - 4,
+        anchor[0] + edge.label.width + 4,
+        anchor[1] - 4,
+      ];
+      edge.labelBounds = [expand(box, 3)];
+      labels.add(box);
+      edge.bounds = union([edge.bounds, ...edge.labelBounds]);
     }
   for (const i of hidden) scene.nodes[i].visible = false;
   for (const id of hiddenGroups) {
@@ -620,9 +696,7 @@ export async function geometry(
   }
   scene.bounds = union([
     ...scene.nodes.filter((n) => n.visible).map(rect),
-    ...scene.edges
-      .filter((e) => e.visible && e.paths.length)
-      .map((e) => expand(e.bounds, Math.max(e.label.width, e.label.height))),
+    ...scene.edges.filter((e) => e.visible && e.paths.length).map((e) => e.bounds),
     ...scene.groups.filter((g) => g.bounds[0] !== g.bounds[2]).map((g) => g.bounds),
   ]);
   scene.routeClearance = options.routeClearance;

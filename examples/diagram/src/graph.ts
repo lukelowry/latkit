@@ -222,7 +222,11 @@ export function addBlock(
   };
   return { graph: { ...graph, nodes: [...graph.nodes, node] }, node };
 }
-export function connectGraph(graph: Graph, gesture: ConnectionGesture): Graph {
+export function connectGraph(
+  graph: Graph,
+  gesture: ConnectionGesture,
+  createOnDrop = false,
+): Graph {
   let next = graph;
   const source = graph.nodes.find((node) => node.id === gesture.from.id);
   if (!source) throw new Error('The starting component was removed.');
@@ -231,6 +235,24 @@ export function connectGraph(graph: Graph, gesture: ConnectionGesture): Graph {
     : false;
   let target = gesture.to;
   if (!target) {
+    if (gesture.replaces) {
+      const { connection, endpoint } = gesture.replaces;
+      return {
+        ...graph,
+        wires: graph.wires
+          .map((wire) =>
+            wire.id === connection.id
+              ? { ...wire, ends: wire.ends.filter((_, i) => i !== endpoint.ordinal) }
+              : wire,
+          )
+          .filter(
+            (wire) =>
+              wire.ends.some((end) => end.role === 'source') &&
+              wire.ends.some((end) => end.role === 'target'),
+          ),
+      };
+    }
+    if (!createOnDrop) return graph;
     const added = addBlock(next, 'Process', gesture.position);
     next = added.graph;
     target = {

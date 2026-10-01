@@ -3,12 +3,25 @@ import type { Diagram, ConnectionGesture } from './diagram.js';
 import { interaction } from './diagram.js';
 import type { DiagramItem, DiagramHit, Point } from './data.js';
 import { itemKey } from './data.js';
+import { positive } from './config.js';
+import { ConnectionSession } from './connection.js';
+
 export interface InputOptions {
   readonly diagram: Diagram;
   readonly canvas: HTMLCanvasElement;
   readonly interaction?: 'edit' | 'navigate' | 'inspect' | 'none';
   readonly wheel?: 'zoom' | 'modifier';
   readonly keyboard?: boolean;
+  /** Primary mouse drag on empty canvas. Touch continues to pan. Default: select in edit mode. */
+  readonly backgroundDrag?: 'pan' | 'select';
+  readonly dragThresholdPx?: number;
+  readonly touchDragThresholdPx?: number;
+  readonly connectionRadiusPx?: number;
+  readonly autoPan?: boolean;
+  readonly autoPanMarginPx?: number;
+  readonly autoPanSpeedPx?: number;
+  /** Additional application policy, after native port type/direction checks. Must be synchronous. */
+  readonly canConnect?: (proposal: ConnectionGesture) => boolean;
 }
 interface Drag {
   id: number;
@@ -17,92 +30,164 @@ interface Drag {
   world: Point;
   kind: 'press' | 'pan' | 'move' | 'marquee' | 'connect';
   moved: boolean;
+  threshold: number;
+  additive: boolean;
   hit?: DiagramHit;
   selection: readonly DiagramItem[];
   revision: number;
-  wire?: Pick<ConnectionGesture, 'from' | 'replaces'>;
+  connection?: ConnectionSession;
+  target: DiagramItem | null;
+  blocked: boolean;
 }
-/** Owns DOM listeners and capture only. Model changes remain application proposals. */
+/** DOM ownership stays separate from rendering and application-owned mutations. */
 export function attachDiagramInput(options: InputOptions): () => void {
   const { diagram, canvas } = options,
     mode = options.interaction ?? 'navigate';
+  const threshold = positive(options.dragThresholdPx ?? 4, 'dragThresholdPx', true);
+  const touchThreshold = positive(options.touchDragThresholdPx ?? 8, 'touchDragThresholdPx', true);
+  const targetRadius = positive(options.connectionRadiusPx ?? 18, 'connectionRadiusPx');
+  const margin = positive(options.autoPanMarginPx ?? 32, 'autoPanMarginPx');
+  const speed = positive(options.autoPanSpeedPx ?? 480, 'autoPanSpeedPx', true);
   if (mode === 'none') return () => {};
   const api = interaction(diagram),
-    input = createCanvasInput({
-      canvas,
-      keyboard: options.keyboard,
-      touchAction: mode === 'inspect' ? 'pan-x pan-y' : 'none',
-    });
+    view = canvas.ownerDocument.defaultView!;
+  const input = createCanvasInput({
+    canvas,
+    keyboard: options.keyboard,
+    touchAction: mode === 'inspect' ? 'pan-x pan-y' : 'none',
+  });
   const { signal } = input;
+  const originalCursor = canvas.style.cursor;
   let drag: Drag | undefined,
     space = false,
-    closed = false,
-    longPress: ReturnType<typeof setTimeout> | undefined;
+    closed = false;
+  let longPress: ReturnType<typeof setTimeout> | undefined,
+    raf = 0,
+    lastPan = 0;
   const pointers = new Map<number, Point>();
   let pinch: { distance: number; center: Point } | undefined;
   const setSelection = (items: readonly DiagramItem[]) => {
+    const before = api.selection();
+    if (
+      before.length === items.length &&
+      before.every((item, i) => itemKey(item) === itemKey(items[i]))
+    )
+      return;
     diagram.select(items);
     api.emit('select', items);
   };
-  const cancel = () => {
-    if (longPress) clearTimeout(longPress);
-    longPress = undefined;
-    const id = drag?.id;
-    drag = undefined;
-    api.preview([], null);
-    api.overlay(null);
-    if (id !== undefined) input.release(id);
-  };
+  const merge = (a: readonly DiagramItem[], b: readonly DiagramItem[]) => [
+    ...new Map([...a, ...b].map((item) => [itemKey(item), item])).values(),
+  ];
   const toggle = (hit: DiagramItem, add: boolean) => {
     if (!add) return [hit];
     const existing = api.selection(),
       key = itemKey(hit);
-    return existing.some((i) => itemKey(i) === key)
-      ? existing.filter((i) => itemKey(i) !== key)
+    return existing.some((item) => itemKey(item) === key)
+      ? existing.filter((item) => itemKey(item) !== key)
       : [...existing, hit];
+  };
+  const cancel = () => {
+    if (longPress) clearTimeout(longPress);
+    longPress = undefined;
+    if (raf) view.cancelAnimationFrame(raf);
+    raf = 0;
+    lastPan = 0;
+    const current = drag;
+    drag = undefined;
+    if (current?.kind === 'move' && current.moved) api.preview([], null);
+    api.overlay(null);
+    canvas.style.cursor = originalCursor;
+    if (current) input.release(current.id);
   };
   const context = (
     point: Point,
     event: MouseEvent | KeyboardEvent,
     trigger: 'pointer' | 'keyboard',
-  ) => {
+  ) =>
     api.emit('contextmenu', {
       point,
       items: diagram.hitTest(point),
       trigger,
       modifiers: inputModifiers(event),
     });
+  const snapped = (point: Point): Point => {
+    const { snap, gridPitch } = api.options();
+    return snap
+      ? [Math.round(point[0] / gridPitch) * gridPitch, Math.round(point[1] / gridPitch) * gridPitch]
+      : point;
   };
-  const connection = (
-    hit: DiagramHit,
-  ): Pick<ConnectionGesture, 'from' | 'replaces'> | undefined => {
-    if (hit.kind !== 'port' && hit.kind !== 'component') return;
-    const from = { type: hit.type, id: hit.id, ...(hit.kind === 'port' ? { port: hit.port } : {}) };
-    if (hit.kind === 'port') {
-      const scene = api.scene(),
-        node = scene?.nodes.findIndex((n) => n.hit.id === hit.id && n.hit.type === hit.type);
-      const port =
-        node !== undefined && node >= 0
-          ? scene!.nodes[node].ports.find((p) => p.name === hit.port)
-          : undefined;
-      if (port?.definition.direction === 'in') {
-        for (const edge of scene?.edges ?? []) {
-          const end = edge.endpoints.find((e) => e.node === node && e.port === hit.port);
-          const other = edge.endpoints.find((e) => e !== end);
-          if (end && other) {
-            const n = scene!.nodes[other.node];
-            return {
-              from: { type: n.hit.type, id: n.hit.id, ...(other.port ? { port: other.port } : {}) },
-              replaces: {
-                connection: { type: edge.hit.type, id: edge.hit.id },
-                endpoint: { ordinal: end.ordinal, index: edge.hit.index, role: end.role },
-              },
-            };
-          }
-        }
-      }
+  const follow = () => {
+    const current = drag,
+      world = current && api.world(current.last);
+    if (!current?.moved || !world) return;
+    if (current.kind === 'move') {
+      api.preview(
+        current.selection,
+        snapped([world[0] - current.world[0], world[1] - current.world[1]]),
+      );
+    } else if (current.kind === 'marquee') {
+      api.overlay({
+        box: [
+          Math.min(current.world[0], world[0]),
+          Math.min(current.world[1], world[1]),
+          Math.max(current.world[0], world[0]),
+          Math.max(current.world[1], world[1]),
+        ],
+      });
+    } else if (current.kind === 'connect' && current.connection) {
+      const session = current.connection;
+      const hits = diagram.hitTest(current.last, {
+        radiusPx: Math.max(targetRadius, current.threshold * 2),
+      });
+      const ports = hits.filter((hit) => hit.kind === 'port');
+      const candidates = ports.length ? ports : hits;
+      const target =
+        candidates.find(
+          (hit) =>
+            session.accepts(hit) &&
+            (options.canConnect?.(session.proposal(hit, snapped(world), current.last)) ?? true),
+        ) ?? null;
+      current.target = target;
+      current.blocked = !target && hits.some((hit) => hit.kind !== 'group');
+      canvas.style.cursor = current.blocked ? 'not-allowed' : 'crosshair';
+      api.overlay({
+        wire: session.preview(snapped(world), target, signal),
+        compatible: session.compatible,
+        target,
+        muted: session.detached,
+        invalid: current.blocked,
+      });
     }
-    return { from };
+  };
+  const velocity = (p: number, size: number) => {
+    const zone = Math.min(margin, size / 3);
+    if (p < zone) return speed * Math.min(1, (zone - p) / zone);
+    if (p > size - zone) return -speed * Math.min(1, (p - size + zone) / zone);
+    return 0;
+  };
+  const panAtEdge = (now: number) => {
+    raf = 0;
+    const current = drag;
+    if (
+      !current?.moved ||
+      !['move', 'marquee', 'connect'].includes(current.kind) ||
+      options.autoPan === false
+    )
+      return;
+    const dx = velocity(current.last[0], canvas.clientWidth),
+      dy = velocity(current.last[1], canvas.clientHeight);
+    if (!dx && !dy) {
+      lastPan = 0;
+      return;
+    }
+    const dt = lastPan ? Math.min(32, Math.max(0, now - lastPan)) / 1000 : 0;
+    lastPan = now;
+    if (dt) {
+      diagram.panBy(dx * dt, dy * dt);
+      follow();
+    }
+    raf = view.requestAnimationFrame(panAtEdge);
   };
   canvas.addEventListener(
     'pointerdown',
@@ -122,10 +207,10 @@ export function attachDiagramInput(options: InputOptions): () => void {
         return;
       }
       const world = api.world(p);
-      if (!world) return;
-      const hit = diagram.hitTest(p, {
-        radiusPx: event.pointerType === 'touch' ? 22 : api.options().pickRadiusPx,
-      })[0];
+      if (!world || drag) return;
+      const touch = event.pointerType === 'touch';
+      const hit = diagram.hitTest(p, { radiusPx: touch ? 22 : api.options().pickRadiusPx })[0];
+      const additive = event.shiftKey || event.ctrlKey || event.metaKey;
       const kind =
         mode === 'inspect'
           ? 'press'
@@ -136,18 +221,11 @@ export function attachDiagramInput(options: InputOptions): () => void {
               ? 'connect'
               : mode === 'edit' && (hit?.kind === 'component' || hit?.kind === 'group')
                 ? 'move'
-                : event.shiftKey
+                : !touch &&
+                    (event.shiftKey ||
+                      (mode === 'edit' && (options.backgroundDrag ?? 'select') === 'select'))
                   ? 'marquee'
-                  : 'press';
-      if (kind === 'move' || kind === 'connect' || kind === 'marquee') {
-        const camera = diagram.getCamera();
-        if (camera) diagram.setCamera(camera);
-      }
-      let selection = api.selection();
-      if (kind === 'move' && hit && !selection.some((i) => itemKey(i) === itemKey(hit))) {
-        selection = toggle(hit, event.shiftKey);
-        setSelection(selection);
-      }
+                  : 'pan';
       drag = {
         id: event.pointerId,
         start: p,
@@ -155,12 +233,15 @@ export function attachDiagramInput(options: InputOptions): () => void {
         world,
         kind,
         moved: false,
+        threshold: touch ? touchThreshold : threshold,
+        additive,
         hit,
-        selection,
+        selection: api.selection(),
         revision: api.revision(),
-        wire: kind === 'connect' && hit ? connection(hit) : undefined,
+        target: null,
+        blocked: false,
       };
-      if (event.pointerType === 'touch')
+      if (touch)
         longPress = setTimeout(() => {
           context(p, event, 'pointer');
           cancel();
@@ -176,44 +257,50 @@ export function attachDiagramInput(options: InputOptions): () => void {
       diagram.setPointer(p);
       if (pinch && pointers.size === 2) {
         const [a, b] = [...pointers.values()],
-          center: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2],
-          d = Math.hypot(b[0] - a[0], b[1] - a[1]);
-        if (d > 0 && pinch.distance > 0) diagram.zoomBy(d / pinch.distance, center);
+          center: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        const distance = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        if (distance > 0 && pinch.distance > 0) diagram.zoomBy(distance / pinch.distance, center);
         diagram.panBy(center[0] - pinch.center[0], center[1] - pinch.center[1]);
-        pinch = { distance: d, center };
+        pinch = { distance, center };
         return;
       }
-      if (!drag || drag.id !== event.pointerId) return;
-      if (Math.hypot(p[0] - drag.start[0], p[1] - drag.start[1]) > 3) {
-        drag.moved = true;
+      const current = drag;
+      if (!current || current.id !== event.pointerId) return;
+      if (
+        !current.moved &&
+        Math.hypot(p[0] - current.start[0], p[1] - current.start[1]) > current.threshold
+      ) {
+        current.moved = true;
         if (longPress) clearTimeout(longPress);
         longPress = undefined;
+        const camera = diagram.getCamera();
+        if (camera && current.kind !== 'press') diagram.setCamera(camera);
+        if (current.kind === 'move' && current.hit) {
+          if (!current.selection.some((item) => itemKey(item) === itemKey(current.hit!)))
+            current.selection = current.additive
+              ? merge(current.selection, [current.hit])
+              : [current.hit];
+          setSelection(current.selection);
+        }
+        if (
+          current.kind === 'connect' &&
+          current.hit &&
+          current.hit.kind !== 'group' &&
+          api.scene()
+        )
+          current.connection = new ConnectionSession(
+            api.scene()!,
+            current.hit,
+            api.options().routeClearance,
+          );
+        canvas.style.cursor =
+          current.kind === 'pan' || current.kind === 'move' ? 'grabbing' : 'crosshair';
       }
-      if (!drag.moved && drag.kind !== 'connect') return;
-      if (drag.kind === 'press' && mode !== 'inspect') drag.kind = 'pan';
-      if (drag.kind === 'pan') diagram.panBy(p[0] - drag.last[0], p[1] - drag.last[1]);
-      const world = api.world(p);
-      if (world) {
-        const g = api.options().gridPitch,
-          snap = (n: number) => (api.options().snap ? Math.round(n / g) * g : n);
-        if (drag.kind === 'move')
-          api.preview(drag.selection, [
-            snap(world[0] - drag.world[0]),
-            snap(world[1] - drag.world[1]),
-          ]);
-        if (drag.kind === 'marquee')
-          api.overlay({
-            box: [
-              Math.min(drag.world[0], world[0]),
-              Math.min(drag.world[1], world[1]),
-              Math.max(drag.world[0], world[0]),
-              Math.max(drag.world[1], world[1]),
-            ],
-          });
-        if (drag.kind === 'connect')
-          api.overlay({ wire: [drag.world, [world[0], drag.world[1]], world] });
-      }
-      drag.last = p;
+      if (!current.moved) return;
+      if (current.kind === 'pan') diagram.panBy(p[0] - current.last[0], p[1] - current.last[1]);
+      current.last = p;
+      follow();
+      if (!raf) raf = view.requestAnimationFrame(panAtEdge);
     },
     { signal },
   );
@@ -233,68 +320,37 @@ export function attachDiagramInput(options: InputOptions): () => void {
         input.release(event.pointerId);
         return;
       }
-      const world = api.world(p),
-        g = api.options().gridPitch,
-        snap = (n: number) => (api.options().snap ? Math.round(n / g) * g : n);
+      current.last = p;
+      follow();
+      const world = api.world(p);
       cancel();
-      if (current.kind === 'connect' && current.wire && world) {
-        const hits = diagram.hitTest(p),
-          hit = hits.find(
-            (h) => h.kind === 'port' || h.kind === 'component' || h.kind === 'connection',
-          );
-        if (
-          hit &&
-          hit.kind !== 'group' &&
-          hit.type === current.wire.from.type &&
-          hit.id === current.wire.from.id &&
-          (hit.kind === 'port' ? hit.port : undefined) === current.wire.from.port
-        )
-          return;
-        const to =
-          hit && hit.kind !== 'group'
-            ? {
-                kind: hit.kind === 'connection' ? ('connection' as const) : ('component' as const),
-                type: hit.type,
-                id: hit.id,
-                ...(hit.kind === 'port' ? { port: hit.port } : {}),
-              }
-            : null;
-        if (to?.port && current.wire.from.port) {
-          const scene = api.scene(),
-            a = scene?.nodes
-              .find(
-                (n) => n.hit.type === current.wire!.from.type && n.hit.id === current.wire!.from.id,
-              )
-              ?.ports.find((p) => p.name === current.wire!.from.port),
-            b = scene?.nodes
-              .find((n) => n.hit.type === to.type && n.hit.id === to.id)
-              ?.ports.find((p) => p.name === to.port);
-          if (
-            a &&
-            b &&
-            ((a.definition.type && b.definition.type && a.definition.type !== b.definition.type) ||
-              (a.definition.direction === b.definition.direction &&
-                a.definition.direction !== 'both'))
-          )
-            return;
-        }
-        api.emit('connect', {
-          ...current.wire,
-          to,
-          position: [snap(world[0]), snap(world[1])],
-          point: p,
-        });
-      } else if (current.kind === 'move' && current.moved && world) {
-        const delta: Point = [snap(world[0] - current.world[0]), snap(world[1] - current.world[1])];
+      if (!current.moved) {
+        const hit = diagram.hitTest(p, {
+          radiusPx: event.pointerType === 'touch' ? 22 : api.options().pickRadiusPx,
+        })[0];
+        if (hit) setSelection(toggle(hit, current.additive));
+        else if (!current.additive) setSelection([]);
+      } else if (
+        current.kind === 'connect' &&
+        current.connection &&
+        world &&
+        !current.blocked &&
+        p[0] >= 0 &&
+        p[1] >= 0 &&
+        p[0] <= canvas.clientWidth &&
+        p[1] <= canvas.clientHeight
+      ) {
+        const proposal = current.connection.proposal(current.target, snapped(world), p);
+        if (options.canConnect?.(proposal) ?? true) api.emit('connect', proposal);
+      } else if (current.kind === 'move' && world) {
+        const delta = snapped([world[0] - current.world[0], world[1] - current.world[1]]);
         if (delta[0] || delta[1]) {
           const proposal = api.move(current.selection, delta);
           if (proposal) api.emit('move', proposal);
         }
-      } else if (current.kind === 'marquee' && world)
-        setSelection(api.marquee(current.world, world));
-      else if (!current.moved) {
-        const hit = diagram.hitTest(p)[0];
-        setSelection(hit ? toggle(hit, event.shiftKey) : []);
+      } else if (current.kind === 'marquee' && world) {
+        const items = api.marquee(current.world, world);
+        setSelection(current.additive ? merge(current.selection, items) : items);
       }
     },
     { signal },
@@ -327,6 +383,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
     (event) => {
       const hit = diagram.hitTest(input.point(event))[0];
       if (hit) api.emit('open', hit);
+      else if (mode !== 'inspect') diagram.fit({ animate: true });
     },
     { signal },
   );
@@ -354,6 +411,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
     },
     { signal, passive: false },
   );
+
   if (options.keyboard !== false) {
     canvas.addEventListener(
       'keydown',
@@ -388,18 +446,14 @@ export function attachDiagramInput(options: InputOptions): () => void {
             at = nodes.findIndex((n) => items[0] && itemKey(n.hit) === itemKey(items[0])),
             next =
               nodes[
-                at < 0
-                  ? event.shiftKey
-                    ? nodes.length - 1
-                    : 0
-                  : (at + (event.shiftKey ? -1 : 1) + nodes.length) % nodes.length
+                at < 0 ? (event.shiftKey ? nodes.length - 1 : 0) : at + (event.shiftKey ? -1 : 1)
               ];
           if (next) {
             setSelection([next.hit]);
             diagram.reveal(next.hit);
-          }
+          } else return;
         } else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(key)) {
-          const step = api.options().gridPitch * (event.shiftKey ? 10 : 1),
+          const step = api.options().gridPitch * (event.shiftKey ? 4 : 1),
             dx = key === 'ArrowLeft' ? -step : key === 'ArrowRight' ? step : 0,
             dy = key === 'ArrowUp' ? -step : key === 'ArrowDown' ? step : 0;
           if (mode === 'edit' && items.some((i) => i.kind === 'component' || i.kind === 'group')) {

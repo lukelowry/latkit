@@ -237,3 +237,96 @@ it('enforces one preparation deadline across native reads and custom layout', as
     now.mockRestore();
   }
 });
+
+it('spreads feedback cycles across ranks without changing native endpoint order', async () => {
+  const source = new Source(4);
+  source.ends.push([
+    { node: 3, port: 'output', role: 'source' },
+    { node: 0, port: 'input', role: 'target' },
+  ]);
+  const result = await scene(source);
+  expect(new Set(result.nodes.map((node) => node.x)).size).toBe(4);
+  expect(result.edges.at(-1)!.endpoints.map((end) => end.node)).toEqual([3, 0]);
+});
+it('passes ports, hyperedges, labels and groups to a custom layout', async () => {
+  const source = new Source(3);
+  source.ends = [
+    [
+      { node: 0, port: 'output', role: 'source' },
+      { node: 1, port: 'input', role: 'target' },
+      { node: 2, port: 'input', role: 'target' },
+    ],
+  ];
+  const algorithm = {
+    arrange: vi.fn((graph: import('../src/layout.js').LayoutGraph) => {
+      expect(graph.nodes[0].ports.map((port) => port.name)).toContain('output');
+      expect(graph.connections[0].endpoints).toHaveLength(3);
+      expect(graph.connections[0].labelSize[0]).toBeGreaterThan(0);
+      expect(graph.groups[0].members).toHaveLength(2);
+      return graph.nodes.map((_, i) => [i * 240, 0] as const);
+    }),
+  };
+  await arrange({
+    data: {
+      ...data(source),
+      groups: { pair: { components: { Task: { kind: 'ids', ids: ['n0', 'n1'] } } } },
+    },
+    layout: { algorithm },
+    measureText: measure,
+  });
+  expect(algorithm.arrange).toHaveBeenCalledOnce();
+});
+it('orients flow toward targets even when a wire runs left', async () => {
+  const source = new Source(2);
+  source.xy = Float64Array.of(400, 0, 0, 160);
+  const result = await scene(source, true),
+    edge = result.edges[0];
+  const start = result.nodes[0].ports.find((port) => port.name === 'output')!.position;
+  const first = edge.paths[edge.offsets.indexOf(0)];
+  expect(first[0]).toEqual(start);
+  const left = edge.paths.find((path) => path[0][0] > path[1][0]);
+  expect(left).toBeDefined();
+  expect(edge.offsets.every((distance) => distance >= 0)).toBe(true);
+});
+it('reconnects from the native source of a hyperedge and rejects duplicate endpoints', async () => {
+  const source = new Source(4);
+  source.ends = [
+    [
+      { node: 1, port: 'input', role: 'target' },
+      { node: 0, port: 'output', role: 'source' },
+      { node: 2, port: 'input', role: 'target' },
+    ],
+  ];
+  const result = await scene(source, true);
+  const { ConnectionSession } = await import('../src/connection.js');
+  const gesture = new ConnectionSession(
+    result,
+    { ...result.nodes[1].hit, kind: 'port', port: 'input' },
+    16,
+  );
+  expect(gesture.start.from).toEqual({ type: 'Task', id: 'n0', port: 'output' });
+  expect(gesture.start.replaces?.endpoint.ordinal).toBe(0);
+  expect(gesture.accepts({ kind: 'port', type: 'Task', id: 'n2', port: 'input' })).toBe(false);
+  expect(gesture.accepts({ kind: 'port', type: 'Task', id: 'n3', port: 'input' })).toBe(true);
+  expect(gesture.accepts({ kind: 'port', type: 'Task', id: 'n3', port: 'output' })).toBe(false);
+  const preview = gesture.preview([400, 200], null, new AbortController().signal);
+  expect(preview[0]).toEqual(
+    result.nodes[0].ports.find((port) => port.name === 'output')!.position,
+  );
+});
+
+it('picks connection labels using their rendered bounds', async () => {
+  const result = await scene(),
+    edge = result.edges[0],
+    box = edge.labelBounds[0];
+  const picking = new Picking(result, limits().pickingBytes);
+  const hit = picking.hit(
+    [50, 50],
+    { center: [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2], scale: [1, 1], yDirection: 'down' },
+    { width: 100, height: 100, pixelRatio: 1 },
+    0,
+  );
+  expect(hit.items.some((item) => item.kind === 'connection' && item.id === edge.hit.id)).toBe(
+    true,
+  );
+});

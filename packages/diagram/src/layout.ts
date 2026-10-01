@@ -20,10 +20,31 @@ export interface LayoutNode {
   readonly size: Point;
   readonly position?: Point;
   readonly group?: string;
+  readonly ports: readonly {
+    readonly name: string;
+    readonly direction: 'in' | 'out' | 'both';
+    readonly side: 'left' | 'right' | 'top' | 'bottom';
+  }[];
 }
 export interface LayoutGraph {
   readonly nodes: readonly LayoutNode[];
   readonly edges: readonly (readonly [number, number])[];
+  /** Native hyperedges retain endpoint roles and ports for custom algorithms. */
+  readonly connections: readonly {
+    readonly id: string;
+    readonly type: string;
+    readonly endpoints: readonly {
+      readonly node: number;
+      readonly port: string | null;
+      readonly role: string;
+    }[];
+    readonly labelSize: Point;
+  }[];
+  readonly groups: readonly {
+    readonly id: string;
+    readonly parent?: string;
+    readonly members: readonly number[];
+  }[];
 }
 export interface LayoutStrategy {
   arrange(
@@ -36,6 +57,8 @@ export interface LayoutOptions {
   readonly direction?: 'right' | 'left' | 'down' | 'up';
   readonly nodeGap?: number;
   readonly rankGap?: number;
+  /** Crossing-reduction passes, from 0 to 12. Default: 4. */
+  readonly sweeps?: number;
 }
 export function layoutOptions(value: LayoutOptions = {}): Required<LayoutOptions> {
   const result = {
@@ -43,7 +66,10 @@ export function layoutOptions(value: LayoutOptions = {}): Required<LayoutOptions
     direction: value.direction ?? 'right',
     nodeGap: value.nodeGap ?? 24,
     rankGap: value.rankGap ?? 64,
+    sweeps: value.sweeps ?? 4,
   };
+  if (!Number.isInteger(result.sweeps) || result.sweeps < 0 || result.sweeps > 12)
+    throw new GpuError('invalid-input', 'Layout sweeps must be an integer from 0 to 12');
   positive(result.nodeGap, 'nodeGap', true);
   positive(result.rankGap, 'rankGap', true);
   if (!['right', 'left', 'down', 'up'].includes(result.direction))
@@ -141,8 +167,24 @@ export async function place(
           size: [node.width, node.height],
           position: node.pinned ? [node.x, node.y] : undefined,
           group: node.group,
+          ports: node.ports.map((port) => ({
+            name: port.name,
+            side: port.side,
+            direction: port.definition.direction,
+          })),
         })),
         edges: pairs,
+        connections: scene.edges.map((edge) => ({
+          id: edge.hit.id,
+          type: edge.hit.type,
+          endpoints: edge.endpoints,
+          labelSize: [edge.label.width, edge.label.height],
+        })),
+        groups: scene.groups.map((group) => ({
+          id: group.id,
+          parent: group.parent,
+          members: group.members,
+        })),
       },
       { signal },
     );
@@ -164,85 +206,103 @@ export async function place(
   }
   const next = Array.from({ length: n }, () => [] as number[]),
     back = Array.from({ length: n }, () => [] as number[]);
-  for (const [a, b] of pairs) {
-    next[a].push(b);
-    back[b].push(a);
-  }
-  // Iterative Kosaraju: cycles form one rank unit without recursion limits.
-  const seen = new Uint8Array(n),
-    order: number[] = [];
-  for (let root = 0; root < n; root++)
-    if (!seen[root]) {
+  for (const [a, b] of pairs)
+    if (a !== b) {
+      next[a].push(b);
+      back[b].push(a);
+    }
+  const keys = nodes.map((node) => JSON.stringify([node.group ?? '', node.hit.type, node.hit.id]));
+  const compare = (a: number, b: number) => (keys[a] < keys[b] ? -1 : keys[a] > keys[b] ? 1 : 0);
+  for (const list of next) list.sort(compare);
+  // Iterative DFS classifies feedback edges without collapsing an entire cycle into one column.
+  // Topology remains intact; only ranking ignores back edges.
+  const color = new Uint8Array(n),
+    forward = Array.from({ length: n }, () => [] as number[]);
+  const roots = Array.from({ length: n }, (_, i) => i).sort(
+    (a, b) => Number(back[a].length > 0) - Number(back[b].length > 0) || compare(a, b),
+  );
+  for (const root of roots)
+    if (!color[root]) {
       const stack: [number, number][] = [[root, 0]];
-      seen[root] = 1;
+      color[root] = 1;
       while (stack.length) {
-        if ((stack.length & 1023) === 0) await work.step();
-        const top = stack[stack.length - 1];
-        if (top[1] < next[top[0]].length) {
-          const v = next[top[0]][top[1]++];
-          if (!seen[v]) {
-            seen[v] = 1;
-            stack.push([v, 0]);
-          }
-        } else {
-          order.push(top[0]);
+        await work.step();
+        const top = stack[stack.length - 1],
+          a = top[0];
+        if (top[1] === next[a].length) {
+          color[a] = 2;
           stack.pop();
+          continue;
+        }
+        const b = next[a][top[1]++];
+        if (color[b] === 1) continue;
+        forward[a].push(b);
+        if (!color[b]) {
+          color[b] = 1;
+          stack.push([b, 0]);
         }
       }
     }
-  const component = new Int32Array(n).fill(-1);
-  let count = 0;
-  for (let i = order.length - 1; i >= 0; i--)
-    if (component[order[i]] < 0) {
-      const stack = [order[i]];
-      component[order[i]] = count;
-      while (stack.length) {
-        if ((stack.length & 1023) === 0) await work.step();
-        const v = stack.pop()!;
-        for (const w of back[v])
-          if (component[w] < 0) {
-            component[w] = count;
-            stack.push(w);
-          }
-      }
-      count++;
-    }
-  const graph = Array.from({ length: count }, () => new Set<number>()),
-    degree = new Uint32Array(count),
-    rank = new Uint32Array(count);
-  for (const [a, b] of pairs)
-    if (component[a] !== component[b] && !graph[component[a]].has(component[b])) {
-      graph[component[a]].add(component[b]);
-      degree[component[b]]++;
-    }
-  const queue: number[] = [];
-  degree.forEach((v, i) => {
-    if (!v) queue.push(i);
-  });
+  const degree = new Uint32Array(n),
+    rank = new Uint32Array(n);
+  for (const list of forward) for (const b of list) degree[b]++;
+  const queue = roots.filter((i) => !degree[i]);
   for (let i = 0; i < queue.length; i++)
-    for (const v of graph[queue[i]]) {
-      rank[v] = Math.max(rank[v], rank[queue[i]] + 1);
-      if (!--degree[v]) queue.push(v);
+    for (const b of forward[queue[i]]) {
+      rank[b] = Math.max(rank[b], rank[queue[i]] + 1);
+      if (!--degree[b]) queue.push(b);
     }
   const levels = new Map<number, number[]>();
   nodes.forEach((_, i) => {
-    const r = rank[component[i]],
-      list = levels.get(r) ?? [];
+    const list = levels.get(rank[i]) ?? [];
     list.push(i);
-    levels.set(r, list);
+    levels.set(rank[i], list);
   });
+  const ordered = [...levels].sort((a, b) => a[0] - b[0]).map(([, list]) => list.sort(compare));
+  const slots = new Float64Array(n);
+  const score = (i: number, neighbors: readonly number[]) => {
+    if (!neighbors.length) return slots[i];
+    return neighbors.reduce((sum, other) => sum + slots[other], 0) / neighbors.length;
+  };
+  // Bounded alternating barycenter sweeps reduce crossings while retaining group contiguity.
+  for (let sweep = 0; sweep < config.sweeps; sweep++) {
+    await work.step();
+    for (const list of ordered)
+      list.forEach((i, position) => {
+        slots[i] = position;
+      });
+    const sequence = sweep % 2 ? [...ordered].reverse() : ordered;
+    for (const list of sequence) {
+      const scores = new Map(list.map((i) => [i, score(i, (sweep % 2 ? next : back)[i])]));
+      list.sort(
+        (a, b) =>
+          (nodes[a].group ?? '').localeCompare(nodes[b].group ?? '') ||
+          scores.get(a)! - scores.get(b)! ||
+          compare(a, b),
+      );
+      list.forEach((i, position) => {
+        slots[i] = position;
+      });
+    }
+  }
   const vertical = config.direction === 'down' || config.direction === 'up',
     reverse = config.direction === 'left' || config.direction === 'up';
   const index = new SpatialIndex();
   for (const node of nodes) if (node.pinned) index.add(expand(rect(node), config.nodeGap / 2));
+  const placed = new Set<number>();
+  const labelGaps = new Float64Array(n);
+  for (const edge of scene.edges) {
+    const root = edge.endpoints[rootEndpoint(scene, edge)];
+    if (root)
+      labelGaps[root.node] = Math.max(
+        labelGaps[root.node],
+        (vertical ? edge.label.height : edge.label.width) + grid * 3,
+      );
+  }
   let major = 0;
-  for (const [, list] of [...levels].sort((a, b) => a[0] - b[0])) {
+  for (const list of ordered) {
     await work.step();
-    list.sort((a, b) => {
-      const x = JSON.stringify([nodes[a].group ?? '', nodes[a].index.type, nodes[a].hit.id]),
-        y = JSON.stringify([nodes[b].group ?? '', nodes[b].index.type, nodes[b].hit.id]);
-      return x < y ? -1 : x > y ? 1 : 0;
-    });
+
     let minor = 0,
       max = 0;
     for (const i of list) {
@@ -252,7 +312,17 @@ export async function place(
       max = Math.max(max, along);
       if (node.pinned) continue;
       const a = reverse ? -major - along : major;
-      let b = minor;
+      const incoming = back[i].filter((p) => placed.has(p));
+      const desired = incoming.length
+        ? incoming.reduce(
+            (sum, p) =>
+              sum + (vertical ? nodes[p].x + nodes[p].width / 2 : nodes[p].y + nodes[p].height / 2),
+            0,
+          ) /
+            incoming.length -
+          across / 2
+        : minor;
+      let b = Math.max(minor, desired);
       node.x = vertical ? b : a;
       node.y = vertical ? a : b;
       // Deterministic local collision escape; jump beyond obstacles, never scan huge coordinates.
@@ -269,8 +339,10 @@ export async function place(
       node.x = Math.round(node.x / grid) * grid;
       node.y = Math.round(node.y / grid) * grid;
       index.add(expand(rect(node), config.nodeGap / 2));
+      placed.add(i);
       minor = b + across + config.nodeGap;
     }
-    major += max + config.rankGap;
+    const labelGap = list.reduce((gap, i) => Math.max(gap, labelGaps[i]), 0);
+    major += max + Math.max(config.rankGap, labelGap);
   }
 }

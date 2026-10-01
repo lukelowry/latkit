@@ -96,7 +96,7 @@ it('connects an input to a free endpoint or existing wire with the correct role'
     position: [700, 0] as const,
     point: [700, 0] as const,
   };
-  const free = connectGraph(graph, { ...gesture, to: null });
+  const free = connectGraph(graph, { ...gesture, to: null }, true);
   expect(free.wires.at(-1)?.ends).toEqual([
     { id: 'diamond', port: 'feedback', role: 'target' },
     { id: free.nodes.at(-1)!.id, port: 'out', role: 'source' },
@@ -128,6 +128,9 @@ it('arranges through the new public headless API', async () => {
         route: 'orthogonal',
         appearance: 'wire',
         palette: 'neutral',
+        light: false,
+        density: 'comfortable',
+        titlePosition: 'header',
         flow: false,
         arrows: true,
         status: true,
@@ -142,4 +145,29 @@ it('arranges through the new public headless API', async () => {
     expect.arrayContaining(['Process', 'Control', 'Input', 'Output']),
   );
   await source.close();
+});
+
+it('requires explicit creation on empty drop and disconnects a replaced branch without deleting siblings', () => {
+  const graph = preset('loop');
+  const free = {
+    from: { type: 'Process', id: 'plant', port: 'out' },
+    to: null,
+    position: [0, 0] as const,
+    point: [0, 0] as const,
+  };
+  expect(connectGraph(graph, free)).toBe(graph);
+  const branch = graph.wires.find((wire) => wire.name === 'Measured')!;
+  const next = connectGraph(graph, {
+    ...free,
+    replaces: {
+      connection: { type: 'Signal', id: branch.id },
+      endpoint: {
+        ordinal: 1,
+        index: { source: 'test', type: 'Signal', version: '0' },
+        role: 'target',
+      },
+    },
+  });
+  expect(next.wires.find((wire) => wire.id === branch.id)!.ends).toHaveLength(2);
+  expect(next.nodes).toBe(graph.nodes);
 });

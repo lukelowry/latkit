@@ -27,6 +27,7 @@ export class Picking {
     maxBytes: number,
   ) {
     this.spatial = new SpatialIndex(maxBytes);
+    this.maxStroke = (scene.portSizePx ?? 8) / 2;
     for (const group of scene.groups) this.identities.add(itemKey({ kind: 'group', id: group.id }));
     for (const edge of scene.edges) this.identities.add(itemKey(edge.hit));
     for (const node of scene.nodes) {
@@ -48,6 +49,7 @@ export class Picking {
       if (!edge.visible || !edge.paths.length) return;
       this.maxStroke = Math.max(this.maxStroke, edge.width / 2);
       this.anchors.set(itemKey(edge.hit), edge.anchor);
+      for (const box of edge.labelBounds) add({ hit: edge.hit, kind: 2, box });
       for (const path of edge.paths)
         for (let i = 1; i < path.length; i++) {
           const a = path[i - 1],
@@ -97,6 +99,7 @@ export class Picking {
     viewport: Viewport,
     radius: number,
     budget?: number,
+    ports = true,
   ): { items: readonly DiagramHit[]; complete: boolean } {
     const work = withinBudget((check) => {
       const world = worldPoint(camera, point, viewport),
@@ -113,10 +116,11 @@ export class Picking {
         const e = this.entries[id];
         let d = Infinity;
         if (e.point) {
+          if (!ports) continue;
           const p = cameraPoint(camera, e.point, viewport);
           d = Math.max(
             0,
-            Math.hypot(point[0] - p[0], point[1] - p[1]) - 3.5 * Math.min(...camera.scale),
+            Math.hypot(point[0] - p[0], point[1] - p[1]) - (this.scene.portSizePx ?? 8) / 2,
           );
         } else if (e.a && e.b)
           d = Math.max(

@@ -23,6 +23,7 @@ export interface Labels {
 export interface PortOptions {
   readonly side?: 'left' | 'right' | 'top' | 'bottom';
   readonly order?: number;
+  readonly marker?: 'directional' | 'circle' | 'diamond';
   readonly label?: string;
   readonly color?: ColorScale | null;
   readonly status?: ColorScale | null;
@@ -32,6 +33,9 @@ export interface ComponentOptions {
   readonly position?: Position2D | null;
   readonly size?: FieldInput | null;
   readonly shape?: Shape;
+  readonly cornerRadius?: number;
+  /** Automatic sizing reserves room around the title. Default: center. */
+  readonly labelPosition?: 'header' | 'center';
   readonly color?: ColorScale | null;
   readonly status?: ColorScale | null;
   readonly visible?: FieldInput | null;

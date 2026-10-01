@@ -58,11 +58,26 @@ function tab(name: string) {
 }
 for (const button of document.querySelectorAll<HTMLButtonElement>('[data-tab]'))
   button.onclick = () => tab(button.dataset.tab!);
+const narrow = matchMedia('(max-width: 650px)');
+const systemTheme = matchMedia('(prefers-color-scheme: light)');
+$('#toggle-controls').setAttribute('aria-expanded', String(!narrow.matches));
 $('#toggle-controls').onclick = () => {
-  const expanded = document.body.classList.toggle('show-controls');
+  const expanded = narrow.matches
+    ? document.body.classList.toggle('show-controls')
+    : !document.body.classList.toggle('hide-controls');
   $('#toggle-controls').setAttribute('aria-expanded', String(expanded));
-  if (expanded) $('.sidebar').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 };
+function showInspector(open: boolean) {
+  document.body.classList.toggle('show-inspector', open);
+  $('#toggle-inspector').setAttribute('aria-expanded', String(open));
+}
+$('#toggle-inspector').onclick = () =>
+  showInspector(!document.body.classList.contains('show-inspector'));
+function lightTheme() {
+  return (
+    select('theme').value === 'light' || (select('theme').value === 'system' && systemTheme.matches)
+  );
+}
 const code = `const gpu = await createGpu();
 
 const diagram = createDiagram({
@@ -122,6 +137,9 @@ async function boot() {
     pointerDown = false;
   const settings = (): Settings => ({
     shape: select('shape').value as 'mixed' | Shape,
+    light: lightTheme(),
+    density: select('density').value as Settings['density'],
+    titlePosition: select('title-position').value as Settings['titlePosition'],
     route: select('route').value as Settings['route'],
     appearance: select('appearance').value as Settings['appearance'],
     palette: select('palette').value as Settings['palette'],
@@ -131,7 +149,15 @@ async function boot() {
     labels: check('labels').checked,
   });
   const options = (): Options => ({
-    ...theme,
+    ...theme(lightTheme()),
+    nodePadding:
+      select('density').value === 'compact' ? 8 : select('density').value === 'spacious' ? 16 : 12,
+    portSpacing:
+      select('density').value === 'compact' ? 20 : select('density').value === 'spacious' ? 30 : 24,
+    portMarker: select('port-marker').value as Options['portMarker'],
+    portLabels: check('port-labels').checked,
+    cornerRadius: Number(select('radius').value),
+    detail: select('detail').value as Options['detail'],
     grid: check('grid').checked,
     snap: check('snap').checked,
     labels: check('labels').checked,
@@ -139,7 +165,7 @@ async function boot() {
     motion: select('motion').value as Options['motion'],
     msaa: Number(select('msaa').value) as 1 | 4,
     hover: select('hover').value as Options['hover'],
-    fitPaddingPx: innerWidth <= 650 ? 24 : 44,
+    fitPaddingPx: innerWidth <= 650 ? [24, 28, 60, 28] : 44,
   });
   const binding = (automatic = false) => {
     const value = data(source, settings(), automatic);
@@ -158,6 +184,7 @@ async function boot() {
       ),
     };
   };
+  document.documentElement.dataset.theme = lightTheme() ? 'light' : 'dark';
   const diagram = createDiagram({ gpu, data: binding(), options: options() });
   const view = createCanvasView({
     gpu,
@@ -178,10 +205,12 @@ async function boot() {
       diagram,
       canvas,
       interaction: select('mode').value as InputOptions['interaction'],
+      backgroundDrag: select('background-drag').value as InputOptions['backgroundDrag'],
+      autoPan: check('auto-pan').checked,
     });
     message(select('mode').selectedOptions[0].text + ' mode');
   };
-  select('mode').onchange = bindInput;
+  for (const id of ['mode', 'background-drag', 'auto-pan']) $('#' + id).onchange = bindInput;
   function historyButtons() {
     document.querySelectorAll<HTMLButtonElement>('[data-action="undo"]').forEach((button) => {
       button.disabled = !history.canUndo;
@@ -190,17 +219,18 @@ async function boot() {
       button.disabled = !history.canRedo;
     });
   }
-  function refresh() {
+  function refresh(animate = false) {
     $('#error').hidden = true;
     source.publish(history.current);
-    diagram.setData(binding());
+    diagram.setData(binding(), { animate });
     historyButtons();
     showGroups();
     inspect();
   }
-  function commit(graph: Graph, description: string) {
+  function commit(graph: Graph, description: string, animate = false) {
+    if (graph === history.current) return;
     history.commit(graph);
-    refresh();
+    refresh(animate);
     message(description);
   }
   function choosePreset(id: Preset) {
@@ -374,8 +404,12 @@ async function boot() {
   diagram.on('connect', (proposal) => {
     try {
       commit(
-        connectGraph(history.current, proposal),
-        proposal.replaces ? 'Reconnected endpoint' : 'Connected signal',
+        connectGraph(history.current, proposal, select('free-drop').value === 'create'),
+        proposal.replaces
+          ? proposal.to
+            ? 'Reconnected endpoint'
+            : 'Disconnected endpoint'
+          : 'Connected signal',
       );
     } catch (error) {
       message(error instanceof Error ? error.message : String(error));
@@ -393,6 +427,7 @@ async function boot() {
     selected = [item];
     diagram.select(selected);
     tab('inspect');
+    showInspector(true);
     inspect();
     check('rename').focus();
     check('rename').select();
@@ -475,6 +510,7 @@ async function boot() {
           })),
         },
         'Applied ' + select('algorithm').selectedOptions[0].text.toLowerCase() + ' layout',
+        true,
       );
       diagram.fit({ animate: true });
     } finally {
@@ -539,14 +575,14 @@ async function boot() {
     undo: () => {
       if (history.canUndo) {
         history.undo();
-        refresh();
+        refresh(true);
         message('Undid edit');
       }
     },
     redo: () => {
       if (history.canRedo) {
         history.redo();
-        refresh();
+        refresh(true);
         message('Redid edit');
       }
     },
@@ -598,16 +634,40 @@ async function boot() {
     'arrows',
     'status',
     'overflow',
+    'title-position',
   ])
     $('#' + id).onchange = () => {
       diagram.setData(binding());
       message('Updated ' + id);
     };
-  for (const id of ['grid', 'snap', 'labels', 'junctions', 'msaa', 'motion', 'hover'])
+  for (const id of [
+    'grid',
+    'snap',
+    'labels',
+    'junctions',
+    'msaa',
+    'motion',
+    'hover',
+    'port-labels',
+    'port-marker',
+    'radius',
+    'detail',
+  ])
     $('#' + id).onchange = () => {
       diagram.setOptions(options());
       message('Updated ' + id);
     };
+  const updateTheme = () => {
+    document.documentElement.dataset.theme = lightTheme() ? 'light' : 'dark';
+    diagram.setOptions(options());
+    diagram.setData(binding());
+  };
+  select('theme').onchange = updateTheme;
+  systemTheme.addEventListener('change', updateTheme);
+  select('density').onchange = () => {
+    diagram.setOptions(options());
+    diagram.setData(binding());
+  };
   select('shade').onchange = () => {
     void diagram
       .setShade(effect(select('shade').value))
@@ -663,7 +723,9 @@ async function boot() {
     }
   }, 250);
   const resize = () => {
-    diagram.setOptions({ fitPaddingPx: compact.matches ? 24 : 44 });
+    diagram.setOptions({
+      fitPaddingPx: compact.matches ? [24, 28, 60, 28] : 44,
+    });
     if (!history.canUndo) choosePreset(active);
   };
   compact.addEventListener('change', resize);
@@ -671,6 +733,7 @@ async function boot() {
     if (event.persisted) return;
     clearInterval(timer);
     compact.removeEventListener('change', resize);
+    systemTheme.removeEventListener('change', updateTheme);
     detach();
     view.destroy();
     diagram.destroy();

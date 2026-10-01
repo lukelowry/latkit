@@ -9,11 +9,23 @@ export const defaults: Required<Options> = {
   junctions: true,
   font: { family: 'system-ui, sans-serif' },
   fontSizePx: 12,
-  nodePadding: 12,
-  portSpacing: 24,
+  nodePadding: 10,
+  cornerRadius: 8,
+  outlineWidthPx: 1,
+  selectionWidthPx: 2,
+  hoverWidthPx: 3,
+  portSizePx: 8,
+  portMarker: 'directional',
+  portLabels: true,
+  portFontSizePx: 11,
+  connectionWidthPx: 1.5,
+  gridMinSpacingPx: 12,
+  detail: 'auto',
+  portSpacing: 22,
   routeClearance: 16,
   motion: 'auto',
   animationMs: 250,
+  animationMaxComponents: 512,
   pickRadiusPx: 8,
   fitPaddingPx: 32,
   revealPaddingPx: 48,
@@ -58,6 +70,14 @@ export function options(value: Options = {}, base = defaults): Required<Options>
     'gridPitch',
     'fontSizePx',
     'nodePadding',
+    'cornerRadius',
+    'outlineWidthPx',
+    'selectionWidthPx',
+    'hoverWidthPx',
+    'portSizePx',
+    'portFontSizePx',
+    'connectionWidthPx',
+    'gridMinSpacingPx',
     'portSpacing',
     'routeClearance',
     'animationMs',
@@ -65,9 +85,17 @@ export function options(value: Options = {}, base = defaults): Required<Options>
     'revealPaddingPx',
     'hoverBudgetMs',
   ] as const)
-    positive(result[key], key, key === 'animationMs');
-  for (const key of ['grid', 'snap', 'labels', 'junctions'] as const)
+    positive(
+      result[key],
+      key,
+      ['animationMs', 'cornerRadius', 'outlineWidthPx', 'hoverWidthPx'].includes(key),
+    );
+  for (const key of ['grid', 'snap', 'labels', 'junctions', 'portLabels'] as const)
     if (typeof result[key] !== 'boolean') fail('Invalid ' + key);
+  if (!Number.isSafeInteger(result.animationMaxComponents) || result.animationMaxComponents < 0)
+    fail('Invalid animationMaxComponents');
+  if (!['auto', 'full'].includes(result.detail)) fail('Invalid detail');
+  if (!['directional', 'circle', 'diamond'].includes(result.portMarker)) fail('Invalid portMarker');
   if (![1, 4].includes(result.msaa)) fail('Invalid msaa');
   if (!['auto', 'reduce', 'full'].includes(result.motion)) fail('Invalid motion');
   if (!['auto', 'on', 'off'].includes(result.hover)) fail('Invalid hover');
@@ -108,12 +136,18 @@ export function data(value: DiagramData): DiagramData {
   if (!value.components) fail('Component bindings are required');
   for (const component of Object.values(value.components)) {
     binding(component);
+    if (component.cornerRadius !== undefined)
+      positive(component.cornerRadius, 'cornerRadius', true);
+    if (component.labelPosition && !['header', 'center'].includes(component.labelPosition))
+      fail('Invalid labelPosition');
     if (
       component.shape &&
       !['rectangle', 'rounded', 'ellipse', 'diamond'].includes(component.shape)
     )
       fail('Invalid shape');
     for (const port of Object.values(component.ports ?? {})) {
+      if (port.marker && !['directional', 'circle', 'diamond'].includes(port.marker))
+        fail('Invalid port marker');
       if (port.side && !['left', 'right', 'top', 'bottom'].includes(port.side))
         fail('Invalid port side');
       if (port.order !== undefined && !Number.isFinite(port.order)) fail('Invalid port order');

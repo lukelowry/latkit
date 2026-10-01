@@ -23,6 +23,8 @@ export interface Port {
   side: 'left' | 'right' | 'top' | 'bottom';
   order: number;
   definition: ComponentPort;
+  marker: 'directional' | 'circle' | 'diamond';
+  connected: boolean;
   label: Label;
   color: RGBA;
   status?: RGBA;
@@ -40,6 +42,7 @@ export interface Node {
   header: number;
   pinned: boolean;
   shape: Shape;
+  radius: number;
   visible: boolean;
   sourceVisible: boolean;
   color: RGBA;
@@ -68,6 +71,8 @@ export interface Edge {
   label: Label;
   options: ConnectionOptions;
   paths: readonly (readonly Point[])[];
+  offsets: readonly number[];
+  labelBounds: readonly Rect[];
   arrows: readonly { point: Point; direction: Point }[];
   junctions: readonly Point[];
   anchor: Point;
@@ -90,6 +95,7 @@ export interface Scene {
   bytes: number;
   routeBytes: number;
   routeClearance?: number;
+  portSizePx?: number;
   endpoints: number;
   versions: ReadonlyMap<Queryable, string>;
 }

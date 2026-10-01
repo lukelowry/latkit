@@ -17,9 +17,14 @@ Open http://127.0.0.1:5192. WebGPU requires a supported browser and graphics dev
 - Scale study: 1,024 nodes, 992 connections, zoom-dependent text, and live render statistics.
 - Controls: layered/custom-grid layout, direction, orthogonal/straight/custom routing,
   tags, native color and width scales, status colors, live synthetic values, shared
-  spotlight/custom shading, MSAA, snapping, labels, and reduced motion.
+  spotlight/custom shading, MSAA, snapping, labels, and reduced motion. Appearance controls
+  include system/light/dark themes, density, title placement, corner radius, directional
+  port markers, port labels, and adaptive detail. The inspector and controls can be hidden.
 - Editing: add or drag in components; move, connect, reconnect, join a wire, rename,
-  delete, select, marquee, inspect, reveal neighbors, undo, and redo.
+  delete, select, additive marquee, inspect, reveal neighbors, undo, and redo. The example
+  exposes background-drag and edge-panning preferences. Empty drops leave new connections
+  unchanged unless creation is enabled; dropping a reconnected input on empty space
+  disconnects that endpoint. Arrangement and history can animate accepted positions.
 - Export: a retained source and an independent renderer produce a fixed-time
   2048 × 1280 PNG through createRenderTarget and gpu.render.
 

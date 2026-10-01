@@ -330,3 +330,115 @@ it('invalidates routes when shapes, port anchors, or routing clearance change', 
     f.gpu.destroy();
   }
 });
+
+it('updates uniform-only presentation without querying or rebuilding geometry', async () => {
+  const f = await fixture();
+  try {
+    await f.draw();
+    const reads = f.source.queries,
+      scene = interaction(f.diagram).scene();
+    f.diagram.setOptions({
+      grid: false,
+      gridMinSpacingPx: 18,
+      selectedColor: [0.3, 0.6, 1, 1],
+      outlineWidthPx: 2,
+      detail: 'full',
+    });
+    await f.draw();
+    expect(f.source.queries).toBe(reads);
+    expect(interaction(f.diagram).scene()).toBe(scene);
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+it('animates accepted positions with coherent picking and one native read per revision', async () => {
+  const f = await fixture();
+  const render = (timeMs: number) =>
+    f.gpu.render({ views: [{ renderer: f.diagram, target: f.target }], timeMs });
+  try {
+    f.diagram.setOptions({ animationMs: 200, motion: 'full' });
+    f.diagram.setData(data(f.source, true));
+    await render(0);
+    f.diagram.setCamera(f.diagram.getCamera()!);
+    const ref = { kind: 'component' as const, type: 'Task', id: 'n0' };
+    const before = interaction(f.diagram).scene()!.nodes[0].y;
+    f.source.xy[1] += 80;
+    f.source.update();
+    f.diagram.setData(data(f.source, true), { animate: true });
+    await render(20);
+    const reads = f.source.queries;
+    expect(interaction(f.diagram).scene()!.nodes[0].y).toBe(before);
+    await render(120);
+    const node = interaction(f.diagram).scene()!.nodes[0];
+    expect(node.y).toBeGreaterThan(before);
+    expect(node.y).toBeLessThan(before + 80);
+    expect(f.diagram.hitTest(f.diagram.locate(ref)!).some((hit) => hit.id === 'n0')).toBe(true);
+    await render(220);
+    expect(interaction(f.diagram).scene()!.nodes[0].y).toBe(before + 80);
+    expect(f.source.queries).toBe(reads);
+    expect(f.diagram.animating).toBe(false);
+    f.diagram.setOptions({ motion: 'reduce' });
+    f.source.xy[1] += 80;
+    f.source.update();
+    f.diagram.setData(data(f.source, true), { animate: true });
+    await render(240);
+    expect(interaction(f.diagram).scene()!.nodes[0].y).toBe(before + 160);
+    expect(f.diagram.animating).toBe(false);
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+
+it('restores accepted positions when a drag interrupts and cancels a layout transition', async () => {
+  const f = await fixture();
+  const render = (timeMs: number) =>
+    f.gpu.render({ views: [{ renderer: f.diagram, target: f.target }], timeMs });
+  try {
+    const api = interaction(f.diagram),
+      ref = { kind: 'component' as const, type: 'Task', id: 'n0' };
+    f.diagram.setOptions({ motion: 'full', animationMs: 200 });
+    f.diagram.setData(data(f.source, true));
+    await render(0);
+    f.source.xy[1] = 80;
+    f.source.update();
+    f.diagram.setData(data(f.source, true), { animate: true });
+    await render(20);
+    await render(100);
+    api.preview([ref], [0, 8]);
+    await render(120);
+    api.preview([], null);
+    await render(140);
+    expect(api.scene()!.nodes[0].y).toBe(80);
+    expect(f.diagram.animating).toBe(false);
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+it('settles immediately when animation is disabled or above its configured size limit', async () => {
+  const f = await fixture();
+  try {
+    f.diagram.setData(data(f.source, true));
+    await f.draw();
+    f.diagram.setOptions({ animationMaxComponents: 2, motion: 'full', animationMs: 0 });
+    f.diagram.fit({ animate: true });
+    await f.draw();
+    expect(f.diagram.getCamera()!.scale.every(Number.isFinite)).toBe(true);
+    f.diagram.setOptions({ animationMs: 200 });
+    f.source.xy[1] = 80;
+    f.source.update();
+    f.diagram.setData(data(f.source, true), { animate: true });
+    await f.draw();
+    expect(interaction(f.diagram).scene()!.nodes[0].y).toBe(80);
+    expect(f.diagram.animating).toBe(false);
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});

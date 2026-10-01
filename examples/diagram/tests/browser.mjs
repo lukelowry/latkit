@@ -126,6 +126,9 @@ try {
     });
     await writeFile(path.join(output, name + '.png'), Buffer.from(shot.data, 'base64'));
   };
+  await evaluate(
+    `(async()=>{ const app=window.proofApp, frames=app.diagram.stats().frames; const el=document.getElementById('theme'); el.value='dark'; el.dispatchEvent(new Event('change')); await window.proofWait(()=>app.diagram.stats().frames>frames); })()`,
+  );
   await screenshot('desktop');
   const report = await evaluate(`(async () => {
     const app = window.proofApp, wait = window.proofWait, passed = [];
@@ -139,6 +142,14 @@ try {
     };
     for (const shape of ['rectangle','ellipse','diamond','rounded']) await change('shape', shape);
     passed.push('four shapes');
+    for (const marker of ['circle','diamond','directional']) await change('port-marker', marker);
+    for (const density of ['compact','spacious','comfortable']) await change('density', density);
+    for (const position of ['header','center']) await change('title-position', position);
+    for (const radius of ['3','16','8']) await change('radius', radius);
+    await change('port-labels', false); await change('port-labels', true);
+    await change('detail', 'full'); await change('detail', 'auto');
+    await change('theme', 'light'); await change('theme', 'dark');
+    passed.push('themes, density, directional markers, port labels, title placement, corner radius and detail');
     for (const route of ['straight','elbow','orthogonal']) await change('route', route);
     for (const appearance of ['tag','wire']) await change('appearance', appearance);
     for (const palette of ['signal','thermal','neutral']) await change('palette', palette);
@@ -192,6 +203,11 @@ try {
     `(async()=>{ const app=window.proofApp; const frames=app.diagram.stats().frames; app.choosePreset('shapes'); await window.proofWait(()=>app.diagram.stats().frames>frames); })()`,
   );
   await screenshot('shapes');
+  await evaluate(
+    `(async()=>{ const app=window.proofApp, frames=app.diagram.stats().frames; const el=document.getElementById('theme'); el.value='light'; el.dispatchEvent(new Event('change')); document.getElementById('toggle-inspector').click(); await window.proofWait(()=>app.diagram.stats().frames>frames); })()`,
+  );
+  await screenshot('light');
+  await evaluate(`document.getElementById('toggle-inspector').click()`);
   await evaluate(
     `(async()=>{ const app=window.proofApp; const frames=app.diagram.stats().frames; app.choosePreset('loop'); await window.proofWait(()=>app.diagram.stats().frames>frames); })()`,
   );

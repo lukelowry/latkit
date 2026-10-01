@@ -43,8 +43,7 @@ interface Geometry {
   text: TextBank[];
   focus: BufferData;
   keys: Map<string, number>;
-  selected: Set<string>;
-  hover: string | null;
+  states: Map<string, number>;
   paddingPx: number;
 }
 interface Pipelines {
@@ -56,6 +55,10 @@ interface Pipelines {
 export interface Overlay {
   readonly box?: readonly [number, number, number, number];
   readonly wire?: readonly Point[];
+  readonly compatible?: readonly DiagramItem[];
+  readonly target?: DiagramItem | null;
+  readonly muted?: string;
+  readonly invalid?: boolean;
 }
 export interface Paint {
   pipelines: Pipelines;
@@ -67,8 +70,14 @@ export interface Paint {
   drawCalls: number;
 }
 const shader = /* wgsl */ `
-struct View { camera:vec4f, viewport:vec4f, grid:vec4f, selected:vec4f, hovered:vec4f, dots:vec4f }
-struct Item { position:vec4f, color:vec4f, outline:vec4f, style:vec4f, extra:vec4f }
+struct View {
+  camera:vec4f, viewport:vec4f, grid:vec4f, selected:vec4f, hovered:vec4f, dots:vec4f,
+  metrics:vec4f, background:vec4f, detail:vec4f
+}
+struct Item {
+  position:vec4f, color:vec4f, outline:vec4f, style:vec4f, extra:vec4f,
+  status:vec4f, marker:vec4f
+}
 @group(0) @binding(0) var<uniform> view:View;
 @group(0) @binding(2) var<storage,read> items:array<Item>;
 @group(0) @binding(3) var<storage,read> focus:array<u32>;
@@ -77,59 +86,101 @@ struct Vertex { @builtin(position) position:vec4f, @location(0) uv:vec2f, @locat
 fn screen(p:vec2f)->vec2f { return (p+view.camera.xy)*view.camera.zw+view.viewport.xy*0.5; }
 fn clip(p:vec2f)->vec4f { return vec4f(p/view.viewport.xy*vec2f(2.,-2.)+vec2f(-1.,1.),0.,1.); }
 fn corner(v:u32)->vec2f { let c=array<vec2f,6>(vec2f(0,0),vec2f(1,0),vec2f(0,1),vec2f(0,1),vec2f(1,0),vec2f(1,1));return c[v]; }
+fn aa(d:f32)->f32 { return 1.-smoothstep(-0.65,0.65,d); }
 @vertex fn shape_vertex(@builtin(vertex_index) v:u32,@builtin(instance_index) i:u32)->Vertex {
   let item=items[i];let c=corner(v);let kind=u32(item.style.x);
+  let pad=max(6.,max(view.metrics.y,view.metrics.z)+2.);
   if(kind==4u||kind==5u){
-    let a=screen(item.position.xy);let b=screen(item.position.zw);let delta=b-a;let len=max(length(delta),0.0001);
-    let dir=delta/len;let normal=vec2f(-dir.y,dir.x);let width=select(item.style.y*0.5+2.,7.,kind==5u);
+    let start=screen(item.position.xy);let tip=screen(item.position.zw);let delta=tip-start;let direction=delta/max(length(delta),0.0001);
+    let b=tip-direction*select(0.,view.detail.z*0.5+3.,kind==5u);
+    let a=select(start,b-direction*8.,kind==5u);
+    let len=max(length(b-a),0.0001);let dir=direction;let normal=vec2f(-dir.y,dir.x);let width=select(item.style.y*0.5+pad,10.+pad,kind==5u);
     let uv=vec2f(mix(-width,len+width,c.x),mix(-width,width,c.y));
     return Vertex(clip(a+dir*uv.x+normal*uv.y),uv,i,vec2f(len,width),vec4f(0.));
   }
-  let a=screen(item.position.xy);let extent=item.position.zw*abs(view.camera.zw);
-  let uv=(c*2.-1.)*(extent*0.5+vec2f(2.));
-  return Vertex(clip(a+extent*vec2f(0.5,select(0.5,-0.5,view.camera.w<0.))+uv),uv,i,extent,vec4f(0.));
+  let a=screen(item.position.xy);
+  let extent=select(item.position.zw*abs(view.camera.zw),item.position.zw,kind>=6u);
+  let center=select(a+extent*vec2f(0.5,select(0.5,-0.5,view.camera.w<0.)),a,kind>=6u);
+  let uv=(c*2.-1.)*(extent*0.5+vec2f(pad));
+  return Vertex(clip(center+uv),uv,i,extent,vec4f(0.));
 }
 @fragment fn shape_fragment(v:Vertex)->@location(0) vec4f {
   let item=items[v.index];let kind=u32(item.style.x);var d=0.;var color=item.color;
   let flags=focus[u32(item.style.w)];
-  var outline=item.outline;
-  if(flags==1u){outline=view.selected;}else if(flags==2u){outline=view.hovered;}
+  let selected=(flags&1u)!=0u;let hovered=(flags&2u)!=0u;
+  let compatible=(flags&4u)!=0u;let targeted=(flags&8u)!=0u;
+  let scale=min(abs(view.camera.z),abs(view.camera.w));
+  var opacity=select(1.,0.22,(flags&32u)!=0u);
+  if((flags&16u)!=0u){opacity*=0.8;}
+  if(view.detail.x!=0. && (kind==5u||kind>=6u)){opacity*=smoothstep(0.2,0.55,scale);}
   if(kind==4u){
-    d=stroke_distance(v.uv,v.size.x)-item.style.y*0.5;
-    if(item.style.z!=0.&&view.grid.z!=0.){
-      let phase=v.uv.x+item.extra.x*min(abs(view.camera.z),abs(view.camera.w))-view.viewport.w*item.style.z/1000.;
-      if(fract(phase/16.)>0.6){discard;}
+    let extra=select(select(0.,0.5,hovered),1.,selected||targeted);
+    d=stroke_distance(v.uv,v.size.x)-item.style.y*0.5-extra;
+    if(item.style.z!=0.){
+      let phase=v.uv.x+item.extra.x*scale-select(0.,view.viewport.w*item.style.z/1000.,view.grid.z!=0.);
+      if(view.grid.z!=0. && fract(phase/14.)>0.62){discard;}
+      if(view.grid.z==0.){
+        let q=vec2f(fract(phase/18.)*18.-9.,abs(v.uv.y));
+        d=min(d,max(abs(q.y+q.x*0.65)-0.8,max(-q.x-3.,q.x-3.)));
+      }
     }
-    if(flags!=0u){color=outline;}
+    if(hovered){color=mix(color,view.hovered,0.65);}
+    if(selected||targeted){color=view.selected;}
   }else if(kind==5u){
-    let x=v.uv.x-v.size.x;d=max(abs(v.uv.y)+x*0.7,-x-9.);
-    if(flags!=0u){color=outline;}
+    let x=v.uv.x-v.size.x;d=max(abs(v.uv.y)+x*0.55,-x-8.);
+    if(selected||targeted){color=view.selected;}else if(hovered){color=view.hovered;}
   }else{
     let half=v.size*0.5;
-    if(kind==2u){d=(length(v.uv/max(half,vec2f(0.001)))-1.)*min(half.x,half.y);}
-    else if(kind==3u){d=(dot(abs(v.uv)/max(half,vec2f(0.001)),vec2f(1.))-1.)*min(half.x,half.y)*0.707;}
+    if(kind==6u){
+      let normal=vec2f(item.marker.x,item.marker.y*sign(view.camera.w));
+      let q=vec2f(dot(v.uv,normal),dot(v.uv,vec2f(-normal.y,normal.x)));
+      if(item.marker.z==1.){
+        d=max(abs(q.y)*0.894427+(q.x-half.x)*0.447214,-q.x-half.x);
+      }else if(item.marker.z==2.){
+        d=(abs(v.uv.x)+abs(v.uv.y)-half.x)*0.707107;
+      }else{d=length(v.uv)-half.x;}
+      if(item.extra.w==0.){color=mix(view.background,item.color,smoothstep(-1.8,-0.8,d));}
+    }else if(kind==2u||kind==7u){d=(length(v.uv/max(half,vec2f(0.001)))-1.)*min(half.x,half.y);}
+    else if(kind==3u){d=(dot(abs(v.uv)/max(half,vec2f(0.001)),vec2f(1.))-1.)*min(half.x,half.y)*0.707107;}
     else{
-      let radius=select(0.,min(5.*min(abs(view.camera.z),abs(view.camera.w)),min(half.x,half.y)),kind==0u);
+      let radius=select(0.,min(item.extra.z*scale,min(half.x,half.y)),kind==0u);
       let q=abs(v.uv)-half+radius;d=length(max(q,vec2f(0.)))+min(max(q.x,q.y),0.)-radius;
     }
-    color=mix(color,outline,smoothstep(-2.,-0.8,d));
+    if(kind<6u){color=mix(color,item.outline,smoothstep(-view.metrics.x-0.65,-view.metrics.x+0.65,d));}
+    if(item.status.a>0.){
+      let ring=aa(abs(d+view.metrics.x+1.4)-1.);
+      color=mix(color,item.status,ring*item.status.a);
+    }
   }
   let shaded=shade(ShadeFragment(color,v.position.xy/view.viewport.z,item.extra.y));
-  return outputColor(shaded,1.-smoothstep(-0.75,0.75,d));
+  var result=outputColor(shaded,aa(d));
+  var accent=view.hovered;var ring=0.;
+  if(hovered){ring=0.35*(1.-smoothstep(0.,view.metrics.z,d));}
+  if(compatible){accent=view.selected;ring=max(ring,0.28*(1.-smoothstep(0.,5.,d)));}
+  if(selected||targeted){accent=view.selected;ring=max(ring,aa(d-view.metrics.y)*smoothstep(-0.5,0.5,d));}
+  let halo=outputColor(accent,ring);
+  result=result+halo*(1.-result.a);
+  return result*opacity;
 }
 @vertex fn text_vertex(@builtin(vertex_index) v:u32,@builtin(instance_index) i:u32)->Vertex {
   let t=textVertex(v,i);return Vertex(clip(screen(t.position+anchors[t.anchor])),t.uv,i,vec2f(0.),t.color);
 }
-@fragment fn text_fragment(v:Vertex)->@location(0) vec4f {return textColor(v.uv,v.color)*smoothstep(3.,8.,view.grid.w*min(abs(view.camera.z),abs(view.camera.w)));}
+@fragment fn text_fragment(v:Vertex)->@location(0) vec4f {return textColor(v.uv,v.color)*smoothstep(4.,8.,view.grid.w*min(abs(view.camera.z),abs(view.camera.w)));}
 @vertex fn grid_vertex(@builtin(vertex_index) v:u32)->Vertex {
   let p=vec2f(f32((v<<1u)&2u),f32(v&2u));return Vertex(vec4f(p*vec2f(2.,-2.)+vec2f(-1.,1.),0.,1.),p*view.viewport.xy,0u,vec2f(0.),vec4f(0.));
 }
+fn dots(world:vec2f, pitch:f32)->f32 {
+  let q=abs(fract(world/pitch+0.5)-0.5)*pitch*abs(view.camera.zw);
+  return 1.-smoothstep(0.4,1.15,length(q));
+}
 @fragment fn grid_fragment(v:Vertex)->@location(0) vec4f {
   if(view.grid.y==0.){discard;}
-  let spacing=view.grid.x*abs(view.camera.zw);if(min(spacing.x,spacing.y)<5.){discard;}
+  let scale=min(abs(view.camera.z),abs(view.camera.w));
+  let level=max(ceil(log2(view.detail.y/(view.grid.x*scale))/2.),0.);
+  let pitch=view.grid.x*exp2(level*2.);
   let world=(v.uv-view.viewport.xy*0.5)/view.camera.zw-view.camera.xy;
-  let q=abs(fract(world/view.grid.x+0.5)-0.5)*spacing;
-  return outputColor(view.dots,1.-smoothstep(0.5,1.25,length(q)));
+  let fade=smoothstep(view.detail.y,view.detail.y*2.,pitch*scale);
+  return outputColor(view.dots,max(dots(world,pitch)*fade*0.7,dots(world,pitch*4.)*0.7));
 }
 `;
 function buffer(values: Float32Array, label: string): BufferData {
@@ -154,12 +205,36 @@ function sync(values: Float32Array, label: string, previous?: BufferData): Buffe
   }
   return previous;
 }
+function sameText(a: readonly TextRun[], b: readonly TextRun[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((run, i) => {
+      const next = b[i];
+      return (
+        run.text === next.text &&
+        run.size === next.size &&
+        run.anchor === next.anchor &&
+        run.direction === next.direction &&
+        run.position[0] === next.position[0] &&
+        run.position[1] === next.position[1] &&
+        run.font?.family === next.font?.family &&
+        run.font?.weight === next.font?.weight &&
+        run.font?.style === next.font?.style &&
+        run.font?.revision === next.font?.revision &&
+        (run.color === next.color ||
+          (!!run.color && !!next.color && run.color.every((v, j) => v === next.color![j])))
+      );
+    })
+  );
+}
 export class Painter {
   animating = false;
   private variants = new Map<string, Promise<Pipelines>>();
   private current?: { scene: Scene; geometry: Geometry };
   private multisample?: TextureResource;
-  private dummy = buffer(new Float32Array(20), 'diagram empty');
+  private dummy = buffer(new Float32Array(28), 'diagram empty');
+  private gestureBuffer = buffer(new Float32Array(0), 'diagram gesture');
+  private emptyFocus = buffer(new Float32Array(1), 'diagram overlay focus');
   constructor(private readonly gpu: Gpu) {}
   async pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade | null): Promise<Pipelines> {
     const key = format + ':' + msaa + ':' + (shade?.wgsl ?? defaultShade);
@@ -253,7 +328,7 @@ export class Painter {
             'diagram instances',
             previous?.banks[banks.length]?.data,
           ),
-          count: records.length / 20,
+          count: records.length / 28,
         });
         records = [];
         bankBounds = [Infinity, Infinity, -Infinity, -Infinity];
@@ -269,18 +344,22 @@ export class Painter {
       flow = 0,
       shade = 1,
       along = 0,
+      radius = options.cornerRadius,
+      status: RGBA = [0, 0, 0, 0],
+      marker: readonly number[] = [0, 0, 0, 0],
+      connected = true,
     ) => {
       if (kind === 4) paddingPx = Math.max(paddingPx, width / 2 + 2);
-      if (records.length >= 20 * 1024) flush();
+      if (records.length >= 28 * 1024) flush();
       if (!records.length) origin = previous?.banks[banks.length]?.origin ?? [p[0], p[1]];
-      const endX = kind >= 4 ? p[2] : p[0] + p[2],
-        endY = kind >= 4 ? p[3] : p[1] + p[3];
+      const endX = kind === 4 || kind === 5 ? p[2] : p[0] + p[2],
+        endY = kind === 4 || kind === 5 ? p[3] : p[1] + p[3];
       bankBounds[0] = Math.min(bankBounds[0], p[0], endX);
       bankBounds[1] = Math.min(bankBounds[1], p[1], endY);
       bankBounds[2] = Math.max(bankBounds[2], p[0], endX);
       bankBounds[3] = Math.max(bankBounds[3], p[1], endY);
       const pos =
-        kind >= 4
+        kind === 4 || kind === 5
           ? [p[0] - origin[0], p[1] - origin[1], p[2] - origin[0], p[3] - origin[1]]
           : [p[0] - origin[0], p[1] - origin[1], p[2], p[3]];
       records.push(
@@ -293,8 +372,10 @@ export class Painter {
         index(item),
         along,
         shade,
-        0,
-        0,
+        radius,
+        +connected,
+        ...status,
+        ...marker,
       );
     };
     let textRuns: TextRun[] = [],
@@ -305,8 +386,7 @@ export class Painter {
     const flushText = () => {
       if (textRuns.length) {
         const old = previous?.text[texts.length];
-        const runs =
-          old && JSON.stringify(old.runs) === JSON.stringify(textRuns) ? old.runs : textRuns;
+        const runs = old && sameText(old.runs, textRuns) ? old.runs : textRuns;
         texts.push({
           origin: textOrigin,
           bounds: textBounds as unknown as Rect,
@@ -348,8 +428,9 @@ export class Painter {
     }
     for (const edge of scene.edges)
       if (edge.visible && edge.paths.length) {
-        let along = 0;
-        for (const path of edge.paths)
+        for (let pathIndex = 0; pathIndex < edge.paths.length; pathIndex++) {
+          const path = edge.paths[pathIndex];
+          let along = edge.offsets[pathIndex] ?? 0;
           for (let i = 1; i < path.length; i++) {
             const a = path[i - 1],
               b = path[i];
@@ -366,6 +447,7 @@ export class Painter {
             );
             along += Math.hypot(b[0] - a[0], b[1] - a[1]);
           }
+        }
         for (const arrow of edge.arrows) {
           const p = arrow.point,
             d = arrow.direction;
@@ -382,20 +464,20 @@ export class Painter {
         }
         if (options.junctions)
           for (const p of edge.junctions)
-            add(edge.hit, [p[0] - 2, p[1] - 2, 4, 4], edge.color, edge.color, 2, 0, 0, edge.shade);
-        if (edge.options.appearance === 'tag')
-          for (const path of edge.paths) {
-            const p = path.at(-1)!;
-            add(
-              edge.hit,
-              [p[0], p[1] - edge.label.height - 3, edge.label.width + 6, edge.label.height + 6],
-              options.backgroundColor,
-              edge.color,
-              0,
-            );
-            text(edge.label, [p[0] + 3, p[1] - edge.label.height]);
-          }
-        else text(edge.label, [edge.anchor[0] + 4, edge.anchor[1] - edge.label.height - 4]);
+            add(edge.hit, [p[0], p[1], 4, 4], edge.color, edge.color, 7, 0, 0, edge.shade);
+      }
+    for (const edge of scene.edges)
+      if (edge.visible && edge.paths.length && options.labels && edge.label.runs.length) {
+        for (const box of edge.labelBounds) {
+          add(
+            edge.hit,
+            [box[0], box[1], box[2] - box[0], box[3] - box[1]],
+            options.backgroundColor,
+            edge.options.appearance === 'tag' ? edge.color : options.backgroundColor,
+            0,
+          );
+          text(edge.label, [box[0] + 3, box[1] + 3]);
+        }
       }
     for (const node of scene.nodes)
       if (node.visible) {
@@ -403,31 +485,53 @@ export class Painter {
           node.hit,
           [node.x, node.y, node.width, node.height],
           node.color,
-          node.status ?? options.outlineColor,
+          options.outlineColor,
           ['rounded', 'rectangle', 'ellipse', 'diamond'].indexOf(node.shape),
           0,
           0,
           node.shade,
+          0,
+          node.radius,
+          node.status,
         );
         text(node.label, [
           node.x + (node.width - node.label.width) / 2,
-          node.y +
-            (node.shape === 'diamond'
-              ? node.height / 4
-              : node.shape === 'ellipse'
-                ? (node.height * (1 - Math.SQRT1_2)) / 2
-                : 0) +
-            options.nodePadding +
-            (node.ports.some((p) => p.side === 'top') ? options.fontSizePx * 1.5 : 0),
+          node.options.labelPosition !== 'header'
+            ? node.y + (node.height - node.label.height) / 2
+            : node.y +
+              (node.shape === 'diamond'
+                ? node.height / 4
+                : node.shape === 'ellipse'
+                  ? (node.height * (1 - Math.SQRT1_2)) / 2
+                  : 0) +
+              options.nodePadding +
+              (node.ports.some((p) => p.side === 'top') ? options.fontSizePx * 1.5 : 0),
         ]);
         for (const port of node.ports) {
           const p = port.position;
           add(
             { ...node.hit, kind: 'port', port: port.name },
-            [p[0] - 3.5, p[1] - 3.5, 7, 7],
+            [p[0], p[1], options.portSizePx, options.portSizePx],
             port.color,
-            port.status ?? port.color,
-            2,
+            port.color,
+            6,
+            0,
+            0,
+            node.shade,
+            0,
+            0,
+            port.status,
+            [
+              port.normal[0] * (port.definition.direction === 'in' ? -1 : 1),
+              port.normal[1] * (port.definition.direction === 'in' ? -1 : 1),
+              port.marker === 'diamond'
+                ? 2
+                : port.marker === 'directional' && port.definition.direction !== 'both'
+                  ? 1
+                  : 0,
+              0,
+            ],
+            port.connected,
           );
           const left =
             port.side === 'right'
@@ -455,8 +559,21 @@ export class Painter {
       }
     flush();
     flushText();
-    const focus = new BufferData({ size: Math.max(4, keys.size * 4), label: 'diagram focus' });
-    return { banks, text: texts, focus, keys, selected: new Set(), hover: null, paddingPx };
+    const reuseFocus =
+      previous &&
+      previous.keys.size === keys.size &&
+      [...keys].every(([key, index]) => previous.keys.get(key) === index);
+    const focus = reuseFocus
+      ? previous.focus
+      : new BufferData({ size: Math.max(4, keys.size * 4), label: 'diagram focus' });
+    return {
+      banks,
+      text: texts,
+      focus,
+      keys,
+      states: reuseFocus ? previous.states : new Map<string, number>(),
+      paddingPx,
+    };
   }
   async prepare(
     frame: Preparation,
@@ -475,14 +592,14 @@ export class Painter {
       geometry = this.build(scene, options, this.current?.geometry);
       this.current = { scene, geometry };
     }
-    const next = new Set(selected.map(itemKey)),
-      hoverKey = hover ? itemKey(hover) : null;
-    const changed = new Set([
-      ...geometry.selected,
-      ...next,
-      ...(geometry.hover ? [geometry.hover] : []),
-      ...(hoverKey ? [hoverKey] : []),
-    ]);
+    const states = new Map<string, number>();
+    const flag = (key: string, bit: number) => states.set(key, (states.get(key) ?? 0) | bit);
+    for (const item of selected) flag(itemKey(item), 1);
+    if (hover && !overlay?.wire) flag(itemKey(hover), 2);
+    for (const item of overlay?.compatible ?? []) flag(itemKey(item), 4);
+    if (overlay?.target) flag(itemKey(overlay.target), 8);
+    if (overlay?.muted) flag(overlay.muted, 32);
+    const changed = new Set([...geometry.states.keys(), ...states.keys()]);
     const words = new Uint32Array(
       geometry.focus.bytes.buffer,
       geometry.focus.bytes.byteOffset,
@@ -491,15 +608,14 @@ export class Painter {
     for (const key of changed) {
       const id = geometry.keys.get(key);
       if (id !== undefined) {
-        const value = next.has(key) ? 1 : key === hoverKey ? 2 : 0;
+        const value = states.get(key) ?? 0;
         if (words[id] !== value) {
           words[id] = value;
           geometry.focus.touch({ offset: id * 4, size: 4 });
         }
       }
     }
-    geometry.selected = next;
-    geometry.hover = hoverKey;
+    geometry.states = states;
     const parameters = new Float32Array(64);
     this.animating =
       shade?.tick?.(parameters, {
@@ -514,6 +630,7 @@ export class Painter {
       data: BufferData,
       anchors: BufferData = this.dummy,
       textSize = 0,
+      focusBuffer = focus,
     ) => {
       const uniforms = Float32Array.of(
         origin[0] - camera.center[0],
@@ -531,6 +648,15 @@ export class Painter {
         ...options.selectedColor,
         ...options.hoverColor,
         ...options.gridColor,
+        options.outlineWidthPx,
+        options.selectionWidthPx,
+        options.hoverWidthPx,
+        0,
+        ...options.backgroundColor,
+        +(options.detail === 'auto'),
+        options.gridMinSpacingPx,
+        options.portSizePx,
+        0,
       );
       return this.gpu.device.createBindGroup({
         layout: pipelines.layout,
@@ -538,13 +664,19 @@ export class Painter {
           { binding: 0, resource: frame.uniforms(uniforms) },
           { binding: 1, resource: effect },
           { binding: 2, resource: frame.buffer(data) },
-          { binding: 3, resource: focus },
+          { binding: 3, resource: focusBuffer },
           { binding: 4, resource: frame.buffer(anchors) },
         ],
       });
     };
-    const dx = frame.viewport.width / (2 * camera.scale[0]) + geometry.paddingPx / camera.scale[0],
-      dy = frame.viewport.height / (2 * camera.scale[1]) + geometry.paddingPx / camera.scale[1];
+    const padding = Math.max(
+      geometry.paddingPx,
+      options.portSizePx / 2 + 6,
+      options.hoverWidthPx + 2,
+      options.selectionWidthPx + 2,
+    );
+    const dx = frame.viewport.width / (2 * camera.scale[0]) + padding / camera.scale[0],
+      dy = frame.viewport.height / (2 * camera.scale[1]) + padding / camera.scale[1];
     const visible: Rect = [
       camera.center[0] - dx,
       camera.center[1] - dy,
@@ -562,7 +694,27 @@ export class Painter {
         origin = camera.center;
       const local = (p: Point): Point => [p[0] - origin[0], p[1] - origin[1]];
       const add = (p: readonly number[], kind: number, color: RGBA) =>
-        records.push(...p, ...color, ...options.selectedColor, kind, 2, 0, 0, 0, 1, 0, 0);
+        records.push(
+          ...p,
+          ...color,
+          ...options.selectedColor,
+          kind,
+          1.5,
+          kind === 4 ? 24 : 0,
+          0,
+          0,
+          1,
+          options.cornerRadius,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+        );
       if (overlay.box) {
         const b = overlay.box;
         add([...local([b[0], b[1]]), b[2] - b[0], b[3] - b[1]], 1, [
@@ -574,11 +726,21 @@ export class Painter {
       }
       if (overlay.wire)
         for (let i = 1; i < overlay.wire.length; i++)
-          add([...local(overlay.wire[i - 1]), ...local(overlay.wire[i])], 4, options.selectedColor);
+          add(
+            [...local(overlay.wire[i - 1]), ...local(overlay.wire[i])],
+            4,
+            overlay.invalid ? [0.95, 0.3, 0.24, 1] : options.selectedColor,
+          );
       if (records.length)
         banks.push({
-          group: group(origin, buffer(Float32Array.from(records), 'diagram gesture')),
-          count: records.length / 20,
+          group: group(
+            origin,
+            sync(Float32Array.from(records), 'diagram gesture', this.gestureBuffer),
+            this.dummy,
+            0,
+            frame.buffer(this.emptyFocus),
+          ),
+          count: records.length / 28,
         });
     }
     const text: { group: GPUBindGroup; pages: readonly TextPage[] }[] = [];
@@ -602,14 +764,23 @@ export class Painter {
       }
       msaa = frame.texture(this.multisample!).createView();
     }
+    const gridLevel = Math.max(
+      0,
+      Math.ceil(
+        Math.log(
+          Math.max(1, options.gridMinSpacingPx / (options.gridPitch * Math.min(...camera.scale))),
+        ) / Math.log(4),
+      ),
+    );
+    const gridPeriod = options.gridPitch * 4 ** (gridLevel + 1);
     return {
       pipelines,
       banks,
       text,
       grid: group(
         [
-          Math.floor(camera.center[0] / options.gridPitch) * options.gridPitch,
-          Math.floor(camera.center[1] / options.gridPitch) * options.gridPitch,
+          Math.floor(camera.center[0] / gridPeriod) * gridPeriod,
+          Math.floor(camera.center[1] / gridPeriod) * gridPeriod,
         ],
         this.dummy,
       ),

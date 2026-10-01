@@ -84,12 +84,12 @@ export interface DiagramStats {
   readonly hover: HoverState;
 }
 export interface Diagram extends Renderer {
-  setData(data: DiagramData): void;
+  setData(data: DiagramData, options?: { readonly animate?: boolean }): void;
   setComponent(type: string, patch: Partial<ComponentOptions>): void;
   setConnection(type: string, patch: Partial<ConnectionOptions>): void;
   setGroup(id: string, patch: Partial<Group>): void;
   setOptions(options: Options): void;
-  setLayout(options: LayoutOptions): void;
+  setLayout(options: LayoutOptions, transition?: { readonly animate?: boolean }): void;
   setShade(shade: Shade | null): Promise<void>;
   getCamera(): Camera2D | null;
   setCamera(camera: Camera2D, options?: { readonly animate?: boolean }): void;
@@ -208,12 +208,22 @@ class View implements Diagram {
     hover: 'idle',
   };
   private animation?: { from: Camera2D; to: Camera2D; start: number };
+  private transitionRequested = false;
+  private sceneTransition?: {
+    target: Scene;
+    picking: Picking;
+    from: ReadonlyMap<string, Point>;
+    revision: number;
+    at?: number;
+    start: number;
+  };
   private clock = 0;
   private shadeSerial = 0;
   private format: GPUTextureFormat = 'rgba8unorm';
   private reducedMotion = false;
   private drag?: { keys: Set<string>; delta: Point; serial: number };
   private dragSerial = 0;
+  private interruptedTransition = false;
   private relayout = false;
   private shadeAnimating = false;
   constructor(private readonly construction: DiagramOptions) {
@@ -244,6 +254,14 @@ class View implements Diagram {
           Math.max(a[1], b[1]),
         ]) ?? [],
       preview: (items, delta) => {
+        if (this.sceneTransition) this.interruptedTransition = true;
+        if (!delta && this.interruptedTransition) {
+          // The drag starts from what was shown; cancellation must reread accepted positions.
+          this.stable = this.stable ? { ...this.stable, revision: -1 } : undefined;
+          this.interruptedTransition = false;
+        }
+        this.sceneTransition = undefined;
+        this.transitionRequested = false;
         this.drag = delta
           ? { keys: this.movingKeys(items), delta, serial: ++this.dragSerial }
           : undefined;
@@ -301,14 +319,18 @@ class View implements Diagram {
             return;
           }
           this.revision++;
+          this.sceneTransition = undefined;
+          this.transitionRequested = false;
           this.drag = undefined;
           this.invalidate(change.kind === 'append' ? 'refresh' : 'replace');
         }),
       );
   }
-  setData(value: DiagramData): void {
+  setData(value: DiagramData, options: { readonly animate?: boolean } = {}): void {
     this.live();
     this.data = checkedData(value);
+    this.transitionRequested = options.animate === true;
+    this.sceneTransition = undefined;
     this.revision++;
     this.drag = undefined;
     this.subscribe();
@@ -337,13 +359,48 @@ class View implements Diagram {
   }
   setOptions(value: Options): void {
     this.live();
-    this.options = checkedOptions(value, this.options);
-    this.revision++;
-    this.invalidate();
+    const next = checkedOptions(value, this.options);
+    const changed = (Object.keys(value) as (keyof Options)[]).filter((key) => {
+      const a = next[key],
+        b = this.options[key];
+      return Array.isArray(a) && Array.isArray(b)
+        ? a.length !== b.length || a.some((v, i) => v !== b[i])
+        : a !== b;
+    });
+    if (!changed.length) return;
+    this.options = next;
+    const uniforms: readonly (keyof Options)[] = [
+      'grid',
+      'snap',
+      'gridColor',
+      'hoverColor',
+      'selectedColor',
+      'msaa',
+      'motion',
+      'animationMs',
+      'pickRadiusPx',
+      'fitPaddingPx',
+      'revealPaddingPx',
+      'hover',
+      'hoverBudgetMs',
+      'outlineWidthPx',
+      'selectionWidthPx',
+      'hoverWidthPx',
+      'gridMinSpacingPx',
+      'detail',
+    ];
+    if (changed.some((key) => !uniforms.includes(key))) {
+      this.revision++;
+      this.sceneTransition = undefined;
+      this.transitionRequested = false;
+      this.invalidate();
+    } else this.invalidate('refresh');
   }
-  setLayout(value: LayoutOptions): void {
+  setLayout(value: LayoutOptions, transition: { readonly animate?: boolean } = {}): void {
     this.live();
     this.layout = layoutOptions(value);
+    this.transitionRequested = transition.animate === true;
+    this.sceneTransition = undefined;
     this.revision++;
     this.relayout = true;
     this.invalidate();
@@ -367,7 +424,7 @@ class View implements Diagram {
     this.fitting = false;
     this.fitItems = undefined;
     this.requestedCamera = next;
-    if (options.animate && this.presented && this.motion())
+    if (options.animate && this.presented && this.motion() && this.options.animationMs > 0)
       this.animation = { from: this.presented.camera, to: next, start: this.clock };
     else this.animation = undefined;
     this.invalidate();
@@ -386,7 +443,7 @@ class View implements Diagram {
       if (boxes.length) {
         const next = this.fitted(union(boxes), this.presented.viewport);
         this.requestedCamera = next;
-        if (options.animate && this.motion())
+        if (options.animate && this.motion() && this.options.animationMs > 0)
           this.animation = { from: this.presented.camera, to: next, start: this.clock };
         else this.animation = undefined;
       }
@@ -496,7 +553,14 @@ class View implements Diagram {
     positive(radius, 'pick radius', true);
     if (point[0] < 0 || point[1] < 0 || point[0] > p.viewport.width || point[1] > p.viewport.height)
       return [];
-    return p.picking.hit(point, p.camera, p.viewport, radius).items;
+    return p.picking.hit(
+      point,
+      p.camera,
+      p.viewport,
+      radius,
+      undefined,
+      this.options.detail === 'full' || Math.min(...p.camera.scale) > 0.2,
+    ).items;
   }
   locate(item: DiagramItem): Point | null {
     const p = this.presented;
@@ -518,6 +582,7 @@ class View implements Diagram {
     return (
       !this.closed &&
       (!!this.animation ||
+        !!this.sceneTransition ||
         this.shadeAnimating ||
         (this.motion() &&
           (this.presented?.scene.edges.some((e) => e.visible && e.flow !== 0) ?? false)))
@@ -569,8 +634,19 @@ class View implements Diagram {
       data = this.data;
     const base = this.stable ?? this.presented;
     let scene: Scene, picking: Picking;
+    if (
+      this.sceneTransition &&
+      (this.sceneTransition.revision !== revision || this.sceneTransition.at !== frame.at)
+    )
+      this.sceneTransition = undefined;
+    const transition = this.sceneTransition;
+    const transitioning =
+      transition && transition.revision === revision && transition.at === frame.at && !this.drag;
     const cached = base && base.revision === revision && base.at === frame.at && !this.drag;
-    if (cached) {
+    if (transitioning) {
+      scene = transition.target;
+      picking = transition.picking;
+    } else if (cached) {
       scene = base.scene;
       picking = base.picking;
     } else {
@@ -622,6 +698,84 @@ class View implements Diagram {
       if ([...scenes].reduce((n, value) => n + value.bytes, 0) > this.limits.geometryBytes)
         throw new GpuError('resource-limit', 'Retained geometry exceeds budget');
     }
+    if (
+      this.transitionRequested &&
+      base &&
+      !this.drag &&
+      this.motion() &&
+      options.animationMs > 0 &&
+      scene.nodes.length <= options.animationMaxComponents &&
+      scene.bytes * 3 + base.scene.bytes <= this.limits.geometryBytes &&
+      picking.bytes * 3 + base.picking.bytes <= this.limits.pickingBytes
+    ) {
+      const from = new Map(
+        base.scene.nodes.map((node) => [itemKey(node.hit), [node.x, node.y] as Point]),
+      );
+      if (
+        scene.nodes.some((node) => {
+          const p = from.get(itemKey(node.hit));
+          return p && (p[0] !== node.x || p[1] !== node.y);
+        })
+      )
+        this.sceneTransition = {
+          target: scene,
+          picking,
+          from,
+          revision,
+          at: frame.at,
+          start: frame.timeMs,
+        };
+    }
+    this.transitionRequested = false;
+    const movement = this.sceneTransition;
+    if (
+      movement &&
+      movement.revision === revision &&
+      movement.at === frame.at &&
+      this.motion() &&
+      options.animationMs > 0
+    ) {
+      const t = Math.min(1, Math.max(0, (frame.timeMs - movement.start) / options.animationMs));
+      if (t < 1) {
+        const ease = 1 - (1 - t) ** 3;
+        scene = {
+          ...movement.target,
+          nodes: movement.target.nodes.map((node) => {
+            const from = movement.from.get(itemKey(node.hit));
+            return {
+              ...node,
+              ports: node.ports.map((port) => ({ ...port })),
+              x: from ? from[0] + (node.x - from[0]) * ease : node.x,
+              y: from ? from[1] + (node.y - from[1]) * ease : node.y,
+            };
+          }),
+          edges: movement.target.edges.map((edge) => ({ ...edge })),
+          groups: movement.target.groups.map((group) => ({ ...group })),
+        };
+        try {
+          await geometry(scene, options, this.limits, frame.signal, base?.scene, work);
+          picking = new Picking(scene, this.limits.pickingBytes);
+          const retained = new Set([scene, movement.target, ...(base ? [base.scene] : [])]);
+          const indices = new Set([picking, movement.picking, ...(base ? [base.picking] : [])]);
+          if (
+            [...retained].reduce((sum, item) => sum + item.bytes, 0) > this.limits.geometryBytes ||
+            [...indices].reduce((sum, item) => sum + item.bytes, 0) > this.limits.pickingBytes
+          )
+            throw new GpuError('resource-limit', 'Transition exceeds retained budgets');
+        } catch (error) {
+          frame.signal.throwIfAborted();
+          if (
+            !(error instanceof GpuError) ||
+            !['invalid-input', 'resource-limit'].includes(error.code)
+          )
+            throw error;
+          // Intermediate positions may overlap even when both layouts are valid.
+          scene = movement.target;
+          picking = movement.picking;
+          this.sceneTransition = undefined;
+        }
+      }
+    }
     frame.signal.throwIfAborted();
     this.live();
     let c =
@@ -634,7 +788,7 @@ class View implements Diagram {
       const boxes = picking.bounds(this.fitItems);
       if (boxes.length) c = this.fitted(union(boxes), frame.viewport);
     }
-    if (this.animation) {
+    if (this.animation && this.motion() && options.animationMs > 0) {
       const a = this.animation,
         t = Math.min(1, Math.max(0, (frame.timeMs - a.start) / this.options.animationMs)),
         u = t * t * (3 - 2 * t);
@@ -658,6 +812,7 @@ class View implements Diagram {
           frame.viewport,
           options.pickRadiusPx,
           options.hover === 'auto' ? options.hoverBudgetMs : undefined,
+          options.detail === 'full' || Math.min(...c.scale) > 0.2,
         )
       : undefined;
     const hover = hit?.items[0] ?? null,
@@ -734,10 +889,18 @@ class View implements Diagram {
         this.notify('select', selected);
       }
     }
+    if (
+      this.sceneTransition &&
+      (!this.motion() || frame.timeMs >= this.sceneTransition.start + this.options.animationMs)
+    )
+      this.sceneTransition = undefined;
     this.clock = frame.timeMs;
     this.currentFit = next.fit;
     this.relayout = false;
-    if (this.animation && frame.timeMs >= this.animation.start + this.options.animationMs)
+    if (
+      this.animation &&
+      (!this.motion() || frame.timeMs >= this.animation.start + this.options.animationMs)
+    )
       this.animation = undefined;
     this.currentStats = {
       components: next.scene.nodes.length,
@@ -767,6 +930,8 @@ class View implements Diagram {
     this.presented = undefined;
     this.stable = undefined;
     this.animation = undefined;
+    this.sceneTransition = undefined;
+    this.transitionRequested = false;
     for (const off of this.subscriptions) off();
     this.subscriptions = [];
     this.listeners.clear();

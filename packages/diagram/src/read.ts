@@ -280,6 +280,7 @@ export async function readScene(
           header: 0,
           pinned: !!xy,
           shape: option.shape ?? 'rounded',
+          radius: option.cornerRadius ?? options.cornerRadius,
           visible: vals.visible === undefined || vals.visible === null || vals.visible !== 0,
           sourceVisible: vals.visible === undefined || vals.visible === null || vals.visible !== 0,
           color: options.componentBaseColor,
@@ -293,6 +294,8 @@ export async function readScene(
           node.ports.push({
             name,
             definition: port,
+            marker: p?.marker ?? options.portMarker,
+            connected: false,
             order: p?.order ?? node.ports.length,
             side: p?.side ?? (port.direction === 'in' ? 'left' : 'right'),
             label: { ...emptyLabel, text: p?.label ?? port.label ?? name },
@@ -318,7 +321,15 @@ export async function readScene(
         node.label = await label(node.label.text, option.labels, options, measure, reader.signal);
       else node.label = emptyLabel;
       for (const port of node.ports) {
-        port.label = await label(port.label.text, null, options, measure, reader.signal);
+        port.label = options.portLabels
+          ? await label(
+              port.label.text,
+              null,
+              { ...options, fontSizePx: options.portFontSizePx },
+              measure,
+              reader.signal,
+            )
+          : emptyLabel;
         const config = option.ports?.[port.name],
           c = 'port-color:' + port.name,
           s = 'port-status:' + port.name;
@@ -330,26 +341,40 @@ export async function readScene(
       const textWidth = (ports: Port[]) => ports.reduce((m, p) => Math.max(m, p.label.width), 0);
       const horizontal = Math.max(side('top').length, side('bottom').length) * options.portSpacing;
       const vertical = Math.max(side('left').length, side('right').length) * options.portSpacing;
+      const centered = option.labelPosition !== 'header';
       const shapeScale = node.shape === 'diamond' ? 2 : node.shape === 'ellipse' ? Math.SQRT2 : 1;
+      const autoWidth = !node.width,
+        autoHeight = !node.height;
       node.width ||= Math.max(
-        64,
+        96,
         (node.label.width + options.nodePadding * 2) * shapeScale,
-        textWidth(side('left')) + textWidth(side('right')) + options.nodePadding * 3,
+        textWidth(side('left')) +
+          textWidth(side('right')) +
+          options.nodePadding * 3 +
+          (centered ? node.label.width + options.nodePadding : 0),
         horizontal + options.nodePadding * 2,
       );
-      node.header =
-        node.label.height +
-        options.nodePadding * 2 +
-        (side('top').length ? options.fontSizePx * 1.5 : 0);
+      node.header = centered
+        ? 0
+        : node.label.height +
+          options.nodePadding * 2 +
+          (side('top').length ? options.fontSizePx * 1.5 : 0);
       node.height ||=
         shapeScale *
         Math.max(
           40,
+          node.label.height + options.nodePadding * 2,
           node.header +
             Math.max(vertical, options.portSpacing) +
             options.nodePadding +
             (side('bottom').length ? options.fontSizePx * 1.5 : 0),
         );
+      if (autoWidth) {
+        if (node.shape === 'ellipse') node.width = Math.max(node.width, node.height * 1.4);
+        if (node.shape === 'diamond') node.width = Math.max(node.width, node.height * 1.25);
+        node.width = Math.ceil(node.width / options.gridPitch) * options.gridPitch;
+      }
+      if (autoHeight) node.height = Math.ceil(node.height / options.gridPitch) * options.gridPitch;
       charge(node.label.text.length * 2 + node.label.runs.length * 128);
       check();
     }
@@ -387,12 +412,14 @@ export async function readScene(
           endpoints: [],
           visible: v.visible === undefined || v.visible === null || v.visible !== 0,
           color: options.connectionBaseColor,
-          width: 1.5,
+          width: options.connectionWidthPx,
           flow: 0,
           shade: Number.isFinite(v.shade) ? v.shade! : 1,
           label: { ...emptyLabel, text: text(tile.columns.label, i) },
           options: option,
           paths: [],
+          offsets: [],
+          labelBounds: [],
           arrows: [],
           junctions: [],
           anchor: [0, 0],
@@ -450,6 +477,8 @@ export async function readScene(
             assertIndex(node.index, index);
             if (port !== null && !node.ports.some((p) => p.name === port))
               fail('Unknown endpoint port');
+            const anchor = node.ports.find((p) => p.name === port);
+            if (anchor) anchor.connected = true;
             edge.endpoints.push({
               node: nodeIndex,
               port,
@@ -472,7 +501,7 @@ export async function readScene(
       const edge = scene.edges[i],
         v = raw[i - start];
       edge.color = color(v.color, option.color, resolved.get('color'), options.connectionBaseColor);
-      edge.width = Math.max(0, mapped(v.width, resolved.get('width')) ?? 1.5);
+      edge.width = Math.max(0, mapped(v.width, resolved.get('width')) ?? options.connectionWidthPx);
       edge.flow = mapped(v.flow, resolved.get('flow')) ?? 0;
       edge.label =
         i - start < (option.labels?.maxCount ?? Infinity)

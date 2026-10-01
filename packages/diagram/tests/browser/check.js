@@ -39,7 +39,7 @@ globalThis.diagramCheck = (async () => {
     point = diagram.locate(ref);
   assert(point && diagram.hitTest(point).some((h) => h.id === 'n0'), 'Presented picking failed');
   const rect = canvas.getBoundingClientRect();
-  const pointer = (type, p) =>
+  const pointer = (type, p, modifiers = {}) =>
     canvas.dispatchEvent(
       new PointerEvent(type, {
         bubbles: true,
@@ -49,13 +49,36 @@ globalThis.diagramCheck = (async () => {
         clientX: rect.left + p[0],
         clientY: rect.top + p[1],
         pointerType: 'mouse',
+        ...modifiers,
       }),
     );
   let selections = 0;
-  diagram.on('select', () => selections++);
+  let selection = [];
+  diagram.on('select', (items) => {
+    selections++;
+    selection = items;
+  });
   pointer('pointerdown', point);
   pointer('pointerup', point);
   assert(selections > 0, 'Input selection failed');
+  const another = diagram.locate({ kind: 'component', type: 'Task', id: 'n2' });
+  for (const modifiers of [{ shiftKey: true }, { ctrlKey: true }, { metaKey: true }]) {
+    pointer('pointerdown', another, modifiers);
+    pointer('pointerup', another, modifiers);
+    assert(
+      selection.length === 2 && selection.some((item) => item.id === 'n2'),
+      'Additive click did not add exactly once',
+    );
+    pointer('pointerdown', another, modifiers);
+    pointer('pointerup', another, modifiers);
+    assert(
+      selection.length === 1 && selection[0].id === 'n0',
+      'Additive click did not remove exactly once',
+    );
+  }
+  pointer('pointerdown', point);
+  pointer('pointermove', [point[0] + 1, point[1] + 1]);
+  pointer('pointerup', [point[0] + 1, point[1] + 1]);
   let moved,
     moveCount = 0;
   diagram.on('move', (proposal) => {
@@ -84,6 +107,8 @@ globalThis.diagramCheck = (async () => {
     pointer('pointermove', b);
     pointer('pointerup', b);
   };
+  wire(port('n1', 'output'), port('n1', 'output'));
+  assert(wires.length === 0, 'Port click unexpectedly created a connection');
   wire(port('n1', 'output'), port('n4', 'input'));
   assert(
     wires.length === 1 && wires[0].from.id === 'n1' && wires[0].to.id === 'n4',
@@ -141,6 +166,16 @@ globalThis.diagramCheck = (async () => {
   assert(opened?.id === 'n0' && removed?.[0] === 'n0', 'Keyboard action proposals failed');
   key('Escape');
   await gpu.render({ views: [{ renderer: diagram, target }], timeMs: 0 });
+  detach();
+  const detachPolicy = attachDiagramInput({
+    diagram,
+    canvas,
+    interaction: 'edit',
+    canConnect: () => false,
+  });
+  wire(port('n1', 'output'), port('n4', 'input'));
+  assert(wires.length === 2, 'Application connection policy was ignored');
+  detachPolicy();
   const before = diagram.stats().frames;
   for (const shape of ['rectangle', 'rounded', 'ellipse', 'diamond']) {
     diagram.setComponent('Task', { shape });
@@ -228,7 +263,19 @@ globalThis.diagramCheck = (async () => {
     brightPixels: bright,
     drawCalls: diagram.stats().drawCalls,
     input: true,
-    gestures: ['select', 'move', 'connect', 'reconnect', 'cancel', 'replace', 'keyboard'],
+    gestures: [
+      'select',
+      'additive click',
+      'drag threshold',
+      'move',
+      'connect',
+      'reconnect',
+      'port click',
+      'connection policy',
+      'cancel',
+      'replace',
+      'keyboard',
+    ],
     shapes: 4,
     shade: true,
     composition: true,

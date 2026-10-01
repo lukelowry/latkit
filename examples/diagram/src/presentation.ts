@@ -12,6 +12,9 @@ export interface Settings {
   arrows: boolean;
   status: boolean;
   labels: boolean;
+  light: boolean;
+  density: 'compact' | 'comfortable' | 'spacious';
+  titlePosition: 'header' | 'center';
 }
 const signalMap = createColormap({
   colors: [
@@ -25,10 +28,21 @@ const thermalMap = createColormap({
   label: 'Inferno surfaces',
   colors: colormaps.inferno.colors.map(([r, g, b]) => [r * 0.45, g * 0.45, b * 0.45, 1]),
 });
+const lightSignalMap = createColormap({
+  colors: signalMap.colors.map(([r, g, b]) => [0.8 + r * 0.2, 0.8 + g * 0.2, 0.8 + b * 0.2, 1]),
+});
+const lightThermalMap = createColormap({
+  colors: colormaps.inferno.colors.map(([r, g, b]) => [
+    0.8 + r * 0.2,
+    0.8 + g * 0.2,
+    0.8 + b * 0.2,
+    1,
+  ]),
+});
 const statusMap = createColormap({
   kind: 'categorical',
   colors: [
-    [0.36, 0.43, 0.5, 1],
+    [0, 0, 0, 0],
     [0.94, 0.64, 0.32, 1],
   ],
 });
@@ -42,20 +56,36 @@ const elbow: RouteStrategy = {
         to.position,
       ]),
 };
-export const theme: Options = {
-  backgroundColor: [0.047, 0.063, 0.082, 1],
+export function theme(light: boolean): Options {
+  return light
+    ? {
+        ...base,
+        backgroundColor: [0.96, 0.97, 0.98, 1],
+        componentBaseColor: [1, 1, 1, 1],
+        connectionBaseColor: [0.34, 0.43, 0.55, 1],
+        outlineColor: [0.61, 0.68, 0.76, 1],
+        textColor: [0.13, 0.2, 0.29, 1],
+        gridColor: [0.35, 0.44, 0.56, 0.24],
+        groupColor: [0.4, 0.56, 0.78, 0.07],
+        hoverColor: [0.22, 0.49, 0.79, 1],
+        selectedColor: [0.14, 0.38, 0.7, 1],
+      }
+    : base;
+}
+const base: Options = {
+  backgroundColor: [0.063, 0.082, 0.106, 1],
   componentBaseColor: [0.1, 0.13, 0.17, 1],
   connectionBaseColor: [0.46, 0.57, 0.65, 1],
   outlineColor: [0.34, 0.43, 0.5, 1],
   textColor: [0.91, 0.94, 0.96, 1],
   gridColor: [0.35, 0.43, 0.52, 0.26],
   groupColor: [0.24, 0.36, 0.4, 0.1],
-  hoverColor: [0.96, 0.66, 0.44, 1],
-  selectedColor: [0.94, 0.47, 0.35, 1],
-  fontSizePx: 14,
-  nodePadding: 16,
-  portSpacing: 30,
-  routeClearance: 20,
+  hoverColor: [0.48, 0.7, 0.94, 1],
+  selectedColor: [0.51, 0.72, 1, 1],
+  fontSizePx: 13,
+  nodePadding: 12,
+  portSpacing: 24,
+  routeClearance: 16,
   fitPaddingPx: 44,
   msaa: 4,
 };
@@ -68,7 +98,13 @@ export function data(source: GraphSource, settings: Settings, automatic = false)
         {
           ...(!automatic ? { position: 'position' } : {}),
           shape: settings.shape === 'mixed' ? shapes[type] : settings.shape,
-          labels: { field: 'name', size: 14, maxWidth: 180, overflow: 'wrap' },
+          labels: {
+            field: 'name',
+            size: settings.density === 'compact' ? 12 : 13,
+            maxWidth: 180,
+            overflow: 'wrap',
+          },
+          labelPosition: settings.titlePosition,
           visible: 'visible',
           shade: 'signal',
           color:
@@ -77,7 +113,14 @@ export function data(source: GraphSource, settings: Settings, automatic = false)
               : {
                   field: 'signal',
                   domain: [0, 1],
-                  colormap: settings.palette === 'signal' ? signalMap : thermalMap,
+                  colormap:
+                    settings.palette === 'signal'
+                      ? settings.light
+                        ? lightSignalMap
+                        : signalMap
+                      : settings.light
+                        ? lightThermalMap
+                        : thermalMap,
                 },
           status: settings.status ? { field: 'status', domain: [0, 1], colormap: statusMap } : null,
           ports:
