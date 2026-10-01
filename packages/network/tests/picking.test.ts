@@ -9,7 +9,7 @@ it.each<RowAxis>([
   { kind: 'range', offset: 1, count: 2 },
   { kind: 'indices', values: Uint32Array.of(2, 1) },
 ])('fits only displayed rows when native tiles span a larger range: $kind', (rows) => {
-  const index = { document: 'fixture', type: 'node', version: '1' };
+  const index = { source: 'fixture', type: 'node', version: '1' };
   const bank: VertexBank = { id: 0, type: 'node', index, rows, count: 2, base: 0 };
   const native: NativeFields = {
     versions: new Map(),

@@ -10,3 +10,4 @@ examples/*/dist
 
 output/
 .playwright-cli/
+packages/monitor/tests/browser/generated

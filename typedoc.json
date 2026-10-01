@@ -14,7 +14,8 @@
   "packageOptions": {
     "entryPoints": ["src/index.ts"],
     "excludeInternal": true,
-    "excludePrivate": true
+    "excludePrivate": true,
+    "readme": "none"
   },
   "out": "docs/api/reference",
   "plugin": ["typedoc-plugin-markdown"],

@@ -1,4 +1,4 @@
-# @latkit/video
+# Export video
 
 Export a GPU renderer to MP4 (H.264) or WebM (VP9).
 Requires WebGPU and browser support for the selected WebCodecs encoder.
@@ -43,6 +43,6 @@ Writes are positional and may replace earlier bytes. Honor `position` and await
 storage writes for backpressure. Each frame waits for complete preparation.
 
 Use `createComposition` from `@latkit/gpu` to combine views.
-See the [worker example](../../examples/video/src/worker.ts) for background export.
+See the [worker example](https://github.com/lukelowry/latkit/blob/main/examples/video/src/worker.ts) for background export.
 
 [API](https://latkit.readthedocs.io/en/latest/api/reference/video/index.html)

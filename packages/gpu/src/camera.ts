@@ -8,11 +8,10 @@ export interface Camera2D {
 }
 export type Bounds2D = readonly [minX: number, minY: number, maxX: number, maxY: number];
 export type Insets = number | readonly [top: number, right: number, bottom: number, left: number];
-type Size = Pick<Viewport, 'width' | 'height'>;
 function direction(camera: Camera2D): number {
   return camera.yDirection === 'up' ? -1 : 1;
 }
-function check(camera: Camera2D, viewport: Size): void {
+function check(camera: Camera2D, viewport: Pick<Viewport, 'width' | 'height'>): void {
   if (
     !camera.center.every(Number.isFinite) ||
     !camera.scale.every((v) => Number.isFinite(v) && v > 0) ||
@@ -24,7 +23,7 @@ function check(camera: Camera2D, viewport: Size): void {
 export function cameraPoint(
   camera: Camera2D,
   point: readonly [number, number],
-  viewport: Size,
+  viewport: Pick<Viewport, 'width' | 'height'>,
 ): readonly [number, number] {
   check(camera, viewport);
   return [
@@ -35,7 +34,7 @@ export function cameraPoint(
 export function worldPoint(
   camera: Camera2D,
   point: readonly [number, number],
-  viewport: Size,
+  viewport: Pick<Viewport, 'width' | 'height'>,
 ): readonly [number, number] {
   check(camera, viewport);
   return [
@@ -45,7 +44,7 @@ export function worldPoint(
 }
 export function fitCamera(
   bounds: Bounds2D,
-  viewport: Size,
+  viewport: Pick<Viewport, 'width' | 'height'>,
   padding: Insets = 32,
   options: {
     readonly aspect?: 'equal' | 'independent';
@@ -87,7 +86,7 @@ export function zoomCamera(
   camera: Camera2D,
   factor: number | readonly [number, number],
   anchor: readonly [number, number],
-  viewport: Size,
+  viewport: Pick<Viewport, 'width' | 'height'>,
 ): Camera2D {
   const factors = typeof factor === 'number' ? [factor, factor] : factor;
   if (!factors.every((v) => Number.isFinite(v) && v > 0))

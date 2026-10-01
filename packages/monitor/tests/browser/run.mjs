@@ -110,9 +110,7 @@ try {
       socket.send(JSON.stringify({ id, method, params }));
     });
   console.log(
-    'Headed monitor URL: http://127.0.0.1:' +
-      port +
-      '/packages/monitor/tests/browser/check.html',
+    'Headed monitor URL: http://127.0.0.1:' + port + '/packages/monitor/tests/browser/check.html',
   );
   console.log('Browser debugging port: ' + debugging);
   await call('Page.enable');

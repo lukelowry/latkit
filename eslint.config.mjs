@@ -15,6 +15,7 @@ export default defineConfig([
       '**/*.d.ts.map',
       'pnpm-lock.yaml',
       'output/**',
+      'packages/monitor/tests/browser/generated/**',
       '.playwright-cli/**',
       // The previous diagram, kept unbuilt as the migration source.
       'packages/diagram/legacy/**',

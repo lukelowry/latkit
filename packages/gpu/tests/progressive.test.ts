@@ -101,16 +101,54 @@ it('reuses a completed frame rectangle after an unrelated append', async () => {
   gpu.destroy();
 });
 
-it('fallback envelopes work on a samples-only source with explicit rows and leading context',async()=>{
- class SamplesOnly extends HistorySource {override get schema(){return {...super.schema,queries:['samples' as const]};}}
- const source=new SamplesOnly(),gpu=await createGpu({device:fakeDevice().device});let observed=false;
- for await(const block of gpu.envelope({source,query:{kind:'envelope',from:'node',rows:{kind:'range',offset:0,count:1},select:['value'],window:{kind:'range',between:[-2,-1],context:{after:1}},buckets:1}})){observed=true;expect(block.columns.value.frames[0]).toBe(source.firstFrame);expect(block.columns.value.values.values[0]).toBe(9);}
- expect(observed).toBe(true);gpu.destroy();
+it('fallback envelopes work on a samples-only source with explicit rows and leading context', async () => {
+  class SamplesOnly extends HistorySource {
+    override get schema() {
+      return { ...super.schema, queries: ['samples' as const] };
+    }
+  }
+  const source = new SamplesOnly(),
+    gpu = await createGpu({ device: fakeDevice().device });
+  let observed = false;
+  for await (const block of gpu.envelope({
+    source,
+    query: {
+      kind: 'envelope',
+      from: 'node',
+      rows: { kind: 'range', offset: 0, count: 1 },
+      select: ['value'],
+      window: { kind: 'range', between: [-2, -1], context: { after: 1 } },
+      buckets: 1,
+    },
+  })) {
+    observed = true;
+    expect(block.columns.value.frames[0]).toBe(source.firstFrame);
+    expect(block.columns.value.values.values[0]).toBe(9);
+  }
+  expect(observed).toBe(true);
+  gpu.destroy();
 });
-it('invalidates an unchanged rectangle after a later data replacement',async()=>{
- const source=new HistorySource(),gpu=await createGpu({device:fakeDevice().device});const query={kind:'samples' as const,from:'node',select:['value'],window:{kind:'frames' as const,offset:source.firstFrame,count:2}};
- for await(const block of gpu.query(source,query)){expect(block.version).toBe('v0');}
- source.version='v1';for(const fn of source.listeners)fn({kind:'append',version:'v1',frames:{offset:source.firstFrame+7,count:1}});
- source.version='v2';for(const fn of source.listeners)fn({kind:'replace',version:'v2'});
- const previous=source.requests.length;for await(const block of gpu.query(source,query)){expect(block.version).toBe('v2');}expect(source.requests.length).toBe(previous+1);gpu.destroy();
+it('invalidates an unchanged rectangle after a later data replacement', async () => {
+  const source = new HistorySource(),
+    gpu = await createGpu({ device: fakeDevice().device });
+  const query = {
+    kind: 'samples' as const,
+    from: 'node',
+    select: ['value'],
+    window: { kind: 'frames' as const, offset: source.firstFrame, count: 2 },
+  };
+  for await (const block of gpu.query(source, query)) {
+    expect(block.version).toBe('v0');
+  }
+  source.version = 'v1';
+  for (const fn of source.listeners)
+    fn({ kind: 'append', version: 'v1', frames: { offset: source.firstFrame + 7, count: 1 } });
+  source.version = 'v2';
+  for (const fn of source.listeners) fn({ kind: 'replace', version: 'v2' });
+  const previous = source.requests.length;
+  for await (const block of gpu.query(source, query)) {
+    expect(block.version).toBe('v2');
+  }
+  expect(source.requests.length).toBe(previous + 1);
+  gpu.destroy();
 });

@@ -107,7 +107,12 @@ export class Sources {
       throw error;
     }
   }
-  private retire(entry: { retired: boolean; users: number; control: AbortController; value: Promise<Queryable> }) {
+  private retire(entry: {
+    retired: boolean;
+    users: number;
+    control: AbortController;
+    value: Promise<Queryable>;
+  }) {
     entry.retired = true;
     if (!entry.users) {
       entry.control.abort();
