@@ -49,10 +49,7 @@ export class Envelopes {
       schema.limits.maxBlockBytes,
       this.memory.budget.stagingBytes / 2,
     );
-    const fields =
-      schema.components[query.from]?.fields ??
-      schema.connections[query.from]?.fields ??
-      schema.tables?.[query.from]?.fields;
+    const fields = schema.types[query.from]?.fields;
     const rowBytes =
       query.buckets *
       query.select.reduce(
@@ -192,10 +189,7 @@ function createColumns(
   query: EnvelopeQuery,
   rows: number,
 ): { columns: Record<string, EnvelopeColumn>; gaps: Record<string, Uint8Array> } {
-  const fields =
-    schema.components[query.from]?.fields ??
-    schema.connections[query.from]?.fields ??
-    schema.tables?.[query.from]?.fields;
+  const fields = schema.types[query.from]?.fields;
   const cells = integer(rows * query.buckets, 'envelope cells', 1, 0x1fffffff),
     length = cells * 4;
   const columns: Record<string, EnvelopeColumn> = {},

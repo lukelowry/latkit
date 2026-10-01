@@ -73,19 +73,18 @@ async function main(): Promise<void> {
   const fields = (): VertexOptions => ({
     position: 'position',
     color: { field: 'load', domain: [0, 1], colormap: colors },
-    size: current.tables.node!.columns.degree
+    size: current.tables.Bus!.columns.degree
       ? { field: 'degree', domain: [0, 1], range: [0.6, 2] }
       : null,
     height: heightOn ? { field: 'load', domain: [0, 1], range: [0, 0.18] } : null,
   });
   const data = (): NetworkData => ({
     source: current,
-    coordinates: 'geographic',
-    vertices: { node: fields() },
+    vertices: { Bus: fields() },
     edges: {
-      line: {
-        connectivity: { kind: 'endpoints', layout: 'pair' },
-        ...(current.tables.line!.columns.bends ? { bends: 'bends' } : {}),
+      Line: {
+        ends: ['from', 'to'],
+        ...(current.tables.Line!.columns.bends ? { bends: 'bends' } : {}),
         curve: geodesic ? 'geodesic' : 'linear',
       },
     },
@@ -142,8 +141,8 @@ async function main(): Promise<void> {
       current = opt.build();
       currentId = opt.id;
       net.setOptions({
-        vertexRadiusPx: current.tables.node!.count >= 100000 ? 1.4 : 4,
-        edgeWidthPx: current.tables.node!.count >= 100000 ? 0.5 : 1.4,
+        vertexRadiusPx: current.tables.Bus!.count >= 100000 ? 1.4 : 4,
+        edgeWidthPx: current.tables.Bus!.count >= 100000 ? 0.5 : 1.4,
       });
       net.setData(data());
       net.setCamera({ fit: true });
@@ -156,7 +155,7 @@ async function main(): Promise<void> {
     net,
     (on) => {
       heightOn = on;
-      net.setVertex('node', fields());
+      net.setVertex('Bus', fields());
     },
     [
       {
@@ -164,7 +163,7 @@ async function main(): Promise<void> {
         on: true,
         apply: (on) => {
           geodesic = on;
-          net.setEdge('line', { curve: on ? 'geodesic' : 'linear' });
+          net.setEdge('Line', { curve: on ? 'geodesic' : 'linear' });
         },
       },
       {
@@ -182,7 +181,7 @@ async function main(): Promise<void> {
   );
   wireColormaps((value) => {
     colors = value;
-    net.setVertex('node', fields());
+    net.setVertex('Bus', fields());
   });
   wirePicking(net);
   Object.assign(window, {

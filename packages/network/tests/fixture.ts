@@ -15,7 +15,8 @@ export class GraphSource implements Queryable {
   readonly document: string;
   readonly listeners = new Set<(update: Update) => void>();
   queries = 0;
-  linksQueries = 0;
+  /** Reads of the lines' ends: topology, which moving positions never re-reads. */
+  endsQueries = 0;
   private readonly coordinates = new Map<string, Float64Array>();
   readonly positions: Float64Array;
   readonly from: Uint32Array;
@@ -63,9 +64,9 @@ export class GraphSource implements Queryable {
     );
     this.schema = {
       limits: { maxBlockBytes: Math.max(65536, blockRows * 32) },
-      queries: ['rows', 'links'],
+      queries: ['rows'],
       axis: { name: 'time', unit: 's' },
-      components: {
+      types: {
         node: {
           fields: {
             location: { type: { kind: 'vector', items: 'float64', size: 2 } },
@@ -81,12 +82,12 @@ export class GraphSource implements Queryable {
           spatial: { field: 'location', system: geographic ? 'geographic' : 'cartesian' },
         },
         line: {
-          fields: { signal: { type: 'float32', sampled: true } },
-          ports: { a: { direction: 'both' }, b: { direction: 'both' } },
+          fields: {
+            signal: { type: 'float32', sampled: true },
+            from: { type: { kind: 'reference', to: 'node' } },
+            to: { type: { kind: 'reference', to: 'node' } },
+          },
         },
-      },
-      connections: {
-        attachment: { fields: {}, roles: { node: { min: 1, max: 1 }, line: { min: 1, max: 1 } } },
       },
     };
   }
@@ -138,7 +139,7 @@ export class GraphSource implements Queryable {
     const issues = validateQuery(this.schema, query);
     if (issues.length) throw new Error(JSON.stringify(issues));
     this.queries++;
-    if (query.kind === 'links') this.linksQueries++;
+    if (query.kind === 'rows' && query.select.includes('from')) this.endsQueries++;
     options?.signal?.throwIfAborted();
     yield { kind: 'schema', version: this.version, schema: this.schema };
     const total = query.from === 'node' ? this.count : this.from.length;
@@ -162,20 +163,21 @@ export class GraphSource implements Queryable {
         index,
         rows,
       };
-      if (query.kind === 'links') {
-        const source = selected
-          ? Uint32Array.from({ length }, (_, i) => this.from[row(i)])
-          : this.from.subarray(row(0), row(0) + length);
-        const target = selected
-          ? Uint32Array.from({ length }, (_, i) => this.to[row(i)])
-          : this.to.subarray(row(0), row(0) + length);
-        const validity = new Uint8Array(Math.ceil(length / 8));
-        validity.fill(255);
-        yield { ...base, kind: 'links', targetIndex: this.index('node'), source, target, validity };
-      } else if (query.kind === 'rows') {
+      if (query.kind === 'rows') {
         const columns: Record<string, Column> = {};
         for (const field of query.select) {
-          if (field === 'location') {
+          if (field === 'from' || field === 'to') {
+            const ends = field === 'from' ? this.from : this.to;
+            columns[field] = {
+              kind: 'reference',
+              index: this.index('node'),
+              offset: 0,
+              length,
+              values: selected
+                ? Uint32Array.from({ length }, (_, i) => ends[row(i)])
+                : ends.subarray(row(0), row(0) + length),
+            };
+          } else if (field === 'location') {
             const values = selected
               ? Float64Array.from(
                   { length: length * 2 },

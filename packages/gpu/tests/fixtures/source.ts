@@ -38,7 +38,7 @@ export class Source implements Queryable {
     this.schema = {
       queries: options.sampled ? ['rows', 'samples'] : ['rows'],
       limits: { maxBlockBytes: 8 * 1024 ** 2 },
-      components: {
+      types: {
         node: {
           fields: {
             value: {
@@ -48,7 +48,6 @@ export class Source implements Queryable {
           },
         },
       },
-      connections: {},
       ...(options.sampled ? { axis: { name: 'coordinate', unit: 'step' } } : {}),
     };
   }

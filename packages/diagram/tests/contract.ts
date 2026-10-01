@@ -10,8 +10,8 @@ export async function usage(
 ): Promise<Renderer> {
   const data = {
     source: model,
-    components: { node: { color, labels: { field: 'name' } } },
-    connections: { link: { route: 'orthogonal' as const } },
+    vertices: { vertex: { color, labels: { field: 'name' } } },
+    edges: { link: { route: 'orthogonal' as const } },
   };
   const positions = await arrange({
     data,
@@ -19,7 +19,10 @@ export async function usage(
   });
   const diagram = createDiagram({
     gpu,
-    data: { ...data, components: { node: { ...data.components.node, position: positions.node } } },
+    data: {
+      ...data,
+      vertices: { vertex: { ...data.vertices.vertex, position: positions.vertex } },
+    },
   });
   attachDiagramInput({ diagram, canvas, interaction: 'edit' });
   diagram.on('delete', (ids) => {

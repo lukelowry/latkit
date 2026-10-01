@@ -218,13 +218,13 @@ describe('monitors', () => {
   it('declares sampled fields on the model and reads them only through a monitor', async () => {
     const model = new FixtureModel();
     const schema = await model.describe();
-    expect(schema.components.Node.fields.output).toMatchObject({ sampled: true });
+    expect(schema.types.Node.fields.output).toMatchObject({ sampled: true });
     expect(schema.axis).toBeUndefined();
     const recording = await model.monitor(output);
     const recorded = await recording.describe();
     expect(validateSchema(recorded)).toEqual([]);
     expect(recorded.axis).toEqual({ name: 'time', unit: 's' });
-    expect(Object.keys(recorded.components.Node.fields)).toEqual(['value', 'output']);
+    expect(Object.keys(recorded.types.Node.fields)).toEqual(['value', 'output']);
   });
   it('starts idle, then streams every command that starts after it opened', async () => {
     const model = new FixtureModel();

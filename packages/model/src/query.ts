@@ -66,8 +66,6 @@ export interface Queryable {
   query(query: RowsQuery, options?: QueryOptions): AsyncIterable<QueryHeader | RowsBlock>;
   query(query: SamplesQuery, options?: QueryOptions): AsyncIterable<QueryHeader | SamplesBlock>;
   query(query: EnvelopeQuery, options?: QueryOptions): AsyncIterable<QueryHeader | EnvelopeBlock>;
-  query(query: EndpointsQuery, options?: QueryOptions): AsyncIterable<QueryHeader | EndpointsBlock>;
-  query(query: LinksQuery, options?: QueryOptions): AsyncIterable<QueryHeader | LinksBlock>;
   query(query: AggregateQuery, options?: QueryOptions): AsyncIterable<QueryHeader | AggregateBlock>;
   query(query: Query, options?: QueryOptions): AsyncIterable<QueryHeader | QueryBlock>;
   /**
@@ -157,30 +155,6 @@ export interface EnvelopeQuery extends FieldSelection {
   readonly buckets: number;
 }
 
-/** All endpoints of matching connections, including those outside the involving selection. */
-export interface EndpointsQuery {
-  readonly kind: 'endpoints';
-  readonly from: string;
-  readonly rows?: RowSelection;
-  readonly involving?: { readonly components: readonly string[] };
-}
-
-/**
- * Optional projection with no geometric meaning. For each named port, follow incident through-type
- * connections to endpoints with the requested role and component type. Exactly one qualifying
- * endpoint supplies that side of the link; zero makes the link invalid, multiple reject invalid-input.
- */
-export interface LinksQuery {
-  readonly kind: 'links';
-  readonly from: string;
-  readonly rows?: RowSelection;
-  readonly ports: readonly [source: string, target: string];
-  readonly through: string;
-  /** Role identifying the through-connection's opposite component. */
-  readonly role: string;
-  readonly to: string;
-}
-
 export interface AggregateQuery extends FieldSelection {
   readonly kind: 'aggregate';
   readonly measures: readonly ('min' | 'max')[];
@@ -188,8 +162,7 @@ export interface AggregateQuery extends FieldSelection {
   readonly window?: SampleWindow;
 }
 
-export type Query =
-  RowsQuery | SamplesQuery | EnvelopeQuery | EndpointsQuery | LinksQuery | AggregateQuery;
+export type Query = RowsQuery | SamplesQuery | EnvelopeQuery | AggregateQuery;
 export type Filter =
   | { readonly field: string; readonly operator: 'equal' | 'notEqual'; readonly value: Scalar }
   | {
@@ -256,37 +229,6 @@ export interface EnvelopeBlock extends Block {
   readonly columns: Readonly<Record<string, EnvelopeColumn>>;
 }
 
-/** CSR segments in selected connection order. Segments of one connection are contiguous and cover
- * [0, totalEndpoints) exactly once. A huge connection may span blocks. Dictionary indices are local
- * to each block; component row numbers belong to their declared Index. */
-export interface EndpointsBlock extends Block {
-  readonly kind: 'endpoints';
-  readonly index: Index;
-  readonly connections: Uint32Array;
-  readonly offsets: Int32Array;
-  readonly firstEndpoint: Uint32Array;
-  readonly totalEndpoints: Uint32Array;
-  readonly componentIndexes: readonly Index[];
-  readonly componentType: Uint32Array;
-  readonly componentRow: Uint32Array;
-  readonly portNames: readonly (string | null)[];
-  readonly port: Uint32Array;
-  readonly roleNames: readonly string[];
-  readonly role: Uint32Array;
-}
-
-/** Exactly one opposite component per named port. Missing links have a zero validity bit.
- * Ambiguous links reject invalid-input; implementations must never choose one arbitrarily. */
-export interface LinksBlock extends Block {
-  readonly kind: 'links';
-  readonly index: Index;
-  readonly rows: RowAxis;
-  readonly targetIndex: Index;
-  readonly source: Uint32Array;
-  readonly target: Uint32Array;
-  readonly validity: Uint8Array;
-}
-
 /** Each requested field appears exactly once over the stream. Counts exclude null/nonfinite data. */
 export interface AggregateBlock extends Block {
   readonly kind: 'aggregate';
@@ -298,8 +240,7 @@ export interface AggregateBlock extends Block {
   >;
 }
 
-export type QueryBlock =
-  RowsBlock | SamplesBlock | EnvelopeBlock | EndpointsBlock | LinksBlock | AggregateBlock;
+export type QueryBlock = RowsBlock | SamplesBlock | EnvelopeBlock | AggregateBlock;
 
 /**
  * Notify in publication order after a complete change; versions are equality tokens, not sortable.

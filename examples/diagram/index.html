@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0c1015" />
+    <title>Diagram studio · Latkit</title>
+    <link rel="icon" href="/favicon.svg" />
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="brand" href="#studio" aria-label="Latkit Diagram studio"
+        ><svg viewBox="0 0 32 32" aria-hidden="true">
+          <rect x="2" y="5" width="10" height="10" rx="2" />
+          <rect x="20" y="17" width="10" height="10" rx="2" />
+          <path d="M12 10h6v12h2" /></svg
+        ><span>latkit<span class="brand-divider">/</span><strong>Diagram studio</strong></span></a
+      >
+      <div class="header-actions">
+        <span id="engine-state" class="engine-state">Starting renderer</span
+        ><button id="toggle-controls" aria-expanded="true" aria-controls="controls">Controls</button
+        ><button id="toggle-inspector" aria-expanded="false" aria-controls="inspector">
+          Inspector</button
+        ><a href="https://github.com/lukelowry/latkit" target="_blank" rel="noreferrer"
+          >Source <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 12 12 4M4 4h8v8" /></svg
+        ></a>
+      </div>
+    </header>
+    <main id="studio" class="studio">
+      <aside class="sidebar" aria-label="Diagram controls">
+        <fieldset id="controls" disabled>
+          <legend class="sr-only">Presentation controls</legend>
+          <section class="control-section">
+            <h2>Scenes</h2>
+            <div id="presets" class="preset-list"></div>
+          </section>
+          <section class="control-section">
+            <h2>Layout & wires</h2>
+            <label class="field"
+              >Arrangement<select id="algorithm">
+                <option value="layered">Layered</option>
+                <option value="grid">Custom grid</option>
+              </select></label
+            >
+            <label class="field"
+              >Direction<select id="direction">
+                <option value="right">Left to right</option>
+                <option value="down">Top to bottom</option>
+                <option value="left">Right to left</option>
+                <option value="up">Bottom to top</option>
+              </select></label
+            >
+            <label class="field"
+              >Routing<select id="route">
+                <option value="orthogonal">Avoid obstacles</option>
+                <option value="straight">Straight</option>
+                <option value="elbow">Custom elbow</option>
+              </select></label
+            >
+            <label class="field"
+              >Wires<select id="appearance">
+                <option value="wire">Wires</option>
+                <option value="tag">Tags</option>
+              </select></label
+            >
+            <div class="toggle-row">
+              <label><input id="arrows" type="checkbox" checked />Arrows</label
+              ><label><input id="flow" type="checkbox" />Flow</label>
+            </div>
+          </section>
+          <details class="control-section" open>
+            <summary>Appearance</summary>
+            <label class="field"
+              >Theme<select id="theme">
+                <option value="system">System</option>
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+              </select></label
+            ><label class="field"
+              >Density<select id="density">
+                <option value="comfortable">Comfortable</option>
+                <option value="compact">Compact</option>
+                <option value="spacious">Spacious</option>
+              </select></label
+            ><label class="field"
+              >Titles<select id="title-position">
+                <option value="center">Centered</option>
+                <option value="header">Header</option>
+              </select></label
+            ><label class="field"
+              >Corners<select id="radius">
+                <option value="8">Soft</option>
+                <option value="3">Subtle</option>
+                <option value="16">Round</option>
+              </select></label
+            ><label class="field"
+              >Ports<select id="port-marker">
+                <option value="directional">Directional</option>
+                <option value="circle">Circle</option>
+                <option value="diamond">Diamond</option>
+              </select></label
+            >
+            <div class="toggle-row">
+              <label><input id="port-labels" type="checkbox" checked />Port labels</label>
+            </div>
+            <label class="field"
+              >Shape<select id="shape">
+                <option value="rounded">Rounded</option>
+                <option value="rectangle">Rectangle</option>
+                <option value="ellipse">Ellipse</option>
+                <option value="diamond">Diamond</option>
+                <option value="mixed">By block type</option>
+              </select></label
+            >
+            <label class="field"
+              >Color<select id="palette">
+                <option value="neutral">Neutral</option>
+                <option value="signal">Signal value</option>
+                <option value="thermal">Inferno</option>
+              </select></label
+            >
+            <label class="field"
+              >Shade<select id="shade">
+                <option value="none">None</option>
+                <option value="spotlight">Pointer spotlight</option>
+                <option value="signal">Custom signal tint</option>
+              </select></label
+            >
+            <div class="toggle-grid">
+              <label><input id="grid" type="checkbox" checked />Grid</label
+              ><label><input id="snap" type="checkbox" checked />Snap</label
+              ><label><input id="labels" type="checkbox" checked />Labels</label
+              ><label><input id="junctions" type="checkbox" checked />Junctions</label
+              ><label><input id="status" type="checkbox" checked />Status colors</label
+              ><label><input id="simulate" type="checkbox" />Live values</label>
+            </div>
+          </details>
+          <details class="control-section">
+            <summary>Interaction</summary>
+            <label class="field"
+              >Drag canvas<select id="background-drag">
+                <option value="select">Select</option>
+                <option value="pan">Pan</option>
+              </select></label
+            ><label class="field"
+              >New wire drop<select id="free-drop">
+                <option value="cancel">Leave unchanged</option>
+                <option value="create">Create process</option>
+              </select></label
+            >
+            <div class="toggle-row">
+              <label><input id="auto-pan" type="checkbox" checked />Edge panning</label>
+            </div>
+          </details>
+          <details class="control-section">
+            <summary>Rendering</summary>
+            <label class="field"
+              >Detail<select id="detail">
+                <option value="auto">Adaptive</option>
+                <option value="full">Always show</option>
+              </select></label
+            >
+            <label class="field"
+              >Antialiasing<select id="msaa">
+                <option value="4">4× MSAA</option>
+                <option value="1">1×</option>
+              </select></label
+            >
+            <label class="field"
+              >Motion<select id="motion">
+                <option value="auto">System preference</option>
+                <option value="reduce">Reduced</option>
+                <option value="full">Full</option>
+              </select></label
+            >
+            <label class="field"
+              >Hover<select id="hover">
+                <option value="auto">Adaptive</option>
+                <option value="on">On</option>
+                <option value="off">Off</option>
+              </select></label
+            >
+            <label class="field"
+              >Label overflow<select id="overflow">
+                <option value="wrap">Wrap</option>
+                <option value="ellipsis">Ellipsis</option>
+              </select></label
+            >
+          </details>
+        </fieldset>
+        <div class="sidebar-foot">
+          Drag ports to connect. Drag an occupied input to reconnect; drop on empty space to
+          disconnect.
+        </div>
+      </aside>
+      <section class="workspace" aria-labelledby="scene-title">
+        <div class="workspace-heading">
+          <div>
+            <h2 id="scene-title">Control loop</h2>
+            <p id="scene-description">Typed ports, feedback & fan-out</p>
+          </div>
+          <button data-action="reset" disabled>Reset scene</button>
+        </div>
+        <div class="toolbar" role="toolbar" aria-label="Canvas tools">
+          <label class="sr-only" for="mode">Interaction mode</label
+          ><select id="mode" aria-label="Interaction mode" disabled>
+            <option value="edit">Edit</option>
+            <option value="navigate">Navigate</option>
+            <option value="inspect">Inspect</option>
+          </select>
+          <div class="toolbar-group">
+            <button data-action="undo" aria-label="Undo" title="Undo · Ctrl Z" disabled>
+              <svg viewBox="0 0 20 20"><path d="M7 4 3 8l4 4M3 8h9a5 5 0 0 1 0 10" /></svg></button
+            ><button data-action="redo" aria-label="Redo" title="Redo · Ctrl Shift Z" disabled>
+              <svg viewBox="0 0 20 20"><path d="m13 4 4 4-4 4m4-4H8a5 5 0 0 0 0 10" /></svg>
+            </button>
+          </div>
+          <button data-action="arrange" disabled>Arrange</button
+          ><button data-action="fit" disabled>Fit view</button>
+          <div class="toolbar-end">
+            <button data-action="export" disabled>
+              Export PNG
+              <svg viewBox="0 0 16 16"><path d="M8 2v8m-3-3 3 3 3-3M3 11v3h10v-3" /></svg>
+            </button>
+          </div>
+        </div>
+        <div class="canvas-wrap">
+          <canvas
+            id="canvas"
+            tabindex="0"
+            role="application"
+            aria-label="Interactive diagram. Drag blocks to move, drag ports to connect, Shift drag to select, wheel to zoom. Tab selects blocks. Arrows move selection, Enter inspects, Delete removes, Escape cancels."
+          ></canvas>
+          <div id="loading" class="canvas-message" role="status">
+            <span class="loading-mark"></span>
+            <h3>Preparing your workspace</h3>
+            <p>Starting the shared WebGPU renderer.</p>
+          </div>
+          <div id="error" class="canvas-message error-message" role="alert" hidden>
+            <h3>Unable to draw the scene</h3>
+            <p id="error-detail"></p>
+            <button data-action="retry">Try again</button>
+          </div>
+          <div class="canvas-navigation">
+            <button data-action="zoom-out" aria-label="Zoom out" disabled>
+              <svg viewBox="0 0 16 16"><path d="M3 8h10" /></svg></button
+            ><output id="zoom">100%</output
+            ><button data-action="zoom-in" aria-label="Zoom in" disabled>
+              <svg viewBox="0 0 16 16"><path d="M3 8h10M8 3v10" /></svg>
+            </button>
+          </div>
+          <p class="canvas-hint">
+            Drag to move <span>·</span> Ports to connect <span>·</span> Space to pan
+          </p>
+        </div>
+        <div class="performance">
+          <span><strong id="blocks">—</strong> blocks</span
+          ><span><strong id="wires">—</strong> wires</span
+          ><span><strong id="draws">—</strong> draws</span
+          ><span class="performance-tail"><strong id="prepare">—</strong> ms preparation</span>
+        </div>
+      </section>
+      <aside id="inspector" class="inspector" aria-label="Inspector">
+        <nav class="inspector-tabs" aria-label="Inspector panels">
+          <button data-tab="inspect" aria-pressed="true">Inspect</button
+          ><button data-tab="features" aria-pressed="false">Explore</button
+          ><button data-tab="api" aria-pressed="false">API</button>
+        </nav>
+        <section id="tab-inspect" class="inspector-content">
+          <div id="selection-empty">
+            <svg class="selection-icon" viewBox="0 0 48 48" aria-hidden="true">
+              <rect x="8" y="8" width="28" height="28" rx="5" />
+              <path d="m26 25 14 6-7 2-2 7Z" />
+            </svg>
+            <h2>Selection</h2>
+            <p>Select a block, port, wire, or group to inspect it.</p>
+          </div>
+          <form id="selection-form" hidden>
+            <h2 id="selected-name"></h2>
+            <p id="selected-type"></p>
+            <label class="stacked"
+              >Name<input id="rename" maxlength="120" autocomplete="off"
+            /></label>
+            <dl id="selection-details"></dl>
+            <div class="button-stack">
+              <button type="button" data-action="neighbors">Reveal neighbors</button
+              ><button type="button" data-action="delete">Delete selection</button>
+            </div>
+          </form>
+          <section class="inspector-section">
+            <h3>Add a block</h3>
+            <div id="palette-buttons" class="block-palette"></div>
+            <p class="small-note">Click to add at the center, or drag onto the canvas.</p>
+          </section>
+          <section id="group-section" class="inspector-section" hidden>
+            <h3>Groups</h3>
+            <div id="groups"></div>
+          </section>
+          <section class="inspector-section">
+            <h3>Activity</h3>
+            <ol id="activity" class="activity">
+              <li>Workspace ready to explore.</li>
+            </ol>
+          </section>
+        </section>
+        <section id="tab-features" class="inspector-content" hidden>
+          <h2>Explore the diagram</h2>
+          <ul class="feature-list">
+            <li>
+              <strong>Make it yours</strong>
+              <p>Move blocks, draw wires, reconnect an input. Undo and redo every edit.</p>
+            </li>
+            <li>
+              <strong>Follow a signal</strong>
+              <p>
+                Enable flow, arrows, and live values. Color maps and shades respond to native
+                fields.
+              </p>
+            </li>
+            <li>
+              <strong>Go beyond pairs</strong>
+              <p>
+                The control loop branches one signal to two destinations. A wire can join many
+                ports.
+              </p>
+            </li>
+            <li>
+              <strong>Fold a hierarchy</strong>
+              <p>
+                Open Grouped plants. Collapse a unit or its parent station; external wires follow
+                its boundary.
+              </p>
+            </li>
+            <li>
+              <strong>Change the geometry</strong>
+              <p>
+                Try four shapes, three routers, tags, layered layout, and a custom grid strategy.
+              </p>
+            </li>
+            <li>
+              <strong>Work at scale</strong>
+              <p>
+                The 1,024-block scene uses the same API. Zoom in to reveal labels and inspect
+                resident geometry.
+              </p>
+            </li>
+            <li>
+              <strong>Keep the result</strong>
+              <p>Export a fixed-time PNG through an independent offscreen renderer.</p>
+            </li>
+          </ul>
+          <h3>Keyboard</h3>
+          <dl class="shortcuts">
+            <dt>Tab</dt>
+            <dd>Next block</dd>
+            <dt>Arrows</dt>
+            <dd>Nudge selection</dd>
+            <dt>Shift + drag</dt>
+            <dd>Marquee selection</dd>
+            <dt>Alt + drag</dt>
+            <dd>Connect a boundary</dd>
+            <dt>Home</dt>
+            <dd>Fit the diagram</dd>
+            <dt>Escape</dt>
+            <dd>Cancel or clear</dd>
+            <dt>Delete</dt>
+            <dd>Remove selection</dd>
+          </dl>
+        </section>
+        <section id="tab-api" class="inspector-content" hidden>
+          <h2>One rendering interface.</h2>
+          <p>
+            The example uses the same GPU, fields, camera, text, and frame lifecycle as the other
+            Latkit packages.
+          </p>
+          <pre><code id="api-code"></code></pre>
+          <button data-action="copy">Copy example</button>
+          <p class="small-note">
+            The application owns edits and history. The diagram emits proposals with stable
+            identities.
+          </p>
+          <a
+            href="https://github.com/lukelowry/latkit/tree/main/packages/diagram"
+            target="_blank"
+            rel="noreferrer"
+            >Package documentation</a
+          >
+        </section>
+      </aside>
+    </main>
+    <footer class="statusbar">
+      <span id="message" role="status" aria-live="polite">Opening Control loop…</span
+      ><span id="hovered">No selection</span>
+    </footer>
+    <div id="context-menu" popover="auto">
+      <button data-action="neighbors">Reveal neighbors</button
+      ><button data-action="delete">Delete selection</button
+      ><button data-action="fit">Fit everything</button>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

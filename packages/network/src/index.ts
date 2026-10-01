@@ -9,7 +9,7 @@ export type {
   PathOptions,
   Labels,
 } from './data.js';
-export type { Limits } from './geometry/connectivity.js';
+export type { Limits } from './geometry/topology.js';
 export type { Options } from './options.js';
 export { PROJECTIONS } from './camera.js';
 export type { Camera, Projection } from './camera.js';

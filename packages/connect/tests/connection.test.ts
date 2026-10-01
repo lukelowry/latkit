@@ -26,7 +26,7 @@ describe('connection', () => {
     try {
       expect(connection.remote.name).toBe('Fixture');
       expect(connection.remote.routines.map((routine) => routine.id)).toEqual(['solve', 'check']);
-      expect((await connection.remote.describe()).components.Node.fields.output).toMatchObject({
+      expect((await connection.remote.describe()).types.Node.fields.output).toMatchObject({
         sampled: true,
       });
       const blocks = await collect(

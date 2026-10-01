@@ -1,6 +1,6 @@
 import type { Schema, FieldDefinition } from '../schema.js';
 import type { Problem } from '../types.js';
-import { Check, kinds, numeric, own } from './check.js';
+import { Check, index, kinds, numeric, own } from './check.js';
 import type { Path } from './check.js';
 import { domainValue } from './schema.js';
 
@@ -8,8 +8,7 @@ export function fieldsOf(
   schema: Schema,
   name: string,
 ): Readonly<Record<string, FieldDefinition>> | undefined {
-  for (const map of [schema.components, schema.connections, schema.tables ?? {}])
-    if (own(map, name)) return map[name].fields;
+  if (own(schema.types, name)) return schema.types[name].fields;
 }
 
 /** Validate request shape and described capabilities. Identity existence/staleness is source-owned. */
@@ -23,29 +22,6 @@ export function validateQuery(schema: Schema, value: unknown): readonly Problem[
   const fields = validFrom ? fieldsOf(schema, q.from as string) : undefined;
   if (!fields) c.issue(['from'], 'Unknown source type.');
   if (own(q, 'rows')) selection(c, q.rows, ['rows'], typeof q.from === 'string' ? q.from : '');
-  if (q.kind === 'endpoints') {
-    if (typeof q.from !== 'string' || !own(schema.connections, q.from))
-      c.issue(['from'], 'Endpoints require a connection type.');
-    if (own(q, 'involving'))
-      c.strings(c.object(q.involving, ['involving']).components, ['involving', 'components']);
-    return c.issues;
-  }
-  if (q.kind === 'links') {
-    const component =
-      typeof q.from === 'string' && own(schema.components, q.from)
-        ? schema.components[q.from]
-        : undefined;
-    if (!component) c.issue(['from'], 'Links require a component type.');
-    const ports = c.strings(q.ports, ['ports'], Object.keys(component?.ports ?? {}));
-    if (ports.length !== 2) c.issue(['ports'], 'Exactly two distinct ports are required.');
-    if (!c.text(q.through, ['through']) || !own(schema.connections, q.through))
-      c.issue(['through'], 'Unknown connection type.');
-    else if (!c.text(q.role, ['role']) || !own(schema.connections[q.through].roles, q.role))
-      c.issue(['role'], 'Unknown opposite endpoint role.');
-    if (!c.text(q.to, ['to']) || !own(schema.components, q.to))
-      c.issue(['to'], 'Unknown target component type.');
-    return c.issues;
-  }
   const selected = c.strings(q.select, ['select'], Object.keys(fields ?? {}), q.kind !== 'rows');
   const used = [...selected];
   if (q.kind === 'rows') {
@@ -96,11 +72,8 @@ export function validateQuery(schema: Schema, value: unknown): readonly Problem[
         const order = c.object(value, path);
         if (c.text(order.field, [...path, 'field'])) {
           if (!fields || !own(fields, order.field)) c.issue([...path, 'field'], 'Unknown field.');
-          else if (
-            typeof fields[order.field].type === 'object' &&
-            (fields[order.field].type as { kind: string }).kind !== 'reference'
-          )
-            c.issue(path, 'Ordering list/vector values is unsupported.');
+          else if (typeof fields[order.field].type === 'object')
+            c.issue(path, 'Ordering list, vector, or reference values is unsupported.');
           if (seen.has(order.field)) c.issue(path, 'Duplicate sort field.');
           seen.add(order.field);
           used.push(order.field);
@@ -151,13 +124,6 @@ export function validateQuery(schema: Schema, value: unknown): readonly Problem[
       window(c, q.window, ['window']);
   }
   return c.issues;
-}
-
-export function index(c: Check, value: unknown, path: Path, type?: string): void {
-  const idx = c.object(value, path);
-  for (const key of ['source', 'type', 'version']) c.text(idx[key], [...path, key]);
-  if (type !== undefined && idx.type !== type)
-    c.issue([...path, 'type'], 'Index belongs to a different type.');
 }
 
 function selection(c: Check, value: unknown, path: Path, from: string): void {

@@ -156,10 +156,7 @@ export async function describeBindings(
   return result;
 }
 export function fields(schema: Schema, type: string) {
-  const result =
-    schema.components[type]?.fields ??
-    schema.connections[type]?.fields ??
-    schema.tables?.[type]?.fields;
+  const result = schema.types[type]?.fields;
   if (!result) throw new GpuError('invalid-input', 'Unknown model type ' + type);
   return result;
 }

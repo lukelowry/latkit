@@ -1,4 +1,4 @@
-import type { LinksQuery, Queryable, RowSelection } from '@latkit/model';
+import type { Queryable, RowSelection } from '@latkit/model';
 import type {
   DataHit,
   FieldInput,
@@ -28,16 +28,16 @@ export interface VertexOptions {
 }
 export interface EdgeOptions {
   readonly rows?: RowSelection;
-  readonly connectivity:
-    | Omit<LinksQuery, 'from' | 'rows'>
-    | {
-        readonly kind: 'endpoints';
-        readonly layout: 'pair' | 'star';
-      };
-  /** Intermediate bends, a native list of two-component floating-point vectors; pair layout only. */
+  /**
+   * Two reference fields naming the vertices each row joins, such as a branch's two buses.
+   * Omitted, the type is a net: each row joins the vertices whose references name it, drawn as a
+   * segment between two or a star of more.
+   */
+  readonly ends?: readonly [source: string, target: string];
+  /** Intermediate bends, a native list of two-component floating-point vectors; requires ends. */
   readonly bends?: FieldInput;
   readonly curve?: 'linear' | 'geodesic';
-  /** Optional star junction; otherwise the centroid of the selected endpoints. */
+  /** A net's star center; otherwise the centroid of its vertices. */
   readonly junction?: Position2D;
   readonly color?: ColorScale | null;
   readonly dash?: FieldInput | null;
@@ -58,11 +58,10 @@ export interface PathOptions {
   /** Decorative paths do not participate in picking by default. */
   readonly pickable?: boolean;
 }
+/** Positions are longitude/latitude in degrees when the drawn types' spatial system is geographic. */
 export interface NetworkData {
   /** Borrowed. Renderer destruction never closes an acquisition. */
   readonly source: Queryable;
-  /** Geographic positions are longitude/latitude in degrees. */
-  readonly coordinates: 'cartesian' | 'geographic';
   /** Keys name native model types, not additional layer identities. */
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;

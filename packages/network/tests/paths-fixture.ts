@@ -19,7 +19,6 @@ export class PathSource implements Queryable {
   queries = 0;
   constructor(
     readonly tables: Readonly<Record<string, Readonly<Record<string, Column>>>>,
-    readonly endpoints: Readonly<Record<string, readonly (readonly [string, number][])[]>> = {},
     readonly blockRows = 256,
   ) {
     const type = (column: Column): import('@latkit/model').DataType => {
@@ -32,25 +31,33 @@ export class PathSource implements Queryable {
         };
       if (column.kind === 'numeric')
         return column.values instanceof Float64Array ? 'float64' : 'float32';
+      if (column.kind === 'reference') return { kind: 'reference', to: column.index.type };
       return column.kind;
     };
-    const components: Record<string, import('@latkit/model').ComponentDefinition> = {},
-      connections: Record<string, import('@latkit/model').ConnectionDefinition> = {};
-    for (const [name, columns] of Object.entries(tables)) {
-      const fields = Object.fromEntries(
-        Object.entries(columns).map(([name, column]) => [
-          name,
-          { type: type(column), nullable: !!column.validity },
-        ]),
-      );
-      if (endpoints[name]) connections[name] = { fields, roles: { member: { min: 0 } } };
-      else components[name] = { fields };
-    }
     this.schema = {
       limits: { maxBlockBytes: 4 * 1024 * 1024 },
-      queries: ['rows', 'endpoints'],
-      components,
-      connections,
+      queries: ['rows'],
+      types: Object.fromEntries(
+        Object.entries(tables).map(([name, columns]) => [
+          name,
+          {
+            fields: Object.fromEntries(
+              Object.entries(columns).map(([name, column]) => [
+                name,
+                { type: type(column), nullable: !!column.validity },
+              ]),
+            ),
+            ...(columns.position || columns.points
+              ? {
+                  spatial: {
+                    field: columns.position ? 'position' : 'points',
+                    system: 'geographic' as const,
+                  },
+                }
+              : {}),
+          },
+        ]),
+      ),
     };
   }
   index(type: string): Index {
@@ -60,7 +67,7 @@ export class PathSource implements Queryable {
     return Promise.resolve(this.schema);
   }
   retain(): Promise<Queryable> {
-    return Promise.resolve(new PathSource(this.tables, this.endpoints, this.blockRows));
+    return Promise.resolve(new PathSource(this.tables, this.blockRows));
   }
   close(): Promise<void> {
     for (const listener of this.listeners) listener({ kind: 'closed' });
@@ -83,7 +90,7 @@ export class PathSource implements Queryable {
     options?.signal?.throwIfAborted();
     yield { kind: 'schema', version: this.version, schema: this.schema };
     const columns = this.tables[query.from],
-      count = this.endpoints[query.from]?.length ?? Object.values(columns)[0].length;
+      count = Object.values(columns)[0].length;
     const selection = query.rows;
     if (selection?.kind === 'ids') throw new Error('Fixture has no string IDs');
     const selected =
@@ -139,29 +146,6 @@ export class PathSource implements Queryable {
             ]),
           ),
         };
-      } else if (query.kind === 'endpoints') {
-        n = 1;
-        const ends = this.endpoints[query.from][row],
-          types = [...new Set(ends.map((e) => e[0]))];
-        // Deliberately split endpoint lists to exercise native CSR continuation.
-        for (let e = 0; e < Math.max(1, ends.length); e += 2) {
-          const part = ends.slice(e, e + 2);
-          yield {
-            ...base,
-            kind: 'endpoints',
-            connections: Uint32Array.of(row),
-            offsets: Int32Array.of(0, part.length),
-            firstEndpoint: Uint32Array.of(e),
-            totalEndpoints: Uint32Array.of(ends.length),
-            componentIndexes: types.map((t) => this.index(t)),
-            componentType: Uint32Array.from(part, (p) => types.indexOf(p[0])),
-            componentRow: Uint32Array.from(part, (p) => p[1]),
-            portNames: [null],
-            port: new Uint32Array(part.length),
-            roleNames: ['member'],
-            role: new Uint32Array(part.length),
-          };
-        }
       } else throw new Error('Unsupported fixture query');
       first += n;
     }
@@ -196,39 +180,40 @@ export function strings(values: readonly string[]): import('@latkit/model').Text
   encoded.forEach((v, i) => bytes.set(v, offsets[i]));
   return { kind: 'text', offset: 0, length: values.length, offsets, bytes };
 }
+export function references(
+  type: string,
+  rows: readonly number[],
+): import('@latkit/model').ReferenceColumn {
+  return {
+    kind: 'reference',
+    index: { source: 'paths-fixture', type, version: 'rows-1' },
+    offset: 0,
+    length: rows.length,
+    values: Uint32Array.from(rows),
+  };
+}
+/** Nodes wired to one star net; bend and route each join two nodes by their ends. */
 export function featureSource(): PathSource {
   return new PathSource(
     {
       node: {
         position: vectors([-70, -20, -30, -10, -60, 30, 20, 40]),
         name: strings(['West', 'East', 'North', 'Distant']),
+        star: references('star', [0, 0, 0, 0]),
       },
-      bend: { points: lists([[-60, 0, -40, 0]]), name: strings(['Bent connection']) },
+      bend: {
+        points: lists([[-60, 0, -40, 0]]),
+        name: strings(['Bent connection']),
+        from: references('node', [0]),
+        to: references('node', [1]),
+      },
       star: { name: strings(['Four-way junction']) },
-      route: { name: strings(['Great circle']) },
+      route: {
+        name: strings(['Great circle']),
+        from: references('node', [0]),
+        to: references('node', [3]),
+      },
       seam: { points: lists([[170, 20, -170, 20]]), name: strings(['Dateline']) },
-    },
-    {
-      bend: [
-        [
-          ['node', 0],
-          ['node', 1],
-        ],
-      ],
-      star: [
-        [
-          ['node', 0],
-          ['node', 1],
-          ['node', 2],
-          ['node', 3],
-        ],
-      ],
-      route: [
-        [
-          ['node', 0],
-          ['node', 3],
-        ],
-      ],
     },
     2,
   );

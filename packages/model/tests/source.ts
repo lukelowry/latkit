@@ -1,12 +1,8 @@
 import type {
   AggregateBlock,
   AggregateQuery,
-  EndpointsBlock,
-  EndpointsQuery,
   Filter,
   Index,
-  LinksBlock,
-  LinksQuery,
   NumericColumn,
   Query,
   Queryable,
@@ -282,8 +278,6 @@ export abstract class Source implements Queryable {
   query(query: RowsQuery, options?: QueryOptions): AsyncIterable<QueryHeader | RowsBlock>;
   query(query: SamplesQuery, options?: QueryOptions): AsyncIterable<QueryHeader | SamplesBlock>;
   query(query: EnvelopeQuery, options?: QueryOptions): AsyncIterable<QueryHeader | EnvelopeBlock>;
-  query(query: EndpointsQuery, options?: QueryOptions): AsyncIterable<QueryHeader | EndpointsBlock>;
-  query(query: LinksQuery, options?: QueryOptions): AsyncIterable<QueryHeader | LinksBlock>;
   query(query: AggregateQuery, options?: QueryOptions): AsyncIterable<QueryHeader | AggregateBlock>;
   query(query: Query, options?: QueryOptions): AsyncIterable<QueryHeader | QueryBlock>;
   query(query: Query, options: QueryOptions = {}): AsyncIterable<QueryHeader | QueryBlock> {
@@ -379,7 +373,7 @@ export abstract class Source implements Queryable {
         ...(query.orderBy ?? []).map((o) => o.field),
       ]),
     ];
-    const sampled = fields.filter((field) => state.schema.components.Node.fields[field]?.sampled);
+    const sampled = fields.filter((field) => state.schema.types.Node.fields[field]?.sampled);
     const frames = sampled.length
       ? selectFrames(state, { kind: 'at', value: query.at! }).frames
       : [];

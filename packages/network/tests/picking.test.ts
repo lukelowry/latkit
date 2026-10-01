@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import type { NativeFields } from '@latkit/gpu';
 import type { RowAxis } from '@latkit/model';
-import type { VertexBank } from '../src/geometry/connectivity.js';
+import type { VertexBank } from '../src/geometry/topology.js';
 import type { FieldRead } from '../src/rendering/fields.js';
 import { Picking } from '../src/picking.js';
 

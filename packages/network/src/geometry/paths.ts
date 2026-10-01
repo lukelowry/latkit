@@ -10,7 +10,7 @@ import {
   type VertexBank,
   type EdgeBank,
   type Limits,
-} from './connectivity.js';
+} from './topology.js';
 import { nativeValue, value, bit, RowLookup } from './rows.js';
 import { scaledValue, type FieldRead } from '../rendering/fields.js';
 import type { Reads } from '../rendering/painter.js';
@@ -60,7 +60,7 @@ function lookup(read: FieldRead): RowLookup<NativeFields> {
   return result;
 }
 function signature(reads: Reads, data: NetworkData): unknown[] {
-  const key: unknown[] = [data.coordinates];
+  const key: unknown[] = [];
   const column = (v: unknown): void => {
     if (ArrayBuffer.isView(v)) {
       key.push(v.buffer, v.byteOffset, v.byteLength);
@@ -109,14 +109,9 @@ export class Paths {
     data: NetworkData,
     limits: Required<Limits>,
   ): { geometry: Geometry; origins: ReadonlyMap<EdgeBank, EdgeBank> } {
-    const needed = native.edges.some((bank) => {
-      const o = edgeOptions(data, bank) as EdgeOptions;
-      return (
-        bank.kind ||
-        o.bends ||
-        (o.connectivity?.kind === 'endpoints' && o.connectivity.layout === 'star')
-      );
-    });
+    const needed = native.edges.some(
+      (bank) => bank.kind || bank.stars || (edgeOptions(data, bank) as EdgeOptions).bends,
+    );
     if (!needed) {
       this.cached = undefined;
       return { geometry: native, origins: new Map() };
@@ -167,14 +162,12 @@ export class Paths {
     };
     for (const original of native.edges) {
       const options = edgeOptions(data, original) as EdgeOptions;
-      const star =
-        options.connectivity?.kind === 'endpoints' && options.connectivity.layout === 'star';
-      if (!original.kind && !options.bends && !star) {
+      if (!original.kind && !options.bends && !original.stars) {
         edges.push(original);
         segments += original.batches.reduce((n, b) => n + b.records.length / 4, 0);
         continue;
       }
-      if (options.curve === 'geodesic' && data.coordinates !== 'geographic')
+      if (options.curve === 'geodesic' && !native.geographic)
         throw new GpuError('invalid-input', 'Geodesics require geographic coordinates');
       const ownKey: unknown[] = [options.curve];
       if (original.kind)
@@ -310,7 +303,7 @@ export class Paths {
             a = start.point,
             b = target.point;
           let steps = 1;
-          if (data.coordinates === 'geographic' && options.curve !== 'geodesic') {
+          if (native.geographic && options.curve !== 'geodesic') {
             const angle = Math.acos(Math.max(-1, Math.min(1, dot(unit(a), unit(b))))) / DEG;
             steps = Math.max(1, Math.ceil(angle));
           }
@@ -320,15 +313,13 @@ export class Paths {
               options.curve === 'geodesic'
                 ? b
                 : [
-                    a[0] +
-                      (data.coordinates === 'geographic' ? longitude(b[0] - a[0]) : b[0] - a[0]) *
-                        t,
+                    a[0] + (native.geographic ? longitude(b[0] - a[0]) : b[0] - a[0]) * t,
                     a[1] + (b[1] - a[1]) * t,
                     a[2] + (b[2] - a[2]) * t,
                   ];
             let next = s === steps ? target : addPoint(p);
             if (
-              data.coordinates === 'geographic' &&
+              native.geographic &&
               options.curve !== 'geodesic' &&
               Math.abs(longitude(previous!.point[0]) - longitude(p[0])) > 180
             ) {
@@ -374,7 +365,7 @@ export class Paths {
           ),
           address,
         );
-        if (star && ends.length) {
+        if (options.junction ? ends.length : ends.length > 2) {
           let center: Point;
           if (options.junction) {
             const vector = !!found.value.columns.junction;
@@ -393,19 +384,17 @@ export class Paths {
             if (!valid.length) continue;
             const sum = [0, 0, 0];
             for (const end of valid) {
-              const p = data.coordinates === 'geographic' ? unit(end.point) : end.point;
+              const p = native.geographic ? unit(end.point) : end.point;
               for (let i = 0; i < 3; i++) sum[i] += p[i];
             }
-            center =
-              data.coordinates === 'geographic'
-                ? [
-                    Math.atan2(sum[2], sum[0]) / DEG,
-                    Math.atan2(sum[1], Math.hypot(sum[0], sum[2])) / DEG,
-                    valid.reduce((n, e) => n + e.point[2], 0) / valid.length,
-                  ]
-                : [sum[0] / valid.length, sum[1] / valid.length, sum[2] / valid.length];
-            if (data.coordinates === 'geographic' && Math.hypot(...sum) < 1e-12)
-              center = valid[0].point;
+            center = native.geographic
+              ? [
+                  Math.atan2(sum[2], sum[0]) / DEG,
+                  Math.atan2(sum[1], Math.hypot(sum[0], sum[2])) / DEG,
+                  valid.reduce((n, e) => n + e.point[2], 0) / valid.length,
+                ]
+              : [sum[0] / valid.length, sum[1] / valid.length, sum[2] / valid.length];
+            if (native.geographic && Math.hypot(...sum) < 1e-12) center = valid[0].point;
           }
           const junction = addPoint(center);
           for (const end of ends) trace([end, junction], row);

@@ -2,32 +2,47 @@
 
 Renderers read native `Queryable` fields. Mapping keys name model types.
 
-## Positions and connections
+## Positions and wiring
+
+A model's topology is its reference fields. A reference holds rows of another
+type, read as a `ReferenceColumn` of row numbers under that type's `Index`.
 
 ```ts
-const data = {
-  source,
-  coordinates: 'geographic' as const,
-  vertices: { node: { position: 'coordinates' } },
-  edges: {
-    line: { connectivity: { kind: 'endpoints' as const, layout: 'pair' as const } },
+const bus = { type: { kind: 'reference', to: 'Bus' } } as const;
+const schema = {
+  queries: ['rows'],
+  limits: { maxBlockBytes: 1 << 20 },
+  types: {
+    Bus: {
+      fields: { position: { type: { kind: 'vector', items: 'float64', size: 2 } } },
+      spatial: { field: 'position', system: 'geographic' },
+    },
+    Branch: { fields: { bus1: bus, bus2: bus } },
+    Load: { fields: { bus } },
   },
 };
+const data = { source, vertices: { Bus: {} }, edges: { Branch: { ends: ['bus1', 'bus2'] } } };
 ```
 
-Geographic positions are longitude/latitude in degrees. Cartesian positions use
-application units. Positions can be two-component vectors or separate
-`{ x: 'longitude', y: 'latitude' }` fields.
+Vertex and edge are what a view draws, not what a type is. An edge with `ends`
+joins the two vertices its reference fields name. Without `ends` the type is a
+net: each row joins the vertices whose references name it, so
+`{ vertices: { Load: {} }, edges: { Bus: {} } }` draws every bus as a star of its
+loads. A diagram draws those references as ports; `direction: 'in' | 'out'` on a
+reference field orients them.
 
-Connections expose native endpoints. Use `pair` for two endpoints and `star`
-for several. Paths and bends use lists of two-component vectors.
+The drawn types' spatial system sets the coordinates: geographic positions are
+longitude/latitude in degrees, cartesian positions use application units.
+Positions default to the spatial field and can also be two-component vectors or
+separate `{ x: 'longitude', y: 'latitude' }` fields. Paths and bends use lists of
+two-component vectors.
 
 ## Style by field
 
 ```ts
-network.setVertex('node', {
+network.setVertex('Bus', {
   color: {
-    field: { source: recording, from: 'node', field: 'temperature' },
+    field: { source: recording, from: 'Bus', field: 'temperature' },
     domain: [0, 100],
     colormap: colormaps.thermal,
   },

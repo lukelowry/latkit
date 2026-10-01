@@ -1,4 +1,11 @@
-import type { Index, RowAxis, NumericColumn, TextColumn, SampleColumn } from './data.js';
+import type {
+  Index,
+  RowAxis,
+  NumericColumn,
+  ReferenceColumn,
+  TextColumn,
+  SampleColumn,
+} from './data.js';
 
 function integer(value: number, name: string, min = 0, max = Number.MAX_SAFE_INTEGER): number {
   if (!Number.isSafeInteger(value) || value < min || value > max)
@@ -39,8 +46,8 @@ export function sliceRows(rows: RowAxis, offset: number, count: number): RowAxis
 export function bitAt(bitmap: Uint8Array | undefined, position: number): boolean {
   return !bitmap || (bitmap[position >>> 3] & (1 << (position & 7))) !== 0;
 }
-/** Null and present nonfinite observations are distinct. */
-export function numberAt(column: NumericColumn, position: number): number | null {
+/** Null and present nonfinite observations are distinct. A reference reads as its row. */
+export function numberAt(column: NumericColumn | ReferenceColumn, position: number): number | null {
   integer(position, 'column position', 0, column.length - 1);
   const at = column.offset + position;
   return bitAt(column.validity, at) ? column.values[at] : null;

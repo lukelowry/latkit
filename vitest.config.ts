@@ -6,7 +6,7 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 export default defineConfig({
   root,
   test: {
-    projects: ['packages/*', 'examples/monitor', 'examples/network'],
+    projects: ['packages/*', 'examples/monitor', 'examples/network', 'examples/diagram'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],

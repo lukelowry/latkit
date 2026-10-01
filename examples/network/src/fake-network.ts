@@ -1,4 +1,4 @@
-import { ExampleSource, numeric, vector } from './source.js';
+import { ExampleSource, numeric, references, vector } from './source.js';
 
 // Continental-US-ish window, in degrees. Stays inside the globe's lon/lat bounds.
 const LON_MIN = -124;
@@ -137,7 +137,7 @@ function wire(pts: Pt[], random: () => number): Edge[] {
   return edges;
 }
 
-/** Generate native component columns and connection endpoints. */
+/** Generate native bus columns, and lines referencing the two buses they join. */
 function encode(pts: Pt[], edges: Edge[], load: Float32Array, degree: Float32Array): ExampleSource {
   const vertexCoords = new Float32Array(pts.length * 2);
   for (let i = 0; i < pts.length; i++) {
@@ -145,14 +145,15 @@ function encode(pts: Pt[], edges: Edge[], load: Float32Array, degree: Float32Arr
     vertexCoords[i * 2 + 1] = pts[i]!.y;
   }
 
-  const edgeIndices = new Uint32Array(edges.length * 2);
+  const from = new Uint32Array(edges.length),
+    to = new Uint32Array(edges.length);
   const offsets = new Int32Array(edges.length + 1);
   const bendPts: number[] = [];
   let cursor = 0;
   for (let e = 0; e < edges.length; e++) {
     const edge = edges[e]!;
-    edgeIndices[e * 2] = edge.a;
-    edgeIndices[e * 2 + 1] = edge.b;
+    from[e] = edge.a;
+    to[e] = edge.b;
     offsets[e] = cursor;
     for (const p of edge.bends) {
       bendPts.push(p.x, p.y);
@@ -162,13 +163,15 @@ function encode(pts: Pt[], edges: Edge[], load: Float32Array, degree: Float32Arr
   offsets[edges.length] = cursor;
 
   return new ExampleSource({
-    node: {
+    Bus: {
       count: pts.length,
       columns: { position: vector(vertexCoords), load: numeric(load), degree: numeric(degree) },
     },
-    line: {
+    Line: {
       count: edges.length,
       columns: {
+        from: references('Bus', from),
+        to: references('Bus', to),
         bends: {
           kind: 'list',
           offset: 0,
@@ -177,7 +180,6 @@ function encode(pts: Pt[], edges: Edge[], load: Float32Array, degree: Float32Arr
           values: vector(new Float32Array(bendPts)),
         },
       },
-      endpoints: { component: 'node', rows: edgeIndices },
     },
   });
 }

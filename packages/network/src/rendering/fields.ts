@@ -8,7 +8,7 @@ import {
 } from '@latkit/gpu';
 import type { ColorScale, Position2D as Position, Scale } from '@latkit/gpu';
 import type { EdgeOptions, PathOptions, VertexOptions } from '../data.js';
-import type { VertexBank, EdgeBank } from '../geometry/connectivity.js';
+import type { VertexBank, EdgeBank } from '../geometry/topology.js';
 import { nativeValue } from '../geometry/rows.js';
 export interface ReadPage {
   readonly page: GpuPage;

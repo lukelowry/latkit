@@ -30,6 +30,7 @@ describe('public contract and allocation boundaries', () => {
         'createCanvasView',
         'createComposition',
         'createGpu',
+        'createNativeReader',
         'createPresentation',
         'createRenderTarget',
         'fitCamera',

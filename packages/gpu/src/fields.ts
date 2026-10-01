@@ -122,10 +122,7 @@ export class Fields {
       if (field) selected.set(field, [...(selected.get(field) ?? []), alias]);
     }
     const state = await this.source(request.source, frame.signal);
-    const definition =
-      state.schema.components[request.from] ??
-      state.schema.connections[request.from] ??
-      state.schema.tables?.[request.from];
+    const definition = state.schema.types[request.from];
     const sampled = [...selected.keys()].some((field) => definition?.fields[field]?.sampled);
     try {
       for await (const block of frame.query(request.source, {
@@ -221,10 +218,7 @@ export class Fields {
         throw new GpuError('conflict', 'Fields must belong to one model type');
       const state = await this.source(binding.source, frame.signal);
       try {
-        const definition =
-          state.schema.components[binding.from] ??
-          state.schema.connections[binding.from] ??
-          state.schema.tables?.[binding.from];
+        const definition = state.schema.types[binding.from];
         const field = definition?.fields[binding.field];
         if (!field) throw new GpuError('invalid-input', 'Unknown field: ' + binding.field);
         if (!field.sampled) {
@@ -419,10 +413,7 @@ export class Fields {
             if (current.closed) throw new GpuError('closed', 'Field source was closed');
           });
         }
-        const definition =
-          state.schema.components[binding.from] ??
-          state.schema.connections[binding.from] ??
-          state.schema.tables?.[binding.from];
+        const definition = state.schema.types[binding.from];
         const field = definition?.fields[binding.field];
         if (!field)
           throw new GpuError(
@@ -639,10 +630,7 @@ export class Fields {
     const state = await this.source(binding.source, frame.signal);
     try {
       scope.use(state.entry);
-      const definition =
-        state.schema.components[binding.from] ??
-        state.schema.connections[binding.from] ??
-        state.schema.tables?.[binding.from];
+      const definition = state.schema.types[binding.from];
       const field = definition?.fields[binding.field];
       if (!field || !['float32', 'float64', 'int32', 'uint32'].includes(field.type as string))
         throw new GpuError('invalid-input', 'Extents require scalar numeric fields');
@@ -969,10 +957,7 @@ export class Fields {
         }
       }
       if (group.state.closed) throw new GpuError('closed', 'Field source was closed');
-      const definition =
-        group.state.schema.components[group.from] ??
-        group.state.schema.connections[group.from] ??
-        group.state.schema.tables?.[group.from];
+      const definition = group.state.schema.types[group.from];
       const expected = Object.fromEntries(
         fields.map((field) => [field, emptyColumn(definition!.fields[field])]),
       );
@@ -1329,7 +1314,9 @@ function emptyColumn(field: FieldDefinition): FieldColumn {
     const values = emptyColumn({ type: type.items });
     return { kind: 'list', offset: 0, length: 0, offsets: new Int32Array(1), values };
   }
-  if (type === 'text' || (typeof type === 'object' && type.kind === 'reference'))
+  if (typeof type === 'object' && type.kind === 'reference')
+    throw new GpuError('unsupported', 'GPU fields require numeric, vector, or boolean data');
+  if (type === 'text')
     return {
       kind: 'text',
       offset: 0,

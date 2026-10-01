@@ -24,16 +24,9 @@ export type {
   TextColumn,
   VectorColumn,
   ListColumn,
+  ReferenceColumn,
 } from './data.js';
-export type {
-  Schema,
-  ComponentDefinition,
-  ComponentPort,
-  ConnectionDefinition,
-  ConnectionRole,
-  TableDefinition,
-  FieldDefinition,
-} from './schema.js';
+export type { Schema, TypeDefinition, FieldDefinition } from './schema.js';
 export type {
   Queryable,
   QueryHeader,
@@ -48,15 +41,11 @@ export type {
   EnvelopeQuery,
   EnvelopeBlock,
   EnvelopeColumn,
-  EndpointsQuery,
-  LinksQuery,
   AggregateQuery,
   Filter,
   QueryBlock,
   RowsBlock,
   SamplesBlock,
-  EndpointsBlock,
-  LinksBlock,
   AggregateBlock,
   Update,
 } from './query.js';

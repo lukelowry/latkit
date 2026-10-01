@@ -26,7 +26,7 @@ async function draw(gpu: Gpu, prepare: (frame: Preparation) => Promise<void>): P
   texture.destroy();
 }
 import { PathSource, vectors } from './paths-fixture.js';
-import { readGeometry, DEFAULT_LIMITS, type VertexBank } from '../src/geometry/connectivity.js';
+import { readGeometry, DEFAULT_LIMITS, type VertexBank } from '../src/geometry/topology.js';
 import { readFields, resolveDomains, type FieldRead } from '../src/rendering/fields.js';
 it('uses the whole selected type for automatic domains across native blocks and draw banks', async () => {
   const count = 20000,
@@ -42,11 +42,10 @@ it('uses the whole selected type for automatic domains across native blocks and 
           },
         },
       },
-      {},
       311,
     );
   const options = { position: 'position', size: { field: 'weight', range: [2, 0.5] as const } };
-  const data = { source, coordinates: 'cartesian' as const, vertices: { node: options } };
+  const data = { source, vertices: { node: options } };
   const gpu = await createGpu({ device: fakeDevice().device });
   await draw(gpu, async (frame) => {
     const geometry = await readGeometry(data, frame, DEFAULT_LIMITS),

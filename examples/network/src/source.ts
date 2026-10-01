@@ -7,6 +7,7 @@ import {
   type NumericArray,
   type NumericColumn,
   type Query,
+  type ReferenceColumn,
   type Queryable,
   type QueryOptions,
   type QueryHeader,
@@ -21,11 +22,19 @@ import {
 export interface Table {
   readonly count: number;
   readonly columns: Readonly<Record<string, Column>>;
-  /** Binary connections, already in native endpoint order. */
-  readonly endpoints?: { readonly component: string; readonly rows: Uint32Array };
 }
 export function numeric(values: NumericArray): NumericColumn {
   return { kind: 'numeric', offset: 0, length: values.length, values };
+}
+/** Rows of `type`; the source serving it numbers them under its own Index. */
+export function references(type: string, rows: Uint32Array): ReferenceColumn {
+  return {
+    kind: 'reference',
+    index: { source: '', type, version: '1' },
+    offset: 0,
+    length: rows.length,
+    values: rows,
+  };
 }
 export function vector(values: Float32Array | Float64Array): Column {
   return { kind: 'vector', offset: 0, length: values.length / 2, size: 2, values: numeric(values) };
@@ -41,6 +50,7 @@ function type(column: Column): DataType {
       items: type(column.values) as 'float32' | 'float64',
     };
   if (column.kind === 'list') return { kind: 'list', items: type(column.values) };
+  if (column.kind === 'reference') return { kind: 'reference', to: column.index.type };
   if (column.kind !== 'numeric') return column.kind;
   return column.values instanceof Float64Array
     ? 'float64'
@@ -55,6 +65,8 @@ function slice(column: Column, first: number, count: number): Column {
   const at = column.offset + first;
   if (column.validity) failure('unsupported', 'Example columns are non-nullable');
   if (column.kind === 'numeric') return numeric(column.values.subarray(at, at + count));
+  if (column.kind === 'reference')
+    return { ...column, offset: 0, length: count, values: column.values.subarray(at, at + count) };
   if (column.kind === 'vector')
     return {
       ...column,
@@ -73,7 +85,7 @@ function slice(column: Column, first: number, count: number): Column {
       values: slice(column.values, begin, end - begin),
     };
   }
-  return failure('unsupported', 'This example stores numeric, vector, and list columns');
+  return failure('unsupported', 'This example stores numeric, reference, vector, and list columns');
 }
 function text(values: readonly string[]): Column {
   const encoded = values.map((value) => new TextEncoder().encode(value));
@@ -109,8 +121,7 @@ export class ExampleSource implements Queryable {
     readonly tables: Readonly<Record<string, Table>>,
     readonly source = crypto.randomUUID(),
   ) {
-    const components: Record<string, Schema['components'][string]> = {};
-    const connections: Record<string, Schema['connections'][string]> = {};
+    const types: Record<string, Schema['types'][string]> = {};
     const buffers = new Set<ArrayBufferLike>();
     const visit = (value: unknown): void => {
       if (ArrayBuffer.isView(value)) buffers.add(value.buffer);
@@ -122,20 +133,17 @@ export class ExampleSource implements Queryable {
       const fields = Object.fromEntries(
         Object.entries(table.columns).map(([name, column]) => [name, { type: type(column) }]),
       );
-      if (table.endpoints) connections[name] = { fields, roles: { member: { min: 2, max: 2 } } };
-      else
-        components[name] = {
-          fields,
-          ...(table.columns.position
-            ? { spatial: { field: 'position', system: 'geographic' } }
-            : {}),
-        };
+      // Every example places its rows by longitude and latitude.
+      const spatial = table.columns.position ? 'position' : table.columns.points ? 'points' : null;
+      types[name] = {
+        fields,
+        ...(spatial ? { spatial: { field: spatial, system: 'geographic' as const } } : {}),
+      };
     }
     this.schema = {
-      queries: ['rows', 'endpoints'],
+      queries: ['rows'],
       limits: { maxBlockBytes: 1024 * 1024 },
-      components,
-      connections,
+      types,
     };
   }
   index(type: string): Index {
@@ -182,8 +190,7 @@ export class ExampleSource implements Queryable {
     const schema = await this.describe(options);
     const issues = validateQuery(schema, query);
     if (issues.length) failure(issues[0]!.code, issues[0]!.message);
-    if (query.kind !== 'rows' && query.kind !== 'endpoints')
-      failure('unsupported', 'Unsupported query');
+    if (query.kind !== 'rows') failure('unsupported', 'Unsupported query');
     const table = this.tables[query.from]!,
       index = this.index(query.from);
     const selection = query.rows;
@@ -230,7 +237,7 @@ export class ExampleSource implements Queryable {
       if (column.kind !== 'numeric') return failure('invalid-input', 'Expected scalar field');
       return column.values[column.offset + row]!;
     };
-    if (query.kind === 'rows' && (query.where?.length || query.orderBy?.length)) {
+    if (query.where?.length || query.orderBy?.length) {
       const selected = Array.from({ length: count(rows) }, (_, i) => rowAt(rows, i)).filter((row) =>
         (query.where ?? []).every((filter) => {
           const v = value(filter.field, row);
@@ -263,20 +270,15 @@ export class ExampleSource implements Queryable {
       rows = { kind: 'indices', values: Uint32Array.from(selected) };
     }
     const total = count(rows);
-    const skip = query.kind === 'rows' ? Math.min(query.offset ?? 0, total) : 0;
-    const length =
-      query.kind === 'endpoints' &&
-      query.involving &&
-      !query.involving.components.includes(table.endpoints!.component)
-        ? 0
-        : Math.min(total - skip, query.kind === 'rows' ? (query.limit ?? total) : total);
+    const skip = Math.min(query.offset ?? 0, total);
+    const length = Math.min(total - skip, query.limit ?? total);
     const bound = Math.min(options?.maxBlockBytes ?? Infinity, this.schema.limits.maxBlockBytes);
     if (!Number.isSafeInteger(bound) || bound < 1) failure('invalid-input', 'Invalid block bound');
     yield { kind: 'schema', version: this.version, schema: this.schema };
     let position = 0;
     do {
       this.check(options);
-      if (!length && !(query.kind === 'rows' && query.count)) break;
+      if (!length && !query.count) break;
       const first = length ? rowAt(rows, skip + position) : 0;
       let n = Math.min(1024, length - position);
       if (rows.kind === 'indices')
@@ -287,43 +289,32 @@ export class ExampleSource implements Queryable {
           }
       let block: QueryBlock;
       for (;;) {
-        const base = { version: this.version, index };
-        if (query.kind === 'rows') {
-          block = {
-            ...base,
-            kind: 'rows',
-            rows: { kind: 'range', offset: first, count: n },
-            position,
-            columns: Object.fromEntries(
-              query.select.map((field) => [field, slice(table.columns[field]!, first, n)]),
-            ),
-            ...(query.count ? { total } : {}),
-            ...(query.ids
-              ? {
-                  ids: text(
-                    Array.from({ length: n }, (_, i) => query.from + ':' + (first + i)),
-                  ) as import('@latkit/model').TextColumn,
-                }
-              : {}),
-          };
-        } else {
-          const zeros = new Uint32Array(n * 2);
-          block = {
-            ...base,
-            kind: 'endpoints',
-            connections: Uint32Array.from({ length: n }, (_, i) => first + i),
-            offsets: Int32Array.from({ length: n + 1 }, (_, i) => i * 2),
-            firstEndpoint: zeros.subarray(0, n),
-            totalEndpoints: new Uint32Array(n).fill(2),
-            componentIndexes: [this.index(table.endpoints!.component)],
-            componentType: zeros,
-            componentRow: table.endpoints!.rows.subarray(first * 2, (first + n) * 2),
-            portNames: [null],
-            port: zeros,
-            roleNames: ['member'],
-            role: zeros,
-          };
-        }
+        block = {
+          kind: 'rows',
+          version: this.version,
+          index,
+          rows: { kind: 'range', offset: first, count: n },
+          position,
+          columns: Object.fromEntries(
+            query.select.map((field) => {
+              const column = slice(table.columns[field]!, first, n);
+              return [
+                field,
+                column.kind === 'reference'
+                  ? { ...column, index: this.index(column.index.type) }
+                  : column,
+              ];
+            }),
+          ),
+          ...(query.count ? { total } : {}),
+          ...(query.ids
+            ? {
+                ids: text(
+                  Array.from({ length: n }, (_, i) => query.from + ':' + (first + i)),
+                ) as import('@latkit/model').TextColumn,
+              }
+            : {}),
+        };
         if (options?.buffers === 'owned') block = owned(block);
         if (blockByteLength(block) <= bound) break;
         if (n <= 1) failure('resource-limit', 'One native row exceeds the block bound');

@@ -45,14 +45,13 @@ export class Telemetry implements Queryable {
       queries: ['samples'],
       limits: { maxBlockBytes: 256 * 1024 },
       axis: { name: 'Time', unit: 's' },
-      components: {
+      types: {
         sensor: {
           fields: Object.fromEntries(
             fields.map((name) => [name, { type: 'float64', sampled: true }]),
           ),
         },
       },
-      connections: {},
     };
   }
   private check(options?: RequestOptions): void {

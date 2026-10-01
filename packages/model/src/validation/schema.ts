@@ -9,20 +9,12 @@ export function validateSchema(value: unknown): readonly Problem[] {
   const schema = c.object(value, []);
   c.strings(schema.queries, ['queries'], kinds);
   c.integer(c.object(schema.limits, ['limits']).maxBlockBytes, ['limits', 'maxBlockBytes'], 1);
-  const names = new Set<string>();
-  const entries: [string, Record<string, unknown>, Path][] = [];
-  for (const category of ['components', 'connections', 'tables']) {
-    if (category === 'tables' && !own(schema, category)) continue;
-    for (const [id, value] of Object.entries(c.object(schema[category], [category]))) {
-      const path = [category, id];
-      c.text(id, path);
-      if (names.has(id)) c.issue(path, 'Type name must be unique across the schema.');
-      names.add(id);
-      entries.push([category, c.object(value, path), path]);
-    }
-  }
-
-  for (const [category, definition, path] of entries) {
+  const types = c.object(schema.types, ['types']);
+  const names = new Set(Object.keys(types));
+  for (const [id, value] of Object.entries(types)) {
+    const path = ['types', id];
+    c.text(id, path);
+    const definition = c.object(value, path);
     for (const key of ['label', 'description'])
       c.optional(definition, key, (v, p) => c.text(v, p, true), path);
     const fields = c.object(definition.fields, [...path, 'fields']);
@@ -34,6 +26,11 @@ export function validateSchema(value: unknown): readonly Problem[] {
       for (const key of ['nullable', 'sampled']) c.optional(field, key, c.bool.bind(c), p);
       for (const key of ['label', 'description', 'unit'])
         c.optional(field, key, (v, at) => c.text(v, at, true), p);
+      if (own(field, 'direction')) {
+        c.enum(field.direction, ['in', 'out'], [...p, 'direction']);
+        if (!record(field.type) || field.type.kind !== 'reference')
+          c.issue([...p, 'direction'], 'Only a reference has a direction.');
+      }
       if (field.sampled === true) {
         c.enum(field.type, numeric, [...p, 'type']);
         if (own(field, 'bounds'))
@@ -44,31 +41,10 @@ export function validateSchema(value: unknown): readonly Problem[] {
         bounds(c, field.bounds, [...p, 'bounds']);
       }
     }
-    if (category === 'components' && own(definition, 'ports'))
-      for (const [id, portValue] of Object.entries(
-        c.object(definition.ports, [...path, 'ports']),
-      )) {
-        const p = [...path, 'ports', id];
-        c.text(id, p);
-        const port = c.object(portValue, p);
-        c.enum(port.direction, ['in', 'out', 'both'], [...p, 'direction']);
-        for (const key of ['label', 'type']) c.optional(port, key, c.text.bind(c), p);
-      }
-    if (category === 'connections')
-      for (const [id, roleValue] of Object.entries(
-        c.object(definition.roles, [...path, 'roles']),
-      )) {
-        const p = [...path, 'roles', id];
-        c.text(id, p);
-        const role = c.object(roleValue, p);
-        const valid = c.integer(role.min, [...p, 'min']);
-        if (own(role, 'max')) c.integer(role.max, [...p, 'max'], valid ? (role.min as number) : 0);
-        c.optional(role, 'direction', (v, at) => c.enum(v, ['in', 'out', 'both'], at), p);
-      }
     if (own(definition, 'spatial')) {
       const p = [...path, 'spatial'];
       const spatial = c.object(definition.spatial, p);
-      c.text(spatial.system, [...p, 'system']);
+      c.enum(spatial.system, ['geographic', 'cartesian'], [...p, 'system']);
       if (c.text(spatial.field, [...p, 'field'])) {
         const field = fields[spatial.field];
         const type = record(field) ? field.type : undefined;

@@ -29,9 +29,8 @@ export interface Bounds {
 }
 
 export type ProblemTarget =
-  | { readonly kind: 'element'; readonly id: string }
-  | { readonly kind: 'field'; readonly element: string; readonly field: string }
-  | { readonly kind: 'port'; readonly element: string; readonly port: string }
+  | { readonly kind: 'row'; readonly type: string; readonly id: string }
+  | { readonly kind: 'field'; readonly type: string; readonly id: string; readonly field: string }
   | { readonly kind: 'parameter'; readonly id: string }
   | { readonly kind: 'path'; readonly path: readonly (string | number)[] };
 

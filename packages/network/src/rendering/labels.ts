@@ -16,7 +16,7 @@ import {
   type Geometry,
   type VertexBank,
   type EdgeBank,
-} from '../geometry/connectivity.js';
+} from '../geometry/topology.js';
 import type { PickGeometry } from '../picking.js';
 import type { Camera, Projected } from '../camera.js';
 import type { Options } from '../options.js';

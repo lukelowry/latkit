@@ -1,7 +1,7 @@
 import { rowAt } from '@latkit/model';
 
 import type { NetworkData, NetworkItem } from '../data.js';
-import type { VertexBank, EdgeBank } from './connectivity.js';
+import type { VertexBank, EdgeBank } from './topology.js';
 import { RowLookup, indexKey } from './rows.js';
 
 /** CSR adjacency over renderer-local dense addresses; public results always use native identities. */
@@ -10,7 +10,7 @@ export class Adjacency {
   private readonly offsets: Uint32Array;
   private readonly incident: Uint32Array;
   private readonly edgeOffsets: Uint32Array;
-  private readonly endpoints: Uint32Array;
+  private readonly ends: Uint32Array;
   private readonly vertexRows = new Map<string, RowLookup<VertexBank>>();
   private readonly edgeRows = new Map<string, RowLookup<EdgeBank>>();
   constructor(
@@ -57,17 +57,17 @@ export class Adjacency {
       }
     }
     for (const rows of this.edgeRows.values()) rows.seal();
-    this.endpoints = all;
+    this.ends = all;
     for (let i = 1; i < this.offsets.length; i++) this.offsets[i] += this.offsets[i - 1];
     this.incident = new Uint32Array(written);
     const fill = this.offsets.slice(0, vertexCount);
     for (let edge = 0; edge < edgeCount; edge++)
       for (let i = this.edgeOffsets[edge]; i < this.edgeOffsets[edge + 1]; i++)
-        this.incident[fill[this.endpoints[i]]++] = edge;
+        this.incident[fill[this.ends[i]]++] = edge;
     this.bytes =
       this.offsets.byteLength +
       this.edgeOffsets.byteLength +
-      this.endpoints.byteLength +
+      this.ends.byteLength +
       this.incident.byteLength;
   }
   private bank<T extends { readonly base: number; readonly count: number }>(
@@ -112,7 +112,7 @@ export class Adjacency {
         result.push({ kind: 'edge', source: data.source, index: bank.index, row });
       }
       for (let i = this.edgeOffsets[dense]; i < this.edgeOffsets[dense + 1]; i++)
-        addVertex(this.endpoints[i]);
+        addVertex(this.ends[i]);
     };
     const dense = found.value.base + found.offset;
     if (item.kind === 'edge') addEdge(dense);

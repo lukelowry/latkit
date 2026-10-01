@@ -21,7 +21,7 @@ export class FieldSource implements Queryable {
   readonly schema: Schema = {
     queries: ['rows'],
     limits: { maxBlockBytes: 1e6 },
-    components: {
+    types: {
       node: {
         fields: {
           value: { type: 'float32' },
@@ -32,7 +32,6 @@ export class FieldSource implements Queryable {
         },
       },
     },
-    connections: {},
     axis: { name: 'time' },
   };
   constructor(readonly count = 8) {}

@@ -30,7 +30,7 @@ fn tessellate(@builtin(global_invocation_id) id:vec3u,@builtin(local_invocation_
   }
   starts[lane]=steps+select(0u,1u,split!=0xffffffffu);
   workgroupBarrier();
-  // Compact one workgroup at a time, avoiding a global atomic for every connection.
+  // Compact one workgroup at a time, avoiding a global atomic for every edge.
   if(lane==0u){var total=0u;for(var j=0u;j<64u;j++){let count=starts[j];starts[j]=total;total+=count;}groupBase=atomicAdd(&indirect.count,total);}
   workgroupBarrier();
   let base=groupBase+starts[lane];

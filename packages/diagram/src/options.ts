@@ -6,15 +6,34 @@ export interface Options extends HoverOptions {
   readonly labels?: boolean;
   readonly junctions?: boolean;
   readonly font?: TextFont;
+  /** Default text size in diagram units (CSS pixels at scale 1). */
   readonly fontSizePx?: number;
+  readonly vertexPadding?: number;
+  /** Corner radius in diagram units. Per-vertex bindings may override it. */
+  readonly cornerRadius?: number;
+  /** Stroke, focus, and port sizes stay constant in CSS pixels while zooming. */
+  readonly outlineWidthPx?: number;
+  readonly selectionWidthPx?: number;
+  readonly hoverWidthPx?: number;
+  readonly portSizePx?: number;
+  readonly portMarker?: 'directional' | 'circle' | 'diamond';
+  readonly portLabels?: boolean;
+  readonly portFontSizePx?: number;
+  readonly edgeWidthPx?: number;
+  readonly gridMinSpacingPx?: number;
+  readonly detail?: 'auto' | 'full';
+  readonly portSpacing?: number;
+  readonly routeClearance?: number;
   readonly motion?: 'auto' | 'reduce' | 'full';
   readonly animationMs?: number;
+  /** Bounds CPU route interpolation; larger scenes settle immediately. Default: 512 vertices. */
+  readonly animationMaxVertices?: number;
   readonly pickRadiusPx?: number;
   readonly fitPaddingPx?: Insets;
   readonly revealPaddingPx?: number;
   readonly backgroundColor?: RGBA;
-  readonly componentBaseColor?: RGBA;
-  readonly connectionBaseColor?: RGBA;
+  readonly vertexBaseColor?: RGBA;
+  readonly edgeBaseColor?: RGBA;
   readonly outlineColor?: RGBA;
   readonly textColor?: RGBA;
   readonly gridColor?: RGBA;
@@ -24,8 +43,9 @@ export interface Options extends HoverOptions {
   readonly msaa?: 1 | 4;
 }
 export interface Limits {
-  readonly components?: number;
-  readonly endpoints?: number;
+  readonly vertices?: number;
+  readonly edges?: number;
+  readonly ends?: number;
   readonly geometryBytes?: number;
   readonly pickingBytes?: number;
   readonly routePoints?: number;

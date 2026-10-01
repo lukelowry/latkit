@@ -51,7 +51,7 @@ export class HistorySource implements Queryable {
       queries: this.native ? ['rows', 'samples', 'envelope'] : ['rows', 'samples'],
       limits: { maxBlockBytes: 1e6 },
       axis: { name: 'coordinate' },
-      components: {
+      types: {
         node: {
           fields: {
             value: { type: 'float64', sampled: true, nullable: true },
@@ -60,7 +60,6 @@ export class HistorySource implements Queryable {
           },
         },
       },
-      connections: {},
     };
   }
   describe(): Promise<Schema> {

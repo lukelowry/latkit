@@ -1,10 +1,18 @@
-import type { Index, NumericColumn, RowsBlock, Schema, TextColumn } from '../src/index.js';
+import type {
+  Index,
+  NumericColumn,
+  ReferenceColumn,
+  RowsBlock,
+  Schema,
+  TextColumn,
+} from '../src/index.js';
 
 export const index: Index = { source: 'model', type: 'Node', version: 'rows:1' };
+export const hubs: Index = { source: 'model', type: 'Hub', version: 'rows:1' };
 export const schema: Schema = {
-  queries: ['rows', 'samples', 'endpoints', 'links', 'aggregate'],
+  queries: ['rows', 'samples', 'aggregate'],
   limits: { maxBlockBytes: 65536 },
-  components: {
+  types: {
     Node: {
       fields: {
         value: {
@@ -20,18 +28,11 @@ export const schema: Schema = {
           nullable: true,
         },
         parent: { type: { kind: 'reference', to: 'Node' }, nullable: true },
+        hub: { type: { kind: 'reference', to: 'Hub' }, direction: 'out' },
       },
-      ports: { a: { direction: 'both' }, b: { direction: 'both' } },
-      spatial: { field: 'position', system: 'local' },
+      spatial: { field: 'position', system: 'cartesian' },
     },
-  },
-  connections: {
-    Relation: {
-      fields: {},
-      roles: { member: { min: 2 } },
-    },
-  },
-  tables: {
+    Hub: { fields: {} },
     Settings: { fields: { value: { type: 'float64' } } },
   },
   axis: { name: 'time', unit: 's' },
@@ -39,6 +40,23 @@ export const schema: Schema = {
 
 export function numbers(values: readonly number[]): NumericColumn {
   return { kind: 'numeric', values: Float64Array.from(values), offset: 0, length: values.length };
+}
+export function references(
+  values: readonly (number | null)[],
+  target: Index = index,
+): ReferenceColumn {
+  const validity = new Uint8Array(Math.ceil(values.length / 8));
+  values.forEach((value, i) => {
+    if (value !== null) validity[i >>> 3] |= 1 << (i & 7);
+  });
+  return {
+    kind: 'reference',
+    index: target,
+    values: Uint32Array.from(values, (value) => value ?? 0),
+    offset: 0,
+    length: values.length,
+    ...(values.includes(null) ? { validity } : {}),
+  };
 }
 export function text(values: readonly string[]): TextColumn {
   const encoder = new TextEncoder();

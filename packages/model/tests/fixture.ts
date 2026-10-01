@@ -24,7 +24,7 @@ export { failure } from './source.js';
 export const fixtureSchema: Schema = {
   queries: ['rows', 'aggregate'],
   limits: { maxBlockBytes: 4096 },
-  components: {
+  types: {
     Node: {
       fields: {
         value: { type: 'float64' },
@@ -33,7 +33,6 @@ export const fixtureSchema: Schema = {
       },
     },
   },
-  connections: {},
 };
 export async function collect<B extends QueryBlock>(
   source: AsyncIterable<QueryHeader | B>,
@@ -82,7 +81,7 @@ function coverageOf(fields: readonly FieldSelection[], inputs: Inputs): Map<stri
     if (selection.from !== 'Node' || !selection.select.length) throw failure('invalid-input');
     const rows = selectRows(inputs, selection.rows);
     for (const field of selection.select) {
-      if (!fixtureSchema.components.Node.fields[field]?.sampled || coverage.has(field))
+      if (!fixtureSchema.types.Node.fields[field]?.sampled || coverage.has(field))
         throw failure('invalid-input');
       coverage.set(field, rows);
     }
@@ -243,12 +242,12 @@ export class FixtureRecording extends Source implements Recording {
   ) {
     super(model.retention);
     this.inputs = model.inputs;
-    const { fields } = fixtureSchema.components.Node;
+    const { fields } = fixtureSchema.types.Node;
     this.schema = {
       ...fixtureSchema,
       queries: ['rows', 'samples', 'aggregate'],
       axis: { name: 'time', unit: 's' },
-      components: {
+      types: {
         Node: {
           fields: Object.fromEntries(
             Object.entries(fields).filter(

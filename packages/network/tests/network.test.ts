@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createGpu, type FieldValues } from '@latkit/gpu';
 import { createNetwork } from '../src/index.js';
 import type { NetworkData } from '../src/data.js';
-import { readGeometry, DEFAULT_LIMITS } from '../src/geometry/connectivity.js';
+import { readGeometry, DEFAULT_LIMITS } from '../src/geometry/topology.js';
 import { HOVER_EXHAUSTED, PickGeometry } from '../src/picking.js';
 import { featureSource } from './paths-fixture.js';
 import { GraphSource } from './fixture.js';
@@ -12,19 +12,8 @@ function fixture(count = 25, blockRows = 8) {
   const source = new GraphSource(count, blockRows);
   const data: NetworkData = {
     source,
-    coordinates: 'cartesian',
     vertices: { node: { position: 'location', color: { field: 'signal', domain: [0, 1] } } },
-    edges: {
-      line: {
-        connectivity: {
-          kind: 'links',
-          ports: ['a', 'b'],
-          through: 'attachment',
-          role: 'node',
-          to: 'node',
-        },
-      },
-    },
+    edges: { line: { ends: ['from', 'to'] } },
   };
   return { source, data };
 }
@@ -161,7 +150,7 @@ it('picks the submitted frame and does not publish a cancelled candidate', async
   gpu.destroy();
 });
 
-it('rebinds immutable live positions without querying connectivity and picks immediately', async () => {
+it('rebinds immutable live positions without rereading topology and picks immediately', async () => {
   const { source, data } = fixture(),
     gpu = await createGpu({ device: device().device }),
     network = createNetwork({ gpu, data });
@@ -392,11 +381,11 @@ it('pauses auto hover during coordinate and camera motion, then wakes after sett
   await render(1);
   expect(nearest).toHaveBeenCalledTimes(1);
   expect(network.stats().hover).toBe('active');
-  const links = source.linksQueries;
+  const ends = source.endsQueries;
   network.panBy(10, 0);
   await render(1);
   expect(network.stats().hover).toBe('moving');
-  expect(source.linksQueries).toBe(links);
+  expect(source.endsQueries).toBe(ends);
   invalidate.mockClear();
   network.destroy();
   invalidate.mockClear();
@@ -491,17 +480,16 @@ it('keeps hover active across color-only samples and reuses a valid spatial inde
   gpu.destroy();
 });
 
-it('renders bends, segmented star endpoints, geodesics, and native paths with original identities', async () => {
+it('renders bends, nets as stars, geodesics, and native paths with original identities', async () => {
   const source = featureSource(),
     gpu = await createGpu({ device: device().device });
   const data: NetworkData = {
     source,
-    coordinates: 'geographic',
     vertices: { node: { position: 'position' } },
     edges: {
-      bend: { connectivity: { kind: 'endpoints', layout: 'pair' }, bends: 'points' },
-      star: { connectivity: { kind: 'endpoints', layout: 'star' } },
-      route: { connectivity: { kind: 'endpoints', layout: 'pair' }, curve: 'geodesic' },
+      bend: { ends: ['from', 'to'], bends: 'points' },
+      star: {},
+      route: { ends: ['from', 'to'], curve: 'geodesic' },
     },
     paths: { seam: { points: 'points', pickable: true } },
   };
@@ -535,7 +523,7 @@ it('renders bends, segmented star endpoints, geodesics, and native paths with or
   expect(gpu.stats().gpuBytes).toBe(0);
   gpu.destroy();
 });
-it('keeps edges pickable when only endpoint markers are hidden', async () => {
+it('keeps edges pickable when only their vertex markers are hidden', async () => {
   const { source, data } = fixture(4),
     gpu = await createGpu({ device: device().device });
   const hidden: FieldValues = {
@@ -563,9 +551,8 @@ it('picks a geodesic arc at its visible arc-length midpoint in every projection'
     gpu,
     data: {
       source,
-      coordinates: 'geographic',
       vertices: { node: { position: 'position' } },
-      edges: { route: { connectivity: { kind: 'endpoints', layout: 'pair' }, curve: 'geodesic' } },
+      edges: { route: { ends: ['from', 'to'], curve: 'geodesic' } },
     },
     camera: { centerX: -30, centerY: 5, scale: 4 },
     options: { vertices: false, edgeWidthPx: 3 },

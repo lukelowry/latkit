@@ -8,6 +8,7 @@ export type DataType =
   | NumericType
   | 'text'
   | 'boolean'
+  /** A row of type `to`: how one row is wired to another. */
   | { readonly kind: 'reference'; readonly to: string }
   | { readonly kind: 'vector'; readonly items: NumericType; readonly size: number }
   | { readonly kind: 'list'; readonly items: DataType };
@@ -88,5 +89,13 @@ export interface ListColumn extends Slice {
   readonly values: Column;
 }
 
+/** Rows of the referenced type, numbered by its Index. A zero validity bit is unwired. */
+export interface ReferenceColumn extends Slice {
+  readonly kind: 'reference';
+  readonly index: Index;
+  readonly values: Uint32Array;
+}
+
 /** Arrow-compatible primitive buffer layouts; this is not an Arrow IPC envelope. */
-export type Column = NumericColumn | BooleanColumn | TextColumn | VectorColumn | ListColumn;
+export type Column =
+  NumericColumn | BooleanColumn | TextColumn | VectorColumn | ListColumn | ReferenceColumn;

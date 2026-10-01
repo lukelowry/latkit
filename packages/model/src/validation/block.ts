@@ -2,9 +2,9 @@ import { blockBuffers, blockByteLength } from '../buffers.js';
 import type { Query, QueryBlock, QueryOptions } from '../query.js';
 import type { Schema } from '../schema.js';
 import type { Problem } from '../types.js';
-import { Check, own, record } from './check.js';
-import { bytes, column, offsetsOf, uints } from './column.js';
-import { fieldsOf, index } from './query.js';
+import { Check, index, own, record } from './check.js';
+import { bytes, column, identities } from './column.js';
+import { fieldsOf } from './query.js';
 import { rowAxis } from './axis.js';
 
 /**
@@ -61,12 +61,7 @@ export function validateBlock(
           );
     }
   }
-  if (
-    query.kind === 'rows' ||
-    query.kind === 'samples' ||
-    query.kind === 'envelope' ||
-    query.kind === 'links'
-  ) {
+  if (query.kind === 'rows' || query.kind === 'samples' || query.kind === 'envelope') {
     const rows = rowAxis(c, block.rows, ['rows']);
     if (rows && query.rows?.kind === 'range') {
       const { offset, count } = query.rows;
@@ -97,13 +92,12 @@ export function validateBlock(
       c.integer(block.position, ['position']);
       if (own(block, 'total')) c.integer(block.total, ['total'], rows?.length ?? 0);
       if (query.count && !own(block, 'total')) c.issue(['total'], 'Count was requested.');
-      if (query.ids)
-        column(c, block.ids, { kind: 'reference', to: query.from }, false, ['ids'], rows?.length);
+      if (query.ids) identities(c, block.ids, ['ids'], rows?.length);
       else if (own(block, 'ids')) c.issue(['ids'], 'Identity strings were not requested.');
       const columns = c.object(block.columns, ['columns']);
       exactKeys(c, columns, query.select, ['columns']);
       for (const field of query.select)
-        if (own(fields, field))
+        if (own(fields, field)) {
           column(
             c,
             columns[field],
@@ -114,6 +108,10 @@ export function validateBlock(
             0,
             !fields[field].sampled,
           );
+          references(columns[field], (target, path) =>
+            sameSource(c, block.index, target.index, ['columns', field, ...path, 'index']),
+          );
+        }
     } else if (query.kind === 'samples') {
       c.integer(block.rowOffset, ['rowOffset']);
       c.integer(block.firstFrame, ['firstFrame']);
@@ -310,93 +308,7 @@ export function validateBlock(
             }
           }
         }
-    } else {
-      index(c, block.targetIndex, ['targetIndex'], query.to);
-      sameSource(c, block.index, block.targetIndex, ['targetIndex']);
-      uints(c, block.source, ['source'], rows?.length);
-      uints(c, block.target, ['target'], rows?.length);
-      const mask = bytes(c, block.validity, ['validity']);
-      if (mask && rows && mask.length !== Math.ceil(rows.length / 8))
-        c.issue(['validity'], 'Link validity must cover exactly the row axis.');
     }
-  } else if (query.kind === 'endpoints') {
-    const connections = uints(c, block.connections, ['connections']);
-    const componentRows = uints(c, block.componentRow, ['componentRow']);
-    const count = componentRows?.length ?? 0;
-    const types = uints(c, block.componentType, ['componentType'], count);
-    const ports = uints(c, block.port, ['port'], count);
-    const roles = uints(c, block.role, ['role'], count);
-    const first = uints(c, block.firstEndpoint, ['firstEndpoint'], connections?.length);
-    const total = uints(c, block.totalEndpoints, ['totalEndpoints'], connections?.length);
-    const offsets = offsetsOf(c, block.offsets, 0, connections?.length ?? 0, count, ['offsets']);
-    if (
-      offsets &&
-      connections &&
-      (offsets[0] !== 0 ||
-        offsets.length !== connections.length + 1 ||
-        offsets[connections.length] !== count)
-    )
-      c.issue(['offsets'], 'CSR offsets must cover the full endpoint axis.');
-    const indexes = c.array(block.componentIndexes, ['componentIndexes']);
-    const indexTypes = new Set<unknown>();
-    for (const [i, idx] of indexes.entries()) {
-      if (record(idx)) {
-        if (indexTypes.has(idx.type))
-          c.issue(['componentIndexes', i], 'Each component type needs one index dictionary entry.');
-        indexTypes.add(idx.type);
-      }
-      index(c, idx, ['componentIndexes', i]);
-      sameSource(c, block.index, idx, ['componentIndexes', i]);
-      if (record(idx) && (typeof idx.type !== 'string' || !own(schema.components, idx.type)))
-        c.issue(['componentIndexes', i], 'Endpoint index must name a component type.');
-    }
-    const names = c.array(block.portNames, ['portNames']);
-    if (new Set(names).size !== names.length) c.issue(['portNames'], 'Duplicate dictionary entry.');
-    for (const [i, name] of names.entries()) if (name !== null) c.text(name, ['portNames', i]);
-    const roleNames = c.strings(
-      block.roleNames,
-      ['roleNames'],
-      Object.keys(schema.connections[query.from]?.roles ?? {}),
-    );
-    if (types && ports && roles)
-      for (let i = 0; i < count; i++) {
-        const idx = indexes[types[i]];
-        if (!record(idx)) c.issue(['componentType', i], 'Dictionary index is out of bounds.');
-        if (ports[i] >= names.length) c.issue(['port', i], 'Dictionary index is out of bounds.');
-        if (roles[i] >= roleNames.length)
-          c.issue(['role', i], 'Dictionary index is out of bounds.');
-        if (record(idx) && typeof idx.type === 'string' && own(schema.components, idx.type)) {
-          const declared = schema.components[idx.type].ports ?? {};
-          const port = names[ports[i]];
-          if (
-            port === null
-              ? Object.keys(declared).length > 0
-              : typeof port !== 'string' || !own(declared, port)
-          )
-            c.issue(['port', i], 'Port is not declared by the endpoint component type.');
-        }
-      }
-    if (connections && offsets && first && total)
-      for (let i = 0; i < connections.length; i++) {
-        const size = offsets[i + 1] - offsets[i];
-        if (size === 0 && total[i] !== 0)
-          c.issue(
-            ['connections', i],
-            'Empty segments cannot make progress through a nonempty connection.',
-          );
-        if (first[i] + size > total[i])
-          c.issue(['firstEndpoint', i], 'Segment exceeds total endpoint count.');
-        if (first[i] === 0 && size === total[i] && roles) {
-          const declared = schema.connections[query.from]?.roles ?? {};
-          for (const [name, role] of Object.entries(declared)) {
-            let actual = 0;
-            for (let j = offsets[i]; j < offsets[i + 1]; j++)
-              if (roleNames[roles[j]] === name) actual++;
-            if (actual < role.min || (role.max !== undefined && actual > role.max))
-              c.issue(['connections', i], 'Endpoint role cardinality is invalid.');
-          }
-        }
-      }
   } else {
     const values = c.object(block.values, ['values']);
     if (!Object.keys(values).length)
@@ -434,6 +346,17 @@ function exactKeys(
     if (!own(object, name)) c.issue([...path, name], 'Missing requested value.');
   for (const name of Object.keys(object))
     if (!expected.includes(name)) c.issue([...path, name], 'Unrequested value.');
+}
+/** Every reference column within a column, nested ones included. */
+function references(
+  value: unknown,
+  visit: (column: Record<string, unknown>, path: readonly (string | number)[]) => void,
+  path: readonly (string | number)[] = [],
+): void {
+  if (!record(value)) return;
+  if (value.kind === 'reference') visit(value, path);
+  else if (value.kind === 'vector' || value.kind === 'list')
+    references(value.values, visit, [...path, 'values']);
 }
 function sameSource(c: Check, a: unknown, b: unknown, path: readonly (string | number)[]): void {
   if (record(a) && record(b) && a.source !== b.source)

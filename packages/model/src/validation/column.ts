@@ -1,5 +1,5 @@
 import type { DataType } from '../data.js';
-import { Check, own } from './check.js';
+import { Check, index, own } from './check.js';
 import type { Path } from './check.js';
 
 const arrays = {
@@ -66,7 +66,7 @@ export function column(
     const values = bytes(c, col.values, [...path, 'values']);
     if (values && values.length < Math.ceil(end / 8))
       c.issue([...path, 'values'], 'Boolean bitmap is too short.');
-  } else if (type === 'text' || (typeof type === 'object' && type.kind === 'reference')) {
+  } else if (type === 'text') {
     if (col.kind !== 'text') c.issue([...path, 'kind'], 'Expected text column.');
     const values = bytes(c, col.bytes, [...path, 'bytes']);
     const offsets = offsetsOf(c, col.offsets, offset, end, values?.length ?? 0, [
@@ -77,13 +77,16 @@ export function column(
       for (let i = offset; i < end; i++)
         if (active(i - offset) && present(i)) {
           try {
-            const text = decoder.decode(values.subarray(offsets[i], offsets[i + 1]));
-            if (typeof type === 'object' && !text.length)
-              c.issue([...path, i], 'Reference identity must be nonempty.');
+            decoder.decode(values.subarray(offsets[i], offsets[i + 1]));
           } catch {
             c.issue([...path, i], 'Invalid UTF-8.');
           }
         }
+  } else if (typeof type === 'object' && type.kind === 'reference') {
+    if (col.kind !== 'reference') c.issue([...path, 'kind'], 'Expected reference column.');
+    index(c, col.index, [...path, 'index'], type.to);
+    const values = uints(c, col.values, [...path, 'values']);
+    if (values && values.length < end) c.issue([...path, 'values'], 'Reference view is too short.');
   } else if (typeof type === 'object' && type.kind === 'vector') {
     if (col.kind !== 'vector' || col.size !== type.size)
       c.issue(path, 'Vector layout does not match its type.');
@@ -138,6 +141,19 @@ export function column(
       },
     );
   }
+}
+
+/** Row identities: a text column of nonempty strings. */
+export function identities(c: Check, value: unknown, path: Path, length?: number): void {
+  const before = c.issues.length;
+  column(c, value, 'text', false, path, length);
+  if (c.issues.length !== before) return;
+  const col = value as { offset: number; length: number; offsets: Int32Array };
+  for (let i = col.offset; i < col.offset + col.length; i++)
+    if (col.offsets[i] === col.offsets[i + 1]) {
+      c.issue([...path, i], 'Row identity must be nonempty.');
+      return;
+    }
 }
 
 export function bytes(c: Check, value: unknown, path: Path): Uint8Array | undefined {

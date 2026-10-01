@@ -31,7 +31,7 @@ export interface Options extends importHoverOptions {
   readonly vertexSelectedPx?: number;
   readonly edgeHoverPx?: number;
   readonly edgeSelectedPx?: number;
-  readonly focusEndpointMode?: 'off' | 'selected' | 'hover-selected';
+  readonly focusEnds?: 'off' | 'selected' | 'hover-selected';
   readonly fitPaddingPx?: Insets;
   readonly fitPitch?: number;
   readonly fitBearing?: number;
@@ -71,7 +71,7 @@ export const DEFAULTS: Required<Options> = Object.freeze({
   vertexSelectedPx: 4,
   edgeHoverPx: 2,
   edgeSelectedPx: 3,
-  focusEndpointMode: 'hover-selected',
+  focusEnds: 'hover-selected',
   fitPaddingPx: 48,
   fitPitch: 45,
   fitBearing: 0,
@@ -114,9 +114,9 @@ export function resolveOptions(patch: Options, previous = DEFAULTS): Required<Op
     } else if (key === 'motion') {
       if (!['auto', 'reduce', 'full'].includes(value as string))
         throw new GpuError('invalid-input', 'Invalid motion');
-    } else if (key === 'focusEndpointMode') {
+    } else if (key === 'focusEnds') {
       if (!['off', 'selected', 'hover-selected'].includes(value as string))
-        throw new GpuError('invalid-input', 'Invalid endpoint focus');
+        throw new GpuError('invalid-input', 'Invalid end focus');
     } else if (!Number.isFinite(value) || (value as number) < 0)
       throw new GpuError('invalid-input', 'Invalid option: ' + key);
     if (

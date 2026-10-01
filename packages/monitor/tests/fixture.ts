@@ -83,7 +83,7 @@ export class SignalSource implements Queryable {
       ],
       limits: { maxBlockBytes: 256 * 1024 },
       axis: { name: 'coordinate' },
-      components: {
+      types: {
         signal: {
           fields: {
             value: { type: 'float64', sampled: true, nullable: true },
@@ -93,7 +93,6 @@ export class SignalSource implements Queryable {
           },
         },
       },
-      connections: {},
     };
   }
   async describe() {
@@ -194,7 +193,6 @@ export class SignalSource implements Queryable {
       yield { kind: 'schema', version, schema: this.schema };
       if (!['samples', 'rows', 'aggregate', 'envelope'].includes(query.kind))
         throw new Error('unsupported');
-      if (query.kind === 'endpoints' || query.kind === 'links') throw new Error('unsupported');
       if (query.rows && query.rows.kind !== 'ids' && query.rows.index)
         assertIndex(query.rows.index, this.index);
       const rows: RowAxis =

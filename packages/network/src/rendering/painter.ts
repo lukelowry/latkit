@@ -21,7 +21,7 @@ import {
   type VertexBank,
   type EdgeBank,
   type SegmentBatch,
-} from '../geometry/connectivity.js';
+} from '../geometry/topology.js';
 import type { Options } from '../options.js';
 import type { Shade } from '@latkit/gpu';
 import { defaultShade } from '@latkit/gpu';
@@ -94,7 +94,7 @@ export class Painter {
   private buffers = new Map<object, BufferResource>();
   private textures: { key: string; depth: TextureResource; color?: TextureResource } | undefined;
   private readonly dummy: BufferResource;
-  private focusData = new BufferData({ size: 16, label: 'network endpoint focus' });
+  private focusData = new BufferData({ size: 16, label: 'network end focus' });
   private focusKey = '';
   private focusGeometry?: Geometry;
   private phases = new WeakMap<SegmentBatch, BufferData>();
@@ -184,7 +184,7 @@ export class Painter {
         Math.sin(camera.centerY * DEG),
         Math.cos(camera.centerY * DEG),
         state.height,
-        data.coordinates === 'geographic' ? 1 : 0,
+        geometry.geographic ? 1 : 0,
       ],
       12,
     );
@@ -233,10 +233,7 @@ export class Painter {
       48,
     );
     f.set(
-      [
-        ...sun(options.sunTime ?? Date.now()),
-        options.daylight && data.coordinates === 'geographic' ? 1 : 0,
-      ],
+      [...sun(options.sunTime ?? Date.now()), options.daylight && geometry.geographic ? 1 : 0],
       52,
     );
     f.set(
@@ -249,7 +246,7 @@ export class Painter {
     const focusKey = JSON.stringify([
       reference(state.selected),
       reference(state.hover),
-      options.focusEndpointMode,
+      options.focusEnds,
       options.focusEnabled,
     ]);
     if (focusKey !== this.focusKey || this.focusGeometry !== focusGeometry) {
@@ -262,8 +259,8 @@ export class Painter {
           if (
             !item ||
             item.kind !== 'edge' ||
-            options.focusEndpointMode === 'off' ||
-            (level === 1 && options.focusEndpointMode !== 'hover-selected')
+            options.focusEnds === 'off' ||
+            (level === 1 && options.focusEnds !== 'hover-selected')
           )
             continue;
           for (const vertex of geometry.adjacency.neighborhood(item, data))
@@ -375,7 +372,7 @@ export class Painter {
         .flatMap((bank) => bank.batches.map((batch) => batch.records.length / 4)),
     );
     if (curveCount) {
-      if (data.coordinates !== 'geographic')
+      if (!geometry.geographic)
         throw new GpuError('invalid-input', 'Geodesics require geographic coordinates');
       const capacity = curveCount * 181;
       if (!this.curves || capacity > this.curves.capacity) {
