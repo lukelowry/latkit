@@ -1,6 +1,7 @@
+import type { HoverOptions as importHoverOptions } from '@latkit/gpu';
 import { GpuError, validateRgba, type Insets, type RGBA } from '@latkit/gpu';
 
-export interface Options {
+export interface Options extends importHoverOptions {
   readonly msaa?: 1 | 4;
   readonly vertices?: boolean;
   readonly edges?: boolean;
@@ -39,12 +40,6 @@ export interface Options {
   readonly orbitRate?: number;
   readonly motion?: 'auto' | 'reduce' | 'full';
   readonly pickRadiusPx?: number;
-  /** Automatic hover pauses during motion and suspends after exceeding its budget.
-   * Data, position bindings, projection, or hover option updates reset suspension.
-   * 'on' removes these limits; 'off' disables hover. Explicit hitTest is unaffected. */
-  readonly hover?: 'auto' | 'on' | 'off';
-  /** Cooperative CPU budget per automatic hover search. Positive milliseconds; default 2. */
-  readonly hoverBudgetMs?: number;
 }
 export const DEFAULTS: Required<Options> = Object.freeze({
   msaa: 4,

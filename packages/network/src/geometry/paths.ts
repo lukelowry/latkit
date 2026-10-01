@@ -1,4 +1,5 @@
-import { GpuError, rowAt, type NativeFields, type FieldValues } from '@latkit/gpu';
+import { rowAt } from '@latkit/model';
+import { GpuError, type NativeFields, type FieldValues } from '@latkit/gpu';
 import type { NetworkData, EdgeOptions } from '../data.js';
 import {
   BANK_ROWS,
@@ -71,7 +72,7 @@ function signature(reads: Reads, data: NetworkData): unknown[] {
   };
   for (const [bank, read] of reads.vertices) {
     column(vertexOptions(data, bank).height?.range);
-    column(read.domains.height);
+    column(read.scales.height?.domain);
     for (const tile of read.native)
       for (const name of ['position', 'x', 'y', 'height']) {
         column(tile.columns[name]);

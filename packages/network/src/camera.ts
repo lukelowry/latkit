@@ -4,7 +4,6 @@ import {
   fitCamera,
   zoomCamera,
   type Bounds2D,
-  type Camera2D,
   type Viewport,
 } from '@latkit/gpu';
 import type { Options } from './options.js';
@@ -14,7 +13,10 @@ export const PROJECTIONS = Object.freeze({
   tilt: { label: 'Tilt' },
   globe: { label: 'Globe' },
 });
-export interface Camera extends Camera2D {
+export interface Camera {
+  readonly centerX: number;
+  readonly centerY: number;
+  readonly scale: number;
   readonly projection: Projection;
   readonly pitch: number;
   readonly bearing: number;
@@ -59,7 +61,9 @@ export function fit(
   const pose = fitCamera(bounds, viewport, options.fitPaddingPx);
   return {
     ...camera,
-    ...pose,
+    centerX: pose.center[0],
+    centerY: pose.center[1],
+    scale: pose.scale[0],
     fit: true,
     bearing: options.fitBearing,
     pitch: camera.projection === 'flat' ? 0 : options.fitPitch,
@@ -71,8 +75,23 @@ export function zoom(
   anchor: readonly [number, number],
   viewport: Viewport,
 ): Camera {
-  const result = zoomCamera(camera, factor, anchor, viewport);
-  return { ...camera, ...result, scale: Math.max(1e-12, Math.min(1e12, result.scale)), fit: false };
+  const result = zoomCamera(
+    {
+      center: [camera.centerX, camera.centerY],
+      scale: [camera.scale, camera.scale],
+      yDirection: 'up',
+    },
+    factor,
+    anchor,
+    viewport,
+  );
+  return {
+    ...camera,
+    centerX: result.center[0],
+    centerY: result.center[1],
+    scale: Math.max(1e-12, Math.min(1e12, result.scale[0])),
+    fit: false,
+  };
 }
 export function move(camera: Camera, dx: number, dy: number): Camera {
   const b = camera.bearing * DEG,

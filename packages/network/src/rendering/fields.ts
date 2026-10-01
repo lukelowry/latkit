@@ -1,22 +1,13 @@
+import { resolveScale, scaleValue } from '@latkit/gpu';
 import {
   GpuError,
-  rowCount,
-  rowAt,
   type FieldInput,
-  type FieldValues,
   type GpuPage,
   type NativeFields,
   type Preparation,
 } from '@latkit/gpu';
-import type { Domain } from '@latkit/model';
-import type {
-  ColorScale,
-  EdgeOptions,
-  PathOptions,
-  Position,
-  Scale,
-  VertexOptions,
-} from '../data.js';
+import type { ColorScale, Position2D as Position, Scale } from '@latkit/gpu';
+import type { EdgeOptions, PathOptions, VertexOptions } from '../data.js';
 import type { VertexBank, EdgeBank } from '../geometry/connectivity.js';
 import { nativeValue } from '../geometry/rows.js';
 export interface ReadPage {
@@ -26,40 +17,13 @@ export interface ReadPage {
 export interface FieldRead {
   readonly pages: readonly ReadPage[];
   readonly native: readonly NativeFields[];
-  readonly domains: Readonly<Record<string, Domain>>;
+  readonly scales: Readonly<Record<string, import('@latkit/gpu').ResolvedScale>>;
   readonly vector: boolean;
-}
-const extents = new WeakMap<
-  object,
-  WeakMap<object, { mask?: WeakRef<Uint8Array>; value: Domain }>
->();
-const identities = new WeakMap<object, FieldValues>();
-function identity(bank: VertexBank | EdgeBank): FieldValues {
-  let input = identities.get(bank);
-  if (!input) {
-    input = {
-      index: bank.index,
-      rows: bank.rows,
-      values: {
-        kind: 'boolean',
-        offset: 0,
-        length: bank.count,
-        values: new Uint8Array(Math.ceil(bank.count / 8)),
-      },
-    };
-    identities.set(bank, input);
-  }
-  return input;
 }
 export function splitPosition(
   position: Position,
 ): position is { readonly x: FieldInput; readonly y: FieldInput } {
   return typeof position === 'object' && 'x' in position;
-}
-function validateDomain(domain: Domain): Domain {
-  if (domain.length !== 2 || !domain.every(Number.isFinite) || domain[1] < domain[0])
-    throw new GpuError('invalid-input', 'Invalid field domain');
-  return domain;
 }
 export async function readFields(
   frame: Preparation,
@@ -80,82 +44,81 @@ export async function readFields(
       vector = true;
     }
   }
-  for (const name of ['color', 'size', 'height'] as const) {
-    const mapped = (options as VertexOptions)[name];
+  for (const [name, mapped] of Object.entries(mappings(options))) {
     if (mapped) fields[name] = mapped.field;
   }
-  for (const name of ['visible', 'shade', 'dash'] as const) {
-    const input = (options as EdgeOptions)[name];
-    if (input != null) fields[name] = input;
-  }
-  for (const name of ['bends', 'points', 'junction'] as const) {
-    const input = (options as unknown as Record<string, FieldInput>)[name];
-    if (input) {
-      if (name === 'junction' && splitPosition(input as Position)) {
-        fields.junctionX = (input as unknown as { x: FieldInput }).x;
-        fields.junctionY = (input as unknown as { y: FieldInput }).y;
-      } else fields[name] = input;
-    }
+  const inputs = {
+    visible: options.visible,
+    shade: 'shade' in options ? options.shade : undefined,
+    dash: 'dash' in options ? options.dash : undefined,
+    bends: 'bends' in options ? options.bends : undefined,
+    points: 'points' in options ? options.points : undefined,
+  };
+  for (const [name, input] of Object.entries(inputs)) if (input != null) fields[name] = input;
+  if ('junction' in options && options.junction) {
+    if (splitPosition(options.junction)) {
+      fields.junctionX = options.junction.x;
+      fields.junctionY = options.junction.y;
+    } else fields.junction = options.junction;
   }
   const control = new Set(['bends', 'points', 'junction', 'junctionX', 'junctionY']);
-  if (!Object.keys(fields).some((name) => !control.has(name))) fields.identity = identity(bank);
   const pages: ReadPage[] = [],
     native: NativeFields[] = [];
-  for await (const page of frame.fields({
+  for await (const tile of frame.fields({
     source,
-    index: bank.index,
-    rows: bank.rows,
+    from: bank.index.type,
+    rows: { ...bank.rows, index: bank.index },
     fields,
-    float64: 'relative',
-    read: Object.keys(fields),
-    upload: Object.keys(fields).filter((name) => !control.has(name)),
   })) {
-    if (
-      vector &&
-      (page.columns.position.kind !== 'value' || page.columns.position.components !== 2)
-    )
-      throw new GpuError('invalid-input', 'Network positions must be two-component vectors');
-    if (
-      !vector &&
-      position &&
-      (page.columns.x.kind !== 'value' ||
-        page.columns.y.kind !== 'value' ||
-        page.columns.x.components !== 1 ||
-        page.columns.y.components !== 1)
-    )
-      throw new GpuError('invalid-input', 'Position axes must be scalar');
-    for (const [name, column] of Object.entries(page.columns))
+    retain(tile);
+    native.push(tile);
+    for (const page of frame.upload(tile, {
+      select: Object.keys(fields).filter((name) => !control.has(name)),
+      float64: 'relative',
+    })) {
       if (
-        name !== 'position' &&
-        name !== 'bends' &&
-        name !== 'points' &&
-        name !== 'junction' &&
-        (column.kind !== 'value' || column.components !== 1)
+        vector &&
+        (page.columns.position.kind !== 'value' || page.columns.position.components !== 2)
       )
-        throw new GpuError('invalid-input', 'Visual fields must be scalar');
-    if (page.native) {
-      for (const name of ['bends', 'points']) {
-        const column = page.native.columns[name];
+        throw new GpuError('invalid-input', 'Network positions must be two-component vectors');
+      if (
+        !vector &&
+        position &&
+        (page.columns.x.kind !== 'value' ||
+          page.columns.y.kind !== 'value' ||
+          page.columns.x.components !== 1 ||
+          page.columns.y.components !== 1)
+      )
+        throw new GpuError('invalid-input', 'Position axes must be scalar');
+      for (const [name, column] of Object.entries(page.columns))
         if (
-          column &&
-          (column.kind !== 'list' || column.values.kind !== 'vector' || column.values.size !== 2)
+          name !== 'position' &&
+          name !== 'bends' &&
+          name !== 'points' &&
+          name !== 'junction' &&
+          (column.kind !== 'value' || column.components !== 1)
         )
-          throw new GpuError(
-            'invalid-input',
-            'Paths require lists of two-component numeric vectors',
-          );
+          throw new GpuError('invalid-input', 'Visual fields must be scalar');
+      if (page.native) {
+        for (const name of ['bends', 'points']) {
+          const column = page.native.columns[name];
+          if (
+            column &&
+            (column.kind !== 'list' || column.values.kind !== 'vector' || column.values.size !== 2)
+          )
+            throw new GpuError(
+              'invalid-input',
+              'Paths require lists of two-component numeric vectors',
+            );
+        }
+        const junction = page.native.columns.junction;
+        if (junction && (junction.kind !== 'vector' || junction.size !== 2))
+          throw new GpuError('invalid-input', 'Junction positions require two-component vectors');
       }
-      const junction = page.native.columns.junction;
-      if (junction && (junction.kind !== 'vector' || junction.size !== 2))
-        throw new GpuError('invalid-input', 'Junction positions require two-component vectors');
-    }
-    pages.push({ page, offset: page.rowOffset });
-    if (page.native && !native.includes(page.native)) {
-      retain(page.native);
-      native.push(page.native);
+      pages.push({ page, offset: page.rowOffset });
     }
   }
-  return { pages, native, domains: {}, vector };
+  return { pages, native, scales: {}, vector };
 }
 /** Resolve each mapping once across all banks, never independently per upload page. */
 export async function resolveDomains(
@@ -164,7 +127,7 @@ export async function resolveDomains(
   reads: Map<VertexBank | EdgeBank, FieldRead>,
   config: (bank: VertexBank | EdgeBank) => VertexOptions | EdgeOptions | PathOptions,
 ): Promise<void> {
-  const groups = new Map<object, (VertexBank | EdgeBank)[]>();
+  const groups = new Map<VertexOptions | EdgeOptions | PathOptions, (VertexBank | EdgeBank)[]>();
   for (const bank of reads.keys()) {
     const options = config(bank),
       banks = groups.get(options) ?? [];
@@ -172,78 +135,33 @@ export async function resolveDomains(
     groups.set(options, banks);
   }
   for (const [options, banks] of groups) {
-    const domains: Record<string, Domain> = {};
-    for (const name of ['color', 'size', 'height'] as const) {
-      const mapping = (options as VertexOptions)[name];
+    const scales: Record<string, import('@latkit/gpu').ResolvedScale> = {};
+    for (const [name, mapping] of Object.entries(mappings(options))) {
       if (!mapping) continue;
-      if (
-        'range' in mapping &&
-        mapping.range &&
-        (mapping.range.length !== 2 || !mapping.range.every(Number.isFinite))
-      )
-        throw new GpuError('invalid-input', 'Invalid output range');
-      if (Array.isArray(mapping.domain)) domains[name] = validateDomain(mapping.domain as Domain);
-      else {
-        let lo = Infinity,
-          hi = -Infinity;
-        if (mapping.domain && mapping.domain !== 'auto') {
-          for (const bank of banks) {
-            const extent = await frame.extent({
-              source: 'source' in bank ? (bank.source ?? source) : source,
-              index: bank.index,
-              rows: bank.rows,
-              field: mapping.field,
-              window: (mapping.domain as { window: import('@latkit/model').SampleWindow }).window,
-            });
-            if (extent) {
-              lo = Math.min(lo, extent[0]);
-              hi = Math.max(hi, extent[1]);
-            }
-          }
-        } else
-          for (const bank of banks) {
-            const read = reads.get(bank)!;
-            for (const tile of read.native) {
-              const column = tile.columns[name];
-              if (!column) continue;
-              let byBank = extents.get(column);
-              if (!byBank) {
-                byBank = new WeakMap();
-                extents.set(column, byBank);
-              }
-              const cached = byBank.get(bank),
-                mask = tile.presence[name];
-              if (cached && cached.mask?.deref() === mask) {
-                lo = Math.min(lo, cached.value[0]);
-                hi = Math.max(hi, cached.value[1]);
-                continue;
-              }
-              let min = Infinity,
-                max = -Infinity;
-              const lookup = bank.rows.kind === 'indices' ? new Set(bank.rows.values) : undefined;
-              for (let i = 0; i < rowCount(tile.rows); i++) {
-                const row = rowAt(tile.rows, i);
-                if (
-                  bank.rows.kind === 'range'
-                    ? row < bank.rows.offset || row >= bank.rows.offset + bank.count
-                    : !lookup!.has(row)
-                )
-                  continue;
-                const value = nativeValue(tile, name, i);
-                if (Number.isFinite(value)) {
-                  min = Math.min(min, value);
-                  max = Math.max(max, value);
-                }
-              }
-              byBank.set(bank, { mask: mask ? new WeakRef(mask) : undefined, value: [min, max] });
-              lo = Math.min(lo, min);
-              hi = Math.max(hi, max);
-            }
-          }
-        domains[name] = lo <= hi ? [lo, hi] : [0, 1];
+      let lo = Infinity,
+        hi = -Infinity;
+      for (const bank of banks) {
+        const scale = await frame.scale({
+          source: 'source' in bank ? (bank.source ?? source) : source,
+          from: bank.index.type,
+          rows: { ...bank.rows, index: bank.index },
+          ...mapping,
+        });
+        if (scale.domain) {
+          lo = Math.min(lo, scale.domain[0]);
+          hi = Math.max(hi, scale.domain[1]);
+        }
       }
+      scales[name] = resolveScale(
+        {
+          ...mapping,
+          range:
+            'range' in mapping ? (mapping.range ?? (name === 'size' ? [0.5, 2] : [0, 1])) : [0, 1],
+        },
+        lo <= hi ? [lo, hi] : null,
+      );
     }
-    for (const bank of banks) reads.set(bank, { ...reads.get(bank)!, domains });
+    for (const bank of banks) reads.set(bank, { ...reads.get(bank)!, scales });
   }
 }
 export function scaledValue(
@@ -256,11 +174,13 @@ export function scaledValue(
 ): number {
   const raw = nativeValue(tile, name, row);
   if (!mapping || !Number.isFinite(raw)) return fallback;
-  const domain = read.domains[name] ?? [0, 1],
-    range = 'range' in mapping ? (mapping.range ?? (name === 'size' ? [0.5, 2] : [0, 1])) : [0, 1];
-  const t =
-    domain[0] === domain[1]
-      ? 0.5
-      : Math.max(0, Math.min(1, (raw - domain[0]) / (domain[1] - domain[0])));
-  return range[0] + t * (range[1] - range[0]);
+  return scaleValue(raw, read.scales[name] ?? resolveScale({}, null)) ?? fallback;
+}
+
+function mappings(options: VertexOptions | EdgeOptions | PathOptions) {
+  return {
+    color: options.color,
+    size: 'size' in options ? options.size : undefined,
+    height: 'height' in options ? options.height : undefined,
+  };
 }

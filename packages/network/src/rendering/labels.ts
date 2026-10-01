@@ -1,9 +1,8 @@
+import { textAt, bitAt } from '@latkit/model';
+import { assertIndex, rowAt, rowCount } from '@latkit/model';
 import {
   BufferData,
-  assertIndex,
   GpuError,
-  rowAt,
-  rowCount,
   type Gpu,
   type Preparation,
   type TextMetrics,
@@ -161,30 +160,24 @@ export class Labels {
           missing.splice(0, missing.length, ...candidates);
         }
         const lookup = new Map(candidates.map((c) => [c.row, c]));
-        for await (const block of frame.query(source, {
-          kind: 'rows',
+        for await (const block of frame.fields({
+          source,
           from: bank.type,
           rows: {
             kind: 'indices',
             index: bank.index,
             values: Uint32Array.from(missing, (c) => c.row),
           },
-          select: [options.field],
+          fields: { label: options.field },
         })) {
-          if (block.kind === 'schema') continue;
           assertIndex(bank.index, block.index);
-          const column = block.columns[options.field];
+          const column = block.columns.label;
           if (column?.kind !== 'text')
             throw new GpuError('invalid-input', 'Labels require text fields');
-          const decoder = new TextDecoder();
           for (let i = 0; i < rowCount(block.rows); i++) {
-            const at = column.offset + i,
-              row = rowAt(block.rows, i);
+            const row = rowAt(block.rows, i);
             if (!lookup.has(row)) throw new GpuError('invalid-input', 'Unexpected label row');
-            const valid = !column.validity || !!(column.validity[at >>> 3] & (1 << (at & 7)));
-            const text = valid
-              ? decoder.decode(column.bytes.subarray(column.offsets[at], column.offsets[at + 1]))
-              : '';
+            const text = bitAt(block.presence.label, i) ? (textAt(column, i) ?? '') : '';
             const run: TextRun = {
               text,
               font: options.font,

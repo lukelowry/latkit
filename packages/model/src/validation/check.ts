@@ -2,7 +2,7 @@ import type { Problem } from '../types.js';
 
 export type Path = readonly (string | number)[];
 export const numeric = ['float32', 'float64', 'int32', 'uint32'];
-export const kinds = ['rows', 'samples', 'endpoints', 'links', 'aggregate'];
+export const kinds = ['rows', 'samples', 'envelope', 'endpoints', 'links', 'aggregate'];
 export const own = (object: object, key: PropertyKey): boolean => Object.hasOwn(object, key);
 export const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' &&

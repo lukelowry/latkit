@@ -1,3 +1,4 @@
+import * as model from '@latkit/model';
 import { describe, expect, it } from 'vitest';
 import * as api from '../src/index.js';
 import { fakeDevice } from './fixtures/device.js';
@@ -21,7 +22,6 @@ describe('public contract and allocation boundaries', () => {
         'BufferData',
         'TextureData',
         'GpuError',
-        'assertIndex',
         'fieldShader',
         'clipStroke',
         'strokeShader',
@@ -31,28 +31,39 @@ describe('public contract and allocation boundaries', () => {
         'createGpu',
         'createPresentation',
         'createRenderTarget',
-        'rowAt',
-        'rowCount',
-        'sameIndex',
         'fitCamera',
         'cameraPoint',
         'worldPoint',
         'zoomCamera',
+        'resolveScale',
+        'scaleValue',
+        'scaleParameters',
+        'scaleShader',
+        'shadeShader',
+        'defaultShade',
+        'spotlight',
+        'premultipliedBlend',
+        'outputShader',
+        'inputModifiers',
+        'localPoint',
+        'wheelDelta',
+        'createCanvasInput',
+        'withinBudget',
       ].sort(),
     );
   });
 
   it('uses document, type, and index version to validate physical identity', () => {
     const index = { document: 'a', type: 'node', version: 'v' };
-    expect(api.sameIndex(index, { ...index })).toBe(true);
+    expect(model.sameIndex(index, { ...index })).toBe(true);
     for (const mismatch of [
       { ...index, document: 'b' },
       { ...index, type: 'edge' },
       { ...index, version: 'v2' },
     ])
-      expect(() => api.assertIndex(index, mismatch)).toThrow(api.GpuError);
-    expect(api.rowAt({ kind: 'indices', values: Uint32Array.of(100, 7) }, 1)).toBe(7);
-    expect(() => api.rowCount({ kind: 'range', offset: 0xffffffff, count: 2 })).toThrow();
+      expect(() => model.assertIndex(index, mismatch)).toThrow();
+    expect(model.rowAt({ kind: 'indices', values: Uint32Array.of(100, 7) }, 1)).toBe(7);
+    expect(() => model.rowCount({ kind: 'range', offset: 0xffffffff, count: 2 })).toThrow();
   });
 
   it('keeps working buffers and textures in the same managed budget', async () => {

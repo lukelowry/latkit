@@ -1,3 +1,4 @@
+import { resolveScale } from './scale.js';
 import {
   blockBuffers,
   type Column,
@@ -10,36 +11,40 @@ import {
   type Schema,
   type Update,
 } from '@latkit/model';
-import {
-  assertIndex,
-  rowAt,
-  rowCount,
-  sliceRows,
-  type FieldBinding,
-  type FieldsRequest,
-  type FieldValues,
-} from './binding.js';
-import type { GpuPage } from './columns.js';
+import { assertIndex, rowAt, rowCount, sliceRows } from '@latkit/model';
+import { type FieldBinding, type FieldsRequest, type FieldValues } from './binding.js';
+import type { NativeFields } from './binding.js';
+import type { Index, SamplesBlock, SampleColumn, SampleWindow } from '@latkit/model';
 import { GpuError, interruptible } from './error.js';
 import type { Entry, Memory } from './memory.js';
 import type { Preparation } from './render.js';
-import type { Uploader, UploadScope } from './uploads.js';
+import type { UploadScope } from './uploads.js';
 
-type Numeric = Exclude<FieldValues['values'], { kind: 'list' }>;
+type Numeric = Exclude<FieldValues['values'], { kind: 'list' | 'text' }>;
 type FieldColumn = FieldValues['values'];
+interface IndexedFields {
+  readonly source: Queryable;
+  readonly index: Index;
+  readonly rows: RowAxis;
+  readonly fields: FieldsRequest['fields'];
+}
+type ReadFrame = Pick<Preparation, 'query' | 'signal' | 'at'> & {
+  observe(source: Queryable): void;
+};
 interface Resolved {
   columns: Record<string, Column>;
   presence: Record<string, Uint8Array>;
   entry: Entry;
 }
 interface Cached {
-  index: FieldsRequest['index'];
+  index: Index;
   chunks: RowsBlock[];
   expected: Record<string, FieldColumn>;
   selection: RowSelection;
   entry: Entry;
   from: string;
   sampled: boolean;
+  at?: number;
   state: { stale: boolean };
 }
 interface Extent {
@@ -64,7 +69,7 @@ interface Group {
   fields: Map<string, string[]>;
 }
 interface Tile {
-  index: FieldsRequest['index'];
+  index: Index;
   rows: RowAxis;
   columns: Record<string, Column>;
   presence: Record<string, Uint8Array>;
@@ -79,24 +84,304 @@ export class Fields {
   private tiles = new Map<string, { entry: Entry; tile: Tile }>();
   constructor(
     private readonly memory: Memory,
-    private readonly uploader: Uploader,
+    private readonly tileBytes: number,
   ) {}
 
   async *prepare(
     request: FieldsRequest,
-    frame: Pick<Preparation, 'query' | 'signal' | 'at'> & { observe(source: Queryable): void },
+    frame: ReadFrame,
     scope: UploadScope,
-  ): AsyncGenerator<GpuPage> {
+  ): AsyncGenerator<NativeFields> {
+    if (!request.from) throw new GpuError('invalid-input', 'Fields require a model type');
+    if (request.window) {
+      yield* this.sampled(request, frame, scope);
+      return;
+    }
+    if (request.rows && request.rows.kind !== 'ids' && request.rows.index && !request.ids) {
+      if (request.rows.index.type !== request.from)
+        throw new GpuError('conflict', 'Selection belongs to another type');
+      yield* this.indexed(
+        { ...request, index: request.rows.index, rows: request.rows },
+        frame,
+        scope,
+      );
+      return;
+    }
+    // Discover physical identity from a real read, never from a schema or a guessed row count.
+    const selected = new Map<string, string[]>();
+    for (const [alias, input] of Object.entries(request.fields)) {
+      const field =
+        typeof input === 'string'
+          ? input
+          : 'field' in input &&
+              input.source === request.source &&
+              input.from === request.from &&
+              !input.rows
+            ? input.field
+            : undefined;
+      if (field) selected.set(field, [...(selected.get(field) ?? []), alias]);
+    }
+    const state = await this.source(request.source, frame.signal);
+    const definition =
+      state.schema.components[request.from] ??
+      state.schema.connections[request.from] ??
+      state.schema.tables?.[request.from];
+    const sampled = [...selected.keys()].some((field) => definition?.fields[field]?.sampled);
+    try {
+      for await (const block of frame.query(request.source, {
+        kind: 'rows',
+        from: request.from,
+        rows: request.rows,
+        select: [...selected.keys()],
+        ...(request.ids ? { ids: true } : {}),
+        ...(sampled ? { at: frame.at } : {}),
+      })) {
+        if (block.kind === 'schema') continue;
+        const held = this.memory.add(blockBuffers(block), 128, () => {});
+        try {
+          const fields = { ...request.fields };
+          for (const [field, aliases] of selected)
+            for (const alias of aliases)
+              fields[alias] = {
+                index: block.index,
+                rows: block.rows,
+                values: block.columns[field],
+              };
+          for await (const tile of this.indexed(
+            { source: request.source, index: block.index, rows: block.rows, fields },
+            frame,
+            scope,
+          )) {
+            const ids = block.ids && {
+              ...block.ids,
+              offset: block.ids.offset + tile.rowOffset,
+              length: rowCount(tile.rows),
+            };
+            yield this.native(
+              { ...tile, rowOffset: block.position + tile.rowOffset, ...(ids ? { ids } : {}) },
+              frame.signal,
+            );
+          }
+        } finally {
+          this.memory.remove(held);
+        }
+      }
+    } finally {
+      state.entry.unpin();
+    }
+  }
+
+  private native(tile: Omit<NativeFields, 'retain'>, signal: AbortSignal): NativeFields {
+    return {
+      ...tile,
+      retain: () => {
+        signal.throwIfAborted();
+        const entry = this.memory.add(
+          backings(tile),
+          128 + Object.keys(tile.columns).length * 32,
+          () => {},
+        );
+        let released = false;
+        return () => {
+          if (!released) {
+            released = true;
+            this.memory.remove(entry);
+          }
+        };
+      },
+    };
+  }
+
+  private async *sampled(
+    request: FieldsRequest,
+    frame: ReadFrame,
+    scope: UploadScope,
+  ): AsyncGenerator<NativeFields> {
+    const groups: {
+      source: Queryable;
+      from: string;
+      fields: Map<string, string[]>;
+      rows?: RowSelection;
+    }[] = [];
+    const statics: Record<string, import('./binding.js').FieldInput> = {};
+    for (const [alias, input] of Object.entries(request.fields)) {
+      if (typeof input === 'object' && 'values' in input) {
+        statics[alias] = input;
+        continue;
+      }
+      const binding: FieldBinding =
+        typeof input === 'string'
+          ? { source: request.source, from: request.from, field: input }
+          : input;
+      if (binding.from !== request.from)
+        throw new GpuError('conflict', 'Fields must belong to one model type');
+      const state = await this.source(binding.source, frame.signal);
+      try {
+        const definition =
+          state.schema.components[binding.from] ??
+          state.schema.connections[binding.from] ??
+          state.schema.tables?.[binding.from];
+        const field = definition?.fields[binding.field];
+        if (!field) throw new GpuError('invalid-input', 'Unknown field: ' + binding.field);
+        if (!field.sampled) {
+          statics[alias] = input;
+          continue;
+        }
+        let group = groups.find(
+          (g) =>
+            g.source === binding.source &&
+            this.selectionKey(g.rows) === this.selectionKey(binding.rows),
+        );
+        if (!group) {
+          group = {
+            source: binding.source,
+            from: binding.from,
+            fields: new Map(),
+            rows: binding.rows,
+          };
+          groups.push(group);
+        }
+        group.fields.set(binding.field, [...(group.fields.get(binding.field) ?? []), alias]);
+      } finally {
+        state.entry.unpin();
+      }
+    }
+    if (!groups.length)
+      throw new GpuError('invalid-input', 'A sample window requires sampled fields');
+    const anchor = groups.find((g) => !g.rows);
+    if (!anchor)
+      throw new GpuError('invalid-input', 'A sampled read requires one complete field binding');
+    for await (const block of frame.query(anchor.source, {
+      kind: 'samples',
+      from: request.from,
+      rows: request.rows,
+      select: [...anchor.fields.keys()],
+      window: request.window!,
+    })) {
+      if (block.kind === 'schema') continue;
+      const held = this.memory.add(blockBuffers(block), 128, () => {}),
+        joined: Entry[] = [];
+      try {
+        const sampledColumns: Record<string, SampleColumn> = {};
+        const sampledPresence: Record<string, Uint8Array> = {};
+        for (const [field, aliases] of anchor.fields)
+          for (const alias of aliases) sampledColumns[alias] = block.columns[field];
+        for (const group of groups) {
+          if (group === anchor) continue;
+          const chunks: SamplesBlock[] = [],
+            entries: Entry[] = [];
+          const selected = intersect(block.rows, group.rows, block.index);
+          try {
+            for await (const part of frame.query(group.source, {
+              kind: 'samples',
+              from: request.from,
+              rows: selected,
+              select: [...group.fields.keys()],
+              window: { kind: 'frames', offset: block.firstFrame, count: block.coordinates.length },
+            })) {
+              if (part.kind === 'schema') continue;
+              assertIndex(block.index, part.index);
+              chunks.push(part);
+              entries.push(this.memory.add(blockBuffers(part), 128, () => {}));
+            }
+            const merged = joinSamples(
+              block,
+              chunks,
+              [...group.fields.keys()],
+              !!group.rows,
+              this.memory,
+              selected.kind === 'ids' ? undefined : selected,
+            );
+            joined.push(this.memory.add(backings(merged), 128, () => {}));
+            for (const [field, aliases] of group.fields)
+              for (const alias of aliases) {
+                sampledColumns[alias] = merged.columns[field];
+                if (merged.presence[field]) sampledPresence[alias] = merged.presence[field];
+              }
+          } finally {
+            for (const entry of entries) this.memory.remove(entry);
+          }
+        }
+        // Static columns retain their native row addressing and broadcast over the sample axis.
+        for await (const tile of this.indexed(
+          { source: request.source, index: block.index, rows: block.rows, fields: statics },
+          frame,
+          scope,
+        )) {
+          const columns: Record<string, Column> = { ...tile.columns };
+          for (const [name, column] of Object.entries(sampledColumns))
+            columns[name] = {
+              ...column,
+              offset: column.offset + tile.rowOffset * column.rowStride,
+              length:
+                (block.coordinates.length - 1) * column.frameStride +
+                (rowCount(tile.rows) - 1) * column.rowStride +
+                1,
+            };
+          const presence = { ...tile.presence };
+          for (const [name, mask] of Object.entries(sampledPresence))
+            presence[name] = this.memory.stage(Math.ceil(rowCount(tile.rows) / 8), () =>
+              sliceBits(mask, tile.rowOffset, rowCount(tile.rows)),
+            );
+          let ids: import('@latkit/model').TextColumn | undefined;
+          let identityEntry: Entry | undefined;
+          if (request.ids) {
+            const chunks: RowsBlock[] = [],
+              heldIds: Entry[] = [];
+            try {
+              for await (const part of frame.query(request.source, {
+                kind: 'rows',
+                from: request.from,
+                rows: { ...tile.rows, index: tile.index },
+                select: [],
+                ids: true,
+              })) {
+                if (part.kind === 'schema') continue;
+                assertIndex(tile.index, part.index);
+                if (!part.ids) throw new GpuError('invalid-input', 'Identity query omitted ids');
+                heldIds.push(this.memory.add(blockBuffers(part), 128, () => {}));
+                chunks.push({ ...part, columns: { ids: part.ids } });
+              }
+              ids = assemble(tile.rows, ['ids'], chunks, false, this.memory).columns
+                .ids as import('@latkit/model').TextColumn;
+              identityEntry = this.memory.add(backings(ids), 128, () => {});
+            } finally {
+              for (const entry of heldIds) this.memory.remove(entry);
+            }
+          }
+          try {
+            const data = {
+              ...tile,
+              rowOffset: block.rowOffset + tile.rowOffset,
+              columns,
+              presence,
+              ...(ids ? { ids } : {}),
+              samples: { firstFrame: block.firstFrame, coordinates: block.coordinates },
+            };
+            const entry = this.memory.add(backings(data), 128, () => {});
+            try {
+              yield this.native(data, frame.signal);
+            } finally {
+              this.memory.remove(entry);
+            }
+          } finally {
+            if (identityEntry) this.memory.remove(identityEntry);
+          }
+        }
+      } finally {
+        for (const entry of joined) this.memory.remove(entry);
+        this.memory.remove(held);
+      }
+    }
+  }
+
+  private async *indexed(
+    request: IndexedFields,
+    frame: ReadFrame,
+    scope: UploadScope,
+  ): AsyncGenerator<NativeFields> {
     const count = rowCount(request.rows),
       names = Object.keys(request.fields);
-    if (!names.length) throw new GpuError('invalid-input', 'Fields must be nonempty');
-    const readNames = [...new Set(request.read ?? [])];
-    const uploadNames = [...new Set(request.upload ?? names)];
-    if (!uploadNames.length || uploadNames.some((name) => !names.includes(name)))
-      throw new GpuError('invalid-input', 'Upload aliases must be a nonempty subset of fields');
-    for (const name of readNames)
-      if (!names.includes(name))
-        throw new GpuError('invalid-input', 'Unknown native field: ' + name);
     if (!count) return;
     const states = new Map<Queryable, Source>();
     const groups: Group[] = [],
@@ -167,7 +452,7 @@ export class Fields {
       // Both gathering and upload conversion are bounded; the stream never gathers the full model.
       const tileRows = Math.max(
         1,
-        Math.floor(Math.min(this.uploader.pageBytes, this.memory.budget.stagingBytes / 2) / width),
+        Math.floor(Math.min(this.tileBytes, this.memory.budget.stagingBytes / 2) / width),
       );
       for (let offset = 0; offset < count; offset += tileRows) {
         frame.signal.throwIfAborted();
@@ -229,50 +514,16 @@ export class Fields {
               }
               cached.entry.pin();
               try {
-                const nativeColumns = Object.fromEntries(
-                  readNames.map((name) => [name, cached!.tile.columns[name]]),
+                yield this.native(
+                  {
+                    index: request.index,
+                    rows: selected,
+                    rowOffset: offset + sorted[part - 1],
+                    columns: cached.tile.columns,
+                    presence: cached.tile.presence,
+                  },
+                  frame.signal,
                 );
-                const nativePresence = Object.fromEntries(
-                  readNames
-                    .filter((name) => cached!.tile.presence?.[name])
-                    .map((name) => [name, cached!.tile.presence![name]]),
-                );
-                const native = readNames.length
-                  ? {
-                      index: request.index,
-                      rows: selected,
-                      columns: nativeColumns as import('./binding.js').NativeFields['columns'],
-                      presence: nativePresence,
-                      retain: () => {
-                        frame.signal.throwIfAborted();
-                        const entry = this.memory.add(
-                          backings({ selected, nativeColumns, nativePresence }),
-                          128 + readNames.length * 32,
-                          () => {},
-                        );
-                        let released = false;
-                        return () => {
-                          if (!released) {
-                            released = true;
-                            this.memory.remove(entry);
-                          }
-                        };
-                      },
-                    }
-                  : undefined;
-                for (const page of this.uploader.fields(
-                  cached.tile,
-                  { select: uploadNames, float64: request.float64 },
-                  scope,
-                )) {
-                  frame.signal.throwIfAborted();
-                  const rowOffset = offset + sorted[part - 1] + page.rowOffset;
-                  yield native
-                    ? { ...page, rowOffset, native }
-                    : rowOffset === page.rowOffset
-                      ? page
-                      : { ...page, rowOffset };
-                }
               } finally {
                 cached.entry.unpin();
               }
@@ -287,6 +538,55 @@ export class Fields {
     } finally {
       for (const state of states.values()) state.entry.unpin();
     }
+  }
+
+  async scale(
+    request: import('./scale.js').ScaleRequest,
+    frame: ReadFrame,
+    scope: UploadScope,
+  ): Promise<import('./scale.js').ResolvedScale> {
+    if (Array.isArray(request.domain))
+      return resolveScale(request, request.domain as import('@latkit/model').Domain);
+    const window =
+      request.domain && request.domain !== 'auto'
+        ? (request.domain as { window: SampleWindow }).window
+        : request.window;
+    if (request.rows && request.rows.kind !== 'ids' && request.rows.index) {
+      return resolveScale(
+        request,
+        await this.extent(
+          {
+            source: request.source,
+            index: request.rows.index,
+            rows: request.rows,
+            field: request.field,
+            window,
+          },
+          frame,
+          scope,
+        ),
+      );
+    }
+    let lo = Infinity,
+      hi = -Infinity;
+    for await (const tile of this.prepare(
+      {
+        source: request.source,
+        from: request.from,
+        rows: request.rows,
+        fields: { value: request.field },
+        window,
+      },
+      frame,
+      scope,
+    )) {
+      const extent = nativeExtent(tile, 'value');
+      if (extent) {
+        lo = Math.min(lo, extent[0]);
+        hi = Math.max(hi, extent[1]);
+      }
+    }
+    return resolveScale(request, lo <= hi ? [lo, hi] : null);
   }
 
   async extent(
@@ -369,7 +669,42 @@ export class Fields {
         if (affects(change, { from: binding.from, sampled })) changed = true;
       });
       try {
-        if (state.schema.queries.includes('aggregate') && rows.kind !== 'ids') {
+        const native =
+          !request.window &&
+          [...state.cache.values()].find(
+            (cached) =>
+              cached.entry.live &&
+              !cached.state.stale &&
+              cached.from === binding.from &&
+              cached.sampled === sampled &&
+              cached.at === (sampled ? frame.at : undefined) &&
+              binding.field in cached.expected &&
+              cached.selection.kind !== 'ids' &&
+              rows.kind !== 'ids' &&
+              contiguous(cached.selection, rows) !== undefined &&
+              cached.index.document === request.index.document &&
+              cached.index.version === request.index.version,
+          );
+        if (native) {
+          const group: Group = {
+            source: binding.source,
+            state,
+            from: binding.from,
+            sampled,
+            rows: binding.rows,
+            fields: new Map([[binding.field, ['value']]]),
+          };
+          const assembled = this.assemble(native, request.rows, group);
+          try {
+            scan(
+              assembled.columns[binding.field],
+              rowCount(request.rows),
+              assembled.presence[binding.field],
+            );
+          } finally {
+            assembled.entry.unpin();
+          }
+        } else if (state.schema.queries.includes('aggregate') && rows.kind !== 'ids') {
           let seen = false;
           for await (const block of frame.query(binding.source, {
             kind: 'aggregate',
@@ -562,7 +897,7 @@ export class Fields {
 
   private async resolve(
     group: Group,
-    index: FieldsRequest['index'],
+    index: Index,
     rows: RowAxis,
     frame: Pick<Preparation, 'query' | 'signal' | 'at'>,
   ): Promise<Cached> {
@@ -575,7 +910,26 @@ export class Fields {
       fields,
       group.sampled ? (frame.at ?? null) : null,
     ]);
-    const hit = group.state.cache.get(key);
+    let hit = group.state.cache.get(key);
+    if (!hit)
+      for (const cached of group.state.cache.values()) {
+        if (
+          cached.entry.live &&
+          !cached.state.stale &&
+          cached.from === group.from &&
+          cached.sampled === group.sampled &&
+          cached.at === (group.sampled ? frame.at : undefined) &&
+          cached.selection.kind !== 'ids' &&
+          selected.kind !== 'ids' &&
+          fields.every((name) => name in cached.expected) &&
+          contiguous(cached.selection, selected) !== undefined &&
+          cached.index.document === index.document &&
+          cached.index.version === index.version
+        ) {
+          hit = cached;
+          break;
+        }
+      }
     if (hit?.entry.live && !hit.state.stale) {
       hit.entry.pin();
       this.memory.queryHits++;
@@ -605,7 +959,7 @@ export class Fields {
           for (const field of fields) {
             const column = block.columns[field];
             if (!column) throw new GpuError('invalid-input', 'Query omitted a requested field');
-            this.uploader.validate(column, rowCount(block.rows));
+            validateNative(column, rowCount(block.rows));
           }
           const entry = this.memory.add(blockBuffers(block), 128, () => {});
           held.push(entry);
@@ -643,6 +997,7 @@ export class Fields {
         entry,
         from: group.from,
         sampled: group.sampled,
+        at: group.sampled ? frame.at : undefined,
         state: { stale: false },
       };
       // The acquired data remains coherent even if an append arrives during the read. Don't cache it as latest.
@@ -656,7 +1011,11 @@ export class Fields {
   }
 
   private assemble(read: Cached, rows: RowAxis, group: Group): Resolved {
-    const key = 'read:' + this.id(read) + ':' + JSON.stringify(this.axisKey(rows));
+    const key =
+      'read:' +
+      this.id(read) +
+      ':' +
+      JSON.stringify([this.axisKey(rows), [...group.fields.keys()].sort()]);
     const hit = this.tiles.get(key);
     if (hit?.entry.live) {
       hit.entry.pin();
@@ -680,7 +1039,7 @@ export class Fields {
   }
 
   private local(input: FieldValues, rows: RowAxis): Resolved {
-    this.uploader.validate(input.values, rowCount(input.rows));
+    validateNative(input.values, rowCount(input.rows));
     const key = 'local:' + this.id(input) + ':' + JSON.stringify(this.axisKey(rows));
     const hit = this.tiles.get(key);
     if (hit?.entry.live) {
@@ -726,9 +1085,10 @@ function definitionBytes(field: FieldDefinition): number {
   }
   if (typeof type === 'object' && type.kind === 'vector') return type.size * 8 + 1;
   if (['float32', 'float64', 'int32', 'uint32', 'boolean'].includes(type as string)) return 9;
-  throw new GpuError('unsupported', 'GPU fields require numeric, vector, or boolean data');
+  return 17;
 }
 function bytesPerRow(column: FieldColumn): number {
+  if (column.kind === 'text') return 5 + column.bytes.byteLength / Math.max(1, column.length);
   if (column.kind === 'list')
     return 8 + (bytesPerRow(column.values) * column.values.length) / Math.max(1, column.length);
   return (column.kind === 'vector' ? column.size : 1) * 8 + 1;
@@ -743,11 +1103,7 @@ function backings(value: unknown): ArrayBufferLike[] {
   walk(value);
   return [...result];
 }
-function intersect(
-  rows: RowAxis,
-  selected: RowSelection | undefined,
-  index: FieldsRequest['index'],
-): RowSelection {
+function intersect(rows: RowAxis, selected: RowSelection | undefined, index: Index): RowSelection {
   if (!selected) return { ...rows, index };
   if (selected.kind === 'ids') return selected;
   if (selected.index) assertIndex(index, selected.index);
@@ -820,6 +1176,12 @@ function assemble(
   }
   for (const name of fields) {
     const sample = chunks.find((chunk) => chunk.columns[name])?.columns[name] ?? expected[name];
+    if (sample?.kind === 'text') {
+      const gathered = gatherText(rows, name, chunks, positions, partial, memory, required);
+      columns[name] = gathered.column;
+      if (gathered.presence) presence[name] = gathered.presence;
+      continue;
+    }
     if (sample?.kind === 'list') {
       const gathered = gatherLists(
         rows,
@@ -969,10 +1331,16 @@ function emptyColumn(field: FieldDefinition): FieldColumn {
   const type = field.type;
   if (typeof type === 'object' && type.kind === 'list') {
     const values = emptyColumn({ type: type.items });
-    if (values.kind !== 'numeric' && values.kind !== 'vector')
-      throw new GpuError('unsupported', 'List items must be numeric or vector');
     return { kind: 'list', offset: 0, length: 0, offsets: new Int32Array(1), values };
   }
+  if (type === 'text' || (typeof type === 'object' && type.kind === 'reference'))
+    return {
+      kind: 'text',
+      offset: 0,
+      length: 0,
+      bytes: new Uint8Array(),
+      offsets: new Int32Array(1),
+    };
   if (type === 'boolean')
     return { kind: 'boolean', offset: 0, length: 0, values: new Uint8Array() };
   const scalar = typeof type === 'object' && type.kind === 'vector' ? type.items : type;
@@ -1000,53 +1368,236 @@ function gatherLists(
   sample: import('@latkit/model').ListColumn,
   required?: RowAxis,
 ): { column: FieldColumn; presence?: Uint8Array } {
-  const leaf = sample.values;
-  if (leaf.kind !== 'numeric' && leaf.kind !== 'vector')
-    throw new GpuError('unsupported', 'List items must be numeric or vector');
-  const components = leaf.kind === 'vector' ? leaf.size : 1;
-  const scalar = leaf.kind === 'vector' ? leaf.values : leaf;
+  const count = rowCount(rows),
+    maskBytes = Math.ceil(count / 8);
+  return memory.stage(count * 32 + maskBytes * 2 + 4, () => {
+    const cells = new Map<number, { column: import('@latkit/model').ListColumn; row: number }>();
+    for (const chunk of chunks) {
+      const column = chunk.columns[name];
+      if (column?.kind !== 'list' || column.values.kind !== sample.values.kind)
+        throw new GpuError('conflict', 'List type changed across blocks');
+      for (let i = 0; i < rowCount(chunk.rows); i++)
+        for (const target of positions.get(rowAt(chunk.rows, i)) ?? []) {
+          if (cells.has(target))
+            throw new GpuError('invalid-input', 'Query returned a physical row twice');
+          cells.set(target, { column, row: column.offset + i });
+        }
+    }
+    const offsets = new Int32Array(count + 1),
+      validity = new Uint8Array(maskBytes),
+      presence = new Uint8Array(maskBytes);
+    const parts: ColumnPart[] = [],
+      requiredSet = required?.kind === 'indices' ? new Set(required.values) : undefined;
+    let length = 0,
+      complete = true,
+      nullable = false;
+    for (let i = 0; i < count; i++) {
+      const cell = cells.get(i),
+        row = rowAt(rows, i);
+      if (!cell) {
+        complete = false;
+        if (
+          !partial ||
+          requiredSet?.has(row) ||
+          (required?.kind === 'range' &&
+            row >= required.offset &&
+            row < required.offset + required.count)
+        )
+          throw new GpuError('invalid-input', 'Query did not cover the requested draw rows');
+      } else {
+        mark(presence, i);
+        if (!bit(cell.column.validity, cell.row)) nullable = true;
+        else {
+          mark(validity, i);
+          const offset = cell.column.offsets[cell.row],
+            count = cell.column.offsets[cell.row + 1] - offset;
+          if (count) parts.push({ column: cell.column.values, offset, count });
+          length += count;
+        }
+      }
+      if (length > 0x7fffffff) throw new GpuError('resource-limit', 'List offsets exceed int32');
+      offsets[i + 1] = length;
+    }
+    return {
+      column: {
+        kind: 'list',
+        offset: 0,
+        length: count,
+        offsets,
+        values: concatenate(parts, sample.values, length, memory),
+        validity: nullable ? validity : undefined,
+      },
+      presence: complete ? undefined : presence,
+    };
+  });
+}
+interface ColumnPart {
+  column: Column;
+  offset: number;
+  count: number;
+}
+function concatenate(
+  parts: readonly ColumnPart[],
+  prototype: Column,
+  length: number,
+  memory: Memory,
+): Column {
+  if (parts.length === 1)
+    return { ...parts[0].column, offset: parts[0].column.offset + parts[0].offset, length };
+  const base = { offset: 0, length };
+  if (prototype.kind === 'list')
+    return memory.stage((length + 1) * 4 + parts.length * 32, () => {
+      const offsets = new Int32Array(length + 1),
+        children: ColumnPart[] = [];
+      let cursor = 0,
+        total = 0;
+      for (const part of parts) {
+        const column = part.column;
+        if (column.kind !== 'list') throw new GpuError('conflict', 'Incompatible list items');
+        const start = column.offset + part.offset;
+        for (let i = 0; i < part.count; i++) {
+          total += column.offsets[start + i + 1] - column.offsets[start + i];
+          offsets[++cursor] = total;
+        }
+        children.push({
+          column: column.values,
+          offset: column.offsets[start],
+          count: column.offsets[start + part.count] - column.offsets[start],
+        });
+      }
+      return {
+        ...base,
+        kind: 'list',
+        offsets,
+        values: concatenate(children, prototype.values, total, memory),
+      };
+    });
+  if (prototype.kind === 'text') {
+    let bytes = 0;
+    for (const part of parts) {
+      if (part.column.kind !== 'text') throw new GpuError('conflict', 'Incompatible text items');
+      const start = part.column.offset + part.offset;
+      bytes += part.column.offsets[start + part.count] - part.column.offsets[start];
+    }
+    return memory.stage(bytes + (length + 1) * 4, () => {
+      const values = new Uint8Array(bytes),
+        offsets = new Int32Array(length + 1);
+      let cursor = 0,
+        at = 0;
+      for (const part of parts) {
+        const column = part.column as import('@latkit/model').TextColumn,
+          start = column.offset + part.offset;
+        for (let i = 0; i < part.count; i++) {
+          const text = column.bytes.subarray(
+            column.offsets[start + i],
+            column.offsets[start + i + 1],
+          );
+          values.set(text, at);
+          at += text.length;
+          offsets[++cursor] = at;
+        }
+      }
+      return { ...base, kind: 'text', bytes: values, offsets };
+    });
+  }
+  const size = prototype.kind === 'vector' ? prototype.size : 1,
+    scalar = prototype.kind === 'vector' ? prototype.values : prototype;
   const Constructor = scalar.values.constructor as {
     new (length: number): NumericArray;
     BYTES_PER_ELEMENT: number;
   };
+  return memory.stage(
+    prototype.kind === 'boolean'
+      ? Math.ceil(length / 8)
+      : length * size * Constructor.BYTES_PER_ELEMENT,
+    () => {
+      const values =
+        prototype.kind === 'boolean'
+          ? new Uint8Array(Math.ceil(length / 8))
+          : new Constructor(length * size);
+      let cursor = 0;
+      for (const part of parts) {
+        const column = part.column;
+        if (column.kind !== prototype.kind)
+          throw new GpuError('conflict', 'Incompatible list items');
+        const start = column.offset + part.offset;
+        if (column.kind === 'boolean') {
+          for (let i = 0; i < part.count; i++)
+            if (bit(column.values, start + i)) mark(values as Uint8Array, cursor + i);
+        } else if (column.kind === 'numeric')
+          values.set(column.values.subarray(start, start + part.count), cursor);
+        else if (column.kind === 'vector') {
+          if (column.size !== size) throw new GpuError('conflict', 'Incompatible vector items');
+          const at = column.values.offset + start * size;
+          values.set(column.values.values.subarray(at, at + part.count * size), cursor * size);
+        }
+        cursor += part.count;
+      }
+      if (prototype.kind === 'boolean')
+        return { ...base, kind: 'boolean', values: values as Uint8Array };
+      const numeric = {
+        kind: 'numeric' as const,
+        offset: 0,
+        length: length * size,
+        values: values as NumericArray,
+      };
+      return prototype.kind === 'vector'
+        ? { ...base, kind: 'vector', size, values: numeric }
+        : numeric;
+    },
+  );
+}
+
+function validateNative(column: Column, rows: number): void {
+  if (!column || !Number.isSafeInteger(column.offset) || column.offset < 0 || column.length < rows)
+    throw new GpuError('invalid-input', 'Column does not cover its rows');
+}
+function sliceBits(mask: Uint8Array, offset: number, count: number): Uint8Array {
+  if (offset % 8 === 0) return mask.subarray(offset / 8, Math.ceil((offset + count) / 8));
+  const result = new Uint8Array(Math.ceil(count / 8));
+  for (let i = 0; i < count; i++) if (bit(mask, offset + i)) mark(result, i);
+  return result;
+}
+function gatherText(
+  rows: RowAxis,
+  name: string,
+  chunks: readonly Pick<RowsBlock, 'rows' | 'columns'>[],
+  positions: Map<number, number[]>,
+  partial: boolean,
+  memory: Memory,
+  required?: RowAxis,
+): { column: import('@latkit/model').TextColumn; presence?: Uint8Array } {
   const count = rowCount(rows),
-    maskBytes = Math.ceil(count / 8);
-  // Admit row metadata before allocation; child payload is admitted after lengths are known.
-  return memory.stage(count * 16 + maskBytes * 2 + 4, () => {
-    const found = new Map<number, { column: import('@latkit/model').ListColumn; row: number }>();
+    cells = new Map<number, { column: import('@latkit/model').TextColumn; at: number }>();
+  return memory.stage(count * 24 + 4, () => {
     let length = 0;
     for (const chunk of chunks) {
       const column = chunk.columns[name];
-      if (
-        column?.kind !== 'list' ||
-        column.values.kind !== leaf.kind ||
-        (column.values.kind === 'vector' && column.values.size !== components)
-      )
-        throw new GpuError('conflict', 'List type changed across query blocks');
+      if (column.kind !== 'text')
+        throw new GpuError('conflict', 'Field type changed across blocks');
       for (let i = 0; i < rowCount(chunk.rows); i++)
         for (const target of positions.get(rowAt(chunk.rows, i)) ?? []) {
-          if (found.has(target))
+          if (cells.has(target))
             throw new GpuError('invalid-input', 'Query returned a physical row twice');
           const at = column.offset + i;
-          found.set(target, { column, row: at });
+          cells.set(target, { column, at });
           if (bit(column.validity, at)) length += column.offsets[at + 1] - column.offsets[at];
         }
     }
-    if (length > 0x7fffffff) throw new GpuError('resource-limit', 'List offsets exceed int32');
-    return memory.stage(length * components * Constructor.BYTES_PER_ELEMENT, () => {
-      const values = new Constructor(length * components),
-        offsets = new Int32Array(count + 1);
-      const validity = new Uint8Array(maskBytes),
-        presence = new Uint8Array(maskBytes);
+    return memory.stage(length + count / 4 + 2, () => {
+      const bytes = new Uint8Array(length),
+        offsets = new Int32Array(count + 1),
+        validity = new Uint8Array(Math.ceil(count / 8)),
+        presence = new Uint8Array(Math.ceil(count / 8));
       const requiredSet = required?.kind === 'indices' ? new Set(required.values) : undefined;
-      let cursor = 0,
-        complete = true,
-        nullable = false;
+      let at = 0,
+        nullable = false,
+        complete = true;
       for (let i = 0; i < count; i++) {
-        const cell = found.get(i);
+        const cell = cells.get(i),
+          row = rowAt(rows, i);
         if (!cell) {
           complete = false;
-          const row = rowAt(rows, i);
           if (
             !partial ||
             requiredSet?.has(row) ||
@@ -1057,38 +1608,164 @@ function gatherLists(
             throw new GpuError('invalid-input', 'Query did not cover the requested draw rows');
         } else {
           mark(presence, i);
-          const { column, row } = cell;
-          if (!bit(column.validity, row)) nullable = true;
+          if (!bit(cell.column.validity, cell.at)) nullable = true;
           else {
             mark(validity, i);
-            const child = column.values as typeof leaf;
-            const numeric = child.kind === 'vector' ? child.values : child;
-            const first =
-              numeric.offset +
-              (child.kind === 'vector' ? child.offset * components : 0) +
-              column.offsets[row] * components;
-            const n = (column.offsets[row + 1] - column.offsets[row]) * components;
-            values.set(numeric.values.subarray(first, first + n), cursor * components);
-            cursor += n / components;
+            const data = cell.column.bytes.subarray(
+              cell.column.offsets[cell.at],
+              cell.column.offsets[cell.at + 1],
+            );
+            bytes.set(data, at);
+            at += data.length;
           }
         }
-        offsets[i + 1] = cursor;
+        offsets[i + 1] = at;
       }
-      const child = { kind: 'numeric' as const, offset: 0, length: values.length, values };
       return {
         column: {
-          kind: 'list' as const,
+          kind: 'text',
           offset: 0,
           length: count,
+          bytes,
           offsets,
           validity: nullable ? validity : undefined,
-          values:
-            leaf.kind === 'vector'
-              ? { kind: 'vector' as const, offset: 0, length, size: components, values: child }
-              : child,
         },
         presence: complete ? undefined : presence,
       };
     });
   });
+}
+function joinSamples(
+  anchor: SamplesBlock,
+  chunks: readonly SamplesBlock[],
+  names: readonly string[],
+  partial: boolean,
+  memory: Memory,
+  required?: RowAxis,
+): { columns: Record<string, SampleColumn>; presence: Record<string, Uint8Array> } {
+  const rows = rowCount(anchor.rows),
+    frames = anchor.coordinates.length;
+  if (
+    chunks.length === 1 &&
+    chunks[0].firstFrame === anchor.firstFrame &&
+    chunks[0].coordinates.length === frames &&
+    contiguous(chunks[0].rows, anchor.rows) === 0 &&
+    rowCount(chunks[0].rows) === rows
+  ) {
+    for (let f = 0; f < frames; f++)
+      if (chunks[0].coordinates[f] !== anchor.coordinates[f])
+        throw new GpuError('conflict', 'Sample coordinates differ across bindings');
+    return { columns: { ...chunks[0].columns }, presence: {} };
+  }
+  return memory.stage(rows * frames * names.length * 10 + rows * 16, () => {
+    const positions = new Map<number, number>();
+    for (let i = 0; i < rows; i++) positions.set(rowAt(anchor.rows, i), i);
+    const columns: Record<string, SampleColumn> = {},
+      presence: Record<string, Uint8Array> = {};
+    for (const name of names) {
+      const prototype = chunks[0]?.columns[name];
+      const Constructor = (prototype?.values.constructor ?? Float64Array) as {
+        new (length: number): NumericArray;
+      };
+      const values = new Constructor(rows * frames),
+        validity = new Uint8Array(Math.ceil((rows * frames) / 8)),
+        seen = new Uint8Array(validity.length),
+        covered = new Uint32Array(rows);
+      for (const chunk of chunks) {
+        const column = chunk.columns[name];
+        if (!column) throw new GpuError('invalid-input', 'Sample query omitted a field');
+        for (let f = 0; f < chunk.coordinates.length; f++) {
+          const targetFrame = chunk.firstFrame + f - anchor.firstFrame;
+          if (
+            targetFrame < 0 ||
+            targetFrame >= frames ||
+            chunk.coordinates[f] !== anchor.coordinates[targetFrame]
+          )
+            throw new GpuError('conflict', 'Sample coordinates differ across bindings');
+          for (let r = 0; r < rowCount(chunk.rows); r++) {
+            const targetRow = positions.get(rowAt(chunk.rows, r));
+            if (targetRow === undefined) continue;
+            const to = targetFrame * rows + targetRow,
+              from = column.offset + f * column.frameStride + r * column.rowStride;
+            if (bit(seen, to)) throw new GpuError('invalid-input', 'Overlapping sample tiles');
+            mark(seen, to);
+            covered[targetRow]++;
+            if (bit(column.validity, from)) {
+              mark(validity, to);
+              values[to] = column.values[from];
+            }
+          }
+        }
+      }
+      const mask = new Uint8Array(Math.ceil(rows / 8));
+      let complete = true;
+      const requiredSet = required?.kind === 'indices' ? new Set(required.values) : undefined;
+      for (let r = 0; r < rows; r++) {
+        if (covered[r] === frames) mark(mask, r);
+        else if (
+          covered[r] ||
+          !partial ||
+          requiredSet?.has(rowAt(anchor.rows, r)) ||
+          (required?.kind === 'range' &&
+            rowAt(anchor.rows, r) >= required.offset &&
+            rowAt(anchor.rows, r) < required.offset + required.count)
+        )
+          throw new GpuError('invalid-input', 'Sample query did not cover its requested rectangle');
+        else complete = false;
+      }
+      columns[name] = {
+        kind: 'numeric',
+        offset: 0,
+        length: values.length,
+        values,
+        validity,
+        frameStride: rows,
+        rowStride: 1,
+      };
+      if (!complete) presence[name] = mask;
+    }
+    return { columns, presence };
+  });
+}
+
+const nativeExtents = new WeakMap<
+  object,
+  { key: string; value: import('@latkit/model').Domain | null }
+>();
+function nativeExtent(tile: NativeFields, name: string): import('@latkit/model').Domain | null {
+  const column = tile.columns[name];
+  if (column.kind !== 'numeric')
+    throw new GpuError('invalid-input', 'Scales require scalar numeric fields');
+  const sampled = column as SampleColumn,
+    rows = rowCount(tile.rows),
+    frames = tile.samples?.coordinates.length ?? 1;
+  const mask = tile.presence[name];
+  // Cache only complete columns: partial overlays have independent presence masks.
+  const key = [
+    column.offset,
+    column.length,
+    rows,
+    frames,
+    sampled.rowStride,
+    sampled.frameStride,
+  ].join(':');
+  const cache = nativeExtents.get(column);
+  if (!mask && cache?.key === key) return cache.value;
+  let lo = Infinity,
+    hi = -Infinity;
+  for (let row = 0; row < rows; row++) {
+    if (!bit(mask, row)) continue;
+    for (let frame = 0; frame < frames; frame++) {
+      const at =
+          column.offset + row * (sampled.rowStride ?? 1) + frame * (sampled.frameStride ?? 0),
+        value = column.values[at];
+      if (bit(column.validity, at) && Number.isFinite(value)) {
+        lo = Math.min(lo, value);
+        hi = Math.max(hi, value);
+      }
+    }
+  }
+  const result: import('@latkit/model').Domain | null = lo <= hi ? [lo, hi] : null;
+  if (!mask) nativeExtents.set(column, { key, value: result });
+  return result;
 }

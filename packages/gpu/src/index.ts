@@ -19,15 +19,20 @@ export type {
 export type {
   FieldBinding,
   FieldInput,
-  FieldColumn,
   ExtentRequest,
   FieldsRequest,
   FieldValues,
   NativeFields,
   DataHit,
 } from './binding.js';
-export { sameIndex, assertIndex, rowCount, rowAt } from './binding.js';
-export type { GpuField, GpuValueField, GpuListField, GpuPage, UploadOptions } from './columns.js';
+export type {
+  GpuField,
+  GpuValueField,
+  GpuListField,
+  GpuEnvelopeField,
+  GpuPage,
+  UploadOptions,
+} from './columns.js';
 export { fieldShader } from './field-shader.js';
 export { TextureData } from './texture-data.js';
 export type { PixelRegion } from './texture-data.js';
@@ -71,3 +76,36 @@ export { parseColor, resolveColor, colorCss, colormapCss } from './colors/css.js
 export { colormaps } from './colors/catalog.js';
 export type { ColormapName } from './colors/catalog.js';
 export { colormapShader } from './colors/shader.js';
+
+export type {
+  Range,
+  ScaleDomain,
+  Scale,
+  ColorScale,
+  Position2D,
+  ScaleRequest,
+  ResolvedScale,
+} from './scale.js';
+export { resolveScale, scaleValue, scaleParameters, scaleShader } from './scale.js';
+
+export type { EnvelopeRequest } from './envelope.js';
+
+export type { Shade, ShadeFrame, ShadeRequest } from './shade.js';
+export { shadeShader, defaultShade, spotlight } from './shade.js';
+export { premultipliedBlend, outputShader } from './output.js';
+
+export type {
+  Modifiers,
+  ContextMenu,
+  HoverOptions,
+  HoverState,
+  CanvasInput,
+  BudgetResult,
+} from './input.js';
+export {
+  inputModifiers,
+  localPoint,
+  wheelDelta,
+  createCanvasInput,
+  withinBudget,
+} from './input.js';

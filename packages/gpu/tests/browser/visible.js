@@ -1,11 +1,6 @@
+import { rowCount } from '@latkit/model';
 /* global GPUShaderStage, GPUTextureUsage, GPUBufferUsage, GPUMapMode, document, requestAnimationFrame */
-import {
-  createGpu,
-  createPresentation,
-  fieldShader,
-  textShader,
-  rowCount,
-} from '../../dist/index.js';
+import { createGpu, createPresentation, fieldShader, textShader } from '../../dist/index.js';
 
 export async function show() {
   const gpu = await createGpu({ pageBytes: 65536 }),
@@ -199,32 +194,49 @@ export async function show() {
     let draws = [],
       textPages = [],
       textGroup;
+    const rowSource = {
+      describe() {
+        throw new Error('Unexpected source read');
+      },
+      query() {
+        throw new Error('Unexpected source read');
+      },
+    };
     const renderer = {
       async prepare(frame) {
         if (capture) frame.buffer(capture);
         draws = [];
-        for await (const page of frame.fields({ index, rows, fields, float64: 'relative' })) {
-          uniformBytes += 32;
-          const origin = page.columns.position.origin;
-          const binding = frame.uniforms(
-            Float32Array.of(
-              ...dimensions,
-              origin[0] - 1e12,
-              origin[1] - 1e12,
-              kind,
-              phase,
-              scale,
-              0,
-            ),
-          );
-          draws.push({
-            page,
-            group: device.createBindGroup({
-              layout: controls,
-              entries: [{ binding: 0, resource: binding }],
-            }),
-          });
-        }
+        for await (const native of frame.fields({
+          source: rowSource,
+          from: index.type,
+          rows: { ...rows, index },
+          fields,
+        }))
+          for (const page of frame.upload(native, {
+            select: Object.keys(native.columns),
+            float64: 'relative',
+          })) {
+            uniformBytes += 32;
+            const origin = page.columns.position.origin;
+            const binding = frame.uniforms(
+              Float32Array.of(
+                ...dimensions,
+                origin[0] - 1e12,
+                origin[1] - 1e12,
+                kind,
+                phase,
+                scale,
+                0,
+              ),
+            );
+            draws.push({
+              page,
+              group: device.createBindGroup({
+                layout: controls,
+                entries: [{ binding: 0, resource: binding }],
+              }),
+            });
+          }
         textPages = await frame.text({ runs });
         uniformBytes += 32;
         textGroup = device.createBindGroup({

@@ -17,7 +17,6 @@ struct Uniforms {
   grid: vec4f,
   flags: vec4u,
 }
-struct Fragment { color: vec4f, px: vec2f, world: vec3f, kind: u32, id: u32, focus: u32, value: f32 }
 fn finite(x: f32) -> bool { return abs(x) <= 3.402823e38; }
 fn project_world(p: vec3f, u: Uniforms) -> vec4f {
   let rx = p.x * u.rotation.x + p.y * u.rotation.y;

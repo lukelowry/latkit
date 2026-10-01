@@ -1,6 +1,6 @@
+import { sameIndex } from '@latkit/model';
 import {
   GpuError,
-  sameIndex,
   type Encoding,
   type FrameInfo,
   type Gpu,
@@ -31,18 +31,14 @@ import { Labels } from './rendering/labels.js';
 import { Paths } from './geometry/paths.js';
 import { Painter, type Paint, type Reads } from './rendering/painter.js';
 import { pipelines } from './rendering/pipelines.js';
-import type { Shade } from './shade.js';
-import { DEFAULT_SHADE } from './shade.js';
+import type { Shade } from '@latkit/gpu';
+import { defaultShade } from '@latkit/gpu';
 
 export interface NetworkEvents {
   readonly invalidate: Invalidation;
   readonly hover: NetworkItem | null;
   readonly select: NetworkItem | null;
-  readonly contextmenu: {
-    readonly point: readonly [number, number];
-    readonly items: readonly NetworkItem[];
-    readonly event: MouseEvent | KeyboardEvent;
-  };
+  readonly contextmenu: import('@latkit/gpu').ContextMenu<NetworkItem>;
   readonly fit: boolean;
   readonly orbit: boolean;
 }
@@ -56,7 +52,7 @@ export interface NetworkStats {
   readonly drawCalls: number;
   readonly prepareMs: number;
   readonly frames: number;
-  readonly hover: 'off' | 'idle' | 'active' | 'moving' | 'budget';
+  readonly hover: import('@latkit/gpu').HoverState;
   /** Hover search CPU time in the submitted frame; zero when skipped. */
   readonly hoverMs: number;
 }
@@ -346,7 +342,7 @@ class NetworkView implements Network {
     const serial = ++this.shadeSerial;
     await Promise.all(
       (['rgba8unorm', 'bgra8unorm'] as const).map((format) =>
-        pipelines(this.gpu, format, this.options.msaa, shade?.wgsl ?? DEFAULT_SHADE),
+        pipelines(this.gpu, format, this.options.msaa, shade?.wgsl ?? defaultShade),
       ),
     );
     this.live();
@@ -719,7 +715,10 @@ class NetworkView implements Network {
       for (const bank of geometry.vertices)
         if (bank.synthetic) {
           const read = vertices.get(bank)!;
-          vertices.set(bank, { ...read, domains: { height: [0, 1] } });
+          vertices.set(bank, {
+            ...read,
+            scales: { height: { domain: [0, 1], range: [0, 1], clamp: true } },
+          });
         }
       const reads: Reads = { vertices, edges },
         picking = this.picking.prepare(geometry, reads, this.limits.cpuBytes - geometry.bytes);

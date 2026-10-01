@@ -8,8 +8,8 @@ import { draw, renderer, target } from './fixtures/render.js';
 function request(source: FieldSource): FieldsRequest {
   return {
     source,
-    index: source.index,
-    rows: { kind: 'range', offset: 0, count: source.count },
+    from: source.index.type,
+    rows: { kind: 'range', index: source.index, offset: 0, count: source.count },
     fields: {
       x: 'value',
       same: 'value',
@@ -18,7 +18,6 @@ function request(source: FieldSource): FieldsRequest {
       visible: 'visible',
       observation: 'observed',
     },
-    float64: 'relative',
   };
 }
 it('batches fields by dependency and preserves static CPU/GPU residency across recording append', async () => {
@@ -29,7 +28,12 @@ it('batches fields by dependency and preserves static CPU/GPU residency across r
   const render = async () => {
     const result: GpuPage[] = [];
     await draw(gpu, async (frame) => {
-      for await (const page of frame.fields(request(source))) result.push(page);
+      for await (const native of frame.fields(request(source)))
+        for (const page of frame.upload(native, {
+          select: Object.keys(native.columns),
+          float64: 'relative',
+        }))
+          result.push(page);
     });
     pages.push(result);
   };
@@ -66,7 +70,7 @@ it('aligns reordered multi-block inputs and explicit sparse observations without
   const input = request(source);
   let page!: GpuPage;
   await draw(gpu, async (frame) => {
-    for await (const result of frame.fields({
+    for await (const native of frame.fields({
       ...input,
       fields: {
         value: 'value',
@@ -78,7 +82,11 @@ it('aligns reordered multi-block inputs and explicit sparse observations without
         },
       },
     }))
-      page = result;
+      for (const result of frame.upload(native, {
+        select: Object.keys(native.columns),
+        float64: 'relative',
+      }))
+        page = result;
   });
   expect(values(page)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   expect(bytes(field(page, 'overlay').presence!.binding)[0]).toBe(0b1010);
@@ -104,7 +112,7 @@ it('keeps boolean/vector types even when an explicit overlay has no rows', async
     gpu = await createGpu({ device: fake.device });
   let page!: GpuPage;
   await draw(gpu, async (frame) => {
-    for await (const result of frame.fields({
+    for await (const native of frame.fields({
       ...request(source),
       fields: {
         visible: {
@@ -121,7 +129,11 @@ it('keeps boolean/vector types even when an explicit overlay has no rows', async
         },
       },
     }))
-      page = result;
+      for (const result of frame.upload(native, {
+        select: Object.keys(native.columns),
+        float64: 'relative',
+      }))
+        page = result;
   });
   expect(source.requests).toHaveLength(0);
   expect((page.columns.visible as import('../src/index.js').GpuValueField).type).toBe('boolean');
@@ -146,8 +158,12 @@ it('reuses native local slices without staging and rejects stale index identity'
   };
   const result: number[] = [];
   await draw(gpu, async (frame) => {
-    for await (const page of frame.fields({ ...request(source), fields: { value: input } }))
-      result.push(...values(page));
+    for await (const native of frame.fields({ ...request(source), fields: { value: input } }))
+      for (const page of frame.upload(native, {
+        select: Object.keys(native.columns),
+        float64: 'relative',
+      }))
+        result.push(...values(page));
   });
   expect(result).toEqual([...input.values.values]);
   expect(gpu.stats().stagedBytes).toBe(0);
@@ -193,7 +209,12 @@ it('bounds the binding count when ten fields occupy more than two slabs', async 
   const render = () =>
     draw(gpu, async (frame) => {
       pages = [];
-      for await (const page of frame.fields({ ...request(source), fields })) pages.push(page);
+      for await (const native of frame.fields({ ...request(source), fields }))
+        for (const page of frame.upload(native, {
+          select: Object.keys(native.columns),
+          float64: 'relative',
+        }))
+          pages.push(page);
     });
   await render();
   for (let i = 0; i < 10; i++)
@@ -222,17 +243,20 @@ it('aligns native block boundaries across sources without materializing matching
     gpu = await createGpu({ device: fake.device });
   const actual: number[] = [];
   await draw(gpu, async (frame) => {
-    for await (const page of frame.fields({
+    for await (const native of frame.fields({
       source: a,
-      index: a.index,
-      rows: { kind: 'range', offset: 0, count: 1000 },
+      from: a.index.type,
+      rows: { index: a.index, kind: 'range', offset: 0, count: 1000 },
       fields: { value: 'value', other: { source: b, from: 'node', field: 'value' } },
-      float64: 'relative',
-    })) {
-      expect(page.rowOffset).toBe(actual.length);
-      actual.push(...values(page));
-      expect(values(page, 'other')).toEqual(values(page));
-    }
+    }))
+      for (const page of frame.upload(native, {
+        select: Object.keys(native.columns),
+        float64: 'relative',
+      })) {
+        expect(page.rowOffset).toBe(actual.length);
+        actual.push(...values(page));
+        expect(values(page, 'other')).toEqual(values(page));
+      }
   });
   expect(actual).toEqual(Array.from({ length: 1000 }, (_, i) => i));
   expect(gpu.stats().stagedBytes).toBe(0);

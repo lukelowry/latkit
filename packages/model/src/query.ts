@@ -1,4 +1,12 @@
-import type { Column, Index, RowAxis, SampleColumn, RowSelection, TextColumn } from './data.js';
+import type {
+  Column,
+  Index,
+  RowAxis,
+  SampleColumn,
+  RowSelection,
+  TextColumn,
+  NumericColumn,
+} from './data.js';
 import type { Schema } from './schema.js';
 import type { Domain, RequestOptions, Scalar, Version } from './types.js';
 
@@ -57,6 +65,7 @@ export interface Queryable {
    */
   query(query: RowsQuery, options?: QueryOptions): AsyncIterable<QueryHeader | RowsBlock>;
   query(query: SamplesQuery, options?: QueryOptions): AsyncIterable<QueryHeader | SamplesBlock>;
+  query(query: EnvelopeQuery, options?: QueryOptions): AsyncIterable<QueryHeader | EnvelopeBlock>;
   query(query: EndpointsQuery, options?: QueryOptions): AsyncIterable<QueryHeader | EndpointsBlock>;
   query(query: LinksQuery, options?: QueryOptions): AsyncIterable<QueryHeader | LinksBlock>;
   query(query: AggregateQuery, options?: QueryOptions): AsyncIterable<QueryHeader | AggregateBlock>;
@@ -102,21 +111,23 @@ export interface RowsQuery extends FieldSelection {
 
 export type SampleWindow =
   | { readonly kind: 'frames'; readonly offset: number; readonly count: number }
-  | {
-      readonly kind: 'range';
-      readonly between: Domain;
-      /**
-       * Extra retained frames strictly before/after the inclusive interval; omitted counts are zero.
-       * Counts are nonnegative safe integers, measured in frames, not distinct coordinates.
-       * Include every boundary duplicate inside the interval. With no interior frames, use the
-       * immediate predecessor/successor at the insertion point. Clip context to retained bounds;
-       * it never causes expired by itself. The base interval's expiration rules still apply.
-       * Resolve both boundaries and context against the same pinned read, without waiting for
-       * future frames. Aggregates include these same context frames when requested.
-       */
-      readonly context?: { readonly before?: number; readonly after?: number };
-    }
+  | SampleRange
   | { readonly kind: 'at'; readonly value: number };
+
+export interface SampleRange {
+  readonly kind: 'range';
+  readonly between: Domain;
+  /**
+   * Extra retained frames strictly before/after the inclusive interval; omitted counts are zero.
+   * Counts are nonnegative safe integers, measured in frames, not distinct coordinates.
+   * Include every boundary duplicate inside the interval. With no interior frames, use the
+   * immediate predecessor/successor at the insertion point. Clip context to retained bounds;
+   * it never causes expired by itself. The base interval's expiration rules still apply.
+   * Resolve both boundaries and context against the same pinned read, without waiting for
+   * future frames. Aggregates include these same context frames when requested.
+   */
+  readonly context?: { readonly before?: number; readonly after?: number };
+}
 
 /**
  * Sampled numeric fields. At selects the last duplicate coordinate; before first is empty.
@@ -127,6 +138,23 @@ export type SampleWindow =
 export interface SamplesQuery extends FieldSelection {
   readonly kind: 'samples';
   readonly window: SampleWindow;
+}
+
+/** Optional native summary capability, advertised in Schema.queries.
+ * Equal-width coordinate buckets partition the inclusive window; only the final bucket includes
+ * its right boundary. A zero-width window requires one bucket. Duplicate coordinates stay in the
+ * same bucket. Context observations belong to the first/last bucket, respectively.
+ * Each slot is a finite source observation: first, minimum, maximum, last, in that fixed order.
+ * Extrema ties choose the earliest absolute frame. Slots may repeat; consumers order/deduplicate
+ * by frame when drawing. Null/nonfinite observations clear continuity, never become extrema.
+ * Empty buckets have all slots invalid and continuity false. Gaps cannot be reconstructed from
+ * a summary: never connect a discontinuous bucket without refining the raw samples.
+ * Appends/evictions preserve absolute frame identities and obey SampleRange expiration rules.
+ */
+export interface EnvelopeQuery extends FieldSelection {
+  readonly kind: 'envelope';
+  readonly window: SampleRange;
+  readonly buckets: number;
 }
 
 /** All endpoints of matching connections, including those outside the involving selection. */
@@ -160,7 +188,8 @@ export interface AggregateQuery extends FieldSelection {
   readonly window?: SampleWindow;
 }
 
-export type Query = RowsQuery | SamplesQuery | EndpointsQuery | LinksQuery | AggregateQuery;
+export type Query =
+  RowsQuery | SamplesQuery | EnvelopeQuery | EndpointsQuery | LinksQuery | AggregateQuery;
 export type Filter =
   | { readonly field: string; readonly operator: 'equal' | 'notEqual'; readonly value: Scalar }
   | {
@@ -205,6 +234,29 @@ export interface SamplesBlock extends Block {
   readonly columns: Readonly<Record<string, SampleColumn>>;
 }
 
+/** Row-major: ((row * bucketCount + bucket) * 4 + slot).
+ * Value validity also governs coordinates/frames. Their arrays have exactly values.length slots;
+ * values.offset addresses only values/validity, not the coordinate/frame arrays.
+ */
+export interface EnvelopeColumn {
+  readonly values: NumericColumn;
+  readonly coordinates: Float64Array;
+  readonly frames: Float64Array;
+  /** Bit-packed per row/bucket. True iff nonempty and every source observation is finite/valid. */
+  readonly continuous: Uint8Array;
+}
+/** Complete rectangular row/bucket coverage, including empty buckets; no overlaps or gaps.
+ * rowOffset is in selection order; firstBucket is in the query's bucket axis. */
+export interface EnvelopeBlock extends Block {
+  readonly kind: 'envelope';
+  readonly index: Index;
+  readonly rows: RowAxis;
+  readonly rowOffset: number;
+  readonly firstBucket: number;
+  readonly bucketCount: number;
+  readonly columns: Readonly<Record<string, EnvelopeColumn>>;
+}
+
 /** CSR segments in selected connection order. Segments of one connection are contiguous and cover
  * [0, totalEndpoints) exactly once. A huge connection may span blocks. Dictionary indices are local
  * to each block; component row numbers belong to their declared Index. */
@@ -247,7 +299,8 @@ export interface AggregateBlock extends Block {
   >;
 }
 
-export type QueryBlock = RowsBlock | SamplesBlock | EndpointsBlock | LinksBlock | AggregateBlock;
+export type QueryBlock =
+  RowsBlock | SamplesBlock | EnvelopeBlock | EndpointsBlock | LinksBlock | AggregateBlock;
 
 /**
  * Notify in publication order after a complete change; versions are equality tokens, not sortable. One commit may emit several notifications with the same version; no older commit's

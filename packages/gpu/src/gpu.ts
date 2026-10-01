@@ -1,3 +1,5 @@
+import { shadeUniforms } from './shade.js';
+import { Envelopes } from './envelope.js';
 import type { Query, Queryable, Version } from '@latkit/model';
 import { BufferData } from './buffers.js';
 import { Buffers, type BufferResource } from './owned-buffer.js';
@@ -106,6 +108,7 @@ class Owner implements Gpu {
   private readonly reads: Reads;
   private readonly uploader: Uploader;
   private readonly fields: Fields;
+  private readonly envelopes: Envelopes;
   private readonly textures: Textures;
   private readonly images: Images;
   private readonly colormaps: Colormaps;
@@ -134,7 +137,8 @@ class Owner implements Gpu {
       options.pageBytes ?? 1024 ** 2,
     );
     this.fieldLayout = this.uploader.fieldPages.layout;
-    this.fields = new Fields(this.memory, this.uploader);
+    this.fields = new Fields(this.memory, this.uploader.pageBytes);
+    this.envelopes = new Envelopes(this.memory, options.maxBlockBytes ?? 1024 ** 2);
     this.reads = new Reads(
       this.memory,
       integer(options.maxBlockBytes ?? 1024 ** 2, 'block bytes', 1),
@@ -310,6 +314,10 @@ class Owner implements Gpu {
       ...info,
       signal,
       query: read,
+      shade: (request = {}) => {
+        assertPreparing();
+        return this.uploader.uniforms(shadeUniforms(request, info), scope);
+      },
       colormap: (value) => {
         assertPreparing();
         return this.colormaps.prepare(value, scope);
@@ -317,6 +325,20 @@ class Owner implements Gpu {
       text: (request) => {
         assertPreparing();
         const task = this.text.prepare(request, scope, signal);
+        tasks.add(task);
+        void task.then(
+          () => tasks.delete(task),
+          () => tasks.delete(task),
+        );
+        return task;
+      },
+      scale: (request) => {
+        assertPreparing();
+        const task = this.fields.scale(
+          request,
+          { query: read, signal, at: info.at, observe },
+          scope,
+        );
         tasks.add(task);
         void task.then(
           () => tasks.delete(task),
@@ -337,6 +359,28 @@ class Owner implements Gpu {
           () => tasks.delete(task),
         );
         return task;
+      },
+      envelope: (request) => {
+        const envelopes = this.envelopes;
+        return {
+          async *[Symbol.asyncIterator]() {
+            assertPreparing();
+            const iterator = envelopes.prepare(request, { query: read, signal });
+            iterators.add(iterator);
+            try {
+              for (;;) {
+                assertPreparing();
+                const next = await interruptible(iterator.next(), signal);
+                assertPreparing();
+                if (next.done) return;
+                yield next.value;
+              }
+            } finally {
+              iterators.delete(iterator);
+              void iterator.return(undefined).catch(() => {});
+            }
+          },
+        };
       },
       fields: (request) => {
         const fields = this.fields;

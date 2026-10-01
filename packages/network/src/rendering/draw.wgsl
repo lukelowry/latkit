@@ -5,7 +5,6 @@ override NETWORK_CURVES:bool=false;
 @group(0) @binding(3) var<storage,read> segments: array<vec4u>;
 @group(0) @binding(4) var<storage,read> styles: array<vec4f>;
 @group(0) @binding(5) var<uniform> item: vec4u;
-@group(0) @binding(6) var<uniform> host: array<vec4f,16>;
 @group(0) @binding(7) var<storage,read> endpointFocus:array<u32>;
 @group(0) @binding(8) var<storage,read> curveInstances:array<vec4u>;
 @group(0) @binding(9) var<storage,read> dashPhases:array<f32>;
@@ -107,8 +106,8 @@ struct PaintOut { @location(0) color:vec4f, @builtin(frag_depth) depth:f32 }
     let tint=select(u.hoverColor,u.selectedColor,v.identity.z==2u);
     color=mix(color,tint,smoothstep(core-aa,core+aa,distanceTo)*tint.a);
   }
-  color=shade(Fragment(color,px,v.world,v.identity.x,v.identity.y,v.identity.z,v.extra.x));
-  var result:PaintOut;result.color=vec4f(color.rgb*color.a*alpha,color.a*alpha);result.depth=v.position.z;
+  color=shade(ShadeFragment(color,px,v.extra.x));
+  var result:PaintOut;result.color=outputColor(color,alpha);result.depth=v.position.z;
   if(u.view.w>1.5&&v.extra.y>0.5){
     let sphere=v.world+vec3f(0,0,1);let radius=length(sphere);
     let world=sphere*max(1.0,radius)/max(radius,0.000001)-vec3f(0,0,1);

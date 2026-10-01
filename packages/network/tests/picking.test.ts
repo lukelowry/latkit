@@ -15,6 +15,7 @@ it.each<RowAxis>([
     index,
     rows: { kind: 'range', offset: 0, count: 4 },
     presence: {},
+    rowOffset: 0,
     columns: {
       position: {
         kind: 'vector',
@@ -31,7 +32,7 @@ it.each<RowAxis>([
     },
     retain: () => () => {},
   };
-  const read: FieldRead = { pages: [], native: [native], vector: true, domains: {} };
+  const read: FieldRead = { pages: [], native: [native], vector: true, scales: {} };
   const result = new Picking().prepare(
     { vertices: [bank], edges: [] },
     { vertices: new Map([[bank, read]]), edges: new Map() },

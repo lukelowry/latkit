@@ -14,9 +14,24 @@ import type {
   SamplesBlock,
 } from '../src/index.js';
 
-it('exports only five runtime boundary utilities', () => {
+it('exports only native access and explicit boundary utilities', () => {
   expect(Object.keys(api).sort()).toEqual(
-    ['blockBuffers', 'blockByteLength', 'validateBlock', 'validateQuery', 'validateSchema'].sort(),
+    [
+      'blockBuffers',
+      'blockByteLength',
+      'validateBlock',
+      'validateQuery',
+      'validateSchema',
+      'assertIndex',
+      'sameIndex',
+      'rowAt',
+      'rowCount',
+      'sliceRows',
+      'bitAt',
+      'numberAt',
+      'textAt',
+      'sampleAt',
+    ].sort(),
   );
 });
 

@@ -7,10 +7,6 @@ export type {
   VertexOptions,
   EdgeOptions,
   PathOptions,
-  Position,
-  Scale,
-  ScaleDomain,
-  ColorScale,
   Labels,
 } from './data.js';
 export type { Limits } from './geometry/connectivity.js';
@@ -19,5 +15,3 @@ export { PROJECTIONS } from './camera.js';
 export type { Camera, Projection } from './camera.js';
 export { attachNetworkInput } from './input.js';
 export type { InputOptions } from './input.js';
-export { spotlight } from './shade.js';
-export type { Shade, ShadeFrame } from './shade.js';

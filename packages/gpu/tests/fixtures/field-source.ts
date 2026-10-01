@@ -8,7 +8,7 @@ import type {
   Schema,
   Update,
 } from '@latkit/model';
-import { rowAt, rowCount } from '../../src/index.js';
+import { rowAt, rowCount } from '@latkit/model';
 
 export class FieldSource implements Queryable {
   version = 'v0';

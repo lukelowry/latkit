@@ -1,20 +1,16 @@
-import type { Domain, LinksQuery, Queryable, RowSelection, SampleWindow } from '@latkit/model';
-import type { Colormap, DataHit, FieldInput, RGBA, TextFont } from '@latkit/gpu';
+import type { LinksQuery, Queryable, RowSelection } from '@latkit/model';
+import type {
+  DataHit,
+  FieldInput,
+  RGBA,
+  TextFont,
+  Position2D,
+  Scale,
+  ColorScale,
+} from '@latkit/gpu';
 
-export type Position = FieldInput | { readonly x: FieldInput; readonly y: FieldInput };
-export type ScaleDomain = Domain | 'auto' | { readonly window: SampleWindow };
-export interface Scale {
-  readonly field: FieldInput;
-  readonly domain?: ScaleDomain;
-  readonly range?: Domain;
-}
-export interface ColorScale {
-  readonly field: FieldInput;
-  readonly domain?: ScaleDomain;
-  readonly colormap?: Colormap;
-}
 export interface Labels {
-  readonly field: string;
+  readonly field: FieldInput;
   readonly font?: TextFont;
   readonly size?: number;
   readonly maxCount?: number;
@@ -22,7 +18,7 @@ export interface Labels {
 }
 export interface VertexOptions {
   readonly rows?: RowSelection;
-  readonly position?: Position;
+  readonly position?: Position2D;
   readonly color?: ColorScale | null;
   readonly size?: Scale | null;
   readonly height?: Scale | null;
@@ -42,7 +38,7 @@ export interface EdgeOptions {
   readonly bends?: FieldInput;
   readonly curve?: 'linear' | 'geodesic';
   /** Optional star junction; otherwise the centroid of the selected endpoints. */
-  readonly junction?: Position;
+  readonly junction?: Position2D;
   readonly color?: ColorScale | null;
   readonly dash?: FieldInput | null;
   readonly visible?: FieldInput | null;

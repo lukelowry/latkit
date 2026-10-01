@@ -1,7 +1,7 @@
 # @latkit/model
 
-The model contract: one root import, native domain interfaces and five
-explicit boundary utilities. Documents have shared identity and independent acquisitions. Models
+The model contract: one root import, native domain interfaces, explicit validation
+and native column access utilities. Documents have shared identity and independent acquisitions. Models
 retain a Document and own computation. Recordings retain captured inputs and observations.
 ModelService provisions these objects without becoming another execution layer.
 
@@ -297,9 +297,23 @@ ring with firstSequence and discardedThrough reporting. Without diagnostics rete
 Consumer-held borrowed buffers can outlive retention and keep allocations alive: retain.bytes is
 not a total process-memory guarantee.
 
+## Optional history envelopes
+
+A sampled `Queryable` may advertise `envelope` alongside `samples`. `EnvelopeQuery` selects a
+coordinate range, rows, scalar fields, and an equal-coordinate bucket count. `EnvelopeBlock`
+contains native numeric first/minimum/maximum/last values, Float64 coordinates and absolute frames,
+and continuity bits. Slots use row-major bucket order. Gaps are explicit; a summary never invents
+an observation or renumbers an evicted frame. Empty buckets are emitted invalid. The query and
+block interfaces specify boundary inclusion, ties, context, tiling and coverage precisely.
+
+Implementations can use indexed history storage to answer this query efficiently. It is optional;
+GPU supplies a bounded raw-sample fallback for ordinary sources. Connect transports the same native
+arrays without another envelope contract. Presentation resolution, simplification and hit testing
+remain consumer concerns.
+
 ## Runtime utilities and verification
 
-Only five functions are exported at runtime:
+Runtime exports cover boundary validation and native access:
 
 ```ts
 validateSchema(candidate); // readonly Problem[]; no mutation
@@ -307,6 +321,15 @@ validateQuery(schema, candidateQuery); // schema must already be validated
 validateBlock(schema, query, candidateBlock, queryOptions);
 blockByteLength(block);
 blockBuffers(block);
+sameIndex(a, b);
+assertIndex(a, b);
+rowCount(rows);
+rowAt(rows, position);
+sliceRows(rows, offset, count);
+bitAt(bitmap, absolutePosition);
+numberAt(column, position);
+textAt(column, position);
+sampleAt(column, { row, frame });
 ```
 
 Validation is explicit boundary work, not a hidden scan on every local read. It checks declared

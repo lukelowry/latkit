@@ -42,47 +42,114 @@ Preparation methods and GPU descriptors are frame-scoped. Exhaust or return quer
 ## Unified fields
 
 ```ts
-for await (const page of frame.fields({
+for await (const native of frame.fields({
   source: document,
-  index,
+  from: 'node',
   rows,
   fields: {
-    position: 'position',
-    radius: 'radius',
-    color: { source: recording, from: index.type, field: 'temperature', rows: capturedRows },
-    selected: selectionValues, // FieldValues: native column + Index + RowAxis
+    position: layout, // FieldValues: native Column + Index + RowAxis
+    color: { source: recording, from: 'node', field: 'temperature' },
+    label: 'name',
   },
-  float64: 'relative',
+  ids: true,
 })) {
-  // page.columns.position.slot identifies this field in the shared shader table.
-  // page.bindGroup binds every selected field, its masks, and physical row mapping.
+  // Native text, numbers, vectors and lists remain native CPU views.
+  if (native.columns.label.kind === 'text') {
+    const label = textAt(native.columns.label, 0); // Imported from @latkit/model.
+  }
+  const pages = frame.upload(native, {
+    select: ['position', 'color'],
+    float64: 'relative',
+  });
+  // Only selected numeric fields are uploaded. Labels use frame.text().
 }
 ```
 
-`FieldBinding` selects one named field from a borrowed `Queryable`. String inputs use the request's default `source` and index type. Omit `source` when all inputs have explicit sources or are application-owned `FieldValues`. No synthetic source is needed for application layout data.
+`FieldBinding` selects one named field from a borrowed `Queryable`. String inputs use the
+request's `source` and `from`. The source supplies authoritative row identity when `rows` is
+omitted or uses IDs. Already indexed physical selections can resolve application-owned
+`FieldValues` without a source query. The source remains explicit; no synthetic source is needed.
 
-Fields batch compatible requests by acquisition, type, selection, and static/sampled dependency. Native block boundaries are aligned across sources without copying matching slices. Reordered or sparse inputs use bounded gathering where alignment requires it. Numeric uploads then use the same encoder as `frame.upload(block, options)` and `frame.values(values, options)`; these are entry points to one physical layout and cache, not renderer-specific formats.
+`frame.fields` returns `NativeFields`. `frame.upload` returns `GpuPage` descriptors. Text and
+control lists can stay entirely on the CPU. Matching native slices share backing arrays; sparse
+or reordered inputs require bounded gathering. `retain()` keeps native allocations admitted to
+GPU's CPU budget when picking or geometry needs them after preparation. Release that lease when
+replacing the retained view. It does not acquire or close a model source.
 
-Every input must match the draw `Index` (document, type, index version). Equal lengths do not establish identity. The draw `RowAxis` remains authoritative. Explicit binding `rows` define a partial overlay; rows outside that coverage have `fieldPresent == false`. Omitted coverage requires every draw row to be readable. Native uncaptured/expired/closed errors propagate. A present null has `fieldPresent == true` and `fieldValid == false`; missing observations are never fabricated. Prefer physical row selections for repeated overlays; ID selections require native resolution.
+Every binding must match the authoritative `Index` (document, type, index version). Explicit
+binding `rows` declares partial overlay coverage. Outside that coverage, presence is false;
+inside it, omitted observations are an error. Presence and validity are independent: a present
+null is not a missing row. ID selections require native resolution.
 
-Use `read: ['position', 'bends']` to share resolved native columns with CPU geometry or interaction. `upload` optionally selects the aliases needed by shaders; other aliases remain native-only. This avoids uploading control lists that a renderer only needs to compile its geometry. Retain native fields through their `retain()` lease when interaction outlives preparation.
+A `window` requests native sample tiles. Static columns broadcast over the sample axis with no
+expanded arrays. Sampled bindings must have identical absolute frames and coordinates; there
+is no implicit interpolation. At least one sampled binding must cover the full requested rows.
+Omit `window` for static values and sampled fields at the current frame coordinate.
 
 ```ts
-const extent = await frame.extent({
+const scale = await frame.scale({
   source: recording,
-  index,
+  from: 'node',
   rows,
   field: 'temperature',
-  window: { kind: 'frames', offset: 0, count: 120 },
+  domain: { window: { kind: 'frames', offset: firstFrame, count: 120 } },
+  range: [8, 2],
 });
-// Domain | null: complete selected mapping, ignoring null/missing/nonfinite values.
+const radius = scaleValue(value, scale);
+const uniforms = scaleParameters(scale, gpuField);
+// WGSL: scaleShader() + scaleMapped(value, valid, scale, fallback)
 ```
 
-Extents use the same source observation, query cache, and budgets as fields. Native aggregate queries are used when supported; bounded row/sample queries provide the fallback. A constant extent remains `[value, value]`; renderers choose its visual mapping. Omit `window` for the current frame coordinate.
+`Scale`, `ColorScale`, `Position2D`, and their resolution semantics belong to GPU. Null,
+nonfinite input and empty domains return the missing-value fallback; constant domains map to
+the range midpoint. Ranges may descend. `scaleParameters` rebases domains against the uploaded
+field's Float64 origin before narrowing. `frame.extent` is the lower-level indexed extent query;
+`frame.scale` handles resolution and mapping together. Compatible native extents and aggregates
+reuse the shared read cache.
 
-Static fields survive append/evict invalidations and retain their GPU columns independently of sampled values. Data/structure changes invalidate affected types; schema/replace invalidate all fields. Cache hits do not reinterpret an old static header as a new source version. Fresh queries from the same source in a frame must agree on their authoritative version. Changes during multi-query preparation can reject `conflict`; retained acquisitions provide deterministic export. GPU never implicitly retains or closes a source.
+Static fields survive append/evict invalidations independently of sampled values. Schema and
+replacement changes invalidate affected caches. Fresh queries in one frame must agree on source
+version. Retain sources explicitly for deterministic multi-query export; GPU never acquires or
+closes them implicitly. Connected acquisitions use this exact `Queryable` path.
 
-`frame.query(source, query)` supports every native model query, including topology and sampled tiles. Its bounded multicast cache applies backpressure to concurrent readers. `@latkit/connect` acquisitions use the identical contract; no renderer transport adapter exists. Model boundary validation is optional (`validate: true`); header consistency, byte bounds, identity and upload shape checks are always enforced.
+## History summaries
+
+```ts
+for await (const block of frame.envelope({
+  source: recording,
+  query: {
+    kind: 'envelope',
+    from: 'node',
+    select: ['temperature'],
+    rows,
+    window: { kind: 'range', between: [100, 200], context: { before: 1, after: 1 } },
+    buckets: 1200,
+  },
+})) {
+  const pages = frame.upload(block, { select: ['temperature'] });
+}
+```
+
+`EnvelopeBlock` belongs to model. Each row/bucket contains first, minimum, maximum and last
+finite observations, their exact native coordinates and absolute frames, and a continuity bit.
+Duplicate slots are valid; consumers deduplicate and order them by frame. Null/nonfinite
+observations mark a discontinuity. Empty buckets remain invalid. Exact hit testing refines raw
+samples; a summary is not a replacement observation.
+
+Sources advertising `envelope` provide their own indexed reductions. Otherwise GPU streams raw
+samples into bounded summaries and caches the result. The fallback bounds row/bucket working
+storage, not source I/O: it still reads the requested history and rebuilds changed windows.
+A single row's bucket summary must fit the configured block/staging budget or the fallback
+rejects `resource-limit`; native sources can tile both axes. Choose bucket count from visible
+resolution. Native source-side summaries are needed to avoid transferring long remote histories.
+
+`GpuEnvelopeField` exposes values, coordinates, frames, and continuity through the same field
+shader/table. Coordinate and frame buffers always use relative encoding; native Float64 arrays
+remain authoritative for exact identity. There is no transport-specific summary format.
+
+`frame.query(source, query)` also supports ordinary rows, samples, topology and aggregates.
+Its bounded multicast cache applies backpressure. Optional `validate: true` adds model boundary
+validation; header consistency, byte bounds, index identity and upload shape checks always run.
 
 ## One shader layout
 
@@ -98,7 +165,7 @@ const layout = gpu.device.createPipelineLayout({
 pass.setBindGroup(0, page.bindGroup);
 ```
 
-`GpuPage` exposes native index/rows, local row offset, named `GpuField` descriptors, one bind group, and optional absolute sample frame metadata. `GpuField` is discriminated by `kind`: a value descriptor exposes its slot, physical type, component count, and optional Float64 origin; a list descriptor exposes the parent slot and an `items` value descriptor. Shader access uses `fieldPresent`, `fieldValid`, `fieldFloat`, `fieldInt`, `fieldUint`, `fieldBool`, `fieldVec2f/3f/4f`, and `fieldRow`. Value loads require valid local row/frame/component addresses; check masks before using values. Sample coordinates have their own slot and are addressed with row zero.
+`GpuPage` exposes native index/rows, local row offset, named `GpuField` descriptors, one bind group, and optional absolute sample frame metadata. `GpuField` is discriminated by `kind`: envelopes expose the four descriptors described above; a value descriptor exposes its slot, physical type, component count, and optional Float64 origin; a list descriptor exposes the parent slot and an `items` value descriptor. Shader access uses `fieldPresent`, `fieldValid`, `fieldFloat`, `fieldInt`, `fieldUint`, `fieldBool`, `fieldVec2f/3f/4f`, and `fieldRow`. Value loads require valid local row/frame/component addresses; check masks before using values. Sample coordinates have their own slot and are addressed with row zero.
 
 The layout uses three read-only storage bindings regardless of field count: a descriptor table and two payload banks. Normal columns stay in shared slab allocations. If independent resident columns span more banks, a bounded GPU copy consolidates the page before render passes in the same command submission. Consolidated pages are cached. There is no per-field bind group or public legacy raw-column path.
 
@@ -130,6 +197,24 @@ pass.setBindGroup(1, colors);
 CPU sampling, CSS legends, and WGSL use the same premultiplied RGBA8 rendering table. Continuous values clamp, cyclic values wrap with a closed seam, and categorical values select hard bins. WGSL returns straight RGBA; the output pass owns compositing. Authoring supports explicit colors, one-time callbacks, and stops interpolated in Oklab, sRGB, or linear-light sRGB. Palette textures and bindings reuse the existing GPU cache and remain protected through submission. No model transformation or renderer-specific palette cache is involved.
 
 See [the color contract and catalog](../../docs/colormaps.md) for semantics, source provenance, regeneration, and usage. Pure color helpers work without a DOM or a WebGPU device; `resolveColor` is the explicit DOM boundary. Bundlers can omit the entire unused catalog and color parser; accessing catalog metadata does not decode samples.
+
+## Cameras, effects and input
+
+`Camera2D` uses `center`, independent positive `scale` values, and `yDirection`. `fitCamera`,
+`cameraPoint`, `worldPoint`, and `zoomCamera` use local CSS pixels. Diagrams can keep equal aspect;
+monitors can scale coordinate and value axes independently. Network's geographic/3D projection
+remains network geometry policy.
+
+`Shade` defines `shade(ShadeFragment)`, with common color, pixel position, and scalar value.
+`frame.shade()` binds pointer, viewport, presentation time and sixteen vec4 parameters through
+`shadeShader()`. `outputShader()` and `premultipliedBlend` apply alpha once at the output boundary.
+Renderers own effect pipeline compilation and call `Shade.tick` to update parameters/animation.
+
+`createCanvasInput`, `localPoint`, `wheelDelta`, and `inputModifiers` share DOM mechanics.
+`HoverOptions`, `HoverState`, `ContextMenu`, and `withinBudget` share payloads and cooperative work
+limits. Interrupted picking never publishes a partial result. Geometry-specific hit tests,
+gestures and hover suspension policy remain renderer responsibilities. No DOM event escapes in
+a public context-menu payload.
 
 ## Shared strokes
 
@@ -192,4 +277,8 @@ pnpm --filter @latkit/gpu benchmark
 
 The browser fixture validates actual computation/readback, sparse nullable samples, Float64 precision, multiple views, incremental images, one million rows, fragmented field consolidation/reuse, ten simultaneous visual fields, and text pixels. Headed mode leaves an interactive three-view fixture visible with `--keep-open`. Set `LATKIT_BROWSER` for an alternative Chromium executable. Reports and screenshots go to `output/gpu-browser.json` and `output/playwright/gpu-foundation.png`. Fake-device benchmarks isolate JavaScript plumbing and are not GPU timings.
 
-Network, diagram, monitor and video still require migration. They should directly use native model identity/query blocks, shared field/text preparation, and this frame lifecycle. Renderer-specific geometry, routing, culling, formatting, picking and video encoding stay in their respective packages. Model coverage/envelope queries remain separate contract work; GPU does not invent a substitute query or compatibility format.
+Network uses this foundation directly. `monitor_new`, `diagram_new`, and `video_new` contain
+root-only public declaration skeletons for the next implementations. Their old packages are not
+adapters and remain unmigrated. Geometry, routing, culling, axis formatting, exact picking and
+video encoding stay with those implementations. Shared types and plumbing are imported from
+model/GPU, without renderer-owned copies or compatibility exports.

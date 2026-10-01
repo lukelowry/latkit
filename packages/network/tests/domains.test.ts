@@ -55,7 +55,7 @@ it('uses the whole selected type for automatic domains across native blocks and 
     for (const bank of geometry.vertices)
       reads.set(bank, await readFields(frame, source, bank, options, 'position', () => {}));
     await resolveDomains(frame, source, reads, () => options);
-    for (const read of reads.values()) expect(read.domains.size).toEqual([0, count - 1]);
+    for (const read of reads.values()) expect(read.scales.size.domain).toEqual([0, count - 1]);
   });
   gpu.destroy();
 });

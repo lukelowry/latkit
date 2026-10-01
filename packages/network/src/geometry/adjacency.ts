@@ -1,4 +1,5 @@
-import { rowAt } from '@latkit/gpu';
+import { rowAt } from '@latkit/model';
+
 import type { NetworkData, NetworkItem } from '../data.js';
 import type { VertexBank, EdgeBank } from './connectivity.js';
 import { RowLookup, indexKey } from './rows.js';

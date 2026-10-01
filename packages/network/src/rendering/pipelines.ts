@@ -1,3 +1,5 @@
+import { shadeShader, outputShader, premultipliedBlend } from '@latkit/gpu';
+import { scaleShader } from '@latkit/gpu';
 import { colormapShader, fieldShader, textShader, strokeShader, type Gpu } from '@latkit/gpu';
 import common from './common.wgsl';
 import prepare from './prepare.wgsl';
@@ -101,11 +103,19 @@ async function create(
   const bg = d.createBindGroupLayout({ entries: [uniform(0, V | F)] });
   const prep = d.createShaderModule({
     label: 'network field preparation',
-    code: common + fieldShader({ group: 0 }) + colormapShader({ group: 2 }) + prepare,
+    code:
+      common + scaleShader() + fieldShader({ group: 0 }) + colormapShader({ group: 2 }) + prepare,
   });
   const shape = d.createShaderModule({
     label: 'network geometry',
-    code: common + curve + strokeShader() + draw + shade,
+    code:
+      common +
+      curve +
+      strokeShader() +
+      shadeShader({ group: 0, binding: 6 }) +
+      outputShader() +
+      draw +
+      shade,
   });
   const bgModule = d.createShaderModule({ label: 'network surface', code: common + background });
   const axisModule = d.createShaderModule({ label: 'network earth axis', code: common + axis });
@@ -126,11 +136,7 @@ async function create(
   const computeLayout = d.createPipelineLayout({
     bindGroupLayouts: [gpu.fieldLayout, compute, gpu.colormapLayout],
   });
-  const blend: GPUBlendState = {
-    color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-    alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
-  };
-  const target = { format, blend };
+  const target = { format, blend: premultipliedBlend };
   const render = (
     module: GPUShaderModule,
     vertex: string,

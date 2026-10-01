@@ -1,11 +1,7 @@
+import { checkFoundation } from './foundation.js';
+import { rowCount } from '@latkit/model';
 /* global GPUBufferUsage, GPUMapMode, GPUShaderStage */
-import {
-  createGpu,
-  createRenderTarget,
-  fieldShader,
-  TextureData,
-  rowCount,
-} from '../../dist/index.js';
+import { createGpu, createRenderTarget, fieldShader, TextureData } from '../../dist/index.js';
 
 import { checkColors } from './colors.js';
 
@@ -337,6 +333,7 @@ export async function check() {
     fragmentedTarget.destroy();
     fragmented.destroy();
     checks.push('ten fragmented fields, native GPU consolidation and resident reuse');
+    checks.push(...(await checkFoundation(gpu, output)));
     const validation = await device.popErrorScope();
     assert(
       !validation && !failures.length,

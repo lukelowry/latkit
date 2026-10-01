@@ -63,7 +63,12 @@ export function validateBlock(
           );
     }
   }
-  if (query.kind === 'rows' || query.kind === 'samples' || query.kind === 'links') {
+  if (
+    query.kind === 'rows' ||
+    query.kind === 'samples' ||
+    query.kind === 'envelope' ||
+    query.kind === 'links'
+  ) {
     const rows = rowAxis(c, block.rows, ['rows']);
     if (rows && query.rows?.kind === 'range') {
       const { offset, count } = query.rows;
@@ -188,6 +193,123 @@ export function validateBlock(
                 }
               }
             if (missing) c.issue([...path, 'validity'], 'Null in a non-nullable sample cell.');
+          }
+        }
+    } else if (query.kind === 'envelope') {
+      c.integer(block.rowOffset, ['rowOffset']);
+      const first = c.integer(block.firstBucket, ['firstBucket'], 0, query.buckets - 1);
+      const size = c.integer(block.bucketCount, ['bucketCount'], 1, query.buckets);
+      if (
+        first &&
+        size &&
+        (block.firstBucket as number) + (block.bucketCount as number) > query.buckets
+      )
+        c.issue(['bucketCount'], 'Tile exceeds the bucket axis.');
+      if (!rows?.length) c.issue(['rows'], 'Envelope tiles must have nonempty rows.');
+      const columns = c.object(block.columns, ['columns']);
+      exactKeys(c, columns, query.select, ['columns']);
+      if (rows && size)
+        for (const field of query.select) {
+          const path = ['columns', field];
+          const item = c.object(columns[field], path);
+          const cells = rows.length * (block.bucketCount as number),
+            slots = cells * 4;
+          if (!c.integer(slots, path, 4, 0x7fffffff)) continue;
+          const values = c.object(item.values, [...path, 'values']);
+          column(c, item.values, fields[field].type, true, [...path, 'values'], slots, 0, true);
+          for (const key of ['coordinates', 'frames']) {
+            if (!(item[key] instanceof Float64Array) || item[key].length !== slots)
+              c.issue([...path, key], 'Expected one Float64 slot per value.');
+          }
+          const continuity = bytes(c, item.continuous, [...path, 'continuous']);
+          if (continuity && continuity.length !== Math.ceil(cells / 8))
+            c.issue([...path, 'continuous'], 'Continuity must cover exactly the row/bucket axis.');
+          if (
+            !(
+              values.values instanceof Float32Array ||
+              values.values instanceof Float64Array ||
+              values.values instanceof Int32Array ||
+              values.values instanceof Uint32Array
+            ) ||
+            typeof values.offset !== 'number' ||
+            !Number.isSafeInteger(values.offset) ||
+            values.offset < 0 ||
+            values.offset + slots > values.values.length ||
+            !(item.coordinates instanceof Float64Array) ||
+            !(item.frames instanceof Float64Array)
+          )
+            continue;
+          const valid = (i: number): boolean =>
+            !(values.validity instanceof Uint8Array) ||
+            !!(
+              values.validity[((values.offset as number) + i) >>> 3] &
+              (1 << (((values.offset as number) + i) & 7))
+            );
+          for (let cell = 0; cell < cells; cell++) {
+            const start = cell * 4,
+              populated = valid(start);
+            for (let slot = 0; slot < 4; slot++) {
+              const i = start + slot;
+              if (valid(i) !== populated)
+                c.issue(path, 'All four slots must be present or absent together.');
+              if (!populated) continue;
+              if (
+                !Number.isFinite(item.coordinates[i]) ||
+                !Number.isSafeInteger(item.frames[i]) ||
+                item.frames[i] < 0
+              )
+                c.issue(
+                  path,
+                  'Envelope identities require finite coordinates and exact absolute frames.',
+                );
+              const coordinate = item.coordinates[i],
+                [lo, hi] = query.window.between,
+                bucket = (block.firstBucket as number) + (cell % (block.bucketCount as number));
+              if (coordinate < lo) {
+                if (bucket !== 0 || !query.window.context?.before)
+                  c.issue(path, 'Unexpected leading context observation.');
+              } else if (coordinate > hi) {
+                if (bucket !== query.buckets - 1 || !query.window.context?.after)
+                  c.issue(path, 'Unexpected trailing context observation.');
+              } else {
+                const span = hi - lo;
+                const expected =
+                  lo === hi
+                    ? 0
+                    : Math.min(
+                        query.buckets - 1,
+                        Math.floor(
+                          (Number.isFinite(span)
+                            ? (coordinate - lo) / span
+                            : (coordinate / 2 - lo / 2) / (hi / 2 - lo / 2)) * query.buckets,
+                        ),
+                      );
+                if (bucket !== expected)
+                  c.issue(path, 'Observation belongs to a different coordinate bucket.');
+              }
+            }
+            if (!populated && continuity && continuity[cell >>> 3] & (1 << (cell & 7)))
+              c.issue(path, 'An empty bucket cannot be continuous.');
+            if (populated) {
+              const v = values.values,
+                at = values.offset + start,
+                f = item.frames;
+              if (
+                v[at + 1] > v[at] ||
+                v[at + 1] > v[at + 3] ||
+                v[at + 2] < v[at] ||
+                v[at + 2] < v[at + 3] ||
+                v[at + 1] > v[at + 2]
+              )
+                c.issue(path, 'Invalid envelope extrema.');
+              if (
+                f[start] > f[start + 1] ||
+                f[start] > f[start + 2] ||
+                f[start + 3] < f[start + 1] ||
+                f[start + 3] < f[start + 2]
+              )
+                c.issue(path, 'Extrema must lie between first and last frame.');
+            }
           }
         }
     } else {

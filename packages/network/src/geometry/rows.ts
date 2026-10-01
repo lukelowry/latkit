@@ -1,10 +1,6 @@
-import { rowCount, rowAt, type NativeFields } from '@latkit/gpu';
+import { rowCount, rowAt } from '@latkit/model';
+import { type NativeFields } from '@latkit/gpu';
 import type { Column, Index, RowAxis } from '@latkit/model';
-export function sliceRows(rows: RowAxis, offset: number, count: number): RowAxis {
-  return rows.kind === 'range'
-    ? { kind: 'range', offset: rows.offset + offset, count }
-    : { kind: 'indices', values: rows.values.subarray(offset, offset + count) };
-}
 export function bit(bytes: Uint8Array | undefined, index: number): boolean {
   return !bytes || !!(bytes[index >>> 3] & (1 << (index & 7)));
 }

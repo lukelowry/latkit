@@ -66,3 +66,8 @@ pnpm --filter @latkit/network test:browser
 ```
 
 The browser command opens a headed fixture and leaves it available. Controls include recording channels, geodesics, detailed Natural Earth borders, poles, hover policy, and geometry features. The report records CPU submission time, complete-frame time, cache misses, uploaded bytes, and median/p95 timings for 100,000 vertices and 199,367 connections, including coordinate playback with borders. Native border assets contain 96,965 points across 2,423 polylines. They are linework, without polygon interiors or hole ownership; region filling is not inferred from them.
+
+Shared `Scale`, `ColorScale`, `Position2D`, `Shade`, colors and DOM input primitives are imported
+from `@latkit/gpu`. Native index/row/text helpers are imported from `@latkit/model`. Network no
+longer exports duplicate scale or shade contracts. Fields resolve to native CPU views before an
+explicit selected upload; labels consume the same field bindings and GPU text atlas.

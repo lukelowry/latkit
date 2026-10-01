@@ -1,3 +1,4 @@
+import { FieldSource } from './fixtures/field-source.js';
 import { expect, it } from 'vitest';
 import { createGpu, type FieldValues, type GpuPage } from '../src/index.js';
 import { fakeDevice, bytes } from './fixtures/device.js';
@@ -62,8 +63,9 @@ it('gathers sparse native lists once and can retain controls without uploading t
     input = lists();
   await draw(gpu, async (frame) => {
     for await (const page of frame.fields({
-      index,
-      rows: { kind: 'indices', values: Uint32Array.of(12, 10) },
+      source: new FieldSource(),
+      from: index.type,
+      rows: { index, kind: 'indices', values: Uint32Array.of(12, 10) },
       fields: {
         points: input,
         style: {
@@ -72,12 +74,10 @@ it('gathers sparse native lists once and can retain controls without uploading t
           values: { kind: 'numeric', offset: 0, length: 3, values: Float32Array.of(1, 2, 3) },
         },
       },
-      read: ['points'],
-      upload: ['style'],
-      float64: 'relative',
     })) {
-      expect(Object.keys(page.columns)).toEqual(['style']);
-      const column = page.native!.columns.points;
+      const uploaded = frame.upload(page, { select: ['style'] });
+      expect(Object.keys(uploaded[0].columns)).toEqual(['style']);
+      const column = page.columns.points;
       expect(column.kind).toBe('list');
       if (column.kind === 'list') {
         expect(Array.from(column.offsets)).toEqual([0, 1, 3]);

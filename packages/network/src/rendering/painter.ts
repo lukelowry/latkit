@@ -1,7 +1,8 @@
+import { scaleParameters, resolveScale } from '@latkit/gpu';
+import { rowCount } from '@latkit/model';
 import {
   BufferData,
   GpuError,
-  rowCount,
   type BufferResource,
   type Encoding,
   type Gpu,
@@ -12,14 +13,7 @@ import {
 import type { Camera } from '../camera.js';
 import { indexKey } from '../geometry/rows.js';
 import { DEG, turn } from '../camera.js';
-import type {
-  NetworkData,
-  NetworkItem,
-  VertexOptions,
-  EdgeOptions,
-  PathOptions,
-  Scale,
-} from '../data.js';
+import type { NetworkData, NetworkItem, VertexOptions, EdgeOptions, PathOptions } from '../data.js';
 import {
   vertexOptions,
   edgeOptions,
@@ -29,8 +23,8 @@ import {
   type SegmentBatch,
 } from '../geometry/connectivity.js';
 import type { Options } from '../options.js';
-import type { Shade } from '../shade.js';
-import { DEFAULT_SHADE } from '../shade.js';
+import type { Shade } from '@latkit/gpu';
+import { defaultShade } from '@latkit/gpu';
 import type { LabelBatch } from './labels.js';
 import type { FieldRead } from './fields.js';
 import { pipelines, type Pipelines } from './pipelines.js';
@@ -131,7 +125,7 @@ export class Painter {
       gpu,
       frame.format,
       options.msaa,
-      state.shade?.wgsl ?? DEFAULT_SHADE,
+      state.shade?.wgsl ?? defaultShade,
     );
     const key = [frame.width, frame.height, frame.format, options.msaa].join(':');
     if (this.textures?.key !== key) {
@@ -288,7 +282,7 @@ export class Painter {
     }
     const focusedBinding = frame.buffer(this.focusData);
     const uniform = frame.uniforms(f),
-      host = frame.uniforms(state.host),
+      host = frame.shade({ parameters: state.host, pointerPx: state.pointer }),
       empty = frame.buffer(this.dummy);
     const vertexBuffers = new Map<VertexBank, GPUBufferBinding>(),
       edgeBuffers = new Map<EdgeBank, GPUBufferBinding>();
@@ -304,10 +298,13 @@ export class Painter {
       edge: boolean,
     ) => {
       for (const { page, offset } of read.pages) {
-        const data = new ArrayBuffer(9 * 16),
+        const data = new ArrayBuffer(12 * 16),
           pf = new Float32Array(data),
           pu = new Uint32Array(data);
-        const slot = (name: string) => page.columns[name]?.slot ?? 0xffffffff;
+        const slot = (name: string) => {
+          const field = page.columns[name];
+          return field && 'slot' in field ? field.slot : 0xffffffff;
+        };
         const origin = (name: string, lane = 0) => {
           const field = page.columns[name];
           return field?.kind === 'value' ? (field.origin?.[lane] ?? 0) : 0;
@@ -334,27 +331,19 @@ export class Painter {
         pf.set([Math.sin(latitude), Math.cos(latitude), 0, 0], 16);
         for (const [name, at] of [
           ['color', 20],
-          ['size', 24],
-          ['height', 28],
+          ['size', 28],
+          ['height', 36],
         ] as const) {
-          const mapping = (config as VertexOptions)[name];
-          const domain = read.domains[name] ?? [0, 1];
-          const range =
-            name === 'color'
-              ? [0, 1]
-              : ((mapping as Scale | undefined)?.range ?? (name === 'size' ? [0.5, 2] : [0, 1]));
-          const span = domain[1] - domain[0];
+          const field = page.columns[name];
           pf.set(
-            [
-              domain[0] - origin(name) - (span === 0 ? 0.5 : 0),
-              span === 0 ? 1 : 1 / span,
-              range[0],
-              range[1] - range[0],
-            ],
+            scaleParameters(
+              read.scales[name] ?? resolveScale({}, null),
+              field?.kind === 'value' ? field : undefined,
+            ),
             at,
           );
         }
-        pf.set([origin('visible'), origin('shade'), origin('dash'), 0], 32);
+        pf.set([origin('visible'), origin('shade'), origin('dash'), 0], 44);
         const colors = frame.colormap(config.color?.colormap);
         const output = edge
           ? edgeBuffers.get(bank as EdgeBank)!

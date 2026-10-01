@@ -1,4 +1,6 @@
-import { rowAt, sameIndex, type Bounds2D, type NativeFields, type Viewport } from '@latkit/gpu';
+import { withinBudget } from '@latkit/gpu';
+import { rowAt, sameIndex } from '@latkit/model';
+import { type Bounds2D, type NativeFields, type Viewport } from '@latkit/gpu';
 import type { NetworkData, NetworkItem, VertexOptions } from './data.js';
 import {
   vertexOptions,
@@ -124,7 +126,7 @@ function identity(read: FieldRead, fields = ['position', 'x', 'y']): unknown[] {
       if (column?.kind === 'vector') {
         key.push(column.size, column.values.offset, column.values.length);
         view(column.values.values);
-      } else if (column && column.kind !== 'list') view(column.values);
+      } else if (column && column.kind !== 'list' && column.kind !== 'text') view(column.values);
     }
   }
   return key;
@@ -228,7 +230,7 @@ export class Picking {
         read,
         lookup,
         spatial,
-        heightIdentity: [...identity(read, ['height']), ...(read.domains.height ?? [])],
+        heightIdentity: [...identity(read, ['height']), ...(read.scales.height?.domain ?? [])],
       });
       if (bank.synthetic && geometry.vertices.some((v) => !v.synthetic)) continue;
       minX = Math.min(minX, spatial.bounds[0]);
@@ -266,7 +268,6 @@ function compare(a: Hit, b: Hit): number {
   return a.kind - b.kind || a.distance - b.distance || a.item.row - b.item.row;
 }
 export const HOVER_EXHAUSTED = Symbol('hover budget exhausted');
-const budgetExceeded = new Error('Hover budget exhausted');
 const unchecked = () => {};
 function* offsets(count: number, check: () => void): Iterable<number> {
   for (let i = 0; i < count; i++) {
@@ -508,25 +509,13 @@ export class PickGeometry {
     radius: number,
     budgetMs?: number,
   ): NetworkItem | null | typeof HOVER_EXHAUSTED {
-    const deadline = budgetMs === undefined ? Infinity : performance.now() + budgetMs;
-    let work = 0;
-    const check =
-      budgetMs === undefined
-        ? unchecked
-        : () => {
-            if ((work++ & 31) === 0 && performance.now() >= deadline) throw budgetExceeded;
-          };
-    let best: Hit | undefined;
-    try {
+    const result = withinBudget((check) => {
+      let best: Hit | undefined;
       for (const hit of this.hits(point, data, camera, viewport, height, options, radius, check))
         if (!best || compare(hit, best) < 0) best = hit;
-      // An incomplete search must never publish a plausible but incorrect nearest item.
-      if (performance.now() >= deadline) return HOVER_EXHAUSTED;
       return best?.item ?? null;
-    } catch (error) {
-      if (error === budgetExceeded) return HOVER_EXHAUSTED;
-      throw error;
-    }
+    }, budgetMs);
+    return result.complete ? result.value : HOVER_EXHAUSTED;
   }
   private *hits(
     point: readonly [number, number],

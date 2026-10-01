@@ -4,9 +4,9 @@ struct Page {
   counts: vec4u,
   origin: vec4f,
   angles: vec4f,
-  color: vec4f,
-  size: vec4f,
-  height: vec4f,
+  color: LatkitScale,
+  size: LatkitScale,
+  height: LatkitScale,
   raw: vec4f,
 }
 @group(1) @binding(0) var<uniform> u: Uniforms;
@@ -24,15 +24,14 @@ fn raw_scalar(slot:u32,row:u32,origin:f32,fallback:f32)->f32{
   if(latkitFields.fields[slot].kind==3u){return select(0.0,1.0,fieldBool(slot,row,0u));}
   let v=fieldFloat(slot,row,0u,0u);return select(fallback,v+origin,finite(v));
 }
-fn scaled(slot: u32, row: u32, d: vec4f, fallback: f32) -> f32 {
-  let v = scalar(slot,row,3.402823e38);
-  if (v == 3.402823e38) { return fallback; }
-  return d.z + clamp((v-d.x)*d.y,0.0,1.0)*d.w;
+fn scaled(slot: u32, row: u32, scale: LatkitScale, fallback: f32) -> f32 {
+  if (slot == 0xffffffffu) { return fallback; }
+  return scaleMapped(fieldFloat(slot,row,0u,0u),fieldValid(slot,row,0u),scale,fallback);
 }
 fn color(row:u32, base:vec4f) -> vec4f {
-  let v = scalar(page.slots1.x,row,3.402823e38);
-  if (v == 3.402823e38) { return base; }
-  return colormapColor((v-page.color.x)*page.color.y);
+  let t = scaled(page.slots1.x,row,page.color,-1.0);
+  if (t < 0.0) { return base; }
+  return colormapColor(t);
 }
 @compute @workgroup_size(64)
 fn vertices(@builtin(global_invocation_id) id: vec3u) {

@@ -12,6 +12,7 @@ function words(page: GpuPage): Uint32Array {
 /** Decode the public shader ABI independently of the uploader implementation. */
 export function field(page: GpuPage, selected: string | GpuField = 'value') {
   const item = typeof selected === 'string' ? page.columns[selected] : selected;
+  if (item.kind === 'envelope') throw new Error('Choose one envelope descriptor');
   const table = words(page),
     f = table.subarray(8 + item.slot * 16, 24 + item.slot * 16),
     banks = bindings(page).slice(1);

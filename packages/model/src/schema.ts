@@ -6,7 +6,7 @@ import type { Axis, Bounds, Value, Version } from './types.js';
 export interface Schema {
   readonly version: Version;
   /** Each advertised kind supports its complete defined semantics, not a partial implementation.
-   * Document excludes samples and cannot read outputs through rows/aggregate. */
+   * Document excludes samples/envelope and cannot read outputs through rows/aggregate. */
   readonly queries: readonly Query['kind'][];
   /** Per-data-block payload bound. Owned blocks also bound whole backing allocations.
    * Schema metadata and transport framing have separate transport limits. */

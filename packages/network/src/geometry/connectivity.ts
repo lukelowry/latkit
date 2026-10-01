@@ -1,14 +1,8 @@
-import {
-  BufferData,
-  GpuError,
-  assertIndex,
-  rowAt,
-  rowCount,
-  type Preparation,
-  type FieldValues,
-} from '@latkit/gpu';
+import { assertIndex, rowAt, rowCount } from '@latkit/model';
+import { BufferData, GpuError, type Preparation, type FieldValues } from '@latkit/gpu';
 import type { Index, RowAxis, Schema, Queryable } from '@latkit/model';
-import type { NetworkData, Position, VertexOptions, EdgeOptions, PathOptions } from '../data.js';
+import type { Position2D as Position } from '@latkit/gpu';
+import type { NetworkData, VertexOptions, EdgeOptions, PathOptions } from '../data.js';
 import { Adjacency } from './adjacency.js';
 import { RowLookup, bit, indexKey } from './rows.js';
 

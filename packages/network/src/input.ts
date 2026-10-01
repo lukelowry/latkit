@@ -1,3 +1,4 @@
+import { createCanvasInput, inputModifiers, wheelDelta } from '@latkit/gpu';
 import type { Network, NetworkEvents } from './network.js';
 import { notifyInput } from './network.js';
 export interface InputOptions {
@@ -11,16 +12,12 @@ export function attachNetworkInput(options: InputOptions): () => void {
   const { network, canvas } = options,
     mode = options.interaction ?? 'navigate';
   if (mode === 'none') return () => {};
-  const controller = new AbortController(),
-    signal = controller.signal;
-  const tab = canvas.getAttribute('tabindex'),
-    touch = canvas.style.touchAction;
-  if (options.keyboard !== false && !canvas.hasAttribute('tabindex')) canvas.tabIndex = 0;
-  canvas.style.touchAction = mode === 'navigate' ? 'none' : 'pan-x pan-y';
-  const point = (event: { clientX: number; clientY: number }): readonly [number, number] => {
-    const r = canvas.getBoundingClientRect();
-    return [event.clientX - r.left, event.clientY - r.top];
-  };
+  const input = createCanvasInput({
+      canvas,
+      keyboard: options.keyboard,
+      touchAction: mode === 'navigate' ? 'none' : 'pan-x pan-y',
+    }),
+    { signal, point } = input;
   let drag:
     | { id: number; x: number; y: number; startX: number; startY: number; rotate: boolean }
     | undefined;
@@ -48,7 +45,7 @@ export function attachNetworkInput(options: InputOptions): () => void {
         startY: p[1],
         rotate: event.button === 2 || event.shiftKey,
       };
-      if (mode === 'navigate') canvas.setPointerCapture(event.pointerId);
+      if (mode === 'navigate') input.capture(event.pointerId);
       canvas.focus({ preventScroll: true });
     },
     { signal },
@@ -76,7 +73,7 @@ export function attachNetworkInput(options: InputOptions): () => void {
       const p = point(event);
       if (Math.hypot(p[0] - drag.startX, p[1] - drag.startY) < 4 && event.button === 0) choose(p);
       drag = undefined;
-      if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+      input.release(event.pointerId);
     },
     { signal },
   );
@@ -102,7 +99,10 @@ export function attachNetworkInput(options: InputOptions): () => void {
         return;
       event.preventDefault();
       network.zoomBy(
-        Math.exp(-event.deltaY * (event.deltaMode === 1 ? 0.04 : 0.002)),
+        Math.exp(
+          -Math.max(-1000, Math.min(1000, wheelDelta(event, { height: canvas.clientHeight }))) *
+            0.002,
+        ),
         point(event),
       );
     },
@@ -113,7 +113,12 @@ export function attachNetworkInput(options: InputOptions): () => void {
     (event) => {
       event.preventDefault();
       const p = point(event);
-      notifyInput(network, 'contextmenu', { point: p, items: network.hitTest(p), event });
+      notifyInput(network, 'contextmenu', {
+        point: p,
+        items: network.hitTest(p),
+        trigger: 'pointer',
+        modifiers: inputModifiers(event),
+      });
     },
     { signal },
   );
@@ -166,18 +171,13 @@ export function attachNetworkInput(options: InputOptions): () => void {
           notifyInput(network, 'contextmenu', {
             point: at,
             items: network.hitTest(at),
-            event,
+            trigger: 'keyboard',
+            modifiers: inputModifiers(event),
           } satisfies NetworkEvents['contextmenu']);
         } else return;
         event.preventDefault();
       },
       { signal },
     );
-  return () => {
-    controller.abort();
-    if (drag && canvas.hasPointerCapture(drag.id)) canvas.releasePointerCapture(drag.id);
-    canvas.style.touchAction = touch;
-    if (tab === null) canvas.removeAttribute('tabindex');
-    else canvas.setAttribute('tabindex', tab);
-  };
+  return () => input.destroy();
 }

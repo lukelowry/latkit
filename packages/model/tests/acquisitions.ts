@@ -13,6 +13,8 @@ import type {
   RowsQuery,
   RowsBlock,
   SamplesQuery,
+  EnvelopeQuery,
+  EnvelopeBlock,
   SamplesBlock,
   EndpointsQuery,
   EndpointsBlock,
@@ -129,6 +131,7 @@ export class RecordingAcquisition<S extends Recording = Recording> implements Re
   }
   query(query: RowsQuery, options?: QueryOptions): AsyncIterable<QueryHeader | RowsBlock>;
   query(query: SamplesQuery, options?: QueryOptions): AsyncIterable<QueryHeader | SamplesBlock>;
+  query(query: EnvelopeQuery, options?: QueryOptions): AsyncIterable<QueryHeader | EnvelopeBlock>;
   query(query: EndpointsQuery, options?: QueryOptions): AsyncIterable<QueryHeader | EndpointsBlock>;
   query(query: LinksQuery, options?: QueryOptions): AsyncIterable<QueryHeader | LinksBlock>;
   query(query: AggregateQuery, options?: QueryOptions): AsyncIterable<QueryHeader | AggregateBlock>;

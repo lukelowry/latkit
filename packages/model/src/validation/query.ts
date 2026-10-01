@@ -123,9 +123,18 @@ export function validateQuery(schema: Schema, value: unknown): readonly Problem[
         const field = fields[id];
         if (typeof field.type !== 'string' || !numeric.includes(field.type))
           c.issue(['select'], 'This query requires scalar numeric fields.');
-        if (q.kind === 'samples' && !field.sampled)
+        if ((q.kind === 'samples' || q.kind === 'envelope') && !field.sampled)
           c.issue(['select'], 'Samples require sampled fields.');
       }
+    if (q.kind === 'envelope') {
+      c.integer(q.buckets, ['buckets'], 1, 0x7fffffff);
+      const range = c.object(q.window, ['window']);
+      if (range.kind !== 'range') c.issue(['window'], 'Envelopes require a coordinate range.');
+      if (Array.isArray(range.between) && range.between[0] === range.between[1] && q.buckets !== 1)
+        c.issue(['buckets'], 'A zero-width interval requires one bucket.');
+      if (!schema.axis)
+        c.issue(['window'], 'This source has no readable observations.', 'unsupported');
+    }
     if (q.kind === 'aggregate') {
       c.strings(q.measures, ['measures'], ['min', 'max'], true);
       const sampled = selected.filter(
@@ -138,7 +147,8 @@ export function validateQuery(schema: Schema, value: unknown): readonly Problem[
       if (Boolean(sampled) !== own(q, 'window'))
         c.issue(['window'], 'A window is required exactly for sampled aggregates.');
     }
-    if (q.kind === 'samples' || own(q, 'window')) window(c, q.window, ['window']);
+    if (q.kind === 'samples' || q.kind === 'envelope' || own(q, 'window'))
+      window(c, q.window, ['window']);
   }
   return c.issues;
 }

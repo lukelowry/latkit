@@ -34,14 +34,17 @@ it('reads and uploads the same native contract through connect without a rendere
     );
     const fields: GpuPage[] = [];
     await draw(gpu, async (frame) => {
-      for await (const page of frame.fields({
+      for await (const native of frame.fields({
         source: remote,
-        index: source.index,
-        rows: { kind: 'range', offset: 99990, count: 10 },
+        from: source.index.type,
+        rows: { index: source.index, kind: 'range', offset: 99990, count: 10 },
         fields: { value: 'value' },
-        float64: 'relative',
       }))
-        fields.push(page);
+        for (const page of frame.upload(native, {
+          select: Object.keys(native.columns),
+          float64: 'relative',
+        }))
+          fields.push(page);
     });
     const prepared = bytes(field(fields[0]).binding);
     expect([...new Float32Array(prepared.buffer, prepared.byteOffset, 10)]).toEqual(

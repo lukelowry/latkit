@@ -12,13 +12,11 @@ it('exposes native precision and aliasing without another query, and budgets ret
   await draw(gpu, async (frame) => {
     for await (const page of frame.fields({
       source,
-      index: source.index,
-      rows: { kind: 'range', offset: 0, count: 8 },
+      from: source.index.type,
+      rows: { index: source.index, kind: 'range', offset: 0, count: 8 },
       fields: { position: 'position', value: 'value', alias: 'value' },
-      read: ['position', 'value', 'alias'],
-      float64: 'relative',
     })) {
-      native = page.native!;
+      native = page;
       expect(native.columns.value).toBe(native.columns.alias);
       expect(native.columns.position.kind).toBe('vector');
       if (native.columns.position.kind === 'vector')
@@ -47,9 +45,9 @@ it('exposes presence separately from null validity on partial native overlays', 
   const gpu = await createGpu({ device: fakeDevice().device });
   await draw(gpu, async (frame) => {
     for await (const page of frame.fields({
-      index: source.index,
-      rows: { kind: 'range', offset: 0, count: 8 },
-      float64: 'relative',
+      source,
+      from: source.index.type,
+      rows: { index: source.index, kind: 'range', offset: 0, count: 8 },
       fields: {
         value: {
           source: observed,
@@ -58,26 +56,23 @@ it('exposes presence separately from null validity on partial native overlays', 
           rows: { kind: 'indices', index: source.index, values: Uint32Array.of(1, 3) },
         },
       },
-      read: ['value'],
     })) {
-      expect(page.native?.presence.value[0]).toBe(0b1010);
-      expect(page.native?.columns.value.validity).toBeUndefined();
+      expect(page.presence.value[0]).toBe(0b1010);
+      expect(page.columns.value.validity).toBeUndefined();
     }
   });
   gpu.destroy();
 });
-it('rejects misspelled CPU read fields before executing a query', async () => {
+it('rejects unknown native fields before executing a query', async () => {
   const source = new FieldSource(),
     gpu = await createGpu({ device: fakeDevice().device });
   await expect(
     draw(gpu, async (frame) => {
       for await (const _page of frame.fields({
         source,
-        index: source.index,
-        rows: { kind: 'range', offset: 0, count: 8 },
-        fields: { value: 'value' },
-        read: ['missing'],
-        float64: 'relative',
+        from: source.index.type,
+        rows: { index: source.index, kind: 'range', offset: 0, count: 8 },
+        fields: { value: 'missing' },
       })) {
         /* consume */
       }

@@ -1,6 +1,14 @@
 import type { Index, RowAxis, Version } from '@latkit/model';
 
-export type GpuField = GpuValueField | GpuListField;
+export type GpuField = GpuValueField | GpuListField | GpuEnvelopeField;
+/** Four lanes per bucket: first, minimum, maximum, last. Addresses use row and bucket. */
+export interface GpuEnvelopeField {
+  readonly kind: 'envelope';
+  readonly values: GpuValueField;
+  readonly coordinates: GpuValueField;
+  readonly frames: GpuValueField;
+  readonly continuous: GpuValueField;
+}
 export interface GpuListField {
   readonly kind: 'list';
   readonly slot: number;
@@ -17,7 +25,7 @@ export interface GpuValueField {
 
 /** One shader layout for queried fields, native rows/samples, and application values. Frame-scoped. */
 export interface GpuPage {
-  /** Available for fields requested through FieldsRequest.read. */
+  /** Native tile resolved before upload. */
   readonly native?: import('./binding.js').NativeFields;
   readonly version?: Version;
   readonly index: Index;
@@ -26,6 +34,7 @@ export interface GpuPage {
   readonly rowOffset: number;
   readonly columns: Readonly<Record<string, GpuField>>;
   readonly bindGroup: GPUBindGroup;
+  readonly envelope?: { readonly firstBucket: number; readonly count: number };
   readonly samples?: {
     readonly firstFrame: number;
     readonly count: number;

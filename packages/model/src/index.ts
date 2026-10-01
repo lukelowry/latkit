@@ -58,6 +58,10 @@ export type {
   RowsQuery,
   SamplesQuery,
   SampleWindow,
+  SampleRange,
+  EnvelopeQuery,
+  EnvelopeBlock,
+  EnvelopeColumn,
   EndpointsQuery,
   LinksQuery,
   AggregateQuery,
@@ -88,3 +92,15 @@ export { blockBuffers, blockByteLength } from './buffers.js';
 export { validateSchema } from './validation/schema.js';
 export { validateQuery } from './validation/query.js';
 export { validateBlock } from './validation/block.js';
+
+export {
+  sameIndex,
+  assertIndex,
+  rowCount,
+  rowAt,
+  sliceRows,
+  bitAt,
+  numberAt,
+  textAt,
+  sampleAt,
+} from './access.js';

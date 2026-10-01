@@ -117,7 +117,8 @@ export function validateSchema(value: unknown): readonly Problem[] {
     }
   }
   if (
-    (Array.isArray(schema.queries) && schema.queries.includes('samples')) ||
+    (Array.isArray(schema.queries) &&
+      (schema.queries.includes('samples') || schema.queries.includes('envelope'))) ||
     own(schema, 'axis')
   ) {
     const axis = c.object(schema.axis, ['axis']);

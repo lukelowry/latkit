@@ -2,7 +2,7 @@ import type { Index, RowAxis, Version } from '@latkit/model';
 import type { GpuField, GpuValueField, GpuPage } from './columns.js';
 import type { Allocation, Allocator } from './allocation.js';
 import { GpuError } from './error.js';
-import { rowCount } from './binding.js';
+import { rowCount } from '@latkit/model';
 
 /** Private addresses consumed by the one shared page encoder. */
 export interface Bitmap {
@@ -63,6 +63,7 @@ export class FieldPages {
       readonly rowOffset: number;
       readonly rowMap?: GPUBufferBinding;
       readonly columns: Readonly<Record<string, Column>>;
+      readonly envelope?: { firstBucket: number; count: number };
       readonly samples?: { firstFrame: number; count: number; coordinates: Column };
     },
     allocate: (size: number, label: string, exclude?: ReadonlySet<GPUBuffer>) => Allocation,
@@ -91,6 +92,7 @@ export class FieldPages {
       add(field.presence?.binding);
     }
     const buffers = [...new Set(regions.map((region) => region.buffer))];
+    if (!buffers.length) buffers.push(allocate(4, 'empty field page').binding.buffer);
     const relocated = new Map<GPUBufferBinding, GPUBufferBinding>();
     if (buffers.length > 2) {
       const total = regions.reduce((sum, region) => sum + region.size!, 0);
@@ -118,10 +120,10 @@ export class FieldPages {
       return { bank: buffers.indexOf(target.buffer), word: (target.offset ?? 0) / 4 };
     };
     // Eight header words, sixteen words per field. Descriptors never consume numeric staging.
-    const words = new Uint32Array(8 + fields.length * 16);
+    const words = new Uint32Array(8 + Math.max(1, fields.length) * 16);
     words.set([
       rowCount(input.rows),
-      input.samples?.count ?? 1,
+      input.samples?.count ?? input.envelope?.count ?? 1,
       fields.length,
       input.rows.kind === 'indices' ? 1 : 0,
       input.rows.kind === 'range' ? input.rows.offset : 0,
@@ -204,6 +206,7 @@ export class FieldPages {
       rowOffset: input.rowOffset,
       columns: described,
       samples,
+      envelope: input.envelope,
       bindGroup,
     };
   }

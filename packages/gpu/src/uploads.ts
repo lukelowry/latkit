@@ -1,5 +1,14 @@
-import type { Column, NumericArray, RowsBlock, SampleColumn, SamplesBlock } from '@latkit/model';
-import { rowCount, sliceRows, type FieldValues } from './binding.js';
+import type {
+  EnvelopeBlock,
+  EnvelopeColumn,
+  Column,
+  NumericArray,
+  RowsBlock,
+  SampleColumn,
+  SamplesBlock,
+} from '@latkit/model';
+import { rowCount, sliceRows } from '@latkit/model';
+import { type FieldValues, type NativeFields } from './binding.js';
 import type { GpuPage, UploadOptions } from './columns.js';
 import {
   FieldPages,
@@ -18,6 +27,7 @@ export interface UploadScope {
   copy(job: CopyJob): void;
 }
 interface NumericView {
+  float64?: UploadOptions['float64'];
   items?: NumericView;
   values: NumericArray | Uint8Array;
   boolean?: true;
@@ -27,6 +37,16 @@ interface NumericView {
   frameStride: number;
   validity?: { values: Uint8Array; offset: number; rowStride: number; frameStride: number };
   presence?: Uint8Array;
+}
+interface UploadData {
+  readonly index: FieldValues['index'];
+  readonly rows: FieldValues['rows'];
+  readonly columns: Readonly<Record<string, Column | NumericView>>;
+  readonly kind?: string;
+  readonly version?: string;
+  readonly presence?: Readonly<Record<string, Uint8Array>>;
+  readonly samples?: NativeFields['samples'];
+  readonly envelope?: { firstBucket: number; count: number };
 }
 interface Resident {
   entry: Entry;
@@ -71,16 +91,120 @@ export class Uploader {
       throw new GpuError('resource-limit', 'Device cannot hold a numeric page');
   }
 
-  validate(column: Column, rows: number): void {
-    if (rows) this.view(column, rows, 1, false);
-  }
-
   upload(
-    block: RowsBlock | SamplesBlock,
+    block: NativeFields | RowsBlock | SamplesBlock | EnvelopeBlock,
     options: UploadOptions,
     scope: UploadScope,
   ): readonly GpuPage[] {
-    return this.prepare(block, options, scope, block);
+    if ('kind' in block && block.kind === 'envelope') return this.envelope(block, options, scope);
+    const native = 'retain' in block ? block : undefined;
+    const pages = this.prepare(block, options, scope, native?.columns ?? block);
+    return native
+      ? pages.map((page) => ({ ...page, rowOffset: native.rowOffset + page.rowOffset, native }))
+      : pages;
+  }
+
+  private envelopes = new WeakMap<
+    EnvelopeBlock,
+    { input: UploadData; names: Map<string, readonly string[]> }
+  >();
+  private envelope(
+    block: EnvelopeBlock,
+    options: UploadOptions,
+    scope: UploadScope,
+  ): readonly GpuPage[] {
+    integer(block.firstBucket, 'first bucket');
+    integer(block.bucketCount, 'bucket count', 1);
+    const cells = rowCount(block.rows) * block.bucketCount,
+      slots = integer(cells * 4, 'envelope slots', 0, 0x7fffffff);
+    for (const column of Object.values(block.columns)) {
+      if (
+        column.values.kind !== 'numeric' ||
+        column.values.length !== slots ||
+        !(column.coordinates instanceof Float64Array) ||
+        column.coordinates.length !== slots ||
+        !(column.frames instanceof Float64Array) ||
+        column.frames.length !== slots ||
+        !(column.continuous instanceof Uint8Array) ||
+        column.continuous.length !== Math.ceil(cells / 8) ||
+        (column.values.validity && column.values.offset + slots > column.values.validity.length * 8)
+      )
+        throw new GpuError('invalid-input', 'Invalid envelope column shape');
+    }
+    let resolved = this.envelopes.get(block);
+    if (!resolved) {
+      const columns: Record<string, NumericView> = {},
+        names = new Map<string, readonly string[]>();
+      let serial = 0;
+      const add = (view: NumericView): string => {
+        const name = String(serial++);
+        columns[name] = view;
+        return name;
+      };
+      for (const [name, field] of Object.entries(block.columns)) {
+        const view = (values: EnvelopeColumn['values']['values'], offset = 0): NumericView => ({
+          values,
+          offset,
+          components: 4,
+          rowStride: block.bucketCount * 4,
+          frameStride: 4,
+          validity: field.values.validity
+            ? {
+                values: field.values.validity,
+                offset: field.values.offset,
+                rowStride: block.bucketCount * 4,
+                frameStride: 4,
+              }
+            : undefined,
+        });
+        names.set(name, [
+          add(view(field.values.values, field.values.offset)),
+          add({ ...view(field.coordinates), float64: 'relative' }),
+          add({ ...view(field.frames), float64: 'relative' }),
+          add({
+            values: field.continuous,
+            offset: 0,
+            components: 1,
+            rowStride: block.bucketCount,
+            frameStride: 1,
+            boolean: true,
+          }),
+        ]);
+      }
+      resolved = {
+        input: {
+          index: block.index,
+          rows: block.rows,
+          columns,
+          envelope: { firstBucket: block.firstBucket, count: block.bucketCount },
+        },
+        names,
+      };
+      this.envelopes.set(block, resolved);
+    }
+    const selected = options.select.flatMap((name) => {
+      const aliases = resolved!.names.get(name);
+      if (!aliases) throw new GpuError('invalid-input', 'Missing envelope field: ' + name);
+      return aliases;
+    });
+    return this.prepare(
+      resolved.input,
+      { ...options, select: selected, float64: options.float64 ?? 'relative' },
+      scope,
+      block,
+    ).map((page) => ({
+      ...page,
+      version: block.version,
+      rowOffset: block.rowOffset + page.rowOffset,
+      columns: Object.fromEntries(
+        options.select.map((name) => {
+          const [values, coordinates, frames, continuous] = resolved!.names
+            .get(name)!
+            .map((alias) => page.columns[alias] as import('./columns.js').GpuValueField);
+          return [name, { kind: 'envelope' as const, values, coordinates, frames, continuous }];
+        }),
+      ),
+    }));
   }
 
   values(
@@ -96,40 +220,23 @@ export class Uploader {
     );
   }
 
-  fields(
-    block: {
-      readonly index: FieldValues['index'];
-      readonly rows: FieldValues['rows'];
-      readonly columns: Readonly<Record<string, Column>>;
-      readonly presence?: Readonly<Record<string, Uint8Array>>;
-    },
-    options: UploadOptions,
-    scope: UploadScope,
-  ): readonly GpuPage[] {
-    return this.prepare(block, options, scope, block);
-  }
-
   private prepare(
-    block: Pick<RowsBlock, 'index' | 'rows' | 'columns'> &
-      Partial<Pick<RowsBlock, 'version'>> & {
-        readonly kind?: string;
-        readonly presence?: Readonly<Record<string, Uint8Array>>;
-      },
+    block: UploadData,
     options: UploadOptions,
     scope: UploadScope,
     identity: object,
   ): readonly GpuPage[] {
-    if (!options.select.length || new Set(options.select).size !== options.select.length)
-      throw new GpuError('invalid-input', 'Upload fields must be nonempty and unique');
-    const sampled = block.kind === 'samples' ? (block as SamplesBlock) : undefined;
+    if (new Set(options.select).size !== options.select.length)
+      throw new GpuError('invalid-input', 'Upload fields must be unique');
+    const sampled = block.kind === 'samples' ? (block as SamplesBlock) : block.samples;
     if (sampled) {
       integer(sampled.firstFrame, 'first frame');
-      integer(sampled.rowOffset, 'sample row offset');
+      if ('rowOffset' in sampled) integer(sampled.rowOffset as number, 'sample row offset');
       if (!(sampled.coordinates instanceof Float64Array))
         throw new GpuError('invalid-input', 'Coordinates must be Float64Array');
     }
     const count = rowCount(block.rows),
-      frames = sampled?.coordinates.length ?? 1;
+      frames = sampled?.coordinates.length ?? block.envelope?.count ?? 1;
     if (!count || !frames) return [];
     const limit = Math.min(
       this.pageBytes,
@@ -147,7 +254,19 @@ export class Uploader {
     const views: [string, NumericView][] = options.select.map((name) => {
       const column = block.columns[name];
       if (!column) throw new GpuError('invalid-input', 'Missing upload field: ' + name);
-      const view = this.view(column, count, frames, sampled !== undefined);
+      const view =
+        'kind' in column ? this.view(column, count, frames, 'frameStride' in column) : column;
+      const span =
+        view.offset +
+        (count - 1) * view.rowStride +
+        (frames - 1) * view.frameStride +
+        view.components;
+      if (
+        !Number.isSafeInteger(span) ||
+        view.offset < 0 ||
+        span > view.values.length * (view.boolean ? 8 : 1)
+      )
+        throw new GpuError('invalid-input', 'Upload view does not cover its axes');
       view.presence = block.presence?.[name];
       if (view.presence && view.presence.length * 8 < count)
         throw new GpuError('invalid-input', 'Presence bitmap does not cover rows');
@@ -170,10 +289,10 @@ export class Uploader {
     if (cellBytes > limit) throw new GpuError('resource-limit', 'A vector exceeds the page bound');
     const tileRows = Math.min(
       count,
-      Math.floor(limit / cellBytes),
+      Math.floor(limit / Math.max(1, cellBytes)),
       views.some(([, view]) => view.boolean) ? limit * 8 - 31 : Infinity,
     );
-    const tileFrames = Math.min(frames, Math.floor(limit / (tileRows * cellBytes)));
+    const tileFrames = Math.min(frames, Math.floor(limit / (tileRows * Math.max(1, cellBytes))));
     const rowRanges: [number, number][] = [];
     const lists = views.filter(([, view]) => view.items);
     for (let row = 0; row < count;) {
@@ -238,7 +357,15 @@ export class Uploader {
       nf: number,
       policy: UploadOptions['float64'],
     ): EncodedColumn => {
-      const resident = this.resident(view, row, nr, frame, nf, limit, policy);
+      const resident = this.resident(
+        view,
+        row,
+        nr,
+        view.frameStride ? frame : 0,
+        view.frameStride ? nf : 1,
+        limit,
+        policy,
+      );
       if (!dependencies.has(resident.entry)) {
         resident.entry.pin();
         dependencies.add(resident.entry);
@@ -290,7 +417,8 @@ export class Uploader {
             EncodedColumn
           >;
           for (const [name, view] of views) {
-            if (!view.items) columns[name] = column(view, row, nr, frame, nf, options.float64);
+            if (!view.items)
+              columns[name] = column(view, row, nr, frame, nf, view.float64 ?? options.float64);
             else {
               const first = view.values[view.offset + row],
                 end = view.values[view.offset + row + nr];
@@ -353,6 +481,10 @@ export class Uploader {
                 rowMap,
                 columns,
                 samples,
+                envelope: block.envelope && {
+                  firstBucket: block.envelope.firstBucket + frame,
+                  count: nf,
+                },
               },
               allocate,
               copies,
@@ -580,6 +712,25 @@ export class Uploader {
     policy: UploadOptions['float64'],
     allocate: (size: number, label: string) => Allocation,
   ): EncodedColumn {
+    if (view.boolean && (view.rowStride !== 1 || view.frameStride !== 0)) {
+      const count = rows * frames;
+      return this.memory.stage(Math.ceil(count / 8), () => {
+        const packed = new Uint8Array(Math.ceil(count / 8));
+        for (let f = 0; f < frames; f++)
+          for (let r = 0; r < rows; r++) {
+            const from = view.offset + (row + r) * view.rowStride + (frame + f) * view.frameStride;
+            const to = f * rows + r;
+            if (view.values[from >>> 3] & (1 << (from & 7))) packed[to >>> 3] |= 1 << (to & 7);
+          }
+        return {
+          ...this.bitmap(packed, 0, count, allocate),
+          rowStride: 1,
+          frameStride: rows,
+          type: 'boolean' as const,
+          components: 1,
+        };
+      });
+    }
     if (view.boolean) {
       const data = this.bitmap(view.values as Uint8Array, view.offset + row, rows, allocate);
       const validity = view.validity
