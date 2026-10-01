@@ -15,7 +15,7 @@ This guide gets a local Latkit checkout or downstream app to its first rendered 
 Install only the packages your app needs:
 
 ```sh
-npm install @latkit/model @latkit/colormaps @latkit/gpu @latkit/monitor @latkit/network @latkit/diagram @latkit/embed @latkit/port
+npm install @latkit/model @latkit/colormaps @latkit/gpu @latkit/monitor @latkit/network @latkit/diagram @latkit/port
 ```
 
 Most applications start with one renderer plus its colors:
@@ -35,8 +35,6 @@ or, for block diagrams:
 ```sh
 npm install @latkit/diagram @latkit/model @latkit/colormaps
 ```
-
-A page that wants a tag instead of a controller installs `@latkit/embed`.
 
 ## Choose a package
 
@@ -61,9 +59,6 @@ A page that wants a tag instead of a controller installs `@latkit/embed`.
 `@latkit/diagram`
 : A WebGPU block-diagram renderer and editor surface: automatic layout, right-angle wires, live values on blocks and wires, and edits reported as proposals. `arrange` computes the same layout without a device, in a worker too.
 
-`@latkit/embed`
-: `latkit-network` and `latkit-monitor`, the same controllers as custom elements.
-
 ## Use public entrypoints
 
 Every package has one entrypoint, its root:
@@ -85,8 +80,6 @@ The repository includes Vite examples that consume the same package entrypoints 
 pnpm install
 pnpm --filter @latkit/network-example dev   # http://127.0.0.1:5188
 pnpm --filter @latkit/monitor-example dev   # http://127.0.0.1:5190
-pnpm --filter @latkit/embed-example dev     # http://127.0.0.1:5192
-pnpm --filter @latkit/diagram-example dev   # http://127.0.0.1:5194
 ```
 
 ## Next steps

@@ -20,7 +20,6 @@ Install only the packages your application needs.
 | [`@latkit/network`](https://www.npmjs.com/package/@latkit/network) | Interactive WebGPU network topology views                           |
 | [`@latkit/monitor`](https://www.npmjs.com/package/@latkit/monitor) | WebGPU time-series and signal monitor views                         |
 | [`@latkit/diagram`](https://www.npmjs.com/package/@latkit/diagram) | WebGPU block diagrams with automatic layout and edit proposals      |
-| [`@latkit/embed`](https://www.npmjs.com/package/@latkit/embed)     | `latkit-network` and `latkit-monitor` custom elements               |
 | [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)         | Shared WebGPU resources, fields, text, colors, and frame submission |
 | [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)     | Native model, monitor, and query contracts                          |
 | [`@latkit/connect`](./packages/connect)                            | Transport for native models, their monitors, and reads              |
@@ -34,7 +33,7 @@ Install only the packages your application needs.
 
 ## Current migration
 
-`model`, `connect`, `gpu`, and `network` use the new contracts. `monitor`, `diagram`, `embed`, and `video` still need migration. The old `port` and `colormaps` packages have been deleted; there are no compatibility exports. Colors and colormaps now come from `@latkit/gpu`.
+`model`, `connect`, `gpu`, and `network` use the new contracts. `monitor`, `diagram`, and `video` still need migration. The old `port`, `colormaps`, and `embed` packages have been deleted; there are no compatibility exports. Colors and colormaps now come from `@latkit/gpu`.
 
 ## Network usage
 

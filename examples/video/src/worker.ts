@@ -21,10 +21,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     },
   );
 };
-async function run(
-  request: { view: ExampleView; format: 'mp4' | 'webm'; filename: string; duration: number },
-  signal: AbortSignal,
-) {
+async function run(request: ExportRequest, signal: AbortSignal): Promise<WorkerResult> {
   let gpu: Awaited<ReturnType<typeof createGpu>> | undefined;
   let content: Awaited<ReturnType<typeof scene>> | undefined;
   let file: FileSystemWritableFileStream | undefined;

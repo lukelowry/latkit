@@ -8,7 +8,7 @@ Latkit is organized as a small monorepo. Each published package owns a single pu
 
 Applications create, size, and own their canvases. A controller is created without a device or a canvas and holds everything a host gives it; `attach(canvas)` leases a device from a shared pool and paints that state, `detach()` returns both and keeps it, and a lost device is replaced inside the controller. See [Lifecycle and failures](lifecycle.md).
 
-Public APIs stay imperative on purpose: data often arrives from simulation, telemetry, or graph pipelines where direct controller methods are easier to integrate than a framework-specific component model. `@latkit/embed` is the declarative form of the same controllers for pages that want a tag.
+Public APIs stay imperative on purpose: data often arrives from simulation, telemetry, or graph pipelines where direct controller methods are easier to integrate than a framework-specific component model.
 
 ## Package boundaries
 
@@ -29,9 +29,6 @@ Public APIs stay imperative on purpose: data often arrives from simulation, tele
 
 `@latkit/diagram`
 : Owns netlist preparation, automatic layout, wire routing, glyph text, picking, editing gestures, and WebGPU rendering for block diagrams behind one `Diagram` controller and its `CHANNELS` and `OPTIONS` registries. It never edits a netlist: what the user draws, moves, or deletes is a proposal event, and the host loads the result. `arrange` is the same layout without a device or a DOM, and the entrypoint loads in a worker. Its GPU channels run on `@latkit/gpu`'s binder; `blockPosition` is the scene's own placement.
-
-`@latkit/embed`
-: Owns the declarative form: `latkit-network` and `latkit-monitor`, each a shadow canvas that fills the host, a data source, an attribute for every option, and the controller itself at `element.network` or `element.monitor`. No chrome. `register()` defines both tags; `embed.js` is the same, as a page script. Depends on the two renderers, `@latkit/model`, and `@latkit/colormaps`.
 
 `@latkit/port`
 : Owns every boundary crossing: the `Port` over workers, webviews, sockets, and one thread; the binary frame that carries typed arrays intact; protocols served and connected over a port, with the `check`s a served side runs; and engines, models, and recordings served and connected: `serveEngine` and `connectEngine`, `serveModel` and `connectModel`, `serveRecording` and `connectRecording`. A served engine carries all of a vendor on one port: each case a peer opens is a `Document.Session` on the document the engine holds, served beside it as a document service of its own, so a case never leaves the realm that keeps it. What crosses is a source, never a shadow: the far side opens a model with `Model.from` and a recording with `Recording.from`, against its model. A served engine records any model a peer gives it, one its realm serves where it lives and any other through the source the peer lends, and forwards each recording call by call; the studies it offers cross with it and follow it as they change. Native format implementations stay outside it; the port carries their document operations, model snapshots, native byte exports, and recording data through vendor-neutral contracts. Depends on `@latkit/model`.
@@ -58,7 +55,7 @@ Every barrel follows the same rules, so the surfaces stay small and alike:
 - One home per type. `Model.Topology`, `Model.Item`, `Document.Netlist`, `Document.Part`, `Series`, `Recording`, `Model.Field`, and `Domain` are defined in `@latkit/model`, and `RGBA` and `Colormap` in `@latkit/colormaps`, and imported from there; no renderer re-exports them.
 - One binding currency. Every renderer that follows a history takes `{ series, signal }`, the shape a model's field is, so a host binds a field without adapting it.
 - Shared behavior lives in base classes. Native documents, model snapshots, engines, and sources of samples extend `Document`, `Model`, `Engine`, or `Series` and implement their protected hooks. `Document.Format` groups a native format's metadata and document factories.
-- One entry point. A package's `index.ts` is its only entrypoint: no subpath, whether to hide plumbing or to trim a bundle. Code shared by renderers lives in the package whose job it is, `@latkit/gpu`, and a split for weight is a dynamic import inside the package. Assets and the embed page script are files, not entrypoints.
+- One entry point. A package's `index.ts` is its only entrypoint: no subpath, whether to hide plumbing or to trim a bundle. Code shared by renderers lives in the package whose job it is, `@latkit/gpu`, and a split for weight is a dynamic import inside the package. Assets are files, not entrypoints.
 - Code lives with the vocabulary it serves. A thing that crosses a boundary crosses as its source, and its far side is built by the package that owns it, never shadowed by the one that carries it.
 
 Names follow one convention across every package and every layer, from option to uniform to shader:
