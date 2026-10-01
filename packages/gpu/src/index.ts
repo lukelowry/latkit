@@ -112,3 +112,6 @@ export {
 
 export { createComposition } from './composition.js';
 export type { CompositionOptions, CompositionView } from './composition.js';
+
+export { createNativeReader } from './reader.js';
+export type { NativeReader } from './reader.js';

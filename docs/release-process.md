@@ -10,6 +10,7 @@ pnpm test:coverage
 pnpm --filter @latkit/gpu test:browser
 pnpm --filter @latkit/monitor test:browser
 pnpm --filter @latkit/network test:browser
+pnpm --filter @latkit/diagram test:browser
 python -m pip install -r docs/requirements.txt
 pnpm docs:build
 pnpm -r --filter "./packages/**" exec npm pack --dry-run
@@ -31,5 +32,5 @@ and merge the generated version PR. The release workflow builds and publishes
 with npm Trusted Publishing. Configure each new package's trusted publisher
 before its first automated release.
 
-The diagram package remains private and is excluded from publication.
+The diagram package now includes a runtime. Include its browser checks before publication.
 Keep API-breaking changes and dependent package versions in the release plan.

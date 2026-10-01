@@ -1,7 +1,6 @@
 {
   "name": "@latkit/diagram",
   "version": "0.3.2",
-  "private": true,
   "description": "WebGPU block-diagram renderer and editor surface for Latkit.",
   "type": "module",
   "repository": {
@@ -17,13 +16,16 @@
   ],
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     }
   },
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "tsup",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --project @latkit/diagram",
+    "test:browser": "pnpm --filter @latkit/diagram... build && esbuild tests/fixture.ts --format=esm --outfile=../../output/diagram-fixture.js && node tests/browser/run.mjs"
   },
   "dependencies": {
     "@latkit/gpu": "workspace:*",

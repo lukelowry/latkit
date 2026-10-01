@@ -6,7 +6,11 @@ export interface Options extends HoverOptions {
   readonly labels?: boolean;
   readonly junctions?: boolean;
   readonly font?: TextFont;
+  /** Default text size in diagram units (CSS pixels at scale 1). */
   readonly fontSizePx?: number;
+  readonly nodePadding?: number;
+  readonly portSpacing?: number;
+  readonly routeClearance?: number;
   readonly motion?: 'auto' | 'reduce' | 'full';
   readonly animationMs?: number;
   readonly pickRadiusPx?: number;
@@ -25,6 +29,7 @@ export interface Options extends HoverOptions {
 }
 export interface Limits {
   readonly components?: number;
+  readonly connections?: number;
   readonly endpoints?: number;
   readonly geometryBytes?: number;
   readonly pickingBytes?: number;

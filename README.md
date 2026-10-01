@@ -65,7 +65,7 @@ await source.close();
 | [network](packages/network) | Network topology and geographic views            |
 | [monitor](packages/monitor) | Time-series plots and live telemetry             |
 | [video](packages/video)     | MP4 and WebM export                              |
-| [diagram](packages/diagram) | Planned API; private, no runtime yet             |
+| [diagram](packages/diagram) | Native diagrams, layout, routing, and editing    |
 
 ## Develop
 

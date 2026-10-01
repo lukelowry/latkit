@@ -5,6 +5,7 @@
 '@latkit/network': minor
 '@latkit/monitor': minor
 '@latkit/video': minor
+'@latkit/diagram': minor
 ---
 
 Replace the previous model and rendering APIs with native Queryable data, explicit
@@ -16,4 +17,7 @@ Rewrite usage guides and package READMEs for these APIs.
 
 This is a breaking pre-1.0 release. Migrate consumers together; the retired port,
 colormaps, document-session, and scene-snapshot APIs have no compatibility exports.
-The diagram package remains private and declaration-only.
+Diagram now provides a complete runtime over the shared GPU lifecycle, with native
+fields, headless arrangement, measured labels, routing, groups, editing proposals,
+and indexed picking. GPU exposes a bounded, device-independent native read session
+for headless consumers.
