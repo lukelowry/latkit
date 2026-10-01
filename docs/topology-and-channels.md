@@ -22,6 +22,11 @@ application units. Positions can be two-component vectors or separate
 Connections expose native endpoints. Use `pair` for two endpoints and `star`
 for several. Paths and bends use lists of two-component vectors.
 
+A connection type can also be the vertices, such as buses joining their devices.
+A component between two of them, such as a branch, is an edge through its two
+ports: `{ connectivity: { kind: 'ports', ports: ['bus1', 'bus2'] } }`. The
+schema's port types name the connection types, which need vertex declarations.
+
 ## Style by field
 
 ```ts

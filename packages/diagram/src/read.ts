@@ -330,9 +330,10 @@ export async function readScene(
       const textWidth = (ports: Port[]) => ports.reduce((m, p) => Math.max(m, p.label.width), 0);
       const horizontal = Math.max(side('top').length, side('bottom').length) * options.portSpacing;
       const vertical = Math.max(side('left').length, side('right').length) * options.portSpacing;
+      const shapeScale = node.shape === 'diamond' ? 2 : node.shape === 'ellipse' ? Math.SQRT2 : 1;
       node.width ||= Math.max(
         64,
-        node.label.width + options.nodePadding * 2,
+        (node.label.width + options.nodePadding * 2) * shapeScale,
         textWidth(side('left')) + textWidth(side('right')) + options.nodePadding * 3,
         horizontal + options.nodePadding * 2,
       );
@@ -340,13 +341,15 @@ export async function readScene(
         node.label.height +
         options.nodePadding * 2 +
         (side('top').length ? options.fontSizePx * 1.5 : 0);
-      node.height ||= Math.max(
-        40,
-        node.header +
-          Math.max(vertical, options.portSpacing) +
-          options.nodePadding +
-          (side('bottom').length ? options.fontSizePx * 1.5 : 0),
-      );
+      node.height ||=
+        shapeScale *
+        Math.max(
+          40,
+          node.header +
+            Math.max(vertical, options.portSpacing) +
+            options.nodePadding +
+            (side('bottom').length ? options.fontSizePx * 1.5 : 0),
+        );
       charge(node.label.text.length * 2 + node.label.runs.length * 128);
       check();
     }

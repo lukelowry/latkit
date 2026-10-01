@@ -100,7 +100,8 @@ export async function readGeometry(
     const table = new RowLookup<VertexBank>();
     const flush = () => {
       if (!pending.length) return;
-      const definition = schema!.components[type] ?? schema!.tables?.[type];
+      const definition =
+        schema!.components[type] ?? schema!.connections[type] ?? schema!.tables?.[type];
       if (!definition) throw new GpuError('invalid-input', 'Unknown vertex type: ' + type);
       const rows = rowAxis(pending),
         count = pending.length;
@@ -245,6 +246,26 @@ export async function readGeometry(
         pair(a, b, local);
       if (rows.length === BANK_ROWS) flush();
     };
+    if (options.connectivity.kind === 'ports') {
+      const sides = await portSides(frame, data, schema, type, options.connectivity.ports, charge);
+      for await (const block of frame.query(data.source, {
+        kind: 'rows',
+        from: type,
+        select: [],
+        ...(options.rows ? { rows: options.rows } : {}),
+      })) {
+        if (block.kind === 'schema') continue;
+        if (index) assertIndex(index, block.index);
+        else index = block.index;
+        if (sides.component) assertIndex(sides.component, block.index);
+        for (let i = 0; i < rowCount(block.rows); i++) {
+          const row = rowAt(block.rows, i);
+          add(row, sides.ends(row));
+        }
+      }
+      flush();
+      continue;
+    }
     const query =
       options.connectivity.kind === 'links'
         ? { ...options.connectivity, from: type, ...(options.rows ? { rows: options.rows } : {}) }
@@ -359,5 +380,64 @@ export async function readGeometry(
     schema,
     bytes,
     adjacency,
+  };
+}
+/**
+ * The connection each row of component `type` sits on through each of two ports, read from the
+ * endpoints of the connection types the schema gives those ports. A row with a port unwired has
+ * fewer ends, and no segment.
+ */
+async function portSides(
+  frame: Preparation,
+  data: NetworkData,
+  schema: Schema,
+  type: string,
+  ports: readonly [string, string],
+  charge: (bytes: number) => void,
+): Promise<{ readonly component: Index | undefined; ends(row: number): [Index, number][] }> {
+  const definition = schema.components[type];
+  if (!definition)
+    throw new GpuError('invalid-input', 'Port connectivity requires a component type: ' + type);
+  const through = ports.map((port) => {
+    const connection = definition.ports?.[port]?.type;
+    if (connection === undefined || !schema.connections[connection])
+      throw new GpuError('invalid-input', `Port ${port} of ${type} names no connection type`);
+    if (!data.vertices[connection])
+      throw new GpuError('invalid-input', 'Port target must have a vertex declaration');
+    return connection;
+  });
+  const sides = [new Map<number, number>(), new Map<number, number>()];
+  const indexes: (Index | undefined)[] = [undefined, undefined];
+  let component: Index | undefined;
+  for (const connection of new Set(through))
+    for await (const block of frame.query(data.source, { kind: 'endpoints', from: connection })) {
+      if (block.kind !== 'endpoints') continue;
+      for (let c = 0; c < block.connections.length; c++)
+        for (let e = block.offsets[c]; e < block.offsets[c + 1]; e++) {
+          const owner = block.componentIndexes[block.componentType[e]];
+          if (owner?.type !== type) continue;
+          if (component) assertIndex(component, owner);
+          else component = owner;
+          const name = block.portNames[block.port[e]];
+          for (let side = 0; side < 2; side++) {
+            if (ports[side] !== name || through[side] !== connection) continue;
+            const known = indexes[side];
+            if (known) assertIndex(known, block.index);
+            else indexes[side] = block.index;
+            sides[side].set(block.componentRow[e], block.connections[c]);
+            charge(24);
+          }
+        }
+    }
+  return {
+    component,
+    ends(row) {
+      const ends: [Index, number][] = [];
+      for (let side = 0; side < 2; side++) {
+        const at = sides[side].get(row);
+        if (at !== undefined) ends.push([indexes[side]!, at]);
+      }
+      return ends;
+    },
   };
 }

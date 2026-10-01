@@ -54,6 +54,28 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@26.1.1)(jsdom@26.1.0)(yaml@2.9.0)
 
+  examples/diagram:
+    dependencies:
+      '@latkit/diagram':
+        specifier: workspace:*
+        version: link:../../packages/diagram
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../../packages/gpu
+      '@latkit/model':
+        specifier: workspace:*
+        version: link:../../packages/model
+    devDependencies:
+      '@webgpu/types':
+        specifier: ^0.1.71
+        version: 0.1.71
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^7.0.0
+        version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
+
   examples/monitor:
     dependencies:
       '@latkit/gpu':

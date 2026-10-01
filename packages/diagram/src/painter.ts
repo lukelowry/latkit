@@ -412,6 +412,11 @@ export class Painter {
         text(node.label, [
           node.x + (node.width - node.label.width) / 2,
           node.y +
+            (node.shape === 'diamond'
+              ? node.height / 4
+              : node.shape === 'ellipse'
+                ? (node.height * (1 - Math.SQRT1_2)) / 2
+                : 0) +
             options.nodePadding +
             (node.ports.some((p) => p.side === 'top') ? options.fontSizePx * 1.5 : 0),
         ]);
@@ -432,9 +437,18 @@ export class Painter {
                 : p[0] - port.label.width / 2;
           const top =
             port.side === 'bottom'
-              ? p[1] - port.label.height - 6
+              ? p[1] -
+                port.label.height -
+                6 -
+                (node.shape === 'diamond'
+                  ? ((port.label.width + 12) * node.height) / (2 * node.width)
+                  : 0)
               : port.side === 'top'
-                ? p[1] + 6
+                ? p[1] +
+                  6 +
+                  (node.shape === 'diamond'
+                    ? ((port.label.width + 12) * node.height) / (2 * node.width)
+                    : 0)
                 : p[1] - port.label.height / 2;
           text(port.label, [left, top]);
         }

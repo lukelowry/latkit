@@ -141,10 +141,17 @@ function checkedData(data: NetworkData): NetworkData {
   if (!data.source || !['cartesian', 'geographic'].includes(data.coordinates) || !data.vertices)
     throw new GpuError('invalid-input', 'Invalid network data');
   for (const [type, edge] of Object.entries(data.edges ?? {})) {
-    if (!edge.connectivity || !['links', 'endpoints'].includes(edge.connectivity.kind))
+    if (!edge.connectivity || !['links', 'endpoints', 'ports'].includes(edge.connectivity.kind))
       throw new GpuError('invalid-input', 'Invalid connectivity for ' + type);
     if (edge.connectivity.kind === 'links' && !data.vertices[edge.connectivity.to])
       throw new GpuError('invalid-input', 'Link target must have a vertex declaration');
+    if (
+      edge.connectivity.kind === 'ports' &&
+      (edge.connectivity.ports?.length !== 2 ||
+        !edge.connectivity.ports.every((port) => typeof port === 'string') ||
+        edge.connectivity.ports[0] === edge.connectivity.ports[1])
+    )
+      throw new GpuError('invalid-input', 'Port connectivity requires two distinct ports');
   }
   for (const path of Object.values(data.paths ?? {})) {
     if (

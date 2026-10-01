@@ -33,6 +33,12 @@ export interface EdgeOptions {
     | {
         readonly kind: 'endpoints';
         readonly layout: 'pair' | 'star';
+      }
+    | {
+        /** A component between the connections its two ports sit on, such as a branch between
+         *  buses: each port's schema type names a connection type with a vertex declaration. */
+        readonly kind: 'ports';
+        readonly ports: readonly [source: string, target: string];
       };
   /** Intermediate bends, a native list of two-component floating-point vectors; pair layout only. */
   readonly bends?: FieldInput;

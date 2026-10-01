@@ -125,4 +125,5 @@ pnpm --filter @latkit/diagram test:browser for actual WebGPU, input, composition
 and pixel readback checks. The browser fixture writes output/diagram-browser.json
 and output/playwright/diagram.png.
 
-legacy/ is an archived behavior reference; it is excluded from the runtime build.
+Run the interactive [Diagram studio](../../examples/diagram/README.md) with
+`pnpm --filter @latkit/diagram-example dev`, then open http://127.0.0.1:5192.
