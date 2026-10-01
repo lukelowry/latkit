@@ -200,11 +200,7 @@ it('keeps null, constant, reversed output ranges and relative Float64 scale sema
   expect(scaleValue(9, resolveScale({ range: [8, 2] }, [5, 5]))).toBe(5);
   expect(scaleValue(1e12 + 0.25, resolveScale({ range: [2, 0] }, [1e12, 1e12 + 1]))).toBe(1.5);
   const params = scaleParameters(resolveScale({ range: [2, 0] }, [1e12, 1e12 + 1]), {
-    kind: 'value',
-    type: 'float32',
-    components: 1,
-    slot: 0,
-    origin: Float64Array.of(1e12),
+    origin: 1e12,
   });
   expect([...params]).toEqual([0, 1, 2, -2, 1, 1, 0, 0]);
   expect(scaleValue(2, resolveScale({ clamp: false }, [0, 1]))).toBe(2);

@@ -277,8 +277,28 @@ pnpm --filter @latkit/gpu benchmark
 
 The browser fixture validates actual computation/readback, sparse nullable samples, Float64 precision, multiple views, incremental images, one million rows, fragmented field consolidation/reuse, ten simultaneous visual fields, and text pixels. Headed mode leaves an interactive three-view fixture visible with `--keep-open`. Set `LATKIT_BROWSER` for an alternative Chromium executable. Reports and screenshots go to `output/gpu-browser.json` and `output/playwright/gpu-foundation.png`. Fake-device benchmarks isolate JavaScript plumbing and are not GPU timings.
 
-Network uses this foundation directly. `monitor_new`, `diagram_new`, and `video_new` contain
+Network and `monitor_new` use this foundation directly. `diagram_new` and `video_new` contain
 root-only public declaration skeletons for the next implementations. Their old packages are not
 adapters and remain unmigrated. Geometry, routing, culling, axis formatting, exact picking and
 video encoding stay with those implementations. Shared types and plumbing are imported from
 model/GPU, without renderer-owned copies or compatibility exports.
+
+
+## Progressive native preparation
+
+`gpu.query`, `gpu.fields`, and `gpu.envelope` use the same engines and caches as their frame methods.
+Their iterators outlive individual render frames, borrow immutable native blocks, respect cancellation
+and source closure, and apply pull-based backpressure. Consume or return each iterator. Native
+`fields` tiles carry authoritative source `versions`; optional `at` supplies a point coordinate.
+Only `frame.upload` creates frame-scoped GPU descriptors. Keeping a native iterator open is not
+retaining a recording acquisition; applications explicitly retain sources when a fixed view is needed.
+
+Renderers can expose `pending`, the next drawable work or completion, and notify `invalidate` when
+work arrives. `gpu.render({ completion: 'complete', ... })` drains bounded submissions until the
+participating renderers have no pending work. The final `encode` callback runs once, after completion.
+Cancellation interrupts waiting without invoking that final callback. Use stable sources and fixed
+time for deterministic output. `createCanvasView` remains progressive and event-driven.
+
+`scaleParameters(scale, { origin })` takes an explicit scalar origin. For vector or envelope fields,
+pass the corresponding `field.origin[component]`; one origin cannot represent every component.
+`frame.shade({ timeMs })` can freeze effect time across progressively composed batches.

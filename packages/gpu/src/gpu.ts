@@ -1,6 +1,8 @@
 import { shadeUniforms } from './shade.js';
+import type { FieldsRequest, NativeFields } from './binding.js';
+import type { EnvelopeRequest } from './envelope.js';
 import { Envelopes } from './envelope.js';
-import type { Query, Queryable, Version } from '@latkit/model';
+import type { Query, Queryable, Version, RequestOptions, EnvelopeBlock } from '@latkit/model';
 import { BufferData } from './buffers.js';
 import { Buffers, type BufferResource } from './owned-buffer.js';
 import { Colormaps } from './colors/preparation.js';
@@ -48,6 +50,13 @@ export interface Gpu {
   readonly textLayout: GPUBindGroupLayout;
   readonly colormapLayout: GPUBindGroupLayout;
   measureText(input: TextInput, options?: { readonly signal?: AbortSignal }): Promise<TextMetrics>;
+  query<Q extends Query>(
+    source: Queryable,
+    query: Q,
+    options?: RequestOptions,
+  ): AsyncIterable<QueryResult<Q>>;
+  fields(request: FieldsRequest, options?: RequestOptions): AsyncIterable<NativeFields>;
+  envelope(request: EnvelopeRequest, options?: RequestOptions): AsyncIterable<EnvelopeBlock>;
   stats(): GpuStats;
   render(options: RenderOptions): Promise<void>;
   buffer(descriptor: GPUBufferDescriptor): BufferResource;
@@ -107,7 +116,8 @@ class Owner implements Gpu {
   private readonly memory: Memory;
   private readonly reads: Reads;
   private readonly uploader: Uploader;
-  private readonly fields: Fields;
+  private readonly fieldReader: Fields;
+  private readonly rendering = new Set<Renderer>();
   private readonly envelopes: Envelopes;
   private readonly textures: Textures;
   private readonly images: Images;
@@ -137,7 +147,7 @@ class Owner implements Gpu {
       options.pageBytes ?? 1024 ** 2,
     );
     this.fieldLayout = this.uploader.fieldPages.layout;
-    this.fields = new Fields(this.memory, this.uploader.pageBytes);
+    this.fieldReader = new Fields(this.memory, this.uploader.pageBytes);
     this.envelopes = new Envelopes(this.memory, options.maxBlockBytes ?? 1024 ** 2);
     this.reads = new Reads(
       this.memory,
@@ -176,6 +186,116 @@ class Owner implements Gpu {
     );
   }
 
+  private readContext(options: RequestOptions, at?: number) {
+    this.assertLive();
+    const abort = new AbortController();
+    const signal = AbortSignal.any([
+      this.stopped.signal,
+      abort.signal,
+      ...(options.signal ? [options.signal] : []),
+    ]);
+    const versions = new Map<Queryable, Version>(),
+      subscriptions = new Map<Queryable, () => void>();
+    const entries = new Set<Entry>(),
+      checks: (() => void)[] = [];
+    const observe = (source: Queryable): void => {
+      signal.throwIfAborted();
+      if (!versions.has(source)) versions.set(source, source.version);
+      if (!subscriptions.has(source))
+        subscriptions.set(
+          source,
+          source.on('change', (change) => {
+            if (change.kind === 'closed')
+              abort.abort(new GpuError('closed', 'Preparation source was closed'));
+          }),
+        );
+    };
+    const reads = this.reads;
+    const query = async function* <Q extends Query>(
+      source: Queryable,
+      request: Q,
+    ): AsyncGenerator<QueryResult<Q>> {
+      observe(source);
+      for await (const block of reads.query(source, request, signal)) {
+        if (block.kind === 'schema') {
+          const previous = versions.get(source);
+          if (previous !== undefined && previous !== block.version)
+            throw new GpuError('conflict', 'Preparation observed different source versions');
+          versions.set(source, block.version);
+        }
+        yield block as QueryResult<Q>;
+      }
+    };
+    const scope: UploadScope = {
+      use(entry) {
+        if (!entries.has(entry)) {
+          entry.pin();
+          entries.add(entry);
+        }
+      },
+      check(check) {
+        checks.push(check);
+      },
+      copy() {
+        throw new GpuError('invalid-input', 'Native preparation cannot encode GPU copies');
+      },
+    };
+    return {
+      query,
+      observe,
+      signal,
+      at,
+      scope,
+      versions,
+      check() {
+        signal.throwIfAborted();
+        for (const check of checks) check();
+      },
+      close() {
+        abort.abort(new DOMException('Preparation ended', 'AbortError'));
+        for (const off of subscriptions.values()) off();
+        for (const entry of entries) entry.unpin();
+      },
+    };
+  }
+  async *query<Q extends Query>(
+    source: Queryable,
+    query: Q,
+    options: RequestOptions = {},
+  ): AsyncGenerator<QueryResult<Q>> {
+    const context = this.readContext(options);
+    try {
+      yield* context.query(source, query);
+    } finally {
+      context.close();
+    }
+  }
+  async *fields(
+    request: FieldsRequest,
+    options: RequestOptions = {},
+  ): AsyncGenerator<NativeFields> {
+    const context = this.readContext(options, request.at);
+    try {
+      for await (const tile of this.fieldReader.prepare(request, context, context.scope)) {
+        context.check();
+        yield { ...tile, versions: new Map(context.versions) };
+      }
+    } finally {
+      context.close();
+    }
+  }
+  async *envelope(
+    request: EnvelopeRequest,
+    options: RequestOptions = {},
+  ): AsyncGenerator<EnvelopeBlock> {
+    const context = this.readContext(options);
+    try {
+      yield* this.envelopes.prepare(request, context);
+    } finally {
+      context.close();
+    }
+  }
+
   stats(): GpuStats {
     return this.memory.stats();
   }
@@ -184,6 +304,34 @@ class Owner implements Gpu {
   }
 
   async render(options: RenderOptions): Promise<void> {
+    this.assertLive();
+    const renderers = [...new Set(options.views.map((view) => view.renderer))];
+    for (const renderer of renderers)
+      if (this.rendering.has(renderer))
+        throw new GpuError('busy', 'Renderer already has a render in progress');
+    const signal = AbortSignal.any([
+      this.stopped.signal,
+      ...(options.signal ? [options.signal] : []),
+    ]);
+    for (const renderer of renderers) this.rendering.add(renderer);
+    try {
+      const complete = options.completion === 'complete';
+      do {
+        await this.renderFrame(complete ? { ...options, encode: undefined } : options);
+        if (!complete) return;
+        const pending = renderers.flatMap((renderer) =>
+          renderer.pending ? [renderer.pending] : [],
+        );
+        if (!pending.length) break;
+        await interruptible(Promise.all(pending), signal);
+      } while (complete);
+      // A final callback sees the complete output and runs only once.
+      if (options.encode) await this.renderFrame(options);
+    } finally {
+      for (const renderer of renderers) this.rendering.delete(renderer);
+    }
+  }
+  private async renderFrame(options: RenderOptions): Promise<void> {
     this.assertLive();
     if (!Number.isFinite(options.timeMs))
       throw new GpuError('invalid-input', 'Frame time must be finite');
@@ -268,6 +416,7 @@ class Owner implements Gpu {
       assertPreparing();
       if (observed.has(source)) return;
       observed.add(source);
+      if (!versions.has(source)) versions.set(source, source.version);
       subscriptions.push(
         source.on('change', (change) => {
           if (change.kind === 'closed')
@@ -334,7 +483,7 @@ class Owner implements Gpu {
       },
       scale: (request) => {
         assertPreparing();
-        const task = this.fields.scale(
+        const task = this.fieldReader.scale(
           request,
           { query: read, signal, at: info.at, observe },
           scope,
@@ -348,7 +497,7 @@ class Owner implements Gpu {
       },
       extent: (request) => {
         assertPreparing();
-        const task = this.fields.extent(
+        const task = this.fieldReader.extent(
           request,
           { query: read, signal, at: info.at, observe },
           scope,
@@ -383,13 +532,13 @@ class Owner implements Gpu {
         };
       },
       fields: (request) => {
-        const fields = this.fields;
+        const fields = this.fieldReader;
         return {
           async *[Symbol.asyncIterator]() {
             assertPreparing();
             const iterator = fields.prepare(
               request,
-              { query: read, signal, at: info.at, observe },
+              { query: read, signal, at: request.at ?? info.at, observe },
               scope,
             );
             iterators.add(iterator);
@@ -399,7 +548,7 @@ class Owner implements Gpu {
                 const next = await interruptible(iterator.next(), signal);
                 assertPreparing();
                 if (next.done) return;
-                yield next.value;
+                yield { ...next.value, versions: new Map(versions) };
               }
             } finally {
               iterators.delete(iterator);

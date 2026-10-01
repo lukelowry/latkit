@@ -9,6 +9,7 @@ import {
   type QueryBlock,
   type QueryHeader,
   type Schema,
+  type Update,
 } from '@latkit/model';
 import { GpuError, interruptible } from './error.js';
 import type { Entry, Memory } from './memory.js';
@@ -64,6 +65,11 @@ export class Reads {
   }
 
   async *query(source: Queryable, query: Query, signal: AbortSignal): AsyncGenerator<Result> {
+    // Optional fields commonly arrive as explicit undefined from typed renderer requests.
+    if (Object.values(query).some((value) => value === undefined))
+      query = Object.fromEntries(
+        Object.entries(query).filter(([, value]) => value !== undefined),
+      ) as unknown as Query;
     signal.throwIfAborted();
     if (this.closed) throw new GpuError('closed', 'Gpu is closed');
     const key = JSON.stringify([source.version, this.key(query)]);
@@ -123,7 +129,7 @@ export class Reads {
           read,
           signal.aborted ? signal.reason : new DOMException('Query consumer left', 'AbortError'),
         );
-        if (cache.get(key) === read) cache.delete(key);
+        if (cache.get(read.key) === read) cache.delete(read.key);
         read.meta.close();
       }
       read.notify();
@@ -155,7 +161,7 @@ export class Reads {
     };
     read.notify();
     read.meta = this.memory.add([], 256 + key.length * 2, () => {
-      if (cache.get(key) === read) cache.delete(key);
+      if (cache.get(read.key) === read) cache.delete(read.key);
       this.live.delete(read);
       read.off();
       if (!read.done) this.stop(read, new GpuError('closed', 'Read cache was released'));
@@ -171,9 +177,27 @@ export class Reads {
         [Symbol.asyncIterator]();
       read.off = source.on('change', (change) => {
         if (change.kind === 'status') return;
+        if (
+          read.done &&
+          !read.failed &&
+          !read.readers.size &&
+          cache.get(read.key) === read &&
+          read.header &&
+          'version' in change &&
+          change.version.length <= read.header.version.length &&
+          unchanged(read, change)
+        ) {
+          cache.delete(read.key);
+          read.key = JSON.stringify([change.version, this.key(read.query)]);
+          read.header = { ...read.header, version: change.version };
+          for (const chunk of read.chunks.values())
+            chunk.value = { ...chunk.value, version: change.version };
+          cache.set(read.key, read);
+          return;
+        }
         if (change.kind === 'closed')
           this.stop(read, new GpuError('closed', 'Queryable was closed'));
-        if (cache.get(key) === read) cache.delete(key);
+        if (cache.get(read.key) === read) cache.delete(read.key);
         read.meta.close();
       });
       this.live.add(read);
@@ -366,4 +390,33 @@ function compact(value: unknown, seen = new Map<object, unknown>()): unknown {
   seen.set(value, copy);
   for (const [name, item] of Object.entries(value)) copy[name] = compact(item, seen);
   return copy;
+}
+
+/** Reuse payload only when the change proves that the complete queried rectangle is unchanged. */
+function unchanged(read: Read, change: Update): boolean {
+  const query = read.query;
+  if (change.kind === 'commands' || change.kind === 'diagnostics') return true;
+  if (change.kind !== 'append' && change.kind !== 'evict') return false;
+  if (query.kind !== 'samples' && query.kind !== 'aggregate' && query.kind !== 'envelope')
+    return false;
+  const window = query.window;
+  if (!window) return false;
+  if (window.kind === 'frames')
+    return change.kind === 'append'
+      ? window.offset + window.count <= change.frames.offset
+      : window.offset >= change.beforeFrame;
+  let first = Infinity,
+    last = -Infinity,
+    coordinate = -Infinity;
+  for (const { value } of read.chunks.values()) {
+    if (value.kind === 'samples' && value.coordinates.length) {
+      first = Math.min(first, value.firstFrame);
+      last = Math.max(last, value.firstFrame + value.coordinates.length - 1);
+      coordinate = Math.max(coordinate, value.coordinates[value.coordinates.length - 1]);
+    }
+  }
+  // Range context must already include the requested successors; at reads must precede the known frontier.
+  if (change.kind === 'evict') return first !== Infinity && first >= change.beforeFrame;
+  const end = window.kind === 'range' ? window.between[1] : window.value;
+  return Number.isFinite(last) && last < change.frames.offset && coordinate > end;
 }

@@ -1,0 +1,226 @@
+import { GpuError, validateRgba, type FieldBinding, type FieldInput, type Gpu } from '@latkit/gpu';
+import {
+  type Queryable,
+  type Schema,
+  type Domain,
+  type RowSelection,
+  type SampleWindow,
+  type NumericColumn,
+  type SampleColumn,
+  rowCount,
+  bitAt,
+} from '@latkit/model';
+import type { MonitorData, Trace } from './data.js';
+import { yieldWork } from './async.js';
+import { domain, finite, fail, windowRange } from './config.js';
+export interface Binding {
+  readonly name: string;
+  readonly trace: Trace;
+  readonly source: Queryable;
+  readonly field: string;
+  readonly schema: Schema;
+  readonly rows?: RowSelection;
+  readonly fields: Readonly<Record<string, FieldInput>>;
+  readonly envelope: boolean;
+  readonly colorValue: boolean;
+  readonly shadeValue: boolean;
+  readonly colorDomain: Domain | null;
+}
+export function validateData(data: MonitorData): void {
+  if (!data.source?.query || !data.source.describe) fail('Monitor requires a Queryable');
+  windowRange(data.window);
+  for (const [name, trace] of Object.entries(data.traces)) {
+    if (!name || !trace.from || !trace.field) fail('Trace requires a name, type and sampled field');
+    if (typeof trace.field !== 'string' && !('field' in trace.field))
+      fail('Trace requires a sampled field binding');
+    if (trace.baseColor) validateRgba(trace.baseColor);
+    if (trace.widthPx !== undefined) finite(trace.widthPx, 'trace width', 0.1, 64);
+    if (
+      trace.interpolation &&
+      !['linear', 'step-before', 'step-after'].includes(trace.interpolation)
+    )
+      fail('Invalid interpolation');
+    if (trace.color?.domain && Array.isArray(trace.color.domain))
+      domain(trace.color.domain as Domain);
+  }
+}
+export function binding(
+  input: FieldInput,
+  source: Queryable,
+  from: string,
+): FieldBinding | undefined {
+  return typeof input === 'string'
+    ? { source, from, field: input }
+    : 'field' in input
+      ? input
+      : undefined;
+}
+export async function describeBindings(
+  gpu: Gpu,
+  data: MonitorData,
+  signal: AbortSignal,
+): Promise<Binding[]> {
+  const schemas = new Map<Queryable, Schema>();
+  const describe = async (source: Queryable) => {
+    let schema = schemas.get(source);
+    if (!schema) {
+      schema = await source.describe({ signal });
+      schemas.set(source, schema);
+    }
+    return schema;
+  };
+  const result: Binding[] = [];
+  for (const [name, trace] of Object.entries(data.traces)) {
+    const main = binding(trace.field, data.source, trace.from)!;
+    if (main.from !== trace.from) fail('Trace and field must belong to the same type');
+    const schema = await describe(main.source),
+      field = fields(schema, trace.from)[main.field];
+    if (
+      !field?.sampled ||
+      !['float32', 'float64', 'int32', 'uint32'].includes(field.type as string)
+    )
+      fail('Trace field must be sampled numeric data');
+    if (!schema.queries.includes('samples'))
+      fail('Monitor requires native samples for exact readings');
+    if (trace.rows && main.rows && JSON.stringify(trace.rows) !== JSON.stringify(main.rows))
+      fail('Specify the trace row selection once');
+    let envelope = true,
+      colorValue = false,
+      shadeValue = false;
+    const mapped: Record<string, FieldInput> = { value: { ...main, rows: undefined } };
+    for (const [alias, input] of [
+      ['color', trace.color?.field],
+      ['visible', trace.visible],
+      ['shade', trace.shade],
+    ] as const) {
+      if (input == null) continue;
+      mapped[alias] = input;
+      const other = binding(input, data.source, trace.from);
+      if (!other) continue;
+      if (other.from !== trace.from) fail('Visual fields must use the trace type');
+      const definition = fields(await describe(other.source), other.from)[other.field];
+      if (!definition) fail('Unknown visual field ' + other.field);
+      if (
+        ![
+          'float32',
+          'float64',
+          'int32',
+          'uint32',
+          ...(alias === 'visible' ? ['boolean'] : []),
+        ].includes(definition.type as string)
+      )
+        fail('Visual fields must be scalar numeric data, or boolean visibility');
+      const same = other.source === main.source && other.field === main.field && !other.rows;
+      if (alias === 'color') colorValue = same;
+      if (alias === 'shade') shadeValue = same;
+      if (definition.sampled && (!same || alias === 'visible')) envelope = false;
+    }
+    let colorDomain: Domain | null = null;
+    const specified = trace.color?.domain;
+    if (specified && Array.isArray(specified)) colorDomain = specified as Domain;
+    else if (trace.color) {
+      const input = trace.color.field,
+        other = binding(input, data.source, trace.from);
+      const sampled = other
+        ? !!fields(await describe(other.source), other.from)[other.field]?.sampled
+        : false;
+      if (!colorValue || (specified && typeof specified === 'object'))
+        colorDomain = await extent(
+          gpu,
+          data.source,
+          trace.from,
+          trace.rows ?? main.rows,
+          input,
+          sampled
+            ? specified && typeof specified === 'object' && 'window' in specified
+              ? specified.window
+              : data.window
+            : undefined,
+          signal,
+        );
+    }
+    result.push({
+      name,
+      trace,
+      source: main.source,
+      field: main.field,
+      schema,
+      rows: trace.rows ?? main.rows,
+      fields: mapped,
+      envelope,
+      colorValue,
+      shadeValue,
+      colorDomain,
+    });
+  }
+  return result;
+}
+export function fields(schema: Schema, type: string) {
+  const result =
+    schema.components[type]?.fields ??
+    schema.connections[type]?.fields ??
+    schema.tables?.[type]?.fields;
+  if (!result) throw new GpuError('invalid-input', 'Unknown model type ' + type);
+  return result;
+}
+
+export async function extent(
+  gpu: Gpu,
+  source: Queryable,
+  from: string,
+  rows: RowSelection | undefined,
+  input: FieldInput,
+  window: SampleWindow | undefined,
+  signal: AbortSignal,
+): Promise<Domain | null> {
+  const ref = binding(input, source, from);
+  let lo = Infinity,
+    hi = -Infinity;
+  if (ref && !ref.rows) {
+    const schema = await ref.source.describe({ signal });
+    if (schema.queries.includes('aggregate')) {
+      for await (const block of gpu.query(
+        ref.source,
+        {
+          kind: 'aggregate',
+          from,
+          rows,
+          select: [ref.field],
+          measures: ['min', 'max'],
+          ...(window ? { window } : {}),
+        },
+        { signal },
+      )) {
+        if (block.kind !== 'aggregate') continue;
+        const v = block.values[ref.field];
+        if (v?.min != null) lo = Math.min(lo, v.min);
+        if (v?.max != null) hi = Math.max(hi, v.max);
+      }
+      return lo <= hi ? [lo, hi] : null;
+    }
+  }
+  for await (const tile of gpu.fields(
+    { source, from, rows, fields: { value: input }, ...(window ? { window } : {}) },
+    { signal },
+  )) {
+    const c = tile.columns.value;
+    if (c.kind !== 'numeric') fail('Scales require scalar numeric data');
+    const sample = c as NumericColumn & Partial<SampleColumn>;
+    let work = performance.now(),
+      checked = 0;
+    for (let r = 0; r < rowCount(tile.rows); r++)
+      for (let f = 0; f < (tile.samples?.coordinates.length ?? 1); f++) {
+        if ((checked++ & 2047) === 0 && performance.now() - work > 3) {
+          await yieldWork(signal);
+          work = performance.now();
+        }
+        const at = c.offset + r * (sample.rowStride ?? 1) + f * (sample.frameStride ?? 0),
+          v = c.values[at];
+        if (bitAt(tile.presence.value, r) && bitAt(c.validity, at) && Number.isFinite(v)) {
+          lo = Math.min(lo, v);
+          hi = Math.max(hi, v);
+        }
+      }
+  }
+  return lo <= hi ? [lo, hi] : null;
+}

@@ -12,6 +12,8 @@ export interface Shade {
   tick?(parameters: Float32Array, frame: ShadeFrame): boolean;
 }
 export interface ShadeRequest {
+  /** Optional fixed effect time for progressive composition. */
+  readonly timeMs?: number;
   readonly parameters?: Float32Array;
   readonly pointerPx?: readonly [number, number] | null;
 }
@@ -28,7 +30,10 @@ export function shadeUniforms(request: ShadeRequest, frame: FrameInfo): Float32A
   if (request.parameters && request.parameters.length !== 64)
     throw new RangeError('Shade parameters require sixteen vec4 values');
   const values = new Float32Array(72);
-  values.set([...(request.pointerPx ?? [0, 0]), request.pointerPx ? 1 : 0, frame.timeMs], 0);
+  values.set(
+    [...(request.pointerPx ?? [0, 0]), request.pointerPx ? 1 : 0, request.timeMs ?? frame.timeMs],
+    0,
+  );
   values.set([frame.viewport.width, frame.viewport.height, frame.viewport.pixelRatio, 0], 4);
   if (request.parameters) values.set(request.parameters, 8);
   return values;

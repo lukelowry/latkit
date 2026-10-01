@@ -94,6 +94,8 @@ export type Invalidation = 'refresh' | 'replace';
 
 /** A renderer represents one view and borrows its Gpu and sources. */
 export interface Renderer {
+  /** Next drawable work or completion; owners observe rejections. No pending work means complete. */
+  readonly pending?: Promise<void>;
   prepare(frame: Preparation): Promise<void>;
   /** Synchronous. Encode any number of passes; never submit the queue. */
   encode(frame: Encoding): void;
@@ -121,6 +123,8 @@ export interface RenderView {
 }
 
 export interface RenderOptions {
+  /** Complete drains bounded submissions. Use fixed sources for deterministic output. */
+  readonly completion?: 'progressive' | 'complete';
   readonly views: readonly RenderView[];
   readonly timeMs: number;
   readonly signal?: AbortSignal;

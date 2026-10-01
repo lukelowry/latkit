@@ -1,4 +1,4 @@
-import type { RowSelection, Index, Queryable, RowAxis, SampleWindow } from '@latkit/model';
+import type { RowSelection, Index, Queryable, RowAxis, SampleWindow, Version } from '@latkit/model';
 
 export interface FieldBinding {
   readonly source: Queryable;
@@ -11,6 +11,8 @@ export interface FieldBinding {
 export type FieldInput = string | FieldBinding | FieldValues;
 
 export interface FieldsRequest {
+  /** Coordinate for sampled point reads outside a render frame. */
+  readonly at?: number;
   readonly source: Queryable;
   readonly from: string;
   readonly rows?: RowSelection;
@@ -39,6 +41,8 @@ export interface DataHit {
 /** Borrowed immutable data before float conversion. Presence is distinct from validity.
  * Address columns using this object's row/sample axes. */
 export interface NativeFields {
+  /** Authoritative observations used by resolved source bindings; local values need no source. */
+  readonly versions: ReadonlyMap<Queryable, Version>;
   readonly index: Index;
   readonly rows: RowAxis;
   readonly rowOffset: number;

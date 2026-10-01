@@ -63,23 +63,53 @@ export class Envelopes {
     if (tileRows < 1)
       throw new GpuError('resource-limit', 'Envelope bucket count exceeds the native block budget');
     // The sampled discovery reads only one observation. Omitted rows retain captured intersection semantics.
-    const discovery = query.rows
-      ? frame.query(source, { kind: 'rows', from: query.from, rows: query.rows, select: [] })
-      : frame.query(source, {
+    const initial = frame.query(source, {
+      kind: 'samples',
+      from: query.from,
+      ...(query.rows ? { rows: query.rows } : {}),
+      select: query.select,
+      window: { kind: 'at', value: query.window.between[1] },
+    });
+    const discovery = (async function* () {
+      let seen = false;
+      for await (const block of initial) {
+        if (block.kind !== 'schema') seen = true;
+        yield block;
+      }
+      if (!seen && query.window.context?.after) {
+        let selectedFrame: number | undefined;
+        for await (const block of frame.query(source, {
           kind: 'samples',
           from: query.from,
+          ...(query.rows ? { rows: query.rows } : {}),
           select: query.select,
-          window: { kind: 'at', value: query.window.between[1] },
-        });
+          window: query.window,
+        })) {
+          if (block.kind === 'schema') {
+            yield block;
+            continue;
+          }
+          selectedFrame ??= block.firstFrame;
+          if (
+            selectedFrame >= block.firstFrame &&
+            selectedFrame < block.firstFrame + block.coordinates.length
+          )
+            yield block;
+        }
+      }
+    })();
     let cache = this.cache.get(source);
     if (!cache) {
       cache = new Map();
       this.cache.set(source, cache);
     }
     for await (const discovered of discovery) {
-      if (discovered.kind === 'schema') continue;
-      const discoveredOffset =
-        discovered.kind === 'rows' ? discovered.position : discovered.rowOffset;
+      if (discovered.kind === 'schema') {
+        if (discovered.schema.version !== schema.version)
+          throw new GpuError('conflict', 'Envelope schema changed during preparation');
+        continue;
+      }
+      const discoveredOffset = discovered.rowOffset;
       for (let offset = 0; offset < rowCount(discovered.rows); offset += tileRows) {
         frame.signal.throwIfAborted();
         const rows = sliceRows(
@@ -140,7 +170,7 @@ export class Envelopes {
           })) {
             if (part.kind === 'schema') continue;
             assertIndex(discovered.index, part.index);
-            accumulate(block, allocation.gaps, part, query);
+            await accumulate(block, allocation.gaps, part, query, frame.signal);
           }
           for (const [name, field] of Object.entries(block.columns)) {
             for (let cell = 0; cell < rowCount(rows) * query.buckets; cell++)
@@ -203,17 +233,20 @@ function createColumns(
 function mark(mask: Uint8Array, at: number): void {
   mask[at >>> 3] |= 1 << (at & 7);
 }
-function accumulate(
+async function accumulate(
   target: EnvelopeBlock,
   gaps: Readonly<Record<string, Uint8Array>>,
   block: SamplesBlock,
   query: EnvelopeQuery,
-): void {
+  signal: AbortSignal,
+): Promise<void> {
   const axis = target.rows;
   let positions: Map<number, number> | undefined;
   if (axis.kind === 'indices') positions = new Map([...axis.values].map((row, i) => [row, i]));
   const [lo, hi] = query.window.between,
     span = hi - lo;
+  let checked = performance.now(),
+    work = 0;
   for (let frame = 0; frame < block.coordinates.length; frame++) {
     const coordinate = block.coordinates[frame],
       absolute = block.firstFrame + frame;
@@ -232,6 +265,12 @@ function accumulate(
             ),
           );
     for (let row = 0; row < rowCount(block.rows); row++) {
+      if ((++work & 4095) === 0 && performance.now() - checked >= 4) {
+        signal.throwIfAborted();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        signal.throwIfAborted();
+        checked = performance.now();
+      }
       const physical = rowAt(block.rows, row),
         position = axis.kind === 'range' ? physical - axis.offset : positions!.get(physical);
       if (position === undefined || position < 0 || position >= rowCount(axis))

@@ -171,9 +171,13 @@ export class Fields {
     }
   }
 
-  private native(tile: Omit<NativeFields, 'retain'>, signal: AbortSignal): NativeFields {
+  private native(
+    tile: Omit<NativeFields, 'retain' | 'versions'>,
+    signal: AbortSignal,
+  ): NativeFields {
     return {
       ...tile,
+      versions: new Map(),
       retain: () => {
         signal.throwIfAborted();
         const entry = this.memory.add(

@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><link
+    rel="icon"
+    href="data:,"
+  /><title>Latkit Monitor</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      background: #101923;
+      color: #d7e5ef;
+      font: 14px/1.5 system-ui;
+    }
+    main {
+      max-width: 1380px;
+      margin: 24px auto;
+      padding: 0 24px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 30px;
+      letter-spacing: -0.04em;
+    }
+    p {
+      color: #9bafbf;
+    }
+    .bar {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin: 18px 0;
+    }
+    select,
+    button,
+    input {
+      font: inherit;
+    }
+    button,
+    select {
+      padding: 7px 12px;
+      background: #243b4d;
+      color: #e0f2fc;
+      border: 1px solid #4c6574;
+      border-radius: 4px;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 560px;
+      background: #070b11;
+      border: 1px solid #344759;
+      border-radius: 6px;
+    }
+    pre {
+      white-space: pre-wrap;
+      font-size: 12px;
+      color: #adc4d3;
+    }
+    #status {
+      color: #73d0b8;
+      font-weight: 600;
+    }
+    #reading {
+      min-height: 22px;
+      font-variant-numeric: tabular-nums;
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "culori/fn": "/packages/gpu/node_modules/culori/src/index-fn.js",
+        "@latkit/gpu": "/packages/gpu/dist/index.js",
+        "@latkit/connect": "/packages/connect/dist/index.js",
+        "@latkit/model": "/packages/model/dist/index.js",
+        "@latkit/monitor_new": "/packages/monitor_new/dist/index.js"
+      }
+    }
+  </script>
+  <main>
+    <h1>Native signal monitor</h1>
+    <p>
+      Shared GPU fields, scales, colors and text. Drag to pan, scroll to zoom, click to focus a
+      native observation. Double-click to fit.
+    </p>
+    <div class="bar">
+      <label
+        >Workload
+        <select id="workload">
+          <option value="normal">64 rows / 4096 observations</option>
+          <option value="many">100,000 rows / 32 observations</option>
+          <option value="long">1 row / 1,000,000 observations</option>
+          <option value="gaps">Gaps and duplicate coordinates</option>
+        </select></label
+      ><label
+        >Color
+        <select id="palette">
+          <option>viridis</option>
+          <option>turbo</option>
+          <option>plasma</option>
+          <option>magma</option>
+        </select></label
+      ><button id="fit">Fit</button><button id="clear">Clear focus</button
+      ><button id="append">Append 32</button
+      ><label><input id="axes" type="checkbox" checked />Axes</label
+      ><span id="status">Checking WebGPU...</span>
+    </div>
+    <canvas id="monitor" aria-label="Interactive native signal history"></canvas>
+    <p id="reading">Hover to inspect an exact observation.</p>
+    <pre id="results"></pre>
+  </main>
+  <script type="module" src="./check.js"></script>
+</html>

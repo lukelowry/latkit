@@ -336,10 +336,9 @@ export class Painter {
         ] as const) {
           const field = page.columns[name];
           pf.set(
-            scaleParameters(
-              read.scales[name] ?? resolveScale({}, null),
-              field?.kind === 'value' ? field : undefined,
-            ),
+            scaleParameters(read.scales[name] ?? resolveScale({}, null), {
+              origin: field?.kind === 'value' ? field.origin?.[0] : undefined,
+            }),
             at,
           );
         }

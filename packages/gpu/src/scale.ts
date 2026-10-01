@@ -1,7 +1,6 @@
 import type { Domain, Queryable, RowSelection, SampleWindow } from '@latkit/model';
 import type { FieldInput } from './binding.js';
 import type { Colormap } from './colors/colormap.js';
-import type { GpuValueField } from './columns.js';
 import { GpuError } from './error.js';
 
 /** Output endpoints may descend. Model domains remain ordered. */
@@ -56,12 +55,15 @@ export function scaleValue(value: number | null, scale: ResolvedScale): number |
   return (1 - t) * scale.range[0] + t * scale.range[1];
 }
 /** Two vec4 uniforms consumed by scaleShader. Rebase before narrowing to Float32. */
-export function scaleParameters(scale: ResolvedScale, field?: GpuValueField): Float32Array {
+export function scaleParameters(
+  scale: ResolvedScale,
+  options: { readonly origin?: number } = {},
+): Float32Array {
   if (!scale.domain) return new Float32Array(8);
   const [lo, hi] = scale.domain,
     span = hi - lo;
   const result = Float32Array.of(
-    lo - (field?.origin?.[0] ?? 0),
+    lo - (options.origin ?? 0),
     span === 0 ? 0 : 1 / span,
     scale.range[0],
     scale.range[1] - scale.range[0],

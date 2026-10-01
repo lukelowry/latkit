@@ -116,7 +116,9 @@ export async function checkFoundation(gpu, target) {
             {
               binding: 2,
               resource: frame.uniforms(
-                scaleParameters(resolveScale({}, [1e12, 1e12 + 100]), field.values),
+                scaleParameters(resolveScale({}, [1e12, 1e12 + 100]), {
+                  origin: field.values.origin?.[0],
+                }),
               ),
             },
           ],
