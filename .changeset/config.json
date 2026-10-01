@@ -8,7 +8,6 @@
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
   "ignore": [
-    "@latkit/diagram-example",
     "@latkit/embed-example",
     "@latkit/monitor-example",
     "@latkit/network-example",

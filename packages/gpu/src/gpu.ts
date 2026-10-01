@@ -1,3 +1,4 @@
+import { renderers as rendererTree } from './renderers.js';
 import { shadeUniforms } from './shade.js';
 import type { FieldsRequest, NativeFields } from './binding.js';
 import type { EnvelopeRequest } from './envelope.js';
@@ -305,7 +306,7 @@ class Owner implements Gpu {
 
   async render(options: RenderOptions): Promise<void> {
     this.assertLive();
-    const renderers = [...new Set(options.views.map((view) => view.renderer))];
+    const renderers = rendererTree(options.views.map((view) => view.renderer));
     for (const renderer of renderers)
       if (this.rendering.has(renderer))
         throw new GpuError('busy', 'Renderer already has a render in progress');

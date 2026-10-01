@@ -28,6 +28,7 @@ describe('public contract and allocation boundaries', () => {
         'textShader',
         'createTextRasterizer',
         'createCanvasView',
+        'createComposition',
         'createGpu',
         'createPresentation',
         'createRenderTarget',
@@ -53,11 +54,11 @@ describe('public contract and allocation boundaries', () => {
     );
   });
 
-  it('uses document, type, and index version to validate physical identity', () => {
-    const index = { document: 'a', type: 'node', version: 'v' };
+  it('uses source, type, and index version to validate physical identity', () => {
+    const index = { source: 'a', type: 'node', version: 'v' };
     expect(model.sameIndex(index, { ...index })).toBe(true);
     for (const mismatch of [
-      { ...index, document: 'b' },
+      { ...index, source: 'b' },
       { ...index, type: 'edge' },
       { ...index, version: 'v2' },
     ])

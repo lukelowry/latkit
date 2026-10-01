@@ -1,69 +1,99 @@
 # @latkit/video
 
-Export network, diagram, and monitor scenes as MP4 (H.264) or WebM (VP9). The package owns the worker, GPU rendering and composition, sample transport, encoder, and container. No application worker or animation loop is required.
+Export any Latkit GPU renderer to MP4 (H.264) or WebM (VP9). The exporter uses the
+same preparation, rendering, native model coordinates, colors, text, and resource
+management as interactive views. It has no renderer-specific data format or worker.
 
 ```ts
-import { exportVideo } from '@latkit/video';
+import { exportVideo, type VideoWrite } from '@latkit/video';
 
-const video = await exportVideo({
-  views: [network.snapshot(), monitor.snapshot()],
-  layout: 'column',
-  timeRange: [0, 10],
-  width: 1920,
-  height: 1080,
-  frameRate: 60,
-  format: 'mp4',
-  quality: 'high',
-  signal: abortController.signal,
-  onProgress: ({ completedFrames, totalFrames }) => {
-    progress.value = completedFrames / totalFrames;
-  },
+const file = await fileHandle.createWritable();
+const output = new WritableStream<VideoWrite>({
+  write: ({ position, bytes }) => file.write({ type: 'write', position, data: bytes }),
 });
-const url = URL.createObjectURL(video);
-// Use for playback/download; revoke the URL when finished.
+try {
+  const result = await exportVideo({
+    gpu,
+    renderer: exportRenderer,
+    width: 1920,
+    height: 1080,
+    duration: 10, // output seconds
+    frameRate: 60,
+    at: (seconds) => 20 + seconds, // native model coordinate
+    format: 'mp4',
+    output,
+    signal,
+    onProgress: ({ completedFrames, totalFrames }) => {
+      console.log(completedFrames / totalFrames);
+    },
+  });
+  await file.close();
+} catch (error) {
+  await file.abort();
+  throw error;
+}
 ```
 
-For large exports, stream to a positional sink instead of retaining the encoded file in memory:
+`duration` includes a possibly shorter last frame. Timestamps derive independently
+from frame number; fractional rates do not accumulate rounding errors. Container
+timebases can introduce small timing quantization. `at` maps output seconds to a
+native coordinate; omit it for static data. Shared GPU effects receive output time
+in milliseconds. Quality defaults to `high`; choose `medium` or `very-high`, or set
+an explicit `bitrate` in bits/second instead of `quality`.
+
+## Ownership and composition
+
+The caller supplies and owns the GPU, renderer, sources, and destination. Use a
+dedicated renderer over retained acquisitions for deterministic exports. Do not
+mutate or render that renderer (including composed children) during an export.
+Export releases its writer lock on every exit, but never closes or aborts the
+caller's stream. Positional writes may overwrite earlier bytes; a destination must
+honor `position`. Write bytes are stable and may be retained by the destination.
+
+Composition belongs to GPU and works for interactive rendering and export alike:
 
 ```ts
-const handle = await showSaveFilePicker({
-  suggestedName: 'simulation.mp4',
-  types: [{ description: 'MP4 video', accept: { 'video/mp4': ['.mp4'] } }],
+import { createComposition } from '@latkit/gpu';
+
+const renderer = createComposition({
+  gpu,
+  views: [
+    { renderer: network, region: { x: 0, y: 0, width: 1, height: 0.6 } },
+    { renderer: monitor, region: { x: 0, y: 0.6, width: 1, height: 0.4 } },
+  ],
 });
-await exportVideo({
-  views: [diagram.snapshot()],
-  timeRange: [0, 30],
-  width: 1920,
-  height: 1080,
-  output: await handle.createWritable(),
-});
+try {
+  await exportVideo({ gpu, renderer, output, width: 1920, height: 1080, duration: 10 });
+} finally {
+  renderer.destroy(); // releases panel textures, not network or monitor
+}
 ```
 
-The exporter locks the sink, closes it only after successful finalization, and requests its abort on error or cancellation. Cancellation covers finalization and always releases exporter resources; it does not wait for an unresponsive sink. Custom sinks should honor their stream controller's abort signal. A file already committed by the sink cannot be rolled back. Custom `WritableStream<VideoWrite>` sinks must honor each write's `position`; container writes are not necessarily sequential. File access remains the application's decision. Streamed MP4 uses fragmentation to bound muxer metadata; buffered MP4 uses fast-start metadata.
+## Performance
 
-## Scenes and time
+Each frame waits for complete progressive preparation before GPU capture. Capture
+passes an OffscreenCanvas to WebCodecs without a JavaScript pixel readback; browser
+and codec internals may still copy. Submission and texture lifetimes remain owned
+by the shared GPU. The encoder queue is bounded to four frames, and awaited writes
+propagate destination backpressure. Encoded writes are at most 256 KiB. A single
+copy at that boundary gives caller-owned asynchronous writes stable bytes even
+when cancellation tears down the muxer.
 
-Each renderer owns its `Scene` type and `snapshot()` method. Snapshots copy static structure, channel values, camera, selection, and style, including a baked colormap. Diagram snapshots preserve effective block positions and rasterized glyphs so worker output uses the same font. A scene can also be constructed directly for batch exports.
+MP4 uses approximately one-second fragments; WebM uses approximately one-second
+clusters and a seek index. GPU textures and queued frames do not grow with duration.
+WebM seek metadata grows with cluster count, and media memory depends on resolution,
+bitrate, codec, and keyframe size. The exporter never collects a whole output file.
+A caller that retains every write will, naturally, retain that file in memory.
 
-Series remain borrowed. At export start, each distinct series is pinned to its committed prefix and read lazily across `@latkit/port`; appends do not alter the video. Keep the underlying recording readable until export settles. Exports do not seek, pause, attach, or destroy your interactive controllers.
+Use an application-owned worker for CPU/codec isolation. Construct GPU and renderer
+inside that worker and stream output to storage there. Renderer objects are not
+serializable, and the package does not hide another GPU owner or scene conversion.
+See [the worker example](../../examples/video/src/worker.ts).
 
-`timeRange` selects source seconds, with an exclusive end. `rate` is source seconds per output second (default 1). Frames use integer microsecond timestamps; the final frame is shortened to end at the requested duration, rounded to a microsecond. Channels use the same sample selection as interactive playback. No interpolation is introduced. All panels sample one source clock. Network orbit and diagram flow animate against output time. Monitor history is drawn once; its playhead moves across the same time range.
+## Verification
 
-`row` and `column` split the output into equal panels. Width and height are positive even integers. Snapshots preserve the logical viewport so increasing resolution keeps label and stroke proportions. A camera following fit reframes for the panel's aspect ratio. Captured JavaScript shade callbacks do not execute in the worker: WGSL and current host uniforms are retained. Pointer/hover state, editing overlays, DOM legends, audio, and arbitrary UI are outside the scene export.
-
-## Runtime and resources
-
-Requires a secure browser context with worker WebGPU, OffscreenCanvas, and WebCodecs. The exact codec/size/frame-rate combination is checked before rendering; unavailable encoding fails explicitly. There is no real-time capture fallback. Browser and GPU drivers determine hardware acceleration; the API does not promise zero-copy encoding.
-
-The worker renders each view into reusable GPU textures, composes them directly into an OffscreenCanvas, and submits VideoSamples with encoder backpressure. No per-frame CPU pixel readback or image transfer is used. Series reads are bounded; monitor history reuses its existing downsampling and GPU accumulation engine. GPU resources, data connections, and the worker are released on completion, cancellation, device loss, or error. Concurrent calls use independent workers/devices; schedule exports according to the host's GPU capacity.
-
-Workers are distributed beside the package entrypoint and resolved with `new URL('./worker.js', import.meta.url)`. Use an ESM bundler with standard module-worker support (the example verifies Vite development and production builds), or serve the built files together. A webview's CSP must permit the packaged worker URL. The UI bundle does not import the encoder or render pipelines.
-
-## Verification example
-
-```sh
-pnpm build
-pnpm --filter @latkit/video-example dev
-```
-
-The example exports network signals, globe orbit, a 1080p network/monitor composition to an actual file stream, diagram flow, and WebM monitor history. It verifies dimensions/duration and decodes samples before offering downloads.
+`pnpm --filter @latkit/video test` checks timing and destination ownership.
+Run `pnpm --filter @latkit/video-example dev`, then open `/check.html` for headed
+real-codec checks: decoded composition pixels, progressive completion, partial
+last frames, 1080p scaling, slow writes, cancellation, and failure cleanup. The main
+page exports and decodes network, monitor, and combined scenes in a worker.

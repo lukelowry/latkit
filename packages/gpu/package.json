@@ -1,9 +1,13 @@
 {
   "name": "@latkit/gpu",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.7.1",
   "description": "Bounded WebGPU rendering and native Latkit column preparation.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lukelowry/latkit.git",
+    "directory": "packages/gpu"
+  },
   "license": "MIT",
   "sideEffects": false,
   "files": [
@@ -33,5 +37,8 @@
   "devDependencies": {
     "@latkit/connect": "workspace:*",
     "@types/culori": "^4.0.1"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

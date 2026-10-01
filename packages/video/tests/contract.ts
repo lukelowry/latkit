@@ -8,7 +8,7 @@ export function usage(gpu: Gpu, renderer: Renderer, output: WritableStream<Video
     width: 1920,
     height: 1080,
     frameRate: 60,
-    frames: 600,
-    at: (frame) => 20 + frame / 60,
+    duration: 10,
+    at: (seconds) => 20 + seconds,
   });
 }

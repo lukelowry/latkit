@@ -686,7 +686,7 @@ export class Fields {
               cached.selection.kind !== 'ids' &&
               rows.kind !== 'ids' &&
               contiguous(cached.selection, rows) !== undefined &&
-              cached.index.document === request.index.document &&
+              cached.index.source === request.index.source &&
               cached.index.version === request.index.version,
           );
         if (native) {
@@ -891,7 +891,7 @@ export class Fields {
           own.cache.delete(key);
           cached.entry.close();
         }
-      if (change.kind === 'schema' || change.kind === 'replace' || change.kind === 'closed') {
+      if (change.kind === 'replace' || change.kind === 'closed') {
         if (this.sources.get(source) === own) this.sources.delete(source);
         entry.close();
       }
@@ -927,7 +927,7 @@ export class Fields {
           selected.kind !== 'ids' &&
           fields.every((name) => name in cached.expected) &&
           contiguous(cached.selection, selected) !== undefined &&
-          cached.index.document === index.document &&
+          cached.index.source === index.source &&
           cached.index.version === index.version
         ) {
           hit = cached;
@@ -955,8 +955,6 @@ export class Fields {
           ...(group.sampled ? { at: frame.at } : {}),
         })) {
           if (block.kind === 'schema') {
-            if (block.schema.version !== group.state.schema.version)
-              throw new GpuError('conflict', 'Field schema changed while preparing');
             continue;
           }
           assertIndex(index, block.index);
@@ -1068,14 +1066,8 @@ function affects(change: Update, item: { from: string; sampled: boolean }): bool
   switch (change.kind) {
     case 'closed':
     case 'replace':
-    case 'schema':
       return true;
-    case 'data':
-      return change.types.includes(item.from);
-    case 'structure':
-      return change.indexes.some((index) => index.type === item.from);
     case 'append':
-    case 'evict':
       return item.sampled;
     default:
       return false;

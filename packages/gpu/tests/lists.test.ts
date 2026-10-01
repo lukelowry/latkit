@@ -4,7 +4,7 @@ import { createGpu, type FieldValues, type GpuPage } from '../src/index.js';
 import { fakeDevice, bytes } from './fixtures/device.js';
 import { draw } from './fixtures/render.js';
 import { field } from './fixtures/fields.js';
-const index = { document: 'd', type: 'path', version: '1' };
+const index = { source: 'd', type: 'path', version: '1' };
 function lists(): FieldValues {
   return {
     index,

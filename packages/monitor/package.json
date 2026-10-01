@@ -1,9 +1,13 @@
 {
   "name": "@latkit/monitor",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.7.1",
   "description": "Progressive native observation rendering on the shared Latkit GPU.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lukelowry/latkit.git",
+    "directory": "packages/monitor"
+  },
   "license": "MIT",
   "sideEffects": false,
   "files": [
@@ -29,5 +33,8 @@
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.71"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

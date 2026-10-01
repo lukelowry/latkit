@@ -278,13 +278,13 @@ class NetworkView implements Network {
         source.on('change', (change: Update) => {
           if (this.closed) return;
           this.labels.invalidate(source, change);
-          if (['replace', 'schema', 'structure'].includes(change.kind)) {
+          if (change.kind === 'replace') {
             this.geometry = undefined;
             this.selected = null;
             this.resetHover();
           }
           this.invalidate(
-            change.kind === 'append' || change.kind === 'evict' ? 'refresh' : 'replace',
+            change.kind === 'append' || change.kind === 'status' ? 'refresh' : 'replace',
           );
         }),
       );
@@ -416,7 +416,7 @@ class NetworkView implements Network {
         maxY = -Infinity;
       for (const item of points) {
         const found = this.geometry?.lookup
-          .get(JSON.stringify([item.index.document, item.index.type, item.index.version]))
+          .get(JSON.stringify([item.index.source, item.index.type, item.index.version]))
           ?.get(item.row);
         if (found) {
           const [x, y] = this.presented.picking.position(found.value, found.offset);

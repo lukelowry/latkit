@@ -111,6 +111,6 @@ it('invalidates an unchanged rectangle after a later data replacement',async()=>
  const source=new HistorySource(),gpu=await createGpu({device:fakeDevice().device});const query={kind:'samples' as const,from:'node',select:['value'],window:{kind:'frames' as const,offset:source.firstFrame,count:2}};
  for await(const block of gpu.query(source,query)){expect(block.version).toBe('v0');}
  source.version='v1';for(const fn of source.listeners)fn({kind:'append',version:'v1',frames:{offset:source.firstFrame+7,count:1}});
- source.version='v2';for(const fn of source.listeners)fn({kind:'data',version:'v2',types:['node']});
+ source.version='v2';for(const fn of source.listeners)fn({kind:'replace',version:'v2'});
  const previous=source.requests.length;for await(const block of gpu.query(source,query)){expect(block.version).toBe('v2');}expect(source.requests.length).toBe(previous+1);gpu.destroy();
 });

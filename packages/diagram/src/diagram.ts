@@ -1,4 +1,3 @@
-import type { Endpoint } from '@latkit/model';
 import type {
   Camera2D,
   ContextMenu,
@@ -17,7 +16,11 @@ export interface ConnectionGesture {
   readonly to: { readonly component: string; readonly port?: string } | null;
   readonly replaces?: {
     readonly connection: string;
-    readonly endpoint: Endpoint & { readonly component: string };
+    readonly endpoint: {
+      readonly component: string;
+      readonly port?: string;
+      readonly role: string;
+    };
   };
   readonly position: readonly [x: number, y: number];
   readonly point: readonly [x: number, y: number];

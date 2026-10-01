@@ -1,9 +1,14 @@
 {
   "name": "@latkit/connect",
   "version": "0.0.0",
-  "private": true,
   "description": "Models, their monitors, and canonical streams across process boundaries.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lukelowry/latkit.git",
+    "directory": "packages/connect"
+  },
+  "license": "MIT",
   "sideEffects": false,
   "files": [
     "dist",
@@ -24,5 +29,8 @@
   },
   "dependencies": {
     "@latkit/model": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

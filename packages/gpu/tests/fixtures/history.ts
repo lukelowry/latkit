@@ -15,7 +15,7 @@ import {
 } from '@latkit/model';
 export class HistorySource implements Queryable {
   version = 'v0';
-  readonly index = { document: 'history', type: 'node', version: 'i0' };
+  readonly index = { source: 'history', type: 'node', version: 'i0' };
   readonly firstFrame = 2 ** 40;
   readonly listeners = new Set<(change: Update) => void>();
   requests: Query[] = [];
@@ -48,7 +48,6 @@ export class HistorySource implements Queryable {
   }
   get schema(): Schema {
     return {
-      version: 's0',
       queries: this.native ? ['rows', 'samples', 'envelope'] : ['rows', 'samples'],
       limits: { maxBlockBytes: 1e6 },
       axis: { name: 'coordinate' },
@@ -115,7 +114,6 @@ export class HistorySource implements Queryable {
       yield {
         kind: 'rows',
         version: this.version,
-        schemaVersion: 's0',
         index: this.index,
         rows,
         position: 0,
@@ -188,7 +186,6 @@ export class HistorySource implements Queryable {
       yield {
         kind: 'samples',
         version: this.version,
-        schemaVersion: 's0',
         index: this.index,
         rows: sliceRows(rows, 0, nr),
         rowOffset: 0,

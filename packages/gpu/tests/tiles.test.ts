@@ -11,8 +11,7 @@ it('shares frame coordinates across row tiles and physical row maps across frame
   const block: SamplesBlock = {
     kind: 'samples',
     version: 'v',
-    schemaVersion: 's',
-    index: { document: 'd', type: 'node', version: 'i' },
+    index: { source: 'd', type: 'node', version: 'i' },
     rows: { kind: 'indices', values: Uint32Array.of(9, 8, 7, 6, 5, 4, 3, 2) },
     rowOffset: 0,
     firstFrame: 100,

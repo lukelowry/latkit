@@ -23,7 +23,7 @@ export function nativeValue(
   return bit(native.presence[name], row) ? value(native.columns[name], row, component) : NaN;
 }
 export function indexKey(index: Index): string {
-  return JSON.stringify([index.document, index.type, index.version]);
+  return JSON.stringify([index.source, index.type, index.version]);
 }
 /** Range lookup is logarithmic and allocation-free per physical row. Sparse rows allocate only their explicit entries. */
 export class RowLookup<T> {

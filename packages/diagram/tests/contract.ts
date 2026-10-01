@@ -1,14 +1,15 @@
 import { createDiagram, arrange, attachDiagramInput } from '../src/index.js';
 import type { Gpu, Renderer, ColorScale, FieldValues } from '@latkit/gpu';
-import type { Document } from '@latkit/model';
+import type { Model } from '@latkit/model';
 export async function usage(
   gpu: Gpu,
-  document: Document,
+  model: Model,
+  remove: (ids: readonly string[]) => Promise<void>,
   canvas: HTMLCanvasElement,
   color: ColorScale,
 ): Promise<Renderer> {
   const data = {
-    source: document,
+    source: model,
     components: { node: { color, labels: { field: 'name' } } },
     connections: { link: { route: 'orthogonal' as const } },
   };
@@ -22,7 +23,7 @@ export async function usage(
   });
   attachDiagramInput({ diagram, canvas, interaction: 'edit' });
   diagram.on('delete', (ids) => {
-    void document.edit?.([{ kind: 'remove', ids }]);
+    void remove(ids);
   });
   diagram.on('move', ({ positions }) => {
     const fields: Readonly<Record<string, FieldValues>> = positions;

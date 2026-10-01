@@ -12,14 +12,13 @@ import { rowAt, rowCount } from '@latkit/model';
 
 export class FieldSource implements Queryable {
   version = 'v0';
-  readonly index = { document: 'd', type: 'node', version: 'i0' };
+  readonly index = { source: 'd', type: 'node', version: 'i0' };
   readonly listeners = new Set<(change: Update) => void>();
   readonly requests: Query[] = [];
   captured?: Set<number>;
   reversed = false;
   blockRows = 1024;
   readonly schema: Schema = {
-    version: 's0',
     queries: ['rows'],
     limits: { maxBlockBytes: 1e6 },
     components: {
@@ -121,7 +120,6 @@ export class FieldSource implements Queryable {
       yield {
         kind: 'rows',
         version,
-        schemaVersion: this.schema.version,
         index: this.index,
         rows: { kind: 'indices', values: Uint32Array.from(rows) },
         position: offset,

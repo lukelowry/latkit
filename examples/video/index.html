@@ -2,6 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <link rel="icon" href="data:," />
     <title>Latkit video exports</title>
     <style>
       body {
@@ -45,10 +46,11 @@
   <body>
     <h1>Latkit video exports</h1>
     <p>
-      Network signals, globe orbit, diagram flow, and synchronized monitor history. Rendered and
-      encoded inside the package worker.
+      Native network and monitor rendering, shared GPU composition, and bounded video encoding.
+      Export runs in an application-owned worker and writes directly to a temporary file.
     </p>
     <button id="export">Export proof videos</button>
+    <button id="cancel" disabled>Cancel export</button>
     <pre id="status">Ready</pre>
     <section id="results"></section>
     <div id="source"></div>

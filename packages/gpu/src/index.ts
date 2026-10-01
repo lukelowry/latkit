@@ -109,3 +109,6 @@ export {
   createCanvasInput,
   withinBudget,
 } from './input.js';
+
+export { createComposition } from './composition.js';
+export type { CompositionOptions, CompositionView } from './composition.js';

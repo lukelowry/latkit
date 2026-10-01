@@ -243,12 +243,7 @@ export class Reads {
         this.schemas.set(value.schema, metadata);
       } else {
         const header = read.header;
-        if (
-          !header ||
-          value.kind !== read.query.kind ||
-          value.version !== header.version ||
-          value.schemaVersion !== header.schema.version
-        )
+        if (!header || value.kind !== read.query.kind || value.version !== header.version)
           throw new GpuError('conflict', 'Query block disagrees with its authoritative header');
         const payload = blockByteLength(value);
         if (payload > Math.min(this.maxBlockBytes, header.schema.limits.maxBlockBytes))
@@ -395,16 +390,13 @@ function compact(value: unknown, seen = new Map<object, unknown>()): unknown {
 /** Reuse payload only when the change proves that the complete queried rectangle is unchanged. */
 function unchanged(read: Read, change: Update): boolean {
   const query = read.query;
-  if (change.kind === 'commands' || change.kind === 'diagnostics') return true;
-  if (change.kind !== 'append' && change.kind !== 'evict') return false;
+  if (change.kind === 'status') return true;
+  if (change.kind !== 'append') return false;
   if (query.kind !== 'samples' && query.kind !== 'aggregate' && query.kind !== 'envelope')
     return false;
   const window = query.window;
   if (!window) return false;
-  if (window.kind === 'frames')
-    return change.kind === 'append'
-      ? window.offset + window.count <= change.frames.offset
-      : window.offset >= change.beforeFrame;
+  if (window.kind === 'frames') return window.offset + window.count <= change.frames.offset;
   let first = Infinity,
     last = -Infinity,
     coordinate = -Infinity;
@@ -416,7 +408,6 @@ function unchanged(read: Read, change: Update): boolean {
     }
   }
   // Range context must already include the requested successors; at reads must precede the known frontier.
-  if (change.kind === 'evict') return first !== Infinity && first >= change.beforeFrame;
   const end = window.kind === 'range' ? window.between[1] : window.value;
   return Number.isFinite(last) && last < change.frames.offset && coordinate > end;
 }

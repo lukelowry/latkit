@@ -21,17 +21,17 @@ it('resolves full selection extents, reuses static cache, and invalidates releva
   const queries = source.requests.length;
   await render();
   expect(source.requests.length).toBe(queries);
-  source.publish({ kind: 'data', version: 'v1', types: ['unrelated'] });
+  source.publish({ kind: 'status' });
   await render();
   expect(source.requests.length).toBe(queries);
-  source.publish({ kind: 'data', version: 'v2', types: ['node'] });
+  source.publish({ kind: 'replace', version: 'v2' });
   await render();
   expect(source.requests.length).toBe(queries + 1);
   gpu.destroy();
 });
 it('ignores null, missing, and nonfinite values, preserving a constant or empty result', async () => {
   const gpu = await createGpu({ device: fakeDevice().device }),
-    index = { document: 'd', type: 'node', version: '1' },
+    index = { source: 'd', type: 'node', version: '1' },
     rows = { kind: 'range' as const, offset: 0, count: 4 };
   await draw(gpu, async (frame) => {
     const values = {
@@ -81,7 +81,6 @@ it('pushes scalar min/max to an advertised aggregate and caches the window resul
       yield {
         kind: 'aggregate' as const,
         version: source.version,
-        schemaVersion: source.schema.version,
         values: { observed: { count: 16, min: 2, max: 9 } },
       };
     },

@@ -53,7 +53,7 @@ it('reads and uploads the same native contract through connect without a rendere
     expect(source.values.byteLength).toBe(400000);
     gpu.destroy();
     expect(source.closes).toBe(0);
-    expect((await remote.describe()).version).toBe(source.schema.version);
+    expect(await remote.describe()).toEqual(source.schema);
   } finally {
     gpu.destroy();
     await remote.close();

@@ -24,7 +24,7 @@ Install only the packages your application needs.
 | [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)         | Shared WebGPU resources, fields, text, colors, and frame submission |
 | [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)     | Native model, monitor, and query contracts                          |
 | [`@latkit/connect`](./packages/connect)                            | Transport for native models, their monitors, and reads              |
-| [`@latkit/video`](./packages/video)                                | Worker-based video export of network, diagram, and monitor scenes   |
+| [`@latkit/video`](./packages/video)                                | Bounded video export through the shared GPU renderer                |
 
 ## Requirements
 

@@ -1,5 +1,11 @@
 # @latkit/video
 
+## 0.2.0
+
+- Replace scene serialization and the internal worker with `exportVideo({ gpu, renderer, duration, at, output })` over the native shared GPU renderer.
+- Add bounded WebCodecs encoding, streamed positional output, MP4/WebM muxing, complete progressive preparation, cancellation, and explicit borrowed ownership.
+- Move reusable renderer composition into `@latkit/gpu`; remove dependencies on specific renderer packages.
+
 ## 0.1.2
 
 ### Patch Changes

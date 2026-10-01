@@ -186,4 +186,4 @@ latency for 40 single-observation appends at an 8 ms cadence, checking canvas pi
 Reports and screenshots are written to `output/monitor-browser.json` and `output/playwright/monitor.png`.
 The generated source bounds native blocks and does not allocate a complete history matrix.
 
-`diagram_new` and `video_new` remain separate skeletons.
+`diagram` remains a separate skeleton. `video` exports monitor renderers through the shared GPU pipeline.

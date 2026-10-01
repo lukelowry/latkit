@@ -54,25 +54,6 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@26.1.1)(jsdom@26.1.0)(yaml@2.9.0)
 
-  examples/diagram:
-    dependencies:
-      '@latkit/diagram':
-        specifier: workspace:*
-        version: link:../../packages/diagram
-      '@latkit/model':
-        specifier: workspace:*
-        version: link:../../packages/model
-    devDependencies:
-      '@webgpu/types':
-        specifier: ^0.1.71
-        version: 0.1.71
-      typescript:
-        specifier: ^5.7.0
-        version: 5.9.3
-      vite:
-        specifier: ^7.0.0
-        version: 7.3.6(@types/node@26.1.1)(yaml@2.9.0)
-
   examples/embed:
     dependencies:
       '@latkit/embed':
@@ -135,9 +116,9 @@ importers:
 
   examples/video:
     dependencies:
-      '@latkit/diagram':
+      '@latkit/gpu':
         specifier: workspace:*
-        version: link:../../packages/diagram
+        version: link:../../packages/gpu
       '@latkit/model':
         specifier: workspace:*
         version: link:../../packages/model
@@ -171,22 +152,6 @@ importers:
         version: link:../model
 
   packages/diagram:
-    dependencies:
-      '@latkit/gpu':
-        specifier: workspace:*
-        version: link:../gpu
-      '@latkit/model':
-        specifier: workspace:*
-        version: link:../model
-      '@webgpu/types':
-        specifier: ^0.1.71
-        version: 0.1.71
-    devDependencies:
-      jsdom:
-        specifier: ^26.1.0
-        version: 26.1.0
-
-  packages/diagram_new:
     dependencies:
       '@latkit/gpu':
         specifier: workspace:*
@@ -266,37 +231,15 @@ importers:
 
   packages/video:
     dependencies:
-      '@latkit/diagram':
-        specifier: workspace:*
-        version: link:../diagram
       '@latkit/gpu':
         specifier: workspace:*
         version: link:../gpu
       '@latkit/model':
         specifier: workspace:*
         version: link:../model
-      '@latkit/monitor':
-        specifier: workspace:*
-        version: link:../monitor
-      '@latkit/network':
-        specifier: workspace:*
-        version: link:../network
       mediabunny:
         specifier: ^1.60.0
         version: 1.60.0
-    devDependencies:
-      '@webgpu/types':
-        specifier: ^0.1.71
-        version: 0.1.71
-
-  packages/video_new:
-    dependencies:
-      '@latkit/gpu':
-        specifier: workspace:*
-        version: link:../gpu
-      '@latkit/model':
-        specifier: workspace:*
-        version: link:../model
     devDependencies:
       '@webgpu/types':
         specifier: ^0.1.71

@@ -11,8 +11,7 @@ it('keeps boolean values and null validity as separate packed bitmaps', async ()
   const block: RowsBlock = {
     kind: 'rows',
     version: 'v',
-    schemaVersion: 's',
-    index: { document: 'd', type: 'node', version: 'i' },
+    index: { source: 'd', type: 'node', version: 'i' },
     rows: { kind: 'range', offset: 1000000, count: 3 },
     position: 0,
     columns: {

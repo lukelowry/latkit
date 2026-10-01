@@ -9,8 +9,7 @@ function block(values: Float32Array | Float64Array | Int32Array | Uint32Array): 
   return {
     kind: 'rows',
     version: 'v0',
-    schemaVersion: 's0',
-    index: { document: 'd', type: 'node', version: 'i0' },
+    index: { source: 'd', type: 'node', version: 'i0' },
     rows: { kind: 'range', offset: 0, count: values.length },
     position: 0,
     columns: { value: { kind: 'numeric', values, offset: 0, length: values.length } },
@@ -85,8 +84,7 @@ describe('native numeric uploads', () => {
     const value: SamplesBlock = {
       kind: 'samples',
       version: 'v',
-      schemaVersion: 's',
-      index: { document: 'd', type: 'node', version: 'i' },
+      index: { source: 'd', type: 'node', version: 'i' },
       rows: { kind: 'indices', values: Uint32Array.of(1000000000, 7) },
       rowOffset: 40,
       firstFrame: 900,

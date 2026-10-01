@@ -105,8 +105,6 @@ export class Envelopes {
     }
     for await (const discovered of discovery) {
       if (discovered.kind === 'schema') {
-        if (discovered.schema.version !== schema.version)
-          throw new GpuError('conflict', 'Envelope schema changed during preparation');
         continue;
       }
       const discoveredOffset = discovered.rowOffset;
@@ -119,7 +117,6 @@ export class Envelopes {
         );
         const key = JSON.stringify([
           discovered.version,
-          schema.version,
           query.from,
           query.select,
           query.window,
@@ -144,7 +141,6 @@ export class Envelopes {
         const block: EnvelopeBlock = {
           kind: 'envelope',
           version: discovered.version,
-          schemaVersion: schema.version,
           index: discovered.index,
           rows,
           rowOffset: discoveredOffset + offset,

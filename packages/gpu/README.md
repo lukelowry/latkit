@@ -277,12 +277,7 @@ pnpm --filter @latkit/gpu benchmark
 
 The browser fixture validates actual computation/readback, sparse nullable samples, Float64 precision, multiple views, incremental images, one million rows, fragmented field consolidation/reuse, ten simultaneous visual fields, and text pixels. Headed mode leaves an interactive three-view fixture visible with `--keep-open`. Set `LATKIT_BROWSER` for an alternative Chromium executable. Reports and screenshots go to `output/gpu-browser.json` and `output/playwright/gpu-foundation.png`. Fake-device benchmarks isolate JavaScript plumbing and are not GPU timings.
 
-Network and `monitor_new` use this foundation directly. `diagram_new` and `video_new` contain
-root-only public declaration skeletons for the next implementations. Their old packages are not
-adapters and remain unmigrated. Geometry, routing, culling, axis formatting, exact picking and
-video encoding stay with those implementations. Shared types and plumbing are imported from
-model/GPU, without renderer-owned copies or compatibility exports.
-
+Network, monitor, and video use this foundation directly. Diagram retains a root-only public skeleton; its older implementation is isolated in `diagram/legacy`. Geometry, routing, culling, axis formatting, exact picking, and video encoding remain renderer-specific. Shared types, composition, and plumbing come from model/GPU without compatibility exports.
 
 ## Progressive native preparation
 
@@ -302,3 +297,17 @@ time for deterministic output. `createCanvasView` remains progressive and event-
 `scaleParameters(scale, { origin })` takes an explicit scalar origin. For vector or envelope fields,
 pass the corresponding `field.origin[component]`; one origin cannot represent every component.
 `frame.shade({ timeMs })` can freeze effect time across progressively composed batches.
+
+## Composed views
+
+`createComposition({ gpu, views, background })` returns a regular `Renderer`.
+Each view supplies a renderer and a normalized `region: { x, y, width, height }`
+with a top-left origin. Later views overlay earlier views using premultiplied alpha.
+Children receive their actual panel dimensions and the parent's coordinate and time.
+
+Composition borrows children and owns only reusable panel textures and subscriptions.
+The same frame preparation, uniform allocation, texture lifetime, encoder, and single
+submission cover the whole tree. Complete rendering drains progressive child work;
+interactive rendering forwards child invalidation and animation. GPU rendering locks
+all descendants against concurrent preparation. Destroy compositions separately from
+their children. A renderer may occur only once in a composition tree.

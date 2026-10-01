@@ -16,6 +16,8 @@ export default defineConfig([
       'pnpm-lock.yaml',
       'output/**',
       '.playwright-cli/**',
+      // The previous diagram, kept unbuilt as the migration source.
+      'packages/diagram/legacy/**',
     ],
   },
   {

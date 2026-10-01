@@ -21,7 +21,7 @@ export class Source implements Queryable {
   listeners = new Set<(change: Update) => void>();
   values: Float32Array | Float64Array;
   readonly schema: Schema;
-  readonly index = { document: 'document', type: 'node', version: 'rows0' };
+  readonly index = { source: 'document', type: 'node', version: 'rows0' };
   constructor(
     readonly count = 16,
     readonly options: {
@@ -36,7 +36,6 @@ export class Source implements Queryable {
       ? Float64Array.from({ length }, (_, i) => 1e12 + i / 4)
       : Float32Array.from({ length }, (_, i) => i);
     this.schema = {
-      version: 'schema0',
       queries: options.sampled ? ['rows', 'samples'] : ['rows'],
       limits: { maxBlockBytes: 8 * 1024 ** 2 },
       components: {
@@ -74,7 +73,7 @@ export class Source implements Queryable {
   publish(change?: Update): void {
     if (!change) {
       this.version += '+';
-      change = { kind: 'data', version: this.version, types: ['node'] };
+      change = { kind: 'replace', version: this.version };
     }
     for (const listener of this.listeners) listener(change);
   }
@@ -133,7 +132,6 @@ export class Source implements Queryable {
           };
           const base = {
             version,
-            schemaVersion: this.schema.version,
             index: this.index,
             rows: { kind: 'range' as const, offset: physical, count },
           };
