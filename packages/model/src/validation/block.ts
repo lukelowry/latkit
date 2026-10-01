@@ -25,8 +25,6 @@ export function validateBlock(
     return c.issues;
   }
   c.text(block.version, ['version']);
-  if (block.schemaVersion !== schema.version)
-    c.issue(['schemaVersion'], 'Block schema differs from the supplied schema.', 'conflict');
   if (options.maxBlockBytes !== undefined)
     c.integer(options.maxBlockBytes, ['options', 'maxBlockBytes'], 1);
   if (options.buffers !== undefined)
@@ -54,7 +52,7 @@ export function validateBlock(
     index(c, block.index, ['index'], query.from);
     if (query.rows && query.rows.kind !== 'ids' && query.rows.index) {
       const supplied = c.object(block.index, ['index']);
-      for (const key of ['document', 'type', 'version'] as const)
+      for (const key of ['source', 'type', 'version'] as const)
         if (supplied[key] !== query.rows.index[key])
           c.issue(
             ['index', key],
@@ -314,7 +312,7 @@ export function validateBlock(
         }
     } else {
       index(c, block.targetIndex, ['targetIndex'], query.to);
-      sameDocument(c, block.index, block.targetIndex, ['targetIndex']);
+      sameSource(c, block.index, block.targetIndex, ['targetIndex']);
       uints(c, block.source, ['source'], rows?.length);
       uints(c, block.target, ['target'], rows?.length);
       const mask = bytes(c, block.validity, ['validity']);
@@ -348,7 +346,7 @@ export function validateBlock(
         indexTypes.add(idx.type);
       }
       index(c, idx, ['componentIndexes', i]);
-      sameDocument(c, block.index, idx, ['componentIndexes', i]);
+      sameSource(c, block.index, idx, ['componentIndexes', i]);
       if (record(idx) && (typeof idx.type !== 'string' || !own(schema.components, idx.type)))
         c.issue(['componentIndexes', i], 'Endpoint index must name a component type.');
     }
@@ -437,9 +435,9 @@ function exactKeys(
   for (const name of Object.keys(object))
     if (!expected.includes(name)) c.issue([...path, name], 'Unrequested value.');
 }
-function sameDocument(c: Check, a: unknown, b: unknown, path: readonly (string | number)[]): void {
-  if (record(a) && record(b) && a.document !== b.document)
-    c.issue(path, 'Indices refer to different documents.');
+function sameSource(c: Check, a: unknown, b: unknown, path: readonly (string | number)[]): void {
+  if (record(a) && record(b) && a.source !== b.source)
+    c.issue(path, 'Indices refer to different sources.');
 }
 function gcd(a: number, b: number): number {
   while (b) {

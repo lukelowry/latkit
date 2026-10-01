@@ -22,7 +22,6 @@ function endpoints(): EndpointsBlock {
   return {
     kind: 'endpoints',
     version: 'data:1',
-    schemaVersion: schema.version,
     index: { ...index, type: 'Relation' },
     connections: new Uint32Array([3]),
     offsets: new Int32Array([0, 2]),
@@ -69,7 +68,7 @@ describe('schema and query boundaries', () => {
       expect(validateSchema(value).length).toBeGreaterThan(0);
     },
   );
-  it('rejects duplicate type names, empty exclusive bounds, bad defaults, and unknown references', () => {
+  it('rejects duplicate type names, empty exclusive bounds, sampled bounds, and unknown references', () => {
     const bad = {
       ...schema,
       tables: {
@@ -77,16 +76,15 @@ describe('schema and query boundaries', () => {
           fields: {
             broken: {
               type: 'float64',
-              default: 0,
               bounds: { lower: { value: 1, inclusive: false }, upper: { value: 1 } },
             },
             ref: { type: { kind: 'reference', to: 'missing' } },
-            output: { type: 'float64', sampled: true, writable: true },
+            output: { type: 'float64', sampled: true, bounds: { lower: { value: 0 } } },
           },
         },
       },
     };
-    expect(validateSchema(bad).length).toBeGreaterThanOrEqual(5);
+    expect(validateSchema(bad).length).toBeGreaterThanOrEqual(4);
   });
   it('bounds recursive descriptions', () => {
     const type: { kind: 'list'; items?: unknown } = { kind: 'list' };
@@ -209,7 +207,6 @@ describe('columnar layout', () => {
     const block: SamplesBlock = {
       kind: 'samples',
       version: 'capture:1',
-      schemaVersion: schema.version,
       index,
       rows: { kind: 'indices', values: new Uint32Array([7, 8, 9]) },
       rowOffset: 0,
@@ -269,7 +266,7 @@ describe('columnar layout', () => {
     for (const bad of [
       { ...endpoints(), firstEndpoint: new Uint32Array([1]) },
       { ...endpoints(), port: new Uint32Array([0, 99]) },
-      { ...endpoints(), componentIndexes: [{ ...index, document: 'different' }] },
+      { ...endpoints(), componentIndexes: [{ ...index, source: 'different' }] },
       { ...endpoints(), roleNames: ['unknown'] },
       { ...endpoints(), portNames: [null, 'b'] },
     ])
@@ -280,7 +277,6 @@ describe('columnar layout', () => {
     const block = {
       kind: 'aggregate',
       version: '1',
-      schemaVersion: schema.version,
       values: { value: { count: 0, min: null } },
     };
     expect(validateBlock(schema, q, block)).toEqual([]);
@@ -334,7 +330,6 @@ describe('padding and input invariants', () => {
     const block: SamplesBlock = {
       kind: 'samples',
       version: 'capture:1',
-      schemaVersion: schema.version,
       index,
       rows: { kind: 'indices', values: new Uint32Array([0, 1]) },
       rowOffset: 0,
@@ -435,7 +430,6 @@ describe('independent sample storage and bounded validation', () => {
     const block: SamplesBlock = {
       kind: 'samples',
       version: '1',
-      schemaVersion: extended.version,
       index,
       rows: { kind: 'range', offset: 0, count: 3 },
       rowOffset: 0,

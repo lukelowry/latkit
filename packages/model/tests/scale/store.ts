@@ -4,7 +4,6 @@ import { failure, axisAt, axisLength } from '../source.js';
 export { failure, axisAt, axisLength };
 export interface Metrics {
   generatedBytes: number;
-  editCopiedBytes: number;
   ownedCopiedBytes: number;
   gatherCopiedBytes: number;
   waitingReads: number;
@@ -16,12 +15,10 @@ export interface Metrics {
   releasedReads: number;
   frameBytes: number;
   peakFrameBytes: number;
-  models: number;
   acquisitions: number;
 }
 export const metrics = (): Metrics => ({
   generatedBytes: 0,
-  editCopiedBytes: 0,
   ownedCopiedBytes: 0,
   gatherCopiedBytes: 0,
   waitingReads: 0,
@@ -33,23 +30,14 @@ export const metrics = (): Metrics => ({
   releasedReads: 0,
   frameBytes: 0,
   peakFrameBytes: 0,
-  models: 0,
   acquisitions: 0,
 });
-export interface State {
-  readonly version: string;
-  readonly pages: ReadonlyMap<number, Float64Array>;
-}
 /** Deliberately simple deterministic data, checked independently by the test oracle. */
 export class Store {
   readonly index: Index;
-  retentions = 0;
-  onRelease: () => void = () => undefined;
-  retainFrames: (frames: readonly { coordinate: number; values: Float64Array }[]) => () => void =
-    () => () =>
-      undefined;
   private base = new Map<number, Float64Array>();
-  state: State = { version: '1', pages: new Map() };
+  private held = new Map<object, number>();
+  private waiting?: ReturnType<typeof deferred<void>>;
   constructor(
     readonly id: string,
     readonly rows: number,
@@ -65,11 +53,9 @@ export class Store {
       pageRows < 1
     )
       throw failure('invalid-input');
-    this.index = { document: id, type: 'Node', version: '1' };
+    this.index = { source: id, type: 'Node', version: '1' };
   }
-  page(state: State, index: number): Float64Array {
-    const edited = state.pages.get(index);
-    if (edited) return edited;
+  page(index: number): Float64Array {
     let page = this.base.get(index);
     if (!page) {
       const start = index * this.pageRows;
@@ -80,8 +66,8 @@ export class Store {
     }
     return page;
   }
-  at(state: State, row: number): number {
-    return this.page(state, Math.floor(row / this.pageRows))[row % this.pageRows];
+  at(row: number): number {
+    return this.page(Math.floor(row / this.pageRows))[row % this.pageRows];
   }
   select(selection?: RowSelection): RowAxis {
     if (!selection) return { kind: 'range', offset: 0, count: this.rows };
@@ -89,7 +75,7 @@ export class Store {
       return { kind: 'indices', values: Uint32Array.from(selection.ids, (id) => this.row(id)) };
     if (
       selection.index &&
-      (selection.index.document !== this.id ||
+      (selection.index.source !== this.id ||
         selection.index.type !== 'Node' ||
         selection.index.version !== '1')
     )
@@ -112,27 +98,38 @@ export class Store {
     if (!Number.isSafeInteger(row) || row >= this.rows) throw failure('invalid-input');
     return row;
   }
-  edit(changes: ReadonlyMap<number, number>): boolean {
-    const pages = new Map(this.state.pages);
-    const touched = new Set<number>();
-    for (const [row, value] of changes) {
-      if (this.at(this.state, row) === value) continue;
-      const key = Math.floor(row / this.pageRows);
-      if (!touched.has(key)) {
-        const page = this.page(this.state, key).slice();
-        pages.set(key, page);
-        touched.add(key);
-        this.stats.editCopiedBytes += page.byteLength;
-      }
-      pages.get(key)![row % this.pageRows] = value;
+  /** Test control: hold every read and command at its next step until resumed. */
+  pause(paused: boolean): void {
+    if (paused) this.waiting ??= deferred();
+    else {
+      this.waiting?.resolve();
+      this.waiting = undefined;
     }
-    if (!touched.size) return false;
-    this.state = { version: String(Number(this.state.version) + 1), pages };
-    return true;
   }
-  clear(): void {
-    this.base.clear();
-    this.state = { version: this.state.version, pages: new Map() };
+  get gate(): Promise<void> | undefined {
+    return this.waiting?.promise;
+  }
+  /** Count frames once however many monitors and retained reads hold them. */
+  hold(frames: readonly { readonly values: Float64Array }[]): () => void {
+    for (const frame of frames) {
+      const count = this.held.get(frame) ?? 0;
+      this.held.set(frame, count + 1);
+      if (count) continue;
+      this.stats.frameBytes += frame.values.byteLength + 8;
+      this.stats.peakFrameBytes = Math.max(this.stats.peakFrameBytes, this.stats.frameBytes);
+    }
+    let held: typeof frames | undefined = frames;
+    return () => {
+      for (const frame of held ?? []) {
+        const count = this.held.get(frame)!;
+        if (count > 1) this.held.set(frame, count - 1);
+        else {
+          this.held.delete(frame);
+          this.stats.frameBytes -= frame.values.byteLength + 8;
+        }
+      }
+      held = undefined;
+    };
   }
 }
 export const slice = (rows: RowAxis, offset: number, count: number): RowAxis =>

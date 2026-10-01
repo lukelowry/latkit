@@ -1,164 +1,136 @@
-import { describe, expect, it } from 'vitest';
-import type { Document, MonitorConfig } from '@latkit/model';
-import {
-  FixtureService,
-  MemoryFile,
-  collect,
-  byteStream,
-  readBytes,
-} from '../../model/tests/fixture.js';
-import { open, deferred } from './fixture.js';
+import { describe, expect, it, vi } from 'vitest';
+import type { FieldSelection, Input } from '@latkit/model';
+import { FixtureModel, collect, byteStream, readBytes } from '../../model/tests/fixture.js';
+import { open, deferred, reached } from './fixture.js';
 const rows = { kind: 'rows', from: 'Node', select: ['value'] } as const;
-const config = (id: string): MonitorConfig => ({
-  scope: { kind: 'command', id },
-  fields: [{ from: 'Node', select: ['output'] }],
-  retain: { kind: 'all', bytes: 4096, onLimit: 'fail' },
-});
-async function firstId(document: Document): Promise<string> {
-  const block = (await collect(document.query({ ...rows, ids: true })))[0];
-  const ids = block.ids!;
-  return new TextDecoder().decode(ids.bytes.subarray(ids.offsets[0], ids.offsets[1]));
-}
+const output: readonly FieldSelection[] = [{ from: 'Node', select: ['output'] }];
+const solve = { routine: 'solve', values: {} } as const;
 describe.each([false, true])('transport framing=%s', (framed) => {
-  it('shares document state across peers without sharing compute lifetimes', async () => {
-    const service = new FixtureService();
-    const host = await open(service, framed);
-    const page = await open(service, framed);
+  it('shares one model across peers, each with monitors of its own', async () => {
+    const model = new FixtureModel();
+    const host = await open(model, framed);
+    const page = await open(model, framed);
     try {
-      const a = await host.remote.open();
-      const b = await page.remote.document(a.id);
-      const first = await host.remote.model(a.id);
-      const second = await page.remote.model(a.id);
-      const changed = deferred<void>();
-      b.on('change', () => {
-        expect(b.version).not.toBe('1');
-        changed.resolve();
+      const mine = await host.remote.monitor(output);
+      const theirs = await page.remote.monitor(output);
+      const running = reached(theirs, 'running');
+      const command = host.remote.run(solve);
+      await running;
+      model.frame(0);
+      model.finish();
+      await command;
+      await reached(theirs, 'complete');
+      expect(mine.frames).toBe(1);
+      expect(theirs.frames).toBe(1);
+      const replaced = deferred();
+      page.remote.on('change', (update) => {
+        if (update.kind === 'replace') replaced.resolve();
       });
-      await a.edit!([{ kind: 'set', id: await firstId(a), values: { value: 5 } }]);
-      await changed.promise;
-      const version = b.version;
-      await first.reset();
-      expect(b.version).toBe(version);
-      await first.close();
-      await a.close();
-      expect(await b.describe()).toBeDefined();
-      await second.close();
-      await b.close();
-      await expect(page.remote.document(a.id)).rejects.toMatchObject({ code: 'closed' });
+      model.replace(new Float64Array([5, 6, 7, 8]));
+      await replaced.promise;
+      expect(page.remote.version).toBe(model.version);
+      await host.close();
+      expect(model.monitors.size).toBe(1);
+      expect(await theirs.describe()).toBeDefined();
     } finally {
       await host.close();
       await page.close();
     }
   });
-  it('preserves armed readiness, command correlation and retained failure details', async () => {
-    const connection = await open(undefined, framed);
-    try {
-      const document = await connection.remote.open();
-      const model = await connection.remote.model(document.id);
-      const recording = await model.monitor!(config('a'));
-      expect(recording.status).toBe('armed');
-      let bound = false;
-      void recording.ready.then(() => {
-        bound = true;
-      });
-      await Promise.resolve();
-      expect(bound).toBe(false);
-      const queued = deferred<void>();
-      model.on('command', (event) => {
-        if (event.kind === 'queued') queued.resolve();
-      });
-      const completed = model.call!({ routine: 'solve', values: {} }, { id: 'a' });
-      await queued.promise;
-      await recording.ready;
-      expect(recording.documentVersion).toBe(document.version);
-      expect(recording.axis?.name).toBe('time');
-      connection.service.models[0].complete('a');
-      await completed;
-      expect(await recording.done).toMatchObject({ reason: 'command-finished' });
-      expect((await recording.commands({ limit: 10 })).items[0].status).toBe('complete');
-      const invalid = await model.monitor!(config('bad'));
-      const readiness = expect(invalid.ready).rejects.toMatchObject({ code: 'invalid-input' });
-      await expect(
-        model.call!({ routine: 'missing', values: {} }, { id: 'bad' }),
-      ).rejects.toMatchObject({ code: 'invalid-input' });
-      await readiness;
-      expect(await invalid.done).toMatchObject({
-        status: 'failed',
-        error: { code: 'invalid-input' },
-      });
-      await model.close();
-      await document.close();
-    } finally {
-      await connection.close();
-    }
-  });
   it('cancels a pending query pull and releases the producer on iterator return', async () => {
     const connection = await open(undefined, framed);
     try {
-      const document = await connection.remote.open();
-      const source = connection.service.documents.get(document.id)!;
-      const iterator = document.query(rows)[Symbol.asyncIterator]();
+      const iterator = connection.remote.query(rows)[Symbol.asyncIterator]();
       await iterator.next();
-      source.readGate = new Promise(() => {});
+      connection.model.readGate = new Promise(() => {});
       const pending = expect(iterator.next()).rejects.toMatchObject({ code: 'aborted' });
       await iterator.return?.();
       await pending;
-      expect(source.released).toBe(1);
-      source.readGate = undefined;
-      expect(await collect(document.query(rows))).toHaveLength(2);
-      await document.close();
+      expect(connection.model.released).toBe(1);
+      connection.model.readGate = undefined;
+      expect(await collect(connection.remote.query(rows))).toHaveLength(2);
     } finally {
       await connection.close();
     }
   });
-  it('cancels queued and running commands while preserving the model', async () => {
+  it('cancels queued and running commands while the model carries on', async () => {
     const connection = await open(undefined, framed);
+    const { model, remote } = connection;
     try {
-      const document = await connection.remote.open();
-      const model = await connection.remote.model(document.id);
-      for (const running of [false, true]) {
-        const controller = new AbortController();
-        const id = String(running);
-        const queued = deferred<void>();
-        const off = model.on('command', (event) => {
-          if (event.id === id && event.kind === 'queued') queued.resolve();
-        });
-        const completed = model.call!(
-          { routine: 'solve', values: {} },
-          { id, signal: controller.signal },
-        );
-        const rejected = expect(completed).rejects.toMatchObject({ code: 'aborted' });
-        await queued.promise;
-        if (running) connection.service.models[0].start(id);
-        controller.abort();
-        await rejected;
-        off();
-      }
-      await model.reset();
-      await model.close();
-      await document.close();
+      const monitor = await remote.monitor(output);
+      const running = reached(monitor, 'running');
+      const ahead = remote.run(solve);
+      await running;
+      const controller = new AbortController();
+      const queued = remote.run(solve, { signal: controller.signal });
+      await vi.waitFor(() => expect(model.queue).toHaveLength(2));
+      controller.abort();
+      await expect(queued).rejects.toMatchObject({ code: 'aborted' });
+      await vi.waitFor(() => expect(model.queue).toHaveLength(1));
+      model.finish();
+      await ahead;
+      const started = reached(monitor, 'running');
+      const stop = new AbortController();
+      const current = remote.run(solve, { signal: stop.signal });
+      await started;
+      model.frame(0);
+      stop.abort();
+      await expect(current).rejects.toMatchObject({ code: 'aborted' });
+      await reached(monitor, 'cancelled');
+      expect(monitor.frames).toBe(1);
+      expect(model.queue).toHaveLength(0);
     } finally {
       await connection.close();
     }
   });
-  it('moves bounded content streams and exports without detaching supplied chunks', async () => {
-    const connection = await open(undefined, framed, {
+  it('moves bounded content streams into a command without detaching supplied chunks', async () => {
+    const model = new FixtureModel();
+    let received: Uint8Array | undefined;
+    model.run = async (command) => {
+      received = await readBytes((command.values.file as Input).stream);
+      return { bytes: received.length };
+    };
+    const connection = await open(model, framed, {
       limits: { maxInFlightBytes: 16 * 1024, maxMetadataBytes: 2048 },
     });
     const data = new TextEncoder().encode(
       JSON.stringify(Array.from({ length: 5000 }, (_, i) => i)),
     );
     try {
-      const document = await connection.remote.open({
-        kind: 'content',
-        stream: byteStream(data),
-        mediaType: 'application/json',
-      });
       expect(data.length).toBeGreaterThan(16000);
-      const exported = await document.export!();
-      expect(await readBytes(exported.stream)).toEqual(data);
+      const file = { mediaType: 'application/json', stream: byteStream(data) };
+      expect(await connection.remote.run({ routine: 'solve', values: { file } })).toEqual({
+        bytes: data.length,
+      });
+      expect(received).toEqual(data);
       expect(data.byteLength).toBeGreaterThan(16000);
-      await document.close();
+    } finally {
+      await connection.close();
+    }
+  });
+  it('exports what a monitor holds as a bounded stream', async () => {
+    const connection = await open(undefined, framed, {
+      limits: { maxInFlightBytes: 16 * 1024, maxMetadataBytes: 2048 },
+    });
+    const { model, remote } = connection;
+    try {
+      const monitor = await remote.monitor(output);
+      const running = reached(monitor, 'running');
+      const command = remote.run(solve);
+      await running;
+      // Each frame is an event; a bounded connection fails rather than queue them without limit.
+      for (let t = 0; t < 500; t++) {
+        model.frame(t);
+        if (t % 10 === 9) await new Promise((resolve) => setImmediate(resolve));
+      }
+      model.finish();
+      await command;
+      const [local] = [...model.monitors];
+      const exported = await monitor.export();
+      expect(exported.mediaType).toBe('application/vnd.latkit.test+json');
+      const bytes = await readBytes(exported.stream);
+      expect(bytes.length).toBeGreaterThan(16 * 1024);
+      expect(bytes).toEqual(await readBytes((await local.export()).stream));
     } finally {
       await connection.close();
     }
@@ -168,15 +140,14 @@ describe.each([false, true])('transport framing=%s', (framed) => {
       limits: { maxStreams: 1, maxReferences: 12 },
     });
     try {
-      const document = await connection.remote.open();
-      const first = document.query(rows)[Symbol.asyncIterator]();
+      const first = connection.remote.query(rows)[Symbol.asyncIterator]();
       await first.next();
-      await expect(document.query(rows)[Symbol.asyncIterator]().next()).rejects.toMatchObject({
-        code: 'resource-limit',
-      });
+      await expect(
+        connection.remote.query(rows)[Symbol.asyncIterator]().next(),
+      ).rejects.toMatchObject({ code: 'resource-limit' });
       await first.return?.();
-      for (let i = 0; i < 20; i++) expect(await collect(document.query(rows))).toHaveLength(2);
-      await document.close();
+      for (let i = 0; i < 20; i++)
+        expect(await collect(connection.remote.query(rows))).toHaveLength(2);
     } finally {
       await connection.close();
     }
@@ -184,75 +155,68 @@ describe.each([false, true])('transport framing=%s', (framed) => {
   it('preserves independent owned blocks under a tight payload bound', async () => {
     const connection = await open(undefined, framed);
     try {
-      const document = await connection.remote.open();
-      const blocks = await collect(document.query(rows, { buffers: 'owned', maxBlockBytes: 300 }));
+      const blocks = await collect(
+        connection.remote.query(rows, { buffers: 'owned', maxBlockBytes: 300 }),
+      );
       const first = blocks[0].columns.value;
       if (first.kind !== 'numeric') throw new Error('numeric');
       structuredClone(first.values, { transfer: [first.values.buffer as ArrayBuffer] });
       const second = blocks[1].columns.value;
       if (second.kind !== 'numeric') throw new Error('numeric');
       expect([...second.values]).toEqual([3, 4]);
-      expect(connection.service.documents.get(document.id)!.state.values.byteLength).toBe(32);
-      await document.close();
+      expect(connection.model.inputs.values.byteLength).toBe(32);
     } finally {
       await connection.close();
     }
   });
 });
-it('revokes host storage on disconnect and explicitly reattaches it without replacing shared edits', async () => {
-  const service = new FixtureService();
-  const file = new MemoryFile();
-  const host = await open(service);
-  const page = await open(service);
-  let replacement: Awaited<ReturnType<typeof open>> | undefined;
+it('cancels the commands of a peer that goes and closes its monitors, while the model carries on', async () => {
+  const model = new FixtureModel();
+  const leaving = await open(model);
+  const staying = await open(model);
   try {
-    const original = await host.remote.open({ kind: 'resource', resource: file.grant() });
-    const document = await page.remote.document(original.id);
-    await document.edit!([{ kind: 'set', id: await firstId(document), values: { value: 9 } }]);
-    const version = document.version;
-    await host.close();
-    expect(file.closedGrants).toBe(1);
-    expect(await collect(document.query(rows))).toHaveLength(2);
-    await expect(document.save!()).rejects.toMatchObject({ code: 'closed' });
-    replacement = await open(service);
-    const attached = await replacement.remote.document(document.id);
-    await attached.attach!(file.grant());
-    expect(attached.version).toBe(version);
-    await document.save!();
-    expect(new TextDecoder().decode(file.bytes!)).toBe('[9,2,3,4]');
-    await attached.close();
-    await document.close();
+    const watching = await staying.remote.monitor(output);
+    await leaving.remote.monitor(output);
+    const running = reached(watching, 'running');
+    const command = leaving.remote.run(solve);
+    void command.catch(() => undefined);
+    await running;
+    model.frame(0);
+    await leaving.server.close();
+    await reached(watching, 'cancelled');
+    await vi.waitFor(() => expect(model.monitors.size).toBe(1));
+    expect(watching.frames).toBe(1);
+    expect(await collect(staying.remote.query(rows))).toHaveLength(2);
   } finally {
-    await host.close();
-    await page.close();
-    await replacement?.close();
+    await leaving.remote.close();
+    await staying.close();
   }
 });
-it('rejects unsettled recordings and pending operations when transport disappears', async () => {
+it('rejects pending operations and closes monitors when the transport disappears', async () => {
   const connection = await open();
-  const document = await connection.remote.open();
-  const model = await connection.remote.model(document.id);
-  const recording = await model.monitor!(config('unused'));
-  const ready = expect(recording.ready).rejects.toMatchObject({ code: 'disconnected' });
-  const done = expect(recording.done).rejects.toMatchObject({ code: 'disconnected' });
+  const monitor = await connection.remote.monitor(output);
+  const running = reached(monitor, 'running');
+  const command = connection.remote.run(solve);
+  await running;
+  const changes: string[] = [];
+  monitor.on('change', (update) => changes.push(update.kind));
+  const stopped = expect(command).rejects.toMatchObject({ code: 'disconnected' });
   const closed = expect(connection.remote.closed).rejects.toMatchObject({ code: 'disconnected' });
   await connection.server.close();
-  await Promise.all([ready, done, closed]);
+  await Promise.all([stopped, closed]);
   await expect(connection.serving).rejects.toMatchObject({ code: 'disconnected' });
+  expect(changes).toContain('closed');
   await connection.remote.close();
 });
-
 it('pins a fresh version for each iteration of the same query', async () => {
   const connection = await open();
   try {
-    const document = await connection.remote.open();
-    const query = document.query(rows);
+    const query = connection.remote.query(rows);
     const before = await collect(query);
-    await document.edit!([{ kind: 'set', id: await firstId(document), values: { value: 10 } }]);
+    connection.model.replace(new Float64Array([10, 2, 3, 4]));
     const after = await collect(query);
     expect(after).toHaveLength(2);
     expect(after[0].version).not.toBe(before[0].version);
-    await document.close();
   } finally {
     await connection.close();
   }

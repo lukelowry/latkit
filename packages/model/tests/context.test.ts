@@ -1,10 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Domain, SampleWindow, SamplesBlock, SamplesQuery } from '../src/index.js';
+import type {
+  Domain,
+  FieldSelection,
+  SampleWindow,
+  SamplesBlock,
+  SamplesQuery,
+} from '../src/index.js';
 import { blockBuffers, validateBlock, validateQuery } from '../src/index.js';
 import { index, schema } from './data.js';
 import { collect, FixtureModel } from './fixture.js';
 import { selectFrames } from './source.js';
-import { ScaleService } from './scale/service.js';
+import { ScaleModel } from './scale/model.js';
 
 const samples = (window: SampleWindow): SamplesQuery => ({
   kind: 'samples',
@@ -13,11 +19,16 @@ const samples = (window: SampleWindow): SamplesQuery => ({
   rows: { kind: 'range', offset: 0, count: 1 },
   window,
 });
-const config = {
-  scope: { kind: 'live' },
-  fields: [{ from: 'Node', select: ['output'] }],
-  retain: { kind: 'all', bytes: 4096, onLimit: 'fail' },
-} as const;
+const output: readonly FieldSelection[] = [{ from: 'Node', select: ['output'] }];
+/** A monitor holding one command that computed frames at these coordinates. */
+async function recorded(model: FixtureModel, coordinates: readonly number[]) {
+  const recording = await model.monitor(output);
+  const command = model.run({ routine: 'solve', values: {} });
+  for (const coordinate of coordinates) model.frame(coordinate);
+  model.finish();
+  await command;
+  return recording;
+}
 const coordinates = (blocks: readonly SamplesBlock[]): number[] =>
   blocks.flatMap((block) => [...block.coordinates]);
 
@@ -65,7 +76,6 @@ describe('range context validation', () => {
     const block = (values: number[]): SamplesBlock => ({
       kind: 'samples',
       version: '1',
-      schemaVersion: schema.version,
       index,
       rows: { kind: 'range', offset: 0, count: 1 },
       rowOffset: 0,
@@ -119,8 +129,7 @@ describe('coherent range context', () => {
     async (between, context, expected) => {
       const model = new FixtureModel();
       try {
-        const recording = await model.monitor(config);
-        for (const coordinate of [0, 2, 2, 5, 8]) model.live(coordinate);
+        const recording = await recorded(model, [0, 2, 2, 5, 8]);
         const window: SampleWindow = {
           kind: 'range',
           between,
@@ -133,10 +142,10 @@ describe('coherent range context', () => {
           expect(
             validateBlock(await recording.describe(), query, block, { maxBlockBytes: 1024 }),
           ).toEqual([]);
-          const native = recording.source.stateForRead().frames![block.firstFrame].values.output;
+          const native = recording.stateForRead().frames![block.firstFrame].values.output;
           expect(block.columns.output.values.buffer).toBe(native.buffer);
         }
-        expect(recording.source.copiedBytes).toBe(0);
+        expect(recording.copiedBytes).toBe(0);
         const aggregate = await collect(
           recording.query({
             kind: 'aggregate',
@@ -157,59 +166,34 @@ describe('coherent range context', () => {
       }
     },
   );
-  it('clips context to retained bounds but does not hide expired base intervals', async () => {
+  it('reads nothing before a command, then clips context to recorded bounds', async () => {
     const model = new FixtureModel();
     try {
-      const recording = await model.monitor({
-        ...config,
-        retain: { kind: 'rolling', frames: 2, bytes: 80, onLimit: 'fail' },
-      });
-      const empty = await collect(
-        recording.query(
-          samples({
-            kind: 'range',
-            between: [0, 10],
-            context: { before: 10, after: 10 },
-          }),
-        ),
-      );
-      expect(empty).toEqual([]);
-      for (const coordinate of [0, 2, 5]) model.live(coordinate);
+      const recording = await model.monitor(output);
+      const wide = samples({ kind: 'range', between: [0, 10], context: { before: 10, after: 10 } });
+      expect(await collect(recording.query(wide))).toEqual([]);
+      const command = model.run({ routine: 'solve', values: {} });
+      for (const coordinate of [0, 2, 5]) model.frame(coordinate);
+      model.finish();
+      await command;
       const kept = await collect(
         recording.query(
-          samples({
-            kind: 'range',
-            between: [2, 2],
-            context: { before: 10, after: 10 },
-          }),
+          samples({ kind: 'range', between: [2, 2], context: { before: 10, after: 10 } }),
         ),
       );
-      expect(coordinates(kept)).toEqual([2, 5]);
-      expect(kept.map((block) => block.firstFrame)).toEqual([1, 2]);
-      await expect(
-        collect(
-          recording.query(
-            samples({
-              kind: 'range',
-              between: [0, 2],
-              context: { before: 1, after: 1 },
-            }),
-          ),
-        ),
-      ).rejects.toMatchObject({ code: 'expired' });
+      expect(coordinates(kept)).toEqual([0, 2, 5]);
+      expect(kept.map((block) => block.firstFrame)).toEqual([0, 1, 2]);
     } finally {
       await model.close();
     }
   });
-  it('pins context with the header across append and eviction', async () => {
+  it('pins context with the header across appends', async () => {
     const model = new FixtureModel();
     try {
-      const recording = await model.monitor({
-        ...config,
-        retain: { kind: 'rolling', frames: 2, bytes: 80, onLimit: 'fail' },
-      });
-      model.live(0);
-      model.live(2);
+      const recording = await model.monitor(output);
+      const command = model.run({ routine: 'solve', values: {} });
+      model.frame(0);
+      model.frame(2);
       const query = samples({
         kind: 'range',
         between: [1, 1],
@@ -217,7 +201,7 @@ describe('coherent range context', () => {
       });
       const iterator = recording.query(query)[Symbol.asyncIterator]();
       const header = await iterator.next();
-      model.live(4);
+      model.frame(4);
       const blocks: SamplesBlock[] = [];
       for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
         if (next.value.kind !== 'samples') throw new Error('Expected samples');
@@ -226,20 +210,17 @@ describe('coherent range context', () => {
       }
       expect(coordinates(blocks)).toEqual([0, 2]);
       expect(blocks.map((block) => block.firstFrame)).toEqual([0, 1]);
+      model.finish();
+      await command;
     } finally {
       await model.close();
     }
   });
   it('preserves owned transfers and cancellation with context in the scale implementation', async () => {
-    const service = new ScaleService(10_003);
-    const document = await service.open();
-    const model = await service.model(document.id);
+    const model = new ScaleModel(10_003);
     try {
-      const recording = await model.monitor!({
-        ...config,
-        retain: { kind: 'all', bytes: 1_000_000, onLimit: 'fail' },
-      });
-      await model.call!({ routine: 'advance', values: { frames: 3, factor: 1 } });
+      const recording = await model.monitor(output);
+      await model.run({ routine: 'simulate', values: { frames: 3, factor: 1 } });
       const query = samples({
         kind: 'range',
         between: [0.25, 0.75],
@@ -267,16 +248,15 @@ describe('coherent range context', () => {
         .query(query, { signal: controller.signal })
         [Symbol.asyncIterator]();
       await iterator.next();
-      service.pause(true);
+      model.pause(true);
       const pending = expect(iterator.next()).rejects.toMatchObject({ code: 'aborted' });
-      await vi.waitFor(() => expect(service.stats.waitingReads).toBe(1));
+      await vi.waitFor(() => expect(model.stats.waitingReads).toBe(1));
       controller.abort();
       await pending;
-      expect(service.stats.activeReads).toBe(0);
+      expect(model.stats.activeReads).toBe(0);
     } finally {
-      service.pause(false);
+      model.pause(false);
       await model.close();
-      await document.close();
     }
   });
 });

@@ -155,7 +155,7 @@ export function validateQuery(schema: Schema, value: unknown): readonly Problem[
 
 export function index(c: Check, value: unknown, path: Path, type?: string): void {
   const idx = c.object(value, path);
-  for (const key of ['document', 'type', 'version']) c.text(idx[key], [...path, key]);
+  for (const key of ['source', 'type', 'version']) c.text(idx[key], [...path, key]);
   if (type !== undefined && idx.type !== type)
     c.issue([...path, 'type'], 'Index belongs to a different type.');
 }

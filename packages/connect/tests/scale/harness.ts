@@ -4,8 +4,8 @@ import { Worker, MessageChannel } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { build } from 'tsup';
 import { connect, serve, messagePort, byteTransport } from '../../src/index.js';
-import type { ModelService } from '@latkit/model';
-import { ScaleService } from '../../../model/tests/scale/service.js';
+import type { Model } from '@latkit/model';
+import { ScaleModel } from '../../../model/tests/scale/model.js';
 import type { Metrics } from '../../../model/tests/scale/store.js';
 import { deferred } from '../../../model/tests/scale/store.js';
 import { socketPair } from './socket.js';
@@ -13,7 +13,7 @@ import type { SocketMetrics } from './socket.js';
 export const modes = ['local', 'message', 'framed', 'worker', 'socket'] as const;
 export type Mode = (typeof modes)[number];
 export interface Harness {
-  service: ModelService;
+  model: Model;
   metrics(): Promise<Metrics>;
   pause(value: boolean): Promise<void>;
   socket: SocketMetrics;
@@ -45,20 +45,17 @@ export async function harness(
   pageRows = 8192,
   options: ConnectOptions = {},
 ): Promise<Harness> {
-  const native = new ScaleService(rows, pageRows);
+  const native = new ScaleModel(rows, pageRows);
   const socket = { sentBytes: 0, receivedBytes: 0, decodedBytes: 0, maxFrameBytes: 0 };
   if (mode === 'local')
     return {
-      service: native,
+      model: native,
       metrics: async () => native.inspect(),
       pause: async (value) => native.pause(value),
       socket,
       async close() {
-        for (const core of [...native.cores.values()]) {
-          for (const model of [...core.models]) await model.close();
-          for (const document of [...core.documents]) await document.close();
-        }
-        await native.capturesRegistry.close();
+        for (const monitor of [...native.monitors]) await monitor.close();
+        await native.close();
         native.pause(false);
       },
     };
@@ -108,7 +105,7 @@ export async function harness(
         signal: options.signal ?? AbortSignal.timeout(60_000),
       });
       return {
-        service: remote,
+        model: remote,
         metrics: () => (finalMetrics ? Promise.resolve(finalMetrics) : request('metrics')),
         pause: async (value) => {
           await request('pause', value);
@@ -162,7 +159,7 @@ export async function harness(
   void serving.catch(() => undefined);
   const remote = await connect(client, options);
   return {
-    service: remote,
+    model: remote,
     metrics: async () => native.inspect(),
     pause: async (value) => native.pause(value),
     socket,

@@ -52,7 +52,6 @@ export interface FrameRead<F> {
   readonly firstFrame?: number;
   readonly frameCount?: number;
   readonly firstCoordinate?: number;
-  readonly evictedThrough?: number;
 }
 export interface ReadState extends FrameRead<Frame> {
   backing?: ReadonlyMap<object, number>;
@@ -157,7 +156,6 @@ export function selectFrames<F extends { readonly coordinate: number }>(
   const frames = state.frames ?? [];
   const first = state.firstFrame ?? 0;
   if (window.kind === 'frames') {
-    if (window.offset < first) throw failure('expired');
     if (window.offset + window.count > (state.frameCount ?? 0)) throw failure('invalid-input');
     return {
       frames: frames.slice(window.offset - first, window.offset + window.count - first),
@@ -168,15 +166,8 @@ export function selectFrames<F extends { readonly coordinate: number }>(
     if (state.firstCoordinate !== undefined && window.value < state.firstCoordinate)
       return { frames: [], offset: first };
     const i = coordinateBound(frames, window.value, true) - 1;
-    if (i < 0 && first > 0) throw failure('expired');
     return { frames: i < 0 ? [] : [frames[i]], offset: i < 0 ? first : first + i };
   }
-  if (
-    state.evictedThrough !== undefined &&
-    window.between[0] <= state.evictedThrough &&
-    window.between[1] >= (state.firstCoordinate ?? -Infinity)
-  )
-    throw failure('expired');
   let start = coordinateBound(frames, window.between[0], false);
   let end = coordinateBound(frames, window.between[1], true);
   start -= Math.min(start, window.context?.before ?? 0);
@@ -202,7 +193,6 @@ export function retainFrames<F extends { readonly coordinate: number }, S extend
     firstFrame: state.firstFrame,
     frameCount: state.frameCount,
     firstCoordinate: state.firstCoordinate,
-    evictedThrough: state.evictedThrough,
   };
   return {
     ...state,
@@ -433,7 +423,6 @@ export abstract class Source implements Queryable {
         block = {
           kind: 'rows',
           version: state.version,
-          schemaVersion: state.schema.version,
           index: state.inputs.index,
           rows: part,
           position,
@@ -477,7 +466,6 @@ export abstract class Source implements Queryable {
           block = {
             kind: 'samples',
             version: state.version,
-            schemaVersion: state.schema.version,
             index: state.inputs.index,
             rows,
             rowOffset: row,
@@ -519,7 +507,6 @@ export abstract class Source implements Queryable {
       yield {
         kind: 'aggregate',
         version: state.version,
-        schemaVersion: state.schema.version,
         values: {
           [field]: {
             count,

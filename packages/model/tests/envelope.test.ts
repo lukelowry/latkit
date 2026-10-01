@@ -10,7 +10,6 @@ import {
   type EnvelopeBlock,
 } from '../src/index.js';
 const schema: Schema = {
-  version: 's',
   queries: ['envelope'],
   axis: { name: 'coordinate' },
   limits: { maxBlockBytes: 8192 },
@@ -28,8 +27,7 @@ function block(): EnvelopeBlock {
   return {
     kind: 'envelope',
     version: 'v',
-    schemaVersion: 's',
-    index: { document: 'd', type: 'node', version: 'i' },
+    index: { source: 'd', type: 'node', version: 'i' },
     rows: { kind: 'range', offset: 0, count: 1 },
     rowOffset: 0,
     firstBucket: 0,

@@ -12,9 +12,10 @@ export type DataType =
   | { readonly kind: 'vector'; readonly items: NumericType; readonly size: number }
   | { readonly kind: 'list'; readonly items: DataType };
 
-/** Stable identity of a type's physical row numbering. Metadata, not a resource handle. */
+/** Stable identity of a type's physical row numbering in one Model or Recording. Metadata only. */
 export interface Index {
-  readonly document: string;
+  /** Opaque identity of the Model or Recording that numbers these rows. */
+  readonly source: string;
   readonly type: string;
   readonly version: Version;
 }

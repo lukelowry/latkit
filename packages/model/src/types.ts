@@ -53,7 +53,6 @@ export interface Export {
 export interface Failure extends Error {
   readonly code:
     | 'conflict'
-    | 'expired'
     | 'invalid-input'
     | 'unsupported'
     | 'resource-limit'

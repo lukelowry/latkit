@@ -15,7 +15,7 @@ import type { Domain, RequestOptions, Scalar, Version } from './types.js';
 
 export interface QueryOptions extends RequestOptions {
   /**
-   * Default borrowed: immutable published backing remains valid after eviction/close. Never detach.
+   * Default borrowed: immutable published backing remains valid after close. Never detach.
    * Borrowed backing cannot be reused for mutable working storage while published views survive.
    * Owned: producer relinquishes every alias to every returned backing allocation; caller may
    * mutate/transfer it. No SharedArrayBuffer or alias into another block is allowed in owned mode.
@@ -72,12 +72,13 @@ export interface Queryable {
   query(query: Query, options?: QueryOptions): AsyncIterable<QueryHeader | QueryBlock>;
   /**
    * Atomically acquire fixed schema, inputs, row identities and observation coverage without
-   * executing queries. Resolve window/context once. Appends and eviction never alter this grant.
-   * Queries resolve against the fixed observation index and reject invalid-input if any selected
-   * frame lies outside the grant; never silently clip to narrower coverage. Retaining again creates
-   * an independent acquisition of the same version, optionally narrowed. No data-change events.
-   * Survives the originating acquisition and Model reset/close. Signal governs acquisition only.
-   * Unknown/evicted coverage rejects; failed or cancelled admission leaves no retained resources.
+   * executing queries. Resolve window/context once. Appends and a monitor starting over never
+   * alter this grant. Queries resolve against the fixed observation index and reject invalid-input
+   * if any selected frame lies outside the grant; never silently clip to narrower coverage.
+   * Retaining again creates an independent acquisition of the same version, optionally narrowed.
+   * No data-change events. Survives the originating acquisition and its Model's close. Signal
+   * governs acquisition only. Unknown coverage rejects; failed or cancelled admission leaves no
+   * retained resources.
    */
   retain(options?: RetainOptions): Promise<Queryable>;
   /** Release only this acquisition and cancel its direct queries. Independent retained sources and
@@ -121,8 +122,7 @@ export interface SampleRange {
    * Extra retained frames strictly before/after the inclusive interval; omitted counts are zero.
    * Counts are nonnegative safe integers, measured in frames, not distinct coordinates.
    * Include every boundary duplicate inside the interval. With no interior frames, use the
-   * immediate predecessor/successor at the insertion point. Clip context to retained bounds;
-   * it never causes expired by itself. The base interval's expiration rules still apply.
+   * immediate predecessor/successor at the insertion point. Clip context to recorded bounds.
    * Resolve both boundaries and context against the same pinned read, without waiting for
    * future frames. Aggregates include these same context frames when requested.
    */
@@ -132,8 +132,8 @@ export interface SampleRange {
 /**
  * Sampled numeric fields. At selects the last duplicate coordinate; before first is empty.
  * Native floating-point observations may be nonfinite; aggregates exclude them.
- * Evicted base ranges reject expired. Future frame ranges reject invalid-input.
- * Only optional range context clips to retained bounds; requested data is never silently truncated.
+ * Future frame ranges reject invalid-input.
+ * Only optional range context clips to recorded bounds; requested data is never silently truncated.
  */
 export interface SamplesQuery extends FieldSelection {
   readonly kind: 'samples';
@@ -149,7 +149,7 @@ export interface SamplesQuery extends FieldSelection {
  * by frame when drawing. Null/nonfinite observations clear continuity, never become extrema.
  * Empty buckets have all slots invalid and continuity false. Gaps cannot be reconstructed from
  * a summary: never connect a discontinuous bucket without refining the raw samples.
- * Appends/evictions preserve absolute frame identities and obey SampleRange expiration rules.
+ * Appends preserve absolute frame identities.
  */
 export interface EnvelopeQuery extends FieldSelection {
   readonly kind: 'envelope';
@@ -202,7 +202,6 @@ export type Filter =
 interface Block {
   readonly kind: Query['kind'];
   readonly version: Version;
-  readonly schemaVersion: Version;
 }
 
 export interface RowsBlock extends Block {
@@ -219,7 +218,7 @@ export interface RowsBlock extends Block {
 /**
  * Rectangular tiles partition both selected rows and frames without overlaps or gaps.
  * rowOffset is a position in the query's row selection; rows are physical indices. firstFrame is
- * absolute even after eviction. Columns address frame * frameStride + row * rowStride relative to
+ * absolute. Columns address frame * frameStride + row * rowStride relative to
  * each column's logical slice and its own strides. Padding values/validity bits are ignored.
  * Coordinate arrays may alias. Omitted rows select the physical-order intersection of captured
  * rows for all selected fields. Explicit rows must be captured for every selected field.
@@ -303,24 +302,15 @@ export type QueryBlock =
   RowsBlock | SamplesBlock | EnvelopeBlock | EndpointsBlock | LinksBlock | AggregateBlock;
 
 /**
- * Notify in publication order after a complete change; versions are equality tokens, not sortable. One commit may emit several notifications with the same version; no older commit's
- * notifications may follow them. Replace/schema invalidate all data caches; structure invalidates
- * the named indices and dependent connectivity; data invalidates those types' values. Append and
- * evict affect only those frame intervals. Status/closed never advance the data version.
+ * Notify in publication order after a complete change; versions are equality tokens, not sortable.
+ * Replace invalidates all data caches: a monitor emits it when a command starts it over. Append
+ * affects only those frames. Status and closed never advance the data version.
  */
 export type Update =
-  | {
-      readonly kind: 'replace' | 'schema';
-      readonly version: Version;
-      readonly schemaVersion: Version;
-    }
-  | { readonly kind: 'data'; readonly version: Version; readonly types: readonly string[] }
-  | { readonly kind: 'structure'; readonly version: Version; readonly indexes: readonly Index[] }
+  | { readonly kind: 'replace'; readonly version: Version }
   | {
       readonly kind: 'append';
       readonly version: Version;
       readonly frames: { readonly offset: number; readonly count: number };
     }
-  | { readonly kind: 'evict'; readonly version: Version; readonly beforeFrame: number }
-  | { readonly kind: 'commands' | 'diagnostics'; readonly version: Version }
   | { readonly kind: 'status' | 'closed' };

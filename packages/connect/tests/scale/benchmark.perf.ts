@@ -25,9 +25,8 @@ const summarize = (scans: ScanResult[]) => ({
   maxBlockBytes: Math.max(...scans.map((s) => s.maxBlockBytes)),
   maxBackingBytes: Math.max(...scans.map((s) => s.maxBackingBytes)),
 });
-const copied = (metrics: Metrics) =>
-  metrics.ownedCopiedBytes + metrics.gatherCopiedBytes + metrics.editCopiedBytes;
-it('measures independently checked scans, capture, edits and cancellation at scale', async () => {
+const copied = (metrics: Metrics) => metrics.ownedCopiedBytes + metrics.gatherCopiedBytes;
+it('measures independently checked scans, monitors and cancellation at scale', async () => {
   const sizes = (process.env.LATKIT_SCALE_ROWS ?? '100000,1000000,4000000').split(',').map(Number);
   const repeats = Number(process.env.LATKIT_SCALE_REPEATS ?? 3);
   assert.ok(sizes.every((n) => Number.isSafeInteger(n) && n >= 10000 && n <= 16000000));
@@ -40,7 +39,7 @@ it('measures independently checked scans, capture, edits and cancellation at sca
       const memoryBefore = process.memoryUsage();
       const setupStart = performance.now(),
         run = await harness(mode, rows),
-        document = await run.service.open();
+        model = run.model;
       const setupMs = performance.now() - setupStart;
       let peakRss = memoryBefore.rss,
         peakExternal = memoryBefore.external,
@@ -53,7 +52,7 @@ it('measures independently checked scans, capture, edits and cancellation at sca
       };
       const sampler = setInterval(sample, 5);
       try {
-        const cold = await verifyRows(document, rows);
+        const cold = await verifyRows(model, rows);
         sample();
         const borrowed: ScanResult[] = [],
           owned: ScanResult[] = [];
@@ -61,10 +60,10 @@ it('measures independently checked scans, capture, edits and cancellation at sca
           ownedNativeCopies = 0;
         for (let i = 0; i < repeats; i++) {
           const before = await run.metrics();
-          borrowed.push(await verifyRows(document, rows));
+          borrowed.push(await verifyRows(model, rows));
           const between = await run.metrics();
           borrowedNativeCopies += copied(between) - copied(before);
-          owned.push(await verifyRows(document, rows, { buffers: 'owned' }));
+          owned.push(await verifyRows(model, rows, { buffers: 'owned' }));
           const after = await run.metrics();
           ownedNativeCopies += copied(after) - copied(between);
           sample();
@@ -76,7 +75,7 @@ it('measures independently checked scans, capture, edits and cancellation at sca
         assert.equal(ownedNativeCopies, repeats * rows * 8);
         const indices = Uint32Array.from({ length: 4096 }, (_, i) => Math.floor((i * rows) / 4096));
         const sparse = await verifyRows(
-          document,
+          model,
           indices.length,
           {},
           {
@@ -87,29 +86,13 @@ it('measures independently checked scans, capture, edits and cancellation at sca
           },
           (i) => indices[i],
         );
-        const beforeEdit = await run.metrics(),
-          editStart = performance.now();
-        await document.edit!([{ kind: 'set', id: 'n0', values: { value: 57 } }]);
-        const editMs = performance.now() - editStart,
-          afterEdit = await run.metrics();
-        assert.equal(afterEdit.editCopiedBytes - beforeEdit.editCopiedBytes, 8192 * 8);
-        const model = await run.service.model(document.id);
-        const config = {
-          scope: { kind: 'command', id: 'capture' },
-          fields: [{ from: 'Node', select: ['output'] }],
-          retain: { kind: 'all', bytes: 3 * (rows * 8 + 8), onLimit: 'fail' },
-        } as const;
-        const recording = await model.monitor!(config),
-          mirror = await model.monitor!(config);
-        const callStart = performance.now();
-        await model.call!(
-          { routine: 'simulate', values: { frames: 3, factor: 2 } },
-          { id: 'capture' },
-        );
-        const commandMs = performance.now() - callStart;
-        const observed = await verifySamples(recording, rows, 3, 0, 2, (row) =>
-          row ? inputAt(row) : 57,
-        );
+        const fields = [{ from: 'Node', select: ['output'] }] as const;
+        const recording = await model.monitor(fields),
+          mirror = await model.monitor(fields);
+        const runStart = performance.now();
+        await model.run({ routine: 'simulate', values: { frames: 3, factor: 2 } });
+        const commandMs = performance.now() - runStart;
+        const observed = await verifySamples(recording, rows, 3, 0, 2, inputAt);
         const captureMetrics = await run.metrics();
         assert.equal(captureMetrics.frameBytes, 3 * (rows * 8 + 8));
         sample();
@@ -125,7 +108,7 @@ it('measures independently checked scans, capture, edits and cancellation at sca
         assert.equal(retainedMetrics.frameBytes, captureMetrics.frameBytes);
         await mirror.close();
         await recording.close();
-        const iterator = document
+        const iterator = model
           .query({ kind: 'rows', from: 'Node', select: ['value'] })
           [Symbol.asyncIterator]();
         await iterator.next();
@@ -138,18 +121,13 @@ it('measures independently checked scans, capture, edits and cancellation at sca
         await rejected;
         const cancelMs = performance.now() - cancelStart;
         await run.pause(false);
-        await model.close();
-        await document.close();
-        const retainedSamples = await verifySamples(source, rows, 1, 0, 2, (row) =>
-          row ? inputAt(row) : 57,
-        );
+        const retainedSamples = await verifySamples(source, rows, 1, 0, 2, inputAt);
         await source.close();
         const final = await run.metrics();
         assert.equal(final.activeReads, 0);
         assert.equal(final.openedReads, final.releasedReads);
         assert.equal(final.frameBytes, 0);
         assert.equal(final.acquisitions, 0);
-        assert.equal(final.models, 0);
         sample();
         const row = {
           mode,
@@ -161,10 +139,8 @@ it('measures independently checked scans, capture, edits and cancellation at sca
           nativeCopies: {
             borrowedPerScan: borrowedNativeCopies / repeats,
             ownedPerScan: ownedNativeCopies / repeats,
-            singleEdit: afterEdit.editCopiedBytes - beforeEdit.editCopiedBytes,
           },
           sparse,
-          editMs,
           commandMs,
           samples: observed,
           sharedCaptureBytes: captureMetrics.frameBytes,

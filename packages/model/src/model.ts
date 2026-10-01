@@ -1,51 +1,33 @@
-import type { MonitorConfig, Recording } from './recording.js';
-import type { Command, CommandEvent, CommandResult, Diagnostic, Routine } from './routine.js';
-import type { Input } from './input.js';
-import type { Problem, RequestOptions } from './types.js';
+import type { FieldSelection, Queryable } from './query.js';
+import type { Recording } from './recording.js';
+import type { Command, CommandResult, Routine } from './routine.js';
+import type { Schema } from './schema.js';
+import type { RequestOptions } from './types.js';
 
-export interface CallOptions extends RequestOptions {
-  /** Unique for this model's lifetime; generated if omitted. Rejected calls also consume it.
-   * Reuse rejects conflict, never retries. */
-  readonly id?: string;
-}
-
-/** One compute context attached to shared inputs. Suitable for isolated work or a live peer.
- * Storage and transport are optional. Implementations schedule/exclusively bind external peers. */
-export interface Model {
-  readonly id: string;
-  readonly label: string;
-  readonly documentId: string;
-  /** Nonempty requires call. Publish replacements before the routines notification. */
+/**
+ * A grid model: its classes and data, the commands it runs, and monitors on what they compute.
+ * The same object in-process, in a worker, or across a connection. Opening it, and changing its
+ * file, belong to its application. Every holder shares it: each monitor streams every command,
+ * whoever ran it. Closing ends only this holder's use.
+ */
+export interface Model extends Queryable {
+  readonly name: string;
+  /** What run() accepts; fixed for the model's lifetime. Empty when it computes nothing. */
   readonly routines: readonly Routine[];
-  parse?(input: Input, options?: RequestOptions): Promise<Command>;
-  /** Preflight metadata/current-input constraints without consuming content streams. */
-  validate?(command: Command, options?: RequestOptions): Promise<readonly Problem[]>;
+  /** Its classes: components, connections and tables, their fields and ports. Sampled fields are
+   * what monitor() can stream; the model holds no observations of them. */
+  describe(options?: RequestOptions): Promise<Schema>;
   /**
-   * Validate independently, accept against current inputs, bind armed monitors, then emit queued.
-   * Isolated inputs are pinned at acceptance, not when a monitor is armed or work starts running.
-   * A binding failure fails that recording without rejecting an otherwise valid command.
-   * Rejected calls fail matching armed monitors. Resolve on completion; abort requests cancellation,
-   * not rollback. Terminal events follow final output publication. Never retry side effects after
-   * a lost transport reply. Implementations may share immutable input backing between commands.
+   * Stream these sampled fields of every command that starts after this call. Each command that
+   * records starts the Recording over: it emits replace, then appends that command's frames as
+   * they are computed. retain() keeps one command's frames past the next. Rejects invalid-input
+   * for unknown rows or fields that are not sampled.
    */
-  call?(command: Command, options?: CallOptions): Promise<CommandResult>;
+  monitor(fields: readonly FieldSelection[], options?: RequestOptions): Promise<Recording>;
   /**
-   * Create a recording and return its first independent acquisition. Resolve once armed. Command scope registers interest without pinning inputs; live scope binds
-   * now. Command IDs must not have been submitted previously; late registration rejects conflict.
-   * Cancelled/rejected setup leaves no active capture. After resolution, use stop/close.
-   * Binding checks routine monitoring support and current schema/row coverage independently of call.
-   * Admission may reject resource-limit for shared input/native working-memory budgets.
+   * Run a command; every open monitor streams it. Commands run one at a time, in the order given.
+   * Rejects invalid-input, with issues, before anything runs. Resolves with the result once every
+   * frame is published. Aborting cancels it, queued or running. A lost reply may have run.
    */
-  monitor?(config: MonitorConfig, options?: RequestOptions): Promise<Recording>;
-  /** Cancel commands, finish captures with model-reset after final publication, and reinitialize
-   * computation against current inputs. Preserve Recording and retained Queryable acquisitions.
-   * Never edit the shared Document. New work rejects busy until ready; do not wait for readers. */
-  reset(): Promise<void>;
-  on(event: 'routines' | 'reset', listener: () => void): () => void;
-  on(event: 'command', listener: (event: CommandEvent) => void): () => void;
-  on(event: 'diagnostic', listener: (diagnostic: Diagnostic) => void): () => void;
-  /** Cancel work, finish captures with model-closed after final publication, and release this context
-   * and its document retention. Preserve independent data acquisitions; do not wait for readers.
-   * Later operations reject closed. Idempotent. */
-  close(): Promise<void>;
+  run(command: Command, options?: RequestOptions): Promise<CommandResult>;
 }

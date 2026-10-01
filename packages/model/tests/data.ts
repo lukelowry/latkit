@@ -1,8 +1,7 @@
 import type { Index, NumericColumn, RowsBlock, Schema, TextColumn } from '../src/index.js';
 
-export const index: Index = { document: 'document', type: 'Node', version: 'rows:1' };
+export const index: Index = { source: 'model', type: 'Node', version: 'rows:1' };
 export const schema: Schema = {
-  version: 'schema:1',
   queries: ['rows', 'samples', 'endpoints', 'links', 'aggregate'],
   limits: { maxBlockBytes: 65536 },
   components: {
@@ -10,12 +9,10 @@ export const schema: Schema = {
       fields: {
         value: {
           type: 'float64',
-          required: true,
-          writable: true,
           bounds: { lower: { value: 0, inclusive: false } },
         },
         label: { type: 'text', nullable: true },
-        enabled: { type: 'boolean', default: true },
+        enabled: { type: 'boolean' },
         output: { type: 'float64', sampled: true },
         position: { type: { kind: 'vector', items: 'float64', size: 2 }, nullable: true },
         route: {
@@ -25,7 +22,6 @@ export const schema: Schema = {
         parent: { type: { kind: 'reference', to: 'Node' }, nullable: true },
       },
       ports: { a: { direction: 'both' }, b: { direction: 'both' } },
-      operations: ['add', 'set', 'remove'],
       spatial: { field: 'position', system: 'local' },
     },
   },
@@ -33,11 +29,10 @@ export const schema: Schema = {
     Relation: {
       fields: {},
       roles: { member: { min: 2 } },
-      operations: ['add', 'reconnect', 'remove'],
     },
   },
   tables: {
-    Settings: { fields: { value: { type: 'float64' } }, operations: ['insert', 'set', 'remove'] },
+    Settings: { fields: { value: { type: 'float64' } } },
   },
   axis: { name: 'time', unit: 's' },
 };
@@ -58,7 +53,6 @@ export function rows(): RowsBlock {
   return {
     kind: 'rows',
     version: 'data:1',
-    schemaVersion: schema.version,
     index,
     rows: { kind: 'range', offset: 0, count: 2 },
     position: 0,

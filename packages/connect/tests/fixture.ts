@@ -1,7 +1,8 @@
 import { MessageChannel } from 'node:worker_threads';
+import type { Recording, RecordingStatus } from '@latkit/model';
 import { connect, serve, messagePort, byteTransport } from '../src/index.js';
 import type { ConnectOptions, Transport } from '../src/index.js';
-import { FixtureService } from '../../model/tests/fixture.js';
+import { FixtureModel } from '../../model/tests/fixture.js';
 export function transports(framed = false): [Transport, Transport] {
   const { port1, port2 } = new MessageChannel();
   const pair = [messagePort(port1), messagePort(port2)];
@@ -16,17 +17,17 @@ export function transports(framed = false): [Transport, Transport] {
   ) as [Transport, Transport];
 }
 export async function open(
-  service = new FixtureService(),
+  model = new FixtureModel(),
   framed = false,
   options: ConnectOptions = {},
 ) {
   const [client, server] = transports(framed);
-  const serving = serve(server, service, options);
+  const serving = serve(server, model, options);
   void serving.catch(() => undefined);
   const remote = await connect(client, options);
   return {
     remote,
-    service,
+    model,
     client,
     server,
     serving,
@@ -45,4 +46,15 @@ export function deferred<T = void>() {
   });
   void promise.catch(() => undefined);
   return { promise, resolve, reject };
+}
+/** Settles once a monitor reports `status`, as its peer publishes it. */
+export function reached(recording: Recording, status: RecordingStatus): Promise<void> {
+  if (recording.status === status) return Promise.resolve();
+  return new Promise((resolve) => {
+    const off = recording.on('change', () => {
+      if (recording.status !== status) return;
+      off();
+      resolve();
+    });
+  });
 }

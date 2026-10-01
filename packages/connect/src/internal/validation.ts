@@ -1,6 +1,11 @@
 import { failure } from './errors.js';
-export type Kind =
-  'service' | 'document' | 'model' | 'recording' | 'resource' | 'queryable' | 'stream';
+export type Kind = 'model' | 'recording' | 'queryable' | 'stream';
+/** The metadata each kind publishes, the only state that crosses with it. */
+export const stateKeys: Record<Exclude<Kind, 'stream'>, readonly string[]> = {
+  model: ['name', 'version', 'routines'],
+  recording: ['version', 'status', 'frames', 'range', 'progress', 'diagnostics'],
+  queryable: ['version'],
+};
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw failure('invalid-input', 'Expected an object.');
@@ -23,92 +28,24 @@ export function integer(value: unknown): value is number {
 }
 export function validateState(kind: Kind, state: Record<string, unknown>): void {
   if (kind === 'stream') return;
-  if (kind !== 'queryable') text(state.id);
-  const allowed =
-    kind === 'service'
-      ? ['id', 'label', 'formats']
-      : kind === 'document'
-        ? ['id', 'name', 'format', 'version', 'saved']
-        : kind === 'model'
-          ? ['id', 'label', 'documentId', 'routines']
-          : kind === 'recording'
-            ? [
-                'id',
-                'scope',
-                'modelId',
-                'documentId',
-                'documentVersion',
-                'status',
-                'fields',
-                'axis',
-                'firstFrame',
-                'frameCount',
-                'range',
-                'error',
-                'version',
-              ]
-            : kind === 'queryable'
-              ? ['version']
-              : ['id', 'name', 'mediaType'];
-  if (Object.keys(state).some((key) => !allowed.includes(key)))
+  if (Object.keys(state).some((key) => !stateKeys[kind].includes(key)))
     throw failure('invalid-input', 'Unknown state property.');
-  if (kind === 'service') {
-    text(state.label);
-    for (const value of array(state.formats)) {
-      const format = record(value);
-      text(format.id);
-      text(format.label);
-      for (const key of ['mediaTypes', 'extensions'])
-        for (const value of array(format[key])) text(value);
-      for (const key of ['reads', 'writes', 'creates'])
-        if (typeof format[key] !== 'boolean') throw failure('invalid-input');
-    }
-  }
-  if (kind === 'document') {
-    text(state.name);
-    text(state.version);
-    if (state.format !== null) text(state.format);
-    if (state.saved !== null) {
-      const saved = record(state.saved);
-      text(saved.resource);
-      text(saved.tag);
-      text(saved.version);
-    }
-  }
+  text(state.version);
   if (kind === 'model') {
-    text(state.label);
-    text(state.documentId);
+    text(state.name);
     for (const value of array(state.routines)) {
       const routine = record(value);
       text(routine.id);
       text(routine.label);
-      if (routine.mode !== 'live' && routine.mode !== 'isolated') throw failure('invalid-input');
       array(routine.parameters);
-      if (routine.monitoring !== undefined)
-        for (const mode of array(routine.monitoring))
-          if (mode !== 'command' && (mode !== 'live' || routine.mode === 'isolated'))
-            throw failure('invalid-input');
+      if (routine.records !== undefined && typeof routine.records !== 'boolean')
+        throw failure('invalid-input');
     }
   }
-  if (kind === 'queryable') text(state.version);
   if (kind === 'recording') {
-    if (state.modelId !== null) text(state.modelId);
-    text(state.documentId);
-    text(state.version);
-    if (state.documentVersion !== null) text(state.documentVersion);
-    if (!['armed', 'monitoring', 'stopped', 'failed'].includes(String(state.status)))
+    if (!['idle', 'running', 'complete', 'cancelled', 'failed'].includes(String(state.status)))
       throw failure('invalid-input');
-    if (
-      !integer(state.firstFrame) ||
-      !integer(state.frameCount) ||
-      state.firstFrame > state.frameCount
-    )
-      throw failure('invalid-input');
-    const scope = record(state.scope);
-    if (scope.kind === 'command') text(scope.id);
-    else if (scope.kind !== 'live') throw failure('invalid-input');
-    if (state.fields !== null) array(state.fields);
-    if (state.axis !== null) text(record(state.axis).name);
+    if (!integer(state.frames)) throw failure('invalid-input');
     if (state.range !== null) {
       const range = array(state.range);
       if (
@@ -118,9 +55,17 @@ export function validateState(kind: Kind, state: Record<string, unknown>): void 
       )
         throw failure('invalid-input');
     }
-  }
-  if (kind === 'resource') {
-    if (state.name !== undefined) text(state.name);
-    if (state.mediaType !== undefined) text(state.mediaType);
+    if (
+      state.progress !== null &&
+      (typeof state.progress !== 'number' || !(state.progress >= 0 && state.progress <= 1))
+    )
+      throw failure('invalid-input');
+    for (const value of array(state.diagnostics)) {
+      const diagnostic = record(value);
+      text(diagnostic.code);
+      if (typeof diagnostic.message !== 'string') throw failure('invalid-input');
+      if (!['info', 'warning', 'error'].includes(String(diagnostic.severity)))
+        throw failure('invalid-input');
+    }
   }
 }

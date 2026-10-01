@@ -15,7 +15,7 @@ import { collect } from './fixture.js';
 /** Native CSR fixture. Queries derive connectivity from these arrays, not prebuilt result blocks. */
 class Connectivity extends Source {
   readonly version = '1';
-  readonly index = { document: 'native', type: 'Node', version: 'nodes:1' };
+  readonly index = { source: 'native', type: 'Node', version: 'nodes:1' };
   readonly targetIndex = { ...this.index, type: 'Hub', version: 'hubs:1' };
   readonly connectionIndex = { ...this.index, type: 'Relation', version: 'relations:1' };
   readonly inputs: Inputs = {
@@ -25,7 +25,6 @@ class Connectivity extends Source {
     values: new Float64Array(2),
   };
   readonly schema: Schema = {
-    version: 'topology:1',
     queries: ['endpoints', 'links'],
     limits: { maxBlockBytes: 4096 },
     components: {
@@ -98,7 +97,6 @@ class Connectivity extends Source {
             block = {
               kind: 'endpoints',
               version: state.version,
-              schemaVersion: state.schema.version,
               index: native.connectionIndex,
               connections: new Uint32Array([row]),
               offsets: new Int32Array([0, count]),
@@ -157,7 +155,6 @@ class Connectivity extends Source {
         const block: LinksBlock = {
           kind: 'links',
           version: state.version,
-          schemaVersion: state.schema.version,
           index: native.index,
           rows: compactRows([row]),
           targetIndex: query.to === 'Node' ? native.index : native.targetIndex,

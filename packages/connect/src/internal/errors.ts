@@ -1,7 +1,6 @@
 import type { Failure } from '@latkit/model';
 const codes = new Set<Failure['code']>([
   'conflict',
-  'expired',
   'invalid-input',
   'unsupported',
   'resource-limit',

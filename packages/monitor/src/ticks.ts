@@ -1,70 +1,53 @@
 import type { Domain } from '@latkit/model';
-import type { Axis, Tick } from './options.js';
-
-/** Bounded indexed ticks: no cumulative floating-point stepping or unbounded loops. */
-export function ticks(domain: Domain, pixels: number, axis: Axis): readonly Tick[] {
-  if (axis.ticks) return axis.ticks.filter(({ value }) => value >= domain[0] && value <= domain[1]);
-  const [lo, hi] = domain;
-  if (lo === hi) return [{ value: lo }];
-  const count = Math.min(128, Math.max(2, Math.floor(pixels / (axis.minSpacingPx ?? 72))));
-  // Scale before subtracting, so opposite extreme f64 values do not overflow.
-  const magnitude = Math.max(Math.abs(lo), Math.abs(hi));
-  const raw = ((hi / magnitude - lo / magnitude) / count) * magnitude;
-  if (!(raw > 0) || !Number.isFinite(raw)) return [{ value: lo }, { value: hi }];
-  const power = 10 ** Math.floor(Math.log10(raw));
-  if (power === 0) return [{ value: lo }, { value: hi }];
-  const fraction = raw / power;
-  const step = (fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10) * power;
-  if (!Number.isFinite(step)) return [{ value: lo }, { value: hi }];
-  const start = Math.ceil(lo / step);
-  const result: Tick[] = [];
+import type { AxisOptions, Tick } from './options.js';
+export interface Ticks {
+  readonly items: readonly Tick[];
+  readonly offset: number;
+}
+export function ticks(range: Domain, pixels: number, axis: AxisOptions): Ticks {
+  if (axis.ticks)
+    return {
+      items: axis.ticks.filter((t) => t.value >= range[0] && t.value <= range[1]),
+      offset: 0,
+    };
+  const span = range[1] - range[0],
+    count = Math.max(1, Math.min(64, Math.floor(pixels / (axis.minSpacingPx ?? 80))));
+  if (!(span > 0) || !Number.isFinite(span)) return { items: [], offset: 0 };
+  const power = 10 ** Math.floor(Math.log10(span / count)),
+    normal = span / count / power;
+  const step = ([1, 2, 2.5, 5, 10].find((n) => n >= normal) ?? 10) * power;
+  const offset =
+    (!axis.format || axis.format === 'auto') && Math.abs(range[0]) > span * 1e5 ? range[0] : 0;
+  const items: Tick[] = [];
+  const first = Math.ceil((range[0] - offset) / step) * step;
   for (let i = 0; i < 128; i++) {
-    const value = (start + i) * step;
-    if (value > hi || !Number.isFinite(value)) break;
-    if (value < lo || (result.length && value <= result[result.length - 1]!.value)) continue;
-    result.push({ value: Object.is(value, -0) ? 0 : value });
+    const local = first + i * step,
+      value = offset + local;
+    if (value > range[1]) break;
+    if (value >= range[0] && (items.length === 0 || value > items[items.length - 1].value))
+      items.push({ value, label: format(local, step, axis) });
   }
-  return result.length ? result : [{ value: lo }, { value: hi }];
+  return { items, offset };
 }
-
-/** Locale-independent output is portable between a window and its export worker. */
-export function formatTick(value: number, domain: Domain, axis: Axis): string {
-  if (value === 0) value = 0;
-  const span = Math.abs(domain[1] / 2 - domain[0] / 2) * 2;
-  const automatic = Math.max(
-    0,
-    Math.min(12, 2 - Math.floor(Math.log10(span || Math.abs(value) || 1))),
-  );
-  const precision = axis.precision ?? automatic;
-  const magnitude = Math.abs(value);
-  const mode = axis.format ?? 'auto';
-  if (mode === 'engineering' && magnitude > 0) {
-    const exponent = Math.floor(Math.log10(magnitude) / 3) * 3;
-    // Divide in two steps when 10^exponent would underflow.
-    const scaled =
-      exponent < -308 ? value / 1e-300 / 10 ** (exponent + 300) : value / 10 ** exponent;
-    return `${scaled.toFixed(axis.precision ?? 2)}e${exponent >= 0 ? '+' : ''}${exponent}`;
-  }
-  if (
-    mode === 'scientific' ||
-    (mode === 'auto' && magnitude > 0 && (magnitude >= 1e6 || magnitude < 1e-4))
-  )
-    return value.toExponential(
-      axis.precision ??
-        Math.max(
-          2,
-          Math.min(16, Math.ceil(Math.log10(magnitude) - Math.log10(span || magnitude)) + 2),
-        ),
+function format(value: number, step: number, axis: AxisOptions): string {
+  if (Object.is(value, -0) || Math.abs(value) < step * 1e-9) value = 0;
+  const precision =
+    axis.precision ??
+    Math.min(
+      12,
+      Math.max(
+        0,
+        -Math.floor(Math.log10(step)) +
+          (Math.abs(step / 10 ** Math.floor(Math.log10(step)) - 2.5) < 1e-9 ? 1 : 0),
+      ),
     );
-  const text = value.toFixed(precision);
-  return axis.precision === undefined && text.includes('.') ? text.replace(/\.?0+$/, '') : text;
-}
-
-/** Auto labels use a shared offset for narrow ranges far from zero, retaining useful digits. */
-export function tickOffset(domain: Domain, axis: Axis): number {
-  if (axis.ticks || (axis.format !== undefined && axis.format !== 'auto')) return 0;
-  const span = domain[1] - domain[0];
-  return span > 0 && Math.max(Math.abs(domain[0]), Math.abs(domain[1])) / span >= 1e6
-    ? domain[0]
-    : 0;
+  if (axis.format === 'scientific') return value.toExponential(axis.precision ?? 3);
+  if (axis.format === 'engineering' && value) {
+    const exponent = Math.floor(Math.log10(Math.abs(value)) / 3) * 3;
+    return (value / 10 ** exponent).toFixed(axis.precision ?? 3) + 'e' + exponent;
+  }
+  if (axis.format === 'fixed') return value.toFixed(precision);
+  if (value !== 0 && (Math.abs(value) >= 1e7 || Math.abs(value) < 1e-5))
+    return value.toExponential(axis.precision ?? 2);
+  return value.toFixed(precision);
 }

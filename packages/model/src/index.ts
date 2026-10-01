@@ -1,10 +1,15 @@
-/** Public Model/Document/Recording contracts and explicit boundary validation. */
-export type { ModelService, Format, OpenInput } from './service.js';
-export type { Input, InputMetadata } from './input.js';
-export type { Resource, ResourceInfo, ResourceRead, ResourceWrite, WritePart } from './resource.js';
-export type { SavedDocument, SaveTarget, SaveOptions, ReloadOptions } from './document.js';
-export type { Model, CallOptions } from './model.js';
-export type { Document, ElementReference, Endpoint, Edit, Change } from './document.js';
+/** Public Model/Recording contracts and explicit boundary validation. */
+export type { Model } from './model.js';
+export type { Recording, RecordingStatus } from './recording.js';
+export type {
+  Routine,
+  Parameter,
+  Input,
+  InputValue,
+  Command,
+  CommandResult,
+  Diagnostic,
+} from './routine.js';
 export type {
   DataType,
   NumericType,
@@ -29,25 +34,6 @@ export type {
   TableDefinition,
   FieldDefinition,
 } from './schema.js';
-export type {
-  Routine,
-  Parameter,
-  InputValue,
-  Command,
-  CommandResult,
-  CommandEntry,
-  CommandEvent,
-  Diagnostic,
-} from './routine.js';
-export type {
-  MonitorScope,
-  Retention,
-  RecordedFields,
-  MonitorConfig,
-  Recording,
-  RecordingStatus,
-  RecordingOutcome,
-} from './recording.js';
 export type {
   Queryable,
   QueryHeader,

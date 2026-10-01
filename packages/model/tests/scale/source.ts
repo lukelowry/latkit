@@ -31,16 +31,13 @@ import { text } from '../data.js';
 import type { FrameRead } from '../source.js';
 import { selectFrames, retainFrames } from '../source.js';
 import { Store, failure, axisAt, axisLength, slice, interrupt } from './store.js';
-import type { State } from './store.js';
 export const schema: Schema = {
-  version: 'scale-schema:1',
   queries: ['rows', 'aggregate'],
   limits: { maxBlockBytes: 256 * 1024 },
   components: {
     Node: {
-      operations: ['set'],
       fields: {
-        value: { type: 'float64', required: true, writable: true },
+        value: { type: 'float64' },
         output: { type: 'float64', sampled: true },
       },
     },
@@ -52,7 +49,6 @@ export interface Frame {
   readonly values: Float64Array;
 }
 export interface Read extends FrameRead<Frame> {
-  readonly state: State;
   readonly version: string;
   readonly schema: Schema;
   readonly frames?: readonly Frame[];
@@ -60,7 +56,6 @@ export interface Read extends FrameRead<Frame> {
   readonly firstFrame?: number;
   readonly frameCount?: number;
   readonly firstCoordinate?: number;
-  readonly evictedThrough?: number;
 }
 export abstract class ScaleSource implements Queryable {
   private sourceClosed = false;
@@ -68,16 +63,11 @@ export abstract class ScaleSource implements Queryable {
   abstract pin(): Read;
   readonly reads = new Map<AbortController, () => Promise<unknown>>();
   readonly listeners = new Set<(value: Update) => void>();
-  constructor(
-    readonly store: Store,
-    readonly gate: () => Promise<void> | undefined,
-  ) {}
+  constructor(readonly store: Store) {}
   async retain(options: RetainOptions = {}): Promise<Queryable> {
     const read = retainFrames(this.pin(), options);
-    // Reserve the lazily materialized base plus distinct edited pages. No scan or query is run.
+    // Reserve the lazily materialized inputs. No scan or query is run.
     const backing = new Map<object, number>([[this.store, this.store.rows * 8]]);
-    for (const values of read.state.pages.values())
-      backing.set(values.buffer, values.buffer.byteLength);
     for (const frame of read.frames ?? []) {
       backing.set(frame, 8);
       backing.set(frame.values.buffer, frame.values.buffer.byteLength);
@@ -87,15 +77,12 @@ export abstract class ScaleSource implements Queryable {
     if (read.grant?.frames) backing.set(read.grant.frames, read.grant.frames.length * 8);
     const store = this.store;
     const release = store.retention.acquire(backing, options.maxBytes);
-    const releaseFrames = store.retainFrames(read.frames ?? []);
-    this.store.retentions++;
-    this.store.stats.acquisitions++;
-    return new RetainedScaleSource(this.store, this.gate, read, () => {
+    const releaseFrames = store.hold(read.frames ?? []);
+    store.stats.acquisitions++;
+    return new RetainedScaleSource(store, read, () => {
       release();
       releaseFrames();
-      store.retentions--;
       store.stats.acquisitions--;
-      store.onRelease();
     });
   }
   async close(): Promise<void> {
@@ -179,7 +166,7 @@ export abstract class ScaleSource implements Queryable {
       yield { kind: 'schema', version: state.version, schema: state.schema };
       while (true) {
         if (controller.signal.aborted) throw failure('aborted');
-        const gate = this.gate();
+        const gate = this.store.gate;
         if (gate) {
           stats.waitingReads++;
           try {
@@ -234,7 +221,7 @@ export abstract class ScaleSource implements Queryable {
     return rows;
   }
   private value(read: Read, field: string, row: number, frame?: Frame): number {
-    return field === 'value' ? this.store.at(read.state, row) : frame!.values[row];
+    return field === 'value' ? this.store.at(row) : frame!.values[row];
   }
   private column(
     read: Read,
@@ -247,7 +234,7 @@ export abstract class ScaleSource implements Queryable {
     if (rows.kind === 'range') {
       const source =
         field === 'value'
-          ? this.store.page(read.state, Math.floor(rows.offset / this.store.pageRows))
+          ? this.store.page(Math.floor(rows.offset / this.store.pageRows))
           : frame!.values;
       const offset = field === 'value' ? rows.offset % this.store.pageRows : rows.offset;
       values = source.subarray(offset, offset + rows.count);
@@ -326,7 +313,6 @@ export abstract class ScaleSource implements Queryable {
         yield {
           kind: 'rows',
           version: read.version,
-          schemaVersion: read.schema.version,
           index: this.store.index,
           rows: part,
           position,
@@ -362,7 +348,6 @@ export abstract class ScaleSource implements Queryable {
           yield {
             kind: 'samples',
             version: read.version,
-            schemaVersion: read.schema.version,
             index: this.store.index,
             rows: part,
             rowOffset: row,
@@ -391,7 +376,6 @@ export abstract class ScaleSource implements Queryable {
         yield {
           kind: 'aggregate',
           version: read.version,
-          schemaVersion: read.schema.version,
           values: {
             [field]: {
               count,
@@ -428,11 +412,10 @@ class RetainedScaleSource extends ScaleSource {
   private closing?: Promise<void>;
   constructor(
     store: Store,
-    gate: () => Promise<void> | undefined,
     private readState: Read | undefined,
     private readonly release: () => void,
   ) {
-    super(store, gate);
+    super(store);
     this.version = readState!.version;
   }
   pin(): Read {

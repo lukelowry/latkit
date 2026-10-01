@@ -1,115 +1,78 @@
 # @latkit/model
 
-The model contract: one root import, native domain interfaces, explicit validation
-and native column access utilities. Documents have shared identity and independent acquisitions. Models
-retain a Document and own computation. Recordings retain captured inputs and observations.
-ModelService provisions these objects without becoming another execution layer.
+The model contract: one root import, native domain interfaces, explicit validation and native
+column access utilities. A Model is a grid model: its classes and data, the commands it runs, and
+monitors on what those commands compute. A Recording is a monitor. Both are read through Queryable.
 
 This package replaces the previous model implementation. Consumers still require migration to this
 contract. The package remains private while implementation and integration work continues.
 
 ## Boundaries and ownership
 
-| Interface    | Responsibility                                                                            | Lifetime                                                            |
-| ------------ | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| ModelService | Implementation identity, formats, open a Document, acquire a Document, Model or Recording | Application-managed service                                         |
-| Document     | Schema, queries, domain edits, optional persistence                                       | Each acquisition closes independently; Models retain shared inputs  |
-| Model        | Routines, optional parsing and validation, commands, monitoring, reset                    | One independent compute context or exclusive live-peer binding      |
-| Recording    | Queryable captured data, command provenance, diagnostics, export                          | Each acquisition closes independently; stop ends shared capture     |
-| Resource     | Access to one application-owned byte sequence                                             | Distinct grant per lend; recipient closes after use or failed setup |
-| Queryable    | Discovery, bounded query streams and independent retained reads                           | Document, Recording or an independently retained source             |
+| Interface | Responsibility                                                            | Lifetime                                                   |
+| --------- | ------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Model     | Classes (describe), data (query), routines, monitor() and run()           | Shared by every holder; closing ends one holder's use      |
+| Recording | A monitor: the frames of its fields for the latest command, readable live | Its holder's; starts over for each command until it closes |
+| Queryable | Discovery, bounded query streams and independent retained reads           | A Model, a Recording, or an independently retained source  |
 
-Document.close() releases its acquisition and reads. Other acquisitions and Models remain usable.
-Model.reset() cancels commands and finishes captures with model-reset; Model.close() finishes them
-with model-closed and releases compute/input retention. Both wait for final output publication,
-without waiting for readers. Existing Recording acquisitions and retained Queryables remain usable.
-Native implementation storage owns shared data. ModelService authorizes/provisions acquisitions;
-it is not a second storage or execution layer. IDs alone never grant access.
-
-Recording.stop() ends capture for every acquisition. Recording.close() releases only that acquisition,
-cancels its direct queries, and emits a local closed change. Unresolved ready/done waits reject closed;
-settled promises remain settled. There is no shared closed capture status. Releasing the final
-Recording acquisition ends remaining capture with released and releases unretained storage.
-Retained Queryables keep their selected data independently. Released/unknown recording IDs reject
-closed; this contract does not imply a durable archive. Resource grants close when no longer needed.
-
-ModelService does not require a file or parser. A live/co-simulation implementation may expose
-formats: [], Document.format: null, no edit/persistence methods, and only live routines and
-monitoring. model(documentId) may reject busy when an external peer permits only one binding.
-The same Model interface works locally, through @latkit/connect, or as a supplied native object.
-Scheduling, synchronization with an external peer, and supported operations remain implementation
-behavior; the contract does not require isolated solving or independent clocks.
+Opening a model, changing its file, access and sharing belong to its application. Nothing is reached
+by id: anything that lives as long as someone holds it is reached through the object they hold. The
+same Model works in-process, in a worker, or through @latkit/connect.
 
 ## Host usage
 
-An implementation supplies ModelService through ordinary interface implementation. Connection
-establishment belongs to @latkit/connect. No registration helper or generic engine wrapper is needed.
-
 ```ts
-import type { ModelService } from '@latkit/model';
+import type { Model, Queryable } from '@latkit/model';
 
-async function analyze(service: ModelService) {
-  const document = await service.open(); // Optional source; may be hardcoded or live.
-  const model = await service.model(document.id);
-  try {
-    const schema = await document.describe();
-    if (!model.call || !model.monitor) return schema;
-
-    const id = crypto.randomUUID();
-    const recording = await model.monitor({
-      scope: { kind: 'command', id },
-      fields: [{ from: 'Node', select: ['output'] }],
-      retain: { kind: 'all', bytes: 64 * 1024 * 1024, onLimit: 'fail' },
-    });
-    try {
-      await model.call({ routine: 'solve', values: {} }, { id });
-      await recording.ready;
-      const outcome = await recording.done;
-      if (outcome.status === 'failed') throw outcome.error;
-
-      for await (const block of recording.query({
-        kind: 'samples',
-        from: 'Node',
-        select: ['output'],
-        window: {
-          kind: 'frames',
-          offset: recording.firstFrame,
-          count: recording.frameCount - recording.firstFrame,
-        },
-      })) {
-        if (block.kind === 'schema') continue;
-        // Canonical columns: consume their offsets, validity and independent strides directly.
-        console.log(block.coordinates, block.columns.output);
-      }
-      return schema;
-    } finally {
-      await recording.close();
-    }
-  } finally {
-    await model.close();
-    await document.close();
-  }
+/** Monitor once, bind the views once, then run as often as you like. */
+async function study(model: Model, signal: AbortSignal): Promise<Queryable> {
+  const schema = await model.describe(); // The classes; sampled fields are what can stream.
+  const buses = await model.monitor([{ from: 'Bus', select: ['Vm', 'Va'] }]);
+  buses.on('change', (update) => {
+    if (update.kind === 'replace') console.log('a command started it over');
+    if (update.kind === 'append') console.log(update.frames.offset, update.frames.count);
+  });
+  const fault = { tmax: 10, fault: true, fault_start: 1, fault_duration: 0.1 };
+  await model.run(
+    { routine: 'dynamic-simulation', values: { ...fault, fault_bus: 'Bus/16' } },
+    { signal },
+  );
+  const first = await buses.retain(); // Keep these frames past the next command.
+  await model.run(
+    { routine: 'dynamic-simulation', values: { ...fault, fault_bus: 'Bus/21' } },
+    { signal },
+  );
+  console.log(schema.components, buses.status, buses.frames, buses.range, buses.diagnostics);
+  return first;
 }
 ```
 
-Discover routine IDs, parameters and modes through model.routines. An isolated routine pins inputs
-at command acceptance; arming a monitor does not pin them. A queued command already retains its
-input version. Later edits or reloads cannot alter it. Routine.monitoring declares command and/or
-live capture support; isolation does not promise parallel execution.
+## Monitors and commands
 
-Live monitoring uses scope: { kind: 'live' }, binds immediately and ends before inputs change.
-Isolated output never enters live capture. stop() stops capture independently of command cancellation.
-Command-scoped recording ends after terminal output flush, including failed commands. commands()
-reports command outcomes; done reports capture outcome. A command ID is unique for the entire Model
-lifetime, including reset and rejected calls. Arm monitors before submitting that ID. Reuse rejects
-conflict; failed acceptance fails matching armed monitors. Never retry unknown side effects after a
-lost reply.
+describe() returns the model's classes: components, connections and tables, with their fields and
+ports. Fields declared sampled are what monitor() can stream; a model holds no observations of them.
+routines lists what run() accepts; it is fixed for the model's lifetime and empty when the model
+computes nothing.
 
-## Independent recording and read lifetimes
+monitor(fields) returns a Recording that streams those fields of every command that starts after the
+call. It is idle until one starts. Each command whose routine records starts it over: the recording
+emits replace and then appends that command's frames as they are computed. Routines that do not
+record leave monitors as they are. A monitor opened while a command runs waits for the next one.
+Rows resolve when it opens; unknown rows and fields that are not sampled reject invalid-input.
 
-Acquire another authorized handle through service.recording(recording.id). Its close does not release
-the original acquisition. recording.modelId identifies the producer without requiring its existence.
-A separate application or worker can keep consuming a Recording after the producing Model closes.
+run(command) runs one command. Commands run one at a time, in the order given. A command runs on the
+data current when it starts, and every monitor open then streams it, whoever ran it. run() rejects
+invalid-input, with issues, before anything runs, and resolves with the command's result once every
+frame is published. Aborting its signal cancels it, queued or running; frames already recorded stay
+readable. A lost reply may have run, so never retry blindly.
+
+A monitor's status, progress and diagnostics are those of the command it shows. Frames are never
+evicted: [0, frames) stays readable until the next command starts it over or it closes. Closing a
+monitor ends its stream, never the command. retain() fixes the frames it holds as an independent
+source, so one command's frames can be compared with the next. export() writes them, with their
+coordinates and command, as one Arrow IPC stream.
+
+## Retained reads
 
 For a coherent multi-query operation, acquire the same Queryable interface at a fixed version:
 
@@ -121,116 +84,52 @@ const source = await recording.retain({
 try {
   for await (const block of source.query({
     kind: 'samples',
-    from: 'Node',
-    select: ['output'],
+    from: 'Bus',
+    select: ['Vm'],
     window: { kind: 'range', between: [100, 200] },
   })) {
-    if (block.kind !== 'schema') console.log(block.coordinates, block.columns.output);
+    if (block.kind !== 'schema') console.log(block.coordinates, block.columns.Vm);
   }
 } finally {
   await source.close();
 }
 ```
 
-retain fixes schema, input values, row identities and available observation coverage atomically.
-Omitting window retains currently available observations; input-only sources reject a window.
-Range context resolves once at acquisition. Queries resolve against that fixed observation index
-and reject invalid-input if any selected frame lies outside the grant. They never clip missing
-selected frames to the grant. Appends cannot expand it, and rolling eviction cannot expire it.
-Already-evicted requested coverage rejects expired during acquisition. A nested retain is independent
-and can only preserve or narrow coverage. Retained sources emit closed only, with no data changes.
+retain fixes schema, data, row identities and recorded observations atomically. Omitting window
+retains every recorded frame; a model's data has no window. Range context resolves once at
+acquisition. Queries resolve against that fixed observation index and reject invalid-input if any
+selected frame lies outside the grant; they never clip missing frames to it. Appends and a monitor
+starting over never alter it. A nested retain is independent and can only preserve or narrow
+coverage. Retained sources emit closed only, with no data changes. A retained source survives the
+acquisition it came from and its model's close.
 
 Admission performs no query execution or result materialization. Native page/index references can be
 shared; acquiring data does not require duplicating its payload. maxBytes accounts for protected
 backing and indexes, including whole allocations behind sparse slices. Implementations impose finite
 default and shared budgets and deduplicate shared backing in global accounting. Conservative storage
 reservations are allowed; resource-limit leaves no acquisition. The signal applies to admission only.
-Closing a source cancels its direct queries; independently retained children and issued blocks survive.
-Implementations remain responsible for native storage, paging, and ownership conversion when needed.
-
-## Shared editing and persistence
-
-```ts
-import type { ModelService, Resource } from '@latkit/model';
-
-async function edit(service: ModelService, resource: Resource) {
-  const document = await service.open({ kind: 'resource', resource });
-  try {
-    if (!document.edit || !document.save) throw new Error('Editing and saving are unavailable');
-    const change = await document.edit([
-      { kind: 'add-component', as: 'new', type: 'Node', values: { value: 3 } },
-    ]);
-    const assignedId = change.created.new;
-    await document.edit([
-      { kind: 'assert', id: assignedId, values: { value: 3 } },
-      { kind: 'set', id: assignedId, values: { value: 4 } },
-    ]);
-    const saved = await document.save();
-    console.log(saved.version === document.version); // Dirty state after any concurrent edits.
-  } finally {
-    await document.close();
-  }
-}
-```
-
-open() creates a logical document; document(id) explicitly joins one. Reopening the same source
-never implicitly joins shared mutable inputs. Implementations may share immutable parsing/storage
-caches. Queries pin coherent versions without requiring eager full-file loading or cloning inputs.
-
-Edits are atomic batches. Assertions inspect pre-edit inputs; aliases resolve throughout the batch;
-validation checks the final domain structure. Removals never silently cascade. Change reports native
-assigned identities, not undo instructions. Failed assertions are conflict; invalid domain inputs
-are invalid-input. History, styling and application catalogs remain outside the contract.
-
-Input also accepts an implementation-defined reference or a one-use content stream. File parameters
-use the same Input carrier. validate() performs preflight without consuming content. Command
-provenance retains InputMetadata rather than live grants or replay promises. An explicit empty input
-selects a creatable format; omitted input is implementation-defined.
-
-Resource exposes stat(), tagged range read(), optional conditional write(), and close(). A tag identifies
-exact stored bytes, independently of Document.version. Applications implement storage and access;
-Document implementations define format parsing, serialization and reusable ranges. No filesystem,
-whole-workspace access, file picker or app save dialog crosses this boundary.
-
-write({ base, parts }) consumes ordered copy/data parts. Copy ranges address the immutable base;
-data carries literal bytes. The resource stages separately and publishes atomically only if the base
-still matches. base: null requires an absent destination and forbids copy parts. A full rewrite is
-simply all data parts. If storage cannot guarantee conditional publication, omit write.
-
-save() pins current inputs at acceptance and serializes saves while editing can continue. saved is
-published only after commit and names that input version, which may already differ from the current
-version. save({ to: { resource, base } }) retargets shared persistence only after success; failed setup
-closes the new grant. A lost response may have committed and must not trigger an automatic retry.
-
-reload() reads the current bound resource atomically; dirty inputs require discardChanges: true.
-Edits or binding changes arriving during the read reject conflict even with discard requested.
-attach(resource) restores access to the same resource identity after its host disconnects, without
-changing inputs or the saved baseline. If storage changed while disconnected, the next save still
-fails its base check. Export streams the current version independently of bound storage. Neither
-persistent history nor a portable archive codec is implied.
-
-Each acquisition exposes change and saved events after metadata publication. A consumer computes
-dirty state using saved === null || saved.version !== document.version. Closing a Resource grant
-cancels its I/O without deleting storage. Applications lend a separate grant to every recipient.
+Closing a source cancels its direct queries; independently retained children and issued blocks
+survive.
 
 ## Schema and physical format
 
 Schema describes components, connections, ordinary tables, numeric/text/boolean/reference fields,
-fixed numeric vectors, lists, ports, roles, and supported edits. Optional spatial metadata identifies
-domain coordinates, never application styling. Bounds use lower/upper edges with explicit
-inclusivity. Diagnostic targets distinguish elements, fields, ports, parameters, and structural paths.
+fixed numeric vectors, lists, ports and roles. It is fixed for the life of its Model or Recording.
+Optional spatial metadata identifies domain coordinates, never application styling. Bounds use
+lower/upper edges with explicit inclusivity and describe scalar numeric data. Diagnostic targets
+distinguish elements, fields, ports, parameters, and structural paths.
 
-IDs are document-wide domain identities and never identify an unrelated entity later in the same
-Document lifetime, including reload. Index = { document, type, version } names a physical row
-numbering. Input value edits preserve it; changes to membership/numbering replace it. Reload invalidates earlier document indices; Model.reset() preserves them. Recordings retain their original index definitions. Source
-implementations reject stale indices; validators cannot infer source membership from metadata alone.
+IDs are model-wide domain identities. Index = { source, type, version } names a physical row
+numbering in one Model or Recording; source is that object's opaque identity. A replaced model
+numbers its rows anew. Recordings keep the index definitions of the data their command ran on.
+Implementations reject stale indices; validators cannot infer membership from metadata alone.
 
 Rows query by IDs, physical range, or versioned Uint32 indices. A cached range may carry an Index too.
-Returned RowAxis uses an allocation-free range or explicit Uint32 indices when needed. Physical order is the default.
-Stable ID strings are emitted only when requested, as UTF-8 columns. Endpoints use columnar CSR
-segments, including partial segments of very large relationships. Links optionally project two
-ports through a declared connection type, with explicit missing/ambiguous semantics. No object-per-
-endpoint topology, implicit geometry, or mandatory lexical sort is required.
+Returned RowAxis uses an allocation-free range or explicit Uint32 indices when needed. Physical order
+is the default. Stable ID strings are emitted only when requested, as UTF-8 columns. Endpoints use
+columnar CSR segments, including partial segments of very large relationships. Links optionally
+project two ports through a declared connection type, with explicit missing/ambiguous semantics. No
+object-per-endpoint topology, implicit geometry, or mandatory lexical sort is required.
 
 Columns use a small Arrow-compatible physical subset, not Arrow JS objects or Arrow IPC:
 
@@ -247,55 +146,48 @@ One physical row axis fits Uint32; one column slice/offset fits signed Int32. La
 partition their types/blocks. Strings or lists larger than a block's bound reject resource-limit.
 These limits are explicit and do not silently downcast identities or offsets.
 
-## Streaming, buffers, and retention
+## Streaming and buffers
 
 Each query iteration fixes one version on first pull, and releases request resources on completion,
 return, throw, or abort. Aborting must also interrupt a pending pull. A stream may fail after yielding
 valid blocks; consumers must not treat a partial stream as complete. Exactly one QueryHeader precedes
 data, including empty reads. It pins Schema and data Version atomically; describe() is for discovery,
 not a prerequisite or substitute for this header. Empty reads have no data blocks, except requested
-row counts and empty aggregate results. Rows are never repeated across blocks;
-sample tiles cover the requested frame/row rectangle exactly once. Schema/data/index versions must
-remain coherent throughout the stream. Separate queries do not implicitly share a pinned version.
+row counts and empty aggregate results. Rows are never repeated across blocks; sample tiles cover the
+requested frame/row rectangle exactly once. Data and index versions remain coherent throughout the
+stream. Separate queries do not implicitly share a pinned version.
 
 A coordinate-range window may request context: { before: 1, after: 1 } to include neighboring
 observations for continuity across its boundaries. Omitted counts are zero; counts must be
 nonnegative safe integers. The inclusive interval includes all duplicate boundary coordinates.
-Context counts individual frames strictly outside it, choosing the nearest retained frames on each
-side even when the interval contains no observations. Extra context clips to retained bounds and
-never waits for future frames; the base interval still rejects expired when it overlaps evicted
-observations. An empty recording has no context. Sample and aggregate queries use the same expanded
-window, resolved against their pinned read. Implementations should locate bounds through their
-coordinate index, without scanning observations or copying numeric payloads merely to add context.
+Context counts individual frames strictly outside it, choosing the nearest recorded frames on each
+side even when the interval contains no observations. Extra context clips to recorded bounds and
+never waits for future frames. An empty recording has no context. Sample and aggregate queries use the
+same expanded window, resolved against their pinned read. Implementations should locate bounds
+through their coordinate index, without scanning observations or copying numeric payloads merely to
+add context.
 
 maxBlockBytes is bounded by Schema.limits.maxBlockBytes. blockByteLength gives the exact contract
 accounting: exposed byte-range unions, UTF-8 metadata including keys, eight bytes per number, and
-one byte per boolean/null. Shared metadata objects are counted once. This deliberately differs from transport framing and allocated memory.
-blockBuffers returns deduplicated backing allocations, which can be much larger than the views.
-Owned blocks must also fit the same bound when counting full backing allocations; a thin slice of
-a large retained buffer is not an owned block. Bounds are checked before column value scans. Schema
-headers and transport envelopes require separate metadata limits at the transport boundary.
+one byte per boolean/null. Shared metadata objects are counted once. This deliberately differs from
+transport framing and allocated memory. blockBuffers returns deduplicated backing allocations, which
+can be much larger than the views. Owned blocks must also fit the same bound when counting full
+backing allocations; a thin slice of a large retained buffer is not an owned block. Bounds are checked
+before column value scans. Schema headers and transport envelopes require separate metadata limits at
+the transport boundary.
 
-Default borrowed blocks remain immutable and valid after eviction/close. Neither side may detach
-their backing. For buffers: 'owned', the implementation must relinquish every backing allocation and
-all aliases; no SharedArrayBuffer or alias into another block may remain. The consumer can then
-transfer blockBuffers(block). Asking for owned data can require a copy when storage retains it.
-Contiguous borrowed reads can expose native subarrays; sparse gathers, sorting, and ownership
-conversion may copy. This contract permits zero-copy paths without claiming every path is zero-copy.
+Default borrowed blocks remain immutable and valid after close. Neither side may detach their
+backing. For buffers: 'owned', the implementation must relinquish every backing allocation and all
+aliases; no SharedArrayBuffer or alias into another block may remain. The consumer can then transfer
+blockBuffers(block). Asking for owned data can require a copy when storage retains it. Contiguous
+borrowed reads can expose native subarrays; sparse gathers, sorting, and ownership conversion may copy.
+This contract permits zero-copy paths without claiming every path is zero-copy.
 
-Recording.fields exposes the actual captured rows and fields after binding, and Recording.axis names
-the coordinate and optional unit. Output declarations in Document do not imply readable observations.
-For sampled reads, omitted rows mean the physical-order intersection of selected fields' coverage;
-explicit rows must be captured for every selected field. Each SampleColumn has its own strides, so
-different field orientations need no shared-layout repacking. Coordinates are domain-neutral.
-
-retain.bytes bounds observations and sample indexing for one recording. Complete frames are admitted
-atomically. Rolling retention never renumbers logical frames. Shared pinned inputs and command
-provenance use implementation-level budgets and must not be cloned/charged once per monitor.
-Provenance cannot be silently evicted; exhaustion fails capture. Diagnostics use an optional bounded
-ring with firstSequence and discardedThrough reporting. Without diagnostics retention, diagnostics() returns an empty page.
-Consumer-held borrowed buffers can outlive retention and keep allocations alive: retain.bytes is
-not a total process-memory guarantee.
+For sampled reads, omitted rows mean the physical-order intersection of the selected fields' coverage;
+explicit rows must be covered for every selected field. Each SampleColumn has its own strides, so
+different field orientations need no shared-layout repacking. Coordinates are domain-neutral; the
+recording schema's axis names them. Consumer-held borrowed buffers can outlive a recording and keep
+allocations alive.
 
 ## Optional history envelopes
 
@@ -303,8 +195,8 @@ A sampled `Queryable` may advertise `envelope` alongside `samples`. `EnvelopeQue
 coordinate range, rows, scalar fields, and an equal-coordinate bucket count. `EnvelopeBlock`
 contains native numeric first/minimum/maximum/last values, Float64 coordinates and absolute frames,
 and continuity bits. Slots use row-major bucket order. Gaps are explicit; a summary never invents
-an observation or renumbers an evicted frame. Empty buckets are emitted invalid. The query and
-block interfaces specify boundary inclusion, ties, context, tiling and coverage precisely.
+an observation or renumbers a frame. Empty buckets are emitted invalid. The query and block
+interfaces specify boundary inclusion, ties, context, tiling and coverage precisely.
 
 Implementations can use indexed history storage to answer this query efficiently. It is optional;
 GPU supplies a bounded raw-sample fallback for ordinary sources. Connect transports the same native
@@ -335,42 +227,38 @@ sampleAt(column, { row, frame });
 Validation is explicit boundary work, not a hidden scan on every local read. It checks declared
 layouts, dictionaries, masks, coordinates, strides, selected fields, known index associations,
 capabilities, and payload limits. It does not prove exclusive ownership, native referential integrity,
-edit atomicity, whole-stream coverage, cancellation responsiveness, or solver isolation. Those are
-implementation obligations exercised by behavioral tests.
+whole-stream coverage, cancellation responsiveness, or command isolation. Those are implementation
+obligations exercised by behavioral tests.
 
 The tests include deliberately narrow test implementations, not a production in-memory Model. They
-exercise numeric filtering/sorting/pagination/aggregation, schema headers and empty reads, atomic
-numeric edits, native assigned IDs, queued/running cancellation, command isolation, recording readiness,
-sparse captured coverage, coordinate windows, retention, tiled coverage, pending reads, and ownership.
-A native CSR fixture derives endpoint segments and missing/ambiguous links from its stored arrays.
-Nested buffers and independent field strides have separate layout fixtures. Persistence tests exercise
-shared acquisitions, incremental writes, interrupted commits, saved baselines and storage conflicts.
-The separate @latkit/connect package tests remote behavior over message and framed transports. Allocation assertions
-cover contiguous borrowed reads, sparse gathers, ownership copies, and backing/view accounting.
+exercise numeric filtering/sorting/pagination/aggregation, schema headers and empty reads, monitors
+that start over for each command, commands that run one at a time, queued/running cancellation,
+failures and their diagnostics, sparse recorded coverage, coordinate windows, retained reads, tiled
+coverage, pending reads, and ownership. A native CSR fixture derives endpoint segments and
+missing/ambiguous links from its stored arrays. Nested buffers and independent field strides have
+separate layout fixtures. The separate @latkit/connect package tests remote behavior over message and
+framed transports. Allocation assertions cover contiguous borrowed reads, sparse gathers, ownership
+copies, and backing/view accounting.
 
 Run pnpm --filter @latkit/model build, typecheck, and test.
 
 ## Remaining implementation and migration work
 
 1. Implement a real model against this contract and run the same behavioral obligations against
-   native editing, live routines, command cancellation during queued/running work, import diagnostics,
-   and large segmented connectivity. Test fixtures cover their advertised narrow schemas; they are not a production query engine.
-2. Integrate @latkit/connect with actual worker/socket deployment and application-owned Resource
-   implementations. Supply authentication, authorization scopes, conditional storage commits and
-   reconnection policy in that deployment; migrate consumers without a port compatibility facade.
-3. Specify and implement a portable Recording archive with format versioning, bounds validation,
-   indexed streaming reads, retained original inputs/schema, command provenance, and diagnostic gaps.
-   Export currently identifies native formats by media type; it does not define an archive codec.
-4. Move the GPU/playback query cache and index mapping into one shared consumption path. Reimplement
+   native commands, cancellation during queued/running work, and large segmented connectivity. Test
+   fixtures cover their advertised narrow schemas; they are not a production query engine.
+2. Integrate @latkit/connect with actual worker/socket deployment. Supply authentication,
+   authorization and reconnection policy in that deployment; migrate consumers directly.
+3. Move the GPU/playback query cache and index mapping into one shared consumption path. Reimplement
    network, diagram, monitor, and other consumers directly against Queryable and these columns.
-   Application document history/layout/catalog state stays outside the contract.
-5. Measure large real datasets across local, worker, socket, and archive paths: copied bytes,
+   Application history/layout/catalog state stays outside the contract.
+4. Measure large real datasets across local, worker, socket, and export paths: copied bytes,
    retained allocations, time to first block, cancellation latency, and GPU upload counts. Complete
    consumer migration and verify correctness and performance before publishing this package.
 
 ## Large-data verification
 
-The test-only paged ModelService in tests/scale runs million-row ownership, copy-on-write and command
-isolation checks. Its independent oracle is also used across five connect paths. Run the separate
-benchmark with pnpm --filter @latkit/connect bench:scale; methodology and scope are documented in
-../connect/tests/scale/README.md. No scale fixture is exported by this package.
+The test-only paged ScaleModel in tests/scale runs million-row ownership, shared-frame and
+one-at-a-time command checks. Its independent oracle is also used across five connect paths. Run the
+separate benchmark with pnpm --filter @latkit/connect bench:scale; methodology and scope are
+documented in ../connect/tests/scale/README.md. No scale fixture is exported by this package.

@@ -174,7 +174,7 @@ class NetworkView implements Network {
   private shadeSerial = 0;
   private geometry?: Geometry;
   private presented?: Presented;
-  private pending?: Pending;
+  private pendingFrame?: Pending;
   private readonly painter: Painter;
   private readonly picking = new Picking();
   private readonly paths = new Paths();
@@ -790,7 +790,7 @@ class NetworkView implements Network {
       });
       this.live();
       frame.signal.throwIfAborted();
-      this.pending = {
+      this.pendingFrame = {
         geometry,
         picking,
         camera,
@@ -816,17 +816,17 @@ class NetworkView implements Network {
   }
   encode(frame: Encoding): void {
     this.live();
-    if (!this.pending) throw new GpuError('invalid-input', 'Network was not prepared');
-    this.painter.encode(frame, this.pending.paint);
+    if (!this.pendingFrame) throw new GpuError('invalid-input', 'Network was not prepared');
+    this.painter.encode(frame, this.pendingFrame.paint);
   }
   submitted(frame: FrameInfo): void {
-    const pending = this.pending;
+    const pending = this.pendingFrame;
     if (!pending || this.closed) return;
     pending.commit();
     if (this.animation === pending.finishedAnimation) this.animation = undefined;
     this.presented?.release();
     this.presented = pending;
-    this.pending = undefined;
+    this.pendingFrame = undefined;
     const before = this.camera.fit;
     this.camera = pending.camera;
     this.placed = true;
@@ -878,9 +878,9 @@ class NetworkView implements Network {
     this.subscriptions = [];
     this.listeners.clear();
     inputEvents.delete(this);
-    this.pending?.release();
+    this.pendingFrame?.release();
     this.presented?.release();
-    this.pending = undefined;
+    this.pendingFrame = undefined;
     this.presented = undefined;
     this.geometry = undefined;
     this.painter.destroy();

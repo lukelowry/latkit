@@ -1,20 +1,13 @@
-import type { Bounds, Failure, Problem, Scalar, Value, Version } from './types.js';
-import type { Input, InputMetadata } from './input.js';
+import type { Bounds, Problem, Scalar, Value } from './types.js';
 
+/** A command a Model can run. */
 export interface Routine {
   readonly id: string;
   readonly label: string;
   readonly description?: string;
-  /**
-   * Isolated: accepted inputs are pinned, outputs belong only to this command, and edits/reload do
-   * not invalidate work. Live: operates on current state; external input changes cancel it. Neither
-   * mode promises parallel execution. Implementations order conflicting work; no implicit clones.
-   */
-  readonly mode: 'isolated' | 'live';
-  /** Supported output routes. Omitted/empty means no monitorable output. Isolated routines may
-   * advertise only command; live routines may advertise live, command, or both when correlated. */
-  readonly monitoring?: readonly ('live' | 'command')[];
   readonly parameters: readonly Parameter[];
+  /** Its commands compute frames, so they start every monitor over. */
+  readonly records?: boolean;
 }
 
 export type Parameter = {
@@ -52,44 +45,23 @@ export type Parameter = {
   | { readonly type: 'file'; readonly extensions?: readonly string[]; readonly multiple?: boolean }
 );
 
+/** A file parameter's value: its bytes, consumed once. */
+export interface Input {
+  readonly name?: string;
+  readonly mediaType?: string;
+  /** Immutable chunks. Cancel on failure. Transports must not detach unowned backing. */
+  readonly stream: ReadableStream<Uint8Array>;
+}
+
 export type InputValue = Value | Input | readonly Input[];
 export interface Command {
   readonly routine: string;
   readonly values: Readonly<Record<string, InputValue>>;
 }
 
-/** Results are portable values. Large output belongs in Queryable, not command return values. */
+/** Results are portable values. Frames belong in monitors, not command return values. */
 export type CommandResult = Readonly<Record<string, Value>>;
 
-export type CommandEntry = {
-  readonly id: string;
-  readonly routine: string;
-  readonly values: Readonly<Record<string, Value | InputMetadata | readonly InputMetadata[]>>;
-  readonly documentVersion: Version;
-  readonly firstFrame: number;
-  /** Exclusive. May equal firstFrame if no samples were observed. */
-  readonly endFrame: number;
-} & (
-  | { readonly status: 'queued' | 'running' | 'cancelled' }
-  | { readonly status: 'complete'; readonly result: CommandResult }
-  | { readonly status: 'failed'; readonly error: Failure }
-);
-
-export type CommandEvent = { readonly id: string; readonly documentVersion: Version } & (
-  | { readonly kind: 'queued' | 'running' | 'cancelled' }
-  | {
-      readonly kind: 'progress';
-      readonly completed: number;
-      readonly total?: number;
-      readonly message?: string;
-    }
-  | { readonly kind: 'complete'; readonly result: CommandResult }
-  | { readonly kind: 'failed'; readonly error: Failure }
-);
-
 export interface Diagnostic extends Problem {
-  /** Monotone model-wide sequence, including diagnostics not retained by a recording. */
-  readonly sequence: number;
   readonly severity: 'info' | 'warning' | 'error';
-  readonly command?: string;
 }

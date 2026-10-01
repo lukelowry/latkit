@@ -1,232 +1,189 @@
 # @latkit/monitor
 
-WebGPU traces over one class's recorded signals. Load one signal of a `Series`, such as a model's field, once; committed appends update the plot automatically. The same API reads memory, files, or remote recordings.
-
-## Install
-
-```sh
-npm install @latkit/monitor @latkit/model @latkit/colormaps
-```
-
-## Basic use
+Native sampled-data rendering on `@latkit/model` and `@latkit/gpu`. The root exports
+`createMonitor`, `attachMonitorInput`, and their public types. This package has no dependency on
+the old monitor implementation or a compatibility data format.
 
 ```ts
-import { colormap } from '@latkit/colormaps';
-import { Series } from '@latkit/model';
-import { createMonitor } from '@latkit/monitor';
+import { createMonitor, attachMonitorInput } from '@latkit/monitor';
+import { createGpu, createCanvasView, colormaps } from '@latkit/gpu';
 
-const series = Series.create({
-  signals: ['load'],
-  elementCount: 2,
-  time: Float64Array.of(0, 1),
-  values: Float64Array.of(0.1, 0.4, 0.2, 0.5),
-});
+const gpu = await createGpu();
 const monitor = createMonitor({
-  timeAxis: { label: 'Time (s)' },
-  valueAxis: { label: 'Load (p.u.)', precision: 2 },
-  valueRange: [0, 1],
-  colorRange: [0.2, 0.8],
-  colormap: colormap('magma'),
-});
-monitor.load({ series, signal: 0 });
-await monitor.attach(document.querySelector<HTMLCanvasElement>('#monitor')!);
-
-series.append({ time: Float64Array.of(2), values: Float64Array.of(0.3, 0.6) });
-```
-
-Initial arrays use `[signal][frame][element]` order. Appended frames use
-`[frame][signal][element]` order, as a solver emits them. Both accept float32 or float64 values;
-time is always float64. Published buffers are borrowed and immutable: create new arrays for
-each append. No future timestamps or capacity slots are exposed.
-
-`Series.read` returns a bounded window with a stride; the monitor handles this itself. A model's
-field is a binding already, so a recorded signal loads as `monitor.load(field)`, from memory or
-across a port. The host owns the recording's resources.
-
-## Display options
-
-`setOptions` applies live patches; only `devices` is fixed at construction.
-`OPTIONS` holds each option's label, default, and validation rules.
-
-```ts
-monitor.setOptions({
-  valueRange: null, // fit committed values
-  colorRange: [0, 100], // keep colors comparable as the vertical axis changes
-  timeRange: [20, 40], // null shows all committed time
-  lineWidthPx: 2,
-  focusColor: null, // brighten the selected trace's own color
-  unselectedAlpha: 0.35,
-});
-```
-
-`valueRange` controls geometry; `colorRange` controls the palette. A null color range follows the
-vertical range. Values and times are normalized in float64 before GPU upload. Nonfinite values
-break traces, and segments crossing the display boundary are clipped.
-
-History reads stay within a 1 MiB sample budget, including time. Selected traces have their own
-read window, so a wide class does not force tiny focus reads. When time and value mappings stay
-fixed, appends draw only the new segments; an automatic value range keeps a tenth of its span
-to spare and only grows, so most appends stay inside it. A changed mapping or canvas size replays
-history behind the last image, which stays on screen, rescaled, until the replay completes. A
-replay over more than two frames per device pixel draws each pixel column's extremes in the order
-they occurred, so its drawing follows the canvas width, not the recording's length; appends and the
-selected trace draw every frame, and readings come from the full series.
-History and focus textures are retained, and changing opacity only composites them again.
-
-## GPU axes and playhead
-
-Ticks, gridlines, axis labels, and the playhead render into the same WebGPU output as the traces.
-They are included in `snapshot()` and video exports. No SVG or HTML axis overlay is required.
-
-```ts
-monitor.setOptions({
-  timeAxis: { label: 'Time (s)', minSpacingPx: 80 },
-  valueAxis: { label: 'Voltage (p.u.)', format: 'fixed', precision: 2 },
-  fontFamily: 'ui-monospace, monospace',
-  fontSizePx: 12,
-  textColor: [0.8, 0.82, 0.86, 1],
-  axisColor: [0.5, 0.55, 0.6, 0.5],
-  gridColor: [0.5, 0.55, 0.6, 0.15],
-  cursorColor: [1, 0.7, 0.2, 0.9],
-});
-monitor.seek(3.5); // only the final GPU composition changes
-monitor.seek(null); // hide the playhead
-
-const point = monitor.toData(event.clientX, event.clientY);
-if (point) console.log(point.time, point.value); // null in the axis gutters
-
-monitor.setOptions({
-  timeAxis: {
-    label: 'Events',
-    ticks: [
-      { value: 0, label: 'Start' },
-      { value: 5, label: 'Fault' },
-    ],
-    grid: true,
+  gpu,
+  data: {
+    source: recording, // Any sampled Queryable, including a connect acquisition.
+    window: { kind: 'range', between: [0, 30] },
+    traces: {
+      temperature: {
+        from: 'node',
+        field: 'temperature',
+        rows,
+        color: { field: 'temperature', domain: [0, 100], colormap: colormaps.viridis },
+        widthPx: 1.5,
+      },
+    },
+  },
+  options: {
+    detail: 'auto',
+    valueDomain: [0, 100],
+    coordinateAxis: { label: 'Time (s)' },
+    valueAxis: { label: 'Temperature' },
+    hover: 'auto',
+    hoverBudgetMs: 2,
   },
 });
-monitor.setOptions({ timeAxis: null, valueAxis: null }); // a bare plot
+const view = createCanvasView({ gpu, renderer: monitor, canvas, onError });
+const detach = attachMonitorInput({ monitor, canvas });
+view.request({ at: 12 }); // Playhead; does not read the history again.
+
+monitor.on('select', (reading) => {
+  // source, version, index, physical row, field, absolute frame, coordinate, original value.
+  application.select(reading);
+});
+
+// Each owner releases only its own resources.
+detach();
+view.destroy();
+monitor.destroy();
+gpu.destroy();
 ```
 
-An axis object replaces that axis's configuration; omitted top-level options remain unchanged.
-Empty `ticks` draws no ticks. Custom ticks must be strictly increasing, with at most 128 entries;
-labels accept at most 256 UTF-16 code units. Automatic ticks are bounded by the viewport and
-thin overlapping or duplicate labels. Formats are `auto`, `fixed`, `scientific`, and `engineering`.
-Labels use the shared monospace SDF atlas; complex script shaping is outside this text contract.
-The host retains its canvas's accessible name, descriptions, and keyboard UI.
+## Data and rendering
 
-Label geometry changes only with the domain, options, or viewport. Stable gutters and caption bands keep numeric
-changes from moving the plot. Automatic labels for narrow ranges far from zero show a shared
-signed offset in the caption, preserving significant digits during deep zoom. Explicit numeric
-formats and custom ticks retain their requested values. Gridlines remain visible through transparent trace pixels.
-The shown and rebuilding history/focus textures together are bounded to 256 MiB and checked
-against device limits. Upload slabs are reused across loads. Folded carry storage is bounded
-by the active element chunk. Hover requests coalesce, with at most one in flight and a 1 MiB
-cache for the latest sampled frame; an oversized frame is scanned in bounded chunks.
+`Trace.field` accepts a sampled numeric field name or shared `FieldBinding`. Shared `FieldInput`
+bindings supply color, visibility, and shading, including static columns, sparse overlays, and
+aligned sampled sources. Native indices and frame coordinates must agree. Inputs are immutable;
+use `setData`, `setTrace`, or `setOptions` to publish changes. Styling a trace preserves the explicit coordinate window.
+All traces share the displayed coordinate window and value domain; independently scaled signals
+belong in separate monitor views sharing one GPU owner.
 
-Web fonts refresh on `document.fonts.loadingdone`. Await `document.fonts.ready` before taking a
-snapshot when the export must use a newly requested font. A snapshot copies prepared glyphs
-and the resolved automatic domains, while borrowing the series. A worker never needs the DOM
-or the source font to reproduce a captured view.
+The monitor borrows the supplied sources and never closes them, mutates their buffers, or transfers
+their backing. It owns bounded retained acquisitions for coherent dependent reads and reuses them
+across matching history, resize, and focus work. Superseded acquisitions are released after their
+active readers finish; destroying the monitor releases its remaining acquisitions.
+Native columns pass through GPU field resolution and upload. Float64 positions use per-component
+floating origins; picking retains original Float64 coordinates, values, and absolute frames.
+Uploading still transfers data to the device, and rebasing, joins, and sparse gathers may require
+bounded materialization. There is no promise of zero copies across every transport or GPU boundary.
 
-## Selection, events, and lifetime
+`detail: 'auto'` uses native first/minimum/maximum/last envelopes when observations exceed the
+working display resolution. GPU supplies the same bounded reduction when the source lacks native
+envelopes. Bucket resolution is capped by working-storage limits. Representatives are ordered
+and deduplicated by absolute frame. Discontinuous rectangles refine native samples; missing or
+nonfinite observations never become connecting lines. Sampled visibility and unrelated sampled
+color/shade fields use aligned native samples. `detail: 'full'` requests every native observation.
+Linear, step-before, and step-after interpolation are supported.
+
+Preparation uses bounded read-ahead of immutable native blocks. The queue admits at most 32
+chunks, counts entire shared backing allocations once, and reserves space for the block currently
+being produced. Its per-job cap is the smaller of 8 MiB, one eighth of the GPU CPU budget, and one
+quarter of `historyBytes`. Oversized backing fails explicitly. Queued work is acknowledged only
+after successful submission; failed frames replay the same geometry without losing observations.
+Several chunks can be prepared per frame under one shared `prepareMs` target and
+`segmentsPerFrame` observation limit. Sources apply backpressure at the queue capacity rather
+than at every display frame. These are cooperative limits, not hard source/compiler deadlines.
+The shared GPU owns field alignment, uploads, resource accounting, scales, colors, and text/atlas
+storage. The monitor owns trace geometry, axes, history images, and submitted inspection coverage.
+
+Initial history becomes visible after its first submitted batch, including a single observation.
+Later batches add detail without clearing it. Changed mappings and styling retain the existing
+presentation until their replacement is coherent. `stats().visible` reports a published image;
+`pendingBytes` reports native backing and metadata currently held by read-ahead.
+
+Committed history and focus use GPU-managed images. Resizing immediately scales both into the
+new plot bounds, with axes laid out at the current CSS size. After 120 ms without another resize,
+the monitor prepares sharper replacements. Replacement history, focus, domains, and picking change together
+only after successful submission; cancelled replacements leave the committed presentation intact.
+Ordinary pointer movement and playhead changes never rebuild history. Focus prepares only the
+selected row using the same detail policy. `setWindow` explicitly requests another coordinate
+interval; `setOptions({ valueDomain })` sets the value range. There is no camera or pan/zoom API.
+`hitTest` separately reads a small coordinate interval, returning the nearest original observations
+(default limit 16). It never reports envelope representatives as invented observations. Results
+reject when the presented generation or source version changes during the read.
+
+## Live updates and effects
+
+Appends coalesce into pending frame intervals and never cancel active historical preparation.
+With fixed domains and no follow, incoming preparation starts immediately when capacity permits,
+reads only the new interval, and joins it to retained native boundaries. An empty source can start
+streaming one observation at a time. Inspection accepts only submitted frame/row coverage.
+Automatic domains grow by default; a changed domain rebuilds the image. `autoDomain: 'fit'`
+recalculates the visible range. `follow: { span }` advances after bounded current work completes;
+its moving domain still rebuilds the visible image. Retained geometry for inexpensive rolling
+follow is a separate optimization. A source `replace` invalidates the old coverage and schedules
+a coherent replacement. Exact automatic domain discovery can still require a full source scan.
+
+Shared `Shade`, colormaps, straight-alpha colors, stroke helpers, numeric scales, text
+runs and atlas resources are used directly. `setShade` compiles before replacing the working
+pipeline. One effect time and parameter set is frozen across each progressive history generation.
+Pointer position is sampled when an explicit history generation starts; moving the pointer does
+not replay history. A flattened RGBA image cannot recover each observation's shade value. Animated effects refine
+at history-generation cadence. They are not a constant-cost image postprocessing promise.
+
+Input uses shared canvas normalization for click selection, context menus, Escape to clear focus,
+and hover in local CSS coordinates. Hover uses a latest-pointer cadence instead of waiting for
+pointer movement to stop. Exact repeated inspection can reuse a still-valid result. Wheel, touch scrolling and navigation keys retain browser
+behavior. Dragging does not navigate or select. Automatic
+hover suspends when its cooperative refinement budget is exceeded, without publishing partial
+nearest results. `hover: 'off'` disables hover reads; explicit `hitTest` remains available.
+
+Limits fail with `resource-limit`, never silently omit requested rows. `historyBytes` includes
+images/MSAA storage, read-ahead and estimated boundary/coverage metadata; `pickingBytes` bounds retained result storage.
+The shared GPU has its own cache/upload budgets. These are managed-resource estimates, not process
+or driver memory measurements. `stats()` reports current work, history storage and hover state.
+
+## Complete output
+
+Applications own acquisition and output lifetimes. Progressive rendering is the default;
+`completion: 'complete'` drains bounded submissions before the final composition callback.
+Use a stable acquisition and a fixed presentation time for deterministic output.
 
 ```ts
-monitor.load({ series, signal: 1 }); // another signal of the same series
-monitor.select(42); // class element index, including sparse recordings
-monitor.on('hover', (reading) => showReading(reading));
-monitor.on('select', (reading) => inspect(reading.element));
-monitor.on('contextmenu', ({ clientX, clientY, reading }) => openMenu(clientX, clientY, reading));
-monitor.on('valueRange', (range) => showRange(range));
-monitor.on('rendered', () => hideProgress());
-monitor.on('error', (error) => showError(error.message));
-monitor.on('deviceLost', ({ message, recovering }) => {
-  if (!recovering) showFallback(message);
-});
+import { createRenderTarget } from '@latkit/gpu';
+
+const fixed = await recording.retain({ window });
+const output = createRenderTarget({ gpu, width: 1920, height: 1080 });
+const exportMonitor = createMonitor({ gpu, data: { source: fixed, window, traces } });
+try {
+  await gpu.render({
+    views: [{ renderer: exportMonitor, target: output, at: coordinate }],
+    completion: 'complete',
+    timeMs: 0,
+    signal,
+    encode: (encoder) => copyOutput(encoder, output.texture()),
+  });
+  await gpu.idle();
+} finally {
+  exportMonitor.destroy();
+  output.destroy();
+  await fixed.close();
+}
 ```
 
-`rendered` fires once everything committed is on screen, and never before the canvas has a layout
-size: a canvas kept at `display: none` until `rendered` would wait forever. Pointer readings
-preserve the original numeric value. Only the primary button selects; a context menu, from the
-pointer or the keyboard, suppresses the native one and reports the sample under the pointer, or
-the one last hovered, as the network and the diagram report their parts. A newer pick, load, or
-detach cancels stale reads.
-`select(null)` clears selection. `pause()` stops work; `resume()` catches up. `load(null)` drops
-the loaded series. `detach()` releases the canvas while retaining data and settings; `destroy()`
-releases the controller. See the
-[lifecycle guide](https://latkit.readthedocs.io/en/latest/lifecycle.html).
+## Verification
 
-## GPU checks
-
-Run `pnpm --filter @latkit/monitor-example dev` and open
-`http://127.0.0.1:5190/check.html` in a browser with WebGPU. The check reads actual pixels for
-float64 normalization, clipping, nonlinear palettes, gaps, and focus opacity. It also captures
-WebGPU validation errors. These complement the unit tests for read budgets, append scheduling,
-and cancellation.
-
-## Video export
-
-`snapshot()` captures a portable renderer-owned `Scene`: static data and style are copied; series remain borrowed. Pass snapshots to `@latkit/video`, which owns the worker, sample reads, rendering, and encoding.
-
-```ts
-import { exportVideo } from '@latkit/video';
-
-const video = await exportVideo({
-  views: [monitor.snapshot()],
-  timeRange: [0, 10],
-  width: 1920,
-  height: 1080,
-});
+```sh
+pnpm --filter @latkit/gpu build
+pnpm --filter @latkit/connect build
+pnpm --filter @latkit/monitor build
+pnpm --filter @latkit/monitor typecheck
+pnpm --filter @latkit/monitor test
+pnpm --filter @latkit/monitor test:browser --headed --keep-open
 ```
 
-See [the video package](../video/README.md) for composition, streamed output, cancellation, and snapshot semantics. Advanced hosts can render a `Scene` against a `RenderTarget` through `createMonitorRenderer`; normal applications use `exportVideo`.
+Normal demo startup mounts the visible view immediately; checks run only from the explicit button
+or the test runner. The demo includes a start/stop stream control.
 
-## Navigate and shade
+The headed fixture verifies actual pixels for gaps, interpolation, Float64 precision, envelopes,
+MSAA, sampled visibility, focus, connected sources, and custom shading. Successive-frame pixel
+checks cover selected-image resizing, cancelled window replacements, and MSAA changes. It benchmarks 100,000 rows,
+a million-observation history, and a multi-signal workload at 960 x 480. Timings include rendering
+and queue completion, not display-vsync FPS. Browser background throttling is disabled for repeatable
+measurements. Hardware, browser load, source work and data distribution still affect results.
+The real-canvas test also measures first visible data, click-to-focus, and receive-to-visible
+latency for 40 single-observation appends at an 8 ms cadence, checking canvas pixels on submission.
+Reports and screenshots are written to `output/monitor-browser.json` and `output/playwright/monitor.png`.
+The generated source bounds native blocks and does not allocate a complete history matrix.
 
-```ts
-monitor.setOptions({ interaction: true }); // drag, wheel, and two-pointer pinch
-monitor.pan(40, 0); // move the plotted image by CSS pixels
-monitor.zoom(1.25, { clientX: event.clientX, clientY: event.clientY });
-monitor.zoom(0.8); // centered on the plot
-monitor.fit(); // restore automatic time and value ranges
-
-await monitor.setShade({
-  wgsl: `fn shade(f: Fragment) -> vec4f {
-    let pulse = 0.85 + 0.15 * sin(f.time * 2.0);
-    return vec4f(f.color.rgb * pulse, f.color.a);
-  }`,
-  tick: () => true,
-});
-await monitor.setShade(null); // restore normal composition
-```
-
-Interaction is opt-in. A click selects; a drag never selects. Gestures start inside the plot,
-leaving gutters and page scrolling elsewhere alone. Disabling interaction restores the canvas's
-original touch policy. Hosts can use `pan`, `zoom`, and `fit` for accessible buttons or keyboard
-bindings. Pan and zoom require an attached, prepared plot; explicit `setOptions` ranges also work
-while detached. Nonfinite motion and nonpositive zoom factors throw; transforms that would
-overflow or collapse a domain are ignored.
-
-Movement remaps retained textures immediately, while axes and exact pointer readings use the
-new displayed ranges. Obsolete history reads are aborted. After 120 ms without movement and
-all pointers are released, the latest visible range is refined once. During refinement the old
-image may be stretched, or leave newly exposed areas blank. Source reads and pixel folding
-remain bounded by the existing window and GPU work budgets.
-
-A shade runs over the composed trace image, including transparent plot pixels, independently
-of signal count. Axes, labels, and playhead are drawn outside it. `Fragment` exposes straight
-RGBA `color`, normalized plot `point` (time right, value up), canvas-local CSS `pixel`, and
-`time` in seconds wrapping hourly. It does not expose sample values or element IDs: use the
-colormap, selection, and exact readings for those. Returning alpha can also tint empty regions.
-The renderer converts the returned straight color to premultiplied alpha for composition.
-
-`tick(host, frame)` receives a reusable 64-float array (`u.host`, 16 vec4s in WGSL), plus
-`timeMs`, CSS `viewport`, and nullable CSS `pointerPx`. `u.pointer_px` is far off-canvas when
-no pointer is present. Return true to continue animation; otherwise the loop sleeps when idle.
-Shader compilation is asynchronous. Failed builds reject with compiler diagnostics and leave
-the last working shade and uniforms intact; newer requests supersede older builds. Detached
-controllers compile on attach and report errors through the `error` event.
-
-Snapshots copy WGSL and current host uniforms, freezing JavaScript tick hooks, as Network and
-Diagram do. Video rendering advances the shader clock using output time; it does not serialize
-or rerun application callbacks. The simulation playhead still follows source time.
+`diagram_new` and `video_new` remain separate skeletons.

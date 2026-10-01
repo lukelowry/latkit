@@ -2,11 +2,9 @@ import { expect, expectTypeOf, it } from 'vitest';
 import * as api from '../src/index.js';
 import type {
   Command,
-  Document,
-  Edit,
+  CommandResult,
   Input,
   Model,
-  ModelService,
   Queryable,
   Recording,
   QueryHeader,
@@ -36,12 +34,7 @@ it('exports only native access and explicit boundary utilities', () => {
 });
 
 // Compiled usage checks; no implementation-specific subclass or generic payload is required.
-function publicUsage(
-  model: Model,
-  source: Queryable,
-  document: Document,
-  service: ModelService,
-): void {
+function publicUsage(model: Model, source: Queryable): void {
   expectTypeOf(source.query({ kind: 'rows', from: 'Node', select: [] })).toEqualTypeOf<
     AsyncIterable<QueryHeader | RowsBlock>
   >();
@@ -54,34 +47,23 @@ function publicUsage(
     }),
   ).toEqualTypeOf<AsyncIterable<QueryHeader | SamplesBlock>>();
   const input: Input = {
-    kind: 'content',
     mediaType: 'application/octet-stream',
     stream: new ReadableStream<Uint8Array>(),
   };
   const command: Command = { routine: 'solve', values: { file: input, count: 10 } };
-  void model.call?.(command, { id: 'command' });
-  void service.open();
-  expectTypeOf(service.recording('id')).toEqualTypeOf<Promise<Recording>>();
+  expectTypeOf(model.monitor([{ from: 'Node', select: ['output'] }])).toEqualTypeOf<
+    Promise<Recording>
+  >();
+  expectTypeOf(model.run(command)).toEqualTypeOf<Promise<CommandResult>>();
   expectTypeOf(source.retain({ maxBytes: 1024 })).toEqualTypeOf<Promise<Queryable>>();
   expectTypeOf(source.close()).toEqualTypeOf<Promise<void>>();
-  const edits: readonly Edit[] = [
-    { kind: 'add-component', type: 'Node', as: 'a', values: { position: [1, 2] } },
-    {
-      kind: 'add-connection',
-      type: 'Relation',
-      as: 'r',
-      endpoints: [{ component: { local: 'a' }, port: 'a', role: 'member' }],
-    },
-    { kind: 'assert', id: 'existing', exists: false },
-  ];
-  void document.edit?.(edits);
-  // @ts-expect-error Engine is not an owner in this contract.
-  void model.engine;
-  // @ts-expect-error Host history is outside Document.
-  void document.undo;
-  // @ts-expect-error No mandatory blanket version gate.
-  void document.edit?.([], { ifVersion: 'old' });
+  // @ts-expect-error A command is only the command: monitors choose what is streamed.
+  void model.run(command, { record: [] });
+  // @ts-expect-error Editing and saving belong to the model's application.
+  void model.edit;
+  // @ts-expect-error Commands are not correlated by id.
+  void model.call;
   // @ts-expect-error Arbitrary implementation objects do not cross the portable input boundary.
-  void service.open({ kind: 'content', arbitrary: true });
+  void model.run({ routine: 'solve', values: { file: { arbitrary: true } } });
 }
 void publicUsage;

@@ -42,7 +42,7 @@ it('preserves sparse axis buffers and enforces physical index identity', () => {
   expect(slice.kind === 'indices' && slice.values.buffer).toBe(values.buffer);
   expect(rowAt(slice, 0)).toBe(3);
   expect(rowCount(slice)).toBe(2);
-  const index = { document: 'd', type: 't', version: 'v' };
+  const index = { source: 'd', type: 't', version: 'v' };
   expect(sameIndex(index, { ...index })).toBe(true);
   expect(() => assertIndex(index, { ...index, version: 'x' })).toThrow();
 });

@@ -1,310 +1,44 @@
-import { devices, type DevicePool } from '@latkit/gpu';
-import { validateRgba, type Colormap, type RGBA } from '@latkit/colormaps';
-import { validateDomain, type Domain } from '@latkit/model';
-
-/** A fixed tick; omitted labels use the axis's numeric formatter. */
+import type { Domain } from '@latkit/model';
+import type { HoverOptions, Insets, RGBA, TextFont } from '@latkit/gpu';
 export interface Tick {
   readonly value: number;
   readonly label?: string;
 }
-/** Serializable axis policy, shared by interactive and exported views. */
-export interface Axis {
+export interface AxisOptions {
   readonly label?: string;
-  /** Omit for automatic ticks; an empty list draws no ticks or gridlines. */
   readonly ticks?: readonly Tick[];
-  /** Minimum automatic tick spacing in CSS pixels. @defaultValue 72 */
   readonly minSpacingPx?: number;
   readonly format?: 'auto' | 'fixed' | 'scientific' | 'engineering';
-  /** Fractional digits; automatic when omitted. Range 0 to 12. */
   readonly precision?: number;
-  /** Draw gridlines at ticks. @defaultValue true */
   readonly grid?: boolean;
 }
-
-/**
- * Monitor display options: the construction record and the live patch.
- *
- * @remarks
- * `devices` is read once at construction. Every other field seeds the initial view and can be
- * patched later with `Monitor.setOptions`; `OPTIONS` says which and carries each default. An
- * option marked nullable takes `null` to hand the decision back to the controller.
- */
-export interface Options {
-  /** Enable drag, pinch, and wheel navigation. @defaultValue false */
-  interaction?: boolean;
-  /** Time axis, or null to hide it. An object replaces its previous configuration. */
-  timeAxis?: Axis | null;
-  /** Value axis, or null to hide it. An object replaces its previous configuration. */
-  valueAxis?: Axis | null;
-  /** Monospace family for GPU labels. @defaultValue 'monospace' */
-  fontFamily?: string;
-  /** Label size in CSS pixels, from 1 to 128. @defaultValue 12 */
-  fontSizePx?: number;
-  /** Label color. @defaultValue [0.65, 0.68, 0.72, 1] */
-  textColor?: RGBA;
-  /** Axis strokes. @defaultValue [0.5, 0.55, 0.6, 0.5] */
-  axisColor?: RGBA;
-  /** Gridline color. @defaultValue [0.5, 0.55, 0.6, 0.15] */
-  gridColor?: RGBA;
-  /** Playhead color. @defaultValue [1, 1, 1, 0.8] */
-  cursorColor?: RGBA;
-  /** Where `Monitor.attach` leases its device. @defaultValue the realm-wide pool from `@latkit/gpu`. */
-  devices?: DevicePool;
-  /** Transfer function for normalized values. @defaultValue A neutral gray ramp. */
-  colormap?: Colormap;
-  /** Trace stroke width in CSS pixels. @defaultValue `1.5`. */
-  lineWidthPx?: number;
-  /**
-   * Fixed value domain for vertical position, or `null` to fit the finite extent of the
-   * active signal's committed frames with a tenth of its span to spare on each side. The fit only
-   * grows until another series or signal loads, so appends inside it draw only new segments.
-   * @defaultValue `null`.
-   */
-  valueRange?: Domain | null;
-  /** Independent color domain; null follows the resolved value range. @defaultValue null. */
-  colorRange?: Domain | null;
-  /** Time window shown across the canvas, or `null` for the series' full span. @defaultValue `null`. */
-  timeRange?: Domain | null;
-  /** Color of the selected element's trace, or `null` to brighten its own color. @defaultValue `null`. */
-  focusColor?: RGBA | null;
-  /** Alpha of every other trace while an element is selected, in `[0, 1]`. @defaultValue `1`. */
-  unselectedAlpha?: number;
+export interface Options extends HoverOptions {
+  readonly detail?: 'auto' | 'full';
+  readonly follow?: { readonly span: number } | null;
+  readonly coordinateAxis?: AxisOptions | null;
+  readonly valueAxis?: AxisOptions | null;
+  readonly valueDomain?: Domain | 'auto';
+  /** Automatic domain policy; grow avoids repainting committed history on ordinary appends. */
+  readonly autoDomain?: 'grow' | 'fit';
+  readonly domainPadding?: number;
+  readonly font?: TextFont;
+  readonly fontSizePx?: number;
+  readonly textColor?: RGBA;
+  readonly axisColor?: RGBA;
+  readonly gridColor?: RGBA;
+  readonly backgroundColor?: RGBA;
+  readonly cursorColor?: RGBA;
+  readonly focusColor?: RGBA | null;
+  readonly unselectedAlpha?: number;
+  readonly paddingPx?: Insets;
+  readonly pickRadiusPx?: number;
+  readonly msaa?: 1 | 4;
 }
-
-/**
- * Validation kind, default, whether `Monitor.setOptions` accepts the option live, whether `null` is
- * a value, the label a control shows, and for a bounded number its inclusive `max`.
- */
-export type OptionDefinition = { readonly label: string } & (
-  | { readonly kind: 'axis'; readonly default: Axis; readonly live: true; readonly nullable: true }
-  | { readonly kind: 'boolean'; readonly default: boolean; readonly live: true }
-  | { readonly kind: 'string'; readonly default: string; readonly live: true }
-  | { readonly kind: 'pool'; readonly default: DevicePool; readonly live: false }
-  | { readonly kind: 'colormap'; readonly default: Colormap; readonly live: true }
-  | {
-      readonly kind: 'nonnegative';
-      readonly default: number;
-      readonly live: true;
-      readonly max?: number;
-      readonly min?: number;
-    }
-  | {
-      readonly kind: 'domain';
-      readonly default: Domain | null;
-      readonly live: true;
-      readonly nullable?: true;
-    }
-  | {
-      readonly kind: 'rgba';
-      readonly default: RGBA | null;
-      readonly live: true;
-      readonly nullable?: true;
-    }
-);
-
-/** Monitor's neutral transfer function before a consumer supplies a colormap. */
-const neutralColormap: Colormap = Object.freeze((t: number) => [t, t, t] as const);
-
-const definitions = {
-  interaction: { kind: 'boolean', default: false, live: true, label: 'Interaction' },
-  timeAxis: {
-    kind: 'axis',
-    default: Object.freeze({}),
-    live: true,
-    nullable: true,
-    label: 'Time axis',
-  },
-  valueAxis: {
-    kind: 'axis',
-    default: Object.freeze({}),
-    live: true,
-    nullable: true,
-    label: 'Value axis',
-  },
-  fontFamily: { kind: 'string', default: 'monospace', live: true, label: 'Font family' },
-  fontSizePx: {
-    kind: 'nonnegative',
-    default: 12,
-    min: 1,
-    max: 128,
-    live: true,
-    label: 'Font size',
-  },
-  textColor: {
-    kind: 'rgba',
-    default: Object.freeze([0.65, 0.68, 0.72, 1] as const),
-    live: true,
-    label: 'Text color',
-  },
-  axisColor: {
-    kind: 'rgba',
-    default: Object.freeze([0.5, 0.55, 0.6, 0.5] as const),
-    live: true,
-    label: 'Axis color',
-  },
-  gridColor: {
-    kind: 'rgba',
-    default: Object.freeze([0.5, 0.55, 0.6, 0.15] as const),
-    live: true,
-    label: 'Grid color',
-  },
-  cursorColor: {
-    kind: 'rgba',
-    default: Object.freeze([1, 1, 1, 0.8] as const),
-    live: true,
-    label: 'Playhead color',
-  },
-  devices: { kind: 'pool', default: devices, live: false, label: 'Device pool' },
-  colormap: { kind: 'colormap', default: neutralColormap, live: true, label: 'Colormap' },
-  lineWidthPx: { kind: 'nonnegative', default: 1.5, live: true, label: 'Line width' },
-  valueRange: { kind: 'domain', default: null, live: true, nullable: true, label: 'Value range' },
-  colorRange: { kind: 'domain', default: null, live: true, nullable: true, label: 'Color range' },
-  timeRange: { kind: 'domain', default: null, live: true, nullable: true, label: 'Time range' },
-  focusColor: { kind: 'rgba', default: null, live: true, nullable: true, label: 'Focus color' },
-  unselectedAlpha: {
-    kind: 'nonnegative',
-    default: 1,
-    live: true,
-    label: 'Unselected opacity',
-    max: 1,
-  },
-} as const satisfies Record<keyof Required<Options>, OptionDefinition>;
-
-for (const definition of Object.values(definitions)) Object.freeze(definition);
-
-/** Every option: its validation kind, default, whether it is accepted live, label, and bounds. */
-export const OPTIONS: Readonly<typeof definitions> = Object.freeze(definitions);
-
-/** Fully resolved Monitor options. */
-export type ResolvedOptions = Readonly<{
-  [Key in keyof typeof OPTIONS]: Exclude<Options[Key], undefined>;
-}>;
-
-/** Resolve and own a complete construction option record. */
-export function resolveOptions(options: Options): ResolvedOptions {
-  validateOptions(options);
-  const values = options as Readonly<Record<string, unknown>>;
-  const entries = Object.entries(OPTIONS).map(([key, definition]) => {
-    const supplied = values[key];
-    const value = supplied === undefined ? definition.default : supplied;
-    const owned =
-      (definition.kind === 'domain' || definition.kind === 'rgba') && value !== null
-        ? Object.freeze([...(value as readonly number[])])
-        : value;
-    return [key, definition.kind === 'axis' ? ownAxis(value as Axis | null) : owned];
-  });
-  return Object.freeze(Object.fromEntries(entries)) as ResolvedOptions;
-}
-
-/**
- * Validate an option patch completely before any of it is applied.
- *
- * @throws TypeError or RangeError naming the first invalid option.
- */
-export function validateOptions(options: Options): void {
-  if (options === null || typeof options !== 'object') {
-    throw new TypeError('monitor options must be an object');
-  }
-  for (const [key, definition] of Object.entries(OPTIONS)) {
-    const value = options[key as keyof Options];
-    if (value === undefined) continue;
-    validateOptionValue(key, definition, value);
-  }
-}
-
-function validateOptionValue(key: string, definition: OptionDefinition, value: unknown): void {
-  if (value === null && 'nullable' in definition && definition.nullable) return;
-  switch (definition.kind) {
-    case 'boolean':
-      if (typeof value !== 'boolean') typeError(key, 'a boolean');
-      return;
-    case 'axis':
-      validateAxis(key, value);
-      return;
-    case 'string':
-      if (typeof value !== 'string' || !value.trim() || value.length > 1024)
-        typeError(key, 'a nonempty string of at most 1024 characters');
-      return;
-    case 'pool':
-      if (typeof (value as Partial<DevicePool> | null)?.acquire !== 'function') {
-        typeError(key, 'a device pool');
-      }
-      return;
-    case 'colormap':
-      if (typeof value !== 'function') typeError(key, 'a colormap function');
-      return;
-    case 'nonnegative':
-      if (typeof value !== 'number') typeError(key, 'a number');
-      if (!Number.isFinite(value) || value < 0) {
-        throw new RangeError(`monitor option ${key} must be finite and nonnegative`);
-      }
-      if ('min' in definition && value < definition.min!)
-        throw new RangeError(`monitor option ${key} must be at least ${definition.min}`);
-      if ('max' in definition && value > definition.max!) {
-        throw new RangeError(`monitor option ${key} must be at most ${definition.max}`);
-      }
-      return;
-    case 'domain':
-      validateDomain(value, `monitor option ${key}`);
-      return;
-    case 'rgba':
-      validateRgba(value, `monitor option ${key}`);
-      return;
-    default:
-      definition satisfies never;
-  }
-}
-
-function typeError(key: string, expected: string): never {
-  throw new TypeError(`monitor option ${key} must be ${expected}`);
-}
-
-function ownAxis(axis: Axis | null): Axis | null {
-  if (axis === null) return null;
-  return Object.freeze({
-    ...axis,
-    ...(axis.ticks
-      ? {
-          ticks: Object.freeze(axis.ticks.map((tick) => Object.freeze({ ...tick }))),
-        }
-      : {}),
-  });
-}
-function validateAxis(key: string, value: unknown): void {
-  if (!value || typeof value !== 'object' || Array.isArray(value))
-    typeError(key, 'an axis object or null');
-  const axis = value as Axis;
-  const label = (text: unknown) => {
-    if (text !== undefined && (typeof text !== 'string' || text.length > 256))
-      typeError(key, 'labels of at most 256 characters');
-  };
-  label(axis.label);
-  if (
-    axis.minSpacingPx !== undefined &&
-    (!Number.isFinite(axis.minSpacingPx) || axis.minSpacingPx < 1)
-  )
-    throw new RangeError(`${key}.minSpacingPx must be at least 1`);
-  if (
-    axis.precision !== undefined &&
-    (!Number.isInteger(axis.precision) || axis.precision < 0 || axis.precision > 12)
-  )
-    throw new RangeError(`${key}.precision must be an integer from 0 to 12`);
-  if (
-    axis.format !== undefined &&
-    !['auto', 'fixed', 'scientific', 'engineering'].includes(axis.format)
-  )
-    typeError(key, 'a supported numeric format');
-  if (axis.grid !== undefined && typeof axis.grid !== 'boolean')
-    typeError(key, 'a boolean grid option');
-  if (axis.ticks !== undefined) {
-    if (!Array.isArray(axis.ticks) || axis.ticks.length > 128)
-      throw new RangeError(`${key}.ticks must contain at most 128 ticks`);
-    let previous = -Infinity;
-    for (const tick of axis.ticks as readonly Tick[]) {
-      if (!tick || !Number.isFinite(tick.value) || tick.value <= previous)
-        throw new RangeError(`${key}.ticks must be finite and strictly increasing`);
-      previous = tick.value;
-      label(tick.label);
-    }
-  }
+export interface Limits {
+  readonly rows?: number;
+  readonly segmentsPerFrame?: number;
+  /** Raw refinement and summary preparation per submission; retain the last presented image. */
+  readonly prepareMs?: number;
+  readonly historyBytes?: number;
+  readonly pickingBytes?: number;
 }

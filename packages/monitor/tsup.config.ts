@@ -1,5 +1,4 @@
 import { defineConfig } from 'tsup';
-
 export default defineConfig({
   entry: ['src/index.ts'],
   format: ['esm'],
@@ -9,7 +8,5 @@ export default defineConfig({
   target: 'es2022',
   platform: 'browser',
   splitting: false,
-  loader: {
-    '.wgsl': 'text',
-  },
+  loader: { '.wgsl': 'text' },
 });

@@ -2,7 +2,7 @@
   "name": "@latkit/connect",
   "version": "0.0.0",
   "private": true,
-  "description": "Model services, resources, and canonical streams across process boundaries.",
+  "description": "Models, their monitors, and canonical streams across process boundaries.",
   "type": "module",
   "sideEffects": false,
   "files": [

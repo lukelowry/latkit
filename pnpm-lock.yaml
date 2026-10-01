@@ -244,22 +244,6 @@ importers:
       '@latkit/model':
         specifier: workspace:*
         version: link:../model
-      '@webgpu/types':
-        specifier: ^0.1.71
-        version: 0.1.71
-    devDependencies:
-      jsdom:
-        specifier: ^26.1.0
-        version: 26.1.0
-
-  packages/monitor_new:
-    dependencies:
-      '@latkit/gpu':
-        specifier: workspace:*
-        version: link:../gpu
-      '@latkit/model':
-        specifier: workspace:*
-        version: link:../model
     devDependencies:
       '@webgpu/types':
         specifier: ^0.1.71

@@ -6,7 +6,7 @@ function integer(value: number, name: string, min = 0, max = Number.MAX_SAFE_INT
   return value;
 }
 export function sameIndex(a: Index, b: Index): boolean {
-  return a.document === b.document && a.type === b.type && a.version === b.version;
+  return a.source === b.source && a.type === b.type && a.version === b.version;
 }
 export function assertIndex(expected: Index, actual: Index): void {
   if (!sameIndex(expected, actual))

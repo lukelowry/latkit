@@ -1,6 +1,4 @@
-import type { WritePart } from '@latkit/model';
 import { failure } from './errors.js';
-import { record, integer } from './validation.js';
 export function bytes(
   stream: ReadableStream<Uint8Array>,
   size: number,
@@ -51,29 +49,6 @@ export function bytes(
       return { done: true, value: undefined };
     },
   };
-}
-export async function* parts(
-  source: AsyncIterable<WritePart>,
-  size: number,
-): AsyncGenerator<WritePart> {
-  for await (const part of checkedParts(source)) {
-    if (part.kind === 'copy') {
-      yield part;
-      continue;
-    }
-    for (let offset = 0; offset < part.bytes.length; offset += size)
-      yield { kind: 'data', bytes: part.bytes.subarray(offset, offset + size) };
-  }
-}
-export async function* checkedParts(source: AsyncIterable<unknown>): AsyncGenerator<WritePart> {
-  for await (const value of source) {
-    const part = record(value);
-    if (part.kind === 'data' && part.bytes instanceof Uint8Array)
-      yield { kind: 'data', bytes: part.bytes };
-    else if (part.kind === 'copy' && integer(part.offset) && integer(part.length))
-      yield { kind: 'copy', offset: part.offset, length: part.length };
-    else throw failure('invalid-input', 'Invalid write part.');
-  }
 }
 export function readable(iterator: AsyncIterableIterator<unknown>): ReadableStream<Uint8Array> {
   return new ReadableStream(

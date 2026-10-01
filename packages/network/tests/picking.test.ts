@@ -12,6 +12,7 @@ it.each<RowAxis>([
   const index = { document: 'fixture', type: 'node', version: '1' };
   const bank: VertexBank = { id: 0, type: 'node', index, rows, count: 2, base: 0 };
   const native: NativeFields = {
+    versions: new Map(),
     index,
     rows: { kind: 'range', offset: 0, count: 4 },
     presence: {},

@@ -22,8 +22,8 @@ Install only the packages your application needs.
 | [`@latkit/diagram`](https://www.npmjs.com/package/@latkit/diagram) | WebGPU block diagrams with automatic layout and edit proposals      |
 | [`@latkit/embed`](https://www.npmjs.com/package/@latkit/embed)     | `latkit-network` and `latkit-monitor` custom elements               |
 | [`@latkit/gpu`](https://www.npmjs.com/package/@latkit/gpu)         | Shared WebGPU resources, fields, text, colors, and frame submission |
-| [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)     | Native model, document, recording, and query contracts              |
-| [`@latkit/connect`](./packages/connect)                            | Transport for native model services and acquisitions                |
+| [`@latkit/model`](https://www.npmjs.com/package/@latkit/model)     | Native model, monitor, and query contracts                          |
+| [`@latkit/connect`](./packages/connect)                            | Transport for native models, their monitors, and reads              |
 | [`@latkit/video`](./packages/video)                                | Worker-based video export of network, diagram, and monitor scenes   |
 
 ## Requirements

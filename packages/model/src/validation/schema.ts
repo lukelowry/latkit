@@ -7,7 +7,6 @@ import type { Path } from './check.js';
 export function validateSchema(value: unknown): readonly Problem[] {
   const c = new Check();
   const schema = c.object(value, []);
-  c.text(schema.version, ['version']);
   c.strings(schema.queries, ['queries'], kinds);
   c.integer(c.object(schema.limits, ['limits']).maxBlockBytes, ['limits', 'maxBlockBytes'], 1);
   const names = new Set<string>();
@@ -31,54 +30,20 @@ export function validateSchema(value: unknown): readonly Problem[] {
       const p = [...path, 'fields', name];
       c.text(name, p);
       const field = c.object(fieldValue, p);
-      const typeValid = dataType(c, field.type, [...p, 'type'], names);
-      for (const key of ['nullable', 'sampled', 'required', 'writable'])
-        c.optional(field, key, c.bool.bind(c), p);
+      dataType(c, field.type, [...p, 'type'], names);
+      for (const key of ['nullable', 'sampled']) c.optional(field, key, c.bool.bind(c), p);
       for (const key of ['label', 'description', 'unit'])
         c.optional(field, key, (v, at) => c.text(v, at, true), p);
       if (field.sampled === true) {
         c.enum(field.type, numeric, [...p, 'type']);
-        for (const key of ['writable', 'required', 'default', 'bounds'])
-          if (own(field, key))
-            c.issue([...p, key], 'Sampled fields cannot declare input behavior.');
-      } else {
-        if (own(field, 'bounds')) {
-          if (typeof field.type !== 'string' || !numeric.includes(field.type))
-            c.issue([...p, 'bounds'], 'Bounds require a scalar numeric field.');
-          bounds(c, field.bounds, [...p, 'bounds']);
-        }
-        if (own(field, 'default') && typeValid) {
-          domainValue(c, field.default, field.type as DataType, field.nullable === true, [
-            ...p,
-            'default',
-          ]);
-          if (typeof field.default === 'number' && record(field.bounds))
-            for (const key of ['lower', 'upper']) {
-              const edge = field.bounds[key];
-              if (
-                record(edge) &&
-                typeof edge.value === 'number' &&
-                (key === 'lower'
-                  ? field.default < edge.value ||
-                    (field.default === edge.value && edge.inclusive === false)
-                  : field.default > edge.value ||
-                    (field.default === edge.value && edge.inclusive === false))
-              )
-                c.issue([...p, 'default'], 'Default lies outside bounds.');
-            }
-        }
+        if (own(field, 'bounds'))
+          c.issue([...p, 'bounds'], 'Sampled fields cannot declare bounds.');
+      } else if (own(field, 'bounds')) {
+        if (typeof field.type !== 'string' || !numeric.includes(field.type))
+          c.issue([...p, 'bounds'], 'Bounds require a scalar numeric field.');
+        bounds(c, field.bounds, [...p, 'bounds']);
       }
     }
-    if (own(definition, 'operations'))
-      c.strings(
-        definition.operations,
-        [...path, 'operations'],
-        category === 'components'
-          ? ['add', 'set', 'remove']
-          : category === 'connections'
-            ? ['add', 'set', 'remove', 'reconnect']
-            : ['insert', 'set', 'remove'],
-      );
     if (category === 'components' && own(definition, 'ports'))
       for (const [id, portValue] of Object.entries(
         c.object(definition.ports, [...path, 'ports']),

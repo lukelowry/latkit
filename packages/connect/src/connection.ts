@@ -1,4 +1,4 @@
-import type { ModelService, Queryable, RequestOptions } from '@latkit/model';
+import type { Model, Queryable, RequestOptions } from '@latkit/model';
 import type { Transport } from './transport.js';
 import { Peer } from './internal/peer.js';
 import { Bindings } from './internal/bindings.js';
@@ -10,13 +10,13 @@ export interface ConnectionLimits {
 }
 export interface ConnectOptions extends RequestOptions {
   readonly limits?: ConnectionLimits;
-  readonly kind?: 'service';
+  readonly kind?: 'model';
 }
 export interface QueryableConnectOptions extends Omit<ConnectOptions, 'kind'> {
   readonly kind: 'queryable';
 }
-/** Closing releases this peer's acquisitions and grants, never the shared service itself. */
-export interface Connection extends ModelService {
+/** Closing ends this peer's monitors, retained reads and commands, never the shared model. */
+export interface Connection extends Model {
   readonly closed: Promise<void>;
   close(): Promise<void>;
 }
@@ -40,7 +40,7 @@ export async function connect(
   const bindings = new Bindings(peer);
   try {
     await peer.ready;
-    const root = await bindings.connectRoot(options.kind ?? 'service');
+    const root = await bindings.connectRoot(options.kind ?? 'model');
     return Object.assign(root, { closed: peer.closed, close: () => peer.close() });
   } catch (error) {
     await peer.close();
@@ -52,21 +52,18 @@ export function serve(
   source: Queryable,
   options: QueryableConnectOptions,
 ): Promise<void>;
-export function serve(
-  transport: Transport,
-  service: ModelService,
-  options?: ConnectOptions,
-): Promise<void>;
-/** Serve an application-authorized capability. The supplied root is borrowed; its owner closes it.
- * Independently acquired children belong to this connection and are released on disconnect. */
+export function serve(transport: Transport, model: Model, options?: ConnectOptions): Promise<void>;
+/** Serve an application-authorized model or read-only source. The root is borrowed: every peer
+ * shares it, and its owner closes it. A peer's monitors, retained reads and commands belong to
+ * that peer, and end when it disconnects. */
 export async function serve(
   transport: Transport,
-  root: ModelService | Queryable,
+  root: Model | Queryable,
   options: ConnectOptions | QueryableConnectOptions = {},
 ): Promise<void> {
   const peer = new Peer(transport, options);
   try {
-    new Bindings(peer, { kind: options.kind ?? 'service', value: root });
+    new Bindings(peer, { kind: options.kind ?? 'model', value: root });
     await peer.ready;
     await peer.closed;
   } finally {

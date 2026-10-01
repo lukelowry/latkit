@@ -1,12 +1,11 @@
 import type { DataType, NumericType } from './data.js';
 import type { Query } from './query.js';
-import type { Axis, Bounds, Value, Version } from './types.js';
+import type { Axis, Bounds } from './types.js';
 
-/** The implementation describes domain data. Published descriptions are immutable. */
+/** The classes a Model or Recording holds, fixed for its life. */
 export interface Schema {
-  readonly version: Version;
   /** Each advertised kind supports its complete defined semantics, not a partial implementation.
-   * Document excludes samples/envelope and cannot read outputs through rows/aggregate. */
+   * A Model excludes samples/envelope and cannot read sampled fields through rows/aggregate. */
   readonly queries: readonly Query['kind'][];
   /** Per-data-block payload bound. Owned blocks also bound whole backing allocations.
    * Schema metadata and transport framing have separate transport limits. */
@@ -15,7 +14,7 @@ export interface Schema {
   readonly components: Readonly<Record<string, ComponentDefinition>>;
   readonly connections: Readonly<Record<string, ConnectionDefinition>>;
   readonly tables?: Readonly<Record<string, TableDefinition>>;
-  /** Present only when observations are readable. Bound by Recording, never global to a Model. */
+  /** Present only when observations are readable: on a Recording, never on a Model. */
   readonly axis?: Axis;
 }
 
@@ -29,7 +28,6 @@ interface Description {
 export interface ComponentDefinition extends Description {
   readonly fields: Readonly<Record<string, FieldDefinition>>;
   readonly ports?: Readonly<Record<string, ComponentPort>>;
-  readonly operations?: readonly ('add' | 'set' | 'remove')[];
 }
 
 export interface ComponentPort {
@@ -41,7 +39,6 @@ export interface ComponentPort {
 export interface ConnectionDefinition extends Description {
   readonly fields: Readonly<Record<string, FieldDefinition>>;
   readonly roles: Readonly<Record<string, ConnectionRole>>;
-  readonly operations?: readonly ('add' | 'set' | 'remove' | 'reconnect')[];
 }
 
 export interface ConnectionRole {
@@ -52,35 +49,16 @@ export interface ConnectionRole {
 
 export interface TableDefinition extends Description {
   readonly fields: Readonly<Record<string, FieldDefinition>>;
-  readonly operations?: readonly ('insert' | 'set' | 'remove')[];
 }
 
-/**
- * Omitted creation inputs use defaults, then enforce requiredness. Remaining absent values read
- * as null and require nullable. Writable controls later set edits, not creation. Sampled fields
- * are observations, never inputs. Bounds apply only to scalar numeric inputs.
- */
+/** Sampled fields are what a monitor can stream; the rest are the model's data. Absent values
+ * read as null and require nullable. Bounds describe scalar numeric data. */
 export type FieldDefinition = {
   readonly label?: string;
   readonly description?: string;
   readonly nullable?: boolean;
+  readonly unit?: string;
 } & (
-  | {
-      readonly sampled: true;
-      readonly type: NumericType;
-      readonly unit?: string;
-      readonly writable?: never;
-      readonly required?: never;
-      readonly default?: never;
-      readonly bounds?: never;
-    }
-  | {
-      readonly sampled?: false;
-      readonly type: DataType;
-      readonly unit?: string;
-      readonly bounds?: Bounds;
-      readonly writable?: boolean;
-      readonly required?: boolean;
-      readonly default?: Value;
-    }
+  | { readonly sampled: true; readonly type: NumericType; readonly bounds?: never }
+  | { readonly sampled?: false; readonly type: DataType; readonly bounds?: Bounds }
 );

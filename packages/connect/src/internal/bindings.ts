@@ -1,48 +1,38 @@
 import type {
-  ModelService,
-  Document,
-  Model,
-  Recording,
-  Resource,
-  Input,
-  OpenInput,
   Command,
+  FieldSelection,
+  Input,
+  Model,
   Query,
   QueryBlock,
   QueryHeader,
   Queryable,
   QueryOptions,
+  Recording,
   RetainOptions,
-  MonitorConfig,
-  Edit,
-  ResourceRead,
-  ResourceWrite,
-  SaveOptions,
   Schema,
 } from '@latkit/model';
 import { blockBuffers, validateBlock, validateQuery, validateSchema } from '@latkit/model';
 import type { Peer, Reply } from './peer.js';
-import {
-  aborted,
-  decodeError,
-  deferred,
-  encodeError,
-  errorValue,
-  failure,
-  interrupt,
-} from './errors.js';
-import type { Deferred } from './errors.js';
+import { aborted, errorValue, failure, interrupt } from './errors.js';
 import { inspect, transferable } from './frame.js';
 
 import type { Kind } from './validation.js';
-import { record, recordOrEmpty, text, array, integer, validateState } from './validation.js';
-import { bytes, parts, checkedParts, readable } from './streams.js';
-type Instance = ModelService | Document | Model | Recording | Resource | Queryable;
+import {
+  record,
+  recordOrEmpty,
+  text,
+  array,
+  integer,
+  stateKeys,
+  validateState,
+} from './validation.js';
+import { bytes, readable } from './streams.js';
+type Instance = Model | Recording | Queryable;
 interface Reference {
   ref: number;
   kind: Kind;
   state: Record<string, unknown>;
-  methods: string[];
   credit?: number;
 }
 interface Local {
@@ -63,26 +53,13 @@ interface Remote {
   reference: Reference;
   state: Record<string, unknown>;
   listeners: Map<string, Set<(value: unknown) => void>>;
-  ready?: Deferred<void>;
-  done?: Deferred<unknown>;
   closed: boolean;
   closedNotified?: boolean;
 }
+/** Every method of a kind crosses; none is optional. */
 const methods: Record<Kind, readonly string[]> = {
-  service: ['open', 'document', 'model', 'recording'],
-  document: ['describe', 'query', 'retain', 'edit', 'save', 'reload', 'attach', 'export', 'close'],
-  model: ['parse', 'validate', 'call', 'monitor', 'reset', 'close'],
-  recording: ['describe', 'query', 'retain', 'commands', 'diagnostics', 'stop', 'export', 'close'],
-  resource: ['stat', 'read', 'write', 'close'],
-  queryable: ['describe', 'query', 'retain', 'close'],
-  stream: ['next', 'close'],
-};
-const required: Record<Kind, readonly string[]> = {
-  service: ['open', 'document', 'model', 'recording'],
-  document: ['describe', 'query', 'retain', 'close'],
-  model: ['reset', 'close'],
-  recording: ['describe', 'query', 'retain', 'commands', 'diagnostics', 'stop', 'close'],
-  resource: ['stat', 'read', 'close'],
+  model: ['describe', 'query', 'retain', 'close', 'monitor', 'run'],
+  recording: ['describe', 'query', 'retain', 'close', 'export'],
   queryable: ['describe', 'query', 'retain', 'close'],
   stream: ['next', 'close'],
 };
@@ -95,39 +72,26 @@ export class Bindings {
   private earlyBytes = 0;
   constructor(
     readonly peer: Peer,
-    root?: { kind: 'service' | 'queryable'; value: ModelService | Queryable },
+    root?: { kind: 'model' | 'queryable'; value: Model | Queryable },
   ) {
-    if (root)
-      this.locals.set(0, {
-        kind: root.kind,
-        value: root.value,
-        controller: new AbortController(),
-        off: [],
-        state: {},
-      });
     peer.invoke = this.invoke.bind(this);
     peer.event = this.event.bind(this);
     peer.orphan = this.orphan.bind(this);
     peer.dispose = this.dispose.bind(this);
-    if (root?.kind === 'queryable') {
-      const source = root.value as Queryable;
-      const entry = this.locals.get(0)!;
-      entry.state = this.metadata('queryable', source);
-      entry.off.push(
-        source.on('change', (change) => {
-          if (change.kind === 'closed') {
-            void peer.close();
-            return;
-          }
-          entry.state = this.metadata('queryable', source);
-          peer.notify(0, 'change', entry.state, change);
-        }),
-      );
-    }
+    if (!root) return;
+    const entry: Local = {
+      kind: root.kind,
+      value: root.value,
+      controller: new AbortController(),
+      off: [],
+      state: this.metadata(root.kind, root.value),
+    };
+    this.locals.set(0, entry);
+    this.watch(0, entry, root.kind, root.value);
   }
-  async connectRoot(kind: 'service' | 'queryable'): Promise<ModelService | Queryable> {
+  async connectRoot(kind: 'model' | 'queryable'): Promise<Model | Queryable> {
     return this.importReference(await this.peer.call(0, 'acquire', { kind }), kind) as
-      ModelService | Queryable;
+      Model | Queryable;
   }
   private checkLimit(stream = false): void {
     if (
@@ -138,51 +102,36 @@ export class Bindings {
     )
       throw failure('resource-limit', 'Reference limit exceeded.');
   }
-  private metadata(kind: Kind, value: Instance): Record<string, unknown> {
+  private metadata(kind: Exclude<Kind, 'stream'>, value: Instance): Record<string, unknown> {
     const v = value as unknown as Record<string, unknown>;
-    const keys =
-      kind === 'service'
-        ? ['id', 'label', 'formats']
-        : kind === 'document'
-          ? ['id', 'name', 'format', 'version', 'saved']
-          : kind === 'model'
-            ? ['id', 'label', 'documentId', 'routines']
-            : kind === 'recording'
-              ? [
-                  'id',
-                  'scope',
-                  'modelId',
-                  'documentId',
-                  'documentVersion',
-                  'status',
-                  'fields',
-                  'axis',
-                  'firstFrame',
-                  'frameCount',
-                  'range',
-                  'error',
-                  'version',
-                ]
-              : kind === 'queryable'
-                ? ['version']
-                : ['id', 'name', 'mediaType'];
     const state: Record<string, unknown> = {};
-    for (const key of keys)
-      if (v[key] !== undefined)
-        state[key] = key === 'error' && v[key] ? encodeError(v[key]) : v[key];
+    for (const key of stateKeys[kind]) if (v[key] !== undefined) state[key] = v[key];
     return state;
+  }
+  /** Tell the peer of each change, after the state it changed. The root closing ends the connection. */
+  private watch(ref: number, entry: Local, kind: Exclude<Kind, 'stream'>, value: Instance): void {
+    entry.off.push(
+      value.on('change', (update) => {
+        if (!this.locals.has(ref)) return;
+        if (ref === 0 && update.kind === 'closed') {
+          void this.peer.close();
+          return;
+        }
+        const state = this.metadata(kind, value);
+        const patch: Record<string, unknown> = {};
+        for (const key of Object.keys(state))
+          if (!Object.is(state[key], entry.state[key])) patch[key] = state[key];
+        entry.state = state;
+        this.peer.notify(ref, 'change', patch, update);
+      }),
+    );
   }
   private exportReference(
     kind: Exclude<Kind, 'stream'>,
     value: Instance,
     parent?: number,
   ): Reference {
-    try {
-      this.checkLimit();
-    } catch (error) {
-      if (kind === 'resource') void (value as Resource).close().catch(() => undefined);
-      throw error;
-    }
+    this.checkLimit();
     const ref = this.nextRef++;
     const entry: Local = {
       kind,
@@ -193,63 +142,9 @@ export class Bindings {
       state: this.metadata(kind, value),
     };
     this.locals.set(ref, entry);
-    const publish = (event: string, payload?: unknown): void => {
-      if (!this.locals.has(ref)) return;
-      const state = this.metadata(kind, value);
-      const patch: Record<string, unknown> = {};
-      for (const key of Object.keys(state))
-        if (!Object.is(state[key], entry.state[key])) patch[key] = state[key];
-      entry.state = state;
-      this.peer.notify(ref, event, patch, payload);
-    };
     try {
-      if (kind === 'document') {
-        const document = value as Document;
-        entry.off.push(document.on('change', (update) => publish('change', update)));
-        entry.off.push(document.on('saved', (saved) => publish('saved', saved)));
-      }
-      if (kind === 'queryable')
-        entry.off.push((value as Queryable).on('change', (update) => publish('change', update)));
-      if (kind === 'recording') {
-        const recording = value as Recording;
-        entry.off.push(recording.on('change', (update) => publish('change', update)));
-        void recording.ready.then(
-          () => publish('ready'),
-          (error) => publish('ready-error', encodeError(error)),
-        );
-        void recording.done.then(
-          (outcome) =>
-            publish(
-              'done',
-              outcome.status === 'failed'
-                ? { ...outcome, error: encodeError(outcome.error) }
-                : outcome,
-            ),
-          (error) => publish('done-error', encodeError(error)),
-        );
-      }
-      if (kind === 'model') {
-        const model = value as Model;
-        entry.off.push(model.on('routines', () => publish('routines')));
-        entry.off.push(model.on('reset', () => publish('reset')));
-        entry.off.push(
-          model.on('command', (event) =>
-            publish(
-              'command',
-              event.kind === 'failed' ? { ...event, error: encodeError(event.error) } : event,
-            ),
-          ),
-        );
-        entry.off.push(model.on('diagnostic', (event) => publish('diagnostic', event)));
-      }
-      return {
-        ref,
-        kind,
-        state: entry.state,
-        methods: methods[kind].filter(
-          (method) => typeof (value as unknown as Record<string, unknown>)[method] === 'function',
-        ),
-      };
+      this.watch(ref, entry, kind, value);
+      return { ref, kind, state: entry.state };
     } catch (error) {
       for (const off of entry.off) off();
       this.locals.delete(ref);
@@ -285,19 +180,12 @@ export class Bindings {
       state: {},
       credit,
     });
-    return { ref, kind: 'stream', state: {}, methods: ['next', 'close'], credit };
+    return { ref, kind: 'stream', state: {}, credit };
   }
   private descriptor(value: unknown, expected: Kind): Reference {
     const r = record(value);
-    if (
-      !integer(r.ref) ||
-      r.kind !== expected ||
-      !Array.isArray(r.methods) ||
-      !r.methods.every((v) => typeof v === 'string' && methods[expected].includes(v)) ||
-      !required[expected].every((method) => (r.methods as unknown[]).includes(method))
-    )
+    if (!integer(r.ref) || r.kind !== expected)
       throw failure('invalid-input', 'Invalid remote reference.');
-    record(r.state);
     validateState(expected, record(r.state));
     if (this.remotes.size >= this.peer.bounds.maxReferences)
       throw failure('resource-limit', 'Remote reference limit exceeded.');
@@ -314,48 +202,31 @@ export class Bindings {
     };
     this.remotes.set(reference.ref, remote);
     const output: Record<string, unknown> = {};
-    for (const key of Object.keys(reference.state))
-      Object.defineProperty(output, key, {
-        enumerable: true,
-        get: () =>
-          key === 'error' && remote.state[key] ? decodeError(remote.state[key]) : remote.state[key],
-      });
-    if (expected === 'recording') {
-      remote.ready = deferred<void>();
-      remote.done = deferred<unknown>();
-      output.ready = remote.ready.promise;
-      output.done = remote.done.promise;
-    }
-    if (
-      expected === 'document' ||
-      expected === 'recording' ||
-      expected === 'queryable' ||
-      expected === 'model'
-    )
-      output.on = (event: string, listener: (value: unknown) => void): (() => void) => {
-        if (remote.closed) throw failure('closed');
-        const listeners = remote.listeners.get(event) ?? new Set();
-        listeners.add(listener);
-        remote.listeners.set(event, listeners);
-        return () => {
-          listeners.delete(listener);
-        };
+    for (const key of stateKeys[expected])
+      Object.defineProperty(output, key, { enumerable: true, get: () => remote.state[key] });
+    output.on = (event: string, listener: (value: unknown) => void): (() => void) => {
+      if (remote.closed) throw failure('closed');
+      const listeners = remote.listeners.get(event) ?? new Set();
+      listeners.add(listener);
+      remote.listeners.set(event, listeners);
+      return () => {
+        listeners.delete(listener);
       };
+    };
     const call = async (method: string, args: unknown, signal?: AbortSignal): Promise<unknown> => {
       if (remote.closed) throw failure('closed');
       return this.peer.call(reference.ref, method, args, signal);
     };
-    const close = async (): Promise<void> => {
-      if (remote.closed) return;
-      try {
-        await call('close', null);
-      } finally {
-        this.closeRemote(remote);
-      }
-    };
-    for (const method of reference.methods) {
+    for (const method of methods[expected]) {
       if (method === 'close') {
-        output.close = close;
+        output.close = async (): Promise<void> => {
+          if (remote.closed) return;
+          try {
+            await call('close', null);
+          } finally {
+            this.closeRemote(remote);
+          }
+        };
         continue;
       }
       if (method === 'query') {
@@ -366,110 +237,38 @@ export class Bindings {
       }
       output[method] = async (...args: unknown[]): Promise<unknown> => {
         if (remote.closed) throw failure('closed');
-        const options = recordOrEmpty(
-          args[
-            method === 'retain' ||
-            method === 'describe' ||
-            method === 'reset' ||
-            method === 'stop' ||
-            method === 'export' ||
-            method === 'stat' ||
-            method === 'save' ||
-            method === 'reload'
-              ? 0
-              : 1
-          ],
-        );
+        const options = recordOrEmpty(args[method === 'monitor' || method === 'run' ? 1 : 0]);
         const signal = options.signal as AbortSignal | undefined;
-        let encoded: unknown = args[0] ?? null;
-        let result: unknown;
+        let encoded: unknown = null;
         const firstRef = this.nextRef;
         try {
-          switch (method) {
-            case 'open':
-              encoded = this.encodeInput(args[0] as OpenInput | undefined);
-              break;
-            case 'parse':
-              encoded = this.encodeInput(args[0] as Input);
-              break;
-            case 'validate':
-            case 'call':
-              encoded = {
-                command: this.encodeCommand(args[0] as Command, method === 'validate'),
-                options: method === 'call' ? { id: options.id } : {},
-              };
-              break;
-            case 'save': {
-              const save = options as SaveOptions;
-              encoded = {
-                to: save.to
-                  ? {
-                      resource: this.exportReference('resource', save.to.resource),
-                      base: save.to.base,
-                    }
-                  : undefined,
-              };
-              break;
-            }
-            case 'attach':
-              encoded = this.exportReference('resource', args[0] as Resource);
-              break;
-            case 'write': {
-              const request = args[0] as ResourceWrite;
-              encoded = {
-                base: request.base,
-                parts: this.exportStream(
-                  parts(request.parts, this.peer.blockBytes)[Symbol.asyncIterator](),
-                ),
-              };
-              break;
-            }
-            case 'export':
-            case 'describe':
-            case 'reset':
-            case 'stop':
-            case 'stat':
-              encoded = null;
-              break;
-            case 'retain':
-              encoded = { window: options.window, maxBytes: options.maxBytes };
-              break;
-            case 'reload':
-              encoded = { discardChanges: options.discardChanges };
-              break;
-          }
+          if (method === 'monitor') encoded = array(args[0]);
+          else if (method === 'run') encoded = this.encodeCommand(args[0] as Command);
+          else if (method === 'retain')
+            encoded = { window: options.window, maxBytes: options.maxBytes };
         } catch (error) {
           await Promise.allSettled(
             Array.from({ length: this.nextRef - firstRef }, (_, i) => this.release(firstRef + i)),
           );
           throw error;
         }
+        let result: unknown;
         try {
           result = await call(method, encoded, signal);
         } catch (error) {
           this.releaseOutgoing(encoded);
           throw error;
-        } finally {
-          if (method === 'validate') this.releaseOutgoing(encoded);
         }
         try {
-          if (method === 'open' || method === 'document')
-            return this.importReference(result, 'document');
-          if (method === 'model') return this.importReference(result, 'model');
           if (method === 'retain') return this.importReference(result, 'queryable');
-          if (method === 'monitor' || method === 'recording')
-            return this.importReference(result, 'recording');
-          if (method === 'read') return readable(this.importStream(result, signal));
+          if (method === 'monitor') return this.importReference(result, 'recording');
           if (method === 'export') {
             const data = record(result);
             return { ...data, stream: readable(this.importStream(data.stream, signal)) };
           }
-          if (method === 'parse') return this.decodeCommand(result);
-          if (method === 'describe') {
-            const problems = validateSchema(result);
-            if (problems.length) throw failure('invalid-input', 'Remote schema is invalid.');
-          }
-          return this.decodeResult(method, result);
+          if (method === 'describe' && validateSchema(result).length)
+            throw failure('invalid-input', 'Remote schema is invalid.');
+          return result;
         } catch (error) {
           this.orphan(result);
           throw error;
@@ -483,19 +282,6 @@ export class Bindings {
       this.recountEarly();
     }
     return output as unknown as Instance;
-  }
-  private decodeResult(method: string, result: unknown): unknown {
-    if (method === 'commands') {
-      const page = record(result);
-      return {
-        ...page,
-        items: array(page.items).map((item) => {
-          const entry = record(item);
-          return entry.status === 'failed' ? { ...entry, error: decodeError(entry.error) } : entry;
-        }),
-      };
-    }
-    return result;
   }
   private event(ref: number, event: string, state: unknown, value: unknown): void {
     const remote = this.remotes.get(ref);
@@ -518,11 +304,12 @@ export class Bindings {
       return;
     }
     if (remote.closed) return;
-    if (event === 'change' && record(value).kind === 'closed') remote.closedNotified = true;
     if (event === 'released') {
       this.closeRemote(remote);
       return;
     }
+    if (event !== 'change') throw failure('invalid-input', 'Unknown event.');
+    if (record(value).kind === 'closed') remote.closedNotified = true;
     const patch = record(state);
     validateState(remote.reference.kind, { ...remote.state, ...patch });
     for (const [key, value] of Object.entries(patch))
@@ -532,20 +319,7 @@ export class Bindings {
         writable: true,
         configurable: true,
       });
-    if (event === 'ready') remote.ready?.resolve();
-    else if (event === 'ready-error') remote.ready?.reject(decodeError(value));
-    else if (event === 'done') {
-      const outcome = record(value);
-      remote.done?.resolve(
-        outcome.status === 'failed' ? { ...outcome, error: decodeError(outcome.error) } : outcome,
-      );
-    } else if (event === 'done-error') remote.done?.reject(decodeError(value));
-    else {
-      let payload = value;
-      if (event === 'command' && record(value).kind === 'failed')
-        payload = { ...record(value), error: decodeError(record(value).error) };
-      for (const listener of remote.listeners.get(event) ?? []) listener(payload);
-    }
+    for (const listener of remote.listeners.get(event) ?? []) listener(value);
   }
   private recountEarly(): void {
     this.earlyBytes = 0;
@@ -559,8 +333,6 @@ export class Bindings {
   private closeRemote(remote: Remote): void {
     remote.dispose?.();
     remote.closed = true;
-    remote.ready?.reject(failure('closed'));
-    remote.done?.reject(failure('closed'));
     if (!remote.closedNotified) {
       remote.closedNotified = true;
       for (const listener of remote.listeners.get('change') ?? []) listener({ kind: 'closed' });
@@ -568,86 +340,34 @@ export class Bindings {
     remote.listeners.clear();
     this.remotes.delete(remote.reference.ref);
   }
-  private encodeInput(input: OpenInput | undefined, preflight = false): unknown {
-    if (input === undefined) return null;
-    if (input.kind === 'resource')
-      return {
-        kind: 'resource',
-        resource: this.exportReference(
-          'resource',
-          preflight
-            ? {
-                id: input.resource.id,
-                name: input.resource.name,
-                mediaType: input.resource.mediaType,
-                stat: input.resource.stat.bind(input.resource),
-                read: () =>
-                  Promise.reject(failure('unsupported', 'Validation cannot consume input.')),
-                close: () => Promise.resolve(),
-              }
-            : input.resource,
-        ),
-      };
-    if (input.kind === 'content')
-      return {
-        ...input,
-        stream: this.exportStream(
-          bytes(
-            preflight
-              ? new ReadableStream<Uint8Array>(
-                  {
-                    pull() {
-                      throw failure('unsupported', 'Validation cannot consume input.');
-                    },
-                  },
-                  { highWaterMark: 0 },
-                )
-              : input.stream,
-            this.peer.blockBytes,
-          )[Symbol.asyncIterator](),
-        ),
-      };
-    return input;
+  private encodeInput(input: Input): unknown {
+    return {
+      ...(input.name === undefined ? {} : { name: input.name }),
+      ...(input.mediaType === undefined ? {} : { mediaType: input.mediaType }),
+      stream: this.exportStream(bytes(input.stream, this.peer.blockBytes)[Symbol.asyncIterator]()),
+    };
   }
-  private decodeInput(value: unknown, empty = false, signal?: AbortSignal): OpenInput | undefined {
-    if (value === null) return undefined;
+  private decodeInput(value: unknown, signal?: AbortSignal): Input {
     const input = record(value);
-    if (input.kind === 'resource')
-      return {
-        kind: 'resource',
-        resource: this.importReference(input.resource, 'resource') as Resource,
-      };
-    if (input.kind === 'content')
-      return {
-        kind: 'content',
-        ...(input.name === undefined ? {} : { name: text(input.name) }),
-        ...(input.mediaType === undefined ? {} : { mediaType: text(input.mediaType) }),
-        stream: readable(this.importStream(input.stream, signal)),
-      };
-    if (input.kind === 'reference') return { kind: 'reference', value: text(input.value) };
-    if (empty && input.kind === 'empty')
-      return {
-        kind: 'empty',
-        format: text(input.format),
-        ...(input.name === undefined ? {} : { name: text(input.name) }),
-      };
-    throw failure('invalid-input', 'Unknown input kind.');
+    return {
+      ...(input.name === undefined ? {} : { name: text(input.name) }),
+      ...(input.mediaType === undefined ? {} : { mediaType: text(input.mediaType) }),
+      stream: readable(this.importStream(input.stream, signal)),
+    };
   }
-  private encodeCommand(command: Command, preflight = false): unknown {
+  private encodeCommand(command: Command): unknown {
+    const encode = (value: unknown): unknown =>
+      Array.isArray(value)
+        ? value.map(encode)
+        : value && typeof value === 'object'
+          ? this.encodeInput(value as Input)
+          : value;
     return {
       routine: command.routine,
       values: Object.fromEntries(
-        Object.entries(command.values).map(([key, value]) => [
-          key,
-          this.encodeValue(value, preflight),
-        ]),
+        Object.entries(command.values).map(([key, value]) => [key, encode(value)]),
       ),
     };
-  }
-  private encodeValue(value: unknown, preflight = false): unknown {
-    if (Array.isArray(value)) return value.map((item) => this.encodeValue(item, preflight));
-    if (value && typeof value === 'object') return this.encodeInput(value as Input, preflight);
-    return value;
   }
   private decodeCommand(value: unknown, signal?: AbortSignal): Command {
     const command = record(value);
@@ -655,7 +375,7 @@ export class Bindings {
       Array.isArray(v)
         ? v.map(decode)
         : v && typeof v === 'object'
-          ? this.decodeInput(v, false, signal)
+          ? this.decodeInput(v, signal)
           : v;
     return {
       routine: text(command.routine),
@@ -861,14 +581,7 @@ export class Bindings {
     if (ref === 0 && method === 'acquire') {
       if (record(args).kind !== entry.kind)
         throw failure('unsupported', 'Connection capability mismatch.');
-      return {
-        value: {
-          ref: 0,
-          kind: entry.kind,
-          state: this.metadata(entry.kind, entry.value!),
-          methods: [...methods[entry.kind]],
-        },
-      };
+      return { value: { ref: 0, kind: entry.kind, state: entry.state } };
     }
     if (!methods[entry.kind].includes(method))
       throw failure('unsupported', 'Unknown contract method.');
@@ -941,9 +654,7 @@ export class Bindings {
     }
     if (method === 'describe') return { value: await source.describe({ signal }) };
     if (method === 'export') {
-      const operation = (value as Document).export;
-      if (!operation) throw failure('unsupported');
-      const result = await operation.call(value, { signal });
+      const result = await (value as Recording).export({ signal });
       const stream = this.exportStream(
         bytes(result.stream, this.peer.blockBytes)[Symbol.asyncIterator](),
         ref,
@@ -953,180 +664,25 @@ export class Bindings {
         discard: () => this.release(stream.ref),
       };
     }
-    if (entry.kind === 'service') {
-      const service = value as ModelService;
-      let result: Document | Model | Recording;
-      if (method === 'open')
-        result = await service.open(this.decodeInput(args, true, signal), { signal });
-      else if (method === 'document') result = await service.document(text(args), { signal });
-      else if (method === 'recording') result = await service.recording(text(args), { signal });
-      else result = await service.model(text(args), { signal });
+    const model = value as Model;
+    if (method === 'monitor') {
+      const recording = await model.monitor(array(args) as unknown as FieldSelection[], {
+        signal,
+      });
       if (signal.aborted) {
-        await result.close();
+        await recording.close();
         throw failure('aborted');
       }
       try {
-        const descriptor = this.exportReference(
-          method === 'model' ? 'model' : method === 'recording' ? 'recording' : 'document',
-          result,
-        );
+        const descriptor = this.exportReference('recording', recording);
         return { value: descriptor, discard: () => this.release(descriptor.ref) };
       } catch (error) {
-        await result.close();
+        await recording.close();
         throw error;
       }
     }
-    if (entry.kind === 'document') {
-      const document = value as Document;
-      if (method === 'edit') {
-        if (!document.edit) throw failure('unsupported');
-        return {
-          value: await document.edit(array(args) as unknown as readonly Edit[], { signal }),
-        };
-      }
-      if (method === 'save') {
-        if (!document.save) throw failure('unsupported');
-        const request = record(args);
-        let to: SaveOptions['to'];
-        if (request.to !== undefined) {
-          const target = record(request.to);
-          if (target.base !== null) text(target.base);
-          to = {
-            resource: this.importReference(target.resource, 'resource') as Resource,
-            base: target.base as string | null,
-          };
-        }
-        return { value: await document.save({ signal, to }) };
-      }
-      if (method === 'reload') {
-        if (!document.reload) throw failure('unsupported');
-        const request = record(args);
-        if (request.discardChanges !== undefined && typeof request.discardChanges !== 'boolean')
-          throw failure('invalid-input');
-        return {
-          value: await document.reload({
-            signal,
-            discardChanges: request.discardChanges as boolean | undefined,
-          }),
-        };
-      }
-      if (method === 'attach') {
-        if (!document.attach) throw failure('unsupported');
-        await document.attach(this.importReference(args, 'resource') as Resource, { signal });
-        return { value: null };
-      }
-    }
-    if (entry.kind === 'model') {
-      const model = value as Model;
-      if (method === 'reset') {
-        await model.reset();
-        return { value: null };
-      }
-      if (method === 'parse') {
-        if (!model.parse) throw failure('unsupported');
-        const input = this.decodeInput(args, false, signal);
-        if (!input || input.kind === 'empty') throw failure('invalid-input');
-        return { value: this.encodeCommand(await model.parse(input, { signal })) };
-      }
-      if (method === 'validate' || method === 'call') {
-        const request = record(args),
-          command = this.decodeCommand(request.command, signal),
-          opts = record(request.options);
-        if (method === 'validate') {
-          if (!model.validate) throw failure('unsupported');
-          try {
-            return { value: await model.validate(command, { signal }) };
-          } finally {
-            await this.releaseIncoming(request.command);
-          }
-        }
-        if (!model.call) throw failure('unsupported');
-        if (opts.id !== undefined) text(opts.id);
-        return { value: await model.call(command, { signal, id: opts.id as string | undefined }) };
-      }
-      if (method === 'monitor') {
-        if (!model.monitor) throw failure('unsupported');
-        const recording = await model.monitor(record(args) as unknown as MonitorConfig, { signal });
-        if (signal.aborted) {
-          await recording.close();
-          throw failure('aborted');
-        }
-        try {
-          const descriptor = this.exportReference('recording', recording);
-          return { value: descriptor, discard: () => this.release(descriptor.ref) };
-        } catch (error) {
-          await recording.close();
-          throw error;
-        }
-      }
-    }
-    if (entry.kind === 'recording') {
-      const recording = value as Recording;
-      if (method === 'stop') {
-        await recording.stop();
-        return { value: null };
-      }
-      const page = record(args);
-      if (!integer(page.limit) || page.limit < 1) throw failure('invalid-input');
-      if (method === 'commands') {
-        if (page.offset !== undefined && !integer(page.offset)) throw failure('invalid-input');
-        const result = await recording.commands(
-          { limit: page.limit, offset: page.offset as number | undefined },
-          { signal },
-        );
-        return {
-          value: {
-            ...result,
-            items: result.items.map((item) =>
-              item.status === 'failed' ? { ...item, error: encodeError(item.error) } : item,
-            ),
-          },
-        };
-      }
-      if (method === 'diagnostics') {
-        if (page.after !== undefined && !integer(page.after)) throw failure('invalid-input');
-        return {
-          value: await recording.diagnostics(
-            { limit: page.limit, after: page.after as number | undefined },
-            { signal },
-          ),
-        };
-      }
-    }
-    if (entry.kind === 'resource') {
-      const resource = value as Resource;
-      if (method === 'stat') return { value: await resource.stat({ signal }) };
-      if (method === 'read') {
-        const request = record(args);
-        text(request.tag);
-        if (request.range !== undefined) {
-          const range = record(request.range);
-          if (!integer(range.offset) || !integer(range.length)) throw failure('invalid-input');
-        }
-        const stream = await resource.read(request as unknown as ResourceRead, { signal });
-        const descriptor = this.exportStream(
-          bytes(stream, this.peer.blockBytes)[Symbol.asyncIterator](),
-          ref,
-        );
-        return { value: descriptor, discard: () => this.release(descriptor.ref) };
-      }
-      if (method === 'write') {
-        if (!resource.write) throw failure('unsupported');
-        const request = record(args);
-        if (request.base !== null) text(request.base);
-        const parts = this.importStream(request.parts, signal);
-        try {
-          return {
-            value: await resource.write(
-              { base: request.base as string | null, parts: checkedParts(parts) },
-              { signal },
-            ),
-          };
-        } finally {
-          await parts.return?.();
-        }
-      }
-    }
+    if (method === 'run')
+      return { value: await model.run(this.decodeCommand(args, signal), { signal }) };
     throw failure('unsupported', 'Method is not implemented.');
   }
   private async release(ref: number): Promise<void> {
@@ -1144,10 +700,7 @@ export class Bindings {
         const children = [...this.locals]
           .filter(([, child]) => child.parent === ref)
           .map(([id]) => this.release(id));
-        await Promise.all([
-          entry.value && 'close' in entry.value ? entry.value.close() : undefined,
-          ...children,
-        ]);
+        await Promise.all([entry.value?.close(), ...children]);
       } finally {
         for (const off of entry.off) off();
         this.locals.delete(ref);
@@ -1156,43 +709,32 @@ export class Bindings {
     });
     return entry.closing;
   }
+  /** A descriptor this side exported: a reference, with its kind and state. */
+  private static described(value: Record<string, unknown>): boolean {
+    return integer(value.ref) && typeof value.kind === 'string' && !!value.state;
+  }
   private releaseOutgoing(value: unknown): void {
     if (!value || typeof value !== 'object') return;
     const v = value as Record<string, unknown>;
-    if (integer(v.ref) && typeof v.kind === 'string' && v.state && Array.isArray(v.methods)) {
-      void this.release(v.ref).catch(() => undefined);
+    if (Bindings.described(v)) {
+      void this.release(v.ref as number).catch(() => undefined);
       return;
     }
     for (const child of Object.values(v)) this.releaseOutgoing(child);
   }
-  private async releaseIncoming(value: unknown): Promise<void> {
-    if (!value || typeof value !== 'object') return;
-    const v = value as Record<string, unknown>;
-    if (integer(v.ref) && typeof v.kind === 'string' && v.state && Array.isArray(v.methods)) {
-      const remote = this.remotes.get(v.ref);
-      if (remote) this.closeRemote(remote);
-      await this.peer.call(v.ref, 'close', null);
-      return;
-    }
-    await Promise.all(Object.values(v).map((child) => this.releaseIncoming(child)));
-  }
   private orphan(value: unknown): void {
     if (!value || typeof value !== 'object') return;
     const v = value as Record<string, unknown>;
-    if (integer(v.ref) && typeof v.kind === 'string' && v.state && Array.isArray(v.methods)) {
-      this.early.delete(v.ref);
+    if (Bindings.described(v)) {
+      this.early.delete(v.ref as number);
       this.recountEarly();
-      void this.peer.call(v.ref, 'close', null).catch(() => undefined);
+      void this.peer.call(v.ref as number, 'close', null).catch(() => undefined);
       return;
     }
     for (const child of Object.values(v)) this.orphan(child);
   }
   private async dispose(): Promise<void> {
-    for (const remote of this.remotes.values()) {
-      remote.ready?.reject(failure('disconnected'));
-      remote.done?.reject(failure('disconnected'));
-      this.closeRemote(remote);
-    }
+    for (const remote of this.remotes.values()) this.closeRemote(remote);
     this.remotes.clear();
     this.early.clear();
     // Abort streams before waiting for close methods which may themselves be waiting on them.
