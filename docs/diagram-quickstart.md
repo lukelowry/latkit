@@ -22,8 +22,9 @@ view.request();
 ```
 
 Give the canvas an explicit CSS size. Type names and fields come from your model
-schema; a vertex's reference fields that name a drawn net are its ports. The application accepts editing proposals and owns
-persistence and undo. Destroy input, view, renderer, and GPU in that order.
+schema; a vertex's reference fields that name a drawn net are its ports. The
+application accepts editing proposals and owns persistence and undo. Destroy
+input, view, renderer, and GPU in that order.
 
-See the [package guide](../packages/diagram/README.md) for layout, grouping, field
-bindings, routing strategies, interaction, and offscreen rendering.
+See the [package guide](https://github.com/lukelowry/latkit/blob/main/packages/diagram/README.md)
+for layout, grouping, field bindings, routing strategies, interaction, and offscreen rendering.
