@@ -11,6 +11,7 @@ import type {
 } from '@latkit/diagram';
 import { GraphSource } from './source.js';
 import {
+  plugged,
   preset,
   presets,
   types,
@@ -20,7 +21,7 @@ import {
   deleteItems,
   moveGraph,
 } from './graph.js';
-import type { Graph, NodeType, Preset } from './graph.js';
+import type { BlockType, Graph, Preset } from './graph.js';
 import { data, effect, theme } from './presentation.js';
 import type { Settings } from './presentation.js';
 import './style.css';
@@ -84,16 +85,16 @@ const diagram = createDiagram({
   gpu,
   data: {
     source: model,
-    components: {
+    vertices: {
       Process: {
         position: 'position',
         labels: { field: 'name' },
       },
     },
-    connections: {
+    edges: {
       Signal: {
         route: 'orthogonal',
-        arrows: ['target'],
+        arrows: true,
       },
     },
   },
@@ -113,7 +114,7 @@ diagram.on('move', acceptMove);
 diagram.on('connect', acceptWire);
 view.request();`;
 $('#api-code').textContent = code;
-const shapeIcon = (type: NodeType) => {
+const shapeIcon = (type: BlockType) => {
   const drawing =
     type === 'Input'
       ? '<ellipse cx="12" cy="9" rx="9" ry="6"/>'
@@ -150,7 +151,7 @@ async function boot() {
   });
   const options = (): Options => ({
     ...theme(lightTheme()),
-    nodePadding:
+    vertexPadding:
       select('density').value === 'compact' ? 8 : select('density').value === 'spacious' ? 16 : 12,
     portSpacing:
       select('density').value === 'compact' ? 20 : select('density').value === 'spacious' ? 30 : 24,
@@ -171,13 +172,13 @@ async function boot() {
     const value = data(source, settings(), automatic);
     return {
       ...value,
-      components: Object.fromEntries(
-        Object.entries(value.components).map(([type, component]) => [
+      vertices: Object.fromEntries(
+        Object.entries(value.vertices).map(([type, vertex]) => [
           type,
           {
-            ...component,
-            labels: component.labels
-              ? { ...component.labels, overflow: select('overflow').value as 'wrap' | 'ellipsis' }
+            ...vertex,
+            labels: vertex.labels
+              ? { ...vertex.labels, overflow: select('overflow').value as 'wrap' | 'ellipsis' }
               : null,
           },
         ]),
@@ -264,12 +265,12 @@ async function boot() {
     button.onclick = () => choosePreset(entry.id);
     $('#presets').append(button);
   }
-  function add(type: NodeType, point?: Point) {
+  function add(type: BlockType, point?: Point) {
     const world = point ??
       diagram.toDiagram([canvas.clientWidth / 2, canvas.clientHeight / 2]) ?? [0, 0];
     const result = addBlock(history.current, type, world);
     commit(result.graph, 'Added ' + type.toLowerCase());
-    selected = [{ kind: 'component', type, id: result.node.id }];
+    selected = [{ kind: 'vertex', type, id: result.block.id }];
     diagram.select(selected);
     inspect();
   }
@@ -279,8 +280,7 @@ async function boot() {
     button.append(document.createTextNode(type));
     button.draggable = true;
     button.onclick = () => add(type);
-    button.ondragstart = (event) =>
-      event.dataTransfer?.setData('application/x-latkit-component', type);
+    button.ondragstart = (event) => event.dataTransfer?.setData('application/x-latkit-block', type);
     $('#palette-buttons').append(button);
   }
   canvas.ondragover = (event) => {
@@ -289,7 +289,7 @@ async function boot() {
   };
   canvas.ondrop = (event) => {
     event.preventDefault();
-    const type = event.dataTransfer?.getData('application/x-latkit-component') as NodeType;
+    const type = event.dataTransfer?.getData('application/x-latkit-block') as BlockType;
     if (!types.includes(type)) return;
     const rect = canvas.getBoundingClientRect();
     add(
@@ -323,17 +323,15 @@ async function boot() {
   }
   function inspect() {
     for (const button of document.querySelectorAll<HTMLButtonElement>('[data-action="delete"]'))
-      button.disabled = !selected.some(
-        (item) => item.kind === 'component' || item.kind === 'connection',
-      );
+      button.disabled = !selected.some((item) => item.kind === 'vertex' || item.kind === 'edge');
     const item = selected[0];
     $('#selection-empty').hidden = !!item;
     $('#selection-form').hidden = !item;
     if (!item) return;
-    const node = history.current.nodes.find((n) => n.id === item.id);
+    const block = history.current.blocks.find((n) => n.id === item.id);
     const wire = history.current.wires.find((n) => n.id === item.id);
     const group = history.current.groups[item.id];
-    $('#selected-name').textContent = node?.name ?? wire?.name ?? group?.label ?? item.id;
+    $('#selected-name').textContent = block?.name ?? wire?.name ?? group?.label ?? item.id;
     $('#selected-type').textContent =
       item.kind === 'group'
         ? 'Presentation group'
@@ -343,19 +341,19 @@ async function boot() {
           (selected.length > 1 ? ' · ' + selected.length + ' selected' : '');
     const input = check('rename');
     if (document.activeElement !== input)
-      input.value = node?.name ?? wire?.name ?? group?.label ?? '';
+      input.value = block?.name ?? wire?.name ?? group?.label ?? '';
     input.disabled = item.kind === 'port';
-    const entries = node
+    const entries = block
       ? [
-          ['Identity', node.id],
-          ['Position', node.position.map((v) => Math.round(v)).join(', ')],
-          ['Signal', node.signal.toFixed(2)],
-          ['Status', node.status ? 'Attention' : 'Normal'],
+          ['Identity', block.id],
+          ['Position', block.position.map((v) => Math.round(v)).join(', ')],
+          ['Signal', block.signal.toFixed(2)],
+          ['Status', block.status ? 'Attention' : 'Normal'],
         ]
       : wire
         ? [
             ['Identity', wire.id],
-            ['Endpoints', String(wire.ends.length)],
+            ['Ports', String(plugged(history.current, wire.id).length)],
             ['Routing', select('route').selectedOptions[0].text],
           ]
         : [
@@ -380,7 +378,7 @@ async function boot() {
     commit(
       {
         ...graph,
-        nodes: graph.nodes.map((node) => (node.id === item.id ? { ...node, name } : node)),
+        blocks: graph.blocks.map((block) => (block.id === item.id ? { ...block, name } : block)),
         wires: graph.wires.map((wire) => (wire.id === item.id ? { ...wire, name } : wire)),
         groups:
           item.kind === 'group'
@@ -407,8 +405,8 @@ async function boot() {
         connectGraph(history.current, proposal, select('free-drop').value === 'create'),
         proposal.replaces
           ? proposal.to
-            ? 'Reconnected endpoint'
-            : 'Disconnected endpoint'
+            ? 'Reconnected input'
+            : 'Disconnected input'
           : 'Connected signal',
       );
     } catch (error) {
@@ -464,11 +462,11 @@ async function boot() {
       const algorithm: LayoutOptions['algorithm'] =
         select('algorithm').value === 'grid'
           ? {
-              arrange: ({ nodes }) => {
-                const columns = Math.ceil(Math.sqrt(nodes.length));
-                const width = Math.max(220, ...nodes.map((node) => node.size[0] + 64));
-                const height = Math.max(160, ...nodes.map((node) => node.size[1] + 64));
-                return nodes.map((_, i) => [
+              arrange: ({ vertices }) => {
+                const columns = Math.ceil(Math.sqrt(vertices.length));
+                const width = Math.max(220, ...vertices.map((vertex) => vertex.size[0] + 64));
+                const height = Math.max(160, ...vertices.map((vertex) => vertex.size[1] + 64));
+                return vertices.map((_, i) => [
                   (i % columns) * width,
                   Math.floor(i / columns) * height,
                 ]);
@@ -482,7 +480,7 @@ async function boot() {
           algorithm,
           direction: select('direction').value as LayoutOptions['direction'],
           rankGap: 72,
-          nodeGap: 48,
+          vertexGap: 48,
         },
         measureText: (input, request) => gpu.measureText(input, request),
       });
@@ -494,9 +492,9 @@ async function boot() {
       for (const [type, field] of Object.entries(fields)) {
         if (field.values.kind !== 'vector') continue;
         const values = field.values;
-        const nodes = history.current.nodes.filter((node) => node.type === type);
+        const blocks = history.current.blocks.filter((block) => block.type === type);
         for (let i = 0; i < rowCount(field.rows); i++)
-          updated.set(nodes[rowAt(field.rows, i)].id, [
+          updated.set(blocks[rowAt(field.rows, i)].id, [
             numberAt(values.values, i * 2)!,
             numberAt(values.values, i * 2 + 1)!,
           ]);
@@ -504,9 +502,9 @@ async function boot() {
       commit(
         {
           ...history.current,
-          nodes: history.current.nodes.map((node) => ({
-            ...node,
-            position: updated.get(node.id) ?? node.position,
+          blocks: history.current.blocks.map((block) => ({
+            ...block,
+            position: updated.get(block.id) ?? block.position,
           })),
         },
         'Applied ' + select('algorithm').selectedOptions[0].text.toLowerCase() + ' layout',
@@ -593,7 +591,7 @@ async function boot() {
     'zoom-out': () => diagram.zoomBy(0.8),
     delete: () => {
       const ids = selected
-        .filter((item) => item.kind === 'component' || item.kind === 'connection')
+        .filter((item) => item.kind === 'vertex' || item.kind === 'edge')
         .map((item) => item.id);
       if (ids.length) {
         commit(deleteItems(history.current, ids), 'Removed selection');
@@ -699,8 +697,8 @@ async function boot() {
     const stats = diagram.stats();
     if (stats.frames === lastFrames) return;
     lastFrames = stats.frames;
-    $('#nodes').textContent = stats.components.toLocaleString();
-    $('#wires').textContent = stats.connections.toLocaleString();
+    $('#blocks').textContent = stats.vertices.toLocaleString();
+    $('#wires').textContent = stats.edges.toLocaleString();
     $('#draws').textContent = String(stats.drawCalls);
     $('#prepare').textContent = stats.prepareMs.toFixed(1);
     $('#zoom').textContent = Math.round((diagram.getCamera()?.scale[0] ?? 1) * 100) + '%';
@@ -711,8 +709,8 @@ async function boot() {
       const time = performance.now() / 1000;
       source.publish({
         ...history.current,
-        nodes: history.current.nodes.map((node, i) => ({
-          ...node,
+        blocks: history.current.blocks.map((block, i) => ({
+          ...block,
           signal: (Math.sin(time + i * 0.7) + 1) / 2,
         })),
         wires: history.current.wires.map((wire, i) => ({
@@ -745,7 +743,7 @@ async function boot() {
   historyButtons();
   inspect();
   view.request();
-  message('Control loop ready. Drag a port to make a connection.', false);
+  message('Control loop ready. Drag from a port to draw a wire.', false);
   return { gpu, diagram, source, view, errors, choosePreset, exportImage };
 }
 const ready = boot().catch((error: unknown) => {

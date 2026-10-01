@@ -62,10 +62,10 @@ afterEach(() => vi.restoreAllMocks());
 it('renders through the unified owner and publishes picking after submission', async () => {
   const f = await fixture();
   try {
-    expect(f.diagram.locate({ kind: 'component', type: 'Task', id: 'n0' })).toBeNull();
+    expect(f.diagram.locate({ kind: 'vertex', type: 'Task', id: 'n0' })).toBeNull();
     await f.draw();
-    const point = f.diagram.locate({ kind: 'component', type: 'Task', id: 'n0' })!;
-    expect(f.diagram.hitTest(point)[0]).toMatchObject({ kind: 'component', id: 'n0', row: 0 });
+    const point = f.diagram.locate({ kind: 'vertex', type: 'Task', id: 'n0' })!;
+    expect(f.diagram.hitTest(point)[0]).toMatchObject({ kind: 'vertex', id: 'n0', row: 0 });
     expect(f.diagram.stats().frames).toBe(1);
     expect(f.fake.queue.submit).toHaveBeenCalledTimes(1);
   } finally {
@@ -87,7 +87,7 @@ it('reuses geometry and uploads on camera and focus changes', async () => {
     expect(f.source.queries).toBe(reads);
     // Uniforms change, but the geometry and text are resident.
     expect(f.gpu.stats().uploadedBytes - before).toBeLessThan(4096);
-    f.diagram.select([{ kind: 'component', type: 'Task', id: 'n0' }]);
+    f.diagram.select([{ kind: 'vertex', type: 'Task', id: 'n0' }]);
     await f.draw();
     expect(f.source.queries).toBe(reads);
   } finally {
@@ -100,7 +100,7 @@ it('preserves presented picking when a sibling fails to encode', async () => {
   const f = await fixture();
   try {
     await f.draw();
-    const before = f.diagram.locate({ kind: 'component', type: 'Task', id: 'n0' });
+    const before = f.diagram.locate({ kind: 'vertex', type: 'Task', id: 'n0' });
     f.diagram.panBy(100, 0);
     const bad = {
       prepare: () => Promise.resolve(),
@@ -119,7 +119,7 @@ it('preserves presented picking when a sibling fails to encode', async () => {
         timeMs: 0,
       }),
     ).rejects.toThrow('sibling failed');
-    expect(f.diagram.locate({ kind: 'component', type: 'Task', id: 'n0' })).toEqual(before);
+    expect(f.diagram.locate({ kind: 'vertex', type: 'Task', id: 'n0' })).toEqual(before);
     target.destroy();
   } finally {
     f.diagram.destroy();
@@ -131,20 +131,20 @@ it('keeps drag previews separate from accepted positions', async () => {
   const f = await fixture();
   try {
     await f.draw();
-    const ref = { kind: 'component' as const, type: 'Task', id: 'n0' },
+    const ref = { kind: 'vertex' as const, type: 'Task', id: 'n0' },
       api = interaction(f.diagram);
-    const before = api.scene()!.nodes[0].x;
+    const before = api.scene()!.vertices[0].x;
     api.preview([ref], [24, 0]);
     await f.draw();
-    expect(api.scene()!.nodes[0].x).toBe(before + 24);
+    expect(api.scene()!.vertices[0].x).toBe(before + 24);
     api.preview([ref], [40, 0]);
     await f.draw();
-    expect(api.scene()!.nodes[0].x).toBe(before + 40);
+    expect(api.scene()!.vertices[0].x).toBe(before + 40);
     api.preview([], null);
     await f.draw();
-    expect(api.scene()!.nodes[0].x).toBe(before);
+    expect(api.scene()!.vertices[0].x).toBe(before);
     const move = api.move([ref], [24, 8])!;
-    expect(move.moves[0].position).toEqual([before + 24, api.scene()!.nodes[0].y + 8]);
+    expect(move.moves[0].position).toEqual([before + 24, api.scene()!.vertices[0].y + 8]);
   } finally {
     f.diagram.destroy();
     f.target.destroy();
@@ -184,22 +184,22 @@ it('releases subscriptions and never closes borrowed sources', async () => {
   expect(f.source.listeners.size).toBe(0);
 });
 
-it('accepts sparse movement without moving uncovered components', async () => {
+it('accepts sparse movement without moving uncovered vertices', async () => {
   const f = await fixture();
   try {
     await f.draw();
     const api = interaction(f.diagram),
-      before = api.scene()!.nodes.map((n) => [n.x, n.y]);
-    const proposal = api.move([{ kind: 'component', type: 'Task', id: 'n0' }], [0, 24])!;
-    f.diagram.setComponent('Task', { position: proposal.positions.Task });
+      before = api.scene()!.vertices.map((n) => [n.x, n.y]);
+    const proposal = api.move([{ kind: 'vertex', type: 'Task', id: 'n0' }], [0, 24])!;
+    f.diagram.setVertex('Task', { position: proposal.positions.Task });
     await f.draw();
     expect(
       api
         .scene()!
-        .nodes.slice(1)
+        .vertices.slice(1)
         .map((n) => [n.x, n.y]),
     ).toEqual(before.slice(1));
-    expect(api.scene()!.nodes[0].y).toBe(before[0][1] + 24);
+    expect(api.scene()!.vertices[0].y).toBe(before[0][1] + 24);
   } finally {
     f.diagram.destroy();
     f.target.destroy();
@@ -214,7 +214,7 @@ it('patches movement buffers and keeps shaped text resident', async () => {
     const before = f.gpu.stats(),
       reads = f.source.queries,
       api = interaction(f.diagram);
-    api.preview([{ kind: 'component', type: 'Task', id: 'n0' }], [0, 8]);
+    api.preview([{ kind: 'vertex', type: 'Task', id: 'n0' }], [0, 8]);
     await f.draw();
     await f.gpu.idle();
     expect(f.source.queries).toBe(reads);
@@ -232,11 +232,11 @@ it('moves nested collapsed groups without losing routes or accumulating geometry
     f.diagram.setData({
       ...data(f.source),
       groups: {
-        outer: { label: 'Outer', components: {}, collapsed: true },
+        outer: { label: 'Outer', vertices: {}, collapsed: true },
         inner: {
           label: 'Inner',
           parent: 'outer',
-          components: { Task: { kind: 'ids', ids: ['n0', 'n1'] } },
+          vertices: { Task: { kind: 'ids', ids: ['n0', 'n1'] } },
         },
       },
     });
@@ -246,7 +246,7 @@ it('moves nested collapsed groups without losing routes or accumulating geometry
     const bounds = [...base.groups.find((g) => g.id === 'outer')!.bounds];
     const refs = [
       { kind: 'group' as const, id: 'outer' },
-      { kind: 'component' as const, type: 'Task', id: 'n0' },
+      { kind: 'vertex' as const, type: 'Task', id: 'n0' },
     ];
     expect(api.move(refs, [0, 24])!.moves).toHaveLength(2);
     api.preview(refs, [0, 24]);
@@ -255,12 +255,12 @@ it('moves nested collapsed groups without losing routes or accumulating geometry
       box = moved.groups.find((g) => g.id === 'outer')!.bounds;
     expect(box[0]).toBe(bounds[0]);
     expect(box[1]).toBe(bounds[1] + 24);
-    expect(moved.nodes.map((node) => node.visible)).toEqual([false, false, true, true]);
+    expect(moved.vertices.map((vertex) => vertex.visible)).toEqual([false, false, true, true]);
     expect(moved.edges[1].paths.length).toBeGreaterThan(0);
     expect(moved.bytes - moved.routeBytes).toBe(base.bytes - base.routeBytes);
     api.preview(refs, [0, 48]);
     await f.draw();
-    expect(api.scene()!.nodes[0].y).toBe(base.nodes[0].y + 48);
+    expect(api.scene()!.vertices[0].y).toBe(base.vertices[0].y + 48);
     api.preview([], null);
     await f.draw();
     expect(api.scene()!.groups.find((g) => g.id === 'outer')!.bounds).toEqual(bounds);
@@ -274,7 +274,7 @@ it('preserves surviving selection and removes deleted identities only after subm
   const f = await fixture();
   try {
     await f.draw();
-    const refs = [0, 3].map((n) => ({ kind: 'component' as const, type: 'Task', id: 'n' + n }));
+    const refs = [0, 3].map((n) => ({ kind: 'vertex' as const, type: 'Task', id: 'n' + n }));
     f.diagram.select(refs);
     const changes = vi.fn();
     f.diagram.on('select', changes);
@@ -297,23 +297,23 @@ it('invalidates routes when shapes, port anchors, or routing clearance change', 
     await f.draw();
     const api = interaction(f.diagram);
     const original = api.scene()!.edges[0].paths;
-    f.diagram.setComponent('Task', { shape: 'diamond' });
+    f.diagram.setVertex('Task', { shape: 'diamond' });
     await f.draw();
     const changed = api.scene()!;
     expect(changed.edges[0].paths).not.toBe(original);
-    const end = changed.nodes[0].ports.find((port) => port.name === 'output')!.position;
+    const end = changed.vertices[0].ports.find((port) => port.name === 'output')!.position;
     expect(
       changed.edges[0].paths.flat().some((point) => point[0] === end[0] && point[1] === end[1]),
     ).toBe(true);
-    f.diagram.setComponent('Task', {
+    f.diagram.setVertex('Task', {
       shape: 'rounded',
       ports: { input: { side: 'right' }, output: { side: 'left' } },
     });
     await f.draw();
     const rewired = api.scene()!;
     for (const edge of rewired.edges)
-      for (const endpoint of edge.endpoints) {
-        const port = rewired.nodes[endpoint.node].ports.find((p) => p.name === endpoint.port)!;
+      for (const end of edge.ends) {
+        const port = rewired.vertices[end.vertex].ports.find((p) => p.name === end.port)!;
         expect(
           edge.paths
             .flat()
@@ -362,21 +362,21 @@ it('animates accepted positions with coherent picking and one native read per re
     f.diagram.setData(data(f.source, true));
     await render(0);
     f.diagram.setCamera(f.diagram.getCamera()!);
-    const ref = { kind: 'component' as const, type: 'Task', id: 'n0' };
-    const before = interaction(f.diagram).scene()!.nodes[0].y;
+    const ref = { kind: 'vertex' as const, type: 'Task', id: 'n0' };
+    const before = interaction(f.diagram).scene()!.vertices[0].y;
     f.source.xy[1] += 80;
     f.source.update();
     f.diagram.setData(data(f.source, true), { animate: true });
     await render(20);
     const reads = f.source.queries;
-    expect(interaction(f.diagram).scene()!.nodes[0].y).toBe(before);
+    expect(interaction(f.diagram).scene()!.vertices[0].y).toBe(before);
     await render(120);
-    const node = interaction(f.diagram).scene()!.nodes[0];
-    expect(node.y).toBeGreaterThan(before);
-    expect(node.y).toBeLessThan(before + 80);
+    const vertex = interaction(f.diagram).scene()!.vertices[0];
+    expect(vertex.y).toBeGreaterThan(before);
+    expect(vertex.y).toBeLessThan(before + 80);
     expect(f.diagram.hitTest(f.diagram.locate(ref)!).some((hit) => hit.id === 'n0')).toBe(true);
     await render(220);
-    expect(interaction(f.diagram).scene()!.nodes[0].y).toBe(before + 80);
+    expect(interaction(f.diagram).scene()!.vertices[0].y).toBe(before + 80);
     expect(f.source.queries).toBe(reads);
     expect(f.diagram.animating).toBe(false);
     f.diagram.setOptions({ motion: 'reduce' });
@@ -384,7 +384,7 @@ it('animates accepted positions with coherent picking and one native read per re
     f.source.update();
     f.diagram.setData(data(f.source, true), { animate: true });
     await render(240);
-    expect(interaction(f.diagram).scene()!.nodes[0].y).toBe(before + 160);
+    expect(interaction(f.diagram).scene()!.vertices[0].y).toBe(before + 160);
     expect(f.diagram.animating).toBe(false);
   } finally {
     f.diagram.destroy();
@@ -399,7 +399,7 @@ it('restores accepted positions when a drag interrupts and cancels a layout tran
     f.gpu.render({ views: [{ renderer: f.diagram, target: f.target }], timeMs });
   try {
     const api = interaction(f.diagram),
-      ref = { kind: 'component' as const, type: 'Task', id: 'n0' };
+      ref = { kind: 'vertex' as const, type: 'Task', id: 'n0' };
     f.diagram.setOptions({ motion: 'full', animationMs: 200 });
     f.diagram.setData(data(f.source, true));
     await render(0);
@@ -412,7 +412,7 @@ it('restores accepted positions when a drag interrupts and cancels a layout tran
     await render(120);
     api.preview([], null);
     await render(140);
-    expect(api.scene()!.nodes[0].y).toBe(80);
+    expect(api.scene()!.vertices[0].y).toBe(80);
     expect(f.diagram.animating).toBe(false);
   } finally {
     f.diagram.destroy();
@@ -425,7 +425,7 @@ it('settles immediately when animation is disabled or above its configured size 
   try {
     f.diagram.setData(data(f.source, true));
     await f.draw();
-    f.diagram.setOptions({ animationMaxComponents: 2, motion: 'full', animationMs: 0 });
+    f.diagram.setOptions({ animationMaxVertices: 2, motion: 'full', animationMs: 0 });
     f.diagram.fit({ animate: true });
     await f.draw();
     expect(f.diagram.getCamera()!.scale.every(Number.isFinite)).toBe(true);
@@ -434,7 +434,7 @@ it('settles immediately when animation is disabled or above its configured size 
     f.source.update();
     f.diagram.setData(data(f.source, true), { animate: true });
     await f.draw();
-    expect(interaction(f.diagram).scene()!.nodes[0].y).toBe(80);
+    expect(interaction(f.diagram).scene()!.vertices[0].y).toBe(80);
     expect(f.diagram.animating).toBe(false);
   } finally {
     f.diagram.destroy();

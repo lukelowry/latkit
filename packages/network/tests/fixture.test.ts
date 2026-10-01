@@ -35,5 +35,5 @@ it('publishes stable native recording axes with double-precision positions', asy
   }
   expect(values(a[0], 'z')[0]).toBe(source.observations[0][8]);
   expect(values(b[0], 'z')[0]).toBe(source.observations[5][8]);
-  expect(source.linksQueries).toBe(0);
+  expect(source.endsQueries).toBe(0);
 });

@@ -35,7 +35,7 @@
             <div id="presets" class="preset-list"></div>
           </section>
           <section class="control-section">
-            <h2>Layout & connections</h2>
+            <h2>Layout & wires</h2>
             <label class="field"
               >Arrangement<select id="algorithm">
                 <option value="layered">Layered</option>
@@ -58,9 +58,9 @@
               </select></label
             >
             <label class="field"
-              >Connections<select id="appearance">
+              >Wires<select id="appearance">
                 <option value="wire">Wires</option>
-                <option value="tag">Endpoint tags</option>
+                <option value="tag">Tags</option>
               </select></label
             >
             <div class="toggle-row">
@@ -109,7 +109,7 @@
                 <option value="rectangle">Rectangle</option>
                 <option value="ellipse">Ellipse</option>
                 <option value="diamond">Diamond</option>
-                <option value="mixed">By component type</option>
+                <option value="mixed">By block type</option>
               </select></label
             >
             <label class="field"
@@ -254,8 +254,8 @@
           </p>
         </div>
         <div class="performance">
-          <span><strong id="nodes">—</strong> blocks</span
-          ><span><strong id="wires">—</strong> connections</span
+          <span><strong id="blocks">—</strong> blocks</span
+          ><span><strong id="wires">—</strong> wires</span
           ><span><strong id="draws">—</strong> draws</span
           ><span class="performance-tail"><strong id="prepare">—</strong> ms preparation</span>
         </div>
@@ -273,7 +273,7 @@
               <path d="m26 25 14 6-7 2-2 7Z" />
             </svg>
             <h2>Selection</h2>
-            <p>Select a block, port, connection, or group to inspect it.</p>
+            <p>Select a block, port, wire, or group to inspect it.</p>
           </div>
           <form id="selection-form" hidden>
             <h2 id="selected-name"></h2>
@@ -288,8 +288,8 @@
             </div>
           </form>
           <section class="inspector-section">
-            <h3>Add a component</h3>
-            <div id="palette-buttons" class="component-palette"></div>
+            <h3>Add a block</h3>
+            <div id="palette-buttons" class="block-palette"></div>
             <p class="small-note">Click to add at the center, or drag onto the canvas.</p>
           </section>
           <section id="group-section" class="inspector-section" hidden>
@@ -320,8 +320,8 @@
             <li>
               <strong>Go beyond pairs</strong>
               <p>
-                The control loop branches one signal to two destinations. Connections can have many
-                endpoints.
+                The control loop branches one signal to two destinations. A wire can join many
+                ports.
               </p>
             </li>
             <li>

@@ -22,7 +22,7 @@ Use an ESM bundler and a WebGPU-capable browser. Supply your data through a
 
 ## Draw a network
 
-Here, `source` has a `node` type with a two-component `position` field and a
+Here, `source` has a `Bus` type with a two-component `position` field and a
 numeric `load` field. `canvas` is an application-owned HTML canvas with a CSS size.
 
 ```ts
@@ -34,9 +34,8 @@ const network = createNetwork({
   gpu,
   data: {
     source,
-    coordinates: 'cartesian',
     vertices: {
-      node: {
+      Bus: {
         position: 'position',
         color: { field: 'load', domain: [0, 1], colormap: colormaps.viridis },
       },

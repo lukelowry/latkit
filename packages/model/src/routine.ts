@@ -32,7 +32,8 @@ export type Parameter = {
           readonly type: 'choice';
           readonly choices: readonly { readonly id: string; readonly label: string }[];
         }
-      | { readonly type: 'element'; readonly table: string }
+      /** The id of a row of type `to`. */
+      | { readonly type: 'reference'; readonly to: string }
     ) &
       (
         | { readonly multiple?: false; readonly default?: string }

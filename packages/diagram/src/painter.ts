@@ -424,7 +424,7 @@ export class Painter {
         options.outlineColor,
         0,
       );
-      text(group.label, [b[0] + options.nodePadding, b[1] + options.nodePadding]);
+      text(group.label, [b[0] + options.vertexPadding, b[1] + options.vertexPadding]);
     }
     for (const edge of scene.edges)
       if (edge.visible && edge.paths.length) {
@@ -479,54 +479,54 @@ export class Painter {
           text(edge.label, [box[0] + 3, box[1] + 3]);
         }
       }
-    for (const node of scene.nodes)
-      if (node.visible) {
+    for (const vertex of scene.vertices)
+      if (vertex.visible) {
         add(
-          node.hit,
-          [node.x, node.y, node.width, node.height],
-          node.color,
+          vertex.hit,
+          [vertex.x, vertex.y, vertex.width, vertex.height],
+          vertex.color,
           options.outlineColor,
-          ['rounded', 'rectangle', 'ellipse', 'diamond'].indexOf(node.shape),
+          ['rounded', 'rectangle', 'ellipse', 'diamond'].indexOf(vertex.shape),
           0,
           0,
-          node.shade,
+          vertex.shade,
           0,
-          node.radius,
-          node.status,
+          vertex.radius,
+          vertex.status,
         );
-        text(node.label, [
-          node.x + (node.width - node.label.width) / 2,
-          node.options.labelPosition !== 'header'
-            ? node.y + (node.height - node.label.height) / 2
-            : node.y +
-              (node.shape === 'diamond'
-                ? node.height / 4
-                : node.shape === 'ellipse'
-                  ? (node.height * (1 - Math.SQRT1_2)) / 2
+        text(vertex.label, [
+          vertex.x + (vertex.width - vertex.label.width) / 2,
+          vertex.options.labelPosition !== 'header'
+            ? vertex.y + (vertex.height - vertex.label.height) / 2
+            : vertex.y +
+              (vertex.shape === 'diamond'
+                ? vertex.height / 4
+                : vertex.shape === 'ellipse'
+                  ? (vertex.height * (1 - Math.SQRT1_2)) / 2
                   : 0) +
-              options.nodePadding +
-              (node.ports.some((p) => p.side === 'top') ? options.fontSizePx * 1.5 : 0),
+              options.vertexPadding +
+              (vertex.ports.some((p) => p.side === 'top') ? options.fontSizePx * 1.5 : 0),
         ]);
-        for (const port of node.ports) {
+        for (const port of vertex.ports) {
           const p = port.position;
           add(
-            { ...node.hit, kind: 'port', port: port.name },
+            { ...vertex.hit, kind: 'port', port: port.name },
             [p[0], p[1], options.portSizePx, options.portSizePx],
             port.color,
             port.color,
             6,
             0,
             0,
-            node.shade,
+            vertex.shade,
             0,
             0,
             port.status,
             [
-              port.normal[0] * (port.definition.direction === 'in' ? -1 : 1),
-              port.normal[1] * (port.definition.direction === 'in' ? -1 : 1),
+              port.normal[0] * (port.direction === 'in' ? -1 : 1),
+              port.normal[1] * (port.direction === 'in' ? -1 : 1),
               port.marker === 'diamond'
                 ? 2
-                : port.marker === 'directional' && port.definition.direction !== 'both'
+                : port.marker === 'directional' && port.direction !== undefined
                   ? 1
                   : 0,
               0,
@@ -544,14 +544,14 @@ export class Painter {
               ? p[1] -
                 port.label.height -
                 6 -
-                (node.shape === 'diamond'
-                  ? ((port.label.width + 12) * node.height) / (2 * node.width)
+                (vertex.shape === 'diamond'
+                  ? ((port.label.width + 12) * vertex.height) / (2 * vertex.width)
                   : 0)
               : port.side === 'top'
                 ? p[1] +
                   6 +
-                  (node.shape === 'diamond'
-                    ? ((port.label.width + 12) * node.height) / (2 * node.width)
+                  (vertex.shape === 'diamond'
+                    ? ((port.label.width + 12) * vertex.height) / (2 * vertex.width)
                     : 0)
                 : p[1] - port.label.height / 2;
           text(port.label, [left, top]);

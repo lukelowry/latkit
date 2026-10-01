@@ -1,10 +1,10 @@
 import { createCanvasInput, inputModifiers, wheelDelta } from '@latkit/gpu';
-import type { Diagram, ConnectionGesture } from './diagram.js';
+import type { Diagram, ConnectProposal } from './diagram.js';
 import { interaction } from './diagram.js';
 import type { DiagramItem, DiagramHit, Point } from './data.js';
 import { itemKey } from './data.js';
 import { positive } from './config.js';
-import { ConnectionSession } from './connection.js';
+import { ConnectSession } from './connect.js';
 
 export interface InputOptions {
   readonly diagram: Diagram;
@@ -16,12 +16,12 @@ export interface InputOptions {
   readonly backgroundDrag?: 'pan' | 'select';
   readonly dragThresholdPx?: number;
   readonly touchDragThresholdPx?: number;
-  readonly connectionRadiusPx?: number;
+  readonly connectRadiusPx?: number;
   readonly autoPan?: boolean;
   readonly autoPanMarginPx?: number;
   readonly autoPanSpeedPx?: number;
   /** Additional application policy, after native port type/direction checks. Must be synchronous. */
-  readonly canConnect?: (proposal: ConnectionGesture) => boolean;
+  readonly canConnect?: (proposal: ConnectProposal) => boolean;
 }
 interface Drag {
   id: number;
@@ -35,7 +35,7 @@ interface Drag {
   hit?: DiagramHit;
   selection: readonly DiagramItem[];
   revision: number;
-  connection?: ConnectionSession;
+  session?: ConnectSession;
   target: DiagramItem | null;
   blocked: boolean;
 }
@@ -45,7 +45,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
     mode = options.interaction ?? 'navigate';
   const threshold = positive(options.dragThresholdPx ?? 4, 'dragThresholdPx', true);
   const touchThreshold = positive(options.touchDragThresholdPx ?? 8, 'touchDragThresholdPx', true);
-  const targetRadius = positive(options.connectionRadiusPx ?? 18, 'connectionRadiusPx');
+  const targetRadius = positive(options.connectRadiusPx ?? 18, 'connectRadiusPx');
   const margin = positive(options.autoPanMarginPx ?? 32, 'autoPanMarginPx');
   const speed = positive(options.autoPanSpeedPx ?? 480, 'autoPanSpeedPx', true);
   if (mode === 'none') return () => {};
@@ -135,8 +135,8 @@ export function attachDiagramInput(options: InputOptions): () => void {
           Math.max(current.world[1], world[1]),
         ],
       });
-    } else if (current.kind === 'connect' && current.connection) {
-      const session = current.connection;
+    } else if (current.kind === 'connect' && current.session) {
+      const session = current.session;
       const hits = diagram.hitTest(current.last, {
         radiusPx: Math.max(targetRadius, current.threshold * 2),
       });
@@ -216,10 +216,9 @@ export function attachDiagramInput(options: InputOptions): () => void {
           ? 'press'
           : space || event.button === 1
             ? 'pan'
-            : mode === 'edit' &&
-                (hit?.kind === 'port' || (event.altKey && hit?.kind === 'component'))
+            : mode === 'edit' && (hit?.kind === 'port' || (event.altKey && hit?.kind === 'vertex'))
               ? 'connect'
-              : mode === 'edit' && (hit?.kind === 'component' || hit?.kind === 'group')
+              : mode === 'edit' && (hit?.kind === 'vertex' || hit?.kind === 'group')
                 ? 'move'
                 : !touch &&
                     (event.shiftKey ||
@@ -288,7 +287,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
           current.hit.kind !== 'group' &&
           api.scene()
         )
-          current.connection = new ConnectionSession(
+          current.session = new ConnectSession(
             api.scene()!,
             current.hit,
             api.options().routeClearance,
@@ -332,7 +331,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
         else if (!current.additive) setSelection([]);
       } else if (
         current.kind === 'connect' &&
-        current.connection &&
+        current.session &&
         world &&
         !current.blocked &&
         p[0] >= 0 &&
@@ -340,7 +339,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
         p[0] <= canvas.clientWidth &&
         p[1] <= canvas.clientHeight
       ) {
-        const proposal = current.connection.proposal(current.target, snapped(world), p);
+        const proposal = current.session.proposal(current.target, snapped(world), p);
         if (options.canConnect?.(proposal) ?? true) api.emit('connect', proposal);
       } else if (current.kind === 'move' && world) {
         const delta = snapped([world[0] - current.world[0], world[1] - current.world[1]]);
@@ -434,19 +433,17 @@ export function attachDiagramInput(options: InputOptions): () => void {
         else if ((key === 'Delete' || key === 'Backspace') && mode === 'edit')
           api.emit('delete', [
             ...new Set(
-              items
-                .filter((i) => i.kind === 'component' || i.kind === 'connection')
-                .map((i) => i.id),
+              items.filter((i) => i.kind === 'vertex' || i.kind === 'edge').map((i) => i.id),
             ),
           ]);
         else if (key === 'ContextMenu' || (key === 'F10' && event.shiftKey))
           context(items[0] ? (diagram.locate(items[0]) ?? [0, 0]) : [0, 0], event, 'keyboard');
         else if (key === 'Tab') {
-          const nodes = api.scene()?.nodes.filter((n) => n.visible) ?? [],
-            at = nodes.findIndex((n) => items[0] && itemKey(n.hit) === itemKey(items[0])),
+          const vertices = api.scene()?.vertices.filter((n) => n.visible) ?? [],
+            at = vertices.findIndex((n) => items[0] && itemKey(n.hit) === itemKey(items[0])),
             next =
-              nodes[
-                at < 0 ? (event.shiftKey ? nodes.length - 1 : 0) : at + (event.shiftKey ? -1 : 1)
+              vertices[
+                at < 0 ? (event.shiftKey ? vertices.length - 1 : 0) : at + (event.shiftKey ? -1 : 1)
               ];
           if (next) {
             setSelection([next.hit]);
@@ -456,7 +453,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
           const step = api.options().gridPitch * (event.shiftKey ? 4 : 1),
             dx = key === 'ArrowLeft' ? -step : key === 'ArrowRight' ? step : 0,
             dy = key === 'ArrowUp' ? -step : key === 'ArrowDown' ? step : 0;
-          if (mode === 'edit' && items.some((i) => i.kind === 'component' || i.kind === 'group')) {
+          if (mode === 'edit' && items.some((i) => i.kind === 'vertex' || i.kind === 'group')) {
             const proposal = api.move(items, [dx, dy]);
             if (proposal) api.emit('move', proposal);
           } else if (mode !== 'inspect') diagram.panBy(-dx * 4, -dy * 4);

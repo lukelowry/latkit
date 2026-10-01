@@ -6,6 +6,7 @@ import type {
   QueryHeader,
   QueryBlock,
   Column,
+  ReferenceColumn,
   TextColumn,
   Update,
   RowSelection,
@@ -13,7 +14,7 @@ import type {
   RequestOptions,
   RetainOptions,
 } from '@latkit/model';
-import { schema, type Graph, type Block, type Wire } from './graph.js';
+import { ports, schema, type Graph, type Block, type Wire } from './graph.js';
 function text(values: readonly string[]): TextColumn {
   const pieces = values.map((value) => new TextEncoder().encode(value));
   const offsets = new Int32Array(values.length + 1);
@@ -126,7 +127,27 @@ export class GraphSource implements Queryable {
     const rows =
       query.from === 'Signal'
         ? graph.wires
-        : graph.nodes.filter((node) => node.type === query.from);
+        : graph.blocks.filter((block) => block.type === query.from);
+    const wireRows = new Map(graph.wires.map((wire, row) => [wire.id, row]));
+    /** A port's column: the row of the wire each block is plugged into. */
+    const plugs = (indices: readonly number[], port: string): ReferenceColumn => {
+      const values = new Uint32Array(indices.length),
+        validity = new Uint8Array(Math.ceil(indices.length / 8));
+      indices.forEach((i, at) => {
+        const wire = (rows[i] as Block).ports[port];
+        if (!wire) return;
+        values[at] = wireRows.get(wire)!;
+        validity[at >>> 3] |= 1 << (at & 7);
+      });
+      return {
+        kind: 'reference',
+        index: this.index('Signal', version),
+        offset: 0,
+        length: indices.length,
+        values,
+        validity,
+      };
+    };
     const choose = (selection?: RowSelection): number[] => {
       if (selection && 'index' in selection && selection.index)
         assertIndex(this.index(query.from, version), selection.index);
@@ -172,6 +193,10 @@ export class GraphSource implements Queryable {
           const indices = selected.slice(position, position + size);
           const columns: Record<string, Column> = {};
           for (const name of query.select) {
+            if (query.from !== 'Signal' && name in ports[query.from as Block['type']]) {
+              columns[name] = plugs(indices, name);
+              continue;
+            }
             const values = indices.map((i) => field(rows[i], name));
             columns[name] =
               name === 'name'
@@ -205,53 +230,6 @@ export class GraphSource implements Queryable {
         if (position < selected.length)
           await new Promise<void>((resolve) => setTimeout(resolve, 0));
       } while (position < selected.length);
-    } else if (query.kind === 'endpoints') {
-      const nodeRows = new Map<string, { type: string; row: number }>(),
-        counts = new Map<string, number>();
-      for (const node of graph.nodes) {
-        const row = counts.get(node.type) ?? 0;
-        nodeRows.set(node.id, { type: node.type, row });
-        counts.set(node.type, row + 1);
-      }
-      for (const row of selected) {
-        const wire = graph.wires[row];
-        if (query.involving && !wire.ends.some((e) => query.involving!.components.includes(e.id)))
-          continue;
-        let first = 0;
-        while (first < wire.ends.length) {
-          signal.throwIfAborted();
-          let size = Math.min(32, wire.ends.length - first),
-            block: QueryBlock;
-          for (;;) {
-            const ends = wire.ends.slice(first, first + size),
-              typeNames = [...new Set(ends.map((e) => nodeRows.get(e.id)!.type))],
-              ports = [...new Set(ends.map((e) => e.port))];
-            block = {
-              kind: 'endpoints',
-              version,
-              index: this.index(query.from, version),
-              connections: Uint32Array.of(row),
-              offsets: Int32Array.of(0, ends.length),
-              firstEndpoint: Uint32Array.of(first),
-              totalEndpoints: Uint32Array.of(wire.ends.length),
-              componentIndexes: typeNames.map((type) => this.index(type, version)),
-              componentType: Uint32Array.from(ends, (e) =>
-                typeNames.indexOf(nodeRows.get(e.id)!.type),
-              ),
-              componentRow: Uint32Array.from(ends, (e) => nodeRows.get(e.id)!.row),
-              portNames: ports,
-              port: Uint32Array.from(ends, (e) => ports.indexOf(e.port)),
-              roleNames: ['source', 'target'],
-              role: Uint32Array.from(ends, (e) => (e.role === 'source' ? 0 : 1)),
-            };
-            if (blockByteLength(block) <= budget) break;
-            if (size <= 1) throw new Error('An endpoint exceeds the requested block budget.');
-            size = Math.floor(size / 2);
-          }
-          yield block;
-          first += size;
-        }
-      }
     }
     signal.throwIfAborted();
   }

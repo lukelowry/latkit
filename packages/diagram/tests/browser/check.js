@@ -11,11 +11,19 @@ globalThis.diagramCheck = (async () => {
   gpu.device.addEventListener('uncapturederror', (e) => errors.push(e.error.message));
   const source = new Source(5);
   source.names = ['Load data', 'Validate α', 'Transform', 'Compute', 'Publish'];
-  source.ends.push([
-    { node: 0, port: 'output', role: 'source' },
-    { node: 2, port: 'input', role: 'target' },
-    { node: 4, port: 'input', role: 'target' },
-  ]);
+  // One output fans out to three inputs; a second net leaves n1 for n3.
+  source.ends = [
+    [
+      { vertex: 0, port: 'output' },
+      { vertex: 1, port: 'input' },
+      { vertex: 2, port: 'input' },
+      { vertex: 4, port: 'input' },
+    ],
+    [
+      { vertex: 1, port: 'output' },
+      { vertex: 3, port: 'input' },
+    ],
+  ];
   const config = data(source);
   const diagram = createDiagram({ gpu, data: config, options: { msaa: 4 } });
   const canvas = document.querySelector('canvas');
@@ -35,7 +43,7 @@ globalThis.diagramCheck = (async () => {
   view.request({ timeMs: 0 });
   await rendered;
   await gpu.idle();
-  const ref = { kind: 'component', type: 'Task', id: 'n0' },
+  const ref = { kind: 'vertex', type: 'Task', id: 'n0' },
     point = diagram.locate(ref);
   assert(point && diagram.hitTest(point).some((h) => h.id === 'n0'), 'Presented picking failed');
   const rect = canvas.getBoundingClientRect();
@@ -61,7 +69,7 @@ globalThis.diagramCheck = (async () => {
   pointer('pointerdown', point);
   pointer('pointerup', point);
   assert(selections > 0, 'Input selection failed');
-  const another = diagram.locate({ kind: 'component', type: 'Task', id: 'n2' });
+  const another = diagram.locate({ kind: 'vertex', type: 'Task', id: 'n2' });
   for (const modifiers of [{ shiftKey: true }, { ctrlKey: true }, { metaKey: true }]) {
     pointer('pointerdown', another, modifiers);
     pointer('pointerup', another, modifiers);
@@ -85,7 +93,7 @@ globalThis.diagramCheck = (async () => {
     moved = proposal;
     moveCount++;
     for (const [type, position] of Object.entries(proposal.positions))
-      diagram.setComponent(type, { position });
+      diagram.setVertex(type, { position });
   });
   pointer('pointerdown', point);
   pointer('pointermove', [point[0], point[1] + 32]);
@@ -108,20 +116,20 @@ globalThis.diagramCheck = (async () => {
     pointer('pointerup', b);
   };
   wire(port('n1', 'output'), port('n1', 'output'));
-  assert(wires.length === 0, 'Port click unexpectedly created a connection');
+  assert(wires.length === 0, 'Port click unexpectedly proposed a wire');
   wire(port('n1', 'output'), port('n4', 'input'));
   assert(
     wires.length === 1 && wires[0].from.id === 'n1' && wires[0].to.id === 'n4',
-    'Connection proposal failed',
+    'Connect proposal failed',
   );
   wire(port('n1', 'input'), port('n3', 'input'));
   assert(
     wires.length === 2 &&
       wires[1].from.id === 'n0' &&
-      wires[1].replaces.connection.id === 'e0' &&
-      wires[1].replaces.endpoint.ordinal === 1 &&
-      wires[1].replaces.endpoint.index.type === 'Dependency',
-    'Endpoint reconnection failed',
+      wires[1].replaces.edge.id === 'e0' &&
+      wires[1].replaces.end.id === 'n1' &&
+      wires[1].replaces.end.port === 'input',
+    'Input reconnection failed',
   );
   wire(port('n0', 'output'), port('n2', 'output'));
   assert(wires.length === 2, 'Incompatible output ports accepted');
@@ -148,12 +156,12 @@ globalThis.diagramCheck = (async () => {
   current = diagram.locate(ref);
   pointer('pointerdown', current);
   pointer('pointermove', [current[0], current[1] + 16]);
-  diagram.setComponent('Task', { shape: 'rounded' });
+  diagram.setVertex('Task', { shape: 'rounded' });
   pointer('pointerup', [current[0], current[1] + 16]);
   assert(moveCount === 1, 'Data replacement committed a stale gesture');
   diagram.select([ref]);
   key('ArrowDown');
-  assert(moveCount === 2 && moved.moves[0].component.id === 'n0', 'Keyboard movement failed');
+  assert(moveCount === 2 && moved.moves[0].vertex.id === 'n0', 'Keyboard movement failed');
   let opened, removed;
   diagram.on('open', (item) => {
     opened = item;
@@ -174,14 +182,14 @@ globalThis.diagramCheck = (async () => {
     canConnect: () => false,
   });
   wire(port('n1', 'output'), port('n4', 'input'));
-  assert(wires.length === 2, 'Application connection policy was ignored');
+  assert(wires.length === 2, 'Application connect policy was ignored');
   detachPolicy();
   const before = diagram.stats().frames;
   for (const shape of ['rectangle', 'rounded', 'ellipse', 'diamond']) {
-    diagram.setComponent('Task', { shape });
+    diagram.setVertex('Task', { shape });
     await gpu.render({ views: [{ renderer: diagram, target }], timeMs: 0 });
   }
-  diagram.setComponent('Task', { shape: 'rectangle', shade: 'weight' });
+  diagram.setVertex('Task', { shape: 'rectangle', shade: 'weight' });
   diagram.setOptions({ grid: false });
   await gpu.render({ views: [{ renderer: diagram, target }], timeMs: 0 });
   const sample = diagram.locate(ref);
@@ -206,7 +214,7 @@ globalThis.diagramCheck = (async () => {
   });
   await gpu.render({ views: [{ renderer: diagram, target }], timeMs: 0 });
   await diagram.setShade(null);
-  diagram.setComponent('Task', { shade: null });
+  diagram.setVertex('Task', { shade: null });
   diagram.setOptions({ grid: true });
   const second = createDiagram({ gpu, data: config });
   const composition = createComposition({
@@ -244,7 +252,7 @@ globalThis.diagramCheck = (async () => {
   buffer.destroy();
   assert(bright > 1000, 'Diagram contains no visible geometry');
   assert(diagram.stats().frames >= before + 5, 'Frame lifecycle failed');
-  diagram.setComponent('Task', { shape: 'rounded' });
+  diagram.setVertex('Task', { shape: 'rounded' });
   diagram.fit();
   rendered = new Promise((yes, no) => {
     resolve = yes;
@@ -257,9 +265,9 @@ globalThis.diagramCheck = (async () => {
   assert(errors.length === 0, errors.join('\n'));
   const result = {
     status: 'passed',
-    components: diagram.stats().components,
-    connections: diagram.stats().connections,
-    endpoints: diagram.stats().endpoints,
+    vertices: diagram.stats().vertices,
+    edges: diagram.stats().edges,
+    ends: diagram.stats().ends,
     brightPixels: bright,
     drawCalls: diagram.stats().drawCalls,
     input: true,
@@ -271,7 +279,7 @@ globalThis.diagramCheck = (async () => {
       'connect',
       'reconnect',
       'port click',
-      'connection policy',
+      'connect policy',
       'cancel',
       'replace',
       'keyboard',

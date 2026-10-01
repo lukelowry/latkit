@@ -4,24 +4,24 @@ export type {
   DiagramOptions,
   DiagramEvents,
   DiagramStats,
-  ConnectionGesture,
+  ConnectProposal,
   MoveProposal,
 } from './diagram.js';
 export type {
   DiagramData,
   DiagramItem,
   DiagramHit,
-  EntityRef,
+  RowRef,
   Point,
   Shape,
-  ComponentOptions,
-  ConnectionOptions,
+  VertexOptions,
+  EdgeOptions,
   PortOptions,
   Labels,
   Group,
   RouteStrategy,
   RouteRequest,
-  RouteEndpoint,
+  RouteEnd,
 } from './data.js';
 export type { Options, Limits } from './options.js';
 export { arrange } from './layout.js';
@@ -30,7 +30,7 @@ export type {
   LayoutOptions,
   LayoutStrategy,
   LayoutGraph,
-  LayoutNode,
+  LayoutVertex,
 } from './layout.js';
 export { attachDiagramInput } from './input.js';
 export type { InputOptions } from './input.js';

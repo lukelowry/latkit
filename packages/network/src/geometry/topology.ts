@@ -1,0 +1,545 @@
+import { assertIndex } from '@latkit/model';
+import { BufferData, GpuError, type Preparation, type FieldValues } from '@latkit/gpu';
+import type { Column, Index, ReferenceColumn, RowAxis, Schema, Queryable } from '@latkit/model';
+import type { Position2D as Position } from '@latkit/gpu';
+import type { NetworkData, VertexOptions, EdgeOptions, PathOptions } from '../data.js';
+import { Adjacency } from './adjacency.js';
+import { RowLookup, bit, indexKey } from './rows.js';
+
+/** Rows per bank. A power of two, so a type's dense address splits into bank and offset by shifts. */
+export const BANK_ROWS = 16384;
+const BANK_SHIFT = 14;
+export interface VertexBank {
+  readonly id: number;
+  readonly type: string;
+  readonly index: Index;
+  readonly rows: RowAxis;
+  readonly count: number;
+  readonly base: number;
+  position?: Position;
+  /** Private control points share field upload/projection, but are never model vertices. */
+  readonly synthetic?: VertexOptions;
+}
+export interface SegmentBatch {
+  readonly a: VertexBank;
+  readonly b: VertexBank;
+  readonly records: Uint32Array;
+  readonly data: BufferData;
+  readonly order?: Uint32Array;
+}
+export interface EdgeBank {
+  readonly base: number;
+  readonly type: string;
+  readonly index: Index;
+  readonly rows: RowAxis;
+  readonly count: number;
+  readonly batches: readonly SegmentBatch[];
+  /** Each row's vertices as dense addresses, compressed by row. */
+  readonly incidence: { readonly offsets: Uint32Array; readonly vertices: Uint32Array };
+  /** Some row joins more than two vertices: a net drawn as stars. */
+  readonly stars?: boolean;
+  readonly order?: Uint32Array;
+  readonly kind?: 'path';
+  readonly source?: Queryable;
+}
+export interface Geometry {
+  readonly vertices: readonly VertexBank[];
+  readonly edges: readonly EdgeBank[];
+  readonly lookup: ReadonlyMap<string, RowLookup<VertexBank>>;
+  readonly vertexCount: number;
+  readonly edgeCount: number;
+  readonly segmentCount: number;
+  readonly schema: Schema;
+  /** Positions are longitude/latitude in degrees. */
+  readonly geographic: boolean;
+  readonly bytes: number;
+  readonly adjacency: Adjacency;
+  readonly native?: Geometry;
+}
+export interface Limits {
+  readonly maxVertices?: number;
+  readonly maxSegments?: number;
+  readonly cpuBytes?: number;
+}
+export const DEFAULT_LIMITS = Object.freeze({
+  maxVertices: 2_000_000,
+  maxSegments: 8_000_000,
+  cpuBytes: 256 * 1024 ** 2,
+});
+export function vertexOptions(data: NetworkData, bank: VertexBank): VertexOptions {
+  return bank.synthetic ?? data.vertices[bank.type];
+}
+export function edgeOptions(data: NetworkData, bank: EdgeBank): EdgeOptions | PathOptions {
+  return bank.kind === 'path' ? data.paths![bank.type] : data.edges![bank.type];
+}
+export function segmentBatch(a: VertexBank, b: VertexBank, records: Uint32Array): SegmentBatch {
+  const data = new BufferData({ size: records.byteLength, label: 'network path segments' });
+  data.write({ data: records });
+  return { a, b, records, data };
+}
+
+/** A growable Uint32Array: amortized constant pushes with no per-item allocation. */
+class Uints {
+  private values = new Uint32Array(64);
+  length = 0;
+  push(value: number): void {
+    if (this.length === this.values.length) {
+      const grown = new Uint32Array(this.values.length * 2);
+      grown.set(this.values);
+      this.values = grown;
+    }
+    this.values[this.length++] = value;
+  }
+  append(rows: RowAxis): void {
+    if (rows.kind === 'indices')
+      for (let i = 0; i < rows.values.length; i++) this.push(rows.values[i]);
+    else for (let i = 0; i < rows.count; i++) this.push(rows.offset + i);
+  }
+  /** An exact-length copy; the builder stays reusable. */
+  take(): Uint32Array {
+    return this.values.slice(0, this.length);
+  }
+}
+
+/** A contiguous run as a range, so ranged reads and lookups never allocate index arrays. */
+function axis(rows: Uint32Array): RowAxis {
+  const n = rows.length;
+  if (!n) return { kind: 'range', offset: 0, count: 0 };
+  for (let i = 1; i < n; i++) if (rows[i] !== rows[0] + i) return { kind: 'indices', values: rows };
+  return { kind: 'range', offset: rows[0], count: n };
+}
+
+/** Physical rows of one Index at dense positions from `base`: a direct table, or a map when sparse.
+ * Build scratch, like the readers' builders, so it is not charged to the geometry. */
+class Addresses {
+  private readonly table?: Int32Array;
+  private readonly map?: Map<number, number>;
+  constructor(
+    rows: Uint32Array,
+    readonly base = 0,
+    readonly firstBank = 0,
+  ) {
+    let max = -1;
+    for (let i = 0; i < rows.length; i++) if (rows[i] > max) max = rows[i];
+    if (max < rows.length * 4 + 65536) {
+      const table = (this.table = new Int32Array(max + 1).fill(-1));
+      for (let i = 0; i < rows.length; i++) {
+        if (table[rows[i]] !== -1) throw new GpuError('invalid-input', 'Duplicate physical row');
+        table[rows[i]] = base + i;
+      }
+    } else {
+      const map = (this.map = new Map());
+      for (let i = 0; i < rows.length; i++) {
+        if (map.has(rows[i])) throw new GpuError('invalid-input', 'Duplicate physical row');
+        map.set(rows[i], base + i);
+      }
+    }
+  }
+  /** The row's dense address; -1 when it is not drawn. */
+  get(row: number): number {
+    if (this.table) return row < this.table.length ? this.table[row] : -1;
+    return this.map!.get(row) ?? -1;
+  }
+}
+
+/** The drawn rows of one vertex type. */
+interface Drawn {
+  readonly index?: Index;
+  readonly addresses: Addresses;
+}
+
+function reference(column: Column | undefined, name: string): ReferenceColumn {
+  if (column?.kind !== 'reference')
+    throw new GpuError('invalid-input', 'Expected a reference column: ' + name);
+  return column;
+}
+
+/** Segment records grouped by the vertex banks they join: [offset a, offset b, local row, 0]. */
+class Segments {
+  private groups = new Map<number, { a: number; b: number; records: Uints }>();
+  private lastKey = -1;
+  private last?: Uints;
+  count = 0;
+  constructor(
+    private readonly vertices: readonly VertexBank[],
+    private readonly limit: number,
+    private readonly total: { count: number },
+  ) {}
+  add(a: number, b: number, offsetA: number, offsetB: number, local: number): void {
+    if (++this.total.count > this.limit)
+      throw new GpuError('resource-limit', 'Network segment limit exceeded');
+    this.count++;
+    const key = a * this.vertices.length + b;
+    if (key !== this.lastKey) {
+      let group = this.groups.get(key);
+      if (!group) {
+        group = { a, b, records: new Uints() };
+        this.groups.set(key, group);
+      }
+      this.lastKey = key;
+      this.last = group.records;
+    }
+    const records = this.last!;
+    records.push(offsetA);
+    records.push(offsetB);
+    records.push(local);
+    records.push(0);
+  }
+  take(): SegmentBatch[] {
+    const batches = [...this.groups.values()].map((g) =>
+      segmentBatch(this.vertices[g.a], this.vertices[g.b], g.records.take()),
+    );
+    this.groups = new Map();
+    this.lastKey = -1;
+    this.last = undefined;
+    this.count = 0;
+    return batches;
+  }
+}
+
+export async function readGeometry(
+  data: NetworkData,
+  frame: Preparation,
+  limits: Required<Limits>,
+): Promise<Geometry> {
+  const vertices: VertexBank[] = [],
+    edges: EdgeBank[] = [],
+    lookup = new Map<string, RowLookup<VertexBank>>(),
+    drawn = new Map<string, Drawn>(),
+    systems = new Set<string>(),
+    segments = { count: 0 };
+  let vertexCount = 0,
+    edgeCount = 0,
+    bytes = 0;
+  let schema: Schema | undefined;
+  const charge = (n: number) => {
+    bytes += n;
+    if (bytes > limits.cpuBytes)
+      throw new GpuError('resource-limit', 'Network geometry exceeds its CPU budget');
+  };
+  const rowsOf = async (
+    source: Queryable,
+    type: string,
+    selection: VertexOptions['rows'],
+    found: (schema: Schema) => void,
+  ): Promise<{ index?: Index; rows: Uint32Array }> => {
+    const rows = new Uints();
+    let index: Index | undefined;
+    for await (const block of frame.query(source, {
+      kind: 'rows',
+      from: type,
+      select: [],
+      ...(selection ? { rows: selection } : {}),
+    })) {
+      if (block.kind === 'schema') {
+        found(block.schema);
+        continue;
+      }
+      if (index) assertIndex(index, block.index);
+      else index = block.index;
+      rows.append(block.rows);
+    }
+    return { index, rows: rows.take() };
+  };
+
+  for (const [type, options] of Object.entries(data.vertices)) {
+    const read = await rowsOf(data.source, type, options.rows, (found) => (schema = found));
+    const definition = schema!.types[type];
+    if (!definition) throw new GpuError('invalid-input', 'Unknown vertex type: ' + type);
+    if (definition.spatial) systems.add(definition.spatial.system);
+    if (vertexCount + read.rows.length > limits.maxVertices)
+      throw new GpuError('resource-limit', 'Network vertex limit exceeded');
+    const addresses = new Addresses(read.rows, vertexCount, vertices.length);
+    drawn.set(type, { index: read.index, addresses });
+    const table = new RowLookup<VertexBank>();
+    for (let first = 0; first < read.rows.length; first += BANK_ROWS) {
+      const rows = axis(read.rows.subarray(first, first + BANK_ROWS));
+      const count = Math.min(BANK_ROWS, read.rows.length - first);
+      const bank: VertexBank = {
+        id: vertices.length,
+        type,
+        index: read.index!,
+        rows,
+        count,
+        base: vertexCount,
+        position: options.position ?? definition.spatial?.field,
+      };
+      vertices.push(bank);
+      table.add(rows, bank);
+      vertexCount += count;
+      charge(256 + (rows.kind === 'indices' ? count * 36 : 0));
+    }
+    table.seal();
+    if (read.index) lookup.set(indexKey(read.index), table);
+  }
+  if (!schema) schema = await data.source.describe({ signal: frame.signal });
+
+  /** The drawn rows a reference column names, checked against its declared vertex type. */
+  const target = (column: ReferenceColumn): Drawn | undefined => {
+    const found = drawn.get(column.index.type);
+    if (!found) throw new GpuError('invalid-input', 'References must name a vertex type');
+    if (found.index) assertIndex(found.index, column.index);
+    return found.index ? found : undefined;
+  };
+  /** Bank and offset of a dense address within its type, without searching. */
+  const bankOf = (addresses: Addresses, dense: number) =>
+    addresses.firstBank + ((dense - addresses.base) >>> BANK_SHIFT);
+  const offsetOf = (addresses: Addresses, dense: number) =>
+    (dense - addresses.base) & (BANK_ROWS - 1);
+  /** The addresses of the type holding a dense vertex address. */
+  const addressesOf = (dense: number): Addresses => {
+    let lo = 0,
+      hi = vertices.length;
+    while (lo < hi) {
+      const m = (lo + hi) >>> 1;
+      if (vertices[m].base <= dense) lo = m + 1;
+      else hi = m;
+    }
+    return drawn.get(vertices[lo - 1].type)!.addresses;
+  };
+
+  for (const [type, options] of Object.entries(data.edges ?? {})) {
+    const definition = schema.types[type];
+    if (!definition) throw new GpuError('invalid-input', 'Unknown edge type: ' + type);
+    const pairs = new Segments(vertices, limits.maxSegments, segments);
+    if (options.ends) {
+      for (const end of options.ends) {
+        const field = definition.fields[end]?.type;
+        if (typeof field !== 'object' || field.kind !== 'reference' || !data.vertices[field.to])
+          throw new GpuError(
+            'invalid-input',
+            `Edge end ${type}.${end} must reference a vertex type`,
+          );
+      }
+      const [a, b] = options.ends;
+      let index: Index | undefined;
+      const rows = new Uints(),
+        offsets = new Uints(),
+        incidence = new Uints();
+      offsets.push(0);
+      const flush = () => {
+        if (!rows.length) return;
+        const count = rows.length;
+        edges.push({
+          base: edgeCount,
+          type,
+          index: index!,
+          rows: axis(rows.take()),
+          count,
+          incidence: { offsets: offsets.take(), vertices: incidence.take() },
+          batches: pairs.take(),
+        });
+        edgeCount += count;
+        charge(256 + count * 16 + incidence.length * 8);
+        rows.length = 0;
+        offsets.length = 0;
+        offsets.push(0);
+        incidence.length = 0;
+      };
+      for await (const block of frame.query(data.source, {
+        kind: 'rows',
+        from: type,
+        select: [a, b],
+        ...(options.rows ? { rows: options.rows } : {}),
+      })) {
+        if (block.kind === 'schema') continue;
+        if (index) assertIndex(index, block.index);
+        else index = block.index;
+        const from = reference(block.columns[a], a),
+          to = reference(block.columns[b], b);
+        const ta = target(from)?.addresses,
+          tb = target(to)?.addresses;
+        const range = block.rows.kind === 'range',
+          offset = range ? block.rows.offset : 0,
+          values = range ? undefined : block.rows.values,
+          n = range ? block.rows.count : values!.length;
+        for (let i = 0; i < n; i++) {
+          const local = rows.length;
+          rows.push(range ? offset + i : values![i]);
+          const at = from.offset + i,
+            bt = to.offset + i;
+          const va = ta && bit(from.validity, at) ? ta.get(from.values[at]) : -1,
+            vb = tb && bit(to.validity, bt) ? tb.get(to.values[bt]) : -1;
+          if (va >= 0) incidence.push(va);
+          if (vb >= 0) incidence.push(vb);
+          offsets.push(incidence.length);
+          if (va >= 0 && vb >= 0) {
+            charge(48);
+            pairs.add(
+              bankOf(ta!, va),
+              bankOf(tb!, vb),
+              offsetOf(ta!, va),
+              offsetOf(tb!, vb),
+              local,
+            );
+          }
+          if (rows.length === BANK_ROWS) flush();
+        }
+      }
+      flush();
+      continue;
+    }
+    if (options.bends) throw new GpuError('invalid-input', 'Bends require ends');
+    // A net: its ends are the drawn vertices whose references name its rows.
+    const nets = await rowsOf(data.source, type, options.rows, () => {});
+    const local = new Addresses(nets.rows);
+    const net = new Uints(),
+      member = new Uints();
+    let wired = false;
+    for (const [vertexType, vertex] of Object.entries(data.vertices)) {
+      const fields = Object.entries(schema.types[vertexType].fields)
+        .filter(([, field]) => typeof field.type === 'object' && field.type.kind === 'reference')
+        .filter(([, field]) => (field.type as { to: string }).to === type)
+        .map(([name]) => name);
+      if (!fields.length) continue;
+      wired = true;
+      const own = drawn.get(vertexType)!;
+      for await (const block of frame.query(data.source, {
+        kind: 'rows',
+        from: vertexType,
+        select: fields,
+        ...(vertex.rows ? { rows: vertex.rows } : {}),
+      })) {
+        if (block.kind === 'schema') continue;
+        if (own.index) assertIndex(own.index, block.index);
+        const range = block.rows.kind === 'range',
+          offset = range ? block.rows.offset : 0,
+          values = range ? undefined : block.rows.values,
+          n = range ? block.rows.count : values!.length;
+        for (const name of fields) {
+          const column = reference(block.columns[name], name);
+          if (nets.index) assertIndex(nets.index, column.index);
+          for (let i = 0; i < n; i++) {
+            const at = column.offset + i;
+            if (!bit(column.validity, at)) continue;
+            const v = own.addresses.get(range ? offset + i : values![i]),
+              e = local.get(column.values[at]);
+            if (v < 0 || e < 0) continue;
+            net.push(e);
+            member.push(v);
+          }
+        }
+      }
+    }
+    if (!wired) throw new GpuError('invalid-input', 'No vertex type references net ' + type);
+    // Group members by net with a counting sort, then drop a vertex wired twice to one net.
+    const count = nets.rows.length,
+      starts = new Uint32Array(count + 1),
+      byNet = net.take(),
+      byMember = member.take(),
+      members = new Uint32Array(byNet.length);
+    for (let p = 0; p < byNet.length; p++) starts[byNet[p] + 1]++;
+    for (let i = 0; i < count; i++) starts[i + 1] += starts[i];
+    const cursor = starts.slice(0, count);
+    for (let p = 0; p < byNet.length; p++) members[cursor[byNet[p]]++] = byMember[p];
+    let write = 0;
+    for (let i = 0; i < count; i++) {
+      const begin = starts[i],
+        end = starts[i + 1];
+      starts[i] = write;
+      if (end - begin > 2) members.subarray(begin, end).sort();
+      for (let p = begin; p < end; p++)
+        if (p === begin || members[p] !== members[p - 1]) members[write++] = members[p];
+    }
+    starts[count] = write;
+    for (let first = 0; first < count; first += BANK_ROWS) {
+      const last = Math.min(count, first + BANK_ROWS),
+        base = starts[first];
+      const offsets = Uint32Array.from(starts.subarray(first, last + 1), (s) => s - base);
+      let stars = false;
+      for (let i = first; i < last; i++) {
+        const size = starts[i + 1] - starts[i];
+        // A junction centers every net's star; otherwise only nets of more than two vertices.
+        if (options.junction ? size > 0 : size > 2) stars = true;
+        else if (size === 2) {
+          const va = members[starts[i]],
+            vb = members[starts[i] + 1];
+          const ta = addressesOf(va),
+            tb = addressesOf(vb);
+          charge(48);
+          pairs.add(bankOf(ta, va), bankOf(tb, vb), offsetOf(ta, va), offsetOf(tb, vb), i - first);
+        }
+      }
+      edges.push({
+        base: edgeCount,
+        type,
+        index: nets.index!,
+        rows: axis(nets.rows.subarray(first, last)),
+        count: last - first,
+        incidence: { offsets, vertices: members.slice(base, starts[last]) },
+        batches: pairs.take(),
+        ...(stars ? { stars } : {}),
+      });
+      edgeCount += last - first;
+      charge(256 + (last - first) * 16 + (starts[last] - base) * 4);
+    }
+  }
+
+  for (const [type, options] of Object.entries(data.paths ?? {})) {
+    const source = options.source ?? data.source;
+    let pathSchema: Schema | undefined;
+    const read = await rowsOf(source, type, options.rows, (found) => (pathSchema = found));
+    const spatial = pathSchema?.types[type]?.spatial;
+    if (spatial) systems.add(spatial.system);
+    for (let first = 0; first < read.rows.length; first += BANK_ROWS) {
+      const count = Math.min(BANK_ROWS, read.rows.length - first);
+      edges.push({
+        base: edgeCount,
+        type,
+        index: read.index!,
+        rows: axis(read.rows.subarray(first, first + BANK_ROWS)),
+        count,
+        kind: 'path',
+        source,
+        batches: [],
+        incidence: { offsets: new Uint32Array(count + 1), vertices: new Uint32Array() },
+      });
+      charge(256 + count * 12);
+    }
+  }
+  frame.signal.throwIfAborted();
+  if (systems.size > 1)
+    throw new GpuError('invalid-input', 'Drawn types disagree on their coordinate system');
+  const geographic = systems.has('geographic');
+  for (const bank of vertices)
+    if (!bank.position) {
+      if (geographic) throw new GpuError('invalid-input', 'Geographic vertices require positions');
+      const values = new Float32Array(bank.count * 2);
+      for (let i = 0; i < bank.count; i++) {
+        const a = (2 * Math.PI * (bank.base + i)) / Math.max(1, vertexCount);
+        values[i * 2] = Math.cos(a);
+        values[i * 2 + 1] = Math.sin(a);
+      }
+      bank.position = {
+        index: bank.index,
+        rows: bank.rows,
+        values: {
+          kind: 'vector',
+          offset: 0,
+          length: bank.count,
+          size: 2,
+          values: { kind: 'numeric', offset: 0, length: values.length, values },
+        },
+      } satisfies FieldValues;
+      charge(values.byteLength);
+    }
+  const connected = edges.filter((bank) => !bank.kind);
+  const adjacencyBytes =
+    (vertexCount + edgeCount + 2) * 4 +
+    connected.reduce((sum, bank) => sum + bank.incidence.vertices.length * 8, 0);
+  charge(adjacencyBytes);
+  const adjacency = new Adjacency(vertices, connected, vertexCount, edgeCount);
+  bytes -= adjacencyBytes - adjacency.bytes;
+  return {
+    vertices,
+    edges,
+    lookup,
+    vertexCount,
+    edgeCount,
+    segmentCount: segments.count,
+    schema,
+    geographic,
+    bytes,
+    adjacency,
+  };
+}

@@ -2,7 +2,7 @@
 import { createGpu, createCanvasView, createRenderTarget } from '@latkit/gpu';
 import { createNetwork, attachNetworkInput } from '@latkit/network';
 import { colormaps } from '@latkit/gpu';
-import { PathSource, featureSource, vectors } from '../../dist/paths-fixture.js';
+import { PathSource, featureSource, references, vectors } from '../../dist/paths-fixture.js';
 import { GraphSource } from '../../dist/fixture.js';
 
 const el = (id) => document.getElementById(id);
@@ -23,7 +23,6 @@ function fail(error) {
 function data(source, labels = true) {
   return {
     source,
-    coordinates: source.geographic ? 'geographic' : 'cartesian',
     vertices: {
       node: {
         position: 'location',
@@ -46,13 +45,7 @@ function data(source, labels = true) {
     edges: {
       line: {
         curve: source.geographic && el('geodesic').checked ? 'geodesic' : 'linear',
-        connectivity: {
-          kind: 'links',
-          ports: ['a', 'b'],
-          through: 'attachment',
-          role: 'node',
-          to: 'node',
-        },
+        ends: ['from', 'to'],
         color: { field: 'signal', domain: [0, 1], colormap: colormaps.viridis },
       },
     },
@@ -244,7 +237,7 @@ async function benchmarkHover(count = 100000) {
             complete = [],
             searches = [];
           const beforeQueries = fixture.queries,
-            beforeLinks = fixture.linksQueries;
+            beforeEnds = fixture.endsQueries;
           const states = new Set();
           for (let i = 0; i < 8; i++) {
             const point = [640 + Math.cos(i * 0.43) * 70, 360 + Math.sin(i * 0.43) * 50];
@@ -260,7 +253,7 @@ async function benchmarkHover(count = 100000) {
             states.add(renderer.stats().hover);
           }
           assert(renderer.stats().pickingBytes === 0, 'Automatic hover allocated spatial trees');
-          assert(fixture.linksQueries === beforeLinks, 'Hover requeried connectivity');
+          assert(fixture.endsQueries === beforeEnds, 'Hover reread the edge ends');
           results.push({
             projection,
             coordinates: moving ? 'recording XYZ' : 'static',
@@ -278,7 +271,7 @@ async function benchmarkHover(count = 100000) {
             states: [...states],
             pickingBytes: renderer.stats().pickingBytes,
             sourceQueries: fixture.queries - beforeQueries,
-            connectivityQueries: fixture.linksQueries - beforeLinks,
+            endsQueries: fixture.endsQueries - beforeEnds,
           });
         }
       }
@@ -342,7 +335,7 @@ async function checks() {
     await gpu.render({ timeMs: 0, views: [{ renderer, target, at: 1 }] });
     const tilt = renderer.locate(item);
     assert(renderer.hitTest(tilt)[0]?.row === 12, 'Tilt picking differs from geometry');
-    const links = fixture.linksQueries;
+    const ends = fixture.endsQueries;
     renderer.setVertex('node', {
       position: { x: 'x', y: 'y' },
       height: { field: 'z', domain: [0, 1] },
@@ -357,7 +350,7 @@ async function checks() {
       renderer.hitTest(moving).some((hit) => hit.kind === 'vertex' && hit.row === item.row),
       'Sampled position picking lost row identity',
     );
-    assert(fixture.linksQueries === links, 'Changing recording channels requeried connectivity');
+    assert(fixture.endsQueries === ends, 'Changing recording channels reread the edge ends');
     const error = await device.popErrorScope();
     assert(!error, error?.message);
     checks.push(
@@ -366,7 +359,7 @@ async function checks() {
       'Tilt projection',
       'Small native blocks / cross-page fields',
       'Sampled X / Y / Z position and picking',
-      'Recording channels preserve connectivity',
+      'Recording channels keep the edge ends',
     );
   } finally {
     readback.destroy();
@@ -379,16 +372,11 @@ async function checks() {
     gpu,
     data: {
       source: features,
-      coordinates: 'geographic',
       vertices: { node: { position: 'position', labels: { field: 'name', maxCount: 4 } } },
       edges: {
-        route: {
-          connectivity: { kind: 'endpoints', layout: 'pair' },
-          curve: 'geodesic',
-          labels: { field: 'name' },
-        },
-        star: { connectivity: { kind: 'endpoints', layout: 'star' } },
-        bend: { connectivity: { kind: 'endpoints', layout: 'pair' }, bends: 'points' },
+        route: { ends: ['from', 'to'], curve: 'geodesic', labels: { field: 'name' } },
+        star: {},
+        bend: { ends: ['from', 'to'], bends: 'points' },
       },
       paths: { seam: { points: 'points', pickable: true } },
     },
@@ -413,7 +401,7 @@ async function checks() {
     const star = { kind: 'edge', source: features, index: features.index('star'), row: 0 };
     assert(
       featureRenderer.neighborhood(star).filter((item) => item.kind === 'vertex').length === 4,
-      'Star adjacency lost endpoints',
+      'Net adjacency lost vertices',
     );
     featureRenderer.select(star);
     await gpu.render({ timeMs: 0, views: [{ renderer: featureRenderer, target: featureTarget }] });
@@ -421,34 +409,27 @@ async function checks() {
     assert(!error, error?.message);
     checks.push(
       'Adaptive GPU geodesics and matching picking',
-      'Native bends / complete star adjacency',
+      'Native bends / complete net adjacency',
       'Shared vertex and edge text anchors',
     );
   } finally {
     featureRenderer.destroy();
     featureTarget.destroy();
   }
-  const seamSource = new PathSource(
-    {
-      node: { position: vectors([170, 20, -170, 20]) },
-      route: { dashed: { kind: 'boolean', offset: 0, length: 1, values: Uint8Array.of(1) } },
+  const seamSource = new PathSource({
+    node: { position: vectors([170, 20, -170, 20]) },
+    route: {
+      dashed: { kind: 'boolean', offset: 0, length: 1, values: Uint8Array.of(1) },
+      from: references('node', [0]),
+      to: references('node', [1]),
     },
-    {
-      route: [
-        [
-          ['node', 0],
-          ['node', 1],
-        ],
-      ],
-    },
-  );
+  });
   const seamRenderer = createNetwork({
     gpu,
     data: {
       source: seamSource,
-      coordinates: 'geographic',
       vertices: { node: { position: 'position' } },
-      edges: { route: { connectivity: { kind: 'endpoints', layout: 'pair' }, curve: 'geodesic' } },
+      edges: { route: { ends: ['from', 'to'], curve: 'geodesic' } },
     },
     camera: { centerX: 0, centerY: 20, scale: 1.2 },
     options: {
@@ -508,7 +489,7 @@ async function checks() {
     );
     const error = await device.popErrorScope();
     assert(!error, error?.message);
-    checks.push('Dashed geodesic seam pixels / hidden endpoint markers');
+    checks.push('Dashed geodesic seam pixels / hidden vertex markers');
   } finally {
     pixels.destroy();
     seamRenderer.destroy();
@@ -626,17 +607,12 @@ async function showFeatures(reset = true) {
     gpu,
     data: {
       source,
-      coordinates: 'geographic',
       vertices: { node: { position: 'position', labels: { field: 'name' } } },
       edges: {
-        bend: {
-          connectivity: { kind: 'endpoints', layout: 'pair' },
-          bends: 'points',
-          labels: { field: 'name' },
-        },
-        star: { connectivity: { kind: 'endpoints', layout: 'star' }, labels: { field: 'name' } },
+        bend: { ends: ['from', 'to'], bends: 'points', labels: { field: 'name' } },
+        star: { labels: { field: 'name' } },
         route: {
-          connectivity: { kind: 'endpoints', layout: 'pair' },
+          ends: ['from', 'to'],
           curve: el('geodesic').checked ? 'geodesic' : 'linear',
           labels: { field: 'name' },
         },

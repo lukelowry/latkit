@@ -9,7 +9,7 @@ import {
   type VertexBank,
   type EdgeBank,
   type SegmentBatch,
-} from './geometry/connectivity.js';
+} from './geometry/topology.js';
 import { nativeValue, RowLookup } from './geometry/rows.js';
 import { project, projectedStroke, worldVisible, type Camera, type Projected } from './camera.js';
 import { geodesic } from './geometry/paths.js';

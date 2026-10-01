@@ -10,10 +10,10 @@ import type {
   RowSelection,
 } from '@latkit/model';
 import type { DiagramData } from '../src/data.js';
+/** One task port wired to a dependency net. */
 export interface End {
-  node: number;
-  port: string | null;
-  role: string;
+  vertex: number;
+  port: 'input' | 'output';
 }
 export class Source implements Queryable {
   version = 'v1';
@@ -23,26 +23,38 @@ export class Source implements Queryable {
   names: string[];
   xy: Float64Array;
   weights: Float32Array;
+  /** Each dependency net's ends; a task port references the net that lists it. */
   ends: End[][];
-  split = 2;
+  /** Serve the input port as numbers rather than references. */
   malformed = false;
   schema: Schema = {
-    queries: ['rows', 'endpoints'],
+    queries: ['rows'],
     limits: { maxBlockBytes: 1024 * 1024 },
-    components: {
+    types: {
       Task: {
         fields: {
           name: { type: 'text' },
           position: { type: { kind: 'vector', items: 'float64', size: 2 } },
           weight: { type: 'float32' },
+          input: {
+            type: { kind: 'reference', to: 'Dependency' },
+            nullable: true,
+            direction: 'in',
+          },
+          output: {
+            type: { kind: 'reference', to: 'Dependency' },
+            nullable: true,
+            direction: 'out',
+          },
         },
-        ports: { input: { direction: 'in' }, output: { direction: 'out' } },
       },
-    },
-    connections: {
       Dependency: {
-        fields: { name: { type: 'text' }, weight: { type: 'float32' } },
-        roles: { source: { min: 1, direction: 'out' }, target: { min: 1, direction: 'in' } },
+        fields: {
+          name: { type: 'text' },
+          weight: { type: 'float32' },
+          from: { type: { kind: 'reference', to: 'Task' }, nullable: true },
+          to: { type: { kind: 'reference', to: 'Task' }, nullable: true },
+        },
       },
     },
   };
@@ -53,8 +65,8 @@ export class Source implements Queryable {
     );
     this.weights = Float32Array.from({ length: count }, (_, i) => i / Math.max(1, count - 1));
     this.ends = Array.from({ length: Math.max(0, count - 1) }, (_, i) => [
-      { node: i, port: 'output', role: 'source' },
-      { node: i + 1, port: 'input', role: 'target' },
+      { vertex: i, port: 'output' },
+      { vertex: i + 1, port: 'input' },
     ]);
   }
   index(type: string) {
@@ -114,7 +126,45 @@ export class Source implements Queryable {
             columns[field] = texts(
               selected.map((i) => (q.from === 'Task' ? this.names[i] : 'Flow ' + i)),
             );
-          else if (field === 'position') {
+          else if (field === 'from' || field === 'to') {
+            // A dependency's own ends: its output task and its first input task.
+            const port = field === 'from' ? 'output' : 'input';
+            const tasks = selected.map((net) => this.ends[net].find((end) => end.port === port));
+            const validity = new Uint8Array(Math.ceil(selected.length / 8));
+            tasks.forEach((task, at) => {
+              if (task) validity[at >>> 3] |= 1 << (at & 7);
+            });
+            columns[field] = {
+              kind: 'reference',
+              index: this.index('Task'),
+              offset: 0,
+              length: selected.length,
+              values: Uint32Array.from(tasks, (task) => task?.vertex ?? 0),
+              validity,
+            };
+          } else if (field === 'input' || field === 'output') {
+            const nets = new Uint32Array(selected.length),
+              validity = new Uint8Array(Math.ceil(selected.length / 8));
+            this.ends.forEach((ends, net) => {
+              for (const end of ends) {
+                const at = end.port === field ? selected.indexOf(end.vertex) : -1;
+                if (at < 0) continue;
+                nets[at] = net;
+                validity[at >>> 3] |= 1 << (at & 7);
+              }
+            });
+            columns[field] =
+              this.malformed && field === 'input'
+                ? { kind: 'numeric', offset: 0, length: selected.length, values: nets }
+                : {
+                    kind: 'reference',
+                    index: this.index('Dependency'),
+                    offset: 0,
+                    length: selected.length,
+                    values: nets,
+                    validity,
+                  };
+          } else if (field === 'position') {
             const values = Float64Array.from(
               selected.flatMap((i) => [this.xy[i * 2], this.xy[i * 2 + 1]]),
             );
@@ -145,28 +195,6 @@ export class Source implements Queryable {
             : {}),
         };
       }
-    } else if (q.kind === 'endpoints') {
-      for (const row of rows)
-        for (let first = 0; first < this.ends[row].length; first += this.split) {
-          const ends = this.ends[row].slice(first, first + this.split),
-            ports = first % 2 ? [null, 'output', 'input'] : ['input', null, 'output'];
-          yield {
-            kind: 'endpoints',
-            version: this.version,
-            index: this.index(q.from),
-            connections: Uint32Array.of(row),
-            offsets: Int32Array.of(0, ends.length),
-            firstEndpoint: Uint32Array.of(this.malformed ? first + 1 : first),
-            totalEndpoints: Uint32Array.of(this.ends[row].length),
-            componentIndexes: [this.index('Task')],
-            componentType: new Uint32Array(ends.length),
-            componentRow: Uint32Array.from(ends, (e) => e.node),
-            portNames: ports,
-            port: Uint32Array.from(ends, (e) => ports.indexOf(e.port)),
-            roleNames: ['source', 'target'],
-            role: Uint32Array.from(ends, (e) => (e.role === 'source' ? 0 : 1)),
-          };
-        }
     }
   }
 }
@@ -181,11 +209,11 @@ export function texts(values: readonly string[]): import('@latkit/model').TextCo
 export function data(source = new Source(), position = false): DiagramData {
   return {
     source,
-    components: {
+    vertices: {
       Task: { labels: { field: 'name' }, ...(position ? { position: 'position' } : {}) },
     },
-    connections: {
-      Dependency: { route: 'orthogonal', arrows: ['target'], labels: { field: 'name' } },
+    edges: {
+      Dependency: { route: 'orthogonal', arrows: true, labels: { field: 'name' } },
     },
   };
 }

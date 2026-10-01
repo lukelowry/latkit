@@ -47,22 +47,18 @@ const statusMap = createColormap({
   ],
 });
 const elbow: RouteStrategy = {
-  route: ({ endpoints }) =>
-    endpoints
+  route: ({ ends }) =>
+    ends
       .slice(1)
-      .map((to) => [
-        endpoints[0].position,
-        [to.position[0], endpoints[0].position[1]],
-        to.position,
-      ]),
+      .map((to) => [ends[0].position, [to.position[0], ends[0].position[1]], to.position]),
 };
 export function theme(light: boolean): Options {
   return light
     ? {
         ...base,
         backgroundColor: [0.96, 0.97, 0.98, 1],
-        componentBaseColor: [1, 1, 1, 1],
-        connectionBaseColor: [0.34, 0.43, 0.55, 1],
+        vertexBaseColor: [1, 1, 1, 1],
+        edgeBaseColor: [0.34, 0.43, 0.55, 1],
         outlineColor: [0.61, 0.68, 0.76, 1],
         textColor: [0.13, 0.2, 0.29, 1],
         gridColor: [0.35, 0.44, 0.56, 0.24],
@@ -74,8 +70,8 @@ export function theme(light: boolean): Options {
 }
 const base: Options = {
   backgroundColor: [0.063, 0.082, 0.106, 1],
-  componentBaseColor: [0.1, 0.13, 0.17, 1],
-  connectionBaseColor: [0.46, 0.57, 0.65, 1],
+  vertexBaseColor: [0.1, 0.13, 0.17, 1],
+  edgeBaseColor: [0.46, 0.57, 0.65, 1],
   outlineColor: [0.34, 0.43, 0.5, 1],
   textColor: [0.91, 0.94, 0.96, 1],
   gridColor: [0.35, 0.43, 0.52, 0.26],
@@ -83,7 +79,7 @@ const base: Options = {
   hoverColor: [0.48, 0.7, 0.94, 1],
   selectedColor: [0.51, 0.72, 1, 1],
   fontSizePx: 13,
-  nodePadding: 12,
+  vertexPadding: 12,
   portSpacing: 24,
   routeClearance: 16,
   fitPaddingPx: 44,
@@ -92,7 +88,7 @@ const base: Options = {
 export function data(source: GraphSource, settings: Settings, automatic = false): DiagramData {
   return {
     source,
-    components: Object.fromEntries(
+    vertices: Object.fromEntries(
       types.map((type) => [
         type,
         {
@@ -128,12 +124,12 @@ export function data(source: GraphSource, settings: Settings, automatic = false)
         },
       ]),
     ),
-    connections: {
+    edges: {
       Signal: {
         route: settings.route === 'elbow' ? elbow : settings.route,
         appearance: settings.appearance,
         labels: { field: 'name', size: 12, maxWidth: 140, overflow: 'ellipsis' },
-        arrows: settings.arrows ? ['target'] : [],
+        arrows: settings.arrows,
         flow: settings.flow ? { field: 'signal', domain: [0, 1], range: [20, 48] } : null,
         width: { field: 'signal', domain: [0, 1], range: [1.5, 2.5] },
       },

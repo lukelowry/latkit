@@ -40,16 +40,15 @@ export async function scene(gpu: Gpu, kind: ExampleView) {
     gpu,
     data: {
       source: geometry,
-      coordinates: 'geographic',
       vertices: {
-        node: {
+        Bus: {
           position: 'position',
           color: { field: 'load', domain: [0, 1], colormap: colormaps.turbo },
         },
       },
       edges: {
-        line: {
-          connectivity: { kind: 'endpoints', layout: 'pair' },
+        Line: {
+          ends: ['from', 'to'],
           bends: 'bends',
           curve: 'geodesic',
         },

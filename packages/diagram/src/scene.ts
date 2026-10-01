@@ -1,13 +1,6 @@
-import type { Index, ComponentPort, Queryable } from '@latkit/model';
+import type { Index, Queryable } from '@latkit/model';
 import type { RGBA, TextRun, FieldValues, Preparation, NativeReader } from '@latkit/gpu';
-import type {
-  DiagramData,
-  DiagramHit,
-  Point,
-  Shape,
-  ComponentOptions,
-  ConnectionOptions,
-} from './data.js';
+import type { DiagramData, DiagramHit, Point, Shape, VertexOptions, EdgeOptions } from './data.js';
 export type Reader =
   Pick<Preparation, 'query' | 'fields' | 'scale' | 'signal' | 'at'> | NativeReader;
 export type Rect = readonly [number, number, number, number];
@@ -18,20 +11,23 @@ export interface Label {
   ascent: number;
   runs: readonly TextRun[];
 }
+/** A reference field wiring its vertex to a drawn net. */
 export interface Port {
   name: string;
+  /** The net type it references. */
+  to: string;
+  direction?: 'in' | 'out';
+  label: Label;
   side: 'left' | 'right' | 'top' | 'bottom';
   order: number;
-  definition: ComponentPort;
   marker: 'directional' | 'circle' | 'diamond';
   connected: boolean;
-  label: Label;
   color: RGBA;
   status?: RGBA;
   position: Point;
   normal: Point;
 }
-export interface Node {
+export interface Vertex {
   hit: Exclude<DiagramHit, { kind: 'group' }>;
   index: Index;
   row: number;
@@ -50,26 +46,25 @@ export interface Node {
   shade: number;
   label: Label;
   ports: Port[];
-  options: ComponentOptions;
+  options: VertexOptions;
   group?: string;
 }
-export interface Endpoint {
-  node: number;
+/** One vertex an edge joins: through a port for a net, or directly for a row's own end. */
+export interface End {
+  vertex: number;
   port: string | null;
-  role: string;
-  ordinal: number;
-  direction?: 'in' | 'out' | 'both';
+  direction?: 'in' | 'out';
 }
 export interface Edge {
   hit: Exclude<DiagramHit, { kind: 'group' }>;
-  endpoints: Endpoint[];
+  ends: End[];
   visible: boolean;
   color: RGBA;
   width: number;
   flow: number;
   shade: number;
   label: Label;
-  options: ConnectionOptions;
+  options: EdgeOptions;
   paths: readonly (readonly Point[])[];
   offsets: readonly number[];
   labelBounds: readonly Rect[];
@@ -88,7 +83,7 @@ export interface GroupBox {
 }
 export interface Scene {
   data: DiagramData;
-  nodes: Node[];
+  vertices: Vertex[];
   edges: Edge[];
   groups: GroupBox[];
   bounds: Rect;
@@ -96,34 +91,34 @@ export interface Scene {
   routeBytes: number;
   routeClearance?: number;
   portSizePx?: number;
-  endpoints: number;
+  ends: number;
   versions: ReadonlyMap<Queryable, string>;
 }
 export const emptyLabel: Label = { text: '', width: 0, height: 0, ascent: 0, runs: [] };
-export function rect(node: Node): Rect {
-  return [node.x, node.y, node.x + node.width, node.y + node.height];
+export function rect(vertex: Vertex): Rect {
+  return [vertex.x, vertex.y, vertex.x + vertex.width, vertex.y + vertex.height];
 }
 export function positions(
-  nodes: readonly Node[],
+  vertices: readonly Vertex[],
   only?: ReadonlySet<number>,
 ): Readonly<Record<string, FieldValues>> {
-  const grouped = new Map<string, Node[]>();
-  nodes.forEach((node, i) => {
+  const grouped = new Map<string, Vertex[]>();
+  vertices.forEach((vertex, i) => {
     if (!only || only.has(i)) {
-      const type = node.index.type;
+      const type = vertex.index.type;
       const entries = grouped.get(type) ?? [];
-      entries.push(node);
+      entries.push(vertex);
       grouped.set(type, entries);
     }
   });
   return Object.fromEntries(
     [...grouped].map(([type, entries]) => {
-      const values = Float64Array.from(entries.flatMap((node) => [node.x, node.y]));
+      const values = Float64Array.from(entries.flatMap((vertex) => [vertex.x, vertex.y]));
       return [
         type,
         {
           index: entries[0].index,
-          rows: { kind: 'indices', values: Uint32Array.from(entries, (node) => node.row) },
+          rows: { kind: 'indices', values: Uint32Array.from(entries, (vertex) => vertex.row) },
           values: {
             kind: 'vector',
             offset: 0,

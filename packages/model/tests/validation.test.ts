@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MessageChannel } from 'node:worker_threads';
-import type { EndpointsBlock, Query, RowsBlock, SamplesBlock, Schema } from '../src/index.js';
+import type { Query, RowsBlock, SamplesBlock, Schema } from '../src/index.js';
 import {
   blockBuffers,
   blockByteLength,
@@ -8,7 +8,7 @@ import {
   validateQuery,
   validateSchema,
 } from '../src/index.js';
-import { index, numbers, rows, schema, text } from './data.js';
+import { hubs, index, numbers, references, rows, schema, text } from './data.js';
 
 const rowQuery = { kind: 'rows', from: 'Node', select: ['value'] } as const;
 const samplesQuery = {
@@ -17,41 +17,22 @@ const samplesQuery = {
   select: ['output'],
   window: { kind: 'frames', offset: 10, count: 2 },
 } as const;
-const endpointsQuery = { kind: 'endpoints', from: 'Relation' } as const;
-function endpoints(): EndpointsBlock {
+const wiringQuery = { kind: 'rows', from: 'Node', select: ['parent', 'hub'] } as const;
+function wiring(): RowsBlock {
   return {
-    kind: 'endpoints',
-    version: 'data:1',
-    index: { ...index, type: 'Relation' },
-    connections: new Uint32Array([3]),
-    offsets: new Int32Array([0, 2]),
-    firstEndpoint: new Uint32Array([0]),
-    totalEndpoints: new Uint32Array([2]),
-    componentIndexes: [index],
-    componentType: new Uint32Array([0, 0]),
-    componentRow: new Uint32Array([7, 9]),
-    portNames: ['a', 'b'],
-    port: new Uint32Array([0, 1]),
-    roleNames: ['member'],
-    role: new Uint32Array([0, 0]),
+    ...rows(),
+    columns: { parent: references([1, null]), hub: references([7, 9], hubs) },
   };
 }
 
 describe('schema and query boundaries', () => {
-  it('supports tabular, connected, nested, referenced and sampled data in one schema', () => {
+  it('supports tabular, wired, nested, and sampled data in one schema', () => {
     expect(validateSchema(schema)).toEqual([]);
     const queries: Query[] = [
       rowQuery,
       samplesQuery,
-      endpointsQuery,
-      {
-        kind: 'links',
-        from: 'Node',
-        ports: ['a', 'b'],
-        through: 'Relation',
-        role: 'member',
-        to: 'Node',
-      },
+      wiringQuery,
+      { ...rowQuery, where: [{ field: 'hub', operator: 'equal', value: 'h1' }] },
       { kind: 'aggregate', from: 'Node', select: ['value'], measures: ['min', 'max'] },
       {
         kind: 'rows',
@@ -62,17 +43,18 @@ describe('schema and query boundaries', () => {
     ];
     for (const q of queries) expect(validateQuery(schema, q)).toEqual([]);
   });
-  it.each([null, [], {}, { components: null }, { queries: ['wrong'] }])(
+  it.each([null, [], {}, { types: null }, { queries: ['wrong'] }])(
     'reports malformed schema without throwing: %j',
     (value) => {
       expect(validateSchema(value).length).toBeGreaterThan(0);
     },
   );
-  it('rejects duplicate type names, empty exclusive bounds, sampled bounds, and unknown references', () => {
+  it('rejects empty bounds, sampled bounds, unknown references, stray directions, and unknown systems', () => {
     const bad = {
       ...schema,
-      tables: {
-        Node: {
+      types: {
+        ...schema.types,
+        Bad: {
           fields: {
             broken: {
               type: 'float64',
@@ -80,17 +62,28 @@ describe('schema and query boundaries', () => {
             },
             ref: { type: { kind: 'reference', to: 'missing' } },
             output: { type: 'float64', sampled: true, bounds: { lower: { value: 0 } } },
+            flow: { type: 'float64', direction: 'in' },
+            wire: { type: { kind: 'reference', to: 'Hub' }, direction: 'both' },
+            position: { type: { kind: 'vector', items: 'float64', size: 2 } },
           },
+          spatial: { field: 'position', system: 'local' },
         },
       },
     };
-    expect(validateSchema(bad).length).toBeGreaterThanOrEqual(4);
+    expect(validateSchema(bad).map((problem) => problem.target)).toEqual([
+      { kind: 'path', path: ['types', 'Bad', 'fields', 'broken', 'bounds'] },
+      { kind: 'path', path: ['types', 'Bad', 'fields', 'ref', 'type', 'to'] },
+      { kind: 'path', path: ['types', 'Bad', 'fields', 'output', 'bounds'] },
+      { kind: 'path', path: ['types', 'Bad', 'fields', 'flow', 'direction'] },
+      { kind: 'path', path: ['types', 'Bad', 'fields', 'wire', 'direction'] },
+      { kind: 'path', path: ['types', 'Bad', 'spatial', 'system'] },
+    ]);
   });
   it('bounds recursive descriptions', () => {
     const type: { kind: 'list'; items?: unknown } = { kind: 'list' };
     type.items = type;
     expect(
-      validateSchema({ ...schema, tables: { Recursive: { fields: { v: { type } } } } }),
+      validateSchema({ ...schema, types: { Recursive: { fields: { v: { type } } } } }),
     ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ message: 'Type nesting exceeds 32 levels.' }),
@@ -112,14 +105,8 @@ describe('schema and query boundaries', () => {
     { ...rowQuery, where: [{ field: 'position', operator: 'equal', value: [0, 0] }] },
     { ...samplesQuery, window: { kind: 'range', between: [2, 1] } },
     { kind: 'aggregate', from: 'Node', select: ['value', 'output'], measures: ['min'] },
-    {
-      kind: 'links',
-      from: 'Node',
-      ports: ['a', 'a'],
-      through: 'Relation',
-      role: 'missing',
-      to: 'Node',
-    },
+    { kind: 'aggregate', from: 'Node', select: ['hub'], measures: ['min'] },
+    { ...rowQuery, orderBy: [{ field: 'parent', direction: 'ascending' }] },
   ])('rejects invalid requests: %j', (query) =>
     expect(validateQuery(schema, query).length).toBeGreaterThan(0),
   );
@@ -176,7 +163,7 @@ describe('columnar layout', () => {
             values: numbers([99, 99, 1, 2, 3, 4, 5, 6]),
           },
         },
-        parent: text(['Node/2', 'Node/1']),
+        parent: references([1, 0]),
       },
     };
     expect(
@@ -254,23 +241,24 @@ describe('columnar layout', () => {
       ),
     ).toEqual([]);
   });
-  it('validates endpoint dictionaries, cardinality, and segments of a large connection', () => {
-    expect(validateBlock(schema, endpointsQuery, endpoints())).toEqual([]);
-    expect(
-      validateBlock(schema, endpointsQuery, {
-        ...endpoints(),
-        firstEndpoint: new Uint32Array([4096]),
-        totalEndpoints: new Uint32Array([8192]),
-      }),
-    ).toEqual([]);
-    for (const bad of [
-      { ...endpoints(), firstEndpoint: new Uint32Array([1]) },
-      { ...endpoints(), port: new Uint32Array([0, 99]) },
-      { ...endpoints(), componentIndexes: [{ ...index, source: 'different' }] },
-      { ...endpoints(), roleNames: ['unknown'] },
-      { ...endpoints(), portNames: [null, 'b'] },
+  it('validates references against the referenced type and source', () => {
+    expect(validateBlock(schema, wiringQuery, wiring())).toEqual([]);
+    for (const hub of [
+      references([7, 9], index),
+      references([7, 9], { ...hubs, source: 'different' }),
+      references([7, null], hubs),
+      { ...references([7, 9], hubs), values: new Uint32Array([7]) },
+      { ...references([7, 9], hubs), values: new Int32Array([7, 9]) },
+      text(['h7', 'h9']),
     ])
-      expect(validateBlock(schema, endpointsQuery, bad)).not.toEqual([]);
+      expect(
+        validateBlock(schema, wiringQuery, { ...wiring(), columns: { ...wiring().columns, hub } }),
+      ).not.toEqual([]);
+  });
+  it('requires nonempty row identities', () => {
+    const query = { ...rowQuery, ids: true };
+    expect(validateBlock(schema, query, { ...rows(), ids: text(['n1', 'n2']) })).toEqual([]);
+    expect(validateBlock(schema, query, { ...rows(), ids: text(['n1', '']) })).not.toEqual([]);
   });
   it('enforces requested aggregate measures and empty semantics', () => {
     const q: Query = { kind: 'aggregate', from: 'Node', select: ['value'], measures: ['min'] };
@@ -392,7 +380,7 @@ describe('allocation and transport boundary', () => {
     expect(validateBlock(schema, rowQuery, block, { buffers: 'owned' })).not.toEqual([]);
   });
   it('transfers native buffers through MessageChannel without JSON arrays or reshaping', async () => {
-    const block = endpoints();
+    const block = wiring();
     const { port1, port2 } = new MessageChannel();
     try {
       const received = new Promise<unknown>((resolve) => port2.once('message', resolve));
@@ -400,8 +388,8 @@ describe('allocation and transport boundary', () => {
       port1.postMessage(block, buffers);
       expect(buffers.every((buffer) => buffer.byteLength === 0)).toBe(true);
       const result = await received;
-      expect(validateBlock(schema, endpointsQuery, result, { buffers: 'owned' })).toEqual([]);
-      expect((result as EndpointsBlock).componentRow).toEqual(new Uint32Array([7, 9]));
+      expect(validateBlock(schema, wiringQuery, result, { buffers: 'owned' })).toEqual([]);
+      expect((result as RowsBlock).columns.hub).toMatchObject({ values: new Uint32Array([7, 9]) });
     } finally {
       port1.close();
       port2.close();
@@ -418,11 +406,11 @@ describe('independent sample storage and bounded validation', () => {
   it('permits each field to retain its native orientation and offset', () => {
     const extended: Schema = {
       ...schema,
-      components: {
-        ...schema.components,
+      types: {
+        ...schema.types,
         Node: {
-          ...schema.components.Node,
-          fields: { ...schema.components.Node.fields, other: { type: 'float64', sampled: true } },
+          ...schema.types.Node,
+          fields: { ...schema.types.Node.fields, other: { type: 'float64', sampled: true } },
         },
       },
     };

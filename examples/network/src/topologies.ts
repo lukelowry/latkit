@@ -1,4 +1,4 @@
-import { ExampleSource, numeric, vector } from './source.js';
+import { ExampleSource, numeric, references, vector } from './source.js';
 import { makeFakeNetwork } from './fake-network.js';
 
 /** One entry in the topology chooser: a label and a lazy builder. */
@@ -109,28 +109,29 @@ function buildGrid(spec: GridSpec): ExampleSource {
 
   const meshEdges = rows * (cols - 1) + cols * (rows - 1);
   const edgeCount = meshEdges + geodesics.length;
-  const edges = new Uint32Array(edgeCount * 2);
+  const from = new Uint32Array(edgeCount),
+    to = new Uint32Array(edgeCount);
   let e = 0;
   // Right neighbours.
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c + 1 < cols; c++) {
-      edges[e * 2] = idx(c, r);
-      edges[e * 2 + 1] = idx(c + 1, r);
+      from[e] = idx(c, r);
+      to[e] = idx(c + 1, r);
       e++;
     }
   }
   // Down neighbours.
   for (let r = 0; r + 1 < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      edges[e * 2] = idx(c, r);
-      edges[e * 2 + 1] = idx(c, r + 1);
+      from[e] = idx(c, r);
+      to[e] = idx(c, r + 1);
       e++;
     }
   }
   // Long geodesics.
   for (const [c0, r0, c1, r1] of geodesics) {
-    edges[e * 2] = idx(c0, r0);
-    edges[e * 2 + 1] = idx(c1, r1);
+    from[e] = idx(c0, r0);
+    to[e] = idx(c1, r1);
     e++;
   }
 
@@ -149,7 +150,10 @@ function buildGrid(spec: GridSpec): ExampleSource {
   for (let v = 0; v < vertexCount; v++) color[v] = color[v]! / maxD;
 
   return new ExampleSource({
-    node: { count: vertexCount, columns: { position: vector(vertexCoords), load: numeric(color) } },
-    line: { count: edgeCount, columns: {}, endpoints: { component: 'node', rows: edges } },
+    Bus: { count: vertexCount, columns: { position: vector(vertexCoords), load: numeric(color) } },
+    Line: {
+      count: edgeCount,
+      columns: { from: references('Bus', from), to: references('Bus', to) },
+    },
   });
 }

@@ -14,7 +14,7 @@ import {
 import { readScene } from './read.js';
 import { positions, rect, type Scene } from './scene.js';
 import { SpatialIndex, expand, intersects } from './spatial.js';
-export interface LayoutNode {
+export interface LayoutVertex {
   readonly id: string;
   readonly type: string;
   readonly size: Point;
@@ -22,21 +22,22 @@ export interface LayoutNode {
   readonly group?: string;
   readonly ports: readonly {
     readonly name: string;
-    readonly direction: 'in' | 'out' | 'both';
+    readonly direction?: 'in' | 'out';
     readonly side: 'left' | 'right' | 'top' | 'bottom';
   }[];
 }
 export interface LayoutGraph {
-  readonly nodes: readonly LayoutNode[];
-  readonly edges: readonly (readonly [number, number])[];
-  /** Native hyperedges retain endpoint roles and ports for custom algorithms. */
-  readonly connections: readonly {
+  readonly vertices: readonly LayoutVertex[];
+  /** Each edge as vertex pairs, from its source end to each other end. */
+  readonly pairs: readonly (readonly [number, number])[];
+  /** Edges with their ends' ports and directions, for custom algorithms. */
+  readonly edges: readonly {
     readonly id: string;
     readonly type: string;
-    readonly endpoints: readonly {
-      readonly node: number;
+    readonly ends: readonly {
+      readonly vertex: number;
       readonly port: string | null;
-      readonly role: string;
+      readonly direction?: 'in' | 'out';
     }[];
     readonly labelSize: Point;
   }[];
@@ -55,7 +56,7 @@ export interface LayoutStrategy {
 export interface LayoutOptions {
   readonly algorithm?: 'layered' | 'manual' | LayoutStrategy;
   readonly direction?: 'right' | 'left' | 'down' | 'up';
-  readonly nodeGap?: number;
+  readonly vertexGap?: number;
   readonly rankGap?: number;
   /** Crossing-reduction passes, from 0 to 12. Default: 4. */
   readonly sweeps?: number;
@@ -64,13 +65,13 @@ export function layoutOptions(value: LayoutOptions = {}): Required<LayoutOptions
   const result = {
     algorithm: value.algorithm ?? 'layered',
     direction: value.direction ?? 'right',
-    nodeGap: value.nodeGap ?? 24,
+    vertexGap: value.vertexGap ?? 24,
     rankGap: value.rankGap ?? 64,
     sweeps: value.sweeps ?? 4,
   };
   if (!Number.isInteger(result.sweeps) || result.sweeps < 0 || result.sweeps > 12)
     throw new GpuError('invalid-input', 'Layout sweeps must be an integer from 0 to 12');
-  positive(result.nodeGap, 'nodeGap', true);
+  positive(result.vertexGap, 'vertexGap', true);
   positive(result.rankGap, 'rankGap', true);
   if (!['right', 'left', 'down', 'up'].includes(result.direction))
     throw new GpuError('invalid-input', 'Invalid layout direction');
@@ -115,19 +116,17 @@ export async function arrange(
     for (const source of sources(data))
       if (source.version !== scene.versions.get(source))
         throw new GpuError('conflict', 'Layout source changed');
-    return positions(scene.nodes);
+    return positions(scene.vertices);
   } finally {
     reader.destroy();
   }
 }
-export function rootEndpoint(scene: Scene, edge: Scene['edges'][number]): number {
-  const i = edge.endpoints.findIndex(
-    (e) =>
-      e.direction === 'out' ||
-      (e.port &&
-        scene.nodes[e.node].ports.find((p) => p.name === e.port)?.definition.direction === 'out'),
+/** The end flow leaves from: the first output, else the first end. */
+export function rootEnd(edge: Scene['edges'][number]): number {
+  return Math.max(
+    0,
+    edge.ends.findIndex((e) => e.direction === 'out'),
   );
-  return Math.max(0, i);
 }
 export async function place(
   scene: Scene,
@@ -138,46 +137,49 @@ export async function place(
   work = new Work(signal),
 ): Promise<void> {
   work.check();
-  const { nodes } = scene,
-    n = nodes.length;
+  const { vertices } = scene,
+    n = vertices.length;
   const old = new Map(
-    previous?.nodes.map((node) => [JSON.stringify([node.index.type, node.hit.id]), node]),
+    previous?.vertices.map((vertex) => [
+      JSON.stringify([vertex.index.type, vertex.hit.id]),
+      vertex,
+    ]),
   );
-  for (const node of nodes)
-    if (!node.pinned) {
-      const prev = old.get(JSON.stringify([node.index.type, node.hit.id]));
+  for (const vertex of vertices)
+    if (!vertex.pinned) {
+      const prev = old.get(JSON.stringify([vertex.index.type, vertex.hit.id]));
       if (prev) {
-        node.x = prev.x;
-        node.y = prev.y;
-        node.pinned = true;
+        vertex.x = prev.x;
+        vertex.y = prev.y;
+        vertex.pinned = true;
       }
     }
   const pairs: [number, number][] = [];
   for (const edge of scene.edges) {
-    const root = edge.endpoints[rootEndpoint(scene, edge)];
+    const root = edge.ends[rootEnd(edge)];
     if (root)
-      for (const e of edge.endpoints) if (e.node !== root.node) pairs.push([root.node, e.node]);
+      for (const e of edge.ends) if (e.vertex !== root.vertex) pairs.push([root.vertex, e.vertex]);
   }
   if (typeof config.algorithm === 'object') {
     const result = await config.algorithm.arrange(
       {
-        nodes: nodes.map((node) => ({
-          id: node.hit.id,
-          type: node.hit.type,
-          size: [node.width, node.height],
-          position: node.pinned ? [node.x, node.y] : undefined,
-          group: node.group,
-          ports: node.ports.map((port) => ({
+        vertices: vertices.map((vertex) => ({
+          id: vertex.hit.id,
+          type: vertex.hit.type,
+          size: [vertex.width, vertex.height],
+          position: vertex.pinned ? [vertex.x, vertex.y] : undefined,
+          group: vertex.group,
+          ports: vertex.ports.map((port) => ({
             name: port.name,
             side: port.side,
-            direction: port.definition.direction,
+            ...(port.direction ? { direction: port.direction } : {}),
           })),
         })),
-        edges: pairs,
-        connections: scene.edges.map((edge) => ({
+        pairs,
+        edges: scene.edges.map((edge) => ({
           id: edge.hit.id,
           type: edge.hit.type,
-          endpoints: edge.endpoints,
+          ends: edge.ends,
           labelSize: [edge.label.width, edge.label.height],
         })),
         groups: scene.groups.map((group) => ({
@@ -191,17 +193,17 @@ export async function place(
     work.check();
     if (result.length !== n || result.some((p) => p.length !== 2 || !p.every(Number.isFinite)))
       throw new GpuError('invalid-input', 'Layout returned invalid positions');
-    nodes.forEach((node, i) => {
-      if (!node.pinned) {
-        node.x = result[i][0];
-        node.y = result[i][1];
+    vertices.forEach((vertex, i) => {
+      if (!vertex.pinned) {
+        vertex.x = result[i][0];
+        vertex.y = result[i][1];
       }
     });
     return;
   }
   if (config.algorithm === 'manual') {
-    if (nodes.some((node) => !node.pinned))
-      throw new GpuError('invalid-input', 'Manual layout requires all component positions');
+    if (vertices.some((vertex) => !vertex.pinned))
+      throw new GpuError('invalid-input', 'Manual layout requires all vertex positions');
     return;
   }
   const next = Array.from({ length: n }, () => [] as number[]),
@@ -211,7 +213,9 @@ export async function place(
       next[a].push(b);
       back[b].push(a);
     }
-  const keys = nodes.map((node) => JSON.stringify([node.group ?? '', node.hit.type, node.hit.id]));
+  const keys = vertices.map((vertex) =>
+    JSON.stringify([vertex.group ?? '', vertex.hit.type, vertex.hit.id]),
+  );
   const compare = (a: number, b: number) => (keys[a] < keys[b] ? -1 : keys[a] > keys[b] ? 1 : 0);
   for (const list of next) list.sort(compare);
   // Iterative DFS classifies feedback edges without collapsing an entire cycle into one column.
@@ -253,7 +257,7 @@ export async function place(
       if (!--degree[b]) queue.push(b);
     }
   const levels = new Map<number, number[]>();
-  nodes.forEach((_, i) => {
+  vertices.forEach((_, i) => {
     const list = levels.get(rank[i]) ?? [];
     list.push(i);
     levels.set(rank[i], list);
@@ -276,7 +280,7 @@ export async function place(
       const scores = new Map(list.map((i) => [i, score(i, (sweep % 2 ? next : back)[i])]));
       list.sort(
         (a, b) =>
-          (nodes[a].group ?? '').localeCompare(nodes[b].group ?? '') ||
+          (vertices[a].group ?? '').localeCompare(vertices[b].group ?? '') ||
           scores.get(a)! - scores.get(b)! ||
           compare(a, b),
       );
@@ -288,14 +292,15 @@ export async function place(
   const vertical = config.direction === 'down' || config.direction === 'up',
     reverse = config.direction === 'left' || config.direction === 'up';
   const index = new SpatialIndex();
-  for (const node of nodes) if (node.pinned) index.add(expand(rect(node), config.nodeGap / 2));
+  for (const vertex of vertices)
+    if (vertex.pinned) index.add(expand(rect(vertex), config.vertexGap / 2));
   const placed = new Set<number>();
   const labelGaps = new Float64Array(n);
   for (const edge of scene.edges) {
-    const root = edge.endpoints[rootEndpoint(scene, edge)];
+    const root = edge.ends[rootEnd(edge)];
     if (root)
-      labelGaps[root.node] = Math.max(
-        labelGaps[root.node],
+      labelGaps[root.vertex] = Math.max(
+        labelGaps[root.vertex],
         (vertical ? edge.label.height : edge.label.width) + grid * 3,
       );
   }
@@ -306,41 +311,44 @@ export async function place(
     let minor = 0,
       max = 0;
     for (const i of list) {
-      const node = nodes[i],
-        along = vertical ? node.height : node.width,
-        across = vertical ? node.width : node.height;
+      const vertex = vertices[i],
+        along = vertical ? vertex.height : vertex.width,
+        across = vertical ? vertex.width : vertex.height;
       max = Math.max(max, along);
-      if (node.pinned) continue;
+      if (vertex.pinned) continue;
       const a = reverse ? -major - along : major;
       const incoming = back[i].filter((p) => placed.has(p));
       const desired = incoming.length
         ? incoming.reduce(
             (sum, p) =>
-              sum + (vertical ? nodes[p].x + nodes[p].width / 2 : nodes[p].y + nodes[p].height / 2),
+              sum +
+              (vertical
+                ? vertices[p].x + vertices[p].width / 2
+                : vertices[p].y + vertices[p].height / 2),
             0,
           ) /
             incoming.length -
           across / 2
         : minor;
       let b = Math.max(minor, desired);
-      node.x = vertical ? b : a;
-      node.y = vertical ? a : b;
+      vertex.x = vertical ? b : a;
+      vertex.y = vertical ? a : b;
       // Deterministic local collision escape; jump beyond obstacles, never scan huge coordinates.
-      for (let attempt = 0; attempt <= nodes.length; attempt++) {
-        const box = expand(rect(node), config.nodeGap / 2),
+      for (let attempt = 0; attempt <= vertices.length; attempt++) {
+        const box = expand(rect(vertex), config.vertexGap / 2),
           hits = index.query(box).filter((j) => intersects(index.boxes[j], box));
         if (!hits.length) break;
-        b = Math.max(...hits.map((j) => index.boxes[j][vertical ? 2 : 3])) + config.nodeGap;
-        node.x = vertical ? b : a;
-        node.y = vertical ? a : b;
-        if (attempt === nodes.length)
+        b = Math.max(...hits.map((j) => index.boxes[j][vertical ? 2 : 3])) + config.vertexGap;
+        vertex.x = vertical ? b : a;
+        vertex.y = vertical ? a : b;
+        if (attempt === vertices.length)
           throw new GpuError('resource-limit', 'Layout collision budget exceeded');
       }
-      node.x = Math.round(node.x / grid) * grid;
-      node.y = Math.round(node.y / grid) * grid;
-      index.add(expand(rect(node), config.nodeGap / 2));
+      vertex.x = Math.round(vertex.x / grid) * grid;
+      vertex.y = Math.round(vertex.y / grid) * grid;
+      index.add(expand(rect(vertex), config.vertexGap / 2));
       placed.add(i);
-      minor = b + across + config.nodeGap;
+      minor = b + across + config.vertexGap;
     }
     const labelGap = list.reduce((gap, i) => Math.max(gap, labelGaps[i]), 0);
     major += max + Math.max(config.rankGap, labelGap);

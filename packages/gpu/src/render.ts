@@ -4,10 +4,6 @@ import type {
   EnvelopeQuery,
   AggregateBlock,
   AggregateQuery,
-  EndpointsBlock,
-  EndpointsQuery,
-  LinksBlock,
-  LinksQuery,
   Query,
   QueryBlock,
   QueryHeader,
@@ -49,13 +45,9 @@ export type QueryResult<Q extends Query> =
         ? EnvelopeBlock
         : Q extends SamplesQuery
           ? SamplesBlock
-          : Q extends EndpointsQuery
-            ? EndpointsBlock
-            : Q extends LinksQuery
-              ? LinksBlock
-              : Q extends AggregateQuery
-                ? AggregateBlock
-                : QueryBlock);
+          : Q extends AggregateQuery
+            ? AggregateBlock
+            : QueryBlock);
 
 /** Methods and returned GPU descriptors are scoped to this frame. Queries must be consumed or returned. */
 export interface Preparation extends FrameInfo {

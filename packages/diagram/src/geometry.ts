@@ -1,27 +1,27 @@
 import { Work } from './work.js';
 import { GpuError } from '@latkit/gpu';
-import type { Point, RouteEndpoint } from './data.js';
-import type { Scene, Node, Rect, Endpoint } from './scene.js';
+import type { Point, RouteEnd } from './data.js';
+import type { Scene, Vertex, Rect, End } from './scene.js';
 import type { Options, Limits } from './options.js';
 import { rect } from './scene.js';
 import { SpatialIndex, union, expand } from './spatial.js';
-import { rootEndpoint } from './layout.js';
+import { rootEnd } from './layout.js';
 
-export function boundary(node: Node, toward: Point): Point {
-  const cx = node.x + node.width / 2,
-    cy = node.y + node.height / 2,
+export function boundary(vertex: Vertex, toward: Point): Point {
+  const cx = vertex.x + vertex.width / 2,
+    cy = vertex.y + vertex.height / 2,
     dx = toward[0] - cx,
     dy = toward[1] - cy;
-  const rx = node.width / 2,
-    ry = node.height / 2;
+  const rx = vertex.width / 2,
+    ry = vertex.height / 2;
   const factor =
-    node.shape === 'ellipse'
+    vertex.shape === 'ellipse'
       ? 1 / Math.sqrt((dx / rx) ** 2 + (dy / ry) ** 2)
-      : node.shape === 'diamond'
+      : vertex.shape === 'diamond'
         ? 1 / (Math.abs(dx) / rx + Math.abs(dy) / ry)
         : 1 / Math.max(Math.abs(dx) / rx, Math.abs(dy) / ry);
-  if (node.shape === 'rounded' && Number.isFinite(factor)) {
-    const radius = Math.min(node.radius, rx, ry),
+  if (vertex.shape === 'rounded' && Number.isFinite(factor)) {
+    const radius = Math.min(vertex.radius, rx, ry),
       px = dx * factor,
       py = dy * factor;
     if (Math.abs(px) > rx - radius && Math.abs(py) > ry - radius) {
@@ -38,18 +38,18 @@ export function boundary(node: Node, toward: Point): Point {
   }
   return Number.isFinite(factor) ? [cx + dx * factor, cy + dy * factor] : [cx + rx, cy];
 }
-export function contains(node: Node, p: Point): boolean {
-  const x = Math.abs((p[0] - node.x - node.width / 2) / (node.width / 2)),
-    y = Math.abs((p[1] - node.y - node.height / 2) / (node.height / 2));
-  if (node.shape === 'rounded') {
-    const radius = Math.min(node.radius, node.width / 2, node.height / 2),
-      qx = Math.abs(p[0] - node.x - node.width / 2) - node.width / 2 + radius,
-      qy = Math.abs(p[1] - node.y - node.height / 2) - node.height / 2 + radius;
+export function contains(vertex: Vertex, p: Point): boolean {
+  const x = Math.abs((p[0] - vertex.x - vertex.width / 2) / (vertex.width / 2)),
+    y = Math.abs((p[1] - vertex.y - vertex.height / 2) / (vertex.height / 2));
+  if (vertex.shape === 'rounded') {
+    const radius = Math.min(vertex.radius, vertex.width / 2, vertex.height / 2),
+      qx = Math.abs(p[0] - vertex.x - vertex.width / 2) - vertex.width / 2 + radius,
+      qy = Math.abs(p[1] - vertex.y - vertex.height / 2) - vertex.height / 2 + radius;
     return Math.hypot(Math.max(0, qx), Math.max(0, qy)) + Math.min(Math.max(qx, qy), 0) <= radius;
   }
-  return node.shape === 'ellipse'
+  return vertex.shape === 'ellipse'
     ? x * x + y * y <= 1
-    : node.shape === 'diamond'
+    : vertex.shape === 'diamond'
       ? x + y <= 1
       : x <= 1 && y <= 1;
 }
@@ -62,25 +62,28 @@ export function distance(p: Point, a: Point, b: Point): number {
     : 0;
   return Math.hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t);
 }
-export function portPositions(node: Node): void {
+export function portPositions(vertex: Vertex): void {
   for (const side of ['left', 'right', 'top', 'bottom'] as const) {
-    const ports = node.ports
+    const ports = vertex.ports
       .filter((p) => p.side === side)
       .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
     ports.forEach((p, i) => {
       const t = (i + 1) / (ports.length + 1);
       p.position =
         side === 'left'
-          ? [node.x, node.y + node.header + (node.height - node.header) * t]
+          ? [vertex.x, vertex.y + vertex.header + (vertex.height - vertex.header) * t]
           : side === 'right'
-            ? [node.x + node.width, node.y + node.header + (node.height - node.header) * t]
+            ? [
+                vertex.x + vertex.width,
+                vertex.y + vertex.header + (vertex.height - vertex.header) * t,
+              ]
             : side === 'top'
-              ? [node.x + node.width * t, node.y]
-              : [node.x + node.width * t, node.y + node.height];
+              ? [vertex.x + vertex.width * t, vertex.y]
+              : [vertex.x + vertex.width * t, vertex.y + vertex.height];
       p.normal =
         side === 'left' ? [-1, 0] : side === 'right' ? [1, 0] : side === 'top' ? [0, -1] : [0, 1];
-      if (node.shape === 'ellipse' || node.shape === 'diamond')
-        p.position = boundary(node, p.position);
+      if (vertex.shape === 'ellipse' || vertex.shape === 'diamond')
+        p.position = boundary(vertex, p.position);
     });
   }
 }
@@ -205,7 +208,7 @@ export function orthogonal(
       heap.push(nid, next + Math.abs(b[0] - q[0]) + Math.abs(b[1] - q[1]));
     }
   }
-  throw new GpuError('invalid-input', 'No orthogonal route between the specified endpoints');
+  throw new GpuError('invalid-input', 'No orthogonal route between the specified ends');
 }
 function simplify(path: readonly Point[]): Point[] {
   const out: Point[] = [];
@@ -322,9 +325,9 @@ export async function geometry(
   scene.portSizePx = options.portSizePx;
   scene.bytes -= scene.routeBytes;
   scene.routeBytes = 0;
-  for (const node of scene.nodes) {
-    node.visible = node.sourceVisible;
-    portPositions(node);
+  for (const vertex of scene.vertices) {
+    vertex.visible = vertex.sourceVisible;
+    portPositions(vertex);
   }
   const groups = new Map(scene.groups.map((g) => [g.id, g]));
   const depth = (id: string): number => {
@@ -336,23 +339,23 @@ export async function geometry(
     hiddenGroups = new Set<string>();
   for (const group of [...scene.groups].sort((a, b) => depth(b.id) - depth(a.id))) {
     const boxes = group.members
-      .filter((i) => scene.nodes[i].visible)
-      .map((i) => rect(scene.nodes[i]));
+      .filter((i) => scene.vertices[i].visible)
+      .map((i) => rect(scene.vertices[i]));
     for (const child of scene.groups) if (child.parent === group.id) boxes.push(child.bounds);
-    let box = expand(union(boxes), options.nodePadding);
-    box = [box[0], box[1] - group.label.height - options.nodePadding, box[2], box[3]];
+    let box = expand(union(boxes), options.vertexPadding);
+    box = [box[0], box[1] - group.label.height - options.vertexPadding, box[2], box[3]];
     if (group.collapsed)
       box = [
         box[0],
         box[1],
-        box[0] + Math.max(120, group.label.width + options.nodePadding * 2),
-        box[1] + Math.max(56, group.label.height + options.nodePadding * 2),
+        box[0] + Math.max(120, group.label.width + options.vertexPadding * 2),
+        box[1] + Math.max(56, group.label.height + options.vertexPadding * 2),
       ];
     group.bounds = box;
   }
   const proxy = new Map<number, string>();
-  for (let i = 0; i < scene.nodes.length; i++) {
-    let group = scene.nodes[i].group,
+  for (let i = 0; i < scene.vertices.length; i++) {
+    let group = scene.vertices[i].group,
       collapsed: string | undefined;
     while (group) {
       if (groups.get(group)?.collapsed) collapsed = group;
@@ -372,28 +375,28 @@ export async function geometry(
   }
   const obstacles = new SpatialIndex(limits.pickingBytes),
     owners: number[] = [];
-  scene.nodes.forEach((node, i) => {
-    if (node.visible && !hidden.has(i)) {
-      obstacles.add(expand(rect(node), 2));
+  scene.vertices.forEach((vertex, i) => {
+    if (vertex.visible && !hidden.has(i)) {
+      obstacles.add(expand(rect(vertex), 2));
       owners.push(i);
     }
   });
   const proxyOwner = new Map<string, number>();
   for (const group of scene.groups)
     if (group.collapsed && !hiddenGroups.has(group.id)) {
-      proxyOwner.set(group.id, scene.nodes.length + proxyOwner.size);
+      proxyOwner.set(group.id, scene.vertices.length + proxyOwner.size);
       obstacles.add(expand(group.bounds, 2));
       owners.push(proxyOwner.get(group.id)!);
     }
   const ownerBounds = new Map(owners.map((owner, i) => [owner, obstacles.boxes[i]]));
-  const endpoint = (e: Endpoint, toward: Point): RouteEndpoint & { owner: number } => {
-    const node = scene.nodes[e.node],
-      group = proxy.get(e.node),
+  const routeEnd = (e: End, toward: Point): RouteEnd & { owner: number } => {
+    const vertex = scene.vertices[e.vertex],
+      group = proxy.get(e.vertex),
       g = group && groups.get(group);
     if (g) {
       const box = g.bounds,
         n = {
-          ...node,
+          ...vertex,
           x: box[0],
           y: box[1],
           width: box[2] - box[0],
@@ -409,30 +412,30 @@ export async function geometry(
           Math.abs(dx / n.width) > Math.abs(dy / n.height)
             ? [Math.sign(dx), 0]
             : [0, Math.sign(dy)],
-        role: e.role,
+        ...(e.direction ? { direction: e.direction } : {}),
         owner: proxyOwner.get(g.id)!,
       };
     }
-    const port = e.port && node.ports.find((p) => p.name === e.port);
-    const p = port ? port.position : boundary(node, toward),
-      dx = p[0] - node.x - node.width / 2,
-      dy = p[1] - node.y - node.height / 2;
+    const port = e.port && vertex.ports.find((p) => p.name === e.port);
+    const p = port ? port.position : boundary(vertex, toward),
+      dx = p[0] - vertex.x - vertex.width / 2,
+      dy = p[1] - vertex.y - vertex.height / 2;
     return {
       position: p,
       normal: port
         ? port.normal
-        : Math.abs(dx / node.width) > Math.abs(dy / node.height)
+        : Math.abs(dx / vertex.width) > Math.abs(dy / vertex.height)
           ? [Math.sign(dx), 0]
           : [0, Math.sign(dy)],
-      role: e.role,
-      owner: e.node,
+      ...(e.direction ? { direction: e.direction } : {}),
+      owner: e.vertex,
     };
   };
   const oldEdges = new Map(previous?.edges.map((e) => [JSON.stringify([e.hit.type, e.hit.id]), e]));
   const changedBoxes: Rect[] = [];
-  const changedNodes = new Set<number>();
-  scene.nodes.forEach((n, i) => {
-    const p = previous?.nodes[i];
+  const changedVertices = new Set<number>();
+  scene.vertices.forEach((n, i) => {
+    const p = previous?.vertices[i];
     if (
       !p ||
       n.hit.id !== p.hit.id ||
@@ -454,7 +457,7 @@ export async function geometry(
         );
       })
     ) {
-      changedNodes.add(i);
+      changedVertices.add(i);
       changedBoxes.push(expand(rect(n), options.routeClearance));
       if (p) changedBoxes.push(expand(rect(p), options.routeClearance));
     }
@@ -482,23 +485,23 @@ export async function geometry(
     edge.paths = [];
     edge.arrows = [];
     edge.junctions = [];
-    const ends = edge.endpoints.filter((e) => scene.nodes[e.node].visible);
+    const ends = edge.ends.filter((e) => scene.vertices[e.vertex].visible);
     if (ends.length * 2 + routePoints > limits.routePoints)
       throw new GpuError('resource-limit', 'Too many route points');
     if (!edge.visible || ends.length < 2) continue;
-    if (ends.every((e) => proxy.get(e.node) && proxy.get(e.node) === proxy.get(ends[0].node)))
+    if (ends.every((e) => proxy.get(e.vertex) && proxy.get(e.vertex) === proxy.get(ends[0].vertex)))
       continue;
     const old = oldEdges.get(JSON.stringify([edge.hit.type, edge.hit.id]));
     if (
       groupSame &&
       previous?.routeClearance === options.routeClearance &&
-      !edge.endpoints.some((e) => changedNodes.has(e.node)) &&
+      !edge.ends.some((e) => changedVertices.has(e.vertex)) &&
       !affected.has(JSON.stringify([edge.hit.type, edge.hit.id])) &&
       old &&
       old.options.route === edge.options.route &&
-      JSON.stringify(old.options.arrows) === JSON.stringify(edge.options.arrows) &&
+      old.options.arrows === edge.options.arrows &&
       old.options.appearance === edge.options.appearance &&
-      JSON.stringify(old.endpoints) === JSON.stringify(edge.endpoints)
+      JSON.stringify(old.ends) === JSON.stringify(edge.ends)
     ) {
       edge.paths = old.paths;
       edge.offsets = old.offsets;
@@ -509,19 +512,19 @@ export async function geometry(
         old.paths.flatMap((path) => path.map((p) => [p[0], p[1], p[0], p[1]] as Rect)),
       );
     } else {
-      const preferred = edge.endpoints[rootEndpoint(scene, edge)];
+      const preferred = edge.ends[rootEnd(edge)];
       const root = ends.includes(preferred) ? preferred : ends[0],
-        center = (e: Endpoint): Point => {
-          const n = scene.nodes[e.node];
+        center = (e: End): Point => {
+          const n = scene.vertices[e.vertex];
           return [n.x + n.width / 2, n.y + n.height / 2];
         };
       const targets = ends.filter((e) => e !== root),
-        rootPoint = endpoint(root, center(targets[0]));
-      const all = [rootPoint, ...targets.map((e) => endpoint(e, center(root)))];
+        rootPoint = routeEnd(root, center(targets[0]));
+      const all = [rootPoint, ...targets.map((e) => routeEnd(e, center(root)))];
       let paths: readonly (readonly Point[])[];
       if (typeof edge.options.route === 'object')
         paths = edge.options.route.route({
-          endpoints: all,
+          ends: all,
           obstacles: obstacles.boxes,
           clearance: options.routeClearance,
           signal,
@@ -568,7 +571,7 @@ export async function geometry(
           };
           const ap = stubPoint(a),
             bp = stubPoint(b);
-          if (edge.options.route === 'straight' && root.node !== target.node)
+          if (edge.options.route === 'straight' && root.vertex !== target.vertex)
             return [a.position, b.position];
           const region = expand(
             union([
@@ -592,14 +595,14 @@ export async function geometry(
       for (let i = 0; i < paths.length; i++) {
         const p = paths[i],
           end = all[Math.min(i + 1, all.length - 1)];
-        if (p.length > 1 && edge.options.arrows?.includes(end.role)) {
+        if (p.length > 1 && edge.options.arrows && end.direction === 'in') {
           const a = p[p.length - 2],
             b = p[p.length - 1],
             d = Math.hypot(b[0] - a[0], b[1] - a[1]);
           if (d) arrows.push({ point: b, direction: [(b[0] - a[0]) / d, (b[1] - a[1]) / d] });
         }
       }
-      if (edge.options.arrows?.includes(root.role) && paths[0]?.length > 1) {
+      if (edge.options.arrows && root.direction === 'in' && paths[0]?.length > 1) {
         const [a, b] = paths[0],
           d = Math.hypot(a[0] - b[0], a[1] - b[1]);
         if (d) arrows.push({ point: a, direction: [(a[0] - b[0]) / d, (a[1] - b[1]) / d] });
@@ -646,8 +649,8 @@ export async function geometry(
       });
   }
   const labels = new SpatialIndex(limits.pickingBytes);
-  for (let i = 0; i < scene.nodes.length; i++)
-    if (scene.nodes[i].visible && !hidden.has(i)) labels.add(rect(scene.nodes[i]));
+  for (let i = 0; i < scene.vertices.length; i++)
+    if (scene.vertices[i].visible && !hidden.has(i)) labels.add(rect(scene.vertices[i]));
   for (const edge of scene.edges)
     if (
       edge.visible &&
@@ -689,13 +692,13 @@ export async function geometry(
       labels.add(box);
       edge.bounds = union([edge.bounds, ...edge.labelBounds]);
     }
-  for (const i of hidden) scene.nodes[i].visible = false;
+  for (const i of hidden) scene.vertices[i].visible = false;
   for (const id of hiddenGroups) {
     const g = groups.get(id)!;
     g.bounds = [0, 0, 0, 0];
   }
   scene.bounds = union([
-    ...scene.nodes.filter((n) => n.visible).map(rect),
+    ...scene.vertices.filter((n) => n.visible).map(rect),
     ...scene.edges.filter((e) => e.visible && e.paths.length).map((e) => e.bounds),
     ...scene.groups.filter((g) => g.bounds[0] !== g.bounds[2]).map((g) => g.bounds),
   ]);

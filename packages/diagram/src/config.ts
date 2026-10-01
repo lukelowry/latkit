@@ -1,6 +1,6 @@
 import { GpuError, validateRgba } from '@latkit/gpu';
 import type { Options, Limits } from './options.js';
-import type { DiagramData, ComponentOptions, ConnectionOptions } from './data.js';
+import type { DiagramData, VertexOptions, EdgeOptions } from './data.js';
 export const defaults: Required<Options> = {
   gridPitch: 8,
   grid: true,
@@ -9,7 +9,7 @@ export const defaults: Required<Options> = {
   junctions: true,
   font: { family: 'system-ui, sans-serif' },
   fontSizePx: 12,
-  nodePadding: 10,
+  vertexPadding: 10,
   cornerRadius: 8,
   outlineWidthPx: 1,
   selectionWidthPx: 2,
@@ -18,14 +18,14 @@ export const defaults: Required<Options> = {
   portMarker: 'directional',
   portLabels: true,
   portFontSizePx: 11,
-  connectionWidthPx: 1.5,
+  edgeWidthPx: 1.5,
   gridMinSpacingPx: 12,
   detail: 'auto',
   portSpacing: 22,
   routeClearance: 16,
   motion: 'auto',
   animationMs: 250,
-  animationMaxComponents: 512,
+  animationMaxVertices: 512,
   pickRadiusPx: 8,
   fitPaddingPx: 32,
   revealPaddingPx: 48,
@@ -33,8 +33,8 @@ export const defaults: Required<Options> = {
   hoverBudgetMs: 4,
   msaa: 1,
   backgroundColor: [0.055, 0.065, 0.09, 1],
-  componentBaseColor: [0.16, 0.19, 0.25, 1],
-  connectionBaseColor: [0.6, 0.65, 0.73, 1],
+  vertexBaseColor: [0.16, 0.19, 0.25, 1],
+  edgeBaseColor: [0.6, 0.65, 0.73, 1],
   outlineColor: [0.4, 0.47, 0.58, 1],
   textColor: [0.92, 0.94, 0.98, 1],
   gridColor: [0.5, 0.55, 0.65, 0.2],
@@ -43,9 +43,9 @@ export const defaults: Required<Options> = {
   selectedColor: [0.35, 0.7, 1, 1],
 };
 export const limitDefaults: Required<Limits> = {
-  components: 100000,
-  connections: 200000,
-  endpoints: 1000000,
+  vertices: 100000,
+  edges: 200000,
+  ends: 1000000,
   geometryBytes: 128 * 1024 ** 2,
   pickingBytes: 32 * 1024 ** 2,
   routePoints: 2000000,
@@ -69,14 +69,14 @@ export function options(value: Options = {}, base = defaults): Required<Options>
   for (const key of [
     'gridPitch',
     'fontSizePx',
-    'nodePadding',
+    'vertexPadding',
     'cornerRadius',
     'outlineWidthPx',
     'selectionWidthPx',
     'hoverWidthPx',
     'portSizePx',
     'portFontSizePx',
-    'connectionWidthPx',
+    'edgeWidthPx',
     'gridMinSpacingPx',
     'portSpacing',
     'routeClearance',
@@ -92,8 +92,8 @@ export function options(value: Options = {}, base = defaults): Required<Options>
     );
   for (const key of ['grid', 'snap', 'labels', 'junctions', 'portLabels'] as const)
     if (typeof result[key] !== 'boolean') fail('Invalid ' + key);
-  if (!Number.isSafeInteger(result.animationMaxComponents) || result.animationMaxComponents < 0)
-    fail('Invalid animationMaxComponents');
+  if (!Number.isSafeInteger(result.animationMaxVertices) || result.animationMaxVertices < 0)
+    fail('Invalid animationMaxVertices');
   if (!['auto', 'full'].includes(result.detail)) fail('Invalid detail');
   if (!['directional', 'circle', 'diamond'].includes(result.portMarker)) fail('Invalid portMarker');
   if (![1, 4].includes(result.msaa)) fail('Invalid msaa');
@@ -116,7 +116,7 @@ export function limits(value: Limits = {}): Required<Limits> {
   }
   return result;
 }
-function binding(value: ComponentOptions | ConnectionOptions) {
+function binding(value: VertexOptions | EdgeOptions) {
   if (value.labels) {
     if (value.labels.size !== undefined) positive(value.labels.size, 'label size');
     if (value.labels.maxWidth !== undefined) positive(value.labels.maxWidth, 'label width');
@@ -133,19 +133,15 @@ function binding(value: ComponentOptions | ConnectionOptions) {
 export function data(value: DiagramData): DiagramData {
   if (!value.source || typeof value.source.query !== 'function')
     fail('A Queryable source is required');
-  if (!value.components) fail('Component bindings are required');
-  for (const component of Object.values(value.components)) {
-    binding(component);
-    if (component.cornerRadius !== undefined)
-      positive(component.cornerRadius, 'cornerRadius', true);
-    if (component.labelPosition && !['header', 'center'].includes(component.labelPosition))
+  if (!value.vertices) fail('Vertex bindings are required');
+  for (const vertex of Object.values(value.vertices)) {
+    binding(vertex);
+    if (vertex.cornerRadius !== undefined) positive(vertex.cornerRadius, 'cornerRadius', true);
+    if (vertex.labelPosition && !['header', 'center'].includes(vertex.labelPosition))
       fail('Invalid labelPosition');
-    if (
-      component.shape &&
-      !['rectangle', 'rounded', 'ellipse', 'diamond'].includes(component.shape)
-    )
+    if (vertex.shape && !['rectangle', 'rounded', 'ellipse', 'diamond'].includes(vertex.shape))
       fail('Invalid shape');
-    for (const port of Object.values(component.ports ?? {})) {
+    for (const port of Object.values(vertex.ports ?? {})) {
       if (port.marker && !['directional', 'circle', 'diamond'].includes(port.marker))
         fail('Invalid port marker');
       if (port.side && !['left', 'right', 'top', 'bottom'].includes(port.side))
@@ -153,22 +149,26 @@ export function data(value: DiagramData): DiagramData {
       if (port.order !== undefined && !Number.isFinite(port.order)) fail('Invalid port order');
     }
   }
-  for (const connection of Object.values(value.connections ?? {})) {
-    binding(connection);
+  for (const [type, edge] of Object.entries(value.edges ?? {})) {
+    binding(edge);
     if (
-      connection.route &&
-      typeof connection.route === 'string' &&
-      !['straight', 'orthogonal'].includes(connection.route)
+      edge.ends &&
+      (edge.ends.length !== 2 ||
+        !edge.ends.every((end) => typeof end === 'string') ||
+        edge.ends[0] === edge.ends[1])
+    )
+      fail('Edge ends must be two distinct fields: ' + type);
+    if (edge.arrows !== undefined && typeof edge.arrows !== 'boolean') fail('Invalid arrows');
+    if (
+      edge.route &&
+      typeof edge.route === 'string' &&
+      !['straight', 'orthogonal'].includes(edge.route)
     )
       fail('Invalid route');
-    if (
-      connection.route &&
-      typeof connection.route === 'object' &&
-      typeof connection.route.route !== 'function'
-    )
+    if (edge.route && typeof edge.route === 'object' && typeof edge.route.route !== 'function')
       fail('Invalid routing strategy');
-    if (connection.appearance && !['wire', 'tag'].includes(connection.appearance))
-      fail('Invalid connection appearance');
+    if (edge.appearance && !['wire', 'tag'].includes(edge.appearance))
+      fail('Invalid edge appearance');
   }
   for (const [id, group] of Object.entries(value.groups ?? {})) {
     const seen = new Set([id]);
@@ -183,8 +183,8 @@ export function data(value: DiagramData): DiagramData {
   }
   return {
     ...value,
-    components: { ...value.components },
-    connections: { ...value.connections },
+    vertices: { ...value.vertices },
+    edges: { ...value.edges },
     groups: { ...value.groups },
   };
 }
@@ -199,7 +199,7 @@ export function sources(data: DiagramData): Set<import('@latkit/model').Queryabl
     if ('values' in value) return;
     for (const child of Object.values(value)) visit(child);
   };
-  visit(data.components);
-  visit(data.connections);
+  visit(data.vertices);
+  visit(data.edges);
   return result;
 }

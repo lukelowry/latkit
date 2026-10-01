@@ -28,7 +28,7 @@ export interface PortOptions {
   readonly color?: ColorScale | null;
   readonly status?: ColorScale | null;
 }
-export interface ComponentOptions {
+export interface VertexOptions {
   readonly rows?: RowSelection;
   readonly position?: Position2D | null;
   readonly size?: FieldInput | null;
@@ -41,10 +41,16 @@ export interface ComponentOptions {
   readonly visible?: FieldInput | null;
   readonly shade?: FieldInput | null;
   readonly labels?: Labels | null;
+  /** Keyed by reference field. Each field naming a drawn net is a port. */
   readonly ports?: Readonly<Record<string, PortOptions>>;
 }
-export interface ConnectionOptions {
+export interface EdgeOptions {
   readonly rows?: RowSelection;
+  /**
+   * Two reference fields naming the vertices each row joins, such as a dependency's two tasks.
+   * Omitted, the type is a net: each row joins the ports whose references name it.
+   */
+  readonly ends?: readonly [source: string, target: string];
   readonly route?: 'orthogonal' | 'straight' | RouteStrategy;
   readonly appearance?: 'wire' | 'tag';
   readonly color?: ColorScale | null;
@@ -54,37 +60,38 @@ export interface ConnectionOptions {
   readonly visible?: FieldInput | null;
   readonly shade?: FieldInput | null;
   readonly labels?: Labels | null;
-  readonly arrows?: readonly string[];
+  /** Arrowheads where flow arrives: a row's target end, or a net's input ports. */
+  readonly arrows?: boolean;
 }
 export interface Group {
   readonly label?: string;
-  readonly components: Readonly<Record<string, RowSelection>>;
+  readonly vertices: Readonly<Record<string, RowSelection>>;
   readonly collapsed?: boolean;
   readonly parent?: string;
 }
 export interface DiagramData {
   readonly source: Queryable;
-  readonly components: Readonly<Record<string, ComponentOptions>>;
-  readonly connections?: Readonly<Record<string, ConnectionOptions>>;
+  readonly vertices: Readonly<Record<string, VertexOptions>>;
+  readonly edges?: Readonly<Record<string, EdgeOptions>>;
   readonly groups?: Readonly<Record<string, Group>>;
 }
-export interface EntityRef {
+export interface RowRef {
   readonly type: string;
   readonly id: string;
 }
 export type DiagramItem =
-  | (EntityRef & { readonly kind: 'component' | 'connection' })
-  | (EntityRef & { readonly kind: 'port'; readonly port: string })
+  | (RowRef & { readonly kind: 'vertex' | 'edge' })
+  | (RowRef & { readonly kind: 'port'; readonly port: string })
   | { readonly kind: 'group'; readonly id: string };
 export type DiagramHit =
   (Exclude<DiagramItem, { kind: 'group' }> & DataHit) | Extract<DiagramItem, { kind: 'group' }>;
-export interface RouteEndpoint {
+export interface RouteEnd {
   readonly position: Point;
   readonly normal: Point;
-  readonly role: string;
+  readonly direction?: 'in' | 'out';
 }
 export interface RouteRequest {
-  readonly endpoints: readonly RouteEndpoint[];
+  readonly ends: readonly RouteEnd[];
   readonly clearance: number;
   readonly signal: AbortSignal;
   readonly obstacles: readonly (readonly [number, number, number, number])[];

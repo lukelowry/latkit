@@ -13,8 +13,7 @@ const schema: Schema = {
   queries: ['envelope'],
   axis: { name: 'coordinate' },
   limits: { maxBlockBytes: 8192 },
-  components: { node: { fields: { value: { type: 'float64', sampled: true, nullable: true } } } },
-  connections: {},
+  types: { node: { fields: { value: { type: 'float64', sampled: true, nullable: true } } } },
 };
 const query: EnvelopeQuery = {
   kind: 'envelope',

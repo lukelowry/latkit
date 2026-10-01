@@ -23,7 +23,7 @@ import {
   type Geometry,
   type Limits,
   type VertexBank,
-} from './geometry/connectivity.js';
+} from './geometry/topology.js';
 import { resolveOptions, type Options } from './options.js';
 import { HOVER_EXHAUSTED, Picking, type PickGeometry } from './picking.js';
 import { readFields, resolveDomains, type FieldRead } from './rendering/fields.js';
@@ -59,7 +59,7 @@ export interface NetworkStats {
 export interface Network extends Renderer {
   setData(data: NetworkData): void;
   setVertex(type: string, patch: Partial<Omit<VertexOptions, 'rows'>>): void;
-  setEdge(type: string, patch: Partial<Omit<EdgeOptions, 'rows' | 'connectivity'>>): void;
+  setEdge(type: string, patch: Partial<Omit<EdgeOptions, 'rows' | 'ends'>>): void;
   setPath(type: string, patch: Partial<Omit<PathOptions, 'rows' | 'source'>>): void;
   setOptions(options: Options): void;
   setShade(shade: Shade | null): Promise<void>;
@@ -138,20 +138,19 @@ function sameItem(a: NetworkItem | null, b: NetworkItem | null): boolean {
   );
 }
 function checkedData(data: NetworkData): NetworkData {
-  if (!data.source || !['cartesian', 'geographic'].includes(data.coordinates) || !data.vertices)
-    throw new GpuError('invalid-input', 'Invalid network data');
+  if (!data.source || !data.vertices) throw new GpuError('invalid-input', 'Invalid network data');
   for (const [type, edge] of Object.entries(data.edges ?? {})) {
-    if (!edge.connectivity || !['links', 'endpoints', 'ports'].includes(edge.connectivity.kind))
-      throw new GpuError('invalid-input', 'Invalid connectivity for ' + type);
-    if (edge.connectivity.kind === 'links' && !data.vertices[edge.connectivity.to])
-      throw new GpuError('invalid-input', 'Link target must have a vertex declaration');
     if (
-      edge.connectivity.kind === 'ports' &&
-      (edge.connectivity.ports?.length !== 2 ||
-        !edge.connectivity.ports.every((port) => typeof port === 'string') ||
-        edge.connectivity.ports[0] === edge.connectivity.ports[1])
+      edge.ends &&
+      (edge.ends.length !== 2 ||
+        !edge.ends.every((end) => typeof end === 'string') ||
+        edge.ends[0] === edge.ends[1])
     )
-      throw new GpuError('invalid-input', 'Port connectivity requires two distinct ports');
+      throw new GpuError('invalid-input', 'Edge ends must be two distinct fields: ' + type);
+    if (edge.ends && edge.junction)
+      throw new GpuError('invalid-input', 'A junction centers a net, which has no ends: ' + type);
+    if (!edge.ends && edge.bends)
+      throw new GpuError('invalid-input', 'Bends require ends: ' + type);
   }
   for (const path of Object.values(data.paths ?? {})) {
     if (
@@ -233,8 +232,6 @@ class NetworkView implements Network {
         ),
     });
     this.shade = config.shade ?? null;
-    if (this.camera.projection === 'globe' && this.data.coordinates !== 'geographic')
-      throw new GpuError('invalid-input', 'Globe requires geographic coordinates');
     this.painter = new Painter(this.gpu);
     this.subscribe();
     inputEvents.set(this, (event, value) => this.emit(event, value));
@@ -317,13 +314,13 @@ class NetworkView implements Network {
     this.subscribe();
     this.invalidate();
   }
-  setEdge(type: string, patch: Partial<Omit<EdgeOptions, 'rows' | 'connectivity'>>): void {
+  setEdge(type: string, patch: Partial<Omit<EdgeOptions, 'rows' | 'ends'>>): void {
     this.live();
     if (!this.data.edges?.[type]) throw new GpuError('invalid-input', 'Unknown edge type');
-    this.data = {
+    this.data = checkedData({
       ...this.data,
       edges: { ...this.data.edges, [type]: { ...this.data.edges[type], ...patch } },
-    };
+    });
     this.subscribe();
     this.invalidate();
   }
@@ -360,8 +357,9 @@ class NetworkView implements Network {
   get projection(): Projection {
     return this.camera.projection;
   }
+  /** Globe needs geographic positions, which the model's spatial system declares once read. */
   get projections(): Readonly<Record<Projection, boolean>> {
-    return { flat: true, tilt: true, globe: this.data.coordinates === 'geographic' };
+    return { flat: true, tilt: true, globe: this.presented?.geometry.geographic ?? false };
   }
   get orbiting(): boolean {
     return this.spinning;
@@ -673,7 +671,7 @@ class NetworkView implements Network {
         (await readGeometry(this.data, frame, this.limits));
       let geometry = topology;
       const vertices = new Map<VertexBank, FieldRead>(),
-        edges = new Map<import('./geometry/connectivity.js').EdgeBank, FieldRead>();
+        edges = new Map<import('./geometry/topology.js').EdgeBank, FieldRead>();
       const retain = (native: NativeFields) => {
         if (!held.has(native)) {
           held.add(native);
@@ -732,6 +730,8 @@ class NetworkView implements Network {
       if (geometry.bytes + picking.bytes > this.limits.cpuBytes)
         throw new GpuError('resource-limit', 'Network geometry and picking exceed the CPU budget');
       let camera = this.camera;
+      if (camera.projection === 'globe' && !geometry.geographic)
+        camera = { ...camera, projection: 'flat', pitch: 0 };
       if (camera.fit) camera = fit(picking.bounds, frame.viewport, camera, this.options);
       let finishedAnimation: object | undefined;
       if (this.animation) {

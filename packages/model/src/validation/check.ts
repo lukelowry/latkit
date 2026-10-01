@@ -2,7 +2,7 @@ import type { Problem } from '../types.js';
 
 export type Path = readonly (string | number)[];
 export const numeric = ['float32', 'float64', 'int32', 'uint32'];
-export const kinds = ['rows', 'samples', 'envelope', 'endpoints', 'links', 'aggregate'];
+export const kinds = ['rows', 'samples', 'envelope', 'aggregate'];
 export const own = (object: object, key: PropertyKey): boolean => Object.hasOwn(object, key);
 export const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' &&
@@ -75,6 +75,13 @@ export class Check {
     if (nonempty && !list.length) this.issue(path, 'Selection must not be empty.');
     return result;
   }
+}
+
+export function index(c: Check, value: unknown, path: Path, type?: string): void {
+  const idx = c.object(value, path);
+  for (const key of ['source', 'type', 'version']) c.text(idx[key], [...path, key]);
+  if (type !== undefined && idx.type !== type)
+    c.issue([...path, 'type'], 'Index belongs to a different type.');
 }
 
 export function bounds(c: Check, value: unknown, path: Path): void {

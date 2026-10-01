@@ -3,7 +3,16 @@ import { blockByteLength, validateBlock, validateSchema, textAt } from '@latkit/
 import type { Query, Queryable } from '@latkit/model';
 import { arrange } from '@latkit/diagram';
 import { GraphSource } from '../src/source.js';
-import { preset, schema, History, connectGraph, deleteItems } from '../src/graph.js';
+import {
+  plugged,
+  ports,
+  preset,
+  schema,
+  types,
+  History,
+  connectGraph,
+  deleteItems,
+} from '../src/graph.js';
 import { data } from '../src/presentation.js';
 async function collect(source: Queryable, query: Query, maxBlockBytes = 2048) {
   const result = [];
@@ -16,18 +25,18 @@ async function collect(source: Queryable, query: Query, maxBlockBytes = 2048) {
   }
   return result;
 }
-it('supplies conforming native rows and endpoint blocks for every scene', async () => {
+it('supplies conforming native rows and wiring for every scene', async () => {
   expect(validateSchema(schema)).toEqual([]);
   for (const which of ['loop', 'groups', 'shapes', 'scale'] as const) {
     const source = new GraphSource(preset(which));
-    for (const type of Object.keys(schema.components))
+    for (const type of types)
       await collect(source, {
         kind: 'rows',
         from: type,
-        select: ['name', 'position', 'signal', 'status', 'visible'],
+        select: ['name', 'position', 'signal', 'status', 'visible', ...Object.keys(ports[type])],
         ids: true,
       });
-    await collect(source, { kind: 'endpoints', from: 'Signal' });
+    await collect(source, { kind: 'rows', from: 'Signal', select: ['name', 'signal'], ids: true });
     await source.close();
   }
 });
@@ -72,24 +81,29 @@ it('supports filtering, ordering, sparse IDs, counts and cancellation', async ()
   ).rejects.toMatchObject({ name: 'AbortError' });
   await source.close();
 });
-it('applies connection proposals, preserves hyperedges, and supports history', () => {
+it('plugs an input into the wire its output drives, keeps fan-out, and supports history', () => {
   const graph = preset('loop'),
     history = new History(graph);
   const next = connectGraph(graph, {
     from: { type: 'Process', id: 'actuator', port: 'out' },
-    to: { kind: 'component', type: 'Output', id: 'response', port: 'in' },
+    to: { kind: 'vertex', type: 'Output', id: 'response', port: 'in' },
     position: [0, 0],
     point: [0, 0],
   });
   history.commit(next);
-  expect(history.current.wires.length).toBe(graph.wires.length + 1);
+  const drive = graph.wires.find((wire) => wire.name === 'Drive')!;
+  expect(next.blocks.find((block) => block.id === 'response')!.ports.in).toBe(drive.id);
+  expect(plugged(next, drive.id)).toHaveLength(3);
   expect(history.undo()).toBe(graph);
   expect(history.redo()).toBe(next);
-  const removed = deleteItems(graph, ['sensor']);
-  expect(removed.wires.find((wire) => wire.name === 'Measured')!.ends).toHaveLength(2);
+  const removed = deleteItems(graph, ['sensor']),
+    measured = removed.wires.find((wire) => wire.name === 'Measured')!;
+  expect(plugged(removed, measured.id)).toHaveLength(2);
+  // Feedback lost its driver: the wire goes, and the controller port is unplugged.
   expect(removed.wires.some((wire) => wire.name === 'Feedback')).toBe(false);
+  expect(removed.blocks.find((block) => block.id === 'controller')!.ports.feedback).toBeNull();
 });
-it('connects an input to a free endpoint or existing wire with the correct role', async () => {
+it('wires an input to a new driving block, or plugs it into an existing wire', async () => {
   const graph = preset('shapes');
   const gesture = {
     from: { type: 'Control', id: 'diamond', port: 'feedback' },
@@ -97,24 +111,22 @@ it('connects an input to a free endpoint or existing wire with the correct role'
     point: [700, 0] as const,
   };
   const free = connectGraph(graph, { ...gesture, to: null }, true);
-  expect(free.wires.at(-1)?.ends).toEqual([
-    { id: 'diamond', port: 'feedback', role: 'target' },
-    { id: free.nodes.at(-1)!.id, port: 'out', role: 'source' },
+  const added = free.wires.at(-1)!;
+  expect(free.wires).toHaveLength(graph.wires.length + 1);
+  expect(plugged(free, added.id)).toEqual([
+    { id: 'diamond', port: 'feedback' },
+    { id: free.blocks.at(-1)!.id, port: 'out' },
   ]);
   const join = {
     ...gesture,
-    to: { kind: 'connection' as const, type: 'Signal', id: graph.wires[0].id },
+    to: { kind: 'edge' as const, type: 'Signal', id: graph.wires[0].id },
   };
   const joined = connectGraph(graph, join);
-  expect(joined.wires[0].ends.at(-1)).toEqual({
-    id: 'diamond',
-    port: 'feedback',
-    role: 'target',
-  });
-  expect(connectGraph(joined, join).wires[0].ends).toHaveLength(3);
+  expect(plugged(joined, graph.wires[0].id)).toContainEqual({ id: 'diamond', port: 'feedback' });
+  expect(plugged(connectGraph(joined, join), graph.wires[0].id)).toHaveLength(3);
   for (const changed of [free, joined]) {
     const source = new GraphSource(changed);
-    await collect(source, { kind: 'endpoints', from: 'Signal' });
+    await collect(source, { kind: 'rows', from: 'Control', select: ['feedback'] });
     await source.close();
   }
 });
@@ -160,14 +172,13 @@ it('requires explicit creation on empty drop and disconnects a replaced branch w
   const next = connectGraph(graph, {
     ...free,
     replaces: {
-      connection: { type: 'Signal', id: branch.id },
-      endpoint: {
-        ordinal: 1,
-        index: { source: 'test', type: 'Signal', version: '0' },
-        role: 'target',
-      },
+      edge: { type: 'Signal', id: branch.id },
+      end: { type: 'Output', id: 'response', port: 'in' },
     },
   });
-  expect(next.wires.find((wire) => wire.id === branch.id)!.ends).toHaveLength(2);
-  expect(next.nodes).toBe(graph.nodes);
+  expect(plugged(next, branch.id)).toEqual([
+    { id: 'plant', port: 'out' },
+    { id: 'sensor', port: 'in' },
+  ]);
+  expect(next.blocks.find((block) => block.id === 'response')!.ports.in).toBeNull();
 });

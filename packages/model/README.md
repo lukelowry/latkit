@@ -66,6 +66,16 @@ const name = textAt(textColumn, 0);
 const value = sampleAt(sampleColumn, { row: 0, frame: 0 });
 ```
 
+Topology is data: a reference field holds rows of another type, read as a
+`ReferenceColumn` of row numbers under that type's `Index`.
+
+```ts
+for await (const block of source.query({ kind: 'rows', from: 'Branch', select: ['bus1'] })) {
+  const bus1 = block.kind === 'rows' ? block.columns.bus1 : undefined;
+  if (bus1?.kind === 'reference') console.log(bus1.index.type, numberAt(bus1, 0)); // 'Bus', a row
+}
+```
+
 Queries yield one schema header, then bounded blocks. Rows use physical ranges
 or indices; `Index = { source, type, version }` identifies their numbering.
 Columns use typed arrays, offsets, and validity bitmaps.

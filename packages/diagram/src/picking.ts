@@ -9,7 +9,7 @@ import { SpatialIndex, expand } from './spatial.js';
 interface Entry {
   hit: DiagramHit;
   kind: number;
-  node?: number;
+  vertex?: number;
   a?: Point;
   b?: Point;
   point?: Point;
@@ -30,10 +30,10 @@ export class Picking {
     this.maxStroke = (scene.portSizePx ?? 8) / 2;
     for (const group of scene.groups) this.identities.add(itemKey({ kind: 'group', id: group.id }));
     for (const edge of scene.edges) this.identities.add(itemKey(edge.hit));
-    for (const node of scene.nodes) {
-      this.identities.add(itemKey(node.hit));
-      for (const port of node.ports)
-        this.identities.add(itemKey({ ...node.hit, kind: 'port', port: port.name }));
+    for (const vertex of scene.vertices) {
+      this.identities.add(itemKey(vertex.hit));
+      for (const port of vertex.ports)
+        this.identities.add(itemKey({ ...vertex.hit, kind: 'port', port: port.name }));
     }
     const add = (e: Entry) => {
       this.spatial.add(e.box);
@@ -69,12 +69,15 @@ export class Picking {
           });
         }
     });
-    scene.nodes.forEach((node, i) => {
-      if (!node.visible) return;
-      add({ hit: node.hit, kind: 1, node: i, box: rect(node) });
-      this.anchors.set(itemKey(node.hit), [node.x + node.width / 2, node.y + node.height / 2]);
-      for (const port of node.ports) {
-        const hit: DiagramHit = { ...node.hit, kind: 'port', port: port.name };
+    scene.vertices.forEach((vertex, i) => {
+      if (!vertex.visible) return;
+      add({ hit: vertex.hit, kind: 1, vertex: i, box: rect(vertex) });
+      this.anchors.set(itemKey(vertex.hit), [
+        vertex.x + vertex.width / 2,
+        vertex.y + vertex.height / 2,
+      ]);
+      for (const port of vertex.ports) {
+        const hit: DiagramHit = { ...vertex.hit, kind: 'port', port: port.name };
         add({ hit, kind: 0, point: port.position, box: [...port.position, ...port.position] });
         this.anchors.set(itemKey(hit), port.position);
       }
@@ -131,8 +134,8 @@ export class Picking {
               cameraPoint(camera, e.b, viewport),
             ) - (e.radius ?? 0),
           );
-        else if (e.node !== undefined) {
-          if (contains(this.scene.nodes[e.node], world)) d = 0;
+        else if (e.vertex !== undefined) {
+          if (contains(this.scene.vertices[e.vertex], world)) d = 0;
         } else if (
           world[0] >= e.box[0] &&
           world[0] <= e.box[2] &&
@@ -161,7 +164,7 @@ export class Picking {
     return this.spatial
       .query(box)
       .map((i) => this.entries[i])
-      .filter((e) => e.node !== undefined)
+      .filter((e) => e.vertex !== undefined)
       .map((e) => e.hit);
   }
   bounds(items?: readonly DiagramItem[]): Rect[] {

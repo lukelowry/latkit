@@ -13,10 +13,6 @@ import type {
   EnvelopeQuery,
   EnvelopeBlock,
   SamplesBlock,
-  EndpointsQuery,
-  EndpointsBlock,
-  LinksQuery,
-  LinksBlock,
   AggregateQuery,
   AggregateBlock,
   RowAxis,
@@ -34,7 +30,7 @@ import { Store, failure, axisAt, axisLength, slice, interrupt } from './store.js
 export const schema: Schema = {
   queries: ['rows', 'aggregate'],
   limits: { maxBlockBytes: 256 * 1024 },
-  components: {
+  types: {
     Node: {
       fields: {
         value: { type: 'float64' },
@@ -42,7 +38,6 @@ export const schema: Schema = {
       },
     },
   },
-  connections: {},
 };
 export interface Frame {
   readonly coordinate: number;
@@ -117,8 +112,6 @@ export abstract class ScaleSource implements Queryable {
   query(query: RowsQuery, options?: QueryOptions): AsyncIterable<QueryHeader | RowsBlock>;
   query(query: SamplesQuery, options?: QueryOptions): AsyncIterable<QueryHeader | SamplesBlock>;
   query(query: EnvelopeQuery, options?: QueryOptions): AsyncIterable<QueryHeader | EnvelopeBlock>;
-  query(query: EndpointsQuery, options?: QueryOptions): AsyncIterable<QueryHeader | EndpointsBlock>;
-  query(query: LinksQuery, options?: QueryOptions): AsyncIterable<QueryHeader | LinksBlock>;
   query(query: AggregateQuery, options?: QueryOptions): AsyncIterable<QueryHeader | AggregateBlock>;
   query(query: Query, options?: QueryOptions): AsyncIterable<QueryHeader | QueryBlock>;
   query(query: Query, options: QueryOptions = {}): AsyncIterable<QueryHeader | QueryBlock> {

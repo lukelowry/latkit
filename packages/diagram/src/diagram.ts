@@ -14,13 +14,13 @@ import type {
   Viewport,
 } from '@latkit/gpu';
 import type {
-  ComponentOptions,
-  ConnectionOptions,
+  VertexOptions,
+  EdgeOptions,
   DiagramData,
   DiagramItem,
   DiagramHit,
   Point,
-  EntityRef,
+  RowRef,
   Group,
 } from './data.js';
 import { itemKey } from './data.js';
@@ -42,24 +42,20 @@ import { Picking } from './picking.js';
 import { Work } from './work.js';
 import { union } from './spatial.js';
 import { Painter, type Paint, type Overlay } from './painter.js';
-export interface ConnectionGesture {
-  readonly from: EntityRef & { readonly port?: string };
-  readonly to:
-    (EntityRef & { readonly kind: 'component' | 'connection'; readonly port?: string }) | null;
-  readonly replaces?: {
-    readonly connection: EntityRef;
-    readonly endpoint: {
-      readonly ordinal: number;
-      readonly index: import('@latkit/model').Index;
-      readonly role: string;
-    };
-  };
+/** A wiring the user drew; the application decides which references change. */
+export interface ConnectProposal {
+  /** Where the wiring starts: a vertex, or one of its ports. */
+  readonly from: RowRef & { readonly port?: string };
+  /** What it was dropped on: a vertex or its port, a net to join, or empty canvas. */
+  readonly to: (RowRef & { readonly kind: 'vertex' | 'edge'; readonly port?: string }) | null;
+  /** Dragging a wired input moves it: the net it leaves, and the port leaving it. */
+  readonly replaces?: { readonly edge: RowRef; readonly end: RowRef & { readonly port: string } };
   readonly position: Point;
   readonly point: Point;
 }
 export interface MoveProposal {
   readonly positions: Readonly<Record<string, FieldValues>>;
-  readonly moves: readonly { readonly component: EntityRef; readonly position: Point }[];
+  readonly moves: readonly { readonly vertex: RowRef; readonly position: Point }[];
 }
 export interface DiagramEvents {
   readonly invalidate: Invalidation;
@@ -67,15 +63,15 @@ export interface DiagramEvents {
   readonly select: readonly DiagramItem[];
   readonly contextmenu: ContextMenu<DiagramHit>;
   readonly open: DiagramItem;
-  readonly connect: ConnectionGesture;
+  readonly connect: ConnectProposal;
   readonly move: MoveProposal;
   readonly delete: readonly string[];
   readonly fit: boolean;
 }
 export interface DiagramStats {
-  readonly components: number;
-  readonly connections: number;
-  readonly endpoints: number;
+  readonly vertices: number;
+  readonly edges: number;
+  readonly ends: number;
   readonly geometryBytes: number;
   readonly pickingBytes: number;
   readonly prepareMs: number;
@@ -85,8 +81,8 @@ export interface DiagramStats {
 }
 export interface Diagram extends Renderer {
   setData(data: DiagramData, options?: { readonly animate?: boolean }): void;
-  setComponent(type: string, patch: Partial<ComponentOptions>): void;
-  setConnection(type: string, patch: Partial<ConnectionOptions>): void;
+  setVertex(type: string, patch: Partial<VertexOptions>): void;
+  setEdge(type: string, patch: Partial<EdgeOptions>): void;
   setGroup(id: string, patch: Partial<Group>): void;
   setOptions(options: Options): void;
   setLayout(options: LayoutOptions, transition?: { readonly animate?: boolean }): void;
@@ -197,9 +193,9 @@ class View implements Diagram {
   private hoverState: HoverState = 'idle';
   private frames = 0;
   private currentStats: DiagramStats = {
-    components: 0,
-    connections: 0,
-    endpoints: 0,
+    vertices: 0,
+    edges: 0,
+    ends: 0,
     geometryBytes: 0,
     pickingBytes: 0,
     prepareMs: 0,
@@ -336,18 +332,18 @@ class View implements Diagram {
     this.subscribe();
     this.invalidate();
   }
-  setComponent(type: string, value: Partial<ComponentOptions>): void {
-    if (!this.data.components[type]) fail('Unknown component type: ' + type);
+  setVertex(type: string, value: Partial<VertexOptions>): void {
+    if (!this.data.vertices[type]) fail('Unknown vertex type: ' + type);
     this.setData({
       ...this.data,
-      components: { ...this.data.components, [type]: patch(this.data.components[type], value) },
+      vertices: { ...this.data.vertices, [type]: patch(this.data.vertices[type], value) },
     });
   }
-  setConnection(type: string, value: Partial<ConnectionOptions>): void {
-    if (!this.data.connections?.[type]) fail('Unknown connection type: ' + type);
+  setEdge(type: string, value: Partial<EdgeOptions>): void {
+    if (!this.data.edges?.[type]) fail('Unknown edge type: ' + type);
     this.setData({
       ...this.data,
-      connections: { ...this.data.connections, [type]: patch(this.data.connections[type], value) },
+      edges: { ...this.data.edges, [type]: patch(this.data.edges[type], value) },
     });
   }
   setGroup(id: string, value: Partial<Group>): void {
@@ -483,27 +479,27 @@ class View implements Diagram {
     const scene = this.presented?.scene;
     if (!scene) return [];
     const result = new Map<string, DiagramItem>([[itemKey(item), item]]),
-      nodes = new Set<number>();
-    scene.nodes.forEach((n, i) => {
+      vertices = new Set<number>();
+    scene.vertices.forEach((n, i) => {
       if (
         item.kind === 'group'
           ? n.group === item.id
-          : item.kind !== 'connection' && n.hit.type === item.type && n.hit.id === item.id
+          : item.kind !== 'edge' && n.hit.type === item.type && n.hit.id === item.id
       )
-        nodes.add(i);
+        vertices.add(i);
     });
     for (const e of scene.edges)
       if (
-        (item.kind === 'connection' && item.type === e.hit.type && item.id === e.hit.id) ||
-        e.endpoints.some((end) => nodes.has(end.node))
+        (item.kind === 'edge' && item.type === e.hit.type && item.id === e.hit.id) ||
+        e.ends.some((end) => vertices.has(end.vertex))
       ) {
         result.set(itemKey(e.hit), e.hit);
-        for (const end of e.endpoints) {
-          const n = scene.nodes[end.node];
+        for (const end of e.ends) {
+          const n = scene.vertices[end.vertex];
           result.set(itemKey(n.hit), n.hit);
         }
       }
-    for (const i of nodes) result.set(itemKey(scene.nodes[i].hit), scene.nodes[i].hit);
+    for (const i of vertices) result.set(itemKey(scene.vertices[i].hit), scene.vertices[i].hit);
     return [...result.values()];
   }
   panBy(dx: number, dy: number): void {
@@ -594,10 +590,10 @@ class View implements Diagram {
     if (!scene) return keys;
     const groups = new Map(scene.groups.map((g) => [g.id, g]));
     const selected = new Set(items.filter((i) => i.kind === 'group').map((i) => i.id));
-    for (const node of scene.nodes)
-      for (let group = node.group; group; group = groups.get(group)?.parent)
+    for (const vertex of scene.vertices)
+      for (let group = vertex.group; group; group = groups.get(group)?.parent)
         if (selected.has(group)) {
-          keys.add(itemKey(node.hit));
+          keys.add(itemKey(vertex.hit));
           break;
         }
     return keys;
@@ -607,19 +603,19 @@ class View implements Diagram {
     if (!scene) return;
     const keys = this.movingKeys(items),
       indices = new Set<number>(),
-      nodes = scene.nodes.map((node, i) => {
-        if (keys.has(itemKey(node.hit))) {
+      vertices = scene.vertices.map((vertex, i) => {
+        if (keys.has(itemKey(vertex.hit))) {
           indices.add(i);
-          return { ...node, x: node.x + delta[0], y: node.y + delta[1] };
+          return { ...vertex, x: vertex.x + delta[0], y: vertex.y + delta[1] };
         }
-        return node;
+        return vertex;
       });
     if (!indices.size) return;
     return {
-      positions: positions(nodes, indices),
+      positions: positions(vertices, indices),
       moves: [...indices].map((i) => ({
-        component: { type: nodes[i].index.type, id: nodes[i].hit.id },
-        position: [nodes[i].x, nodes[i].y],
+        vertex: { type: vertices[i].index.type, id: vertices[i].hit.id },
+        position: [vertices[i].x, vertices[i].y],
       })),
     };
   }
@@ -653,7 +649,10 @@ class View implements Diagram {
       if (this.drag && base && base.revision === revision) {
         scene = {
           ...base.scene,
-          nodes: base.scene.nodes.map((n) => ({ ...n, ports: n.ports.map((p) => ({ ...p })) })),
+          vertices: base.scene.vertices.map((n) => ({
+            ...n,
+            ports: n.ports.map((p) => ({ ...p })),
+          })),
           edges: base.scene.edges.map((e) => ({ ...e })),
           groups: base.scene.groups.map((g) => ({ ...g })),
         };
@@ -676,10 +675,10 @@ class View implements Diagram {
         );
       }
       if (this.drag)
-        for (const node of scene.nodes)
-          if (this.drag.keys.has(itemKey(node.hit))) {
-            node.x += this.drag.delta[0];
-            node.y += this.drag.delta[1];
+        for (const vertex of scene.vertices)
+          if (this.drag.keys.has(itemKey(vertex.hit))) {
+            vertex.x += this.drag.delta[0];
+            vertex.y += this.drag.delta[1];
           }
       await geometry(scene, options, this.limits, frame.signal, base?.scene, work);
       picking = new Picking(scene, this.limits.pickingBytes);
@@ -704,17 +703,17 @@ class View implements Diagram {
       !this.drag &&
       this.motion() &&
       options.animationMs > 0 &&
-      scene.nodes.length <= options.animationMaxComponents &&
+      scene.vertices.length <= options.animationMaxVertices &&
       scene.bytes * 3 + base.scene.bytes <= this.limits.geometryBytes &&
       picking.bytes * 3 + base.picking.bytes <= this.limits.pickingBytes
     ) {
       const from = new Map(
-        base.scene.nodes.map((node) => [itemKey(node.hit), [node.x, node.y] as Point]),
+        base.scene.vertices.map((vertex) => [itemKey(vertex.hit), [vertex.x, vertex.y] as Point]),
       );
       if (
-        scene.nodes.some((node) => {
-          const p = from.get(itemKey(node.hit));
-          return p && (p[0] !== node.x || p[1] !== node.y);
+        scene.vertices.some((vertex) => {
+          const p = from.get(itemKey(vertex.hit));
+          return p && (p[0] !== vertex.x || p[1] !== vertex.y);
         })
       )
         this.sceneTransition = {
@@ -740,13 +739,13 @@ class View implements Diagram {
         const ease = 1 - (1 - t) ** 3;
         scene = {
           ...movement.target,
-          nodes: movement.target.nodes.map((node) => {
-            const from = movement.from.get(itemKey(node.hit));
+          vertices: movement.target.vertices.map((vertex) => {
+            const from = movement.from.get(itemKey(vertex.hit));
             return {
-              ...node,
-              ports: node.ports.map((port) => ({ ...port })),
-              x: from ? from[0] + (node.x - from[0]) * ease : node.x,
-              y: from ? from[1] + (node.y - from[1]) * ease : node.y,
+              ...vertex,
+              ports: vertex.ports.map((port) => ({ ...port })),
+              x: from ? from[0] + (vertex.x - from[0]) * ease : vertex.x,
+              y: from ? from[1] + (vertex.y - from[1]) * ease : vertex.y,
             };
           }),
           edges: movement.target.edges.map((edge) => ({ ...edge })),
@@ -782,7 +781,7 @@ class View implements Diagram {
       this.requestedCamera ??
       base?.camera ??
       ({ center: [0, 0], scale: [1, 1], yDirection: 'down' } as Camera2D);
-    if (this.fitting && scene.nodes.some((n) => n.visible))
+    if (this.fitting && scene.vertices.some((n) => n.visible))
       c = this.fitted(scene.bounds, frame.viewport);
     if (this.fitItems) {
       const boxes = picking.bounds(this.fitItems);
@@ -903,9 +902,9 @@ class View implements Diagram {
     )
       this.animation = undefined;
     this.currentStats = {
-      components: next.scene.nodes.length,
-      connections: next.scene.edges.length,
-      endpoints: next.scene.endpoints,
+      vertices: next.scene.vertices.length,
+      edges: next.scene.edges.length,
+      ends: next.scene.ends,
       geometryBytes: next.scene.bytes,
       pickingBytes: next.picking.bytes,
       prepareMs: next.prepareMs,

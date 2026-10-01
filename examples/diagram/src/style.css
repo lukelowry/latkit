@@ -539,16 +539,16 @@ dd {
   display: grid;
   gap: 8px;
 }
-.component-palette {
+.block-palette {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
 }
-.component-palette button {
+.block-palette button {
   justify-content: flex-start;
   font-size: 11px;
 }
-.component-palette svg {
+.block-palette svg {
   width: 22px;
 }
 .small-note {

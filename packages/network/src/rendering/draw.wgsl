@@ -5,7 +5,7 @@ override NETWORK_CURVES:bool=false;
 @group(0) @binding(3) var<storage,read> segments: array<vec4u>;
 @group(0) @binding(4) var<storage,read> styles: array<vec4f>;
 @group(0) @binding(5) var<uniform> item: vec4u;
-@group(0) @binding(7) var<storage,read> endpointFocus:array<u32>;
+@group(0) @binding(7) var<storage,read> endFocus:array<u32>;
 @group(0) @binding(8) var<storage,read> curveInstances:array<vec4u>;
 @group(0) @binding(9) var<storage,read> dashPhases:array<f32>;
 struct Varying {
@@ -27,7 +27,7 @@ fn focus(groupId:u32,row:u32,dense:u32)->u32 {
   if(u.flags.x==0u){return 0u;}
   if(groupId==u.focus.x&&row==u.focus.y){return 2u;}
   if(groupId==u.focus.z&&row==u.focus.w){return 1u;}
-  if(dense<arrayLength(&endpointFocus)){return endpointFocus[dense];}
+  if(dense<arrayLength(&endFocus)){return endFocus[dense];}
   return 0u;
 }
 fn screen(p:vec4f)->vec2f{return vec2f((p.x/p.w+1.0)*u.view.x*0.5,(1.0-p.y/p.w)*u.view.y*0.5);}
