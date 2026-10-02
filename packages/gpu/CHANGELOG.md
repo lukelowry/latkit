@@ -1,5 +1,30 @@
 # @latkit/gpu
 
+## 0.11.1
+
+### Patch Changes
+
+- 5f19f4e: Replace connect with demand-driven connectLattice and acceptModel endpoints. Registration carries metadata only; bounded binary publications, cumulative credit windows, cancellation, typed command arguments, bounded diagnostics, and encoded forwarding replace snapshots and transaction event plumbing.
+
+  Make model the shared data and command vocabulary: add CommandDescription, Parameters, Arguments, Progress, Diagnostic, validateBatch, validateSelection, and selectBatches. Remove Model, Commands, Routine, DataEvent, transactions, and schema delivery limits. Read limits belong to QueryOptions; connection limits belong to connect. Update GPU/monitor consumers accordingly. This intentionally breaks the previous connection and model contracts.
+
+- 5f19f4e: Store field pages and sample indexes in persistent balanced collections. Appending shares earlier
+  storage instead of copying and reindexing the full history. TableData.fields now contains readonly
+  ColumnPages: use at() or iteration rather than array indexing and construct columns through
+  createData/appendData. copyBuffers preserves the indexed representation. Add appendedPages,
+  samplePages, and resolveRows for consistent indexed suffix, window, and row-coverage access.
+
+  Compile field bindings in the shared GPU layer independently of Data snapshots. Resolve row
+  identity without gathering bound values, and cache each point field independently so static
+  columns and slower sampled fields remain reusable through playback, including reordered IDs.
+  Index cached reads by their actual dependencies, and reuse network binding records across frames.
+  Monitor append detection now visits only added pages while preserving cancellation and replacement
+  semantics. Application view usage is unchanged.
+
+- Updated dependencies [5f19f4e]
+- Updated dependencies [5f19f4e]
+  - @latkit/model@1.0.0
+
 ## 0.11.0
 
 ### Minor Changes
