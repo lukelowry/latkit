@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RowsBlock, SamplesBlock } from '@latkit/model';
-import { BufferData, createGpu, type GpuPage } from '../src/index.js';
+import { createGpu } from '../src/index.js';
+import { BufferData, type GpuPage } from '../src/kit.js';
 import { bytes, fakeDevice, record } from './fixtures/device.js';
 import { field } from './fixtures/fields.js';
 import { draw, renderer, target } from './fixtures/render.js';
@@ -73,7 +74,7 @@ describe('native numeric uploads', () => {
       page = frame.upload(block(Uint32Array.of(0xffffffff, 16777217)), { select: ['value'] })[0];
     });
     const data = bytes(field(page).binding);
-    expect((page.columns.value as import('../src/index.js').GpuValueField).type).toBe('uint32');
+    expect((page.columns.value as import('../src/kit.js').GpuValueField).type).toBe('uint32');
     expect([...new Uint32Array(data.buffer, data.byteOffset, 2)]).toEqual([0xffffffff, 16777217]);
     gpu.destroy();
   });
@@ -155,7 +156,7 @@ describe('native numeric uploads', () => {
     await draw(gpu, (frame) => {
       page = frame.upload(value, { select: ['value'], float64: 'relative' })[0];
     });
-    expect((page.columns.value as import('../src/index.js').GpuValueField).origin?.[0]).toBe(1e12);
+    expect((page.columns.value as import('../src/kit.js').GpuValueField).origin?.[0]).toBe(1e12);
     expect(f32(field(page).binding)).toEqual([0, 0.25, 0.5]);
     gpu.destroy();
   });
@@ -185,7 +186,7 @@ describe('native numeric uploads', () => {
     await draw(gpu, (frame) => {
       page = frame.upload(value, { select: ['value'], float64: 'relative' })[0];
     });
-    expect([...(page.columns.value as import('../src/index.js').GpuValueField).origin!]).toEqual([
+    expect([...(page.columns.value as import('../src/kit.js').GpuValueField).origin!]).toEqual([
       1e12,
       1e12 + 1,
     ]);

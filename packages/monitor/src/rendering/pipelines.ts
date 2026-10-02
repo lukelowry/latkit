@@ -1,15 +1,4 @@
-import {
-  fieldShader,
-  scaleShader,
-  colormapShader,
-  strokeShader,
-  shadeShader,
-  defaultShade,
-  outputShader,
-  textShader,
-  premultipliedBlend,
-  type Gpu,
-} from '@latkit/gpu';
+import { type Gpu, kit } from '@latkit/gpu';
 import traceCode from './traces.wgsl';
 import compositeCode from './composite.wgsl';
 import axesCode from './axes.wgsl';
@@ -32,7 +21,7 @@ export function pipelines(
   gpu: Gpu,
   format: GPUTextureFormat,
   msaa: 1 | 4,
-  shade = defaultShade,
+  shade: string = kit.defaultShade,
 ): Promise<Pipelines> {
   let entries = cache.get(gpu);
   if (!entries) {
@@ -56,7 +45,7 @@ async function compilePipelines(
   gpu: Gpu,
   format: GPUTextureFormat,
   msaa: 1 | 4,
-  shade = defaultShade,
+  shade: string = kit.defaultShade,
 ): Promise<Pipelines> {
   const d = gpu.device,
     both = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
@@ -102,17 +91,17 @@ async function compilePipelines(
   };
   const [module, screen, axes] = await Promise.all([
     compile(
-      fieldShader({ group: 0 }) +
-        scaleShader() +
-        colormapShader({ group: 2 }) +
-        strokeShader() +
-        shadeShader({ group: 3 }) +
-        outputShader() +
+      kit.fieldShader({ group: 0 }) +
+        kit.scaleShader() +
+        kit.colormapShader({ group: 2 }) +
+        kit.strokeShader() +
+        kit.shadeShader({ group: 3 }) +
+        kit.outputShader() +
         shade +
         traceCode,
     ),
     compile(compositeCode),
-    compile(textShader({ group: 0 }) + axesCode),
+    compile(kit.textShader({ group: 0 }) + axesCode),
   ]);
   const traceLayout = d.createPipelineLayout({
     bindGroupLayouts: [gpu.fieldLayout, view, gpu.colormapLayout, effects],
@@ -124,7 +113,7 @@ async function compilePipelines(
       fragment: {
         module,
         entryPoint: 'fragment_main',
-        targets: [{ format: 'rgba8unorm', blend: premultipliedBlend }],
+        targets: [{ format: 'rgba8unorm', blend: kit.premultipliedBlend }],
       },
       primitive: { topology: 'triangle-list' },
       multisample: { count: msaa },
@@ -138,7 +127,11 @@ async function compilePipelines(
       gpu.renderPipeline({
         layout: d.createPipelineLayout({ bindGroupLayouts: [image] }),
         vertex: { module: screen, entryPoint: 'main' },
-        fragment: { module: screen, entryPoint, targets: [{ format, blend: premultipliedBlend }] },
+        fragment: {
+          module: screen,
+          entryPoint,
+          targets: [{ format, blend: kit.premultipliedBlend }],
+        },
       }),
     ),
     ...[
@@ -156,7 +149,7 @@ async function compilePipelines(
         fragment: {
           module: axes,
           entryPoint: fragment,
-          targets: [{ format, blend: premultipliedBlend }],
+          targets: [{ format, blend: kit.premultipliedBlend }],
         },
       }),
     ),

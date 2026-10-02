@@ -5,13 +5,12 @@ import {
   colormaps,
   createColormap,
   reverseColormap,
-  sampleColormap,
   colormapCss,
   colorCss,
   parseColor,
-  validateRgba,
   type RGBA,
 } from '../src/index.js';
+import { sampleColormap, validateRgba } from '../src/kit.js';
 
 const black: RGBA = [0, 0, 0, 1],
   white: RGBA = [1, 1, 1, 1];

@@ -16,7 +16,14 @@ export class Sources {
     }
   >();
   private closed = false;
-  async acquire(request: Omit<HistoryRequest, 'signal'>, signal: AbortSignal) {
+  async acquire(
+    request: Omit<HistoryRequest, 'signal'>,
+    signal: AbortSignal,
+  ): Promise<{
+    readonly request: Omit<HistoryRequest, 'signal'>;
+    readonly originals: Map<Queryable, Queryable>;
+    readonly release: () => void;
+  }> {
     const window: SampleWindow = request.frames
       ? { kind: 'frames', ...request.frames }
       : {
@@ -95,9 +102,7 @@ export class Sources {
           ...request,
           data: { ...request.data, source: acquired.get(request.data.source)! },
           bindings,
-          focus: request.focus
-            ? { ...request.focus, source: acquired.get(request.focus.source)! }
-            : undefined,
+          focus: request.focus?.map((f) => ({ ...f, source: acquired.get(f.source) ?? f.source })),
         },
         originals: new Map([...acquired].map(([original, fixed]) => [fixed, original])),
         release,

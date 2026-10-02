@@ -7,7 +7,6 @@ struct Uniforms {
   vertexColor: vec4f,
   edgeColor: vec4f,
   style: vec4f,
-  focus: vec4u,
   hoverColor: vec4f,
   selectedColor: vec4f,
   halo: vec4f,

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BufferData, createGpu, createRenderTarget } from '../src/index.js';
+import { createGpu } from '../src/index.js';
+import { BufferData, createRenderTarget } from '../src/kit.js';
 import { deferred, fakeDevice, record, type FakeTexture } from './fixtures/device.js';
 import { draw, renderer, target } from './fixtures/render.js';
 

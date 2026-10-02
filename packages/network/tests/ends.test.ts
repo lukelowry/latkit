@@ -213,17 +213,17 @@ it('refuses ends that are not two distinct references to vertex types', async ()
   const gpu = await createGpu({ device: device().device });
   const source = new GridSource();
   for (const ends of [['bus1', 'bus1'], ['bus1']] as unknown as (readonly [string, string])[])
-    expect(() =>
-      createNetwork({ gpu, data: { ...branches(source), edges: { Branch: { ends } } } }),
-    ).toThrow('Edge ends must be two distinct fields');
+    expect(() => createNetwork(gpu, { ...branches(source), edges: { Branch: { ends } } })).toThrow(
+      'Edge ends must be two distinct fields',
+    );
   expect(() =>
-    createNetwork({
-      gpu,
-      data: { ...branches(source), edges: { Branch: { ends: ['bus1', 'bus2'], junction: 'x' } } },
+    createNetwork(gpu, {
+      ...branches(source),
+      edges: { Branch: { ends: ['bus1', 'bus2'], junction: 'x' } },
     }),
   ).toThrow('A junction centers a net');
   expect(() =>
-    createNetwork({ gpu, data: { ...branches(source), edges: { Bus: { bends: 'route' } } } }),
+    createNetwork(gpu, { ...branches(source), edges: { Bus: { bends: 'route' } } }),
   ).toThrow('Bends require ends');
   await expect(
     geometryOf(gpu, { ...branches(source), edges: { Branch: { ends: ['bus1', 'rating'] } } }),

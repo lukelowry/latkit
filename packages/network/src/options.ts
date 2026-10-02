@@ -1,27 +1,32 @@
-import type { HoverOptions as importHoverOptions } from '@latkit/gpu';
-import { GpuError, validateRgba, type Insets, type RGBA } from '@latkit/gpu';
+import { GpuError, kit, type RGBA } from '@latkit/gpu';
 
-export interface Options extends importHoverOptions {
+/** How a network draws; every option has a default. */
+export interface StyleOptions extends kit.HoverOptions {
   readonly msaa?: 1 | 4;
-  readonly vertices?: boolean;
-  readonly edges?: boolean;
-  readonly poles?: boolean;
+  readonly showVertices?: boolean;
+  readonly showEdges?: boolean;
+  /** Stems from the ground to raised vertices. */
+  readonly showPoles?: boolean;
+  readonly showGraticule?: boolean;
+  /** The globe's axis. */
+  readonly showEarthAxis?: boolean;
   readonly vertexRadiusPx?: number;
   readonly edgeWidthPx?: number;
   readonly heightScale?: number;
   readonly dashPeriodPx?: number;
   readonly vertexBaseColor?: RGBA;
+  /** Null colors each edge by its ends. */
   readonly edgeBaseColor?: RGBA | null;
   readonly backgroundColor?: RGBA;
   readonly surfaceColor?: RGBA;
   readonly graticuleColor?: RGBA;
-  readonly graticule?: boolean;
+  /** Light the globe by the sun at `sunTime`, or now. */
   readonly daylight?: boolean;
   readonly sunTime?: number | null;
   readonly nightFloor?: number;
   readonly surfaceNightFloor?: number;
   readonly terminatorWidth?: number;
-  readonly earthAxis?: boolean;
+  /** Halo hovered and selected items. */
   readonly focusEnabled?: boolean;
   readonly hoverColor?: RGBA;
   readonly selectedColor?: RGBA;
@@ -31,8 +36,9 @@ export interface Options extends importHoverOptions {
   readonly vertexSelectedPx?: number;
   readonly edgeHoverPx?: number;
   readonly edgeSelectedPx?: number;
+  /** Also halo the vertices an edge joins. */
   readonly focusEnds?: 'off' | 'selected' | 'hover-selected';
-  readonly fitPaddingPx?: Insets;
+  readonly fitPaddingPx?: kit.Insets;
   readonly fitPitch?: number;
   readonly fitBearing?: number;
   readonly revealPaddingPx?: number;
@@ -41,11 +47,14 @@ export interface Options extends importHoverOptions {
   readonly motion?: 'auto' | 'reduce' | 'full';
   readonly pickRadiusPx?: number;
 }
-export const DEFAULTS: Required<Options> = Object.freeze({
+export type Style = Required<StyleOptions>;
+export const DEFAULTS: Style = Object.freeze({
   msaa: 4,
-  vertices: true,
-  edges: true,
-  poles: false,
+  showVertices: true,
+  showEdges: true,
+  showPoles: false,
+  showGraticule: false,
+  showEarthAxis: true,
   vertexRadiusPx: 4,
   edgeWidthPx: 1.4,
   heightScale: 1,
@@ -55,13 +64,11 @@ export const DEFAULTS: Required<Options> = Object.freeze({
   backgroundColor: [0.025, 0.038, 0.06, 1] as RGBA,
   surfaceColor: [0.07, 0.1, 0.15, 1] as RGBA,
   graticuleColor: [0.3, 0.38, 0.46, 0.4] as RGBA,
-  graticule: false,
   daylight: false,
   sunTime: null,
   nightFloor: 0.55,
   surfaceNightFloor: 0.15,
   terminatorWidth: 0.12,
-  earthAxis: true,
   focusEnabled: true,
   hoverColor: [1, 0.72, 0.28, 1] as RGBA,
   selectedColor: [1, 0.4, 0.24, 1] as RGBA,
@@ -83,12 +90,21 @@ export const DEFAULTS: Required<Options> = Object.freeze({
   hover: 'auto',
   hoverBudgetMs: 2,
 });
-export function resolveOptions(patch: Options, previous = DEFAULTS): Required<Options> {
-  for (const [key, value] of Object.entries(patch)) {
-    if (!(key in DEFAULTS)) throw new GpuError('invalid-input', 'Unknown network option: ' + key);
+const UNIT = new Set([
+  'nightFloor',
+  'surfaceNightFloor',
+  'terminatorWidth',
+  'hoverAlpha',
+  'selectedAlpha',
+]);
+/** The style a config describes: its own options over the defaults. */
+export function resolveStyle(config: StyleOptions): Style {
+  const style: Record<string, unknown> = { ...DEFAULTS };
+  for (const key of Object.keys(DEFAULTS) as (keyof Style)[]) {
+    const value = config[key];
+    if (value === undefined) continue;
     if (key.endsWith('Color')) {
-      if (key === 'edgeBaseColor' && value === null) continue;
-      validateRgba(value as RGBA);
+      if (!(key === 'edgeBaseColor' && value === null)) kit.validateRgba(value as RGBA);
     } else if (key === 'fitPaddingPx') {
       const values = typeof value === 'number' ? [value] : (value as readonly number[]);
       if (
@@ -102,7 +118,7 @@ export function resolveOptions(patch: Options, previous = DEFAULTS): Required<Op
         throw new GpuError('invalid-input', 'Invalid sun time');
     } else if (key === 'msaa') {
       if (value !== 1 && value !== 4) throw new GpuError('invalid-input', 'MSAA must be 1 or 4');
-    } else if (typeof DEFAULTS[key as keyof Options] === 'boolean') {
+    } else if (typeof DEFAULTS[key] === 'boolean') {
       if (typeof value !== 'boolean')
         throw new GpuError('invalid-input', 'Expected boolean: ' + key);
     } else if (key === 'hover') {
@@ -119,17 +135,9 @@ export function resolveOptions(patch: Options, previous = DEFAULTS): Required<Op
         throw new GpuError('invalid-input', 'Invalid end focus');
     } else if (!Number.isFinite(value) || (value as number) < 0)
       throw new GpuError('invalid-input', 'Invalid option: ' + key);
-    if (
-      [
-        'nightFloor',
-        'surfaceNightFloor',
-        'terminatorWidth',
-        'hoverAlpha',
-        'selectedAlpha',
-      ].includes(key) &&
-      (value as number) > 1
-    )
+    if (UNIT.has(key) && (value as number) > 1)
       throw new GpuError('invalid-input', 'Option must be in [0,1]: ' + key);
+    style[key] = value;
   }
-  return Object.freeze({ ...previous, ...patch });
+  return Object.freeze(style) as Style;
 }

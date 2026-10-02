@@ -1,12 +1,5 @@
-import {
-  createGpu,
-  createCanvasView,
-  colormaps,
-  colormapCss,
-  type ColormapName,
-  type CanvasView,
-} from '@latkit/gpu';
-import { createMonitor, attachMonitorInput, type Monitor, type Reading } from '@latkit/monitor';
+import { createGpu, colormaps, colormapCss, type ColormapName, type Shade } from '@latkit/gpu';
+import { createMonitor, type Monitor, type Reading, type Trace } from '@latkit/monitor';
 import { Telemetry } from './source.js';
 import './style.css';
 
@@ -66,7 +59,6 @@ const SIGNAL_IDS = SIGNALS.map((signal) => signal.id);
 let source = new Telemetry(SIGNAL_IDS, ELEMENT_COUNT, DT_SECONDS);
 let palette: ColormapName = EXAMPLE_COLORMAPS[0];
 let monitor: Monitor;
-let view: CanvasView;
 let frameCursor = 0;
 let latest = new Float64Array(ELEMENT_COUNT * SIGNALS.length).fill(NaN);
 let currentSignal: SignalIndex = 0;
@@ -77,21 +69,28 @@ let lastHotRender = 0;
 
 /** Seconds of history the sliding window shows. */
 const WINDOW_S = 20;
+const FULL_WINDOW = [0, FRAME_COUNT * DT_SECONDS] as const;
 
-function data() {
+const highlight: Shade = {
+  wgsl: `fn shade(f: ShadeFragment) -> vec4f {
+    let domain = shadeContext.parameters[0];
+    let high = smoothstep(0.55, 0.85, (f.value - domain.x) / (domain.y - domain.x));
+    return vec4f(mix(f.color.rgb, vec3f(1.0, 0.4, 0.15), high * 0.85), f.color.a);
+  }`,
+  tick: (parameters) => {
+    parameters.set(signalRange(currentSignal));
+    return false;
+  },
+};
+
+function trace(): Trace {
   const signal = SIGNALS[currentSignal];
   return {
-    source,
-    window: { kind: 'range' as const, between: [0, FRAME_COUNT * DT_SECONDS] as const },
-    traces: {
-      telemetry: {
-        from: 'sensor',
-        field: signal.id,
-        widthPx: 1.4,
-        color: { field: signal.id, domain: signal.range, colormap: colormaps[palette] },
-        shade: signal.id,
-      },
-    },
+    from: 'sensor',
+    field: signal.id,
+    widthPx: 1.4,
+    color: { field: signal.id, domain: signal.range, colormap: palette },
+    shade: signal.id,
   };
 }
 
@@ -118,43 +117,26 @@ function fail(message: string): void {
 
 async function main(): Promise<void> {
   const gpu = await createGpu();
-  monitor = createMonitor({
-    gpu,
-    data: data(),
-    options: {
-      coordinateAxis: { label: 'Time (s)' },
-      valueAxis: { label: 'Temperature (C)', precision: 1 },
-      valueDomain: signalRange(currentSignal),
-      unselectedAlpha: 0.35,
-    },
-  });
-  view = createCanvasView({
-    gpu,
+  monitor = createMonitor(gpu, {
     canvas: stage,
-    renderer: monitor,
-    onError: (error) => {
-      setRunning(false);
-      statusEl.textContent = String(error);
-    },
-    onLost: (info) => {
-      setRunning(false);
-      statusEl.textContent = `GPU unavailable: ${info.message}`;
-    },
+    source,
+    traces: { telemetry: trace() },
+    camera: { window: FULL_WINDOW, values: signalRange(currentSignal) },
+    coordinateAxis: 'Time (s)',
+    valueAxis: { label: 'Temperature (C)', precision: 1 },
+    unselectedAlpha: 0.35,
   });
-  const detachInput = attachMonitorInput({ monitor, canvas: stage });
+  monitor.on('error', (error) => {
+    setRunning(false);
+    statusEl.textContent = String(error);
+  });
   monitor.on('hover', (reading) => {
     hoverReadout.textContent = describeReading(reading);
   });
-  monitor.on('select', (reading) => {
+  monitor.on('select', (readings) => {
+    const reading = readings[0] ?? null;
     selectedElement = reading?.row ?? null;
     pickReadout.textContent = describeReading(reading);
-    renderSelected();
-    renderHotList(performance.now(), true);
-  });
-  stage.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
-    selectedElement = null;
-    pickReadout.textContent = '-';
     renderSelected();
     renderHotList(performance.now(), true);
   });
@@ -164,8 +146,6 @@ async function main(): Promise<void> {
   window.addEventListener('pagehide', (event) => {
     if (event.persisted) return;
     stopTimer();
-    detachInput();
-    view.destroy();
     monitor.destroy();
     void source.close();
     gpu.destroy();
@@ -195,7 +175,7 @@ function wireChrome(): void {
     button.style.setProperty('--swatch', colormapCss(colormaps[name], { direction: 'to right' }));
     button.addEventListener('click', () => {
       palette = name;
-      monitor.setTrace('telemetry', data().traces.telemetry);
+      monitor.set({ traces: { telemetry: trace() } });
       setActive(colormapRow, button);
     });
     colormapRow.appendChild(button);
@@ -208,24 +188,7 @@ function wireChrome(): void {
     applyWindow();
   });
   document.getElementById('shade')!.addEventListener('change', (event) => {
-    const enabled = (event.target as HTMLInputElement).checked;
-    void monitor
-      .setShade(
-        enabled
-          ? {
-              wgsl: `fn shade(f: ShadeFragment) -> vec4f {
-        let domain = shadeContext.parameters[0];
-        let high = smoothstep(0.55, 0.85, (f.value - domain.x) / (domain.y - domain.x));
-        return vec4f(mix(f.color.rgb, vec3f(1.0, 0.4, 0.15), high * 0.85), f.color.a);
-      }`,
-              tick: (parameters) => {
-                parameters.set(signalRange(currentSignal));
-                return false;
-              },
-            }
-          : null,
-      )
-      .catch((error) => fail(String(error)));
+    monitor.set({ shade: (event.target as HTMLInputElement).checked ? highlight : null });
   });
   runToggle.addEventListener('click', () => setRunning(!running));
   resetButton.addEventListener('click', resetStream);
@@ -246,9 +209,9 @@ function resetStream(): void {
   selectedElement = null;
   hoverReadout.textContent = '-';
   pickReadout.textContent = '-';
-  monitor.setData(data());
+  monitor.set({ source, traces: { telemetry: trace() } });
   void previous.close();
-  monitor.select(null);
+  monitor.select([]);
   // Show useful history immediately, then append one native frame per timer tick.
   for (let frame = 0; frame < 40; frame++) {
     writeFrame(frame);
@@ -265,10 +228,10 @@ function resetStream(): void {
 function setSignal(signal: SignalIndex): void {
   if (signal === currentSignal) return;
   currentSignal = signal;
-  monitor.setTrace('telemetry', data().traces.telemetry);
+  monitor.set({ traces: { telemetry: trace() } });
   applyRange();
   selectedElement = null;
-  monitor.select(null);
+  monitor.select([]);
   pickReadout.textContent = '-';
   for (const [index, button] of [...signalRow.querySelectorAll('button')].entries()) {
     button.setAttribute('aria-pressed', String(index === signal));
@@ -350,21 +313,19 @@ function valueAt(signal: number, _frame: number, element: number): number {
 
 function applyRange(): void {
   const signal = SIGNALS[currentSignal];
-  monitor.setOptions({
-    valueDomain: autoRangeInput.checked ? 'auto' : signalRange(currentSignal),
+  monitor.set({
+    camera: autoRangeInput.checked ? { fit: true } : { values: signalRange(currentSignal) },
     valueAxis: { label: `${signal.label} (${signal.unit})`, precision: signal.decimals },
   });
 }
 
 /** Follow is renderer-owned; appending never resets data or rebuilds bindings. */
 function applyWindow(): void {
-  monitor.setOptions({ follow: windowInput.checked ? { span: WINDOW_S } : null });
   const end = Math.max(DT_SECONDS, (frameCursor - 1) * DT_SECONDS);
-  monitor.setWindow({
-    kind: 'range',
-    between: windowInput.checked
-      ? [Math.max(0, end - WINDOW_S), end]
-      : [0, FRAME_COUNT * DT_SECONDS],
+  monitor.set({
+    camera: windowInput.checked
+      ? { window: [Math.max(0, end - WINDOW_S), end], follow: WINDOW_S }
+      : { window: FULL_WINDOW, follow: null },
   });
 }
 
@@ -385,12 +346,9 @@ function renderHotList(now: number, force = false): void {
     button.setAttribute('aria-pressed', String(item.element === selectedElement));
     button.addEventListener('click', () => {
       selectedElement = item.element;
-      monitor.select({
-        source,
-        index: source.index,
-        row: item.element,
-        field: SIGNALS[currentSignal].id,
-      });
+      monitor.select([
+        { source, index: source.index, row: item.element, field: SIGNALS[currentSignal].id },
+      ]);
       pickReadout.textContent = describeElement(item.element);
       renderSelected();
       renderHotList(performance.now(), true);

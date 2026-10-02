@@ -1,5 +1,6 @@
-import { createComposition, createRenderTarget, type Gpu, type Renderer } from '@latkit/gpu';
+import { createComposition, kit, type Gpu } from '@latkit/gpu';
 import { exportVideo, type VideoWrite } from '../../src/index.js';
+import { view } from './views.js';
 const assert = (value: unknown, message: string) => {
   if (!value) throw new Error(message);
 };
@@ -14,7 +15,7 @@ export async function ownership(gpu: Gpu) {
   const ready = new Promise<void>((resolve) => {
     entered = resolve;
   });
-  const child: Renderer = {
+  const child = view(gpu, {
     async prepare() {
       entered();
       await gate;
@@ -28,22 +29,22 @@ export async function ownership(gpu: Gpu) {
         })
         .end();
     },
-    destroy() {
+    release() {
       destroyed = true;
     },
-  };
-  const composition = createComposition({
-    gpu,
-    views: [{ renderer: child, region: { x: 0, y: 0, width: 1, height: 1 } }],
   });
-  const target = createRenderTarget({ gpu, width: 32, height: 32 });
+  const composition = createComposition(gpu, { views: [{ view: child, region: [0, 0, 1, 1] }] });
+  const target = kit.createRenderTarget({ gpu, width: 32, height: 32 });
   try {
-    const rendering = gpu.render({ timeMs: 0, views: [{ renderer: composition, target }] });
+    const rendering = gpu.render({
+      timeMs: 0,
+      views: [{ renderer: kit.rendererOf(composition), target }],
+    });
     await ready;
     try {
       let busy = false;
       try {
-        await gpu.render({ timeMs: 0, views: [{ renderer: child, target }] });
+        await gpu.render({ timeMs: 0, views: [{ renderer: kit.rendererOf(child), target }] });
       } catch (error) {
         busy = String(error).includes('in progress');
       }
@@ -54,7 +55,7 @@ export async function ownership(gpu: Gpu) {
     }
     composition.destroy();
     assert(!destroyed, 'Composition destroyed its borrowed child');
-    await gpu.render({ timeMs: 0, views: [{ renderer: child, target }] });
+    await gpu.render({ timeMs: 0, views: [{ renderer: kit.rendererOf(child), target }] });
   } finally {
     release();
     composition.destroy();
@@ -64,7 +65,7 @@ export async function ownership(gpu: Gpu) {
 }
 
 /** Deliberately difficult to compress: changing spatial detail, generated entirely on the GPU. */
-export async function throughput(gpu: Gpu) {
+export async function throughput(gpu: Gpu): Promise<unknown[]> {
   const module = gpu.device.createShaderModule({
     code: `
 @group(0) @binding(0) var<uniform> phase: vec4f;
@@ -80,7 +81,7 @@ export async function throughput(gpu: Gpu) {
   });
   const pipelines = new Map<GPUTextureFormat, GPURenderPipeline>();
   let pipeline: GPURenderPipeline, binding: GPUBindGroup;
-  const renderer: Renderer = {
+  const scene = view(gpu, {
     async prepare(frame) {
       let cached = pipelines.get(frame.format);
       if (!cached) {
@@ -110,10 +111,10 @@ export async function throughput(gpu: Gpu) {
       pass.draw(3);
       pass.end();
     },
-    destroy() {
+    release() {
       pipelines.clear();
     },
-  };
+  });
   const report = [];
   try {
     for (const duration of [1, 10]) {
@@ -132,9 +133,7 @@ export async function throughput(gpu: Gpu) {
         },
       });
       const start = performance.now();
-      const result = await exportVideo({
-        gpu,
-        renderer,
+      const result = await exportVideo(scene, {
         output,
         width: 1920,
         height: 1080,
@@ -158,7 +157,7 @@ export async function throughput(gpu: Gpu) {
       });
     }
   } finally {
-    renderer.destroy();
+    scene.destroy();
   }
   return report;
 }

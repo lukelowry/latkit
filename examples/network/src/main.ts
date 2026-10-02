@@ -1,6 +1,5 @@
 import {
   createGpu,
-  createCanvasView,
   colormaps,
   colormapCss,
   reverseColormap,
@@ -10,10 +9,7 @@ import {
 import { ExampleSource, vector } from './source.js';
 import {
   createNetwork,
-  attachNetworkInput,
-  PROJECTIONS,
   type Network,
-  type NetworkData,
   type NetworkItem,
   type Projection,
   type VertexOptions,
@@ -65,9 +61,7 @@ async function main(): Promise<void> {
   const lifetime = new AbortController();
   let currentId = TOPOLOGIES[0]!.id;
   let current = TOPOLOGIES[0]!.build();
-  let heightOn = false,
-    geodesic = true,
-    bordersOn = false;
+  let heightOn = false;
   let colors = colormaps.viridis;
   let borders: ExampleSource | undefined;
   const fields = (): VertexOptions => ({
@@ -78,61 +72,38 @@ async function main(): Promise<void> {
       : null,
     height: heightOn ? { field: 'load', domain: [0, 1], range: [0, 0.18] } : null,
   });
-  const data = (): NetworkData => ({
+  const gpu = await createGpu();
+  const net = createNetwork(gpu, {
+    canvas: stage,
     source: current,
     vertices: { Bus: fields() },
     edges: {
       Line: {
         ends: ['from', 'to'],
         ...(current.tables.Line!.columns.bends ? { bends: 'bends' } : {}),
-        curve: geodesic ? 'geodesic' : 'linear',
+        curve: 'geodesic',
       },
     },
-    paths:
-      bordersOn && borders
-        ? {
-            border: {
-              source: borders,
-              points: 'points',
-              widthPx: 0.8,
-              baseColor: [0.4, 0.55, 0.65, 0.7],
-            },
-          }
-        : {},
+    msaa: 4,
+    daylight: true,
+    showGraticule: false,
+    hover: 'auto',
+    showPoles: false,
+    fitPaddingPx: [48, 48, 48, window.innerWidth > 640 ? 320 : 48],
+    vertexBaseColor: [0.36, 0.4, 0.46, 1],
   });
-  const gpu = await createGpu();
-  const net = createNetwork({
-    gpu,
-    data: data(),
-    options: {
-      msaa: 4,
-      daylight: true,
-      graticule: false,
-      hover: 'auto',
-      poles: false,
-      fitPaddingPx: [48, 48, 48, window.innerWidth > 640 ? 320 : 48],
-      vertexBaseColor: [0.36, 0.4, 0.46, 1],
-    },
-  });
-  const view = createCanvasView({
-    gpu,
-    canvas: stage,
-    renderer: net,
-    onError: fail,
-    onLost: (info) => fail(new Error('GPU unavailable: ' + info.message)),
-    onRendered: () => {
-      const stats = net.stats();
-      statusEl.textContent = `${stats.vertices.toLocaleString()} vertices / ${stats.edges.toLocaleString()} edges`;
-      document.getElementById('metrics')!.textContent =
-        `${stats.prepareMs.toFixed(1)} ms prepare / ${stats.drawCalls} draws / hover ${stats.hover}`;
-      projections.refresh();
-    },
-  });
-  const detach = attachNetworkInput({ network: net, canvas: stage });
-  const projections = wireProjections(net);
+  net.on('error', fail);
+  const report = (): void => {
+    const stats = net.stats();
+    statusEl.textContent = `${stats.vertices.toLocaleString()} vertices / ${stats.edges.toLocaleString()} edges`;
+    document.getElementById('metrics')!.textContent =
+      `${stats.prepareMs.toFixed(1)} ms prepare / ${stats.drawCalls} draws / hover ${stats.hover}`;
+  };
+  net.on('frame', report);
+  wireProjections(net);
   wireOrbit(net);
   const fitButton = createButton('fit', false);
-  fitButton.onclick = () => net.fit({ animate: true });
+  fitButton.onclick = () => net.fit(undefined, { animate: true });
   document.getElementById('camera')!.append(fitButton);
   wireTopologies(
     () => currentId,
@@ -140,12 +111,14 @@ async function main(): Promise<void> {
       const previous = current;
       current = opt.build();
       currentId = opt.id;
-      net.setOptions({
+      net.set({
+        source: current,
+        vertices: { Bus: fields() },
+        edges: { Line: { bends: current.tables.Line!.columns.bends ? 'bends' : null } },
         vertexRadiusPx: current.tables.Bus!.count >= 100000 ? 1.4 : 4,
         edgeWidthPx: current.tables.Bus!.count >= 100000 ? 0.5 : 1.4,
+        camera: { fit: true },
       });
-      net.setData(data());
-      net.setCamera({ fit: true });
       void previous.close();
       readoutEl.querySelector('.hover')!.textContent = '-';
       readoutEl.querySelector('.select')!.textContent = '-';
@@ -155,16 +128,13 @@ async function main(): Promise<void> {
     net,
     (on) => {
       heightOn = on;
-      net.setVertex('Bus', fields());
+      net.set({ vertices: { Bus: fields() } });
     },
     [
       {
         label: 'geodesics',
         on: true,
-        apply: (on) => {
-          geodesic = on;
-          net.setEdge('Line', { curve: on ? 'geodesic' : 'linear' });
-        },
+        apply: (on) => net.set({ edges: { Line: { curve: on ? 'geodesic' : 'linear' } } }),
       },
       {
         label: 'borders',
@@ -172,33 +142,39 @@ async function main(): Promise<void> {
         apply: async (on) => {
           if (on && !borders) borders = await loadBorders(lifetime.signal);
           lifetime.signal.throwIfAborted();
-          bordersOn = on;
-          net.setData(data());
+          net.set({
+            paths: {
+              border: on
+                ? {
+                    source: borders,
+                    points: 'points',
+                    widthPx: 0.8,
+                    baseColor: [0.4, 0.55, 0.65, 0.7],
+                  }
+                : null,
+            },
+          });
         },
       },
-      { label: 'surface poles', on: false, apply: (on) => net.setOptions({ poles: on }) },
+      { label: 'surface poles', on: false, apply: (on) => net.set({ showPoles: on }) },
     ],
   );
   wireColormaps((value) => {
     colors = value;
-    net.setVertex('Bus', fields());
+    net.set({ vertices: { Bus: fields() } });
   });
   wirePicking(net);
   Object.assign(window, {
     network: net,
     networkExample: {
       gpu,
-      view,
       get source() {
         return current;
       },
     },
   });
-  view.request();
   const dispose = (): void => {
     lifetime.abort();
-    detach();
-    view.destroy();
     net.destroy();
     void current.close();
     void borders?.close();
@@ -224,11 +200,9 @@ function wireTopologies(currentId: () => string, apply: (opt: TopologyOption) =>
   }
 }
 
-interface ProjectionControls {
-  refresh(): void;
-}
+const PROJECTIONS: Record<Projection, string> = { flat: 'Flat', tilt: 'Tilt', globe: 'Globe' };
 
-function wireProjections(net: Network): ProjectionControls {
+function wireProjections(net: Network): void {
   const row = document.getElementById('projections') as HTMLElement;
   const buttons = new Map<Projection, HTMLButtonElement>();
 
@@ -236,23 +210,21 @@ function wireProjections(net: Network): ProjectionControls {
   function refresh(): void {
     for (const [mode, btn] of buttons) {
       btn.disabled = !net.projections[mode];
-      setPressed(btn, mode === net.projection);
+      setPressed(btn, mode === net.camera.projection);
     }
   }
 
   for (const mode of Object.keys(PROJECTIONS) as Projection[]) {
-    const btn = createButton(PROJECTIONS[mode].label, mode === net.projection);
+    const btn = createButton(PROJECTIONS[mode], mode === net.camera.projection);
     btn.disabled = !net.projections[mode];
     btn.addEventListener('click', () => {
-      if (net.setCamera({ projection: mode })) refresh();
+      if (net.projections[mode]) net.set({ camera: { projection: mode } });
     });
     buttons.set(mode, btn);
     row.appendChild(btn);
   }
-  // Orbit promotes flat to tilt; mirror that in the buttons.
-  net.on('orbit', refresh);
-
-  return { refresh };
+  // Orbit promotes flat to tilt, and the globe needs geographic data; the camera reports both.
+  net.on('camera', refresh);
 }
 
 function wireOrbit(net: Network): void {
@@ -260,9 +232,9 @@ function wireOrbit(net: Network): void {
   const btn = createButton('auto rotate', false);
   // Gestures and keys on the canvas stop the orbit inside the renderer; the event keeps the
   // button honest, and reduced motion refuses to start it at all.
-  net.on('orbit', (active) => setPressed(btn, active));
+  net.on('camera', (camera) => setPressed(btn, camera.orbit));
   btn.addEventListener('click', () => {
-    net.orbit(!net.orbiting);
+    net.set({ camera: { orbit: !net.camera.orbit } });
   });
   row.appendChild(btn);
 }
@@ -275,23 +247,23 @@ interface Toggle {
 function wireToggles(net: Network, setHeight: (on: boolean) => void, extra: Toggle[]): void {
   const specs: Toggle[] = [
     ...extra,
-    { label: 'vertices', on: true, apply: (v) => net.setOptions({ vertices: v }) },
-    { label: 'edges', on: true, apply: (v) => net.setOptions({ edges: v }) },
-    { label: 'graticule', on: false, apply: (v) => net.setOptions({ graticule: v }) },
-    { label: 'earth axis', on: true, apply: (v) => net.setOptions({ earthAxis: v }) },
-    { label: 'daylight', on: true, apply: (v) => net.setOptions({ daylight: v }) },
+    { label: 'vertices', on: true, apply: (v) => net.set({ showVertices: v }) },
+    { label: 'edges', on: true, apply: (v) => net.set({ showEdges: v }) },
+    { label: 'graticule', on: false, apply: (v) => net.set({ showGraticule: v }) },
+    { label: 'earth axis', on: true, apply: (v) => net.set({ showEarthAxis: v }) },
+    { label: 'daylight', on: true, apply: (v) => net.set({ daylight: v }) },
     // A pinned sun holds the terminator still; null follows the clock.
     {
       label: 'noon sun',
       on: false,
-      apply: (v) => net.setOptions({ sunTime: v ? Date.UTC(2026, 5, 21, 12) : null }),
+      apply: (v) => net.set({ sunTime: v ? Date.UTC(2026, 5, 21, 12) : null }),
     },
     { label: 'height', on: false, apply: setHeight },
     // A base edge color replaces the endpoint-color average.
     {
       label: 'muted edges',
       on: false,
-      apply: (v) => net.setOptions({ edgeBaseColor: v ? [0.3, 0.32, 0.36, 1] : null }),
+      apply: (v) => net.set({ edgeBaseColor: v ? [0.3, 0.32, 0.36, 1] : null }),
     },
   ];
   const row = document.getElementById('toggles') as HTMLElement;
@@ -365,9 +337,9 @@ function wirePicking(net: Network): void {
   net.on('hover', (item) => {
     readoutEl.querySelector('.hover')!.textContent = describe(item);
   });
-  // Pointer taps and Escape both arrive here; the keyboard map is the controller's.
-  net.on('select', (item) => {
-    readoutEl.querySelector('.select')!.textContent = describe(item);
+  // Pointer taps and Escape both arrive here; the keyboard map is the input's.
+  net.on('select', (items) => {
+    readoutEl.querySelector('.select')!.textContent = items.map(describe).join(', ') || '-';
   });
 }
 

@@ -1,6 +1,7 @@
 import type { Colormap } from './colormap.js';
 import type { RGBA } from './color.js';
 import { presets, type ColormapName } from './presets/data.js';
+import { GpuError } from '../error.js';
 
 export type { ColormapName } from './presets/data.js';
 function preset(value: (typeof presets)[ColormapName]): Colormap {
@@ -29,3 +30,9 @@ function buildCatalog(): Readonly<Record<ColormapName, Colormap>> {
 }
 /** Named immutable values; accessing metadata never decodes their sample tables. */
 export const colormaps = /* @__PURE__ */ buildCatalog();
+/** A colormap, or the catalog's by name. */
+export function namedColormap(value: Colormap | ColormapName): Colormap {
+  const map = typeof value === 'string' ? colormaps[value] : value;
+  if (!map) throw new GpuError('invalid-input', 'Unknown colormap: ' + (value as string));
+  return map;
+}

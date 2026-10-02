@@ -1,5 +1,5 @@
 import type { RequestOptions } from '@latkit/model';
-import { createPresentation, GpuError, type Gpu, type Renderer } from '@latkit/gpu';
+import { GpuError, kit, type View } from '@latkit/gpu';
 import { VideoSample } from 'mediabunny';
 import { settings, timeline } from './timing.js';
 import { encoding } from './encoding.js';
@@ -18,9 +18,6 @@ export interface VideoProgress {
   readonly totalFrames: number;
 }
 export interface VideoOptions extends RequestOptions {
-  readonly gpu: Gpu;
-  /** Borrowed exclusively for this export; use a dedicated view over retained sources. */
-  readonly renderer: Renderer;
   readonly width: number;
   readonly height: number;
   /** Output duration in seconds, including a possibly shorter final frame. */
@@ -43,29 +40,41 @@ export interface VideoResult {
   readonly byteLength: number;
   readonly mediaType: string;
 }
-const active = new WeakSet<Renderer>();
-/** GPU preparation, capture, encoder and destination backpressure form one bounded pipeline. */
-export async function exportVideo(options: VideoOptions): Promise<VideoResult> {
-  const config = settings(options);
-  if (active.has(options.renderer)) throw new GpuError('busy', 'Renderer is already exporting');
+const active = new WeakSet<object>();
+/**
+ * Record a view: one bounded pipeline of frame preparation, capture, encoding and destination
+ * backpressure. The view's canvas pauses until the export settles.
+ */
+export async function exportVideo(view: View, options: VideoOptions): Promise<VideoResult> {
+  const gpu = kit.gpuOf(view),
+    renderer = kit.rendererOf(view),
+    config = settings(options, gpu.device.limits.maxTextureDimension2D);
+  if (active.has(view)) throw new GpuError('busy', 'View is already exporting');
   options.signal?.throwIfAborted();
-  active.add(options.renderer);
+  active.add(view);
   const stop = new AbortController();
   const signal = AbortSignal.any([stop.signal, ...(options.signal ? [options.signal] : [])]);
-  const releaseLoss = observeLoss(options.gpu, stop);
+  const releaseLoss = observeLoss(gpu, stop);
   const error = (event: GPUUncapturedErrorEvent) => stop.abort(event.error);
-  options.gpu.device.addEventListener('uncapturederror', error);
-  let presentation: ReturnType<typeof createPresentation> | undefined;
+  gpu.device.addEventListener('uncapturederror', error);
+  let release: (() => void) | undefined;
+  let presentation: kit.Presentation | undefined;
   let sink: ReturnType<typeof destination> | undefined;
   let media: Awaited<ReturnType<typeof encoding>> | undefined;
   try {
     // Negotiate before acquiring a destination or allocating capture textures.
     media = await wait(encoding(config), signal);
+    const holding = kit.hold(view);
+    // A hold granted after cancellation is released at once.
+    release = await wait(holding, signal).catch((cause: unknown) => {
+      void holding.then((late) => late());
+      throw cause;
+    });
     signal.throwIfAborted();
     sink = destination(options.output, signal);
     media.open(sink.stream);
     const canvas = new OffscreenCanvas(config.width, config.height);
-    presentation = createPresentation({ gpu: options.gpu, canvas, alphaMode: 'opaque' });
+    presentation = kit.createPresentation({ gpu, canvas, alphaMode: 'opaque' });
     await wait(media.start(), signal);
     let reported = -Infinity;
     for (let i = 0; i < config.frames; i++) {
@@ -74,11 +83,11 @@ export async function exportVideo(options: VideoOptions): Promise<VideoResult> {
       const at = options.at?.(frame.seconds);
       if (at !== undefined && !Number.isFinite(at))
         throw new GpuError('invalid-input', 'Video coordinate must be finite');
-      await options.gpu.render({
+      await gpu.render({
         completion: 'complete',
         signal,
         timeMs: frame.seconds * 1000,
-        views: [{ renderer: options.renderer, target: presentation, at }],
+        views: [{ renderer, target: presentation, at }],
       });
       signal.throwIfAborted();
       const sample = new VideoSample(canvas, {
@@ -122,7 +131,8 @@ export async function exportVideo(options: VideoOptions): Promise<VideoResult> {
     releaseLoss();
     presentation?.destroy();
     sink?.release();
-    options.gpu.device.removeEventListener('uncapturederror', error);
-    active.delete(options.renderer);
+    gpu.device.removeEventListener('uncapturederror', error);
+    release?.();
+    active.delete(view);
   }
 }

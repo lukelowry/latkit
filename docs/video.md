@@ -1,7 +1,7 @@
 # Export video
 
-Export a GPU renderer to MP4 (H.264) or WebM (VP9).
-Requires WebGPU and browser support for the selected WebCodecs encoder.
+Record any view to MP4 (H.264) or WebM (VP9). Requires WebGPU and a browser WebCodecs encoder for
+the format.
 
 ```ts
 import { exportVideo, type VideoWrite } from '@latkit/video';
@@ -11,18 +11,14 @@ const output = new WritableStream<VideoWrite>({
   write: ({ position, bytes }) => file.write({ type: 'write', position, data: bytes }),
 });
 try {
-  await exportVideo({
-    gpu,
-    renderer,
+  await exportVideo(network, {
     output,
     width: 1920,
     height: 1080,
     duration: 10,
-    frameRate: 60,
-    format: 'mp4',
     at: (seconds) => 20 + seconds,
+    onProgress: ({ completedFrames, totalFrames }) => showProgress(completedFrames / totalFrames),
     signal,
-    onProgress: ({ completedFrames, totalFrames }) => console.log(completedFrames / totalFrames),
   });
   await file.close();
 } catch (error) {
@@ -31,18 +27,15 @@ try {
 }
 ```
 
-`duration` is output seconds; `at` maps them to native model coordinates.
-Omit `at` for static data. Choose `quality: 'medium' | 'high' | 'very-high'`
-or an explicit `bitrate` in bits per second.
+`duration` is in output seconds; `at` maps them to model coordinates. Choose `format`,
+`frameRate` (60 by default), and `quality` or an explicit `bitrate`.
 
-Use a dedicated renderer over retained data. Do not mutate or render it elsewhere
-during export. The exporter borrows the GPU, renderer, sources, and output stream;
-it releases its writer lock but does not close or abort your destination.
+The view's canvas pauses while it records. Keep its sources fixed for the export. Writes are
+positional; honor `position` and await storage for backpressure. The exporter releases its writer
+lock but never closes your destination.
 
-Writes are positional and may replace earlier bytes. Honor `position` and await
-storage writes for backpressure. Each frame waits for complete preparation.
-
-Use `createComposition` from `@latkit/gpu` to combine views.
-See the [worker example](https://github.com/lukelowry/latkit/blob/main/examples/video/src/worker.ts) for background export.
+Record a [composition](views.md#compose) to combine views. The
+[worker example](https://github.com/lukelowry/latkit/blob/main/examples/video/src/worker.ts) exports
+in the background.
 
 [API](https://latkit.readthedocs.io/en/latest/api/reference/video/index.html)

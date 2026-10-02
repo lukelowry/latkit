@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
-import { createGpu, type TextPage, type TextRasterizer, type TextRun } from '../src/index.js';
+import { createGpu } from '../src/index.js';
+import { type TextPage, type TextRasterizer, type TextRun } from '../src/kit.js';
 import { distanceField } from '../src/distance-field.js';
 import { bytes, deferred, fakeDevice } from './fixtures/device.js';
 import { draw, renderer, target } from './fixtures/render.js';

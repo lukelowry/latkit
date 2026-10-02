@@ -1,4 +1,4 @@
-import { GpuError, validateRgba, type FieldBinding, type FieldInput, type Gpu } from '@latkit/gpu';
+import { GpuError, type Gpu, kit } from '@latkit/gpu';
 import {
   type Queryable,
   type Schema,
@@ -10,9 +10,9 @@ import {
   rowCount,
   bitAt,
 } from '@latkit/model';
-import type { MonitorData, Trace } from './data.js';
+import type { MonitorData, TraceData as Trace } from './data.js';
 import { yieldWork } from './async.js';
-import { domain, finite, fail, windowRange } from './config.js';
+import { domain, finite, fail } from './config.js';
 export interface Binding {
   readonly name: string;
   readonly trace: Trace;
@@ -20,7 +20,7 @@ export interface Binding {
   readonly field: string;
   readonly schema: Schema;
   readonly rows?: RowSelection;
-  readonly fields: Readonly<Record<string, FieldInput>>;
+  readonly fields: Readonly<Record<string, kit.FieldInput>>;
   readonly envelope: boolean;
   readonly colorValue: boolean;
   readonly shadeValue: boolean;
@@ -28,12 +28,11 @@ export interface Binding {
 }
 export function validateData(data: MonitorData): void {
   if (!data.source?.query || !data.source.describe) fail('Monitor requires a Queryable');
-  windowRange(data.window);
   for (const [name, trace] of Object.entries(data.traces)) {
     if (!name || !trace.from || !trace.field) fail('Trace requires a name, type and sampled field');
     if (typeof trace.field !== 'string' && !('field' in trace.field))
       fail('Trace requires a sampled field binding');
-    if (trace.baseColor) validateRgba(trace.baseColor);
+    if (trace.baseColor) kit.validateRgba(trace.baseColor);
     if (trace.widthPx !== undefined) finite(trace.widthPx, 'trace width', 0.1, 64);
     if (
       trace.interpolation &&
@@ -45,10 +44,10 @@ export function validateData(data: MonitorData): void {
   }
 }
 export function binding(
-  input: FieldInput,
+  input: kit.FieldInput,
   source: Queryable,
   from: string,
-): FieldBinding | undefined {
+): kit.FieldBinding | undefined {
   return typeof input === 'string'
     ? { source, from, field: input }
     : 'field' in input
@@ -87,7 +86,7 @@ export async function describeBindings(
     let envelope = true,
       colorValue = false,
       shadeValue = false;
-    const mapped: Record<string, FieldInput> = { value: { ...main, rows: undefined } };
+    const mapped: Record<string, kit.FieldInput> = { value: { ...main, rows: undefined } };
     for (const [alias, input] of [
       ['color', trace.color?.field],
       ['visible', trace.visible],
@@ -117,7 +116,7 @@ export async function describeBindings(
     }
     let colorDomain: Domain | null = null;
     const specified = trace.color?.domain;
-    if (specified && Array.isArray(specified)) colorDomain = specified as Domain;
+    if (specified && Array.isArray(specified)) colorDomain = specified as unknown as Domain;
     else if (trace.color) {
       const input = trace.color.field,
         other = binding(input, data.source, trace.from);
@@ -166,7 +165,7 @@ export async function extent(
   source: Queryable,
   from: string,
   rows: RowSelection | undefined,
-  input: FieldInput,
+  input: kit.FieldInput,
   window: SampleWindow | undefined,
   signal: AbortSignal,
 ): Promise<Domain | null> {

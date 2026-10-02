@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { createGpu, createRenderTarget, createComposition } from '@latkit/gpu';
-import { createDiagram, interaction } from '../src/diagram.js';
+import { createGpu, createComposition, kit } from '@latkit/gpu';
+import { createDiagram, type Diagram } from '../src/diagram.js';
+import type { Controls } from '../src/input.js';
 import { Source, data } from './fixture.js';
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
 function device() {
@@ -32,6 +33,10 @@ function device() {
   });
   return fake;
 }
+/** What input drives, without a canvas. */
+const interaction = (diagram: Diagram) =>
+  (diagram as unknown as { controls(): Controls }).controls();
+const animating = (diagram: Diagram) => kit.rendererOf(diagram).animating;
 async function fixture() {
   const fake = device(),
     source = new Source();
@@ -53,9 +58,10 @@ async function fixture() {
       },
     },
   });
-  const target = createRenderTarget({ gpu, width: 800, height: 600 }),
-    diagram = createDiagram({ gpu, data: data(source) });
-  const draw = () => gpu.render({ views: [{ renderer: diagram, target }], timeMs: 0 });
+  const target = kit.createRenderTarget({ gpu, width: 800, height: 600 }),
+    diagram = createDiagram(gpu, data(source));
+  const draw = () =>
+    gpu.render({ views: [{ renderer: kit.rendererOf(diagram), target }], timeMs: 0 });
   return { fake, source, gpu, target, diagram, draw };
 }
 afterEach(() => vi.restoreAllMocks());
@@ -65,7 +71,7 @@ it('renders through the unified owner and publishes picking after submission', a
     expect(f.diagram.locate({ kind: 'vertex', type: 'Task', id: 'n0' })).toBeNull();
     await f.draw();
     const point = f.diagram.locate({ kind: 'vertex', type: 'Task', id: 'n0' })!;
-    expect(f.diagram.hitTest(point)[0]).toMatchObject({ kind: 'vertex', id: 'n0', row: 0 });
+    expect((await f.diagram.pick(point))[0]).toMatchObject({ kind: 'vertex', id: 'n0', row: 0 });
     expect(f.diagram.stats().frames).toBe(1);
     expect(f.fake.queue.submit).toHaveBeenCalledTimes(1);
   } finally {
@@ -81,7 +87,7 @@ it('reuses geometry and uploads on camera and focus changes', async () => {
     await f.gpu.idle();
     const reads = f.source.queries;
     const before = f.gpu.stats().uploadedBytes;
-    f.diagram.panBy(10, 20);
+    interaction(f.diagram).pan(10, 20);
     await f.draw();
     await f.gpu.idle();
     expect(f.source.queries).toBe(reads);
@@ -101,7 +107,7 @@ it('preserves presented picking when a sibling fails to encode', async () => {
   try {
     await f.draw();
     const before = f.diagram.locate({ kind: 'vertex', type: 'Task', id: 'n0' });
-    f.diagram.panBy(100, 0);
+    interaction(f.diagram).pan(100, 0);
     const bad = {
       prepare: () => Promise.resolve(),
       encode() {
@@ -109,11 +115,11 @@ it('preserves presented picking when a sibling fails to encode', async () => {
       },
       destroy() {},
     };
-    const target = createRenderTarget({ gpu: f.gpu, width: 10, height: 10 });
+    const target = kit.createRenderTarget({ gpu: f.gpu, width: 10, height: 10 });
     await expect(
       f.gpu.render({
         views: [
-          { renderer: f.diagram, target: f.target },
+          { renderer: kit.rendererOf(f.diagram), target: f.target },
           { renderer: bad, target },
         ],
         timeMs: 0,
@@ -153,16 +159,18 @@ it('keeps drag previews separate from accepted positions', async () => {
 });
 it('supports composition and independent renderer views', async () => {
   const f = await fixture();
-  const second = createDiagram({ gpu: f.gpu, data: data(f.source) }),
-    composed = createComposition({
-      gpu: f.gpu,
+  const second = createDiagram(f.gpu, data(f.source)),
+    composed = createComposition(f.gpu, {
       views: [
-        { renderer: f.diagram, region: { x: 0, y: 0, width: 0.5, height: 1 } },
-        { renderer: second, region: { x: 0.5, y: 0, width: 0.5, height: 1 } },
+        { view: f.diagram, region: [0, 0, 0.5, 1] },
+        { view: second, region: [0.5, 0, 0.5, 1] },
       ],
     });
   try {
-    await f.gpu.render({ views: [{ renderer: composed, target: f.target }], timeMs: 0 });
+    await f.gpu.render({
+      views: [{ renderer: kit.rendererOf(composed), target: f.target }],
+      timeMs: 0,
+    });
     expect(second.stats().frames).toBe(1);
   } finally {
     composed.destroy();
@@ -191,7 +199,7 @@ it('accepts sparse movement without moving uncovered vertices', async () => {
     const api = interaction(f.diagram),
       before = api.scene()!.vertices.map((n) => [n.x, n.y]);
     const proposal = api.move([{ kind: 'vertex', type: 'Task', id: 'n0' }], [0, 24])!;
-    f.diagram.setVertex('Task', { position: proposal.positions.Task });
+    f.diagram.set({ vertices: { Task: { position: proposal.positions.Task } } });
     await f.draw();
     expect(
       api
@@ -229,7 +237,7 @@ it('patches movement buffers and keeps shaped text resident', async () => {
 it('moves nested collapsed groups without losing routes or accumulating geometry', async () => {
   const f = await fixture();
   try {
-    f.diagram.setData({
+    f.diagram.set({
       ...data(f.source),
       groups: {
         outer: { label: 'Outer', vertices: {}, collapsed: true },
@@ -278,7 +286,7 @@ it('preserves surviving selection and removes deleted identities only after subm
     f.diagram.select(refs);
     const changes = vi.fn();
     f.diagram.on('select', changes);
-    f.diagram.setData(data(new Source(2)));
+    f.diagram.set(data(new Source(2)));
     expect(interaction(f.diagram).selection()).toEqual(refs);
     await f.draw();
     await Promise.resolve();
@@ -297,7 +305,7 @@ it('invalidates routes when shapes, port anchors, or routing clearance change', 
     await f.draw();
     const api = interaction(f.diagram);
     const original = api.scene()!.edges[0].paths;
-    f.diagram.setVertex('Task', { shape: 'diamond' });
+    f.diagram.set({ vertices: { Task: { shape: 'diamond' } } });
     await f.draw();
     const changed = api.scene()!;
     expect(changed.edges[0].paths).not.toBe(original);
@@ -305,9 +313,10 @@ it('invalidates routes when shapes, port anchors, or routing clearance change', 
     expect(
       changed.edges[0].paths.flat().some((point) => point[0] === end[0] && point[1] === end[1]),
     ).toBe(true);
-    f.diagram.setVertex('Task', {
-      shape: 'rounded',
-      ports: { input: { side: 'right' }, output: { side: 'left' } },
+    f.diagram.set({
+      vertices: {
+        Task: { shape: 'rounded', ports: { input: { side: 'right' }, output: { side: 'left' } } },
+      },
     });
     await f.draw();
     const rewired = api.scene()!;
@@ -321,7 +330,7 @@ it('invalidates routes when shapes, port anchors, or routing clearance change', 
         ).toBe(true);
       }
     const before = rewired.edges[0].paths;
-    f.diagram.setOptions({ routeClearance: 32 });
+    f.diagram.set({ routeClearance: 32 });
     await f.draw();
     expect(api.scene()!.edges[0].paths).not.toBe(before);
   } finally {
@@ -337,7 +346,7 @@ it('updates uniform-only presentation without querying or rebuilding geometry', 
     await f.draw();
     const reads = f.source.queries,
       scene = interaction(f.diagram).scene();
-    f.diagram.setOptions({
+    f.diagram.set({
       grid: false,
       gridMinSpacingPx: 18,
       selectedColor: [0.3, 0.6, 1, 1],
@@ -356,17 +365,17 @@ it('updates uniform-only presentation without querying or rebuilding geometry', 
 it('animates accepted positions with coherent picking and one native read per revision', async () => {
   const f = await fixture();
   const render = (timeMs: number) =>
-    f.gpu.render({ views: [{ renderer: f.diagram, target: f.target }], timeMs });
+    f.gpu.render({ views: [{ renderer: kit.rendererOf(f.diagram), target: f.target }], timeMs });
   try {
-    f.diagram.setOptions({ animationMs: 200, motion: 'full' });
-    f.diagram.setData(data(f.source, true));
+    f.diagram.set({ animationMs: 200, motion: 'full' });
+    f.diagram.set(data(f.source, true));
     await render(0);
-    f.diagram.setCamera(f.diagram.getCamera()!);
+    f.diagram.set({ camera: { fit: false } });
     const ref = { kind: 'vertex' as const, type: 'Task', id: 'n0' };
     const before = interaction(f.diagram).scene()!.vertices[0].y;
     f.source.xy[1] += 80;
     f.source.update();
-    f.diagram.setData(data(f.source, true), { animate: true });
+    f.diagram.set(data(f.source, true), { animate: true });
     await render(20);
     const reads = f.source.queries;
     expect(interaction(f.diagram).scene()!.vertices[0].y).toBe(before);
@@ -374,18 +383,20 @@ it('animates accepted positions with coherent picking and one native read per re
     const vertex = interaction(f.diagram).scene()!.vertices[0];
     expect(vertex.y).toBeGreaterThan(before);
     expect(vertex.y).toBeLessThan(before + 80);
-    expect(f.diagram.hitTest(f.diagram.locate(ref)!).some((hit) => hit.id === 'n0')).toBe(true);
+    expect((await f.diagram.pick(f.diagram.locate(ref)!)).some((hit) => hit.id === 'n0')).toBe(
+      true,
+    );
     await render(220);
     expect(interaction(f.diagram).scene()!.vertices[0].y).toBe(before + 80);
     expect(f.source.queries).toBe(reads);
-    expect(f.diagram.animating).toBe(false);
-    f.diagram.setOptions({ motion: 'reduce' });
+    expect(animating(f.diagram)).toBe(false);
+    f.diagram.set({ motion: 'reduce' });
     f.source.xy[1] += 80;
     f.source.update();
-    f.diagram.setData(data(f.source, true), { animate: true });
+    f.diagram.set(data(f.source, true), { animate: true });
     await render(240);
     expect(interaction(f.diagram).scene()!.vertices[0].y).toBe(before + 160);
-    expect(f.diagram.animating).toBe(false);
+    expect(animating(f.diagram)).toBe(false);
   } finally {
     f.diagram.destroy();
     f.target.destroy();
@@ -396,16 +407,16 @@ it('animates accepted positions with coherent picking and one native read per re
 it('restores accepted positions when a drag interrupts and cancels a layout transition', async () => {
   const f = await fixture();
   const render = (timeMs: number) =>
-    f.gpu.render({ views: [{ renderer: f.diagram, target: f.target }], timeMs });
+    f.gpu.render({ views: [{ renderer: kit.rendererOf(f.diagram), target: f.target }], timeMs });
   try {
     const api = interaction(f.diagram),
       ref = { kind: 'vertex' as const, type: 'Task', id: 'n0' };
-    f.diagram.setOptions({ motion: 'full', animationMs: 200 });
-    f.diagram.setData(data(f.source, true));
+    f.diagram.set({ motion: 'full', animationMs: 200 });
+    f.diagram.set(data(f.source, true));
     await render(0);
     f.source.xy[1] = 80;
     f.source.update();
-    f.diagram.setData(data(f.source, true), { animate: true });
+    f.diagram.set(data(f.source, true), { animate: true });
     await render(20);
     await render(100);
     api.preview([ref], [0, 8]);
@@ -413,7 +424,7 @@ it('restores accepted positions when a drag interrupts and cancels a layout tran
     api.preview([], null);
     await render(140);
     expect(api.scene()!.vertices[0].y).toBe(80);
-    expect(f.diagram.animating).toBe(false);
+    expect(animating(f.diagram)).toBe(false);
   } finally {
     f.diagram.destroy();
     f.target.destroy();
@@ -423,19 +434,44 @@ it('restores accepted positions when a drag interrupts and cancels a layout tran
 it('settles immediately when animation is disabled or above its configured size limit', async () => {
   const f = await fixture();
   try {
-    f.diagram.setData(data(f.source, true));
+    f.diagram.set(data(f.source, true));
     await f.draw();
-    f.diagram.setOptions({ animationMaxVertices: 2, motion: 'full', animationMs: 0 });
-    f.diagram.fit({ animate: true });
+    f.diagram.set({ animationMaxVertices: 2, motion: 'full', animationMs: 0 });
+    f.diagram.fit(undefined, { animate: true });
     await f.draw();
-    expect(f.diagram.getCamera()!.scale.every(Number.isFinite)).toBe(true);
-    f.diagram.setOptions({ animationMs: 200 });
+    expect(Number.isFinite(f.diagram.camera.scale)).toBe(true);
+    f.diagram.set({ animationMs: 200 });
     f.source.xy[1] = 80;
     f.source.update();
-    f.diagram.setData(data(f.source, true), { animate: true });
+    f.diagram.set(data(f.source, true), { animate: true });
     await f.draw();
     expect(interaction(f.diagram).scene()!.vertices[0].y).toBe(80);
-    expect(f.diagram.animating).toBe(false);
+    expect(animating(f.diagram)).toBe(false);
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+it('merges layout shorthands and camera patches, and reports the presented camera', async () => {
+  const f = await fixture();
+  try {
+    const cameras = vi.fn();
+    f.diagram.on('camera', cameras);
+    f.diagram.set({ layout: 'layered' });
+    f.diagram.set({ layout: { direction: 'down' } });
+    expect(f.diagram.config.layout).toEqual({ algorithm: 'layered', direction: 'down' });
+    await f.draw();
+    await Promise.resolve();
+    expect(cameras).toHaveBeenLastCalledWith(expect.objectContaining({ fit: true }));
+    f.diagram.set({ camera: { scale: 2 } });
+    expect(f.diagram.camera.fit).toBe(false);
+    await f.draw();
+    await Promise.resolve();
+    expect(cameras).toHaveBeenLastCalledWith(expect.objectContaining({ scale: 2, fit: false }));
+    f.diagram.set({ camera: null });
+    await f.draw();
+    expect(f.diagram.camera.fit).toBe(true);
   } finally {
     f.diagram.destroy();
     f.target.destroy();

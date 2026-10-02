@@ -6,30 +6,39 @@ import { draw, renderer, target } from './fixtures/render.js';
 import { Source } from './fixtures/source.js';
 
 describe('public contract and allocation boundaries', () => {
-  it('exports one clean root with no legacy channel, device-pool, or playback facades', () => {
+  it('exports an app surface and keeps renderer authoring under kit', () => {
     expect(Object.keys(api).sort()).toEqual(
       [
-        'validateRgba',
+        'createGpu',
+        'GpuError',
+        'createComposition',
+        'colormaps',
         'createColormap',
         'reverseColormap',
-        'sampleColormap',
         'parseColor',
-        'resolveColor',
         'colorCss',
         'colormapCss',
-        'colormaps',
+        'spotlight',
+        'kit',
+      ].sort(),
+    );
+    expect(Object.keys(api.kit).sort()).toEqual(
+      [
+        'BaseView',
+        'rendererOf',
+        'gpuOf',
+        'hold',
+        'validateRgba',
+        'sampleColormap',
+        'resolveColor',
         'colormapShader',
         'BufferData',
         'TextureData',
-        'GpuError',
         'fieldShader',
         'clipStroke',
         'strokeShader',
         'textShader',
         'createTextRasterizer',
-        'createCanvasView',
-        'createComposition',
-        'createGpu',
         'createNativeReader',
         'createPresentation',
         'createRenderTarget',
@@ -43,7 +52,6 @@ describe('public contract and allocation boundaries', () => {
         'scaleShader',
         'shadeShader',
         'defaultShade',
-        'spotlight',
         'premultipliedBlend',
         'outputShader',
         'inputModifiers',
@@ -146,7 +154,7 @@ describe('public contract and allocation boundaries', () => {
       gpu = await api.createGpu({ device: fake.device });
     const owned = gpu.buffer({ size: 16, usage: GPUBufferUsage.STORAGE });
     await draw(gpu, (frame) => {
-      frame.buffer(new api.BufferData({ size: 256 }));
+      frame.buffer(new api.kit.BufferData({ size: 256 }));
     });
     gpu.trim();
     expect(gpu.stats().gpuBytes).toBe(16);
@@ -157,7 +165,7 @@ describe('public contract and allocation boundaries', () => {
 
   it('journals disjoint byte changes and resets newly grown bytes', () => {
     fakeDevice();
-    const data = new api.BufferData({ size: 4096 });
+    const data = new api.kit.BufferData({ size: 4096 });
     const version = data.version;
     data.write({ data: Uint8Array.of(9), offset: 0 });
     data.write({ data: Uint8Array.of(8), offset: 4000 });

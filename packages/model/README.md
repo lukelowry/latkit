@@ -1,7 +1,7 @@
 # @latkit/model
 
 TypeScript data contracts and utilities for Latkit. Your application implements
-the model; renderers and transports consume the same interfaces.
+the model; views and transports consume the same interfaces.
 
 | Interface   | Purpose                                                 |
 | ----------- | ------------------------------------------------------- |
@@ -46,7 +46,7 @@ const fixed = await recording.retain({
   maxBytes: 64 * 1024 * 1024,
 });
 try {
-  // Pass fixed to a renderer or issue several coherent queries.
+  // Pass fixed to a view or issue several coherent queries.
 } finally {
   await fixed.close();
 }

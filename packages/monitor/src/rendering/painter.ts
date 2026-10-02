@@ -1,15 +1,4 @@
-import {
-  resolveScale,
-  scaleValue,
-  scaleParameters,
-  type Encoding,
-  type Gpu,
-  type GpuPage,
-  type GpuValueField,
-  type Preparation,
-  type TextureResource,
-  type TextPage,
-} from '@latkit/gpu';
+import { type Gpu, kit } from '@latkit/gpu';
 import { rowCount, type Domain } from '@latkit/model';
 import { isEnvelope, type Chunk } from '../history.js';
 import { buffer, geometry, type Geometry, type Seams } from '../segments.js';
@@ -17,8 +6,8 @@ import type { Settings } from '../config.js';
 import type { Axes, Plot } from '../axes.js';
 import type { Pipelines } from './pipelines.js';
 export interface Image {
-  texture: TextureResource;
-  msaa?: TextureResource;
+  texture: kit.TextureResource;
+  msaa?: kit.TextureResource;
   width: number;
   height: number;
   x: Domain;
@@ -75,7 +64,7 @@ export function imageBytes(image: Image): number {
   return image.width * image.height * 4 * (image.msaa ? 5 : 1);
 }
 export interface Draw {
-  page: GpuPage;
+  page: kit.GpuPage;
   view: GPUBindGroup;
   colors: GPUBindGroup;
   shade: GPUBindGroup;
@@ -84,7 +73,7 @@ export interface Draw {
 }
 export function prepareChunk(
   gpu: Gpu,
-  frame: Preparation,
+  frame: kit.Preparation,
   pipelines: Pipelines,
   chunk: Chunk,
   target: Image,
@@ -111,7 +100,7 @@ export function prepareChunk(
   const styles = chunk.styles
     ? Float32Array.from(chunk.styles, (v, i) =>
         i % 4 === 0
-          ? (scaleValue(v, resolveScale({}, colorDomain)) ?? -1)
+          ? (kit.scaleValue(v, kit.resolveScale({}, colorDomain)) ?? -1)
           : Number.isFinite(v)
             ? v
             : 0,
@@ -179,10 +168,10 @@ export function prepareChunk(
       ],
       28,
     );
-    const setScale = (at: number, domain: Domain, column: GpuValueField, clamp: boolean) => {
+    const setScale = (at: number, domain: Domain, column: kit.GpuValueField, clamp: boolean) => {
       for (let lane = 0; lane < 4; lane++)
         uniforms.set(
-          scaleParameters(resolveScale({ clamp }, domain), {
+          kit.scaleParameters(kit.resolveScale({ clamp }, domain), {
             origin: column.origin?.[Math.min(lane, column.components - 1)] ?? 0,
           }),
           at + lane * 8,
@@ -195,7 +184,7 @@ export function prepareChunk(
     setScale(68, target.y, value, false);
     for (let lane = 0; lane < 4; lane++)
       uniforms.set(
-        scaleParameters(resolveScale({}, colorDomain), {
+        kit.scaleParameters(kit.resolveScale({}, colorDomain), {
           origin:
             color?.kind === 'value'
               ? (color.origin?.[Math.min(lane, color.components - 1)] ?? 0)
@@ -236,7 +225,7 @@ export function prepareChunk(
   return draws;
 }
 export function paint(
-  frame: Encoding,
+  frame: kit.Encoding,
   pipelines: Pipelines,
   target: Image,
   draws: readonly Draw[],
@@ -276,13 +265,13 @@ export interface Screen {
   image: GPUBindGroup;
   axis: GPUBindGroup;
   cursor?: GPUBindGroup;
-  text: readonly TextPage[];
+  text: readonly kit.TextPage[];
   lines: number;
   grid: number;
 }
 export async function prepareScreen(
   gpu: Gpu,
-  frame: Preparation,
+  frame: kit.Preparation,
   pipelines: Pipelines,
   history: Image,
   focus: Image,
@@ -316,9 +305,9 @@ export async function prepareScreen(
   const cursor =
     at === undefined
       ? null
-      : scaleValue(at, resolveScale({ range: [p.x, p.x + p.width], clamp: false }, x));
+      : kit.scaleValue(at, kit.resolveScale({ range: [p.x, p.x + p.width], clamp: false }, x));
   const extra = cursor !== null && cursor >= p.x && cursor <= p.x + p.width ? 8 : 0;
-  const makeAxis = (values: import('@latkit/gpu').BufferData) =>
+  const makeAxis = (values: kit.BufferData) =>
     gpu.device.createBindGroup({
       layout: pipelines.axis,
       entries: [
@@ -347,7 +336,7 @@ export async function prepareScreen(
     grid: layout.gridCount,
   };
 }
-export function composite(frame: Encoding, pipelines: Pipelines, screen: Screen): number {
+export function composite(frame: kit.Encoding, pipelines: Pipelines, screen: Screen): number {
   const pass = frame.encoder.beginRenderPass({
     colorAttachments: [
       {
@@ -394,7 +383,7 @@ export function composite(frame: Encoding, pipelines: Pipelines, screen: Screen)
   pass.end();
   return calls;
 }
-export function enroll(frame: Preparation, value: Image) {
+export function enroll(frame: kit.Preparation, value: Image) {
   frame.texture(value.texture);
   if (value.msaa) frame.texture(value.msaa);
 }

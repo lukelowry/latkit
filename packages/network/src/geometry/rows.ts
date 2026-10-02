@@ -1,5 +1,5 @@
 import { rowCount, rowAt } from '@latkit/model';
-import { type NativeFields } from '@latkit/gpu';
+import { kit } from '@latkit/gpu';
 import type { Column, Index, RowAxis } from '@latkit/model';
 export function bit(bytes: Uint8Array | undefined, index: number): boolean {
   return !bytes || !!(bytes[index >>> 3] & (1 << (index & 7)));
@@ -15,7 +15,7 @@ export function value(column: Column | undefined, row: number, component = 0): n
   return NaN;
 }
 export function nativeValue(
-  native: NativeFields,
+  native: kit.NativeFields,
   name: string,
   row: number,
   component = 0,

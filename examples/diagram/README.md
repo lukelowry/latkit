@@ -25,8 +25,8 @@ Open http://127.0.0.1:5192. WebGPU requires a supported browser and graphics dev
   exposes background-drag and edge-panning preferences. Empty drops leave the wiring
   unchanged unless creation is enabled; dropping a reconnected input on empty space
   unplugs it. Arrangement and history can animate accepted positions.
-- Export: a retained source and an independent renderer produce a fixed-time
-  2048 × 1280 PNG through createRenderTarget and gpu.render.
+- Export: a retained source and an independent offscreen diagram produce a
+  2048 × 1280 PNG through `image()`.
 
 The API panel shows the minimal integration. Source is split into graph.ts (domain
 edits and history), source.ts (native data), presentation.ts (bindings), and main.ts

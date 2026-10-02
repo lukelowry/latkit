@@ -4,7 +4,10 @@ import type { NetworkData, NetworkItem } from '../data.js';
 import type { VertexBank, EdgeBank } from './topology.js';
 import { RowLookup, indexKey } from './rows.js';
 
-/** CSR adjacency over renderer-local dense addresses; public results always use native identities. */
+/**
+ * CSR adjacency over renderer-local dense addresses: vertices, then edges, then paths. Public results
+ * always use native identities.
+ */
 export class Adjacency {
   readonly bytes: number;
   private readonly offsets: Uint32Array;
@@ -16,31 +19,18 @@ export class Adjacency {
   constructor(
     private readonly vertices: readonly VertexBank[],
     private readonly edges: readonly EdgeBank[],
-    vertexCount: number,
+    paths: readonly EdgeBank[],
+    private readonly vertexCount: number,
     edgeCount: number,
   ) {
     this.offsets = new Uint32Array(vertexCount + 1);
     this.edgeOffsets = new Uint32Array(edgeCount + 1);
     const all = new Uint32Array(edges.reduce((n, bank) => n + bank.incidence.vertices.length, 0));
     let written = 0;
-    for (const bank of vertices) {
-      const key = indexKey(bank.index);
-      let rows = this.vertexRows.get(key);
-      if (!rows) {
-        rows = new RowLookup();
-        this.vertexRows.set(key, rows);
-      }
-      rows.add(bank.rows, bank);
-    }
+    for (const bank of vertices) this.rows(this.vertexRows, bank.index).add(bank.rows, bank);
     for (const rows of this.vertexRows.values()) rows.seal();
     for (const bank of edges) {
-      const key = indexKey(bank.index);
-      let rows = this.edgeRows.get(key);
-      if (!rows) {
-        rows = new RowLookup();
-        this.edgeRows.set(key, rows);
-      }
-      rows.add(bank.rows, bank);
+      this.rows(this.edgeRows, bank.index).add(bank.rows, bank);
       for (let i = 0; i < bank.count; i++) {
         const start = bank.incidence.offsets[i],
           end = bank.incidence.offsets[i + 1],
@@ -56,6 +46,7 @@ export class Adjacency {
         this.edgeOffsets[bank.base + i + 1] = written;
       }
     }
+    for (const bank of paths) this.rows(this.edgeRows, bank.index).add(bank.rows, bank);
     for (const rows of this.edgeRows.values()) rows.seal();
     this.ends = all;
     for (let i = 1; i < this.offsets.length; i++) this.offsets[i] += this.offsets[i - 1];
@@ -69,6 +60,21 @@ export class Adjacency {
       this.edgeOffsets.byteLength +
       this.ends.byteLength +
       this.incident.byteLength;
+  }
+  private rows<T>(map: Map<string, RowLookup<T>>, index: VertexBank['index']): RowLookup<T> {
+    const key = indexKey(index);
+    let rows = map.get(key);
+    if (!rows) map.set(key, (rows = new RowLookup()));
+    return rows;
+  }
+  /** An item's dense address, or undefined when it is not drawn. */
+  address(item: NetworkItem): number | undefined {
+    if (item.kind === 'vertex') {
+      const found = this.vertexRows.get(indexKey(item.index))?.get(item.row);
+      return found && found.value.base + found.offset;
+    }
+    const found = this.edgeRows.get(indexKey(item.index))?.get(item.row);
+    return found && this.vertexCount + found.value.base + found.offset;
   }
   private bank<T extends { readonly base: number; readonly count: number }>(
     banks: readonly T[],

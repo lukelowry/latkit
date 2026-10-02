@@ -14,15 +14,15 @@ import {
   type NumericColumn,
   type SampleColumn,
 } from '@latkit/model';
+import { createGpu } from '../src/index.js';
 import {
-  createGpu,
   resolveScale,
   scaleValue,
   scaleParameters,
   withinBudget,
   type GpuPage,
   type NativeFields,
-} from '../src/index.js';
+} from '../src/kit.js';
 import { fakeDevice } from './fixtures/device.js';
 import { field } from './fixtures/fields.js';
 import { draw } from './fixtures/render.js';

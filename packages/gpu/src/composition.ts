@@ -1,84 +1,36 @@
-import { children, renderers } from './renderers.js';
+import { children } from './renderers.js';
 import type { Gpu } from './gpu.js';
-import type { Renderer, Preparation, Encoding, FrameInfo, Invalidation } from './render.js';
+import type { Renderer, Preparation, Encoding, FrameInfo } from './render.js';
 import type { TextureResource } from './resources.js';
 import type { RGBA } from './colors/color.js';
 import { validateRgba } from './colors/color.js';
 import { GpuError } from './error.js';
 import { premultipliedBlend } from './output.js';
 import { shadeUniforms } from './shade.js';
+import {
+  BaseView,
+  compose,
+  rendererOf,
+  type View,
+  type ViewConfig,
+  type ViewEvents,
+} from './view.js';
 
-export interface CompositionView {
-  readonly renderer: Renderer;
-  /** Normalized output rectangle, top-left origin. Later views draw over earlier views. */
-  readonly region: {
-    readonly x: number;
-    readonly y: number;
-    readonly width: number;
-    readonly height: number;
-  };
-}
-export interface CompositionOptions {
-  readonly gpu: Gpu;
-  readonly views: readonly CompositionView[];
+export interface CompositionConfig extends ViewConfig {
+  /** Each view in a normalized region, top-left origin; later views draw over earlier ones. */
+  readonly views: readonly {
+    readonly view: View<ViewConfig, ViewEvents>;
+    readonly region: readonly [x: number, y: number, width: number, height: number];
+  }[];
   readonly background?: RGBA;
 }
-/** Borrows its child renderers; owns only panel textures and composition resources. */
-export function createComposition(options: CompositionOptions): Renderer {
-  const { gpu } = options;
-  const views = options.views.map((view) => ({
-    renderer: view.renderer,
-    region: { ...view.region },
-  }));
-  if (!views.length || new Set(views.map((v) => v.renderer)).size !== views.length)
-    throw new GpuError('invalid-input', 'Composition requires distinct renderer views');
-  for (const { region: r } of views)
-    if (
-      ![r.x, r.y, r.width, r.height].every(Number.isFinite) ||
-      r.x < 0 ||
-      r.y < 0 ||
-      r.width <= 0 ||
-      r.height <= 0 ||
-      r.x + r.width > 1 ||
-      r.y + r.height > 1
-    )
-      throw new GpuError('invalid-input', 'Composition regions must fit the unit rectangle');
-  renderers(views.map((view) => view.renderer));
-  const background: RGBA = [...(options.background ?? [0, 0, 0, 1])];
-  validateRgba(background);
-  const listeners = new Set<(change: Invalidation) => void>();
-  let closed = false,
-    format: GPUTextureFormat | undefined,
-    pipeline: GPURenderPipeline | undefined;
-  const textures: (TextureResource | undefined)[] = [];
-  const bindings: (
-    | {
-        texture: GPUTexture;
-        view: GPUTextureView;
-        group: GPUBindGroup;
-        pipeline: GPURenderPipeline;
-      }
-    | undefined
-  )[] = [];
-  let prepared: {
-    info: FrameInfo;
-    x: number;
-    y: number;
-    view: GPUTextureView;
-    group: GPUBindGroup;
-  }[] = [];
-  const sampler = gpu.device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
-  const subscriptions = views.map((v) =>
-    v.renderer.on?.('invalidate', (change) => {
-      if (!closed) for (const listener of listeners) listener(change);
-    }),
-  );
-  const live = () => {
-    if (closed) throw new GpuError('closed', 'Composition is destroyed');
-  };
-  const shader = gpu.device.createShaderModule({
-    label: 'composition',
-    code: `
+
+/** Present several views as one: on a canvas, in images, or in video. Borrows its views. */
+export function createComposition(gpu: Gpu, config: CompositionConfig): View<CompositionConfig> {
+  return new Composition(gpu, config);
+}
+
+const shader = `
 @group(0) @binding(0) var image: texture_2d<f32>;
 @group(0) @binding(1) var filtering: sampler;
 struct Vertex { @builtin(position) position: vec4f, @location(0) uv: vec2f }
@@ -87,147 +39,221 @@ struct Vertex { @builtin(position) position: vec4f, @location(0) uv: vec2f }
   return Vertex(vec4f(uv * vec2f(2., -2.) + vec2f(-1., 1.), 0., 1.), uv);
 }
 @fragment fn fragment(v: Vertex) -> @location(0) vec4f { return textureSample(image, filtering, v.uv); }
-`,
-  });
-  const composition: Renderer = {
-    get pending() {
-      const pending = views.flatMap((v) => (v.renderer.pending ? [v.renderer.pending] : []));
-      return pending.length ? Promise.all(pending).then(() => {}) : undefined;
-    },
-    get animating() {
-      return !closed && views.some((v) => v.renderer.animating);
-    },
-    on(_event, listener) {
-      live();
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-    async prepare(frame: Preparation) {
-      live();
-      prepared = [];
-      if (!pipeline || format !== frame.format) {
-        pipeline = await gpu.renderPipeline({
-          layout: 'auto',
-          vertex: { module: shader, entryPoint: 'vertex' },
-          fragment: {
-            module: shader,
-            entryPoint: 'fragment',
-            targets: [{ format: frame.format, blend: premultipliedBlend }],
-          },
-          primitive: { topology: 'triangle-list' },
+`;
+
+interface Panel {
+  readonly renderer: Renderer;
+  readonly region: CompositionConfig['views'][number]['region'];
+  readonly release: () => void;
+  readonly off: () => void;
+}
+
+class Composition extends BaseView<CompositionConfig, ViewEvents> {
+  private panels: Panel[] = [];
+  private readonly own: Renderer;
+  private readonly sampler: GPUSampler;
+  private readonly module: GPUShaderModule;
+  private format?: GPUTextureFormat;
+  private pipeline?: GPURenderPipeline;
+  private textures: (TextureResource | undefined)[] = [];
+  private bindings: (
+    { texture: GPUTexture; view: GPUTextureView; group: GPUBindGroup } | undefined
+  )[] = [];
+  private prepared: {
+    info: FrameInfo;
+    x: number;
+    y: number;
+    view: GPUTextureView;
+    group: GPUBindGroup;
+  }[] = [];
+  constructor(gpu: Gpu, config: CompositionConfig) {
+    super(gpu, config);
+    this.own = rendererOf(this);
+    this.sampler = gpu.device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
+    this.module = gpu.device.createShaderModule({ label: 'composition', code: shader });
+    this.check(config);
+    this.panels = this.compose(config);
+    this.start();
+  }
+  protected check(config: CompositionConfig): void {
+    if (!config.views?.length) throw new GpuError('invalid-input', 'A composition needs views');
+    if (new Set(config.views.map((v) => v.view)).size !== config.views.length)
+      throw new GpuError('invalid-input', 'Composition requires distinct views');
+    for (const { region: r } of config.views)
+      if (
+        r.length !== 4 ||
+        !r.every(Number.isFinite) ||
+        r[0] < 0 ||
+        r[1] < 0 ||
+        r[2] <= 0 ||
+        r[3] <= 0 ||
+        r[0] + r[2] > 1 ||
+        r[1] + r[3] > 1
+      )
+        throw new GpuError('invalid-input', 'Composition regions must fit the unit rectangle');
+    if (config.background) validateRgba(config.background);
+  }
+  private compose(config: CompositionConfig): Panel[] {
+    const panels: Panel[] = [];
+    try {
+      for (const { view, region } of config.views) {
+        const renderer = rendererOf(view),
+          release = compose(view);
+        panels.push({
+          renderer,
+          region: [...region] as unknown as Panel['region'],
+          release,
+          off: renderer.on?.('invalidate', (change) => this.invalidate(change)) ?? (() => {}),
         });
-        format = frame.format;
       }
-      for (let i = 0; i < views.length; i++) {
-        frame.signal.throwIfAborted();
-        live();
-        const { renderer, region: r } = views[i];
-        const x = Math.floor(r.x * frame.width),
-          y = Math.floor(r.y * frame.height);
-        const width = Math.floor((r.x + r.width) * frame.width) - x;
-        const height = Math.floor((r.y + r.height) * frame.height) - y;
-        if (width < 1 || height < 1)
-          throw new GpuError('invalid-input', 'Composition panel is smaller than one pixel');
-        let resource = textures[i];
-        if (!resource || resource.texture.width !== width || resource.texture.height !== height) {
-          const next = gpu.texture({
-            size: [width, height],
-            format: 'rgba8unorm',
-            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-          });
-          resource?.destroy();
-          textures[i] = resource = next;
-        }
-        const texture = frame.texture(resource);
-        let binding = bindings[i];
-        if (!binding || binding.texture !== texture || binding.pipeline !== pipeline) {
-          const view = texture.createView();
-          binding = bindings[i] = {
-            texture,
-            view,
-            pipeline,
-            group: gpu.device.createBindGroup({
-              layout: pipeline.getBindGroupLayout(0),
-              entries: [
-                { binding: 0, resource: view },
-                { binding: 1, resource: sampler },
-              ],
-            }),
-          };
-        }
-        const info: FrameInfo = {
-          width,
-          height,
-          format: 'rgba8unorm',
-          timeMs: frame.timeMs,
-          at: frame.at,
-          viewport: {
-            width: width / frame.viewport.pixelRatio,
-            height: height / frame.viewport.pixelRatio,
-            pixelRatio: frame.viewport.pixelRatio,
-          },
-        };
-        await renderer.prepare({
-          ...frame,
-          ...info,
-          // The same shared uniform layout, with the panel's actual viewport.
-          shade: (request = {}) => frame.uniforms(shadeUniforms(request, info)),
-        });
-        prepared.push({ info, x, y, view: binding.view, group: binding.group });
-      }
-    },
-    encode(frame: Encoding) {
-      live();
-      if (prepared.length !== views.length)
-        throw new GpuError('invalid-input', 'Composition is not prepared');
-      for (let i = 0; i < views.length; i++)
-        views[i].renderer.encode({
-          ...prepared[i].info,
-          encoder: frame.encoder,
-          target: prepared[i].view,
-        });
-      const pass = frame.encoder.beginRenderPass({
-        colorAttachments: [
-          {
-            view: frame.target,
-            loadOp: 'clear',
-            storeOp: 'store',
-            clearValue: [
-              background[0] * background[3],
-              background[1] * background[3],
-              background[2] * background[3],
-              background[3],
-            ],
-          },
-        ],
+    } catch (error) {
+      for (const panel of panels) this.unpanel(panel);
+      throw error;
+    }
+    children.set(
+      this.own,
+      panels.map((panel) => panel.renderer),
+    );
+    return panels;
+  }
+  private unpanel(panel: Panel): void {
+    panel.off();
+    panel.release();
+  }
+  protected configure(previous: CompositionConfig, next: CompositionConfig): void {
+    if (previous.views !== next.views) {
+      const panels = this.compose(next);
+      for (const panel of this.panels) this.unpanel(panel);
+      this.panels = panels;
+    }
+    this.invalidate('replace');
+  }
+  protected get pending(): Promise<void> | undefined {
+    const pending = this.panels.flatMap((p) => (p.renderer.pending ? [p.renderer.pending] : []));
+    return pending.length ? Promise.all(pending).then(() => {}) : undefined;
+  }
+  protected get animating(): boolean {
+    return this.panels.some((p) => p.renderer.animating);
+  }
+  protected async prepare(frame: Preparation): Promise<void> {
+    this.live();
+    this.prepared = [];
+    if (!this.pipeline || this.format !== frame.format) {
+      this.pipeline = await this.gpu.renderPipeline({
+        layout: 'auto',
+        vertex: { module: this.module, entryPoint: 'vertex' },
+        fragment: {
+          module: this.module,
+          entryPoint: 'fragment',
+          targets: [{ format: frame.format, blend: premultipliedBlend }],
+        },
+        primitive: { topology: 'triangle-list' },
       });
-      pass.setPipeline(pipeline!);
-      for (const panel of prepared) {
-        pass.setViewport(panel.x, panel.y, panel.info.width, panel.info.height, 0, 1);
-        pass.setBindGroup(0, panel.group);
-        pass.draw(3);
+      this.format = frame.format;
+    }
+    const pipeline = this.pipeline;
+    for (let i = 0; i < this.panels.length; i++) {
+      frame.signal.throwIfAborted();
+      this.live();
+      const { renderer, region: r } = this.panels[i];
+      const x = Math.floor(r[0] * frame.width),
+        y = Math.floor(r[1] * frame.height);
+      const width = Math.floor((r[0] + r[2]) * frame.width) - x;
+      const height = Math.floor((r[1] + r[3]) * frame.height) - y;
+      if (width < 1 || height < 1)
+        throw new GpuError('invalid-input', 'Composition panel is smaller than one pixel');
+      let resource = this.textures[i];
+      if (!resource || resource.texture.width !== width || resource.texture.height !== height) {
+        const next = this.gpu.texture({
+          size: [width, height],
+          format: 'rgba8unorm',
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        });
+        resource?.destroy();
+        this.textures[i] = resource = next;
       }
-      pass.end();
-    },
-    submitted() {
-      for (let i = 0; i < views.length; i++) views[i].renderer.submitted?.(prepared[i].info);
-    },
-    destroy() {
-      if (closed) return;
-      closed = true;
-      for (const off of subscriptions) off?.();
-      for (const texture of textures) texture?.destroy();
-      listeners.clear();
-      prepared = [];
-      bindings.length = 0;
-      children.delete(composition);
-    },
-  };
-  children.set(
-    composition,
-    views.map((view) => view.renderer),
-  );
-  return composition;
+      const texture = frame.texture(resource);
+      let binding = this.bindings[i];
+      if (!binding || binding.texture !== texture) {
+        const view = texture.createView();
+        binding = this.bindings[i] = {
+          texture,
+          view,
+          group: this.gpu.device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(0),
+            entries: [
+              { binding: 0, resource: view },
+              { binding: 1, resource: this.sampler },
+            ],
+          }),
+        };
+      }
+      const info: FrameInfo = {
+        width,
+        height,
+        format: 'rgba8unorm',
+        timeMs: frame.timeMs,
+        at: frame.at,
+        viewport: {
+          width: width / frame.viewport.pixelRatio,
+          height: height / frame.viewport.pixelRatio,
+          pixelRatio: frame.viewport.pixelRatio,
+        },
+      };
+      await renderer.prepare({
+        ...frame,
+        ...info,
+        // The same shared uniform layout, with the panel's actual viewport.
+        shade: (request = {}) => frame.uniforms(shadeUniforms(request, info)),
+      });
+      this.prepared.push({ info, x, y, view: binding.view, group: binding.group });
+    }
+  }
+  protected encode(frame: Encoding): void {
+    this.live();
+    if (this.prepared.length !== this.panels.length)
+      throw new GpuError('invalid-input', 'Composition is not prepared');
+    for (let i = 0; i < this.panels.length; i++)
+      this.panels[i].renderer.encode({
+        ...this.prepared[i].info,
+        encoder: frame.encoder,
+        target: this.prepared[i].view,
+      });
+    const background = this.config.background ?? [0, 0, 0, 1];
+    const pass = frame.encoder.beginRenderPass({
+      colorAttachments: [
+        {
+          view: frame.target,
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: [
+            background[0] * background[3],
+            background[1] * background[3],
+            background[2] * background[3],
+            background[3],
+          ],
+        },
+      ],
+    });
+    pass.setPipeline(this.pipeline!);
+    for (const panel of this.prepared) {
+      pass.setViewport(panel.x, panel.y, panel.info.width, panel.info.height, 0, 1);
+      pass.setBindGroup(0, panel.group);
+      pass.draw(3);
+    }
+    pass.end();
+  }
+  protected submitted(): void {
+    for (let i = 0; i < this.panels.length; i++)
+      this.panels[i].renderer.submitted?.(this.prepared[i].info);
+  }
+  protected release(): void {
+    for (const panel of this.panels) this.unpanel(panel);
+    this.panels = [];
+    children.delete(this.own);
+    for (const texture of this.textures) texture?.destroy();
+    this.textures = [];
+    this.prepared = [];
+    this.bindings = [];
+  }
 }

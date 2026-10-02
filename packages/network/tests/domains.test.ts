@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
-import { createGpu, type Gpu, type Preparation } from '@latkit/gpu';
+import { createGpu, type Gpu, type kit } from '@latkit/gpu';
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
-async function draw(gpu: Gpu, prepare: (frame: Preparation) => Promise<void>): Promise<void> {
+async function draw(gpu: Gpu, prepare: (frame: kit.Preparation) => Promise<void>): Promise<void> {
   const texture = gpu.device.createTexture({
     size: [16, 16],
     format: 'rgba8unorm',

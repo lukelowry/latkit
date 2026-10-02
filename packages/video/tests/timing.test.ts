@@ -3,8 +3,6 @@ import { settings, timeline } from '../src/timing.js';
 import type { VideoOptions } from '../src/video.js';
 const options = (patch: Partial<VideoOptions> = {}) =>
   ({
-    gpu: { device: { limits: { maxTextureDimension2D: 8192 } } },
-    renderer: {},
     output: new WritableStream(),
     width: 1280,
     height: 720,
@@ -13,7 +11,7 @@ const options = (patch: Partial<VideoOptions> = {}) =>
   }) as VideoOptions;
 describe('video timing', () => {
   it('derives precise fractional-rate timestamps without accumulated drift', () => {
-    const config = settings(options({ duration: 3600, frameRate: 30000 / 1001 }));
+    const config = settings(options({ duration: 3600, frameRate: 30000 / 1001 }), 8192);
     expect(config.frames).toBe(107893);
     let through = 0;
     for (let i = 0; i < config.frames; i++) {
@@ -26,7 +24,7 @@ describe('video timing', () => {
   });
   it('does not add an extra frame at exact duration boundaries', () => {
     for (const rate of [24, 30, 60, 30000 / 1001]) {
-      const config = settings(options({ duration: 600 / rate, frameRate: rate }));
+      const config = settings(options({ duration: 600 / rate, frameRate: rate }), 8192);
       expect(config.frames).toBe(600);
     }
   });
@@ -39,10 +37,10 @@ describe('video timing', () => {
       { duration: 0 },
       { bitrate: 1000, quality: 'high' as const },
     ])
-      expect(() => settings(options(patch))).toThrow();
+      expect(() => settings(options(patch), 8192)).toThrow();
     const output = new WritableStream();
     const writer = output.getWriter();
-    expect(() => settings(options({ output }))).toThrow();
+    expect(() => settings(options({ output }), 8192)).toThrow();
     writer.releaseLock();
   });
 });

@@ -1,8 +1,7 @@
 import { assertIndex } from '@latkit/model';
-import { BufferData, GpuError, type Preparation, type FieldValues } from '@latkit/gpu';
+import { GpuError, kit } from '@latkit/gpu';
 import type { Column, Index, ReferenceColumn, RowAxis, Schema, Queryable } from '@latkit/model';
-import type { Position2D as Position } from '@latkit/gpu';
-import type { NetworkData, VertexOptions, EdgeOptions, PathOptions } from '../data.js';
+import type { NetworkData, VertexData, EdgeData, PathData } from '../data.js';
 import { Adjacency } from './adjacency.js';
 import { RowLookup, bit, indexKey } from './rows.js';
 
@@ -16,15 +15,15 @@ export interface VertexBank {
   readonly rows: RowAxis;
   readonly count: number;
   readonly base: number;
-  position?: Position;
+  position?: kit.Position2D;
   /** Private control points share field upload/projection, but are never model vertices. */
-  readonly synthetic?: VertexOptions;
+  readonly synthetic?: VertexData;
 }
 export interface SegmentBatch {
   readonly a: VertexBank;
   readonly b: VertexBank;
   readonly records: Uint32Array;
-  readonly data: BufferData;
+  readonly data: kit.BufferData;
   readonly order?: Uint32Array;
 }
 export interface EdgeBank {
@@ -48,6 +47,8 @@ export interface Geometry {
   readonly lookup: ReadonlyMap<string, RowLookup<VertexBank>>;
   readonly vertexCount: number;
   readonly edgeCount: number;
+  /** Path rows, densely addressed after the edges. */
+  readonly pathCount: number;
   readonly segmentCount: number;
   readonly schema: Schema;
   /** Positions are longitude/latitude in degrees. */
@@ -66,14 +67,14 @@ export const DEFAULT_LIMITS = Object.freeze({
   maxSegments: 8_000_000,
   cpuBytes: 256 * 1024 ** 2,
 });
-export function vertexOptions(data: NetworkData, bank: VertexBank): VertexOptions {
+export function vertexOptions(data: NetworkData, bank: VertexBank): VertexData {
   return bank.synthetic ?? data.vertices[bank.type];
 }
-export function edgeOptions(data: NetworkData, bank: EdgeBank): EdgeOptions | PathOptions {
+export function edgeOptions(data: NetworkData, bank: EdgeBank): EdgeData | PathData {
   return bank.kind === 'path' ? data.paths![bank.type] : data.edges![bank.type];
 }
 export function segmentBatch(a: VertexBank, b: VertexBank, records: Uint32Array): SegmentBatch {
-  const data = new BufferData({ size: records.byteLength, label: 'network path segments' });
+  const data = new kit.BufferData({ size: records.byteLength, label: 'network path segments' });
   data.write({ data: records });
   return { a, b, records, data };
 }
@@ -199,7 +200,7 @@ class Segments {
 
 export async function readGeometry(
   data: NetworkData,
-  frame: Preparation,
+  frame: kit.Preparation,
   limits: Required<Limits>,
 ): Promise<Geometry> {
   const vertices: VertexBank[] = [],
@@ -210,6 +211,7 @@ export async function readGeometry(
     segments = { count: 0 };
   let vertexCount = 0,
     edgeCount = 0,
+    pathCount = 0,
     bytes = 0;
   let schema: Schema | undefined;
   const charge = (n: number) => {
@@ -220,7 +222,7 @@ export async function readGeometry(
   const rowsOf = async (
     source: Queryable,
     type: string,
-    selection: VertexOptions['rows'],
+    selection: VertexData['rows'],
     found: (schema: Schema) => void,
   ): Promise<{ index?: Index; rows: Uint32Array }> => {
     const rows = new Uints();
@@ -484,7 +486,7 @@ export async function readGeometry(
     for (let first = 0; first < read.rows.length; first += BANK_ROWS) {
       const count = Math.min(BANK_ROWS, read.rows.length - first);
       edges.push({
-        base: edgeCount,
+        base: edgeCount + pathCount,
         type,
         index: read.index!,
         rows: axis(read.rows.subarray(first, first + BANK_ROWS)),
@@ -494,6 +496,7 @@ export async function readGeometry(
         batches: [],
         incidence: { offsets: new Uint32Array(count + 1), vertices: new Uint32Array() },
       });
+      pathCount += count;
       charge(256 + count * 12);
     }
   }
@@ -520,7 +523,7 @@ export async function readGeometry(
           size: 2,
           values: { kind: 'numeric', offset: 0, length: values.length, values },
         },
-      } satisfies FieldValues;
+      } satisfies kit.FieldValues;
       charge(values.byteLength);
     }
   const connected = edges.filter((bank) => !bank.kind);
@@ -528,7 +531,13 @@ export async function readGeometry(
     (vertexCount + edgeCount + 2) * 4 +
     connected.reduce((sum, bank) => sum + bank.incidence.vertices.length * 8, 0);
   charge(adjacencyBytes);
-  const adjacency = new Adjacency(vertices, connected, vertexCount, edgeCount);
+  const adjacency = new Adjacency(
+    vertices,
+    connected,
+    edges.filter((bank) => bank.kind === 'path'),
+    vertexCount,
+    edgeCount,
+  );
   bytes -= adjacencyBytes - adjacency.bytes;
   return {
     vertices,
@@ -536,6 +545,7 @@ export async function readGeometry(
     lookup,
     vertexCount,
     edgeCount,
+    pathCount,
     segmentCount: segments.count,
     schema,
     geographic,

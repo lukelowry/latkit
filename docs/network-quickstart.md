@@ -1,62 +1,44 @@
-# Create a network view
+# Network
 
-Interactive WebGPU views over native model data.
+Draw a model's vertices, edges, and paths: flat, tilted, or on a globe.
 
 ```ts
-import { createGpu, createCanvasView, colormaps } from '@latkit/gpu';
-import { createNetwork, attachNetworkInput } from '@latkit/network';
+import { createNetwork } from '@latkit/network';
 
-const gpu = await createGpu();
-const network = createNetwork({
-  gpu,
-  data: {
-    source,
-    vertices: {
-      Bus: {
-        position: 'position',
-        color: { field: 'load', domain: [0, 1], colormap: colormaps.viridis },
-        labels: { field: 'name', maxCount: 100 },
-      },
-    },
-    edges: { Line: { ends: ['from', 'to'] } },
+const network = createNetwork(gpu, {
+  canvas,
+  source,
+  vertices: {
+    Bus: { color: { field: 'load', domain: [0, 1], colormap: 'viridis' }, labels: 'name' },
   },
+  edges: { Line: { ends: ['from', 'to'] } },
 });
-const view = createCanvasView({ gpu, canvas, renderer: network, onError: console.error });
-const detach = attachNetworkInput({ network, canvas });
-view.request();
 ```
 
-`source` is a `Queryable`: `Bus.position` is its geographic spatial field,
-`Bus.load` is numeric, and each `Line` row references the two buses it joins
-through `from` and `to`.
+Each `Bus` is drawn at its type's spatial field; each `Line` row references the two buses it joins
+through `from` and `to`. [Data bindings](topology-and-channels.md) covers nets, paths, and styling
+by field.
 
-## Update a view
+## Camera
 
 ```ts
-network.setVertex('Bus', { size: { field: 'load', domain: [0, 1], range: [3, 12] } });
-network.on('select', (items) => console.log(items));
-view.request({ at: 12 }); // Native model coordinate.
+network.set({ camera: { projection: 'globe', orbit: true } }, { animate: true });
 ```
 
-Omit `ends` to draw a type as a net, a star of the vertices that reference it.
-Optional `bends` and path `points` are lists of two-component vectors. Set
-`curve: 'geodesic'` for geographic arcs. Paths are decorative unless `pickable: true`.
+The camera is `{ projection, center, scale, pitch, bearing, fit, orbit }`. The globe needs
+geographic positions; `network.projections` says which projections the data supports.
 
-Omitted color/size domains use finite values over the displayed mapping.
-Use an explicit domain for stable playback colors. Selection keeps native
-source, index, and row identities.
+Drag to pan, right- or Shift-drag to turn, and scroll to zoom. Shift-, Ctrl-, or ⌘-click adds to the
+selection. Home fits; arrows pan, or step between neighbors with `input: 'inspect'`.
 
-## Cleanup
+## Style
+
+Style options sit on the config beside the data:
 
 ```ts
-detach();
-view.destroy();
-network.destroy();
-gpu.destroy();
-await source.close();
+network.set({ edgeWidthPx: 2, showGraticule: true, daylight: true, sunTime: Date.now() });
 ```
 
-The renderer borrows the source and GPU; its destruction closes neither.
+Omitted domains fit the displayed values; give a `domain` for stable colors during playback.
 
-[Data bindings](topology-and-channels.md) ?
 [API](https://latkit.readthedocs.io/en/latest/api/reference/network/index.html)

@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
-import { createGpu, type NativeFields } from '../src/index.js';
+import { createGpu } from '../src/index.js';
+import { type NativeFields } from '../src/kit.js';
 import { fakeDevice } from './fixtures/device.js';
 import { FieldSource } from './fixtures/field-source.js';
 import { draw } from './fixtures/render.js';

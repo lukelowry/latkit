@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { cameraPoint, fitCamera, worldPoint, zoomCamera } from '../src/index.js';
+import { cameraPoint, fitCamera, worldPoint, zoomCamera } from '../src/kit.js';
 const viewport = { width: 800, height: 600, pixelRatio: 2 };
 it('fits asymmetric padding and roundtrips large coordinates in double precision', () => {
   const camera = fitCamera([1e12, 1e12, 1e12 + 100, 1e12 + 50], viewport, [20, 40, 60, 120]);

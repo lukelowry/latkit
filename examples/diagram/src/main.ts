@@ -1,11 +1,11 @@
-import { createGpu, createCanvasView, createRenderTarget } from '@latkit/gpu';
+import { createGpu } from '@latkit/gpu';
 import { numberAt, rowAt, rowCount } from '@latkit/model';
-import { createDiagram, attachDiagramInput, arrange } from '@latkit/diagram';
+import { createDiagram, arrange } from '@latkit/diagram';
 import type {
+  DiagramConfig,
+  DiagramInput,
   DiagramItem,
-  InputOptions,
   LayoutOptions,
-  Options,
   Shape,
   Point,
 } from '@latkit/diagram';
@@ -23,7 +23,7 @@ import {
 } from './graph.js';
 import type { BlockType, Graph, Preset } from './graph.js';
 import { data, effect, theme } from './presentation.js';
-import type { Settings } from './presentation.js';
+import type { Drawn, Settings, Style } from './presentation.js';
 import './style.css';
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) =>
   document.querySelector<T>(selector)!;
@@ -81,39 +81,42 @@ function lightTheme() {
 }
 const code = `const gpu = await createGpu();
 
-const diagram = createDiagram({
-  gpu,
-  data: {
-    source: model,
-    vertices: {
-      Process: {
-        position: 'position',
-        labels: { field: 'name' },
-      },
+const diagram = createDiagram(gpu, {
+  canvas,
+  input: 'edit',
+  source: model,
+  vertices: {
+    Process: {
+      position: 'position',
+      labels: 'name',
     },
-    edges: {
-      Signal: {
-        route: 'orthogonal',
-        arrows: true,
-      },
+  },
+  edges: {
+    Signal: {
+      route: 'orthogonal',
+      arrows: true,
     },
   },
 });
 
-const view = createCanvasView({
-  gpu, canvas, renderer: diagram,
-  onError: console.error,
-});
-
-attachDiagramInput({
-  canvas, diagram,
-  interaction: 'edit',
-});
-
 diagram.on('move', acceptMove);
-diagram.on('connect', acceptWire);
-view.request();`;
+diagram.on('connect', acceptWire);`;
 $('#api-code').textContent = code;
+/** A record patch that replaces each entry: entries and options the next record lacks are removed. */
+function replace<T extends object>(
+  previous: Readonly<Record<string, T>> | undefined,
+  next: Readonly<Record<string, T>>,
+) {
+  type Entry = { [K in keyof T]?: T[K] | null };
+  const patch: Record<string, Entry | null> = {};
+  for (const [id, entry] of Object.entries(previous ?? {}))
+    patch[id] =
+      id in next
+        ? (Object.fromEntries(Object.keys(entry).map((key) => [key, null])) as Entry)
+        : null;
+  for (const [id, entry] of Object.entries(next)) patch[id] = { ...patch[id], ...entry };
+  return patch;
+}
 const shapeIcon = (type: BlockType) => {
   const drawing =
     type === 'Input'
@@ -148,67 +151,60 @@ async function boot() {
     arrows: check('arrows').checked,
     status: check('status').checked,
     labels: check('labels').checked,
+    overflow: select('overflow').value as Settings['overflow'],
   });
-  const options = (): Options => ({
+  const options = (): Style => ({
     ...theme(lightTheme()),
     vertexPadding:
       select('density').value === 'compact' ? 8 : select('density').value === 'spacious' ? 16 : 12,
     portSpacing:
       select('density').value === 'compact' ? 20 : select('density').value === 'spacious' ? 30 : 24,
-    portMarker: select('port-marker').value as Options['portMarker'],
+    portMarker: select('port-marker').value as DiagramConfig['portMarker'],
     portLabels: check('port-labels').checked,
     cornerRadius: Number(select('radius').value),
-    detail: select('detail').value as Options['detail'],
+    detail: select('detail').value as DiagramConfig['detail'],
     grid: check('grid').checked,
     snap: check('snap').checked,
     labels: check('labels').checked,
     junctions: check('junctions').checked,
-    motion: select('motion').value as Options['motion'],
+    motion: select('motion').value as DiagramConfig['motion'],
     msaa: Number(select('msaa').value) as 1 | 4,
-    hover: select('hover').value as Options['hover'],
+    hover: select('hover').value as DiagramConfig['hover'],
     fitPaddingPx: innerWidth <= 650 ? [24, 28, 60, 28] : 44,
   });
-  const binding = (automatic = false) => {
-    const value = data(source, settings(), automatic);
-    return {
-      ...value,
-      vertices: Object.fromEntries(
-        Object.entries(value.vertices).map(([type, vertex]) => [
-          type,
-          {
-            ...vertex,
-            labels: vertex.labels
-              ? { ...vertex.labels, overflow: select('overflow').value as 'wrap' | 'ellipsis' }
-              : null,
-          },
-        ]),
-      ),
-    };
-  };
-  document.documentElement.dataset.theme = lightTheme() ? 'light' : 'dark';
-  const diagram = createDiagram({ gpu, data: binding(), options: options() });
-  const view = createCanvasView({
-    gpu,
-    canvas,
-    renderer: diagram,
-    onError: report,
-    onRendered: () => {
-      $('#loading').hidden = true;
-      $('#engine-state').textContent = 'WebGPU ready';
-      $('#engine-state').classList.add('ready');
-      syncMetrics();
-    },
+  const binding = (automatic = false) => data(source, settings(), automatic);
+  const input = (): DiagramInput => ({
+    mode: select('mode').value as DiagramInput['mode'],
+    backgroundDrag: select('background-drag').value as DiagramInput['backgroundDrag'],
+    autoPan: check('auto-pan').checked,
   });
-  let detach = attachDiagramInput({ diagram, canvas, interaction: 'edit' });
+  document.documentElement.dataset.theme = lightTheme() ? 'light' : 'dark';
+  const diagram = createDiagram(gpu, { ...binding(), ...options(), canvas, input: input() });
+  /** Replace what the diagram draws with a new binding. */
+  const drawn = (next: Drawn) => ({
+    vertices: replace(diagram.config.vertices, next.vertices),
+    edges: replace(diagram.config.edges, next.edges),
+    groups: replace(diagram.config.groups, next.groups),
+  });
+  /** A canvas point in diagram units, on the grid when snapping. */
+  const world = (point: Point): Point => {
+    const { center, scale } = diagram.camera,
+      pitch = diagram.config.gridPitch!;
+    const x = center[0] + (point[0] - canvas.clientWidth / 2) / scale,
+      y = center[1] + (point[1] - canvas.clientHeight / 2) / scale;
+    return diagram.config.snap
+      ? [Math.round(x / pitch) * pitch, Math.round(y / pitch) * pitch]
+      : [x, y];
+  };
+  diagram.on('error', report);
+  diagram.on('frame', () => {
+    $('#loading').hidden = true;
+    $('#engine-state').textContent = 'WebGPU ready';
+    $('#engine-state').classList.add('ready');
+    syncMetrics();
+  });
   const bindInput = () => {
-    detach();
-    detach = attachDiagramInput({
-      diagram,
-      canvas,
-      interaction: select('mode').value as InputOptions['interaction'],
-      backgroundDrag: select('background-drag').value as InputOptions['backgroundDrag'],
-      autoPan: check('auto-pan').checked,
-    });
+    diagram.set({ input: input() });
     message(select('mode').selectedOptions[0].text + ' mode');
   };
   for (const id of ['mode', 'background-drag', 'auto-pan']) $('#' + id).onchange = bindInput;
@@ -223,7 +219,7 @@ async function boot() {
   function refresh(animate = false) {
     $('#error').hidden = true;
     source.publish(history.current);
-    diagram.setData(binding(), { animate });
+    diagram.set(drawn(binding()), { animate });
     historyButtons();
     showGroups();
     inspect();
@@ -265,10 +261,8 @@ async function boot() {
     button.onclick = () => choosePreset(entry.id);
     $('#presets').append(button);
   }
-  function add(type: BlockType, point?: Point) {
-    const world = point ??
-      diagram.toDiagram([canvas.clientWidth / 2, canvas.clientHeight / 2]) ?? [0, 0];
-    const result = addBlock(history.current, type, world);
+  function add(type: BlockType, point: Point = [canvas.clientWidth / 2, canvas.clientHeight / 2]) {
+    const result = addBlock(history.current, type, world(point));
     commit(result.graph, 'Added ' + type.toLowerCase());
     selected = [{ kind: 'vertex', type, id: result.block.id }];
     diagram.select(selected);
@@ -292,10 +286,7 @@ async function boot() {
     const type = event.dataTransfer?.getData('application/x-latkit-block') as BlockType;
     if (!types.includes(type)) return;
     const rect = canvas.getBoundingClientRect();
-    add(
-      type,
-      diagram.toDiagram([event.clientX - rect.left, event.clientY - rect.top]) ?? undefined,
-    );
+    add(type, [event.clientX - rect.left, event.clientY - rect.top]);
   };
   function showGroups() {
     const entries = Object.entries(history.current.groups);
@@ -473,16 +464,15 @@ async function boot() {
               },
             }
           : 'layered';
-      const fields = await arrange({
-        data: binding(true),
-        options: options(),
+      const fields = await arrange(gpu, {
+        ...binding(true),
+        ...options(),
         layout: {
           algorithm,
           direction: select('direction').value as LayoutOptions['direction'],
           rankGap: 72,
           vertexGap: 48,
         },
-        measureText: (input, request) => gpu.measureText(input, request),
       });
       if (source.version !== version) {
         message('Scene changed during layout. Arrange again.');
@@ -510,7 +500,7 @@ async function boot() {
         'Applied ' + select('algorithm').selectedOptions[0].text.toLowerCase() + ' layout',
         true,
       );
-      diagram.fit({ animate: true });
+      diagram.fit(undefined, { animate: true });
     } finally {
       busy = false;
       button.disabled = false;
@@ -519,39 +509,16 @@ async function boot() {
   }
   async function exportImage(download = true): Promise<Blob> {
     const fixed = await source.retain();
-    const renderer = createDiagram({
-      gpu,
-      data: { ...binding(), source: fixed },
-      options: { ...options(), motion: 'reduce', fitPaddingPx: 64 },
+    const offscreen = createDiagram(gpu, {
+      ...binding(),
+      ...options(),
+      source: fixed,
+      motion: 'reduce',
+      fitPaddingPx: 64,
+      shade: effect(select('shade').value),
     });
-    const width = 2048,
-      height = 1280,
-      rowBytes = Math.ceil((width * 4) / 256) * 256;
-    const target = createRenderTarget({ gpu, width, height, format: 'rgba8unorm' });
-    let buffer: GPUBuffer | undefined;
     try {
-      await renderer.setShade(effect(select('shade').value));
-      await gpu.render({ views: [{ renderer, target }], timeMs: 0, completion: 'complete' });
-      buffer = gpu.device.createBuffer({
-        size: rowBytes * height,
-        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-      });
-      const encoder = gpu.device.createCommandEncoder();
-      encoder.copyTextureToBuffer(
-        { texture: target.texture() },
-        { buffer, bytesPerRow: rowBytes },
-        [width, height],
-      );
-      gpu.device.queue.submit([encoder.finish()]);
-      await buffer.mapAsync(GPUMapMode.READ);
-      const pixels = new Uint8ClampedArray(width * height * 4),
-        bytes = new Uint8Array(buffer.getMappedRange());
-      for (let y = 0; y < height; y++)
-        pixels.set(bytes.subarray(y * rowBytes, y * rowBytes + width * 4), y * width * 4);
-      buffer.unmap();
-      const image = new OffscreenCanvas(width, height);
-      image.getContext('2d')!.putImageData(new ImageData(pixels, width, height), 0, 0);
-      const blob = await image.convertToBlob({ type: 'image/png' });
+      const blob = await offscreen.image({ width: 2048, height: 1280 });
       if (download) {
         const url = URL.createObjectURL(blob),
           anchor = document.createElement('a');
@@ -563,9 +530,7 @@ async function boot() {
       }
       return blob;
     } finally {
-      buffer?.destroy();
-      renderer.destroy();
-      target.destroy();
+      offscreen.destroy();
       await fixed.close();
     }
   }
@@ -585,10 +550,10 @@ async function boot() {
       }
     },
     reset: () => choosePreset(active),
-    fit: () => diagram.fit({ animate: true }),
+    fit: () => diagram.fit(undefined, { animate: true }),
     arrange: layout,
-    'zoom-in': () => diagram.zoomBy(1.25),
-    'zoom-out': () => diagram.zoomBy(0.8),
+    'zoom-in': () => diagram.set({ camera: { scale: diagram.camera.scale * 1.25 } }),
+    'zoom-out': () => diagram.set({ camera: { scale: diagram.camera.scale * 0.8 } }),
     delete: () => {
       const ids = selected
         .filter((item) => item.kind === 'vertex' || item.kind === 'edge')
@@ -601,7 +566,7 @@ async function boot() {
       }
     },
     neighbors: () => {
-      if (selected[0]) diagram.reveal(selected[0], { neighbors: true, animate: true });
+      if (selected[0]) diagram.fit(diagram.neighborhood(selected[0]), { animate: true });
     },
     export: () => exportImage(),
     retry: () => {
@@ -635,7 +600,7 @@ async function boot() {
     'title-position',
   ])
     $('#' + id).onchange = () => {
-      diagram.setData(binding());
+      diagram.set(drawn(binding()));
       message('Updated ' + id);
     };
   for (const id of [
@@ -652,25 +617,19 @@ async function boot() {
     'detail',
   ])
     $('#' + id).onchange = () => {
-      diagram.setOptions(options());
+      diagram.set(options());
       message('Updated ' + id);
     };
   const updateTheme = () => {
     document.documentElement.dataset.theme = lightTheme() ? 'light' : 'dark';
-    diagram.setOptions(options());
-    diagram.setData(binding());
+    diagram.set({ ...options(), ...drawn(binding()) });
   };
   select('theme').onchange = updateTheme;
   systemTheme.addEventListener('change', updateTheme);
-  select('density').onchange = () => {
-    diagram.setOptions(options());
-    diagram.setData(binding());
-  };
+  select('density').onchange = () => diagram.set({ ...options(), ...drawn(binding()) });
   select('shade').onchange = () => {
-    void diagram
-      .setShade(effect(select('shade').value))
-      .then(() => message('Updated shade'))
-      .catch(report);
+    diagram.set({ shade: effect(select('shade').value) });
+    message('Updated shade');
   };
   check('simulate').onchange = () => {
     if (!check('simulate').checked) source.publish(history.current);
@@ -701,7 +660,7 @@ async function boot() {
     $('#wires').textContent = stats.edges.toLocaleString();
     $('#draws').textContent = String(stats.drawCalls);
     $('#prepare').textContent = stats.prepareMs.toFixed(1);
-    $('#zoom').textContent = Math.round((diagram.getCamera()?.scale[0] ?? 1) * 100) + '%';
+    $('#zoom').textContent = Math.round(diagram.camera.scale * 100) + '%';
   }
   const timer = setInterval(() => {
     syncMetrics();
@@ -721,9 +680,7 @@ async function boot() {
     }
   }, 250);
   const resize = () => {
-    diagram.setOptions({
-      fitPaddingPx: compact.matches ? [24, 28, 60, 28] : 44,
-    });
+    diagram.set({ fitPaddingPx: compact.matches ? [24, 28, 60, 28] : 44 });
     if (!history.canUndo) choosePreset(active);
   };
   compact.addEventListener('change', resize);
@@ -732,8 +689,6 @@ async function boot() {
     clearInterval(timer);
     compact.removeEventListener('change', resize);
     systemTheme.removeEventListener('change', updateTheme);
-    detach();
-    view.destroy();
     diagram.destroy();
     gpu.destroy();
     void source.close();
@@ -742,9 +697,8 @@ async function boot() {
   select('mode').disabled = false;
   historyButtons();
   inspect();
-  view.request();
   message('Control loop ready. Drag from a port to draw a wire.', false);
-  return { gpu, diagram, source, view, errors, choosePreset, exportImage };
+  return { gpu, diagram, source, errors, choosePreset, exportImage };
 }
 const ready = boot().catch((error: unknown) => {
   $('#loading').hidden = true;

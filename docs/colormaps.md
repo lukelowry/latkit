@@ -1,16 +1,15 @@
 # Colors and colormaps
 
-Import all color helpers from `@latkit/gpu`.
+Name a catalog colormap wherever a scale takes one, or pass your own.
 
 ```ts
-import { colormaps, colormapCss, reverseColormap, sampleColormap } from '@latkit/gpu';
+import { colormaps, colormapCss, reverseColormap } from '@latkit/gpu';
 
-network.setVertex('node', {
-  color: { field: 'temperature', domain: [250, 350], colormap: colormaps.thermal },
+network.set({
+  vertices: { node: { color: { field: 'temperature', domain: [250, 350], colormap: 'thermal' } } },
 });
 legend.style.backgroundImage = colormapCss(colormaps.thermal, { direction: 'to right' });
 const reversed = reverseColormap(colormaps.thermal);
-const rgba = sampleColormap(colormaps.thermal, 0.5);
 ```
 
 Use sequential maps for magnitude, diverging maps for a center, cyclic maps for
@@ -38,8 +37,7 @@ RGBA components are in `[0, 1]`, with sRGB color and straight alpha.
 CPU, CSS, and GPU sampling share a quantized rendering table.
 Continuous inputs clamp; cyclic inputs wrap; categories use hard bins.
 
-`parseColor` parses literals without a DOM. Use
-`resolveColor('var(--accent)', element)` for contextual CSS.
+`parseColor` parses CSS color literals without a DOM.
 
 Palette licenses are in
 [THIRD_PARTY_NOTICES](https://github.com/lukelowry/latkit/blob/main/packages/gpu/THIRD_PARTY_NOTICES.md).

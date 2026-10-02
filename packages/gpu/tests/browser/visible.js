@@ -1,6 +1,6 @@
 import { rowCount } from '@latkit/model';
 /* global GPUShaderStage, GPUTextureUsage, GPUBufferUsage, GPUMapMode, document, requestAnimationFrame */
-import { createGpu, createPresentation, fieldShader, textShader } from '../../dist/index.js';
+import { createGpu, kit } from '../../dist/index.js';
 
 export async function show() {
   const gpu = await createGpu({ pageBytes: 65536 }),
@@ -25,7 +25,7 @@ export async function show() {
   `;
   const module = device.createShaderModule({
     code:
-      fieldShader({ group: 0 }) +
+      kit.fieldShader({ group: 0 }) +
       shared +
       `
     @vertex fn vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) row: u32) -> Vertex {
@@ -57,7 +57,7 @@ export async function show() {
   });
   const text = device.createShaderModule({
     code:
-      textShader({ group: 0 }) +
+      kit.textShader({ group: 0 }) +
       shared +
       `
     @vertex fn vs(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> Vertex {
@@ -101,7 +101,7 @@ export async function show() {
     const canvas = document.querySelectorAll('canvas')[kind];
     canvas.width = dimensions[0];
     canvas.height = dimensions[1];
-    const target = createPresentation({
+    const target = kit.createPresentation({
       gpu,
       canvas,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,

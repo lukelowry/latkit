@@ -1,30 +1,51 @@
 # Diagram
 
-`@latkit/diagram` renders native model vertices, ports, and edges using the
-shared GPU renderer interface.
+Draw a model as blocks and wires: vertices with ports, edges, and groups, laid out or placed.
 
 ```ts
-import { createGpu, createCanvasView } from '@latkit/gpu';
-import { createDiagram, attachDiagramInput } from '@latkit/diagram';
+import { createDiagram } from '@latkit/diagram';
 
-const gpu = await createGpu();
-const diagram = createDiagram({
-  gpu,
-  data: {
-    source: model,
-    vertices: { Task: { labels: { field: 'name' } } },
-    edges: { Dependency: { ends: ['from', 'to'], arrows: true } },
-  },
+const diagram = createDiagram(gpu, {
+  canvas,
+  input: 'edit',
+  source: model,
+  vertices: { Task: { labels: 'name' } },
+  edges: { Dependency: { ends: ['from', 'to'], route: 'orthogonal', arrows: true } },
 });
-const view = createCanvasView({ gpu, renderer: diagram, canvas, onError: console.error });
-const detach = attachDiagramInput({ diagram, canvas, interaction: 'edit' });
-view.request();
+diagram.on('move', ({ moves }) => savePositions(moves));
+diagram.on('connect', (proposal) => wire(proposal));
+diagram.on('delete', (ids) => remove(ids));
 ```
 
-Give the canvas an explicit CSS size. Type names and fields come from your model
-schema; a vertex's reference fields that name a drawn net are its ports. The
-application accepts editing proposals and owns persistence and undo. Destroy
-input, view, renderer, and GPU in that order.
+The diagram proposes edits; your application changes the model, and the diagram redraws from it.
+Proposals name rows by `{ type, id }`.
 
-See the [package guide](https://github.com/lukelowry/latkit/blob/main/packages/diagram/README.md)
-for layout, grouping, field bindings, routing strategies, interaction, and offscreen rendering.
+## Ports and wires
+
+A vertex's reference fields that name a drawn net are its ports, oriented by the field's
+`direction`. An edge with `ends` joins two vertices; a net fans out to every port that names it.
+`ports` options set a port's side, order, label, color, status, and marker.
+
+## Layout
+
+`layout` is `'layered'` (the default), `'manual'` to keep model positions, or
+`{ algorithm, direction, rankGap, vertexGap }` with a custom `LayoutStrategy` as the algorithm.
+
+```ts
+diagram.set({ layout: { direction: 'down' } }, { animate: true });
+const positions = await arrange(gpu, config); // positions by type, without drawing
+```
+
+`groups` gather vertices under a label; collapsing one routes its wires to its boundary, and moving
+it moves its vertices.
+
+## Input
+
+`input: 'edit'` adds dragging, marquee selection, wiring, and Delete to navigation; `'inspect'`
+keeps page scrolling. Pass `{ mode, backgroundDrag, connectRadiusPx, autoPan, canConnect }` to tune
+it. Tab visits vertices, Enter opens, Home fits, and arrows pan or nudge the selection. Space-drag
+pans, two pointers pinch, and a long press opens the context menu.
+
+Geometry, text, and gaps use diagram units; widths, radii, and padding use CSS pixels.
+
+[API](https://latkit.readthedocs.io/en/latest/api/reference/diagram/index.html)

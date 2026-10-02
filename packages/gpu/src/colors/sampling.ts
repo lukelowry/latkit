@@ -1,6 +1,7 @@
 import { TextureData } from '../texture-data.js';
 import type { RGBA } from './color.js';
 import { validateColormap, type Colormap } from './colormap.js';
+import { namedColormap, type ColormapName } from './catalog.js';
 
 const pixels = new WeakMap<Colormap, TextureData>();
 /** Shared private premultiplied sRGB table. It is never exposed for mutation. */
@@ -29,9 +30,10 @@ export function pixelColor(data: TextureData, at: number): RGBA {
     : [0, 0, 0, 0];
 }
 /** Finite normalized input: clamp continuous maps, wrap cyclic maps, or select categorical bins. */
-export function sampleColormap(map: Colormap, t: number): RGBA {
+export function sampleColormap(value: Colormap | ColormapName, t: number): RGBA {
   if (!Number.isFinite(t)) throw new RangeError('Colormap coordinate must be finite');
-  const data = colormapPixels(map);
+  const map = namedColormap(value),
+    data = colormapPixels(map);
   t = map.kind === 'cyclic' ? t - Math.floor(t) : Math.max(0, Math.min(1, t));
   if (map.kind === 'categorical')
     return pixelColor(data, Math.min(data.width - 1, Math.floor(t * data.width)));

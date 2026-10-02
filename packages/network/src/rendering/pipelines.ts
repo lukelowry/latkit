@@ -1,6 +1,4 @@
-import { shadeShader, outputShader, premultipliedBlend } from '@latkit/gpu';
-import { scaleShader } from '@latkit/gpu';
-import { colormapShader, fieldShader, textShader, strokeShader, type Gpu } from '@latkit/gpu';
+import { kit, type Gpu } from '@latkit/gpu';
 import common from './common.wgsl';
 import prepare from './prepare.wgsl';
 import draw from './draw.wgsl';
@@ -97,23 +95,27 @@ async function create(
   });
   const tessModule = d.createShaderModule({
     label: 'network adaptive geodesics',
-    code: common + curve + strokeShader() + tessellate,
+    code: common + curve + kit.strokeShader() + tessellate,
   });
   const label = d.createBindGroupLayout({ entries: [uniform(0, V), storage(1, V)] });
   const bg = d.createBindGroupLayout({ entries: [uniform(0, V | F)] });
   const prep = d.createShaderModule({
     label: 'network field preparation',
     code:
-      common + scaleShader() + fieldShader({ group: 0 }) + colormapShader({ group: 2 }) + prepare,
+      common +
+      kit.scaleShader() +
+      kit.fieldShader({ group: 0 }) +
+      kit.colormapShader({ group: 2 }) +
+      prepare,
   });
   const shape = d.createShaderModule({
     label: 'network geometry',
     code:
       common +
       curve +
-      strokeShader() +
-      shadeShader({ group: 0, binding: 6 }) +
-      outputShader() +
+      kit.strokeShader() +
+      kit.shadeShader({ group: 0, binding: 6 }) +
+      kit.outputShader() +
       draw +
       shade,
   });
@@ -121,7 +123,7 @@ async function create(
   const axisModule = d.createShaderModule({ label: 'network earth axis', code: common + axis });
   const text = d.createShaderModule({
     label: 'network shared text',
-    code: common + textShader({ group: 1 }) + labels,
+    code: common + kit.textShader({ group: 1 }) + labels,
   });
   for (const module of [prep, shape, bgModule, text, axisModule, tessModule]) {
     const info = await module.getCompilationInfo();
@@ -136,7 +138,7 @@ async function create(
   const computeLayout = d.createPipelineLayout({
     bindGroupLayouts: [gpu.fieldLayout, compute, gpu.colormapLayout],
   });
-  const target = { format, blend: premultipliedBlend };
+  const target = { format, blend: kit.premultipliedBlend };
   const render = (
     module: GPUShaderModule,
     vertex: string,

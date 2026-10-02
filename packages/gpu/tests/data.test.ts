@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Query, Queryable, QueryHeader, QueryBlock } from '@latkit/model';
-import { createGpu, type Preparation } from '../src/index.js';
+import { createGpu } from '../src/index.js';
+import { type Preparation } from '../src/kit.js';
 import { deferred, fakeDevice } from './fixtures/device.js';
 import { draw, renderer, target } from './fixtures/render.js';
 import { Source } from './fixtures/source.js';

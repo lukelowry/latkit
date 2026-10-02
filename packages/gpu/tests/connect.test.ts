@@ -1,7 +1,8 @@
 import { MessageChannel } from 'node:worker_threads';
 import { expect, it } from 'vitest';
 import { connect, messagePort, serve } from '@latkit/connect';
-import { createGpu, type GpuPage } from '../src/index.js';
+import { createGpu } from '../src/index.js';
+import { type GpuPage } from '../src/kit.js';
 import { bytes, fakeDevice } from './fixtures/device.js';
 import { field } from './fixtures/fields.js';
 import { draw } from './fixtures/render.js';

@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import { blockByteLength, validateBlock, validateSchema, textAt } from '@latkit/model';
 import type { Query, Queryable } from '@latkit/model';
+import type { Gpu } from '@latkit/gpu';
 import { arrange } from '@latkit/diagram';
 import { GraphSource } from '../src/source.js';
 import {
@@ -132,8 +133,14 @@ it('wires an input to a new driving block, or plugs it into an existing wire', a
 });
 it('arranges through the new public headless API', async () => {
   const source = new GraphSource(preset('loop'));
-  const result = await arrange({
-    data: data(
+  // Arrangement only measures text.
+  const gpu = {
+    measureText: (input: { text: string }) =>
+      Promise.resolve({ advance: input.text.length * 0.6, ascent: 0.8, descent: 0.2 }),
+  } as unknown as Gpu;
+  const result = await arrange(
+    gpu,
+    data(
       source,
       {
         shape: 'rounded',
@@ -143,6 +150,7 @@ it('arranges through the new public headless API', async () => {
         light: false,
         density: 'comfortable',
         titlePosition: 'header',
+        overflow: 'wrap',
         flow: false,
         arrows: true,
         status: true,
@@ -150,9 +158,7 @@ it('arranges through the new public headless API', async () => {
       },
       true,
     ),
-    measureText: (input) =>
-      Promise.resolve({ advance: input.text.length * 0.6, ascent: 0.8, descent: 0.2 }),
-  });
+  );
   expect(Object.keys(result)).toEqual(
     expect.arrayContaining(['Process', 'Control', 'Input', 'Output']),
   );

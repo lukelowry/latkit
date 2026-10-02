@@ -1,5 +1,4 @@
-import type { Domain } from '@latkit/model';
-import type { HoverOptions, Insets, RGBA, TextFont } from '@latkit/gpu';
+import type { kit, RGBA } from '@latkit/gpu';
 export interface Tick {
   readonly value: number;
   readonly label?: string;
@@ -12,25 +11,29 @@ export interface AxisOptions {
   readonly precision?: number;
   readonly grid?: boolean;
 }
-export interface Options extends HoverOptions {
+/** How a monitor draws; every option has a default. */
+export interface StyleOptions extends kit.HoverOptions {
+  /** `full` draws every observation; `auto` summarizes long histories. */
   readonly detail?: 'auto' | 'full';
-  readonly follow?: { readonly span: number } | null;
-  readonly coordinateAxis?: AxisOptions | null;
-  readonly valueAxis?: AxisOptions | null;
-  readonly valueDomain?: Domain | 'auto';
-  /** Automatic domain policy; grow avoids repainting committed history on ordinary appends. */
+  /** A label, axis options, or false to hide the axis. */
+  readonly coordinateAxis?: string | AxisOptions | false;
+  readonly valueAxis?: string | AxisOptions | false;
+  /** How fitted values follow appends: `grow` keeps drawn history, `fit` redraws it. */
   readonly autoDomain?: 'grow' | 'fit';
+  /** Fraction of the fitted value range added on each side. */
   readonly domainPadding?: number;
-  readonly font?: TextFont;
+  readonly font?: kit.TextFont;
   readonly fontSizePx?: number;
   readonly textColor?: RGBA;
   readonly axisColor?: RGBA;
   readonly gridColor?: RGBA;
   readonly backgroundColor?: RGBA;
   readonly cursorColor?: RGBA;
+  /** Selected traces' color; null keeps their own. */
   readonly focusColor?: RGBA | null;
+  /** Opacity of unselected traces while something is selected. */
   readonly unselectedAlpha?: number;
-  readonly paddingPx?: Insets;
+  readonly paddingPx?: kit.Insets;
   readonly pickRadiusPx?: number;
   readonly msaa?: 1 | 4;
 }

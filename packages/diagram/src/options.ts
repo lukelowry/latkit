@@ -1,11 +1,12 @@
-import type { HoverOptions, Insets, RGBA, TextFont } from '@latkit/gpu';
-export interface Options extends HoverOptions {
+import type { kit, RGBA } from '@latkit/gpu';
+/** How a diagram draws; every option has a default. */
+export interface StyleOptions extends kit.HoverOptions {
   readonly gridPitch?: number;
   readonly grid?: boolean;
   readonly snap?: boolean;
   readonly labels?: boolean;
   readonly junctions?: boolean;
-  readonly font?: TextFont;
+  readonly font?: kit.TextFont;
   /** Default text size in diagram units (CSS pixels at scale 1). */
   readonly fontSizePx?: number;
   readonly vertexPadding?: number;
@@ -29,7 +30,7 @@ export interface Options extends HoverOptions {
   /** Bounds CPU route interpolation; larger scenes settle immediately. Default: 512 vertices. */
   readonly animationMaxVertices?: number;
   readonly pickRadiusPx?: number;
-  readonly fitPaddingPx?: Insets;
+  readonly fitPaddingPx?: kit.Insets;
   readonly revealPaddingPx?: number;
   readonly backgroundColor?: RGBA;
   readonly vertexBaseColor?: RGBA;

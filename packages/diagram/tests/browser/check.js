@@ -1,10 +1,17 @@
-/* global document, PointerEvent, KeyboardEvent, GPUBufferUsage, GPUMapMode */
-import { createGpu, createCanvasView, createRenderTarget, createComposition } from '@latkit/gpu';
-import { createDiagram, attachDiagramInput } from '../../dist/index.js';
+/* global document, PointerEvent, KeyboardEvent, OffscreenCanvas, createImageBitmap, requestAnimationFrame */
+import { createGpu, createComposition, kit } from '@latkit/gpu';
+import { createDiagram } from '../../dist/index.js';
 import { Source, data } from '/output/diagram-fixture.js';
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
 };
+/** An image's RGBA bytes, row by row. */
+async function decode(blob) {
+  const bitmap = await createImageBitmap(blob),
+    context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d');
+  context.drawImage(bitmap, 0, 0);
+  return context.getImageData(0, 0, bitmap.width, bitmap.height).data;
+}
 globalThis.diagramCheck = (async () => {
   const errors = [];
   const gpu = await createGpu();
@@ -25,27 +32,41 @@ globalThis.diagramCheck = (async () => {
     ],
   ];
   const config = data(source);
-  const diagram = createDiagram({ gpu, data: config, options: { msaa: 4 } });
   const canvas = document.querySelector('canvas');
-  let resolve, reject;
-  let rendered = new Promise((yes, no) => {
-    resolve = yes;
-    reject = no;
+  const diagram = createDiagram(gpu, { ...config, canvas, input: 'edit', msaa: 4 });
+  let failure;
+  diagram.on('error', (error) => {
+    failure = error;
   });
-  const view = createCanvasView({
-    gpu,
-    canvas,
-    renderer: diagram,
-    onError: (error) => reject(error),
-    onRendered: () => resolve(),
-  });
-  const detach = attachDiagramInput({ diagram, canvas, interaction: 'edit' });
-  view.request({ timeMs: 0 });
-  await rendered;
+  /** Wait for the canvas to present a frame after the given count. */
+  const presented = async (after) => {
+    while (diagram.stats().frames <= after) {
+      if (failure) throw failure;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+  };
+  /** Shades compile asynchronously; the diagram invalidates once one applies. */
+  const applied = () =>
+    new Promise((resolve, reject) => {
+      const offs = [
+        kit.rendererOf(diagram).on('invalidate', () => {
+          offs.forEach((off) => off());
+          resolve();
+        }),
+        diagram.on('error', (error) => {
+          offs.forEach((off) => off());
+          reject(error);
+        }),
+      ];
+    });
+  await presented(0);
   await gpu.idle();
   const ref = { kind: 'vertex', type: 'Task', id: 'n0' },
     point = diagram.locate(ref);
-  assert(point && diagram.hitTest(point).some((h) => h.id === 'n0'), 'Presented picking failed');
+  assert(
+    point && (await diagram.pick(point)).some((h) => h.id === 'n0'),
+    'Presented picking failed',
+  );
   const rect = canvas.getBoundingClientRect();
   const pointer = (type, p, modifiers = {}) =>
     canvas.dispatchEvent(
@@ -93,15 +114,16 @@ globalThis.diagramCheck = (async () => {
     moved = proposal;
     moveCount++;
     for (const [type, position] of Object.entries(proposal.positions))
-      diagram.setVertex(type, { position });
+      diagram.set({ vertices: { [type]: { position } } });
   });
   pointer('pointerdown', point);
   pointer('pointermove', [point[0], point[1] + 32]);
   pointer('pointerup', [point[0], point[1] + 32]);
   assert(moved?.moves.length === 1, 'Move proposal failed');
-  view.pause();
-  const target = createRenderTarget({ gpu, width: 1000, height: 620 });
-  await gpu.render({ views: [{ renderer: diagram, target }], timeMs: 0, completion: 'complete' });
+  // The canvas stops presenting; each step below renders an image at the canvas's size.
+  diagram.set({ paused: true });
+  const render = () => diagram.image({ width: 1000, height: 620, pixelRatio: 1 });
+  await render();
   await gpu.idle();
   const port = (id, name) => {
     const point = diagram.locate({ kind: 'port', type: 'Task', id, port: name });
@@ -141,22 +163,20 @@ globalThis.diagramCheck = (async () => {
       }),
     );
   let current = diagram.locate(ref);
-  const cameraBeforeDrag = diagram.getCamera();
+  const camera = () => JSON.stringify([diagram.camera.center, diagram.camera.scale]);
+  const cameraBeforeDrag = camera();
   pointer('pointerdown', current);
   pointer('pointermove', [current[0], current[1] + 16]);
-  await gpu.render({ views: [{ renderer: diagram, target }], timeMs: 0 });
-  assert(
-    JSON.stringify(diagram.getCamera()) === JSON.stringify(cameraBeforeDrag),
-    'Auto-fit moved the camera during a drag',
-  );
+  await render();
+  assert(camera() === cameraBeforeDrag, 'Auto-fit moved the camera during a drag');
   key('Escape');
   pointer('pointerup', [current[0], current[1] + 16]);
   assert(moveCount === 1, 'Escape committed a cancelled movement');
-  await gpu.render({ views: [{ renderer: diagram, target }], timeMs: 0 });
+  await render();
   current = diagram.locate(ref);
   pointer('pointerdown', current);
   pointer('pointermove', [current[0], current[1] + 16]);
-  diagram.setVertex('Task', { shape: 'rounded' });
+  diagram.set({ vertices: { Task: { shape: 'rounded' } } });
   pointer('pointerup', [current[0], current[1] + 16]);
   assert(moveCount === 1, 'Data replacement committed a stale gesture');
   diagram.select([ref]);
@@ -173,95 +193,56 @@ globalThis.diagramCheck = (async () => {
   key('Delete');
   assert(opened?.id === 'n0' && removed?.[0] === 'n0', 'Keyboard action proposals failed');
   key('Escape');
-  await gpu.render({ views: [{ renderer: diagram, target }], timeMs: 0 });
-  detach();
-  const detachPolicy = attachDiagramInput({
-    diagram,
-    canvas,
-    interaction: 'edit',
-    canConnect: () => false,
-  });
+  await render();
+  diagram.set({ input: { canConnect: () => false } });
   wire(port('n1', 'output'), port('n4', 'input'));
   assert(wires.length === 2, 'Application connect policy was ignored');
-  detachPolicy();
+  // A composition presents its views, so the diagram leaves its canvas until the end.
+  diagram.set({ canvas: null, input: { canConnect: null } });
   const before = diagram.stats().frames;
   for (const shape of ['rectangle', 'rounded', 'ellipse', 'diamond']) {
-    diagram.setVertex('Task', { shape });
-    await gpu.render({ views: [{ renderer: diagram, target }], timeMs: 0 });
+    diagram.set({ vertices: { Task: { shape } } });
+    await render();
   }
-  diagram.setVertex('Task', { shape: 'rectangle', shade: 'weight' });
-  diagram.setOptions({ grid: false });
-  await gpu.render({ views: [{ renderer: diagram, target }], timeMs: 0 });
-  const sample = diagram.locate(ref);
-  const pixelBuffer = gpu.device.createBuffer({
-    size: 256,
-    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-  });
-  const sampleEncoder = gpu.device.createCommandEncoder();
-  sampleEncoder.copyTextureToBuffer(
-    { texture: target.texture(), origin: [Math.floor(sample[0]), Math.floor(sample[1])] },
-    { buffer: pixelBuffer, bytesPerRow: 256 },
-    [1, 1],
+  diagram.set({ vertices: { Task: { shape: 'rectangle', shade: 'weight' } }, grid: false });
+  const shaded = await decode(await render()),
+    sample = diagram.locate(ref),
+    at = (Math.floor(sample[1]) * 1000 + Math.floor(sample[0])) * 4;
+  assert(
+    shaded[at] + shaded[at + 1] + shaded[at + 2] > 100,
+    'Shade values must not implicitly change opacity',
   );
-  gpu.device.queue.submit([sampleEncoder.finish()]);
-  await pixelBuffer.mapAsync(GPUMapMode.READ);
-  const pixel = new Uint8Array(pixelBuffer.getMappedRange());
-  assert(pixel[0] + pixel[1] + pixel[2] > 100, 'Shade values must not implicitly change opacity');
-  pixelBuffer.unmap();
-  pixelBuffer.destroy();
-  await diagram.setShade({
-    wgsl: 'fn shade(f: ShadeFragment) -> vec4f { return vec4f(mix(f.color.rgb, vec3f(0.2, 0.8, 0.5), f.value), f.color.a); }',
+  diagram.set({
+    shade: {
+      wgsl: 'fn shade(f: ShadeFragment) -> vec4f { return vec4f(mix(f.color.rgb, vec3f(0.2, 0.8, 0.5), f.value), f.color.a); }',
+    },
   });
-  await gpu.render({ views: [{ renderer: diagram, target }], timeMs: 0 });
-  await diagram.setShade(null);
-  diagram.setVertex('Task', { shade: null });
-  diagram.setOptions({ grid: true });
-  const second = createDiagram({ gpu, data: config });
-  const composition = createComposition({
-    gpu,
+  await applied();
+  await render();
+  diagram.set({ shade: null, grid: true, vertices: { Task: { shade: null } } });
+  await applied();
+  const second = createDiagram(gpu, config);
+  const composition = createComposition(gpu, {
     views: [
-      { renderer: diagram, region: { x: 0, y: 0, width: 0.5, height: 1 } },
-      { renderer: second, region: { x: 0.5, y: 0, width: 0.5, height: 1 } },
+      { view: diagram, region: [0, 0, 0.5, 1] },
+      { view: second, region: [0.5, 0, 0.5, 1] },
     ],
   });
-  await gpu.render({ views: [{ renderer: composition, target }], timeMs: 0 });
+  // Read actual offscreen pixels; a non-background image must have been drawn.
+  const pixels = await decode(await composition.image({ width: 1000, height: 620, pixelRatio: 1 }));
   composition.destroy();
   second.destroy();
-  // Read actual offscreen pixels; a non-background image must have been drawn.
-  const rowBytes = 4096,
-    buffer = gpu.device.createBuffer({
-      size: rowBytes * 620,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
-  const encoder = gpu.device.createCommandEncoder();
-  encoder.copyTextureToBuffer(
-    { texture: target.texture() },
-    { buffer, bytesPerRow: rowBytes },
-    [1000, 620],
-  );
-  gpu.device.queue.submit([encoder.finish()]);
-  await buffer.mapAsync(GPUMapMode.READ);
-  const pixels = new Uint8Array(buffer.getMappedRange());
   let bright = 0;
-  for (let y = 0; y < 620; y++)
-    for (let x = 0; x < 1000; x++) {
-      const i = y * rowBytes + x * 4;
-      if (pixels[i] > 90 || pixels[i + 1] > 90 || pixels[i + 2] > 90) bright++;
-    }
-  buffer.unmap();
-  buffer.destroy();
+  for (let i = 0; i < pixels.length; i += 4)
+    if (pixels[i] > 90 || pixels[i + 1] > 90 || pixels[i + 2] > 90) bright++;
   assert(bright > 1000, 'Diagram contains no visible geometry');
   assert(diagram.stats().frames >= before + 5, 'Frame lifecycle failed');
-  diagram.setVertex('Task', { shape: 'rounded' });
+  const frames = diagram.stats().frames;
+  diagram.set({ canvas, paused: false, vertices: { Task: { shape: 'rounded' } } });
   diagram.fit();
-  rendered = new Promise((yes, no) => {
-    resolve = yes;
-    reject = no;
-  });
-  view.resume();
-  view.request({ timeMs: 0 });
-  await rendered;
+  await presented(frames);
   await gpu.idle();
+  if (failure) throw failure;
   assert(errors.length === 0, errors.join('\n'));
   const result = {
     status: 'passed',
@@ -291,6 +272,6 @@ globalThis.diagramCheck = (async () => {
   };
   document.querySelector('#result').textContent = JSON.stringify(result, null, 2);
   // Keep the final canvas for the runner's screenshot.
-  globalThis.diagramFixture = { gpu, diagram, view, source, detach, target };
+  globalThis.diagramFixture = { gpu, diagram, source };
   return result;
 })();

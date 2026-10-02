@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
-import { createGpu, type FieldsRequest, type GpuPage } from '../src/index.js';
+import { createGpu } from '../src/index.js';
+import { type FieldsRequest, type GpuPage } from '../src/kit.js';
 import { bytes, deferred, fakeDevice } from './fixtures/device.js';
 import { field, values } from './fixtures/fields.js';
 import { FieldSource } from './fixtures/field-source.js';
@@ -90,7 +91,7 @@ it('aligns reordered multi-block inputs and explicit sparse observations without
   });
   expect(values(page)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   expect(bytes(field(page, 'overlay').presence!.binding)[0]).toBe(0b1010);
-  expect((page.columns.overlay as import('../src/index.js').GpuValueField).origin?.[0]).toBe(
+  expect((page.columns.overlay as import('../src/kit.js').GpuValueField).origin?.[0]).toBe(
     1e12 + 1,
   );
   await expect(
@@ -136,8 +137,8 @@ it('keeps boolean/vector types even when an explicit overlay has no rows', async
         page = result;
   });
   expect(source.requests).toHaveLength(0);
-  expect((page.columns.visible as import('../src/index.js').GpuValueField).type).toBe('boolean');
-  expect((page.columns.position as import('../src/index.js').GpuValueField).components).toBe(2);
+  expect((page.columns.visible as import('../src/kit.js').GpuValueField).type).toBe('boolean');
+  expect((page.columns.position as import('../src/kit.js').GpuValueField).components).toBe(2);
   expect(bytes(field(page, 'position').presence!.binding)[0]).toBe(0);
   gpu.destroy();
 });
@@ -269,7 +270,7 @@ it('observes source closure even when every field was served from cache', async 
   const source = new FieldSource(),
     fake = fakeDevice(),
     gpu = await createGpu({ device: fake.device });
-  const prepare = async (frame: import('../src/index.js').Preparation) => {
+  const prepare = async (frame: import('../src/kit.js').Preparation) => {
     for await (const _page of frame.fields(request(source))) {
       /* consume */
     }

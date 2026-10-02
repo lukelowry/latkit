@@ -5,7 +5,7 @@ override NETWORK_CURVES:bool=false;
 @group(0) @binding(3) var<storage,read> segments: array<vec4u>;
 @group(0) @binding(4) var<storage,read> styles: array<vec4f>;
 @group(0) @binding(5) var<uniform> item: vec4u;
-@group(0) @binding(7) var<storage,read> endFocus:array<u32>;
+@group(0) @binding(7) var<storage,read> focused:array<u32>;
 @group(0) @binding(8) var<storage,read> curveInstances:array<vec4u>;
 @group(0) @binding(9) var<storage,read> dashPhases:array<f32>;
 struct Varying {
@@ -23,19 +23,18 @@ fn corner(v:u32)->vec2f {
   let c=array<vec2f,6>(vec2f(-1,-1),vec2f(1,-1),vec2f(-1,1),vec2f(-1,1),vec2f(1,-1),vec2f(1,1));
   return c[v];
 }
-fn focus(groupId:u32,row:u32,dense:u32)->u32 {
-  if(u.flags.x==0u){return 0u;}
-  if(groupId==u.focus.x&&row==u.focus.y){return 2u;}
-  if(groupId==u.focus.z&&row==u.focus.w){return 1u;}
-  if(dense<arrayLength(&endFocus)){return endFocus[dense];}
-  return 0u;
+/** Focus of a drawn row: 2 selected, 1 hovered; two bits per row, vertices then edges then paths. */
+fn focus(dense:u32)->u32 {
+  let word=dense>>4u;
+  if(u.flags.x==0u||word>=arrayLength(&focused)){return 0u;}
+  return (focused[word]>>((dense&15u)*2u))&3u;
 }
 fn screen(p:vec4f)->vec2f{return vec2f((p.x/p.w+1.0)*u.view.x*0.5,(1.0-p.y/p.w)*u.view.y*0.5);}
 fn hidden()->Varying { var out:Varying;out.position=vec4f(2.0,2.0,2.0,1.0);return out; }
 @vertex fn vertex_main(@builtin(vertex_index) v:u32,@builtin(instance_index) i:u32)->Varying {
   let base=i*5u;let p=a[base];let info=a[base+3u];
   if(info.w<0.5||p.w<=0.0){return hidden();}
-  let row=bitcast<u32>(info.z);let f=focus(item.x,row,item.w+i);
+  let row=bitcast<u32>(info.z);let f=focus(item.x+i);
   let halo=select(select(0.0,u.halo.x,f==1u),u.halo.y,f==2u);
   let radius=max(0.1,info.x)+halo;let q=corner(v);
   var out:Varying;
@@ -60,7 +59,7 @@ fn hidden()->Varying { var out:Varying;out.position=vec4f(2.0,2.0,2.0,1.0);retur
   }
   let clipping=stroke_clip(p,q);if(clipping.x>clipping.y){return hidden();}
   let start=p;p=mix(start,q,clipping.x);q=mix(start,q,clipping.y);
-  let row=bitcast<u32>(info.z);let f=focus(item.x,row,0xffffffffu);
+  let row=bitcast<u32>(info.z);let f=focus(item.x+segment.z);
   let halo=select(select(0.0,u.halo.z,f==1u),u.halo.w,f==2u);
   let width=u.style.y+halo;
   let sa=screen(p);let sb=screen(q);let delta=sb-sa;let lengthPx=max(0.001,length(delta));

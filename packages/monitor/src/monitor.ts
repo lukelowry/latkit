@@ -1,70 +1,7 @@
-import type { Domain, RequestOptions, SampleRange, Queryable, Update } from '@latkit/model';
-import type {
-  ContextMenu,
-  DataHit,
-  Gpu,
-  HoverState,
-  Invalidation,
-  Renderer,
-  Shade,
-} from '@latkit/gpu';
-import type { MonitorData, Reading, Trace } from './data.js';
-import type { Limits, Options } from './options.js';
-export interface MonitorEvents {
-  readonly invalidate: Invalidation;
-  readonly hover: Reading | null;
-  readonly select: Reading | null;
-  readonly contextmenu: ContextMenu<Reading>;
-  readonly window: SampleRange;
-  readonly valueDomain: Domain | null;
-}
-export interface MonitorStats {
-  readonly traces: number;
-  readonly historyBytes: number;
-  readonly pickingBytes: number;
-  readonly pendingBytes: number;
-  readonly visible: boolean;
-  readonly prepareMs: number;
-  readonly drawCalls: number;
-  readonly frames: number;
-  readonly refining: boolean;
-  readonly hover: HoverState;
-}
-export interface HitTestOptions extends RequestOptions {
-  readonly radiusPx?: number;
-  /** Nearest observations, ordered by distance; default 16. */
-  readonly limit?: number;
-}
-/** Playhead uses the observation coordinate supplied as RenderView.at. */
-export interface Monitor extends Renderer {
-  setData(data: MonitorData): void;
-  setTrace(name: string, patch: Partial<Trace>): void;
-  setOptions(options: Options): void;
-  setShade(shade: Shade | null): Promise<void>;
-  setWindow(window: SampleRange): void;
-  /** Focus a native row; field narrows focus when supplied. Does not emit select. */
-  select(item: DataHit | null): void;
-  setPointer(point: readonly [number, number] | null): void;
-  /** Local CSS coordinates. Raw refinement is cancellable and scoped to the presented version. */
-  hitTest(point: readonly [number, number], options?: HitTestOptions): Promise<readonly Reading[]>;
-  toData(
-    point: readonly [number, number],
-  ): { readonly coordinate: number; readonly value: number } | null;
-  stats(): MonitorStats;
-  on<K extends keyof MonitorEvents>(
-    event: K,
-    listener: (value: MonitorEvents[K]) => void,
-  ): () => void;
-}
-export interface MonitorOptions {
-  readonly gpu: Gpu;
-  readonly data: MonitorData;
-  readonly options?: Options;
-  readonly limits?: Limits;
-  readonly shade?: Shade;
-}
-
-import { GpuError, type Preparation, type Encoding, type FrameInfo } from '@latkit/gpu';
+import type { Domain, Queryable, Update } from '@latkit/model';
+import { GpuError, kit, type Gpu, type Shade, type View } from '@latkit/gpu';
+import { monitorData, type MonitorData, type Reading, type Trace } from './data.js';
+import type { Limits, StyleOptions } from './options.js';
 import {
   defaults,
   settings,
@@ -97,30 +34,132 @@ import {
 import { deferred, wait, asError } from './async.js';
 import { pick, HoverBudget } from './picking.js';
 import type { Seams } from './segments.js';
+import { attachInput, type MonitorInput } from './input.js';
 
-export const interactions = new WeakMap<
-  Monitor,
-  { select(value: Reading | null): void; context(value: ContextMenu<Reading>): void }
->();
-export function createMonitor(options: MonitorOptions): Monitor {
-  return new MonitorView(options);
+type Point = readonly [number, number];
+/** What the monitor shows. */
+export interface Camera {
+  /** Coordinates shown, such as seconds. */
+  readonly window: Domain;
+  /** Values shown. */
+  readonly values: Domain;
+  /** Fit the values to the data as it changes. */
+  readonly fit: boolean;
+  /** Show the latest coordinates as frames append, this span wide; null stays put. */
+  readonly follow: number | null;
 }
-class MonitorView implements Monitor {
-  private readonly gpu: Gpu;
+export interface MonitorConfig extends kit.ViewConfig, StyleOptions {
+  /** Borrowed sampled data, such as a Recording: destroy never closes it. */
+  readonly source: Queryable;
+  /** Lines by name; several may read one type. */
+  readonly traces: Readonly<Record<string, Trace>>;
+  /** Where the camera starts; `monitor.camera` is where it is. Values fit the data by default. */
+  readonly camera: Partial<Camera> & { readonly window: Domain };
+  /** Pointer and keyboard inspection of the canvas; `inspect` by default. */
+  readonly input?: NonNullable<MonitorInput['mode']> | MonitorInput;
+  /** WGSL that recolors every fragment. */
+  readonly shade?: Shade | null;
+  readonly limits?: Limits;
+}
+export interface MonitorEvents extends kit.ViewEvents {
+  readonly hover: Reading | null;
+  /** The user changed the selection. */
+  readonly select: readonly Reading[];
+  readonly contextmenu: kit.ContextMenu<Reading>;
+  /** The presented camera changed, such as by following appends. */
+  readonly camera: Camera;
+}
+export interface MonitorStats {
+  readonly traces: number;
+  readonly historyBytes: number;
+  readonly pickingBytes: number;
+  readonly pendingBytes: number;
+  readonly visible: boolean;
+  readonly prepareMs: number;
+  readonly drawCalls: number;
+  readonly frames: number;
+  readonly refining: boolean;
+  readonly hover: kit.HoverState;
+}
+export interface PickOptions {
+  readonly radiusPx?: number;
+  /** Nearest observations, ordered by distance; default 16. */
+  readonly limit?: number;
+  readonly signal?: AbortSignal;
+}
+type Records = 'traces';
+type Merged = 'camera' | 'input' | 'limits';
+/** At draws the playhead. */
+export interface Monitor extends View<MonitorConfig, MonitorEvents> {
+  set(
+    patch: kit.Patch<MonitorConfig, 'traces', 'camera' | 'input' | 'limits'>,
+    options?: kit.SetOptions,
+  ): void;
+  /** What is shown. `set({ camera })` changes it. */
+  readonly camera: Camera;
+  /** Highlighted rows; a hit with a field narrows to that field's trace. */
+  readonly selection: readonly kit.DataHit[];
+  select(items: readonly kit.DataHit[]): void;
+  /** Exact observations near a canvas point, nearest first. */
+  pick(point: readonly [x: number, y: number], options?: PickOptions): Promise<readonly Reading[]>;
+  /** A reading's canvas point, or null when it is not shown. */
+  locate(item: Reading): readonly [x: number, y: number] | null;
+  /** Show the readings, or all recorded frames with fitted values. */
+  fit(items?: readonly Reading[], options?: kit.SetOptions): void;
+  /** Move the window just enough to show the reading. */
+  reveal(item: Reading, options?: kit.SetOptions): void;
+  stats(): MonitorStats;
+}
+
+/** Draw sampled fields over a coordinate such as time, on a canvas or offscreen. */
+export function createMonitor(gpu: Gpu, config: MonitorConfig): Monitor {
+  return new MonitorView(gpu, config);
+}
+const KEYS = new Set([
+  'canvas',
+  'at',
+  'paused',
+  'source',
+  'traces',
+  'camera',
+  'input',
+  'shade',
+  'limits',
+  ...Object.keys(defaults),
+]);
+interface Resolved {
+  readonly config: MonitorConfig;
+  readonly options: Settings;
+  readonly limits: Required<Limits>;
+}
+function resolve(config: MonitorConfig): Resolved {
+  for (const key of Object.keys(config)) if (!KEYS.has(key)) fail('Unknown monitor option: ' + key);
+  validateData(monitorData(config, { kind: 'range', between: [0, 1] }));
+  return { config, options: settings(config), limits: limits(config.limits) };
+}
+function follows(value: number | null): number | null {
+  if (value !== null && (!Number.isFinite(value) || value <= 0)) fail('Invalid follow span');
+  return value;
+}
+class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Merged> {
   private data: MonitorData;
   private options: Settings;
-  private readonly limits: Required<Limits>;
+  private limits: Required<Limits>;
+  private resolved?: Resolved;
   private readonly stop = new AbortController();
   private closed = false;
-  private listeners = new Map<string, Set<(value: never) => void>>();
+  private follow: number | null;
+  private fitValues: boolean;
+  private reported?: Camera;
+  private shadeSerial = 0;
   private subscriptions: (() => void)[] = [];
   private bindings?: Binding[];
   private setup?: Promise<void>;
   private setupStop?: AbortController;
   private error?: unknown;
-  private window: SampleRange;
+  private window: import('@latkit/model').SampleRange;
   private y: Domain;
-  private viewport?: FrameInfo['viewport'];
+  private viewport?: kit.Viewport;
   private layout?: Axes;
   private layoutKey = '';
   private format?: GPUTextureFormat;
@@ -146,7 +185,7 @@ class MonitorView implements Monitor {
   private tails?: Seams;
   private dirty = true;
   private focusDirty = false;
-  private selected: DataHit | null = null;
+  private chosen: readonly kit.DataHit[] = Object.freeze([]);
   private pointer: readonly [number, number] | null = null;
   private debounce?: {
     promise: Promise<void>;
@@ -177,49 +216,30 @@ class MonitorView implements Monitor {
     versions: Map<Queryable, string>;
     result: readonly Reading[];
   };
-  private hoverState: HoverState = 'idle';
+  private hoverState: kit.HoverState = 'idle';
   private hoverTask?: ReturnType<typeof setTimeout>;
   private frames = 0;
   private drawCalls = 0;
   private prepareMs = 0;
   private rowCount = 0;
   private pickingBytes = 0;
-  constructor(input: MonitorOptions) {
-    validateData(input.data);
-    this.gpu = input.gpu;
-    this.data = input.data;
-    this.options = settings(defaults, input.options ?? {});
-    this.limits = limits(input.limits);
-    this.window = windowRange(input.data.window);
-    this.y = this.options.valueDomain === 'auto' ? [0, 1] : expanded(this.options.valueDomain);
-    this.shade = input.shade ?? null;
-    interactions.set(this, {
-      select: (value) => this.emit('select', value),
-      context: (value) => this.emit('contextmenu', value),
-    });
+  constructor(gpu: Gpu, config: MonitorConfig) {
+    super(gpu, config, { records: ['traces'], merged: ['camera', 'input', 'limits'] });
+    const resolved = resolve(this.config),
+      camera = config.camera ?? fail('A monitor needs a camera window');
+    this.options = resolved.options;
+    this.limits = resolved.limits;
+    this.window = windowRange(camera.window);
+    this.data = monitorData(this.config, this.window);
+    this.follow = follows(camera.follow ?? null);
+    this.fitValues = camera.fit ?? !camera.values;
+    this.y = camera.values && !this.fitValues ? expanded(camera.values) : [0, 1];
+    this.shade = config.shade ?? null;
     this.watch();
-  }
-  private live() {
-    if (this.closed) throw new GpuError('closed', 'Monitor is destroyed');
-  }
-  private emit<K extends keyof MonitorEvents>(event: K, value: MonitorEvents[K]) {
-    for (const listener of this.listeners.get(event) ?? []) listener(value as never);
-  }
-  on<K extends keyof MonitorEvents>(
-    event: K,
-    listener: (value: MonitorEvents[K]) => void,
-  ): () => void {
-    this.live();
-    let set = this.listeners.get(event);
-    if (!set) {
-      set = new Set();
-      this.listeners.set(event, set);
-    }
-    set.add(listener as (value: never) => void);
-    return () => set!.delete(listener as (value: never) => void);
+    this.start();
   }
   private refresh() {
-    if (!this.closed) this.emit('invalidate', 'refresh');
+    this.invalidate('refresh');
   }
   private watch() {
     for (const dispose of this.subscriptions) dispose();
@@ -259,7 +279,7 @@ class MonitorView implements Monitor {
     }
     if (change.kind === 'replace') {
       this.invalidSources.add(source);
-      this.select(null);
+      this.clearSelection();
       this.through.clear();
     }
     this.bindings = undefined;
@@ -278,8 +298,8 @@ class MonitorView implements Monitor {
       this.debounce ||
       !this.front ||
       !this.bindings ||
-      this.options.follow ||
-      this.options.valueDomain === 'auto'
+      this.follow ||
+      this.fitValues
     )
       return;
     const next = this.append.entries().next().value;
@@ -291,8 +311,8 @@ class MonitorView implements Monitor {
       count = range.offset + range.count - offset;
     if (count <= 0) return;
     try {
-      this.start(false, { offset, count });
-      if (this.selected) this.start(true);
+      this.begin(false, { offset, count });
+      if (this.chosen.length) this.begin(true);
     } catch (error) {
       this.error = error;
     }
@@ -313,7 +333,7 @@ class MonitorView implements Monitor {
     this.setupStop?.abort(new DOMException('Monitor setup superseded', 'AbortError'));
     this.setup = undefined;
     this.dirty = true;
-    this.focusDirty = !!this.selected;
+    this.focusDirty = this.chosen.length > 0;
     this.append.clear();
     this.generation++;
     this.pickStop?.abort();
@@ -332,9 +352,9 @@ class MonitorView implements Monitor {
       }, 120);
       this.debounce = { ...task, timer };
     }
-    if (notify && !this.closed) this.emit('invalidate', 'replace');
+    if (notify) this.invalidate('replace');
   }
-  get pending(): Promise<void> | undefined {
+  protected get pending(): Promise<void> | undefined {
     if (this.closed || this.error) return undefined;
     if (this.debounce) return this.debounce.promise;
     if (this.setup) return this.setup;
@@ -347,7 +367,7 @@ class MonitorView implements Monitor {
       return Promise.resolve();
     return undefined;
   }
-  get animating() {
+  protected get animating(): boolean {
     return (
       !this.closed &&
       !this.debounce &&
@@ -373,7 +393,7 @@ class MonitorView implements Monitor {
       const task = (async () => {
         const bindings = await describeBindings(this.gpu, this.data, setupSignal);
         let values: Domain | null = null;
-        if (this.options.valueDomain === 'auto')
+        if (this.fitValues)
           for (const item of bindings)
             values = mergeDomain(
               values,
@@ -426,7 +446,7 @@ class MonitorView implements Monitor {
       this.coverage.bytes
     );
   }
-  private start(focus: boolean, frames?: { offset: number; count: number }) {
+  private begin(focus: boolean, frames?: { offset: number; count: number }) {
     const p = plot(this.viewport!, this.options);
     const seed = frames ? this.tails : undefined;
     if (!focus) this.tails = undefined;
@@ -453,7 +473,7 @@ class MonitorView implements Monitor {
         detail: this.options.detail,
         limits: this.limits,
         frames,
-        focus: focus ? this.selected! : undefined,
+        focus: focus ? this.chosen : undefined,
       },
       () => this.refresh(),
       this.sources,
@@ -470,7 +490,7 @@ class MonitorView implements Monitor {
       this.dirty = false;
     }
   }
-  async prepare(frame: Preparation) {
+  protected async prepare(frame: kit.Preparation): Promise<void> {
     this.live();
     this.prepared = undefined;
     frame.signal.throwIfAborted();
@@ -504,7 +524,7 @@ class MonitorView implements Monitor {
       !this.dirty
     ) {
       this.dirty = true;
-      this.focusDirty = !!this.selected;
+      this.focusDirty = this.chosen.length > 0;
     }
     if (this.dirty && !this.debounce) {
       this.timeMs = frame.timeMs;
@@ -514,7 +534,7 @@ class MonitorView implements Monitor {
           pointerPx: this.pointer,
           viewport: frame.viewport,
         }) ?? false;
-      this.start(false);
+      this.begin(false);
     }
     if (this.append.size && !this.job && !this.focusJob && !this.dirty) {
       const [source, range] = this.append.entries().next().value!;
@@ -525,7 +545,7 @@ class MonitorView implements Monitor {
         this.refresh();
         return;
       }
-      if (this.options.follow) {
+      if (this.follow) {
         const item = this.bindings.find((b) => b.source === source);
         if (item)
           for await (const block of this.gpu.query(
@@ -543,14 +563,13 @@ class MonitorView implements Monitor {
             const end = block.coordinates[0];
             this.window = {
               ...this.window,
-              between: [Math.max(this.data.window.between[0], end - this.options.follow.span), end],
+              between: [Math.max(this.data.window.between[0], end - this.follow), end],
             };
-            this.emit('window', this.window);
             break;
           }
       }
       let values: Domain | null = null;
-      if (this.options.valueDomain === 'auto')
+      if (this.fitValues)
         for (const item of this.bindings)
           values = mergeDomain(
             values,
@@ -566,7 +585,7 @@ class MonitorView implements Monitor {
               frame.signal,
             ),
           );
-      this.focusDirty = !!this.selected;
+      this.focusDirty = this.chosen.length > 0;
       if (
         values &&
         (values[0] < this.y[0] || values[1] > this.y[1] || this.options.autoDomain === 'fit')
@@ -575,10 +594,10 @@ class MonitorView implements Monitor {
           this.options.autoDomain === 'grow' ? mergeDomain(this.y, values)! : values,
           this.options.domainPadding,
         );
-        this.start(false);
-      } else this.start(false, this.options.follow ? undefined : append);
+        this.begin(false);
+      } else this.begin(false, this.follow ? undefined : append);
     }
-    if (this.focusDirty && this.selected && !this.focusJob && !this.debounce) this.start(true);
+    if (this.focusDirty && this.chosen.length && !this.focusJob && !this.debounce) this.begin(true);
     for (const job of [this.job, this.focusJob])
       if (job?.error) {
         this.error = job.error;
@@ -629,7 +648,7 @@ class MonitorView implements Monitor {
       }
     const replacementReady =
       !!this.job?.completeAfter(painted.find((p) => p.job === this.job)?.count ?? 0) &&
-      (!this.selected ||
+      (!this.chosen.length ||
         !!this.focusJob?.completeAfter(painted.find((p) => p.job === this.focusJob)?.count ?? 0) ||
         (!this.focusDirty && !this.focusJob));
     const x = replacementReady || !this.front ? expanded(this.window.between) : this.front.x;
@@ -659,7 +678,7 @@ class MonitorView implements Monitor {
     const show = !!this.front || replacementReady || initial;
     const showFocus =
       (focusReady || this.focusVisible) &&
-      (!replacementReady || !!this.selected) &&
+      (!replacementReady || this.chosen.length > 0) &&
       focus.x[0] === display.x[0] &&
       focus.x[1] === display.x[1] &&
       focus.y[0] === display.y[0] &&
@@ -696,7 +715,7 @@ class MonitorView implements Monitor {
     };
     this.prepareMs = performance.now() - began;
   }
-  encode(frame: Encoding) {
+  protected encode(frame: kit.Encoding): void {
     if (!this.prepared) return;
     const { pipeline, screen, paint: painted, clear } = this.prepared;
     let calls = 0;
@@ -704,7 +723,7 @@ class MonitorView implements Monitor {
     for (const item of painted) calls += paint(frame, pipeline, item.job.target, item.draws);
     this.drawCalls = calls + composite(frame, pipeline, screen);
   }
-  submitted() {
+  protected submitted(): void {
     const prepared = this.prepared;
     if (!prepared) return;
     this.prepared = undefined;
@@ -740,7 +759,7 @@ class MonitorView implements Monitor {
         options: this.options,
         layout: prepared.layout,
       };
-      if (!this.selected) {
+      if (!this.chosen.length) {
         destroyImage(this.focusImage);
         this.focusImage = undefined;
         this.focusVisible = false;
@@ -772,93 +791,205 @@ class MonitorView implements Monitor {
       }
     }
     this.prefetchAppend();
+    this.report();
   }
-  setData(data: MonitorData) {
-    this.live();
-    validateData(data);
-    this.data = data;
-    this.window = windowRange(data.window);
-    this.bindings = undefined;
-    this.setup = undefined;
-    this.rowCount = 0;
-    this.through.clear();
-    this.selected = null;
-    this.watch();
-    this.restart(false);
+  get camera(): Camera {
+    return Object.freeze({
+      window: this.window.between,
+      values: this.y,
+      fit: this.fitValues,
+      follow: this.follow,
+    });
   }
-  setTrace(name: string, patch: Partial<Trace>) {
-    this.live();
-    if (!this.data.traces[name]) fail('Unknown trace ' + name);
-    const data = {
-      ...this.data,
-      traces: { ...this.data.traces, [name]: { ...this.data.traces[name], ...patch } },
-    };
-    validateData(data);
-    this.data = data;
-    this.bindings = undefined;
-    this.setup = undefined;
-    this.watch();
-    this.restart(false);
+  get selection(): readonly kit.DataHit[] {
+    return this.chosen;
   }
-  setOptions(patch: Options) {
+  select(items: readonly kit.DataHit[]): void {
     this.live();
-    const previous = this.options,
-      next = settings(previous, patch);
-    this.options = next;
-    if (
-      Object.keys(patch).every((key) => ['hover', 'hoverBudgetMs', 'pickRadiusPx'].includes(key))
-    ) {
-      this.pickStop?.abort();
-      this.hoverState = next.hover === 'off' ? 'off' : 'idle';
-      return;
-    }
-    if (patch.valueDomain !== undefined) {
-      if (next.valueDomain !== 'auto') this.y = expanded(next.valueDomain);
-      else {
-        this.bindings = undefined;
-        this.setup = undefined;
-      }
-    }
-    if (previous.msaa !== next.msaa) {
-      this.pipeline = undefined;
-      this.compiling = undefined;
-    }
-    this.hoverState = next.hover === 'off' ? 'off' : 'idle';
-    this.restart(false);
-  }
-  async setShade(value: Shade | null) {
-    this.live();
-    const next = this.format
-      ? await pipelines(this.gpu, this.format, this.options.msaa, value?.wgsl)
-      : undefined;
-    this.live();
-    this.shade = value;
-    this.pipeline = next;
-    this.compiling = undefined;
-    this.parameters.fill(0);
-    this.restart(false);
-  }
-  setWindow(value: SampleRange) {
-    this.live();
-    this.window = windowRange(value);
-    this.restart(false);
-    this.emit('window', this.window);
-  }
-  select(item: DataHit | null) {
-    this.live();
-    if (item && (!Number.isSafeInteger(item.row) || item.row < 0)) fail('Invalid focused row');
-    this.selected = item;
+    for (const item of items)
+      if (!Number.isSafeInteger(item.row) || item.row < 0) fail('Invalid focused row');
+    this.chosen = Object.freeze([...items]);
     this.focusJob?.cancel();
     this.focusJob = undefined;
     destroyImage(this.focusBack);
     this.focusBack = undefined;
-    this.focusDirty = !!item;
-    if (!item) this.focusVisible = false;
-    if (item && this.bindings && this.viewport && !this.dirty && !this.debounce) this.start(true);
+    this.focusDirty = items.length > 0;
+    if (!items.length) this.focusVisible = false;
+    if (items.length && this.bindings && this.viewport && !this.dirty && !this.debounce)
+      this.begin(true);
     this.refresh();
   }
-  setPointer(point: readonly [number, number] | null) {
+  fit(items?: readonly Reading[], options: kit.SetOptions = {}): void {
     this.live();
+    if (!items?.length) {
+      const range = (this.data.source as { readonly range?: Domain | null }).range;
+      this.moveCamera(range ? { window: range, fit: true } : { fit: true }, options);
+      return;
+    }
+    let lo = Infinity,
+      hi = -Infinity,
+      low = Infinity,
+      high = -Infinity;
+    for (const item of items) {
+      lo = Math.min(lo, item.coordinate);
+      hi = Math.max(hi, item.coordinate);
+      low = Math.min(low, item.value);
+      high = Math.max(high, item.value);
+    }
+    const half = (this.window.between[1] - this.window.between[0]) / 2;
+    this.moveCamera(
+      {
+        window: hi > lo ? expanded([lo, hi], this.options.domainPadding) : [lo - half, lo + half],
+        values: expanded([low, high], this.options.domainPadding),
+      },
+      options,
+    );
+  }
+  reveal(item: Reading, options: kit.SetOptions = {}): void {
+    this.live();
+    const [lo, hi] = this.window.between;
+    if (item.coordinate >= lo && item.coordinate <= hi) return;
+    const half = (hi - lo) / 2;
+    this.moveCamera({ window: [item.coordinate - half, item.coordinate + half] }, options);
+  }
+  locate(item: Reading): Point | null {
+    if (!this.front || !this.presented) return null;
+    const p = this.presented.layout.plot,
+      { x, y } = this.front;
+    const point: Point = [
+      p.x + ((item.coordinate - x[0]) / (x[1] - x[0])) * p.width,
+      p.y + ((y[1] - item.value) / (y[1] - y[0])) * p.height,
+    ];
+    return this.toData(point) ? point : null;
+  }
+  pick(point: Point, options: PickOptions = {}): Promise<readonly Reading[]> {
+    return this.read(point, options);
+  }
+
+  protected check(config: MonitorConfig): void {
+    this.resolved = resolve(config);
+  }
+  protected configure(previous: MonitorConfig, next: MonitorConfig): void {
+    const resolved = this.resolved?.config === next ? this.resolved : resolve(next);
+    this.resolved = undefined;
+    const before = this.options;
+    this.options = resolved.options;
+    this.limits = resolved.limits;
+    if (previous.source !== next.source || previous.traces !== next.traces) {
+      this.data = monitorData(next, this.window);
+      this.bindings = undefined;
+      this.setup = undefined;
+      if (previous.source !== next.source) {
+        this.rowCount = 0;
+        this.through.clear();
+        this.clearSelection();
+      }
+      this.watch();
+    }
+    if (previous.shade !== next.shade) this.compile(next.shade ?? null);
+    const changed = (Object.keys(defaults) as (keyof Settings)[]).filter(
+      (key) => before[key] !== this.options[key],
+    );
+    const hoverOnly = changed.every((key) =>
+      ['hover', 'hoverBudgetMs', 'pickRadiusPx'].includes(key),
+    );
+    this.hoverState = this.options.hover === 'off' ? 'off' : 'idle';
+    if (
+      hoverOnly &&
+      previous.source === next.source &&
+      previous.traces === next.traces &&
+      previous.limits === next.limits
+    ) {
+      this.pickStop?.abort();
+      return;
+    }
+    if (before.msaa !== this.options.msaa) {
+      this.pipeline = undefined;
+      this.compiling = undefined;
+    }
+    this.restart(false);
+  }
+  /** Null shows all recorded frames with fitted values. */
+  protected moveCamera(patch: Partial<Camera> | null, options: kit.SetOptions = {}): void {
+    void options;
+    if (patch === null) {
+      this.fit();
+      return;
+    }
+    if (patch.window) {
+      this.window = windowRange(patch.window);
+      this.follow = null;
+    }
+    if (patch.follow !== undefined) this.follow = follows(patch.follow);
+    if (patch.values) {
+      this.y = expanded(patch.values);
+      this.fitValues = false;
+    }
+    if (patch.fit !== undefined && patch.fit !== this.fitValues) {
+      this.fitValues = patch.fit;
+      if (patch.fit) {
+        this.bindings = undefined;
+        this.setup = undefined;
+      }
+    }
+    this.restart(false);
+  }
+  protected attach(canvas: HTMLCanvasElement): () => void {
+    return attachInput(canvas, (this.config.input ?? {}) as MonitorInput, {
+      pointer: (point) => this.point(point),
+      pick: (point, options) => this.read(point, options),
+      choose: (items) => {
+        this.select(items);
+        this.emit('select', items);
+      },
+      menu: (menu) => this.emit('contextmenu', menu),
+    });
+  }
+  private clearSelection(): void {
+    if (!this.chosen.length) return;
+    this.select([]);
+    this.emit('select', []);
+  }
+  private compile(shade: Shade | null): void {
+    const serial = ++this.shadeSerial,
+      format = this.format;
+    (format
+      ? pipelines(this.gpu, format, this.options.msaa, shade?.wgsl)
+      : Promise.resolve(undefined)
+    ).then(
+      (next) => {
+        if (serial !== this.shadeSerial || this.closed) return;
+        this.shade = shade;
+        this.pipeline = next;
+        this.compiling = undefined;
+        this.parameters.fill(0);
+        this.restart(false);
+      },
+      (error: unknown) => {
+        if (serial === this.shadeSerial) this.fail(error);
+      },
+    );
+  }
+  /** Report the presented camera when it moved. */
+  private report(): void {
+    const camera = this.camera,
+      last = this.reported;
+    if (
+      last &&
+      last.window[0] === camera.window[0] &&
+      last.window[1] === camera.window[1] &&
+      last.values[0] === camera.values[0] &&
+      last.values[1] === camera.values[1] &&
+      last.fit === camera.fit &&
+      last.follow === camera.follow
+    )
+      return;
+    this.reported = camera;
+    this.emit('camera', camera);
+  }
+  /** Move the pointer; hover reads are debounced and one at a time. */
+  private point(point: Point | null) {
+    if (this.closed) return;
     if (point && !point.every(Number.isFinite)) fail('Invalid pointer');
     this.pointer = point;
     if (!point || this.options.hover === 'off') {
@@ -903,11 +1034,11 @@ class MonitorView implements Monitor {
         )
         .finally(() => {
           this.hovering = false;
-          if (!this.closed && this.pointer && this.pointer !== point) this.setPointer(this.pointer);
+          if (!this.closed && this.pointer && this.pointer !== point) this.point(this.pointer);
         });
     }, 16);
   }
-  toData(point: readonly [number, number]) {
+  private toData(point: Point) {
     if (!this.front || !this.presented) return null;
     const p = this.presented.layout.plot,
       { x, y } = this.front;
@@ -918,12 +1049,9 @@ class MonitorView implements Monitor {
       value: y[1] - ((point[1] - p.y) / p.height) * (y[1] - y[0]),
     };
   }
-  hitTest(point: readonly [number, number], options: HitTestOptions = {}) {
-    return this.read(point, options);
-  }
   private async read(
     point: readonly [number, number],
-    options: HitTestOptions,
+    options: PickOptions,
     budget?: number,
   ): Promise<readonly Reading[]> {
     this.live();
@@ -997,9 +1125,9 @@ class MonitorView implements Monitor {
       hover: this.hoverState,
     };
   }
-  destroy() {
-    if (this.closed) return;
+  protected release(): void {
     this.closed = true;
+    this.shadeSerial++;
     this.stop.abort(new DOMException('Monitor destroyed', 'AbortError'));
     this.cancel();
     this.sources.destroy();
@@ -1017,7 +1145,5 @@ class MonitorView implements Monitor {
     this.front = this.back = this.focusImage = this.focusBack = undefined;
     this.tails = undefined;
     this.presentedVersions.clear();
-    this.listeners.clear();
-    interactions.delete(this);
   }
 }

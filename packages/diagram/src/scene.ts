@@ -1,15 +1,15 @@
 import type { Index, Queryable } from '@latkit/model';
-import type { RGBA, TextRun, FieldValues, Preparation, NativeReader } from '@latkit/gpu';
-import type { DiagramData, DiagramHit, Point, Shape, VertexOptions, EdgeOptions } from './data.js';
+import type { kit, RGBA } from '@latkit/gpu';
+import type { DiagramData, DiagramHit, Point, Shape, VertexData, EdgeData } from './data.js';
 export type Reader =
-  Pick<Preparation, 'query' | 'fields' | 'scale' | 'signal' | 'at'> | NativeReader;
+  Pick<kit.Preparation, 'query' | 'fields' | 'scale' | 'signal' | 'at'> | kit.NativeReader;
 export type Rect = readonly [number, number, number, number];
 export interface Label {
   text: string;
   width: number;
   height: number;
   ascent: number;
-  runs: readonly TextRun[];
+  runs: readonly kit.TextRun[];
 }
 /** A reference field wiring its vertex to a drawn net. */
 export interface Port {
@@ -46,7 +46,7 @@ export interface Vertex {
   shade: number;
   label: Label;
   ports: Port[];
-  options: VertexOptions;
+  options: VertexData;
   group?: string;
 }
 /** One vertex an edge joins: through a port for a net, or directly for a row's own end. */
@@ -64,7 +64,7 @@ export interface Edge {
   flow: number;
   shade: number;
   label: Label;
-  options: EdgeOptions;
+  options: EdgeData;
   paths: readonly (readonly Point[])[];
   offsets: readonly number[];
   labelBounds: readonly Rect[];
@@ -101,7 +101,7 @@ export function rect(vertex: Vertex): Rect {
 export function positions(
   vertices: readonly Vertex[],
   only?: ReadonlySet<number>,
-): Readonly<Record<string, FieldValues>> {
+): Readonly<Record<string, kit.FieldValues>> {
   const grouped = new Map<string, Vertex[]>();
   vertices.forEach((vertex, i) => {
     if (!only || only.has(i)) {
@@ -126,7 +126,7 @@ export function positions(
             size: 2,
             values: { kind: 'numeric', offset: 0, length: values.length, values },
           },
-        } satisfies FieldValues,
+        } satisfies kit.FieldValues,
       ];
     }),
   );

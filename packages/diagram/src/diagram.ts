@@ -1,18 +1,5 @@
-import { GpuError, fitCamera, cameraPoint, worldPoint, zoomCamera } from '@latkit/gpu';
-import type {
-  Camera2D,
-  ContextMenu,
-  FieldValues,
-  Gpu,
-  HoverState,
-  Invalidation,
-  Renderer,
-  Shade,
-  Preparation,
-  Encoding,
-  FrameInfo,
-  Viewport,
-} from '@latkit/gpu';
+import { GpuError, kit, type Gpu, type Shade, type View } from '@latkit/gpu';
+import type { Queryable } from '@latkit/model';
 import type {
   VertexOptions,
   EdgeOptions,
@@ -23,18 +10,19 @@ import type {
   RowRef,
   Group,
 } from './data.js';
-import { itemKey } from './data.js';
-import type { Limits, Options } from './options.js';
+import { diagramData, itemKey } from './data.js';
+import type { Limits, StyleOptions } from './options.js';
 import {
   data as checkedData,
+  defaults,
   options as checkedOptions,
   limits as checkedLimits,
-  patch,
   sources,
   positive,
   fail,
+  type Style,
 } from './config.js';
-import { place, layoutOptions, type LayoutOptions } from './layout.js';
+import { place, layoutOptions, type Layout, type LayoutOptions } from './layout.js';
 import { readScene } from './read.js';
 import { geometry } from './geometry.js';
 import { positions, type Scene, type Rect } from './scene.js';
@@ -42,6 +30,7 @@ import { Picking } from './picking.js';
 import { Work } from './work.js';
 import { union } from './spatial.js';
 import { Painter, type Paint, type Overlay } from './painter.js';
+import { attachInput, type Controls, type DiagramInput } from './input.js';
 /** A wiring the user drew; the application decides which references change. */
 export interface ConnectProposal {
   /** Where the wiring starts: a vertex, or one of its ports. */
@@ -53,20 +42,50 @@ export interface ConnectProposal {
   readonly position: Point;
   readonly point: Point;
 }
+/** Vertices the user dragged; write the positions to the model to accept them. */
 export interface MoveProposal {
-  readonly positions: Readonly<Record<string, FieldValues>>;
+  /** Moved positions by vertex type. */
+  readonly positions: Readonly<Record<string, kit.FieldValues>>;
   readonly moves: readonly { readonly vertex: RowRef; readonly position: Point }[];
 }
-export interface DiagramEvents {
-  readonly invalidate: Invalidation;
+export interface Camera {
+  /** Diagram units at the canvas center. */
+  readonly center: Point;
+  /** Pixels per diagram unit. */
+  readonly scale: number;
+  /** Keep the whole diagram in view as it changes. */
+  readonly fit: boolean;
+}
+export interface DiagramConfig extends kit.ViewConfig, StyleOptions {
+  /** Borrowed: destroy never closes it. */
+  readonly source: Queryable;
+  /** Drawn types by model type name. */
+  readonly vertices: Readonly<Record<string, VertexOptions>>;
+  readonly edges?: Readonly<Record<string, EdgeOptions>>;
+  readonly groups?: Readonly<Record<string, Group>>;
+  /** How vertices are placed; `layered` by default, `manual` keeps model positions. */
+  readonly layout?: Layout;
+  /** Where the camera starts; `diagram.camera` is where it is. Fits the diagram by default. */
+  readonly camera?: Partial<Camera>;
+  /** Pointer and keyboard control of the canvas; `navigate` by default. */
+  readonly input?: NonNullable<DiagramInput['mode']> | DiagramInput;
+  /** WGSL that recolors every fragment. */
+  readonly shade?: Shade | null;
+  readonly limits?: Limits;
+}
+export interface DiagramEvents extends kit.ViewEvents {
   readonly hover: DiagramHit | null;
+  /** The selection changed, by the user or because selected rows left the diagram. */
   readonly select: readonly DiagramItem[];
-  readonly contextmenu: ContextMenu<DiagramHit>;
+  readonly contextmenu: kit.ContextMenu<DiagramHit>;
+  /** Double click or Enter. */
   readonly open: DiagramItem;
   readonly connect: ConnectProposal;
   readonly move: MoveProposal;
+  /** Delete or Backspace in edit mode: the selected rows' ids. */
   readonly delete: readonly string[];
-  readonly fit: boolean;
+  /** The presented camera changed. */
+  readonly camera: Camera;
 }
 export interface DiagramStats {
   readonly vertices: number;
@@ -77,54 +96,45 @@ export interface DiagramStats {
   readonly prepareMs: number;
   readonly drawCalls: number;
   readonly frames: number;
-  readonly hover: HoverState;
+  readonly hover: kit.HoverState;
 }
-export interface Diagram extends Renderer {
-  setData(data: DiagramData, options?: { readonly animate?: boolean }): void;
-  setVertex(type: string, patch: Partial<VertexOptions>): void;
-  setEdge(type: string, patch: Partial<EdgeOptions>): void;
-  setGroup(id: string, patch: Partial<Group>): void;
-  setOptions(options: Options): void;
-  setLayout(options: LayoutOptions, transition?: { readonly animate?: boolean }): void;
-  setShade(shade: Shade | null): Promise<void>;
-  getCamera(): Camera2D | null;
-  setCamera(camera: Camera2D, options?: { readonly animate?: boolean }): void;
-  fit(options?: { readonly items?: readonly DiagramItem[]; readonly animate?: boolean }): void;
-  reveal(
-    item: DiagramItem,
-    options?: { readonly animate?: boolean; readonly neighbors?: boolean },
+type Records = 'vertices' | 'edges' | 'groups';
+type Merged = 'camera' | 'input' | 'limits' | 'layout';
+export interface Diagram extends View<DiagramConfig, DiagramEvents> {
+  /** `animate` eases vertices to new positions and the camera to a new place. */
+  set(
+    patch: kit.Patch<
+      DiagramConfig,
+      'vertices' | 'edges' | 'groups',
+      'camera' | 'input' | 'limits' | 'layout'
+    >,
+    options?: kit.SetOptions,
   ): void;
-  neighborhood(item: DiagramItem): readonly DiagramItem[];
-  panBy(dx: number, dy: number): void;
-  zoomBy(factor: number, anchor?: Point): void;
+  /** Where the camera is. `set({ camera })` moves it. */
+  readonly camera: Camera;
+  readonly selection: readonly DiagramItem[];
   select(items: readonly DiagramItem[]): void;
-  setPointer(point: Point | null): void;
-  hitTest(point: Point, options?: { readonly radiusPx?: number }): readonly DiagramHit[];
+  /** Items at a canvas point, topmost first. */
+  pick(point: Point, options?: { readonly radiusPx?: number }): Promise<readonly DiagramHit[]>;
+  /** An item's canvas point, or null when it is not drawn. */
   locate(item: DiagramItem): Point | null;
-  toDiagram(point: Point): Point | null;
+  /** The item, its wires, and what they join. */
+  neighborhood(item: DiagramItem): readonly DiagramItem[];
+  /** Frame the items, or follow the whole diagram. */
+  fit(items?: readonly DiagramItem[], options?: kit.SetOptions): void;
+  /** Pan just enough to show the item. */
+  reveal(item: DiagramItem, options?: kit.SetOptions): void;
   stats(): DiagramStats;
-  on<K extends keyof DiagramEvents>(
-    event: K,
-    listener: (value: DiagramEvents[K]) => void,
-  ): () => void;
 }
-export interface DiagramOptions {
-  readonly gpu: Gpu;
-  readonly data: DiagramData;
-  readonly camera?: Camera2D;
-  readonly options?: Options;
-  readonly limits?: Limits;
-  readonly shade?: Shade;
-  readonly layout?: LayoutOptions;
-}
-export function createDiagram(options: DiagramOptions): Diagram {
-  return new View(options);
+/** Draw a model as a block diagram: vertices, ports, wires, and groups, on a canvas or offscreen. */
+export function createDiagram(gpu: Gpu, config: DiagramConfig): Diagram {
+  return new DiagramView(gpu, config);
 }
 interface Presented {
   scene: Scene;
   picking: Picking;
-  camera: Camera2D;
-  viewport: Viewport;
+  camera: kit.Camera2D;
+  viewport: kit.Viewport;
   revision: number;
   at?: number;
 }
@@ -132,55 +142,87 @@ interface Staged extends Presented {
   paint: Paint;
   prepareMs: number;
   hover: DiagramHit | null;
-  hoverState: HoverState;
+  hoverState: kit.HoverState;
   fit: boolean;
   off(): void;
 }
-export interface Interaction {
-  emit<K extends Exclude<keyof DiagramEvents, 'invalidate' | 'fit' | 'hover'>>(
-    event: K,
-    value: DiagramEvents[K],
-  ): void;
-  selection(): readonly DiagramItem[];
-  revision(): number;
-  scene(): Scene | undefined;
-  options(): Required<Options>;
-  world(point: Point): Point | null;
-  marquee(a: Point, b: Point): readonly DiagramItem[];
-  preview(items: readonly DiagramItem[], delta: Point | null): void;
-  move(items: readonly DiagramItem[], delta: Point): MoveProposal | undefined;
-  reduced(value: boolean): void;
-  overlay(value: Overlay | null): void;
+const KEYS = new Set([
+  'canvas',
+  'at',
+  'paused',
+  'source',
+  'vertices',
+  'edges',
+  'groups',
+  'layout',
+  'camera',
+  'input',
+  'shade',
+  'limits',
+  ...Object.keys(defaults),
+]);
+interface Resolved {
+  readonly config: DiagramConfig;
+  readonly data: DiagramData;
+  readonly options: Style;
+  readonly limits: Required<Limits>;
+  readonly layout: Required<LayoutOptions>;
 }
-const interactions = new WeakMap<Diagram, Interaction>();
-export function interaction(diagram: Diagram): Interaction {
-  const value = interactions.get(diagram);
-  if (!value) fail('Input requires a diagram created by createDiagram');
-  return value;
+function resolve(config: DiagramConfig): Resolved {
+  for (const key of Object.keys(config)) if (!KEYS.has(key)) fail('Unknown diagram option: ' + key);
+  return {
+    config,
+    data: checkedData(diagramData(config)),
+    options: checkedOptions(config),
+    limits: checkedLimits(config.limits),
+    layout: layoutOptions(config.layout),
+  };
 }
-function camera(value: Camera2D): Camera2D {
-  if (
-    value.center.length !== 2 ||
-    !value.center.every(Number.isFinite) ||
-    value.scale.length !== 2 ||
-    !value.scale.every((v) => Number.isFinite(v) && v > 0) ||
-    !['up', 'down'].includes(value.yDirection)
-  )
-    fail('Invalid camera');
-  return { center: [...value.center], scale: [...value.scale], yDirection: value.yDirection };
+/** Style options drawn through uniforms; any other change rereads the scene. */
+const UNIFORMS: readonly (keyof Style)[] = [
+  'grid',
+  'snap',
+  'gridColor',
+  'hoverColor',
+  'selectedColor',
+  'msaa',
+  'motion',
+  'animationMs',
+  'pickRadiusPx',
+  'fitPaddingPx',
+  'revealPaddingPx',
+  'hover',
+  'hoverBudgetMs',
+  'outlineWidthPx',
+  'selectionWidthPx',
+  'hoverWidthPx',
+  'gridMinSpacingPx',
+  'detail',
+];
+function view(camera: kit.Camera2D | undefined, fit: boolean): Camera {
+  return Object.freeze({
+    center: camera ? camera.center : ([0, 0] as Point),
+    scale: camera ? camera.scale[0] : 1,
+    fit,
+  });
 }
-class View implements Diagram {
+function camera2d(center: Point, scale: number): kit.Camera2D {
+  if (center?.length !== 2 || !center.every(Number.isFinite)) fail('Invalid camera center');
+  positive(scale, 'camera scale');
+  return { center: [center[0], center[1]], scale: [scale, scale], yDirection: 'down' };
+}
+class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Merged> {
   private data: DiagramData;
-  private options: Required<Options>;
+  private options: Style;
   private limits: Required<Limits>;
   private layout: Required<LayoutOptions>;
+  private resolved?: Resolved;
   private shade: Shade | null;
   private painter: Painter;
-  private listeners = new Map<keyof DiagramEvents, Set<(value: never) => void>>();
   private subscriptions: (() => void)[] = [];
   private revision = 0;
   private closed = false;
-  private requestedCamera?: Camera2D;
+  private requestedCamera?: kit.Camera2D;
   private fitting = true;
   private fitItems?: readonly DiagramItem[];
   private presented?: Presented;
@@ -190,7 +232,8 @@ class View implements Diagram {
   private selected: readonly DiagramItem[] = [];
   private pointer: Point | null = null;
   private hover: DiagramHit | null = null;
-  private hoverState: HoverState = 'idle';
+  private hoverState: kit.HoverState = 'idle';
+  private reported?: Camera;
   private frames = 0;
   private currentStats: DiagramStats = {
     vertices: 0,
@@ -203,7 +246,7 @@ class View implements Diagram {
     frames: 0,
     hover: 'idle',
   };
-  private animation?: { from: Camera2D; to: Camera2D; start: number };
+  private animation?: { from: kit.Camera2D; to: kit.Camera2D; start: number };
   private transitionRequested = false;
   private sceneTransition?: {
     target: Scene;
@@ -222,26 +265,182 @@ class View implements Diagram {
   private interruptedTransition = false;
   private relayout = false;
   private shadeAnimating = false;
-  constructor(private readonly construction: DiagramOptions) {
-    this.data = checkedData(construction.data);
-    this.options = checkedOptions(construction.options);
-    this.limits = checkedLimits(construction.limits);
-    this.layout = layoutOptions(construction.layout);
-    this.shade = construction.shade ?? null;
-    this.painter = new Painter(construction.gpu);
-    if (construction.camera) {
-      this.requestedCamera = camera(construction.camera);
-      this.fitting = false;
+  constructor(gpu: Gpu, config: DiagramConfig) {
+    super(gpu, config, {
+      records: ['vertices', 'edges', 'groups'],
+      merged: ['camera', 'input', 'limits', 'layout'],
+      shorthands: { layout: 'algorithm' },
+    });
+    const resolved = resolve(this.config);
+    this.data = resolved.data;
+    this.options = resolved.options;
+    this.limits = resolved.limits;
+    this.layout = resolved.layout;
+    this.shade = config.shade ?? null;
+    this.painter = new Painter(gpu);
+    const camera = config.camera ?? {};
+    if (camera.center || camera.scale) {
+      this.requestedCamera = camera2d(camera.center ?? [0, 0], camera.scale ?? 1);
+      this.fitting = camera.fit ?? false;
     }
     this.subscribe();
-    interactions.set(this, {
+    this.start();
+  }
+
+  get camera(): Camera {
+    const presented = this.presented?.camera,
+      c = this.fitting ? (presented ?? this.requestedCamera) : (this.requestedCamera ?? presented);
+    return view(c, this.fitting);
+  }
+  get selection(): readonly DiagramItem[] {
+    return this.selected;
+  }
+  select(items: readonly DiagramItem[]): void {
+    this.live();
+    this.selected = [...new Map(items.map((i) => [itemKey(i), i])).values()];
+    this.invalidate('refresh');
+  }
+  pick(point: Point, options: { readonly radiusPx?: number } = {}): Promise<readonly DiagramHit[]> {
+    return new Promise((resolve) => {
+      this.live();
+      resolve(this.hit(point, options.radiusPx));
+    });
+  }
+  locate(item: DiagramItem): Point | null {
+    const p = this.presented;
+    if (!p) return null;
+    const point = p.picking.locate(item);
+    return point ? kit.cameraPoint(p.camera, point, p.viewport) : null;
+  }
+  neighborhood(item: DiagramItem): readonly DiagramItem[] {
+    const scene = this.presented?.scene;
+    if (!scene) return [];
+    const result = new Map<string, DiagramItem>([[itemKey(item), item]]),
+      vertices = new Set<number>();
+    scene.vertices.forEach((n, i) => {
+      if (
+        item.kind === 'group'
+          ? n.group === item.id
+          : item.kind !== 'edge' && n.hit.type === item.type && n.hit.id === item.id
+      )
+        vertices.add(i);
+    });
+    for (const e of scene.edges)
+      if (
+        (item.kind === 'edge' && item.type === e.hit.type && item.id === e.hit.id) ||
+        e.ends.some((end) => vertices.has(end.vertex))
+      ) {
+        result.set(itemKey(e.hit), e.hit);
+        for (const end of e.ends) {
+          const n = scene.vertices[end.vertex];
+          result.set(itemKey(n.hit), n.hit);
+        }
+      }
+    for (const i of vertices) result.set(itemKey(scene.vertices[i].hit), scene.vertices[i].hit);
+    return [...result.values()];
+  }
+  fit(items?: readonly DiagramItem[], options: kit.SetOptions = {}): void {
+    this.live();
+    this.fitting = !items;
+    this.fitItems = items;
+    if (this.presented) {
+      const boxes = this.presented.picking.bounds(items);
+      if (boxes.length) {
+        const next = this.fitted(union(boxes), this.presented.viewport);
+        this.requestedCamera = next;
+        if (options.animate && this.motion() && this.options.animationMs > 0)
+          this.animation = { from: this.presented.camera, to: next, start: this.clock };
+        else this.animation = undefined;
+      }
+    }
+    this.invalidate();
+  }
+  reveal(item: DiagramItem, options: kit.SetOptions = {}): void {
+    this.live();
+    const point = this.presented?.picking.locate(item);
+    if (!point || !this.presented) return;
+    const p = kit.cameraPoint(this.presented.camera, point, this.presented.viewport),
+      padding = this.options.revealPaddingPx;
+    if (
+      p[0] >= padding &&
+      p[1] >= padding &&
+      p[0] <= this.presented.viewport.width - padding &&
+      p[1] <= this.presented.viewport.height - padding
+    ) {
+      this.animation = undefined;
+      return;
+    }
+    this.aim({ ...this.presented.camera, center: point }, options);
+  }
+  stats(): DiagramStats {
+    return { ...this.currentStats, hover: this.hoverState };
+  }
+
+  protected check(config: DiagramConfig): void {
+    this.resolved = resolve(config);
+  }
+  protected configure(previous: DiagramConfig, next: DiagramConfig, options: kit.SetOptions): void {
+    const resolved = this.resolved?.config === next ? this.resolved : resolve(next);
+    this.resolved = undefined;
+    const animate = options.animate === true,
+      revision = this.revision;
+    this.limits = resolved.limits;
+    if (
+      previous.source !== next.source ||
+      previous.vertices !== next.vertices ||
+      previous.edges !== next.edges ||
+      previous.groups !== next.groups ||
+      previous.limits !== next.limits
+    ) {
+      this.data = resolved.data;
+      this.reread(animate);
+      this.subscribe();
+    }
+    if (previous.layout !== next.layout) {
+      this.layout = resolved.layout;
+      this.reread(animate);
+      this.relayout = true;
+    }
+    if (previous.shade !== next.shade) this.compile(next.shade ?? null);
+    const before = this.options;
+    this.options = resolved.options;
+    const changed = (Object.keys(defaults) as (keyof Style)[]).filter((key) => {
+      const a = this.options[key],
+        b = before[key];
+      return Array.isArray(a) && Array.isArray(b)
+        ? a.length !== b.length || a.some((v, i) => v !== b[i])
+        : a !== b;
+    });
+    if (changed.some((key) => !UNIFORMS.includes(key))) this.reread(false);
+    this.invalidate(this.revision !== revision ? 'replace' : 'refresh');
+  }
+  /** Null fits the whole diagram. */
+  protected moveCamera(patch: Partial<Camera> | null, options: kit.SetOptions): void {
+    if (patch === null || patch.fit) {
+      this.fit(undefined, options);
+      return;
+    }
+    const current = this.presented?.camera ?? this.requestedCamera;
+    if (patch.center || patch.scale)
+      this.aim(
+        camera2d(patch.center ?? current?.center ?? [0, 0], patch.scale ?? current?.scale[0] ?? 1),
+        options,
+      );
+    else if (patch.fit === false) this.stay();
+  }
+  protected attach(canvas: HTMLCanvasElement): () => void {
+    return attachInput(canvas, (this.config.input ?? {}) as DiagramInput, this.controls());
+  }
+  private controls(): Controls {
+    return {
       emit: (event, value) => this.emit(event, value),
       selection: () => this.selected,
+      select: (items) => this.select(items),
       revision: () => this.revision,
       scene: () => this.presented?.scene,
       options: () => this.options,
       world: (p) =>
-        this.presented ? worldPoint(this.presented.camera, p, this.presented.viewport) : null,
+        this.presented ? kit.worldPoint(this.presented.camera, p, this.presented.viewport) : null,
       marquee: (a, b) =>
         this.presented?.picking.marquee([
           Math.min(a[0], b[0]),
@@ -272,36 +471,42 @@ class View implements Diagram {
         this.reducedMotion = value;
         this.invalidate('refresh');
       },
-    });
+      hit: (point, radiusPx) => this.hit(point, radiusPx),
+      pointer: (point) => this.point(point),
+      pan: (dx, dy) => this.pan(dx, dy),
+      zoom: (factor, anchor) => this.zoom(factor, anchor),
+      stay: () => this.stay(),
+      fit: () => this.fit(undefined, { animate: true }),
+      reveal: (item) => this.reveal(item),
+      locate: (item) => this.locate(item),
+      invalidated: (listener) => kit.rendererOf(this).on!('invalidate', listener),
+    };
   }
-  private live(): void {
-    if (this.closed) throw new GpuError('closed', 'Diagram is destroyed');
+
+  private reread(animate: boolean): void {
+    this.transitionRequested = animate;
+    this.sceneTransition = undefined;
+    this.revision++;
+    this.drag = undefined;
   }
-  private emit<K extends keyof DiagramEvents>(event: K, value: DiagramEvents[K]): void {
-    for (const fn of [...(this.listeners.get(event) ?? [])]) fn(value as never);
+  private compile(shade: Shade | null): void {
+    const serial = ++this.shadeSerial;
+    this.painter.pipelines(this.format, this.options.msaa, shade).then(
+      () => {
+        if (serial !== this.shadeSerial) return;
+        this.shade = shade;
+        this.invalidate();
+      },
+      (error: unknown) => {
+        if (serial === this.shadeSerial) this.fail(error);
+      },
+    );
   }
+  /** Emit after the current task, so listeners never run inside a frame. */
   private notify<K extends keyof DiagramEvents>(event: K, value: DiagramEvents[K]): void {
     queueMicrotask(() => {
       if (!this.closed) this.emit(event, value);
     });
-  }
-  private invalidate(change: Invalidation = 'replace'): void {
-    if (!this.closed) this.emit('invalidate', change);
-  }
-  on<K extends keyof DiagramEvents>(
-    event: K,
-    listener: (value: DiagramEvents[K]) => void,
-  ): () => void {
-    this.live();
-    let set = this.listeners.get(event);
-    if (!set) {
-      set = new Set();
-      this.listeners.set(event, set);
-    }
-    set.add(listener as (value: never) => void);
-    return () => {
-      set!.delete(listener as (value: never) => void);
-    };
   }
   private subscribe(): void {
     for (const off of this.subscriptions) off();
@@ -322,101 +527,8 @@ class View implements Diagram {
         }),
       );
   }
-  setData(value: DiagramData, options: { readonly animate?: boolean } = {}): void {
-    this.live();
-    this.data = checkedData(value);
-    this.transitionRequested = options.animate === true;
-    this.sceneTransition = undefined;
-    this.revision++;
-    this.drag = undefined;
-    this.subscribe();
-    this.invalidate();
-  }
-  setVertex(type: string, value: Partial<VertexOptions>): void {
-    if (!this.data.vertices[type]) fail('Unknown vertex type: ' + type);
-    this.setData({
-      ...this.data,
-      vertices: { ...this.data.vertices, [type]: patch(this.data.vertices[type], value) },
-    });
-  }
-  setEdge(type: string, value: Partial<EdgeOptions>): void {
-    if (!this.data.edges?.[type]) fail('Unknown edge type: ' + type);
-    this.setData({
-      ...this.data,
-      edges: { ...this.data.edges, [type]: patch(this.data.edges[type], value) },
-    });
-  }
-  setGroup(id: string, value: Partial<Group>): void {
-    if (!this.data.groups?.[id]) fail('Unknown group: ' + id);
-    this.setData({
-      ...this.data,
-      groups: { ...this.data.groups, [id]: patch(this.data.groups[id], value) },
-    });
-  }
-  setOptions(value: Options): void {
-    this.live();
-    const next = checkedOptions(value, this.options);
-    const changed = (Object.keys(value) as (keyof Options)[]).filter((key) => {
-      const a = next[key],
-        b = this.options[key];
-      return Array.isArray(a) && Array.isArray(b)
-        ? a.length !== b.length || a.some((v, i) => v !== b[i])
-        : a !== b;
-    });
-    if (!changed.length) return;
-    this.options = next;
-    const uniforms: readonly (keyof Options)[] = [
-      'grid',
-      'snap',
-      'gridColor',
-      'hoverColor',
-      'selectedColor',
-      'msaa',
-      'motion',
-      'animationMs',
-      'pickRadiusPx',
-      'fitPaddingPx',
-      'revealPaddingPx',
-      'hover',
-      'hoverBudgetMs',
-      'outlineWidthPx',
-      'selectionWidthPx',
-      'hoverWidthPx',
-      'gridMinSpacingPx',
-      'detail',
-    ];
-    if (changed.some((key) => !uniforms.includes(key))) {
-      this.revision++;
-      this.sceneTransition = undefined;
-      this.transitionRequested = false;
-      this.invalidate();
-    } else this.invalidate('refresh');
-  }
-  setLayout(value: LayoutOptions, transition: { readonly animate?: boolean } = {}): void {
-    this.live();
-    this.layout = layoutOptions(value);
-    this.transitionRequested = transition.animate === true;
-    this.sceneTransition = undefined;
-    this.revision++;
-    this.relayout = true;
-    this.invalidate();
-  }
-  async setShade(shade: Shade | null): Promise<void> {
-    this.live();
-    const serial = ++this.shadeSerial;
-    await this.painter.pipelines(this.format, this.options.msaa, shade);
-    this.live();
-    if (serial === this.shadeSerial) {
-      this.shade = shade;
-      this.invalidate();
-    }
-  }
-  getCamera(): Camera2D | null {
-    return this.presented ? camera(this.presented.camera) : null;
-  }
-  setCamera(value: Camera2D, options: { readonly animate?: boolean } = {}): void {
-    this.live();
-    const next = camera(value);
+  /** Move the camera to a place; any explicit move stops fitting. */
+  private aim(next: kit.Camera2D, options: kit.SetOptions = {}): void {
     this.fitting = false;
     this.fitItems = undefined;
     this.requestedCamera = next;
@@ -425,103 +537,30 @@ class View implements Diagram {
     else this.animation = undefined;
     this.invalidate();
   }
+  private stay(): void {
+    const c = this.presented?.camera;
+    if (c) this.aim(c);
+  }
   private motion(): boolean {
     return (
       this.options.motion !== 'reduce' && !(this.options.motion === 'auto' && this.reducedMotion)
     );
   }
-  fit(options: { readonly items?: readonly DiagramItem[]; readonly animate?: boolean } = {}): void {
-    this.live();
-    this.fitting = !options.items;
-    this.fitItems = options.items;
-    if (this.presented) {
-      const boxes = this.presented.picking.bounds(options.items);
-      if (boxes.length) {
-        const next = this.fitted(union(boxes), this.presented.viewport);
-        this.requestedCamera = next;
-        if (options.animate && this.motion() && this.options.animationMs > 0)
-          this.animation = { from: this.presented.camera, to: next, start: this.clock };
-        else this.animation = undefined;
-      }
-    }
-    this.invalidate();
+  private fitted(bounds: Rect, viewport: kit.Viewport): kit.Camera2D {
+    return kit.fitCamera(bounds, viewport, this.options.fitPaddingPx, { yDirection: 'down' });
   }
-  private fitted(bounds: Rect, viewport: Viewport): Camera2D {
-    return fitCamera(bounds, viewport, this.options.fitPaddingPx, {
-      yDirection: this.requestedCamera?.yDirection ?? 'down',
-    });
-  }
-  reveal(
-    item: DiagramItem,
-    options: { readonly animate?: boolean; readonly neighbors?: boolean } = {},
-  ): void {
-    this.live();
-    if (options.neighbors) {
-      this.fit({ items: this.neighborhood(item), animate: options.animate });
-      return;
-    }
-    const point = this.presented?.picking.locate(item);
-    if (!point || !this.presented) return;
-    const p = cameraPoint(this.presented.camera, point, this.presented.viewport),
-      padding = this.options.revealPaddingPx;
-    if (
-      p[0] >= padding &&
-      p[1] >= padding &&
-      p[0] <= this.presented.viewport.width - padding &&
-      p[1] <= this.presented.viewport.height - padding
-    ) {
-      this.animation = undefined;
-      return;
-    }
-    this.setCamera({ ...this.presented.camera, center: point }, options);
-  }
-  neighborhood(item: DiagramItem): readonly DiagramItem[] {
-    const scene = this.presented?.scene;
-    if (!scene) return [];
-    const result = new Map<string, DiagramItem>([[itemKey(item), item]]),
-      vertices = new Set<number>();
-    scene.vertices.forEach((n, i) => {
-      if (
-        item.kind === 'group'
-          ? n.group === item.id
-          : item.kind !== 'edge' && n.hit.type === item.type && n.hit.id === item.id
-      )
-        vertices.add(i);
-    });
-    for (const e of scene.edges)
-      if (
-        (item.kind === 'edge' && item.type === e.hit.type && item.id === e.hit.id) ||
-        e.ends.some((end) => vertices.has(end.vertex))
-      ) {
-        result.set(itemKey(e.hit), e.hit);
-        for (const end of e.ends) {
-          const n = scene.vertices[end.vertex];
-          result.set(itemKey(n.hit), n.hit);
-        }
-      }
-    for (const i of vertices) result.set(itemKey(scene.vertices[i].hit), scene.vertices[i].hit);
-    return [...result.values()];
-  }
-  panBy(dx: number, dy: number): void {
-    this.live();
+  private pan(dx: number, dy: number): void {
     if (!Number.isFinite(dx) || !Number.isFinite(dy)) fail('Invalid pan');
     const c = this.requestedCamera ?? this.presented?.camera;
     if (!c) return;
-    this.setCamera({
-      ...c,
-      center: [
-        c.center[0] - dx / c.scale[0],
-        c.center[1] - (dy / c.scale[1]) * (c.yDirection === 'down' ? 1 : -1),
-      ],
-    });
+    this.aim({ ...c, center: [c.center[0] - dx / c.scale[0], c.center[1] - dy / c.scale[1]] });
   }
-  zoomBy(factor: number, anchor?: Point): void {
-    this.live();
+  private zoom(factor: number, anchor?: Point): void {
     positive(factor, 'zoom factor');
     const p = this.presented;
     if (!p) return;
-    this.setCamera(
-      zoomCamera(
+    this.aim(
+      kit.zoomCamera(
         this.requestedCamera ?? p.camera,
         factor,
         anchor ?? [p.viewport.width / 2, p.viewport.height / 2],
@@ -529,23 +568,17 @@ class View implements Diagram {
       ),
     );
   }
-  select(items: readonly DiagramItem[]): void {
-    this.live();
-    this.selected = [...new Map(items.map((i) => [itemKey(i), i])).values()];
-    this.invalidate('refresh');
-  }
-  setPointer(point: Point | null): void {
-    this.live();
+  private point(point: Point | null): void {
+    if (this.closed) return;
     if (point && !point.every(Number.isFinite)) fail('Invalid pointer');
     this.pointer = point;
     this.invalidate('refresh');
   }
-  hitTest(point: Point, options: { readonly radiusPx?: number } = {}): readonly DiagramHit[] {
-    this.live();
+  private hit(point: Point, radiusPx?: number): readonly DiagramHit[] {
     const p = this.presented;
     if (!p) return [];
     if (!point.every(Number.isFinite)) fail('Invalid hit point');
-    const radius = options.radiusPx ?? this.options.pickRadiusPx;
+    const radius = radiusPx ?? this.options.pickRadiusPx;
     positive(radius, 'pick radius', true);
     if (point[0] < 0 || point[1] < 0 || point[0] > p.viewport.width || point[1] > p.viewport.height)
       return [];
@@ -558,23 +591,7 @@ class View implements Diagram {
       this.options.detail === 'full' || Math.min(...p.camera.scale) > 0.2,
     ).items;
   }
-  locate(item: DiagramItem): Point | null {
-    const p = this.presented;
-    if (!p) return null;
-    const point = p.picking.locate(item);
-    return point ? cameraPoint(p.camera, point, p.viewport) : null;
-  }
-  toDiagram(point: Point): Point | null {
-    const p = this.presented;
-    if (!p) return null;
-    const world = worldPoint(p.camera, point, p.viewport),
-      g = this.options.gridPitch;
-    return this.options.snap ? [Math.round(world[0] / g) * g, Math.round(world[1] / g) * g] : world;
-  }
-  stats(): DiagramStats {
-    return { ...this.currentStats, hover: this.hoverState };
-  }
-  get animating(): boolean {
+  protected get animating(): boolean {
     return (
       !this.closed &&
       (!!this.animation ||
@@ -619,7 +636,7 @@ class View implements Diagram {
       })),
     };
   }
-  async prepare(frame: Preparation): Promise<void> {
+  protected async prepare(frame: kit.Preparation): Promise<void> {
     this.live();
     this.staged?.off();
     this.staged = undefined;
@@ -662,7 +679,7 @@ class View implements Diagram {
           frame,
           options,
           this.limits,
-          (input, request) => this.construction.gpu.measureText(input, request),
+          (input, request) => this.gpu.measureText(input, request),
           work,
         );
         await place(
@@ -780,7 +797,7 @@ class View implements Diagram {
     let c =
       this.requestedCamera ??
       base?.camera ??
-      ({ center: [0, 0], scale: [1, 1], yDirection: 'down' } as Camera2D);
+      ({ center: [0, 0], scale: [1, 1], yDirection: 'down' } as kit.Camera2D);
     if (this.fitting && scene.vertices.some((n) => n.visible))
       c = this.fitted(scene.bounds, frame.viewport);
     if (this.fitItems) {
@@ -815,7 +832,7 @@ class View implements Diagram {
         )
       : undefined;
     const hover = hit?.items[0] ?? null,
-      hoverState: HoverState =
+      hoverState: kit.HoverState =
         options.hover === 'off'
           ? 'off'
           : this.drag
@@ -861,17 +878,16 @@ class View implements Diagram {
     this.staged = candidate;
     this.format = frame.format;
   }
-  encode(frame: Encoding): void {
+  protected encode(frame: kit.Encoding): void {
     this.live();
     if (!this.staged) throw new GpuError('invalid-input', 'Diagram is not prepared');
     this.painter.encode(frame, this.staged.paint);
   }
-  submitted(frame: FrameInfo): void {
+  protected submitted(frame: kit.FrameInfo): void {
     const next = this.staged;
     if (!next || this.closed) return;
     next.off();
     this.staged = undefined;
-    const beforeFit = this.presented ? this.currentFit : undefined;
     this.presented = {
       scene: next.scene,
       picking: next.picking,
@@ -894,7 +910,6 @@ class View implements Diagram {
     )
       this.sceneTransition = undefined;
     this.clock = frame.timeMs;
-    this.currentFit = next.fit;
     this.relayout = false;
     if (
       this.animation &&
@@ -917,13 +932,22 @@ class View implements Diagram {
       this.hover = next.hover;
       this.notify('hover', this.hover);
     }
-    if (beforeFit !== next.fit) this.notify('fit', next.fit);
+    const camera = view(next.camera, next.fit),
+      reported = this.reported;
+    if (
+      !reported ||
+      reported.center[0] !== camera.center[0] ||
+      reported.center[1] !== camera.center[1] ||
+      reported.scale !== camera.scale ||
+      reported.fit !== camera.fit
+    ) {
+      this.reported = camera;
+      this.notify('camera', camera);
+    }
   }
-  private currentFit = true;
-  destroy(): void {
-    if (this.closed) return;
-    this.invalidate();
+  protected release(): void {
     this.closed = true;
+    this.shadeSerial++;
     this.staged?.off();
     this.staged = undefined;
     this.presented = undefined;
@@ -933,8 +957,6 @@ class View implements Diagram {
     this.transitionRequested = false;
     for (const off of this.subscriptions) off();
     this.subscriptions = [];
-    this.listeners.clear();
     this.painter.destroy();
-    interactions.delete(this);
   }
 }

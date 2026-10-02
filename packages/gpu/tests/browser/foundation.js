@@ -1,12 +1,5 @@
 /* global GPUBufferUsage, GPUMapMode, GPUShaderStage */
-import {
-  fieldShader,
-  scaleShader,
-  scaleParameters,
-  resolveScale,
-  shadeShader,
-  outputShader,
-} from '../../dist/index.js';
+import { kit } from '../../dist/index.js';
 export async function checkFoundation(gpu, target) {
   const device = gpu.device,
     rows = 3,
@@ -55,8 +48,8 @@ export async function checkFoundation(gpu, target) {
   });
   const module = device.createShaderModule({
     code:
-      fieldShader({ group: 0 }) +
-      scaleShader() +
+      kit.fieldShader({ group: 0 }) +
+      kit.scaleShader() +
       `
     struct Info {shape:vec4u,slots:vec4u}
     @group(1) @binding(0) var<storage,read_write> result:array<f32>;
@@ -116,7 +109,7 @@ export async function checkFoundation(gpu, target) {
             {
               binding: 2,
               resource: frame.uniforms(
-                scaleParameters(resolveScale({}, [1e12, 1e12 + 100]), {
+                kit.scaleParameters(kit.resolveScale({}, [1e12, 1e12 + 100]), {
                   origin: field.values.origin?.[0],
                 }),
               ),
@@ -165,8 +158,8 @@ export async function checkFoundation(gpu, target) {
     await gpu.idle();
     const effect = device.createShaderModule({
       code:
-        shadeShader() +
-        outputShader() +
+        kit.shadeShader() +
+        kit.outputShader() +
         `fn shade(f:ShadeFragment)->vec4f{return f.color;} @compute @workgroup_size(1) fn main(){ let color=outputColor(shade(ShadeFragment(vec4f(1),shadeContext.pointer.xy,0)),1); }`,
     });
     if ((await effect.getCompilationInfo()).messages.some((m) => m.type === 'error'))

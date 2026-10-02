@@ -1,5 +1,6 @@
 import { it, expect } from 'vitest';
-import { createGpu, type Renderer } from '../src/index.js';
+import { createGpu } from '../src/index.js';
+import { type Renderer } from '../src/kit.js';
 import { HistorySource } from './fixtures/history.js';
 import { fakeDevice } from './fixtures/device.js';
 import { target, renderer } from './fixtures/render.js';

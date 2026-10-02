@@ -36,9 +36,7 @@ async function run(request: ExportRequest, signal: AbortSignal): Promise<WorkerR
       write: ({ position, bytes }) => destination.write({ type: 'write', position, data: bytes }),
     });
     const began = performance.now();
-    const result = await exportVideo({
-      gpu,
-      renderer: content.renderer,
+    const result = await exportVideo(content.view, {
       output,
       width: 1280,
       height: 720,

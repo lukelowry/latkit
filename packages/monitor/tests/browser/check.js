@@ -1,6 +1,6 @@
 /* global document, location */
-import { createGpu, createCanvasView, colormaps } from '@latkit/gpu';
-import { createMonitor, attachMonitorInput } from '@latkit/monitor';
+import { createGpu } from '@latkit/gpu';
+import { createMonitor } from '@latkit/monitor';
 import { verify, benchmark, canvasLatency } from './verify.js';
 import { SignalSource } from './generated/fixture.js';
 const canvas = document.querySelector('canvas'),
@@ -12,67 +12,60 @@ globalThis.monitorCheck = (async () => {
   const began = performance.now();
   status.textContent = 'Loading signals...';
   let source = new SignalSource(64, 4096, { native: true });
-  const monitor = createMonitor({
-    gpu,
-    data: {
-      source,
-      window: { kind: 'range', between: [0, 41] },
-      traces: {
-        signal: {
-          from: 'signal',
-          field: 'value',
-          color: { field: 'weight', domain: [0, 63], colormap: colormaps.viridis },
-          widthPx: 1.1,
-        },
+  const monitor = createMonitor(gpu, {
+    canvas,
+    source,
+    traces: {
+      signal: {
+        from: 'signal',
+        field: 'value',
+        color: { field: 'weight', domain: [0, 63], colormap: 'viridis' },
+        widthPx: 1.1,
       },
     },
-    options: {
-      valueDomain: [-1.4, 1.4],
-      coordinateAxis: { label: 'Coordinate' },
-      valueAxis: { label: 'Value' },
-    },
+    camera: { window: [0, 41], values: [-1.4, 1.4] },
+    coordinateAxis: 'Coordinate',
+    valueAxis: 'Value',
     limits: { historyBytes: 96 * 1024 ** 2 },
+  });
+  monitor.on('error', (error) => {
+    status.textContent = String(error);
+    console.error(error);
   });
   let firstVisibleMs, readyResolve;
   const ready = new Promise((resolve) => {
     readyResolve = resolve;
   });
-  const view = createCanvasView({
-    gpu,
-    canvas,
-    renderer: monitor,
-    onError: (error) => {
-      status.textContent = String(error);
-      console.error(error);
-    },
-    onRendered: () => {
-      if (monitor.stats().visible && firstVisibleMs === undefined)
-        firstVisibleMs = performance.now() - began;
-      status.textContent = monitor.stats().refining ? 'Adding signals...' : 'Ready';
-      if (!monitor.stats().refining) readyResolve();
-    },
+  monitor.on('frame', () => {
+    const stats = monitor.stats();
+    if (stats.visible && firstVisibleMs === undefined) firstVisibleMs = performance.now() - began;
+    status.textContent = stats.refining ? 'Adding signals...' : 'Ready';
+    if (!stats.refining) readyResolve();
   });
-  attachMonitorInput({ monitor, canvas });
   monitor.on('hover', (reading) => {
     document.querySelector('#reading').textContent = reading
       ? `Row ${reading.row} | frame ${reading.frame} | coordinate ${reading.coordinate.toPrecision(9)} | value ${reading.value.toPrecision(9)}`
       : 'Hover to inspect an exact observation.';
   });
   document.querySelector('#reset').onclick = () =>
-    monitor.setWindow({ kind: 'range', between: [0, source.coordinate(source.frames + 31)] });
-  document.querySelector('#clear').onclick = () => monitor.select(null);
+    monitor.set({ camera: { window: [0, source.coordinate(source.frames + 31)] } });
+  document.querySelector('#clear').onclick = () => monitor.select([]);
   document.querySelector('#append').onclick = () => source.append(32);
   document.querySelector('#axes').onchange = (event) =>
-    monitor.setOptions({
-      coordinateAxis: event.target.checked ? { label: 'Coordinate' } : null,
-      valueAxis: event.target.checked ? { label: 'Value' } : null,
+    monitor.set({
+      coordinateAxis: event.target.checked ? 'Coordinate' : false,
+      valueAxis: event.target.checked ? 'Value' : false,
     });
   document.querySelector('#palette').onchange = (event) =>
-    monitor.setTrace('signal', {
-      color: {
-        field: 'weight',
-        domain: [0, Math.max(1, source.count - 1)],
-        colormap: colormaps[event.target.value],
+    monitor.set({
+      traces: {
+        signal: {
+          color: {
+            field: 'weight',
+            domain: [0, Math.max(1, source.count - 1)],
+            colormap: event.target.value,
+          },
+        },
       },
     });
   document.querySelector('#workload').onchange = (event) => {
@@ -82,9 +75,8 @@ globalThis.monitorCheck = (async () => {
       value === 'many' ? 32 : value === 'long' ? 1000000 : value === 'gaps' ? 512 : 4096,
       { native: true, gaps: value === 'gaps', duplicates: value === 'gaps' },
     );
-    monitor.setData({
+    monitor.set({
       source,
-      window: { kind: 'range', between: [0, source.coordinate(source.frames + 31)] },
       traces: {
         signal: {
           from: 'signal',
@@ -92,18 +84,18 @@ globalThis.monitorCheck = (async () => {
           color: {
             field: 'weight',
             domain: [0, Math.max(1, source.count - 1)],
-            colormap: colormaps[document.querySelector('#palette').value],
+            colormap: document.querySelector('#palette').value,
           },
           widthPx: value === 'many' ? 0.7 : 1.1,
         },
       },
+      camera: { window: [0, source.coordinate(source.frames + 31)] },
     });
   };
 
   globalThis.fixture = {
     gpu,
     monitor,
-    view,
     get source() {
       return source;
     },
@@ -118,16 +110,17 @@ globalThis.monitorCheck = (async () => {
       return;
     }
     source = new SignalSource(8, 0, { native: true });
-    monitor.setData({
+    monitor.set({
       source,
-      window: { kind: 'range', between: [0, 10] },
       traces: {
         signal: {
           from: 'signal',
           field: 'value',
-          color: { field: 'weight', domain: [0, 7], colormap: colormaps.viridis },
+          color: { field: 'weight', domain: [0, 7], colormap: 'viridis' },
+          widthPx: null,
         },
       },
+      camera: { window: [0, 10] },
     });
     streaming = setInterval(() => source.append(1), 20);
     streamButton.textContent = 'Stop stream';

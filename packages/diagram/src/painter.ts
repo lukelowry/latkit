@@ -1,47 +1,27 @@
-import {
-  BufferData,
-  GpuError,
-  defaultShade,
-  shadeShader,
-  textShader,
-  strokeShader,
-  outputShader,
-  premultipliedBlend,
-} from '@latkit/gpu';
-import type {
-  Gpu,
-  Preparation,
-  Encoding,
-  Camera2D,
-  RGBA,
-  Shade,
-  TextRun,
-  TextPage,
-  TextureResource,
-} from '@latkit/gpu';
+import { GpuError, kit, type Gpu, type RGBA, type Shade } from '@latkit/gpu';
 import { intersects } from './spatial.js';
 import type { Scene, Label, Rect } from './scene.js';
-import type { Options } from './options.js';
+import type { Style } from './config.js';
 import type { DiagramItem, Point } from './data.js';
 import { itemKey } from './data.js';
 
 interface Bank {
   bounds: Rect;
   origin: Point;
-  data: BufferData;
+  data: kit.BufferData;
   count: number;
 }
 interface TextBank {
   bounds: Rect;
   maxSize: number;
   origin: Point;
-  runs: readonly TextRun[];
-  anchors: BufferData;
+  runs: readonly kit.TextRun[];
+  anchors: kit.BufferData;
 }
 interface Geometry {
   banks: Bank[];
   text: TextBank[];
-  focus: BufferData;
+  focus: kit.BufferData;
   keys: Map<string, number>;
   states: Map<string, number>;
   paddingPx: number;
@@ -63,7 +43,7 @@ export interface Overlay {
 export interface Paint {
   pipelines: Pipelines;
   banks: { group: GPUBindGroup; count: number }[];
-  text: { group: GPUBindGroup; pages: readonly TextPage[] }[];
+  text: { group: GPUBindGroup; pages: readonly kit.TextPage[] }[];
   grid: GPUBindGroup;
   msaa?: GPUTextureView;
   background: RGBA;
@@ -183,12 +163,12 @@ fn dots(world:vec2f, pitch:f32)->f32 {
   return outputColor(view.dots,max(dots(world,pitch)*fade*0.7,dots(world,pitch*4.)*0.7));
 }
 `;
-function buffer(values: Float32Array, label: string): BufferData {
-  const b = new BufferData({ size: Math.max(4, values.byteLength), label });
+function buffer(values: Float32Array, label: string): kit.BufferData {
+  const b = new kit.BufferData({ size: Math.max(4, values.byteLength), label });
   if (values.length) b.write({ data: values });
   return b;
 }
-function sync(values: Float32Array, label: string, previous?: BufferData): BufferData {
+function sync(values: Float32Array, label: string, previous?: kit.BufferData): kit.BufferData {
   if (!previous) return buffer(values, label);
   previous.resize(Math.max(4, values.byteLength));
   const before = new Uint32Array(previous.bytes.buffer, previous.bytes.byteOffset, values.length);
@@ -205,7 +185,7 @@ function sync(values: Float32Array, label: string, previous?: BufferData): Buffe
   }
   return previous;
 }
-function sameText(a: readonly TextRun[], b: readonly TextRun[]): boolean {
+function sameText(a: readonly kit.TextRun[], b: readonly kit.TextRun[]): boolean {
   return (
     a.length === b.length &&
     a.every((run, i) => {
@@ -231,13 +211,13 @@ export class Painter {
   animating = false;
   private variants = new Map<string, Promise<Pipelines>>();
   private current?: { scene: Scene; geometry: Geometry };
-  private multisample?: TextureResource;
+  private multisample?: kit.TextureResource;
   private dummy = buffer(new Float32Array(28), 'diagram empty');
   private gestureBuffer = buffer(new Float32Array(0), 'diagram gesture');
   private emptyFocus = buffer(new Float32Array(1), 'diagram overlay focus');
   constructor(private readonly gpu: Gpu) {}
   async pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade | null): Promise<Pipelines> {
-    const key = format + ':' + msaa + ':' + (shade?.wgsl ?? defaultShade);
+    const key = format + ':' + msaa + ':' + (shade?.wgsl ?? kit.defaultShade);
     const existing = this.variants.get(key);
     if (existing) return existing;
     const task = this.compile(format, msaa, shade);
@@ -266,12 +246,12 @@ export class Painter {
     const module = d.createShaderModule({
       label: 'diagram',
       code:
-        shadeShader({ group: 0, binding: 1 }) +
-        textShader({ group: 1 }) +
-        strokeShader() +
-        outputShader() +
+        kit.shadeShader({ group: 0, binding: 1 }) +
+        kit.textShader({ group: 1 }) +
+        kit.strokeShader() +
+        kit.outputShader() +
         shader +
-        (shade?.wgsl ?? defaultShade),
+        (shade?.wgsl ?? kit.defaultShade),
     });
     const info = await module.getCompilationInfo();
     const errors = info.messages.filter((m) => m.type === 'error');
@@ -289,7 +269,7 @@ export class Painter {
         fragment: {
           module,
           entryPoint: fragment,
-          targets: [{ format, blend: premultipliedBlend }],
+          targets: [{ format, blend: kit.premultipliedBlend }],
         },
         primitive: { topology: 'triangle-list' },
         multisample: { count: msaa },
@@ -301,7 +281,7 @@ export class Painter {
     ]);
     return { shapes, text, grid, layout };
   }
-  private build(scene: Scene, options: Required<Options>, previous?: Geometry): Geometry {
+  private build(scene: Scene, options: Style, previous?: Geometry): Geometry {
     const keys = new Map<string, number>(),
       banks: Bank[] = [],
       texts: TextBank[] = [];
@@ -378,7 +358,7 @@ export class Painter {
         ...marker,
       );
     };
-    let textRuns: TextRun[] = [],
+    let textRuns: kit.TextRun[] = [],
       textOrigin: Point = [0, 0],
       textAnchors: number[] = [];
     let textBounds: number[] = [Infinity, Infinity, -Infinity, -Infinity],
@@ -565,7 +545,7 @@ export class Painter {
       [...keys].every(([key, index]) => previous.keys.get(key) === index);
     const focus = reuseFocus
       ? previous.focus
-      : new BufferData({ size: Math.max(4, keys.size * 4), label: 'diagram focus' });
+      : new kit.BufferData({ size: Math.max(4, keys.size * 4), label: 'diagram focus' });
     return {
       banks,
       text: texts,
@@ -576,10 +556,10 @@ export class Painter {
     };
   }
   async prepare(
-    frame: Preparation,
+    frame: kit.Preparation,
     scene: Scene,
-    options: Required<Options>,
-    camera: Camera2D,
+    options: Style,
+    camera: kit.Camera2D,
     selected: readonly DiagramItem[],
     hover: DiagramItem | null,
     shade: Shade | null,
@@ -627,8 +607,8 @@ export class Painter {
       focus = frame.buffer(geometry.focus);
     const group = (
       origin: Point,
-      data: BufferData,
-      anchors: BufferData = this.dummy,
+      data: kit.BufferData,
+      anchors: kit.BufferData = this.dummy,
       textSize = 0,
       focusBuffer = focus,
     ) => {
@@ -743,7 +723,7 @@ export class Painter {
           count: records.length / 28,
         });
     }
-    const text: { group: GPUBindGroup; pages: readonly TextPage[] }[] = [];
+    const text: { group: GPUBindGroup; pages: readonly kit.TextPage[] }[] = [];
     for (const bank of geometry.text)
       if (intersects(bank.bounds, visible) && bank.maxSize * Math.min(...camera.scale) >= 3)
         text.push({
@@ -789,7 +769,7 @@ export class Painter {
       drawCalls: 1 + banks.length + text.reduce((n, b) => n + b.pages.length, 0),
     };
   }
-  encode(frame: Encoding, paint: Paint): void {
+  encode(frame: kit.Encoding, paint: Paint): void {
     const color = paint.background;
     const pass = frame.encoder.beginRenderPass({
       colorAttachments: [

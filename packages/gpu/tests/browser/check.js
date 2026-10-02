@@ -1,7 +1,7 @@
 import { checkFoundation } from './foundation.js';
 import { rowCount } from '@latkit/model';
 /* global GPUBufferUsage, GPUMapMode, GPUShaderStage */
-import { createGpu, createRenderTarget, fieldShader, TextureData } from '../../dist/index.js';
+import { createGpu, kit } from '../../dist/index.js';
 
 import { checkColors } from './colors.js';
 
@@ -17,12 +17,12 @@ export async function check() {
   device.addEventListener('uncapturederror', (event) => failures.push(event.error.message));
   device.pushErrorScope('validation');
   const gpu = await createGpu({ device, pageBytes: 64 * 1024 });
-  const output = createRenderTarget({ gpu, width: 16, height: 16 });
+  const output = kit.createRenderTarget({ gpu, width: 16, height: 16 });
   const checks = [];
   try {
     const module = device.createShaderModule({
       code:
-        fieldShader({ group: 0 }) +
+        kit.fieldShader({ group: 0 }) +
         `
       struct Info { rows: u32, frames: u32, destination: u32, slot: u32 }
       @group(1) @binding(0) var<storage, read_write> output: array<f32>;
@@ -187,7 +187,7 @@ export async function check() {
       [1, 0, 0, 1],
       [0, 0, 1, 1],
     ];
-    const targets = colors.map(() => createRenderTarget({ gpu, width: 16, height: 16 }));
+    const targets = colors.map(() => kit.createRenderTarget({ gpu, width: 16, height: 16 }));
     const pixels = gpu.buffer({
       size: 8192,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
@@ -241,7 +241,7 @@ export async function check() {
     targets.forEach((target) => target.destroy());
     checks.push('two render passes and readback in one submission');
 
-    const atlas = new TextureData({ width: 3, height: 2, format: 'r8unorm' });
+    const atlas = new kit.TextureData({ width: 3, height: 2, format: 'r8unorm' });
     atlas.write({ x: 0, y: 0, width: 3, height: 2, data: Uint8Array.of(1, 2, 3, 4, 5, 6) });
     const atlasReadback = gpu.buffer({
       size: 512,
@@ -309,7 +309,7 @@ export async function check() {
     );
     checks.push('one million rows, paged compute and full numerical readback');
     const fragmented = await createGpu({ device, pageBytes: 8 * 1024 ** 2 });
-    const fragmentedTarget = createRenderTarget({ gpu: fragmented, width: 16, height: 16 });
+    const fragmentedTarget = kit.createRenderTarget({ gpu: fragmented, width: 16, height: 16 });
     const consolidation = {
       ...large,
       rows: { kind: 'range', offset: 0, count: 65536 },

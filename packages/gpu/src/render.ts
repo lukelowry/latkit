@@ -1,4 +1,5 @@
 import type { Colormap } from './colors/colormap.js';
+import type { ColormapName } from './colors/catalog.js';
 import type {
   EnvelopeBlock,
   EnvelopeQuery,
@@ -55,7 +56,7 @@ export interface Preparation extends FrameInfo {
   /** Shared effect uniforms consumed by shadeShader. */
   shade(request?: import('./shade.js').ShadeRequest): GPUBufferBinding;
   /** Frame-scoped shared binding; defaults to grayscale. Use Gpu.colormapLayout. */
-  colormap(value?: Colormap): GPUBindGroup;
+  colormap(value?: Colormap | ColormapName): GPUBindGroup;
   text(request: TextRequest): Promise<readonly TextPage[]>;
   scale(request: import('./scale.js').ScaleRequest): Promise<import('./scale.js').ResolvedScale>;
   extent(request: ExtentRequest): Promise<import('@latkit/model').Domain | null>;

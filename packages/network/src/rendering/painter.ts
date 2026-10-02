@@ -1,19 +1,15 @@
-import { scaleParameters, resolveScale } from '@latkit/gpu';
+import { kit, GpuError, type Gpu, type Shade } from '@latkit/gpu';
 import { rowCount } from '@latkit/model';
-import {
-  BufferData,
-  GpuError,
-  type BufferResource,
-  type Encoding,
-  type Gpu,
-  type Preparation,
-  type TextureResource,
-  type TextPage,
-} from '@latkit/gpu';
 import type { Camera } from '../camera.js';
-import { indexKey } from '../geometry/rows.js';
 import { DEG, turn } from '../camera.js';
-import type { NetworkData, NetworkItem, VertexOptions, EdgeOptions, PathOptions } from '../data.js';
+import {
+  sameItem,
+  type NetworkData,
+  type NetworkItem,
+  type VertexData,
+  type EdgeData,
+  type PathData,
+} from '../data.js';
 import {
   vertexOptions,
   edgeOptions,
@@ -22,9 +18,7 @@ import {
   type EdgeBank,
   type SegmentBatch,
 } from '../geometry/topology.js';
-import type { Options } from '../options.js';
-import type { Shade } from '@latkit/gpu';
-import { defaultShade } from '@latkit/gpu';
+import type { Style } from '../options.js';
 import type { LabelBatch } from './labels.js';
 import type { FieldRead } from './fields.js';
 import { pipelines, type Pipelines } from './pipelines.js';
@@ -35,11 +29,13 @@ export interface Reads {
 }
 export interface DrawFrame {
   readonly camera: Camera;
-  readonly options: Required<Options>;
+  readonly options: Style;
   readonly data: NetworkData;
   readonly geometry: Geometry;
   readonly reads: Reads;
-  readonly selected: NetworkItem | null;
+  readonly selection: readonly NetworkItem[];
+  /** Changes whenever the selection does. */
+  readonly selectionVersion: number;
   readonly hover: NetworkItem | null;
   readonly pointer: readonly [number, number] | null;
   readonly height: number;
@@ -65,11 +61,11 @@ export interface Paint {
   readonly compute: readonly Compute[];
   readonly vertices: readonly Command[];
   readonly edges: readonly Command[];
-  readonly labels: readonly { group: GPUBindGroup; pages: readonly TextPage[] }[];
+  readonly labels: readonly { group: GPUBindGroup; pages: readonly kit.TextPage[] }[];
   readonly background: GPUBindGroup;
   readonly depth: GPUTextureView;
   readonly color?: GPUTextureView;
-  readonly options: Required<Options>;
+  readonly options: Style;
   readonly globe: boolean;
   readonly indirect?: GPUBuffer;
   readonly drawCalls: number;
@@ -81,24 +77,26 @@ function sun(time: number): readonly [number, number, number] {
     lon = (0.5 - (time % 86400000) / 86400000) * Math.PI * 2;
   return [Math.cos(decl) * Math.cos(lon), Math.sin(decl), -Math.cos(decl) * Math.sin(lon)];
 }
-export function typeIds(data: NetworkData): Map<string, number> {
-  return new Map(
-    [
-      ...Object.keys(data.vertices).map((type) => 'vertex:' + type),
-      ...Object.keys(data.edges ?? {}).map((type) => 'edge:' + type),
-      ...Object.keys(data.paths ?? {}).map((type) => 'path:' + type),
-    ].map((key, i) => [key, i + 1]),
-  );
-}
 export class Painter {
-  private buffers = new Map<object, BufferResource>();
-  private textures: { key: string; depth: TextureResource; color?: TextureResource } | undefined;
-  private readonly dummy: BufferResource;
-  private focusData = new BufferData({ size: 16, label: 'network end focus' });
-  private focusKey = '';
-  private focusGeometry?: Geometry;
-  private phases = new WeakMap<SegmentBatch, BufferData>();
-  private curves?: { capacity: number; instances: BufferResource; indirect: BufferResource };
+  private buffers = new Map<object, kit.BufferResource>();
+  private textures:
+    { key: string; depth: kit.TextureResource; color?: kit.TextureResource } | undefined;
+  private readonly dummy: kit.BufferResource;
+  /** Two bits per drawn row: what the selection and hover halo. */
+  private readonly focus = new kit.BufferData({ size: 16, label: 'network focus' });
+  private focusWords = new Map<number, number>();
+  private focused?: {
+    readonly geometry: Geometry;
+    readonly selection: number;
+    readonly hover: NetworkItem | null;
+    readonly options: Style;
+  };
+  private phases = new WeakMap<SegmentBatch, kit.BufferData>();
+  private curves?: {
+    capacity: number;
+    instances: kit.BufferResource;
+    indirect: kit.BufferResource;
+  };
   constructor(private readonly gpu: Gpu) {
     this.dummy = gpu.buffer({
       size: 80,
@@ -106,7 +104,7 @@ export class Painter {
       label: 'network empty binding',
     });
   }
-  private output(key: object, bytes: number): BufferResource {
+  private output(key: object, bytes: number): kit.BufferResource {
     let result = this.buffers.get(key);
     if (!result) {
       result = this.gpu.buffer({
@@ -118,14 +116,14 @@ export class Painter {
     }
     return result;
   }
-  async prepare(frame: Preparation, state: DrawFrame): Promise<Paint> {
+  async prepare(frame: kit.Preparation, state: DrawFrame): Promise<Paint> {
     const { gpu } = this,
       { camera, options, reads, geometry, data } = state;
     const pipeline = await pipelines(
       gpu,
       frame.format,
       options.msaa,
-      state.shade?.wgsl ?? defaultShade,
+      state.shade?.wgsl ?? kit.defaultShade,
     );
     const key = [frame.width, frame.height, frame.format, options.msaa].join(':');
     if (this.textures?.key !== key) {
@@ -135,7 +133,7 @@ export class Painter {
         sampleCount: options.msaa,
         usage: GPUTextureUsage.RENDER_ATTACHMENT,
       });
-      let color: TextureResource | undefined;
+      let color: kit.TextureResource | undefined;
       try {
         if (options.msaa === 4)
           color = gpu.texture({
@@ -154,8 +152,7 @@ export class Painter {
     }
     const depth = frame.texture(this.textures.depth).createView(),
       color = this.textures.color ? frame.texture(this.textures.color).createView() : undefined;
-    const ids = typeIds(data);
-    const bytes = new ArrayBuffer(17 * 16),
+    const bytes = new ArrayBuffer(16 * 16),
       f = new Float32Array(bytes),
       u = new Uint32Array(bytes);
     const scale = camera.scale / (camera.projection === 'globe' ? DEG : 1),
@@ -181,8 +178,8 @@ export class Painter {
     );
     f.set(
       [
-        Math.sin(camera.centerY * DEG),
-        Math.cos(camera.centerY * DEG),
+        Math.sin(camera.center[1] * DEG),
+        Math.cos(camera.center[1] * DEG),
         state.height,
         geometry.geographic ? 1 : 0,
       ],
@@ -190,10 +187,10 @@ export class Painter {
     );
     f.set(
       [
-        camera.centerX,
-        camera.centerY,
-        Math.sin(camera.centerX * DEG),
-        Math.cos(camera.centerX * DEG),
+        camera.center[0],
+        camera.center[1],
+        Math.sin(camera.center[0] * DEG),
+        Math.cos(camera.center[0] * DEG),
       ],
       16,
     );
@@ -204,17 +201,12 @@ export class Painter {
         options.vertexRadiusPx,
         options.edgeWidthPx / 2,
         options.dashPeriodPx,
-        options.vertices ? 1 : 0,
+        options.showVertices ? 1 : 0,
       ],
       28,
     );
-    const reference = (item: NetworkItem | null) =>
-      item
-        ? [ids.get(item.kind + ':' + item.index.type) ?? 0xffffffff, item.row]
-        : [0xffffffff, 0xffffffff];
-    u.set([...reference(state.selected), ...reference(state.hover)], 32);
-    f.set([...options.hoverColor.slice(0, 3), options.hoverAlpha], 36);
-    f.set([...options.selectedColor.slice(0, 3), options.selectedAlpha], 40);
+    f.set([...options.hoverColor.slice(0, 3), options.hoverAlpha], 32);
+    f.set([...options.selectedColor.slice(0, 3), options.selectedAlpha], 36);
     f.set(
       [
         options.vertexHoverPx,
@@ -222,7 +214,7 @@ export class Painter {
         options.edgeHoverPx,
         options.edgeSelectedPx,
       ],
-      44,
+      40,
     );
     f.set(
       [
@@ -230,54 +222,20 @@ export class Painter {
         options.nightFloor,
         Math.max(0.0001, options.terminatorWidth),
       ],
-      48,
+      44,
     );
     f.set(
       [...sun(options.sunTime ?? Date.now()), options.daylight && geometry.geographic ? 1 : 0],
-      52,
+      48,
     );
     f.set(
       [...options.surfaceColor.slice(0, 3), options.daylight ? options.surfaceNightFloor : 1],
-      56,
+      52,
     );
-    f.set(options.graticuleColor, 60);
-    u.set([options.focusEnabled ? 1 : 0, options.graticule ? 1 : 0, 0, 0], 64);
-    const focusGeometry = geometry.native ?? geometry;
-    const focusKey = JSON.stringify([
-      reference(state.selected),
-      reference(state.hover),
-      options.focusEnds,
-      options.focusEnabled,
-    ]);
-    if (focusKey !== this.focusKey || this.focusGeometry !== focusGeometry) {
-      const focused = new Uint32Array(Math.max(1, geometry.vertexCount));
-      if (options.focusEnabled)
-        for (const [item, level] of [
-          [state.selected, 2],
-          [state.hover, 1],
-        ] as const) {
-          if (
-            !item ||
-            item.kind !== 'edge' ||
-            options.focusEnds === 'off' ||
-            (level === 1 && options.focusEnds !== 'hover-selected')
-          )
-            continue;
-          for (const vertex of geometry.adjacency.neighborhood(item, data))
-            if (vertex.kind === 'vertex') {
-              const found = geometry.lookup.get(indexKey(vertex.index))?.get(vertex.row);
-              if (found) {
-                const at = found.value.base + found.offset;
-                focused[at] = Math.max(focused[at], level);
-              }
-            }
-        }
-      this.focusData.resize(focused.byteLength);
-      this.focusData.write({ data: focused });
-      this.focusKey = focusKey;
-      this.focusGeometry = focusGeometry;
-    }
-    const focusedBinding = frame.buffer(this.focusData);
+    f.set(options.graticuleColor, 56);
+    u.set([options.focusEnabled ? 1 : 0, options.showGraticule ? 1 : 0, 0, 0], 60);
+    this.updateFocus(state);
+    const focusedBinding = frame.buffer(this.focus);
     const uniform = frame.uniforms(f),
       host = frame.shade({ parameters: state.host, pointerPx: state.pointer }),
       empty = frame.buffer(this.dummy);
@@ -291,7 +249,7 @@ export class Painter {
     const makeCompute = (
       bank: VertexBank | EdgeBank,
       read: FieldRead,
-      config: VertexOptions | EdgeOptions | PathOptions,
+      config: VertexData | EdgeData | PathData,
       edge: boolean,
     ) => {
       for (const { page, offset } of read.pages) {
@@ -319,10 +277,10 @@ export class Painter {
         pu.set([rowCount(page.rows), offset, read.vector ? 2 : 1, 'synthetic' in bank ? 1 : 0], 8);
         const ox = origin(read.vector ? 'position' : 'x'),
           oy = origin(read.vector ? 'position' : 'y', read.vector ? 1 : 0);
-        const longitude = turn(camera.centerX, ox) * DEG,
+        const longitude = turn(camera.center[0], ox) * DEG,
           latitude = oy * DEG;
         pf.set(
-          [ox - camera.centerX, oy - camera.centerY, Math.sin(longitude), Math.cos(longitude)],
+          [ox - camera.center[0], oy - camera.center[1], Math.sin(longitude), Math.cos(longitude)],
           12,
         );
         pf.set([Math.sin(latitude), Math.cos(latitude), 0, 0], 16);
@@ -333,7 +291,7 @@ export class Painter {
         ] as const) {
           const field = page.columns[name];
           pf.set(
-            scaleParameters(read.scales[name] ?? resolveScale({}, null), {
+            kit.scaleParameters(read.scales[name] ?? kit.resolveScale({}, null), {
               origin: field?.kind === 'value' ? field.origin?.[0] : undefined,
             }),
             at,
@@ -347,7 +305,7 @@ export class Painter {
         let styleUniform = uniform;
         if ('baseColor' in config || 'points' in config) {
           const values = f.slice();
-          values.set((config as PathOptions).baseColor ?? [0.52, 0.6, 0.68, 0.6], 24);
+          values.set((config as PathData).baseColor ?? [0.52, 0.6, 0.68, 0.6], 24);
           styleUniform = frame.uniforms(values);
         }
         const group = gpu.device.createBindGroup({
@@ -381,7 +339,7 @@ export class Painter {
           usage: GPUBufferUsage.STORAGE,
           label: 'network reusable curve scratch',
         });
-        let indirect: BufferResource;
+        let indirect: kit.BufferResource;
         try {
           indirect = gpu.buffer({
             size: 16,
@@ -399,16 +357,15 @@ export class Painter {
     }
     const curveInstances = curveCount ? frame.buffer(this.curves!.instances) : empty;
     const curveIndirect = curveCount ? frame.buffer(this.curves!.indirect) : undefined;
+    /** `base` is the dense address of the bank's first row, for focus. */
     const group = (
       a: GPUBufferBinding,
       b: GPUBufferBinding,
       segments: GPUBufferBinding,
       styles: GPUBufferBinding,
-      id: number,
+      base: number,
       style = uniform,
-      curved = false,
       phase?: GPUBufferBinding,
-      base = 0xffffffff,
     ) =>
       gpu.device.createBindGroup({
         layout: pipeline.draw,
@@ -420,7 +377,7 @@ export class Painter {
           { binding: 4, resource: styles },
           {
             binding: 5,
-            resource: frame.uniforms(Uint32Array.of(id, curved ? 1 : 0, phase ? 1 : 0, base)),
+            resource: frame.uniforms(Uint32Array.of(base, 0, phase ? 1 : 0, 0)),
           },
           { binding: 6, resource: host },
           { binding: 7, resource: focusedBinding },
@@ -433,17 +390,7 @@ export class Painter {
     for (const bank of geometry.vertices)
       if (!bank.synthetic)
         vertices.push({
-          group: group(
-            vertexBuffers.get(bank)!,
-            empty,
-            empty,
-            empty,
-            ids.get('vertex:' + bank.type)!,
-            uniform,
-            false,
-            undefined,
-            bank.base,
-          ),
+          group: group(vertexBuffers.get(bank)!, empty, empty, empty, bank.base),
           count: bank.count,
         });
     for (const bank of geometry.edges) {
@@ -486,7 +433,7 @@ export class Painter {
         if (values) {
           let buffer = this.phases.get(batch);
           if (!buffer) {
-            buffer = new BufferData({ size: values.byteLength, label: 'network dash phases' });
+            buffer = new kit.BufferData({ size: values.byteLength, label: 'network dash phases' });
             this.phases.set(batch, buffer);
           }
           buffer.write({ data: values });
@@ -498,9 +445,8 @@ export class Painter {
             b,
             segments,
             edgeBuffers.get(bank)!,
-            ids.get((bank.kind ?? 'edge') + ':' + bank.type)!,
+            geometry.vertexCount + bank.base,
             style,
-            curved,
             phase,
           ),
           count,
@@ -508,7 +454,7 @@ export class Painter {
         });
       }
     }
-    const labels: { group: GPUBindGroup; pages: readonly TextPage[] }[] = [];
+    const labels: { group: GPUBindGroup; pages: readonly kit.TextPage[] }[] = [];
     for (const { runs, anchors } of state.labels)
       if (runs.length) {
         const pages = await frame.text({ runs });
@@ -541,14 +487,77 @@ export class Painter {
       globe: camera.projection === 'globe',
       drawCalls:
         1 +
-        (camera.projection === 'globe' && options.earthAxis ? 1 : 0) +
-        (options.vertices ? vertices.length : 0) +
-        (options.poles ? vertices.length : 0) +
-        (options.edges ? edges.length : 0) +
+        (camera.projection === 'globe' && options.showEarthAxis ? 1 : 0) +
+        (options.showVertices ? vertices.length : 0) +
+        (options.showPoles ? vertices.length : 0) +
+        (options.showEdges ? edges.length : 0) +
         labels.reduce((n, v) => n + v.pages.length, 0),
     };
   }
-  encode(frame: Encoding, paint: Paint): void {
+  /** Rewrite only the focus words that changed, and only when selection, hover, or geometry do. */
+  private updateFocus(state: DrawFrame): void {
+    const { geometry, options, data } = state,
+      native = geometry.native ?? geometry,
+      last = this.focused;
+    if (
+      last?.geometry === native &&
+      last.selection === state.selectionVersion &&
+      sameItem(last.hover, state.hover) &&
+      last.options.focusEnabled === options.focusEnabled &&
+      last.options.focusEnds === options.focusEnds
+    )
+      return;
+    const next = new Map<number, number>(),
+      adjacency = native.adjacency;
+    const mark = (item: NetworkItem, level: number) => {
+      const dense = adjacency.address(item);
+      if (dense === undefined) return;
+      const word = dense >>> 4,
+        shift = (dense & 15) * 2,
+        bits = next.get(word) ?? 0;
+      if (((bits >>> shift) & 3) < level)
+        next.set(word, ((bits & ~(3 << shift)) | (level << shift)) >>> 0);
+    };
+    const focus = (item: NetworkItem, level: number) => {
+      mark(item, level);
+      if (
+        item.kind === 'edge' &&
+        (options.focusEnds === 'hover-selected' ||
+          (level === 2 && options.focusEnds === 'selected'))
+      )
+        for (const vertex of adjacency.neighborhood(item, data))
+          if (vertex.kind === 'vertex') mark(vertex, level);
+    };
+    if (options.focusEnabled) {
+      for (const item of state.selection) focus(item, 2);
+      if (state.hover) focus(state.hover, 1);
+    }
+    // Sixteen rows per word, padded to whole 16-byte rows.
+    const rows = native.vertexCount + native.edgeCount + native.pathCount,
+      size = Math.max(16, Math.ceil(rows / 64) * 16);
+    if (this.focus.size !== size) this.focus.resize(size);
+    const bytes = this.focus.bytes,
+      words = new Uint32Array(bytes.buffer, bytes.byteOffset, size / 4);
+    let lo = Infinity,
+      hi = -1;
+    const write = (word: number, value: number) => {
+      if (word >= words.length || words[word] === value) return;
+      words[word] = value;
+      lo = Math.min(lo, word);
+      hi = Math.max(hi, word);
+    };
+    for (const word of this.focusWords.keys()) if (!next.has(word)) write(word, 0);
+    for (const [word, value] of next) write(word, value);
+    if (hi >= lo) this.focus.touch({ offset: lo * 4, size: (hi - lo + 1) * 4 });
+    this.focusWords = next;
+    this.focused = {
+      geometry: native,
+      selection: state.selectionVersion,
+      hover: state.hover,
+      options,
+    };
+  }
+  encode(frame: kit.Encoding, paint: Paint): void {
     const compute = frame.encoder.beginComputePass({ label: 'network native fields to geometry' });
     for (const command of paint.compute) {
       compute.setPipeline(command.edge ? paint.pipelines.edge : paint.pipelines.vertex);
@@ -581,12 +590,12 @@ export class Painter {
     pass.setPipeline(paint.pipelines.surface);
     pass.setBindGroup(0, paint.background);
     pass.draw(3);
-    if (paint.globe && paint.options.earthAxis) {
+    if (paint.globe && paint.options.showEarthAxis) {
       pass.setPipeline(paint.pipelines.axis);
       pass.setBindGroup(0, paint.background);
       pass.draw(6);
     }
-    if (paint.options.edges) {
+    if (paint.options.showEdges) {
       pass.setPipeline(paint.pipelines.edges);
       for (const item of paint.edges) {
         if (item.tessellation) {
@@ -610,14 +619,14 @@ export class Painter {
         pass.draw(6, item.count);
       }
     }
-    if (paint.options.poles) {
+    if (paint.options.showPoles) {
       pass.setPipeline(paint.pipelines.poles);
       for (const item of paint.vertices) {
         pass.setBindGroup(0, item.group);
         pass.draw(6, item.count);
       }
     }
-    if (paint.options.vertices) {
+    if (paint.options.showVertices) {
       pass.setPipeline(paint.pipelines.vertices);
       for (const item of paint.vertices) {
         pass.setBindGroup(0, item.group);
