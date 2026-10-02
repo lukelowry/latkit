@@ -1,81 +1,117 @@
-import { GpuError, type Gpu } from '@latkit/gpu';
-import { bitAt, rowCount, rowAt, sampleAt, type Domain, type SampleColumn } from '@latkit/model';
+import { kit, type Point } from '@latkit/gpu';
+import {
+  bitAt,
+  rowCount,
+  rowAt,
+  sampleAt,
+  type Domain,
+  type ReadScope,
+  type SampleColumn,
+} from '@latkit/model';
 import type { Binding } from './bindings.js';
 import type { MonitorData, Reading } from './data.js';
 import type { Plot } from './axes.js';
-import { finite } from './config.js';
-import { yieldWork } from './async.js';
-export class HoverBudget extends Error {
-  constructor() {
-    super('Automatic hover exceeded its CPU budget');
+
+/** Bytes a reading holds, for the picking budget. */
+export const READING_BYTES = 192;
+export interface PickRequest {
+  readonly reads: ReadScope;
+  readonly data: MonitorData;
+  readonly bindings: readonly Binding[];
+  readonly plot: Plot;
+  readonly x: Domain;
+  readonly y: Domain;
+  readonly point: Point;
+  readonly radius: number;
+  /** The nearest this many readings are kept. */
+  readonly limit: number;
+}
+interface Candidate {
+  readonly distance: number;
+  /** Scan order, which is draw order: later is on top. */
+  readonly order: number;
+  readonly reading: Reading;
+}
+/** Whether `a` ranks below `b`: farther, or as near and drawn earlier. */
+function below(a: Candidate, b: Candidate): boolean {
+  return a.distance > b.distance || (a.distance === b.distance && a.order < b.order);
+}
+/** The best `limit` candidates in a heap whose root is the worst kept. */
+class Nearest {
+  readonly heap: Candidate[] = [];
+  constructor(private readonly limit: number) {}
+  admits(distance: number, order: number): boolean {
+    const worst = this.heap[0];
+    return (
+      this.heap.length < this.limit ||
+      distance < worst.distance ||
+      (distance === worst.distance && order > worst.order)
+    );
+  }
+  add(candidate: Candidate): void {
+    const heap = this.heap;
+    let i: number;
+    if (heap.length < this.limit) {
+      i = heap.push(candidate) - 1;
+      while (i > 0) {
+        const parent = (i - 1) >> 1;
+        if (!below(heap[i], heap[parent])) break;
+        [heap[i], heap[parent]] = [heap[parent], heap[i]];
+        i = parent;
+      }
+      return;
+    }
+    heap[0] = candidate;
+    i = 0;
+    for (;;) {
+      const left = i * 2 + 1,
+        right = left + 1;
+      let worst = i;
+      if (left < heap.length && below(heap[left], heap[worst])) worst = left;
+      if (right < heap.length && below(heap[right], heap[worst])) worst = right;
+      if (worst === i) break;
+      [heap[i], heap[worst]] = [heap[worst], heap[i]];
+      i = worst;
+    }
+  }
+  /** Nearest first, topmost breaking ties. */
+  sorted(): Reading[] {
+    return [...this.heap]
+      .sort((a, b) => a.distance - b.distance || b.order - a.order)
+      .map((candidate) => candidate.reading);
   }
 }
-export interface PickRequest {
-  gpu: Gpu;
-  data: MonitorData;
-  bindings: readonly Binding[];
-  plot: Plot;
-  x: Domain;
-  y: Domain;
-  point: readonly [number, number];
-  radius: number;
-  limit: number;
-  maxBytes: number;
-  signal: AbortSignal;
-  budget?: number;
-  accepts?: (reading: Reading) => boolean;
-}
-/** Refine only the pointer's coordinate interval; preserve native identities and Float64 values. */
+/** Read only the pointer's coordinate interval; readings keep native identities and Float64 values. */
 export async function pick(request: PickRequest): Promise<Reading[]> {
-  const { gpu, data, bindings, plot, x, y, point, radius, limit, maxBytes, signal, budget } =
-    request;
-  finite(radius, 'pick radius', 0, 1024);
-  if (!Number.isSafeInteger(limit) || limit < 1)
-    throw new GpuError('invalid-input', 'Pick limit must be a positive integer');
-  if (limit * 192 > maxBytes)
-    throw new GpuError('resource-limit', 'Pick result exceeds pickingBytes');
+  const { reads, data, bindings, plot, x, y, point, radius, limit } = request;
+  const work = new kit.Work(reads.signal, Infinity, 3);
   const coordinate = x[0] + ((point[0] - plot.x) / plot.width) * (x[1] - x[0]),
     delta = (radius / plot.width) * (x[1] - x[0]);
   const between: Domain = [Math.max(x[0], coordinate - delta), Math.min(x[1], coordinate + delta)];
-  const result: { reading: Reading; distance: number }[] = [];
-  let used = 0;
+  const nearest = new Nearest(limit);
+  let order = 0;
   for (const item of bindings) {
-    for await (const tile of gpu.fields(
-      {
-        source: data.source,
-        from: item.trace.from,
-        rows: item.rows,
-        fields: {
-          value: item.fields.value,
-          ...(item.fields.visible ? { visible: item.fields.visible } : {}),
-        },
-        window: { kind: 'range', between },
+    for await (const tile of reads.fields({
+      source: data.source,
+      from: item.trace.from,
+      rows: item.rows,
+      fields: {
+        value: item.fields.value,
+        ...(item.fields.visible ? { visible: item.fields.visible } : {}),
       },
-      { signal },
-    )) {
-      const version = tile.versions.get(item.source);
-      if (version === undefined)
-        throw new GpuError('conflict', 'Missing authoritative trace version');
+      window: { kind: 'range', between },
+    })) {
       const samples = tile.samples!,
-        column = tile.columns.value as SampleColumn;
-      let began = performance.now(),
-        checked = 0;
-      for (let f = 0; f < samples.coordinates.length; f++)
-        for (let r = 0; r < rowCount(tile.rows); r++) {
-          if ((checked++ & 1023) === 0) {
-            signal.throwIfAborted();
-            const elapsed = performance.now() - began;
-            if (used + elapsed > (budget ?? Infinity)) throw new HoverBudget();
-            if (elapsed > 3) {
-              used += elapsed;
-              await yieldWork(signal);
-              began = performance.now();
-            }
-          }
+        column = tile.columns.value as SampleColumn,
+        visible = tile.columns.visible,
+        frames = samples.coordinates.length;
+      // Rows draw in order, each from its first frame to its last.
+      for (let r = 0; r < rowCount(tile.rows); r++)
+        for (let f = 0; f < frames; f++, order++) {
+          if ((order & 1023) === 0) await work.step();
           if (!bitAt(tile.presence.value, r)) continue;
           const value = sampleAt(column, { row: r, frame: f });
           if (value === null || !Number.isFinite(value)) continue;
-          const visible = tile.columns.visible;
           if (visible && bitAt(tile.presence.visible, r)) {
             const c = visible as typeof visible & { rowStride?: number; frameStride?: number },
               at = c.offset + r * (c.rowStride ?? 1) + f * (c.frameStride ?? 0);
@@ -90,14 +126,9 @@ export async function pick(request: PickRequest): Promise<Reading[]> {
           const px = plot.x + ((samples.coordinates[f] - x[0]) / (x[1] - x[0])) * plot.width,
             py = plot.y + ((y[1] - value) / (y[1] - y[0])) * plot.height,
             distance = (px - point[0]) ** 2 + (py - point[1]) ** 2;
-          if (
-            distance > radius * radius ||
-            (result.length === limit && distance >= result[result.length - 1].distance)
-          )
-            continue;
+          if (distance > radius * radius || !nearest.admits(distance, order)) continue;
           const reading: Reading = {
             source: item.source,
-            version,
             index: tile.index,
             row: rowAt(tile.rows, r),
             field: item.field,
@@ -107,15 +138,9 @@ export async function pick(request: PickRequest): Promise<Reading[]> {
             value,
             point: [px, py],
           };
-          if (request.accepts && !request.accepts(reading)) continue;
-          let at = result.findIndex((v) => distance < v.distance);
-          if (at < 0) at = result.length;
-          result.splice(at, 0, { reading, distance });
-          if (result.length > limit) result.pop();
+          nearest.add({ distance, order, reading });
         }
-      used += performance.now() - began;
-      if (used > (budget ?? Infinity)) throw new HoverBudget();
     }
   }
-  return result.map((item) => item.reading);
+  return nearest.sorted();
 }

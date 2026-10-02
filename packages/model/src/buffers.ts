@@ -14,6 +14,15 @@ export function blockBuffers(block: unknown): readonly ArrayBufferLike[] {
  * overhead. Borrowed views may retain larger backing allocations; inspect blockBuffers for those.
  */
 export function blockByteLength(block: unknown): number {
+  return measure(block).bytes;
+}
+
+/** The binary part of blockByteLength: the union of exposed view ranges per allocation. */
+export function exposedBytes(block: unknown): number {
+  return measure(block).exposed;
+}
+
+function measure(block: unknown): { bytes: number; exposed: number } {
   const ranges = new Map<ArrayBufferLike, [number, number][]>();
   let bytes = 0;
   visit(block, (value) => {
@@ -25,15 +34,16 @@ export function blockByteLength(block: unknown): number {
     else if (typeof value === 'number') bytes += 8;
     else if (typeof value === 'boolean' || value === null) bytes += 1;
   });
+  let exposed = 0;
   for (const list of ranges.values()) {
     list.sort((a, b) => a[0] - b[0]);
     let end = 0;
     for (const [start, next] of list) {
-      bytes += Math.max(0, next - Math.max(start, end));
+      exposed += Math.max(0, next - Math.max(start, end));
       end = Math.max(end, next);
     }
   }
-  return bytes;
+  return { bytes: bytes + exposed, exposed };
 }
 
 function visit(value: unknown, consume: (value: unknown) => void): void {

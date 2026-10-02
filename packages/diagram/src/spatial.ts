@@ -58,17 +58,26 @@ export class SpatialIndex {
       throw new GpuError('resource-limit', 'Spatial index exceeds budget');
     return id;
   }
-  query(box: Rect): number[] {
+  /** Entries meeting the box; `check` bounds a scan of every entry. */
+  query(box: Rect, check?: () => void): number[] {
     const x = Math.floor(box[0] / this.pitch),
       y = Math.floor(box[1] / this.pitch),
       r = Math.floor(box[2] / this.pitch),
       b = Math.floor(box[3] / this.pitch);
-    if ((r - x + 1) * (b - y + 1) > 4096)
-      return this.boxes.flatMap((v, i) => (intersects(v, box) ? [i] : []));
+    if ((r - x + 1) * (b - y + 1) > 4096) {
+      const found: number[] = [];
+      for (let i = 0; i < this.boxes.length; i++) {
+        check?.();
+        if (intersects(this.boxes[i], box)) found.push(i);
+      }
+      return found;
+    }
     const found = new Set(this.large);
     for (let j = y; j <= b; j++)
-      for (let i = x; i <= r; i++)
+      for (let i = x; i <= r; i++) {
+        check?.();
         for (const id of this.cells.get(i + ',' + j) ?? []) found.add(id);
+      }
     return [...found].filter((id) => intersects(this.boxes[id], box));
   }
 }

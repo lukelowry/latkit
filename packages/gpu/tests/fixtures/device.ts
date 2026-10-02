@@ -157,6 +157,12 @@ export function fakeDevice(
       };
       return encoder;
     }),
+    createShaderModule: vi.fn((descriptor: GPUShaderModuleDescriptor) => ({
+      label: descriptor.label ?? '',
+      getCompilationInfo: async () => ({ messages: [] }),
+    })),
+    pushErrorScope: vi.fn(),
+    popErrorScope: vi.fn(async () => null),
     createRenderPipelineAsync: vi.fn(async (_descriptor: GPURenderPipelineDescriptor) => ({
       kind: 'render',
     })),

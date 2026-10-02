@@ -96,6 +96,6 @@ export class GraphSource {
         columns,
       });
     }
-    return createData(schema, this.version, batches);
+    return createData(schema, batches);
   }
 }

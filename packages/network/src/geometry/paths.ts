@@ -1,5 +1,5 @@
-import { rowAt } from '@latkit/model';
-import { GpuError, kit } from '@latkit/gpu';
+import { rowAt, type FieldsBlock, type FieldValues } from '@latkit/model';
+import { GpuError } from '@latkit/gpu';
 import type { NetworkData, EdgeData } from '../data.js';
 import {
   BANK_ROWS,
@@ -53,8 +53,8 @@ export function geodesic(a: Point, b: Point, t: number): Point {
     a[2] + (b[2] - a[2]) * t,
   ];
 }
-function lookup(read: FieldRead): RowLookup<kit.NativeFields> {
-  const result = new RowLookup<kit.NativeFields>();
+function lookup(read: FieldRead): RowLookup<FieldsBlock> {
+  const result = new RowLookup<FieldsBlock>();
   for (const tile of read.native) result.add(tile.rows, tile);
   result.seal();
   return result;
@@ -136,7 +136,7 @@ export class Paths {
       branch = 0;
     const charge = (n: number) => {
       bytes += n;
-      if (bytes > limits.cpuBytes)
+      if (bytes > limits.geometryBytes)
         throw new GpuError('resource-limit', 'Paths exceed the network CPU budget');
     };
     const point = (bank: VertexBank, offset: number): Point => {
@@ -229,7 +229,7 @@ export class Paths {
           rows = { kind: 'range' as const, offset: 0, count };
         const values = new Float64Array(coordinates),
           h = new Float32Array(heights);
-        const position: kit.FieldValues = {
+        const position: FieldValues = {
           index: active.index,
           rows,
           values: {
@@ -273,7 +273,7 @@ export class Paths {
         return { bank: active, offset, point: p };
       };
       const segment = (a: Address, b: Address, owner: number, branch: number) => {
-        if (++segments > limits.maxSegments)
+        if (++segments > limits.segments)
           throw new GpuError('resource-limit', 'Path segment limit exceeded');
         charge(48);
         const key = a.bank.id + ':' + b.bank.id;
@@ -341,7 +341,7 @@ export class Paths {
           }
         }
       };
-      const list = (tile: kit.NativeFields, name: string, row: number): Point[] => {
+      const list = (tile: FieldsBlock, name: string, row: number): Point[] => {
         const column = tile.columns[name];
         if (column?.kind !== 'list' || column.values.kind !== 'vector' || column.values.size !== 2)
           throw new GpuError('invalid-input', 'Paths require lists of two-component vectors');

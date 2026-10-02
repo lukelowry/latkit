@@ -11,13 +11,13 @@ const monitor = createMonitor(gpu, {
   canvas,
   source: observations,
   traces: { temperature: { from: 'sensor', field: 'temperature' } },
-  camera: { window: [0, 30], follow: 30 },
+  camera: { window: [0, 30] },
   valueAxis: 'Temperature',
 });
 ```
 
-Supply each application update with `monitor.set({ source: nextData })`. Shared unchanged
-pages preserve incremental rendering; the application decides how much history to keep.
+Supply each application update with `monitor.set({ source: nextData })`. Each frame draws only the
+observations that arrived; the application decides how much history to keep.
 
 [Guide](https://latkit.readthedocs.io/en/latest/monitor-quickstart.html) ·
 [Views](https://latkit.readthedocs.io/en/latest/views.html) ·

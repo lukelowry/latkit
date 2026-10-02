@@ -1,17 +1,15 @@
-import { GpuError, type Gpu, kit } from '@latkit/gpu';
-import {
-  type Data,
-  type Schema,
-  type Domain,
-  type RowSelection,
-  type SampleWindow,
-  type NumericColumn,
-  type SampleColumn,
-  rowCount,
-  bitAt,
+import { GpuError, kit } from '@latkit/gpu';
+import { rowCount } from '@latkit/model';
+import type {
+  Data,
+  Schema,
+  Domain,
+  RowSelection,
+  FieldBinding,
+  FieldInput,
+  ReadScope,
 } from '@latkit/model';
 import type { MonitorData, TraceData as Trace } from './data.js';
-import { yieldWork } from './async.js';
 import { domain, finite, fail } from './config.js';
 export interface Binding {
   readonly name: string;
@@ -20,10 +18,9 @@ export interface Binding {
   readonly field: string;
   readonly schema: Schema;
   readonly rows?: RowSelection;
-  readonly fields: Readonly<Record<string, kit.FieldInput>>;
-  readonly envelope: boolean;
-  readonly colorValue: boolean;
-  readonly shadeValue: boolean;
+  /** Rows the trace draws. */
+  readonly count: number;
+  readonly fields: Readonly<Record<string, FieldInput>>;
   readonly colorDomain: Domain | null;
 }
 export function validateData(data: MonitorData): void {
@@ -43,21 +40,18 @@ export function validateData(data: MonitorData): void {
       domain(trace.color.domain as Domain);
   }
 }
-export function binding(
-  input: kit.FieldInput,
-  source: Data,
-  from: string,
-): kit.FieldBinding | undefined {
+export function binding(input: FieldInput, source: Data, from: string): FieldBinding | undefined {
   return typeof input === 'string'
     ? { source, from, field: input }
     : 'field' in input
       ? input
       : undefined;
 }
+/** The traces as the monitor reads them; sampled color domains fit `window`. */
 export async function describeBindings(
-  gpu: Gpu,
+  reads: ReadScope,
   data: MonitorData,
-  signal: AbortSignal,
+  window: Domain,
 ): Promise<Binding[]> {
   const schemas = new Map<Data, Schema>();
   const describe = (source: Data) => {
@@ -81,10 +75,11 @@ export async function describeBindings(
       fail('Trace field must be sampled numeric data');
     if (trace.rows && main.rows && JSON.stringify(trace.rows) !== JSON.stringify(main.rows))
       fail('Specify the trace row selection once');
-    let envelope = true,
-      colorValue = false,
-      shadeValue = false;
-    const mapped: Record<string, kit.FieldInput> = { value: { ...main, rows: undefined } };
+    let colorValue = false;
+    // A field name reads the request's source, so a trace named by field follows appends.
+    const mapped: Record<string, FieldInput> = {
+      value: typeof trace.field === 'string' ? trace.field : { ...main, rows: undefined },
+    };
     for (const [alias, input] of [
       ['color', trace.color?.field],
       ['visible', trace.visible],
@@ -107,10 +102,8 @@ export async function describeBindings(
         ].includes(definition.type as string)
       )
         fail('Visual fields must be scalar numeric data, or boolean visibility');
-      const same = other.source === main.source && other.field === main.field && !other.rows;
-      if (alias === 'color') colorValue = same;
-      if (alias === 'shade') shadeValue = same;
-      if (definition.sampled && (!same || alias === 'visible')) envelope = false;
+      if (alias === 'color')
+        colorValue = other.source === main.source && other.field === main.field && !other.rows;
     }
     let colorDomain: Domain | null = null;
     const specified = trace.color?.domain;
@@ -122,31 +115,38 @@ export async function describeBindings(
         ? !!fields(describe(other.source), other.from)[other.field]?.sampled
         : false;
       if (!colorValue || (specified && typeof specified === 'object'))
-        colorDomain = await extent(
-          gpu,
-          data.source,
-          trace.from,
-          trace.rows ?? main.rows,
-          input,
-          sampled
+        colorDomain = await reads.extent({
+          source: data.source,
+          from: trace.from,
+          rows: trace.rows ?? main.rows,
+          field: input,
+          window: sampled
             ? specified && typeof specified === 'object' && 'window' in specified
               ? specified.window
-              : data.window
+              : { kind: 'range', between: window }
             : undefined,
-          signal,
-        );
+        });
     }
+    const rows = trace.rows ?? main.rows,
+      table = main.source.tables[trace.from];
+    const count = !rows
+      ? table
+        ? rowCount(table.rows)
+        : 0
+      : rows.kind === 'ids'
+        ? rows.ids.length
+        : rows.kind === 'range'
+          ? rows.count
+          : rows.values.length;
     result.push({
       name,
       trace,
       source: main.source,
       field: main.field,
       schema,
-      rows: trace.rows ?? main.rows,
+      rows,
+      count,
       fields: mapped,
-      envelope,
-      colorValue,
-      shadeValue,
       colorDomain,
     });
   }
@@ -156,64 +156,4 @@ export function fields(schema: Schema, type: string) {
   const result = schema.types[type]?.fields;
   if (!result) throw new GpuError('invalid-input', 'Unknown model type ' + type);
   return result;
-}
-
-export async function extent(
-  gpu: Gpu,
-  source: Data,
-  from: string,
-  rows: RowSelection | undefined,
-  input: kit.FieldInput,
-  window: SampleWindow | undefined,
-  signal: AbortSignal,
-): Promise<Domain | null> {
-  const ref = binding(input, source, from);
-  let lo = Infinity,
-    hi = -Infinity;
-  if (ref && !ref.rows) {
-    if (ref.source.tables[ref.from]) {
-      for await (const block of gpu.query(
-        ref.source,
-        {
-          kind: 'aggregate',
-          from,
-          rows,
-          select: [ref.field],
-          measures: ['min', 'max'],
-          ...(window ? { window } : {}),
-        },
-        { signal },
-      )) {
-        if (block.kind !== 'aggregate') continue;
-        const v = block.values[ref.field];
-        if (v?.min != null) lo = Math.min(lo, v.min);
-        if (v?.max != null) hi = Math.max(hi, v.max);
-      }
-      return lo <= hi ? [lo, hi] : null;
-    }
-  }
-  for await (const tile of gpu.fields(
-    { source, from, rows, fields: { value: input }, ...(window ? { window } : {}) },
-    { signal },
-  )) {
-    const c = tile.columns.value;
-    if (c.kind !== 'numeric') fail('Scales require scalar numeric data');
-    const sample = c as NumericColumn & Partial<SampleColumn>;
-    let work = performance.now(),
-      checked = 0;
-    for (let r = 0; r < rowCount(tile.rows); r++)
-      for (let f = 0; f < (tile.samples?.coordinates.length ?? 1); f++) {
-        if ((checked++ & 2047) === 0 && performance.now() - work > 3) {
-          await yieldWork(signal);
-          work = performance.now();
-        }
-        const at = c.offset + r * (sample.rowStride ?? 1) + f * (sample.frameStride ?? 0),
-          v = c.values[at];
-        if (bitAt(tile.presence.value, r) && bitAt(c.validity, at) && Number.isFinite(v)) {
-          lo = Math.min(lo, v);
-          hi = Math.max(hi, v);
-        }
-      }
-  }
-  return lo <= hi ? [lo, hi] : null;
 }

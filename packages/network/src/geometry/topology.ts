@@ -1,6 +1,14 @@
 import { assertIndex } from '@latkit/model';
 import { GpuError, kit } from '@latkit/gpu';
-import type { Column, Index, ReferenceColumn, RowAxis, Schema, Data } from '@latkit/model';
+import type {
+  Column,
+  Index,
+  ReferenceColumn,
+  RowAxis,
+  Schema,
+  Data,
+  FieldValues,
+} from '@latkit/model';
 import type { NetworkData, VertexData, EdgeData, PathData } from '../data.js';
 import { Adjacency } from './adjacency.js';
 import { RowLookup, bit, indexKey } from './rows.js';
@@ -58,14 +66,20 @@ export interface Geometry {
   readonly native?: Geometry;
 }
 export interface Limits {
-  readonly maxVertices?: number;
-  readonly maxSegments?: number;
-  readonly cpuBytes?: number;
+  /** Drawn vertices, including path points. */
+  readonly vertices?: number;
+  /** Logical stroke segments before adaptive GPU tessellation. */
+  readonly segments?: number;
+  /** CPU memory for topology and paths. */
+  readonly geometryBytes?: number;
+  /** CPU memory for hit-test indexes; hover and pick fall back to scans past it. */
+  readonly pickingBytes?: number;
 }
 export const DEFAULT_LIMITS = Object.freeze({
-  maxVertices: 2_000_000,
-  maxSegments: 8_000_000,
-  cpuBytes: 256 * 1024 ** 2,
+  vertices: 2_000_000,
+  segments: 8_000_000,
+  geometryBytes: 256 * 1024 ** 2,
+  pickingBytes: 64 * 1024 ** 2,
 });
 export function vertexOptions(data: NetworkData, bank: VertexBank): VertexData {
   return bank.synthetic ?? data.vertices[bank.type];
@@ -213,30 +227,25 @@ export async function readGeometry(
     edgeCount = 0,
     pathCount = 0,
     bytes = 0;
-  let schema: Schema | undefined;
+  const schema = data.source.schema;
   const charge = (n: number) => {
     bytes += n;
-    if (bytes > limits.cpuBytes)
+    if (bytes > limits.geometryBytes)
       throw new GpuError('resource-limit', 'Network geometry exceeds its CPU budget');
   };
   const rowsOf = async (
     source: Data,
     type: string,
     selection: VertexData['rows'],
-    found: (schema: Schema) => void,
   ): Promise<{ index?: Index; rows: Uint32Array }> => {
     const rows = new Uints();
     let index: Index | undefined;
-    for await (const block of frame.query(source, {
+    for await (const block of frame.reader.read(source, {
       kind: 'rows',
       from: type,
       select: [],
       ...(selection ? { rows: selection } : {}),
     })) {
-      if (block.kind === 'schema') {
-        found(block.schema);
-        continue;
-      }
       if (index) assertIndex(index, block.index);
       else index = block.index;
       rows.append(block.rows);
@@ -245,11 +254,11 @@ export async function readGeometry(
   };
 
   for (const [type, options] of Object.entries(data.vertices)) {
-    const read = await rowsOf(data.source, type, options.rows, (found) => (schema = found));
-    const definition = schema!.types[type];
+    const read = await rowsOf(data.source, type, options.rows);
+    const definition = schema.types[type];
     if (!definition) throw new GpuError('invalid-input', 'Unknown vertex type: ' + type);
     if (definition.spatial) systems.add(definition.spatial.system);
-    if (vertexCount + read.rows.length > limits.maxVertices)
+    if (vertexCount + read.rows.length > limits.vertices)
       throw new GpuError('resource-limit', 'Network vertex limit exceeded');
     const addresses = new Addresses(read.rows, vertexCount, vertices.length);
     drawn.set(type, { index: read.index, addresses });
@@ -274,7 +283,6 @@ export async function readGeometry(
     table.seal();
     if (read.index) lookup.set(indexKey(read.index), table);
   }
-  if (!schema) schema = data.source.schema;
 
   /** The drawn rows a reference column names, checked against its declared vertex type. */
   const target = (column: ReferenceColumn): Drawn | undefined => {
@@ -300,20 +308,12 @@ export async function readGeometry(
     return drawn.get(vertices[lo - 1].type)!.addresses;
   };
 
+  const wiring = kit.wiring(schema, Object.keys(data.vertices), data.edges ?? {});
   for (const [type, options] of Object.entries(data.edges ?? {})) {
-    const definition = schema.types[type];
-    if (!definition) throw new GpuError('invalid-input', 'Unknown edge type: ' + type);
-    const pairs = new Segments(vertices, limits.maxSegments, segments);
-    if (options.ends) {
-      for (const end of options.ends) {
-        const field = definition.fields[end]?.type;
-        if (typeof field !== 'object' || field.kind !== 'reference' || !data.vertices[field.to])
-          throw new GpuError(
-            'invalid-input',
-            `Edge end ${type}.${end} must reference a vertex type`,
-          );
-      }
-      const [a, b] = options.ends;
+    const wire = wiring.get(type)!;
+    const pairs = new Segments(vertices, limits.segments, segments);
+    if (wire.kind === 'ends') {
+      const [{ field: a }, { field: b }] = wire.ends;
       let index: Index | undefined;
       const rows = new Uints(),
         offsets = new Uints(),
@@ -338,13 +338,12 @@ export async function readGeometry(
         offsets.push(0);
         incidence.length = 0;
       };
-      for await (const block of frame.query(data.source, {
+      for await (const block of frame.reader.read(data.source, {
         kind: 'rows',
         from: type,
         select: [a, b],
         ...(options.rows ? { rows: options.rows } : {}),
       })) {
-        if (block.kind === 'schema') continue;
         if (index) assertIndex(index, block.index);
         else index = block.index;
         const from = reference(block.columns[a], a),
@@ -383,26 +382,22 @@ export async function readGeometry(
     }
     if (options.bends) throw new GpuError('invalid-input', 'Bends require ends');
     // A net: its ends are the drawn vertices whose references name its rows.
-    const nets = await rowsOf(data.source, type, options.rows, () => {});
+    const nets = await rowsOf(data.source, type, options.rows);
     const local = new Addresses(nets.rows);
     const net = new Uints(),
       member = new Uints();
-    let wired = false;
-    for (const [vertexType, vertex] of Object.entries(data.vertices)) {
-      const fields = Object.entries(schema.types[vertexType].fields)
-        .filter(([, field]) => typeof field.type === 'object' && field.type.kind === 'reference')
-        .filter(([, field]) => (field.type as { to: string }).to === type)
-        .map(([name]) => name);
-      if (!fields.length) continue;
-      wired = true;
-      const own = drawn.get(vertexType)!;
-      for await (const block of frame.query(data.source, {
+    const ports = new Map<string, string[]>();
+    for (const port of wire.ports)
+      ports.set(port.type, [...(ports.get(port.type) ?? []), port.field]);
+    for (const [vertexType, fields] of ports) {
+      const own = drawn.get(vertexType)!,
+        selection = data.vertices[vertexType].rows;
+      for await (const block of frame.reader.read(data.source, {
         kind: 'rows',
         from: vertexType,
         select: fields,
-        ...(vertex.rows ? { rows: vertex.rows } : {}),
+        ...(selection ? { rows: selection } : {}),
       })) {
-        if (block.kind === 'schema') continue;
         if (own.index) assertIndex(own.index, block.index);
         const range = block.rows.kind === 'range',
           offset = range ? block.rows.offset : 0,
@@ -423,7 +418,6 @@ export async function readGeometry(
         }
       }
     }
-    if (!wired) throw new GpuError('invalid-input', 'No vertex type references net ' + type);
     // Group members by net with a counting sort, then drop a vertex wired twice to one net.
     const count = nets.rows.length,
       starts = new Uint32Array(count + 1),
@@ -479,9 +473,8 @@ export async function readGeometry(
 
   for (const [type, options] of Object.entries(data.paths ?? {})) {
     const source = options.source ?? data.source;
-    let pathSchema: Schema | undefined;
-    const read = await rowsOf(source, type, options.rows, (found) => (pathSchema = found));
-    const spatial = pathSchema?.types[type]?.spatial;
+    const read = await rowsOf(source, type, options.rows);
+    const spatial = source.schema.types[type]?.spatial;
     if (spatial) systems.add(spatial.system);
     for (let first = 0; first < read.rows.length; first += BANK_ROWS) {
       const count = Math.min(BANK_ROWS, read.rows.length - first);
@@ -523,7 +516,7 @@ export async function readGeometry(
           size: 2,
           values: { kind: 'numeric', offset: 0, length: values.length, values },
         },
-      } satisfies kit.FieldValues;
+      } satisfies FieldValues;
       charge(values.byteLength);
     }
   const connected = edges.filter((bank) => !bank.kind);

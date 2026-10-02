@@ -1,11 +1,4 @@
-import {
-  type ColumnPages,
-  isColumnPages,
-  framesOf,
-  frameGroup,
-  frameGroups,
-  type Frames,
-} from './pages.js';
+import { type ColumnPages, framesOf, frameGroup, frameGroups, type Frames } from './pages.js';
 import type {
   Column,
   DataType,
@@ -26,7 +19,6 @@ import type {
   Filter,
   Query,
   QueryBlock,
-  QueryHeader,
   QueryOptions,
   RowsBlock,
   RowsQuery,
@@ -46,19 +38,20 @@ import {
 } from './columns.js';
 import { blockBuffers, blockByteLength } from './buffers.js';
 import { checkSignal, failure } from './error.js';
+import { IdIndex } from './ids.js';
 import { validateQuery, checkSampleWindow } from './validation/query.js';
 import { DEFAULT_BLOCK_BYTES } from './query.js';
 import { Check } from './validation/check.js';
 
-export type ReadResult<Q extends Query> =
-  | QueryHeader
-  | (Q extends RowsQuery
-      ? RowsBlock
-      : Q extends SamplesQuery
-        ? SamplesBlock
-        : Q extends EnvelopeQuery
-          ? EnvelopeBlock
-          : AggregateBlock);
+export type ReadResult<Q extends Query> = Q extends RowsQuery
+  ? RowsBlock
+  : Q extends SamplesQuery
+    ? SamplesBlock
+    : Q extends EnvelopeQuery
+      ? EnvelopeBlock
+      : Q extends AggregateQuery
+        ? AggregateBlock
+        : QueryBlock;
 
 /** Bounded local computation over application-owned values. Never performs I/O. */
 export function read<Q extends Query>(
@@ -73,21 +66,19 @@ async function* execute(
   data: Data,
   query: Query,
   options: QueryOptions,
-): AsyncGenerator<QueryHeader | QueryBlock> {
+): AsyncGenerator<QueryBlock> {
   checkSignal(options.signal);
   const issues = validateQuery(data.schema, query);
-  if (issues.length) throw Object.assign(failure('invalid-input', issues[0].message), { issues });
+  if (issues.length) throw failure('invalid-input', issues[0].message, { issues });
   const bound = options.maxBlockBytes ?? DEFAULT_BLOCK_BYTES;
   if (!Number.isSafeInteger(bound) || bound < 1)
     throw failure('invalid-input', 'Invalid block byte limit.');
-  yield { kind: 'schema', schema: data.schema, version: data.version };
   const table = data.tables[query.from];
   if (!table) {
     if (query.kind === 'aggregate')
       for (const name of query.select)
         yield {
           kind: 'aggregate',
-          version: data.version,
           values: {
             [name]: {
               count: 0,
@@ -119,7 +110,7 @@ async function* execute(
   }
 }
 
-const ids = new WeakMap<TableData['ids'], Map<string, number>>();
+const idIndexes = new WeakMap<TableData['ids'], IdIndex>();
 const idSelections = new WeakMap<TableData['ids'], WeakMap<readonly string[], RowAxis>>();
 export function selectRows(
   table: TableData,
@@ -129,23 +120,15 @@ export function selectRows(
   if (!selection) return available;
   let selected: RowAxis;
   if (selection.kind === 'ids') {
-    let map = ids.get(table.ids);
-    if (!map) {
-      map = new Map();
-      for (const page of table.ids)
-        for (let i = 0, n = rowCount(page.rows); i < n; i++) {
-          const id = textAt(page.column, i);
-          if (id !== null) map.set(id, rowAt(page.rows, i));
-        }
-      ids.set(table.ids, map);
-    }
+    let index = idIndexes.get(table.ids);
+    if (!index) idIndexes.set(table.ids, (index = new IdIndex(table.ids)));
     let selections = idSelections.get(table.ids);
     if (!selections) idSelections.set(table.ids, (selections = new WeakMap()));
     let resolved = selections.get(selection.ids);
     if (!resolved) {
       resolved = compactRows(
         selection.ids.map((id) => {
-          const row = map!.get(id);
+          const row = index.row(id);
           if (row === undefined) throw failure('invalid-input', 'Unknown row id: ' + id);
           return row;
         }),
@@ -166,9 +149,8 @@ interface PageIndex {
   readonly sorted: readonly ColumnPage[];
   readonly ranges: boolean;
 }
-type PageAccess = ColumnPages | TableData['ids'];
-const pageIndexes = new WeakMap<PageAccess, PageIndex>();
-function pageIndex(pages: PageAccess): PageIndex {
+const pageIndexes = new WeakMap<ColumnPages, PageIndex>();
+function pageIndex(pages: ColumnPages): PageIndex {
   let index = pageIndexes.get(pages);
   if (!index) {
     const sorted = Array.from<ColumnPage>(pages).sort(
@@ -185,10 +167,9 @@ function rowAtOrZero(rows: RowAxis): number {
   return rows.kind === 'range' ? rows.offset : (rows.values[0] ?? 0);
 }
 
-function findPage(pages: PageAccess, row: number, frame?: number): ColumnPage | undefined {
+function findPage(pages: ColumnPages, row: number, frame?: number): ColumnPage | undefined {
   // Frame groups have their own row index, keeping page lookup logarithmic for dense tiles.
   if (frame !== undefined) {
-    if (!isColumnPages(pages)) throw failure('invalid-input', 'IDs have no samples.');
     const index = framesOf(pages),
       group = frameGroup(index, frame);
     if (!group) return undefined;
@@ -295,13 +276,17 @@ export function locateSample(pages: ColumnPages, at: number): SampleLocation | u
   return { frame: first, coordinate: group.coordinates[offset], offset, pages: group.pages };
 }
 
-/** Iterate only the pages covering a sample window, using the shared immutable sample index. */
-export function samplePages(pages: ColumnPages, window: SampleWindow): Iterable<ColumnPage> {
+/** The absolute frames a sample window covers, `[first, end)`, from the shared sample index. */
+export function sampleFrames(pages: ColumnPages, window: SampleWindow): readonly [number, number] {
   const check = new Check();
   checkSampleWindow(check, window, []);
   if (check.issues.length) throw failure('invalid-input', check.issues[0].message);
-  const index = framesOf(pages);
-  const [first, end] = frameRange(index, window);
+  return frameRange(framesOf(pages), window);
+}
+/** Iterate only the pages covering a sample window, using the shared immutable sample index. */
+export function samplePages(pages: ColumnPages, window: SampleWindow): Iterable<ColumnPage> {
+  const [first, end] = sampleFrames(pages, window),
+    index = framesOf(pages);
   return (function* () {
     for (const group of frameGroups(index, first, end)) yield* group.pages;
   })();
@@ -342,7 +327,7 @@ function availableRows(pages: ColumnPages, frame: number): RowAxis {
   );
 }
 
-function intersect(a: RowAxis, b: RowAxis): RowAxis {
+export function intersect(a: RowAxis, b: RowAxis): RowAxis {
   if (containsRows(b, a)) return a;
   if (containsRows(a, b)) return b;
   if (a.kind === 'range' && b.kind === 'range') {
@@ -377,7 +362,7 @@ function sampleRows(
   return selectRows(table, selection, available);
 }
 
-function columnFor(pages: PageAccess, selected: RowAxis, type: DataType, frame?: number): Column {
+function columnFor(pages: ColumnPages, selected: RowAxis, type: DataType, frame?: number): Column {
   const count = rowCount(selected);
   if (!count) return pages.length ? sliceColumn(pages.at(0)!.column, 0, 0) : emptyColumn(type);
   const first = findPage(pages, rowAt(selected, 0), frame);
@@ -505,7 +490,7 @@ export function resolveRows(data: Data, request: RowMappingRequest): RowMapping 
     ...(request.rows ? { rows: request.rows } : {}),
     ...(request.at !== undefined ? { at: request.at } : {}),
   });
-  if (issues.length) throw Object.assign(failure('invalid-input', issues[0].message), { issues });
+  if (issues.length) throw failure('invalid-input', issues[0].message, { issues });
   const table = data.tables[request.from];
   if (!table) return undefined;
   const resolved = fieldRows(data, table, request.select, request.rows, request.at);
@@ -605,10 +590,9 @@ function* rows(
       );
       block = {
         kind: 'rows',
-        version: data.version,
         index: table.index,
         rows: part,
-        position: offset,
+        rowOffset: offset,
         columns,
         ...(query.count ? { total } : {}),
         ...(query.ids ? { ids: columnFor(table.ids, part, 'text') as TextColumn } : {}),
@@ -760,10 +744,12 @@ function* samples(
       const following = frameGroup(index, stop);
       const currentValues = group.pages[0]?.column;
       const nextValues = following?.pages[0]?.column;
+      // A lone last frame joins the next group, so a read from it always reaches the next frame.
       if (
         currentValues?.kind === 'numeric' &&
         nextValues?.kind === 'numeric' &&
-        currentValues.values.buffer === nextValues.values.buffer
+        currentValues.values.buffer === nextValues.values.buffer &&
+        stop - frame > 1
       )
         nf = Math.min(nf, stop - frame);
       for (const other of indexes) nf = Math.min(nf, frameSpan(other, frame, nf));
@@ -801,7 +787,6 @@ function* samples(
           const part = sliceRows(selected, offset, n);
           block = {
             kind: 'samples',
-            version: data.version,
             index: table.index,
             rows: part,
             rowOffset: offset,
@@ -873,7 +858,6 @@ async function* aggregate(
     const value = values[name];
     yield {
       kind: 'aggregate',
-      version: data.version,
       values: {
         [name]: {
           count: value.count,
@@ -1005,7 +989,6 @@ async function* envelope(
     }
     yield {
       kind: 'envelope',
-      version: data.version,
       index: table.index,
       rows: part,
       rowOffset: offset,

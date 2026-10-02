@@ -3,5 +3,4 @@ export { createNetwork } from './network.js';
 export type { Network, NetworkConfig, NetworkEvents, NetworkStats } from './network.js';
 export type { NetworkItem, VertexOptions, EdgeOptions, PathOptions, Labels } from './data.js';
 export type { Camera, Projection } from './camera.js';
-export type { NetworkInput } from './input.js';
 export type { Limits as NetworkLimits } from './geometry/topology.js';

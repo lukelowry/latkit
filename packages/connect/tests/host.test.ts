@@ -29,7 +29,7 @@ it('drains more than 128 publications and 64 MiB in order after consumer pressur
       arrived.resolve();
     else if (
       data instanceof ArrayBuffer &&
-      new DataView(data).getUint16(6, true) === Op.publication &&
+      new DataView(data).getUint32(4, true) === Op.publication &&
       ++received === count
     )
       arrived.resolve();

@@ -42,11 +42,11 @@ async function main() {
     fitPitch: 50,
     fitBearing: 20,
     fitPaddingPx: [110, 72, 80, 72],
-    showPoles: true,
-    showEarthAxis: false,
+    poles: true,
+    earthAxis: false,
     vertexRadiusPx: 3.4,
     edgeWidthPx: 1,
-    backgroundColor: [0.035, 0.047, 0.067, 1],
+    background: [0.035, 0.047, 0.067, 1],
   });
   const subset = {
     kind: 'indices',
@@ -69,7 +69,7 @@ async function main() {
     coordinateAxis: 'Time (s)',
     valueAxis: 'Signal',
     cursorColor: [1, 0.9, 0.83, 1],
-    backgroundColor: [0.035, 0.047, 0.067, 1],
+    background: [0.035, 0.047, 0.067, 1],
   });
   for (const view of [network, monitor]) view.on('error', fail);
   element('dataset').textContent =

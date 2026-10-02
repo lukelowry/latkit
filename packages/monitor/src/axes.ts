@@ -1,7 +1,7 @@
 import { type Gpu, type RGBA, kit } from '@latkit/gpu';
-import { buffer } from './segments.js';
+import { buffer } from './rendering/painter.js';
 import type { Domain } from '@latkit/model';
-import type { Settings } from './config.js';
+import type { Style } from './config.js';
 import { insets } from './config.js';
 import { ticks } from './ticks.js';
 export interface Plot {
@@ -17,7 +17,7 @@ export interface Axes {
   lineCount: number;
   gridCount: number;
 }
-export function plot(view: kit.Viewport, options: Settings): Plot {
+export function plot(view: kit.Viewport, options: Style): Plot {
   const [top, right, bottom, left] = insets(options.paddingPx),
     size = options.fontSizePx;
   const x = left + (options.valueAxis === null ? 0 : Math.max(64, size * 7)),
@@ -37,7 +37,7 @@ export async function axes(
   view: kit.Viewport,
   x: Domain,
   y: Domain,
-  options: Settings,
+  options: Style,
   signal: AbortSignal,
 ): Promise<Axes> {
   const area = plot(view, options),

@@ -38,7 +38,7 @@ class Wiring {
       length: values.length,
       values,
     });
-    this.data = createData(this.schema, 'v1', [
+    this.data = createData(this.schema, [
       {
         kind: 'rows',
         index: this.branches,
@@ -73,7 +73,7 @@ it('splits a large wiring read within the block bound', async () => {
   let next = 0;
   for (const block of await collect(read(source.data, query, { maxBlockBytes: 1024 }))) {
     expect(validateBlock(source.schema, query, block, { maxBlockBytes: 1024 })).toEqual([]);
-    expect(block.position).toBe(next);
+    expect(block.rowOffset).toBe(next);
     next += axisLength(block.rows);
   }
   expect(next).toBe(count);

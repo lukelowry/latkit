@@ -1,11 +1,29 @@
 import { FieldSource } from './fixtures/field-source.js';
 import { expect, it } from 'vitest';
+import type { FieldValues } from '@latkit/model';
 import { createGpu } from '../src/index.js';
-import { type FieldValues, type GpuPage } from '../src/kit.js';
+import { type GpuPage, type Preparation, type UploadOptions } from '../src/kit.js';
 import { fakeDevice, bytes } from './fixtures/device.js';
 import { draw } from './fixtures/render.js';
 import { field } from './fixtures/fields.js';
 const index = { source: 'd', type: 'path', version: '1' };
+function upload(
+  frame: Preparation,
+  input: FieldValues,
+  options: Omit<UploadOptions, 'select'> = {},
+): readonly GpuPage[] {
+  return frame.upload(
+    {
+      kind: 'fields',
+      index: input.index,
+      rows: input.rows,
+      rowOffset: 0,
+      columns: { value: input.values },
+      presence: {},
+    },
+    { ...options, select: ['value'] },
+  );
+}
 function lists(): FieldValues {
   return {
     index,
@@ -47,7 +65,7 @@ it('uploads sliced list offsets and relative vector items in the shared field AB
   const gpu = await createGpu({ device: fakeDevice().device });
   let page!: GpuPage;
   await draw(gpu, (frame) => {
-    page = frame.values(lists(), { float64: 'relative' })[0];
+    page = upload(frame, lists(), { float64: 'relative' })[0];
   });
   const list = page.columns.value;
   expect(list.kind).toBe('list');
@@ -63,7 +81,7 @@ it('gathers sparse native lists once and can retain controls without uploading t
   const gpu = await createGpu({ device: fakeDevice().device }),
     input = lists();
   await draw(gpu, async (frame) => {
-    for await (const page of frame.fields({
+    for await (const page of frame.reader.fields({
       source: new FieldSource().data,
       from: index.type,
       rows: { index, kind: 'indices', values: Uint32Array.of(12, 10) },
@@ -92,12 +110,12 @@ it('rejects oversized cells and implicit Float64 list conversion', async () => {
   const gpu = await createGpu({ device: fakeDevice().device });
   await expect(
     draw(gpu, (frame) => {
-      frame.values(lists());
+      upload(frame, lists());
     }),
   ).rejects.toMatchObject({ code: 'precision' });
   await expect(
     draw(gpu, (frame) => {
-      frame.values(lists(), { float64: 'relative', maxPageBytes: 16 });
+      upload(frame, lists(), { float64: 'relative', maxPageBytes: 16 });
     }),
   ).rejects.toMatchObject({ code: 'resource-limit' });
   gpu.destroy();
@@ -106,7 +124,8 @@ it('rejects oversized cells and implicit Float64 list conversion', async () => {
 it('ignores payloads under null parents when choosing a relative list origin', async () => {
   const gpu = await createGpu({ device: fakeDevice().device });
   await draw(gpu, (frame) => {
-    const page = frame.values(
+    const page = upload(
+      frame,
       {
         index,
         rows: { kind: 'range', offset: 0, count: 2 },

@@ -1,4 +1,5 @@
 import type { ColumnPage } from './materialized.js';
+import type { Domain } from './types.js';
 import { rowAt, rowCount } from './access.js';
 import { Sequence } from './sequence.js';
 
@@ -101,6 +102,13 @@ function firstRow(page: ColumnPage): number {
 }
 export function framesOf(pages: ColumnPages): Frames {
   return storage(pages).frames;
+}
+/** First and last recorded sample coordinates, or null without samples. Constant time. */
+export function sampleDomain(pages: ColumnPages | undefined): Domain | null {
+  const groups = pages && framesOf(pages).groups;
+  const first = groups?.at(0)?.coordinates[0],
+    last = groups?.at(-1)?.coordinates.at(-1);
+  return first === undefined || last === undefined ? null : [first, last];
 }
 export function frameGroup(index: Frames, frame: number): FrameGroup | undefined {
   const next = index.groups.lowerBound((group) => group.first > frame);

@@ -1,8 +1,8 @@
-import { sameIndex, type Data, type RowSelection } from '@latkit/model';
-import type { kit, RGBA } from '@latkit/gpu';
+import { sameIndex, type Data, type FieldInput, type RowSelection } from '@latkit/model';
+import type { DataHit, kit, RGBA } from '@latkit/gpu';
 
 export interface Labels {
-  readonly field: kit.FieldInput;
+  readonly field: FieldInput;
   readonly font?: kit.TextFont;
   readonly size?: number;
   readonly maxCount?: number;
@@ -16,8 +16,8 @@ export interface VertexOptions {
   readonly color?: string | kit.ColorScale | null;
   readonly size?: string | kit.Scale | null;
   readonly height?: string | kit.Scale | null;
-  readonly visible?: kit.FieldInput | null;
-  readonly shade?: kit.FieldInput | null;
+  readonly visible?: FieldInput | null;
+  readonly shade?: FieldInput | null;
   readonly labels?: string | Labels | null;
 }
 export interface EdgeOptions {
@@ -29,51 +29,42 @@ export interface EdgeOptions {
    */
   readonly ends?: readonly [source: string, target: string];
   /** Intermediate bends, a native list of two-component floating-point vectors; requires ends. */
-  readonly bends?: kit.FieldInput;
+  readonly bends?: FieldInput;
   readonly curve?: 'linear' | 'geodesic';
   /** A net's star center; otherwise the centroid of its vertices. */
   readonly junction?: kit.Position2D;
   readonly color?: string | kit.ColorScale | null;
-  readonly dash?: kit.FieldInput | null;
-  readonly visible?: kit.FieldInput | null;
-  readonly shade?: kit.FieldInput | null;
+  readonly dash?: FieldInput | null;
+  readonly visible?: FieldInput | null;
+  readonly shade?: FieldInput | null;
   readonly labels?: string | Labels | null;
 }
 export interface PathOptions {
   /** Defaults to the network's source. */
   readonly source?: Data;
   readonly rows?: RowSelection;
-  readonly points: kit.FieldInput;
+  readonly points: FieldInput;
   readonly curve?: 'linear' | 'geodesic';
   readonly widthPx?: number;
   readonly baseColor?: RGBA;
   readonly color?: string | kit.ColorScale | null;
-  readonly visible?: kit.FieldInput | null;
+  readonly visible?: FieldInput | null;
   readonly labels?: string | Labels | null;
   /** Decorative paths do not participate in picking by default. */
   readonly pickable?: boolean;
 }
-export interface NetworkItem extends kit.DataHit {
+export interface NetworkItem extends DataHit {
   readonly kind: 'vertex' | 'edge' | 'path';
 }
+/** Items are their kind, table index, and row; the index names the source. */
 export function sameItem(a: NetworkItem | null, b: NetworkItem | null): boolean {
   return (
-    a === b ||
-    (!!a &&
-      !!b &&
-      a.source === b.source &&
-      a.kind === b.kind &&
-      a.row === b.row &&
-      sameIndex(a.index, b.index))
+    a === b || (!!a && !!b && a.kind === b.kind && a.row === b.row && sameIndex(a.index, b.index))
   );
 }
-
-/** Options with every shorthand expanded. */
-type Full<T> = {
-  readonly [K in keyof T]: K extends 'color' | 'size' | 'height' | 'labels'
-    ? Exclude<T[K], string>
-    : T[K];
-};
+/** Option keys whose string value names a field. */
+export const FIELD_OPTIONS = ['color', 'size', 'height', 'labels'] as const;
+type Full<T> = kit.Expanded<T, (typeof FIELD_OPTIONS)[number]>;
 export type VertexData = Full<VertexOptions>;
 export type EdgeData = Full<EdgeOptions>;
 export type PathData = Full<PathOptions>;
@@ -85,34 +76,13 @@ export interface NetworkData {
   readonly paths?: Readonly<Record<string, PathData>>;
 }
 
-const expanded = new WeakMap<object, object>();
-/** Expand shorthands, keeping each unchanged entry's identity so caches keyed on it survive. */
-function full<T extends object>(options: T): Full<T> {
-  let found = expanded.get(options);
-  if (!found) {
-    const result: Record<string, unknown> = { ...(options as Record<string, unknown>) };
-    for (const key of ['color', 'size', 'height', 'labels'])
-      if (typeof result[key] === 'string') result[key] = { field: result[key] };
-    found = Object.freeze(result);
-    expanded.set(options, found);
-  }
-  return found as Full<T>;
-}
-function record<T extends object>(
-  entries: Readonly<Record<string, T>> | undefined,
-): Readonly<Record<string, Full<T>>> | undefined {
-  return entries && Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, full(v)]));
-}
+/** The drawn records of a config whose field shorthands the view already expanded. */
 export function networkData(config: {
   readonly source: Data;
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;
   readonly paths?: Readonly<Record<string, PathOptions>>;
 }): NetworkData {
-  return {
-    source: config.source,
-    vertices: record(config.vertices)!,
-    edges: record(config.edges),
-    paths: record(config.paths),
-  };
+  const { source, vertices, edges, paths } = config as NetworkData;
+  return { source, vertices, edges, paths };
 }

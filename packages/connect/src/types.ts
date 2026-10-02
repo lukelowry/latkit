@@ -12,17 +12,21 @@ import type {
   Schema,
 } from '@latkit/model';
 
-/** A bounded group is delivered atomically. A large model is many publications. */
+/** Batches published together. A group within the negotiated message bounds arrives as one atomic
+ *  message; a larger one arrives as several, in order, cutting sample batches only between frames. */
 export type Publication = readonly DataBatch[];
 export interface EncodedPublication {
   readonly bytes: Uint8Array;
 }
 export interface Publish {
+  /** Resolves once every message is encoded; its arrays may then be reused. */
   (batch: DataBatch | Publication): Promise<void>;
 }
 export interface MonitorContext {
   readonly signal: AbortSignal;
-  readonly maxBatchBytes: number;
+  /** Preferred size of one batch, for selectBatches and other block producers. Larger sample
+   *  batches are cut between frames; a row batch must fit one message. */
+  readonly maxBlockBytes: number;
 }
 export interface CommandContext extends MonitorContext {
   readonly outputs: readonly FieldSelection[];

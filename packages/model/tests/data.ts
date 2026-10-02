@@ -68,10 +68,9 @@ export function text(values: readonly string[]): TextColumn {
 export function rows(): RowsBlock {
   return {
     kind: 'rows',
-    version: 'data:1',
     index,
     rows: { kind: 'range', offset: 0, count: 2 },
-    position: 0,
+    rowOffset: 0,
     columns: { value: numbers([10, 20]) },
   };
 }

@@ -1,17 +1,13 @@
-import { kit } from '@latkit/gpu';
+import { kit, type Modifiers, type ViewInput } from '@latkit/gpu';
 import type { ConnectProposal, DiagramEvents, MoveProposal } from './diagram.js';
 import type { DiagramItem, DiagramHit, Point } from './data.js';
 import { itemKey } from './data.js';
-import { positive, type Style } from './config.js';
+import type { Style } from './config.js';
 import { ConnectSession } from './connect.js';
 import type { Scene } from './scene.js';
 import type { Overlay } from './painter.js';
 
-export interface DiagramInput {
-  /** `edit` also moves and wires; `navigate` pans and zooms; `inspect` only hovers and selects. */
-  readonly mode?: 'edit' | 'navigate' | 'inspect' | 'none';
-  readonly wheel?: 'zoom' | 'modifier';
-  readonly keyboard?: boolean;
+export interface DiagramInput extends ViewInput {
   /** Primary mouse drag on empty canvas. Touch continues to pan. Default: select in edit mode. */
   readonly backgroundDrag?: 'pan' | 'select';
   readonly dragThresholdPx?: number;
@@ -23,14 +19,13 @@ export interface DiagramInput {
   /** Additional application policy, after native port type/direction checks. Must be synchronous. */
   readonly canConnect?: (proposal: ConnectProposal) => boolean;
 }
-/** What input drives; the view implements it. */
+type Mode = NonNullable<ViewInput['mode']>;
+/** What a diagram's own gestures drive; the view implements it. */
 export interface Controls {
-  emit<K extends 'select' | 'contextmenu' | 'open' | 'connect' | 'move' | 'delete'>(
-    event: K,
-    value: DiagramEvents[K],
-  ): void;
+  emit<K extends 'open' | 'connect' | 'move' | 'delete'>(event: K, value: DiagramEvents[K]): void;
   selection(): readonly DiagramItem[];
-  select(items: readonly DiagramItem[]): void;
+  /** Select as the user did, reporting a change. */
+  choose(items: readonly DiagramItem[]): void;
   revision(): number;
   scene(): Scene | undefined;
   options(): Style;
@@ -38,18 +33,25 @@ export interface Controls {
   marquee(a: Point, b: Point): readonly DiagramItem[];
   preview(items: readonly DiagramItem[], delta: Point | null): void;
   move(items: readonly DiagramItem[], delta: Point): MoveProposal | undefined;
-  reduced(value: boolean): void;
   overlay(value: Overlay | null): void;
-  hit(point: Point, radiusPx?: number): readonly DiagramHit[];
-  pointer(point: Point | null): void;
+  /** Hits near a canvas point, nearest first. */
+  hits(point: Point, radiusPx?: number): readonly DiagramHit[];
+  menu(point: Point, modifiers: Modifiers): void;
   pan(dx: number, dy: number): void;
   zoom(factor: number, anchor?: Point): void;
   /** Stop fitting: the camera stays where it is shown. */
   stay(): void;
   fit(): void;
   reveal(item: DiagramItem): void;
-  locate(item: DiagramItem): Point | null;
   invalidated(listener: () => void): () => void;
+}
+/** A diagram's gestures on one canvas: the view forwards keys and Escape to them. */
+export interface Gestures {
+  /** Handle a key before the shared ones; true when handled. */
+  key(event: KeyboardEvent): boolean;
+  /** End a gesture in progress; true when one ended. */
+  cancel(): boolean;
+  detach(): void;
 }
 interface Drag {
   id: number;
@@ -67,24 +69,23 @@ interface Drag {
   target: DiagramItem | null;
   blocked: boolean;
 }
-/** DOM ownership stays separate from rendering and application-owned mutations. */
-export function attachInput(
+/**
+ * Drag moves, wires, marquee-selects, or pans; click selects; two pointers pinch. Hover, wheel,
+ * context menus, and the shared keys belong to the view.
+ */
+export function listen(
   canvas: HTMLCanvasElement,
+  input: kit.CanvasInput,
+  mode: Mode,
   options: DiagramInput,
   api: Controls,
-): () => void {
-  const mode = options.mode ?? 'navigate';
-  const threshold = positive(options.dragThresholdPx ?? 4, 'dragThresholdPx', true);
-  const touchThreshold = positive(options.touchDragThresholdPx ?? 8, 'touchDragThresholdPx', true);
-  const targetRadius = positive(options.connectRadiusPx ?? 18, 'connectRadiusPx');
-  const margin = positive(options.autoPanMarginPx ?? 32, 'autoPanMarginPx');
-  const speed = positive(options.autoPanSpeedPx ?? 480, 'autoPanSpeedPx', true);
+): Gestures {
+  const threshold = options.dragThresholdPx ?? 4,
+    touchThreshold = options.touchDragThresholdPx ?? 8,
+    targetRadius = options.connectRadiusPx ?? 18,
+    margin = options.autoPanMarginPx ?? 32,
+    speed = options.autoPanSpeedPx ?? 480;
   const view = canvas.ownerDocument.defaultView!;
-  const input = kit.createCanvasInput({
-    canvas,
-    keyboard: options.keyboard,
-    touchAction: mode === 'inspect' ? 'pan-x pan-y' : 'none',
-  });
   const { signal } = input;
   const originalCursor = canvas.style.cursor;
   let drag: Drag | undefined,
@@ -95,16 +96,6 @@ export function attachInput(
     lastPan = 0;
   const pointers = new Map<number, Point>();
   let pinch: { distance: number; center: Point } | undefined;
-  const setSelection = (items: readonly DiagramItem[]) => {
-    const before = api.selection();
-    if (
-      before.length === items.length &&
-      before.every((item, i) => itemKey(item) === itemKey(items[i]))
-    )
-      return;
-    api.select(items);
-    api.emit('select', items);
-  };
   const merge = (a: readonly DiagramItem[], b: readonly DiagramItem[]) => [
     ...new Map([...a, ...b].map((item) => [itemKey(item), item])).values(),
   ];
@@ -116,6 +107,7 @@ export function attachInput(
       ? existing.filter((item) => itemKey(item) !== key)
       : [...existing, hit];
   };
+  /** End any gesture; true when one was in progress. */
   const cancel = () => {
     if (longPress) clearTimeout(longPress);
     longPress = undefined;
@@ -128,18 +120,8 @@ export function attachInput(
     api.overlay(null);
     canvas.style.cursor = originalCursor;
     if (current) input.release(current.id);
+    return !!current;
   };
-  const context = (
-    point: Point,
-    event: MouseEvent | KeyboardEvent,
-    trigger: 'pointer' | 'keyboard',
-  ) =>
-    api.emit('contextmenu', {
-      point,
-      items: api.hit(point),
-      trigger,
-      modifiers: kit.inputModifiers(event),
-    });
   const snapped = (point: Point): Point => {
     const { snap, gridPitch } = api.options();
     return snap
@@ -166,7 +148,7 @@ export function attachInput(
       });
     } else if (current.kind === 'connect' && current.session) {
       const session = current.session;
-      const hits = api.hit(current.last, Math.max(targetRadius, current.threshold * 2));
+      const hits = api.hits(current.last, Math.max(targetRadius, current.threshold * 2));
       const ports = hits.filter((hit) => hit.kind === 'port');
       const candidates = ports.length ? ports : hits;
       const target =
@@ -236,7 +218,7 @@ export function attachInput(
       const world = api.world(p);
       if (!world || drag) return;
       const touch = event.pointerType === 'touch';
-      const hit = api.hit(p, touch ? 22 : api.options().pickRadiusPx)[0];
+      const hit = api.hits(p, touch ? 22 : undefined)[0];
       const additive = event.shiftKey || event.ctrlKey || event.metaKey;
       const kind =
         mode === 'inspect'
@@ -269,7 +251,7 @@ export function attachInput(
       };
       if (touch)
         longPress = setTimeout(() => {
-          context(p, event, 'pointer');
+          api.menu(p, kit.inputModifiers(event));
           cancel();
         }, 550);
     },
@@ -280,7 +262,6 @@ export function attachInput(
     (event) => {
       const p = input.point(event);
       if (pointers.has(event.pointerId)) pointers.set(event.pointerId, p);
-      api.pointer(p);
       if (pinch && pointers.size === 2) {
         const [a, b] = [...pointers.values()],
           center: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
@@ -305,7 +286,7 @@ export function attachInput(
             current.selection = current.additive
               ? merge(current.selection, [current.hit])
               : [current.hit];
-          setSelection(current.selection);
+          api.choose(current.selection);
         }
         if (
           current.kind === 'connect' &&
@@ -350,9 +331,9 @@ export function attachInput(
       const world = api.world(p);
       cancel();
       if (!current.moved) {
-        const hit = api.hit(p, event.pointerType === 'touch' ? 22 : api.options().pickRadiusPx)[0];
-        if (hit) setSelection(toggle(hit, current.additive));
-        else if (!current.additive) setSelection([]);
+        const hit = api.hits(p, event.pointerType === 'touch' ? 22 : undefined)[0];
+        if (hit) api.choose(toggle(hit, current.additive));
+        else if (!current.additive) api.choose([]);
       } else if (
         current.kind === 'connect' &&
         current.session &&
@@ -373,7 +354,7 @@ export function attachInput(
         }
       } else if (current.kind === 'marquee' && world) {
         const items = api.marquee(current.world, world);
-        setSelection(current.additive ? merge(current.selection, items) : items);
+        api.choose(current.additive ? merge(current.selection, items) : items);
       }
     },
     { signal },
@@ -395,92 +376,15 @@ export function attachInput(
     { signal },
   );
   canvas.addEventListener(
-    'pointerleave',
-    () => {
-      if (!drag) api.pointer(null);
-    },
-    { signal },
-  );
-  canvas.addEventListener(
     'dblclick',
     (event) => {
-      const hit = api.hit(input.point(event))[0];
+      const hit = api.hits(input.point(event))[0];
       if (hit) api.emit('open', hit);
       else if (mode !== 'inspect') api.fit();
     },
     { signal },
   );
-  canvas.addEventListener(
-    'contextmenu',
-    (event) => {
-      event.preventDefault();
-      context(input.point(event), event, 'pointer');
-    },
-    { signal },
-  );
-  canvas.addEventListener(
-    'wheel',
-    (event) => {
-      if (mode === 'inspect' || (options.wheel === 'modifier' && !event.ctrlKey && !event.metaKey))
-        return;
-      event.preventDefault();
-      const delta = kit.wheelDelta(event, { height: canvas.clientHeight });
-      api.zoom(Math.exp(-Math.max(-500, Math.min(500, delta)) * 0.002), input.point(event));
-    },
-    { signal, passive: false },
-  );
-
   if (options.keyboard !== false) {
-    canvas.addEventListener(
-      'keydown',
-      (event) => {
-        if (event.target !== canvas) return;
-        const items = api.selection(),
-          key = event.key;
-        if (key === ' ') {
-          space = true;
-          event.preventDefault();
-          return;
-        }
-        if (key === 'Escape') {
-          cancel();
-          setSelection([]);
-        } else if (key === 'Home') api.fit();
-        else if (key === '+' || key === '=') api.zoom(1.2);
-        else if (key === '-') api.zoom(1 / 1.2);
-        else if (key === 'Enter' && items[0]) api.emit('open', items[0]);
-        else if ((key === 'Delete' || key === 'Backspace') && mode === 'edit')
-          api.emit('delete', [
-            ...new Set(
-              items.filter((i) => i.kind === 'vertex' || i.kind === 'edge').map((i) => i.id),
-            ),
-          ]);
-        else if (key === 'ContextMenu' || (key === 'F10' && event.shiftKey))
-          context(items[0] ? (api.locate(items[0]) ?? [0, 0]) : [0, 0], event, 'keyboard');
-        else if (key === 'Tab') {
-          const vertices = api.scene()?.vertices.filter((n) => n.visible) ?? [],
-            at = vertices.findIndex((n) => items[0] && itemKey(n.hit) === itemKey(items[0])),
-            next =
-              vertices[
-                at < 0 ? (event.shiftKey ? vertices.length - 1 : 0) : at + (event.shiftKey ? -1 : 1)
-              ];
-          if (next) {
-            setSelection([next.hit]);
-            api.reveal(next.hit);
-          } else return;
-        } else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(key)) {
-          const step = api.options().gridPitch * (event.shiftKey ? 4 : 1),
-            dx = key === 'ArrowLeft' ? -step : key === 'ArrowRight' ? step : 0,
-            dy = key === 'ArrowUp' ? -step : key === 'ArrowDown' ? step : 0;
-          if (mode === 'edit' && items.some((i) => i.kind === 'vertex' || i.kind === 'group')) {
-            const proposal = api.move(items, [dx, dy]);
-            if (proposal) api.emit('move', proposal);
-          } else if (mode !== 'inspect') api.pan(-dx * 4, -dy * 4);
-        } else return;
-        event.preventDefault();
-      },
-      { signal },
-    );
     canvas.addEventListener(
       'keyup',
       (event) => {
@@ -497,19 +401,49 @@ export function attachInput(
       { signal },
     );
   }
-  const media = canvas.ownerDocument.defaultView?.matchMedia('(prefers-reduced-motion: reduce)');
-  const motion = () => api.reduced(media?.matches ?? false);
-  motion();
-  media?.addEventListener('change', motion, { signal });
   const off = api.invalidated(() => {
     if (drag && api.revision() !== drag.revision) cancel();
   });
-  return () => {
-    if (closed) return;
-    closed = true;
-    off();
-    cancel();
-    api.pointer(null);
-    input.destroy();
+  /** Space pans; Enter opens; Delete proposes removal; Tab visits; arrows nudge or pan. */
+  const key = (event: KeyboardEvent): boolean => {
+    const items = api.selection(),
+      key = event.key;
+    if (key === ' ') space = true;
+    else if (key === 'Enter' && items[0]) api.emit('open', items[0]);
+    else if ((key === 'Delete' || key === 'Backspace') && mode === 'edit')
+      api.emit('delete', [
+        ...new Set(items.filter((i) => i.kind === 'vertex' || i.kind === 'edge').map((i) => i.id)),
+      ]);
+    else if (key === 'Tab') {
+      const vertices = api.scene()?.vertices.filter((n) => n.visible) ?? [],
+        at = vertices.findIndex((n) => items[0] && itemKey(n.hit) === itemKey(items[0])),
+        next =
+          vertices[
+            at < 0 ? (event.shiftKey ? vertices.length - 1 : 0) : at + (event.shiftKey ? -1 : 1)
+          ];
+      if (!next) return false;
+      api.choose([next.hit]);
+      api.reveal(next.hit);
+    } else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(key)) {
+      const step = api.options().gridPitch * (event.shiftKey ? 4 : 1),
+        dx = key === 'ArrowLeft' ? -step : key === 'ArrowRight' ? step : 0,
+        dy = key === 'ArrowUp' ? -step : key === 'ArrowDown' ? step : 0;
+      if (mode === 'edit' && items.some((i) => i.kind === 'vertex' || i.kind === 'group')) {
+        const proposal = api.move(items, [dx, dy]);
+        if (proposal) api.emit('move', proposal);
+      } else if (mode !== 'inspect') api.pan(-dx * 4, -dy * 4);
+      else return false;
+    } else return false;
+    return true;
+  };
+  return {
+    key,
+    cancel,
+    detach() {
+      if (closed) return;
+      closed = true;
+      off();
+      cancel();
+    },
   };
 }

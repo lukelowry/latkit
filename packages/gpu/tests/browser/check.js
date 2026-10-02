@@ -9,6 +9,20 @@ import { checkColors } from './colors.js';
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
+/** A rows or samples literal as the fields block an upload takes. */
+function fieldsBlock(block) {
+  return {
+    kind: 'fields',
+    index: block.index,
+    rows: block.rows,
+    rowOffset: 0,
+    columns: block.columns,
+    presence: {},
+    ...(block.kind === 'samples'
+      ? { samples: { firstFrame: block.firstFrame, coordinates: block.coordinates } }
+      : {}),
+  };
+}
 
 export async function check() {
   const adapter = await navigator.gpu?.requestAdapter();
@@ -65,7 +79,7 @@ export async function check() {
           async (frame) => {
             const destination = frame.buffer(result);
             frame.buffer(readback);
-            const pages = frame.upload(block, {
+            const pages = frame.upload(fieldsBlock(block), {
               select: Object.keys(block.columns),
               float64: policy,
             });
@@ -132,11 +146,9 @@ export async function check() {
       return renderer;
     }
 
-    const index = { document: 'd', type: 'node', version: 'i0' };
+    const index = { source: 'd', type: 'node', version: 'i0' };
     await readColumns({
       kind: 'samples',
-      version: 'v0',
-      schemaVersion: 's0',
       index,
       rows: { kind: 'indices', values: Uint32Array.of(900000, 4) },
       rowOffset: 0,
@@ -158,11 +170,8 @@ export async function check() {
     await readColumns(
       {
         kind: 'rows',
-        version: 'v0',
-        schemaVersion: 's0',
         index,
         rows: { kind: 'range', offset: 0, count: 3 },
-        position: 0,
         columns: {
           value: {
             kind: 'numeric',
@@ -292,11 +301,8 @@ export async function check() {
     const rows = 1_000_000;
     const large = {
       kind: 'rows',
-      version: 'large',
-      schemaVersion: 's0',
       index,
       rows: { kind: 'range', offset: 0, count: rows },
-      position: 0,
       columns: {
         value: {
           kind: 'numeric',
@@ -333,14 +339,16 @@ export async function check() {
         ]),
       ),
     };
+    // Ten fields bind across the page's value banks directly; the copy that packs more is unit-tested.
     await readColumns(consolidation, undefined, fragmented, fragmentedTarget);
-    const copied = fragmented.stats().gpuCopiedBytes;
-    assert(copied > 0, 'Fragmented fields did not exercise GPU consolidation');
+    assert(fragmented.stats().gpuCopiedBytes === 0, 'Ten fields needed a consolidation copy');
+    const hits = fragmented.stats().uploadHits;
     await readColumns(consolidation, undefined, fragmented, fragmentedTarget);
-    assert(fragmented.stats().gpuCopiedBytes === copied, 'Resident consolidation was repeated');
+    assert(fragmented.stats().uploadHits > hits, 'Resident fields were not reused');
+    assert(fragmented.stats().gpuCopiedBytes === 0, 'Resident fields were copied');
     fragmentedTarget.destroy();
     fragmented.destroy();
-    checks.push('ten fragmented fields, native GPU consolidation and resident reuse');
+    checks.push('ten fields across value banks, without copies, and resident reuse');
     checks.push(...(await checkFoundation(gpu, output)));
     const validation = await device.popErrorScope();
     assert(

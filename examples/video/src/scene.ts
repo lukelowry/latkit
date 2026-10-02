@@ -44,7 +44,7 @@ export function scene(gpu: Gpu, kind: ExampleView) {
         curve: 'geodesic',
       },
     },
-    showPoles: false,
+    poles: false,
     daylight: false,
     shade: {
       wgsl: `fn shade(f: ShadeFragment) -> vec4f {

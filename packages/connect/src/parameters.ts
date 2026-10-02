@@ -1,4 +1,4 @@
-import { validateSelection } from '@latkit/model';
+import { failure, validateSelection } from '@latkit/model';
 import type {
   Arguments,
   CommandDescription,
@@ -10,7 +10,7 @@ import type {
   DataBatch,
 } from '@latkit/model';
 import { checkTree } from './frame.js';
-import { failure, integer, record, text } from './core.js';
+import { integer, record, text } from './core.js';
 
 export function definitions(
   input: unknown,

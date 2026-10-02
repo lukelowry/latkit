@@ -24,7 +24,6 @@ export function validateBlock(
     c.issue(['kind'], 'Block kind differs from its query.');
     return c.issues;
   }
-  c.text(block.version, ['version']);
   if (options.maxBlockBytes !== undefined)
     c.integer(options.maxBlockBytes, ['options', 'maxBlockBytes'], 1);
   if (options.buffers !== undefined)
@@ -89,7 +88,7 @@ export function validateBlock(
           }
     }
     if (query.kind === 'rows') {
-      c.integer(block.position, ['position']);
+      c.integer(block.rowOffset, ['rowOffset']);
       if (own(block, 'total')) c.integer(block.total, ['total'], rows?.length ?? 0);
       if (query.count && !own(block, 'total')) c.issue(['total'], 'Count was requested.');
       if (query.ids) identities(c, block.ids, ['ids'], rows?.length);

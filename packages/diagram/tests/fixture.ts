@@ -1,13 +1,5 @@
 import { createData, read, type Data, type DataBatch } from '@latkit/model';
-import type {
-  Query,
-  QueryOptions,
-  QueryBlock,
-  QueryHeader,
-  Schema,
-  Column,
-  RowSelection,
-} from '@latkit/model';
+import type { Query, QueryOptions, RowsBlock, Schema, Column, RowSelection } from '@latkit/model';
 import type { DiagramData } from '../src/data.js';
 /** One task port wired to a dependency net. */
 export interface End {
@@ -15,7 +7,6 @@ export interface End {
   port: 'input' | 'output';
 }
 export class Source {
-  version = 'v1';
   indexVersion = 'rows1';
   queries = 0;
   names: string[];
@@ -25,6 +16,8 @@ export class Source {
   ends: End[][];
   /** Serve the input port as numbers rather than references. */
   malformed = false;
+  /** Number each dependency's own ends against an outdated task row space. */
+  staleEnds = false;
   schema: Schema = {
     types: {
       Task: {
@@ -69,11 +62,11 @@ export class Source {
     return { source: 'diagram-fixture', type, version: this.indexVersion };
   }
   update(): void {
-    this.version += 'x';
+    this.cached = undefined;
   }
   private cached?: Data;
   get data(): Data {
-    if (this.cached?.version === this.version) return this.cached;
+    if (this.cached) return this.cached;
     const batches: DataBatch[] = [];
     for (const [from, type] of Object.entries(this.schema.types))
       for (const block of this.blocks({
@@ -82,15 +75,14 @@ export class Source {
         select: Object.keys(type.fields),
         ids: true,
       }))
-        if (block.kind === 'rows')
-          batches.push({
-            kind: 'rows',
-            index: block.index,
-            rows: block.rows,
-            columns: block.columns,
-            ids: block.ids,
-          });
-    return (this.cached = createData(this.schema, this.version, batches));
+        batches.push({
+          kind: 'rows',
+          index: block.index,
+          rows: block.rows,
+          columns: block.columns,
+          ids: block.ids,
+        });
+    return (this.cached = createData(this.schema, batches));
   }
   selection(type: string, rows?: RowSelection): number[] {
     const count = type === 'Task' ? this.count : this.ends.length;
@@ -101,10 +93,9 @@ export class Source {
   query<Q extends Query>(query: Q, options?: QueryOptions) {
     return read(this.data, query, options);
   }
-  private *blocks(q: Query, o?: QueryOptions): Generator<QueryHeader | QueryBlock> {
+  private *blocks(q: Query, o?: QueryOptions): Generator<RowsBlock> {
     this.queries++;
     o?.signal?.throwIfAborted();
-    yield { kind: 'schema', version: this.version, schema: this.schema };
     const rows = this.selection(q.from, 'rows' in q ? q.rows : undefined);
     if (q.kind === 'rows') {
       const ports = new Map<string, Map<number, number>>();
@@ -138,7 +129,9 @@ export class Source {
             });
             columns[field] = {
               kind: 'reference',
-              index: this.index('Task'),
+              index: this.staleEnds
+                ? { ...this.index('Task'), version: 'stale' }
+                : this.index('Task'),
               offset: 0,
               length: selected.length,
               values: Uint32Array.from(tasks, (task) => task?.vertex ?? 0),
@@ -185,12 +178,11 @@ export class Source {
         }
         yield {
           kind: 'rows',
-          version: this.version,
           index: this.index(q.from),
           rows: selected.every((row, i) => row === selected[0] + i)
             ? { kind: 'range', offset: selected[0] ?? 0, count: selected.length }
             : { kind: 'indices', values: Uint32Array.from(selected) },
-          position: first,
+          rowOffset: first,
           columns,
           ...(q.ids
             ? { ids: texts(selected.map((i) => (q.from === 'Task' ? 'n' : 'e') + i)) }

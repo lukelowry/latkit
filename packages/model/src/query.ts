@@ -7,8 +7,7 @@ import type {
   TextColumn,
   NumericColumn,
 } from './data.js';
-import type { Schema } from './schema.js';
-import type { Domain, RequestOptions, Scalar, Version } from './types.js';
+import type { Domain, RequestOptions, Scalar } from './types.js';
 
 export const DEFAULT_BLOCK_BYTES = 256 * 1024;
 
@@ -22,13 +21,6 @@ export interface QueryOptions extends RequestOptions {
    */
   readonly buffers?: 'borrowed' | 'owned';
   readonly maxBlockBytes?: number;
-}
-
-/** Exactly one per iteration, including empty reads. Immutable and authoritative for that read. */
-export interface QueryHeader {
-  readonly kind: 'schema';
-  readonly version: Version;
-  readonly schema: Schema;
 }
 
 /** The same field/row vocabulary is used by queries and monitoring.
@@ -127,15 +119,15 @@ export type Filter =
 
 interface Block {
   readonly kind: Query['kind'];
-  readonly version: Version;
 }
 
 export interface RowsBlock extends Block {
   readonly kind: 'rows';
   readonly index: Index;
-  /** Physical indices in result order; position starts at zero after filtering, sorting, and offset/limit. */
+  /** Physical indices in result order. */
   readonly rows: RowAxis;
-  readonly position: number;
+  /** Position of the first row in the result, after filtering, sorting, and offset/limit. */
+  readonly rowOffset: number;
   readonly ids?: TextColumn;
   readonly total?: number;
   readonly columns: Readonly<Record<string, Column>>;

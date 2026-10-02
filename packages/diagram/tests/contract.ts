@@ -1,6 +1,6 @@
 import { createDiagram, arrange, type Diagram } from '../src/index.js';
 import type { Gpu, kit } from '@latkit/gpu';
-import type { Data } from '@latkit/model';
+import type { Data, FieldValues } from '@latkit/model';
 export async function usage(
   gpu: Gpu,
   model: Data,
@@ -25,7 +25,7 @@ export async function usage(
     void remove(ids);
   });
   diagram.on('move', ({ positions }) => {
-    const fields: Readonly<Record<string, kit.FieldValues>> = positions;
+    const fields: Readonly<Record<string, FieldValues>> = positions;
     void fields;
   });
   diagram.set({ layout: { direction: 'down' }, camera: { scale: 2 } }, { animate: true });

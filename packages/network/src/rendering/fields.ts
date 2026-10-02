@@ -1,4 +1,5 @@
 import { kit, GpuError } from '@latkit/gpu';
+import type { Data, FieldInput, FieldsBlock } from '@latkit/model';
 import type { EdgeData, PathData, VertexData } from '../data.js';
 import type { VertexBank, EdgeBank } from '../geometry/topology.js';
 import { nativeValue } from '../geometry/rows.js';
@@ -8,27 +9,27 @@ export interface ReadPage {
 }
 export interface FieldRead {
   readonly pages: readonly ReadPage[];
-  readonly native: readonly kit.NativeFields[];
+  readonly native: readonly FieldsBlock[];
   readonly scales: Readonly<Record<string, kit.ResolvedScale>>;
   readonly vector: boolean;
 }
 export function splitPosition(
   position: kit.Position2D,
-): position is { readonly x: kit.FieldInput; readonly y: kit.FieldInput } {
+): position is { readonly x: FieldInput; readonly y: FieldInput } {
   return typeof position === 'object' && 'x' in position;
 }
 const fieldBindings = new WeakMap<
   object,
   {
     position: kit.Position2D | undefined;
-    fields: Record<string, kit.FieldInput>;
+    fields: Record<string, FieldInput>;
     vector: boolean;
   }
 >();
 function bindings(options: VertexData | EdgeData | PathData, position: kit.Position2D | undefined) {
   const cached = fieldBindings.get(options);
   if (cached && cached.position === position) return cached;
-  const fields: Record<string, kit.FieldInput> = {};
+  const fields: Record<string, FieldInput> = {};
   let vector = false;
   if (position) {
     if (splitPosition(position)) {
@@ -62,7 +63,7 @@ function bindings(options: VertexData | EdgeData | PathData, position: kit.Posit
 }
 export async function readFields(
   frame: kit.Preparation,
-  source: import('@latkit/model').Data,
+  source: Data,
   bank: VertexBank | EdgeBank,
   options: VertexData | EdgeData | PathData,
   position: kit.Position2D | undefined,
@@ -70,8 +71,8 @@ export async function readFields(
   const { fields, vector } = bindings(options, position);
   const control = new Set(['bends', 'points', 'junction', 'junctionX', 'junctionY']);
   const pages: ReadPage[] = [],
-    native: kit.NativeFields[] = [];
-  for await (const tile of frame.fields({
+    native: FieldsBlock[] = [];
+  for await (const tile of frame.reader.fields({
     source,
     from: bank.index.type,
     rows: { ...bank.rows, index: bank.index },
@@ -105,9 +106,9 @@ export async function readFields(
           (column.kind !== 'value' || column.components !== 1)
         )
           throw new GpuError('invalid-input', 'Visual fields must be scalar');
-      if (page.native) {
+      if (page.block) {
         for (const name of ['bends', 'points']) {
-          const column = page.native.columns[name];
+          const column = page.block.columns[name];
           if (
             column &&
             (column.kind !== 'list' || column.values.kind !== 'vector' || column.values.size !== 2)
@@ -117,7 +118,7 @@ export async function readFields(
               'Paths require lists of two-component numeric vectors',
             );
         }
-        const junction = page.native.columns.junction;
+        const junction = page.block.columns.junction;
         if (junction && (junction.kind !== 'vector' || junction.size !== 2))
           throw new GpuError('invalid-input', 'Junction positions require two-component vectors');
       }
@@ -129,7 +130,7 @@ export async function readFields(
 /** Resolve each mapping once across all banks, never independently per upload page. */
 export async function resolveDomains(
   frame: kit.Preparation,
-  source: import('@latkit/model').Data,
+  source: Data,
   reads: Map<VertexBank | EdgeBank, FieldRead>,
   config: (bank: VertexBank | EdgeBank) => VertexData | EdgeData | PathData,
 ): Promise<void> {
@@ -147,7 +148,7 @@ export async function resolveDomains(
       let lo = Infinity,
         hi = -Infinity;
       for (const bank of banks) {
-        const scale = await frame.scale({
+        const scale = await kit.fieldScale(frame.reader, {
           source: 'source' in bank ? (bank.source ?? source) : source,
           from: bank.index.type,
           rows: { ...bank.rows, index: bank.index },
@@ -173,7 +174,7 @@ export async function resolveDomains(
 export function scaledValue(
   read: FieldRead,
   name: string,
-  tile: kit.NativeFields,
+  tile: FieldsBlock,
   row: number,
   mapping: kit.Scale | kit.ColorScale | null | undefined,
   fallback: number,

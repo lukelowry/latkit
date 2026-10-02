@@ -1,23 +1,29 @@
 import { expect, it, vi } from 'vitest';
-import { kit, type Gpu } from '@latkit/gpu';
+import { createReader } from '@latkit/model';
+import type { Gpu } from '@latkit/gpu';
 import { arrange, layoutOptions, place, rootEnd } from '../src/layout.js';
 import { readScene } from '../src/read.js';
 import { geometry, orthogonal, contains, boundary } from '../src/geometry.js';
-import { options, limits } from '../src/config.js';
+import { resolveStyle, resolveLimits } from '../src/config.js';
 import { data, Source, measure } from './fixture.js';
-/** Arrangement only measures text. */
-const gpu = { measureText: measure } as unknown as Gpu;
+/** Arrangement only reads and measures text. */
+const gpu = { reader: createReader(), measureText: measure } as unknown as Gpu;
 import { Picking } from '../src/picking.js';
 async function scene(source = new Source(), position = false) {
-  const reader = kit.createNativeReader();
+  const reader = gpu.reader.open();
   try {
-    const result = await readScene(data(source, position), reader, options(), limits(), measure);
+    const result = await readScene(
+      data(source, position),
+      reader,
+      resolveStyle(),
+      resolveLimits(),
+      measure,
+    );
     await place(result, layoutOptions(), 8, reader.signal);
-    await geometry(result, options(), limits(), reader.signal);
-    reader.check();
+    await geometry(result, resolveStyle(), resolveLimits(), reader.signal);
     return result;
   } finally {
-    reader.destroy();
+    reader.close();
   }
 }
 it('arranges native rows deterministically without GPU or DOM', async () => {
@@ -57,18 +63,18 @@ it('joins every port whose reference names a net', async () => {
 });
 it('draws each row between the vertices its two references name', async () => {
   const source = new Source(3),
-    reader = kit.createNativeReader();
+    reader = gpu.reader.open();
   try {
     const d = data(source);
     const result = await readScene(
       { ...d, edges: { Dependency: { ...d.edges!.Dependency, ends: ['from', 'to'] } } },
       reader,
-      options(),
-      limits(),
+      resolveStyle(),
+      resolveLimits(),
       measure,
     );
     await place(result, layoutOptions(), 8, reader.signal);
-    await geometry(result, options(), limits(), reader.signal);
+    await geometry(result, resolveStyle(), resolveLimits(), reader.signal);
     expect(result.edges.map((edge) => edge.ends)).toEqual([
       [
         { vertex: 0, port: null, direction: 'out' },
@@ -83,8 +89,16 @@ it('draws each row between the vertices its two references name', async () => {
     expect(result.vertices.every((vertex) => !vertex.ports.length)).toBe(true);
     expect(result.edges.every((edge) => edge.arrows.length === 1)).toBe(true);
   } finally {
-    reader.destroy();
+    reader.close();
   }
+});
+it('rejects ends numbered against another row space than their vertices', async () => {
+  const source = new Source(3);
+  source.staleEnds = true;
+  const d = data(source);
+  await expect(
+    arrange(gpu, { ...d, edges: { Dependency: { ...d.edges!.Dependency, ends: ['from', 'to'] } } }),
+  ).rejects.toMatchObject({ code: 'conflict' });
 });
 it('rejects ports that are not reference columns', async () => {
   const source = new Source();
@@ -149,9 +163,9 @@ it('uses identical geometry for shape boundaries and picking', async () => {
       scale: [1, 1] as const,
       yDirection: 'down' as const,
     };
-  expect(
-    picking.hit([200, 150], camera, { width: 400, height: 300, pixelRatio: 2 }, 8).items[0].id,
-  ).toBe('n0');
+  expect(picking.hit([200, 150], camera, { width: 400, height: 300, pixelRatio: 2 }, 8)[0].id).toBe(
+    'n0',
+  );
 });
 it('supports headless custom layout and routing strategies', async () => {
   const source = new Source(2),
@@ -187,7 +201,7 @@ it('keeps explicit positions and sizes', async () => {
 });
 it('collapses groups into proxies for their external ends', async () => {
   const source = new Source(3),
-    reader = kit.createNativeReader();
+    reader = gpu.reader.open();
   try {
     const d = {
       ...data(source, true),
@@ -199,15 +213,15 @@ it('collapses groups into proxies for their external ends', async () => {
         },
       },
     };
-    const result = await readScene(d, reader, options(), limits(), measure);
+    const result = await readScene(d, reader, resolveStyle(), resolveLimits(), measure);
     await place(result, layoutOptions(), 8, reader.signal);
-    await geometry(result, options(), limits(), reader.signal);
+    await geometry(result, resolveStyle(), resolveLimits(), reader.signal);
     expect(result.vertices.map((n) => n.visible)).toEqual([false, false, true]);
     expect(result.edges[0].paths).toHaveLength(0);
     expect(result.edges[1].paths.length).toBeGreaterThan(0);
     expect(result.groups[0].bounds[2] - result.groups[0].bounds[0]).toBeLessThan(200);
   } finally {
-    reader.destroy();
+    reader.close();
   }
 });
 
@@ -264,7 +278,7 @@ it('enforces one preparation deadline across native reads and custom layout', as
     await expect(
       arrange(gpu, {
         ...data(new Source()),
-        limits: { prepareMs: 10 },
+        limits: { layoutMs: 10 },
         layout: {
           algorithm: {
             arrange: (graph) => {
@@ -359,16 +373,47 @@ it('reconnects a wired input from the source of its net and rejects duplicate en
   );
 });
 
+it('picks nearest first, the topmost item breaking ties', async () => {
+  const result = await scene(new Source(2), true),
+    port = result.vertices[0].ports.find((p) => p.name === 'output')!.position;
+  const picking = new Picking(result, resolveLimits().pickingBytes),
+    camera = { center: port, scale: [1, 1] as const, yDirection: 'down' as const },
+    viewport = { width: 400, height: 300, pixelRatio: 1 };
+  // Inside the vertex, beside its port: the vertex is nearer.
+  const beside = picking.hit([192, 150], camera, viewport, 8).map((hit) => hit.kind);
+  expect(beside.slice(0, 2)).toEqual(['vertex', 'port']);
+  // On the port everything touches; the port draws over its vertex, which draws over the wire.
+  const on = picking.hit([200, 150], camera, viewport, 8).map((hit) => hit.kind);
+  expect(on[0]).toBe('port');
+  expect(on.indexOf('vertex')).toBeLessThan(on.indexOf('edge'));
+  expect(picking.nearest([200, 150], camera, viewport, 8, true, () => {})?.kind).toBe('port');
+  expect(picking.hit([200, 150], camera, viewport, 8, false)[0].kind).not.toBe('port');
+});
+it('rejects unknown limits', async () => {
+  await expect(
+    arrange(gpu, { ...data(), limits: { prepareMs: 10 } as never }),
+  ).rejects.toMatchObject({ code: 'invalid-input' });
+  expect(resolveLimits({ layoutMs: 5 }).layoutMs).toBe(5);
+});
+it('expands field shorthands for headless arrangement', async () => {
+  const source = new Source(3),
+    d = data(source);
+  const result = await arrange(gpu, {
+    ...d,
+    vertices: { Task: { labels: 'name', color: 'weight', ports: { input: { color: 'weight' } } } },
+  });
+  expect(result.Task.rows).toEqual({ kind: 'indices', values: Uint32Array.of(0, 1, 2) });
+});
 it('picks edge labels using their rendered bounds', async () => {
   const result = await scene(),
     edge = result.edges[0],
     box = edge.labelBounds[0];
-  const picking = new Picking(result, limits().pickingBytes);
+  const picking = new Picking(result, resolveLimits().pickingBytes);
   const hit = picking.hit(
     [50, 50],
     { center: [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2], scale: [1, 1], yDirection: 'down' },
     { width: 100, height: 100, pixelRatio: 1 },
     0,
   );
-  expect(hit.items.some((item) => item.kind === 'edge' && item.id === edge.hit.id)).toBe(true);
+  expect(hit.some((item) => item.kind === 'edge' && item.id === edge.hit.id)).toBe(true);
 });

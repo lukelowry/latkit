@@ -27,8 +27,9 @@ try {
 }
 ```
 
-`duration` is in output seconds; `at` maps them to model coordinates. Choose `format`,
-`frameRate` (60 by default), and `quality` or an explicit `bitrate`.
+`duration` is in output seconds; `at` maps them to model coordinates and otherwise the view's `at`
+holds. `pixelRatio` scales lines and text as it does for images. Choose `format`, `frameRate` (60
+by default), and `quality` or an explicit `bitrate`.
 
 The view's canvas pauses while it records. Keep its sources fixed for the export. Writes are
 positional; honor `position` and await storage for backpressure. The exporter releases its writer

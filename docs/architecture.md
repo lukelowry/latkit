@@ -1,14 +1,14 @@
 # Package responsibilities
 
-| Package   | Owns                                                        |
-| --------- | ----------------------------------------------------------- |
-| `model`   | Data contracts, native columns, validation                  |
-| `connect` | Transport, remote acquisitions, cancellation                |
-| `gpu`     | Views, field preparation, text, colors, budgets, submission |
-| `network` | Network geometry, cameras, picking                          |
-| `monitor` | Trace geometry, axes, progressive history                   |
-| `diagram` | Diagram layout, routing, ports, editing proposals           |
-| `video`   | Encoding and container output                               |
+| Package   | Owns                                                      |
+| --------- | --------------------------------------------------------- |
+| `model`   | Data contracts, native columns, bounded reads, validation |
+| `connect` | Transport, remote acquisitions, cancellation              |
+| `gpu`     | Views, field uploads, text, colors, budgets, submission   |
+| `network` | Network geometry, cameras, picking                        |
+| `monitor` | Trace geometry, axes, progressive history                 |
+| `diagram` | Diagram layout, routing, ports, editing proposals         |
+| `video`   | Encoding and container output                             |
 
 Applications own data, canvases, storage, and the GPU's lifetime. Views borrow sources and the GPU;
 several views share one GPU.
@@ -62,5 +62,7 @@ const renderer: kit.Renderer = {
 };
 ```
 
-`kit.BaseView` handles capture and request coalescing for built-in views. Custom renderers must keep
+`kit.BaseView` handles capture and request coalescing for built-in views; `kit.BaseItemView` adds
+the camera, selection, picking, hover, style, and input that network, monitor, and diagram share,
+so each supplies only its geometry and gestures. Custom renderers must keep
 captured inputs stable until `release`; `submitted` and `discard` settle a prepared candidate once.

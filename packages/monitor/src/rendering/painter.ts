@@ -1,30 +1,50 @@
 import { type Gpu, kit } from '@latkit/gpu';
-import { rowCount, type Domain } from '@latkit/model';
-import { isEnvelope, type Chunk } from '../history.js';
-import { buffer, geometry, type Geometry, type Seams } from '../segments.js';
-import type { Settings } from '../config.js';
+import { rowCount, type Domain, type FieldsBlock } from '@latkit/model';
+import type { Binding } from '../bindings.js';
+import type { Style } from '../config.js';
 import type { Axes, Plot } from '../axes.js';
 import type { Pipelines } from './pipelines.js';
-export interface Image {
-  texture: kit.TextureResource;
-  msaa?: kit.TextureResource;
-  width: number;
-  height: number;
-  x: Domain;
-  y: Domain;
-  ready: boolean;
+
+/** What decides an image's pixels. */
+export interface Transform {
+  readonly width: number;
+  readonly height: number;
+  readonly window: Domain;
+  readonly values: Domain;
+  /** Changes with the traces, their style, and the shade. */
+  readonly generation: number;
+}
+/** How far a trace is drawn into an image. */
+export interface Progress {
+  /** The last absolute frame drawn for every row; the next lines start from it. */
+  readonly through?: number;
+  /** A chunk drawn for its first `rows` rows, which finishes before anything later. */
+  readonly chunk?: { readonly start: number; readonly frames: number; readonly rows: number };
+}
+/** History pixels for one transform, and how far each trace is drawn into them. */
+export interface Image extends Transform {
+  readonly texture: kit.TextureResource;
+  readonly msaa?: kit.TextureResource;
+  readonly progress: Map<string, Progress>;
+  /** Cleared by its first pass. */
   fresh: boolean;
 }
-export function image(
-  gpu: Gpu,
-  width: number,
-  height: number,
-  x: Domain,
-  y: Domain,
-  msaa: 1 | 4,
-): Image {
+export function sameTransform(a: Transform | undefined, b: Transform): boolean {
+  return (
+    !!a &&
+    a.width === b.width &&
+    a.height === b.height &&
+    a.generation === b.generation &&
+    a.window[0] === b.window[0] &&
+    a.window[1] === b.window[1] &&
+    a.values[0] === b.values[0] &&
+    a.values[1] === b.values[1]
+  );
+}
+export function image(gpu: Gpu, transform: Transform, msaa: 1 | 4): Image {
+  const size = [transform.width, transform.height];
   const texture = gpu.texture({
-    size: [width, height],
+    size,
     format: 'rgba8unorm',
     usage:
       GPUTextureUsage.RENDER_ATTACHMENT |
@@ -34,96 +54,135 @@ export function image(
   });
   try {
     return {
+      ...transform,
       texture,
       msaa:
         msaa === 4
           ? gpu.texture({
-              size: [width, height],
+              size,
               format: 'rgba8unorm',
               sampleCount: 4,
               usage: GPUTextureUsage.RENDER_ATTACHMENT,
             })
           : undefined,
-      width,
-      height,
-      x,
-      y,
-      ready: false,
+      progress: new Map(),
       fresh: true,
     };
-  } catch (e) {
+  } catch (error) {
     texture.destroy();
-    throw e;
+    throw error;
   }
 }
-export function destroyImage(value?: Image) {
+export function destroyImage(value?: Image): void {
   value?.texture.destroy();
   value?.msaa?.destroy();
 }
-export function imageBytes(image: Image): number {
-  return image.width * image.height * 4 * (image.msaa ? 5 : 1);
+export function imageBytes(value: Pick<Image, 'width' | 'height' | 'msaa'>): number {
+  return value.width * value.height * 4 * (value.msaa ? 5 : 1);
 }
+export function buffer(values: ArrayBufferView, label: string): kit.BufferData {
+  const data = new kit.BufferData({ size: Math.max(16, values.byteLength), label });
+  if (values.byteLength) data.write({ data: values });
+  return data;
+}
+
 export interface Draw {
-  page: kit.GpuPage;
-  view: GPUBindGroup;
-  colors: GPUBindGroup;
-  shade: GPUBindGroup;
-  geometry: Geometry;
-  factor: number;
+  readonly page: kit.GpuPage;
+  /** This draw's view uniforms, bound by `bindDraws`. */
+  readonly uniforms: Float32Array;
+  view?: GPUBindGroup;
+  readonly colors: GPUBindGroup;
+  readonly shade: GPUBindGroup;
+  /** Instances: a line per row and frame step, two for stepped interpolation. */
+  readonly instances: number;
 }
-export function prepareChunk(
+const VIEW_BYTES = 224;
+/** Bind every draw's uniforms from shared buffers: one per buffer's worth of draws, not one each. */
+export function bindDraws(
   gpu: Gpu,
   frame: kit.Preparation,
   pipelines: Pipelines,
-  chunk: Chunk,
+  draws: readonly Draw[],
+): void {
+  const limits = gpu.device.limits,
+    stride =
+      Math.ceil(VIEW_BYTES / limits.minUniformBufferOffsetAlignment) *
+      limits.minUniformBufferOffsetAlignment,
+    per = Math.max(1, Math.floor(limits.maxUniformBufferBindingSize / stride));
+  for (let first = 0; first < draws.length; first += per) {
+    const chunk = draws.slice(first, first + per),
+      packed = new Float32Array((chunk.length * stride) / 4);
+    chunk.forEach((draw, i) => packed.set(draw.uniforms, (i * stride) / 4));
+    const binding = frame.uniforms(packed);
+    chunk.forEach((draw, i) => {
+      draw.view = gpu.device.createBindGroup({
+        layout: pipelines.view,
+        entries: [
+          {
+            binding: 0,
+            resource: {
+              buffer: binding.buffer,
+              offset: (binding.offset ?? 0) + i * stride,
+              size: VIEW_BYTES,
+            },
+          },
+        ],
+      });
+    });
+  }
+}
+/**
+ * Draws for one block of a trace: a line per row through every frame of each GPU page, whose
+ * pages keep all frames of their rows. A single frame draws a dot only when `dots` is set.
+ */
+export function traceDraws(
+  gpu: Gpu,
+  frame: kit.Preparation,
+  pipelines: Pipelines,
+  block: FieldsBlock,
+  trace: Binding,
   target: Image,
   plot: Plot,
-  settings: Settings,
-  seams: Seams,
+  style: Style,
   focus: boolean,
-  parameters: Float32Array,
-  pointer: readonly [number, number] | null,
-  memo: Map<string, Geometry>,
-  timeMs: number,
-): Draw[] {
-  const native = chunk.data,
-    env = isEnvelope(native),
-    binding = chunk.binding;
-  const select = env ? [binding.field] : Object.keys(native.columns);
-  const pages = frame.upload(native, { select, float64: 'relative', maxPageBytes: 256 * 1024 });
-  const colors = frame.colormap(binding.trace.color?.colormap),
-    effect = gpu.device.createBindGroup({
-      layout: pipelines.shade,
-      entries: [{ binding: 0, resource: frame.shade({ parameters, pointerPx: pointer, timeMs }) }],
-    });
-  const colorDomain = binding.colorDomain ?? target.y;
-  const styles = chunk.styles
-    ? Float32Array.from(chunk.styles, (v, i) =>
-        i % 4 === 0
-          ? (kit.scaleValue(v, kit.resolveScale({}, colorDomain)) ?? -1)
-          : Number.isFinite(v)
-            ? v
-            : 0,
-      )
-    : new Float32Array(4);
-  const styleBuffer = frame.buffer(buffer(styles, 'monitor row styles'));
+  shade: GPUBindGroup,
+  dots: boolean,
+): { readonly draws: Draw[]; readonly segments: number } {
+  const pages = frame.upload(block, {
+    select: Object.keys(block.columns),
+    float64: 'relative',
+    maxPageBytes: 256 * 1024,
+  });
+  const colors = frame.colormap(trace.trace.color?.colormap),
+    colorDomain = trace.colorDomain ?? target.values,
+    interpolation = { linear: 0, 'step-before': 1, 'step-after': 2 }[
+      trace.trace.interpolation ?? 'linear'
+    ],
+    width = trace.trace.widthPx ?? 1.25;
   const draws: Draw[] = [];
+  let segments = 0;
   for (const page of pages) {
-    const desc = page.columns[env ? binding.field : 'value'];
-    if (desc.kind === 'list') throw new Error('Trace field must be scalar');
-    const value = desc.kind === 'envelope' ? desc.values : desc,
-      coordinate = desc.kind === 'envelope' ? desc.coordinates : page.samples!.coordinates;
-    const color = env ? (binding.colorValue ? value : undefined) : page.columns.color;
-    const shade = env ? (binding.shadeValue ? value : undefined) : page.columns.shade;
-    const visibility = env ? undefined : page.columns.visible;
-    const uniforms = new Float32Array(156),
-      ints = new Uint32Array(uniforms.buffer),
-      base = binding.trace.baseColor ?? [0.23, 0.72, 0.88, 0.7];
+    const frames = page.samples!.count,
+      rows = rowCount(page.rows);
+    if (frames < 2 && !dots) continue;
+    const value = page.columns.value,
+      coordinate = page.samples!.coordinates,
+      color = page.columns.color,
+      shaded = page.columns.shade,
+      visible = page.columns.visible;
+    if (value.kind !== 'value') throw new Error('Trace field must be scalar');
+    const uniforms = new Float32Array(56),
+      ints = new Uint32Array(uniforms.buffer);
     uniforms.set([target.width, target.height, plot.width, plot.height], 0);
-    uniforms.set(base, 4);
-    uniforms.set(settings.focusColor ?? [0, 0, 0, -1], 8);
+    uniforms.set(trace.trace.baseColor ?? [0.23, 0.72, 0.88, 0.7], 4);
+    uniforms.set(focus && style.selectedColor ? style.selectedColor : [0, 0, 0, -1], 8);
     uniforms.set(
-      [binding.trace.widthPx ?? 1.25, focus ? 1 : 0, 0, binding.trace.color ? 1 : 0],
+      [
+        focus ? Math.max(width, style.selectedWidthPx) : width,
+        focus ? 1 : 0,
+        frame.viewport.pixelRatio,
+        trace.trace.color ? 1 : 0,
+      ],
       12,
     );
     ints.set(
@@ -131,106 +190,42 @@ export function prepareChunk(
         value.slot,
         coordinate.slot,
         color?.kind === 'value' ? color.slot : 0xffffffff,
-        shade?.kind === 'value' ? shade.slot : 0xffffffff,
+        shaded?.kind === 'value' ? shaded.slot : 0xffffffff,
       ],
       16,
     );
     ints.set(
       [
-        env ? 1 : 0,
-        visibility?.kind === 'value' ? visibility.slot : 0xffffffff,
+        visible?.kind === 'value' ? visible.slot : 0xffffffff,
+        visible?.kind === 'value' && visible.type === 'boolean' ? 1 : 0,
+        interpolation,
         0,
-        binding.trace.interpolation === 'step-before'
-          ? 1
-          : binding.trace.interpolation === 'step-after'
-            ? 2
-            : 0,
       ],
       20,
     );
-    ints.set(
-      [
-        rowCount(page.rows),
-        page.samples?.count ?? page.envelope!.count,
-        page.rowOffset - native.rowOffset,
-        (visibility?.kind === 'value' && visibility.type === 'boolean' ? 1 : 0) |
-          (binding.colorValue ? 2 : 0) |
-          (binding.shadeValue ? 4 : 0),
-      ],
-      24,
-    );
-    uniforms.set(
-      [
-        shade?.kind === 'value' ? (shade.origin?.[0] ?? 0) : 0,
-        frame.viewport.pixelRatio,
-        plot.x,
-        plot.y,
-      ],
-      28,
-    );
-    const setScale = (at: number, domain: Domain, column: kit.GpuValueField, clamp: boolean) => {
-      for (let lane = 0; lane < 4; lane++)
-        uniforms.set(
-          kit.scaleParameters(kit.resolveScale({ clamp }, domain), {
-            origin: column.origin?.[Math.min(lane, column.components - 1)] ?? 0,
-          }),
-          at + lane * 8,
-        );
-    };
-    for (let lane = 0; lane < 4; lane++)
-      uniforms[32 + lane] =
-        shade?.kind === 'value' ? (shade.origin?.[Math.min(lane, shade.components - 1)] ?? 0) : 0;
-    setScale(36, target.x, coordinate, false);
-    setScale(68, target.y, value, false);
-    for (let lane = 0; lane < 4; lane++)
+    ints.set([rows, frames, 0, 0], 24);
+    uniforms.set([shaded?.kind === 'value' ? (shaded.origin?.[0] ?? 0) : 0, 0, plot.x, plot.y], 28);
+    const scale = (at: number, domain: Domain, origin: number | undefined, clamp = false) =>
       uniforms.set(
-        kit.scaleParameters(kit.resolveScale({}, colorDomain), {
-          origin:
-            color?.kind === 'value'
-              ? (color.origin?.[Math.min(lane, color.components - 1)] ?? 0)
-              : 0,
-        }),
-        100 + lane * 8,
+        kit.scaleParameters(kit.resolveScale({ clamp }, domain), { origin: origin ?? 0 }),
+        at,
       );
-    const key = [
-      page.rowOffset,
-      page.samples?.firstFrame,
-      page.samples?.count,
-      page.envelope?.firstBucket,
-      page.envelope?.count,
-    ].join(':');
-    let shape = memo.get(key);
-    if (!shape) {
-      shape = geometry(chunk, page, seams);
-      memo.set(key, shape);
-    }
-    for (const [i, domain] of [target.x, target.y, colorDomain].entries())
-      uniforms.set(
-        kit.scaleParameters(kit.resolveScale({ clamp: i === 2 }, domain), {
-          origin: shape.origins[i],
-        }),
-        132 + i * 8,
-      );
-    const group = gpu.device.createBindGroup({
-      layout: pipelines.view,
-      entries: [
-        { binding: 0, resource: frame.uniforms(uniforms) },
-        { binding: 1, resource: frame.buffer(shape.addresses) },
-        { binding: 2, resource: frame.buffer(shape.joins) },
-        { binding: 3, resource: styleBuffer },
-      ],
-    });
+    scale(32, target.window, coordinate.origin?.[0]);
+    scale(40, target.values, value.origin?.[0]);
+    scale(48, colorDomain, color?.kind === 'value' ? color.origin?.[0] : 0, true);
+    const steps = rows * Math.max(1, frames - 1);
+    segments += steps;
     draws.push({
       page,
-      view: group,
+      uniforms,
       colors,
-      shade: effect,
-      geometry: shape,
-      factor: ints[23] ? 2 : 1,
+      shade,
+      instances: steps * (interpolation ? 2 : 1),
     });
   }
-  return draws;
+  return { draws, segments };
 }
+/** Draw onto an image, clearing it first when fresh. */
 export function paint(
   frame: kit.Encoding,
   pipelines: Pipelines,
@@ -248,73 +243,71 @@ export function paint(
       },
     ],
   });
-  let calls = 0;
+  pass.setPipeline(pipelines.trace);
   for (const draw of draws) {
     pass.setBindGroup(0, draw.page.bindGroup);
-    pass.setBindGroup(1, draw.view);
+    pass.setBindGroup(1, draw.view!);
     pass.setBindGroup(2, draw.colors);
     pass.setBindGroup(3, draw.shade);
-    if (draw.geometry.count) {
-      pass.setPipeline(draw.geometry.raw ? pipelines.raw : pipelines.envelope);
-      pass.draw(6, draw.geometry.count * draw.factor);
-      calls++;
-    }
-    if (draw.geometry.joinCount) {
-      pass.setPipeline(pipelines.seams);
-      pass.draw(6, draw.geometry.joinCount * draw.factor);
-      calls++;
-    }
+    pass.draw(6, draw.instances);
   }
   pass.end();
-  return calls;
+  return draws.length;
 }
+
 export interface Screen {
-  image: GPUBindGroup;
-  axis: GPUBindGroup;
-  cursor?: GPUBindGroup;
-  text: readonly kit.TextPage[];
-  lines: number;
-  grid: number;
+  readonly image: GPUBindGroup;
+  readonly axis: GPUBindGroup;
+  readonly cursor?: GPUBindGroup;
+  readonly text: readonly kit.TextPage[];
+  readonly lines: number;
+  readonly grid: number;
+}
+/** Where an image's pixels fall in the camera's plot: offset and scale of its uv per plot uv. */
+function mapping(image: Transform, window: Domain, values: Domain): readonly number[] {
+  const iw = image.window[1] - image.window[0],
+    iv = image.values[1] - image.values[0];
+  return [
+    (window[0] - image.window[0]) / iw,
+    (image.values[1] - values[1]) / iv,
+    (window[1] - window[0]) / iw,
+    (values[1] - values[0]) / iv,
+  ];
 }
 export async function prepareScreen(
   gpu: Gpu,
   frame: kit.Preparation,
   pipelines: Pipelines,
   history: Image,
-  focus: Image,
-  showHistory: boolean,
-  showFocus: boolean,
-  x: Domain,
-  y: Domain,
+  focus: Image | undefined,
+  window: Domain,
+  values: Domain,
   layout: Axes,
-  settings: Settings,
+  style: Style,
   at: number | undefined,
 ): Promise<Screen> {
   const p = layout.plot,
-    uniforms = new Float32Array(20);
+    uniforms = new Float32Array(24);
   uniforms.set([frame.viewport.width, frame.viewport.height, 0, 0]);
   uniforms.set([p.x, p.y, p.width, p.height], 4);
-  uniforms.set([0, 0, 1, 1], 8);
-  uniforms.set(settings.backgroundColor, 12);
-  uniforms.set(
-    [showFocus ? settings.unselectedAlpha : 1, showFocus ? 1 : 0, showHistory ? 1 : 0, 0],
-    16,
-  );
-  const imageGroup = gpu.device.createBindGroup({
+  uniforms.set(mapping(history, window, values), 8);
+  uniforms.set(focus ? mapping(focus, window, values) : [0, 0, 1, 1], 12);
+  uniforms.set(style.background, 16);
+  uniforms.set([focus ? style.unselectedAlpha : 1, focus ? 1 : 0, 1, 0], 20);
+  const image = gpu.device.createBindGroup({
     layout: pipelines.image,
     entries: [
       { binding: 0, resource: frame.uniforms(uniforms) },
       { binding: 1, resource: frame.texture(history.texture).createView() },
-      { binding: 2, resource: frame.texture(focus.texture).createView() },
+      { binding: 2, resource: frame.texture((focus ?? history).texture).createView() },
       { binding: 3, resource: pipelines.sampler },
     ],
   });
   const cursor =
     at === undefined
       ? null
-      : kit.scaleValue(at, kit.resolveScale({ range: [p.x, p.x + p.width], clamp: false }, x));
-  const extra = cursor !== null && cursor >= p.x && cursor <= p.x + p.width ? 8 : 0;
-  const makeAxis = (values: kit.BufferData) =>
+      : kit.scaleValue(at, kit.resolveScale({ range: [p.x, p.x + p.width], clamp: false }, window));
+  const axis = (data: kit.BufferData) =>
     gpu.device.createBindGroup({
       layout: pipelines.axis,
       entries: [
@@ -324,20 +317,21 @@ export async function prepareScreen(
             Float32Array.of(frame.viewport.width, frame.viewport.height, 0, 0),
           ),
         },
-        { binding: 1, resource: frame.buffer(values) },
+        { binding: 1, resource: frame.buffer(data) },
       ],
     });
   return {
-    image: imageGroup,
-    axis: makeAxis(layout.lines),
-    cursor: extra
-      ? makeAxis(
-          buffer(
-            Float32Array.of(cursor!, p.y, cursor!, p.y + p.height, ...settings.cursorColor),
-            'monitor playhead',
-          ),
-        )
-      : undefined,
+    image,
+    axis: axis(layout.lines),
+    cursor:
+      cursor !== null && cursor >= p.x && cursor <= p.x + p.width
+        ? axis(
+            buffer(
+              Float32Array.of(cursor, p.y, cursor, p.y + p.height, ...style.cursorColor),
+              'monitor playhead',
+            ),
+          )
+        : undefined,
     text: await frame.text({ runs: layout.runs }),
     lines: layout.lineCount,
     grid: layout.gridCount,
@@ -390,7 +384,8 @@ export function composite(frame: kit.Encoding, pipelines: Pipelines, screen: Scr
   pass.end();
   return calls;
 }
-export function enroll(frame: kit.Preparation, value: Image) {
+/** Hold an image's textures until this frame's GPU work completes. */
+export function enroll(frame: kit.Preparation, value: Image): void {
   frame.texture(value.texture);
   if (value.msaa) frame.texture(value.msaa);
 }

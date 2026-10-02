@@ -52,7 +52,7 @@ export function coupledData() {
     length: values.length,
     values: Uint32Array.from(values),
   });
-  const topology = createData(schema, 'topology', [
+  const topology = createData(schema, [
     {
       kind: 'rows',
       index,
@@ -78,7 +78,7 @@ export function coupledData() {
       values[frame * count + row] = 0.5 + 0.45 * wave;
     }
   }
-  const data = appendData(topology, 'history', [
+  const data = appendData(topology, [
     {
       kind: 'samples',
       index,

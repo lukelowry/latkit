@@ -1,4 +1,11 @@
-import { createGpu, colormaps, colormapCss, type ColormapName, type Shade } from '@latkit/gpu';
+import {
+  createGpu,
+  colormaps,
+  colormapCss,
+  type ColormapName,
+  type DataHit,
+  type Shade,
+} from '@latkit/gpu';
 import { createMonitor, type Monitor, type Reading, type Trace } from '@latkit/monitor';
 import { Telemetry } from './source.js';
 import './style.css';
@@ -133,10 +140,10 @@ async function main(): Promise<void> {
   monitor.on('hover', (reading) => {
     hoverReadout.textContent = describeReading(reading);
   });
-  monitor.on('select', (readings) => {
-    const reading = readings[0] ?? null;
-    selectedElement = reading?.row ?? null;
-    pickReadout.textContent = describeReading(reading);
+  monitor.on('select', (items) => {
+    const item = items[0] ?? null;
+    selectedElement = item?.row ?? null;
+    pickReadout.textContent = describeReading(item);
     renderSelected();
     renderHotList(performance.now(), true);
   });
@@ -268,6 +275,7 @@ function tick(): void {
   frameCursor++;
   source.append(latest);
   monitor?.set({ source: source.data });
+  if (windowInput.checked) applyWindow();
   const now = performance.now();
   renderHotList(now);
   if (selectedElement !== null) renderSelected();
@@ -318,13 +326,16 @@ function applyRange(): void {
   });
 }
 
-/** Follow is renderer-owned; appending never resets data or rebuilds bindings. */
+/**
+ * The last 20 s, advancing half a window at a time: appends draw into the shown history, and the
+ * history redraws only when the window moves.
+ */
 function applyWindow(): void {
-  const end = Math.max(DT_SECONDS, (frameCursor - 1) * DT_SECONDS);
+  const end = Math.max(DT_SECONDS, (frameCursor - 1) * DT_SECONDS),
+    step = WINDOW_S / 2,
+    start = Math.max(0, (Math.floor(end / step) - 1) * step);
   monitor.set({
-    camera: windowInput.checked
-      ? { window: [Math.max(0, end - WINDOW_S), end], follow: WINDOW_S }
-      : { window: FULL_WINDOW, follow: null },
+    camera: { window: windowInput.checked ? [start, start + WINDOW_S] : FULL_WINDOW },
   });
 }
 
@@ -408,8 +419,10 @@ function describeElement(element: number): string {
   return `element ${element} / ${formatValue(valueAt(currentSignal, frame, element), currentSignal)}`;
 }
 
-function describeReading(reading: Reading | null): string {
+/** A clicked reading, or a row selected from the list. */
+function describeReading(reading: Reading | DataHit | null): string {
   if (!reading) return '-';
+  if (!('value' in reading)) return describeElement(reading.row);
   return `element ${reading.row} / ${formatValue(reading.value, SIGNALS.findIndex((signal) => signal.id === reading.field) as SignalIndex)} / ${reading.coordinate.toFixed(1)}s`;
 }
 

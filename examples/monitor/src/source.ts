@@ -23,7 +23,7 @@ export class Telemetry {
         },
       },
     };
-    this.data = createData(this.schema, '0', []);
+    this.data = createData(this.schema, []);
   }
   /** Ownership of values passes to the application store. Never mutate published buffers. */
   append(values: Float64Array): void {
@@ -49,6 +49,6 @@ export class Telemetry {
         ]),
       ),
     };
-    this.data = appendData(this.data, String(frame + 1), [batch]);
+    this.data = appendData(this.data, [batch]);
   }
 }

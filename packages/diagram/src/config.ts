@@ -1,21 +1,17 @@
-import { GpuError, kit, type RGBA } from '@latkit/gpu';
-import type { Data } from '@latkit/model';
-import type { Limits, StyleOptions } from './options.js';
+import { GpuError, kit, viewStyle, type RGBA } from '@latkit/gpu';
+import type { DiagramStyle, Limits } from './options.js';
 import type { DiagramData, VertexData, EdgeData } from './data.js';
-export type Style = Required<StyleOptions>;
-export const defaults: Style = {
+import type { DiagramInput } from './input.js';
+export type Style = Required<DiagramStyle> & kit.ResolvedViewStyle;
+export const DEFAULTS: Required<DiagramStyle> = Object.freeze({
   gridPitch: 8,
   grid: true,
   snap: true,
   labels: true,
   junctions: true,
-  font: { family: 'system-ui, sans-serif' },
-  fontSizePx: 12,
   vertexPadding: 10,
   cornerRadius: 8,
   outlineWidthPx: 1,
-  selectionWidthPx: 2,
-  hoverWidthPx: 3,
   portSizePx: 8,
   portMarker: 'directional',
   portLabels: true,
@@ -25,34 +21,22 @@ export const defaults: Style = {
   detail: 'auto',
   portSpacing: 22,
   routeClearance: 16,
-  motion: 'auto',
-  animationMs: 250,
   animationMaxVertices: 512,
-  pickRadiusPx: 8,
-  fitPaddingPx: 32,
-  revealPaddingPx: 48,
-  hover: 'auto',
-  hoverBudgetMs: 4,
-  msaa: 1,
-  backgroundColor: [0.055, 0.065, 0.09, 1],
-  vertexBaseColor: [0.16, 0.19, 0.25, 1],
-  edgeBaseColor: [0.6, 0.65, 0.73, 1],
-  outlineColor: [0.4, 0.47, 0.58, 1],
-  textColor: [0.92, 0.94, 0.98, 1],
-  gridColor: [0.5, 0.55, 0.65, 0.2],
-  groupColor: [0.45, 0.55, 0.7, 0.1],
-  hoverColor: [1, 0.7, 0.25, 1],
-  selectedColor: [0.35, 0.7, 1, 1],
-};
-export const limitDefaults: Required<Limits> = {
+  vertexBaseColor: [0.16, 0.19, 0.25, 1] as RGBA,
+  edgeBaseColor: [0.6, 0.65, 0.73, 1] as RGBA,
+  outlineColor: [0.4, 0.47, 0.58, 1] as RGBA,
+  gridColor: [0.5, 0.55, 0.65, 0.2] as RGBA,
+  groupColor: [0.45, 0.55, 0.7, 0.1] as RGBA,
+});
+export const LIMITS: Required<Limits> = Object.freeze({
   vertices: 100000,
   edges: 200000,
   ends: 1000000,
   geometryBytes: 128 * 1024 ** 2,
   pickingBytes: 32 * 1024 ** 2,
   routePoints: 2000000,
-  prepareMs: 30000,
-};
+  layoutMs: 30000,
+});
 export function fail(message: string): never {
   throw new GpuError('invalid-input', message);
 }
@@ -60,69 +44,59 @@ export function positive(value: number, name: string, zero = false): number {
   if (!Number.isFinite(value) || (zero ? value < 0 : value <= 0)) fail('Invalid ' + name);
   return value;
 }
-export function patch<T extends object>(base: T, values: Partial<T>): T {
-  return {
-    ...base,
-    ...Object.fromEntries(Object.entries(values).filter(([, v]) => v !== undefined)),
-  };
-}
-/** The style a config describes: its own options over the defaults. */
-export function options(config: StyleOptions = {}): Style {
-  const result = patch(
-    defaults,
-    Object.fromEntries(
-      Object.keys(defaults).map((key) => [key, config[key as keyof StyleOptions]]),
-    ) as StyleOptions,
-  );
-  for (const key of [
-    'gridPitch',
-    'fontSizePx',
-    'vertexPadding',
-    'cornerRadius',
-    'outlineWidthPx',
-    'selectionWidthPx',
-    'hoverWidthPx',
-    'portSizePx',
-    'portFontSizePx',
-    'edgeWidthPx',
-    'gridMinSpacingPx',
-    'portSpacing',
-    'routeClearance',
-    'animationMs',
-    'pickRadiusPx',
-    'revealPaddingPx',
-    'hoverBudgetMs',
-  ] as const)
-    positive(
-      result[key],
-      key,
-      ['animationMs', 'cornerRadius', 'outlineWidthPx', 'hoverWidthPx'].includes(key),
-    );
-  for (const key of ['grid', 'snap', 'labels', 'junctions', 'portLabels'] as const)
-    if (typeof result[key] !== 'boolean') fail('Invalid ' + key);
-  if (!Number.isSafeInteger(result.animationMaxVertices) || result.animationMaxVertices < 0)
-    fail('Invalid animationMaxVertices');
-  if (!['auto', 'full'].includes(result.detail)) fail('Invalid detail');
-  if (!['directional', 'circle', 'diamond'].includes(result.portMarker)) fail('Invalid portMarker');
-  if (![1, 4].includes(result.msaa)) fail('Invalid msaa');
-  if (!['auto', 'reduce', 'full'].includes(result.motion)) fail('Invalid motion');
-  if (!['auto', 'on', 'off'].includes(result.hover)) fail('Invalid hover');
-  const padding =
-    typeof result.fitPaddingPx === 'number' ? [result.fitPaddingPx] : result.fitPaddingPx;
-  if (padding.length !== 1 && padding.length !== 4) fail('Invalid fitPaddingPx');
-  padding.forEach((v) => positive(v, 'fitPaddingPx', true));
-  if (!result.font.family) fail('A font family is required');
-  for (const key of Object.keys(result) as (keyof Style)[])
-    if (key.endsWith('Color')) kit.validateRgba(result[key] as RGBA);
-  return result;
-}
-export function limits(value: Limits = {}): Required<Limits> {
-  const result = patch(limitDefaults, value);
-  for (const [name, v] of Object.entries(result)) {
-    positive(v, name);
-    if (name !== 'prepareMs' && !Number.isSafeInteger(v)) fail('Invalid integer limit: ' + name);
+const ZERO = new Set(['cornerRadius', 'outlineWidthPx']);
+const CHOICES: Partial<Record<keyof DiagramStyle, readonly string[]>> = {
+  detail: ['auto', 'full'],
+  portMarker: ['directional', 'circle', 'diamond'],
+};
+/** The style a config describes: its own options over the defaults, on the shared view style. */
+export function resolveStyle(
+  config: DiagramStyle = {},
+  view: kit.ResolvedViewStyle = viewStyle,
+): Style {
+  const style: Record<string, unknown> = { ...view, ...DEFAULTS };
+  for (const key of Object.keys(DEFAULTS) as (keyof DiagramStyle)[]) {
+    const value = config[key];
+    if (value === undefined) continue;
+    const choices = CHOICES[key];
+    if (key.endsWith('Color')) kit.validateRgba(value as RGBA);
+    else if (choices) {
+      if (!choices.includes(value as string)) fail('Invalid ' + key);
+    } else if (typeof DEFAULTS[key] === 'boolean') {
+      if (typeof value !== 'boolean') fail('Invalid ' + key);
+    } else if (key === 'animationMaxVertices') {
+      if (!Number.isSafeInteger(value) || (value as number) < 0) fail('Invalid ' + key);
+    } else positive(value as number, key, ZERO.has(key));
+    style[key] = value;
   }
-  return result;
+  return Object.freeze(style) as Style;
+}
+export function resolveLimits(value: Limits = {}): Required<Limits> {
+  for (const key of Object.keys(value)) if (!(key in LIMITS)) fail('Unknown diagram limit: ' + key);
+  const result: Record<string, number> = { ...LIMITS };
+  for (const [name, v] of Object.entries(value) as [string, number | undefined][]) {
+    if (v === undefined) continue;
+    positive(v, name);
+    if (name !== 'layoutMs' && !Number.isSafeInteger(v)) fail('Invalid integer limit: ' + name);
+    result[name] = v;
+  }
+  return Object.freeze(result) as Required<Limits>;
+}
+const MODES = ['edit', 'navigate', 'inspect', 'none'];
+/** Throw on input options the gestures cannot use. */
+export function checkInput(input: DiagramInput | undefined): void {
+  if (!input) return;
+  if (input.mode !== undefined && !MODES.includes(input.mode)) fail('Invalid input mode');
+  if (input.wheel !== undefined && !['zoom', 'modifier'].includes(input.wheel))
+    fail('Invalid wheel');
+  if (input.backgroundDrag !== undefined && !['pan', 'select'].includes(input.backgroundDrag))
+    fail('Invalid backgroundDrag');
+  for (const key of ['dragThresholdPx', 'touchDragThresholdPx', 'autoPanSpeedPx'] as const)
+    if (input[key] !== undefined) positive(input[key], key, true);
+  for (const key of ['connectRadiusPx', 'autoPanMarginPx'] as const)
+    if (input[key] !== undefined) positive(input[key], key);
+  if (input.canConnect !== undefined && typeof input.canConnect !== 'function')
+    fail('Invalid canConnect');
 }
 function binding(value: VertexData | EdgeData) {
   if (value.labels) {
@@ -194,19 +168,4 @@ export function data(value: DiagramData): DiagramData {
     edges: { ...value.edges },
     groups: { ...value.groups },
   };
-}
-export function sources(data: DiagramData): Set<Data> {
-  const result = new Set([data.source]);
-  const visit = (value: unknown): void => {
-    if (!value || typeof value !== 'object' || ArrayBuffer.isView(value)) return;
-    if ('source' in value && 'field' in value) {
-      result.add((value as kit.FieldBinding).source);
-      return;
-    }
-    if ('values' in value) return;
-    for (const child of Object.values(value)) visit(child);
-  };
-  visit(data.vertices);
-  visit(data.edges);
-  return result;
 }

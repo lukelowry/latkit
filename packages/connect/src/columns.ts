@@ -1,19 +1,20 @@
-import { validateBatch } from '@latkit/model';
-import type { Column, DataBatch, SampleColumn, Schema } from '@latkit/model';
-import { failure, integer, record, text } from './core.js';
-import { align8, checkTree, Op, prepare } from './frame.js';
+import { failure, rowCount, sliceSamples, validateBatch } from '@latkit/model';
+import type { Column, DataBatch, SampleBatch, SampleColumn, Schema } from '@latkit/model';
+import { integer, record, text } from './core.js';
+import { align8, checkTree, HEADER, Op, prepare } from './frame.js';
 import type { FrameLimits, Plan } from './frame.js';
 import type { EncodedPublication, Limits, Publication } from './types.js';
 
 const arrays = {
-  u8: Uint8Array,
-  u32: Uint32Array,
-  i32: Int32Array,
-  f32: Float32Array,
-  f64: Float64Array,
+  uint8: Uint8Array,
+  uint32: Uint32Array,
+  int32: Int32Array,
+  float32: Float32Array,
+  float64: Float64Array,
 };
-type ArrayKind = keyof typeof arrays;
+type ArrayType = keyof typeof arrays;
 const littleEndian = new Uint8Array(Uint16Array.of(1).buffer)[0] === 1;
+const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 function swapped(input: Uint8Array, width: number): Uint8Array {
   const output = Uint8Array.from(input);
@@ -21,102 +22,226 @@ function swapped(input: Uint8Array, width: number): Uint8Array {
     for (let j = 0; j < width; j++) output[at + j] = input[at + width - j - 1];
   return output;
 }
-type Bounds = FrameLimits & Pick<Limits, 'maxPublicationBatches'>;
+/** The limits a publication is encoded and decoded under. */
+export type PublicationLimits = FrameLimits & Pick<Limits, 'maxPublicationBatches'>;
 
-/** Prepare bounded metadata without copying numeric values. encode() owns the outgoing copy. */
+/** One atomic publication message; throws when `input` does not fit the bounds. Prepares bounded
+ *  metadata without copying numeric values: encode() owns the outgoing copy. */
 export function preparePublication(
   input: DataBatch | Publication,
   id: number,
   schema: Schema,
-  bounds: Bounds,
+  bounds: PublicationLimits,
 ): Plan {
-  const batches = Array.isArray(input) ? input : [input];
-  if (!batches.length || batches.length > bounds.maxPublicationBatches)
-    throw failure('resource-limit', 'Publication batch count exceeds its bound.');
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  const binary = (value: ArrayBufferView) => {
-    const kind: ArrayKind =
+  const frame = new PublicationFrame(bounds);
+  for (const batch of batchesOf(input)) {
+    validate(batch, schema, bounds);
+    if (!frame.add(batch))
+      throw failure('resource-limit', 'Publication exceeds its message bounds.');
+  }
+  return frame.plan(id);
+}
+
+/** The fewest publication messages for `input`, in order. A group that fits is one atomic message;
+ *  a sample batch beyond one message is cut between whole frames, so each piece appends in turn. */
+export function* preparePublications(
+  input: DataBatch | Publication,
+  id: number,
+  schema: Schema,
+  bounds: PublicationLimits,
+): Generator<Plan> {
+  let frame = new PublicationFrame(bounds);
+  for (const batch of batchesOf(input)) {
+    validate(batch, schema, bounds);
+    for (const piece of batch.kind === 'samples' ? framesOf(batch, bounds) : [batch]) {
+      if (frame.add(piece)) continue;
+      if (frame.size) {
+        yield frame.plan(id);
+        frame = new PublicationFrame(bounds);
+        if (frame.add(piece)) continue;
+      }
+      throw failure(
+        'resource-limit',
+        batch.kind === 'samples'
+          ? 'One sample frame exceeds the message bounds.'
+          : 'A row batch exceeds the message bounds.',
+      );
+    }
+  }
+  yield frame.plan(id);
+}
+
+/** UTF-8 bytes of the metadata of a publication without batches. */
+const EMPTY = JSON.stringify({ batches: [] }).length;
+
+/** Batches laid into one publication frame in order, each batch's binary placed as it is added. */
+class PublicationFrame {
+  private readonly chunks: Uint8Array[] = [];
+  private readonly batches: Record<string, unknown>[] = [];
+  private body = 0;
+  private json = EMPTY;
+  constructor(private readonly bounds: PublicationLimits) {}
+
+  get size(): number {
+    return this.batches.length;
+  }
+
+  /** Adds a validated batch, or returns false and leaves the frame unchanged when a bound would be exceeded. */
+  add(batch: DataBatch): boolean {
+    if (this.batches.length === this.bounds.maxPublicationBatches) return false;
+    const chunks = this.chunks.length,
+      body = this.body;
+    const metadata = describe(batch, (view) => this.place(view));
+    const json =
+      this.json + encoder.encode(JSON.stringify(metadata)).length + (this.batches.length ? 1 : 0);
+    if (
+      json > this.bounds.maxMetadataBytes ||
+      align8(HEADER + json) + this.body > this.bounds.maxMessageBytes
+    ) {
+      this.chunks.length = chunks;
+      this.body = body;
+      return false;
+    }
+    this.batches.push(metadata);
+    this.json = json;
+    return true;
+  }
+
+  plan(id: number): Plan {
+    return prepare(Op.publication, id, { batches: this.batches }, this.chunks, this.bounds);
+  }
+
+  /** Borrows the view's little-endian bytes at the next aligned body offset. */
+  private place(value: ArrayBufferView) {
+    const type: ArrayType =
       value instanceof Float64Array
-        ? 'f64'
+        ? 'float64'
         : value instanceof Float32Array
-          ? 'f32'
+          ? 'float32'
           : value instanceof Int32Array
-            ? 'i32'
+            ? 'int32'
             : value instanceof Uint32Array
-              ? 'u32'
-              : 'u8';
-    const offset = align8(size);
-    size = offset + value.byteLength;
-    if (size > bounds.maxMessageBytes)
-      throw failure('resource-limit', 'Publication exceeds the message bound.');
+              ? 'uint32'
+              : 'uint8';
+    const offset = align8(this.body);
+    this.body = offset + value.byteLength;
     const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-    chunks.push(littleEndian ? bytes : swapped(bytes, arrays[kind].BYTES_PER_ELEMENT));
-    return { kind, offset, length: value.byteLength / arrays[kind].BYTES_PER_ELEMENT };
-  };
+    this.chunks.push(littleEndian ? bytes : swapped(bytes, arrays[type].BYTES_PER_ELEMENT));
+    return { type, offset, length: value.byteLength / arrays[type].BYTES_PER_ELEMENT };
+  }
+}
+
+/** A batch's publication metadata, each binary leaf placed by `place`. */
+function describe(
+  value: DataBatch,
+  place: (view: ArrayBufferView) => unknown,
+): Record<string, unknown> {
   function column(value: Column): Record<string, unknown> {
     const common = {
       kind: value.kind,
       offset: value.offset,
       length: value.length,
-      ...(value.validity && { validity: binary(value.validity) }),
+      ...(value.validity && { validity: place(value.validity) }),
     };
     switch (value.kind) {
       case 'numeric':
         return {
           ...common,
-          values: binary(value.values),
+          values: place(value.values),
           ...('frameStride' in value
             ? { frameStride: value.frameStride, rowStride: (value as SampleColumn).rowStride }
             : {}),
         };
       case 'boolean':
-        return { ...common, values: binary(value.values) };
+        return { ...common, values: place(value.values) };
       case 'reference':
-        return { ...common, index: value.index, values: binary(value.values) };
+        return { ...common, index: value.index, values: place(value.values) };
       case 'text':
-        return { ...common, bytes: binary(value.bytes), offsets: binary(value.offsets) };
+        return { ...common, bytes: place(value.bytes), offsets: place(value.offsets) };
       case 'vector':
         return { ...common, size: value.size, values: column(value.values) };
       case 'list':
-        return { ...common, offsets: binary(value.offsets), values: column(value.values) };
+        return { ...common, offsets: place(value.offsets), values: column(value.values) };
     }
   }
-  function batch(value: DataBatch) {
-    checkTree(value, bounds.maxMetadataBytes, true);
-    const issues = validateBatch(schema, value, { maxBlockBytes: bounds.maxMessageBytes });
-    if (issues.length) throw failure(issues[0].code, issues[0].message);
-    return {
-      kind: value.kind,
-      index: value.index,
-      rows:
-        value.rows.kind === 'range'
-          ? value.rows
-          : { kind: 'indices', values: binary(value.rows.values) },
-      ...(value.kind === 'samples'
-        ? { firstFrame: value.firstFrame, coordinates: binary(value.coordinates) }
-        : value.ids
-          ? { ids: column(value.ids) }
-          : {}),
-      columns: Object.fromEntries(
-        Object.entries(value.columns).map(([key, c]) => [key, column(c)]),
-      ),
-    };
+  return {
+    kind: value.kind,
+    index: value.index,
+    rows:
+      value.rows.kind === 'range'
+        ? value.rows
+        : { kind: 'indices', values: place(value.rows.values) },
+    ...(value.kind === 'samples'
+      ? { firstFrame: value.firstFrame, coordinates: place(value.coordinates) }
+      : value.ids
+        ? { ids: column(value.ids) }
+        : {}),
+    columns: Object.fromEntries(Object.entries(value.columns).map(([key, c]) => [key, column(c)])),
+  };
+}
+
+/** Plain metadata and a layout valid for `schema`. A frame bounds the message size. */
+function validate(batch: DataBatch, schema: Schema, bounds: PublicationLimits): void {
+  checkTree(batch, bounds.maxMetadataBytes, true);
+  const issues = validateBatch(schema, batch);
+  if (issues.length) throw failure('invalid-input', issues[0].message, { issues });
+}
+
+/** Whole-frame pieces of `batch`, each within an empty message's binary budget. Frame-major
+ *  columns split as views; other layouts must fit one message whole. */
+function* framesOf(batch: SampleBatch, bounds: PublicationLimits): Generator<SampleBatch> {
+  const budget = bounds.maxMessageBytes - align8(HEADER + bounds.maxMetadataBytes);
+  if (bodyOf(batch).bytes <= budget) {
+    yield batch;
+    return;
   }
-  return prepare(
-    Op.publication,
-    id,
-    { batches: batches.map((value) => batch(value as DataBatch)) },
-    chunks,
-    bounds,
+  const rows = rowCount(batch.rows),
+    frames = batch.coordinates.length;
+  const piece = (from: number, count: number): SampleBatch => ({
+    ...batch,
+    firstFrame: batch.firstFrame + from,
+    coordinates: batch.coordinates.subarray(from, from + count),
+    columns: Object.fromEntries(
+      Object.entries(batch.columns).map(([name, column]) => [
+        name,
+        sliceSamples(column, 0, rows, from, count),
+      ]),
+    ),
+  });
+  const fixed = bodyOf(piece(0, 0)),
+    one = bodyOf(piece(0, 1));
+  // Each view pads to 8 bytes at most once, whatever the frame count.
+  const per = Math.max(
+    1,
+    Math.floor((budget - fixed.bytes - 8 * one.views) / (one.bytes - fixed.bytes)),
   );
+  for (let from = 0; from < frames; from += per) yield piece(from, Math.min(per, frames - from));
+}
+
+/** Binary bytes and views of a batch exactly as a frame places them. */
+function bodyOf(batch: DataBatch): { readonly bytes: number; readonly views: number } {
+  let bytes = 0,
+    views = 0;
+  describe(batch, (view) => {
+    bytes = align8(bytes) + view.byteLength;
+    views++;
+    return null;
+  });
+  return { bytes, views };
+}
+
+function batchesOf(input: DataBatch | Publication): readonly DataBatch[] {
+  const batches = Array.isArray(input) ? input : [input];
+  if (!batches.length)
+    throw failure('resource-limit', 'Publication batch count exceeds its bound.');
+  return batches as readonly DataBatch[];
 }
 
 /** A connection-independent payload. Received storage is immutable and survives disconnect. */
 export function decodePublication(
   publication: EncodedPublication,
   schema: Schema,
-  bounds: Bounds,
+  bounds: PublicationLimits,
 ): Publication {
   let payload = publication.bytes;
   if (
@@ -142,12 +267,12 @@ export function decodePublication(
   )
     throw failure('protocol', 'Invalid publication batch count.');
   let referencedBytes = 0;
-  function binary(value: unknown, expected?: ArrayKind): ArrayBufferView {
+  function binary(value: unknown, expected?: ArrayType): ArrayBufferView {
     const descriptor = record(value),
-      kind = text(descriptor.kind) as ArrayKind;
-    if (!Object.hasOwn(arrays, kind) || (expected && kind !== expected))
+      type = text(descriptor.type) as ArrayType;
+    if (!Object.hasOwn(arrays, type) || (expected && type !== expected))
       throw failure('protocol', 'Invalid binary type.');
-    const ctor = arrays[kind],
+    const ctor = arrays[type],
       offset = integer(descriptor.offset),
       length = integer(descriptor.length);
     if (offset % 8 || length > Math.floor((body.length - offset) / ctor.BYTES_PER_ELEMENT))
@@ -173,7 +298,7 @@ export function decodePublication(
       kind,
       offset: integer(c.offset),
       length: integer(c.length),
-      ...(c.validity !== undefined && { validity: binary(c.validity, 'u8') }),
+      ...(c.validity !== undefined && { validity: binary(c.validity, 'uint8') }),
     };
     switch (kind) {
       case 'numeric':
@@ -186,17 +311,17 @@ export function decodePublication(
           }),
         };
       case 'boolean':
-        return { ...common, values: binary(c.values, 'u8') };
+        return { ...common, values: binary(c.values, 'uint8') };
       case 'reference':
-        return { ...common, index: c.index, values: binary(c.values, 'u32') };
+        return { ...common, index: c.index, values: binary(c.values, 'uint32') };
       case 'text':
-        return { ...common, bytes: binary(c.bytes, 'u8'), offsets: binary(c.offsets, 'i32') };
+        return { ...common, bytes: binary(c.bytes, 'uint8'), offsets: binary(c.offsets, 'int32') };
       case 'vector':
         return { ...common, size: integer(c.size, 1), values: column(c.values, depth + 1) };
       case 'list':
         return {
           ...common,
-          offsets: binary(c.offsets, 'i32'),
+          offsets: binary(c.offsets, 'int32'),
           values: column(c.values, depth + 1),
         };
       default:
@@ -214,9 +339,10 @@ export function decodePublication(
     const batch = {
       kind: m.kind,
       index: m.index,
-      rows: rows.kind === 'range' ? rows : { kind: 'indices', values: binary(rows.values, 'u32') },
+      rows:
+        rows.kind === 'range' ? rows : { kind: 'indices', values: binary(rows.values, 'uint32') },
       ...(m.kind === 'samples'
-        ? { firstFrame: integer(m.firstFrame), coordinates: binary(m.coordinates, 'f64') }
+        ? { firstFrame: integer(m.firstFrame), coordinates: binary(m.coordinates, 'float64') }
         : m.ids !== undefined
           ? { ids: column(m.ids) }
           : {}),

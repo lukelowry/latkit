@@ -1,3 +1,4 @@
+import type { Domain } from './types.js';
 /** Portable command descriptions and values, shared by producers and consumers. */
 export type Json =
   null | boolean | number | string | readonly Json[] | { readonly [key: string]: Json };
@@ -52,6 +53,8 @@ export interface Progress {
   readonly completed: number;
   readonly total?: number;
   readonly message?: string;
+  /** The coordinates the run covers, once the model knows them, such as its time span. */
+  readonly domain?: Domain;
 }
 export interface Diagnostic {
   readonly severity: 'info' | 'warning' | 'error';

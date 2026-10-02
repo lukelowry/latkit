@@ -4,6 +4,7 @@ import {
   locateSample,
   createData,
   read,
+  selectRows,
   textColumn,
   rowAt,
   rowCount,
@@ -54,7 +55,7 @@ function history(nr = 2, nf = 7) {
       : Float64Array.from({ length: nf }, (_, i) => i);
   const values = Float64Array.from({ length: nr * nf }, (_, i) => i);
   const validity = new Uint8Array(Math.ceil(values.length / 8)).fill(255);
-  return createData(schema, 'samples', [
+  return createData(schema, [
     {
       kind: 'samples',
       index,
@@ -76,17 +77,17 @@ function history(nr = 2, nf = 7) {
   ]);
 }
 it('data is a value with no acquisition, query or close protocol', async () => {
-  const data = createData(schema, 'v1', [batch]);
-  expect(Object.keys(data).sort()).toEqual(['schema', 'tables', 'version']);
+  const data = createData(schema, [batch]);
+  expect(Object.keys(data).sort()).toEqual(['schema', 'tables']);
   expect(data.tables.Node.fields.value.at(0)!.column).toBe(batch.columns.value);
   const blocks = await collect(read(data, rows));
-  expect(blocks[0]).toMatchObject({ kind: 'schema', version: 'v1' });
+  expect(blocks[0]).toMatchObject({ kind: 'rows', rowOffset: 0 });
   const block = blocks.find((b) => b.kind === 'rows')!;
   expect(blockBuffers(block)).toContain(values.buffer);
   expect(validateBlock(schema, rows, block)).toEqual([]);
 });
 it('selects identities, filters, sorts with stable physical ties, and counts before pagination', async () => {
-  const data = createData(schema, 'v1', [batch]);
+  const data = createData(schema, [batch]);
   const blocks = await collect(
     read(data, {
       ...rows,
@@ -107,8 +108,33 @@ it('selects identities, filters, sorts with stable physical ties, and counts bef
     values: Uint32Array.of(3, 1),
   });
 });
+it('resolves IDs across pages by their bytes, skipping nulls and letting a later page win', () => {
+  const nulls = { ...textColumn(['x', 'twin', 'é']), validity: Uint8Array.of(0b110) };
+  const table = createData(schema, [
+    {
+      kind: 'rows',
+      index,
+      rows: { kind: 'range', offset: 0, count: 3 },
+      ids: textColumn(['ä/1', 'twin', 'z']),
+      columns: {},
+    },
+    {
+      kind: 'rows',
+      index,
+      rows: { kind: 'indices', values: Uint32Array.of(5, 9, 7) },
+      ids: nulls,
+      columns: {},
+    },
+  ]).tables.Node;
+  expect(selectRows(table, { kind: 'ids', ids: ['é', 'ä/1', 'twin'] })).toEqual({
+    kind: 'indices',
+    values: Uint32Array.of(7, 0, 9),
+  });
+  for (const id of ['x', 'missing', ''])
+    expect(() => selectRows(table, { kind: 'ids', ids: [id] })).toThrow('Unknown row id');
+});
 it('has independent transferred copies and immutable shared pages', async () => {
-  const data = createData(schema, 'v1', [batch]);
+  const data = createData(schema, [batch]);
   const block = (await collect(read(data, rows, { buffers: 'owned' }))).find(
     (b) => b.kind === 'rows',
   )!;
@@ -116,12 +142,11 @@ it('has independent transferred copies and immutable shared pages', async () => 
   const cloned = structuredClone(block, { transfer: [...blockBuffers(block)] as ArrayBuffer[] });
   expect(numberAt(cloned.columns.value as NumericColumn, 0)).toBe(4);
   expect(values[0]).toBe(4);
-  const next = appendData(data, 'v2', []);
+  const next = appendData(data, []);
   expect(next.tables.Node).toBe(data.tables.Node);
-  expect(data.version).toBe('v1');
 });
 it('keeps stored values independently of producer lifetime', async () => {
-  const result = createData(schema, 'v1', [batch]);
+  const result = createData(schema, [batch]);
   expect((await collect(read(result, rows))).find((b) => b.kind === 'rows')!.rows).toEqual(
     batch.rows,
   );
@@ -186,7 +211,7 @@ it('reduces samples locally and preserves exact envelope extrema and gaps', asyn
   expect(aggregate.values.output).toEqual({ count: 14, min: 0, max: 13 });
 });
 it('rejects stale identities, absent fields, impossible bounds and cancelled work', async () => {
-  const data = createData(schema, 'v1', [batch]);
+  const data = createData(schema, [batch]);
   await expect(
     collect(
       read(data, {
@@ -221,7 +246,7 @@ it('resolves coordinate windows and context across gaps in stored frame numbers'
       },
     },
   }));
-  const data = createData(schema, 'gaps', batches);
+  const data = createData(schema, batches);
   const base = { kind: 'samples', from: 'Node', select: ['output'] } as const;
   const at = (await collect(read(data, { ...base, window: { kind: 'at', value: 3 } }))).filter(
     (b) => b.kind === 'samples',
@@ -241,8 +266,8 @@ it('resolves coordinate windows and context across gaps in stored frame numbers'
   ).rejects.toMatchObject({ code: 'invalid-input' });
 });
 it('constructs replacement static data without mutating earlier application data', async () => {
-  const previous = createData(schema, 'v1', [batch]);
-  const next = createData(schema, 'v2', [
+  const previous = createData(schema, [batch]);
+  const next = createData(schema, [
     {
       kind: 'rows',
       index,
@@ -292,8 +317,8 @@ function observations(
 }
 
 it('rejects row appends even when a JavaScript caller bypasses the type contract', () => {
-  const data = createData(schema, 'v1', [batch]);
-  expect(() => appendData(data, 'v2', [batch] as unknown as SampleBatch[])).toThrow(
+  const data = createData(schema, [batch]);
+  expect(() => appendData(data, [batch] as unknown as SampleBatch[])).toThrow(
     /sampled observations only/,
   );
   expect(data.tables.Node.fields.value.at(0)!.column).toBe(batch.columns.value);
@@ -302,10 +327,8 @@ it('rejects row appends even when a JavaScript caller bypasses the type contract
 it.each([true, false, undefined])('rejects the removed replace option (%s)', (replace) => {
   const row = { ...batch, replace };
   const sample = { ...observations(0), replace };
-  expect(() => createData(schema, 'v1', [row])).toThrow(/Replacement operations/);
-  expect(() => appendData(createData(schema, 'empty', []), 'v1', [sample])).toThrow(
-    /Replacement operations/,
-  );
+  expect(() => createData(schema, [row])).toThrow(/Replacement operations/);
+  expect(() => appendData(createData(schema, []), [sample])).toThrow(/Replacement operations/);
   for (const block of [row, sample])
     expect(validateBatch(schema, block)).toContainEqual(
       expect.objectContaining({ message: 'Replacement operations are unsupported.' }),
@@ -324,15 +347,15 @@ it('rejects overlapping static cells and identities while allowing separate colu
     rows: { kind: 'range', offset: 1, count: 1 },
     ids: undefined,
   };
-  expect(() => createData(schema, 'v1', [batch, overlap])).toThrow(/overlap/);
+  expect(() => createData(schema, [batch, overlap])).toThrow(/overlap/);
   expect(() =>
-    createData(schema, 'v1', [batch, { ...overlap, columns: {}, ids: textColumn(['x']) }]),
+    createData(schema, [batch, { ...overlap, columns: {}, ids: textColumn(['x']) }]),
   ).toThrow(/overlap/);
-  const data = createData(schema, 'v1', [
+  const data = createData(schema, [
     { ...batch, ids: undefined },
     { ...batch, columns: {} },
   ]);
-  expect(data.tables.Node.ids[0].column).toBe(batch.ids);
+  expect(data.tables.Node.ids.at(0)!.column).toBe(batch.ids);
   expect(data.tables.Node.fields.value.at(0)!.column).toBe(batch.columns.value);
 });
 
@@ -341,21 +364,21 @@ it('validates sparse row collisions without changing supplied row order', () => 
   const column = { kind: 'numeric' as const, offset: 0, length: 2, values: Float64Array.of(3, 1) };
   const a: RowBatch = { kind: 'rows', index, rows: sparse, columns: { value: column } };
   const b: RowBatch = { ...a, rows: { kind: 'range', offset: 1, count: 1 } };
-  expect(() => createData(schema, 'v1', [a, b])).toThrow(/overlap/);
+  expect(() => createData(schema, [a, b])).toThrow(/overlap/);
   expect(() =>
-    createData(schema, 'v1', [{ ...a, rows: { kind: 'indices', values: Uint32Array.of(1, 1) } }]),
+    createData(schema, [{ ...a, rows: { kind: 'indices', values: Uint32Array.of(1, 1) } }]),
   ).toThrow(/Duplicate/);
-  const data = createData(schema, 'v1', [a]);
+  const data = createData(schema, [a]);
   expect(data.tables.Node.fields.value.at(0)!.rows).toBe(sparse);
   expect([...sparse.values]).toEqual([3, 1]);
 });
 
 it('appends row-tiled samples atomically and shares every old payload', async () => {
   const first = observations(0, 2);
-  const previous = createData(schema, 'v1', [batch, first]);
+  const previous = createData(schema, [batch, first]);
   const upper = observations(2, 2, { kind: 'range', offset: 1, count: 1 });
   const lower = observations(2, 2, { kind: 'range', offset: 0, count: 1 });
-  const next = appendData(previous, 'v2', [upper, lower]);
+  const next = appendData(previous, [upper, lower]);
   expect(previous.tables.Node.fields.output).toHaveLength(1);
   expect(next.tables.Node.fields.output).toHaveLength(3);
   expect(next.tables.Node.fields.output.at(0)!).toBe(previous.tables.Node.fields.output.at(0)!);
@@ -378,56 +401,55 @@ it('appends row-tiled samples atomically and shares every old payload', async ()
 });
 
 it('checks a complete append before publishing, including duplicate and backfilled tiles', () => {
-  const previous = createData(schema, 'v1', [observations(5)]);
+  const previous = createData(schema, [observations(5)]);
   for (const incoming of [
     [observations(5)],
     [observations(2)],
     [observations(6), observations(6)],
   ]) {
-    expect(() => appendData(previous, 'v2', incoming)).toThrow();
+    expect(() => appendData(previous, incoming)).toThrow();
     expect(previous.tables.Node.fields.output).toHaveLength(1);
-    expect(previous.version).toBe('v1');
   }
-  const next = appendData(previous, 'v2', [observations(6)]);
+  const next = appendData(previous, [observations(6)]);
   expect(next.tables.Node.fields.output).toHaveLength(2);
 });
 
 it('accepts new frame batches supplied out of order and then advances the append boundary', () => {
-  const previous = createData(schema, 'v1', [observations(0)]);
-  const next = appendData(previous, 'v2', [observations(3), observations(1)]);
-  expect(() => appendData(next, 'v3', [observations(2)])).toThrow(/append after/);
-  expect(appendData(next, 'v3', [observations(4)]).tables.Node.fields.output).toHaveLength(4);
+  const previous = createData(schema, [observations(0)]);
+  const next = appendData(previous, [observations(3), observations(1)]);
+  expect(() => appendData(next, [observations(2)])).toThrow(/append after/);
+  expect(appendData(next, [observations(4)]).tables.Node.fields.output).toHaveLength(4);
 });
 
 it('rejects conflicting tile coordinates and backward coordinates, and preserves duplicates', () => {
   const a = observations(0, 2, { kind: 'range', offset: 0, count: 1 });
   const b = observations(0, 2, { kind: 'range', offset: 1, count: 1 });
-  expect(() => createData(schema, 'v1', [a, { ...b, coordinates: Float64Array.of(0, 2) }])).toThrow(
+  expect(() => createData(schema, [a, { ...b, coordinates: Float64Array.of(0, 2) }])).toThrow(
     /coordinates differ/,
   );
-  expect(() => createData(schema, 'v1', [{ ...a, coordinates: Float64Array.of(1, 0) }])).toThrow(
+  expect(() => createData(schema, [{ ...a, coordinates: Float64Array.of(1, 0) }])).toThrow(
     /nondecreasing/,
   );
-  const previous = createData(schema, 'v1', [a]);
+  const previous = createData(schema, [a]);
   expect(() =>
-    appendData(previous, 'v2', [{ ...observations(2), coordinates: Float64Array.of(0) }]),
+    appendData(previous, [{ ...observations(2), coordinates: Float64Array.of(0) }]),
   ).toThrow(/append after/);
   expect(
-    appendData(previous, 'v2', [{ ...observations(2), coordinates: Float64Array.of(1) }]).tables
-      .Node.fields.output,
+    appendData(previous, [{ ...observations(2), coordinates: Float64Array.of(1) }]).tables.Node
+      .fields.output,
   ).toHaveLength(2);
 });
 
 it('preserves append boundaries when column storage is reused in a Data value', () => {
-  const value = createData(schema, 'v1', [observations(10)]);
+  const value = createData(schema, [observations(10)]);
   const foreign = {
     ...value,
     tables: {
       Node: { ...value.tables.Node, fields: { output: value.tables.Node.fields.output } },
     },
   };
-  expect(() => appendData(foreign, 'v2', [observations(9)])).toThrow(/append after/);
-  expect(appendData(foreign, 'v2', [observations(11)]).tables.Node.fields.output).toHaveLength(2);
+  expect(() => appendData(foreign, [observations(9)])).toThrow(/append after/);
+  expect(appendData(foreign, [observations(11)]).tables.Node.fields.output).toHaveLength(2);
 });
 
 it('validates each aligned field against its own committed boundary', () => {
@@ -439,7 +461,7 @@ it('validates each aligned field against its own committed boundary', () => {
   };
   const early = observations(0);
   const late = observations(5);
-  const previous = createData(otherSchema, 'v1', [
+  const previous = createData(otherSchema, [
     early,
     { ...late, columns: { extra: late.columns.output } },
   ]);
@@ -448,7 +470,7 @@ it('validates each aligned field against its own committed boundary', () => {
     ...next,
     columns: { output: next.columns.output, extra: next.columns.output },
   };
-  expect(() => appendData(previous, 'v2', [aligned])).toThrow(/append after/);
+  expect(() => appendData(previous, [aligned])).toThrow(/append after/);
   expect(previous.tables.Node.fields.output).toHaveLength(1);
   expect(previous.tables.Node.fields.extra).toHaveLength(1);
 });
@@ -468,7 +490,7 @@ it('does not reuse layout validation for differently tiled columns', () => {
     rows: { kind: 'range', offset: 1, count: 1 },
     columns: { extra: batch.columns.value },
   };
-  expect(() => createData(twoFields, 'v1', [a, b])).toThrow(/overlap/);
+  expect(() => createData(twoFields, [a, b])).toThrow(/overlap/);
 });
 
 it('locates the same observation as reads at duplicate coordinates and across frame gaps', async () => {
@@ -494,13 +516,13 @@ it('locates the same observation as reads at duplicate coordinates and across fr
       expect(location!.offset).toBe(location!.frame - 2 ** 40);
     }
   }
-  const grouped = createData(schema, 'gaps', [observations(0), observations(8)]);
+  const grouped = createData(schema, [observations(0), observations(8)]);
   expect(locateSample(grouped.tables.Node.fields.output, 3)!.frame).toBe(0);
   expect(locateSample(grouped.tables.Node.fields.output, 8)!.frame).toBe(8);
   expect(
     locateSample(
-      createData(schema, 'empty', [{ ...observations(0), coordinates: new Float64Array() }]).tables
-        .Node.fields.output,
+      createData(schema, [{ ...observations(0), coordinates: new Float64Array() }]).tables.Node
+        .fields.output,
       0,
     ),
   ).toBeUndefined();

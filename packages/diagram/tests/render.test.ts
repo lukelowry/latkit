@@ -1,5 +1,6 @@
 import { renderer as snapshotRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { afterEach, expect, it, vi } from 'vitest';
+import { createData } from '@latkit/model';
 import { createGpu, createComposition, kit } from '@latkit/gpu';
 import { createDiagram, type Diagram } from '../src/diagram.js';
 import type { Controls } from '../src/input.js';
@@ -7,12 +8,6 @@ import { Source, data } from './fixture.js';
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
 function device() {
   const fake = fakeDevice();
-  fake.device.createShaderModule = vi.fn(
-    () =>
-      ({
-        getCompilationInfo: () => Promise.resolve({ messages: [] }),
-      }) as unknown as GPUShaderModule,
-  );
   fake.device.createPipelineLayout = vi.fn(() => ({}) as GPUPipelineLayout);
   fake.device.createRenderPipelineAsync = vi.fn(() =>
     Promise.resolve({ getBindGroupLayout: () => ({}) } as unknown as GPURenderPipeline),
@@ -35,8 +30,7 @@ function device() {
   return fake;
 }
 /** What input drives, without a canvas. */
-const interaction = (diagram: Diagram) =>
-  (diagram as unknown as { controls(): Controls }).controls();
+const interaction = (diagram: Diagram) => (diagram as unknown as { controls: Controls }).controls;
 const animating = (diagram: Diagram) => kit.rendererOf(diagram).animating;
 async function fixture() {
   const fake = device(),
@@ -64,6 +58,35 @@ async function fixture() {
   const draw = () =>
     gpu.render({ views: [{ renderer: kit.rendererOf(diagram), target }], timeMs: 0 });
   return { fake, source, gpu, target, diagram, draw };
+}
+/** Each task's load, sampled at coordinates 0 and 1. */
+function load(source: Source) {
+  const n = source.count;
+  return createData(
+    {
+      axis: { name: 'time' },
+      types: { Task: { fields: { load: { type: 'float32', sampled: true } } } },
+    },
+    [
+      {
+        kind: 'samples',
+        index: source.index('Task'),
+        rows: { kind: 'range', offset: 0, count: n },
+        firstFrame: 0,
+        coordinates: Float64Array.of(0, 1),
+        columns: {
+          load: {
+            kind: 'numeric',
+            offset: 0,
+            length: n * 2,
+            values: Float32Array.from({ length: n * 2 }, (_, i) => (i < n ? 0.25 : 0.75)),
+            rowStride: 1,
+            frameStride: n,
+          },
+        },
+      },
+    ],
+  );
 }
 afterEach(() => vi.restoreAllMocks());
 it('renders through the unified owner and publishes picking after submission', async () => {
@@ -478,6 +501,101 @@ it('merges layout shorthands and camera patches, and reports the presented camer
     f.diagram.set({ camera: null });
     await f.draw();
     expect(f.diagram.camera.fit).toBe(true);
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+it('fits items once and follows all the data otherwise', async () => {
+  const f = await fixture();
+  try {
+    await f.draw();
+    const all = f.diagram.camera;
+    expect(all.fit).toBe(true);
+    f.diagram.fit([{ kind: 'vertex', type: 'Task', id: 'n0' }]);
+    await f.draw();
+    expect(f.diagram.camera.fit).toBe(false);
+    expect(f.diagram.camera.scale).toBeGreaterThan(all.scale);
+    f.diagram.fit([]);
+    expect(f.diagram.camera.fit).toBe(true);
+    await f.draw();
+    expect(f.diagram.camera).toEqual(all);
+    f.diagram.set({ camera: { center: [10, 10] } });
+    expect(f.diagram.camera.fit).toBe(false);
+    f.diagram.set({ camera: null });
+    expect(f.diagram.camera.fit).toBe(true);
+    expect(() => f.diagram.set({ camera: { scale: 0 } })).toThrow('camera scale');
+    expect(() => f.diagram.set({ camera: { zoom: 2 } as never })).toThrow('Unknown camera');
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+it('expands field shorthands in entries and their ports', async () => {
+  const f = await fixture();
+  try {
+    f.diagram.set({
+      vertices: { Task: { color: 'weight', ports: { input: { color: 'weight', side: 'top' } } } },
+      edges: { Dependency: { width: 'weight' } },
+    });
+    const task = f.diagram.config.vertices.Task;
+    expect(task.color).toEqual({ field: 'weight' });
+    expect(task.ports?.input.color).toEqual({ field: 'weight' });
+    expect(task.ports?.input.side).toBe('top');
+    expect(f.diagram.config.edges?.Dependency.width).toEqual({ field: 'weight' });
+    await f.draw();
+    expect(interaction(f.diagram).scene()!.edges[0].width).toBeGreaterThan(0);
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+it('shares the view style, stats, and limits', async () => {
+  const f = await fixture();
+  try {
+    f.diagram.set({ selectedWidthPx: 4, background: [0, 0, 0, 1], selectedColor: null });
+    await f.draw();
+    expect(f.diagram.stats()).toMatchObject({ frames: 1, hover: 'idle', hoverMs: 0 });
+    expect(f.diagram.stats().pickingBytes).toBeGreaterThan(0);
+    expect(() => f.diagram.set({ selectionWidthPx: 2 } as never)).toThrow('Unknown diagram option');
+    expect(() => f.diagram.set({ backgroundColor: [0, 0, 0, 1] } as never)).toThrow(
+      'Unknown diagram option',
+    );
+    expect(() => f.diagram.set({ limits: { prepareMs: 1 } } as never)).toThrow(
+      'Unknown diagram limit',
+    );
+    expect(() => f.diagram.set({ input: { dragThresholdPx: -1 } })).toThrow('dragThresholdPx');
+    f.diagram.set({ limits: { layoutMs: 1000 } });
+    expect(f.diagram.config.limits).toEqual({ layoutMs: 1000 });
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+it('rereads the scene at a new coordinate only when a binding is sampled', async () => {
+  const f = await fixture();
+  const render = (at: number) =>
+    f.gpu.render({
+      views: [{ renderer: kit.rendererOf(f.diagram), target: f.target, at }],
+      timeMs: 0,
+    });
+  try {
+    await render(0);
+    const still = interaction(f.diagram).scene();
+    await render(1);
+    expect(interaction(f.diagram).scene()).toBe(still);
+    f.diagram.set({
+      vertices: { Task: { shade: { source: load(f.source), from: 'Task', field: 'load' } } },
+    });
+    await render(0);
+    const before = interaction(f.diagram).scene()!;
+    expect(before.vertices[0].shade).toBe(0.25);
+    await render(1);
+    expect(interaction(f.diagram).scene()!.vertices[0].shade).toBe(0.75);
   } finally {
     f.diagram.destroy();
     f.target.destroy();

@@ -1,4 +1,4 @@
-import { TextureData } from '../texture-data.js';
+import { TextureData } from '../memory/texture-data.js';
 import type { RGBA } from './color.js';
 import { validateColormap, type Colormap } from './colormap.js';
 import { namedColormap, type ColormapName } from './catalog.js';

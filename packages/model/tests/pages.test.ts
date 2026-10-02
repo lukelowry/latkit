@@ -8,6 +8,7 @@ import {
   locateSample,
   read,
   resolveRows,
+  sampleFrames,
   samplePages,
   textColumn,
   type Data,
@@ -50,10 +51,10 @@ function batch(
   };
 }
 it('preserves snapshots and duplicate-coordinate lookup through thousands of appends and frame gaps', async () => {
-  let data = createData(schema, '0', [batch(0, 0)]);
+  let data = createData(schema, [batch(0, 0)]);
   const versions: Data[] = [data];
   for (let i = 1; i < 2048; i++) {
-    data = appendData(data, String(i), [batch(i * 3, Math.floor(i / 4))]);
+    data = appendData(data, [batch(i * 3, Math.floor(i / 4))]);
     if (i % 127 === 0) versions.push(data);
   }
   const pages = data.tables.node.fields.a;
@@ -83,7 +84,7 @@ it('preserves snapshots and duplicate-coordinate lookup through thousands of app
   expect([...samplePages(pages, { kind: 'frames', offset: 0, count: 0 })]).toEqual([]);
 });
 it('resolves independent sample coverage and stable ID ordering without gathering values', () => {
-  const source = createData(schema, 'a', [
+  const source = createData(schema, [
     { kind: 'rows', index, rows, ids: textColumn(['left', 'right']), columns: {} },
     batch(0, 0),
     batch(1, 1, 'a', { ...rows, offset: 1, count: 1 }),
@@ -91,7 +92,7 @@ it('resolves independent sample coverage and stable ID ordering without gatherin
   ]);
   const selection = { kind: 'ids', ids: ['right', 'left'] } as const;
   const first = resolveRows(source, { from: 'node', select: ['a', 'b'], rows: selection, at: 0 })!;
-  const next = appendData(source, 'b', [batch(9, 2, 'b')]);
+  const next = appendData(source, [batch(9, 2, 'b')]);
   expect(
     resolveRows(next, { from: 'node', select: ['a', 'b'], rows: selection, at: 0 })?.rows,
   ).toBe(first.rows);
@@ -136,8 +137,8 @@ it('reads, appends, and copies indexed data across independent package copies', 
     [{ createData, appendData }, packaged],
     [packaged, { appendData, appendedPages, copyBuffers, locateSample, read }],
   ] as const) {
-    const original = producer.createData(schema, 'first', [batch(0, 0)]);
-    const next = consumer.appendData(original, 'next', [batch(1, 1)]);
+    const original = producer.createData(schema, [batch(0, 0)]);
+    const next = consumer.appendData(original, [batch(1, 1)]);
     const pages = next.tables.node.fields.a;
     expect(consumer.locateSample(pages, 1)?.frame).toBe(1);
     expect([...consumer.appendedPages(original.tables.node.fields.a, pages)!]).toHaveLength(1);
@@ -154,4 +155,15 @@ it('reads, appends, and copies indexed data across independent package copies', 
       if (block.kind === 'rows') blocks.push(block);
     expect(blocks).toHaveLength(1);
   }
+});
+
+it('reports the frames a window covers, with context, in one index lookup', () => {
+  let data = createData(schema, [batch(0, 10)]);
+  for (let frame = 1; frame < 5; frame++) data = appendData(data, [batch(frame, 10 + frame * 10)]);
+  const pages = data.tables.node.fields.a;
+  expect(sampleFrames(pages, { kind: 'range', between: [15, 35] })).toEqual([1, 3]);
+  expect(
+    sampleFrames(pages, { kind: 'range', between: [15, 35], context: { before: 1, after: 1 } }),
+  ).toEqual([0, 4]);
+  expect(sampleFrames(pages, { kind: 'frames', offset: 2, count: 2 })).toEqual([2, 4]);
 });

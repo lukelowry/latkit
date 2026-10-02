@@ -26,8 +26,7 @@
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
-    "test:browser": "node tests/browser/run.mjs",
-    "benchmark": "vitest bench --config vitest.config.ts --run"
+    "test:browser": "node tests/browser/run.mjs"
   },
   "dependencies": {
     "@latkit/model": "workspace:*",

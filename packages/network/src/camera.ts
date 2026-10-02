@@ -1,4 +1,4 @@
-import { kit } from '@latkit/gpu';
+import { GpuError, kit } from '@latkit/gpu';
 import type { Style } from './options.js';
 export type Projection = 'flat' | 'tilt' | 'globe';
 const PROJECTIONS: readonly Projection[] = ['flat', 'tilt', 'globe'];
@@ -12,7 +12,7 @@ export interface Camera {
   readonly pitch: number;
   /** Degrees clockwise. */
   readonly bearing: number;
-  /** Keep the data in view as it changes. */
+  /** Keep the data in view as it changes; moving the view by hand turns it off. */
   readonly fit: boolean;
   /** Turn about the center. */
   readonly orbit: boolean;
@@ -41,7 +41,7 @@ export function checkCamera(value: Camera): Camera {
     typeof value.fit !== 'boolean' ||
     typeof value.orbit !== 'boolean'
   )
-    throw new RangeError('Invalid camera');
+    throw new GpuError('invalid-input', 'Invalid camera');
   return Object.freeze({ ...value, pitch: value.projection === 'flat' ? 0 : value.pitch });
 }
 export function fit(

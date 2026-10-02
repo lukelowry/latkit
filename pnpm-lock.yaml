@@ -54,6 +54,37 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@26.1.1)(jsdom@26.1.0)(yaml@2.9.0)
 
+  benchmark:
+    dependencies:
+      '@latkit/connect':
+        specifier: workspace:*
+        version: link:../packages/connect
+      '@latkit/diagram':
+        specifier: workspace:*
+        version: link:../packages/diagram
+      '@latkit/gpu':
+        specifier: workspace:*
+        version: link:../packages/gpu
+      '@latkit/model':
+        specifier: workspace:*
+        version: link:../packages/model
+      '@latkit/monitor':
+        specifier: workspace:*
+        version: link:../packages/monitor
+      '@latkit/network':
+        specifier: workspace:*
+        version: link:../packages/network
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.18.2
+        version: 8.18.2
+      '@webgpu/types':
+        specifier: ^0.1.71
+        version: 0.1.71
+      ws:
+        specifier: 8.21.0
+        version: 8.21.0
+
   examples/diagram:
     dependencies:
       '@latkit/diagram':

@@ -1,4 +1,4 @@
-export { connectLattice } from './connect.js';
+export { connectModel } from './connect.js';
 export { acceptModel } from './accept.js';
 export type {
   AcceptOptions,
@@ -18,3 +18,5 @@ export type {
   RunOptions,
   WebSocketLike,
 } from './types.js';
+/** The binary wire codec, for gateways and other hosts. */
+export * as protocol from './protocol.js';

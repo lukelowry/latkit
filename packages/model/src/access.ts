@@ -46,6 +46,9 @@ export function sliceRows(rows: RowAxis, offset: number, count: number): RowAxis
 export function bitAt(bitmap: Uint8Array | undefined, position: number): boolean {
   return !bitmap || (bitmap[position >>> 3] & (1 << (position & 7))) !== 0;
 }
+export function setBit(bitmap: Uint8Array, position: number): void {
+  bitmap[position >>> 3] |= 1 << (position & 7);
+}
 /** Null and present nonfinite observations are distinct. A reference reads as its row. */
 export function numberAt(column: NumericColumn | ReferenceColumn, position: number): number | null {
   integer(position, 'column position', 0, column.length - 1);

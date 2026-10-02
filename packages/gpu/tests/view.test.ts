@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { createComposition, createGpu, type Gpu } from '../src/index.js';
+import { createComposition, createGpu, type Gpu, type SetOptions } from '../src/index.js';
 import {
   BaseView,
   createPresentation,
@@ -8,7 +8,6 @@ import {
   type Encoding,
   type FrameInfo,
   type Preparation,
-  type SetOptions,
   type ViewConfig,
   type ViewEvents,
 } from '../src/kit.js';
@@ -335,7 +334,6 @@ function compositing(fake: ReturnType<typeof fakeDevice>): void {
   const device = fake.native as unknown as Record<string, (...args: never[]) => unknown>;
   const pipeline = device.createRenderPipelineAsync,
     encoder = device.createCommandEncoder;
-  device.createShaderModule = vi.fn(() => ({}));
   device.createRenderPipelineAsync = vi.fn(async (descriptor: never) => ({
     ...((await pipeline(descriptor)) as object),
     getBindGroupLayout: () => ({}),

@@ -3,7 +3,6 @@ import type { Column, Query, QueryOptions, Schema, Index } from '@latkit/model';
 
 /** Immutable application data used by unit tests and the headed path benchmark. */
 export class PathSource {
-  readonly version = 'paths-1';
   readonly schema: Schema;
   queries = 0;
   constructor(
@@ -54,7 +53,6 @@ export class PathSource {
   get data(): Data {
     return (this.cached ??= createData(
       this.schema,
-      this.version,
       Object.entries(this.tables).map(([type, columns]) => ({
         kind: 'rows' as const,
         index: this.index(type),

@@ -1,9 +1,10 @@
 import { afterEach, expect, expectTypeOf, it } from 'vitest';
-import { decodePublication } from '../src/protocol.js';
+import { protocol } from '../src/index.js';
+const { decodePublication } = protocol;
 import { defaults, deferred } from '../src/core.js';
 import { pair, batch, fields, schema, pause, collect } from './fixture.js';
 import type { LogEntry, Progress } from '@latkit/model';
-import { connectLattice } from '../src/index.js';
+import { connectModel } from '../src/index.js';
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -15,7 +16,7 @@ it('registers metadata only, then serves explicitly selected publications', asyn
     monitor: function* (selection, context) {
       calls++;
       expect(selection).toEqual(fields);
-      expect(context.maxBatchBytes).toBeGreaterThan(0);
+      expect(context.maxBlockBytes).toBeGreaterThan(0);
       yield batch();
     },
   });
@@ -56,8 +57,9 @@ it('runs typed commands with selected data, coalesced progress, bounded logs and
         async run({ count }, ctx) {
           expectTypeOf(count).toEqualTypeOf<number>();
           expect(ctx.outputs).toEqual(fields);
+          expect(() => ctx.progress({ completed: 0, domain: [2, 1] })).toThrow('Invalid progress');
           for (let i = 0; i < 100; i++) {
-            ctx.progress({ completed: i, total: 100 });
+            ctx.progress({ completed: i, total: 100, domain: [0, 10] });
             ctx.log({ severity: 'info', message: '' + i });
           }
           await ctx.publish(batch(count));
@@ -82,7 +84,7 @@ it('runs typed commands with selected data, coalesced progress, bounded logs and
   );
   expect(result).toEqual({ count: 3 });
   expect(received).toEqual([[batch(3)]]);
-  expect(progress.at(-1)?.completed).toBe(99);
+  expect(progress.at(-1)).toMatchObject({ completed: 99, domain: [0, 10] });
   expect(logs.filter((l) => l.code !== 'dropped')).toHaveLength(defaults.maxLogs);
   expect(logs.at(-1)?.dropped).toBe(100 - defaults.maxLogs);
 });
@@ -253,6 +255,6 @@ it('surfaces command errors, callback failures and cancellation without leaking 
 });
 it('rejects already-aborted connection setup', async () => {
   await expect(
-    connectLattice({ url: 'http://localhost', name: 'test', schema, signal: AbortSignal.abort() }),
+    connectModel({ url: 'http://localhost', name: 'test', schema, signal: AbortSignal.abort() }),
   ).rejects.toThrow();
 });

@@ -1,4 +1,4 @@
-import { validateSchema } from '@latkit/model';
+import { failure, validateSchema } from '@latkit/model';
 import type {
   CommandDescription,
   CommandResult,
@@ -9,7 +9,17 @@ import type {
   Schema,
 } from '@latkit/model';
 import { decodePublication } from './columns.js';
-import { deferred, errorOf, failure, integer, interrupt, negotiate, record, text } from './core.js';
+import {
+  deferred,
+  errorOf,
+  integer,
+  interrupt,
+  negotiate,
+  record,
+  remoteFailure,
+  text,
+  validProgress,
+} from './core.js';
 import { checkTree, Op } from './frame.js';
 import type { Frame } from './frame.js';
 import { definitions, encodeArguments, selections, demanded } from './parameters.js';
@@ -290,21 +300,16 @@ class RemoteModel implements ConnectedModel {
   }
 }
 function remoteError(metadata: Record<string, unknown>): Error {
-  return failure(text(metadata.code, 128), text(metadata.message, 4096));
+  return remoteFailure(text(metadata.code, 128), text(metadata.message, 4096));
 }
 function progressOf(m: Record<string, unknown>): Progress {
-  if (
-    typeof m.completed !== 'number' ||
-    !Number.isFinite(m.completed) ||
-    m.completed < 0 ||
-    (m.total !== undefined &&
-      (typeof m.total !== 'number' || !Number.isFinite(m.total) || m.total < m.completed))
-  )
-    throw failure('protocol', 'Invalid progress.');
+  if (!validProgress(m)) throw failure('protocol', 'Invalid progress.');
+  const domain = m.domain as Progress['domain'];
   return {
-    completed: m.completed,
+    completed: m.completed as number,
     ...(m.total === undefined ? {} : { total: m.total as number }),
     ...(m.message === undefined ? {} : { message: boundedText(m.message, 1024) }),
+    ...(domain === undefined ? {} : { domain: [domain[0], domain[1]] }),
   };
 }
 function logOf(value: unknown): LogEntry {

@@ -20,9 +20,11 @@ export interface LabelBatch {
 }
 interface Entry {
   options: LabelOptions;
+  /** The style's text defaults the runs were built with. */
+  defaults: readonly unknown[];
   revision: number;
   source: Data;
-  text: Map<number, { run: kit.TextRun; metrics: kit.TextMetrics }>;
+  runsByRow: Map<number, { run: kit.TextRun; metrics: kit.TextMetrics }>;
   runs: readonly kit.TextRun[];
   anchors: kit.BufferData;
 }
@@ -84,9 +86,9 @@ export class Labels {
         key = type + ':' + bank.type;
       const config = edge ? edgeOptions(data, bank) : vertexOptions(data, bank),
         options = config.labels;
-      if (!options || (!edge && !style.showVertices) || (edge && !style.showEdges)) continue;
+      if (!options || (!edge && !style.markers) || (edge && !style.lines)) continue;
       const max = options.maxCount ?? 200,
-        size = options.size ?? 12;
+        size = options.size ?? style.fontSizePx;
       if (!Number.isSafeInteger(max) || max < 0 || !Number.isFinite(size) || size <= 0)
         throw new GpuError('invalid-input', 'Invalid label options');
       const count = Math.min(
@@ -97,17 +99,20 @@ export class Labels {
       const source = edge ? (bank.source ?? data.source) : data.source,
         revision = this.revisions.get(source) ?? 0;
       let entry = this.cache.get(bank.rows);
+      const defaults = [style.font, style.fontSizePx, style.textColor];
       if (
         !entry ||
         entry.options !== options ||
         entry.source !== source ||
-        entry.revision !== revision
+        entry.revision !== revision ||
+        entry.defaults.some((value, i) => value !== defaults[i])
       ) {
         entry = {
           options,
+          defaults,
           source,
           revision,
-          text: new Map(),
+          runsByRow: new Map(),
           runs: [],
           anchors: new kit.BufferData({ size: 16, label: 'network label anchors' }),
         };
@@ -142,15 +147,15 @@ export class Labels {
           dx: edge ? 0 : ('radius' in p ? (p.radius as number) : 1) * style.vertexRadiusPx + 4,
         });
       }
-      const missing = candidates.filter((c) => !entry!.text.has(c.row));
+      const missing = candidates.filter((c) => !entry!.runsByRow.has(c.row));
       if (missing.length) {
         // Bound retained strings/runs as the view moves; the shared atlas owns glyph resources.
-        if (entry.text.size + missing.length > count * 4) {
-          entry.text.clear();
+        if (entry.runsByRow.size + missing.length > count * 4) {
+          entry.runsByRow.clear();
           missing.splice(0, missing.length, ...candidates);
         }
         const lookup = new Map(candidates.map((c) => [c.row, c]));
-        for await (const block of frame.fields({
+        for await (const block of frame.reader.fields({
           source,
           from: bank.type,
           rows: {
@@ -170,25 +175,25 @@ export class Labels {
             const text = bitAt(block.presence.label, i) ? (textAt(column, i) ?? '') : '';
             const run: kit.TextRun = {
               text,
-              font: options.font,
+              font: options.font ?? style.font,
               size,
-              color: options.color ?? [0.85, 0.91, 0.97, 1],
+              color: options.color ?? style.textColor,
               position: [0, 4],
-              anchor: entry.text.size,
+              anchor: entry.runsByRow.size,
             };
-            entry.text.set(row, {
+            entry.runsByRow.set(row, {
               run,
               metrics: await gpu.measureText(run, { signal: frame.signal }),
             });
           }
         }
-        entry.runs = [...entry.text.values()].map((v) => v.run);
+        entry.runs = [...entry.runsByRow.values()].map((v) => v.run);
         entry.anchors.resize(Math.max(16, entry.runs.length * 16));
       }
       const anchors = new Float32Array(Math.max(4, entry.runs.length * 4));
       for (const candidate of candidates) {
         if ((counts.get(key) ?? 0) >= max) break;
-        const text = entry.text.get(candidate.row);
+        const text = entry.runsByRow.get(candidate.row);
         if (!text?.run.text) continue;
         const { metrics, run } = text,
           { p } = candidate;

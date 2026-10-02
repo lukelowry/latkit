@@ -1,6 +1,6 @@
 /** Reusable read-contract checks. Supply another implementation/transport without changing tests. */
 import { describe, expect, it } from 'vitest';
-import type { Data, RowsQuery, QueryHeader } from '../src/index.js';
+import type { Data, RowsQuery } from '../src/index.js';
 import {
   read,
   rowCount as axisLength,
@@ -22,31 +22,19 @@ export function queryConformance(
   }>,
 ): void {
   describe(name, () => {
-    it('streams one coherent schema/data/index version and complete ordered rows', async () => {
+    it('streams one coherent index and complete ordered rows', async () => {
       const { source, query, expectedRows, close } = await open();
       try {
-        let header: QueryHeader | undefined;
+        expect(validateSchema(source.schema)).toEqual([]);
         const actual: number[] = [];
-        let version: string | undefined;
         let index: unknown;
         for await (const block of read(source, query)) {
-          if (block.kind === 'schema') {
-            expect(header).toBeUndefined();
-            header = block;
-            expect(validateSchema(header.schema)).toEqual([]);
-            continue;
-          }
-          expect(header).toBeDefined();
-          expect(block.version).toBe(header!.version);
-          expect(validateBlock(header!.schema, query, block)).toEqual([]);
-          version ??= block.version;
+          expect(validateBlock(source.schema, query, block)).toEqual([]);
           index ??= block.index;
-          expect(block.version).toBe(version);
           expect(block.index).toEqual(index);
-          expect(block.position).toBe(actual.length);
+          expect(block.rowOffset).toBe(actual.length);
           actual.push(...axisValues(block.rows));
         }
-        expect(header).toBeDefined();
         expect(actual).toEqual(expectedRows);
       } finally {
         await close();
@@ -56,12 +44,11 @@ export function queryConformance(
       const { source, query, expectedRows, close } = await open();
       try {
         for await (const block of read(source, query)) {
-          expect(block.kind).toBe('schema');
+          expect(block.kind).toBe('rows');
           break;
         }
         let count = 0;
-        for await (const block of read(source, query))
-          if (block.kind !== 'schema') count += axisLength(block.rows);
+        for await (const block of read(source, query)) count += axisLength(block.rows);
         expect(count).toBe(expectedRows.length);
       } finally {
         await close();

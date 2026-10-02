@@ -1,5 +1,6 @@
-import { deferred, errorOf, failure, interrupt } from './core.js';
-import { PROTOCOL } from './frame.js';
+import { failure } from '@latkit/model';
+import { deferred, errorOf, interrupt } from './core.js';
+import { subprotocol } from './frame.js';
 import type { Limits, WebSocketLike } from './types.js';
 
 /** Synchronous binary receive dispatch. All application queues live in Session. */
@@ -20,7 +21,7 @@ export class Socket {
     }
   };
   readonly #open = () => {
-    if (this.peer.protocol !== PROTOCOL) {
+    if (this.peer.protocol !== subprotocol) {
       const error = failure('protocol', 'The peer must negotiate the latkit subprotocol.');
       this.ready.reject(error);
       this.ended(error);

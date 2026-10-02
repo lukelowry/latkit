@@ -44,7 +44,11 @@ it moves its vertices.
 `input: 'edit'` adds dragging, marquee selection, wiring, and Delete to navigation; `'inspect'`
 keeps page scrolling. Pass `{ mode, backgroundDrag, connectRadiusPx, autoPan, canConnect }` to tune
 it. Tab visits vertices, Enter opens, Home fits, and arrows pan or nudge the selection. Space-drag
-pans, two pointers pinch, and a long press opens the context menu.
+pans, two pointers pinch, a long press opens the context menu, and Escape ends a drag before it
+clears the selection.
+
+The camera, selection, hover, `pick`, and `fit` work as in every [view](views.md): `fit(items)`
+frames them once, and `fit()` follows the whole diagram.
 
 Geometry, text, and gaps use diagram units; widths, radii, and padding use CSS pixels.
 

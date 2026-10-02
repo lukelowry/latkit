@@ -191,7 +191,6 @@ describe('columnar layout', () => {
   it('validates rectangular sample tiles in either native orientation', () => {
     const block: SamplesBlock = {
       kind: 'samples',
-      version: 'capture:1',
       index,
       rows: { kind: 'indices', values: new Uint32Array([7, 8, 9]) },
       rowOffset: 0,
@@ -262,7 +261,6 @@ describe('columnar layout', () => {
     const q: Query = { kind: 'aggregate', from: 'Node', select: ['value'], measures: ['min'] };
     const block = {
       kind: 'aggregate',
-      version: '1',
       values: { value: { count: 0, min: null } },
     };
     expect(validateBlock(schema, q, block)).toEqual([]);
@@ -315,7 +313,6 @@ describe('padding and input invariants', () => {
   it('ignores unused sample padding bits but checks addressed cells', () => {
     const block: SamplesBlock = {
       kind: 'samples',
-      version: 'capture:1',
       index,
       rows: { kind: 'indices', values: new Uint32Array([0, 1]) },
       rowOffset: 0,
@@ -418,7 +415,6 @@ describe('independent sample storage and bounded validation', () => {
     const query = { ...samplesQuery, select: ['output', 'other'] };
     const block: SamplesBlock = {
       kind: 'samples',
-      version: '1',
       index,
       rows: { kind: 'range', offset: 0, count: 3 },
       rowOffset: 0,

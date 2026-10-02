@@ -1,4 +1,14 @@
-import { defaults, deferred, errorOf, failure, integer, interrupt, limits, text } from './core.js';
+import { failure } from '@latkit/model';
+import {
+  defaults,
+  deferred,
+  errorOf,
+  integer,
+  interrupt,
+  limits,
+  remoteFailure,
+  text,
+} from './core.js';
 import { decode, Op, prepare } from './frame.js';
 import type { Frame, Opcode, Plan } from './frame.js';
 import { Socket } from './socket.js';
@@ -167,7 +177,7 @@ export class Session {
       return;
     }
     if (frame.op === Op.close) {
-      this.end(failure(text(frame.metadata.code, 128), text(frame.metadata.message, 4096)));
+      this.end(remoteFailure(text(frame.metadata.code, 128), text(frame.metadata.message, 4096)));
       return;
     }
     this.onControl(frame);

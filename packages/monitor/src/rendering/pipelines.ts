@@ -3,9 +3,7 @@ import traceCode from './traces.wgsl';
 import compositeCode from './composite.wgsl';
 import axesCode from './axes.wgsl';
 export interface Pipelines {
-  raw: GPURenderPipeline;
-  envelope: GPURenderPipeline;
-  seams: GPURenderPipeline;
+  trace: GPURenderPipeline;
   background: GPURenderPipeline;
   composite: GPURenderPipeline;
   lines: GPURenderPipeline;
@@ -50,14 +48,7 @@ async function compilePipelines(
   const d = gpu.device,
     both = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
   const view = d.createBindGroupLayout({
-    entries: [
-      { binding: 0, visibility: both, buffer: { type: 'uniform' } },
-      ...[1, 2, 3].map((binding) => ({
-        binding,
-        visibility: GPUShaderStage.VERTEX,
-        buffer: { type: 'read-only-storage' as const },
-      })),
-    ],
+    entries: [{ binding: 0, visibility: both, buffer: { type: 'uniform' } }],
   });
   const effects = d.createBindGroupLayout({
     entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }],
@@ -79,18 +70,8 @@ async function compilePipelines(
       { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
     ],
   });
-  const compile = async (code: string) => {
-    d.pushErrorScope('validation');
-    const module = d.createShaderModule({ code });
-    const validation = d.popErrorScope();
-    const [info, error] = await Promise.all([module.getCompilationInfo(), validation]);
-    const errors = info.messages.filter((m) => m.type === 'error');
-    if (errors.length || error)
-      throw new Error(errors.map((m) => m.message).join('\n') || error!.message);
-    return module;
-  };
   const [module, screen, axes] = await Promise.all([
-    compile(
+    gpu.shaderModule(
       kit.fieldShader({ group: 0 }) +
         kit.scaleShader() +
         kit.colormapShader({ group: 2 }) +
@@ -99,17 +80,18 @@ async function compilePipelines(
         kit.outputShader() +
         shade +
         traceCode,
+      'monitor traces',
     ),
-    compile(compositeCode),
-    compile(kit.textShader({ group: 0 }) + axesCode),
+    gpu.shaderModule(compositeCode, 'monitor composite'),
+    gpu.shaderModule(kit.textShader({ group: 0 }) + axesCode, 'monitor axes'),
   ]);
   const traceLayout = d.createPipelineLayout({
     bindGroupLayouts: [gpu.fieldLayout, view, gpu.colormapLayout, effects],
   });
-  const trace = (entryPoint: string) =>
+  const traces = () =>
     gpu.renderPipeline({
       layout: traceLayout,
-      vertex: { module, entryPoint },
+      vertex: { module, entryPoint: 'trace_main' },
       fragment: {
         module,
         entryPoint: 'fragment_main',
@@ -119,10 +101,8 @@ async function compilePipelines(
       multisample: { count: msaa },
     });
   const axesLayout = d.createPipelineLayout({ bindGroupLayouts: [gpu.textLayout, axis] });
-  const [raw, envelope, seams, background, composite, lines, text] = await Promise.all([
-    trace('raw_main'),
-    trace('envelope_main'),
-    trace('seam_main'),
+  const [trace, background, composite, lines, text] = await Promise.all([
+    traces(),
     ...['background', 'color'].map((entryPoint) =>
       gpu.renderPipeline({
         layout: d.createPipelineLayout({ bindGroupLayouts: [image] }),
@@ -155,9 +135,7 @@ async function compilePipelines(
     ),
   ]);
   return {
-    raw,
-    envelope,
-    seams,
+    trace,
     background,
     composite,
     lines,

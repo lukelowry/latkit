@@ -9,7 +9,6 @@ import {
   type QueryOptions,
 } from '@latkit/model';
 export class HistorySource {
-  version = 'v0';
   readonly index = { source: 'history', type: 'node', version: 'i0' };
   readonly firstFrame = 2 ** 40;
   blockFrames = 2;
@@ -52,7 +51,7 @@ export class HistorySource {
     },
   };
   get data(): Data {
-    if (this.cached?.version === this.version) return this.cached;
+    if (this.cached) return this.cached;
     const rows = { kind: 'range' as const, offset: 0, count: this.count };
     const batches: DataBatch[] = [
       {
@@ -94,7 +93,11 @@ export class HistorySource {
       });
     }
     if (this.reverseFrames) batches.reverse();
-    return (this.cached = createData(this.schema, this.version, batches));
+    return (this.cached = createData(this.schema, batches));
+  }
+  /** Rebuild the data value from the same application arrays. */
+  publish(): void {
+    this.cached = undefined;
   }
   query<Q extends Query>(query: Q, options?: QueryOptions) {
     return read(this.data, query, options);

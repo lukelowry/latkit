@@ -1,15 +1,8 @@
-import { Work } from './work.js';
-import type { RequestOptions } from '@latkit/model';
+import type { FieldValues, RequestOptions } from '@latkit/model';
 import { GpuError, kit, type Gpu } from '@latkit/gpu';
-import { diagramData, type Point } from './data.js';
+import { expandedData, type Point } from './data.js';
 import type { DiagramConfig } from './diagram.js';
-import {
-  data as checkedData,
-  options as checkedOptions,
-  limits as checkedLimits,
-  sources,
-  positive,
-} from './config.js';
+import { data as checkedData, resolveLimits, resolveStyle, positive } from './config.js';
 import { readScene } from './read.js';
 import { positions, rect, type Scene } from './scene.js';
 import { SpatialIndex, expand, intersects } from './spatial.js';
@@ -88,17 +81,13 @@ export async function arrange(
   gpu: Gpu,
   config: DiagramConfig,
   options: RequestOptions = {},
-): Promise<Readonly<Record<string, kit.FieldValues>>> {
-  const data = checkedData(diagramData(config)),
-    limits = checkedLimits(config.limits),
-    style = checkedOptions(config);
-  const reader = kit.createNativeReader({
-    signal: options.signal,
-    at: config.at ?? undefined,
-    maxBytes: limits.geometryBytes,
-  });
+): Promise<Readonly<Record<string, FieldValues>>> {
+  const data = checkedData(expandedData(config)),
+    limits = resolveLimits(config.limits),
+    style = resolveStyle(config, kit.resolveViewStyle(config));
+  const reader = gpu.reader.open({ signal: options.signal, at: config.at ?? undefined });
   try {
-    const work = new Work(reader.signal, limits.prepareMs);
+    const work = new kit.Work(reader.signal, limits.layoutMs);
     const scene = await readScene(
       data,
       reader,
@@ -116,13 +105,9 @@ export async function arrange(
       work,
     );
     work.check();
-    reader.check();
-    for (const source of sources(data))
-      if (source.version !== scene.versions.get(source))
-        throw new GpuError('conflict', 'Layout source changed');
     return positions(scene.vertices);
   } finally {
-    reader.destroy();
+    reader.close();
   }
 }
 /** The end flow leaves from: the first output, else the first end. */
@@ -138,7 +123,7 @@ export async function place(
   grid: number,
   signal: AbortSignal,
   previous?: Scene,
-  work = new Work(signal),
+  work: kit.Work = new kit.Work(signal),
 ): Promise<void> {
   work.check();
   const { vertices } = scene,

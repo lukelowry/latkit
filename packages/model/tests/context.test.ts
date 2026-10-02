@@ -60,7 +60,6 @@ describe('range context validation', () => {
   it('bounds context per tile while retaining ordinary range validation', () => {
     const block = (values: number[]): SamplesBlock => ({
       kind: 'samples',
-      version: '1',
       index,
       rows: { kind: 'range', offset: 0, count: 1 },
       rowOffset: 0,

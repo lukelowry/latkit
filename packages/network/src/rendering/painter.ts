@@ -33,9 +33,8 @@ export interface DrawFrame {
   readonly data: NetworkData;
   readonly geometry: Geometry;
   readonly reads: Reads;
+  /** Replaced whenever it changes. */
   readonly selection: readonly NetworkItem[];
-  /** Changes whenever the selection does. */
-  readonly selectionVersion: number;
   readonly hover: NetworkItem | null;
   readonly pointer: readonly [number, number] | null;
   readonly height: number;
@@ -79,15 +78,14 @@ function sun(time: number): readonly [number, number, number] {
 }
 export class Painter {
   private buffers = new Map<object, kit.BufferResource>();
-  private textures:
-    { key: string; depth: kit.TextureResource; color?: kit.TextureResource } | undefined;
+  private readonly attachments: kit.Attachments;
   private readonly dummy: kit.BufferResource;
   /** Two bits per drawn row: what the selection and hover halo. */
   private readonly focus = new kit.BufferData({ size: 16, label: 'network focus' });
   private focusWords = new Map<number, number>();
   private focused?: {
     readonly geometry: Geometry;
-    readonly selection: number;
+    readonly selection: readonly NetworkItem[];
     readonly hover: NetworkItem | null;
     readonly options: Style;
   };
@@ -98,6 +96,7 @@ export class Painter {
     indirect: kit.BufferResource;
   };
   constructor(private readonly gpu: Gpu) {
+    this.attachments = new kit.Attachments(gpu);
     this.dummy = gpu.buffer({
       size: 80,
       usage: GPUBufferUsage.STORAGE,
@@ -125,33 +124,10 @@ export class Painter {
       options.msaa,
       state.shade?.wgsl ?? kit.defaultShade,
     );
-    const key = [frame.width, frame.height, frame.format, options.msaa].join(':');
-    if (this.textures?.key !== key) {
-      const depth = gpu.texture({
-        size: [frame.width, frame.height],
-        format: 'depth32float',
-        sampleCount: options.msaa,
-        usage: GPUTextureUsage.RENDER_ATTACHMENT,
-      });
-      let color: kit.TextureResource | undefined;
-      try {
-        if (options.msaa === 4)
-          color = gpu.texture({
-            size: [frame.width, frame.height],
-            format: frame.format,
-            sampleCount: 4,
-            usage: GPUTextureUsage.RENDER_ATTACHMENT,
-          });
-      } catch (error) {
-        depth.destroy();
-        throw error;
-      }
-      this.textures?.depth.destroy();
-      this.textures?.color?.destroy();
-      this.textures = { key, depth, color };
-    }
-    const depth = frame.texture(this.textures.depth).createView(),
-      color = this.textures.color ? frame.texture(this.textures.color).createView() : undefined;
+    const { color, depth } = this.attachments.prepare(frame, {
+      msaa: options.msaa,
+      depth: 'depth32float',
+    });
     const bytes = new ArrayBuffer(16 * 16),
       f = new Float32Array(bytes),
       u = new Uint32Array(bytes);
@@ -201,18 +177,23 @@ export class Painter {
         options.vertexRadiusPx,
         options.edgeWidthPx / 2,
         options.dashPeriodPx,
-        options.showVertices ? 1 : 0,
+        options.markers ? 1 : 0,
       ],
       28,
     );
     f.set([...options.hoverColor.slice(0, 3), options.hoverAlpha], 32);
-    f.set([...options.selectedColor.slice(0, 3), options.selectedAlpha], 36);
+    f.set(
+      options.selectedColor
+        ? [...options.selectedColor.slice(0, 3), options.selectedAlpha]
+        : [0, 0, 0, 0],
+      36,
+    );
     f.set(
       [
-        options.vertexHoverPx,
-        options.vertexSelectedPx,
-        options.edgeHoverPx,
-        options.edgeSelectedPx,
+        options.hoverWidthPx,
+        options.selectedWidthPx,
+        options.hoverWidthPx,
+        options.selectedWidthPx,
       ],
       40,
     );
@@ -232,8 +213,8 @@ export class Painter {
       [...options.surfaceColor.slice(0, 3), options.daylight ? options.surfaceNightFloor : 1],
       52,
     );
-    f.set(options.graticuleColor, 56);
-    u.set([options.focusEnabled ? 1 : 0, options.showGraticule ? 1 : 0, 0, 0], 60);
+    f.set(options.gridColor, 56);
+    u.set([options.focusEnabled ? 1 : 0, options.graticule ? 1 : 0, 0, 0], 60);
     this.updateFocus(state);
     const focusedBinding = frame.buffer(this.focus);
     const uniform = frame.uniforms(f),
@@ -481,16 +462,16 @@ export class Painter {
       edges,
       labels,
       background,
-      depth,
+      depth: depth!,
       color,
       options,
       globe: camera.projection === 'globe',
       drawCalls:
         1 +
-        (camera.projection === 'globe' && options.showEarthAxis ? 1 : 0) +
-        (options.showVertices ? vertices.length : 0) +
-        (options.showPoles ? vertices.length : 0) +
-        (options.showEdges ? edges.length : 0) +
+        (camera.projection === 'globe' && options.earthAxis ? 1 : 0) +
+        (options.markers ? vertices.length : 0) +
+        (options.poles ? vertices.length : 0) +
+        (options.lines ? edges.length : 0) +
         labels.reduce((n, v) => n + v.pages.length, 0),
     };
   }
@@ -501,7 +482,7 @@ export class Painter {
       last = this.focused;
     if (
       last?.geometry === native &&
-      last.selection === state.selectionVersion &&
+      last.selection === state.selection &&
       sameItem(last.hover, state.hover) &&
       last.options.focusEnabled === options.focusEnabled &&
       last.options.focusEnds === options.focusEnds
@@ -552,7 +533,7 @@ export class Painter {
     this.focusWords = next;
     this.focused = {
       geometry: native,
-      selection: state.selectionVersion,
+      selection: state.selection,
       hover: state.hover,
       options,
     };
@@ -576,7 +557,7 @@ export class Painter {
             resolveTarget: paint.color ? frame.target : undefined,
             loadOp: load ? 'load' : 'clear',
             storeOp: 'store',
-            clearValue: paint.options.backgroundColor,
+            clearValue: paint.options.background,
           },
         ],
         depthStencilAttachment: {
@@ -590,12 +571,12 @@ export class Painter {
     pass.setPipeline(paint.pipelines.surface);
     pass.setBindGroup(0, paint.background);
     pass.draw(3);
-    if (paint.globe && paint.options.showEarthAxis) {
+    if (paint.globe && paint.options.earthAxis) {
       pass.setPipeline(paint.pipelines.axis);
       pass.setBindGroup(0, paint.background);
       pass.draw(6);
     }
-    if (paint.options.showEdges) {
+    if (paint.options.lines) {
       pass.setPipeline(paint.pipelines.edges);
       for (const item of paint.edges) {
         if (item.tessellation) {
@@ -619,14 +600,14 @@ export class Painter {
         pass.draw(6, item.count);
       }
     }
-    if (paint.options.showPoles) {
+    if (paint.options.poles) {
       pass.setPipeline(paint.pipelines.poles);
       for (const item of paint.vertices) {
         pass.setBindGroup(0, item.group);
         pass.draw(6, item.count);
       }
     }
-    if (paint.options.showVertices) {
+    if (paint.options.markers) {
       pass.setPipeline(paint.pipelines.vertices);
       for (const item of paint.vertices) {
         pass.setBindGroup(0, item.group);
@@ -654,8 +635,7 @@ export class Painter {
   destroy(): void {
     for (const buffer of this.buffers.values()) buffer.destroy();
     this.buffers.clear();
-    this.textures?.depth.destroy();
-    this.textures?.color?.destroy();
+    this.attachments.destroy();
     this.dummy.destroy();
     this.curves?.instances.destroy();
     this.curves?.indirect.destroy();

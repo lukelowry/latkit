@@ -19,18 +19,13 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./protocol": {
-      "types": "./dist/protocol.d.ts",
-      "import": "./dist/protocol.js"
     }
   },
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --config vitest.config.ts",
-    "bench:scale": "vitest run --config vitest.bench.config.ts"
+    "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
     "@latkit/model": "workspace:*"

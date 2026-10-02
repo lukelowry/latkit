@@ -1,21 +1,16 @@
-import type { kit, RGBA } from '@latkit/gpu';
-/** How a diagram draws; every option has a default. */
-export interface StyleOptions extends kit.HoverOptions {
+import type { RGBA } from '@latkit/gpu';
+/** How a diagram draws, beyond the shared view style; every option has a default. */
+export interface DiagramStyle {
   readonly gridPitch?: number;
   readonly grid?: boolean;
   readonly snap?: boolean;
   readonly labels?: boolean;
   readonly junctions?: boolean;
-  readonly font?: kit.TextFont;
-  /** Default text size in diagram units (CSS pixels at scale 1). */
-  readonly fontSizePx?: number;
   readonly vertexPadding?: number;
   /** Corner radius in diagram units. Per-vertex bindings may override it. */
   readonly cornerRadius?: number;
   /** Stroke, focus, and port sizes stay constant in CSS pixels while zooming. */
   readonly outlineWidthPx?: number;
-  readonly selectionWidthPx?: number;
-  readonly hoverWidthPx?: number;
   readonly portSizePx?: number;
   readonly portMarker?: 'directional' | 'circle' | 'diamond';
   readonly portLabels?: boolean;
@@ -25,23 +20,13 @@ export interface StyleOptions extends kit.HoverOptions {
   readonly detail?: 'auto' | 'full';
   readonly portSpacing?: number;
   readonly routeClearance?: number;
-  readonly motion?: 'auto' | 'reduce' | 'full';
-  readonly animationMs?: number;
   /** Bounds CPU route interpolation; larger scenes settle immediately. Default: 512 vertices. */
   readonly animationMaxVertices?: number;
-  readonly pickRadiusPx?: number;
-  readonly fitPaddingPx?: kit.Insets;
-  readonly revealPaddingPx?: number;
-  readonly backgroundColor?: RGBA;
   readonly vertexBaseColor?: RGBA;
   readonly edgeBaseColor?: RGBA;
   readonly outlineColor?: RGBA;
-  readonly textColor?: RGBA;
   readonly gridColor?: RGBA;
   readonly groupColor?: RGBA;
-  readonly hoverColor?: RGBA;
-  readonly selectedColor?: RGBA;
-  readonly msaa?: 1 | 4;
 }
 export interface Limits {
   readonly vertices?: number;
@@ -50,5 +35,6 @@ export interface Limits {
   readonly geometryBytes?: number;
   readonly pickingBytes?: number;
   readonly routePoints?: number;
-  readonly prepareMs?: number;
+  /** Time for reading, layout, and routing one scene. */
+  readonly layoutMs?: number;
 }

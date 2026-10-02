@@ -1,7 +1,7 @@
 import { copyPages, isColumnPages } from './pages.js';
 import type { ColumnPage } from './materialized.js';
 import type { Column, NumericArray, RowAxis, SampleColumn, TextColumn } from './data.js';
-import { assertIndex, bitAt, rowCount } from './access.js';
+import { assertIndex, bitAt, rowCount, setBit } from './access.js';
 import { failure } from './error.js';
 
 export function position(rows: RowAxis, row: number): number {
@@ -101,6 +101,7 @@ export function sliceColumn(column: Column, start: number, count: number): Colum
     : { kind: 'list', ...common, values: sliceColumn(column.values, first, end - first) };
 }
 
+/** A view of `rows` rows from `row` and `frames` frames from `frame`, keeping the column's strides. */
 export function sliceSamples(
   column: SampleColumn,
   row: number,
@@ -131,90 +132,196 @@ export interface Cell {
   readonly at: number;
 }
 
-/** Gather only when a selection cannot be represented by a contiguous view. */
-export function gather(cells: readonly Cell[], empty: Column): Column {
-  const first = cells[0]?.column ?? empty;
-  if (
-    cells.length &&
-    cells.every((cell, i) => cell.column === first && cell.at === cells[0].at + i)
-  )
-    return sliceColumn(first, cells[0].at, cells.length);
+/**
+ * Gather only when a selection cannot be represented by a contiguous view. A missing cell reads as
+ * null. List items are copied as contiguous runs, never one cell at a time.
+ */
+export function gather(cells: readonly (Cell | undefined)[], empty: Column): Column {
+  const first = cells.find((cell) => cell)?.column ?? empty;
+  const start = cells[0];
+  if (start && cells.every((cell, i) => cell?.column === first && cell.at === start.at + i))
+    return sliceColumn(first, start.at, cells.length);
   const count = cells.length;
+  for (const cell of cells)
+    if (
+      cell &&
+      (cell.column.kind !== first.kind ||
+        (cell.column.kind === 'vector' &&
+          first.kind === 'vector' &&
+          cell.column.size !== first.size))
+    )
+      throw failure('conflict', 'Column types differ.');
   let validity: Uint8Array | undefined;
-  if (cells.some((cell) => cell.column.validity)) {
+  if (cells.some((cell) => !cell || cell.column.validity)) {
     validity = new Uint8Array(Math.ceil(count / 8));
-    for (let i = 0; i < count; i++)
-      if (bitAt(cells[i].column.validity, cells[i].column.offset + cells[i].at))
-        validity[i >>> 3] |= 1 << (i & 7);
+    for (let i = 0; i < count; i++) {
+      const cell = cells[i];
+      if (cell && bitAt(cell.column.validity, cell.column.offset + cell.at)) setBit(validity, i);
+    }
   }
   const common = { offset: 0, length: count, ...(validity ? { validity } : {}) };
   if (first.kind === 'numeric' || first.kind === 'reference') {
     const Constructor = first.values.constructor as { new (length: number): NumericArray };
     const values = new Constructor(count);
     for (let i = 0; i < count; i++) {
-      const c = cells[i].column;
-      if (c.kind !== first.kind) throw failure('conflict', 'Column types differ.');
+      const cell = cells[i];
+      if (!cell) continue;
+      const c = cell.column as typeof first;
       if (c.kind === 'reference' && first.kind === 'reference') assertIndex(c.index, first.index);
-      values[i] = (c as typeof first).values[c.offset + cells[i].at];
+      values[i] = c.values[c.offset + cell.at];
     }
     return { ...first, ...common, values } as Column;
   }
   if (first.kind === 'boolean') {
     const values = new Uint8Array(Math.ceil(count / 8));
     for (let i = 0; i < count; i++) {
-      const c = cells[i].column;
-      if (c.kind !== 'boolean') throw failure('conflict', 'Column types differ.');
-      if (bitAt(c.values, c.offset + cells[i].at)) values[i >>> 3] |= 1 << (i & 7);
+      const cell = cells[i];
+      if (cell && bitAt((cell.column as typeof first).values, cell.column.offset + cell.at))
+        setBit(values, i);
     }
     return { kind: 'boolean', ...common, values };
   }
   if (first.kind === 'vector') {
-    const children: Cell[] = [];
-    for (const cell of cells) {
-      const c = cell.column;
-      if (c.kind !== 'vector' || c.size !== first.size)
-        throw failure('conflict', 'Vector types differ.');
-      for (let lane = 0; lane < c.size; lane++)
-        children.push({ column: c.values, at: (c.offset + cell.at) * c.size + lane });
+    const size = first.size;
+    const Constructor = first.values.values.constructor as { new (length: number): NumericArray };
+    const values = new Constructor(count * size);
+    for (let i = 0; i < count; i++) {
+      const cell = cells[i];
+      if (!cell) continue;
+      const c = cell.column as typeof first,
+        at = c.values.offset + (c.offset + cell.at) * size;
+      values.set(c.values.values.subarray(at, at + size), i * size);
     }
     return {
       kind: 'vector',
       ...common,
-      size: first.size,
-      values: gather(children, first.values) as typeof first.values,
+      size,
+      values: { kind: 'numeric', offset: 0, length: count * size, values },
     };
   }
   const offsets = new Int32Array(count + 1);
   let length = 0;
   for (let i = 0; i < count; i++) {
-    const c = cells[i].column;
-    if (c.kind !== first.kind) throw failure('conflict', 'Column types differ.');
-    const x = c as typeof first,
-      at = c.offset + cells[i].at;
-    if (bitAt(c.validity, at)) length += x.offsets[at + 1] - x.offsets[at];
-    if (length > 0x7fffffff) throw failure('resource-limit', 'Column offsets exceed int32.');
+    const cell = cells[i];
+    if (cell) {
+      const c = cell.column as typeof first,
+        at = c.offset + cell.at;
+      if (bitAt(c.validity, at)) length += c.offsets[at + 1] - c.offsets[at];
+      if (length > 0x7fffffff) throw failure('resource-limit', 'Column offsets exceed int32.');
+    }
     offsets[i + 1] = length;
   }
   if (first.kind === 'text') {
     const bytes = new Uint8Array(length);
     for (let i = 0; i < count; i++) {
-      const c = cells[i].column as TextColumn,
-        at = c.offset + cells[i].at;
-      if (offsets[i + 1] !== offsets[i])
-        bytes.set(c.bytes.subarray(c.offsets[at], c.offsets[at + 1]), offsets[i]);
+      const cell = cells[i];
+      if (!cell || offsets[i + 1] === offsets[i]) continue;
+      const c = cell.column as TextColumn,
+        at = c.offset + cell.at;
+      bytes.set(c.bytes.subarray(c.offsets[at], c.offsets[at + 1]), offsets[i]);
     }
     return { kind: 'text', ...common, offsets, bytes };
   }
-  const children: Cell[] = [];
+  const parts: Part[] = [];
   for (let i = 0; i < count; i++) {
-    const c = cells[i].column;
-    if (c.kind !== 'list') throw failure('conflict', 'List types differ.');
-    const at = c.offset + cells[i].at;
-    if (offsets[i + 1] !== offsets[i])
-      for (let j = c.offsets[at]; j < c.offsets[at + 1]; j++)
-        children.push({ column: c.values, at: j });
+    const cell = cells[i];
+    if (!cell || offsets[i + 1] === offsets[i]) continue;
+    const c = cell.column as typeof first,
+      at = c.offset + cell.at;
+    parts.push({ column: c.values, offset: c.offsets[at], count: offsets[i + 1] - offsets[i] });
   }
-  return { kind: 'list', ...common, offsets, values: gather(children, first.values) };
+  return { kind: 'list', ...common, offsets, values: concatenate(parts, first.values, length) };
+}
+
+interface Part {
+  readonly column: Column;
+  readonly offset: number;
+  readonly count: number;
+}
+/** Concatenate runs of non-nullable list items. */
+function concatenate(parts: readonly Part[], prototype: Column, length: number): Column {
+  if (parts.length === 1) return sliceColumn(parts[0].column, parts[0].offset, parts[0].count);
+  const base = { offset: 0, length };
+  if (prototype.kind === 'list' || prototype.kind === 'text') {
+    const offsets = new Int32Array(length + 1);
+    let cursor = 0,
+      total = 0;
+    for (const part of parts) {
+      const column = part.column as typeof prototype,
+        start = column.offset + part.offset;
+      for (let i = 0; i < part.count; i++) {
+        total += column.offsets[start + i + 1] - column.offsets[start + i];
+        offsets[++cursor] = total;
+      }
+    }
+    if (prototype.kind === 'text') {
+      const bytes = new Uint8Array(total);
+      for (let i = 0, at = 0; i < parts.length; i++) {
+        const column = parts[i].column as TextColumn,
+          start = column.offset + parts[i].offset,
+          run = column.bytes.subarray(
+            column.offsets[start],
+            column.offsets[start + parts[i].count],
+          );
+        bytes.set(run, at);
+        at += run.length;
+      }
+      return { kind: 'text', ...base, offsets, bytes };
+    }
+    const children = parts.map((part) => {
+      const column = part.column as typeof prototype,
+        start = column.offset + part.offset;
+      return {
+        column: column.values,
+        offset: column.offsets[start],
+        count: column.offsets[start + part.count] - column.offsets[start],
+      };
+    });
+    return {
+      kind: 'list',
+      ...base,
+      offsets,
+      values: concatenate(children, prototype.values, total),
+    };
+  }
+  if (prototype.kind === 'boolean') {
+    const values = new Uint8Array(Math.ceil(length / 8));
+    let cursor = 0;
+    for (const part of parts) {
+      const column = part.column as typeof prototype,
+        start = column.offset + part.offset;
+      for (let i = 0; i < part.count; i++)
+        if (bitAt(column.values, start + i)) setBit(values, cursor + i);
+      cursor += part.count;
+    }
+    return { kind: 'boolean', ...base, values };
+  }
+  const size = prototype.kind === 'vector' ? prototype.size : 1,
+    scalar = prototype.kind === 'vector' ? prototype.values : prototype;
+  const Constructor = scalar.values.constructor as { new (length: number): NumericArray };
+  const values = new Constructor(length * size);
+  let cursor = 0;
+  for (const part of parts) {
+    const column = part.column as typeof prototype;
+    if (column.kind === 'vector') {
+      const at = column.values.offset + (column.offset + part.offset) * size;
+      values.set(column.values.values.subarray(at, at + part.count * size), cursor * size);
+    } else {
+      const at = column.offset + part.offset;
+      values.set(column.values.subarray(at, at + part.count), cursor);
+    }
+    cursor += part.count;
+  }
+  if (prototype.kind === 'vector')
+    return {
+      kind: 'vector',
+      ...base,
+      size,
+      values: { kind: 'numeric', offset: 0, length: length * size, values },
+    };
+  if (prototype.kind === 'reference')
+    return { kind: 'reference', ...base, index: prototype.index, values: values as Uint32Array };
+  return { kind: 'numeric', ...base, values };
 }
 
 export function textColumn(values: readonly string[]): TextColumn {

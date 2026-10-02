@@ -11,37 +11,27 @@ export interface AxisOptions {
   readonly precision?: number;
   readonly grid?: boolean;
 }
-/** How a monitor draws; every option has a default. */
-export interface StyleOptions extends kit.HoverOptions {
-  /** `full` draws every observation; `auto` summarizes long histories. */
-  readonly detail?: 'auto' | 'full';
+/** How a monitor draws, beyond the shared view style; every option has a default. */
+export interface MonitorStyle {
   /** A label, axis options, or false to hide the axis. */
   readonly coordinateAxis?: string | AxisOptions | false;
   readonly valueAxis?: string | AxisOptions | false;
-  /** How fitted values follow appends: `grow` keeps drawn history, `fit` redraws it. */
-  readonly autoDomain?: 'grow' | 'fit';
   /** Fraction of the fitted value range added on each side. */
   readonly domainPadding?: number;
-  readonly font?: kit.TextFont;
-  readonly fontSizePx?: number;
-  readonly textColor?: RGBA;
   readonly axisColor?: RGBA;
   readonly gridColor?: RGBA;
-  readonly backgroundColor?: RGBA;
+  /** The playhead at `at`. */
   readonly cursorColor?: RGBA;
-  /** Selected traces' color; null keeps their own. */
-  readonly focusColor?: RGBA | null;
   /** Opacity of unselected traces while something is selected. */
   readonly unselectedAlpha?: number;
   readonly paddingPx?: kit.Insets;
-  readonly pickRadiusPx?: number;
-  readonly msaa?: 1 | 4;
 }
 export interface Limits {
+  /** Rows the traces draw together. */
   readonly rows?: number;
+  /** Line segments drawn per frame; what is drawn is never drawn again. */
   readonly segmentsPerFrame?: number;
-  /** Raw refinement and summary preparation per submission; retain the last presented image. */
-  readonly prepareMs?: number;
+  /** GPU memory for history images. */
   readonly historyBytes?: number;
   readonly pickingBytes?: number;
 }

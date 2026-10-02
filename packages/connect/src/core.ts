@@ -1,5 +1,7 @@
+import { failure } from '@latkit/model';
 import type { Limits } from './types.js';
-export function failure(code: string, message: string): Error & { code: string } {
+/** An error a peer reported. Its code is whatever the peer sent, not necessarily a local Failure code. */
+export function remoteFailure(code: string, message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code });
 }
 export function errorOf(value: unknown): Error {
@@ -19,6 +21,22 @@ export function text(value: unknown, max = 1024): string {
   if (typeof value !== 'string' || !value.length || value.length > max)
     throw failure('invalid-input', 'Expected bounded nonempty text.');
   return value;
+}
+/** What both ends require of progress: a count, a total at least as large, and a coordinate domain. */
+export function validProgress(value: Readonly<Record<string, unknown>>): boolean {
+  const { completed, total, domain } = value;
+  return (
+    typeof completed === 'number' &&
+    Number.isFinite(completed) &&
+    completed >= 0 &&
+    (total === undefined ||
+      (typeof total === 'number' && Number.isFinite(total) && total >= completed)) &&
+    (domain === undefined ||
+      (Array.isArray(domain) &&
+        domain.length === 2 &&
+        domain.every((n) => typeof n === 'number' && Number.isFinite(n)) &&
+        domain[0] <= domain[1]))
+  );
 }
 export const defaults: Limits = Object.freeze({
   maxMessageBytes: 1024 * 1024,

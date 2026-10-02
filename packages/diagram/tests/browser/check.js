@@ -1,10 +1,12 @@
-/* global document, PointerEvent, KeyboardEvent, OffscreenCanvas, createImageBitmap, requestAnimationFrame */
+/* global document, PointerEvent, KeyboardEvent, MouseEvent, WheelEvent, OffscreenCanvas, createImageBitmap, requestAnimationFrame */
 import { createGpu, createComposition, kit } from '@latkit/gpu';
 import { createDiagram } from '../../dist/index.js';
 import { Source, data } from '/output/diagram-fixture.js';
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
 };
+/** Views report events on a microtask; let them arrive. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 /** An image's RGBA bytes, row by row. */
 async function decode(blob) {
   const bitmap = await createImageBitmap(blob),
@@ -89,17 +91,20 @@ globalThis.diagramCheck = (async () => {
   });
   pointer('pointerdown', point);
   pointer('pointerup', point);
+  await settle();
   assert(selections > 0, 'Input selection failed');
   const another = diagram.locate({ kind: 'vertex', type: 'Task', id: 'n2' });
   for (const modifiers of [{ shiftKey: true }, { ctrlKey: true }, { metaKey: true }]) {
     pointer('pointerdown', another, modifiers);
     pointer('pointerup', another, modifiers);
+    await settle();
     assert(
       selection.length === 2 && selection.some((item) => item.id === 'n2'),
       'Additive click did not add exactly once',
     );
     pointer('pointerdown', another, modifiers);
     pointer('pointerup', another, modifiers);
+    await settle();
     assert(
       selection.length === 1 && selection[0].id === 'n0',
       'Additive click did not remove exactly once',
@@ -119,6 +124,7 @@ globalThis.diagramCheck = (async () => {
   pointer('pointerdown', point);
   pointer('pointermove', [point[0], point[1] + 32]);
   pointer('pointerup', [point[0], point[1] + 32]);
+  await settle();
   assert(moved?.moves.length === 1, 'Move proposal failed');
   // The canvas stops presenting; each step below renders an image at the canvas's size.
   diagram.set({ paused: true });
@@ -132,19 +138,20 @@ globalThis.diagramCheck = (async () => {
   };
   const wires = [];
   diagram.on('connect', (proposal) => wires.push(proposal));
-  const wire = (a, b) => {
+  const wire = async (a, b) => {
     pointer('pointerdown', a);
     pointer('pointermove', b);
     pointer('pointerup', b);
+    await settle();
   };
-  wire(port('n1', 'output'), port('n1', 'output'));
+  await wire(port('n1', 'output'), port('n1', 'output'));
   assert(wires.length === 0, 'Port click unexpectedly proposed a wire');
-  wire(port('n1', 'output'), port('n4', 'input'));
+  await wire(port('n1', 'output'), port('n4', 'input'));
   assert(
     wires.length === 1 && wires[0].from.id === 'n1' && wires[0].to.id === 'n4',
     'Connect proposal failed',
   );
-  wire(port('n1', 'input'), port('n3', 'input'));
+  await wire(port('n1', 'input'), port('n3', 'input'));
   assert(
     wires.length === 2 &&
       wires[1].from.id === 'n0' &&
@@ -153,7 +160,7 @@ globalThis.diagramCheck = (async () => {
       wires[1].replaces.end.port === 'input',
     'Input reconnection failed',
   );
-  wire(port('n0', 'output'), port('n2', 'output'));
+  await wire(port('n0', 'output'), port('n2', 'output'));
   assert(wires.length === 2, 'Incompatible output ports accepted');
   const key = (value) =>
     canvas.dispatchEvent(
@@ -169,8 +176,10 @@ globalThis.diagramCheck = (async () => {
   pointer('pointermove', [current[0], current[1] + 16]);
   await render();
   assert(camera() === cameraBeforeDrag, 'Auto-fit moved the camera during a drag');
+  // Escape ends the drag in progress without committing it.
   key('Escape');
   pointer('pointerup', [current[0], current[1] + 16]);
+  await settle();
   assert(moveCount === 1, 'Escape committed a cancelled movement');
   await render();
   current = diagram.locate(ref);
@@ -178,9 +187,11 @@ globalThis.diagramCheck = (async () => {
   pointer('pointermove', [current[0], current[1] + 16]);
   diagram.set({ vertices: { Task: { shape: 'rounded' } } });
   pointer('pointerup', [current[0], current[1] + 16]);
+  await settle();
   assert(moveCount === 1, 'Data replacement committed a stale gesture');
   diagram.select([ref]);
   key('ArrowDown');
+  await settle();
   assert(moveCount === 2 && moved.moves[0].vertex.id === 'n0', 'Keyboard movement failed');
   let opened, removed;
   diagram.on('open', (item) => {
@@ -191,11 +202,12 @@ globalThis.diagramCheck = (async () => {
   });
   key('Enter');
   key('Delete');
+  await settle();
   assert(opened?.id === 'n0' && removed?.[0] === 'n0', 'Keyboard action proposals failed');
   key('Escape');
   await render();
   diagram.set({ input: { canConnect: () => false } });
-  wire(port('n1', 'output'), port('n4', 'input'));
+  await wire(port('n1', 'output'), port('n4', 'input'));
   assert(wires.length === 2, 'Application connect policy was ignored');
   // A composition presents its views, so the diagram leaves its canvas until the end.
   diagram.set({ canvas: null, input: { canConnect: null } });
@@ -241,6 +253,44 @@ globalThis.diagramCheck = (async () => {
   diagram.set({ canvas, paused: false, vertices: { Task: { shape: 'rounded' } } });
   diagram.fit();
   await presented(frames);
+  // The shared input: hover, the context menu, wheel zoom, and Home.
+  const once = (event, accept = () => true) =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        off();
+        reject(new Error('No ' + event + ' event'));
+      }, 5000);
+      const off = diagram.on(event, (value) => {
+        if (!accept(value)) return;
+        clearTimeout(timer);
+        off();
+        resolve(value);
+      });
+    });
+  diagram.set({ hover: 'on' });
+  const target = diagram.locate(ref),
+    client = { clientX: rect.left + target[0], clientY: rect.top + target[1] };
+  const hovered = once('hover', (item) => item !== null);
+  pointer('pointermove', target, { buttons: 0 });
+  assert((await hovered).id === 'n0', 'Hover missed the vertex');
+  const menu = once('contextmenu');
+  canvas.dispatchEvent(
+    new MouseEvent('contextmenu', { bubbles: true, cancelable: true, ...client }),
+  );
+  const opened2 = await menu;
+  assert(
+    opened2.trigger === 'pointer' && opened2.items[0]?.id === 'n0',
+    'Context menu missed the vertex',
+  );
+  const scale = diagram.camera.scale;
+  canvas.dispatchEvent(
+    new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -120, ...client }),
+  );
+  assert(diagram.camera.scale > scale && !diagram.camera.fit, 'Wheel did not zoom');
+  key('Home');
+  assert(diagram.camera.fit, 'Home did not fit');
+  const fitted = diagram.stats().frames;
+  await presented(fitted);
   await gpu.idle();
   if (failure) throw failure;
   assert(errors.length === 0, errors.join('\n'));
@@ -264,6 +314,10 @@ globalThis.diagramCheck = (async () => {
       'cancel',
       'replace',
       'keyboard',
+      'hover',
+      'context menu',
+      'wheel',
+      'home',
     ],
     shapes: 4,
     shade: true,

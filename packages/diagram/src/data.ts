@@ -1,9 +1,9 @@
-import type { Data, RowSelection } from '@latkit/model';
-import type { kit, RGBA } from '@latkit/gpu';
+import type { Data, FieldInput, RowSelection } from '@latkit/model';
+import type { DataHit, kit, RGBA } from '@latkit/gpu';
 export type Point = readonly [x: number, y: number];
 export type Shape = 'rectangle' | 'rounded' | 'ellipse' | 'diamond';
 export interface Labels {
-  readonly field: kit.FieldInput;
+  readonly field: FieldInput;
   readonly font?: kit.TextFont;
   /** Diagram units, independent of camera zoom. */
   readonly size?: number;
@@ -23,7 +23,7 @@ export interface PortOptions {
 export interface VertexOptions {
   readonly rows?: RowSelection;
   readonly position?: kit.Position2D | null;
-  readonly size?: kit.FieldInput | null;
+  readonly size?: FieldInput | null;
   readonly shape?: Shape;
   readonly cornerRadius?: number;
   /** Automatic sizing reserves room around the title. Default: center. */
@@ -31,8 +31,8 @@ export interface VertexOptions {
   /** A field name stands for that field with defaults: `color: 'load'`, `labels: 'name'`. */
   readonly color?: string | kit.ColorScale | null;
   readonly status?: string | kit.ColorScale | null;
-  readonly visible?: kit.FieldInput | null;
-  readonly shade?: kit.FieldInput | null;
+  readonly visible?: FieldInput | null;
+  readonly shade?: FieldInput | null;
   readonly labels?: string | Labels | null;
   /** Keyed by reference field. Each field naming a drawn net is a port. */
   readonly ports?: Readonly<Record<string, PortOptions>>;
@@ -50,8 +50,8 @@ export interface EdgeOptions {
   /** Widths are CSS pixels; flow is CSS pixels per second. */
   readonly width?: string | kit.Scale | null;
   readonly flow?: string | kit.Scale | null;
-  readonly visible?: kit.FieldInput | null;
-  readonly shade?: kit.FieldInput | null;
+  readonly visible?: FieldInput | null;
+  readonly shade?: FieldInput | null;
   readonly labels?: string | Labels | null;
   /** Arrowheads where flow arrives: a row's target end, or a net's input ports. */
   readonly arrows?: boolean;
@@ -71,7 +71,7 @@ export type DiagramItem =
   | (RowRef & { readonly kind: 'port'; readonly port: string })
   | { readonly kind: 'group'; readonly id: string };
 export type DiagramHit =
-  (Exclude<DiagramItem, { kind: 'group' }> & kit.DataHit) | Extract<DiagramItem, { kind: 'group' }>;
+  (Exclude<DiagramItem, { kind: 'group' }> & DataHit) | Extract<DiagramItem, { kind: 'group' }>;
 export interface RouteEnd {
   readonly position: Point;
   readonly normal: Point;
@@ -95,10 +95,9 @@ export function itemKey(item: DiagramItem): string {
   );
 }
 
-type Shorthand = 'color' | 'status' | 'labels' | 'width' | 'flow';
-type Full<T> = {
-  readonly [K in keyof T]: K extends Shorthand ? Exclude<T[K], string> : T[K];
-};
+/** Option keys whose string value names a field, in entries and their ports. */
+export const FIELD_OPTIONS = ['color', 'status', 'labels', 'width', 'flow'] as const;
+type Full<T> = kit.Expanded<T, (typeof FIELD_OPTIONS)[number]>;
 export type PortData = Full<PortOptions>;
 export type VertexData = Omit<Full<VertexOptions>, 'ports'> & {
   readonly ports?: Readonly<Record<string, PortData>>;
@@ -111,35 +110,33 @@ export interface DiagramData {
   readonly edges?: Readonly<Record<string, EdgeData>>;
   readonly groups?: Readonly<Record<string, Group>>;
 }
-const expanded = new WeakMap<object, object>();
-/** Expand shorthands, keeping each unchanged entry's identity so caches keyed on it survive. */
-function full<T extends object>(options: T): T {
-  let found = expanded.get(options);
-  if (!found) {
-    const result: Record<string, unknown> = { ...(options as Record<string, unknown>) };
-    for (const key of ['color', 'status', 'width', 'flow', 'labels'])
-      if (typeof result[key] === 'string') result[key] = { field: result[key] };
-    if (result.ports)
-      result.ports = Object.fromEntries(
-        Object.entries(result.ports as Record<string, object>).map(([k, v]) => [k, full(v)]),
-      );
-    found = Object.freeze(result);
-    expanded.set(options, found);
-  }
-  return found as T;
-}
-const all = <T extends object>(entries: Readonly<Record<string, T>> | undefined) =>
-  entries && Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, full(v)]));
-export function diagramData(config: {
+interface Drawn {
   readonly source: Data;
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;
   readonly groups?: Readonly<Record<string, Group>>;
-}): DiagramData {
+}
+/** The drawn records of a config whose field shorthands the view already expanded. */
+export function diagramData(config: Drawn): DiagramData {
+  const { source, vertices, edges, groups } = config as DiagramData;
+  return { source, vertices, edges, groups };
+}
+function expand(entry: object): object {
+  const next: Record<string, unknown> = { ...entry };
+  for (const key of FIELD_OPTIONS)
+    if (typeof next[key] === 'string') next[key] = { field: next[key] };
+  if (next.ports) next.ports = expandRecord(next.ports as Readonly<Record<string, object>>);
+  return next;
+}
+function expandRecord(record: Readonly<Record<string, object>> | undefined) {
+  return record && Object.fromEntries(Object.entries(record).map(([k, v]) => [k, expand(v)]));
+}
+/** The drawn records of a config no view normalized, such as one `arrange` takes. */
+export function expandedData(config: Drawn): DiagramData {
   return {
     source: config.source,
-    vertices: all(config.vertices) as Record<string, VertexData>,
-    edges: all(config.edges) as Record<string, EdgeData> | undefined,
+    vertices: expandRecord(config.vertices) as DiagramData['vertices'],
+    edges: expandRecord(config.edges) as DiagramData['edges'],
     groups: config.groups,
   };
 }

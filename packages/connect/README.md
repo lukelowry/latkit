@@ -2,7 +2,7 @@
 
 Two endpoints for demand-driven model connections:
 
-- `connectLattice(options)` registers a producer and serves requested observations and commands.
+- `connectModel(options)` registers a producer and serves requested observations and commands.
 - `acceptModel(socket, options?)` accepts that producer on a host.
 
 Registration sends schema and command descriptions only. Nothing reads or sends model values until
@@ -15,7 +15,7 @@ This complete producer exposes a small model and a typed command. The same API w
 that generates bounded batches directly.
 
 ```ts
-import { connectLattice } from '@latkit/connect';
+import { connectModel } from '@latkit/connect';
 import { createData, selectBatches } from '@latkit/model';
 
 const schema = {
@@ -23,7 +23,7 @@ const schema = {
 } as const;
 
 function values(multiplier: number) {
-  return createData(schema, String(multiplier), [
+  return createData(schema, [
     {
       kind: 'rows',
       index: { source: 'grid', type: 'Bus', version: 'rows-1' },
@@ -41,23 +41,20 @@ function values(multiplier: number) {
 }
 let current = values(1);
 
-const connection = await connectLattice({
+const connection = await connectModel({
   url: 'http://localhost:3000',
   name: 'grid',
   schema,
-  monitor(fields, { signal, maxBatchBytes }) {
-    return selectBatches(current, fields, { signal, maxBlockBytes: maxBatchBytes });
+  monitor(fields, { signal, maxBlockBytes }) {
+    return selectBatches(current, fields, { signal, maxBlockBytes });
   },
   commands: {
     scale: {
       parameters: { multiplier: { type: 'number', min: 0, default: 1 } },
-      async run({ multiplier }, { signal, outputs, publish, progress, log, maxBatchBytes }) {
+      async run({ multiplier }, { signal, outputs, publish, progress, log, maxBlockBytes }) {
         // multiplier is inferred as number.
         const next = values(multiplier);
-        for await (const batch of selectBatches(next, outputs, {
-          signal,
-          maxBlockBytes: maxBatchBytes,
-        }))
+        for await (const batch of selectBatches(next, outputs, { signal, maxBlockBytes }))
           await publish(batch);
         current = next;
         progress({ completed: 1, total: 1 });
@@ -137,8 +134,11 @@ wire opcodes, and execution bookkeeping stay inside the connection.
 
 ## Delivery and ownership
 
-Each publication is one atomic bounded message. Large models use many publications; atomicity does
-not extend across an entire model or execution. Applications needing a complete replacement can
+A publication within the negotiated message bounds is delivered as one atomic message. A larger one
+is delivered as several messages in order: batches share a message while they fit, and a sample batch
+is cut only between whole frames, so a host can append each message as it arrives. A row batch must
+fit one message; `selectBatches` bounds them. Producers never size messages themselves, and
+atomicity does not extend across an entire model or execution. Applications needing a complete replacement can
 stage a bounded or persisted stream and expose it when the monitor ends or the command succeeds.
 Earlier publications remain valid if a later publication fails. Static replacement and retained
 history policies belong to the application.
@@ -177,7 +177,7 @@ await model.run('solve', values, {
 });
 ```
 
-`@latkit/connect/protocol` provides `decodePublication`, `preparePublication`, and the explicit
+The `protocol` namespace provides `decodePublication`, `preparePublication`, and the explicit
 wire codec for implementations and gateways. The primary API uses model types and WebSocket
 interfaces; renderers consume `Data`, independent of this protocol. Encoded mode still validates
 incoming layouts at the trust boundary. Payloads omit connection-local IDs and sequences.
@@ -244,7 +244,7 @@ commands are not replayed, retried, or claimed to execute exactly once across fa
 - `connect.ts` / `accept.ts`: producer and host behavior.
 - `session.ts`: routing, credit windows, bounded queues, cancellation.
 - `outbound.ts` / `socket.ts`: the single outbound writer, WebSocket events and send-buffer capacity.
-- `frame.ts` / `columns.ts`: framing and model column encoding.
+- `frame.ts` / `columns.ts`: framing, publication packing and model column encoding.
 - `parameters.ts` / `core.ts`: boundary validation and small shared primitives.
 
 Run `pnpm --filter @latkit/connect test` and `pnpm --filter @latkit/connect bench:scale`.
