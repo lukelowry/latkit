@@ -47,6 +47,7 @@ import {
 import { blockBuffers, blockByteLength } from './buffers.js';
 import { checkSignal, failure } from './error.js';
 import { validateQuery, checkSampleWindow } from './validation/query.js';
+import { DEFAULT_BLOCK_BYTES } from './query.js';
 import { Check } from './validation/check.js';
 
 export type ReadResult<Q extends Query> =
@@ -76,7 +77,7 @@ async function* execute(
   checkSignal(options.signal);
   const issues = validateQuery(data.schema, query);
   if (issues.length) throw Object.assign(failure('invalid-input', issues[0].message), { issues });
-  const bound = Math.min(data.schema.limits.maxBlockBytes, options.maxBlockBytes ?? Infinity);
+  const bound = options.maxBlockBytes ?? DEFAULT_BLOCK_BYTES;
   if (!Number.isSafeInteger(bound) || bound < 1)
     throw failure('invalid-input', 'Invalid block byte limit.');
   yield { kind: 'schema', schema: data.schema, version: data.version };

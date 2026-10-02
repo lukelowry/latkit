@@ -28,7 +28,6 @@ export class Source {
       ? Float64Array.from({ length }, (_, i) => 1e12 + i / 4)
       : Float32Array.from({ length }, (_, i) => i);
     this.schema = {
-      limits: { maxBlockBytes: 8 * 1024 ** 2 },
       types: {
         node: {
           fields: {

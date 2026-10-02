@@ -18,7 +18,6 @@ import { Sequence } from '../src/sequence.js';
 const index = { source: 'pages', type: 'node', version: 'rows' };
 const rows = { kind: 'range', offset: 0, count: 2 } as const;
 const schema: Schema = {
-  limits: { maxBlockBytes: 65536 },
   axis: { name: 'time' },
   types: {
     node: {

@@ -1,12 +1,5 @@
 import { type ColumnPages, emptyPages } from './pages.js';
-import type {
-  Data,
-  DataEvent,
-  DataBatch,
-  SampleBatch,
-  TableData,
-  ColumnPage,
-} from './materialized.js';
+import type { Data, DataBatch, SampleBatch, TableData, ColumnPage } from './materialized.js';
 import type { Index, RowAxis, TextColumn } from './data.js';
 import type { Schema } from './schema.js';
 import type { Version } from './types.js';
@@ -152,30 +145,4 @@ function unionRows(a: TableData['rows'], b: TableData['rows']): TableData['rows'
   const values = new Set<number>();
   for (const rows of [a, b]) for (let i = 0; i < rowCount(rows); i++) values.add(rowAt(rows, i));
   return compactRows([...values].sort((x, y) => x - y));
-}
-
-/** Assemble each transaction independently. No history, replay or command lifecycle. */
-export async function* transactions<S extends Schema>(
-  schema: S,
-  events: AsyncIterable<DataEvent>,
-): AsyncGenerator<Data<S>> {
-  let version: Version | undefined;
-  let batches: DataBatch[] = [];
-  for await (const event of events) {
-    if (event.kind === 'begin') {
-      if (version !== undefined) throw failure('invalid-input', 'Nested data transaction.');
-      version = event.version;
-    } else {
-      if (version === undefined || event.version !== version)
-        throw failure('conflict', 'Data transaction version differs.');
-      if (event.kind === 'data') batches.push(event.block);
-      else {
-        const data = createData(schema, version, batches);
-        version = undefined;
-        batches = [];
-        yield data;
-      }
-    }
-  }
-  if (version !== undefined) throw failure('invalid-input', 'Incomplete data transaction.');
 }

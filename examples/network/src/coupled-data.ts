@@ -27,7 +27,6 @@ export function coupledData() {
     }
   }
   const schema = {
-    limits: { maxBlockBytes: 4 * 1024 * 1024 },
     axis: { name: 'Time', unit: 's' },
     types: {
       Node: {

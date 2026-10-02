@@ -83,7 +83,6 @@ export class ExampleSource {
       };
     }
     this.schema = {
-      limits: { maxBlockBytes: 1024 * 1024 },
       types,
     };
     this.data = createData(

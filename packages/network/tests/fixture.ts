@@ -60,7 +60,6 @@ export class GraphSource {
       ),
     );
     this.schema = {
-      limits: { maxBlockBytes: Math.max(65536, blockRows * 32) },
       axis: { name: 'time', unit: 's' },
       types: {
         node: {

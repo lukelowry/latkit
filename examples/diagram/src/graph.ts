@@ -19,7 +19,6 @@ const fields: TypeDefinition['fields'] = {
 };
 /** A port is a reference to the signal wire it is plugged into. */
 export const schema: Schema = {
-  limits: { maxBlockBytes: 1024 * 1024 },
   types: {
     ...Object.fromEntries(
       types.map((type) => [

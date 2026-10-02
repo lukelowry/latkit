@@ -47,7 +47,7 @@ diagrams work the same way: see [views](https://latkit.readthedocs.io/en/latest/
 | Package                     | Use                                              |
 | --------------------------- | ------------------------------------------------ |
 | [model](packages/model)     | Columnar values, passive monitoring, local reads |
-| [connect](packages/connect) | Models over workers and sockets                  |
+| [connect](packages/connect) | Demand-driven model connections                  |
 | [gpu](packages/gpu)         | Shared rendering, fields, text, colors           |
 | [network](packages/network) | Network topology and geographic views            |
 | [monitor](packages/monitor) | Time-series plots and live telemetry             |

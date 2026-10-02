@@ -52,7 +52,6 @@ export class SignalSource {
     );
   }
   readonly schema: Schema = {
-    limits: { maxBlockBytes: 256 * 1024 },
     axis: { name: 'coordinate' },
     types: {
       signal: {

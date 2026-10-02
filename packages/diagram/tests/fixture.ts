@@ -26,7 +26,6 @@ export class Source {
   /** Serve the input port as numbers rather than references. */
   malformed = false;
   schema: Schema = {
-    limits: { maxBlockBytes: 1024 * 1024 },
     types: {
       Task: {
         fields: {

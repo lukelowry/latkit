@@ -197,7 +197,7 @@ export async function show() {
       textGroup;
     const rowSource = {
       version: 'v1',
-      schema: { limits: { maxBlockBytes: 1048576 }, types: { [index.type]: { fields: {} } } },
+      schema: { types: { [index.type]: { fields: {} } } },
       tables: {},
     };
     const renderer = {

@@ -1,8 +1,8 @@
 import { expect, it } from 'vitest';
-import { connected, subscribed } from '../../connect/tests/fixture.js';
-import { LiveModel, transaction } from '../../model/tests/live.js';
+import { pair, collect } from '../../connect/tests/fixture.js';
 import {
   createData,
+  selectBatches,
   bitAt,
   numberAt,
   sampleAt,
@@ -172,29 +172,22 @@ it('includes boundary duplicates and context, leaves empty buckets invalid, and 
   gpu.destroy();
 });
 it('reduces delivered samples after the transport and producer have closed', async () => {
-  const source = new HistorySource(),
-    model = new LiveModel();
-  Object.assign(model, { schema: source.schema });
-  const h = await connected(false, model);
-  const stream = h.remote.monitor([{ from: 'node', select: ['value'] }]);
-  await subscribed(model);
-  const batches = [...source.data.tables.node.fields.value].map((page) => ({
-    kind: 'samples' as const,
-    index: source.index,
-    rows: page.rows,
-    firstFrame: page.samples!.firstFrame,
-    coordinates: page.samples!.coordinates,
-    columns: { value: page.column as SampleColumn },
-  }));
-  const publishing = model.publish(batches);
-  const events = await transaction(stream);
-  await publishing;
-  const data = createData(
-    h.remote.schema,
-    'v1',
-    events.flatMap((event) => (event.kind === 'data' ? [event.block] : [])),
+  const source = new HistorySource();
+  const h = await pair(
+    {
+      monitor: (fields, { signal, maxBatchBytes }) =>
+        selectBatches(source.data, fields, { signal, maxBlockBytes: maxBatchBytes }),
+    },
+    {},
+    source.schema,
   );
-  await h.close();
+  let data;
+  try {
+    const publications = await collect(h.model.monitor([{ from: 'node', select: ['value'] }]));
+    data = createData(h.model.schema, 'v1', publications.flat());
+  } finally {
+    await h.close();
+  }
   const gpu = await createGpu({ device: fakeDevice().device, validate: true });
   await draw(gpu, async (frame) => {
     for await (const block of frame.envelope({ source: data, query })) {

@@ -12,19 +12,16 @@ import {
   validateBlock,
   blockBuffers,
   blockByteLength,
-  transactions,
   type NumericColumn,
   type Schema,
   type DataBatch,
   type RowBatch,
   type SampleBatch,
   type RowAxis,
-  validateDataEvent,
-  type DataEvent,
+  validateBatch,
   type SamplesQuery,
 } from '../src/index.js';
 const schema: Schema = {
-  limits: { maxBlockBytes: 4096 },
   axis: { name: 'time' },
   types: {
     Node: {
@@ -50,14 +47,14 @@ async function collect<T>(stream: AsyncIterable<T>): Promise<T[]> {
   for await (const value of stream) out.push(value);
   return out;
 }
-function history(nr = 2, nf = 7, bound = 4096) {
+function history(nr = 2, nf = 7) {
   const coordinates =
     nf === 7
       ? Float64Array.of(0, 1, 1, 2, 3, 4, 6)
       : Float64Array.from({ length: nf }, (_, i) => i);
   const values = Float64Array.from({ length: nr * nf }, (_, i) => i);
   const validity = new Uint8Array(Math.ceil(values.length / 8)).fill(255);
-  return createData({ ...schema, limits: { maxBlockBytes: bound } }, 'samples', [
+  return createData(schema, 'samples', [
     {
       kind: 'samples',
       index,
@@ -123,29 +120,11 @@ it('has independent transferred copies and immutable shared pages', async () => 
   expect(next.tables.Node).toBe(data.tables.Node);
   expect(data.version).toBe('v1');
 });
-it('keeps stored values after a producer is gone, and never replays a transaction', async () => {
-  async function* events(): AsyncGenerator<DataEvent> {
-    yield { kind: 'begin', version: 'v1', initial: true };
-    yield { kind: 'data', version: 'v1', block: batch };
-    yield { kind: 'end', version: 'v1' };
-  }
-  const stream = events();
-  const result = await collect(transactions(schema, stream));
-  expect(result).toHaveLength(1);
-  expect(await collect(stream)).toEqual([]);
-  expect((await collect(read(result[0], rows))).find((b) => b.kind === 'rows')!.rows).toEqual(
+it('keeps stored values independently of producer lifetime', async () => {
+  const result = createData(schema, 'v1', [batch]);
+  expect((await collect(read(result, rows))).find((b) => b.kind === 'rows')!.rows).toEqual(
     batch.rows,
   );
-  await expect(
-    collect(
-      transactions(
-        schema,
-        (async function* () {
-          yield { kind: 'begin', version: 'broken', initial: false } as const;
-        })(),
-      ),
-    ),
-  ).rejects.toMatchObject({ code: 'invalid-input' });
 });
 it.each([
   { kind: 'at', value: -1 },
@@ -160,7 +139,7 @@ it.each([
   for (const block of blocks) expect(validateBlock(schema, q, block)).toEqual([]);
 });
 it('tiles every addressed sample exactly once under a tight payload bound without repacking dense backing', async () => {
-  const data = history(113, 79, 2048),
+  const data = history(113, 79),
     seen = new Uint8Array(113 * 79);
   const q: SamplesQuery = {
     kind: 'samples',
@@ -168,7 +147,7 @@ it('tiles every addressed sample exactly once under a tight payload bound withou
     select: ['output'],
     window: { kind: 'frames', offset: 2 ** 40, count: 79 },
   };
-  for await (const b of read(data, q))
+  for await (const b of read(data, q, { maxBlockBytes: 2048 }))
     if (b.kind === 'samples') {
       expect(blockByteLength(b)).toBeLessThanOrEqual(2048);
       expect(validateBlock(data.schema, q, b)).toEqual([]);
@@ -328,14 +307,14 @@ it.each([true, false, undefined])('rejects the removed replace option (%s)', (re
     /Replacement operations/,
   );
   for (const block of [row, sample])
-    expect(validateDataEvent(schema, { kind: 'data', version: 'v1', block })).toContainEqual(
+    expect(validateBatch(schema, block)).toContainEqual(
       expect.objectContaining({ message: 'Replacement operations are unsupported.' }),
     );
 });
 
 it('rejects old publication payloads rather than treating them as empty batches', () => {
   expect(
-    validateDataEvent(schema, { kind: 'data', version: 'v1', patch: batch }).length,
+    validateBatch(schema, { kind: 'data', version: 'v1', patch: batch }).length,
   ).toBeGreaterThan(0);
 });
 

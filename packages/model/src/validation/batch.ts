@@ -1,33 +1,20 @@
 import type { Schema } from '../schema.js';
-import type { MonitorOptions } from '../model.js';
 import type { Problem } from '../types.js';
-import { blockByteLength } from '../buffers.js';
+import type { QueryOptions, Query } from '../query.js';
 import { Check, record } from './check.js';
 import { validateBlock } from './block.js';
 import { validateQuery } from './query.js';
 
-/** Validate delivered values at a trust boundary, before exposing them to application code. */
-export function validateDataEvent(
+/** Validate a columnar batch directly. Delivery size is an operation option, not schema meaning. */
+export function validateBatch(
   schema: Schema,
   value: unknown,
-  options: MonitorOptions = {},
+  options: QueryOptions = {},
 ): readonly Problem[] {
   const c = new Check();
-  const event = c.object(value, []);
-  c.text(event.version, ['version']);
-  c.enum(event.kind, ['begin', 'data', 'end'], ['kind']);
-  if (event.kind === 'begin') c.bool(event.initial, ['initial']);
-  if (event.kind !== 'data') return c.issues;
-  if (
-    blockByteLength(value) >
-    Math.min(schema.limits.maxBlockBytes, options.maxBlockBytes ?? Infinity)
-  ) {
-    c.issue([], 'Data event exceeds its payload bound.', 'resource-limit');
-    return c.issues;
-  }
-  const batch = c.object(event.block, ['block']);
-  c.enum(batch.kind, ['rows', 'samples'], ['block', 'kind']);
-  if ('replace' in batch) c.issue(['block', 'replace'], 'Replacement operations are unsupported.');
+  const batch = c.object(value, []);
+  c.enum(batch.kind, ['rows', 'samples'], ['kind']);
+  if ('replace' in batch) c.issue(['replace'], 'Replacement operations are unsupported.');
   if (!record(batch.columns) || !record(batch.index))
     return [...c.issues, { code: 'invalid-input', message: 'Missing columns or row identity.' }];
   const query =
@@ -48,15 +35,14 @@ export function validateDataEvent(
           select: Object.keys(batch.columns),
           ...(batch.ids ? { ids: true } : {}),
         };
-  const q = query as import('../query.js').Query;
-  const issues = validateQuery(schema, q);
+  const issues = validateQuery(schema, query);
   if (issues.length) return [...c.issues, ...issues];
   return [
     ...c.issues,
     ...validateBlock(
       schema,
-      q,
-      { ...batch, version: event.version, position: 0, rowOffset: 0 },
+      query as Query,
+      { ...batch, version: 'batch', position: 0, rowOffset: 0 },
       options,
     ),
   ];

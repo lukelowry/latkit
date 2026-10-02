@@ -17,7 +17,6 @@ import { renderer, target } from './fixtures/render.js';
 const index = { source: 'sample-cache', type: 'node', version: 'rows' };
 const rows = { kind: 'range', offset: 0, count: 2 } as const;
 const schema: Schema = {
-  limits: { maxBlockBytes: 65536 },
   axis: { name: 'time' },
   types: {
     node: {

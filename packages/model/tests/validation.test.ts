@@ -375,7 +375,9 @@ describe('allocation and transport boundary', () => {
       },
     };
     expect(validateBlock(schema, rowQuery, block, { buffers: 'borrowed' })).toEqual([]);
-    expect(validateBlock(schema, rowQuery, block, { buffers: 'owned' })).not.toEqual([]);
+    expect(
+      validateBlock(schema, rowQuery, block, { buffers: 'owned', maxBlockBytes: 65536 }),
+    ).not.toEqual([]);
   });
   it('transfers native buffers through MessageChannel without JSON arrays or reshaping', async () => {
     const block = wiring();
@@ -395,8 +397,9 @@ describe('allocation and transport boundary', () => {
   });
   it('documents that a validated block does not prove whole-stream completeness', () => {
     const q: Query = { ...rowQuery, limit: 1000 };
-    const small: Schema = { ...schema, limits: { maxBlockBytes: blockByteLength(rows()) } };
-    expect(validateBlock(small, q, rows())).toEqual([]);
+    expect(validateBlock(schema, q, rows(), { maxBlockBytes: blockByteLength(rows()) })).toEqual(
+      [],
+    );
   });
 });
 
@@ -459,9 +462,9 @@ describe('independent sample storage and bounded validation', () => {
     values.set([1, 2]);
     const block = { ...rows(), columns: { value: { ...numbers([1, 2]), values } } };
     expect(validateBlock(schema, rowQuery, block)).toEqual([]);
-    expect(validateBlock(schema, rowQuery, block, { buffers: 'owned' })).toMatchObject([
-      { code: 'resource-limit' },
-    ]);
+    expect(
+      validateBlock(schema, rowQuery, block, { buffers: 'owned', maxBlockBytes: 65536 }),
+    ).toMatchObject([{ code: 'resource-limit' }]);
   });
 });
 

@@ -98,15 +98,7 @@ async function* readHistory(
       1,
       Math.min(
         request.pixels,
-        Math.floor(
-          (Math.min(
-            item.schema.limits.maxBlockBytes,
-            gpu.budget.stagingBytes / 2,
-            gpu.budget.cpuBytes / 4,
-          ) -
-            4096) /
-            100,
-        ),
+        Math.floor((Math.min(gpu.budget.stagingBytes / 2, gpu.budget.cpuBytes / 4) - 4096) / 100),
       ),
     );
     const rows = focus ? focused(focus, item) : item.rows;
@@ -158,12 +150,7 @@ async function* readHistory(
             Math.min(
               128,
               Math.floor(
-                (Math.min(
-                  gpu.budget.stagingBytes / 4,
-                  item.schema.limits.maxBlockBytes,
-                  512 * 1024,
-                ) -
-                  2048) /
+                (Math.min(gpu.budget.stagingBytes / 4, 512 * 1024) - 2048) /
                   (Math.max(1, pixels) * 100),
               ),
             ),
