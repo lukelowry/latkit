@@ -166,8 +166,7 @@ it.each(['indexed', 'discovered', 'ids'] as const)(
     expect(pages[3].flatMap((page) => values(page, 'static'))).toEqual(
       mode === 'ids' ? [200, 100] : [100, 200],
     );
-    if (mode !== 'ids')
-      expect(field(pages[3][0], 'static').binding).toEqual(field(pages[0][0], 'static').binding);
+    expect(field(pages[3][0], 'static').binding).toEqual(field(pages[0][0], 'static').binding);
     expect(
       numbers(
         await collect(gpu.query(previous, { kind: 'rows', from: 'node', select: ['a'], at: 4 })),
@@ -262,3 +261,124 @@ it('does not share field results or domains across distinct data using the same 
   }
   gpu.destroy();
 });
+
+it('updates each bound field independently and rebinds compiled plans to current snapshots', async () => {
+  let source = data();
+  const external = data();
+  const gpu = await createGpu({ device: fakeDevice().device });
+  const output = target(gpu.device);
+  const fields = { color: 'a', height: 'b', fixed: { source: external, from: 'node', field: 'a' } };
+  const seen: GpuPage[][] = [];
+  const draw = async (at: number) => {
+    const pages: GpuPage[] = [];
+    await gpu.render({
+      timeMs: at,
+      views: [
+        {
+          target: output,
+          at,
+          renderer: renderer(async (frame) => {
+            for await (const tile of frame.fields({
+              source,
+              from: 'node',
+              rows: { ...rows, index },
+              fields,
+            }))
+              pages.push(...frame.upload(tile, { select: Object.keys(fields) }));
+          }),
+        },
+      ],
+    });
+    await gpu.idle();
+    seen.push(pages);
+  };
+  await draw(0.75);
+  await draw(1.25);
+  expect(values(seen[1][0], 'color')).toEqual([3, 4]);
+  expect(field(seen[1][0], 'height').binding).toEqual(field(seen[0][0], 'height').binding);
+  source = appendData(source, 'next', [samples('a', 12, [1], [7, 8])]);
+  await draw(1.25);
+  expect(values(seen[2][0], 'color')).toEqual([7, 8]);
+  expect(values(seen[2][0], 'fixed')).toEqual([3, 4]);
+  expect(field(seen[2][0], 'height').binding).toEqual(field(seen[1][0], 'height').binding);
+  await draw(2);
+  expect(values(seen[3][0], 'height')).toEqual([30, 40]);
+  expect(field(seen[3][0], 'color').binding).toEqual(field(seen[2][0], 'color').binding);
+  gpu.destroy();
+});
+
+it.each([false, true])(
+  'batches cold field reads and keeps independent column reuse (sampled=%s)',
+  async (sampled) => {
+    const names = Array.from({ length: 12 }, (_, i) => 'field' + i);
+    const fields = Object.fromEntries(names.map((name) => [name, name]));
+    const columns = Object.fromEntries(
+      names.map((name, i) => [
+        name,
+        {
+          kind: 'numeric' as const,
+          offset: 0,
+          length: 2,
+          values: Float32Array.of(i, i + 1),
+          ...(sampled ? { frameStride: 2, rowStride: 1 } : {}),
+        },
+      ]),
+    );
+    const modelSchema: Schema = {
+      ...schema,
+      types: {
+        node: {
+          fields: Object.fromEntries(
+            names.map((name) => [name, { type: 'float32', ...(sampled ? { sampled: true } : {}) }]),
+          ),
+        },
+      },
+    };
+    let source = createData(modelSchema, 'one', [
+      sampled
+        ? {
+            kind: 'samples',
+            index,
+            rows,
+            firstFrame: 0,
+            coordinates: Float64Array.of(0),
+            columns: columns as SampleBatch['columns'],
+          }
+        : { kind: 'rows', index, rows, columns },
+    ]);
+    const gpu = await createGpu({ device: fakeDevice().device });
+    const output = target(gpu.device);
+    const draw = async () => {
+      const pages: GpuPage[] = [];
+      await gpu.render({
+        timeMs: 0,
+        views: [
+          {
+            target: output,
+            at: 1,
+            renderer: renderer(async (frame) => {
+              for await (const tile of frame.fields({
+                source,
+                from: 'node',
+                rows: { ...rows, index },
+                fields,
+              }))
+                pages.push(...frame.upload(tile, { select: names }));
+            }),
+          },
+        ],
+      });
+      await gpu.idle();
+      return pages;
+    };
+    const first = await draw();
+    expect(gpu.stats().queries).toBe(1);
+    if (sampled) source = appendData(source, 'two', [samples(names[0], 1, [1], [90, 99])]);
+    const next = await draw();
+    expect(gpu.stats().queries).toBe(sampled ? 2 : 1);
+    expect(values(next[0], names[0])).toEqual(sampled ? [90, 99] : [0, 1]);
+    for (const name of names.slice(1))
+      expect(field(next[0], name).binding).toEqual(field(first[0], name).binding);
+    gpu.destroy();
+  },
+);

@@ -1,3 +1,4 @@
+import { type ColumnPages, emptyPages } from './pages.js';
 import type {
   Data,
   DataEvent,
@@ -103,17 +104,17 @@ function assemble<S extends Schema>(
   const tables = Object.fromEntries(
     [...drafts].map(([name, draft]) => {
       const pages = new PageAssembly();
-      const fields: Record<string, readonly ColumnPage[]> = {
+      const fields: Record<string, ColumnPages> = {
         ...(draft.prior?.fields ??
           Object.fromEntries(
             Object.entries(schema.types[name].fields)
               .filter(([, field]) => field.sampled)
-              .map(([field]) => [field, []]),
+              .map(([field]) => [field, emptyPages]),
           )),
         ...Object.fromEntries(
           [...draft.fields].map(([field, added]) => [
             field,
-            pages.append(draft.prior?.fields[field] ?? [], added),
+            pages.append(draft.prior?.fields[field] ?? emptyPages, added),
           ]),
         ),
       };

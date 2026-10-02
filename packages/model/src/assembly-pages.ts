@@ -1,3 +1,4 @@
+import { type ColumnPages, appendPages, framesOf } from './pages.js';
 import type { RowAxis } from './data.js';
 import type { ColumnPage } from './materialized.js';
 import { failure } from './error.js';
@@ -6,7 +7,6 @@ interface Tail {
   readonly end: number;
   readonly coordinate: number;
 }
-const tails = new WeakMap<readonly ColumnPage[], Tail>();
 const coordinatesChecked = new WeakSet<Float64Array>();
 type Range = readonly [number, number];
 const rowRanges = new WeakMap<RowAxis, readonly Range[]>();
@@ -20,7 +20,7 @@ interface Extent extends Tail {
 export class PageAssembly {
   private checked?: { pages: readonly ColumnPage[]; extent?: Extent };
 
-  append(before: readonly ColumnPage[], added: readonly ColumnPage[]): readonly ColumnPage[] {
+  append(before: ColumnPages, added: readonly ColumnPage[]): ColumnPages {
     if (!added.length) return before;
     const checked = this.checked;
     const same =
@@ -37,9 +37,7 @@ export class PageAssembly {
       if (extent.first < tail.end || extent.firstCoordinate < tail.coordinate)
         throw failure('conflict', 'Samples must append after existing observations.');
     }
-    const pages = before.length ? before.concat(added) : added;
-    if (extent) tails.set(pages, { end: extent.end, coordinate: extent.coordinate });
-    return pages;
+    return appendPages(before, added);
   }
 }
 
@@ -90,21 +88,9 @@ function checkPages(added: readonly ColumnPage[]): Extent | undefined {
   return extent;
 }
 
-function sampleTail(pages: readonly ColumnPage[]): Tail {
-  let tail = tails.get(pages);
-  if (tail) return tail;
-  tail = { end: 0, coordinate: -Infinity };
-  // A structurally supplied Data value may not have been assembled by these helpers.
-  // Inspect its page metadata once; subsequent appends use the cached boundary.
-  for (const page of pages) {
-    const sample = page.samples;
-    if (sample?.coordinates.length) {
-      const end = sample.firstFrame + sample.coordinates.length;
-      if (end > tail.end) tail = { end, coordinate: sample.coordinates.at(-1)! };
-    }
-  }
-  tails.set(pages, tail);
-  return tail;
+function sampleTail(pages: ColumnPages): Tail {
+  const frames = framesOf(pages);
+  return { end: frames.end, coordinate: frames.groups.at(-1)?.coordinates.at(-1) ?? -Infinity };
 }
 
 /** Rectangular row tiles and sparse selections must not overwrite the same cells. */

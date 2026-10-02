@@ -65,10 +65,13 @@ export class Check {
   ): readonly string[] {
     const list = this.array(value, path);
     const result: string[] = [];
+    const seen = new Set<string>();
+    const allowed = choices && new Set(choices);
     for (const [i, item] of list.entries()) {
       if (this.text(item, [...path, i])) {
-        if (result.includes(item)) this.issue([...path, i], 'Duplicate selection.');
-        if (choices && !choices.includes(item)) this.issue([...path, i], 'Unknown selection.');
+        if (seen.has(item)) this.issue([...path, i], 'Duplicate selection.');
+        if (allowed && !allowed.has(item)) this.issue([...path, i], 'Unknown selection.');
+        seen.add(item);
         result.push(item);
       }
     }

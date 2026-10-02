@@ -53,6 +53,28 @@ global history. Your application decides which values to hold, persist, or disca
 
 ## Locate an observation
 
+Field pages are immutable indexed collections (`ColumnPages`), built by `createData` and
+`appendData`. Appending shares the earlier page and sample indexes; it does not copy the entire
+page list or rebuild the earlier sample index. Older `Data` values remain valid.
+
+```ts
+const pages = data.tables.Node.fields.output;
+const first = pages.at(0); // replaces pages[0]
+for (const page of pages) consume(page);
+```
+
+Use `appendedPages(previousPages, nextPages)` to inspect just an appended suffix; it returns
+`undefined` for a replacement. `samplePages(pages, window)` visits only pages covering a sample
+window. Neither function retains a model or performs I/O. Construct data from batches rather
+than assigning arrays directly to `TableData.fields`. `copyBuffers(data)` preserves these indexes
+while copying payloads; `Data` itself is not a structured-clone transport format. Transport uses
+plain `DataBatch` values.
+
+`resolveRows(data, { from, select, rows, at })` resolves physical row identity and ordering without
+gathering field values. It uses the same sampled coverage rules as `read`, including independent
+field clocks, missing observations, and ID selections. These helpers are optional; views use them
+automatically.
+
 `locateSample(pages, at)` resolves the last observation at or before a finite coordinate without
 reading or copying its values. It returns `{ frame, coordinate, offset, pages }`, or `undefined`
 before the first observation or when no samples exist. Duplicate coordinates select the last

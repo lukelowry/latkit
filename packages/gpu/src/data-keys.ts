@@ -1,5 +1,6 @@
 import {
   locateSample,
+  samplePages,
   type ColumnPage,
   type Data,
   type Query,
@@ -40,17 +41,10 @@ export class DataKeys {
     if (definition?.sampled && pages && window?.kind === 'at') {
       const sample = locateSample(pages, window.value);
       selected = sample ? [this.pages(sample.pages), sample.frame] : null;
-    } else if (pages && window?.kind === 'frames') {
-      selected = pages
-        .filter(
-          (page) =>
-            !page.samples ||
-            (page.samples.firstFrame < window.offset + window.count &&
-              page.samples.firstFrame + page.samples.coordinates.length > window.offset),
-        )
-        .map((page) => this.identity(page))
-        .join(',');
+    } else if (definition?.sampled && pages && window?.kind === 'frames') {
+      selected = Array.from(samplePages(pages, window), (page) => this.identity(page)).join(',');
     }
+
     const type = definition?.type;
     const reference =
       typeof type === 'object' && type.kind === 'reference'

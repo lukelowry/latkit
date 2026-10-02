@@ -40,3 +40,10 @@ field reads, uploads, text, colormaps, and transient buffers.
 [Views](https://latkit.readthedocs.io/en/latest/views.html) ·
 [Colors](https://latkit.readthedocs.io/en/latest/colormaps.html) ·
 [API](https://latkit.readthedocs.io/en/latest/api/reference/gpu/index.html)
+
+Field bindings compile into shared internal plans. Plans describe aliases, source slots, and row
+selections; each frame supplies its captured Data snapshots. Static fields and independently
+sampled fields keep separate cache dependencies, including when rows are selected by ID. Changed
+samples therefore do not require gathering or uploading unchanged static fields. The same plan
+compiler serves point and sample-window preparation, and its metadata uses the GPU's existing
+memory budget. No plan objects or setup are required in application code.

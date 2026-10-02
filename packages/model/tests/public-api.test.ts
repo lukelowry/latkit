@@ -16,6 +16,9 @@ it('exports values, local computation and explicit boundary validation', () => {
   for (const name of [
     'read',
     'locateSample',
+    'appendedPages',
+    'samplePages',
+    'resolveRows',
     'createData',
     'appendData',
     'transactions',
@@ -51,6 +54,12 @@ function usage(model: Model, commands: Commands, data: Data) {
   void model.retain;
   // @ts-expect-error Data has no read capability or provider lifetime.
   void data.query;
+  const pages = data.tables.Node.fields.output;
+  expectTypeOf(pages.at(0)).toEqualTypeOf<api.ColumnPage | undefined>();
+  // @ts-expect-error Indexed columns are not mutable flat arrays.
+  void pages.push;
+  // @ts-expect-error Indexed page access uses at(), not an array subscript.
+  void pages[0];
   // @ts-expect-error Data needs no close.
   void data.close;
 }

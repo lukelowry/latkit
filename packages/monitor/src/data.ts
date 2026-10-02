@@ -1,3 +1,4 @@
+import { appendedPages } from '@latkit/model';
 import type { Data, RowSelection, SampleRange, Version } from '@latkit/model';
 import type { kit, RGBA } from '@latkit/gpu';
 /** A sampled field of one type's rows, drawn as a line per row. */
@@ -92,22 +93,13 @@ export function appended(before: Data, after: Data): FrameRanges | undefined {
       const x = a.fields[field],
         y = b.fields[field];
       if (x === y) continue;
-      if (
-        !definition.sampled ||
-        !x ||
-        !y ||
-        y.length < x.length ||
-        x.some((page, i) => page !== y[i])
-      )
-        return;
-      let previous = -Infinity;
-      for (const page of x)
-        if (page.samples)
-          previous = Math.max(previous, page.samples.firstFrame + page.samples.coordinates.length);
+      if (!definition.sampled || !x || !y) return;
+      const added = appendedPages(x, y);
+      if (!added) return;
       const ranges: FrameRange[] = [];
-      for (let i = x.length; i < y.length; i++) {
-        const sample = y[i].samples;
-        if (!sample || sample.firstFrame < previous) return;
+      for (const page of added) {
+        const sample = page.samples;
+        if (!sample) return;
         ranges.push({ offset: sample.firstFrame, count: sample.coordinates.length });
       }
       if (ranges.length) result.set(type + ':' + field, mergeRanges(ranges));

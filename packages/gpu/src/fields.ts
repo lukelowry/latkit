@@ -1,3 +1,4 @@
+import { FieldPlans } from './field-plan.js';
 import { DataKeys } from './data-keys.js';
 import { resolveScale } from './scale.js';
 import {
@@ -11,7 +12,7 @@ import {
   type RowsBlock,
   type Schema,
 } from '@latkit/model';
-import { assertIndex, rowAt, rowCount, sliceRows } from '@latkit/model';
+import { assertIndex, resolveRows, rowAt, rowCount, sliceRows } from '@latkit/model';
 import { type FieldBinding, type FieldsRequest, type FieldValues } from './binding.js';
 import type { NativeFields } from './binding.js';
 import type { Index, SamplesBlock, SampleColumn, SampleWindow } from '@latkit/model';
@@ -57,6 +58,7 @@ interface SchemaState {
   schema: Schema;
   entry: Entry;
   cache: Map<string, Cached>;
+  byField: Map<string, Set<Cached>>;
   extents: Map<string, Extent>;
 }
 interface Group {
@@ -66,6 +68,16 @@ interface Group {
   rows?: RowSelection;
   sampled: boolean;
   fields: Map<string, string[]>;
+}
+interface ColumnRead {
+  group: Group;
+  index: Index;
+  rows: RowAxis;
+  selected: RowSelection;
+  fields: string[];
+  table: string;
+  dependencies: Record<string, string>;
+  key: string;
 }
 interface Tile {
   index: Index;
@@ -81,10 +93,17 @@ export class Fields {
   private ids = new WeakMap<object, number>();
   private serial = 0;
   private tiles = new Map<string, { entry: Entry; tile: Tile }>();
+  private readonly plans: FieldPlans;
   constructor(
     private readonly memory: Memory,
     private readonly tileBytes: number,
-  ) {}
+  ) {
+    this.plans = new FieldPlans(
+      memory,
+      (value) => this.id(value),
+      (rows) => this.selectionKey(rows),
+    );
+  }
 
   async *prepare(
     request: FieldsRequest,
@@ -106,45 +125,40 @@ export class Fields {
       );
       return;
     }
-    // Discover physical identity from a real read, never from a schema or a guessed row count.
-    const selected = new Map<string, string[]>();
-    for (const [alias, input] of Object.entries(request.fields)) {
-      const field =
-        typeof input === 'string'
-          ? input
-          : 'field' in input &&
-              input.source === request.source &&
-              input.from === request.from &&
-              !input.rows
-            ? input.field
-            : undefined;
-      if (field) selected.set(field, [...(selected.get(field) ?? []), alias]);
-    }
-    const state = this.schemaState(request.source, frame.signal);
-    const definition = state.schema.types[request.from];
-    const sampled = [...selected.keys()].some((field) => definition?.fields[field]?.sampled);
+    const compiled = this.plans.acquire(request.fields, request.source, request.from);
     try {
+      frame.signal.throwIfAborted();
+      frame.observe(request.source);
+      const select = compiled.plan.points
+        .filter((group) => compiled.sources[group.slot] === request.source && !group.rows)
+        .flatMap((group) => [...group.fields.keys()]);
+      const sampled = select.some(
+        (name) => request.source.schema.types[request.from].fields[name].sampled,
+      );
+      const mapping = resolveRows(request.source, {
+        from: request.from,
+        select,
+        rows: request.rows,
+        ...(sampled ? { at: frame.at } : {}),
+      });
+      if (!mapping) return;
+      if (!request.ids) {
+        yield* this.indexed({ ...request, ...mapping }, frame, scope);
+        return;
+      }
+      // IDs are gathered separately; field values retain their independent cache identities.
       for await (const block of frame.query(request.source, {
         kind: 'rows',
         from: request.from,
-        rows: request.rows,
-        select: [...selected.keys()],
-        ...(request.ids ? { ids: true } : {}),
-        ...(sampled ? { at: frame.at } : {}),
+        rows: { ...mapping.rows, index: mapping.index },
+        select: [],
+        ids: true,
       })) {
         if (block.kind === 'schema') continue;
         const held = this.memory.add(blockBuffers(block), 128, () => {});
         try {
-          const fields = { ...request.fields };
-          for (const [field, aliases] of selected)
-            for (const alias of aliases)
-              fields[alias] = {
-                index: block.index,
-                rows: block.rows,
-                values: block.columns[field],
-              };
           for await (const tile of this.indexed(
-            { source: request.source, index: block.index, rows: block.rows, fields },
+            { ...request, index: block.index, rows: block.rows },
             frame,
             scope,
           )) {
@@ -163,7 +177,7 @@ export class Fields {
         }
       }
     } finally {
-      state.entry.unpin();
+      compiled.entry.unpin();
     }
   }
 
@@ -180,178 +194,148 @@ export class Fields {
     frame: ReadFrame,
     scope: UploadScope,
   ): AsyncGenerator<NativeFields> {
-    const groups: {
-      source: Data;
-      from: string;
-      fields: Map<string, string[]>;
-      rows?: RowSelection;
-    }[] = [];
-    const statics: Record<string, import('./binding.js').FieldInput> = {};
-    for (const [alias, input] of Object.entries(request.fields)) {
-      if (typeof input === 'object' && 'values' in input) {
-        statics[alias] = input;
-        continue;
-      }
-      const binding: FieldBinding =
-        typeof input === 'string'
-          ? { source: request.source, from: request.from, field: input }
-          : input;
-      if (binding.from !== request.from)
-        throw new GpuError('conflict', 'Fields must belong to one model type');
-      const state = this.schemaState(binding.source, frame.signal);
-      try {
-        const definition = state.schema.types[binding.from];
-        const field = definition?.fields[binding.field];
-        if (!field) throw new GpuError('invalid-input', 'Unknown field: ' + binding.field);
-        if (!field.sampled) {
-          statics[alias] = input;
-          continue;
-        }
-        let group = groups.find(
-          (g) =>
-            g.source === binding.source &&
-            this.selectionKey(g.rows) === this.selectionKey(binding.rows),
-        );
-        if (!group) {
-          group = {
-            source: binding.source,
-            from: binding.from,
-            fields: new Map(),
-            rows: binding.rows,
-          };
-          groups.push(group);
-        }
-        group.fields.set(binding.field, [...(group.fields.get(binding.field) ?? []), alias]);
-      } finally {
-        state.entry.unpin();
-      }
-    }
-    if (!groups.length)
-      throw new GpuError('invalid-input', 'A sample window requires sampled fields');
-    const anchor = groups.find((g) => !g.rows);
-    if (!anchor)
-      throw new GpuError('invalid-input', 'A sampled read requires one complete field binding');
-    for await (const block of frame.query(anchor.source, {
-      kind: 'samples',
-      from: request.from,
-      rows: request.rows,
-      select: [...anchor.fields.keys()],
-      window: request.window!,
-    })) {
-      if (block.kind === 'schema') continue;
-      const held = this.memory.add(blockBuffers(block), 128, () => {}),
-        joined: Entry[] = [];
-      try {
-        const sampledColumns: Record<string, SampleColumn> = {};
-        const sampledPresence: Record<string, Uint8Array> = {};
-        for (const [field, aliases] of anchor.fields)
-          for (const alias of aliases) sampledColumns[alias] = block.columns[field];
-        for (const group of groups) {
-          if (group === anchor) continue;
-          const chunks: SamplesBlock[] = [],
-            entries: Entry[] = [];
-          const selected = intersect(block.rows, group.rows, block.index);
-          try {
-            for await (const part of frame.query(group.source, {
-              kind: 'samples',
-              from: request.from,
-              rows: selected,
-              select: [...group.fields.keys()],
-              window: { kind: 'frames', offset: block.firstFrame, count: block.coordinates.length },
-            })) {
-              if (part.kind === 'schema') continue;
-              assertIndex(block.index, part.index);
-              chunks.push(part);
-              entries.push(this.memory.add(blockBuffers(part), 128, () => {}));
-            }
-            const merged = joinSamples(
-              block,
-              chunks,
-              [...group.fields.keys()],
-              !!group.rows,
-              this.memory,
-              selected.kind === 'ids' ? undefined : selected,
-            );
-            joined.push(this.memory.add(backings(merged), 128, () => {}));
-            for (const [field, aliases] of group.fields)
-              for (const alias of aliases) {
-                sampledColumns[alias] = merged.columns[field];
-                if (merged.presence[field]) sampledPresence[alias] = merged.presence[field];
-              }
-          } finally {
-            for (const entry of entries) this.memory.remove(entry);
-          }
-        }
-        // Static columns retain their native row addressing and broadcast over the sample axis.
-        for await (const tile of this.indexed(
-          { source: request.source, index: block.index, rows: block.rows, fields: statics },
-          frame,
-          scope,
-        )) {
-          const columns: Record<string, Column> = { ...tile.columns };
-          for (const [name, column] of Object.entries(sampledColumns))
-            columns[name] = {
-              ...column,
-              offset: column.offset + tile.rowOffset * column.rowStride,
-              length:
-                (block.coordinates.length - 1) * column.frameStride +
-                (rowCount(tile.rows) - 1) * column.rowStride +
-                1,
-            };
-          const presence = { ...tile.presence };
-          for (const [name, mask] of Object.entries(sampledPresence))
-            presence[name] = this.memory.stage(Math.ceil(rowCount(tile.rows) / 8), () =>
-              sliceBits(mask, tile.rowOffset, rowCount(tile.rows)),
-            );
-          let ids: import('@latkit/model').TextColumn | undefined;
-          let identityEntry: Entry | undefined;
-          if (request.ids) {
-            const chunks: RowsBlock[] = [],
-              heldIds: Entry[] = [];
+    const compiled = this.plans.acquire(request.fields, request.source, request.from);
+    try {
+      const groups = compiled.plan.samples.map((group) => ({
+        ...group,
+        source: compiled.sources[group.slot],
+      }));
+      const statics = Object.fromEntries(
+        compiled.plan.statics.map((alias) => [alias, request.fields[alias]]),
+      );
+      if (!groups.length)
+        throw new GpuError('invalid-input', 'A sample window requires sampled fields');
+      const anchor = groups.find((g) => !g.rows);
+      if (!anchor)
+        throw new GpuError('invalid-input', 'A sampled read requires one complete field binding');
+      for await (const block of frame.query(anchor.source, {
+        kind: 'samples',
+        from: request.from,
+        rows: request.rows,
+        select: [...anchor.fields.keys()],
+        window: request.window!,
+      })) {
+        if (block.kind === 'schema') continue;
+        const held = this.memory.add(blockBuffers(block), 128, () => {}),
+          joined: Entry[] = [];
+        try {
+          const sampledColumns: Record<string, SampleColumn> = {};
+          const sampledPresence: Record<string, Uint8Array> = {};
+          for (const [field, aliases] of anchor.fields)
+            for (const alias of aliases) sampledColumns[alias] = block.columns[field];
+          for (const group of groups) {
+            if (group === anchor) continue;
+            const chunks: SamplesBlock[] = [],
+              entries: Entry[] = [];
+            const selected = intersect(block.rows, group.rows, block.index);
             try {
-              for await (const part of frame.query(request.source, {
-                kind: 'rows',
+              for await (const part of frame.query(group.source, {
+                kind: 'samples',
                 from: request.from,
-                rows: { ...tile.rows, index: tile.index },
-                select: [],
-                ids: true,
+                rows: selected,
+                select: [...group.fields.keys()],
+                window: {
+                  kind: 'frames',
+                  offset: block.firstFrame,
+                  count: block.coordinates.length,
+                },
               })) {
                 if (part.kind === 'schema') continue;
-                assertIndex(tile.index, part.index);
-                if (!part.ids) throw new GpuError('invalid-input', 'Identity query omitted ids');
-                heldIds.push(this.memory.add(blockBuffers(part), 128, () => {}));
-                chunks.push({ ...part, columns: { ids: part.ids } });
+                assertIndex(block.index, part.index);
+                chunks.push(part);
+                entries.push(this.memory.add(blockBuffers(part), 128, () => {}));
               }
-              ids = assemble(tile.rows, ['ids'], chunks, false, this.memory).columns
-                .ids as import('@latkit/model').TextColumn;
-              identityEntry = this.memory.add(backings(ids), 128, () => {});
+              const merged = joinSamples(
+                block,
+                chunks,
+                [...group.fields.keys()],
+                !!group.rows,
+                this.memory,
+                selected.kind === 'ids' ? undefined : selected,
+              );
+              joined.push(this.memory.add(backings(merged), 128, () => {}));
+              for (const [field, aliases] of group.fields)
+                for (const alias of aliases) {
+                  sampledColumns[alias] = merged.columns[field];
+                  if (merged.presence[field]) sampledPresence[alias] = merged.presence[field];
+                }
             } finally {
-              for (const entry of heldIds) this.memory.remove(entry);
+              for (const entry of entries) this.memory.remove(entry);
             }
           }
-          try {
-            const data = {
-              ...tile,
-              rowOffset: block.rowOffset + tile.rowOffset,
-              columns,
-              presence,
-              ...(ids ? { ids } : {}),
-              samples: { firstFrame: block.firstFrame, coordinates: block.coordinates },
-            };
-            const entry = this.memory.add(backings(data), 128, () => {});
+          // Static columns retain their native row addressing and broadcast over the sample axis.
+          for await (const tile of this.indexed(
+            { source: request.source, index: block.index, rows: block.rows, fields: statics },
+            frame,
+            scope,
+          )) {
+            const columns: Record<string, Column> = { ...tile.columns };
+            for (const [name, column] of Object.entries(sampledColumns))
+              columns[name] = {
+                ...column,
+                offset: column.offset + tile.rowOffset * column.rowStride,
+                length:
+                  (block.coordinates.length - 1) * column.frameStride +
+                  (rowCount(tile.rows) - 1) * column.rowStride +
+                  1,
+              };
+            const presence = { ...tile.presence };
+            for (const [name, mask] of Object.entries(sampledPresence))
+              presence[name] = this.memory.stage(Math.ceil(rowCount(tile.rows) / 8), () =>
+                sliceBits(mask, tile.rowOffset, rowCount(tile.rows)),
+              );
+            let ids: import('@latkit/model').TextColumn | undefined;
+            let identityEntry: Entry | undefined;
+            if (request.ids) {
+              const chunks: RowsBlock[] = [],
+                heldIds: Entry[] = [];
+              try {
+                for await (const part of frame.query(request.source, {
+                  kind: 'rows',
+                  from: request.from,
+                  rows: { ...tile.rows, index: tile.index },
+                  select: [],
+                  ids: true,
+                })) {
+                  if (part.kind === 'schema') continue;
+                  assertIndex(tile.index, part.index);
+                  if (!part.ids) throw new GpuError('invalid-input', 'Identity query omitted ids');
+                  heldIds.push(this.memory.add(blockBuffers(part), 128, () => {}));
+                  chunks.push({ ...part, columns: { ids: part.ids } });
+                }
+                ids = assemble(tile.rows, ['ids'], chunks, false, this.memory).columns
+                  .ids as import('@latkit/model').TextColumn;
+                identityEntry = this.memory.add(backings(ids), 128, () => {});
+              } finally {
+                for (const entry of heldIds) this.memory.remove(entry);
+              }
+            }
             try {
-              yield this.native(data, frame.signal);
+              const data = {
+                ...tile,
+                rowOffset: block.rowOffset + tile.rowOffset,
+                columns,
+                presence,
+                ...(ids ? { ids } : {}),
+                samples: { firstFrame: block.firstFrame, coordinates: block.coordinates },
+              };
+              const entry = this.memory.add(backings(data), 128, () => {});
+              try {
+                yield this.native(data, frame.signal);
+              } finally {
+                this.memory.remove(entry);
+              }
             } finally {
-              this.memory.remove(entry);
+              if (identityEntry) this.memory.remove(identityEntry);
             }
-          } finally {
-            if (identityEntry) this.memory.remove(identityEntry);
           }
+        } finally {
+          for (const entry of joined) this.memory.remove(entry);
+          this.memory.remove(held);
         }
-      } finally {
-        for (const entry of joined) this.memory.remove(entry);
-        this.memory.remove(held);
       }
+    } finally {
+      compiled.entry.unpin();
     }
   }
 
@@ -360,67 +344,27 @@ export class Fields {
     frame: ReadFrame,
     scope: UploadScope,
   ): AsyncGenerator<NativeFields> {
-    const count = rowCount(request.rows),
-      names = Object.keys(request.fields);
+    const count = rowCount(request.rows);
     if (!count) return;
+    const compiled = this.plans.acquire(request.fields, request.source, request.index.type);
+    const { plan, sources } = compiled;
+    const { names, width } = plan;
     const states = new Map<Data, SchemaState>();
-    const groups: Group[] = [],
-      values: [string, FieldValues][] = [];
-    let width = 4;
+    const groups: Group[] = [];
+    const values = plan.locals.map((name) => [name, request.fields[name] as FieldValues] as const);
     try {
-      for (const [name, input] of Object.entries(request.fields)) {
+      for (const [, input] of values) assertIndex(request.index, input.index);
+      for (const planned of plan.points) {
         frame.signal.throwIfAborted();
-        if (typeof input !== 'string' && 'values' in input) {
-          assertIndex(request.index, input.index);
-          values.push([name, input]);
-          width += bytesPerRow(input.values);
-          continue;
-        }
-        if (typeof input === 'string' && !request.source)
-          throw new GpuError('invalid-input', 'String fields require a source');
-        const binding: FieldBinding =
-          typeof input === 'string'
-            ? { source: request.source!, from: request.index.type, field: input }
-            : input;
-        if (binding.from !== request.index.type)
-          throw new GpuError('conflict', 'Fields must belong to the draw index type');
-        frame.observe(binding.source);
-        let state = states.get(binding.source);
+        const source = sources[planned.slot];
+        frame.observe(source);
+        let state = states.get(source);
         if (!state) {
-          state = this.schemaState(binding.source, frame.signal);
-          states.set(binding.source, state);
+          state = this.schemaState(source, frame.signal);
+          states.set(source, state);
           scope.use(state.entry);
         }
-        const definition = state.schema.types[binding.from];
-        const field = definition?.fields[binding.field];
-        if (!field)
-          throw new GpuError(
-            'invalid-input',
-            'Unknown field: ' + binding.from + '.' + binding.field,
-          );
-        width += definitionBytes(field);
-        const sampled = field.sampled === true;
-        let group = groups.find(
-          (g) =>
-            g.source === binding.source &&
-            g.from === binding.from &&
-            g.sampled === sampled &&
-            this.selectionKey(g.rows) === this.selectionKey(binding.rows),
-        );
-        if (!group) {
-          group = {
-            source: binding.source,
-            state,
-            from: binding.from,
-            sampled,
-            rows: binding.rows,
-            fields: new Map(),
-          };
-          groups.push(group);
-        }
-        const aliases = group.fields.get(binding.field) ?? [];
-        aliases.push(name);
-        group.fields.set(binding.field, aliases);
+        groups.push({ ...planned, source, state });
       }
       // Both gathering and upload conversion are bounded; the stream never gathers the full model.
       const tileRows = Math.max(
@@ -430,16 +374,11 @@ export class Fields {
       for (let offset = 0; offset < count; offset += tileRows) {
         frame.signal.throwIfAborted();
         const rows = sliceRows(request.rows, offset, Math.min(tileRows, count - offset));
-        const reads = new Map<Group, Cached>(),
-          held: Entry[] = [];
+        const reads = await this.resolveAll(groups, request.index, rows, frame);
         try {
           const cuts = new Set([0, rowCount(rows)]);
-          for (const group of groups) {
-            const resolved = await this.resolve(group, request.index, rows, frame);
-            held.push(resolved.entry);
-            reads.set(group, resolved);
+          for (const resolved of reads.values())
             for (const cut of boundaries(resolved.chunks, rows)) cuts.add(cut);
-          }
           const sorted = [...cuts].sort((a, b) => a - b);
           for (let part = 1; part < sorted.length; part++) {
             const selected = sliceRows(rows, sorted[part - 1], sorted[part] - sorted[part - 1]);
@@ -499,11 +438,12 @@ export class Fields {
             }
           }
         } finally {
-          for (const entry of held) entry.unpin();
+          for (const read of reads.values()) read.entry.unpin();
         }
       }
     } finally {
       for (const state of states.values()) state.entry.unpin();
+      compiled.entry.unpin();
     }
   }
 
@@ -532,6 +472,37 @@ export class Fields {
           frame,
           scope,
         ),
+      );
+    }
+    if (!window) {
+      const input = request.field;
+      const field =
+        typeof input === 'string'
+          ? input
+          : 'field' in input &&
+              input.source === request.source &&
+              input.from === request.from &&
+              !input.rows
+            ? input.field
+            : undefined;
+      const sampled = field && request.source.schema.types[request.from]?.fields[field]?.sampled;
+      frame.signal.throwIfAborted();
+      frame.observe(request.source);
+      const mapping = resolveRows(request.source, {
+        from: request.from,
+        select: field ? [field] : [],
+        rows: request.rows,
+        ...(sampled ? { at: frame.at } : {}),
+      });
+      return resolveScale(
+        request,
+        mapping
+          ? await this.extent(
+              { source: request.source, ...mapping, field: request.field },
+              frame,
+              scope,
+            )
+          : null,
       );
     }
     let lo = Infinity,
@@ -635,7 +606,7 @@ export class Fields {
       {
         const native =
           !request.window &&
-          [...state.cache.values()].find(
+          [...(state.byField.get(readKey(table, binding.field, dependency)) ?? [])].find(
             (cached) =>
               cached.entry.live &&
               cached.from === binding.from &&
@@ -820,17 +791,17 @@ export class Fields {
     }
     const schema = source.schema;
     const entry = this.memory.add([], 256 + JSON.stringify(schema).length * 2, () => {});
-    state = { schema, entry, cache: new Map(), extents: new Map() };
+    state = { schema, entry, cache: new Map(), byField: new Map(), extents: new Map() };
     this.schemas.set(source.schema, state);
     return state;
   }
 
-  private async resolve(
+  private lookup(
     group: Group,
     index: Index,
     rows: RowAxis,
-    frame: Pick<Preparation, 'query' | 'signal' | 'at'>,
-  ): Promise<Cached> {
+    frame: Pick<Preparation, 'at'>,
+  ): Cached | ColumnRead {
     const selected = intersect(rows, group.rows, index),
       fields = [...group.fields.keys()].sort();
     const table = this.keys.table(group.source, group.from);
@@ -851,7 +822,9 @@ export class Fields {
     ]);
     let hit = group.state.cache.get(key);
     if (!hit)
-      for (const cached of group.state.cache.values()) {
+      for (const cached of group.state.byField.get(
+        readKey(table, fields[0], dependencies[fields[0]]),
+      ) ?? []) {
         if (
           cached.entry.live &&
           cached.from === group.from &&
@@ -874,66 +847,135 @@ export class Fields {
       this.memory.queryHits++;
       return hit;
     }
-    const chunks: RowsBlock[] = [],
-      held: Entry[] = [];
+    return { group, index, rows, selected, fields, table, dependencies, key };
+  }
+  private async resolve(
+    group: Group,
+    index: Index,
+    rows: RowAxis,
+    frame: Pick<Preparation, 'query' | 'signal' | 'at'>,
+  ): Promise<Cached> {
+    return (await this.resolveAll([group], index, rows, frame)).get(group)!;
+  }
+  private async resolveAll(
+    groups: readonly Group[],
+    index: Index,
+    rows: RowAxis,
+    frame: Pick<Preparation, 'query' | 'signal' | 'at'>,
+  ): Promise<Map<Group, Cached>> {
+    const resolved = new Map<Group, Cached>();
+    const batches = new Map<string, ColumnRead[]>();
     try {
-      if (selected.kind === 'ids' || rowCount(selected)) {
-        for await (const block of frame.query(group.source, {
-          kind: 'rows',
-          from: group.from,
-          select: fields,
-          rows: selected,
-          ...(group.sampled ? { at: frame.at } : {}),
-        })) {
-          if (block.kind === 'schema') {
-            continue;
+      for (const group of groups) {
+        const found = this.lookup(group, index, rows, frame);
+        if ('entry' in found) {
+          resolved.set(group, found);
+          continue;
+        }
+        const key = JSON.stringify([
+          this.id(group.source),
+          group.from,
+          group.sampled,
+          this.selectionKey(group.rows),
+        ]);
+        let batch = batches.get(key);
+        if (!batch) batches.set(key, (batch = []));
+        batch.push(found);
+      }
+      // Share each cold read across compatible columns, while caching each dependency separately.
+      for (const batch of batches.values()) {
+        const { group, selected } = batch[0];
+        const fields = [...new Set(batch.flatMap((read) => read.fields))];
+        const chunks: RowsBlock[] = [],
+          held: Entry[] = [];
+        try {
+          if (selected.kind === 'ids' || rowCount(selected)) {
+            for await (const block of frame.query(group.source, {
+              kind: 'rows',
+              from: group.from,
+              select: fields,
+              rows: selected,
+              ...(group.sampled ? { at: frame.at } : {}),
+            })) {
+              if (block.kind === 'schema') continue;
+              assertIndex(index, block.index);
+              for (const field of fields) {
+                const column = block.columns[field];
+                if (!column) throw new GpuError('invalid-input', 'Query omitted a requested field');
+                validateNative(column, rowCount(block.rows));
+              }
+              held.push(this.memory.add(blockBuffers(block), 128, () => {}));
+              chunks.push(block);
+            }
           }
-          assertIndex(index, block.index);
-          for (const field of fields) {
-            const column = block.columns[field];
-            if (!column) throw new GpuError('invalid-input', 'Query omitted a requested field');
-            validateNative(column, rowCount(block.rows));
+          for (const read of batch) {
+            const columns =
+              batch.length === 1
+                ? chunks
+                : chunks.map((block) => ({
+                    ...block,
+                    columns: Object.fromEntries(
+                      read.fields.map((name) => [name, block.columns[name]]),
+                    ),
+                  }));
+            resolved.set(read.group, this.storeRead(read, columns));
           }
-          const entry = this.memory.add(blockBuffers(block), 128, () => {});
-          held.push(entry);
-          chunks.push(block);
+        } finally {
+          for (const entry of held) this.memory.remove(entry);
         }
       }
-      const definition = group.state.schema.types[group.from];
-      const expected = Object.fromEntries(
-        fields.map((field) => [field, emptyColumn(definition!.fields[field])]),
-      );
-      group.state.entry.pin();
-      let entry: Entry;
-      try {
-        entry = this.memory.add(
-          backings({ rows, chunks, selection: selected }),
-          256 + key.length * 2 + fields.length * 128,
-          () => {
-            if (group.state.cache.get(key)?.entry === entry) group.state.cache.delete(key);
-            group.state.entry.unpin();
-          },
-        );
-      } catch (error) {
-        group.state.entry.unpin();
-        throw error;
-      }
-      const result: Cached = {
-        index,
-        chunks,
-        expected,
-        selection: selected,
-        entry,
-        from: group.from,
-        sampled: group.sampled,
-        table,
-        dependencies,
-      };
-      group.state.cache.set(key, result);
-      return result;
-    } finally {
-      for (const entry of held) this.memory.remove(entry);
+      return resolved;
+    } catch (error) {
+      for (const read of resolved.values()) read.entry.unpin();
+      throw error;
     }
+  }
+  private storeRead(read: ColumnRead, chunks: RowsBlock[]): Cached {
+    const { group, index, rows, selected, fields, table, dependencies, key } = read;
+    const definition = group.state.schema.types[group.from];
+    const expected = Object.fromEntries(
+      fields.map((field) => [field, emptyColumn(definition!.fields[field])]),
+    );
+    const state = group.state;
+    const related = fields.map((field) => readKey(table, field, dependencies[field]));
+    state.entry.pin();
+    let entry: Entry;
+    try {
+      entry = this.memory.add(
+        backings({ rows, chunks, selection: selected }),
+        256 + key.length * 2 + related.reduce((n, key) => n + key.length * 2 + 128, 0),
+        () => {
+          if (state.cache.get(key)?.entry === entry) state.cache.delete(key);
+          for (const name of related) {
+            const reads = state.byField.get(name);
+            reads?.delete(result);
+            if (!reads?.size) state.byField.delete(name);
+          }
+          state.entry.unpin();
+        },
+      );
+    } catch (error) {
+      state.entry.unpin();
+      throw error;
+    }
+    const result: Cached = {
+      index,
+      chunks,
+      expected,
+      selection: selected,
+      entry,
+      from: group.from,
+      sampled: group.sampled,
+      table,
+      dependencies,
+    };
+    state.cache.set(key, result);
+    for (const name of related) {
+      let reads = state.byField.get(name);
+      if (!reads) state.byField.set(name, (reads = new Set()));
+      reads.add(result);
+    }
+    return result;
   }
 
   private assemble(read: Cached, rows: RowAxis, group: Group): Resolved {
@@ -990,21 +1032,8 @@ export class Fields {
   }
 }
 
-function definitionBytes(field: FieldDefinition): number {
-  const type = field.type;
-  if (typeof type === 'object' && type.kind === 'list') {
-    definitionBytes({ type: type.items });
-    return 17;
-  }
-  if (typeof type === 'object' && type.kind === 'vector') return type.size * 8 + 1;
-  if (['float32', 'float64', 'int32', 'uint32', 'boolean'].includes(type as string)) return 9;
-  return 17;
-}
-function bytesPerRow(column: FieldColumn): number {
-  if (column.kind === 'text') return 5 + column.bytes.byteLength / Math.max(1, column.length);
-  if (column.kind === 'list')
-    return 8 + (bytesPerRow(column.values) * column.values.length) / Math.max(1, column.length);
-  return (column.kind === 'vector' ? column.size : 1) * 8 + 1;
+function readKey(table: string, field: string, dependency: string): string {
+  return JSON.stringify([table, field, dependency]);
 }
 function backings(value: unknown): ArrayBufferLike[] {
   const result = new Set<ArrayBufferLike>();

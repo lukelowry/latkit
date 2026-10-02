@@ -464,3 +464,15 @@ describe('independent sample storage and bounded validation', () => {
     ]);
   });
 });
+
+it('reports the exact duplicate position in a large ID selection', () => {
+  const ids = Array.from({ length: 5000 }, (_, i) => 'row-' + i);
+  ids.push(ids[0]);
+  expect(validateQuery(schema, { ...rowQuery, rows: { kind: 'ids', ids } })).toEqual([
+    {
+      code: 'invalid-input',
+      message: 'Duplicate selection.',
+      target: { kind: 'path', path: ['rows', 'ids', 5000] },
+    },
+  ]);
+});

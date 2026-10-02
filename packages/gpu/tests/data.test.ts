@@ -85,7 +85,7 @@ it('ordinary data values remain usable after GPU teardown', async () => {
   await collect(gpu.query(data, query));
   gpu.destroy();
   expect(Object.keys(data).sort()).toEqual(['schema', 'tables', 'version']);
-  expect((data.tables.node.fields.value[0].column as NumericColumn).values[0]).toBe(0);
+  expect((data.tables.node.fields.value.at(0)!.column as NumericColumn).values[0]).toBe(0);
 });
 it('cancels a local reader without affecting another reader of the same data', async () => {
   const data = new Source(1000, { blockRows: 100 }).data,

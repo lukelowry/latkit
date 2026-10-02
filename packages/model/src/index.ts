@@ -90,3 +90,8 @@ export { createData, appendData, transactions } from './assemble.js';
 export { textColumn, sliceColumn, copyBuffers } from './columns.js';
 
 export { validateDataEvent } from './validation/event.js';
+
+export type { ColumnPages } from './pages.js';
+export { appendedPages } from './pages.js';
+export { resolveRows, type RowMappingRequest, type RowMapping } from './read.js';
+export { samplePages } from './read.js';

@@ -178,7 +178,7 @@ it('reduces delivered samples after the transport and producer have closed', asy
   const h = await connected(false, model);
   const stream = h.remote.monitor([{ from: 'node', select: ['value'] }]);
   await subscribed(model);
-  const batches = source.data.tables.node.fields.value.map((page) => ({
+  const batches = [...source.data.tables.node.fields.value].map((page) => ({
     kind: 'samples' as const,
     index: source.index,
     rows: page.rows,
@@ -234,7 +234,17 @@ it('rejects missing rows inside declared sampled coverage and preserves frame id
     tables: {
       node: {
         ...missing.data.tables.node,
-        fields: { ...missing.data.tables.node.fields, value: [] },
+        fields: {
+          ...missing.data.tables.node.fields,
+          value: createData(missing.data.schema, 'empty', [
+            {
+              kind: 'rows',
+              index: missing.index,
+              rows: missing.data.tables.node.rows,
+              columns: {},
+            },
+          ]).tables.node.fields.value,
+        },
       },
     },
   };
