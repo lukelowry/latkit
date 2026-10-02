@@ -1,5 +1,22 @@
 # @latkit/connect
 
+## 0.3.0
+
+### Minor Changes
+
+- 145a02d: Breaking change: remove model retention and historical reads. Models publish one-pass passive
+  transactions, commands are a separate optional capability, and applications own immutable
+  columnar Data. Views consume Data directly and accept updates with set({ source: nextData }).
+  Local read computes rows, samples, aggregates, and envelopes without contacting a producer.
+  Connect protocol 3 removes queryable roots, retained reference trees, and remote exports;
+  upgrade both peers together. Delivered values survive unsubscribe and disconnect. Shared
+  unchanged pages preserve local read caching and GPU uploads.
+
+### Patch Changes
+
+- Updated dependencies [145a02d]
+  - @latkit/model@0.14.0
+
 ## 0.2.0
 
 ### Minor Changes
