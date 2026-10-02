@@ -1,6 +1,6 @@
 # Data bindings
 
-Renderers read native `Queryable` fields. Mapping keys name model types.
+Renderers read immutable application-owned `Data` fields. Mapping keys name model types.
 
 ## Positions and wiring
 
@@ -10,7 +10,6 @@ type, read as a `ReferenceColumn` of row numbers under that type's `Index`.
 ```ts
 const bus = { type: { kind: 'reference', to: 'Bus' } } as const;
 const schema = {
-  queries: ['rows'],
   limits: { maxBlockBytes: 1 << 20 },
   types: {
     Bus: {
@@ -44,7 +43,7 @@ network.set({
   vertices: {
     Bus: {
       color: {
-        field: { source: recording, from: 'Bus', field: 'temperature' },
+        field: { source: observations, from: 'Bus', field: 'temperature' },
         domain: [0, 100],
         colormap: 'thermal',
       },

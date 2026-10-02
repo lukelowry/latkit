@@ -6,8 +6,6 @@ export interface Routine {
   readonly label: string;
   readonly description?: string;
   readonly parameters: readonly Parameter[];
-  /** Its commands compute frames, so they start every monitor over. */
-  readonly records?: boolean;
 }
 
 export type Parameter = {

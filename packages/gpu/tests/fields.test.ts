@@ -1,14 +1,14 @@
 import { expect, it } from 'vitest';
 import { createGpu } from '../src/index.js';
 import { type FieldsRequest, type GpuPage } from '../src/kit.js';
-import { bytes, deferred, fakeDevice } from './fixtures/device.js';
+import { bytes, fakeDevice } from './fixtures/device.js';
 import { field, values } from './fixtures/fields.js';
 import { FieldSource } from './fixtures/field-source.js';
-import { draw, renderer, target } from './fixtures/render.js';
+import { draw } from './fixtures/render.js';
 
 function request(source: FieldSource): FieldsRequest {
   return {
-    source,
+    source: source.data,
     from: source.index.type,
     rows: { kind: 'range', index: source.index, offset: 0, count: source.count },
     fields: {
@@ -21,7 +21,7 @@ function request(source: FieldSource): FieldsRequest {
     },
   };
 }
-it('batches fields by dependency and preserves static CPU/GPU residency across recording append', async () => {
+it('batches fields by dependency and preserves static CPU/GPU residency across a new data version sharing unchanged pages', async () => {
   const source = new FieldSource(),
     fake = fakeDevice(),
     gpu = await createGpu({ device: fake.device });
@@ -39,25 +39,15 @@ it('batches fields by dependency and preserves static CPU/GPU residency across r
     pages.push(result);
   };
   await render();
-  expect(source.requests).toHaveLength(2);
-  expect((source.requests[0] as { select: readonly string[] }).select).toEqual([
-    'color',
-    'position',
-    'value',
-    'visible',
-  ]);
   expect(field(pages[0][0], 'x').binding).toEqual(field(pages[0][0], 'same').binding);
   const bytesBefore = gpu.stats().uploadedBytes;
   await render();
-  expect(source.requests).toHaveLength(2);
   expect(gpu.stats().uploadedBytes).toBe(bytesBefore);
-  source.publish({ kind: 'append', version: 'v1', frames: { offset: 1, count: 1 } });
+  source.publish({ version: 'v1' });
   await render();
-  expect(source.requests).toHaveLength(3);
   expect(field(pages[0][0], 'position').binding).toEqual(field(pages[2][0], 'position').binding);
   expect(values(pages[2][0], 'x')).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
   gpu.destroy();
-  expect(source.listeners.size).toBe(0);
 });
 
 it('aligns reordered multi-block inputs and explicit sparse observations without dropping draw rows', async () => {
@@ -76,7 +66,7 @@ it('aligns reordered multi-block inputs and explicit sparse observations without
       fields: {
         value: 'value',
         overlay: {
-          source: observed,
+          source: observed.data,
           from: 'node',
           field: 'observed',
           rows: { kind: 'indices', index: source.index, values: Uint32Array.of(1, 3) },
@@ -98,12 +88,12 @@ it('aligns reordered multi-block inputs and explicit sparse observations without
     draw(gpu, async (frame) => {
       for await (const _page of frame.fields({
         ...input,
-        fields: { overlay: { source: observed, from: 'node', field: 'observed' } },
+        fields: { overlay: { source: observed.data, from: 'node', field: 'observed' } },
       })) {
         /* consume */
       }
     }),
-  ).rejects.toMatchObject({ code: 'uncaptured' });
+  ).rejects.toMatchObject({ code: 'invalid-input' });
   gpu.destroy();
 });
 
@@ -117,13 +107,13 @@ it('keeps boolean/vector types even when an explicit overlay has no rows', async
       ...request(source),
       fields: {
         visible: {
-          source,
+          source: source.data,
           from: 'node',
           field: 'visible',
           rows: { kind: 'range', offset: 99, count: 0 },
         },
         position: {
-          source,
+          source: source.data,
           from: 'node',
           field: 'position',
           rows: { kind: 'range', offset: 99, count: 0 },
@@ -136,7 +126,6 @@ it('keeps boolean/vector types even when an explicit overlay has no rows', async
       }))
         page = result;
   });
-  expect(source.requests).toHaveLength(0);
   expect((page.columns.visible as import('../src/kit.js').GpuValueField).type).toBe('boolean');
   expect((page.columns.position as import('../src/kit.js').GpuValueField).components).toBe(2);
   expect(bytes(field(page, 'position').presence!.binding)[0]).toBe(0);
@@ -245,10 +234,10 @@ it('aligns native block boundaries across sources without materializing matching
   const actual: number[] = [];
   await draw(gpu, async (frame) => {
     for await (const native of frame.fields({
-      source: a,
+      source: a.data,
       from: a.index.type,
       rows: { index: a.index, kind: 'range', offset: 0, count: 1000 },
-      fields: { value: 'value', other: { source: b, from: 'node', field: 'value' } },
+      fields: { value: 'value', other: { source: b.data, from: 'node', field: 'value' } },
     }))
       for (const page of frame.upload(native, {
         select: Object.keys(native.columns),
@@ -261,41 +250,5 @@ it('aligns native block boundaries across sources without materializing matching
   });
   expect(actual).toEqual(Array.from({ length: 1000 }, (_, i) => i));
   expect(gpu.stats().stagedBytes).toBe(0);
-  expect(a.requests).toHaveLength(1);
-  expect(b.requests).toHaveLength(1);
-  gpu.destroy();
-});
-
-it('observes source closure even when every field was served from cache', async () => {
-  const source = new FieldSource(),
-    fake = fakeDevice(),
-    gpu = await createGpu({ device: fake.device });
-  const prepare = async (frame: import('../src/kit.js').Preparation) => {
-    for await (const _page of frame.fields(request(source))) {
-      /* consume */
-    }
-  };
-  await draw(gpu, prepare);
-  const entered = deferred<void>(),
-    gate = deferred<void>();
-  const task = gpu.render({
-    timeMs: 0,
-    views: [
-      {
-        target: target(fake.device),
-        renderer: renderer(async (frame) => {
-          await prepare(frame);
-          entered.resolve();
-          await gate.promise;
-        }),
-      },
-    ],
-  });
-  await entered.promise;
-  const result = expect(task).rejects.toMatchObject({ code: 'closed' });
-  await source.close();
-  await result;
-  gate.resolve();
-  expect(fake.queue.submit).toHaveBeenCalledTimes(1);
   gpu.destroy();
 });

@@ -195,12 +195,9 @@ export async function show() {
       textPages = [],
       textGroup;
     const rowSource = {
-      describe() {
-        throw new Error('Unexpected source read');
-      },
-      query() {
-        throw new Error('Unexpected source read');
-      },
+      version: 'v1',
+      schema: { limits: { maxBlockBytes: 1048576 }, types: { [index.type]: { fields: {} } } },
+      tables: {},
     };
     const renderer = {
       async prepare(frame) {

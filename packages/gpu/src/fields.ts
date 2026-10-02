@@ -4,18 +4,17 @@ import {
   type Column,
   type FieldDefinition,
   type NumericArray,
-  type Queryable,
+  type Data,
   type RowAxis,
   type RowSelection,
   type RowsBlock,
   type Schema,
-  type Update,
 } from '@latkit/model';
 import { assertIndex, rowAt, rowCount, sliceRows } from '@latkit/model';
 import { type FieldBinding, type FieldsRequest, type FieldValues } from './binding.js';
 import type { NativeFields } from './binding.js';
 import type { Index, SamplesBlock, SampleColumn, SampleWindow } from '@latkit/model';
-import { GpuError, interruptible } from './error.js';
+import { GpuError } from './error.js';
 import type { Entry, Memory } from './memory.js';
 import type { Preparation } from './render.js';
 import type { UploadScope } from './uploads.js';
@@ -23,13 +22,13 @@ import type { UploadScope } from './uploads.js';
 type Numeric = Exclude<FieldValues['values'], { kind: 'list' | 'text' }>;
 type FieldColumn = FieldValues['values'];
 interface IndexedFields {
-  readonly source: Queryable;
+  readonly source: Data;
   readonly index: Index;
   readonly rows: RowAxis;
   readonly fields: FieldsRequest['fields'];
 }
 type ReadFrame = Pick<Preparation, 'query' | 'signal' | 'at'> & {
-  observe(source: Queryable): void;
+  observe(source: Data): void;
 };
 interface Resolved {
   columns: Record<string, Column>;
@@ -45,7 +44,6 @@ interface Cached {
   from: string;
   sampled: boolean;
   at?: number;
-  state: { stale: boolean };
 }
 interface Extent {
   entry: Entry;
@@ -58,10 +56,9 @@ interface Source {
   entry: Entry;
   cache: Map<string, Cached>;
   extents: Map<string, Extent>;
-  closed: boolean;
 }
 interface Group {
-  source: Queryable;
+  source: Data;
   state: Source;
   from: string;
   rows?: RowSelection;
@@ -77,8 +74,7 @@ interface Tile {
 
 /** Resolves native fields into one physical row order. Uploading remains the Uploader's job. */
 export class Fields {
-  private sources = new WeakMap<Queryable, Source>();
-  private closed = new WeakSet<Queryable>();
+  private sources = new WeakMap<Data, Source>();
   private ids = new WeakMap<object, number>();
   private serial = 0;
   private tiles = new Map<string, { entry: Entry; tile: Tile }>();
@@ -121,7 +117,7 @@ export class Fields {
             : undefined;
       if (field) selected.set(field, [...(selected.get(field) ?? []), alias]);
     }
-    const state = await this.source(request.source, frame.signal);
+    const state = this.source(request.source, frame.signal);
     const definition = state.schema.types[request.from];
     const sampled = [...selected.keys()].some((field) => definition?.fields[field]?.sampled);
     try {
@@ -168,28 +164,11 @@ export class Fields {
     }
   }
 
-  private native(
-    tile: Omit<NativeFields, 'retain' | 'versions'>,
-    signal: AbortSignal,
-  ): NativeFields {
+  private native(tile: Omit<NativeFields, 'versions'>, signal: AbortSignal): NativeFields {
+    signal.throwIfAborted();
     return {
       ...tile,
       versions: new Map(),
-      retain: () => {
-        signal.throwIfAborted();
-        const entry = this.memory.add(
-          backings(tile),
-          128 + Object.keys(tile.columns).length * 32,
-          () => {},
-        );
-        let released = false;
-        return () => {
-          if (!released) {
-            released = true;
-            this.memory.remove(entry);
-          }
-        };
-      },
     };
   }
 
@@ -199,7 +178,7 @@ export class Fields {
     scope: UploadScope,
   ): AsyncGenerator<NativeFields> {
     const groups: {
-      source: Queryable;
+      source: Data;
       from: string;
       fields: Map<string, string[]>;
       rows?: RowSelection;
@@ -216,7 +195,7 @@ export class Fields {
           : input;
       if (binding.from !== request.from)
         throw new GpuError('conflict', 'Fields must belong to one model type');
-      const state = await this.source(binding.source, frame.signal);
+      const state = this.source(binding.source, frame.signal);
       try {
         const definition = state.schema.types[binding.from];
         const field = definition?.fields[binding.field];
@@ -381,7 +360,7 @@ export class Fields {
     const count = rowCount(request.rows),
       names = Object.keys(request.fields);
     if (!count) return;
-    const states = new Map<Queryable, Source>();
+    const states = new Map<Data, Source>();
     const groups: Group[] = [],
       values: [string, FieldValues][] = [];
     let width = 4;
@@ -405,13 +384,9 @@ export class Fields {
         frame.observe(binding.source);
         let state = states.get(binding.source);
         if (!state) {
-          state = await this.source(binding.source, frame.signal);
+          state = this.source(binding.source, frame.signal);
           states.set(binding.source, state);
           scope.use(state.entry);
-          const current = state;
-          scope.check(() => {
-            if (current.closed) throw new GpuError('closed', 'Field source was closed');
-          });
         }
         const definition = state.schema.types[binding.from];
         const field = definition?.fields[binding.field];
@@ -460,12 +435,6 @@ export class Fields {
             const resolved = await this.resolve(group, request.index, rows, frame);
             held.push(resolved.entry);
             reads.set(group, resolved);
-            const state = resolved.state,
-              sampled = group.sampled;
-            scope.check(() => {
-              if (state.stale && !sampled)
-                throw new GpuError('conflict', 'Static fields changed during preparation');
-            });
             for (const cut of boundaries(resolved.chunks, rows)) cuts.add(cut);
           }
           const sorted = [...cuts].sort((a, b) => a - b);
@@ -586,7 +555,7 @@ export class Fields {
 
   async extent(
     request: import('./binding.js').ExtentRequest,
-    frame: Pick<Preparation, 'query' | 'signal' | 'at'> & { observe(source: Queryable): void },
+    frame: Pick<Preparation, 'query' | 'signal' | 'at'> & { observe(source: Data): void },
     scope: UploadScope,
   ): Promise<import('@latkit/model').Domain | null> {
     frame.signal.throwIfAborted();
@@ -627,7 +596,7 @@ export class Fields {
     if (binding.from !== request.index.type)
       throw new GpuError('conflict', 'Extent field must belong to the selected index');
     frame.observe(binding.source);
-    const state = await this.source(binding.source, frame.signal);
+    const state = this.source(binding.source, frame.signal);
     try {
       scope.use(state.entry);
       const definition = state.schema.types[binding.from];
@@ -656,17 +625,12 @@ export class Fields {
         this.memory.queryHits++;
         return cached.value;
       }
-      let changed = false;
-      const off = binding.source.on('change', (change) => {
-        if (affects(change, { from: binding.from, sampled })) changed = true;
-      });
-      try {
+      {
         const native =
           !request.window &&
           [...state.cache.values()].find(
             (cached) =>
               cached.entry.live &&
-              !cached.state.stale &&
               cached.from === binding.from &&
               cached.sampled === sampled &&
               cached.at === (sampled ? frame.at : undefined) &&
@@ -696,7 +660,7 @@ export class Fields {
           } finally {
             assembled.entry.unpin();
           }
-        } else if (state.schema.queries.includes('aggregate') && rows.kind !== 'ids') {
+        } else if (rows.kind !== 'ids') {
           let seen = false;
           for await (const block of frame.query(binding.source, {
             kind: 'aggregate',
@@ -802,8 +766,6 @@ export class Fields {
           }
         }
         frame.signal.throwIfAborted();
-        if (changed || state.closed)
-          throw new GpuError('conflict', 'Extent source changed while preparing');
         const value: import('@latkit/model').Domain | null = lo <= hi ? [lo, hi] : null;
         const entry = this.memory.add([], 128 + key.length * 2, () => {
           if (state.extents.get(key)?.entry === entry) state.extents.delete(key);
@@ -812,8 +774,6 @@ export class Fields {
         scope.use(entry);
         entry.unpin();
         return value;
-      } finally {
-        off();
       }
     } finally {
       state.entry.unpin();
@@ -843,47 +803,17 @@ export class Fields {
           : [this.axisKey(rows), rows.index],
     );
   }
-  private async source(source: Queryable, signal: AbortSignal): Promise<Source> {
-    if (this.closed.has(source)) throw new GpuError('closed', 'Field source was closed');
+  private source(source: Data, signal: AbortSignal): Source {
+    signal.throwIfAborted();
     let state = this.sources.get(source);
     if (state?.entry.live) {
       state.entry.pin();
       return state;
     }
-    const schema = await interruptible(source.describe({ signal }), signal);
-    if (this.closed.has(source)) throw new GpuError('closed', 'Field source was closed');
-    // A concurrent view may have completed the same description.
-    state = this.sources.get(source);
-    if (state?.entry.live) {
-      state.entry.pin();
-      return state;
-    }
-    let off = (): void => {};
-    const entry = this.memory.add([], 256 + JSON.stringify(schema).length * 2, () => off());
-    state = { schema, entry, cache: new Map(), extents: new Map(), closed: false };
+    const schema = source.schema;
+    const entry = this.memory.add([], 256 + JSON.stringify(schema).length * 2, () => {});
+    state = { schema, entry, cache: new Map(), extents: new Map() };
     this.sources.set(source, state);
-    const own = state;
-    off = source.on('change', (change) => {
-      if (change.kind === 'closed') {
-        own.closed = true;
-        this.closed.add(source);
-      }
-      for (const [key, cached] of own.extents)
-        if (affects(change, cached)) {
-          own.extents.delete(key);
-          cached.entry.close();
-        }
-      for (const [key, cached] of own.cache)
-        if (affects(change, cached)) {
-          cached.state.stale = true;
-          own.cache.delete(key);
-          cached.entry.close();
-        }
-      if (change.kind === 'replace' || change.kind === 'closed') {
-        if (this.sources.get(source) === own) this.sources.delete(source);
-        entry.close();
-      }
-    });
     return state;
   }
 
@@ -907,7 +837,6 @@ export class Fields {
       for (const cached of group.state.cache.values()) {
         if (
           cached.entry.live &&
-          !cached.state.stale &&
           cached.from === group.from &&
           cached.sampled === group.sampled &&
           cached.at === (group.sampled ? frame.at : undefined) &&
@@ -922,17 +851,13 @@ export class Fields {
           break;
         }
       }
-    if (hit?.entry.live && !hit.state.stale) {
+    if (hit?.entry.live) {
       hit.entry.pin();
       this.memory.queryHits++;
       return hit;
     }
     const chunks: RowsBlock[] = [],
       held: Entry[] = [];
-    let changed = false;
-    const off = group.source.on('change', (change) => {
-      if (affects(change, group)) changed = true;
-    });
     try {
       if (selected.kind === 'ids' || rowCount(selected)) {
         for await (const block of frame.query(group.source, {
@@ -956,7 +881,6 @@ export class Fields {
           chunks.push(block);
         }
       }
-      if (group.state.closed) throw new GpuError('closed', 'Field source was closed');
       const definition = group.state.schema.types[group.from];
       const expected = Object.fromEntries(
         fields.map((field) => [field, emptyColumn(definition!.fields[field])]),
@@ -985,14 +909,10 @@ export class Fields {
         from: group.from,
         sampled: group.sampled,
         at: group.sampled ? frame.at : undefined,
-        state: { stale: false },
       };
-      // The acquired data remains coherent even if an append arrives during the read. Don't cache it as latest.
-      if (!changed) group.state.cache.set(key, result);
-      else entry.close();
+      group.state.cache.set(key, result);
       return result;
     } finally {
-      off();
       for (const entry of held) this.memory.remove(entry);
     }
   }
@@ -1047,17 +967,6 @@ export class Fields {
   }
 }
 
-function affects(change: Update, item: { from: string; sampled: boolean }): boolean {
-  switch (change.kind) {
-    case 'closed':
-    case 'replace':
-      return true;
-    case 'append':
-      return item.sampled;
-    default:
-      return false;
-  }
-}
 function definitionBytes(field: FieldDefinition): number {
   const type = field.type;
   if (typeof type === 'object' && type.kind === 'list') {

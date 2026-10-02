@@ -11,7 +11,7 @@ import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
 function fixture(count = 25, blockRows = 8) {
   const source = new GraphSource(count, blockRows);
   const data: NetworkData = {
-    source,
+    source: source.data,
     vertices: { node: { position: 'location', color: { field: 'signal', domain: [0, 1] } } },
     edges: { line: { ends: ['from', 'to'] } },
   };
@@ -96,7 +96,12 @@ it('keeps model identities across pages and uses CSR neighborhoods', async () =>
   });
   expect(geometry.vertices.length).toBe(1); // Native query blocks do not become draw banks.
   expect(geometry.segmentCount).toBe(source.from.length);
-  const item = { kind: 'vertex' as const, source, index: source.index('node'), row: 55 };
+  const item = {
+    kind: 'vertex' as const,
+    source: source.data,
+    index: source.index('node'),
+    row: 55,
+  };
   const neighbors = geometry.adjacency.neighborhood(item, data);
   expect(
     neighbors
@@ -131,7 +136,6 @@ it('uses one submission and preserves camera-only native cache hits', async () =
   gpu.trim();
   expect(gpu.stats().gpuBytes).toBe(0);
   expect(gpu.stats().cpuBytes).toBe(0);
-  expect(source.listeners.size).toBe(0);
   gpu.destroy();
 });
 
@@ -144,7 +148,12 @@ it('picks the submitted frame and does not publish a cancelled candidate', async
     timeMs: 0,
     views: [{ renderer: kit.rendererOf(network), target: surface, at: 0 }],
   });
-  const item = { kind: 'vertex' as const, source, index: source.index('node'), row: 12 },
+  const item = {
+      kind: 'vertex' as const,
+      source: source.data,
+      index: source.index('node'),
+      row: 12,
+    },
     point = network.locate(item)!;
   expect((await network.pick(point))[0]?.row).toBe(12);
   pan(network, 100, 0);
@@ -199,7 +208,12 @@ it('rebinds immutable live positions without rereading topology and picks immedi
     views: [{ renderer: kit.rendererOf(network), target: surface, at: 0 }],
   });
   expect(source.queries).toBe(requests);
-  const item = { kind: 'vertex' as const, source, index: source.index('node'), row: 12 };
+  const item = {
+    kind: 'vertex' as const,
+    source: source.data,
+    index: source.index('node'),
+    row: 12,
+  };
   expect((await network.pick(network.locate(item)!))[0]?.row).toBe(12);
   network.destroy();
   gpu.destroy();
@@ -246,8 +260,7 @@ it('preserves an explicit initial camera and rejects incompatible position ident
 
 it('enforces geometry admission limits and keeps borrowed sources open', async () => {
   const { source, data } = fixture(),
-    gpu = await createGpu({ device: device().device }),
-    close = vi.spyOn(source, 'close');
+    gpu = await createGpu({ device: device().device });
   const network = createNetwork(gpu, { ...data, limits: { maxVertices: 10 } });
   await expect(
     gpu.render({
@@ -256,7 +269,7 @@ it('enforces geometry admission limits and keeps borrowed sources open', async (
     }),
   ).rejects.toMatchObject({ code: 'resource-limit' });
   network.destroy();
-  expect(close).not.toHaveBeenCalled();
+  expect(source.data).toBe(data.source);
   gpu.destroy();
 });
 
@@ -283,25 +296,14 @@ it('rejects invalid options atomically and falls back from the globe for Cartesi
 });
 
 it('cleans up a source read when destruction interrupts preparation', async () => {
-  const { source, data } = fixture(),
+  const { data } = fixture(),
     gpu = await createGpu({ device: device().device });
-  let entered!: () => void;
-  const waiting = new Promise<void>((resolve) => {
-    entered = resolve;
-  });
-  source.query = (() => ({
-    async *[Symbol.asyncIterator]() {
-      entered();
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      yield { kind: 'schema' as const, version: source.version, schema: source.schema };
-    },
-  })) as typeof source.query;
   const network = createNetwork(gpu, data),
     render = gpu.render({
       timeMs: 0,
       views: [{ renderer: kit.rendererOf(network), target: target(gpu), at: 0 }],
     });
-  await waiting;
+  await Promise.resolve();
   network.destroy();
   await expect(render).rejects.toBeDefined();
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -326,7 +328,12 @@ it('coalesces pointer movement into one committed hover search and keeps click p
   network.on('hover', hover);
   await render();
   expect(network.stats().pickingBytes).toBe(0);
-  const point = network.locate({ kind: 'vertex', source, index: source.index('node'), row: 12 })!;
+  const point = network.locate({
+    kind: 'vertex',
+    source: source.data,
+    index: source.index('node'),
+    row: 12,
+  })!;
   pointer(network, [0, 0]);
   pointer(network, [10, 10]);
   pointer(network, point);
@@ -378,7 +385,7 @@ it('aborts automatic searches without a partial hit and latches across pointer a
   network.on('hover', hover);
   pointer(
     network,
-    network.locate({ kind: 'vertex', source, index: source.index('node'), row: 0 })!,
+    network.locate({ kind: 'vertex', source: source.data, index: source.index('node'), row: 0 })!,
   );
   let clock = 0;
   const now = vi.spyOn(performance, 'now').mockImplementation(() => ++clock);
@@ -456,7 +463,7 @@ it('does not publish hover from a failed composition or restore it after pointer
   network.on('hover', hover);
   pointer(
     network,
-    network.locate({ kind: 'vertex', source, index: source.index('node'), row: 12 })!,
+    network.locate({ kind: 'vertex', source: source.data, index: source.index('node'), row: 12 })!,
   );
   await expect(
     gpu.render({
@@ -499,7 +506,12 @@ it('falls back to exact scanning when explicit indexes cannot fit the CPU budget
     timeMs: 0,
     views: [{ renderer: kit.rendererOf(network), target: surface, at: 0 }],
   });
-  const point = network.locate({ kind: 'vertex', source, index: source.index('node'), row: 12 })!;
+  const point = network.locate({
+    kind: 'vertex',
+    source: source.data,
+    index: source.index('node'),
+    row: 12,
+  })!;
   expect((await network.pick(point))[0]).toMatchObject({ row: 12 });
   expect(network.stats().pickingBytes).toBe(0);
   expect(() => network.set({ hoverBudgetMs: 0 })).toThrow();
@@ -518,7 +530,12 @@ it('keeps hover active across color-only samples and reuses a valid spatial inde
   const render = (at: number) =>
     gpu.render({ timeMs: at, views: [{ renderer: kit.rendererOf(network), target: surface, at }] });
   await render(0);
-  const point = network.locate({ kind: 'vertex', source, index: source.index('node'), row: 12 })!;
+  const point = network.locate({
+    kind: 'vertex',
+    source: source.data,
+    index: source.index('node'),
+    row: 12,
+  })!;
   await network.pick(point);
   const bytes = network.stats().pickingBytes;
   pointer(network, point);
@@ -537,7 +554,7 @@ it('renders bends, nets as stars, geodesics, and native paths with original iden
   const source = featureSource(),
     gpu = await createGpu({ device: device().device });
   const data: NetworkData = {
-    source,
+    source: source.data,
     vertices: { node: { position: 'position' } },
     edges: {
       bend: { ends: ['from', 'to'], bends: 'points' },
@@ -553,7 +570,7 @@ it('renders bends, nets as stars, geodesics, and native paths with original iden
   await render();
   expect(network.stats().vertices).toBe(4);
   expect(network.stats().edges).toBe(3);
-  const star = { kind: 'edge' as const, source, index: source.index('star'), row: 0 };
+  const star = { kind: 'edge' as const, source: source.data, index: source.index('star'), row: 0 };
   expect(
     network
       .neighborhood(star)
@@ -561,7 +578,7 @@ it('renders bends, nets as stars, geodesics, and native paths with original iden
       .map((item) => item.row)
       .sort(),
   ).toEqual([0, 1, 2, 3]);
-  const bend = { kind: 'edge' as const, source, index: source.index('bend'), row: 0 };
+  const bend = { kind: 'edge' as const, source: source.data, index: source.index('bend'), row: 0 };
   const anchor = network.locate(bend)!;
   expect(anchor).not.toBeNull();
   expect(
@@ -593,7 +610,7 @@ it('keeps edges pickable when only their vertex markers are hidden', async () =>
     timeMs: 0,
     views: [{ renderer: kit.rendererOf(network), target: target(gpu), at: 0 }],
   });
-  const item = { kind: 'edge' as const, source, index: source.index('line'), row: 0 },
+  const item = { kind: 'edge' as const, source: source.data, index: source.index('line'), row: 0 },
     point = network.locate(item)!;
   expect((await network.pick(point)).some((hit) => hit.kind === 'edge' && hit.row === 0)).toBe(
     true,
@@ -607,7 +624,7 @@ it('picks a geodesic arc at its visible arc-length midpoint in every projection'
   const source = featureSource(),
     gpu = await createGpu({ device: device().device });
   const network = createNetwork(gpu, {
-    source,
+    source: source.data,
     vertices: { node: { position: 'position' } },
     edges: { route: { ends: ['from', 'to'], curve: 'geodesic' } },
     camera: { center: [-30, 5], scale: 4 },
@@ -615,7 +632,7 @@ it('picks a geodesic arc at its visible arc-length midpoint in every projection'
     edgeWidthPx: 3,
   });
   const surface = target(gpu),
-    item = { kind: 'edge' as const, source, index: source.index('route'), row: 0 };
+    item = { kind: 'edge' as const, source: source.data, index: source.index('route'), row: 0 };
   for (const projection of ['flat', 'tilt', 'globe'] as const) {
     network.set({ camera: { projection, pitch: projection === 'tilt' ? 40 : 0 } });
     await gpu.render({
@@ -654,8 +671,8 @@ it('halos every selected item and its ends, expands shorthands, and reports came
     return (words[dense >>> 4] >>> ((dense & 15) * 2)) & 3;
   };
   const node = (row: number) =>
-      ({ kind: 'vertex', source, index: source.index('node'), row }) as const,
-    line = { kind: 'edge', source, index: source.index('line'), row: 0 } as const;
+      ({ kind: 'vertex', source: source.data, index: source.index('node'), row }) as const,
+    line = { kind: 'edge', source: source.data, index: source.index('line'), row: 0 } as const;
   network.select([node(12), node(20), line]);
   await render();
   // Vertices come first, then edges: line 0 is dense address 25.

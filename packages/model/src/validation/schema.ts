@@ -1,13 +1,12 @@
 import type { DataType } from '../data.js';
 import type { Problem } from '../types.js';
-import { bounds, Check, kinds, numeric, own, record } from './check.js';
+import { bounds, Check, numeric, own, record } from './check.js';
 import type { Path } from './check.js';
 
 /** Structural/domain-description validation. Does not inspect implementation state or mutate input. */
 export function validateSchema(value: unknown): readonly Problem[] {
   const c = new Check();
   const schema = c.object(value, []);
-  c.strings(schema.queries, ['queries'], kinds);
   c.integer(c.object(schema.limits, ['limits']).maxBlockBytes, ['limits', 'maxBlockBytes'], 1);
   const types = c.object(schema.types, ['types']);
   const names = new Set(Object.keys(types));
@@ -58,9 +57,13 @@ export function validateSchema(value: unknown): readonly Problem[] {
     }
   }
   if (
-    (Array.isArray(schema.queries) &&
-      (schema.queries.includes('samples') || schema.queries.includes('envelope'))) ||
-    own(schema, 'axis')
+    own(schema, 'axis') ||
+    Object.values(types).some(
+      (value) =>
+        record(value) &&
+        record(value.fields) &&
+        Object.values(value.fields).some((field) => record(field) && field.sampled === true),
+    )
   ) {
     const axis = c.object(schema.axis, ['axis']);
     c.text(axis.name, ['axis', 'name']);

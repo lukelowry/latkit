@@ -1,9 +1,9 @@
 import { createMonitor, type Monitor } from '../src/index.js';
 import type { Gpu, kit } from '@latkit/gpu';
-import type { Queryable } from '@latkit/model';
+import type { Data } from '@latkit/model';
 export function usage(
   gpu: Gpu,
-  recording: Queryable,
+  recording: Data,
   canvas: HTMLCanvasElement,
   color: kit.ColorScale,
 ): Monitor {

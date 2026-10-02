@@ -1,3 +1,4 @@
+import { createData } from '@latkit/model';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createGpu, type Gpu } from '@latkit/gpu';
 import type {
@@ -7,7 +8,8 @@ import type {
   QueryBlock,
   QueryHeader,
   QueryOptions,
-  Queryable,
+  Data,
+  DataPatch,
   Schema,
 } from '@latkit/model';
 import { createNetwork } from '../src/index.js';
@@ -19,7 +21,7 @@ const lonlat = { kind: 'vector', items: 'float64', size: 2 } as const;
 const bus = { type: { kind: 'reference', to: 'Bus' }, nullable: true } as const;
 
 /** Buses placed by longitude/latitude, branches wired to two of them, and loads wired to one. */
-class GridSource implements Queryable {
+class GridSource {
   readonly version = 'v1';
   readonly positions = Float64Array.of(-100, 40, -99, 40, -98, 41, -97, 42);
   /** Each branch's buses; -1 leaves an end unwired. */
@@ -34,7 +36,6 @@ class GridSource implements Queryable {
   readonly schema: Schema;
   constructor(system: 'geographic' | 'cartesian' = 'geographic') {
     this.schema = {
-      queries: ['rows'],
       limits: { maxBlockBytes: 1 << 20 },
       types: {
         Bus: { fields: { position: { type: lonlat } }, spatial: { field: 'position', system } },
@@ -49,24 +50,22 @@ class GridSource implements Queryable {
   index(type: string): Index {
     return { source: 'grid', type, version: 'v1' };
   }
-  describe(): Promise<Schema> {
-    return Promise.resolve(this.schema);
+  private cached?: Data;
+  get data(): Data {
+    if (this.cached) return this.cached;
+    const patches: DataPatch[] = [];
+    for (const [from, type] of Object.entries(this.schema.types))
+      for (const block of this.blocks({ kind: 'rows', from, select: Object.keys(type.fields) }))
+        if (block.kind === 'rows')
+          patches.push({
+            kind: 'rows',
+            index: block.index,
+            rows: block.rows,
+            columns: block.columns,
+          });
+    return (this.cached = createData(this.schema, this.version, patches));
   }
-  on(): () => void {
-    return () => {};
-  }
-  retain(): Promise<Queryable> {
-    return Promise.reject(new Error('Not retained'));
-  }
-  close(): Promise<void> {
-    return Promise.resolve();
-  }
-  query: Queryable['query'] = ((query: Query, options?: QueryOptions) =>
-    this.read(query, options)) as Queryable['query'];
-  private async *read(
-    query: Query,
-    options?: QueryOptions,
-  ): AsyncGenerator<QueryHeader | QueryBlock> {
+  private *blocks(query: Query, options?: QueryOptions): Generator<QueryHeader | QueryBlock> {
     options?.signal?.throwIfAborted();
     yield { kind: 'schema', version: this.version, schema: this.schema };
     if (query.kind !== 'rows') throw new Error('Fixture query not implemented: ' + query.kind);
@@ -153,8 +152,8 @@ async function geometryOf(gpu: Gpu, data: NetworkData): Promise<Geometry> {
   });
   return geometry;
 }
-const branches = (source: Queryable): NetworkData => ({
-  source,
+const branches = (source: GridSource): NetworkData => ({
+  source: source.data,
   vertices: { Bus: {} },
   edges: { Branch: { ends: ['bus1', 'bus2'] } },
 });
@@ -171,7 +170,12 @@ it('draws each row between the vertices its two references name', async () => {
   // Every branch is an edge; the one with an end unwired has no segment.
   expect(geometry.edges.map(({ type, count }) => [type, count])).toEqual([['Branch', 4]]);
   expect(geometry.segmentCount).toBe(3);
-  const vertex = { kind: 'vertex' as const, source, index: source.index('Bus'), row: 1 };
+  const vertex = {
+    kind: 'vertex' as const,
+    source: source.data,
+    index: source.index('Bus'),
+    row: 1,
+  };
   const around = geometry.adjacency.neighborhood(vertex, branches(source));
   expect(
     around
@@ -191,7 +195,7 @@ it('draws each row between the vertices its two references name', async () => {
 it('draws a net between the vertices whose references name it', async () => {
   const source = new GridSource();
   const gpu = await createGpu({ device: device().device });
-  const data: NetworkData = { source, vertices: { Load: {} }, edges: { Bus: {} } };
+  const data: NetworkData = { source: source.data, vertices: { Load: {} }, edges: { Bus: {} } };
   const geometry = await geometryOf(gpu, data);
   const [bank] = geometry.edges;
   // Bus 0 joins two loads, bus 2 three, and buses 1 and 3 none.
@@ -199,7 +203,7 @@ it('draws a net between the vertices whose references name it', async () => {
   expect([...bank.incidence.vertices]).toEqual([0, 1, 2, 3, 4]);
   expect(bank.stars).toBe(true);
   expect(geometry.segmentCount).toBe(1);
-  const net = { kind: 'edge' as const, source, index: source.index('Bus'), row: 2 };
+  const net = { kind: 'edge' as const, source: source.data, index: source.index('Bus'), row: 2 };
   expect(
     geometry.adjacency
       .neighborhood(net, data)

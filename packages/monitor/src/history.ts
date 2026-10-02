@@ -12,7 +12,7 @@ import {
   type RowSelection,
   type SampleRange,
   type SampleWindow,
-  type Queryable,
+  type Data,
 } from '@latkit/model';
 import type { Binding } from './bindings.js';
 import type { MonitorData } from './data.js';
@@ -42,7 +42,7 @@ export interface HistoryRequest {
   readonly focus?: readonly Focus[];
 }
 export interface Focus {
-  readonly source: Queryable;
+  readonly source: Data;
   readonly index: Index;
   readonly row: number;
   readonly field?: string;

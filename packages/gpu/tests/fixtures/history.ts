@@ -1,27 +1,19 @@
 import {
-  rowAt,
-  rowCount,
-  sliceRows,
-  type Queryable,
+  createData,
+  read,
+  sliceColumn,
+  type Data,
+  type DataPatch,
   type Schema,
   type Query,
   type QueryOptions,
-  type QueryHeader,
-  type QueryBlock,
-  type Column,
-  type RowAxis,
-  type Update,
-  type EnvelopeBlock,
 } from '@latkit/model';
-export class HistorySource implements Queryable {
+export class HistorySource {
   version = 'v0';
   readonly index = { source: 'history', type: 'node', version: 'i0' };
   readonly firstFrame = 2 ** 40;
-  readonly listeners = new Set<(change: Update) => void>();
-  requests: Query[] = [];
   blockFrames = 2;
   reverseFrames = false;
-  native?: EnvelopeBlock;
   readonly values: Float64Array;
   readonly validity: Uint8Array;
   readonly labels = {
@@ -46,152 +38,66 @@ export class HistorySource implements Queryable {
     this.validity = new Uint8Array(Math.ceil(this.values.length / 8)).fill(255);
     if (count === 2 && coordinates.length === 7) this.validity[0] &= ~(1 << 3);
   }
-  get schema(): Schema {
-    return {
-      queries: this.native ? ['rows', 'samples', 'envelope'] : ['rows', 'samples'],
-      limits: { maxBlockBytes: 1e6 },
-      axis: { name: 'coordinate' },
-      types: {
-        node: {
-          fields: {
-            value: { type: 'float64', sampled: true, nullable: true },
-            weight: { type: 'float32' },
-            label: { type: 'text' },
+  private cached?: Data;
+  readonly schema: Schema = {
+    limits: { maxBlockBytes: 1e6 },
+    axis: { name: 'coordinate' },
+    types: {
+      node: {
+        fields: {
+          value: { type: 'float64', sampled: true, nullable: true },
+          weight: { type: 'float32' },
+          label: { type: 'text' },
+        },
+      },
+    },
+  };
+  get data(): Data {
+    if (this.cached?.version === this.version) return this.cached;
+    const rows = { kind: 'range' as const, offset: 0, count: this.count };
+    const patches: DataPatch[] = [
+      {
+        kind: 'rows',
+        index: this.index,
+        rows,
+        ids: this.labels,
+        columns: {
+          label: this.labels,
+          weight: {
+            kind: 'numeric',
+            offset: 0,
+            length: this.count,
+            values: Float32Array.from({ length: this.count }, (_, i) => i + 10),
           },
         },
       },
-    };
-  }
-  describe(): Promise<Schema> {
-    return Promise.resolve(this.schema);
-  }
-  retain(): Promise<Queryable> {
-    return Promise.resolve(this);
-  }
-  close(): Promise<void> {
-    for (const listener of this.listeners) listener({ kind: 'closed' });
-    return Promise.resolve();
-  }
-  on(_event: 'change', listener: (change: Update) => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-  query: Queryable['query'] = ((query: Query, options: QueryOptions = {}) =>
-    this.read(query, options)) as Queryable['query'];
-  private async *read(
-    query: Query,
-    options: QueryOptions,
-  ): AsyncGenerator<QueryHeader | QueryBlock> {
-    this.requests.push(query);
-    options.signal?.throwIfAborted();
-    yield { kind: 'schema', version: this.version, schema: this.schema };
-    if (query.kind === 'envelope') {
-      if (!this.native) throw new Error('unsupported');
-      yield options.buffers === 'owned' ? structuredClone(this.native) : this.native;
-      return;
-    }
-    if (query.kind !== 'rows' && query.kind !== 'samples') throw new Error('unsupported');
-    const selected = query.rows;
-    const rows: RowAxis =
-      selected?.kind === 'ids'
-        ? { kind: 'indices', values: Uint32Array.from(selected.ids, Number) }
-        : (selected ?? { kind: 'range', offset: 0, count: this.count });
-    const nr = rowCount(rows);
-    if (query.kind === 'rows') {
-      const columns: Record<string, Column> = {};
-      for (const name of query.select) {
-        if (name === 'label') columns[name] = this.labels;
-        else
-          columns[name] = {
-            kind: 'numeric',
-            offset: 0,
-            length: nr,
-            values: Float32Array.from({ length: nr }, (_, i) => rowAt(rows, i) + 10),
-          };
-      }
-      const labels = query.ids ? { ...this.labels, length: nr } : undefined;
-      yield {
-        kind: 'rows',
-        version: this.version,
+    ];
+    for (let f = 0; f < this.coordinates.length; f += this.blockFrames) {
+      const count = Math.min(this.blockFrames, this.coordinates.length - f);
+      const column = sliceColumn(
+        {
+          kind: 'numeric',
+          offset: 0,
+          length: this.values.length,
+          values: this.values,
+          validity: this.validity,
+        },
+        f * this.count,
+        count * this.count,
+      ) as import('@latkit/model').NumericColumn;
+      patches.push({
+        kind: 'samples',
         index: this.index,
         rows,
-        position: 0,
-        columns,
-        ...(labels ? { ids: labels } : {}),
-      };
-      return;
+        firstFrame: this.firstFrame + f,
+        coordinates: this.coordinates.subarray(f, f + count),
+        columns: { value: { ...column, rowStride: 1, frameStride: this.count } },
+      });
     }
-    const window = query.window;
-    let first = 0,
-      end = this.coordinates.length;
-    if (window.kind === 'frames') {
-      first = window.offset - this.firstFrame;
-      end = first + window.count;
-    } else if (window.kind === 'at') {
-      while (first < end && this.coordinates[first] <= window.value) first++;
-      end = first;
-      first = Math.max(0, end - 1);
-    } else {
-      while (first < end && this.coordinates[first] < window.between[0]) first++;
-      let last = first;
-      while (last < end && this.coordinates[last] <= window.between[1]) last++;
-      first = Math.max(0, first - (window.context?.before ?? 0));
-      end = Math.min(end, last + (window.context?.after ?? 0));
-    }
-    const tiles: number[] = [];
-    for (let frame = first; frame < end; frame += this.blockFrames) tiles.push(frame);
-    if (this.reverseFrames) tiles.reverse();
-    for (const frame of tiles) {
-      options.signal?.throwIfAborted();
-      const nf = Math.min(this.blockFrames, end - frame),
-        columns: Record<string, import('@latkit/model').SampleColumn> = {};
-      for (const name of query.select) {
-        if (name !== 'value') throw new Error('Only value is sampled');
-        if (rows.kind === 'range') {
-          const at = frame * this.count + rows.offset,
-            span = (nf - 1) * this.count + nr,
-            start = Math.floor(at / 8) * 8;
-          // Values and validity share absolute offsets, including deliberately unaddressed cells.
-          columns[name] = {
-            kind: 'numeric',
-            values: this.values.subarray(start, at + span),
-            validity: this.validity.subarray(start / 8, Math.ceil((at + span) / 8)),
-            offset: at - start,
-            length: span,
-            rowStride: 1,
-            frameStride: this.count,
-          };
-        } else {
-          const values = new Float64Array(nf * nr),
-            validity = new Uint8Array(Math.ceil(values.length / 8));
-          for (let f = 0; f < nf; f++)
-            for (let r = 0; r < nr; r++) {
-              const at = (frame + f) * this.count + rowAt(rows, r),
-                to = f * nr + r;
-              values[to] = this.values[at];
-              if (this.validity[at >>> 3] & (1 << (at & 7))) validity[to >>> 3] |= 1 << (to & 7);
-            }
-          columns[name] = {
-            kind: 'numeric',
-            values,
-            validity,
-            offset: 0,
-            length: values.length,
-            rowStride: 1,
-            frameStride: nr,
-          };
-        }
-      }
-      yield {
-        kind: 'samples',
-        version: this.version,
-        index: this.index,
-        rows: sliceRows(rows, 0, nr),
-        rowOffset: 0,
-        firstFrame: this.firstFrame + frame,
-        coordinates: this.coordinates.subarray(frame, frame + nf),
-        columns,
-      };
-    }
+    if (this.reverseFrames) patches.reverse();
+    return (this.cached = createData(this.schema, this.version, patches));
+  }
+  query<Q extends Query>(query: Q, options?: QueryOptions) {
+    return read(this.data, query, options);
   }
 }

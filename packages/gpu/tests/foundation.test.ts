@@ -1,14 +1,15 @@
 import { expect, it } from 'vitest';
-import { MessageChannel } from 'node:worker_threads';
-import { serve, connect, messagePort } from '@latkit/connect';
+import { connected, subscribed } from '../../connect/tests/fixture.js';
+import { LiveModel, transaction } from '../../model/tests/live.js';
 import {
+  createData,
   bitAt,
   numberAt,
   sampleAt,
   textAt,
   validateBlock,
   rowCount,
-  type Queryable,
+  type Data,
   type EnvelopeBlock,
   type EnvelopeQuery,
   type NumericColumn,
@@ -41,7 +42,7 @@ it('reads text without GPU allocation and decodes the requested sliced cell only
     gpu = await createGpu({ device: fakeDevice().device });
   await draw(gpu, async (frame) => {
     for await (const tile of frame.fields({
-      source,
+      source: source.data,
       from: 'node',
       fields: { label: 'label' },
       ids: true,
@@ -65,7 +66,7 @@ it('keeps sampled strides/native backing and broadcasts static columns without e
     pages: GpuPage[] = [];
   await draw(gpu, async (frame) => {
     for await (const tile of frame.fields({
-      source,
+      source: source.data,
       from: 'node',
       fields: { value: 'value', weight: 'weight', label: 'label' },
       window: { kind: 'frames', offset: source.firstFrame, count: 2 },
@@ -90,9 +91,9 @@ it('rejects incompatible observation coordinates rather than silently resampling
   await expect(
     draw(gpu, async (frame) => {
       for await (const _ of frame.fields({
-        source: a,
+        source: a.data,
         from: 'node',
-        fields: { a: 'value', b: { source: b, from: 'node', field: 'value' } },
+        fields: { a: 'value', b: { source: b.data, from: 'node', field: 'value' } },
         window: { kind: 'frames', offset: a.firstFrame, count: 2 },
       }))
         void _;
@@ -106,14 +107,12 @@ it('reduces unsorted native tiles to exact extrema identities, preserves gaps, a
   const gpu = await createGpu({ device: fakeDevice().device, validate: true });
   let result!: EnvelopeBlock, page!: GpuPage;
   await draw(gpu, async (frame) => {
-    for await (const block of frame.envelope({ source, query })) {
+    for await (const block of frame.envelope({ source: source.data, query })) {
       result = block;
       page = frame.upload(block, { select: ['value'] })[0];
     }
   });
-  expect(
-    validateBlock({ ...source.schema, queries: ['rows', 'samples', 'envelope'] }, query, result),
-  ).toEqual([]);
+  expect(validateBlock(source.schema, query, result)).toEqual([]);
   const column = result.columns.value;
   expect([...column.values.values]).toEqual([
     9, 2, 10, 10, 1, 1, 1, 1, 8, 4, 8, 4, 3, 3, 8, 8, 2, 2, 2, 2, 9, 0, 9, 0,
@@ -134,12 +133,12 @@ it('reduces unsorted native tiles to exact extrema identities, preserves gaps, a
   expect(descriptor.frames.origin?.[0]).toBe(source.firstFrame);
   expect(page.envelope).toEqual({ firstBucket: 0, count: 3 });
   const uploaded = gpu.stats().uploadedBytes,
-    requests = source.requests.length;
+    requests = gpu.stats().queries;
   await draw(gpu, async (frame) => {
-    for await (const block of frame.envelope({ source, query }))
+    for await (const block of frame.envelope({ source: source.data, query }))
       frame.upload(block, { select: ['value'] });
   });
-  expect(source.requests.length).toBe(requests);
+  expect(gpu.stats().queries).toBe(requests);
   expect(gpu.stats().uploadedBytes).toBe(uploaded);
   gpu.destroy();
 });
@@ -152,7 +151,7 @@ it('includes boundary duplicates and context, leaves empty buckets invalid, and 
     buckets: 4,
   };
   await draw(gpu, async (frame) => {
-    for await (const block of frame.envelope({ source, query: q })) {
+    for await (const block of frame.envelope({ source: source.data, query: q })) {
       const c = block.columns.value;
       expect(c.coordinates[0]).toBe(0);
       expect(c.coordinates[15]).toBe(4);
@@ -161,38 +160,49 @@ it('includes boundary duplicates and context, leaves empty buckets invalid, and 
   });
   await expect(
     draw(gpu, async (frame) => {
-      for await (const b of frame.envelope({ source, query: { ...query, buckets: 1e6 } })) void b;
+      for await (const b of frame.envelope({
+        source: source.data,
+        query: { ...query, buckets: 1e6 },
+      }))
+        void b;
     }),
   ).rejects.toMatchObject({ code: 'resource-limit' });
   gpu.trim();
   expect(gpu.stats().cpuBytes).toBe(0);
   gpu.destroy();
 });
-it('forwards native envelopes through connect with the same model buffers and validation', async () => {
+it('reduces delivered samples after the transport and producer have closed', async () => {
   const source = new HistorySource(),
-    gpu = await createGpu({ device: fakeDevice().device, validate: true });
+    model = new LiveModel();
+  Object.assign(model, { schema: source.schema });
+  const h = await connected(false, model);
+  const stream = h.remote.monitor([{ from: 'node', select: ['value'] }]);
+  await subscribed(model);
+  const patches = source.data.tables.node.fields.value.map((page) => ({
+    kind: 'samples' as const,
+    index: source.index,
+    rows: page.rows,
+    firstFrame: page.samples!.firstFrame,
+    coordinates: page.samples!.coordinates,
+    columns: { value: page.column as SampleColumn },
+  }));
+  const publishing = model.publish(patches);
+  const events = await transaction(stream);
+  await publishing;
+  const data = createData(
+    h.remote.schema,
+    'v1',
+    events.flatMap((event) => (event.kind === 'data' ? [event.patch] : [])),
+  );
+  await h.close();
+  const gpu = await createGpu({ device: fakeDevice().device, validate: true });
   await draw(gpu, async (frame) => {
-    for await (const block of frame.envelope({ source, query })) source.native = block;
+    for await (const block of frame.envelope({ source: data, query })) {
+      expect([...block.columns.value.values.values].slice(0, 4)).toEqual([9, 2, 10, 10]);
+      expect(frame.upload(block, { select: ['value'] })[0].columns.value.kind).toBe('envelope');
+    }
   });
-  const channel = new MessageChannel(),
-    serving = serve(messagePort(channel.port1), source, { kind: 'queryable' }),
-    remote = await connect(messagePort(channel.port2), { kind: 'queryable' });
-  source.requests = [];
-  try {
-    await draw(gpu, async (frame) => {
-      for await (const block of frame.envelope({ source: remote, query })) {
-        expect(block).toEqual(source.native);
-        expect(frame.upload(block, { select: ['value'] })[0].columns.value.kind).toBe('envelope');
-      }
-    });
-    expect(source.requests.map((q) => q.kind)).toEqual(['envelope']);
-  } finally {
-    gpu.destroy();
-    await remote.close();
-    await serving;
-    channel.port1.close();
-    channel.port2.close();
-  }
+  gpu.destroy();
 });
 it('keeps null, constant, reversed output ranges and relative Float64 scale semantics consistent', () => {
   expect(scaleValue(5, resolveScale({}, null))).toBeNull();
@@ -219,24 +229,25 @@ it('never publishes a partial picking result after its cooperative budget expire
 it('rejects missing rows inside declared sampled coverage and preserves frame identities with float32 values', async () => {
   const source = new HistorySource(),
     missing = new HistorySource();
-  const original = missing.query.bind(missing);
-  missing.query = ((request, options) =>
-    (async function* () {
-      for await (const block of original(request, options)) {
-        if (block.kind === 'samples') continue;
-        yield block;
-      }
-    })()) as Queryable['query'];
+  const absent: Data = {
+    ...missing.data,
+    tables: {
+      node: {
+        ...missing.data.tables.node,
+        fields: { ...missing.data.tables.node.fields, value: [] },
+      },
+    },
+  };
   const gpu = await createGpu({ device: fakeDevice().device });
   await expect(
     draw(gpu, async (frame) => {
       for await (const tile of frame.fields({
-        source,
+        source: source.data,
         from: 'node',
         fields: {
           value: 'value',
           overlay: {
-            source: missing,
+            source: absent,
             from: 'node',
             field: 'value',
             rows: { kind: 'range', offset: 0, count: 1 },
@@ -248,7 +259,7 @@ it('rejects missing rows inside declared sampled coverage and preserves frame id
     }),
   ).rejects.toMatchObject({ code: 'invalid-input' });
   await draw(gpu, async (frame) => {
-    for await (const block of frame.envelope({ source, query })) {
+    for await (const block of frame.envelope({ source: source.data, query })) {
       const column = frame.upload(block, { select: ['value'], float64: 'float32' })[0].columns
         .value;
       if (column.kind !== 'envelope') throw new Error('Expected envelope');
@@ -278,7 +289,7 @@ it('streams a million historical observations into bounded native summaries', as
   let rows = 0;
   await draw(gpu, async (frame) => {
     for await (const block of frame.envelope({
-      source,
+      source: source.data,
       query: {
         ...query,
         rows: { kind: 'range', offset: 0, count: 8 },

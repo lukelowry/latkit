@@ -1,7 +1,7 @@
-import type { RowSelection, Index, Queryable, RowAxis, SampleWindow, Version } from '@latkit/model';
+import type { RowSelection, Index, Data, RowAxis, SampleWindow, Version } from '@latkit/model';
 
 export interface FieldBinding {
-  readonly source: Queryable;
+  readonly source: Data;
   readonly from: string;
   readonly field: string;
   /** Explicit coverage for a partial overlay. Omitted means every draw row is required. */
@@ -13,7 +13,7 @@ export type FieldInput = string | FieldBinding | FieldValues;
 export interface FieldsRequest {
   /** Coordinate for sampled point reads outside a render frame. */
   readonly at?: number;
-  readonly source: Queryable;
+  readonly source: Data;
   readonly from: string;
   readonly rows?: RowSelection;
   readonly fields: Readonly<Record<string, FieldInput>>;
@@ -30,7 +30,7 @@ export interface FieldValues {
 }
 
 export interface DataHit {
-  readonly source: Queryable;
+  readonly source: Data;
   readonly index: Index;
   readonly row: number;
   readonly field?: string;
@@ -42,7 +42,7 @@ export interface DataHit {
  * Address columns using this object's row/sample axes. */
 export interface NativeFields {
   /** Authoritative observations used by resolved source bindings; local values need no source. */
-  readonly versions: ReadonlyMap<Queryable, Version>;
+  readonly versions: ReadonlyMap<Data, Version>;
   readonly index: Index;
   readonly rows: RowAxis;
   readonly rowOffset: number;
@@ -51,13 +51,11 @@ export interface NativeFields {
   /** Sample columns carry strides; static columns broadcast without expanding their buffers. */
   readonly samples?: { readonly firstFrame: number; readonly coordinates: Float64Array };
   readonly presence: Readonly<Record<string, Uint8Array>>;
-  /** Call during preparation. Keeps backing allocations in the Gpu budget until idempotent release. */
-  retain(): () => void;
 }
 
 /** Finite scalar extent over the complete selected mapping. Null means no finite values. */
 export interface ExtentRequest {
-  readonly source?: Queryable;
+  readonly source?: Data;
   readonly index: Index;
   readonly rows: RowAxis;
   readonly field: FieldInput;

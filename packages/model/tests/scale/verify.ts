@@ -1,14 +1,20 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import type {
-  Queryable,
+  Data,
   RowsQuery,
   SamplesQuery,
   QueryHeader,
   QueryOptions,
   NumericColumn,
 } from '../../src/index.js';
-import { blockByteLength, blockBuffers, validateBlock, validateSchema } from '../../src/index.js';
+import {
+  read,
+  blockByteLength,
+  blockBuffers,
+  validateBlock,
+  validateSchema,
+} from '../../src/index.js';
 export const inputAt = (row: number): number => row - Math.floor(row / 1009) * 1009 - 504;
 export interface ScanResult {
   cells: number;
@@ -22,7 +28,7 @@ export interface ScanResult {
 }
 /** Independent oracle: each cell, row identity, block position and complete coverage is checked. */
 export async function verifyRows(
-  source: Queryable,
+  source: Data,
   count: number,
   options: QueryOptions = {},
   query: RowsQuery = { kind: 'rows', from: 'Node', select: ['value'] },
@@ -38,7 +44,7 @@ export async function verifyRows(
     checksum = 0,
     maxBlockBytes = 0,
     maxBackingBytes = 0;
-  for await (const block of source.query(query, options)) {
+  for await (const block of read(source, query, options)) {
     if (block.kind === 'schema') {
       assert.equal(header, undefined);
       assert.deepEqual(validateSchema(block.schema), []);
@@ -93,7 +99,7 @@ export async function verifyRows(
   };
 }
 export async function verifySamples(
-  source: Queryable,
+  source: Data,
   rows: number,
   frames: number,
   first = 0,
@@ -116,7 +122,7 @@ export async function verifySamples(
     maxBlockBytes = 0,
     maxBackingBytes = 0,
     firstBlockMs = 0;
-  for await (const block of source.query(query)) {
+  for await (const block of read(source, query)) {
     if (block.kind === 'schema') {
       assert.equal(header, undefined);
       header = block;

@@ -1,7 +1,7 @@
 import { textAt, bitAt } from '@latkit/model';
 import { assertIndex, rowAt, rowCount } from '@latkit/model';
 import { GpuError, type Gpu, kit } from '@latkit/gpu';
-import type { Queryable, Update } from '@latkit/model';
+import type { Data } from '@latkit/model';
 import type { NetworkData, Labels as LabelOptions } from '../data.js';
 import {
   edgeOptions,
@@ -21,7 +21,7 @@ export interface LabelBatch {
 interface Entry {
   options: LabelOptions;
   revision: number;
-  source: Queryable;
+  source: Data;
   text: Map<number, { run: kit.TextRun; metrics: kit.TextMetrics }>;
   runs: readonly kit.TextRun[];
   anchors: kit.BufferData;
@@ -52,11 +52,8 @@ class Occupancy {
 }
 export class Labels {
   private cache = new WeakMap<object, Entry>();
-  private revisions = new WeakMap<Queryable, number>();
-  invalidate(source: Queryable, update: Update): void {
-    if (['data', 'structure', 'schema', 'replace', 'closed'].includes(update.kind))
-      this.revisions.set(source, (this.revisions.get(source) ?? 0) + 1);
-  }
+  private revisions = new WeakMap<Data, number>();
+
   async prepare(
     frame: kit.Preparation,
     gpu: Gpu,

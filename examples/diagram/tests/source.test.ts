@@ -1,6 +1,12 @@
 import { expect, it } from 'vitest';
-import { blockByteLength, validateBlock, validateSchema, textAt } from '@latkit/model';
-import type { Query, Queryable } from '@latkit/model';
+import {
+  read as readData,
+  blockByteLength,
+  validateBlock,
+  validateSchema,
+  textAt,
+} from '@latkit/model';
+import type { Query, Data } from '@latkit/model';
 import type { Gpu } from '@latkit/gpu';
 import { arrange } from '@latkit/diagram';
 import { GraphSource } from '../src/source.js';
@@ -15,9 +21,9 @@ import {
   deleteItems,
 } from '../src/graph.js';
 import { data } from '../src/presentation.js';
-async function collect(source: Queryable, query: Query, maxBlockBytes = 2048) {
+async function collect(source: Data, query: Query, maxBlockBytes = 2048) {
   const result = [];
-  for await (const block of source.query(query, { maxBlockBytes })) {
+  for await (const block of readData(source, query, { maxBlockBytes })) {
     if (block.kind !== 'schema') {
       expect(validateBlock(schema, query, block, { maxBlockBytes })).toEqual([]);
       expect(blockByteLength(block)).toBeLessThanOrEqual(maxBlockBytes);
@@ -31,21 +37,25 @@ it('supplies conforming native rows and wiring for every scene', async () => {
   for (const which of ['loop', 'groups', 'shapes', 'scale'] as const) {
     const source = new GraphSource(preset(which));
     for (const type of types)
-      await collect(source, {
+      await collect(source.data, {
         kind: 'rows',
         from: type,
         select: ['name', 'position', 'signal', 'status', 'visible', ...Object.keys(ports[type])],
         ids: true,
       });
-    await collect(source, { kind: 'rows', from: 'Signal', select: ['name', 'signal'], ids: true });
-    await source.close();
+    await collect(source.data, {
+      kind: 'rows',
+      from: 'Signal',
+      select: ['name', 'signal'],
+      ids: true,
+    });
   }
 });
-it('retains independent versions and coherent iterators during replacement', async () => {
+it('keeps application versions and coherent iterators during replacement', async () => {
   const source = new GraphSource(preset('loop')),
-    retained = await source.retain();
+    retained = source.data;
   const query = { kind: 'rows' as const, from: 'Process', select: ['name'], ids: true };
-  const read = source.query(query)[Symbol.asyncIterator]();
+  const read = readData(source.data, query)[Symbol.asyncIterator]();
   await read.next();
   source.publish(preset('shapes'));
   const result = await read.next();
@@ -53,13 +63,11 @@ it('retains independent versions and coherent iterators during replacement', asy
   if (!result.done && result.value.kind === 'rows')
     expect(textAt(result.value.ids!, 0)).toBe('actuator');
   await read.return?.();
-  await source.close();
   expect((await collect(retained, query)).length).toBeGreaterThan(0);
-  await retained.close();
 });
 it('supports filtering, ordering, sparse IDs, counts and cancellation', async () => {
   const source = new GraphSource(preset('loop'));
-  const blocks = await collect(source, {
+  const blocks = await collect(source.data, {
     kind: 'rows',
     from: 'Process',
     select: ['name'],
@@ -75,12 +83,14 @@ it('supports filtering, ordering, sparse IDs, counts and cancellation', async ()
   const controller = new AbortController();
   controller.abort();
   await expect(
-    source
-      .query({ kind: 'rows', from: 'Process', select: [] }, { signal: controller.signal })
+    readData(
+      source.data,
+      { kind: 'rows', from: 'Process', select: [] },
+      { signal: controller.signal },
+    )
       [Symbol.asyncIterator]()
       .next(),
-  ).rejects.toMatchObject({ name: 'AbortError' });
-  await source.close();
+  ).rejects.toMatchObject({ code: 'aborted' });
 });
 it('plugs an input into the wire its output drives, keeps fan-out, and supports history', () => {
   const graph = preset('loop'),
@@ -127,8 +137,7 @@ it('wires an input to a new driving block, or plugs it into an existing wire', a
   expect(plugged(connectGraph(joined, join), graph.wires[0].id)).toHaveLength(3);
   for (const changed of [free, joined]) {
     const source = new GraphSource(changed);
-    await collect(source, { kind: 'rows', from: 'Control', select: ['feedback'] });
-    await source.close();
+    await collect(source.data, { kind: 'rows', from: 'Control', select: ['feedback'] });
   }
 });
 it('arranges through the new public headless API', async () => {
@@ -162,7 +171,6 @@ it('arranges through the new public headless API', async () => {
   expect(Object.keys(result)).toEqual(
     expect.arrayContaining(['Process', 'Control', 'Input', 'Output']),
   );
-  await source.close();
 });
 
 it('requires explicit creation on empty drop and disconnects a replaced branch without deleting siblings', () => {

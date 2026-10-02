@@ -18,7 +18,7 @@ npm install @latkit/gpu @latkit/network
 ```
 
 Use an ESM bundler and a WebGPU-capable browser. Supply your data through a
-`Queryable` from [`@latkit/model`](packages/model).
+`Data` from [`@latkit/model`](packages/model).
 
 ## Draw a network
 
@@ -46,7 +46,7 @@ diagrams work the same way: see [views](https://latkit.readthedocs.io/en/latest/
 
 | Package                     | Use                                              |
 | --------------------------- | ------------------------------------------------ |
-| [model](packages/model)     | Data interfaces, queries, recordings, validation |
+| [model](packages/model)     | Columnar values, passive monitoring, local reads |
 | [connect](packages/connect) | Models over workers and sockets                  |
 | [gpu](packages/gpu)         | Shared rendering, fields, text, colors           |
 | [network](packages/network) | Network topology and geographic views            |

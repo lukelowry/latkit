@@ -1,15 +1,15 @@
 import {
+  read as readData,
   blockBuffers,
   blockByteLength,
   validateBlock,
   validateQuery,
   validateSchema,
   type Query,
-  type Queryable,
+  type Data,
   type QueryBlock,
   type QueryHeader,
   type Schema,
-  type Update,
 } from '@latkit/model';
 import { GpuError, interruptible } from './error.js';
 import type { Entry, Memory } from './memory.js';
@@ -24,7 +24,6 @@ interface Reader {
   holding: boolean;
 }
 interface Read {
-  source: Queryable;
   key: string;
   query: Query;
   meta: Entry;
@@ -43,9 +42,9 @@ interface Read {
   off(): void;
 }
 
-/** Cache only complete replayable prefixes. Active streams use a bounded multicast barrier. */
+/** Bounded memoization of local computations over immutable application data. */
 export class Reads {
-  private sources = new WeakMap<Queryable, Map<string, Read>>();
+  private cache = new Map<string, Read>();
   private objects = new WeakMap<object, number>();
   private serial = 0;
   private schemas = new WeakMap<Schema, number>();
@@ -64,7 +63,7 @@ export class Reads {
     );
   }
 
-  async *query(source: Queryable, query: Query, signal: AbortSignal): AsyncGenerator<Result> {
+  async *query(source: Data, query: Query, signal: AbortSignal): AsyncGenerator<Result> {
     // Optional fields commonly arrive as explicit undefined from typed renderer requests.
     if (Object.values(query).some((value) => value === undefined))
       query = Object.fromEntries(
@@ -72,12 +71,8 @@ export class Reads {
       ) as unknown as Query;
     signal.throwIfAborted();
     if (this.closed) throw new GpuError('closed', 'Gpu is closed');
-    const key = JSON.stringify([source.version, this.key(query)]);
-    let cache = this.sources.get(source);
-    if (!cache) {
-      cache = new Map();
-      this.sources.set(source, cache);
-    }
+    const key = this.dependencyKey(source, query);
+    const cache = this.cache;
     let read = cache.get(key);
     if (read?.meta.live) this.memory.queryHits++;
     else {
@@ -96,7 +91,9 @@ export class Reads {
         if (chunk) {
           reader.holding = true;
           try {
-            yield chunk.value;
+            yield chunk.value.version === source.version
+              ? chunk.value
+              : { ...chunk.value, version: source.version };
           } finally {
             reader.holding = false;
             reader.next++;
@@ -136,11 +133,10 @@ export class Reads {
     }
   }
 
-  private open(source: Queryable, query: Query, key: string, cache: Map<string, Read>): Read {
+  private open(source: Data, query: Query, key: string, cache: Map<string, Read>): Read {
     const controller = new AbortController();
     let wake = (): void => {};
     const read = {
-      source,
       key,
       query,
       controller,
@@ -168,38 +164,10 @@ export class Reads {
       for (const chunk of read.chunks.values()) chunk.memory.close();
     });
     try {
-      read.iterator = source
-        .query(query, {
-          signal: controller.signal,
-          buffers: 'borrowed',
-          maxBlockBytes: this.maxBlockBytes,
-        })
-        [Symbol.asyncIterator]();
-      read.off = source.on('change', (change) => {
-        if (change.kind === 'status') return;
-        if (
-          read.done &&
-          !read.failed &&
-          !read.readers.size &&
-          cache.get(read.key) === read &&
-          read.header &&
-          'version' in change &&
-          change.version.length <= read.header.version.length &&
-          unchanged(read, change)
-        ) {
-          cache.delete(read.key);
-          read.key = JSON.stringify([change.version, this.key(read.query)]);
-          read.header = { ...read.header, version: change.version };
-          for (const chunk of read.chunks.values())
-            chunk.value = { ...chunk.value, version: change.version };
-          cache.set(read.key, read);
-          return;
-        }
-        if (change.kind === 'closed')
-          this.stop(read, new GpuError('closed', 'Queryable was closed'));
-        if (cache.get(read.key) === read) cache.delete(read.key);
-        read.meta.close();
-      });
+      read.iterator = readData(source, query, {
+        signal: controller.signal,
+        maxBlockBytes: this.maxBlockBytes,
+      })[Symbol.asyncIterator]();
       this.live.add(read);
       this.memory.queries++;
       read.meta.unpin();
@@ -297,6 +265,52 @@ export class Reads {
     read.notify();
   }
 
+  private dependencyKey(data: Data, query: Query): string {
+    const table = data.tables[query.from];
+    const used = new Set(query.select);
+    if (query.kind === 'rows') {
+      for (const filter of query.where ?? []) used.add(filter.field);
+      for (const order of query.orderBy ?? []) used.add(order.field);
+    }
+    const window = 'window' in query ? query.window : undefined;
+    const dependencies: unknown[] = [
+      this.identity(data.schema),
+      table?.index,
+      table?.rows,
+      table?.ids,
+    ];
+    for (const name of [...used].sort()) {
+      const pages = table?.fields[name] ?? [];
+      if (window?.kind === 'frames') {
+        dependencies.push(
+          name,
+          pages
+            .filter(
+              (page) =>
+                !page.samples ||
+                (page.samples.firstFrame < window.offset + window.count &&
+                  page.samples.firstFrame + page.samples.coordinates.length > window.offset),
+            )
+            .map((page) => this.identity(page)),
+        );
+      } else dependencies.push(name, this.identity(pages));
+      const type = data.schema.types[query.from]?.fields[name]?.type;
+      if (typeof type === 'object' && type.kind === 'reference')
+        dependencies.push(
+          data.tables[type.to]?.index,
+          this.identity(data.tables[type.to]?.ids ?? data),
+        );
+    }
+    return this.key([dependencies, query]);
+  }
+  private identity(value: object): number {
+    let id = this.objects.get(value);
+    if (!id) {
+      id = ++this.serial;
+      this.objects.set(value, id);
+    }
+    return id;
+  }
   private key(value: unknown): string {
     if (value === undefined) return 'undefined';
     if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -381,33 +395,18 @@ function compact(value: unknown, seen = new Map<object, unknown>()): unknown {
     for (const item of value) copy.push(compact(item, seen));
     return copy;
   }
-  const copy: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  const copy: Record<string, unknown> = {};
   seen.set(value, copy);
-  for (const [name, item] of Object.entries(value)) copy[name] = compact(item, seen);
-  return copy;
-}
-
-/** Reuse payload only when the change proves that the complete queried rectangle is unchanged. */
-function unchanged(read: Read, change: Update): boolean {
-  const query = read.query;
-  if (change.kind === 'status') return true;
-  if (change.kind !== 'append') return false;
-  if (query.kind !== 'samples' && query.kind !== 'aggregate' && query.kind !== 'envelope')
-    return false;
-  const window = query.window;
-  if (!window) return false;
-  if (window.kind === 'frames') return window.offset + window.count <= change.frames.offset;
-  let first = Infinity,
-    last = -Infinity,
-    coordinate = -Infinity;
-  for (const { value } of read.chunks.values()) {
-    if (value.kind === 'samples' && value.coordinates.length) {
-      first = Math.min(first, value.firstFrame);
-      last = Math.max(last, value.firstFrame + value.coordinates.length - 1);
-      coordinate = Math.max(coordinate, value.coordinates[value.coordinates.length - 1]);
-    }
+  for (const [name, item] of Object.entries(value)) {
+    const child = compact(item, seen);
+    if (name === '__proto__')
+      Object.defineProperty(copy, name, {
+        value: child,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    else copy[name] = child;
   }
-  // Range context must already include the requested successors; at reads must precede the known frontier.
-  const end = window.kind === 'range' ? window.between[1] : window.value;
-  return Number.isFinite(last) && last < change.frames.offset && coordinate > end;
+  return copy;
 }

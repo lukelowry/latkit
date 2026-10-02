@@ -1,26 +1,24 @@
-import type {
-  Column,
-  Queryable,
-  Query,
-  QueryOptions,
-  QueryHeader,
-  RowsBlock,
-  Schema,
-  Update,
+import {
+  createData,
+  read,
+  textColumn,
+  type Data,
+  type DataPatch,
+  type Schema,
+  type Query,
+  type QueryOptions,
+  type Column,
 } from '@latkit/model';
-import { rowAt, rowCount } from '@latkit/model';
-
-export class FieldSource implements Queryable {
+export class FieldSource {
   version = 'v0';
   readonly index = { source: 'd', type: 'node', version: 'i0' };
-  readonly listeners = new Set<(change: Update) => void>();
-  readonly requests: Query[] = [];
   captured?: Set<number>;
   reversed = false;
   blockRows = 1024;
+  private cached?: Data;
   readonly schema: Schema = {
-    queries: ['rows'],
     limits: { maxBlockBytes: 1e6 },
+    axis: { name: 'time' },
     types: {
       node: {
         fields: {
@@ -32,98 +30,75 @@ export class FieldSource implements Queryable {
         },
       },
     },
-    axis: { name: 'time' },
   };
   constructor(readonly count = 8) {}
-  describe(): Promise<Schema> {
-    return Promise.resolve(this.schema);
-  }
-  retain(): Promise<Queryable> {
-    return Promise.resolve(new FieldSource(this.count));
-  }
-  close(): Promise<void> {
-    this.publish({ kind: 'closed' });
-    return Promise.resolve();
-  }
-  on(_event: 'change', listener: (change: Update) => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-  publish(change: Update): void {
-    if ('version' in change) this.version = change.version;
-    for (const listener of this.listeners) listener(change);
-  }
-  query: Queryable['query'] = ((query: Query, options: QueryOptions = {}) =>
-    this.read(query, options)) as Queryable['query'];
-  private async *read(
-    query: Query,
-    options: QueryOptions,
-  ): AsyncGenerator<QueryHeader | RowsBlock> {
-    this.requests.push(query);
-    if (query.kind !== 'rows') throw new Error('rows only');
-    const selection = query.rows ?? { kind: 'range' as const, offset: 0, count: this.count };
-    const selected =
-      selection.kind === 'ids'
-        ? selection.ids.map(Number)
-        : Array.from({ length: rowCount(selection) }, (_, i) => rowAt(selection, i));
-    if (this.reversed) selected.reverse();
-    const fields = query.select as readonly string[];
-    if (
-      fields.includes('observed') &&
-      this.captured &&
-      selected.some((row) => !this.captured!.has(row))
-    )
-      throw Object.assign(new Error('Not captured'), { code: 'uncaptured' });
-    const version = this.version;
-    yield { kind: 'schema', version, schema: this.schema };
-    const blockRows = Math.min(
-      this.blockRows,
-      Math.max(1, Math.floor((options.maxBlockBytes ?? 1e6) / 128)),
-    );
-    for (let offset = 0; offset < selected.length; offset += blockRows) {
-      options.signal?.throwIfAborted();
-      const rows = selected.slice(offset, offset + blockRows),
-        columns: Record<string, Column> = {};
-      for (const field of fields) {
-        const base = { offset: 0, length: rows.length };
-        if (field === 'position' || field === 'color') {
-          const size = field === 'position' ? 2 : 4;
-          const values =
-            field === 'position'
-              ? Float64Array.from(rows.flatMap((row) => [1e12 + row, 1e12 + row + 0.25]))
-              : Float32Array.from(rows.flatMap((row) => [row / 8, 0.5, 1, 1]));
-          columns[field] = {
-            ...base,
-            kind: 'vector',
-            size,
-            values: { kind: 'numeric', offset: 0, length: values.length, values },
-          };
-        } else if (field === 'visible') {
-          const values = new Uint8Array(Math.ceil(rows.length / 8)),
-            validity = new Uint8Array(values.length);
-          rows.forEach((row, i) => {
-            if (row % 2 === 0) values[i >>> 3] |= 1 << (i & 7);
-            if (row !== 2) validity[i >>> 3] |= 1 << (i & 7);
-          });
-          columns[field] = { ...base, kind: 'boolean', values, validity };
-        } else
-          columns[field] = {
-            ...base,
-            kind: 'numeric',
-            values:
-              field === 'observed'
-                ? Float64Array.from(rows, (row) => 1e12 + row + (query.at ?? 0))
-                : Float32Array.from(rows),
-          };
-      }
-      yield {
+  get data(): Data {
+    if (this.cached?.version === this.version) return this.cached;
+    const patches: DataPatch[] = [];
+    for (let offset = 0; offset < this.count; offset += this.blockRows) {
+      const count = Math.min(this.blockRows, this.count - offset),
+        rows = Array.from({ length: count }, (_, i) => offset + i);
+      if (this.reversed) rows.reverse();
+      const columns: Record<string, Column> = {};
+      const numeric = (values: Float32Array | Float64Array) => ({
+        kind: 'numeric' as const,
+        offset: 0,
+        length: values.length,
+        values,
+      });
+      columns.value = numeric(Float32Array.from(rows));
+      columns.position = {
+        kind: 'vector',
+        offset: 0,
+        length: count,
+        size: 2,
+        values: numeric(Float64Array.from(rows.flatMap((r) => [1e12 + r, 1e12 + r + 0.25]))),
+      };
+      columns.color = {
+        kind: 'vector',
+        offset: 0,
+        length: count,
+        size: 4,
+        values: numeric(Float32Array.from(rows.flatMap((r) => [r / 8, 0.5, 1, 1]))),
+      };
+      const values = new Uint8Array(Math.ceil(count / 8)),
+        validity = new Uint8Array(values.length);
+      rows.forEach((r, i) => {
+        if (r % 2 === 0) values[i >>> 3] |= 1 << (i & 7);
+        if (r !== 2) validity[i >>> 3] |= 1 << (i & 7);
+      });
+      columns.visible = { kind: 'boolean', offset: 0, length: count, values, validity };
+      patches.push({
         kind: 'rows',
-        version,
         index: this.index,
         rows: { kind: 'indices', values: Uint32Array.from(rows) },
-        position: offset,
         columns,
-      };
+        ids: textColumn(rows.map(String)),
+      });
+      const selected = this.captured ? rows.filter((r) => this.captured!.has(r)) : rows;
+      for (let f = 0; f < 8; f++)
+        patches.push({
+          kind: 'samples',
+          index: this.index,
+          rows: { kind: 'indices', values: Uint32Array.from(selected) },
+          firstFrame: f,
+          coordinates: Float64Array.of(f),
+          columns: {
+            observed: {
+              ...numeric(Float64Array.from(selected, (r) => 1e12 + r + f)),
+              rowStride: 1,
+              frameStride: Math.max(1, selected.length),
+            },
+          },
+        });
     }
+    return (this.cached = createData(this.schema, this.version, patches));
+  }
+  publish(change: { version?: string } = {}): void {
+    this.version = change.version ?? this.version + '+';
+    if (this.cached) this.cached = { ...this.cached, version: this.version };
+  }
+  query<Q extends Query>(query: Q, options?: QueryOptions) {
+    return read(this.data, query, options);
   }
 }

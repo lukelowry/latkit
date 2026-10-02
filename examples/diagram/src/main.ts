@@ -84,7 +84,7 @@ const code = `const gpu = await createGpu();
 const diagram = createDiagram(gpu, {
   canvas,
   input: 'edit',
-  source: model,
+  source: model.data,
   vertices: {
     Process: {
       position: 'position',
@@ -219,6 +219,7 @@ async function boot() {
   function refresh(animate = false) {
     $('#error').hidden = true;
     source.publish(history.current);
+    diagram.set({ source: source.data });
     diagram.set(drawn(binding()), { animate });
     historyButtons();
     showGroups();
@@ -508,7 +509,7 @@ async function boot() {
     }
   }
   async function exportImage(download = true): Promise<Blob> {
-    const fixed = await source.retain();
+    const fixed = source.data;
     const offscreen = createDiagram(gpu, {
       ...binding(),
       ...options(),
@@ -531,7 +532,6 @@ async function boot() {
       return blob;
     } finally {
       offscreen.destroy();
-      await fixed.close();
     }
   }
   const actions: Record<string, () => void | Promise<unknown>> = {
@@ -633,6 +633,7 @@ async function boot() {
   };
   check('simulate').onchange = () => {
     if (!check('simulate').checked) source.publish(history.current);
+    diagram.set({ source: source.data });
     message(check('simulate').checked ? 'Synthetic signal values are live' : 'Live values paused');
   };
   canvas.addEventListener('pointerdown', () => {
@@ -677,6 +678,7 @@ async function boot() {
           signal: (Math.sin(time + i * 0.4) + 1) / 2,
         })),
       });
+      diagram.set({ source: source.data });
     }
   }, 250);
   const resize = () => {
@@ -691,7 +693,6 @@ async function boot() {
     systemTheme.removeEventListener('change', updateTheme);
     diagram.destroy();
     gpu.destroy();
-    void source.close();
   });
   $<HTMLFieldSetElement>('#controls').disabled = false;
   select('mode').disabled = false;

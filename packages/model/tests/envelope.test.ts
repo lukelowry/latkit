@@ -10,7 +10,6 @@ import {
   type EnvelopeBlock,
 } from '../src/index.js';
 const schema: Schema = {
-  queries: ['envelope'],
   axis: { name: 'coordinate' },
   limits: { maxBlockBytes: 8192 },
   types: { node: { fields: { value: { type: 'float64', sampled: true, nullable: true } } } },
@@ -54,7 +53,7 @@ it('validates optional native summaries and accounts every exposed backing', () 
   expect(blockBuffers(block())).toHaveLength(5);
   expect(blockByteLength(block())).toBeGreaterThan(3 * 8 * 8);
   expect(validateSchema({ ...schema, axis: undefined })).not.toEqual([]);
-  expect(validateQuery({ ...schema, queries: ['rows'] }, query)[0].code).toBe('unsupported');
+  expect(validateQuery(schema, query)).toEqual([]);
 });
 it('rejects invented times, partial slots, nonfinite summaries, invalid extrema and truncated bitmaps', () => {
   for (const change of [

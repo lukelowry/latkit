@@ -134,7 +134,7 @@ describe('public contract and allocation boundaries', () => {
       gpu = await api.createGpu({ device: fake.device });
     const source = new Source(1_000_000, { blockRows: 10000 });
     await draw(gpu, async (frame) => {
-      for await (const block of frame.query(source, {
+      for await (const block of frame.query(source.data, {
         kind: 'rows',
         from: 'node',
         select: ['value'],

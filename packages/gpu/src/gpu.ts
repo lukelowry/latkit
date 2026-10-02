@@ -3,7 +3,7 @@ import { shadeUniforms } from './shade.js';
 import type { FieldsRequest, NativeFields } from './binding.js';
 import type { EnvelopeRequest } from './envelope.js';
 import { Envelopes } from './envelope.js';
-import type { Query, Queryable, Version, RequestOptions, EnvelopeBlock } from '@latkit/model';
+import type { Query, Data, Version, RequestOptions, EnvelopeBlock } from '@latkit/model';
 import { BufferData } from './buffers.js';
 import { Buffers, type BufferResource } from './owned-buffer.js';
 import { Colormaps } from './colors/preparation.js';
@@ -52,7 +52,7 @@ export interface Gpu {
   readonly colormapLayout: GPUBindGroupLayout;
   measureText(input: TextInput, options?: { readonly signal?: AbortSignal }): Promise<TextMetrics>;
   query<Q extends Query>(
-    source: Queryable,
+    source: Data,
     query: Q,
     options?: RequestOptions,
   ): AsyncIterable<QueryResult<Q>>;
@@ -149,7 +149,7 @@ class Owner implements Gpu {
     );
     this.fieldLayout = this.uploader.fieldPages.layout;
     this.fieldReader = new Fields(this.memory, this.uploader.pageBytes);
-    this.envelopes = new Envelopes(this.memory, options.maxBlockBytes ?? 1024 ** 2);
+    this.envelopes = new Envelopes();
     this.reads = new Reads(
       this.memory,
       integer(options.maxBlockBytes ?? 1024 ** 2, 'block bytes', 1),
@@ -195,25 +195,16 @@ class Owner implements Gpu {
       abort.signal,
       ...(options.signal ? [options.signal] : []),
     ]);
-    const versions = new Map<Queryable, Version>(),
-      subscriptions = new Map<Queryable, () => void>();
+    const versions = new Map<Data, Version>();
     const entries = new Set<Entry>(),
       checks: (() => void)[] = [];
-    const observe = (source: Queryable): void => {
+    const observe = (source: Data): void => {
       signal.throwIfAborted();
       if (!versions.has(source)) versions.set(source, source.version);
-      if (!subscriptions.has(source))
-        subscriptions.set(
-          source,
-          source.on('change', (change) => {
-            if (change.kind === 'closed')
-              abort.abort(new GpuError('closed', 'Preparation source was closed'));
-          }),
-        );
     };
     const reads = this.reads;
     const query = async function* <Q extends Query>(
-      source: Queryable,
+      source: Data,
       request: Q,
     ): AsyncGenerator<QueryResult<Q>> {
       observe(source);
@@ -254,13 +245,12 @@ class Owner implements Gpu {
       },
       close() {
         abort.abort(new DOMException('Preparation ended', 'AbortError'));
-        for (const off of subscriptions.values()) off();
         for (const entry of entries) entry.unpin();
       },
     };
   }
   async *query<Q extends Query>(
-    source: Queryable,
+    source: Data,
     query: Q,
     options: RequestOptions = {},
   ): AsyncGenerator<QueryResult<Q>> {
@@ -380,7 +370,7 @@ class Owner implements Gpu {
     const held = new Set<Entry>();
     const checks: (() => void)[] = [];
     const copies = new Set<CopyJob>();
-    const versions = new Map<Queryable, Version>();
+    const versions = new Map<Data, Version>();
     const subscriptions: (() => void)[] = [];
     const iterators = new Set<AsyncIterator<unknown>>();
     const tasks = new Set<Promise<unknown>>();
@@ -412,20 +402,14 @@ class Owner implements Gpu {
       for (const entry of held) entry.unpin();
       held.clear();
     };
-    const observed = new Set<Queryable>();
-    const observe = (source: Queryable): void => {
+    const observed = new Set<Data>();
+    const observe = (source: Data): void => {
       assertPreparing();
       if (observed.has(source)) return;
       observed.add(source);
       if (!versions.has(source)) versions.set(source, source.version);
-      subscriptions.push(
-        source.on('change', (change) => {
-          if (change.kind === 'closed')
-            cancelled.abort(new GpuError('closed', 'A frame source was closed'));
-        }),
-      );
     };
-    const read = <Q extends Query>(source: Queryable, query: Q): AsyncIterable<QueryResult<Q>> => {
+    const read = <Q extends Query>(source: Data, query: Q): AsyncIterable<QueryResult<Q>> => {
       const reads = this.reads;
       return {
         async *[Symbol.asyncIterator]() {

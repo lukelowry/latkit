@@ -75,7 +75,7 @@ async function main(): Promise<void> {
   const gpu = await createGpu();
   const net = createNetwork(gpu, {
     canvas: stage,
-    source: current,
+    source: current.data,
     vertices: { Bus: fields() },
     edges: {
       Line: {
@@ -108,18 +108,16 @@ async function main(): Promise<void> {
   wireTopologies(
     () => currentId,
     (opt) => {
-      const previous = current;
       current = opt.build();
       currentId = opt.id;
       net.set({
-        source: current,
+        source: current.data,
         vertices: { Bus: fields() },
         edges: { Line: { bends: current.tables.Line!.columns.bends ? 'bends' : null } },
         vertexRadiusPx: current.tables.Bus!.count >= 100000 ? 1.4 : 4,
         edgeWidthPx: current.tables.Bus!.count >= 100000 ? 0.5 : 1.4,
         camera: { fit: true },
       });
-      void previous.close();
       readoutEl.querySelector('.hover')!.textContent = '-';
       readoutEl.querySelector('.select')!.textContent = '-';
     },
@@ -146,7 +144,7 @@ async function main(): Promise<void> {
             paths: {
               border: on
                 ? {
-                    source: borders,
+                    source: borders?.data,
                     points: 'points',
                     widthPx: 0.8,
                     baseColor: [0.4, 0.55, 0.65, 0.7],
@@ -176,8 +174,6 @@ async function main(): Promise<void> {
   const dispose = (): void => {
     lifetime.abort();
     net.destroy();
-    void current.close();
-    void borders?.close();
     gpu.destroy();
   };
   window.addEventListener('pagehide', (event) => {

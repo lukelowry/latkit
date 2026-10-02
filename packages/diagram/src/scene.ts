@@ -1,4 +1,4 @@
-import type { Index, Queryable } from '@latkit/model';
+import type { Index, Data } from '@latkit/model';
 import type { kit, RGBA } from '@latkit/gpu';
 import type { DiagramData, DiagramHit, Point, Shape, VertexData, EdgeData } from './data.js';
 export type Reader =
@@ -92,7 +92,7 @@ export interface Scene {
   routeClearance?: number;
   portSizePx?: number;
   ends: number;
-  versions: ReadonlyMap<Queryable, string>;
+  versions: ReadonlyMap<Data, string>;
 }
 export const emptyLabel: Label = { text: '', width: 0, height: 0, ascent: 0, runs: [] };
 export function rect(vertex: Vertex): Rect {

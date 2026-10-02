@@ -40,6 +40,9 @@ network.set({
 });
 ```
 
+Data updates are explicit: `view.set({ source: nextData })`. Views never subscribe to a model
+or request historical data. Share unchanged column pages when constructing the next value.
+
 An invalid patch throws and changes nothing. `view.config` holds the current config.
 
 ## Camera
@@ -96,7 +99,6 @@ no canvas of their own.
 ```ts
 network.destroy();
 gpu.destroy();
-await source.close();
 ```
 
 `destroy` releases the view's canvas, input, and GPU resources, never its sources or GPU. Destroy the

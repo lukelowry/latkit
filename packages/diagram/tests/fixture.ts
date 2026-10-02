@@ -1,11 +1,10 @@
+import { createData, read, type Data, type DataPatch } from '@latkit/model';
 import type {
-  Queryable,
   Query,
   QueryOptions,
   QueryBlock,
   QueryHeader,
   Schema,
-  Update,
   Column,
   RowSelection,
 } from '@latkit/model';
@@ -15,11 +14,10 @@ export interface End {
   vertex: number;
   port: 'input' | 'output';
 }
-export class Source implements Queryable {
+export class Source {
   version = 'v1';
   indexVersion = 'rows1';
   queries = 0;
-  listeners = new Set<(change: Update) => void>();
   names: string[];
   xy: Float64Array;
   weights: Float32Array;
@@ -28,7 +26,6 @@ export class Source implements Queryable {
   /** Serve the input port as numbers rather than references. */
   malformed = false;
   schema: Schema = {
-    queries: ['rows'],
     limits: { maxBlockBytes: 1024 * 1024 },
     types: {
       Task: {
@@ -72,33 +69,29 @@ export class Source implements Queryable {
   index(type: string) {
     return { source: 'diagram-fixture', type, version: this.indexVersion };
   }
-  describe(): Promise<Schema> {
-    return Promise.resolve(this.schema);
-  }
-  on(_event: 'change', listener: (change: Update) => void): () => void {
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
-  }
   update(): void {
     this.version += 'x';
-    for (const fn of this.listeners) fn({ kind: 'replace', version: this.version });
   }
-  close(): Promise<void> {
-    for (const fn of this.listeners) fn({ kind: 'closed' });
-    this.listeners.clear();
-    return Promise.resolve();
-  }
-  retain(): Promise<Queryable> {
-    const copy = new Source(this.count);
-    copy.version = this.version;
-    copy.indexVersion = this.indexVersion;
-    copy.names = [...this.names];
-    copy.xy = this.xy.slice();
-    copy.weights = this.weights.slice();
-    copy.ends = this.ends.map((e) => e.map((v) => ({ ...v })));
-    return Promise.resolve(copy);
+  private cached?: Data;
+  get data(): Data {
+    if (this.cached?.version === this.version) return this.cached;
+    const patches: DataPatch[] = [];
+    for (const [from, type] of Object.entries(this.schema.types))
+      for (const block of this.blocks({
+        kind: 'rows',
+        from,
+        select: Object.keys(type.fields),
+        ids: true,
+      }))
+        if (block.kind === 'rows')
+          patches.push({
+            kind: 'rows',
+            index: block.index,
+            rows: block.rows,
+            columns: block.columns,
+            ids: block.ids,
+          });
+    return (this.cached = createData(this.schema, this.version, patches));
   }
   selection(type: string, rows?: RowSelection): number[] {
     const count = type === 'Task' ? this.count : this.ends.length;
@@ -106,14 +99,24 @@ export class Source implements Queryable {
     if (rows?.kind === 'indices') return [...rows.values];
     return Array.from({ length: rows?.count ?? count }, (_, i) => i + (rows?.offset ?? 0));
   }
-  query: Queryable['query'] = ((q: Query, o?: QueryOptions) =>
-    this.read(q, o)) as Queryable['query'];
-  private async *read(q: Query, o?: QueryOptions): AsyncGenerator<QueryHeader | QueryBlock> {
+  query<Q extends Query>(query: Q, options?: QueryOptions) {
+    return read(this.data, query, options);
+  }
+  private *blocks(q: Query, o?: QueryOptions): Generator<QueryHeader | QueryBlock> {
     this.queries++;
     o?.signal?.throwIfAborted();
     yield { kind: 'schema', version: this.version, schema: this.schema };
     const rows = this.selection(q.from, 'rows' in q ? q.rows : undefined);
     if (q.kind === 'rows') {
+      const ports = new Map<string, Map<number, number>>();
+      if (q.from === 'Task')
+        this.ends.forEach((ends, net) => {
+          for (const end of ends) {
+            let vertices = ports.get(end.port);
+            if (!vertices) ports.set(end.port, (vertices = new Map<number, number>()));
+            vertices.set(end.vertex, net);
+          }
+        });
       const chosen = rows.slice(
         q.offset ?? 0,
         q.limit === undefined ? undefined : (q.offset ?? 0) + q.limit,
@@ -145,13 +148,11 @@ export class Source implements Queryable {
           } else if (field === 'input' || field === 'output') {
             const nets = new Uint32Array(selected.length),
               validity = new Uint8Array(Math.ceil(selected.length / 8));
-            this.ends.forEach((ends, net) => {
-              for (const end of ends) {
-                const at = end.port === field ? selected.indexOf(end.vertex) : -1;
-                if (at < 0) continue;
-                nets[at] = net;
-                validity[at >>> 3] |= 1 << (at & 7);
-              }
+            selected.forEach((vertex, at) => {
+              const net = ports.get(field)?.get(vertex);
+              if (net === undefined) return;
+              nets[at] = net;
+              validity[at >>> 3] |= 1 << (at & 7);
             });
             columns[field] =
               this.malformed && field === 'input'
@@ -187,7 +188,9 @@ export class Source implements Queryable {
           kind: 'rows',
           version: this.version,
           index: this.index(q.from),
-          rows: { kind: 'indices', values: Uint32Array.from(selected) },
+          rows: selected.every((row, i) => row === selected[0] + i)
+            ? { kind: 'range', offset: selected[0] ?? 0, count: selected.length }
+            : { kind: 'indices', values: Uint32Array.from(selected) },
           position: first,
           columns,
           ...(q.ids
@@ -208,7 +211,7 @@ export function texts(values: readonly string[]): import('@latkit/model').TextCo
 }
 export function data(source = new Source(), position = false): DiagramData {
   return {
-    source,
+    source: source.data,
     vertices: {
       Task: { labels: { field: 'name' }, ...(position ? { position: 'position' } : {}) },
     },

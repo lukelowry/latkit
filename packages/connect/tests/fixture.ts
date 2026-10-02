@@ -1,8 +1,7 @@
 import { MessageChannel } from 'node:worker_threads';
-import type { Recording, RecordingStatus } from '@latkit/model';
 import { connect, serve, messagePort, byteTransport } from '../src/index.js';
 import type { ConnectOptions, Transport } from '../src/index.js';
-import { FixtureModel } from '../../model/tests/fixture.js';
+import { LiveModel } from '../../model/tests/live.js';
 export function transports(framed = false): [Transport, Transport] {
   const { port1, port2 } = new MessageChannel();
   const pair = [messagePort(port1), messagePort(port2)];
@@ -16,19 +15,18 @@ export function transports(framed = false): [Transport, Transport] {
       : raw,
   ) as [Transport, Transport];
 }
-export async function open(
-  model = new FixtureModel(),
+export async function connected(
   framed = false,
+  model = new LiveModel(),
   options: ConnectOptions = {},
 ) {
-  const [client, server] = transports(framed);
-  const serving = serve(server, model, options);
-  void serving.catch(() => undefined);
+  const [server, client] = transports(framed);
+  const serving = serve(server, model, { ...options, commands: model.commands });
   const remote = await connect(client, options);
+  void serving.catch(() => undefined);
   return {
-    remote,
     model,
-    client,
+    remote,
     server,
     serving,
     async close() {
@@ -37,24 +35,21 @@ export async function open(
     },
   };
 }
-export function deferred<T = void>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: Error) => void;
-  const promise = new Promise<T>((a, b) => {
-    resolve = a;
-    reject = b;
-  });
-  void promise.catch(() => undefined);
-  return { promise, resolve, reject };
+export async function subscribed(model: LiveModel, count = 1): Promise<void> {
+  for (let i = 0; model.subscribers.size < count; i++) {
+    if (i > 1000) throw new Error('Subscription not established');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
-/** Settles once a monitor reports `status`, as its peer publishes it. */
-export function reached(recording: Recording, status: RecordingStatus): Promise<void> {
-  if (recording.status === status) return Promise.resolve();
-  return new Promise((resolve) => {
-    const off = recording.on('change', () => {
-      if (recording.status !== status) return;
-      off();
-      resolve();
-    });
+
+export function open(model = new LiveModel(), framed = false, options: ConnectOptions = {}) {
+  return connected(framed, model, options);
+}
+export function deferred<T = void>() {
+  let resolve!: (value: T) => void, reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
   });
+  return { promise, resolve, reject };
 }

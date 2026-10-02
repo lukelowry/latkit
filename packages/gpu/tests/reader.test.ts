@@ -6,7 +6,7 @@ it('resolves indexed native fields and releases CPU-only sessions', async () => 
     reader = createNativeReader();
   try {
     for await (const tile of reader.fields({
-      source,
+      source: source.data,
       from: source.index.type,
       rows: { index: source.index, kind: 'range', offset: 0, count: 8 },
       fields: { position: 'position', value: 'value' },
@@ -21,7 +21,7 @@ it('resolves indexed native fields and releases CPU-only sessions', async () => 
   }
   await expect(async () => {
     for await (const _tile of reader.fields({
-      source,
+      source: source.data,
       from: source.index.type,
       fields: { value: 'value' },
     })) {
@@ -37,7 +37,7 @@ it('rejects canceled reads without acquiring a WebGPU device', async () => {
   try {
     await expect(async () => {
       for await (const _tile of reader.fields({
-        source,
+        source: source.data,
         from: source.index.type,
         fields: { value: 'value' },
       })) {

@@ -26,7 +26,7 @@ export async function draw(
   prepare: (frame: Preparation) => void | Promise<void>,
 ): Promise<void> {
   await gpu.render({
-    views: [{ renderer: renderer(prepare), target: target(gpu.device) }],
+    views: [{ renderer: renderer(prepare), target: target(gpu.device), at: 0 }],
     timeMs: 0,
   });
   await gpu.idle();

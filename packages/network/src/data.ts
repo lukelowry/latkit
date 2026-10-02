@@ -1,4 +1,4 @@
-import { sameIndex, type Queryable, type RowSelection } from '@latkit/model';
+import { sameIndex, type Data, type RowSelection } from '@latkit/model';
 import type { kit, RGBA } from '@latkit/gpu';
 
 export interface Labels {
@@ -41,7 +41,7 @@ export interface EdgeOptions {
 }
 export interface PathOptions {
   /** Defaults to the network's source. */
-  readonly source?: Queryable;
+  readonly source?: Data;
   readonly rows?: RowSelection;
   readonly points: kit.FieldInput;
   readonly curve?: 'linear' | 'geodesic';
@@ -79,7 +79,7 @@ export type EdgeData = Full<EdgeOptions>;
 export type PathData = Full<PathOptions>;
 /** What the renderer draws. Positions are longitude/latitude in degrees for geographic data. */
 export interface NetworkData {
-  readonly source: Queryable;
+  readonly source: Data;
   readonly vertices: Readonly<Record<string, VertexData>>;
   readonly edges?: Readonly<Record<string, EdgeData>>;
   readonly paths?: Readonly<Record<string, PathData>>;
@@ -104,7 +104,7 @@ function record<T extends object>(
   return entries && Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, full(v)]));
 }
 export function networkData(config: {
-  readonly source: Queryable;
+  readonly source: Data;
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;
   readonly paths?: Readonly<Record<string, PathOptions>>;

@@ -93,7 +93,7 @@ const base: Style = {
 };
 export function data(source: GraphSource, settings: Settings, automatic = false): Drawn {
   return {
-    source,
+    source: source.data,
     vertices: Object.fromEntries(
       types.map((type) => [
         type,

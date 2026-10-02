@@ -8,7 +8,7 @@ import type {
   Query,
   QueryBlock,
   QueryHeader,
-  Queryable,
+  Data,
   RowsBlock,
   RowsQuery,
   SamplesBlock,
@@ -62,7 +62,7 @@ export interface Preparation extends FrameInfo {
   extent(request: ExtentRequest): Promise<import('@latkit/model').Domain | null>;
   envelope(request: import('./envelope.js').EnvelopeRequest): AsyncIterable<EnvelopeBlock>;
   fields(request: FieldsRequest): AsyncIterable<NativeFields>;
-  query<Q extends Query>(source: Queryable, query: Q): AsyncIterable<QueryResult<Q>>;
+  query<Q extends Query>(source: Data, query: Q): AsyncIterable<QueryResult<Q>>;
   upload(
     block: NativeFields | RowsBlock | SamplesBlock | EnvelopeBlock,
     options: UploadOptions,

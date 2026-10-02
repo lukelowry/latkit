@@ -9,12 +9,15 @@ import { createMonitor } from '@latkit/monitor';
 const gpu = await createGpu();
 const monitor = createMonitor(gpu, {
   canvas,
-  source: recording,
+  source: observations,
   traces: { temperature: { from: 'sensor', field: 'temperature' } },
   camera: { window: [0, 30], follow: 30 },
   valueAxis: 'Temperature',
 });
 ```
+
+Supply each application update with `monitor.set({ source: nextData })`. Shared unchanged
+pages preserve incremental rendering; the application decides how much history to keep.
 
 [Guide](https://latkit.readthedocs.io/en/latest/monitor-quickstart.html) ·
 [Views](https://latkit.readthedocs.io/en/latest/views.html) ·

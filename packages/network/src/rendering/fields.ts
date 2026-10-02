@@ -19,11 +19,10 @@ export function splitPosition(
 }
 export async function readFields(
   frame: kit.Preparation,
-  source: import('@latkit/model').Queryable,
+  source: import('@latkit/model').Data,
   bank: VertexBank | EdgeBank,
   options: VertexData | EdgeData | PathData,
   position: kit.Position2D | undefined,
-  retain: (native: kit.NativeFields) => void,
 ): Promise<FieldRead> {
   const fields: Record<string, kit.FieldInput> = {};
   let vector = false;
@@ -62,7 +61,6 @@ export async function readFields(
     rows: { ...bank.rows, index: bank.index },
     fields,
   })) {
-    retain(tile);
     native.push(tile);
     for (const page of frame.upload(tile, {
       select: Object.keys(fields).filter((name) => !control.has(name)),
@@ -115,7 +113,7 @@ export async function readFields(
 /** Resolve each mapping once across all banks, never independently per upload page. */
 export async function resolveDomains(
   frame: kit.Preparation,
-  source: import('@latkit/model').Queryable,
+  source: import('@latkit/model').Data,
   reads: Map<VertexBank | EdgeBank, FieldRead>,
   config: (bank: VertexBank | EdgeBank) => VertexData | EdgeData | PathData,
 ): Promise<void> {

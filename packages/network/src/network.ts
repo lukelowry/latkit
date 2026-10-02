@@ -1,5 +1,5 @@
 import { GpuError, kit, type Gpu, type Shade, type View } from '@latkit/gpu';
-import type { Queryable, Update } from '@latkit/model';
+import type { Data } from '@latkit/model';
 import type { Camera, Projection } from './camera.js';
 import { DEFAULT_CAMERA, checkCamera, fit, mixCamera, move, zoom } from './camera.js';
 import {
@@ -34,7 +34,7 @@ import { pipelines } from './rendering/pipelines.js';
 type Point = readonly [number, number];
 export interface NetworkConfig extends kit.ViewConfig, StyleOptions {
   /** Borrowed: destroy never closes it. */
-  readonly source: Queryable;
+  readonly source: Data;
   /** Drawn types by model type name. */
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;
@@ -112,7 +112,6 @@ interface Presented {
   readonly height: number;
   readonly data: NetworkData;
   readonly options: Style;
-  readonly release: () => void;
 }
 interface PreparedHover {
   readonly item: NetworkItem | null;
@@ -127,7 +126,6 @@ interface Pending extends Presented {
   readonly paint: Paint;
   readonly prepareMs: number;
   readonly finishedAnimation?: object;
-  commit(): void;
 }
 interface Resolved {
   readonly config: NetworkConfig;
@@ -198,7 +196,7 @@ function rewired(a: NetworkData, b: NetworkData): boolean {
     );
   };
   return (
-    a.source !== b.source ||
+    topologyChanged(a.source, b.source) ||
     differ(a.vertices, b.vertices, ['rows']) ||
     differ(a.edges, b.edges, ['rows', 'ends', 'junction']) ||
     differ(a.paths, b.paths, ['rows', 'source'])
@@ -230,7 +228,6 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
   private hoverSuspended = false;
   private hoverUntil = 0;
   private hoverWake?: ReturnType<typeof setTimeout>;
-  private subscriptions: (() => void)[] = [];
   private shadeAnimating = false;
   private previousTime?: number;
   private clock = 0;
@@ -268,7 +265,6 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
       this.view = checkCamera({ ...this.view, projection: 'tilt', pitch: 45 });
     this.shade = config.shade ?? null;
     this.painter = new Painter(gpu);
-    this.subscribe();
     this.start();
   }
 
@@ -409,7 +405,6 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
       style.hoverBudgetMs !== this.style.hoverBudgetMs
     )
       this.resetHover();
-    if (bound) this.subscribe();
     if (previous.shade !== next.shade) this.compile(next.shade ?? null);
     this.invalidate();
   }
@@ -525,39 +520,6 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
         if (serial === this.shadeSerial) this.fail(error);
       },
     );
-  }
-  private subscribe(): void {
-    for (const off of this.subscriptions) off();
-    this.subscriptions = [];
-    const sources = new Set<Queryable>([this.data.source]);
-    const visit = (value: unknown): void => {
-      if (!value || typeof value !== 'object') return;
-      if ('source' in value && 'field' in value) {
-        sources.add((value as { source: Queryable }).source);
-        return;
-      }
-      if (ArrayBuffer.isView(value) || 'values' in value) return;
-      for (const child of Object.values(value as Record<string, unknown>)) visit(child);
-    };
-    visit(this.data.vertices);
-    visit(this.data.edges);
-    visit(this.data.paths);
-    for (const path of Object.values(this.data.paths ?? {}))
-      if (path.source) sources.add(path.source);
-    for (const source of sources)
-      this.subscriptions.push(
-        source.on('change', (change: Update) => {
-          this.labels.invalidate(source, change);
-          if (change.kind === 'replace') {
-            this.geometry = undefined;
-            this.clearSelection();
-            this.resetHover();
-          }
-          this.invalidate(
-            change.kind === 'append' || change.kind === 'status' ? 'refresh' : 'replace',
-          );
-        }),
-      );
   }
   private hit(point: Point, radiusPx?: number): readonly NetworkItem[] {
     const shown = this.presented;
@@ -685,21 +647,7 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
   protected async prepare(frame: kit.Preparation): Promise<void> {
     this.live();
     const started = performance.now();
-    const releases: (() => void)[] = [],
-      held = new Set<kit.NativeFields>();
-    let released = false,
-      committed = false;
-    const release = () => {
-      if (!released) {
-        released = true;
-        for (const off of releases) off();
-      }
-    };
-    const abort = () => {
-      if (!committed) release();
-    };
-    frame.signal.addEventListener('abort', abort, { once: true });
-    try {
+    {
       const data = this.data,
         style = this.style;
       const topology =
@@ -707,12 +655,6 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
       let geometry = topology;
       const vertices = new Map<VertexBank, FieldRead>(),
         edges = new Map<EdgeBank, FieldRead>();
-      const retain = (native: kit.NativeFields) => {
-        if (!held.has(native)) {
-          held.add(native);
-          releases.push(native.retain());
-        }
-      };
       for (const bank of geometry.vertices)
         vertices.set(
           bank,
@@ -722,7 +664,6 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
             bank,
             data.vertices[bank.type],
             data.vertices[bank.type].position ?? bank.position,
-            retain,
           ),
         );
       for (const bank of geometry.edges)
@@ -734,7 +675,6 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
             bank,
             edgeOptions(data, bank),
             undefined,
-            retain,
           ),
         );
       await resolveDomains(frame, data.source, vertices, (bank) =>
@@ -750,7 +690,7 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
         if (bank.synthetic)
           vertices.set(
             bank,
-            await readFields(frame, data.source, bank, bank.synthetic, bank.position, retain),
+            await readFields(frame, data.source, bank, bank.synthetic, bank.position),
           );
       for (const bank of geometry.vertices)
         if (bank.synthetic) {
@@ -841,16 +781,7 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
         hover,
         prepareMs: performance.now() - started,
         finishedAnimation,
-        release,
-        commit: () => {
-          committed = true;
-          frame.signal.removeEventListener('abort', abort);
-        },
       };
-    } catch (error) {
-      frame.signal.removeEventListener('abort', abort);
-      release();
-      throw error;
     }
   }
   protected encode(frame: kit.Encoding): void {
@@ -861,9 +792,7 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
   protected submitted(frame: kit.FrameInfo): void {
     const pending = this.pendingFrame;
     if (!pending) return;
-    pending.commit();
     if (this.animation === pending.finishedAnimation) this.animation = undefined;
-    this.presented?.release();
     this.presented = pending;
     this.pendingFrame = undefined;
     this.view = pending.camera;
@@ -915,13 +844,41 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
   protected release(): void {
     this.clearHoverWake();
     this.shadeSerial++;
-    for (const off of this.subscriptions) off();
-    this.subscriptions = [];
-    this.pendingFrame?.release();
-    this.presented?.release();
     this.pendingFrame = undefined;
     this.presented = undefined;
     this.geometry = undefined;
     this.painter.destroy();
   }
+}
+
+function topologyChanged(a: Data, b: Data): boolean {
+  if (a === b) return false;
+  if (a.schema !== b.schema || Object.keys(a.tables).length !== Object.keys(b.tables).length)
+    return true;
+  for (const [name, x] of Object.entries(a.tables)) {
+    const y = b.tables[name];
+    if (
+      !y ||
+      x.index.source !== y.index.source ||
+      x.index.type !== y.index.type ||
+      x.index.version !== y.index.version
+    )
+      return true;
+    if (
+      x.rows !== y.rows &&
+      (x.rows.kind !== 'range' ||
+        y.rows.kind !== 'range' ||
+        x.rows.offset !== y.rows.offset ||
+        x.rows.count !== y.rows.count)
+    )
+      return true;
+    for (const [field, definition] of Object.entries(a.schema.types[name].fields))
+      if (
+        typeof definition.type === 'object' &&
+        (definition.type.kind === 'reference' || definition.type.kind === 'list') &&
+        x.fields[field] !== y.fields[field]
+      )
+        return true;
+  }
+  return false;
 }

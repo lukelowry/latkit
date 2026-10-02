@@ -1,3 +1,4 @@
+import { transactions } from '@latkit/model';
 import { connect, messagePort, serve } from '@latkit/connect';
 /* global document, GPUBufferUsage, GPUMapMode, PointerEvent, OffscreenCanvas, createImageBitmap */
 import { createMonitor } from '@latkit/monitor';
@@ -65,6 +66,12 @@ function bright(image, x, y, radius = 2) {
   return max > 80;
 }
 export async function verify(gpu) {
+  const queries = [],
+    query = gpu.query.bind(gpu);
+  gpu.query = (...args) => {
+    queries.push(args[1]);
+    return query(...args);
+  };
   const checks = [];
   globalThis.pixelChecks = checks;
   const target = kit.createRenderTarget({ gpu, width: 512, height: 256 });
@@ -79,7 +86,7 @@ export async function verify(gpu) {
       lo = source.coordinate(0),
       hi = source.coordinate(source.frames - 1);
     const view = createMonitor(gpu, {
-      source,
+      source: source.data,
       traces: {
         a: {
           from: 'signal',
@@ -144,7 +151,6 @@ export async function verify(gpu) {
     }
     checks.push({ mode, found, tested });
     out.view.destroy();
-    await source.close();
   }
   for (const interpolation of ['step-before', 'step-after']) {
     const source = new SignalSource(1, 2);
@@ -183,7 +189,9 @@ export async function verify(gpu) {
   stableSource.value = (row) => (row ? 1 : -1);
   const stable = await render(stableSource, { focusColor: [0, 1, 0, 1] });
   const stableRenderer = kit.rendererOf(stable.view);
-  stable.view.select([{ source: stableSource, index: stableSource.index, row: 1, field: 'value' }]);
+  stable.view.select([
+    { source: stableSource.data, index: stableSource.index, row: 1, field: 'value' },
+  ]);
   await draw(stable.view);
   let checkedFrames = 0;
   async function checkStable() {
@@ -200,13 +208,13 @@ export async function verify(gpu) {
     assert(color(0.75, 0) < 100, 'Unselected history flashed to full brightness');
     checkedFrames++;
   }
-  const resizeReads = stableSource.reads;
+  const resizeReads = gpu.stats().queries;
   for (let i = 0; i < 12; i++) {
     target.resize({ width: 512 + i * 4, height: 256 + i * 2 });
     await draw(stable.view, false);
     await checkStable();
   }
-  assert(stableSource.reads === resizeReads, 'Resize burst rebuilt source history');
+  assert(gpu.stats().queries === resizeReads, 'Resize burst rebuilt source history');
   await draw(stable.view);
   await checkStable();
   const [lo, hi] = stable.view.camera.window,
@@ -248,10 +256,11 @@ export async function verify(gpu) {
   });
   // Sampled visibility must refine raw samples instead of misapplying envelope representatives.
   document.querySelector('#status').textContent = 'Pixel check: visibility';
+  const visibilityStart = queries.length;
   const visibility = new SignalSource(1, 4096, { native: true });
   const shown = await render(visibility, {}, { visible: 'visible' });
   assert(
-    !visibility.requests.some((q) => q.kind === 'envelope'),
+    !queries.slice(visibilityStart).some((q) => q.kind === 'envelope'),
     'Sampled visibility used lossy summaries',
   );
   shown.view.destroy();
@@ -285,10 +294,39 @@ export async function verify(gpu) {
   checks.push({ mode: 'transactional shade', passed: true });
   const channel = new MessageChannel(),
     local = new SignalSource(3, 128);
-  const serving = serve(messagePort(channel.port1), local, { kind: 'queryable' }),
-    remote = await connect(messagePort(channel.port2), { kind: 'queryable' });
+  const producer = {
+    name: 'Telemetry',
+    schema: local.schema,
+    async *monitor() {
+      yield { kind: 'begin', version: local.version, initial: true };
+      for (const page of local.data.tables.signal.fields.value)
+        yield {
+          kind: 'data',
+          version: local.version,
+          patch: {
+            kind: 'samples',
+            index: local.index,
+            rows: page.rows,
+            firstFrame: page.samples.firstFrame,
+            coordinates: page.samples.coordinates,
+            columns: { value: page.column },
+          },
+        };
+      yield { kind: 'end', version: local.version };
+    },
+  };
+  const serving = serve(messagePort(channel.port1), producer),
+    remote = await connect(messagePort(channel.port2));
+  const transaction = transactions(
+    remote.schema,
+    remote.monitor([{ from: 'signal', select: ['value'] }]),
+  );
+  const delivered = (await transaction.next()).value;
+  await transaction.return();
+  await remote.close();
+  await serving;
   const connected = createMonitor(gpu, {
-    source: remote,
+    source: delivered,
     traces: { a: { from: 'signal', field: 'value' } },
     camera: { window: [0, 1.27], values: [-2, 2] },
     coordinateAxis: false,
@@ -305,7 +343,7 @@ export async function verify(gpu) {
     assert(
       hits.some(
         (hit) =>
-          hit.source === remote &&
+          hit.source === delivered &&
           hit.row === 1 &&
           hit.frame === local.firstFrame + 60 &&
           hit.value === value,
@@ -313,8 +351,8 @@ export async function verify(gpu) {
       'Connected source changed the native reading contract',
     );
     connected.destroy();
-    assert(!local.closed, 'Monitor closed a borrowed connected source');
-    checks.push({ mode: 'connected Queryable', passed: true });
+    assert(local.data.tables.signal.fields.value.length > 0, 'Application data changed');
+    checks.push({ mode: 'delivered data after disconnect', passed: true });
   } finally {
     connected.destroy();
     await remote.close();
@@ -335,6 +373,12 @@ function summary(values) {
   };
 }
 export async function benchmark(gpu) {
+  const queries = [],
+    query = gpu.query.bind(gpu);
+  gpu.query = (...args) => {
+    queries.push(args[1]);
+    return query(...args);
+  };
   const result = [];
   globalThis.benchmarkProgress = result;
   const target = kit.createRenderTarget({ gpu, width: 960, height: 480 });
@@ -345,7 +389,7 @@ export async function benchmark(gpu) {
   ]) {
     const source = new SignalSource(rows, frames, { native: true });
     const view = createMonitor(gpu, {
-      source,
+      source: source.data,
       traces: {
         signal: { from: 'signal', field: 'value', widthPx: 1, baseColor: [0.2, 0.7, 0.9, 0.15] },
       },
@@ -370,7 +414,7 @@ export async function benchmark(gpu) {
     await gpu.idle();
     const initialMs = performance.now() - began;
     progress.phase = 'steady';
-    const reads = source.reads,
+    const reads = gpu.stats().queries,
       steady = [],
       moving = [];
     for (let i = 0; i < 45; i++) {
@@ -382,7 +426,7 @@ export async function benchmark(gpu) {
       await gpu.idle();
       if (i >= 5) steady.push(performance.now() - began);
     }
-    assert(source.reads === reads, 'Playhead caused history queries');
+    assert(gpu.stats().queries === reads, 'Playhead caused history queries');
     progress.phase = 'resizing';
     for (let i = 0; i < 25; i++) {
       target.resize({ width: 960 + (i % 2) * 4, height: 480 + (i % 2) * 2 });
@@ -392,17 +436,17 @@ export async function benchmark(gpu) {
       moving.push(performance.now() - began);
       prepared.push(view.stats().prepareMs);
     }
-    assert(source.reads === reads, 'Resizing caused history queries before settling');
+    assert(gpu.stats().queries === reads, 'Resizing caused history queries before settling');
     await gpu.render({ views: [{ renderer, target }], timeMs: 1000, completion: 'complete' });
     progress.phase = 'focus';
-    const q = source.requests.length;
-    view.select([{ source, index: source.index, row: 0, field: 'value' }]);
+    const q = queries.length;
+    view.select([{ source: source.data, index: source.index, row: 0, field: 'value' }]);
     began = performance.now();
     await gpu.render({ views: [{ renderer, target }], timeMs: 1000, completion: 'complete' });
     await gpu.idle();
     const focusMs = performance.now() - began;
     assert(
-      source.requests
+      queries
         .slice(q)
         .filter((q) => q.kind === 'samples')
         .every((q) => q.rows?.kind === 'range' && q.rows.count === 1),
@@ -420,14 +464,9 @@ export async function benchmark(gpu) {
       focusMs,
       historyBytes: view.stats().historyBytes,
       gpu: gpu.stats(),
-      peakSourceBlockBytes: source.peakBlockBytes,
       noQueriesDuringInteraction: true,
-      sourceYieldMs: source.yieldMs,
-      sourceYieldCount: source.yieldCount,
-      sourceObservations: source.observations,
     });
     view.destroy();
-    await source.close();
     await gpu.idle();
     gpu.trim();
   }
@@ -460,7 +499,7 @@ export async function canvasLatency(gpu) {
   const started = performance.now();
   const monitor = createMonitor(gpu, {
     canvas,
-    source,
+    source: source.data,
     traces: { a: { from: 'signal', field: 'value', baseColor: [0, 1, 0, 1], widthPx: 3 } },
     camera: { window: [0, 41], values: [-2, 2] },
     coordinateAxis: false,
@@ -532,13 +571,14 @@ export async function canvasLatency(gpu) {
       phase = 'empty';
       live = new SignalSource(1, 0);
       live.value = () => 0;
-      monitor.set({ source: live, camera: { window: [0, 1] } });
+      monitor.set({ source: live.data, camera: { window: [0, 1] } });
     } else if (phase === 'empty' && !monitor.stats().refining) {
       phase = 'stream';
       timer = setInterval(() => {
         events.push({ coordinate: live.coordinate(received), receivedAt: performance.now() });
         received++;
         live.append(1);
+        monitor.set({ source: live.data });
         if (received === 40) {
           clearInterval(timer);
           timer = undefined;

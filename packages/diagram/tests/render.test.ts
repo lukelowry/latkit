@@ -180,16 +180,16 @@ it('supports composition and independent renderer views', async () => {
     f.gpu.destroy();
   }
 });
-it('releases subscriptions and never closes borrowed sources', async () => {
+it('leaves application data usable after releasing GPU resources', async () => {
   const f = await fixture();
   await f.draw();
-  const close = vi.spyOn(f.source, 'close');
+  const value = f.source.data;
   f.diagram.destroy();
   f.diagram.destroy();
   f.target.destroy();
   f.gpu.destroy();
-  expect(close).not.toHaveBeenCalled();
-  expect(f.source.listeners.size).toBe(0);
+  expect(f.source.data).toBe(value);
+  expect(Object.keys(value.tables).length).toBeGreaterThan(0);
 });
 
 it('accepts sparse movement without moving uncovered vertices', async () => {
@@ -375,6 +375,7 @@ it('animates accepted positions with coherent picking and one native read per re
     const before = interaction(f.diagram).scene()!.vertices[0].y;
     f.source.xy[1] += 80;
     f.source.update();
+    f.diagram.set({ source: f.source.data });
     f.diagram.set(data(f.source, true), { animate: true });
     await render(20);
     const reads = f.source.queries;
@@ -393,6 +394,7 @@ it('animates accepted positions with coherent picking and one native read per re
     f.diagram.set({ motion: 'reduce' });
     f.source.xy[1] += 80;
     f.source.update();
+    f.diagram.set({ source: f.source.data });
     f.diagram.set(data(f.source, true), { animate: true });
     await render(240);
     expect(interaction(f.diagram).scene()!.vertices[0].y).toBe(before + 160);
@@ -416,6 +418,7 @@ it('restores accepted positions when a drag interrupts and cancels a layout tran
     await render(0);
     f.source.xy[1] = 80;
     f.source.update();
+    f.diagram.set({ source: f.source.data });
     f.diagram.set(data(f.source, true), { animate: true });
     await render(20);
     await render(100);
@@ -443,6 +446,7 @@ it('settles immediately when animation is disabled or above its configured size 
     f.diagram.set({ animationMs: 200 });
     f.source.xy[1] = 80;
     f.source.update();
+    f.diagram.set({ source: f.source.data });
     f.diagram.set(data(f.source, true), { animate: true });
     await f.draw();
     expect(interaction(f.diagram).scene()!.vertices[0].y).toBe(80);

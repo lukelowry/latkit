@@ -31,7 +31,6 @@ it.each<RowAxis>([
         },
       },
     },
-    retain: () => () => {},
   };
   const read: FieldRead = { pages: [], native: [native], vector: true, scales: {} };
   const result = new Picking().prepare(

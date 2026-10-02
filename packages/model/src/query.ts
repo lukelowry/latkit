@@ -10,14 +10,11 @@ import type {
 import type { Schema } from './schema.js';
 import type { Domain, RequestOptions, Scalar, Version } from './types.js';
 
-// TODO(API REDESIGN): Grid IS A BAD NAME. Replace the old table-specific Grid API with
-// this general Queryable surface throughout Latkit; do not introduce another Grid facade.
-
 export interface QueryOptions extends RequestOptions {
   /**
-   * Default borrowed: immutable published backing remains valid after close. Never detach.
+   * Default borrowed: immutable application backing remains valid after the read ends. Never detach.
    * Borrowed backing cannot be reused for mutable working storage while published views survive.
-   * Owned: producer relinquishes every alias to every returned backing allocation; caller may
+   * Owned: read copies exposed buffers into independent allocations; caller may
    * mutate/transfer it. No SharedArrayBuffer or alias into another block is allowed in owned mode.
    * Sparse gathers and ownership conversion may copy; zero-copy is permitted, never promised.
    */
@@ -39,52 +36,6 @@ export interface FieldSelection {
   readonly from: string;
   readonly select: readonly string[];
   readonly rows?: RowSelection;
-}
-
-/** Acquisition limits, independent of later query cancellation. */
-export interface RetainOptions extends RequestOptions {
-  /** Sampled sources only. Omitted retains all currently available observations. */
-  readonly window?: SampleWindow;
-  /** Protected native backing and indexes, including whole allocations behind slices.
-   * Implementations impose finite defaults and shared limits, deduplicating shared backing.
-   * Admission may reserve storage conservatively; this is not a process-memory limit. */
-  readonly maxBytes?: number;
-}
-
-export interface Queryable {
-  readonly version: Version;
-  describe(options?: RequestOptions): Promise<Schema>;
-  /**
-   * One coherent version per iteration, fixed on first pull. No eager collection. Pulls apply
-   * backpressure; return/throw/abort release this request. Abort also interrupts a pending pull.
-   * Each block satisfies the smaller requested/schema byte bound. Even a single oversized cell
-   * fails resource-limit. Previously delivered blocks remain valid; failures may follow them.
-   * Exactly one schema header precedes data, even for an empty read. Schema and version are pinned
-   * atomically on first pull. Block versions must match the header. Row counts use an empty data
-   * block if requested; aggregates emit null measures/count zero for an empty selection.
-   */
-  query(query: RowsQuery, options?: QueryOptions): AsyncIterable<QueryHeader | RowsBlock>;
-  query(query: SamplesQuery, options?: QueryOptions): AsyncIterable<QueryHeader | SamplesBlock>;
-  query(query: EnvelopeQuery, options?: QueryOptions): AsyncIterable<QueryHeader | EnvelopeBlock>;
-  query(query: AggregateQuery, options?: QueryOptions): AsyncIterable<QueryHeader | AggregateBlock>;
-  query(query: Query, options?: QueryOptions): AsyncIterable<QueryHeader | QueryBlock>;
-  /**
-   * Atomically acquire fixed schema, inputs, row identities and observation coverage without
-   * executing queries. Resolve window/context once. Appends and a monitor starting over never
-   * alter this grant. Queries resolve against the fixed observation index and reject invalid-input
-   * if any selected frame lies outside the grant; never silently clip to narrower coverage.
-   * Retaining again creates an independent acquisition of the same version, optionally narrowed.
-   * No data-change events. Survives the originating acquisition and its Model's close. Signal
-   * governs acquisition only. Unknown coverage rejects; failed or cancelled admission leaves no
-   * retained resources.
-   */
-  retain(options?: RetainOptions): Promise<Queryable>;
-  /** Release only this acquisition and cancel its direct queries. Independent retained sources and
-   * already returned blocks remain valid. Remote acquisitions still require their transport.
-   * Emit a local closed change; later operations reject closed. Idempotent. */
-  close(): Promise<void>;
-  /** Publish before notification. Listeners must not throw. */
-  on(event: 'change', listener: (change: Update) => void): () => void;
 }
 
 export interface RowsQuery extends FieldSelection {
@@ -117,11 +68,11 @@ export interface SampleRange {
   readonly kind: 'range';
   readonly between: Domain;
   /**
-   * Extra retained frames strictly before/after the inclusive interval; omitted counts are zero.
+   * Extra available frames strictly before/after the inclusive interval; omitted counts are zero.
    * Counts are nonnegative safe integers, measured in frames, not distinct coordinates.
    * Include every boundary duplicate inside the interval. With no interior frames, use the
    * immediate predecessor/successor at the insertion point. Clip context to recorded bounds.
-   * Resolve both boundaries and context against the same pinned read, without waiting for
+   * Resolve both boundaries and context against the same immutable value, without waiting for
    * future frames. Aggregates include these same context frames when requested.
    */
   readonly context?: { readonly before?: number; readonly after?: number };
@@ -138,7 +89,7 @@ export interface SamplesQuery extends FieldSelection {
   readonly window: SampleWindow;
 }
 
-/** Optional native summary capability, advertised in Schema.queries.
+/** Local summary computed over supplied samples.
  * Equal-width coordinate buckets partition the inclusive window; only the final bucket includes
  * its right boundary. A zero-width window requires one bucket. Duplicate coordinates stay in the
  * same bucket. Context observations belong to the first/last bucket, respectively.
@@ -241,17 +192,3 @@ export interface AggregateBlock extends Block {
 }
 
 export type QueryBlock = RowsBlock | SamplesBlock | EnvelopeBlock | AggregateBlock;
-
-/**
- * Notify in publication order after a complete change; versions are equality tokens, not sortable.
- * Replace invalidates all data caches: a monitor emits it when a command starts it over. Append
- * affects only those frames. Status and closed never advance the data version.
- */
-export type Update =
-  | { readonly kind: 'replace'; readonly version: Version }
-  | {
-      readonly kind: 'append';
-      readonly version: Version;
-      readonly frames: { readonly offset: number; readonly count: number };
-    }
-  | { readonly kind: 'status' | 'closed' };

@@ -19,7 +19,7 @@ function fail(error) {
 }
 function data(source, labels = true) {
   return {
-    source,
+    source: source.data,
     vertices: {
       node: {
         position: 'location',
@@ -32,7 +32,7 @@ function data(source, labels = true) {
       source.geographic && borders && el('borders').checked
         ? {
             border: {
-              source: borders,
+              source: borders.data,
               points: 'points',
               widthPx: 0.8,
               baseColor: [0.45, 0.62, 0.68, 0.72],
@@ -330,7 +330,7 @@ async function checks() {
     let bright = 0;
     for (let i = 0; i < bytes.length; i += 4) if (bytes[i + 1] > 80 || bytes[i + 2] > 100) bright++;
     assert(bright > 400, 'Graph did not produce visible pixels');
-    const item = { kind: 'vertex', source: fixture, index: fixture.index('node'), row: 12 },
+    const item = { kind: 'vertex', source: fixture.data, index: fixture.index('node'), row: 12 },
       located = view.locate(item);
     assert(located, 'Native vertex could not be located');
     const hits = await view.pick(located);
@@ -362,14 +362,14 @@ async function checks() {
       'Tilt projection',
       'Small native blocks / cross-page fields',
       'Sampled X / Y / Z position and picking',
-      'Recording channels keep the edge ends',
+      'Sampled channels keep the edge ends',
     );
   } finally {
     view.destroy();
   }
   const features = featureSource();
   const featureView = createNetwork(gpu, {
-    source: features,
+    source: features.data,
     vertices: { node: { position: 'position', labels: { field: 'name', maxCount: 4 } } },
     edges: {
       route: { ends: ['from', 'to'], curve: 'geodesic', labels: { field: 'name' } },
@@ -385,14 +385,14 @@ async function checks() {
     for (const projection of ['flat', 'tilt', 'globe']) {
       featureView.set({ camera: { projection, pitch: projection === 'tilt' ? 40 : 0 } });
       await featureView.image({ width: 512, height: 512 });
-      const item = { kind: 'edge', source: features, index: features.index('route'), row: 0 },
+      const item = { kind: 'edge', source: features.data, index: features.index('route'), row: 0 },
         located = featureView.locate(item);
       assert(
         located && (await featureView.pick(located)).some((hit) => hit.index.type === 'route'),
         'Geodesic picking failed in ' + projection,
       );
     }
-    const star = { kind: 'edge', source: features, index: features.index('star'), row: 0 };
+    const star = { kind: 'edge', source: features.data, index: features.index('star'), row: 0 };
     assert(
       featureView.neighborhood(star).filter((item) => item.kind === 'vertex').length === 4,
       'Net adjacency lost vertices',
@@ -418,7 +418,7 @@ async function checks() {
     },
   });
   const seamView = createNetwork(gpu, {
-    source: seamSource,
+    source: seamSource.data,
     vertices: { node: { position: 'position' } },
     edges: { route: { ends: ['from', 'to'], curve: 'geodesic' } },
     camera: { center: [0, 20], scale: 1.2 },
@@ -572,7 +572,7 @@ async function showFeatures(reset = true) {
   network = createNetwork(gpu, {
     canvas: el('graph'),
     at: 0,
-    source,
+    source: source.data,
     vertices: { node: { position: 'position', labels: { field: 'name' } } },
     edges: {
       bend: { ends: ['from', 'to'], bends: 'points', labels: { field: 'name' } },
@@ -587,7 +587,7 @@ async function showFeatures(reset = true) {
       ...(el('borders').checked
         ? {
             border: {
-              source: borders,
+              source: borders.data,
               points: 'points',
               widthPx: 0.8,
               baseColor: [0.3, 0.48, 0.58, 0.75],
@@ -625,7 +625,7 @@ async function benchmarkPaths(count = 100000, moving = false) {
           input.vertices.node.height = { field: 'z', domain: [0, 1] };
         }
         input.paths = detailed
-          ? { border: { source: borders, points: 'points', widthPx: 0.8 } }
+          ? { border: { source: borders.data, points: 'points', widthPx: 0.8 } }
           : undefined;
         const view = createNetwork(gpu, {
           ...input,

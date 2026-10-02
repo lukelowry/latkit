@@ -21,7 +21,7 @@ const network = createNetwork(gpu, {
 });
 ```
 
-`canvas` needs a CSS size. `source` is a `Queryable`: your own model, or one served over
+`canvas` needs a CSS size. `source` is a `Data`: an application-owned value, including data delivered over
 [`@latkit/connect`](ports-and-protocols.md). [Views](views.md) covers what every view shares.
 
 ## Run an example

@@ -1,3 +1,4 @@
+import { read } from '@latkit/model';
 import { createGpu, kit } from '@latkit/gpu';
 import { createMonitor } from '@latkit/monitor';
 import { Telemetry } from './source.js';
@@ -23,7 +24,7 @@ async function check(): Promise<void> {
         Float64Array.from({ length: 192 }, (_, row) => Math.sin(frame * 0.02 + row * 0.1));
       for (let f = 0; f < frames; f++) source.append(values(f));
       const monitor = createMonitor(gpu, {
-        source,
+        source: source.data,
         traces: {
           value: {
             from: 'sensor',
@@ -49,17 +50,19 @@ async function check(): Promise<void> {
         const appendMs: number[] = [];
         for (let f = 0; f < 8; f++) {
           source.append(values(frames + f));
+          monitor.set({ source: source.data });
           appendMs.push(await render());
         }
-        monitor.select([{ source, index: source.index, row: 42, field: 'value' }]);
+        monitor.select([{ source: source.data, index: source.index, row: 42, field: 'value' }]);
         const focusMs = await render();
         const focusedAppendMs: number[] = [];
         for (let f = 8; f < 16; f++) {
           source.append(values(frames + f));
+          monitor.set({ source: source.data });
           focusedAppendMs.push(await render());
         }
         let blocks = 0;
-        for await (const block of source.query({
+        for await (const block of read(source.data, {
           kind: 'samples',
           from: 'sensor',
           select: ['value'],
@@ -80,7 +83,6 @@ async function check(): Promise<void> {
         result.textContent = JSON.stringify({ report, errors }, null, 2);
       } finally {
         monitor.destroy();
-        await source.close();
       }
     }
     if (errors.length) throw new Error(errors.join('\n'));

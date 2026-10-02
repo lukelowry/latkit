@@ -37,7 +37,7 @@ async function harness(source = new SignalSource(4, 128), options: Partial<Monit
   const gpu = await createGpu({ device: fake.device, validate: true });
   const target = kit.createRenderTarget({ gpu, width: 512, height: 256 });
   const monitor = createMonitor(gpu, {
-    source,
+    source: source.data,
     traces: { signal: { from: 'signal', field: 'value' } },
     camera: {
       window: [source.coordinate(source.before), source.coordinate(source.frames + 127)],
@@ -47,6 +47,7 @@ async function harness(source = new SignalSource(4, 128), options: Partial<Monit
     valueAxis: false,
     ...options,
   });
+  const requests = vi.spyOn(gpu, 'query');
   const renderer = kit.rendererOf(monitor);
   const render = (complete = true, at?: number) =>
     gpu.render({
@@ -56,6 +57,7 @@ async function harness(source = new SignalSource(4, 128), options: Partial<Monit
     });
   return {
     fake,
+    requests,
     gpu,
     target,
     monitor,
@@ -75,22 +77,21 @@ describe('bounded monitor lifecycle', () => {
     await h.render();
     expect(h.monitor.stats().traces).toBe(4);
     expect(h.renderer.pending).toBeUndefined();
-    const reads = h.source.reads,
+    const reads = h.gpu.stats().queries,
       uploads = h.gpu.stats().uploadedBytes;
     for (let i = 0; i < 6; i++) await h.render(true, i);
-    expect(h.source.reads).toBe(reads);
+    expect(h.gpu.stats().queries).toBe(reads);
     expect(h.gpu.stats().uploadedBytes - uploads).toBeLessThan(8192);
     h.close();
-    expect(h.source.closed).toBe(false);
-    expect(h.source.active).toBe(0);
+    expect(h.renderer.pending).toBeUndefined();
   });
   it('resizes the committed image without reads until resizing settles', async () => {
     const h = await harness();
     await h.render();
-    const reads = h.source.reads;
+    const reads = h.gpu.stats().queries;
     h.target.resize({ width: 600, height: 300 });
     await h.render(false);
-    expect(h.source.reads).toBe(reads);
+    expect(h.gpu.stats().queries).toBe(reads);
     await h.render();
     expect(h.monitor.stats().refining).toBe(false);
     h.close();
@@ -98,10 +99,12 @@ describe('bounded monitor lifecycle', () => {
   it('appends only new frames and keeps the fixed-domain history', async () => {
     const h = await harness();
     await h.render();
-    const first = h.source.requests.length;
+    const first = h.requests.mock.calls.map((call) => call[1]).length;
     h.source.append(8);
+    h.monitor.set({ source: h.source.data });
     await h.render();
-    const queries = h.source.requests
+    const queries = h.requests.mock.calls
+      .map((call) => call[1])
       .slice(first)
       .filter((q) => q.kind === 'samples' && q.window.kind !== 'at');
     expect(queries.length).toBeGreaterThan(0);
@@ -114,6 +117,24 @@ describe('bounded monitor lifecycle', () => {
           q.window.count <= 8,
       ),
     ).toBe(true);
+    h.close();
+  });
+  it('keeps explicit data bindings fixed when the default source receives more samples', async () => {
+    const source = new SignalSource(2, 128),
+      original = source.data;
+    const h = await harness(source, {
+      traces: {
+        signal: { from: 'signal', field: { source: original, from: 'signal', field: 'value' } },
+      },
+    });
+    await h.render();
+    source.append(8);
+    h.monitor.set({ source: source.data });
+    h.requests.mockClear();
+    await h.render();
+    const reads = h.requests.mock.calls.filter((call) => call[1].kind === 'samples');
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.every((call) => call[0] === original)).toBe(true);
     h.close();
   });
   it('focuses only the selected native row and returns exact Float64 identities', async () => {
@@ -144,11 +165,12 @@ describe('bounded monitor lifecycle', () => {
           hit.version === source.version,
       ),
     ).toBe(true);
-    const first = source.requests.length;
+    const first = h.requests.mock.calls.map((call) => call[1]).length;
     h.monitor.select([hits.find((hit) => hit.row === 1)!]);
     await h.render();
     expect(
-      source.requests
+      h.requests.mock.calls
+        .map((call) => call[1])
         .slice(first)
         .filter((q) => q.kind === 'samples')
         .every((q) => q.rows?.kind === 'range' && q.rows.offset === 1 && q.rows.count === 1),
@@ -166,6 +188,7 @@ describe('bounded monitor lifecycle', () => {
     });
     await h.render();
     h.source.append(8);
+    h.monitor.set({ source: h.source.data });
     await h.render();
     expect(toData(h.monitor, [256, 128])!.coordinate).toBeCloseTo(h.source.coordinate(135) - 0.25);
     expect(h.monitor.stats().refining).toBe(false);
@@ -176,7 +199,7 @@ describe('bounded monitor lifecycle', () => {
     await h.render(false);
     h.monitor.destroy();
     await new Promise((r) => setTimeout(r, 10));
-    expect(h.source.active).toBe(0);
+    expect(h.renderer.pending).toBeUndefined();
     expect(h.renderer.pending).toBeUndefined();
     h.target.destroy();
     h.gpu.destroy();
@@ -185,7 +208,7 @@ describe('bounded monitor lifecycle', () => {
     const h = await harness();
     h.monitor.destroy();
     const view = createMonitor(h.gpu, {
-      source: h.source,
+      source: h.source.data,
       traces: { a: { from: 'signal', field: 'value' } },
       camera: { window: [0, 2], values: [-2, 2] },
       limits: { rows: 1 },
@@ -206,6 +229,7 @@ describe('bounded monitor lifecycle', () => {
     const h = await harness(new SignalSource(16, 1024));
     await h.render(false);
     h.source.append(8);
+    h.monitor.set({ source: h.source.data });
     await h.render();
     expect(h.renderer.pending).toBeUndefined();
     h.close();
@@ -237,7 +261,7 @@ describe('bounded monitor lifecycle', () => {
 it('refines gapped envelope rectangles as native samples', async () => {
   const h = await harness(new SignalSource(2, 1024, { native: true, gaps: true }));
   const data = {
-    source: h.source,
+    source: h.source.data,
     window: { kind: 'range' as const, between: [0, 10] as const },
     traces: { a: { from: 'signal', field: 'value' } },
   };
@@ -287,10 +311,10 @@ it('suspends automatic hover when refinement exceeds its soft budget', async () 
   pointer(h.monitor, [256, 128]);
   await new Promise((r) => setTimeout(r, 80));
   expect(h.monitor.stats().hover).toBe('budget');
-  const reads = h.source.reads;
+  const reads = h.gpu.stats().queries;
   pointer(h.monitor, [258, 128]);
   await new Promise((r) => setTimeout(r, 60));
-  expect(h.source.reads).toBe(reads);
+  expect(h.gpu.stats().queries).toBe(reads);
   h.monitor.set({ hover: 'off' });
   expect(h.monitor.stats().hover).toBe('off');
   h.close();
@@ -328,13 +352,13 @@ it('does not replay shaded history on pointer movement', async () => {
   await h.render();
   await new Promise((r) => setTimeout(r, 0));
   await h.render();
-  const reads = h.source.reads,
+  const reads = h.gpu.stats().queries,
     uploads = h.gpu.stats().uploadedBytes;
   for (let i = 0; i < 8; i++) {
     pointer(h.monitor, [200 + i, 100]);
     await h.render(false);
   }
-  expect(h.source.reads).toBe(reads);
+  expect(h.gpu.stats().queries).toBe(reads);
   expect(h.renderer.pending).toBeUndefined();
   expect(h.gpu.stats().uploadedBytes - uploads).toBeLessThan(8192);
   h.close();
@@ -351,7 +375,7 @@ it('publishes initial data before draining the bounded producer', async () => {
   expect(h.monitor.stats().pendingBytes).toBeLessThanOrEqual(16 * 1024 ** 2);
   h.close();
   await new Promise((r) => setTimeout(r, 10));
-  expect(h.source.active).toBe(0);
+  expect(h.renderer.pending).toBeUndefined();
 });
 it('makes progress during continuous appends without restarting history', async () => {
   const h = await harness(new SignalSource(32, 512, { blockFrames: 16 }));
@@ -360,6 +384,7 @@ it('makes progress during continuous appends without restarting history', async 
   await h.render(false);
   for (let i = 0; i < 30; i++) {
     h.source.append(1);
+    h.monitor.set({ source: h.source.data });
     await new Promise((r) => setTimeout(r, 2));
     await h.render(false);
   }
@@ -367,9 +392,9 @@ it('makes progress during continuous appends without restarting history', async 
   expect(invalidations).not.toContain('replace');
   await h.render();
   expect(h.renderer.pending).toBeUndefined();
-  const count = h.source.requests.filter(
-    (q) => q.kind === 'samples' && q.window.kind === 'range',
-  ).length;
+  const count = h.requests.mock.calls
+    .map((call) => call[1])
+    .filter((q) => q.kind === 'samples' && q.window.kind === 'range').length;
   expect(count).toBeLessThan(20);
   h.close();
 });
@@ -378,6 +403,7 @@ it('accepts single observations after an initially empty source', async () => {
   await h.render();
   for (let i = 0; i < 4; i++) {
     h.source.append(1);
+    h.monitor.set({ source: h.source.data });
     await h.render();
   }
   const coordinate = h.source.coordinate(3),
@@ -421,40 +447,31 @@ it('reuses exact inspection at the same pointer without another query', async ()
   await h.render();
   const point = [256, 128] as const;
   const first = await h.monitor.pick(point, { limit: 1 });
-  const reads = h.source.reads;
+  const reads = h.gpu.stats().queries;
   expect(await h.monitor.pick(point, { limit: 1 })).toEqual(first);
-  expect(h.source.reads).toBe(reads);
+  expect(h.gpu.stats().queries).toBe(reads);
   h.close();
 });
 
-it('does not inspect replaced observations before replacement is presented', async () => {
+it('inspects presented data while replacement is pending', async () => {
   const h = await harness();
   await h.render();
-  h.source.version = 'replaced';
-  for (const listener of h.source.listeners)
-    listener({ kind: 'replace', version: h.source.version });
-  await expect(h.monitor.pick([256, 128])).rejects.toMatchObject({ code: 'conflict' });
+  const old = h.source.data;
+  const replacement = new SignalSource(4, 128, { valueOrigin: 100 });
+  h.monitor.set({ source: replacement.data });
+  const before = await h.monitor.pick([256, 128], { radiusPx: 500, limit: 1 });
+  expect(before[0]?.source).toBe(old);
   await h.render();
   h.close();
 });
-it('releases owned acquisitions when sources are replaced or the monitor closes', async () => {
+it('keeps application observations usable after destroying a monitor', async () => {
   const source = new SignalSource(2, 32),
-    owned: SignalSource[] = [];
-  const retain = source.retain.bind(source);
-  source.retain = async (options) => {
-    const fixed = await retain(options);
-    owned.push(fixed);
-    return fixed;
-  };
-  const h = await harness(source);
+    value = source.data,
+    h = await harness(source);
   await h.render();
-  h.monitor.select([{ source, index: source.index, row: 1, field: 'value' }]);
-  await h.render();
-  expect(owned.length).toBe(1);
   h.close();
-  await new Promise((r) => setTimeout(r, 10));
-  expect(owned.every((v) => v.closed)).toBe(true);
-  expect(source.closed).toBe(false);
+  expect(source.data).toBe(value);
+  expect(value.tables.signal.fields.value[0].column.length).toBe(64);
 });
 it('reports camera changes, focuses several rows, and locates readings', async () => {
   const h = await harness();
@@ -466,11 +483,14 @@ it('reports camera changes, focuses several rows, and locates readings', async (
   const point = h.monitor.locate(hit)!;
   expect(point[0]).toBeCloseTo(hit.point[0], 3);
   expect(point[1]).toBeCloseTo(hit.point[1], 3);
-  const first = h.source.requests.length,
-    row = (row: number) => ({ source: h.source, index: h.source.index, row });
+  const first = h.requests.mock.calls.map((call) => call[1]).length,
+    row = (row: number) => ({ source: h.source.data, index: h.source.index, row });
   h.monitor.select([row(2), row(0)]);
   await h.render();
-  const focused = h.source.requests.slice(first).filter((q) => q.kind === 'samples');
+  const focused = h.requests.mock.calls
+    .map((call) => call[1])
+    .slice(first)
+    .filter((q) => q.kind === 'samples');
   expect(focused.length).toBeGreaterThan(0);
   expect(
     focused.every((q) => q.rows?.kind === 'indices' && [...q.rows.values].join() === '0,2'),

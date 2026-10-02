@@ -1,6 +1,6 @@
 import { assertIndex } from '@latkit/model';
 import { GpuError, kit } from '@latkit/gpu';
-import type { Column, Index, ReferenceColumn, RowAxis, Schema, Queryable } from '@latkit/model';
+import type { Column, Index, ReferenceColumn, RowAxis, Schema, Data } from '@latkit/model';
 import type { NetworkData, VertexData, EdgeData, PathData } from '../data.js';
 import { Adjacency } from './adjacency.js';
 import { RowLookup, bit, indexKey } from './rows.js';
@@ -39,7 +39,7 @@ export interface EdgeBank {
   readonly stars?: boolean;
   readonly order?: Uint32Array;
   readonly kind?: 'path';
-  readonly source?: Queryable;
+  readonly source?: Data;
 }
 export interface Geometry {
   readonly vertices: readonly VertexBank[];
@@ -220,7 +220,7 @@ export async function readGeometry(
       throw new GpuError('resource-limit', 'Network geometry exceeds its CPU budget');
   };
   const rowsOf = async (
-    source: Queryable,
+    source: Data,
     type: string,
     selection: VertexData['rows'],
     found: (schema: Schema) => void,
@@ -274,7 +274,7 @@ export async function readGeometry(
     table.seal();
     if (read.index) lookup.set(indexKey(read.index), table);
   }
-  if (!schema) schema = await data.source.describe({ signal: frame.signal });
+  if (!schema) schema = data.source.schema;
 
   /** The drawn rows a reference column names, checked against its declared vertex type. */
   const target = (column: ReferenceColumn): Drawn | undefined => {

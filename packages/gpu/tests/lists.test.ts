@@ -64,7 +64,7 @@ it('gathers sparse native lists once and can retain controls without uploading t
     input = lists();
   await draw(gpu, async (frame) => {
     for await (const page of frame.fields({
-      source: new FieldSource(),
+      source: new FieldSource().data,
       from: index.type,
       rows: { index, kind: 'indices', values: Uint32Array.of(12, 10) },
       fields: {

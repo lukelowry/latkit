@@ -14,7 +14,7 @@ globalThis.monitorCheck = (async () => {
   let source = new SignalSource(64, 4096, { native: true });
   const monitor = createMonitor(gpu, {
     canvas,
-    source,
+    source: source.data,
     traces: {
       signal: {
         from: 'signal',
@@ -50,7 +50,10 @@ globalThis.monitorCheck = (async () => {
   document.querySelector('#reset').onclick = () =>
     monitor.set({ camera: { window: [0, source.coordinate(source.frames + 31)] } });
   document.querySelector('#clear').onclick = () => monitor.select([]);
-  document.querySelector('#append').onclick = () => source.append(32);
+  document.querySelector('#append').onclick = () => {
+    source.append(32);
+    monitor.set({ source: source.data });
+  };
   document.querySelector('#axes').onchange = (event) =>
     monitor.set({
       coordinateAxis: event.target.checked ? 'Coordinate' : false,
@@ -76,7 +79,7 @@ globalThis.monitorCheck = (async () => {
       { native: true, gaps: value === 'gaps', duplicates: value === 'gaps' },
     );
     monitor.set({
-      source,
+      source: source.data,
       traces: {
         signal: {
           from: 'signal',
@@ -111,7 +114,7 @@ globalThis.monitorCheck = (async () => {
     }
     source = new SignalSource(8, 0, { native: true });
     monitor.set({
-      source,
+      source: source.data,
       traces: {
         signal: {
           from: 'signal',
@@ -122,7 +125,10 @@ globalThis.monitorCheck = (async () => {
       },
       camera: { window: [0, 10] },
     });
-    streaming = setInterval(() => source.append(1), 20);
+    streaming = setInterval(() => {
+      source.append(1);
+      monitor.set({ source: source.data });
+    }, 20);
     streamButton.textContent = 'Stop stream';
   };
   await ready;

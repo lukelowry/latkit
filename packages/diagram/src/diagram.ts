@@ -1,5 +1,5 @@
 import { GpuError, kit, type Gpu, type Shade, type View } from '@latkit/gpu';
-import type { Queryable } from '@latkit/model';
+import type { Data } from '@latkit/model';
 import type {
   VertexOptions,
   EdgeOptions,
@@ -17,7 +17,6 @@ import {
   defaults,
   options as checkedOptions,
   limits as checkedLimits,
-  sources,
   positive,
   fail,
   type Style,
@@ -58,7 +57,7 @@ export interface Camera {
 }
 export interface DiagramConfig extends kit.ViewConfig, StyleOptions {
   /** Borrowed: destroy never closes it. */
-  readonly source: Queryable;
+  readonly source: Data;
   /** Drawn types by model type name. */
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;
@@ -219,7 +218,6 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
   private resolved?: Resolved;
   private shade: Shade | null;
   private painter: Painter;
-  private subscriptions: (() => void)[] = [];
   private revision = 0;
   private closed = false;
   private requestedCamera?: kit.Camera2D;
@@ -283,7 +281,6 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
       this.requestedCamera = camera2d(camera.center ?? [0, 0], camera.scale ?? 1);
       this.fitting = camera.fit ?? false;
     }
-    this.subscribe();
     this.start();
   }
 
@@ -394,7 +391,6 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
     ) {
       this.data = resolved.data;
       this.reread(animate);
-      this.subscribe();
     }
     if (previous.layout !== next.layout) {
       this.layout = resolved.layout;
@@ -507,25 +503,6 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
     queueMicrotask(() => {
       if (!this.closed) this.emit(event, value);
     });
-  }
-  private subscribe(): void {
-    for (const off of this.subscriptions) off();
-    this.subscriptions = [];
-    for (const source of sources(this.data))
-      this.subscriptions.push(
-        source.on('change', (change) => {
-          if (this.closed) return;
-          if (change.kind === 'status') {
-            this.invalidate('refresh');
-            return;
-          }
-          this.revision++;
-          this.sceneTransition = undefined;
-          this.transitionRequested = false;
-          this.drag = undefined;
-          this.invalidate(change.kind === 'append' ? 'refresh' : 'replace');
-        }),
-      );
   }
   /** Move the camera to a place; any explicit move stops fitting. */
   private aim(next: kit.Camera2D, options: kit.SetOptions = {}): void {
@@ -955,8 +932,6 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
     this.animation = undefined;
     this.sceneTransition = undefined;
     this.transitionRequested = false;
-    for (const off of this.subscriptions) off();
-    this.subscriptions = [];
     this.painter.destroy();
   }
 }

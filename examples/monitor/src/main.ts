@@ -119,7 +119,7 @@ async function main(): Promise<void> {
   const gpu = await createGpu();
   monitor = createMonitor(gpu, {
     canvas: stage,
-    source,
+    source: source.data,
     traces: { telemetry: trace() },
     camera: { window: FULL_WINDOW, values: signalRange(currentSignal) },
     coordinateAxis: 'Time (s)',
@@ -147,7 +147,6 @@ async function main(): Promise<void> {
     if (event.persisted) return;
     stopTimer();
     monitor.destroy();
-    void source.close();
     gpu.destroy();
   });
 }
@@ -203,19 +202,18 @@ function wireChrome(): void {
 function resetStream(): void {
   anomaly.fill(0);
   frameCursor = 0;
-  const previous = source;
   source = new Telemetry(SIGNAL_IDS, ELEMENT_COUNT, DT_SECONDS);
   latest = new Float64Array(ELEMENT_COUNT * SIGNALS.length).fill(NaN);
   selectedElement = null;
   hoverReadout.textContent = '-';
   pickReadout.textContent = '-';
-  monitor.set({ source, traces: { telemetry: trace() } });
-  void previous.close();
+  monitor.set({ source: source.data, traces: { telemetry: trace() } });
   monitor.select([]);
   // Show useful history immediately, then append one native frame per timer tick.
   for (let frame = 0; frame < 40; frame++) {
     writeFrame(frame);
     source.append(latest);
+    monitor?.set({ source: source.data });
     frameCursor++;
   }
   applyWindow();
@@ -269,6 +267,7 @@ function tick(): void {
   writeFrame(frameCursor);
   frameCursor++;
   source.append(latest);
+  monitor?.set({ source: source.data });
   const now = performance.now();
   renderHotList(now);
   if (selectedElement !== null) renderSelected();
@@ -347,7 +346,12 @@ function renderHotList(now: number, force = false): void {
     button.addEventListener('click', () => {
       selectedElement = item.element;
       monitor.select([
-        { source, index: source.index, row: item.element, field: SIGNALS[currentSignal].id },
+        {
+          source: source.data,
+          index: source.index,
+          row: item.element,
+          field: SIGNALS[currentSignal].id,
+        },
       ]);
       pickReadout.textContent = describeElement(item.element);
       renderSelected();

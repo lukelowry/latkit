@@ -1,5 +1,5 @@
 import { GpuError, kit, type RGBA } from '@latkit/gpu';
-import type { Queryable } from '@latkit/model';
+import type { Data } from '@latkit/model';
 import type { Limits, StyleOptions } from './options.js';
 import type { DiagramData, VertexData, EdgeData } from './data.js';
 export type Style = Required<StyleOptions>;
@@ -139,8 +139,7 @@ function binding(value: VertexData | EdgeData) {
   }
 }
 export function data(value: DiagramData): DiagramData {
-  if (!value.source || typeof value.source.query !== 'function')
-    fail('A Queryable source is required');
+  if (!value.source?.schema || !value.source.tables) fail('A Data source is required');
   if (!value.vertices) fail('Vertex bindings are required');
   for (const vertex of Object.values(value.vertices)) {
     binding(vertex);
@@ -196,7 +195,7 @@ export function data(value: DiagramData): DiagramData {
     groups: { ...value.groups },
   };
 }
-export function sources(data: DiagramData): Set<Queryable> {
+export function sources(data: DiagramData): Set<Data> {
   const result = new Set([data.source]);
   const visit = (value: unknown): void => {
     if (!value || typeof value !== 'object' || ArrayBuffer.isView(value)) return;

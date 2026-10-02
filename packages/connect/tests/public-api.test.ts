@@ -1,7 +1,7 @@
 import { expect, expectTypeOf, it } from 'vitest';
 import * as api from '../src/index.js';
-import type { Connection, QueryableConnection, Transport, ByteChannel } from '../src/index.js';
-import type { CommandResult, Model, Recording, Queryable } from '@latkit/model';
+import type { Connection, Transport, ByteChannel } from '../src/index.js';
+import type { CommandResult, Model, DataEvent, Commands } from '@latkit/model';
 it('exposes only connection and transport entry points at runtime', () => {
   expect(Object.keys(api).sort()).toEqual([
     'byteTransport',
@@ -22,14 +22,12 @@ function usage(
 ): void {
   expectTypeOf(connection).toExtend<Model>();
   expectTypeOf(connection.monitor([{ from: 'Node', select: ['output'] }])).toEqualTypeOf<
-    Promise<Recording>
+    AsyncIterable<DataEvent>
   >();
-  expectTypeOf(connection.run({ routine: 'solve', values: {} })).toEqualTypeOf<
+  expectTypeOf(connection.commands!.run({ routine: 'solve', values: {} })).toEqualTypeOf<
     Promise<CommandResult>
   >();
-  expectTypeOf(api.connect(transport, { kind: 'queryable' })).toEqualTypeOf<
-    Promise<QueryableConnection>
-  >();
+  expectTypeOf(api.connect(transport)).toEqualTypeOf<Promise<Connection>>();
   void api.serve(transport, model);
   void api.connect(api.messagePort(worker));
   void api.connect(api.messagePort(scope));
@@ -42,19 +40,18 @@ function usage(
 }
 void usage;
 
-function queryableUsage(
-  connection: QueryableConnection,
+function controls(
+  connection: Connection,
   transport: Transport,
-  source: Queryable,
+  model: Model,
+  commands: Commands,
 ): void {
-  expectTypeOf(connection).toExtend<Queryable>();
-  expectTypeOf(source.retain()).toEqualTypeOf<Promise<Queryable>>();
-  void api.serve(transport, source, { kind: 'queryable' });
-  // @ts-expect-error A read capability cannot run commands.
+  void api.serve(transport, model, { commands });
+  // @ts-expect-error Commands are explicitly separate.
   void connection.run;
-  // @ts-expect-error A read capability cannot open monitors.
-  void connection.monitor;
-  // @ts-expect-error A Queryable requires explicit capability selection.
-  void api.serve(transport, source);
+  // @ts-expect-error Models cannot replay data.
+  void connection.query;
+  // @ts-expect-error No retention handles.
+  void connection.retain;
 }
-void queryableUsage;
+void controls;

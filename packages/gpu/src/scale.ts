@@ -1,4 +1,4 @@
-import type { Domain, Queryable, RowSelection, SampleWindow } from '@latkit/model';
+import type { Domain, Data, RowSelection, SampleWindow } from '@latkit/model';
 import type { FieldInput } from './binding.js';
 import type { Colormap } from './colors/colormap.js';
 import type { ColormapName } from './colors/catalog.js';
@@ -21,7 +21,7 @@ export interface ColorScale {
 }
 export type Position2D = FieldInput | { readonly x: FieldInput; readonly y: FieldInput };
 export interface ScaleRequest extends Scale {
-  readonly source: Queryable;
+  readonly source: Data;
   readonly from: string;
   readonly rows?: RowSelection;
   readonly window?: SampleWindow;

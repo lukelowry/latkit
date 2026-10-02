@@ -1,9 +1,9 @@
 import { createDiagram, arrange, type Diagram } from '../src/index.js';
 import type { Gpu, kit } from '@latkit/gpu';
-import type { Model } from '@latkit/model';
+import type { Data } from '@latkit/model';
 export async function usage(
   gpu: Gpu,
-  model: Model,
+  model: Data,
   remove: (ids: readonly string[]) => Promise<void>,
   canvas: HTMLCanvasElement,
   color: kit.ColorScale,

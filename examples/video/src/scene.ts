@@ -5,7 +5,7 @@ import { makeFakeNetwork } from '../../network/src/fake-network.js';
 import { Telemetry } from '../../monitor/src/source.js';
 export type ExampleView = 'network' | 'monitor' | 'combined';
 /** App-owned construction runs identically in a worker or the window. */
-export async function scene(gpu: Gpu, kind: ExampleView) {
+export function scene(gpu: Gpu, kind: ExampleView) {
   const live = new Telemetry(['response'], 48, 1 / 60);
   for (let frame = 0; frame <= 360; frame++)
     live.append(
@@ -14,8 +14,7 @@ export async function scene(gpu: Gpu, kind: ExampleView) {
         (_, row) => Math.sin(frame * 0.035 + row * 0.16) * (0.4 + row / 100),
       ),
     );
-  const samples = await live.retain();
-  await live.close();
+  const samples = live.data;
   const geometry = makeFakeNetwork();
   const monitor = createMonitor(gpu, {
     source: samples,
@@ -31,7 +30,7 @@ export async function scene(gpu: Gpu, kind: ExampleView) {
     valueAxis: 'Response',
   });
   const network = createNetwork(gpu, {
-    source: geometry,
+    source: geometry.data,
     vertices: {
       Bus: {
         position: 'position',
@@ -66,12 +65,10 @@ export async function scene(gpu: Gpu, kind: ExampleView) {
       : undefined;
   return {
     view: composition ?? (kind === 'monitor' ? monitor : network),
-    async close() {
+    close() {
       composition?.destroy();
       network.destroy();
       monitor.destroy();
-      await samples.close();
-      await geometry.close();
     },
   };
 }

@@ -1,14 +1,21 @@
 /** Reusable read-contract checks. Supply another implementation/transport without changing tests. */
 import { describe, expect, it } from 'vitest';
-import type { Queryable, RowsQuery, QueryHeader } from '../src/index.js';
-import { validateBlock, validateSchema } from '../src/index.js';
+import type { Data, RowsQuery, QueryHeader } from '../src/index.js';
+import {
+  read,
+  rowCount as axisLength,
+  rowAt,
+  validateBlock,
+  validateSchema,
+} from '../src/index.js';
 
-import { axisLength, axisValues } from './source.js';
+const axisValues = (rows: import('../src/index.js').RowAxis) =>
+  Array.from({ length: axisLength(rows) }, (_, i) => rowAt(rows, i));
 
 export function queryConformance(
   name: string,
   open: () => Promise<{
-    source: Queryable;
+    source: Data;
     query: RowsQuery;
     expectedRows: readonly number[];
     close: () => Promise<void>;
@@ -22,7 +29,7 @@ export function queryConformance(
         const actual: number[] = [];
         let version: string | undefined;
         let index: unknown;
-        for await (const block of source.query(query)) {
+        for await (const block of read(source, query)) {
           if (block.kind === 'schema') {
             expect(header).toBeUndefined();
             header = block;
@@ -48,12 +55,12 @@ export function queryConformance(
     it('supports early return and subsequent independent reads', async () => {
       const { source, query, expectedRows, close } = await open();
       try {
-        for await (const block of source.query(query)) {
+        for await (const block of read(source, query)) {
           expect(block.kind).toBe('schema');
           break;
         }
         let count = 0;
-        for await (const block of source.query(query))
+        for await (const block of read(source, query))
           if (block.kind !== 'schema') count += axisLength(block.rows);
         expect(count).toBe(expectedRows.length);
       } finally {
@@ -65,9 +72,9 @@ export function queryConformance(
       try {
         const signal = AbortSignal.abort();
         await expect(
-          source.query(query, { signal })[Symbol.asyncIterator]().next(),
+          read(source, query, { signal })[Symbol.asyncIterator]().next(),
         ).rejects.toMatchObject({ code: 'aborted' });
-        expect(await source.describe()).toBeDefined();
+        expect(source.schema).toBeDefined();
       } finally {
         await close();
       }

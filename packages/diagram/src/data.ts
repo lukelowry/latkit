@@ -1,4 +1,4 @@
-import type { Queryable, RowSelection } from '@latkit/model';
+import type { Data, RowSelection } from '@latkit/model';
 import type { kit, RGBA } from '@latkit/gpu';
 export type Point = readonly [x: number, y: number];
 export type Shape = 'rectangle' | 'rounded' | 'ellipse' | 'diamond';
@@ -106,7 +106,7 @@ export type VertexData = Omit<Full<VertexOptions>, 'ports'> & {
 export type EdgeData = Full<EdgeOptions>;
 /** What the renderer draws, with every shorthand expanded. */
 export interface DiagramData {
-  readonly source: Queryable;
+  readonly source: Data;
   readonly vertices: Readonly<Record<string, VertexData>>;
   readonly edges?: Readonly<Record<string, EdgeData>>;
   readonly groups?: Readonly<Record<string, Group>>;
@@ -131,7 +131,7 @@ function full<T extends object>(options: T): T {
 const all = <T extends object>(entries: Readonly<Record<string, T>> | undefined) =>
   entries && Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, full(v)]));
 export function diagramData(config: {
-  readonly source: Queryable;
+  readonly source: Data;
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;
   readonly groups?: Readonly<Record<string, Group>>;

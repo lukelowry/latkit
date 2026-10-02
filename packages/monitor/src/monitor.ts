@@ -1,6 +1,6 @@
-import type { Domain, Queryable, Update } from '@latkit/model';
+import type { Domain, Data } from '@latkit/model';
 import { GpuError, kit, type Gpu, type Shade, type View } from '@latkit/gpu';
-import { monitorData, type MonitorData, type Reading, type Trace } from './data.js';
+import { appended, monitorData, type MonitorData, type Reading, type Trace } from './data.js';
 import type { Limits, StyleOptions } from './options.js';
 import {
   defaults,
@@ -11,11 +11,10 @@ import {
   fail,
   type Settings,
 } from './config.js';
-import { binding, describeBindings, validateData, extent, type Binding } from './bindings.js';
+import { describeBindings, validateData, extent, type Binding } from './bindings.js';
 import { axes, plot, type Axes } from './axes.js';
 import { mergeDomain } from './history.js';
 import { Job } from './job.js';
-import { Sources } from './sources.js';
 import { Coverage } from './coverage.js';
 import { pipelines, type Pipelines } from './rendering/pipelines.js';
 import {
@@ -49,8 +48,8 @@ export interface Camera {
   readonly follow: number | null;
 }
 export interface MonitorConfig extends kit.ViewConfig, StyleOptions {
-  /** Borrowed sampled data, such as a Recording: destroy never closes it. */
-  readonly source: Queryable;
+  /** Application-owned sampled data. Pass a new value to set() to display updates. */
+  readonly source: Data;
   /** Lines by name; several may read one type. */
   readonly traces: Readonly<Record<string, Trace>>;
   /** Where the camera starts; `monitor.camera` is where it is. Values fit the data by default. */
@@ -152,7 +151,6 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
   private fitValues: boolean;
   private reported?: Camera;
   private shadeSerial = 0;
-  private subscriptions: (() => void)[] = [];
   private bindings?: Binding[];
   private setup?: Promise<void>;
   private setupStop?: AbortController;
@@ -176,11 +174,10 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
   private focusVisible = false;
   private presented?: { data: MonitorData; bindings: Binding[]; options: Settings; layout: Axes };
   private presentation = 0;
-  private invalidSources = new Set<Queryable>();
+  private invalidSources = new Set<Data>();
   private job?: Job;
-  private readonly sources = new Sources();
   private coverage = new Coverage();
-  private through = new Map<Queryable, number>();
+  private through = new Map<string, number>();
   private focusJob?: Job;
   private tails?: Seams;
   private dirty = true;
@@ -192,9 +189,9 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
     resolve: () => void;
     timer: ReturnType<typeof setTimeout>;
   };
-  private append = new Map<Queryable, { offset: number; count: number }>();
+  private append = new Map<Data, { offset: number; count: number }>();
   private generation = 0;
-  private presentedVersions = new Map<Queryable, string>();
+  private presentedVersions = new Map<Data, string>();
   private prepared?: {
     pipeline: Pipelines;
     screen: Screen;
@@ -213,7 +210,7 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
     limit: number;
     generation: number;
     presentation: number;
-    versions: Map<Queryable, string>;
+    versions: Map<Data, string>;
     result: readonly Reading[];
   };
   private hoverState: kit.HoverState = 'idle';
@@ -235,59 +232,10 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
     this.fitValues = camera.fit ?? !camera.values;
     this.y = camera.values && !this.fitValues ? expanded(camera.values) : [0, 1];
     this.shade = config.shade ?? null;
-    this.watch();
     this.start();
   }
   private refresh() {
     this.invalidate('refresh');
-  }
-  private watch() {
-    for (const dispose of this.subscriptions) dispose();
-    this.subscriptions = [];
-    const sources = new Set([this.data.source]);
-    for (const trace of Object.values(this.data.traces))
-      for (const value of [trace.field, trace.color?.field, trace.visible, trace.shade])
-        if (value) {
-          const ref = binding(value, this.data.source, trace.from);
-          if (ref) sources.add(ref.source);
-        }
-    this.sources.prune(sources);
-    for (const source of sources)
-      this.subscriptions.push(source.on('change', (change) => this.update(source, change)));
-  }
-  private update(source: Queryable, change: Update) {
-    if (this.closed || change.kind === 'status') return;
-    if (change.kind === 'append') {
-      const previous = this.append.get(source),
-        start = Math.min(previous?.offset ?? change.frames.offset, change.frames.offset);
-      const end = Math.max(
-        previous ? previous.offset + previous.count : 0,
-        change.frames.offset + change.frames.count,
-      );
-      this.append.set(source, { offset: start, count: end - start });
-      this.prefetchAppend();
-      this.refresh();
-      return;
-    }
-    this.pickStop?.abort();
-    this.generation++;
-    if (change.kind === 'closed') {
-      this.error = new GpuError('closed', 'A monitor source closed');
-      this.cancel();
-      this.refresh();
-      return;
-    }
-    if (change.kind === 'replace') {
-      this.invalidSources.add(source);
-      this.clearSelection();
-      this.through.clear();
-    }
-    this.bindings = undefined;
-    this.setup = undefined;
-    this.generation++;
-    this.error = undefined;
-    this.restart(false);
-    this.refresh();
   }
   private prefetchAppend() {
     if (
@@ -307,7 +255,10 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
     const [source, range] = next;
     if (!this.bindings.every((b) => b.source === source)) return;
     this.append.delete(source);
-    const offset = Math.max(range.offset, (this.through.get(source) ?? -Infinity) + 1),
+    const offset = Math.max(
+        range.offset,
+        (this.through.get(dataIdentity(source)) ?? -Infinity) + 1,
+      ),
       count = range.offset + range.count - offset;
     if (count <= 0) return;
     try {
@@ -476,7 +427,6 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
         focus: focus ? this.chosen : undefined,
       },
       () => this.refresh(),
-      this.sources,
       seed,
     );
     job.timeMs = this.timeMs;
@@ -539,7 +489,10 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
     if (this.append.size && !this.job && !this.focusJob && !this.dirty) {
       const [source, range] = this.append.entries().next().value!;
       this.append.delete(source);
-      const offset = Math.max(range.offset, (this.through.get(source) ?? -Infinity) + 1);
+      const offset = Math.max(
+        range.offset,
+        (this.through.get(dataIdentity(source)) ?? -Infinity) + 1,
+      );
       const append = { offset, count: Math.max(0, range.offset + range.count - offset) };
       if (!append.count) {
         this.refresh();
@@ -776,7 +729,10 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
         }
         this.rowCount = job.rows;
         for (const [source, end] of job.endFrames)
-          this.through.set(source, Math.max(this.through.get(source) ?? -Infinity, end));
+          this.through.set(
+            dataIdentity(source),
+            Math.max(this.through.get(dataIdentity(source)) ?? -Infinity, end),
+          );
         job.seams.finish();
         this.tails = job.seams;
         this.presentedVersions = new Map(job.versions);
@@ -875,6 +831,51 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
     const before = this.options;
     this.options = resolved.options;
     this.limits = resolved.limits;
+    const addition =
+      previous.source !== next.source &&
+      previous.traces === next.traces &&
+      previous.limits === next.limits &&
+      previous.shade === next.shade &&
+      Object.keys(defaults).every(
+        (key) => previous[key as keyof MonitorConfig] === next[key as keyof MonitorConfig],
+      )
+        ? appended(previous.source, next.source)
+        : undefined;
+    if (
+      addition &&
+      this.bindings?.every(
+        (binding) =>
+          binding.source === previous.source &&
+          typeof binding.trace.field === 'string' &&
+          [binding.trace.color?.field, binding.trace.visible, binding.trace.shade].every(
+            (input) =>
+              !input ||
+              typeof input !== 'object' ||
+              !('field' in input && input.source === previous.source),
+          ),
+      )
+    ) {
+      const queued = this.append.get(previous.source);
+      this.append.delete(previous.source);
+      this.data = monitorData(next, this.window);
+      this.bindings = this.bindings.map((item) => ({
+        ...item,
+        source: next.source,
+        fields: Object.fromEntries(
+          Object.entries(item.fields).map(([name, value]) => [
+            name,
+            typeof value === 'object' && 'field' in value && value.source === previous.source
+              ? { ...value, source: next.source }
+              : value,
+          ]),
+        ),
+      }));
+      const offset = Math.min(queued?.offset ?? addition.offset, addition.offset);
+      this.append.set(next.source, { offset, count: addition.offset + addition.count - offset });
+      this.prefetchAppend();
+      this.refresh();
+      return;
+    }
     if (previous.source !== next.source || previous.traces !== next.traces) {
       this.data = monitorData(next, this.window);
       this.bindings = undefined;
@@ -884,7 +885,6 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
         this.through.clear();
         this.clearSelection();
       }
-      this.watch();
     }
     if (previous.shade !== next.shade) this.compile(next.shade ?? null);
     const changed = (Object.keys(defaults) as (keyof Settings)[]).filter(
@@ -1130,7 +1130,6 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
     this.shadeSerial++;
     this.stop.abort(new DOMException('Monitor destroyed', 'AbortError'));
     this.cancel();
-    this.sources.destroy();
     this.inspection = undefined;
     this.pickStop?.abort();
     if (this.hoverTask) clearTimeout(this.hoverTask);
@@ -1138,12 +1137,14 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
       clearTimeout(this.debounce.timer);
       this.debounce.resolve();
     }
-    for (const dispose of this.subscriptions) dispose();
-    this.subscriptions = [];
     for (const value of new Set([this.front, this.back, this.focusImage, this.focusBack]))
       destroyImage(value);
     this.front = this.back = this.focusImage = this.focusBack = undefined;
     this.tails = undefined;
     this.presentedVersions.clear();
   }
+}
+
+function dataIdentity(data: Data): string {
+  return JSON.stringify(Object.values(data.tables).map((table) => table.index));
 }

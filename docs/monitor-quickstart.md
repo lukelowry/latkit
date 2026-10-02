@@ -7,7 +7,7 @@ import { createMonitor } from '@latkit/monitor';
 
 const monitor = createMonitor(gpu, {
   canvas,
-  source: recording,
+  source: observations,
   traces: { temperature: { from: 'sensor', field: 'temperature', widthPx: 1.5 } },
   camera: { window: [0, 30], values: [0, 100] },
   coordinateAxis: 'Time (s)',
@@ -16,7 +16,7 @@ const monitor = createMonitor(gpu, {
 });
 ```
 
-`recording` supplies sampled numeric `sensor.temperature`. A trace draws one line per row; `rows`
+`observations` is application-owned data supplying sampled numeric `sensor.temperature`. A trace draws one line per row; `rows`
 narrows them. `at` places the playhead, and moving it never rereads history.
 
 ## Window

@@ -1,7 +1,7 @@
 # Diagram studio
 
 A local, interactive showcase of the unified diagram API. All scenes are synthetic.
-The example implements a native Queryable source whose block ports reference signal
+The example owns immutable columnar Data whose block ports reference signal
 wires; the application accepts editing proposals and owns undo/redo.
 
 ```sh
@@ -25,11 +25,11 @@ Open http://127.0.0.1:5192. WebGPU requires a supported browser and graphics dev
   exposes background-drag and edge-panning preferences. Empty drops leave the wiring
   unchanged unless creation is enabled; dropping a reconnected input on empty space
   unplugs it. Arrangement and history can animate accepted positions.
-- Export: a retained source and an independent offscreen diagram produce a
+- Export: application-owned data and an independent offscreen diagram produce a
   2048 × 1280 PNG through `image()`.
 
 The API panel shows the minimal integration. Source is split into graph.ts (domain
-edits and history), source.ts (native data), presentation.ts (bindings), and main.ts
+edits and history), source.ts (application data), presentation.ts (bindings), and main.ts
 (the application). No legacy imports or adapter APIs are used.
 
 ```sh
