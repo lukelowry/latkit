@@ -11,6 +11,7 @@
     "@latkit/monitor-example",
     "@latkit/network-example",
     "@latkit/video-example",
-    "@latkit/diagram-example"
+    "@latkit/diagram-example",
+    "@latkit/benchmark"
   ]
 }
