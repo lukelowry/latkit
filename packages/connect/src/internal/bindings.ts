@@ -318,8 +318,8 @@ export class Bindings {
           const event = result.value as DataEvent;
           if (
             event.kind === 'data' &&
-            Object.keys(event.patch.columns).some(
-              (field) => !selected.get(event.patch.index.type)?.has(field),
+            Object.keys(event.block.columns).some(
+              (field) => !selected.get(event.block.index.type)?.has(field),
             )
           )
             throw failure('invalid-input', 'Publication contains an unselected field.');

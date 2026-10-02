@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>Coupled monitor + network | latkit</title>
+  </head>
+  <body>
+    <main>
+      <header class="intro">
+        <div>
+          <h1>Monitor + network</h1>
+          <p>One signal. Shared history. One playhead.</p>
+        </div>
+        <p id="dataset">Preparing synthetic data...</p>
+      </header>
+      <div id="error" role="alert" hidden></div>
+      <div class="views">
+        <section class="view" aria-labelledby="network-title">
+          <header>
+            <h2 id="network-title">Network</h2>
+            <span>Signal &rarr; color + height</span>
+          </header>
+          <canvas
+            id="network"
+            tabindex="0"
+            aria-label="Network: signal controls node color and elevation"
+          ></canvas>
+          <p id="network-metrics" class="metrics">Preparing network...</p>
+        </section>
+        <section class="view" aria-labelledby="monitor-title">
+          <header>
+            <h2 id="monitor-title">Monitor</h2>
+            <label
+              >Traces
+              <select id="traces" disabled>
+                <option value="16">16 distributed nodes</option>
+                <option value="400">All 400 nodes</option>
+              </select></label
+            >
+          </header>
+          <canvas
+            id="monitor"
+            tabindex="0"
+            aria-label="Signal history with a shared time cursor"
+          ></canvas>
+          <p id="monitor-metrics" class="metrics">Preparing monitor...</p>
+        </section>
+      </div>
+      <section class="timeline" aria-label="Shared playback controls">
+        <div class="transport">
+          <button id="play" type="button" disabled>Play</button>
+          <button id="reset" type="button" disabled>Reset time</button>
+          <label for="time"
+            >Time <output id="time-value" for="time" aria-live="off">0.000 s</output></label
+          >
+          <label class="speed"
+            >Speed
+            <select id="speed" disabled>
+              <option value="0.25">0.25&times;</option>
+              <option value="1" selected>1&times;</option>
+              <option value="4">4&times;</option>
+            </select></label
+          >
+        </div>
+        <input
+          id="time"
+          type="range"
+          min="0"
+          max="60"
+          value="0"
+          step="any"
+          aria-label="Shared time in seconds"
+          disabled
+        />
+        <div class="ticks">
+          <span>0 s</span><span>15 s</span><span>30 s</span><span>45 s</span><span>60 s</span>
+        </div>
+      </section>
+      <footer>
+        <div class="legend">
+          <span>Signal 0</span><span id="palette" aria-hidden="true"></span><span>1</span
+          ><span>Height 0&ndash;3 units</span>
+        </div>
+        <p id="status" role="status" aria-live="off">Starting WebGPU...</p>
+        <p>
+          Drag the slider to scrub; use arrow keys for fine steps. Drag the network to pan, scroll
+          to zoom. FPS counts submitted frames; preparation time excludes GPU execution.
+        </p>
+      </footer>
+    </main>
+    <script type="module" src="/src/coupled.ts"></script>
+  </body>
+</html>

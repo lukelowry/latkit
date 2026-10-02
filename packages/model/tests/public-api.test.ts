@@ -1,6 +1,8 @@
 import { expect, expectTypeOf, it } from 'vitest';
 import * as api from '../src/index.js';
 import type {
+  RowBatch,
+  SampleBatch,
   Model,
   Commands,
   Data,
@@ -51,4 +53,13 @@ function usage(model: Model, commands: Commands, data: Data) {
   // @ts-expect-error Data needs no close.
   void data.close;
 }
+function appendUsage(data: Data, rows: RowBatch, samples: SampleBatch) {
+  api.createData(data.schema, 'next', [rows, samples]);
+  api.appendData(data, 'next', [samples]);
+  // @ts-expect-error Static rows require complete construction, never append.
+  api.appendData(data, 'next', [rows]);
+  // @ts-expect-error Row batches have no replacement operation.
+  void rows.replace;
+}
+void appendUsage;
 void usage;

@@ -20,6 +20,8 @@ import { Textures, type TextureResource } from './resources.js';
 import {
   targetResources,
   type FrameInfo,
+  type CapturedFrame,
+  type PreparedFrame,
   type Preparation,
   type QueryResult,
   type Renderer,
@@ -371,7 +373,8 @@ class Owner implements Gpu {
     const checks: (() => void)[] = [];
     const copies = new Set<CopyJob>();
     const versions = new Map<Data, Version>();
-    const subscriptions: (() => void)[] = [];
+    const snapshots: CapturedFrame[] = [];
+    const prepared: (PreparedFrame | undefined)[] = [];
     const iterators = new Set<AsyncIterator<unknown>>();
     const tasks = new Set<Promise<unknown>>();
     let phase: 'prepare' | 'encode' | 'closed' = 'prepare';
@@ -568,17 +571,13 @@ class Owner implements Gpu {
       },
     });
     try {
-      for (const renderer of renderers) {
-        const off = renderer.on?.('invalidate', (change) => {
-          if (change === 'replace' && !submitted)
-            cancelled.abort(new DOMException('Renderer frame superseded', 'AbortError'));
-        });
-        if (off) subscriptions.push(off);
-      }
+      for (const view of options.views) snapshots.push(view.renderer.capture());
       while (this.pending.size >= this.maxFrames)
         await interruptible(Promise.race(this.pending), signal);
-      const jobs = options.views.map((view, i) =>
-        Promise.resolve().then(() => view.renderer.prepare(makeFrame(infos[i]))),
+      const jobs = snapshots.map((snapshot, i) =>
+        Promise.resolve().then(async () => {
+          prepared[i] = await snapshot.prepare(makeFrame(infos[i]));
+        }),
       );
       preparation = Promise.allSettled(jobs);
       await interruptible(Promise.all(jobs), signal);
@@ -618,7 +617,7 @@ class Owner implements Gpu {
           target = view.target.texture().createView();
           targets.set(view.target, target);
         }
-        const result: unknown = view.renderer.encode({ ...infos[i], encoder, target });
+        const result: unknown = prepared[i]!.encode({ ...infos[i], encoder, target });
         if (result && typeof (result as PromiseLike<unknown>).then === 'function')
           throw new GpuError('invalid-input', 'Renderer encoding must be synchronous');
       }
@@ -647,9 +646,9 @@ class Owner implements Gpu {
         },
       );
       const failures: unknown[] = [];
-      for (const [i, view] of options.views.entries()) {
+      for (const [i] of options.views.entries()) {
         try {
-          view.renderer.submitted?.(infos[i]);
+          prepared[i]!.submitted();
         } catch (error) {
           failures.push(error);
         }
@@ -664,12 +663,27 @@ class Owner implements Gpu {
       cancelled.abort(new DOMException('Frame preparation ended', 'AbortError'));
       for (const iterator of iterators)
         void Promise.resolve(iterator.return?.(undefined)).catch(() => {});
-      for (const off of subscriptions) off();
       if (!submitted) release();
       // An uncooperative prepare cannot race a later call on the same renderer.
-      void preparation.then(() => {
+      const settle = () => {
+        const failures: unknown[] = [];
+        if (!submitted)
+          for (const candidate of prepared)
+            try {
+              candidate?.discard();
+            } catch (error) {
+              failures.push(error);
+            }
+        for (const snapshot of snapshots)
+          try {
+            snapshot.release();
+          } catch (error) {
+            failures.push(error);
+          }
         for (const renderer of renderers) this.busy.delete(renderer);
-      });
+        if (failures.length) this.stop(new AggregateError(failures, 'Frame cleanup failed'));
+      };
+      void preparation.then(settle, settle);
     }
   }
 

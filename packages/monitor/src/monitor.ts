@@ -1,6 +1,16 @@
+import { Tiles, coordinateRanges } from './tiles.js';
 import type { Domain, Data } from '@latkit/model';
 import { GpuError, kit, type Gpu, type Shade, type View } from '@latkit/gpu';
-import { appended, monitorData, type MonitorData, type Reading, type Trace } from './data.js';
+import {
+  appended,
+  mergeRanges,
+  monitorData,
+  type FrameRanges,
+  type FrameRange,
+  type MonitorData,
+  type Reading,
+  type Trace,
+} from './data.js';
 import type { Limits, StyleOptions } from './options.js';
 import {
   defaults,
@@ -177,9 +187,9 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
   private invalidSources = new Set<Data>();
   private job?: Job;
   private coverage = new Coverage();
-  private through = new Map<string, number>();
   private focusJob?: Job;
   private tails?: Seams;
+  private tiles: Tiles;
   private dirty = true;
   private focusDirty = false;
   private chosen: readonly kit.DataHit[] = Object.freeze([]);
@@ -189,7 +199,7 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
     resolve: () => void;
     timer: ReturnType<typeof setTimeout>;
   };
-  private append = new Map<Data, { offset: number; count: number }>();
+  private append = new Map<string, readonly FrameRange[]>();
   private generation = 0;
   private presentedVersions = new Map<Data, string>();
   private prepared?: {
@@ -226,6 +236,7 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
       camera = config.camera ?? fail('A monitor needs a camera window');
     this.options = resolved.options;
     this.limits = resolved.limits;
+    this.tiles = new Tiles(this.limits.historyBytes / 4);
     this.window = windowRange(camera.window);
     this.data = monitorData(this.config, this.window);
     this.follow = follows(camera.follow ?? null);
@@ -235,7 +246,7 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
     this.start();
   }
   private refresh() {
-    this.invalidate('refresh');
+    this.invalidate();
   }
   private prefetchAppend() {
     if (
@@ -250,24 +261,17 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
       this.fitValues
     )
       return;
-    const next = this.append.entries().next().value;
-    if (!next) return;
-    const [source, range] = next;
-    if (!this.bindings.every((b) => b.source === source)) return;
-    this.append.delete(source);
-    const offset = Math.max(
-        range.offset,
-        (this.through.get(dataIdentity(source)) ?? -Infinity) + 1,
-      ),
-      count = range.offset + range.count - offset;
-    if (count <= 0) return;
+    if (!this.append.size) return;
+    const frames = new Map(this.append);
     try {
-      this.begin(false, { offset, count });
+      this.begin(false, frames);
+      this.append.clear();
       if (this.chosen.length) this.begin(true);
     } catch (error) {
       this.error = error;
     }
   }
+
   private cancel() {
     this.job?.cancel();
     this.focusJob?.cancel();
@@ -303,7 +307,7 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
       }, 120);
       this.debounce = { ...task, timer };
     }
-    if (notify) this.invalidate('replace');
+    if (notify) this.invalidate();
   }
   protected get pending(): Promise<void> | undefined {
     if (this.closed || this.error) return undefined;
@@ -394,19 +398,67 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
       (this.focusJob?.seams.bytes ?? 0) +
       (this.job?.bytes ?? 0) +
       (this.focusJob?.bytes ?? 0) +
+      this.tiles.bytes +
       this.coverage.bytes
     );
   }
-  private begin(focus: boolean, frames?: { offset: number; count: number }) {
+  private begin(focus: boolean, frames?: FrameRanges, reproject = false) {
     const p = plot(this.viewport!, this.options);
-    const seed = frames ? this.tails : undefined;
-    if (!focus) this.tails = undefined;
+    const pixels = Math.max(1, Math.floor(p.width * this.viewport!.pixelRatio));
+    const cached =
+      !focus && (!frames || reproject)
+        ? this.tiles.reuse(this.window.between, pixels, this.bindings!, !!frames)
+        : undefined;
+    if (
+      cached &&
+      frames &&
+      this.tiles.coveredThrough !== undefined &&
+      this.window.between[1] > this.tiles.coveredThrough
+    ) {
+      // A camera extension may expose existing observations, not only newly appended ones.
+      const pending = new Map(frames),
+        through = this.tiles.coveredThrough;
+      for (const binding of this.bindings!) {
+        const ranges = [...(pending.get(binding.name) ?? [])];
+        for (const page of binding.source.tables[binding.trace.from]?.fields[binding.field] ?? []) {
+          const sample = page.samples;
+          if (!sample) continue;
+          const coordinates = sample.coordinates;
+          if (coordinates.at(-1)! <= through || coordinates[0] > this.window.between[1]) continue;
+          const bound = (value: number, inclusive: boolean) => {
+            let lo = 0,
+              hi = coordinates.length;
+            while (lo < hi) {
+              const mid = (lo + hi) >>> 1;
+              if (coordinates[mid] < value || (!inclusive && coordinates[mid] === value))
+                lo = mid + 1;
+              else hi = mid;
+            }
+            return lo;
+          };
+          const first = bound(
+            Math.max(through, this.window.between[0]),
+            this.window.between[0] > through,
+          );
+          const end = bound(this.window.between[1], false);
+          if (first < end) ranges.push({ offset: sample.firstFrame + first, count: end - first });
+        }
+        if (ranges.length) pending.set(binding.name, mergeRanges(ranges));
+      }
+      frames = pending;
+    }
+    if (reproject && !cached) frames = undefined;
+    const seed = frames || cached ? this.tails : undefined;
+    if (!focus) {
+      this.tails = undefined;
+      if (!frames && !cached) this.tiles.clear();
+    }
     let target: Image;
     if (focus) {
       destroyImage(this.focusBack);
       this.focusBack = undefined;
       target = this.focusBack = this.makeImage();
-    } else if (frames && this.front) {
+    } else if (frames && this.front && !reproject) {
       target = this.front;
     } else {
       destroyImage(this.back);
@@ -428,6 +480,11 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
       },
       () => this.refresh(),
       seed,
+      cached
+        ? { entries: cached, rows: this.tiles.rows, readNew: !!frames }
+        : frames
+          ? { entries: [], rows: this.rowCount, readNew: true }
+          : undefined,
     );
     job.timeMs = this.timeMs;
     job.pointer = this.pointer;
@@ -487,57 +544,86 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
       this.begin(false);
     }
     if (this.append.size && !this.job && !this.focusJob && !this.dirty) {
-      const [source, range] = this.append.entries().next().value!;
-      this.append.delete(source);
-      const offset = Math.max(
-        range.offset,
-        (this.through.get(dataIdentity(source)) ?? -Infinity) + 1,
-      );
-      const append = { offset, count: Math.max(0, range.offset + range.count - offset) };
-      if (!append.count) {
-        this.refresh();
-        return;
-      }
+      // Snapshot the request without consuming it. A cancelled await must leave it retryable.
+      const frames = new Map(this.append);
+      let window = this.window;
       if (this.follow) {
-        const item = this.bindings.find((b) => b.source === source);
-        if (item)
-          for await (const block of this.gpu.query(
-            source,
-            {
-              kind: 'samples',
-              from: item.trace.from,
-              rows: item.rows,
-              select: [item.field],
-              window: { kind: 'frames', offset: append.offset + append.count - 1, count: 1 },
-            },
-            { signal: frame.signal },
-          )) {
-            if (block.kind === 'schema' || !block.coordinates.length) continue;
-            const end = block.coordinates[0];
-            this.window = {
-              ...this.window,
-              between: [Math.max(this.data.window.between[0], end - this.follow), end],
-            };
-            break;
+        let end = -Infinity;
+        for (const item of this.bindings)
+          for (const range of frames.get(item.name) ?? []) {
+            const last = range.offset + range.count - 1;
+            for (const page of item.source.tables[item.trace.from]?.fields[item.field] ?? []) {
+              const sample = page.samples;
+              if (
+                sample &&
+                last >= sample.firstFrame &&
+                last < sample.firstFrame + sample.coordinates.length
+              )
+                end = Math.max(end, sample.coordinates[last - sample.firstFrame]);
+            }
           }
+        if (Number.isFinite(end))
+          window = {
+            ...window,
+            between: [Math.max(this.data.window.between[0], end - this.follow), end],
+          };
       }
       let values: Domain | null = null;
       if (this.fitValues)
-        for (const item of this.bindings)
-          values = mergeDomain(
-            values,
-            await extent(
-              this.gpu,
-              this.data.source,
-              item.trace.from,
-              item.rows,
-              item.fields.value,
+        for (const item of this.bindings) {
+          const cached =
+            this.options.autoDomain === 'fit'
+              ? await this.tiles.bounds(item.name, window.between, frame.signal)
+              : undefined;
+          let windows: import('@latkit/model').SampleWindow[];
+          if (cached) {
+            values = mergeDomain(values, cached.domain);
+            const intervals = [...cached.missing];
+            for (const range of frames.get(item.name) ?? [])
+              for (const page of item.source.tables[item.trace.from]?.fields[item.field] ?? []) {
+                const sample = page.samples;
+                if (!sample) continue;
+                const start = Math.max(range.offset, sample.firstFrame),
+                  end = Math.min(
+                    range.offset + range.count,
+                    sample.firstFrame + sample.coordinates.length,
+                  );
+                if (start >= end) continue;
+                const first = Math.max(
+                  window.between[0],
+                  sample.coordinates[start - sample.firstFrame],
+                );
+                const last = Math.min(
+                  window.between[1],
+                  sample.coordinates[end - sample.firstFrame - 1],
+                );
+                if (first <= last) intervals.push([first, last]);
+              }
+            windows = coordinateRanges(intervals).map((between) => ({ kind: 'range', between }));
+          } else
+            windows =
               this.options.autoDomain === 'fit'
-                ? this.window
-                : { kind: 'frames', offset: append.offset, count: append.count },
-              frame.signal,
-            ),
-          );
+                ? [window]
+                : (frames.get(item.name) ?? []).map((range) => ({
+                    kind: 'frames' as const,
+                    ...range,
+                  }));
+          for (const selected of windows)
+            values = mergeDomain(
+              values,
+              await extent(
+                this.gpu,
+                this.data.source,
+                item.trace.from,
+                item.rows,
+                item.fields.value,
+                selected,
+                frame.signal,
+              ),
+            );
+        }
+      frame.signal.throwIfAborted();
+      this.window = window;
       this.focusDirty = this.chosen.length > 0;
       if (
         values &&
@@ -547,9 +633,12 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
           this.options.autoDomain === 'grow' ? mergeDomain(this.y, values)! : values,
           this.options.domainPadding,
         );
-        this.begin(false);
-      } else this.begin(false, this.follow ? undefined : append);
+        this.begin(false, frames, true);
+      } else this.begin(false, frames, !!this.follow);
+      // The durable job now owns preparation; frame cancellation does not cancel that job.
+      this.append.clear();
     }
+
     if (this.focusDirty && this.chosen.length && !this.focusJob && !this.debounce) this.begin(true);
     for (const job of [this.job, this.focusJob])
       if (job?.error) {
@@ -668,6 +757,9 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
     };
     this.prepareMs = performance.now() - began;
   }
+  protected discard(): void {
+    this.prepared = undefined;
+  }
   protected encode(frame: kit.Encoding): void {
     if (!this.prepared) return;
     const { pipeline, screen, paint: painted, clear } = this.prepared;
@@ -688,6 +780,9 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
       job.target.fresh = false;
       if (job === this.job && job.target === this.front && this.coverage !== job.coverage)
         for (const item of job.queue.slice(0, count)) this.coverage.add(item.chunk);
+      if (job === this.job)
+        for (const entry of job.queue.slice(0, count))
+          if (!entry.cached) this.tiles.add(entry, this.window.between);
       job.consume(count);
       if (!this.front) this.rowCount = job.rows;
     }
@@ -728,11 +823,15 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
           this.back = undefined;
         }
         this.rowCount = job.rows;
-        for (const [source, end] of job.endFrames)
-          this.through.set(
-            dataIdentity(source),
-            Math.max(this.through.get(dataIdentity(source)) ?? -Infinity, end),
-          );
+        this.tiles.finish(
+          this.window.between,
+          Math.max(
+            1,
+            Math.floor(plot(this.viewport!, this.options).width * this.viewport!.pixelRatio),
+          ),
+          job.rows,
+          true,
+        );
         job.seams.finish();
         this.tails = job.seams;
         this.presentedVersions = new Map(job.versions);
@@ -762,6 +861,7 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
   }
   select(items: readonly kit.DataHit[]): void {
     this.live();
+    if (this.defer('selection', () => this.select(items))) return;
     for (const item of items)
       if (!Number.isSafeInteger(item.row) || item.row < 0) fail('Invalid focused row');
     this.chosen = Object.freeze([...items]);
@@ -855,8 +955,6 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
           ),
       )
     ) {
-      const queued = this.append.get(previous.source);
-      this.append.delete(previous.source);
       this.data = monitorData(next, this.window);
       this.bindings = this.bindings.map((item) => ({
         ...item,
@@ -870,22 +968,47 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
           ]),
         ),
       }));
-      const offset = Math.min(queued?.offset ?? addition.offset, addition.offset);
-      this.append.set(next.source, { offset, count: addition.offset + addition.count - offset });
+      for (const binding of this.bindings) {
+        const fields = new Set([binding.field]);
+        for (const value of Object.values(binding.fields)) {
+          if (typeof value === 'string') fields.add(value);
+          else if (
+            'field' in value &&
+            value.source === next.source &&
+            value.from === binding.trace.from
+          )
+            fields.add(value.field);
+        }
+        const ranges = [...fields].flatMap(
+          (field) => addition.get(binding.trace.from + ':' + field) ?? [],
+        );
+        if (ranges.length)
+          this.append.set(
+            binding.name,
+            mergeRanges([...(this.append.get(binding.name) ?? []), ...ranges]),
+          );
+      }
       this.prefetchAppend();
       this.refresh();
       return;
     }
     if (previous.source !== next.source || previous.traces !== next.traces) {
+      this.tiles.clear();
       this.data = monitorData(next, this.window);
       this.bindings = undefined;
       this.setup = undefined;
       if (previous.source !== next.source) {
         this.rowCount = 0;
-        this.through.clear();
         this.clearSelection();
       }
     }
+    if (previous.limits !== next.limits) this.tiles = new Tiles(this.limits.historyBytes / 4);
+    if (
+      previous.traces !== next.traces ||
+      previous.shade !== next.shade ||
+      previous.detail !== next.detail
+    )
+      this.tiles.clear();
     if (previous.shade !== next.shade) this.compile(next.shade ?? null);
     const changed = (Object.keys(defaults) as (keyof Settings)[]).filter(
       (key) => before[key] !== this.options[key],
@@ -911,6 +1034,10 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
   }
   /** Null shows all recorded frames with fitted values. */
   protected moveCamera(patch: Partial<Camera> | null, options: kit.SetOptions = {}): void {
+    if (patch?.window) windowRange(patch.window);
+    if (patch?.values) expanded(patch.values);
+    if (patch?.follow !== undefined) follows(patch.follow);
+    if (this.deferCamera(patch, options)) return;
     void options;
     if (patch === null) {
       this.fit();
@@ -991,6 +1118,7 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
   private point(point: Point | null) {
     if (this.closed) return;
     if (point && !point.every(Number.isFinite)) fail('Invalid pointer');
+    if (this.defer('pointer', () => this.point(point))) return;
     this.pointer = point;
     if (!point || this.options.hover === 'off') {
       this.pickStop?.abort();
@@ -1126,6 +1254,7 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
     };
   }
   protected release(): void {
+    this.tiles.clear();
     this.closed = true;
     this.shadeSerial++;
     this.stop.abort(new DOMException('Monitor destroyed', 'AbortError'));
@@ -1143,8 +1272,4 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
     this.tails = undefined;
     this.presentedVersions.clear();
   }
-}
-
-function dataIdentity(data: Data): string {
-  return JSON.stringify(Object.values(data.tables).map((table) => table.index));
 }

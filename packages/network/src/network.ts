@@ -280,6 +280,7 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
   }
   select(items: readonly NetworkItem[]): void {
     this.live();
+    if (this.defer('selection', () => this.select(items))) return;
     for (const item of items)
       if (
         item.source !==
@@ -290,7 +291,7 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
         throw new GpuError('conflict', 'Selection belongs to another source');
     this.chosen = Object.freeze([...items]);
     this.chosenVersion++;
-    this.invalidate('refresh');
+    this.invalidate();
   }
   pick(
     point: Point,
@@ -409,6 +410,7 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
     this.invalidate();
   }
   /** Null resets the camera to fit the data. */
+  private desiredCamera?: Camera;
   protected moveCamera(patch: Partial<Camera> | null, options: kit.SetOptions): void {
     const given = (
       patch === null
@@ -422,11 +424,16 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
     ) as Partial<Camera>;
     const moved = ['projection', 'center', 'scale', 'pitch', 'bearing'].some((key) => key in given);
     let target = checkCamera({
-      ...this.view,
+      ...(this.desiredCamera ?? this.view),
       ...given,
       fit: given.fit ?? (moved ? false : this.view.fit),
       orbit: (given.orbit ?? this.view.orbit) && !this.reduced(),
     });
+    if (this.deferCamera(patch, options)) {
+      this.desiredCamera = target;
+      return;
+    }
+    this.desiredCamera = undefined;
     if (target.orbit && !this.view.orbit) {
       this.previousTime = undefined;
       if (target.projection === 'flat')
@@ -449,18 +456,22 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
       this.view = target;
       this.animation = undefined;
     }
-    this.invalidate(target.orbit ? 'refresh' : 'replace');
+    this.invalidate();
   }
   protected attach(canvas: HTMLCanvasElement): () => void {
     return attachInput(canvas, (this.config.input ?? {}) as NetworkInput, {
       pointer: (point) => this.point(point),
-      pan: (dx, dy) => this.moveCamera({ ...move(this.view, dx, dy), orbit: false }, {}),
+      pan: (dx, dy) =>
+        this.moveCamera({ ...move(this.desiredCamera ?? this.view, dx, dy), orbit: false }, {}),
       rotate: (dx, dy) =>
         this.moveCamera(
           {
-            projection: this.view.projection === 'flat' ? 'tilt' : this.view.projection,
-            bearing: this.view.bearing + dx * 0.4,
-            pitch: Math.max(0, Math.min(80, this.view.pitch - dy * 0.25)),
+            projection:
+              (this.desiredCamera ?? this.view).projection === 'flat'
+                ? 'tilt'
+                : (this.desiredCamera ?? this.view).projection,
+            bearing: (this.desiredCamera ?? this.view).bearing + dx * 0.4,
+            pitch: Math.max(0, Math.min(80, (this.desiredCamera ?? this.view).pitch - dy * 0.25)),
             orbit: false,
           },
           {},
@@ -470,7 +481,12 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
         if (vp)
           this.moveCamera(
             {
-              ...zoom(this.view, factor, anchor ?? [vp.width / 2, vp.height / 2], vp),
+              ...zoom(
+                this.desiredCamera ?? this.view,
+                factor,
+                anchor ?? [vp.width / 2, vp.height / 2],
+                vp,
+              ),
               orbit: false,
             },
             {},
@@ -545,7 +561,7 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
     this.hoverWake = setTimeout(
       () => {
         this.hoverWake = undefined;
-        if (this.pointer) this.invalidate('refresh');
+        if (this.pointer) this.invalidate();
       },
       Math.max(1, at - performance.now()),
     );
@@ -564,9 +580,10 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
   /** Move the pointer; frames search for hover, so pointer events only request work. */
   private point(point: Point | null): void {
     if (point && !point.every(Number.isFinite)) throw new RangeError('Invalid pointer');
+    this.pointerVersion++;
+    if (this.defer('pointer', () => this.point(point))) return;
     const leaving = !point && this.pointer !== null;
     this.pointer = point;
-    this.pointerVersion++;
     const hadHover = this.hover !== null;
     if (!point) {
       this.clearHoverWake();
@@ -590,7 +607,7 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
       (leaving && policy !== 'off' && !this.hoverSuspended) ||
       this.shade
     )
-      this.invalidate('refresh');
+      this.invalidate();
   }
   private prepareHover(
     picking: PickGeometry,
@@ -783,6 +800,9 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
         finishedAnimation,
       };
     }
+  }
+  protected discard(): void {
+    this.pendingFrame = undefined;
   }
   protected encode(frame: kit.Encoding): void {
     this.live();

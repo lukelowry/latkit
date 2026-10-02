@@ -3,7 +3,8 @@ import {
   createData,
   read,
   type Data,
-  type DataPatch,
+  type RowBatch,
+  type SampleBatch,
   type Schema,
   type Query,
   type QueryOptions,
@@ -67,9 +68,10 @@ export class SignalSource {
   get data(): Data {
     if (this.cached?.version === this.version) return this.cached;
     const rows = { kind: 'range' as const, offset: 0, count: this.count },
-      patches: DataPatch[] = [];
+      batches: SampleBatch[] = [];
+    const staticBatches: RowBatch[] = [];
     if (!this.cached)
-      patches.push({
+      staticBatches.push({
         kind: 'rows',
         index: this.index,
         rows,
@@ -87,7 +89,7 @@ export class SignalSource {
       const coordinates = Float64Array.from({ length: nf }, (_, i) => this.coordinate(f + i));
       for (let r = 0; r < this.count; r += 16) {
         const nr = Math.min(16, this.count - r);
-        const columns: import('@latkit/model').SamplesPatch['columns'] = Object.fromEntries(
+        const columns: import('@latkit/model').SampleBatch['columns'] = Object.fromEntries(
           ['value', 'other', 'visible'].map((name) => {
             const values = new Float64Array(nr * nf),
               validity = new Uint8Array(Math.ceil(values.length / 8));
@@ -113,7 +115,7 @@ export class SignalSource {
             ];
           }),
         );
-        patches.push({
+        batches.push({
           kind: 'samples',
           index: this.index,
           rows: { kind: 'range', offset: r, count: nr },
@@ -125,8 +127,8 @@ export class SignalSource {
     }
     this.storedThrough = this.frames;
     this.cached = this.cached
-      ? appendData(this.cached, this.version, patches)
-      : createData(this.schema, this.version, patches);
+      ? appendData(this.cached, this.version, batches)
+      : createData(this.schema, this.version, [...staticBatches, ...batches]);
     return this.cached;
   }
   append(count: number): void {

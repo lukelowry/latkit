@@ -2,7 +2,7 @@ import {
   createData,
   textColumn,
   type Data,
-  type DataPatch,
+  type DataBatch,
   type Column,
   type NumericColumn,
 } from '@latkit/model';
@@ -44,7 +44,7 @@ export class GraphSource {
   }
   private materialize(): Data {
     const wires = new Map(this.graph.wires.map((wire, row) => [wire.id, row]));
-    const patches: DataPatch[] = [];
+    const batches: DataBatch[] = [];
     for (const [type, definition] of Object.entries(schema.types)) {
       const rows =
         type === 'Signal'
@@ -88,7 +88,7 @@ export class GraphSource {
                 : numeric(values as number[]);
         }
       }
-      patches.push({
+      batches.push({
         kind: 'rows',
         index: this.index(type),
         rows: { kind: 'range', offset: 0, count: rows.length },
@@ -96,6 +96,6 @@ export class GraphSource {
         columns,
       });
     }
-    return createData(schema, this.version, patches);
+    return createData(schema, this.version, batches);
   }
 }

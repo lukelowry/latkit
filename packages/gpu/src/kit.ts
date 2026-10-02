@@ -13,7 +13,8 @@ export type { CompositionConfig } from './composition.js';
 export type { Budget, GpuStats } from './memory.js';
 export type {
   Renderer,
-  Invalidation,
+  CapturedFrame,
+  PreparedFrame,
   Preparation,
   Encoding,
   FrameInfo,

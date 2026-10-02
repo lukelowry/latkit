@@ -19,7 +19,7 @@ for await (const block of read(fixed, {
 ```
 
 Explicit frame requests outside supplied observations reject. Queries cannot retrieve missing
-history from a model. To save incoming observations, apply delivered patches to application
+history from a model. To save incoming observations, append delivered sample batches to application
 storage using `appendData`; to replace them, use `createData`. Neither helper communicates
 with a producer or stores anything outside its returned value.
 

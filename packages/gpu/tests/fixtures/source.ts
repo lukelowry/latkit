@@ -2,7 +2,7 @@ import {
   createData,
   read,
   type Data,
-  type DataPatch,
+  type DataBatch,
   type Schema,
   type Query,
   type QueryOptions,
@@ -44,7 +44,7 @@ export class Source {
   }
   get data(): Data {
     if (this.cached?.version === this.version) return this.cached;
-    const patches: DataPatch[] = [];
+    const batches: DataBatch[] = [];
     for (let f = 0; f < (this.options.sampled ? (this.options.frames ?? 4) : 1); f++)
       for (let offset = 0; offset < this.count; offset += this.options.blockRows ?? 4096) {
         const count = Math.min(this.options.blockRows ?? 4096, this.count - offset);
@@ -55,7 +55,7 @@ export class Source {
           values: this.values.subarray(f * this.count + offset, f * this.count + offset + count),
         };
         const base = { index: this.index, rows: { kind: 'range' as const, offset, count } };
-        patches.push(
+        batches.push(
           this.options.sampled
             ? {
                 ...base,
@@ -67,7 +67,7 @@ export class Source {
             : { ...base, kind: 'rows', columns: { value: column } },
         );
       }
-    return (this.cached = createData(this.schema, this.version, patches));
+    return (this.cached = createData(this.schema, this.version, batches));
   }
   publish(): void {
     this.version += '+';

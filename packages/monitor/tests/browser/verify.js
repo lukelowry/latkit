@@ -303,7 +303,7 @@ export async function verify(gpu) {
         yield {
           kind: 'data',
           version: local.version,
-          patch: {
+          block: {
             kind: 'samples',
             index: local.index,
             rows: page.rows,

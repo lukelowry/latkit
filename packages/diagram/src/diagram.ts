@@ -294,8 +294,9 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
   }
   select(items: readonly DiagramItem[]): void {
     this.live();
+    if (this.defer('selection', () => this.select(items))) return;
     this.selected = [...new Map(items.map((i) => [itemKey(i), i])).values()];
-    this.invalidate('refresh');
+    this.invalidate();
   }
   pick(point: Point, options: { readonly radiusPx?: number } = {}): Promise<readonly DiagramHit[]> {
     return new Promise((resolve) => {
@@ -338,6 +339,8 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
   }
   fit(items?: readonly DiagramItem[], options: kit.SetOptions = {}): void {
     this.live();
+    if (this.defer('camera', () => this.fit(items, options))) return;
+    this.desiredCamera = undefined;
     this.fitting = !items;
     this.fitItems = items;
     if (this.presented) {
@@ -354,6 +357,7 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
   }
   reveal(item: DiagramItem, options: kit.SetOptions = {}): void {
     this.live();
+    if (this.defer('camera', () => this.reveal(item, options))) return;
     const point = this.presented?.picking.locate(item);
     if (!point || !this.presented) return;
     const p = kit.cameraPoint(this.presented.camera, point, this.presented.viewport),
@@ -379,8 +383,7 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
   protected configure(previous: DiagramConfig, next: DiagramConfig, options: kit.SetOptions): void {
     const resolved = this.resolved?.config === next ? this.resolved : resolve(next);
     this.resolved = undefined;
-    const animate = options.animate === true,
-      revision = this.revision;
+    const animate = options.animate === true;
     this.limits = resolved.limits;
     if (
       previous.source !== next.source ||
@@ -408,10 +411,12 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
         : a !== b;
     });
     if (changed.some((key) => !UNIFORMS.includes(key))) this.reread(false);
-    this.invalidate(this.revision !== revision ? 'replace' : 'refresh');
+    this.invalidate();
   }
   /** Null fits the whole diagram. */
   protected moveCamera(patch: Partial<Camera> | null, options: kit.SetOptions): void {
+    if (patch?.center || patch?.scale) camera2d(patch.center ?? [0, 0], patch.scale ?? 1);
+    if (this.deferCamera(patch, options)) return;
     if (patch === null || patch.fit) {
       this.fit(undefined, options);
       return;
@@ -445,6 +450,7 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
           Math.max(a[1], b[1]),
         ]) ?? [],
       preview: (items, delta) => {
+        if (this.defer('preview', () => this.controls().preview(items, delta))) return;
         if (this.sceneTransition) this.interruptedTransition = true;
         if (!delta && this.interruptedTransition) {
           // The drag starts from what was shown; cancellation must reread accepted positions.
@@ -460,12 +466,14 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
       },
       move: (items, delta) => this.move(items, delta),
       overlay: (value) => {
+        if (this.defer('overlay', () => this.controls().overlay(value))) return;
         this.overlay = value;
-        this.invalidate('refresh');
+        this.invalidate();
       },
       reduced: (value) => {
+        if (this.defer('reduced', () => this.controls().reduced(value))) return;
         this.reducedMotion = value;
-        this.invalidate('refresh');
+        this.invalidate();
       },
       hit: (point, radiusPx) => this.hit(point, radiusPx),
       pointer: (point) => this.point(point),
@@ -505,7 +513,13 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
     });
   }
   /** Move the camera to a place; any explicit move stops fitting. */
+  private desiredCamera?: kit.Camera2D;
   private aim(next: kit.Camera2D, options: kit.SetOptions = {}): void {
+    if (this.defer('camera', () => this.aim(next, options))) {
+      this.desiredCamera = next;
+      return;
+    }
+    this.desiredCamera = undefined;
     this.fitting = false;
     this.fitItems = undefined;
     this.requestedCamera = next;
@@ -528,7 +542,7 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
   }
   private pan(dx: number, dy: number): void {
     if (!Number.isFinite(dx) || !Number.isFinite(dy)) fail('Invalid pan');
-    const c = this.requestedCamera ?? this.presented?.camera;
+    const c = this.desiredCamera ?? this.requestedCamera ?? this.presented?.camera;
     if (!c) return;
     this.aim({ ...c, center: [c.center[0] - dx / c.scale[0], c.center[1] - dy / c.scale[1]] });
   }
@@ -538,7 +552,7 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
     if (!p) return;
     this.aim(
       kit.zoomCamera(
-        this.requestedCamera ?? p.camera,
+        this.desiredCamera ?? this.requestedCamera ?? p.camera,
         factor,
         anchor ?? [p.viewport.width / 2, p.viewport.height / 2],
         p.viewport,
@@ -548,8 +562,9 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
   private point(point: Point | null): void {
     if (this.closed) return;
     if (point && !point.every(Number.isFinite)) fail('Invalid pointer');
+    if (this.defer('pointer', () => this.point(point))) return;
     this.pointer = point;
-    this.invalidate('refresh');
+    this.invalidate();
   }
   private hit(point: Point, radiusPx?: number): readonly DiagramHit[] {
     const p = this.presented;
@@ -854,6 +869,10 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
     frame.signal.addEventListener('abort', abort, { once: true });
     this.staged = candidate;
     this.format = frame.format;
+  }
+  protected discard(): void {
+    this.staged?.off();
+    this.staged = undefined;
   }
   protected encode(frame: kit.Encoding): void {
     this.live();

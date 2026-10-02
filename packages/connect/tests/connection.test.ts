@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { connect, serve } from '../src/index.js';
-import { LiveModel, inputPatch, transaction } from '../../model/tests/live.js';
+import { LiveModel, inputBatch, transaction } from '../../model/tests/live.js';
 import { open, transports, subscribed } from './fixture.js';
 it('negotiates schema and separate command capability', async () => {
   const c = await open();
@@ -26,7 +26,7 @@ it.each([false, true])('serves passive models without commands (framed=%s)', asy
     expect(remote.commands).toBeUndefined();
     const events = remote.monitor([{ from: 'Node', select: ['value'] }]);
     await subscribed(model);
-    const publish = model.publish([inputPatch()]);
+    const publish = model.publish([inputBatch()]);
     expect((await transaction(events)).map((e) => e.kind)).toEqual(['begin', 'data', 'end']);
     await publish;
   } finally {

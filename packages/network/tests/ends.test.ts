@@ -1,3 +1,4 @@
+import { renderer as snapshotRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { createData } from '@latkit/model';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createGpu, type Gpu } from '@latkit/gpu';
@@ -9,7 +10,7 @@ import type {
   QueryHeader,
   QueryOptions,
   Data,
-  DataPatch,
+  DataBatch,
   Schema,
 } from '@latkit/model';
 import { createNetwork } from '../src/index.js';
@@ -53,17 +54,17 @@ class GridSource {
   private cached?: Data;
   get data(): Data {
     if (this.cached) return this.cached;
-    const patches: DataPatch[] = [];
+    const batches: DataBatch[] = [];
     for (const [from, type] of Object.entries(this.schema.types))
       for (const block of this.blocks({ kind: 'rows', from, select: Object.keys(type.fields) }))
         if (block.kind === 'rows')
-          patches.push({
+          batches.push({
             kind: 'rows',
             index: block.index,
             rows: block.rows,
             columns: block.columns,
           });
-    return (this.cached = createData(this.schema, this.version, patches));
+    return (this.cached = createData(this.schema, this.version, batches));
   }
   private *blocks(query: Query, options?: QueryOptions): Generator<QueryHeader | QueryBlock> {
     options?.signal?.throwIfAborted();
@@ -141,11 +142,12 @@ async function geometryOf(gpu: Gpu, data: NetworkData): Promise<Geometry> {
           texture: () => surface,
         },
         renderer: {
-          async prepare(frame) {
-            geometry = await readGeometry(data, frame, DEFAULT_LIMITS);
-          },
-          encode() {},
-          destroy() {},
+          ...snapshotRenderer(
+            async (frame) => {
+              geometry = await readGeometry(data, frame, DEFAULT_LIMITS);
+            },
+            () => {},
+          ),
         },
       },
     ],

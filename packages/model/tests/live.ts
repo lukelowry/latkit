@@ -6,7 +6,7 @@ import {
   type Schema,
   type Commands,
   type DataEvent,
-  type DataPatch,
+  type DataBatch,
   type FieldSelection,
   type MonitorOptions,
 } from '../src/index.js';
@@ -124,32 +124,32 @@ export class LiveModel implements Model {
       },
     };
   }
-  async publish(patches: readonly DataPatch[], version = 'v1'): Promise<void> {
+  async publish(batches: readonly DataBatch[], version = 'v1'): Promise<void> {
     await Promise.all(
       [...this.subscribers].map(async (sub) => {
         await sub.send({ kind: 'begin', version, initial: false });
-        for (const patch of patches) {
-          const data = createData(this.schema, version, [patch]);
+        for (const batch of batches) {
+          const data = createData(this.schema, version, [batch]);
           for (const selection of sub.fields) {
-            if (selection.from !== patch.index.type) continue;
-            const select = selection.select.filter((field) => field in patch.columns);
+            if (selection.from !== batch.index.type) continue;
+            const select = selection.select.filter((field) => field in batch.columns);
             if (!select.length) continue;
             const query =
-              patch.kind === 'samples'
+              batch.kind === 'samples'
                 ? {
                     ...selection,
                     select,
                     kind: 'samples' as const,
                     window: {
                       kind: 'frames' as const,
-                      offset: patch.firstFrame,
-                      count: patch.coordinates.length,
+                      offset: batch.firstFrame,
+                      count: batch.coordinates.length,
                     },
                   }
                 : { ...selection, select, kind: 'rows' as const };
             for await (const block of read(data, query, { maxBlockBytes: sub.bound - 128 })) {
               if (block.kind === 'schema') continue;
-              const delivered: DataPatch =
+              const delivered: DataBatch =
                 block.kind === 'rows'
                   ? { kind: 'rows', index: block.index, rows: block.rows, columns: block.columns }
                   : {
@@ -160,7 +160,7 @@ export class LiveModel implements Model {
                       coordinates: block.coordinates,
                       columns: block.columns,
                     };
-              await sub.send({ kind: 'data', version, patch: delivered });
+              await sub.send({ kind: 'data', version, block: delivered });
             }
           }
         }
@@ -172,7 +172,7 @@ export class LiveModel implements Model {
     for (const sub of [...this.subscribers]) sub.close();
   }
 }
-export function inputPatch(count = 4): DataPatch {
+export function inputBatch(count = 4): DataBatch {
   const values = Float64Array.from({ length: count }, (_, i) => (i % 1009) - 504);
   return {
     kind: 'rows',

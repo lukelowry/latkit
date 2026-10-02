@@ -1,3 +1,4 @@
+import { renderer as snapshotRenderer } from './fixtures/render.js';
 import { it, expect } from 'vitest';
 import { createGpu } from '../src/index.js';
 import { type Renderer } from '../src/kit.js';
@@ -32,17 +33,18 @@ it('complete drains bounded renderer submissions and encodes final output once',
     encodes = 0,
     finishes = 0;
   const view: Renderer = {
+    ...snapshotRenderer(
+      async () => {},
+      () => {
+        encodes++;
+      },
+      () => {
+        remaining = Math.max(0, remaining - 1);
+      },
+    ),
     get pending() {
       return remaining ? Promise.resolve() : undefined;
     },
-    async prepare() {},
-    encode() {
-      encodes++;
-    },
-    submitted() {
-      remaining = Math.max(0, remaining - 1);
-    },
-    destroy() {},
   };
   await gpu.render({
     views: [{ renderer: view, target: target(fake.device) }],

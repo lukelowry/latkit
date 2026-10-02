@@ -53,8 +53,9 @@ Typed arrays stay binary. Pull credit bounds in-flight payloads; transfer prepar
 detaches application buffers. Only active subscription and command-input streams have remote
 references. Delivery validates schema, transaction order, version, columns, and payload bounds.
 
-This breaking contract uses protocol version **3**; older peers fail negotiation. Upgrade both
-ends together. Authentication, authorization, and reconnection belong to the application.
+This breaking contract uses protocol version **4**; older peers fail negotiation. Upgrade both
+ends together. Data events carry `block: DataBatch`; row replacement and overwrite operations
+are unsupported. Authentication, authorization, and reconnection belong to the application.
 A lost command reply does not prove the command failed; automatic retries require an
 application-level idempotency policy.
 

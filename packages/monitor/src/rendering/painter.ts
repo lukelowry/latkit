@@ -116,7 +116,7 @@ export function prepareChunk(
     const color = env ? (binding.colorValue ? value : undefined) : page.columns.color;
     const shade = env ? (binding.shadeValue ? value : undefined) : page.columns.shade;
     const visibility = env ? undefined : page.columns.visible;
-    const uniforms = new Float32Array(132),
+    const uniforms = new Float32Array(156),
       ints = new Uint32Array(uniforms.buffer),
       base = binding.trace.baseColor ?? [0.23, 0.72, 0.88, 0.7];
     uniforms.set([target.width, target.height, plot.width, plot.height], 0);
@@ -201,9 +201,16 @@ export function prepareChunk(
     ].join(':');
     let shape = memo.get(key);
     if (!shape) {
-      shape = geometry(chunk, page, seams, target.x, target.y, colorDomain);
+      shape = geometry(chunk, page, seams);
       memo.set(key, shape);
     }
+    for (const [i, domain] of [target.x, target.y, colorDomain].entries())
+      uniforms.set(
+        kit.scaleParameters(kit.resolveScale({ clamp: i === 2 }, domain), {
+          origin: shape.origins[i],
+        }),
+        132 + i * 8,
+      );
     const group = gpu.device.createBindGroup({
       layout: pipelines.view,
       entries: [

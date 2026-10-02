@@ -1,7 +1,8 @@
 struct View {
  size:vec4f, base:vec4f, focus:vec4f, style:vec4f,
  slots:vec4u, mode:vec4u, shape:vec4u, extra:vec4f, origins:vec4f,
- x:array<LatkitScale,4>, y:array<LatkitScale,4>, color:array<LatkitScale,4>
+ x:array<LatkitScale,4>, y:array<LatkitScale,4>, color:array<LatkitScale,4>,
+ joinX:LatkitScale, joinY:LatkitScale, joinColor:LatkitScale
 }
 @group(1) @binding(0) var<uniform> view:View;
 @group(1) @binding(1) var<storage,read> segments:array<vec4u>;
@@ -59,7 +60,9 @@ fn stroke(vertex:u32,leg:u32,originalA:Point,originalB:Point)->Vertex {
 }
 @vertex fn seam_main(@builtin(vertex_index) vertex:u32,@builtin(instance_index) instance:u32)->Vertex {
  let factor=select(2u,1u,view.mode.w==0u);let at=(instance/factor)*2u;let a=seams[at];let b=seams[at+1u];
- return stroke(vertex,instance%factor,Point(vec2f(a.x,1.0-a.y)*view.size.xy,a.z,a.w,true),Point(vec2f(b.x,1.0-b.y)*view.size.xy,b.z,b.w,true));
+ let ap=vec2f(scaleMapped(a.x,true,view.joinX,0.0),1.0-scaleMapped(a.y,true,view.joinY,0.0))*view.size.xy;
+ let bp=vec2f(scaleMapped(b.x,true,view.joinX,0.0),1.0-scaleMapped(b.y,true,view.joinY,0.0))*view.size.xy;
+ return stroke(vertex,instance%factor,Point(ap,scaleMapped(a.z,scaleFinite(a.z),view.joinColor,-1.0),a.w,true),Point(bp,scaleMapped(b.z,scaleFinite(b.z),view.joinColor,-1.0),b.w,true));
 }
 @fragment fn fragment_main(v:Vertex)->@location(0) vec4f {
  let distance=stroke_distance(v.uv,v.length);let width=view.style.x*view.extra.y*0.5;

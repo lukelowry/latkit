@@ -1,6 +1,13 @@
 import { children } from './renderers.js';
 import type { Gpu } from './gpu.js';
-import type { Renderer, Preparation, Encoding, FrameInfo } from './render.js';
+import type {
+  Renderer,
+  Preparation,
+  Encoding,
+  FrameInfo,
+  CapturedFrame,
+  PreparedFrame,
+} from './render.js';
 import type { TextureResource } from './resources.js';
 import type { RGBA } from './colors/color.js';
 import { validateRgba } from './colors/color.js';
@@ -59,7 +66,9 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
   private bindings: (
     { texture: GPUTexture; view: GPUTextureView; group: GPUBindGroup } | undefined
   )[] = [];
+  private captures: CapturedFrame[] = [];
   private prepared: {
+    candidate: PreparedFrame;
     info: FrameInfo;
     x: number;
     y: number;
@@ -103,7 +112,7 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
           renderer,
           region: [...region] as unknown as Panel['region'],
           release,
-          off: renderer.on?.('invalidate', (change) => this.invalidate(change)) ?? (() => {}),
+          off: renderer.on?.('invalidate', () => this.invalidate()) ?? (() => {}),
         });
       }
     } catch (error) {
@@ -126,7 +135,7 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
       for (const panel of this.panels) this.unpanel(panel);
       this.panels = panels;
     }
-    this.invalidate('replace');
+    this.invalidate();
   }
   protected get pending(): Promise<void> | undefined {
     const pending = this.panels.flatMap((p) => (p.renderer.pending ? [p.renderer.pending] : []));
@@ -134,6 +143,20 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
   }
   protected get animating(): boolean {
     return this.panels.some((p) => p.renderer.animating);
+  }
+  protected captureChildren(): readonly CapturedFrame[] {
+    this.captures = [];
+    try {
+      for (const panel of this.panels) this.captures.push(panel.renderer.capture());
+    } catch (error) {
+      for (const capture of this.captures) capture.release();
+      throw error;
+    }
+    return this.captures;
+  }
+  protected discard(): void {
+    for (const panel of this.prepared) panel.candidate.discard();
+    this.prepared = [];
   }
   protected async prepare(frame: Preparation): Promise<void> {
     this.live();
@@ -155,7 +178,7 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
     for (let i = 0; i < this.panels.length; i++) {
       frame.signal.throwIfAborted();
       this.live();
-      const { renderer, region: r } = this.panels[i];
+      const { region: r } = this.panels[i];
       const x = Math.floor(r[0] * frame.width),
         y = Math.floor(r[1] * frame.height);
       const width = Math.floor((r[0] + r[2]) * frame.width) - x;
@@ -200,13 +223,13 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
           pixelRatio: frame.viewport.pixelRatio,
         },
       };
-      await renderer.prepare({
+      const candidate = await this.captures[i].prepare({
         ...frame,
         ...info,
         // The same shared uniform layout, with the panel's actual viewport.
         shade: (request = {}) => frame.uniforms(shadeUniforms(request, info)),
       });
-      this.prepared.push({ info, x, y, view: binding.view, group: binding.group });
+      this.prepared.push({ candidate, info, x, y, view: binding.view, group: binding.group });
     }
   }
   protected encode(frame: Encoding): void {
@@ -214,12 +237,12 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
     if (this.prepared.length !== this.panels.length)
       throw new GpuError('invalid-input', 'Composition is not prepared');
     for (let i = 0; i < this.panels.length; i++)
-      this.panels[i].renderer.encode({
+      this.prepared[i].candidate.encode({
         ...this.prepared[i].info,
         encoder: frame.encoder,
         target: this.prepared[i].view,
       });
-    const background = this.config.background ?? [0, 0, 0, 1];
+    const background = this.frameConfig.background ?? [0, 0, 0, 1];
     const pass = frame.encoder.beginRenderPass({
       colorAttachments: [
         {
@@ -244,8 +267,7 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
     pass.end();
   }
   protected submitted(): void {
-    for (let i = 0; i < this.panels.length; i++)
-      this.panels[i].renderer.submitted?.(this.prepared[i].info);
+    for (let i = 0; i < this.panels.length; i++) this.prepared[i].candidate.submitted();
   }
   protected release(): void {
     for (const panel of this.panels) this.unpanel(panel);

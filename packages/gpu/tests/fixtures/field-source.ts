@@ -3,7 +3,7 @@ import {
   read,
   textColumn,
   type Data,
-  type DataPatch,
+  type DataBatch,
   type Schema,
   type Query,
   type QueryOptions,
@@ -34,7 +34,7 @@ export class FieldSource {
   constructor(readonly count = 8) {}
   get data(): Data {
     if (this.cached?.version === this.version) return this.cached;
-    const patches: DataPatch[] = [];
+    const batches: DataBatch[] = [];
     for (let offset = 0; offset < this.count; offset += this.blockRows) {
       const count = Math.min(this.blockRows, this.count - offset),
         rows = Array.from({ length: count }, (_, i) => offset + i);
@@ -68,7 +68,7 @@ export class FieldSource {
         if (r !== 2) validity[i >>> 3] |= 1 << (i & 7);
       });
       columns.visible = { kind: 'boolean', offset: 0, length: count, values, validity };
-      patches.push({
+      batches.push({
         kind: 'rows',
         index: this.index,
         rows: { kind: 'indices', values: Uint32Array.from(rows) },
@@ -77,7 +77,7 @@ export class FieldSource {
       });
       const selected = this.captured ? rows.filter((r) => this.captured!.has(r)) : rows;
       for (let f = 0; f < 8; f++)
-        patches.push({
+        batches.push({
           kind: 'samples',
           index: this.index,
           rows: { kind: 'indices', values: Uint32Array.from(selected) },
@@ -92,7 +92,7 @@ export class FieldSource {
           },
         });
     }
-    return (this.cached = createData(this.schema, this.version, patches));
+    return (this.cached = createData(this.schema, this.version, batches));
   }
   publish(change: { version?: string } = {}): void {
     this.version = change.version ?? this.version + '+';

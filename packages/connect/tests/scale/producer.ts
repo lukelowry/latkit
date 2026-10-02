@@ -139,7 +139,7 @@ export class Producer implements Model {
                 yield {
                   kind: 'data',
                   version: 'v1',
-                  patch:
+                  block:
                     name === 'value'
                       ? {
                           ...base,

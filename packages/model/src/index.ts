@@ -79,9 +79,9 @@ export type {
   Data,
   TableData,
   ColumnPage,
-  DataPatch,
-  RowsPatch,
-  SamplesPatch,
+  DataBatch,
+  RowBatch,
+  SampleBatch,
   DataEvent,
 } from './materialized.js';
 export { read, selectRows } from './read.js';

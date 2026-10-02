@@ -1,3 +1,4 @@
+import { renderer as snapshotRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createGpu, createComposition, kit } from '@latkit/gpu';
 import { createDiagram, type Diagram } from '../src/diagram.js';
@@ -109,11 +110,12 @@ it('preserves presented picking when a sibling fails to encode', async () => {
     const before = f.diagram.locate({ kind: 'vertex', type: 'Task', id: 'n0' });
     interaction(f.diagram).pan(100, 0);
     const bad = {
-      prepare: () => Promise.resolve(),
-      encode() {
-        throw new Error('sibling failed');
-      },
-      destroy() {},
+      ...snapshotRenderer(
+        () => Promise.resolve(),
+        () => {
+          throw new Error('sibling failed');
+        },
+      ),
     };
     const target = kit.createRenderTarget({ gpu: f.gpu, width: 10, height: 10 });
     await expect(

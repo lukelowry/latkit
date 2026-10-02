@@ -1,4 +1,4 @@
-import { createData, read, type Data, type DataPatch } from '@latkit/model';
+import { createData, read, type Data, type DataBatch } from '@latkit/model';
 import type {
   Query,
   QueryOptions,
@@ -75,7 +75,7 @@ export class Source {
   private cached?: Data;
   get data(): Data {
     if (this.cached?.version === this.version) return this.cached;
-    const patches: DataPatch[] = [];
+    const batches: DataBatch[] = [];
     for (const [from, type] of Object.entries(this.schema.types))
       for (const block of this.blocks({
         kind: 'rows',
@@ -84,14 +84,14 @@ export class Source {
         ids: true,
       }))
         if (block.kind === 'rows')
-          patches.push({
+          batches.push({
             kind: 'rows',
             index: block.index,
             rows: block.rows,
             columns: block.columns,
             ids: block.ids,
           });
-    return (this.cached = createData(this.schema, this.version, patches));
+    return (this.cached = createData(this.schema, this.version, batches));
   }
   selection(type: string, rows?: RowSelection): number[] {
     const count = type === 'Task' ? this.count : this.ends.length;

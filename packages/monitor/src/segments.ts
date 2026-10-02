@@ -5,7 +5,6 @@ import {
   rowCount,
   sliceRows,
   sampleAt,
-  type Domain,
   type Column,
   type SampleColumn,
 } from '@latkit/model';
@@ -105,6 +104,7 @@ export interface Point {
   visible: boolean;
 }
 export interface Geometry {
+  readonly origins: readonly [number, number, number];
   readonly addresses: kit.BufferData;
   readonly joins: kit.BufferData;
   readonly count: number;
@@ -197,14 +197,7 @@ function rawPoint(tile: kit.NativeFields, row: number, frame: number): Point | n
     visible: scalar(tile, 'visible', row, frame, 1) !== 0,
   };
 }
-export function geometry(
-  chunk: Chunk,
-  page: kit.GpuPage,
-  seams: Seams,
-  x: Domain,
-  y: Domain,
-  colorDomain: Domain | null,
-): Geometry {
+export function geometry(chunk: Chunk, page: kit.GpuPage, seams: Seams): Geometry {
   const data = chunk.data,
     addresses: number[] = [],
     joins: number[] = [],
@@ -215,19 +208,18 @@ export function geometry(
     addresses.push(row, a, al, 0, row, b, bl, 0);
     count++;
   };
-  const color = kit.resolveScale({}, colorDomain),
-    sx = kit.resolveScale({ clamp: false }, x),
-    sy = kit.resolveScale({ clamp: false }, y);
+  let origins: [number, number, number] | undefined;
   const seam = (a: Point, b: Point) => {
     if (a.frame + 1 !== b.frame || !a.visible || !b.visible) return;
+    origins ??= [a.coordinate, a.value, Number.isFinite(a.color) ? a.color : 0];
     joins.push(
-      kit.scaleValue(a.coordinate, sx)!,
-      kit.scaleValue(a.value, sy)!,
-      kit.scaleValue(a.color, color) ?? -1,
+      a.coordinate - origins[0],
+      a.value - origins[1],
+      a.color - origins[2],
       a.shade,
-      kit.scaleValue(b.coordinate, sx)!,
-      kit.scaleValue(b.value, sy)!,
-      kit.scaleValue(b.color, color) ?? -1,
+      b.coordinate - origins[0],
+      b.value - origins[1],
+      b.color - origins[2],
       b.shade,
     );
   };
@@ -294,6 +286,7 @@ export function geometry(
   }
   if (!isEnvelope(data)) count = nr * Math.max(1, page.samples!.count - 1);
   return {
+    origins: origins ?? [0, 0, 0],
     addresses: buffer(new Uint32Array(addresses), 'monitor connectivity'),
     joins: buffer(new Float32Array(joins), 'monitor boundaries'),
     count,

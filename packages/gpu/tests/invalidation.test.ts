@@ -1,44 +1,41 @@
 import { expect, it, vi } from 'vitest';
 import { createGpu } from '../src/index.js';
-import { type Invalidation } from '../src/kit.js';
-import { deferred, fakeDevice } from './fixtures/device.js';
+import { fakeDevice } from './fixtures/device.js';
 import { renderer, target } from './fixtures/render.js';
 
-it('refresh completes an acquired frame, while replacement cancels before submission', async () => {
-  for (const change of ['refresh', 'replace'] as const) {
-    const fake = fakeDevice(),
-      gpu = await createGpu({ device: fake.device }),
-      entered = deferred<void>(),
-      gate = deferred<void>();
-    let notify!: (change: Invalidation) => void;
-    const submitted = vi.fn(),
-      view = {
-        ...renderer(async () => {
-          entered.resolve();
-          await gate.promise;
-        }),
-        on: (_event: 'invalidate', listener: (change: Invalidation) => void) => {
-          notify = listener;
-          return vi.fn();
+it('captures every view before preparation and discards unsubmitted candidates', async () => {
+  const fake = fakeDevice(),
+    gpu = await createGpu({ device: fake.device });
+  const captured: number[] = [],
+    discarded = vi.fn();
+  const make = (id: number) => ({
+    capture() {
+      captured.push(id);
+      return {
+        prepare: async () => {
+          expect(captured).toEqual([1, 2]);
+          return {
+            encode() {
+              if (id === 2) throw new Error('failed encoding');
+            },
+            submitted: vi.fn(),
+            discard: discarded,
+          };
         },
-        submitted,
+        release() {},
       };
-    const pending = gpu.render({
+    },
+    destroy() {},
+  });
+  await expect(
+    gpu.render({
       timeMs: 0,
-      views: [{ renderer: view, target: target(fake.device) }],
-    });
-    await entered.promise;
-    const result =
-      change === 'replace'
-        ? expect(pending).rejects.toMatchObject({ name: 'AbortError' })
-        : pending;
-    notify(change);
-    gate.resolve();
-    await result;
-    expect(fake.queue.submit).toHaveBeenCalledTimes(change === 'refresh' ? 1 : 0);
-    expect(submitted).toHaveBeenCalledTimes(change === 'refresh' ? 1 : 0);
-    gpu.destroy();
-  }
+      views: [1, 2].map((id) => ({ renderer: make(id), target: target(fake.device) })),
+    }),
+  ).rejects.toThrow('failed encoding');
+  expect(discarded).toHaveBeenCalledTimes(2);
+  expect(fake.queue.submit).not.toHaveBeenCalled();
+  gpu.destroy();
 });
 
 it('notifies all views only after whole-frame submission and releases pins after notification failure', async () => {
@@ -49,12 +46,14 @@ it('notifies all views only after whole-frame submission and releases pins after
       throw new Error('application hook');
     }),
     b = vi.fn();
-  const make = (submitted: () => void) => ({
-    ...renderer((frame) => {
-      frame.uniforms(Float32Array.of(1));
-    }),
-    submitted,
-  });
+  const make = (submitted: () => void) =>
+    renderer(
+      (frame) => {
+        frame.uniforms(Float32Array.of(1));
+      },
+      undefined,
+      submitted,
+    );
   await expect(
     gpu.render({
       timeMs: 0,
@@ -81,7 +80,7 @@ it('does not commit interaction state when a later view fails encoding', async (
     gpu.render({
       timeMs: 0,
       views: [
-        { renderer: { ...renderer(() => {}), submitted }, target: target(fake.device) },
+        { renderer: renderer(() => {}, undefined, submitted), target: target(fake.device) },
         {
           renderer: renderer(
             () => {},
