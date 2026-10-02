@@ -101,6 +101,7 @@ export function sliceColumn(column: Column, start: number, count: number): Colum
     : { kind: 'list', ...common, values: sliceColumn(column.values, first, end - first) };
 }
 
+/** A view of `rows` rows from `row` and `frames` frames from `frame`, keeping the column's strides. */
 export function sliceSamples(
   column: SampleColumn,
   row: number,

@@ -59,6 +59,7 @@ export type {
   Problem,
   Failure,
 } from './types.js';
+export { failure } from './error.js';
 export { blockBuffers, blockByteLength } from './buffers.js';
 export { validateSchema } from './validation/schema.js';
 export { validateQuery } from './validation/query.js';
@@ -87,7 +88,7 @@ export type {
 export { read, selectRows, locateSample } from './read.js';
 export type { ReadResult, SampleLocation } from './read.js';
 export { createData, appendData } from './assemble.js';
-export { textColumn, sliceColumn, copyBuffers } from './columns.js';
+export { textColumn, sliceColumn, sliceSamples, copyBuffers } from './columns.js';
 
 export { validateBatch } from './validation/batch.js';
 export { validateSelection } from './validation/selection.js';

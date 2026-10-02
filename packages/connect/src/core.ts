@@ -1,5 +1,7 @@
+import { failure } from '@latkit/model';
 import type { Limits } from './types.js';
-export function failure(code: string, message: string): Error & { code: string } {
+/** An error a peer reported. Its code is whatever the peer sent, not necessarily a local Failure code. */
+export function remoteFailure(code: string, message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code });
 }
 export function errorOf(value: unknown): Error {

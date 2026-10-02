@@ -139,6 +139,8 @@ has no polling Model, Commands service, begin/end event union, or transaction as
 handler arguments, including optional/defaulted values, choices, and multiple values. Parameters
 support numbers, booleans, text, choices, domain-ID references, and bounded File inputs.
 `Progress`, `Diagnostic`, and `CommandResult` are the shared status/result vocabulary.
+`failure(code, message, { target, issues })` builds the shared `Failure` a command throws to
+report a code that crosses the connection, such as `busy` or `invalid-input`.
 These are descriptions and values, without opcodes or transport implementation.
 
 ## Identity, layout, and validation

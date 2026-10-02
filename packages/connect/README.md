@@ -134,8 +134,11 @@ wire opcodes, and execution bookkeeping stay inside the connection.
 
 ## Delivery and ownership
 
-Each publication is one atomic bounded message. Large models use many publications; atomicity does
-not extend across an entire model or execution. Applications needing a complete replacement can
+A publication within the negotiated message bounds is delivered as one atomic message. A larger one
+is delivered as several messages in order: batches share a message while they fit, and a sample batch
+is cut only between whole frames, so a host can append each message as it arrives. A row batch must
+fit one message; `selectBatches` bounds them. Producers never size messages themselves, and
+atomicity does not extend across an entire model or execution. Applications needing a complete replacement can
 stage a bounded or persisted stream and expose it when the monitor ends or the command succeeds.
 Earlier publications remain valid if a later publication fails. Static replacement and retained
 history policies belong to the application.
@@ -241,7 +244,7 @@ commands are not replayed, retried, or claimed to execute exactly once across fa
 - `connect.ts` / `accept.ts`: producer and host behavior.
 - `session.ts`: routing, credit windows, bounded queues, cancellation.
 - `outbound.ts` / `socket.ts`: the single outbound writer, WebSocket events and send-buffer capacity.
-- `frame.ts` / `columns.ts`: framing and model column encoding.
+- `frame.ts` / `columns.ts`: framing, publication packing and model column encoding.
 - `parameters.ts` / `core.ts`: boundary validation and small shared primitives.
 
 Run `pnpm --filter @latkit/connect test` and `pnpm --filter @latkit/connect bench:scale`.

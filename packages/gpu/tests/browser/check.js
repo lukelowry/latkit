@@ -339,14 +339,16 @@ export async function check() {
         ]),
       ),
     };
+    // Ten fields bind across the page's value banks directly; the copy that packs more is unit-tested.
     await readColumns(consolidation, undefined, fragmented, fragmentedTarget);
-    const copied = fragmented.stats().gpuCopiedBytes;
-    assert(copied > 0, 'Fragmented fields did not exercise GPU consolidation');
+    assert(fragmented.stats().gpuCopiedBytes === 0, 'Ten fields needed a consolidation copy');
+    const hits = fragmented.stats().uploadHits;
     await readColumns(consolidation, undefined, fragmented, fragmentedTarget);
-    assert(fragmented.stats().gpuCopiedBytes === copied, 'Resident consolidation was repeated');
+    assert(fragmented.stats().uploadHits > hits, 'Resident fields were not reused');
+    assert(fragmented.stats().gpuCopiedBytes === 0, 'Resident fields were copied');
     fragmentedTarget.destroy();
     fragmented.destroy();
-    checks.push('ten fragmented fields, native GPU consolidation and resident reuse');
+    checks.push('ten fields across value banks, without copies, and resident reuse');
     checks.push(...(await checkFoundation(gpu, output)));
     const validation = await device.popErrorScope();
     assert(

@@ -37,8 +37,9 @@ try {
 }
 ```
 
-Each publication is a bounded atomic group of column batches. The example displays each group
-independently; accumulating a complete model or retaining history is an explicit application
+Each publication arrives as one atomic message when it fits the negotiated bounds; a larger one
+arrives as several, cutting sample batches only between whole frames. The example displays each
+message independently; accumulating a complete model or retaining history is an explicit application
 storage policy. `Data` values remain valid after the connection closes.
 
 The host's `model.run(name, values, { outputs, onData, onProgress, onLog, signal })` requests

@@ -444,13 +444,15 @@ class MonitorView
       previous.traces === next.traces &&
       !!this.traces &&
       continues(previous.source, next.source);
-    if (appended)
+    if (appended) {
       // Drawn frames stand: the next frame draws only what arrived. Traces named by field follow
       // the source; explicit bindings keep theirs.
       this.traces = this.traces!.map((trace) =>
         typeof trace.trace.field === 'string' ? { ...trace, source: next.source } : trace,
       );
-    else if (previous.source !== next.source || previous.traces !== next.traces) {
+      // New observations change what lies under the pointer.
+      this.refreshHover();
+    } else if (previous.source !== next.source || previous.traces !== next.traces) {
       this.setupStop?.abort(new DOMException('Monitor traces superseded', 'AbortError'));
       this.setup = undefined;
       this.traces = undefined;

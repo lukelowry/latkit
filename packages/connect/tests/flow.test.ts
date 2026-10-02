@@ -1,7 +1,9 @@
 import { expect, it, vi } from 'vitest';
-import { pair, fields, batch, pause, collect } from './fixture.js';
+import { appendData, createData, type SampleBatch } from '@latkit/model';
+import { pair, fields, batch, pause, collect, schema } from './fixture.js';
 import { deferred } from '../src/core.js';
 import { Op } from '../src/frame.js';
+import type { Publication } from '../src/types.js';
 
 it('stops producer pulls at the credit window plus one pending publication while other operations remain usable', async () => {
   let produced = 0;
@@ -31,6 +33,51 @@ it('stops producer pulls at the credit window plus one pending publication while
     expect(produced).toBe(6);
   } finally {
     await stream.return!();
+    await p.close();
+  }
+});
+it('delivers an oversized sample publish and monitor yield as whole-frame messages', async () => {
+  const frames = 2000,
+    rows = 4,
+    values = Float64Array.from({ length: frames * rows }, (_, i) => i);
+  const samples: SampleBatch = {
+    kind: 'samples',
+    index: batch().index,
+    rows: { kind: 'range', offset: 0, count: rows },
+    firstFrame: 0,
+    coordinates: Float64Array.from({ length: frames }, (_, i) => i),
+    columns: {
+      output: {
+        kind: 'numeric',
+        offset: 0,
+        length: values.length,
+        values,
+        frameStride: rows,
+        rowStride: 1,
+      },
+    },
+  };
+  const p = await pair({
+    limits: { maxMessageBytes: 16 << 10, maxMetadataBytes: 4 << 10 },
+    monitor: () => [samples],
+    commands: { stream: { parameters: {}, run: (_, context) => context.publish(samples) } },
+  });
+  const output = [{ from: 'Node', select: ['output'] }];
+  try {
+    const published: Publication[] = [];
+    await p.model.run(
+      'stream',
+      {},
+      { outputs: output, onData: (data) => void published.push(data) },
+    );
+    for (const publications of [published, await collect(p.model.monitor(output))]) {
+      expect(publications.length).toBeGreaterThan(1);
+      let data = createData(schema, []);
+      for (const publication of publications) data = appendData(data, publication as SampleBatch[]);
+      const received = publications.flat() as SampleBatch[];
+      expect(received.reduce((n, piece) => n + piece.coordinates.length, 0)).toBe(frames);
+    }
+  } finally {
     await p.close();
   }
 });

@@ -1,4 +1,5 @@
-import { deferred, errorOf, failure, interrupt } from './core.js';
+import { failure } from '@latkit/model';
+import { deferred, errorOf, interrupt } from './core.js';
 import { subprotocol } from './frame.js';
 import type { Limits, WebSocketLike } from './types.js';
 

@@ -78,7 +78,7 @@
     "uploadedBytes": 664544,
     "uploadHits": 7,
     "gpuCopiedBytes": 0,
-    "allocations": 2.75,
+    "allocations": 2.25,
     "submissions": 1,
     "evictions": 0,
     "stagedBytes": 0
@@ -138,7 +138,7 @@
     "uploadedBytes": 6792240,
     "uploadHits": 60,
     "gpuCopiedBytes": 0,
-    "allocations": 8.625,
+    "allocations": 2.375,
     "submissions": 1,
     "evictions": 0,
     "stagedBytes": 0
@@ -222,7 +222,7 @@
     "uploadedBytes": 400184,
     "uploadHits": 0,
     "gpuCopiedBytes": 0,
-    "allocations": 0.417,
+    "allocations": 0.25,
     "submissions": 1,
     "evictions": 0,
     "stagedBytes": 0
@@ -246,7 +246,7 @@
     "uploadedBytes": 4001196,
     "uploadHits": 0,
     "gpuCopiedBytes": 0,
-    "allocations": 4,
+    "allocations": 0.333,
     "submissions": 1,
     "evictions": 0,
     "stagedBytes": 0
@@ -413,95 +413,221 @@
     "evictions": 0,
     "stagedBytes": 0
   },
-  "monitor 100 rows > append and follow": {
-    "queries": 3,
-    "queryHits": 0,
-    "evictions": 0
-  },
   "monitor 100 rows > cached frame": {
     "queries": 0,
     "queryHits": 0,
-    "evictions": 0
+    "uploads": 5,
+    "uploadedBytes": 448,
+    "uploadHits": 2,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "monitor 100 rows > change window": {
+    "queries": 0,
+    "queryHits": 1,
+    "uploads": 9,
+    "uploadedBytes": 3276,
+    "uploadHits": 4,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
   },
   "monitor 100 rows > first frame": {
-    "queries": 1,
-    "queryHits": 3,
-    "evictions": 0
+    "queries": 0,
+    "queryHits": 1,
+    "uploads": 9,
+    "uploadedBytes": 3228,
+    "uploadHits": 4,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
   },
   "monitor 100 rows > pick": {
     "queries": 0,
     "queryHits": 0,
-    "evictions": 0
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 0,
+    "evictions": 0,
+    "stagedBytes": 0
   },
   "monitor 100 rows > playhead": {
     "queries": 0,
     "queryHits": 0,
-    "evictions": 0
+    "uploads": 5,
+    "uploadedBytes": 448,
+    "uploadHits": 2,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
   },
-  "monitor 100 rows > zoom window": {
+  "monitor 100 rows > stream frame": {
     "queries": 1,
     "queryHits": 0,
-    "evictions": 0
-  },
-  "monitor 1000 rows > append and follow": {
-    "queries": 3,
-    "queryHits": 0,
-    "evictions": 0
+    "uploads": 9,
+    "uploadedBytes": 1668,
+    "uploadHits": 4,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 8
   },
   "monitor 1000 rows > cached frame": {
     "queries": 0,
     "queryHits": 0,
-    "evictions": 0
+    "uploads": 5,
+    "uploadedBytes": 448,
+    "uploadHits": 2,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "monitor 1000 rows > change window": {
+    "queries": 0,
+    "queryHits": 1,
+    "uploads": 10,
+    "uploadedBytes": 3688,
+    "uploadHits": 5,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
   },
   "monitor 1000 rows > first frame": {
-    "queries": 1,
-    "queryHits": 3,
-    "evictions": 0
+    "queries": 0,
+    "queryHits": 1,
+    "uploads": 9,
+    "uploadedBytes": 3228,
+    "uploadHits": 4,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
   },
   "monitor 1000 rows > pick": {
     "queries": 0,
     "queryHits": 0,
-    "evictions": 0
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 0,
+    "evictions": 0,
+    "stagedBytes": 0
   },
   "monitor 1000 rows > playhead": {
     "queries": 0,
     "queryHits": 0,
-    "evictions": 0
+    "uploads": 5,
+    "uploadedBytes": 448,
+    "uploadHits": 2,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
   },
-  "monitor 1000 rows > zoom window": {
-    "queries": 1,
+  "monitor 1000 rows > stream frame": {
+    "queries": 1.083,
     "queryHits": 0,
-    "evictions": 0
-  },
-  "monitor 10000 rows > append and follow": {
-    "queries": 12,
-    "queryHits": 0,
-    "evictions": 0
+    "uploads": 9.583,
+    "uploadedBytes": 23515.333,
+    "uploadHits": 4,
+    "gpuCopiedBytes": 0,
+    "allocations": 0.083,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 1768.667
   },
   "monitor 10000 rows > cached frame": {
     "queries": 0,
     "queryHits": 0,
-    "evictions": 0
+    "uploads": 5,
+    "uploadedBytes": 448,
+    "uploadHits": 2,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "monitor 10000 rows > change window": {
+    "queries": 0,
+    "queryHits": 1,
+    "uploads": 24,
+    "uploadedBytes": 9552,
+    "uploadHits": 25,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
   },
   "monitor 10000 rows > first frame": {
-    "queries": 1,
-    "queryHits": 12,
-    "evictions": 0
+    "queries": 0,
+    "queryHits": 1,
+    "uploads": 19,
+    "uploadedBytes": 7444,
+    "uploadHits": 17,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
   },
   "monitor 10000 rows > pick": {
     "queries": 0,
     "queryHits": 0,
-    "evictions": 0
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 0,
+    "evictions": 0,
+    "stagedBytes": 0
   },
   "monitor 10000 rows > playhead": {
     "queries": 0,
     "queryHits": 0,
-    "evictions": 0
+    "uploads": 5,
+    "uploadedBytes": 448,
+    "uploadHits": 2,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
   },
-  "monitor 10000 rows > zoom window": {
+  "monitor 10000 rows > stream frame": {
     "queries": 1,
     "queryHits": 0,
-    "evictions": 0
+    "uploads": 9,
+    "uploadedBytes": 80868,
+    "uploadHits": 4,
+    "gpuCopiedBytes": 0,
+    "allocations": 0.083,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 8
   },
   "network 10000 buses > cached frame": {
     "queries": 0,
@@ -534,7 +660,7 @@
     "uploadedBytes": 325424,
     "uploadHits": 9,
     "gpuCopiedBytes": 0,
-    "allocations": 6.292,
+    "allocations": 6.125,
     "submissions": 1,
     "evictions": 0,
     "stagedBytes": 0
@@ -558,7 +684,7 @@
     "uploadedBytes": 41388,
     "uploadHits": 13,
     "gpuCopiedBytes": 0,
-    "allocations": 0.042,
+    "allocations": 0,
     "submissions": 1,
     "evictions": 0,
     "stagedBytes": 0
@@ -606,7 +732,7 @@
     "uploadedBytes": 3269616,
     "uploadHits": 60,
     "gpuCopiedBytes": 0,
-    "allocations": 26.167,
+    "allocations": 23.25,
     "submissions": 1,
     "evictions": 0,
     "stagedBytes": 0
@@ -629,8 +755,8 @@
     "uploads": 68,
     "uploadedBytes": 406436,
     "uploadHits": 93,
-    "gpuCopiedBytes": 262144,
-    "allocations": 0.583,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
     "submissions": 1,
     "evictions": 0,
     "stagedBytes": 0
@@ -678,7 +804,7 @@
     "uploadedBytes": 32758272,
     "uploadHits": 552,
     "gpuCopiedBytes": 0,
-    "allocations": 218.167,
+    "allocations": 189,
     "submissions": 1,
     "evictions": 0,
     "stagedBytes": 0
@@ -701,8 +827,8 @@
     "uploads": 616,
     "uploadedBytes": 4054408,
     "uploadHits": 859,
-    "gpuCopiedBytes": 3932160,
-    "allocations": 7.667,
+    "gpuCopiedBytes": 0,
+    "allocations": 0.333,
     "submissions": 1,
     "evictions": 0,
     "stagedBytes": 0
@@ -720,39 +846,39 @@
     "stagedBytes": 0
   },
   "pipeline 10000 buses > publication to frame": {
-    "queries": 2.292,
+    "queries": 2,
     "queryHits": 1,
-    "uploads": 24.667,
-    "uploadedBytes": 47058,
-    "uploadHits": 27.542,
+    "uploads": 19,
+    "uploadedBytes": 42992,
+    "uploadHits": 16,
     "gpuCopiedBytes": 0,
-    "allocations": 0.5,
+    "allocations": 0.042,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 956490.667
+    "stagedBytes": 8
   },
   "pipeline 100000 buses > publication to frame": {
-    "queries": 8.5,
+    "queries": 8,
     "queryHits": 7,
-    "uploads": 82.167,
-    "uploadedBytes": 411862,
-    "uploadHits": 99.25,
+    "uploads": 77,
+    "uploadedBytes": 407656,
+    "uploadHits": 90,
     "gpuCopiedBytes": 0,
-    "allocations": 0.833,
+    "allocations": 0.083,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 1062767.333
+    "stagedBytes": 8
   },
   "pipeline 1000000 buses > publication to frame": {
-    "queries": 63.333,
+    "queries": 63,
     "queryHits": 62,
-    "uploads": 636.167,
-    "uploadedBytes": 4055193.333,
-    "uploadHits": 815.167,
+    "uploads": 637,
+    "uploadedBytes": 4053500,
+    "uploadHits": 813,
     "gpuCopiedBytes": 0,
-    "allocations": 4.167,
+    "allocations": 0.167,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 850213.333
+    "stagedBytes": 8
   }
 }

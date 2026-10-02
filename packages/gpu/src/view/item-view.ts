@@ -445,12 +445,16 @@ export abstract class BaseItemView<
     // A frame may have drawn a hover that was never published; leaving redraws without it.
     if (((point || leaving) && searching) || had || this.#shade) this.invalidate();
   }
-  /** Search for hover again after a budget miss, as when an index makes searching cheaper. */
-  protected retryHover(): void {
-    if (!this.#suspended) return;
+  /**
+   * What lies under a still pointer changed, as when data arrives or an index makes searching
+   * cheaper: search again, even after a budget miss.
+   */
+  protected refreshHover(): void {
+    // Only a lifted suspension or a stale asynchronous result needs another frame.
+    const stale = this.#suspended || !!this.#found;
     this.#suspended = false;
     this.#epoch++;
-    if (this.#pointer) this.invalidate();
+    if (this.#pointer && stale) this.invalidate();
   }
   /** Drop selected items the next drawn frame no longer contains, reporting the change. A new source does this already. */
   protected pruneSelection(): void {

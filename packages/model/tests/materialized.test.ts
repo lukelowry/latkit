@@ -4,6 +4,7 @@ import {
   locateSample,
   createData,
   read,
+  selectRows,
   textColumn,
   rowAt,
   rowCount,
@@ -106,6 +107,31 @@ it('selects identities, filters, sorts with stable physical ties, and counts bef
     kind: 'indices',
     values: Uint32Array.of(3, 1),
   });
+});
+it('resolves IDs across pages by their bytes, skipping nulls and letting a later page win', () => {
+  const nulls = { ...textColumn(['x', 'twin', 'é']), validity: Uint8Array.of(0b110) };
+  const table = createData(schema, [
+    {
+      kind: 'rows',
+      index,
+      rows: { kind: 'range', offset: 0, count: 3 },
+      ids: textColumn(['ä/1', 'twin', 'z']),
+      columns: {},
+    },
+    {
+      kind: 'rows',
+      index,
+      rows: { kind: 'indices', values: Uint32Array.of(5, 9, 7) },
+      ids: nulls,
+      columns: {},
+    },
+  ]).tables.Node;
+  expect(selectRows(table, { kind: 'ids', ids: ['é', 'ä/1', 'twin'] })).toEqual({
+    kind: 'indices',
+    values: Uint32Array.of(7, 0, 9),
+  });
+  for (const id of ['x', 'missing', ''])
+    expect(() => selectRows(table, { kind: 'ids', ids: [id] })).toThrow('Unknown row id');
 });
 it('has independent transferred copies and immutable shared pages', async () => {
   const data = createData(schema, [batch]);

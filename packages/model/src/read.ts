@@ -38,6 +38,7 @@ import {
 } from './columns.js';
 import { blockBuffers, blockByteLength } from './buffers.js';
 import { checkSignal, failure } from './error.js';
+import { IdIndex } from './ids.js';
 import { validateQuery, checkSampleWindow } from './validation/query.js';
 import { DEFAULT_BLOCK_BYTES } from './query.js';
 import { Check } from './validation/check.js';
@@ -68,7 +69,7 @@ async function* execute(
 ): AsyncGenerator<QueryBlock> {
   checkSignal(options.signal);
   const issues = validateQuery(data.schema, query);
-  if (issues.length) throw Object.assign(failure('invalid-input', issues[0].message), { issues });
+  if (issues.length) throw failure('invalid-input', issues[0].message, { issues });
   const bound = options.maxBlockBytes ?? DEFAULT_BLOCK_BYTES;
   if (!Number.isSafeInteger(bound) || bound < 1)
     throw failure('invalid-input', 'Invalid block byte limit.');
@@ -109,7 +110,7 @@ async function* execute(
   }
 }
 
-const ids = new WeakMap<TableData['ids'], Map<string, number>>();
+const idIndexes = new WeakMap<TableData['ids'], IdIndex>();
 const idSelections = new WeakMap<TableData['ids'], WeakMap<readonly string[], RowAxis>>();
 export function selectRows(
   table: TableData,
@@ -119,23 +120,15 @@ export function selectRows(
   if (!selection) return available;
   let selected: RowAxis;
   if (selection.kind === 'ids') {
-    let map = ids.get(table.ids);
-    if (!map) {
-      map = new Map();
-      for (const page of table.ids)
-        for (let i = 0, n = rowCount(page.rows); i < n; i++) {
-          const id = textAt(page.column as TextColumn, i);
-          if (id !== null) map.set(id, rowAt(page.rows, i));
-        }
-      ids.set(table.ids, map);
-    }
+    let index = idIndexes.get(table.ids);
+    if (!index) idIndexes.set(table.ids, (index = new IdIndex(table.ids)));
     let selections = idSelections.get(table.ids);
     if (!selections) idSelections.set(table.ids, (selections = new WeakMap()));
     let resolved = selections.get(selection.ids);
     if (!resolved) {
       resolved = compactRows(
         selection.ids.map((id) => {
-          const row = map!.get(id);
+          const row = index.row(id);
           if (row === undefined) throw failure('invalid-input', 'Unknown row id: ' + id);
           return row;
         }),
@@ -497,7 +490,7 @@ export function resolveRows(data: Data, request: RowMappingRequest): RowMapping 
     ...(request.rows ? { rows: request.rows } : {}),
     ...(request.at !== undefined ? { at: request.at } : {}),
   });
-  if (issues.length) throw Object.assign(failure('invalid-input', issues[0].message), { issues });
+  if (issues.length) throw failure('invalid-input', issues[0].message, { issues });
   const table = data.tables[request.from];
   if (!table) return undefined;
   const resolved = fieldRows(data, table, request.select, request.rows, request.at);

@@ -1,4 +1,5 @@
-import { failure, integer, record } from './core.js';
+import { failure } from '@latkit/model';
+import { integer, record } from './core.js';
 import type { Limits } from './types.js';
 
 /** The WebSocket subprotocol both endpoints select. */
@@ -35,7 +36,8 @@ export type FrameLimits = Pick<Limits, 'maxMetadataBytes' | 'maxMessageBytes'>;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const MAGIC = 0x4b54414c; // LATK
-const HEADER = 24;
+/** Bytes before a frame's metadata. */
+export const HEADER = 24;
 export const align8 = (n: number): number => Math.ceil(n / 8) * 8;
 
 /** Bound traversal and string allocation before JSON serialization. Binary views are optional leaves. */

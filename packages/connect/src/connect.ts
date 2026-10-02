@@ -1,10 +1,9 @@
-import { validateSchema } from '@latkit/model';
+import { failure, validateSchema } from '@latkit/model';
 import type { CommandDescription, Diagnostic, Parameters, Progress } from '@latkit/model';
-import { preparePublication } from './columns.js';
+import { preparePublications } from './columns.js';
 import {
   deferred,
   errorOf,
-  failure,
   integer,
   interrupt,
   negotiate,
@@ -128,9 +127,13 @@ export async function connectModel<const C extends Record<string, Parameters>>(
             const next = await interrupt(Promise.resolve(iterator.next()), sender.signal);
             if (next.done) break;
             checkDemand(next.value);
-            await sender.write(
-              preparePublication(next.value, sender.id, options.schema, session.bounds),
-            );
+            for (const plan of preparePublications(
+              next.value,
+              sender.id,
+              options.schema,
+              session.bounds,
+            ))
+              await sender.write(plan);
           }
         } finally {
           if (iterator.return)
@@ -158,7 +161,10 @@ export async function connectModel<const C extends Record<string, Parameters>>(
           if (!accepting) throw failure('closed', 'The command has already returned.');
           if (pending) throw failure('busy', 'Await publish before publishing again.');
           checkDemand(input);
-          task = sender.write(preparePublication(input, sender.id, options.schema, session.bounds));
+          const plans = preparePublications(input, sender.id, options.schema, session.bounds);
+          task = (async () => {
+            for (const plan of plans) await sender.write(plan);
+          })();
           pending = task;
         } catch (error) {
           task = Promise.reject(errorOf(error));

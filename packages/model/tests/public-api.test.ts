@@ -19,6 +19,8 @@ it('exports values, local computation and explicit boundary validation', () => {
     'validateBlock',
     'createReader',
     'sampleDomain',
+    'failure',
+    'sliceSamples',
   ])
     expect(api).toHaveProperty(name);
   for (const name of ['retain', 'record', 'createRecording', 'transactions', 'validateDataEvent'])

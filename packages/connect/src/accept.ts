@@ -1,4 +1,4 @@
-import { validateSchema } from '@latkit/model';
+import { failure, validateSchema } from '@latkit/model';
 import type {
   CommandDescription,
   CommandResult,
@@ -12,11 +12,11 @@ import { decodePublication } from './columns.js';
 import {
   deferred,
   errorOf,
-  failure,
   integer,
   interrupt,
   negotiate,
   record,
+  remoteFailure,
   text,
   validProgress,
 } from './core.js';
@@ -300,7 +300,7 @@ class RemoteModel implements ConnectedModel {
   }
 }
 function remoteError(metadata: Record<string, unknown>): Error {
-  return failure(text(metadata.code, 128), text(metadata.message, 4096));
+  return remoteFailure(text(metadata.code, 128), text(metadata.message, 4096));
 }
 function progressOf(m: Record<string, unknown>): Progress {
   if (!validProgress(m)) throw failure('protocol', 'Invalid progress.');

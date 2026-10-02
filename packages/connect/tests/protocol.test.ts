@@ -1,6 +1,14 @@
 import { expect, it } from 'vitest';
-import { textColumn, type DataBatch, type Schema } from '@latkit/model';
-import { preparePublication, decodePublication } from '../src/columns.js';
+import {
+  appendData,
+  createData,
+  textColumn,
+  type DataBatch,
+  type SampleBatch,
+  type SampleColumn,
+  type Schema,
+} from '@latkit/model';
+import { preparePublication, preparePublications, decodePublication } from '../src/columns.js';
 import { decode, prepare, Op } from '../src/frame.js';
 import { defaults } from '../src/core.js';
 import { batch, schema } from './fixture.js';
@@ -149,4 +157,58 @@ it('rejects sparse-array allocation bombs and nonenumerable JSON hooks before in
   });
   expect(() => prepare(Op.run, 1, { hidden }, [], defaults)).toThrow(/accessors/);
   expect(invoked).toBe(false);
+});
+
+const small = { ...defaults, maxMessageBytes: 8192, maxMetadataBytes: 2048 };
+function samples(frames: number, rows = 4, firstFrame = 0): SampleBatch {
+  const values = Float64Array.from({ length: frames * rows }, (_, i) => firstFrame * rows + i);
+  return {
+    kind: 'samples',
+    index: batch().index,
+    rows: { kind: 'range', offset: 0, count: rows },
+    firstFrame,
+    coordinates: Float64Array.from({ length: frames }, (_, i) => firstFrame + i),
+    columns: {
+      output: {
+        kind: 'numeric',
+        offset: 0,
+        length: values.length,
+        values,
+        frameStride: rows,
+        rowStride: 1,
+      },
+    },
+  };
+}
+/** Each message `preparePublications` makes, as a host decodes it. */
+function received(input: DataBatch | readonly DataBatch[], bounds = small) {
+  return Array.from(preparePublications(input, 1, schema, bounds), (plan) => {
+    const bytes = plan.encode(1);
+    expect(bytes.length).toBeLessThanOrEqual(bounds.maxMessageBytes);
+    return decodePublication({ bytes: decode(bytes, bounds).payload }, schema, bounds);
+  });
+}
+it('cuts a sample batch beyond one message between whole frames, each piece appending in turn', () => {
+  const original = samples(400);
+  const messages = received(original);
+  expect(messages.length).toBeGreaterThan(1);
+  let data = createData(schema, []);
+  for (const publication of messages) data = appendData(data, publication as SampleBatch[]);
+  const pieces = messages.flat() as SampleBatch[];
+  const values = (piece: SampleBatch) => [...(piece.columns.output as SampleColumn).values];
+  expect(pieces.flatMap((piece) => [...piece.coordinates])).toEqual([...original.coordinates]);
+  expect(pieces.flatMap(values)).toEqual(values(original));
+  expect(() => preparePublication(original, 1, schema, small)).toThrow(/message bounds/);
+});
+it('packs batches that fit into one atomic message, within the batch count and metadata bounds', () => {
+  expect(received([samples(2, 4, 0), samples(2, 4, 2)]).map((m) => m.length)).toEqual([2]);
+  const tiny = Array.from({ length: 70 }, (_, i) => samples(1, 1, i));
+  expect(received(tiny, defaults).map((m) => m.length)).toEqual([64, 6]);
+  const tight = received(tiny, { ...defaults, maxMetadataBytes: 1024 });
+  expect(tight.length).toBeGreaterThan(2);
+  expect(tight.flat()).toHaveLength(70);
+});
+it('rejects one sample frame or a row batch beyond a message', () => {
+  expect(() => received(samples(1, 2000))).toThrow(/sample frame exceeds/);
+  expect(() => received(batch(2000))).toThrow(/row batch exceeds/);
 });

@@ -611,7 +611,7 @@ class NetworkView
         () => {
           task.done = true;
           // Hover that missed its budget by scanning gets another chance with the index.
-          if (!signal.aborted) this.retryHover();
+          if (!signal.aborted) this.refreshHover();
         },
         (error: unknown) => {
           if (!signal.aborted) this.fail(error);
