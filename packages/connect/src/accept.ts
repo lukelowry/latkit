@@ -134,7 +134,7 @@ class RemoteModel implements ConnectedModel {
       next: async () => {
         if (finished) return { done: true, value: undefined };
         try {
-          await sent;
+          await interrupt(sent, stream.signal);
           const next = await stream.next();
           if (next.done) {
             cleanup();
@@ -245,13 +245,12 @@ class RemoteModel implements ConnectedModel {
       );
       signal.addEventListener('abort', abort, { once: true });
       if (signal.aborted) abort();
-      try {
-        await sending;
-      } catch (error) {
-        stream.fail(errorOf(error));
-        this.session.release(stream);
-        throw error;
-      }
+      const requested = stream;
+      void sending.catch((error) => {
+        requested.fail(errorOf(error));
+        this.session.release(requested);
+      });
+      await interrupt(sending, signal);
       for (;;) {
         const next = await stream.next();
         if (next.done) {

@@ -190,24 +190,32 @@ storage. The SDK does not silently retain snapshots or replay a running executio
 
 Both endpoints negotiate the minimum of their limits:
 
-| Limit                                                      |                 Default |
-| ---------------------------------------------------------- | ----------------------: |
-| Complete message                                           |                   1 MiB |
-| JSON metadata                                              |                  64 KiB |
-| Total reserved receive windows                             | 16 MiB / 1,024 messages |
-| Each stream window                                         |    4 MiB / 256 messages |
-| Stream descriptors                                         |                      32 |
-| Batches per publication                                    |                      64 |
-| Pending diagnostics per execution                          |                      32 |
-| Registration, blocked send, cancellation, cleanup deadline |              30 seconds |
+| Limit                                                        |                 Default |
+| ------------------------------------------------------------ | ----------------------: |
+| Complete message                                             |                   1 MiB |
+| JSON metadata                                                |                  64 KiB |
+| Total reserved receive windows                               | 16 MiB / 1,024 messages |
+| Each stream window                                           |    4 MiB / 256 messages |
+| Stream descriptors                                           |                      32 |
+| Batches per publication                                      |                      64 |
+| Pending diagnostics per execution                            |                      32 |
+| Registration, cancellation response, close, cleanup deadline |              30 seconds |
 
 The global window budget can admit fewer streams than the descriptor ceiling (four full default
-windows). New streams fail immediately when reservations are exhausted. Control sends have a
-separate 16 MiB byte budget and at most `maxStreams + 8` queued sends. The native send buffer is
-also capped at `maxBufferedBytes` before each send. There is one pending publication per active
-producer stream; it may borrow caller storage until encoding. Sender acknowledgement ledgers
-retain byte counts, not payload history. Metadata has a depth limit of 24 and a traversal limit of
-8,192 nodes.
+windows). New streams fail immediately when reservations are exhausted. One FIFO writer handles
+publications and controls, waiting for native send-buffer capacity before encoding. The native
+send buffer is capped at `maxBufferedBytes` before each send. There is one pending publication
+per producer stream and one pending cumulative ACK per receiver. ACKs read the latest consumed
+sequence when sending; terminal ACKs retain the stream reservation until sent. Control pressure
+waits for capacity instead of closing the connection.
+
+Pending writes are bounded by admitted streams: each receiver can own a request, a cancellation,
+and one ACK; each sender can own a publication and a terminal, with one telemetry write for the
+active command. Registration and an idempotent close add constant overhead. Queued publications
+may borrow caller storage until encoding; their aggregate encoded sizes fit the reserved windows.
+Control metadata is bounded per message and stream; it has no per-publication queue. A run may
+also retain one bounded file-argument payload. Sender acknowledgement ledgers retain byte counts,
+not payload history. Metadata has a depth limit of 24 and a traversal limit of 8,192 nodes.
 
 Thus connection-owned live queues are bounded independently of total rows, frames, and elapsed
 stream duration. These bounds are not a process RSS cap: JavaScript object overhead, GC timing,
@@ -221,9 +229,13 @@ stops consumer waits promptly; producer code must observe its signal and release
 A noncooperating producer triggers cancellation/cleanup deadlines, and a command slot remains busy
 until its handler exits. There is no forced termination of arbitrary application code.
 
-An idle completed stream retains its bounded reservation until consumed or cancelled. A producer
-blocked on exhausted credit fails that stream after the deadline. Remote closure, protocol faults,
-and cleanup failures reject `closed`; a successful local close resolves it. Reconnect explicitly;
+A completed stream with unread publications retains its bounded reservation until consumed or
+cancelled and its terminal ACK is sent. Credit and socket-drain waits have no elapsed-time deadline:
+a healthy slow consumer can pause indefinitely. Supply an `AbortSignal` when the application needs
+an operation deadline. Cancellation response deadlines start once the cancellation is sent, and
+close notifications have their own bounded best-effort wait before mandatory local teardown.
+Remote closure, protocol faults, and cleanup failures reject `closed`; a successful local close
+resolves it. Reconnect explicitly;
 commands are not replayed, retried, or claimed to execute exactly once across failures.
 
 ## Code layout and verification
@@ -231,14 +243,15 @@ commands are not replayed, retried, or claimed to execute exactly once across fa
 - `types.ts`: public API and limits.
 - `connect.ts` / `accept.ts`: producer and host behavior.
 - `session.ts`: routing, credit windows, bounded queues, cancellation.
-- `socket.ts`: WebSocket events and native send-buffer limits.
+- `outbound.ts` / `socket.ts`: the single outbound writer, WebSocket events and send-buffer capacity.
 - `frame.ts` / `columns.ts`: framing and model column encoding.
 - `parameters.ts` / `core.ts`: boundary validation and small shared primitives.
 
 Run `pnpm --filter @latkit/connect test` and `pnpm --filter @latkit/connect bench:scale`.
 The tests cover real native-WebSocket-to-ws connections, demand-only delivery, command/file
 validation, delayed callbacks, cancellation, disconnects, encoded ownership, all column layouts,
-credit exhaustion, admission limits, malformed frames, and control ordering.
+credit exhaustion, admission limits, malformed frames, control ordering, 80 MiB backlog recovery,
+coalesced terminal ACKs, and slow consumers beyond the lifecycle deadline.
 
 The benchmark transfers 128 MiB each of static rows and sampled values through both endpoints.
 Its assertions verify values and a maximum lead of 16 publications for 256 KiB payloads under a

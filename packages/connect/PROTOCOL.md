@@ -63,11 +63,16 @@ An end/result/error follows all publications for that request. It does not impli
 data credit. The receiver sends a terminal ack once it has consumed or discarded all preceding
 data. The terminal ack can repeat the last acknowledged sequence, or use zero for an empty stream;
 it releases the producer descriptor. Ordinary acknowledgements must strictly advance. A crossing
-cancel for an already released descriptor is harmless.
+cancel for an already released descriptor is harmless. ACKs are cumulative state, not one receipt
+per publication: a pending ACK may advance to the latest consumed sequence and become terminal.
+The receiver retains its reservation until its terminal ACK is sent, ordering subsequent admission
+after that ACK. Credit and socket-drain waits have no elapsed-time deadline.
 
 Cancel aborts producer work; the producer still sends a terminal outcome. The consumer discards
 and acknowledges in-flight publications while waiting for that outcome. Cancellation is bounded
-by a deadline. No retry, replay, rollback, or persistent execution identity is implied.
+by a response deadline starting after the cancel is sent. Registration, close notification and
+application cleanup also have lifecycle deadlines. No retry, replay, rollback, or persistent
+execution identity is implied.
 
 Progress and logs are bounded control messages, independent of data credits. Progress is latest
 pending state; logs report loss through the dropped count. Commands may finish without publishing

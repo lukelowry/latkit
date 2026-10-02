@@ -1,6 +1,7 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { pair, fields, batch, pause, collect } from './fixture.js';
 import { deferred } from '../src/core.js';
+import { Op } from '../src/frame.js';
 
 it('stops producer pulls at the credit window plus one pending publication while other operations remain usable', async () => {
   let produced = 0;
@@ -302,6 +303,50 @@ it('does not accumulate native File reads when callers abort preparation', async
     await expect(p.model.run('load', { file: new File(['x'], 'x') })).resolves.toBe(true);
   } finally {
     release.resolve(new ArrayBuffer(1));
+    await p.close();
+  }
+});
+
+it('cancels queued requests promptly without releasing their reservations before terminal ACKs', async () => {
+  const p = await pair({
+    monitor: () => [],
+    commands: { ping: { parameters: {}, run: () => 'pong' } },
+    limits: { maxStreams: 2, timeoutMs: 100 },
+  });
+  const writes = vi.spyOn(p.socket, 'send');
+  const stop = new AbortController();
+  Object.defineProperty(p.socket, 'bufferedAmount', {
+    configurable: true,
+    get: () => 16 * 1024 ** 2,
+  });
+  try {
+    const run = p.model.run('ping', {}, { signal: stop.signal });
+    const rejectedRun = expect(run).rejects.toThrow();
+    const stream = p.model.monitor(fields);
+    const rejectedPull = expect(stream.next()).rejects.toThrow();
+    await pause();
+    stop.abort();
+    await stream.return!();
+    await Promise.all([rejectedRun, rejectedPull]);
+    expect(() => p.model.monitor(fields)).toThrow(/streams/);
+    await pause(150);
+    expect(writes).not.toHaveBeenCalled();
+    Reflect.deleteProperty(p.socket, 'bufferedAmount');
+    await expect
+      .poll(
+        () =>
+          writes.mock.calls.filter(
+            ([data]) =>
+              data instanceof Uint8Array &&
+              new DataView(data.buffer, data.byteOffset, data.byteLength).getUint16(6, true) ===
+                Op.ack,
+          ).length,
+      )
+      .toBe(2);
+    await expect(p.model.run('ping', {})).resolves.toBe('pong');
+  } finally {
+    Reflect.deleteProperty(p.socket, 'bufferedAmount');
+    writes.mockRestore();
     await p.close();
   }
 });
