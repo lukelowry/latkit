@@ -1,6 +1,6 @@
 import type { Data, DataBatch } from './materialized.js';
 import type { FieldSelection, QueryOptions } from './query.js';
-import { framesOf } from './pages.js';
+import { sampleDomain } from './pages.js';
 import { read } from './read.js';
 import { validateSelection } from './validation/selection.js';
 import { failure } from './error.js';
@@ -24,46 +24,33 @@ export async function* selectBatches(
         data,
         { ...selection, kind: 'rows', select: fields, ids: table.ids.length > 0 },
         options,
-      )) {
-        if (block.kind === 'rows')
-          yield {
-            kind: 'rows',
-            index: block.index,
-            rows: block.rows,
-            columns: block.columns,
-            ...(block.ids && { ids: block.ids }),
-          };
-      }
+      ))
+        yield {
+          kind: 'rows',
+          index: block.index,
+          rows: block.rows,
+          columns: block.columns,
+          ...(block.ids && { ids: block.ids }),
+        };
     }
     // One indexed read per sampled field: independent clocks and coverage stay independent.
     for (const field of selection.select) {
       if (!definitions[field].sampled) continue;
-      const pages = table.fields[field];
-      if (!pages?.length) continue;
-      const frames = framesOf(pages);
-      const first = frames.groups.at(0)?.coordinates[0];
-      const last = frames.groups.at(frames.groups.length - 1)?.coordinates.at(-1);
-      if (first === undefined || last === undefined) continue;
+      const between = sampleDomain(table.fields[field]);
+      if (!between) continue;
       for await (const block of read(
         data,
-        {
-          ...selection,
-          kind: 'samples',
-          select: [field],
-          window: { kind: 'range', between: [first, last] },
-        },
+        { ...selection, kind: 'samples', select: [field], window: { kind: 'range', between } },
         options,
-      )) {
-        if (block.kind === 'samples')
-          yield {
-            kind: 'samples',
-            index: block.index,
-            rows: block.rows,
-            firstFrame: block.firstFrame,
-            coordinates: block.coordinates,
-            columns: block.columns,
-          };
-      }
+      ))
+        yield {
+          kind: 'samples',
+          index: block.index,
+          rows: block.rows,
+          firstFrame: block.firstFrame,
+          coordinates: block.coordinates,
+          columns: block.columns,
+        };
     }
   }
 }

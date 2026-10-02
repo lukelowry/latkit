@@ -1,11 +1,19 @@
 import { expect, expectTypeOf, it } from 'vitest';
 import * as api from '../src/index.js';
 import { schema } from './fixture.js';
-it('exports only the two connection entry points', () => {
-  expect(Object.keys(api).sort()).toEqual(['acceptModel', 'connectLattice']);
+it('exports the two connection entry points and the wire codec', () => {
+  expect(Object.keys(api).sort()).toEqual(['acceptModel', 'connectModel', 'protocol']);
+  expect(Object.keys(api.protocol).sort()).toEqual([
+    'Op',
+    'decode',
+    'decodePublication',
+    'prepare',
+    'preparePublication',
+    'subprotocol',
+  ]);
 });
 function usage() {
-  return api.connectLattice({
+  return api.connectModel({
     url: 'http://localhost',
     name: 'test',
     schema,

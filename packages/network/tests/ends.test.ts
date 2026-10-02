@@ -7,7 +7,6 @@ import type {
   Index,
   Query,
   QueryBlock,
-  QueryHeader,
   QueryOptions,
   Data,
   DataBatch,
@@ -23,7 +22,6 @@ const bus = { type: { kind: 'reference', to: 'Bus' }, nullable: true } as const;
 
 /** Buses placed by longitude/latitude, branches wired to two of them, and loads wired to one. */
 class GridSource {
-  readonly version = 'v1';
   readonly positions = Float64Array.of(-100, 40, -99, 40, -98, 41, -97, 42);
   /** Each branch's buses; -1 leaves an end unwired. */
   readonly branches: readonly (readonly [number, number])[] = [
@@ -63,11 +61,10 @@ class GridSource {
             rows: block.rows,
             columns: block.columns,
           });
-    return (this.cached = createData(this.schema, this.version, batches));
+    return (this.cached = createData(this.schema, batches));
   }
-  private *blocks(query: Query, options?: QueryOptions): Generator<QueryHeader | QueryBlock> {
+  private *blocks(query: Query, options?: QueryOptions): Generator<QueryBlock> {
     options?.signal?.throwIfAborted();
-    yield { kind: 'schema', version: this.version, schema: this.schema };
     if (query.kind !== 'rows') throw new Error('Fixture query not implemented: ' + query.kind);
     const count =
       query.from === 'Bus' ? 4 : query.from === 'Branch' ? this.branches.length : this.loads.length;
@@ -102,10 +99,9 @@ class GridSource {
     };
     yield {
       kind: 'rows',
-      version: this.version,
       index: this.index(query.from),
       rows: { kind: 'range', offset: 0, count },
-      position: 0,
+      rowOffset: 0,
       columns: Object.fromEntries(query.select.map((field) => [field, column(field)])),
     };
   }

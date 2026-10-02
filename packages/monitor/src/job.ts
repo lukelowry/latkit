@@ -41,7 +41,6 @@ export class Job {
   }
   peakBytes = 0;
   readonly completion: Promise<void>;
-  readonly versions = new Map<import('@latkit/model').Data, string>();
   work = 4096;
   rows = 0;
   timeMs = 0;
@@ -50,7 +49,7 @@ export class Job {
   readonly maxBytes: number;
   constructor(
     readonly target: Image,
-    request: Omit<HistoryRequest, 'signal'>,
+    request: Omit<HistoryRequest, 'reads'>,
     private readonly changed: () => void,
     seed?: Seams,
     private readonly reuse?: { entries: readonly QueuedChunk[]; rows: number; readNew: boolean },
@@ -77,45 +76,47 @@ export class Job {
   get pending(): Promise<void> | undefined {
     return this.ready || this.done ? undefined : this.next.promise;
   }
-  private async *entries(request: Omit<HistoryRequest, 'signal'>): AsyncGenerator<QueuedChunk> {
+  private async *entries(request: Omit<HistoryRequest, 'reads'>): AsyncGenerator<QueuedChunk> {
     if (this.reuse) yield* this.reuse.entries;
     if (this.reuse && !this.reuse.readNew) return;
-    for await (const block of history({
-      ...request,
-      signal: this.stop.signal,
-      onRows: (rows) => {
-        this.rows = Math.max(this.reuse?.rows ?? 0, rows);
-      },
-    })) {
-      this.held = backing([block.data, block.styles]);
-      if ([...this.held].reduce((n, b) => n + b.byteLength, 256) > this.maxBytes / 2)
-        throw new GpuError('resource-limit', 'Native backing exceeds monitor read-ahead capacity');
-      const original = request.bindings.find((b) => b.name === block.binding.name)!;
-      const versions = isEnvelope(block.data)
-        ? new Map([[block.binding.source, block.data.version]])
-        : block.data.versions;
-      for (const [source, version] of versions) this.versions.set(source, version);
-      for (const chunk of split(
-        { ...block, binding: original },
-        Math.min(request.limits.segmentsPerFrame, this.work),
-      )) {
-        const data = chunk.data;
-        yield {
-          chunk,
-          buffers: backing([chunk.data, chunk.styles]),
-          memo: new Map(),
-          observations:
-            rowCount(data.rows) *
-            (isEnvelope(data) ? data.bucketCount * 4 : data.samples!.coordinates.length),
-        };
+    const reads = request.gpu.reader.open({ signal: this.stop.signal });
+    try {
+      for await (const block of history({
+        ...request,
+        reads,
+        onRows: (rows) => {
+          this.rows = Math.max(this.reuse?.rows ?? 0, rows);
+        },
+      })) {
+        this.held = backing([block.data, block.styles]);
+        if ([...this.held].reduce((n, b) => n + b.byteLength, 256) > this.maxBytes / 2)
+          throw new GpuError(
+            'resource-limit',
+            'Native backing exceeds monitor read-ahead capacity',
+          );
+        const original = request.bindings.find((b) => b.name === block.binding.name)!;
+        for (const chunk of split(
+          { ...block, binding: original },
+          Math.min(request.limits.segmentsPerFrame, this.work),
+        )) {
+          const data = chunk.data;
+          yield {
+            chunk,
+            buffers: backing([chunk.data, chunk.styles]),
+            memo: new Map(),
+            observations:
+              rowCount(data.rows) *
+              (isEnvelope(data) ? data.bucketCount * 4 : data.samples!.coordinates.length),
+          };
+        }
+        this.held.clear();
       }
-      this.held.clear();
+    } finally {
+      reads.close();
     }
   }
-  private async run(request: Omit<HistoryRequest, 'signal'>) {
+  private async run(request: Omit<HistoryRequest, 'reads'>) {
     try {
-      for (const binding of request.bindings)
-        this.versions.set(binding.source, binding.source.version);
       for await (const entry of this.entries(request)) {
         this.stop.signal.throwIfAborted();
         const { buffers } = entry;

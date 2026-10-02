@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
+import type { FieldsRequest } from '@latkit/model';
 import { createGpu } from '../src/index.js';
-import { type FieldsRequest, type GpuPage } from '../src/kit.js';
+import { type GpuPage } from '../src/kit.js';
 import { bytes, fakeDevice } from './fixtures/device.js';
 import { field, values } from './fixtures/fields.js';
 import { FieldSource } from './fixtures/field-source.js';
@@ -21,7 +22,7 @@ function request(source: FieldSource): FieldsRequest {
     },
   };
 }
-it('batches fields by dependency and preserves static CPU/GPU residency across a new data version sharing unchanged pages', async () => {
+it('batches fields by dependency and preserves static CPU/GPU residency across a new data value sharing unchanged pages', async () => {
   const source = new FieldSource(),
     fake = fakeDevice(),
     gpu = await createGpu({ device: fake.device });
@@ -29,7 +30,7 @@ it('batches fields by dependency and preserves static CPU/GPU residency across a
   const render = async () => {
     const result: GpuPage[] = [];
     await draw(gpu, async (frame) => {
-      for await (const native of frame.fields(request(source)))
+      for await (const native of frame.reader.fields(request(source)))
         for (const page of frame.upload(native, {
           select: Object.keys(native.columns),
           float64: 'relative',
@@ -43,7 +44,7 @@ it('batches fields by dependency and preserves static CPU/GPU residency across a
   const bytesBefore = gpu.stats().uploadedBytes;
   await render();
   expect(gpu.stats().uploadedBytes).toBe(bytesBefore);
-  source.publish({ version: 'v1' });
+  source.publish();
   await render();
   expect(field(pages[0][0], 'position').binding).toEqual(field(pages[2][0], 'position').binding);
   expect(values(pages[2][0], 'x')).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
@@ -61,7 +62,7 @@ it('aligns reordered multi-block inputs and explicit sparse observations without
   const input = request(source);
   let page!: GpuPage;
   await draw(gpu, async (frame) => {
-    for await (const native of frame.fields({
+    for await (const native of frame.reader.fields({
       ...input,
       fields: {
         value: 'value',
@@ -86,7 +87,7 @@ it('aligns reordered multi-block inputs and explicit sparse observations without
   );
   await expect(
     draw(gpu, async (frame) => {
-      for await (const _page of frame.fields({
+      for await (const _page of frame.reader.fields({
         ...input,
         fields: { overlay: { source: observed.data, from: 'node', field: 'observed' } },
       })) {
@@ -103,7 +104,7 @@ it('keeps boolean/vector types even when an explicit overlay has no rows', async
     gpu = await createGpu({ device: fake.device });
   let page!: GpuPage;
   await draw(gpu, async (frame) => {
-    for await (const native of frame.fields({
+    for await (const native of frame.reader.fields({
       ...request(source),
       fields: {
         visible: {
@@ -148,7 +149,10 @@ it('reuses native local slices without staging and rejects stale index identity'
   };
   const result: number[] = [];
   await draw(gpu, async (frame) => {
-    for await (const native of frame.fields({ ...request(source), fields: { value: input } }))
+    for await (const native of frame.reader.fields({
+      ...request(source),
+      fields: { value: input },
+    }))
       for (const page of frame.upload(native, {
         select: Object.keys(native.columns),
         float64: 'relative',
@@ -159,7 +163,7 @@ it('reuses native local slices without staging and rejects stale index identity'
   expect(gpu.stats().stagedBytes).toBe(0);
   await expect(
     draw(gpu, async (frame) => {
-      for await (const _page of frame.fields({
+      for await (const _page of frame.reader.fields({
         ...request(source),
         fields: { value: { ...input, index: { ...source.index, version: 'stale' } } },
       })) {
@@ -199,7 +203,7 @@ it('bounds the binding count when ten fields occupy more than two slabs', async 
   const render = () =>
     draw(gpu, async (frame) => {
       pages = [];
-      for await (const native of frame.fields({ ...request(source), fields }))
+      for await (const native of frame.reader.fields({ ...request(source), fields }))
         for (const page of frame.upload(native, {
           select: Object.keys(native.columns),
           float64: 'relative',
@@ -233,7 +237,7 @@ it('aligns native block boundaries across sources without materializing matching
     gpu = await createGpu({ device: fake.device });
   const actual: number[] = [];
   await draw(gpu, async (frame) => {
-    for await (const native of frame.fields({
+    for await (const native of frame.reader.fields({
       source: a.data,
       from: a.index.type,
       rows: { index: a.index, kind: 'range', offset: 0, count: 1000 },

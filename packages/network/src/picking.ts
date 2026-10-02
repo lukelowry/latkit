@@ -1,5 +1,5 @@
 import { kit } from '@latkit/gpu';
-import { rowAt, sameIndex } from '@latkit/model';
+import { rowAt, sameIndex, type FieldsBlock } from '@latkit/model';
 import type { NetworkData, NetworkItem, VertexData } from './data.js';
 import {
   vertexOptions,
@@ -86,14 +86,14 @@ interface Spatial {
 interface CpuBank {
   readonly bank: VertexBank;
   readonly read: FieldRead;
-  readonly lookup: RowLookup<kit.NativeFields>;
+  readonly lookup: RowLookup<FieldsBlock>;
   readonly spatial: Spatial;
   readonly heightIdentity: readonly unknown[];
 }
 interface CpuEdge {
   readonly bank: EdgeBank;
   readonly read: FieldRead;
-  readonly lookup: RowLookup<kit.NativeFields>;
+  readonly lookup: RowLookup<FieldsBlock>;
 }
 interface CpuSegment {
   readonly batch: SegmentBatch;
@@ -102,8 +102,8 @@ interface CpuSegment {
   readonly b: CpuBank;
   readonly spatial: { tree?: Tree };
 }
-function readLookup(read: FieldRead): RowLookup<kit.NativeFields> {
-  const lookup = new RowLookup<kit.NativeFields>();
+function readLookup(read: FieldRead): RowLookup<FieldsBlock> {
+  const lookup = new RowLookup<FieldsBlock>();
   for (const tile of read.native) lookup.add(tile.rows, tile);
   lookup.seal();
   return lookup;
@@ -171,13 +171,13 @@ function treeBytes(count: number): number {
 function readBounds(
   bank: VertexBank,
   read: FieldRead,
-  lookup: RowLookup<kit.NativeFields>,
+  lookup: RowLookup<FieldsBlock>,
 ): kit.Bounds2D {
   let minX = Infinity,
     minY = Infinity,
     maxX = -Infinity,
     maxY = -Infinity;
-  const include = (tile: kit.NativeFields, i: number) => {
+  const include = (tile: FieldsBlock, i: number) => {
     const x = nativeValue(tile, read.vector ? 'position' : 'x', i);
     const y = nativeValue(tile, read.vector ? 'position' : 'y', i, read.vector ? 1 : 0);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;

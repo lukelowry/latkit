@@ -6,13 +6,13 @@ import type { FrameLimits, Plan } from './frame.js';
 import type { EncodedPublication, Limits, Publication } from './types.js';
 
 const arrays = {
-  u8: Uint8Array,
-  u32: Uint32Array,
-  i32: Int32Array,
-  f32: Float32Array,
-  f64: Float64Array,
+  uint8: Uint8Array,
+  uint32: Uint32Array,
+  int32: Int32Array,
+  float32: Float32Array,
+  float64: Float64Array,
 };
-type ArrayKind = keyof typeof arrays;
+type ArrayType = keyof typeof arrays;
 const littleEndian = new Uint8Array(Uint16Array.of(1).buffer)[0] === 1;
 const decoder = new TextDecoder('utf-8', { fatal: true });
 function swapped(input: Uint8Array, width: number): Uint8Array {
@@ -21,14 +21,15 @@ function swapped(input: Uint8Array, width: number): Uint8Array {
     for (let j = 0; j < width; j++) output[at + j] = input[at + width - j - 1];
   return output;
 }
-type Bounds = FrameLimits & Pick<Limits, 'maxPublicationBatches'>;
+/** The limits a publication is encoded and decoded under. */
+export type PublicationLimits = FrameLimits & Pick<Limits, 'maxPublicationBatches'>;
 
 /** Prepare bounded metadata without copying numeric values. encode() owns the outgoing copy. */
 export function preparePublication(
   input: DataBatch | Publication,
   id: number,
   schema: Schema,
-  bounds: Bounds,
+  bounds: PublicationLimits,
 ): Plan {
   const batches = Array.isArray(input) ? input : [input];
   if (!batches.length || batches.length > bounds.maxPublicationBatches)
@@ -36,23 +37,23 @@ export function preparePublication(
   const chunks: Uint8Array[] = [];
   let size = 0;
   const binary = (value: ArrayBufferView) => {
-    const kind: ArrayKind =
+    const type: ArrayType =
       value instanceof Float64Array
-        ? 'f64'
+        ? 'float64'
         : value instanceof Float32Array
-          ? 'f32'
+          ? 'float32'
           : value instanceof Int32Array
-            ? 'i32'
+            ? 'int32'
             : value instanceof Uint32Array
-              ? 'u32'
-              : 'u8';
+              ? 'uint32'
+              : 'uint8';
     const offset = align8(size);
     size = offset + value.byteLength;
     if (size > bounds.maxMessageBytes)
       throw failure('resource-limit', 'Publication exceeds the message bound.');
     const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-    chunks.push(littleEndian ? bytes : swapped(bytes, arrays[kind].BYTES_PER_ELEMENT));
-    return { kind, offset, length: value.byteLength / arrays[kind].BYTES_PER_ELEMENT };
+    chunks.push(littleEndian ? bytes : swapped(bytes, arrays[type].BYTES_PER_ELEMENT));
+    return { type, offset, length: value.byteLength / arrays[type].BYTES_PER_ELEMENT };
   };
   function column(value: Column): Record<string, unknown> {
     const common = {
@@ -116,7 +117,7 @@ export function preparePublication(
 export function decodePublication(
   publication: EncodedPublication,
   schema: Schema,
-  bounds: Bounds,
+  bounds: PublicationLimits,
 ): Publication {
   let payload = publication.bytes;
   if (
@@ -142,12 +143,12 @@ export function decodePublication(
   )
     throw failure('protocol', 'Invalid publication batch count.');
   let referencedBytes = 0;
-  function binary(value: unknown, expected?: ArrayKind): ArrayBufferView {
+  function binary(value: unknown, expected?: ArrayType): ArrayBufferView {
     const descriptor = record(value),
-      kind = text(descriptor.kind) as ArrayKind;
-    if (!Object.hasOwn(arrays, kind) || (expected && kind !== expected))
+      type = text(descriptor.type) as ArrayType;
+    if (!Object.hasOwn(arrays, type) || (expected && type !== expected))
       throw failure('protocol', 'Invalid binary type.');
-    const ctor = arrays[kind],
+    const ctor = arrays[type],
       offset = integer(descriptor.offset),
       length = integer(descriptor.length);
     if (offset % 8 || length > Math.floor((body.length - offset) / ctor.BYTES_PER_ELEMENT))
@@ -173,7 +174,7 @@ export function decodePublication(
       kind,
       offset: integer(c.offset),
       length: integer(c.length),
-      ...(c.validity !== undefined && { validity: binary(c.validity, 'u8') }),
+      ...(c.validity !== undefined && { validity: binary(c.validity, 'uint8') }),
     };
     switch (kind) {
       case 'numeric':
@@ -186,17 +187,17 @@ export function decodePublication(
           }),
         };
       case 'boolean':
-        return { ...common, values: binary(c.values, 'u8') };
+        return { ...common, values: binary(c.values, 'uint8') };
       case 'reference':
-        return { ...common, index: c.index, values: binary(c.values, 'u32') };
+        return { ...common, index: c.index, values: binary(c.values, 'uint32') };
       case 'text':
-        return { ...common, bytes: binary(c.bytes, 'u8'), offsets: binary(c.offsets, 'i32') };
+        return { ...common, bytes: binary(c.bytes, 'uint8'), offsets: binary(c.offsets, 'int32') };
       case 'vector':
         return { ...common, size: integer(c.size, 1), values: column(c.values, depth + 1) };
       case 'list':
         return {
           ...common,
-          offsets: binary(c.offsets, 'i32'),
+          offsets: binary(c.offsets, 'int32'),
           values: column(c.values, depth + 1),
         };
       default:
@@ -214,9 +215,10 @@ export function decodePublication(
     const batch = {
       kind: m.kind,
       index: m.index,
-      rows: rows.kind === 'range' ? rows : { kind: 'indices', values: binary(rows.values, 'u32') },
+      rows:
+        rows.kind === 'range' ? rows : { kind: 'indices', values: binary(rows.values, 'uint32') },
       ...(m.kind === 'samples'
-        ? { firstFrame: integer(m.firstFrame), coordinates: binary(m.coordinates, 'f64') }
+        ? { firstFrame: integer(m.firstFrame), coordinates: binary(m.coordinates, 'float64') }
         : m.ids !== undefined
           ? { ids: column(m.ids) }
           : {}),

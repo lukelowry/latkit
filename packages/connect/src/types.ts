@@ -22,7 +22,8 @@ export interface Publish {
 }
 export interface MonitorContext {
   readonly signal: AbortSignal;
-  readonly maxBatchBytes: number;
+  /** Bound of one batch, for selectBatches and other block producers. */
+  readonly maxBlockBytes: number;
 }
 export interface CommandContext extends MonitorContext {
   readonly outputs: readonly FieldSelection[];

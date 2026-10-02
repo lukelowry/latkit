@@ -12,6 +12,7 @@ describe('public contract and allocation boundaries', () => {
         'createGpu',
         'GpuError',
         'createComposition',
+        'createTextRasterizer',
         'colormaps',
         'createColormap',
         'reverseColormap',
@@ -38,14 +39,14 @@ describe('public contract and allocation boundaries', () => {
         'clipStroke',
         'strokeShader',
         'textShader',
-        'createTextRasterizer',
-        'createNativeReader',
         'createPresentation',
         'createRenderTarget',
         'fitCamera',
         'cameraPoint',
         'worldPoint',
         'zoomCamera',
+        'wiring',
+        'fieldScale',
         'resolveScale',
         'scaleValue',
         'scaleParameters',
@@ -134,7 +135,7 @@ describe('public contract and allocation boundaries', () => {
       gpu = await api.createGpu({ device: fake.device });
     const source = new Source(1_000_000, { blockRows: 10000 });
     await draw(gpu, async (frame) => {
-      for await (const block of frame.query(source.data, {
+      for await (const block of frame.reader.read(source.data, {
         kind: 'rows',
         from: 'node',
         select: ['value'],
@@ -166,10 +167,10 @@ describe('public contract and allocation boundaries', () => {
   it('journals disjoint byte changes and resets newly grown bytes', () => {
     fakeDevice();
     const data = new api.kit.BufferData({ size: 4096 });
-    const version = data.version;
+    const revision = data.revision;
     data.write({ data: Uint8Array.of(9), offset: 0 });
     data.write({ data: Uint8Array.of(8), offset: 4000 });
-    expect(data.changesSince(version)).toEqual([
+    expect(data.changesSince(revision)).toEqual([
       { offset: 0, size: 1 },
       { offset: 4000, size: 1 },
     ]);

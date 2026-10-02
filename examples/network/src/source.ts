@@ -55,7 +55,6 @@ function identify(column: Column, source: string): Column {
 }
 /** The example owns these immutable values; views receive data directly. */
 export class ExampleSource {
-  readonly version = '1';
   readonly schema: Schema;
   readonly data: Data;
   readonly bytes: number;
@@ -87,7 +86,6 @@ export class ExampleSource {
     };
     this.data = createData(
       this.schema,
-      this.version,
       Object.entries(tables).map(([name, table]) => ({
         kind: 'rows' as const,
         index: this.index(name),

@@ -108,7 +108,7 @@ export async function show() {
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
     });
     const count = [2400, 6, 1200][kind],
-      index = { document: 'fixture', type: 'mark', version: 'rows' },
+      index = { source: 'fixture', type: 'mark', version: 'rows' },
       rows = { kind: 'range', offset: 0, count };
     const positions = new Float64Array(count * 2);
     const radius = new Float32Array(count),
@@ -196,7 +196,6 @@ export async function show() {
       textPages = [],
       textGroup;
     const rowSource = {
-      version: 'v1',
       schema: { types: { [index.type]: { fields: {} } } },
       tables: {},
     };
@@ -205,7 +204,7 @@ export async function show() {
         async (frame) => {
           if (capture) frame.buffer(capture);
           draws = [];
-          for await (const native of frame.fields({
+          for await (const native of frame.reader.fields({
             source: rowSource,
             from: index.type,
             rows: { ...rows, index },

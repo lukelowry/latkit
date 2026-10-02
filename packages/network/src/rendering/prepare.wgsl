@@ -15,13 +15,13 @@ struct Page {
 
 fn scalar(slot: u32, row: u32, fallback: f32) -> f32 {
   if (slot == 0xffffffffu || !fieldValid(slot, row, 0u)) { return fallback; }
-  if (latkitFields.fields[slot].kind == 3u) { return select(0.0, 1.0, fieldBool(slot, row, 0u)); }
+  if (latkitFields.fields[slot].kind == FIELD_BOOLEAN) { return select(0.0, 1.0, fieldBool(slot, row, 0u)); }
   let v = fieldFloat(slot, row, 0u, 0u);
   return select(fallback, v, finite(v));
 }
 fn raw_scalar(slot:u32,row:u32,origin:f32,fallback:f32)->f32{
   if(slot==0xffffffffu||!fieldValid(slot,row,0u)){return fallback;}
-  if(latkitFields.fields[slot].kind==3u){return select(0.0,1.0,fieldBool(slot,row,0u));}
+  if(latkitFields.fields[slot].kind==FIELD_BOOLEAN){return select(0.0,1.0,fieldBool(slot,row,0u));}
   let v=fieldFloat(slot,row,0u,0u);return select(fallback,v+origin,finite(v));
 }
 fn scaled(slot: u32, row: u32, scale: LatkitScale, fallback: f32) -> f32 {

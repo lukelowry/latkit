@@ -52,6 +52,8 @@ export interface Failure extends Error {
     | 'aborted'
     | 'closed'
     | 'disconnected'
+    | 'protocol'
+    | 'timeout'
     | 'io'
     | 'internal';
   readonly target?: ProblemTarget;

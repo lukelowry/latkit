@@ -1,5 +1,6 @@
 import { renderer as snapshotRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { afterEach, expect, it, vi } from 'vitest';
+import { createData } from '@latkit/model';
 import { createGpu, createComposition, kit } from '@latkit/gpu';
 import { createDiagram, type Diagram } from '../src/diagram.js';
 import type { Controls } from '../src/input.js';
@@ -64,6 +65,35 @@ async function fixture() {
   const draw = () =>
     gpu.render({ views: [{ renderer: kit.rendererOf(diagram), target }], timeMs: 0 });
   return { fake, source, gpu, target, diagram, draw };
+}
+/** Each task's load, sampled at coordinates 0 and 1. */
+function load(source: Source) {
+  const n = source.count;
+  return createData(
+    {
+      axis: { name: 'time' },
+      types: { Task: { fields: { load: { type: 'float32', sampled: true } } } },
+    },
+    [
+      {
+        kind: 'samples',
+        index: source.index('Task'),
+        rows: { kind: 'range', offset: 0, count: n },
+        firstFrame: 0,
+        coordinates: Float64Array.of(0, 1),
+        columns: {
+          load: {
+            kind: 'numeric',
+            offset: 0,
+            length: n * 2,
+            values: Float32Array.from({ length: n * 2 }, (_, i) => (i < n ? 0.25 : 0.75)),
+            rowStride: 1,
+            frameStride: n,
+          },
+        },
+      },
+    ],
+  );
 }
 afterEach(() => vi.restoreAllMocks());
 it('renders through the unified owner and publishes picking after submission', async () => {
@@ -478,6 +508,32 @@ it('merges layout shorthands and camera patches, and reports the presented camer
     f.diagram.set({ camera: null });
     await f.draw();
     expect(f.diagram.camera.fit).toBe(true);
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+it('rereads the scene at a new coordinate only when a binding is sampled', async () => {
+  const f = await fixture();
+  const render = (at: number) =>
+    f.gpu.render({
+      views: [{ renderer: kit.rendererOf(f.diagram), target: f.target, at }],
+      timeMs: 0,
+    });
+  try {
+    await render(0);
+    const still = interaction(f.diagram).scene();
+    await render(1);
+    expect(interaction(f.diagram).scene()).toBe(still);
+    f.diagram.set({
+      vertices: { Task: { shade: { source: load(f.source), from: 'Task', field: 'load' } } },
+    });
+    await render(0);
+    const before = interaction(f.diagram).scene()!;
+    expect(before.vertices[0].shade).toBe(0.25);
+    await render(1);
+    expect(interaction(f.diagram).scene()!.vertices[0].shade).toBe(0.75);
   } finally {
     f.diagram.destroy();
     f.target.destroy();

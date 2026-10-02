@@ -150,7 +150,7 @@ export class Labels {
           missing.splice(0, missing.length, ...candidates);
         }
         const lookup = new Map(candidates.map((c) => [c.row, c]));
-        for await (const block of frame.fields({
+        for await (const block of frame.reader.fields({
           source,
           from: bank.type,
           rows: {

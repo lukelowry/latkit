@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import { createData } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import { fakeDevice } from './fixtures/device.js';
 import { draw } from './fixtures/render.js';
@@ -9,13 +10,13 @@ it('resolves full selection extents, reuses static cache, and invalidates releva
   source.blockRows = 7;
   const request = {
     source: source.data,
-    index: source.index,
-    rows: { kind: 'range' as const, offset: 5, count: 85 },
+    from: source.index.type,
+    rows: { kind: 'range' as const, index: source.index, offset: 5, count: 85 },
     field: 'value',
   };
   const render = () =>
     draw(gpu, async (frame) => {
-      expect(await frame.extent(request)).toEqual([5, 89]);
+      expect(await frame.reader.extent(request)).toEqual([5, 89]);
     });
   await render();
   const queries = gpu.stats().queries;
@@ -26,7 +27,8 @@ it('resolves full selection extents, reuses static cache, and invalidates releva
 it('ignores null, missing, and nonfinite values, preserving a constant or empty result', async () => {
   const gpu = await createGpu({ device: fakeDevice().device }),
     index = { source: 'd', type: 'node', version: '1' },
-    rows = { kind: 'range' as const, offset: 0, count: 4 };
+    rows = { kind: 'range' as const, offset: 0, count: 4 },
+    source = createData({ types: { node: { fields: {} } } }, []);
   await draw(gpu, async (frame) => {
     const values = {
       index,
@@ -39,9 +41,16 @@ it('ignores null, missing, and nonfinite values, preserving a constant or empty 
         validity: Uint8Array.of(0b1011),
       },
     };
-    expect(await frame.extent({ index, rows, field: values })).toEqual([5, 5]);
     expect(
-      await frame.extent({ index, rows: { kind: 'range', offset: 5, count: 1 }, field: values }),
+      await frame.reader.extent({ source, from: 'node', rows: { ...rows, index }, field: values }),
+    ).toEqual([5, 5]);
+    expect(
+      await frame.reader.extent({
+        source,
+        from: 'node',
+        rows: { kind: 'range', index, offset: 5, count: 1 },
+        field: values,
+      }),
     ).toBeNull();
   });
   gpu.destroy();
@@ -52,10 +61,10 @@ it('uses a row read for a sampled coordinate when a source does not advertise ag
     gpu = await createGpu({ device: fakeDevice().device });
   await draw(gpu, async (frame) => {
     expect(
-      await frame.extent({
+      await frame.reader.extent({
         source: source.data,
-        index: source.index,
-        rows: { kind: 'range', offset: 1, count: 3 },
+        from: source.index.type,
+        rows: { kind: 'range', index: source.index, offset: 1, count: 3 },
         field: 'observed',
         window: { kind: 'at', value: 4 },
       }),
@@ -68,15 +77,15 @@ it('reduces sampled application values and caches the local result', async () =>
     gpu = await createGpu({ device: fakeDevice().device });
   const request = {
     source: source.data,
-    index: source.index,
-    rows: { kind: 'range' as const, offset: 0, count: 8 },
+    from: source.index.type,
+    rows: { kind: 'range' as const, index: source.index, offset: 0, count: 8 },
     field: 'observed',
     window: { kind: 'frames' as const, offset: 0, count: 2 },
   };
   await draw(gpu, async (frame) => {
-    expect(await frame.extent(request)).toEqual([1e12, 1e12 + 8]);
+    expect(await frame.reader.extent(request)).toEqual([1e12, 1e12 + 8]);
     const count = gpu.stats().queries;
-    expect(await frame.extent(request)).toEqual([1e12, 1e12 + 8]);
+    expect(await frame.reader.extent(request)).toEqual([1e12, 1e12 + 8]);
     expect(gpu.stats().queries).toBe(count);
   });
   gpu.destroy();

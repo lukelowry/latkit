@@ -1,12 +1,4 @@
-import {
-  createData,
-  textColumn,
-  type Data,
-  type DataBatch,
-  type QueryBlock,
-  type QueryHeader,
-  type Schema,
-} from '../src/index.js';
+import { createData, textColumn, type Data, type DataBatch, type Schema } from '../src/index.js';
 export const fixtureSchema: Schema = {
   axis: { name: 'time' },
   types: {
@@ -40,12 +32,11 @@ export function staticData(count = 4, pageRows = 4096): Data {
         : {}),
     });
   }
-  return createData(fixtureSchema, 'v1', batches);
+  return createData(fixtureSchema, batches);
 }
 export function sampledData(coordinates: readonly number[], count = 4): Data {
   return createData(
     fixtureSchema,
-    'v1',
     coordinates.map((coordinate, frame) => ({
       kind: 'samples' as const,
       index: { source: 'fixture', type: 'Node', version: 'rows1' },
@@ -65,11 +56,9 @@ export function sampledData(coordinates: readonly number[], count = 4): Data {
     })),
   );
 }
-export async function collect<B extends QueryBlock>(
-  stream: AsyncIterable<QueryHeader | B>,
-): Promise<B[]> {
+export async function collect<B>(stream: AsyncIterable<B>): Promise<B[]> {
   const values: B[] = [];
-  for await (const value of stream) if (value.kind !== 'schema') values.push(value as B);
+  for await (const value of stream) values.push(value);
   return values;
 }
 export function failure(code: string, message = code) {

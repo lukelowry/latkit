@@ -1,19 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import type { RowsBlock, SamplesBlock } from '@latkit/model';
+import type { FieldsBlock, SampleColumn } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import { BufferData, type GpuPage } from '../src/kit.js';
 import { bytes, fakeDevice, record } from './fixtures/device.js';
 import { field } from './fixtures/fields.js';
 import { draw, renderer, target } from './fixtures/render.js';
 
-function block(values: Float32Array | Float64Array | Int32Array | Uint32Array): RowsBlock {
+function block(values: Float32Array | Float64Array | Int32Array | Uint32Array): FieldsBlock {
   return {
-    kind: 'rows',
-    version: 'v0',
+    kind: 'fields',
     index: { source: 'd', type: 'node', version: 'i0' },
     rows: { kind: 'range', offset: 0, count: values.length },
-    position: 0,
+    rowOffset: 0,
     columns: { value: { kind: 'numeric', values, offset: 0, length: values.length } },
+    presence: {},
   };
 }
 const f32 = (binding: GPUBufferBinding) => {
@@ -60,7 +60,7 @@ describe('native numeric uploads', () => {
     await gpu.idle();
     await gpu.render(request);
     await gpu.idle();
-    expect(new Set(pages).size).toBe(1);
+    expect(new Set(pages.map((page) => page.bindGroup)).size).toBe(1);
     expect(gpu.stats().uploads).toBe(2);
     expect(gpu.stats().uploadHits).toBe(3);
     gpu.destroy();
@@ -82,25 +82,23 @@ describe('native numeric uploads', () => {
   it('preserves sparse physical rows, sample strides, offsets, and nulls', async () => {
     const fake = fakeDevice(),
       gpu = await createGpu({ device: fake.device });
-    const value: SamplesBlock = {
-      kind: 'samples',
-      version: 'v',
+    const column: SampleColumn = {
+      kind: 'numeric',
+      values: Float32Array.of(999, 10, 20, 99, 99, 30, 40),
+      offset: 1,
+      length: 6,
+      frameStride: 4,
+      rowStride: 1,
+      validity: Uint8Array.of(0b00100110),
+    };
+    const value: FieldsBlock = {
+      kind: 'fields',
       index: { source: 'd', type: 'node', version: 'i' },
       rows: { kind: 'indices', values: Uint32Array.of(1000000000, 7) },
       rowOffset: 40,
-      firstFrame: 900,
-      coordinates: Float64Array.of(1e12, 1e12 + 0.25),
-      columns: {
-        value: {
-          kind: 'numeric',
-          values: Float32Array.of(999, 10, 20, 99, 99, 30, 40),
-          offset: 1,
-          length: 6,
-          frameStride: 4,
-          rowStride: 1,
-          validity: Uint8Array.of(0b00100110),
-        },
-      },
+      columns: { value: column },
+      presence: {},
+      samples: { firstFrame: 900, coordinates: Float64Array.of(1e12, 1e12 + 0.25) },
     };
     let page!: GpuPage;
     await draw(gpu, (frame) => {
@@ -164,7 +162,7 @@ describe('native numeric uploads', () => {
   it('handles sliced vector parents and child offsets', async () => {
     const fake = fakeDevice(),
       gpu = await createGpu({ device: fake.device });
-    const value: RowsBlock = {
+    const value: FieldsBlock = {
       ...block(Float32Array.of(0, 0)),
       columns: {
         value: {

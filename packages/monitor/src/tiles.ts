@@ -13,6 +13,8 @@ export class Tiles {
     memo: QueuedChunk['memo'];
     buffers: QueuedChunk['buffers'];
     observations: number;
+    /** The greatest coordinate this item covers. */
+    last: number;
     extent?: Domain | null;
   }[] = [];
   private overflowed = false;
@@ -39,7 +41,7 @@ export class Tiles {
     this.overflowed = false;
   }
   add(entry: QueuedChunk, window: Domain): void {
-    if (this.size > this.limit / 2 && window[0] > this.window[0]) this.prune(window[0]);
+    if (window[0] > this.window[0]) this.prune(window[0]);
     const extra = [...entry.buffers].reduce(
       (n, b) => n + (this.buffers.has(b) ? 0 : b.byteLength),
       256,
@@ -57,15 +59,14 @@ export class Tiles {
     this.size += extra + geometry;
     for (const backing of entry.buffers) this.buffers.add(backing);
     const { binding, data, styles } = entry.chunk;
-    // Upload caches key columns; removing version roots does not repack their buffers.
-    const value = isEnvelope(data) ? data : { ...data, versions: new Map() };
     this.items.push({
       trace: binding.name,
-      data: value,
+      data,
       styles,
       memo: entry.memo,
       buffers: entry.buffers,
       observations: entry.observations,
+      last: lastCoordinate(data),
     });
   }
   finish(window: Domain, pixels: number, rows: number, complete: boolean): void {
@@ -157,23 +158,21 @@ export class Tiles {
     return { domain: lo <= hi ? [lo, hi] : null, missing: coordinateRanges(missing) };
   }
   private prune(before: number): void {
-    this.items = this.items.filter(({ data }) => {
-      if (!isEnvelope(data)) return (data.samples!.coordinates.at(-1) ?? Infinity) >= before;
-      for (const column of Object.values(data.columns))
-        for (const coordinate of column.coordinates) if (coordinate >= before) return true;
-      return false;
-    });
-    this.buffers.clear();
-    this.size = 0;
-    for (const item of this.items) {
-      this.size += 256;
-      for (const buffer of item.buffers)
-        if (!this.buffers.has(buffer)) {
-          this.buffers.add(buffer);
-          this.size += buffer.byteLength;
-        }
-      for (const geometry of item.memo.values())
-        this.size += geometry.addresses.size + geometry.joins.size;
+    const kept = this.items.filter((item) => item.last >= before);
+    if (kept.length < this.items.length) {
+      this.items = kept;
+      this.buffers.clear();
+      this.size = 0;
+      for (const item of kept) {
+        this.size += 256;
+        for (const buffer of item.buffers)
+          if (!this.buffers.has(buffer)) {
+            this.buffers.add(buffer);
+            this.size += buffer.byteLength;
+          }
+        for (const geometry of item.memo.values())
+          this.size += geometry.addresses.size + geometry.joins.size;
+      }
     }
     this.window = [Math.max(before, this.window[0]), this.window[1]];
   }
@@ -192,12 +191,25 @@ export class Tiles {
       return;
     const byName = new Map(bindings.map((binding) => [binding.name, binding]));
     if (this.items.some((item) => !byName.has(item.trace))) return;
-    return this.items.map(({ trace, data, styles, ...entry }) => ({
-      ...entry,
-      cached: true,
-      chunk: { data, styles, binding: byName.get(trace)! },
-    }));
+    return this.items
+      .filter((item) => item.last >= window[0])
+      .map((item) => ({
+        cached: true,
+        chunk: { data: item.data, styles: item.styles, binding: byName.get(item.trace)! },
+        memo: item.memo,
+        buffers: item.buffers,
+        observations: item.observations,
+      }));
   }
+}
+
+/** Raw tiles hold ascending coordinates; summaries hold them per bucket lane. */
+function lastCoordinate(data: Chunk['data']): number {
+  if (!isEnvelope(data)) return data.samples!.coordinates.at(-1) ?? Infinity;
+  let last = -Infinity;
+  for (const column of Object.values(data.columns))
+    for (const coordinate of column.coordinates) if (coordinate > last) last = coordinate;
+  return last;
 }
 
 export function coordinateRanges(ranges: readonly Domain[]): Domain[] {

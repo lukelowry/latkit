@@ -1,44 +1,36 @@
 import { type ColumnPages, emptyPages } from './pages.js';
 import type { Data, DataBatch, SampleBatch, TableData, ColumnPage } from './materialized.js';
-import type { Index, RowAxis, TextColumn } from './data.js';
+import type { Index, RowAxis } from './data.js';
 import type { Schema } from './schema.js';
-import type { Version } from './types.js';
 import { assertIndex, rowAt, rowCount } from './access.js';
 import { compactRows, containsRows } from './columns.js';
 import { failure } from './error.js';
-import { PageAssembly, checkRows } from './assembly-pages.js';
+import { PageAssembly } from './assembly-pages.js';
 
 /** Construct a complete value from disjoint batches. Never overwrites existing cells. */
-export function createData<S extends Schema>(
-  schema: S,
-  version: Version,
-  batches: readonly DataBatch[],
-): Data<S> {
-  return assemble(schema, version, batches);
+export function createData<S extends Schema>(schema: S, batches: readonly DataBatch[]): Data<S> {
+  return assemble(schema, batches);
 }
 
 /** Append new sampled observations to application-owned data. Static changes require createData.
  * Existing buffers are shared; earlier Data values remain valid. No model is contacted. */
 export function appendData<S extends Schema>(
   previous: Data<S>,
-  version: Version,
   batches: readonly SampleBatch[],
 ): Data<S> {
-  return assemble(previous.schema, version, batches, previous);
+  return assemble(previous.schema, batches, previous);
 }
 
-type IdPage = { readonly rows: RowAxis; readonly column: TextColumn };
 interface Draft {
   readonly prior?: TableData;
   readonly index: Index;
   rows: RowAxis;
   readonly fields: Map<string, ColumnPage[]>;
-  readonly ids: IdPage[];
+  readonly ids: ColumnPage[];
 }
 
 function assemble<S extends Schema>(
   schema: S,
-  version: Version,
   batches: readonly DataBatch[],
   previous?: Data<S>,
 ): Data<S> {
@@ -111,19 +103,20 @@ function assemble<S extends Schema>(
           ]),
         ),
       };
-      if (draft.ids.length) checkRows(draft.ids.map((page) => page.rows));
       return [
         name,
         {
           index: draft.index,
           rows: draft.rows,
           fields,
-          ids: draft.ids.length ? draft.ids : (draft.prior?.ids ?? []),
+          ids: draft.ids.length
+            ? new PageAssembly().append(emptyPages, draft.ids)
+            : (draft.prior?.ids ?? emptyPages),
         },
       ];
     }),
   );
-  return { schema, version, tables: { ...previous?.tables, ...tables } };
+  return { schema, tables: { ...previous?.tables, ...tables } };
 }
 
 function unionRows(a: TableData['rows'], b: TableData['rows']): TableData['rows'] {

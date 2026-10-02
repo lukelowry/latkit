@@ -6,6 +6,8 @@ import {
   sliceRows,
   sampleAt,
   type Column,
+  type EnvelopeColumn,
+  type FieldsBlock,
   type SampleColumn,
 } from '@latkit/model';
 import { isEnvelope, type Chunk } from './history.js';
@@ -35,7 +37,7 @@ export function* split(chunk: Chunk, maximum: number): Generator<Chunk> {
           nf = Math.min(buckets, width - f),
           start = (r * width + f) * 4,
           length = count * nf * 4;
-        const columns: Record<string, import('@latkit/model').EnvelopeColumn> = {};
+        const columns: Record<string, EnvelopeColumn> = {};
         for (const [name, c] of Object.entries(input.columns))
           columns[name] = {
             values: { ...c.values, offset: c.values.offset + start, length },
@@ -164,7 +166,7 @@ export class Seams {
   }
 }
 function scalar(
-  tile: kit.NativeFields,
+  tile: FieldsBlock,
   name: string,
   row: number,
   frame: number,
@@ -183,7 +185,7 @@ function scalar(
         : 0
       : fallback;
 }
-function rawPoint(tile: kit.NativeFields, row: number, frame: number): Point | null {
+function rawPoint(tile: FieldsBlock, row: number, frame: number): Point | null {
   const c = tile.columns.value;
   if (c.kind !== 'numeric' || !bitAt(tile.presence.value, row)) return null;
   const value = sampleAt(c as SampleColumn, { row, frame });

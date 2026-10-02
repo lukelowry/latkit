@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import type { RowsBlock } from '@latkit/model';
+import type { FieldsBlock } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import { type GpuPage } from '../src/kit.js';
 import { bytes, fakeDevice } from './fixtures/device.js';
@@ -9,12 +9,12 @@ import { draw } from './fixtures/render.js';
 it('keeps boolean values and null validity as separate packed bitmaps', async () => {
   const fake = fakeDevice(),
     gpu = await createGpu({ device: fake.device });
-  const block: RowsBlock = {
-    kind: 'rows',
-    version: 'v',
+  const block: FieldsBlock = {
+    kind: 'fields',
     index: { source: 'd', type: 'node', version: 'i' },
     rows: { kind: 'range', offset: 1000000, count: 3 },
-    position: 0,
+    rowOffset: 0,
+    presence: {},
     columns: {
       visible: {
         kind: 'boolean',
@@ -35,6 +35,6 @@ it('keeps boolean values and null validity as separate packed bitmaps', async ()
   expect(bytes(field(page, 'visible').binding)[0]).toBe(0b00010100);
   expect(field(page, 'visible').validity?.offset).toBe(2);
   expect(bytes(field(page, 'visible').validity!.binding)[0]).toBe(0b00001100);
-  expect(gpu.stats().uploadedBytes).toBe(104);
+  expect(gpu.stats().uploadedBytes).toBe(100);
   gpu.destroy();
 });

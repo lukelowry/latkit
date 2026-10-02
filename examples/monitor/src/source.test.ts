@@ -29,29 +29,29 @@ describe('native example telemetry', () => {
     source.append(frame);
     expect(validateSchema(source.schema)).toEqual([]);
     const result = await collect(source.data);
-    expect(result[0]?.kind).toBe('schema');
-    for (const block of result.slice(1)) {
+    expect(result.length).toBeGreaterThan(0);
+    for (const block of result) {
       if (block.kind !== 'samples') throw new Error('Expected samples');
       expect(validateBlock(source.schema, query, block)).toEqual([]);
       expect(block.columns.x!.values.buffer).toBe(frame.buffer);
       expect([...block.columns.y!.values]).toEqual([4, 5, 6]);
     }
   });
-  it('reads immutable application versions while later observations arrive', async () => {
+  it('reads immutable application data while later observations arrive', async () => {
     const source = new Telemetry(['x', 'y'], 1, 1);
     source.append(Float64Array.of(1, 2));
-    const read = readData(source.data, query)[Symbol.asyncIterator]();
-    const header = await read.next();
-    if (header.done) throw new Error('Expected schema');
-    expect(header.value.version).toBe('1');
     const retained = source.data;
+    const read = readData(retained, query)[Symbol.asyncIterator]();
+    const first = read.next();
     source.append(Float64Array.of(3, 4));
-    const sample = await read.next();
+    const sample = await first;
     if (sample.done || sample.value.kind !== 'samples') throw new Error('Expected samples');
     expect(sample.value.firstFrame).toBe(0);
+    expect(sample.value.coordinates.length).toBe(1);
     expect((await read.next()).done).toBe(true);
-    expect((await collect(retained)).length).toBe(2);
-    expect(retained.version).toBe('1');
+    expect((await collect(retained)).length).toBe(1);
+    expect(source.data).not.toBe(retained);
+    expect(retained.tables.sensor!.fields.x!.length).toBe(1);
   });
   it('honors byte bounds, sparse order, and independent owned allocations', async () => {
     const source = new Telemetry(['x', 'y'], 3, 1);

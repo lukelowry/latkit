@@ -84,12 +84,12 @@ it('copies unaligned Buffer slices before making typed views', () => {
   expect(decoded.body.byteOffset % 8).toBe(0);
   expect(decodePublication({ bytes: decoded.payload }, schema, defaults)).toEqual([batch()]);
 });
-it('rejects truncated, future-version, oversized and aliased malicious payloads', () => {
+it('rejects truncated, foreign, oversized and aliased malicious payloads', () => {
   const encoded = preparePublication(batch(), 1, schema, defaults).encode(1);
   expect(() => decode(encoded.subarray(0, encoded.length - 1), defaults)).toThrow();
-  const version = Uint8Array.from(encoded);
-  version[4] = 2;
-  expect(() => decode(version, defaults)).toThrow(/version/);
+  const foreign = Uint8Array.from(encoded);
+  foreign[3] = 0x31;
+  expect(() => decode(foreign, defaults)).toThrow(/Not a latkit frame/);
   expect(() => preparePublication(batch(200_000), 1, schema, defaults)).toThrow();
   const frame = decode(encoded, defaults);
   const m = frame.metadata as { batches: { columns: Record<string, unknown> }[] };

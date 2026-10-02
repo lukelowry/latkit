@@ -1,8 +1,8 @@
-import { sameIndex, type Data, type RowSelection } from '@latkit/model';
+import { sameIndex, type Data, type FieldInput, type RowSelection } from '@latkit/model';
 import type { kit, RGBA } from '@latkit/gpu';
 
 export interface Labels {
-  readonly field: kit.FieldInput;
+  readonly field: FieldInput;
   readonly font?: kit.TextFont;
   readonly size?: number;
   readonly maxCount?: number;
@@ -16,8 +16,8 @@ export interface VertexOptions {
   readonly color?: string | kit.ColorScale | null;
   readonly size?: string | kit.Scale | null;
   readonly height?: string | kit.Scale | null;
-  readonly visible?: kit.FieldInput | null;
-  readonly shade?: kit.FieldInput | null;
+  readonly visible?: FieldInput | null;
+  readonly shade?: FieldInput | null;
   readonly labels?: string | Labels | null;
 }
 export interface EdgeOptions {
@@ -29,26 +29,26 @@ export interface EdgeOptions {
    */
   readonly ends?: readonly [source: string, target: string];
   /** Intermediate bends, a native list of two-component floating-point vectors; requires ends. */
-  readonly bends?: kit.FieldInput;
+  readonly bends?: FieldInput;
   readonly curve?: 'linear' | 'geodesic';
   /** A net's star center; otherwise the centroid of its vertices. */
   readonly junction?: kit.Position2D;
   readonly color?: string | kit.ColorScale | null;
-  readonly dash?: kit.FieldInput | null;
-  readonly visible?: kit.FieldInput | null;
-  readonly shade?: kit.FieldInput | null;
+  readonly dash?: FieldInput | null;
+  readonly visible?: FieldInput | null;
+  readonly shade?: FieldInput | null;
   readonly labels?: string | Labels | null;
 }
 export interface PathOptions {
   /** Defaults to the network's source. */
   readonly source?: Data;
   readonly rows?: RowSelection;
-  readonly points: kit.FieldInput;
+  readonly points: FieldInput;
   readonly curve?: 'linear' | 'geodesic';
   readonly widthPx?: number;
   readonly baseColor?: RGBA;
   readonly color?: string | kit.ColorScale | null;
-  readonly visible?: kit.FieldInput | null;
+  readonly visible?: FieldInput | null;
   readonly labels?: string | Labels | null;
   /** Decorative paths do not participate in picking by default. */
   readonly pickable?: boolean;

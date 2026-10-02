@@ -1,13 +1,13 @@
 import { Work } from './work.js';
 import { assertIndex, bitAt, numberAt, textAt, rowAt, rowCount } from '@latkit/model';
-import type { Column, FieldDefinition, Index, Schema } from '@latkit/model';
+import type { Column, FieldInput, FieldsBlock, Index, ReadScope } from '@latkit/model';
 import { GpuError, colormaps, kit, type RGBA } from '@latkit/gpu';
 import type { DiagramData, VertexData, EdgeData, Labels } from './data.js';
-import type { Reader, Scene, Vertex, Edge, Label, Port } from './scene.js';
+import type { Scene, Vertex, Edge, Label, Port } from './scene.js';
 import { emptyLabel } from './scene.js';
 import type { Limits } from './options.js';
 import type { Style } from './config.js';
-import { fail, sources } from './config.js';
+import { fail } from './config.js';
 
 export type Measure = (
   input: kit.TextInput,
@@ -36,8 +36,8 @@ function text(column: Column | undefined, row: number): string {
   if (column.kind !== 'text') fail('Expected a text label field');
   return textAt(column, row) ?? '';
 }
-function fields(option: VertexData | EdgeData): Record<string, kit.FieldInput> {
-  const out: Record<string, kit.FieldInput> = {};
+function fields(option: VertexData | EdgeData): Record<string, FieldInput> {
+  const out: Record<string, FieldInput> = {};
   for (const key of ['color', 'status', 'width', 'flow'] as const) {
     const scale = (option as VertexData & EdgeData)[key];
     if (scale) out[key] = scale.field;
@@ -58,10 +58,21 @@ function fields(option: VertexData | EdgeData): Record<string, kit.FieldInput> {
     }
   return out;
 }
+/** Whether any binding reads a sampled field, so the scene depends on the read coordinate. */
+export function sampled(data: DiagramData): boolean {
+  const reads = (type: string, input: FieldInput) =>
+    typeof input === 'string'
+      ? data.source.schema.types[type]?.fields[input]?.sampled === true
+      : 'source' in input &&
+        input.source.schema.types[input.from]?.fields[input.field]?.sampled === true;
+  return [...Object.entries(data.vertices), ...Object.entries(data.edges ?? {})].some(
+    ([type, option]) => Object.values(fields(option)).some((input) => reads(type, input)),
+  );
+}
 interface Values {
   [name: string]: number | null;
 }
-function values(tile: kit.NativeFields, row: number, names: readonly string[]): Values {
+function values(tile: FieldsBlock, row: number, names: readonly string[]): Values {
   return Object.fromEntries(
     names.map((name) => [
       name,
@@ -84,7 +95,7 @@ function color(
   return t === null ? fallback : kit.sampleColormap(config?.colormap ?? colormaps.grays, t);
 }
 async function scales(
-  reader: Reader,
+  reader: ReadScope,
   data: DiagramData,
   type: string,
   option: VertexData | EdgeData,
@@ -103,7 +114,7 @@ async function scales(
   for (const [name, value] of bindings)
     result.set(
       name,
-      await reader.scale({
+      await kit.fieldScale(reader, {
         ...value,
         source: data.source,
         from: type,
@@ -182,13 +193,12 @@ export async function label(
 }
 export async function readScene(
   data: DiagramData,
-  reader: Reader,
+  reader: ReadScope,
   options: Style,
   limits: Required<Limits>,
   measure: Measure,
   work = new Work(reader.signal, limits.prepareMs),
 ): Promise<Scene> {
-  const versions = new Map([...sources(data)].map((source) => [source, source.version]));
   const check = () => work.check();
   const scene: Scene = {
     data,
@@ -199,52 +209,39 @@ export async function readScene(
     bytes: 0,
     routeBytes: 0,
     ends: 0,
-    versions,
   };
-  let schema: Schema | undefined;
-  // A schema-only read pins the authoritative topology schema for this preparation.
-  const firstType = Object.keys(data.vertices)[0] ?? Object.keys(data.edges ?? {})[0];
-  if (!firstType) return scene;
-  for await (const block of reader.query(data.source, {
-    kind: 'rows',
-    from: firstType,
-    select: [],
-    rows: { kind: 'range', offset: 0, count: 0 },
-  })) {
-    if (block.kind === 'schema') schema = block.schema;
-  }
-  if (!schema) fail('Missing source schema');
+  const { schema } = data.source;
   const charge = (bytes: number) => {
     scene.bytes += bytes;
     if (scene.bytes > limits.geometryBytes)
       throw new GpuError('resource-limit', 'Diagram geometry exceeds budget');
   };
-  const byType = new Map<string, Map<number, number>>();
-  const reference = (field: FieldDefinition | undefined) =>
-    field && typeof field.type === 'object' && field.type.kind === 'reference'
-      ? field.type.to
-      : undefined;
-  const nets = new Set(
-    Object.entries(data.edges ?? {})
-      .filter(([, edge]) => !edge.ends)
-      .map(([type]) => type),
-  );
+  for (const type of Object.keys(data.vertices))
+    if (!schema.types[type]) fail('Unknown vertex type: ' + type);
+  const wirings = kit.wiring(schema, Object.keys(data.vertices), data.edges ?? {});
+  const byType = new Map<string, Map<number, number>>(),
+    indices = new Map<string, Index>();
+  /** Each vertex type's ports and the net each names. */
+  const portsOf = new Map<string, (kit.Port & { net: string })[]>();
   /** Each port wired to a net row: its vertex and port, by net type. */
   const wired = new Map<
     string,
     { index?: Index; vertex: number[]; port: string[]; row: number[] }
   >();
-  for (const type of nets) wired.set(type, { vertex: [], port: [], row: [] });
+  for (const [net, wiring] of wirings) {
+    if (wiring.kind !== 'net') continue;
+    wired.set(net, { vertex: [], port: [], row: [] });
+    for (const port of wiring.ports)
+      portsOf.set(port.type, [...(portsOf.get(port.type) ?? []), { ...port, net }]);
+  }
   for (const [type, option] of Object.entries(data.vertices)) {
-    const definition = schema.types[type];
-    if (!definition) fail('Unknown vertex type: ' + type);
-    // A port is a reference field naming a drawn net.
-    const ports = Object.entries(definition.fields).filter(([, field]) => {
-      const to = reference(field);
-      return to !== undefined && nets.has(to);
-    });
+    const definition = schema.types[type],
+      order = Object.keys(definition.fields);
+    const ports = (portsOf.get(type) ?? []).sort(
+      (a, b) => order.indexOf(a.field) - order.indexOf(b.field),
+    );
     for (const name of Object.keys(option.ports ?? {}))
-      if (!ports.some(([port]) => port === name)) fail('Unknown port: ' + type + '.' + name);
+      if (!ports.some((port) => port.field === name)) fail('Unknown port: ' + type + '.' + name);
     const start = scene.vertices.length,
       raw: Values[] = [];
     const aliases = fields(option);
@@ -259,6 +256,7 @@ export async function readScene(
       ids: true,
     })) {
       if (!tile.ids) fail('Vertex IDs were not returned');
+      indices.set(type, tile.index);
       await work.step();
       for (let i = 0; i < rowCount(tile.rows); i++) {
         check();
@@ -301,17 +299,17 @@ export async function readScene(
           ports: [],
           options: option,
         };
-        for (const [name, field] of ports) {
+        for (const { field: name, net, direction } of ports) {
           const p = option.ports?.[name];
           vertex.ports.push({
             name,
-            to: reference(field)!,
-            ...(field.direction ? { direction: field.direction } : {}),
+            to: net,
+            ...(direction ? { direction } : {}),
             marker: p?.marker ?? options.portMarker,
             connected: false,
             order: p?.order ?? vertex.ports.length,
-            side: p?.side ?? (field.direction === 'in' ? 'left' : 'right'),
-            label: { ...emptyLabel, text: p?.label ?? field.label ?? name },
+            side: p?.side ?? (direction === 'in' ? 'left' : 'right'),
+            label: { ...emptyLabel, text: p?.label ?? definition.fields[name].label ?? name },
             color: options.edgeBaseColor,
             position: [0, 0],
             normal: [0, 0],
@@ -322,18 +320,17 @@ export async function readScene(
       }
     }
     if (ports.length)
-      for await (const block of reader.query(data.source, {
+      for await (const block of reader.read(data.source, {
         kind: 'rows',
         from: type,
         rows: option.rows,
-        select: ports.map(([name]) => name),
+        select: ports.map((port) => port.field),
       })) {
-        if (block.kind === 'schema') continue;
         await work.step();
-        const columns = ports.map(([name, field]) => {
+        const columns = ports.map(({ field: name, net: to }) => {
           const column = block.columns[name];
           if (column?.kind !== 'reference') fail('Expected a reference column: ' + name);
-          const net = wired.get(reference(field)!)!;
+          const net = wired.get(to)!;
           if (net.index) assertIndex(net.index, column.index);
           else net.index = column.index;
           return { name, column, net };
@@ -434,14 +431,7 @@ export async function readScene(
     edge.ends.push({ vertex, port, ...(direction ? { direction } : {}) });
   };
   for (const [type, option] of Object.entries(data.edges ?? {})) {
-    const definition = schema.types[type];
-    if (!definition) fail('Unknown edge type: ' + type);
-    const targets = option.ends?.map((name) => {
-      const to = reference(definition.fields[name]);
-      if (to === undefined || !byType.has(to))
-        fail('Edge end ' + type + '.' + name + ' must reference a vertex type');
-      return to;
-    });
+    const wiring = wirings.get(type)!;
     const raw: Values[] = [],
       edgeRows = new Map<number, Edge>(),
       start = scene.edges.length;
@@ -490,41 +480,36 @@ export async function readScene(
         scene.edges.push(edge);
       }
     }
-    if (option.ends && targets) {
+    if (wiring.kind === 'ends') {
       // A row's own ends, ordered source to target.
-      for await (const block of reader.query(data.source, {
+      for await (const block of reader.read(data.source, {
         kind: 'rows',
         from: type,
         rows: option.rows,
-        select: [...option.ends],
+        select: wiring.ends.map((e) => e.field),
       })) {
-        if (block.kind === 'schema') continue;
         await work.step();
-        const columns = option.ends.map((name) => {
-          const column = block.columns[name];
-          if (column?.kind !== 'reference') fail('Expected a reference column: ' + name);
-          return column;
+        const columns = wiring.ends.map(({ field, type: to }) => {
+          const column = block.columns[field];
+          if (column?.kind !== 'reference') fail('Expected a reference column: ' + field);
+          const target = indices.get(to);
+          if (target) assertIndex(target, column.index);
+          return { column, rows: byType.get(to)! };
         });
         for (let i = 0; i < rowCount(block.rows); i++) {
           check();
           const edge = edgeRows.get(rowAt(block.rows, i));
           if (!edge) fail('Ends name an unselected edge row');
-          columns.forEach((column, side) => {
+          columns.forEach(({ column, rows }, side) => {
             const at = column.offset + i;
             if (!bitAt(column.validity, at)) return;
-            const vertex = byType.get(targets[side])!.get(column.values[at]);
+            const vertex = rows.get(column.values[at]);
             if (vertex !== undefined) end(edge, vertex, null, side ? 'in' : 'out');
           });
         }
       }
     } else {
       const net = wired.get(type)!;
-      if (
-        !Object.keys(data.vertices).some((vertex) =>
-          Object.values(schema.types[vertex].fields).some((field) => reference(field) === type),
-        )
-      )
-        fail('No vertex type references net ' + type);
       if (index && net.index) assertIndex(index, net.index);
       for (let i = 0; i < net.vertex.length; i++) {
         check();
@@ -553,13 +538,12 @@ export async function readScene(
     const members: number[] = [];
     for (const [type, selection] of Object.entries(group.vertices)) {
       if (!byType.has(type)) fail('Unknown group vertex type: ' + type);
-      for await (const block of reader.query(data.source, {
+      for await (const block of reader.read(data.source, {
         kind: 'rows',
         from: type,
         rows: selection,
         select: [],
       })) {
-        if (block.kind === 'schema') continue;
         await work.step();
         for (let at = 0; at < rowCount(block.rows); at++) {
           const i = byType.get(type)?.get(rowAt(block.rows, at));
@@ -583,8 +567,5 @@ export async function readScene(
       parent: group.parent,
     });
   }
-  for (const [source, version] of versions)
-    if (source.version !== version)
-      throw new GpuError('conflict', 'Diagram source changed during preparation');
   return scene;
 }

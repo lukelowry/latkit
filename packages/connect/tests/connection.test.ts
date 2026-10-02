@@ -1,9 +1,10 @@
 import { afterEach, expect, expectTypeOf, it } from 'vitest';
-import { decodePublication } from '../src/protocol.js';
+import { protocol } from '../src/index.js';
+const { decodePublication } = protocol;
 import { defaults, deferred } from '../src/core.js';
 import { pair, batch, fields, schema, pause, collect } from './fixture.js';
 import type { LogEntry, Progress } from '@latkit/model';
-import { connectLattice } from '../src/index.js';
+import { connectModel } from '../src/index.js';
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -15,7 +16,7 @@ it('registers metadata only, then serves explicitly selected publications', asyn
     monitor: function* (selection, context) {
       calls++;
       expect(selection).toEqual(fields);
-      expect(context.maxBatchBytes).toBeGreaterThan(0);
+      expect(context.maxBlockBytes).toBeGreaterThan(0);
       yield batch();
     },
   });
@@ -253,6 +254,6 @@ it('surfaces command errors, callback failures and cancellation without leaking 
 });
 it('rejects already-aborted connection setup', async () => {
   await expect(
-    connectLattice({ url: 'http://localhost', name: 'test', schema, signal: AbortSignal.abort() }),
+    connectModel({ url: 'http://localhost', name: 'test', schema, signal: AbortSignal.abort() }),
   ).rejects.toThrow();
 });

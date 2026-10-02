@@ -9,7 +9,6 @@ import {
 } from '@latkit/model';
 /** Application-owned fixture; data values are independent of the mutable test harness. */
 export class Source {
-  version = 'v0';
   values: Float32Array | Float64Array;
   readonly schema: Schema;
   readonly index = { source: 'document', type: 'node', version: 'rows0' };
@@ -42,7 +41,7 @@ export class Source {
     };
   }
   get data(): Data {
-    if (this.cached?.version === this.version) return this.cached;
+    if (this.cached) return this.cached;
     const batches: DataBatch[] = [];
     for (let f = 0; f < (this.options.sampled ? (this.options.frames ?? 4) : 1); f++)
       for (let offset = 0; offset < this.count; offset += this.options.blockRows ?? 4096) {
@@ -66,10 +65,11 @@ export class Source {
             : { ...base, kind: 'rows', columns: { value: column } },
         );
       }
-    return (this.cached = createData(this.schema, this.version, batches));
+    return (this.cached = createData(this.schema, batches));
   }
+  /** Rebuild the data value from the current application arrays. */
   publish(): void {
-    this.version += '+';
+    this.cached = undefined;
   }
   query<Q extends Query>(query: Q, options?: QueryOptions) {
     return read(this.data, query, options);

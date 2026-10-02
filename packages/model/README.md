@@ -1,12 +1,13 @@
 # @latkit/model
 
-Immutable columnar values, local computation, and portable command descriptions for Latkit.
+Immutable columnar values, bounded local reads, and portable command descriptions for Latkit.
 
 | Contract                               | Responsibility                                                               |
 | -------------------------------------- | ---------------------------------------------------------------------------- |
 | `Data`                                 | Immutable application-owned schema, row identities, and indexed column pages |
 | `DataBatch`                            | Plain static rows or sampled observations                                    |
 | `read(data, query, options)`           | Bounded local rows, samples, aggregates, and envelopes                       |
+| `createReader(options)`                | Memoized reads, joined fields, and extents under one memory budget           |
 | `selectBatches(data, fields, options)` | Selected plain batches from a captured value                                 |
 | `CommandDescription` / `Parameter`     | Shared command vocabulary without connection or transport state              |
 
@@ -18,7 +19,7 @@ import { createData, read } from '@latkit/model';
 const schema = {
   types: { Bus: { fields: { load: { type: 'float64' } } } },
 } as const;
-const source = createData(schema, 'data-1', [
+const source = createData(schema, [
   {
     kind: 'rows',
     index: { source: 'grid', type: 'Bus', version: 'rows-1' },
@@ -28,21 +29,20 @@ const source = createData(schema, 'data-1', [
 ]);
 
 // Pass source directly to any Latkit view.
-for await (const block of read(source, { kind: 'rows', from: 'Bus', select: ['load'] })) {
-  if (block.kind === 'rows') console.log(block.columns.load);
-}
+for await (const block of read(source, { kind: 'rows', from: 'Bus', select: ['load'] }))
+  console.log(block.columns.load);
 ```
 
 `Data` has no methods, model reference, or close operation. Keeping a reference keeps the
 values. Dropping references lets normal garbage collection release them. Never mutate
 published arrays, schema, pages, or indices. A new value represents a change.
 
-`createData(schema, version, batches)` constructs a complete value from `RowBatch` and
+`createData(schema, batches)` constructs a complete value from `RowBatch` and
 `SampleBatch` inputs. Batches describe disjoint cells: duplicate static values or row identities
 reject instead of overwriting. To change static data or topology, construct a fresh value;
 unchanged immutable column buffers can be supplied again without copying their payloads.
 
-`appendData(previous, version, sampleBatches)` accepts only new sampled observations. It shares
+`appendData(previous, sampleBatches)` accepts only new sampled observations. It shares
 existing pages and buffers, and rejects row batches, corrections, and backfilling into a field's
 committed frame range. Row and column tiles of one append are validated together, so a batch can
 arrive in pieces. Frame-number gaps and duplicate coordinates remain supported; coordinates must
@@ -90,6 +90,29 @@ if (sample) console.log(sample.frame, sample.coordinate);
 Views perform this lookup automatically. Applications do not need to quantize their playheads
 or add their own sample caches.
 
+## Read through a reader
+
+A `Reader` memoizes reads over immutable values within one memory budget. A scope holds what it
+read until it closes; every view on a GPU shares that GPU's reader.
+
+```ts
+import { createReader } from '@latkit/model';
+
+const reader = createReader({ maxBytes: 64 * 1024 ** 2 });
+const reads = reader.open({ signal, at: playhead });
+try {
+  for await (const block of reads.fields({ source, from: 'Bus', fields: { load: 'load' } }))
+    draw(block.rows, block.columns.load);
+  console.log(await reads.extent({ source, from: 'Bus', field: 'load' }));
+} finally {
+  reads.close();
+}
+```
+
+`fields` joins fields of other sources and local `FieldValues` to one physical row order in
+bounded blocks; `presence` marks the rows a partial binding covers. Results are keyed by the
+values they read, so appending samples or replacing one field leaves other reads cached.
+
 ## Select values on demand
 
 `selectBatches` reads a captured immutable value and yields only selected fields and their row
@@ -108,7 +131,7 @@ for await (const batch of selectBatches(data, [{ from: 'Bus', select: ['voltage'
 ```
 
 It performs local work only. A network producer can return this iterable from
-`connectLattice.monitor`, or use it with a command's requested outputs. Live subscriptions,
+`connectModel`'s `monitor`, or use it with a command's requested outputs. Live subscriptions,
 publication ownership, backpressure, and cancellation belong to `@latkit/connect`. This package
 has no polling Model, Commands service, begin/end event union, or transaction assembler.
 
@@ -120,8 +143,9 @@ These are descriptions and values, without opcodes or transport implementation.
 
 ## Identity, layout, and validation
 
-`Data.version` names an immutable value. `Index = { source, type, version }` identifies a
-physical row numbering, which can stay unchanged across many data versions. References carry
+A `Data` value never changes; a new value is a new object, so identity is its version.
+`Index = { source, type, version }` identifies a physical row numbering, which can stay unchanged
+across many values. References carry
 the target type's index; incompatible indices fail rather than joining unrelated rows.
 String IDs are optional pages used for domain-ID selection. Sample pages carry absolute
 frame numbers and Float64 coordinates, independently of their numeric field precision.
@@ -134,7 +158,7 @@ byte limit when explicitly supplied; local `read` and `selectBatches` default to
 Storage helpers expect validated column layouts; they additionally check row-space compatibility,
 disjoint cells, and append boundaries without rescanning stored payloads.
 
-Queries yield one schema header followed by byte-bounded blocks. Contiguous reads share
+Queries yield byte-bounded blocks. Contiguous reads share
 immutable typed-array views. Sparse selections and batched small sample pages may copy.
 Use `buffers: 'owned'` for independent allocations you may mutate or transfer; never detach
 application-owned buffers. Local filtering and reductions require the relevant fields to
@@ -143,7 +167,7 @@ have been supplied. They never ask a model for missing values.
 ## Breaking migration
 
 Remove `Model`, `Commands`, `Routine`, `MonitorOptions`, `DataEvent`,
-`validateDataEvent`, and `transactions` imports. Use `connectLattice` / `acceptModel`
+`validateDataEvent`, and `transactions` imports. Use `connectModel` / `acceptModel`
 from connect for remote behavior, `CommandDescription` / `Parameters` for command metadata,
 and `validateBatch` for plain batches. Replace schema `limits` with per-operation query or
 connection limits. There is no compatibility layer.

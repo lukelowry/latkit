@@ -1,13 +1,12 @@
 import { Work } from './work.js';
-import type { RequestOptions } from '@latkit/model';
-import { GpuError, kit, type Gpu } from '@latkit/gpu';
+import type { FieldValues, RequestOptions } from '@latkit/model';
+import { GpuError, type Gpu } from '@latkit/gpu';
 import { diagramData, type Point } from './data.js';
 import type { DiagramConfig } from './diagram.js';
 import {
   data as checkedData,
   options as checkedOptions,
   limits as checkedLimits,
-  sources,
   positive,
 } from './config.js';
 import { readScene } from './read.js';
@@ -88,15 +87,11 @@ export async function arrange(
   gpu: Gpu,
   config: DiagramConfig,
   options: RequestOptions = {},
-): Promise<Readonly<Record<string, kit.FieldValues>>> {
+): Promise<Readonly<Record<string, FieldValues>>> {
   const data = checkedData(diagramData(config)),
     limits = checkedLimits(config.limits),
     style = checkedOptions(config);
-  const reader = kit.createNativeReader({
-    signal: options.signal,
-    at: config.at ?? undefined,
-    maxBytes: limits.geometryBytes,
-  });
+  const reader = gpu.reader.open({ signal: options.signal, at: config.at ?? undefined });
   try {
     const work = new Work(reader.signal, limits.prepareMs);
     const scene = await readScene(
@@ -116,13 +111,9 @@ export async function arrange(
       work,
     );
     work.check();
-    reader.check();
-    for (const source of sources(data))
-      if (source.version !== scene.versions.get(source))
-        throw new GpuError('conflict', 'Layout source changed');
     return positions(scene.vertices);
   } finally {
-    reader.destroy();
+    reader.close();
   }
 }
 /** The end flow leaves from: the first output, else the first end. */

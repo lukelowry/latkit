@@ -338,7 +338,7 @@ it('cancels queued requests promptly without releasing their reservations before
           writes.mock.calls.filter(
             ([data]) =>
               data instanceof Uint8Array &&
-              new DataView(data.buffer, data.byteOffset, data.byteLength).getUint16(6, true) ===
+              new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(4, true) ===
                 Op.ack,
           ).length,
       )

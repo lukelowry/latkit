@@ -15,12 +15,12 @@ for (const count of [100_000, 1_000_000, 4_000_000]) {
     });
     const source = new Source(count, { blockRows: 16384 });
     const view = renderer(async (frame) => {
-      for await (const block of frame.query(source.data, {
-        kind: 'rows',
+      for await (const block of frame.reader.fields({
+        source: source.data,
         from: 'node',
-        select: ['value'],
+        fields: { value: 'value' },
       }))
-        if (block.kind === 'rows') frame.upload(block, { select: ['value'] });
+        frame.upload(block, { select: ['value'] });
     });
     const request = { timeMs: 0, views: [{ renderer: view, target: target(fake.device) }] };
     bench(

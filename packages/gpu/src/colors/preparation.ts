@@ -1,7 +1,7 @@
-import { BufferData } from '../buffers.js';
-import type { Images } from '../images.js';
-import type { Entry, Memory } from '../memory.js';
-import type { UploadScope, Uploader } from '../uploads.js';
+import { BufferData } from '../memory/buffer-data.js';
+import type { Images } from '../memory/images.js';
+import type { Entry, Memory } from '../memory/memory.js';
+import type { UploadScope, Uploader } from '../fields/upload.js';
 import type { RGBA } from './color.js';
 import type { Colormap } from './colormap.js';
 import { colormapPixels } from './sampling.js';

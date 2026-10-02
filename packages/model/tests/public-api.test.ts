@@ -1,13 +1,6 @@
 import { expect, expectTypeOf, it } from 'vitest';
 import * as api from '../src/index.js';
-import type {
-  RowBatch,
-  SampleBatch,
-  Data,
-  QueryHeader,
-  RowsBlock,
-  SamplesBlock,
-} from '../src/index.js';
+import type { RowBatch, SampleBatch, Data, RowsBlock, SamplesBlock } from '../src/index.js';
 it('exports values, local computation and explicit boundary validation', () => {
   for (const name of [
     'read',
@@ -23,6 +16,8 @@ it('exports values, local computation and explicit boundary validation', () => {
     'validateSchema',
     'validateQuery',
     'validateBlock',
+    'createReader',
+    'sampleDomain',
   ])
     expect(api).toHaveProperty(name);
   for (const name of ['retain', 'record', 'createRecording', 'transactions', 'validateDataEvent'])
@@ -30,7 +25,7 @@ it('exports values, local computation and explicit boundary validation', () => {
 });
 function usage(data: Data) {
   expectTypeOf(api.read(data, { kind: 'rows', from: 'Node', select: ['value'] })).toEqualTypeOf<
-    AsyncIterable<QueryHeader | RowsBlock>
+    AsyncIterable<RowsBlock>
   >();
   expectTypeOf(
     api.read(data, {
@@ -39,7 +34,7 @@ function usage(data: Data) {
       select: ['output'],
       window: { kind: 'at', value: 0 },
     }),
-  ).toEqualTypeOf<AsyncIterable<QueryHeader | SamplesBlock>>();
+  ).toEqualTypeOf<AsyncIterable<SamplesBlock>>();
   // @ts-expect-error Data has no read capability or provider lifetime.
   void data.query;
   const pages = data.tables.Node.fields.output;
@@ -52,10 +47,10 @@ function usage(data: Data) {
   void data.close;
 }
 function appendUsage(data: Data, rows: RowBatch, samples: SampleBatch) {
-  api.createData(data.schema, 'next', [rows, samples]);
-  api.appendData(data, 'next', [samples]);
+  api.createData(data.schema, [rows, samples]);
+  api.appendData(data, [samples]);
   // @ts-expect-error Static rows require complete construction, never append.
-  api.appendData(data, 'next', [rows]);
+  api.appendData(data, [rows]);
   // @ts-expect-error Row batches have no replacement operation.
   void rows.replace;
 }

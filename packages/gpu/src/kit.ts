@@ -1,16 +1,14 @@
-/** What renderer packages build on: the view base, frames, native fields, shaders, and input. */
-export { BaseView, rendererOf, gpuOf, hold } from './view.js';
+/** What renderer packages build on: the view base, frames, field uploads, shaders, text, and input. */
+export { BaseView, rendererOf, gpuOf, hold } from './view/view.js';
 export type {
   ViewConfig,
   ViewEvents,
-  ImageOptions,
   SetOptions,
   Patch,
   OptionsPatch,
   ConfigShape,
-} from './view.js';
-export type { CompositionConfig } from './composition.js';
-export type { Budget, GpuStats } from './memory.js';
+  DataHit,
+} from './view/view.js';
 export type {
   Renderer,
   CapturedFrame,
@@ -22,17 +20,7 @@ export type {
   RenderTarget,
   RenderView,
   RenderOptions,
-  QueryResult,
-} from './render.js';
-export type {
-  FieldBinding,
-  FieldInput,
-  ExtentRequest,
-  FieldsRequest,
-  FieldValues,
-  NativeFields,
-  DataHit,
-} from './binding.js';
+} from './frame/render.js';
 export type {
   GpuField,
   GpuValueField,
@@ -40,37 +28,34 @@ export type {
   GpuEnvelopeField,
   GpuPage,
   UploadOptions,
-} from './columns.js';
-export { fieldShader } from './field-shader.js';
-export { TextureData } from './texture-data.js';
-export type { PixelRegion } from './texture-data.js';
-export { BufferData } from './buffers.js';
-export type { ByteRange } from './buffers.js';
-export type { BufferResource } from './owned-buffer.js';
-export type { TextureResource } from './resources.js';
-export { createRenderTarget } from './target.js';
-export type { TextureTarget, TargetSize } from './target.js';
-export { createPresentation } from './presentation.js';
-export type { Canvas, Presentation } from './presentation.js';
+} from './fields/types.js';
+export { fieldShader } from './fields/shader.js';
+export { TextureData } from './memory/texture-data.js';
+export type { PixelRegion } from './memory/texture-data.js';
+export { BufferData } from './memory/buffer-data.js';
+export type { ByteRange } from './memory/buffer-data.js';
+export type { BufferResource } from './memory/buffers.js';
+export type { TextureResource } from './memory/textures.js';
+export { createRenderTarget } from './view/target.js';
+export type { TextureTarget, TargetSize } from './view/target.js';
+export { createPresentation } from './view/presentation.js';
+export type { Canvas, Presentation } from './view/presentation.js';
 export type {
   TextInput,
-  TextOptions,
   TextFont,
   TextMetrics,
   TextRun,
   TextRequest,
   TextPage,
-  TextRasterizer,
-  TextBitmap,
-} from './text.js';
-export { createTextRasterizer } from './text-rasterizer.js';
-export { textShader } from './text-shader.js';
-export { fitCamera, cameraPoint, worldPoint, zoomCamera } from './camera.js';
-export type { Camera2D, Bounds2D, Insets } from './camera.js';
-export { clipStroke, strokeShader } from './stroke.js';
-export type { ClipPoint } from './stroke.js';
+} from './text/text.js';
+export { textShader } from './text/shader.js';
+export { fitCamera, cameraPoint, worldPoint, zoomCamera } from './view/camera.js';
+export type { Camera2D, Bounds2D, Insets } from './view/camera.js';
+export { wiring } from './view/wiring.js';
+export type { Wiring, End, Port } from './view/wiring.js';
+export { clipStroke, strokeShader } from './style/stroke.js';
+export type { ClipPoint } from './style/stroke.js';
 export { validateRgba } from './colors/color.js';
-export type { ColormapKind, ColormapOptions, ColorStop } from './colors/colormap.js';
 export { sampleColormap } from './colors/sampling.js';
 export { resolveColor } from './colors/css.js';
 export { colormapShader } from './colors/shader.js';
@@ -82,12 +67,17 @@ export type {
   Position2D,
   ScaleRequest,
   ResolvedScale,
-} from './scale.js';
-export { resolveScale, scaleValue, scaleParameters, scaleShader } from './scale.js';
-export type { EnvelopeRequest } from './envelope.js';
-export type { ShadeFrame, ShadeRequest } from './shade.js';
-export { shadeShader, defaultShade } from './shade.js';
-export { premultipliedBlend, outputShader } from './output.js';
+} from './style/scale.js';
+export {
+  fieldScale,
+  resolveScale,
+  scaleValue,
+  scaleParameters,
+  scaleShader,
+} from './style/scale.js';
+export type { ShadeRequest } from './style/shade.js';
+export { shadeShader, defaultShade } from './style/shade.js';
+export { premultipliedBlend, outputShader } from './style/output.js';
 export type {
   Modifiers,
   ContextMenu,
@@ -95,13 +85,11 @@ export type {
   HoverState,
   CanvasInput,
   BudgetResult,
-} from './input.js';
+} from './view/input.js';
 export {
   inputModifiers,
   localPoint,
   wheelDelta,
   createCanvasInput,
   withinBudget,
-} from './input.js';
-export { createNativeReader } from './reader.js';
-export type { NativeReader } from './reader.js';
+} from './view/input.js';

@@ -35,7 +35,7 @@ function batch(firstFrame: number, field: string): SampleBatch {
   };
 }
 it('selects independent fields across gaps and out-of-order publication pages', async () => {
-  const data = createData(schema, 'local', [batch(9, 'a'), batch(1, 'a'), batch(5, 'b')]);
+  const data = createData(schema, [batch(9, 'a'), batch(1, 'a'), batch(5, 'b')]);
   const result = [];
   for await (const value of selectBatches(data, [{ from: 'Node', select: ['a', 'b'] }]))
     result.push(value);

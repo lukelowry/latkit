@@ -39,11 +39,6 @@ export function validateBatch(
   if (issues.length) return [...c.issues, ...issues];
   return [
     ...c.issues,
-    ...validateBlock(
-      schema,
-      query as Query,
-      { ...batch, version: 'batch', position: 0, rowOffset: 0 },
-      options,
-    ),
+    ...validateBlock(schema, query as Query, { ...batch, rowOffset: 0 }, options),
   ];
 }

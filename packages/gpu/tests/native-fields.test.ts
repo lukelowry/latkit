@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
+import type { FieldsBlock } from '@latkit/model';
 import { createGpu } from '../src/index.js';
-import { type NativeFields } from '../src/kit.js';
 import { fakeDevice } from './fixtures/device.js';
 import { FieldSource } from './fixtures/field-source.js';
 import { draw } from './fixtures/render.js';
@@ -8,9 +8,9 @@ import { draw } from './fixtures/render.js';
 it('exposes immutable columns that need no acquisition or release', async () => {
   const source = new FieldSource(),
     gpu = await createGpu({ device: fakeDevice().device });
-  let native!: NativeFields;
+  let native!: FieldsBlock;
   await draw(gpu, async (frame) => {
-    for await (const page of frame.fields({
+    for await (const page of frame.reader.fields({
       source: source.data,
       from: 'node',
       fields: { position: 'position', value: 'value', alias: 'value' },
@@ -32,7 +32,7 @@ it('exposes presence separately from null validity on partial native overlays', 
   observed.captured = new Set([1, 3]);
   const gpu = await createGpu({ device: fakeDevice().device });
   await draw(gpu, async (frame) => {
-    for await (const page of frame.fields({
+    for await (const page of frame.reader.fields({
       source: source.data,
       from: source.index.type,
       rows: { index: source.index, kind: 'range', offset: 0, count: 8 },
@@ -56,7 +56,7 @@ it('rejects unknown native fields before executing a query', async () => {
     gpu = await createGpu({ device: fakeDevice().device });
   await expect(
     draw(gpu, async (frame) => {
-      for await (const _page of frame.fields({
+      for await (const _page of frame.reader.fields({
         source: source.data,
         from: source.index.type,
         rows: { index: source.index, kind: 'range', offset: 0, count: 8 },

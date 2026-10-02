@@ -1,6 +1,5 @@
 import { rowCount, rowAt } from '@latkit/model';
-import { kit } from '@latkit/gpu';
-import type { Column, Index, RowAxis } from '@latkit/model';
+import type { Column, FieldsBlock, Index, RowAxis } from '@latkit/model';
 export function bit(bytes: Uint8Array | undefined, index: number): boolean {
   return !bytes || !!(bytes[index >>> 3] & (1 << (index & 7)));
 }
@@ -14,12 +13,7 @@ export function value(column: Column | undefined, row: number, component = 0): n
     return column.values.values[column.values.offset + at * column.size + component];
   return NaN;
 }
-export function nativeValue(
-  native: kit.NativeFields,
-  name: string,
-  row: number,
-  component = 0,
-): number {
+export function nativeValue(native: FieldsBlock, name: string, row: number, component = 0): number {
   return bit(native.presence[name], row) ? value(native.columns[name], row, component) : NaN;
 }
 export function indexKey(index: Index): string {

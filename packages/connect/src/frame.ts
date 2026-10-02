@@ -1,7 +1,8 @@
 import { failure, integer, record } from './core.js';
 import type { Limits } from './types.js';
 
-export const PROTOCOL = 'latkit';
+/** The WebSocket subprotocol both endpoints select. */
+export const subprotocol = 'latkit';
 export const Op = Object.freeze({
   register: 1,
   registered: 2,
@@ -33,7 +34,7 @@ export interface Plan {
 export type FrameLimits = Pick<Limits, 'maxMetadataBytes' | 'maxMessageBytes'>;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
-const MAGIC = 0x3154414c;
+const MAGIC = 0x4b54414c; // LATK
 const HEADER = 24;
 export const align8 = (n: number): number => Math.ceil(n / 8) * 8;
 
@@ -127,8 +128,7 @@ export function prepare(
       const output = new Uint8Array(bytes),
         view = new DataView(output.buffer);
       view.setUint32(0, MAGIC, true);
-      view.setUint16(4, 1, true);
-      view.setUint16(6, op, true);
+      view.setUint32(4, op, true);
       view.setUint32(8, id, true);
       view.setUint32(12, sequence, true);
       view.setUint32(16, json.length, true);
@@ -152,9 +152,8 @@ export function decode(input: Uint8Array, bounds: FrameLimits): Frame {
     throw failure('protocol', 'Invalid frame length.');
   const bytes = input.byteOffset % 8 ? Uint8Array.from(input) : input;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (view.getUint32(0, true) !== MAGIC || view.getUint16(4, true) !== 1)
-    throw failure('protocol', 'Unsupported wire version.');
-  const op = integer(view.getUint16(6, true), 1, 13);
+  if (view.getUint32(0, true) !== MAGIC) throw failure('protocol', 'Not a latkit frame.');
+  const op = integer(view.getUint32(4, true), 1, 13);
   const size = view.getUint32(16, true),
     bodySize = view.getUint32(20, true),
     start = align8(HEADER + size);

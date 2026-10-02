@@ -24,7 +24,9 @@ export interface VideoOptions extends RequestOptions {
   readonly duration: number;
   /** Defaults to 60. */
   readonly frameRate?: number;
-  /** Maps output seconds to a model coordinate. Omit for static data; effects still receive output time. */
+  /** Pixels per layout pixel, as for images. Defaults to 1. */
+  readonly pixelRatio?: number;
+  /** Maps output seconds to a model coordinate. Omit to keep the view's; effects still receive output time. */
   readonly at?: (seconds: number) => number;
   readonly format?: 'mp4' | 'webm';
   readonly quality?: 'medium' | 'high' | 'very-high';
@@ -74,20 +76,25 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
     sink = destination(options.output, signal);
     media.open(sink.stream);
     const canvas = new OffscreenCanvas(config.width, config.height);
+    const viewport = {
+      width: config.width / config.pixelRatio,
+      height: config.height / config.pixelRatio,
+      pixelRatio: config.pixelRatio,
+    };
     presentation = kit.createPresentation({ gpu, canvas, alphaMode: 'opaque' });
     await wait(media.start(), signal);
     let reported = -Infinity;
     for (let i = 0; i < config.frames; i++) {
       signal.throwIfAborted();
       const frame = timeline(config, i);
-      const at = options.at?.(frame.seconds);
+      const at = options.at ? options.at(frame.seconds) : (view.config.at ?? undefined);
       if (at !== undefined && !Number.isFinite(at))
         throw new GpuError('invalid-input', 'Video coordinate must be finite');
       await gpu.render({
         completion: 'complete',
         signal,
         timeMs: frame.seconds * 1000,
-        views: [{ renderer, target: presentation, at }],
+        views: [{ renderer, target: presentation, at, viewport }],
       });
       signal.throwIfAborted();
       const sample = new VideoSample(canvas, {

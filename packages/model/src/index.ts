@@ -1,4 +1,4 @@
-/** Immutable data, local computation, and portable command descriptions. */
+/** Immutable data, bounded local reads, and portable command descriptions. */
 export type {
   Arguments,
   CommandDescription,
@@ -29,7 +29,6 @@ export type {
 } from './data.js';
 export type { Schema, TypeDefinition, FieldDefinition } from './schema.js';
 export type {
-  QueryHeader,
   FieldSelection,
   QueryOptions,
   Query,
@@ -96,6 +95,18 @@ export { selectBatches } from './select.js';
 export { DEFAULT_BLOCK_BYTES } from './query.js';
 
 export type { ColumnPages } from './pages.js';
-export { appendedPages } from './pages.js';
+export { appendedPages, sampleDomain } from './pages.js';
 export { resolveRows, type RowMappingRequest, type RowMapping } from './read.js';
 export { samplePages } from './read.js';
+
+export { createReader } from './reader/reader.js';
+export type { Reader, ReadScope, ReaderOptions } from './reader/reader.js';
+export type { ReaderStats } from './reader/memory.js';
+export type {
+  FieldInput,
+  FieldBinding,
+  FieldValues,
+  FieldsRequest,
+  FieldsBlock,
+  ExtentRequest,
+} from './reader/types.js';

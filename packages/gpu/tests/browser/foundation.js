@@ -16,9 +16,7 @@ export async function checkFoundation(gpu, target) {
   }
   const block = {
     kind: 'envelope',
-    version: 'v',
-    schemaVersion: 's',
-    index: { document: 'd', type: 'node', version: 'i' },
+    index: { source: 'd', type: 'node', version: 'i' },
     rows: { kind: 'range', offset: 10, count: rows },
     rowOffset: 0,
     firstBucket: 0,

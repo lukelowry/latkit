@@ -1,5 +1,4 @@
 import { GpuError, kit, type RGBA } from '@latkit/gpu';
-import type { Data } from '@latkit/model';
 import type { Limits, StyleOptions } from './options.js';
 import type { DiagramData, VertexData, EdgeData } from './data.js';
 export type Style = Required<StyleOptions>;
@@ -194,19 +193,4 @@ export function data(value: DiagramData): DiagramData {
     edges: { ...value.edges },
     groups: { ...value.groups },
   };
-}
-export function sources(data: DiagramData): Set<Data> {
-  const result = new Set([data.source]);
-  const visit = (value: unknown): void => {
-    if (!value || typeof value !== 'object' || ArrayBuffer.isView(value)) return;
-    if ('source' in value && 'field' in value) {
-      result.add((value as kit.FieldBinding).source);
-      return;
-    }
-    if ('values' in value) return;
-    for (const child of Object.values(value)) visit(child);
-  };
-  visit(data.vertices);
-  visit(data.edges);
-  return result;
 }

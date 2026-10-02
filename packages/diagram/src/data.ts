@@ -1,9 +1,9 @@
-import type { Data, RowSelection } from '@latkit/model';
+import type { Data, FieldInput, RowSelection } from '@latkit/model';
 import type { kit, RGBA } from '@latkit/gpu';
 export type Point = readonly [x: number, y: number];
 export type Shape = 'rectangle' | 'rounded' | 'ellipse' | 'diamond';
 export interface Labels {
-  readonly field: kit.FieldInput;
+  readonly field: FieldInput;
   readonly font?: kit.TextFont;
   /** Diagram units, independent of camera zoom. */
   readonly size?: number;
@@ -23,7 +23,7 @@ export interface PortOptions {
 export interface VertexOptions {
   readonly rows?: RowSelection;
   readonly position?: kit.Position2D | null;
-  readonly size?: kit.FieldInput | null;
+  readonly size?: FieldInput | null;
   readonly shape?: Shape;
   readonly cornerRadius?: number;
   /** Automatic sizing reserves room around the title. Default: center. */
@@ -31,8 +31,8 @@ export interface VertexOptions {
   /** A field name stands for that field with defaults: `color: 'load'`, `labels: 'name'`. */
   readonly color?: string | kit.ColorScale | null;
   readonly status?: string | kit.ColorScale | null;
-  readonly visible?: kit.FieldInput | null;
-  readonly shade?: kit.FieldInput | null;
+  readonly visible?: FieldInput | null;
+  readonly shade?: FieldInput | null;
   readonly labels?: string | Labels | null;
   /** Keyed by reference field. Each field naming a drawn net is a port. */
   readonly ports?: Readonly<Record<string, PortOptions>>;
@@ -50,8 +50,8 @@ export interface EdgeOptions {
   /** Widths are CSS pixels; flow is CSS pixels per second. */
   readonly width?: string | kit.Scale | null;
   readonly flow?: string | kit.Scale | null;
-  readonly visible?: kit.FieldInput | null;
-  readonly shade?: kit.FieldInput | null;
+  readonly visible?: FieldInput | null;
+  readonly shade?: FieldInput | null;
   readonly labels?: string | Labels | null;
   /** Arrowheads where flow arrives: a row's target end, or a net's input ports. */
   readonly arrows?: boolean;

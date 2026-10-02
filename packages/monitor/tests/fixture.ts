@@ -11,10 +11,8 @@ import {
 } from '@latkit/model';
 /** Values belong to this test application's store, with small independent backing allocations. */
 export class SignalSource {
-  version = 'v0';
   readonly index = { source: 'monitor-fixture', type: 'signal', version: 'rows0' };
   readonly firstFrame = 2 ** 40;
-  revision = 0;
   before = 0;
   private cached?: Data;
   private storedThrough = 0;
@@ -65,7 +63,7 @@ export class SignalSource {
     },
   };
   get data(): Data {
-    if (this.cached?.version === this.version) return this.cached;
+    if (this.cached && this.storedThrough === this.frames) return this.cached;
     const rows = { kind: 'range' as const, offset: 0, count: this.count },
       batches: SampleBatch[] = [];
     const staticBatches: RowBatch[] = [];
@@ -126,13 +124,12 @@ export class SignalSource {
     }
     this.storedThrough = this.frames;
     this.cached = this.cached
-      ? appendData(this.cached, this.version, batches)
-      : createData(this.schema, this.version, [...staticBatches, ...batches]);
+      ? appendData(this.cached, batches)
+      : createData(this.schema, [...staticBatches, ...batches]);
     return this.cached;
   }
   append(count: number): void {
     this.frames += count;
-    this.version = 'v' + ++this.revision;
   }
   query<Q extends Query>(query: Q, options?: QueryOptions) {
     return read(this.data, query, options);

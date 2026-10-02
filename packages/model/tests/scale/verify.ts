@@ -4,7 +4,6 @@ import type {
   Data,
   RowsQuery,
   SamplesQuery,
-  QueryHeader,
   QueryOptions,
   NumericColumn,
 } from '../../src/index.js';
@@ -36,8 +35,8 @@ export async function verifyRows(
   expected: (row: number) => number = inputAt,
 ): Promise<ScanResult> {
   const start = performance.now();
-  let firstBlockMs = 0,
-    header: QueryHeader | undefined;
+  assert.deepEqual(validateSchema(source.schema), []);
+  let firstBlockMs = 0;
   let cells = 0,
     blocks = 0,
     payloadBytes = 0,
@@ -45,16 +44,8 @@ export async function verifyRows(
     maxBlockBytes = 0,
     maxBackingBytes = 0;
   for await (const block of read(source, query, options)) {
-    if (block.kind === 'schema') {
-      assert.equal(header, undefined);
-      assert.deepEqual(validateSchema(block.schema), []);
-      header = block;
-      continue;
-    }
-    assert.ok(header);
-    assert.equal(block.version, header.version);
-    assert.equal(block.position, cells);
-    assert.deepEqual(validateBlock(header.schema, query, block, options), []);
+    assert.equal(block.rowOffset, cells);
+    assert.deepEqual(validateBlock(source.schema, query, block, options), []);
     if (!blocks) firstBlockMs = performance.now() - start;
     const size = blockByteLength(block);
     payloadBytes += size;
@@ -85,7 +76,6 @@ export async function verifyRows(
       cells++;
     }
   }
-  assert.ok(header);
   assert.equal(cells, count);
   return {
     cells,
@@ -114,7 +104,7 @@ export async function verifySamples(
   };
   const seen = new Uint32Array(frames),
     start = performance.now();
-  let header: QueryHeader | undefined;
+  assert.deepEqual(validateSchema(source.schema), []);
   let blocks = 0,
     cells = 0,
     checksum = 0,
@@ -123,15 +113,7 @@ export async function verifySamples(
     maxBackingBytes = 0,
     firstBlockMs = 0;
   for await (const block of read(source, query)) {
-    if (block.kind === 'schema') {
-      assert.equal(header, undefined);
-      header = block;
-      assert.deepEqual(validateSchema(block.schema), []);
-      continue;
-    }
-    assert.ok(header);
-    assert.equal(block.version, header.version);
-    assert.deepEqual(validateBlock(header.schema, query, block), []);
+    assert.deepEqual(validateBlock(source.schema, query, block), []);
     if (!blocks) firstBlockMs = performance.now() - start;
     blocks++;
     const size = blockByteLength(block);
@@ -160,7 +142,6 @@ export async function verifySamples(
       }
     }
   }
-  assert.ok(header);
   for (const count of seen) assert.equal(count, rows);
   return {
     cells,

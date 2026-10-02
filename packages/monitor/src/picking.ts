@@ -1,5 +1,13 @@
-import { GpuError, type Gpu } from '@latkit/gpu';
-import { bitAt, rowCount, rowAt, sampleAt, type Domain, type SampleColumn } from '@latkit/model';
+import { GpuError } from '@latkit/gpu';
+import {
+  bitAt,
+  rowCount,
+  rowAt,
+  sampleAt,
+  type Domain,
+  type ReadScope,
+  type SampleColumn,
+} from '@latkit/model';
 import type { Binding } from './bindings.js';
 import type { MonitorData, Reading } from './data.js';
 import type { Plot } from './axes.js';
@@ -11,7 +19,7 @@ export class HoverBudget extends Error {
   }
 }
 export interface PickRequest {
-  gpu: Gpu;
+  reads: ReadScope;
   data: MonitorData;
   bindings: readonly Binding[];
   plot: Plot;
@@ -21,14 +29,13 @@ export interface PickRequest {
   radius: number;
   limit: number;
   maxBytes: number;
-  signal: AbortSignal;
   budget?: number;
   accepts?: (reading: Reading) => boolean;
 }
 /** Refine only the pointer's coordinate interval; preserve native identities and Float64 values. */
 export async function pick(request: PickRequest): Promise<Reading[]> {
-  const { gpu, data, bindings, plot, x, y, point, radius, limit, maxBytes, signal, budget } =
-    request;
+  const { reads, data, bindings, plot, x, y, point, radius, limit, maxBytes, budget } = request;
+  const signal = reads.signal;
   finite(radius, 'pick radius', 0, 1024);
   if (!Number.isSafeInteger(limit) || limit < 1)
     throw new GpuError('invalid-input', 'Pick limit must be a positive integer');
@@ -40,22 +47,16 @@ export async function pick(request: PickRequest): Promise<Reading[]> {
   const result: { reading: Reading; distance: number }[] = [];
   let used = 0;
   for (const item of bindings) {
-    for await (const tile of gpu.fields(
-      {
-        source: data.source,
-        from: item.trace.from,
-        rows: item.rows,
-        fields: {
-          value: item.fields.value,
-          ...(item.fields.visible ? { visible: item.fields.visible } : {}),
-        },
-        window: { kind: 'range', between },
+    for await (const tile of reads.fields({
+      source: data.source,
+      from: item.trace.from,
+      rows: item.rows,
+      fields: {
+        value: item.fields.value,
+        ...(item.fields.visible ? { visible: item.fields.visible } : {}),
       },
-      { signal },
-    )) {
-      const version = tile.versions.get(item.source);
-      if (version === undefined)
-        throw new GpuError('conflict', 'Missing authoritative trace version');
+      window: { kind: 'range', between },
+    })) {
       const samples = tile.samples!,
         column = tile.columns.value as SampleColumn;
       let began = performance.now(),
@@ -97,7 +98,6 @@ export async function pick(request: PickRequest): Promise<Reading[]> {
             continue;
           const reading: Reading = {
             source: item.source,
-            version,
             index: tile.index,
             row: rowAt(tile.rows, r),
             field: item.field,

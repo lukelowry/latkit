@@ -9,6 +9,9 @@ export function settings(options: VideoOptions, maxDimension: number) {
   ] as const)
     if (!Number.isSafeInteger(value) || value < 1 || value > maxDimension)
       throw new GpuError('invalid-input', `Invalid video ${name}`);
+  const pixelRatio = options.pixelRatio ?? 1;
+  if (!Number.isFinite(pixelRatio) || pixelRatio <= 0)
+    throw new GpuError('invalid-input', 'Video pixelRatio must be positive');
   if (!Number.isFinite(frameRate) || frameRate < 1 || frameRate > 240)
     throw new GpuError('invalid-input', 'Video frameRate must be between 1 and 240');
   const durationUs = Math.round(options.duration * 1e6);
@@ -38,6 +41,7 @@ export function settings(options: VideoOptions, maxDimension: number) {
   return {
     width: options.width,
     height: options.height,
+    pixelRatio,
     frameRate,
     frames,
     durationUs,

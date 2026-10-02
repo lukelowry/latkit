@@ -1,22 +1,21 @@
 import { appendedPages } from '@latkit/model';
-import type { Data, RowSelection, SampleRange, Version } from '@latkit/model';
+import type { Data, FieldBinding, FieldInput, RowSelection, SampleRange } from '@latkit/model';
 import type { kit, RGBA } from '@latkit/gpu';
 /** A sampled field of one type's rows, drawn as a line per row. */
 export interface Trace {
   readonly from: string;
   readonly rows?: RowSelection;
-  readonly field: string | kit.FieldBinding;
+  readonly field: string | FieldBinding;
   readonly interpolation?: 'linear' | 'step-before' | 'step-after';
   /** A field name colors by that field with defaults. */
   readonly color?: string | kit.ColorScale | null;
   readonly baseColor?: RGBA;
   readonly widthPx?: number;
-  readonly visible?: kit.FieldInput | null;
-  readonly shade?: kit.FieldInput | null;
+  readonly visible?: FieldInput | null;
+  readonly shade?: FieldInput | null;
 }
 /** Exact native observation; envelopes are never reported as exact readings. */
 export interface Reading extends kit.DataHit {
-  readonly version: Version;
   readonly trace: string;
   readonly field: string;
   readonly frame: number;

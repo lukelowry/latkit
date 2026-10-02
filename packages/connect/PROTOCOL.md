@@ -1,7 +1,7 @@
-# Latkit connection wire format, version 1
+# Latkit connection wire format
 
 WebSocket subprotocol: `latkit`. Both endpoints must select it. One complete binary WebSocket
-message contains one frame. Text, shared memory, unknown versions/opcodes, malformed lengths,
+message contains one frame. Text, shared memory, foreign magic, unknown opcodes, malformed lengths,
 out-of-sequence publications, and credit violations fail the connection. JSON/layout failures
 encountered when consuming a publication fail that operation. No model payload is sent at registration.
 
@@ -11,9 +11,8 @@ All integers and numeric payloads are little-endian. The 24-byte header is:
 
 | Byte offset | Type | Meaning                                               |
 | ----------- | ---- | ----------------------------------------------------- |
-| 0           | u32  | Magic 0x3154414c (LAT1)                               |
-| 4           | u16  | Wire version 1                                        |
-| 6           | u16  | Opcode                                                |
+| 0           | u32  | Magic 0x4b54414c (LATK)                               |
+| 4           | u32  | Opcode                                                |
 | 8           | u32  | Request ID; registration/connection control uses zero |
 | 12          | u32  | Publication sequence; all other messages use zero     |
 | 16          | u32  | UTF-8 JSON metadata length                            |
@@ -81,8 +80,8 @@ data. Host callbacks finish before a command's result promise resolves.
 ## Column payloads
 
 A publication's metadata is `{batches: [...]}`. Batches use the model's RowBatch/SampleBatch shape.
-Native binary leaves become `{kind, offset, length}` descriptors, where length counts elements,
-offset counts bytes relative to the body, and kind is u8/u32/i32/f32/f64. All offsets are 8-byte
+Native binary leaves become `{type, offset, length}` descriptors, where length counts elements,
+offset counts bytes relative to the body, and type is uint8, uint32, int32, float32, or float64. All offsets are 8-byte
 aligned, in range, and correctly typed. Total referenced bytes cannot exceed the body size.
 Numeric sample offset/rowStride/frameStride are preserved; arrays are never serialized as JSON
 number lists or transposed. References preserve their target Index. UTF-8 text, packed validity,
@@ -94,10 +93,9 @@ frame on little-endian systems, copies unaligned input when needed, and swaps ar
 systems. Layout/schema validation precedes delivery.
 
 For storage/forwarding, `EncodedPublication.bytes` is the frame from byte 16 onward:
-two u32 lengths, JSON, alignment padding, body. It excludes op/request/sequence/version.
-Its interpretation is the version-1 publication codec selected by the enclosing protocol or
-application storage format. A new connection can reuse those bytes without rewriting request IDs.
-Consumers use `decodePublication({bytes}, schema, bounds)`; this payload is not a whole session frame.
+two u32 lengths, JSON, alignment padding, body. It excludes magic/op/request/sequence. A new
+connection can reuse those bytes without rewriting request IDs. Consumers use
+`protocol.decodePublication({bytes}, schema, bounds)`; this payload is not a whole session frame.
 
 ## Arguments and transport separation
 
@@ -108,9 +106,9 @@ Other arguments and results are finite JSON matching shared model command descri
 
 The session state machine consumes and emits binary frames. The socket layer handles WebSocket
 events and send-buffer capacity. The column codec depends on model layouts, not Lattice's registry,
-UI/page wire format, rendering, or storage. Version changes happen in this package's explicit
-codec, not in command names or a producer-specific Lattice subprotocol.
+UI/page wire format, rendering, or storage. The frame carries no version: a frame with another
+magic is not a latkit frame, and a changed codec makes older endpoints obsolete.
 
 Authentication, routing, uniqueness, page fan-out, storage retention, and replay are host policy.
 Set native inbound message caps and choose bounded fan-out behavior. There is no implicit snapshot
-or global data version: model Data.version belongs to an application's immutable local value.
+or data version: each Data an application builds is a new immutable value.

@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import {
+  createReader,
   read as readData,
   blockByteLength,
   validateBlock,
@@ -24,11 +25,9 @@ import { data } from '../src/presentation.js';
 async function collect(source: Data, query: Query, maxBlockBytes = 2048) {
   const result = [];
   for await (const block of readData(source, query, { maxBlockBytes })) {
-    if (block.kind !== 'schema') {
-      expect(validateBlock(schema, query, block, { maxBlockBytes })).toEqual([]);
-      expect(blockByteLength(block)).toBeLessThanOrEqual(maxBlockBytes);
-      result.push(block);
-    }
+    expect(validateBlock(schema, query, block, { maxBlockBytes })).toEqual([]);
+    expect(blockByteLength(block)).toBeLessThanOrEqual(maxBlockBytes);
+    result.push(block);
   }
   return result;
 }
@@ -51,17 +50,15 @@ it('supplies conforming native rows and wiring for every scene', async () => {
     });
   }
 });
-it('keeps application versions and coherent iterators during replacement', async () => {
+it('keeps coherent iterators during replacement', async () => {
   const source = new GraphSource(preset('loop')),
     retained = source.data;
   const query = { kind: 'rows' as const, from: 'Process', select: ['name'], ids: true };
   const read = readData(source.data, query)[Symbol.asyncIterator]();
-  await read.next();
   source.publish(preset('shapes'));
   const result = await read.next();
-  expect(result.value?.kind).toBe('rows');
-  if (!result.done && result.value.kind === 'rows')
-    expect(textAt(result.value.ids!, 0)).toBe('actuator');
+  expect(result.done).toBe(false);
+  if (!result.done) expect(textAt(result.value.ids!, 0)).toBe('actuator');
   await read.return?.();
   expect((await collect(retained, query)).length).toBeGreaterThan(0);
 });
@@ -142,8 +139,9 @@ it('wires an input to a new driving block, or plugs it into an existing wire', a
 });
 it('arranges through the new public headless API', async () => {
   const source = new GraphSource(preset('loop'));
-  // Arrangement only measures text.
+  // Arrangement only reads and measures text.
   const gpu = {
+    reader: createReader(),
     measureText: (input: { text: string }) =>
       Promise.resolve({ advance: input.text.length * 0.6, ascent: 0.8, descent: 0.2 }),
   } as unknown as Gpu;

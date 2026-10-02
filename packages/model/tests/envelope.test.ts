@@ -24,7 +24,6 @@ const query: EnvelopeQuery = {
 function block(): EnvelopeBlock {
   return {
     kind: 'envelope',
-    version: 'v',
     index: { source: 'd', type: 'node', version: 'i' },
     rows: { kind: 'range', offset: 0, count: 1 },
     rowOffset: 0,

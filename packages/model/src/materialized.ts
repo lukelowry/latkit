@@ -1,8 +1,7 @@
 import type { ColumnPages } from './pages.js';
-import type { Column, Index, RowAxis, TextColumn } from './data.js';
+import type { Column, Index, RowAxis } from './data.js';
 import type { RowsBlock, SamplesBlock } from './query.js';
 import type { Schema } from './schema.js';
-import type { Version } from './types.js';
 
 /** A page of actual values, never a provider handle or a deferred read. */
 export interface ColumnPage {
@@ -17,14 +16,14 @@ export interface ColumnPage {
 export interface TableData {
   readonly index: Index;
   readonly rows: RowAxis;
-  readonly ids: readonly { readonly rows: RowAxis; readonly column: TextColumn }[];
+  /** Text pages of stable row identities. */
+  readonly ids: ColumnPages;
   readonly fields: Readonly<Record<string, ColumnPages>>;
 }
 
-/** Immutable, application-owned values. There are no I/O or lifetime methods. */
+/** Immutable, application-owned values. A new value is a new object; there is no version to track. */
 export interface Data<S extends Schema = Schema> {
   readonly schema: S;
-  readonly version: Version;
   readonly tables: Readonly<Record<string, TableData>>;
 }
 

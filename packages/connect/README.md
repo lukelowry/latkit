@@ -2,7 +2,7 @@
 
 Two endpoints for demand-driven model connections:
 
-- `connectLattice(options)` registers a producer and serves requested observations and commands.
+- `connectModel(options)` registers a producer and serves requested observations and commands.
 - `acceptModel(socket, options?)` accepts that producer on a host.
 
 Registration sends schema and command descriptions only. Nothing reads or sends model values until
@@ -15,7 +15,7 @@ This complete producer exposes a small model and a typed command. The same API w
 that generates bounded batches directly.
 
 ```ts
-import { connectLattice } from '@latkit/connect';
+import { connectModel } from '@latkit/connect';
 import { createData, selectBatches } from '@latkit/model';
 
 const schema = {
@@ -23,7 +23,7 @@ const schema = {
 } as const;
 
 function values(multiplier: number) {
-  return createData(schema, String(multiplier), [
+  return createData(schema, [
     {
       kind: 'rows',
       index: { source: 'grid', type: 'Bus', version: 'rows-1' },
@@ -41,23 +41,20 @@ function values(multiplier: number) {
 }
 let current = values(1);
 
-const connection = await connectLattice({
+const connection = await connectModel({
   url: 'http://localhost:3000',
   name: 'grid',
   schema,
-  monitor(fields, { signal, maxBatchBytes }) {
-    return selectBatches(current, fields, { signal, maxBlockBytes: maxBatchBytes });
+  monitor(fields, { signal, maxBlockBytes }) {
+    return selectBatches(current, fields, { signal, maxBlockBytes });
   },
   commands: {
     scale: {
       parameters: { multiplier: { type: 'number', min: 0, default: 1 } },
-      async run({ multiplier }, { signal, outputs, publish, progress, log, maxBatchBytes }) {
+      async run({ multiplier }, { signal, outputs, publish, progress, log, maxBlockBytes }) {
         // multiplier is inferred as number.
         const next = values(multiplier);
-        for await (const batch of selectBatches(next, outputs, {
-          signal,
-          maxBlockBytes: maxBatchBytes,
-        }))
+        for await (const batch of selectBatches(next, outputs, { signal, maxBlockBytes }))
           await publish(batch);
         current = next;
         progress({ completed: 1, total: 1 });
@@ -177,7 +174,7 @@ await model.run('solve', values, {
 });
 ```
 
-`@latkit/connect/protocol` provides `decodePublication`, `preparePublication`, and the explicit
+The `protocol` namespace provides `decodePublication`, `preparePublication`, and the explicit
 wire codec for implementations and gateways. The primary API uses model types and WebSocket
 interfaces; renderers consume `Data`, independent of this protocol. Encoded mode still validates
 incoming layouts at the trust boundary. Payloads omit connection-local IDs and sequences.

@@ -1,8 +1,6 @@
-import type { Index, Data } from '@latkit/model';
+import type { FieldValues, Index } from '@latkit/model';
 import type { kit, RGBA } from '@latkit/gpu';
 import type { DiagramData, DiagramHit, Point, Shape, VertexData, EdgeData } from './data.js';
-export type Reader =
-  Pick<kit.Preparation, 'query' | 'fields' | 'scale' | 'signal' | 'at'> | kit.NativeReader;
 export type Rect = readonly [number, number, number, number];
 export interface Label {
   text: string;
@@ -92,7 +90,6 @@ export interface Scene {
   routeClearance?: number;
   portSizePx?: number;
   ends: number;
-  versions: ReadonlyMap<Data, string>;
 }
 export const emptyLabel: Label = { text: '', width: 0, height: 0, ascent: 0, runs: [] };
 export function rect(vertex: Vertex): Rect {
@@ -101,7 +98,7 @@ export function rect(vertex: Vertex): Rect {
 export function positions(
   vertices: readonly Vertex[],
   only?: ReadonlySet<number>,
-): Readonly<Record<string, kit.FieldValues>> {
+): Readonly<Record<string, FieldValues>> {
   const grouped = new Map<string, Vertex[]>();
   vertices.forEach((vertex, i) => {
     if (!only || only.has(i)) {
@@ -126,7 +123,7 @@ export function positions(
             size: 2,
             values: { kind: 'numeric', offset: 0, length: values.length, values },
           },
-        } satisfies kit.FieldValues,
+        } satisfies FieldValues,
       ];
     }),
   );

@@ -1,23 +1,23 @@
 import { expect, it, vi } from 'vitest';
-import { kit, type Gpu } from '@latkit/gpu';
+import { createReader } from '@latkit/model';
+import type { Gpu } from '@latkit/gpu';
 import { arrange, layoutOptions, place, rootEnd } from '../src/layout.js';
 import { readScene } from '../src/read.js';
 import { geometry, orthogonal, contains, boundary } from '../src/geometry.js';
 import { options, limits } from '../src/config.js';
 import { data, Source, measure } from './fixture.js';
-/** Arrangement only measures text. */
-const gpu = { measureText: measure } as unknown as Gpu;
+/** Arrangement only reads and measures text. */
+const gpu = { reader: createReader(), measureText: measure } as unknown as Gpu;
 import { Picking } from '../src/picking.js';
 async function scene(source = new Source(), position = false) {
-  const reader = kit.createNativeReader();
+  const reader = gpu.reader.open();
   try {
     const result = await readScene(data(source, position), reader, options(), limits(), measure);
     await place(result, layoutOptions(), 8, reader.signal);
     await geometry(result, options(), limits(), reader.signal);
-    reader.check();
     return result;
   } finally {
-    reader.destroy();
+    reader.close();
   }
 }
 it('arranges native rows deterministically without GPU or DOM', async () => {
@@ -57,7 +57,7 @@ it('joins every port whose reference names a net', async () => {
 });
 it('draws each row between the vertices its two references name', async () => {
   const source = new Source(3),
-    reader = kit.createNativeReader();
+    reader = gpu.reader.open();
   try {
     const d = data(source);
     const result = await readScene(
@@ -83,8 +83,16 @@ it('draws each row between the vertices its two references name', async () => {
     expect(result.vertices.every((vertex) => !vertex.ports.length)).toBe(true);
     expect(result.edges.every((edge) => edge.arrows.length === 1)).toBe(true);
   } finally {
-    reader.destroy();
+    reader.close();
   }
+});
+it('rejects ends numbered against another row space than their vertices', async () => {
+  const source = new Source(3);
+  source.staleEnds = true;
+  const d = data(source);
+  await expect(
+    arrange(gpu, { ...d, edges: { Dependency: { ...d.edges!.Dependency, ends: ['from', 'to'] } } }),
+  ).rejects.toMatchObject({ code: 'conflict' });
 });
 it('rejects ports that are not reference columns', async () => {
   const source = new Source();
@@ -187,7 +195,7 @@ it('keeps explicit positions and sizes', async () => {
 });
 it('collapses groups into proxies for their external ends', async () => {
   const source = new Source(3),
-    reader = kit.createNativeReader();
+    reader = gpu.reader.open();
   try {
     const d = {
       ...data(source, true),
@@ -207,7 +215,7 @@ it('collapses groups into proxies for their external ends', async () => {
     expect(result.edges[1].paths.length).toBeGreaterThan(0);
     expect(result.groups[0].bounds[2] - result.groups[0].bounds[0]).toBeLessThan(200);
   } finally {
-    reader.destroy();
+    reader.close();
   }
 });
 

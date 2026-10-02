@@ -1,5 +1,5 @@
 import { GpuError, kit, type Gpu, type Shade, type View } from '@latkit/gpu';
-import type { Data } from '@latkit/model';
+import type { Data, FieldValues } from '@latkit/model';
 import type {
   VertexOptions,
   EdgeOptions,
@@ -22,7 +22,7 @@ import {
   type Style,
 } from './config.js';
 import { place, layoutOptions, type Layout, type LayoutOptions } from './layout.js';
-import { readScene } from './read.js';
+import { readScene, sampled } from './read.js';
 import { geometry } from './geometry.js';
 import { positions, type Scene, type Rect } from './scene.js';
 import { Picking } from './picking.js';
@@ -44,7 +44,7 @@ export interface ConnectProposal {
 /** Vertices the user dragged; write the positions to the model to accept them. */
 export interface MoveProposal {
   /** Moved positions by vertex type. */
-  readonly positions: Readonly<Record<string, kit.FieldValues>>;
+  readonly positions: Readonly<Record<string, FieldValues>>;
   readonly moves: readonly { readonly vertex: RowRef; readonly position: Point }[];
 }
 export interface Camera {
@@ -212,6 +212,8 @@ function camera2d(center: Point, scale: number): kit.Camera2D {
 }
 class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Merged> {
   private data: DiagramData;
+  /** Whether the scene reads sampled fields; otherwise it is the same at every coordinate. */
+  private sampled: boolean;
   private options: Style;
   private limits: Required<Limits>;
   private layout: Required<LayoutOptions>;
@@ -271,6 +273,7 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
     });
     const resolved = resolve(this.config);
     this.data = resolved.data;
+    this.sampled = sampled(this.data);
     this.options = resolved.options;
     this.limits = resolved.limits;
     this.layout = resolved.layout;
@@ -393,6 +396,7 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
       previous.limits !== next.limits
     ) {
       this.data = resolved.data;
+      this.sampled = sampled(this.data);
       this.reread(animate);
     }
     if (previous.layout !== next.layout) {
@@ -636,18 +640,19 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
       work = new Work(frame.signal, this.limits.prepareMs),
       revision = this.revision,
       options = this.options,
-      data = this.data;
+      data = this.data,
+      at = this.sampled ? frame.at : undefined;
     const base = this.stable ?? this.presented;
     let scene: Scene, picking: Picking;
     if (
       this.sceneTransition &&
-      (this.sceneTransition.revision !== revision || this.sceneTransition.at !== frame.at)
+      (this.sceneTransition.revision !== revision || this.sceneTransition.at !== at)
     )
       this.sceneTransition = undefined;
     const transition = this.sceneTransition;
     const transitioning =
-      transition && transition.revision === revision && transition.at === frame.at && !this.drag;
-    const cached = base && base.revision === revision && base.at === frame.at && !this.drag;
+      transition && transition.revision === revision && transition.at === at && !this.drag;
+    const cached = base && base.revision === revision && base.at === at && !this.drag;
     if (transitioning) {
       scene = transition.target;
       picking = transition.picking;
@@ -668,7 +673,7 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
       } else {
         scene = await readScene(
           data,
-          frame,
+          frame.reader,
           options,
           this.limits,
           (input, request) => this.gpu.measureText(input, request),
@@ -730,7 +735,7 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
           picking,
           from,
           revision,
-          at: frame.at,
+          at,
           start: frame.timeMs,
         };
     }
@@ -739,7 +744,7 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
     if (
       movement &&
       movement.revision === revision &&
-      movement.at === frame.at &&
+      movement.at === at &&
       this.motion() &&
       options.animationMs > 0
     ) {
@@ -858,7 +863,7 @@ class DiagramView extends kit.BaseView<DiagramConfig, DiagramEvents, Records, Me
       camera: c,
       viewport: frame.viewport,
       revision: this.drag ? -1 : revision,
-      at: frame.at,
+      at,
       paint,
       prepareMs: performance.now() - started,
       hover,

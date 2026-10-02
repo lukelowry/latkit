@@ -1,15 +1,6 @@
 import { createData, read, type Data, type DataBatch, validateQuery } from '@latkit/model';
-import type {
-  Query,
-  QueryOptions,
-  QueryHeader,
-  QueryBlock,
-  Schema,
-  Column,
-  RowAxis,
-} from '@latkit/model';
+import type { Query, QueryOptions, QueryBlock, Schema, Column, RowAxis } from '@latkit/model';
 export class GraphSource {
-  version = 'v0';
   readonly document: string;
   queries = 0;
   /** Reads of the lines' ends: topology, which moving positions never re-reads. */
@@ -112,7 +103,7 @@ export class GraphSource {
   }
   private cached?: Data;
   get data(): Data {
-    if (this.cached?.version === this.version) return this.cached;
+    if (this.cached) return this.cached;
     const batches: DataBatch[] = [];
     for (const [from, type] of Object.entries(this.schema.types)) {
       const staticFields = Object.keys(type.fields).filter((name) => !type.fields[name].sampled);
@@ -142,18 +133,17 @@ export class GraphSource {
               ) as import('@latkit/model').SampleBatch['columns'],
             });
     }
-    return (this.cached = createData(this.schema, this.version, batches));
+    return (this.cached = createData(this.schema, batches));
   }
   query<Q extends Query>(query: Q, options?: QueryOptions) {
     return read(this.data, query, options);
   }
-  private *blocks(query: Query, options?: QueryOptions): Generator<QueryHeader | QueryBlock> {
+  private *blocks(query: Query, options?: QueryOptions): Generator<QueryBlock> {
     const issues = validateQuery(this.schema, query);
     if (issues.length) throw new Error(JSON.stringify(issues));
     this.queries++;
     if (query.kind === 'rows' && query.select.includes('from')) this.endsQueries++;
     options?.signal?.throwIfAborted();
-    yield { kind: 'schema', version: this.version, schema: this.schema };
     const total = query.from === 'node' ? this.count : this.from.length;
     const selection = 'rows' in query ? query.rows : undefined;
     if (selection?.kind === 'ids') throw new Error('Fixture does not resolve string ids');
@@ -171,7 +161,6 @@ export class GraphSource {
       const row = (i: number) => (rows.kind === 'range' ? rows.offset + i : rows.values[i]);
       const base = {
         kind: query.kind,
-        version: this.version,
         index,
         rows,
       };
@@ -224,7 +213,7 @@ export class GraphSource {
             };
           }
         }
-        yield { ...base, kind: 'rows', position: first, columns };
+        yield { ...base, kind: 'rows', rowOffset: first, columns };
       } else throw new Error('Fixture query not implemented: ' + query.kind);
     }
   }

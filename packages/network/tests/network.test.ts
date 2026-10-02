@@ -1,6 +1,7 @@
 import { renderer as testRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createGpu, kit } from '@latkit/gpu';
+import type { FieldValues } from '@latkit/model';
 import { createNetwork, type Network } from '../src/index.js';
 import type { NetworkData } from '../src/data.js';
 import { readGeometry, DEFAULT_LIMITS } from '../src/geometry/topology.js';
@@ -187,7 +188,7 @@ it('rebinds immutable live positions without rereading topology and picks immedi
   const values = source.positions.slice();
   values[24] += 3;
   values[25] += 2;
-  const position: kit.FieldValues = {
+  const position: FieldValues = {
     index: source.index('node'),
     rows: { kind: 'range', offset: 0, count: 25 },
     values: {
@@ -594,7 +595,7 @@ it('renders bends, nets as stars, geodesics, and native paths with original iden
 it('keeps edges pickable when only their vertex markers are hidden', async () => {
   const { source, data } = fixture(4),
     gpu = await createGpu({ device: device().device });
-  const hidden: kit.FieldValues = {
+  const hidden: FieldValues = {
     index: source.index('node'),
     rows: { kind: 'range', offset: 0, count: 4 },
     values: { kind: 'boolean', offset: 0, length: 4, values: Uint8Array.of(0) },

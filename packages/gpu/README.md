@@ -25,25 +25,21 @@ automatic scale domains reuse results when that coordinate selects the same immu
 Each field resolves its own coordinates. Appending samples preserves reuse of unchanged observations;
 new samples at the playhead, including duplicate coordinates, invalidate the affected reads.
 
-This works with named fields, explicit row indices, and ID selections without cache configuration.
-Cached blocks report the current data version. `gpu.stats()` exposes query and upload counts for
-measuring reuse. Caches remain subject to the existing GPU owner's resource budget; there is no
+Reads go through `gpu.reader`, the model `Reader` every view on this GPU shares, bounded by the
+GPU's budget. `gpu.stats()` exposes query and upload counts for measuring reuse. There is no
 producer retention or replay.
 
 ## Write a view
 
 Renderer authors build on the `kit` namespace: extend `kit.BaseView`, prepare GPU work in
 `prepare`, encode it in `encode`, and react to config changes in `configure`. The base presents on
-a canvas, schedules frames, attaches input, renders images, and keeps events. Frames provide native
-field reads, uploads, text, colormaps, and transient buffers.
+a canvas, schedules frames, attaches input, renders images, and keeps events. Frames provide the
+GPU's reader (`frame.reader`), field uploads, text, colormaps, and transient buffers.
 
 [Views](https://latkit.readthedocs.io/en/latest/views.html) ·
 [Colors](https://latkit.readthedocs.io/en/latest/colormaps.html) ·
 [API](https://latkit.readthedocs.io/en/latest/api/reference/gpu/index.html)
 
-Field bindings compile into shared internal plans. Plans describe aliases, source slots, and row
-selections; each frame supplies its captured Data snapshots. Static fields and independently
-sampled fields keep separate cache dependencies, including when rows are selected by ID. Changed
-samples therefore do not require gathering or uploading unchanged static fields. The same plan
-compiler serves point and sample-window preparation, and its metadata uses the GPU's existing
-memory budget. No plan objects or setup are required in application code.
+Uploads are keyed by the field blocks the reader returns, so a block the reader still holds uploads
+once. Static fields and independently sampled fields keep separate dependencies; changed samples
+do not gather or upload unchanged static fields.

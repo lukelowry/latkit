@@ -20,7 +20,7 @@ it('reads and uploads the same native contract through connect without a rendere
   let remote;
   try {
     const publications = await collect(h.model.monitor(fields));
-    remote = createData(h.model.schema, 'v1', publications.flat());
+    remote = createData(h.model.schema, publications.flat());
   } finally {
     await h.close();
   }
@@ -30,14 +30,18 @@ it('reads and uploads the same native contract through connect without a rendere
   try {
     const pages: GpuPage[] = [];
     await draw(gpu, async (frame) => {
-      for await (const block of frame.query(remote, {
+      for await (const block of frame.reader.read(remote, {
         kind: 'rows',
         from: 'Node',
         select: ['value'],
         rows: { kind: 'range', offset: 99990, count: 10 },
       }))
-        if (block.kind === 'rows')
-          pages.push(...frame.upload(block, { select: ['value'], float64: 'float32' }));
+        pages.push(
+          ...frame.upload(
+            { ...block, kind: 'fields', presence: {} },
+            { select: ['value'], float64: 'float32' },
+          ),
+        );
     });
     expect(pages).toHaveLength(1);
     expect(pages[0].index).toEqual(source.index);
@@ -48,7 +52,7 @@ it('reads and uploads the same native contract through connect without a rendere
     );
     const fields: GpuPage[] = [];
     await draw(gpu, async (frame) => {
-      for await (const native of frame.fields({
+      for await (const native of frame.reader.fields({
         source: remote,
         from: source.index.type,
         rows: { index: source.index, kind: 'range', offset: 99990, count: 10 },

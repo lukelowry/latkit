@@ -1,5 +1,12 @@
 import { Tiles, coordinateRanges } from './tiles.js';
-import type { Domain, Data } from '@latkit/model';
+import {
+  sampleDomain,
+  samplePages,
+  type Domain,
+  type Data,
+  type SampleRange,
+  type SampleWindow,
+} from '@latkit/model';
 import { GpuError, kit, type Gpu, type Shade, type View } from '@latkit/gpu';
 import {
   appended,
@@ -21,7 +28,7 @@ import {
   fail,
   type Settings,
 } from './config.js';
-import { describeBindings, validateData, extent, type Binding } from './bindings.js';
+import { binding, describeBindings, validateData, type Binding } from './bindings.js';
 import { axes, plot, type Axes } from './axes.js';
 import { mergeDomain } from './history.js';
 import { Job } from './job.js';
@@ -165,7 +172,7 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
   private setup?: Promise<void>;
   private setupStop?: AbortController;
   private error?: unknown;
-  private window: import('@latkit/model').SampleRange;
+  private window: SampleRange;
   private y: Domain;
   private viewport?: kit.Viewport;
   private layout?: Axes;
@@ -184,7 +191,6 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
   private focusVisible = false;
   private presented?: { data: MonitorData; bindings: Binding[]; options: Settings; layout: Axes };
   private presentation = 0;
-  private invalidSources = new Set<Data>();
   private job?: Job;
   private coverage = new Coverage();
   private focusJob?: Job;
@@ -201,7 +207,6 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
   };
   private append = new Map<string, readonly FrameRange[]>();
   private generation = 0;
-  private presentedVersions = new Map<Data, string>();
   private prepared?: {
     pipeline: Pipelines;
     screen: Screen;
@@ -220,7 +225,6 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
     limit: number;
     generation: number;
     presentation: number;
-    versions: Map<Data, string>;
     result: readonly Reading[];
   };
   private hoverState: kit.HoverState = 'idle';
@@ -346,25 +350,28 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
       this.setupStop = control;
       const setupSignal = AbortSignal.any([this.stop.signal, control.signal]);
       const task = (async () => {
-        const bindings = await describeBindings(this.gpu, this.data, setupSignal);
-        let values: Domain | null = null;
-        if (this.fitValues)
-          for (const item of bindings)
-            values = mergeDomain(
-              values,
-              await extent(
-                this.gpu,
-                this.data.source,
-                item.trace.from,
-                item.rows,
-                item.fields.value,
-                this.window,
-                setupSignal,
-              ),
-            );
-        if (generation !== this.generation || this.closed) return;
-        this.bindings = bindings;
-        if (values) this.y = expanded(values, this.options.domainPadding);
+        const reads = this.gpu.reader.open({ signal: setupSignal });
+        try {
+          const bindings = await describeBindings(reads, this.data);
+          let values: Domain | null = null;
+          if (this.fitValues)
+            for (const item of bindings)
+              values = mergeDomain(
+                values,
+                await reads.extent({
+                  source: this.data.source,
+                  from: item.trace.from,
+                  rows: item.rows,
+                  field: item.fields.value,
+                  window: this.window,
+                }),
+              );
+          if (generation !== this.generation || this.closed) return;
+          this.bindings = bindings;
+          if (values) this.y = expanded(values, this.options.domainPadding);
+        } finally {
+          reads.close();
+        }
       })();
       this.setup = task;
       void task
@@ -418,31 +425,37 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
       // A camera extension may expose existing observations, not only newly appended ones.
       const pending = new Map(frames),
         through = this.tiles.coveredThrough;
+      const exposed: SampleWindow = {
+        kind: 'range',
+        between: [Math.max(through, this.window.between[0]), this.window.between[1]],
+      };
       for (const binding of this.bindings!) {
         const ranges = [...(pending.get(binding.name) ?? [])];
-        for (const page of binding.source.tables[binding.trace.from]?.fields[binding.field] ?? []) {
-          const sample = page.samples;
-          if (!sample) continue;
-          const coordinates = sample.coordinates;
-          if (coordinates.at(-1)! <= through || coordinates[0] > this.window.between[1]) continue;
-          const bound = (value: number, inclusive: boolean) => {
-            let lo = 0,
-              hi = coordinates.length;
-            while (lo < hi) {
-              const mid = (lo + hi) >>> 1;
-              if (coordinates[mid] < value || (!inclusive && coordinates[mid] === value))
-                lo = mid + 1;
-              else hi = mid;
-            }
-            return lo;
-          };
-          const first = bound(
-            Math.max(through, this.window.between[0]),
-            this.window.between[0] > through,
-          );
-          const end = bound(this.window.between[1], false);
-          if (first < end) ranges.push({ offset: sample.firstFrame + first, count: end - first });
-        }
+        const pages = binding.source.tables[binding.trace.from]?.fields[binding.field];
+        if (pages)
+          for (const page of samplePages(pages, exposed)) {
+            const sample = page.samples;
+            if (!sample) continue;
+            const coordinates = sample.coordinates;
+            if (coordinates.at(-1)! <= through || coordinates[0] > this.window.between[1]) continue;
+            const bound = (value: number, inclusive: boolean) => {
+              let lo = 0,
+                hi = coordinates.length;
+              while (lo < hi) {
+                const mid = (lo + hi) >>> 1;
+                if (coordinates[mid] < value || (!inclusive && coordinates[mid] === value))
+                  lo = mid + 1;
+                else hi = mid;
+              }
+              return lo;
+            };
+            const first = bound(
+              Math.max(through, this.window.between[0]),
+              this.window.between[0] > through,
+            );
+            const end = bound(this.window.between[1], false);
+            if (first < end) ranges.push({ offset: sample.firstFrame + first, count: end - first });
+          }
         if (ranges.length) pending.set(binding.name, mergeRanges(ranges));
       }
       frames = pending;
@@ -548,20 +561,15 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
       const frames = new Map(this.append);
       let window = this.window;
       if (this.follow) {
+        // Appends land at the tail, so the newest coordinate is each field's last.
         let end = -Infinity;
         for (const item of this.bindings)
-          for (const range of frames.get(item.name) ?? []) {
-            const last = range.offset + range.count - 1;
-            for (const page of item.source.tables[item.trace.from]?.fields[item.field] ?? []) {
-              const sample = page.samples;
-              if (
-                sample &&
-                last >= sample.firstFrame &&
-                last < sample.firstFrame + sample.coordinates.length
-              )
-                end = Math.max(end, sample.coordinates[last - sample.firstFrame]);
-            }
-          }
+          if (frames.get(item.name)?.length)
+            end = Math.max(
+              end,
+              sampleDomain(item.source.tables[item.trace.from]?.fields[item.field])?.[1] ??
+                -Infinity,
+            );
         if (Number.isFinite(end))
           window = {
             ...window,
@@ -575,30 +583,32 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
             this.options.autoDomain === 'fit'
               ? await this.tiles.bounds(item.name, window.between, frame.signal)
               : undefined;
-          let windows: import('@latkit/model').SampleWindow[];
+          let windows: SampleWindow[];
           if (cached) {
             values = mergeDomain(values, cached.domain);
             const intervals = [...cached.missing];
-            for (const range of frames.get(item.name) ?? [])
-              for (const page of item.source.tables[item.trace.from]?.fields[item.field] ?? []) {
-                const sample = page.samples;
-                if (!sample) continue;
-                const start = Math.max(range.offset, sample.firstFrame),
-                  end = Math.min(
-                    range.offset + range.count,
-                    sample.firstFrame + sample.coordinates.length,
+            const pages = item.source.tables[item.trace.from]?.fields[item.field];
+            if (pages)
+              for (const range of frames.get(item.name) ?? [])
+                for (const page of samplePages(pages, { kind: 'frames', ...range })) {
+                  const sample = page.samples;
+                  if (!sample) continue;
+                  const start = Math.max(range.offset, sample.firstFrame),
+                    end = Math.min(
+                      range.offset + range.count,
+                      sample.firstFrame + sample.coordinates.length,
+                    );
+                  if (start >= end) continue;
+                  const first = Math.max(
+                    window.between[0],
+                    sample.coordinates[start - sample.firstFrame],
                   );
-                if (start >= end) continue;
-                const first = Math.max(
-                  window.between[0],
-                  sample.coordinates[start - sample.firstFrame],
-                );
-                const last = Math.min(
-                  window.between[1],
-                  sample.coordinates[end - sample.firstFrame - 1],
-                );
-                if (first <= last) intervals.push([first, last]);
-              }
+                  const last = Math.min(
+                    window.between[1],
+                    sample.coordinates[end - sample.firstFrame - 1],
+                  );
+                  if (first <= last) intervals.push([first, last]);
+                }
             windows = coordinateRanges(intervals).map((between) => ({ kind: 'range', between }));
           } else
             windows =
@@ -611,15 +621,13 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
           for (const selected of windows)
             values = mergeDomain(
               values,
-              await extent(
-                this.gpu,
-                this.data.source,
-                item.trace.from,
-                item.rows,
-                item.fields.value,
-                selected,
-                frame.signal,
-              ),
+              await frame.reader.extent({
+                source: this.data.source,
+                from: item.trace.from,
+                rows: item.rows,
+                field: item.fields.value,
+                window: selected,
+              }),
             );
         }
       frame.signal.throwIfAborted();
@@ -800,7 +808,6 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
     )
       this.presentation++;
     if (prepared.commit || prepared.initial) {
-      this.invalidSources.clear();
       this.presented = {
         data: this.data,
         bindings: this.bindings!,
@@ -834,7 +841,6 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
         );
         job.seams.finish();
         this.tails = job.seams;
-        this.presentedVersions = new Map(job.versions);
         this.job = undefined;
       }
       if (job === this.focusJob) {
@@ -878,8 +884,16 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
   fit(items?: readonly Reading[], options: kit.SetOptions = {}): void {
     this.live();
     if (!items?.length) {
-      const range = (this.data.source as { readonly range?: Domain | null }).range;
-      this.moveCamera(range ? { window: range, fit: true } : { fit: true }, options);
+      let recorded: Domain | null = null;
+      for (const trace of Object.values(this.data.traces)) {
+        const main = binding(trace.field, this.data.source, trace.from);
+        if (main)
+          recorded = mergeDomain(
+            recorded,
+            sampleDomain(main.source.tables[main.from]?.fields[main.field]),
+          );
+      }
+      this.moveCamera(recorded ? { window: recorded, fit: true } : { fit: true }, options);
       return;
     }
     let lo = Infinity,
@@ -1154,7 +1168,7 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
             if (error instanceof HoverBudget) {
               this.hoverState = 'budget';
               this.emit('hover', null);
-            } else if (!(error instanceof GpuError && error.code === 'conflict')) {
+            } else {
               this.error = error;
               this.refresh();
             }
@@ -1184,12 +1198,9 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
   ): Promise<readonly Reading[]> {
     this.live();
     if (!this.presented || !this.toData(point) || !this.front?.ready) return [];
-    if (this.invalidSources.size)
-      throw new GpuError('conflict', 'Presented observations have been replaced');
     options.signal?.throwIfAborted();
     const radius = options.radiusPx ?? this.options.pickRadiusPx,
       limit = options.limit ?? 16;
-    const versions = new Map(this.presented.bindings.map((b) => [b.source, b.source.version]));
     const cached = this.inspection;
     if (
       cached &&
@@ -1200,43 +1211,39 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
       limit > 0 &&
       cached.limit >= limit &&
       cached.generation === this.generation &&
-      cached.presentation === this.presentation &&
-      [...versions].every(([s, v]) => cached.versions.get(s) === v)
+      cached.presentation === this.presentation
     )
       return cached.result.slice(0, limit);
     const generation = this.generation,
-      presentation = this.presentation,
-      signal = options.signal
+      presentation = this.presentation;
+    const reads = this.gpu.reader.open({
+      signal: options.signal
         ? AbortSignal.any([options.signal, this.stop.signal])
-        : this.stop.signal;
-    const result = await pick({
-      gpu: this.gpu,
-      data: this.presented.data,
-      bindings: this.presented.bindings,
-      plot: this.presented.layout.plot,
-      x: this.front.x,
-      y: this.front.y,
-      point,
-      radius: options.radiusPx ?? this.options.pickRadiusPx,
-      limit: options.limit ?? 16,
-      maxBytes: this.limits.pickingBytes,
-      signal,
-      budget,
-      accepts: (reading) => this.coverage.contains(reading),
+        : this.stop.signal,
     });
+    let result: Reading[];
+    try {
+      result = await pick({
+        reads,
+        data: this.presented.data,
+        bindings: this.presented.bindings,
+        plot: this.presented.layout.plot,
+        x: this.front.x,
+        y: this.front.y,
+        point,
+        radius: options.radiusPx ?? this.options.pickRadiusPx,
+        limit: options.limit ?? 16,
+        maxBytes: this.limits.pickingBytes,
+        budget,
+        accepts: (reading) => this.coverage.contains(reading),
+      });
+    } finally {
+      reads.close();
+    }
     if (generation !== this.generation || presentation !== this.presentation)
       throw new DOMException('Presented monitor changed', 'AbortError');
     this.pickingBytes = result.length * 192;
-    if ([...versions].every(([s, v]) => s.version === v))
-      this.inspection = {
-        point: [...point],
-        radius,
-        limit,
-        generation,
-        presentation,
-        versions,
-        result,
-      };
+    this.inspection = { point: [...point], radius, limit, generation, presentation, result };
     return result;
   }
   stats(): MonitorStats {
@@ -1270,6 +1277,5 @@ class MonitorView extends kit.BaseView<MonitorConfig, MonitorEvents, Records, Me
       destroyImage(value);
     this.front = this.back = this.focusImage = this.focusBack = undefined;
     this.tails = undefined;
-    this.presentedVersions.clear();
   }
 }

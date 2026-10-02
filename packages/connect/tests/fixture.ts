@@ -1,5 +1,5 @@
 import { WebSocketServer, type WebSocket } from 'ws';
-import { acceptModel, connectLattice } from '../src/index.js';
+import { acceptModel, connectModel } from '../src/index.js';
 import { deferred } from '../src/core.js';
 import type { AcceptOptions, ConnectOptions, ConnectedModel, Connection } from '../src/types.js';
 import type { Parameters, RowBatch, Schema } from '@latkit/model';
@@ -58,7 +58,7 @@ export async function pair<const C extends Record<string, Parameters>>(
   if (typeof address !== 'object' || !address) throw new Error('Missing address');
   let connection: Connection | undefined;
   try {
-    connection = await connectLattice({
+    connection = await connectModel({
       ...options,
       url: 'http://127.0.0.1:' + address.port,
       name: 'a model',

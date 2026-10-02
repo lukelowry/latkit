@@ -5,25 +5,29 @@ import { type Renderer } from '../src/kit.js';
 import { HistorySource } from './fixtures/history.js';
 import { fakeDevice } from './fixtures/device.js';
 import { target, renderer } from './fixtures/render.js';
-it('standalone fields preserve authoritative versions and borrowed sample backing', async () => {
+it('standalone fields preserve borrowed sample backing', async () => {
   const gpu = await createGpu({ device: fakeDevice().device }),
-    source = new HistorySource();
-  const iterator = gpu
-    .fields({
-      source: source.data,
-      from: 'node',
-      fields: { value: 'value' },
-      window: { kind: 'range', between: [0, 6] },
-    })
-    [Symbol.asyncIterator]();
-  const first = await iterator.next();
-  expect(first.done).toBe(false);
-  if (first.done) throw new Error('Expected a native tile');
-  expect(first.value.versions.get(source.data)).toBe(source.version);
-  expect(first.value.columns.value.kind).toBe('numeric');
-  if (first.value.columns.value.kind === 'numeric')
-    expect(first.value.columns.value.values.buffer).toBe(source.values.buffer);
-  await iterator.return?.();
+    source = new HistorySource(),
+    reads = gpu.reader.open();
+  try {
+    const iterator = reads
+      .fields({
+        source: source.data,
+        from: 'node',
+        fields: { value: 'value' },
+        window: { kind: 'range', between: [0, 6] },
+      })
+      [Symbol.asyncIterator]();
+    const first = await iterator.next();
+    expect(first.done).toBe(false);
+    if (first.done) throw new Error('Expected a native tile');
+    expect(first.value.columns.value.kind).toBe('numeric');
+    if (first.value.columns.value.kind === 'numeric')
+      expect(first.value.columns.value.values.buffer).toBe(source.values.buffer);
+    await iterator.return?.();
+  } finally {
+    reads.close();
+  }
   gpu.destroy();
 });
 it('complete drains bounded renderer submissions and encodes final output once', async () => {
@@ -90,57 +94,63 @@ it('reuses a completed frame rectangle after an unrelated append', async () => {
       select: ['value'],
       window: { kind: 'frames' as const, offset: source.firstFrame, count: 2 },
     };
-  for await (const block of gpu.query(source.data, query)) {
-    expect(block.version).toBe(source.version);
+  const reads = gpu.reader.open();
+  try {
+    const original = [];
+    for await (const block of reads.read(source.data, query)) original.push(block);
+    const queries = gpu.stats().queries;
+    const results = [];
+    for await (const block of reads.read({ ...source.data }, query)) results.push(block);
+    expect(results).toEqual(original);
+    expect(gpu.stats().queries).toBe(queries);
+  } finally {
+    reads.close();
   }
-  const reads = gpu.stats().queries;
-  const original = { ...source.data, version: 'v1' };
-  const results = [];
-  for await (const block of gpu.query(original, query)) results.push(block);
-  expect(results.every((block) => block.version === 'v1')).toBe(true);
-  expect(gpu.stats().queries).toBe(reads);
   gpu.destroy();
 });
 
 it('fallback envelopes work on a samples-only source with explicit rows and leading context', async () => {
   const source = new HistorySource(),
-    gpu = await createGpu({ device: fakeDevice().device });
+    gpu = await createGpu({ device: fakeDevice().device }),
+    reads = gpu.reader.open();
   let observed = false;
-  for await (const block of gpu.envelope({
-    source: source.data,
-    query: {
+  try {
+    for await (const block of reads.read(source.data, {
       kind: 'envelope',
       from: 'node',
       rows: { kind: 'range', offset: 0, count: 1 },
       select: ['value'],
       window: { kind: 'range', between: [-2, -1], context: { after: 1 } },
       buckets: 1,
-    },
-  })) {
-    observed = true;
-    expect(block.columns.value.frames[0]).toBe(source.firstFrame);
-    expect(block.columns.value.values.values[0]).toBe(9);
+    })) {
+      observed = true;
+      expect(block.columns.value.frames[0]).toBe(source.firstFrame);
+      expect(block.columns.value.values.values[0]).toBe(9);
+    }
+  } finally {
+    reads.close();
   }
   expect(observed).toBe(true);
   gpu.destroy();
 });
 it('invalidates an unchanged rectangle after a later data replacement', async () => {
   const source = new HistorySource(),
-    gpu = await createGpu({ device: fakeDevice().device });
+    gpu = await createGpu({ device: fakeDevice().device }),
+    reads = gpu.reader.open();
   const query = {
     kind: 'samples' as const,
     from: 'node',
     select: ['value'],
     window: { kind: 'frames' as const, offset: source.firstFrame, count: 2 },
   };
-  for await (const block of gpu.query(source.data, query)) {
-    expect(block.version).toBe('v0');
+  try {
+    for await (const block of reads.read(source.data, query)) void block;
+    source.publish();
+    const previous = gpu.stats().queries;
+    for await (const block of reads.read(source.data, query)) void block;
+    expect(gpu.stats().queries).toBe(previous + 1);
+  } finally {
+    reads.close();
   }
-  source.version = 'v2';
-  const previous = gpu.stats().queries;
-  for await (const block of gpu.query(source.data, query)) {
-    expect(block.version).toBe('v2');
-  }
-  expect(gpu.stats().queries).toBe(previous + 1);
   gpu.destroy();
 });

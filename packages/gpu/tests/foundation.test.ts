@@ -12,6 +12,7 @@ import {
   type Data,
   type EnvelopeBlock,
   type EnvelopeQuery,
+  type FieldsBlock,
   type NumericColumn,
   type SampleColumn,
 } from '@latkit/model';
@@ -22,7 +23,6 @@ import {
   scaleParameters,
   withinBudget,
   type GpuPage,
-  type NativeFields,
 } from '../src/kit.js';
 import { fakeDevice } from './fixtures/device.js';
 import { field } from './fixtures/fields.js';
@@ -41,7 +41,7 @@ it('reads text without GPU allocation and decodes the requested sliced cell only
   const source = new HistorySource(),
     gpu = await createGpu({ device: fakeDevice().device });
   await draw(gpu, async (frame) => {
-    for await (const tile of frame.fields({
+    for await (const tile of frame.reader.fields({
       source: source.data,
       from: 'node',
       fields: { label: 'label' },
@@ -62,10 +62,10 @@ it('reads text without GPU allocation and decodes the requested sliced cell only
 it('keeps sampled strides/native backing and broadcasts static columns without expanding them', async () => {
   const source = new HistorySource(),
     gpu = await createGpu({ device: fakeDevice().device });
-  const native: NativeFields[] = [],
+  const native: FieldsBlock[] = [],
     pages: GpuPage[] = [];
   await draw(gpu, async (frame) => {
-    for await (const tile of frame.fields({
+    for await (const tile of frame.reader.fields({
       source: source.data,
       from: 'node',
       fields: { value: 'value', weight: 'weight', label: 'label' },
@@ -90,7 +90,7 @@ it('rejects incompatible observation coordinates rather than silently resampling
   const gpu = await createGpu({ device: fakeDevice().device });
   await expect(
     draw(gpu, async (frame) => {
-      for await (const _ of frame.fields({
+      for await (const _ of frame.reader.fields({
         source: a.data,
         from: 'node',
         fields: { a: 'value', b: { source: b.data, from: 'node', field: 'value' } },
@@ -107,7 +107,7 @@ it('reduces unsorted native tiles to exact extrema identities, preserves gaps, a
   const gpu = await createGpu({ device: fakeDevice().device, validate: true });
   let result!: EnvelopeBlock, page!: GpuPage;
   await draw(gpu, async (frame) => {
-    for await (const block of frame.envelope({ source: source.data, query })) {
+    for await (const block of frame.reader.read(source.data, query)) {
       result = block;
       page = frame.upload(block, { select: ['value'] })[0];
     }
@@ -135,7 +135,7 @@ it('reduces unsorted native tiles to exact extrema identities, preserves gaps, a
   const uploaded = gpu.stats().uploadedBytes,
     requests = gpu.stats().queries;
   await draw(gpu, async (frame) => {
-    for await (const block of frame.envelope({ source: source.data, query }))
+    for await (const block of frame.reader.read(source.data, query))
       frame.upload(block, { select: ['value'] });
   });
   expect(gpu.stats().queries).toBe(requests);
@@ -151,7 +151,7 @@ it('includes boundary duplicates and context, leaves empty buckets invalid, and 
     buckets: 4,
   };
   await draw(gpu, async (frame) => {
-    for await (const block of frame.envelope({ source: source.data, query: q })) {
+    for await (const block of frame.reader.read(source.data, q)) {
       const c = block.columns.value;
       expect(c.coordinates[0]).toBe(0);
       expect(c.coordinates[15]).toBe(4);
@@ -160,11 +160,7 @@ it('includes boundary duplicates and context, leaves empty buckets invalid, and 
   });
   await expect(
     draw(gpu, async (frame) => {
-      for await (const b of frame.envelope({
-        source: source.data,
-        query: { ...query, buckets: 1e6 },
-      }))
-        void b;
+      for await (const b of frame.reader.read(source.data, { ...query, buckets: 1e6 })) void b;
     }),
   ).rejects.toMatchObject({ code: 'resource-limit' });
   gpu.trim();
@@ -175,8 +171,8 @@ it('reduces delivered samples after the transport and producer have closed', asy
   const source = new HistorySource();
   const h = await pair(
     {
-      monitor: (fields, { signal, maxBatchBytes }) =>
-        selectBatches(source.data, fields, { signal, maxBlockBytes: maxBatchBytes }),
+      monitor: (fields, { signal, maxBlockBytes }) =>
+        selectBatches(source.data, fields, { signal, maxBlockBytes }),
     },
     {},
     source.schema,
@@ -184,13 +180,13 @@ it('reduces delivered samples after the transport and producer have closed', asy
   let data;
   try {
     const publications = await collect(h.model.monitor([{ from: 'node', select: ['value'] }]));
-    data = createData(h.model.schema, 'v1', publications.flat());
+    data = createData(h.model.schema, publications.flat());
   } finally {
     await h.close();
   }
   const gpu = await createGpu({ device: fakeDevice().device, validate: true });
   await draw(gpu, async (frame) => {
-    for await (const block of frame.envelope({ source: data, query })) {
+    for await (const block of frame.reader.read(data, query)) {
       expect([...block.columns.value.values.values].slice(0, 4)).toEqual([9, 2, 10, 10]);
       expect(frame.upload(block, { select: ['value'] })[0].columns.value.kind).toBe('envelope');
     }
@@ -229,7 +225,7 @@ it('rejects missing rows inside declared sampled coverage and preserves frame id
         ...missing.data.tables.node,
         fields: {
           ...missing.data.tables.node.fields,
-          value: createData(missing.data.schema, 'empty', [
+          value: createData(missing.data.schema, [
             {
               kind: 'rows',
               index: missing.index,
@@ -244,7 +240,7 @@ it('rejects missing rows inside declared sampled coverage and preserves frame id
   const gpu = await createGpu({ device: fakeDevice().device });
   await expect(
     draw(gpu, async (frame) => {
-      for await (const tile of frame.fields({
+      for await (const tile of frame.reader.fields({
         source: source.data,
         from: 'node',
         fields: {
@@ -262,7 +258,7 @@ it('rejects missing rows inside declared sampled coverage and preserves frame id
     }),
   ).rejects.toMatchObject({ code: 'invalid-input' });
   await draw(gpu, async (frame) => {
-    for await (const block of frame.envelope({ source: source.data, query })) {
+    for await (const block of frame.reader.read(source.data, query)) {
       const column = frame.upload(block, { select: ['value'], float64: 'float32' })[0].columns
         .value;
       if (column.kind !== 'envelope') throw new Error('Expected envelope');
@@ -291,14 +287,11 @@ it('streams a million historical observations into bounded native summaries', as
   });
   let rows = 0;
   await draw(gpu, async (frame) => {
-    for await (const block of frame.envelope({
-      source: source.data,
-      query: {
-        ...query,
-        rows: { kind: 'range', offset: 0, count: 8 },
-        window: { kind: 'range', between: [0, frames - 1] },
-        buckets: 512,
-      },
+    for await (const block of frame.reader.read(source.data, {
+      ...query,
+      rows: { kind: 'range', offset: 0, count: 8 },
+      window: { kind: 'range', between: [0, frames - 1] },
+      buckets: 512,
     })) {
       rows += rowCount(block.rows);
       expect(block.columns.value.frames[0]).toBe(source.firstFrame);

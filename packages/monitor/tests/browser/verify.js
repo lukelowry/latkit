@@ -1,5 +1,5 @@
 import { createData, selectBatches } from '@latkit/model';
-import { preparePublication, decodePublication, decode } from '@latkit/connect/protocol';
+import { protocol } from '@latkit/connect';
 /* global document, GPUBufferUsage, GPUMapMode, PointerEvent, OffscreenCanvas, createImageBitmap */
 import { createMonitor } from '@latkit/monitor';
 import { kit } from '@latkit/gpu';
@@ -65,13 +65,36 @@ function bright(image, x, y, radius = 2) {
       max = Math.max(max, image.data[j * image.stride + i * 4]);
   return max > 80;
 }
-export async function verify(gpu) {
+/** Block queries and field requests made through the Gpu's reader, in order. */
+function record(gpu) {
   const queries = [],
-    query = gpu.query.bind(gpu);
-  gpu.query = (...args) => {
-    queries.push(args[1]);
-    return query(...args);
+    open = gpu.reader.open.bind(gpu.reader);
+  gpu.reader.open = (options) => {
+    const scope = open(options);
+    return {
+      get signal() {
+        return scope.signal;
+      },
+      at: scope.at,
+      get busy() {
+        return scope.busy;
+      },
+      read(data, query) {
+        queries.push(query);
+        return scope.read(data, query);
+      },
+      fields(request) {
+        queries.push({ kind: 'fields', rows: request.rows, window: request.window });
+        return scope.fields(request);
+      },
+      extent: (request) => scope.extent(request),
+      close: () => scope.close(),
+    };
   };
+  return queries;
+}
+export async function verify(gpu) {
+  const queries = record(gpu);
   const checks = [];
   globalThis.pixelChecks = checks;
   const target = kit.createRenderTarget({ gpu, width: 512, height: 256 });
@@ -300,10 +323,13 @@ export async function verify(gpu) {
   };
   const received = [];
   for await (const batch of selectBatches(local.data, [{ from: 'signal', select: ['value'] }])) {
-    const frame = decode(preparePublication(batch, 1, local.schema, bounds).encode(1), bounds);
-    received.push(...decodePublication({ bytes: frame.payload }, local.schema, bounds));
+    const frame = protocol.decode(
+      protocol.preparePublication(batch, 1, local.schema, bounds).encode(1),
+      bounds,
+    );
+    received.push(...protocol.decodePublication({ bytes: frame.payload }, local.schema, bounds));
   }
-  const delivered = createData(local.schema, local.version, received);
+  const delivered = createData(local.schema, received);
   const connected = createMonitor(gpu, {
     source: delivered,
     traces: { a: { from: 'signal', field: 'value' } },
@@ -348,12 +374,7 @@ function summary(values) {
   };
 }
 export async function benchmark(gpu) {
-  const queries = [],
-    query = gpu.query.bind(gpu);
-  gpu.query = (...args) => {
-    queries.push(args[1]);
-    return query(...args);
-  };
+  const queries = record(gpu);
   const result = [];
   globalThis.benchmarkProgress = result;
   const target = kit.createRenderTarget({ gpu, width: 960, height: 480 });
@@ -423,7 +444,7 @@ export async function benchmark(gpu) {
     assert(
       queries
         .slice(q)
-        .filter((q) => q.kind === 'samples')
+        .filter((q) => q.kind === 'samples' || q.kind === 'fields')
         .every((q) => q.rows?.kind === 'range' && q.rows.count === 1),
       'Focus expanded unrelated rows',
     );

@@ -10,7 +10,6 @@ import {
   type Column,
 } from '@latkit/model';
 export class FieldSource {
-  version = 'v0';
   readonly index = { source: 'd', type: 'node', version: 'i0' };
   captured?: Set<number>;
   reversed = false;
@@ -32,7 +31,7 @@ export class FieldSource {
   };
   constructor(readonly count = 8) {}
   get data(): Data {
-    if (this.cached?.version === this.version) return this.cached;
+    if (this.cached) return this.cached;
     const batches: DataBatch[] = [];
     for (let offset = 0; offset < this.count; offset += this.blockRows) {
       const count = Math.min(this.blockRows, this.count - offset),
@@ -91,11 +90,11 @@ export class FieldSource {
           },
         });
     }
-    return (this.cached = createData(this.schema, this.version, batches));
+    return (this.cached = createData(this.schema, batches));
   }
-  publish(change: { version?: string } = {}): void {
-    this.version = change.version ?? this.version + '+';
-    if (this.cached) this.cached = { ...this.cached, version: this.version };
+  /** A new data value sharing every unchanged page. */
+  publish(): void {
+    if (this.cached) this.cached = { ...this.cached };
   }
   query<Q extends Query>(query: Q, options?: QueryOptions) {
     return read(this.data, query, options);

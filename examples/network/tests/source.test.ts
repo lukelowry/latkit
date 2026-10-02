@@ -17,17 +17,10 @@ async function read(source: Data, query: Query, options?: QueryOptions): Promise
   const schema = source.schema;
   expect(validateSchema(schema)).toEqual([]);
   const blocks: QueryBlock[] = [];
-  let headers = 0;
   for await (const block of readData(source, query, options)) {
-    if (block.kind === 'schema') {
-      headers++;
-      continue;
-    }
-    expect(headers).toBe(1);
     expect(validateBlock(schema, query, block, options)).toEqual([]);
     blocks.push(block);
   }
-  expect(headers).toBe(1);
   return blocks;
 }
 it('generates valid native fields and wiring for every example, including 100k', async () => {

@@ -1,6 +1,5 @@
 import { expect, it } from 'vitest';
-import type { kit } from '@latkit/gpu';
-import type { RowAxis } from '@latkit/model';
+import type { FieldsBlock, RowAxis } from '@latkit/model';
 import type { VertexBank } from '../src/geometry/topology.js';
 import type { FieldRead } from '../src/rendering/fields.js';
 import { Picking } from '../src/picking.js';
@@ -11,8 +10,8 @@ it.each<RowAxis>([
 ])('fits only displayed rows when native tiles span a larger range: $kind', (rows) => {
   const index = { source: 'fixture', type: 'node', version: '1' };
   const bank: VertexBank = { id: 0, type: 'node', index, rows, count: 2, base: 0 };
-  const native: kit.NativeFields = {
-    versions: new Map(),
+  const native: FieldsBlock = {
+    kind: 'fields',
     index,
     rows: { kind: 'range', offset: 0, count: 4 },
     presence: {},

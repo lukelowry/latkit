@@ -2,7 +2,7 @@ import { validateSchema } from '@latkit/model';
 import type { CommandDescription, Diagnostic, Parameters, Progress } from '@latkit/model';
 import { preparePublication } from './columns.js';
 import { deferred, errorOf, failure, integer, interrupt, negotiate, record, text } from './core.js';
-import { checkTree, Op, PROTOCOL } from './frame.js';
+import { checkTree, Op, subprotocol } from './frame.js';
 import type { Frame } from './frame.js';
 import { argumentsOf, definitions, selections, demanded } from './parameters.js';
 import { Session } from './session.js';
@@ -10,7 +10,7 @@ import type { Sender } from './session.js';
 import type { Command, ConnectOptions, Connection, Publish } from './types.js';
 
 /** Register metadata only. Observations start when the host asks for them. */
-export async function connectLattice<const C extends Record<string, Parameters>>(
+export async function connectModel<const C extends Record<string, Parameters>>(
   options: ConnectOptions<C>,
 ): Promise<Connection> {
   options.signal?.throwIfAborted();
@@ -27,7 +27,7 @@ export async function connectLattice<const C extends Record<string, Parameters>>
     );
   url.pathname = url.pathname.replace(/\/$/, '') + '/models/' + encodeURIComponent(options.name);
   const ready = deferred<void>();
-  const session = new Session(new WebSocket(url.href, PROTOCOL), options);
+  const session = new Session(new WebSocket(url.href, subprotocol), options);
   const commands = options.commands as Readonly<Record<string, Command>> | undefined;
   let lastId = 0,
     registered = false,
@@ -97,7 +97,7 @@ export async function connectLattice<const C extends Record<string, Parameters>>
     }
     const context = (sender: Sender) => ({
       signal: sender.signal,
-      maxBatchBytes: session.bounds.maxMessageBytes - session.bounds.maxMetadataBytes - 64,
+      maxBlockBytes: session.bounds.maxMessageBytes - session.bounds.maxMetadataBytes - 64,
     });
     async function observe(frame: Frame, sender: Sender): Promise<void> {
       try {

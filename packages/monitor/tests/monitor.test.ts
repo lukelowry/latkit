@@ -1,14 +1,22 @@
 import { Tiles } from '../src/tiles.js';
-import { appendData } from '@latkit/model';
+import {
+  appendData,
+  type Data,
+  type FieldInput,
+  type FieldsBlock,
+  type ReadScope,
+  type RowSelection,
+  type SampleWindow,
+} from '@latkit/model';
 import { renderer as testRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { describe, it, expect, vi } from 'vitest';
-import { createGpu, kit } from '@latkit/gpu';
+import { createGpu, kit, type Gpu } from '@latkit/gpu';
 import { createMonitor, type Monitor, type MonitorConfig } from '../src/index.js';
 import { SignalSource } from './fixture.js';
 import { deferred, fakeDevice } from '../../gpu/tests/fixtures/device.js';
 import { ticks } from '../src/ticks.js';
 import { Seams } from '../src/segments.js';
-import { describeBindings } from '../src/bindings.js';
+import { describeBindings, type Binding } from '../src/bindings.js';
 import { history, isEnvelope } from '../src/history.js';
 import { limits } from '../src/config.js';
 /** The canvas coordinate and value under a point, from the presented axes. */
@@ -21,6 +29,51 @@ const toData = (monitor: Monitor, point: readonly [number, number]) =>
 /** Drive the pointer as input does. */
 const pointer = (monitor: Monitor, point: readonly [number, number] | null) =>
   (monitor as unknown as { point(point: readonly [number, number] | null): void }).point(point);
+/** One read the monitor asked of a scope: a block query, a fields request, or an extent. */
+interface Request {
+  readonly kind: string;
+  readonly source: Data;
+  readonly rows?: RowSelection;
+  readonly select?: readonly string[];
+  readonly window?: SampleWindow;
+}
+const fieldNames = (fields: Readonly<Record<string, FieldInput>>) =>
+  Object.values(fields).flatMap((input) =>
+    typeof input === 'string' ? [input] : 'field' in input ? [input.field] : [],
+  );
+/** Record every read the monitor makes through the Gpu's reader; `wrap` may delay a scope. */
+function record(gpu: Gpu, requests: Request[]) {
+  const open = gpu.reader.open.bind(gpu.reader);
+  const spy = vi.spyOn(gpu.reader, 'open');
+  const wrap = (wrapped: (scope: ReadScope) => ReadScope) =>
+    spy.mockImplementation((options) => {
+      const scope = open(options);
+      return wrapped({
+        get signal() {
+          return scope.signal;
+        },
+        at: scope.at,
+        get busy() {
+          return scope.busy;
+        },
+        read(source, query) {
+          requests.push({ source, ...query });
+          return scope.read(source, query);
+        },
+        fields(request) {
+          requests.push({ ...request, kind: 'fields', select: fieldNames(request.fields) });
+          return scope.fields(request);
+        },
+        extent(request) {
+          requests.push({ ...request, kind: 'extent' });
+          return scope.extent(request);
+        },
+        close: () => scope.close(),
+      });
+    });
+  wrap((scope) => scope);
+  return wrap;
+}
 async function harness(source = new SignalSource(4, 128), options: Partial<MonitorConfig> = {}) {
   const fake = fakeDevice();
   Object.assign(fake.native, {
@@ -50,8 +103,8 @@ async function harness(source = new SignalSource(4, 128), options: Partial<Monit
     valueAxis: false,
     ...options,
   });
-  const rawQuery = gpu.query.bind(gpu);
-  const requests = vi.spyOn(gpu, 'query');
+  const requests: Request[] = [];
+  const wrap = record(gpu, requests);
   const renderer = kit.rendererOf(monitor);
   const render = (complete = true, at?: number) =>
     gpu.render({
@@ -61,7 +114,7 @@ async function harness(source = new SignalSource(4, 128), options: Partial<Monit
     });
   return {
     fake,
-    rawQuery,
+    wrap,
     requests,
     gpu,
     target,
@@ -104,20 +157,18 @@ describe('bounded monitor lifecycle', () => {
   it('appends only new frames and keeps the fixed-domain history', async () => {
     const h = await harness();
     await h.render();
-    const first = h.requests.mock.calls.map((call) => call[1]).length;
+    const first = h.requests.length;
     h.source.append(8);
     h.monitor.set({ source: h.source.data });
     await h.render();
-    const queries = h.requests.mock.calls
-      .map((call) => call[1])
+    const queries = h.requests
       .slice(first)
-      .filter((q) => q.kind === 'samples' && q.window.kind !== 'at');
+      .filter((q) => (q.kind === 'samples' || q.kind === 'fields') && q.window?.kind !== 'at');
     expect(queries.length).toBeGreaterThan(0);
     expect(
       queries.every(
         (q) =>
-          q.kind === 'samples' &&
-          q.window.kind === 'frames' &&
+          q.window?.kind === 'frames' &&
           q.window.offset === h.source.firstFrame + 128 &&
           q.window.count <= 8,
       ),
@@ -135,11 +186,11 @@ describe('bounded monitor lifecycle', () => {
     await h.render();
     source.append(8);
     h.monitor.set({ source: source.data });
-    h.requests.mockClear();
+    h.requests.length = 0;
     await h.render();
-    const reads = h.requests.mock.calls.filter((call) => call[1].kind === 'samples');
+    const reads = h.requests.filter((q) => q.kind === 'samples');
     expect(reads.length).toBeGreaterThan(0);
-    expect(reads.every((call) => call[0] === original)).toBe(true);
+    expect(reads.every((q) => q.source === original)).toBe(true);
     h.close();
   });
   it('focuses only the selected native row and returns exact Float64 identities', async () => {
@@ -167,18 +218,18 @@ describe('bounded monitor lifecycle', () => {
           hit.frame === source.firstFrame + 10 &&
           hit.value === value &&
           hit.coordinate === coordinate &&
-          hit.version === source.version,
+          hit.source === h.source.data,
       ),
     ).toBe(true);
-    const first = h.requests.mock.calls.map((call) => call[1]).length;
+    const first = h.requests.length;
     h.monitor.select([hits.find((hit) => hit.row === 1)!]);
     await h.render();
+    const focused = h.requests
+      .slice(first)
+      .filter((q) => q.kind === 'samples' || q.kind === 'fields');
+    expect(focused.length).toBeGreaterThan(0);
     expect(
-      h.requests.mock.calls
-        .map((call) => call[1])
-        .slice(first)
-        .filter((q) => q.kind === 'samples')
-        .every((q) => q.rows?.kind === 'range' && q.rows.offset === 1 && q.rows.count === 1),
+      focused.every((q) => q.rows?.kind === 'range' && q.rows.offset === 1 && q.rows.count === 1),
     ).toBe(true);
     h.close();
   });
@@ -266,21 +317,23 @@ it('refines gapped envelope rectangles as native samples', async () => {
     window: { kind: 'range' as const, between: [0, 10] as const },
     traces: { a: { from: 'signal', field: 'value' } },
   };
-  const bindings = await describeBindings(h.gpu, data, new AbortController().signal);
+  const reads = h.gpu.reader.open();
+  const bindings = await describeBindings(reads, data);
   let raw = 0;
   for await (const block of history({
     gpu: h.gpu,
+    reads,
     data,
     bindings,
     window: data.window,
     pixels: 16,
     detail: 'auto',
     limits: limits(),
-    signal: new AbortController().signal,
   })) {
     if (!isEnvelope(block.data)) raw++;
   }
   expect(raw).toBeGreaterThan(0);
+  reads.close();
   h.close();
 });
 it('preserves source order when joining reversed native tiles', () => {
@@ -395,9 +448,9 @@ it('makes progress during continuous appends without restarting history', async 
   expect(invalidations.length).toBeGreaterThan(0);
   await h.render();
   expect(h.renderer.pending).toBeUndefined();
-  const count = h.requests.mock.calls
-    .map((call) => call[1])
-    .filter((q) => q.kind === 'samples' && q.window.kind === 'range').length;
+  const count = h.requests.filter(
+    (q) => (q.kind === 'fields' || q.kind === 'envelope') && q.window?.kind === 'range',
+  ).length;
   expect(count).toBeLessThan(20);
   h.close();
 });
@@ -482,14 +535,13 @@ it('reports camera changes, focuses several rows, and locates readings', async (
   const point = h.monitor.locate(hit)!;
   expect(point[0]).toBeCloseTo(hit.point[0], 3);
   expect(point[1]).toBeCloseTo(hit.point[1], 3);
-  const first = h.requests.mock.calls.map((call) => call[1]).length,
+  const first = h.requests.length,
     row = (row: number) => ({ source: h.source.data, index: h.source.index, row });
   h.monitor.select([row(2), row(0)]);
   await h.render();
-  const focused = h.requests.mock.calls
-    .map((call) => call[1])
+  const focused = h.requests
     .slice(first)
-    .filter((q) => q.kind === 'samples');
+    .filter((q) => q.kind === 'samples' || q.kind === 'fields');
   expect(focused.length).toBeGreaterThan(0);
   expect(
     focused.every((q) => q.rows?.kind === 'indices' && [...q.rows.values].join() === '0,2'),
@@ -507,20 +559,26 @@ it('keeps a pending append when cancellation interrupts domain preparation', asy
   await h.render();
   source.append(8);
   h.monitor.set({ source: source.data });
-  const original = h.rawQuery,
-    entered = deferred<void>(),
+  const entered = deferred<void>(),
     gate = deferred<void>();
   let gated = false;
-  vi.spyOn(h.gpu, 'query').mockImplementation((querySource, query, options) =>
-    (async function* () {
-      if (query.kind === 'aggregate' && !gated) {
+  h.wrap((scope) => ({
+    ...scope,
+    get signal() {
+      return scope.signal;
+    },
+    get busy() {
+      return scope.busy;
+    },
+    async extent(request) {
+      if (!gated) {
         gated = true;
         entered.resolve();
         await gate.promise;
       }
-      yield* original(querySource, query, options);
-    })(),
-  );
+      return scope.extent(request);
+    },
+  }));
   const controller = new AbortController();
   const rendering = h.gpu.render({
     timeMs: 0,
@@ -546,6 +604,27 @@ it('keeps a pending append when cancellation interrupts domain preparation', asy
   expect(h.renderer.pending).toBeUndefined();
   h.close();
 });
+it('fits the window to every recorded coordinate of every trace', async () => {
+  const source = new SignalSource(2, 64, { coordinateOrigin: 3 }),
+    longer = new SignalSource(2, 96, { coordinateOrigin: 3 });
+  const h = await harness(source, {
+    traces: {
+      signal: { from: 'signal', field: 'value' },
+      longer: { from: 'signal', field: { source: longer.data, from: 'signal', field: 'value' } },
+    },
+    camera: { window: [0, 1], values: [-2, 2] },
+  });
+  await h.render();
+  h.monitor.fit();
+  expect(h.monitor.camera).toMatchObject({
+    window: [source.coordinate(0), longer.coordinate(95)],
+    fit: true,
+    follow: null,
+  });
+  await h.render();
+  expect(h.monitor.stats().visible).toBe(true);
+  h.close();
+});
 it('reprojects cached history after a domain change without rereading observations', async () => {
   const h = await harness(new SignalSource(4, 128));
   await h.render();
@@ -568,8 +647,8 @@ it('tracks independent sampled fields without dropping trace counts or rereading
   });
   await h.render();
   let data = source.data;
-  for (const [i, field] of ['value', 'other'].entries()) {
-    data = appendData(data, 'independent-' + i, [
+  for (const field of ['value', 'other']) {
+    data = appendData(data, [
       {
         kind: 'samples',
         index: source.index,
@@ -588,19 +667,18 @@ it('tracks independent sampled fields without dropping trace counts or rereading
         },
       },
     ]);
-    const before = h.requests.mock.calls.length;
+    const before = h.requests.length;
     h.monitor.set({ source: data });
     await h.render();
-    const queries = h.requests.mock.calls
+    const queries = h.requests
       .slice(before)
-      .map((call) => call[1])
-      .filter((q) => q.kind === 'samples');
+      .filter((q) => q.kind === 'samples' || q.kind === 'fields');
     expect(queries.length).toBeGreaterThan(0);
     expect(
       queries.every(
         (q) =>
           q.select?.includes(field) &&
-          q.window.kind === 'frames' &&
+          q.window?.kind === 'frames' &&
           q.window.offset === source.firstFrame + 32,
       ),
     ).toBe(true);
@@ -616,19 +694,21 @@ it('fits appended values using cached bounds and queries only the new interval',
     domainPadding: 0,
   });
   await h.render();
-  const before = h.requests.mock.calls.length;
+  const before = h.requests.length;
   source.append(8);
   h.monitor.set({ source: source.data });
   await h.render();
-  const queries = h.requests.mock.calls.slice(before).map((call) => call[1]);
-  const bounds = queries.filter((q) => q.kind === 'aggregate');
+  const queries = h.requests.slice(before);
+  const bounds = queries.filter((q) => q.kind === 'extent');
   expect(bounds.length).toBeGreaterThan(0);
   expect(
     bounds.every((q) => q.window?.kind === 'range' && q.window.between[0] >= source.coordinate(32)),
   ).toBe(true);
-  expect(queries.filter((q) => q.kind === 'samples').every((q) => q.window.kind === 'frames')).toBe(
-    true,
-  );
+  expect(
+    queries
+      .filter((q) => q.kind === 'samples' || q.kind === 'fields')
+      .every((q) => q.window?.kind === 'frames'),
+  ).toBe(true);
   const values = Array.from({ length: 80 }, (_, i) => source.value(i % 2, Math.floor(i / 2)));
   expect(h.monitor.camera.values[0]).toBeCloseTo(Math.min(...values), 10);
   expect(h.monitor.camera.values[1]).toBeCloseTo(Math.max(...values), 10);
@@ -662,18 +742,18 @@ it('bounds derived tile storage and falls back when cached coverage is unavailab
     window: { kind: 'range' as const, between: [0, 1] as const },
     traces: { a: { from: 'signal', field: 'value' } },
   };
-  const signal = new AbortController().signal;
-  const bindings = await describeBindings(h.gpu, data, signal);
+  const reads = h.gpu.reader.open();
+  const bindings = await describeBindings(reads, data);
   const cache = new Tiles(512);
   for await (const chunk of history({
     gpu: h.gpu,
+    reads,
     data,
     bindings,
     window: data.window,
     pixels: 512,
     detail: 'full',
     limits: limits(),
-    signal,
   })) {
     cache.add(
       { chunk, memo: new Map(), observations: 128, buffers: new Set([new ArrayBuffer(1024)]) },
@@ -683,10 +763,39 @@ it('bounds derived tile storage and falls back when cached coverage is unavailab
   cache.finish([0, 1], 512, 2, true);
   expect(cache.bytes).toBeLessThanOrEqual(512);
   expect(cache.reuse([0, 1], 512, bindings)).toBeUndefined();
-  expect(await cache.bounds('a', [0, 1], signal)).toBeUndefined();
+  expect(await cache.bounds('a', [0, 1], reads.signal)).toBeUndefined();
+  reads.close();
   h.close();
 });
 
+it('prunes derived tiles as the window advances and replays only overlapping ones', () => {
+  const binding = { name: 'a' } as Binding;
+  const entry = (first: number, last: number) => ({
+    chunk: {
+      binding,
+      data: {
+        kind: 'fields',
+        samples: { firstFrame: 0, coordinates: Float64Array.of(first, last) },
+      } as unknown as FieldsBlock,
+    },
+    memo: new Map(),
+    buffers: new Set([new ArrayBuffer(64)]),
+    observations: 2,
+  });
+  const cache = new Tiles(1e6);
+  for (const [first, last] of [
+    [0, 1],
+    [1, 2],
+    [2, 4],
+  ])
+    cache.add(entry(first, last), [0, 4]);
+  cache.finish([0, 4], 100, 1, true);
+  expect(cache.reuse([1.5, 4], 100, [binding])).toHaveLength(2);
+  cache.add(entry(4, 5), [2.5, 5]);
+  expect(cache.bytes).toBe(2 * (256 + 64));
+  expect(cache.reuse([2.5, 5], 100, [binding], true)).toHaveLength(2);
+  expect(cache.reuse([2, 5], 100, [binding], true)).toBeUndefined();
+});
 it('reads newly exposed existing observations when a follow window extends cached coverage', async () => {
   const source = new SignalSource(2, 64);
   const h = await harness(source, {
@@ -695,30 +804,28 @@ it('reads newly exposed existing observations when a follow window extends cache
     domainPadding: 0,
   });
   await h.render();
-  const fields = vi.spyOn(h.gpu, 'fields');
-  const before = h.requests.mock.calls.length;
+  const before = h.requests.length;
   source.append(1);
   h.monitor.set({ source: source.data });
   await h.render();
-  const queries = h.requests.mock.calls
-    .slice(before)
-    .map((call) => call[1])
-    .filter((q) => q.kind === 'samples');
+  const queries = h.requests.slice(before);
+  const samples = queries.filter((q) => q.kind === 'samples');
   expect(
-    queries.some(
+    samples.some(
       (q) =>
-        q.window.kind === 'frames' &&
+        q.window?.kind === 'frames' &&
         q.window.offset === source.firstFrame + 32 &&
         q.window.count === 1,
     ),
   ).toBe(true);
-  expect(queries.every((q) => q.window.kind === 'frames')).toBe(true);
+  expect(samples.every((q) => q.window?.kind === 'frames')).toBe(true);
   expect(
-    fields.mock.calls.some(
-      ([request]) =>
-        request.window?.kind === 'frames' &&
-        request.window.offset === source.firstFrame + 32 &&
-        request.window.count === 33,
+    queries.some(
+      (q) =>
+        q.kind === 'fields' &&
+        q.window?.kind === 'frames' &&
+        q.window.offset === source.firstFrame + 32 &&
+        q.window.count === 33,
     ),
   ).toBe(true);
   const values = Array.from({ length: 66 }, (_, i) => source.value(i % 2, 32 + Math.floor(i / 2)));
