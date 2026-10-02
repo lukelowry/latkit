@@ -1,6 +1,6 @@
 {
   "name": "@latkit/connect",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "Demand-driven model connections with bounded binary streaming.",
   "type": "module",
   "license": "MIT",

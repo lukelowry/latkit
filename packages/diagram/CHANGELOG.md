@@ -1,5 +1,76 @@
 # @latkit/diagram
 
+## 0.6.0
+
+### Minor Changes
+
+- b958ddc: Move the CPU data layer from gpu into model as one bounded `Reader`, and drop the data version.
+
+  Added
+
+  - `createReader`, `Reader`, `ReadScope` in model: memoized reads, joined fields, and extents under one budget.
+  - `sampleDomain(pages)` in model.
+  - `gpu.reader`, `frame.reader`, `kit.fieldScale`, `kit.wiring`.
+  - `protocol` namespace export in connect.
+  - `pixelRatio` option for `exportVideo`.
+
+  Changed
+
+  - `createData(schema, batches)` and `appendData(previous, batches)`.
+  - Reads yield blocks only; `RowsBlock.position` is `rowOffset`; `TableData.ids` is `ColumnPages`.
+  - `FieldInput`, `FieldBinding`, `FieldValues`, `FieldsRequest`, `FieldsBlock` (was `NativeFields`), and `ExtentRequest` live in model; `ExtentRequest` takes `{ source, from, rows, field, window }`.
+  - `frame.upload` takes a `FieldsBlock` or `EnvelopeBlock`; `GpuPage.native` is `GpuPage.block`.
+  - `BufferData` and `TextureData` report `revision`.
+  - App-facing gpu types (`CompositionConfig`, `GpuStats`, `Budget`, `ImageOptions`, `TextOptions`, `ColormapOptions`, `ShadeFrame`, …) moved from `kit` to the root export.
+  - Field shader header is seven words; kinds are named `FIELD_*` constants.
+  - Connect frames carry no version field; the magic is `LATK` and the opcode is u32. Binary descriptors use `type: 'float32' | …`. `connectLattice` is `connectModel`; `maxBatchBytes` is `maxBlockBytes`.
+  - `exportVideo` keeps the view's `at` when no `at` mapping is given.
+  - Monitor `fit()` with no readings fits the recorded window; following appends no longer scans every page, and cached tiles before the window are pruned as it advances.
+  - Diagram re-reads its scene for a new `at` only when a sampled field is bound, and checks edge-end indices.
+
+  Removed
+
+  - `Data.version`, `QueryHeader`, block `version` fields, and monitor `Reading.version`.
+  - `Gpu.query`, `Gpu.fields`, `Gpu.envelope`, `frame.query`, `frame.fields`, `frame.envelope`, `frame.extent`, `frame.values`, `frame.scale`, `kit.createNativeReader`, `kit.NativeReader`, `kit.QueryResult`.
+  - The `@latkit/connect/protocol` subpath.
+
+- b958ddc: Network, monitor, and diagram build on one item-view base, so camera, selection, picking, hover, style, input, and events behave the same in each.
+
+  Added
+
+  - `ItemView`, `ItemViewConfig`, `ItemEvents`, `ViewCamera`, `ViewInput`, `PickOptions`, `ViewStats`, `ViewStyle`, `viewStyle`, and `Point` in gpu.
+  - `kit.BaseItemView`, `kit.resolveViewStyle`, `kit.Attachments`, `kit.Work`, `kit.Expanded`, and `kit.HoverSearch`.
+  - `gpu.shaderModule(code, label)`: validated shader modules, shared by identical code.
+  - `stats()` on every view, with frames, preparation time, draw calls, picking bytes, and hover state and time; `pick(point, { radiusPx, limit, signal })` on every item view.
+  - `selectedColor: null`, which keeps each selected item's own color.
+  - `benchmark/`, with `pnpm bench`, `pnpm bench:update`, `pnpm bench:gate`, and a CI gate.
+
+  Changed
+
+  - One set of shared style options and defaults: `background` (was `backgroundColor`), `hoverWidthPx`, `selectedWidthPx`, `selectedColor`, `msaa`, `hover`, `hoverBudgetMs`, `pickRadiusPx`, `fitPaddingPx`, `revealPaddingPx`, `animationMs`, `motion`, `font`, `fontSizePx`, and `textColor`.
+  - `pick` returns hits nearest first, topmost breaking ties, at most 16 by default.
+  - `fit(items)` frames once; `fit()` and `set({ camera: null })` follow all the data. Moving a framed camera key turns `fit` off.
+  - Events arrive together after each frame, in order: `frame`, `camera`, `hover`, `select`.
+  - Unknown options and limits, and invalid cameras, throw `invalid-input`.
+  - `SetOptions`, `DataHit`, `ContextMenu`, `Modifiers`, and `HoverState` moved from `kit` to the root export.
+  - Network: `showVertices`, `showEdges`, `showPoles`, `showGraticule`, `showEarthAxis` → `markers`, `lines`, `poles`, `graticule`, `earthAxis`; `graticuleColor` → `gridColor`; `vertexHoverPx`/`edgeHoverPx` → `hoverWidthPx`; `vertexSelectedPx`/`edgeSelectedPx` → `selectedWidthPx`; limits `maxVertices`, `maxSegments`, `cpuBytes` → `vertices`, `segments`, `geometryBytes`, `pickingBytes`. Items compare by kind, index, and row.
+  - Diagram: `selectionWidthPx` → `selectedWidthPx`; limit `prepareMs` → `layoutMs`.
+  - Monitor: `focusColor` → `selectedColor`; `stats().traces` → `rows`; selection survives appends.
+  - Model: a sampled field bound both by name and as a binding to the request's own source is read once; such reads no longer stall under a frames window.
+
+  Removed
+
+  - `kit.HoverOptions`, `NetworkInput`, `MonitorInput`, and monitor `PickOptions`; use `ViewStyle`, `ViewInput`, and `PickOptions`.
+
+### Patch Changes
+
+- Updated dependencies [b958ddc]
+- Updated dependencies [b958ddc]
+- Updated dependencies [b958ddc]
+- Updated dependencies [b958ddc]
+  - @latkit/model@2.0.0
+  - @latkit/gpu@0.12.0
+
 ## 0.5.2
 
 ### Patch Changes
