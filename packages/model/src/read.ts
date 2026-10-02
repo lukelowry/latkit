@@ -337,6 +337,27 @@ function frameRange(index: Frames, window: SampleWindow): [number, number] {
   const startFrame = ordinalFrame(index, first);
   return [startFrame, end > first ? ordinalFrame(index, end - 1) + 1 : startFrame];
 }
+/** The last observation at or before a coordinate, shared across all row tiles. */
+export interface SampleLocation {
+  readonly frame: number;
+  readonly coordinate: number;
+  /** Frame offset into each page's sample coordinates and column strides. */
+  readonly offset: number;
+  readonly pages: readonly ColumnPage[];
+}
+
+/** Locate an observation without reading or copying its values. Equal coordinates select the
+ * last observation; before the first observation, or with no samples, returns undefined. */
+export function locateSample(pages: readonly ColumnPage[], at: number): SampleLocation | undefined {
+  if (!Number.isFinite(at)) throw failure('invalid-input', 'Sample coordinate must be finite.');
+  const index = framesOf(pages);
+  const [first, end] = frameRange(index, { kind: 'at', value: at });
+  if (first === end) return undefined;
+  const group = frameGroup(index, first)!;
+  const offset = first - group.first;
+  return { frame: first, coordinate: group.coordinates[offset], offset, pages: group.pages };
+}
+
 function ordinalFrame(index: Frames, ordinal: number): number {
   if (ordinal >= index.count) return index.end;
   let lo = 0,

@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import {
   appendData,
+  locateSample,
   createData,
   read,
   textColumn,
@@ -489,4 +490,34 @@ it('does not reuse layout validation for differently tiled columns', () => {
     columns: { extra: batch.columns.value },
   };
   expect(() => createData(twoFields, 'v1', [a, b])).toThrow(/overlap/);
+});
+
+it('locates the same observation as reads at duplicate coordinates and across frame gaps', async () => {
+  const source = history();
+  const pages = source.tables.Node.fields.output;
+  for (const at of [-1, 0, 0.5, 1, 1.99, 2, 5, 6, 100]) {
+    const location = locateSample(pages, at);
+    const blocks = (
+      await collect(
+        read(source, {
+          kind: 'samples',
+          from: 'Node',
+          select: ['output'],
+          window: { kind: 'at', value: at },
+        }),
+      )
+    ).filter((b) => b.kind === 'samples');
+    if (at < 0) expect(location).toBeUndefined();
+    else {
+      expect(location!.frame).toBe(blocks[0].firstFrame);
+      expect(location!.coordinate).toBe(blocks[0].coordinates[0]);
+      expect(location!.pages[0]).toBe(pages[0]);
+      expect(location!.offset).toBe(location!.frame - 2 ** 40);
+    }
+  }
+  const grouped = createData(schema, 'gaps', [observations(0), observations(8)]);
+  expect(locateSample(grouped.tables.Node.fields.output, 3)!.frame).toBe(0);
+  expect(locateSample(grouped.tables.Node.fields.output, 8)!.frame).toBe(8);
+  expect(locateSample([], 0)).toBeUndefined();
+  expect(() => locateSample(pages, Infinity)).toThrow(/finite/);
 });

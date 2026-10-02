@@ -15,6 +15,7 @@ import type {
 it('exports values, local computation and explicit boundary validation', () => {
   for (const name of [
     'read',
+    'locateSample',
     'createData',
     'appendData',
     'transactions',

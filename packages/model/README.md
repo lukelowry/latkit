@@ -51,6 +51,23 @@ not move backwards. Neither helper accepts `replace` or mutates earlier `Data` v
 These are pure application storage helpers. They do not fetch, subscribe, retain a model, or keep
 global history. Your application decides which values to hold, persist, or discard.
 
+## Locate an observation
+
+`locateSample(pages, at)` resolves the last observation at or before a finite coordinate without
+reading or copying its values. It returns `{ frame, coordinate, offset, pages }`, or `undefined`
+before the first observation or when no samples exist. Duplicate coordinates select the last
+observation, matching `read()`; frame-number gaps and row tiles are supported.
+
+```ts
+import { locateSample } from '@latkit/model';
+
+const sample = locateSample(data.tables.Bus.fields.voltage, playhead);
+if (sample) console.log(sample.frame, sample.coordinate);
+```
+
+Views perform this lookup automatically. Applications do not need to quantize their playheads
+or add their own sample caches.
+
 ## Observe independently of commands
 
 ```ts

@@ -1,3 +1,4 @@
+import { DataKeys } from './data-keys.js';
 import {
   read as readData,
   blockBuffers,
@@ -45,8 +46,7 @@ interface Read {
 /** Bounded memoization of local computations over immutable application data. */
 export class Reads {
   private cache = new Map<string, Read>();
-  private objects = new WeakMap<object, number>();
-  private serial = 0;
+  private readonly keys = new DataKeys();
   private schemas = new WeakMap<Schema, number>();
   private live = new Set<Read>();
   private closed = false;
@@ -71,7 +71,7 @@ export class Reads {
       ) as unknown as Query;
     signal.throwIfAborted();
     if (this.closed) throw new GpuError('closed', 'Gpu is closed');
-    const key = this.dependencyKey(source, query);
+    const key = this.keys.query(source, query);
     const cache = this.cache;
     let read = cache.get(key);
     if (read?.meta.live) this.memory.queryHits++;
@@ -263,75 +263,6 @@ export class Reads {
     read.controller.abort(reason);
     void Promise.resolve(read.iterator?.return?.()).catch(() => {});
     read.notify();
-  }
-
-  private dependencyKey(data: Data, query: Query): string {
-    const table = data.tables[query.from];
-    const used = new Set(query.select);
-    if (query.kind === 'rows') {
-      for (const filter of query.where ?? []) used.add(filter.field);
-      for (const order of query.orderBy ?? []) used.add(order.field);
-    }
-    const window = 'window' in query ? query.window : undefined;
-    const dependencies: unknown[] = [
-      this.identity(data.schema),
-      table?.index,
-      table?.rows,
-      table?.ids,
-    ];
-    for (const name of [...used].sort()) {
-      const pages = table?.fields[name] ?? [];
-      if (window?.kind === 'frames') {
-        dependencies.push(
-          name,
-          pages
-            .filter(
-              (page) =>
-                !page.samples ||
-                (page.samples.firstFrame < window.offset + window.count &&
-                  page.samples.firstFrame + page.samples.coordinates.length > window.offset),
-            )
-            .map((page) => this.identity(page)),
-        );
-      } else dependencies.push(name, this.identity(pages));
-      const type = data.schema.types[query.from]?.fields[name]?.type;
-      if (typeof type === 'object' && type.kind === 'reference')
-        dependencies.push(
-          data.tables[type.to]?.index,
-          this.identity(data.tables[type.to]?.ids ?? data),
-        );
-    }
-    return this.key([dependencies, query]);
-  }
-  private identity(value: object): number {
-    let id = this.objects.get(value);
-    if (!id) {
-      id = ++this.serial;
-      this.objects.set(value, id);
-    }
-    return id;
-  }
-  private key(value: unknown): string {
-    if (value === undefined) return 'undefined';
-    if (value === null || typeof value !== 'object') return JSON.stringify(value);
-    if (ArrayBuffer.isView(value) || (Array.isArray(value) && value.length > 64)) {
-      let id = this.objects.get(value);
-      if (!id) {
-        id = ++this.serial;
-        this.objects.set(value, id);
-      }
-      return '@' + id;
-    }
-    if (Array.isArray(value)) return '[' + value.map((item) => this.key(item)).join(',') + ']';
-    return (
-      '{' +
-      Object.entries(value)
-        .filter(([, item]) => item !== undefined)
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([name, item]) => JSON.stringify(name) + ':' + this.key(item))
-        .join(',') +
-      '}'
-    );
   }
 
   destroy(): void {
