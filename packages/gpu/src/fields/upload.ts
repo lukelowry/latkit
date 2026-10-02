@@ -264,9 +264,11 @@ export class Uploader {
       cellBytes += (view.boolean ? 1 / 8 : view.components * 8) + (view.validity ? 1 / 8 : 0);
     }
     if (cellBytes > limit) throw new GpuError('resource-limit', 'A vector exceeds the page bound');
+    // Pages keep every frame of their rows, so a line through the frames never spans two pages;
+    // frames split only when one row's frames exceed the page.
     const tileRows = Math.min(
       count,
-      Math.floor(limit / Math.max(1, cellBytes)),
+      Math.max(1, Math.floor(limit / Math.max(1, cellBytes * frames))),
       views.some(([, view]) => view.boolean) ? limit * 8 - 31 : Infinity,
     );
     const tileFrames = Math.min(frames, Math.floor(limit / (tileRows * Math.max(1, cellBytes))));
@@ -530,7 +532,7 @@ export class Uploader {
     }
     const cached = cache.get(key);
     if (cached?.entry.live) {
-      cached.entry.touched = ++this.memory.clock;
+      cached.entry.touch();
       this.memory.uploadHits++;
       return cached;
     }

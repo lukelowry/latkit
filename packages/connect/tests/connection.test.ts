@@ -57,8 +57,9 @@ it('runs typed commands with selected data, coalesced progress, bounded logs and
         async run({ count }, ctx) {
           expectTypeOf(count).toEqualTypeOf<number>();
           expect(ctx.outputs).toEqual(fields);
+          expect(() => ctx.progress({ completed: 0, domain: [2, 1] })).toThrow('Invalid progress');
           for (let i = 0; i < 100; i++) {
-            ctx.progress({ completed: i, total: 100 });
+            ctx.progress({ completed: i, total: 100, domain: [0, 10] });
             ctx.log({ severity: 'info', message: '' + i });
           }
           await ctx.publish(batch(count));
@@ -83,7 +84,7 @@ it('runs typed commands with selected data, coalesced progress, bounded logs and
   );
   expect(result).toEqual({ count: 3 });
   expect(received).toEqual([[batch(3)]]);
-  expect(progress.at(-1)?.completed).toBe(99);
+  expect(progress.at(-1)).toMatchObject({ completed: 99, domain: [0, 10] });
   expect(logs.filter((l) => l.code !== 'dropped')).toHaveLength(defaults.maxLogs);
   expect(logs.at(-1)?.dropped).toBe(100 - defaults.maxLogs);
 });

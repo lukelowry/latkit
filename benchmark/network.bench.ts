@@ -9,8 +9,6 @@ describe.each(sizes)('network %i buses', async (buses) => {
     source: data,
     vertices: { Bus: { color: { field: 'voltage', domain: [0.95, 1.05] }, size: 'load' } },
     edges: { Branch: { ends: ['from', 'to'] } },
-    // Room for the hit-test indexes of a million vertices; past its budget, pick scans every item.
-    limits: { pickingBytes: 512 * 1024 ** 2 },
   };
   const view = createNetwork(device, config);
   await draw(device, view);

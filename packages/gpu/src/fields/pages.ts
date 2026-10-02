@@ -22,6 +22,8 @@ export interface Column extends Bitmap {
 }
 /** Field kinds as the shader reads them; fieldShader declares one constant per kind. */
 export const FIELD_KIND = { float32: 0, int32: 1, uint32: 2, boolean: 3, list: 4 } as const;
+/** Value buffers a page binds directly; a page spanning more is packed into one, by a copy. */
+export const BANKS = 4;
 const HEADER_WORDS = 7;
 
 export interface CopyJob {
@@ -44,14 +46,14 @@ export class FieldPages {
       limits.maxStorageBuffersInVertexStage,
       limits.maxStorageBuffersInFragmentStage,
     ])
-      if (limit !== undefined && limit < 3)
+      if (limit !== undefined && limit < BANKS + 1)
         throw new GpuError(
           'unsupported',
-          'Field rendering requires three storage bindings per shader stage',
+          `Field rendering requires ${BANKS + 1} storage bindings per shader stage`,
         );
     this.layout = device.createBindGroupLayout({
       label: 'latkit fields',
-      entries: [0, 1, 2].map((binding) => ({
+      entries: Array.from({ length: BANKS + 1 }, (_, binding) => ({
         binding,
         visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,
         buffer: { type: 'read-only-storage' },
@@ -97,7 +99,7 @@ export class FieldPages {
     const buffers = [...new Set(regions.map((region) => region.buffer))];
     if (!buffers.length) buffers.push(allocate(4, 'empty field page').binding.buffer);
     const relocated = new Map<GPUBufferBinding, GPUBufferBinding>();
-    if (buffers.length > 2) {
+    if (buffers.length > BANKS) {
       const total = regions.reduce((sum, region) => sum + region.size!, 0);
       if (total > this.device.limits.maxStorageBufferBindingSize)
         throw new GpuError('resource-limit', 'Prepared field page exceeds the binding limit');
@@ -192,7 +194,7 @@ export class FieldPages {
       layout: this.layout,
       entries: [
         { binding: 0, resource: metadata },
-        ...[0, 1].map((bank) => ({
+        ...Array.from({ length: BANKS }, (_, bank) => ({
           binding: bank + 1,
           resource: {
             buffer: buffers[bank] ?? buffers[0],

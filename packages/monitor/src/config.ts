@@ -1,5 +1,5 @@
 import { GpuError, kit, type RGBA } from '@latkit/gpu';
-import type { Domain, SampleRange } from '@latkit/model';
+import type { Domain } from '@latkit/model';
 import type { MonitorStyle, Limits, AxisOptions } from './options.js';
 
 type Own = Required<Omit<MonitorStyle, 'coordinateAxis' | 'valueAxis'>> & {
@@ -9,10 +9,8 @@ type Own = Required<Omit<MonitorStyle, 'coordinateAxis' | 'valueAxis'>> & {
 /** The monitor's own style over the shared view style, every option resolved. */
 export type Style = Own & kit.ResolvedViewStyle;
 export const DEFAULTS: Own = Object.freeze({
-  detail: 'auto',
   coordinateAxis: {},
   valueAxis: {},
-  autoDomain: 'grow',
   domainPadding: 0.1,
   axisColor: [0.48, 0.58, 0.67, 0.8] as RGBA,
   gridColor: [0.4, 0.5, 0.6, 0.13] as RGBA,
@@ -21,8 +19,9 @@ export const DEFAULTS: Own = Object.freeze({
   paddingPx: 12,
 });
 /**
- * Shared style a monitor draws differently: one sample, no easing because history redraws, monospace
- * axes, and selected traces in their own colors.
+ * Shared style a monitor draws differently: one sample, since history images would cost four times
+ * the memory; no easing, since each eased step would redraw history; monospace axes; and selected
+ * traces in their own colors.
  */
 export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({
   msaa: 1,
@@ -33,8 +32,7 @@ export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({
 });
 export const LIMITS: Required<Limits> = Object.freeze({
   rows: 100000,
-  frameMs: 3,
-  observationsPerFrame: 250000,
+  segmentsPerFrame: 1_000_000,
   historyBytes: 64 * 1024 ** 2,
   pickingBytes: 2 * 1024 ** 2,
 });
@@ -59,9 +57,6 @@ export function domain(value: Domain, name = 'domain'): Domain {
   )
     fail('Invalid ' + name);
   return [value[0], value[1]];
-}
-export function windowRange(value: Domain): SampleRange {
-  return { kind: 'range', between: domain(value, 'coordinate window') };
 }
 export function expanded(value: Domain, padding = 0): Domain {
   const d = value[1] - value[0],
@@ -97,8 +92,6 @@ export function resolveStyle(config: MonitorStyle, view: kit.ResolvedViewStyle):
   };
   finite(out.unselectedAlpha, 'unselectedAlpha', 0, 1);
   finite(out.domainPadding, 'domainPadding', 0, 10);
-  if (!['auto', 'full'].includes(out.detail) || !['grow', 'fit'].includes(out.autoDomain))
-    fail('Invalid monitor option');
   for (const color of [out.axisColor, out.gridColor, out.cursorColor]) kit.validateRgba(color);
   for (const axis of [out.coordinateAxis, out.valueAxis]) checkAxis(axis);
   insets(out.paddingPx);
@@ -128,10 +121,8 @@ function checkAxis(axis: AxisOptions | null): void {
 export function limits(patch: Limits = {}): Required<Limits> {
   for (const key of Object.keys(patch)) if (!(key in LIMITS)) fail('Unknown monitor limit: ' + key);
   const result = { ...LIMITS, ...patch };
-  for (const [name, n] of Object.entries(result)) {
-    finite(n, name, 1);
-    if (name !== 'frameMs' && !Number.isSafeInteger(n)) fail('Invalid ' + name);
-  }
+  for (const [name, n] of Object.entries(result))
+    if (!Number.isSafeInteger(n) || n < 1) fail('Invalid ' + name);
   return result;
 }
 export function insets(padding: kit.Insets): readonly number[] {

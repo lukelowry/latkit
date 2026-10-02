@@ -24,12 +24,11 @@ Changed
 - `pick` returns hits nearest first, topmost breaking ties, at most 16 by default.
 - `fit(items)` frames once; `fit()` and `set({ camera: null })` follow all the data. Moving a framed camera key turns `fit` off.
 - Events arrive together after each frame, in order: `frame`, `camera`, `hover`, `select`.
-- A hover budget miss suspends automatic hover until the source or hover options change.
 - Unknown options and limits, and invalid cameras, throw `invalid-input`.
 - `SetOptions`, `DataHit`, `ContextMenu`, `Modifiers`, and `HoverState` moved from `kit` to the root export.
 - Network: `showVertices`, `showEdges`, `showPoles`, `showGraticule`, `showEarthAxis` → `markers`, `lines`, `poles`, `graticule`, `earthAxis`; `graticuleColor` → `gridColor`; `vertexHoverPx`/`edgeHoverPx` → `hoverWidthPx`; `vertexSelectedPx`/`edgeSelectedPx` → `selectedWidthPx`; limits `maxVertices`, `maxSegments`, `cpuBytes` → `vertices`, `segments`, `geometryBytes`, `pickingBytes`. Items compare by kind, index, and row.
 - Diagram: `selectionWidthPx` → `selectedWidthPx`; limit `prepareMs` → `layoutMs`.
-- Monitor: `focusColor` → `selectedColor`; limits `prepareMs` → `frameMs` and `segmentsPerFrame` → `observationsPerFrame`; `stats().traces` → `rows`. Input modes other than `inspect` pan and zoom the window; selection survives appends.
+- Monitor: `focusColor` → `selectedColor`; `stats().traces` → `rows`; selection survives appends.
 - Model: a sampled field bound both by name and as a binding to the request's own source is read once; such reads no longer stall under a frames window.
 
 Removed

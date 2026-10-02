@@ -134,6 +134,13 @@ function pan(view, dx, dy) {
   const { center, scale } = view.camera;
   view.set({ camera: { center: [center[0] - dx / scale, center[1] + dy / scale] } });
 }
+/** Wait until a view's background hit-test indexes stop growing. */
+async function indexed(view) {
+  for (let last = -1; view.stats().pickingBytes !== last;) {
+    last = view.stats().pickingBytes;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
 /** RGBA bytes of an offscreen image of the view. */
 async function pixels(view, options) {
   const bitmap = await createImageBitmap(await view.image(options), {
@@ -250,6 +257,8 @@ async function benchmarkHover(count = 100000) {
         for (let i = 0; i < 8; i++) await render(moving ? i : 0);
         await gpu.idle();
         await new Promise((resolve) => setTimeout(resolve, 160));
+        // Positions that hold still get hit-test indexes in the background; hover uses them.
+        if (!moving) await indexed(view);
         for (const hover of ['auto', 'off']) {
           view.set({ hover });
           const pointer = [],
@@ -272,7 +281,11 @@ async function benchmarkHover(count = 100000) {
             searches.push(view.stats().hoverMs);
             states.add(view.stats().hover);
           }
-          assert(view.stats().pickingBytes === 0, 'Automatic hover allocated spatial trees');
+          // Indexes build in the background, never in a hover search, within the default 64 MiB.
+          assert(
+            view.stats().pickingBytes <= 64 * 1024 ** 2,
+            'Hit-test indexes outgrew pickingBytes',
+          );
           assert(fixture.endsQueries === beforeEnds, 'Hover reread the edge ends');
           results.push({
             projection,

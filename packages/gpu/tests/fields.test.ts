@@ -174,18 +174,18 @@ it('reuses native local slices without staging and rejects stale index identity'
   gpu.destroy();
 });
 
-it('bounds the binding count when ten fields occupy more than two slabs', async () => {
+it('bounds the binding count when fifteen fields occupy more than four slabs', async () => {
   const fake = fakeDevice({
       limits: {
         maxStorageBufferBindingSize: 1024,
         minStorageBufferOffsetAlignment: 256,
-        maxStorageBuffersPerShaderStage: 3,
+        maxStorageBuffersPerShaderStage: 5,
       },
     }),
     gpu = await createGpu({ device: fake.device, pageBytes: 1024 });
   const source = new FieldSource(40),
     fields: FieldsRequest['fields'] = Object.fromEntries(
-      Array.from({ length: 10 }, (_, i) => [
+      Array.from({ length: 15 }, (_, i) => [
         'v' + i,
         {
           index: source.index,
@@ -211,13 +211,13 @@ it('bounds the binding count when ten fields occupy more than two slabs', async 
           pages.push(page);
     });
   await render();
-  for (let i = 0; i < 10; i++)
+  for (let i = 0; i < 15; i++)
     expect(pages.flatMap((page) => values(page, 'v' + i))).toEqual(
       Array.from({ length: 40 }, (_, row) => i * 100 + row),
     );
   expect(
     fake.native.createBindGroup.mock.calls.every(
-      ([descriptor]) => [...descriptor.entries].length === 3,
+      ([descriptor]) => [...descriptor.entries].length === 5,
     ),
   ).toBe(true);
   expect(gpu.stats().gpuCopiedBytes).toBeGreaterThan(0);

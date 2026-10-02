@@ -1,4 +1,5 @@
 import { GpuError, kit } from '@latkit/gpu';
+import { rowCount } from '@latkit/model';
 import type {
   Data,
   Schema,
@@ -17,10 +18,9 @@ export interface Binding {
   readonly field: string;
   readonly schema: Schema;
   readonly rows?: RowSelection;
+  /** Rows the trace draws. */
+  readonly count: number;
   readonly fields: Readonly<Record<string, FieldInput>>;
-  readonly envelope: boolean;
-  readonly colorValue: boolean;
-  readonly shadeValue: boolean;
   readonly colorDomain: Domain | null;
 }
 export function validateData(data: MonitorData): void {
@@ -47,7 +47,12 @@ export function binding(input: FieldInput, source: Data, from: string): FieldBin
       ? input
       : undefined;
 }
-export async function describeBindings(reads: ReadScope, data: MonitorData): Promise<Binding[]> {
+/** The traces as the monitor reads them; sampled color domains fit `window`. */
+export async function describeBindings(
+  reads: ReadScope,
+  data: MonitorData,
+  window: Domain,
+): Promise<Binding[]> {
   const schemas = new Map<Data, Schema>();
   const describe = (source: Data) => {
     let schema = schemas.get(source);
@@ -70,10 +75,11 @@ export async function describeBindings(reads: ReadScope, data: MonitorData): Pro
       fail('Trace field must be sampled numeric data');
     if (trace.rows && main.rows && JSON.stringify(trace.rows) !== JSON.stringify(main.rows))
       fail('Specify the trace row selection once');
-    let envelope = true,
-      colorValue = false,
-      shadeValue = false;
-    const mapped: Record<string, FieldInput> = { value: { ...main, rows: undefined } };
+    let colorValue = false;
+    // A field name reads the request's source, so a trace named by field follows appends.
+    const mapped: Record<string, FieldInput> = {
+      value: typeof trace.field === 'string' ? trace.field : { ...main, rows: undefined },
+    };
     for (const [alias, input] of [
       ['color', trace.color?.field],
       ['visible', trace.visible],
@@ -96,10 +102,8 @@ export async function describeBindings(reads: ReadScope, data: MonitorData): Pro
         ].includes(definition.type as string)
       )
         fail('Visual fields must be scalar numeric data, or boolean visibility');
-      const same = other.source === main.source && other.field === main.field && !other.rows;
-      if (alias === 'color') colorValue = same;
-      if (alias === 'shade') shadeValue = same;
-      if (definition.sampled && (!same || alias === 'visible')) envelope = false;
+      if (alias === 'color')
+        colorValue = other.source === main.source && other.field === main.field && !other.rows;
     }
     let colorDomain: Domain | null = null;
     const specified = trace.color?.domain;
@@ -119,21 +123,30 @@ export async function describeBindings(reads: ReadScope, data: MonitorData): Pro
           window: sampled
             ? specified && typeof specified === 'object' && 'window' in specified
               ? specified.window
-              : data.window
+              : { kind: 'range', between: window }
             : undefined,
         });
     }
+    const rows = trace.rows ?? main.rows,
+      table = main.source.tables[trace.from];
+    const count = !rows
+      ? table
+        ? rowCount(table.rows)
+        : 0
+      : rows.kind === 'ids'
+        ? rows.ids.length
+        : rows.kind === 'range'
+          ? rows.count
+          : rows.values.length;
     result.push({
       name,
       trace,
       source: main.source,
       field: main.field,
       schema,
-      rows: trace.rows ?? main.rows,
+      rows,
+      count,
       fields: mapped,
-      envelope,
-      colorValue,
-      shadeValue,
       colorDomain,
     });
   }

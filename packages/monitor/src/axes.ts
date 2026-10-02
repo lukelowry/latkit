@@ -1,5 +1,5 @@
 import { type Gpu, type RGBA, kit } from '@latkit/gpu';
-import { buffer } from './segments.js';
+import { buffer } from './rendering/painter.js';
 import type { Domain } from '@latkit/model';
 import type { Style } from './config.js';
 import { insets } from './config.js';

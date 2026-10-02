@@ -20,6 +20,22 @@ export function text(value: unknown, max = 1024): string {
     throw failure('invalid-input', 'Expected bounded nonempty text.');
   return value;
 }
+/** What both ends require of progress: a count, a total at least as large, and a coordinate domain. */
+export function validProgress(value: Readonly<Record<string, unknown>>): boolean {
+  const { completed, total, domain } = value;
+  return (
+    typeof completed === 'number' &&
+    Number.isFinite(completed) &&
+    completed >= 0 &&
+    (total === undefined ||
+      (typeof total === 'number' && Number.isFinite(total) && total >= completed)) &&
+    (domain === undefined ||
+      (Array.isArray(domain) &&
+        domain.length === 2 &&
+        domain.every((n) => typeof n === 'number' && Number.isFinite(n)) &&
+        domain[0] <= domain[1]))
+  );
+}
 export const defaults: Limits = Object.freeze({
   maxMessageBytes: 1024 * 1024,
   maxMetadataBytes: 64 * 1024,

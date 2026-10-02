@@ -241,7 +241,7 @@ class Owner implements Gpu {
     this.assertLive();
     const cached = this.modules.get(code);
     if (cached?.entry.live) {
-      cached.entry.touched = ++this.memory.clock;
+      cached.entry.touch();
       return cached.promise;
     }
     const entry = this.memory.add([], code.length * 2, () => {
@@ -286,7 +286,7 @@ class Owner implements Gpu {
     this.assertLive();
     const cached = this.pipelines.get(descriptor);
     if (cached?.entry.live) {
-      cached.entry.touched = ++this.memory.clock;
+      cached.entry.touch();
       return cached.promise;
     }
     const entry = this.memory.add([], 512, () => {

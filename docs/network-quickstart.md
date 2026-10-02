@@ -46,7 +46,8 @@ Omitted domains fit the displayed values; give a `domain` for stable colors duri
 ## Limits
 
 `limits: { vertices, segments, geometryBytes, pickingBytes }` bound what a network reads and keeps.
-Past `pickingBytes`, `pick` scans every item instead of building a hit-test index; give large
-networks more room, such as 512 MiB for a million vertices.
+On a flat camera, `pick` and hover query hit-test indexes, about 21 bytes per vertex or edge, built
+in the background once positions hold still; the default 64 MiB `pickingBytes` fits a million
+vertices and two million edges. Past it, they scan every item.
 
 [API](https://latkit.readthedocs.io/en/latest/api/reference/network/index.html)

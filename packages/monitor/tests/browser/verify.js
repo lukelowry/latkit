@@ -246,11 +246,9 @@ export async function verify(gpu) {
   stable.view.set({ camera: { window: [0.2, 1.4] } });
   await draw(stable.view, false);
   await checkStable();
-  const unsubmitted = stable.view.locate(center);
-  assert(
-    unsubmitted?.[0] === presented[0] && unsubmitted[1] === presented[1],
-    'Unsubmitted window changed picking',
-  );
+  // The axes and the stretched image show the new window at once, and so does locate.
+  const moved = stable.view.locate(center);
+  assert(moved && moved[0] !== presented[0], 'Locate does not follow the drawn camera');
   stable.view.set({ camera: { window: [0.4, 1.6] } });
   for (let i = 0; i < 300; i++) {
     await draw(stable.view, false);
@@ -598,7 +596,6 @@ export async function canvasLatency(gpu) {
           stream: summary(events.map((e) => e.latencyMs)),
           received,
           visible: events.length,
-          pendingBytes: monitor.stats().pendingBytes,
         });
       }
     }

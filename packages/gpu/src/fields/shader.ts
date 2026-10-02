@@ -1,13 +1,25 @@
 import { integer } from '../error.js';
-import { FIELD_KIND } from './pages.js';
+import { BANKS, FIELD_KIND } from './pages.js';
 
+const banks = Array.from({ length: BANKS }, (_, bank) => bank);
 const kinds = Object.entries(FIELD_KIND)
   .map(([name, value]) => `const FIELD_${name.toUpperCase()}: u32 = ${value}u;`)
+  .join('\n');
+/** Reads a word of one value bank; the last bank is the fallthrough. */
+const word = banks
+  .slice(0, -1)
+  .map((bank) => `  if (bank == ${bank}u) { return latkitValues${bank}[offset]; }`)
   .join('\n');
 
 /** One layout for native columns, field bindings and sampled observations. */
 export function fieldShader(options: { readonly group: number }): string {
   const group = integer(options.group, 'field bind group', 0, 3);
+  const values = banks
+    .map(
+      (bank) =>
+        `@group(${group}) @binding(${bank + 1}) var<storage, read> latkitValues${bank}: array<u32>;`,
+    )
+    .join('\n');
   return /* wgsl */ `
 ${kinds}
 struct LatkitField {
@@ -22,11 +34,10 @@ struct LatkitFields {
   fields: array<LatkitField>,
 }
 @group(${group}) @binding(0) var<storage, read> latkitFields: LatkitFields;
-@group(${group}) @binding(1) var<storage, read> latkitValues0: array<u32>;
-@group(${group}) @binding(2) var<storage, read> latkitValues1: array<u32>;
+${values}
 fn latkitWord(bank: u32, offset: u32) -> u32 {
-  if (bank == 0u) { return latkitValues0[offset]; }
-  return latkitValues1[offset];
+${word}
+  return latkitValues${BANKS - 1}[offset];
 }
 fn latkitBit(bank: u32, bit: u32) -> bool {
   return (latkitWord(bank, bit / 32u) & (1u << (bit & 31u))) != 0u;

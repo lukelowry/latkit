@@ -275,6 +275,7 @@ function tick(): void {
   frameCursor++;
   source.append(latest);
   monitor?.set({ source: source.data });
+  if (windowInput.checked) applyWindow();
   const now = performance.now();
   renderHotList(now);
   if (selectedElement !== null) renderSelected();
@@ -325,13 +326,16 @@ function applyRange(): void {
   });
 }
 
-/** Follow is renderer-owned; appending never resets data or rebuilds bindings. */
+/**
+ * The last 20 s, advancing half a window at a time: appends draw into the shown history, and the
+ * history redraws only when the window moves.
+ */
 function applyWindow(): void {
-  const end = Math.max(DT_SECONDS, (frameCursor - 1) * DT_SECONDS);
+  const end = Math.max(DT_SECONDS, (frameCursor - 1) * DT_SECONDS),
+    step = WINDOW_S / 2,
+    start = Math.max(0, (Math.floor(end / step) - 1) * step);
   monitor.set({
-    camera: windowInput.checked
-      ? { window: [Math.max(0, end - WINDOW_S), end], follow: WINDOW_S }
-      : { window: FULL_WINDOW, follow: null },
+    camera: { window: windowInput.checked ? [start, start + WINDOW_S] : FULL_WINDOW },
   });
 }
 

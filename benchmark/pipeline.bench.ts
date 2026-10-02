@@ -26,14 +26,13 @@ describe.each(sizes)('pipeline %i buses', async (buses) => {
     vertices: { Bus: { color: { field: 'voltage', domain: [0.95, 1.05] } } },
     edges: { Branch: { ends: ['from', 'to'] } },
   });
+  // A fixed window with room for the run, as a model that declares its domain gives.
   const monitor = createMonitor(device, {
     source: data,
     traces: {
       voltage: { from: 'Bus', field: 'voltage', rows: { kind: 'range', offset: 0, count: 100 } },
     },
-    camera: { window: [0, frames - 1], follow: frames },
-    // Refine history in one pass, so the work each frame does is exact.
-    limits: { frameMs: 60_000 },
+    camera: { window: [0, frames * 4] },
   });
   const composition = createComposition(device, {
     views: [

@@ -16,7 +16,6 @@ export class Entry {
   pins = 1;
   live = true;
   retire = false;
-  touched = 0;
   constructor(
     readonly pool: Memory,
     readonly backings: readonly ArrayBufferLike[],
@@ -25,14 +24,14 @@ export class Entry {
   ) {}
   pin(): void {
     if (!this.live || this.retire) throw failure('closed', 'Read result is closed');
-    this.pins++;
-    this.touched = ++this.pool.clock;
+    if (this.pins++ === 0) this.pool.busy(this);
   }
   unpin(): void {
     if (!this.live) return;
     if (this.pins <= 0) throw new Error('Unbalanced read release');
-    this.pins--;
-    if (!this.pins && this.retire) this.pool.remove(this);
+    if (--this.pins) return;
+    if (this.retire) this.pool.remove(this);
+    else this.pool.idle(this);
   }
   close(): void {
     this.retire = true;
@@ -52,13 +51,14 @@ export class Memory {
   readonly stagingBytes: number;
   readonly maxEntries: number;
   readonly entries = new Set<Entry>();
+  /** Unpinned entries, least recently used first: eviction takes the first, in constant time. */
+  private readonly lru = new Set<Entry>();
   private backings = new Map<ArrayBufferLike, { count: number; bytes: number }>();
   private cpu = 0;
   private staging = 0;
   private peakCpu = 0;
   private peakStaging = 0;
   private staged = 0;
-  clock = 0;
   queries = 0;
   queryHits = 0;
   evictions = 0;
@@ -104,7 +104,6 @@ export class Memory {
     this.cpu += metadata;
     this.peakCpu = Math.max(this.peakCpu, this.cpu);
     const entry = new Entry(this, unique, metadata, dispose);
-    entry.touched = ++this.clock;
     this.entries.add(entry);
     return entry;
   }
@@ -122,10 +121,17 @@ export class Memory {
     }
   }
 
+  /** An entry no longer held: the most recently used of the evictable. */
+  idle(entry: Entry): void {
+    this.lru.delete(entry);
+    this.lru.add(entry);
+  }
+  /** An entry held again: not evictable until released. */
+  busy(entry: Entry): void {
+    this.lru.delete(entry);
+  }
   private evict(): boolean {
-    let oldest: Entry | undefined;
-    for (const entry of this.entries)
-      if (!entry.pins && (!oldest || entry.touched < oldest.touched)) oldest = entry;
+    const [oldest] = this.lru;
     if (!oldest) return false;
     this.evictions++;
     this.remove(oldest);
@@ -136,6 +142,7 @@ export class Memory {
     if (!entry.live) return;
     entry.live = false;
     this.entries.delete(entry);
+    this.lru.delete(entry);
     this.cpu -= entry.metadata;
     for (const buffer of entry.backings) {
       const held = this.backings.get(buffer)!;
@@ -148,11 +155,8 @@ export class Memory {
   }
 
   trim(): void {
-    let previous: number;
-    do {
-      previous = this.entries.size;
-      for (const entry of [...this.entries]) if (!entry.pins) this.remove(entry);
-    } while (this.entries.size < previous);
+    // Disposing an entry may release others, which then become evictable too.
+    while (this.lru.size) for (const entry of [...this.lru]) this.remove(entry);
   }
   destroy(): void {
     for (const entry of [...this.entries]) this.remove(entry);

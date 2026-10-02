@@ -224,7 +224,7 @@ export class TextAtlas {
     ]);
     const cached = this.glyphs.get(key);
     if (cached?.atlas.entry.live) {
-      cached.atlas.entry.touched = ++this.memory.clock;
+      cached.atlas.entry.touch();
       return Promise.resolve(cached);
     }
     let pending = this.pending.get(key);

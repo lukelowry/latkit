@@ -17,7 +17,7 @@ export function usage(
     hover: 'auto',
   });
   monitor.on('select', (readings) => monitor.fit(readings, { animate: true }));
-  monitor.set({ camera: { follow: 10 }, traces: { temperature: { color: 'temperature' } } });
+  monitor.set({ camera: { window: [5, 15] }, traces: { temperature: { color: 'temperature' } } });
   // @ts-expect-error Frame preparation stays inside the view.
   void monitor.prepare;
   // @ts-expect-error Sources are borrowed, never closed by a view.

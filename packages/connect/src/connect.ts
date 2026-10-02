@@ -1,7 +1,17 @@
 import { validateSchema } from '@latkit/model';
 import type { CommandDescription, Diagnostic, Parameters, Progress } from '@latkit/model';
 import { preparePublication } from './columns.js';
-import { deferred, errorOf, failure, integer, interrupt, negotiate, record, text } from './core.js';
+import {
+  deferred,
+  errorOf,
+  failure,
+  integer,
+  interrupt,
+  negotiate,
+  record,
+  text,
+  validProgress,
+} from './core.js';
 import { checkTree, Op, subprotocol } from './frame.js';
 import type { Frame } from './frame.js';
 import { argumentsOf, definitions, selections, demanded } from './parameters.js';
@@ -239,16 +249,12 @@ class Telemetry {
   ) {}
   progress(value: Progress): void {
     if (this.#closed || this.sender.signal.aborted) return;
-    if (
-      !Number.isFinite(value.completed) ||
-      value.completed < 0 ||
-      (value.total !== undefined &&
-        (!Number.isFinite(value.total) || value.total < value.completed))
-    )
+    if (!validProgress(value as unknown as Record<string, unknown>))
       throw failure('invalid-input', 'Invalid progress.');
     this.#progress = {
       completed: value.completed,
       ...(value.total === undefined ? {} : { total: value.total }),
+      ...(value.domain === undefined ? {} : { domain: [value.domain[0], value.domain[1]] }),
       ...(value.message === undefined
         ? {}
         : {

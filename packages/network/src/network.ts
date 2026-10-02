@@ -100,6 +100,22 @@ interface Resolved {
   readonly data: NetworkData;
   readonly limits: Required<Limits>;
 }
+/** Hit-test indexes build once the shown positions have held this long, as hover settles. */
+const INDEX_SETTLE_MS = 150;
+/** Resolve after `ms`, or as soon as the signal aborts. */
+function settle(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
 const KEYS = new Set([
   'canvas',
   'at',
@@ -200,6 +216,12 @@ class NetworkView
   private preparing?: { readonly geometry: Geometry; readonly picking: PickGeometry };
   private readonly painter: Painter;
   private readonly picking = new Picking();
+  /** Hit-test indexes building in the background for the shown positions. */
+  private indexing?: {
+    readonly picking: PickGeometry;
+    readonly stop: AbortController;
+    done: boolean;
+  };
   private readonly paths = new Paths();
   private readonly labels = new Labels();
   private shadeAnimating = false;
@@ -558,6 +580,7 @@ class NetworkView
     this.geometry = pending.geometry;
     this.orbitTime = pending.camera.orbit ? frame.timeMs : undefined;
     this.painter.prune(pending.geometry);
+    this.indexLater(pending);
     this.counts = {
       vertices: pending.geometry.vertexCount,
       edges: pending.geometry.edgeCount,
@@ -566,7 +589,38 @@ class NetworkView
       drawCalls: pending.paint.drawCalls,
     };
   }
+  /**
+   * Build the shown frame's missing hit-test indexes in cooperative slices once its positions hold
+   * still, so pick and hover query them; new positions or destroy abort the build.
+   */
+  private indexLater({ picking, camera, data, options }: Presented): void {
+    const running = this.indexing;
+    if (running && !running.done && running.picking.sameIndexes(picking)) return;
+    running?.stop.abort();
+    this.indexing = undefined;
+    if (camera.projection !== 'flat' || !picking.indexable(data, options)) return;
+    const task = { picking, stop: new AbortController(), done: false },
+      { signal } = task.stop;
+    this.indexing = task;
+    settle(INDEX_SETTLE_MS, signal)
+      .then(() => {
+        signal.throwIfAborted();
+        return picking.indexLater(data, options, new kit.Work(signal));
+      })
+      .then(
+        () => {
+          task.done = true;
+          // Hover that missed its budget by scanning gets another chance with the index.
+          if (!signal.aborted) this.retryHover();
+        },
+        (error: unknown) => {
+          if (!signal.aborted) this.fail(error);
+        },
+      );
+  }
   protected release(): void {
+    this.indexing?.stop.abort();
+    this.indexing = undefined;
     this.pendingFrame = undefined;
     this.shown = undefined;
     this.geometry = undefined;

@@ -13,13 +13,9 @@ export interface AxisOptions {
 }
 /** How a monitor draws, beyond the shared view style; every option has a default. */
 export interface MonitorStyle {
-  /** `full` draws every observation; `auto` summarizes long histories. */
-  readonly detail?: 'auto' | 'full';
   /** A label, axis options, or false to hide the axis. */
   readonly coordinateAxis?: string | AxisOptions | false;
   readonly valueAxis?: string | AxisOptions | false;
-  /** How fitted values follow appends: `grow` keeps drawn history, `fit` redraws it. */
-  readonly autoDomain?: 'grow' | 'fit';
   /** Fraction of the fitted value range added on each side. */
   readonly domainPadding?: number;
   readonly axisColor?: RGBA;
@@ -31,11 +27,11 @@ export interface MonitorStyle {
   readonly paddingPx?: kit.Insets;
 }
 export interface Limits {
+  /** Rows the traces draw together. */
   readonly rows?: number;
-  /** Observations drawn per frame. */
-  readonly observationsPerFrame?: number;
-  /** History preparation per frame; the last presented image stays meanwhile. */
-  readonly frameMs?: number;
+  /** Line segments drawn per frame; what is drawn is never drawn again. */
+  readonly segmentsPerFrame?: number;
+  /** GPU memory for history images. */
   readonly historyBytes?: number;
   readonly pickingBytes?: number;
 }

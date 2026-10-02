@@ -145,7 +145,7 @@ export abstract class BaseItemView<
   #hover: Hit | null = null;
   #hoverState: HoverState = 'idle';
   #hoverMs = 0;
-  /** A budget miss suspends automatic hover until the source or hover options change. */
+  /** A budget miss suspends automatic hover until the scene next moves, or its options change. */
   #suspended = false;
   #settleAt = 0;
   /** Changes whenever what lies under a still pointer may have changed. */
@@ -374,6 +374,8 @@ export abstract class BaseItemView<
     ) {
       this.#settleAt = now + SETTLE_MS;
       this.#epoch++;
+      // What lies under the pointer changed, so the next settled search gets another chance.
+      this.#suspended = false;
     }
     if (policy === 'off') return record(null, 'off');
     const point = this.#pointer;
@@ -442,6 +444,13 @@ export abstract class BaseItemView<
     }
     // A frame may have drawn a hover that was never published; leaving redraws without it.
     if (((point || leaving) && searching) || had || this.#shade) this.invalidate();
+  }
+  /** Search for hover again after a budget miss, as when an index makes searching cheaper. */
+  protected retryHover(): void {
+    if (!this.#suspended) return;
+    this.#suspended = false;
+    this.#epoch++;
+    if (this.#pointer) this.invalidate();
   }
   /** Drop selected items the next drawn frame no longer contains, reporting the change. A new source does this already. */
   protected pruneSelection(): void {

@@ -7,6 +7,7 @@ it('exports values, local computation and explicit boundary validation', () => {
     'locateSample',
     'appendedPages',
     'samplePages',
+    'sampleFrames',
     'resolveRows',
     'createData',
     'appendData',

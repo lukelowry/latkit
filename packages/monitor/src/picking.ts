@@ -25,7 +25,6 @@ export interface PickRequest {
   readonly radius: number;
   /** The nearest this many readings are kept. */
   readonly limit: number;
-  readonly accepts?: (reading: Reading) => boolean;
 }
 interface Candidate {
   readonly distance: number;
@@ -82,7 +81,7 @@ class Nearest {
       .map((candidate) => candidate.reading);
   }
 }
-/** Refine only the pointer's coordinate interval; preserve native identities and Float64 values. */
+/** Read only the pointer's coordinate interval; readings keep native identities and Float64 values. */
 export async function pick(request: PickRequest): Promise<Reading[]> {
   const { reads, data, bindings, plot, x, y, point, radius, limit } = request;
   const work = new kit.Work(reads.signal, Infinity, 3);
@@ -139,7 +138,6 @@ export async function pick(request: PickRequest): Promise<Reading[]> {
             value,
             point: [px, py],
           };
-          if (request.accepts && !request.accepts(reading)) continue;
           nearest.add({ distance, order, reading });
         }
     }

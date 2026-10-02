@@ -283,13 +283,17 @@ export function locateSample(pages: ColumnPages, at: number): SampleLocation | u
   return { frame: first, coordinate: group.coordinates[offset], offset, pages: group.pages };
 }
 
-/** Iterate only the pages covering a sample window, using the shared immutable sample index. */
-export function samplePages(pages: ColumnPages, window: SampleWindow): Iterable<ColumnPage> {
+/** The absolute frames a sample window covers, `[first, end)`, from the shared sample index. */
+export function sampleFrames(pages: ColumnPages, window: SampleWindow): readonly [number, number] {
   const check = new Check();
   checkSampleWindow(check, window, []);
   if (check.issues.length) throw failure('invalid-input', check.issues[0].message);
-  const index = framesOf(pages);
-  const [first, end] = frameRange(index, window);
+  return frameRange(framesOf(pages), window);
+}
+/** Iterate only the pages covering a sample window, using the shared immutable sample index. */
+export function samplePages(pages: ColumnPages, window: SampleWindow): Iterable<ColumnPage> {
+  const [first, end] = sampleFrames(pages, window),
+    index = framesOf(pages);
   return (function* () {
     for (const group of frameGroups(index, first, end)) yield* group.pages;
   })();
@@ -747,10 +751,12 @@ function* samples(
       const following = frameGroup(index, stop);
       const currentValues = group.pages[0]?.column;
       const nextValues = following?.pages[0]?.column;
+      // A lone last frame joins the next group, so a read from it always reaches the next frame.
       if (
         currentValues?.kind === 'numeric' &&
         nextValues?.kind === 'numeric' &&
-        currentValues.values.buffer === nextValues.values.buffer
+        currentValues.values.buffer === nextValues.values.buffer &&
+        stop - frame > 1
       )
         nf = Math.min(nf, stop - frame);
       for (const other of indexes) nf = Math.min(nf, frameSpan(other, frame, nf));

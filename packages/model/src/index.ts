@@ -97,7 +97,7 @@ export { DEFAULT_BLOCK_BYTES } from './query.js';
 export type { ColumnPages } from './pages.js';
 export { appendedPages, sampleDomain } from './pages.js';
 export { resolveRows, type RowMappingRequest, type RowMapping } from './read.js';
-export { samplePages } from './read.js';
+export { samplePages, sampleFrames } from './read.js';
 
 export { createReader } from './reader/reader.js';
 export type { Reader, ReadScope, ReaderOptions } from './reader/reader.js';

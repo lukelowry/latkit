@@ -21,6 +21,8 @@ export interface Allocation {
 /** Suballocations never move. Retired frames keep their regions out of the free list. */
 export class Allocator {
   private slabs = new Set<Slab>();
+  /** The slab that served the latest allocation, tried first so one upload's regions share it. */
+  private recent?: Slab;
   constructor(
     readonly device: GPUDevice,
     readonly memory: Memory,
@@ -48,7 +50,7 @@ export class Allocator {
     usage |= GPUBufferUsage.COPY_DST;
     if (usage & GPUBufferUsage.STORAGE) usage |= GPUBufferUsage.COPY_SRC;
     let found: { slab: Slab; index: number; start: number } | undefined;
-    for (const slab of this.slabs) {
+    for (const slab of this.recent ? [this.recent, ...this.slabs] : this.slabs) {
       if (slab.usage !== usage || exclude?.has(slab.buffer)) continue;
       const index = slab.free.findIndex(
         (span) => align(span.offset, alignment) + size <= span.offset + span.size,
@@ -59,8 +61,11 @@ export class Allocator {
       }
     }
     if (!found) {
+      // Slabs grow with what this usage already holds, so large uploads share buffers.
+      let footprint = 0;
+      for (const slab of this.slabs) if (slab.usage === usage) footprint += slab.size;
       const preferred = Math.min(
-        1024 ** 2,
+        Math.max(1024 ** 2, Math.min(16 * 1024 ** 2, footprint)),
         limits.maxBufferSize,
         usage & GPUBufferUsage.STORAGE ? limits.maxStorageBufferBindingSize : limits.maxBufferSize,
         Math.floor(this.memory.budget.gpuBytes / 8),
@@ -85,6 +90,7 @@ export class Allocator {
       found = { slab, index: 0, start: 0 };
     }
     const { slab, index, start } = found;
+    this.recent = slab;
     const span = slab.free[index];
     const remaining: Span[] = [];
     if (start > span.offset) remaining.push({ offset: span.offset, size: start - span.offset });
@@ -100,6 +106,7 @@ export class Allocator {
         live = false;
         if (--slab.count === 0) {
           this.slabs.delete(slab);
+          if (this.recent === slab) this.recent = undefined;
           slab.buffer.destroy();
           this.memory.releaseGpu(slab.size);
           return;

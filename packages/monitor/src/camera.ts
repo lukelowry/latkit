@@ -1,4 +1,4 @@
-import type { Point, ViewCamera } from '@latkit/gpu';
+import type { ViewCamera } from '@latkit/gpu';
 import type { Domain } from '@latkit/model';
 import type { Plot } from './axes.js';
 import { domain, expanded, fail } from './config.js';
@@ -9,27 +9,23 @@ export interface Camera extends ViewCamera {
   readonly window: Domain;
   /** Values shown. */
   readonly values: Domain;
-  /** Fit the values to the data as it changes. Moving the values by hand turns it off. */
+  /** Fit the values to the data in the window as it changes. Setting values turns it off. */
   readonly fit: boolean;
-  /** Show the latest coordinates as frames append, this span wide; null stays put. */
-  readonly follow: number | null;
 }
 export const DEFAULT_CAMERA: Camera = Object.freeze({
   window: [0, 1] as Domain,
   values: [0, 1] as Domain,
   fit: true,
-  follow: null,
 });
 /** A valid, frozen camera of exactly the monitor's keys. */
 export function checkCamera(camera: Camera): Camera {
-  const follow = camera.follow ?? null;
   if (typeof camera.fit !== 'boolean') fail('Invalid camera fit');
-  if (follow !== null && (!Number.isFinite(follow) || follow <= 0)) fail('Invalid follow span');
+  for (const key of Object.keys(camera))
+    if (key !== 'window' && key !== 'values' && key !== 'fit') fail('Unknown camera key: ' + key);
   return Object.freeze({
     window: domain(camera.window, 'coordinate window'),
     values: expanded(domain(camera.values, 'value domain')),
     fit: camera.fit,
-    follow,
   });
 }
 export function sameDomain(a: Domain, b: Domain): boolean {
@@ -42,24 +38,11 @@ export function mixCamera(from: Camera, to: Camera, t: number): Camera {
   ];
   return { ...to, window: mix(from.window, to.window), values: mix(from.values, to.values) };
 }
-/** The camera moved by canvas pixels: content follows the pointer. */
+/** The camera moved by canvas pixels, for revealing a reading. */
 export function move(camera: Camera, dx: number, dy: number, plot: Plot): Camera {
   const [x0, x1] = camera.window,
     [y0, y1] = camera.values;
   const sx = (dx * (x1 - x0)) / plot.width,
     sy = (dy * (y1 - y0)) / plot.height;
-  return {
-    ...camera,
-    window: [x0 - sx, x1 - sx],
-    values: [y0 + sy, y1 + sy],
-    follow: null,
-  };
-}
-/** The window zoomed about a canvas point's coordinate; values stay. */
-export function zoom(camera: Camera, factor: number, anchor: Point, plot: Plot): Camera {
-  const [x0, x1] = camera.window,
-    t = Math.max(0, Math.min(1, (anchor[0] - plot.x) / plot.width)),
-    center = x0 + t * (x1 - x0),
-    span = (x1 - x0) / factor;
-  return { ...camera, window: [center - t * span, center + (1 - t) * span], follow: null };
+  return { ...camera, window: [x0 - sx, x1 - sx], values: [y0 + sy, y1 + sy] };
 }
