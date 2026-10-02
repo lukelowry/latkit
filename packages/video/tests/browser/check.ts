@@ -1,18 +1,21 @@
 import { ownership, throughput } from './scaling.js';
-import { createGpu, createComposition, type Renderer } from '@latkit/gpu';
+import { createGpu, createComposition, type Gpu, type View } from '@latkit/gpu';
+import { view } from './views.js';
 import { exportVideo, type VideoWrite } from '../../src/index.js';
 import { Input, BlobSource, ALL_FORMATS, VideoSampleSink } from 'mediabunny';
 const assert = (test: unknown, message: string) => {
   if (!test) throw new Error(message);
 };
-function solid(color: readonly [number, number, number, number], progressive = false): Renderer {
+function solid(
+  gpu: Gpu,
+  color: readonly [number, number, number, number],
+  progressive = false,
+): View {
   let time = -1,
     steps = 0;
-  return {
-    get pending() {
-      return progressive && steps < 3 ? Promise.resolve() : undefined;
-    },
-    async prepare(frame) {
+  return view(gpu, {
+    pending: () => (progressive && steps < 3 ? Promise.resolve() : undefined),
+    prepare(frame) {
       if (frame.timeMs !== time) {
         time = frame.timeMs;
         steps = 0;
@@ -32,8 +35,7 @@ function solid(color: readonly [number, number, number, number], progressive = f
       });
       pass.end();
     },
-    destroy() {},
-  };
+  });
 }
 function memory() {
   let size = 0,
@@ -104,22 +106,19 @@ export async function check() {
   const gpu = await createGpu();
   gpu.device.addEventListener('uncapturederror', (e) => errors.push(e.error.message));
   try {
-    const top = solid([1, 0, 0, 1], true),
-      bottom = solid([0, 1, 0, 1]);
-    const renderer = createComposition({
-      gpu,
+    const top = solid(gpu, [1, 0, 0, 1], true),
+      bottom = solid(gpu, [0, 1, 0, 1]);
+    const composed = createComposition(gpu, {
       views: [
-        { renderer: top, region: { x: 0, y: 0, width: 1, height: 0.5 } },
-        { renderer: bottom, region: { x: 0, y: 0.5, width: 1, height: 0.5 } },
+        { view: top, region: [0, 0, 1, 0.5] },
+        { view: bottom, region: [0, 0.5, 1, 0.5] },
       ],
     });
     try {
       for (const format of ['mp4', 'webm'] as const) {
         const output = memory(),
           seen: number[] = [];
-        const result = await exportVideo({
-          gpu,
-          renderer,
+        const result = await exportVideo(composed, {
           output: output.stream,
           width: 320,
           height: 180,
@@ -191,9 +190,7 @@ export async function check() {
           },
         });
         const begin = performance.now();
-        const result = await exportVideo({
-          gpu,
-          renderer,
+        const result = await exportVideo(composed, {
           output,
           width: 1920,
           height: 1080,
@@ -225,9 +222,7 @@ export async function check() {
           });
         },
       });
-      const pending = exportVideo({
-        gpu,
-        renderer,
+      const pending = exportVideo(composed, {
         output,
         width: 320,
         height: 180,
@@ -246,14 +241,12 @@ export async function check() {
         },
       });
       await rejects(
-        exportVideo({ gpu, renderer, output: broken, width: 320, height: 180, duration: 1 }),
+        exportVideo(composed, { output: broken, width: 320, height: 180, duration: 1 }),
         'disk full',
       );
       assert(!broken.locked && encoders.size === 0, 'Failed write leaked resources');
       await rejects(
-        exportVideo({
-          gpu,
-          renderer,
+        exportVideo(composed, {
           output: new WritableStream(),
           width: 320,
           height: 180,
@@ -275,7 +268,9 @@ export async function check() {
         peakQueue,
       });
     } finally {
-      renderer.destroy();
+      composed.destroy();
+      top.destroy();
+      bottom.destroy();
     }
     assert(!errors.length, errors.join('\n'));
     return report;

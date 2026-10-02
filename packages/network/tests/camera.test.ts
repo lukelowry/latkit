@@ -1,15 +1,16 @@
 import { expect, it } from 'vitest';
-import { initialCamera, project } from '../src/camera.js';
+import { DEFAULT_CAMERA, checkCamera, project, type Camera } from '../src/camera.js';
+const initialCamera = (patch: Partial<Camera>) => checkCamera({ ...DEFAULT_CAMERA, ...patch });
 const viewport = { width: 800, height: 600, pixelRatio: 2 };
 it('keeps sub-unit positions near a large origin distinct', () => {
-  const camera = initialCamera({ centerX: 1e12, centerY: 1e12, scale: 100 });
+  const camera = initialCamera({ center: [1e12, 1e12], scale: 100 });
   const a = project(camera, viewport, 1e12, 1e12),
     b = project(camera, viewport, 1e12 + 0.125, 1e12);
   expect(b.x - a.x).toBe(12.5);
   expect(a.depth).toBe(0.5);
 });
 it('projects the globe anchor to the center and rejects the far hemisphere', () => {
-  const camera = initialCamera({ projection: 'globe', centerX: -75, centerY: 30, scale: 5 });
+  const camera = initialCamera({ projection: 'globe', center: [-75, 30], scale: 5 });
   const near = project(camera, viewport, -75, 30),
     far = project(camera, viewport, 105, -30);
   expect(near.x).toBeCloseTo(400);
@@ -23,7 +24,7 @@ it('rejects invalid camera scale and pitch', () => {
 });
 
 it('clips near-plane crossings instead of discarding both endpoints', async () => {
-  const { project, projectedStroke, initialCamera } = await import('../src/camera.js');
+  const { projectedStroke } = await import('../src/camera.js');
   const camera = initialCamera({ projection: 'tilt', pitch: 0, scale: 1, fit: false }),
     viewport = { width: 800, height: 600, pixelRatio: 1 };
   const a = project(camera, viewport, -10, 0, 1000),

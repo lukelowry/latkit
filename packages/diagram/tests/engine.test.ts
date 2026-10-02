@@ -1,13 +1,15 @@
 import { expect, it, vi } from 'vitest';
-import { createNativeReader } from '@latkit/gpu';
+import { kit, type Gpu } from '@latkit/gpu';
 import { arrange, layoutOptions, place, rootEnd } from '../src/layout.js';
 import { readScene } from '../src/read.js';
 import { geometry, orthogonal, contains, boundary } from '../src/geometry.js';
 import { options, limits } from '../src/config.js';
 import { data, Source, measure } from './fixture.js';
+/** Arrangement only measures text. */
+const gpu = { measureText: measure } as unknown as Gpu;
 import { Picking } from '../src/picking.js';
 async function scene(source = new Source(), position = false) {
-  const reader = createNativeReader();
+  const reader = kit.createNativeReader();
   try {
     const result = await readScene(data(source, position), reader, options(), limits(), measure);
     await place(result, layoutOptions(), 8, reader.signal);
@@ -20,9 +22,9 @@ async function scene(source = new Source(), position = false) {
 }
 it('arranges native rows deterministically without GPU or DOM', async () => {
   const source = new Source(12),
-    input = { data: data(source), measureText: measure };
-  const a = await arrange(input),
-    b = await arrange(input);
+    config = data(source);
+  const a = await arrange(gpu, config),
+    b = await arrange(gpu, config);
   expect(a).toEqual(b);
   expect(a.Task.index).toEqual(source.index('Task'));
   expect(a.Task.values.kind).toBe('vector');
@@ -55,7 +57,7 @@ it('joins every port whose reference names a net', async () => {
 });
 it('draws each row between the vertices its two references name', async () => {
   const source = new Source(3),
-    reader = createNativeReader();
+    reader = kit.createNativeReader();
   try {
     const d = data(source);
     const result = await readScene(
@@ -92,12 +94,9 @@ it('rejects ports that are not reference columns', async () => {
 it('honors sparse row selections and returns physical row identities', async () => {
   const source = new Source(),
     d = data(source);
-  const result = await arrange({
-    data: {
-      ...d,
-      vertices: { Task: { rows: { kind: 'ids', ids: ['n3', 'n1'] }, labels: { field: 'name' } } },
-    },
-    measureText: measure,
+  const result = await arrange(gpu, {
+    ...d,
+    vertices: { Task: { rows: { kind: 'ids', ids: ['n3', 'n1'] }, labels: 'name' } },
   });
   expect(result.Task.rows).toEqual({ kind: 'indices', values: Uint32Array.of(3, 1) });
 });
@@ -157,9 +156,8 @@ it('uses identical geometry for shape boundaries and picking', async () => {
 it('supports headless custom layout and routing strategies', async () => {
   const source = new Source(2),
     d = data(source);
-  const result = await arrange({
-    data: d,
-    measureText: measure,
+  const result = await arrange(gpu, {
+    ...d,
     layout: {
       algorithm: { arrange: (graph) => graph.vertices.map((_, i) => [i * 500, 123] as const) },
     },
@@ -169,14 +167,14 @@ it('supports headless custom layout and routing strategies', async () => {
   ]);
 });
 it('bounds memory and honors cancellation', async () => {
-  await expect(
-    arrange({ data: data(new Source(10)), measureText: measure, limits: { vertices: 2 } }),
-  ).rejects.toThrow(/vertices/);
+  await expect(arrange(gpu, { ...data(new Source(10)), limits: { vertices: 2 } })).rejects.toThrow(
+    /vertices/,
+  );
   const controller = new AbortController();
   controller.abort();
-  await expect(
-    arrange({ data: data(), measureText: measure, signal: controller.signal }),
-  ).rejects.toMatchObject({ name: 'AbortError' });
+  await expect(arrange(gpu, data(), { signal: controller.signal })).rejects.toMatchObject({
+    name: 'AbortError',
+  });
 });
 it('keeps explicit positions and sizes', async () => {
   const source = new Source(3);
@@ -189,7 +187,7 @@ it('keeps explicit positions and sizes', async () => {
 });
 it('collapses groups into proxies for their external ends', async () => {
   const source = new Source(3),
-    reader = createNativeReader();
+    reader = kit.createNativeReader();
   try {
     const d = {
       ...data(source, true),
@@ -255,7 +253,7 @@ it('prepares a thousand-vertex graph with bounded geometry and queries', async (
 it('cancels a large arrangement between CPU slices', async () => {
   const source = new Source(10000),
     controller = new AbortController();
-  const promise = arrange({ data: data(source), measureText: measure, signal: controller.signal });
+  const promise = arrange(gpu, data(source), { signal: controller.signal });
   setTimeout(() => controller.abort(), 0);
   await expect(promise).rejects.toMatchObject({ name: 'AbortError' });
 });
@@ -264,9 +262,8 @@ it('enforces one preparation deadline across native reads and custom layout', as
   const now = vi.spyOn(performance, 'now').mockReturnValue(0);
   try {
     await expect(
-      arrange({
-        data: data(new Source()),
-        measureText: measure,
+      arrange(gpu, {
+        ...data(new Source()),
         limits: { prepareMs: 10 },
         layout: {
           algorithm: {
@@ -313,13 +310,10 @@ it('passes ports, hyperedges, labels and groups to a custom layout', async () =>
       return graph.vertices.map((_, i) => [i * 240, 0] as const);
     }),
   };
-  await arrange({
-    data: {
-      ...data(source),
-      groups: { pair: { vertices: { Task: { kind: 'ids', ids: ['n0', 'n1'] } } } },
-    },
+  await arrange(gpu, {
+    ...data(source),
+    groups: { pair: { vertices: { Task: { kind: 'ids', ids: ['n0', 'n1'] } } } },
     layout: { algorithm },
-    measureText: measure,
   });
   expect(algorithm.arrange).toHaveBeenCalledOnce();
 });

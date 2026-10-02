@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
-import { createGpu, type Invalidation } from '../src/index.js';
+import { createGpu } from '../src/index.js';
+import { type Invalidation } from '../src/kit.js';
 import { deferred, fakeDevice } from './fixtures/device.js';
 import { renderer, target } from './fixtures/render.js';
 

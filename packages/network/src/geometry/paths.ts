@@ -1,6 +1,6 @@
 import { rowAt } from '@latkit/model';
-import { GpuError, type NativeFields, type FieldValues } from '@latkit/gpu';
-import type { NetworkData, EdgeOptions } from '../data.js';
+import { GpuError, kit } from '@latkit/gpu';
+import type { NetworkData, EdgeData } from '../data.js';
 import {
   BANK_ROWS,
   edgeOptions,
@@ -53,8 +53,8 @@ export function geodesic(a: Point, b: Point, t: number): Point {
     a[2] + (b[2] - a[2]) * t,
   ];
 }
-function lookup(read: FieldRead): RowLookup<NativeFields> {
-  const result = new RowLookup<NativeFields>();
+function lookup(read: FieldRead): RowLookup<kit.NativeFields> {
+  const result = new RowLookup<kit.NativeFields>();
   for (const tile of read.native) result.add(tile.rows, tile);
   result.seal();
   return result;
@@ -81,8 +81,8 @@ function signature(reads: Reads, data: NetworkData): unknown[] {
   }
   for (const [bank, read] of reads.edges) {
     key.push(
-      (edgeOptions(data, bank) as EdgeOptions).curve,
-      !!(edgeOptions(data, bank) as EdgeOptions).junction,
+      (edgeOptions(data, bank) as EdgeData).curve,
+      !!(edgeOptions(data, bank) as EdgeData).junction,
     );
     for (const tile of read.native)
       for (const name of ['points', 'bends', 'junction', 'junctionX', 'junctionY']) {
@@ -110,7 +110,7 @@ export class Paths {
     limits: Required<Limits>,
   ): { geometry: Geometry; origins: ReadonlyMap<EdgeBank, EdgeBank> } {
     const needed = native.edges.some(
-      (bank) => bank.kind || bank.stars || (edgeOptions(data, bank) as EdgeOptions).bends,
+      (bank) => bank.kind || bank.stars || (edgeOptions(data, bank) as EdgeData).bends,
     );
     if (!needed) {
       this.cached = undefined;
@@ -161,7 +161,7 @@ export class Paths {
       return { bank, offset, point: point(bank, offset) };
     };
     for (const original of native.edges) {
-      const options = edgeOptions(data, original) as EdgeOptions;
+      const options = edgeOptions(data, original) as EdgeData;
       if (!original.kind && !options.bends && !original.stars) {
         edges.push(original);
         segments += original.batches.reduce((n, b) => n + b.records.length / 4, 0);
@@ -229,7 +229,7 @@ export class Paths {
           rows = { kind: 'range' as const, offset: 0, count };
         const values = new Float64Array(coordinates),
           h = new Float32Array(heights);
-        const position: FieldValues = {
+        const position: kit.FieldValues = {
           index: active.index,
           rows,
           values: {
@@ -341,7 +341,7 @@ export class Paths {
           }
         }
       };
-      const list = (tile: NativeFields, name: string, row: number): Point[] => {
+      const list = (tile: kit.NativeFields, name: string, row: number): Point[] => {
         const column = tile.columns[name];
         if (column?.kind !== 'list' || column.values.kind !== 'vector' || column.values.size !== 2)
           throw new GpuError('invalid-input', 'Paths require lists of two-component vectors');

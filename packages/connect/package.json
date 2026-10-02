@@ -1,7 +1,7 @@
 {
   "name": "@latkit/connect",
   "version": "0.2.0",
-  "description": "Models, their monitors, and canonical streams across process boundaries.",
+  "description": "One-pass model observation and independent commands across process boundaries.",
   "type": "module",
   "repository": {
     "type": "git",

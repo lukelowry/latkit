@@ -1,7 +1,9 @@
-import { GpuError, validateRgba } from '@latkit/gpu';
-import type { Options, Limits } from './options.js';
-import type { DiagramData, VertexOptions, EdgeOptions } from './data.js';
-export const defaults: Required<Options> = {
+import { GpuError, kit, type RGBA } from '@latkit/gpu';
+import type { Data } from '@latkit/model';
+import type { Limits, StyleOptions } from './options.js';
+import type { DiagramData, VertexData, EdgeData } from './data.js';
+export type Style = Required<StyleOptions>;
+export const defaults: Style = {
   gridPitch: 8,
   grid: true,
   snap: true,
@@ -64,8 +66,14 @@ export function patch<T extends object>(base: T, values: Partial<T>): T {
     ...Object.fromEntries(Object.entries(values).filter(([, v]) => v !== undefined)),
   };
 }
-export function options(value: Options = {}, base = defaults): Required<Options> {
-  const result = patch(base, value);
+/** The style a config describes: its own options over the defaults. */
+export function options(config: StyleOptions = {}): Style {
+  const result = patch(
+    defaults,
+    Object.fromEntries(
+      Object.keys(defaults).map((key) => [key, config[key as keyof StyleOptions]]),
+    ) as StyleOptions,
+  );
   for (const key of [
     'gridPitch',
     'fontSizePx',
@@ -104,8 +112,8 @@ export function options(value: Options = {}, base = defaults): Required<Options>
   if (padding.length !== 1 && padding.length !== 4) fail('Invalid fitPaddingPx');
   padding.forEach((v) => positive(v, 'fitPaddingPx', true));
   if (!result.font.family) fail('A font family is required');
-  for (const key of Object.keys(result) as (keyof Options)[])
-    if (key.endsWith('Color')) validateRgba(result[key] as import('@latkit/gpu').RGBA);
+  for (const key of Object.keys(result) as (keyof Style)[])
+    if (key.endsWith('Color')) kit.validateRgba(result[key] as RGBA);
   return result;
 }
 export function limits(value: Limits = {}): Required<Limits> {
@@ -116,7 +124,7 @@ export function limits(value: Limits = {}): Required<Limits> {
   }
   return result;
 }
-function binding(value: VertexOptions | EdgeOptions) {
+function binding(value: VertexData | EdgeData) {
   if (value.labels) {
     if (value.labels.size !== undefined) positive(value.labels.size, 'label size');
     if (value.labels.maxWidth !== undefined) positive(value.labels.maxWidth, 'label width');
@@ -125,14 +133,13 @@ function binding(value: VertexOptions | EdgeOptions) {
       (!Number.isSafeInteger(value.labels.maxCount) || value.labels.maxCount < 0)
     )
       fail('Invalid label count');
-    if (value.labels.color) validateRgba(value.labels.color);
+    if (value.labels.color) kit.validateRgba(value.labels.color);
     if (value.labels.overflow && !['wrap', 'ellipsis'].includes(value.labels.overflow))
       fail('Invalid label overflow');
   }
 }
 export function data(value: DiagramData): DiagramData {
-  if (!value.source || typeof value.source.query !== 'function')
-    fail('A Queryable source is required');
+  if (!value.source?.schema || !value.source.tables) fail('A Data source is required');
   if (!value.vertices) fail('Vertex bindings are required');
   for (const vertex of Object.values(value.vertices)) {
     binding(vertex);
@@ -188,12 +195,12 @@ export function data(value: DiagramData): DiagramData {
     groups: { ...value.groups },
   };
 }
-export function sources(data: DiagramData): Set<import('@latkit/model').Queryable> {
+export function sources(data: DiagramData): Set<Data> {
   const result = new Set([data.source]);
   const visit = (value: unknown): void => {
     if (!value || typeof value !== 'object' || ArrayBuffer.isView(value)) return;
     if ('source' in value && 'field' in value) {
-      result.add((value as import('@latkit/gpu').FieldBinding).source);
+      result.add((value as kit.FieldBinding).source);
       return;
     }
     if ('values' in value) return;

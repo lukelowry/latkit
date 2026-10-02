@@ -13,9 +13,9 @@ export type DataType =
   | { readonly kind: 'vector'; readonly items: NumericType; readonly size: number }
   | { readonly kind: 'list'; readonly items: DataType };
 
-/** Stable identity of a type's physical row numbering in one Model or Recording. Metadata only. */
+/** Stable identity of a type's physical row numbering in one application row space. Metadata only. */
 export interface Index {
-  /** Opaque identity of the Model or Recording that numbers these rows. */
+  /** Opaque identity of the application row space that numbers these rows. */
   readonly source: string;
   readonly type: string;
   readonly version: Version;

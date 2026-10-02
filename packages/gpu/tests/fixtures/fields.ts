@@ -1,4 +1,4 @@
-import type { GpuField, GpuValueField, GpuPage } from '../../src/index.js';
+import type { GpuField, GpuValueField, GpuPage } from '../../src/kit.js';
 import { bytes } from './device.js';
 
 function bindings(page: GpuPage): GPUBufferBinding[] {

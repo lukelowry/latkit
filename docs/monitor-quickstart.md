@@ -1,63 +1,41 @@
-# Create a monitor
+# Monitor
 
-WebGPU time-series plots over a sampled `Queryable`.
+Plot sampled fields over a coordinate such as time. Live sources draw frames as they append.
 
 ```ts
-import { createGpu, createCanvasView } from '@latkit/gpu';
-import { createMonitor, attachMonitorInput } from '@latkit/monitor';
+import { createMonitor } from '@latkit/monitor';
 
-const gpu = await createGpu();
-const monitor = createMonitor({
-  gpu,
-  data: {
-    source: recording,
-    window: { kind: 'range', between: [0, 30] },
-    traces: {
-      temperature: { from: 'sensor', field: 'temperature', widthPx: 1.5 },
-    },
-  },
-  options: {
-    valueDomain: [0, 100],
-    coordinateAxis: { label: 'Time (s)' },
-    valueAxis: { label: 'Temperature' },
-  },
+const monitor = createMonitor(gpu, {
+  canvas,
+  source: observations,
+  traces: { temperature: { from: 'sensor', field: 'temperature', widthPx: 1.5 } },
+  camera: { window: [0, 30], values: [0, 100] },
+  coordinateAxis: 'Time (s)',
+  valueAxis: 'Temperature',
+  at: 12,
 });
-const view = createCanvasView({ gpu, canvas, renderer: monitor, onError: console.error });
-const detach = attachMonitorInput({ monitor, canvas });
-view.request({ at: 12 });
-monitor.on('select', (reading) => console.log(reading));
 ```
 
-`recording` supplies sampled numeric `sensor.temperature` values.
-Omit `rows` to show all covered rows, or select rows on each trace.
+`observations` is application-owned data supplying sampled numeric `sensor.temperature`. A trace draws one line per row; `rows`
+narrows them. `at` places the playhead, and moving it never rereads history.
 
-## Window and detail
+## Window
+
+The camera is `{ window, values, fit, follow }`:
 
 ```ts
-monitor.setWindow({ kind: 'range', between: [30, 60] });
-monitor.setOptions({ valueDomain: [10, 80] });
-view.request({ at: 45 });
+monitor.set({ camera: { window: [30, 60] } });
+monitor.set({ camera: { fit: true } }); // values fit the data
+monitor.set({ camera: { follow: 30 } }); // show the latest 30 as frames append
+monitor.fit(); // every recorded frame
 ```
 
-The playhead does not reload history. `detail: 'auto'` uses bounded
-first/minimum/maximum/last summaries; `detail: 'full'` reads every observation.
-Gaps remain gaps. All traces share the window and value domain.
+`detail: 'auto'` summarizes long histories with bounded envelopes; `'full'` reads every
+observation. Gaps stay gaps.
 
-Live sources publish appends. Set `follow: { span: 30 }` in options for a rolling
-window. Hover and click report original observations. `hover: 'off'` disables
-automatic hover reads; `hitTest` remains available.
+## Inspect
 
-## Cleanup
-
-```ts
-detach();
-view.destroy();
-monitor.destroy();
-gpu.destroy();
-await recording.close();
-```
-
-Renderers borrow their sources. For a fixed export, retain the source and use
-a dedicated renderer with [video export](video.md).
+Hover, click, and `pick` report exact observations as `Reading`s, never envelope values.
+`monitor.select(rows)` highlights rows, each narrowed to one trace when it names a `field`.
 
 [API](https://latkit.readthedocs.io/en/latest/api/reference/monitor/index.html)

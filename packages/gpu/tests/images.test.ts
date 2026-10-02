@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
-import { createGpu, TextureData } from '../src/index.js';
+import { createGpu } from '../src/index.js';
+import { TextureData } from '../src/kit.js';
 import { fakeDevice } from './fixtures/device.js';
 import { draw, renderer, target } from './fixtures/render.js';
 

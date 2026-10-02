@@ -1,28 +1,18 @@
 import { Work } from './work.js';
 import { assertIndex, bitAt, numberAt, textAt, rowAt, rowCount } from '@latkit/model';
 import type { Column, FieldDefinition, Index, Schema } from '@latkit/model';
-import { GpuError, scaleValue, sampleColormap, colormaps } from '@latkit/gpu';
-import type {
-  FieldInput,
-  ColorScale,
-  Scale,
-  RGBA,
-  TextInput,
-  TextMetrics,
-  TextFont,
-  NativeFields,
-  ResolvedScale,
-} from '@latkit/gpu';
-import type { DiagramData, VertexOptions, EdgeOptions, Labels } from './data.js';
+import { GpuError, colormaps, kit, type RGBA } from '@latkit/gpu';
+import type { DiagramData, VertexData, EdgeData, Labels } from './data.js';
 import type { Reader, Scene, Vertex, Edge, Label, Port } from './scene.js';
 import { emptyLabel } from './scene.js';
-import type { Options, Limits } from './options.js';
+import type { Limits } from './options.js';
+import type { Style } from './config.js';
 import { fail, sources } from './config.js';
 
 export type Measure = (
-  input: TextInput,
+  input: kit.TextInput,
   options?: { readonly signal?: AbortSignal },
-) => Promise<TextMetrics>;
+) => Promise<kit.TextMetrics>;
 export function scalar(column: Column | undefined, row: number): number | null {
   if (!column) return null;
   if (column.kind === 'numeric') return numberAt(column, row);
@@ -46,10 +36,10 @@ function text(column: Column | undefined, row: number): string {
   if (column.kind !== 'text') fail('Expected a text label field');
   return textAt(column, row) ?? '';
 }
-function fields(option: VertexOptions | EdgeOptions): Record<string, FieldInput> {
-  const out: Record<string, FieldInput> = {};
+function fields(option: VertexData | EdgeData): Record<string, kit.FieldInput> {
+  const out: Record<string, kit.FieldInput> = {};
   for (const key of ['color', 'status', 'width', 'flow'] as const) {
-    const scale = (option as VertexOptions & EdgeOptions)[key];
+    const scale = (option as VertexData & EdgeData)[key];
     if (scale) out[key] = scale.field;
   }
   for (const key of ['visible', 'shade'] as const) if (option[key]) out[key] = option[key]!;
@@ -71,7 +61,7 @@ function fields(option: VertexOptions | EdgeOptions): Record<string, FieldInput>
 interface Values {
   [name: string]: number | null;
 }
-function values(tile: NativeFields, row: number, names: readonly string[]): Values {
+function values(tile: kit.NativeFields, row: number, names: readonly string[]): Values {
   return Object.fromEntries(
     names.map((name) => [
       name,
@@ -81,27 +71,27 @@ function values(tile: NativeFields, row: number, names: readonly string[]): Valu
     ]),
   );
 }
-function mapped(raw: number | null, scale: ResolvedScale | undefined): number | null {
-  return scale ? scaleValue(raw ?? null, scale) : null;
+function mapped(raw: number | null, scale: kit.ResolvedScale | undefined): number | null {
+  return scale ? kit.scaleValue(raw ?? null, scale) : null;
 }
 function color(
   raw: number | null,
-  config: ColorScale | null | undefined,
-  scale: ResolvedScale | undefined,
+  config: kit.ColorScale | null | undefined,
+  scale: kit.ResolvedScale | undefined,
   fallback: RGBA,
 ): RGBA {
   const t = mapped(raw, scale);
-  return t === null ? fallback : sampleColormap(config?.colormap ?? colormaps.grays, t);
+  return t === null ? fallback : kit.sampleColormap(config?.colormap ?? colormaps.grays, t);
 }
 async function scales(
   reader: Reader,
   data: DiagramData,
   type: string,
-  option: VertexOptions | EdgeOptions,
-): Promise<Map<string, ResolvedScale>> {
-  const bindings = new Map<string, Scale | ColorScale>();
+  option: VertexData | EdgeData,
+): Promise<Map<string, kit.ResolvedScale>> {
+  const bindings = new Map<string, kit.Scale | kit.ColorScale>();
   for (const name of ['color', 'status', 'width', 'flow'] as const) {
-    const value = (option as VertexOptions & EdgeOptions)[name];
+    const value = (option as VertexData & EdgeData)[name];
     if (value) bindings.set(name, value);
   }
   if ('ports' in option)
@@ -109,7 +99,7 @@ async function scales(
       if (port.color) bindings.set('port-color:' + name, port.color);
       if (port.status) bindings.set('port-status:' + name, port.status);
     }
-  const result = new Map<string, ResolvedScale>();
+  const result = new Map<string, kit.ResolvedScale>();
   for (const [name, value] of bindings)
     result.set(
       name,
@@ -133,12 +123,12 @@ async function scales(
 export async function label(
   textValue: string,
   config: Labels | null | undefined,
-  options: Required<Options>,
+  options: Style,
   measure: Measure,
   signal: AbortSignal,
 ): Promise<Label> {
   if (!textValue) return emptyLabel;
-  const font: TextFont = config?.font ?? options.font,
+  const font: kit.TextFont = config?.font ?? options.font,
     size = config?.size ?? options.fontSizePx;
   const metric = (s: string) => measure({ text: s, font }, { signal });
   const max = config?.maxWidth ?? Infinity;
@@ -173,7 +163,7 @@ export async function label(
   let width = 0,
     height = 0,
     ascent = 0;
-  const runs: import('@latkit/gpu').TextRun[] = [];
+  const runs: kit.TextRun[] = [];
   for (const line of lines) {
     const m = await metric(line || ' ');
     const lineHeight = Math.max(size, (m.ascent + m.descent) * size);
@@ -193,7 +183,7 @@ export async function label(
 export async function readScene(
   data: DiagramData,
   reader: Reader,
-  options: Required<Options>,
+  options: Style,
   limits: Required<Limits>,
   measure: Measure,
   work = new Work(reader.signal, limits.prepareMs),

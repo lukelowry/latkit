@@ -1,13 +1,5 @@
-import {
-  resolveScale,
-  scaleValue,
-  type Gpu,
-  type TextRun,
-  type Viewport,
-  type RGBA,
-} from '@latkit/gpu';
+import { type Gpu, type RGBA, kit } from '@latkit/gpu';
 import { buffer } from './segments.js';
-import type { BufferData } from '@latkit/gpu';
 import type { Domain } from '@latkit/model';
 import type { Settings } from './config.js';
 import { insets } from './config.js';
@@ -20,12 +12,12 @@ export interface Plot {
 }
 export interface Axes {
   plot: Plot;
-  runs: readonly TextRun[];
-  lines: BufferData;
+  runs: readonly kit.TextRun[];
+  lines: kit.BufferData;
   lineCount: number;
   gridCount: number;
 }
-export function plot(view: Viewport, options: Settings): Plot {
+export function plot(view: kit.Viewport, options: Settings): Plot {
   const [top, right, bottom, left] = insets(options.paddingPx),
     size = options.fontSizePx;
   const x = left + (options.valueAxis === null ? 0 : Math.max(64, size * 7)),
@@ -42,18 +34,18 @@ export function plot(view: Viewport, options: Settings): Plot {
 }
 export async function axes(
   gpu: Gpu,
-  view: Viewport,
+  view: kit.Viewport,
   x: Domain,
   y: Domain,
   options: Settings,
   signal: AbortSignal,
 ): Promise<Axes> {
   const area = plot(view, options),
-    runs: TextRun[] = [],
+    runs: kit.TextRun[] = [],
     lines: number[] = [],
     grid: number[] = [];
-  const sx = resolveScale({ range: [area.x, area.x + area.width] }, x),
-    sy = resolveScale({ range: [area.y + area.height, area.y] }, y),
+  const sx = kit.resolveScale({ range: [area.x, area.x + area.width] }, x),
+    sy = kit.resolveScale({ range: [area.y + area.height, area.y] }, y),
     size = options.fontSizePx;
   const line = (a: number, b: number, c: number, d: number, color: RGBA) =>
     (color === options.gridColor ? grid : lines).push(a, b, c, d, ...color);
@@ -86,7 +78,7 @@ export async function axes(
       options.axisColor,
     );
     for (const tick of t.items) {
-      const px = scaleValue(tick.value, sx)!;
+      const px = kit.scaleValue(tick.value, sx)!;
       if (axis.grid !== false) line(px, area.y, px, area.y + area.height, options.gridColor);
       const text = tick.label ?? String(tick.value),
         metric = await gpu.measureText({ text, font: options.font }, { signal }),
@@ -104,7 +96,7 @@ export async function axes(
       t = ticks(y, area.height, { minSpacingPx: 40, ...axis });
     line(area.x, area.y, area.x, area.y + area.height, options.axisColor);
     for (const tick of t.items) {
-      const py = scaleValue(tick.value, sy)!;
+      const py = kit.scaleValue(tick.value, sy)!;
       if (axis.grid !== false) line(area.x, py, area.x + area.width, py, options.gridColor);
       await label(tick.label ?? String(tick.value), area.x - 8, py + size * 0.3, 'right');
     }

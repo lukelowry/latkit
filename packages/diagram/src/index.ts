@@ -1,14 +1,15 @@
+/** Draw a model as a block diagram: vertices with ports, wires, and groups, laid out or placed. */
 export { createDiagram } from './diagram.js';
 export type {
   Diagram,
-  DiagramOptions,
+  DiagramConfig,
   DiagramEvents,
   DiagramStats,
+  Camera,
   ConnectProposal,
   MoveProposal,
 } from './diagram.js';
 export type {
-  DiagramData,
   DiagramItem,
   DiagramHit,
   RowRef,
@@ -23,14 +24,7 @@ export type {
   RouteRequest,
   RouteEnd,
 } from './data.js';
-export type { Options, Limits } from './options.js';
 export { arrange } from './layout.js';
-export type {
-  ArrangeOptions,
-  LayoutOptions,
-  LayoutStrategy,
-  LayoutGraph,
-  LayoutVertex,
-} from './layout.js';
-export { attachDiagramInput } from './input.js';
-export type { InputOptions } from './input.js';
+export type { Layout, LayoutOptions, LayoutStrategy, LayoutGraph, LayoutVertex } from './layout.js';
+export type { Limits as DiagramLimits } from './options.js';
+export type { DiagramInput } from './input.js';

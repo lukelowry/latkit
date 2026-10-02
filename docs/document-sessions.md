@@ -1,33 +1,32 @@
-# Retain a data version
+# Application-owned data
 
-Use `Queryable.retain()` when several reads or an export must see the same data.
+Keep a `Data` value when several reads, views, or an export must see the same observations.
+The value already contains its schema, row identities, and column pages. No model acquisition
+or lifetime operation is needed.
 
 ```ts
-const fixed = await recording.retain({
-  window: { kind: 'range', between: [0, 10], context: { before: 1, after: 1 } },
-  maxBytes: 64 * 1024 * 1024,
-});
-try {
-  for await (const block of fixed.query({
-    kind: 'samples',
-    from: 'Bus',
-    select: ['Vm'],
-    window: { kind: 'range', between: [0, 10] },
-  })) {
-    if (block.kind === 'samples') console.log(block.coordinates);
-  }
-} finally {
-  await fixed.close();
+import { read } from '@latkit/model';
+
+const fixed = currentData; // Ordinary immutable application value.
+for await (const block of read(fixed, {
+  kind: 'samples',
+  from: 'Bus',
+  select: ['voltage'],
+  window: { kind: 'range', between: [0, 10] },
+})) {
+  if (block.kind === 'samples') console.log(block.coordinates);
 }
 ```
 
-Retention fixes schema, data, row identities, and observations.
-Queries outside its coverage reject rather than silently clipping.
-A nested retained acquisition has its own lifetime and may narrow coverage.
+Explicit frame requests outside supplied observations reject. Queries cannot retrieve missing
+history from a model. To save incoming observations, apply delivered patches to application
+storage using `appendData`; to replace them, use `createData`. Neither helper communicates
+with a producer or stores anything outside its returned value.
 
-A live recording starts over when the next recording command begins.
-Retained results survive that replacement and the parent's closure.
-Always close each acquisition you own.
+Pass a value to `createNetwork`, `createMonitor`, or `createDiagram` as `source`, and supply
+changes with `view.set({ source: nextData })`. Share unchanged pages to preserve caches and
+GPU uploads. Monitor can continue its existing image when shared pages prove an append.
 
-File editing, undo, persistence, and sharing belong to the application.
-There is no public `Document.Session` API in the current model contract.
+File editing, undo, persistence, memory limits, and sharing belong to the application.
+Unsubscribing or closing a connection does not invalidate values already delivered. There is
+no `retain`, `Recording`, model history export, or replay endpoint.

@@ -27,7 +27,7 @@ async function run(request: ExportRequest, signal: AbortSignal): Promise<WorkerR
   let file: FileSystemWritableFileStream | undefined;
   try {
     gpu = await createGpu();
-    content = await scene(gpu, request.view);
+    content = scene(gpu, request.view);
     const directory = await navigator.storage.getDirectory();
     const handle = await directory.getFileHandle(request.filename, { create: true });
     file = await handle.createWritable();
@@ -36,9 +36,7 @@ async function run(request: ExportRequest, signal: AbortSignal): Promise<WorkerR
       write: ({ position, bytes }) => destination.write({ type: 'write', position, data: bytes }),
     });
     const began = performance.now();
-    const result = await exportVideo({
-      gpu,
-      renderer: content.renderer,
+    const result = await exportVideo(content.view, {
       output,
       width: 1280,
       height: 720,
@@ -63,7 +61,7 @@ async function run(request: ExportRequest, signal: AbortSignal): Promise<WorkerR
     return { kind: 'error', message: error instanceof Error ? error.message : String(error) };
   } finally {
     try {
-      await content?.close();
+      content?.close();
     } finally {
       gpu?.destroy();
     }

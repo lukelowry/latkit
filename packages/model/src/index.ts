@@ -1,6 +1,5 @@
-/** Public Model/Recording contracts and explicit boundary validation. */
-export type { Model } from './model.js';
-export type { Recording, RecordingStatus } from './recording.js';
+/** Public data and passive model contracts and explicit boundary validation. */
+export type { Model, Commands, MonitorOptions } from './model.js';
 export type {
   Routine,
   Parameter,
@@ -28,11 +27,9 @@ export type {
 } from './data.js';
 export type { Schema, TypeDefinition, FieldDefinition } from './schema.js';
 export type {
-  Queryable,
   QueryHeader,
   FieldSelection,
   QueryOptions,
-  RetainOptions,
   Query,
   RowsQuery,
   SamplesQuery,
@@ -47,7 +44,6 @@ export type {
   RowsBlock,
   SamplesBlock,
   AggregateBlock,
-  Update,
 } from './query.js';
 export type {
   Version,
@@ -60,7 +56,6 @@ export type {
   RequestOptions,
   ProblemTarget,
   Problem,
-  Export,
   Failure,
 } from './types.js';
 export { blockBuffers, blockByteLength } from './buffers.js';
@@ -79,3 +74,19 @@ export {
   textAt,
   sampleAt,
 } from './access.js';
+
+export type {
+  Data,
+  TableData,
+  ColumnPage,
+  DataPatch,
+  RowsPatch,
+  SamplesPatch,
+  DataEvent,
+} from './materialized.js';
+export { read, selectRows } from './read.js';
+export type { ReadResult } from './read.js';
+export { createData, appendData, transactions } from './assemble.js';
+export { textColumn, sliceColumn, copyBuffers } from './columns.js';
+
+export { validateDataEvent } from './validation/event.js';

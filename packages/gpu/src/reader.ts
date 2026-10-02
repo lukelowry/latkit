@@ -1,4 +1,4 @@
-import type { Query, Queryable, RequestOptions, Version } from '@latkit/model';
+import type { Query, Data, RequestOptions, Version } from '@latkit/model';
 import type { FieldsRequest, NativeFields } from './binding.js';
 import type { QueryResult } from './render.js';
 import { Fields } from './fields.js';
@@ -11,7 +11,7 @@ import type { UploadScope } from './uploads.js';
 export interface NativeReader {
   readonly signal: AbortSignal;
   readonly at?: number;
-  query<Q extends Query>(source: Queryable, query: Q): AsyncIterable<QueryResult<Q>>;
+  query<Q extends Query>(source: Data, query: Q): AsyncIterable<QueryResult<Q>>;
   fields(request: FieldsRequest): AsyncIterable<NativeFields>;
   scale(request: import('./scale.js').ScaleRequest): Promise<import('./scale.js').ResolvedScale>;
   check(): void;
@@ -32,21 +32,14 @@ export function createNativeReader(
   const bytes = integer(options.maxBlockBytes ?? 1024 ** 2, 'block bytes', 1);
   const reads = new Reads(memory, bytes, true);
   const fields = new Fields(memory, bytes);
-  const versions = new Map<Queryable, Version>();
-  const subscriptions = new Map<Queryable, () => void>();
+  const versions = new Map<Data, Version>();
   const entries = new Set<Entry>();
   const checks: (() => void)[] = [];
   let closed = false;
-  const observe = (source: Queryable) => {
+  const observe = (source: Data) => {
     signal.throwIfAborted();
     if (!versions.has(source)) {
       versions.set(source, source.version);
-      subscriptions.set(
-        source,
-        source.on('change', (change) => {
-          if (change.kind === 'closed') stopped.abort(new GpuError('closed', 'Read source closed'));
-        }),
-      );
     }
   };
   const check = () => {
@@ -56,7 +49,7 @@ export function createNativeReader(
     for (const validate of checks) validate();
   };
   const query = async function* <Q extends Query>(
-    source: Queryable,
+    source: Data,
     request: Q,
   ): AsyncGenerator<QueryResult<Q>> {
     observe(source);
@@ -102,7 +95,6 @@ export function createNativeReader(
       if (closed) return;
       closed = true;
       stopped.abort(new DOMException('Read session closed', 'AbortError'));
-      for (const off of subscriptions.values()) off();
       for (const entry of entries) entry.unpin();
       reads.destroy();
       memory.destroy();

@@ -1,7 +1,6 @@
-/* global document, GPUBufferUsage, GPUMapMode */
-import { createGpu, createCanvasView, createRenderTarget } from '@latkit/gpu';
-import { createNetwork, attachNetworkInput } from '@latkit/network';
-import { colormaps } from '@latkit/gpu';
+/* global document, OffscreenCanvas, createImageBitmap */
+import { createGpu, colormaps, kit } from '@latkit/gpu';
+import { createNetwork } from '@latkit/network';
 import { PathSource, featureSource, references, vectors } from '../../dist/paths-fixture.js';
 import { GraphSource } from '../../dist/fixture.js';
 
@@ -9,8 +8,6 @@ const el = (id) => document.getElementById(id);
 const errors = [];
 let gpu,
   network,
-  view,
-  detach,
   source,
   at = 0,
   geographic = false,
@@ -22,7 +19,7 @@ function fail(error) {
 }
 function data(source, labels = true) {
   return {
-    source,
+    source: source.data,
     vertices: {
       node: {
         position: 'location',
@@ -35,7 +32,7 @@ function data(source, labels = true) {
       source.geographic && borders && el('borders').checked
         ? {
             border: {
-              source: borders,
+              source: borders.data,
               points: 'points',
               widthPx: 0.8,
               baseColor: [0.45, 0.62, 0.68, 0.72],
@@ -68,11 +65,15 @@ function recordingControls(enabled) {
     el(id).disabled = !enabled;
 }
 function updateChannels() {
-  network.setVertex('node', channelBindings());
-  network.setEdge('line', {
-    color: el('channel-color').checked
-      ? { field: 'signal', domain: [0, 1], colormap: colormaps.viridis }
-      : null,
+  network.set({
+    vertices: { node: channelBindings() },
+    edges: {
+      line: {
+        color: el('channel-color').checked
+          ? { field: 'signal', domain: [0, 1], colormap: colormaps.viridis }
+          : null,
+      },
+    },
   });
 }
 function update() {
@@ -92,60 +93,71 @@ function update() {
   el('hover-state').textContent =
     hover[stats.hover] + (stats.hoverMs ? ' (' + stats.hoverMs.toFixed(2) + ' ms)' : '');
 }
+/** Report the presented network after each frame. */
+function observe(describe) {
+  network.on('error', fail);
+  network.on('frame', update);
+  network.on('select', (items) => {
+    el('status').textContent = describe(items[0]);
+  });
+}
 function show(count = Number(el('size').value), geo = geographic) {
-  detach?.();
-  view?.destroy();
   network?.destroy();
   source = new GraphSource(count, 4096, geo);
   geographic = geo;
   recordingControls(true);
-  network = createNetwork({
-    gpu,
-    data: data(source, labelled),
+  network = createNetwork(gpu, {
+    ...data(source, labelled),
+    canvas: el('graph'),
+    at,
     camera: { projection: geo ? 'globe' : 'flat', pitch: geo ? 15 : 0 },
-    options: {
-      vertexRadiusPx: count > 10000 ? 1.4 : count > 1000 ? 2 : 4,
-      edgeWidthPx: count > 10000 ? 0.5 : 1.1,
-      graticule: geo,
-      daylight: geo,
-      sunTime: Date.UTC(2026, 8, 30, 17),
-      msaa: 4,
-      poles: el('poles').checked,
-      hover: el('hover-mode').value,
-      hoverBudgetMs: Number(el('hover-budget').value),
-    },
+    vertexRadiusPx: count > 10000 ? 1.4 : count > 1000 ? 2 : 4,
+    edgeWidthPx: count > 10000 ? 0.5 : 1.1,
+    showGraticule: geo,
+    daylight: geo,
+    sunTime: Date.UTC(2026, 8, 30, 17),
+    msaa: 4,
+    showPoles: el('poles').checked,
+    hover: el('hover-mode').value,
+    hoverBudgetMs: Number(el('hover-budget').value),
   });
   updateChannels();
-  network.on('select', (item) => {
-    el('status').textContent = item
-      ? 'Selected ' + item.index.type + ' row ' + item.row
-      : 'Interactive';
-  });
-  view = createCanvasView({
-    gpu,
-    canvas: el('graph'),
-    renderer: network,
-    onError: fail,
-    onRendered: update,
-  });
-  detach = attachNetworkInput({ network, canvas: el('graph') });
-  view.request({ at });
+  observe((item) => (item ? 'Selected ' + item.index.type + ' row ' + item.row : 'Interactive'));
   el('status').textContent = 'Interactive';
 }
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+/** Pan by pixels on a flat, unrotated camera, as a drag does. */
+function pan(view, dx, dy) {
+  const { center, scale } = view.camera;
+  view.set({ camera: { center: [center[0] - dx / scale, center[1] + dy / scale] } });
+}
+/** RGBA bytes of an offscreen image of the view. */
+async function pixels(view, options) {
+  const bitmap = await createImageBitmap(await view.image(options), {
+    colorSpaceConversion: 'none',
+    premultiplyAlpha: 'none',
+  });
+  const { width, height } = bitmap,
+    context = new OffscreenCanvas(width, height).getContext('2d');
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return context.getImageData(0, 0, width, height).data;
+}
 async function benchmark(count = 100000) {
-  view?.pause();
+  network?.set({ paused: true });
   const baseline = gpu.stats();
   const fixture = new GraphSource(count, 4096),
-    renderer = createNetwork({
-      gpu,
-      data: data(fixture, false),
-      options: { msaa: 1, vertexRadiusPx: 1, edgeWidthPx: 0.6 },
+    view = createNetwork(gpu, {
+      ...data(fixture, false),
+      msaa: 1,
+      vertexRadiusPx: 1,
+      edgeWidthPx: 0.6,
     });
-  const target = createRenderTarget({ gpu, width: 1280, height: 720 });
+  const renderer = kit.rendererOf(view),
+    target = kit.createRenderTarget({ gpu, width: 1280, height: 720 });
   const render = (coordinate) =>
     gpu.render({ timeMs: 0, views: [{ renderer, target, at: coordinate }] });
   try {
@@ -158,7 +170,7 @@ async function benchmark(count = 100000) {
     const cpu = [],
       complete = [];
     for (let i = 0; i < 12; i++) {
-      renderer.panBy(i % 2 ? 2 : -2, 0);
+      pan(view, i % 2 ? 2 : -2, 0);
       const t = performance.now();
       await render(0);
       cpu.push(performance.now() - t);
@@ -185,7 +197,7 @@ async function benchmark(count = 100000) {
       recordingCompleteMedianMs: median(sampled),
       cameraQueries,
       cameraUploadedBytes: cameraUploads,
-      drawCalls: renderer.stats().drawCalls,
+      drawCalls: view.stats().drawCalls,
       gpu: {
         cpuBytes: gpu.stats().cpuBytes,
         gpuBytes: gpu.stats().gpuBytes,
@@ -194,44 +206,52 @@ async function benchmark(count = 100000) {
       },
     };
   } finally {
-    renderer.destroy();
+    view.destroy();
     target.destroy();
     await gpu.idle();
     gpu.trim();
-    view?.resume();
+    network?.set({ paused: false });
   }
 }
 async function benchmarkHover(count = 100000) {
-  view?.pause();
+  network?.set({ paused: true });
   const fixture = new GraphSource(count, 4096, true);
-  const renderer = createNetwork({
-    gpu,
-    data: data(fixture, false),
-    options: { msaa: 1, vertexRadiusPx: 1.4, edgeWidthPx: 0.5, poles: false },
+  const view = createNetwork(gpu, {
+    ...data(fixture, false),
+    msaa: 1,
+    vertexRadiusPx: 1.4,
+    edgeWidthPx: 0.5,
+    showPoles: false,
   });
-  const target = createRenderTarget({ gpu, width: 1280, height: 720 });
+  const renderer = kit.rendererOf(view),
+    target = kit.createRenderTarget({ gpu, width: 1280, height: 720 });
   const render = (at = 0) => gpu.render({ timeMs: 0, views: [{ renderer, target, at }] });
   const results = [];
   const percentile = (values, fraction) =>
     [...values].sort((a, b) => a - b)[Math.ceil(values.length * fraction) - 1];
   try {
     for (const projection of ['flat', 'tilt', 'globe']) {
-      renderer.setPointer(null);
-      renderer.setCamera({ projection, pitch: projection === 'flat' ? 0 : 50, fit: true });
+      // The pointer hook input drives; frames search for hover.
+      view.point(null);
+      view.set({ camera: { projection, pitch: projection === 'flat' ? 0 : 50, fit: true } });
       await render();
-      renderer.setCamera({ fit: false });
+      view.set({ camera: { fit: false } });
       for (const moving of [false, true]) {
-        renderer.setVertex('node', {
-          position: moving ? { x: 'x', y: 'y' } : 'location',
-          height: moving ? { field: 'z', domain: [0, 1] } : null,
+        view.set({
+          vertices: {
+            node: {
+              position: moving ? { x: 'x', y: 'y' } : 'location',
+              height: moving ? { field: 'z', domain: [0, 1] } : null,
+            },
+          },
         });
         // Warm the same coordinates for both policies before measuring.
-        renderer.setOptions({ hover: 'off' });
+        view.set({ hover: 'off' });
         for (let i = 0; i < 8; i++) await render(moving ? i : 0);
         await gpu.idle();
         await new Promise((resolve) => setTimeout(resolve, 160));
         for (const hover of ['auto', 'off']) {
-          renderer.setOptions({ hover });
+          view.set({ hover });
           const pointer = [],
             submit = [],
             complete = [],
@@ -242,17 +262,17 @@ async function benchmarkHover(count = 100000) {
           for (let i = 0; i < 8; i++) {
             const point = [640 + Math.cos(i * 0.43) * 70, 360 + Math.sin(i * 0.43) * 50];
             let start = performance.now();
-            renderer.setPointer(point);
+            view.point(point);
             pointer.push(performance.now() - start);
             start = performance.now();
             await render(moving ? i : 0);
             submit.push(performance.now() - start);
             await gpu.idle();
             complete.push(performance.now() - start);
-            searches.push(renderer.stats().hoverMs);
-            states.add(renderer.stats().hover);
+            searches.push(view.stats().hoverMs);
+            states.add(view.stats().hover);
           }
-          assert(renderer.stats().pickingBytes === 0, 'Automatic hover allocated spatial trees');
+          assert(view.stats().pickingBytes === 0, 'Automatic hover allocated spatial trees');
           assert(fixture.endsQueries === beforeEnds, 'Hover reread the edge ends');
           results.push({
             projection,
@@ -261,15 +281,15 @@ async function benchmarkHover(count = 100000) {
             vertices: count,
             edges: fixture.from.length,
             samples: pointer.length,
-            setPointerMedianMs: median(pointer),
-            setPointerP95Ms: percentile(pointer, 0.95),
+            pointerMedianMs: median(pointer),
+            pointerP95Ms: percentile(pointer, 0.95),
             submitMedianMs: median(submit),
             completeMedianMs: median(complete),
             completeP95Ms: percentile(complete, 0.95),
-            latestSearchMs: renderer.stats().hoverMs,
+            latestSearchMs: view.stats().hoverMs,
             maxSearchMs: Math.max(...searches),
             states: [...states],
-            pickingBytes: renderer.stats().pickingBytes,
+            pickingBytes: view.stats().pickingBytes,
             sourceQueries: fixture.queries - beforeQueries,
             endsQueries: fixture.endsQueries - beforeEnds,
           });
@@ -278,11 +298,11 @@ async function benchmarkHover(count = 100000) {
     }
     return results;
   } finally {
-    renderer.destroy();
+    view.destroy();
     target.destroy();
     await gpu.idle();
     gpu.trim();
-    view?.resume();
+    network?.set({ paused: false });
   }
 }
 async function checks() {
@@ -297,57 +317,40 @@ async function checks() {
   show();
   const checks = [];
   const fixture = new GraphSource(25, 3),
-    renderer = createNetwork({
-      gpu,
-      data: data(fixture, false),
-      options: { msaa: 1, vertexRadiusPx: 8, daylight: false },
+    view = createNetwork(gpu, {
+      ...data(fixture, false),
+      msaa: 1,
+      vertexRadiusPx: 8,
+      daylight: false,
     });
-  const target = createRenderTarget({ gpu, width: 256, height: 256 });
-  const readback = gpu.buffer({
-    size: 256 * 256 * 4,
-    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-  });
+  const size = { width: 256, height: 256 };
   try {
     device.pushErrorScope('validation');
-    await gpu.render({
-      timeMs: 0,
-      views: [{ renderer, target, at: 0 }],
-      encode(encoder) {
-        encoder.copyTextureToBuffer(
-          { texture: target.texture() },
-          { buffer: readback.buffer, bytesPerRow: 1024 },
-          [256, 256],
-        );
-      },
-    });
-    await readback.buffer.mapAsync(GPUMapMode.READ);
-    const bytes = new Uint8Array(readback.buffer.getMappedRange());
+    const bytes = await pixels(view, { ...size, at: 0 });
     let bright = 0;
     for (let i = 0; i < bytes.length; i += 4) if (bytes[i + 1] > 80 || bytes[i + 2] > 100) bright++;
     assert(bright > 400, 'Graph did not produce visible pixels');
-    readback.buffer.unmap();
-    const item = { kind: 'vertex', source: fixture, index: fixture.index('node'), row: 12 },
-      point = renderer.locate(item);
-    assert(point, 'Native vertex could not be located');
-    const hits = renderer.hitTest(point);
+    const item = { kind: 'vertex', source: fixture.data, index: fixture.index('node'), row: 12 },
+      located = view.locate(item);
+    assert(located, 'Native vertex could not be located');
+    const hits = await view.pick(located);
     assert(hits[0]?.kind === 'vertex' && hits[0]?.row === 12, 'Picking lost physical row identity');
-    renderer.setCamera({ projection: 'tilt', pitch: 45 });
-    await gpu.render({ timeMs: 0, views: [{ renderer, target, at: 1 }] });
-    const tilt = renderer.locate(item);
-    assert(renderer.hitTest(tilt)[0]?.row === 12, 'Tilt picking differs from geometry');
+    view.set({ camera: { projection: 'tilt', pitch: 45 } });
+    await view.image({ ...size, at: 1 });
+    const tilt = view.locate(item);
+    assert((await view.pick(tilt))[0]?.row === 12, 'Tilt picking differs from geometry');
     const ends = fixture.endsQueries;
-    renderer.setVertex('node', {
-      position: { x: 'x', y: 'y' },
-      height: { field: 'z', domain: [0, 1] },
+    view.set({
+      vertices: { node: { position: { x: 'x', y: 'y' }, height: { field: 'z', domain: [0, 1] } } },
     });
-    await gpu.render({ timeMs: 0, views: [{ renderer, target, at: 2 }] });
-    const moving = renderer.locate(item);
+    await view.image({ ...size, at: 2 });
+    const moving = view.locate(item);
     assert(
       Math.hypot(moving[0] - tilt[0], moving[1] - tilt[1]) > 1,
       'Recording positions did not move the vertex',
     );
     assert(
-      renderer.hitTest(moving).some((hit) => hit.kind === 'vertex' && hit.row === item.row),
+      (await view.pick(moving)).some((hit) => hit.kind === 'vertex' && hit.row === item.row),
       'Sampled position picking lost row identity',
     );
     assert(fixture.endsQueries === ends, 'Changing recording channels reread the edge ends');
@@ -359,52 +362,43 @@ async function checks() {
       'Tilt projection',
       'Small native blocks / cross-page fields',
       'Sampled X / Y / Z position and picking',
-      'Recording channels keep the edge ends',
+      'Sampled channels keep the edge ends',
     );
   } finally {
-    readback.destroy();
-    renderer.destroy();
-    target.destroy();
+    view.destroy();
   }
-  const features = featureSource(),
-    featureTarget = createRenderTarget({ gpu, width: 512, height: 512 });
-  const featureRenderer = createNetwork({
-    gpu,
-    data: {
-      source: features,
-      vertices: { node: { position: 'position', labels: { field: 'name', maxCount: 4 } } },
-      edges: {
-        route: { ends: ['from', 'to'], curve: 'geodesic', labels: { field: 'name' } },
-        star: {},
-        bend: { ends: ['from', 'to'], bends: 'points' },
-      },
-      paths: { seam: { points: 'points', pickable: true } },
+  const features = featureSource();
+  const featureView = createNetwork(gpu, {
+    source: features.data,
+    vertices: { node: { position: 'position', labels: { field: 'name', maxCount: 4 } } },
+    edges: {
+      route: { ends: ['from', 'to'], curve: 'geodesic', labels: { field: 'name' } },
+      star: {},
+      bend: { ends: ['from', 'to'], bends: 'points' },
     },
-    camera: { centerX: -30, centerY: 5, scale: 3 },
-    options: { edgeWidthPx: 3 },
+    paths: { seam: { points: 'points', pickable: true } },
+    camera: { center: [-30, 5], scale: 3 },
+    edgeWidthPx: 3,
   });
   try {
     device.pushErrorScope('validation');
     for (const projection of ['flat', 'tilt', 'globe']) {
-      featureRenderer.setCamera({ projection, pitch: projection === 'tilt' ? 40 : 0 });
-      await gpu.render({
-        timeMs: 0,
-        views: [{ renderer: featureRenderer, target: featureTarget }],
-      });
-      const item = { kind: 'edge', source: features, index: features.index('route'), row: 0 },
-        point = featureRenderer.locate(item);
+      featureView.set({ camera: { projection, pitch: projection === 'tilt' ? 40 : 0 } });
+      await featureView.image({ width: 512, height: 512 });
+      const item = { kind: 'edge', source: features.data, index: features.index('route'), row: 0 },
+        located = featureView.locate(item);
       assert(
-        point && featureRenderer.hitTest(point).some((hit) => hit.index.type === 'route'),
+        located && (await featureView.pick(located)).some((hit) => hit.index.type === 'route'),
         'Geodesic picking failed in ' + projection,
       );
     }
-    const star = { kind: 'edge', source: features, index: features.index('star'), row: 0 };
+    const star = { kind: 'edge', source: features.data, index: features.index('star'), row: 0 };
     assert(
-      featureRenderer.neighborhood(star).filter((item) => item.kind === 'vertex').length === 4,
+      featureView.neighborhood(star).filter((item) => item.kind === 'vertex').length === 4,
       'Net adjacency lost vertices',
     );
-    featureRenderer.select(star);
-    await gpu.render({ timeMs: 0, views: [{ renderer: featureRenderer, target: featureTarget }] });
+    featureView.select([star]);
+    await featureView.image({ width: 512, height: 512 });
     const error = await device.popErrorScope();
     assert(!error, error?.message);
     checks.push(
@@ -413,8 +407,7 @@ async function checks() {
       'Shared vertex and edge text anchors',
     );
   } finally {
-    featureRenderer.destroy();
-    featureTarget.destroy();
+    featureView.destroy();
   }
   const seamSource = new PathSource({
     node: { position: vectors([170, 20, -170, 20]) },
@@ -424,48 +417,26 @@ async function checks() {
       to: references('node', [1]),
     },
   });
-  const seamRenderer = createNetwork({
-    gpu,
-    data: {
-      source: seamSource,
-      vertices: { node: { position: 'position' } },
-      edges: { route: { ends: ['from', 'to'], curve: 'geodesic' } },
-    },
-    camera: { centerX: 0, centerY: 20, scale: 1.2 },
-    options: {
-      vertices: false,
-      earthAxis: false,
-      edgeBaseColor: [1, 1, 1, 1],
-      backgroundColor: [0, 0, 0, 1],
-      surfaceColor: [0, 0, 0, 1],
-      edgeWidthPx: 2,
-      dashPeriodPx: 8,
-      msaa: 1,
-    },
-  });
-  const seamTarget = createRenderTarget({ gpu, width: 512, height: 512, format: 'rgba8unorm' });
-  const pixels = gpu.buffer({
-    size: 512 * 512 * 4,
-    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  const seamView = createNetwork(gpu, {
+    source: seamSource.data,
+    vertices: { node: { position: 'position' } },
+    edges: { route: { ends: ['from', 'to'], curve: 'geodesic' } },
+    camera: { center: [0, 20], scale: 1.2 },
+    showVertices: false,
+    showEarthAxis: false,
+    edgeBaseColor: [1, 1, 1, 1],
+    backgroundColor: [0, 0, 0, 1],
+    surfaceColor: [0, 0, 0, 1],
+    edgeWidthPx: 2,
+    dashPeriodPx: 8,
+    msaa: 1,
   });
   try {
     device.pushErrorScope('validation');
     const counts = [];
     for (const dash of [null, 'dashed']) {
-      seamRenderer.setEdge('route', { dash });
-      await gpu.render({
-        timeMs: 0,
-        views: [{ renderer: seamRenderer, target: seamTarget }],
-        encode(encoder) {
-          encoder.copyTextureToBuffer(
-            { texture: seamTarget.texture() },
-            { buffer: pixels.buffer, bytesPerRow: 2048 },
-            [512, 512],
-          );
-        },
-      });
-      await pixels.buffer.mapAsync(GPUMapMode.READ);
-      const bytes = new Uint8Array(pixels.buffer.getMappedRange());
+      seamView.set({ edges: { route: { dash } } });
+      const bytes = await pixels(seamView, { width: 512, height: 512 });
       let left = 0,
         right = 0,
         middle = 0;
@@ -476,7 +447,6 @@ async function checks() {
         else if (x > 412) right++;
         else middle++;
       }
-      pixels.buffer.unmap();
       assert(
         left > 10 && right > 10 && middle === 0,
         'Geodesic must split at the dateline without crossing the map',
@@ -491,9 +461,7 @@ async function checks() {
     assert(!error, error?.message);
     checks.push('Dashed geodesic seam pixels / hidden vertex markers');
   } finally {
-    pixels.destroy();
-    seamRenderer.destroy();
-    seamTarget.destroy();
+    seamView.destroy();
   }
   const result = {
     adapter: adapter.info
@@ -518,25 +486,25 @@ async function checks() {
 el('size').addEventListener('change', () => show());
 el('flat').onclick = () => {
   if (geographic && source instanceof GraphSource) show(Number(el('size').value), false);
-  else network.setCamera({ projection: 'flat', pitch: 0, fit: true });
+  else network.set({ camera: { projection: 'flat', pitch: 0, fit: true } });
 };
-el('tilt').onclick = () => network.setCamera({ projection: 'tilt', pitch: 50, fit: false });
+el('tilt').onclick = () => network.set({ camera: { projection: 'tilt', pitch: 50, fit: false } });
 el('globe').onclick = () => {
   if (source instanceof GraphSource) show(Number(el('size').value), true);
-  else network.setCamera({ projection: 'globe', pitch: 0, fit: false });
+  else network.set({ camera: { projection: 'globe', pitch: 0, fit: false } });
 };
-el('fit').onclick = () => network.fit({ animate: true });
-el('orbit').onclick = () => network.orbit(!network.orbiting);
+el('fit').onclick = () => network.fit(undefined, { animate: true });
+el('orbit').onclick = () => network.set({ camera: { orbit: !network.camera.orbit } });
 el('labels').onclick = () => {
   labelled = !labelled;
-  network.setVertex('node', {
-    labels: labelled ? { field: 'name', size: 11, maxCount: 45 } : null,
+  network.set({
+    vertices: { node: { labels: labelled ? { field: 'name', size: 11, maxCount: 45 } : null } },
   });
 };
 el('time').oninput = () => {
   at = Number(el('time').value);
   el('time-value').textContent = at + ' s';
-  view.request({ at });
+  network.set({ at });
 };
 el('benchmark').onclick = () => {
   el('status').textContent = 'Benchmarking...';
@@ -547,11 +515,11 @@ el('benchmark').onclick = () => {
 };
 for (const channel of ['color', 'x', 'y', 'z'])
   el('channel-' + channel).addEventListener('change', updateChannels);
-el('poles').onchange = () => network.setOptions({ poles: el('poles').checked });
-el('hover-mode').onchange = () => network.setOptions({ hover: el('hover-mode').value });
+el('poles').onchange = () => network.set({ showPoles: el('poles').checked });
+el('hover-mode').onchange = () => network.set({ hover: el('hover-mode').value });
 el('hover-budget').onchange = () => {
   if (el('hover-budget').reportValidity())
-    network.setOptions({ hoverBudgetMs: Number(el('hover-budget').value) });
+    network.set({ hoverBudgetMs: Number(el('hover-budget').value) });
 };
 el('hover-benchmark').onclick = () => {
   el('status').textContent = 'Measuring hover in all projections...';
@@ -598,71 +566,55 @@ async function showFeatures(reset = true) {
   }
   recordingControls(false);
   await loadBorders();
-  detach?.();
-  view?.destroy();
   network?.destroy();
   source = featureSource();
   geographic = true;
-  network = createNetwork({
-    gpu,
-    data: {
-      source,
-      vertices: { node: { position: 'position', labels: { field: 'name' } } },
-      edges: {
-        bend: { ends: ['from', 'to'], bends: 'points', labels: { field: 'name' } },
-        star: { labels: { field: 'name' } },
-        route: {
-          ends: ['from', 'to'],
-          curve: el('geodesic').checked ? 'geodesic' : 'linear',
-          labels: { field: 'name' },
-        },
-      },
-      paths: {
-        ...(el('borders').checked
-          ? {
-              border: {
-                source: borders,
-                points: 'points',
-                widthPx: 0.8,
-                baseColor: [0.3, 0.48, 0.58, 0.75],
-              },
-            }
-          : {}),
-        seam: { points: 'points', pickable: true, widthPx: 2, baseColor: [1, 0.6, 0.25, 1] },
-      },
-    },
-    camera: { centerX: -35, centerY: 5, scale: 4, projection: 'globe', pitch: 0 },
-    options: {
-      poles: el('poles').checked,
-      hover: el('hover-mode').value,
-      hoverBudgetMs: Number(el('hover-budget').value),
-      edgeBaseColor: [0.95, 0.67, 0.25, 1],
-      edgeWidthPx: 2,
-      graticule: true,
-    },
-  });
-  network.on('select', (item) => {
-    el('status').textContent = item
-      ? item.kind + ' / ' + item.index.type + ' / row ' + item.row
-      : 'Geometry features';
-  });
-  view = createCanvasView({
-    gpu,
+  network = createNetwork(gpu, {
     canvas: el('graph'),
-    renderer: network,
-    onError: fail,
-    onRendered: update,
+    at: 0,
+    source: source.data,
+    vertices: { node: { position: 'position', labels: { field: 'name' } } },
+    edges: {
+      bend: { ends: ['from', 'to'], bends: 'points', labels: { field: 'name' } },
+      star: { labels: { field: 'name' } },
+      route: {
+        ends: ['from', 'to'],
+        curve: el('geodesic').checked ? 'geodesic' : 'linear',
+        labels: { field: 'name' },
+      },
+    },
+    paths: {
+      ...(el('borders').checked
+        ? {
+            border: {
+              source: borders.data,
+              points: 'points',
+              widthPx: 0.8,
+              baseColor: [0.3, 0.48, 0.58, 0.75],
+            },
+          }
+        : {}),
+      seam: { points: 'points', pickable: true, widthPx: 2, baseColor: [1, 0.6, 0.25, 1] },
+    },
+    camera: { center: [-35, 5], scale: 4, projection: 'globe', pitch: 0 },
+    showPoles: el('poles').checked,
+    hover: el('hover-mode').value,
+    hoverBudgetMs: Number(el('hover-budget').value),
+    edgeBaseColor: [0.95, 0.67, 0.25, 1],
+    edgeWidthPx: 2,
+    showGraticule: true,
   });
-  detach = attachNetworkInput({ canvas: el('graph'), network });
-  view.request({ at: 0 });
+  observe((item) =>
+    item ? item.kind + ' / ' + item.index.type + ' / row ' + item.row : 'Geometry features',
+  );
   el('status').textContent = 'Bends, four-way junction, geodesic, borders and shared labels';
 }
 async function benchmarkPaths(count = 100000, moving = false) {
-  view?.pause();
+  network?.set({ paused: true });
   const borders = await loadBorders(),
     fixture = new GraphSource(count, 4096, true),
     results = [];
-  const target = createRenderTarget({ gpu, width: 1200, height: 700, format: 'rgba8unorm' });
+  const target = kit.createRenderTarget({ gpu, width: 1200, height: 700, format: 'rgba8unorm' });
   try {
     for (const curve of ['linear', 'geodesic'])
       for (const detailed of [false, true]) {
@@ -673,16 +625,20 @@ async function benchmarkPaths(count = 100000, moving = false) {
           input.vertices.node.height = { field: 'z', domain: [0, 1] };
         }
         input.paths = detailed
-          ? { border: { source: borders, points: 'points', widthPx: 0.8 } }
+          ? { border: { source: borders.data, points: 'points', widthPx: 0.8 } }
           : undefined;
-        const renderer = createNetwork({
-          gpu,
-          data: input,
-          camera: { centerX: -65, centerY: 5, scale: 4, projection: 'globe', pitch: 15 },
-          options: { hover: 'auto', poles: false, vertexRadiusPx: 1.4, edgeWidthPx: 0.5, msaa: 4 },
+        const view = createNetwork(gpu, {
+          ...input,
+          camera: { center: [-65, 5], scale: 4, projection: 'globe', pitch: 15 },
+          hover: 'auto',
+          showPoles: false,
+          vertexRadiusPx: 1.4,
+          edgeWidthPx: 0.5,
+          msaa: 4,
         });
+        const renderer = kit.rendererOf(view);
         const draw = async (i) => {
-          renderer.setCamera({ bearing: i * 0.3 });
+          view.set({ camera: { bearing: i * 0.3 } });
           const start = performance.now();
           await gpu.render({
             timeMs: i * 16,
@@ -712,25 +668,25 @@ async function benchmarkPaths(count = 100000, moving = false) {
             completeP95Ms: sorted[15],
             cameraQueries: fixture.queries + borders.queries - queries,
             cameraUploadedBytes: gpu.stats().uploadedBytes - before.uploadedBytes,
-            stats: renderer.stats(),
+            stats: view.stats(),
           });
         } finally {
-          renderer.destroy();
+          view.destroy();
           await gpu.idle();
           gpu.trim();
         }
       }
   } finally {
     target.destroy();
-    view?.resume();
+    network?.set({ paused: false });
   }
   return results;
 }
 el('geodesic').onchange = () => {
+  const curve = el('geodesic').checked ? 'geodesic' : 'linear';
   if (!geographic) show(Number(el('size').value), true);
-  else if (source instanceof GraphSource)
-    network.setEdge('line', { curve: el('geodesic').checked ? 'geodesic' : 'linear' });
-  else network.setEdge('route', { curve: el('geodesic').checked ? 'geodesic' : 'linear' });
+  else if (source instanceof GraphSource) network.set({ edges: { line: { curve } } });
+  else network.set({ edges: { route: { curve } } });
 };
 el('borders').onchange = () => {
   void loadBorders().then(

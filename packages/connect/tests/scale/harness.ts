@@ -5,15 +5,16 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'tsup';
 import { connect, serve, messagePort, byteTransport } from '../../src/index.js';
 import type { Model } from '@latkit/model';
-import { ScaleModel } from '../../../model/tests/scale/model.js';
-import type { Metrics } from '../../../model/tests/scale/store.js';
-import { deferred } from '../../../model/tests/scale/store.js';
+import { Producer } from './producer.js';
+import type { Metrics } from './producer.js';
+import { deferred } from '../fixture.js';
 import { socketPair } from './socket.js';
 import type { SocketMetrics } from './socket.js';
 export const modes = ['local', 'message', 'framed', 'worker', 'socket'] as const;
 export type Mode = (typeof modes)[number];
 export interface Harness {
   model: Model;
+  commands: import('@latkit/model').Commands;
   metrics(): Promise<Metrics>;
   pause(value: boolean): Promise<void>;
   socket: SocketMetrics;
@@ -45,17 +46,17 @@ export async function harness(
   pageRows = 8192,
   options: ConnectOptions = {},
 ): Promise<Harness> {
-  const native = new ScaleModel(rows, pageRows);
+  const native = new Producer(rows, pageRows);
   const socket = { sentBytes: 0, receivedBytes: 0, decodedBytes: 0, maxFrameBytes: 0 };
   if (mode === 'local')
     return {
       model: native,
+      commands: native.commands,
       metrics: async () => native.inspect(),
       pause: async (value) => native.pause(value),
       socket,
       async close() {
-        for (const monitor of [...native.monitors]) await monitor.close();
-        await native.close();
+        native.close();
         native.pause(false);
       },
     };
@@ -106,6 +107,7 @@ export async function harness(
       });
       return {
         model: remote,
+        commands: remote.commands!,
         metrics: () => (finalMetrics ? Promise.resolve(finalMetrics) : request('metrics')),
         pause: async (value) => {
           await request('pause', value);
@@ -155,11 +157,12 @@ export async function harness(
     );
     [client, server] = transports;
   }
-  const serving = serve(server, native);
+  const serving = serve(server, native, { commands: native.commands });
   void serving.catch(() => undefined);
   const remote = await connect(client, options);
   return {
     model: remote,
+    commands: remote.commands!,
     metrics: async () => native.inspect(),
     pause: async (value) => native.pause(value),
     socket,

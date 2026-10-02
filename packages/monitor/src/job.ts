@@ -5,7 +5,6 @@ import { history, isEnvelope } from './history.js';
 import { split, Seams, type Geometry } from './segments.js';
 import { deferred, wait } from './async.js';
 import type { Image } from './rendering/painter.js';
-import type { Sources } from './sources.js';
 import { Coverage } from './coverage.js';
 
 export interface QueuedChunk {
@@ -25,7 +24,7 @@ export class Job {
   readonly stop = new AbortController();
   readonly seams: Seams;
   readonly coverage = new Coverage();
-  readonly endFrames = new Map<import('@latkit/model').Queryable, number>();
+  readonly endFrames = new Map<import('@latkit/model').Data, number>();
   readonly queue: QueuedChunk[] = [];
   private finished = false;
   error?: unknown;
@@ -42,7 +41,7 @@ export class Job {
   }
   peakBytes = 0;
   readonly completion: Promise<void>;
-  readonly versions = new Map<import('@latkit/model').Queryable, string>();
+  readonly versions = new Map<import('@latkit/model').Data, string>();
   work = 4096;
   rows = 0;
   timeMs = 0;
@@ -53,7 +52,6 @@ export class Job {
     readonly target: Image,
     request: Omit<HistoryRequest, 'signal'>,
     private readonly changed: () => void,
-    sources: Sources,
     seed?: Seams,
   ) {
     this.seams = new Seams(request.limits.historyBytes);
@@ -62,7 +60,7 @@ export class Job {
       1,
       Math.min(8 * 1024 ** 2, request.gpu.budget.cpuBytes / 8, request.limits.historyBytes / 4),
     );
-    this.completion = this.run(request, sources);
+    this.completion = this.run(request);
     void this.completion.catch(() => {});
   }
   get ready() {
@@ -77,13 +75,10 @@ export class Job {
   get pending(): Promise<void> | undefined {
     return this.ready || this.done ? undefined : this.next.promise;
   }
-  private async run(request: Omit<HistoryRequest, 'signal'>, sources: Sources) {
-    let release: (() => void) | undefined;
+  private async run(request: Omit<HistoryRequest, 'signal'>) {
     try {
-      const fixed = await sources.acquire(request, this.stop.signal);
-      release = fixed.release;
       for await (const block of history({
-        ...fixed.request,
+        ...request,
         signal: this.stop.signal,
         onRows: (rows) => {
           this.rows = rows;
@@ -99,8 +94,7 @@ export class Job {
         const versions = isEnvelope(block.data)
           ? new Map([[block.binding.source, block.data.version]])
           : block.data.versions;
-        for (const [source, version] of versions)
-          this.versions.set(fixed.originals.get(source) ?? source, version);
+        for (const [source, version] of versions) this.versions.set(source, version);
         for (const chunk of split(
           { ...block, binding: original },
           Math.min(request.limits.segmentsPerFrame, this.work),
@@ -139,7 +133,6 @@ export class Job {
       if (!this.stop.signal.aborted) this.error = error;
     } finally {
       this.held.clear();
-      release?.();
       this.finished = true;
       this.next.resolve();
       if (!this.stop.signal.aborted) this.changed();

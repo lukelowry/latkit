@@ -1,11 +1,4 @@
-import {
-  BufferData,
-  GpuError,
-  resolveScale,
-  scaleValue,
-  type GpuPage,
-  type NativeFields,
-} from '@latkit/gpu';
+import { GpuError, kit } from '@latkit/gpu';
 import {
   bitAt,
   rowAt,
@@ -17,8 +10,8 @@ import {
   type SampleColumn,
 } from '@latkit/model';
 import { isEnvelope, type Chunk } from './history.js';
-export function buffer(values: ArrayBufferView, label: string): BufferData {
-  const data = new BufferData({ size: Math.max(16, values.byteLength), label });
+export function buffer(values: ArrayBufferView, label: string): kit.BufferData {
+  const data = new kit.BufferData({ size: Math.max(16, values.byteLength), label });
   if (values.byteLength) data.write({ data: values });
   return data;
 }
@@ -112,8 +105,8 @@ export interface Point {
   visible: boolean;
 }
 export interface Geometry {
-  readonly addresses: BufferData;
-  readonly joins: BufferData;
+  readonly addresses: kit.BufferData;
+  readonly joins: kit.BufferData;
   readonly count: number;
   readonly joinCount: number;
   readonly raw: boolean;
@@ -171,7 +164,7 @@ export class Seams {
   }
 }
 function scalar(
-  tile: NativeFields,
+  tile: kit.NativeFields,
   name: string,
   row: number,
   frame: number,
@@ -190,7 +183,7 @@ function scalar(
         : 0
       : fallback;
 }
-function rawPoint(tile: NativeFields, row: number, frame: number): Point | null {
+function rawPoint(tile: kit.NativeFields, row: number, frame: number): Point | null {
   const c = tile.columns.value;
   if (c.kind !== 'numeric' || !bitAt(tile.presence.value, row)) return null;
   const value = sampleAt(c as SampleColumn, { row, frame });
@@ -206,7 +199,7 @@ function rawPoint(tile: NativeFields, row: number, frame: number): Point | null 
 }
 export function geometry(
   chunk: Chunk,
-  page: GpuPage,
+  page: kit.GpuPage,
   seams: Seams,
   x: Domain,
   y: Domain,
@@ -222,19 +215,19 @@ export function geometry(
     addresses.push(row, a, al, 0, row, b, bl, 0);
     count++;
   };
-  const color = resolveScale({}, colorDomain),
-    sx = resolveScale({ clamp: false }, x),
-    sy = resolveScale({ clamp: false }, y);
+  const color = kit.resolveScale({}, colorDomain),
+    sx = kit.resolveScale({ clamp: false }, x),
+    sy = kit.resolveScale({ clamp: false }, y);
   const seam = (a: Point, b: Point) => {
     if (a.frame + 1 !== b.frame || !a.visible || !b.visible) return;
     joins.push(
-      scaleValue(a.coordinate, sx)!,
-      scaleValue(a.value, sy)!,
-      scaleValue(a.color, color) ?? -1,
+      kit.scaleValue(a.coordinate, sx)!,
+      kit.scaleValue(a.value, sy)!,
+      kit.scaleValue(a.color, color) ?? -1,
       a.shade,
-      scaleValue(b.coordinate, sx)!,
-      scaleValue(b.value, sy)!,
-      scaleValue(b.color, color) ?? -1,
+      kit.scaleValue(b.coordinate, sx)!,
+      kit.scaleValue(b.value, sy)!,
+      kit.scaleValue(b.color, color) ?? -1,
       b.shade,
     );
   };

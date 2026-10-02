@@ -1,7 +1,8 @@
 import { expect, it } from 'vitest';
 import { MessageChannel } from 'node:worker_threads';
 import { connect, serve, messagePort, webSocket, byteTransport } from '../src/index.js';
-import { FixtureModel, collect } from '../../model/tests/fixture.js';
+import { LiveModel, inputPatch, transaction } from '../../model/tests/live.js';
+import { subscribed } from './fixture.js';
 import { decodeFrame, limits } from '../src/internal/frame.js';
 import { Peer } from '../src/internal/peer.js';
 import { deferred } from './fixture.js';
@@ -28,11 +29,11 @@ class Socket extends EventTarget {
 it('retains an early message handshake until the client subscribes', async () => {
   const { port1, port2 } = new MessageChannel();
   const client = messagePort(port1);
-  const serving = serve(messagePort(port2), new FixtureModel());
+  const serving = serve(messagePort(port2), new LiveModel());
   void serving.catch(() => undefined);
   await new Promise((resolve) => setTimeout(resolve, 10));
   const remote = await connect(client);
-  expect(remote.name).toBe('Fixture');
+  expect(remote.name).toBe('Live data');
   await remote.close();
   await serving;
 });
@@ -67,12 +68,16 @@ it('serves the same contract through the socket adapter', async () => {
     b = new Socket();
   a.peer = b;
   b.peer = a;
-  const serving = serve(webSocket(b), new FixtureModel());
+  const model = new LiveModel();
+  const serving = serve(webSocket(b), model);
   void serving.catch(() => undefined);
   const remote = await connect(webSocket(a));
-  expect(
-    await collect(remote.query({ kind: 'rows', from: 'Node', select: ['value'] })),
-  ).toHaveLength(2);
+  const stream = remote.monitor([{ from: 'Node', select: ['value'] }]);
+  await subscribed(model);
+  const publication = model.publish([inputPatch()]);
+  const events = await transaction(stream);
+  await publication;
+  expect(events.map((event) => event.kind)).toEqual(['begin', 'data', 'end']);
   await remote.close();
   await serving;
 });

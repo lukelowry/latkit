@@ -1,6 +1,7 @@
 import { FieldSource } from './fixtures/field-source.js';
 import { expect, it } from 'vitest';
-import { createGpu, type FieldValues, type GpuPage } from '../src/index.js';
+import { createGpu } from '../src/index.js';
+import { type FieldValues, type GpuPage } from '../src/kit.js';
 import { fakeDevice, bytes } from './fixtures/device.js';
 import { draw } from './fixtures/render.js';
 import { field } from './fixtures/fields.js';
@@ -63,7 +64,7 @@ it('gathers sparse native lists once and can retain controls without uploading t
     input = lists();
   await draw(gpu, async (frame) => {
     for await (const page of frame.fields({
-      source: new FieldSource(),
+      source: new FieldSource().data,
       from: index.type,
       rows: { index, kind: 'indices', values: Uint32Array.of(12, 10) },
       fields: {

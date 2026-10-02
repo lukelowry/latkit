@@ -1,30 +1,26 @@
-import { createMonitor, attachMonitorInput } from '../src/index.js';
-import { createCanvasView, type Gpu, type Renderer, type ColorScale } from '@latkit/gpu';
-import type { Queryable } from '@latkit/model';
+import { createMonitor, type Monitor } from '../src/index.js';
+import type { Gpu, kit } from '@latkit/gpu';
+import type { Data } from '@latkit/model';
 export function usage(
   gpu: Gpu,
-  recording: Queryable,
+  recording: Data,
   canvas: HTMLCanvasElement,
-  color: ColorScale,
-): Renderer {
-  const monitor = createMonitor({
-    gpu,
-    data: {
-      source: recording,
-      window: { kind: 'range', between: [0, 10] },
-      traces: { temperature: { from: 'node', field: 'temperature', color } },
-    },
-    options: { hover: 'auto', hoverBudgetMs: 2 },
+  color: kit.ColorScale,
+): Monitor {
+  const monitor = createMonitor(gpu, {
+    canvas,
+    at: 5,
+    source: recording,
+    traces: { temperature: { from: 'node', field: 'temperature', color } },
+    camera: { window: [0, 10] },
+    valueAxis: 'Temperature',
+    hover: 'auto',
   });
-  const view = createCanvasView({ gpu, renderer: monitor, canvas, onError: console.error });
-  view.request({ at: 5 });
-  attachMonitorInput({ monitor, canvas });
-  monitor.on('select', (reading) => {
-    if (reading) monitor.select(reading);
-  });
-  // @ts-expect-error Model ownership and acquisition are outside a renderer.
+  monitor.on('select', (readings) => monitor.fit(readings, { animate: true }));
+  monitor.set({ camera: { follow: 10 }, traces: { temperature: { color: 'temperature' } } });
+  // @ts-expect-error Frame preparation stays inside the view.
+  void monitor.prepare;
+  // @ts-expect-error Sources are borrowed, never closed by a view.
   void monitor.close;
-  // @ts-expect-error No exported snapshot data pipeline.
-  void monitor.snapshot;
   return monitor;
 }

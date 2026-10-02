@@ -1,9 +1,8 @@
 import { Work } from './work.js';
 import type { RequestOptions } from '@latkit/model';
-import { createNativeReader, GpuError } from '@latkit/gpu';
-import type { FieldValues, TextInput, TextMetrics } from '@latkit/gpu';
-import type { DiagramData, Point } from './data.js';
-import type { Limits, Options } from './options.js';
+import { GpuError, kit, type Gpu } from '@latkit/gpu';
+import { diagramData, type Point } from './data.js';
+import type { DiagramConfig } from './diagram.js';
 import {
   data as checkedData,
   options as checkedOptions,
@@ -61,7 +60,10 @@ export interface LayoutOptions {
   /** Crossing-reduction passes, from 0 to 12. Default: 4. */
   readonly sweeps?: number;
 }
-export function layoutOptions(value: LayoutOptions = {}): Required<LayoutOptions> {
+/** An algorithm name stands for that algorithm with defaults. */
+export type Layout = 'layered' | 'manual' | LayoutOptions;
+export function layoutOptions(layout: Layout = {}): Required<LayoutOptions> {
+  const value = typeof layout === 'string' ? { algorithm: layout } : layout;
   const result = {
     algorithm: value.algorithm ?? 'layered',
     direction: value.direction ?? 'right',
@@ -81,32 +83,34 @@ export function layoutOptions(value: LayoutOptions = {}): Required<LayoutOptions
     throw new GpuError('invalid-input', 'Invalid layout strategy');
   return result;
 }
-export interface ArrangeOptions extends RequestOptions {
-  readonly data: DiagramData;
-  readonly options?: Options;
-  readonly layout?: LayoutOptions;
-  readonly at?: number;
-  readonly limits?: Limits;
-  readonly measureText: (input: TextInput, options?: RequestOptions) => Promise<TextMetrics>;
-}
+/** Place a diagram's vertices as its layout would, without drawing: positions by vertex type. */
 export async function arrange(
-  input: ArrangeOptions,
-): Promise<Readonly<Record<string, FieldValues>>> {
-  const data = checkedData(input.data),
-    limits = checkedLimits(input.limits),
-    options = checkedOptions(input.options);
-  const reader = createNativeReader({
-    signal: input.signal,
-    at: input.at,
+  gpu: Gpu,
+  config: DiagramConfig,
+  options: RequestOptions = {},
+): Promise<Readonly<Record<string, kit.FieldValues>>> {
+  const data = checkedData(diagramData(config)),
+    limits = checkedLimits(config.limits),
+    style = checkedOptions(config);
+  const reader = kit.createNativeReader({
+    signal: options.signal,
+    at: config.at ?? undefined,
     maxBytes: limits.geometryBytes,
   });
   try {
     const work = new Work(reader.signal, limits.prepareMs);
-    const scene = await readScene(data, reader, options, limits, input.measureText, work);
+    const scene = await readScene(
+      data,
+      reader,
+      style,
+      limits,
+      (input, request) => gpu.measureText(input, request),
+      work,
+    );
     await place(
       scene,
-      layoutOptions(input.layout),
-      options.gridPitch,
+      layoutOptions(config.layout),
+      style.gridPitch,
       reader.signal,
       undefined,
       work,

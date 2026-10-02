@@ -1,18 +1,38 @@
-import { createCanvasInput, inputModifiers, wheelDelta } from '@latkit/gpu';
-import type { Network, NetworkEvents } from './network.js';
-import { notifyInput } from './network.js';
-export interface InputOptions {
-  readonly network: Network;
-  readonly canvas: HTMLCanvasElement;
-  readonly interaction?: 'navigate' | 'inspect' | 'none';
+import { kit } from '@latkit/gpu';
+import { sameItem, type NetworkItem } from './data.js';
+
+type Point = readonly [number, number];
+export interface NetworkInput {
+  /** `navigate` pans, zooms, and turns; `inspect` only hovers and selects. */
+  readonly mode?: 'navigate' | 'inspect' | 'none';
+  /** Zoom on every wheel, or only with Ctrl or ⌘. */
   readonly wheel?: 'zoom' | 'modifier';
   readonly keyboard?: boolean;
 }
-export function attachNetworkInput(options: InputOptions): () => void {
-  const { network, canvas } = options,
-    mode = options.interaction ?? 'navigate';
-  if (mode === 'none') return () => {};
-  const input = createCanvasInput({
+/** What input drives; the view implements it. */
+export interface Controls {
+  pointer(point: Point | null): void;
+  pan(dx: number, dy: number): void;
+  rotate(dx: number, dy: number): void;
+  zoom(factor: number, anchor?: Point): void;
+  fit(): void;
+  hit(point: Point): readonly NetworkItem[];
+  locate(item: NetworkItem): Point | null;
+  neighborhood(item: NetworkItem): readonly NetworkItem[];
+  reveal(item: NetworkItem): void;
+  selection(): readonly NetworkItem[];
+  /** Select as the user did, reporting it. */
+  choose(items: readonly NetworkItem[]): void;
+  menu(menu: kit.ContextMenu<NetworkItem>): void;
+}
+
+export function attachInput(
+  canvas: HTMLCanvasElement,
+  options: NetworkInput,
+  view: Controls,
+): () => void {
+  const mode = options.mode ?? 'navigate';
+  const input = kit.createCanvasInput({
       canvas,
       keyboard: options.keyboard,
       touchAction: mode === 'navigate' ? 'none' : 'pan-x pan-y',
@@ -21,16 +41,20 @@ export function attachNetworkInput(options: InputOptions): () => void {
   let drag:
     | { id: number; x: number; y: number; startX: number; startY: number; rotate: boolean }
     | undefined;
-  let selected: import('./data.js').NetworkItem | null = null,
-    cycle = 0,
-    lastPoint: readonly [number, number] | undefined;
-  const choose = (p: readonly [number, number]) => {
-    const hits = network.hitTest(p);
+  let cycle = 0,
+    lastPoint: Point | undefined;
+  /** Click selects the nearest item, cycling through overlaps; a modifier toggles it instead. */
+  const choose = (p: Point, toggle: boolean) => {
+    const hits = view.hit(p);
     cycle = lastPoint && Math.hypot(p[0] - lastPoint[0], p[1] - lastPoint[1]) < 3 ? cycle + 1 : 0;
     lastPoint = p;
-    selected = hits.length ? hits[cycle % hits.length] : null;
-    network.select(selected);
-    notifyInput(network, 'select', selected);
+    const hit = hits.length ? hits[cycle % hits.length] : undefined;
+    if (!toggle) view.choose(hit ? [hit] : []);
+    else if (hit) {
+      const selection = view.selection(),
+        rest = selection.filter((item) => !sameItem(item, hit));
+      view.choose(rest.length === selection.length ? [...rest, hit] : rest);
+    }
   };
   canvas.addEventListener(
     'pointerdown',
@@ -54,12 +78,12 @@ export function attachNetworkInput(options: InputOptions): () => void {
     'pointermove',
     (event) => {
       const p = point(event);
-      network.setPointer(p);
+      view.pointer(p);
       if (drag?.id === event.pointerId && mode === 'navigate') {
         const dx = p[0] - drag.x,
           dy = p[1] - drag.y;
-        if (drag.rotate) network.rotateBy(dx, dy);
-        else network.panBy(dx, dy);
+        if (drag.rotate) view.rotate(dx, dy);
+        else view.pan(dx, dy);
         drag.x = p[0];
         drag.y = p[1];
       }
@@ -71,7 +95,8 @@ export function attachNetworkInput(options: InputOptions): () => void {
     (event) => {
       if (drag?.id !== event.pointerId) return;
       const p = point(event);
-      if (Math.hypot(p[0] - drag.startX, p[1] - drag.startY) < 4 && event.button === 0) choose(p);
+      if (Math.hypot(p[0] - drag.startX, p[1] - drag.startY) < 4 && event.button === 0)
+        choose(p, event.shiftKey || event.ctrlKey || event.metaKey);
       drag = undefined;
       input.release(event.pointerId);
     },
@@ -81,14 +106,14 @@ export function attachNetworkInput(options: InputOptions): () => void {
     'pointercancel',
     () => {
       drag = undefined;
-      network.setPointer(null);
+      view.pointer(null);
     },
     { signal },
   );
   canvas.addEventListener(
     'pointerleave',
     () => {
-      if (!drag) network.setPointer(null);
+      if (!drag) view.pointer(null);
     },
     { signal },
   );
@@ -98,13 +123,8 @@ export function attachNetworkInput(options: InputOptions): () => void {
       if (mode !== 'navigate' || (options.wheel === 'modifier' && !event.ctrlKey && !event.metaKey))
         return;
       event.preventDefault();
-      network.zoomBy(
-        Math.exp(
-          -Math.max(-1000, Math.min(1000, wheelDelta(event, { height: canvas.clientHeight }))) *
-            0.002,
-        ),
-        point(event),
-      );
+      const delta = kit.wheelDelta(event, { height: canvas.clientHeight });
+      view.zoom(Math.exp(-Math.max(-1000, Math.min(1000, delta)) * 0.002), point(event));
     },
     { signal, passive: false },
   );
@@ -113,11 +133,11 @@ export function attachNetworkInput(options: InputOptions): () => void {
     (event) => {
       event.preventDefault();
       const p = point(event);
-      notifyInput(network, 'contextmenu', {
+      view.menu({
         point: p,
-        items: network.hitTest(p),
+        items: view.hit(p),
         trigger: 'pointer',
-        modifiers: inputModifiers(event),
+        modifiers: kit.inputModifiers(event),
       });
     },
     { signal },
@@ -126,26 +146,25 @@ export function attachNetworkInput(options: InputOptions): () => void {
     canvas.addEventListener(
       'keydown',
       (event) => {
-        if (event.key === 'Escape') {
-          selected = null;
-          network.select(null);
-          notifyInput(network, 'select', null);
-        } else if (event.key === 'Home') network.fit({ animate: true });
-        else if (event.key === '+' || event.key === '=') network.zoomBy(1.2);
-        else if (event.key === '-') network.zoomBy(1 / 1.2);
+        const selected = view.selection().at(-1);
+        if (event.key === 'Escape') view.choose([]);
+        else if (event.key === 'Home') view.fit();
+        else if (event.key === '+' || event.key === '=') view.zoom(1.2);
+        else if (event.key === '-') view.zoom(1 / 1.2);
         else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
           const dx = event.key === 'ArrowLeft' ? 24 : event.key === 'ArrowRight' ? -24 : 0,
             dy = event.key === 'ArrowUp' ? 24 : event.key === 'ArrowDown' ? -24 : 0;
           if (mode === 'navigate') {
-            if (event.shiftKey) network.rotateBy(dx, dy);
-            else network.panBy(dx, dy);
+            if (event.shiftKey) view.rotate(dx, dy);
+            else view.pan(dx, dy);
           } else if (selected) {
-            const origin = network.locate(selected);
+            // Step to the neighbor most nearly in the arrow's direction.
+            const origin = view.locate(selected);
             if (origin) {
-              let best: typeof selected | null = null,
+              let best: NetworkItem | undefined,
                 score = Infinity;
-              for (const item of network.neighborhood(selected)) {
-                const p = network.locate(item);
+              for (const item of view.neighborhood(selected)) {
+                const p = view.locate(item);
                 if (!p) continue;
                 const x = p[0] - origin[0],
                   y = p[1] - origin[1],
@@ -158,22 +177,22 @@ export function attachNetworkInput(options: InputOptions): () => void {
                 }
               }
               if (best) {
-                selected = best;
-                network.select(best);
-                notifyInput(network, 'select', best);
-                network.reveal(best);
+                view.choose([best]);
+                view.reveal(best);
               }
             }
           }
         } else if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
-          const p = selected ? network.locate(selected) : null;
-          const at = p ?? ([canvas.clientWidth / 2, canvas.clientHeight / 2] as const);
-          notifyInput(network, 'contextmenu', {
+          const at = (selected && view.locate(selected)) ?? [
+            canvas.clientWidth / 2,
+            canvas.clientHeight / 2,
+          ];
+          view.menu({
             point: at,
-            items: network.hitTest(at),
+            items: view.hit(at),
             trigger: 'keyboard',
-            modifiers: inputModifiers(event),
-          } satisfies NetworkEvents['contextmenu']);
+            modifiers: kit.inputModifiers(event),
+          });
         } else return;
         event.preventDefault();
       },

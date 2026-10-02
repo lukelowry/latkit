@@ -1,39 +1,30 @@
-import { resolveScale, scaleValue } from '@latkit/gpu';
-import {
-  GpuError,
-  type FieldInput,
-  type GpuPage,
-  type NativeFields,
-  type Preparation,
-} from '@latkit/gpu';
-import type { ColorScale, Position2D as Position, Scale } from '@latkit/gpu';
-import type { EdgeOptions, PathOptions, VertexOptions } from '../data.js';
+import { kit, GpuError } from '@latkit/gpu';
+import type { EdgeData, PathData, VertexData } from '../data.js';
 import type { VertexBank, EdgeBank } from '../geometry/topology.js';
 import { nativeValue } from '../geometry/rows.js';
 export interface ReadPage {
-  readonly page: GpuPage;
+  readonly page: kit.GpuPage;
   readonly offset: number;
 }
 export interface FieldRead {
   readonly pages: readonly ReadPage[];
-  readonly native: readonly NativeFields[];
-  readonly scales: Readonly<Record<string, import('@latkit/gpu').ResolvedScale>>;
+  readonly native: readonly kit.NativeFields[];
+  readonly scales: Readonly<Record<string, kit.ResolvedScale>>;
   readonly vector: boolean;
 }
 export function splitPosition(
-  position: Position,
-): position is { readonly x: FieldInput; readonly y: FieldInput } {
+  position: kit.Position2D,
+): position is { readonly x: kit.FieldInput; readonly y: kit.FieldInput } {
   return typeof position === 'object' && 'x' in position;
 }
 export async function readFields(
-  frame: Preparation,
-  source: import('@latkit/model').Queryable,
+  frame: kit.Preparation,
+  source: import('@latkit/model').Data,
   bank: VertexBank | EdgeBank,
-  options: VertexOptions | EdgeOptions | PathOptions,
-  position: Position | undefined,
-  retain: (native: NativeFields) => void,
+  options: VertexData | EdgeData | PathData,
+  position: kit.Position2D | undefined,
 ): Promise<FieldRead> {
-  const fields: Record<string, FieldInput> = {};
+  const fields: Record<string, kit.FieldInput> = {};
   let vector = false;
   if (position) {
     if (splitPosition(position)) {
@@ -63,14 +54,13 @@ export async function readFields(
   }
   const control = new Set(['bends', 'points', 'junction', 'junctionX', 'junctionY']);
   const pages: ReadPage[] = [],
-    native: NativeFields[] = [];
+    native: kit.NativeFields[] = [];
   for await (const tile of frame.fields({
     source,
     from: bank.index.type,
     rows: { ...bank.rows, index: bank.index },
     fields,
   })) {
-    retain(tile);
     native.push(tile);
     for (const page of frame.upload(tile, {
       select: Object.keys(fields).filter((name) => !control.has(name)),
@@ -122,12 +112,12 @@ export async function readFields(
 }
 /** Resolve each mapping once across all banks, never independently per upload page. */
 export async function resolveDomains(
-  frame: Preparation,
-  source: import('@latkit/model').Queryable,
+  frame: kit.Preparation,
+  source: import('@latkit/model').Data,
   reads: Map<VertexBank | EdgeBank, FieldRead>,
-  config: (bank: VertexBank | EdgeBank) => VertexOptions | EdgeOptions | PathOptions,
+  config: (bank: VertexBank | EdgeBank) => VertexData | EdgeData | PathData,
 ): Promise<void> {
-  const groups = new Map<VertexOptions | EdgeOptions | PathOptions, (VertexBank | EdgeBank)[]>();
+  const groups = new Map<VertexData | EdgeData | PathData, (VertexBank | EdgeBank)[]>();
   for (const bank of reads.keys()) {
     const options = config(bank),
       banks = groups.get(options) ?? [];
@@ -135,7 +125,7 @@ export async function resolveDomains(
     groups.set(options, banks);
   }
   for (const [options, banks] of groups) {
-    const scales: Record<string, import('@latkit/gpu').ResolvedScale> = {};
+    const scales: Record<string, kit.ResolvedScale> = {};
     for (const [name, mapping] of Object.entries(mappings(options))) {
       if (!mapping) continue;
       let lo = Infinity,
@@ -152,7 +142,7 @@ export async function resolveDomains(
           hi = Math.max(hi, scale.domain[1]);
         }
       }
-      scales[name] = resolveScale(
+      scales[name] = kit.resolveScale(
         {
           ...mapping,
           range:
@@ -167,17 +157,17 @@ export async function resolveDomains(
 export function scaledValue(
   read: FieldRead,
   name: string,
-  tile: NativeFields,
+  tile: kit.NativeFields,
   row: number,
-  mapping: Scale | ColorScale | null | undefined,
+  mapping: kit.Scale | kit.ColorScale | null | undefined,
   fallback: number,
 ): number {
   const raw = nativeValue(tile, name, row);
   if (!mapping || !Number.isFinite(raw)) return fallback;
-  return scaleValue(raw, read.scales[name] ?? resolveScale({}, null)) ?? fallback;
+  return kit.scaleValue(raw, read.scales[name] ?? kit.resolveScale({}, null)) ?? fallback;
 }
 
-function mappings(options: VertexOptions | EdgeOptions | PathOptions) {
+function mappings(options: VertexData | EdgeData | PathData) {
   return {
     color: options.color,
     size: 'size' in options ? options.size : undefined,

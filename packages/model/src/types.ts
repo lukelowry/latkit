@@ -41,13 +41,6 @@ export interface Problem {
   readonly edit?: number;
 }
 
-/** Export pins exactly one version until consumed or cancelled by its caller. */
-export interface Export {
-  readonly version: Version;
-  readonly mediaType: string;
-  readonly stream: ReadableStream<Uint8Array>;
-}
-
 /** Codes and public details survive transport; prototypes and stacks need not. */
 export interface Failure extends Error {
   readonly code:

@@ -1,4 +1,5 @@
-import type { Gpu, Preparation, Renderer, RenderTarget, Encoding } from '../../src/index.js';
+import type { Gpu } from '../../src/index.js';
+import type { Preparation, Renderer, RenderTarget, Encoding } from '../../src/kit.js';
 
 export function target(device: GPUDevice): RenderTarget {
   const texture = device.createTexture({
@@ -25,7 +26,7 @@ export async function draw(
   prepare: (frame: Preparation) => void | Promise<void>,
 ): Promise<void> {
   await gpu.render({
-    views: [{ renderer: renderer(prepare), target: target(gpu.device) }],
+    views: [{ renderer: renderer(prepare), target: target(gpu.device), at: 0 }],
     timeMs: 0,
   });
   await gpu.idle();

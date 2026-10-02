@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import type { RowsBlock } from '@latkit/model';
-import { createGpu, type GpuPage } from '../src/index.js';
+import { createGpu } from '../src/index.js';
+import { type GpuPage } from '../src/kit.js';
 import { bytes, fakeDevice } from './fixtures/device.js';
 import { field } from './fixtures/fields.js';
 import { draw } from './fixtures/render.js';

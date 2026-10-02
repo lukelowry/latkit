@@ -1,16 +1,13 @@
 import { GpuError } from '@latkit/gpu';
 import type { VideoOptions } from './video.js';
-export function settings(options: VideoOptions) {
+/** Validated options; sizes are bounded by the device's texture dimension. */
+export function settings(options: VideoOptions, maxDimension: number) {
   const frameRate = options.frameRate ?? 60;
   for (const [name, value] of [
     ['width', options.width],
     ['height', options.height],
   ] as const)
-    if (
-      !Number.isSafeInteger(value) ||
-      value < 1 ||
-      value > options.gpu.device.limits.maxTextureDimension2D
-    )
+    if (!Number.isSafeInteger(value) || value < 1 || value > maxDimension)
       throw new GpuError('invalid-input', `Invalid video ${name}`);
   if (!Number.isFinite(frameRate) || frameRate < 1 || frameRate > 240)
     throw new GpuError('invalid-input', 'Video frameRate must be between 1 and 240');

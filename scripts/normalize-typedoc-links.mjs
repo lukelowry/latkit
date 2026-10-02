@@ -45,12 +45,10 @@ async function headingAnchors(file) {
 }
 
 async function normalizeLinkTarget(target, file) {
-  if (
-    target.startsWith('#') ||
-    target.startsWith('http:') ||
-    target.startsWith('https:') ||
-    target.startsWith('mailto:')
-  ) {
+  // MyST resolves fragments only to headings, on this page as on others.
+  if (target.startsWith('#'))
+    return (await headingAnchors(file)).has(target.slice(1)) ? target : path.basename(file);
+  if (target.startsWith('http:') || target.startsWith('https:') || target.startsWith('mailto:')) {
     return target;
   }
 

@@ -7,7 +7,7 @@
 [![CI](https://github.com/lukelowry/latkit/actions/workflows/ci.yml/badge.svg)](https://github.com/lukelowry/latkit/actions/workflows/ci.yml)
 [![Documentation Status](https://readthedocs.org/projects/latkit/badge/?version=latest)](https://latkit.readthedocs.io/en/latest/)
 
-TypeScript tools for WebGPU network views, time-series plots, and video export.
+TypeScript tools for WebGPU network views, time-series plots, block diagrams, and video export.
 
 [Documentation](https://latkit.readthedocs.io/en/latest/) ? [API reference](https://latkit.readthedocs.io/en/latest/api/index.html) ? [Examples](examples)
 
@@ -18,47 +18,35 @@ npm install @latkit/gpu @latkit/network
 ```
 
 Use an ESM bundler and a WebGPU-capable browser. Supply your data through a
-`Queryable` from [`@latkit/model`](packages/model).
+`Data` from [`@latkit/model`](packages/model).
 
 ## Draw a network
 
-Here, `source` has a `Bus` type with a two-component `position` field and a
-numeric `load` field. `canvas` is an application-owned HTML canvas with a CSS size.
-
 ```ts
-import { createGpu, createCanvasView, colormaps } from '@latkit/gpu';
-import { createNetwork, attachNetworkInput } from '@latkit/network';
+import { createGpu } from '@latkit/gpu';
+import { createNetwork } from '@latkit/network';
 
 const gpu = await createGpu();
-const network = createNetwork({
-  gpu,
-  data: {
-    source,
-    vertices: {
-      Bus: {
-        position: 'position',
-        color: { field: 'load', domain: [0, 1], colormap: colormaps.viridis },
-      },
-    },
-  },
+const network = createNetwork(gpu, {
+  canvas,
+  source,
+  vertices: { Bus: { color: 'load', labels: 'name' } },
+  edges: { Line: { ends: ['from', 'to'] } },
 });
-const view = createCanvasView({ gpu, canvas, renderer: network, onError: console.error });
-const detach = attachNetworkInput({ network, canvas });
-view.request();
+network.on('select', (items) => console.log(items));
+network.set({ at: 12 });
 
-// On teardown:
-detach();
-view.destroy();
-network.destroy();
-gpu.destroy();
-await source.close();
+network.destroy(); // never closes the source or the GPU
 ```
+
+`canvas` is yours, with a CSS size; the network draws on it and handles its input. Monitors and
+diagrams work the same way: see [views](https://latkit.readthedocs.io/en/latest/views.html).
 
 ## Packages
 
 | Package                     | Use                                              |
 | --------------------------- | ------------------------------------------------ |
-| [model](packages/model)     | Data interfaces, queries, recordings, validation |
+| [model](packages/model)     | Columnar values, passive monitoring, local reads |
 | [connect](packages/connect) | Models over workers and sockets                  |
 | [gpu](packages/gpu)         | Shared rendering, fields, text, colors           |
 | [network](packages/network) | Network topology and geographic views            |

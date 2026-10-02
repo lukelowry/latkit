@@ -1,7 +1,6 @@
-import { withinBudget } from '@latkit/gpu';
+import { kit } from '@latkit/gpu';
 import { rowAt, sameIndex } from '@latkit/model';
-import { type Bounds2D, type NativeFields, type Viewport } from '@latkit/gpu';
-import type { NetworkData, NetworkItem, VertexOptions } from './data.js';
+import type { NetworkData, NetworkItem, VertexData } from './data.js';
 import {
   vertexOptions,
   edgeOptions,
@@ -15,13 +14,13 @@ import { project, projectedStroke, worldVisible, type Camera, type Projected } f
 import { geodesic } from './geometry/paths.js';
 import { scaledValue, type FieldRead } from './rendering/fields.js';
 import type { Reads } from './rendering/painter.js';
-import type { Options } from './options.js';
+import type { Style } from './options.js';
 
 class Tree {
   readonly order: Uint32Array;
   readonly boxes: Float64Array;
   readonly size: number;
-  constructor(count: number, read: (i: number) => Bounds2D) {
+  constructor(count: number, read: (i: number) => kit.Bounds2D) {
     let size = 1;
     while (size < count) size *= 2;
     this.size = size;
@@ -57,7 +56,7 @@ class Tree {
       );
     }
   }
-  *query(bounds: Bounds2D, check: () => void): Iterable<number> {
+  *query(bounds: kit.Bounds2D, check: () => void): Iterable<number> {
     const stack = [1];
     while (stack.length) {
       check();
@@ -81,20 +80,20 @@ class Tree {
 }
 interface Spatial {
   readonly identity: readonly unknown[];
-  readonly bounds: Bounds2D;
+  readonly bounds: kit.Bounds2D;
   tree?: Tree;
 }
 interface CpuBank {
   readonly bank: VertexBank;
   readonly read: FieldRead;
-  readonly lookup: RowLookup<NativeFields>;
+  readonly lookup: RowLookup<kit.NativeFields>;
   readonly spatial: Spatial;
   readonly heightIdentity: readonly unknown[];
 }
 interface CpuEdge {
   readonly bank: EdgeBank;
   readonly read: FieldRead;
-  readonly lookup: RowLookup<NativeFields>;
+  readonly lookup: RowLookup<kit.NativeFields>;
 }
 interface CpuSegment {
   readonly batch: SegmentBatch;
@@ -103,8 +102,8 @@ interface CpuSegment {
   readonly b: CpuBank;
   readonly spatial: { tree?: Tree };
 }
-function readLookup(read: FieldRead): RowLookup<NativeFields> {
-  const lookup = new RowLookup<NativeFields>();
+function readLookup(read: FieldRead): RowLookup<kit.NativeFields> {
+  const lookup = new RowLookup<kit.NativeFields>();
   for (const tile of read.native) lookup.add(tile.rows, tile);
   lookup.seal();
   return lookup;
@@ -145,7 +144,7 @@ function raw(bank: CpuBank, offset: number): readonly [number, number] {
       ]
     : [nativeValue(found.value, 'x', found.offset), nativeValue(found.value, 'y', found.offset)];
 }
-function box(x: number, y: number): Bounds2D {
+function box(x: number, y: number): kit.Bounds2D {
   return Number.isFinite(x) && Number.isFinite(y)
     ? [x, y, x, y]
     : [Infinity, Infinity, -Infinity, -Infinity];
@@ -169,12 +168,16 @@ function treeBytes(count: number): number {
   while (n < count) n *= 2;
   return n * 64 + count * 4;
 }
-function readBounds(bank: VertexBank, read: FieldRead, lookup: RowLookup<NativeFields>): Bounds2D {
+function readBounds(
+  bank: VertexBank,
+  read: FieldRead,
+  lookup: RowLookup<kit.NativeFields>,
+): kit.Bounds2D {
   let minX = Infinity,
     minY = Infinity,
     maxX = -Infinity,
     maxY = -Infinity;
-  const include = (tile: NativeFields, i: number) => {
+  const include = (tile: kit.NativeFields, i: number) => {
     const x = nativeValue(tile, read.vector ? 'position' : 'x', i);
     const y = nativeValue(tile, read.vector ? 'position' : 'y', i, read.vector ? 1 : 0);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return;
@@ -279,7 +282,7 @@ export class PickGeometry {
   constructor(
     private readonly vertices: ReadonlyMap<VertexBank, CpuBank>,
     private readonly edges: readonly CpuSegment[],
-    readonly bounds: Bounds2D,
+    readonly bounds: kit.Bounds2D,
     private readonly byteLimit: number,
   ) {}
   get bytes(): number {
@@ -304,7 +307,7 @@ export class PickGeometry {
   private index(): void {
     // Only explicit flat hit queries build indexes. Include construction scratch in admission.
     let available = this.byteLimit - this.bytes;
-    const build = (spatial: { tree?: Tree }, count: number, read: (i: number) => Bounds2D) => {
+    const build = (spatial: { tree?: Tree }, count: number, read: (i: number) => kit.Bounds2D) => {
       if (spatial.tree || treeBytes(count) + count * 32 > available) return;
       spatial.tree = new Tree(count, read);
       available -= treeBytes(count);
@@ -330,9 +333,9 @@ export class PickGeometry {
     bank: VertexBank,
     offset: number,
     camera: Camera,
-    viewport: Viewport,
+    viewport: kit.Viewport,
     height: number,
-    options: VertexOptions,
+    options: VertexData,
     marker = true,
   ): Projected & { radius: number; visible: boolean } {
     const cpu = this.vertices.get(bank)!,
@@ -357,14 +360,14 @@ export class PickGeometry {
   dashPhases(
     data: NetworkData,
     camera: Camera,
-    viewport: Viewport,
+    viewport: kit.Viewport,
     height: number,
   ): ReadonlyMap<SegmentBatch, Float32Array> {
     const groups = new Map<EdgeBank, CpuSegment[]>();
     for (const batch of this.edges)
       if (
         batch.edge.bank.order &&
-        (edgeOptions(data, batch.edge.bank) as import('./data.js').EdgeOptions).dash
+        (edgeOptions(data, batch.edge.bank) as import('./data.js').EdgeData).dash
       ) {
         const group = groups.get(batch.edge.bank) ?? [];
         group.push(batch);
@@ -414,7 +417,7 @@ export class PickGeometry {
     bo: number,
     data: NetworkData,
     camera: Camera,
-    viewport: Viewport,
+    viewport: kit.Viewport,
     height: number,
     check: () => void,
   ): Iterable<{ a: Projected; b: Projected; first: boolean; last: boolean }> {
@@ -481,9 +484,9 @@ export class PickGeometry {
     point: readonly [number, number],
     data: NetworkData,
     camera: Camera,
-    viewport: Viewport,
+    viewport: kit.Viewport,
     height: number,
-    options: Required<Options>,
+    options: Style,
     radius: number,
   ): readonly NetworkItem[] {
     if (camera.projection === 'flat') this.index();
@@ -503,13 +506,13 @@ export class PickGeometry {
     point: readonly [number, number],
     data: NetworkData,
     camera: Camera,
-    viewport: Viewport,
+    viewport: kit.Viewport,
     height: number,
-    options: Required<Options>,
+    options: Style,
     radius: number,
     budgetMs?: number,
   ): NetworkItem | null | typeof HOVER_EXHAUSTED {
-    const result = withinBudget((check) => {
+    const result = kit.withinBudget((check) => {
       let best: Hit | undefined;
       for (const hit of this.hits(point, data, camera, viewport, height, options, radius, check))
         if (!best || compare(hit, best) < 0) best = hit;
@@ -521,19 +524,19 @@ export class PickGeometry {
     point: readonly [number, number],
     data: NetworkData,
     camera: Camera,
-    viewport: Viewport,
+    viewport: kit.Viewport,
     height: number,
-    options: Required<Options>,
+    options: Style,
     radius: number,
     check: () => void,
   ): Iterable<Hit> {
-    let bounds: Bounds2D = [-Infinity, -Infinity, Infinity, Infinity];
+    let bounds: kit.Bounds2D = [-Infinity, -Infinity, Infinity, Infinity];
     if (camera.projection === 'flat') {
       const dx = (point[0] - viewport.width / 2) / camera.scale,
         dy = -(point[1] - viewport.height / 2) / camera.scale,
         b = (camera.bearing * Math.PI) / 180;
-      const x = camera.centerX + dx * Math.cos(b) - dy * Math.sin(b),
-        y = camera.centerY + dx * Math.sin(b) + dy * Math.cos(b);
+      const x = camera.center[0] + dx * Math.cos(b) - dy * Math.sin(b),
+        y = camera.center[1] + dx * Math.sin(b) + dy * Math.cos(b);
       const maxSize = Math.max(
         1,
         ...Object.values(data.vertices).map((v) => v.size?.range?.[1] ?? 2),
@@ -545,7 +548,7 @@ export class PickGeometry {
         camera.scale;
       bounds = [x - reach, y - reach, x + reach, y + reach];
     }
-    if (options.vertices || options.poles)
+    if (options.showVertices || options.showPoles)
       for (const [bank, cpu] of this.vertices)
         if (!bank.synthetic)
           for (const offset of cpu.spatial.tree?.query(bounds, check) ??
@@ -560,13 +563,13 @@ export class PickGeometry {
               data.vertices[bank.type],
             );
             if (!p.visible) continue;
-            let distance = options.vertices
+            let distance = options.showVertices
               ? Math.max(
                   0,
                   Math.hypot(point[0] - p.x, point[1] - p.y) - p.radius * options.vertexRadiusPx,
                 )
               : Infinity;
-            if (options.poles) {
+            if (options.showPoles) {
               const [x, y] = raw(cpu, offset),
                 base = project(camera, viewport, x, y);
               if (base.visible)
@@ -587,7 +590,7 @@ export class PickGeometry {
                 kind: 0,
               };
           }
-    if (options.edges)
+    if (options.showEdges)
       for (const batch of this.edges)
         if (batch.edge.bank.kind !== 'path' || data.paths![batch.edge.bank.type].pickable)
           for (const offset of (edgeOptions(data, batch.edge.bank).curve === 'geodesic'
@@ -654,7 +657,7 @@ export class PickGeometry {
               )
                 continue;
               if (
-                options.vertices &&
+                options.showVertices &&
                 ((piece.first &&
                   Math.hypot(point[0] - a.x, point[1] - a.y) < a.radius * options.vertexRadiusPx) ||
                   (piece.last &&
@@ -678,7 +681,7 @@ export class PickGeometry {
     item: NetworkItem,
     data: NetworkData,
     camera: Camera,
-    viewport: Viewport,
+    viewport: kit.Viewport,
     height: number,
   ): readonly [number, number] | null {
     if (
@@ -719,7 +722,7 @@ export class PickGeometry {
     item: NetworkItem,
     data: NetworkData,
     camera: Camera,
-    viewport: Viewport,
+    viewport: kit.Viewport,
     height: number,
   ): Projected | null {
     const segments: { batch: CpuSegment; offset: number }[] = [];

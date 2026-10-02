@@ -97,7 +97,7 @@ export class Uploader {
     scope: UploadScope,
   ): readonly GpuPage[] {
     if ('kind' in block && block.kind === 'envelope') return this.envelope(block, options, scope);
-    const native = 'retain' in block ? block : undefined;
+    const native = 'presence' in block ? block : undefined;
     const pages = this.prepare(block, options, scope, native?.columns ?? block);
     return native
       ? pages.map((page) => ({ ...page, rowOffset: native.rowOffset + page.rowOffset, native }))

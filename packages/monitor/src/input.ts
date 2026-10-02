@@ -1,28 +1,41 @@
-import { interactions, type Monitor } from './monitor.js';
-import { createCanvasInput, inputModifiers } from '@latkit/gpu';
-export interface InputOptions {
-  readonly monitor: Monitor;
-  readonly canvas: HTMLCanvasElement;
+import { kit } from '@latkit/gpu';
+import type { Reading } from './data.js';
+
+type Point = readonly [number, number];
+export interface MonitorInput {
+  /** `inspect` hovers and selects; wheel and touch scrolling stay with the page. */
+  readonly mode?: 'inspect' | 'none';
   readonly keyboard?: boolean;
 }
-/** Inspection only. Wheel and touch scrolling remain browser behavior. */
-export function attachMonitorInput(options: InputOptions): () => void {
-  const { monitor, canvas } = options;
-  const input = createCanvasInput({
-    canvas,
-    keyboard: options.keyboard,
-  });
+/** What input drives; the view implements it. */
+export interface Controls {
+  pointer(point: Point | null): void;
+  pick(
+    point: Point,
+    options: { readonly limit: number; readonly signal: AbortSignal },
+  ): Promise<readonly Reading[]>;
+  /** Select as the user did, reporting it. */
+  choose(items: readonly Reading[]): void;
+  menu(menu: kit.ContextMenu<Reading>): void;
+}
+
+export function attachInput(
+  canvas: HTMLCanvasElement,
+  options: MonitorInput,
+  view: Controls,
+): () => void {
+  const input = kit.createCanvasInput({ canvas, keyboard: options.keyboard });
   const listener = { signal: input.signal },
-    points = new Map<number, readonly [number, number]>();
-  let start: readonly [number, number] | undefined,
+    points = new Map<number, Point>();
+  let start: Point | undefined,
     moved = false,
     picking: AbortController | undefined;
-  const read = async (point: readonly [number, number], limit = 16) => {
+  const read = async (point: Point, limit = 16) => {
     picking?.abort();
     const request = new AbortController();
     picking = request;
     try {
-      return await monitor.hitTest(point, {
+      return await view.pick(point, {
         limit,
         signal: AbortSignal.any([input.signal, request.signal]),
       });
@@ -30,6 +43,11 @@ export function attachMonitorInput(options: InputOptions): () => void {
       return null;
     }
   };
+  const menu = (point: Point, trigger: 'pointer' | 'keyboard', event: KeyboardEvent | MouseEvent) =>
+    void read(point).then((items) => {
+      if (!input.signal.aborted && items)
+        view.menu({ point, items, trigger, modifiers: kit.inputModifiers(event) });
+    });
   canvas.addEventListener(
     'pointerdown',
     (event) => {
@@ -41,7 +59,7 @@ export function attachMonitorInput(options: InputOptions): () => void {
         start = point;
         moved = false;
       } else moved = true;
-      monitor.setPointer(null);
+      view.pointer(null);
     },
     listener,
   );
@@ -51,7 +69,7 @@ export function attachMonitorInput(options: InputOptions): () => void {
       const point = input.point(event),
         previous = points.get(event.pointerId);
       if (!previous) {
-        monitor.setPointer(point);
+        view.pointer(point);
         return;
       }
       points.set(event.pointerId, point);
@@ -67,14 +85,11 @@ export function attachMonitorInput(options: InputOptions): () => void {
       points.delete(event.pointerId);
       if (!moved)
         void read(point, 1).then((items) => {
-          if (input.signal.aborted || !items) return;
-          const item = items[0] ?? null;
-          monitor.select(item);
-          interactions.get(monitor)?.select(item);
+          if (!input.signal.aborted && items) view.choose(items.slice(0, 1));
         });
       if (!points.size) {
         start = undefined;
-        monitor.setPointer(point);
+        view.pointer(point);
       }
     },
     listener,
@@ -83,7 +98,7 @@ export function attachMonitorInput(options: InputOptions): () => void {
     points.delete(event.pointerId);
     start = undefined;
     moved = true;
-    monitor.setPointer(null);
+    view.pointer(null);
   };
   canvas.addEventListener('pointercancel', cancel, listener);
   canvas.addEventListener(
@@ -99,7 +114,7 @@ export function attachMonitorInput(options: InputOptions): () => void {
       points.clear();
       start = undefined;
       moved = true;
-      monitor.setPointer(null);
+      view.pointer(null);
     },
     listener,
   );
@@ -107,13 +122,7 @@ export function attachMonitorInput(options: InputOptions): () => void {
     'contextmenu',
     (event) => {
       event.preventDefault();
-      const point = input.point(event);
-      void read(point).then((items) => {
-        if (!input.signal.aborted && items)
-          interactions
-            .get(monitor)
-            ?.context({ point, items, trigger: 'pointer', modifiers: inputModifiers(event) });
-      });
+      menu(input.point(event), 'pointer', event);
     },
     listener,
   );
@@ -121,29 +130,18 @@ export function attachMonitorInput(options: InputOptions): () => void {
     canvas.addEventListener(
       'keydown',
       (event) => {
-        const actions: Record<string, () => void> = { Escape: () => monitor.select(null) };
-        if (actions[event.key]) {
-          event.preventDefault();
-          actions[event.key]();
-        }
-        if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
-          event.preventDefault();
-          const point = [canvas.clientWidth / 2, canvas.clientHeight / 2] as const;
-          void read(point).then((items) => {
-            if (!input.signal.aborted && items)
-              interactions
-                .get(monitor)
-                ?.context({ point, items, trigger: 'keyboard', modifiers: inputModifiers(event) });
-          });
-        }
+        if (event.key === 'Escape') view.choose([]);
+        else if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey))
+          menu([canvas.clientWidth / 2, canvas.clientHeight / 2], 'keyboard', event);
+        else return;
+        event.preventDefault();
       },
       listener,
     );
   return () => {
-    if (input.signal.aborted) return;
     picking?.abort();
     input.destroy();
     points.clear();
-    if (interactions.has(monitor)) monitor.setPointer(null);
+    view.pointer(null);
   };
 }

@@ -1,7 +1,7 @@
 {
   "name": "@latkit/model",
   "version": "0.13.0",
-  "description": "Model, Recording, and columnar query contracts for Latkit.",
+  "description": "Columnar values, passive observation, and local computation for Latkit.",
   "type": "module",
   "repository": {
     "type": "git",

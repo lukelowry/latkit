@@ -1,11 +1,13 @@
+import { transactions } from '@latkit/model';
 import { connect, messagePort, serve } from '@latkit/connect';
-/* global document, GPUBufferUsage, GPUMapMode, PointerEvent */
-import { createMonitor, attachMonitorInput } from '@latkit/monitor';
-import { createRenderTarget, createCanvasView } from '@latkit/gpu';
+/* global document, GPUBufferUsage, GPUMapMode, PointerEvent, OffscreenCanvas, createImageBitmap */
+import { createMonitor } from '@latkit/monitor';
+import { kit } from '@latkit/gpu';
 import { SignalSource } from './generated/fixture.js';
 function assert(value, message) {
   if (!value) throw new Error(message);
 }
+/** Raw target pixels, for progressive frames a complete image never shows. */
 async function pixels(gpu, target) {
   const stride = Math.ceil((target.width * 4) / 256) * 256,
     read = gpu.buffer({
@@ -25,6 +27,33 @@ async function pixels(gpu, target) {
   read.destroy();
   return { data, stride };
 }
+/** A complete image of a view, decoded to RGBA. */
+async function snapshot(view, width = 512, height = 256) {
+  const bitmap = await createImageBitmap(await view.image({ width, height, pixelRatio: 1 }), {
+    colorSpaceConversion: 'none',
+    premultiplyAlpha: 'none',
+  });
+  const context = new OffscreenCanvas(width, height).getContext('2d', {
+    willReadFrequently: true,
+  });
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return { data: context.getImageData(0, 0, width, height).data, stride: width * 4 };
+}
+/** The next value a view reports for an event, or undefined after a timeout. */
+function next(view, event, ms = 5000) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      off();
+      resolve(undefined);
+    }, ms);
+    const off = view.on(event, (value) => {
+      clearTimeout(timer);
+      off();
+      resolve(value);
+    });
+  });
+}
 function bright(image, x, y, radius = 2) {
   let max = 0;
   for (let j = Math.max(0, Math.floor(y - radius)); j <= Math.min(255, Math.ceil(y + radius)); j++)
@@ -37,43 +66,47 @@ function bright(image, x, y, radius = 2) {
   return max > 80;
 }
 export async function verify(gpu) {
+  const queries = [],
+    query = gpu.query.bind(gpu);
+  gpu.query = (...args) => {
+    queries.push(args[1]);
+    return query(...args);
+  };
   const checks = [];
   globalThis.pixelChecks = checks;
-  const target = createRenderTarget({ gpu, width: 512, height: 256 });
+  const target = kit.createRenderTarget({ gpu, width: 512, height: 256 });
+  const draw = (view, complete = true) =>
+    gpu.render({
+      views: [{ renderer: kit.rendererOf(view), target }],
+      timeMs: 10,
+      ...(complete ? { completion: 'complete' } : {}),
+    });
   const render = async (source, extra = {}, trace = {}) => {
     const origin = source.options.valueOrigin ?? 0,
       lo = source.coordinate(0),
       hi = source.coordinate(source.frames - 1);
-    const view = createMonitor({
-      gpu,
-      data: {
-        source,
-        window: { kind: 'range', between: [lo, hi] },
-        traces: {
-          a: {
-            from: 'signal',
-            field: 'value',
-            widthPx: 2.5,
-            baseColor: [1, 0.25, 0.05, 1],
-            ...trace,
-          },
+    const view = createMonitor(gpu, {
+      source: source.data,
+      traces: {
+        a: {
+          from: 'signal',
+          field: 'value',
+          widthPx: 2.5,
+          baseColor: [1, 0.25, 0.05, 1],
+          ...trace,
         },
       },
-      options: {
-        coordinateAxis: null,
-        valueAxis: null,
-        paddingPx: 12,
-        valueDomain: [origin - 2, origin + 2],
-        backgroundColor: [0, 0, 0, 1],
-        ...extra,
-      },
+      camera: { window: [lo, hi], values: [origin - 2, origin + 2] },
+      coordinateAxis: false,
+      valueAxis: false,
+      paddingPx: 12,
+      backgroundColor: [0, 0, 0, 1],
+      ...extra,
     });
     globalThis.checkView = view;
-    await gpu.render({ views: [{ renderer: view, target }], timeMs: 10, completion: 'complete' });
-    await gpu.idle();
     return {
       view,
-      image: await pixels(gpu, target),
+      image: await snapshot(view),
       x: (f) => 12 + ((source.coordinate(f) - lo) / (hi - lo)) * 488,
       y: (v) => 12 + ((origin + 2 - v) / 4) * 232,
     };
@@ -118,7 +151,6 @@ export async function verify(gpu) {
     }
     checks.push({ mode, found, tested });
     out.view.destroy();
-    await source.close();
   }
   for (const interpolation of ['step-before', 'step-after']) {
     const source = new SignalSource(1, 2);
@@ -136,18 +168,13 @@ export async function verify(gpu) {
   const focusSource = new SignalSource(2, 128);
   focusSource.value = (row) => (row ? 1 : -1);
   const focused = await render(focusSource, { focusColor: [0, 1, 0, 1] });
-  const hits = await focused.view.hitTest([focused.x(64), focused.y(1)], { radiusPx: 3, limit: 1 });
+  const hits = await focused.view.pick([focused.x(64), focused.y(1)], { radiusPx: 3, limit: 1 });
   assert(
     hits[0]?.row === 1 && hits[0].frame === focusSource.firstFrame + 64,
     'Picking lost the exact native observation',
   );
-  focused.view.select(hits[0]);
-  await gpu.render({
-    views: [{ renderer: focused.view, target }],
-    timeMs: 10,
-    completion: 'complete',
-  });
-  const focusedPixels = await pixels(gpu, target);
+  focused.view.select([hits[0]]);
+  const focusedPixels = await snapshot(focused.view);
   const ix = Math.round(focused.x(64)),
     iy = Math.round(focused.y(1)),
     pixel = iy * focusedPixels.stride + ix * 4;
@@ -161,14 +188,11 @@ export async function verify(gpu) {
   const stableSource = new SignalSource(2, 256, { blockFrames: 16 });
   stableSource.value = (row) => (row ? 1 : -1);
   const stable = await render(stableSource, { focusColor: [0, 1, 0, 1] });
-  stable.view.select({ source: stableSource, index: stableSource.index, row: 1, field: 'value' });
-  const draw = (complete) =>
-    gpu.render({
-      views: [{ renderer: stable.view, target }],
-      timeMs: 10,
-      ...(complete ? { completion: 'complete' } : {}),
-    });
-  await draw(true);
+  const stableRenderer = kit.rendererOf(stable.view);
+  stable.view.select([
+    { source: stableSource.data, index: stableSource.index, row: 1, field: 'value' },
+  ]);
+  await draw(stable.view);
   let checkedFrames = 0;
   async function checkStable() {
     const image = await pixels(gpu, target),
@@ -184,40 +208,44 @@ export async function verify(gpu) {
     assert(color(0.75, 0) < 100, 'Unselected history flashed to full brightness');
     checkedFrames++;
   }
-  const resizeReads = stableSource.reads;
+  const resizeReads = gpu.stats().queries;
   for (let i = 0; i < 12; i++) {
     target.resize({ width: 512 + i * 4, height: 256 + i * 2 });
-    await draw(false);
+    await draw(stable.view, false);
     await checkStable();
   }
-  assert(stableSource.reads === resizeReads, 'Resize burst rebuilt source history');
-  await draw(true);
+  assert(gpu.stats().queries === resizeReads, 'Resize burst rebuilt source history');
+  await draw(stable.view);
   await checkStable();
-  const oldCoordinate = stable.view.toData([target.width / 2, target.height / 2]).coordinate;
-  stable.view.setWindow({ kind: 'range', between: [0.2, 1.4] });
-  await draw(false);
+  const [lo, hi] = stable.view.camera.window,
+    center = { coordinate: (lo + hi) / 2, value: 0 },
+    presented = stable.view.locate(center);
+  stable.view.set({ camera: { window: [0.2, 1.4] } });
+  await draw(stable.view, false);
   await checkStable();
+  const unsubmitted = stable.view.locate(center);
   assert(
-    stable.view.toData([target.width / 2, target.height / 2]).coordinate === oldCoordinate,
+    unsubmitted?.[0] === presented[0] && unsubmitted[1] === presented[1],
     'Unsubmitted window changed picking',
   );
-  stable.view.setWindow({ kind: 'range', between: [0.4, 1.6] });
+  stable.view.set({ camera: { window: [0.4, 1.6] } });
   for (let i = 0; i < 300; i++) {
-    await draw(false);
+    await draw(stable.view, false);
     await checkStable();
-    const pending = stable.view.pending;
+    const pending = stableRenderer.pending;
     if (!pending) break;
     await pending;
   }
-  assert(!stable.view.pending, 'Replacement did not complete');
+  assert(!stableRenderer.pending, 'Replacement did not complete');
+  const committed = stable.view.locate({ coordinate: 1, value: 0 });
   assert(
-    Math.abs(stable.view.toData([target.width / 2, target.height / 2]).coordinate - 1) < 1e-9,
+    committed && Math.abs(committed[0] - target.width / 2) < 1e-6,
     'Final window was not committed',
   );
-  stable.view.setOptions({ msaa: 4 });
-  await draw(false);
+  stable.view.set({ msaa: 4 });
+  await draw(stable.view, false);
   await checkStable();
-  await draw(true);
+  await draw(stable.view);
   await checkStable();
   stable.view.destroy();
   target.resize({ width: 512, height: 256 });
@@ -228,10 +256,11 @@ export async function verify(gpu) {
   });
   // Sampled visibility must refine raw samples instead of misapplying envelope representatives.
   document.querySelector('#status').textContent = 'Pixel check: visibility';
+  const visibilityStart = queries.length;
   const visibility = new SignalSource(1, 4096, { native: true });
   const shown = await render(visibility, {}, { visible: 'visible' });
   assert(
-    !visibility.requests.some((q) => q.kind === 'envelope'),
+    !queries.slice(visibilityStart).some((q) => q.kind === 'envelope'),
     'Sampled visibility used lossy summaries',
   );
   shown.view.destroy();
@@ -240,22 +269,23 @@ export async function verify(gpu) {
   document.querySelector('#status').textContent = 'Pixel check: shade';
   const source = new SignalSource(1, 128);
   const effect = await render(source, {}, { shade: 'value' });
-  let rejected = false;
-  try {
-    await effect.view.setShade({ wgsl: 'not valid WGSL' });
-  } catch {
-    rejected = true;
-  }
-  assert(rejected, 'Invalid shade accepted');
-  await effect.view.setShade({
-    wgsl: 'fn shade(f:ShadeFragment)->vec4f { return vec4f(0.0,1.0,0.0,f.color.a); }',
+  const rejected = next(effect.view, 'error');
+  effect.view.set({ shade: { wgsl: 'not valid WGSL' } });
+  assert(await rejected, 'Invalid shade accepted');
+  effect.view.set({
+    shade: {
+      wgsl: 'fn shade(f:ShadeFragment)->vec4f { return vec4f(0.0,1.0,0.0,f.color.a); }',
+    },
   });
-  await gpu.render({
-    views: [{ renderer: effect.view, target }],
-    timeMs: 10,
-    completion: 'complete',
+  // The working pipeline draws until the new one compiles and asks for a frame.
+  const compiled = new Promise((resolve) => {
+    const off = kit.rendererOf(effect.view).on('invalidate', () => {
+      off();
+      resolve();
+    });
   });
-  const green = await pixels(gpu, target);
+  await Promise.race([compiled, next(effect.view, 'error')]);
+  const green = await snapshot(effect.view);
   let colored = 0;
   for (let i = 0; i < green.data.length; i += 4)
     if (green.data[i + 1] > 100 && green.data[i] < 20) colored++;
@@ -264,33 +294,56 @@ export async function verify(gpu) {
   checks.push({ mode: 'transactional shade', passed: true });
   const channel = new MessageChannel(),
     local = new SignalSource(3, 128);
-  const serving = serve(messagePort(channel.port1), local, { kind: 'queryable' }),
-    remote = await connect(messagePort(channel.port2), { kind: 'queryable' });
-  const connected = createMonitor({
-    gpu,
-    data: {
-      source: remote,
-      window: { kind: 'range', between: [0, 1.27] },
-      traces: { a: { from: 'signal', field: 'value' } },
+  const producer = {
+    name: 'Telemetry',
+    schema: local.schema,
+    async *monitor() {
+      yield { kind: 'begin', version: local.version, initial: true };
+      for (const page of local.data.tables.signal.fields.value)
+        yield {
+          kind: 'data',
+          version: local.version,
+          patch: {
+            kind: 'samples',
+            index: local.index,
+            rows: page.rows,
+            firstFrame: page.samples.firstFrame,
+            coordinates: page.samples.coordinates,
+            columns: { value: page.column },
+          },
+        };
+      yield { kind: 'end', version: local.version };
     },
-    options: { valueDomain: [-2, 2], coordinateAxis: null, valueAxis: null },
+  };
+  const serving = serve(messagePort(channel.port1), producer),
+    remote = await connect(messagePort(channel.port2));
+  const transaction = transactions(
+    remote.schema,
+    remote.monitor([{ from: 'signal', select: ['value'] }]),
+  );
+  const delivered = (await transaction.next()).value;
+  await transaction.return();
+  await remote.close();
+  await serving;
+  const connected = createMonitor(gpu, {
+    source: delivered,
+    traces: { a: { from: 'signal', field: 'value' } },
+    camera: { window: [0, 1.27], values: [-2, 2] },
+    coordinateAxis: false,
+    valueAxis: false,
   });
   try {
-    await gpu.render({
-      views: [{ renderer: connected, target }],
-      timeMs: 0,
-      completion: 'complete',
-    });
+    await draw(connected);
     const coordinate = local.coordinate(60),
       value = local.value(1, 60);
-    const hits = await connected.hitTest(
+    const hits = await connected.pick(
       [12 + (coordinate / 1.27) * 488, 12 + ((2 - value) / 4) * 232],
       { radiusPx: 0.25, limit: 3 },
     );
     assert(
       hits.some(
         (hit) =>
-          hit.source === remote &&
+          hit.source === delivered &&
           hit.row === 1 &&
           hit.frame === local.firstFrame + 60 &&
           hit.value === value,
@@ -298,8 +351,8 @@ export async function verify(gpu) {
       'Connected source changed the native reading contract',
     );
     connected.destroy();
-    assert(!local.closed, 'Monitor closed a borrowed connected source');
-    checks.push({ mode: 'connected Queryable', passed: true });
+    assert(local.data.tables.signal.fields.value.length > 0, 'Application data changed');
+    checks.push({ mode: 'delivered data after disconnect', passed: true });
   } finally {
     connected.destroy();
     await remote.close();
@@ -320,31 +373,32 @@ function summary(values) {
   };
 }
 export async function benchmark(gpu) {
+  const queries = [],
+    query = gpu.query.bind(gpu);
+  gpu.query = (...args) => {
+    queries.push(args[1]);
+    return query(...args);
+  };
   const result = [];
   globalThis.benchmarkProgress = result;
-  const target = createRenderTarget({ gpu, width: 960, height: 480 });
+  const target = kit.createRenderTarget({ gpu, width: 960, height: 480 });
   for (const [name, rows, frames] of [
     ['many rows', 100000, 32],
     ['long history', 1, 1000000],
     ['signals', 64, 4096],
   ]) {
     const source = new SignalSource(rows, frames, { native: true });
-    const view = createMonitor({
-      gpu,
-      data: {
-        source,
-        window: { kind: 'range', between: [0, source.coordinate(frames + 32)] },
-        traces: {
-          signal: { from: 'signal', field: 'value', widthPx: 1, baseColor: [0.2, 0.7, 0.9, 0.15] },
-        },
+    const view = createMonitor(gpu, {
+      source: source.data,
+      traces: {
+        signal: { from: 'signal', field: 'value', widthPx: 1, baseColor: [0.2, 0.7, 0.9, 0.15] },
       },
-      options: {
-        valueDomain: [-1.4, 1.4],
-        coordinateAxis: { label: 'Coordinate' },
-        valueAxis: { label: 'Value' },
-      },
+      camera: { window: [0, source.coordinate(frames + 32)], values: [-1.4, 1.4] },
+      coordinateAxis: 'Coordinate',
+      valueAxis: 'Value',
       limits: { historyBytes: 96 * 1024 ** 2 },
     });
+    const renderer = kit.rendererOf(view);
     globalThis.benchmarkView = view;
     const progress = { name, phase: 'initial', started: performance.now() };
     result.push(progress);
@@ -352,7 +406,7 @@ export async function benchmark(gpu) {
     let prepared = [],
       began = performance.now();
     const finish = gpu.render({
-      views: [{ renderer: view, target }],
+      views: [{ renderer, target }],
       timeMs: 0,
       completion: 'complete',
     });
@@ -360,39 +414,39 @@ export async function benchmark(gpu) {
     await gpu.idle();
     const initialMs = performance.now() - began;
     progress.phase = 'steady';
-    const reads = source.reads,
+    const reads = gpu.stats().queries,
       steady = [],
       moving = [];
     for (let i = 0; i < 45; i++) {
       began = performance.now();
       await gpu.render({
-        views: [{ renderer: view, target, at: source.coordinate(i) }],
+        views: [{ renderer, target, at: source.coordinate(i) }],
         timeMs: i * 16,
       });
       await gpu.idle();
       if (i >= 5) steady.push(performance.now() - began);
     }
-    assert(source.reads === reads, 'Playhead caused history queries');
+    assert(gpu.stats().queries === reads, 'Playhead caused history queries');
     progress.phase = 'resizing';
     for (let i = 0; i < 25; i++) {
       target.resize({ width: 960 + (i % 2) * 4, height: 480 + (i % 2) * 2 });
       began = performance.now();
-      await gpu.render({ views: [{ renderer: view, target }], timeMs: i * 16 });
+      await gpu.render({ views: [{ renderer, target }], timeMs: i * 16 });
       await gpu.idle();
       moving.push(performance.now() - began);
       prepared.push(view.stats().prepareMs);
     }
-    assert(source.reads === reads, 'Resizing caused history queries before settling');
-    await gpu.render({ views: [{ renderer: view, target }], timeMs: 1000, completion: 'complete' });
+    assert(gpu.stats().queries === reads, 'Resizing caused history queries before settling');
+    await gpu.render({ views: [{ renderer, target }], timeMs: 1000, completion: 'complete' });
     progress.phase = 'focus';
-    const q = source.requests.length;
-    view.select({ source, index: source.index, row: 0, field: 'value' });
+    const q = queries.length;
+    view.select([{ source: source.data, index: source.index, row: 0, field: 'value' }]);
     began = performance.now();
-    await gpu.render({ views: [{ renderer: view, target }], timeMs: 1000, completion: 'complete' });
+    await gpu.render({ views: [{ renderer, target }], timeMs: 1000, completion: 'complete' });
     await gpu.idle();
     const focusMs = performance.now() - began;
     assert(
-      source.requests
+      queries
         .slice(q)
         .filter((q) => q.kind === 'samples')
         .every((q) => q.rows?.kind === 'range' && q.rows.count === 1),
@@ -410,14 +464,9 @@ export async function benchmark(gpu) {
       focusMs,
       historyBytes: view.stats().historyBytes,
       gpu: gpu.stats(),
-      peakSourceBlockBytes: source.peakBlockBytes,
       noQueriesDuringInteraction: true,
-      sourceYieldMs: source.yieldMs,
-      sourceYieldCount: source.yieldCount,
-      sourceObservations: source.observations,
     });
     view.destroy();
-    await source.close();
     await gpu.idle();
     gpu.trim();
   }
@@ -433,17 +482,7 @@ export async function canvasLatency(gpu) {
   const copy = document.createElement('canvas'),
     ctx = copy.getContext('2d', { willReadFrequently: true });
   const source = new SignalSource(64, 4096, { native: true });
-  const monitor = createMonitor({
-    gpu,
-    data: {
-      source,
-      window: { kind: 'range', between: [0, 41] },
-      traces: { a: { from: 'signal', field: 'value', baseColor: [0, 1, 0, 1], widthPx: 3 } },
-    },
-    options: { valueDomain: [-2, 2], coordinateAxis: null, valueAxis: null },
-  });
-  const started = performance.now(),
-    events = [];
+  const events = [];
   let firstVisibleMs,
     completeMs,
     resolve,
@@ -457,11 +496,20 @@ export async function canvasLatency(gpu) {
     resolve = yes;
     reject = no;
   });
+  const started = performance.now();
+  const monitor = createMonitor(gpu, {
+    canvas,
+    source: source.data,
+    traces: { a: { from: 'signal', field: 'value', baseColor: [0, 1, 0, 1], widthPx: 3 } },
+    camera: { window: [0, 41], values: [-2, 2] },
+    coordinateAxis: false,
+    valueAxis: false,
+  });
   let live,
     selected = false;
-  const detach = attachMonitorInput({ monitor, canvas });
-  monitor.on('select', (reading) => {
-    selected = !!reading;
+  monitor.on('error', reject);
+  monitor.on('select', (readings) => {
+    selected = readings.length > 0;
   });
   const deadlines = setTimeout(
     () => reject(new Error('Canvas streaming benchmark timed out')),
@@ -489,96 +537,88 @@ export async function canvasLatency(gpu) {
         if (image.data[(j * image.width + i) * 4 + 1] > 100) found = true;
     return found;
   }
-  const view = createCanvasView({
-    gpu,
-    canvas,
-    renderer: monitor,
-    onError: reject,
-    onRendered: () => {
-      try {
-        const now = performance.now();
-        if (phase === 'initial') {
-          if (monitor.stats().visible && firstVisibleMs === undefined) {
-            const image = capture();
-            assert(
-              image.data.some((v, i) => i % 4 === 1 && v > 100),
-              'Published initial canvas was blank',
-            );
-            firstVisibleMs = now - started;
-          }
-          if (!monitor.stats().refining) {
-            completeMs = now - started;
-            phase = 'focus';
-            focusedAt = now;
-            const rect = canvas.getBoundingClientRect(),
-              x = 12 + (source.coordinate(250) / 41) * 616,
-              y = 12 + ((2 - source.value(0, 250)) / 4) * 216;
-            for (const type of ['pointerdown', 'pointerup'])
-              canvas.dispatchEvent(
-                new PointerEvent(type, {
-                  pointerId: 1,
-                  button: 0,
-                  clientX: rect.x + x,
-                  clientY: rect.y + y,
-                  bubbles: true,
-                }),
-              );
-          }
-        } else if (phase === 'focus' && selected && !monitor.stats().refining) {
-          focusMs = now - focusedAt;
-          phase = 'empty';
-          live = new SignalSource(1, 0);
-          live.value = () => 0;
-          monitor.setData({
-            source: live,
-            window: { kind: 'range', between: [0, 1] },
-            traces: { a: { from: 'signal', field: 'value', baseColor: [0, 1, 0, 1], widthPx: 3 } },
-          });
-        } else if (phase === 'empty' && !monitor.stats().refining) {
-          phase = 'stream';
-          timer = setInterval(() => {
-            events.push({ coordinate: live.coordinate(received), receivedAt: performance.now() });
-            received++;
-            live.append(1);
-            if (received === 40) {
-              clearInterval(timer);
-              timer = undefined;
-            }
-          }, 8);
-        } else if (phase === 'stream') {
-          const image = capture();
-          for (const event of events)
-            if (event.latencyMs === undefined && green(image, 12 + event.coordinate * 616, 120))
-              event.latencyMs = now - event.receivedAt;
-          if (
-            received === 40 &&
-            events.every((e) => e.latencyMs !== undefined) &&
-            !monitor.stats().refining
-          ) {
-            phase = 'done';
-            resolve({
-              firstVisibleMs,
-              completeMs,
-              clickToFocusMs: focusMs,
-              stream: summary(events.map((e) => e.latencyMs)),
-              received,
-              visible: events.length,
-              pendingBytes: monitor.stats().pendingBytes,
-            });
-          }
-        }
-      } catch (error) {
-        reject(error);
+  const rendered = () => {
+    const now = performance.now();
+    if (phase === 'initial') {
+      if (monitor.stats().visible && firstVisibleMs === undefined) {
+        const image = capture();
+        assert(
+          image.data.some((v, i) => i % 4 === 1 && v > 100),
+          'Published initial canvas was blank',
+        );
+        firstVisibleMs = now - started;
       }
-    },
+      if (!monitor.stats().refining) {
+        completeMs = now - started;
+        phase = 'focus';
+        focusedAt = now;
+        const rect = canvas.getBoundingClientRect(),
+          x = 12 + (source.coordinate(250) / 41) * 616,
+          y = 12 + ((2 - source.value(0, 250)) / 4) * 216;
+        for (const type of ['pointerdown', 'pointerup'])
+          canvas.dispatchEvent(
+            new PointerEvent(type, {
+              pointerId: 1,
+              button: 0,
+              clientX: rect.x + x,
+              clientY: rect.y + y,
+              bubbles: true,
+            }),
+          );
+      }
+    } else if (phase === 'focus' && selected && !monitor.stats().refining) {
+      focusMs = now - focusedAt;
+      phase = 'empty';
+      live = new SignalSource(1, 0);
+      live.value = () => 0;
+      monitor.set({ source: live.data, camera: { window: [0, 1] } });
+    } else if (phase === 'empty' && !monitor.stats().refining) {
+      phase = 'stream';
+      timer = setInterval(() => {
+        events.push({ coordinate: live.coordinate(received), receivedAt: performance.now() });
+        received++;
+        live.append(1);
+        monitor.set({ source: live.data });
+        if (received === 40) {
+          clearInterval(timer);
+          timer = undefined;
+        }
+      }, 8);
+    } else if (phase === 'stream') {
+      const image = capture();
+      for (const event of events)
+        if (event.latencyMs === undefined && green(image, 12 + event.coordinate * 616, 120))
+          event.latencyMs = now - event.receivedAt;
+      if (
+        received === 40 &&
+        events.every((e) => e.latencyMs !== undefined) &&
+        !monitor.stats().refining
+      ) {
+        phase = 'done';
+        resolve({
+          firstVisibleMs,
+          completeMs,
+          clickToFocusMs: focusMs,
+          stream: summary(events.map((e) => e.latencyMs)),
+          received,
+          visible: events.length,
+          pendingBytes: monitor.stats().pendingBytes,
+        });
+      }
+    }
+  };
+  monitor.on('frame', () => {
+    try {
+      rendered();
+    } catch (error) {
+      reject(error);
+    }
   });
   try {
     return await finished;
   } finally {
     clearTimeout(deadlines);
     if (timer) clearInterval(timer);
-    detach();
-    view.destroy();
     monitor.destroy();
     canvas.remove();
   }

@@ -1,9 +1,7 @@
 import { exportVideo, type VideoWrite } from '../src/index.js';
-import type { Gpu, Renderer } from '@latkit/gpu';
-export function usage(gpu: Gpu, renderer: Renderer, output: WritableStream<VideoWrite>) {
-  return exportVideo({
-    gpu,
-    renderer,
+import type { View } from '@latkit/gpu';
+export function usage(view: View, output: WritableStream<VideoWrite>) {
+  return exportVideo(view, {
     output,
     width: 1920,
     height: 1080,

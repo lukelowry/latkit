@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
-import { colormaps, createGpu, reverseColormap, type Preparation } from '../src/index.js';
+import { colormaps, createGpu, reverseColormap } from '../src/index.js';
+import { type Preparation } from '../src/kit.js';
 import { fakeDevice } from './fixtures/device.js';
 import { draw, renderer, target } from './fixtures/render.js';
 

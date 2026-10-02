@@ -16,8 +16,6 @@ export function validateQuery(schema: Schema, value: unknown): readonly Problem[
   const c = new Check();
   const q = c.object(value, []);
   if (!c.enum(q.kind, kinds, ['kind'])) return c.issues;
-  if (!schema.queries.includes(q.kind as Schema['queries'][number]))
-    c.issue(['kind'], 'Query kind is unsupported by this source.', 'unsupported');
   const validFrom = c.text(q.from, ['from']);
   const fields = validFrom ? fieldsOf(schema, q.from as string) : undefined;
   if (!fields) c.issue(['from'], 'Unknown source type.');

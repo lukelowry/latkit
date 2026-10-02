@@ -1,5 +1,4 @@
-import { cameraPoint, worldPoint, withinBudget } from '@latkit/gpu';
-import type { Camera2D, Viewport } from '@latkit/gpu';
+import { kit } from '@latkit/gpu';
 import type { DiagramHit, DiagramItem, Point } from './data.js';
 import { itemKey } from './data.js';
 import type { Scene, Rect } from './scene.js';
@@ -98,14 +97,14 @@ export class Picking {
   }
   hit(
     point: Point,
-    camera: Camera2D,
-    viewport: Viewport,
+    camera: kit.Camera2D,
+    viewport: kit.Viewport,
     radius: number,
     budget?: number,
     ports = true,
   ): { items: readonly DiagramHit[]; complete: boolean } {
-    const work = withinBudget((check) => {
-      const world = worldPoint(camera, point, viewport),
+    const work = kit.withinBudget((check) => {
+      const world = kit.worldPoint(camera, point, viewport),
         dx = (radius + this.maxStroke) / camera.scale[0] + 3.5,
         dy = (radius + this.maxStroke) / camera.scale[1] + 3.5;
       const matches = new Map<string, { entry: Entry; distance: number }>();
@@ -120,7 +119,7 @@ export class Picking {
         let d = Infinity;
         if (e.point) {
           if (!ports) continue;
-          const p = cameraPoint(camera, e.point, viewport);
+          const p = kit.cameraPoint(camera, e.point, viewport);
           d = Math.max(
             0,
             Math.hypot(point[0] - p[0], point[1] - p[1]) - (this.scene.portSizePx ?? 8) / 2,
@@ -130,8 +129,8 @@ export class Picking {
             0,
             distance(
               point,
-              cameraPoint(camera, e.a, viewport),
-              cameraPoint(camera, e.b, viewport),
+              kit.cameraPoint(camera, e.a, viewport),
+              kit.cameraPoint(camera, e.b, viewport),
             ) - (e.radius ?? 0),
           );
         else if (e.vertex !== undefined) {

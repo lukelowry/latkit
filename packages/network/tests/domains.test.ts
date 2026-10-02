@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
-import { createGpu, type Gpu, type Preparation } from '@latkit/gpu';
+import { createGpu, type Gpu, type kit } from '@latkit/gpu';
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
-async function draw(gpu: Gpu, prepare: (frame: Preparation) => Promise<void>): Promise<void> {
+async function draw(gpu: Gpu, prepare: (frame: kit.Preparation) => Promise<void>): Promise<void> {
   const texture = gpu.device.createTexture({
     size: [16, 16],
     format: 'rgba8unorm',
@@ -45,15 +45,15 @@ it('uses the whole selected type for automatic domains across native blocks and 
       311,
     );
   const options = { position: 'position', size: { field: 'weight', range: [2, 0.5] as const } };
-  const data = { source, vertices: { node: options } };
+  const data = { source: source.data, vertices: { node: options } };
   const gpu = await createGpu({ device: fakeDevice().device });
   await draw(gpu, async (frame) => {
     const geometry = await readGeometry(data, frame, DEFAULT_LIMITS),
       reads = new Map<VertexBank, FieldRead>();
     expect(geometry.vertices).toHaveLength(2);
     for (const bank of geometry.vertices)
-      reads.set(bank, await readFields(frame, source, bank, options, 'position', () => {}));
-    await resolveDomains(frame, source, reads, () => options);
+      reads.set(bank, await readFields(frame, source.data, bank, options, 'position'));
+    await resolveDomains(frame, source.data, reads, () => options);
     for (const read of reads.values()) expect(read.scales.size.domain).toEqual([0, count - 1]);
   });
   gpu.destroy();

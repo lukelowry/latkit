@@ -2,7 +2,8 @@ import { Work } from './work.js';
 import { GpuError } from '@latkit/gpu';
 import type { Point, RouteEnd } from './data.js';
 import type { Scene, Vertex, Rect, End } from './scene.js';
-import type { Options, Limits } from './options.js';
+import type { Limits } from './options.js';
+import type { Style } from './config.js';
 import { rect } from './scene.js';
 import { SpatialIndex, union, expand } from './spatial.js';
 import { rootEnd } from './layout.js';
@@ -316,7 +317,7 @@ function segments(paths: readonly (readonly Point[])[]): {
 
 export async function geometry(
   scene: Scene,
-  options: Required<Options>,
+  options: Style,
   limits: Required<Limits>,
   signal: AbortSignal,
   previous?: Scene,
@@ -709,6 +710,6 @@ export async function geometry(
   if (scene.bytes > limits.geometryBytes)
     throw new GpuError('resource-limit', 'Route geometry exceeds budget');
 }
-function stubLength(options: Required<Options>): number {
+function stubLength(options: Style): number {
   return options.routeClearance;
 }

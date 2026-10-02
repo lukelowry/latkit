@@ -1,161 +1,96 @@
 import type {
   Command,
+  Commands,
+  DataEvent,
   FieldSelection,
   Input,
   Model,
-  Query,
-  QueryBlock,
-  QueryHeader,
-  Queryable,
-  QueryOptions,
-  Recording,
-  RetainOptions,
+  MonitorOptions,
+  Routine,
   Schema,
 } from '@latkit/model';
-import { blockBuffers, validateBlock, validateQuery, validateSchema } from '@latkit/model';
+import { validateSchema, validateDataEvent, validateQuery } from '@latkit/model';
 import type { Peer, Reply } from './peer.js';
 import { aborted, errorValue, failure, interrupt } from './errors.js';
-import { inspect, transferable } from './frame.js';
-
-import type { Kind } from './validation.js';
-import {
-  record,
-  recordOrEmpty,
-  text,
-  array,
-  integer,
-  stateKeys,
-  validateState,
-} from './validation.js';
+import { record, text, array, integer } from './validation.js';
 import { bytes, readable } from './streams.js';
-type Instance = Model | Recording | Queryable;
 interface Reference {
   ref: number;
-  kind: Kind;
+  kind: 'stream';
   state: Record<string, unknown>;
   credit?: number;
 }
 interface Local {
-  closing?: Promise<void>;
-  kind: Kind;
-  value?: Instance;
-  iterator?: AsyncIterator<unknown>;
+  iterator: AsyncIterator<unknown>;
   controller: AbortController;
-  owned?: boolean;
+  credit: number;
   pulling?: boolean;
-  parent?: number;
-  off: (() => void)[];
-  state: Record<string, unknown>;
-  credit?: number;
 }
 interface Remote {
-  dispose?: () => void;
   reference: Reference;
-  state: Record<string, unknown>;
-  listeners: Map<string, Set<(value: unknown) => void>>;
   closed: boolean;
-  closedNotified?: boolean;
+  dispose?: () => void;
 }
-/** Every method of a kind crosses; none is optional. */
-const methods: Record<Kind, readonly string[]> = {
-  model: ['describe', 'query', 'retain', 'close', 'monitor', 'run'],
-  recording: ['describe', 'query', 'retain', 'close', 'export'],
-  queryable: ['describe', 'query', 'retain', 'close'],
-  stream: ['next', 'close'],
-};
-/** Known interfaces only: no arbitrary object reflection or user-selected method paths. */
+
+/** Only live subscriptions and command file streams cross the connection. */
 export class Bindings {
   private nextRef = 1;
   private locals = new Map<number, Local>();
   private remotes = new Map<number, Remote>();
-  private early = new Map<number, { event: string; state: unknown; value: unknown }[]>();
-  private earlyBytes = 0;
   constructor(
     readonly peer: Peer,
-    root?: { kind: 'model' | 'queryable'; value: Model | Queryable },
+    private readonly root?: { model: Model; commands?: Commands },
   ) {
     peer.invoke = this.invoke.bind(this);
-    peer.event = this.event.bind(this);
     peer.orphan = this.orphan.bind(this);
     peer.dispose = this.dispose.bind(this);
-    if (!root) return;
-    const entry: Local = {
-      kind: root.kind,
-      value: root.value,
-      controller: new AbortController(),
-      off: [],
-      state: this.metadata(root.kind, root.value),
+  }
+  async connectRoot(): Promise<Model & { readonly commands?: Commands }> {
+    const result = record(await this.peer.call(0, 'acquire', null));
+    const name = text(result.name);
+    if (validateSchema(result.schema).length)
+      throw failure('invalid-input', 'Invalid model schema.');
+    const schema = result.schema as Schema;
+    const model: Model & { commands?: Commands } = {
+      name,
+      schema,
+      monitor: (fields, options = {}) => this.monitor(schema, fields, options),
     };
-    this.locals.set(0, entry);
-    this.watch(0, entry, root.kind, root.value);
-  }
-  async connectRoot(kind: 'model' | 'queryable'): Promise<Model | Queryable> {
-    return this.importReference(await this.peer.call(0, 'acquire', { kind }), kind) as
-      Model | Queryable;
-  }
-  private checkLimit(stream = false): void {
-    if (
-      this.locals.size >= this.peer.bounds.maxReferences ||
-      (stream &&
-        [...this.locals.values()].filter((e) => e.kind === 'stream').length >=
-          this.peer.bounds.maxStreams)
-    )
-      throw failure('resource-limit', 'Reference limit exceeded.');
-  }
-  private metadata(kind: Exclude<Kind, 'stream'>, value: Instance): Record<string, unknown> {
-    const v = value as unknown as Record<string, unknown>;
-    const state: Record<string, unknown> = {};
-    for (const key of stateKeys[kind]) if (v[key] !== undefined) state[key] = v[key];
-    return state;
-  }
-  /** Tell the peer of each change, after the state it changed. The root closing ends the connection. */
-  private watch(ref: number, entry: Local, kind: Exclude<Kind, 'stream'>, value: Instance): void {
-    entry.off.push(
-      value.on('change', (update) => {
-        if (!this.locals.has(ref)) return;
-        if (ref === 0 && update.kind === 'closed') {
-          void this.peer.close();
-          return;
-        }
-        const state = this.metadata(kind, value);
-        const patch: Record<string, unknown> = {};
-        for (const key of Object.keys(state))
-          if (!Object.is(state[key], entry.state[key])) patch[key] = state[key];
-        entry.state = state;
-        this.peer.notify(ref, 'change', patch, update);
-      }),
-    );
-  }
-  private exportReference(
-    kind: Exclude<Kind, 'stream'>,
-    value: Instance,
-    parent?: number,
-  ): Reference {
-    this.checkLimit();
-    const ref = this.nextRef++;
-    const entry: Local = {
-      kind,
-      value,
-      parent,
-      controller: new AbortController(),
-      off: [],
-      state: this.metadata(kind, value),
-    };
-    this.locals.set(ref, entry);
-    try {
-      this.watch(ref, entry, kind, value);
-      return { ref, kind, state: entry.state };
-    } catch (error) {
-      for (const off of entry.off) off();
-      this.locals.delete(ref);
-      throw error;
+    if (result.routines !== undefined) {
+      const routines = array(result.routines);
+      for (const value of routines) {
+        const routine = record(value);
+        text(routine.id);
+        text(routine.label);
+        array(routine.parameters);
+      }
+      model.commands = {
+        routines: routines as unknown as readonly Routine[],
+        run: async (command, options = {}) => {
+          aborted(options.signal);
+          const references = new Set<number>();
+          try {
+            return (await this.peer.call(
+              0,
+              'run',
+              this.encodeCommand(command, references),
+              options.signal,
+            )) as Awaited<ReturnType<Commands['run']>>;
+          } finally {
+            await Promise.allSettled([...references].map((ref) => this.release(ref)));
+          }
+        },
+      };
     }
+    return model;
+  }
+  private checkLimit(_stream = false): void {
+    if (this.locals.size >= Math.min(this.peer.bounds.maxReferences, this.peer.bounds.maxStreams))
+      throw failure('resource-limit', 'Stream limit exceeded.');
   }
   private exportStream(
     iterator: AsyncIterator<unknown>,
-    parent?: number,
     controller = new AbortController(),
-    owned = false,
     blockBytes = this.peer.blockBytes,
   ): Reference {
     try {
@@ -171,196 +106,51 @@ export class Bindings {
       blockBytes + this.peer.bounds.maxMetadataBytes + 1024,
     );
     this.locals.set(ref, {
-      kind: 'stream',
       iterator,
-      parent,
       controller,
-      owned,
-      off: [],
-      state: {},
       credit,
     });
     return { ref, kind: 'stream', state: {}, credit };
   }
-  private descriptor(value: unknown, expected: Kind): Reference {
+  private descriptor(value: unknown): Reference {
     const r = record(value);
-    if (!integer(r.ref) || r.kind !== expected)
-      throw failure('invalid-input', 'Invalid remote reference.');
-    validateState(expected, record(r.state));
+    if (!integer(r.ref) || r.ref === 0 || r.kind !== 'stream')
+      throw failure('invalid-input', 'Invalid stream reference.');
     if (this.remotes.size >= this.peer.bounds.maxReferences)
-      throw failure('resource-limit', 'Remote reference limit exceeded.');
+      throw failure('resource-limit', 'Stream limit exceeded.');
     return r as unknown as Reference;
   }
-  private importReference(value: unknown, expected: Exclude<Kind, 'stream'>): Instance {
-    const reference = this.descriptor(value, expected);
-    if (this.remotes.has(reference.ref)) throw failure('invalid-input', 'Duplicate acquisition.');
-    const remote: Remote = {
-      reference,
-      state: { ...reference.state },
-      listeners: new Map(),
-      closed: false,
-    };
-    this.remotes.set(reference.ref, remote);
-    const output: Record<string, unknown> = {};
-    for (const key of stateKeys[expected])
-      Object.defineProperty(output, key, { enumerable: true, get: () => remote.state[key] });
-    output.on = (event: string, listener: (value: unknown) => void): (() => void) => {
-      if (remote.closed) throw failure('closed');
-      const listeners = remote.listeners.get(event) ?? new Set();
-      listeners.add(listener);
-      remote.listeners.set(event, listeners);
-      return () => {
-        listeners.delete(listener);
-      };
-    };
-    const call = async (method: string, args: unknown, signal?: AbortSignal): Promise<unknown> => {
-      if (remote.closed) throw failure('closed');
-      return this.peer.call(reference.ref, method, args, signal);
-    };
-    for (const method of methods[expected]) {
-      if (method === 'close') {
-        output.close = async (): Promise<void> => {
-          if (remote.closed) return;
-          try {
-            await call('close', null);
-          } finally {
-            this.closeRemote(remote);
-          }
-        };
-        continue;
-      }
-      if (method === 'query') {
-        output.query = (query: Query, options: QueryOptions = {}) => ({
-          [Symbol.asyncIterator]: () => this.query(reference.ref, query, options, remote),
-        });
-        continue;
-      }
-      output[method] = async (...args: unknown[]): Promise<unknown> => {
-        if (remote.closed) throw failure('closed');
-        const options = recordOrEmpty(args[method === 'monitor' || method === 'run' ? 1 : 0]);
-        const signal = options.signal as AbortSignal | undefined;
-        let encoded: unknown = null;
-        const firstRef = this.nextRef;
-        try {
-          if (method === 'monitor') encoded = array(args[0]);
-          else if (method === 'run') encoded = this.encodeCommand(args[0] as Command);
-          else if (method === 'retain')
-            encoded = { window: options.window, maxBytes: options.maxBytes };
-        } catch (error) {
-          await Promise.allSettled(
-            Array.from({ length: this.nextRef - firstRef }, (_, i) => this.release(firstRef + i)),
-          );
-          throw error;
-        }
-        let result: unknown;
-        try {
-          result = await call(method, encoded, signal);
-        } catch (error) {
-          this.releaseOutgoing(encoded);
-          throw error;
-        }
-        try {
-          if (method === 'retain') return this.importReference(result, 'queryable');
-          if (method === 'monitor') return this.importReference(result, 'recording');
-          if (method === 'export') {
-            const data = record(result);
-            return { ...data, stream: readable(this.importStream(data.stream, signal)) };
-          }
-          if (method === 'describe' && validateSchema(result).length)
-            throw failure('invalid-input', 'Remote schema is invalid.');
-          return result;
-        } catch (error) {
-          this.orphan(result);
-          throw error;
-        }
-      };
-    }
-    const pending = this.early.get(reference.ref);
-    this.early.delete(reference.ref);
-    if (pending) {
-      for (const event of pending) this.event(reference.ref, event.event, event.state, event.value);
-      this.recountEarly();
-    }
-    return output as unknown as Instance;
-  }
-  private event(ref: number, event: string, state: unknown, value: unknown): void {
-    const remote = this.remotes.get(ref);
-    if (!remote) {
-      if (event === 'released') {
-        this.early.delete(ref);
-        this.recountEarly();
-        return;
-      }
-      const list = this.early.get(ref) ?? [];
-      list.push({ event, state, value });
-      this.early.set(ref, list);
-      this.earlyBytes += inspect({ state, value }, this.peer.bounds).bytes;
-      if (
-        this.early.size > this.peer.bounds.maxReferences ||
-        list.length > this.peer.bounds.maxStreams ||
-        this.earlyBytes > this.peer.bounds.maxInFlightBytes
-      )
-        throw failure('resource-limit', 'Pending event limit exceeded.');
-      return;
-    }
-    if (remote.closed) return;
-    if (event === 'released') {
-      this.closeRemote(remote);
-      return;
-    }
-    if (event !== 'change') throw failure('invalid-input', 'Unknown event.');
-    if (record(value).kind === 'closed') remote.closedNotified = true;
-    const patch = record(state);
-    validateState(remote.reference.kind, { ...remote.state, ...patch });
-    for (const [key, value] of Object.entries(patch))
-      Object.defineProperty(remote.state, key, {
-        value,
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
-    for (const listener of remote.listeners.get(event) ?? []) listener(value);
-  }
-  private recountEarly(): void {
-    this.earlyBytes = 0;
-    for (const list of this.early.values())
-      for (const event of list)
-        this.earlyBytes += inspect(
-          { state: event.state, value: event.value },
-          this.peer.bounds,
-        ).bytes;
-  }
-  private closeRemote(remote: Remote): void {
-    remote.dispose?.();
-    remote.closed = true;
-    if (!remote.closedNotified) {
-      remote.closedNotified = true;
-      for (const listener of remote.listeners.get('change') ?? []) listener({ kind: 'closed' });
-    }
-    remote.listeners.clear();
-    this.remotes.delete(remote.reference.ref);
-  }
-  private encodeInput(input: Input): unknown {
+  private encodeInput(input: Input, references: Set<number>): unknown {
+    const stream = this.exportStream(
+      bytes(input.stream, this.peer.blockBytes)[Symbol.asyncIterator](),
+    );
+    references.add(stream.ref);
     return {
       ...(input.name === undefined ? {} : { name: input.name }),
       ...(input.mediaType === undefined ? {} : { mediaType: input.mediaType }),
-      stream: this.exportStream(bytes(input.stream, this.peer.blockBytes)[Symbol.asyncIterator]()),
+      stream,
     };
   }
-  private decodeInput(value: unknown, signal?: AbortSignal): Input {
+  private decodeInput(
+    value: unknown,
+    streams: AsyncIterableIterator<unknown>[],
+    signal?: AbortSignal,
+  ): Input {
     const input = record(value);
+    const stream = this.importStream(input.stream, signal);
+    streams.push(stream);
     return {
       ...(input.name === undefined ? {} : { name: text(input.name) }),
       ...(input.mediaType === undefined ? {} : { mediaType: text(input.mediaType) }),
-      stream: readable(this.importStream(input.stream, signal)),
+      stream: readable(stream),
     };
   }
-  private encodeCommand(command: Command): unknown {
+  private encodeCommand(command: Command, references: Set<number>): unknown {
     const encode = (value: unknown): unknown =>
       Array.isArray(value)
         ? value.map(encode)
         : value && typeof value === 'object'
-          ? this.encodeInput(value as Input)
+          ? this.encodeInput(value as Input, references)
           : value;
     return {
       routine: command.routine,
@@ -369,13 +159,17 @@ export class Bindings {
       ),
     };
   }
-  private decodeCommand(value: unknown, signal?: AbortSignal): Command {
+  private decodeCommand(
+    value: unknown,
+    streams: AsyncIterableIterator<unknown>[],
+    signal?: AbortSignal,
+  ): Command {
     const command = record(value);
     const decode = (v: unknown): unknown =>
       Array.isArray(v)
         ? v.map(decode)
         : v && typeof v === 'object'
-          ? this.decodeInput(v, signal)
+          ? this.decodeInput(v, streams, signal)
           : v;
     return {
       routine: text(command.routine),
@@ -385,7 +179,7 @@ export class Bindings {
     };
   }
   private importStream(value: unknown, signal?: AbortSignal): AsyncIterableIterator<unknown> {
-    const reference = this.descriptor(value, 'stream');
+    const reference = this.descriptor(value);
     if (this.remotes.has(reference.ref)) throw failure('invalid-input', 'Duplicate stream.');
     if (
       !integer(reference.credit) ||
@@ -398,7 +192,7 @@ export class Bindings {
       this.peer.bounds.maxStreams
     )
       throw failure('resource-limit', 'Remote stream limit exceeded.');
-    const remote: Remote = { reference, state: {}, listeners: new Map(), closed: false };
+    const remote: Remote = { reference, closed: false };
     this.remotes.set(reference.ref, remote);
     const controller = new AbortController();
     const abort = (): void => {
@@ -465,107 +259,92 @@ export class Bindings {
       },
     };
   }
-  private query(
-    ref: number,
-    query: Query,
-    options: QueryOptions,
-    remote: Remote,
-  ): AsyncIterableIterator<QueryHeader | QueryBlock> {
+  private monitor(
+    schema: Schema,
+    fields: readonly FieldSelection[],
+    options: MonitorOptions,
+  ): AsyncIterableIterator<DataEvent> {
+    const selected = selections(schema, fields);
     const controller = new AbortController();
-    const abort = (): void => controller.abort();
-
-    let started: Promise<AsyncIterableIterator<unknown>> | undefined;
-    let ended = false;
-    let header: QueryHeader | undefined;
-    const start = (): Promise<AsyncIterableIterator<unknown>> =>
-      (started ??= (async () => {
-        options.signal?.addEventListener('abort', abort, { once: true });
-        if (options.signal?.aborted) abort();
-        if (remote.closed) throw failure('closed');
-        const descriptor = await this.peer.call(
-          ref,
-          'query',
-          { query, options: { buffers: options.buffers, maxBlockBytes: options.maxBlockBytes } },
-          controller.signal,
-        );
-        return this.importStream(descriptor, controller.signal);
-      })());
-    const close = async (): Promise<IteratorResult<QueryHeader | QueryBlock>> => {
-      if (ended) return { done: true, value: undefined };
-      ended = true;
-      controller.abort();
-      options.signal?.removeEventListener('abort', abort);
-      if (started) {
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, controller.signal])
+      : controller.signal;
+    // Start now, so delaying the first pull does not change the subscription boundary.
+    const started = this.peer
+      .call(0, 'monitor', { fields, maxBlockBytes: options.maxBlockBytes }, signal)
+      .then((value) => {
+        try {
+          return this.importStream(value, signal);
+        } catch (error) {
+          this.orphan(value);
+          throw error;
+        }
+      });
+    void started.catch(() => {});
+    let ended = false,
+      pulling = false;
+    let version: string | undefined;
+    const close = async (): Promise<IteratorResult<DataEvent>> => {
+      if (!ended) {
+        ended = true;
+        controller.abort();
         try {
           await (await started).return?.();
         } catch {
-          /* Rejected setup has no live stream. */
+          /* Setup failure has no live stream. */
         }
       }
       return { done: true, value: undefined };
     };
-    const iterator: AsyncIterableIterator<QueryHeader | QueryBlock> = {
+    return {
       [Symbol.asyncIterator]() {
         return this;
       },
       next: async () => {
-        if (ended) return { done: true, value: undefined };
         aborted(options.signal);
+        if (ended) return { done: true, value: undefined };
+        if (pulling) throw failure('busy', 'Concurrent pulls are unsupported.');
+        pulling = true;
         try {
-          const stream = await start();
-          if (remote.closed) throw failure('closed');
-          const result = await stream.next();
-          if (remote.closed) throw failure('closed');
+          const result = await (await started).next();
           if (result.done) {
-            if (!header) throw failure('invalid-input', 'Missing query header.');
+            if (version !== undefined)
+              throw failure('invalid-input', 'Incomplete data transaction.');
             ended = true;
-            options.signal?.removeEventListener('abort', abort);
             return { done: true, value: undefined };
           }
-          let block = record(result.value);
-          if (block.kind === 'schema') {
-            if (header || validateSchema(block.schema).length || typeof block.version !== 'string')
-              throw failure('invalid-input', 'Invalid query header.');
-            const problems = validateQuery(block.schema as Schema, query);
-            if (problems.length)
-              throw failure('invalid-input', 'Query differs from its returned schema.');
-            header = block as unknown as QueryHeader;
-          } else {
-            if (!header || block.version !== header.version)
-              throw failure('conflict', 'Incoherent query stream.');
-            const limit = Math.min(
-              options.maxBlockBytes ?? Infinity,
-              header.schema.limits.maxBlockBytes,
-            );
-            if (
-              options.buffers === 'owned' &&
-              blockBuffers(block as unknown as QueryBlock).reduce((n, b) => n + b.byteLength, 0) >
-                limit
+          const issues = validateDataEvent(schema, result.value, options);
+          if (issues.length) throw failure('invalid-input', issues[0].message);
+          const event = result.value as DataEvent;
+          if (
+            event.kind === 'data' &&
+            Object.keys(event.patch.columns).some(
+              (field) => !selected.get(event.patch.index.type)?.has(field),
             )
-              block = transferable(block, this.peer.bounds).value as Record<string, unknown>;
-            const problems = validateBlock(header.schema, query, block, options);
-            if (problems.length)
-              throw Object.assign(
-                failure(
-                  problems[0].code === 'resource-limit' ? 'resource-limit' : 'invalid-input',
-                  'Invalid remote block.',
-                ),
-                { issues: problems },
-              );
+          )
+            throw failure('invalid-input', 'Publication contains an unselected field.');
+          if (event.kind === 'begin') {
+            if (version !== undefined) throw failure('invalid-input', 'Nested data transaction.');
+            version = event.version;
+          } else {
+            if (event.version !== version)
+              throw failure('conflict', 'Inconsistent data transaction.');
+            if (event.kind === 'end') version = undefined;
           }
-          return { done: false, value: block as unknown as QueryHeader | QueryBlock };
+          return { done: false, value: event };
         } catch (error) {
           await close();
           throw error;
+        } finally {
+          pulling = false;
         }
       },
       return: close,
-      throw: async (error?: unknown) => {
+      throw: async (error) => {
         await close();
         throw errorValue(error);
       },
     };
-    return iterator;
   }
   private async invoke(
     ref: number,
@@ -574,174 +353,121 @@ export class Bindings {
     signal: AbortSignal,
     credit: number,
   ): Promise<Reply> {
-    const entry = this.locals.get(ref);
-    if (!entry || (entry.closing && method !== 'close')) throw failure('closed');
-    if (method !== 'close') signal = AbortSignal.any([signal, entry.controller.signal]);
     aborted(signal);
-    if (ref === 0 && method === 'acquire') {
-      if (record(args).kind !== entry.kind)
-        throw failure('unsupported', 'Connection capability mismatch.');
-      return { value: { ref: 0, kind: entry.kind, state: entry.state } };
-    }
-    if (!methods[entry.kind].includes(method))
-      throw failure('unsupported', 'Unknown contract method.');
-    if (method === 'close') {
+    if (method === 'close' && ref !== 0) {
       await this.release(ref);
       return { value: null };
     }
-    if (entry.kind === 'stream') {
-      if (method !== 'next' || !credit || credit < entry.credit!)
+    const entry = this.locals.get(ref);
+    if (ref !== 0 && !entry) throw failure('closed', 'Stream is closed.');
+    if (ref !== 0) {
+      if (method !== 'next' || !credit || credit < entry!.credit!)
         throw failure('invalid-input', 'Missing pull credit.');
-      if (entry.pulling) throw failure('busy');
-      entry.pulling = true;
+      if (entry!.pulling) throw failure('busy');
+      entry!.pulling = true;
       const abort = (): void => {
-        entry.controller.abort();
+        entry!.controller.abort();
         void this.release(ref).catch(() => undefined);
       };
       signal.addEventListener('abort', abort, { once: true });
       try {
-        const result = await interrupt(Promise.resolve(entry.iterator!.next()), signal);
+        const result = await interrupt(Promise.resolve(entry!.iterator!.next()), signal);
         if (result.done) await this.release(ref);
         return {
           value: { done: result.done === true, value: result.value as unknown },
-          owned: entry.owned,
         };
       } finally {
-        entry.pulling = false;
+        entry!.pulling = false;
         signal.removeEventListener('abort', abort);
       }
     }
-    const value = entry.value!;
-    const source = value as Queryable;
-    if (method === 'query') {
-      const request = record(args),
-        opts = record(request.options);
-      if (opts.buffers !== undefined && opts.buffers !== 'owned' && opts.buffers !== 'borrowed')
-        throw failure('invalid-input');
-      if (
-        opts.maxBlockBytes !== undefined &&
-        (!integer(opts.maxBlockBytes) || opts.maxBlockBytes < 1)
-      )
-        throw failure('invalid-input');
-      const controller = new AbortController();
-      const bound = Math.min(Number(opts.maxBlockBytes ?? Infinity), this.peer.blockBytes);
-      const buffers = this.peer.transport.transfers
-        ? 'owned'
-        : (opts.buffers as QueryOptions['buffers']);
-      const iterator = source
-        .query(record(request.query) as unknown as Query, {
-          signal: controller.signal,
-          buffers,
-          maxBlockBytes: bound,
-        })
-        [Symbol.asyncIterator]();
-      const result = this.exportStream(iterator, ref, controller, buffers === 'owned', bound);
-      return { value: result, discard: () => this.release(result.ref) };
-    }
-    if (method === 'retain') {
-      const options = record(args);
-      if (options.maxBytes !== undefined && (!integer(options.maxBytes) || options.maxBytes < 1))
-        throw failure('invalid-input');
-      const retained = await source.retain({ ...options, signal } as RetainOptions);
-      try {
-        aborted(signal);
-        const descriptor = this.exportReference('queryable', retained);
-        return { value: descriptor, discard: () => this.release(descriptor.ref) };
-      } catch (error) {
-        await retained.close();
-        throw error;
-      }
-    }
-    if (method === 'describe') return { value: await source.describe({ signal }) };
-    if (method === 'export') {
-      const result = await (value as Recording).export({ signal });
-      const stream = this.exportStream(
-        bytes(result.stream, this.peer.blockBytes)[Symbol.asyncIterator](),
-        ref,
-      );
+    if (!this.root) throw failure('unsupported', 'No model is served.');
+    if (method === 'acquire')
       return {
-        value: { version: result.version, mediaType: result.mediaType, stream },
-        discard: () => this.release(stream.ref),
+        value: {
+          name: this.root.model.name,
+          schema: this.root.model.schema,
+          ...(this.root.commands ? { routines: this.root.commands.routines } : {}),
+        },
       };
-    }
-    const model = value as Model;
     if (method === 'monitor') {
-      const recording = await model.monitor(array(args) as unknown as FieldSelection[], {
-        signal,
-      });
-      if (signal.aborted) {
-        await recording.close();
-        throw failure('aborted');
-      }
-      try {
-        const descriptor = this.exportReference('recording', recording);
-        return { value: descriptor, discard: () => this.release(descriptor.ref) };
-      } catch (error) {
-        await recording.close();
-        throw error;
-      }
+      this.checkLimit();
+      const request = record(args);
+      if (
+        request.maxBlockBytes !== undefined &&
+        (!integer(request.maxBlockBytes) || request.maxBlockBytes < 1)
+      )
+        throw failure('invalid-input', 'Invalid block limit.');
+      const fields = array(request.fields) as unknown as readonly FieldSelection[];
+      selections(this.root.model.schema, fields);
+      const controller = new AbortController();
+      const bound = Math.min(this.peer.blockBytes, Number(request.maxBlockBytes ?? Infinity));
+      const iterator = this.root.model
+        .monitor(fields, { signal: controller.signal, maxBlockBytes: bound })
+        [Symbol.asyncIterator]();
+      const descriptor = this.exportStream(iterator, controller, bound);
+      return { value: descriptor, discard: () => this.release(descriptor.ref) };
     }
-    if (method === 'run')
-      return { value: await model.run(this.decodeCommand(args, signal), { signal }) };
-    throw failure('unsupported', 'Method is not implemented.');
-  }
-  private async release(ref: number): Promise<void> {
-    const entry = this.locals.get(ref);
-    if (!entry || ref === 0) return;
-    if (entry.closing) return entry.closing;
-    entry.controller.abort();
-    if (entry.iterator) {
-      this.locals.delete(ref);
-      void Promise.resolve(entry.iterator.return?.()).catch(() => undefined);
-      return;
-    }
-    entry.closing = Promise.resolve().then(async () => {
+    if (method === 'run' && this.root.commands) {
+      const streams: AsyncIterableIterator<unknown>[] = [];
       try {
-        const children = [...this.locals]
-          .filter(([, child]) => child.parent === ref)
-          .map(([id]) => this.release(id));
-        await Promise.all([entry.value?.close(), ...children]);
+        return {
+          value: await this.root.commands.run(this.decodeCommand(args, streams, signal), {
+            signal,
+          }),
+        };
       } finally {
-        for (const off of entry.off) off();
-        this.locals.delete(ref);
-        this.peer.notify(ref, 'released', {});
+        await Promise.allSettled(streams.map((stream) => Promise.resolve(stream.return?.())));
       }
-    });
-    return entry.closing;
-  }
-  /** A descriptor this side exported: a reference, with its kind and state. */
-  private static described(value: Record<string, unknown>): boolean {
-    return integer(value.ref) && typeof value.kind === 'string' && !!value.state;
-  }
-  private releaseOutgoing(value: unknown): void {
-    if (!value || typeof value !== 'object') return;
-    const v = value as Record<string, unknown>;
-    if (Bindings.described(v)) {
-      void this.release(v.ref as number).catch(() => undefined);
-      return;
     }
-    for (const child of Object.values(v)) this.releaseOutgoing(child);
+    throw failure('unsupported', 'Unknown capability.');
+  }
+  private release(ref: number): Promise<void> {
+    const entry = this.locals.get(ref);
+    if (!entry) return Promise.resolve();
+    this.locals.delete(ref);
+    entry.controller.abort();
+    void Promise.resolve(entry.iterator.return?.()).catch(() => {});
+    return Promise.resolve();
   }
   private orphan(value: unknown): void {
     if (!value || typeof value !== 'object') return;
     const v = value as Record<string, unknown>;
-    if (Bindings.described(v)) {
-      this.early.delete(v.ref as number);
-      this.recountEarly();
-      void this.peer.call(v.ref as number, 'close', null).catch(() => undefined);
+    if (integer(v.ref) && v.kind === 'stream') {
+      void this.peer.call(v.ref, 'close', null).catch(() => {});
       return;
     }
     for (const child of Object.values(v)) this.orphan(child);
   }
   private async dispose(): Promise<void> {
-    for (const remote of this.remotes.values()) this.closeRemote(remote);
+    for (const remote of this.remotes.values()) {
+      remote.closed = true;
+      remote.dispose?.();
+    }
     this.remotes.clear();
-    this.early.clear();
-    // Abort streams before waiting for close methods which may themselves be waiting on them.
-    for (const entry of this.locals.values()) entry.controller.abort();
-    const refs = [...this.locals.keys()].filter((ref) => ref !== 0);
-    await Promise.allSettled(refs.map((ref) => this.release(ref)));
-    for (const off of this.locals.get(0)?.off ?? []) off();
-    this.locals.clear();
+    await Promise.allSettled([...this.locals.keys()].map((ref) => this.release(ref)));
   }
+}
+
+/** Validate the subscription independently of the provider and track its selected columns. */
+function selections(schema: Schema, fields: readonly FieldSelection[]): Map<string, Set<string>> {
+  const selected = new Map<string, Set<string>>();
+  for (const value of array(fields)) {
+    const field = record(value),
+      from = text(field.from),
+      select = array(field.select).map(text);
+    const sampled = select.some((name) => schema.types[from]?.fields[name]?.sampled);
+    const issues = validateQuery(schema, {
+      kind: 'rows',
+      from,
+      select,
+      ...(field.rows === undefined ? {} : { rows: field.rows }),
+      ...(sampled ? { at: 0 } : {}),
+    });
+    if (issues.length) throw failure('invalid-input', issues[0].message);
+    const names = selected.get(from) ?? new Set<string>();
+    for (const name of select) names.add(name);
+    selected.set(from, names);
+  }
+  return selected;
 }

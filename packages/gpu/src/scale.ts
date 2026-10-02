@@ -1,6 +1,7 @@
-import type { Domain, Queryable, RowSelection, SampleWindow } from '@latkit/model';
+import type { Domain, Data, RowSelection, SampleWindow } from '@latkit/model';
 import type { FieldInput } from './binding.js';
 import type { Colormap } from './colors/colormap.js';
+import type { ColormapName } from './colors/catalog.js';
 import { GpuError } from './error.js';
 
 /** Output endpoints may descend. Model domains remain ordered. */
@@ -15,11 +16,12 @@ export interface Scale {
 export interface ColorScale {
   readonly field: FieldInput;
   readonly domain?: ScaleDomain;
-  readonly colormap?: Colormap;
+  /** A colormap or a catalog name such as `viridis`. */
+  readonly colormap?: Colormap | ColormapName;
 }
 export type Position2D = FieldInput | { readonly x: FieldInput; readonly y: FieldInput };
 export interface ScaleRequest extends Scale {
-  readonly source: Queryable;
+  readonly source: Data;
   readonly from: string;
   readonly rows?: RowSelection;
   readonly window?: SampleWindow;

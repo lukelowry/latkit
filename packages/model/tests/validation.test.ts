@@ -110,10 +110,8 @@ describe('schema and query boundaries', () => {
   ])('rejects invalid requests: %j', (query) =>
     expect(validateQuery(schema, query).length).toBeGreaterThan(0),
   );
-  it('distinguishes unsupported capability from an invalid request', () => {
-    expect(validateQuery({ ...schema, queries: ['rows'] }, samplesQuery)[0].code).toBe(
-      'unsupported',
-    );
+  it('validates local queries without producer capability flags', () => {
+    expect(validateQuery(schema, samplesQuery)).toEqual([]);
   });
 });
 

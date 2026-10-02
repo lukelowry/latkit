@@ -1,11 +1,5 @@
 export { connect, serve } from './connection.js';
-export type {
-  Connection,
-  QueryableConnection,
-  ConnectOptions,
-  QueryableConnectOptions,
-  ConnectionLimits,
-} from './connection.js';
+export type { Connection, ConnectOptions, ServeOptions, ConnectionLimits } from './connection.js';
 export type { Transport } from './transport.js';
 export { messagePort } from './transports/message.js';
 export type { MessageTarget } from './transports/message.js';

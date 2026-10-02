@@ -1,70 +1,42 @@
 import { expect, it } from 'vitest';
 import { createGpu } from '../src/index.js';
+import { Source } from './fixtures/source.js';
 import { fakeDevice } from './fixtures/device.js';
 import { draw } from './fixtures/render.js';
-import { Source } from './fixtures/source.js';
-
-it('refuses to combine two query versions from the same live acquisition', async () => {
-  const fake = fakeDevice(),
-    gpu = await createGpu({ device: fake.device });
-  const source = new Source();
-  await expect(
-    draw(gpu, async (frame) => {
-      for await (const block of frame.query(source, {
+it('prepares independently versioned application data without requiring a common provider', async () => {
+  const a = new Source(4),
+    b = new Source(4);
+  b.publish();
+  const gpu = await createGpu({ device: fakeDevice().device });
+  await draw(gpu, async (frame) => {
+    for (const data of [a.data, b.data])
+      for await (const block of frame.query(data, {
         kind: 'rows',
         from: 'node',
         select: ['value'],
       }))
-        void block;
-      source.publish();
-      for await (const block of frame.query(source, {
-        kind: 'rows',
-        from: 'node',
-        select: ['value'],
-        rows: { kind: 'range', offset: 0, count: 2 },
-      }))
-        void block;
-    }),
-  ).rejects.toMatchObject({ code: 'conflict' });
-  expect(fake.queue.submit).not.toHaveBeenCalled();
+        if (block.kind === 'rows') expect(block.version).toBe(data.version);
+  });
   gpu.destroy();
 });
-
-it('does not cancel another view when one view abandons a shared stream', async () => {
-  const fake = fakeDevice(),
-    gpu = await createGpu({ device: fake.device });
-  const source = new Source(10, { blockRows: 2 });
-  const { renderer, target } = await import('./fixtures/render.js');
-  let count = 0;
-  await gpu.render({
-    timeMs: 0,
-    views: [
-      {
-        target: target(fake.device),
-        renderer: renderer(async (frame) => {
-          for await (const block of frame.query(source, {
-            kind: 'rows',
-            from: 'node',
-            select: ['value'],
-          })) {
-            if (block.kind === 'rows') break;
-          }
-        }),
-      },
-      {
-        target: target(fake.device),
-        renderer: renderer(async (frame) => {
-          for await (const block of frame.query(source, {
-            kind: 'rows',
-            from: 'node',
-            select: ['value'],
-          }))
-            if (block.kind === 'rows' && block.rows.kind === 'range') count += block.rows.count;
-        }),
-      },
-    ],
+it('leaving one computation does not cancel another consumer of its data', async () => {
+  const data = new Source(100, { blockRows: 10 }).data,
+    gpu = await createGpu({ device: fakeDevice().device });
+  await draw(gpu, async (frame) => {
+    const query = { kind: 'rows', from: 'node', select: ['value'] } as const;
+    await Promise.all([
+      (async () => {
+        for await (const block of frame.query(data, query)) {
+          if (block.kind === 'rows') break;
+        }
+      })(),
+      (async () => {
+        let n = 0;
+        for await (const block of frame.query(data, query))
+          if (block.kind === 'rows') n += block.columns.value.length;
+        expect(n).toBe(100);
+      })(),
+    ]);
   });
-  expect(count).toBe(10);
-  expect(source.reads).toBe(1);
   gpu.destroy();
 });

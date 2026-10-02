@@ -1,14 +1,7 @@
 import { textAt, bitAt } from '@latkit/model';
 import { assertIndex, rowAt, rowCount } from '@latkit/model';
-import {
-  BufferData,
-  GpuError,
-  type Gpu,
-  type Preparation,
-  type TextMetrics,
-  type TextRun,
-} from '@latkit/gpu';
-import type { Queryable, Update } from '@latkit/model';
+import { GpuError, type Gpu, kit } from '@latkit/gpu';
+import type { Data } from '@latkit/model';
 import type { NetworkData, Labels as LabelOptions } from '../data.js';
 import {
   edgeOptions,
@@ -19,19 +12,19 @@ import {
 } from '../geometry/topology.js';
 import type { PickGeometry } from '../picking.js';
 import type { Camera, Projected } from '../camera.js';
-import type { Options } from '../options.js';
+import type { Style } from '../options.js';
 
 export interface LabelBatch {
-  readonly runs: readonly TextRun[];
-  readonly anchors: BufferData;
+  readonly runs: readonly kit.TextRun[];
+  readonly anchors: kit.BufferData;
 }
 interface Entry {
   options: LabelOptions;
   revision: number;
-  source: Queryable;
-  text: Map<number, { run: TextRun; metrics: TextMetrics }>;
-  runs: readonly TextRun[];
-  anchors: BufferData;
+  source: Data;
+  text: Map<number, { run: kit.TextRun; metrics: kit.TextMetrics }>;
+  runs: readonly kit.TextRun[];
+  anchors: kit.BufferData;
 }
 /** Shared collision grid for vertex, edge, and path labels. */
 class Occupancy {
@@ -59,20 +52,17 @@ class Occupancy {
 }
 export class Labels {
   private cache = new WeakMap<object, Entry>();
-  private revisions = new WeakMap<Queryable, number>();
-  invalidate(source: Queryable, update: Update): void {
-    if (['data', 'structure', 'schema', 'replace', 'closed'].includes(update.kind))
-      this.revisions.set(source, (this.revisions.get(source) ?? 0) + 1);
-  }
+  private revisions = new WeakMap<Data, number>();
+
   async prepare(
-    frame: Preparation,
+    frame: kit.Preparation,
     gpu: Gpu,
     geometry: Geometry,
     picking: PickGeometry,
     data: NetworkData,
     camera: Camera,
     height: number,
-    style: Required<Options>,
+    style: Style,
   ): Promise<readonly LabelBatch[]> {
     const batches: LabelBatch[] = [],
       occupied = new Occupancy(),
@@ -94,7 +84,7 @@ export class Labels {
         key = type + ':' + bank.type;
       const config = edge ? edgeOptions(data, bank) : vertexOptions(data, bank),
         options = config.labels;
-      if (!options || (!edge && !style.vertices) || (edge && !style.edges)) continue;
+      if (!options || (!edge && !style.showVertices) || (edge && !style.showEdges)) continue;
       const max = options.maxCount ?? 200,
         size = options.size ?? 12;
       if (!Number.isSafeInteger(max) || max < 0 || !Number.isFinite(size) || size <= 0)
@@ -119,7 +109,7 @@ export class Labels {
           revision,
           text: new Map(),
           runs: [],
-          anchors: new BufferData({ size: 16, label: 'network label anchors' }),
+          anchors: new kit.BufferData({ size: 16, label: 'network label anchors' }),
         };
         this.cache.set(bank.rows, entry);
       }
@@ -178,7 +168,7 @@ export class Labels {
             const row = rowAt(block.rows, i);
             if (!lookup.has(row)) throw new GpuError('invalid-input', 'Unexpected label row');
             const text = bitAt(block.presence.label, i) ? (textAt(column, i) ?? '') : '';
-            const run: TextRun = {
+            const run: kit.TextRun = {
               text,
               font: options.font,
               size,

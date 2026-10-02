@@ -1,4 +1,4 @@
-import { GpuError, type Gpu, type NativeFields, type FieldInput } from '@latkit/gpu';
+import { GpuError, type Gpu, kit } from '@latkit/gpu';
 import {
   assertIndex,
   bitAt,
@@ -9,9 +9,10 @@ import {
   type EnvelopeBlock,
   type Index,
   type RowAxis,
+  type RowSelection,
   type SampleRange,
   type SampleWindow,
-  type Queryable,
+  type Data,
 } from '@latkit/model';
 import type { Binding } from './bindings.js';
 import type { MonitorData } from './data.js';
@@ -19,7 +20,7 @@ import type { Limits } from './options.js';
 import { yieldWork } from './async.js';
 export interface Chunk {
   readonly binding: Binding;
-  readonly data: EnvelopeBlock | NativeFields;
+  readonly data: EnvelopeBlock | kit.NativeFields;
   /** Four normalized renderer style values per native row: color scalar, visibility, shade, spare. */
   readonly styles?: Float64Array;
 }
@@ -37,7 +38,30 @@ export interface HistoryRequest {
   readonly signal: AbortSignal;
   readonly onRows?: (count: number) => void;
   readonly frames?: { offset: number; count: number };
-  readonly focus?: { source: Queryable; index: Index; row: number; field?: string };
+  /** Draw only these rows, each narrowed to one field when it names one. */
+  readonly focus?: readonly Focus[];
+}
+export interface Focus {
+  readonly source: Data;
+  readonly index: Index;
+  readonly row: number;
+  readonly field?: string;
+}
+/** The focused rows a binding draws, ascending; undefined when it draws none. */
+function focused(focus: readonly Focus[], item: Binding): RowSelection | undefined {
+  const matching = focus.filter(
+    (f) =>
+      f.source === item.source &&
+      f.index.type === item.trace.from &&
+      (!f.field || f.field === item.field),
+  );
+  if (!matching.length) return undefined;
+  const index = matching[0].index;
+  for (const f of matching) assertIndex(index, f.index);
+  const rows = Uint32Array.from(new Set(matching.map((f) => f.row))).sort();
+  return rows.length === 1
+    ? { kind: 'range', index, offset: rows[0], count: 1 }
+    : { kind: 'indices', index, values: rows };
 }
 export async function* history(request: HistoryRequest): AsyncGenerator<Chunk> {
   const { gpu, data, bindings, window, detail, limits, signal, frames, focus } = request;
@@ -59,16 +83,8 @@ export async function* history(request: HistoryRequest): AsyncGenerator<Chunk> {
         ),
       ),
     );
-    if (
-      focus &&
-      (item.source !== focus.source ||
-        item.trace.from !== focus.index.type ||
-        (focus.field && item.field !== focus.field))
-    )
-      continue;
-    const rows = focus
-      ? { kind: 'range' as const, index: focus.index, offset: focus.row, count: 1 }
-      : item.rows;
+    const rows = focus ? focused(focus, item) : item.rows;
+    if (focus && !rows) continue;
     let first: number | undefined;
     if (!frames)
       for await (const part of gpu.query(
@@ -100,7 +116,7 @@ export async function* history(request: HistoryRequest): AsyncGenerator<Chunk> {
     for await (const block of gpu.query(item.source, discovery, { signal })) {
       if (block.kind === 'schema') continue;
       discovered = true;
-      if (focus) assertIndex(focus.index, block.index);
+      if (rows && 'index' in rows && rows.index) assertIndex(rows.index, block.index);
       admitted += rowCount(block.rows);
       request.onRows?.(admitted);
       if (admitted > limits.rows)
@@ -277,7 +293,7 @@ async function rowStyles(
     output[i * 4] = NaN;
     output[i * 4 + 1] = 1;
   }
-  const selected: Record<string, FieldInput> = {};
+  const selected: Record<string, kit.FieldInput> = {};
   for (const name of ['color', 'visible', 'shade'] as const)
     if (
       item.fields[name] &&

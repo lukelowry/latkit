@@ -1,4 +1,5 @@
-import { createGpu, createRenderTarget, colormaps } from '@latkit/gpu';
+import { read } from '@latkit/model';
+import { createGpu, kit } from '@latkit/gpu';
 import { createMonitor } from '@latkit/monitor';
 import { Telemetry } from './source.js';
 const result = document.querySelector<HTMLPreElement>('#result')!;
@@ -9,11 +10,11 @@ async function check(): Promise<void> {
   result.textContent = 'Checking short and long histories?';
   const report: unknown[] = [];
   let gpu: Awaited<ReturnType<typeof createGpu>> | undefined;
-  let target: ReturnType<typeof createRenderTarget> | undefined;
+  let target: ReturnType<typeof kit.createRenderTarget> | undefined;
   const errors: string[] = [];
   try {
     gpu = await createGpu();
-    target = createRenderTarget({ gpu, width: 1000, height: 600 });
+    target = kit.createRenderTarget({ gpu, width: 1000, height: 600 });
     gpu.device.addEventListener('uncapturederror', (event) => errors.push(event.error.message));
     const owner = gpu,
       output = target;
@@ -22,27 +23,24 @@ async function check(): Promise<void> {
       const values = (frame: number) =>
         Float64Array.from({ length: 192 }, (_, row) => Math.sin(frame * 0.02 + row * 0.1));
       for (let f = 0; f < frames; f++) source.append(values(f));
-      const monitor = createMonitor({
-        gpu,
-        data: {
-          source,
-          window: { kind: 'range', between: [0, 100] },
-          traces: {
-            value: {
-              from: 'sensor',
-              field: 'value',
-              color: { field: 'value', domain: [-1, 1], colormap: colormaps.viridis },
-            },
+      const monitor = createMonitor(gpu, {
+        source: source.data,
+        traces: {
+          value: {
+            from: 'sensor',
+            field: 'value',
+            color: { field: 'value', domain: [-1, 1], colormap: 'viridis' },
           },
         },
-        options: { valueDomain: [-1.1, 1.1] },
+        camera: { window: [0, 100], values: [-1.1, 1.1] },
       });
+      const renderer = kit.rendererOf(monitor);
       try {
         const render = async () => {
           const begin = performance.now();
           await owner.render({
             completion: 'complete',
-            views: [{ renderer: monitor, target: output }],
+            views: [{ renderer, target: output }],
             timeMs: 0,
           });
           await owner.idle();
@@ -52,17 +50,19 @@ async function check(): Promise<void> {
         const appendMs: number[] = [];
         for (let f = 0; f < 8; f++) {
           source.append(values(frames + f));
+          monitor.set({ source: source.data });
           appendMs.push(await render());
         }
-        monitor.select({ source, index: source.index, row: 42, field: 'value' });
+        monitor.select([{ source: source.data, index: source.index, row: 42, field: 'value' }]);
         const focusMs = await render();
         const focusedAppendMs: number[] = [];
         for (let f = 8; f < 16; f++) {
           source.append(values(frames + f));
+          monitor.set({ source: source.data });
           focusedAppendMs.push(await render());
         }
         let blocks = 0;
-        for await (const block of source.query({
+        for await (const block of read(source.data, {
           kind: 'samples',
           from: 'sensor',
           select: ['value'],
@@ -83,7 +83,6 @@ async function check(): Promise<void> {
         result.textContent = JSON.stringify({ report, errors }, null, 2);
       } finally {
         monitor.destroy();
-        await source.close();
       }
     }
     if (errors.length) throw new Error(errors.join('\n'));

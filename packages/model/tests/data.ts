@@ -10,7 +10,6 @@ import type {
 export const index: Index = { source: 'model', type: 'Node', version: 'rows:1' };
 export const hubs: Index = { source: 'model', type: 'Hub', version: 'rows:1' };
 export const schema: Schema = {
-  queries: ['rows', 'samples', 'aggregate'],
   limits: { maxBlockBytes: 65536 },
   types: {
     Node: {

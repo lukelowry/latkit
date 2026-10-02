@@ -1,19 +1,16 @@
-import { validateQuery } from '@latkit/model';
+import { createData, read, type Data, type DataPatch, validateQuery } from '@latkit/model';
 import type {
   Query,
-  Queryable,
   QueryOptions,
   QueryHeader,
   QueryBlock,
   Schema,
-  Update,
   Column,
   RowAxis,
 } from '@latkit/model';
-export class GraphSource implements Queryable {
+export class GraphSource {
   version = 'v0';
   readonly document: string;
-  readonly listeners = new Set<(update: Update) => void>();
   queries = 0;
   /** Reads of the lines' ends: topology, which moving positions never re-reads. */
   endsQueries = 0;
@@ -64,7 +61,6 @@ export class GraphSource implements Queryable {
     );
     this.schema = {
       limits: { maxBlockBytes: Math.max(65536, blockRows * 32) },
-      queries: ['rows'],
       axis: { name: 'time', unit: 's' },
       types: {
         node: {
@@ -115,27 +111,44 @@ export class GraphSource implements Queryable {
   index(type: string) {
     return { source: this.document, type, version: type + '-rows-1' };
   }
-  describe(): Promise<Schema> {
-    return Promise.resolve(this.schema);
+  private cached?: Data;
+  get data(): Data {
+    if (this.cached?.version === this.version) return this.cached;
+    const patches: DataPatch[] = [];
+    for (const [from, type] of Object.entries(this.schema.types)) {
+      const staticFields = Object.keys(type.fields).filter((name) => !type.fields[name].sampled);
+      const sampled = Object.keys(type.fields).filter((name) => type.fields[name].sampled);
+      for (const block of this.blocks({ kind: 'rows', from, select: staticFields }))
+        if (block.kind === 'rows')
+          patches.push({
+            kind: 'rows',
+            index: block.index,
+            rows: block.rows,
+            columns: block.columns,
+          });
+      for (let at = 0; at < 16; at++)
+        for (const block of this.blocks({ kind: 'rows', from, select: sampled, at }))
+          if (block.kind === 'rows')
+            patches.push({
+              kind: 'samples',
+              index: block.index,
+              rows: block.rows,
+              firstFrame: at,
+              coordinates: Float64Array.of(at),
+              columns: Object.fromEntries(
+                Object.entries(block.columns).map(([name, column]) => [
+                  name,
+                  { ...column, rowStride: 1, frameStride: column.length },
+                ]),
+              ) as import('@latkit/model').SamplesPatch['columns'],
+            });
+    }
+    return (this.cached = createData(this.schema, this.version, patches));
   }
-  on(_event: 'change', listener: (change: Update) => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+  query<Q extends Query>(query: Q, options?: QueryOptions) {
+    return read(this.data, query, options);
   }
-  retain(): Promise<Queryable> {
-    return Promise.reject(new Error('This deterministic test fixture does not acquire recordings'));
-  }
-  close(): Promise<void> {
-    for (const listener of this.listeners) listener({ kind: 'closed' });
-    this.listeners.clear();
-    return Promise.resolve();
-  }
-  query: Queryable['query'] = ((query: Query, options?: QueryOptions) =>
-    this.read(query, options)) as Queryable['query'];
-  private async *read(
-    query: Query,
-    options?: QueryOptions,
-  ): AsyncGenerator<QueryHeader | QueryBlock> {
+  private *blocks(query: Query, options?: QueryOptions): Generator<QueryHeader | QueryBlock> {
     const issues = validateQuery(this.schema, query);
     if (issues.length) throw new Error(JSON.stringify(issues));
     this.queries++;
@@ -215,6 +228,5 @@ export class GraphSource implements Queryable {
         yield { ...base, kind: 'rows', position: first, columns };
       } else throw new Error('Fixture query not implemented: ' + query.kind);
     }
-    await Promise.resolve();
   }
 }

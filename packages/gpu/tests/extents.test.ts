@@ -8,7 +8,7 @@ it('resolves full selection extents, reuses static cache, and invalidates releva
     gpu = await createGpu({ device: fakeDevice().device });
   source.blockRows = 7;
   const request = {
-    source,
+    source: source.data,
     index: source.index,
     rows: { kind: 'range' as const, offset: 5, count: 85 },
     field: 'value',
@@ -18,15 +18,9 @@ it('resolves full selection extents, reuses static cache, and invalidates releva
       expect(await frame.extent(request)).toEqual([5, 89]);
     });
   await render();
-  const queries = source.requests.length;
+  const queries = gpu.stats().queries;
   await render();
-  expect(source.requests.length).toBe(queries);
-  source.publish({ kind: 'status' });
-  await render();
-  expect(source.requests.length).toBe(queries);
-  source.publish({ kind: 'replace', version: 'v2' });
-  await render();
-  expect(source.requests.length).toBe(queries + 1);
+  expect(gpu.stats().queries).toBe(queries);
   gpu.destroy();
 });
 it('ignores null, missing, and nonfinite values, preserving a constant or empty result', async () => {
@@ -59,7 +53,7 @@ it('uses a row read for a sampled coordinate when a source does not advertise ag
   await draw(gpu, async (frame) => {
     expect(
       await frame.extent({
-        source,
+        source: source.data,
         index: source.index,
         rows: { kind: 'range', offset: 1, count: 3 },
         field: 'observed',
@@ -67,40 +61,23 @@ it('uses a row read for a sampled coordinate when a source does not advertise ag
       }),
     ).toEqual([1e12 + 5, 1e12 + 7]);
   });
-  expect(source.requests[0]).toMatchObject({ kind: 'rows', at: 4 });
   gpu.destroy();
 });
-it('pushes scalar min/max to an advertised aggregate and caches the window result', async () => {
+it('reduces sampled application values and caches the local result', async () => {
   const source = new FieldSource(),
     gpu = await createGpu({ device: fakeDevice().device });
-  Object.assign(source.schema, { queries: ['rows', 'aggregate'] });
-  source.query = ((query: import('@latkit/model').Query) => ({
-    async *[Symbol.asyncIterator]() {
-      source.requests.push(query);
-      yield { kind: 'schema' as const, version: source.version, schema: source.schema };
-      yield {
-        kind: 'aggregate' as const,
-        version: source.version,
-        values: { observed: { count: 16, min: 2, max: 9 } },
-      };
-    },
-  })) as import('@latkit/model').Queryable['query'];
   const request = {
-    source,
+    source: source.data,
     index: source.index,
     rows: { kind: 'range' as const, offset: 0, count: 8 },
     field: 'observed',
     window: { kind: 'frames' as const, offset: 0, count: 2 },
   };
   await draw(gpu, async (frame) => {
-    expect(await frame.extent(request)).toEqual([2, 9]);
-    expect(await frame.extent(request)).toEqual([2, 9]);
-  });
-  expect(source.requests).toHaveLength(1);
-  expect(source.requests[0]).toMatchObject({
-    kind: 'aggregate',
-    measures: ['min', 'max'],
-    window: request.window,
+    expect(await frame.extent(request)).toEqual([1e12, 1e12 + 8]);
+    const count = gpu.stats().queries;
+    expect(await frame.extent(request)).toEqual([1e12, 1e12 + 8]);
+    expect(gpu.stats().queries).toBe(count);
   });
   gpu.destroy();
 });

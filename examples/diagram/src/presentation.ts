@@ -1,5 +1,5 @@
 import { createColormap, colormaps, spotlight } from '@latkit/gpu';
-import type { Options, DiagramData, Shape, RouteStrategy } from '@latkit/diagram';
+import type { DiagramConfig, Shape, RouteStrategy } from '@latkit/diagram';
 import type { Shade } from '@latkit/gpu';
 import { types, shapes } from './graph.js';
 import type { GraphSource } from './source.js';
@@ -15,7 +15,12 @@ export interface Settings {
   light: boolean;
   density: 'compact' | 'comfortable' | 'spacious';
   titlePosition: 'header' | 'center';
+  overflow: 'wrap' | 'ellipsis';
 }
+/** The config's style options. */
+export type Style = Omit<DiagramConfig, 'source' | 'vertices' | 'edges' | 'groups'>;
+/** What the diagram draws. */
+export type Drawn = Required<Pick<DiagramConfig, 'source' | 'vertices' | 'edges' | 'groups'>>;
 const signalMap = createColormap({
   colors: [
     [0.12, 0.23, 0.27, 1],
@@ -52,7 +57,7 @@ const elbow: RouteStrategy = {
       .slice(1)
       .map((to) => [ends[0].position, [to.position[0], ends[0].position[1]], to.position]),
 };
-export function theme(light: boolean): Options {
+export function theme(light: boolean): Style {
   return light
     ? {
         ...base,
@@ -68,7 +73,7 @@ export function theme(light: boolean): Options {
       }
     : base;
 }
-const base: Options = {
+const base: Style = {
   backgroundColor: [0.063, 0.082, 0.106, 1],
   vertexBaseColor: [0.1, 0.13, 0.17, 1],
   edgeBaseColor: [0.46, 0.57, 0.65, 1],
@@ -79,15 +84,16 @@ const base: Options = {
   hoverColor: [0.48, 0.7, 0.94, 1],
   selectedColor: [0.51, 0.72, 1, 1],
   fontSizePx: 13,
+  gridPitch: 8,
   vertexPadding: 12,
   portSpacing: 24,
   routeClearance: 16,
   fitPaddingPx: 44,
   msaa: 4,
 };
-export function data(source: GraphSource, settings: Settings, automatic = false): DiagramData {
+export function data(source: GraphSource, settings: Settings, automatic = false): Drawn {
   return {
-    source,
+    source: source.data,
     vertices: Object.fromEntries(
       types.map((type) => [
         type,
@@ -98,7 +104,7 @@ export function data(source: GraphSource, settings: Settings, automatic = false)
             field: 'name',
             size: settings.density === 'compact' ? 12 : 13,
             maxWidth: 180,
-            overflow: 'wrap',
+            overflow: settings.overflow,
           },
           labelPosition: settings.titlePosition,
           visible: 'visible',

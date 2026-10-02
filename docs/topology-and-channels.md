@@ -1,6 +1,6 @@
 # Data bindings
 
-Renderers read native `Queryable` fields. Mapping keys name model types.
+Renderers read immutable application-owned `Data` fields. Mapping keys name model types.
 
 ## Positions and wiring
 
@@ -10,7 +10,6 @@ type, read as a `ReferenceColumn` of row numbers under that type's `Index`.
 ```ts
 const bus = { type: { kind: 'reference', to: 'Bus' } } as const;
 const schema = {
-  queries: ['rows'],
   limits: { maxBlockBytes: 1 << 20 },
   types: {
     Bus: {
@@ -40,24 +39,26 @@ two-component vectors.
 ## Style by field
 
 ```ts
-network.setVertex('Bus', {
-  color: {
-    field: { source: recording, from: 'Bus', field: 'temperature' },
-    domain: [0, 100],
-    colormap: colormaps.thermal,
+network.set({
+  vertices: {
+    Bus: {
+      color: {
+        field: { source: observations, from: 'Bus', field: 'temperature' },
+        domain: [0, 100],
+        colormap: 'thermal',
+      },
+      size: { field: 'capacity', domain: [0, 1000], range: [3, 12] },
+      labels: { field: 'name', maxCount: 100 },
+    },
   },
-  size: { field: 'capacity', domain: [0, 1000], range: [3, 12] },
-  labels: { field: 'name', maxCount: 100 },
+  at: 12,
 });
-view.request({ at: 12 });
 ```
 
-A string names a field on the mapping's source and type. An explicit binding
-selects another source. Native indices and sampled coordinates must align.
-Use immutable bindings and publish changes through renderer setters.
+A string names a field of the mapping's own source and type; `color: 'load'` is shorthand for
+`{ field: 'load' }`. A binding object reads another source, whose indices and sampled coordinates
+must align. Omitted domains fit the displayed values; explicit domains keep colors stable during
+playback. Missing values keep style defaults.
 
-Omitted domains use finite values across the displayed mapping. Explicit domains
-keep scales stable during playback. Missing values keep style defaults.
-
-Selections and hits retain source, index, and physical row identity.
-Do not reuse row indices after their source index version changes.
+Selections and hits keep source, index, and physical row. Do not reuse rows after their source's
+index version changes.

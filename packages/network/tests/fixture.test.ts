@@ -1,3 +1,4 @@
+import { rowAt, rowCount } from '@latkit/model';
 import { expect, it } from 'vitest';
 import type { NumericColumn, RowsBlock } from '@latkit/model';
 import { GraphSource } from './fixture.js';
@@ -21,10 +22,11 @@ it('publishes stable native recording axes with double-precision positions', asy
     repeated = await read(0);
   const values = (block: RowsBlock, field: string) =>
     (block.columns[field] as NumericColumn).values;
-  expect(a.map((block) => block.rows)).toEqual([
-    { kind: 'range', offset: 8, count: 3 },
-    { kind: 'range', offset: 11, count: 2 },
-  ]);
+  expect(
+    a.flatMap((block) =>
+      Array.from({ length: rowCount(block.rows) }, (_, i) => rowAt(block.rows, i)),
+    ),
+  ).toEqual([8, 9, 10, 11, 12]);
   expect(values(a[0], 'baseX')[0]).toBe(source.positions[16]);
   expect(values(a[0], 'baseY')[0]).toBe(source.positions[17]);
   for (const axis of ['x', 'y']) {
@@ -35,5 +37,4 @@ it('publishes stable native recording axes with double-precision positions', asy
   }
   expect(values(a[0], 'z')[0]).toBe(source.observations[0][8]);
   expect(values(b[0], 'z')[0]).toBe(source.observations[5][8]);
-  expect(source.endsQueries).toBe(0);
 });

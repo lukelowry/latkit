@@ -1,7 +1,5 @@
-import type { QueryBlock } from './query.js';
-
 /** Deduplicated backing allocations. Only transfer these for a query requested with buffers: owned. */
-export function blockBuffers(block: QueryBlock): readonly ArrayBufferLike[] {
+export function blockBuffers(block: unknown): readonly ArrayBufferLike[] {
   const buffers = new Set<ArrayBufferLike>();
   visit(block, (value) => {
     if (ArrayBuffer.isView(value)) buffers.add(value.buffer);
@@ -14,7 +12,7 @@ export function blockBuffers(block: QueryBlock): readonly ArrayBufferLike[] {
  * eight bytes per numeric metadata value, one per boolean/null. Excludes allocation/transport/object
  * overhead. Borrowed views may retain larger backing allocations; inspect blockBuffers for those.
  */
-export function blockByteLength(block: QueryBlock): number {
+export function blockByteLength(block: unknown): number {
   const ranges = new Map<ArrayBufferLike, [number, number][]>();
   let bytes = 0;
   visit(block, (value) => {

@@ -1,17 +1,17 @@
-import { GpuError, validateRgba, type RGBA, type Insets } from '@latkit/gpu';
+import { GpuError, kit, type RGBA } from '@latkit/gpu';
 import type { Domain, SampleRange } from '@latkit/model';
-import type { Options, Limits, AxisOptions } from './options.js';
-export type Settings = Required<Omit<Options, 'coordinateAxis' | 'valueAxis' | 'focusColor'>> & {
-  coordinateAxis: AxisOptions | null;
-  valueAxis: AxisOptions | null;
-  focusColor: RGBA | null;
+import type { StyleOptions, Limits, AxisOptions } from './options.js';
+export type Settings = Required<
+  Omit<StyleOptions, 'coordinateAxis' | 'valueAxis' | 'focusColor'>
+> & {
+  readonly coordinateAxis: AxisOptions | null;
+  readonly valueAxis: AxisOptions | null;
+  readonly focusColor: RGBA | null;
 };
 export const defaults: Settings = {
   detail: 'auto',
-  follow: null,
   coordinateAxis: {},
   valueAxis: {},
-  valueDomain: 'auto',
   autoDomain: 'grow',
   domainPadding: 0.1,
   font: { family: 'ui-monospace, monospace' },
@@ -53,12 +53,8 @@ export function domain(value: Domain, name = 'domain'): Domain {
     fail('Invalid ' + name);
   return [...value];
 }
-export function windowRange(value: SampleRange): SampleRange {
-  if (value.kind !== 'range') fail('Monitor window must be a coordinate range');
-  domain(value.between, 'coordinate window');
-  for (const n of [value.context?.before, value.context?.after])
-    if (n !== undefined && (!Number.isSafeInteger(n) || n < 0)) fail('Invalid window context');
-  return { ...value, between: [...value.between] };
+export function windowRange(value: Domain): SampleRange {
+  return { kind: 'range', between: domain(value, 'coordinate window') };
 }
 export function expanded(value: Domain, padding = 0): Domain {
   const d = value[1] - value[0],
@@ -69,10 +65,28 @@ export function expanded(value: Domain, padding = 0): Domain {
     fail('Domain cannot be represented');
   return [lo, hi];
 }
-export function settings(current: Settings, patch: Options): Settings {
-  const out = { ...current, ...patch };
-  for (const key of Object.keys(patch))
-    if (!(key in defaults)) fail('Unknown monitor option: ' + key);
+const axis = (value: string | AxisOptions | false | undefined, fallback: AxisOptions | null) =>
+  value === undefined
+    ? fallback
+    : value === false
+      ? null
+      : typeof value === 'string'
+        ? { label: value }
+        : value;
+/** The style a config describes: its own options over the defaults. */
+export function settings(config: StyleOptions): Settings {
+  const own = Object.fromEntries(
+    Object.keys(defaults).flatMap((key) => {
+      const value = config[key as keyof StyleOptions];
+      return value === undefined ? [] : [[key, value]];
+    }),
+  );
+  const out: Settings = {
+    ...defaults,
+    ...own,
+    coordinateAxis: axis(config.coordinateAxis, defaults.coordinateAxis),
+    valueAxis: axis(config.valueAxis, defaults.valueAxis),
+  };
   for (const [name, n, min, max] of [
     ['fontSizePx', out.fontSizePx, 1, 256],
     ['pickRadiusPx', out.pickRadiusPx, 0, 1024],
@@ -88,8 +102,6 @@ export function settings(current: Settings, patch: Options): Settings {
     ![1, 4].includes(out.msaa)
   )
     fail('Invalid monitor option');
-  if (out.valueDomain !== 'auto') domain(out.valueDomain);
-  if (out.follow) finite(out.follow.span, 'follow span', Number.MIN_VALUE);
   for (const c of [
     out.textColor,
     out.axisColor,
@@ -98,7 +110,7 @@ export function settings(current: Settings, patch: Options): Settings {
     out.cursorColor,
     out.focusColor,
   ])
-    if (c) validateRgba(c);
+    if (c) kit.validateRgba(c);
   for (const axis of [out.coordinateAxis, out.valueAxis]) checkAxis(axis);
   insets(out.paddingPx);
   return out;
@@ -132,7 +144,7 @@ export function limits(patch: Limits = {}): Required<Limits> {
   }
   return result;
 }
-export function insets(padding: Insets): readonly number[] {
+export function insets(padding: kit.Insets): readonly number[] {
   const p = typeof padding === 'number' ? [padding, padding, padding, padding] : padding;
   if (p.length !== 4 || !p.every((n) => Number.isFinite(n) && n >= 0)) fail('Invalid padding');
   return p;

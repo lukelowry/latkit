@@ -1,11 +1,12 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import type { FieldSelection, Input } from '@latkit/model';
-import { FixtureModel, failure } from '../../model/tests/fixture.js';
-import { open, deferred, reached } from './fixture.js';
+import { failure } from '../../model/tests/fixture.js';
+import { open, deferred, subscribed } from './fixture.js';
+import { LiveModel } from '../../model/tests/live.js';
 const output: readonly FieldSelection[] = [{ from: 'Node', select: ['output'] }];
 it('cancels a pending reverse content pull and recovers the connection', async () => {
-  const model = new FixtureModel();
-  model.run = async (command) => {
+  const model = new LiveModel();
+  model.commands.run = async (command) => {
     const reader = (command.values.file as Input).stream.getReader();
     await reader.read();
     return {};
@@ -26,7 +27,7 @@ it('cancels a pending reverse content pull and recovers the connection', async (
     { highWaterMark: 0 },
   );
   try {
-    const running = connection.remote.run(
+    const running = connection.remote.commands!.run(
       { routine: 'solve', values: { file: { stream } } },
       { signal: controller.signal },
     );
@@ -36,14 +37,14 @@ it('cancels a pending reverse content pull and recovers the connection', async (
     await failed;
     await cancelled.promise;
     expect(stream.locked).toBe(false);
-    expect(await connection.remote.describe()).toBeDefined();
+    expect(connection.remote.schema).toBeDefined();
   } finally {
     await connection.close();
   }
 });
 it('preserves failure targets and issues', async () => {
-  const model = new FixtureModel();
-  model.run = async () => {
+  const model = new LiveModel();
+  model.commands.run = async () => {
     throw Object.assign(failure('invalid-input'), {
       target: { kind: 'parameter', id: 'tmax' },
       issues: [
@@ -53,7 +54,9 @@ it('preserves failure targets and issues', async () => {
   };
   const connection = await open(model);
   try {
-    await expect(connection.remote.run({ routine: 'solve', values: {} })).rejects.toMatchObject({
+    await expect(
+      connection.remote.commands!.run({ routine: 'solve', values: {} }),
+    ).rejects.toMatchObject({
       code: 'invalid-input',
       target: { kind: 'parameter', id: 'tmax' },
       issues: [{ code: 'bounds', message: 'Must be positive.' }],
@@ -78,7 +81,7 @@ it('unwinds partial input setup without leaving locked streams or references', a
         { highWaterMark: 0 },
       );
       await expect(
-        connection.remote.run({
+        connection.remote.commands!.run({
           routine: 'solve',
           values: { first: { stream: first }, second: { stream: locked } },
         }),
@@ -86,13 +89,12 @@ it('unwinds partial input setup without leaving locked streams or references', a
       await cancelled.promise;
       expect(first.locked).toBe(false);
     }
-    expect(connection.model.queue).toHaveLength(0);
   } finally {
     reader.releaseLock();
     await connection.close();
   }
 });
-it('cancels content when a command is already aborted', async () => {
+it('does not acquire content when a command is already aborted', async () => {
   const connection = await open();
   const controller = new AbortController();
   controller.abort();
@@ -107,48 +109,29 @@ it('cancels content when a command is already aborted', async () => {
       { highWaterMark: 0 },
     );
     await expect(
-      connection.remote.run(
+      connection.remote.commands!.run(
         { routine: 'solve', values: { file: { stream } } },
         { signal: controller.signal },
       ),
     ).rejects.toMatchObject({ code: 'aborted' });
-    await cancelled.promise;
+    await Promise.resolve();
     expect(stream.locked).toBe(false);
-    expect(connection.model.queue).toHaveLength(0);
   } finally {
     await connection.close();
   }
 });
-it('closes a new monitor if the connection cannot publish another reference', async () => {
-  const connection = await open(undefined, false, { limits: { maxReferences: 1 } });
-  try {
-    for (let i = 0; i < 5; i++) {
-      await expect(connection.remote.monitor(output)).rejects.toMatchObject({
-        code: 'resource-limit',
-      });
-      expect(connection.model.monitors.size).toBe(0);
-    }
-    expect(await connection.remote.describe()).toBeDefined();
-  } finally {
-    await connection.close();
-  }
-});
-it('recycles reference slots as monitors close', async () => {
-  const connection = await open(undefined, false, { limits: { maxReferences: 4 } });
-  const { model, remote } = connection;
+it('recycles stream reference slots when passive monitors close', async () => {
+  const connection = await open(undefined, false, { limits: { maxReferences: 1, maxStreams: 1 } });
   try {
     for (let i = 0; i < 20; i++) {
-      const monitor = await remote.monitor(output);
-      const running = reached(monitor, 'running');
-      const command = remote.run({ routine: 'solve', values: {} });
-      await running;
-      model.frame(i);
-      model.finish();
-      await command;
-      expect(monitor.range).toEqual([i, i]);
-      await monitor.close();
+      const first = connection.remote.monitor(output)[Symbol.asyncIterator]();
+      await subscribed(connection.model);
+      await expect(
+        connection.remote.monitor(output)[Symbol.asyncIterator]().next(),
+      ).rejects.toMatchObject({ code: 'resource-limit' });
+      await first.return?.();
+      await vi.waitFor(() => expect(connection.model.subscribers.size).toBe(0));
     }
-    expect(model.monitors.size).toBe(0);
   } finally {
     await connection.close();
   }

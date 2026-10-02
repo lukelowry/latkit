@@ -1,42 +1,30 @@
 import { expect, it } from 'vitest';
-import { createGpu, type NativeFields } from '../src/index.js';
+import { createGpu } from '../src/index.js';
+import { type NativeFields } from '../src/kit.js';
 import { fakeDevice } from './fixtures/device.js';
 import { FieldSource } from './fixtures/field-source.js';
 import { draw } from './fixtures/render.js';
 
-it('exposes native precision and aliasing without another query, and budgets retained data', async () => {
+it('exposes immutable columns that need no acquisition or release', async () => {
   const source = new FieldSource(),
-    fake = fakeDevice(),
-    gpu = await createGpu({ device: fake.device });
-  let native!: NativeFields, release!: () => void, again!: () => void;
+    gpu = await createGpu({ device: fakeDevice().device });
+  let native!: NativeFields;
   await draw(gpu, async (frame) => {
     for await (const page of frame.fields({
-      source,
-      from: source.index.type,
-      rows: { index: source.index, kind: 'range', offset: 0, count: 8 },
+      source: source.data,
+      from: 'node',
       fields: { position: 'position', value: 'value', alias: 'value' },
     })) {
       native = page;
-      expect(native.columns.value).toBe(native.columns.alias);
-      expect(native.columns.position.kind).toBe('vector');
-      if (native.columns.position.kind === 'vector')
-        expect(native.columns.position.values.values[0]).toBe(1e12);
-      release = native.retain();
-      const before = gpu.stats().cpuBytes;
-      again = native.retain();
-      expect(gpu.stats().cpuBytes - before).toBe(224);
+      expect(page.columns.value).toBe(page.columns.alias);
+      expect('retain' in page).toBe(false);
     }
   });
-  expect(source.requests).toHaveLength(1);
-  expect(() => native.retain()).toThrow();
   gpu.trim();
-  expect(gpu.stats().cpuBytes).toBeGreaterThan(0);
-  release();
-  release();
-  again();
-  gpu.trim();
-  expect(gpu.stats().cpuBytes).toBe(0);
   gpu.destroy();
+  expect(native.columns.position.kind).toBe('vector');
+  if (native.columns.position.kind === 'vector')
+    expect(native.columns.position.values.values[0]).toBe(1e12);
 });
 it('exposes presence separately from null validity on partial native overlays', async () => {
   const source = new FieldSource(),
@@ -45,12 +33,12 @@ it('exposes presence separately from null validity on partial native overlays', 
   const gpu = await createGpu({ device: fakeDevice().device });
   await draw(gpu, async (frame) => {
     for await (const page of frame.fields({
-      source,
+      source: source.data,
       from: source.index.type,
       rows: { index: source.index, kind: 'range', offset: 0, count: 8 },
       fields: {
         value: {
-          source: observed,
+          source: observed.data,
           from: 'node',
           field: 'observed',
           rows: { kind: 'indices', index: source.index, values: Uint32Array.of(1, 3) },
@@ -69,7 +57,7 @@ it('rejects unknown native fields before executing a query', async () => {
   await expect(
     draw(gpu, async (frame) => {
       for await (const _page of frame.fields({
-        source,
+        source: source.data,
         from: source.index.type,
         rows: { index: source.index, kind: 'range', offset: 0, count: 8 },
         fields: { value: 'missing' },
@@ -78,6 +66,5 @@ it('rejects unknown native fields before executing a query', async () => {
       }
     }),
   ).rejects.toMatchObject({ code: 'invalid-input' });
-  expect(source.requests).toHaveLength(0);
   gpu.destroy();
 });

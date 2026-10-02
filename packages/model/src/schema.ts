@@ -1,18 +1,14 @@
 import type { DataType, NumericType } from './data.js';
-import type { Query } from './query.js';
 import type { Axis, Bounds } from './types.js';
 
-/** The types a Model or Recording holds, fixed for its life. */
+/** The types and column shapes published by a model. */
 export interface Schema {
-  /** Each advertised kind supports its complete defined semantics, not a partial implementation.
-   * A Model excludes samples/envelope and cannot read sampled fields through rows/aggregate. */
-  readonly queries: readonly Query['kind'][];
   /** Per-data-block payload bound. Owned blocks also bound whole backing allocations.
    * Schema metadata and transport framing have separate transport limits. */
   readonly limits: { readonly maxBlockBytes: number };
   /** Topology is data: a reference field wires each row to a row of another type. */
   readonly types: Readonly<Record<string, TypeDefinition>>;
-  /** Present only when observations are readable: on a Recording, never on a Model. */
+  /** Coordinate axis for sampled fields. Independent of commands. */
   readonly axis?: Axis;
 }
 
@@ -25,7 +21,7 @@ export interface TypeDefinition {
   readonly spatial?: { readonly field: string; readonly system: 'geographic' | 'cartesian' };
 }
 
-/** Sampled fields are what a monitor can stream; the rest are the model's data. Absent values
+/** Both static and sampled fields may be monitored. Absent values
  * read as null and require nullable. Bounds describe scalar numeric data. */
 export type FieldDefinition = {
   readonly label?: string;

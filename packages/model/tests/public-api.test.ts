@@ -1,69 +1,54 @@
 import { expect, expectTypeOf, it } from 'vitest';
 import * as api from '../src/index.js';
 import type {
-  Command,
-  CommandResult,
-  Input,
   Model,
-  Queryable,
-  Recording,
+  Commands,
+  Data,
+  DataEvent,
   QueryHeader,
   RowsBlock,
   SamplesBlock,
+  CommandResult,
 } from '../src/index.js';
-
-it('exports only native access and explicit boundary utilities', () => {
-  expect(Object.keys(api).sort()).toEqual(
-    [
-      'blockBuffers',
-      'blockByteLength',
-      'validateBlock',
-      'validateQuery',
-      'validateSchema',
-      'assertIndex',
-      'sameIndex',
-      'rowAt',
-      'rowCount',
-      'sliceRows',
-      'bitAt',
-      'numberAt',
-      'textAt',
-      'sampleAt',
-    ].sort(),
-  );
+it('exports values, local computation and explicit boundary validation', () => {
+  for (const name of [
+    'read',
+    'createData',
+    'appendData',
+    'transactions',
+    'validateDataEvent',
+    'validateSchema',
+    'validateQuery',
+    'validateBlock',
+  ])
+    expect(api).toHaveProperty(name);
+  for (const name of ['retain', 'record', 'createRecording']) expect(api).not.toHaveProperty(name);
 });
-
-// Compiled usage checks; no implementation-specific subclass or generic payload is required.
-function publicUsage(model: Model, source: Queryable): void {
-  expectTypeOf(source.query({ kind: 'rows', from: 'Node', select: [] })).toEqualTypeOf<
+function usage(model: Model, commands: Commands, data: Data) {
+  expectTypeOf(model.monitor([{ from: 'Node', select: ['output'] }])).toEqualTypeOf<
+    AsyncIterable<DataEvent>
+  >();
+  expectTypeOf(api.read(data, { kind: 'rows', from: 'Node', select: ['value'] })).toEqualTypeOf<
     AsyncIterable<QueryHeader | RowsBlock>
   >();
   expectTypeOf(
-    source.query({
+    api.read(data, {
       kind: 'samples',
       from: 'Node',
       select: ['output'],
-      window: { kind: 'range', between: [0, 1], context: { before: 1, after: 1 } },
+      window: { kind: 'at', value: 0 },
     }),
   ).toEqualTypeOf<AsyncIterable<QueryHeader | SamplesBlock>>();
-  const input: Input = {
-    mediaType: 'application/octet-stream',
-    stream: new ReadableStream<Uint8Array>(),
-  };
-  const command: Command = { routine: 'solve', values: { file: input, count: 10 } };
-  expectTypeOf(model.monitor([{ from: 'Node', select: ['output'] }])).toEqualTypeOf<
-    Promise<Recording>
+  expectTypeOf(commands.run({ routine: 'solve', values: {} })).toEqualTypeOf<
+    Promise<CommandResult>
   >();
-  expectTypeOf(model.run(command)).toEqualTypeOf<Promise<CommandResult>>();
-  expectTypeOf(source.retain({ maxBytes: 1024 })).toEqualTypeOf<Promise<Queryable>>();
-  expectTypeOf(source.close()).toEqualTypeOf<Promise<void>>();
-  // @ts-expect-error A command is only the command: monitors choose what is streamed.
-  void model.run(command, { record: [] });
-  // @ts-expect-error Editing and saving belong to the model's application.
-  void model.edit;
-  // @ts-expect-error Commands are not correlated by id.
-  void model.call;
-  // @ts-expect-error Arbitrary implementation objects do not cross the portable input boundary.
-  void model.run({ routine: 'solve', values: { file: { arbitrary: true } } });
+  // @ts-expect-error Models do not run commands.
+  void model.run;
+  // @ts-expect-error Models do not retain or replay values.
+  void model.retain;
+  // @ts-expect-error Data has no read capability or provider lifetime.
+  void data.query;
+  // @ts-expect-error Data needs no close.
+  void data.close;
 }
-void publicUsage;
+void usage;

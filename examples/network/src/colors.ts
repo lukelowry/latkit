@@ -1,15 +1,12 @@
 import {
   createGpu,
-  createCanvasView,
   colormaps,
-  colormapShader,
   colormapCss,
   createColormap,
-  sampleColormap,
   reverseColormap,
+  kit,
   type Colormap,
-  type Renderer,
-  type CanvasView,
+  type Gpu,
 } from '@latkit/gpu';
 import './colors.css';
 
@@ -49,7 +46,7 @@ const rows = maps.map(([name, map]) => {
   canvas.setAttribute('aria-label', `${map.label} GPU preview`);
   row.append(label, cpu, css, canvas);
   catalog.append(row);
-  return { row, map: map as Colormap, cpu, css, canvas, view: undefined as CanvasView | undefined };
+  return { row, map: map as Colormap, cpu, css, canvas, view: undefined as Preview | undefined };
 });
 let reversed = false;
 function selected(map: Colormap): Colormap {
@@ -62,11 +59,11 @@ function update(): void {
     const context = item.cpu.getContext('2d')!;
     const pixels = context.createImageData(512, 1);
     for (let x = 0; x < 512; x++) {
-      const color = sampleColormap(map, (x + 0.5) / 512);
+      const color = kit.sampleColormap(map, (x + 0.5) / 512);
       for (let c = 0; c < 4; c++) pixels.data[x * 4 + c] = Math.round(color[c]! * 255);
     }
     context.putImageData(pixels, 0, 0);
-    item.view?.request();
+    item.view?.set({ colormap: map });
   }
 }
 const reverse = document.getElementById('reverse')!;
@@ -84,11 +81,56 @@ kind.onchange = () => {
 };
 update();
 
+interface PreviewConfig extends kit.ViewConfig {
+  readonly colormap: Colormap;
+}
+/** A colormap swept left to right by the shared WGSL sampler. */
+class Preview extends kit.BaseView<PreviewConfig, kit.ViewEvents> {
+  private binding?: GPUBindGroup;
+  private pipeline?: GPURenderPipeline;
+  constructor(
+    gpu: Gpu,
+    config: PreviewConfig,
+    private readonly module: GPUShaderModule,
+    private readonly layout: GPUPipelineLayout,
+  ) {
+    super(gpu, config);
+    this.start();
+  }
+  protected configure(): void {
+    this.invalidate();
+  }
+  protected async prepare(frame: kit.Preparation): Promise<void> {
+    this.binding = frame.colormap(this.config.colormap);
+    this.pipeline = await this.gpu.renderPipeline({
+      layout: this.layout,
+      vertex: { module: this.module, entryPoint: 'vertex' },
+      fragment: {
+        module: this.module,
+        entryPoint: 'fragment',
+        targets: [{ format: frame.format }],
+      },
+    });
+  }
+  protected encode(frame: kit.Encoding): void {
+    const pass = frame.encoder.beginRenderPass({
+      colorAttachments: [
+        { view: frame.target, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] },
+      ],
+    });
+    pass.setPipeline(this.pipeline!);
+    pass.setBindGroup(0, this.binding!);
+    pass.draw(3);
+    pass.end();
+  }
+  protected release(): void {}
+}
+
 async function main(): Promise<void> {
   const gpu = await createGpu();
   const module = gpu.device.createShaderModule({
     code:
-      colormapShader({ group: 0 }) +
+      kit.colormapShader({ group: 0 }) +
       `
     struct Vertex { @builtin(position) position:vec4f, @location(0) t:f32 }
     @vertex fn vertex(@builtin(vertex_index) id:u32)->Vertex {
@@ -104,44 +146,18 @@ async function main(): Promise<void> {
   const layout = gpu.device.createPipelineLayout({ bindGroupLayouts: [gpu.colormapLayout] });
   let rendered = 0;
   for (const item of rows) {
-    let binding: GPUBindGroup, pipeline: GPURenderPipeline;
-    let counted = false;
-    const renderer: Renderer = {
-      async prepare(frame) {
-        binding = frame.colormap(selected(item.map));
-        pipeline = await gpu.renderPipeline({
-          layout,
-          vertex: { module, entryPoint: 'vertex' },
-          fragment: { module, entryPoint: 'fragment', targets: [{ format: frame.format }] },
-        });
-      },
-      encode(frame) {
-        const pass = frame.encoder.beginRenderPass({
-          colorAttachments: [
-            { view: frame.target, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] },
-          ],
-        });
-        pass.setPipeline(pipeline);
-        pass.setBindGroup(0, binding);
-        pass.draw(3);
-        pass.end();
-      },
-      destroy() {},
-    };
-    item.view = createCanvasView({
+    const view = new Preview(
       gpu,
-      canvas: item.canvas,
-      renderer,
-      onError: fail,
-      onRendered: () => {
-        if (!counted) {
-          counted = true;
-          rendered++;
-        }
-        status.textContent = `${rendered} / ${rows.length} GPU previews ready`;
-      },
+      { canvas: item.canvas, colormap: selected(item.map) },
+      module,
+      layout,
+    );
+    view.on('error', fail);
+    const off = view.on('frame', () => {
+      off();
+      status.textContent = `${++rendered} / ${rows.length} GPU previews ready`;
     });
-    item.view.request();
+    item.view = view;
   }
   Object.assign(window, { colorGallery: { gpu, rows } });
   const dispose = (): void => {

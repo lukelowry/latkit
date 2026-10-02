@@ -5,6 +5,7 @@ import type { UploadScope, Uploader } from '../uploads.js';
 import type { RGBA } from './color.js';
 import type { Colormap } from './colormap.js';
 import { colormapPixels } from './sampling.js';
+import { namedColormap, type ColormapName } from './catalog.js';
 
 const grayscale: Colormap = Object.freeze({
   kind: 'sequential',
@@ -41,7 +42,8 @@ export class Colormaps {
       addressModeU: 'clamp-to-edge',
     });
   }
-  prepare(map: Colormap = grayscale, scope: UploadScope): GPUBindGroup {
+  prepare(value: Colormap | ColormapName = grayscale, scope: UploadScope): GPUBindGroup {
+    const map = namedColormap(value);
     const pixels = colormapPixels(map);
     let cached = this.cached.get(map);
     if (!cached?.entry.live) {

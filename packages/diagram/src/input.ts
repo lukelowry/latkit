@@ -1,15 +1,15 @@
-import { createCanvasInput, inputModifiers, wheelDelta } from '@latkit/gpu';
-import type { Diagram, ConnectProposal } from './diagram.js';
-import { interaction } from './diagram.js';
+import { kit } from '@latkit/gpu';
+import type { ConnectProposal, DiagramEvents, MoveProposal } from './diagram.js';
 import type { DiagramItem, DiagramHit, Point } from './data.js';
 import { itemKey } from './data.js';
-import { positive } from './config.js';
+import { positive, type Style } from './config.js';
 import { ConnectSession } from './connect.js';
+import type { Scene } from './scene.js';
+import type { Overlay } from './painter.js';
 
-export interface InputOptions {
-  readonly diagram: Diagram;
-  readonly canvas: HTMLCanvasElement;
-  readonly interaction?: 'edit' | 'navigate' | 'inspect' | 'none';
+export interface DiagramInput {
+  /** `edit` also moves and wires; `navigate` pans and zooms; `inspect` only hovers and selects. */
+  readonly mode?: 'edit' | 'navigate' | 'inspect' | 'none';
   readonly wheel?: 'zoom' | 'modifier';
   readonly keyboard?: boolean;
   /** Primary mouse drag on empty canvas. Touch continues to pan. Default: select in edit mode. */
@@ -22,6 +22,34 @@ export interface InputOptions {
   readonly autoPanSpeedPx?: number;
   /** Additional application policy, after native port type/direction checks. Must be synchronous. */
   readonly canConnect?: (proposal: ConnectProposal) => boolean;
+}
+/** What input drives; the view implements it. */
+export interface Controls {
+  emit<K extends 'select' | 'contextmenu' | 'open' | 'connect' | 'move' | 'delete'>(
+    event: K,
+    value: DiagramEvents[K],
+  ): void;
+  selection(): readonly DiagramItem[];
+  select(items: readonly DiagramItem[]): void;
+  revision(): number;
+  scene(): Scene | undefined;
+  options(): Style;
+  world(point: Point): Point | null;
+  marquee(a: Point, b: Point): readonly DiagramItem[];
+  preview(items: readonly DiagramItem[], delta: Point | null): void;
+  move(items: readonly DiagramItem[], delta: Point): MoveProposal | undefined;
+  reduced(value: boolean): void;
+  overlay(value: Overlay | null): void;
+  hit(point: Point, radiusPx?: number): readonly DiagramHit[];
+  pointer(point: Point | null): void;
+  pan(dx: number, dy: number): void;
+  zoom(factor: number, anchor?: Point): void;
+  /** Stop fitting: the camera stays where it is shown. */
+  stay(): void;
+  fit(): void;
+  reveal(item: DiagramItem): void;
+  locate(item: DiagramItem): Point | null;
+  invalidated(listener: () => void): () => void;
 }
 interface Drag {
   id: number;
@@ -40,18 +68,19 @@ interface Drag {
   blocked: boolean;
 }
 /** DOM ownership stays separate from rendering and application-owned mutations. */
-export function attachDiagramInput(options: InputOptions): () => void {
-  const { diagram, canvas } = options,
-    mode = options.interaction ?? 'navigate';
+export function attachInput(
+  canvas: HTMLCanvasElement,
+  options: DiagramInput,
+  api: Controls,
+): () => void {
+  const mode = options.mode ?? 'navigate';
   const threshold = positive(options.dragThresholdPx ?? 4, 'dragThresholdPx', true);
   const touchThreshold = positive(options.touchDragThresholdPx ?? 8, 'touchDragThresholdPx', true);
   const targetRadius = positive(options.connectRadiusPx ?? 18, 'connectRadiusPx');
   const margin = positive(options.autoPanMarginPx ?? 32, 'autoPanMarginPx');
   const speed = positive(options.autoPanSpeedPx ?? 480, 'autoPanSpeedPx', true);
-  if (mode === 'none') return () => {};
-  const api = interaction(diagram),
-    view = canvas.ownerDocument.defaultView!;
-  const input = createCanvasInput({
+  const view = canvas.ownerDocument.defaultView!;
+  const input = kit.createCanvasInput({
     canvas,
     keyboard: options.keyboard,
     touchAction: mode === 'inspect' ? 'pan-x pan-y' : 'none',
@@ -73,7 +102,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
       before.every((item, i) => itemKey(item) === itemKey(items[i]))
     )
       return;
-    diagram.select(items);
+    api.select(items);
     api.emit('select', items);
   };
   const merge = (a: readonly DiagramItem[], b: readonly DiagramItem[]) => [
@@ -107,9 +136,9 @@ export function attachDiagramInput(options: InputOptions): () => void {
   ) =>
     api.emit('contextmenu', {
       point,
-      items: diagram.hitTest(point),
+      items: api.hit(point),
       trigger,
-      modifiers: inputModifiers(event),
+      modifiers: kit.inputModifiers(event),
     });
   const snapped = (point: Point): Point => {
     const { snap, gridPitch } = api.options();
@@ -137,9 +166,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
       });
     } else if (current.kind === 'connect' && current.session) {
       const session = current.session;
-      const hits = diagram.hitTest(current.last, {
-        radiusPx: Math.max(targetRadius, current.threshold * 2),
-      });
+      const hits = api.hit(current.last, Math.max(targetRadius, current.threshold * 2));
       const ports = hits.filter((hit) => hit.kind === 'port');
       const candidates = ports.length ? ports : hits;
       const target =
@@ -184,7 +211,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
     const dt = lastPan ? Math.min(32, Math.max(0, now - lastPan)) / 1000 : 0;
     lastPan = now;
     if (dt) {
-      diagram.panBy(dx * dt, dy * dt);
+      api.pan(dx * dt, dy * dt);
       follow();
     }
     raf = view.requestAnimationFrame(panAtEdge);
@@ -209,7 +236,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
       const world = api.world(p);
       if (!world || drag) return;
       const touch = event.pointerType === 'touch';
-      const hit = diagram.hitTest(p, { radiusPx: touch ? 22 : api.options().pickRadiusPx })[0];
+      const hit = api.hit(p, touch ? 22 : api.options().pickRadiusPx)[0];
       const additive = event.shiftKey || event.ctrlKey || event.metaKey;
       const kind =
         mode === 'inspect'
@@ -253,13 +280,13 @@ export function attachDiagramInput(options: InputOptions): () => void {
     (event) => {
       const p = input.point(event);
       if (pointers.has(event.pointerId)) pointers.set(event.pointerId, p);
-      diagram.setPointer(p);
+      api.pointer(p);
       if (pinch && pointers.size === 2) {
         const [a, b] = [...pointers.values()],
           center: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
         const distance = Math.hypot(b[0] - a[0], b[1] - a[1]);
-        if (distance > 0 && pinch.distance > 0) diagram.zoomBy(distance / pinch.distance, center);
-        diagram.panBy(center[0] - pinch.center[0], center[1] - pinch.center[1]);
+        if (distance > 0 && pinch.distance > 0) api.zoom(distance / pinch.distance, center);
+        api.pan(center[0] - pinch.center[0], center[1] - pinch.center[1]);
         pinch = { distance, center };
         return;
       }
@@ -272,8 +299,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
         current.moved = true;
         if (longPress) clearTimeout(longPress);
         longPress = undefined;
-        const camera = diagram.getCamera();
-        if (camera && current.kind !== 'press') diagram.setCamera(camera);
+        if (current.kind !== 'press') api.stay();
         if (current.kind === 'move' && current.hit) {
           if (!current.selection.some((item) => itemKey(item) === itemKey(current.hit!)))
             current.selection = current.additive
@@ -296,7 +322,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
           current.kind === 'pan' || current.kind === 'move' ? 'grabbing' : 'crosshair';
       }
       if (!current.moved) return;
-      if (current.kind === 'pan') diagram.panBy(p[0] - current.last[0], p[1] - current.last[1]);
+      if (current.kind === 'pan') api.pan(p[0] - current.last[0], p[1] - current.last[1]);
       current.last = p;
       follow();
       if (!raf) raf = view.requestAnimationFrame(panAtEdge);
@@ -324,9 +350,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
       const world = api.world(p);
       cancel();
       if (!current.moved) {
-        const hit = diagram.hitTest(p, {
-          radiusPx: event.pointerType === 'touch' ? 22 : api.options().pickRadiusPx,
-        })[0];
+        const hit = api.hit(p, event.pointerType === 'touch' ? 22 : api.options().pickRadiusPx)[0];
         if (hit) setSelection(toggle(hit, current.additive));
         else if (!current.additive) setSelection([]);
       } else if (
@@ -373,16 +397,16 @@ export function attachDiagramInput(options: InputOptions): () => void {
   canvas.addEventListener(
     'pointerleave',
     () => {
-      if (!drag) diagram.setPointer(null);
+      if (!drag) api.pointer(null);
     },
     { signal },
   );
   canvas.addEventListener(
     'dblclick',
     (event) => {
-      const hit = diagram.hitTest(input.point(event))[0];
+      const hit = api.hit(input.point(event))[0];
       if (hit) api.emit('open', hit);
-      else if (mode !== 'inspect') diagram.fit({ animate: true });
+      else if (mode !== 'inspect') api.fit();
     },
     { signal },
   );
@@ -400,13 +424,8 @@ export function attachDiagramInput(options: InputOptions): () => void {
       if (mode === 'inspect' || (options.wheel === 'modifier' && !event.ctrlKey && !event.metaKey))
         return;
       event.preventDefault();
-      diagram.zoomBy(
-        Math.exp(
-          -Math.max(-500, Math.min(500, wheelDelta(event, { height: canvas.clientHeight }))) *
-            0.002,
-        ),
-        input.point(event),
-      );
+      const delta = kit.wheelDelta(event, { height: canvas.clientHeight });
+      api.zoom(Math.exp(-Math.max(-500, Math.min(500, delta)) * 0.002), input.point(event));
     },
     { signal, passive: false },
   );
@@ -426,9 +445,9 @@ export function attachDiagramInput(options: InputOptions): () => void {
         if (key === 'Escape') {
           cancel();
           setSelection([]);
-        } else if (key === 'Home') diagram.fit({ animate: true });
-        else if (key === '+' || key === '=') diagram.zoomBy(1.2);
-        else if (key === '-') diagram.zoomBy(1 / 1.2);
+        } else if (key === 'Home') api.fit();
+        else if (key === '+' || key === '=') api.zoom(1.2);
+        else if (key === '-') api.zoom(1 / 1.2);
         else if (key === 'Enter' && items[0]) api.emit('open', items[0]);
         else if ((key === 'Delete' || key === 'Backspace') && mode === 'edit')
           api.emit('delete', [
@@ -437,7 +456,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
             ),
           ]);
         else if (key === 'ContextMenu' || (key === 'F10' && event.shiftKey))
-          context(items[0] ? (diagram.locate(items[0]) ?? [0, 0]) : [0, 0], event, 'keyboard');
+          context(items[0] ? (api.locate(items[0]) ?? [0, 0]) : [0, 0], event, 'keyboard');
         else if (key === 'Tab') {
           const vertices = api.scene()?.vertices.filter((n) => n.visible) ?? [],
             at = vertices.findIndex((n) => items[0] && itemKey(n.hit) === itemKey(items[0])),
@@ -447,7 +466,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
               ];
           if (next) {
             setSelection([next.hit]);
-            diagram.reveal(next.hit);
+            api.reveal(next.hit);
           } else return;
         } else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(key)) {
           const step = api.options().gridPitch * (event.shiftKey ? 4 : 1),
@@ -456,7 +475,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
           if (mode === 'edit' && items.some((i) => i.kind === 'vertex' || i.kind === 'group')) {
             const proposal = api.move(items, [dx, dy]);
             if (proposal) api.emit('move', proposal);
-          } else if (mode !== 'inspect') diagram.panBy(-dx * 4, -dy * 4);
+          } else if (mode !== 'inspect') api.pan(-dx * 4, -dy * 4);
         } else return;
         event.preventDefault();
       },
@@ -482,7 +501,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
   const motion = () => api.reduced(media?.matches ?? false);
   motion();
   media?.addEventListener('change', motion, { signal });
-  const off = diagram.on('invalidate', () => {
+  const off = api.invalidated(() => {
     if (drag && api.revision() !== drag.revision) cancel();
   });
   return () => {
@@ -490,7 +509,7 @@ export function attachDiagramInput(options: InputOptions): () => void {
     closed = true;
     off();
     cancel();
-    diagram.setPointer(null);
+    api.pointer(null);
     input.destroy();
   };
 }

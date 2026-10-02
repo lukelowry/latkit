@@ -4,22 +4,21 @@ import {
   validateBlock,
   validateSchema,
   type Query,
-  type Queryable,
+  read as readData,
+  rowAt,
+  rowCount,
+  type Data,
   type QueryOptions,
   type QueryBlock,
 } from '@latkit/model';
 import { TOPOLOGIES } from '../src/topologies.js';
 
-async function read(
-  source: Queryable,
-  query: Query,
-  options?: QueryOptions,
-): Promise<QueryBlock[]> {
-  const schema = await source.describe();
+async function read(source: Data, query: Query, options?: QueryOptions): Promise<QueryBlock[]> {
+  const schema = source.schema;
   expect(validateSchema(schema)).toEqual([]);
   const blocks: QueryBlock[] = [];
   let headers = 0;
-  for await (const block of source.query(query, options)) {
+  for await (const block of readData(source, query, options)) {
     if (block.kind === 'schema') {
       headers++;
       continue;
@@ -39,13 +38,13 @@ it('generates valid native fields and wiring for every example, including 100k',
         (sum, b) => sum + (b.kind === 'rows' && b.rows.kind === 'range' ? b.rows.count : 0),
         0,
       );
-    const buses = await read(source, {
+    const buses = await read(source.data, {
       kind: 'rows',
       from: 'Bus',
       select: Object.keys(source.tables.Bus!.columns),
     });
     expect(count(buses)).toBe(source.tables.Bus!.count);
-    const lines = await read(source, { kind: 'rows', from: 'Line', select: ['from', 'to'] });
+    const lines = await read(source.data, { kind: 'rows', from: 'Line', select: ['from', 'to'] });
     expect(count(lines)).toBe(source.tables.Line!.count);
     for (const block of lines)
       if (block.kind === 'rows')
@@ -55,13 +54,12 @@ it('generates valid native fields and wiring for every example, including 100k',
             index: { source: source.source, type: 'Bus' },
           });
     if (source.tables.Line!.columns.bends)
-      await read(source, { kind: 'rows', from: 'Line', select: ['bends'] });
-    await source.close();
+      await read(source.data, { kind: 'rows', from: 'Line', select: ['bends'] });
   }
 });
 it('preserves requested physical identities and implements filtering, sorting, count and paging', async () => {
   const source = TOPOLOGIES[1]!.build();
-  const selected = await read(source, {
+  const selected = await read(source.data, {
     kind: 'rows',
     from: 'Bus',
     rows: { kind: 'ids', ids: ['Bus:5', 'Bus:1'] },
@@ -69,14 +67,11 @@ it('preserves requested physical identities and implements filtering, sorting, c
     ids: true,
   });
   expect(
-    selected.map((b) =>
-      b.kind === 'rows' && b.rows.kind === 'range' ? [b.rows.offset, b.position] : null,
+    selected.flatMap((b) =>
+      b.kind === 'rows' ? Array.from({ length: rowCount(b.rows) }, (_, i) => rowAt(b.rows, i)) : [],
     ),
-  ).toEqual([
-    [5, 0],
-    [1, 1],
-  ]);
-  const filtered = await read(source, {
+  ).toEqual([5, 1]);
+  const filtered = await read(source.data, {
     kind: 'rows',
     from: 'Bus',
     select: ['load'],
@@ -93,7 +88,7 @@ it('preserves requested physical identities and implements filtering, sorting, c
   );
   expect(values).toHaveLength(4);
   expect(values.every((v, i) => v > 0.5 && (!i || v <= values[i - 1]!))).toBe(true);
-  const empty = await read(source, {
+  const empty = await read(source.data, {
     kind: 'rows',
     from: 'Bus',
     select: [],
@@ -102,7 +97,7 @@ it('preserves requested physical identities and implements filtering, sorting, c
   });
   expect(empty).toMatchObject([{ kind: 'rows', total: 0, rows: { count: 0 } }]);
   await expect(
-    read(source, {
+    read(source.data, {
       kind: 'rows',
       from: 'Bus',
       select: [],
@@ -114,7 +109,7 @@ it('bounds native blocks and grants independent ownership only when requested', 
   const source = TOPOLOGIES[0]!.build();
   for (const buffers of ['borrowed', 'owned'] as const) {
     const blocks = await read(
-      source,
+      source.data,
       { kind: 'rows', from: 'Bus', select: ['load'] },
       { buffers, maxBlockBytes: 700 },
     );
@@ -133,28 +128,25 @@ it('bounds native blocks and grants independent ownership only when requested', 
     }
   }
   await read(
-    source,
+    source.data,
     { kind: 'rows', from: 'Line', select: ['from', 'to'] },
     { buffers: 'owned', maxBlockBytes: 1200 },
   );
   await read(
-    source,
+    source.data,
     { kind: 'rows', from: 'Line', select: ['bends'] },
     { buffers: 'owned', maxBlockBytes: 700 },
   );
 });
-it('retained acquisitions survive closing their origin and enforce admission', async () => {
-  const source = TOPOLOGIES[1]!.build();
-  await expect(source.retain({ maxBytes: 1 })).rejects.toMatchObject({ code: 'resource-limit' });
-  const retained = await source.retain();
-  const query = { kind: 'rows' as const, from: 'Bus', select: ['load'] };
-  const pending = source.query(query)[Symbol.asyncIterator]();
-  await pending.next();
-  await source.close();
-  await expect(pending.next()).rejects.toMatchObject({ code: 'closed' });
-  expect((await read(retained, query)).length).toBeGreaterThan(0);
-  const controller = new AbortController();
-  controller.abort();
-  await expect(read(retained, query, { signal: controller.signal })).rejects.toThrow();
-  await retained.close();
+it('supports local cancellation without changing application data', async () => {
+  const source = TOPOLOGIES[1]!.build(),
+    value = source.data,
+    stop = new AbortController();
+  stop.abort();
+  await expect(
+    read(value, { kind: 'rows', from: 'Bus', select: ['load'] }, { signal: stop.signal }),
+  ).rejects.toMatchObject({ code: 'aborted' });
+  expect(
+    (await read(value, { kind: 'rows', from: 'Bus', select: ['load'] })).length,
+  ).toBeGreaterThan(0);
 });

@@ -15,7 +15,7 @@ for (const count of [100_000, 1_000_000, 4_000_000]) {
     });
     const source = new Source(count, { blockRows: 16384 });
     const view = renderer(async (frame) => {
-      for await (const block of frame.query(source, {
+      for await (const block of frame.query(source.data, {
         kind: 'rows',
         from: 'node',
         select: ['value'],
