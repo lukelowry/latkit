@@ -48,19 +48,20 @@ export class Socket {
   private get bounds(): Limits {
     return this.getBounds();
   }
-  async write(bytes: Uint8Array, signal: AbortSignal): Promise<void> {
-    const start = performance.now();
-    // Reserve a small control allowance by keeping data accounting in Session.
-    while (this.peer.bufferedAmount + bytes.length > this.bounds.maxBufferedBytes) {
+  async waitForCapacity(bytes: number, signal: AbortSignal): Promise<void> {
+    // Called only by the session's single writer: one poller and no competing reservations.
+    for (;;) {
       signal.throwIfAborted();
-      if (performance.now() - start >= this.bounds.timeoutMs)
-        throw failure('timeout', 'The socket send buffer did not drain.');
+      if (this.#stopped || this.peer.readyState !== 1)
+        throw failure('closed', 'The socket is closed.');
+      if (this.peer.bufferedAmount + bytes <= this.bounds.maxBufferedBytes) return;
       await interrupt(new Promise<void>((resolve) => setTimeout(resolve, 4)), signal);
     }
-    signal.throwIfAborted();
+  }
+  send(bytes: Uint8Array): void {
     if (this.#stopped || this.peer.readyState !== 1)
       throw failure('closed', 'The socket is closed.');
-    // Browser/Node native send copies; ws may borrow. SDK-owned encoded frames are never mutated.
+    // Browser/Node native send copies; ws may borrow. Encoded frames are never mutated.
     this.peer.send(bytes as Uint8Array<ArrayBuffer>);
   }
   close(): void {

@@ -1,8 +1,8 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { Session } from '../src/session.js';
 import { defaults } from '../src/core.js';
 import { Op, decode, prepare } from '../src/frame.js';
-import type { WebSocketLike } from '../src/types.js';
+import type { Limits, WebSocketLike } from '../src/types.js';
 import { batch, schema, pause } from './fixture.js';
 import { preparePublication } from '../src/columns.js';
 
@@ -36,7 +36,7 @@ class Socket implements WebSocketLike {
     queueMicrotask(() => this.emit('close'));
   }
 }
-function sessions() {
+function sessions(overrides: Partial<Limits> = {}) {
   const a = new Socket(),
     b = new Socket();
   a.peer = b;
@@ -49,6 +49,7 @@ function sessions() {
     streamWindowMessages: 2,
     maxBufferedMessages: 4,
     timeoutMs: 100,
+    ...overrides,
   };
   return {
     a,
@@ -155,4 +156,188 @@ it('fails a peer that sends more sequential publications than granted message cr
   await rejected;
   await p.producer.close();
   await p.host.close();
+});
+
+it('coalesces a stalled ACK to the latest sequence and preserves its terminal upgrade', async () => {
+  const p = sessions({
+    maxBufferedBytes: 1024 * 1024,
+    streamWindowBytes: 1024 * 1024,
+    streamWindowMessages: 1024,
+    maxBufferedMessages: 1024,
+    maxStreams: 1,
+  });
+  const receiver = p.host.receiver(1);
+  const sender = p.producer.sender(1, receiver.windowBytes, receiver.windowMessages);
+  const queued = vi.spyOn(p.host.outbound, 'write');
+  try {
+    const plan = preparePublication(batch(1), 1, schema, p.producer.bounds);
+    for (let i = 0; i < 1024; i++) await sender.write(plan);
+    p.b.bufferedAmount = p.host.bounds.maxBufferedBytes;
+    for (let i = 0; i < 1024; i++) expect((await receiver.next()).done).toBe(false);
+    expect(queued).toHaveBeenCalledTimes(1);
+    await sender.finish(Op.end);
+    let finished = false;
+    const last = receiver.next().then((value) => {
+      finished = true;
+      return value;
+    });
+    await pause(5);
+    expect(finished).toBe(false);
+    expect(queued).toHaveBeenCalledTimes(1);
+    expect(p.b.sent).toHaveLength(0);
+    expect(() => p.host.receiver(2)).toThrow(/streams/);
+    p.b.bufferedAmount = 0;
+    expect((await last).done).toBe(true);
+    const acks = p.b.sent.map((v) => decode(v, defaults));
+    expect(acks.map((f) => f.metadata)).toEqual([{ sequence: 1024, terminal: true }]);
+    expect(p.host.receivers.size).toBe(0);
+    expect(p.producer.senders.size).toBe(0);
+    // Reusing the only slot cannot overtake its predecessor's terminal ACK.
+    const second = p.host.receiver(2);
+    const nextSender = p.producer.sender(2, second.windowBytes, second.windowMessages);
+    await nextSender.finish(Op.end);
+    expect((await second.next()).done).toBe(true);
+  } finally {
+    await p.producer.close();
+    await p.host.close();
+  }
+});
+
+it('keeps credit and socket waits alive beyond 30 seconds, then drains in order', async () => {
+  vi.useFakeTimers();
+  const p = sessions();
+  try {
+    const receiver = p.host.receiver(1);
+    const sender = p.producer.sender(1, receiver.windowBytes, receiver.windowMessages);
+    const plan = preparePublication(batch(), 1, schema, p.producer.bounds);
+    await sender.write(plan);
+    await sender.write(plan);
+    let sent = false;
+    const third = sender.write(plan).then(() => {
+      sent = true;
+    });
+    await vi.advanceTimersByTimeAsync(31000);
+    expect(sent).toBe(false);
+    expect(sender.signal.aborted).toBe(false);
+    p.b.bufferedAmount = p.host.bounds.maxBufferedBytes;
+    await receiver.next();
+    await receiver.next();
+    await vi.advanceTimersByTimeAsync(31000);
+    expect(p.host.lifetime.signal.aborted).toBe(false);
+    expect(sent).toBe(false);
+    p.b.bufferedAmount = 0;
+    await vi.advanceTimersByTimeAsync(4);
+    await third;
+    await sender.finish(Op.end);
+    expect((await receiver.next()).done).toBe(false);
+    expect((await receiver.next()).done).toBe(true);
+  } finally {
+    await p.producer.close();
+    await p.host.close();
+    vi.useRealTimers();
+  }
+});
+
+it('starts cancellation deadlines after sending and retires an empty terminal ACK', async () => {
+  vi.useFakeTimers();
+  const p = sessions();
+  try {
+    const receiver = p.host.receiver(1);
+    const sender = p.producer.sender(1, receiver.windowBytes, receiver.windowMessages);
+    p.b.bufferedAmount = p.host.bounds.maxBufferedBytes;
+    receiver.cancel();
+    await vi.advanceTimersByTimeAsync(31000);
+    expect(p.host.lifetime.signal.aborted).toBe(false);
+    expect(sender.signal.aborted).toBe(false);
+    p.b.bufferedAmount = 0;
+    await vi.advanceTimersByTimeAsync(4);
+    expect(sender.signal.aborted).toBe(true);
+    await sender.finish(Op.end);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(p.host.receivers.size).toBe(0);
+    expect(p.producer.senders.size).toBe(0);
+    expect(p.host.lifetime.signal.aborted).toBe(false);
+    expect(decode(p.b.sent.at(-1)!, defaults).metadata).toEqual({ sequence: 0, terminal: true });
+  } finally {
+    await p.producer.close();
+    await p.host.close();
+    vi.useRealTimers();
+  }
+});
+
+it('bounds and deduplicates close even when its reason cannot drain', async () => {
+  vi.useFakeTimers();
+  const p = sessions();
+  try {
+    p.a.bufferedAmount = p.producer.bounds.maxBufferedBytes;
+    const pending = p.producer.control(Op.monitor, 1);
+    const rejected = expect(pending).rejects.toThrow(/closed/);
+    const close = p.producer.close({ code: 'shutdown', message: 'Closing' });
+    expect(p.producer.close({ code: 'again', message: 'Again' })).toBe(close);
+    await vi.advanceTimersByTimeAsync(101);
+    await close;
+    await rejected;
+    expect(p.a.sent).toHaveLength(0);
+    expect(p.producer.lifetime.signal.aborted).toBe(true);
+  } finally {
+    await p.producer.close();
+    await p.host.close();
+    vi.useRealTimers();
+  }
+});
+
+it('aborts both credit and outbound waits on teardown', async () => {
+  const p = sessions();
+  try {
+    const receiver = p.host.receiver(1);
+    const sender = p.producer.sender(1, receiver.windowBytes, receiver.windowMessages);
+    const plan = preparePublication(batch(), 1, schema, p.producer.bounds);
+    await sender.write(plan);
+    await sender.write(plan);
+    const blocked = expect(sender.write(plan)).rejects.toThrow(/closed/);
+    p.a.bufferedAmount = p.producer.bounds.maxBufferedBytes;
+    const control = expect(p.producer.control(Op.progress, 1, { completed: 1 })).rejects.toThrow(
+      /closed/,
+    );
+    await p.producer.close();
+    await Promise.all([blocked, control]);
+  } finally {
+    await p.producer.close();
+    await p.host.close();
+  }
+});
+
+it('preserves an already queued publication before cancellation terminal and serves other streams fairly', async () => {
+  const p = sessions();
+  try {
+    const r1 = p.host.receiver(1),
+      r2 = p.host.receiver(2);
+    const s1 = p.producer.sender(1, r1.windowBytes, r1.windowMessages);
+    const s2 = p.producer.sender(2, r2.windowBytes, r2.windowMessages);
+    p.a.bufferedAmount = p.producer.bounds.maxBufferedBytes;
+    const first = s1.write(preparePublication(batch(), 1, schema, p.producer.bounds));
+    const second = s2.write(preparePublication(batch(), 2, schema, p.producer.bounds));
+    s1.cancel();
+    const terminal = s1.finish(Op.end);
+    p.a.bufferedAmount = 0;
+    await Promise.all([first, second, terminal]);
+    expect(
+      p.a.sent.map((v) => {
+        const f = decode(v, defaults);
+        return [f.id, f.op];
+      }),
+    ).toEqual([
+      [1, Op.publication],
+      [2, Op.publication],
+      [1, Op.end],
+    ]);
+    expect((await r1.next()).done).toBe(false);
+    expect((await r1.next()).done).toBe(true);
+    await s2.finish(Op.end);
+    expect((await r2.next()).done).toBe(false);
+    expect((await r2.next()).done).toBe(true);
+  } finally {
+    await p.producer.close();
+    await p.host.close();
+  }
 });

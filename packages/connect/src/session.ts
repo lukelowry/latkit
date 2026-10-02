@@ -1,8 +1,17 @@
-import { deferred, errorOf, failure, integer, interrupt, limits, text } from './core.js';
+import { defaults, deferred, errorOf, failure, integer, interrupt, limits, text } from './core.js';
 import { decode, Op, prepare } from './frame.js';
 import type { Frame, Opcode, Plan } from './frame.js';
 import { Socket } from './socket.js';
+import { Outbound } from './outbound.js';
 import type { Limits, WebSocketLike } from './types.js';
+
+const ACK_BYTES = prepare(
+  Op.ack,
+  0xffffffff,
+  { sequence: 0xffffffff, terminal: false },
+  [],
+  defaults,
+).bytes;
 
 export interface Delivery {
   readonly frame: Frame;
@@ -19,6 +28,7 @@ export class Session {
   readonly #done = deferred<void>();
   readonly closed = this.#done.promise;
   readonly socket: Socket;
+  readonly outbound: Outbound;
   bounds: Limits;
   onControl: (frame: Frame) => void = () => {
     throw failure('protocol', 'Unexpected control message.');
@@ -27,9 +37,7 @@ export class Session {
   readonly senders = new Map<number, Sender>();
   #reservedBytes = 0;
   #reservedMessages = 0;
-  #controls = 0;
-  #controlBytes = 0;
-  #controlTail: Promise<void> = Promise.resolve();
+  #closing?: Promise<void>;
   #ended = false;
   #tasks = new Set<Promise<unknown>>();
   #cleanup?: Promise<void>;
@@ -46,6 +54,7 @@ export class Session {
       (bytes) => this.receive(bytes),
       (error) => this.end(error),
     );
+    this.outbound = new Outbound(this.socket, this.lifetime.signal, (error) => this.end(error));
     this.#external = options.signal;
     options.signal?.addEventListener('abort', this.#abort, { once: true });
     if (options.signal?.aborted) this.end();
@@ -67,30 +76,13 @@ export class Session {
     chunks: readonly Uint8Array[] = [],
   ): Promise<void> {
     this.lifetime.signal.throwIfAborted();
-    if (this.#controls >= this.bounds.maxStreams + 8)
-      throw failure('resource-limit', 'Control send capacity exceeded.');
     const plan = prepare(op, id, metadata, chunks, this.bounds);
-    if (this.#controlBytes + plan.bytes > this.bounds.maxBufferedBytes)
-      throw failure('resource-limit', 'Control byte budget exceeded.');
-    this.#controls++;
-    this.#controlBytes += plan.bytes;
-    const sending = this.#controlTail
-      .then(() => this.socket.write(plan.encode(), this.lifetime.signal))
-      .catch((error) => {
-        this.end(errorOf(error));
-        throw error;
-      });
-    this.#controlTail = sending.catch(() => {});
-    try {
-      await sending;
-    } finally {
-      this.#controls--;
-      this.#controlBytes -= plan.bytes;
-    }
+    await this.outbound.write(plan.bytes, () => plan.encode());
   }
+
   receiver(id: number): Receiver {
     this.lifetime.signal.throwIfAborted();
-    if (this.receivers.size >= this.bounds.maxStreams)
+    if (this.receivers.size >= this.bounds.maxStreams || this.receivers.has(id))
       throw failure('resource-limit', 'Too many observation streams.');
     const bytes = Math.min(
       this.bounds.streamWindowBytes,
@@ -180,12 +172,19 @@ export class Session {
     }
     this.onControl(frame);
   }
-  async close(reason?: { code: string; message: string }): Promise<void> {
+  close(reason?: { code: string; message: string }): Promise<void> {
+    return (this.#closing ??= this.shutdown(reason));
+  }
+  private async shutdown(reason?: { code: string; message: string }): Promise<void> {
     if (!this.#ended && reason) {
       try {
-        await this.control(Op.close, 0, reason);
+        await interrupt(
+          this.control(Op.close, 0, reason),
+          this.lifetime.signal,
+          this.bounds.timeoutMs,
+        );
       } catch {
-        /* Teardown is still mandatory. */
+        /* A best-effort reason must not prevent local teardown. */
       }
     }
     this.end();
@@ -219,8 +218,9 @@ export class Session {
 
 /** One consumer; one credit release per next() or completed onData callback. */
 export class Receiver {
+  readonly #stop = new AbortController();
+  readonly signal: AbortSignal;
   #queue: (Delivery | undefined)[] = [];
-  #disposed = false;
   #head = 0;
   #held?: Delivery;
   #changed = deferred<void>();
@@ -232,7 +232,8 @@ export class Receiver {
   #released = 0;
   #bytes = 0;
   #messages = 0;
-  #ackQueued = false;
+  #ackRunning = false;
+  readonly #retired = deferred<void>();
   #acknowledged = 0;
   #terminalAcknowledged = false;
   #timer?: ReturnType<typeof setTimeout>;
@@ -242,7 +243,9 @@ export class Receiver {
     readonly id: number,
     readonly windowBytes: number,
     readonly windowMessages: number,
-  ) {}
+  ) {
+    this.signal = AbortSignal.any([this.#stop.signal, session.lifetime.signal]);
+  }
   get grant(): Record<string, number> {
     return { bytes: this.windowBytes, messages: this.windowMessages };
   }
@@ -274,10 +277,12 @@ export class Receiver {
     if (this.#terminal || frame.sequence) throw failure('protocol', 'Duplicate terminal message.');
     this.#terminal = { op: frame.op, metadata: frame.metadata };
     clearTimeout(this.#timer);
-    if (this.#cancelled) this.dispose();
+    this.acknowledge();
     this.wake();
   }
   fail(error: Error): void {
+    this.#retired.reject(error);
+    this.#stop.abort(error);
     this.#error = error;
     this.#cancelled = true;
     this.discard();
@@ -288,22 +293,41 @@ export class Receiver {
     this.#changed.resolve();
     this.#changed = deferred<void>();
   }
+  private get needsAck(): boolean {
+    return (
+      !this.#terminalAcknowledged &&
+      (this.#released > this.#acknowledged || Boolean(this.#terminal && this.#messages === 0))
+    );
+  }
   private acknowledge(): void {
-    if (this.#ackQueued || this.session.lifetime.signal.aborted) return;
-    this.#ackQueued = true;
-    queueMicrotask(() => {
-      this.#ackQueued = false;
-      if (this.session.lifetime.signal.aborted) return;
-      const terminal = Boolean(this.#terminal && this.#messages === 0);
-      if (this.#terminalAcknowledged || (this.#released === this.#acknowledged && !terminal))
-        return;
-      this.#acknowledged = this.#released;
-      this.#terminalAcknowledged = terminal;
-      // A terminal ACK also releases the producer's stream descriptor.
-      void this.session
-        .control(Op.ack, this.id, { sequence: this.#released, terminal })
-        .catch((error) => this.session.end(errorOf(error)));
-    });
+    if (this.#ackRunning || !this.needsAck || this.session.lifetime.signal.aborted) return;
+    this.#ackRunning = true;
+    void this.flushAck();
+  }
+  private async flushAck(): Promise<void> {
+    try {
+      while (this.needsAck) {
+        let sequence = 0,
+          terminal = false;
+        await this.session.outbound.write(ACK_BYTES, () => {
+          sequence = this.#released;
+          terminal = Boolean(this.#terminal && this.#messages === 0);
+          return prepare(Op.ack, this.id, { sequence, terminal }, [], this.session.bounds).encode();
+        });
+        // Only a completed native send advances state. Later consumption gets the next turn.
+        this.#acknowledged = sequence;
+        this.#terminalAcknowledged = terminal;
+        if (terminal) {
+          this.session.release(this);
+          this.#retired.resolve();
+        }
+      }
+    } catch (error) {
+      this.#retired.reject(error);
+      if (!this.session.lifetime.signal.aborted) this.session.end(errorOf(error));
+    } finally {
+      this.#ackRunning = false;
+    }
   }
   private discard(): void {
     this.#held?.release();
@@ -312,32 +336,30 @@ export class Receiver {
     this.#queue = [];
     this.#head = 0;
   }
-  private dispose(): void {
-    if (this.#disposed) return;
-    this.#disposed = true;
-    this.discard();
-    this.acknowledge();
-    this.session.release(this);
-  }
   cancel(error: Error = failure('aborted', 'The operation was cancelled.')): void {
     if (this.#cancelled) return;
     this.#cancelled = true;
+    this.#stop.abort(error);
     this.#error = error;
     this.onTelemetry = undefined;
     this.discard();
     this.wake();
     if (this.#terminal) {
-      this.dispose();
+      this.acknowledge();
       return;
     }
     if (!this.session.lifetime.signal.aborted) {
       void this.session
         .control(Op.cancel, this.id)
+        .then(() => {
+          // Waiting for socket capacity is not evidence of an uncooperative producer.
+          if (this.#terminal || this.session.lifetime.signal.aborted) return;
+          this.#timer = setTimeout(
+            () => this.session.end(failure('timeout', 'The producer did not finish cancellation.')),
+            this.session.bounds.timeoutMs,
+          );
+        })
         .catch((cause) => this.session.end(errorOf(cause)));
-      this.#timer = setTimeout(
-        () => this.session.end(failure('timeout', 'The producer did not finish cancellation.')),
-        this.session.bounds.timeoutMs,
-      );
     }
   }
   async next(): Promise<IteratorResult<Delivery, Terminal>> {
@@ -363,7 +385,8 @@ export class Receiver {
           return { done: false, value: item };
         }
         if (this.#terminal) {
-          this.dispose();
+          this.acknowledge();
+          await interrupt(this.#retired.promise, this.signal);
           return { done: true, value: this.#terminal };
         }
         await this.#changed.promise;
@@ -405,15 +428,14 @@ export class Sender {
         this.#bytes + plan.bytes > this.windowBytes ||
         this.#entries.size >= this.windowMessages
       )
-        await interrupt(this.#changed.promise, this.signal, this.session.bounds.timeoutMs);
+        await interrupt(this.#changed.promise, this.signal);
       this.signal.throwIfAborted();
       const sequence = integer(this.#sequence + 1, 1, 0xffffffff);
-      const bytes = plan.encode(sequence);
       this.#sequence = sequence;
       this.#entries.set(sequence, plan.bytes);
       this.#bytes += plan.bytes;
       try {
-        await this.session.socket.write(bytes, this.session.lifetime.signal);
+        await this.session.outbound.write(plan.bytes, () => plan.encode(sequence));
       } catch (error) {
         this.session.end(errorOf(error));
         throw error;

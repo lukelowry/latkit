@@ -48,6 +48,7 @@ export interface Limits {
   readonly maxStreams: number;
   readonly maxPublicationBatches: number;
   readonly maxLogs: number;
+  /** Registration, cancellation response, close notification and cleanup deadlines; never a flow-control timeout. */
   readonly timeoutMs: number;
 }
 export interface ConnectOptions<C extends Record<string, Parameters> = Record<string, Parameters>> {

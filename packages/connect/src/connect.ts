@@ -206,13 +206,17 @@ export async function connectLattice<const C extends Record<string, Parameters>>
       session.lifetime.signal,
       session.bounds.timeoutMs,
     );
-    await session.control(Op.register, 0, {
-      name: options.name,
-      schema: options.schema,
-      commands: catalog,
-      monitoring: Boolean(options.monitor),
-      limits: session.bounds,
-    });
+    await interrupt(
+      session.control(Op.register, 0, {
+        name: options.name,
+        schema: options.schema,
+        commands: catalog,
+        monitoring: Boolean(options.monitor),
+        limits: session.bounds,
+      }),
+      session.lifetime.signal,
+      session.bounds.timeoutMs,
+    );
     await interrupt(ready.promise, session.lifetime.signal, session.bounds.timeoutMs);
     return { closed: session.closed, close: (reason) => session.close(reason) };
   } catch (error) {
