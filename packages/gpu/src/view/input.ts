@@ -1,4 +1,5 @@
 import type { Viewport } from '../frame/render.js';
+import type { Point } from './view.js';
 export interface Modifiers {
   readonly alt: boolean;
   readonly control: boolean;
@@ -6,14 +7,10 @@ export interface Modifiers {
   readonly shift: boolean;
 }
 export interface ContextMenu<T> {
-  readonly point: readonly [number, number];
+  readonly point: Point;
   readonly items: readonly T[];
   readonly trigger: 'pointer' | 'keyboard';
   readonly modifiers: Modifiers;
-}
-export interface HoverOptions {
-  readonly hover?: 'auto' | 'on' | 'off';
-  readonly hoverBudgetMs?: number;
 }
 export type HoverState = 'off' | 'idle' | 'active' | 'moving' | 'budget';
 export function inputModifiers(
@@ -25,7 +22,7 @@ export function inputModifiers(
 export function localPoint(
   element: HTMLElement,
   event: { readonly clientX: number; readonly clientY: number },
-): readonly [number, number] {
+): Point {
   const rect = element.getBoundingClientRect();
   const sx = rect.width / (element.offsetWidth || rect.width),
     sy = rect.height / (element.offsetHeight || rect.height);
@@ -42,7 +39,7 @@ export function wheelDelta(
 }
 export interface CanvasInput {
   readonly signal: AbortSignal;
-  point(event: { readonly clientX: number; readonly clientY: number }): readonly [number, number];
+  point(event: { readonly clientX: number; readonly clientY: number }): Point;
   capture(pointerId: number): void;
   release(pointerId: number): void;
   destroy(): void;

@@ -113,11 +113,11 @@ function show(count = Number(el('size').value), geo = geographic) {
     camera: { projection: geo ? 'globe' : 'flat', pitch: geo ? 15 : 0 },
     vertexRadiusPx: count > 10000 ? 1.4 : count > 1000 ? 2 : 4,
     edgeWidthPx: count > 10000 ? 0.5 : 1.1,
-    showGraticule: geo,
+    graticule: geo,
     daylight: geo,
     sunTime: Date.UTC(2026, 8, 30, 17),
     msaa: 4,
-    showPoles: el('poles').checked,
+    poles: el('poles').checked,
     hover: el('hover-mode').value,
     hoverBudgetMs: Number(el('hover-budget').value),
   });
@@ -221,7 +221,7 @@ async function benchmarkHover(count = 100000) {
     msaa: 1,
     vertexRadiusPx: 1.4,
     edgeWidthPx: 0.5,
-    showPoles: false,
+    poles: false,
   });
   const renderer = kit.rendererOf(view),
     target = kit.createRenderTarget({ gpu, width: 1280, height: 720 });
@@ -232,7 +232,7 @@ async function benchmarkHover(count = 100000) {
   try {
     for (const projection of ['flat', 'tilt', 'globe']) {
       // The pointer hook input drives; frames search for hover.
-      view.point(null);
+      view.pointer(null);
       view.set({ camera: { projection, pitch: projection === 'flat' ? 0 : 50, fit: true } });
       await render();
       view.set({ camera: { fit: false } });
@@ -262,7 +262,7 @@ async function benchmarkHover(count = 100000) {
           for (let i = 0; i < 8; i++) {
             const point = [640 + Math.cos(i * 0.43) * 70, 360 + Math.sin(i * 0.43) * 50];
             let start = performance.now();
-            view.point(point);
+            view.pointer(point);
             pointer.push(performance.now() - start);
             start = performance.now();
             await render(moving ? i : 0);
@@ -422,10 +422,10 @@ async function checks() {
     vertices: { node: { position: 'position' } },
     edges: { route: { ends: ['from', 'to'], curve: 'geodesic' } },
     camera: { center: [0, 20], scale: 1.2 },
-    showVertices: false,
-    showEarthAxis: false,
+    markers: false,
+    earthAxis: false,
     edgeBaseColor: [1, 1, 1, 1],
-    backgroundColor: [0, 0, 0, 1],
+    background: [0, 0, 0, 1],
     surfaceColor: [0, 0, 0, 1],
     edgeWidthPx: 2,
     dashPeriodPx: 8,
@@ -515,7 +515,7 @@ el('benchmark').onclick = () => {
 };
 for (const channel of ['color', 'x', 'y', 'z'])
   el('channel-' + channel).addEventListener('change', updateChannels);
-el('poles').onchange = () => network.set({ showPoles: el('poles').checked });
+el('poles').onchange = () => network.set({ poles: el('poles').checked });
 el('hover-mode').onchange = () => network.set({ hover: el('hover-mode').value });
 el('hover-budget').onchange = () => {
   if (el('hover-budget').reportValidity())
@@ -597,12 +597,12 @@ async function showFeatures(reset = true) {
       seam: { points: 'points', pickable: true, widthPx: 2, baseColor: [1, 0.6, 0.25, 1] },
     },
     camera: { center: [-35, 5], scale: 4, projection: 'globe', pitch: 0 },
-    showPoles: el('poles').checked,
+    poles: el('poles').checked,
     hover: el('hover-mode').value,
     hoverBudgetMs: Number(el('hover-budget').value),
     edgeBaseColor: [0.95, 0.67, 0.25, 1],
     edgeWidthPx: 2,
-    showGraticule: true,
+    graticule: true,
   });
   observe((item) =>
     item ? item.kind + ' / ' + item.index.type + ' / row ' + item.row : 'Geometry features',
@@ -631,7 +631,7 @@ async function benchmarkPaths(count = 100000, moving = false) {
           ...input,
           camera: { center: [-65, 5], scale: 4, projection: 'globe', pitch: 15 },
           hover: 'auto',
-          showPoles: false,
+          poles: false,
           vertexRadiusPx: 1.4,
           edgeWidthPx: 0.5,
           msaa: 4,

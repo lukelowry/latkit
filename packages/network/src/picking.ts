@@ -267,10 +267,10 @@ interface Hit {
   readonly distance: number;
   readonly kind: number;
 }
+/** Nearest first; vertices draw over edges, so they win ties. */
 function compare(a: Hit, b: Hit): number {
-  return a.kind - b.kind || a.distance - b.distance || a.item.row - b.item.row;
+  return a.distance - b.distance || a.kind - b.kind || a.item.row - b.item.row;
 }
-export const HOVER_EXHAUSTED = Symbol('hover budget exhausted');
 const unchecked = () => {};
 function* offsets(count: number, check: () => void): Iterable<number> {
   for (let i = 0; i < count; i++) {
@@ -502,6 +502,7 @@ export class PickGeometry {
       })
       .map((hit) => hit.item);
   }
+  /** The nearest hit, scanning without building indexes; `check` bounds the scan. */
   nearest(
     point: readonly [number, number],
     data: NetworkData,
@@ -510,15 +511,12 @@ export class PickGeometry {
     height: number,
     options: Style,
     radius: number,
-    budgetMs?: number,
-  ): NetworkItem | null | typeof HOVER_EXHAUSTED {
-    const result = kit.withinBudget((check) => {
-      let best: Hit | undefined;
-      for (const hit of this.hits(point, data, camera, viewport, height, options, radius, check))
-        if (!best || compare(hit, best) < 0) best = hit;
-      return best?.item ?? null;
-    }, budgetMs);
-    return result.complete ? result.value : HOVER_EXHAUSTED;
+    check: () => void,
+  ): NetworkItem | null {
+    let best: Hit | undefined;
+    for (const hit of this.hits(point, data, camera, viewport, height, options, radius, check))
+      if (!best || compare(hit, best) < 0) best = hit;
+    return best?.item ?? null;
   }
   private *hits(
     point: readonly [number, number],
@@ -544,11 +542,11 @@ export class PickGeometry {
       const reach =
         (radius +
           Math.max(options.vertexRadiusPx * maxSize, options.edgeWidthPx) +
-          options.vertexSelectedPx) /
+          options.selectedWidthPx) /
         camera.scale;
       bounds = [x - reach, y - reach, x + reach, y + reach];
     }
-    if (options.showVertices || options.showPoles)
+    if (options.markers || options.poles)
       for (const [bank, cpu] of this.vertices)
         if (!bank.synthetic)
           for (const offset of cpu.spatial.tree?.query(bounds, check) ??
@@ -563,13 +561,13 @@ export class PickGeometry {
               data.vertices[bank.type],
             );
             if (!p.visible) continue;
-            let distance = options.showVertices
+            let distance = options.markers
               ? Math.max(
                   0,
                   Math.hypot(point[0] - p.x, point[1] - p.y) - p.radius * options.vertexRadiusPx,
                 )
               : Infinity;
-            if (options.showPoles) {
+            if (options.poles) {
               const [x, y] = raw(cpu, offset),
                 base = project(camera, viewport, x, y);
               if (base.visible)
@@ -590,7 +588,7 @@ export class PickGeometry {
                 kind: 0,
               };
           }
-    if (options.showEdges)
+    if (options.lines)
       for (const batch of this.edges)
         if (batch.edge.bank.kind !== 'path' || data.paths![batch.edge.bank.type].pickable)
           for (const offset of (edgeOptions(data, batch.edge.bank).curve === 'geodesic'
@@ -657,7 +655,7 @@ export class PickGeometry {
               )
                 continue;
               if (
-                options.showVertices &&
+                options.markers &&
                 ((piece.first &&
                   Math.hypot(point[0] - a.x, point[1] - a.y) < a.radius * options.vertexRadiusPx) ||
                   (piece.last &&
@@ -671,7 +669,7 @@ export class PickGeometry {
                   index: batch.edge.bank.index,
                   row: edgeRow,
                 },
-                distance: hit.distance,
+                distance: Math.max(0, hit.distance - width / 2),
                 kind: 1,
               };
             }
@@ -684,11 +682,6 @@ export class PickGeometry {
     viewport: kit.Viewport,
     height: number,
   ): readonly [number, number] | null {
-    if (
-      item.source !==
-      (item.kind === 'path' ? (data.paths?.[item.index.type]?.source ?? data.source) : data.source)
-    )
-      return null;
     if (item.kind === 'vertex')
       for (const [bank, cpu] of this.vertices) {
         if (bank.synthetic || !sameIndex(bank.index, item.index)) continue;

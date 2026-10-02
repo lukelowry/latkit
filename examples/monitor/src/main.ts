@@ -1,4 +1,11 @@
-import { createGpu, colormaps, colormapCss, type ColormapName, type Shade } from '@latkit/gpu';
+import {
+  createGpu,
+  colormaps,
+  colormapCss,
+  type ColormapName,
+  type DataHit,
+  type Shade,
+} from '@latkit/gpu';
 import { createMonitor, type Monitor, type Reading, type Trace } from '@latkit/monitor';
 import { Telemetry } from './source.js';
 import './style.css';
@@ -133,10 +140,10 @@ async function main(): Promise<void> {
   monitor.on('hover', (reading) => {
     hoverReadout.textContent = describeReading(reading);
   });
-  monitor.on('select', (readings) => {
-    const reading = readings[0] ?? null;
-    selectedElement = reading?.row ?? null;
-    pickReadout.textContent = describeReading(reading);
+  monitor.on('select', (items) => {
+    const item = items[0] ?? null;
+    selectedElement = item?.row ?? null;
+    pickReadout.textContent = describeReading(item);
     renderSelected();
     renderHotList(performance.now(), true);
   });
@@ -408,8 +415,10 @@ function describeElement(element: number): string {
   return `element ${element} / ${formatValue(valueAt(currentSignal, frame, element), currentSignal)}`;
 }
 
-function describeReading(reading: Reading | null): string {
+/** A clicked reading, or a row selected from the list. */
+function describeReading(reading: Reading | DataHit | null): string {
   if (!reading) return '-';
+  if (!('value' in reading)) return describeElement(reading.row);
   return `element ${reading.row} / ${formatValue(reading.value, SIGNALS.findIndex((signal) => signal.id === reading.field) as SignalIndex)} / ${reading.coordinate.toFixed(1)}s`;
 }
 

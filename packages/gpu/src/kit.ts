@@ -3,12 +3,17 @@ export { BaseView, rendererOf, gpuOf, hold } from './view/view.js';
 export type {
   ViewConfig,
   ViewEvents,
-  SetOptions,
   Patch,
   OptionsPatch,
   ConfigShape,
-  DataHit,
+  Expanded,
 } from './view/view.js';
+export { BaseItemView } from './view/item-view.js';
+export type { HoverSearch } from './view/item-view.js';
+export { resolveViewStyle } from './view/style.js';
+export type { ResolvedViewStyle } from './view/style.js';
+export { Attachments } from './view/attachments.js';
+export { Work } from './work.js';
 export type {
   Renderer,
   CapturedFrame,
@@ -78,14 +83,7 @@ export {
 export type { ShadeRequest } from './style/shade.js';
 export { shadeShader, defaultShade } from './style/shade.js';
 export { premultipliedBlend, outputShader } from './style/output.js';
-export type {
-  Modifiers,
-  ContextMenu,
-  HoverOptions,
-  HoverState,
-  CanvasInput,
-  BudgetResult,
-} from './view/input.js';
+export type { CanvasInput, BudgetResult } from './view/input.js';
 export {
   inputModifiers,
   localPoint,

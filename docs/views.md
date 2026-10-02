@@ -1,7 +1,8 @@
 # Views
 
 A network, monitor, diagram, or composition is a view: one object, created from a GPU and a config,
-updated with `set`, and destroyed when done.
+updated with `set`, and destroyed when done. Network, monitor, and diagram are item views: they also
+share one camera, selection, picking, hover, and style contract, `ItemView` in `@latkit/gpu`.
 
 ```ts
 import { createGpu } from '@latkit/gpu';
@@ -20,9 +21,14 @@ pointer and keyboard input, and redraws only after something changes. Without on
 ```ts
 network.set({ at: 12 }); // model coordinate shown, such as a time
 network.set({ paused: true }); // stop drawing; state is kept
-network.set({ input: 'inspect' }); // 'navigate', 'inspect', 'none'; diagrams add 'edit'
+network.set({ input: 'inspect' }); // 'navigate', 'inspect', 'edit', or 'none'
 network.on('frame', () => showStats(network.stats())); // after each drawn frame
 ```
+
+Every item view handles the same input: hover follows the pointer, the context menu key or
+Shift+F10 opens a menu at the selection, Escape ends a gesture or clears the selection, and, when
+navigating, the wheel zooms (or only with Ctrl or ⌘ under `input: { wheel: 'modifier' }`), Home fits
+the data, and + and − zoom. Each view adds its own gestures, such as dragging.
 
 ## Update
 
@@ -31,6 +37,7 @@ network.on('frame', () => showStats(network.stats())); // after each drawn frame
 - Keyed records (`vertices`, `edges`, `paths`, `traces`, `groups`) merge per entry, then per option.
 - `camera`, `input`, `limits`, and `layout` merge per option.
 - `null` removes an entry or resets an option. Any other value replaces.
+- A field name stands for that field with defaults: `color: 'load'` is `color: { field: 'load' }`.
 
 ```ts
 network.set({
@@ -43,12 +50,33 @@ network.set({
 Data updates are explicit: `view.set({ source: nextData })`. Views never subscribe to a model
 or request historical data. Share unchanged column pages when constructing the next value.
 
-An invalid patch throws and changes nothing. `view.config` holds the current config.
+An invalid patch throws `invalid-input` and changes nothing, including an unknown option or limit.
+`view.config` holds the current config.
+
+## Style
+
+Every item view takes the same style options, with one set of defaults in `viewStyle`:
+
+| Option                            | Default                  |                                                         |
+| --------------------------------- | ------------------------ | ------------------------------------------------------- |
+| `background`                      | dark blue-gray           |                                                         |
+| `msaa`                            | `4`                      | monitor `1`: its history images would cost 4×           |
+| `hover`, `hoverBudgetMs`          | `'auto'`, `2`            | `auto` searches within the budget once motion stops     |
+| `pickRadiusPx`                    | `8`                      |                                                         |
+| `fitPaddingPx`, `revealPaddingPx` | `32`, `48`               |                                                         |
+| `animationMs`, `motion`           | `300`, `'auto'`          | monitor `0`; `auto` follows reduced motion              |
+| `hoverColor`, `selectedColor`     | amber, orange            | monitor `null`, keeping trace colors; it draws no hover |
+| `hoverWidthPx`, `selectedWidthPx` | `3`, `3`                 |                                                         |
+| `font`, `fontSizePx`, `textColor` | `system-ui`, `12`, light | monitor uses a monospace font                           |
+
+Each view adds its own options, such as a network's `edgeWidthPx` or a monitor's `valueAxis`.
 
 ## Camera
 
-`view.camera` is where the camera is. `set({ camera })` moves it, and `{ animate: true }` eases the
-move. `fit: true` keeps the data in view as it changes; any explicit move turns it off.
+`view.camera` is where the camera is going. `set({ camera })` moves it, and `{ animate: true }`
+eases the move. While `fit` is true the view keeps the data in view as it changes; moving a framed
+part of the camera by hand turns it off. `set({ camera: null })` and `fit()` follow all the data
+again; `fit(items)` frames those items once.
 
 ```ts
 network.set({ camera: { projection: 'globe' } }, { animate: true });
@@ -59,15 +87,20 @@ network.on('camera', (camera) => showZoom(camera.scale));
 ## Select and pick
 
 ```ts
-const [item] = await network.pick([x, y]);
+const [item] = await network.pick([x, y], { radiusPx: 12, limit: 4 });
 network.select(item ? [item] : []);
 network.on('select', (items) => inspect(items));
 network.on('hover', (item) => tooltip(item));
 network.on('contextmenu', ({ point, items }) => openMenu(point, items));
 ```
 
-`select`, `hover`, and `contextmenu` report what the user did. Items keep their source, `Index`, and
-row. `locate(item)` returns an item's canvas point, and `reveal(item)` pans until it shows.
+`pick` returns hits nearest first, the item drawn on top winning ties, at most `limit` (16 by
+default). `select` replaces the selection without reporting it; `select`, `hover`, and `contextmenu`
+events report what the user did, and `select` also reports items a new source no longer has. Items
+keep their source, `Index`, and row. `locate(item)` returns an item's canvas point, and
+`reveal(item)` pans until it shows.
+
+Events arrive together after each drawn frame, in order: `frame`, `camera`, `hover`, `select`.
 
 ## Images
 

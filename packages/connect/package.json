@@ -25,8 +25,7 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --config vitest.config.ts",
-    "bench:scale": "vitest run --config vitest.bench.config.ts"
+    "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
     "@latkit/model": "workspace:*"

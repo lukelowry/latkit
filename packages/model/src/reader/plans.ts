@@ -17,6 +17,8 @@ export interface PlannedGroup {
 export interface FieldPlan {
   readonly names: readonly string[];
   readonly external: readonly string[];
+  /** Bindings to the request's own source, read with its plain fields. */
+  readonly aliased: readonly string[];
   readonly locals: readonly string[];
   readonly statics: readonly string[];
   readonly points: readonly PlannedGroup[];
@@ -46,13 +48,15 @@ export class FieldPlans {
     if (!names) schemas.set(source.schema, (names = new Map<string, string>()));
     const hint = names.get(from),
       hit = hint === undefined ? undefined : this.plans.get(hint);
-    if (hit?.entry.live) {
+    if (hit?.entry.live && this.fits(hit.plan, fields, source)) {
       hit.entry.pin();
       return { ...hit, sources: this.sources(hit.plan, fields, source) };
     }
     const external: string[] = [],
+      aliased: string[] = [],
       sources = [source],
-      slots = new Map<Data, number>();
+      // A binding to the request's own source is that source's plain field: one read serves both.
+      slots = new Map<Data, number>([[source, 0]]);
     const descriptors: unknown[] = [];
     const inputs: { alias: string; slot: number; binding: FieldBinding }[] = [];
     const locals: string[] = [];
@@ -68,6 +72,7 @@ export class FieldPlans {
       let slot = 0;
       if (typeof input !== 'string') {
         const existing = slots.get(binding.source);
+        if (existing === 0) aliased.push(alias);
         if (existing !== undefined) slot = existing;
         else {
           slot = sources.length;
@@ -124,6 +129,7 @@ export class FieldPlans {
       const plan: FieldPlan = {
         names: Object.keys(fields),
         external,
+        aliased,
         locals,
         statics,
         points,
@@ -142,6 +148,13 @@ export class FieldPlans {
     }
     names.set(from, key);
     return { ...cached, sources };
+  }
+  /** Whether a plan hinted for these fields still assigns each binding's source to the same slot. */
+  private fits(plan: FieldPlan, fields: FieldsRequest['fields'], source: Data): boolean {
+    return (
+      plan.aliased.every((alias) => (fields[alias] as FieldBinding).source === source) &&
+      plan.external.every((alias) => (fields[alias] as FieldBinding).source !== source)
+    );
   }
   private sources(plan: FieldPlan, fields: FieldsRequest['fields'], source: Data): Data[] {
     return [source, ...plan.external.map((alias) => (fields[alias] as FieldBinding).source)];

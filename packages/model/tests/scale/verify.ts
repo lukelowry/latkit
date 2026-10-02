@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { performance } from 'node:perf_hooks';
 import type {
   Data,
   RowsQuery,
@@ -22,8 +21,6 @@ export interface ScanResult {
   maxBlockBytes: number;
   maxBackingBytes: number;
   checksum: number;
-  firstBlockMs: number;
-  elapsedMs: number;
 }
 /** Independent oracle: each cell, row identity, block position and complete coverage is checked. */
 export async function verifyRows(
@@ -34,9 +31,7 @@ export async function verifyRows(
   rowAt: (position: number) => number = (position) => position,
   expected: (row: number) => number = inputAt,
 ): Promise<ScanResult> {
-  const start = performance.now();
   assert.deepEqual(validateSchema(source.schema), []);
-  let firstBlockMs = 0;
   let cells = 0,
     blocks = 0,
     payloadBytes = 0,
@@ -46,7 +41,6 @@ export async function verifyRows(
   for await (const block of read(source, query, options)) {
     assert.equal(block.rowOffset, cells);
     assert.deepEqual(validateBlock(source.schema, query, block, options), []);
-    if (!blocks) firstBlockMs = performance.now() - start;
     const size = blockByteLength(block);
     payloadBytes += size;
     maxBlockBytes = Math.max(maxBlockBytes, size);
@@ -84,8 +78,6 @@ export async function verifyRows(
     maxBlockBytes,
     maxBackingBytes,
     checksum,
-    firstBlockMs,
-    elapsedMs: performance.now() - start,
   };
 }
 export async function verifySamples(
@@ -102,19 +94,16 @@ export async function verifySamples(
     select: ['output'],
     window: { kind: 'frames', offset: first, count: frames },
   };
-  const seen = new Uint32Array(frames),
-    start = performance.now();
+  const seen = new Uint32Array(frames);
   assert.deepEqual(validateSchema(source.schema), []);
   let blocks = 0,
     cells = 0,
     checksum = 0,
     payloadBytes = 0,
     maxBlockBytes = 0,
-    maxBackingBytes = 0,
-    firstBlockMs = 0;
+    maxBackingBytes = 0;
   for await (const block of read(source, query)) {
     assert.deepEqual(validateBlock(source.schema, query, block), []);
-    if (!blocks) firstBlockMs = performance.now() - start;
     blocks++;
     const size = blockByteLength(block);
     payloadBytes += size;
@@ -150,7 +139,5 @@ export async function verifySamples(
     maxBlockBytes,
     maxBackingBytes,
     checksum,
-    firstBlockMs,
-    elapsedMs: performance.now() - start,
   };
 }

@@ -1,12 +1,17 @@
-import { GpuError } from '@latkit/gpu';
+import { GpuError, kit } from '@latkit/gpu';
 import { rowCount } from '@latkit/model';
 import type { Chunk, HistoryRequest } from './history.js';
 import { history, isEnvelope } from './history.js';
 import { split, Seams, type Geometry } from './segments.js';
-import { deferred, wait } from './async.js';
 import type { Image } from './rendering/painter.js';
 import { Coverage } from './coverage.js';
 
+/** A promise and its resolver. */
+export function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => (resolve = done));
+  return { promise, resolve };
+}
 export interface QueuedChunk {
   readonly cached?: boolean;
   readonly chunk: Chunk;
@@ -23,6 +28,7 @@ function backing(value: unknown, buffers = new Set<ArrayBufferLike>()): Set<Arra
 /** Bounded read-ahead. Queued entries remain replayable until successful submission. */
 export class Job {
   readonly stop = new AbortController();
+  private readonly task = new kit.Work(this.stop.signal);
   readonly seams: Seams;
   readonly coverage = new Coverage();
   readonly queue: QueuedChunk[] = [];
@@ -97,7 +103,7 @@ export class Job {
         const original = request.bindings.find((b) => b.name === block.binding.name)!;
         for (const chunk of split(
           { ...block, binding: original },
-          Math.min(request.limits.segmentsPerFrame, this.work),
+          Math.min(request.limits.observationsPerFrame, this.work),
         )) {
           const data = chunk.data;
           yield {
@@ -128,7 +134,7 @@ export class Job {
         const extra = () =>
           [...buffers].reduce((n, b) => n + (this.buffers.has(b) ? 0 : b.byteLength), 256);
         while (this.queue.length >= 32 || this.queuedBytes + extra() > this.maxBytes / 2)
-          await wait(this.space.promise, this.stop.signal);
+          await this.task.wait(this.space.promise);
         this.stop.signal.throwIfAborted();
         this.queuedBytes += extra();
         for (const b of buffers) this.buffers.set(b, (this.buffers.get(b) ?? 0) + 1);

@@ -4,7 +4,6 @@ import { VideoSample } from 'mediabunny';
 import { settings, timeline } from './timing.js';
 import { encoding } from './encoding.js';
 import { destination } from './output.js';
-import { wait } from './wait.js';
 import { observeLoss } from './loss.js';
 
 /** Positional writes. Bytes remain immutable after write resolves; the destination owns retention. */
@@ -56,6 +55,7 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
   active.add(view);
   const stop = new AbortController();
   const signal = AbortSignal.any([stop.signal, ...(options.signal ? [options.signal] : [])]);
+  const work = new kit.Work(signal);
   const releaseLoss = observeLoss(gpu, stop);
   const error = (event: GPUUncapturedErrorEvent) => stop.abort(event.error);
   gpu.device.addEventListener('uncapturederror', error);
@@ -65,15 +65,15 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
   let media: Awaited<ReturnType<typeof encoding>> | undefined;
   try {
     // Negotiate before acquiring a destination or allocating capture textures.
-    media = await wait(encoding(config), signal);
+    media = await work.wait(encoding(config));
     const holding = kit.hold(view);
     // A hold granted after cancellation is released at once.
-    release = await wait(holding, signal).catch((cause: unknown) => {
+    release = await work.wait(holding).catch((cause: unknown) => {
       void holding.then((late) => late());
       throw cause;
     });
     signal.throwIfAborted();
-    sink = destination(options.output, signal);
+    sink = destination(options.output, work);
     media.open(sink.stream);
     const canvas = new OffscreenCanvas(config.width, config.height);
     const viewport = {
@@ -82,7 +82,7 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
       pixelRatio: config.pixelRatio,
     };
     presentation = kit.createPresentation({ gpu, canvas, alphaMode: 'opaque' });
-    await wait(media.start(), signal);
+    await work.wait(media.start());
     let reported = -Infinity;
     for (let i = 0; i < config.frames; i++) {
       signal.throwIfAborted();
@@ -102,7 +102,7 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
         duration: frame.duration / 1e6,
       });
       try {
-        await wait(media.add(sample, i % config.keyFrames === 0), signal);
+        await work.wait(media.add(sample, i % config.keyFrames === 0));
       } finally {
         sample.close();
       }
@@ -121,7 +121,7 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
       completedFrames: config.frames,
       totalFrames: config.frames,
     });
-    await wait(media.finish(), signal);
+    await work.wait(media.finish());
     signal.throwIfAborted();
     return {
       frames: config.frames,

@@ -5,7 +5,7 @@ import type { FieldValues } from '@latkit/model';
 import { createNetwork, type Network } from '../src/index.js';
 import type { NetworkData } from '../src/data.js';
 import { readGeometry, DEFAULT_LIMITS } from '../src/geometry/topology.js';
-import { HOVER_EXHAUSTED, PickGeometry } from '../src/picking.js';
+import { PickGeometry } from '../src/picking.js';
 import { featureSource } from './paths-fixture.js';
 import { GraphSource } from './fixture.js';
 import { deferred, fakeDevice } from '../../gpu/tests/fixtures/device.js';
@@ -62,7 +62,7 @@ function target(gpu: Awaited<ReturnType<typeof createGpu>>) {
 }
 /** Drive the pointer as input does. */
 const pointer = (network: Network, point: readonly [number, number] | null) =>
-  (network as unknown as { point(point: readonly [number, number] | null): void }).point(point);
+  (network as unknown as { pointer(point: readonly [number, number] | null): void }).pointer(point);
 /** Pan by pixels on a flat, unrotated camera, as a drag does. */
 function pan(network: Network, dx: number, dy: number): void {
   const { center, scale } = network.camera;
@@ -259,7 +259,7 @@ it('preserves an explicit initial camera and rejects incompatible position ident
 it('enforces geometry admission limits and keeps borrowed sources open', async () => {
   const { source, data } = fixture(),
     gpu = await createGpu({ device: device().device });
-  const network = createNetwork(gpu, { ...data, limits: { maxVertices: 10 } });
+  const network = createNetwork(gpu, { ...data, limits: { vertices: 10 } });
   await expect(
     gpu.render({
       timeMs: 0,
@@ -289,7 +289,7 @@ it('rejects invalid options atomically and falls back from the globe for Cartesi
   expect(network.projections.globe).toBe(false);
   expect(network.camera.projection).toBe('flat');
   network.destroy();
-  expect(() => network.set({ showEdges: false })).toThrow('destroyed');
+  expect(() => network.set({ lines: false })).toThrow('destroyed');
   gpu.destroy();
 });
 
@@ -388,7 +388,7 @@ it('aborts automatic searches without a partial hit and latches across pointer a
   let clock = 0;
   const now = vi.spyOn(performance, 'now').mockImplementation(() => ++clock);
   await render();
-  expect(nearest.mock.results[0].value).toBe(HOVER_EXHAUSTED);
+  expect(nearest.mock.results[0].type).toBe('throw');
   expect(projected.mock.calls.length).toBeLessThan(1000);
   expect(hover).not.toHaveBeenCalled();
   expect(network.stats()).toMatchObject({ hover: 'budget', pickingBytes: 0 });
@@ -488,18 +488,11 @@ it('does not publish hover from a failed composition or restore it after pointer
   gpu.destroy();
 });
 
-it('falls back to exact scanning when explicit indexes cannot fit the CPU budget', async () => {
+it('falls back to exact scanning when explicit indexes cannot fit the picking budget', async () => {
   const { source, data } = fixture(),
-    gpu = await createGpu({ device: device().device });
-  const baseline = createNetwork(gpu, data),
+    gpu = await createGpu({ device: device().device }),
     surface = target(gpu);
-  await gpu.render({
-    timeMs: 0,
-    views: [{ renderer: kit.rendererOf(baseline), target: surface, at: 0 }],
-  });
-  const bytes = baseline.stats().geometryBytes;
-  baseline.destroy();
-  const network = createNetwork(gpu, { ...data, limits: { cpuBytes: bytes + 1 }, hover: 'off' });
+  const network = createNetwork(gpu, { ...data, limits: { pickingBytes: 1 }, hover: 'off' });
   await gpu.render({
     timeMs: 0,
     views: [{ renderer: kit.rendererOf(network), target: surface, at: 0 }],
@@ -626,7 +619,7 @@ it('picks a geodesic arc at its visible arc-length midpoint in every projection'
     vertices: { node: { position: 'position' } },
     edges: { route: { ends: ['from', 'to'], curve: 'geodesic' } },
     camera: { center: [-30, 5], scale: 4 },
-    showVertices: false,
+    markers: false,
     edgeWidthPx: 3,
   });
   const surface = target(gpu),

@@ -33,7 +33,9 @@ producer retention or replay.
 
 Renderer authors build on the `kit` namespace: extend `kit.BaseView`, prepare GPU work in
 `prepare`, encode it in `encode`, and react to config changes in `configure`. The base presents on
-a canvas, schedules frames, attaches input, renders images, and keeps events. Frames provide the
+a canvas, schedules frames, attaches input, renders images, and keeps events. Views of selectable
+items extend `kit.BaseItemView`, which adds the shared camera, selection, picking, hover, style,
+and input; the view supplies its camera math, hit search, and own gestures. Frames provide the
 GPU's reader (`frame.reader`), field uploads, text, colormaps, and transient buffers.
 
 [Views](https://latkit.readthedocs.io/en/latest/views.html) ·

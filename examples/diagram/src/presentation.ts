@@ -61,7 +61,7 @@ export function theme(light: boolean): Style {
   return light
     ? {
         ...base,
-        backgroundColor: [0.96, 0.97, 0.98, 1],
+        background: [0.96, 0.97, 0.98, 1],
         vertexBaseColor: [1, 1, 1, 1],
         edgeBaseColor: [0.34, 0.43, 0.55, 1],
         outlineColor: [0.61, 0.68, 0.76, 1],
@@ -74,7 +74,7 @@ export function theme(light: boolean): Style {
     : base;
 }
 const base: Style = {
-  backgroundColor: [0.063, 0.082, 0.106, 1],
+  background: [0.063, 0.082, 0.106, 1],
   vertexBaseColor: [0.1, 0.13, 0.17, 1],
   edgeBaseColor: [0.46, 0.57, 0.65, 1],
   outlineColor: [0.34, 0.43, 0.5, 1],

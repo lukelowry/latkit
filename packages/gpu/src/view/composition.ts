@@ -14,6 +14,7 @@ import { validateRgba } from '../colors/color.js';
 import { GpuError } from '../error.js';
 import { premultipliedBlend } from '../style/output.js';
 import { shadeUniforms } from '../style/shade.js';
+import { viewStyle } from './style.js';
 import {
   BaseView,
   compose,
@@ -29,6 +30,7 @@ export interface CompositionConfig extends ViewConfig {
     readonly view: View<ViewConfig, ViewEvents>;
     readonly region: readonly [x: number, y: number, width: number, height: number];
   }[];
+  /** Behind every region; `viewStyle.background` by default. */
   readonly background?: RGBA;
 }
 
@@ -59,7 +61,6 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
   private panels: Panel[] = [];
   private readonly own: Renderer;
   private readonly sampler: GPUSampler;
-  private readonly module: GPUShaderModule;
   private format?: GPUTextureFormat;
   private pipeline?: GPURenderPipeline;
   private textures: (TextureResource | undefined)[] = [];
@@ -79,7 +80,6 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
     super(gpu, config);
     this.own = rendererOf(this);
     this.sampler = gpu.device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
-    this.module = gpu.device.createShaderModule({ label: 'composition', code: shader });
     this.check(config);
     this.panels = this.compose(config);
     this.start();
@@ -162,11 +162,12 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
     this.live();
     this.prepared = [];
     if (!this.pipeline || this.format !== frame.format) {
+      const module = await this.gpu.shaderModule(shader, 'composition');
       this.pipeline = await this.gpu.renderPipeline({
         layout: 'auto',
-        vertex: { module: this.module, entryPoint: 'vertex' },
+        vertex: { module, entryPoint: 'vertex' },
         fragment: {
-          module: this.module,
+          module,
           entryPoint: 'fragment',
           targets: [{ format: frame.format, blend: premultipliedBlend }],
         },
@@ -242,7 +243,7 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
         encoder: frame.encoder,
         target: this.prepared[i].view,
       });
-    const background = this.frameConfig.background ?? [0, 0, 0, 1];
+    const background = this.frameConfig.background ?? viewStyle.background;
     const pass = frame.encoder.beginRenderPass({
       colorAttachments: [
         {

@@ -136,7 +136,7 @@ export class Paths {
       branch = 0;
     const charge = (n: number) => {
       bytes += n;
-      if (bytes > limits.cpuBytes)
+      if (bytes > limits.geometryBytes)
         throw new GpuError('resource-limit', 'Paths exceed the network CPU budget');
     };
     const point = (bank: VertexBank, offset: number): Point => {
@@ -273,7 +273,7 @@ export class Paths {
         return { bank: active, offset, point: p };
       };
       const segment = (a: Address, b: Address, owner: number, branch: number) => {
-        if (++segments > limits.maxSegments)
+        if (++segments > limits.segments)
           throw new GpuError('resource-limit', 'Path segment limit exceeded');
         charge(48);
         const key = a.bank.id + ':' + b.bank.id;

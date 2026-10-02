@@ -86,9 +86,9 @@ async function main(): Promise<void> {
     },
     msaa: 4,
     daylight: true,
-    showGraticule: false,
+    graticule: false,
     hover: 'auto',
-    showPoles: false,
+    poles: false,
     fitPaddingPx: [48, 48, 48, window.innerWidth > 640 ? 320 : 48],
     vertexBaseColor: [0.36, 0.4, 0.46, 1],
   });
@@ -154,7 +154,7 @@ async function main(): Promise<void> {
           });
         },
       },
-      { label: 'surface poles', on: false, apply: (on) => net.set({ showPoles: on }) },
+      { label: 'surface poles', on: false, apply: (on) => net.set({ poles: on }) },
     ],
   );
   wireColormaps((value) => {
@@ -243,10 +243,10 @@ interface Toggle {
 function wireToggles(net: Network, setHeight: (on: boolean) => void, extra: Toggle[]): void {
   const specs: Toggle[] = [
     ...extra,
-    { label: 'vertices', on: true, apply: (v) => net.set({ showVertices: v }) },
-    { label: 'edges', on: true, apply: (v) => net.set({ showEdges: v }) },
-    { label: 'graticule', on: false, apply: (v) => net.set({ showGraticule: v }) },
-    { label: 'earth axis', on: true, apply: (v) => net.set({ showEarthAxis: v }) },
+    { label: 'vertices', on: true, apply: (v) => net.set({ markers: v }) },
+    { label: 'edges', on: true, apply: (v) => net.set({ lines: v }) },
+    { label: 'graticule', on: false, apply: (v) => net.set({ graticule: v }) },
+    { label: 'earth axis', on: true, apply: (v) => net.set({ earthAxis: v }) },
     { label: 'daylight', on: true, apply: (v) => net.set({ daylight: v }) },
     // A pinned sun holds the terminator still; null follows the clock.
     {

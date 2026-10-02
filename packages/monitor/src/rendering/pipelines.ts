@@ -79,18 +79,8 @@ async function compilePipelines(
       { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
     ],
   });
-  const compile = async (code: string) => {
-    d.pushErrorScope('validation');
-    const module = d.createShaderModule({ code });
-    const validation = d.popErrorScope();
-    const [info, error] = await Promise.all([module.getCompilationInfo(), validation]);
-    const errors = info.messages.filter((m) => m.type === 'error');
-    if (errors.length || error)
-      throw new Error(errors.map((m) => m.message).join('\n') || error!.message);
-    return module;
-  };
   const [module, screen, axes] = await Promise.all([
-    compile(
+    gpu.shaderModule(
       kit.fieldShader({ group: 0 }) +
         kit.scaleShader() +
         kit.colormapShader({ group: 2 }) +
@@ -99,9 +89,10 @@ async function compilePipelines(
         kit.outputShader() +
         shade +
         traceCode,
+      'monitor traces',
     ),
-    compile(compositeCode),
-    compile(kit.textShader({ group: 0 }) + axesCode),
+    gpu.shaderModule(compositeCode, 'monitor composite'),
+    gpu.shaderModule(kit.textShader({ group: 0 }) + axesCode, 'monitor axes'),
   ]);
   const traceLayout = d.createPipelineLayout({
     bindGroupLayouts: [gpu.fieldLayout, view, gpu.colormapLayout, effects],

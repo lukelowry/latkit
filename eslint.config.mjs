@@ -56,7 +56,7 @@ export default defineConfig([
     },
   },
   {
-    files: ['**/tests/**/*.ts', '**/*.unit.test.ts', '**/*.bench.ts'],
+    files: ['**/tests/**/*.ts', '**/*.unit.test.ts', '**/*.bench.ts', 'benchmark/**/*.ts'],
     rules: {
       '@typescript-eslint/no-empty-function': 'off',
       '@typescript-eslint/no-explicit-any': 'off',

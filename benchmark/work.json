@@ -1,0 +1,758 @@
+{
+  "diagram 100 blocks > cached frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 3,
+    "uploadedBytes": 576,
+    "uploadHits": 5,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "diagram 100 blocks > layout": {
+    "queries": 0,
+    "queryHits": 3,
+    "uploads": 6,
+    "uploadedBytes": 63408,
+    "uploadHits": 2,
+    "gpuCopiedBytes": 0,
+    "allocations": 2,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "diagram 100 blocks > pick": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "diagram 100 blocks > playback frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 3,
+    "uploadedBytes": 576,
+    "uploadHits": 5,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "diagram 100 blocks > restyle": {
+    "queries": 0,
+    "queryHits": 3,
+    "uploads": 4,
+    "uploadedBytes": 62176,
+    "uploadHits": 4,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "diagram 1000 blocks > cached frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 8,
+    "uploadedBytes": 1296,
+    "uploadHits": 15,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "diagram 1000 blocks > layout": {
+    "queries": 0,
+    "queryHits": 3,
+    "uploads": 16,
+    "uploadedBytes": 664544,
+    "uploadHits": 7,
+    "gpuCopiedBytes": 0,
+    "allocations": 2.75,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "diagram 1000 blocks > pick": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "diagram 1000 blocks > playback frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 8,
+    "uploadedBytes": 1296,
+    "uploadHits": 15,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "diagram 1000 blocks > restyle": {
+    "queries": 0,
+    "queryHits": 3,
+    "uploads": 13,
+    "uploadedBytes": 574736,
+    "uploadHits": 10,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "diagram 10000 blocks > cached frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 61,
+    "uploadedBytes": 8928,
+    "uploadHits": 121,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "diagram 10000 blocks > layout": {
+    "queries": 0,
+    "queryHits": 3,
+    "uploads": 122,
+    "uploadedBytes": 6792240,
+    "uploadHits": 60,
+    "gpuCopiedBytes": 0,
+    "allocations": 8.625,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "diagram 10000 blocks > pick": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "diagram 10000 blocks > playback frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 61,
+    "uploadedBytes": 8928,
+    "uploadHits": 121,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "diagram 10000 blocks > restyle": {
+    "queries": 0,
+    "queryHits": 3,
+    "uploads": 110,
+    "uploadedBytes": 5628640,
+    "uploadHits": 72,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "gpu 10000 buses > field scale": {
+    "queries": 0,
+    "queryHits": 1,
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "gpu 10000 buses > playback frame": {
+    "queries": 1,
+    "queryHits": 0,
+    "uploads": 2,
+    "uploadedBytes": 40092,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0.042,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "gpu 100000 buses > field scale": {
+    "queries": 0,
+    "queryHits": 1,
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "gpu 100000 buses > playback frame": {
+    "queries": 2,
+    "queryHits": 0,
+    "uploads": 4,
+    "uploadedBytes": 400184,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0.417,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "gpu 1000000 buses > field scale": {
+    "queries": 0,
+    "queryHits": 1,
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "gpu 1000000 buses > playback frame": {
+    "queries": 13,
+    "queryHits": 0,
+    "uploads": 26,
+    "uploadedBytes": 4001196,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 4,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 10000 buses > appendData frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 10000 buses > createData": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 10000 buses > read envelope": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 10000 buses > read rows": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 10000 buses > read samples": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 10000 buses > reader extent": {
+    "queries": 0,
+    "queryHits": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 10000 buses > reader fields, cached": {
+    "queries": 0,
+    "queryHits": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 10000 buses > reader fields, cold": {
+    "queries": 1,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 10000 buses > selectBatches": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 100000 buses > appendData frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 100000 buses > createData": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 100000 buses > read envelope": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 100000 buses > read rows": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 100000 buses > read samples": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 100000 buses > reader extent": {
+    "queries": 0,
+    "queryHits": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 100000 buses > reader fields, cached": {
+    "queries": 0,
+    "queryHits": 2,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 100000 buses > reader fields, cold": {
+    "queries": 2,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 100000 buses > selectBatches": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 1000000 buses > appendData frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 1000000 buses > createData": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 1000000 buses > read envelope": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 1000000 buses > read rows": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 1000000 buses > read samples": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 1000000 buses > reader extent": {
+    "queries": 0,
+    "queryHits": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 1000000 buses > reader fields, cached": {
+    "queries": 0,
+    "queryHits": 13,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 1000000 buses > reader fields, cold": {
+    "queries": 13,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "model 1000000 buses > selectBatches": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "monitor 100 rows > append and follow": {
+    "queries": 3,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "monitor 100 rows > cached frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "monitor 100 rows > first frame": {
+    "queries": 1,
+    "queryHits": 3,
+    "evictions": 0
+  },
+  "monitor 100 rows > pick": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "monitor 100 rows > playhead": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "monitor 100 rows > zoom window": {
+    "queries": 1,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "monitor 1000 rows > append and follow": {
+    "queries": 3,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "monitor 1000 rows > cached frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "monitor 1000 rows > first frame": {
+    "queries": 1,
+    "queryHits": 3,
+    "evictions": 0
+  },
+  "monitor 1000 rows > pick": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "monitor 1000 rows > playhead": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "monitor 1000 rows > zoom window": {
+    "queries": 1,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "monitor 10000 rows > append and follow": {
+    "queries": 12,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "monitor 10000 rows > cached frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "monitor 10000 rows > first frame": {
+    "queries": 1,
+    "queryHits": 12,
+    "evictions": 0
+  },
+  "monitor 10000 rows > pick": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "monitor 10000 rows > playhead": {
+    "queries": 0,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "monitor 10000 rows > zoom window": {
+    "queries": 1,
+    "queryHits": 0,
+    "evictions": 0
+  },
+  "network 10000 buses > cached frame": {
+    "queries": 0,
+    "queryHits": 4,
+    "uploads": 8,
+    "uploadedBytes": 1168,
+    "uploadHits": 12,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 10000 buses > camera move": {
+    "queries": 0,
+    "queryHits": 4,
+    "uploads": 8,
+    "uploadedBytes": 1168,
+    "uploadHits": 12,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 10000 buses > first frame": {
+    "queries": 0,
+    "queryHits": 6,
+    "uploads": 11,
+    "uploadedBytes": 325424,
+    "uploadHits": 9,
+    "gpuCopiedBytes": 0,
+    "allocations": 6.292,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 10000 buses > pick": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 10000 buses > playback frame": {
+    "queries": 1,
+    "queryHits": 3,
+    "uploads": 10,
+    "uploadedBytes": 41388,
+    "uploadHits": 13,
+    "gpuCopiedBytes": 0,
+    "allocations": 0.042,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 10000 buses > restyle": {
+    "queries": 0,
+    "queryHits": 3,
+    "uploads": 8,
+    "uploadedBytes": 1168,
+    "uploadHits": 12,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 100000 buses > cached frame": {
+    "queries": 0,
+    "queryHits": 28,
+    "uploads": 54,
+    "uploadedBytes": 4896,
+    "uploadHits": 86,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 100000 buses > camera move": {
+    "queries": 0,
+    "queryHits": 28,
+    "uploads": 54,
+    "uploadedBytes": 4896,
+    "uploadHits": 86,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 100000 buses > first frame": {
+    "queries": 0,
+    "queryHits": 30,
+    "uploads": 80,
+    "uploadedBytes": 3269616,
+    "uploadHits": 60,
+    "gpuCopiedBytes": 0,
+    "allocations": 26.167,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 100000 buses > pick": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 100000 buses > playback frame": {
+    "queries": 7,
+    "queryHits": 21,
+    "uploads": 68,
+    "uploadedBytes": 406436,
+    "uploadHits": 93,
+    "gpuCopiedBytes": 262144,
+    "allocations": 0.583,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 100000 buses > restyle": {
+    "queries": 0,
+    "queryHits": 21,
+    "uploads": 54,
+    "uploadedBytes": 4896,
+    "uploadHits": 86,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 1000000 buses > cached frame": {
+    "queries": 0,
+    "queryHits": 248,
+    "uploads": 492,
+    "uploadedBytes": 40768,
+    "uploadHits": 797,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 1000000 buses > camera move": {
+    "queries": 0,
+    "queryHits": 248,
+    "uploads": 492,
+    "uploadedBytes": 40768,
+    "uploadHits": 797,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 1000000 buses > first frame": {
+    "queries": 0,
+    "queryHits": 250,
+    "uploads": 737,
+    "uploadedBytes": 32758272,
+    "uploadHits": 552,
+    "gpuCopiedBytes": 0,
+    "allocations": 218.167,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 1000000 buses > pick": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 0,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 1000000 buses > playback frame": {
+    "queries": 62,
+    "queryHits": 186,
+    "uploads": 616,
+    "uploadedBytes": 4054408,
+    "uploadHits": 859,
+    "gpuCopiedBytes": 3932160,
+    "allocations": 7.667,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "network 1000000 buses > restyle": {
+    "queries": 0,
+    "queryHits": 186,
+    "uploads": 492,
+    "uploadedBytes": 40768,
+    "uploadHits": 797,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0
+  },
+  "pipeline 10000 buses > publication to frame": {
+    "queries": 2.292,
+    "queryHits": 1,
+    "uploads": 24.667,
+    "uploadedBytes": 47058,
+    "uploadHits": 27.542,
+    "gpuCopiedBytes": 0,
+    "allocations": 0.5,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 956490.667
+  },
+  "pipeline 100000 buses > publication to frame": {
+    "queries": 8.5,
+    "queryHits": 7,
+    "uploads": 82.167,
+    "uploadedBytes": 411862,
+    "uploadHits": 99.25,
+    "gpuCopiedBytes": 0,
+    "allocations": 0.833,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 1062767.333
+  },
+  "pipeline 1000000 buses > publication to frame": {
+    "queries": 63.333,
+    "queryHits": 62,
+    "uploads": 636.167,
+    "uploadedBytes": 4055193.333,
+    "uploadHits": 815.167,
+    "gpuCopiedBytes": 0,
+    "allocations": 4.167,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 850213.333
+  }
+}

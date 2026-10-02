@@ -1,5 +1,5 @@
+import { kit } from '@latkit/gpu';
 import { bitAt, rowCount, sampleAt, type Domain, type SampleColumn } from '@latkit/model';
-import { yieldWork } from './async.js';
 import type { Binding } from './bindings.js';
 import { isEnvelope, type Chunk } from './history.js';
 import type { QueuedChunk } from './job.js';
@@ -90,14 +90,14 @@ export class Tiles {
     signal: AbortSignal,
   ): Promise<{ domain: Domain | null; missing: Domain[] } | undefined> {
     if (!this.complete || window[0] < this.window[0]) return;
+    const work = new kit.Work(signal, Infinity, 3);
     let lo = Infinity,
-      hi = -Infinity,
-      yieldedAt = performance.now();
+      hi = -Infinity;
     const missing: Domain[] =
       window[1] > this.window[1] ? [[Math.max(window[0], this.window[1]), window[1]]] : [];
     for (const item of this.items) {
       if (item.trace !== trace) continue;
-      signal.throwIfAborted();
+      work.check();
       let low = Infinity,
         high = -Infinity,
         whole = true;
@@ -150,10 +150,7 @@ export class Tiles {
         lo = Math.min(lo, domain[0]);
         hi = Math.max(hi, domain[1]);
       }
-      if (performance.now() - yieldedAt >= 3) {
-        await yieldWork(signal);
-        yieldedAt = performance.now();
-      }
+      await work.step();
     }
     return { domain: lo <= hi ? [lo, hi] : null, missing: coordinateRanges(missing) };
   }

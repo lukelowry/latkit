@@ -1,41 +1,43 @@
 import { GpuError, kit, type RGBA } from '@latkit/gpu';
 import type { Domain, SampleRange } from '@latkit/model';
-import type { StyleOptions, Limits, AxisOptions } from './options.js';
-export type Settings = Required<
-  Omit<StyleOptions, 'coordinateAxis' | 'valueAxis' | 'focusColor'>
-> & {
+import type { MonitorStyle, Limits, AxisOptions } from './options.js';
+
+type Own = Required<Omit<MonitorStyle, 'coordinateAxis' | 'valueAxis'>> & {
   readonly coordinateAxis: AxisOptions | null;
   readonly valueAxis: AxisOptions | null;
-  readonly focusColor: RGBA | null;
 };
-export const defaults: Settings = {
+/** The monitor's own style over the shared view style, every option resolved. */
+export type Style = Own & kit.ResolvedViewStyle;
+export const DEFAULTS: Own = Object.freeze({
   detail: 'auto',
   coordinateAxis: {},
   valueAxis: {},
   autoDomain: 'grow',
   domainPadding: 0.1,
-  font: { family: 'ui-monospace, monospace' },
-  fontSizePx: 12,
-  textColor: [0.78, 0.84, 0.91, 1],
-  axisColor: [0.48, 0.58, 0.67, 0.8],
-  gridColor: [0.4, 0.5, 0.6, 0.13],
-  backgroundColor: [0.027, 0.043, 0.065, 1],
-  cursorColor: [1, 0.71, 0.25, 0.9],
-  focusColor: null,
+  axisColor: [0.48, 0.58, 0.67, 0.8] as RGBA,
+  gridColor: [0.4, 0.5, 0.6, 0.13] as RGBA,
+  cursorColor: [1, 0.71, 0.25, 0.9] as RGBA,
   unselectedAlpha: 0.25,
   paddingPx: 12,
-  pickRadiusPx: 8,
+});
+/**
+ * Shared style a monitor draws differently: one sample, no easing because history redraws, monospace
+ * axes, and selected traces in their own colors.
+ */
+export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({
   msaa: 1,
-  hover: 'auto',
-  hoverBudgetMs: 2,
-};
-export const limitDefaults: Required<Limits> = {
+  animationMs: 0,
+  font: Object.freeze({ family: 'ui-monospace, monospace' }),
+  textColor: [0.78, 0.84, 0.91, 1] as RGBA,
+  selectedColor: null,
+});
+export const LIMITS: Required<Limits> = Object.freeze({
   rows: 100000,
-  prepareMs: 3,
-  segmentsPerFrame: 250000,
+  frameMs: 3,
+  observationsPerFrame: 250000,
   historyBytes: 64 * 1024 ** 2,
   pickingBytes: 2 * 1024 ** 2,
-};
+});
 export function fail(message: string): never {
   throw new GpuError('invalid-input', message);
 }
@@ -49,9 +51,14 @@ export function finite(
   return value;
 }
 export function domain(value: Domain, name = 'domain'): Domain {
-  if (value.length !== 2 || !value.every(Number.isFinite) || value[1] < value[0])
+  if (
+    !Array.isArray(value) ||
+    value.length !== 2 ||
+    !value.every(Number.isFinite) ||
+    value[1] < value[0]
+  )
     fail('Invalid ' + name);
-  return [...value];
+  return [value[0], value[1]];
 }
 export function windowRange(value: Domain): SampleRange {
   return { kind: 'range', between: domain(value, 'coordinate window') };
@@ -73,47 +80,29 @@ const axis = (value: string | AxisOptions | false | undefined, fallback: AxisOpt
       : typeof value === 'string'
         ? { label: value }
         : value;
-/** The style a config describes: its own options over the defaults. */
-export function settings(config: StyleOptions): Settings {
+/** The style a config describes: its own options over the defaults, on the shared view style. */
+export function resolveStyle(config: MonitorStyle, view: kit.ResolvedViewStyle): Style {
   const own = Object.fromEntries(
-    Object.keys(defaults).flatMap((key) => {
-      const value = config[key as keyof StyleOptions];
+    Object.keys(DEFAULTS).flatMap((key) => {
+      const value = config[key as keyof MonitorStyle];
       return value === undefined ? [] : [[key, value]];
     }),
   );
-  const out: Settings = {
-    ...defaults,
+  const out: Style = {
+    ...view,
+    ...DEFAULTS,
     ...own,
-    coordinateAxis: axis(config.coordinateAxis, defaults.coordinateAxis),
-    valueAxis: axis(config.valueAxis, defaults.valueAxis),
+    coordinateAxis: axis(config.coordinateAxis, DEFAULTS.coordinateAxis),
+    valueAxis: axis(config.valueAxis, DEFAULTS.valueAxis),
   };
-  for (const [name, n, min, max] of [
-    ['fontSizePx', out.fontSizePx, 1, 256],
-    ['pickRadiusPx', out.pickRadiusPx, 0, 1024],
-    ['hoverBudgetMs', out.hoverBudgetMs, 0, 1000],
-    ['unselectedAlpha', out.unselectedAlpha, 0, 1],
-    ['domainPadding', out.domainPadding, 0, 10],
-  ] as const)
-    finite(n, name, min, max);
-  if (
-    !['auto', 'full'].includes(out.detail) ||
-    !['grow', 'fit'].includes(out.autoDomain) ||
-    !['auto', 'on', 'off'].includes(out.hover) ||
-    ![1, 4].includes(out.msaa)
-  )
+  finite(out.unselectedAlpha, 'unselectedAlpha', 0, 1);
+  finite(out.domainPadding, 'domainPadding', 0, 10);
+  if (!['auto', 'full'].includes(out.detail) || !['grow', 'fit'].includes(out.autoDomain))
     fail('Invalid monitor option');
-  for (const c of [
-    out.textColor,
-    out.axisColor,
-    out.gridColor,
-    out.backgroundColor,
-    out.cursorColor,
-    out.focusColor,
-  ])
-    if (c) kit.validateRgba(c);
+  for (const color of [out.axisColor, out.gridColor, out.cursorColor]) kit.validateRgba(color);
   for (const axis of [out.coordinateAxis, out.valueAxis]) checkAxis(axis);
   insets(out.paddingPx);
-  return out;
+  return Object.freeze(out);
 }
 function checkAxis(axis: AxisOptions | null): void {
   if (axis === null) return;
@@ -137,10 +126,11 @@ function checkAxis(axis: AxisOptions | null): void {
   }
 }
 export function limits(patch: Limits = {}): Required<Limits> {
-  const result = { ...limitDefaults, ...patch };
+  for (const key of Object.keys(patch)) if (!(key in LIMITS)) fail('Unknown monitor limit: ' + key);
+  const result = { ...LIMITS, ...patch };
   for (const [name, n] of Object.entries(result)) {
     finite(n, name, 1);
-    if (name !== 'prepareMs' && !Number.isSafeInteger(n)) fail('Invalid ' + name);
+    if (name !== 'frameMs' && !Number.isSafeInteger(n)) fail('Invalid ' + name);
   }
   return result;
 }

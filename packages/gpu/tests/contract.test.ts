@@ -20,12 +20,17 @@ describe('public contract and allocation boundaries', () => {
         'colorCss',
         'colormapCss',
         'spotlight',
+        'viewStyle',
         'kit',
       ].sort(),
     );
     expect(Object.keys(api.kit).sort()).toEqual(
       [
         'BaseView',
+        'BaseItemView',
+        'resolveViewStyle',
+        'Attachments',
+        'Work',
         'rendererOf',
         'gpuOf',
         'hold',

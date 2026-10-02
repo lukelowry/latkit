@@ -1,4 +1,4 @@
-import { GpuError, kit, type Gpu, type RGBA, type Shade } from '@latkit/gpu';
+import { kit, type Gpu, type RGBA, type Shade } from '@latkit/gpu';
 import { intersects } from './spatial.js';
 import type { Scene, Label, Rect } from './scene.js';
 import type { Style } from './config.js';
@@ -40,6 +40,20 @@ export interface Overlay {
   readonly muted?: string;
   readonly invalid?: boolean;
 }
+/** What one frame draws. */
+export interface DrawState {
+  readonly scene: Scene;
+  readonly style: Style;
+  readonly camera: kit.Camera2D;
+  /** Replaced whenever it changes. */
+  readonly selection: readonly DiagramItem[];
+  readonly hover: DiagramItem | null;
+  readonly shade: Shade | null;
+  readonly pointer: Point | null;
+  readonly overlay: Overlay | null;
+  /** Flow animates; false under reduced motion. */
+  readonly motion: boolean;
+}
 export interface Paint {
   pipelines: Pipelines;
   banks: { group: GPUBindGroup; count: number }[];
@@ -67,6 +81,7 @@ fn screen(p:vec2f)->vec2f { return (p+view.camera.xy)*view.camera.zw+view.viewpo
 fn clip(p:vec2f)->vec4f { return vec4f(p/view.viewport.xy*vec2f(2.,-2.)+vec2f(-1.,1.),0.,1.); }
 fn corner(v:u32)->vec2f { let c=array<vec2f,6>(vec2f(0,0),vec2f(1,0),vec2f(0,1),vec2f(0,1),vec2f(1,0),vec2f(1,1));return c[v]; }
 fn aa(d:f32)->f32 { return 1.-smoothstep(-0.65,0.65,d); }
+fn chosen(color:vec4f)->vec4f { return select(view.selected,color,view.metrics.w!=0.); }
 @vertex fn shape_vertex(@builtin(vertex_index) v:u32,@builtin(instance_index) i:u32)->Vertex {
   let item=items[i];let c=corner(v);let kind=u32(item.style.x);
   let pad=max(6.,max(view.metrics.y,view.metrics.z)+2.);
@@ -105,10 +120,10 @@ fn aa(d:f32)->f32 { return 1.-smoothstep(-0.65,0.65,d); }
       }
     }
     if(hovered){color=mix(color,view.hovered,0.65);}
-    if(selected||targeted){color=view.selected;}
+    if(selected||targeted){color=chosen(color);}
   }else if(kind==5u){
     let x=v.uv.x-v.size.x;d=max(abs(v.uv.y)+x*0.55,-x-8.);
-    if(selected||targeted){color=view.selected;}else if(hovered){color=view.hovered;}
+    if(selected||targeted){color=chosen(color);}else if(hovered){color=view.hovered;}
   }else{
     let half=v.size*0.5;
     if(kind==6u){
@@ -136,8 +151,8 @@ fn aa(d:f32)->f32 { return 1.-smoothstep(-0.65,0.65,d); }
   var result=outputColor(shaded,aa(d));
   var accent=view.hovered;var ring=0.;
   if(hovered){ring=0.35*(1.-smoothstep(0.,view.metrics.z,d));}
-  if(compatible){accent=view.selected;ring=max(ring,0.28*(1.-smoothstep(0.,5.,d)));}
-  if(selected||targeted){accent=view.selected;ring=max(ring,aa(d-view.metrics.y)*smoothstep(-0.5,0.5,d));}
+  if(compatible){accent=chosen(item.color);ring=max(ring,0.28*(1.-smoothstep(0.,5.,d)));}
+  if(selected||targeted){accent=chosen(item.color);ring=max(ring,aa(d-view.metrics.y)*smoothstep(-0.5,0.5,d));}
   let halo=outputColor(accent,ring);
   result=result+halo*(1.-result.a);
   return result*opacity;
@@ -211,11 +226,19 @@ export class Painter {
   animating = false;
   private variants = new Map<string, Promise<Pipelines>>();
   private current?: { scene: Scene; geometry: Geometry };
-  private multisample?: kit.TextureResource;
+  private focused?: {
+    readonly geometry: Geometry;
+    readonly selection: readonly DiagramItem[];
+    readonly hover: DiagramItem | null;
+    readonly overlay: Overlay | null;
+  };
+  private readonly attachments: kit.Attachments;
   private dummy = buffer(new Float32Array(28), 'diagram empty');
   private gestureBuffer = buffer(new Float32Array(0), 'diagram gesture');
   private emptyFocus = buffer(new Float32Array(1), 'diagram overlay focus');
-  constructor(private readonly gpu: Gpu) {}
+  constructor(private readonly gpu: Gpu) {
+    this.attachments = new kit.Attachments(gpu);
+  }
   async pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade | null): Promise<Pipelines> {
     const key = format + ':' + msaa + ':' + (shade?.wgsl ?? kit.defaultShade);
     const existing = this.variants.get(key);
@@ -243,23 +266,15 @@ export class Painter {
         { binding: 4, visibility: V, buffer: { type: 'read-only-storage' } },
       ],
     });
-    const module = d.createShaderModule({
-      label: 'diagram',
-      code:
-        kit.shadeShader({ group: 0, binding: 1 }) +
+    const module = await this.gpu.shaderModule(
+      kit.shadeShader({ group: 0, binding: 1 }) +
         kit.textShader({ group: 1 }) +
         kit.strokeShader() +
         kit.outputShader() +
         shader +
         (shade?.wgsl ?? kit.defaultShade),
-    });
-    const info = await module.getCompilationInfo();
-    const errors = info.messages.filter((m) => m.type === 'error');
-    if (errors.length)
-      throw new GpuError(
-        'invalid-input',
-        errors.map((m) => m.lineNum + ': ' + m.message).join('\n'),
-      );
+      'diagram',
+    );
     const pipe = (vertex: string, fragment: string, text = false) =>
       this.gpu.renderPipeline({
         layout: d.createPipelineLayout({
@@ -452,8 +467,8 @@ export class Painter {
           add(
             edge.hit,
             [box[0], box[1], box[2] - box[0], box[3] - box[1]],
-            options.backgroundColor,
-            edge.options.appearance === 'tag' ? edge.color : options.backgroundColor,
+            options.background,
+            edge.options.appearance === 'tag' ? edge.color : options.background,
             0,
           );
           text(edge.label, [box[0] + 3, box[1] + 3]);
@@ -555,47 +570,15 @@ export class Painter {
       paddingPx,
     };
   }
-  async prepare(
-    frame: kit.Preparation,
-    scene: Scene,
-    options: Style,
-    camera: kit.Camera2D,
-    selected: readonly DiagramItem[],
-    hover: DiagramItem | null,
-    shade: Shade | null,
-    pointer: Point | null,
-    overlay: Overlay | null = null,
-  ): Promise<Paint> {
+  async prepare(frame: kit.Preparation, state: DrawState): Promise<Paint> {
+    const { scene, style: options, camera, shade, pointer, overlay } = state;
     const pipelines = await this.pipelines(frame.format, options.msaa, shade);
     let geometry = this.current?.scene === scene ? this.current.geometry : undefined;
     if (!geometry) {
       geometry = this.build(scene, options, this.current?.geometry);
       this.current = { scene, geometry };
     }
-    const states = new Map<string, number>();
-    const flag = (key: string, bit: number) => states.set(key, (states.get(key) ?? 0) | bit);
-    for (const item of selected) flag(itemKey(item), 1);
-    if (hover && !overlay?.wire) flag(itemKey(hover), 2);
-    for (const item of overlay?.compatible ?? []) flag(itemKey(item), 4);
-    if (overlay?.target) flag(itemKey(overlay.target), 8);
-    if (overlay?.muted) flag(overlay.muted, 32);
-    const changed = new Set([...geometry.states.keys(), ...states.keys()]);
-    const words = new Uint32Array(
-      geometry.focus.bytes.buffer,
-      geometry.focus.bytes.byteOffset,
-      geometry.focus.size / 4,
-    );
-    for (const key of changed) {
-      const id = geometry.keys.get(key);
-      if (id !== undefined) {
-        const value = states.get(key) ?? 0;
-        if (words[id] !== value) {
-          words[id] = value;
-          geometry.focus.touch({ offset: id * 4, size: 4 });
-        }
-      }
-    }
-    geometry.states = states;
+    this.focus(geometry, state);
     const parameters = new Float32Array(64);
     this.animating =
       shade?.tick?.(parameters, {
@@ -604,7 +587,8 @@ export class Painter {
         viewport: frame.viewport,
       }) ?? false;
     const effect = frame.shade({ parameters, pointerPx: pointer }),
-      focus = frame.buffer(geometry.focus);
+      focus = frame.buffer(geometry.focus),
+      accent = options.selectedColor ?? options.hoverColor;
     const group = (
       origin: Point,
       data: kit.BufferData,
@@ -623,16 +607,16 @@ export class Painter {
         frame.timeMs,
         options.gridPitch,
         +options.grid,
-        +(options.motion !== 'reduce'),
+        +state.motion,
         textSize,
-        ...options.selectedColor,
+        ...accent,
         ...options.hoverColor,
         ...options.gridColor,
         options.outlineWidthPx,
-        options.selectionWidthPx,
+        options.selectedWidthPx,
         options.hoverWidthPx,
-        0,
-        ...options.backgroundColor,
+        +(options.selectedColor === null),
+        ...options.background,
         +(options.detail === 'auto'),
         options.gridMinSpacingPx,
         options.portSizePx,
@@ -653,7 +637,7 @@ export class Painter {
       geometry.paddingPx,
       options.portSizePx / 2 + 6,
       options.hoverWidthPx + 2,
-      options.selectionWidthPx + 2,
+      options.selectedWidthPx + 2,
     );
     const dx = frame.viewport.width / (2 * camera.scale[0]) + padding / camera.scale[0],
       dy = frame.viewport.height / (2 * camera.scale[1]) + padding / camera.scale[1];
@@ -677,7 +661,7 @@ export class Painter {
         records.push(
           ...p,
           ...color,
-          ...options.selectedColor,
+          ...accent,
           kind,
           1.5,
           kind === 4 ? 24 : 0,
@@ -698,9 +682,9 @@ export class Painter {
       if (overlay.box) {
         const b = overlay.box;
         add([...local([b[0], b[1]]), b[2] - b[0], b[3] - b[1]], 1, [
-          options.selectedColor[0],
-          options.selectedColor[1],
-          options.selectedColor[2],
+          accent[0],
+          accent[1],
+          accent[2],
           0.12,
         ]);
       }
@@ -709,7 +693,7 @@ export class Painter {
           add(
             [...local(overlay.wire[i - 1]), ...local(overlay.wire[i])],
             4,
-            overlay.invalid ? [0.95, 0.3, 0.24, 1] : options.selectedColor,
+            overlay.invalid ? [0.95, 0.3, 0.24, 1] : accent,
           );
       if (records.length)
         banks.push({
@@ -730,20 +714,7 @@ export class Painter {
           group: group(bank.origin, this.dummy, bank.anchors, bank.maxSize),
           pages: await frame.text({ runs: bank.runs }),
         });
-    let msaa: GPUTextureView | undefined;
-    if (options.msaa === 4) {
-      const t = this.multisample?.texture;
-      if (!t || t.width !== frame.width || t.height !== frame.height || t.format !== frame.format) {
-        this.multisample?.destroy();
-        this.multisample = this.gpu.texture({
-          size: [frame.width, frame.height],
-          format: frame.format,
-          sampleCount: 4,
-          usage: GPUTextureUsage.RENDER_ATTACHMENT,
-        });
-      }
-      msaa = frame.texture(this.multisample!).createView();
-    }
+    const msaa = this.attachments.prepare(frame, { msaa: options.msaa }).color;
     const gridLevel = Math.max(
       0,
       Math.ceil(
@@ -765,7 +736,7 @@ export class Painter {
         this.dummy,
       ),
       msaa,
-      background: options.backgroundColor,
+      background: options.background,
       drawCalls: 1 + banks.length + text.reduce((n, b) => n + b.pages.length, 0),
     };
   }
@@ -800,9 +771,47 @@ export class Painter {
     }
     pass.end();
   }
+  /** Write each item's selection, hover, and gesture flags where they changed. */
+  private focus(geometry: Geometry, state: DrawState): void {
+    const { selection, hover, overlay } = state,
+      last = this.focused;
+    if (
+      last?.geometry === geometry &&
+      last.selection === selection &&
+      last.hover === hover &&
+      last.overlay === overlay
+    )
+      return;
+    this.focused = { geometry, selection, hover, overlay };
+    const states = new Map<string, number>();
+    const flag = (key: string, bit: number) => states.set(key, (states.get(key) ?? 0) | bit);
+    for (const item of selection) flag(itemKey(item), 1);
+    if (hover && !overlay?.wire) flag(itemKey(hover), 2);
+    for (const item of overlay?.compatible ?? []) flag(itemKey(item), 4);
+    if (overlay?.target) flag(itemKey(overlay.target), 8);
+    if (overlay?.muted) flag(overlay.muted, 32);
+    const changed = new Set([...geometry.states.keys(), ...states.keys()]);
+    const words = new Uint32Array(
+      geometry.focus.bytes.buffer,
+      geometry.focus.bytes.byteOffset,
+      geometry.focus.size / 4,
+    );
+    for (const key of changed) {
+      const id = geometry.keys.get(key);
+      if (id !== undefined) {
+        const value = states.get(key) ?? 0;
+        if (words[id] !== value) {
+          words[id] = value;
+          geometry.focus.touch({ offset: id * 4, size: 4 });
+        }
+      }
+    }
+    geometry.states = states;
+  }
   destroy(): void {
-    this.multisample?.destroy();
+    this.attachments.destroy();
     this.variants.clear();
     this.current = undefined;
+    this.focused = undefined;
   }
 }

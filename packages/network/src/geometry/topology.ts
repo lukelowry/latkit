@@ -66,14 +66,20 @@ export interface Geometry {
   readonly native?: Geometry;
 }
 export interface Limits {
-  readonly maxVertices?: number;
-  readonly maxSegments?: number;
-  readonly cpuBytes?: number;
+  /** Drawn vertices, including path points. */
+  readonly vertices?: number;
+  /** Logical stroke segments before adaptive GPU tessellation. */
+  readonly segments?: number;
+  /** CPU memory for topology and paths. */
+  readonly geometryBytes?: number;
+  /** CPU memory for hit-test indexes; hover and pick fall back to scans past it. */
+  readonly pickingBytes?: number;
 }
 export const DEFAULT_LIMITS = Object.freeze({
-  maxVertices: 2_000_000,
-  maxSegments: 8_000_000,
-  cpuBytes: 256 * 1024 ** 2,
+  vertices: 2_000_000,
+  segments: 8_000_000,
+  geometryBytes: 256 * 1024 ** 2,
+  pickingBytes: 64 * 1024 ** 2,
 });
 export function vertexOptions(data: NetworkData, bank: VertexBank): VertexData {
   return bank.synthetic ?? data.vertices[bank.type];
@@ -224,7 +230,7 @@ export async function readGeometry(
   const schema = data.source.schema;
   const charge = (n: number) => {
     bytes += n;
-    if (bytes > limits.cpuBytes)
+    if (bytes > limits.geometryBytes)
       throw new GpuError('resource-limit', 'Network geometry exceeds its CPU budget');
   };
   const rowsOf = async (
@@ -252,7 +258,7 @@ export async function readGeometry(
     const definition = schema.types[type];
     if (!definition) throw new GpuError('invalid-input', 'Unknown vertex type: ' + type);
     if (definition.spatial) systems.add(definition.spatial.system);
-    if (vertexCount + read.rows.length > limits.maxVertices)
+    if (vertexCount + read.rows.length > limits.vertices)
       throw new GpuError('resource-limit', 'Network vertex limit exceeded');
     const addresses = new Addresses(read.rows, vertexCount, vertices.length);
     drawn.set(type, { index: read.index, addresses });
@@ -305,7 +311,7 @@ export async function readGeometry(
   const wiring = kit.wiring(schema, Object.keys(data.vertices), data.edges ?? {});
   for (const [type, options] of Object.entries(data.edges ?? {})) {
     const wire = wiring.get(type)!;
-    const pairs = new Segments(vertices, limits.maxSegments, segments);
+    const pairs = new Segments(vertices, limits.segments, segments);
     if (wire.kind === 'ends') {
       const [{ field: a }, { field: b }] = wire.ends;
       let index: Index | undefined;

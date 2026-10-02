@@ -36,9 +36,17 @@ selection. Home fits; arrows pan, or step between neighbors with `input: 'inspec
 Style options sit on the config beside the data:
 
 ```ts
-network.set({ edgeWidthPx: 2, showGraticule: true, daylight: true, sunTime: Date.now() });
+network.set({ edgeWidthPx: 2, graticule: true, daylight: true, sunTime: Date.now() });
 ```
 
+`markers`, `lines`, `poles`, `graticule`, and `earthAxis` show or hide each layer. The options every
+view shares, such as `background` and `selectedColor`, are listed under [views](views.md#style).
 Omitted domains fit the displayed values; give a `domain` for stable colors during playback.
+
+## Limits
+
+`limits: { vertices, segments, geometryBytes, pickingBytes }` bound what a network reads and keeps.
+Past `pickingBytes`, `pick` scans every item instead of building a hit-test index; give large
+networks more room, such as 512 MiB for a million vertices.
 
 [API](https://latkit.readthedocs.io/en/latest/api/reference/network/index.html)

@@ -8,6 +8,8 @@ docs/api/reference/
 *.log
 
 output/
+.bench/
+benchmark/.results/
 .playwright-cli/
 
 .impeccable/

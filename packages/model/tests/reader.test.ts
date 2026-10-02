@@ -97,3 +97,47 @@ it('rejects reads from a canceled scope', async () => {
     reader.destroy();
   }
 });
+
+it('reads one sampled field bound by name and by binding without reading it twice', async () => {
+  const sampled: Schema = {
+    axis: { name: 'time' },
+    types: { node: { fields: { signal: { type: 'float32', sampled: true } } } },
+  };
+  const frame = (f: number) => ({
+    kind: 'samples' as const,
+    index,
+    rows: { kind: 'range' as const, offset: 0, count: 4 },
+    firstFrame: f,
+    coordinates: Float64Array.of(f),
+    columns: {
+      signal: {
+        kind: 'numeric' as const,
+        offset: 0,
+        length: 4,
+        values: Float32Array.from({ length: 4 }, (_, i) => f * 10 + i),
+        rowStride: 1,
+        frameStride: 4,
+      },
+    },
+  });
+  const source = createData(sampled, [
+    { kind: 'rows', index, rows: { kind: 'range', offset: 0, count: 4 }, columns: {} },
+    frame(0),
+    frame(1),
+  ]);
+  const reader = createReader(),
+    scope = reader.open();
+  const blocks = [];
+  for await (const block of scope.fields({
+    source,
+    from: 'node',
+    window: { kind: 'frames', offset: 0, count: 2 },
+    fields: { value: 'signal', shade: { source, from: 'node', field: 'signal' } },
+  }))
+    blocks.push(block);
+  scope.close();
+  expect(blocks).toHaveLength(1);
+  expect(blocks[0].columns.shade).toEqual(blocks[0].columns.value);
+  expect(reader.stats().queries).toBe(1);
+  reader.destroy();
+});

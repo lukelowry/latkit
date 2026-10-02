@@ -2,7 +2,7 @@ import { type Gpu, kit } from '@latkit/gpu';
 import { rowCount, type Domain } from '@latkit/model';
 import { isEnvelope, type Chunk } from '../history.js';
 import { buffer, geometry, type Geometry, type Seams } from '../segments.js';
-import type { Settings } from '../config.js';
+import type { Style } from '../config.js';
 import type { Axes, Plot } from '../axes.js';
 import type { Pipelines } from './pipelines.js';
 export interface Image {
@@ -78,7 +78,7 @@ export function prepareChunk(
   chunk: Chunk,
   target: Image,
   plot: Plot,
-  settings: Settings,
+  settings: Style,
   seams: Seams,
   focus: boolean,
   parameters: Float32Array,
@@ -118,12 +118,18 @@ export function prepareChunk(
     const visibility = env ? undefined : page.columns.visible;
     const uniforms = new Float32Array(156),
       ints = new Uint32Array(uniforms.buffer),
-      base = binding.trace.baseColor ?? [0.23, 0.72, 0.88, 0.7];
+      base = binding.trace.baseColor ?? [0.23, 0.72, 0.88, 0.7],
+      width = binding.trace.widthPx ?? 1.25;
     uniforms.set([target.width, target.height, plot.width, plot.height], 0);
     uniforms.set(base, 4);
-    uniforms.set(settings.focusColor ?? [0, 0, 0, -1], 8);
+    uniforms.set(focus && settings.selectedColor ? settings.selectedColor : [0, 0, 0, -1], 8);
     uniforms.set(
-      [binding.trace.widthPx ?? 1.25, focus ? 1 : 0, 0, binding.trace.color ? 1 : 0],
+      [
+        focus ? Math.max(width, settings.selectedWidthPx) : width,
+        focus ? 1 : 0,
+        0,
+        binding.trace.color ? 1 : 0,
+      ],
       12,
     );
     ints.set(
@@ -287,7 +293,7 @@ export async function prepareScreen(
   x: Domain,
   y: Domain,
   layout: Axes,
-  settings: Settings,
+  settings: Style,
   at: number | undefined,
 ): Promise<Screen> {
   const p = layout.plot,
@@ -295,7 +301,7 @@ export async function prepareScreen(
   uniforms.set([frame.viewport.width, frame.viewport.height, 0, 0]);
   uniforms.set([p.x, p.y, p.width, p.height], 4);
   uniforms.set([0, 0, 1, 1], 8);
-  uniforms.set(settings.backgroundColor, 12);
+  uniforms.set(settings.background, 12);
   uniforms.set(
     [showFocus ? settings.unselectedAlpha : 1, showFocus ? 1 : 0, showHistory ? 1 : 0, 0],
     16,

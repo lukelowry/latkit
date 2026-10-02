@@ -1,5 +1,5 @@
 import type { FrameRanges, FrameRange } from './data.js';
-import { GpuError, type Gpu } from '@latkit/gpu';
+import { GpuError, kit, type DataHit, type Gpu } from '@latkit/gpu';
 import {
   assertIndex,
   bitAt,
@@ -18,12 +18,11 @@ import {
   type SampleColumn,
   type SampleRange,
   type SampleWindow,
-  type Data,
+  sameIndex,
 } from '@latkit/model';
 import type { Binding } from './bindings.js';
 import type { MonitorData } from './data.js';
 import type { Limits } from './options.js';
-import { yieldWork } from './async.js';
 export interface Chunk {
   readonly binding: Binding;
   readonly data: EnvelopeBlock | FieldsBlock;
@@ -45,25 +44,16 @@ export interface HistoryRequest {
   readonly onRows?: (count: number) => void;
   readonly frames?: FrameRanges;
   /** Draw only these rows, each narrowed to one field when it names one. */
-  readonly focus?: readonly Focus[];
-}
-export interface Focus {
-  readonly source: Data;
-  readonly index: Index;
-  readonly row: number;
-  readonly field?: string;
+  readonly focus?: readonly DataHit[];
 }
 /** The focused rows a binding draws, ascending; undefined when it draws none. */
-function focused(focus: readonly Focus[], item: Binding): RowSelection | undefined {
-  const matching = focus.filter(
-    (f) =>
-      f.source === item.source &&
-      f.index.type === item.trace.from &&
-      (!f.field || f.field === item.field),
-  );
-  if (!matching.length) return undefined;
-  const index = matching[0].index;
-  for (const f of matching) assertIndex(index, f.index);
+function focused(focus: readonly DataHit[], item: Binding): RowSelection | undefined {
+  const index = item.source.tables[item.trace.from]?.index;
+  // The index names the rows, so a selection survives appends that replace the Data value.
+  const matching = index
+    ? focus.filter((f) => sameIndex(f.index, index) && (!f.field || f.field === item.field))
+    : [];
+  if (!index || !matching.length) return undefined;
   const rows = Uint32Array.from(new Set(matching.map((f) => f.row))).sort();
   return rows.length === 1
     ? { kind: 'range', index, offset: rows[0], count: 1 }
@@ -96,9 +86,8 @@ async function* readHistory(
   request: Omit<HistoryRequest, 'frames'> & { readonly frames?: FrameRange },
 ): AsyncGenerator<Chunk> {
   const { gpu, reads, data, bindings, window, detail, limits, frames, focus } = request;
-  const signal = reads.signal;
-  let admitted = 0,
-    yieldedAt = performance.now();
+  const work = new kit.Work(reads.signal, Infinity, 3);
+  let admitted = 0;
   for (const item of bindings) {
     const pixels = Math.max(
       1,
@@ -223,10 +212,7 @@ async function* readHistory(
             }
           }
         } else yield* raw(reads, data, item, selection, range);
-        if (performance.now() - yieldedAt >= 3) {
-          await yieldWork(signal);
-          yieldedAt = performance.now();
-        }
+        await work.step();
       }
     }
     // Before the first coordinate, explicit context may still request an observation.

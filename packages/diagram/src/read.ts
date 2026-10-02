@@ -1,4 +1,3 @@
-import { Work } from './work.js';
 import { assertIndex, bitAt, numberAt, textAt, rowAt, rowCount } from '@latkit/model';
 import type { Column, FieldInput, FieldsBlock, Index, ReadScope } from '@latkit/model';
 import { GpuError, colormaps, kit, type RGBA } from '@latkit/gpu';
@@ -197,7 +196,7 @@ export async function readScene(
   options: Style,
   limits: Required<Limits>,
   measure: Measure,
-  work = new Work(reader.signal, limits.prepareMs),
+  work: kit.Work = new kit.Work(reader.signal, limits.layoutMs),
 ): Promise<Scene> {
   const check = () => work.check();
   const scene: Scene = {

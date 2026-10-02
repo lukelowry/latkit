@@ -26,9 +26,17 @@ const toData = (monitor: Monitor, point: readonly [number, number]) =>
       toData(point: readonly [number, number]): { coordinate: number; value: number } | null;
     }
   ).toData(point);
+/** What a call throws. */
+function failure(run: () => void): unknown {
+  try {
+    run();
+  } catch (error) {
+    return error;
+  }
+}
 /** Drive the pointer as input does. */
 const pointer = (monitor: Monitor, point: readonly [number, number] | null) =>
-  (monitor as unknown as { point(point: readonly [number, number] | null): void }).point(point);
+  (monitor as unknown as { pointer(point: readonly [number, number] | null): void }).pointer(point);
 /** One read the monitor asked of a scope: a block query, a fields request, or an extent. */
 interface Request {
   readonly kind: string;
@@ -133,7 +141,7 @@ describe('bounded monitor lifecycle', () => {
   it('drains native history, reuses images and never re-queries for a playhead', async () => {
     const h = await harness();
     await h.render();
-    expect(h.monitor.stats().traces).toBe(4);
+    expect(h.monitor.stats().rows).toBe(4);
     expect(h.renderer.pending).toBeUndefined();
     const reads = h.gpu.stats().queries,
       uploads = h.gpu.stats().uploadedBytes;
@@ -359,15 +367,39 @@ it('formats fractional and large-offset ticks without duplicate labels', () => {
   expect(large.items.length).toBeGreaterThan(2);
 });
 
-it('suspends automatic hover when refinement exceeds its soft budget', async () => {
+it('reports exact hover a frame later and reuses it while the pointer rests', async () => {
+  const h = await harness(undefined, { hover: 'on', pickRadiusPx: 200 });
+  const hovered = vi.fn();
+  h.monitor.on('hover', hovered);
+  await h.render();
+  pointer(h.monitor, [256, 128]);
+  await h.render();
+  await new Promise((r) => setTimeout(r, 10));
+  expect(hovered).toHaveBeenCalledTimes(1);
+  expect(hovered).toHaveBeenCalledWith(expect.objectContaining({ trace: 'signal' }));
+  const reads = h.gpu.stats().queries;
+  await h.render(false);
+  await h.render(false);
+  expect(h.gpu.stats().queries).toBe(reads);
+  expect(h.monitor.stats().hover).toBe('active');
+  pointer(h.monitor, null);
+  await Promise.resolve();
+  expect(hovered).toHaveBeenLastCalledWith(null);
+  h.close();
+});
+
+it('suspends automatic hover when a search exceeds its budget', async () => {
   const h = await harness(new SignalSource(256, 128), { hover: 'auto', hoverBudgetMs: 0.000001 });
   await h.render();
   pointer(h.monitor, [256, 128]);
-  await new Promise((r) => setTimeout(r, 80));
+  await h.render(false);
   expect(h.monitor.stats().hover).toBe('budget');
+  // The dropped search finishes on its own.
+  await new Promise((r) => setTimeout(r, 50));
   const reads = h.gpu.stats().queries;
   pointer(h.monitor, [258, 128]);
-  await new Promise((r) => setTimeout(r, 60));
+  await h.render(false);
+  await new Promise((r) => setTimeout(r, 20));
   expect(h.gpu.stats().queries).toBe(reads);
   h.monitor.set({ hover: 'off' });
   expect(h.monitor.stats().hover).toBe('off');
@@ -489,7 +521,7 @@ it('replays prepared queue entries after another renderer cancels submission', a
     }),
   ).rejects.toThrow('cancel frame');
   await h.render();
-  expect(h.monitor.stats().traces).toBe(16);
+  expect(h.monitor.stats().rows).toBe(16);
   expect(h.renderer.pending).toBeUndefined();
   h.close();
 });
@@ -633,7 +665,7 @@ it('reprojects cached history after a domain change without rereading observatio
   await h.render();
   expect(h.gpu.stats().queries).toBe(queries);
   expect(h.monitor.camera.values).toEqual([-4, 4]);
-  expect(h.monitor.stats().traces).toBe(4);
+  expect(h.monitor.stats().rows).toBe(4);
   h.close();
 });
 
@@ -682,7 +714,7 @@ it('tracks independent sampled fields without dropping trace counts or rereading
           q.window.offset === source.firstFrame + 32,
       ),
     ).toBe(true);
-    expect(h.monitor.stats().traces).toBe(4);
+    expect(h.monitor.stats().rows).toBe(4);
   }
   h.close();
 });
@@ -831,5 +863,96 @@ it('reads newly exposed existing observations when a follow window extends cache
   const values = Array.from({ length: 66 }, (_, i) => source.value(i % 2, 32 + Math.floor(i / 2)));
   expect(h.monitor.camera.values[0]).toBeCloseTo(Math.min(...values), 10);
   expect(h.monitor.camera.values[1]).toBeCloseTo(Math.max(...values), 10);
+  h.close();
+});
+it('keeps selected rows through appends and prunes them with their row space', async () => {
+  const source = new SignalSource(3, 32);
+  const h = await harness(source);
+  const selected = vi.fn();
+  h.monitor.on('select', selected);
+  await h.render();
+  const row = { source: source.data, index: source.index, row: 1 };
+  expect(
+    failure(() => h.monitor.select([{ ...row, index: { ...source.index, source: 'elsewhere' } }])),
+  ).toMatchObject({ code: 'conflict' });
+  h.monitor.select([row]);
+  await h.render();
+  const before = h.requests.length;
+  source.append(4);
+  h.monitor.set({ source: source.data });
+  await h.render();
+  expect(h.monitor.selection).toEqual([row]);
+  expect(
+    h.requests
+      .slice(before)
+      .some((q) => q.rows?.kind === 'range' && q.rows.offset === 1 && q.rows.count === 1),
+  ).toBe(true);
+  const replaced = Object.assign(new SignalSource(3, 32), {
+    index: { source: 'replacement', type: 'signal', version: 'rows0' },
+  });
+  h.monitor.set({ source: replaced.data });
+  await h.render();
+  await Promise.resolve();
+  expect(h.monitor.selection).toEqual([]);
+  expect(selected).toHaveBeenCalledExactlyOnceWith([]);
+  h.close();
+});
+it('frames readings once and reveals one outside the window', async () => {
+  const h = await harness();
+  await h.render();
+  const [hit] = await h.monitor.pick([256, 128], { radiusPx: 300, limit: 1 });
+  h.monitor.fit([hit]);
+  await h.render();
+  const framed = h.monitor.camera;
+  expect(framed).toMatchObject({ fit: false, follow: null });
+  expect((framed.window[0] + framed.window[1]) / 2).toBeCloseTo(hit.coordinate, 9);
+  expect(framed.values[0]).toBeLessThan(hit.value);
+  expect(framed.values[1]).toBeGreaterThan(hit.value);
+  h.monitor.set({ camera: { window: [10, 11], values: [-2, 2] } });
+  await h.render();
+  expect(h.monitor.locate(hit)![0]).toBeLessThan(0);
+  h.monitor.reveal(hit);
+  const shown = h.monitor.camera;
+  expect((shown.window[0] + shown.window[1]) / 2).toBeCloseTo(hit.coordinate, 9);
+  expect(shown.window[1] - shown.window[0]).toBeCloseTo(1, 9);
+  h.close();
+});
+it('rejects unknown options and limits, and invalid cameras', async () => {
+  const h = await harness();
+  expect(() => h.monitor.set({ limits: { prepareMs: 3 } as never })).toThrow(
+    'Unknown monitor limit',
+  );
+  expect(() => h.monitor.set({ focusColor: [0, 1, 0, 1] } as never)).toThrow(
+    'Unknown monitor option',
+  );
+  h.monitor.set({ selectedColor: [0, 1, 0, 1], limits: { frameMs: 2, observationsPerFrame: 9 } });
+  expect(failure(() => h.monitor.set({ camera: { window: [2, 1] } }))).toMatchObject({
+    code: 'invalid-input',
+  });
+  expect(failure(() => h.monitor.set({ camera: { follow: -1 } }))).toMatchObject({
+    code: 'invalid-input',
+  });
+  await h.render();
+  expect(h.monitor.stats()).toMatchObject({ rows: 4, visible: true, refining: false });
+  h.close();
+});
+it('drops selected readings whose trace is no longer drawn', async () => {
+  const h = await harness(undefined, {
+    traces: {
+      signal: { from: 'signal', field: 'value' },
+      other: { from: 'signal', field: 'other' },
+    },
+  });
+  const selected = vi.fn();
+  h.monitor.on('select', selected);
+  await h.render();
+  const [hit] = await h.monitor.pick([256, 128], { radiusPx: 300, limit: 1 });
+  const row = { source: h.source.data, index: h.source.index, row: 2, field: 'other' };
+  h.monitor.select([hit, row]);
+  h.monitor.set({ traces: { [hit.trace]: null } });
+  await h.render();
+  await Promise.resolve();
+  expect(h.monitor.selection).toEqual(hit.trace === 'other' ? [] : [row]);
+  expect(selected).toHaveBeenCalledOnce();
   h.close();
 });

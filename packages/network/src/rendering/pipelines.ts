@@ -93,48 +93,35 @@ async function create(
       uniform(6, C),
     ],
   });
-  const tessModule = d.createShaderModule({
-    label: 'network adaptive geodesics',
-    code: common + curve + kit.strokeShader() + tessellate,
-  });
   const label = d.createBindGroupLayout({ entries: [uniform(0, V), storage(1, V)] });
   const bg = d.createBindGroupLayout({ entries: [uniform(0, V | F)] });
-  const prep = d.createShaderModule({
-    label: 'network field preparation',
-    code:
+  const [tessModule, prep, shape, bgModule, axisModule, text] = await Promise.all([
+    gpu.shaderModule(
+      common + curve + kit.strokeShader() + tessellate,
+      'network adaptive geodesics',
+    ),
+    gpu.shaderModule(
       common +
-      kit.scaleShader() +
-      kit.fieldShader({ group: 0 }) +
-      kit.colormapShader({ group: 2 }) +
-      prepare,
-  });
-  const shape = d.createShaderModule({
-    label: 'network geometry',
-    code:
+        kit.scaleShader() +
+        kit.fieldShader({ group: 0 }) +
+        kit.colormapShader({ group: 2 }) +
+        prepare,
+      'network field preparation',
+    ),
+    gpu.shaderModule(
       common +
-      curve +
-      kit.strokeShader() +
-      kit.shadeShader({ group: 0, binding: 6 }) +
-      kit.outputShader() +
-      draw +
-      shade,
-  });
-  const bgModule = d.createShaderModule({ label: 'network surface', code: common + background });
-  const axisModule = d.createShaderModule({ label: 'network earth axis', code: common + axis });
-  const text = d.createShaderModule({
-    label: 'network shared text',
-    code: common + kit.textShader({ group: 1 }) + labels,
-  });
-  for (const module of [prep, shape, bgModule, text, axisModule, tessModule]) {
-    const info = await module.getCompilationInfo();
-    const errors = info.messages.filter((message) => message.type === 'error');
-    if (errors.length)
-      throw new Error(
-        errors
-          .map((message) => String(message.lineNum) + ':' + message.linePos + ' ' + message.message)
-          .join('; '),
-      );
-  }
+        curve +
+        kit.strokeShader() +
+        kit.shadeShader({ group: 0, binding: 6 }) +
+        kit.outputShader() +
+        draw +
+        shade,
+      'network geometry',
+    ),
+    gpu.shaderModule(common + background, 'network surface'),
+    gpu.shaderModule(common + axis, 'network earth axis'),
+    gpu.shaderModule(common + kit.textShader({ group: 1 }) + labels, 'network shared text'),
+  ]);
   const computeLayout = d.createPipelineLayout({
     bindGroupLayouts: [gpu.fieldLayout, compute, gpu.colormapLayout],
   });

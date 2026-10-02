@@ -1,10 +1,23 @@
-import { GpuError, kit, type Gpu, type Shade, type View } from '@latkit/gpu';
-import type { Data } from '@latkit/model';
+import {
+  GpuError,
+  kit,
+  viewStyle,
+  type Gpu,
+  type ItemEvents,
+  type ItemView,
+  type ItemViewConfig,
+  type Point,
+  type SetOptions,
+  type Shade,
+  type ViewInput,
+  type ViewStats,
+} from '@latkit/gpu';
+import { sameIndex, type Data } from '@latkit/model';
 import type { Camera, Projection } from './camera.js';
 import { DEFAULT_CAMERA, checkCamera, fit, mixCamera, move, zoom } from './camera.js';
 import {
+  FIELD_OPTIONS,
   networkData,
-  sameItem,
   type EdgeOptions,
   type NetworkData,
   type NetworkItem,
@@ -22,80 +35,46 @@ import {
   type VertexBank,
 } from './geometry/topology.js';
 import { indexKey } from './geometry/rows.js';
-import { attachInput, type NetworkInput } from './input.js';
-import { DEFAULTS, resolveStyle, type Style, type StyleOptions } from './options.js';
-import { HOVER_EXHAUSTED, Picking, type PickGeometry } from './picking.js';
+import { arrow, listen, type Gestures } from './input.js';
+import { DEFAULTS, resolveStyle, type NetworkStyle, type Style } from './options.js';
+import { Picking, type PickGeometry } from './picking.js';
 import { readFields, resolveDomains, type FieldRead } from './rendering/fields.js';
 import { Labels } from './rendering/labels.js';
 import { Paths } from './geometry/paths.js';
 import { Painter, type Paint, type Reads } from './rendering/painter.js';
 import { pipelines } from './rendering/pipelines.js';
 
-type Point = readonly [number, number];
-export interface NetworkConfig extends kit.ViewConfig, StyleOptions {
-  /** Borrowed: destroy never closes it. */
-  readonly source: Data;
+export interface NetworkConfig extends ItemViewConfig, NetworkStyle {
   /** Drawn types by model type name. */
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;
   readonly paths?: Readonly<Record<string, PathOptions>>;
   /** Where the camera starts; `network.camera` is where it is. Fits the data by default. */
   readonly camera?: Partial<Camera>;
-  /** Pointer and keyboard control of the canvas; `navigate` by default. */
-  readonly input?: NonNullable<NetworkInput['mode']> | NetworkInput;
-  /** WGSL that recolors every fragment. */
-  readonly shade?: Shade | null;
   readonly limits?: Limits;
 }
-export interface NetworkEvents extends kit.ViewEvents {
-  /** The item under the pointer. */
-  readonly hover: NetworkItem | null;
-  /** The user changed the selection. */
-  readonly select: readonly NetworkItem[];
-  readonly contextmenu: kit.ContextMenu<NetworkItem>;
-  /** The presented camera changed. */
-  readonly camera: Camera;
-}
-export interface NetworkStats {
+export type NetworkEvents = ItemEvents<NetworkItem, NetworkItem, Camera>;
+export interface NetworkStats extends ViewStats {
   readonly vertices: number;
   readonly edges: number;
   /** Logical stroke segments before adaptive GPU tessellation. */
   readonly segments: number;
   readonly geometryBytes: number;
-  readonly pickingBytes: number;
-  readonly drawCalls: number;
-  readonly prepareMs: number;
-  readonly frames: number;
-  readonly hover: kit.HoverState;
-  /** Hover search CPU time in the submitted frame; zero when skipped. */
-  readonly hoverMs: number;
 }
 type Records = 'vertices' | 'edges' | 'paths';
 type Merged = 'camera' | 'input' | 'limits';
-export interface Network extends View<NetworkConfig, NetworkEvents> {
-  set(
-    patch: kit.Patch<NetworkConfig, 'vertices' | 'edges' | 'paths', 'camera' | 'input' | 'limits'>,
-    options?: kit.SetOptions,
-  ): void;
-  /** Where the camera is. `set({ camera })` moves it. */
-  readonly camera: Camera;
+export interface Network extends ItemView<
+  NetworkConfig,
+  NetworkItem,
+  NetworkItem,
+  Camera,
+  NetworkEvents
+> {
+  set(patch: kit.Patch<NetworkConfig, Records, Merged>, options?: SetOptions): void;
   /** Projections the data supports: the globe needs geographic positions. */
   readonly projections: Readonly<Record<Projection, boolean>>;
-  readonly selection: readonly NetworkItem[];
-  select(items: readonly NetworkItem[]): void;
-  /** Items near a canvas point, nearest first. */
-  pick(
-    point: readonly [x: number, y: number],
-    options?: { readonly radiusPx?: number },
-  ): Promise<readonly NetworkItem[]>;
-  /** An item's canvas point, or null when it is not drawn. */
-  locate(item: NetworkItem): readonly [x: number, y: number] | null;
   /** The item, the edges at a vertex or the vertices of an edge, and itself. */
   neighborhood(item: NetworkItem): readonly NetworkItem[];
-  /** Frame the items, or follow all the data. */
-  fit(items?: readonly NetworkItem[], options?: kit.SetOptions): void;
-  /** Pan just enough to show the item. */
-  reveal(item: NetworkItem, options?: kit.SetOptions): void;
   stats(): NetworkStats;
 }
 
@@ -113,24 +92,12 @@ interface Presented {
   readonly data: NetworkData;
   readonly options: Style;
 }
-interface PreparedHover {
-  readonly item: NetworkItem | null;
-  readonly state: NetworkStats['hover'];
-  readonly ms: number;
-  readonly settleAt: number;
-  readonly version: number;
-  readonly pointerVersion: number;
-}
 interface Pending extends Presented {
-  readonly hover: PreparedHover;
   readonly paint: Paint;
-  readonly prepareMs: number;
-  readonly finishedAnimation?: object;
 }
 interface Resolved {
   readonly config: NetworkConfig;
   readonly data: NetworkData;
-  readonly style: Style;
   readonly limits: Required<Limits>;
 }
 const KEYS = new Set([
@@ -145,6 +112,7 @@ const KEYS = new Set([
   'input',
   'shade',
   'limits',
+  ...Object.keys(viewStyle),
   ...Object.keys(DEFAULTS),
 ]);
 function resolve(config: NetworkConfig): Resolved {
@@ -175,11 +143,15 @@ function resolve(config: NetworkConfig): Resolved {
     if (path.curve && !['linear', 'geodesic'].includes(path.curve))
       throw new GpuError('invalid-input', 'Invalid path curve');
   }
+  for (const key of Object.keys(config.limits ?? {}))
+    if (!(key in DEFAULT_LIMITS))
+      throw new GpuError('invalid-input', 'Unknown network limit: ' + key);
   const limits = { ...DEFAULT_LIMITS, ...config.limits };
   for (const value of Object.values(limits))
     if (!Number.isSafeInteger(value) || value < 1)
       throw new GpuError('invalid-input', 'Invalid network limit');
-  return { config, data, style: resolveStyle(config), limits };
+  resolveStyle(config, viewStyle);
+  return { config, data, limits };
 }
 /** Whether drawn rows or their wiring differ, which rebuilds geometry. */
 function rewired(a: NetworkData, b: NetworkData): boolean {
@@ -203,121 +175,106 @@ function rewired(a: NetworkData, b: NetworkData): boolean {
   );
 }
 
-class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Merged> {
+class NetworkView
+  extends kit.BaseItemView<
+    NetworkConfig,
+    NetworkEvents,
+    NetworkItem,
+    NetworkItem,
+    Camera,
+    Records,
+    Merged
+  >
+  implements Network
+{
+  protected readonly framed = ['projection', 'center', 'scale', 'pitch', 'bearing'] as const;
   private data: NetworkData;
   private style: Style;
   private limits: Required<Limits>;
   private resolved?: Resolved;
-  private view: Camera;
-  private placed = false;
-  private shade: Shade | null;
-  private shadeSerial = 0;
   private geometry?: Geometry;
-  private presented?: Presented;
+  /** The latest drawn frame: what pick, locate, and selection see. */
+  private shown?: Presented;
   private pendingFrame?: Pending;
-  private reported?: Camera;
+  /** This frame's geometry while its camera is framed. */
+  private preparing?: { readonly geometry: Geometry; readonly picking: PickGeometry };
   private readonly painter: Painter;
   private readonly picking = new Picking();
   private readonly paths = new Paths();
-  private chosen: readonly NetworkItem[] = Object.freeze([]);
-  private chosenVersion = 0;
-  private hover: NetworkItem | null = null;
-  private pointer: Point | null = null;
-  private pointerVersion = 0;
-  private hoverVersion = 0;
-  private hoverSuspended = false;
-  private hoverUntil = 0;
-  private hoverWake?: ReturnType<typeof setTimeout>;
-  private shadeAnimating = false;
-  private previousTime?: number;
-  private clock = 0;
-  private animation?: { from: Camera; to: Camera; start: number; duration: number };
   private readonly labels = new Labels();
-  private currentStats: NetworkStats = {
-    vertices: 0,
-    edges: 0,
-    segments: 0,
-    geometryBytes: 0,
-    pickingBytes: 0,
-    drawCalls: 0,
-    prepareMs: 0,
-    frames: 0,
-    hover: 'idle',
-    hoverMs: 0,
+  private shadeAnimating = false;
+  private orbitTime?: number;
+  private counts = { vertices: 0, edges: 0, segments: 0, geometryBytes: 0, drawCalls: 0 };
+  private readonly gestures: Gestures = {
+    pan: (dx, dy) => this.pan(dx, dy),
+    rotate: (dx, dy) => {
+      const camera = this.camera;
+      this.moveCamera(
+        {
+          projection: camera.projection === 'flat' ? 'tilt' : camera.projection,
+          bearing: camera.bearing + dx * 0.4,
+          pitch: Math.max(0, Math.min(80, camera.pitch - dy * 0.25)),
+          orbit: false,
+        },
+        {},
+      );
+    },
+    hits: (point) => this.hit(point, this.viewStyle.pickRadiusPx),
+    locate: (item) => this.locate(item),
+    neighborhood: (item) => this.neighborhood(item),
+    reveal: (item) => this.reveal(item),
+    selection: () => this.selection,
+    choose: (items) => this.choose(items),
   };
   constructor(gpu: Gpu, config: NetworkConfig) {
     super(gpu, config, {
       records: ['vertices', 'edges', 'paths'],
       merged: ['camera', 'input', 'limits'],
+      fields: FIELD_OPTIONS,
     });
     const resolved = resolve(this.config);
     this.data = resolved.data;
-    this.style = resolved.style;
     this.limits = resolved.limits;
-    const camera = config.camera ?? {};
-    this.view = checkCamera({
-      ...DEFAULT_CAMERA,
-      ...camera,
-      fit: camera.fit ?? !('center' in camera || 'scale' in camera),
-      orbit: !!camera.orbit && !this.reduced(),
-    });
-    if (this.view.orbit && this.view.projection === 'flat')
-      this.view = checkCamera({ ...this.view, projection: 'tilt', pitch: 45 });
-    this.shade = config.shade ?? null;
+    this.style = resolveStyle(this.config, this.viewStyle);
     this.painter = new Painter(gpu);
     this.start();
   }
 
-  get camera(): Camera {
-    return this.view;
-  }
   /** Globe needs geographic positions, which the model's spatial system declares once read. */
   get projections(): Readonly<Record<Projection, boolean>> {
-    return { flat: true, tilt: true, globe: this.presented?.geometry.geographic ?? false };
-  }
-  get selection(): readonly NetworkItem[] {
-    return this.chosen;
-  }
-  select(items: readonly NetworkItem[]): void {
-    this.live();
-    if (this.defer('selection', () => this.select(items))) return;
-    for (const item of items)
-      if (
-        item.source !==
-        (item.kind === 'path'
-          ? (this.data.paths?.[item.index.type]?.source ?? this.data.source)
-          : this.data.source)
-      )
-        throw new GpuError('conflict', 'Selection belongs to another source');
-    this.chosen = Object.freeze([...items]);
-    this.chosenVersion++;
-    this.invalidate();
-  }
-  pick(
-    point: Point,
-    options: { readonly radiusPx?: number } = {},
-  ): Promise<readonly NetworkItem[]> {
-    return new Promise((resolve) => {
-      this.live();
-      resolve(this.hit(point, options.radiusPx));
-    });
-  }
-  locate(item: NetworkItem): Point | null {
-    const p = this.presented;
-    return p ? p.picking.locate(item, p.data, p.camera, p.viewport, p.height) : null;
+    return { flat: true, tilt: true, globe: this.shown?.geometry.geographic ?? false };
   }
   neighborhood(item: NetworkItem): readonly NetworkItem[] {
-    return this.presented?.geometry.adjacency.neighborhood(item, this.presented.data) ?? [];
+    return this.shown?.geometry.adjacency.neighborhood(item, this.shown.data) ?? [];
   }
-  fit(items?: readonly NetworkItem[], options: kit.SetOptions = {}): void {
-    this.live();
-    const shown = this.presented;
-    if (!shown) {
-      this.moveCamera({ fit: !items?.length }, options);
-      return;
-    }
-    let bounds = shown.picking.bounds;
-    if (items?.length) {
+  stats(): NetworkStats {
+    return {
+      ...super.stats(),
+      ...this.counts,
+      pickingBytes: this.shown?.picking.bytes ?? 0,
+    };
+  }
+
+  protected defaultCamera(): Camera {
+    return DEFAULT_CAMERA;
+  }
+  /** Orbiting needs motion and a tilt: turning it on tilts a flat camera. */
+  protected resolveCamera(camera: Camera, current: Camera | undefined): Camera {
+    let next: Camera = { ...camera, orbit: camera.orbit && !this.reducedMotion };
+    if (next.orbit && !current?.orbit && next.projection === 'flat')
+      next = { ...next, projection: 'tilt', pitch: 45 };
+    return checkCamera(next);
+  }
+  protected framing(
+    items: readonly NetworkItem[] | undefined,
+    camera: Camera,
+    viewport: kit.Viewport,
+  ): Partial<Camera> | undefined {
+    const prepared = this.preparing;
+    if (!prepared) return undefined;
+    const { geometry, picking } = prepared;
+    let bounds = picking.bounds;
+    if (items) {
       let minX = Infinity,
         minY = Infinity,
         maxX = -Infinity,
@@ -325,68 +282,93 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
       for (const item of items.flatMap((item) =>
         item.kind === 'vertex'
           ? [item]
-          : this.neighborhood(item).filter((n) => n.kind === 'vertex'),
+          : geometry.adjacency
+              .neighborhood(item, this.data)
+              .filter((near) => near.kind === 'vertex'),
       )) {
-        const found = shown.geometry.lookup.get(indexKey(item.index))?.get(item.row);
-        if (found) {
-          const [x, y] = shown.picking.position(found.value, found.offset);
-          minX = Math.min(minX, x);
-          minY = Math.min(minY, y);
-          maxX = Math.max(maxX, x);
-          maxY = Math.max(maxY, y);
-        }
+        const found = geometry.lookup.get(indexKey(item.index))?.get(item.row);
+        if (!found) continue;
+        const [x, y] = picking.position(found.value, found.offset);
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
       }
       if (minX <= maxX) bounds = [minX, minY, maxX, maxY];
     }
-    const framed = fit(bounds, shown.viewport, this.view, this.style);
-    this.moveCamera({ ...framed, fit: !items?.length }, options);
+    const { center, scale, pitch, bearing } = fit(bounds, viewport, camera, this.style);
+    return { center, scale, pitch, bearing };
   }
-  reveal(item: NetworkItem, options: kit.SetOptions = {}): void {
-    this.live();
-    const point = this.locate(item),
-      shown = this.presented;
-    if (!point || !shown) return;
-    const inset = this.style.revealPaddingPx;
-    if (
-      point[0] < inset ||
-      point[0] > shown.viewport.width - inset ||
-      point[1] < inset ||
-      point[1] > shown.viewport.height - inset
-    ) {
-      const { center } = move(
-        this.view,
-        shown.viewport.width / 2 - point[0],
-        shown.viewport.height / 2 - point[1],
-      );
-      this.moveCamera({ center }, options);
-    }
+  protected interpolate(from: Camera, to: Camera, t: number): Camera | undefined {
+    return from.projection === to.projection ? mixCamera(from, to, t) : undefined;
   }
-  stats(): NetworkStats {
-    return {
-      ...this.currentStats,
-      pickingBytes: this.presented?.picking.bytes ?? 0,
-      hover:
-        this.style.hover === 'off'
-          ? 'off'
-          : this.hoverSuspended
-            ? 'budget'
-            : this.currentStats.hover,
-    };
+  protected panned(camera: Camera, dx: number, dy: number): Camera {
+    return { ...move(camera, dx, dy), orbit: false };
+  }
+  protected zoomed(camera: Camera, factor: number, anchor: Point, viewport: kit.Viewport): Camera {
+    return { ...zoom(camera, factor, anchor, viewport), orbit: false };
+  }
+  protected position(item: NetworkItem): Point | null {
+    const p = this.shown;
+    return p ? p.picking.locate(item, p.data, p.camera, p.viewport, p.height) : null;
+  }
+  protected identify(item: NetworkItem): string {
+    return item.kind + ':' + indexKey(item.index) + ':' + item.row;
+  }
+  protected accept(item: NetworkItem): void {
+    const source =
+      item.kind === 'path'
+        ? (this.data.paths?.[item.index.type]?.source ?? this.data.source)
+        : this.data.source;
+    const table = source.tables[item.index.type];
+    if (!table || !sameIndex(table.index, item.index))
+      throw new GpuError('conflict', 'Selection belongs to another source');
+  }
+  protected contains(item: NetworkItem): boolean {
+    const geometry = this.shown?.geometry;
+    if (!geometry) return false;
+    if (item.kind === 'vertex') return !!geometry.lookup.get(indexKey(item.index))?.get(item.row);
+    return geometry.edges.some(
+      (bank) =>
+        (bank.kind ?? 'edge') === item.kind &&
+        sameIndex(bank.index, item.index) &&
+        (bank.rows.kind === 'range'
+          ? item.row >= bank.rows.offset && item.row < bank.rows.offset + bank.rows.count
+          : bank.rows.values.includes(item.row)),
+    );
+  }
+  protected hits(point: Point, radiusPx: number): readonly NetworkItem[] {
+    return this.hit(point, radiusPx);
+  }
+  protected compileShade(shade: Shade | null, format: GPUTextureFormat): Promise<unknown> {
+    return pipelines(this.gpu, format, this.style.msaa, shade?.wgsl ?? kit.defaultShade);
+  }
+  protected listen(
+    canvas: HTMLCanvasElement,
+    input: kit.CanvasInput,
+    mode: NonNullable<ViewInput['mode']>,
+  ): void {
+    listen(canvas, input, mode, this.gestures);
+  }
+  protected key(event: KeyboardEvent, mode: NonNullable<ViewInput['mode']>): boolean {
+    return arrow(event, mode, this.gestures);
   }
 
   protected check(config: NetworkConfig): void {
+    super.check(config);
     this.resolved = resolve(config);
   }
   protected configure(previous: NetworkConfig, next: NetworkConfig): void {
     const resolved = this.resolved?.config === next ? this.resolved : resolve(next);
     this.resolved = undefined;
-    const before = this.data,
-      bound =
-        previous.source !== next.source ||
-        previous.vertices !== next.vertices ||
-        previous.edges !== next.edges ||
-        previous.paths !== next.paths;
-    if (bound) this.data = resolved.data;
+    const before = this.data;
+    if (
+      previous.source !== next.source ||
+      previous.vertices !== next.vertices ||
+      previous.edges !== next.edges ||
+      previous.paths !== next.paths
+    )
+      this.data = resolved.data;
     if (
       rewired(before, this.data) ||
       Object.entries(resolved.limits).some(
@@ -394,155 +376,18 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
       )
     ) {
       this.geometry = undefined;
-      this.placed = previous.source === next.source && this.placed;
-      if (previous.source !== next.source) this.clearSelection();
+      this.pruneSelection();
     }
     this.limits = resolved.limits;
-    const style = this.style;
-    this.style = resolved.style;
-    if (
-      before !== this.data ||
-      style.hover !== this.style.hover ||
-      style.hoverBudgetMs !== this.style.hoverBudgetMs
-    )
-      this.resetHover();
-    if (previous.shade !== next.shade) this.compile(next.shade ?? null);
+    this.style = resolveStyle(next, this.viewStyle);
     this.invalidate();
   }
-  /** Null resets the camera to fit the data. */
-  private desiredCamera?: Camera;
-  protected moveCamera(patch: Partial<Camera> | null, options: kit.SetOptions): void {
-    const given = (
-      patch === null
-        ? DEFAULT_CAMERA
-        : Object.fromEntries(
-            Object.entries(patch).map(([key, value]) => [
-              key,
-              value ?? DEFAULT_CAMERA[key as keyof Camera],
-            ]),
-          )
-    ) as Partial<Camera>;
-    const moved = ['projection', 'center', 'scale', 'pitch', 'bearing'].some((key) => key in given);
-    let target = checkCamera({
-      ...(this.desiredCamera ?? this.view),
-      ...given,
-      fit: given.fit ?? (moved ? false : this.view.fit),
-      orbit: (given.orbit ?? this.view.orbit) && !this.reduced(),
-    });
-    if (this.deferCamera(patch, options)) {
-      this.desiredCamera = target;
-      return;
-    }
-    this.desiredCamera = undefined;
-    if (target.orbit && !this.view.orbit) {
-      this.previousTime = undefined;
-      if (target.projection === 'flat')
-        target = checkCamera({ ...target, projection: 'tilt', pitch: 45 });
-    }
-    if (target.projection !== this.view.projection) this.resetHover();
-    if (
-      options.animate &&
-      !this.reduced() &&
-      this.placed &&
-      target.projection === this.view.projection
-    )
-      this.animation = {
-        from: this.view,
-        to: target,
-        start: this.clock,
-        duration: this.style.animationMs,
-      };
-    else {
-      this.view = target;
-      this.animation = undefined;
-    }
-    this.invalidate();
+  protected get animating(): boolean {
+    return super.animating || this.camera.orbit || this.shadeAnimating;
   }
-  protected attach(canvas: HTMLCanvasElement): () => void {
-    return attachInput(canvas, (this.config.input ?? {}) as NetworkInput, {
-      pointer: (point) => this.point(point),
-      pan: (dx, dy) =>
-        this.moveCamera({ ...move(this.desiredCamera ?? this.view, dx, dy), orbit: false }, {}),
-      rotate: (dx, dy) =>
-        this.moveCamera(
-          {
-            projection:
-              (this.desiredCamera ?? this.view).projection === 'flat'
-                ? 'tilt'
-                : (this.desiredCamera ?? this.view).projection,
-            bearing: (this.desiredCamera ?? this.view).bearing + dx * 0.4,
-            pitch: Math.max(0, Math.min(80, (this.desiredCamera ?? this.view).pitch - dy * 0.25)),
-            orbit: false,
-          },
-          {},
-        ),
-      zoom: (factor, anchor) => {
-        const vp = this.presented?.viewport;
-        if (vp)
-          this.moveCamera(
-            {
-              ...zoom(
-                this.desiredCamera ?? this.view,
-                factor,
-                anchor ?? [vp.width / 2, vp.height / 2],
-                vp,
-              ),
-              orbit: false,
-            },
-            {},
-          );
-      },
-      fit: () => this.fit(undefined, { animate: true }),
-      hit: (point) => this.hit(point),
-      locate: (item) => this.locate(item),
-      neighborhood: (item) => this.neighborhood(item),
-      reveal: (item) => this.reveal(item),
-      selection: () => this.chosen,
-      choose: (items) => {
-        this.select(items);
-        this.emit('select', this.chosen);
-      },
-      menu: (menu) => this.emit('contextmenu', menu),
-    });
-  }
-
-  private reduced(): boolean {
-    const motion = this.style?.motion ?? DEFAULTS.motion;
-    return (
-      motion === 'reduce' ||
-      (motion === 'auto' &&
-        globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true)
-    );
-  }
-  private clearSelection(): void {
-    if (!this.chosen.length) return;
-    this.chosen = Object.freeze([]);
-    this.chosenVersion++;
-    this.emit('select', this.chosen);
-  }
-  private compile(shade: Shade | null): void {
-    const serial = ++this.shadeSerial;
-    Promise.all(
-      (['rgba8unorm', 'bgra8unorm'] as const).map((format) =>
-        pipelines(this.gpu, format, this.style.msaa, shade?.wgsl ?? kit.defaultShade),
-      ),
-    ).then(
-      () => {
-        if (serial !== this.shadeSerial) return;
-        this.shade = shade;
-        this.invalidate();
-      },
-      (error: unknown) => {
-        if (serial === this.shadeSerial) this.fail(error);
-      },
-    );
-  }
-  private hit(point: Point, radiusPx?: number): readonly NetworkItem[] {
-    const shown = this.presented;
+  private hit(point: Point, radiusPx: number): readonly NetworkItem[] {
+    const shown = this.shown;
     if (!shown) return [];
-    const radius = radiusPx ?? this.style.pickRadiusPx;
-    if (!point.every(Number.isFinite) || !Number.isFinite(radius) || radius < 0)
-      throw new RangeError('Invalid hit query');
     return shown.picking.hit(
       point,
       shown.data,
@@ -550,256 +395,152 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
       shown.viewport,
       shown.height,
       shown.options,
-      Math.min(radius, Math.hypot(shown.viewport.width, shown.viewport.height)),
+      Math.min(radiusPx, Math.hypot(shown.viewport.width, shown.viewport.height)),
     );
   }
-  private clearHoverWake(): void {
-    if (this.hoverWake !== undefined) clearTimeout(this.hoverWake);
-    this.hoverWake = undefined;
-  }
-  private wakeHover(at: number): void {
-    this.hoverWake = setTimeout(
-      () => {
-        this.hoverWake = undefined;
-        if (this.pointer) this.invalidate();
-      },
-      Math.max(1, at - performance.now()),
+
+  protected async prepare(frame: kit.Preparation): Promise<void> {
+    this.live();
+    const data = this.data,
+      style = this.style;
+    const topology =
+      this.geometry?.native ?? this.geometry ?? (await readGeometry(data, frame, this.limits));
+    let geometry = topology;
+    const vertices = new Map<VertexBank, FieldRead>(),
+      edges = new Map<EdgeBank, FieldRead>();
+    for (const bank of geometry.vertices)
+      vertices.set(
+        bank,
+        await readFields(
+          frame,
+          data.source,
+          bank,
+          data.vertices[bank.type],
+          data.vertices[bank.type].position ?? bank.position,
+        ),
+      );
+    for (const bank of geometry.edges)
+      edges.set(
+        bank,
+        await readFields(
+          frame,
+          bank.source ?? data.source,
+          bank,
+          edgeOptions(data, bank),
+          undefined,
+        ),
+      );
+    await resolveDomains(frame, data.source, vertices, (bank) =>
+      vertexOptions(data, bank as VertexBank),
     );
-  }
-  private resetHover(): void {
-    this.hoverVersion++;
-    this.hoverSuspended = false;
-    this.hoverUntil = 0;
-    this.clearHoverWake();
-  }
-  private publishHover(item: NetworkItem | null): void {
-    if (sameItem(item, this.hover)) return;
-    this.hover = item;
-    this.emit('hover', item);
-  }
-  /** Move the pointer; frames search for hover, so pointer events only request work. */
-  private point(point: Point | null): void {
-    if (point && !point.every(Number.isFinite)) throw new RangeError('Invalid pointer');
-    this.pointerVersion++;
-    if (this.defer('pointer', () => this.point(point))) return;
-    const leaving = !point && this.pointer !== null;
-    this.pointer = point;
-    const hadHover = this.hover !== null;
-    if (!point) {
-      this.clearHoverWake();
-      this.publishHover(null);
+    await resolveDomains(frame, data.source, edges, (bank) => edgeOptions(data, bank as EdgeBank));
+    const compiled = this.paths.prepare(topology, { vertices, edges }, data, this.limits);
+    geometry = compiled.geometry;
+    for (const [bank, original] of compiled.origins) edges.set(bank, edges.get(original)!);
+    for (const bank of geometry.vertices)
+      if (bank.synthetic)
+        vertices.set(
+          bank,
+          await readFields(frame, data.source, bank, bank.synthetic, bank.position),
+        );
+    for (const bank of geometry.vertices)
+      if (bank.synthetic) {
+        const read = vertices.get(bank)!;
+        vertices.set(bank, {
+          ...read,
+          scales: { height: { domain: [0, 1], range: [0, 1], clamp: true } },
+        });
+      }
+    const reads: Reads = { vertices, edges },
+      picking = this.picking.prepare(geometry, reads, this.limits.pickingBytes);
+    this.preparing = { geometry, picking };
+    let camera: Camera;
+    try {
+      camera = await this.frameCamera(frame);
+    } finally {
+      this.preparing = undefined;
     }
-    const policy = this.style.hover;
-    const eligible =
-      policy === 'on' ||
-      (policy === 'auto' && !this.hoverSuspended && performance.now() >= this.hoverUntil);
-    if (
-      point &&
-      policy === 'auto' &&
-      !this.hoverSuspended &&
-      !eligible &&
-      this.hoverWake === undefined
-    )
-      this.wakeHover(this.hoverUntil);
-    if (
-      (point && eligible) ||
-      hadHover ||
-      (leaving && policy !== 'off' && !this.hoverSuspended) ||
-      this.shade
-    )
-      this.invalidate();
-  }
-  private prepareHover(
-    picking: PickGeometry,
-    camera: Camera,
-    viewport: kit.Viewport,
-    height: number,
-  ): PreparedHover {
-    const previous = this.presented;
-    const moved =
+    const framed = camera;
+    if (camera.projection === 'globe' && !geometry.geographic)
+      camera = { ...camera, projection: 'flat', pitch: 0 };
+    if (camera.orbit) {
+      const dt =
+        this.orbitTime === undefined
+          ? 0
+          : Math.max(0, Math.min(100, frame.timeMs - this.orbitTime));
+      camera = { ...camera, fit: false, bearing: camera.bearing + dt * 0.012 * style.orbitRate };
+    }
+    if (camera !== framed) this.drawCamera(frame, camera);
+    const height =
+      style.heightScale *
+      (camera.projection === 'globe'
+        ? 0.08
+        : Math.max(
+            picking.bounds[2] - picking.bounds[0],
+            picking.bounds[3] - picking.bounds[1],
+            1e-6,
+          ) * 0.15);
+    const host = new Float32Array(64),
+      shade = this.shade,
+      pointer = this.pointerPoint;
+    this.shadeAnimating =
+      shade?.tick?.(host, { timeMs: frame.timeMs, pointerPx: pointer, viewport: frame.viewport }) ??
+      false;
+    this.live();
+    frame.signal.throwIfAborted();
+    const phases = picking.dashPhases(data, camera, frame.viewport, height);
+    const labels = await this.labels.prepare(
+      frame,
+      this.gpu,
+      geometry,
+      picking,
+      data,
+      camera,
+      height,
+      style,
+    );
+    const previous = this.shown;
+    const moving =
       !!previous &&
       (!picking.samePositions(previous.picking) ||
         height !== previous.height ||
-        viewport.width !== previous.viewport.width ||
-        viewport.height !== previous.viewport.height ||
-        camera.center[0] !== previous.camera.center[0] ||
-        camera.center[1] !== previous.camera.center[1] ||
-        (['scale', 'pitch', 'bearing', 'projection'] as const).some(
-          (key) => camera[key] !== previous.camera[key],
-        ) ||
-        Object.keys(this.data.vertices).some(
-          (key) => this.data.vertices[key].height !== previous.data.vertices[key]?.height,
+        Object.keys(data.vertices).some(
+          (key) => data.vertices[key].height !== previous.data.vertices[key]?.height,
         ));
-    const settleAt =
-      moved || camera.orbit || this.animation ? performance.now() + 150 : this.hoverUntil;
-    const base = { version: this.hoverVersion, pointerVersion: this.pointerVersion, settleAt };
-    if (this.style.hover === 'off') return { ...base, item: null, state: 'off', ms: 0 };
-    if (!this.pointer) return { ...base, item: null, state: 'idle', ms: 0 };
-    if (this.style.hover === 'auto') {
-      if (this.hoverSuspended) return { ...base, item: null, state: 'budget', ms: 0 };
-      if (performance.now() < settleAt) return { ...base, item: null, state: 'moving', ms: 0 };
-    }
-    const started = performance.now();
-    const item = picking.nearest(
-      this.pointer,
-      this.data,
-      camera,
-      viewport,
-      height,
-      this.style,
-      this.style.pickRadiusPx,
-      this.style.hover === 'auto' ? this.style.hoverBudgetMs : undefined,
+    const drawnCamera = camera;
+    const hover = this.hoverFrame(
+      frame,
+      (point, radius, { check }) =>
+        picking.nearest(point, data, drawnCamera, frame.viewport, height, style, radius, check),
+      moving,
     );
-    return {
-      ...base,
-      item: item === HOVER_EXHAUSTED ? null : item,
-      state: item === HOVER_EXHAUSTED ? 'budget' : 'active',
-      ms: performance.now() - started,
-    };
-  }
-
-  protected get animating(): boolean {
-    return this.view.orbit || !!this.animation || this.shadeAnimating;
-  }
-  protected async prepare(frame: kit.Preparation): Promise<void> {
+    const paint = await this.painter.prepare(frame, {
+      camera,
+      options: style,
+      data,
+      geometry,
+      reads,
+      selection: this.selection,
+      hover,
+      pointer,
+      height,
+      shade,
+      host,
+      labels,
+      phases,
+    });
     this.live();
-    const started = performance.now();
-    {
-      const data = this.data,
-        style = this.style;
-      const topology =
-        this.geometry?.native ?? this.geometry ?? (await readGeometry(data, frame, this.limits));
-      let geometry = topology;
-      const vertices = new Map<VertexBank, FieldRead>(),
-        edges = new Map<EdgeBank, FieldRead>();
-      for (const bank of geometry.vertices)
-        vertices.set(
-          bank,
-          await readFields(
-            frame,
-            data.source,
-            bank,
-            data.vertices[bank.type],
-            data.vertices[bank.type].position ?? bank.position,
-          ),
-        );
-      for (const bank of geometry.edges)
-        edges.set(
-          bank,
-          await readFields(
-            frame,
-            bank.source ?? data.source,
-            bank,
-            edgeOptions(data, bank),
-            undefined,
-          ),
-        );
-      await resolveDomains(frame, data.source, vertices, (bank) =>
-        vertexOptions(data, bank as VertexBank),
-      );
-      await resolveDomains(frame, data.source, edges, (bank) =>
-        edgeOptions(data, bank as EdgeBank),
-      );
-      const compiled = this.paths.prepare(topology, { vertices, edges }, data, this.limits);
-      geometry = compiled.geometry;
-      for (const [bank, original] of compiled.origins) edges.set(bank, edges.get(original)!);
-      for (const bank of geometry.vertices)
-        if (bank.synthetic)
-          vertices.set(
-            bank,
-            await readFields(frame, data.source, bank, bank.synthetic, bank.position),
-          );
-      for (const bank of geometry.vertices)
-        if (bank.synthetic) {
-          const read = vertices.get(bank)!;
-          vertices.set(bank, {
-            ...read,
-            scales: { height: { domain: [0, 1], range: [0, 1], clamp: true } },
-          });
-        }
-      const reads: Reads = { vertices, edges },
-        picking = this.picking.prepare(geometry, reads, this.limits.cpuBytes - geometry.bytes);
-      if (geometry.bytes + picking.bytes > this.limits.cpuBytes)
-        throw new GpuError('resource-limit', 'Network geometry and picking exceed the CPU budget');
-      let camera = this.view;
-      if (camera.projection === 'globe' && !geometry.geographic)
-        camera = { ...camera, projection: 'flat', pitch: 0 };
-      if (camera.fit) camera = fit(picking.bounds, frame.viewport, camera, style);
-      let finishedAnimation: object | undefined;
-      if (this.animation) {
-        const t = Math.max(
-          0,
-          Math.min(1, (frame.timeMs - this.animation.start) / Math.max(1, this.animation.duration)),
-        );
-        camera = mixCamera(this.animation.from, this.animation.to, t * t * (3 - 2 * t));
-        if (t === 1) finishedAnimation = this.animation;
-      }
-      if (camera.orbit && this.previousTime !== undefined) {
-        const dt = Math.max(0, Math.min(100, frame.timeMs - this.previousTime));
-        camera = { ...camera, fit: false, bearing: camera.bearing + dt * 0.012 * style.orbitRate };
-      }
-      const height =
-        style.heightScale *
-        (camera.projection === 'globe'
-          ? 0.08
-          : Math.max(
-              picking.bounds[2] - picking.bounds[0],
-              picking.bounds[3] - picking.bounds[1],
-              1e-6,
-            ) * 0.15);
-      const host = new Float32Array(64);
-      this.shadeAnimating =
-        this.shade?.tick?.(host, {
-          timeMs: frame.timeMs,
-          pointerPx: this.pointer,
-          viewport: frame.viewport,
-        }) ?? false;
-      this.live();
-      frame.signal.throwIfAborted();
-      const phases = picking.dashPhases(data, camera, frame.viewport, height);
-      const labels = await this.labels.prepare(
-        frame,
-        this.gpu,
-        geometry,
-        picking,
-        data,
-        camera,
-        height,
-        style,
-      );
-      const hover = this.prepareHover(picking, camera, frame.viewport, height);
-      const paint = await this.painter.prepare(frame, {
-        camera,
-        options: style,
-        data,
-        geometry,
-        reads,
-        selection: this.chosen,
-        selectionVersion: this.chosenVersion,
-        hover: hover.item,
-        pointer: this.pointer,
-        height,
-        shade: this.shade,
-        host,
-        labels,
-        phases,
-      });
-      this.live();
-      frame.signal.throwIfAborted();
-      this.pendingFrame = {
-        geometry,
-        picking,
-        camera,
-        viewport: frame.viewport,
-        height,
-        data,
-        options: style,
-        paint,
-        hover,
-        prepareMs: performance.now() - started,
-        finishedAnimation,
-      };
-    }
+    frame.signal.throwIfAborted();
+    this.pendingFrame = {
+      geometry,
+      picking,
+      camera,
+      viewport: frame.viewport,
+      height,
+      data,
+      options: style,
+      paint,
+    };
   }
   protected discard(): void {
     this.pendingFrame = undefined;
@@ -812,60 +553,22 @@ class NetworkView extends kit.BaseView<NetworkConfig, NetworkEvents, Records, Me
   protected submitted(frame: kit.FrameInfo): void {
     const pending = this.pendingFrame;
     if (!pending) return;
-    if (this.animation === pending.finishedAnimation) this.animation = undefined;
-    this.presented = pending;
     this.pendingFrame = undefined;
-    this.view = pending.camera;
-    this.placed = true;
+    this.shown = pending;
     this.geometry = pending.geometry;
-    this.previousTime = frame.timeMs;
-    this.clock = frame.timeMs;
+    this.orbitTime = pending.camera.orbit ? frame.timeMs : undefined;
     this.painter.prune(pending.geometry);
-    this.currentStats = {
+    this.counts = {
       vertices: pending.geometry.vertexCount,
       edges: pending.geometry.edgeCount,
       segments: pending.geometry.segmentCount,
       geometryBytes: pending.geometry.bytes,
-      pickingBytes: pending.picking.bytes,
       drawCalls: pending.paint.drawCalls,
-      prepareMs: pending.prepareMs,
-      frames: this.currentStats.frames + 1,
-      hover: pending.hover.state,
-      hoverMs: pending.hover.ms,
     };
-    const hover = pending.hover;
-    if (hover.version === this.hoverVersion) {
-      this.hoverSuspended ||= hover.state === 'budget';
-      this.hoverUntil = hover.settleAt;
-      this.clearHoverWake();
-      if (
-        this.pointer &&
-        this.style.hover === 'auto' &&
-        !this.hoverSuspended &&
-        performance.now() < hover.settleAt
-      )
-        this.wakeHover(hover.settleAt);
-      if (hover.pointerVersion === this.pointerVersion) this.publishHover(hover.item);
-    }
-    const camera = this.view,
-      reported = this.reported;
-    if (
-      !reported ||
-      camera.center[0] !== reported.center[0] ||
-      camera.center[1] !== reported.center[1] ||
-      (['projection', 'scale', 'pitch', 'bearing', 'fit', 'orbit'] as const).some(
-        (key) => camera[key] !== reported[key],
-      )
-    ) {
-      this.reported = camera;
-      this.emit('camera', camera);
-    }
   }
   protected release(): void {
-    this.clearHoverWake();
-    this.shadeSerial++;
     this.pendingFrame = undefined;
-    this.presented = undefined;
+    this.shown = undefined;
     this.geometry = undefined;
     this.painter.destroy();
   }

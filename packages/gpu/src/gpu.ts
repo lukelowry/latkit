@@ -43,6 +43,8 @@ export interface Gpu {
   render(options: RenderOptions): Promise<void>;
   buffer(descriptor: GPUBufferDescriptor): BufferResource;
   texture(descriptor: GPUTextureDescriptor): TextureResource;
+  /** A validated shader module; identical code shares one. Invalid WGSL rejects with `invalid-input`. */
+  shaderModule(code: string, label?: string): Promise<GPUShaderModule>;
   /** Immutable descriptor identity is the cache key. */
   renderPipeline(descriptor: GPURenderPipelineDescriptor): Promise<GPURenderPipeline>;
   computePipeline(descriptor: GPUComputePipelineDescriptor): Promise<GPUComputePipeline>;
@@ -108,6 +110,7 @@ class Owner implements Gpu {
     object,
     { entry: Entry; promise: Promise<GPURenderPipeline | GPUComputePipeline> }
   >();
+  private readonly modules = new Map<string, { entry: Entry; promise: Promise<GPUShaderModule> }>();
 
   constructor(
     readonly device: GPUDevice,
@@ -234,6 +237,38 @@ class Owner implements Gpu {
     this.assertLive();
     return this.textures.create(descriptor);
   }
+  shaderModule(code: string, label?: string): Promise<GPUShaderModule> {
+    this.assertLive();
+    const cached = this.modules.get(code);
+    if (cached?.entry.live) {
+      cached.entry.touched = ++this.memory.clock;
+      return cached.promise;
+    }
+    const entry = this.memory.add([], code.length * 2, () => {
+      this.modules.delete(code);
+    });
+    const device = this.device;
+    device.pushErrorScope('validation');
+    const module = device.createShaderModule({ label, code }),
+      validation = device.popErrorScope();
+    const promise = Promise.all([module.getCompilationInfo(), validation]).then(([info, error]) => {
+      this.assertLive();
+      const errors = info.messages.filter((message) => message.type === 'error');
+      if (errors.length || error)
+        throw new GpuError(
+          'invalid-input',
+          (label ? label + ': ' : '') +
+            (errors
+              .map((message) => message.lineNum + ':' + message.linePos + ' ' + message.message)
+              .join('; ') || error!.message),
+        );
+      entry.unpin();
+      return module;
+    });
+    promise.catch(() => this.memory.remove(entry));
+    this.modules.set(code, { entry, promise });
+    return promise;
+  }
   renderPipeline(descriptor: GPURenderPipelineDescriptor): Promise<GPURenderPipeline> {
     return this.pipeline(descriptor, () =>
       this.device.createRenderPipelineAsync(descriptor),
@@ -286,6 +321,7 @@ class Owner implements Gpu {
     this.reader.destroy();
     this.memory.destroy();
     this.pipelines.clear();
+    this.modules.clear();
   }
   destroy(): void {
     if (this.stopped.signal.aborted) return;

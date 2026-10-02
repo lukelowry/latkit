@@ -11,6 +11,10 @@ import type {
   Renderer,
   RenderTarget,
 } from '../frame/render.js';
+import type { HoverState } from './input.js';
+
+/** A canvas point in CSS pixels. */
+export type Point = readonly [x: number, y: number];
 
 /** A drawn row, as selections and hits report it. */
 export interface DataHit {
@@ -50,6 +54,17 @@ export interface ImageOptions {
   readonly quality?: number;
   readonly signal?: AbortSignal;
 }
+/** What every view measures. */
+export interface ViewStats {
+  readonly frames: number;
+  /** Preparation time of the latest drawn frame. */
+  readonly prepareMs: number;
+  readonly drawCalls: number;
+  readonly pickingBytes: number;
+  readonly hover: HoverState;
+  /** Hover search time in the latest frame; zero when it did not search. */
+  readonly hoverMs: number;
+}
 export interface SetOptions {
   /** Ease camera and position changes. */
   readonly animate?: boolean;
@@ -70,6 +85,10 @@ export type Patch<C, Records extends keyof C = never, Merged extends keyof C = n
 };
 /** Some of an object's options, each of which may be null to reset it. */
 export type OptionsPatch<T> = T extends object ? { readonly [K in keyof T]?: T[K] | null } : T;
+/** Options as a view reads them: `ConfigShape.fields` shorthands are already `{ field }` objects. */
+export type Expanded<T, K extends PropertyKey> = {
+  readonly [P in keyof T]: P extends K ? Exclude<T[P], string> : T[P];
+};
 
 /** What every latkit view shares. */
 export interface View<
@@ -79,6 +98,7 @@ export interface View<
   /** The config as given, with every patch applied. */
   readonly config: Config;
   set(patch: Patch<Config>, options?: SetOptions): void;
+  stats(): ViewStats;
   /** Render offscreen at any size and coordinate; the canvas keeps presenting afterwards. */
   image(options?: ImageOptions): Promise<Blob>;
   on<K extends keyof Events>(event: K, listener: (value: Events[K]) => void): () => void;
@@ -94,9 +114,14 @@ export interface ConfigShape {
   readonly merged?: readonly string[];
   /** Keys whose string value names one option, such as `layout: 'layered'` for its algorithm. */
   readonly shorthands?: Readonly<Record<string, string>>;
+  /** Options of record entries whose string value names a field: `color: 'load'` is `{ field: 'load' }`. */
+  readonly fields?: readonly string[];
+  /** Records nested in entries that take the same field shorthands, such as diagram `ports`. */
+  readonly nested?: readonly string[];
 }
 
 type Listener = (value: never) => void;
+type Queued = readonly [event: PropertyKey, value: unknown];
 const PRESENTATION = new Set(['canvas', 'at', 'paused']);
 type Plain = Record<string, unknown>;
 
@@ -139,12 +164,14 @@ export abstract class BaseView<
   #config: Config;
   #closed = false;
   #listeners = new Map<PropertyKey, Set<Listener>>();
+  #events: Queued[] = [];
   #invalidated = new Set<() => void>();
   #captured = false;
   #frameConfig?: Config;
   #configuration?: { previous: Config; next: Config; options: SetOptions };
   #changes = new Map<string, () => void>();
-  #cameraChange?: { reset: boolean; patch: Plain; options: SetOptions };
+  #frames = 0;
+  #prepareMs = 0;
   readonly #renderer: Renderer;
   #canvas?: CanvasState;
   #held = 0;
@@ -226,7 +253,7 @@ export abstract class BaseView<
           options,
         };
         this.invalidate();
-      } else this.configure(previous, next, options);
+      } else this.#configure(previous, next, options);
     }
     if (camera !== undefined) this.moveCamera(camera as Plain | null, options);
     if (previous.canvas !== next.canvas) {
@@ -249,8 +276,31 @@ export abstract class BaseView<
     set.add(listener as Listener);
     return () => set.delete(listener as Listener);
   }
+  /** Every event dispatches on one microtask, in the order emitted; never inside a frame. */
   protected emit<K extends keyof Events>(event: K, value: Events[K]): void {
-    for (const listener of [...(this.#listeners.get(event) ?? [])]) listener(value as never);
+    if (this.#events.push([event, value]) === 1)
+      queueMicrotask(() => {
+        const events = this.#events;
+        this.#events = [];
+        if (this.#closed) return;
+        for (const [name, payload] of events)
+          for (const listener of [...(this.#listeners.get(name) ?? [])]) listener(payload as never);
+      });
+  }
+  stats(): ViewStats {
+    return {
+      frames: this.#frames,
+      prepareMs: this.#prepareMs,
+      drawCalls: 0,
+      pickingBytes: 0,
+      hover: 'off',
+      hoverMs: 0,
+      ...this.measure(),
+    };
+  }
+  /** Whether destroy has run; `live()` throws instead. */
+  protected get closed(): boolean {
+    return this.#closed;
   }
   /** Report a failure no caller awaits; unobserved failures reach the console. */
   protected fail(error: unknown): void {
@@ -273,31 +323,13 @@ export abstract class BaseView<
   /** Coalesce changes to renderer state until the captured snapshot has settled. */
   protected defer(key: string, change: () => void): boolean {
     if (!this.#captured) return false;
-    if (key === 'camera') this.#cameraChange = undefined;
     this.#changes.set(key, change);
     this.invalidate();
     return true;
   }
-  protected deferCamera(
-    camera: Readonly<Record<string, unknown>> | null,
-    options: SetOptions,
-  ): boolean {
-    if (!this.#captured) return false;
-    const previous = this.#cameraChange;
-    this.#cameraChange = {
-      reset: camera === null || !!previous?.reset,
-      patch: camera === null ? {} : { ...previous?.patch, ...camera },
-      options,
-    };
-    this.#changes.set('camera', () => {
-      const change = this.#cameraChange;
-      this.#cameraChange = undefined;
-      if (!change) return;
-      if (change.reset) this.moveCamera(null, change.options);
-      if (Object.keys(change.patch).length) this.moveCamera(change.patch, change.options);
-    });
-    this.invalidate();
-    return true;
+  #configure(previous: Config, next: Config, options: SetOptions): void {
+    this.changed(previous, next, options);
+    this.configure(previous, next, options);
   }
   #capture(): CapturedFrame {
     this.live();
@@ -315,20 +347,25 @@ export abstract class BaseView<
     let released = false;
     return {
       prepare: async (frame) => {
+        const started = performance.now();
         try {
           await this.prepare(frame);
         } catch (error) {
           this.discard();
           throw error;
         }
+        const prepareMs = performance.now() - started;
         let settled = false;
         return {
           encode: (encoding) => this.encode(encoding),
           submitted: () => {
             if (settled) return;
             settled = true;
-            this.submitted(frame);
+            this.#frames++;
+            this.#prepareMs = prepareMs;
             this.emit('frame', frame as Events['frame']);
+            this.submitted(frame);
+            this.presented(frame);
           },
           discard: () => {
             if (settled) return;
@@ -357,7 +394,7 @@ export abstract class BaseView<
         if (!this.#closed) {
           try {
             if (configuration)
-              this.configure(configuration.previous, configuration.next, configuration.options);
+              this.#configure(configuration.previous, configuration.next, configuration.options);
           } catch (error) {
             failures.push(error);
           }
@@ -369,7 +406,6 @@ export abstract class BaseView<
             }
           }
         }
-        this.#cameraChange = undefined;
         if (failures.length) throw new AggregateError(failures, 'Snapshot release failed');
       },
     };
@@ -477,6 +513,20 @@ export abstract class BaseView<
   }
   /** React to config changes; the config is already current. */
   protected abstract configure(previous: Config, next: Config, options: SetOptions): void;
+  /** View-specific measures merged into stats(). */
+  protected measure(): Partial<ViewStats> {
+    return {};
+  }
+  /** Base-class step before configure; views implement configure instead. */
+  protected changed(previous: Config, next: Config, options: SetOptions): void {
+    void previous;
+    void next;
+    void options;
+  }
+  /** Base-class step after a frame is submitted; views implement submitted instead. */
+  protected presented(frame: FrameInfo): void {
+    void frame;
+  }
   /** Move the camera by a partial camera, or reset it with null; views without one ignore it. */
   protected moveCamera(
     camera: Readonly<Record<string, unknown>> | null,
@@ -676,7 +726,41 @@ function normalized<C extends ViewConfig>(config: C, shape: ConfigShape): C {
   let result = config as Plain;
   for (const [key, option] of Object.entries({ input: 'mode', ...shape.shorthands }))
     if (typeof result[key] === 'string') result = { ...result, [key]: { [option]: result[key] } };
+  if (shape.fields?.length)
+    for (const key of shape.records ?? []) {
+      const record = result[key];
+      if (!record || typeof record !== 'object') continue;
+      const next = expandRecord(record as Plain, shape);
+      if (next !== record) result = { ...result, [key]: next };
+    }
   return result as C;
+}
+const expansions = new WeakMap<object, object>();
+/** Expand an entry once, keeping its identity when nothing changes so caches keyed on it survive. */
+function expand(entry: Plain, shape: ConfigShape): Plain {
+  let found = expansions.get(entry) as Plain | undefined;
+  if (found) return found;
+  let next: Plain | undefined;
+  for (const key of shape.fields ?? [])
+    if (typeof entry[key] === 'string') (next ??= { ...entry })[key] = { field: entry[key] };
+  for (const key of shape.nested ?? []) {
+    const nested = entry[key];
+    if (!nested || typeof nested !== 'object') continue;
+    const record = expandRecord(nested as Plain, shape);
+    if (record !== nested) (next ??= { ...entry })[key] = record;
+  }
+  found = next ? Object.freeze(next) : entry;
+  expansions.set(entry, found);
+  return found;
+}
+function expandRecord(record: Plain, shape: ConfigShape): Plain {
+  let next: Plain | undefined;
+  for (const [name, entry] of Object.entries(record)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const expanded = expand(entry as Plain, shape);
+    if (expanded !== entry) (next ??= { ...record })[name] = expanded;
+  }
+  return next ?? record;
 }
 interface Internals {
   readonly gpu: Gpu;

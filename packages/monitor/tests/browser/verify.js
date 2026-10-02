@@ -123,7 +123,7 @@ export async function verify(gpu) {
       coordinateAxis: false,
       valueAxis: false,
       paddingPx: 12,
-      backgroundColor: [0, 0, 0, 1],
+      background: [0, 0, 0, 1],
       ...extra,
     });
     globalThis.checkView = view;
@@ -190,7 +190,7 @@ export async function verify(gpu) {
   }
   const focusSource = new SignalSource(2, 128);
   focusSource.value = (row) => (row ? 1 : -1);
-  const focused = await render(focusSource, { focusColor: [0, 1, 0, 1] });
+  const focused = await render(focusSource, { selectedColor: [0, 1, 0, 1] });
   const hits = await focused.view.pick([focused.x(64), focused.y(1)], { radiusPx: 3, limit: 1 });
   assert(
     hits[0]?.row === 1 && hits[0].frame === focusSource.firstFrame + 64,
@@ -210,7 +210,7 @@ export async function verify(gpu) {
   // Check every submitted image, including intermediate work and cancelled replacements.
   const stableSource = new SignalSource(2, 256, { blockFrames: 16 });
   stableSource.value = (row) => (row ? 1 : -1);
-  const stable = await render(stableSource, { focusColor: [0, 1, 0, 1] });
+  const stable = await render(stableSource, { selectedColor: [0, 1, 0, 1] });
   const stableRenderer = kit.rendererOf(stable.view);
   stable.view.select([
     { source: stableSource.data, index: stableSource.index, row: 1, field: 'value' },

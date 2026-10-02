@@ -11,8 +11,8 @@ export interface AxisOptions {
   readonly precision?: number;
   readonly grid?: boolean;
 }
-/** How a monitor draws; every option has a default. */
-export interface StyleOptions extends kit.HoverOptions {
+/** How a monitor draws, beyond the shared view style; every option has a default. */
+export interface MonitorStyle {
   /** `full` draws every observation; `auto` summarizes long histories. */
   readonly detail?: 'auto' | 'full';
   /** A label, axis options, or false to hide the axis. */
@@ -22,26 +22,20 @@ export interface StyleOptions extends kit.HoverOptions {
   readonly autoDomain?: 'grow' | 'fit';
   /** Fraction of the fitted value range added on each side. */
   readonly domainPadding?: number;
-  readonly font?: kit.TextFont;
-  readonly fontSizePx?: number;
-  readonly textColor?: RGBA;
   readonly axisColor?: RGBA;
   readonly gridColor?: RGBA;
-  readonly backgroundColor?: RGBA;
+  /** The playhead at `at`. */
   readonly cursorColor?: RGBA;
-  /** Selected traces' color; null keeps their own. */
-  readonly focusColor?: RGBA | null;
   /** Opacity of unselected traces while something is selected. */
   readonly unselectedAlpha?: number;
   readonly paddingPx?: kit.Insets;
-  readonly pickRadiusPx?: number;
-  readonly msaa?: 1 | 4;
 }
 export interface Limits {
   readonly rows?: number;
-  readonly segmentsPerFrame?: number;
-  /** Raw refinement and summary preparation per submission; retain the last presented image. */
-  readonly prepareMs?: number;
+  /** Observations drawn per frame. */
+  readonly observationsPerFrame?: number;
+  /** History preparation per frame; the last presented image stays meanwhile. */
+  readonly frameMs?: number;
   readonly historyBytes?: number;
   readonly pickingBytes?: number;
 }

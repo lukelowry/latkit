@@ -1,10 +1,21 @@
-/** One Gpu per page, the View every renderer shares, compositions, and colormaps. */
+/** One Gpu per page, the views every renderer shares, compositions, and colormaps. */
 export { createGpu } from './gpu.js';
 export type { Gpu, GpuOptions } from './gpu.js';
 export type { Budget, GpuStats } from './memory/memory.js';
 export { GpuError } from './error.js';
 export type { GpuErrorCode } from './error.js';
-export type { View, ImageOptions } from './view/view.js';
+export type { View, ImageOptions, SetOptions, ViewStats, Point, DataHit } from './view/view.js';
+export type {
+  ItemView,
+  ItemViewConfig,
+  ItemEvents,
+  ViewCamera,
+  ViewInput,
+  PickOptions,
+} from './view/item-view.js';
+export { viewStyle } from './view/style.js';
+export type { ViewStyle } from './view/style.js';
+export type { ContextMenu, Modifiers, HoverState } from './view/input.js';
 export { createComposition } from './view/composition.js';
 export type { CompositionConfig } from './view/composition.js';
 export type { TextOptions, TextRasterizer, TextBitmap } from './text/text.js';
