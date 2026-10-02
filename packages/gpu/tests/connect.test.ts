@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { connected, subscribed } from '../../connect/tests/fixture.js';
-import { inputPatch, transaction } from '../../model/tests/live.js';
+import { inputBatch, transaction } from '../../model/tests/live.js';
 import { createData, type NumericColumn } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import { type GpuPage } from '../src/kit.js';
@@ -10,7 +10,7 @@ import { draw } from './fixtures/render.js';
 
 it('reads and uploads the same native contract through connect without a renderer transport adapter', async () => {
   const h = await connected();
-  const patch = inputPatch(100000);
+  const patch = inputBatch(100000);
   (patch.columns.value as NumericColumn).values.set(
     Float64Array.from({ length: 100000 }, (_, i) => i),
   );
@@ -22,7 +22,7 @@ it('reads and uploads the same native contract through connect without a rendere
   const remote = createData(
     h.remote.schema,
     'v1',
-    events.flatMap((event) => (event.kind === 'data' ? [event.patch] : [])),
+    events.flatMap((event) => (event.kind === 'data' ? [event.block] : [])),
   );
   const source = { index: patch.index, values: (patch.columns.value as NumericColumn).values };
   await h.close();

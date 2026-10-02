@@ -106,7 +106,7 @@ class TestView extends BaseView<TestConfig, ViewEvents, 'items', 'limits' | 'inp
     this.start();
   }
   refresh(): void {
-    this.invalidate('refresh');
+    this.invalidate();
   }
   protected configure(previous: TestConfig, next: TestConfig, options: SetOptions): void {
     this.configured.push({ previous, next, options });
@@ -395,5 +395,70 @@ it('reports each drawn frame', async () => {
   expect(frames).toHaveBeenCalledTimes(1);
   expect(frames.mock.lastCall?.[0]).toMatchObject({ at: 3, width: 200, height: 160 });
   view.destroy();
+  gpu.destroy();
+});
+
+it('coalesces playhead and configuration changes without cancelling a captured canvas frame', async () => {
+  const fake = fakeDevice(),
+    gpu = await createGpu({ device: fake.device }),
+    fixture = canvasFixture(fake.device);
+  const entered = deferred<void>(),
+    gate = deferred<void>();
+  let signal!: AbortSignal;
+  const view = new TestView(
+    gpu,
+    { canvas: fixture.canvas, at: 0, limits: { rows: 1 } },
+    async (frame) => {
+      signal = frame.signal;
+      if (frame.at === 0) {
+        entered.resolve();
+        await gate.promise;
+      }
+    },
+  );
+  const submitted: number[] = [];
+  view.on('frame', (frame) => submitted.push(frame.at!));
+  fixture.tick();
+  await entered.promise;
+  for (let at = 1; at <= 20; at++) view.set({ at, limits: { rows: at } });
+  expect(view.config.at).toBe(20);
+  expect(view.configured).toHaveLength(0);
+  expect(signal.aborted).toBe(false);
+  fixture.tick(); // A newer presentation tick arrives while the first preparation is active.
+  gate.resolve();
+  await settle();
+  await settle();
+  expect(submitted).toEqual([0, 20]);
+  expect(view.configured).toHaveLength(1);
+  expect(view.configured[0].next.limits?.rows).toBe(20);
+  expect(fixture.frames.size).toBe(0);
+  view.destroy();
+  gpu.destroy();
+});
+it('captures composition children before an asynchronous sibling changes their desired state', async () => {
+  const fake = fakeDevice();
+  compositing(fake);
+  const gpu = await createGpu({ device: fake.device });
+  const right = new TestView(gpu, { limits: { rows: 1 } }, () => {
+    expect(right.configured).toHaveLength(0);
+  });
+  const left = new TestView(gpu, {}, () => {
+    right.set({ limits: { rows: 99 } });
+  });
+  const composition = createComposition(gpu, {
+    views: [
+      { view: left, region: [0, 0, 0.5, 1] },
+      { view: right, region: [0.5, 0, 0.5, 1] },
+    ],
+  });
+  await gpu.render({
+    timeMs: 0,
+    views: [{ renderer: rendererOf(composition), target: target(fake.device) }],
+  });
+  expect(right.configured).toHaveLength(1);
+  expect(right.config.limits?.rows).toBe(99);
+  composition.destroy();
+  left.destroy();
+  right.destroy();
   gpu.destroy();
 });

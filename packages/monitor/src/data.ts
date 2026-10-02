@@ -53,11 +53,30 @@ export function monitorData(
   return { source: config.source, window, traces };
 }
 
-/** A proof of append-only change from shared page identity, independent of producer lifecycle. */
-export function appended(before: Data, after: Data): { offset: number; count: number } | undefined {
-  if (before.schema !== after.schema) return;
-  if (Object.keys(before.tables).length !== Object.keys(after.tables).length) return;
-  let result: { offset: number; count: number } | undefined;
+export interface FrameRange {
+  readonly offset: number;
+  readonly count: number;
+}
+export type FrameRanges = ReadonlyMap<string, readonly FrameRange[]>;
+/** Merge only overlapping/adjacent observations; gaps remain explicit. */
+export function mergeRanges(ranges: readonly FrameRange[]): FrameRange[] {
+  const result: { offset: number; count: number }[] = [];
+  for (const range of [...ranges].sort((a, b) => a.offset - b.offset)) {
+    const last = result.at(-1);
+    if (last && range.offset <= last.offset + last.count)
+      last.count = Math.max(last.offset + last.count, range.offset + range.count) - last.offset;
+    else result.push({ ...range });
+  }
+  return result;
+}
+/** Independent column appends: unchanged sampled columns need not advance together. */
+export function appended(before: Data, after: Data): FrameRanges | undefined {
+  if (
+    before.schema !== after.schema ||
+    Object.keys(before.tables).length !== Object.keys(after.tables).length
+  )
+    return;
+  const result = new Map<string, FrameRange[]>();
   for (const [type, a] of Object.entries(before.tables)) {
     const b = after.tables[type];
     if (
@@ -70,29 +89,28 @@ export function appended(before: Data, after: Data): { offset: number; count: nu
     )
       return;
     for (const [field, definition] of Object.entries(before.schema.types[type].fields)) {
-      const x = a.fields[field] ?? [],
-        y = b.fields[field] ?? [];
-      if (!definition.sampled) {
-        if (x !== y) return;
-        continue;
-      }
-      if (y.length <= x.length || x.some((page, i) => page !== y[i])) return;
-      let first = Infinity,
-        last = -Infinity,
-        previous = -Infinity;
+      const x = a.fields[field],
+        y = b.fields[field];
+      if (x === y) continue;
+      if (
+        !definition.sampled ||
+        !x ||
+        !y ||
+        y.length < x.length ||
+        x.some((page, i) => page !== y[i])
+      )
+        return;
+      let previous = -Infinity;
       for (const page of x)
         if (page.samples)
           previous = Math.max(previous, page.samples.firstFrame + page.samples.coordinates.length);
+      const ranges: FrameRange[] = [];
       for (let i = x.length; i < y.length; i++) {
         const sample = y[i].samples;
-        if (!sample) return;
-        first = Math.min(first, sample.firstFrame);
-        last = Math.max(last, sample.firstFrame + sample.coordinates.length);
+        if (!sample || sample.firstFrame < previous) return;
+        ranges.push({ offset: sample.firstFrame, count: sample.coordinates.length });
       }
-      if (Number.isFinite(previous) && first !== previous) return;
-      const range = { offset: first, count: last - first };
-      if (result && (result.offset !== range.offset || result.count !== range.count)) return;
-      result = range;
+      if (ranges.length) result.set(type + ':' + field, mergeRanges(ranges));
     }
   }
   return result;

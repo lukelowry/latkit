@@ -1,3 +1,4 @@
+import { renderer as snapshotRenderer } from './snapshot.js';
 /* global GPUBufferUsage, GPUMapMode, GPUShaderStage, document, CSS */
 import { colormaps, createColormap, reverseColormap, colormapCss, kit } from '../../dist/index.js';
 const assert = (condition, message) => {
@@ -80,27 +81,28 @@ export async function checkColors(gpu, target) {
       'Invalid CSS gradient: ' + map.label,
     );
     const renderer = {
-      async prepare(frame) {
-        palette = frame.colormap(map);
-        data = device.createBindGroup({
-          layout,
-          entries: [
-            { binding: 0, resource: frame.buffer(input) },
-            { binding: 1, resource: frame.buffer(result) },
-          ],
-        });
-        frame.buffer(readback);
-      },
-      encode(frame) {
-        const pass = frame.encoder.beginComputePass();
-        pass.setPipeline(pipeline);
-        pass.setBindGroup(0, palette);
-        pass.setBindGroup(1, data);
-        pass.dispatchWorkgroups(Math.ceil(values.length / 64));
-        pass.end();
-        frame.encoder.copyBufferToBuffer(result.buffer, 0, readback.buffer, 0, bytes);
-      },
-      destroy() {},
+      ...snapshotRenderer(
+        async (frame) => {
+          palette = frame.colormap(map);
+          data = device.createBindGroup({
+            layout,
+            entries: [
+              { binding: 0, resource: frame.buffer(input) },
+              { binding: 1, resource: frame.buffer(result) },
+            ],
+          });
+          frame.buffer(readback);
+        },
+        (frame) => {
+          const pass = frame.encoder.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, palette);
+          pass.setBindGroup(1, data);
+          pass.dispatchWorkgroups(Math.ceil(values.length / 64));
+          pass.end();
+          frame.encoder.copyBufferToBuffer(result.buffer, 0, readback.buffer, 0, bytes);
+        },
+      ),
     };
     await gpu.render({ timeMs: 0, views: [{ renderer, target }] });
     await readback.buffer.mapAsync(GPUMapMode.READ);

@@ -1,3 +1,4 @@
+import { renderer as testRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createGpu, kit } from '@latkit/gpu';
 import { createNetwork, type Network } from '../src/index.js';
@@ -6,7 +7,7 @@ import { readGeometry, DEFAULT_LIMITS } from '../src/geometry/topology.js';
 import { HOVER_EXHAUSTED, PickGeometry } from '../src/picking.js';
 import { featureSource } from './paths-fixture.js';
 import { GraphSource } from './fixture.js';
-import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
+import { deferred, fakeDevice } from '../../gpu/tests/fixtures/device.js';
 
 function fixture(count = 25, blockRows = 8) {
   const source = new GraphSource(count, blockRows);
@@ -84,13 +85,9 @@ it('keeps model identities across pages and uses CSR neighborhoods', async () =>
     views: [
       {
         target: target(gpu),
-        renderer: {
-          async prepare(frame) {
-            geometry = await readGeometry(data, frame, DEFAULT_LIMITS);
-          },
-          encode() {},
-          destroy() {},
-        },
+        renderer: testRenderer(async (frame) => {
+          geometry = await readGeometry(data, frame, DEFAULT_LIMITS);
+        }),
       },
     ],
   });
@@ -485,7 +482,7 @@ it('does not publish hover from a failed composition or restore it after pointer
     },
   });
   expect(hover).not.toHaveBeenCalled();
-  expect(invalidate).toHaveBeenCalledWith('refresh');
+  expect(invalidate).toHaveBeenCalledWith();
   network.destroy();
   gpu.destroy();
 });
@@ -688,6 +685,39 @@ it('halos every selected item and its ends, expands shorthands, and reports came
   expect(cameras).toHaveBeenCalledTimes(2);
   network.set({ camera: null });
   expect(network.camera.fit).toBe(true);
+  network.destroy();
+  gpu.destroy();
+});
+
+it('submits a captured network while batches coalesce into the next snapshot', async () => {
+  const first = fixture(20),
+    fake = device(),
+    gpu = await createGpu({ device: fake.device });
+  const entered = deferred<void>(),
+    gate = deferred<void>(),
+    original = gpu.renderPipeline.bind(gpu);
+  vi.spyOn(gpu, 'renderPipeline').mockImplementation(async (...args) => {
+    entered.resolve();
+    await gate.promise;
+    return original(...args);
+  });
+  const network = createNetwork(gpu, first.data),
+    surface = target(gpu);
+  const draw = () =>
+    gpu.render({
+      timeMs: 0,
+      views: [{ renderer: kit.rendererOf(network), target: surface, at: 0 }],
+    });
+  const rendering = draw();
+  await entered.promise;
+  for (let n = 21; n <= 30; n++) network.set({ source: fixture(n).source.data });
+  gate.resolve();
+  await rendering;
+  expect(network.stats().frames).toBe(1);
+  expect(network.stats().vertices).toBe(20);
+  await draw();
+  expect(network.stats().frames).toBe(2);
+  expect(network.stats().vertices).toBe(30);
   network.destroy();
   gpu.destroy();
 });

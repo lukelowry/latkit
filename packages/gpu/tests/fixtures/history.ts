@@ -3,7 +3,7 @@ import {
   read,
   sliceColumn,
   type Data,
-  type DataPatch,
+  type DataBatch,
   type Schema,
   type Query,
   type QueryOptions,
@@ -55,7 +55,7 @@ export class HistorySource {
   get data(): Data {
     if (this.cached?.version === this.version) return this.cached;
     const rows = { kind: 'range' as const, offset: 0, count: this.count };
-    const patches: DataPatch[] = [
+    const batches: DataBatch[] = [
       {
         kind: 'rows',
         index: this.index,
@@ -85,7 +85,7 @@ export class HistorySource {
         f * this.count,
         count * this.count,
       ) as import('@latkit/model').NumericColumn;
-      patches.push({
+      batches.push({
         kind: 'samples',
         index: this.index,
         rows,
@@ -94,8 +94,8 @@ export class HistorySource {
         columns: { value: { ...column, rowStride: 1, frameStride: this.count } },
       });
     }
-    if (this.reverseFrames) patches.reverse();
-    return (this.cached = createData(this.schema, this.version, patches));
+    if (this.reverseFrames) batches.reverse();
+    return (this.cached = createData(this.schema, this.version, batches));
   }
   query<Q extends Query>(query: Q, options?: QueryOptions) {
     return read(this.data, query, options);

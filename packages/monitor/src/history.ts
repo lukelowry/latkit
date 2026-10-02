@@ -1,3 +1,4 @@
+import type { FrameRanges, FrameRange } from './data.js';
 import { GpuError, type Gpu, kit } from '@latkit/gpu';
 import {
   assertIndex,
@@ -37,7 +38,7 @@ export interface HistoryRequest {
   readonly limits: Required<Limits>;
   readonly signal: AbortSignal;
   readonly onRows?: (count: number) => void;
-  readonly frames?: { offset: number; count: number };
+  readonly frames?: FrameRanges;
   /** Draw only these rows, each narrowed to one field when it names one. */
   readonly focus?: readonly Focus[];
 }
@@ -64,6 +65,31 @@ function focused(focus: readonly Focus[], item: Binding): RowSelection | undefin
     : { kind: 'indices', index, values: rows };
 }
 export async function* history(request: HistoryRequest): AsyncGenerator<Chunk> {
+  if (!request.frames) {
+    yield* readHistory({ ...request, frames: undefined });
+    return;
+  }
+  let admitted = 0;
+  for (const item of request.bindings) {
+    let rows = 0;
+    for (const range of request.frames.get(item.name) ?? [])
+      yield* readHistory({
+        ...request,
+        bindings: [item],
+        frames: range,
+        onRows: (count) => {
+          rows = Math.max(rows, count);
+          if (admitted + rows > request.limits.rows)
+            throw new GpuError('resource-limit', 'Monitor row limit exceeded');
+          request.onRows?.(admitted + rows);
+        },
+      });
+    admitted += rows;
+  }
+}
+async function* readHistory(
+  request: Omit<HistoryRequest, 'frames'> & { readonly frames?: FrameRange },
+): AsyncGenerator<Chunk> {
   const { gpu, data, bindings, window, detail, limits, signal, frames, focus } = request;
   let admitted = 0,
     yieldedAt = performance.now();

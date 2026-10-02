@@ -1,12 +1,12 @@
 import { expect, it } from 'vitest';
 import { read, createData, transactions, validateDataEvent, type DataEvent } from '../src/index.js';
-import { LiveModel, inputPatch, transaction } from './live.js';
+import { LiveModel, inputBatch, transaction } from './live.js';
 it('passively receives data before, during and after an unrelated routine', async () => {
   const model = new LiveModel(),
     a = model.monitor([{ from: 'Node', select: ['value'] }]),
     b = model.monitor([{ from: 'Node', select: ['value'] }]);
   for (let i = 0; i < 3; i++) {
-    const publication = model.publish([inputPatch()], String(i));
+    const publication = model.publish([inputBatch()], String(i));
     const [x, y] = await Promise.all([transaction(a), transaction(b)]);
     await publication;
     expect(x).toEqual(y);
@@ -20,11 +20,11 @@ it('passively receives data before, during and after an unrelated routine', asyn
 it('a later subscriber receives future publications without replay', async () => {
   const model = new LiveModel(),
     a = model.monitor([{ from: 'Node', select: ['value'] }]);
-  const first = model.publish([inputPatch()], 'first');
+  const first = model.publish([inputBatch()], 'first');
   await transaction(a);
   await first;
   const b = model.monitor([{ from: 'Node', select: ['value'] }]);
-  const second = model.publish([inputPatch()], 'second');
+  const second = model.publish([inputBatch()], 'second');
   expect(
     (await Promise.all([transaction(a), transaction(b)])).map((events) => events[0].version),
   ).toEqual(['second', 'second']);
@@ -36,16 +36,16 @@ it('delivers only selected fields and rows, and frees an abandoned subscription'
     stream = model.monitor([
       { from: 'Node', select: ['value'], rows: { kind: 'range', offset: 1, count: 2 } },
     ]);
-  const publish = model.publish([inputPatch()]);
+  const publish = model.publish([inputBatch()]);
   const events = await transaction(stream);
   await publish;
   expect(events.find((e) => e.kind === 'data')).toMatchObject({
-    patch: { rows: { kind: 'range', offset: 1, count: 2 } },
+    block: { rows: { kind: 'range', offset: 1, count: 2 } },
   });
   const data = createData(
     model.schema,
     'v1',
-    events.flatMap((e) => (e.kind === 'data' ? [e.patch] : [])),
+    events.flatMap((e) => (e.kind === 'data' ? [e.block] : [])),
   );
   await stream.return?.();
   model.end();
@@ -65,7 +65,7 @@ it('aborts a waiting receiver and does not change other consumers', async () => 
 });
 it.each(
   [
-    [{ kind: 'data', version: 'x', patch: inputPatch() }],
+    [{ kind: 'data', version: 'x', block: inputBatch() }],
     [
       { kind: 'begin', version: 'x', initial: false },
       { kind: 'end', version: 'y' },

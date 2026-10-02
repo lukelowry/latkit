@@ -1,3 +1,4 @@
+import { renderer as snapshotRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { expect, it } from 'vitest';
 import { createGpu, type Gpu, type kit } from '@latkit/gpu';
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
@@ -11,7 +12,7 @@ async function draw(gpu: Gpu, prepare: (frame: kit.Preparation) => Promise<void>
     timeMs: 0,
     views: [
       {
-        renderer: { prepare, encode() {}, destroy() {} },
+        renderer: { ...snapshotRenderer(prepare, () => {}) },
         target: {
           device: gpu.device,
           width: 16,

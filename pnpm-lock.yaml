@@ -106,6 +106,9 @@ importers:
       '@latkit/model':
         specifier: workspace:*
         version: link:../../packages/model
+      '@latkit/monitor':
+        specifier: workspace:*
+        version: link:../../packages/monitor
       '@latkit/network':
         specifier: workspace:*
         version: link:../../packages/network

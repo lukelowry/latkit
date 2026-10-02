@@ -178,7 +178,7 @@ it('reduces delivered samples after the transport and producer have closed', asy
   const h = await connected(false, model);
   const stream = h.remote.monitor([{ from: 'node', select: ['value'] }]);
   await subscribed(model);
-  const patches = source.data.tables.node.fields.value.map((page) => ({
+  const batches = source.data.tables.node.fields.value.map((page) => ({
     kind: 'samples' as const,
     index: source.index,
     rows: page.rows,
@@ -186,13 +186,13 @@ it('reduces delivered samples after the transport and producer have closed', asy
     coordinates: page.samples!.coordinates,
     columns: { value: page.column as SampleColumn },
   }));
-  const publishing = model.publish(patches);
+  const publishing = model.publish(batches);
   const events = await transaction(stream);
   await publishing;
   const data = createData(
     h.remote.schema,
     'v1',
-    events.flatMap((event) => (event.kind === 'data' ? [event.patch] : [])),
+    events.flatMap((event) => (event.kind === 'data' ? [event.block] : [])),
   );
   await h.close();
   const gpu = await createGpu({ device: fakeDevice().device, validate: true });

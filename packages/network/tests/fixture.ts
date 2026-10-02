@@ -1,4 +1,4 @@
-import { createData, read, type Data, type DataPatch, validateQuery } from '@latkit/model';
+import { createData, read, type Data, type DataBatch, validateQuery } from '@latkit/model';
 import type {
   Query,
   QueryOptions,
@@ -114,13 +114,13 @@ export class GraphSource {
   private cached?: Data;
   get data(): Data {
     if (this.cached?.version === this.version) return this.cached;
-    const patches: DataPatch[] = [];
+    const batches: DataBatch[] = [];
     for (const [from, type] of Object.entries(this.schema.types)) {
       const staticFields = Object.keys(type.fields).filter((name) => !type.fields[name].sampled);
       const sampled = Object.keys(type.fields).filter((name) => type.fields[name].sampled);
       for (const block of this.blocks({ kind: 'rows', from, select: staticFields }))
         if (block.kind === 'rows')
-          patches.push({
+          batches.push({
             kind: 'rows',
             index: block.index,
             rows: block.rows,
@@ -129,7 +129,7 @@ export class GraphSource {
       for (let at = 0; at < 16; at++)
         for (const block of this.blocks({ kind: 'rows', from, select: sampled, at }))
           if (block.kind === 'rows')
-            patches.push({
+            batches.push({
               kind: 'samples',
               index: block.index,
               rows: block.rows,
@@ -140,10 +140,10 @@ export class GraphSource {
                   name,
                   { ...column, rowStride: 1, frameStride: column.length },
                 ]),
-              ) as import('@latkit/model').SamplesPatch['columns'],
+              ) as import('@latkit/model').SampleBatch['columns'],
             });
     }
-    return (this.cached = createData(this.schema, this.version, patches));
+    return (this.cached = createData(this.schema, this.version, batches));
   }
   query<Q extends Query>(query: Q, options?: QueryOptions) {
     return read(this.data, query, options);

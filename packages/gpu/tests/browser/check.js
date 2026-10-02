@@ -1,3 +1,4 @@
+import { renderer as snapshotRenderer } from './snapshot.js';
 import { checkFoundation } from './foundation.js';
 import { rowCount } from '@latkit/model';
 /* global GPUBufferUsage, GPUMapMode, GPUShaderStage */
@@ -60,56 +61,61 @@ export async function check() {
       let groups = [],
         expected = [];
       const renderer = {
-        async prepare(frame) {
-          const destination = frame.buffer(result);
-          frame.buffer(readback);
-          const pages = frame.upload(block, {
-            select: Object.keys(block.columns),
-            float64: policy,
-          });
-          groups = [];
-          expected = [];
-          for (const page of pages) {
-            const column = page.columns.value;
-            const rows = rowCount(page.rows),
-              frames = page.samples?.count ?? 1;
-            const info = frame.uniforms(Uint32Array.of(rows, frames, expected.length, column.slot));
-            const group = device.createBindGroup({
-              layout: resultLayout,
-              entries: [
-                { binding: 0, resource: destination },
-                { binding: 1, resource: info },
-              ],
+        ...snapshotRenderer(
+          async (frame) => {
+            const destination = frame.buffer(result);
+            frame.buffer(readback);
+            const pages = frame.upload(block, {
+              select: Object.keys(block.columns),
+              float64: policy,
             });
-            groups.push({ group, fields: page.bindGroup, count: rows * frames });
-            const native = block.columns.value;
-            const frameStart = page.samples ? page.samples.firstFrame - block.firstFrame : 0;
-            for (let f = 0; f < frames; f++)
-              for (let r = 0; r < rows; r++) {
-                const address =
-                  native.offset +
-                  (frameStart + f) * (native.frameStride ?? 0) +
-                  (page.rowOffset + r) * (native.rowStride ?? 1);
-                const present =
-                  !native.validity || native.validity[address >>> 3] & (1 << (address & 7));
-                expected.push(
-                  present ? Math.fround(native.values[address] - (column.origin?.[0] ?? 0)) : -999,
-                );
-              }
-          }
-        },
-        encode(frame) {
-          const pass = frame.encoder.beginComputePass();
-          pass.setPipeline(pipeline);
-          for (const { group, fields, count } of groups) {
-            pass.setBindGroup(0, fields);
-            pass.setBindGroup(1, group);
-            pass.dispatchWorkgroups(Math.ceil(count / 64));
-          }
-          pass.end();
-          frame.encoder.copyBufferToBuffer(result.buffer, 0, readback.buffer, 0, count * 4);
-        },
-        destroy() {},
+            groups = [];
+            expected = [];
+            for (const page of pages) {
+              const column = page.columns.value;
+              const rows = rowCount(page.rows),
+                frames = page.samples?.count ?? 1;
+              const info = frame.uniforms(
+                Uint32Array.of(rows, frames, expected.length, column.slot),
+              );
+              const group = device.createBindGroup({
+                layout: resultLayout,
+                entries: [
+                  { binding: 0, resource: destination },
+                  { binding: 1, resource: info },
+                ],
+              });
+              groups.push({ group, fields: page.bindGroup, count: rows * frames });
+              const native = block.columns.value;
+              const frameStart = page.samples ? page.samples.firstFrame - block.firstFrame : 0;
+              for (let f = 0; f < frames; f++)
+                for (let r = 0; r < rows; r++) {
+                  const address =
+                    native.offset +
+                    (frameStart + f) * (native.frameStride ?? 0) +
+                    (page.rowOffset + r) * (native.rowStride ?? 1);
+                  const present =
+                    !native.validity || native.validity[address >>> 3] & (1 << (address & 7));
+                  expected.push(
+                    present
+                      ? Math.fround(native.values[address] - (column.origin?.[0] ?? 0))
+                      : -999,
+                  );
+                }
+            }
+          },
+          (frame) => {
+            const pass = frame.encoder.beginComputePass();
+            pass.setPipeline(pipeline);
+            for (const { group, fields, count } of groups) {
+              pass.setBindGroup(0, fields);
+              pass.setBindGroup(1, group);
+              pass.dispatchWorkgroups(Math.ceil(count / 64));
+            }
+            pass.end();
+            frame.encoder.copyBufferToBuffer(result.buffer, 0, readback.buffer, 0, count * 4);
+          },
+        ),
       };
       await owner.render({ timeMs: 0, views: [{ renderer, target: renderTarget }] });
       await readback.buffer.mapAsync(GPUMapMode.READ);
@@ -195,26 +201,27 @@ export async function check() {
     const renderers = colors.map((color) => {
       let pipeline, group;
       return {
-        async prepare(frame) {
-          pipeline = await gpu.renderPipeline(descriptor);
-          frame.buffer(pixels);
-          group = device.createBindGroup({
-            layout: pipeline.getBindGroupLayout(0),
-            entries: [{ binding: 0, resource: frame.uniforms(Float32Array.from(color)) }],
-          });
-        },
-        encode(frame) {
-          const pass = frame.encoder.beginRenderPass({
-            colorAttachments: [
-              { view: frame.target, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] },
-            ],
-          });
-          pass.setPipeline(pipeline);
-          pass.setBindGroup(0, group);
-          pass.draw(3);
-          pass.end();
-        },
-        destroy() {},
+        ...snapshotRenderer(
+          async (frame) => {
+            pipeline = await gpu.renderPipeline(descriptor);
+            frame.buffer(pixels);
+            group = device.createBindGroup({
+              layout: pipeline.getBindGroupLayout(0),
+              entries: [{ binding: 0, resource: frame.uniforms(Float32Array.from(color)) }],
+            });
+          },
+          (frame) => {
+            const pass = frame.encoder.beginRenderPass({
+              colorAttachments: [
+                { view: frame.target, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] },
+              ],
+            });
+            pass.setPipeline(pipeline);
+            pass.setBindGroup(0, group);
+            pass.draw(3);
+            pass.end();
+          },
+        ),
       };
     });
     await gpu.render({
@@ -249,18 +256,19 @@ export async function check() {
     });
     let atlasTexture;
     const atlasRenderer = {
-      async prepare(frame) {
-        atlasTexture = frame.texture(atlas);
-        frame.buffer(atlasReadback);
-      },
-      encode(frame) {
-        frame.encoder.copyTextureToBuffer(
-          { texture: atlasTexture },
-          { buffer: atlasReadback.buffer, bytesPerRow: 256 },
-          [3, 2],
-        );
-      },
-      destroy() {},
+      ...snapshotRenderer(
+        async (frame) => {
+          atlasTexture = frame.texture(atlas);
+          frame.buffer(atlasReadback);
+        },
+        (frame) => {
+          frame.encoder.copyTextureToBuffer(
+            { texture: atlasTexture },
+            { buffer: atlasReadback.buffer, bytesPerRow: 256 },
+            [3, 2],
+          );
+        },
+      ),
     };
     for (let iteration = 0; iteration < 2; iteration++) {
       if (iteration) atlas.write({ x: 1, y: 1, width: 1, height: 1, data: Uint8Array.of(9) });

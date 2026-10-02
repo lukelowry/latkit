@@ -2,7 +2,7 @@ import {
   createData,
   textColumn,
   type Data,
-  type DataPatch,
+  type DataBatch,
   type QueryBlock,
   type QueryHeader,
   type Schema,
@@ -21,10 +21,10 @@ export const fixtureSchema: Schema = {
   },
 };
 export function staticData(count = 4, pageRows = 4096): Data {
-  const patches: DataPatch[] = [];
+  const batches: DataBatch[] = [];
   for (let offset = 0; offset < count; offset += pageRows) {
     const n = Math.min(pageRows, count - offset);
-    patches.push({
+    batches.push({
       kind: 'rows',
       index: { source: 'fixture', type: 'Node', version: 'rows1' },
       rows: { kind: 'range', offset, count: n },
@@ -41,7 +41,7 @@ export function staticData(count = 4, pageRows = 4096): Data {
         : {}),
     });
   }
-  return createData(fixtureSchema, 'v1', patches);
+  return createData(fixtureSchema, 'v1', batches);
 }
 export function sampledData(coordinates: readonly number[], count = 4): Data {
   return createData(

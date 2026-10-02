@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import type { Input } from '@latkit/model';
-import { LiveModel, inputPatch, transaction } from '../../model/tests/live.js';
+import { LiveModel, inputBatch, transaction } from '../../model/tests/live.js';
 import { byteStream, readBytes } from '../../model/tests/fixture.js';
 import { open, subscribed, deferred } from './fixture.js';
 const fields = [{ from: 'Node', select: ['value'] }] as const;
@@ -14,7 +14,7 @@ it.each([false, true])('isolates subscriptions across connections (framed=%s)', 
     await subscribed(model, 2);
     await a.close();
     await vi.waitFor(() => expect(model.subscribers.size).toBe(1));
-    const published = model.publish([inputPatch()]);
+    const published = model.publish([inputBatch()]);
     expect((await transaction(other)).at(-1)?.kind).toBe('end');
     await published;
   } finally {
@@ -35,7 +35,7 @@ it.each([false, true])(
       await vi.waitFor(() => expect(c.model.subscribers.size).toBe(0));
       const another = c.remote.monitor(fields);
       await subscribed(c.model);
-      const publish = c.model.publish([inputPatch()]);
+      const publish = c.model.publish([inputBatch()]);
       await transaction(another);
       await publish;
     } finally {
@@ -97,7 +97,7 @@ it('cancels an unrelated command without ending passive observation', async () =
     await started.promise;
     stop.abort();
     await failed;
-    const publish = model.publish([inputPatch()]);
+    const publish = model.publish([inputBatch()]);
     await transaction(stream);
     await publish;
     expect(model.subscribers.size).toBe(1);

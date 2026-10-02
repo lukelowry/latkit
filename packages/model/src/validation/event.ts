@@ -25,28 +25,28 @@ export function validateDataEvent(
     c.issue([], 'Data event exceeds its payload bound.', 'resource-limit');
     return c.issues;
   }
-  const patch = c.object(event.patch, ['patch']);
-  c.enum(patch.kind, ['rows', 'samples'], ['patch', 'kind']);
-  if (patch.replace !== undefined) c.bool(patch.replace, ['patch', 'replace']);
-  if (!record(patch.columns) || !record(patch.index))
+  const batch = c.object(event.block, ['block']);
+  c.enum(batch.kind, ['rows', 'samples'], ['block', 'kind']);
+  if ('replace' in batch) c.issue(['block', 'replace'], 'Replacement operations are unsupported.');
+  if (!record(batch.columns) || !record(batch.index))
     return [...c.issues, { code: 'invalid-input', message: 'Missing columns or row identity.' }];
   const query =
-    patch.kind === 'samples'
+    batch.kind === 'samples'
       ? {
           kind: 'samples',
-          from: patch.index.type,
-          select: Object.keys(patch.columns),
+          from: batch.index.type,
+          select: Object.keys(batch.columns),
           window: {
             kind: 'frames',
-            offset: patch.firstFrame,
-            count: patch.coordinates instanceof Float64Array ? patch.coordinates.length : 0,
+            offset: batch.firstFrame,
+            count: batch.coordinates instanceof Float64Array ? batch.coordinates.length : 0,
           },
         }
       : {
           kind: 'rows',
-          from: patch.index.type,
-          select: Object.keys(patch.columns),
-          ...(patch.ids ? { ids: true } : {}),
+          from: batch.index.type,
+          select: Object.keys(batch.columns),
+          ...(batch.ids ? { ids: true } : {}),
         };
   const q = query as import('../query.js').Query;
   const issues = validateQuery(schema, q);
@@ -56,7 +56,7 @@ export function validateDataEvent(
     ...validateBlock(
       schema,
       q,
-      { ...patch, version: event.version, position: 0, rowOffset: 0 },
+      { ...batch, version: event.version, position: 0, rowOffset: 0 },
       options,
     ),
   ];

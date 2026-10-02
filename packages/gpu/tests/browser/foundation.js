@@ -1,3 +1,4 @@
+import { renderer as snapshotRenderer } from './snapshot.js';
 /* global GPUBufferUsage, GPUMapMode, GPUShaderStage */
 import { kit } from '../../dist/index.js';
 export async function checkFoundation(gpu, target) {
@@ -79,73 +80,74 @@ export async function checkFoundation(gpu, target) {
   let draws = [],
     expected = new Float32Array(rows * buckets * 16);
   const renderer = {
-    async prepare(frame) {
-      const destination = frame.buffer(output);
-      frame.buffer(readback);
-      draws = [];
-      for (const page of frame.upload(block, { select: ['value'], maxPageBytes: 1024 })) {
-        const field = page.columns.value,
-          nr = page.rows.count,
-          nf = page.envelope.count;
-        const group = device.createBindGroup({
-          layout,
-          entries: [
-            { binding: 0, resource: destination },
-            {
-              binding: 1,
-              resource: frame.uniforms(
-                Uint32Array.of(
-                  nr,
-                  nf,
-                  page.rowOffset,
-                  page.envelope.firstBucket,
-                  field.values.slot,
-                  field.coordinates.slot,
-                  field.frames.slot,
-                  field.continuous.slot,
+    ...snapshotRenderer(
+      async (frame) => {
+        const destination = frame.buffer(output);
+        frame.buffer(readback);
+        draws = [];
+        for (const page of frame.upload(block, { select: ['value'], maxPageBytes: 1024 })) {
+          const field = page.columns.value,
+            nr = page.rows.count,
+            nf = page.envelope.count;
+          const group = device.createBindGroup({
+            layout,
+            entries: [
+              { binding: 0, resource: destination },
+              {
+                binding: 1,
+                resource: frame.uniforms(
+                  Uint32Array.of(
+                    nr,
+                    nf,
+                    page.rowOffset,
+                    page.envelope.firstBucket,
+                    field.values.slot,
+                    field.coordinates.slot,
+                    field.frames.slot,
+                    field.continuous.slot,
+                  ),
                 ),
-              ),
-            },
-            {
-              binding: 2,
-              resource: frame.uniforms(
-                kit.scaleParameters(kit.resolveScale({}, [1e12, 1e12 + 100]), {
-                  origin: field.values.origin?.[0],
-                }),
-              ),
-            },
-          ],
-        });
-        draws.push({ group, fields: page.bindGroup, count: nr * nf });
-        for (let r = 0; r < nr; r++)
-          for (let b = 0; b < nf; b++) {
-            const cell = (page.rowOffset + r) * buckets + page.envelope.firstBucket + b,
-              at = cell * 16;
-            for (let lane = 0; lane < 4; lane++) {
-              expected[at + lane] = numeric[cell * 4 + lane] - field.values.origin[lane];
-              expected[at + 4 + lane] =
-                coordinates[cell * 4 + lane] - field.coordinates.origin[lane];
-              expected[at + 8 + lane] = frames[cell * 4 + lane] - field.frames.origin[lane];
+              },
+              {
+                binding: 2,
+                resource: frame.uniforms(
+                  kit.scaleParameters(kit.resolveScale({}, [1e12, 1e12 + 100]), {
+                    origin: field.values.origin?.[0],
+                  }),
+                ),
+              },
+            ],
+          });
+          draws.push({ group, fields: page.bindGroup, count: nr * nf });
+          for (let r = 0; r < nr; r++)
+            for (let b = 0; b < nf; b++) {
+              const cell = (page.rowOffset + r) * buckets + page.envelope.firstBucket + b,
+                at = cell * 16;
+              for (let lane = 0; lane < 4; lane++) {
+                expected[at + lane] = numeric[cell * 4 + lane] - field.values.origin[lane];
+                expected[at + 4 + lane] =
+                  coordinates[cell * 4 + lane] - field.coordinates.origin[lane];
+                expected[at + 8 + lane] = frames[cell * 4 + lane] - field.frames.origin[lane];
+              }
+              expected[at + 12] = cell % 2 === 0 ? 1 : 0;
+              expected[at + 13] = (numeric[cell * 4] - 1e12) / 100;
+              expected[at + 14] = 5;
+              expected[at + 15] = -99;
             }
-            expected[at + 12] = cell % 2 === 0 ? 1 : 0;
-            expected[at + 13] = (numeric[cell * 4] - 1e12) / 100;
-            expected[at + 14] = 5;
-            expected[at + 15] = -99;
-          }
-      }
-    },
-    encode(frame) {
-      const pass = frame.encoder.beginComputePass();
-      pass.setPipeline(pipeline);
-      for (const draw of draws) {
-        pass.setBindGroup(0, draw.fields);
-        pass.setBindGroup(1, draw.group);
-        pass.dispatchWorkgroups(Math.ceil(draw.count / 64));
-      }
-      pass.end();
-      frame.encoder.copyBufferToBuffer(output.buffer, 0, readback.buffer, 0, output.buffer.size);
-    },
-    destroy() {},
+        }
+      },
+      (frame) => {
+        const pass = frame.encoder.beginComputePass();
+        pass.setPipeline(pipeline);
+        for (const draw of draws) {
+          pass.setBindGroup(0, draw.fields);
+          pass.setBindGroup(1, draw.group);
+          pass.dispatchWorkgroups(Math.ceil(draw.count / 64));
+        }
+        pass.end();
+        frame.encoder.copyBufferToBuffer(output.buffer, 0, readback.buffer, 0, output.buffer.size);
+      },
+    ),
   };
   try {
     await gpu.render({ timeMs: 0, views: [{ renderer, target }] });

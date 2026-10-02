@@ -1,3 +1,4 @@
+import { DataKeys } from './data-keys.js';
 import { resolveScale } from './scale.js';
 import {
   blockBuffers,
@@ -43,7 +44,8 @@ interface Cached {
   entry: Entry;
   from: string;
   sampled: boolean;
-  at?: number;
+  table: string;
+  dependencies: Readonly<Record<string, string>>;
 }
 interface Extent {
   entry: Entry;
@@ -51,7 +53,7 @@ interface Extent {
   sampled: boolean;
   value: import('@latkit/model').Domain | null;
 }
-interface Source {
+interface SchemaState {
   schema: Schema;
   entry: Entry;
   cache: Map<string, Cached>;
@@ -59,7 +61,7 @@ interface Source {
 }
 interface Group {
   source: Data;
-  state: Source;
+  state: SchemaState;
   from: string;
   rows?: RowSelection;
   sampled: boolean;
@@ -74,7 +76,8 @@ interface Tile {
 
 /** Resolves native fields into one physical row order. Uploading remains the Uploader's job. */
 export class Fields {
-  private sources = new WeakMap<Data, Source>();
+  private schemas = new WeakMap<Schema, SchemaState>();
+  private readonly keys = new DataKeys();
   private ids = new WeakMap<object, number>();
   private serial = 0;
   private tiles = new Map<string, { entry: Entry; tile: Tile }>();
@@ -117,7 +120,7 @@ export class Fields {
             : undefined;
       if (field) selected.set(field, [...(selected.get(field) ?? []), alias]);
     }
-    const state = this.source(request.source, frame.signal);
+    const state = this.schemaState(request.source, frame.signal);
     const definition = state.schema.types[request.from];
     const sampled = [...selected.keys()].some((field) => definition?.fields[field]?.sampled);
     try {
@@ -195,7 +198,7 @@ export class Fields {
           : input;
       if (binding.from !== request.from)
         throw new GpuError('conflict', 'Fields must belong to one model type');
-      const state = this.source(binding.source, frame.signal);
+      const state = this.schemaState(binding.source, frame.signal);
       try {
         const definition = state.schema.types[binding.from];
         const field = definition?.fields[binding.field];
@@ -360,7 +363,7 @@ export class Fields {
     const count = rowCount(request.rows),
       names = Object.keys(request.fields);
     if (!count) return;
-    const states = new Map<Data, Source>();
+    const states = new Map<Data, SchemaState>();
     const groups: Group[] = [],
       values: [string, FieldValues][] = [];
     let width = 4;
@@ -384,7 +387,7 @@ export class Fields {
         frame.observe(binding.source);
         let state = states.get(binding.source);
         if (!state) {
-          state = this.source(binding.source, frame.signal);
+          state = this.schemaState(binding.source, frame.signal);
           states.set(binding.source, state);
           scope.use(state.entry);
         }
@@ -596,7 +599,7 @@ export class Fields {
     if (binding.from !== request.index.type)
       throw new GpuError('conflict', 'Extent field must belong to the selected index');
     frame.observe(binding.source);
-    const state = this.source(binding.source, frame.signal);
+    const state = this.schemaState(binding.source, frame.signal);
     try {
       scope.use(state.entry);
       const definition = state.schema.types[binding.from];
@@ -612,12 +615,16 @@ export class Fields {
       if (sampled && !window)
         throw new GpuError('invalid-input', 'Sampled extents require a coordinate or window');
       const rows = intersect(request.rows, binding.rows, request.index);
+      const table = this.keys.table(binding.source, binding.from);
+      const dependency = this.keys.field(binding.source, binding.from, binding.field, window);
       const key = JSON.stringify([
+        table,
         request.index,
         this.axisKey(request.rows),
         this.selectionKey(binding.rows),
         binding.field,
-        window,
+        dependency,
+        window?.kind === 'at' ? 'at' : window,
       ]);
       const cached = state.extents.get(key);
       if (cached?.entry.live) {
@@ -633,7 +640,8 @@ export class Fields {
               cached.entry.live &&
               cached.from === binding.from &&
               cached.sampled === sampled &&
-              cached.at === (sampled ? frame.at : undefined) &&
+              cached.table === table &&
+              cached.dependencies[binding.field] === dependency &&
               binding.field in cached.expected &&
               cached.selection.kind !== 'ids' &&
               rows.kind !== 'ids' &&
@@ -803,9 +811,9 @@ export class Fields {
           : [this.axisKey(rows), rows.index],
     );
   }
-  private source(source: Data, signal: AbortSignal): Source {
+  private schemaState(source: Data, signal: AbortSignal): SchemaState {
     signal.throwIfAborted();
-    let state = this.sources.get(source);
+    let state = this.schemas.get(source.schema);
     if (state?.entry.live) {
       state.entry.pin();
       return state;
@@ -813,7 +821,7 @@ export class Fields {
     const schema = source.schema;
     const entry = this.memory.add([], 256 + JSON.stringify(schema).length * 2, () => {});
     state = { schema, entry, cache: new Map(), extents: new Map() };
-    this.sources.set(source, state);
+    this.schemas.set(source.schema, state);
     return state;
   }
 
@@ -825,12 +833,21 @@ export class Fields {
   ): Promise<Cached> {
     const selected = intersect(rows, group.rows, index),
       fields = [...group.fields.keys()].sort();
+    const table = this.keys.table(group.source, group.from);
+    const window =
+      group.sampled && frame.at !== undefined
+        ? { kind: 'at' as const, value: frame.at }
+        : undefined;
+    const dependencies = Object.fromEntries(
+      fields.map((name) => [name, this.keys.field(group.source, group.from, name, window)]),
+    );
     const key = JSON.stringify([
+      table,
       index,
       this.axisKey(rows),
       this.selectionKey(group.rows),
-      fields,
-      group.sampled ? (frame.at ?? null) : null,
+      dependencies,
+      group.sampled ? (window ? 'at' : 'missing-coordinate') : 'static',
     ]);
     let hit = group.state.cache.get(key);
     if (!hit)
@@ -839,7 +856,8 @@ export class Fields {
           cached.entry.live &&
           cached.from === group.from &&
           cached.sampled === group.sampled &&
-          cached.at === (group.sampled ? frame.at : undefined) &&
+          cached.table === table &&
+          fields.every((name) => cached.dependencies[name] === dependencies[name]) &&
           cached.selection.kind !== 'ids' &&
           selected.kind !== 'ids' &&
           fields.every((name) => name in cached.expected) &&
@@ -908,7 +926,8 @@ export class Fields {
         entry,
         from: group.from,
         sampled: group.sampled,
-        at: group.sampled ? frame.at : undefined,
+        table,
+        dependencies,
       };
       group.state.cache.set(key, result);
       return result;
@@ -947,7 +966,11 @@ export class Fields {
 
   private local(input: FieldValues, rows: RowAxis): Resolved {
     validateNative(input.values, rowCount(input.rows));
-    const key = 'local:' + this.id(input) + ':' + JSON.stringify(this.axisKey(rows));
+    const key =
+      'local:' +
+      this.id(input.values) +
+      ':' +
+      JSON.stringify([this.axisKey(input.rows), this.axisKey(rows)]);
     const hit = this.tiles.get(key);
     if (hit?.entry.live) {
       hit.entry.pin();

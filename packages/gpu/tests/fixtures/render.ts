@@ -12,12 +12,17 @@ export function target(device: GPUDevice): RenderTarget {
 export function renderer(
   prepare: (frame: Preparation) => void | Promise<void>,
   encode: (frame: Encoding) => void = () => {},
+  submitted: () => void = () => {},
+  discard: () => void = () => {},
 ): Renderer {
   return {
-    prepare: async (frame) => {
-      await prepare(frame);
-    },
-    encode,
+    capture: () => ({
+      prepare: async (frame) => {
+        await prepare(frame);
+        return { encode, submitted, discard };
+      },
+      release() {},
+    }),
     destroy() {},
   };
 }

@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { MessageChannel } from 'node:worker_threads';
 import { connect, serve, messagePort, webSocket, byteTransport } from '../src/index.js';
-import { LiveModel, inputPatch, transaction } from '../../model/tests/live.js';
+import { LiveModel, inputBatch, transaction } from '../../model/tests/live.js';
 import { subscribed } from './fixture.js';
 import { decodeFrame, limits } from '../src/internal/frame.js';
 import { Peer } from '../src/internal/peer.js';
@@ -74,7 +74,7 @@ it('serves the same contract through the socket adapter', async () => {
   const remote = await connect(webSocket(a));
   const stream = remote.monitor([{ from: 'Node', select: ['value'] }]);
   await subscribed(model);
-  const publication = model.publish([inputPatch()]);
+  const publication = model.publish([inputBatch()]);
   const events = await transaction(stream);
   await publication;
   expect(events.map((event) => event.kind)).toEqual(['begin', 'data', 'end']);

@@ -79,13 +79,13 @@ export type {
   Data,
   TableData,
   ColumnPage,
-  DataPatch,
-  RowsPatch,
-  SamplesPatch,
+  DataBatch,
+  RowBatch,
+  SampleBatch,
   DataEvent,
 } from './materialized.js';
-export { read, selectRows } from './read.js';
-export type { ReadResult } from './read.js';
+export { read, selectRows, locateSample } from './read.js';
+export type { ReadResult, SampleLocation } from './read.js';
 export { createData, appendData, transactions } from './assemble.js';
 export { textColumn, sliceColumn, copyBuffers } from './columns.js';
 

@@ -1,3 +1,4 @@
+import { renderer as snapshotRenderer } from './snapshot.js';
 import { rowCount } from '@latkit/model';
 /* global GPUShaderStage, GPUTextureUsage, GPUBufferUsage, GPUMapMode, document, requestAnimationFrame */
 import { createGpu, kit } from '../../dist/index.js';
@@ -200,78 +201,79 @@ export async function show() {
       tables: {},
     };
     const renderer = {
-      async prepare(frame) {
-        if (capture) frame.buffer(capture);
-        draws = [];
-        for await (const native of frame.fields({
-          source: rowSource,
-          from: index.type,
-          rows: { ...rows, index },
-          fields,
-        }))
-          for (const page of frame.upload(native, {
-            select: Object.keys(native.columns),
-            float64: 'relative',
-          })) {
-            uniformBytes += 32;
-            const origin = page.columns.position.origin;
-            const binding = frame.uniforms(
-              Float32Array.of(
-                ...dimensions,
-                origin[0] - 1e12,
-                origin[1] - 1e12,
-                kind,
-                phase,
-                scale,
-                0,
-              ),
-            );
-            draws.push({
-              page,
-              group: device.createBindGroup({
-                layout: controls,
-                entries: [{ binding: 0, resource: binding }],
-              }),
-            });
+      ...snapshotRenderer(
+        async (frame) => {
+          if (capture) frame.buffer(capture);
+          draws = [];
+          for await (const native of frame.fields({
+            source: rowSource,
+            from: index.type,
+            rows: { ...rows, index },
+            fields,
+          }))
+            for (const page of frame.upload(native, {
+              select: Object.keys(native.columns),
+              float64: 'relative',
+            })) {
+              uniformBytes += 32;
+              const origin = page.columns.position.origin;
+              const binding = frame.uniforms(
+                Float32Array.of(
+                  ...dimensions,
+                  origin[0] - 1e12,
+                  origin[1] - 1e12,
+                  kind,
+                  phase,
+                  scale,
+                  0,
+                ),
+              );
+              draws.push({
+                page,
+                group: device.createBindGroup({
+                  layout: controls,
+                  entries: [{ binding: 0, resource: binding }],
+                }),
+              });
+            }
+          textPages = await frame.text({ runs });
+          uniformBytes += 32;
+          textGroup = device.createBindGroup({
+            layout: controls,
+            entries: [
+              {
+                binding: 0,
+                resource: frame.uniforms(Float32Array.of(...dimensions, 0, 0, kind, phase, 1, 0)),
+              },
+            ],
+          });
+        },
+        (frame) => {
+          const pass = frame.encoder.beginRenderPass({
+            colorAttachments: [
+              {
+                view: frame.target,
+                loadOp: 'clear',
+                storeOp: 'store',
+                clearValue: [0.027, 0.047, 0.075, 1],
+              },
+            ],
+          });
+          pass.setPipeline(pipeline);
+          for (const { page, group } of draws) {
+            pass.setBindGroup(0, page.bindGroup);
+            pass.setBindGroup(1, group);
+            pass.draw(6, rowCount(page.rows));
           }
-        textPages = await frame.text({ runs });
-        uniformBytes += 32;
-        textGroup = device.createBindGroup({
-          layout: controls,
-          entries: [
-            {
-              binding: 0,
-              resource: frame.uniforms(Float32Array.of(...dimensions, 0, 0, kind, phase, 1, 0)),
-            },
-          ],
-        });
-      },
-      encode(frame) {
-        const pass = frame.encoder.beginRenderPass({
-          colorAttachments: [
-            {
-              view: frame.target,
-              loadOp: 'clear',
-              storeOp: 'store',
-              clearValue: [0.027, 0.047, 0.075, 1],
-            },
-          ],
-        });
-        pass.setPipeline(pipeline);
-        for (const { page, group } of draws) {
-          pass.setBindGroup(0, page.bindGroup);
-          pass.setBindGroup(1, group);
-          pass.draw(6, rowCount(page.rows));
-        }
-        pass.setPipeline(textPipeline);
-        pass.setBindGroup(1, textGroup);
-        for (const page of textPages) {
-          pass.setBindGroup(0, page.bindGroup);
-          pass.draw(6, page.count);
-        }
-        pass.end();
-      },
-      destroy() {},
+          pass.setPipeline(textPipeline);
+          pass.setBindGroup(1, textGroup);
+          for (const page of textPages) {
+            pass.setBindGroup(0, page.bindGroup);
+            pass.draw(6, page.count);
+          }
+          pass.end();
+        },
+      ),
     };
     views.push({ renderer, target });
   }

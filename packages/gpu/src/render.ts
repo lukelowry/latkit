@@ -83,19 +83,30 @@ export interface Encoding extends FrameInfo {
   readonly target: GPUTextureView;
 }
 
-export type Invalidation = 'refresh' | 'replace';
+/** Work captured synchronously before any renderer starts asynchronous preparation. */
+export interface CapturedFrame {
+  prepare(frame: Preparation): Promise<PreparedFrame>;
+  /** Release the snapshot after preparation settles, whether submitted or cancelled. Idempotent. */
+  release(): void;
+}
 
-/** A renderer represents one view and borrows its Gpu and sources. */
-export interface Renderer {
-  /** Next drawable work or completion; owners observe rejections. No pending work means complete. */
-  readonly pending?: Promise<void>;
-  prepare(frame: Preparation): Promise<void>;
-  /** Synchronous. Encode any number of passes; never submit the queue. */
+/** A single candidate. Only submission may advance visible state or acknowledge work. */
+export interface PreparedFrame {
+  /** Synchronous: record commands, never submit the queue. */
   encode(frame: Encoding): void;
-  /** Notification after whole-frame submission. Must not throw or start another render synchronously. */
-  submitted?(frame: FrameInfo): void;
+  /** Called after the whole frame is submitted. Must not throw or start a render synchronously. */
+  submitted(): void;
+  /** Discard frame-local preparation without consuming pending work. Idempotent. */
+  discard(): void;
+}
+
+/** A renderer borrows its Gpu and immutable application data. */
+export interface Renderer {
+  readonly pending?: Promise<void>;
+  /** Capture every input before asynchronous work; ordinary invalidation requests another frame. */
+  capture(): CapturedFrame;
   readonly animating?: boolean;
-  on?(event: 'invalidate', listener: (change: Invalidation) => void): () => void;
+  on?(event: 'invalidate', listener: () => void): () => void;
   destroy(): void;
 }
 

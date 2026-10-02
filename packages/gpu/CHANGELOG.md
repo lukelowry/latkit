@@ -1,5 +1,28 @@
 # @latkit/gpu
 
+## 0.11.0
+
+### Minor Changes
+
+- dc8b6a0: Replace renderer prepare/encode hooks with captured and prepared frame contracts. Ordinary
+  invalidation schedules the latest state without cancelling valid work; canvas playback coalesces
+  requests without adding an extra animation-frame wait. Compositions capture every child before
+  preparation, and images and video share submission and discard behavior.
+
+  Monitor append progress survives cancelled frames and tracks independently sampled fields.
+  Bounded camera-independent tiles reuse geometry and exact bounds for domain changes, with local
+  refinement at summary boundaries and local rereads on cache misses. Models and transport remain
+  free of observation retention and replay.
+
+### Patch Changes
+
+- 70030a4: Add `locateSample` for consistent observation lookup. Reuse local query, field, and scale results by
+  immutable sample dependencies rather than exact playhead coordinates or whole data publications.
+  Playback benefits automatically through existing view APIs, including after sample appends.
+- Updated dependencies [dc8b6a0]
+- Updated dependencies [70030a4]
+  - @latkit/model@0.15.0
+
 ## 0.10.0
 
 ### Minor Changes

@@ -20,12 +20,12 @@ it.each([false, true])(
     }
   },
 );
-it('rejects the previous protocol before dispatch', async () => {
+it.each([2, 3])('rejects previous protocol %s before dispatch', async (version) => {
   const [client, server] = transports();
   server.subscribe(
     (value) => {
       const m = value as { kind: string; limits: unknown };
-      if (m.kind === 'hello') void server.send({ kind: 'hello', version: 2, limits: m.limits });
+      if (m.kind === 'hello') void server.send({ kind: 'hello', version, limits: m.limits });
     },
     () => {},
   );
@@ -37,7 +37,7 @@ it('rejects the previous protocol before dispatch', async () => {
 });
 it.each(
   [
-    [{ kind: 'data', version: 'x', patch: {} }],
+    [{ kind: 'data', version: 'x', block: {} }],
     [
       { kind: 'begin', version: 'x', initial: false },
       { kind: 'end', version: 'y' },
@@ -94,7 +94,7 @@ it('rejects unsolicited publication columns', async () => {
     yield {
       kind: 'data',
       version: 'v1',
-      patch: {
+      block: {
         kind: 'rows',
         index: { source: 'test', type: 'Node', version: 'v1' },
         rows: { kind: 'range', offset: 0, count: 1 },
@@ -117,3 +117,39 @@ it('rejects unsolicited publication columns', async () => {
     await serving;
   }
 });
+
+it.each([false, true])(
+  'rejects replacement operations at the publication boundary (framed=%s)',
+  async (framed) => {
+    const model = new LiveModel();
+    model.monitor = async function* () {
+      yield { kind: 'begin', version: 'v1', initial: true };
+      yield {
+        kind: 'data',
+        version: 'v1',
+        block: {
+          kind: 'rows',
+          index: { source: 'test', type: 'Node', version: 'v1' },
+          rows: { kind: 'range', offset: 0, count: 1 },
+          columns: { value: { kind: 'numeric', offset: 0, length: 1, values: Float64Array.of(1) } },
+          replace: true,
+        },
+      };
+      yield { kind: 'end', version: 'v1' };
+    };
+    const [client, server] = transports(framed);
+    const serving = serve(server, model);
+    const remote = await connect(client);
+    try {
+      await expect(
+        (async () => {
+          for await (const event of remote.monitor([{ from: 'Node', select: ['value'] }]))
+            void event;
+        })(),
+      ).rejects.toMatchObject({ code: 'invalid-input' });
+    } finally {
+      await remote.close();
+      await serving;
+    }
+  },
+);

@@ -5,7 +5,7 @@ import { createRenderTarget, type TextureTarget } from './target.js';
 import type {
   Encoding,
   FrameInfo,
-  Invalidation,
+  CapturedFrame,
   Preparation,
   Renderer,
   RenderTarget,
@@ -128,7 +128,12 @@ export abstract class BaseView<
   #config: Config;
   #closed = false;
   #listeners = new Map<PropertyKey, Set<Listener>>();
-  #invalidated = new Set<(change: Invalidation) => void>();
+  #invalidated = new Set<() => void>();
+  #captured = false;
+  #frameConfig?: Config;
+  #configuration?: { previous: Config; next: Config; options: SetOptions };
+  #changes = new Map<string, () => void>();
+  #cameraChange?: { reset: boolean; patch: Plain; options: SetOptions };
   readonly #renderer: Renderer;
   #canvas?: CanvasState;
   #held = 0;
@@ -152,12 +157,7 @@ export abstract class BaseView<
       get animating() {
         return view.animating;
       },
-      prepare: (frame) => this.prepare(frame),
-      encode: (frame) => this.encode(frame),
-      submitted: (frame) => {
-        this.submitted(frame);
-        this.emit('frame', frame as Events['frame']);
-      },
+      capture: () => this.#capture(),
       on: (_event, listener) => {
         this.#invalidated.add(listener);
         return () => this.#invalidated.delete(listener);
@@ -207,7 +207,16 @@ export abstract class BaseView<
     const own = Object.keys(rest).some((key) => !PRESENTATION.has(key));
     if (own) this.check(next);
     this.#config = next;
-    if (own) this.configure(previous, next, options);
+    if (own) {
+      if (this.#captured) {
+        this.#configuration = {
+          previous: this.#configuration?.previous ?? previous,
+          next,
+          options,
+        };
+        this.invalidate();
+      } else this.configure(previous, next, options);
+    }
     if (camera !== undefined) this.moveCamera(camera as Plain | null, options);
     if (previous.canvas !== next.canvas) {
       this.#detach();
@@ -218,9 +227,9 @@ export abstract class BaseView<
     }
     if (previous.paused !== next.paused) {
       if (next.paused) this.#stopFrame(new DOMException('View paused', 'AbortError'));
-      else this.invalidate('replace');
+      else this.invalidate();
     }
-    if (previous.at !== next.at) this.invalidate('replace');
+    if (previous.at !== next.at) this.invalidate();
   }
   on<K extends keyof Events>(event: K, listener: (value: Events[K]) => void): () => void {
     this.live();
@@ -237,16 +246,122 @@ export abstract class BaseView<
     if (this.#listeners.get('error')?.size) this.emit('error', error as Events['error']);
     else console.error(error);
   }
-  /** Schedule a frame. Replace discards a frame in preparation; refresh lets it finish. */
-  protected invalidate(change: Invalidation = 'replace'): void {
+  /** Schedule the latest desired state. A valid captured frame is allowed to finish. */
+  protected invalidate(): void {
     if (this.#closed) return;
-    for (const listener of this.#invalidated) listener(change);
+    for (const listener of this.#invalidated) listener();
     const state = this.#canvas;
     if (!state) return;
     state.wanted = true;
-    if (change === 'replace')
-      state.active?.abort(new DOMException('Canvas frame superseded', 'AbortError'));
     this.#schedule();
+  }
+  /** Configuration seen by the captured frame; config itself always exposes the latest request. */
+  protected get frameConfig(): Config {
+    return this.#frameConfig ?? this.#config;
+  }
+  /** Coalesce changes to renderer state until the captured snapshot has settled. */
+  protected defer(key: string, change: () => void): boolean {
+    if (!this.#captured) return false;
+    if (key === 'camera') this.#cameraChange = undefined;
+    this.#changes.set(key, change);
+    this.invalidate();
+    return true;
+  }
+  protected deferCamera(
+    camera: Readonly<Record<string, unknown>> | null,
+    options: SetOptions,
+  ): boolean {
+    if (!this.#captured) return false;
+    const previous = this.#cameraChange;
+    this.#cameraChange = {
+      reset: camera === null || !!previous?.reset,
+      patch: camera === null ? {} : { ...previous?.patch, ...camera },
+      options,
+    };
+    this.#changes.set('camera', () => {
+      const change = this.#cameraChange;
+      this.#cameraChange = undefined;
+      if (!change) return;
+      if (change.reset) this.moveCamera(null, change.options);
+      if (Object.keys(change.patch).length) this.moveCamera(change.patch, change.options);
+    });
+    this.invalidate();
+    return true;
+  }
+  #capture(): CapturedFrame {
+    this.live();
+    if (this.#captured) throw new GpuError('busy', 'View already has a captured frame');
+    this.#captured = true;
+    this.#frameConfig = this.#config;
+    let children: readonly CapturedFrame[];
+    try {
+      children = this.captureChildren();
+    } catch (error) {
+      this.#captured = false;
+      this.#frameConfig = undefined;
+      throw error;
+    }
+    let released = false;
+    return {
+      prepare: async (frame) => {
+        try {
+          await this.prepare(frame);
+        } catch (error) {
+          this.discard();
+          throw error;
+        }
+        let settled = false;
+        return {
+          encode: (encoding) => this.encode(encoding),
+          submitted: () => {
+            if (settled) return;
+            settled = true;
+            this.submitted(frame);
+            this.emit('frame', frame as Events['frame']);
+          },
+          discard: () => {
+            if (settled) return;
+            settled = true;
+            this.discard();
+          },
+        };
+      },
+      release: () => {
+        if (released) return;
+        released = true;
+        const failures: unknown[] = [];
+        for (const child of children) {
+          try {
+            child.release();
+          } catch (error) {
+            failures.push(error);
+          }
+        }
+        this.#captured = false;
+        this.#frameConfig = undefined;
+        const configuration = this.#configuration;
+        const changes = [...this.#changes.values()];
+        this.#configuration = undefined;
+        this.#changes.clear();
+        if (!this.#closed) {
+          try {
+            if (configuration)
+              this.configure(configuration.previous, configuration.next, configuration.options);
+          } catch (error) {
+            failures.push(error);
+          }
+          for (const change of changes) {
+            try {
+              change();
+            } catch (error) {
+              failures.push(error);
+            }
+          }
+        }
+        this.#cameraChange = undefined;
+        if (failures.length) throw new AggregateError(failures, 'Snapshot release failed');
+      },
+    };
   }
   protected live(): void {
     if (this.#closed) throw new GpuError('closed', 'View is destroyed');
@@ -327,7 +442,7 @@ export abstract class BaseView<
         released = true;
         this.#held--;
         done();
-        this.invalidate('replace');
+        this.invalidate();
       };
     });
   }
@@ -368,6 +483,10 @@ export abstract class BaseView<
   protected abstract release(): void;
   protected abstract prepare(frame: Preparation): Promise<void>;
   protected abstract encode(frame: Encoding): void;
+  protected captureChildren(): readonly CapturedFrame[] {
+    return [];
+  }
+  protected discard(): void {}
   protected submitted(frame: FrameInfo): void {
     void frame;
   }
@@ -388,7 +507,7 @@ export abstract class BaseView<
     const presentation = createPresentation({ gpu: this.gpu, canvas });
     const state: CanvasState = { canvas, presentation, window, wanted: true, raf: 0 };
     this.#canvas = state;
-    const resize = () => this.invalidate('replace');
+    const resize = () => this.invalidate();
     const ratio = () => {
       state.ratio?.removeEventListener('change', onRatio);
       state.ratio = window.matchMedia('(resolution: ' + (window.devicePixelRatio || 1) + 'dppx)');
@@ -440,23 +559,28 @@ export abstract class BaseView<
     state.active?.abort(reason);
     if (state.raf) state.window.cancelAnimationFrame(state.raf);
     state.raf = 0;
+    state.pendingTime = undefined;
   }
   #schedule(): void {
     const state = this.#canvas;
-    if (
-      state &&
-      state.wanted &&
-      !state.active &&
-      !state.raf &&
-      !this.#held &&
-      !this.#config.paused &&
-      !this.#closed
-    )
+    if (state && state.wanted && !state.raf && !this.#held && !this.#config.paused && !this.#closed)
       state.raf = state.window.requestAnimationFrame((now) => this.#frame(state, now));
   }
   #frame(state: CanvasState, now: number): void {
     state.raf = 0;
     if (this.#canvas !== state || this.#held || this.#config.paused || !state.wanted) return;
+    if (state.active) {
+      state.pendingTime = now;
+      if (this.animating) this.#schedule();
+      return;
+    }
+    this.#draw(state, now);
+  }
+  #draw(state: CanvasState, now: number): void {
+    if (state.raf) {
+      state.window.cancelAnimationFrame(state.raf);
+      state.raf = 0;
+    }
     const { canvas, window, presentation } = state;
     const width = canvas.clientWidth,
       height = canvas.clientHeight;
@@ -504,8 +628,22 @@ export abstract class BaseView<
       )
       .finally(() => {
         if (state.active === own) state.active = undefined;
-        this.#schedule();
+        const pendingTime = state.pendingTime;
+        state.pendingTime = undefined;
+        if (
+          pendingTime !== undefined &&
+          state.wanted &&
+          this.#canvas === state &&
+          !this.#held &&
+          !this.#config.paused
+        )
+          this.#draw(state, pendingTime);
+        else this.#schedule();
       });
+    if (this.animating) {
+      state.wanted = true;
+      this.#schedule();
+    }
   }
 }
 interface CanvasState {
@@ -515,6 +653,7 @@ interface CanvasState {
   wanted: boolean;
   raf: number;
   active?: AbortController;
+  pendingTime?: number;
   frame?: Promise<void>;
   observer?: ResizeObserver;
   ratio?: MediaQueryList;
