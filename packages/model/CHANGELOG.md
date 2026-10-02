@@ -1,5 +1,24 @@
 # @latkit/model
 
+## 0.15.0
+
+### Minor Changes
+
+- dc8b6a0: Replace data patch operations with complete construction and sample-only append. `createData`
+  accepts disjoint `RowBatch` and `SampleBatch` values; `appendData` accepts only new sampled
+  observations. Static changes require a fresh `Data` value. Overlapping writes, sample corrections,
+  backfilling, and the `replace` option reject without changing earlier values. Immutable payloads
+  remain shared, with cached per-field append boundaries and one assembly per changed table.
+
+  Remove `DataPatch`, `RowsPatch`, and `SamplesPatch` in favor of `DataBatch`, `RowBatch`, and
+  `SampleBatch`. Data events now carry `block` instead of `patch`. Connect protocol 4 requires
+  upgrading both peers together. Transaction assembly remains independent of commands and does
+  not accumulate history.
+
+- 70030a4: Add `locateSample` for consistent observation lookup. Reuse local query, field, and scale results by
+  immutable sample dependencies rather than exact playhead coordinates or whole data publications.
+  Playback benefits automatically through existing view APIs, including after sample appends.
+
 ## 0.14.0
 
 ### Minor Changes
