@@ -30,7 +30,7 @@ export function validateBlock(
   if (options.buffers !== undefined)
     c.enum(options.buffers, ['borrowed', 'owned'], ['options', 'buffers']);
   if (c.issues.length) return c.issues;
-  const bound = Math.min(schema.limits.maxBlockBytes, options.maxBlockBytes ?? Infinity);
+  const bound = options.maxBlockBytes ?? Infinity;
   const allocations = blockBuffers(value as QueryBlock);
   if (
     blockByteLength(value as QueryBlock) > bound ||

@@ -37,7 +37,6 @@ class GridSource {
   readonly schema: Schema;
   constructor(system: 'geographic' | 'cartesian' = 'geographic') {
     this.schema = {
-      limits: { maxBlockBytes: 1 << 20 },
       types: {
         Bus: { fields: { position: { type: lonlat } }, spatial: { field: 'position', system } },
         Branch: { fields: { bus1: bus, bus2: bus, rating: { type: 'float64' } } },

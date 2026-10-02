@@ -83,7 +83,7 @@ describe('native example telemetry', () => {
     expect(blocks.reduce((n, block) => n + block.coordinates.length, 0)).toBe(900);
     for (const block of blocks) {
       expect(validateBlock(source.schema, request, block)).toEqual([]);
-      expect(blockByteLength(block)).toBeLessThanOrEqual(source.schema.limits.maxBlockBytes);
+      expect(blockByteLength(block)).toBeLessThanOrEqual(256 * 1024);
       expect(block.columns.x!.values[0]).toBe(block.firstFrame);
     }
   });

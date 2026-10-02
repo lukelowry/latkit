@@ -24,7 +24,6 @@ export class PathSource {
       return column.kind;
     };
     this.schema = {
-      limits: { maxBlockBytes: 4 * 1024 * 1024 },
       types: Object.fromEntries(
         Object.entries(tables).map(([name, columns]) => [
           name,

@@ -10,6 +10,8 @@ import type {
 import type { Schema } from './schema.js';
 import type { Domain, RequestOptions, Scalar, Version } from './types.js';
 
+export const DEFAULT_BLOCK_BYTES = 256 * 1024;
+
 export interface QueryOptions extends RequestOptions {
   /**
    * Default borrowed: immutable application backing remains valid after the read ends. Never detach.

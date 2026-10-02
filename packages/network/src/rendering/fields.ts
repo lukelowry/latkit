@@ -17,13 +17,17 @@ export function splitPosition(
 ): position is { readonly x: kit.FieldInput; readonly y: kit.FieldInput } {
   return typeof position === 'object' && 'x' in position;
 }
-export async function readFields(
-  frame: kit.Preparation,
-  source: import('@latkit/model').Data,
-  bank: VertexBank | EdgeBank,
-  options: VertexData | EdgeData | PathData,
-  position: kit.Position2D | undefined,
-): Promise<FieldRead> {
+const fieldBindings = new WeakMap<
+  object,
+  {
+    position: kit.Position2D | undefined;
+    fields: Record<string, kit.FieldInput>;
+    vector: boolean;
+  }
+>();
+function bindings(options: VertexData | EdgeData | PathData, position: kit.Position2D | undefined) {
+  const cached = fieldBindings.get(options);
+  if (cached && cached.position === position) return cached;
   const fields: Record<string, kit.FieldInput> = {};
   let vector = false;
   if (position) {
@@ -52,6 +56,18 @@ export async function readFields(
       fields.junctionY = options.junction.y;
     } else fields.junction = options.junction;
   }
+  const result = { fields, vector, position };
+  fieldBindings.set(options, result);
+  return result;
+}
+export async function readFields(
+  frame: kit.Preparation,
+  source: import('@latkit/model').Data,
+  bank: VertexBank | EdgeBank,
+  options: VertexData | EdgeData | PathData,
+  position: kit.Position2D | undefined,
+): Promise<FieldRead> {
+  const { fields, vector } = bindings(options, position);
   const control = new Set(['bends', 'points', 'junction', 'junctionX', 'junctionY']);
   const pages: ReadPage[] = [],
     native: kit.NativeFields[] = [];

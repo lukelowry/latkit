@@ -1,6 +1,5 @@
 import { expect, it } from 'vitest';
-import { connected, subscribed } from '../../connect/tests/fixture.js';
-import { inputBatch, transaction } from '../../model/tests/live.js';
+import { pair, batch, fields, collect } from '../../connect/tests/fixture.js';
 import { createData, type NumericColumn } from '@latkit/model';
 import { createGpu } from '../src/index.js';
 import { type GpuPage } from '../src/kit.js';
@@ -9,23 +8,23 @@ import { field } from './fixtures/fields.js';
 import { draw } from './fixtures/render.js';
 
 it('reads and uploads the same native contract through connect without a renderer transport adapter', async () => {
-  const h = await connected();
-  const patch = inputBatch(100000);
+  const patch = batch(100000);
   (patch.columns.value as NumericColumn).values.set(
     Float64Array.from({ length: 100000 }, (_, i) => i),
   );
-  const stream = h.remote.monitor([{ from: 'Node', select: ['value'] }]);
-  await subscribed(h.model);
-  const publishing = h.model.publish([patch]);
-  const events = await transaction(stream);
-  await publishing;
-  const remote = createData(
-    h.remote.schema,
-    'v1',
-    events.flatMap((event) => (event.kind === 'data' ? [event.block] : [])),
-  );
+  const h = await pair({
+    monitor: function* () {
+      yield patch;
+    },
+  });
+  let remote;
+  try {
+    const publications = await collect(h.model.monitor(fields));
+    remote = createData(h.model.schema, 'v1', publications.flat());
+  } finally {
+    await h.close();
+  }
   const source = { index: patch.index, values: (patch.columns.value as NumericColumn).values };
-  await h.close();
   const fake = fakeDevice(),
     gpu = await createGpu({ device: fake.device, validate: true });
   try {

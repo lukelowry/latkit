@@ -17,7 +17,6 @@ export class FieldSource {
   blockRows = 1024;
   private cached?: Data;
   readonly schema: Schema = {
-    limits: { maxBlockBytes: 1e6 },
     axis: { name: 'time' },
     types: {
       node: {

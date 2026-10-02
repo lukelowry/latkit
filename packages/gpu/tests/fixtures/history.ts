@@ -40,7 +40,6 @@ export class HistorySource {
   }
   private cached?: Data;
   readonly schema: Schema = {
-    limits: { maxBlockBytes: 1e6 },
     axis: { name: 'coordinate' },
     types: {
       node: {

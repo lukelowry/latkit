@@ -1,5 +1,5 @@
-import { transactions } from '@latkit/model';
-import { connect, messagePort, serve } from '@latkit/connect';
+import { createData, selectBatches } from '@latkit/model';
+import { preparePublication, decodePublication, decode } from '@latkit/connect/protocol';
 /* global document, GPUBufferUsage, GPUMapMode, PointerEvent, OffscreenCanvas, createImageBitmap */
 import { createMonitor } from '@latkit/monitor';
 import { kit } from '@latkit/gpu';
@@ -292,39 +292,18 @@ export async function verify(gpu) {
   assert(colored > 100, 'Shared Shade did not affect history');
   effect.view.destroy();
   checks.push({ mode: 'transactional shade', passed: true });
-  const channel = new MessageChannel(),
-    local = new SignalSource(3, 128);
-  const producer = {
-    name: 'Telemetry',
-    schema: local.schema,
-    async *monitor() {
-      yield { kind: 'begin', version: local.version, initial: true };
-      for (const page of local.data.tables.signal.fields.value)
-        yield {
-          kind: 'data',
-          version: local.version,
-          block: {
-            kind: 'samples',
-            index: local.index,
-            rows: page.rows,
-            firstFrame: page.samples.firstFrame,
-            coordinates: page.samples.coordinates,
-            columns: { value: page.column },
-          },
-        };
-      yield { kind: 'end', version: local.version };
-    },
+  const local = new SignalSource(3, 128);
+  const bounds = {
+    maxMessageBytes: 1024 * 1024,
+    maxMetadataBytes: 64 * 1024,
+    maxPublicationBatches: 64,
   };
-  const serving = serve(messagePort(channel.port1), producer),
-    remote = await connect(messagePort(channel.port2));
-  const transaction = transactions(
-    remote.schema,
-    remote.monitor([{ from: 'signal', select: ['value'] }]),
-  );
-  const delivered = (await transaction.next()).value;
-  await transaction.return();
-  await remote.close();
-  await serving;
+  const received = [];
+  for await (const batch of selectBatches(local.data, [{ from: 'signal', select: ['value'] }])) {
+    const frame = decode(preparePublication(batch, 1, local.schema, bounds).encode(1), bounds);
+    received.push(...decodePublication({ bytes: frame.payload }, local.schema, bounds));
+  }
+  const delivered = createData(local.schema, local.version, received);
   const connected = createMonitor(gpu, {
     source: delivered,
     traces: { a: { from: 'signal', field: 'value' } },
@@ -352,13 +331,9 @@ export async function verify(gpu) {
     );
     connected.destroy();
     assert(local.data.tables.signal.fields.value.length > 0, 'Application data changed');
-    checks.push({ mode: 'delivered data after disconnect', passed: true });
+    checks.push({ mode: 'decoded publication ownership', passed: true });
   } finally {
     connected.destroy();
-    await remote.close();
-    await serving;
-    channel.port1.close();
-    channel.port2.close();
   }
   target.destroy();
   await gpu.idle();

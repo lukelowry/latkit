@@ -1,13 +1,14 @@
 # @latkit/model
 
-Columnar values, passive observation, and local computation for Latkit.
+Immutable columnar values, local computation, and portable command descriptions for Latkit.
 
-| Contract            | Responsibility                                                       |
-| ------------------- | -------------------------------------------------------------------- |
-| `Data`              | Immutable application-owned schema, row identities, and column pages |
-| `Model`             | Schema and one-pass `monitor(fields)` publications                   |
-| `Commands`          | Optional, independent routines and `run(command)`                    |
-| `read(data, query)` | Bounded local rows, samples, aggregates, and envelopes               |
+| Contract                               | Responsibility                                                               |
+| -------------------------------------- | ---------------------------------------------------------------------------- |
+| `Data`                                 | Immutable application-owned schema, row identities, and indexed column pages |
+| `DataBatch`                            | Plain static rows or sampled observations                                    |
+| `read(data, query, options)`           | Bounded local rows, samples, aggregates, and envelopes                       |
+| `selectBatches(data, fields, options)` | Selected plain batches from a captured value                                 |
+| `CommandDescription` / `Parameter`     | Shared command vocabulary without connection or transport state              |
 
 ## Supply values
 
@@ -15,7 +16,6 @@ Columnar values, passive observation, and local computation for Latkit.
 import { createData, read } from '@latkit/model';
 
 const schema = {
-  limits: { maxBlockBytes: 256 * 1024 },
   types: { Bus: { fields: { load: { type: 'float64' } } } },
 } as const;
 const source = createData(schema, 'data-1', [
@@ -53,6 +53,28 @@ global history. Your application decides which values to hold, persist, or disca
 
 ## Locate an observation
 
+Field pages are immutable indexed collections (`ColumnPages`), built by `createData` and
+`appendData`. Appending shares the earlier page and sample indexes; it does not copy the entire
+page list or rebuild the earlier sample index. Older `Data` values remain valid.
+
+```ts
+const pages = data.tables.Node.fields.output;
+const first = pages.at(0); // replaces pages[0]
+for (const page of pages) consume(page);
+```
+
+Use `appendedPages(previousPages, nextPages)` to inspect just an appended suffix; it returns
+`undefined` for a replacement. `samplePages(pages, window)` visits only pages covering a sample
+window. Neither function retains a model or performs I/O. Construct data from batches rather
+than assigning arrays directly to `TableData.fields`. `copyBuffers(data)` preserves these indexes
+while copying payloads; `Data` itself is not a structured-clone transport format. Transport uses
+plain `DataBatch` values.
+
+`resolveRows(data, { from, select, rows, at })` resolves physical row identity and ordering without
+gathering field values. It uses the same sampled coverage rules as `read`, including independent
+field clocks, missing observations, and ID selections. These helpers are optional; views use them
+automatically.
+
 `locateSample(pages, at)` resolves the last observation at or before a finite coordinate without
 reading or copying its values. It returns `{ frame, coordinate, offset, pages }`, or `undefined`
 before the first observation or when no samples exist. Duplicate coordinates select the last
@@ -68,32 +90,33 @@ if (sample) console.log(sample.frame, sample.coordinate);
 Views perform this lookup automatically. Applications do not need to quantize their playheads
 or add their own sample caches.
 
-## Observe independently of commands
+## Select values on demand
+
+`selectBatches` reads a captured immutable value and yields only selected fields and their row
+identities. Static columns, sampled fields with independent clocks, gaps, and native strides are
+preserved. Indexed coordinate reads avoid repeatedly scanning the complete sample history.
 
 ```ts
-import { transactions } from '@latkit/model';
-import type { Model } from '@latkit/model';
+import { selectBatches } from '@latkit/model';
 
-async function observe(model: Model, signal: AbortSignal) {
-  const events = model.monitor([{ from: 'Bus', select: ['voltage'] }], { signal });
-  for await (const data of transactions(model.schema, events)) {
-    show(data); // Each value contains just this transaction's supplied pages.
-  }
+for await (const batch of selectBatches(data, [{ from: 'Bus', select: ['voltage'] }], {
+  signal,
+  maxBlockBytes: 256 * 1024,
+})) {
+  await publish(batch);
 }
 ```
 
-A subscription begins when `monitor` is invoked and delivers ordered `begin`, `data`, `end`
-transactions. The initial transaction may supply current state. There is no historical
-cursor, replay, retained handle, or query operation on a model. A producer uses bounded
-delivery buffers and backpressure, or fails a slow subscription with `resource-limit`.
-Return the iterator or abort its signal to unsubscribe, including a pending pull.
+It performs local work only. A network producer can return this iterable from
+`connectLattice.monitor`, or use it with a command's requested outputs. Live subscriptions,
+publication ownership, backpressure, and cancellation belong to `@latkit/connect`. This package
+has no polling Model, Commands service, begin/end event union, or transaction assembler.
 
-Commands neither start nor reset nor complete subscriptions. A model need not have any
-commands. An application's command scheduler and observation publisher remain independent.
-`transactions` assembles complete publications without accumulating previous transactions;
-to keep history, the application collects `event.block` values through the transaction end and explicitly appends
-its sampled batches to its own `Data`. The `transactions(schema, events)` convenience helper
-continues to yield a fresh `Data` for each complete transaction.
+`CommandDescription` holds parameters and labels; `Arguments<typeof parameters>` infers
+handler arguments, including optional/defaulted values, choices, and multiple values. Parameters
+support numbers, booleans, text, choices, domain-ID references, and bounded File inputs.
+`Progress`, `Diagnostic`, and `CommandResult` are the shared status/result vocabulary.
+These are descriptions and values, without opcodes or transport implementation.
 
 ## Identity, layout, and validation
 
@@ -104,11 +127,12 @@ String IDs are optional pages used for domain-ID selection. Sample pages carry a
 frame numbers and Float64 coordinates, independently of their numeric field precision.
 
 Schema declares column types, nullability, spatial meaning, and the sample axis. It does
-not advertise query capabilities: local `read` implements all four operations. Use
-`validateSchema`, `validateDataEvent`, and `validateBlock` at trust boundaries. Storage
-helpers expect validated column layouts; they additionally check schema/row-space compatibility,
-disjoint cells, and append boundaries without rescanning stored payloads. `DataEvent` carries a
-`block: DataBatch`; the former patch types, event payload, and replacement option are removed.
+not declare transport limits or query capabilities. Use `validateSchema`, `validateSelection`,
+`validateBatch`, and `validateBlock` at trust boundaries. Batch/block validation applies a
+byte limit when explicitly supplied; local `read` and `selectBatches` default to
+`DEFAULT_BLOCK_BYTES` (256 KiB). Override through `QueryOptions.maxBlockBytes`.
+Storage helpers expect validated column layouts; they additionally check row-space compatibility,
+disjoint cells, and append boundaries without rescanning stored payloads.
 
 Queries yield one schema header followed by byte-bounded blocks. Contiguous reads share
 immutable typed-array views. Sparse selections and batched small sample pages may copy.
@@ -118,11 +142,14 @@ have been supplied. They never ask a model for missing values.
 
 ## Breaking migration
 
-Delete `Queryable`, `Recording`, `retain`, retained budgets, model `query`/`export`/`on`,
-and `Routine.records`. Replace `describe()` with `.schema`. Move `run` and `routines` to
-`Commands`. Replace provider implementations with passive `Model.monitor` delivery and
-application-owned `Data`; call `read(data, query)` locally. Views take `source: data` and
-receive updates through `view.set({ source: nextData })`. Values remain usable after
-unsubscribe, connection closure, or view destruction.
+Remove `Model`, `Commands`, `Routine`, `MonitorOptions`, `DataEvent`,
+`validateDataEvent`, and `transactions` imports. Use `connectLattice` / `acceptModel`
+from connect for remote behavior, `CommandDescription` / `Parameters` for command metadata,
+and `validateBatch` for plain batches. Replace schema `limits` with per-operation query or
+connection limits. There is no compatibility layer.
+
+Applications construct or append their own immutable `Data` values from received batches.
+Views still take `source: data` and updates through `view.set({ source: nextData })`.
+Data remains usable after unsubscribe, connection closure, or view destruction.
 
 [API](https://latkit.readthedocs.io/en/latest/api/reference/model/index.html)

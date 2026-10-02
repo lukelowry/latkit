@@ -1,3 +1,4 @@
+import { isColumnPages } from './pages.js';
 /** Deduplicated backing allocations. Only transfer these for a query requested with buffers: owned. */
 export function blockBuffers(block: unknown): readonly ArrayBufferLike[] {
   const buffers = new Set<ArrayBufferLike>();
@@ -44,7 +45,8 @@ function visit(value: unknown, consume: (value: unknown) => void): void {
       if (seen.has(current)) continue;
       seen.add(current);
       if (ArrayBuffer.isView(current)) consume(current);
-      else if (Array.isArray(current)) for (const item of current) pending.push(item);
+      else if (Array.isArray(current) || isColumnPages(current))
+        for (const item of current) pending.push(item);
       else
         for (const [key, item] of Object.entries(current)) {
           consume(key);

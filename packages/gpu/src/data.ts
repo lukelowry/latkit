@@ -214,7 +214,7 @@ export class Reads {
         if (!header || value.kind !== read.query.kind || value.version !== header.version)
           throw new GpuError('conflict', 'Query block disagrees with its authoritative header');
         const payload = blockByteLength(value);
-        if (payload > Math.min(this.maxBlockBytes, header.schema.limits.maxBlockBytes))
+        if (payload > this.maxBlockBytes)
           throw new GpuError('resource-limit', 'Query block exceeds its requested byte bound');
         if (
           this.validate &&

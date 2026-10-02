@@ -1,23 +1,28 @@
 {
   "name": "@latkit/connect",
   "version": "0.4.0",
-  "description": "One-pass model observation and independent commands across process boundaries.",
+  "description": "Demand-driven model connections with bounded binary streaming.",
   "type": "module",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lukelowry/latkit.git",
     "directory": "packages/connect"
   },
-  "license": "MIT",
   "sideEffects": false,
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "PROTOCOL.md"
   ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -25,12 +30,16 @@
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
-    "bench:scale": "vitest run --config vitest.scale.config.ts"
+    "bench:scale": "vitest run --config vitest.bench.config.ts"
   },
   "dependencies": {
     "@latkit/model": "workspace:*"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2",
+    "ws": "8.21.0"
   }
 }

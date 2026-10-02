@@ -470,7 +470,7 @@ it('keeps application observations usable after destroying a monitor', async () 
   await h.render();
   h.close();
   expect(source.data).toBe(value);
-  expect(value.tables.signal.fields.value[0].column.length).toBe(64);
+  expect(value.tables.signal.fields.value.at(0)!.column.length).toBe(64);
 });
 it('reports camera changes, focuses several rows, and locates readings', async () => {
   const h = await harness();

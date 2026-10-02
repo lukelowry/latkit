@@ -15,7 +15,6 @@ class Wiring {
   readonly branches = { source: 'test', type: 'Branch', version: 'branches1' };
   readonly buses = { source: 'test', type: 'Bus', version: 'buses1' };
   readonly schema: Schema = {
-    limits: { maxBlockBytes: 4096 },
     types: {
       Bus: { fields: {} },
       Branch: {

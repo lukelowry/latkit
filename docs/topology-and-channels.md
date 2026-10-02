@@ -10,7 +10,6 @@ type, read as a `ReferenceColumn` of row numbers under that type's `Index`.
 ```ts
 const bus = { type: { kind: 'reference', to: 'Bus' } } as const;
 const schema = {
-  limits: { maxBlockBytes: 1 << 20 },
   types: {
     Bus: {
       fields: { position: { type: { kind: 'vector', items: 'float64', size: 2 } } },

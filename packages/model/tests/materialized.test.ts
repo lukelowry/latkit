@@ -12,19 +12,16 @@ import {
   validateBlock,
   blockBuffers,
   blockByteLength,
-  transactions,
   type NumericColumn,
   type Schema,
   type DataBatch,
   type RowBatch,
   type SampleBatch,
   type RowAxis,
-  validateDataEvent,
-  type DataEvent,
+  validateBatch,
   type SamplesQuery,
 } from '../src/index.js';
 const schema: Schema = {
-  limits: { maxBlockBytes: 4096 },
   axis: { name: 'time' },
   types: {
     Node: {
@@ -50,14 +47,14 @@ async function collect<T>(stream: AsyncIterable<T>): Promise<T[]> {
   for await (const value of stream) out.push(value);
   return out;
 }
-function history(nr = 2, nf = 7, bound = 4096) {
+function history(nr = 2, nf = 7) {
   const coordinates =
     nf === 7
       ? Float64Array.of(0, 1, 1, 2, 3, 4, 6)
       : Float64Array.from({ length: nf }, (_, i) => i);
   const values = Float64Array.from({ length: nr * nf }, (_, i) => i);
   const validity = new Uint8Array(Math.ceil(values.length / 8)).fill(255);
-  return createData({ ...schema, limits: { maxBlockBytes: bound } }, 'samples', [
+  return createData(schema, 'samples', [
     {
       kind: 'samples',
       index,
@@ -81,7 +78,7 @@ function history(nr = 2, nf = 7, bound = 4096) {
 it('data is a value with no acquisition, query or close protocol', async () => {
   const data = createData(schema, 'v1', [batch]);
   expect(Object.keys(data).sort()).toEqual(['schema', 'tables', 'version']);
-  expect(data.tables.Node.fields.value[0].column).toBe(batch.columns.value);
+  expect(data.tables.Node.fields.value.at(0)!.column).toBe(batch.columns.value);
   const blocks = await collect(read(data, rows));
   expect(blocks[0]).toMatchObject({ kind: 'schema', version: 'v1' });
   const block = blocks.find((b) => b.kind === 'rows')!;
@@ -123,29 +120,11 @@ it('has independent transferred copies and immutable shared pages', async () => 
   expect(next.tables.Node).toBe(data.tables.Node);
   expect(data.version).toBe('v1');
 });
-it('keeps stored values after a producer is gone, and never replays a transaction', async () => {
-  async function* events(): AsyncGenerator<DataEvent> {
-    yield { kind: 'begin', version: 'v1', initial: true };
-    yield { kind: 'data', version: 'v1', block: batch };
-    yield { kind: 'end', version: 'v1' };
-  }
-  const stream = events();
-  const result = await collect(transactions(schema, stream));
-  expect(result).toHaveLength(1);
-  expect(await collect(stream)).toEqual([]);
-  expect((await collect(read(result[0], rows))).find((b) => b.kind === 'rows')!.rows).toEqual(
+it('keeps stored values independently of producer lifetime', async () => {
+  const result = createData(schema, 'v1', [batch]);
+  expect((await collect(read(result, rows))).find((b) => b.kind === 'rows')!.rows).toEqual(
     batch.rows,
   );
-  await expect(
-    collect(
-      transactions(
-        schema,
-        (async function* () {
-          yield { kind: 'begin', version: 'broken', initial: false } as const;
-        })(),
-      ),
-    ),
-  ).rejects.toMatchObject({ code: 'invalid-input' });
 });
 it.each([
   { kind: 'at', value: -1 },
@@ -160,7 +139,7 @@ it.each([
   for (const block of blocks) expect(validateBlock(schema, q, block)).toEqual([]);
 });
 it('tiles every addressed sample exactly once under a tight payload bound without repacking dense backing', async () => {
-  const data = history(113, 79, 2048),
+  const data = history(113, 79),
     seen = new Uint8Array(113 * 79);
   const q: SamplesQuery = {
     kind: 'samples',
@@ -168,7 +147,7 @@ it('tiles every addressed sample exactly once under a tight payload bound withou
     select: ['output'],
     window: { kind: 'frames', offset: 2 ** 40, count: 79 },
   };
-  for await (const b of read(data, q))
+  for await (const b of read(data, q, { maxBlockBytes: 2048 }))
     if (b.kind === 'samples') {
       expect(blockByteLength(b)).toBeLessThanOrEqual(2048);
       expect(validateBlock(data.schema, q, b)).toEqual([]);
@@ -317,7 +296,7 @@ it('rejects row appends even when a JavaScript caller bypasses the type contract
   expect(() => appendData(data, 'v2', [batch] as unknown as SampleBatch[])).toThrow(
     /sampled observations only/,
   );
-  expect(data.tables.Node.fields.value[0].column).toBe(batch.columns.value);
+  expect(data.tables.Node.fields.value.at(0)!.column).toBe(batch.columns.value);
 });
 
 it.each([true, false, undefined])('rejects the removed replace option (%s)', (replace) => {
@@ -328,14 +307,14 @@ it.each([true, false, undefined])('rejects the removed replace option (%s)', (re
     /Replacement operations/,
   );
   for (const block of [row, sample])
-    expect(validateDataEvent(schema, { kind: 'data', version: 'v1', block })).toContainEqual(
+    expect(validateBatch(schema, block)).toContainEqual(
       expect.objectContaining({ message: 'Replacement operations are unsupported.' }),
     );
 });
 
 it('rejects old publication payloads rather than treating them as empty batches', () => {
   expect(
-    validateDataEvent(schema, { kind: 'data', version: 'v1', patch: batch }).length,
+    validateBatch(schema, { kind: 'data', version: 'v1', patch: batch }).length,
   ).toBeGreaterThan(0);
 });
 
@@ -354,7 +333,7 @@ it('rejects overlapping static cells and identities while allowing separate colu
     { ...batch, columns: {} },
   ]);
   expect(data.tables.Node.ids[0].column).toBe(batch.ids);
-  expect(data.tables.Node.fields.value[0].column).toBe(batch.columns.value);
+  expect(data.tables.Node.fields.value.at(0)!.column).toBe(batch.columns.value);
 });
 
 it('validates sparse row collisions without changing supplied row order', () => {
@@ -367,7 +346,7 @@ it('validates sparse row collisions without changing supplied row order', () => 
     createData(schema, 'v1', [{ ...a, rows: { kind: 'indices', values: Uint32Array.of(1, 1) } }]),
   ).toThrow(/Duplicate/);
   const data = createData(schema, 'v1', [a]);
-  expect(data.tables.Node.fields.value[0].rows).toBe(sparse);
+  expect(data.tables.Node.fields.value.at(0)!.rows).toBe(sparse);
   expect([...sparse.values]).toEqual([3, 1]);
 });
 
@@ -379,8 +358,8 @@ it('appends row-tiled samples atomically and shares every old payload', async ()
   const next = appendData(previous, 'v2', [upper, lower]);
   expect(previous.tables.Node.fields.output).toHaveLength(1);
   expect(next.tables.Node.fields.output).toHaveLength(3);
-  expect(next.tables.Node.fields.output[0]).toBe(previous.tables.Node.fields.output[0]);
-  expect(next.tables.Node.fields.output[1].column).toBe(upper.columns.output);
+  expect(next.tables.Node.fields.output.at(0)!).toBe(previous.tables.Node.fields.output.at(0)!);
+  expect(next.tables.Node.fields.output.at(1)!.column).toBe(upper.columns.output);
   expect(next.tables.Node.fields.value).toBe(previous.tables.Node.fields.value);
   expect(next.tables.Node.ids).toBe(previous.tables.Node.ids);
   const result = await collect(
@@ -439,12 +418,12 @@ it('rejects conflicting tile coordinates and backward coordinates, and preserves
   ).toHaveLength(2);
 });
 
-it('derives the append boundary for a structurally supplied Data value', () => {
+it('preserves append boundaries when column storage is reused in a Data value', () => {
   const value = createData(schema, 'v1', [observations(10)]);
   const foreign = {
     ...value,
     tables: {
-      Node: { ...value.tables.Node, fields: { output: [...value.tables.Node.fields.output] } },
+      Node: { ...value.tables.Node, fields: { output: value.tables.Node.fields.output } },
     },
   };
   expect(() => appendData(foreign, 'v2', [observations(9)])).toThrow(/append after/);
@@ -511,13 +490,19 @@ it('locates the same observation as reads at duplicate coordinates and across fr
     else {
       expect(location!.frame).toBe(blocks[0].firstFrame);
       expect(location!.coordinate).toBe(blocks[0].coordinates[0]);
-      expect(location!.pages[0]).toBe(pages[0]);
+      expect(location!.pages[0]).toBe(pages.at(0));
       expect(location!.offset).toBe(location!.frame - 2 ** 40);
     }
   }
   const grouped = createData(schema, 'gaps', [observations(0), observations(8)]);
   expect(locateSample(grouped.tables.Node.fields.output, 3)!.frame).toBe(0);
   expect(locateSample(grouped.tables.Node.fields.output, 8)!.frame).toBe(8);
-  expect(locateSample([], 0)).toBeUndefined();
+  expect(
+    locateSample(
+      createData(schema, 'empty', [{ ...observations(0), coordinates: new Float64Array() }]).tables
+        .Node.fields.output,
+      0,
+    ),
+  ).toBeUndefined();
   expect(() => locateSample(pages, Infinity)).toThrow(/finite/);
 });

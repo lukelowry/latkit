@@ -119,7 +119,7 @@ export function validateQuery(schema: Schema, value: unknown): readonly Problem[
         c.issue(['window'], 'A window is required exactly for sampled aggregates.');
     }
     if (q.kind === 'samples' || q.kind === 'envelope' || own(q, 'window'))
-      window(c, q.window, ['window']);
+      checkSampleWindow(c, q.window, ['window']);
   }
   return c.issues;
 }
@@ -142,7 +142,7 @@ function selection(c: Check, value: unknown, path: Path, from: string): void {
   } else c.issue([...path, 'kind'], 'Unknown row selection.');
 }
 
-function window(c: Check, value: unknown, path: Path): void {
+export function checkSampleWindow(c: Check, value: unknown, path: Path): void {
   const w = c.object(value, path);
   if (own(w, 'context') && w.kind !== 'range')
     c.issue([...path, 'context'], 'Context requires a coordinate range.');

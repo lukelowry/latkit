@@ -1,3 +1,11 @@
+import {
+  type ColumnPages,
+  isColumnPages,
+  framesOf,
+  frameGroup,
+  frameGroups,
+  type Frames,
+} from './pages.js';
 import type {
   Column,
   DataType,
@@ -38,7 +46,9 @@ import {
 } from './columns.js';
 import { blockBuffers, blockByteLength } from './buffers.js';
 import { checkSignal, failure } from './error.js';
-import { validateQuery } from './validation/query.js';
+import { validateQuery, checkSampleWindow } from './validation/query.js';
+import { DEFAULT_BLOCK_BYTES } from './query.js';
+import { Check } from './validation/check.js';
 
 export type ReadResult<Q extends Query> =
   | QueryHeader
@@ -67,7 +77,7 @@ async function* execute(
   checkSignal(options.signal);
   const issues = validateQuery(data.schema, query);
   if (issues.length) throw Object.assign(failure('invalid-input', issues[0].message), { issues });
-  const bound = Math.min(data.schema.limits.maxBlockBytes, options.maxBlockBytes ?? Infinity);
+  const bound = options.maxBlockBytes ?? DEFAULT_BLOCK_BYTES;
   if (!Number.isSafeInteger(bound) || bound < 1)
     throw failure('invalid-input', 'Invalid block byte limit.');
   yield { kind: 'schema', schema: data.schema, version: data.version };
@@ -109,7 +119,8 @@ async function* execute(
   }
 }
 
-const ids = new WeakMap<TableData, Map<string, number>>();
+const ids = new WeakMap<TableData['ids'], Map<string, number>>();
+const idSelections = new WeakMap<TableData['ids'], WeakMap<readonly string[], RowAxis>>();
 export function selectRows(
   table: TableData,
   selection?: RowSelection,
@@ -118,7 +129,7 @@ export function selectRows(
   if (!selection) return available;
   let selected: RowAxis;
   if (selection.kind === 'ids') {
-    let map = ids.get(table);
+    let map = ids.get(table.ids);
     if (!map) {
       map = new Map();
       for (const page of table.ids)
@@ -126,15 +137,22 @@ export function selectRows(
           const id = textAt(page.column, i);
           if (id !== null) map.set(id, rowAt(page.rows, i));
         }
-      ids.set(table, map);
+      ids.set(table.ids, map);
     }
-    selected = compactRows(
-      selection.ids.map((id) => {
-        const row = map!.get(id);
-        if (row === undefined) throw failure('invalid-input', 'Unknown row id: ' + id);
-        return row;
-      }),
-    );
+    let selections = idSelections.get(table.ids);
+    if (!selections) idSelections.set(table.ids, (selections = new WeakMap()));
+    let resolved = selections.get(selection.ids);
+    if (!resolved) {
+      resolved = compactRows(
+        selection.ids.map((id) => {
+          const row = map!.get(id);
+          if (row === undefined) throw failure('invalid-input', 'Unknown row id: ' + id);
+          return row;
+        }),
+      );
+      selections.set(selection.ids, resolved);
+    }
+    selected = resolved;
   } else {
     if (selection.index) assertIndex(table.index, selection.index);
     selected = selection;
@@ -148,11 +166,12 @@ interface PageIndex {
   readonly sorted: readonly ColumnPage[];
   readonly ranges: boolean;
 }
-const pageIndexes = new WeakMap<readonly ColumnPage[], PageIndex>();
-function pageIndex(pages: readonly ColumnPage[]): PageIndex {
+type PageAccess = ColumnPages | TableData['ids'];
+const pageIndexes = new WeakMap<PageAccess, PageIndex>();
+function pageIndex(pages: PageAccess): PageIndex {
   let index = pageIndexes.get(pages);
   if (!index) {
-    const sorted = [...pages].sort(
+    const sorted = Array.from<ColumnPage>(pages).sort(
       (a, b) =>
         (a.samples?.firstFrame ?? 0) - (b.samples?.firstFrame ?? 0) ||
         rowAtOrZero(a.rows) - rowAtOrZero(b.rows),
@@ -166,26 +185,10 @@ function rowAtOrZero(rows: RowAxis): number {
   return rows.kind === 'range' ? rows.offset : (rows.values[0] ?? 0);
 }
 
-function findPage(
-  pages: readonly ColumnPage[],
-  row: number,
-  frame?: number,
-): ColumnPage | undefined {
-  const index = pageIndex(pages),
-    list = index.sorted;
-  if (frame === undefined && index.ranges) {
-    let lo = 0,
-      hi = list.length;
-    while (lo < hi) {
-      const m = (lo + hi) >>> 1;
-      if (rowAtOrZero(list[m].rows) <= row) lo = m + 1;
-      else hi = m;
-    }
-    const page = list[lo - 1];
-    return page && !page.samples && position(page.rows, row) >= 0 ? page : undefined;
-  }
+function findPage(pages: PageAccess, row: number, frame?: number): ColumnPage | undefined {
   // Frame groups have their own row index, keeping page lookup logarithmic for dense tiles.
   if (frame !== undefined) {
+    if (!isColumnPages(pages)) throw failure('invalid-input', 'IDs have no samples.');
     const index = framesOf(pages),
       group = frameGroup(index, frame);
     if (!group) return undefined;
@@ -202,93 +205,28 @@ function findPage(
     }
     return group.pages.find((p) => position(p.rows, row) >= 0);
   }
+  const index = pageIndex(pages),
+    list = index.sorted;
+  if (frame === undefined && index.ranges) {
+    let lo = 0,
+      hi = list.length;
+    while (lo < hi) {
+      const m = (lo + hi) >>> 1;
+      if (rowAtOrZero(list[m].rows) <= row) lo = m + 1;
+      else hi = m;
+    }
+    const page = list[lo - 1];
+    return page && !page.samples && position(page.rows, row) >= 0 ? page : undefined;
+  }
   return list.find((p) => !p.samples && position(p.rows, row) >= 0);
 }
 
-interface FrameGroup {
-  readonly ordinal: number;
-  readonly first: number;
-  readonly coordinates: Float64Array;
-  readonly pages: readonly ColumnPage[];
-  readonly ranges: boolean;
-}
-interface Frames {
-  readonly count: number;
-  readonly groups: readonly FrameGroup[];
-  readonly first: number;
-  readonly end: number;
-}
-const frameIndexes = new WeakMap<readonly ColumnPage[], Frames>();
-function framesOf(pages: readonly ColumnPage[]): Frames {
-  let result = frameIndexes.get(pages);
-  if (result) return result;
-  const grouped = new Map<number, ColumnPage[]>();
-  for (const page of pages)
-    if (page.samples) {
-      const parts = grouped.get(page.samples.firstFrame) ?? [];
-      parts.push(page);
-      grouped.set(page.samples.firstFrame, parts);
-    }
-  let count = 0;
-  const groups = [...grouped]
-    .sort((a, b) => a[0] - b[0])
-    .map(([first, parts]) => ({
-      ordinal:
-        (count += parts[0].samples!.coordinates.length) - parts[0].samples!.coordinates.length,
-      first,
-      coordinates: parts[0].samples!.coordinates,
-      pages: parts.sort((a, b) => rowAtOrZero(a.rows) - rowAtOrZero(b.rows)),
-      ranges: parts.every((p) => p.rows.kind === 'range'),
-    }));
-  for (let i = 0; i < groups.length; i++) {
-    const group = groups[i],
-      previous = groups[i - 1];
-    if (
-      previous &&
-      (group.first < previous.first + previous.coordinates.length ||
-        group.coordinates[0] < previous.coordinates.at(-1)!)
-    )
-      throw failure('conflict', 'Sample pages overlap or coordinates move backwards.');
-    for (const page of group.pages) {
-      const coordinates = page.samples!.coordinates;
-      if (coordinates === group.coordinates) continue;
-      if (coordinates.length !== group.coordinates.length)
-        throw failure('conflict', 'Sample tile coordinate lengths differ.');
-      for (let j = 0; j < coordinates.length; j++)
-        if (coordinates[j] !== group.coordinates[j])
-          throw failure('conflict', 'Sample tile coordinates differ.');
-    }
-  }
-  result = {
-    count,
-    groups,
-    first: groups[0]?.first ?? 0,
-    end: groups.length ? groups.at(-1)!.first + groups.at(-1)!.coordinates.length : 0,
-  };
-  frameIndexes.set(pages, result);
-  return result;
-}
-function frameGroup(index: Frames, frame: number): FrameGroup | undefined {
-  let lo = 0,
-    hi = index.groups.length;
-  while (lo < hi) {
-    const m = (lo + hi) >>> 1;
-    if (index.groups[m].first <= frame) lo = m + 1;
-    else hi = m;
-  }
-  const group = index.groups[lo - 1];
-  return group && frame < group.first + group.coordinates.length ? group : undefined;
-}
 function coordinateBound(index: Frames, value: number, upper: boolean): number {
-  let lo = 0,
-    hi = index.groups.length;
-  while (lo < hi) {
-    const m = (lo + hi) >>> 1,
-      last = index.groups[m].coordinates.at(-1)!;
-    if (last < value || (upper && last === value)) lo = m + 1;
-    else hi = m;
-  }
-  const group = index.groups[lo];
+  const next = index.groups.lowerBound((group) => {
+    const last = group.coordinates.at(-1)!;
+    return last > value || (!upper && last === value);
+  });
+  const group = index.groups.at(next);
   if (!group) return index.count;
   let a = 0,
     b = group.coordinates.length;
@@ -310,8 +248,7 @@ function frameRange(index: Frames, window: SampleWindow): [number, number] {
     if (window.offset < index.first || window.offset + window.count > index.end)
       throw failure('invalid-input', 'Requested observations are unavailable.');
     let covered = window.offset;
-    for (const group of index.groups) {
-      if (group.first + group.coordinates.length <= covered) continue;
+    for (const group of frameGroups(index, covered, window.offset + window.count)) {
       if (group.first > covered) break;
       covered = group.first + group.coordinates.length;
       if (covered >= window.offset + window.count) break;
@@ -348,7 +285,7 @@ export interface SampleLocation {
 
 /** Locate an observation without reading or copying its values. Equal coordinates select the
  * last observation; before the first observation, or with no samples, returns undefined. */
-export function locateSample(pages: readonly ColumnPage[], at: number): SampleLocation | undefined {
+export function locateSample(pages: ColumnPages, at: number): SampleLocation | undefined {
   if (!Number.isFinite(at)) throw failure('invalid-input', 'Sample coordinate must be finite.');
   const index = framesOf(pages);
   const [first, end] = frameRange(index, { kind: 'at', value: at });
@@ -358,25 +295,31 @@ export function locateSample(pages: readonly ColumnPage[], at: number): SampleLo
   return { frame: first, coordinate: group.coordinates[offset], offset, pages: group.pages };
 }
 
+/** Iterate only the pages covering a sample window, using the shared immutable sample index. */
+export function samplePages(pages: ColumnPages, window: SampleWindow): Iterable<ColumnPage> {
+  const check = new Check();
+  checkSampleWindow(check, window, []);
+  if (check.issues.length) throw failure('invalid-input', check.issues[0].message);
+  const index = framesOf(pages);
+  const [first, end] = frameRange(index, window);
+  return (function* () {
+    for (const group of frameGroups(index, first, end)) yield* group.pages;
+  })();
+}
+
 function ordinalFrame(index: Frames, ordinal: number): number {
   if (ordinal >= index.count) return index.end;
-  let lo = 0,
-    hi = index.groups.length;
-  while (lo < hi) {
-    const m = (lo + hi) >>> 1;
-    if (index.groups[m].ordinal <= ordinal) lo = m + 1;
-    else hi = m;
-  }
-  const group = index.groups[lo - 1];
+  const next = index.groups.lowerBound((group) => group.ordinal > ordinal);
+  const group = index.groups.at(next - 1)!;
   return group.first + ordinal - group.ordinal;
 }
 
-function pagesFor(table: TableData, field: string): readonly ColumnPage[] {
+function pagesFor(table: TableData, field: string): ColumnPages {
   const pages = table.fields[field];
   if (!pages) throw failure('invalid-input', 'Field has not been supplied: ' + field);
   return pages;
 }
-function availableRows(pages: readonly ColumnPage[], frame: number): RowAxis {
+function availableRows(pages: ColumnPages, frame: number): RowAxis {
   const group = frameGroup(framesOf(pages), frame);
   if (!group) return { kind: 'range', offset: 0, count: 0 };
   if (group.pages.length === 1) return group.pages[0].rows;
@@ -426,7 +369,7 @@ function sampleRows(
 ): RowAxis {
   let available = table.rows;
   for (const field of fields)
-    for (const group of framesOf(pagesFor(table, field)).groups) {
+    for (const group of frameGroups(framesOf(pagesFor(table, field)), first, end)) {
       if (group.first >= end) break;
       if (group.first + group.coordinates.length <= first) continue;
       available = intersect(available, availableRows(pagesFor(table, field), group.first));
@@ -434,14 +377,9 @@ function sampleRows(
   return selectRows(table, selection, available);
 }
 
-function columnFor(
-  pages: readonly ColumnPage[],
-  selected: RowAxis,
-  type: DataType,
-  frame?: number,
-): Column {
+function columnFor(pages: PageAccess, selected: RowAxis, type: DataType, frame?: number): Column {
   const count = rowCount(selected);
-  if (!count) return pages.length ? sliceColumn(pages[0].column, 0, 0) : emptyColumn(type);
+  if (!count) return pages.length ? sliceColumn(pages.at(0)!.column, 0, 0) : emptyColumn(type);
   const first = findPage(pages, rowAt(selected, 0), frame);
   if (
     first &&
@@ -474,7 +412,7 @@ function columnFor(
           : at * c.rowStride + (frame - page.samples!.firstFrame) * c.frameStride,
     };
   });
-  return gather(cells, pages[0]?.column ?? emptyColumn(type));
+  return gather(cells, pages.at(0)?.column ?? emptyColumn(type));
 }
 
 export function emptyColumn(type: DataType): Column {
@@ -552,6 +490,48 @@ function matches(value: string | number | boolean | null, filter: Filter): boole
   }
 }
 
+/** Fields constrain available rows without reading or gathering their values. */
+export type RowMappingRequest = Pick<RowsQuery, 'from' | 'select' | 'rows' | 'at'>;
+export interface RowMapping {
+  readonly index: TableData['index'];
+  readonly rows: RowAxis;
+}
+/** Resolve physical rows, including sampled coverage and ID order. Never copies field values. */
+export function resolveRows(data: Data, request: RowMappingRequest): RowMapping | undefined {
+  const issues = validateQuery(data.schema, {
+    kind: 'rows',
+    from: request.from,
+    select: request.select,
+    ...(request.rows ? { rows: request.rows } : {}),
+    ...(request.at !== undefined ? { at: request.at } : {}),
+  });
+  if (issues.length) throw Object.assign(failure('invalid-input', issues[0].message), { issues });
+  const table = data.tables[request.from];
+  if (!table) return undefined;
+  const resolved = fieldRows(data, table, request.select, request.rows, request.at);
+  return resolved && { index: table.index, rows: resolved.rows };
+}
+function fieldRows(
+  data: Data,
+  table: TableData,
+  fields: readonly string[],
+  selection?: RowSelection,
+  at?: number,
+): { rows: RowAxis; frames: Map<string, number> } | undefined {
+  const definitions = data.schema.types[table.index.type].fields;
+  const frames = new Map<string, number>();
+  let available = table.rows;
+  for (const name of fields)
+    if (definitions[name].sampled) {
+      const pages = pagesFor(table, name);
+      const sample = locateSample(pages, at!);
+      if (!sample) return undefined;
+      frames.set(name, sample.frame);
+      available = intersect(available, availableRows(pages, sample.frame));
+    }
+  return { rows: selectRows(table, selection, available), frames };
+}
+
 function* rows(
   data: Data,
   table: TableData,
@@ -566,18 +546,10 @@ function* rows(
       ...(query.orderBy ?? []).map((f) => f.field),
     ]),
   ];
-  const sampled = used.filter((name) => definitions[name].sampled);
-  const frames = new Map<string, number>();
-  let available = table.rows;
-  for (const name of sampled) {
-    const pages = pagesFor(table, name),
-      index = framesOf(pages),
-      range = frameRange(index, { kind: 'at', value: query.at! });
-    if (range[0] === range[1]) return;
-    frames.set(name, range[0]);
-    available = intersect(available, availableRows(pages, range[0]));
-  }
-  let selected = selectRows(table, query.rows, available);
+  const resolved = fieldRows(data, table, used, query.rows, query.at);
+  if (!resolved) return;
+  const { frames } = resolved;
+  let selected = resolved.rows;
   if (query.where?.length || query.orderBy?.length) {
     const fields = new Map(
       used.map((name) => [
@@ -659,7 +631,7 @@ function widthOf(type: DataType): number {
 }
 
 function sampleColumn(
-  pages: readonly ColumnPage[],
+  pages: ColumnPages,
   selected: RowAxis,
   first: number,
   nf: number,
@@ -776,7 +748,7 @@ function* samples(
     nr = rowCount(selected);
   const width = query.select.reduce((n, f) => n + widthOf(definitions[f].type), 0);
   let next = first;
-  for (const group of index.groups) {
+  for (const group of frameGroups(index, first, end)) {
     const stop = Math.min(end, group.first + group.coordinates.length);
     for (let frame = Math.max(next, group.first); frame < stop;) {
       // Coalesce small publications into bounded local batches. Keep large delivered tiles as views.

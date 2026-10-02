@@ -14,7 +14,6 @@ export class Telemetry {
   ) {
     this.index = { source, type: 'sensor', version: '0' };
     this.schema = {
-      limits: { maxBlockBytes: 256 * 1024 },
       axis: { name: 'Time', unit: 's' },
       types: {
         sensor: {

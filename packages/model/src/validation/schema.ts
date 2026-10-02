@@ -7,7 +7,8 @@ import type { Path } from './check.js';
 export function validateSchema(value: unknown): readonly Problem[] {
   const c = new Check();
   const schema = c.object(value, []);
-  c.integer(c.object(schema.limits, ['limits']).maxBlockBytes, ['limits', 'maxBlockBytes'], 1);
+  if (own(schema, 'limits'))
+    c.issue(['limits'], 'Delivery limits belong to operation options, not schemas.');
   const types = c.object(schema.types, ['types']);
   const names = new Set(Object.keys(types));
   for (const [id, value] of Object.entries(types)) {

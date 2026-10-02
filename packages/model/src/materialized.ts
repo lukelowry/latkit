@@ -1,3 +1,4 @@
+import type { ColumnPages } from './pages.js';
 import type { Column, Index, RowAxis, TextColumn } from './data.js';
 import type { RowsBlock, SamplesBlock } from './query.js';
 import type { Schema } from './schema.js';
@@ -17,7 +18,7 @@ export interface TableData {
   readonly index: Index;
   readonly rows: RowAxis;
   readonly ids: readonly { readonly rows: RowAxis; readonly column: TextColumn }[];
-  readonly fields: Readonly<Record<string, readonly ColumnPage[]>>;
+  readonly fields: Readonly<Record<string, ColumnPages>>;
 }
 
 /** Immutable, application-owned values. There are no I/O or lifetime methods. */
@@ -37,9 +38,3 @@ export type SampleBatch = Pick<
 >;
 
 export type DataBatch = RowBatch | SampleBatch;
-
-/** Data revisions describe publications, never replay capabilities. */
-export type DataEvent =
-  | { readonly kind: 'begin'; readonly version: Version; readonly initial: boolean }
-  | { readonly kind: 'data'; readonly version: Version; readonly block: DataBatch }
-  | { readonly kind: 'end'; readonly version: Version };

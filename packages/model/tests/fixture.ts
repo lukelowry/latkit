@@ -8,7 +8,6 @@ import {
   type Schema,
 } from '../src/index.js';
 export const fixtureSchema: Schema = {
-  limits: { maxBlockBytes: 65536 },
   axis: { name: 'time' },
   types: {
     Node: {

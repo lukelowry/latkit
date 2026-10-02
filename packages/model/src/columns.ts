@@ -1,3 +1,5 @@
+import { copyPages, isColumnPages } from './pages.js';
+import type { ColumnPage } from './materialized.js';
 import type { Column, NumericArray, RowAxis, SampleColumn, TextColumn } from './data.js';
 import { assertIndex, bitAt, rowCount } from './access.js';
 import { failure } from './error.js';
@@ -241,6 +243,11 @@ export function copyBuffers<T>(value: T): T {
         return result;
       }
       const result = (v as unknown as Uint8Array).slice();
+      seen.set(v, result);
+      return result;
+    }
+    if (isColumnPages(v)) {
+      const result = copyPages(v, (page) => copy(page) as ColumnPage);
       seen.set(v, result);
       return result;
     }

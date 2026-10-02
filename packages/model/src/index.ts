@@ -1,14 +1,16 @@
-/** Public data and passive model contracts and explicit boundary validation. */
-export type { Model, Commands, MonitorOptions } from './model.js';
+/** Immutable data, local computation, and portable command descriptions. */
 export type {
-  Routine,
-  Parameter,
-  Input,
-  InputValue,
-  Command,
+  Arguments,
+  CommandDescription,
   CommandResult,
   Diagnostic,
-} from './routine.js';
+  InputValue,
+  Json,
+  LogEntry,
+  Parameter,
+  Parameters,
+  Progress,
+} from './commands.js';
 export type {
   DataType,
   NumericType,
@@ -82,11 +84,18 @@ export type {
   DataBatch,
   RowBatch,
   SampleBatch,
-  DataEvent,
 } from './materialized.js';
 export { read, selectRows, locateSample } from './read.js';
 export type { ReadResult, SampleLocation } from './read.js';
-export { createData, appendData, transactions } from './assemble.js';
+export { createData, appendData } from './assemble.js';
 export { textColumn, sliceColumn, copyBuffers } from './columns.js';
 
-export { validateDataEvent } from './validation/event.js';
+export { validateBatch } from './validation/batch.js';
+export { validateSelection } from './validation/selection.js';
+export { selectBatches } from './select.js';
+export { DEFAULT_BLOCK_BYTES } from './query.js';
+
+export type { ColumnPages } from './pages.js';
+export { appendedPages } from './pages.js';
+export { resolveRows, type RowMappingRequest, type RowMapping } from './read.js';
+export { samplePages } from './read.js';

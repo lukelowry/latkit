@@ -3,9 +3,6 @@ import type { Axis, Bounds } from './types.js';
 
 /** The types and column shapes published by a model. */
 export interface Schema {
-  /** Per-data-block payload bound. Owned blocks also bound whole backing allocations.
-   * Schema metadata and transport framing have separate transport limits. */
-  readonly limits: { readonly maxBlockBytes: number };
   /** Topology is data: a reference field wires each row to a row of another type. */
   readonly types: Readonly<Record<string, TypeDefinition>>;
   /** Coordinate axis for sampled fields. Independent of commands. */

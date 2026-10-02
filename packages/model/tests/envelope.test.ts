@@ -11,7 +11,7 @@ import {
 } from '../src/index.js';
 const schema: Schema = {
   axis: { name: 'coordinate' },
-  limits: { maxBlockBytes: 8192 },
+
   types: { node: { fields: { value: { type: 'float64', sampled: true, nullable: true } } } },
 };
 const query: EnvelopeQuery = {
