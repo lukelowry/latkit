@@ -133,6 +133,25 @@ it('resolves IDs across pages by their bytes, skipping nulls and letting a later
   for (const id of ['x', 'missing', ''])
     expect(() => selectRows(table, { kind: 'ids', ids: [id] })).toThrow('Unknown row id');
 });
+it('resolves IDs longer than the shared encoding buffer', () => {
+  const long = ['x'.repeat(300), 'é'.repeat(200), 'x'.repeat(299)];
+  const table = createData(schema, [
+    {
+      kind: 'rows',
+      index,
+      rows: { kind: 'range', offset: 0, count: 3 },
+      ids: textColumn(long),
+      columns: {},
+    },
+  ]).tables.Node;
+  expect(selectRows(table, { kind: 'ids', ids: [long[1], long[0], long[2]] })).toEqual({
+    kind: 'indices',
+    values: Uint32Array.of(1, 0, 2),
+  });
+  expect(() => selectRows(table, { kind: 'ids', ids: ['x'.repeat(301)] })).toThrow(
+    'Unknown row id',
+  );
+});
 it('has independent transferred copies and immutable shared pages', async () => {
   const data = createData(schema, [batch]);
   const block = (await collect(read(data, rows, { buffers: 'owned' }))).find(
