@@ -19,9 +19,11 @@ import { DEFAULT_CAMERA, checkCamera, fit, mixCamera, move, zoom } from './camer
 import {
   FIELD_OPTIONS,
   networkData,
+  type EdgeData,
   type EdgeOptions,
   type NetworkData,
   type NetworkItem,
+  type PathData,
   type PathOptions,
   type VertexOptions,
 } from './data.js';
@@ -37,7 +39,7 @@ import {
 } from './geometry/topology.js';
 import { indexKey } from './geometry/rows.js';
 import { arrow, listen, type Gestures } from './input.js';
-import { DEFAULTS, resolveStyle, type NetworkStyle, type Style } from './options.js';
+import { DEFAULTS, VIEW_DEFAULTS, resolveStyle, type NetworkStyle, type Style } from './options.js';
 import { Picking, type PickGeometry } from './picking.js';
 import { readFields, resolveDomains, type FieldRead } from './rendering/fields.js';
 import { Labels } from './rendering/labels.js';
@@ -136,17 +138,23 @@ function checkData(config: NetworkConfig): NetworkData {
     if (edge.ends && edge.junction)
       throw failure('invalid-input', 'A junction centers a net, which has no ends: ' + type);
     if (!edge.ends && edge.bends) throw failure('invalid-input', 'Bends require ends: ' + type);
+    checkLine(type, edge);
   }
-  for (const path of Object.values(data.paths ?? {})) {
-    if (
-      !path.points ||
-      (path.widthPx !== undefined && (!Number.isFinite(path.widthPx) || path.widthPx < 0))
-    )
-      throw failure('invalid-input', 'Invalid path options');
-    if (path.curve && !['linear', 'geodesic'].includes(path.curve))
-      throw failure('invalid-input', 'Invalid path curve');
+  for (const [type, path] of Object.entries(data.paths ?? {})) {
+    if (!path.points) throw failure('invalid-input', 'A path needs points: ' + type);
+    checkLine(type, path);
   }
+  for (const vertex of Object.values(data.vertices))
+    if (vertex.baseColor) kit.validateRgba(vertex.baseColor);
   return data;
+}
+/** An edge's or path's own line options. */
+function checkLine(type: string, entry: EdgeData | PathData): void {
+  if (entry.route && !['straight', 'geodesic'].includes(entry.route))
+    throw failure('invalid-input', 'Invalid route: ' + type);
+  if (entry.widthPx !== undefined && !(entry.widthPx >= 0 && Number.isFinite(entry.widthPx)))
+    throw failure('invalid-input', 'Invalid widthPx: ' + type);
+  if (entry.baseColor) kit.validateRgba(entry.baseColor);
 }
 /** Whether drawn rows or their wiring differ, which rebuilds geometry. */
 function rewired(a: NetworkData, b: NetworkData): boolean {
@@ -235,6 +243,7 @@ class NetworkView
       fields: FIELD_OPTIONS,
       options: Object.keys(DEFAULTS),
       framed: ['projection', 'center', 'scale', 'pitch', 'bearing'],
+      style: VIEW_DEFAULTS,
     });
     this.painter = new Painter(gpu);
     this.start();

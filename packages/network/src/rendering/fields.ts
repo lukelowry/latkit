@@ -3,6 +3,7 @@ import { kit, type ColorScale, type Position2D, type Scale } from '@latkit/gpu';
 import type { EdgeData, PathData, VertexData } from '../data.js';
 import type { VertexBank, EdgeBank } from '../geometry/topology.js';
 import { nativeValue } from '../geometry/rows.js';
+import { SIZE_RANGE } from '../options.js';
 export interface ReadPage {
   readonly page: kit.GpuPage;
   readonly offset: number;
@@ -160,7 +161,9 @@ export async function resolveDomains(
         {
           ...mapping,
           range:
-            'range' in mapping ? (mapping.range ?? (name === 'size' ? [0.5, 2] : [0, 1])) : [0, 1],
+            'range' in mapping
+              ? (mapping.range ?? (name === 'size' ? SIZE_RANGE : [0, 1]))
+              : [0, 1],
         },
         lo <= hi ? [lo, hi] : null,
       );
@@ -184,7 +187,7 @@ export function scaledValue(
 function mappings(options: VertexData | EdgeData | PathData) {
   return {
     color: options.color,
-    size: 'size' in options ? options.size : undefined,
+    size: 'sizePx' in options ? options.sizePx : undefined,
     height: 'height' in options ? options.height : undefined,
   };
 }

@@ -5,14 +5,11 @@ import {
   type Item,
   type RowSelection,
 } from '@latkit/model';
-import type { kit, RGBA, ColorScale, Position2D, Scale, TextFont } from '@latkit/gpu';
+import type { kit, Labels, RGBA, ColorScale, Position2D, Scale } from '@latkit/gpu';
 
-export interface Labels {
-  readonly field: FieldInput;
-  readonly font?: TextFont;
-  readonly size?: number;
-  readonly maxCount?: number;
-  readonly color?: RGBA;
+/** Labels beside a type's items, sized in CSS pixels; `fontSizePx` by default. */
+export interface NetworkLabels extends Labels {
+  readonly sizePx?: number;
 }
 /** A field name stands for that field with defaults: `color: 'load'`, `labels: 'name'`. */
 export interface VertexOptions {
@@ -20,11 +17,14 @@ export interface VertexOptions {
   /** Defaults to the type's spatial field. */
   readonly position?: Position2D;
   readonly color?: string | ColorScale | null;
-  readonly size?: string | Scale | null;
+  /** The color without a `color` field; `vertexBaseColor` by default. */
+  readonly baseColor?: RGBA;
+  /** Marker radius in CSS pixels, from a field; `vertexRadiusPx` without one. */
+  readonly sizePx?: string | Scale | null;
   readonly height?: string | Scale | null;
   readonly visible?: FieldInput | null;
   readonly shade?: FieldInput | null;
-  readonly labels?: string | Labels | null;
+  readonly labels?: string | NetworkLabels | null;
 }
 export interface EdgeOptions {
   readonly rows?: RowSelection;
@@ -36,26 +36,31 @@ export interface EdgeOptions {
   readonly ends?: readonly [source: string, target: string];
   /** Intermediate bends, a native list of two-component floating-point vectors; requires ends. */
   readonly bends?: FieldInput;
-  readonly curve?: 'linear' | 'geodesic';
+  /** `straight` in the data's coordinates, or `geodesic` along great circles. */
+  readonly route?: 'straight' | 'geodesic';
   /** A net's star center; otherwise the centroid of its vertices. */
   readonly junction?: Position2D;
+  /** `edgeWidthPx` by default. */
+  readonly widthPx?: number;
   readonly color?: string | ColorScale | null;
+  /** The color without a `color` field; `edgeBaseColor`, or the colors of its ends, by default. */
+  readonly baseColor?: RGBA;
   readonly dash?: FieldInput | null;
   readonly visible?: FieldInput | null;
   readonly shade?: FieldInput | null;
-  readonly labels?: string | Labels | null;
+  readonly labels?: string | NetworkLabels | null;
 }
 export interface PathOptions {
   /** Defaults to the network's source. */
   readonly source?: Data;
   readonly rows?: RowSelection;
   readonly points: FieldInput;
-  readonly curve?: 'linear' | 'geodesic';
+  readonly route?: 'straight' | 'geodesic';
   readonly widthPx?: number;
-  readonly baseColor?: RGBA;
   readonly color?: string | ColorScale | null;
+  readonly baseColor?: RGBA;
   readonly visible?: FieldInput | null;
-  readonly labels?: string | Labels | null;
+  readonly labels?: string | NetworkLabels | null;
   /** Decorative paths do not participate in picking by default. */
   readonly pickable?: boolean;
 }
@@ -68,7 +73,7 @@ export function sameItem(a: NetworkItem | null, b: NetworkItem | null): boolean 
   return a === b || (!!a && !!b && a.kind === b.kind && sameRow(a, b));
 }
 /** Option keys whose string value names a field. */
-export const FIELD_OPTIONS = ['color', 'size', 'height', 'labels'] as const;
+export const FIELD_OPTIONS = ['color', 'sizePx', 'height', 'labels'] as const;
 type Full<T> = kit.Expanded<T, (typeof FIELD_OPTIONS)[number]>;
 export type VertexData = Full<VertexOptions>;
 export type EdgeData = Full<EdgeOptions>;

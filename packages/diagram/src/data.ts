@@ -1,14 +1,11 @@
 import type { Data, FieldInput, Item, RowSelection } from '@latkit/model';
-import type { kit, Point, RGBA, ColorScale, Position2D, Scale, TextFont } from '@latkit/gpu';
+import type { kit, Labels, Point, RGBA, ColorScale, Position2D, Scale } from '@latkit/gpu';
 export type { Point };
 export type Shape = 'rectangle' | 'rounded' | 'ellipse' | 'diamond';
-export interface Labels {
-  readonly field: FieldInput;
-  readonly font?: TextFont;
-  /** Diagram units, independent of camera zoom. */
+/** Labels on a type's items, sized in diagram units so they zoom with the diagram. */
+export interface DiagramLabels extends Labels {
+  /** `fontSizePx` by default. */
   readonly size?: number;
-  readonly color?: RGBA;
-  readonly maxCount?: number;
   readonly maxWidth?: number;
   readonly overflow?: 'wrap' | 'ellipsis';
 }
@@ -30,10 +27,12 @@ export interface VertexOptions {
   readonly labelPosition?: 'header' | 'center';
   /** A field name stands for that field with defaults: `color: 'load'`, `labels: 'name'`. */
   readonly color?: string | ColorScale | null;
+  /** The color without a `color` field; `vertexBaseColor` by default. */
+  readonly baseColor?: RGBA;
   readonly status?: string | ColorScale | null;
   readonly visible?: FieldInput | null;
   readonly shade?: FieldInput | null;
-  readonly labels?: string | Labels | null;
+  readonly labels?: string | DiagramLabels | null;
   /** Keyed by reference field. Each field naming a drawn net is a port. */
   readonly ports?: Readonly<Record<string, PortOptions>>;
 }
@@ -47,12 +46,15 @@ export interface EdgeOptions {
   readonly route?: 'orthogonal' | 'straight' | RouteStrategy;
   readonly appearance?: 'wire' | 'tag';
   readonly color?: string | ColorScale | null;
-  /** Widths are CSS pixels; flow is CSS pixels per second. */
-  readonly width?: string | Scale | null;
+  /** The color without a `color` field; `edgeBaseColor` by default. */
+  readonly baseColor?: RGBA;
+  /** Line width from a field; `edgeWidthPx` without one. */
+  readonly widthPx?: string | Scale | null;
+  /** CSS pixels per second. */
   readonly flow?: string | Scale | null;
   readonly visible?: FieldInput | null;
   readonly shade?: FieldInput | null;
-  readonly labels?: string | Labels | null;
+  readonly labels?: string | DiagramLabels | null;
   /** Arrowheads where flow arrives: a row's target end, or a net's input ports. */
   readonly arrows?: boolean;
 }
@@ -114,7 +116,7 @@ export function itemKey(item: DiagramItem): string {
 }
 
 /** Option keys whose string value names a field, in entries and their ports. */
-export const FIELD_OPTIONS = ['color', 'status', 'labels', 'width', 'flow'] as const;
+export const FIELD_OPTIONS = ['color', 'status', 'labels', 'widthPx', 'flow'] as const;
 type Full<T> = kit.Expanded<T, (typeof FIELD_OPTIONS)[number]>;
 export type PortData = Full<PortOptions>;
 export type VertexData = Omit<Full<VertexOptions>, 'ports'> & {

@@ -80,7 +80,7 @@ function signature(reads: Reads, data: NetworkData): unknown[] {
   }
   for (const [bank, read] of reads.edges) {
     key.push(
-      (edgeOptions(data, bank) as EdgeData).curve,
+      (edgeOptions(data, bank) as EdgeData).route,
       !!(edgeOptions(data, bank) as EdgeData).junction,
     );
     for (const tile of read.native)
@@ -166,9 +166,9 @@ export class Paths {
         segments += original.batches.reduce((n, b) => n + b.records.length / 4, 0);
         continue;
       }
-      if (options.curve === 'geodesic' && !native.geographic)
+      if (options.route === 'geodesic' && !native.geographic)
         throw failure('invalid-input', 'Geodesics require geographic coordinates');
-      const ownKey: unknown[] = [options.curve];
+      const ownKey: unknown[] = [options.route];
       if (original.kind)
         for (const tile of reads.edges.get(original)!.native) {
           const c = tile.columns.points;
@@ -302,14 +302,14 @@ export class Paths {
             a = start.point,
             b = target.point;
           let steps = 1;
-          if (native.geographic && options.curve !== 'geodesic') {
+          if (native.geographic && options.route !== 'geodesic') {
             const angle = Math.acos(Math.max(-1, Math.min(1, dot(unit(a), unit(b))))) / DEG;
             steps = Math.max(1, Math.ceil(angle));
           }
           for (let s = 1; s <= steps; s++) {
             const t = s / steps;
             const p: Point =
-              options.curve === 'geodesic'
+              options.route === 'geodesic'
                 ? b
                 : [
                     a[0] + (native.geographic ? longitude(b[0] - a[0]) : b[0] - a[0]) * t,
@@ -319,7 +319,7 @@ export class Paths {
             let next = s === steps ? target : addPoint(p);
             if (
               native.geographic &&
-              options.curve !== 'geodesic' &&
+              options.route !== 'geodesic' &&
               Math.abs(longitude(previous!.point[0]) - longitude(p[0])) > 180
             ) {
               const pa = previous!.point,

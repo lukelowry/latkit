@@ -34,7 +34,6 @@ export const LIMITS: Required<Limits> = Object.freeze({
   rows: 100000,
   segmentsPerFrame: 1_000_000,
   historyBytes: 64 * 1024 ** 2,
-  pickingBytes: 2 * 1024 ** 2,
 });
 export function fail(message: string): never {
   throw failure('invalid-input', message);

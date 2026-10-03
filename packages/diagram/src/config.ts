@@ -122,6 +122,7 @@ export function data(value: DiagramData): DiagramData {
   if (!value.vertices) fail('Vertex bindings are required');
   for (const vertex of Object.values(value.vertices)) {
     binding(vertex);
+    if (vertex.baseColor) kit.validateRgba(vertex.baseColor);
     if (vertex.cornerRadius !== undefined) positive(vertex.cornerRadius, 'cornerRadius', true);
     if (vertex.labelPosition && !['header', 'center'].includes(vertex.labelPosition))
       fail('Invalid labelPosition');
@@ -137,6 +138,7 @@ export function data(value: DiagramData): DiagramData {
   }
   for (const [type, edge] of Object.entries(value.edges ?? {})) {
     binding(edge);
+    if (edge.baseColor) kit.validateRgba(edge.baseColor);
     if (
       edge.ends &&
       (edge.ends.length !== 2 ||

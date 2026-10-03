@@ -17,7 +17,7 @@ export type {
   VertexOptions,
   EdgeOptions,
   PortOptions,
-  Labels,
+  DiagramLabels,
   Group,
   RouteStrategy,
   RouteRequest,

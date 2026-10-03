@@ -45,7 +45,7 @@ it('uses the whole selected type for automatic domains across native blocks and 
       },
       311,
     );
-  const options = { position: 'position', size: { field: 'weight', range: [2, 0.5] as const } };
+  const options = { position: 'position', sizePx: { field: 'weight', range: [8, 2] as const } };
   const data = { source: source.data, vertices: { node: options } };
   const gpu = await createGpu({ device: fakeDevice().device });
   await draw(gpu, async (frame) => {

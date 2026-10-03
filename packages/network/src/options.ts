@@ -28,12 +28,10 @@ export interface NetworkStyle {
   readonly nightFloor?: number;
   readonly surfaceNightFloor?: number;
   readonly terminatorWidth?: number;
-  /** Halo hovered and selected items. */
-  readonly focusEnabled?: boolean;
-  readonly hoverAlpha?: number;
-  readonly selectedAlpha?: number;
-  /** Also halo the vertices an edge joins. */
-  readonly focusEnds?: 'off' | 'selected' | 'hover-selected';
+  /** Also halo the vertices a selected edge joins. */
+  readonly selectedEnds?: boolean;
+  /** Also halo the vertices a hovered edge joins. */
+  readonly hoverEnds?: boolean;
   readonly fitPitch?: number;
   readonly fitBearing?: number;
   readonly orbitRate?: number;
@@ -58,21 +56,29 @@ export const DEFAULTS: Required<NetworkStyle> = Object.freeze({
   nightFloor: 0.55,
   surfaceNightFloor: 0.15,
   terminatorWidth: 0.12,
-  focusEnabled: true,
-  hoverAlpha: 0.65,
-  selectedAlpha: 0.9,
-  focusEnds: 'hover-selected',
+  selectedEnds: true,
+  hoverEnds: true,
   fitPitch: 45,
   fitBearing: 0,
   orbitRate: 1,
 });
-const UNIT = new Set([
-  'nightFloor',
-  'surfaceNightFloor',
-  'terminatorWidth',
-  'hoverAlpha',
-  'selectedAlpha',
-]);
+/** Shared style a network draws differently: halos translucent over what they surround. */
+export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({
+  hoverColor: [1, 0.72, 0.28, 0.65] as RGBA,
+  selectedColor: [1, 0.4, 0.24, 0.9] as RGBA,
+});
+/** A path's line where its options leave it unset; a path has no ends to color it by. */
+export const PATH_LINE = Object.freeze({ widthPx: 1, baseColor: [0.52, 0.6, 0.68, 0.6] as RGBA });
+/** Marker radii in CSS pixels that a `sizePx` field spans by default. */
+export const SIZE_RANGE: readonly [number, number] = [2, 8];
+/** The width a type's lines draw at, in CSS pixels. */
+export function lineWidthPx(
+  entry: { readonly widthPx?: number; readonly points?: unknown },
+  style: Style,
+): number {
+  return entry.widthPx ?? ('points' in entry ? PATH_LINE.widthPx : style.edgeWidthPx);
+}
+const UNIT = new Set(['nightFloor', 'surfaceNightFloor', 'terminatorWidth']);
 /** The style a config describes: its own options over the defaults, on the shared view style. */
 export function resolveStyle(config: NetworkStyle, view: kit.ResolvedViewStyle): Style {
   const style: Record<string, unknown> = { ...view, ...DEFAULTS };
@@ -86,9 +92,6 @@ export function resolveStyle(config: NetworkStyle, view: kit.ResolvedViewStyle):
         throw failure('invalid-input', 'Invalid sun time');
     } else if (typeof DEFAULTS[key] === 'boolean') {
       if (typeof value !== 'boolean') throw failure('invalid-input', 'Expected boolean: ' + key);
-    } else if (key === 'focusEnds') {
-      if (!['off', 'selected', 'hover-selected'].includes(value as string))
-        throw failure('invalid-input', 'Invalid end focus');
     } else if (!Number.isFinite(value) || (value as number) < 0)
       throw failure('invalid-input', 'Invalid option: ' + key);
     if (UNIT.has(key) && (value as number) > 1)

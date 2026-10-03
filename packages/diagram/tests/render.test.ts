@@ -576,13 +576,13 @@ it('expands field shorthands in entries and their ports', async () => {
   try {
     f.diagram.set({
       vertices: { Task: { color: 'weight', ports: { input: { color: 'weight', side: 'top' } } } },
-      edges: { Dependency: { width: 'weight' } },
+      edges: { Dependency: { widthPx: 'weight' } },
     });
     const task = f.diagram.config.vertices.Task;
     expect(task.color).toEqual({ field: 'weight' });
     expect(task.ports?.input.color).toEqual({ field: 'weight' });
     expect(task.ports?.input.side).toBe('top');
-    expect(f.diagram.config.edges?.Dependency.width).toEqual({ field: 'weight' });
+    expect(f.diagram.config.edges?.Dependency.widthPx).toEqual({ field: 'weight' });
     await f.draw();
     expect(interaction(f.diagram).scene()!.edges[0].width).toBeGreaterThan(0);
   } finally {

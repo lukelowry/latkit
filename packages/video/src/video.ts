@@ -26,8 +26,10 @@ export interface VideoOptions extends RequestOptions {
   readonly pixelRatio?: number;
   /** Maps output seconds to a model coordinate. Omit to keep the view's; effects still receive output time. */
   readonly at?: (seconds: number) => number;
+  /** `mp4` by default. */
   readonly format?: 'mp4' | 'webm';
-  readonly quality?: 'medium' | 'high' | 'very-high';
+  /** From 0 to 1, as for images; 0.75 by default. */
+  readonly quality?: number;
   /** Explicit target bits/second, instead of quality. */
   readonly bitrate?: number;
   /** Borrowed writer lock. The caller closes or aborts the destination. */

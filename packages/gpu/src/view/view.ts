@@ -30,6 +30,7 @@ export interface ViewEvents {
   /** A failure no call could report, such as a frame that failed to render. */
   readonly error: unknown;
 }
+const IMAGE_FORMATS: readonly string[] = ['png', 'jpeg', 'webp'];
 export interface ImageOptions {
   /** Output size in pixels. Defaults to the canvas's, else 1280 × 720. */
   readonly width?: number;
@@ -38,8 +39,9 @@ export interface ImageOptions {
   readonly pixelRatio?: number;
   /** Model coordinate shown; defaults to the view's. */
   readonly at?: number;
-  /** Image media type, such as `image/png` (the default) or `image/jpeg`. */
-  readonly type?: string;
+  /** `png` by default. */
+  readonly format?: 'png' | 'jpeg' | 'webp';
+  /** From 0 to 1, for `jpeg` and `webp`. */
   readonly quality?: number;
   readonly signal?: AbortSignal;
 }
@@ -477,6 +479,11 @@ export abstract class BaseView<
   async image(options: ImageOptions = {}): Promise<Blob> {
     this.live();
     options.signal?.throwIfAborted();
+    const format = options.format ?? 'png',
+      quality = options.quality;
+    if (!IMAGE_FORMATS.includes(format)) throw failure('invalid-input', 'Unsupported image format');
+    if (quality !== undefined && !(quality >= 0 && quality <= 1))
+      throw failure('invalid-input', 'Image quality must be between 0 and 1');
     const canvas = this.#config.canvas;
     const ratio =
       options.pixelRatio ?? (canvas ? canvas.ownerDocument.defaultView?.devicePixelRatio || 1 : 1);
@@ -523,10 +530,7 @@ export abstract class BaseView<
       buffer.unmap();
       const image = new OffscreenCanvas(width, height);
       image.getContext('2d')!.putImageData(new ImageData(pixels, width, height), 0, 0);
-      return await image.convertToBlob({
-        type: options.type ?? 'image/png',
-        quality: options.quality,
-      });
+      return await image.convertToBlob({ type: 'image/' + format, quality });
     } finally {
       buffer?.destroy();
       target?.destroy();

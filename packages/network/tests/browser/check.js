@@ -24,8 +24,8 @@ function data(source, labels = true) {
       node: {
         position: 'location',
         color: { field: 'signal', domain: [0, 1], colormap: colormaps.viridis },
-        size: { field: 'weight', domain: [0, 1], range: [0.7, 1.5] },
-        labels: labels ? { field: 'name', size: 11, maxCount: 45 } : null,
+        sizePx: { field: 'weight', domain: [0, 1], range: [2.8, 6] },
+        labels: labels ? { field: 'name', sizePx: 11, maxCount: 45 } : null,
       },
     },
     paths:
@@ -41,7 +41,7 @@ function data(source, labels = true) {
         : undefined,
     edges: {
       line: {
-        curve: source.geographic && el('geodesic').checked ? 'geodesic' : 'linear',
+        route: source.geographic && el('geodesic').checked ? 'geodesic' : 'straight',
         ends: ['from', 'to'],
         color: { field: 'signal', domain: [0, 1], colormap: colormaps.viridis },
       },
@@ -385,7 +385,7 @@ async function checks() {
     source: features.data,
     vertices: { node: { position: 'position', labels: { field: 'name', maxCount: 4 } } },
     edges: {
-      route: { ends: ['from', 'to'], curve: 'geodesic', labels: { field: 'name' } },
+      route: { ends: ['from', 'to'], route: 'geodesic', labels: { field: 'name' } },
       star: {},
       bend: { ends: ['from', 'to'], bends: 'points' },
     },
@@ -433,7 +433,7 @@ async function checks() {
   const seamView = createNetwork(gpu, {
     source: seamSource.data,
     vertices: { node: { position: 'position' } },
-    edges: { route: { ends: ['from', 'to'], curve: 'geodesic' } },
+    edges: { route: { ends: ['from', 'to'], route: 'geodesic' } },
     camera: { center: [0, 20], scale: 1.2 },
     markers: false,
     earthAxis: false,
@@ -592,7 +592,7 @@ async function showFeatures(reset = true) {
       star: { labels: { field: 'name' } },
       route: {
         ends: ['from', 'to'],
-        curve: el('geodesic').checked ? 'geodesic' : 'linear',
+        route: el('geodesic').checked ? 'geodesic' : 'straight',
         labels: { field: 'name' },
       },
     },
@@ -629,10 +629,10 @@ async function benchmarkPaths(count = 100000, moving = false) {
     results = [];
   const target = kit.createTextureTarget(gpu, { width: 1200, height: 700, format: 'rgba8unorm' });
   try {
-    for (const curve of ['linear', 'geodesic'])
+    for (const route of ['straight', 'geodesic'])
       for (const detailed of [false, true]) {
         const input = data(fixture, false);
-        input.edges.line.curve = curve;
+        input.edges.line.route = route;
         if (moving) {
           input.vertices.node.position = { x: 'x', y: 'y' };
           input.vertices.node.height = { field: 'z', domain: [0, 1] };
@@ -671,7 +671,7 @@ async function benchmarkPaths(count = 100000, moving = false) {
           const sorted = times.map((t) => t[1]).sort((a, b) => a - b),
             submit = times.map((t) => t[0]).sort((a, b) => a - b);
           results.push({
-            curve,
+            route,
             moving,
             detailedBorders: detailed,
             vertices: count,
@@ -696,10 +696,10 @@ async function benchmarkPaths(count = 100000, moving = false) {
   return results;
 }
 el('geodesic').onchange = () => {
-  const curve = el('geodesic').checked ? 'geodesic' : 'linear';
+  const route = el('geodesic').checked ? 'geodesic' : 'straight';
   if (!geographic) show(Number(el('size').value), true);
-  else if (source instanceof GraphSource) network.set({ edges: { line: { curve } } });
-  else network.set({ edges: { route: { curve } } });
+  else if (source instanceof GraphSource) network.set({ edges: { line: { route } } });
+  else network.set({ edges: { route: { route } } });
 };
 el('borders').onchange = () => {
   void loadBorders().then(

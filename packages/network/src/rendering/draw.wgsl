@@ -26,7 +26,7 @@ fn corner(v:u32)->vec2f {
 /** Focus of a drawn row: 2 selected, 1 hovered; two bits per row, vertices then edges then paths. */
 fn focus(dense:u32)->u32 {
   let word=dense>>4u;
-  if(u.flags.x==0u||word>=arrayLength(&focused)){return 0u;}
+  if(word>=arrayLength(&focused)){return 0u;}
   return (focused[word]>>((dense&15u)*2u))&3u;
 }
 fn screen(p:vec4f)->vec2f{return vec2f((p.x/p.w+1.0)*u.view.x*0.5,(1.0-p.y/p.w)*u.view.y*0.5);}

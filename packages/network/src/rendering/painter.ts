@@ -18,7 +18,7 @@ import {
   type EdgeBank,
   type SegmentBatch,
 } from '../geometry/topology.js';
-import type { Style } from '../options.js';
+import { lineWidthPx, PATH_LINE, type Style } from '../options.js';
 import type { LabelBatch } from './labels.js';
 import type { FieldRead } from './fields.js';
 import type { Pipelines } from './pipelines.js';
@@ -177,13 +177,8 @@ export class Painter {
       ],
       28,
     );
-    f.set([...options.hoverColor.slice(0, 3), options.hoverAlpha], 32);
-    f.set(
-      options.selectedColor
-        ? [...options.selectedColor.slice(0, 3), options.selectedAlpha]
-        : [0, 0, 0, 0],
-      36,
-    );
+    f.set(options.hoverColor, 32);
+    f.set(options.selectedColor ?? [0, 0, 0, 0], 36);
     f.set(
       [
         options.hoverWidthPx,
@@ -210,12 +205,31 @@ export class Painter {
       52,
     );
     f.set(options.gridColor, 56);
-    u.set([options.focusEnabled ? 1 : 0, options.graticule ? 1 : 0, 0, 0], 60);
+    u.set([0, options.graticule ? 1 : 0, 0, 0], 60);
     this.updateFocus(state);
     const focusedBinding = frame.buffer(this.focus);
     const uniform = frame.uniforms(f),
       host = state.shade,
       empty = frame.buffer(this.dummy);
+    /** A type's own base color and width over the style; types without them share the uniforms. */
+    const styles = new Map<VertexBank | EdgeBank, GPUBufferBinding>();
+    const typeStyle = (bank: VertexBank | EdgeBank, config: VertexData | EdgeData | PathData) => {
+      let style = styles.get(bank);
+      if (style) return style;
+      const path = 'points' in config,
+        line = 'batches' in bank,
+        color = config.baseColor ?? (path ? PATH_LINE.baseColor : undefined),
+        width = line ? (config as EdgeData | PathData).widthPx : undefined;
+      if (!color && width === undefined && !path) style = uniform;
+      else {
+        const values = f.slice();
+        if (color) values.set(color, line ? 24 : 20);
+        if (line) values[29] = lineWidthPx(config as EdgeData | PathData, options) / 2;
+        style = frame.uniforms(values);
+      }
+      styles.set(bank, style);
+      return style;
+    };
     const vertexBuffers = new Map<VertexBank, GPUBufferBinding>(),
       edgeBuffers = new Map<EdgeBank, GPUBufferBinding>();
     for (const bank of geometry.vertices)
@@ -279,12 +293,7 @@ export class Painter {
         const output = edge
           ? edgeBuffers.get(bank as EdgeBank)!
           : vertexBuffers.get(bank as VertexBank)!;
-        let styleUniform = uniform;
-        if ('baseColor' in config || 'points' in config) {
-          const values = f.slice();
-          values.set((config as PathData).baseColor ?? [0.52, 0.6, 0.68, 0.6], 24);
-          styleUniform = frame.uniforms(values);
-        }
+        const styleUniform = typeStyle(bank, config);
         const group = gpu.device.createBindGroup({
           layout: pipeline.compute,
           entries: [
@@ -303,7 +312,7 @@ export class Painter {
     const curveCount = Math.max(
       0,
       ...geometry.edges
-        .filter((bank) => edgeOptions(data, bank).curve === 'geodesic')
+        .filter((bank) => edgeOptions(data, bank).route === 'geodesic')
         .flatMap((bank) => bank.batches.map((batch) => batch.records.length / 4)),
     );
     if (curveCount) {
@@ -367,21 +376,21 @@ export class Painter {
     for (const bank of geometry.vertices)
       if (!bank.synthetic)
         vertices.push({
-          group: group(vertexBuffers.get(bank)!, empty, empty, empty, bank.base),
+          group: group(
+            vertexBuffers.get(bank)!,
+            empty,
+            empty,
+            empty,
+            bank.base,
+            typeStyle(bank, vertexOptions(data, bank)),
+          ),
           count: bank.count,
         });
     for (const bank of geometry.edges) {
-      let style = uniform;
-      if (bank.kind === 'path') {
-        const config = data.paths![bank.type],
-          values = f.slice();
-        values[29] = (config.widthPx ?? 1) / 2;
-        values.set(config.baseColor ?? [0.52, 0.6, 0.68, 0.6], 24);
-        style = frame.uniforms(values);
-      }
+      const style = typeStyle(bank, edgeOptions(data, bank));
       for (const batch of bank.batches) {
         const config = edgeOptions(data, bank);
-        const curved = config.curve === 'geodesic',
+        const curved = config.route === 'geodesic',
           count = batch.records.length / 4;
         const a = vertexBuffers.get(batch.a)!,
           b = vertexBuffers.get(batch.b)!,
@@ -480,8 +489,8 @@ export class Painter {
       last?.geometry === native &&
       last.selection === state.selection &&
       sameItem(last.hover, state.hover) &&
-      last.options.focusEnabled === options.focusEnabled &&
-      last.options.focusEnds === options.focusEnds
+      last.options.selectedEnds === options.selectedEnds &&
+      last.options.hoverEnds === options.hoverEnds
     )
       return;
     const next = new Map<number, number>(),
@@ -497,18 +506,12 @@ export class Painter {
     };
     const focus = (item: NetworkItem, level: number) => {
       mark(item, level);
-      if (
-        item.kind === 'edge' &&
-        (options.focusEnds === 'hover-selected' ||
-          (level === 2 && options.focusEnds === 'selected'))
-      )
+      if (item.kind === 'edge' && (level === 2 ? options.selectedEnds : options.hoverEnds))
         for (const vertex of adjacency.neighborhood(item, data))
           if (vertex.kind === 'vertex') mark(vertex, level);
     };
-    if (options.focusEnabled) {
-      for (const item of state.selection) focus(item, 2);
-      if (state.hover) focus(state.hover, 1);
-    }
+    for (const item of state.selection) focus(item, 2);
+    if (state.hover) focus(state.hover, 1);
     // Sixteen rows per word, padded to whole 16-byte rows.
     const rows = native.vertexCount + native.edgeCount + native.pathCount,
       size = Math.max(16, Math.ceil(rows / 64) * 16);
@@ -553,7 +556,7 @@ export class Painter {
             resolveTarget: paint.color ? frame.target : undefined,
             loadOp: load ? 'load' : 'clear',
             storeOp: 'store',
-            clearValue: paint.options.background,
+            clearValue: kit.clearColor(paint.options.background),
           },
         ],
         depthStencilAttachment: {

@@ -65,7 +65,7 @@ import {
   type Screen,
   type Transform,
 } from './rendering/painter.js';
-import { pick, READING_BYTES } from './picking.js';
+import { pick } from './picking.js';
 
 export interface MonitorConfig extends ItemViewConfig, MonitorStyle {
   /** Lines by name; several may read one type. */
@@ -298,7 +298,6 @@ class MonitorView
     readonly result: readonly Reading[];
   };
   private drawCalls = 0;
-  private pickingBytes = 0;
   /** The hover search: exact readings, a frame later. */
   private readonly nearest: kit.HoverSearch<Reading> = (point, radius, { signal }) =>
     this.shown ? this.read(point, radius, 1, signal).then((hits) => hits[0] ?? null) : null;
@@ -333,7 +332,6 @@ class MonitorView
       historyBytes: this.historyBytes(),
       visible: !!this.presentedHistory.front,
       refining: !this.presentedHistory.complete,
-      pickingBytes: this.pickingBytes,
       drawCalls: this.drawCalls,
     };
   }
@@ -407,14 +405,13 @@ class MonitorView
         (!trace.rows || trace.rows.kind === 'ids' || includes(trace.rows, item.row)),
     );
   }
-  /** The nearest `limit` readings, capped by what the picking budget holds. */
+  /** The nearest `limit` readings. */
   protected hits(
     point: Point,
     radiusPx: number,
     options: { readonly limit: number; readonly signal?: AbortSignal },
   ): Promise<readonly Reading[]> {
-    const capacity = Math.max(1, Math.floor(this.limits.pickingBytes / READING_BYTES));
-    return this.read(point, radiusPx, Math.min(options.limit, capacity), options.signal);
+    return this.read(point, radiusPx, options.limit, options.signal);
   }
   protected pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade): Promise<Pipelines> {
     return pipelines(this.gpu, format, msaa, shade.wgsl);
@@ -885,7 +882,6 @@ class MonitorView
     } finally {
       reads.close();
     }
-    this.pickingBytes = result.length * READING_BYTES;
     this.inspection = { point: [point[0], point[1]], radius, limit, source, shown, result };
     return result;
   }

@@ -12,8 +12,6 @@ import type { Binding } from './bindings.js';
 import type { MonitorData, Reading } from './data.js';
 import type { Plot } from './axes.js';
 
-/** Bytes a reading holds, for the picking budget. */
-export const READING_BYTES = 192;
 export interface PickRequest {
   readonly reads: ReadScope;
   readonly data: MonitorData;

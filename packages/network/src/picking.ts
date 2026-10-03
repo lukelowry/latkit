@@ -14,7 +14,7 @@ import { project, projectedStroke, worldVisible, type Camera, type Projected } f
 import { geodesic } from './geometry/paths.js';
 import { scaledValue, type FieldRead } from './rendering/fields.js';
 import type { Reads } from './rendering/painter.js';
-import type { Style } from './options.js';
+import { lineWidthPx, SIZE_RANGE, type Style } from './options.js';
 
 /** Children per index node. */
 const NODE = 16;
@@ -538,7 +538,7 @@ export class PickGeometry {
           };
     if (options.lines)
       for (const cpu of this.edges)
-        if (pickable(cpu, data) && edgeOptions(data, cpu.edge.bank).curve !== 'geodesic') {
+        if (pickable(cpu, data) && edgeOptions(data, cpu.edge.bank).route !== 'geodesic') {
           const records = cpu.batch.records,
             a = cpu.a.spatial.bounds,
             b = cpu.b.spatial.bounds;
@@ -614,6 +614,7 @@ export class PickGeometry {
     viewport: Viewport,
     height: number,
     options: VertexData,
+    radiusPx: number,
     marker = true,
   ): Projected & { radius: number; visible: boolean } {
     const cpu = this.vertices.get(bank)!,
@@ -630,7 +631,7 @@ export class PickGeometry {
       radius:
         bank.synthetic || (Number.isFinite(visible) && visible <= 0)
           ? 0
-          : scaledValue(cpu.read, 'size', found.value, found.offset, options.size, 1),
+          : scaledValue(cpu.read, 'size', found.value, found.offset, options.sizePx, radiusPx),
     };
   }
   private phases = new Map<SegmentBatch, Float32Array>();
@@ -701,9 +702,10 @@ export class PickGeometry {
   ): Iterable<{ a: Projected; b: Projected; first: boolean; last: boolean }> {
     const ac = vertexOptions(data, batch.a.bank),
       bc = vertexOptions(data, batch.b.bank);
-    const a = this.projected(batch.a.bank, ao, camera, viewport, height, ac, false),
-      b = this.projected(batch.b.bank, bo, camera, viewport, height, bc, false);
-    if (edgeOptions(data, batch.edge.bank).curve !== 'geodesic') {
+    // Strokes need positions only; their markers' radii stay unread.
+    const a = this.projected(batch.a.bank, ao, camera, viewport, height, ac, 0, false),
+      b = this.projected(batch.b.bank, bo, camera, viewport, height, bc, 0, false);
+    if (edgeOptions(data, batch.edge.bank).route !== 'geodesic') {
       const clip = projectedStroke(a, b, camera, viewport);
       if (clip) yield { a: clip[0], b: clip[1], first: true, last: true };
       return;
@@ -813,16 +815,15 @@ export class PickGeometry {
         b = (camera.bearing * Math.PI) / 180;
       const x = camera.center[0] + dx * Math.cos(b) - dy * Math.sin(b),
         y = camera.center[1] + dx * Math.sin(b) + dy * Math.cos(b);
-      const maxSize = Math.max(
-        1,
-        ...Object.values(data.vertices).map((v) => v.size?.range?.[1] ?? 2),
-      );
       const reach =
         (radius +
           Math.max(
-            options.vertexRadiusPx * maxSize,
-            options.edgeWidthPx,
-            ...Object.values(data.paths ?? {}).map((path) => path.widthPx ?? 1),
+            ...Object.values(data.vertices).map((v) =>
+              v.sizePx ? Math.max(...(v.sizePx.range ?? SIZE_RANGE)) : options.vertexRadiusPx,
+            ),
+            ...[...Object.values(data.edges ?? {}), ...Object.values(data.paths ?? {})].map(
+              (line) => lineWidthPx(line, options),
+            ),
           ) +
           options.selectedWidthPx) /
         camera.scale;
@@ -841,13 +842,11 @@ export class PickGeometry {
               viewport,
               height,
               data.vertices[bank.type],
+              options.vertexRadiusPx,
             );
             if (!p.visible) continue;
             let distance = options.markers
-              ? Math.max(
-                  0,
-                  Math.hypot(point[0] - p.x, point[1] - p.y) - p.radius * options.vertexRadiusPx,
-                )
+              ? Math.max(0, Math.hypot(point[0] - p.x, point[1] - p.y) - p.radius)
               : Infinity;
             if (options.poles) {
               const [x, y] = raw(cpu, offset),
@@ -874,7 +873,7 @@ export class PickGeometry {
       for (const batch of this.edges)
         if (pickable(batch, data))
           for (const offset of (bounds &&
-            edgeOptions(data, batch.edge.bank).curve !== 'geodesic' &&
+            edgeOptions(data, batch.edge.bank).route !== 'geodesic' &&
             batch.spatial.index?.query(bounds, check)) ||
             offsets(batch.batch.records.length / 4, check)) {
             check();
@@ -893,6 +892,7 @@ export class PickGeometry {
               viewport,
               height,
               vertexOptions(data, batch.a.bank),
+              options.vertexRadiusPx,
               false,
             );
             const b = this.projected(
@@ -902,6 +902,7 @@ export class PickGeometry {
               viewport,
               height,
               vertexOptions(data, batch.b.bank),
+              options.vertexRadiusPx,
               false,
             );
             let phase = this.phases.get(batch.batch)?.[offset] ?? 0;
@@ -911,17 +912,14 @@ export class PickGeometry {
               const hit = segmentDistance(point[0], point[1], start.x, start.y, end.x, end.y);
               const dashStart = phase;
               phase += hit.length;
-              const width =
-                batch.edge.bank.kind === 'path'
-                  ? (data.paths![batch.edge.bank.type].widthPx ?? 1)
-                  : options.edgeWidthPx;
+              const width = lineWidthPx(edgeOptions(data, batch.edge.bank), options);
               if (hit.distance > radius + width / 2) continue;
               let world = start.world.map(
                 (v, i) => v + (end.world[i] - v) * hit.t,
               ) as unknown as Projected['world'];
               if (
                 (records[offset * 4 + 3] ||
-                  edgeOptions(data, batch.edge.bank).curve === 'geodesic') &&
+                  edgeOptions(data, batch.edge.bank).route === 'geodesic') &&
                 camera.projection === 'globe'
               ) {
                 const sphere = [world[0], world[1], world[2] + 1],
@@ -938,10 +936,8 @@ export class PickGeometry {
                 continue;
               if (
                 options.markers &&
-                ((piece.first &&
-                  Math.hypot(point[0] - a.x, point[1] - a.y) < a.radius * options.vertexRadiusPx) ||
-                  (piece.last &&
-                    Math.hypot(point[0] - b.x, point[1] - b.y) < b.radius * options.vertexRadiusPx))
+                ((piece.first && Math.hypot(point[0] - a.x, point[1] - a.y) < a.radius) ||
+                  (piece.last && Math.hypot(point[0] - b.x, point[1] - b.y) < b.radius))
               )
                 continue;
               yield {

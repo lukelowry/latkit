@@ -21,10 +21,10 @@ export function settings(options: VideoOptions, maxDimension: number) {
       'Video duration must be finite, positive and representable in microseconds',
     );
   const format = options.format ?? 'mp4',
-    quality = options.quality ?? 'high';
+    quality = options.quality ?? 0.75;
   if (!['mp4', 'webm'].includes(format)) throw failure('invalid-input', 'Unsupported video format');
-  if (!['medium', 'high', 'very-high'].includes(quality))
-    throw failure('invalid-input', 'Invalid video quality');
+  if (!(quality >= 0 && quality <= 1))
+    throw failure('invalid-input', 'Video quality must be between 0 and 1');
   if (
     options.bitrate !== undefined &&
     (!Number.isSafeInteger(options.bitrate) || options.bitrate < 1 || options.quality !== undefined)

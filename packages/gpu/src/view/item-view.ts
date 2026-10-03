@@ -610,9 +610,9 @@ export abstract class BaseItemView<
     this.emit('select', next);
   }
   /**
-   * Select what a click at a point hits. A modifier toggles the hit in the selection; clicking again
-   * in place cycles through the hits there; clicking nothing clears the selection. A touch picks
-   * farther around itself.
+   * Select what a click at a point hits. Clicking again in place cycles through the hits there; a
+   * modifier toggles the topmost hit in the selection; clicking nothing clears the selection. A
+   * touch picks farther around itself.
    */
   protected async click(
     point: Point,
@@ -623,14 +623,16 @@ export abstract class BaseItemView<
       radius = touch ? Math.max(TOUCH_PX, this.#style.pickRadiusPx) : this.#style.pickRadiusPx;
     const hits = await this.hits(point, radius, { limit: 16, signal });
     if (signal?.aborted || this.closed) return;
-    const last = this.#clicked,
+    const additive = modifiers.shift || modifiers.control || modifiers.meta,
+      last = this.#clicked,
       turn =
-        last && Math.hypot(point[0] - last.point[0], point[1] - last.point[1]) < 3
+        !additive && last && Math.hypot(point[0] - last.point[0], point[1] - last.point[1]) < 3
           ? last.turn + 1
           : 0;
-    this.#clicked = { point, turn };
+    // A toggle ends the cycle, so the next plain click starts from the topmost hit.
+    this.#clicked = additive ? undefined : { point, turn };
     const hit = hits.length ? hits[turn % hits.length] : undefined;
-    if (!(modifiers.shift || modifiers.control || modifiers.meta)) this.choose(hit ? [hit] : []);
+    if (!additive) this.choose(hit ? [hit] : []);
     else if (hit) {
       const key = this.identify(hit),
         rest = this.#selection.filter((item) => this.identify(item) !== key);

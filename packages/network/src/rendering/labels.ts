@@ -1,6 +1,6 @@
 import { failure, textAt, bitAt, assertIndex, rowAt, rowCount, type Data } from '@latkit/model';
 import { type Gpu, kit, type TextMetrics } from '@latkit/gpu';
-import type { NetworkData, Labels as LabelOptions } from '../data.js';
+import type { NetworkData, NetworkLabels as LabelOptions } from '../data.js';
 import {
   edgeOptions,
   vertexOptions,
@@ -86,7 +86,7 @@ export class Labels {
         options = config.labels;
       if (!options || (!edge && !style.markers) || (edge && !style.lines)) continue;
       const max = options.maxCount ?? 200,
-        size = options.size ?? style.fontSizePx;
+        size = options.sizePx ?? style.fontSizePx;
       if (!Number.isSafeInteger(max) || max < 0 || !Number.isFinite(size) || size <= 0)
         throw failure('invalid-input', 'Invalid label options');
       const count = Math.min(
@@ -129,7 +129,15 @@ export class Labels {
               frame.viewport,
               height,
             )
-          : picking.projected(bank, offset, camera, frame.viewport, height, config);
+          : picking.projected(
+              bank,
+              offset,
+              camera,
+              frame.viewport,
+              height,
+              config,
+              style.vertexRadiusPx,
+            );
         if (
           !p?.visible ||
           p.x < 0 ||
@@ -142,7 +150,7 @@ export class Labels {
           row,
           offset,
           p,
-          dx: edge ? 0 : ('radius' in p ? (p.radius as number) : 1) * style.vertexRadiusPx + 4,
+          dx: edge ? 0 : ('radius' in p ? (p.radius as number) : style.vertexRadiusPx) + 4,
         });
       }
       const missing = candidates.filter((c) => !entry!.runsByRow.has(c.row));

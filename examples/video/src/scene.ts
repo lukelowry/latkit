@@ -41,7 +41,7 @@ export function scene(gpu: Gpu, kind: ExampleView) {
       Line: {
         ends: ['from', 'to'],
         bends: 'bends',
-        curve: 'geodesic',
+        route: 'geodesic',
       },
     },
     poles: false,

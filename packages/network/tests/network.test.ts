@@ -668,7 +668,7 @@ it('renders bends, nets as stars, geodesics, and native paths with original iden
     edges: {
       bend: { ends: ['from', 'to'], bends: 'points' },
       star: {},
-      route: { ends: ['from', 'to'], curve: 'geodesic' },
+      route: { ends: ['from', 'to'], route: 'geodesic' },
     },
     paths: { seam: { points: 'points', pickable: true } },
   };
@@ -735,7 +735,7 @@ it('picks a geodesic arc at its visible arc-length midpoint in every projection'
   const network = createNetwork(gpu, {
     source: source.data,
     vertices: { node: { position: 'position' } },
-    edges: { route: { ends: ['from', 'to'], curve: 'geodesic' } },
+    edges: { route: { ends: ['from', 'to'], route: 'geodesic' } },
     camera: { center: [-30, 5], scale: 4 },
     markers: false,
     edgeWidthPx: 3,

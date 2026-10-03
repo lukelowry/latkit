@@ -33,5 +33,4 @@ export interface Limits {
   readonly segmentsPerFrame?: number;
   /** GPU memory for history images. */
   readonly historyBytes?: number;
-  readonly pickingBytes?: number;
 }

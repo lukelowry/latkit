@@ -137,7 +137,7 @@ export function data(source: GraphSource, settings: Settings, automatic = false)
         labels: { field: 'name', size: 12, maxWidth: 140, overflow: 'ellipsis' },
         arrows: settings.arrows,
         flow: settings.flow ? { field: 'signal', domain: [0, 1], range: [20, 48] } : null,
-        width: { field: 'signal', domain: [0, 1], range: [1.5, 2.5] },
+        widthPx: { field: 'signal', domain: [0, 1], range: [1.5, 2.5] },
       },
     },
     groups: source.graph.groups,

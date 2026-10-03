@@ -484,7 +484,7 @@ function drawOnce(gpu: Gpu, view: Dots) {
   });
 }
 
-it('cycles overlapping hits on clicks in place, toggles with a modifier, and clears on nothing', async () => {
+it('cycles overlapping hits on clicks in place, toggles the topmost with a modifier, and clears on nothing', async () => {
   const gpu = await createGpu({ device: fakeDevice().device });
   const { canvas, send } = pointerCanvas(gpu.device);
   // Drawn at 25, 25.5, and 75.
@@ -500,10 +500,13 @@ it('cycles overlapping hits on clicks in place, toggles with a modifier, and cle
   await click(25);
   await click(25);
   await click(25);
+  // A modifier toggles the topmost hit, however often it clicks in place.
+  await click(25, { shiftKey: true });
+  await click(25, { shiftKey: true });
   await click(75, { shiftKey: true });
   await click(75, { ctrlKey: true });
   await click(50);
-  expect(selections).toEqual([['a'], ['b'], ['a'], ['a', 'c'], ['a'], []]);
+  expect(selections).toEqual([['a'], ['b'], ['a'], [], ['a'], ['a', 'c'], ['a'], []]);
   view.destroy();
   vi.unstubAllGlobals();
   gpu.destroy();

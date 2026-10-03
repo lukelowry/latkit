@@ -9,6 +9,8 @@ import {
 } from '@latkit/model';
 import type { Colormap } from '../colors/colormap.js';
 import type { ColormapName } from '../colors/catalog.js';
+import type { RGBA } from '../colors/color.js';
+import type { TextFont } from '../text/text.js';
 
 /** Output endpoints may descend. Model domains remain ordered. */
 export type Range = readonly [start: number, end: number];
@@ -26,6 +28,15 @@ export interface ColorScale {
   readonly colormap?: Colormap | ColormapName;
 }
 export type Position2D = FieldInput | { readonly x: FieldInput; readonly y: FieldInput };
+/** Text from a field beside each drawn item; views add how it is sized. */
+export interface Labels {
+  readonly field: FieldInput;
+  readonly font?: TextFont;
+  /** `textColor` by default. */
+  readonly color?: RGBA;
+  /** At most this many labels of the type draw at once. */
+  readonly maxCount?: number;
+}
 export interface ScaleRequest extends Scale {
   readonly source: Data;
   readonly from: string;

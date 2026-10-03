@@ -42,7 +42,7 @@ zoom. Each view adds its own gestures, such as dragging.
 
 ```ts
 network.set({
-  vertices: { Bus: { size: { field: 'capacity', range: [3, 12] } } },
+  vertices: { Bus: { sizePx: { field: 'capacity', range: [3, 12] } } },
   paths: { Border: null },
   edgeWidthPx: 2,
 });
@@ -110,7 +110,8 @@ Events arrive together after each drawn frame, in order: `frame`, `camera`, `hov
 const png = await network.image({ width: 2048, height: 1024, at: 12 });
 ```
 
-An image renders at any size and coordinate. A view on a canvas or in a composition stays as it is:
+An image renders at any size and coordinate, as a `png`, `jpeg`, or `webp` `format`, with `quality`
+from 0 to 1 for the last two. A view on a canvas or in a composition stays as it is:
 its camera, hover, selection, and what `pick` finds stay as presented. A view with neither presents
 in its images, so `pick` and `locate` follow the latest one. [Video](video.md) always draws the view
 as it is and changes nothing.

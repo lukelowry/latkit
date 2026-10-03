@@ -22,7 +22,7 @@ import {
   type TextInput,
   type TextMetrics,
 } from '@latkit/gpu';
-import type { DiagramData, VertexData, EdgeData, Labels } from './data.js';
+import type { DiagramData, VertexData, EdgeData, DiagramLabels as Labels } from './data.js';
 import type { Scene, Vertex, Edge, Label, Port } from './scene.js';
 import { emptyLabel } from './scene.js';
 import type { Limits } from './options.js';
@@ -58,7 +58,7 @@ function text(column: Column | undefined, row: number): string {
 }
 function fields(option: VertexData | EdgeData): Record<string, FieldInput> {
   const out: Record<string, FieldInput> = {};
-  for (const key of ['color', 'status', 'width', 'flow'] as const) {
+  for (const key of ['color', 'status', 'widthPx', 'flow'] as const) {
     const scale = (option as VertexData & EdgeData)[key];
     if (scale) out[key] = scale.field;
   }
@@ -121,7 +121,7 @@ async function scales(
   option: VertexData | EdgeData,
 ): Promise<Map<string, kit.ResolvedScale>> {
   const bindings = new Map<string, Scale | ColorScale>();
-  for (const name of ['color', 'status', 'width', 'flow'] as const) {
+  for (const name of ['color', 'status', 'widthPx', 'flow'] as const) {
     const value = (option as VertexData & EdgeData)[name];
     if (value) bindings.set(name, value);
   }
@@ -142,7 +142,7 @@ async function scales(
         range:
           'range' in value
             ? value.range
-            : name === 'width'
+            : name === 'widthPx'
               ? [1, 4]
               : name === 'flow'
                 ? [0, 40]
@@ -313,7 +313,7 @@ export async function readScene(
           radius: option.cornerRadius ?? options.cornerRadius,
           visible: vals.visible === undefined || vals.visible === null || vals.visible !== 0,
           sourceVisible: vals.visible === undefined || vals.visible === null || vals.visible !== 0,
-          color: options.vertexBaseColor,
+          color: option.baseColor ?? options.vertexBaseColor,
           shade: Number.isFinite(vals.shade) ? vals.shade! : 1,
           label: { ...emptyLabel, text: text(tile.columns.label, i) },
           ports: [],
@@ -372,7 +372,12 @@ export async function readScene(
     for (let i = start; i < scene.vertices.length; i++) {
       const vertex = scene.vertices[i],
         v = raw[i - start];
-      vertex.color = color(v.color, option.color, columns.get('color'), options.vertexBaseColor);
+      vertex.color = color(
+        v.color,
+        option.color,
+        columns.get('color'),
+        option.baseColor ?? options.vertexBaseColor,
+      );
       if (option.status && v.status !== null)
         vertex.status = color(v.status, option.status, columns.get('status'), vertex.color);
       if (i - start < (option.labels?.maxCount ?? Infinity))
@@ -482,7 +487,7 @@ export async function readScene(
           hit: { kind: 'edge', id, source: data.source, index: tile.index, row },
           ends: [],
           visible: v.visible === undefined || v.visible === null || v.visible !== 0,
-          color: options.edgeBaseColor,
+          color: option.baseColor ?? options.edgeBaseColor,
           width: options.edgeWidthPx,
           flow: 0,
           shade: Number.isFinite(v.shade) ? v.shade! : 1,
@@ -545,8 +550,13 @@ export async function readScene(
     for (let i = start; i < scene.edges.length; i++) {
       const edge = scene.edges[i],
         v = raw[i - start];
-      edge.color = color(v.color, option.color, resolved.get('color'), options.edgeBaseColor);
-      edge.width = Math.max(0, mapped(v.width, resolved.get('width')) ?? options.edgeWidthPx);
+      edge.color = color(
+        v.color,
+        option.color,
+        resolved.get('color'),
+        option.baseColor ?? options.edgeBaseColor,
+      );
+      edge.width = Math.max(0, mapped(v.widthPx, resolved.get('widthPx')) ?? options.edgeWidthPx);
       edge.flow = mapped(v.flow, resolved.get('flow')) ?? 0;
       edge.label =
         i - start < (option.labels?.maxCount ?? Infinity)

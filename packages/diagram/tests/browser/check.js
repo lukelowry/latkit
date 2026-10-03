@@ -71,10 +71,7 @@ globalThis.diagramCheck = (async () => {
   await gpu.idle();
   const ref = vertex(source, 'n0'),
     point = diagram.locate(ref);
-  assert(
-    point && (await diagram.pick(point)).some((h) => is(h, 'n0')),
-    'Presented picking failed',
-  );
+  assert(point && (await diagram.pick(point)).some((h) => is(h, 'n0')), 'Presented picking failed');
   const rect = canvas.getBoundingClientRect();
   const pointer = (type, p, modifiers = {}) =>
     canvas.dispatchEvent(
