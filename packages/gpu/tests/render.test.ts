@@ -160,25 +160,18 @@ describe('frame ownership', () => {
     gpu.destroy();
   });
 
-  it('deduplicates pipeline builds and retries failures', async () => {
+  it('builds pipelines while the Gpu lives and reports a failed build', async () => {
     const fake = fakeDevice(),
       gpu = await createGpu({ device: fake.device });
     const descriptor = {
       layout: 'auto',
       vertex: { module: {} as GPUShaderModule, entryPoint: 'vs' },
     } as const;
-    const [a, b] = await Promise.all([
-      gpu.renderPipeline(descriptor),
-      gpu.renderPipeline(descriptor),
-    ]);
-    expect(a).toBe(b);
-    expect(fake.native.createRenderPipelineAsync).toHaveBeenCalledTimes(1);
-    const broken = { ...descriptor };
+    await gpu.renderPipeline(descriptor);
     fake.native.createRenderPipelineAsync.mockRejectedValueOnce(new Error('shader failed'));
-    await expect(gpu.renderPipeline(broken)).rejects.toThrow('shader failed');
-    await gpu.renderPipeline(broken);
-    expect(fake.native.createRenderPipelineAsync).toHaveBeenCalledTimes(3);
+    await expect(gpu.renderPipeline(descriptor)).rejects.toThrow('shader failed');
     gpu.destroy();
+    await expect(gpu.renderPipeline(descriptor)).rejects.toMatchObject({ code: 'closed' });
   });
 
   it('isolates device generations and never destroys a borrowed device', async () => {

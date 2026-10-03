@@ -49,7 +49,7 @@ export interface Gpu {
   texture(descriptor: GPUTextureDescriptor): TextureResource;
   /** A validated shader module; identical code shares one. Invalid WGSL rejects with `invalid-input`. */
   shaderModule(code: string, label?: string): Promise<GPUShaderModule>;
-  /** Immutable descriptor identity is the cache key. */
+  /** A pipeline, created while the Gpu is live; views keep and share their own variants. */
   renderPipeline(descriptor: GPURenderPipelineDescriptor): Promise<GPURenderPipeline>;
   computePipeline(descriptor: GPUComputePipelineDescriptor): Promise<GPUComputePipeline>;
   /** Wait for already submitted managed work. Does not await ongoing preparation. */
@@ -109,10 +109,6 @@ class Owner implements Gpu {
   private readonly buffers: Buffers;
   private readonly stopped = new AbortController();
   private readonly pending = new Set<Promise<void>>();
-  private readonly pipelines = new Map<
-    object,
-    { entry: Entry; promise: Promise<GPURenderPipeline | GPUComputePipeline> }
-  >();
   private readonly modules = new Map<string, { entry: Entry; promise: Promise<GPUShaderModule> }>();
 
   constructor(
@@ -280,43 +276,17 @@ class Owner implements Gpu {
     return promise;
   }
   renderPipeline(descriptor: GPURenderPipelineDescriptor): Promise<GPURenderPipeline> {
-    return this.pipeline(descriptor, () =>
-      this.device.createRenderPipelineAsync(descriptor),
-    ) as Promise<GPURenderPipeline>;
+    return this.pipeline(() => this.device.createRenderPipelineAsync(descriptor));
   }
   computePipeline(descriptor: GPUComputePipelineDescriptor): Promise<GPUComputePipeline> {
-    return this.pipeline(descriptor, () =>
-      this.device.createComputePipelineAsync(descriptor),
-    ) as Promise<GPUComputePipeline>;
+    return this.pipeline(() => this.device.createComputePipelineAsync(descriptor));
   }
-  private pipeline(
-    descriptor: object,
-    create: () => Promise<GPURenderPipeline | GPUComputePipeline>,
-  ): Promise<GPURenderPipeline | GPUComputePipeline> {
+  /** Views cache their variants; a pipeline is created once per request and checked live. */
+  private async pipeline<P>(create: () => Promise<P>): Promise<P> {
     this.assertLive();
-    const cached = this.pipelines.get(descriptor);
-    if (cached?.entry.live) {
-      cached.entry.touch();
-      return cached.promise;
-    }
-    const entry = this.memory.add([], 512, () => {
-      this.pipelines.delete(descriptor);
-    });
-    const promise = Promise.resolve()
-      .then(create)
-      .then(
-        (pipeline) => {
-          this.assertLive();
-          entry.unpin();
-          return pipeline;
-        },
-        (error) => {
-          this.memory.remove(entry);
-          throw error;
-        },
-      );
-    this.pipelines.set(descriptor, { entry, promise });
-    return promise;
+    const pipeline = await create();
+    this.assertLive();
+    return pipeline;
   }
   async idle(): Promise<void> {
     await Promise.all([...this.pending]);
@@ -330,7 +300,6 @@ class Owner implements Gpu {
     this.stopped.abort(reason);
     this.reader.destroy();
     this.memory.destroy();
-    this.pipelines.clear();
     this.modules.clear();
   }
   destroy(): void {

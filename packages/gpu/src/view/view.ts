@@ -1,4 +1,4 @@
-import { failure, isFailure, type Data, type Index } from '@latkit/model';
+import { failure, isFailure } from '@latkit/model';
 import type { Gpu } from '../gpu.js';
 import { createPresentation, type Presentation } from './presentation.js';
 import { createTextureTarget, type TextureTarget } from './target.js';
@@ -14,16 +14,6 @@ import type { HoverState } from './input.js';
 
 /** A canvas point in CSS pixels. */
 export type Point = readonly [x: number, y: number];
-
-/** A drawn row, as selections and hits report it. */
-export interface DataHit {
-  readonly source: Data;
-  readonly index: Index;
-  readonly row: number;
-  readonly field?: string;
-  readonly frame?: number;
-  readonly coordinate?: number;
-}
 
 /** Config every view understands. */
 export interface ViewConfig {
@@ -154,16 +144,26 @@ export function applyPatch<C>(config: C, patch: object, shape: ConfigShape): C {
 }
 
 /**
- * The base every latkit view extends. It owns the config, presentation on a canvas, input, images,
- * and events; a subclass renders and reacts to config changes.
+ * The base every latkit view extends. It owns the config and what it resolves to, presentation on a
+ * canvas, input, images, and events. A view resolves its config, prepares a frame, and encodes what
+ * it prepared; the base carries the prepared value from one step to the next.
  */
 export abstract class BaseView<
   Config extends ViewConfig,
   Events extends ViewEvents,
+  Resolved = Config,
+  Prepared = void,
   Records extends keyof Config = never,
   Merged extends keyof Config = never,
 > {
   #config: Config;
+  #resolved?: Resolved;
+  /** A checked config and what it resolves to, until that config applies. */
+  #checked?: { readonly config: Config; readonly resolved: Resolved };
+  /** Aborts when the view is destroyed. */
+  readonly #alive = new AbortController();
+  /** Input a composition routes here from the panel this view draws in. */
+  #routed?: { readonly surface: HTMLCanvasElement; detach?: () => void };
   #closed = false;
   #listeners = new Map<PropertyKey, Set<Listener>>();
   #events: Queued[] = [];
@@ -198,7 +198,7 @@ export abstract class BaseView<
     const { camera, ...rest } = config as Plain;
     void camera;
     this.#config = normalized(rest as unknown as Config, shape);
-    const view = this as BaseView<Config, Events, Records, Merged>;
+    const view = this as BaseView<Config, Events, Resolved, Prepared, Records, Merged>;
     this.#renderer = {
       get pending() {
         return view.pending;
@@ -218,6 +218,17 @@ export abstract class BaseView<
       renderer: this.#renderer,
       closed: () => this.#closed,
       hold: () => this.hold(),
+      route: (surface) => {
+        const routed: { readonly surface: HTMLCanvasElement; detach?: () => void } = {
+          surface,
+          detach: this.#input(surface),
+        };
+        this.#routed = routed;
+        return () => {
+          routed.detach?.();
+          if (this.#routed === routed) this.#routed = undefined;
+        };
+      },
       compose: () => {
         if (this.#config.canvas)
           throw failure('invalid-input', 'A composed view presents through its composition');
@@ -237,6 +248,7 @@ export abstract class BaseView<
    * A view whose construction throws first holds nothing.
    */
   protected start(): void {
+    void this.resolved;
     this.gpu.signal.addEventListener('abort', this.#stopped, { once: true });
     if (this.#config.canvas) this.#attach(this.#config.canvas);
   }
@@ -246,6 +258,7 @@ export abstract class BaseView<
   }
   set(patch: Patch<Config, Records, Merged>, options: SetOptions = {}): void {
     this.live();
+    void this.resolved;
     const { camera, ...rest } = patch as Plain;
     const previous = this.#config;
     // Shorthands expand before merging, so `input: 'inspect'` keeps the other input options.
@@ -257,7 +270,11 @@ export abstract class BaseView<
       throw failure('invalid-input', 'A composed view presents through its composition');
     // Presentation keys are the base's alone, so playback's set({ at }) stays constant time.
     const own = Object.keys(rest).some((key) => !PRESENTATION.has(key));
-    if (own) this.check(next);
+    if (own) {
+      this.check(next);
+      // Keyed by config: a patch rejected after this never applies what it resolved to.
+      this.#checked = { config: next, resolved: this.resolve(next) };
+    }
     // Every part of the patch is valid before any of it applies.
     const move = camera === undefined ? undefined : this.cameraMove(camera as Plain | null);
     this.#config = next;
@@ -275,9 +292,15 @@ export abstract class BaseView<
     if (previous.canvas !== next.canvas) {
       this.#detach();
       if (next.canvas) this.#attach(next.canvas);
-    } else if (this.#canvas && (previous as Plain).input !== (next as Plain).input) {
-      this.#canvas.input?.();
-      this.#canvas.input = this.#input(this.#canvas.canvas);
+    } else if ((previous as Plain).input !== (next as Plain).input) {
+      if (this.#canvas) {
+        this.#canvas.input?.();
+        this.#canvas.input = this.#input(this.#canvas.canvas);
+      }
+      if (this.#routed) {
+        this.#routed.detach?.();
+        this.#routed.detach = this.#input(this.#routed.surface);
+      }
     }
     if (previous.paused !== next.paused) {
       if (next.paused) this.#stopFrame(new DOMException('View paused', 'AbortError'));
@@ -336,6 +359,19 @@ export abstract class BaseView<
   protected get frameConfig(): Config {
     return this.#frameConfig ?? this.#config;
   }
+  /** What the current config means to this view, resolved once per config. */
+  protected get resolved(): Resolved {
+    return (this.#resolved ??= this.resolve(this.#config));
+  }
+  /** Aborts when the view is destroyed, for the view's own background work. */
+  protected get signal(): AbortSignal {
+    return this.#alive.signal;
+  }
+  /** Follow every invalidation, as a composition of this view does; returns the unsubscribe. */
+  protected onInvalidate(listener: () => void): () => void {
+    this.#invalidated.add(listener);
+    return () => this.#invalidated.delete(listener);
+  }
   /** Coalesce changes to renderer state until the captured snapshot has settled. */
   protected defer(key: string, change: () => void): boolean {
     if (!this.#captured) return false;
@@ -344,8 +380,13 @@ export abstract class BaseView<
     return true;
   }
   #configure(previous: Config, next: Config, options: SetOptions): void {
+    const before = this.resolved,
+      checked = this.#checked;
+    this.#checked = undefined;
+    const after = checked?.config === next ? checked.resolved : this.resolve(next);
+    this.#resolved = after;
     this.changed(previous, next, options);
-    this.configure(previous, next, options);
+    this.configure(after, before, options);
   }
   #capture(): CapturedFrame {
     this.live();
@@ -366,31 +407,26 @@ export abstract class BaseView<
     let released = false;
     return {
       prepare: async (frame) => {
-        const started = performance.now();
-        try {
-          await this.prepare(frame);
-        } catch (error) {
-          this.discard();
-          throw error;
-        }
-        const prepareMs = performance.now() - started;
+        const started = performance.now(),
+          prepared = await this.prepare(frame),
+          prepareMs = performance.now() - started;
         let settled = false;
         return {
-          encode: (encoding) => this.encode(encoding),
+          encode: (encoding) => this.encode(encoding, prepared),
           submitted: () => {
             if (settled) return;
             settled = true;
             this.#frames++;
             this.#prepareMs = prepareMs;
             this.emit('frame', frameInfo(frame) as Events['frame']);
-            this.submitted(frame);
+            this.submitted(frame, prepared);
             // Exported frames draw the view's state; only presented ones advance it.
             if (frame.presented) this.presented(frame);
           },
           discard: () => {
             if (settled) return;
             settled = true;
-            this.discard();
+            this.discard(prepared);
           },
         };
       },
@@ -525,9 +561,12 @@ export abstract class BaseView<
   destroy(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.#alive.abort(new DOMException('View destroyed', 'AbortError'));
     this.gpu.signal.removeEventListener('abort', this.#stopped);
     try {
       this.#detach();
+      this.#routed?.detach?.();
+      this.#routed = undefined;
     } finally {
       this.#invalidated.clear();
       this.release();
@@ -536,12 +575,16 @@ export abstract class BaseView<
     }
   }
 
-  /** Validate a config before it applies; throw to reject a patch. */
+  /** Validate a config before it resolves; throw to reject a patch. */
   protected check(config: Config): void {
     void config;
   }
-  /** React to config changes; the config is already current. */
-  protected abstract configure(previous: Config, next: Config, options: SetOptions): void;
+  /** What a config means to this view: pure, resolved once per config; throw to reject it. */
+  protected resolve(config: Config): Resolved {
+    return config as unknown as Resolved;
+  }
+  /** React to a resolved config replacing the previous one; `resolved` is already the next. */
+  protected abstract configure(next: Resolved, previous: Resolved, options: SetOptions): void;
   /** View-specific measures merged into stats(). */
   protected measure(): Partial<ViewStats> {
     return {};
@@ -573,14 +616,21 @@ export abstract class BaseView<
   }
   /** Release GPU and source subscriptions; the canvas is already detached. */
   protected abstract release(): void;
-  protected abstract prepare(frame: Preparation): Promise<void>;
-  protected abstract encode(frame: Encoding): void;
+  /** Prepare a frame: read, upload, and build what `encode` draws. Never change shown state here. */
+  protected abstract prepare(frame: Preparation): Promise<Prepared>;
+  /** Record a prepared frame's commands; synchronous. */
+  protected abstract encode(frame: Encoding, prepared: Prepared): void;
   protected captureChildren(): readonly CapturedFrame[] {
     return [];
   }
-  protected discard(): void {}
-  protected submitted(frame: FrameInfo): void {
+  /** A prepared frame was dropped before submission. */
+  protected discard(prepared: Prepared): void {
+    void prepared;
+  }
+  /** A prepared frame was submitted: commit what it shows. */
+  protected submitted(frame: FrameInfo, prepared: Prepared): void {
     void frame;
+    void prepared;
   }
   protected get pending(): Promise<void> | undefined {
     return undefined;
@@ -811,6 +861,8 @@ interface Internals {
   readonly renderer: Renderer;
   closed(): boolean;
   hold(): Promise<() => void>;
+  /** Attach the view's input to a surface a composition routes events to; returns the detach. */
+  route(surface: HTMLCanvasElement): () => void;
   compose(): () => void;
 }
 const internals = new WeakMap<object, Internals>();
@@ -831,6 +883,10 @@ export function gpuOf(view: object): Gpu {
 /** Take a view's renderer from its canvas until release, for rendering it elsewhere. */
 export function hold(view: object): Promise<() => void> {
   return of(view).hold();
+}
+/** Route a composed view's input from the surface of its panel until the returned detach. */
+export function route(view: object, surface: HTMLCanvasElement): () => void {
+  return of(view).route(surface);
 }
 /** Mark a view as presented by a composition until release. */
 export function compose(view: object): () => void {

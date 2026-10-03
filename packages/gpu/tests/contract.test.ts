@@ -38,6 +38,7 @@ describe('public contract and allocation boundaries', () => {
       [
         'BaseView',
         'BaseItemView',
+        'resolveLimits',
         'resolveViewStyle',
         'Attachments',
         'Work',
@@ -45,6 +46,7 @@ describe('public contract and allocation boundaries', () => {
         'gpuOf',
         'hold',
         'validateRgba',
+        'clearColor',
         'sampleColormap',
         'colormapShader',
         'BufferData',

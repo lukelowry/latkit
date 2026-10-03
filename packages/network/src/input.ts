@@ -1,15 +1,11 @@
 import type { kit, Point, ViewInput } from '@latkit/gpu';
-import { sameItem, type NetworkItem } from './data.js';
+import type { NetworkItem } from './data.js';
 
 type Mode = NonNullable<ViewInput['mode']>;
 /** What a network's own gestures drive; the view implements it. */
 export interface Gestures {
   pan(dx: number, dy: number): void;
   rotate(dx: number, dy: number): void;
-  /** Hits at a point, nearest first, once the shown frame can answer. */
-  hits(point: Point, signal: AbortSignal): Promise<readonly NetworkItem[]>;
-  /** Report a failure no caller awaits. */
-  fail(error: unknown): void;
   locate(item: NetworkItem): Point | null;
   neighborhood(item: NetworkItem): readonly NetworkItem[];
   reveal(item: NetworkItem): void;
@@ -18,7 +14,7 @@ export interface Gestures {
   choose(items: readonly NetworkItem[]): void;
 }
 
-/** Drag pans, or turns with the right button or Shift; click selects, cycling through overlaps. */
+/** Drag pans, or turns with the right button or Shift; the view selects what a click hits. */
 export function listen(
   canvas: HTMLCanvasElement,
   input: kit.CanvasInput,
@@ -27,36 +23,7 @@ export function listen(
 ): void {
   const { signal, point } = input,
     navigate = mode !== 'inspect';
-  let drag:
-    | { id: number; x: number; y: number; startX: number; startY: number; rotate: boolean }
-    | undefined;
-  let cycle = 0,
-    lastPoint: Point | undefined,
-    picking: AbortController | undefined;
-  /** A modifier toggles the hit instead of replacing the selection; a newer click wins. */
-  const choose = (p: Point, toggle: boolean) => {
-    cycle = lastPoint && Math.hypot(p[0] - lastPoint[0], p[1] - lastPoint[1]) < 3 ? cycle + 1 : 0;
-    lastPoint = p;
-    const turn = cycle;
-    picking?.abort();
-    const own = (picking = new AbortController()),
-      stop = AbortSignal.any([signal, own.signal]);
-    view.hits(p, stop).then(
-      (hits) => {
-        if (stop.aborted) return;
-        const hit = hits.length ? hits[turn % hits.length] : undefined;
-        if (!toggle) view.choose(hit ? [hit] : []);
-        else if (hit) {
-          const selection = view.selection(),
-            rest = selection.filter((item) => !sameItem(item, hit));
-          view.choose(rest.length === selection.length ? [...rest, hit] : rest);
-        }
-      },
-      (error: unknown) => {
-        if (!stop.aborted) view.fail(error);
-      },
-    );
-  };
+  let drag: { id: number; x: number; y: number; rotate: boolean } | undefined;
   canvas.addEventListener(
     'pointerdown',
     (event) => {
@@ -66,8 +33,6 @@ export function listen(
         id: event.pointerId,
         x: p[0],
         y: p[1],
-        startX: p[0],
-        startY: p[1],
         rotate: event.button === 2 || event.shiftKey,
       };
       if (navigate) input.capture(event.pointerId);
@@ -93,9 +58,6 @@ export function listen(
     'pointerup',
     (event) => {
       if (drag?.id !== event.pointerId) return;
-      const p = point(event);
-      if (Math.hypot(p[0] - drag.startX, p[1] - drag.startY) < 4 && event.button === 0)
-        choose(p, event.shiftKey || event.ctrlKey || event.metaKey);
       drag = undefined;
       input.release(event.pointerId);
     },

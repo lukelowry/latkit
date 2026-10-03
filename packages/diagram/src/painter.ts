@@ -1,4 +1,4 @@
-import { kit, type Gpu, type RGBA, type Shade } from '@latkit/gpu';
+import { kit, type Gpu, type RGBA } from '@latkit/gpu';
 import { intersects } from './spatial.js';
 import type { Scene, Label, Rect } from './scene.js';
 import type { Style } from './config.js';
@@ -26,7 +26,7 @@ interface Geometry {
   states: Map<string, number>;
   paddingPx: number;
 }
-interface Pipelines {
+export interface Pipelines {
   shapes: GPURenderPipeline;
   text: GPURenderPipeline;
   grid: GPURenderPipeline;
@@ -48,8 +48,9 @@ export interface DrawState {
   /** Replaced whenever it changes. */
   readonly selection: readonly DiagramItem[];
   readonly hover: DiagramItem | null;
-  readonly shade: Shade | null;
-  readonly pointer: Point | null;
+  readonly pipelines: Pipelines;
+  /** The shade's uniforms for this frame. */
+  readonly shade: GPUBufferBinding;
   readonly overlay: Overlay | null;
   /** Flow animates; false under reduced motion. */
   readonly motion: boolean;
@@ -222,9 +223,56 @@ function sameText(a: readonly kit.TextRun[], b: readonly kit.TextRun[]): boolean
     })
   );
 }
+/** Build the pipelines for one target format, MSAA, and shade; the view caches each variant. */
+export async function pipelines(
+  gpu: Gpu,
+  format: GPUTextureFormat,
+  msaa: 1 | 4,
+  shade: string,
+): Promise<Pipelines> {
+  const d = gpu.device,
+    V = GPUShaderStage.VERTEX,
+    F = GPUShaderStage.FRAGMENT;
+  const layout = d.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: V | F, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: F, buffer: { type: 'uniform' } },
+      { binding: 2, visibility: V | F, buffer: { type: 'read-only-storage' } },
+      { binding: 3, visibility: F, buffer: { type: 'read-only-storage' } },
+      { binding: 4, visibility: V, buffer: { type: 'read-only-storage' } },
+    ],
+  });
+  const module = await gpu.shaderModule(
+    kit.shadeShader({ group: 0, binding: 1 }) +
+      kit.textShader({ group: 1 }) +
+      kit.strokeShader() +
+      kit.outputShader() +
+      shader +
+      shade,
+    'diagram',
+  );
+  const pipe = (vertex: string, fragment: string, text = false) =>
+    gpu.renderPipeline({
+      layout: d.createPipelineLayout({
+        bindGroupLayouts: text ? [layout, gpu.textLayout] : [layout],
+      }),
+      vertex: { module, entryPoint: vertex },
+      fragment: {
+        module,
+        entryPoint: fragment,
+        targets: [{ format, blend: kit.premultipliedBlend }],
+      },
+      primitive: { topology: 'triangle-list' },
+      multisample: { count: msaa },
+    });
+  const [shapes, text, grid] = await Promise.all([
+    pipe('shape_vertex', 'shape_fragment'),
+    pipe('text_vertex', 'text_fragment', true),
+    pipe('grid_vertex', 'grid_fragment'),
+  ]);
+  return { shapes, text, grid, layout };
+}
 export class Painter {
-  animating = false;
-  private variants = new Map<string, Promise<Pipelines>>();
   private current?: { scene: Scene; geometry: Geometry };
   private focused?: {
     readonly geometry: Geometry;
@@ -238,63 +286,6 @@ export class Painter {
   private emptyFocus = buffer(new Float32Array(1), 'diagram overlay focus');
   constructor(private readonly gpu: Gpu) {
     this.attachments = new kit.Attachments(gpu);
-  }
-  async pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade | null): Promise<Pipelines> {
-    const key = format + ':' + msaa + ':' + (shade?.wgsl ?? kit.defaultShade);
-    const existing = this.variants.get(key);
-    if (existing) return existing;
-    const task = this.compile(format, msaa, shade);
-    this.variants.set(key, task);
-    void task.catch(() => this.variants.delete(key));
-    if (this.variants.size > 8) this.variants.delete(this.variants.keys().next().value!);
-    return task;
-  }
-  private async compile(
-    format: GPUTextureFormat,
-    msaa: 1 | 4,
-    shade: Shade | null,
-  ): Promise<Pipelines> {
-    const d = this.gpu.device,
-      V = GPUShaderStage.VERTEX,
-      F = GPUShaderStage.FRAGMENT;
-    const layout = d.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: V | F, buffer: { type: 'uniform' } },
-        { binding: 1, visibility: F, buffer: { type: 'uniform' } },
-        { binding: 2, visibility: V | F, buffer: { type: 'read-only-storage' } },
-        { binding: 3, visibility: F, buffer: { type: 'read-only-storage' } },
-        { binding: 4, visibility: V, buffer: { type: 'read-only-storage' } },
-      ],
-    });
-    const module = await this.gpu.shaderModule(
-      kit.shadeShader({ group: 0, binding: 1 }) +
-        kit.textShader({ group: 1 }) +
-        kit.strokeShader() +
-        kit.outputShader() +
-        shader +
-        (shade?.wgsl ?? kit.defaultShade),
-      'diagram',
-    );
-    const pipe = (vertex: string, fragment: string, text = false) =>
-      this.gpu.renderPipeline({
-        layout: d.createPipelineLayout({
-          bindGroupLayouts: text ? [layout, this.gpu.textLayout] : [layout],
-        }),
-        vertex: { module, entryPoint: vertex },
-        fragment: {
-          module,
-          entryPoint: fragment,
-          targets: [{ format, blend: kit.premultipliedBlend }],
-        },
-        primitive: { topology: 'triangle-list' },
-        multisample: { count: msaa },
-      });
-    const [shapes, text, grid] = await Promise.all([
-      pipe('shape_vertex', 'shape_fragment'),
-      pipe('text_vertex', 'text_fragment', true),
-      pipe('grid_vertex', 'grid_fragment'),
-    ]);
-    return { shapes, text, grid, layout };
   }
   private build(scene: Scene, options: Style, previous?: Geometry): Geometry {
     const keys = new Map<string, number>(),
@@ -571,23 +562,14 @@ export class Painter {
     };
   }
   async prepare(frame: kit.Preparation, state: DrawState): Promise<Paint> {
-    const { scene, style: options, camera, shade, pointer, overlay } = state;
-    const pipelines = await this.pipelines(frame.format, options.msaa, shade);
+    const { scene, style: options, camera, pipelines, shade: effect, overlay } = state;
     let geometry = this.current?.scene === scene ? this.current.geometry : undefined;
     if (!geometry) {
       geometry = this.build(scene, options, this.current?.geometry);
       this.current = { scene, geometry };
     }
     this.focus(geometry, state);
-    const parameters = new Float32Array(64);
-    this.animating =
-      shade?.tick?.(parameters, {
-        timeMs: frame.timeMs,
-        pointerPx: pointer,
-        viewport: frame.viewport,
-      }) ?? false;
-    const effect = frame.shade({ parameters, pointerPx: pointer }),
-      focus = frame.buffer(geometry.focus),
+    const focus = frame.buffer(geometry.focus),
       accent = options.selectedColor ?? options.hoverColor;
     const group = (
       origin: Point,
@@ -741,7 +723,6 @@ export class Painter {
     };
   }
   encode(frame: kit.Encoding, paint: Paint): void {
-    const color = paint.background;
     const pass = frame.encoder.beginRenderPass({
       colorAttachments: [
         {
@@ -749,7 +730,7 @@ export class Painter {
           resolveTarget: paint.msaa ? frame.target : undefined,
           loadOp: 'clear',
           storeOp: 'store',
-          clearValue: [color[0] * color[3], color[1] * color[3], color[2] * color[3], color[3]],
+          clearValue: kit.clearColor(paint.background),
         },
       ],
     });
@@ -810,7 +791,6 @@ export class Painter {
   }
   destroy(): void {
     this.attachments.destroy();
-    this.variants.clear();
     this.current = undefined;
     this.focused = undefined;
   }

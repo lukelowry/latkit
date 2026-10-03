@@ -93,7 +93,14 @@ interface TestConfig extends ViewConfig {
   readonly input?:
     'navigate' | 'none' | { readonly mode?: 'navigate' | 'none'; readonly wheel?: string };
 }
-class TestView extends BaseView<TestConfig, ViewEvents, 'items', 'limits' | 'input' | 'camera'> {
+class TestView extends BaseView<
+  TestConfig,
+  ViewEvents,
+  TestConfig,
+  void,
+  'items',
+  'limits' | 'input' | 'camera'
+> {
   frames: FrameInfo[] = [];
   configured: { previous: TestConfig; next: TestConfig; options: SetOptions }[] = [];
   camera = { x: 0, y: 0 };
@@ -112,7 +119,7 @@ class TestView extends BaseView<TestConfig, ViewEvents, 'items', 'limits' | 'inp
   refresh(): void {
     this.invalidate();
   }
-  protected configure(previous: TestConfig, next: TestConfig, options: SetOptions): void {
+  protected configure(next: TestConfig, previous: TestConfig, options: SetOptions): void {
     this.configured.push({ previous, next, options });
     this.invalidate();
   }

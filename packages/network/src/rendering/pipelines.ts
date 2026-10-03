@@ -24,28 +24,8 @@ export interface Pipelines {
   readonly text: GPURenderPipeline;
   readonly axis: GPURenderPipeline;
 }
-const caches = new WeakMap<Gpu, Map<string, Promise<Pipelines>>>();
-export function pipelines(
-  gpu: Gpu,
-  format: GPUTextureFormat,
-  msaa: 1 | 4,
-  shade: string,
-): Promise<Pipelines> {
-  let cache = caches.get(gpu);
-  if (!cache) {
-    cache = new Map();
-    caches.set(gpu, cache);
-  }
-  const key = format + ':' + msaa + ':' + shade;
-  const hit = cache.get(key);
-  if (hit) return hit;
-  const pending = create(gpu, format, msaa, shade);
-  cache.set(key, pending);
-  void pending.catch(() => cache!.delete(key));
-  if (cache.size > 12) cache.delete(cache.keys().next().value!);
-  return pending;
-}
-async function create(
+/** Build the network's pipelines; its view caches each variant. */
+export async function pipelines(
   gpu: Gpu,
   format: GPUTextureFormat,
   msaa: 1 | 4,

@@ -1,7 +1,6 @@
 import { failure, isFailure, sameItem, type FieldValues } from '@latkit/model';
 import {
   kit,
-  viewStyle,
   type Gpu,
   type ItemEvents,
   type ItemView,
@@ -43,7 +42,7 @@ import { geometry } from './geometry.js';
 import { positions, type Scene } from './scene.js';
 import { Picking } from './picking.js';
 import { union } from './spatial.js';
-import { Painter, type Paint, type Overlay } from './painter.js';
+import { Painter, pipelines, type Paint, type Overlay, type Pipelines } from './painter.js';
 import { listen, type Controls, type DiagramInput, type Gestures } from './input.js';
 /** A wiring the user drew; the application decides which references change. */
 export interface ConnectProposal {
@@ -123,41 +122,19 @@ interface Presented {
   readonly revision: number;
   readonly at?: number;
 }
+/** A prepared frame: what it shows, and what it draws. */
 interface Staged extends Presented {
   readonly paint: Paint;
-  off(): void;
 }
-const KEYS = new Set([
-  'canvas',
-  'at',
-  'paused',
-  'source',
-  'vertices',
-  'edges',
-  'groups',
-  'layout',
-  'camera',
-  'input',
-  'shade',
-  'limits',
-  ...Object.keys(viewStyle),
-  ...Object.keys(DEFAULTS),
-]);
+/** What a config means to the diagram: its data, limits, layout, and style. */
 interface Resolved {
   readonly config: DiagramConfig;
   readonly data: DiagramData;
+  /** Whether the scene reads sampled fields; otherwise it is the same at every coordinate. */
+  readonly sampled: boolean;
   readonly limits: Required<Limits>;
   readonly layout: Required<LayoutOptions>;
-}
-function resolve(config: DiagramConfig): Resolved {
-  for (const key of Object.keys(config)) if (!KEYS.has(key)) fail('Unknown diagram option: ' + key);
-  resolveStyle(config);
-  return {
-    config,
-    data: checkedData(diagramData(config)),
-    limits: resolveLimits(config.limits),
-    layout: layoutOptions(config.layout),
-  };
+  readonly style: Style;
 }
 /** Style options drawn through uniforms; any other change rereads the scene. */
 const UNIFORMS = new Set<keyof Style>([
@@ -199,32 +176,25 @@ const KINDS = new Set(['vertex', 'edge', 'port']);
 class DiagramView
   extends kit.BaseItemView<
     DiagramConfig,
-    DiagramEvents,
     DiagramItem,
     DiagramItem,
     Camera,
+    DiagramEvents,
+    Resolved,
+    Staged,
+    Pipelines,
     Records,
     Merged
   >
   implements Diagram
 {
-  private data: DiagramData;
-  /** Whether the scene reads sampled fields; otherwise it is the same at every coordinate. */
-  private sampled: boolean;
-  private style: Style;
-  private limits: Required<Limits>;
-  private layout: Required<LayoutOptions>;
-  private resolved?: Resolved;
   private readonly painter: Painter;
   private revision = 0;
   /** The latest drawn frame: what pick, locate, and selection see. */
   private shown?: Presented;
   /** The latest drawn frame of accepted positions, which drags start from. */
   private stable?: Presented;
-  /** This frame's scene while its camera is framed. */
-  private preparing?: { readonly scene: Scene; readonly picking: Picking };
   private overlay: Overlay | null = null;
-  private staged?: Staged;
   private counts = { vertices: 0, edges: 0, ends: 0, geometryBytes: 0, drawCalls: 0 };
   /** Whether the shown scene has wires whose flow moves. */
   private flowing = false;
@@ -240,12 +210,13 @@ class DiagramView
   private drag?: { keys: Set<string>; delta: Point };
   private interruptedTransition = false;
   private relayout = false;
-  private shadeAnimating = false;
   private gestures?: Gestures;
   private readonly controls: Controls = {
     emit: (event, value) => this.emit(event, value),
     selection: () => this.selection,
     choose: (items) => this.choose(items),
+    click: (p, modifiers, touch) =>
+      void this.click(p, modifiers, { touch }).catch((error: unknown) => this.fail(error)),
     revision: () => this.revision,
     scene: () => this.shown?.scene,
     options: () => this.style,
@@ -271,28 +242,34 @@ class DiagramView
     stay: () => {
       if (this.camera.fit) this.moveCamera({ fit: false }, {});
     },
-    fit: () => this.fit(undefined, { animate: true }),
     reveal: (item) => this.reveal(item),
-    invalidated: (listener) => kit.rendererOf(this).on!('invalidate', listener),
+    invalidated: (listener) => this.onInvalidate(listener),
   };
   constructor(gpu: Gpu, config: DiagramConfig) {
     super(gpu, config, {
+      name: 'diagram',
       records: ['vertices', 'edges', 'groups'],
       merged: ['camera', 'input', 'limits', 'layout'],
       shorthands: { layout: 'algorithm' },
       fields: FIELD_OPTIONS,
       nested: ['ports'],
+      options: Object.keys(DEFAULTS),
       framed: ['center', 'scale'],
       modes: ['navigate', 'edit', 'inspect', 'none'],
+      // Presses drag, wire, and marquee here; the gestures select through `click`.
+      clicks: false,
     });
-    const resolved = resolve(this.config);
-    this.data = resolved.data;
-    this.sampled = sampled(this.data);
-    this.style = resolveStyle(this.config, this.viewStyle);
-    this.limits = resolved.limits;
-    this.layout = resolved.layout;
     this.painter = new Painter(gpu);
     this.start();
+  }
+  private get data(): DiagramData {
+    return this.resolved.data;
+  }
+  private get style(): Style {
+    return this.resolved.style;
+  }
+  private get limits(): Required<Limits> {
+    return this.resolved.limits;
   }
 
   neighborhood(item: DiagramItem): readonly DiagramItem[] {
@@ -340,18 +317,17 @@ class DiagramView
     if (typeof fit !== 'boolean') fail('Invalid camera fit');
     return Object.freeze({ center: point(center[0], center[1]), scale, fit });
   }
-  protected framing(
+  /** The camera that frames items in a scene, or the whole scene; undefined before anything draws. */
+  private framing(
+    scene: Scene,
+    picking: Picking,
     items: readonly DiagramItem[] | undefined,
-    camera: Camera,
     viewport: Viewport,
   ): Partial<Camera> | undefined {
-    void camera;
-    const prepared = this.preparing;
-    if (!prepared) return undefined;
-    const boxes = items ? prepared.picking.bounds(items) : [];
-    if (!boxes.length && !prepared.picking.drawn) return undefined;
+    const boxes = items ? picking.bounds(items) : [];
+    if (!boxes.length && !picking.drawn) return undefined;
     const fitted = kit.fitCamera(
-      boxes.length ? union(boxes) : prepared.scene.bounds,
+      boxes.length ? union(boxes) : scene.bounds,
       viewport,
       this.style.fitPaddingPx,
       { yDirection: 'down' },
@@ -416,12 +392,8 @@ class DiagramView
       portsShown(this.style, shown.camera),
     );
   }
-  protected compileShade(
-    shade: Shade | null,
-    format: GPUTextureFormat,
-    msaa: 1 | 4,
-  ): Promise<unknown> {
-    return this.painter.pipelines(format, msaa, shade);
+  protected pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade): Promise<Pipelines> {
+    return pipelines(this.gpu, format, msaa, shade.wgsl);
   }
   protected checkInput(input: DiagramInput): void {
     super.checkInput(checkInput(input));
@@ -451,15 +423,21 @@ class DiagramView
     return this.gestures?.cancel() ?? false;
   }
 
-  protected check(config: DiagramConfig): void {
-    super.check(config);
-    this.resolved = resolve(config);
+  protected resolve(config: DiagramConfig): Resolved {
+    const data = checkedData(diagramData(config));
+    return {
+      config,
+      data,
+      sampled: sampled(data),
+      limits: resolveLimits(config.limits),
+      layout: layoutOptions(config.layout),
+      style: resolveStyle(config, this.sharedStyle(config)),
+    };
   }
-  protected configure(previous: DiagramConfig, next: DiagramConfig, options: SetOptions): void {
-    const resolved = this.resolved?.config === next ? this.resolved : resolve(next);
-    this.resolved = undefined;
+  protected configure(resolved: Resolved, before: Resolved, options: SetOptions): void {
+    const { config: next } = resolved,
+      { config: previous } = before;
     const animate = options.animate === true;
-    this.limits = resolved.limits;
     if (
       previous.source !== next.source ||
       previous.vertices !== next.vertices ||
@@ -467,21 +445,16 @@ class DiagramView
       previous.groups !== next.groups ||
       previous.limits !== next.limits
     ) {
-      this.data = resolved.data;
-      this.sampled = sampled(this.data);
       this.reread(animate);
       this.pruneSelection();
     }
     if (previous.layout !== next.layout) {
-      this.layout = resolved.layout;
       this.reread(animate);
       this.relayout = true;
     }
-    const before = this.style;
-    this.style = resolveStyle(next, this.viewStyle);
-    const changed = (Object.keys(this.style) as (keyof Style)[]).filter((key) => {
-      const a = this.style[key],
-        b = before[key];
+    const changed = (Object.keys(resolved.style) as (keyof Style)[]).filter((key) => {
+      const a = resolved.style[key],
+        b = before.style[key];
       return Array.isArray(a) && Array.isArray(b)
         ? a.length !== b.length || a.some((v, i) => v !== b[i])
         : a !== b;
@@ -492,10 +465,7 @@ class DiagramView
   protected get animating(): boolean {
     return (
       !this.closed &&
-      (super.animating ||
-        !!this.sceneTransition ||
-        this.shadeAnimating ||
-        (this.flowing && !this.reducedMotion))
+      (super.animating || !!this.sceneTransition || (this.flowing && !this.reducedMotion))
     );
   }
 
@@ -554,16 +524,16 @@ class DiagramView
       })),
     };
   }
-  protected async prepare(frame: kit.Preparation): Promise<void> {
+  protected async prepare(frame: kit.Preparation): Promise<Staged> {
     this.live();
-    this.staged?.off();
-    this.staged = undefined;
-    const work = new kit.Work(frame.signal, this.limits.layoutMs),
+    // Compile while the scene reads.
+    const compiling = this.framePipelines(frame);
+    void compiling.catch(() => {});
+    const { data, style, limits, layout } = this.resolved,
+      work = new kit.Work(frame.signal, limits.layoutMs),
       revision = this.revision,
-      style = this.style,
-      data = this.data,
       motion = !this.reducedMotion,
-      at = this.sampled ? frame.at : undefined;
+      at = this.resolved.sampled ? frame.at : undefined;
     const base = this.stable ?? this.shown,
       // An exported frame draws transitions at their targets and changes none of them.
       presented = frame.presented;
@@ -600,13 +570,13 @@ class DiagramView
           data,
           frame.reader,
           style,
-          this.limits,
+          limits,
           (input, request) => this.gpu.measureText(input, request),
           work,
         );
         await place(
           scene,
-          this.layout,
+          layout,
           style.gridPitch,
           frame.signal,
           this.relayout ? undefined : base?.scene,
@@ -718,16 +688,13 @@ class DiagramView
     }
     frame.signal.throwIfAborted();
     this.live();
-    this.preparing = { scene, picking };
-    let camera: Camera;
-    try {
-      camera = await this.frameCamera(frame);
-    } finally {
-      this.preparing = undefined;
-    }
+    const framed = scene,
+      found = picking;
+    const camera = await this.frameCamera(frame, (items, _, viewport) =>
+      this.framing(framed, found, items, viewport),
+    );
     const drawn = camera2d(camera),
       viewport = frame.viewport,
-      found = picking,
       ports = portsShown(style, drawn);
     const hover = this.hoverFrame(
       frame,
@@ -741,18 +708,14 @@ class DiagramView
       camera: drawn,
       selection: this.selection,
       hover,
-      shade: this.shade,
-      pointer: this.pointerPoint,
+      pipelines: await work.wait(compiling),
+      shade: this.shadeFrame(frame),
       overlay: this.overlay,
       motion,
     });
-    this.shadeAnimating = this.painter.animating;
     work.check();
     this.live();
-    const abort = () => {
-      if (this.staged === candidate) this.staged = undefined;
-    };
-    const candidate: Staged = {
+    return {
       scene,
       picking,
       camera: drawn,
@@ -760,25 +723,14 @@ class DiagramView
       revision: this.drag ? -1 : revision,
       at,
       paint,
-      off: () => frame.signal.removeEventListener('abort', abort),
     };
-    frame.signal.addEventListener('abort', abort, { once: true });
-    this.staged = candidate;
   }
-  protected discard(): void {
-    this.staged?.off();
-    this.staged = undefined;
-  }
-  protected encode(frame: kit.Encoding): void {
+  protected encode(frame: kit.Encoding, staged: Staged): void {
     this.live();
-    if (!this.staged) throw failure('invalid-input', 'Diagram is not prepared');
-    this.painter.encode(frame, this.staged.paint);
+    this.painter.encode(frame, staged.paint);
   }
-  protected submitted(frame: FrameInfo): void {
-    const next = this.staged;
-    if (!next || this.closed) return;
-    next.off();
-    this.staged = undefined;
+  protected submitted(frame: FrameInfo, next: Staged): void {
+    if (this.closed) return;
     // An exported frame leaves what pick, locate, drags, and layout start from.
     if (!frame.presented) return;
     if (next.scene !== this.shown?.scene)
@@ -807,8 +759,6 @@ class DiagramView
     };
   }
   protected release(): void {
-    this.staged?.off();
-    this.staged = undefined;
     this.shown = undefined;
     this.stable = undefined;
     this.sceneTransition = undefined;

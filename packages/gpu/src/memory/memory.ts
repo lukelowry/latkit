@@ -47,7 +47,7 @@ export class Entry {
   }
   unpin(): void {
     if (!this.live) return;
-    if (this.pins <= 0) throw new Error('Unbalanced resource release');
+    if (this.pins <= 0) throw failure('internal', 'Unbalanced resource release');
     if (--this.pins) return;
     if (this.retire) this.pool.remove(this);
     else this.pool.idle(this);

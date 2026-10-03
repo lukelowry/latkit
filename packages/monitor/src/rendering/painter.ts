@@ -1,5 +1,5 @@
 import { type Gpu, kit } from '@latkit/gpu';
-import { rowCount, type Domain, type FieldsBlock } from '@latkit/model';
+import { failure, rowCount, type Domain, type FieldsBlock } from '@latkit/model';
 import type { Binding } from '../bindings.js';
 import type { Style } from '../config.js';
 import type { Axes, Plot } from '../axes.js';
@@ -170,7 +170,7 @@ export function traceDraws(
       color = page.columns.color,
       shaded = page.columns.shade,
       visible = page.columns.visible;
-    if (value.kind !== 'value') throw new Error('Trace field must be scalar');
+    if (value.kind !== 'value') throw failure('invalid-input', 'Trace field must be scalar');
     const uniforms = new Float32Array(56),
       ints = new Uint32Array(uniforms.buffer);
     uniforms.set([target.width, target.height, plot.width, plot.height], 0);

@@ -1,6 +1,7 @@
 import { failure, type Data } from '@latkit/model';
 import { expect, it, vi } from 'vitest';
 import {
+  createComposition,
   createGpu,
   type Gpu,
   type ItemEvents,
@@ -35,10 +36,13 @@ const viewport: Viewport = { width: 100, height: 100, pixelRatio: 1 };
 
 class Dots extends BaseItemView<
   DotConfig,
-  ItemEvents<Dot, DotHit, Plane>,
   Dot,
   DotHit,
   Plane,
+  ItemEvents<Dot, DotHit, Plane>,
+  DotConfig,
+  void,
+  null,
   'marks'
 > {
   drawn?: Plane;
@@ -47,8 +51,10 @@ class Dots extends BaseItemView<
   async = false;
   constructor(gpu: Gpu, config: DotConfig) {
     super(gpu, config, {
+      name: 'dots',
       records: ['marks'],
       fields: ['color'],
+      options: ['dots'],
       framed: ['center', 'scale'],
       style: { animationMs: 100, hover: 'on' },
     });
@@ -60,7 +66,7 @@ class Dots extends BaseItemView<
   move(point: Point | null): void {
     this.pointer(point);
   }
-  click(ids: readonly string[]): void {
+  userSelect(ids: readonly string[]): void {
     this.choose(ids.map((id) => ({ id })));
   }
   protected defaultCamera(): Plane {
@@ -70,7 +76,7 @@ class Dots extends BaseItemView<
     if (!(camera.scale > 0)) throw failure('invalid-input', 'Invalid scale');
     return camera;
   }
-  protected framing(items: readonly Dot[] | undefined): Partial<Plane> | undefined {
+  private framing(items: readonly Dot[] | undefined): Partial<Plane> | undefined {
     const points = (items?.map((item) => item.id) ?? Object.keys(this.config.dots)).map(
       (id) => this.config.dots[id],
     );
@@ -127,7 +133,12 @@ class Dots extends BaseItemView<
       .filter((hit) => hit.distance <= radiusPx)
       .sort((a, b) => a.distance - b.distance);
   }
-  protected async compileShade(): Promise<void> {}
+  /** Pipeline builds by every Dots view, which share each variant. */
+  static builds = 0;
+  protected async pipelines(): Promise<null> {
+    Dots.builds++;
+    return null;
+  }
   protected check(config: DotConfig): void {
     super.check(config);
     if ('bad' in config.dots) throw failure('invalid-input', 'Bad dot');
@@ -136,7 +147,8 @@ class Dots extends BaseItemView<
     this.invalidate();
   }
   protected async prepare(frame: Preparation): Promise<void> {
-    this.drawn = await this.frameCamera(frame);
+    await this.framePipelines(frame);
+    this.drawn = await this.frameCamera(frame, (items) => this.framing(items));
     this.hoverFrame(frame, (point, radius) => {
       this.searches++;
       const hit = this.hits(point, radius)[0] ?? null;
@@ -189,8 +201,8 @@ it('selects silently and uniquely, and reports only user changes', async () => {
   expect(() => view.select([{ id: 'z' }])).toThrow('Unknown dot');
   await frame();
   expect(events.some(([name]) => name === 'select')).toBe(false);
-  view.click(['a', 'b']);
-  view.click(['b']);
+  view.userSelect(['a', 'b']);
+  view.userSelect(['b']);
   await Promise.resolve();
   expect(events.filter(([name]) => name === 'select').map(([, value]) => value)).toEqual([
     [{ id: 'b' }],
@@ -370,17 +382,24 @@ function pointerCanvas(device: GPUDevice) {
     hasPointerCapture: () => false,
     focus() {},
   });
-  const send = (type: string, x: number, button = 2) =>
+  const send = (
+    type: string,
+    x: number,
+    button = 2,
+    extra: Readonly<Record<string, unknown>> = {},
+  ) =>
     canvas.dispatchEvent(
       Object.assign(new Event(type, { cancelable: true }), {
         button,
         pointerId: 1,
+        pointerType: 'mouse',
         clientX: x,
         clientY: 50,
         altKey: false,
         ctrlKey: false,
         metaKey: false,
         shiftKey: false,
+        ...extra,
       }),
     );
   return { canvas: canvas as unknown as HTMLCanvasElement, send };
@@ -421,6 +440,23 @@ it('opens the menu for a right click in place, never for a right drag, wherever 
   gpu.destroy();
 });
 
+it('shares pipeline variants between views of one kind on a Gpu', async () => {
+  const { gpu, frame } = await setup();
+  const other = new Dots(gpu, { source, dots: { a: [0, 0] } });
+  const builds = Dots.builds;
+  await frame();
+  await gpu.render({
+    timeMs: 0,
+    views: [{ renderer: rendererOf(other), target: target(gpu.device), viewport }],
+  });
+  // The first view built this variant already, or this frame built it once for both.
+  expect(Dots.builds - builds).toBeLessThanOrEqual(1);
+  const before = Dots.builds;
+  await frame();
+  expect(Dots.builds).toBe(before);
+  other.destroy();
+});
+
 it('publishes an asynchronous hover once and reuses it while nothing moves', async () => {
   const { view, events, frame } = await setup();
   view.async = true;
@@ -438,4 +474,114 @@ it('publishes an asynchronous hover once and reuses it while nothing moves', asy
   await frame();
   expect(view.searches).toBe(2);
   expect(events.filter(([name]) => name === 'hover').at(-1)?.[1]).toEqual({ id: 'b', distance: 0 });
+});
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+function drawOnce(gpu: Gpu, view: Dots) {
+  return gpu.render({
+    timeMs: 0,
+    views: [{ renderer: rendererOf(view), target: target(gpu.device), viewport }],
+  });
+}
+
+it('cycles overlapping hits on clicks in place, toggles with a modifier, and clears on nothing', async () => {
+  const gpu = await createGpu({ device: fakeDevice().device });
+  const { canvas, send } = pointerCanvas(gpu.device);
+  // Drawn at 25, 25.5, and 75.
+  const view = new Dots(gpu, { source, dots: { a: [0, 0], b: [0.1, 0], c: [10, 0] }, canvas });
+  await drawOnce(gpu, view);
+  const selections: string[][] = [];
+  view.on('select', (items) => selections.push(items.map((item) => item.id)));
+  const click = async (x: number, extra = {}) => {
+    send('pointerdown', x, 0, extra);
+    send('pointerup', x, 0, extra);
+    await settle();
+  };
+  await click(25);
+  await click(25);
+  await click(25);
+  await click(75, { shiftKey: true });
+  await click(75, { ctrlKey: true });
+  await click(50);
+  expect(selections).toEqual([['a'], ['b'], ['a'], ['a', 'c'], ['a'], []]);
+  view.destroy();
+  vi.unstubAllGlobals();
+  gpu.destroy();
+});
+
+it('opens what a double click or Enter finds, and fits the data on a double click on nothing', async () => {
+  const gpu = await createGpu({ device: fakeDevice().device });
+  const { canvas, send } = pointerCanvas(gpu.device);
+  // Drawn at 50 and 60.
+  const view = new Dots(gpu, {
+    source,
+    dots: { a: [0, 0], b: [10, 0] },
+    canvas,
+    camera: { center: [0, 0], scale: 1 },
+  });
+  await drawOnce(gpu, view);
+  const opened: unknown[] = [];
+  view.on('open', (item) => opened.push(item));
+  send('dblclick', 50, 0);
+  await settle();
+  view.select([{ id: 'b' }]);
+  send('keydown', 0, 0, { key: 'Enter' });
+  await settle();
+  expect(opened).toEqual([{ id: 'a', distance: 0 }, { id: 'b' }]);
+  expect(view.camera.fit).toBe(false);
+  send('dblclick', 90, 0);
+  await settle();
+  expect(view.camera.fit).toBe(true);
+  view.destroy();
+  vi.unstubAllGlobals();
+  gpu.destroy();
+});
+
+it('rejects options it does not know and configs without a source', async () => {
+  const { gpu, view } = await setup();
+  expect(() => view.set({ dotz: {} } as never)).toThrow('Unknown dots option: dotz');
+  expect(() => new Dots(gpu, { source, dots: {}, colour: 'red' } as never)).toThrow(
+    'Unknown dots option: colour',
+  );
+  expect(() => new Dots(gpu, { dots: {} } as never)).toThrow('A Data source is required');
+});
+
+it("routes a composition's input to the panel under the pointer, in that panel's points", async () => {
+  const gpu = await createGpu({ device: fakeDevice().device });
+  const { canvas, send } = pointerCanvas(gpu.device);
+  const left = new Dots(gpu, { source, dots: { a: [0, 0] } }),
+    right = new Dots(gpu, { source, dots: { a: [0, 0] } });
+  const composition = createComposition(gpu, {
+    canvas,
+    views: [
+      { view: left, region: [0, 0, 0.5, 1] },
+      { view: right, region: [0.5, 0, 0.5, 1] },
+    ],
+  });
+  const heard: [string, unknown][] = [];
+  for (const [name, view] of [
+    ['left', left],
+    ['right', right],
+  ] as const) {
+    view.on('contextmenu', (menu) => heard.push([name, menu.point]));
+    view.on('open', () => heard.push([name, 'open']));
+  }
+  send('pointerdown', 80);
+  send('contextmenu', 80);
+  send('pointerup', 80);
+  await settle();
+  // Keys reach the panel pressed last.
+  left.select([{ id: 'a' }]);
+  right.select([{ id: 'a' }]);
+  send('keydown', 0, 0, { key: 'Enter' });
+  await settle();
+  expect(heard).toEqual([
+    ['right', [30, 50]],
+    ['right', 'open'],
+  ]);
+  composition.destroy();
+  left.destroy();
+  right.destroy();
+  vi.unstubAllGlobals();
+  gpu.destroy();
 });

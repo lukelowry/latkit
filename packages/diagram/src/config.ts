@@ -72,16 +72,9 @@ export function resolveStyle(
   }
   return Object.freeze(style) as Style;
 }
-export function resolveLimits(value: Limits = {}): Required<Limits> {
-  for (const key of Object.keys(value)) if (!(key in LIMITS)) fail('Unknown diagram limit: ' + key);
-  const result: Record<string, number> = { ...LIMITS };
-  for (const [name, v] of Object.entries(value) as [string, number | undefined][]) {
-    if (v === undefined) continue;
-    positive(v, name);
-    if (name !== 'layoutMs' && !Number.isSafeInteger(v)) fail('Invalid integer limit: ' + name);
-    result[name] = v;
-  }
-  return Object.freeze(result) as Required<Limits>;
+/** Limits over their defaults; `layoutMs` may be fractional. */
+export function resolveLimits(value?: Limits): Required<Limits> {
+  return kit.resolveLimits(value, LIMITS, 'diagram');
 }
 /** Throw on the diagram's own input options the gestures cannot use; return the shared rest. */
 export function checkInput(input: DiagramInput): ViewInput {

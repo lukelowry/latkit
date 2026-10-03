@@ -1,8 +1,8 @@
 /** What renderer packages build on: the view base, frames, field uploads, shaders, text, and input. */
 export { BaseView, rendererOf, gpuOf, hold } from './view/view.js';
 export type { ConfigShape, Expanded } from './view/view.js';
-export { BaseItemView } from './view/item-view.js';
-export type { HoverSearch, ItemShape } from './view/item-view.js';
+export { BaseItemView, resolveLimits } from './view/item-view.js';
+export type { Framing, HoverSearch, ItemShape } from './view/item-view.js';
 export { resolveViewStyle } from './view/style.js';
 export type { ResolvedViewStyle } from './view/style.js';
 export { Attachments } from './view/attachments.js';
@@ -44,7 +44,7 @@ export { wiring } from './view/wiring.js';
 export type { Wiring, End, Port } from './view/wiring.js';
 export { clipStroke, strokeShader } from './style/stroke.js';
 export type { ClipPoint } from './style/stroke.js';
-export { validateRgba } from './colors/color.js';
+export { clearColor, validateRgba } from './colors/color.js';
 export { sampleColormap } from './colors/sampling.js';
 export { colormapShader } from './colors/shader.js';
 export type { ScaleRequest, ResolvedScale } from './style/scale.js';

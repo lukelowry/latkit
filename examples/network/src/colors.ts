@@ -86,10 +86,13 @@ update();
 interface PreviewConfig extends ViewConfig {
   readonly colormap: Colormap;
 }
+/** What one prepared frame draws. */
+interface Drawn {
+  readonly binding: GPUBindGroup;
+  readonly pipeline: GPURenderPipeline;
+}
 /** A colormap swept left to right by the shared WGSL sampler. */
-class Preview extends kit.BaseView<PreviewConfig, ViewEvents> {
-  private binding?: GPUBindGroup;
-  private pipeline?: GPURenderPipeline;
+class Preview extends kit.BaseView<PreviewConfig, ViewEvents, PreviewConfig, Drawn> {
   constructor(
     gpu: Gpu,
     config: PreviewConfig,
@@ -102,26 +105,28 @@ class Preview extends kit.BaseView<PreviewConfig, ViewEvents> {
   protected configure(): void {
     this.invalidate();
   }
-  protected async prepare(frame: kit.Preparation): Promise<void> {
-    this.binding = frame.colormap(this.config.colormap);
-    this.pipeline = await this.gpu.renderPipeline({
-      layout: this.layout,
-      vertex: { module: this.module, entryPoint: 'vertex' },
-      fragment: {
-        module: this.module,
-        entryPoint: 'fragment',
-        targets: [{ format: frame.format }],
-      },
-    });
+  protected async prepare(frame: kit.Preparation): Promise<Drawn> {
+    return {
+      binding: frame.colormap(this.frameConfig.colormap),
+      pipeline: await this.gpu.renderPipeline({
+        layout: this.layout,
+        vertex: { module: this.module, entryPoint: 'vertex' },
+        fragment: {
+          module: this.module,
+          entryPoint: 'fragment',
+          targets: [{ format: frame.format }],
+        },
+      }),
+    };
   }
-  protected encode(frame: kit.Encoding): void {
+  protected encode(frame: kit.Encoding, drawn: Drawn): void {
     const pass = frame.encoder.beginRenderPass({
       colorAttachments: [
         { view: frame.target, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] },
       ],
     });
-    pass.setPipeline(this.pipeline!);
-    pass.setBindGroup(0, this.binding!);
+    pass.setPipeline(drawn.pipeline);
+    pass.setBindGroup(0, drawn.binding);
     pass.draw(3);
     pass.end();
   }

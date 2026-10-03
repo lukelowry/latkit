@@ -1,4 +1,4 @@
-import { kit, type Gpu, type Shade } from '@latkit/gpu';
+import { kit, type Gpu } from '@latkit/gpu';
 import { failure, rowCount } from '@latkit/model';
 import type { Camera } from '../camera.js';
 import { DEG, turn } from '../camera.js';
@@ -21,7 +21,7 @@ import {
 import type { Style } from '../options.js';
 import type { LabelBatch } from './labels.js';
 import type { FieldRead } from './fields.js';
-import { pipelines, type Pipelines } from './pipelines.js';
+import type { Pipelines } from './pipelines.js';
 
 export interface Reads {
   readonly vertices: ReadonlyMap<VertexBank, FieldRead>;
@@ -38,8 +38,9 @@ export interface DrawFrame {
   readonly hover: NetworkItem | null;
   readonly pointer: readonly [number, number] | null;
   readonly height: number;
-  readonly shade: Shade | null;
-  readonly host: Float32Array;
+  readonly pipelines: Pipelines;
+  /** This frame's shade uniforms. */
+  readonly shade: GPUBufferBinding;
   readonly labels: readonly LabelBatch[];
   readonly phases: ReadonlyMap<SegmentBatch, Float32Array>;
 }
@@ -118,12 +119,7 @@ export class Painter {
   async prepare(frame: kit.Preparation, state: DrawFrame): Promise<Paint> {
     const { gpu } = this,
       { camera, options, reads, geometry, data } = state;
-    const pipeline = await pipelines(
-      gpu,
-      frame.format,
-      options.msaa,
-      state.shade?.wgsl ?? kit.defaultShade,
-    );
+    const pipeline = state.pipelines;
     const { color, depth } = this.attachments.prepare(frame, {
       msaa: options.msaa,
       depth: 'depth32float',
@@ -218,7 +214,7 @@ export class Painter {
     this.updateFocus(state);
     const focusedBinding = frame.buffer(this.focus);
     const uniform = frame.uniforms(f),
-      host = frame.shade({ parameters: state.host, pointerPx: state.pointer }),
+      host = state.shade,
       empty = frame.buffer(this.dummy);
     const vertexBuffers = new Map<VertexBank, GPUBufferBinding>(),
       edgeBuffers = new Map<EdgeBank, GPUBufferBinding>();

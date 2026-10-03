@@ -1,3 +1,4 @@
+import { failure } from '@latkit/model';
 import { validateRgba, type RGBA } from './color.js';
 import type { Colormap } from './colormap.js';
 import { toRgba } from './conversion.js';
@@ -43,7 +44,7 @@ export function colormapCss(
 ): string {
   const direction = options.direction ?? 'to top';
   if (direction !== 'to right' && direction !== 'to top')
-    throw new TypeError('Invalid gradient direction');
+    throw failure('invalid-input', 'Invalid gradient direction');
   const data = colormapPixels(map),
     stops: string[] = [];
   for (let i = 0; i < data.width; i++) {

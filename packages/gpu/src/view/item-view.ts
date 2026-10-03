@@ -1,7 +1,7 @@
 import { failure, type Data } from '@latkit/model';
 import type { Gpu } from '../gpu.js';
-import type { FrameInfo, Viewport } from '../frame/render.js';
-import type { Shade } from '../style/shade.js';
+import type { FrameInfo, Preparation, Viewport } from '../frame/render.js';
+import { defaultShade, type Shade } from '../style/shade.js';
 import {
   createCanvasInput,
   inputModifiers,
@@ -12,7 +12,7 @@ import {
   type HoverState,
   type Modifiers,
 } from './input.js';
-import { resolveViewStyle, type ResolvedViewStyle, type ViewStyle } from './style.js';
+import { resolveViewStyle, viewStyle, type ResolvedViewStyle, type ViewStyle } from './style.js';
 import {
   BaseView,
   type ConfigShape,
@@ -52,6 +52,8 @@ export interface ItemEvents<Item, Hit, Camera> extends ViewEvents {
   readonly hover: Hit | null;
   /** The user changed the selection, or a source change removed selected items. */
   readonly select: readonly Item[];
+  /** Double click on an item, or Enter on the selection. */
+  readonly open: Item;
   readonly contextmenu: ContextMenu<Hit>;
 }
 export interface PickOptions {
@@ -83,22 +85,60 @@ export interface ItemView<
   reveal(item: Item, options?: SetOptions): void;
 }
 
+type Mode = NonNullable<ViewInput['mode']>;
 /** What an item view is, fixed when it is created. */
 export interface ItemShape<Camera> extends ConfigShape {
+  /** The view's name in messages, such as `network`. */
+  readonly name: string;
   /** Camera keys that framing sets; moving one by hand stops fitting. */
   readonly framed: readonly (keyof Camera)[];
   /** Input modes the view supports, its default first: `navigate`, `inspect`, and `none` by default. */
   readonly modes?: readonly Mode[];
   /** The view's own defaults for the shared style. */
   readonly style?: Partial<ResolvedViewStyle>;
+  /** The view's own options, beside the shared ones and its records and merged options. */
+  readonly options?: readonly string[];
+  /** Whether a click selects what it hits; a view with its own press gestures selects itself. */
+  readonly clicks?: boolean;
 }
-
+/** The framed camera keys that show these items, or all the data; undefined until there is data. */
+export type Framing<Item, Camera> = (
+  items: readonly Item[] | undefined,
+  camera: Camera,
+  viewport: Viewport,
+) => Partial<Camera> | undefined | Promise<Partial<Camera> | undefined>;
 /** A hover search. Synchronous searches call `check`; asynchronous ones observe `signal`. */
 export type HoverSearch<Hit> = (
   point: Point,
   radiusPx: number,
   options: { readonly check: () => void; readonly signal: AbortSignal },
 ) => Hit | null | Promise<Hit | null>;
+
+/**
+ * Limits over their defaults. Every limit is positive; counts and bytes are whole, and durations,
+ * named in `Ms`, may be fractional. Unknown limits throw.
+ */
+export function resolveLimits<K extends string>(
+  given: Partial<Readonly<Record<K, number>>> | undefined,
+  defaults: Readonly<Record<K, number>>,
+  name: string,
+): Readonly<Record<K, number>> {
+  const result: Record<string, number> = { ...defaults };
+  for (const [key, value] of Object.entries(given ?? {})) {
+    if (!Object.hasOwn(defaults, key))
+      throw failure('invalid-input', `Unknown ${name} limit: ${key}`);
+    if (value === undefined) continue;
+    if (
+      typeof value !== 'number' ||
+      !(value > 0) ||
+      !Number.isFinite(value) ||
+      (!key.endsWith('Ms') && !Number.isSafeInteger(value))
+    )
+      throw failure('invalid-input', `Invalid ${name} limit: ${key}`);
+    result[key] = value;
+  }
+  return Object.freeze(result) as Readonly<Record<K, number>>;
+}
 
 interface Hovered<Hit> {
   readonly item: Hit | null;
@@ -121,33 +161,47 @@ interface Animation<Camera> {
   readonly duration: number;
   start?: number;
 }
-type Mode = NonNullable<ViewInput['mode']>;
 const MODES: readonly Mode[] = ['navigate', 'inspect', 'none'];
 const INPUT = new Set(['mode', 'wheel', 'keyboard']);
+/** Options every item view takes, beside the shared style. */
+const OPTIONS = ['canvas', 'at', 'paused', 'source', 'camera', 'input', 'shade'];
 /** Hover waits this long after the camera, positions, or data move. */
 const SETTLE_MS = 150;
 /** A press that moves farther than this is a drag, not a click. */
 const CLICK_PX = 4;
+/** A touch picks at least this far around itself, about a fingertip. */
+const TOUCH_PX = 22;
+/** Pipeline variants a view kind keeps per Gpu: formats, MSAA, and shades in use. */
+const VARIANTS = 8;
+/** Pipelines by Gpu and view kind, so views of one kind share each variant. */
+const variants = new WeakMap<Gpu, WeakMap<object, Map<string, Promise<unknown>>>>();
 
 /**
- * The base of every item view: the camera, selection, picking, hover, events, shade swaps, and the
- * shared input live here once. A view supplies its geometry through the abstract members.
+ * The base of every item view. The camera, selection, picking, hover, clicks, events, input,
+ * shades, pipeline variants, and option checks live here once; a view supplies its geometry, what
+ * its config resolves to, and the frames it prepares.
  */
 export abstract class BaseItemView<
   Config extends ItemViewConfig,
-  Events extends ItemEvents<Item, Hit, Camera>,
   Item,
   Hit extends Item,
   Camera extends ViewCamera,
+  Events extends ItemEvents<Item, Hit, Camera>,
+  Resolved,
+  Prepared,
+  Pipelines,
   Records extends keyof Config = never,
   Merged extends keyof Config = never,
-> extends BaseView<Config, Events, Records, Merged> {
+> extends BaseView<Config, Events, Resolved, Prepared, Records, Merged> {
   #style: ResolvedViewStyle;
-  /** The style a checked config resolves to, until that config applies. */
+  /** The shared style a checked config resolves to, until that config applies. */
   #checked?: { readonly config: Config; readonly style: ResolvedViewStyle };
+  readonly #name: string;
+  readonly #known: ReadonlySet<string>;
   readonly #styleDefaults: Partial<ResolvedViewStyle>;
   readonly #framed: readonly (keyof Camera)[];
   readonly #modes: readonly Mode[];
+  readonly #clicks: boolean;
   #target: Camera;
   #version = 0;
   #drawn?: Camera;
@@ -172,19 +226,35 @@ export abstract class BaseItemView<
   #found?: { readonly pointer: number; readonly epoch: number; readonly item: Hit | null };
   #wake?: ReturnType<typeof setTimeout>;
   #search?: AbortController;
-  #shade: Shade | null;
+  #shade: Shade;
   #shadeSerial = 0;
+  /** The shade's parameters, which it ticks each presented frame. */
+  readonly #parameters = new Float32Array(64);
+  #shadeAnimating = false;
   readonly #formats = new Set<GPUTextureFormat>();
+  /** Where the last click landed and which of its overlapping hits it chose. */
+  #clicked?: { readonly point: Point; readonly turn: number };
+  #clicking?: AbortController;
 
-  /** Validates the shared style, input, and starting camera before a view allocates anything. */
+  /** Checks every option, the input, and the starting camera before a view allocates anything. */
   constructor(gpu: Gpu, config: Config, shape: ItemShape<Camera>) {
     super(gpu, config, shape);
+    this.#name = shape.name;
     this.#framed = shape.framed;
     this.#modes = shape.modes ?? MODES;
+    this.#clicks = shape.clicks ?? true;
     this.#styleDefaults = shape.style ?? {};
-    this.#style = resolveViewStyle(config, this.#styleDefaults);
-    this.checkInput(inputOf(this.config as Config));
-    this.#shade = config.shade ?? null;
+    this.#known = new Set([
+      ...OPTIONS,
+      ...Object.keys(viewStyle),
+      ...(shape.records ?? []),
+      ...(shape.merged ?? []),
+      ...(shape.options ?? []),
+    ]);
+    this.check(this.config as Config);
+    this.#style = this.#checked!.style;
+    void this.resolved;
+    this.#shade = config.shade ?? defaultShade;
     this.#target = this.#resolvePatch(
       (config as { readonly camera?: Readonly<Record<string, unknown>> }).camera ?? {},
       undefined,
@@ -196,12 +266,6 @@ export abstract class BaseItemView<
   protected abstract defaultCamera(): Camera;
   /** A valid, normalized camera replacing `current`, or the first one; throws on an invalid one. */
   protected abstract resolveCamera(camera: Camera, current: Camera | undefined): Camera;
-  /** The framed keys that show these items, or all the data; undefined until the data is ready. */
-  protected abstract framing(
-    items: readonly Item[] | undefined,
-    camera: Camera,
-    viewport: Viewport,
-  ): Partial<Camera> | undefined | Promise<Partial<Camera> | undefined>;
   /** A camera part way between two; undefined when they cannot ease, such as across projections. */
   protected abstract interpolate(from: Camera, to: Camera, t: number): Camera | undefined;
   /** The camera moved by canvas pixels. */
@@ -222,12 +286,12 @@ export abstract class BaseItemView<
     radiusPx: number,
     options: { readonly limit: number; readonly signal?: AbortSignal },
   ): readonly Hit[] | Promise<readonly Hit[]>;
-  /** Build the pipelines a shade needs; the base orders compiles and swaps the shade on success. */
-  protected abstract compileShade(
-    shade: Shade | null,
+  /** Build the pipelines for a target format, MSAA, and shade; the base caches each variant. */
+  protected abstract pipelines(
     format: GPUTextureFormat,
     msaa: 1 | 4,
-  ): Promise<unknown>;
+    shade: Shade,
+  ): Promise<Pipelines>;
   /** React to a compiled shade replacing the previous one. */
   protected shaded?(): void;
   /** The view's own gestures; return a detach. Shared input is attached already. */
@@ -317,9 +381,19 @@ export abstract class BaseItemView<
   protected get viewStyle(): ResolvedViewStyle {
     return this.#style;
   }
+  /** The shared style a config resolves to, for a view resolving its own style over it. */
+  protected sharedStyle(config: Config): ResolvedViewStyle {
+    return this.#checked?.config === config
+      ? this.#checked.style
+      : resolveViewStyle(config, this.#styleDefaults);
+  }
   /** The compiled shade frames draw with. */
-  protected get shade(): Shade | null {
+  protected get shade(): Shade {
     return this.#shade;
+  }
+  /** Whether the shade asked for another frame when it last ticked. */
+  protected get shadeAnimating(): boolean {
+    return this.#shadeAnimating;
   }
   /** The pointer over the canvas, in CSS pixels. */
   protected get pointerPoint(): Point | null {
@@ -338,17 +412,37 @@ export abstract class BaseItemView<
   protected get hovered(): Hit | null {
     return this.#hover;
   }
+  /** This frame's pipelines: its format, the style's MSAA, and the compiled shade. */
+  protected framePipelines(frame: FrameInfo): Promise<Pipelines> {
+    this.#formats.add(frame.format);
+    return this.#variant(frame.format, this.#style.msaa, this.#shade);
+  }
+  /**
+   * Tick the shade for this frame and bind its uniforms; an animated shade keeps frames coming. An
+   * exported frame ticks a copy, leaving the shade's parameters as presented frames left them.
+   */
+  protected shadeFrame(frame: Preparation): GPUBufferBinding {
+    const parameters = frame.presented ? this.#parameters : this.#parameters.slice(),
+      pointerPx = this.#pointer,
+      animating =
+        this.#shade.tick?.(parameters, {
+          timeMs: frame.timeMs,
+          pointerPx,
+          viewport: frame.viewport,
+        }) ?? false;
+    if (frame.presented) this.#shadeAnimating = animating;
+    return frame.shade({ parameters, pointerPx, timeMs: frame.timeMs });
+  }
   /**
    * The camera this frame draws: framed while `fit` holds, eased while animating. Call once per
-   * prepare. An exported frame frames its own size and draws where the camera is going, leaving the
-   * view's camera as it was.
+   * prepare with how this frame's geometry frames items. An exported frame frames its own size and
+   * draws where the camera is going, leaving the view's camera as it was.
    */
-  protected async frameCamera(frame: FrameInfo): Promise<Camera> {
-    this.#formats.add(frame.format);
+  protected async frameCamera(frame: FrameInfo, framing: Framing<Item, Camera>): Promise<Camera> {
     let target = this.camera;
     const fitting = this.#fitting;
     if (fitting || target.fit) {
-      const framed = await this.framing(fitting?.items, target, frame.viewport);
+      const framed = await framing(fitting?.items, target, frame.viewport);
       if (framed) {
         const next = this.resolveCamera(
           { ...target, ...framed, fit: !fitting?.items } as Camera,
@@ -471,7 +565,8 @@ export abstract class BaseItemView<
     this.#search?.abort();
     this.#search = undefined;
     const had = this.#hover !== null,
-      leaving = !point && this.#pointer !== null;
+      leaving = !point && this.#pointer !== null,
+      shaded = this.#shade !== defaultShade;
     this.#pointer = point;
     if (!point) {
       this.#clearWake();
@@ -481,10 +576,10 @@ export abstract class BaseItemView<
       searching = policy !== 'off' && !(policy === 'auto' && this.#suspended);
     if (point && searching && policy === 'auto' && performance.now() < this.#settleAt) {
       this.#wakeAt(this.#settleAt);
-      if (!had && !this.#shade) return;
+      if (!had && !shaded) return;
     }
     // A frame may have drawn a hover that was never published; leaving redraws without it.
-    if (((point || leaving) && searching) || had || this.#shade) this.invalidate();
+    if (((point || leaving) && searching) || had || shaded) this.invalidate();
   }
   /**
    * What lies under a still pointer changed, as when data arrives or an index makes searching
@@ -513,6 +608,34 @@ export abstract class BaseItemView<
     this.#selection = next;
     this.invalidate();
     this.emit('select', next);
+  }
+  /**
+   * Select what a click at a point hits. A modifier toggles the hit in the selection; clicking again
+   * in place cycles through the hits there; clicking nothing clears the selection. A touch picks
+   * farther around itself.
+   */
+  protected async click(
+    point: Point,
+    modifiers: Modifiers,
+    options: { readonly touch?: boolean; readonly signal?: AbortSignal } = {},
+  ): Promise<void> {
+    const { touch, signal } = options,
+      radius = touch ? Math.max(TOUCH_PX, this.#style.pickRadiusPx) : this.#style.pickRadiusPx;
+    const hits = await this.hits(point, radius, { limit: 16, signal });
+    if (signal?.aborted || this.closed) return;
+    const last = this.#clicked,
+      turn =
+        last && Math.hypot(point[0] - last.point[0], point[1] - last.point[1]) < 3
+          ? last.turn + 1
+          : 0;
+    this.#clicked = { point, turn };
+    const hit = hits.length ? hits[turn % hits.length] : undefined;
+    if (!(modifiers.shift || modifiers.control || modifiers.meta)) this.choose(hit ? [hit] : []);
+    else if (hit) {
+      const key = this.identify(hit),
+        rest = this.#selection.filter((item) => this.identify(item) !== key);
+      this.choose(rest.length === this.#selection.length ? [...rest, hit] : rest);
+    }
   }
   /** Report a context menu at a canvas point with the hits there. */
   protected async menu(
@@ -552,7 +675,6 @@ export abstract class BaseItemView<
       {},
     );
   }
-
   /** Move the camera by a partial camera, as `set({ camera })` does, or follow the data with null. */
   protected moveCamera(patch: Readonly<Record<string, unknown>> | null, options: SetOptions): void {
     this.cameraMove(patch)(options);
@@ -571,6 +693,11 @@ export abstract class BaseItemView<
     };
   }
   protected check(config: Config): void {
+    for (const key of Object.keys(config))
+      if (!this.#known.has(key))
+        throw failure('invalid-input', `Unknown ${this.#name} option: ${key}`);
+    if (!config.source?.schema || !config.source.tables)
+      throw failure('invalid-input', 'A Data source is required');
     const style = resolveViewStyle(config, this.#styleDefaults);
     this.checkInput(inputOf(config));
     // Keyed by config: a patch rejected after this check never applies its style.
@@ -579,10 +706,7 @@ export abstract class BaseItemView<
   protected changed(previous: Config, next: Config, options: SetOptions): void {
     void options;
     const style = this.#style;
-    this.#style =
-      this.#checked?.config === next
-        ? this.#checked.style
-        : resolveViewStyle(next, this.#styleDefaults);
+    this.#style = this.sharedStyle(next);
     this.#checked = undefined;
     if (previous.source !== next.source) this.#prune = true;
     if (
@@ -594,7 +718,7 @@ export abstract class BaseItemView<
       this.#settleAt = 0;
       this.#epoch++;
     }
-    if (previous.shade !== next.shade) this.#compile(next.shade ?? null);
+    if (previous.shade !== next.shade) this.#compile(next.shade ?? defaultShade);
   }
   protected presented(frame: FrameInfo): void {
     const drawn = this.#frames.get(frame);
@@ -625,7 +749,7 @@ export abstract class BaseItemView<
     };
   }
   protected get animating(): boolean {
-    return !!this.#animation;
+    return !!this.#animation || this.#shadeAnimating;
   }
   protected attach(canvas: HTMLCanvasElement): () => void {
     const options = inputOf(this.config as Config),
@@ -637,17 +761,30 @@ export abstract class BaseItemView<
         touchAction: navigate ? 'none' : 'pan-x pan-y',
       }),
       { signal } = input;
-    // A right press opens the menu where it is released in place; a right drag is a gesture. The
-    // browser asks for the menu on press (macOS, Linux) or after release (Windows).
-    let press: { readonly id: number; readonly point: Point; asked?: Modifiers } | undefined,
+    // A press is a click until it moves; a right press opens the menu where it is released in
+    // place. The browser asks for the menu on press (macOS, Linux) or after release (Windows).
+    let press:
+        | {
+            readonly id: number;
+            readonly button: number;
+            readonly point: Point;
+            readonly touch: boolean;
+            asked?: Modifiers;
+          }
+        | undefined,
       dragged = false;
     canvas.addEventListener(
       'pointerdown',
       (event) => {
         dragged = false;
-        if (event.button !== 2) return;
-        press = { id: event.pointerId, point: input.point(event) };
-        input.capture(event.pointerId);
+        if (event.button !== 0 && event.button !== 2) return;
+        press = {
+          id: event.pointerId,
+          button: event.button,
+          point: input.point(event),
+          touch: event.pointerType === 'touch',
+        };
+        if (event.button === 2) input.capture(event.pointerId);
       },
       { signal },
     );
@@ -667,9 +804,23 @@ export abstract class BaseItemView<
     canvas.addEventListener(
       'pointerup',
       (event) => {
-        if (event.button !== 2 || press?.id !== event.pointerId) return;
-        const asked = press.asked;
+        if (press?.id !== event.pointerId || event.button !== press.button) return;
+        const { asked, button, touch } = press;
         press = undefined;
+        if (button === 0) {
+          if (!dragged && this.#clicks) {
+            this.#clicking?.abort();
+            this.#clicking = new AbortController();
+            const stop = AbortSignal.any([signal, this.#clicking.signal]);
+            void this.click(input.point(event), inputModifiers(event), {
+              touch,
+              signal: stop,
+            }).catch((error: unknown) => {
+              if (!stop.aborted) this.fail(error);
+            });
+          }
+          return;
+        }
         input.release(event.pointerId);
         if (!asked) return;
         if (!dragged) void this.menu(input.point(event), 'pointer', asked);
@@ -678,6 +829,12 @@ export abstract class BaseItemView<
       { signal },
     );
     canvas.addEventListener('pointercancel', () => (press = undefined), { signal });
+    canvas.addEventListener(
+      'dblclick',
+      (event) =>
+        void this.#open(input.point(event), navigate).catch((error: unknown) => this.fail(error)),
+      { signal },
+    );
     canvas.ownerDocument.defaultView
       ?.matchMedia?.('(prefers-reduced-motion: reduce)')
       .addEventListener('change', () => this.invalidate(), { signal });
@@ -686,7 +843,7 @@ export abstract class BaseItemView<
       'contextmenu',
       (event) => {
         event.preventDefault();
-        if (press) press.asked = inputModifiers(event);
+        if (press?.button === 2) press.asked = inputModifiers(event);
         else if (dragged) dragged = false;
         else void this.menu(input.point(event), 'pointer', inputModifiers(event));
       },
@@ -715,6 +872,7 @@ export abstract class BaseItemView<
     const own = this.listen?.(canvas, input, mode);
     return () => {
       own?.();
+      this.#clicking?.abort();
       input.destroy();
       this.pointer(null);
     };
@@ -724,6 +882,10 @@ export abstract class BaseItemView<
     const key = event.key;
     if (key === 'Escape') {
       if (!this.cancel?.()) this.choose([]);
+    } else if (key === 'Enter') {
+      const item = this.#selection[0];
+      if (item === undefined) return false;
+      this.emit('open', item);
     } else if (key === 'ContextMenu' || (key === 'F10' && event.shiftKey)) {
       const last = this.#selection.at(-1);
       const point = (last !== undefined && this.position(last)) || [
@@ -737,6 +899,13 @@ export abstract class BaseItemView<
     else if (key === '-' && this.zoomed) this.zoom(1 / 1.2);
     else return false;
     return true;
+  }
+  /** Open the item under a double click; a double click on nothing fits the data while navigating. */
+  async #open(point: Point, navigate: boolean): Promise<void> {
+    const [hit] = await this.hits(point, this.#style.pickRadiusPx, { limit: 1 });
+    if (this.closed) return;
+    if (hit !== undefined) this.emit('open', hit);
+    else if (navigate) this.fit(undefined, { animate: true });
   }
   /**
    * The camera a patch moves to from `current`, or the starting camera without one. A null option
@@ -813,14 +982,40 @@ export abstract class BaseItemView<
     if (this.#wake !== undefined) clearTimeout(this.#wake);
     this.#wake = undefined;
   }
-  #compile(shade: Shade | null): void {
+  /** One pipeline variant, shared by every view of this kind on the Gpu. */
+  #variant(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade): Promise<Pipelines> {
+    let kinds = variants.get(this.gpu);
+    if (!kinds) variants.set(this.gpu, (kinds = new WeakMap()));
+    let cache = kinds.get(this.constructor);
+    if (!cache) kinds.set(this.constructor, (cache = new Map<string, Promise<unknown>>()));
+    const key = format + ':' + msaa + ':' + shade.wgsl,
+      found = cache.get(key) as Promise<Pipelines> | undefined;
+    if (found) {
+      // The most recently used variant is the last evicted.
+      cache.delete(key);
+      cache.set(key, found);
+      return found;
+    }
+    const built = this.pipelines(format, msaa, shade),
+      held = cache;
+    held.set(key, built);
+    void built.catch(() => {
+      if (held.get(key) === built) held.delete(key);
+    });
+    if (held.size > VARIANTS) held.delete(held.keys().next().value!);
+    return built;
+  }
+  /** Compile a shade for every format in use, then swap it in; a later shade wins. */
+  #compile(shade: Shade): void {
     const serial = ++this.#shadeSerial,
       msaa = this.#style.msaa,
       formats: GPUTextureFormat[] = this.#formats.size ? [...this.#formats] : ['rgba8unorm'];
-    Promise.all(formats.map((format) => this.compileShade(shade, format, msaa))).then(
+    Promise.all(formats.map((format) => this.#variant(format, msaa, shade))).then(
       () => {
         if (serial !== this.#shadeSerial || this.closed) return;
         this.#shade = shade;
+        this.#parameters.fill(0);
+        this.#shadeAnimating = false;
         this.shaded?.();
         this.invalidate();
       },
@@ -847,7 +1042,9 @@ function same(a: object | undefined, b: object | undefined): boolean {
   if (!a || !b) return false;
   const x = a as Record<string, unknown>,
     y = b as Record<string, unknown>;
-  for (const key of new Set([...Object.keys(x), ...Object.keys(y)])) {
+  const xs = Object.keys(x);
+  if (xs.length !== Object.keys(y).length) return false;
+  for (const key of xs) {
     const u = x[key],
       v = y[key];
     if (u === v) continue;

@@ -118,13 +118,6 @@ function checkAxis(axis: AxisOptions | null): void {
     }
   }
 }
-export function limits(patch: Limits = {}): Required<Limits> {
-  for (const key of Object.keys(patch)) if (!(key in LIMITS)) fail('Unknown monitor limit: ' + key);
-  const result = { ...LIMITS, ...patch };
-  for (const [name, n] of Object.entries(result))
-    if (!Number.isSafeInteger(n) || n < 1) fail('Invalid ' + name);
-  return result;
-}
 export function insets(padding: Insets): readonly number[] {
   const p = typeof padding === 'number' ? [padding, padding, padding, padding] : padding;
   if (p.length !== 4 || !p.every((n) => Number.isFinite(n) && n >= 0)) fail('Invalid padding');
