@@ -1,5 +1,6 @@
+import { failure } from '@latkit/model';
 import type { Gpu } from '../gpu.js';
-import { GpuError, integer } from '../error.js';
+import { integer } from '../error.js';
 import type { RenderTarget } from '../frame/render.js';
 import type { TargetSize } from './target.js';
 
@@ -11,20 +12,21 @@ export interface Presentation extends RenderTarget {
 }
 
 /** Owns canvas configuration and backing dimensions; borrows the Gpu. */
-export function createPresentation(options: {
-  readonly gpu: Gpu;
-  readonly canvas: Canvas;
-  readonly format?: GPUTextureFormat;
-  readonly alphaMode?: GPUCanvasAlphaMode;
-  readonly colorSpace?: PredefinedColorSpace;
-  readonly usage?: GPUTextureUsageFlags;
-}): Presentation {
-  const { canvas, gpu } = options;
+export function createPresentation(
+  gpu: Gpu,
+  options: {
+    readonly canvas: Canvas;
+    readonly format?: GPUTextureFormat;
+    readonly alphaMode?: GPUCanvasAlphaMode;
+    readonly colorSpace?: PredefinedColorSpace;
+    readonly usage?: GPUTextureUsageFlags;
+  },
+): Presentation {
+  const { canvas } = options;
   const context = canvas.getContext('webgpu') as GPUCanvasContext | null;
-  if (!context) throw new GpuError('unavailable', 'Canvas has no WebGPU context');
+  if (!context) throw failure('unavailable', 'Canvas has no WebGPU context');
   const format = options.format ?? globalThis.navigator?.gpu?.getPreferredCanvasFormat();
-  if (!format)
-    throw new GpuError('unavailable', 'A canvas format is required without navigator.gpu');
+  if (!format) throw failure('unavailable', 'A canvas format is required without navigator.gpu');
   const html = 'getAttribute' in canvas;
   const saved = html
     ? [canvas.getAttribute('width'), canvas.getAttribute('height')]
@@ -42,7 +44,7 @@ export function createPresentation(options: {
   };
   let closed = false;
   const assertLive = (): void => {
-    if (closed) throw new GpuError('closed', 'Presentation is closed');
+    if (closed) throw failure('closed', 'Presentation is closed');
   };
   try {
     context.configure({

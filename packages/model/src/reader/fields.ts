@@ -120,7 +120,6 @@ export class Fields {
 
   async *read(request: FieldsRequest, scope: FieldScope): AsyncGenerator<FieldsBlock> {
     if (!request.from) throw failure('invalid-input', 'Fields require a model type');
-    if (request.at !== undefined) scope = { ...scope, at: request.at };
     for await (const block of this.blocks(request, scope)) yield { kind: 'fields', ...block };
   }
 

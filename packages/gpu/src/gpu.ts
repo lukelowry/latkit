@@ -1,4 +1,4 @@
-import { createReader, type Reader } from '@latkit/model';
+import { failure, createReader, type Reader } from '@latkit/model';
 import { renderers as rendererTree } from './frame/tree.js';
 import { renderFrame, type FrameOwner } from './frame/frame.js';
 import type { Renderer, RenderOptions } from './frame/render.js';
@@ -8,7 +8,7 @@ import { Images } from './memory/images.js';
 import { TextAtlas } from './text/atlas.js';
 import type { TextInput, TextMetrics, TextOptions } from './text/text.js';
 import { Allocator } from './memory/allocation.js';
-import { GpuError, integer, interruptible } from './error.js';
+import { integer, interruptible } from './error.js';
 import { Memory, type Budget, type Entry, type GpuStats } from './memory/memory.js';
 import { Textures, type TextureResource } from './memory/textures.js';
 import { Uploader } from './fields/upload.js';
@@ -32,7 +32,7 @@ export interface GpuOptions {
 export interface Gpu {
   readonly device: GPUDevice;
   /**
-   * Aborts when this Gpu stops: with a `device-lost` GpuError when the device is lost, or `closed`
+   * Aborts when this Gpu stops: with a `device-lost` failure when the device is lost, or `closed`
    * after `destroy`. Views stop drawing then; after device loss, recreate the Gpu and its views.
    */
   readonly signal: AbortSignal;
@@ -63,28 +63,28 @@ export async function createGpu(options: GpuOptions = {}): Promise<Gpu> {
   let device = options.device;
   if (!device) {
     const api = globalThis.navigator?.gpu;
-    if (!api) throw new GpuError('unavailable', 'WebGPU is unavailable');
+    if (!api) throw failure('unavailable', 'WebGPU is unavailable');
     const adapter = await api.requestAdapter({ powerPreference: options.powerPreference });
-    if (!adapter) throw new GpuError('unavailable', 'No WebGPU adapter is available');
+    if (!adapter) throw failure('unavailable', 'No WebGPU adapter is available');
     try {
       device = await adapter.requestDevice({
         requiredFeatures: options.requiredFeatures,
         requiredLimits: options.requiredLimits,
       });
     } catch (cause) {
-      throw new GpuError('unavailable', 'The requested GPU device could not be created', { cause });
+      throw failure('unavailable', 'The requested GPU device could not be created', { cause });
     }
   } else {
     for (const feature of options.requiredFeatures ?? [])
       if (!device.features.has(feature))
-        throw new GpuError('unsupported', 'Missing GPU feature: ' + feature);
+        throw failure('unsupported', 'Missing GPU feature: ' + feature);
     for (const [limit, requested] of Object.entries(options.requiredLimits ?? {})) {
       const actual = (device.limits as unknown as Record<string, number>)[limit];
       if (
         actual === undefined ||
         (limit.startsWith('min') ? actual > requested : actual < requested)
       )
-        throw new GpuError('unsupported', 'Insufficient GPU limit: ' + limit);
+        throw failure('unsupported', 'Insufficient GPU limit: ' + limit);
     }
   }
   try {
@@ -168,7 +168,7 @@ class Owner implements Gpu {
     };
     void device.lost.then((info) =>
       this.stop(
-        new GpuError('device-lost', 'GPU device lost: ' + (info.message || info.reason), {
+        failure('device-lost', 'GPU device lost: ' + (info.message || info.reason), {
           cause: info,
         }),
       ),
@@ -215,7 +215,7 @@ class Owner implements Gpu {
     const renderers = rendererTree(options.views.map((view) => view.renderer));
     for (const renderer of renderers)
       if (this.rendering.has(renderer))
-        throw new GpuError('busy', 'Renderer already has a render in progress');
+        throw failure('busy', 'Renderer already has a render in progress');
     const signal = AbortSignal.any([
       this.stopped.signal,
       ...(options.signal ? [options.signal] : []),
@@ -265,7 +265,7 @@ class Owner implements Gpu {
       this.assertLive();
       const errors = info.messages.filter((message) => message.type === 'error');
       if (errors.length || error)
-        throw new GpuError(
+        throw failure(
           'invalid-input',
           (label ? label + ': ' : '') +
             (errors
@@ -335,7 +335,7 @@ class Owner implements Gpu {
   }
   destroy(): void {
     if (this.stopped.signal.aborted) return;
-    this.stop(new GpuError('closed', 'Gpu is closed'));
+    this.stop(failure('closed', 'Gpu is closed'));
     if (this.ownsDevice) this.device.destroy();
   }
 }

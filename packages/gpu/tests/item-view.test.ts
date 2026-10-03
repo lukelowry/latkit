@@ -1,20 +1,14 @@
-import type { Data } from '@latkit/model';
+import { failure, type Data } from '@latkit/model';
 import { expect, it, vi } from 'vitest';
 import {
   createGpu,
-  GpuError,
   type Gpu,
   type ItemEvents,
   type ItemViewConfig,
   type Point,
-} from '../src/index.js';
-import {
-  BaseItemView,
-  rendererOf,
-  type Encoding,
-  type Preparation,
   type Viewport,
-} from '../src/kit.js';
+} from '../src/index.js';
+import { BaseItemView, rendererOf, type Encoding, type Preparation } from '../src/kit.js';
 import { fakeDevice } from './fixtures/device.js';
 import { target } from './fixtures/render.js';
 
@@ -73,7 +67,7 @@ class Dots extends BaseItemView<
     return { center: [0, 0], scale: 1, fit: true };
   }
   protected resolveCamera(camera: Plane): Plane {
-    if (!(camera.scale > 0)) throw new GpuError('invalid-input', 'Invalid scale');
+    if (!(camera.scale > 0)) throw failure('invalid-input', 'Invalid scale');
     return camera;
   }
   protected framing(items: readonly Dot[] | undefined): Partial<Plane> | undefined {
@@ -119,7 +113,7 @@ class Dots extends BaseItemView<
     return item.id;
   }
   protected accept(item: Dot): void {
-    if (!(item.id in this.config.dots)) throw new GpuError('invalid-input', 'Unknown dot');
+    if (!(item.id in this.config.dots)) throw failure('invalid-input', 'Unknown dot');
   }
   protected contains(item: Dot): boolean {
     return item.id in this.config.dots;
@@ -136,7 +130,7 @@ class Dots extends BaseItemView<
   protected async compileShade(): Promise<void> {}
   protected check(config: DotConfig): void {
     super.check(config);
-    if ('bad' in config.dots) throw new GpuError('invalid-input', 'Bad dot');
+    if ('bad' in config.dots) throw failure('invalid-input', 'Bad dot');
   }
   protected configure(): void {
     this.invalidate();
@@ -192,7 +186,7 @@ it('selects silently and uniquely, and reports only user changes', async () => {
   view.select([{ id: 'a' }, { id: 'a' }, { id: 'b' }]);
   expect(view.selection.map((item) => item.id)).toEqual(['a', 'b']);
   expect(Object.isFrozen(view.selection)).toBe(true);
-  expect(() => view.select([{ id: 'z' }])).toThrow(GpuError);
+  expect(() => view.select([{ id: 'z' }])).toThrow('Unknown dot');
   await frame();
   expect(events.some(([name]) => name === 'select')).toBe(false);
   view.click(['a', 'b']);
@@ -231,7 +225,7 @@ it('follows the data while fit holds, and stops when a framed key moves', async 
   view.set({ camera: null });
   await frame();
   expect(view.camera).toEqual({ center: [0, 0], scale: 50, fit: true });
-  expect(() => view.set({ camera: { scale: -1 } })).toThrow(GpuError);
+  expect(() => view.set({ camera: { scale: -1 } })).toThrow('Invalid scale');
 });
 
 it('frames items once, and eases moves that ask to animate', async () => {

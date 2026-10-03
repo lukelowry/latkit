@@ -1,4 +1,4 @@
-import { GpuError } from '../error.js';
+import { failure } from '@latkit/model';
 import type { Viewport } from '../frame/render.js';
 export interface Camera2D {
   readonly center: readonly [x: number, y: number];
@@ -18,7 +18,7 @@ function check(camera: Camera2D, viewport: Pick<Viewport, 'width' | 'height'>): 
     !['up', 'down'].includes(camera.yDirection) ||
     ![viewport.width, viewport.height].every((v) => Number.isFinite(v) && v > 0)
   )
-    throw new GpuError('invalid-input', 'Invalid camera or viewport');
+    throw failure('invalid-input', 'Invalid camera or viewport');
 }
 export function cameraPoint(
   camera: Camera2D,
@@ -60,7 +60,7 @@ export function fitCamera(
     !p.every((v) => Number.isFinite(v) && v >= 0) ||
     ![viewport.width, viewport.height].every((v) => Number.isFinite(v) && v > 0)
   )
-    throw new GpuError('invalid-input', 'Invalid camera bounds, viewport, or padding');
+    throw failure('invalid-input', 'Invalid camera bounds, viewport, or padding');
   const dx = bounds[2] - bounds[0],
     dy = bounds[3] - bounds[1],
     sx = Math.max(1, viewport.width - p[1] - p[3]) / Math.max(dx, 1e-12),
@@ -90,7 +90,7 @@ export function zoomCamera(
 ): Camera2D {
   const factors = typeof factor === 'number' ? [factor, factor] : factor;
   if (!factors.every((v) => Number.isFinite(v) && v > 0))
-    throw new GpuError('invalid-input', 'Zoom factors must be positive');
+    throw failure('invalid-input', 'Zoom factors must be positive');
   const before = worldPoint(camera, anchor, viewport),
     scale: readonly [number, number] = [camera.scale[0] * factors[0], camera.scale[1] * factors[1]];
   const result: Camera2D = {

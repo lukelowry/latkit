@@ -1,5 +1,5 @@
-import { GpuError, kit, type RGBA } from '@latkit/gpu';
-import type { Domain } from '@latkit/model';
+import { failure, type Domain } from '@latkit/model';
+import { kit, type RGBA, type Insets } from '@latkit/gpu';
 import type { MonitorStyle, Limits, AxisOptions } from './options.js';
 
 type Own = Required<Omit<MonitorStyle, 'coordinateAxis' | 'valueAxis'>> & {
@@ -37,7 +37,7 @@ export const LIMITS: Required<Limits> = Object.freeze({
   pickingBytes: 2 * 1024 ** 2,
 });
 export function fail(message: string): never {
-  throw new GpuError('invalid-input', message);
+  throw failure('invalid-input', message);
 }
 export function finite(
   value: number,
@@ -125,7 +125,7 @@ export function limits(patch: Limits = {}): Required<Limits> {
     if (!Number.isSafeInteger(n) || n < 1) fail('Invalid ' + name);
   return result;
 }
-export function insets(padding: kit.Insets): readonly number[] {
+export function insets(padding: Insets): readonly number[] {
   const p = typeof padding === 'number' ? [padding, padding, padding, padding] : padding;
   if (p.length !== 4 || !p.every((n) => Number.isFinite(n) && n >= 0)) fail('Invalid padding');
   return p;

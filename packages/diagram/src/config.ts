@@ -1,4 +1,5 @@
-import { GpuError, kit, viewStyle, type RGBA, type ViewInput } from '@latkit/gpu';
+import { failure } from '@latkit/model';
+import { kit, viewStyle, type RGBA, type ViewInput } from '@latkit/gpu';
 import type { DiagramStyle, Limits } from './options.js';
 import type { DiagramData, VertexData, EdgeData } from './data.js';
 import type { DiagramInput } from './input.js';
@@ -38,7 +39,7 @@ export const LIMITS: Required<Limits> = Object.freeze({
   layoutMs: 30000,
 });
 export function fail(message: string): never {
-  throw new GpuError('invalid-input', message);
+  throw failure('invalid-input', message);
 }
 export function positive(value: number, name: string, zero = false): number {
   if (!Number.isFinite(value) || (zero ? value < 0 : value <= 0)) fail('Invalid ' + name);

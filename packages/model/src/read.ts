@@ -10,6 +10,7 @@ import type {
   TextColumn,
 } from './data.js';
 import type { ColumnPage, Data, TableData } from './materialized.js';
+import type { Item } from './item.js';
 import type {
   AggregateBlock,
   AggregateQuery,
@@ -37,10 +38,10 @@ import {
   sliceSamples,
 } from './columns.js';
 import { blockBuffers, blockByteLength } from './buffers.js';
-import { checkSignal, failure } from './error.js';
+import { failure } from './error.js';
 import { IdIndex } from './ids.js';
 import { validateQuery, checkSampleWindow } from './validation/query.js';
-import { DEFAULT_BLOCK_BYTES } from './query.js';
+import { BLOCK_BYTES } from './query.js';
 import { Check } from './validation/check.js';
 
 export type ReadResult<Q extends Query> = Q extends RowsQuery
@@ -67,10 +68,10 @@ async function* execute(
   query: Query,
   options: QueryOptions,
 ): AsyncGenerator<QueryBlock> {
-  checkSignal(options.signal);
+  options.signal?.throwIfAborted();
   const issues = validateQuery(data.schema, query);
   if (issues.length) throw failure('invalid-input', issues[0].message, { issues });
-  const bound = options.maxBlockBytes ?? DEFAULT_BLOCK_BYTES;
+  const bound = options.maxBlockBytes ?? BLOCK_BYTES;
   if (!Number.isSafeInteger(bound) || bound < 1)
     throw failure('invalid-input', 'Invalid block byte limit.');
   const table = data.tables[query.from];
@@ -98,7 +99,7 @@ async function* execute(
           ? aggregate(data, table, query, bound, options.signal)
           : envelope(data, table, query, bound, options.signal);
   for await (const block of blocks) {
-    checkSignal(options.signal);
+    options.signal?.throwIfAborted();
     const value = options.buffers === 'owned' ? copyBuffers(block) : block;
     if (
       blockByteLength(value) > bound ||
@@ -165,6 +166,19 @@ function pageIndex(pages: ColumnPages): PageIndex {
 }
 function rowAtOrZero(rows: RowAxis): number {
   return rows.kind === 'range' ? rows.offset : (rows.values[0] ?? 0);
+}
+
+/** The id of an item's row, for writing changes back by id. */
+export function itemId(item: Item): string {
+  const table = item.source.tables[item.index.type];
+  if (!table) throw failure('invalid-input', 'Unknown type: ' + item.index.type);
+  assertIndex(table.index, item.index);
+  const page = findPage(table.ids, item.row),
+    at = page ? position(page.rows, item.row) : -1,
+    id = page && at >= 0 ? textAt(page.column as TextColumn, at) : null;
+  if (id === null)
+    throw failure('invalid-input', `Row ${item.row} of ${item.index.type} has no id`);
+  return id;
 }
 
 function findPage(pages: ColumnPages, row: number, frame?: number): ColumnPage | undefined {
@@ -835,7 +849,7 @@ async function* aggregate(
       await new Promise((resolve) => setTimeout(resolve, 0));
       yieldedAt = performance.now();
     }
-    checkSignal(signal);
+    signal?.throwIfAborted();
     for (const name of query.select) {
       const column = block.columns[name] as SampleColumn,
         target = values[name];
@@ -936,7 +950,7 @@ async function* envelope(
         await new Promise((resolve) => setTimeout(resolve, 0));
         yieldedAt = performance.now();
       }
-      checkSignal(signal);
+      signal?.throwIfAborted();
       for (let f = 0; f < block.coordinates.length; f++) {
         const coordinate = block.coordinates[f],
           bucket = span

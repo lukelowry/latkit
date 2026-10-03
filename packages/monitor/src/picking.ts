@@ -110,7 +110,7 @@ export async function pick(request: PickRequest): Promise<Reading[]> {
         for (let f = 0; f < frames; f++, order++) {
           if ((order & 1023) === 0) await work.step();
           if (!bitAt(tile.presence.value, r)) continue;
-          const value = sampleAt(column, { row: r, frame: f });
+          const value = sampleAt(column, r, f);
           if (value === null || !Number.isFinite(value)) continue;
           if (visible && bitAt(tile.presence.visible, r)) {
             const c = visible as typeof visible & { rowStride?: number; frameStride?: number },

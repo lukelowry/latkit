@@ -1,4 +1,4 @@
-import type { kit, RGBA } from '@latkit/gpu';
+import type { RGBA, Insets } from '@latkit/gpu';
 export interface Tick {
   readonly value: number;
   readonly label?: string;
@@ -24,7 +24,7 @@ export interface MonitorStyle {
   readonly cursorColor?: RGBA;
   /** Opacity of unselected traces while something is selected. */
   readonly unselectedAlpha?: number;
-  readonly paddingPx?: kit.Insets;
+  readonly paddingPx?: Insets;
 }
 export interface Limits {
   /** Rows the traces draw together. */

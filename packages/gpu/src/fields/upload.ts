@@ -1,17 +1,19 @@
-import type {
-  EnvelopeBlock,
-  EnvelopeColumn,
-  Column,
-  FieldsBlock,
-  NumericArray,
-  SampleColumn,
+import {
+  failure,
+  rowCount,
+  sliceRows,
+  type EnvelopeBlock,
+  type EnvelopeColumn,
+  type Column,
+  type FieldsBlock,
+  type NumericArray,
+  type SampleColumn,
 } from '@latkit/model';
-import { rowCount, sliceRows } from '@latkit/model';
 import type { GpuPage, GpuValueField, UploadOptions } from './types.js';
 import { FieldPages, type Bitmap, type Column as EncodedColumn, type CopyJob } from './pages.js';
 import { Allocator, type Allocation } from '../memory/allocation.js';
 import { BufferData } from '../memory/buffer-data.js';
-import { align, GpuError, integer } from '../error.js';
+import { align, integer } from '../error.js';
 import type { Entry, Memory } from '../memory/memory.js';
 
 export interface UploadScope {
@@ -78,8 +80,7 @@ export class Uploader {
           memory.budget.stagingBytes,
         ) / 4,
       ) * 4;
-    if (this.pageBytes < 4)
-      throw new GpuError('resource-limit', 'Device cannot hold a numeric page');
+    if (this.pageBytes < 4) throw failure('resource-limit', 'Device cannot hold a numeric page');
   }
 
   upload(
@@ -121,7 +122,7 @@ export class Uploader {
         column.continuous.length !== Math.ceil(cells / 8) ||
         (column.values.validity && column.values.offset + slots > column.values.validity.length * 8)
       )
-        throw new GpuError('invalid-input', 'Invalid envelope column shape');
+        throw failure('invalid-input', 'Invalid envelope column shape');
     }
     let resolved = this.envelopes.get(block);
     if (!resolved) {
@@ -176,7 +177,7 @@ export class Uploader {
     }
     const selected = options.select.flatMap((name) => {
       const aliases = resolved!.names.get(name);
-      if (!aliases) throw new GpuError('invalid-input', 'Missing envelope field: ' + name);
+      if (!aliases) throw failure('invalid-input', 'Missing envelope field: ' + name);
       return aliases;
     });
     return this.prepare(
@@ -205,12 +206,12 @@ export class Uploader {
     identity: object,
   ): readonly GpuPage[] {
     if (new Set(options.select).size !== options.select.length)
-      throw new GpuError('invalid-input', 'Upload fields must be unique');
+      throw failure('invalid-input', 'Upload fields must be unique');
     const sampled = block.samples;
     if (sampled) {
       integer(sampled.firstFrame, 'first frame');
       if (!(sampled.coordinates instanceof Float64Array))
-        throw new GpuError('invalid-input', 'Coordinates must be Float64Array');
+        throw failure('invalid-input', 'Coordinates must be Float64Array');
     }
     const count = rowCount(block.rows),
       frames = sampled?.coordinates.length ?? block.envelope?.count ?? 1;
@@ -230,7 +231,7 @@ export class Uploader {
     }
     const views: [string, NumericView][] = options.select.map((name) => {
       const column = block.columns[name];
-      if (!column) throw new GpuError('invalid-input', 'Missing upload field: ' + name);
+      if (!column) throw failure('invalid-input', 'Missing upload field: ' + name);
       const view =
         'kind' in column ? this.view(column, count, frames, 'frameStride' in column) : column;
       const span =
@@ -243,15 +244,15 @@ export class Uploader {
         view.offset < 0 ||
         span > view.values.length * (view.boolean ? 8 : 1)
       )
-        throw new GpuError('invalid-input', 'Upload view does not cover its axes');
+        throw failure('invalid-input', 'Upload view does not cover its axes');
       view.presence = block.presence?.[name];
       if (view.presence && view.presence.length * 8 < count)
-        throw new GpuError('invalid-input', 'Presence bitmap does not cover rows');
+        throw failure('invalid-input', 'Presence bitmap does not cover rows');
       if (
         (view.values instanceof Float64Array || view.items?.values instanceof Float64Array) &&
         !options.float64
       )
-        throw new GpuError(
+        throw failure(
           'precision',
           'Float64 field ' + name + ' requires an explicit encoding policy',
         );
@@ -263,7 +264,7 @@ export class Uploader {
       widest = Math.max(widest, view.components);
       cellBytes += (view.boolean ? 1 / 8 : view.components * 8) + (view.validity ? 1 / 8 : 0);
     }
-    if (cellBytes > limit) throw new GpuError('resource-limit', 'A vector exceeds the page bound');
+    if (cellBytes > limit) throw failure('resource-limit', 'A vector exceeds the page bound');
     // Pages keep every frame of their rows, so a line through the frames never spans two pages;
     // frames split only when one row's frames exceed the page.
     const tileRows = Math.min(
@@ -296,7 +297,7 @@ export class Uploader {
           else hi = mid - 1;
         }
         nr = lo;
-        if (!nr) throw new GpuError('resource-limit', 'A list cell exceeds the GPU page bound');
+        if (!nr) throw failure('resource-limit', 'A list cell exceeds the GPU page bound');
       }
       rowRanges.push([row, nr]);
       row += nr;
@@ -360,10 +361,7 @@ export class Uploader {
           const axis = sampled.coordinates;
           for (let i = frame; i < frame + nf; i++) {
             if (!Number.isFinite(axis[i]) || (i > 0 && axis[i] < axis[i - 1]))
-              throw new GpuError(
-                'invalid-input',
-                'Sample coordinates must be finite and nondecreasing',
-              );
+              throw failure('invalid-input', 'Sample coordinates must be finite and nondecreasing');
           }
           samples = {
             firstFrame: sampled.firstFrame + frame,
@@ -568,7 +566,7 @@ export class Uploader {
   private view(column: Column, rows: number, frames: number, sampled: boolean): NumericView {
     if (column.kind === 'list') {
       if (sampled || (column.values.kind !== 'numeric' && column.values.kind !== 'vector'))
-        throw new GpuError('unsupported', 'Lists require static numeric or vector items');
+        throw failure('unsupported', 'Lists require static numeric or vector items');
       const offset = integer(column.offset, 'list offset');
       if (
         !(column.offsets instanceof Int32Array) ||
@@ -577,12 +575,12 @@ export class Uploader {
         (column.validity && offset + rows > column.validity.length * 8) ||
         column.values.validity
       )
-        throw new GpuError('invalid-input', 'Invalid list slice or nullable list items');
+        throw failure('invalid-input', 'Invalid list slice or nullable list items');
       let previous = column.offsets[offset];
       for (let i = offset; i <= offset + rows; i++) {
         const next = column.offsets[i];
         if (next < previous || next < 0 || next > column.values.length)
-          throw new GpuError('invalid-input', 'List offsets exceed child bounds');
+          throw failure('invalid-input', 'List offsets exceed child bounds');
         previous = next;
       }
       const items = this.view(column.values, column.values.length, 1, false);
@@ -599,7 +597,7 @@ export class Uploader {
       };
     }
     if (column.kind === 'boolean') {
-      if (sampled) throw new GpuError('invalid-input', 'Sampled fields must be numeric');
+      if (sampled) throw failure('invalid-input', 'Sampled fields must be numeric');
       const offset = integer(column.offset, 'boolean offset');
       if (
         !(column.values instanceof Uint8Array) ||
@@ -607,7 +605,7 @@ export class Uploader {
         offset + rows > column.values.length * 8 ||
         (column.validity && offset + rows > column.validity.length * 8)
       )
-        throw new GpuError('invalid-input', 'Boolean bitmap does not cover its rows');
+        throw failure('invalid-input', 'Boolean bitmap does not cover its rows');
       return {
         values: column.values,
         boolean: true,
@@ -621,12 +619,12 @@ export class Uploader {
       };
     }
     if (column.kind !== 'numeric' && column.kind !== 'vector')
-      throw new GpuError('unsupported', 'Numeric uploads accept numeric and vector columns');
+      throw failure('unsupported', 'Numeric uploads accept numeric and vector columns');
     const vector = column.kind === 'vector';
     if (sampled && vector)
-      throw new GpuError('invalid-input', 'Sampled fields must be scalar numeric columns');
+      throw failure('invalid-input', 'Sampled fields must be scalar numeric columns');
     if (vector && column.values.validity)
-      throw new GpuError('invalid-input', 'Vector lanes are non-nullable');
+      throw failure('invalid-input', 'Vector lanes are non-nullable');
     const scalar = vector ? column.values : column;
     const values = scalar.values;
     if (!(
@@ -635,7 +633,7 @@ export class Uploader {
       values instanceof Int32Array ||
       values instanceof Uint32Array
     ))
-      throw new GpuError('invalid-input', 'Unsupported numeric backing');
+      throw failure('invalid-input', 'Unsupported numeric backing');
     const components = vector ? integer(column.size, 'vector size', 1) : 1;
     const parentOffset = integer(column.offset, 'column offset');
     integer(column.length, 'column length');
@@ -654,7 +652,7 @@ export class Uploader {
         b = remainder;
       }
       if (frames > rowStride / a && rows > frameStride / a)
-        throw new GpuError('invalid-input', 'Sample strides alias distinct cells');
+        throw failure('invalid-input', 'Sample strides alias distinct cells');
     }
     const offset = vector
       ? integer(scalar.offset, 'child offset') + parentOffset * components
@@ -667,14 +665,14 @@ export class Uploader {
         ? rows > column.length || parentOffset * components + span > scalar.length
         : span > column.length)
     )
-      throw new GpuError('invalid-input', 'Column does not cover its logical axes');
+      throw failure('invalid-input', 'Column does not cover its logical axes');
     let validity: NumericView['validity'];
     if (column.validity) {
       const rs = vector ? 1 : rowStride,
         fs = vector ? 0 : frameStride;
       const last = parentOffset + (rows - 1) * rs + (frames - 1) * fs;
       if (!(column.validity instanceof Uint8Array) || last >= column.validity.length * 8)
-        throw new GpuError('invalid-input', 'Validity bitmap does not cover the column');
+        throw failure('invalid-input', 'Validity bitmap does not cover the column');
       validity = { values: column.validity, offset: parentOffset, rowStride: rs, frameStride: fs };
     }
     return { values, offset, components, rowStride, frameStride, validity };
@@ -769,7 +767,7 @@ export class Uploader {
               const value = view.values[base + f * view.frameStride + r * view.rowStride + lane];
               const encoded = value - (origin?.[lane] ?? 0);
               if (is64 && Number.isFinite(value) && !Number.isFinite(Math.fround(encoded)))
-                throw new GpuError(
+                throw failure(
                   'precision',
                   'Finite Float64 value exceeds the selected Float32 encoding',
                 );
@@ -877,14 +875,14 @@ export class Uploader {
       resident.entry.unpin();
       scope.check(() => {
         if (data.revision !== revision)
-          throw new GpuError('conflict', 'Renderer buffer changed during preparation');
+          throw failure('conflict', 'Renderer buffer changed during preparation');
       });
       return { ...resident.allocation.binding, size: align(Math.max(4, data.size), 4) };
     }
     scope.use(resident.entry);
     scope.check(() => {
       if (data.revision !== revision)
-        throw new GpuError('conflict', 'Renderer buffer changed during preparation');
+        throw failure('conflict', 'Renderer buffer changed during preparation');
     });
     return { ...resident.allocation.binding, size: align(Math.max(4, data.size), 4) };
   }

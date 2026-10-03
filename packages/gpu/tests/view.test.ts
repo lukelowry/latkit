@@ -1,15 +1,20 @@
 import { expect, it, vi } from 'vitest';
-import { createComposition, createGpu, type Gpu, type SetOptions } from '../src/index.js';
+import {
+  createComposition,
+  createGpu,
+  type FrameInfo,
+  type Gpu,
+  type SetOptions,
+  type ViewConfig,
+  type ViewEvents,
+} from '../src/index.js';
 import {
   BaseView,
   createPresentation,
   hold,
   rendererOf,
   type Encoding,
-  type FrameInfo,
   type Preparation,
-  type ViewConfig,
-  type ViewEvents,
 } from '../src/kit.js';
 import { deferred, fakeDevice } from './fixtures/device.js';
 import { target } from './fixtures/render.js';
@@ -291,7 +296,7 @@ it('preserves the original configuration failure during cleanup', async () => {
   fixture.context.unconfigure.mockImplementation(() => {
     throw new Error('cleanup');
   });
-  expect(() => createPresentation({ gpu, canvas: fixture.canvas })).toThrow('configuration');
+  expect(() => createPresentation(gpu, { canvas: fixture.canvas })).toThrow('configuration');
   gpu.destroy();
 });
 

@@ -6,7 +6,6 @@ import {
   staticFields,
   validateBatch,
   validateSelection,
-  validateSchema,
 } from '../src/index.js';
 import type { SampleBatch, Schema } from '../src/index.js';
 const schema: Schema = {
@@ -50,8 +49,7 @@ it('selects independent fields across gaps and out-of-order publication pages', 
   ]);
   for (const value of result) expect(validateBatch(schema, value)).toEqual([]);
 });
-it('keeps delivery budgets out of schema and validates demand directly', () => {
-  expect(validateSchema({ ...schema, limits: { maxBlockBytes: 1 } })).not.toEqual([]);
+it('validates demand directly against the schema', () => {
   expect(validateSelection(schema, { from: 'Node', select: ['a'] })).toEqual([]);
   expect(validateSelection(schema, { from: 'Node', select: ['missing'] })).not.toEqual([]);
   expect(validateBatch(schema, batch(1, 'a'), { maxBlockBytes: 1 })).not.toEqual([]);

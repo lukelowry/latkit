@@ -1,9 +1,15 @@
-import { sameIndex, type Data, type FieldInput, type RowSelection } from '@latkit/model';
-import type { DataHit, kit, RGBA } from '@latkit/gpu';
+import {
+  sameItem as sameRow,
+  type Data,
+  type FieldInput,
+  type Item,
+  type RowSelection,
+} from '@latkit/model';
+import type { kit, RGBA, ColorScale, Position2D, Scale, TextFont } from '@latkit/gpu';
 
 export interface Labels {
   readonly field: FieldInput;
-  readonly font?: kit.TextFont;
+  readonly font?: TextFont;
   readonly size?: number;
   readonly maxCount?: number;
   readonly color?: RGBA;
@@ -12,10 +18,10 @@ export interface Labels {
 export interface VertexOptions {
   readonly rows?: RowSelection;
   /** Defaults to the type's spatial field. */
-  readonly position?: kit.Position2D;
-  readonly color?: string | kit.ColorScale | null;
-  readonly size?: string | kit.Scale | null;
-  readonly height?: string | kit.Scale | null;
+  readonly position?: Position2D;
+  readonly color?: string | ColorScale | null;
+  readonly size?: string | Scale | null;
+  readonly height?: string | Scale | null;
   readonly visible?: FieldInput | null;
   readonly shade?: FieldInput | null;
   readonly labels?: string | Labels | null;
@@ -32,8 +38,8 @@ export interface EdgeOptions {
   readonly bends?: FieldInput;
   readonly curve?: 'linear' | 'geodesic';
   /** A net's star center; otherwise the centroid of its vertices. */
-  readonly junction?: kit.Position2D;
-  readonly color?: string | kit.ColorScale | null;
+  readonly junction?: Position2D;
+  readonly color?: string | ColorScale | null;
   readonly dash?: FieldInput | null;
   readonly visible?: FieldInput | null;
   readonly shade?: FieldInput | null;
@@ -47,20 +53,19 @@ export interface PathOptions {
   readonly curve?: 'linear' | 'geodesic';
   readonly widthPx?: number;
   readonly baseColor?: RGBA;
-  readonly color?: string | kit.ColorScale | null;
+  readonly color?: string | ColorScale | null;
   readonly visible?: FieldInput | null;
   readonly labels?: string | Labels | null;
   /** Decorative paths do not participate in picking by default. */
   readonly pickable?: boolean;
 }
-export interface NetworkItem extends DataHit {
+/** A drawn row: a vertex, an edge, or a path. */
+export interface NetworkItem extends Item {
   readonly kind: 'vertex' | 'edge' | 'path';
 }
-/** Items are their kind, table index, and row; the index names the source. */
+/** Items are their kind and row; the index names the row space. */
 export function sameItem(a: NetworkItem | null, b: NetworkItem | null): boolean {
-  return (
-    a === b || (!!a && !!b && a.kind === b.kind && a.row === b.row && sameIndex(a.index, b.index))
-  );
+  return a === b || (!!a && !!b && a.kind === b.kind && sameRow(a, b));
 }
 /** Option keys whose string value names a field. */
 export const FIELD_OPTIONS = ['color', 'size', 'height', 'labels'] as const;

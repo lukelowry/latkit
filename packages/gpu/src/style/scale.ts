@@ -1,14 +1,14 @@
-import type {
-  Domain,
-  Data,
-  FieldInput,
-  ReadScope,
-  RowSelection,
-  SampleWindow,
+import {
+  failure,
+  type Domain,
+  type Data,
+  type FieldInput,
+  type ReadScope,
+  type RowSelection,
+  type SampleWindow,
 } from '@latkit/model';
 import type { Colormap } from '../colors/colormap.js';
 import type { ColormapName } from '../colors/catalog.js';
-import { GpuError } from '../error.js';
 
 /** Output endpoints may descend. Model domains remain ordered. */
 export type Range = readonly [start: number, end: number];
@@ -42,10 +42,10 @@ export function resolveScale(
   domain: Domain | null,
 ): ResolvedScale {
   if (domain && (domain.length !== 2 || !domain.every(Number.isFinite) || domain[1] < domain[0]))
-    throw new GpuError('invalid-input', 'Invalid scale domain');
+    throw failure('invalid-input', 'Invalid scale domain');
   const range = scale.range ?? [0, 1];
   if (range.length !== 2 || !range.every(Number.isFinite))
-    throw new GpuError('invalid-input', 'Invalid output range');
+    throw failure('invalid-input', 'Invalid output range');
   return { domain, range, clamp: scale.clamp ?? true };
 }
 /** Resolve a scale, reading its field's extent when the domain is automatic. */
@@ -91,7 +91,7 @@ export function scaleParameters(
     0,
   );
   if (!result.every(Number.isFinite))
-    throw new GpuError('precision', 'Scale exceeds Float32 relative precision');
+    throw failure('precision', 'Scale exceeds Float32 relative precision');
   return result;
 }
 export function scaleShader(): string {

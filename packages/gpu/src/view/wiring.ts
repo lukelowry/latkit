@@ -1,5 +1,4 @@
-import type { Schema } from '@latkit/model';
-import { GpuError } from '../error.js';
+import { failure, type Schema } from '@latkit/model';
 
 /** One end of an edge: the edge type's reference field and the vertex type it names. */
 export interface End {
@@ -30,15 +29,12 @@ export function wiring(
   };
   const result = new Map<string, Wiring>();
   for (const [edge, { ends }] of Object.entries(edges)) {
-    if (!schema.types[edge]) throw new GpuError('invalid-input', 'Unknown edge type: ' + edge);
+    if (!schema.types[edge]) throw failure('invalid-input', 'Unknown edge type: ' + edge);
     if (ends) {
       const [a, b] = ends.map((field): End => {
         const type = target(edge, field);
         if (type === undefined || !drawn.has(type))
-          throw new GpuError(
-            'invalid-input',
-            `Edge end ${edge}.${field} must reference a vertex type`,
-          );
+          throw failure('invalid-input', `Edge end ${edge}.${field} must reference a vertex type`);
         return { field, type };
       });
       result.set(edge, { kind: 'ends', ends: [a, b] });
@@ -53,7 +49,7 @@ export function wiring(
           ...(definition.direction ? { direction: definition.direction } : {}),
         })),
     );
-    if (!ports.length) throw new GpuError('invalid-input', 'No vertex type references net ' + edge);
+    if (!ports.length) throw failure('invalid-input', 'No vertex type references net ' + edge);
     result.set(edge, { kind: 'net', ports });
   }
   return result;

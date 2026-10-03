@@ -1,6 +1,13 @@
 import { renderer as snapshotRenderer } from './snapshot.js';
 /* global GPUBufferUsage, GPUMapMode, GPUShaderStage, document, CSS */
-import { colormaps, createColormap, reverseColormap, colormapCss, kit } from '../../dist/index.js';
+import {
+  colormaps,
+  createColormap,
+  reverseColormap,
+  colormapCss,
+  kit,
+  resolveColor,
+} from '../../dist/index.js';
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
 };
@@ -148,22 +155,22 @@ export async function checkColors(gpu, target) {
     const close = (actual, expected) =>
       actual && actual.every((v, i) => Math.abs(v - expected[i]) < 1e-6);
     assert(
-      close(kit.resolveColor('currentColor', context), [20 / 255, 40 / 255, 60 / 255, 1]),
+      close(resolveColor('currentColor', context), [20 / 255, 40 / 255, 60 / 255, 1]),
       'currentColor resolution',
     );
     assert(
-      close(kit.resolveColor('var(--accent)', context), [1, 128 / 255, 0, 1]),
+      close(resolveColor('var(--accent)', context), [1, 128 / 255, 0, 1]),
       'Custom property resolution',
     );
     assert(
-      close(kit.resolveColor('var(--missing, blue)', context), [0, 0, 1, 1]),
+      close(resolveColor('var(--missing, blue)', context), [0, 0, 1, 1]),
       'Custom property fallback',
     );
     assert(
-      kit.resolveColor('var(--missing)', context) === null,
+      resolveColor('var(--missing)', context) === null,
       'Unresolved variable must not inherit silently',
     );
-    assert(kit.resolveColor('nonsense', context) === null, 'Invalid CSS must not inherit silently');
+    assert(resolveColor('nonsense', context) === null, 'Invalid CSS must not inherit silently');
     assert(context.children.length === 0, 'CSS resolution leaked DOM probes');
   } finally {
     context.remove();

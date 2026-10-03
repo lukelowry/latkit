@@ -11,9 +11,8 @@ export type {
 } from './diagram.js';
 export type {
   DiagramItem,
-  DiagramHit,
-  RowRef,
-  Point,
+  DiagramRow,
+  DiagramPort,
   Shape,
   VertexOptions,
   EdgeOptions,

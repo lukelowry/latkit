@@ -1,5 +1,4 @@
-import { rowAt, type FieldsBlock, type FieldValues } from '@latkit/model';
-import { GpuError } from '@latkit/gpu';
+import { failure, rowAt, type FieldsBlock, type FieldValues } from '@latkit/model';
 import type { NetworkData, EdgeData } from '../data.js';
 import {
   BANK_ROWS,
@@ -137,7 +136,7 @@ export class Paths {
     const charge = (n: number) => {
       bytes += n;
       if (bytes > limits.geometryBytes)
-        throw new GpuError('resource-limit', 'Paths exceed the network CPU budget');
+        throw failure('resource-limit', 'Paths exceed the network CPU budget');
     };
     const point = (bank: VertexBank, offset: number): Point => {
       const read = reads.vertices.get(bank)!,
@@ -168,7 +167,7 @@ export class Paths {
         continue;
       }
       if (options.curve === 'geodesic' && !native.geographic)
-        throw new GpuError('invalid-input', 'Geodesics require geographic coordinates');
+        throw failure('invalid-input', 'Geodesics require geographic coordinates');
       const ownKey: unknown[] = [options.curve];
       if (original.kind)
         for (const tile of reads.edges.get(original)!.native) {
@@ -274,7 +273,7 @@ export class Paths {
       };
       const segment = (a: Address, b: Address, owner: number, branch: number) => {
         if (++segments > limits.segments)
-          throw new GpuError('resource-limit', 'Path segment limit exceeded');
+          throw failure('resource-limit', 'Path segment limit exceeded');
         charge(48);
         const key = a.bank.id + ':' + b.bank.id;
         let group = groups.get(key);
@@ -344,7 +343,7 @@ export class Paths {
       const list = (tile: FieldsBlock, name: string, row: number): Point[] => {
         const column = tile.columns[name];
         if (column?.kind !== 'list' || column.values.kind !== 'vector' || column.values.size !== 2)
-          throw new GpuError('invalid-input', 'Paths require lists of two-component vectors');
+          throw failure('invalid-input', 'Paths require lists of two-component vectors');
         const at = column.offset + row;
         if (!bit(tile.presence[name], row) || !bit(column.validity, at)) return [];
         const result: Point[] = [];

@@ -1,5 +1,5 @@
+import { failure } from '@latkit/model';
 import type { Renderer } from './render.js';
-import { GpuError } from '../error.js';
 export const children = new WeakMap<Renderer, readonly Renderer[]>();
 /** Lock every composed child as well as its parent; hidden concurrent use is still a conflict. */
 export function renderers(roots: readonly Renderer[]): Renderer[] {
@@ -8,7 +8,7 @@ export function renderers(roots: readonly Renderer[]): Renderer[] {
   while (pending.length) {
     const renderer = pending.pop()!;
     if (found.has(renderer))
-      throw new GpuError('invalid-input', 'A renderer appears more than once in the composition');
+      throw failure('invalid-input', 'A renderer appears more than once in the composition');
     found.add(renderer);
     pending.push(...(children.get(renderer) ?? []));
   }

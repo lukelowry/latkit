@@ -1,4 +1,5 @@
-import { align, GpuError } from '../error.js';
+import { failure } from '@latkit/model';
+import { align } from '../error.js';
 import type { Memory } from './memory.js';
 
 interface Span {
@@ -41,7 +42,7 @@ export class Allocator {
       (usage & GPUBufferUsage.STORAGE && size > limits.maxStorageBufferBindingSize) ||
       (usage & GPUBufferUsage.UNIFORM && size > limits.maxUniformBufferBindingSize)
     )
-      throw new GpuError('resource-limit', 'Buffer binding exceeds the device limits');
+      throw failure('resource-limit', 'Buffer binding exceeds the device limits');
     const alignment = Math.max(
       4,
       usage & GPUBufferUsage.STORAGE ? limits.minStorageBufferOffsetAlignment : 4,
@@ -129,10 +130,7 @@ export class Allocator {
     const size = data.byteLength;
     if (!size) return;
     if (size & 3 || offset & 3 || offset + size > binding.size!)
-      throw new GpuError(
-        'invalid-input',
-        'GPU writes must fit their binding and align to four bytes',
-      );
+      throw failure('invalid-input', 'GPU writes must fit their binding and align to four bytes');
     this.device.queue.writeBuffer(
       binding.buffer,
       (binding.offset ?? 0) + offset,

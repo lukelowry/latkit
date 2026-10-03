@@ -32,7 +32,7 @@ export async function check() {
   device.addEventListener('uncapturederror', (event) => failures.push(event.error.message));
   device.pushErrorScope('validation');
   const gpu = await createGpu({ device, pageBytes: 64 * 1024 });
-  const output = kit.createRenderTarget({ gpu, width: 16, height: 16 });
+  const output = kit.createTextureTarget(gpu, { width: 16, height: 16 });
   const checks = [];
   try {
     const module = device.createShaderModule({
@@ -202,7 +202,7 @@ export async function check() {
       [1, 0, 0, 1],
       [0, 0, 1, 1],
     ];
-    const targets = colors.map(() => kit.createRenderTarget({ gpu, width: 16, height: 16 }));
+    const targets = colors.map(() => kit.createTextureTarget(gpu, { width: 16, height: 16 }));
     const pixels = gpu.buffer({
       size: 8192,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
@@ -323,7 +323,7 @@ export async function check() {
     );
     checks.push('one million rows, paged compute and full numerical readback');
     const fragmented = await createGpu({ device, pageBytes: 8 * 1024 ** 2 });
-    const fragmentedTarget = kit.createRenderTarget({ gpu: fragmented, width: 16, height: 16 });
+    const fragmentedTarget = kit.createTextureTarget(fragmented, { width: 16, height: 16 });
     const consolidation = {
       ...large,
       rows: { kind: 'range', offset: 0, count: 65536 },

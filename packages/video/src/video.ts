@@ -1,5 +1,5 @@
-import type { RequestOptions } from '@latkit/model';
-import { GpuError, kit, type View } from '@latkit/gpu';
+import { failure, type RequestOptions } from '@latkit/model';
+import { kit, type View } from '@latkit/gpu';
 import { VideoSample } from 'mediabunny';
 import { settings, timeline } from './timing.js';
 import { encoding } from './encoding.js';
@@ -50,7 +50,7 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
   const gpu = kit.gpuOf(view),
     renderer = kit.rendererOf(view),
     config = settings(options, gpu.device.limits.maxTextureDimension2D);
-  if (active.has(view)) throw new GpuError('busy', 'View is already exporting');
+  if (active.has(view)) throw failure('busy', 'View is already exporting');
   options.signal?.throwIfAborted();
   active.add(view);
   const stop = new AbortController();
@@ -85,7 +85,7 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
       height: config.height / config.pixelRatio,
       pixelRatio: config.pixelRatio,
     };
-    presentation = kit.createPresentation({ gpu, canvas, alphaMode: 'opaque' });
+    presentation = kit.createPresentation(gpu, { canvas, alphaMode: 'opaque' });
     await work.wait(media.start());
     let reported = -Infinity;
     for (let i = 0; i < config.frames; i++) {
@@ -93,7 +93,7 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
       const frame = timeline(config, i);
       const at = options.at ? options.at(frame.seconds) : (view.config.at ?? undefined);
       if (at !== undefined && !Number.isFinite(at))
-        throw new GpuError('invalid-input', 'Video coordinate must be finite');
+        throw failure('invalid-input', 'Video coordinate must be finite');
       await gpu.render({
         completion: 'complete',
         signal,

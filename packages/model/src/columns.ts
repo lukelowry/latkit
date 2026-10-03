@@ -11,20 +11,39 @@ import type {
 import { assertIndex, bitAt, rowCount, setBit } from './access.js';
 import { failure } from './error.js';
 
+/** A row's position on an axis, or -1. Ascending index axes, the common case, search in place. */
 export function position(rows: RowAxis, row: number): number {
   if (rows.kind === 'range') {
     const at = row - rows.offset;
     return at >= 0 && at < rows.count ? at : -1;
   }
-  let index = rowIndexes.get(rows.values);
-  if (!index) {
-    index = new Map<number, number>();
-    for (let i = 0; i < rows.values.length; i++) index.set(rows.values[i], i);
-    rowIndexes.set(rows.values, index);
+  const values = rows.values;
+  let index = rowIndexes.get(values);
+  if (index === undefined) {
+    index = ascending(values) || indexOf(values);
+    rowIndexes.set(values, index);
   }
-  return index.get(row) ?? -1;
+  if (index !== true) return index.get(row) ?? -1;
+  let lo = 0,
+    hi = values.length;
+  while (lo < hi) {
+    const m = (lo + hi) >>> 1;
+    if (values[m] < row) lo = m + 1;
+    else hi = m;
+  }
+  return lo < values.length && values[lo] === row ? lo : -1;
 }
-const rowIndexes = new WeakMap<Uint32Array, Map<number, number>>();
+/** Per axis: true when ascending, else positions by row. */
+const rowIndexes = new WeakMap<Uint32Array, Map<number, number> | true>();
+function ascending(values: Uint32Array): boolean {
+  for (let i = 1; i < values.length; i++) if (values[i] <= values[i - 1]) return false;
+  return true;
+}
+function indexOf(values: Uint32Array): Map<number, number> {
+  const index = new Map<number, number>();
+  for (let i = 0; i < values.length; i++) index.set(values[i], i);
+  return index;
+}
 
 export function compactRows(values: readonly number[]): RowAxis {
   if (!values.length || values.every((v, i) => v === values[0] + i))
@@ -343,14 +362,29 @@ function concatenate(parts: readonly Part[], prototype: Column, length: number):
   return { kind: 'numeric', ...base, values };
 }
 
-export function textColumn(values: readonly string[]): TextColumn {
+/** A text column of these values; a null value is absent. */
+export function textColumn(values: readonly (string | null)[]): TextColumn {
   const encoder = new TextEncoder(),
-    encoded = values.map((value) => encoder.encode(value));
+    encoded = values.map((value) => (value === null ? undefined : encoder.encode(value)));
   const offsets = new Int32Array(values.length + 1);
-  for (let i = 0; i < encoded.length; i++) offsets[i + 1] = offsets[i] + encoded[i].length;
+  let validity: Uint8Array | undefined;
+  for (let i = 0; i < encoded.length; i++) {
+    const value = encoded[i];
+    offsets[i + 1] = offsets[i] + (value?.length ?? 0);
+    if (value) continue;
+    validity ??= new Uint8Array(Math.ceil(values.length / 8)).fill(255);
+    validity[i >>> 3] &= ~(1 << (i & 7));
+  }
   const bytes = new Uint8Array(offsets.at(-1)!);
-  for (let i = 0; i < encoded.length; i++) bytes.set(encoded[i], offsets[i]);
-  return { kind: 'text', bytes, offsets, offset: 0, length: values.length } as TextColumn;
+  for (let i = 0; i < encoded.length; i++) if (encoded[i]) bytes.set(encoded[i]!, offsets[i]);
+  return {
+    kind: 'text',
+    bytes,
+    offsets,
+    offset: 0,
+    length: values.length,
+    ...(validity ? { validity } : {}),
+  };
 }
 
 /** Copy only exposed views; never detach buffers owned by an application or another consumer. */

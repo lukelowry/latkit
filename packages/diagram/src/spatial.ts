@@ -1,4 +1,4 @@
-import { GpuError } from '@latkit/gpu';
+import { failure } from '@latkit/model';
 import type { Rect } from './scene.js';
 export function intersects(a: Rect, b: Rect): boolean {
   return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
@@ -54,8 +54,7 @@ export class SpatialIndex {
           cell.push(id);
           this.bytes += 8;
         }
-    if (this.bytes > this.maxBytes)
-      throw new GpuError('resource-limit', 'Spatial index exceeds budget');
+    if (this.bytes > this.maxBytes) throw failure('resource-limit', 'Spatial index exceeds budget');
     return id;
   }
   /** Entries meeting the box; `check` bounds a scan of every entry. */

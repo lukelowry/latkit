@@ -1,6 +1,6 @@
 import { kit, type Modifiers, type ViewInput } from '@latkit/gpu';
 import type { ConnectProposal, DiagramEvents, MoveProposal } from './diagram.js';
-import type { DiagramItem, DiagramHit, Point } from './data.js';
+import type { DiagramItem, DiagramRow, Point } from './data.js';
 import { itemKey } from './data.js';
 import type { Style } from './config.js';
 import { ConnectSession } from './connect.js';
@@ -35,7 +35,7 @@ export interface Controls {
   move(items: readonly DiagramItem[], delta: Point): MoveProposal | undefined;
   overlay(value: Overlay | null): void;
   /** Hits near a canvas point, nearest first. */
-  hits(point: Point, radiusPx?: number): readonly DiagramHit[];
+  hits(point: Point, radiusPx?: number): readonly DiagramItem[];
   menu(point: Point, modifiers: Modifiers): void;
   pan(dx: number, dy: number): void;
   zoom(factor: number, anchor?: Point): void;
@@ -62,7 +62,7 @@ interface Drag {
   moved: boolean;
   threshold: number;
   additive: boolean;
-  hit?: DiagramHit;
+  hit?: DiagramItem;
   selection: readonly DiagramItem[];
   revision: number;
   session?: ConnectSession;
@@ -411,9 +411,10 @@ export function listen(
     if (key === ' ') space = true;
     else if (key === 'Enter' && items[0]) api.emit('open', items[0]);
     else if ((key === 'Delete' || key === 'Backspace') && mode === 'edit')
-      api.emit('delete', [
-        ...new Set(items.filter((i) => i.kind === 'vertex' || i.kind === 'edge').map((i) => i.id)),
-      ]);
+      api.emit(
+        'delete',
+        items.filter((item): item is DiagramRow => item.kind === 'vertex' || item.kind === 'edge'),
+      );
     else if (key === 'Tab') {
       const vertices = api.scene()?.vertices.filter((n) => n.visible) ?? [],
         at = vertices.findIndex((n) => items[0] && itemKey(n.hit) === itemKey(items[0])),

@@ -1,25 +1,5 @@
 /* eslint-disable @typescript-eslint/prefer-promise-reject-errors -- Preserve native AbortSignal reasons. */
-export type GpuErrorCode =
-  | 'unavailable'
-  | 'device-lost'
-  | 'closed'
-  | 'busy'
-  | 'conflict'
-  | 'invalid-input'
-  | 'unsupported'
-  | 'resource-limit'
-  | 'precision';
-
-export class GpuError extends Error {
-  constructor(
-    readonly code: GpuErrorCode,
-    message: string,
-    options?: ErrorOptions,
-  ) {
-    super(message, options);
-    this.name = 'GpuError';
-  }
-}
+import { failure } from '@latkit/model';
 
 export function integer(
   value: number,
@@ -28,7 +8,7 @@ export function integer(
   maximum = Number.MAX_SAFE_INTEGER,
 ): number {
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum)
-    throw new GpuError('invalid-input', `${label} must be an integer in [${minimum}, ${maximum}]`);
+    throw failure('invalid-input', `${label} must be an integer in [${minimum}, ${maximum}]`);
   return value;
 }
 

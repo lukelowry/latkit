@@ -1,6 +1,5 @@
-import type { Data } from '@latkit/model';
+import { failure, type Data } from '@latkit/model';
 import type { Gpu } from '../gpu.js';
-import { GpuError } from '../error.js';
 import type { FrameInfo, Viewport } from '../frame/render.js';
 import type { Shade } from '../style/shade.js';
 import {
@@ -243,13 +242,13 @@ export abstract class BaseItemView<
    */
   protected checkInput(input: ViewInput): void {
     for (const key of Object.keys(input))
-      if (!INPUT.has(key)) throw new GpuError('invalid-input', 'Unknown input option: ' + key);
+      if (!INPUT.has(key)) throw failure('invalid-input', 'Unknown input option: ' + key);
     if (input.mode !== undefined && !this.#modes.includes(input.mode))
-      throw new GpuError('invalid-input', 'Unsupported input mode: ' + String(input.mode));
+      throw failure('invalid-input', 'Unsupported input mode: ' + String(input.mode));
     if (input.wheel !== undefined && input.wheel !== 'zoom' && input.wheel !== 'modifier')
-      throw new GpuError('invalid-input', 'Invalid wheel');
+      throw failure('invalid-input', 'Invalid wheel');
     if (input.keyboard !== undefined && typeof input.keyboard !== 'boolean')
-      throw new GpuError('invalid-input', 'Invalid keyboard');
+      throw failure('invalid-input', 'Invalid keyboard');
   }
 
   // ── The contract ──
@@ -276,7 +275,7 @@ export abstract class BaseItemView<
       !Number.isSafeInteger(limit) ||
       limit < 1
     )
-      throw new GpuError('invalid-input', 'Invalid pick');
+      throw failure('invalid-input', 'Invalid pick');
     options.signal?.throwIfAborted();
     const hits = await this.hits(point, radius, { limit, signal: options.signal });
     return hits.length > limit ? hits.slice(0, limit) : hits;
@@ -467,7 +466,7 @@ export abstract class BaseItemView<
   }
   /** Move the pointer; frames search for the hovered item. */
   protected pointer(point: Point | null): void {
-    if (point && !isPoint(point)) throw new GpuError('invalid-input', 'Invalid pointer');
+    if (point && !isPoint(point)) throw failure('invalid-input', 'Invalid pointer');
     this.#pointerVersion++;
     this.#search?.abort();
     this.#search = undefined;
@@ -745,12 +744,12 @@ export abstract class BaseItemView<
    */
   #resolvePatch(patch: Readonly<Record<string, unknown>>, current: Camera | undefined): Camera {
     if (!patch || typeof patch !== 'object' || Array.isArray(patch))
-      throw new GpuError('invalid-input', 'Invalid camera');
+      throw failure('invalid-input', 'Invalid camera');
     const defaults = this.defaultCamera() as unknown as Record<string, unknown>,
       values: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(patch)) {
       if (!Object.hasOwn(defaults, key))
-        throw new GpuError('invalid-input', 'Unknown camera option: ' + key);
+        throw failure('invalid-input', 'Unknown camera option: ' + key);
       values[key] = value ?? defaults[key];
     }
     const moved = this.#framed.some((key) => Object.hasOwn(values, key)),
@@ -836,7 +835,7 @@ export abstract class BaseItemView<
 function inputOf(config: ItemViewConfig): ViewInput {
   const input = config.input ?? {};
   if (typeof input !== 'object' || Array.isArray(input))
-    throw new GpuError('invalid-input', 'Invalid input');
+    throw failure('invalid-input', 'Invalid input');
   return input;
 }
 function isPoint(point: unknown): point is Point {

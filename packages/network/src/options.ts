@@ -1,4 +1,5 @@
-import { GpuError, kit, type RGBA } from '@latkit/gpu';
+import { failure } from '@latkit/model';
+import { kit, type RGBA } from '@latkit/gpu';
 
 /** How a network draws, beyond the shared view style; every option has a default. */
 export interface NetworkStyle {
@@ -82,17 +83,16 @@ export function resolveStyle(config: NetworkStyle, view: kit.ResolvedViewStyle):
       if (!(key === 'edgeBaseColor' && value === null)) kit.validateRgba(value as RGBA);
     } else if (key === 'sunTime') {
       if (value !== null && !Number.isFinite(value))
-        throw new GpuError('invalid-input', 'Invalid sun time');
+        throw failure('invalid-input', 'Invalid sun time');
     } else if (typeof DEFAULTS[key] === 'boolean') {
-      if (typeof value !== 'boolean')
-        throw new GpuError('invalid-input', 'Expected boolean: ' + key);
+      if (typeof value !== 'boolean') throw failure('invalid-input', 'Expected boolean: ' + key);
     } else if (key === 'focusEnds') {
       if (!['off', 'selected', 'hover-selected'].includes(value as string))
-        throw new GpuError('invalid-input', 'Invalid end focus');
+        throw failure('invalid-input', 'Invalid end focus');
     } else if (!Number.isFinite(value) || (value as number) < 0)
-      throw new GpuError('invalid-input', 'Invalid option: ' + key);
+      throw failure('invalid-input', 'Invalid option: ' + key);
     if (UNIT.has(key) && (value as number) > 1)
-      throw new GpuError('invalid-input', 'Option must be in [0,1]: ' + key);
+      throw failure('invalid-input', 'Option must be in [0,1]: ' + key);
     style[key] = value;
   }
   return Object.freeze(style) as Style;

@@ -1,13 +1,14 @@
-import { GpuError, kit } from '@latkit/gpu';
-import { rowCount } from '@latkit/model';
-import type {
-  Data,
-  Schema,
-  Domain,
-  RowSelection,
-  FieldBinding,
-  FieldInput,
-  ReadScope,
+import { kit } from '@latkit/gpu';
+import {
+  failure,
+  rowCount,
+  type Data,
+  type Schema,
+  type Domain,
+  type RowSelection,
+  type FieldBinding,
+  type FieldInput,
+  type ReadScope,
 } from '@latkit/model';
 import type { MonitorData, TraceData as Trace } from './data.js';
 import { domain, finite, fail } from './config.js';
@@ -154,6 +155,6 @@ export async function describeBindings(
 }
 export function fields(schema: Schema, type: string) {
   const result = schema.types[type]?.fields;
-  if (!result) throw new GpuError('invalid-input', 'Unknown model type ' + type);
+  if (!result) throw failure('invalid-input', 'Unknown model type ' + type);
   return result;
 }

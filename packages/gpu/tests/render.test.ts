@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createGpu } from '../src/index.js';
-import { BufferData, createRenderTarget } from '../src/kit.js';
+import { BufferData, createTextureTarget } from '../src/kit.js';
 import { deferred, fakeDevice, record, type FakeTexture } from './fixtures/device.js';
 import { draw, renderer, target } from './fixtures/render.js';
 
@@ -109,7 +109,7 @@ describe('frame ownership', () => {
   it('protects textures after their owner releases them until submitted work completes', async () => {
     const fake = fakeDevice({ deferCompletion: true }),
       gpu = await createGpu({ device: fake.device });
-    const output = createRenderTarget({ gpu, width: 16, height: 16 });
+    const output = createTextureTarget(gpu, { width: 16, height: 16 });
     const texture = output.texture() as FakeTexture;
     await gpu.render({ timeMs: 0, views: [{ renderer: renderer(() => {}), target: output }] });
     output.destroy();

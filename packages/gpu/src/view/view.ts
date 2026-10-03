@@ -1,8 +1,7 @@
-import type { Data, Index } from '@latkit/model';
+import { failure, isFailure, type Data, type Index } from '@latkit/model';
 import type { Gpu } from '../gpu.js';
-import { GpuError } from '../error.js';
 import { createPresentation, type Presentation } from './presentation.js';
-import { createRenderTarget, type TextureTarget } from './target.js';
+import { createTextureTarget, type TextureTarget } from './target.js';
 import type {
   Encoding,
   FrameInfo,
@@ -186,7 +185,7 @@ export abstract class BaseView<
   readonly #stopped = (): void => {
     const reason: unknown = this.gpu.signal.reason;
     this.#stopFrame(reason);
-    if (!(reason instanceof GpuError && reason.code === 'closed')) this.fail(reason);
+    if (!isFailure(reason, 'closed')) this.fail(reason);
   };
 
   constructor(
@@ -221,7 +220,7 @@ export abstract class BaseView<
       hold: () => this.hold(),
       compose: () => {
         if (this.#config.canvas)
-          throw new GpuError('invalid-input', 'A composed view presents through its composition');
+          throw failure('invalid-input', 'A composed view presents through its composition');
         this.#composed++;
         let released = false;
         return () => {
@@ -255,7 +254,7 @@ export abstract class BaseView<
       this.shape,
     );
     if (next.canvas !== previous.canvas && next.canvas && this.#composed)
-      throw new GpuError('invalid-input', 'A composed view presents through its composition');
+      throw failure('invalid-input', 'A composed view presents through its composition');
     // Presentation keys are the base's alone, so playback's set({ at }) stays constant time.
     const own = Object.keys(rest).some((key) => !PRESENTATION.has(key));
     if (own) this.check(next);
@@ -350,7 +349,7 @@ export abstract class BaseView<
   }
   #capture(): CapturedFrame {
     this.live();
-    if (this.#captured) throw new GpuError('busy', 'View already has a captured frame');
+    if (this.#captured) throw failure('busy', 'View already has a captured frame');
     this.#captured = true;
     this.#frameConfig = this.#config;
     let free!: () => void;
@@ -436,7 +435,7 @@ export abstract class BaseView<
     };
   }
   protected live(): void {
-    if (this.#closed) throw new GpuError('closed', 'View is destroyed');
+    if (this.#closed) throw failure('closed', 'View is destroyed');
   }
 
   async image(options: ImageOptions = {}): Promise<Blob> {
@@ -450,7 +449,7 @@ export abstract class BaseView<
     const release = await this.hold();
     let target: TextureTarget | undefined, buffer: GPUBuffer | undefined;
     try {
-      target = createRenderTarget({ gpu: this.gpu, width, height, label: 'view image' });
+      target = createTextureTarget(this.gpu, { width, height, label: 'view image' });
       await this.gpu.render({
         completion: 'complete',
         timeMs: performance.now(),
@@ -596,8 +595,8 @@ export abstract class BaseView<
   }
   #attach(canvas: HTMLCanvasElement): void {
     const window = canvas.ownerDocument.defaultView;
-    if (!window) throw new GpuError('unavailable', 'Canvas has no window');
-    const presentation = createPresentation({ gpu: this.gpu, canvas });
+    if (!window) throw failure('unavailable', 'Canvas has no window');
+    const presentation = createPresentation(this.gpu, { canvas });
     const state: CanvasState = { canvas, presentation, window, wanted: true, raf: 0 };
     this.#canvas = state;
     const resize = () => this.invalidate();
@@ -723,7 +722,7 @@ export abstract class BaseView<
         },
         (error: unknown) => {
           if (own.signal.aborted || this.#closed) return;
-          if (error instanceof GpuError && error.code === 'busy') state.wanted = true;
+          if (isFailure(error, 'busy')) state.wanted = true;
           else this.fail(error);
         },
       )
@@ -817,8 +816,8 @@ interface Internals {
 const internals = new WeakMap<object, Internals>();
 function of(view: object): Internals {
   const found = internals.get(view);
-  if (!found) throw new GpuError('invalid-input', 'Expected a latkit view');
-  if (found.closed()) throw new GpuError('closed', 'View is destroyed');
+  if (!found) throw failure('invalid-input', 'Expected a latkit view');
+  if (found.closed()) throw failure('closed', 'View is destroyed');
   return found;
 }
 /** The renderer behind a view, for compositions and video. */

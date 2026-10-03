@@ -1,4 +1,5 @@
-import { GpuError, interruptible } from '../error.js';
+import { failure } from '@latkit/model';
+import { interruptible } from '../error.js';
 import type { TextRasterizer } from './text.js';
 
 /** Uses the browser's shaping engine, including ligatures, fallback fonts and bidirectional runs. */
@@ -8,7 +9,7 @@ export function createTextRasterizer(): TextRasterizer {
       const { pixelsPerEm, maxWidth, maxHeight, signal } = options;
       signal.throwIfAborted();
       if (input.text.length > 4096 || /[\r\n]/u.test(input.text))
-        throw new GpuError('invalid-input', 'Text runs must be bounded single lines');
+        throw failure('invalid-input', 'Text runs must be bounded single lines');
       const font = `${input.font?.style ?? 'normal'} ${input.font?.weight ?? 400} ${pixelsPerEm}px ${input.font?.family ?? 'sans-serif'}`;
       const fonts =
         (globalThis as typeof globalThis & { fonts?: FontFaceSet }).fonts ??
@@ -19,13 +20,10 @@ export function createTextRasterizer(): TextRasterizer {
           ? new OffscreenCanvas(1, 1)
           : globalThis.document?.createElement('canvas');
       if (!canvas)
-        throw new GpuError(
-          'unavailable',
-          'Supply a TextRasterizer in environments without Canvas2D',
-        );
+        throw failure('unavailable', 'Supply a TextRasterizer in environments without Canvas2D');
       const context = canvas.getContext('2d', { willReadFrequently: true }) as
         CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
-      if (!context) throw new GpuError('unavailable', 'Canvas2D text rasterization is unavailable');
+      if (!context) throw failure('unavailable', 'Canvas2D text rasterization is unavailable');
       const configure = (): void => {
         context.font = font;
         context.textAlign = 'left';
@@ -40,7 +38,7 @@ export function createTextRasterizer(): TextRasterizer {
       const width = Math.max(1, Math.ceil(metrics.actualBoundingBoxRight) - left),
         height = Math.max(1, Math.ceil(metrics.actualBoundingBoxDescent) - top);
       if (width > maxWidth || height > maxHeight)
-        throw new GpuError(
+        throw failure(
           'resource-limit',
           'Shaped text exceeds the atlas page; split long lines before preparing text',
         );

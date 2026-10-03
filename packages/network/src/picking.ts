@@ -1,4 +1,4 @@
-import { kit } from '@latkit/gpu';
+import { kit, type Viewport } from '@latkit/gpu';
 import { rowAt, sameIndex, type FieldsBlock } from '@latkit/model';
 import type { NetworkData, NetworkItem, VertexData } from './data.js';
 import {
@@ -611,7 +611,7 @@ export class PickGeometry {
     bank: VertexBank,
     offset: number,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
     options: VertexData,
     marker = true,
@@ -638,7 +638,7 @@ export class PickGeometry {
   dashPhases(
     data: NetworkData,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
   ): ReadonlyMap<SegmentBatch, Float32Array> {
     const groups = new Map<EdgeBank, CpuSegment[]>();
@@ -695,7 +695,7 @@ export class PickGeometry {
     bo: number,
     data: NetworkData,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
     check: () => void,
   ): Iterable<{ a: Projected; b: Projected; first: boolean; last: boolean }> {
@@ -762,7 +762,7 @@ export class PickGeometry {
     point: readonly [number, number],
     data: NetworkData,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
     options: Style,
     radius: number,
@@ -784,7 +784,7 @@ export class PickGeometry {
     point: readonly [number, number],
     data: NetworkData,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
     options: Style,
     radius: number,
@@ -799,7 +799,7 @@ export class PickGeometry {
     point: readonly [number, number],
     data: NetworkData,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
     options: Style,
     radius: number,
@@ -961,7 +961,7 @@ export class PickGeometry {
     item: NetworkItem,
     data: NetworkData,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
   ): readonly [number, number] | null {
     if (item.kind === 'vertex')
@@ -997,7 +997,7 @@ export class PickGeometry {
     item: NetworkItem,
     data: NetworkData,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
   ): Projected | null {
     const segments: { batch: CpuSegment; offset: number }[] = [];

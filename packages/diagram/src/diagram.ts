@@ -1,5 +1,5 @@
+import { failure, isFailure, sameItem, type FieldValues } from '@latkit/model';
 import {
-  GpuError,
   kit,
   viewStyle,
   type Gpu,
@@ -11,19 +11,21 @@ import {
   type ViewCamera,
   type ViewInput,
   type ViewStats,
+  type FrameInfo,
+  type Patch,
+  type Viewport,
 } from '@latkit/gpu';
-import type { FieldValues } from '@latkit/model';
 import type {
   VertexOptions,
   EdgeOptions,
   DiagramData,
   DiagramItem,
-  DiagramHit,
+  DiagramPort,
+  DiagramRow,
   Point,
-  RowRef,
   Group,
 } from './data.js';
-import { FIELD_OPTIONS, diagramData, itemKey } from './data.js';
+import { FIELD_OPTIONS, diagramData, itemKey, rowOf } from './data.js';
 import type { DiagramStyle, Limits } from './options.js';
 import {
   DEFAULTS,
@@ -46,11 +48,11 @@ import { listen, type Controls, type DiagramInput, type Gestures } from './input
 /** A wiring the user drew; the application decides which references change. */
 export interface ConnectProposal {
   /** Where the wiring starts: a vertex, or one of its ports. */
-  readonly from: RowRef & { readonly port?: string };
+  readonly from: DiagramRow | DiagramPort;
   /** What it was dropped on: a vertex or its port, a net to join, or empty canvas. */
-  readonly to: (RowRef & { readonly kind: 'vertex' | 'edge'; readonly port?: string }) | null;
+  readonly to: DiagramRow | DiagramPort | null;
   /** Dragging a wired input moves it: the net it leaves, and the port leaving it. */
-  readonly replaces?: { readonly edge: RowRef; readonly end: RowRef & { readonly port: string } };
+  readonly replaces?: { readonly edge: DiagramRow; readonly end: DiagramPort };
   readonly position: Point;
   readonly point: Point;
 }
@@ -58,7 +60,7 @@ export interface ConnectProposal {
 export interface MoveProposal {
   /** Moved positions by vertex type. */
   readonly positions: Readonly<Record<string, FieldValues>>;
-  readonly moves: readonly { readonly vertex: RowRef; readonly position: Point }[];
+  readonly moves: readonly { readonly vertex: DiagramRow; readonly position: Point }[];
 }
 export interface Camera extends ViewCamera {
   /** Diagram units at the canvas center. */
@@ -79,13 +81,13 @@ export interface DiagramConfig extends ItemViewConfig, DiagramStyle {
   readonly input?: DiagramInput | NonNullable<DiagramInput['mode']>;
   readonly limits?: Limits;
 }
-export interface DiagramEvents extends ItemEvents<DiagramItem, DiagramHit, Camera> {
+export interface DiagramEvents extends ItemEvents<DiagramItem, DiagramItem, Camera> {
   /** Double click or Enter. */
   readonly open: DiagramItem;
   readonly connect: ConnectProposal;
   readonly move: MoveProposal;
-  /** Delete or Backspace in edit mode: the selected rows' ids. */
-  readonly delete: readonly string[];
+  /** Delete or Backspace in edit mode: the selected vertex and edge rows. */
+  readonly delete: readonly DiagramRow[];
 }
 export interface DiagramStats extends ViewStats {
   readonly vertices: number;
@@ -98,12 +100,12 @@ type Merged = 'camera' | 'input' | 'limits' | 'layout';
 export interface Diagram extends ItemView<
   DiagramConfig,
   DiagramItem,
-  DiagramHit,
+  DiagramItem,
   Camera,
   DiagramEvents
 > {
   /** `animate` eases vertices to new positions and the camera to a new place. */
-  set(patch: kit.Patch<DiagramConfig, Records, Merged>, options?: SetOptions): void;
+  set(patch: Patch<DiagramConfig, Records, Merged>, options?: SetOptions): void;
   /** The item, its wires, and what they join. */
   neighborhood(item: DiagramItem): readonly DiagramItem[];
   stats(): DiagramStats;
@@ -116,7 +118,7 @@ interface Presented {
   readonly scene: Scene;
   readonly picking: Picking;
   readonly camera: kit.Camera2D;
-  readonly viewport: kit.Viewport;
+  readonly viewport: Viewport;
   /** The scene's revision, or -1 for a drag preview. */
   readonly revision: number;
   readonly at?: number;
@@ -185,7 +187,7 @@ const DEFAULT_CAMERA: Camera = Object.freeze({ center: point(0, 0), scale: 1, fi
 function camera2d(camera: Camera): kit.Camera2D {
   return { center: camera.center, scale: [camera.scale, camera.scale], yDirection: 'down' };
 }
-function inside(p: Point, viewport: kit.Viewport): boolean {
+function inside(p: Point, viewport: Viewport): boolean {
   return p[0] >= 0 && p[1] >= 0 && p[0] <= viewport.width && p[1] <= viewport.height;
 }
 /** Ports are picked once they are large enough to aim at. */
@@ -199,7 +201,7 @@ class DiagramView
     DiagramConfig,
     DiagramEvents,
     DiagramItem,
-    DiagramHit,
+    DiagramItem,
     Camera,
     Records,
     Merged
@@ -300,24 +302,23 @@ class DiagramView
       vertices = new Set<number>();
     scene.vertices.forEach((n, i) => {
       if (
-        item.kind === 'group'
-          ? n.group === item.id
-          : item.kind !== 'edge' && n.hit.type === item.type && n.hit.id === item.id
+        item.kind === 'group' ? n.group === item.id : item.kind !== 'edge' && sameItem(n.hit, item)
       )
         vertices.add(i);
     });
     for (const e of scene.edges)
       if (
-        (item.kind === 'edge' && item.type === e.hit.type && item.id === e.hit.id) ||
+        (item.kind === 'edge' && sameItem(item, e.hit)) ||
         e.ends.some((end) => vertices.has(end.vertex))
       ) {
-        result.set(itemKey(e.hit), e.hit);
+        result.set(itemKey(e.hit), rowOf(e.hit));
         for (const end of e.ends) {
           const n = scene.vertices[end.vertex];
-          result.set(itemKey(n.hit), n.hit);
+          result.set(itemKey(n.hit), rowOf(n.hit));
         }
       }
-    for (const i of vertices) result.set(itemKey(scene.vertices[i].hit), scene.vertices[i].hit);
+    for (const i of vertices)
+      result.set(itemKey(scene.vertices[i].hit), rowOf(scene.vertices[i].hit));
     return [...result.values()];
   }
   stats(): DiagramStats {
@@ -342,7 +343,7 @@ class DiagramView
   protected framing(
     items: readonly DiagramItem[] | undefined,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
   ): Partial<Camera> | undefined {
     void camera;
     const prepared = this.preparing;
@@ -373,7 +374,7 @@ class DiagramView
       center: point(camera.center[0] - dx / camera.scale, camera.center[1] - dy / camera.scale),
     };
   }
-  protected zoomed(camera: Camera, factor: number, anchor: Point, viewport: kit.Viewport): Camera {
+  protected zoomed(camera: Camera, factor: number, anchor: Point, viewport: Viewport): Camera {
     const zoomed = kit.zoomCamera(camera2d(camera), factor, anchor, viewport);
     return {
       ...camera,
@@ -392,18 +393,19 @@ class DiagramView
   protected accept(item: DiagramItem): void {
     if (
       !item ||
-      typeof item.id !== 'string' ||
-      (item.kind !== 'group' &&
-        (!KINDS.has(item.kind) ||
-          typeof item.type !== 'string' ||
-          (item.kind === 'port' && typeof item.port !== 'string')))
+      (item.kind === 'group'
+        ? typeof item.id !== 'string'
+        : !KINDS.has(item.kind) ||
+          typeof item.index?.type !== 'string' ||
+          !Number.isSafeInteger(item.row) ||
+          (item.kind === 'port' && typeof item.port !== 'string'))
     )
       fail('Invalid diagram item');
   }
   protected contains(item: DiagramItem): boolean {
     return this.shown?.picking.has(item) ?? false;
   }
-  protected hits(p: Point, radiusPx: number): readonly DiagramHit[] {
+  protected hits(p: Point, radiusPx: number): readonly DiagramItem[] {
     const shown = this.shown;
     if (!shown || !inside(p, shown.viewport)) return [];
     return shown.picking.hit(
@@ -547,7 +549,7 @@ class DiagramView
     return {
       positions: positions(vertices, indices),
       moves: [...indices].map((i) => ({
-        vertex: { type: vertices[i].index.type, id: vertices[i].hit.id },
+        vertex: rowOf(vertices[i].hit),
         position: [vertices[i].x, vertices[i].y],
       })),
     };
@@ -630,9 +632,9 @@ class DiagramView
         ...(this.shown ? [this.shown.picking] : []),
       ]);
       if ([...indices].reduce((n, index) => n + index.bytes, 0) > this.limits.pickingBytes)
-        throw new GpuError('resource-limit', 'Retained picking exceeds budget');
+        throw failure('resource-limit', 'Retained picking exceeds budget');
       if ([...scenes].reduce((n, value) => n + value.bytes, 0) > this.limits.geometryBytes)
-        throw new GpuError('resource-limit', 'Retained geometry exceeds budget');
+        throw failure('resource-limit', 'Retained geometry exceeds budget');
     }
     if (
       presented &&
@@ -701,13 +703,10 @@ class DiagramView
             [...retained].reduce((sum, item) => sum + item.bytes, 0) > this.limits.geometryBytes ||
             [...indices].reduce((sum, item) => sum + item.bytes, 0) > this.limits.pickingBytes
           )
-            throw new GpuError('resource-limit', 'Transition exceeds retained budgets');
+            throw failure('resource-limit', 'Transition exceeds retained budgets');
         } catch (error) {
           frame.signal.throwIfAborted();
-          if (
-            !(error instanceof GpuError) ||
-            !['invalid-input', 'resource-limit'].includes(error.code)
-          )
+          if (!isFailure(error) || !['invalid-input', 'resource-limit'].includes(error.code))
             throw error;
           // Intermediate positions may overlap even when both layouts are valid.
           scene = movement.target;
@@ -772,10 +771,10 @@ class DiagramView
   }
   protected encode(frame: kit.Encoding): void {
     this.live();
-    if (!this.staged) throw new GpuError('invalid-input', 'Diagram is not prepared');
+    if (!this.staged) throw failure('invalid-input', 'Diagram is not prepared');
     this.painter.encode(frame, this.staged.paint);
   }
-  protected submitted(frame: kit.FrameInfo): void {
+  protected submitted(frame: FrameInfo): void {
     const next = this.staged;
     if (!next || this.closed) return;
     next.off();

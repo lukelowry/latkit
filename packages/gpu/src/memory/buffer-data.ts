@@ -1,4 +1,5 @@
-import { GpuError, integer } from '../error.js';
+import { failure } from '@latkit/model';
+import { integer } from '../error.js';
 
 export interface ByteRange {
   readonly offset: number;
@@ -57,7 +58,7 @@ export class BufferData {
   write(options: { readonly data: ArrayBufferView; readonly offset?: number }): void {
     const offset = integer(options.offset ?? 0, 'write offset');
     if (offset + options.data.byteLength > this.used)
-      throw new GpuError('invalid-input', 'Write exceeds buffer size');
+      throw failure('invalid-input', 'Write exceeds buffer size');
     this.storage.set(
       new Uint8Array(options.data.buffer, options.data.byteOffset, options.data.byteLength),
       offset,

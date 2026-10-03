@@ -60,7 +60,7 @@ export function queryConformance(
         const signal = AbortSignal.abort();
         await expect(
           read(source, query, { signal })[Symbol.asyncIterator]().next(),
-        ).rejects.toMatchObject({ code: 'aborted' });
+        ).rejects.toMatchObject({ name: 'AbortError' });
         expect(source.schema).toBeDefined();
       } finally {
         await close();

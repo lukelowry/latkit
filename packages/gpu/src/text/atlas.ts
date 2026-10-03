@@ -1,6 +1,7 @@
+import { failure } from '@latkit/model';
 import { BufferData } from '../memory/buffer-data.js';
 import { distanceField } from './distance-field.js';
-import { GpuError, integer, interruptible } from '../error.js';
+import { integer, interruptible } from '../error.js';
 import type { Images } from '../memory/images.js';
 import type { Entry, Memory } from '../memory/memory.js';
 import type { Textures, TextureResource } from '../memory/textures.js';
@@ -111,13 +112,13 @@ export class TextAtlas {
               (run.color.length !== 4 ||
                 !run.color.every((value) => Number.isFinite(value) && value >= 0 && value <= 1)))
           )
-            throw new GpuError('invalid-input', 'Invalid text size, position, or color');
+            throw failure('invalid-input', 'Invalid text size, position, or color');
           integer(run.anchor ?? 0, 'text anchor', 0, 0xffffffff);
           let glyph = await interruptible(this.glyph(run), signal);
           // The promise continuation can interleave with another allocation that evicts a page.
           if (!glyph.atlas.entry.live) glyph = await interruptible(this.glyph(run), signal);
           if (!glyph.atlas.entry.live)
-            throw new GpuError('resource-limit', 'Atlas was evicted during text preparation');
+            throw failure('resource-limit', 'Atlas was evicted during text preparation');
           if (!held.has(glyph.atlas.entry)) {
             glyph.atlas.entry.pin();
             held.add(glyph.atlas.entry);
@@ -135,7 +136,7 @@ export class TextAtlas {
           Math.min(this.uploader.pageBytes, this.device.limits.maxStorageBufferBindingSize) / 64,
         );
         if (request.runs.length && !maximum)
-          throw new GpuError('resource-limit', 'Text instance exceeds the page limit');
+          throw failure('resource-limit', 'Text instance exceeds the page limit');
         // Keep painter order, including when successive runs use different atlas pages.
         for (let start = 0; start < request.runs.length;) {
           const atlas = glyphs[start].atlas;
@@ -237,14 +238,14 @@ export class TextAtlas {
 
   private async rasterize(input: TextInput, key: string): Promise<Glyph> {
     if (input.text.length > 4096)
-      throw new GpuError('resource-limit', 'Text run exceeds its length bound');
+      throw failure('resource-limit', 'Text run exceeds its length bound');
     const maxWidth = this.size - padding * 2;
     const maxHeight = Math.min(
       maxWidth,
       Math.floor(this.memory.budget.stagingBytes / (maxWidth * 32)) - padding * 2,
     );
     if (maxHeight < 1)
-      throw new GpuError('resource-limit', 'Text rasterization exceeds the staging budget');
+      throw failure('resource-limit', 'Text rasterization exceeds the staging budget');
     const bitmap = await this.memory.stageAsync(maxWidth * maxHeight * 5, () =>
       this.rasterizer.rasterize(input, {
         pixelsPerEm: em,
@@ -263,7 +264,7 @@ export class TextAtlas {
         Number.isFinite,
       )
     )
-      throw new GpuError('invalid-input', 'Invalid text rasterization result');
+      throw failure('invalid-input', 'Invalid text rasterization result');
     const width = bitmap.width + padding * 2,
       height = bitmap.height + padding * 2;
     const sdf = this.memory.stage(width * height * 17 + Math.max(width, height) * 28 + 8, () =>

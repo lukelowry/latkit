@@ -1,4 +1,5 @@
-import { GpuError, integer } from '../error.js';
+import { failure } from '@latkit/model';
+import { integer } from '../error.js';
 import type { Entry, Memory } from './memory.js';
 
 export interface TextureResource {
@@ -56,10 +57,7 @@ const FORMAT_BYTES: Readonly<Record<string, number>> = {
 function textureBytes(descriptor: GPUTextureDescriptor): number {
   const texel = FORMAT_BYTES[descriptor.format];
   if (!texel)
-    throw new GpuError(
-      'unsupported',
-      `Managed texture format is unsupported: ${descriptor.format}`,
-    );
+    throw failure('unsupported', `Managed texture format is unsupported: ${descriptor.format}`);
   const dimensions = descriptor.size as readonly number[];
   let width = dimensions[0];
   let height = dimensions[1];
@@ -74,14 +72,14 @@ function textureBytes(descriptor: GPUTextureDescriptor): number {
   );
   const samples = descriptor.sampleCount ?? 1;
   if (samples !== 1 && samples !== 4)
-    throw new GpuError('invalid-input', 'Texture sample count must be 1 or 4');
+    throw failure('invalid-input', 'Texture sample count must be 1 or 4');
   if (dimension === '1d' && (height !== 1 || depth !== 1 || mips !== 1))
-    throw new GpuError(
+    throw failure(
       'invalid-input',
       'One-dimensional textures require height, depth, and mip count of one',
     );
   if (samples > 1 && (dimension !== '2d' || depth !== 1 || mips !== 1))
-    throw new GpuError(
+    throw failure(
       'invalid-input',
       'Multisampled textures require a single two-dimensional level and layer',
     );
@@ -113,7 +111,7 @@ export class Textures {
             (size as GPUExtent3DDict).depthOrArrayLayers ?? 1,
           ];
     if (dimensions.length < 1 || dimensions.length > 3)
-      throw new GpuError('invalid-input', 'Texture size must have one to three dimensions');
+      throw failure('invalid-input', 'Texture size must have one to three dimensions');
     const dimension = descriptor.dimension ?? '2d';
     const limits = this.device.limits;
     const maximum =
@@ -171,7 +169,7 @@ export class Textures {
 
   entry(resource: TextureResource): Entry {
     const entry = this.owned.get(resource);
-    if (!entry) throw new GpuError('invalid-input', 'Texture belongs to another Gpu');
+    if (!entry) throw failure('invalid-input', 'Texture belongs to another Gpu');
     return entry;
   }
 }

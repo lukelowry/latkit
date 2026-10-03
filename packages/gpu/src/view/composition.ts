@@ -1,3 +1,4 @@
+import { failure } from '@latkit/model';
 import { children } from '../frame/tree.js';
 import type { Gpu } from '../gpu.js';
 import type {
@@ -11,7 +12,6 @@ import type {
 import type { TextureResource } from '../memory/textures.js';
 import type { RGBA } from '../colors/color.js';
 import { validateRgba } from '../colors/color.js';
-import { GpuError } from '../error.js';
 import { premultipliedBlend } from '../style/output.js';
 import { shadeUniforms } from '../style/shade.js';
 import { viewStyle } from './style.js';
@@ -34,9 +34,12 @@ export interface CompositionConfig extends ViewConfig {
   readonly background?: RGBA;
 }
 
+/** Several views presented as one. */
+export type Composition = View<CompositionConfig>;
+
 /** Present several views as one: on a canvas, in images, or in video. Borrows its views. */
-export function createComposition(gpu: Gpu, config: CompositionConfig): View<CompositionConfig> {
-  return new Composition(gpu, config);
+export function createComposition(gpu: Gpu, config: CompositionConfig): Composition {
+  return new CompositionView(gpu, config);
 }
 
 const shader = `
@@ -57,7 +60,7 @@ interface Panel {
   readonly off: () => void;
 }
 
-class Composition extends BaseView<CompositionConfig, ViewEvents> {
+class CompositionView extends BaseView<CompositionConfig, ViewEvents> {
   private panels: Panel[] = [];
   private readonly own: Renderer;
   private readonly sampler: GPUSampler;
@@ -85,9 +88,9 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
     this.start();
   }
   protected check(config: CompositionConfig): void {
-    if (!config.views?.length) throw new GpuError('invalid-input', 'A composition needs views');
+    if (!config.views?.length) throw failure('invalid-input', 'A composition needs views');
     if (new Set(config.views.map((v) => v.view)).size !== config.views.length)
-      throw new GpuError('invalid-input', 'Composition requires distinct views');
+      throw failure('invalid-input', 'Composition requires distinct views');
     for (const { region: r } of config.views)
       if (
         r.length !== 4 ||
@@ -99,7 +102,7 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
         r[0] + r[2] > 1 ||
         r[1] + r[3] > 1
       )
-        throw new GpuError('invalid-input', 'Composition regions must fit the unit rectangle');
+        throw failure('invalid-input', 'Composition regions must fit the unit rectangle');
     if (config.background) validateRgba(config.background);
   }
   private compose(config: CompositionConfig): Panel[] {
@@ -185,7 +188,7 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
       const width = Math.floor((r[0] + r[2]) * frame.width) - x;
       const height = Math.floor((r[1] + r[3]) * frame.height) - y;
       if (width < 1 || height < 1)
-        throw new GpuError('invalid-input', 'Composition panel is smaller than one pixel');
+        throw failure('invalid-input', 'Composition panel is smaller than one pixel');
       let resource = this.textures[i];
       if (!resource || resource.texture.width !== width || resource.texture.height !== height) {
         const next = this.gpu.texture({
@@ -237,7 +240,7 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
   protected encode(frame: Encoding): void {
     this.live();
     if (this.prepared.length !== this.panels.length)
-      throw new GpuError('invalid-input', 'Composition is not prepared');
+      throw failure('invalid-input', 'Composition is not prepared');
     for (let i = 0; i < this.panels.length; i++)
       this.prepared[i].candidate.encode({
         ...this.prepared[i].info,

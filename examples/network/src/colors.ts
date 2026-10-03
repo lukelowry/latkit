@@ -7,6 +7,8 @@ import {
   kit,
   type Colormap,
   type Gpu,
+  type ViewConfig,
+  type ViewEvents,
 } from '@latkit/gpu';
 import './colors.css';
 
@@ -81,11 +83,11 @@ kind.onchange = () => {
 };
 update();
 
-interface PreviewConfig extends kit.ViewConfig {
+interface PreviewConfig extends ViewConfig {
   readonly colormap: Colormap;
 }
 /** A colormap swept left to right by the shared WGSL sampler. */
-class Preview extends kit.BaseView<PreviewConfig, kit.ViewEvents> {
+class Preview extends kit.BaseView<PreviewConfig, ViewEvents> {
   private binding?: GPUBindGroup;
   private pipeline?: GPURenderPipeline;
   constructor(

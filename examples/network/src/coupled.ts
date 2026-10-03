@@ -1,4 +1,4 @@
-import { colormapCss, colormaps, createGpu, type kit } from '@latkit/gpu';
+import { colormapCss, colormaps, createGpu, type FrameInfo } from '@latkit/gpu';
 import { createMonitor, type Trace } from '@latkit/monitor';
 import { createNetwork } from '@latkit/network';
 import { coupledData } from './coupled-data.js';
@@ -83,7 +83,7 @@ async function main() {
     lastReadout = 0;
   const measurements = [network, monitor].map((view, i) => {
     const state = { at: NaN, count: 0, frames: [] as number[] };
-    view.on('frame', (frame: kit.FrameInfo) => {
+    view.on('frame', (frame: FrameInfo) => {
       state.at = frame.at ?? NaN;
       state.count++;
       state.frames.push(performance.now());

@@ -1,4 +1,5 @@
-import { GpuError, interruptible } from './error.js';
+import { failure } from '@latkit/model';
+import { interruptible } from './error.js';
 
 /** Cooperative CPU work: yields to the event loop between slices, stops on abort, and bounds its total time. */
 export class Work {
@@ -15,7 +16,7 @@ export class Work {
   check(): void {
     this.signal.throwIfAborted();
     if (performance.now() - this.#started > this.limitMs)
-      throw new GpuError('resource-limit', 'Work exceeded its time limit');
+      throw failure('resource-limit', 'Work exceeded its time limit');
   }
   /** Yield once the current slice is spent. */
   async step(): Promise<void> {

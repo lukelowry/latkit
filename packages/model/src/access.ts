@@ -6,10 +6,11 @@ import type {
   TextColumn,
   SampleColumn,
 } from './data.js';
+import { failure } from './error.js';
 
 function integer(value: number, name: string, min = 0, max = Number.MAX_SAFE_INTEGER): number {
   if (!Number.isSafeInteger(value) || value < min || value > max)
-    throw Object.assign(new RangeError(`Invalid ${name}`), { code: 'invalid-input' });
+    throw failure('invalid-input', `Invalid ${name}`);
   return value;
 }
 export function sameIndex(a: Index, b: Index): boolean {
@@ -17,7 +18,7 @@ export function sameIndex(a: Index, b: Index): boolean {
 }
 export function assertIndex(expected: Index, actual: Index): void {
   if (!sameIndex(expected, actual))
-    throw Object.assign(new Error('Physical row identities do not match'), { code: 'conflict' });
+    throw failure('conflict', 'Physical row identities do not match');
 }
 export function rowCount(rows: RowAxis): number {
   if (rows.kind === 'range') {
@@ -25,9 +26,7 @@ export function rowCount(rows: RowAxis): number {
     return integer(rows.count, 'row count', 0, 0x100000000 - rows.offset);
   }
   if (!(rows.values instanceof Uint32Array))
-    throw Object.assign(new TypeError('Row indices must be Uint32Array'), {
-      code: 'invalid-input',
-    });
+    throw failure('invalid-input', 'Row indices must be Uint32Array');
   return rows.values.length;
 }
 export function rowAt(rows: RowAxis, position: number): number {
@@ -64,11 +63,17 @@ export function textAt(column: TextColumn, position: number): string | null {
     ? decoder.decode(column.bytes.subarray(column.offsets[at], column.offsets[at + 1]))
     : null;
 }
-export function sampleAt(
-  column: SampleColumn,
-  position: { readonly row: number; readonly frame: number },
-): number | null {
-  integer(position.row, 'sample row');
-  integer(position.frame, 'sample frame');
-  return numberAt(column, position.row * column.rowStride + position.frame * column.frameStride);
+/** The observation of a row at a frame, both relative to the column; one bounds check per cell. */
+export function sampleAt(column: SampleColumn, row: number, frame: number): number | null {
+  const position = row * column.rowStride + frame * column.frameStride;
+  if (
+    !Number.isSafeInteger(row) ||
+    !Number.isSafeInteger(frame) ||
+    row < 0 ||
+    frame < 0 ||
+    position >= column.length
+  )
+    throw failure('invalid-input', 'Invalid sample position');
+  const at = column.offset + position;
+  return bitAt(column.validity, at) ? column.values[at] : null;
 }

@@ -1,8 +1,6 @@
 import {
-  GpuError,
   kit,
   viewStyle,
-  type DataHit,
   type Gpu,
   type ItemEvents,
   type ItemView,
@@ -11,8 +9,12 @@ import {
   type SetOptions,
   type Shade,
   type ViewStats,
+  type FrameInfo,
+  type Patch,
+  type Viewport,
 } from '@latkit/gpu';
 import {
+  failure,
   rowCount,
   sameIndex,
   sampleDomain,
@@ -28,6 +30,7 @@ import {
   continues,
   monitorData,
   type MonitorData,
+  type MonitorItem,
   type Reading,
   type Trace,
 } from './data.js';
@@ -73,7 +76,7 @@ export interface MonitorConfig extends ItemViewConfig, MonitorStyle {
   readonly camera: Partial<Camera> & { readonly window: Domain };
   readonly limits?: Limits;
 }
-export type MonitorEvents = ItemEvents<DataHit, Reading, Camera>;
+export type MonitorEvents = ItemEvents<MonitorItem, Reading, Camera>;
 export interface MonitorStats extends ViewStats {
   /** Rows the traces draw. */
   readonly rows: number;
@@ -89,8 +92,14 @@ type Merged = 'camera' | 'input' | 'limits';
  * Selects rows, each narrowed to one trace when it names a `field`, and picks exact readings.
  * `at` draws the playhead.
  */
-export interface Monitor extends ItemView<MonitorConfig, DataHit, Reading, Camera, MonitorEvents> {
-  set(patch: kit.Patch<MonitorConfig, Records, Merged>, options?: SetOptions): void;
+export interface Monitor extends ItemView<
+  MonitorConfig,
+  MonitorItem,
+  Reading,
+  Camera,
+  MonitorEvents
+> {
+  set(patch: Patch<MonitorConfig, Records, Merged>, options?: SetOptions): void;
   stats(): MonitorStats;
 }
 
@@ -130,7 +139,7 @@ function resolve(config: Omit<MonitorConfig, 'camera'>): Resolved {
 }
 /** The window and values that show readings: their coordinates and values, padded. */
 function frameReadings(
-  items: readonly DataHit[],
+  items: readonly MonitorItem[],
   camera: Camera,
   padding: number,
 ): Partial<Camera> {
@@ -139,8 +148,7 @@ function frameReadings(
     low = Infinity,
     high = -Infinity;
   for (const item of items) {
-    const coordinate = item.coordinate,
-      value = (item as Partial<Reading>).value;
+    const { coordinate, value } = item as Partial<Reading>;
     if (coordinate !== undefined && Number.isFinite(coordinate)) {
       lo = Math.min(lo, coordinate);
       hi = Math.max(hi, coordinate);
@@ -164,12 +172,12 @@ function includes(rows: RowAxis, row: number): boolean {
     : rows.values.includes(row);
 }
 /** The selected rows a trace draws, ascending; undefined when it draws none. */
-function focused(selection: readonly DataHit[], trace: Binding): RowSelection | undefined {
+function focused(selection: readonly MonitorItem[], trace: Binding): RowSelection | undefined {
   const index = trace.source.tables[trace.trace.from]?.index;
   // The index names the rows, so a selection survives appends that replace the Data value.
   const rows = index
     ? selection.filter(
-        (item) => sameIndex(item.index, index) && (!item.field || item.field === trace.field),
+        (item) => sameIndex(item.index, index) && (!item.trace || item.trace === trace.name),
       )
     : [];
   if (!index || !rows.length) return undefined;
@@ -234,7 +242,7 @@ interface Surface {
   back?: Image;
   focus?: Image;
   /** The selection the focus image draws. */
-  focusFor: readonly DataHit[];
+  focusFor: readonly MonitorItem[];
   /** The plot size and when it last changed, to wait out a resize. */
   sized: { width: number; height: number; at: number };
   /** Whether its images hold every frame their windows show. */
@@ -268,7 +276,15 @@ interface Shown {
 }
 
 class MonitorView
-  extends kit.BaseItemView<MonitorConfig, MonitorEvents, DataHit, Reading, Camera, Records, Merged>
+  extends kit.BaseItemView<
+    MonitorConfig,
+    MonitorEvents,
+    MonitorItem,
+    Reading,
+    Camera,
+    Records,
+    Merged
+  >
   implements Monitor
 {
   private data: MonitorData;
@@ -358,7 +374,7 @@ class MonitorView
     };
   }
   /** Readings frame once; no readings fit the values and show every recorded coordinate. */
-  fit(items?: readonly DataHit[], options: SetOptions = {}): void {
+  fit(items?: readonly MonitorItem[], options: SetOptions = {}): void {
     this.live();
     if (!items?.length) {
       const recorded = this.recorded();
@@ -375,7 +391,7 @@ class MonitorView
     return checkCamera(camera);
   }
   protected framing(
-    items: readonly DataHit[] | undefined,
+    items: readonly MonitorItem[] | undefined,
     camera: Camera,
   ): Partial<Camera> | undefined {
     if (items) return frameReadings(items, camera, this.style.domainPadding);
@@ -385,48 +401,44 @@ class MonitorView
   protected interpolate(from: Camera, to: Camera, t: number): Camera {
     return mixCamera(from, to, t);
   }
-  protected panned(camera: Camera, dx: number, dy: number, viewport: kit.Viewport): Camera {
+  protected panned(camera: Camera, dx: number, dy: number, viewport: Viewport): Camera {
     return move(camera, dx, dy, plot(viewport, this.style));
   }
 
   // ── Items ──
   /** A reading's point in the latest drawn frame; it lies off the plot outside the window. */
-  protected position(item: DataHit): Point | null {
+  protected position(item: MonitorItem): Point | null {
     const shown = this.shown,
-      value = (item as Partial<Reading>).value;
-    if (!shown || item.coordinate === undefined || typeof value !== 'number') return null;
+      { coordinate, value } = item as Partial<Reading>;
+    if (!shown || coordinate === undefined || value === undefined) return null;
     const { plot: p, window: x, values: y } = shown;
     return [
-      p.x + ((item.coordinate - x[0]) / (x[1] - x[0])) * p.width,
+      p.x + ((coordinate - x[0]) / (x[1] - x[0])) * p.width,
       p.y + ((y[1] - value) / (y[1] - y[0])) * p.height,
     ];
   }
-  protected identify(item: DataHit): string {
+  protected identify(item: MonitorItem): string {
     return JSON.stringify([
       item.index.source,
       item.index.type,
       item.index.version,
       item.row,
-      item.field ?? null,
-      item.frame ?? null,
-      (item as Partial<Reading>).trace ?? null,
+      item.trace ?? null,
+      (item as Partial<Reading>).frame ?? null,
     ]);
   }
-  protected accept(item: DataHit): void {
+  protected accept(item: MonitorItem): void {
     if (!Number.isSafeInteger(item.row) || item.row < 0) fail('Invalid selected row');
-    if (!this.table(item)) throw new GpuError('conflict', 'Selection belongs to another source');
+    if (!this.table(item)) throw failure('conflict', 'Selection belongs to another source');
   }
   /** Rows stay selected while a trace draws them and their row space stands, as through appends. */
-  protected contains(item: DataHit): boolean {
+  protected contains(item: MonitorItem): boolean {
     const rows = this.table(item)?.rows;
     if (!rows || !includes(rows, item.row)) return false;
-    const name = (item as Partial<Reading>).trace,
-      traces = this.config.traces;
-    return (name === undefined ? Object.values(traces) : [traces[name]]).some(
+    const traces = this.config.traces;
+    return (item.trace === undefined ? Object.values(traces) : [traces[item.trace]]).some(
       (trace) =>
         trace?.from === item.index.type &&
-        (!item.field ||
-          item.field === (typeof trace.field === 'string' ? trace.field : trace.field.field)) &&
         (!trace.rows || trace.rows.kind === 'ids' || includes(trace.rows, item.row)),
     );
   }
@@ -645,7 +657,7 @@ class MonitorView
       this.layoutKey = key;
     }
     if (this.historyBytes() > this.limits.historyBytes)
-      throw new GpuError('resource-limit', 'Monitor history exceeds historyBytes');
+      throw failure('resource-limit', 'Monitor history exceeds historyBytes');
     for (const value of [display, history.focus, ...draws.keys()]) if (value) enroll(frame, value);
     const screen = await prepareScreen(
       this.gpu,
@@ -774,7 +786,7 @@ class MonitorView
       if (target?.fresh && !prepared.paint.has(target)) paint(frame, prepared.pipeline, target, []);
     this.drawCalls = calls + composite(frame, prepared.pipeline, prepared.screen);
   }
-  protected submitted(frame: kit.FrameInfo): void {
+  protected submitted(frame: FrameInfo): void {
     const prepared = this.prepared;
     if (!prepared) return;
     this.prepared = undefined;
@@ -832,7 +844,7 @@ class MonitorView
           const traces = await describeBindings(reads, data, this.camera.window);
           if (control.signal.aborted || this.closed) return;
           if (traces.reduce((n, trace) => n + trace.count, 0) > this.limits.rows)
-            throw new GpuError('resource-limit', 'Monitor row limit exceeded');
+            throw failure('resource-limit', 'Monitor row limit exceeded');
           this.traces = traces;
         } catch (error) {
           if (!control.signal.aborted) this.error = error;
@@ -876,7 +888,7 @@ class MonitorView
       msaa: this.style.msaa === 4 ? ({} as kit.TextureResource) : undefined,
     });
     if (this.historyBytes() + bytes > this.limits.historyBytes)
-      throw new GpuError(
+      throw failure(
         'resource-limit',
         'Monitor history exceeds historyBytes; reduce viewport or MSAA, or increase its limit',
       );
@@ -957,7 +969,7 @@ class MonitorView
     return result;
   }
   /** The table of an item's rows among the sources the traces read. */
-  private table(item: DataHit): Data['tables'][string] | undefined {
+  private table(item: MonitorItem): Data['tables'][string] | undefined {
     const config = this.config,
       sources = new Set([config.source]);
     for (const trace of Object.values(config.traces))

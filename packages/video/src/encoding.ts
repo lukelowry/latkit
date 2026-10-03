@@ -1,3 +1,4 @@
+import { failure } from '@latkit/model';
 import {
   canEncodeVideo,
   Mp4OutputFormat,
@@ -9,7 +10,6 @@ import {
   type VideoSample,
   type StreamTargetChunk,
 } from 'mediabunny';
-import { GpuError } from '@latkit/gpu';
 import type { settings } from './timing.js';
 export async function encoding(config: ReturnType<typeof settings>) {
   if (
@@ -17,7 +17,7 @@ export async function encoding(config: ReturnType<typeof settings>) {
     typeof VideoFrame === 'undefined' ||
     typeof OffscreenCanvas === 'undefined'
   )
-    throw new GpuError('unavailable', 'Video export requires WebCodecs and OffscreenCanvas');
+    throw failure('unavailable', 'Video export requires WebCodecs and OffscreenCanvas');
   const codec: 'avc' | 'vp9' = config.format === 'mp4' ? 'avc' : 'vp9';
   const options = {
     codec,
@@ -37,7 +37,7 @@ export async function encoding(config: ReturnType<typeof settings>) {
       frameRate: config.frameRate,
     }))
   )
-    throw new GpuError(
+    throw failure(
       'unavailable',
       `Cannot encode ${config.format} at ${config.width}x${config.height}, ${config.frameRate} fps`,
     );

@@ -1,7 +1,5 @@
-import { textAt, bitAt } from '@latkit/model';
-import { assertIndex, rowAt, rowCount } from '@latkit/model';
-import { GpuError, type Gpu, kit } from '@latkit/gpu';
-import type { Data } from '@latkit/model';
+import { failure, textAt, bitAt, assertIndex, rowAt, rowCount, type Data } from '@latkit/model';
+import { type Gpu, kit, type TextMetrics } from '@latkit/gpu';
 import type { NetworkData, Labels as LabelOptions } from '../data.js';
 import {
   edgeOptions,
@@ -24,7 +22,7 @@ interface Entry {
   defaults: readonly unknown[];
   revision: number;
   source: Data;
-  runsByRow: Map<number, { run: kit.TextRun; metrics: kit.TextMetrics }>;
+  runsByRow: Map<number, { run: kit.TextRun; metrics: TextMetrics }>;
   runs: readonly kit.TextRun[];
   anchors: kit.BufferData;
 }
@@ -90,7 +88,7 @@ export class Labels {
       const max = options.maxCount ?? 200,
         size = options.size ?? style.fontSizePx;
       if (!Number.isSafeInteger(max) || max < 0 || !Number.isFinite(size) || size <= 0)
-        throw new GpuError('invalid-input', 'Invalid label options');
+        throw failure('invalid-input', 'Invalid label options');
       const count = Math.min(
         bank.count,
         Math.ceil((Math.min(8192, max * 8) * bank.count) / totals.get(key)!),
@@ -167,11 +165,10 @@ export class Labels {
         })) {
           assertIndex(bank.index, block.index);
           const column = block.columns.label;
-          if (column?.kind !== 'text')
-            throw new GpuError('invalid-input', 'Labels require text fields');
+          if (column?.kind !== 'text') throw failure('invalid-input', 'Labels require text fields');
           for (let i = 0; i < rowCount(block.rows); i++) {
             const row = rowAt(block.rows, i);
-            if (!lookup.has(row)) throw new GpuError('invalid-input', 'Unexpected label row');
+            if (!lookup.has(row)) throw failure('invalid-input', 'Unexpected label row');
             const text = bitAt(block.presence.label, i) ? (textAt(column, i) ?? '') : '';
             const run: kit.TextRun = {
               text,

@@ -1,5 +1,6 @@
+import { failure } from '@latkit/model';
 import type { Gpu } from '../gpu.js';
-import { GpuError, integer } from '../error.js';
+import { integer } from '../error.js';
 import { targetResources, type RenderTarget } from '../frame/render.js';
 
 export interface TargetSize {
@@ -11,14 +12,11 @@ export interface TextureTarget extends RenderTarget {
   destroy(): void;
 }
 
-export function createRenderTarget(
-  options: TargetSize & {
-    readonly gpu: Gpu;
-    readonly format?: GPUTextureFormat;
-    readonly label?: string;
-  },
+/** A texture to render into, such as for images or a view's offscreen panels; resizable. */
+export function createTextureTarget(
+  gpu: Gpu,
+  options: TargetSize & { readonly format?: GPUTextureFormat; readonly label?: string },
 ): TextureTarget {
-  const { gpu } = options;
   const format = options.format ?? 'rgba8unorm';
   const allocate = (size: TargetSize) => {
     integer(size.width, 'target width', 1, gpu.device.limits.maxTextureDimension2D);
@@ -38,7 +36,7 @@ export function createRenderTarget(
     height = options.height,
     closed = false;
   const assertLive = (): void => {
-    if (closed) throw new GpuError('closed', 'Render target is closed');
+    if (closed) throw failure('closed', 'Render target is closed');
   };
   const target: TextureTarget = {
     device: gpu.device,

@@ -1,4 +1,5 @@
-import { GpuError, kit } from '@latkit/gpu';
+import { failure } from '@latkit/model';
+import { kit } from '@latkit/gpu';
 import type { Point, RouteEnd } from './data.js';
 import type { Scene, Vertex, Rect, End } from './scene.js';
 import type { Limits } from './options.js';
@@ -171,8 +172,7 @@ export function orthogonal(
   let visits = 0;
   for (let current = heap.pop(); current; current = heap.pop()) {
     if ((visits++ & 63) === 0) signal.throwIfAborted();
-    if (visits > 32768)
-      throw new GpuError('resource-limit', 'Orthogonal route search exceeded budget');
+    if (visits > 32768) throw failure('resource-limit', 'Orthogonal route search exceeded budget');
     const id = current.id,
       cost = costs.get(id)!;
     const vertex = Math.floor(id / 3),
@@ -208,7 +208,7 @@ export function orthogonal(
       heap.push(nid, next + Math.abs(b[0] - q[0]) + Math.abs(b[1] - q[1]));
     }
   }
-  throw new GpuError('invalid-input', 'No orthogonal route between the specified ends');
+  throw failure('invalid-input', 'No orthogonal route between the specified ends');
 }
 function simplify(path: readonly Point[]): Point[] {
   const out: Point[] = [];
@@ -431,7 +431,9 @@ export async function geometry(
       owner: e.vertex,
     };
   };
-  const oldEdges = new Map(previous?.edges.map((e) => [JSON.stringify([e.hit.type, e.hit.id]), e]));
+  const oldEdges = new Map(
+    previous?.edges.map((e) => [JSON.stringify([e.hit.index.type, e.hit.id]), e]),
+  );
   const changedBoxes: Rect[] = [];
   const changedVertices = new Set<number>();
   scene.vertices.forEach((n, i) => {
@@ -439,7 +441,7 @@ export async function geometry(
     if (
       !p ||
       n.hit.id !== p.hit.id ||
-      n.hit.type !== p.hit.type ||
+      n.hit.index.type !== p.hit.index.type ||
       n.visible !== p.visible ||
       n.x !== p.x ||
       n.y !== p.y ||
@@ -477,7 +479,7 @@ export async function geometry(
     previous.edges.forEach((e) => routes.add(expand(e.bounds, options.routeClearance)));
     for (const box of changedBoxes)
       for (const i of routes.query(box))
-        affected.add(JSON.stringify([previous.edges[i].hit.type, previous.edges[i].hit.id]));
+        affected.add(JSON.stringify([previous.edges[i].hit.index.type, previous.edges[i].hit.id]));
   }
   let routePoints = 0;
   for (const edge of scene.edges) {
@@ -487,16 +489,16 @@ export async function geometry(
     edge.junctions = [];
     const ends = edge.ends.filter((e) => scene.vertices[e.vertex].visible);
     if (ends.length * 2 + routePoints > limits.routePoints)
-      throw new GpuError('resource-limit', 'Too many route points');
+      throw failure('resource-limit', 'Too many route points');
     if (!edge.visible || ends.length < 2) continue;
     if (ends.every((e) => proxy.get(e.vertex) && proxy.get(e.vertex) === proxy.get(ends[0].vertex)))
       continue;
-    const old = oldEdges.get(JSON.stringify([edge.hit.type, edge.hit.id]));
+    const old = oldEdges.get(JSON.stringify([edge.hit.index.type, edge.hit.id]));
     if (
       groupSame &&
       previous?.routeClearance === options.routeClearance &&
       !edge.ends.some((e) => changedVertices.has(e.vertex)) &&
-      !affected.has(JSON.stringify([edge.hit.type, edge.hit.id])) &&
+      !affected.has(JSON.stringify([edge.hit.index.type, edge.hit.id])) &&
       old &&
       old.options.route === edge.options.route &&
       old.options.arrows === edge.options.arrows &&
@@ -590,7 +592,7 @@ export async function geometry(
           ]);
         });
       if (paths.some((path) => path.some((p) => p.length !== 2 || !p.every(Number.isFinite))))
-        throw new GpuError('invalid-input', 'Router returned invalid points');
+        throw failure('invalid-input', 'Router returned invalid points');
       const arrows: { point: Point; direction: Point }[] = [];
       for (let i = 0; i < paths.length; i++) {
         const p = paths[i],
@@ -608,7 +610,7 @@ export async function geometry(
         if (d) arrows.push({ point: a, direction: [(a[0] - b[0]) / d, (a[1] - b[1]) / d] });
       }
       if (paths.reduce((n, p) => n + p.length, 0) + routePoints > limits.routePoints)
-        throw new GpuError('resource-limit', 'Too many route points');
+        throw failure('resource-limit', 'Too many route points');
       const merged = segments(paths);
       edge.paths = edge.options.appearance === 'tag' ? [] : merged.paths;
       edge.offsets = edge.options.appearance === 'tag' ? all.map(() => 0) : merged.offsets;
@@ -636,8 +638,7 @@ export async function geometry(
         }),
       );
     routePoints += edge.paths.reduce((n, p) => n + p.length, 0);
-    if (routePoints > limits.routePoints)
-      throw new GpuError('resource-limit', 'Too many route points');
+    if (routePoints > limits.routePoints) throw failure('resource-limit', 'Too many route points');
   }
   for (const edge of scene.edges) {
     edge.labelBounds = [];
@@ -707,7 +708,7 @@ export async function geometry(
   scene.bytes += scene.routeBytes;
   work.check();
   if (scene.bytes > limits.geometryBytes)
-    throw new GpuError('resource-limit', 'Route geometry exceeds budget');
+    throw failure('resource-limit', 'Route geometry exceeds budget');
 }
 function stubLength(options: Style): number {
   return options.routeClearance;

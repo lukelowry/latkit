@@ -1,11 +1,11 @@
 import { createMonitor, type Monitor } from '../src/index.js';
-import type { Gpu, kit } from '@latkit/gpu';
+import type { Gpu, ColorScale } from '@latkit/gpu';
 import type { Data } from '@latkit/model';
 export function usage(
   gpu: Gpu,
   recording: Data,
   canvas: HTMLCanvasElement,
-  color: kit.ColorScale,
+  color: ColorScale,
 ): Monitor {
   const monitor = createMonitor(gpu, {
     canvas,

@@ -5,7 +5,7 @@ import { arrange, layoutOptions, place, rootEnd } from '../src/layout.js';
 import { readScene } from '../src/read.js';
 import { geometry, orthogonal, contains, boundary } from '../src/geometry.js';
 import { resolveStyle, resolveLimits } from '../src/config.js';
-import { data, Source, measure } from './fixture.js';
+import { data, edge as edgeOf, port, Source, measure } from './fixture.js';
 /** Arrangement only reads and measures text. */
 const gpu = { reader: createReader(), measureText: measure } as unknown as Gpu;
 import { Picking } from '../src/picking.js';
@@ -163,9 +163,9 @@ it('uses identical geometry for shape boundaries and picking', async () => {
       scale: [1, 1] as const,
       yDirection: 'down' as const,
     };
-  expect(picking.hit([200, 150], camera, { width: 400, height: 300, pixelRatio: 2 }, 8)[0].id).toBe(
-    'n0',
-  );
+  expect(
+    picking.hit([200, 150], camera, { width: 400, height: 300, pixelRatio: 2 }, 8)[0],
+  ).toMatchObject({ kind: 'vertex', row: 0 });
 });
 it('supports headless custom layout and routing strategies', async () => {
   const source = new Source(2),
@@ -359,14 +359,14 @@ it('reconnects a wired input from the source of its net and rejects duplicate en
     { ...result.vertices[1].hit, kind: 'port', port: 'input' },
     16,
   );
-  expect(gesture.start.from).toEqual({ type: 'Task', id: 'n0', port: 'output' });
+  expect(gesture.start.from).toEqual(port(source, 'n0', 'output'));
   expect(gesture.start.replaces).toEqual({
-    edge: { type: 'Dependency', id: 'e0' },
-    end: { type: 'Task', id: 'n1', port: 'input' },
+    edge: edgeOf(source, 'e0'),
+    end: port(source, 'n1', 'input'),
   });
-  expect(gesture.accepts({ kind: 'port', type: 'Task', id: 'n2', port: 'input' })).toBe(false);
-  expect(gesture.accepts({ kind: 'port', type: 'Task', id: 'n3', port: 'input' })).toBe(true);
-  expect(gesture.accepts({ kind: 'port', type: 'Task', id: 'n3', port: 'output' })).toBe(false);
+  expect(gesture.accepts(port(source, 'n2', 'input'))).toBe(false);
+  expect(gesture.accepts(port(source, 'n3', 'input'))).toBe(true);
+  expect(gesture.accepts(port(source, 'n3', 'output'))).toBe(false);
   const preview = gesture.preview([400, 200], null, new AbortController().signal);
   expect(preview[0]).toEqual(
     result.vertices[0].ports.find((port) => port.name === 'output')!.position,
@@ -415,5 +415,5 @@ it('picks edge labels using their rendered bounds', async () => {
     { width: 100, height: 100, pixelRatio: 1 },
     0,
   );
-  expect(hit.some((item) => item.kind === 'edge' && item.id === edge.hit.id)).toBe(true);
+  expect(hit.some((item) => item.kind === 'edge' && item.row === edge.hit.row)).toBe(true);
 });

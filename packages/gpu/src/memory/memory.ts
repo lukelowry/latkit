@@ -1,4 +1,5 @@
-import { GpuError, integer } from '../error.js';
+import { failure } from '@latkit/model';
+import { integer } from '../error.js';
 
 export interface Budget {
   readonly cpuBytes: number;
@@ -41,7 +42,7 @@ export class Entry {
     readonly kind: 'cpu' | 'gpu',
   ) {}
   pin(): void {
-    if (!this.live || this.retire) throw new GpuError('closed', 'Rendering resource is closed');
+    if (!this.live || this.retire) throw failure('closed', 'Rendering resource is closed');
     if (this.pins++ === 0) this.pool.busy(this);
   }
   unpin(): void {
@@ -125,13 +126,13 @@ export class Memory {
   ): Entry {
     const unique = [...new Set(backings)];
     if (metadata + unique.reduce((n, buffer) => n + buffer.byteLength, 0) > this.budget.cpuBytes)
-      throw new GpuError('resource-limit', 'Entry exceeds the CPU budget');
+      throw failure('resource-limit', 'Entry exceeds the CPU budget');
     const cost = (): number =>
       metadata +
       unique.reduce((n, buffer) => n + (this.backings.has(buffer) ? 0 : buffer.byteLength), 0);
     while (this.cpu + cost() > this.budget.cpuBytes || this.entries.size >= this.budget.entries) {
       if (!this.evict())
-        throw new GpuError('resource-limit', 'CPU cache or entry budget exceeded by pinned data');
+        throw failure('resource-limit', 'CPU cache or entry budget exceeded by pinned data');
     }
     for (const buffer of unique) {
       const existing = this.backings.get(buffer);
@@ -151,10 +152,10 @@ export class Memory {
   reserveGpu(bytes: number): void {
     integer(bytes, 'GPU allocation bytes');
     if (bytes > this.budget.gpuBytes)
-      throw new GpuError('resource-limit', 'Allocation exceeds the GPU budget');
+      throw failure('resource-limit', 'Allocation exceeds the GPU budget');
     while (this.gpu + bytes > this.budget.gpuBytes) {
       if (!this.evict('gpu'))
-        throw new GpuError('resource-limit', 'GPU budget exceeded by live or in-flight resources');
+        throw failure('resource-limit', 'GPU budget exceeded by live or in-flight resources');
     }
     this.gpu += bytes;
     this.peakGpu = Math.max(this.peakGpu, this.gpu);
@@ -166,7 +167,7 @@ export class Memory {
 
   stage<T>(bytes: number, work: () => T): T {
     if (this.staging + bytes > this.budget.stagingBytes)
-      throw new GpuError('resource-limit', 'Staging budget exceeded');
+      throw failure('resource-limit', 'Staging budget exceeded');
     this.staging += bytes;
     this.staged += bytes;
     this.peakStaging = Math.max(this.peakStaging, this.staging);
@@ -179,7 +180,7 @@ export class Memory {
 
   async stageAsync<T>(bytes: number, work: () => Promise<T>): Promise<T> {
     if (this.staging + bytes > this.budget.stagingBytes)
-      throw new GpuError('resource-limit', 'Staging budget exceeded');
+      throw failure('resource-limit', 'Staging budget exceeded');
     this.staging += bytes;
     this.staged += bytes;
     this.peakStaging = Math.max(this.peakStaging, this.staging);

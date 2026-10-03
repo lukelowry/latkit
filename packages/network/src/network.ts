@@ -1,5 +1,4 @@
 import {
-  GpuError,
   kit,
   viewStyle,
   type Gpu,
@@ -11,8 +10,11 @@ import {
   type Shade,
   type ViewInput,
   type ViewStats,
+  type FrameInfo,
+  type Patch,
+  type Viewport,
 } from '@latkit/gpu';
-import { sameIndex, type Data } from '@latkit/model';
+import { failure, sameIndex, type Data } from '@latkit/model';
 import type { Camera, Projection } from './camera.js';
 import { DEFAULT_CAMERA, checkCamera, fit, mixCamera, move, zoom } from './camera.js';
 import {
@@ -70,7 +72,7 @@ export interface Network extends ItemView<
   Camera,
   NetworkEvents
 > {
-  set(patch: kit.Patch<NetworkConfig, Records, Merged>, options?: SetOptions): void;
+  set(patch: Patch<NetworkConfig, Records, Merged>, options?: SetOptions): void;
   /** Projections the data supports: the globe needs geographic positions. */
   readonly projections: Readonly<Record<Projection, boolean>>;
   /** The item, the edges at a vertex or the vertices of an edge, and itself. */
@@ -87,7 +89,7 @@ interface Presented {
   readonly geometry: Geometry;
   readonly picking: PickGeometry;
   readonly camera: Camera;
-  readonly viewport: kit.Viewport;
+  readonly viewport: Viewport;
   readonly height: number;
   readonly data: NetworkData;
   readonly options: Style;
@@ -135,9 +137,8 @@ const KEYS = new Set([
 ]);
 function resolve(config: NetworkConfig): Resolved {
   for (const key of Object.keys(config))
-    if (!KEYS.has(key)) throw new GpuError('invalid-input', 'Unknown network option: ' + key);
-  if (!config.source || !config.vertices)
-    throw new GpuError('invalid-input', 'Invalid network data');
+    if (!KEYS.has(key)) throw failure('invalid-input', 'Unknown network option: ' + key);
+  if (!config.source || !config.vertices) throw failure('invalid-input', 'Invalid network data');
   const data = networkData(config);
   for (const [type, edge] of Object.entries(data.edges ?? {})) {
     if (
@@ -146,28 +147,26 @@ function resolve(config: NetworkConfig): Resolved {
         !edge.ends.every((end) => typeof end === 'string') ||
         edge.ends[0] === edge.ends[1])
     )
-      throw new GpuError('invalid-input', 'Edge ends must be two distinct fields: ' + type);
+      throw failure('invalid-input', 'Edge ends must be two distinct fields: ' + type);
     if (edge.ends && edge.junction)
-      throw new GpuError('invalid-input', 'A junction centers a net, which has no ends: ' + type);
-    if (!edge.ends && edge.bends)
-      throw new GpuError('invalid-input', 'Bends require ends: ' + type);
+      throw failure('invalid-input', 'A junction centers a net, which has no ends: ' + type);
+    if (!edge.ends && edge.bends) throw failure('invalid-input', 'Bends require ends: ' + type);
   }
   for (const path of Object.values(data.paths ?? {})) {
     if (
       !path.points ||
       (path.widthPx !== undefined && (!Number.isFinite(path.widthPx) || path.widthPx < 0))
     )
-      throw new GpuError('invalid-input', 'Invalid path options');
+      throw failure('invalid-input', 'Invalid path options');
     if (path.curve && !['linear', 'geodesic'].includes(path.curve))
-      throw new GpuError('invalid-input', 'Invalid path curve');
+      throw failure('invalid-input', 'Invalid path curve');
   }
   for (const key of Object.keys(config.limits ?? {}))
-    if (!(key in DEFAULT_LIMITS))
-      throw new GpuError('invalid-input', 'Unknown network limit: ' + key);
+    if (!(key in DEFAULT_LIMITS)) throw failure('invalid-input', 'Unknown network limit: ' + key);
   const limits = { ...DEFAULT_LIMITS, ...config.limits };
   for (const value of Object.values(limits))
     if (!Number.isSafeInteger(value) || value < 1)
-      throw new GpuError('invalid-input', 'Invalid network limit');
+      throw failure('invalid-input', 'Invalid network limit');
   resolveStyle(config, viewStyle);
   return { config, data, limits };
 }
@@ -300,7 +299,7 @@ class NetworkView
   protected framing(
     items: readonly NetworkItem[] | undefined,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
   ): Partial<Camera> | undefined {
     const prepared = this.preparing;
     if (!prepared) return undefined;
@@ -337,7 +336,7 @@ class NetworkView
   protected panned(camera: Camera, dx: number, dy: number): Camera {
     return { ...move(camera, dx, dy), orbit: false };
   }
-  protected zoomed(camera: Camera, factor: number, anchor: Point, viewport: kit.Viewport): Camera {
+  protected zoomed(camera: Camera, factor: number, anchor: Point, viewport: Viewport): Camera {
     return { ...zoom(camera, factor, anchor, viewport), orbit: false };
   }
   protected position(item: NetworkItem): Point | null {
@@ -354,7 +353,7 @@ class NetworkView
         : this.data.source;
     const table = source.tables[item.index.type];
     if (!table || !sameIndex(table.index, item.index))
-      throw new GpuError('conflict', 'Selection belongs to another source');
+      throw failure('conflict', 'Selection belongs to another source');
   }
   protected contains(item: NetworkItem): boolean {
     const geometry = this.shown?.geometry;
@@ -592,10 +591,10 @@ class NetworkView
   }
   protected encode(frame: kit.Encoding): void {
     this.live();
-    if (!this.pendingFrame) throw new GpuError('invalid-input', 'Network was not prepared');
+    if (!this.pendingFrame) throw failure('invalid-input', 'Network was not prepared');
     this.painter.encode(frame, this.pendingFrame.paint);
   }
-  protected submitted(frame: kit.FrameInfo): void {
+  protected submitted(frame: FrameInfo): void {
     const pending = this.pendingFrame;
     if (!pending) return;
     this.pendingFrame = undefined;

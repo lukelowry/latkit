@@ -97,7 +97,7 @@ export async function verify(gpu) {
   const queries = record(gpu);
   const checks = [];
   globalThis.pixelChecks = checks;
-  const target = kit.createRenderTarget({ gpu, width: 512, height: 256 });
+  const target = kit.createTextureTarget(gpu, { width: 512, height: 256 });
   const draw = (view, complete = true) =>
     gpu.render({
       views: [{ renderer: kit.rendererOf(view), target }],
@@ -375,7 +375,7 @@ export async function benchmark(gpu) {
   const queries = record(gpu);
   const result = [];
   globalThis.benchmarkProgress = result;
-  const target = kit.createRenderTarget({ gpu, width: 960, height: 480 });
+  const target = kit.createTextureTarget(gpu, { width: 960, height: 480 });
   for (const [name, rows, frames] of [
     ['many rows', 100000, 32],
     ['long history', 1, 1000000],

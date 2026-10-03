@@ -14,7 +14,6 @@ export function validateBatch(
   const c = new Check();
   const batch = c.object(value, []);
   c.enum(batch.kind, ['rows', 'samples'], ['kind']);
-  if ('replace' in batch) c.issue(['replace'], 'Replacement operations are unsupported.');
   if (!record(batch.columns) || !record(batch.index))
     return [...c.issues, { code: 'invalid-input', message: 'Missing columns or row identity.' }];
   const query =

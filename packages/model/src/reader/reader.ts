@@ -1,6 +1,6 @@
 import { failure } from '../error.js';
 import type { Data } from '../materialized.js';
-import type { Query } from '../query.js';
+import { BLOCK_BYTES, type Query } from '../query.js';
 import type { ReadResult } from '../read.js';
 import type { Domain } from '../types.js';
 import { Blocks } from './blocks.js';
@@ -63,7 +63,7 @@ class Cache implements Reader {
       stagingBytes: options.maxStagingBytes,
       entries: options.maxEntries,
     });
-    const blockBytes = options.maxBlockBytes ?? 1024 ** 2;
+    const blockBytes = options.maxBlockBytes ?? BLOCK_BYTES;
     if (!Number.isSafeInteger(blockBytes) || blockBytes < 1)
       throw failure('invalid-input', 'Block bytes must be a positive integer');
     const bound = Math.max(

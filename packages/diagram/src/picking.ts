@@ -1,12 +1,12 @@
-import { kit } from '@latkit/gpu';
-import type { DiagramHit, DiagramItem, Point } from './data.js';
+import { kit, type Viewport } from '@latkit/gpu';
+import type { DiagramItem, Point } from './data.js';
 import { itemKey } from './data.js';
 import type { Scene, Rect } from './scene.js';
 import { rect } from './scene.js';
 import { contains, distance } from './geometry.js';
 import { SpatialIndex, expand } from './spatial.js';
 interface Entry {
-  hit: DiagramHit;
+  hit: DiagramItem;
   vertex?: number;
   a?: Point;
   b?: Point;
@@ -15,7 +15,7 @@ interface Entry {
   radius?: number;
 }
 interface Match {
-  readonly hit: DiagramHit;
+  readonly hit: DiagramItem;
   readonly distance: number;
   /** Draw order: a later entry draws over an earlier one. */
   readonly order: number;
@@ -53,7 +53,7 @@ export class Picking {
     };
     scene.groups.forEach((g) => {
       if (g.bounds[0] === g.bounds[2]) return;
-      const hit: DiagramHit = { kind: 'group', id: g.id };
+      const hit: DiagramItem = { kind: 'group', id: g.id };
       add({ hit, box: g.bounds });
       this.anchors.set(itemKey(hit), [(g.bounds[0] + g.bounds[2]) / 2, g.bounds[1] + 12]);
     });
@@ -90,7 +90,7 @@ export class Picking {
         vertex.y + vertex.height / 2,
       ]);
       for (const port of vertex.ports) {
-        const hit: DiagramHit = { ...vertex.hit, kind: 'port', port: port.name };
+        const hit: DiagramItem = { ...vertex.hit, kind: 'port', port: port.name };
         add({ hit, point: port.position, box: [...port.position, ...port.position] });
         this.anchors.set(itemKey(hit), port.position);
       }
@@ -114,11 +114,11 @@ export class Picking {
   hit(
     point: Point,
     camera: kit.Camera2D,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     radius: number,
     ports = true,
     check: () => void = unchecked,
-  ): readonly DiagramHit[] {
+  ): readonly DiagramItem[] {
     const matches = new Map<string, Match>();
     this.scan(point, camera, viewport, radius, ports, check, (match) => {
       const key = itemKey(match.hit),
@@ -131,11 +131,11 @@ export class Picking {
   nearest(
     point: Point,
     camera: kit.Camera2D,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     radius: number,
     ports: boolean,
     check: () => void,
-  ): DiagramHit | null {
+  ): DiagramItem | null {
     let best: Match | undefined;
     this.scan(point, camera, viewport, radius, ports, check, (match) => {
       if (!best || compare(match, best) < 0) best = match;
@@ -157,7 +157,7 @@ export class Picking {
   private scan(
     point: Point,
     camera: kit.Camera2D,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     radius: number,
     ports: boolean,
     check: () => void,

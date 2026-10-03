@@ -1,5 +1,5 @@
-import { kit, GpuError, type Gpu, type Shade } from '@latkit/gpu';
-import { rowCount } from '@latkit/model';
+import { kit, type Gpu, type Shade } from '@latkit/gpu';
+import { failure, rowCount } from '@latkit/model';
 import type { Camera } from '../camera.js';
 import { DEG, turn } from '../camera.js';
 import {
@@ -312,7 +312,7 @@ export class Painter {
     );
     if (curveCount) {
       if (!geometry.geographic)
-        throw new GpuError('invalid-input', 'Geodesics require geographic coordinates');
+        throw failure('invalid-input', 'Geodesics require geographic coordinates');
       const capacity = curveCount * 181;
       if (!this.curves || capacity > this.curves.capacity) {
         const instances = gpu.buffer({

@@ -1,4 +1,5 @@
-import { GpuError, kit } from '@latkit/gpu';
+import { failure } from '@latkit/model';
+import { kit, type Viewport } from '@latkit/gpu';
 import type { Style } from './options.js';
 export type Projection = 'flat' | 'tilt' | 'globe';
 const PROJECTIONS: readonly Projection[] = ['flat', 'tilt', 'globe'];
@@ -41,12 +42,12 @@ export function checkCamera(value: Camera): Camera {
     typeof value.fit !== 'boolean' ||
     typeof value.orbit !== 'boolean'
   )
-    throw new GpuError('invalid-input', 'Invalid camera');
+    throw failure('invalid-input', 'Invalid camera');
   return Object.freeze({ ...value, pitch: value.projection === 'flat' ? 0 : value.pitch });
 }
 export function fit(
   bounds: kit.Bounds2D,
-  viewport: kit.Viewport,
+  viewport: Viewport,
   camera: Camera,
   options: Style,
 ): Camera {
@@ -64,7 +65,7 @@ export function zoom(
   camera: Camera,
   factor: number,
   anchor: readonly [number, number],
-  viewport: kit.Viewport,
+  viewport: Viewport,
 ): Camera {
   const result = kit.zoomCamera(
     { center: camera.center, scale: [camera.scale, camera.scale], yDirection: 'up' },
@@ -104,7 +105,7 @@ export interface Projected {
 }
 export function project(
   camera: Camera,
-  viewport: kit.Viewport,
+  viewport: Viewport,
   x: number,
   y: number,
   height = 0,
@@ -186,7 +187,7 @@ export function projectedStroke(
   a: Projected,
   b: Projected,
   camera: Camera,
-  viewport: kit.Viewport,
+  viewport: Viewport,
 ): readonly [Projected, Projected] | null {
   if (![...a.world, ...b.world].every(Number.isFinite)) return null;
   const range = kit.clipStroke(a.clip, b.clip);
@@ -209,7 +210,7 @@ export function projectedStroke(
 export function worldVisible(
   world: Projected['world'],
   camera: Camera,
-  viewport: kit.Viewport,
+  viewport: Viewport,
 ): boolean {
   if (camera.projection !== 'globe') return true;
   const p = camera.pitch * DEG,

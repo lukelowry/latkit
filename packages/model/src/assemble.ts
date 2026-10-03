@@ -36,8 +36,6 @@ function assemble<S extends Schema>(
 ): Data<S> {
   const drafts = new Map<string, Draft>();
   for (const batch of batches) {
-    if ('replace' in batch)
-      throw failure('invalid-input', 'Replacement operations are unsupported.');
     if (previous && batch.kind !== 'samples')
       throw failure('invalid-input', 'appendData accepts sampled observations only.');
     if (batch.kind !== 'rows' && batch.kind !== 'samples')

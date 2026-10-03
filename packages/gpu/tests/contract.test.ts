@@ -5,18 +5,28 @@ import { fakeDevice } from './fixtures/device.js';
 import { draw, renderer, target } from './fixtures/render.js';
 import { Source } from './fixtures/source.js';
 
+/** The failure code a call throws, or undefined when it returns. */
+function codeOf(call: () => unknown): string | undefined {
+  try {
+    call();
+  } catch (error) {
+    return (error as { code?: string }).code;
+  }
+  return undefined;
+}
+
 describe('public contract and allocation boundaries', () => {
   it('exports an app surface and keeps renderer authoring under kit', () => {
     expect(Object.keys(api).sort()).toEqual(
       [
         'createGpu',
-        'GpuError',
         'createComposition',
         'createTextRasterizer',
         'colormaps',
         'createColormap',
         'reverseColormap',
         'parseColor',
+        'resolveColor',
         'colorCss',
         'colormapCss',
         'spotlight',
@@ -36,7 +46,6 @@ describe('public contract and allocation boundaries', () => {
         'hold',
         'validateRgba',
         'sampleColormap',
-        'resolveColor',
         'colormapShader',
         'BufferData',
         'TextureData',
@@ -45,7 +54,7 @@ describe('public contract and allocation boundaries', () => {
         'strokeShader',
         'textShader',
         'createPresentation',
-        'createRenderTarget',
+        'createTextureTarget',
         'fitCamera',
         'cameraPoint',
         'worldPoint',
@@ -62,9 +71,6 @@ describe('public contract and allocation boundaries', () => {
         'outputShader',
         'inputModifiers',
         'localPoint',
-        'wheelDelta',
-        'createCanvasInput',
-        'withinBudget',
       ].sort(),
     );
   });
@@ -92,7 +98,9 @@ describe('public contract and allocation boundaries', () => {
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
     expect(gpu.stats().gpuBytes).toBe(768);
-    expect(() => gpu.buffer({ size: 512, usage: GPUBufferUsage.STORAGE })).toThrow(api.GpuError);
+    expect(codeOf(() => gpu.buffer({ size: 512, usage: GPUBufferUsage.STORAGE }))).toBe(
+      'resource-limit',
+    );
     data.destroy();
     texture.destroy();
     expect(gpu.stats().gpuBytes).toBe(0);
@@ -230,7 +238,7 @@ it('rejects invalid texture extents and sample counts before allocating', async 
     { sampleCount: 4, mipLevelCount: 2 },
     { size: [8, 8, 2], sampleCount: 4 },
   ])
-    expect(() => gpu.texture({ ...base, ...changes })).toThrow(api.GpuError);
+    expect(codeOf(() => gpu.texture({ ...base, ...changes }))).toBeTypeOf('string');
   expect(fake.native.createTexture).not.toHaveBeenCalled();
   expect(gpu.stats().gpuBytes).toBe(0);
   gpu.destroy();

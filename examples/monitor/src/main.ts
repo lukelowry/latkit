@@ -1,12 +1,11 @@
+import { createGpu, colormaps, colormapCss, type ColormapName, type Shade } from '@latkit/gpu';
 import {
-  createGpu,
-  colormaps,
-  colormapCss,
-  type ColormapName,
-  type DataHit,
-  type Shade,
-} from '@latkit/gpu';
-import { createMonitor, type Monitor, type Reading, type Trace } from '@latkit/monitor';
+  createMonitor,
+  type Monitor,
+  type MonitorItem,
+  type Reading,
+  type Trace,
+} from '@latkit/monitor';
 import { Telemetry } from './source.js';
 import './style.css';
 
@@ -361,7 +360,7 @@ function renderHotList(now: number, force = false): void {
           source: source.data,
           index: source.index,
           row: item.element,
-          field: SIGNALS[currentSignal].id,
+          trace: 'telemetry',
         },
       ]);
       pickReadout.textContent = describeElement(item.element);
@@ -420,7 +419,7 @@ function describeElement(element: number): string {
 }
 
 /** A clicked reading, or a row selected from the list. */
-function describeReading(reading: Reading | DataHit | null): string {
+function describeReading(reading: Reading | MonitorItem | null): string {
   if (!reading) return '-';
   if (!('value' in reading)) return describeElement(reading.row);
   return `element ${reading.row} / ${formatValue(reading.value, SIGNALS.findIndex((signal) => signal.id === reading.field) as SignalIndex)} / ${reading.coordinate.toFixed(1)}s`;

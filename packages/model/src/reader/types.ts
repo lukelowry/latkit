@@ -29,8 +29,6 @@ export interface FieldsRequest {
   readonly fields: Readonly<Record<string, FieldInput>>;
   /** Omitted reads static fields, and sampled fields at the scope's coordinate. */
   readonly window?: SampleWindow;
-  /** Coordinate for sampled point reads; defaults to the scope's. */
-  readonly at?: number;
   readonly ids?: boolean;
 }
 

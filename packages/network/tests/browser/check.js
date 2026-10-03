@@ -164,7 +164,7 @@ async function benchmark(count = 100000) {
       edgeWidthPx: 0.6,
     });
   const renderer = kit.rendererOf(view),
-    target = kit.createRenderTarget({ gpu, width: 1280, height: 720 });
+    target = kit.createTextureTarget(gpu, { width: 1280, height: 720 });
   const render = (coordinate) =>
     gpu.render({ timeMs: 0, views: [{ renderer, target, at: coordinate }] });
   try {
@@ -231,7 +231,7 @@ async function benchmarkHover(count = 100000) {
     poles: false,
   });
   const renderer = kit.rendererOf(view),
-    target = kit.createRenderTarget({ gpu, width: 1280, height: 720 });
+    target = kit.createTextureTarget(gpu, { width: 1280, height: 720 });
   const render = (at = 0) => gpu.render({ timeMs: 0, views: [{ renderer, target, at }] });
   const results = [];
   const percentile = (values, fraction) =>
@@ -627,7 +627,7 @@ async function benchmarkPaths(count = 100000, moving = false) {
   const borders = await loadBorders(),
     fixture = new GraphSource(count, 4096, true),
     results = [];
-  const target = kit.createRenderTarget({ gpu, width: 1200, height: 700, format: 'rgba8unorm' });
+  const target = kit.createTextureTarget(gpu, { width: 1200, height: 700, format: 'rgba8unorm' });
   try {
     for (const curve of ['linear', 'geodesic'])
       for (const detailed of [false, true]) {

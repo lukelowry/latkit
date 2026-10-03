@@ -102,8 +102,7 @@ export async function show() {
     const canvas = document.querySelectorAll('canvas')[kind];
     canvas.width = dimensions[0];
     canvas.height = dimensions[1];
-    const target = kit.createPresentation({
-      gpu,
+    const target = kit.createPresentation(gpu, {
       canvas,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
     });
