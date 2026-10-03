@@ -1,5 +1,73 @@
 # @latkit/model
 
+## 2.1.0
+
+### Minor Changes
+
+- 96f79d2: A model is a value both sides of a connection share, and either side may dial.
+
+  Added
+
+  - `Model`, `Command`, `MonitorContext`, `CommandContext`, and `Publication` in model: the contract a
+    model meets, whether used in process or across a connection.
+  - `staticFields(schema)` and `sampledFields(schema, types?)` in model.
+  - `protocol.subprotocols`: `latkit.connect` for a dialing side that offers a model, `latkit.accept`
+    for one that accepts it.
+  - An accepted model can be offered onward as it is. Publications connect received go on as the bytes
+    that arrived when they fit the onward bounds, and the onward connections close with the model.
+  - A peer that closes a socket before registering rejects with its close reason.
+
+  Changed
+
+  - `connectModel(model, { url } | { socket })` and `acceptModel({ url } | { socket })`: either side
+    dials a URL or answers on a socket a server accepted. The URL is dialed exactly; nothing is
+    appended to it.
+  - An accepted model is a `ConnectedModel`, a `Model` and a `Connection`. Commands run as
+    `model.commands[name].run(values, { outputs, publish, progress, log, signal })`, with the context a
+    model's own handler receives.
+  - `monitor` is absent when a model offers no reading, and an empty selection reads nothing.
+  - A log entry that carries a `dropped` count is counted, not forwarded as an entry.
+  - `Limits` is `ConnectLimits`.
+
+  Removed
+
+  - `model.run(name, values, { onData, onProgress, onLog })`, `format: 'encoded'`, `MonitorOptions`,
+    `RunOptions`, `EncodedMonitorOptions`, and `EncodedRunOptions`. `EncodedPublication` is in
+    `protocol`.
+  - `Command`, `CommandContext`, `MonitorContext`, `Publication`, and `Publish` from connect; the first
+    four are in model.
+  - `protocol.subprotocol`, and the `/models/<name>` connect appended to a URL.
+
+### Patch Changes
+
+- 96f79d2: Exports never change a view, item views check every option the same way, and views stop cleanly with their Gpu.
+
+  Added
+
+  - `gpu.signal`: aborts when the Gpu stops, with `device-lost` or `closed`.
+  - `FrameInfo.presented` and `RenderView.presented`: video, and images of a view on a canvas or in a composition, render frames that are not presented.
+  - `kit.ItemShape`: an item view describes its framed camera keys, input modes, and style defaults once.
+
+  Changed
+
+  - Video, and images of a view on a canvas or in a composition, draw the view as it is and change nothing: its camera, hover, selection, and picking stay as presented. A monitor draws them into history of its own. A view with neither presents in its images.
+  - Unknown camera and input options, and input modes a view does not have, throw `invalid-input` in every view, and the patch changes nothing.
+  - A mode shorthand merges like the option it names: `set({ input: 'inspect' })` keeps `wheel` and `keyboard`.
+  - The `frame` event reports the frame's `FrameInfo` and nothing it borrowed.
+  - A right click opens the context menu where the button comes up; a right drag never opens it.
+  - Views stop drawing when their Gpu stops: device loss reports one `device-lost` error per view, and destroying the Gpu reports none. The Gpu no longer keeps destroyed views alive.
+  - `image()` and `exportVideo` wait for a canvas frame that cannot stop at once, instead of failing `busy`.
+  - `view.config` is typed without `camera`, which lives on `view.camera`.
+  - `kit.BaseItemView` takes `(gpu, config, shape)`; `compileShade` receives the `msaa` to compile for; `kit.BaseView`'s `moveCamera` hook is `cameraMove`, which validates before a patch applies.
+  - Network: `pick`, clicks, and context menus wait for the background hit-test index, starting it at once, instead of building it on the main thread.
+  - Video: an export ends with the Gpu's `device-lost` error.
+  - Model: `sliceColumn` returns exactly its kind's keys, so a point read of a sampled field is a plain column however its pages lie; `selectRows` encodes each requested ID into one reused buffer.
+
+  Removed
+
+  - `Gpu.lost`; use `gpu.signal`.
+  - `kit.BaseItemView`'s `framed` and `inputMode` members; use `kit.ItemShape`.
+
 ## 2.0.0
 
 ### Major Changes
