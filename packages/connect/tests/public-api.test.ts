@@ -9,6 +9,7 @@ it('exports the two connection entry points and the wire codec', () => {
     'Op',
     'decode',
     'decodePublication',
+    'forward',
     'prepare',
     'preparePublication',
     'subprotocols',

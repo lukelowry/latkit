@@ -122,7 +122,7 @@ it('rejects cycles, accessors, shared storage and excessive metadata before enco
   expect(() => prepare(Op.run, 1, getter, [], defaults)).toThrow(/accessors/);
   expect(accessed).toBe(false);
   expect(() =>
-    prepare(Op.run, 1, { long: 'x'.repeat(defaults.maxMetadataBytes) }, [], defaults),
+    prepare(Op.run, 1, { long: 'x'.repeat(defaults.metadataBytes) }, [], defaults),
   ).toThrow(/budget|large/);
   const value = {
     ...batch(),
@@ -159,7 +159,7 @@ it('rejects sparse-array allocation bombs and nonenumerable JSON hooks before in
   expect(invoked).toBe(false);
 });
 
-const small = { ...defaults, maxMessageBytes: 8192, maxMetadataBytes: 2048 };
+const small = { ...defaults, messageBytes: 8192, metadataBytes: 2048 };
 function samples(frames: number, rows = 4, firstFrame = 0): SampleBatch {
   const values = Float64Array.from({ length: frames * rows }, (_, i) => firstFrame * rows + i);
   return {
@@ -184,7 +184,7 @@ function samples(frames: number, rows = 4, firstFrame = 0): SampleBatch {
 function received(input: DataBatch | readonly DataBatch[], bounds = small) {
   return Array.from(preparePublications(input, 1, schema, bounds), (plan) => {
     const bytes = plan.encode(1);
-    expect(bytes.length).toBeLessThanOrEqual(bounds.maxMessageBytes);
+    expect(bytes.length).toBeLessThanOrEqual(bounds.messageBytes);
     return decodePublication({ bytes: decode(bytes, bounds).payload }, schema, bounds);
   });
 }
@@ -204,7 +204,7 @@ it('packs batches that fit into one atomic message, within the batch count and m
   expect(received([samples(2, 4, 0), samples(2, 4, 2)]).map((m) => m.length)).toEqual([2]);
   const tiny = Array.from({ length: 70 }, (_, i) => samples(1, 1, i));
   expect(received(tiny, defaults).map((m) => m.length)).toEqual([64, 6]);
-  const tight = received(tiny, { ...defaults, maxMetadataBytes: 1024 });
+  const tight = received(tiny, { ...defaults, metadataBytes: 1024 });
   expect(tight.length).toBeGreaterThan(2);
   expect(tight.flat()).toHaveLength(70);
 });

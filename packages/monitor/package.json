@@ -28,10 +28,8 @@
     "test:browser": "tsup tests/fixture.ts --config false --format esm --out-dir tests/browser/generated --external @latkit/model && node tests/browser/run.mjs"
   },
   "dependencies": {
-    "@latkit/model": "workspace:*",
-    "@latkit/gpu": "workspace:*"
-  },
-  "devDependencies": {
+    "@latkit/gpu": "workspace:^",
+    "@latkit/model": "workspace:^",
     "@webgpu/types": "^0.1.71"
   },
   "publishConfig": {

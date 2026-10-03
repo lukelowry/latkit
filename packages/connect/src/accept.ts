@@ -21,9 +21,10 @@ import {
   interrupt,
   negotiate,
   record,
-  remoteFailure,
   text,
   validProgress,
+  fromPeer,
+  peerFailure,
 } from './core.js';
 import { checkTree, Op, subprotocols } from './frame.js';
 import type { Frame } from './frame.js';
@@ -54,7 +55,7 @@ export async function acceptModel(options: AcceptOptions): Promise<ConnectedMode
     const issues = validateSchema(m.schema);
     if (issues.length) throw failure('protocol', issues[0].message);
     const schema = m.schema as Schema;
-    const commands = definitions(m.commands, schema, session.bounds.maxMetadataBytes);
+    const commands = definitions(m.commands, schema, session.bounds.metadataBytes);
     if (typeof m.monitoring !== 'boolean') throw failure('protocol', 'Invalid monitor capability.');
     session.bounds = negotiate(session.bounds, m.limits);
     const model = new RemoteModel(session, name, schema, commands, m.monitoring);
@@ -122,7 +123,7 @@ class RemoteModel implements ConnectedModel {
     context: Partial<MonitorContext> = {},
   ): AsyncIterableIterator<Publication> {
     context.signal?.throwIfAborted();
-    checkTree(fields, this.session.bounds.maxMetadataBytes);
+    checkTree(fields, this.session.bounds.metadataBytes);
     selections(fields, this.schema);
     // An empty selection reads nothing.
     if (!fields.length) return (async function* () {})();
@@ -156,7 +157,7 @@ class RemoteModel implements ConnectedModel {
           const next = await stream.next();
           if (next.done) {
             cleanup();
-            if (next.value.op === Op.error) throw remoteError(next.value.metadata);
+            if (next.value.op === Op.error) throw peerFailure(next.value.metadata);
             if (next.value.op !== Op.end)
               throw failure('protocol', 'Invalid observation terminal.');
             return { done: true, value: undefined };
@@ -191,7 +192,7 @@ class RemoteModel implements ConnectedModel {
     if (this.#running || this.#preparing)
       throw failure('busy', 'Another command is still running.');
     const outputs = selections(context.outputs ?? [], this.schema);
-    checkTree(outputs, this.session.bounds.maxMetadataBytes);
+    checkTree(outputs, this.session.bounds.metadataBytes);
     const publish = context.publish;
     if (outputs.length && !publish)
       throw failure('invalid-input', 'Requested outputs require publish.');
@@ -206,7 +207,7 @@ class RemoteModel implements ConnectedModel {
       const preparing = (this.#preparing = encodeArguments(
         description.parameters,
         values,
-        this.session.bounds.maxMessageBytes - this.session.bounds.maxMetadataBytes - 64,
+        this.session.bounds.messageBytes - this.session.bounds.metadataBytes - 64,
         signal,
       ));
       // An aborted File read may still be running natively. Keep admission until it settles.
@@ -227,7 +228,7 @@ class RemoteModel implements ConnectedModel {
           else {
             const entries = frame.metadata.entries,
               dropped = integer(frame.metadata.dropped);
-            if (!Array.isArray(entries) || entries.length > this.session.bounds.maxLogs)
+            if (!Array.isArray(entries) || entries.length > this.session.bounds.logs)
               throw failure('protocol', 'Invalid diagnostic batch.');
             const logs = entries.map((entry: unknown) => logOf(entry));
             for (const entry of logs) notify(context.log, entry);
@@ -260,9 +261,9 @@ class RemoteModel implements ConnectedModel {
       for (;;) {
         const next = await stream.next();
         if (next.done) {
-          if (next.value.op === Op.error) throw remoteError(next.value.metadata);
+          if (next.value.op === Op.error) throw peerFailure(next.value.metadata);
           if (next.value.op !== Op.result) throw failure('protocol', 'Invalid command terminal.');
-          checkTree(next.value.metadata.value, this.session.bounds.maxMetadataBytes);
+          checkTree(next.value.metadata.value, this.session.bounds.metadataBytes);
           return next.value.metadata.value as CommandResult;
         }
         if (!outputs.length || !publish) throw failure('protocol', 'Unrequested execution data.');
@@ -278,13 +279,12 @@ class RemoteModel implements ConnectedModel {
   }
   private publication(frame: Frame, checkDemand: ReturnType<typeof demanded>): Publication {
     // Validated once at the trust boundary; served onward, it goes as it arrived.
-    const batches = decodePublication({ bytes: frame.payload }, this.schema, this.session.bounds);
+    const batches = fromPeer(() =>
+      decodePublication({ bytes: frame.payload }, this.schema, this.session.bounds),
+    );
     checkDemand(batches);
     return batches;
   }
-}
-function remoteError(metadata: Record<string, unknown>): Error {
-  return remoteFailure(text(metadata.code, 128), text(metadata.message, 4096));
 }
 function progressOf(m: Record<string, unknown>): Progress {
   if (!validProgress(m)) throw failure('protocol', 'Invalid progress.');

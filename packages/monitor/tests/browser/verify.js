@@ -315,9 +315,9 @@ export async function verify(gpu) {
   checks.push({ mode: 'transactional shade', passed: true });
   const local = new SignalSource(3, 128);
   const bounds = {
-    maxMessageBytes: 1024 * 1024,
-    maxMetadataBytes: 64 * 1024,
-    maxPublicationBatches: 64,
+    messageBytes: 1024 * 1024,
+    metadataBytes: 64 * 1024,
+    publicationBatches: 64,
   };
   const received = [];
   for await (const batch of selectBatches(local.data, [{ from: 'signal', select: ['value'] }])) {

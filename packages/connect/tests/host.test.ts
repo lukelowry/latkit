@@ -9,7 +9,7 @@ it('drains more than 128 publications and 64 MiB in order after consumer pressur
   const arrived = deferred<void>();
   const p = await pair(
     {
-      limits: { streamWindowBytes: 96 * 1024 ** 2, maxBufferedBytes: 96 * 1024 ** 2 },
+      limits: { streamWindowBytes: 96 * 1024 ** 2, bufferedBytes: 96 * 1024 ** 2 },
       monitor: function* () {
         const value = batch(elements);
         const column = value.columns.value;
@@ -21,7 +21,7 @@ it('drains more than 128 publications and 64 MiB in order after consumer pressur
       },
       commands: { ping: { parameters: {}, run: () => 'pong' } },
     },
-    { limits: { streamWindowBytes: 96 * 1024 ** 2, maxBufferedBytes: 96 * 1024 ** 2 } },
+    { limits: { streamWindowBytes: 96 * 1024 ** 2, bufferedBytes: 96 * 1024 ** 2 } },
   );
   let received = 0;
   p.socket.on('message', (data) => {

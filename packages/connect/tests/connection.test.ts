@@ -76,8 +76,8 @@ it('runs typed commands with selected data, coalesced progress, bounded logs and
   expect(result).toEqual({ count: 3 });
   expect(received).toEqual([[batch(3)]]);
   expect(progress.at(-1)).toMatchObject({ completed: 99, domain: [0, 10] });
-  expect(logs.filter((l) => l.code !== 'dropped')).toHaveLength(defaults.maxLogs);
-  expect(logs.at(-1)?.dropped).toBe(100 - defaults.maxLogs);
+  expect(logs.filter((l) => l.code !== 'dropped')).toHaveLength(defaults.logs);
+  expect(logs.at(-1)?.dropped).toBe(100 - defaults.logs);
 });
 it('awaits publish before resolving the command result', async () => {
   const gate = deferred<void>(),
@@ -173,7 +173,7 @@ it('cancels a pending monitor pull and finalizes the source', async () => {
 });
 it('releases finished observation admission on consumption and early return', async () => {
   const p = await pair({
-    limits: { maxStreams: 1 },
+    limits: { streams: 1 },
     monitor: function* () {
       yield batch();
     },

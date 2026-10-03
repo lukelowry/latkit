@@ -2,7 +2,7 @@ import { afterAll, describe } from 'vitest';
 import { protocol } from '@latkit/connect';
 import { connected, schema, sizes, split, suite, voltages } from './harness.ts';
 
-const bounds = { maxMessageBytes: 64 << 20, maxMetadataBytes: 64 << 10, maxPublicationBatches: 64 };
+const bounds = { messageBytes: 64 << 20, metadataBytes: 64 << 10, publicationBatches: 64 };
 
 describe.each(sizes)('connect %i buses', async (buses) => {
   const frame = voltages(buses, 0),

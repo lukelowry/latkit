@@ -16,15 +16,15 @@ export interface EncodedPublication {
   readonly bytes: Uint8Array;
 }
 export interface ConnectLimits {
-  readonly maxMessageBytes: number;
-  readonly maxMetadataBytes: number;
-  readonly maxBufferedBytes: number;
-  readonly maxBufferedMessages: number;
+  readonly messageBytes: number;
+  readonly metadataBytes: number;
+  readonly bufferedBytes: number;
+  readonly bufferedMessages: number;
   readonly streamWindowBytes: number;
   readonly streamWindowMessages: number;
-  readonly maxStreams: number;
-  readonly maxPublicationBatches: number;
-  readonly maxLogs: number;
+  readonly streams: number;
+  readonly publicationBatches: number;
+  readonly logs: number;
   /** Registration, cancellation response, close notification and cleanup deadlines; never a flow-control timeout. */
   readonly timeoutMs: number;
 }

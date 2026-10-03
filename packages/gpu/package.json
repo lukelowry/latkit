@@ -29,7 +29,7 @@
     "test:browser": "node tests/browser/run.mjs"
   },
   "dependencies": {
-    "@latkit/model": "workspace:*",
+    "@latkit/model": "workspace:^",
     "@webgpu/types": "^0.1.71",
     "culori": "4.0.2"
   },

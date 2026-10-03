@@ -57,7 +57,7 @@ it('delivers an oversized sample publish and monitor yield as whole-frame messag
     },
   };
   const p = await pair({
-    limits: { maxMessageBytes: 16 << 10, maxMetadataBytes: 4 << 10 },
+    limits: { messageBytes: 16 << 10, metadataBytes: 4 << 10 },
     monitor: () => [samples],
     commands: { stream: { parameters: {}, run: (_, context) => context.publish(samples) } },
   });
@@ -161,7 +161,7 @@ it('aborts an in-progress data callback promptly and retains the producer slot u
 it('keeps repeated empty and failed streams bounded', async () => {
   let calls = 0;
   const p = await pair({
-    limits: { maxStreams: 1 },
+    limits: { streams: 1 },
     monitor: () => {
       if (calls++ % 2) throw new Error('source failed');
       return [];
@@ -203,7 +203,7 @@ it('propagates abrupt socket failure to a pending consumer', async () => {
 
 it('returns bounded errors for oversized results and releases unsent command reservations', async () => {
   const p = await pair({
-    limits: { maxMetadataBytes: 1024, maxStreams: 1 },
+    limits: { metadataBytes: 1024, streams: 1 },
     commands: {
       echo: {
         parameters: { text: { type: 'text' } },
@@ -229,7 +229,7 @@ it('returns bounded errors for oversized results and releases unsent command res
 });
 it('bounds worst-case escaped diagnostics under minimum metadata limits', async () => {
   const p = await pair({
-    limits: { maxMetadataBytes: 1024 },
+    limits: { metadataBytes: 1024 },
     commands: {
       log: {
         parameters: {},
@@ -354,7 +354,7 @@ it('cancels queued requests promptly without releasing their reservations before
   const p = await pair({
     monitor: () => [],
     commands: { ping: { parameters: {}, run: () => 'pong' } },
-    limits: { maxStreams: 2, timeoutMs: 100 },
+    limits: { streams: 2, timeoutMs: 100 },
   });
   const writes = vi.spyOn(p.socket, 'send');
   const stop = new AbortController();

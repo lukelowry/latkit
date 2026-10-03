@@ -28,10 +28,8 @@
     "test:browser": "pnpm --filter @latkit/diagram... build && esbuild tests/fixture.ts --format=esm --outfile=../../output/diagram-fixture.js && node tests/browser/run.mjs"
   },
   "dependencies": {
-    "@latkit/gpu": "workspace:*",
-    "@latkit/model": "workspace:*"
-  },
-  "devDependencies": {
+    "@latkit/gpu": "workspace:^",
+    "@latkit/model": "workspace:^",
     "@webgpu/types": "^0.1.71"
   },
   "publishConfig": {
