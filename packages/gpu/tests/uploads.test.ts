@@ -279,6 +279,27 @@ describe('mutable and frame-local buffers', () => {
     gpu.destroy();
   });
 
+  it('fits frame uniforms within a small GPU budget', async () => {
+    const fake = fakeDevice(),
+      gpu = await createGpu({ device: fake.device, budget: { gpuBytes: 1024 } });
+    let uniform!: GPUBufferBinding;
+    await gpu.render({
+      timeMs: 0,
+      views: [
+        {
+          renderer: renderer((frame) => {
+            uniform = frame.uniforms(Float32Array.of(1, 2, 3, 4));
+            frame.uniforms(Float32Array.of(5));
+          }),
+          target: target(fake.device),
+        },
+      ],
+    });
+    await gpu.idle();
+    expect(uniform.size).toBe(16);
+    expect(gpu.stats().peakGpuBytes).toBeLessThanOrEqual(1024);
+    gpu.destroy();
+  });
   it('does not overwrite earlier draws when several views upload uniforms', async () => {
     const fake = fakeDevice(),
       gpu = await createGpu({ device: fake.device });

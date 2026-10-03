@@ -1,8 +1,10 @@
 import { failure, type Memory } from '@latkit/model';
 import { align } from '../error.js';
 
-/** Bytes of one shared uniform buffer; a larger uniform gets a buffer of its own size. */
+/** Bytes of one shared uniform buffer, within an eighth of the GPU budget. */
 const CHUNK_BYTES = 64 * 1024;
+/** Free buffers kept for later frames; a frame that needs more makes them, and they go after it. */
+const POOLED = 16;
 
 interface Chunk {
   readonly buffer: GPUBuffer;
@@ -31,12 +33,18 @@ export class Uniforms {
   #closed = false;
   readonly #alignment: number;
   readonly #limit: number;
+  /** The size of a shared buffer; a larger uniform gets a buffer of its own. */
+  readonly #chunkBytes: number;
   constructor(
     private readonly device: GPUDevice,
     private readonly memory: Memory,
   ) {
     this.#alignment = device.limits.minUniformBufferOffsetAlignment;
     this.#limit = device.limits.maxUniformBufferBindingSize;
+    this.#chunkBytes = Math.max(
+      4,
+      Math.min(CHUNK_BYTES, Math.floor(memory.budget.gpuBytes / 32) * 4),
+    );
   }
 
   begin(): FrameUniforms {
@@ -70,7 +78,12 @@ export class Uniforms {
         released = true;
         for (const chunk of chunks) {
           chunk.used = 0;
-          if (chunk.bytes.byteLength === CHUNK_BYTES && !this.#closed) this.#free.push(chunk);
+          if (
+            chunk.bytes.byteLength === this.#chunkBytes &&
+            !this.#closed &&
+            this.#free.length < POOLED
+          )
+            this.#free.push(chunk);
           else this.#destroy(chunk);
         }
         chunks.length = 0;
@@ -89,11 +102,11 @@ export class Uniforms {
   }
 
   #take(size: number): Chunk {
-    if (size <= CHUNK_BYTES) {
+    if (size <= this.#chunkBytes) {
       const free = this.#free.pop();
       if (free) return free;
     }
-    const bytes = Math.max(CHUNK_BYTES, align(size, 4));
+    const bytes = Math.max(this.#chunkBytes, align(size, 4));
     this.memory.reserveGpu(bytes);
     try {
       return {

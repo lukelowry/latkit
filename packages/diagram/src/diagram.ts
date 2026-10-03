@@ -568,11 +568,14 @@ class DiagramView
     const transitioning =
       transition && transition.revision === revision && transition.at === at && !this.drag;
     const cached = base && base.revision === revision && base.at === at && !this.drag;
-    let drag: DragDraw | null = null;
-    if (this.drag && base && base.revision === revision && base.at === at) {
-      // A drag draws over the accepted scene; only what it moves is placed and routed again.
+    let drag: DragDraw | null = null,
+      drawnAt = at;
+    if (this.drag && base && base.revision === revision) {
+      // A drag draws over the accepted scene, even while the coordinate plays on; only what it
+      // moves is placed and routed again.
       scene = base.scene;
       picking = base.picking;
+      drawnAt = base.at;
       drag = this.dragDraw(scene, this.drag, style, frame.signal);
     } else if (transitioning) {
       scene = transition.target;
@@ -730,7 +733,7 @@ class DiagramView
       camera: drawn,
       viewport,
       revision,
-      at,
+      at: drawnAt,
       drag: drag ?? undefined,
       paint,
     };
