@@ -1,6 +1,6 @@
+import type { MemoryEntry, Memory } from '@latkit/model';
 import { BufferData } from '../memory/buffer-data.js';
 import type { Images } from '../memory/images.js';
-import type { Entry, Memory } from '../memory/memory.js';
 import type { UploadScope, Uploader } from '../fields/upload.js';
 import type { RGBA } from './color.js';
 import type { Colormap } from './colormap.js';
@@ -12,7 +12,7 @@ const grayscale: Colormap = Object.freeze({
   colors: Object.freeze([Object.freeze([0, 0, 0, 1]) as RGBA, Object.freeze([1, 1, 1, 1]) as RGBA]),
 });
 interface Prepared {
-  readonly entry: Entry;
+  readonly entry: MemoryEntry;
   readonly parameters: BufferData;
   binding?: { texture: GPUTexture; buffer: GPUBuffer; offset: number; group: GPUBindGroup };
 }

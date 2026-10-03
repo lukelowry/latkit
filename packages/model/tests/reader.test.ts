@@ -1,5 +1,12 @@
 import { expect, it } from 'vitest';
-import { createData, createReader, type Data, type Index, type Schema } from '../src/index.js';
+import {
+  createData,
+  createMemory,
+  createReader,
+  type Data,
+  type Index,
+  type Schema,
+} from '../src/index.js';
 
 const index: Index = { source: 'reader', type: 'node', version: 'rows' };
 const schema: Schema = {
@@ -75,6 +82,43 @@ it('resolves indexed fields and releases a closed scope', async () => {
     }
   }).rejects.toMatchObject({ name: 'AbortError' });
   reader.destroy();
+});
+
+it('shares a borrowed memory pool, which outlives its readers', async () => {
+  const memory = createMemory({ cpuBytes: 1024 ** 2 }),
+    first = createReader({ memory }),
+    second = createReader({ memory }),
+    reads = first.open();
+  try {
+    for await (const tile of reads.fields({
+      source: data(),
+      from: index.type,
+      fields: { value: 'value' },
+    }))
+      expect(tile.index).toEqual(index);
+  } finally {
+    reads.close();
+  }
+  const held = memory.stats().entries;
+  expect(held).toBeGreaterThan(0);
+  // Both readers report the pool they share, so one budget bounds them together.
+  expect(second.stats()).toEqual(memory.stats());
+  first.destroy();
+  second.destroy();
+  // The pool stays live for its owner: its other results remain, and a new reader reads into it.
+  expect(memory.stats().entries).toBeGreaterThan(0);
+  const third = createReader({ memory }),
+    more = third.open();
+  for await (const tile of more.fields({
+    source: data(),
+    from: index.type,
+    fields: { value: 'value' },
+  }))
+    expect(tile.index).toEqual(index);
+  more.close();
+  third.destroy();
+  memory.destroy();
+  expect(memory.stats()).toMatchObject({ cpuBytes: 0, entries: 0 });
 });
 
 it('rejects reads from a canceled scope', async () => {

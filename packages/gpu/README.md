@@ -25,8 +25,9 @@ automatic scale domains reuse results when that coordinate selects the same immu
 Each field resolves its own coordinates. Appending samples preserves reuse of unchanged observations;
 new samples at the playhead, including duplicate coordinates, invalidate the affected reads.
 
-Reads go through `gpu.reader`, the model `Reader` every view on this GPU shares, bounded by the
-GPU's budget. `gpu.stats()` exposes query and upload counts for measuring reuse. There is no
+Reads go through `gpu.reader`, the model `Reader` every view on this GPU shares. It reads into the
+GPU's memory pool, so one `budget` bounds reads, uploads, and GPU resources together. `gpu.stats()`
+exposes query and upload counts for measuring reuse. There is no
 producer retention or replay.
 
 ## Write a view

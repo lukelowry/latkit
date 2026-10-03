@@ -6,17 +6,16 @@ import type { Domain } from '../types.js';
 import { Blocks } from './blocks.js';
 import { Fields, type FieldScope } from './fields.js';
 import { Keys } from './keys.js';
-import { Memory, type Entry, type ReaderStats } from './memory.js';
+import { Memory, type Entry, type MemoryStats } from '../memory.js';
 import { interruptible } from './signal.js';
 import type { ExtentRequest, FieldsBlock, FieldsRequest } from './types.js';
 
 export interface ReaderOptions {
-  /** Memoized blocks, field tiles, and extents. Defaults to 64 MiB. */
-  readonly maxBytes?: number;
-  /** Transient gathers and copies. Defaults to 8 MiB. */
-  readonly maxStagingBytes?: number;
-  /** Cached results. Defaults to 4096. */
-  readonly maxEntries?: number;
+  /**
+   * The pool that holds memoized blocks, field tiles, and extents, and bounds transient copies.
+   * Borrowed: destroy never destroys it. Defaults to a pool of the reader's own.
+   */
+  readonly memory?: Memory;
   /** Bound of one read block. Defaults to 1 MiB. */
   readonly maxBlockBytes?: number;
   /** Validate schemas, queries, and blocks at this boundary. Defaults to false. */
@@ -27,8 +26,9 @@ export interface ReaderOptions {
 export interface Reader {
   /** Reads whose results stay cached and held until the scope closes. */
   open(options?: { readonly signal?: AbortSignal; readonly at?: number }): ReadScope;
-  stats(): ReaderStats;
-  /** Evict every result no scope holds. */
+  /** The stats of the reader's memory pool. */
+  stats(): MemoryStats;
+  /** Evict every result no one holds from the reader's memory pool. */
   trim(): void;
   destroy(): void;
 }
@@ -52,23 +52,24 @@ export function createReader(options: ReaderOptions = {}): Reader {
 
 class Cache implements Reader {
   readonly #memory: Memory;
+  /** Whether the reader made its pool, and so destroys it. */
+  readonly #owned: boolean;
   readonly #keys = new Keys();
   readonly #blocks: Blocks;
   readonly #fields: Fields;
   readonly #stopped = new AbortController();
 
   constructor(options: ReaderOptions) {
-    this.#memory = new Memory({
-      cpuBytes: options.maxBytes,
-      stagingBytes: options.maxStagingBytes,
-      entries: options.maxEntries,
-    });
+    this.#owned = !options.memory;
+    this.#memory = options.memory ?? new Memory();
     const blockBytes = options.maxBlockBytes ?? BLOCK_BYTES;
     if (!Number.isSafeInteger(blockBytes) || blockBytes < 1)
       throw failure('invalid-input', 'Block bytes must be a positive integer');
     const bound = Math.max(
       1,
-      Math.floor(Math.min(blockBytes, this.#memory.cpuBytes / 4, this.#memory.stagingBytes)),
+      Math.floor(
+        Math.min(blockBytes, this.#memory.budget.cpuBytes / 4, this.#memory.budget.stagingBytes),
+      ),
     );
     this.#blocks = new Blocks(this.#memory, this.#keys, bound, options.validate ?? false);
     this.#fields = new Fields(this.#memory, this.#keys, bound);
@@ -145,7 +146,7 @@ class Cache implements Reader {
     };
   }
 
-  stats(): ReaderStats {
+  stats(): MemoryStats {
     return this.#memory.stats();
   }
   trim(): void {
@@ -155,6 +156,6 @@ class Cache implements Reader {
     if (this.#stopped.signal.aborted) return;
     this.#stopped.abort(failure('closed', 'Reader is closed'));
     this.#blocks.destroy();
-    this.#memory.destroy();
+    if (this.#owned) this.#memory.destroy();
   }
 }

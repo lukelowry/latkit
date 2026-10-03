@@ -1,4 +1,13 @@
-import { failure, createReader, type Reader } from '@latkit/model';
+import {
+  failure,
+  createMemory,
+  createReader,
+  type Memory,
+  type MemoryBudget,
+  type MemoryEntry,
+  type MemoryStats,
+  type Reader,
+} from '@latkit/model';
 import { renderers as rendererTree } from './frame/tree.js';
 import { renderFrame, type FrameOwner } from './frame/frame.js';
 import type { Renderer, RenderOptions } from './frame/render.js';
@@ -9,7 +18,6 @@ import { TextAtlas } from './text/atlas.js';
 import type { TextInput, TextMetrics, TextOptions } from './text/text.js';
 import { Allocator } from './memory/allocation.js';
 import { integer, interruptible } from './error.js';
-import { Memory, type Budget, type Entry, type GpuStats } from './memory/memory.js';
 import { Textures, type TextureResource } from './memory/textures.js';
 import { Uploader } from './fields/upload.js';
 
@@ -19,8 +27,8 @@ export interface GpuOptions {
   readonly powerPreference?: GPUPowerPreference;
   readonly requiredFeatures?: readonly GPUFeatureName[];
   readonly requiredLimits?: Readonly<Record<string, number>>;
-  /** CPU, staging, and entry bounds apply to the reader's cache and to GPU bookkeeping, each. */
-  readonly budget?: Partial<Budget>;
+  /** One pool bounds the reader's cache, uploads, and GPU resources together. */
+  readonly budget?: Partial<MemoryBudget>;
   readonly pageBytes?: number;
   readonly maxBlockBytes?: number;
   readonly maxFramesInFlight?: number;
@@ -36,14 +44,14 @@ export interface Gpu {
    * after `destroy`. Views stop drawing then; after device loss, recreate the Gpu and its views.
    */
   readonly signal: AbortSignal;
-  readonly budget: Budget;
+  readonly budget: MemoryBudget;
   /** One bounded, memoized reader for every view, job, and layout on this Gpu. */
   readonly reader: Reader;
   readonly fieldLayout: GPUBindGroupLayout;
   readonly textLayout: GPUBindGroupLayout;
   readonly colormapLayout: GPUBindGroupLayout;
   measureText(input: TextInput, options?: { readonly signal?: AbortSignal }): Promise<TextMetrics>;
-  stats(): GpuStats;
+  stats(): MemoryStats;
   render(options: RenderOptions): Promise<void>;
   buffer(descriptor: GPUBufferDescriptor): BufferResource;
   texture(descriptor: GPUTextureDescriptor): TextureResource;
@@ -96,7 +104,7 @@ export async function createGpu(options: GpuOptions = {}): Promise<Gpu> {
 }
 
 class Owner implements Gpu {
-  readonly budget: Budget;
+  readonly budget: MemoryBudget;
   readonly reader: Reader;
   readonly fieldLayout: GPUBindGroupLayout;
   readonly textLayout: GPUBindGroupLayout;
@@ -109,19 +117,20 @@ class Owner implements Gpu {
   private readonly buffers: Buffers;
   private readonly stopped = new AbortController();
   private readonly pending = new Set<Promise<void>>();
-  private readonly modules = new Map<string, { entry: Entry; promise: Promise<GPUShaderModule> }>();
+  private readonly modules = new Map<
+    string,
+    { entry: MemoryEntry; promise: Promise<GPUShaderModule> }
+  >();
 
   constructor(
     readonly device: GPUDevice,
     private readonly ownsDevice: boolean,
     options: GpuOptions,
   ) {
-    this.memory = new Memory(options.budget);
+    this.memory = createMemory(options.budget);
     this.budget = this.memory.budget;
     this.reader = createReader({
-      maxBytes: this.budget.cpuBytes,
-      maxStagingBytes: this.budget.stagingBytes,
-      maxEntries: this.budget.entries,
+      memory: this.memory,
       maxBlockBytes: integer(options.maxBlockBytes ?? 1024 ** 2, 'block bytes', 1),
       validate: options.validate ?? false,
     });
@@ -186,21 +195,8 @@ class Owner implements Gpu {
     );
   }
 
-  stats(): GpuStats {
-    const gpu = this.memory.stats(),
-      reads = this.reader.stats();
-    return {
-      ...gpu,
-      cpuBytes: gpu.cpuBytes + reads.cpuBytes,
-      peakCpuBytes: gpu.peakCpuBytes + reads.peakCpuBytes,
-      stagingBytes: gpu.stagingBytes + reads.stagingBytes,
-      peakStagingBytes: gpu.peakStagingBytes + reads.peakStagingBytes,
-      stagedBytes: gpu.stagedBytes + reads.stagedBytes,
-      entries: gpu.entries + reads.entries,
-      queries: reads.queries,
-      queryHits: reads.queryHits,
-      evictions: gpu.evictions + reads.evictions,
-    };
+  stats(): MemoryStats {
+    return this.memory.stats();
   }
   private assertLive(): void {
     this.stopped.signal.throwIfAborted();
@@ -293,7 +289,6 @@ class Owner implements Gpu {
   }
   trim(): void {
     this.memory.trim();
-    this.reader.trim();
   }
   private stop(reason: unknown): void {
     if (this.stopped.signal.aborted) return;

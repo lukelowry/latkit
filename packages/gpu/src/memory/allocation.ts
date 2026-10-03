@@ -1,6 +1,5 @@
-import { failure } from '@latkit/model';
+import { failure, type Memory } from '@latkit/model';
 import { align } from '../error.js';
-import type { Memory } from './memory.js';
 
 interface Span {
   offset: number;

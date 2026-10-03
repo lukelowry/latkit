@@ -1,10 +1,9 @@
-import { failure } from '@latkit/model';
-import type { Entry, Memory } from './memory.js';
+import { failure, type MemoryEntry, type Memory } from '@latkit/model';
 import { TextureData } from './texture-data.js';
 import type { UploadScope } from '../fields/upload.js';
 
 interface Resident {
-  entry: Entry;
+  entry: MemoryEntry;
   texture: GPUTexture;
   revision: number;
   width: number;
@@ -75,7 +74,7 @@ export class Images {
           this.memory.releaseGpu(bytes);
           throw error;
         }
-        let entry: Entry;
+        let entry: MemoryEntry;
         try {
           entry = this.memory.add(
             [],

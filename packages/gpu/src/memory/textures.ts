@@ -1,6 +1,5 @@
-import { failure } from '@latkit/model';
+import { failure, type MemoryEntry, type Memory } from '@latkit/model';
 import { integer } from '../error.js';
-import type { Entry, Memory } from './memory.js';
 
 export interface TextureResource {
   readonly texture: GPUTexture;
@@ -94,7 +93,7 @@ function textureBytes(descriptor: GPUTextureDescriptor): number {
 }
 
 export class Textures {
-  private owned = new WeakMap<TextureResource, Entry>();
+  private owned = new WeakMap<TextureResource, MemoryEntry>();
   constructor(
     private readonly device: GPUDevice,
     private readonly memory: Memory,
@@ -142,7 +141,7 @@ export class Textures {
       this.memory.releaseGpu(bytes);
       throw error;
     }
-    let entry: Entry;
+    let entry: MemoryEntry;
     try {
       entry = this.memory.add([], 128, () => {
         texture.destroy();
@@ -167,7 +166,7 @@ export class Textures {
     return resource;
   }
 
-  entry(resource: TextureResource): Entry {
+  entry(resource: TextureResource): MemoryEntry {
     const entry = this.owned.get(resource);
     if (!entry) throw failure('invalid-input', 'Texture belongs to another Gpu');
     return entry;

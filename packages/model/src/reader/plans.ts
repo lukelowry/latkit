@@ -4,7 +4,7 @@ import { failure } from '../error.js';
 import type { Data } from '../materialized.js';
 import type { FieldDefinition, Schema } from '../schema.js';
 import type { Keys } from './keys.js';
-import type { Entry, Memory } from './memory.js';
+import type { Entry, Memory } from '../memory.js';
 import type { FieldBinding, FieldValues, FieldsRequest } from './types.js';
 
 export interface PlannedGroup {

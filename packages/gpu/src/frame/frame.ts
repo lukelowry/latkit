@@ -1,4 +1,4 @@
-import { failure, type Reader, type ReadScope } from '@latkit/model';
+import { failure, type Reader, type ReadScope, type MemoryEntry, type Memory } from '@latkit/model';
 import { integer, interruptible } from '../error.js';
 import type { CopyJob } from '../fields/pages.js';
 import type { Uploader, UploadScope } from '../fields/upload.js';
@@ -6,7 +6,6 @@ import type { Colormaps } from '../colors/preparation.js';
 import type { Buffers } from '../memory/buffers.js';
 import { BufferData } from '../memory/buffer-data.js';
 import type { Images } from '../memory/images.js';
-import type { Entry, Memory } from '../memory/memory.js';
 import { TextureData } from '../memory/texture-data.js';
 import type { Textures } from '../memory/textures.js';
 import { shadeUniforms } from '../style/shade.js';
@@ -87,7 +86,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
     };
   });
   for (const renderer of renderers) owner.busy.add(renderer);
-  const held = new Set<Entry>();
+  const held = new Set<MemoryEntry>();
   const checks: (() => void)[] = [];
   const copies = new Set<CopyJob>();
   const snapshots: CapturedFrame[] = [];

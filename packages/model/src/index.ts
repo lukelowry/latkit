@@ -104,7 +104,8 @@ export { sampleFrames } from './read.js';
 
 export { createReader } from './reader/reader.js';
 export type { Reader, ReadScope, ReaderOptions } from './reader/reader.js';
-export type { ReaderStats } from './reader/memory.js';
+export { createMemory } from './memory.js';
+export type { Memory, Entry as MemoryEntry, MemoryBudget, MemoryStats } from './memory.js';
 export type {
   FieldInput,
   FieldBinding,

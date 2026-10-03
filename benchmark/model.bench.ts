@@ -1,12 +1,19 @@
 import { describe } from 'vitest';
-import { appendData, createData, createReader, read, selectBatches } from '@latkit/model';
+import {
+  appendData,
+  createData,
+  createMemory,
+  createReader,
+  read,
+  selectBatches,
+} from '@latkit/model';
 import { batches, drain, frames, grid, schema, sizes, suite, voltages } from './harness.ts';
 
 describe.each(sizes)('model %i buses', (buses) => {
   const data = grid(buses),
     input = batches(buses),
     next = voltages(buses, frames),
-    reader = createReader({ maxBytes: 512 * 1024 ** 2 }),
+    reader = createReader({ memory: createMemory({ cpuBytes: 512 * 1024 ** 2 }) }),
     window = { kind: 'range', between: [0, frames - 1] } as const;
   const fields = () => {
     const scope = reader.open();

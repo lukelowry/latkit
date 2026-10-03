@@ -1,7 +1,6 @@
 /** One Gpu per page, the views every renderer shares, compositions, and colormaps. */
 export { createGpu } from './gpu.js';
 export type { Gpu, GpuOptions } from './gpu.js';
-export type { Budget, GpuStats } from './memory/memory.js';
 export type {
   View,
   ViewConfig,

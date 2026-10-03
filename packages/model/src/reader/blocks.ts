@@ -9,7 +9,7 @@ import { validateBlock } from '../validation/block.js';
 import { validateQuery } from '../validation/query.js';
 import { validateSchema } from '../validation/schema.js';
 import type { Keys } from './keys.js';
-import type { Entry, Memory } from './memory.js';
+import type { Entry, Memory } from '../memory.js';
 import { interruptible } from './signal.js';
 
 interface Chunk {
@@ -199,8 +199,8 @@ export class Blocks {
       const metadata = Math.max(128, payload - exposedBytes(value));
       const held = backings.reduce((total, backing) => total + backing.byteLength, 0);
       if (
-        held > Math.max(payload * 4, this.memory.cpuBytes / 2) ||
-        held + metadata > this.memory.cpuBytes
+        held > Math.max(payload * 4, this.memory.budget.cpuBytes / 2) ||
+        held + metadata > this.memory.budget.cpuBytes
       ) {
         // Borrowed views can pin far larger allocations; keep only the exposed bytes.
         value = this.memory.stage(payload, () => copyBuffers(value));

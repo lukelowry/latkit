@@ -1,9 +1,8 @@
-import { failure } from '@latkit/model';
+import { failure, type MemoryEntry, type Memory } from '@latkit/model';
 import { BufferData } from '../memory/buffer-data.js';
 import { distanceField } from './distance-field.js';
 import { integer, interruptible } from '../error.js';
 import type { Images } from '../memory/images.js';
-import type { Entry, Memory } from '../memory/memory.js';
 import type { Textures, TextureResource } from '../memory/textures.js';
 import { createTextRasterizer } from './rasterizer.js';
 import type {
@@ -19,7 +18,7 @@ import type { Uploader, UploadScope } from '../fields/upload.js';
 
 interface Atlas {
   resource: TextureResource;
-  entry: Entry;
+  entry: MemoryEntry;
   x: number;
   y: number;
   height: number;
@@ -43,7 +42,7 @@ interface Geometry {
   group?: GPUBindGroup;
 }
 interface Resident {
-  entry: Entry;
+  entry: MemoryEntry;
   geometry: Geometry[];
 }
 const em = 48,
@@ -99,7 +98,7 @@ export class TextAtlas {
     signal.throwIfAborted();
     let resident = this.geometry.get(request.runs);
     if (!resident?.entry.live) {
-      const held = new Set<Entry>(),
+      const held = new Set<MemoryEntry>(),
         glyphs: Glyph[] = [];
       try {
         for (const run of request.runs) {

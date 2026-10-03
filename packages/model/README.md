@@ -7,7 +7,8 @@ Immutable columnar values, bounded local reads, and portable command description
 | `Data`                                 | Immutable application-owned schema, row identities, and indexed column pages |
 | `DataBatch`                            | Plain static rows or sampled observations                                    |
 | `read(data, query, options)`           | Bounded local rows, samples, aggregates, and envelopes                       |
-| `createReader(options)`                | Memoized reads, joined fields, and extents under one memory budget           |
+| `createReader(options)`                | Memoized reads, joined fields, and extents in a memory pool                  |
+| `createMemory(budget)`                 | One budget for the reads, uploads, and GPU resources that share it           |
 | `selectBatches(data, fields, options)` | Selected plain batches from a captured value                                 |
 | `CommandDescription` / `Parameter`     | Shared command vocabulary without connection or transport state              |
 
@@ -92,13 +93,14 @@ or add their own sample caches.
 
 ## Read through a reader
 
-A `Reader` memoizes reads over immutable values within one memory budget. A scope holds what it
-read until it closes; every view on a GPU shares that GPU's reader.
+A `Reader` memoizes reads over immutable values in a memory pool, its own unless you pass one. A
+scope holds what it read until it closes; every view on a GPU shares that GPU's reader, which reads
+into the GPU's pool.
 
 ```ts
-import { createReader } from '@latkit/model';
+import { createMemory, createReader } from '@latkit/model';
 
-const reader = createReader({ maxBytes: 64 * 1024 ** 2 });
+const reader = createReader({ memory: createMemory({ cpuBytes: 64 * 1024 ** 2 }) });
 const reads = reader.open({ signal, at: playhead });
 try {
   for await (const block of reads.fields({ source, from: 'Bus', fields: { load: 'load' } }))

@@ -8,16 +8,17 @@ import {
   type FieldsBlock,
   type NumericArray,
   type SampleColumn,
+  type MemoryEntry,
+  type Memory,
 } from '@latkit/model';
 import type { GpuPage, GpuValueField, UploadOptions } from './types.js';
 import { FieldPages, type Bitmap, type Column as EncodedColumn, type CopyJob } from './pages.js';
 import { Allocator, type Allocation } from '../memory/allocation.js';
 import { BufferData } from '../memory/buffer-data.js';
 import { align, integer } from '../error.js';
-import type { Entry, Memory } from '../memory/memory.js';
 
 export interface UploadScope {
-  use(entry: Entry): void;
+  use(entry: MemoryEntry): void;
   check(check: () => void): void;
   copy(job: CopyJob): void;
 }
@@ -42,12 +43,12 @@ interface UploadData {
   readonly envelope?: { firstBucket: number; count: number };
 }
 interface Resident {
-  entry: Entry;
+  entry: MemoryEntry;
   pages: readonly GpuPage[];
   copies: CopyJob[];
 }
 interface MutableResident {
-  entry: Entry;
+  entry: MemoryEntry;
   allocation: Allocation;
   revision: number;
   size: number;
@@ -60,7 +61,7 @@ export class Uploader {
   readonly fieldPages: FieldPages;
   private numericCache = new WeakMap<
     ArrayBufferLike,
-    Map<string, { entry: Entry; column: EncodedColumn }>
+    Map<string, { entry: MemoryEntry; column: EncodedColumn }>
   >();
   private identities = new WeakMap<object, number>();
   private serial = 0;
@@ -303,7 +304,7 @@ export class Uploader {
       row += nr;
     }
     const pageCount = rowRanges.length * Math.ceil(frames / tileFrames);
-    const dependencies = new Set<Entry>();
+    const dependencies = new Set<MemoryEntry>();
     const copies: CopyJob[] = [];
     const allocations: Allocation[] = [];
     cache ??= new Map();
@@ -498,7 +499,7 @@ export class Uploader {
     frames: number,
     limit: number,
     policy: UploadOptions['float64'],
-  ): { entry: Entry; column: EncodedColumn } {
+  ): { entry: MemoryEntry; column: EncodedColumn } {
     const mask = view.validity;
     const key = JSON.stringify([
       view.values.constructor.name,
