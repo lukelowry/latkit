@@ -1,4 +1,14 @@
-import { createReader, type Reader } from '@latkit/model';
+import {
+  interruptible,
+  failure,
+  createMemory,
+  createReader,
+  type Memory,
+  type MemoryBudget,
+  type MemoryEntry,
+  type MemoryStats,
+  type Reader,
+} from '@latkit/model';
 import { renderers as rendererTree } from './frame/tree.js';
 import { renderFrame, type FrameOwner } from './frame/frame.js';
 import type { Renderer, RenderOptions } from './frame/render.js';
@@ -8,8 +18,8 @@ import { Images } from './memory/images.js';
 import { TextAtlas } from './text/atlas.js';
 import type { TextInput, TextMetrics, TextOptions } from './text/text.js';
 import { Allocator } from './memory/allocation.js';
-import { GpuError, integer, interruptible } from './error.js';
-import { Memory, type Budget, type Entry, type GpuStats } from './memory/memory.js';
+import { integer } from './error.js';
+import { Uniforms } from './frame/uniforms.js';
 import { Textures, type TextureResource } from './memory/textures.js';
 import { Uploader } from './fields/upload.js';
 
@@ -19,8 +29,8 @@ export interface GpuOptions {
   readonly powerPreference?: GPUPowerPreference;
   readonly requiredFeatures?: readonly GPUFeatureName[];
   readonly requiredLimits?: Readonly<Record<string, number>>;
-  /** CPU, staging, and entry bounds apply to the reader's cache and to GPU bookkeeping, each. */
-  readonly budget?: Partial<Budget>;
+  /** One pool bounds the reader's cache, uploads, and GPU resources together. */
+  readonly budget?: Partial<MemoryBudget>;
   readonly pageBytes?: number;
   readonly maxBlockBytes?: number;
   readonly maxFramesInFlight?: number;
@@ -32,24 +42,24 @@ export interface GpuOptions {
 export interface Gpu {
   readonly device: GPUDevice;
   /**
-   * Aborts when this Gpu stops: with a `device-lost` GpuError when the device is lost, or `closed`
+   * Aborts when this Gpu stops: with a `device-lost` failure when the device is lost, or `closed`
    * after `destroy`. Views stop drawing then; after device loss, recreate the Gpu and its views.
    */
   readonly signal: AbortSignal;
-  readonly budget: Budget;
+  readonly budget: MemoryBudget;
   /** One bounded, memoized reader for every view, job, and layout on this Gpu. */
   readonly reader: Reader;
   readonly fieldLayout: GPUBindGroupLayout;
   readonly textLayout: GPUBindGroupLayout;
   readonly colormapLayout: GPUBindGroupLayout;
   measureText(input: TextInput, options?: { readonly signal?: AbortSignal }): Promise<TextMetrics>;
-  stats(): GpuStats;
+  stats(): MemoryStats;
   render(options: RenderOptions): Promise<void>;
   buffer(descriptor: GPUBufferDescriptor): BufferResource;
   texture(descriptor: GPUTextureDescriptor): TextureResource;
   /** A validated shader module; identical code shares one. Invalid WGSL rejects with `invalid-input`. */
   shaderModule(code: string, label?: string): Promise<GPUShaderModule>;
-  /** Immutable descriptor identity is the cache key. */
+  /** A pipeline, created while the Gpu is live; views keep and share their own variants. */
   renderPipeline(descriptor: GPURenderPipelineDescriptor): Promise<GPURenderPipeline>;
   computePipeline(descriptor: GPUComputePipelineDescriptor): Promise<GPUComputePipeline>;
   /** Wait for already submitted managed work. Does not await ongoing preparation. */
@@ -63,28 +73,28 @@ export async function createGpu(options: GpuOptions = {}): Promise<Gpu> {
   let device = options.device;
   if (!device) {
     const api = globalThis.navigator?.gpu;
-    if (!api) throw new GpuError('unavailable', 'WebGPU is unavailable');
+    if (!api) throw failure('unavailable', 'WebGPU is unavailable');
     const adapter = await api.requestAdapter({ powerPreference: options.powerPreference });
-    if (!adapter) throw new GpuError('unavailable', 'No WebGPU adapter is available');
+    if (!adapter) throw failure('unavailable', 'No WebGPU adapter is available');
     try {
       device = await adapter.requestDevice({
         requiredFeatures: options.requiredFeatures,
         requiredLimits: options.requiredLimits,
       });
     } catch (cause) {
-      throw new GpuError('unavailable', 'The requested GPU device could not be created', { cause });
+      throw failure('unavailable', 'The requested GPU device could not be created', { cause });
     }
   } else {
     for (const feature of options.requiredFeatures ?? [])
       if (!device.features.has(feature))
-        throw new GpuError('unsupported', 'Missing GPU feature: ' + feature);
+        throw failure('unsupported', 'Missing GPU feature: ' + feature);
     for (const [limit, requested] of Object.entries(options.requiredLimits ?? {})) {
       const actual = (device.limits as unknown as Record<string, number>)[limit];
       if (
         actual === undefined ||
         (limit.startsWith('min') ? actual > requested : actual < requested)
       )
-        throw new GpuError('unsupported', 'Insufficient GPU limit: ' + limit);
+        throw failure('unsupported', 'Insufficient GPU limit: ' + limit);
     }
   }
   try {
@@ -96,7 +106,7 @@ export async function createGpu(options: GpuOptions = {}): Promise<Gpu> {
 }
 
 class Owner implements Gpu {
-  readonly budget: Budget;
+  readonly budget: MemoryBudget;
   readonly reader: Reader;
   readonly fieldLayout: GPUBindGroupLayout;
   readonly textLayout: GPUBindGroupLayout;
@@ -107,25 +117,23 @@ class Owner implements Gpu {
   private readonly text: TextAtlas;
   private readonly textures: Textures;
   private readonly buffers: Buffers;
+  private readonly uniforms: Uniforms;
   private readonly stopped = new AbortController();
   private readonly pending = new Set<Promise<void>>();
-  private readonly pipelines = new Map<
-    object,
-    { entry: Entry; promise: Promise<GPURenderPipeline | GPUComputePipeline> }
+  private readonly modules = new Map<
+    string,
+    { entry: MemoryEntry; promise: Promise<GPUShaderModule> }
   >();
-  private readonly modules = new Map<string, { entry: Entry; promise: Promise<GPUShaderModule> }>();
 
   constructor(
     readonly device: GPUDevice,
     private readonly ownsDevice: boolean,
     options: GpuOptions,
   ) {
-    this.memory = new Memory(options.budget);
+    this.memory = createMemory(options.budget);
     this.budget = this.memory.budget;
     this.reader = createReader({
-      maxBytes: this.budget.cpuBytes,
-      maxStagingBytes: this.budget.stagingBytes,
-      maxEntries: this.budget.entries,
+      memory: this.memory,
       maxBlockBytes: integer(options.maxBlockBytes ?? 1024 ** 2, 'block bytes', 1),
       validate: options.validate ?? false,
     });
@@ -150,11 +158,13 @@ class Owner implements Gpu {
       options.text,
     );
     this.textLayout = this.text.layout;
+    this.uniforms = new Uniforms(device, this.memory);
     this.frames = {
       device,
       reader: this.reader,
       memory: this.memory,
       uploader,
+      uniforms: this.uniforms,
       colormaps,
       text: this.text,
       images,
@@ -168,7 +178,7 @@ class Owner implements Gpu {
     };
     void device.lost.then((info) =>
       this.stop(
-        new GpuError('device-lost', 'GPU device lost: ' + (info.message || info.reason), {
+        failure('device-lost', 'GPU device lost: ' + (info.message || info.reason), {
           cause: info,
         }),
       ),
@@ -190,21 +200,8 @@ class Owner implements Gpu {
     );
   }
 
-  stats(): GpuStats {
-    const gpu = this.memory.stats(),
-      reads = this.reader.stats();
-    return {
-      ...gpu,
-      cpuBytes: gpu.cpuBytes + reads.cpuBytes,
-      peakCpuBytes: gpu.peakCpuBytes + reads.peakCpuBytes,
-      stagingBytes: gpu.stagingBytes + reads.stagingBytes,
-      peakStagingBytes: gpu.peakStagingBytes + reads.peakStagingBytes,
-      stagedBytes: gpu.stagedBytes + reads.stagedBytes,
-      entries: gpu.entries + reads.entries,
-      queries: reads.queries,
-      queryHits: reads.queryHits,
-      evictions: gpu.evictions + reads.evictions,
-    };
+  stats(): MemoryStats {
+    return this.memory.stats();
   }
   private assertLive(): void {
     this.stopped.signal.throwIfAborted();
@@ -215,7 +212,7 @@ class Owner implements Gpu {
     const renderers = rendererTree(options.views.map((view) => view.renderer));
     for (const renderer of renderers)
       if (this.rendering.has(renderer))
-        throw new GpuError('busy', 'Renderer already has a render in progress');
+        throw failure('busy', 'Renderer already has a render in progress');
     const signal = AbortSignal.any([
       this.stopped.signal,
       ...(options.signal ? [options.signal] : []),
@@ -265,7 +262,7 @@ class Owner implements Gpu {
       this.assertLive();
       const errors = info.messages.filter((message) => message.type === 'error');
       if (errors.length || error)
-        throw new GpuError(
+        throw failure(
           'invalid-input',
           (label ? label + ': ' : '') +
             (errors
@@ -280,62 +277,36 @@ class Owner implements Gpu {
     return promise;
   }
   renderPipeline(descriptor: GPURenderPipelineDescriptor): Promise<GPURenderPipeline> {
-    return this.pipeline(descriptor, () =>
-      this.device.createRenderPipelineAsync(descriptor),
-    ) as Promise<GPURenderPipeline>;
+    return this.pipeline(() => this.device.createRenderPipelineAsync(descriptor));
   }
   computePipeline(descriptor: GPUComputePipelineDescriptor): Promise<GPUComputePipeline> {
-    return this.pipeline(descriptor, () =>
-      this.device.createComputePipelineAsync(descriptor),
-    ) as Promise<GPUComputePipeline>;
+    return this.pipeline(() => this.device.createComputePipelineAsync(descriptor));
   }
-  private pipeline(
-    descriptor: object,
-    create: () => Promise<GPURenderPipeline | GPUComputePipeline>,
-  ): Promise<GPURenderPipeline | GPUComputePipeline> {
+  /** Views cache their variants; a pipeline is created once per request and checked live. */
+  private async pipeline<P>(create: () => Promise<P>): Promise<P> {
     this.assertLive();
-    const cached = this.pipelines.get(descriptor);
-    if (cached?.entry.live) {
-      cached.entry.touch();
-      return cached.promise;
-    }
-    const entry = this.memory.add([], 512, () => {
-      this.pipelines.delete(descriptor);
-    });
-    const promise = Promise.resolve()
-      .then(create)
-      .then(
-        (pipeline) => {
-          this.assertLive();
-          entry.unpin();
-          return pipeline;
-        },
-        (error) => {
-          this.memory.remove(entry);
-          throw error;
-        },
-      );
-    this.pipelines.set(descriptor, { entry, promise });
-    return promise;
+    const pipeline = await create();
+    this.assertLive();
+    return pipeline;
   }
   async idle(): Promise<void> {
     await Promise.all([...this.pending]);
   }
   trim(): void {
+    this.uniforms.trim();
     this.memory.trim();
-    this.reader.trim();
   }
   private stop(reason: unknown): void {
     if (this.stopped.signal.aborted) return;
     this.stopped.abort(reason);
     this.reader.destroy();
+    this.uniforms.destroy();
     this.memory.destroy();
-    this.pipelines.clear();
     this.modules.clear();
   }
   destroy(): void {
     if (this.stopped.signal.aborted) return;
-    this.stop(new GpuError('closed', 'Gpu is closed'));
+    this.stop(failure('closed', 'Gpu is closed'));
     if (this.ownsDevice) this.device.destroy();
   }
 }

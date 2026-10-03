@@ -3,19 +3,18 @@ import {
   appendData,
   appendedPages,
   blockBuffers,
-  copyBuffers,
   createData,
   locateSample,
   read,
-  resolveRows,
   sampleFrames,
-  samplePages,
   textColumn,
   type Data,
   type SampleBatch,
   type Schema,
 } from '../src/index.js';
 import { Sequence } from '../src/sequence.js';
+import { copyBuffers } from '../src/columns.js';
+import { resolveRows, samplePages } from '../src/read.js';
 const index = { source: 'pages', type: 'node', version: 'rows' };
 const rows = { kind: 'range', offset: 0, count: 2 } as const;
 const schema: Schema = {
@@ -131,20 +130,17 @@ it('searches and slices irregular persistent batches like a flat sequence withou
   expect(sequence.startsWith(Sequence.empty<number>().append([0, -1]))).toBe(false);
 });
 
-it('reads, appends, and copies indexed data across independent package copies', async () => {
+it('reads and appends indexed data across independent package copies', async () => {
   const packaged = await import('../dist/index.js');
   for (const [producer, consumer] of [
     [{ createData, appendData }, packaged],
-    [packaged, { appendData, appendedPages, copyBuffers, locateSample, read }],
+    [packaged, { appendData, appendedPages, locateSample, read }],
   ] as const) {
     const original = producer.createData(schema, [batch(0, 0)]);
     const next = consumer.appendData(original, [batch(1, 1)]);
     const pages = next.tables.node.fields.a;
     expect(consumer.locateSample(pages, 1)?.frame).toBe(1);
     expect([...consumer.appendedPages(original.tables.node.fields.a, pages)!]).toHaveLength(1);
-    const copied = consumer.copyBuffers(next);
-    expect(consumer.locateSample(copied.tables.node.fields.a, 1)?.frame).toBe(1);
-    expect([...copied.tables.node.fields.a]).toHaveLength(2);
     const blocks = [];
     for await (const block of consumer.read(next, {
       kind: 'rows',

@@ -1,3 +1,4 @@
+import { failure } from '@latkit/model';
 import { interpolateWithPremultipliedAlpha } from 'culori/fn';
 import { freezeColor, validateRgba, type RGBA } from './color.js';
 import { initializeColors, toRgba } from './conversion.js';
@@ -34,12 +35,12 @@ const validated = new WeakSet<Colormap>();
 export function validateColormap(map: Colormap): void {
   if (validated.has(map)) return;
   if (!map || !kinds.includes(map.kind) || !Array.isArray(map.colors))
-    throw new TypeError('Expected a colormap value');
+    throw failure('invalid-input', 'Expected a colormap value');
   const min = map.kind === 'categorical' ? 1 : 2;
   if (map.colors.length < min || map.colors.length > 16384)
-    throw new RangeError(`Colormaps require ${min} to 16384 colors`);
+    throw failure('invalid-input', `Colormaps require ${min} to 16384 colors`);
   if (map.label !== undefined && typeof map.label !== 'string')
-    throw new TypeError('Invalid colormap label');
+    throw failure('invalid-input', 'Invalid colormap label');
   for (const color of map.colors) validateRgba(color);
   // Structural values are immutable by contract; factory results also enforce it at runtime.
   if (Object.isFrozen(map) && Object.isFrozen(map.colors) && map.colors.every(Object.isFrozen))
@@ -49,22 +50,23 @@ export function validateColormap(map: Colormap): void {
 /** Copies and freezes authoring data once. Callbacks are evaluated only during construction. */
 export function createColormap(options: ColormapOptions): Colormap {
   const kind = options.kind ?? 'sequential';
-  if (!kinds.includes(kind)) throw new TypeError('Invalid colormap kind');
+  if (!kinds.includes(kind)) throw failure('invalid-input', 'Invalid colormap kind');
   if (options.label !== undefined && typeof options.label !== 'string')
-    throw new TypeError('Invalid colormap label');
+    throw failure('invalid-input', 'Invalid colormap label');
   let colors: readonly RGBA[];
   if ('colors' in options) {
     validateColormap({ kind, colors: options.colors });
     colors = options.colors.map(freezeColor);
   } else {
-    if (kind === 'categorical') throw new TypeError('Categorical maps require explicit colors');
+    if (kind === 'categorical')
+      throw failure('invalid-input', 'Categorical maps require explicit colors');
     const size = options.size ?? 256;
     if (!Number.isSafeInteger(size) || size < 2 || size > 16384)
-      throw new RangeError('Colormap size must be an integer from 2 to 16384');
+      throw failure('invalid-input', 'Colormap size must be an integer from 2 to 16384');
     let sample: (t: number) => RGBA;
     if ('sample' in options) sample = options.sample;
     else {
-      if (!Array.isArray(options.stops)) throw new TypeError('Expected color stops');
+      if (!Array.isArray(options.stops)) throw failure('invalid-input', 'Expected color stops');
       const stops = options.stops as readonly ColorStop[];
       if (
         stops.length < 2 ||
@@ -72,20 +74,20 @@ export function createColormap(options: ColormapOptions): Colormap {
         stops[0].at !== 0 ||
         stops[stops.length - 1].at !== 1
       )
-        throw new RangeError('Stops must cover [0, 1]');
+        throw failure('invalid-input', 'Stops must cover [0, 1]');
       for (let i = 0; i < stops.length; i++) {
         if (!Number.isFinite(stops[i].at) || (i && stops[i].at <= stops[i - 1].at))
-          throw new RangeError('Stops must be finite and strictly increasing');
+          throw failure('invalid-input', 'Stops must be finite and strictly increasing');
         validateRgba(stops[i].color);
       }
       if (
         kind === 'cyclic' &&
         stops[0].color.some((v, i) => v !== stops[stops.length - 1].color[i])
       )
-        throw new RangeError('Cyclic stops must close at the same color');
+        throw failure('invalid-input', 'Cyclic stops must close at the same color');
       const space = options.interpolation ?? 'oklab';
       if (!['srgb', 'srgb-linear', 'oklab'].includes(space))
-        throw new TypeError('Invalid interpolation space');
+        throw failure('invalid-input', 'Invalid interpolation space');
       initializeColors();
       const interpolate = interpolateWithPremultipliedAlpha(
         stops.map(({ at, color: c }) => [
@@ -96,7 +98,7 @@ export function createColormap(options: ColormapOptions): Colormap {
       );
       sample = (t) => {
         const color = toRgba(interpolate(t));
-        if (!color) throw new TypeError('Interpolation produced an invalid color');
+        if (!color) throw failure('invalid-input', 'Interpolation produced an invalid color');
         return color;
       };
     }

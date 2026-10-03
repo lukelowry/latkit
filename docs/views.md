@@ -25,11 +25,14 @@ network.set({ input: 'inspect' }); // 'navigate', 'inspect', or 'none'; a diagra
 network.on('frame', () => showStats(network.stats())); // after each drawn frame
 ```
 
-Every item view handles the same input: hover follows the pointer, a right click opens a menu where
-the button comes up (a right drag never does), the context menu key or Shift+F10 opens a menu at
-the selection, Escape ends a gesture or clears the selection, and, when navigating, the wheel zooms
-(or only with Ctrl or ⌘ under `input: { wheel: 'modifier' }`), Home fits the data, and + and −
-zoom. Each view adds its own gestures, such as dragging.
+Every item view handles the same input: hover follows the pointer; a click selects what it hits,
+and clicking again in place cycles through overlapping hits; Shift, Ctrl, or ⌘ toggles the topmost
+hit; a double click or Enter reports `open`, and a double click on nothing fits the data while
+navigating; a right click opens a menu where the button comes up (a right drag never does); the
+context menu key or Shift+F10 opens a menu at the selection; Escape ends a gesture or clears the
+selection; and, when navigating, the wheel zooms (or only with Ctrl or ⌘ under
+`input: { wheel: 'modifier' }`), Home fits the data, and + and − zoom. Each view adds its own
+gestures, such as dragging.
 
 ## Update
 
@@ -42,7 +45,7 @@ zoom. Each view adds its own gestures, such as dragging.
 
 ```ts
 network.set({
-  vertices: { Bus: { size: { field: 'capacity', range: [3, 12] } } },
+  vertices: { Bus: { sizePx: { field: 'capacity', range: [3, 12] } } },
   paths: { Border: null },
   edgeWidthPx: 2,
 });
@@ -110,7 +113,8 @@ Events arrive together after each drawn frame, in order: `frame`, `camera`, `hov
 const png = await network.image({ width: 2048, height: 1024, at: 12 });
 ```
 
-An image renders at any size and coordinate. A view on a canvas or in a composition stays as it is:
+An image renders at any size and coordinate, as a `png`, `jpeg`, or `webp` `format`, with `quality`
+from 0 to 1 for the last two. A view on a canvas or in a composition stays as it is:
 its camera, hover, selection, and what `pick` finds stay as presented. A view with neither presents
 in its images, so `pick` and `locate` follow the latest one. [Video](video.md) always draws the view
 as it is and changes nothing.
@@ -130,7 +134,8 @@ const dashboard = createComposition(gpu, {
 ```
 
 Regions are `[x, y, width, height]` fractions from the top left. A composition borrows views that have
-no canvas of their own.
+no canvas of their own. Pointer, wheel, menu, and key input reach the view under the pointer, in its
+own canvas points, so each view hovers, picks, and navigates as it would on a canvas of its own.
 
 ## Clean up
 

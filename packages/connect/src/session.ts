@@ -3,11 +3,11 @@ import {
   defaults,
   deferred,
   errorOf,
+  fromPeer,
   integer,
   interrupt,
   limits,
-  remoteFailure,
-  text,
+  peerFailure,
 } from './core.js';
 import { decode, Op, prepare } from './frame.js';
 import type { Frame, Opcode, Plan } from './frame.js';
@@ -94,17 +94,17 @@ export class Session {
 
   receiver(id: number): Receiver {
     this.lifetime.signal.throwIfAborted();
-    if (this.receivers.size >= this.bounds.maxStreams || this.receivers.has(id))
+    if (this.receivers.size >= this.bounds.streams || this.receivers.has(id))
       throw failure('resource-limit', 'Too many observation streams.');
     const bytes = Math.min(
       this.bounds.streamWindowBytes,
-      this.bounds.maxBufferedBytes - this.#reservedBytes,
+      this.bounds.bufferedBytes - this.#reservedBytes,
     );
     const messages = Math.min(
       this.bounds.streamWindowMessages,
-      this.bounds.maxBufferedMessages - this.#reservedMessages,
+      this.bounds.bufferedMessages - this.#reservedMessages,
     );
-    if (bytes < this.bounds.maxMessageBytes || messages < 1)
+    if (bytes < this.bounds.messageBytes || messages < 1)
       throw failure('resource-limit', 'Receive windows exhaust the connection budget.');
     const stream = new Receiver(this, id, bytes, messages);
     this.#reservedBytes += bytes;
@@ -118,21 +118,21 @@ export class Session {
     this.#reservedMessages -= stream.windowMessages;
   }
   sender(id: number, bytes: unknown, messages: unknown): Sender {
-    if (this.senders.size >= this.bounds.maxStreams || this.senders.has(id))
+    if (this.senders.size >= this.bounds.streams || this.senders.has(id))
       throw failure('resource-limit', 'Too many producer streams.');
     const reserved = [...this.senders.values()].reduce((sum, s) => sum + s.windowBytes, 0);
-    if (reserved + integer(bytes, 1) > this.bounds.maxBufferedBytes)
+    if (reserved + integer(bytes, 1) > this.bounds.bufferedBytes)
       throw failure('resource-limit', 'Producer windows exhaust the connection budget.');
     const reservedMessages = [...this.senders.values()].reduce(
       (sum, s) => sum + s.windowMessages,
       0,
     );
-    if (reservedMessages + integer(messages, 1) > this.bounds.maxBufferedMessages)
+    if (reservedMessages + integer(messages, 1) > this.bounds.bufferedMessages)
       throw failure('resource-limit', 'Producer message windows exhaust the connection budget.');
     const stream = new Sender(
       this,
       id,
-      integer(bytes, this.bounds.maxMessageBytes, this.bounds.streamWindowBytes),
+      integer(bytes, this.bounds.messageBytes, this.bounds.streamWindowBytes),
       integer(messages, 1, this.bounds.streamWindowMessages),
     );
     this.senders.set(id, stream);
@@ -140,6 +140,9 @@ export class Session {
   }
   private receive(bytes: Uint8Array): void {
     if (this.#ended) return;
+    fromPeer(() => this.handle(bytes));
+  }
+  private handle(bytes: Uint8Array): void {
     const frame = decode(bytes, this.bounds);
     if (frame.op === Op.publication) {
       const stream = this.receivers.get(frame.id);
@@ -179,7 +182,7 @@ export class Session {
       return;
     }
     if (frame.op === Op.close) {
-      this.end(remoteFailure(text(frame.metadata.code, 128), text(frame.metadata.message, 4096)));
+      this.end(peerFailure(frame.metadata));
       return;
     }
     this.onControl(frame);

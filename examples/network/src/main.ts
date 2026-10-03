@@ -64,14 +64,19 @@ async function main(): Promise<void> {
   let heightOn = false;
   let colors = colormaps.viridis;
   let borders: ExampleSource | undefined;
-  const fields = (): VertexOptions => ({
-    position: 'position',
-    color: { field: 'load', domain: [0, 1], colormap: colors },
-    size: current.tables.Bus!.columns.degree
-      ? { field: 'degree', domain: [0, 1], range: [0.6, 2] }
-      : null,
-    height: heightOn ? { field: 'load', domain: [0, 1], range: [0, 0.18] } : null,
-  });
+  /** Large grids draw smaller markers and thinner lines. */
+  const large = (): boolean => current.tables.Bus!.count >= 100000;
+  const fields = (): VertexOptions => {
+    const radius = large() ? 1.4 : 4;
+    return {
+      position: 'position',
+      color: { field: 'load', domain: [0, 1], colormap: colors },
+      sizePx: current.tables.Bus!.columns.degree
+        ? { field: 'degree', domain: [0, 1], range: [radius * 0.6, radius * 2] }
+        : null,
+      height: heightOn ? { field: 'load', domain: [0, 1], range: [0, 0.18] } : null,
+    };
+  };
   const gpu = await createGpu();
   const net = createNetwork(gpu, {
     canvas: stage,
@@ -81,7 +86,7 @@ async function main(): Promise<void> {
       Line: {
         ends: ['from', 'to'],
         ...(current.tables.Line!.columns.bends ? { bends: 'bends' } : {}),
-        curve: 'geodesic',
+        route: 'geodesic',
       },
     },
     msaa: 4,
@@ -114,8 +119,8 @@ async function main(): Promise<void> {
         source: current.data,
         vertices: { Bus: fields() },
         edges: { Line: { bends: current.tables.Line!.columns.bends ? 'bends' : null } },
-        vertexRadiusPx: current.tables.Bus!.count >= 100000 ? 1.4 : 4,
-        edgeWidthPx: current.tables.Bus!.count >= 100000 ? 0.5 : 1.4,
+        vertexRadiusPx: large() ? 1.4 : 4,
+        edgeWidthPx: large() ? 0.5 : 1.4,
         camera: { fit: true },
       });
       readoutEl.querySelector('.hover')!.textContent = '-';
@@ -132,7 +137,7 @@ async function main(): Promise<void> {
       {
         label: 'geodesics',
         on: true,
-        apply: (on) => net.set({ edges: { Line: { curve: on ? 'geodesic' : 'linear' } } }),
+        apply: (on) => net.set({ edges: { Line: { route: on ? 'geodesic' : 'straight' } } }),
       },
       {
         label: 'borders',

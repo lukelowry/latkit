@@ -1,14 +1,11 @@
-import type { Data, FieldInput, RowSelection } from '@latkit/model';
-import type { DataHit, kit, RGBA } from '@latkit/gpu';
-export type Point = readonly [x: number, y: number];
+import type { Data, FieldInput, Item, RowSelection } from '@latkit/model';
+import type { kit, Labels, Point, RGBA, ColorScale, Position2D, Scale } from '@latkit/gpu';
+export type { Point };
 export type Shape = 'rectangle' | 'rounded' | 'ellipse' | 'diamond';
-export interface Labels {
-  readonly field: FieldInput;
-  readonly font?: kit.TextFont;
-  /** Diagram units, independent of camera zoom. */
+/** Labels on a type's items, sized in diagram units so they zoom with the diagram. */
+export interface DiagramLabels extends Labels {
+  /** `fontSizePx` by default. */
   readonly size?: number;
-  readonly color?: RGBA;
-  readonly maxCount?: number;
   readonly maxWidth?: number;
   readonly overflow?: 'wrap' | 'ellipsis';
 }
@@ -17,23 +14,25 @@ export interface PortOptions {
   readonly order?: number;
   readonly marker?: 'directional' | 'circle' | 'diamond';
   readonly label?: string;
-  readonly color?: string | kit.ColorScale | null;
-  readonly status?: string | kit.ColorScale | null;
+  readonly color?: string | ColorScale | null;
+  readonly status?: string | ColorScale | null;
 }
 export interface VertexOptions {
   readonly rows?: RowSelection;
-  readonly position?: kit.Position2D | null;
+  readonly position?: Position2D | null;
   readonly size?: FieldInput | null;
   readonly shape?: Shape;
   readonly cornerRadius?: number;
   /** Automatic sizing reserves room around the title. Default: center. */
   readonly labelPosition?: 'header' | 'center';
   /** A field name stands for that field with defaults: `color: 'load'`, `labels: 'name'`. */
-  readonly color?: string | kit.ColorScale | null;
-  readonly status?: string | kit.ColorScale | null;
+  readonly color?: string | ColorScale | null;
+  /** The color without a `color` field; `vertexBaseColor` by default. */
+  readonly baseColor?: RGBA;
+  readonly status?: string | ColorScale | null;
   readonly visible?: FieldInput | null;
   readonly shade?: FieldInput | null;
-  readonly labels?: string | Labels | null;
+  readonly labels?: string | DiagramLabels | null;
   /** Keyed by reference field. Each field naming a drawn net is a port. */
   readonly ports?: Readonly<Record<string, PortOptions>>;
 }
@@ -46,13 +45,16 @@ export interface EdgeOptions {
   readonly ends?: readonly [source: string, target: string];
   readonly route?: 'orthogonal' | 'straight' | RouteStrategy;
   readonly appearance?: 'wire' | 'tag';
-  readonly color?: string | kit.ColorScale | null;
-  /** Widths are CSS pixels; flow is CSS pixels per second. */
-  readonly width?: string | kit.Scale | null;
-  readonly flow?: string | kit.Scale | null;
+  readonly color?: string | ColorScale | null;
+  /** The color without a `color` field; `edgeBaseColor` by default. */
+  readonly baseColor?: RGBA;
+  /** Line width from a field; `edgeWidthPx` without one. */
+  readonly widthPx?: string | Scale | null;
+  /** CSS pixels per second. */
+  readonly flow?: string | Scale | null;
   readonly visible?: FieldInput | null;
   readonly shade?: FieldInput | null;
-  readonly labels?: string | Labels | null;
+  readonly labels?: string | DiagramLabels | null;
   /** Arrowheads where flow arrives: a row's target end, or a net's input ports. */
   readonly arrows?: boolean;
 }
@@ -62,16 +64,22 @@ export interface Group {
   readonly collapsed?: boolean;
   readonly parent?: string;
 }
-export interface RowRef {
-  readonly type: string;
+/** A drawn row, as a vertex or an edge. */
+export interface DiagramRow extends Item {
+  readonly kind: 'vertex' | 'edge';
+}
+/** A vertex's port: the vertex row and the reference field the port draws. */
+export interface DiagramPort extends Item {
+  readonly kind: 'port';
+  readonly port: string;
+}
+/** What a diagram selects, hovers, and picks: a row, a port, or a group of the config. */
+export type DiagramItem =
+  DiagramRow | DiagramPort | { readonly kind: 'group'; readonly id: string };
+/** The item a scene vertex or edge draws, with the id its layout and labels key on. */
+export interface SceneItem extends DiagramRow {
   readonly id: string;
 }
-export type DiagramItem =
-  | (RowRef & { readonly kind: 'vertex' | 'edge' })
-  | (RowRef & { readonly kind: 'port'; readonly port: string })
-  | { readonly kind: 'group'; readonly id: string };
-export type DiagramHit =
-  (Exclude<DiagramItem, { kind: 'group' }> & DataHit) | Extract<DiagramItem, { kind: 'group' }>;
 export interface RouteEnd {
   readonly position: Point;
   readonly normal: Point;
@@ -87,16 +95,28 @@ export interface RouteStrategy {
   /** Return one path per branch. Coordinates are diagram units. */
   route(request: RouteRequest): readonly (readonly Point[])[];
 }
+/** A scene row as a public item, without the id its layout keys on. */
+export function rowOf(hit: SceneItem): DiagramRow {
+  return { kind: hit.kind, source: hit.source, index: hit.index, row: hit.row };
+}
+/** One string per item: its kind, row space, row, and port, or its group. */
 export function itemKey(item: DiagramItem): string {
   return JSON.stringify(
     item.kind === 'group'
       ? ['group', item.id]
-      : [item.kind, item.type, item.id, item.kind === 'port' ? item.port : ''],
+      : [
+          item.kind,
+          item.index.source,
+          item.index.type,
+          item.index.version,
+          item.row,
+          item.kind === 'port' ? item.port : '',
+        ],
   );
 }
 
 /** Option keys whose string value names a field, in entries and their ports. */
-export const FIELD_OPTIONS = ['color', 'status', 'labels', 'width', 'flow'] as const;
+export const FIELD_OPTIONS = ['color', 'status', 'labels', 'widthPx', 'flow'] as const;
 type Full<T> = kit.Expanded<T, (typeof FIELD_OPTIONS)[number]>;
 export type PortData = Full<PortOptions>;
 export type VertexData = Omit<Full<VertexOptions>, 'ports'> & {

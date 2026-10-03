@@ -1,4 +1,4 @@
-import { kit } from '@latkit/gpu';
+import { Work } from '@latkit/model';
 import { describe, expect, it, vi } from 'vitest';
 import { destination } from '../src/output.js';
 import type { VideoWrite } from '../src/video.js';
@@ -14,7 +14,7 @@ describe('borrowed destination', () => {
       close,
       abort,
     });
-    const sink = destination(output, new kit.Work(new AbortController().signal)),
+    const sink = destination(output, new Work(new AbortController().signal)),
       writer = sink.stream.getWriter();
     const data = Uint8Array.of(1, 2, 3);
     await writer.write({ type: 'write', position: 100, data });
@@ -40,7 +40,7 @@ describe('borrowed destination', () => {
       abort,
     });
     const stop = new AbortController(),
-      sink = destination(output, new kit.Work(stop.signal)),
+      sink = destination(output, new Work(stop.signal)),
       writer = sink.stream.getWriter();
     const write = writer.write({ type: 'write', position: 0, data: Uint8Array.of(1) });
     await new Promise((r) => setTimeout(r, 0));
@@ -59,7 +59,7 @@ describe('borrowed destination', () => {
         throw new Error('disk full');
       },
     });
-    const sink = destination(output, new kit.Work(new AbortController().signal)),
+    const sink = destination(output, new Work(new AbortController().signal)),
       writer = sink.stream.getWriter();
     await expect(
       writer.write({ type: 'write', position: 0, data: Uint8Array.of(1) }),

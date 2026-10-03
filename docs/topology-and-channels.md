@@ -46,7 +46,7 @@ network.set({
         domain: [0, 100],
         colormap: 'thermal',
       },
-      size: { field: 'capacity', domain: [0, 1000], range: [3, 12] },
+      sizePx: { field: 'capacity', domain: [0, 1000], range: [3, 12] },
       labels: { field: 'name', maxCount: 100 },
     },
   },

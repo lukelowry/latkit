@@ -20,11 +20,9 @@ it('honors offsets, bitmaps and sample strides without conflating null and prese
   expect(numberAt(column, 0)).toBe(1);
   expect(numberAt(column, 1)).toBeNaN();
   expect(numberAt(column, 2)).toBeNull();
-  expect(sampleAt({ ...column, rowStride: 1, frameStride: 2 }, { row: 1, frame: 1 })).toBe(4);
+  expect(sampleAt({ ...column, rowStride: 1, frameStride: 2 }, 1, 1)).toBe(4);
   expect(() => numberAt(column, 4)).toThrow();
-  expect(() =>
-    sampleAt({ ...column, rowStride: 1, frameStride: 2 }, { row: -1, frame: 0 }),
-  ).toThrow();
+  expect(() => sampleAt({ ...column, rowStride: 1, frameStride: 2 }, -1, 0)).toThrow();
   const text = {
     kind: 'text' as const,
     offset: 1,

@@ -1,10 +1,9 @@
-import { GpuError } from '../error.js';
-import type { Entry, Memory } from './memory.js';
+import { failure, type MemoryEntry, type Memory } from '@latkit/model';
 import { TextureData } from './texture-data.js';
 import type { UploadScope } from '../fields/upload.js';
 
 interface Resident {
-  entry: Entry;
+  entry: MemoryEntry;
   texture: GPUTexture;
   revision: number;
   width: number;
@@ -42,7 +41,7 @@ export class Images {
 
   upload(data: TextureData, scope: UploadScope): GPUTexture {
     if (Math.max(data.width, data.height) > this.device.limits.maxTextureDimension2D)
-      throw new GpuError('resource-limit', 'Image exceeds the device texture limit');
+      throw failure('resource-limit', 'Image exceeds the device texture limit');
     const revision = data.revision;
     const residents = this.cached.get(data) ?? [];
     this.cached.set(data, residents);
@@ -75,7 +74,7 @@ export class Images {
           this.memory.releaseGpu(bytes);
           throw error;
         }
-        let entry: Entry;
+        let entry: MemoryEntry;
         try {
           entry = this.memory.add(
             [],
@@ -119,7 +118,7 @@ export class Images {
     }
     scope.check(() => {
       if (data.revision !== revision)
-        throw new GpuError('conflict', 'Pixels changed during frame preparation');
+        throw failure('conflict', 'Pixels changed during frame preparation');
     });
     return resident.texture;
   }

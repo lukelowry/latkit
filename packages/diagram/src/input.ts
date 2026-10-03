@@ -1,6 +1,6 @@
 import { kit, type Modifiers, type ViewInput } from '@latkit/gpu';
 import type { ConnectProposal, DiagramEvents, MoveProposal } from './diagram.js';
-import type { DiagramItem, DiagramHit, Point } from './data.js';
+import type { DiagramItem, DiagramRow, Point } from './data.js';
 import { itemKey } from './data.js';
 import type { Style } from './config.js';
 import { ConnectSession } from './connect.js';
@@ -22,10 +22,12 @@ export interface DiagramInput extends ViewInput {
 type Mode = NonNullable<ViewInput['mode']>;
 /** What a diagram's own gestures drive; the view implements it. */
 export interface Controls {
-  emit<K extends 'open' | 'connect' | 'move' | 'delete'>(event: K, value: DiagramEvents[K]): void;
+  emit<K extends 'connect' | 'move' | 'delete'>(event: K, value: DiagramEvents[K]): void;
   selection(): readonly DiagramItem[];
   /** Select as the user did, reporting a change. */
   choose(items: readonly DiagramItem[]): void;
+  /** Select what a click hits, as every item view does. */
+  click(point: Point, modifiers: Modifiers, touch: boolean): void;
   revision(): number;
   scene(): Scene | undefined;
   options(): Style;
@@ -35,13 +37,12 @@ export interface Controls {
   move(items: readonly DiagramItem[], delta: Point): MoveProposal | undefined;
   overlay(value: Overlay | null): void;
   /** Hits near a canvas point, nearest first. */
-  hits(point: Point, radiusPx?: number): readonly DiagramHit[];
+  hits(point: Point, radiusPx?: number): readonly DiagramItem[];
   menu(point: Point, modifiers: Modifiers): void;
   pan(dx: number, dy: number): void;
   zoom(factor: number, anchor?: Point): void;
   /** Stop fitting: the camera stays where it is shown. */
   stay(): void;
-  fit(): void;
   reveal(item: DiagramItem): void;
   invalidated(listener: () => void): () => void;
 }
@@ -62,7 +63,7 @@ interface Drag {
   moved: boolean;
   threshold: number;
   additive: boolean;
-  hit?: DiagramHit;
+  hit?: DiagramItem;
   selection: readonly DiagramItem[];
   revision: number;
   session?: ConnectSession;
@@ -71,7 +72,7 @@ interface Drag {
 }
 /**
  * Drag moves, wires, marquee-selects, or pans; click selects; two pointers pinch. Hover, wheel,
- * context menus, and the shared keys belong to the view.
+ * double clicks, context menus, and the shared keys belong to the view.
  */
 export function listen(
   canvas: HTMLCanvasElement,
@@ -99,14 +100,6 @@ export function listen(
   const merge = (a: readonly DiagramItem[], b: readonly DiagramItem[]) => [
     ...new Map([...a, ...b].map((item) => [itemKey(item), item])).values(),
   ];
-  const toggle = (hit: DiagramItem, add: boolean) => {
-    if (!add) return [hit];
-    const existing = api.selection(),
-      key = itemKey(hit);
-    return existing.some((item) => itemKey(item) === key)
-      ? existing.filter((item) => itemKey(item) !== key)
-      : [...existing, hit];
-  };
   /** End any gesture; true when one was in progress. */
   const cancel = () => {
     if (longPress) clearTimeout(longPress);
@@ -330,11 +323,8 @@ export function listen(
       follow();
       const world = api.world(p);
       cancel();
-      if (!current.moved) {
-        const hit = api.hits(p, event.pointerType === 'touch' ? 22 : undefined)[0];
-        if (hit) api.choose(toggle(hit, current.additive));
-        else if (!current.additive) api.choose([]);
-      } else if (
+      if (!current.moved) api.click(p, kit.inputModifiers(event), event.pointerType === 'touch');
+      else if (
         current.kind === 'connect' &&
         current.session &&
         world &&
@@ -375,15 +365,6 @@ export function listen(
     },
     { signal },
   );
-  canvas.addEventListener(
-    'dblclick',
-    (event) => {
-      const hit = api.hits(input.point(event))[0];
-      if (hit) api.emit('open', hit);
-      else if (mode !== 'inspect') api.fit();
-    },
-    { signal },
-  );
   if (options.keyboard !== false) {
     canvas.addEventListener(
       'keyup',
@@ -404,16 +385,16 @@ export function listen(
   const off = api.invalidated(() => {
     if (drag && api.revision() !== drag.revision) cancel();
   });
-  /** Space pans; Enter opens; Delete proposes removal; Tab visits; arrows nudge or pan. */
+  /** Space pans; Delete proposes removal; Tab visits; arrows nudge or pan. */
   const key = (event: KeyboardEvent): boolean => {
     const items = api.selection(),
       key = event.key;
     if (key === ' ') space = true;
-    else if (key === 'Enter' && items[0]) api.emit('open', items[0]);
     else if ((key === 'Delete' || key === 'Backspace') && mode === 'edit')
-      api.emit('delete', [
-        ...new Set(items.filter((i) => i.kind === 'vertex' || i.kind === 'edge').map((i) => i.id)),
-      ]);
+      api.emit(
+        'delete',
+        items.filter((item): item is DiagramRow => item.kind === 'vertex' || item.kind === 'edge'),
+      );
     else if (key === 'Tab') {
       const vertices = api.scene()?.vertices.filter((n) => n.visible) ?? [],
         at = vertices.findIndex((n) => items[0] && itemKey(n.hit) === itemKey(items[0])),

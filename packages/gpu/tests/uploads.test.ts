@@ -279,6 +279,27 @@ describe('mutable and frame-local buffers', () => {
     gpu.destroy();
   });
 
+  it('fits frame uniforms within a small GPU budget', async () => {
+    const fake = fakeDevice(),
+      gpu = await createGpu({ device: fake.device, budget: { gpuBytes: 1024 } });
+    let uniform!: GPUBufferBinding;
+    await gpu.render({
+      timeMs: 0,
+      views: [
+        {
+          renderer: renderer((frame) => {
+            uniform = frame.uniforms(Float32Array.of(1, 2, 3, 4));
+            frame.uniforms(Float32Array.of(5));
+          }),
+          target: target(fake.device),
+        },
+      ],
+    });
+    await gpu.idle();
+    expect(uniform.size).toBe(16);
+    expect(gpu.stats().peakGpuBytes).toBeLessThanOrEqual(1024);
+    gpu.destroy();
+  });
   it('does not overwrite earlier draws when several views upload uniforms', async () => {
     const fake = fakeDevice(),
       gpu = await createGpu({ device: fake.device });
@@ -301,6 +322,21 @@ describe('mutable and frame-local buffers', () => {
     await gpu.idle();
     expect(observed).toEqual([1, 2, 3]);
     expect(fake.queue.submit).toHaveBeenCalledTimes(1);
+    // One buffer holds the frame's uniforms, written once; the next frame reuses it.
+    const uniformBuffers = () =>
+      fake.native.createBuffer.mock.calls.filter(([d]) => d.label === 'frame uniforms').length;
+    expect(uniformBuffers()).toBe(1);
+    const writes = fake.queue.writeBuffer.mock.calls.length;
+    await gpu.render({
+      timeMs: 1,
+      views: [4, 5].map((value) => ({ renderer: make(value), target: target(fake.device) })),
+    });
+    await gpu.idle();
+    expect(observed).toEqual([1, 2, 3, 4, 5]);
+    expect(uniformBuffers()).toBe(1);
+    expect(fake.queue.writeBuffer.mock.calls.length - writes).toBe(1);
+    // The frame's uniform buffer returns to the pool, which trim empties.
+    gpu.trim();
     expect(gpu.stats().gpuBytes).toBe(0);
     gpu.destroy();
   });

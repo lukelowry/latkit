@@ -1,7 +1,29 @@
-import { assertIndex, bitAt, numberAt, textAt, rowAt, rowCount } from '@latkit/model';
-import type { Column, FieldInput, FieldsBlock, Index, ReadScope } from '@latkit/model';
-import { GpuError, colormaps, kit, type RGBA } from '@latkit/gpu';
-import type { DiagramData, VertexData, EdgeData, Labels } from './data.js';
+import {
+  Work,
+  failure,
+  assertIndex,
+  bitAt,
+  numberAt,
+  textAt,
+  rowAt,
+  rowCount,
+  type Column,
+  type FieldInput,
+  type FieldsBlock,
+  type Index,
+  type ReadScope,
+} from '@latkit/model';
+import {
+  colormaps,
+  kit,
+  type RGBA,
+  type ColorScale,
+  type Scale,
+  type TextFont,
+  type TextInput,
+  type TextMetrics,
+} from '@latkit/gpu';
+import type { DiagramData, VertexData, EdgeData, DiagramLabels as Labels } from './data.js';
 import type { Scene, Vertex, Edge, Label, Port } from './scene.js';
 import { emptyLabel } from './scene.js';
 import type { Limits } from './options.js';
@@ -9,9 +31,9 @@ import type { Style } from './config.js';
 import { fail } from './config.js';
 
 export type Measure = (
-  input: kit.TextInput,
+  input: TextInput,
   options?: { readonly signal?: AbortSignal },
-) => Promise<kit.TextMetrics>;
+) => Promise<TextMetrics>;
 export function scalar(column: Column | undefined, row: number): number | null {
   if (!column) return null;
   if (column.kind === 'numeric') return numberAt(column, row);
@@ -37,7 +59,7 @@ function text(column: Column | undefined, row: number): string {
 }
 function fields(option: VertexData | EdgeData): Record<string, FieldInput> {
   const out: Record<string, FieldInput> = {};
-  for (const key of ['color', 'status', 'width', 'flow'] as const) {
+  for (const key of ['color', 'status', 'widthPx', 'flow'] as const) {
     const scale = (option as VertexData & EdgeData)[key];
     if (scale) out[key] = scale.field;
   }
@@ -86,7 +108,7 @@ function mapped(raw: number | null, scale: kit.ResolvedScale | undefined): numbe
 }
 function color(
   raw: number | null,
-  config: kit.ColorScale | null | undefined,
+  config: ColorScale | null | undefined,
   scale: kit.ResolvedScale | undefined,
   fallback: RGBA,
 ): RGBA {
@@ -99,8 +121,8 @@ async function scales(
   type: string,
   option: VertexData | EdgeData,
 ): Promise<Map<string, kit.ResolvedScale>> {
-  const bindings = new Map<string, kit.Scale | kit.ColorScale>();
-  for (const name of ['color', 'status', 'width', 'flow'] as const) {
+  const bindings = new Map<string, Scale | ColorScale>();
+  for (const name of ['color', 'status', 'widthPx', 'flow'] as const) {
     const value = (option as VertexData & EdgeData)[name];
     if (value) bindings.set(name, value);
   }
@@ -121,7 +143,7 @@ async function scales(
         range:
           'range' in value
             ? value.range
-            : name === 'width'
+            : name === 'widthPx'
               ? [1, 4]
               : name === 'flow'
                 ? [0, 40]
@@ -138,7 +160,7 @@ export async function label(
   signal: AbortSignal,
 ): Promise<Label> {
   if (!textValue) return emptyLabel;
-  const font: kit.TextFont = config?.font ?? options.font,
+  const font: TextFont = config?.font ?? options.font,
     size = config?.size ?? options.fontSizePx;
   const metric = (s: string) => measure({ text: s, font }, { signal });
   const max = config?.maxWidth ?? Infinity;
@@ -196,7 +218,7 @@ export async function readScene(
   options: Style,
   limits: Required<Limits>,
   measure: Measure,
-  work: kit.Work = new kit.Work(reader.signal, limits.layoutMs),
+  work: Work = new Work(reader.signal, limits.layoutMs),
 ): Promise<Scene> {
   const check = () => work.check();
   const scene: Scene = {
@@ -213,7 +235,7 @@ export async function readScene(
   const charge = (bytes: number) => {
     scene.bytes += bytes;
     if (scene.bytes > limits.geometryBytes)
-      throw new GpuError('resource-limit', 'Diagram geometry exceeds budget');
+      throw failure('resource-limit', 'Diagram geometry exceeds budget');
   };
   for (const type of Object.keys(data.vertices))
     if (!schema.types[type]) fail('Unknown vertex type: ' + type);
@@ -260,7 +282,7 @@ export async function readScene(
       for (let i = 0; i < rowCount(tile.rows); i++) {
         check();
         if (scene.vertices.length >= limits.vertices)
-          throw new GpuError('resource-limit', 'Too many diagram vertices');
+          throw failure('resource-limit', 'Too many diagram vertices');
         charge(512 + ports.length * 192);
         const row = rowAt(tile.rows, i);
         if (rows.has(row)) fail('Duplicate vertex row');
@@ -279,7 +301,7 @@ export async function readScene(
           !tile.presence.size || bitAt(tile.presence.size, i) ? vector(tile.columns.size, i) : null;
         if (size && (size[0] <= 0 || size[1] <= 0)) fail('Vertex size must be positive');
         const vertex: Vertex = {
-          hit: { kind: 'vertex', id, type, source: data.source, index: tile.index, row },
+          hit: { kind: 'vertex', id, source: data.source, index: tile.index, row },
           index: tile.index,
           row,
           x: xy?.[0] ?? 0,
@@ -292,7 +314,7 @@ export async function readScene(
           radius: option.cornerRadius ?? options.cornerRadius,
           visible: vals.visible === undefined || vals.visible === null || vals.visible !== 0,
           sourceVisible: vals.visible === undefined || vals.visible === null || vals.visible !== 0,
-          color: options.vertexBaseColor,
+          color: option.baseColor ?? options.vertexBaseColor,
           shade: Number.isFinite(vals.shade) ? vals.shade! : 1,
           label: { ...emptyLabel, text: text(tile.columns.label, i) },
           ports: [],
@@ -351,7 +373,12 @@ export async function readScene(
     for (let i = start; i < scene.vertices.length; i++) {
       const vertex = scene.vertices[i],
         v = raw[i - start];
-      vertex.color = color(v.color, option.color, columns.get('color'), options.vertexBaseColor);
+      vertex.color = color(
+        v.color,
+        option.color,
+        columns.get('color'),
+        option.baseColor ?? options.vertexBaseColor,
+      );
       if (option.status && v.status !== null)
         vertex.status = color(v.status, option.status, columns.get('status'), vertex.color);
       if (i - start < (option.labels?.maxCount ?? Infinity))
@@ -425,7 +452,7 @@ export async function readScene(
     }
   }
   const end = (edge: Edge, vertex: number, port: string | null, direction?: 'in' | 'out') => {
-    if (++scene.ends > limits.ends) throw new GpuError('resource-limit', 'Too many edge ends');
+    if (++scene.ends > limits.ends) throw failure('resource-limit', 'Too many edge ends');
     charge(48);
     edge.ends.push({ vertex, port, ...(direction ? { direction } : {}) });
   };
@@ -450,7 +477,7 @@ export async function readScene(
       for (let i = 0; i < rowCount(tile.rows); i++) {
         check();
         if (scene.edges.length >= limits.edges)
-          throw new GpuError('resource-limit', 'Too many diagram edges');
+          throw failure('resource-limit', 'Too many diagram edges');
         charge(384);
         const v = values(tile, i, numeric),
           row = rowAt(tile.rows, i),
@@ -458,10 +485,10 @@ export async function readScene(
         if (id === null || edgeRows.has(row)) fail('Missing or duplicate edge identity');
         raw.push(v);
         const edge: Edge = {
-          hit: { kind: 'edge', type, id, source: data.source, index: tile.index, row },
+          hit: { kind: 'edge', id, source: data.source, index: tile.index, row },
           ends: [],
           visible: v.visible === undefined || v.visible === null || v.visible !== 0,
-          color: options.edgeBaseColor,
+          color: option.baseColor ?? options.edgeBaseColor,
           width: options.edgeWidthPx,
           flow: 0,
           shade: Number.isFinite(v.shade) ? v.shade! : 1,
@@ -524,8 +551,13 @@ export async function readScene(
     for (let i = start; i < scene.edges.length; i++) {
       const edge = scene.edges[i],
         v = raw[i - start];
-      edge.color = color(v.color, option.color, resolved.get('color'), options.edgeBaseColor);
-      edge.width = Math.max(0, mapped(v.width, resolved.get('width')) ?? options.edgeWidthPx);
+      edge.color = color(
+        v.color,
+        option.color,
+        resolved.get('color'),
+        option.baseColor ?? options.edgeBaseColor,
+      );
+      edge.width = Math.max(0, mapped(v.widthPx, resolved.get('widthPx')) ?? options.edgeWidthPx);
       edge.flow = mapped(v.flow, resolved.get('flow')) ?? 0;
       edge.label =
         i - start < (option.labels?.maxCount ?? Infinity)

@@ -22,7 +22,7 @@ The network command opens an interactive fixture. For headless verification,
 bundle its fixtures first, then run `node packages/network/tests/browser/run.mjs`.
 
 Run the video example's `/check.html` for real codec checks.
-Run `pnpm bench:gate` to check performance against the base branch; see `benchmark/`.
+Run `pnpm bench:gate` to check recorded work; see `benchmark/`.
 Reports go to `output/`.
 
 ## Publish

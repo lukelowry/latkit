@@ -1,11 +1,11 @@
-import { kit, type Gpu, type View } from '@latkit/gpu';
+import { kit, type Gpu, type View, type ViewConfig, type ViewEvents } from '@latkit/gpu';
 interface Hooks {
   prepare?(frame: kit.Preparation): Promise<void> | void;
   encode(frame: kit.Encoding): void;
   pending?(): Promise<void> | undefined;
   release?(): void;
 }
-class HookView extends kit.BaseView<kit.ViewConfig, kit.ViewEvents> {
+class HookView extends kit.BaseView<ViewConfig, ViewEvents> {
   constructor(
     gpu: Gpu,
     private readonly hooks: Hooks,

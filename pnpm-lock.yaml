@@ -188,7 +188,7 @@ importers:
   packages/connect:
     dependencies:
       '@latkit/model':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../model
     devDependencies:
       '@types/ws':
@@ -201,12 +201,11 @@ importers:
   packages/diagram:
     dependencies:
       '@latkit/gpu':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../gpu
       '@latkit/model':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../model
-    devDependencies:
       '@webgpu/types':
         specifier: ^0.1.71
         version: 0.1.71
@@ -214,7 +213,7 @@ importers:
   packages/gpu:
     dependencies:
       '@latkit/model':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../model
       '@webgpu/types':
         specifier: ^0.1.71
@@ -235,12 +234,11 @@ importers:
   packages/monitor:
     dependencies:
       '@latkit/gpu':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../gpu
       '@latkit/model':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../model
-    devDependencies:
       '@webgpu/types':
         specifier: ^0.1.71
         version: 0.1.71
@@ -248,10 +246,10 @@ importers:
   packages/network:
     dependencies:
       '@latkit/gpu':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../gpu
       '@latkit/model':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../model
       '@webgpu/types':
         specifier: ^0.1.71
@@ -260,18 +258,17 @@ importers:
   packages/video:
     dependencies:
       '@latkit/gpu':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../gpu
       '@latkit/model':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../model
-      mediabunny:
-        specifier: ^1.60.0
-        version: 1.60.0
-    devDependencies:
       '@webgpu/types':
         specifier: ^0.1.71
         version: 0.1.71
+      mediabunny:
+        specifier: ^1.60.0
+        version: 1.60.0
 
 packages:
 

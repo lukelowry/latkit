@@ -1,8 +1,45 @@
-import { failure } from '@latkit/model';
+import { failure, isFailure, type Failure, type FailureCode } from '@latkit/model';
 import type { ConnectLimits } from './types.js';
-/** An error a peer reported. Its code is whatever the peer sent, not necessarily a local Failure code. */
-export function remoteFailure(code: string, message: string): Error & { code: string } {
-  return Object.assign(new Error(message), { code });
+/** Every Failure code, so a peer's report keeps the codes latkit knows. */
+const CODES: Readonly<Record<FailureCode, true>> = {
+  'invalid-input': true,
+  'resource-limit': true,
+  conflict: true,
+  unsupported: true,
+  busy: true,
+  aborted: true,
+  closed: true,
+  unavailable: true,
+  'device-lost': true,
+  precision: true,
+  disconnected: true,
+  protocol: true,
+  timeout: true,
+  io: true,
+  internal: true,
+};
+/**
+ * Read what a peer sent. Data that fails a check is the peer breaking the protocol, not invalid
+ * input from whoever reads it.
+ */
+export function fromPeer<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (error) {
+    if (isFailure(error, 'invalid-input'))
+      throw failure('protocol', error.message, { cause: error });
+    throw error;
+  }
+}
+/** A failure a peer reported: its own code when latkit knows it, otherwise `internal` naming it. */
+export function peerFailure(metadata: Readonly<Record<string, unknown>>): Failure {
+  return fromPeer(() => {
+    const code = text(metadata.code, 128),
+      message = text(metadata.message, 4096);
+    return Object.hasOwn(CODES, code)
+      ? failure(code as FailureCode, message)
+      : failure('internal', code + ': ' + message);
+  });
 }
 export function errorOf(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
@@ -47,15 +84,15 @@ export function validProgress(value: Readonly<Record<string, unknown>>): boolean
   );
 }
 export const defaults: ConnectLimits = Object.freeze({
-  maxMessageBytes: 1024 * 1024,
-  maxMetadataBytes: 64 * 1024,
-  maxBufferedBytes: 16 * 1024 * 1024,
-  maxBufferedMessages: 1024,
+  messageBytes: 1024 * 1024,
+  metadataBytes: 64 * 1024,
+  bufferedBytes: 16 * 1024 * 1024,
+  bufferedMessages: 1024,
   streamWindowBytes: 4 * 1024 * 1024,
   streamWindowMessages: 256,
-  maxStreams: 32,
-  maxPublicationBatches: 64,
-  maxLogs: 32,
+  streams: 32,
+  publicationBatches: 64,
+  logs: 32,
   timeoutMs: 30000,
 });
 export function limits(input: Partial<ConnectLimits> = {}): ConnectLimits {
@@ -65,11 +102,11 @@ export function limits(input: Partial<ConnectLimits> = {}): ConnectLimits {
   for (const [key, value] of Object.entries(result))
     integer(value, 1, key === 'timeoutMs' ? 0x7fffffff : 0xffffffff);
   if (
-    result.maxMetadataBytes < 1024 ||
-    result.maxMetadataBytes + 1024 > result.maxMessageBytes ||
-    result.maxMessageBytes > result.streamWindowBytes ||
-    result.streamWindowBytes > result.maxBufferedBytes ||
-    result.streamWindowMessages > result.maxBufferedMessages
+    result.metadataBytes < 1024 ||
+    result.metadataBytes + 1024 > result.messageBytes ||
+    result.messageBytes > result.streamWindowBytes ||
+    result.streamWindowBytes > result.bufferedBytes ||
+    result.streamWindowMessages > result.bufferedMessages
   )
     throw failure(
       'invalid-input',
@@ -78,14 +115,16 @@ export function limits(input: Partial<ConnectLimits> = {}): ConnectLimits {
   return Object.freeze(result);
 }
 export function negotiate(local: ConnectLimits, remote: unknown): ConnectLimits {
-  const offered = record(remote),
-    result = { ...local };
-  for (const key of Object.keys(defaults) as (keyof ConnectLimits)[])
-    result[key] = Math.min(
-      local[key],
-      integer(offered[key], 1, key === 'timeoutMs' ? 0x7fffffff : 0xffffffff),
-    );
-  return limits(result);
+  return fromPeer(() => {
+    const offered = record(remote),
+      result = { ...local };
+    for (const key of Object.keys(defaults) as (keyof ConnectLimits)[])
+      result[key] = Math.min(
+        local[key],
+        integer(offered[key], 1, key === 'timeoutMs' ? 0x7fffffff : 0xffffffff),
+      );
+    return limits(result);
+  });
 }
 export function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void, reject!: (reason?: unknown) => void;

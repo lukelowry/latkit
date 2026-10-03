@@ -1,16 +1,23 @@
-import type { Reader, ReadScope } from '@latkit/model';
-import { GpuError, integer, interruptible } from '../error.js';
+import {
+  interruptible,
+  failure,
+  type Reader,
+  type ReadScope,
+  type MemoryEntry,
+  type Memory,
+} from '@latkit/model';
+import { integer } from '../error.js';
 import type { CopyJob } from '../fields/pages.js';
 import type { Uploader, UploadScope } from '../fields/upload.js';
 import type { Colormaps } from '../colors/preparation.js';
 import type { Buffers } from '../memory/buffers.js';
 import { BufferData } from '../memory/buffer-data.js';
 import type { Images } from '../memory/images.js';
-import type { Entry, Memory } from '../memory/memory.js';
 import { TextureData } from '../memory/texture-data.js';
 import type { Textures } from '../memory/textures.js';
 import { shadeUniforms } from '../style/shade.js';
 import type { TextAtlas } from '../text/atlas.js';
+import type { Uniforms } from './uniforms.js';
 import {
   targetResources,
   type CapturedFrame,
@@ -27,6 +34,7 @@ export interface FrameOwner {
   readonly reader: Reader;
   readonly memory: Memory;
   readonly uploader: Uploader;
+  readonly uniforms: Uniforms;
   readonly colormaps: Colormaps;
   readonly text: TextAtlas;
   readonly images: Images;
@@ -44,14 +52,13 @@ export interface FrameOwner {
 /** Capture every view, prepare them concurrently, then encode and submit one command buffer. */
 export async function renderFrame(owner: FrameOwner, options: RenderOptions): Promise<void> {
   owner.stopped.throwIfAborted();
-  if (!Number.isFinite(options.timeMs))
-    throw new GpuError('invalid-input', 'Frame time must be finite');
+  if (!Number.isFinite(options.timeMs)) throw failure('invalid-input', 'Frame time must be finite');
   const renderers = new Set(options.views.map((view) => view.renderer));
   if (renderers.size !== options.views.length)
-    throw new GpuError('invalid-input', 'A renderer may appear only once in a frame');
+    throw failure('invalid-input', 'A renderer may appear only once in a frame');
   for (const renderer of renderers)
     if (owner.busy.has(renderer))
-      throw new GpuError('busy', 'Renderer already has a preparation in progress');
+      throw failure('busy', 'Renderer already has a preparation in progress');
   const cancelled = new AbortController();
   const signal = AbortSignal.any([
     owner.stopped,
@@ -61,11 +68,11 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
   signal.throwIfAborted();
   const infos = options.views.map((view): FrameInfo => {
     if (view.target.device !== owner.device)
-      throw new GpuError('invalid-input', 'Target belongs to a different device');
+      throw failure('invalid-input', 'Target belongs to a different device');
     integer(view.target.width, 'target width', 1);
     integer(view.target.height, 'target height', 1);
     if (view.at !== undefined && !Number.isFinite(view.at))
-      throw new GpuError('invalid-input', 'Model coordinate must be finite');
+      throw failure('invalid-input', 'Model coordinate must be finite');
     const viewport = view.viewport ?? {
       width: view.target.width,
       height: view.target.height,
@@ -76,7 +83,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
         (value) => Number.isFinite(value) && value > 0,
       )
     )
-      throw new GpuError('invalid-input', 'Viewport dimensions and pixel ratio must be positive');
+      throw failure('invalid-input', 'Viewport dimensions and pixel ratio must be positive');
     return {
       at: view.at,
       timeMs: options.timeMs,
@@ -88,7 +95,8 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
     };
   });
   for (const renderer of renderers) owner.busy.add(renderer);
-  const held = new Set<Entry>();
+  const held = new Set<MemoryEntry>();
+  const uniforms = owner.uniforms.begin();
   const checks: (() => void)[] = [];
   const copies = new Set<CopyJob>();
   const snapshots: CapturedFrame[] = [];
@@ -100,7 +108,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
   let preparation: Promise<unknown> = Promise.resolve();
   const assertPreparing = (): void => {
     signal.throwIfAborted();
-    if (phase !== 'prepare') throw new GpuError('closed', 'Frame preparation is finished');
+    if (phase !== 'prepare') throw failure('closed', 'Frame preparation is finished');
   };
   const scope: UploadScope = {
     copy: (job) => {
@@ -122,6 +130,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
   const release = (): void => {
     for (const entry of held) entry.unpin();
     held.clear();
+    uniforms.release();
     for (const reads of scopes) reads.close();
   };
   const track = <T>(task: Promise<T>): Promise<T> => {
@@ -136,7 +145,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
     reader,
     shade: (request = {}) => {
       assertPreparing();
-      return owner.uploader.uniforms(shadeUniforms(request, info), scope);
+      return uniforms.add(shadeUniforms(request, info));
     },
     colormap: (value) => {
       assertPreparing();
@@ -158,7 +167,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
     },
     uniforms: (data) => {
       assertPreparing();
-      return owner.uploader.uniforms(data, scope);
+      return uniforms.add(data);
     },
     texture: (resource) => {
       assertPreparing();
@@ -183,7 +192,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
       await interruptible(Promise.race(owner.pending), signal);
     assertPreparing();
     if (scopes.some((reads) => reads.busy) || tasks.size)
-      throw new GpuError('invalid-input', 'Preparation left asynchronous work open');
+      throw failure('invalid-input', 'Preparation left asynchronous work open');
     for (const check of checks) check();
     for (const [i, view] of options.views.entries()) {
       if (
@@ -191,7 +200,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
         view.target.height !== infos[i].height ||
         view.target.format !== infos[i].format
       )
-        throw new GpuError('conflict', 'Target changed during preparation');
+        throw failure('conflict', 'Target changed during preparation');
       const resource = targetResources.get(view.target)?.();
       if (resource) scope.use(owner.textures.entry(resource));
     }
@@ -217,12 +226,13 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
       }
       const result: unknown = prepared[i]!.encode({ ...infos[i], encoder, target });
       if (result && typeof (result as PromiseLike<unknown>).then === 'function')
-        throw new GpuError('invalid-input', 'Renderer encoding must be synchronous');
+        throw failure('invalid-input', 'Renderer encoding must be synchronous');
     }
     const extra: unknown = options.encode?.(encoder);
     if (extra && typeof (extra as PromiseLike<unknown>).then === 'function')
-      throw new GpuError('invalid-input', 'Final encoding must be synchronous');
+      throw failure('invalid-input', 'Final encoding must be synchronous');
     signal.throwIfAborted();
+    uniforms.flush();
     owner.device.queue.submit([encoder.finish()]);
     submitted = true;
     for (const job of encodedCopies) {

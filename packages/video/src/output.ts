@@ -1,8 +1,8 @@
-import type { kit } from '@latkit/gpu';
+import { Work } from '@latkit/model';
 import type { StreamTargetChunk } from 'mediabunny';
 import type { VideoWrite } from './video.js';
 /** Private muxer stream owns neither the application's destination nor its close/abort policy. */
-export function destination(output: WritableStream<VideoWrite>, work: kit.Work) {
+export function destination(output: WritableStream<VideoWrite>, work: Work) {
   const writer = output.getWriter();
   let byteLength = 0;
   const stream = new WritableStream<StreamTargetChunk>(

@@ -42,12 +42,12 @@ function sessions(overrides: Partial<ConnectLimits> = {}) {
   a.peer = b;
   b.peer = a;
   const bounds = {
-    maxMessageBytes: 8192,
-    maxMetadataBytes: 1024,
-    maxBufferedBytes: 16384,
+    messageBytes: 8192,
+    metadataBytes: 1024,
+    bufferedBytes: 16384,
     streamWindowBytes: 8192,
     streamWindowMessages: 2,
-    maxBufferedMessages: 4,
+    bufferedMessages: 4,
     timeoutMs: 100,
     ...overrides,
   };
@@ -160,11 +160,11 @@ it('fails a peer that sends more sequential publications than granted message cr
 
 it('coalesces a stalled ACK to the latest sequence and preserves its terminal upgrade', async () => {
   const p = sessions({
-    maxBufferedBytes: 1024 * 1024,
+    bufferedBytes: 1024 * 1024,
     streamWindowBytes: 1024 * 1024,
     streamWindowMessages: 1024,
-    maxBufferedMessages: 1024,
-    maxStreams: 1,
+    bufferedMessages: 1024,
+    streams: 1,
   });
   const receiver = p.host.receiver(1);
   const sender = p.producer.sender(1, receiver.windowBytes, receiver.windowMessages);
@@ -172,7 +172,7 @@ it('coalesces a stalled ACK to the latest sequence and preserves its terminal up
   try {
     const plan = preparePublication(batch(1), 1, schema, p.producer.bounds);
     for (let i = 0; i < 1024; i++) await sender.write(plan);
-    p.b.bufferedAmount = p.host.bounds.maxBufferedBytes;
+    p.b.bufferedAmount = p.host.bounds.bufferedBytes;
     for (let i = 0; i < 1024; i++) expect((await receiver.next()).done).toBe(false);
     expect(queued).toHaveBeenCalledTimes(1);
     await sender.finish(Op.end);
@@ -219,7 +219,7 @@ it('keeps credit and socket waits alive beyond 30 seconds, then drains in order'
     await vi.advanceTimersByTimeAsync(31000);
     expect(sent).toBe(false);
     expect(sender.signal.aborted).toBe(false);
-    p.b.bufferedAmount = p.host.bounds.maxBufferedBytes;
+    p.b.bufferedAmount = p.host.bounds.bufferedBytes;
     await receiver.next();
     await receiver.next();
     await vi.advanceTimersByTimeAsync(31000);
@@ -244,7 +244,7 @@ it('starts cancellation deadlines after sending and retires an empty terminal AC
   try {
     const receiver = p.host.receiver(1);
     const sender = p.producer.sender(1, receiver.windowBytes, receiver.windowMessages);
-    p.b.bufferedAmount = p.host.bounds.maxBufferedBytes;
+    p.b.bufferedAmount = p.host.bounds.bufferedBytes;
     receiver.cancel();
     await vi.advanceTimersByTimeAsync(31000);
     expect(p.host.lifetime.signal.aborted).toBe(false);
@@ -269,7 +269,7 @@ it('bounds and deduplicates close even when its reason cannot drain', async () =
   vi.useFakeTimers();
   const p = sessions();
   try {
-    p.a.bufferedAmount = p.producer.bounds.maxBufferedBytes;
+    p.a.bufferedAmount = p.producer.bounds.bufferedBytes;
     const pending = p.producer.control(Op.monitor, 1);
     const rejected = expect(pending).rejects.toThrow(/closed/);
     const close = p.producer.close({ code: 'shutdown', message: 'Closing' });
@@ -295,7 +295,7 @@ it('aborts both credit and outbound waits on teardown', async () => {
     await sender.write(plan);
     await sender.write(plan);
     const blocked = expect(sender.write(plan)).rejects.toThrow(/closed/);
-    p.a.bufferedAmount = p.producer.bounds.maxBufferedBytes;
+    p.a.bufferedAmount = p.producer.bounds.bufferedBytes;
     const control = expect(p.producer.control(Op.progress, 1, { completed: 1 })).rejects.toThrow(
       /closed/,
     );
@@ -314,7 +314,7 @@ it('preserves an already queued publication before cancellation terminal and ser
       r2 = p.host.receiver(2);
     const s1 = p.producer.sender(1, r1.windowBytes, r1.windowMessages);
     const s2 = p.producer.sender(2, r2.windowBytes, r2.windowMessages);
-    p.a.bufferedAmount = p.producer.bounds.maxBufferedBytes;
+    p.a.bufferedAmount = p.producer.bounds.bufferedBytes;
     const first = s1.write(preparePublication(batch(), 1, schema, p.producer.bounds));
     const second = s2.write(preparePublication(batch(), 2, schema, p.producer.bounds));
     s1.cancel();

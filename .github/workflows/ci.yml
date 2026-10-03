@@ -32,8 +32,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
       - uses: pnpm/action-setup@v6
         with:
           version: 10.30.0
@@ -41,13 +39,6 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      # Both runs share this machine, so timings compare fairly.
-      - name: Benchmark the base branch
-        run: |
-          git worktree add .bench/base origin/${{ github.base_ref }}
-          cd .bench/base
-          pnpm install --frozen-lockfile
-          pnpm bench --outputJson ../base.json || echo "The base branch has no benchmarks."
       - run: pnpm install --frozen-lockfile
       - run: pnpm bench:gate
 

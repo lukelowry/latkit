@@ -19,6 +19,7 @@ import {
   record,
   text,
   validProgress,
+  limits,
 } from './core.js';
 import { checkTree, Op, subprotocols } from './frame.js';
 import type { Frame } from './frame.js';
@@ -39,38 +40,40 @@ export async function connectModel<const C extends Record<string, Parameters>>(
   options: ConnectOptions,
 ): Promise<Connection> {
   options.signal?.throwIfAborted();
+  // Everything the model describes is checked before any socket opens.
   text(model.name);
   const issues = validateSchema(model.schema);
   if (issues.length) throw failure('invalid-input', issues[0].message);
+  const bounds = limits(options.limits);
+  checkTree(model.schema, bounds.metadataBytes);
+  const commands = model.commands as Readonly<Record<string, Command>> | undefined;
+  const descriptions = Object.fromEntries(
+    Object.entries(commands ?? {}).map(([name, command]) => {
+      if (typeof command.run !== 'function')
+        throw failure('invalid-input', 'A command needs a run function.');
+      const { parameters, label, description } = command;
+      return [
+        name,
+        {
+          parameters,
+          ...(label === undefined ? {} : { label }),
+          ...(description === undefined ? {} : { description }),
+        },
+      ];
+    }),
+  );
+  const catalog = definitions(descriptions, model.schema, bounds.metadataBytes);
   const socket = options.socket ?? dial(options.url, subprotocols.connect);
   const ready = deferred<void>();
   const session = new Session(socket, {
     subprotocol: options.socket ? subprotocols.accept : subprotocols.connect,
-    limits: options.limits,
+    limits: bounds,
     signal: options.signal,
   });
-  const commands = model.commands as Readonly<Record<string, Command>> | undefined;
   let lastId = 0,
     registered = false,
     executing = false;
   try {
-    checkTree(model.schema, session.bounds.maxMetadataBytes);
-    const descriptions = Object.fromEntries(
-      Object.entries(commands ?? {}).map(([name, command]) => {
-        if (typeof command.run !== 'function')
-          throw failure('invalid-input', 'A command needs a run function.');
-        const { parameters, label, description } = command;
-        return [
-          name,
-          {
-            parameters,
-            ...(label === undefined ? {} : { label }),
-            ...(description === undefined ? {} : { description }),
-          },
-        ];
-      }),
-    );
-    const catalog = definitions(descriptions, model.schema, session.bounds.maxMetadataBytes);
     session.onControl = (frame) => {
       if (frame.op === Op.registered) {
         if (registered || frame.id)
@@ -107,12 +110,12 @@ export async function connectModel<const C extends Record<string, Parameters>>(
       if (session.lifetime.signal.aborted) return;
       await sender.finish(
         Op.error,
-        reasonOf(reason, Math.min(2048, Math.floor((session.bounds.maxMetadataBytes - 512) / 6))),
+        reasonOf(reason, Math.min(2048, Math.floor((session.bounds.metadataBytes - 512) / 6))),
       );
     }
     const context = (sender: Sender) => ({
       signal: sender.signal,
-      maxBlockBytes: session.bounds.maxMessageBytes - session.bounds.maxMetadataBytes - 64,
+      maxBlockBytes: session.bounds.messageBytes - session.bounds.metadataBytes - 64,
     });
     async function observe(frame: Frame, sender: Sender): Promise<void> {
       try {
@@ -207,7 +210,7 @@ export async function connectModel<const C extends Record<string, Parameters>>(
         if (publishFailure) throw publishFailure;
         sender.signal.throwIfAborted();
         await telemetry.flush();
-        checkTree(value ?? null, session.bounds.maxMetadataBytes);
+        checkTree(value ?? null, session.bounds.metadataBytes);
         await sender.finish(Op.result, { value: value ?? null });
       } catch (error) {
         accepting = false;
@@ -284,7 +287,7 @@ class Telemetry {
         : {
             message: value.message.slice(
               0,
-              Math.min(1024, Math.floor((this.session.bounds.maxMetadataBytes - 512) / 6)),
+              Math.min(1024, Math.floor((this.session.bounds.metadataBytes - 512) / 6)),
             ),
           }),
     };
@@ -300,7 +303,7 @@ class Telemetry {
       this.schedule();
       return;
     }
-    if (this.#logs.length >= this.session.bounds.maxLogs) {
+    if (this.#logs.length >= this.session.bounds.logs) {
       this.#dropped = Math.min(Number.MAX_SAFE_INTEGER, this.#dropped + 1);
       return;
     }
@@ -308,7 +311,7 @@ class Telemetry {
       severity: value.severity,
       message: value.message.slice(
         0,
-        Math.min(1024, Math.floor((this.session.bounds.maxMetadataBytes - 512) / 6)),
+        Math.min(1024, Math.floor((this.session.bounds.metadataBytes - 512) / 6)),
       ),
       ...(value.code === undefined ? {} : { code: value.code.slice(0, 64) }),
     });
@@ -339,7 +342,7 @@ class Telemetry {
         while (this.#logs.length) {
           const entry = this.#logs[0];
           const size = new TextEncoder().encode(JSON.stringify(entry)).length + 1;
-          if (cost + size > this.session.bounds.maxMetadataBytes) break;
+          if (cost + size > this.session.bounds.metadataBytes) break;
           cost += size;
           entries.push(this.#logs.shift()!);
         }

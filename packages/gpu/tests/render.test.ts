@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createGpu } from '../src/index.js';
-import { BufferData, createRenderTarget } from '../src/kit.js';
+import { BufferData, createTextureTarget } from '../src/kit.js';
 import { deferred, fakeDevice, record, type FakeTexture } from './fixtures/device.js';
 import { draw, renderer, target } from './fixtures/render.js';
 
@@ -63,6 +63,8 @@ describe('frame ownership', () => {
       }),
     ).rejects.toThrow('preparation failed');
     expect(fake.queue.submit).not.toHaveBeenCalled();
+    // The frame's uniform buffer returns to the pool, which trim empties.
+    gpu.trim();
     expect(gpu.stats().gpuBytes).toBe(0);
     gpu.destroy();
   });
@@ -109,7 +111,7 @@ describe('frame ownership', () => {
   it('protects textures after their owner releases them until submitted work completes', async () => {
     const fake = fakeDevice({ deferCompletion: true }),
       gpu = await createGpu({ device: fake.device });
-    const output = createRenderTarget({ gpu, width: 16, height: 16 });
+    const output = createTextureTarget(gpu, { width: 16, height: 16 });
     const texture = output.texture() as FakeTexture;
     await gpu.render({ timeMs: 0, views: [{ renderer: renderer(() => {}), target: output }] });
     output.destroy();
@@ -160,25 +162,18 @@ describe('frame ownership', () => {
     gpu.destroy();
   });
 
-  it('deduplicates pipeline builds and retries failures', async () => {
+  it('builds pipelines while the Gpu lives and reports a failed build', async () => {
     const fake = fakeDevice(),
       gpu = await createGpu({ device: fake.device });
     const descriptor = {
       layout: 'auto',
       vertex: { module: {} as GPUShaderModule, entryPoint: 'vs' },
     } as const;
-    const [a, b] = await Promise.all([
-      gpu.renderPipeline(descriptor),
-      gpu.renderPipeline(descriptor),
-    ]);
-    expect(a).toBe(b);
-    expect(fake.native.createRenderPipelineAsync).toHaveBeenCalledTimes(1);
-    const broken = { ...descriptor };
+    await gpu.renderPipeline(descriptor);
     fake.native.createRenderPipelineAsync.mockRejectedValueOnce(new Error('shader failed'));
-    await expect(gpu.renderPipeline(broken)).rejects.toThrow('shader failed');
-    await gpu.renderPipeline(broken);
-    expect(fake.native.createRenderPipelineAsync).toHaveBeenCalledTimes(3);
+    await expect(gpu.renderPipeline(descriptor)).rejects.toThrow('shader failed');
     gpu.destroy();
+    await expect(gpu.renderPipeline(descriptor)).rejects.toMatchObject({ code: 'closed' });
   });
 
   it('isolates device generations and never destroys a borrowed device', async () => {

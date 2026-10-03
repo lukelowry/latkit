@@ -1,5 +1,4 @@
-import { rowAt, type FieldsBlock, type FieldValues } from '@latkit/model';
-import { GpuError } from '@latkit/gpu';
+import { failure, rowAt, type FieldsBlock, type FieldValues } from '@latkit/model';
 import type { NetworkData, EdgeData } from '../data.js';
 import {
   BANK_ROWS,
@@ -81,7 +80,7 @@ function signature(reads: Reads, data: NetworkData): unknown[] {
   }
   for (const [bank, read] of reads.edges) {
     key.push(
-      (edgeOptions(data, bank) as EdgeData).curve,
+      (edgeOptions(data, bank) as EdgeData).route,
       !!(edgeOptions(data, bank) as EdgeData).junction,
     );
     for (const tile of read.native)
@@ -137,7 +136,7 @@ export class Paths {
     const charge = (n: number) => {
       bytes += n;
       if (bytes > limits.geometryBytes)
-        throw new GpuError('resource-limit', 'Paths exceed the network CPU budget');
+        throw failure('resource-limit', 'Paths exceed the network CPU budget');
     };
     const point = (bank: VertexBank, offset: number): Point => {
       const read = reads.vertices.get(bank)!,
@@ -167,9 +166,9 @@ export class Paths {
         segments += original.batches.reduce((n, b) => n + b.records.length / 4, 0);
         continue;
       }
-      if (options.curve === 'geodesic' && !native.geographic)
-        throw new GpuError('invalid-input', 'Geodesics require geographic coordinates');
-      const ownKey: unknown[] = [options.curve];
+      if (options.route === 'geodesic' && !native.geographic)
+        throw failure('invalid-input', 'Geodesics require geographic coordinates');
+      const ownKey: unknown[] = [options.route];
       if (original.kind)
         for (const tile of reads.edges.get(original)!.native) {
           const c = tile.columns.points;
@@ -274,7 +273,7 @@ export class Paths {
       };
       const segment = (a: Address, b: Address, owner: number, branch: number) => {
         if (++segments > limits.segments)
-          throw new GpuError('resource-limit', 'Path segment limit exceeded');
+          throw failure('resource-limit', 'Path segment limit exceeded');
         charge(48);
         const key = a.bank.id + ':' + b.bank.id;
         let group = groups.get(key);
@@ -303,14 +302,14 @@ export class Paths {
             a = start.point,
             b = target.point;
           let steps = 1;
-          if (native.geographic && options.curve !== 'geodesic') {
+          if (native.geographic && options.route !== 'geodesic') {
             const angle = Math.acos(Math.max(-1, Math.min(1, dot(unit(a), unit(b))))) / DEG;
             steps = Math.max(1, Math.ceil(angle));
           }
           for (let s = 1; s <= steps; s++) {
             const t = s / steps;
             const p: Point =
-              options.curve === 'geodesic'
+              options.route === 'geodesic'
                 ? b
                 : [
                     a[0] + (native.geographic ? longitude(b[0] - a[0]) : b[0] - a[0]) * t,
@@ -320,7 +319,7 @@ export class Paths {
             let next = s === steps ? target : addPoint(p);
             if (
               native.geographic &&
-              options.curve !== 'geodesic' &&
+              options.route !== 'geodesic' &&
               Math.abs(longitude(previous!.point[0]) - longitude(p[0])) > 180
             ) {
               const pa = previous!.point,
@@ -344,7 +343,7 @@ export class Paths {
       const list = (tile: FieldsBlock, name: string, row: number): Point[] => {
         const column = tile.columns[name];
         if (column?.kind !== 'list' || column.values.kind !== 'vector' || column.values.size !== 2)
-          throw new GpuError('invalid-input', 'Paths require lists of two-component vectors');
+          throw failure('invalid-input', 'Paths require lists of two-component vectors');
         const at = column.offset + row;
         if (!bit(tile.presence[name], row) || !bit(column.validity, at)) return [];
         const result: Point[] = [];

@@ -138,7 +138,7 @@ it('supports local cancellation without changing application data', async () => 
   stop.abort();
   await expect(
     read(value, { kind: 'rows', from: 'Bus', select: ['load'] }, { signal: stop.signal }),
-  ).rejects.toMatchObject({ code: 'aborted' });
+  ).rejects.toMatchObject({ name: 'AbortError' });
   expect(
     (await read(value, { kind: 'rows', from: 'Bus', select: ['load'] })).length,
   ).toBeGreaterThan(0);

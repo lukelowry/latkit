@@ -38,24 +38,29 @@ export interface Problem {
   readonly code: string;
   readonly message: string;
   readonly target?: ProblemTarget;
-  readonly edit?: number;
 }
+
+/** Why an operation failed, the same in every latkit package and across a connection. */
+export type FailureCode =
+  | 'invalid-input'
+  | 'resource-limit'
+  | 'conflict'
+  | 'unsupported'
+  | 'busy'
+  | 'aborted'
+  | 'closed'
+  | 'unavailable'
+  | 'device-lost'
+  | 'precision'
+  | 'disconnected'
+  | 'protocol'
+  | 'timeout'
+  | 'io'
+  | 'internal';
 
 /** Codes and public details survive transport; prototypes and stacks need not. */
 export interface Failure extends Error {
-  readonly code:
-    | 'conflict'
-    | 'invalid-input'
-    | 'unsupported'
-    | 'resource-limit'
-    | 'busy'
-    | 'aborted'
-    | 'closed'
-    | 'disconnected'
-    | 'protocol'
-    | 'timeout'
-    | 'io'
-    | 'internal';
+  readonly code: FailureCode;
   readonly target?: ProblemTarget;
   readonly issues?: readonly Problem[];
 }

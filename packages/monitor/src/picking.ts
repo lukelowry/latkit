@@ -1,5 +1,6 @@
-import { kit, type Point } from '@latkit/gpu';
+import type { Point } from '@latkit/gpu';
 import {
+  Work,
   bitAt,
   rowCount,
   rowAt,
@@ -12,8 +13,6 @@ import type { Binding } from './bindings.js';
 import type { MonitorData, Reading } from './data.js';
 import type { Plot } from './axes.js';
 
-/** Bytes a reading holds, for the picking budget. */
-export const READING_BYTES = 192;
 export interface PickRequest {
   readonly reads: ReadScope;
   readonly data: MonitorData;
@@ -84,7 +83,7 @@ class Nearest {
 /** Read only the pointer's coordinate interval; readings keep native identities and Float64 values. */
 export async function pick(request: PickRequest): Promise<Reading[]> {
   const { reads, data, bindings, plot, x, y, point, radius, limit } = request;
-  const work = new kit.Work(reads.signal, Infinity, 3);
+  const work = new Work(reads.signal, Infinity, 3);
   const coordinate = x[0] + ((point[0] - plot.x) / plot.width) * (x[1] - x[0]),
     delta = (radius / plot.width) * (x[1] - x[0]);
   const between: Domain = [Math.max(x[0], coordinate - delta), Math.min(x[1], coordinate + delta)];
@@ -110,7 +109,7 @@ export async function pick(request: PickRequest): Promise<Reading[]> {
         for (let f = 0; f < frames; f++, order++) {
           if ((order & 1023) === 0) await work.step();
           if (!bitAt(tile.presence.value, r)) continue;
-          const value = sampleAt(column, { row: r, frame: f });
+          const value = sampleAt(column, r, f);
           if (value === null || !Number.isFinite(value)) continue;
           if (visible && bitAt(tile.presence.visible, r)) {
             const c = visible as typeof visible & { rowStride?: number; frameStride?: number },

@@ -1,7 +1,7 @@
 import {
   createData,
   read,
-  sliceColumn,
+  sliceSamples,
   type Data,
   type DataBatch,
   type Schema,
@@ -72,24 +72,28 @@ export class HistorySource {
     ];
     for (let f = 0; f < this.coordinates.length; f += this.blockFrames) {
       const count = Math.min(this.blockFrames, this.coordinates.length - f);
-      const column = sliceColumn(
+      const column = sliceSamples(
         {
           kind: 'numeric',
           offset: 0,
           length: this.values.length,
           values: this.values,
           validity: this.validity,
+          rowStride: 1,
+          frameStride: this.count,
         },
-        f * this.count,
-        count * this.count,
-      ) as import('@latkit/model').NumericColumn;
+        0,
+        this.count,
+        f,
+        count,
+      );
       batches.push({
         kind: 'samples',
         index: this.index,
         rows,
         firstFrame: this.firstFrame + f,
         coordinates: this.coordinates.subarray(f, f + count),
-        columns: { value: { ...column, rowStride: 1, frameStride: this.count } },
+        columns: { value: column },
       });
     }
     if (this.reverseFrames) batches.reverse();

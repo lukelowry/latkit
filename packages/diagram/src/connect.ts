@@ -1,7 +1,7 @@
-import { GpuError } from '@latkit/gpu';
+import { isFailure } from '@latkit/model';
 import type { ConnectProposal } from './diagram.js';
-import type { DiagramHit, DiagramItem, RowRef, Point } from './data.js';
-import { itemKey } from './data.js';
+import type { DiagramItem, DiagramPort, DiagramRow, Point, SceneItem } from './data.js';
+import { itemKey, rowOf } from './data.js';
 import type { Vertex, Port, Scene } from './scene.js';
 import { rect } from './scene.js';
 import { boundary, orthogonal } from './geometry.js';
@@ -9,7 +9,9 @@ import { rootEnd } from './layout.js';
 import { SpatialIndex, expand } from './spatial.js';
 
 export type ConnectStart = Pick<ConnectProposal, 'from' | 'replaces'>;
-const identity = (ref: RowRef) => JSON.stringify([ref.type, ref.id]);
+/** A vertex or edge row, whichever kind names it. */
+const identity = (item: Exclude<DiagramItem, { kind: 'group' }>) =>
+  itemKey({ ...item, kind: 'vertex' });
 
 /** One immutable topology lookup per gesture; pointer moves only query nearby candidates. */
 export class ConnectSession {
@@ -23,7 +25,7 @@ export class ConnectSession {
   private port?: Port;
   constructor(
     private readonly scene: Scene,
-    hit: Exclude<DiagramHit, { kind: 'group' }>,
+    hit: Exclude<DiagramItem, { kind: 'group' }>,
     private readonly clearance: number,
   ) {
     for (const vertex of scene.vertices) {
@@ -36,11 +38,11 @@ export class ConnectSession {
     for (const edge of scene.edges) this.edges.set(identity(edge.hit), edge);
     let source = this.vertices.get(identity(hit))!;
     let port = hit.kind === 'port' ? source.ports.find((p) => p.name === hit.port) : undefined;
-    this.start = { from: { type: hit.type, id: hit.id, ...(port ? { port: port.name } : {}) } };
+    this.start = { from: endOf(source.hit, port?.name) };
     // Dragging a wired input moves it: the new wiring starts from its net's source.
     if (port?.direction === 'in') {
       const vertexIndex = scene.vertices.indexOf(source),
-        moved = { type: hit.type, id: hit.id, port: port.name };
+        moved = endOf(source.hit, port.name) as DiagramPort;
       for (const edge of scene.edges) {
         const end = edge.ends.find((e) => e.vertex === vertexIndex && e.port === moved.port);
         const root = edge.ends[rootEnd(edge)];
@@ -48,12 +50,8 @@ export class ConnectSession {
         source = scene.vertices[root.vertex];
         port = source.ports.find((p) => p.name === root.port);
         this.start = {
-          from: {
-            type: source.hit.type,
-            id: source.hit.id,
-            ...(root.port ? { port: root.port } : {}),
-          },
-          replaces: { edge: { type: edge.hit.type, id: edge.hit.id }, end: moved },
+          from: endOf(source.hit, root.port ?? undefined),
+          replaces: { edge: rowOf(edge.hit), end: moved },
         };
         break;
       }
@@ -81,7 +79,7 @@ export class ConnectSession {
       return (
         !!edge &&
         !!this.port &&
-        edge.hit.type === this.port.to &&
+        edge.hit.index.type === this.port.to &&
         !edge.ends.some(
           (end) => this.scene.vertices[end.vertex] === this.source && end.port === this.port!.name,
         )
@@ -112,15 +110,7 @@ export class ConnectSession {
       ...this.start,
       position,
       point,
-      to:
-        item && item.kind !== 'group'
-          ? {
-              kind: item.kind === 'edge' ? 'edge' : 'vertex',
-              type: item.type,
-              id: item.id,
-              ...(item.kind === 'port' ? { port: item.port } : {}),
-            }
-          : null,
+      to: item && item.kind !== 'group' ? item : null,
     };
   }
   preview(point: Point, target: DiagramItem | null, signal: AbortSignal): readonly Point[] {
@@ -150,12 +140,18 @@ export class ConnectSession {
     } catch (error) {
       signal.throwIfAborted();
       // Overlapping blocks can temporarily enclose the pointer. Keep the gesture cancellable.
-      if (!(error instanceof GpuError) || !['invalid-input', 'resource-limit'].includes(error.code))
+      if (!isFailure(error) || !['invalid-input', 'resource-limit'].includes(error.code))
         throw error;
       return [a, ap, [bp[0], ap[1]], bp, b];
     }
   }
   get detached(): string | undefined {
-    return this.start.replaces ? itemKey({ kind: 'edge', ...this.start.replaces.edge }) : undefined;
+    return this.start.replaces ? itemKey(this.start.replaces.edge) : undefined;
   }
+}
+/** Where wiring starts or ends: a vertex, or one of its ports. */
+function endOf(vertex: SceneItem, port: string | undefined): DiagramRow | DiagramPort {
+  return port === undefined
+    ? { kind: 'vertex', source: vertex.source, index: vertex.index, row: vertex.row }
+    : { kind: 'port', source: vertex.source, index: vertex.index, row: vertex.row, port };
 }

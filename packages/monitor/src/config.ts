@@ -1,5 +1,5 @@
-import { GpuError, kit, type RGBA } from '@latkit/gpu';
-import type { Domain } from '@latkit/model';
+import { failure, type Domain } from '@latkit/model';
+import { kit, type RGBA, type Insets } from '@latkit/gpu';
 import type { MonitorStyle, Limits, AxisOptions } from './options.js';
 
 type Own = Required<Omit<MonitorStyle, 'coordinateAxis' | 'valueAxis'>> & {
@@ -34,10 +34,9 @@ export const LIMITS: Required<Limits> = Object.freeze({
   rows: 100000,
   segmentsPerFrame: 1_000_000,
   historyBytes: 64 * 1024 ** 2,
-  pickingBytes: 2 * 1024 ** 2,
 });
 export function fail(message: string): never {
-  throw new GpuError('invalid-input', message);
+  throw failure('invalid-input', message);
 }
 export function finite(
   value: number,
@@ -118,14 +117,7 @@ function checkAxis(axis: AxisOptions | null): void {
     }
   }
 }
-export function limits(patch: Limits = {}): Required<Limits> {
-  for (const key of Object.keys(patch)) if (!(key in LIMITS)) fail('Unknown monitor limit: ' + key);
-  const result = { ...LIMITS, ...patch };
-  for (const [name, n] of Object.entries(result))
-    if (!Number.isSafeInteger(n) || n < 1) fail('Invalid ' + name);
-  return result;
-}
-export function insets(padding: kit.Insets): readonly number[] {
+export function insets(padding: Insets): readonly number[] {
   const p = typeof padding === 'number' ? [padding, padding, padding, padding] : padding;
   if (p.length !== 4 || !p.every((n) => Number.isFinite(n) && n >= 0)) fail('Invalid padding');
   return p;

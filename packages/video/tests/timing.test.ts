@@ -35,7 +35,8 @@ describe('video timing', () => {
       { frameRate: NaN },
       { duration: Infinity },
       { duration: 0 },
-      { bitrate: 1000, quality: 'high' as const },
+      { bitrate: 1000, quality: 0.75 },
+      { quality: 1.5 },
     ])
       expect(() => settings(options(patch), 8192)).toThrow();
     const output = new WritableStream();

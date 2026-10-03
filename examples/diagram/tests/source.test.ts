@@ -11,6 +11,7 @@ import type { Query, Data } from '@latkit/model';
 import type { Gpu } from '@latkit/gpu';
 import { arrange } from '@latkit/diagram';
 import { GraphSource } from '../src/source.js';
+import type { DiagramPort, DiagramRow } from '@latkit/diagram';
 import {
   plugged,
   ports,
@@ -87,14 +88,21 @@ it('supports filtering, ordering, sparse IDs, counts and cancellation', async ()
     )
       [Symbol.asyncIterator]()
       .next(),
-  ).rejects.toMatchObject({ code: 'aborted' });
+  ).rejects.toMatchObject({ name: 'AbortError' });
 });
+/** A block or wire as the diagram names it, or one of a block's ports. */
+function item(graph: Parameters<typeof connectGraph>[0], id: string): DiagramRow;
+function item(graph: Parameters<typeof connectGraph>[0], id: string, port: string): DiagramPort;
+function item(graph: Parameters<typeof connectGraph>[0], id: string, port?: string) {
+  const row = new GraphSource(graph).item(id)!;
+  return port === undefined ? row : { ...row, kind: 'port', port };
+}
 it('plugs an input into the wire its output drives, keeps fan-out, and supports history', () => {
   const graph = preset('loop'),
     history = new History(graph);
   const next = connectGraph(graph, {
-    from: { type: 'Process', id: 'actuator', port: 'out' },
-    to: { kind: 'vertex', type: 'Output', id: 'response', port: 'in' },
+    from: item(graph, 'actuator', 'out'),
+    to: item(graph, 'response', 'in'),
     position: [0, 0],
     point: [0, 0],
   });
@@ -114,7 +122,7 @@ it('plugs an input into the wire its output drives, keeps fan-out, and supports 
 it('wires an input to a new driving block, or plugs it into an existing wire', async () => {
   const graph = preset('shapes');
   const gesture = {
-    from: { type: 'Control', id: 'diamond', port: 'feedback' },
+    from: item(graph, 'diamond', 'feedback'),
     position: [700, 0] as const,
     point: [700, 0] as const,
   };
@@ -127,7 +135,7 @@ it('wires an input to a new driving block, or plugs it into an existing wire', a
   ]);
   const join = {
     ...gesture,
-    to: { kind: 'edge' as const, type: 'Signal', id: graph.wires[0].id },
+    to: item(graph, graph.wires[0].id),
   };
   const joined = connectGraph(graph, join);
   expect(plugged(joined, graph.wires[0].id)).toContainEqual({ id: 'diamond', port: 'feedback' });
@@ -174,7 +182,7 @@ it('arranges through the new public headless API', async () => {
 it('requires explicit creation on empty drop and disconnects a replaced branch without deleting siblings', () => {
   const graph = preset('loop');
   const free = {
-    from: { type: 'Process', id: 'plant', port: 'out' },
+    from: item(graph, 'plant', 'out'),
     to: null,
     position: [0, 0] as const,
     point: [0, 0] as const,
@@ -184,8 +192,8 @@ it('requires explicit creation on empty drop and disconnects a replaced branch w
   const next = connectGraph(graph, {
     ...free,
     replaces: {
-      edge: { type: 'Signal', id: branch.id },
-      end: { type: 'Output', id: 'response', port: 'in' },
+      edge: item(graph, branch.id),
+      end: item(graph, 'response', 'in'),
     },
   });
   expect(plugged(next, branch.id)).toEqual([

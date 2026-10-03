@@ -18,10 +18,7 @@ export class Socket {
   readonly #message = (event: { data: unknown }) => {
     if (this.#stopped) return;
     try {
-      if (
-        !(event.data instanceof ArrayBuffer) ||
-        event.data.byteLength > this.bounds.maxMessageBytes
-      )
+      if (!(event.data instanceof ArrayBuffer) || event.data.byteLength > this.bounds.messageBytes)
         throw failure('protocol', 'Expected a bounded binary message.');
       this.receive(new Uint8Array(event.data));
     } catch (error) {
@@ -68,7 +65,7 @@ export class Socket {
       signal.throwIfAborted();
       if (this.#stopped || this.peer.readyState !== 1)
         throw failure('closed', 'The socket is closed.');
-      if (this.peer.bufferedAmount + bytes <= this.bounds.maxBufferedBytes) return;
+      if (this.peer.bufferedAmount + bytes <= this.bounds.bufferedBytes) return;
       await interrupt(new Promise<void>((resolve) => setTimeout(resolve, 4)), signal);
     }
   }

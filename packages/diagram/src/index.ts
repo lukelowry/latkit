@@ -11,14 +11,13 @@ export type {
 } from './diagram.js';
 export type {
   DiagramItem,
-  DiagramHit,
-  RowRef,
-  Point,
+  DiagramRow,
+  DiagramPort,
   Shape,
   VertexOptions,
   EdgeOptions,
   PortOptions,
-  Labels,
+  DiagramLabels,
   Group,
   RouteStrategy,
   RouteRequest,

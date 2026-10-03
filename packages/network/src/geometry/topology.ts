@@ -1,14 +1,15 @@
-import { assertIndex } from '@latkit/model';
-import { GpuError, kit } from '@latkit/gpu';
-import type {
-  Column,
-  Index,
-  ReferenceColumn,
-  RowAxis,
-  Schema,
-  Data,
-  FieldValues,
+import {
+  failure,
+  assertIndex,
+  type Column,
+  type Index,
+  type ReferenceColumn,
+  type RowAxis,
+  type Schema,
+  type Data,
+  type FieldValues,
 } from '@latkit/model';
+import { kit, type Position2D } from '@latkit/gpu';
 import type { NetworkData, VertexData, EdgeData, PathData } from '../data.js';
 import { Adjacency } from './adjacency.js';
 import { RowLookup, bit, indexKey } from './rows.js';
@@ -23,7 +24,7 @@ export interface VertexBank {
   readonly rows: RowAxis;
   readonly count: number;
   readonly base: number;
-  position?: kit.Position2D;
+  position?: Position2D;
   /** Private control points share field upload/projection, but are never model vertices. */
   readonly synthetic?: VertexData;
 }
@@ -139,13 +140,13 @@ class Addresses {
     if (max < rows.length * 4 + 65536) {
       const table = (this.table = new Int32Array(max + 1).fill(-1));
       for (let i = 0; i < rows.length; i++) {
-        if (table[rows[i]] !== -1) throw new GpuError('invalid-input', 'Duplicate physical row');
+        if (table[rows[i]] !== -1) throw failure('invalid-input', 'Duplicate physical row');
         table[rows[i]] = base + i;
       }
     } else {
       const map = (this.map = new Map());
       for (let i = 0; i < rows.length; i++) {
-        if (map.has(rows[i])) throw new GpuError('invalid-input', 'Duplicate physical row');
+        if (map.has(rows[i])) throw failure('invalid-input', 'Duplicate physical row');
         map.set(rows[i], base + i);
       }
     }
@@ -165,7 +166,7 @@ interface Drawn {
 
 function reference(column: Column | undefined, name: string): ReferenceColumn {
   if (column?.kind !== 'reference')
-    throw new GpuError('invalid-input', 'Expected a reference column: ' + name);
+    throw failure('invalid-input', 'Expected a reference column: ' + name);
   return column;
 }
 
@@ -182,7 +183,7 @@ class Segments {
   ) {}
   add(a: number, b: number, offsetA: number, offsetB: number, local: number): void {
     if (++this.total.count > this.limit)
-      throw new GpuError('resource-limit', 'Network segment limit exceeded');
+      throw failure('resource-limit', 'Network segment limit exceeded');
     this.count++;
     const key = a * this.vertices.length + b;
     if (key !== this.lastKey) {
@@ -231,7 +232,7 @@ export async function readGeometry(
   const charge = (n: number) => {
     bytes += n;
     if (bytes > limits.geometryBytes)
-      throw new GpuError('resource-limit', 'Network geometry exceeds its CPU budget');
+      throw failure('resource-limit', 'Network geometry exceeds its CPU budget');
   };
   const rowsOf = async (
     source: Data,
@@ -256,10 +257,10 @@ export async function readGeometry(
   for (const [type, options] of Object.entries(data.vertices)) {
     const read = await rowsOf(data.source, type, options.rows);
     const definition = schema.types[type];
-    if (!definition) throw new GpuError('invalid-input', 'Unknown vertex type: ' + type);
+    if (!definition) throw failure('invalid-input', 'Unknown vertex type: ' + type);
     if (definition.spatial) systems.add(definition.spatial.system);
     if (vertexCount + read.rows.length > limits.vertices)
-      throw new GpuError('resource-limit', 'Network vertex limit exceeded');
+      throw failure('resource-limit', 'Network vertex limit exceeded');
     const addresses = new Addresses(read.rows, vertexCount, vertices.length);
     drawn.set(type, { index: read.index, addresses });
     const table = new RowLookup<VertexBank>();
@@ -287,7 +288,7 @@ export async function readGeometry(
   /** The drawn rows a reference column names, checked against its declared vertex type. */
   const target = (column: ReferenceColumn): Drawn | undefined => {
     const found = drawn.get(column.index.type);
-    if (!found) throw new GpuError('invalid-input', 'References must name a vertex type');
+    if (!found) throw failure('invalid-input', 'References must name a vertex type');
     if (found.index) assertIndex(found.index, column.index);
     return found.index ? found : undefined;
   };
@@ -380,7 +381,7 @@ export async function readGeometry(
       flush();
       continue;
     }
-    if (options.bends) throw new GpuError('invalid-input', 'Bends require ends');
+    if (options.bends) throw failure('invalid-input', 'Bends require ends');
     // A net: its ends are the drawn vertices whose references name its rows.
     const nets = await rowsOf(data.source, type, options.rows);
     const local = new Addresses(nets.rows);
@@ -495,11 +496,11 @@ export async function readGeometry(
   }
   frame.signal.throwIfAborted();
   if (systems.size > 1)
-    throw new GpuError('invalid-input', 'Drawn types disagree on their coordinate system');
+    throw failure('invalid-input', 'Drawn types disagree on their coordinate system');
   const geographic = systems.has('geographic');
   for (const bank of vertices)
     if (!bank.position) {
-      if (geographic) throw new GpuError('invalid-input', 'Geographic vertices require positions');
+      if (geographic) throw failure('invalid-input', 'Geographic vertices require positions');
       const values = new Float32Array(bank.count * 2);
       for (let i = 0; i < bank.count; i++) {
         const a = (2 * Math.PI * (bank.base + i)) / Math.max(1, vertexCount);

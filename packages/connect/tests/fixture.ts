@@ -73,7 +73,7 @@ export async function pair<const C extends Record<string, Parameters>>(
     socket = peer;
     path = url;
     void acceptModel({ socket: peer, limits: host.limits }).then(accepted.resolve, accepted.reject);
-  }, host.limits?.maxMessageBytes);
+  }, host.limits?.messageBytes);
   let connection: Connection | undefined;
   try {
     const { limits, ...rest } = model;

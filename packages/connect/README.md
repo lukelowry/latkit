@@ -204,28 +204,29 @@ explicitly, as one entry carrying the `dropped` count. Messages are truncated to
 limits. `progress` and `log` are synchronous; await work in `publish`.
 
 The `protocol` namespace provides `decodePublication`, `preparePublication`, the subprotocols, and
-the explicit wire codec for storage and gateways. Renderers consume `Data`, independent of this
+the explicit wire codec for storage and gateways. `forward(id, publication.bytes)` frames a received
+publication for another stream without encoding it again, as a relay does. Renderers consume `Data`, independent of this
 protocol. Payloads omit connection-local IDs and sequences.
 
 ## Limits and lifecycle
 
 Both endpoints negotiate the minimum of their `ConnectLimits`:
 
-| Limit                                                        |                 Default |
-| ------------------------------------------------------------ | ----------------------: |
-| Complete message                                             |                   1 MiB |
-| JSON metadata                                                |                  64 KiB |
-| Total reserved receive windows                               | 16 MiB / 1,024 messages |
-| Each stream window                                           |    4 MiB / 256 messages |
-| Stream descriptors                                           |                      32 |
-| Batches per publication                                      |                      64 |
-| Pending diagnostics per execution                            |                      32 |
-| Registration, cancellation response, close, cleanup deadline |              30 seconds |
+| Limit                                                                     |                 Default |
+| ------------------------------------------------------------------------- | ----------------------: |
+| `messageBytes`: a complete message                                        |                   1 MiB |
+| `metadataBytes`: JSON metadata                                            |                  64 KiB |
+| `bufferedBytes`, `bufferedMessages`: all reserved receive windows         | 16 MiB / 1,024 messages |
+| `streamWindowBytes`, `streamWindowMessages`: each stream window           |    4 MiB / 256 messages |
+| `streams`: stream descriptors                                             |                      32 |
+| `publicationBatches`: batches per publication                             |                      64 |
+| `logs`: pending diagnostics per execution                                 |                      32 |
+| `timeoutMs`: registration, cancellation response, close, cleanup deadline |              30 seconds |
 
 The global window budget can admit fewer streams than the descriptor ceiling (four full default
 windows). New streams fail immediately when reservations are exhausted. One FIFO writer handles
 publications and controls, waiting for native send-buffer capacity before encoding. The native
-send buffer is capped at `maxBufferedBytes` before each send. There is one pending publication
+send buffer is capped at `bufferedBytes` before each send. There is one pending publication
 per model stream and one pending cumulative ACK per receiver. ACKs read the latest consumed
 sequence when sending; terminal ACKs retain the stream reservation until sent. Control pressure
 waits for capacity instead of closing the connection.

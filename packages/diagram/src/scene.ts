@@ -1,6 +1,7 @@
 import type { FieldValues, Index } from '@latkit/model';
-import type { kit, RGBA } from '@latkit/gpu';
-import type { DiagramData, DiagramHit, Point, Shape, VertexData, EdgeData } from './data.js';
+import type { kit, Point, RGBA } from '@latkit/gpu';
+import type { DiagramData, SceneItem, Shape, VertexData, EdgeData } from './data.js';
+import type { Obstacles } from './geometry.js';
 export type Rect = readonly [number, number, number, number];
 export interface Label {
   text: string;
@@ -26,7 +27,7 @@ export interface Port {
   normal: Point;
 }
 export interface Vertex {
-  hit: Exclude<DiagramHit, { kind: 'group' }>;
+  hit: SceneItem;
   index: Index;
   row: number;
   x: number;
@@ -54,7 +55,7 @@ export interface End {
   direction?: 'in' | 'out';
 }
 export interface Edge {
-  hit: Exclude<DiagramHit, { kind: 'group' }>;
+  hit: SceneItem;
   ends: End[];
   visible: boolean;
   color: RGBA;
@@ -90,6 +91,8 @@ export interface Scene {
   routeClearance?: number;
   portSizePx?: number;
   ends: number;
+  /** What the routes avoid, once routed. */
+  obstacles?: Obstacles;
 }
 export const emptyLabel: Label = { text: '', width: 0, height: 0, ascent: 0, runs: [] };
 export function rect(vertex: Vertex): Rect {

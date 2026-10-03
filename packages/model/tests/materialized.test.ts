@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import { sliceColumn } from '../src/columns.js';
 import {
   appendData,
   locateSample,
@@ -13,7 +14,6 @@ import {
   validateBlock,
   blockBuffers,
   blockByteLength,
-  sliceColumn,
   type Column,
   type NumericColumn,
   type RowSelection,
@@ -203,7 +203,7 @@ it('tiles every addressed sample exactly once under a tight payload bound withou
         for (let r = 0; r < rowCount(b.rows); r++) {
           const at = (b.firstFrame + f - 2 ** 40) * 113 + rowAt(b.rows, r);
           expect(seen[at]++).toBe(0);
-          expect(sampleAt(b.columns.output, { row: r, frame: f })).toBe(at);
+          expect(sampleAt(b.columns.output, r, f)).toBe(at);
         }
     }
   expect(seen.every((v) => v === 1)).toBe(true);
@@ -246,8 +246,9 @@ it('rejects stale identities, absent fields, impossible bounds and cancelled wor
   await expect(collect(read(data, rows, { maxBlockBytes: 1 }))).rejects.toMatchObject({
     code: 'resource-limit',
   });
+  // An aborted read rejects with the signal's reason, as every latkit read does.
   await expect(collect(read(data, rows, { signal: AbortSignal.abort() }))).rejects.toMatchObject({
-    code: 'aborted',
+    name: 'AbortError',
   });
 });
 
@@ -402,17 +403,6 @@ it('rejects row appends even when a JavaScript caller bypasses the type contract
     /sampled observations only/,
   );
   expect(data.tables.Node.fields.value.at(0)!.column).toBe(batch.columns.value);
-});
-
-it.each([true, false, undefined])('rejects the removed replace option (%s)', (replace) => {
-  const row = { ...batch, replace };
-  const sample = { ...observations(0), replace };
-  expect(() => createData(schema, [row])).toThrow(/Replacement operations/);
-  expect(() => appendData(createData(schema, []), [sample])).toThrow(/Replacement operations/);
-  for (const block of [row, sample])
-    expect(validateBatch(schema, block)).toContainEqual(
-      expect.objectContaining({ message: 'Replacement operations are unsupported.' }),
-    );
 });
 
 it('rejects old publication payloads rather than treating them as empty batches', () => {

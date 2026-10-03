@@ -1,5 +1,5 @@
-import { kit } from '@latkit/gpu';
-import { rowAt, sameIndex, type FieldsBlock } from '@latkit/model';
+import { kit, type Viewport } from '@latkit/gpu';
+import { Work, rowAt, sameIndex, type FieldsBlock } from '@latkit/model';
 import type { NetworkData, NetworkItem, VertexData } from './data.js';
 import {
   vertexOptions,
@@ -10,11 +10,18 @@ import {
   type SegmentBatch,
 } from './geometry/topology.js';
 import { nativeValue, RowLookup } from './geometry/rows.js';
-import { project, projectedStroke, worldVisible, type Camera, type Projected } from './camera.js';
+import {
+  DEG,
+  project,
+  projectedStroke,
+  worldVisible,
+  type Camera,
+  type Projected,
+} from './camera.js';
 import { geodesic } from './geometry/paths.js';
 import { scaledValue, type FieldRead } from './rendering/fields.js';
 import type { Reads } from './rendering/painter.js';
-import type { Style } from './options.js';
+import { lineWidthPx, SIZE_RANGE, type Style } from './options.js';
 
 /** Children per index node. */
 const NODE = 16;
@@ -340,6 +347,20 @@ function identity(read: FieldRead, fields = ['position', 'x', 'y']): unknown[] {
 function equal(a: readonly unknown[], b: readonly unknown[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
+/** A position in world units: the data's own on a plane, or on the unit globe. */
+function world(
+  [x, y, h]: readonly [number, number, number],
+  globe: boolean,
+): readonly [number, number, number] {
+  if (!globe) return [x, y, h];
+  const lon = x * DEG,
+    lat = y * DEG,
+    r = (1 + h) * Math.cos(lat);
+  return [r * Math.sin(lon), (1 + h) * Math.sin(lat), r * Math.cos(lon)];
+}
+function distance(a: readonly number[], b: readonly number[]): number {
+  return Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+}
 function raw(bank: CpuBank, offset: number): readonly [number, number] {
   const row = rowAt(bank.bank.rows, offset),
     found = bank.lookup.get(row);
@@ -538,7 +559,7 @@ export class PickGeometry {
           };
     if (options.lines)
       for (const cpu of this.edges)
-        if (pickable(cpu, data) && edgeOptions(data, cpu.edge.bank).curve !== 'geodesic') {
+        if (pickable(cpu, data) && edgeOptions(data, cpu.edge.bank).route !== 'geodesic') {
           const records = cpu.batch.records,
             a = cpu.a.spatial.bounds,
             b = cpu.b.spatial.bounds;
@@ -592,7 +613,7 @@ export class PickGeometry {
     }
   }
   /** Build the missing queried indexes in cooperative slices; queries wait for this, never build. */
-  async indexLater(data: NetworkData, options: Style, work: kit.Work): Promise<void> {
+  async indexLater(data: NetworkData, options: Style, work: Work): Promise<void> {
     for (const steps of this.builds(data, options)) {
       // Abort stops the build at once, freeing its bytes.
       const stop = () => void steps.return();
@@ -611,9 +632,10 @@ export class PickGeometry {
     bank: VertexBank,
     offset: number,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
     options: VertexData,
+    radiusPx: number,
     marker = true,
   ): Projected & { radius: number; visible: boolean } {
     const cpu = this.vertices.get(bank)!,
@@ -630,17 +652,37 @@ export class PickGeometry {
       radius:
         bank.synthetic || (Number.isFinite(visible) && visible <= 0)
           ? 0
-          : scaledValue(cpu.read, 'size', found.value, found.offset, options.size, 1),
+          : scaledValue(cpu.read, 'size', found.value, found.offset, options.sizePx, radiusPx),
     };
   }
   private phases = new Map<SegmentBatch, Float32Array>();
-  /** Only multi-segment dashed paths need a prefix; ordinary edges pay no preparation cost. */
+  /** What the dash prefixes were measured for; they hold until one of these changes. */
+  private phaseKey?: {
+    readonly edges: readonly CpuSegment[];
+    readonly data: NetworkData;
+    readonly globe: boolean;
+    readonly height: number;
+  };
+  /**
+   * Each dashed segment's distance along its edge before it, in world units, which drawing scales to
+   * pixels where each piece lands. Only multi-segment dashed edges have one, and it holds while the
+   * camera moves.
+   */
   dashPhases(
     data: NetworkData,
-    camera: Camera,
-    viewport: kit.Viewport,
+    globe: boolean,
     height: number,
   ): ReadonlyMap<SegmentBatch, Float32Array> {
+    const key = this.phaseKey;
+    if (
+      key?.edges === this.edges &&
+      key.data === data &&
+      key.globe === globe &&
+      key.height === height
+    )
+      return this.phases;
+    this.phaseKey = { edges: this.edges, data, globe, height };
+    this.phases = new Map();
     const groups = new Map<EdgeBank, CpuSegment[]>();
     for (const batch of this.edges)
       if (
@@ -674,20 +716,53 @@ export class PickGeometry {
         const found = batch.edge.lookup.get(rowAt(bank.rows, owner))!;
         if (!(nativeValue(found.value, 'dash', found.offset) > 0)) continue;
         outputs[group][offset] = phase;
-        for (const piece of this.stroke(
-          batch,
-          records[at],
-          records[at + 1],
-          data,
-          camera,
-          viewport,
-          height,
-          unchecked,
-        ))
-          phase += Math.hypot(piece.b.x - piece.a.x, piece.b.y - piece.a.y);
+        phase += this.worldLength(batch, records[at], records[at + 1], data, globe, height);
       }
     }
     return this.phases;
+  }
+  /** A segment's length in world units: its chord, or the steps a geodesic draws. */
+  private worldLength(
+    batch: CpuSegment,
+    ao: number,
+    bo: number,
+    data: NetworkData,
+    globe: boolean,
+    height: number,
+  ): number {
+    const a = this.place(batch.a, ao, vertexOptions(data, batch.a.bank), height),
+      b = this.place(batch.b, bo, vertexOptions(data, batch.b.bank), height);
+    if (![...a, ...b].every(Number.isFinite)) return 0;
+    if (edgeOptions(data, batch.edge.bank).route !== 'geodesic')
+      return distance(world(a, globe), world(b, globe));
+    const cosine =
+      Math.sin(a[1] * DEG) * Math.sin(b[1] * DEG) +
+      Math.cos(a[1] * DEG) * Math.cos(b[1] * DEG) * Math.cos((b[0] - a[0]) * DEG);
+    const steps = Math.max(1, Math.ceil(Math.acos(Math.max(-1, Math.min(1, cosine))) / DEG));
+    let length = 0,
+      previous = world(a, globe);
+    for (let i = 1; i <= steps; i++) {
+      const next = world(geodesic(a, b, i / steps), globe);
+      length += distance(previous, next);
+      previous = next;
+    }
+    return length;
+  }
+  /** A vertex's coordinates and height, as drawing places it. */
+  private place(
+    cpu: CpuBank,
+    offset: number,
+    options: VertexData,
+    height: number,
+  ): readonly [number, number, number] {
+    const found = cpu.lookup.get(rowAt(cpu.bank.rows, offset));
+    if (!found) return [NaN, NaN, NaN];
+    const [x, y] = raw(cpu, offset);
+    return [
+      x,
+      y,
+      scaledValue(cpu.read, 'height', found.value, found.offset, options.height, 0) * height,
+    ];
   }
   private *stroke(
     batch: CpuSegment,
@@ -695,15 +770,16 @@ export class PickGeometry {
     bo: number,
     data: NetworkData,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
     check: () => void,
   ): Iterable<{ a: Projected; b: Projected; first: boolean; last: boolean }> {
     const ac = vertexOptions(data, batch.a.bank),
       bc = vertexOptions(data, batch.b.bank);
-    const a = this.projected(batch.a.bank, ao, camera, viewport, height, ac, false),
-      b = this.projected(batch.b.bank, bo, camera, viewport, height, bc, false);
-    if (edgeOptions(data, batch.edge.bank).curve !== 'geodesic') {
+    // Strokes need positions only; their markers' radii stay unread.
+    const a = this.projected(batch.a.bank, ao, camera, viewport, height, ac, 0, false),
+      b = this.projected(batch.b.bank, bo, camera, viewport, height, bc, 0, false);
+    if (edgeOptions(data, batch.edge.bank).route !== 'geodesic') {
       const clip = projectedStroke(a, b, camera, viewport);
       if (clip) yield { a: clip[0], b: clip[1], first: true, last: true };
       return;
@@ -762,7 +838,7 @@ export class PickGeometry {
     point: readonly [number, number],
     data: NetworkData,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
     options: Style,
     radius: number,
@@ -784,7 +860,7 @@ export class PickGeometry {
     point: readonly [number, number],
     data: NetworkData,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
     options: Style,
     radius: number,
@@ -799,7 +875,7 @@ export class PickGeometry {
     point: readonly [number, number],
     data: NetworkData,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
     options: Style,
     radius: number,
@@ -813,16 +889,15 @@ export class PickGeometry {
         b = (camera.bearing * Math.PI) / 180;
       const x = camera.center[0] + dx * Math.cos(b) - dy * Math.sin(b),
         y = camera.center[1] + dx * Math.sin(b) + dy * Math.cos(b);
-      const maxSize = Math.max(
-        1,
-        ...Object.values(data.vertices).map((v) => v.size?.range?.[1] ?? 2),
-      );
       const reach =
         (radius +
           Math.max(
-            options.vertexRadiusPx * maxSize,
-            options.edgeWidthPx,
-            ...Object.values(data.paths ?? {}).map((path) => path.widthPx ?? 1),
+            ...Object.values(data.vertices).map((v) =>
+              v.sizePx ? Math.max(...(v.sizePx.range ?? SIZE_RANGE)) : options.vertexRadiusPx,
+            ),
+            ...[...Object.values(data.edges ?? {}), ...Object.values(data.paths ?? {})].map(
+              (line) => lineWidthPx(line, options),
+            ),
           ) +
           options.selectedWidthPx) /
         camera.scale;
@@ -841,13 +916,11 @@ export class PickGeometry {
               viewport,
               height,
               data.vertices[bank.type],
+              options.vertexRadiusPx,
             );
             if (!p.visible) continue;
             let distance = options.markers
-              ? Math.max(
-                  0,
-                  Math.hypot(point[0] - p.x, point[1] - p.y) - p.radius * options.vertexRadiusPx,
-                )
+              ? Math.max(0, Math.hypot(point[0] - p.x, point[1] - p.y) - p.radius)
               : Infinity;
             if (options.poles) {
               const [x, y] = raw(cpu, offset),
@@ -874,7 +947,7 @@ export class PickGeometry {
       for (const batch of this.edges)
         if (pickable(batch, data))
           for (const offset of (bounds &&
-            edgeOptions(data, batch.edge.bank).curve !== 'geodesic' &&
+            edgeOptions(data, batch.edge.bank).route !== 'geodesic' &&
             batch.spatial.index?.query(bounds, check)) ||
             offsets(batch.batch.records.length / 4, check)) {
             check();
@@ -893,6 +966,7 @@ export class PickGeometry {
               viewport,
               height,
               vertexOptions(data, batch.a.bank),
+              options.vertexRadiusPx,
               false,
             );
             const b = this.projected(
@@ -902,26 +976,27 @@ export class PickGeometry {
               viewport,
               height,
               vertexOptions(data, batch.b.bank),
+              options.vertexRadiusPx,
               false,
             );
-            let phase = this.phases.get(batch.batch)?.[offset] ?? 0;
+            const prefix = this.phases.get(batch.batch)?.[offset] ?? 0;
+            let phase = 0;
             for (const piece of this.stroke(batch, ao, bo, data, camera, viewport, height, check)) {
               const start = piece.a,
                 end = piece.b;
               const hit = segmentDistance(point[0], point[1], start.x, start.y, end.x, end.y);
-              const dashStart = phase;
+              // Earlier segments, in world units, at this piece's screen scale, as drawing does.
+              const dashStart =
+                phase + (prefix * hit.length) / Math.max(1e-6, distance(start.world, end.world));
               phase += hit.length;
-              const width =
-                batch.edge.bank.kind === 'path'
-                  ? (data.paths![batch.edge.bank.type].widthPx ?? 1)
-                  : options.edgeWidthPx;
+              const width = lineWidthPx(edgeOptions(data, batch.edge.bank), options);
               if (hit.distance > radius + width / 2) continue;
               let world = start.world.map(
                 (v, i) => v + (end.world[i] - v) * hit.t,
               ) as unknown as Projected['world'];
               if (
                 (records[offset * 4 + 3] ||
-                  edgeOptions(data, batch.edge.bank).curve === 'geodesic') &&
+                  edgeOptions(data, batch.edge.bank).route === 'geodesic') &&
                 camera.projection === 'globe'
               ) {
                 const sphere = [world[0], world[1], world[2] + 1],
@@ -938,10 +1013,8 @@ export class PickGeometry {
                 continue;
               if (
                 options.markers &&
-                ((piece.first &&
-                  Math.hypot(point[0] - a.x, point[1] - a.y) < a.radius * options.vertexRadiusPx) ||
-                  (piece.last &&
-                    Math.hypot(point[0] - b.x, point[1] - b.y) < b.radius * options.vertexRadiusPx))
+                ((piece.first && Math.hypot(point[0] - a.x, point[1] - a.y) < a.radius) ||
+                  (piece.last && Math.hypot(point[0] - b.x, point[1] - b.y) < b.radius))
               )
                 continue;
               yield {
@@ -961,7 +1034,7 @@ export class PickGeometry {
     item: NetworkItem,
     data: NetworkData,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
   ): readonly [number, number] | null {
     if (item.kind === 'vertex')
@@ -997,7 +1070,7 @@ export class PickGeometry {
     item: NetworkItem,
     data: NetworkData,
     camera: Camera,
-    viewport: kit.Viewport,
+    viewport: Viewport,
     height: number,
   ): Projected | null {
     const segments: { batch: CpuSegment; offset: number }[] = [];

@@ -17,7 +17,7 @@ import { emptyColumn, intersect, resolveRows, type ReadResult } from '../read.js
 import type { Schema } from '../schema.js';
 import type { Domain } from '../types.js';
 import type { Keys } from './keys.js';
-import type { Entry, Memory } from './memory.js';
+import type { Entry, Memory } from '../memory.js';
 import { FieldPlans } from './plans.js';
 import type {
   ExtentRequest,
@@ -120,7 +120,6 @@ export class Fields {
 
   async *read(request: FieldsRequest, scope: FieldScope): AsyncGenerator<FieldsBlock> {
     if (!request.from) throw failure('invalid-input', 'Fields require a model type');
-    if (request.at !== undefined) scope = { ...scope, at: request.at };
     for await (const block of this.blocks(request, scope)) yield { kind: 'fields', ...block };
   }
 
@@ -353,7 +352,7 @@ export class Fields {
       // Both gathering and upload conversion are bounded; the stream never gathers the full model.
       const tileRows = Math.max(
         1,
-        Math.floor(Math.min(this.tileBytes, this.memory.stagingBytes / 2) / width),
+        Math.floor(Math.min(this.tileBytes, this.memory.budget.stagingBytes / 2) / width),
       );
       for (let offset = 0; offset < count; offset += tileRows) {
         scope.signal.throwIfAborted();

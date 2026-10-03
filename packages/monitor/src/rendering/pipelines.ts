@@ -14,36 +14,12 @@ export interface Pipelines {
   axis: GPUBindGroupLayout;
   sampler: GPUSampler;
 }
-const cache = new WeakMap<Gpu, Map<string, Promise<Pipelines>>>();
-export function pipelines(
+/** Build the pipelines for one target format, MSAA, and shade; the view caches each variant. */
+export async function pipelines(
   gpu: Gpu,
   format: GPUTextureFormat,
   msaa: 1 | 4,
-  shade: string = kit.defaultShade,
-): Promise<Pipelines> {
-  let entries = cache.get(gpu);
-  if (!entries) {
-    entries = new Map();
-    cache.set(gpu, entries);
-  }
-  const key = JSON.stringify([format, msaa, shade]);
-  let result = entries.get(key);
-  if (!result) {
-    result = compilePipelines(gpu, format, msaa, shade);
-    entries.set(key, result);
-    if (entries.size > 8) entries.delete(entries.keys().next().value!);
-    const own = result;
-    void result.catch(() => {
-      if (entries!.get(key) === own) entries!.delete(key);
-    });
-  }
-  return result;
-}
-async function compilePipelines(
-  gpu: Gpu,
-  format: GPUTextureFormat,
-  msaa: 1 | 4,
-  shade: string = kit.defaultShade,
+  shade: string,
 ): Promise<Pipelines> {
   const d = gpu.device,
     both = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;

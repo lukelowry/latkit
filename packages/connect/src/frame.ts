@@ -36,7 +36,7 @@ export interface Plan {
   readonly bytes: number;
   encode(sequence?: number): Uint8Array;
 }
-export type FrameLimits = Pick<ConnectLimits, 'maxMetadataBytes' | 'maxMessageBytes'>;
+export type FrameLimits = Pick<ConnectLimits, 'metadataBytes' | 'messageBytes'>;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const MAGIC = 0x4b54414c; // LATK
@@ -113,20 +113,19 @@ export function prepare(
 ): Plan {
   integer(op, 1, 13);
   integer(id, 0, 0xffffffff);
-  checkTree(metadata, bounds.maxMetadataBytes);
+  checkTree(metadata, bounds.metadataBytes);
   const json = encoder.encode(JSON.stringify(metadata));
-  if (json.length > bounds.maxMetadataBytes)
-    throw failure('resource-limit', 'Metadata is too large.');
+  if (json.length > bounds.metadataBytes) throw failure('resource-limit', 'Metadata is too large.');
   if (chunks.length > 8192) throw failure('resource-limit', 'Too many binary fragments.');
   let bodyBytes = 0;
   for (const chunk of chunks) {
     bodyBytes = align8(bodyBytes) + chunk.byteLength;
-    if (bodyBytes > bounds.maxMessageBytes)
+    if (bodyBytes > bounds.messageBytes)
       throw failure('resource-limit', 'Binary payload is too large.');
   }
   const start = align8(HEADER + json.length),
     bytes = start + bodyBytes;
-  if (bytes > bounds.maxMessageBytes) throw failure('resource-limit', 'Message is too large.');
+  if (bytes > bounds.messageBytes) throw failure('resource-limit', 'Message is too large.');
   return {
     bytes,
     encode(sequence = 0) {
@@ -174,7 +173,7 @@ export function forward(id: number, payload: Uint8Array): Plan {
 export function decode(input: Uint8Array, bounds: FrameLimits): Frame {
   if (!(input.buffer instanceof ArrayBuffer))
     throw failure('protocol', 'Shared frame storage is unsupported.');
-  if (input.byteLength < HEADER || input.byteLength > bounds.maxMessageBytes)
+  if (input.byteLength < HEADER || input.byteLength > bounds.messageBytes)
     throw failure('protocol', 'Invalid frame length.');
   const bytes = input.byteOffset % 8 ? Uint8Array.from(input) : input;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -183,7 +182,7 @@ export function decode(input: Uint8Array, bounds: FrameLimits): Frame {
   const size = view.getUint32(16, true),
     bodySize = view.getUint32(20, true),
     start = align8(HEADER + size);
-  if (size > bounds.maxMetadataBytes || start + bodySize !== bytes.length)
+  if (size > bounds.metadataBytes || start + bodySize !== bytes.length)
     throw failure('protocol', 'Inconsistent frame lengths.');
   // Publications are decoded only when consumed. The socket path validates framing and credit
   // without parsing column metadata twice or allocating wrappers for queued payloads.
@@ -195,7 +194,7 @@ export function decode(input: Uint8Array, bounds: FrameLimits): Frame {
     get metadata() {
       if (!metadata) {
         metadata = record(JSON.parse(decoder.decode(bytes.subarray(HEADER, HEADER + size))));
-        checkTree(metadata, bounds.maxMetadataBytes);
+        checkTree(metadata, bounds.metadataBytes);
       }
       return metadata;
     },

@@ -1,3 +1,4 @@
+import { failure } from '@latkit/model';
 import { TextureData } from '../memory/texture-data.js';
 import type { RGBA } from './color.js';
 import { validateColormap, type Colormap } from './colormap.js';
@@ -31,7 +32,7 @@ export function pixelColor(data: TextureData, at: number): RGBA {
 }
 /** Finite normalized input: clamp continuous maps, wrap cyclic maps, or select categorical bins. */
 export function sampleColormap(value: Colormap | ColormapName, t: number): RGBA {
-  if (!Number.isFinite(t)) throw new RangeError('Colormap coordinate must be finite');
+  if (!Number.isFinite(t)) throw failure('invalid-input', 'Colormap coordinate must be finite');
   const map = namedColormap(value),
     data = colormapPixels(map);
   t = map.kind === 'cyclic' ? t - Math.floor(t) : Math.max(0, Math.min(1, t));

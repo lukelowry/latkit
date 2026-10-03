@@ -1,6 +1,6 @@
 import { createData, read, type Data, type DataBatch } from '@latkit/model';
 import type { Query, QueryOptions, RowsBlock, Schema, Column, RowSelection } from '@latkit/model';
-import type { DiagramData } from '../src/data.js';
+import type { DiagramData, DiagramPort, DiagramRow } from '../src/data.js';
 /** One task port wired to a dependency net. */
 export interface End {
   vertex: number;
@@ -199,6 +199,26 @@ export function texts(values: readonly string[]): import('@latkit/model').TextCo
   const bytes = new Uint8Array(offsets.at(-1)!);
   parts.forEach((p, i) => bytes.set(p, offsets[i]));
   return { kind: 'text', offset: 0, length: values.length, offsets, bytes };
+}
+/** The item an app finds for an id: fixture ids name their row, as `n2` for a task or `e0` for a dependency. */
+export function vertex(source: Source, id: string): DiagramRow {
+  return {
+    kind: 'vertex',
+    source: source.data,
+    index: source.index('Task'),
+    row: Number(id.slice(1)),
+  };
+}
+export function edge(source: Source, id: string): DiagramRow {
+  return {
+    kind: 'edge',
+    source: source.data,
+    index: source.index('Dependency'),
+    row: Number(id.slice(1)),
+  };
+}
+export function port(source: Source, id: string, name: string): DiagramPort {
+  return { ...vertex(source, id), kind: 'port', port: name };
 }
 export function data(source = new Source(), position = false): DiagramData {
   return {

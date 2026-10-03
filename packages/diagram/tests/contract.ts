@@ -1,12 +1,12 @@
 import { createDiagram, arrange, type Diagram } from '../src/index.js';
-import type { Gpu, kit } from '@latkit/gpu';
-import type { Data, FieldValues } from '@latkit/model';
+import type { Gpu, ColorScale } from '@latkit/gpu';
+import { itemId, type Data, type FieldValues } from '@latkit/model';
 export async function usage(
   gpu: Gpu,
   model: Data,
   remove: (ids: readonly string[]) => Promise<void>,
   canvas: HTMLCanvasElement,
-  color: kit.ColorScale,
+  color: ColorScale,
 ): Promise<Diagram> {
   const config = {
     source: model,
@@ -21,8 +21,9 @@ export async function usage(
     layout: 'manual',
     vertices: { vertex: { ...config.vertices.vertex, position: positions.vertex } },
   });
-  diagram.on('delete', (ids) => {
-    void remove(ids);
+  // Rows name what to delete; their ids are how an application writes the change back.
+  diagram.on('delete', (rows) => {
+    void remove(rows.map(itemId));
   });
   diagram.on('move', ({ positions }) => {
     const fields: Readonly<Record<string, FieldValues>> = positions;

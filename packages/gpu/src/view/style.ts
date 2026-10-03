@@ -1,5 +1,5 @@
+import { failure } from '@latkit/model';
 import { validateRgba, type RGBA } from '../colors/color.js';
-import { GpuError } from '../error.js';
 import type { TextFont } from '../text/text.js';
 import type { Insets } from './camera.js';
 
@@ -83,5 +83,5 @@ export function resolveViewStyle(
   return Object.freeze(style) as ResolvedViewStyle;
 }
 function fail(message: string): never {
-  throw new GpuError('invalid-input', message);
+  throw failure('invalid-input', message);
 }

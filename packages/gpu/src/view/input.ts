@@ -1,3 +1,4 @@
+import { failure } from '@latkit/model';
 import type { Viewport } from '../frame/render.js';
 import type { Point } from './view.js';
 export interface Modifiers {
@@ -89,6 +90,8 @@ export function createCanvasInput(options: {
     },
   };
 }
+/** Thrown through a search to stop it at its budget; never escapes withinBudget. */
+const exhausted = failure('busy', 'Work budget exhausted');
 export type BudgetResult<T> =
   | { readonly complete: true; readonly value: T; readonly elapsedMs: number }
   | { readonly complete: false; readonly elapsedMs: number };
@@ -98,10 +101,9 @@ export function withinBudget<T>(
   budgetMs?: number,
 ): BudgetResult<T> {
   if (budgetMs !== undefined && (!Number.isFinite(budgetMs) || budgetMs <= 0))
-    throw new RangeError('Budget must be positive');
+    throw failure('invalid-input', 'Budget must be positive');
   const started = performance.now(),
-    deadline = budgetMs === undefined ? Infinity : started + budgetMs,
-    exhausted = new Error('Work budget exhausted');
+    deadline = budgetMs === undefined ? Infinity : started + budgetMs;
   let count = 0;
   const check =
     budgetMs === undefined

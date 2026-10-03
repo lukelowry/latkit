@@ -1,4 +1,5 @@
-import { GpuError, kit, viewStyle, type RGBA, type ViewInput } from '@latkit/gpu';
+import { failure } from '@latkit/model';
+import { kit, viewStyle, type RGBA, type ViewInput } from '@latkit/gpu';
 import type { DiagramStyle, Limits } from './options.js';
 import type { DiagramData, VertexData, EdgeData } from './data.js';
 import type { DiagramInput } from './input.js';
@@ -38,7 +39,7 @@ export const LIMITS: Required<Limits> = Object.freeze({
   layoutMs: 30000,
 });
 export function fail(message: string): never {
-  throw new GpuError('invalid-input', message);
+  throw failure('invalid-input', message);
 }
 export function positive(value: number, name: string, zero = false): number {
   if (!Number.isFinite(value) || (zero ? value < 0 : value <= 0)) fail('Invalid ' + name);
@@ -71,16 +72,9 @@ export function resolveStyle(
   }
   return Object.freeze(style) as Style;
 }
-export function resolveLimits(value: Limits = {}): Required<Limits> {
-  for (const key of Object.keys(value)) if (!(key in LIMITS)) fail('Unknown diagram limit: ' + key);
-  const result: Record<string, number> = { ...LIMITS };
-  for (const [name, v] of Object.entries(value) as [string, number | undefined][]) {
-    if (v === undefined) continue;
-    positive(v, name);
-    if (name !== 'layoutMs' && !Number.isSafeInteger(v)) fail('Invalid integer limit: ' + name);
-    result[name] = v;
-  }
-  return Object.freeze(result) as Required<Limits>;
+/** Limits over their defaults; `layoutMs` may be fractional. */
+export function resolveLimits(value?: Limits): Required<Limits> {
+  return kit.resolveLimits(value, LIMITS, 'diagram');
 }
 /** Throw on the diagram's own input options the gestures cannot use; return the shared rest. */
 export function checkInput(input: DiagramInput): ViewInput {
@@ -128,6 +122,7 @@ export function data(value: DiagramData): DiagramData {
   if (!value.vertices) fail('Vertex bindings are required');
   for (const vertex of Object.values(value.vertices)) {
     binding(vertex);
+    if (vertex.baseColor) kit.validateRgba(vertex.baseColor);
     if (vertex.cornerRadius !== undefined) positive(vertex.cornerRadius, 'cornerRadius', true);
     if (vertex.labelPosition && !['header', 'center'].includes(vertex.labelPosition))
       fail('Invalid labelPosition');
@@ -143,6 +138,7 @@ export function data(value: DiagramData): DiagramData {
   }
   for (const [type, edge] of Object.entries(value.edges ?? {})) {
     binding(edge);
+    if (edge.baseColor) kit.validateRgba(edge.baseColor);
     if (
       edge.ends &&
       (edge.ends.length !== 2 ||

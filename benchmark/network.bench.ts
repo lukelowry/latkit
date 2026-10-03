@@ -7,7 +7,7 @@ describe.each(sizes)('network %i buses', async (buses) => {
     data = grid(buses);
   const config: NetworkConfig = {
     source: data,
-    vertices: { Bus: { color: { field: 'voltage', domain: [0.95, 1.05] }, size: 'load' } },
+    vertices: { Bus: { color: { field: 'voltage', domain: [0.95, 1.05] }, sizePx: 'load' } },
     edges: { Branch: { ends: ['from', 'to'] } },
   };
   const view = createNetwork(device, config);
@@ -23,7 +23,7 @@ describe.each(sizes)('network %i buses', async (buses) => {
   // Before anything moves the fitted camera.
   measure('pick', () => view.pick([640, 360]));
   measure('restyle', (i) => {
-    view.set({ vertices: { Bus: { size: i % 2 ? 'load' : null } } });
+    view.set({ vertices: { Bus: { sizePx: i % 2 ? 'load' : null } } });
     return draw(device, view);
   });
   measure('camera move', (i) => {

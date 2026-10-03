@@ -1,5 +1,5 @@
-import { createGpu } from '@latkit/gpu';
-import { numberAt, rowAt, rowCount } from '@latkit/model';
+import { createGpu, type Point } from '@latkit/gpu';
+import { itemId, numberAt, rowAt, rowCount } from '@latkit/model';
 import { createDiagram, arrange } from '@latkit/diagram';
 import type {
   DiagramConfig,
@@ -7,7 +7,6 @@ import type {
   DiagramItem,
   LayoutOptions,
   Shape,
-  Point,
 } from '@latkit/diagram';
 import { GraphSource } from './source.js';
 import {
@@ -28,6 +27,8 @@ import './style.css';
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) =>
   document.querySelector<T>(selector)!;
 const select = (id: string) => $<HTMLSelectElement>('#' + id);
+/** The graph id of a diagram item: a block's or wire's row id, or a group's name. */
+const idOf = (item: DiagramItem) => (item.kind === 'group' ? item.id : itemId(item));
 const check = (id: string) => $<HTMLInputElement>('#' + id);
 const canvas = $<HTMLCanvasElement>('#canvas');
 const errors: string[] = [];
@@ -265,7 +266,7 @@ async function boot() {
   function add(type: BlockType, point: Point = [canvas.clientWidth / 2, canvas.clientHeight / 2]) {
     const result = addBlock(history.current, type, world(point));
     commit(result.graph, 'Added ' + type.toLowerCase());
-    selected = [{ kind: 'vertex', type, id: result.block.id }];
+    selected = [source.item(result.block.id)!];
     diagram.select(selected);
     inspect();
   }
@@ -320,14 +321,15 @@ async function boot() {
     $('#selection-empty').hidden = !!item;
     $('#selection-form').hidden = !item;
     if (!item) return;
-    const block = history.current.blocks.find((n) => n.id === item.id);
-    const wire = history.current.wires.find((n) => n.id === item.id);
-    const group = history.current.groups[item.id];
-    $('#selected-name').textContent = block?.name ?? wire?.name ?? group?.label ?? item.id;
+    const id = idOf(item);
+    const block = history.current.blocks.find((n) => n.id === id);
+    const wire = history.current.wires.find((n) => n.id === id);
+    const group = history.current.groups[id];
+    $('#selected-name').textContent = block?.name ?? wire?.name ?? group?.label ?? id;
     $('#selected-type').textContent =
       item.kind === 'group'
         ? 'Presentation group'
-        : item.type +
+        : item.index.type +
           ' · ' +
           item.kind +
           (selected.length > 1 ? ' · ' + selected.length + ' selected' : '');
@@ -349,7 +351,7 @@ async function boot() {
             ['Routing', select('route').selectedOptions[0].text],
           ]
         : [
-            ['Identity', item.id],
+            ['Identity', id],
             ['State', group?.collapsed ? 'Collapsed' : 'Expanded'],
           ];
     $('#selection-details').replaceChildren();
@@ -366,15 +368,16 @@ async function boot() {
     const item = selected[0],
       name = check('rename').value.trim();
     if (!item || !name) return;
-    const graph = history.current;
+    const graph = history.current,
+      id = idOf(item);
     commit(
       {
         ...graph,
-        blocks: graph.blocks.map((block) => (block.id === item.id ? { ...block, name } : block)),
-        wires: graph.wires.map((wire) => (wire.id === item.id ? { ...wire, name } : wire)),
+        blocks: graph.blocks.map((block) => (block.id === id ? { ...block, name } : block)),
+        wires: graph.wires.map((wire) => (wire.id === id ? { ...wire, name } : wire)),
         groups:
           item.kind === 'group'
-            ? { ...graph.groups, [item.id]: { ...graph.groups[item.id], label: name } }
+            ? { ...graph.groups, [id]: { ...graph.groups[id], label: name } }
             : graph.groups,
       },
       'Renamed ' + name,
@@ -405,9 +408,9 @@ async function boot() {
       message(error instanceof Error ? error.message : String(error));
     }
   });
-  diagram.on('delete', (ids) => {
-    if (ids.length) {
-      commit(deleteItems(history.current, ids), 'Removed selection');
+  diagram.on('delete', (rows) => {
+    if (rows.length) {
+      commit(deleteItems(history.current, rows.map(itemId)), 'Removed selection');
       selected = [];
       diagram.select([]);
       inspect();
@@ -425,8 +428,8 @@ async function boot() {
   diagram.on('hover', (item) => {
     $('#hovered').textContent = item
       ? item.kind === 'port'
-        ? item.port + ' · ' + item.id
-        : item.id
+        ? item.port + ' · ' + idOf(item)
+        : idOf(item)
       : selected.length
         ? selected.length + ' selected'
         : 'No selection';
@@ -446,7 +449,7 @@ async function boot() {
   async function layout() {
     if (busy) return;
     busy = true;
-    const version = source.version;
+    const revision = source.revision;
     const button = $<HTMLButtonElement>('[data-action="arrange"]');
     button.disabled = true;
     button.textContent = 'Arranging…';
@@ -475,7 +478,7 @@ async function boot() {
           vertexGap: 48,
         },
       });
-      if (source.version !== version) {
+      if (source.revision !== revision) {
         message('Scene changed during layout. Arrange again.');
         return;
       }
@@ -557,7 +560,7 @@ async function boot() {
     delete: () => {
       const ids = selected
         .filter((item) => item.kind === 'vertex' || item.kind === 'edge')
-        .map((item) => item.id);
+        .map(idOf);
       if (ids.length) {
         commit(deleteItems(history.current, ids), 'Removed selection');
         selected = [];

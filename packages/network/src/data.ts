@@ -1,24 +1,30 @@
-import { sameIndex, type Data, type FieldInput, type RowSelection } from '@latkit/model';
-import type { DataHit, kit, RGBA } from '@latkit/gpu';
+import {
+  sameItem as sameRow,
+  type Data,
+  type FieldInput,
+  type Item,
+  type RowSelection,
+} from '@latkit/model';
+import type { kit, Labels, RGBA, ColorScale, Position2D, Scale } from '@latkit/gpu';
 
-export interface Labels {
-  readonly field: FieldInput;
-  readonly font?: kit.TextFont;
-  readonly size?: number;
-  readonly maxCount?: number;
-  readonly color?: RGBA;
+/** Labels beside a type's items, sized in CSS pixels; `fontSizePx` by default. */
+export interface NetworkLabels extends Labels {
+  readonly sizePx?: number;
 }
 /** A field name stands for that field with defaults: `color: 'load'`, `labels: 'name'`. */
 export interface VertexOptions {
   readonly rows?: RowSelection;
   /** Defaults to the type's spatial field. */
-  readonly position?: kit.Position2D;
-  readonly color?: string | kit.ColorScale | null;
-  readonly size?: string | kit.Scale | null;
-  readonly height?: string | kit.Scale | null;
+  readonly position?: Position2D;
+  readonly color?: string | ColorScale | null;
+  /** The color without a `color` field; `vertexBaseColor` by default. */
+  readonly baseColor?: RGBA;
+  /** Marker radius in CSS pixels, from a field; `vertexRadiusPx` without one. */
+  readonly sizePx?: string | Scale | null;
+  readonly height?: string | Scale | null;
   readonly visible?: FieldInput | null;
   readonly shade?: FieldInput | null;
-  readonly labels?: string | Labels | null;
+  readonly labels?: string | NetworkLabels | null;
 }
 export interface EdgeOptions {
   readonly rows?: RowSelection;
@@ -30,40 +36,44 @@ export interface EdgeOptions {
   readonly ends?: readonly [source: string, target: string];
   /** Intermediate bends, a native list of two-component floating-point vectors; requires ends. */
   readonly bends?: FieldInput;
-  readonly curve?: 'linear' | 'geodesic';
+  /** `straight` in the data's coordinates, or `geodesic` along great circles. */
+  readonly route?: 'straight' | 'geodesic';
   /** A net's star center; otherwise the centroid of its vertices. */
-  readonly junction?: kit.Position2D;
-  readonly color?: string | kit.ColorScale | null;
+  readonly junction?: Position2D;
+  /** `edgeWidthPx` by default. */
+  readonly widthPx?: number;
+  readonly color?: string | ColorScale | null;
+  /** The color without a `color` field; `edgeBaseColor`, or the colors of its ends, by default. */
+  readonly baseColor?: RGBA;
   readonly dash?: FieldInput | null;
   readonly visible?: FieldInput | null;
   readonly shade?: FieldInput | null;
-  readonly labels?: string | Labels | null;
+  readonly labels?: string | NetworkLabels | null;
 }
 export interface PathOptions {
   /** Defaults to the network's source. */
   readonly source?: Data;
   readonly rows?: RowSelection;
   readonly points: FieldInput;
-  readonly curve?: 'linear' | 'geodesic';
+  readonly route?: 'straight' | 'geodesic';
   readonly widthPx?: number;
+  readonly color?: string | ColorScale | null;
   readonly baseColor?: RGBA;
-  readonly color?: string | kit.ColorScale | null;
   readonly visible?: FieldInput | null;
-  readonly labels?: string | Labels | null;
+  readonly labels?: string | NetworkLabels | null;
   /** Decorative paths do not participate in picking by default. */
   readonly pickable?: boolean;
 }
-export interface NetworkItem extends DataHit {
+/** A drawn row: a vertex, an edge, or a path. */
+export interface NetworkItem extends Item {
   readonly kind: 'vertex' | 'edge' | 'path';
 }
-/** Items are their kind, table index, and row; the index names the source. */
+/** Items are their kind and row; the index names the row space. */
 export function sameItem(a: NetworkItem | null, b: NetworkItem | null): boolean {
-  return (
-    a === b || (!!a && !!b && a.kind === b.kind && a.row === b.row && sameIndex(a.index, b.index))
-  );
+  return a === b || (!!a && !!b && a.kind === b.kind && sameRow(a, b));
 }
 /** Option keys whose string value names a field. */
-export const FIELD_OPTIONS = ['color', 'size', 'height', 'labels'] as const;
+export const FIELD_OPTIONS = ['color', 'sizePx', 'height', 'labels'] as const;
 type Full<T> = kit.Expanded<T, (typeof FIELD_OPTIONS)[number]>;
 export type VertexData = Full<VertexOptions>;
 export type EdgeData = Full<EdgeOptions>;

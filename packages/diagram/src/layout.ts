@@ -1,5 +1,5 @@
-import type { FieldValues, RequestOptions } from '@latkit/model';
-import { GpuError, kit, type Gpu } from '@latkit/gpu';
+import { Work, failure, type FieldValues, type RequestOptions } from '@latkit/model';
+import { kit, type Gpu } from '@latkit/gpu';
 import { expandedData, type Point } from './data.js';
 import type { DiagramConfig } from './diagram.js';
 import { data as checkedData, resolveLimits, resolveStyle, positive } from './config.js';
@@ -65,15 +65,15 @@ export function layoutOptions(layout: Layout = {}): Required<LayoutOptions> {
     sweeps: value.sweeps ?? 4,
   };
   if (!Number.isInteger(result.sweeps) || result.sweeps < 0 || result.sweeps > 12)
-    throw new GpuError('invalid-input', 'Layout sweeps must be an integer from 0 to 12');
+    throw failure('invalid-input', 'Layout sweeps must be an integer from 0 to 12');
   positive(result.vertexGap, 'vertexGap', true);
   positive(result.rankGap, 'rankGap', true);
   if (!['right', 'left', 'down', 'up'].includes(result.direction))
-    throw new GpuError('invalid-input', 'Invalid layout direction');
+    throw failure('invalid-input', 'Invalid layout direction');
   if (typeof result.algorithm === 'string' && !['layered', 'manual'].includes(result.algorithm))
-    throw new GpuError('invalid-input', 'Invalid layout algorithm');
+    throw failure('invalid-input', 'Invalid layout algorithm');
   if (typeof result.algorithm === 'object' && typeof result.algorithm.arrange !== 'function')
-    throw new GpuError('invalid-input', 'Invalid layout strategy');
+    throw failure('invalid-input', 'Invalid layout strategy');
   return result;
 }
 /** Place a diagram's vertices as its layout would, without drawing: positions by vertex type. */
@@ -87,7 +87,7 @@ export async function arrange(
     style = resolveStyle(config, kit.resolveViewStyle(config));
   const reader = gpu.reader.open({ signal: options.signal, at: config.at ?? undefined });
   try {
-    const work = new kit.Work(reader.signal, limits.layoutMs);
+    const work = new Work(reader.signal, limits.layoutMs);
     const scene = await readScene(
       data,
       reader,
@@ -123,7 +123,7 @@ export async function place(
   grid: number,
   signal: AbortSignal,
   previous?: Scene,
-  work: kit.Work = new kit.Work(signal),
+  work: Work = new Work(signal),
 ): Promise<void> {
   work.check();
   const { vertices } = scene,
@@ -154,7 +154,7 @@ export async function place(
       {
         vertices: vertices.map((vertex) => ({
           id: vertex.hit.id,
-          type: vertex.hit.type,
+          type: vertex.hit.index.type,
           size: [vertex.width, vertex.height],
           position: vertex.pinned ? [vertex.x, vertex.y] : undefined,
           group: vertex.group,
@@ -167,7 +167,7 @@ export async function place(
         pairs,
         edges: scene.edges.map((edge) => ({
           id: edge.hit.id,
-          type: edge.hit.type,
+          type: edge.hit.index.type,
           ends: edge.ends,
           labelSize: [edge.label.width, edge.label.height],
         })),
@@ -181,7 +181,7 @@ export async function place(
     );
     work.check();
     if (result.length !== n || result.some((p) => p.length !== 2 || !p.every(Number.isFinite)))
-      throw new GpuError('invalid-input', 'Layout returned invalid positions');
+      throw failure('invalid-input', 'Layout returned invalid positions');
     vertices.forEach((vertex, i) => {
       if (!vertex.pinned) {
         vertex.x = result[i][0];
@@ -192,7 +192,7 @@ export async function place(
   }
   if (config.algorithm === 'manual') {
     if (vertices.some((vertex) => !vertex.pinned))
-      throw new GpuError('invalid-input', 'Manual layout requires all vertex positions');
+      throw failure('invalid-input', 'Manual layout requires all vertex positions');
     return;
   }
   const next = Array.from({ length: n }, () => [] as number[]),
@@ -203,7 +203,7 @@ export async function place(
       back[b].push(a);
     }
   const keys = vertices.map((vertex) =>
-    JSON.stringify([vertex.group ?? '', vertex.hit.type, vertex.hit.id]),
+    JSON.stringify([vertex.group ?? '', vertex.hit.index.type, vertex.hit.id]),
   );
   const compare = (a: number, b: number) => (keys[a] < keys[b] ? -1 : keys[a] > keys[b] ? 1 : 0);
   for (const list of next) list.sort(compare);
@@ -331,7 +331,7 @@ export async function place(
         vertex.x = vertical ? b : a;
         vertex.y = vertical ? a : b;
         if (attempt === vertices.length)
-          throw new GpuError('resource-limit', 'Layout collision budget exceeded');
+          throw failure('resource-limit', 'Layout collision budget exceeded');
       }
       vertex.x = Math.round(vertex.x / grid) * grid;
       vertex.y = Math.round(vertex.y / grid) * grid;

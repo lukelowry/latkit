@@ -30,7 +30,7 @@ function swapped(input: Uint8Array, width: number): Uint8Array {
   return output;
 }
 /** The limits a publication is encoded and decoded under. */
-export type PublicationLimits = FrameLimits & Pick<ConnectLimits, 'maxPublicationBatches'>;
+export type PublicationLimits = FrameLimits & Pick<ConnectLimits, 'publicationBatches'>;
 
 /** The payload each publication decodePublication made arrived as. Its batches view the same
  *  storage, so remembering it costs nothing. */
@@ -47,10 +47,10 @@ export function publicationPlans(
   const payload = Array.isArray(input) ? arrived.get(input as Publication) : undefined;
   if (
     payload &&
-    16 + payload.byteLength <= bounds.maxMessageBytes &&
+    16 + payload.byteLength <= bounds.messageBytes &&
     new DataView(payload.buffer, payload.byteOffset, 4).getUint32(0, true) <=
-      bounds.maxMetadataBytes &&
-    (input as Publication).length <= bounds.maxPublicationBatches
+      bounds.metadataBytes &&
+    (input as Publication).length <= bounds.publicationBatches
   )
     return [forward(id, payload)];
   return preparePublications(input, id, schema, bounds);
@@ -119,15 +119,15 @@ class PublicationFrame {
 
   /** Adds a validated batch, or returns false and leaves the frame unchanged when a bound would be exceeded. */
   add(batch: DataBatch): boolean {
-    if (this.batches.length === this.bounds.maxPublicationBatches) return false;
+    if (this.batches.length === this.bounds.publicationBatches) return false;
     const chunks = this.chunks.length,
       body = this.body;
     const metadata = describe(batch, (view) => this.place(view));
     const json =
       this.json + encoder.encode(JSON.stringify(metadata)).length + (this.batches.length ? 1 : 0);
     if (
-      json > this.bounds.maxMetadataBytes ||
-      align8(HEADER + json) + this.body > this.bounds.maxMessageBytes
+      json > this.bounds.metadataBytes ||
+      align8(HEADER + json) + this.body > this.bounds.messageBytes
     ) {
       this.chunks.length = chunks;
       this.body = body;
@@ -213,7 +213,7 @@ function describe(
 
 /** Plain metadata and a layout valid for `schema`. A frame bounds the message size. */
 function validate(batch: DataBatch, schema: Schema, bounds: PublicationLimits): void {
-  checkTree(batch, bounds.maxMetadataBytes, true);
+  checkTree(batch, bounds.metadataBytes, true);
   const issues = validateBatch(schema, batch);
   if (issues.length) throw failure('invalid-input', issues[0].message, { issues });
 }
@@ -221,7 +221,7 @@ function validate(batch: DataBatch, schema: Schema, bounds: PublicationLimits): 
 /** Whole-frame pieces of `batch`, each within an empty message's binary budget. Frame-major
  *  columns split as views; other layouts must fit one message whole. */
 function* framesOf(batch: SampleBatch, bounds: PublicationLimits): Generator<SampleBatch> {
-  const budget = bounds.maxMessageBytes - align8(HEADER + bounds.maxMetadataBytes);
+  const budget = bounds.messageBytes - align8(HEADER + bounds.metadataBytes);
   if (bodyOf(batch).bytes <= budget) {
     yield batch;
     return;
@@ -278,7 +278,7 @@ export function decodePublication(
   if (
     !(payload.buffer instanceof ArrayBuffer) ||
     payload.length < 8 ||
-    payload.length > bounds.maxMessageBytes - 16
+    payload.length > bounds.messageBytes - 16
   )
     throw failure('protocol', 'Invalid publication size.');
   if (payload.byteOffset % 8) payload = Uint8Array.from(payload);
@@ -286,15 +286,15 @@ export function decodePublication(
   const metadataBytes = header.getUint32(0, true),
     bodyBytes = header.getUint32(4, true);
   const start = align8(8 + metadataBytes);
-  if (metadataBytes > bounds.maxMetadataBytes || start + bodyBytes !== payload.length)
+  if (metadataBytes > bounds.metadataBytes || start + bodyBytes !== payload.length)
     throw failure('protocol', 'Invalid publication lengths.');
   const metadata = record(JSON.parse(decoder.decode(payload.subarray(8, 8 + metadataBytes))));
-  checkTree(metadata, bounds.maxMetadataBytes);
+  checkTree(metadata, bounds.metadataBytes);
   const body = payload.subarray(start);
   if (
     !Array.isArray(metadata.batches) ||
     !metadata.batches.length ||
-    metadata.batches.length > bounds.maxPublicationBatches
+    metadata.batches.length > bounds.publicationBatches
   )
     throw failure('protocol', 'Invalid publication batch count.');
   let referencedBytes = 0;
@@ -381,7 +381,7 @@ export function decodePublication(
         Object.entries(record(m.columns)).map(([key, c]) => [key, column(c)]),
       ),
     };
-    const issues = validateBatch(schema, batch, { maxBlockBytes: bounds.maxMessageBytes });
+    const issues = validateBatch(schema, batch, { maxBlockBytes: bounds.messageBytes });
     if (issues.length) throw failure('protocol', issues[0].message);
     return batch as unknown as DataBatch;
   });

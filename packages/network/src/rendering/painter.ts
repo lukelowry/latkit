@@ -1,5 +1,5 @@
-import { kit, GpuError, type Gpu, type Shade } from '@latkit/gpu';
-import { rowCount } from '@latkit/model';
+import { kit, type Gpu } from '@latkit/gpu';
+import { failure, rowCount } from '@latkit/model';
 import type { Camera } from '../camera.js';
 import { DEG, turn } from '../camera.js';
 import {
@@ -18,10 +18,10 @@ import {
   type EdgeBank,
   type SegmentBatch,
 } from '../geometry/topology.js';
-import type { Style } from '../options.js';
+import { lineWidthPx, PATH_LINE, type Style } from '../options.js';
 import type { LabelBatch } from './labels.js';
 import type { FieldRead } from './fields.js';
-import { pipelines, type Pipelines } from './pipelines.js';
+import type { Pipelines } from './pipelines.js';
 
 export interface Reads {
   readonly vertices: ReadonlyMap<VertexBank, FieldRead>;
@@ -38,8 +38,9 @@ export interface DrawFrame {
   readonly hover: NetworkItem | null;
   readonly pointer: readonly [number, number] | null;
   readonly height: number;
-  readonly shade: Shade | null;
-  readonly host: Float32Array;
+  readonly pipelines: Pipelines;
+  /** This frame's shade uniforms. */
+  readonly shade: GPUBufferBinding;
   readonly labels: readonly LabelBatch[];
   readonly phases: ReadonlyMap<SegmentBatch, Float32Array>;
 }
@@ -89,7 +90,11 @@ export class Painter {
     readonly hover: NetworkItem | null;
     readonly options: Style;
   };
-  private phases = new WeakMap<SegmentBatch, kit.BufferData>();
+  /** Each batch's dash prefixes, uploaded when they change. */
+  private phases = new WeakMap<
+    SegmentBatch,
+    { readonly buffer: kit.BufferData; readonly values: Float32Array }
+  >();
   private curves?: {
     capacity: number;
     instances: kit.BufferResource;
@@ -118,12 +123,7 @@ export class Painter {
   async prepare(frame: kit.Preparation, state: DrawFrame): Promise<Paint> {
     const { gpu } = this,
       { camera, options, reads, geometry, data } = state;
-    const pipeline = await pipelines(
-      gpu,
-      frame.format,
-      options.msaa,
-      state.shade?.wgsl ?? kit.defaultShade,
-    );
+    const pipeline = state.pipelines;
     const { color, depth } = this.attachments.prepare(frame, {
       msaa: options.msaa,
       depth: 'depth32float',
@@ -181,13 +181,8 @@ export class Painter {
       ],
       28,
     );
-    f.set([...options.hoverColor.slice(0, 3), options.hoverAlpha], 32);
-    f.set(
-      options.selectedColor
-        ? [...options.selectedColor.slice(0, 3), options.selectedAlpha]
-        : [0, 0, 0, 0],
-      36,
-    );
+    f.set(options.hoverColor, 32);
+    f.set(options.selectedColor ?? [0, 0, 0, 0], 36);
     f.set(
       [
         options.hoverWidthPx,
@@ -214,12 +209,31 @@ export class Painter {
       52,
     );
     f.set(options.gridColor, 56);
-    u.set([options.focusEnabled ? 1 : 0, options.graticule ? 1 : 0, 0, 0], 60);
+    u.set([0, options.graticule ? 1 : 0, 0, 0], 60);
     this.updateFocus(state);
     const focusedBinding = frame.buffer(this.focus);
     const uniform = frame.uniforms(f),
-      host = frame.shade({ parameters: state.host, pointerPx: state.pointer }),
+      host = state.shade,
       empty = frame.buffer(this.dummy);
+    /** A type's own base color and width over the style; types without them share the uniforms. */
+    const styles = new Map<VertexBank | EdgeBank, GPUBufferBinding>();
+    const typeStyle = (bank: VertexBank | EdgeBank, config: VertexData | EdgeData | PathData) => {
+      let style = styles.get(bank);
+      if (style) return style;
+      const path = 'points' in config,
+        line = 'batches' in bank,
+        color = config.baseColor ?? (path ? PATH_LINE.baseColor : undefined),
+        width = line ? (config as EdgeData | PathData).widthPx : undefined;
+      if (!color && width === undefined && !path) style = uniform;
+      else {
+        const values = f.slice();
+        if (color) values.set(color, line ? 24 : 20);
+        if (line) values[29] = lineWidthPx(config as EdgeData | PathData, options) / 2;
+        style = frame.uniforms(values);
+      }
+      styles.set(bank, style);
+      return style;
+    };
     const vertexBuffers = new Map<VertexBank, GPUBufferBinding>(),
       edgeBuffers = new Map<EdgeBank, GPUBufferBinding>();
     for (const bank of geometry.vertices)
@@ -283,12 +297,7 @@ export class Painter {
         const output = edge
           ? edgeBuffers.get(bank as EdgeBank)!
           : vertexBuffers.get(bank as VertexBank)!;
-        let styleUniform = uniform;
-        if ('baseColor' in config || 'points' in config) {
-          const values = f.slice();
-          values.set((config as PathData).baseColor ?? [0.52, 0.6, 0.68, 0.6], 24);
-          styleUniform = frame.uniforms(values);
-        }
+        const styleUniform = typeStyle(bank, config);
         const group = gpu.device.createBindGroup({
           layout: pipeline.compute,
           entries: [
@@ -307,12 +316,12 @@ export class Painter {
     const curveCount = Math.max(
       0,
       ...geometry.edges
-        .filter((bank) => edgeOptions(data, bank).curve === 'geodesic')
+        .filter((bank) => edgeOptions(data, bank).route === 'geodesic')
         .flatMap((bank) => bank.batches.map((batch) => batch.records.length / 4)),
     );
     if (curveCount) {
       if (!geometry.geographic)
-        throw new GpuError('invalid-input', 'Geodesics require geographic coordinates');
+        throw failure('invalid-input', 'Geodesics require geographic coordinates');
       const capacity = curveCount * 181;
       if (!this.curves || capacity > this.curves.capacity) {
         const instances = gpu.buffer({
@@ -371,21 +380,21 @@ export class Painter {
     for (const bank of geometry.vertices)
       if (!bank.synthetic)
         vertices.push({
-          group: group(vertexBuffers.get(bank)!, empty, empty, empty, bank.base),
+          group: group(
+            vertexBuffers.get(bank)!,
+            empty,
+            empty,
+            empty,
+            bank.base,
+            typeStyle(bank, vertexOptions(data, bank)),
+          ),
           count: bank.count,
         });
     for (const bank of geometry.edges) {
-      let style = uniform;
-      if (bank.kind === 'path') {
-        const config = data.paths![bank.type],
-          values = f.slice();
-        values[29] = (config.widthPx ?? 1) / 2;
-        values.set(config.baseColor ?? [0.52, 0.6, 0.68, 0.6], 24);
-        style = frame.uniforms(values);
-      }
+      const style = typeStyle(bank, edgeOptions(data, bank));
       for (const batch of bank.batches) {
         const config = edgeOptions(data, bank);
-        const curved = config.curve === 'geodesic',
+        const curved = config.route === 'geodesic',
           count = batch.records.length / 4;
         const a = vertexBuffers.get(batch.a)!,
           b = vertexBuffers.get(batch.b)!,
@@ -412,13 +421,15 @@ export class Painter {
         let phase: GPUBufferBinding | undefined;
         const values = state.phases.get(batch);
         if (values) {
-          let buffer = this.phases.get(batch);
-          if (!buffer) {
-            buffer = new kit.BufferData({ size: values.byteLength, label: 'network dash phases' });
-            this.phases.set(batch, buffer);
+          let phases = this.phases.get(batch);
+          if (phases?.values !== values) {
+            const buffer =
+              phases?.buffer ??
+              new kit.BufferData({ size: values.byteLength, label: 'network dash phases' });
+            buffer.write({ data: values });
+            this.phases.set(batch, (phases = { buffer, values }));
           }
-          buffer.write({ data: values });
-          phase = frame.buffer(buffer);
+          phase = frame.buffer(phases.buffer);
         }
         edges.push({
           group: group(
@@ -484,8 +495,8 @@ export class Painter {
       last?.geometry === native &&
       last.selection === state.selection &&
       sameItem(last.hover, state.hover) &&
-      last.options.focusEnabled === options.focusEnabled &&
-      last.options.focusEnds === options.focusEnds
+      last.options.selectedEnds === options.selectedEnds &&
+      last.options.hoverEnds === options.hoverEnds
     )
       return;
     const next = new Map<number, number>(),
@@ -501,18 +512,12 @@ export class Painter {
     };
     const focus = (item: NetworkItem, level: number) => {
       mark(item, level);
-      if (
-        item.kind === 'edge' &&
-        (options.focusEnds === 'hover-selected' ||
-          (level === 2 && options.focusEnds === 'selected'))
-      )
+      if (item.kind === 'edge' && (level === 2 ? options.selectedEnds : options.hoverEnds))
         for (const vertex of adjacency.neighborhood(item, data))
           if (vertex.kind === 'vertex') mark(vertex, level);
     };
-    if (options.focusEnabled) {
-      for (const item of state.selection) focus(item, 2);
-      if (state.hover) focus(state.hover, 1);
-    }
+    for (const item of state.selection) focus(item, 2);
+    if (state.hover) focus(state.hover, 1);
     // Sixteen rows per word, padded to whole 16-byte rows.
     const rows = native.vertexCount + native.edgeCount + native.pathCount,
       size = Math.max(16, Math.ceil(rows / 64) * 16);
@@ -557,7 +562,7 @@ export class Painter {
             resolveTarget: paint.color ? frame.target : undefined,
             loadOp: load ? 'load' : 'clear',
             storeOp: 'store',
-            clearValue: paint.options.background,
+            clearValue: kit.clearColor(paint.options.background),
           },
         ],
         depthStencilAttachment: {

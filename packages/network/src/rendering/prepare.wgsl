@@ -72,7 +72,7 @@ fn vertices(@builtin(global_invocation_id) id: vec3u) {
   output[out]=pos;
   output[out+1u]=project_world(ground,u);
   output[out+2u]=c;
-  output[out+3u]=vec4f(select(u.style.x*scaled(page.slots0.z,row,page.size,1.0),0.0,page.counts.w>0u),raw_scalar(page.slots1.z,row,page.raw.y,0.0),bitcast<f32>(fieldRow(row)),select(0.0,1.0,visible));
+  output[out+3u]=vec4f(select(scaled(page.slots0.z,row,page.size,u.style.x),0.0,page.counts.w>0u),raw_scalar(page.slots1.z,row,page.raw.y,0.0),bitcast<f32>(fieldRow(row)),select(0.0,1.0,visible));
   output[out+4u]=vec4f(world,select(0.0,1.0,valid && finite(x) && finite(y)));
 }
 @compute @workgroup_size(64)

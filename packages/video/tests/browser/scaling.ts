@@ -34,7 +34,7 @@ export async function ownership(gpu: Gpu) {
     },
   });
   const composition = createComposition(gpu, { views: [{ view: child, region: [0, 0, 1, 1] }] });
-  const target = kit.createRenderTarget({ gpu, width: 32, height: 32 });
+  const target = kit.createTextureTarget(gpu, { width: 32, height: 32 });
   try {
     const rendering = gpu.render({
       timeMs: 0,

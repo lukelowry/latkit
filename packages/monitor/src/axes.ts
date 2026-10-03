@@ -1,4 +1,4 @@
-import { type Gpu, type RGBA, kit } from '@latkit/gpu';
+import { type Gpu, type RGBA, kit, type Viewport } from '@latkit/gpu';
 import { buffer } from './rendering/painter.js';
 import type { Domain } from '@latkit/model';
 import type { Style } from './config.js';
@@ -17,7 +17,7 @@ export interface Axes {
   lineCount: number;
   gridCount: number;
 }
-export function plot(view: kit.Viewport, options: Style): Plot {
+export function plot(view: Viewport, options: Style): Plot {
   const [top, right, bottom, left] = insets(options.paddingPx),
     size = options.fontSizePx;
   const x = left + (options.valueAxis === null ? 0 : Math.max(64, size * 7)),
@@ -34,7 +34,7 @@ export function plot(view: kit.Viewport, options: Style): Plot {
 }
 export async function axes(
   gpu: Gpu,
-  view: kit.Viewport,
+  view: Viewport,
   x: Domain,
   y: Domain,
   options: Style,

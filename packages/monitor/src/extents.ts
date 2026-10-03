@@ -55,7 +55,7 @@ function extent(page: ColumnPage, rows: Selection, window: Domain): Domain | nul
   for (let r = 0; r < rowCount(page.rows); r++) {
     if (!rows.has(rowAt(page.rows, r))) continue;
     for (let f = first; f < end; f++) {
-      const value = sampleAt(column, { row: r, frame: f });
+      const value = sampleAt(column, r, f);
       if (value !== null && Number.isFinite(value)) {
         if (value < lo) lo = value;
         if (value > hi) hi = value;

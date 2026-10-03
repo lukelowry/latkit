@@ -46,8 +46,10 @@ message, metadata, and decoder complexity, and are enforced before allocating ty
 
 Below, the model is the endpoint that offers it and the consumer the endpoint that accepts it.
 Registration occurs once. Its metadata must fit the receiving endpoint's initial bounds.
-Limits are positive integers; metadata is at least 1,024 bytes, and metadata + 1,024 ≤ message
-≤ stream window ≤ connection budget. Per-stream message limits cannot exceed the global count.
+Limits are positive integers, named `messageBytes`, `metadataBytes`, `bufferedBytes`,
+`bufferedMessages`, `streamWindowBytes`, `streamWindowMessages`, `streams`, `publicationBatches`,
+`logs`, and `timeoutMs`. Metadata is at least 1,024 bytes, and metadata + 1,024 ≤ message ≤ stream
+window ≤ connection budget. Per-stream message limits cannot exceed the global count.
 The peer responds with the elementwise minimum of its limits and the offer; both enforce that
 agreement thereafter.
 

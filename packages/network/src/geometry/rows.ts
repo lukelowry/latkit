@@ -1,4 +1,4 @@
-import { rowCount, rowAt } from '@latkit/model';
+import { failure, rowCount, rowAt } from '@latkit/model';
 import type { Column, FieldsBlock, Index, RowAxis } from '@latkit/model';
 export function bit(bytes: Uint8Array | undefined, index: number): boolean {
   return !bytes || !!(bytes[index >>> 3] & (1 << (index & 7)));
@@ -28,7 +28,8 @@ export class RowLookup<T> {
       this.ranges.push({ offset: rows.offset, count: rows.count, value: data });
     else
       for (let i = 0; i < rows.values.length; i++) {
-        if (this.sparse.has(rows.values[i])) throw new Error('Duplicate physical row');
+        if (this.sparse.has(rows.values[i]))
+          throw failure('invalid-input', 'Duplicate physical row');
         this.sparse.set(rows.values[i], { value: data, offset: i });
       }
   }
@@ -36,9 +37,9 @@ export class RowLookup<T> {
     this.ranges.sort((a, b) => a.offset - b.offset);
     for (let i = 1; i < this.ranges.length; i++)
       if (this.ranges[i].offset < this.ranges[i - 1].offset + this.ranges[i - 1].count)
-        throw new Error('Overlapping physical rows');
+        throw failure('invalid-input', 'Overlapping physical rows');
     for (const row of this.sparse.keys())
-      if (this.range(row)) throw new Error('Duplicate physical row');
+      if (this.range(row)) throw failure('invalid-input', 'Duplicate physical row');
   }
   private range(row: number): { value: T; offset: number } | undefined {
     let lo = 0,

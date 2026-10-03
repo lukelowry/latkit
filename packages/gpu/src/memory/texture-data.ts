@@ -1,4 +1,5 @@
-import { GpuError, integer } from '../error.js';
+import { failure } from '@latkit/model';
+import { integer } from '../error.js';
 
 export interface PixelRegion {
   readonly x: number;
@@ -24,7 +25,7 @@ export class TextureData {
   }) {
     this.format = options.format ?? 'rgba8unorm';
     if (this.format !== 'r8unorm' && this.format !== 'rgba8unorm')
-      throw new GpuError('unsupported', 'Unsupported pixel format');
+      throw failure('unsupported', 'Unsupported pixel format');
     this.channels = this.format === 'r8unorm' ? 1 : 4;
     this.w = integer(options.width, 'image width', 1);
     this.h = integer(options.height, 'image height', 1);
@@ -65,7 +66,7 @@ export class TextureData {
     const rowBytes = options.width * this.channels;
     const stride = integer(options.bytesPerRow ?? rowBytes, 'pixel row stride', rowBytes);
     if (options.height && (options.height - 1) * stride + rowBytes > options.data.byteLength)
-      throw new GpuError('invalid-input', 'Pixel input does not cover its region');
+      throw failure('invalid-input', 'Pixel input does not cover its region');
     const data = options.data.buffer === this.pixels.buffer ? options.data.slice() : options.data;
     for (let row = 0; row < options.height; row++)
       this.pixels.set(

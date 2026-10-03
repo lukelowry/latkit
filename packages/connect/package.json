@@ -28,7 +28,7 @@
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
-    "@latkit/model": "workspace:*"
+    "@latkit/model": "workspace:^"
   },
   "publishConfig": {
     "access": "public"

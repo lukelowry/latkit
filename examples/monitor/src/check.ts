@@ -10,11 +10,11 @@ async function check(): Promise<void> {
   result.textContent = 'Checking short and long histories?';
   const report: unknown[] = [];
   let gpu: Awaited<ReturnType<typeof createGpu>> | undefined;
-  let target: ReturnType<typeof kit.createRenderTarget> | undefined;
+  let target: ReturnType<typeof kit.createTextureTarget> | undefined;
   const errors: string[] = [];
   try {
     gpu = await createGpu();
-    target = kit.createRenderTarget({ gpu, width: 1000, height: 600 });
+    target = kit.createTextureTarget(gpu, { width: 1000, height: 600 });
     gpu.device.addEventListener('uncapturederror', (event) => errors.push(event.error.message));
     const owner = gpu,
       output = target;
@@ -53,7 +53,7 @@ async function check(): Promise<void> {
           monitor.set({ source: source.data });
           appendMs.push(await render());
         }
-        monitor.select([{ source: source.data, index: source.index, row: 42, field: 'value' }]);
+        monitor.select([{ source: source.data, index: source.index, row: 42, trace: 'value' }]);
         const focusMs = await render();
         const focusedAppendMs: number[] = [];
         for (let f = 8; f < 16; f++) {

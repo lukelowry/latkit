@@ -1,8 +1,9 @@
-import { kit, GpuError } from '@latkit/gpu';
-import type { Data, FieldInput, FieldsBlock } from '@latkit/model';
+import { failure, type Data, type FieldInput, type FieldsBlock } from '@latkit/model';
+import { kit, type ColorScale, type Position2D, type Scale } from '@latkit/gpu';
 import type { EdgeData, PathData, VertexData } from '../data.js';
 import type { VertexBank, EdgeBank } from '../geometry/topology.js';
 import { nativeValue } from '../geometry/rows.js';
+import { SIZE_RANGE } from '../options.js';
 export interface ReadPage {
   readonly page: kit.GpuPage;
   readonly offset: number;
@@ -14,19 +15,19 @@ export interface FieldRead {
   readonly vector: boolean;
 }
 export function splitPosition(
-  position: kit.Position2D,
+  position: Position2D,
 ): position is { readonly x: FieldInput; readonly y: FieldInput } {
   return typeof position === 'object' && 'x' in position;
 }
 const fieldBindings = new WeakMap<
   object,
   {
-    position: kit.Position2D | undefined;
+    position: Position2D | undefined;
     fields: Record<string, FieldInput>;
     vector: boolean;
   }
 >();
-function bindings(options: VertexData | EdgeData | PathData, position: kit.Position2D | undefined) {
+function bindings(options: VertexData | EdgeData | PathData, position: Position2D | undefined) {
   const cached = fieldBindings.get(options);
   if (cached && cached.position === position) return cached;
   const fields: Record<string, FieldInput> = {};
@@ -66,7 +67,7 @@ export async function readFields(
   source: Data,
   bank: VertexBank | EdgeBank,
   options: VertexData | EdgeData | PathData,
-  position: kit.Position2D | undefined,
+  position: Position2D | undefined,
 ): Promise<FieldRead> {
   const { fields, vector } = bindings(options, position);
   const control = new Set(['bends', 'points', 'junction', 'junctionX', 'junctionY']);
@@ -87,7 +88,7 @@ export async function readFields(
         vector &&
         (page.columns.position.kind !== 'value' || page.columns.position.components !== 2)
       )
-        throw new GpuError('invalid-input', 'Network positions must be two-component vectors');
+        throw failure('invalid-input', 'Network positions must be two-component vectors');
       if (
         !vector &&
         position &&
@@ -96,7 +97,7 @@ export async function readFields(
           page.columns.x.components !== 1 ||
           page.columns.y.components !== 1)
       )
-        throw new GpuError('invalid-input', 'Position axes must be scalar');
+        throw failure('invalid-input', 'Position axes must be scalar');
       for (const [name, column] of Object.entries(page.columns))
         if (
           name !== 'position' &&
@@ -105,7 +106,7 @@ export async function readFields(
           name !== 'junction' &&
           (column.kind !== 'value' || column.components !== 1)
         )
-          throw new GpuError('invalid-input', 'Visual fields must be scalar');
+          throw failure('invalid-input', 'Visual fields must be scalar');
       if (page.block) {
         for (const name of ['bends', 'points']) {
           const column = page.block.columns[name];
@@ -113,14 +114,11 @@ export async function readFields(
             column &&
             (column.kind !== 'list' || column.values.kind !== 'vector' || column.values.size !== 2)
           )
-            throw new GpuError(
-              'invalid-input',
-              'Paths require lists of two-component numeric vectors',
-            );
+            throw failure('invalid-input', 'Paths require lists of two-component numeric vectors');
         }
         const junction = page.block.columns.junction;
         if (junction && (junction.kind !== 'vector' || junction.size !== 2))
-          throw new GpuError('invalid-input', 'Junction positions require two-component vectors');
+          throw failure('invalid-input', 'Junction positions require two-component vectors');
       }
       pages.push({ page, offset: page.rowOffset });
     }
@@ -163,7 +161,9 @@ export async function resolveDomains(
         {
           ...mapping,
           range:
-            'range' in mapping ? (mapping.range ?? (name === 'size' ? [0.5, 2] : [0, 1])) : [0, 1],
+            'range' in mapping
+              ? (mapping.range ?? (name === 'size' ? SIZE_RANGE : [0, 1]))
+              : [0, 1],
         },
         lo <= hi ? [lo, hi] : null,
       );
@@ -176,7 +176,7 @@ export function scaledValue(
   name: string,
   tile: FieldsBlock,
   row: number,
-  mapping: kit.Scale | kit.ColorScale | null | undefined,
+  mapping: Scale | ColorScale | null | undefined,
   fallback: number,
 ): number {
   const raw = nativeValue(tile, name, row);
@@ -187,7 +187,7 @@ export function scaledValue(
 function mappings(options: VertexData | EdgeData | PathData) {
   return {
     color: options.color,
-    size: 'size' in options ? options.size : undefined,
+    size: 'sizePx' in options ? options.sizePx : undefined,
     height: 'height' in options ? options.height : undefined,
   };
 }

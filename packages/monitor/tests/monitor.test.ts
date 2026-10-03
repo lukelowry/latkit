@@ -94,7 +94,7 @@ async function harness(source = new SignalSource(4, 128), options: Partial<Monit
   );
   Object.assign(fake.native, { createPipelineLayout: () => ({}) });
   const gpu = await createGpu({ device: fake.device, validate: true });
-  const target = kit.createRenderTarget({ gpu, width: 512, height: 256 });
+  const target = kit.createTextureTarget(gpu, { width: 512, height: 256 });
   const monitor = createMonitor(gpu, {
     source: source.data,
     traces: { signal: { from: 'signal', field: 'value' } },
@@ -160,7 +160,7 @@ describe('history', () => {
     const [hit] = await h.monitor.pick(h.point(64), { radiusPx: 1, limit: 1 });
     const front = (h.monitor as unknown as Record<string, { front?: object }>).presentedHistory
       .front;
-    const exported = kit.createRenderTarget({ gpu: h.gpu, width: 256, height: 512 });
+    const exported = kit.createTextureTarget(h.gpu, { width: 256, height: 512 });
     await h.gpu.render({
       views: [{ renderer: h.renderer, target: exported, presented: false }],
       timeMs: performance.now(),
@@ -558,7 +558,7 @@ describe('inspection', () => {
     h.monitor.on('select', selected);
     await h.render();
     const [hit] = await h.monitor.pick([256, 128], { radiusPx: 300, limit: 1 });
-    const row = { source: h.source.data, index: h.source.index, row: 2, field: 'other' };
+    const row = { source: h.source.data, index: h.source.index, row: 2, trace: 'other' };
     h.monitor.select([hit, row]);
     h.monitor.set({ traces: { [hit.trace]: null } });
     await h.render();

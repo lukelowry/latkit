@@ -17,13 +17,8 @@ import {
   type SampleColumn,
 } from '@latkit/model';
 import { createGpu } from '../src/index.js';
-import {
-  resolveScale,
-  scaleValue,
-  scaleParameters,
-  withinBudget,
-  type GpuPage,
-} from '../src/kit.js';
+import { resolveScale, scaleValue, scaleParameters, type GpuPage } from '../src/kit.js';
+import { withinBudget } from '../src/view/input.js';
 import { fakeDevice } from './fixtures/device.js';
 import { field } from './fixtures/fields.js';
 import { draw } from './fixtures/render.js';
@@ -74,7 +69,7 @@ it('keeps sampled strides/native backing and broadcasts static columns without e
       native.push(tile);
       pages.push(...frame.upload(tile, { select: ['value', 'weight'], float64: 'relative' }));
       expect((tile.columns.value as NumericColumn).values.buffer).toBe(source.values.buffer);
-      expect(sampleAt(tile.columns.value as SampleColumn, { row: 1, frame: 1 })).toBeNull();
+      expect(sampleAt(tile.columns.value as SampleColumn, 1, 1)).toBeNull();
       expect(numberAt(tile.columns.weight as NumericColumn, 1)).toBe(11);
     }
   });

@@ -1,8 +1,6 @@
-import type { Index, RowAxis } from '@latkit/model';
+import { failure, rowCount, type Index, type RowAxis } from '@latkit/model';
 import type { GpuField, GpuValueField, GpuPage } from './types.js';
 import type { Allocation, Allocator } from '../memory/allocation.js';
-import { GpuError } from '../error.js';
-import { rowCount } from '@latkit/model';
 
 /** Private addresses consumed by the one shared page encoder. */
 export interface Bitmap {
@@ -47,7 +45,7 @@ export class FieldPages {
       limits.maxStorageBuffersInFragmentStage,
     ])
       if (limit !== undefined && limit < BANKS + 1)
-        throw new GpuError(
+        throw failure(
           'unsupported',
           `Field rendering requires ${BANKS + 1} storage bindings per shader stage`,
         );
@@ -102,7 +100,7 @@ export class FieldPages {
     if (buffers.length > BANKS) {
       const total = regions.reduce((sum, region) => sum + region.size!, 0);
       if (total > this.device.limits.maxStorageBufferBindingSize)
-        throw new GpuError('resource-limit', 'Prepared field page exceeds the binding limit');
+        throw failure('resource-limit', 'Prepared field page exceeds the binding limit');
       const packed = allocate(total, 'field page consolidation', new Set(buffers)).binding;
       let offset = packed.offset!;
       const work = regions.map((source) => {

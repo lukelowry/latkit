@@ -1,3 +1,4 @@
+import { failure } from '@latkit/model';
 import { integer } from '../error.js';
 import type { FrameInfo, Viewport } from '../frame/render.js';
 export interface ShadeFrame {
@@ -17,7 +18,10 @@ export interface ShadeRequest {
   readonly parameters?: Float32Array;
   readonly pointerPx?: readonly [number, number] | null;
 }
-export const defaultShade = 'fn shade(f: ShadeFragment) -> vec4f { return f.color; }';
+/** The shade that keeps every fragment's color. */
+export const defaultShade: Shade = Object.freeze({
+  wgsl: 'fn shade(f: ShadeFragment) -> vec4f { return f.color; }',
+});
 /** Shared effect uniform layout. Custom geometry remains in renderer-specific shader functions. */
 export function shadeShader(
   options: { readonly group?: number; readonly binding?: number } = {},
@@ -28,7 +32,7 @@ struct ShadeContext { pointer: vec4f, viewport: vec4f, parameters: array<vec4f,1
 }
 export function shadeUniforms(request: ShadeRequest, frame: FrameInfo): Float32Array {
   if (request.parameters && request.parameters.length !== 64)
-    throw new RangeError('Shade parameters require sixteen vec4 values');
+    throw failure('invalid-input', 'Shade parameters require sixteen vec4 values');
   const values = new Float32Array(72);
   values.set(
     [...(request.pointerPx ?? [0, 0]), request.pointerPx ? 1 : 0, request.timeMs ?? frame.timeMs],
@@ -54,7 +58,7 @@ export function spotlight(
     strength > 1 ||
     color.some((v) => !Number.isFinite(v) || v < 0 || v > 1)
   )
-    throw new RangeError('Invalid spotlight');
+    throw failure('invalid-input', 'Invalid spotlight');
   return {
     wgsl: `fn shade(f: ShadeFragment) -> vec4f {
       let p = shadeContext.parameters[0];

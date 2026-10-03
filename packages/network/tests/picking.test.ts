@@ -1,6 +1,5 @@
 import { expect, it } from 'vitest';
-import { kit } from '@latkit/gpu';
-import type { FieldsBlock, RowAxis } from '@latkit/model';
+import { Work, type FieldsBlock, type RowAxis } from '@latkit/model';
 import type { NetworkData } from '../src/data.js';
 import type { VertexBank } from '../src/geometry/topology.js';
 import type { Style } from '../src/options.js';
@@ -128,7 +127,7 @@ it('builds an index in cooperative slices and frees one aborted part way', async
         64 * 1024 ** 2,
       ),
       stop = new AbortController();
-    const later = picking.indexLater(data, style, new kit.Work(stop.signal, Infinity, 0));
+    const later = picking.indexLater(data, style, new Work(stop.signal, Infinity, 0));
     return { picking, stop, later };
   };
   const pause = () => new Promise((resolve) => setTimeout(resolve, 0));

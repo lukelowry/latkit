@@ -1,5 +1,6 @@
-import type { Schema, TypeDefinition } from '@latkit/model';
-import type { Group, Point, Shape, ConnectProposal, MoveProposal } from '@latkit/diagram';
+import { itemId, type Schema, type TypeDefinition } from '@latkit/model';
+import type { Point } from '@latkit/gpu';
+import type { Group, Shape, ConnectProposal, MoveProposal } from '@latkit/diagram';
 
 export const types = ['Input', 'Process', 'Control', 'Output'] as const;
 export type BlockType = (typeof types)[number];
@@ -232,7 +233,7 @@ function prune(graph: Graph): Graph {
   };
 }
 export function moveGraph(graph: Graph, proposal: MoveProposal): Graph {
-  const positions = new Map(proposal.moves.map((m) => [m.vertex.id, m.position]));
+  const positions = new Map(proposal.moves.map((m) => [itemId(m.vertex), m.position]));
   return {
     ...graph,
     blocks: graph.blocks.map((block) => ({
@@ -291,26 +292,39 @@ function portOf(block: Block, direction: 'in' | 'out'): string {
 }
 /** Plug the proposal's ports into one wire: the driving output's, or a new one. */
 export function connectGraph(graph: Graph, proposal: ConnectProposal, createOnDrop = false): Graph {
-  const source = graph.blocks.find((block) => block.id === proposal.from.id);
+  // The proposal names rows; this graph names blocks and wires by id.
+  const fromPort = proposal.from.kind === 'port' ? proposal.from.port : undefined;
+  const source = graph.blocks.find((block) => block.id === itemId(proposal.from));
   if (!source) throw new Error('The starting block was removed.');
   // A moved input leaves its wire first.
-  let next = proposal.replaces ? plug(graph, proposal.replaces.end, null) : graph;
-  const input = !!proposal.from.port && ports[source.type][proposal.from.port] === 'in';
-  let target = proposal.to;
+  const replaces = proposal.replaces;
+  let next = replaces
+    ? plug(graph, { id: itemId(replaces.end), port: replaces.end.port }, null)
+    : graph;
+  const input = !!fromPort && ports[source.type][fromPort] === 'in';
+  let target: {
+    readonly kind: 'vertex' | 'edge';
+    readonly id: string;
+    readonly port?: string;
+  } | null = proposal.to && {
+    kind: proposal.to.kind === 'edge' ? 'edge' : 'vertex',
+    id: itemId(proposal.to),
+    ...(proposal.to.kind === 'port' ? { port: proposal.to.port } : {}),
+  };
   if (!target) {
-    if (proposal.replaces) return prune(next);
+    if (replaces) return prune(next);
     if (!createOnDrop) return graph;
     const added = addBlock(next, 'Process', proposal.position);
     next = added.graph;
-    target = { kind: 'vertex', type: 'Process', id: added.block.id, port: input ? 'out' : 'in' };
+    target = { kind: 'vertex', id: added.block.id, port: input ? 'out' : 'in' };
   }
   if (target.kind === 'edge') {
-    if (!proposal.from.port) throw new Error('Only a port joins a wire.');
-    return prune(plug(next, { id: source.id, port: proposal.from.port }, target.id));
+    if (!fromPort) throw new Error('Only a port joins a wire.');
+    return prune(plug(next, { id: source.id, port: fromPort }, target.id));
   }
   const destination = next.blocks.find((block) => block.id === target.id);
   if (!destination) throw new Error('The destination was removed.');
-  const from: Plug = { id: source.id, port: proposal.from.port ?? portOf(source, 'out') },
+  const from: Plug = { id: source.id, port: fromPort ?? portOf(source, 'out') },
     to: Plug = {
       id: destination.id,
       port:

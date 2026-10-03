@@ -1,8 +1,5 @@
 import {
-  GpuError,
   kit,
-  viewStyle,
-  type DataHit,
   type Gpu,
   type ItemEvents,
   type ItemView,
@@ -11,8 +8,13 @@ import {
   type SetOptions,
   type Shade,
   type ViewStats,
+  type FrameInfo,
+  type Patch,
+  type Viewport,
 } from '@latkit/gpu';
 import {
+  Work,
+  failure,
   rowCount,
   sameIndex,
   sampleDomain,
@@ -28,6 +30,7 @@ import {
   continues,
   monitorData,
   type MonitorData,
+  type MonitorItem,
   type Reading,
   type Trace,
 } from './data.js';
@@ -36,7 +39,7 @@ import {
   DEFAULTS,
   VIEW_DEFAULTS,
   resolveStyle,
-  limits,
+  LIMITS,
   expanded,
   fail,
   type Style,
@@ -63,8 +66,7 @@ import {
   type Screen,
   type Transform,
 } from './rendering/painter.js';
-import { pick, READING_BYTES } from './picking.js';
-import { listen, type Gestures } from './input.js';
+import { pick } from './picking.js';
 
 export interface MonitorConfig extends ItemViewConfig, MonitorStyle {
   /** Lines by name; several may read one type. */
@@ -73,7 +75,7 @@ export interface MonitorConfig extends ItemViewConfig, MonitorStyle {
   readonly camera: Partial<Camera> & { readonly window: Domain };
   readonly limits?: Limits;
 }
-export type MonitorEvents = ItemEvents<DataHit, Reading, Camera>;
+export type MonitorEvents = ItemEvents<MonitorItem, Reading, Camera>;
 export interface MonitorStats extends ViewStats {
   /** Rows the traces draw. */
   readonly rows: number;
@@ -89,8 +91,14 @@ type Merged = 'camera' | 'input' | 'limits';
  * Selects rows, each narrowed to one trace when it names a `field`, and picks exact readings.
  * `at` draws the playhead.
  */
-export interface Monitor extends ItemView<MonitorConfig, DataHit, Reading, Camera, MonitorEvents> {
-  set(patch: kit.Patch<MonitorConfig, Records, Merged>, options?: SetOptions): void;
+export interface Monitor extends ItemView<
+  MonitorConfig,
+  MonitorItem,
+  Reading,
+  Camera,
+  MonitorEvents
+> {
+  set(patch: Patch<MonitorConfig, Records, Merged>, options?: SetOptions): void;
   stats(): MonitorStats;
 }
 
@@ -98,39 +106,22 @@ export interface Monitor extends ItemView<MonitorConfig, DataHit, Reading, Camer
 export function createMonitor(gpu: Gpu, config: MonitorConfig): Monitor {
   return new MonitorView(gpu, config);
 }
-const STYLE_KEYS = [...Object.keys(viewStyle), ...Object.keys(DEFAULTS)] as (keyof Style)[];
-const KEYS = new Set<string>([
-  'canvas',
-  'at',
-  'paused',
-  'source',
-  'traces',
-  'camera',
-  'input',
-  'shade',
-  'limits',
-  ...STYLE_KEYS,
-]);
 /** Style drawn into history pixels; the rest is composited, or changes no pixels at all. */
 const HISTORY = new Set<keyof Style>(['msaa']);
 /** Style drawn into the focus image. */
 const FOCUS = new Set<keyof Style>(['selectedColor', 'selectedWidthPx']);
 /** A replacement for a new size waits until resizing pauses. */
 const RESIZE_MS = 120;
+/** What a config means to the monitor: its traces, limits, and style. */
 interface Resolved {
-  readonly config: Omit<MonitorConfig, 'camera'>;
+  readonly config: MonitorConfig;
+  readonly data: MonitorData;
   readonly limits: Required<Limits>;
-}
-/** The config's options, checked; the camera lives on `camera`. */
-function resolve(config: Omit<MonitorConfig, 'camera'>): Resolved {
-  for (const key of Object.keys(config)) if (!KEYS.has(key)) fail('Unknown monitor option: ' + key);
-  validateData(monitorData(config));
-  resolveStyle(config, viewStyle);
-  return { config, limits: limits(config.limits) };
+  readonly style: Style;
 }
 /** The window and values that show readings: their coordinates and values, padded. */
 function frameReadings(
-  items: readonly DataHit[],
+  items: readonly MonitorItem[],
   camera: Camera,
   padding: number,
 ): Partial<Camera> {
@@ -139,8 +130,7 @@ function frameReadings(
     low = Infinity,
     high = -Infinity;
   for (const item of items) {
-    const coordinate = item.coordinate,
-      value = (item as Partial<Reading>).value;
+    const { coordinate, value } = item as Partial<Reading>;
     if (coordinate !== undefined && Number.isFinite(coordinate)) {
       lo = Math.min(lo, coordinate);
       hi = Math.max(hi, coordinate);
@@ -164,12 +154,12 @@ function includes(rows: RowAxis, row: number): boolean {
     : rows.values.includes(row);
 }
 /** The selected rows a trace draws, ascending; undefined when it draws none. */
-function focused(selection: readonly DataHit[], trace: Binding): RowSelection | undefined {
+function focused(selection: readonly MonitorItem[], trace: Binding): RowSelection | undefined {
   const index = trace.source.tables[trace.trace.from]?.index;
   // The index names the rows, so a selection survives appends that replace the Data value.
   const rows = index
     ? selection.filter(
-        (item) => sameIndex(item.index, index) && (!item.field || item.field === trace.field),
+        (item) => sameIndex(item.index, index) && (!item.trace || item.trace === trace.name),
       )
     : [];
   if (!index || !rows.length) return undefined;
@@ -234,7 +224,7 @@ interface Surface {
   back?: Image;
   focus?: Image;
   /** The selection the focus image draws. */
-  focusFor: readonly DataHit[];
+  focusFor: readonly MonitorItem[];
   /** The plot size and when it last changed, to wait out a resize. */
   sized: { width: number; height: number; at: number };
   /** Whether its images hold every frame their windows show. */
@@ -268,14 +258,20 @@ interface Shown {
 }
 
 class MonitorView
-  extends kit.BaseItemView<MonitorConfig, MonitorEvents, DataHit, Reading, Camera, Records, Merged>
+  extends kit.BaseItemView<
+    MonitorConfig,
+    MonitorItem,
+    Reading,
+    Camera,
+    MonitorEvents,
+    Resolved,
+    Prepared | undefined,
+    Pipelines,
+    Records,
+    Merged
+  >
   implements Monitor
 {
-  private data: MonitorData;
-  private style: Style;
-  private limits: Required<Limits>;
-  private resolved?: Resolved;
-  private readonly stop = new AbortController();
   private traces?: Binding[];
   private setup?: Promise<void>;
   private setupStop?: AbortController;
@@ -291,19 +287,8 @@ class MonitorView
   /** The history of the latest prepared frame, which `pending` and `animating` follow. */
   private current = this.presentedHistory;
   private resizeTimer?: ReturnType<typeof setTimeout>;
-  private drawnShade: Shade | null;
-  private parameters = new Float32Array(64);
-  private animate = false;
-  private pipeline?: Pipelines;
-  private compiling?: {
-    readonly format: GPUTextureFormat;
-    readonly msaa: 1 | 4;
-    readonly shade: Shade | null;
-    readonly promise: Promise<Pipelines>;
-  };
   private layout?: Axes;
   private layoutKey = '';
-  private prepared?: Prepared;
   private shown?: Shown;
   private inspection?: {
     readonly point: Point;
@@ -314,36 +299,31 @@ class MonitorView
     readonly result: readonly Reading[];
   };
   private drawCalls = 0;
-  private pickingBytes = 0;
-  private readonly gestures: Gestures = {
-    click: (point, signal) =>
-      void this.read(point, this.viewStyle.pickRadiusPx, 1, signal).then(
-        (hits) => {
-          if (!signal.aborted && !this.closed) this.choose(hits.slice(0, 1));
-        },
-        (error: unknown) => {
-          if (!signal.aborted && !this.closed) this.fail(error);
-        },
-      ),
-  };
   /** The hover search: exact readings, a frame later. */
   private readonly nearest: kit.HoverSearch<Reading> = (point, radius, { signal }) =>
     this.shown ? this.read(point, radius, 1, signal).then((hits) => hits[0] ?? null) : null;
   constructor(gpu: Gpu, config: MonitorConfig) {
     super(gpu, config, {
+      name: 'monitor',
       records: ['traces'],
       merged: ['camera', 'input', 'limits'],
       fields: FIELD_OPTIONS,
+      options: Object.keys(DEFAULTS),
       framed: ['values'],
       modes: ['inspect', 'navigate', 'none'],
       style: VIEW_DEFAULTS,
     });
     if (!config.camera?.window) fail('A monitor needs a camera window');
-    this.limits = resolve(this.config).limits;
-    this.style = resolveStyle(this.config, this.viewStyle);
-    this.data = monitorData(this.config);
-    this.drawnShade = this.shade;
     this.start();
+  }
+  private get data(): MonitorData {
+    return this.resolved.data;
+  }
+  private get style(): Style {
+    return this.resolved.style;
+  }
+  private get limits(): Required<Limits> {
+    return this.resolved.limits;
   }
 
   stats(): MonitorStats {
@@ -353,12 +333,11 @@ class MonitorView
       historyBytes: this.historyBytes(),
       visible: !!this.presentedHistory.front,
       refining: !this.presentedHistory.complete,
-      pickingBytes: this.pickingBytes,
       drawCalls: this.drawCalls,
     };
   }
   /** Readings frame once; no readings fit the values and show every recorded coordinate. */
-  fit(items?: readonly DataHit[], options: SetOptions = {}): void {
+  fit(items?: readonly MonitorItem[], options: SetOptions = {}): void {
     this.live();
     if (!items?.length) {
       const recorded = this.recorded();
@@ -374,8 +353,9 @@ class MonitorView
   protected resolveCamera(camera: Camera): Camera {
     return checkCamera(camera);
   }
-  protected framing(
-    items: readonly DataHit[] | undefined,
+  /** Readings frame their coordinates and values; otherwise the values fit the window's data. */
+  private framing(
+    items: readonly MonitorItem[] | undefined,
     camera: Camera,
   ): Partial<Camera> | undefined {
     if (items) return frameReadings(items, camera, this.style.domainPadding);
@@ -385,83 +365,77 @@ class MonitorView
   protected interpolate(from: Camera, to: Camera, t: number): Camera {
     return mixCamera(from, to, t);
   }
-  protected panned(camera: Camera, dx: number, dy: number, viewport: kit.Viewport): Camera {
+  protected panned(camera: Camera, dx: number, dy: number, viewport: Viewport): Camera {
     return move(camera, dx, dy, plot(viewport, this.style));
   }
 
   // ── Items ──
   /** A reading's point in the latest drawn frame; it lies off the plot outside the window. */
-  protected position(item: DataHit): Point | null {
+  protected position(item: MonitorItem): Point | null {
     const shown = this.shown,
-      value = (item as Partial<Reading>).value;
-    if (!shown || item.coordinate === undefined || typeof value !== 'number') return null;
+      { coordinate, value } = item as Partial<Reading>;
+    if (!shown || coordinate === undefined || value === undefined) return null;
     const { plot: p, window: x, values: y } = shown;
     return [
-      p.x + ((item.coordinate - x[0]) / (x[1] - x[0])) * p.width,
+      p.x + ((coordinate - x[0]) / (x[1] - x[0])) * p.width,
       p.y + ((y[1] - value) / (y[1] - y[0])) * p.height,
     ];
   }
-  protected identify(item: DataHit): string {
+  protected identify(item: MonitorItem): string {
     return JSON.stringify([
       item.index.source,
       item.index.type,
       item.index.version,
       item.row,
-      item.field ?? null,
-      item.frame ?? null,
-      (item as Partial<Reading>).trace ?? null,
+      item.trace ?? null,
+      (item as Partial<Reading>).frame ?? null,
     ]);
   }
-  protected accept(item: DataHit): void {
+  protected accept(item: MonitorItem): void {
     if (!Number.isSafeInteger(item.row) || item.row < 0) fail('Invalid selected row');
-    if (!this.table(item)) throw new GpuError('conflict', 'Selection belongs to another source');
+    if (!this.table(item)) throw failure('conflict', 'Selection belongs to another source');
   }
   /** Rows stay selected while a trace draws them and their row space stands, as through appends. */
-  protected contains(item: DataHit): boolean {
+  protected contains(item: MonitorItem): boolean {
     const rows = this.table(item)?.rows;
     if (!rows || !includes(rows, item.row)) return false;
-    const name = (item as Partial<Reading>).trace,
-      traces = this.config.traces;
-    return (name === undefined ? Object.values(traces) : [traces[name]]).some(
+    const traces = this.config.traces;
+    return (item.trace === undefined ? Object.values(traces) : [traces[item.trace]]).some(
       (trace) =>
         trace?.from === item.index.type &&
-        (!item.field ||
-          item.field === (typeof trace.field === 'string' ? trace.field : trace.field.field)) &&
         (!trace.rows || trace.rows.kind === 'ids' || includes(trace.rows, item.row)),
     );
   }
-  /** The nearest `limit` readings, capped by what the picking budget holds. */
+  /** The nearest `limit` readings. */
   protected hits(
     point: Point,
     radiusPx: number,
     options: { readonly limit: number; readonly signal?: AbortSignal },
   ): Promise<readonly Reading[]> {
-    const capacity = Math.max(1, Math.floor(this.limits.pickingBytes / READING_BYTES));
-    return this.read(point, radiusPx, Math.min(options.limit, capacity), options.signal);
+    return this.read(point, radiusPx, options.limit, options.signal);
   }
-  protected compileShade(
-    shade: Shade | null,
-    format: GPUTextureFormat,
-    msaa: 1 | 4,
-  ): Promise<unknown> {
-    return pipelines(this.gpu, format, msaa, shade?.wgsl);
+  protected pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade): Promise<Pipelines> {
+    return pipelines(this.gpu, format, msaa, shade.wgsl);
   }
-  protected listen(canvas: HTMLCanvasElement, input: kit.CanvasInput): void {
-    listen(canvas, input, this.gestures);
+  /** A new shade's parameters draw into history, so history draws again. */
+  protected shaded(): void {
+    this.redraw();
   }
 
   // ── Config ──
-  protected check(config: MonitorConfig): void {
-    super.check(config);
-    this.resolved = resolve(config);
+  protected resolve(config: MonitorConfig): Resolved {
+    const data = monitorData(config);
+    validateData(data);
+    return {
+      config,
+      data,
+      limits: kit.resolveLimits(config.limits, LIMITS, 'monitor'),
+      style: resolveStyle(config, this.sharedStyle(config)),
+    };
   }
-  protected configure(previous: MonitorConfig, next: MonitorConfig): void {
-    const resolved = this.resolved?.config === next ? this.resolved : resolve(next);
-    this.resolved = undefined;
-    const style = this.style;
-    this.style = resolveStyle(next, this.viewStyle);
-    this.limits = resolved.limits;
-    this.data = monitorData(next);
+  protected configure(resolved: Resolved, before: Resolved): void {
+    const { config: next, style: after } = resolved,
+      { config: previous, style } = before;
     const appended =
       previous.source !== next.source &&
       previous.traces === next.traces &&
@@ -484,8 +458,8 @@ class MonitorView
       this.redraw();
     }
     if (previous.traces !== next.traces) this.pruneSelection();
-    if ([...HISTORY].some((key) => style[key] !== this.style[key])) this.redraw();
-    if ([...FOCUS].some((key) => style[key] !== this.style[key])) this.focusGeneration++;
+    if ([...HISTORY].some((key) => style[key] !== after[key])) this.redraw();
+    if ([...FOCUS].some((key) => style[key] !== after[key])) this.focusGeneration++;
     this.invalidate();
   }
   /** History pixels no longer match: images draw again behind what is shown. */
@@ -501,54 +475,27 @@ class MonitorView
     return this.current.complete ? undefined : Promise.resolve();
   }
   protected get animating(): boolean {
-    return super.animating || (!this.closed && (!this.current.complete || this.animate));
+    return super.animating || (!this.closed && !this.current.complete);
   }
-  protected async prepare(frame: kit.Preparation): Promise<void> {
+  protected async prepare(frame: kit.Preparation): Promise<Prepared | undefined> {
     this.live();
-    this.prepared = undefined;
     frame.signal.throwIfAborted();
     if (this.error) throw this.error as Error;
-    const work = new kit.Work(frame.signal);
-    const shade = this.shade;
-    if (shade !== this.drawnShade) {
-      this.drawnShade = shade;
-      this.parameters.fill(0);
-      this.redraw();
-    }
-    const msaa = this.style.msaa,
-      compiling = this.compiling;
-    if (
-      !compiling ||
-      compiling.format !== frame.format ||
-      compiling.msaa !== msaa ||
-      compiling.shade !== shade
-    ) {
-      this.pipeline = undefined;
-      this.compiling = {
-        format: frame.format,
-        msaa,
-        shade,
-        promise: pipelines(this.gpu, frame.format, msaa, shade?.wgsl),
-      };
-      void this.compiling.promise.catch(() => {});
-    }
+    const work = new Work(frame.signal);
+    // Compile while traces resolve.
+    const compiling = this.framePipelines(frame);
+    void compiling.catch(() => {});
     await this.initialize(work);
     const traces = this.traces;
     if (!traces) {
       this.invalidate();
-      return;
+      return undefined;
     }
-    const camera = await this.frameCamera(frame);
+    const camera = await this.frameCamera(frame, (items, current) => this.framing(items, current));
     // An animated shade bakes its parameters into history, which then draws every frame.
-    if (this.animate) this.redraw();
-    this.animate =
-      shade?.tick?.(this.parameters, {
-        timeMs: frame.timeMs,
-        pointerPx: this.pointerPoint,
-        viewport: frame.viewport,
-      }) ?? false;
-    if (!this.pipeline) this.pipeline = await work.wait(this.compiling!.promise);
-    const pipeline = this.pipeline,
+    if (this.shadeAnimating) this.redraw();
+    const shading = this.shadeFrame(frame);
+    const pipeline = await work.wait(compiling),
       area = plot(frame.viewport, this.style),
       wanted: Transform = {
         width: Math.max(1, Math.ceil(area.width * frame.viewport.pixelRatio)),
@@ -592,16 +539,7 @@ class MonitorView
     history.focusFor = selection;
     const effect = this.gpu.device.createBindGroup({
       layout: pipeline.shade,
-      entries: [
-        {
-          binding: 0,
-          resource: frame.shade({
-            parameters: this.parameters,
-            pointerPx: this.pointerPoint,
-            timeMs: frame.timeMs,
-          }),
-        },
-      ],
+      entries: [{ binding: 0, resource: shading }],
     });
     // What has arrived reaches the shown image first, then the selection, then a replacement.
     const draws = new Map<Image, Draw[]>(),
@@ -645,7 +583,7 @@ class MonitorView
       this.layoutKey = key;
     }
     if (this.historyBytes() > this.limits.historyBytes)
-      throw new GpuError('resource-limit', 'Monitor history exceeds historyBytes');
+      throw failure('resource-limit', 'Monitor history exceeds historyBytes');
     for (const value of [display, history.focus, ...draws.keys()]) if (value) enroll(frame, value);
     const screen = await prepareScreen(
       this.gpu,
@@ -661,7 +599,7 @@ class MonitorView
     );
     frame.signal.throwIfAborted();
     this.hoverFrame(frame, this.nearest);
-    this.prepared = {
+    return {
       surface: history,
       pipeline,
       screen,
@@ -759,11 +697,7 @@ class MonitorView
     if (through !== before.through || chunk !== before.chunk)
       advanced.push({ target, trace: trace.name, progress: { through, chunk } });
   }
-  protected discard(): void {
-    this.prepared = undefined;
-  }
-  protected encode(frame: kit.Encoding): void {
-    const prepared = this.prepared;
+  protected encode(frame: kit.Encoding, prepared: Prepared | undefined): void {
     if (!prepared) return;
     let calls = 0;
     for (const [target, draws] of prepared.paint)
@@ -774,10 +708,8 @@ class MonitorView
       if (target?.fresh && !prepared.paint.has(target)) paint(frame, prepared.pipeline, target, []);
     this.drawCalls = calls + composite(frame, prepared.pipeline, prepared.screen);
   }
-  protected submitted(frame: kit.FrameInfo): void {
-    const prepared = this.prepared;
+  protected submitted(frame: FrameInfo, prepared: Prepared | undefined): void {
     if (!prepared) return;
-    this.prepared = undefined;
     const { surface: history } = prepared;
     for (const target of [...prepared.paint.keys(), history.front ?? history.back, history.focus])
       if (target) target.fresh = false;
@@ -809,7 +741,6 @@ class MonitorView
     this.exportedHistory = undefined;
   }
   protected release(): void {
-    this.stop.abort(new DOMException('Monitor destroyed', 'AbortError'));
     if (this.resizeTimer !== undefined) clearTimeout(this.resizeTimer);
     this.inspection = undefined;
     destroySurface(this.presentedHistory);
@@ -819,12 +750,12 @@ class MonitorView
   }
 
   // ── History ──
-  private async initialize(work: kit.Work) {
+  private async initialize(work: Work) {
     if (this.traces) return;
     if (!this.setup) {
       const control = new AbortController();
       this.setupStop = control;
-      const signal = AbortSignal.any([this.stop.signal, control.signal]),
+      const signal = AbortSignal.any([this.signal, control.signal]),
         data = this.data;
       const task = (async () => {
         const reads = this.gpu.reader.open({ signal });
@@ -832,7 +763,7 @@ class MonitorView
           const traces = await describeBindings(reads, data, this.camera.window);
           if (control.signal.aborted || this.closed) return;
           if (traces.reduce((n, trace) => n + trace.count, 0) > this.limits.rows)
-            throw new GpuError('resource-limit', 'Monitor row limit exceeded');
+            throw failure('resource-limit', 'Monitor row limit exceeded');
           this.traces = traces;
         } catch (error) {
           if (!control.signal.aborted) this.error = error;
@@ -876,7 +807,7 @@ class MonitorView
       msaa: this.style.msaa === 4 ? ({} as kit.TextureResource) : undefined,
     });
     if (this.historyBytes() + bytes > this.limits.historyBytes)
-      throw new GpuError(
+      throw failure(
         'resource-limit',
         'Monitor history exceeds historyBytes; reduce viewport or MSAA, or increase its limit',
       );
@@ -934,7 +865,7 @@ class MonitorView
     )
       return cached.result.length > limit ? cached.result.slice(0, limit) : cached.result;
     const reads = this.gpu.reader.open({
-      signal: signal ? AbortSignal.any([signal, this.stop.signal]) : this.stop.signal,
+      signal: signal ? AbortSignal.any([signal, this.signal]) : this.signal,
     });
     let result: Reading[];
     try {
@@ -952,12 +883,11 @@ class MonitorView
     } finally {
       reads.close();
     }
-    this.pickingBytes = result.length * READING_BYTES;
     this.inspection = { point: [point[0], point[1]], radius, limit, source, shown, result };
     return result;
   }
   /** The table of an item's rows among the sources the traces read. */
-  private table(item: DataHit): Data['tables'][string] | undefined {
+  private table(item: MonitorItem): Data['tables'][string] | undefined {
     const config = this.config,
       sources = new Set([config.source]);
     for (const trace of Object.values(config.traces))

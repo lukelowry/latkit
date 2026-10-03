@@ -1,13 +1,18 @@
-import { GpuError, integer } from '../error.js';
+import { failure } from './error.js';
 
-export interface Budget {
+/** Bounds of one memory pool, shared by a reader and the Gpu that reads into it. */
+export interface MemoryBudget {
+  /** Cached reads, uploads, and their bookkeeping. */
   readonly cpuBytes: number;
   readonly gpuBytes: number;
+  /** Transient gathers and copies. */
   readonly stagingBytes: number;
+  /** Cached results of every kind. */
   readonly entries: number;
 }
 
-export interface GpuStats {
+/** Managed allocations of one pool, not process or driver memory estimates. */
+export interface MemoryStats {
   readonly cpuBytes: number;
   readonly gpuBytes: number;
   readonly stagingBytes: number;
@@ -27,6 +32,7 @@ export interface GpuStats {
   readonly evictions: number;
 }
 
+/** One cached result: its backing buffers, held while pinned and evictable once released. */
 export class Entry {
   pins = 1;
   live = true;
@@ -41,12 +47,12 @@ export class Entry {
     readonly kind: 'cpu' | 'gpu',
   ) {}
   pin(): void {
-    if (!this.live || this.retire) throw new GpuError('closed', 'Rendering resource is closed');
+    if (!this.live || this.retire) throw failure('closed', 'Cached result is closed');
     if (this.pins++ === 0) this.pool.busy(this);
   }
   unpin(): void {
     if (!this.live) return;
-    if (this.pins <= 0) throw new Error('Unbalanced resource release');
+    if (this.pins <= 0) throw failure('internal', 'Unbalanced release');
     if (--this.pins) return;
     if (this.retire) this.pool.remove(this);
     else this.pool.idle(this);
@@ -61,9 +67,18 @@ export class Entry {
   }
 }
 
-/** All numbers describe managed allocations, not process/driver memory estimates. */
+function integer(value: number, label: string, minimum: number): number {
+  if (!Number.isSafeInteger(value) || value < minimum)
+    throw failure('invalid-input', `${label} must be an integer of at least ${minimum}`);
+  return value;
+}
+
+/**
+ * Bounded least-recently-used accounting of cached reads, uploads, and GPU resources. A buffer that
+ * several entries share counts once.
+ */
 export class Memory {
-  readonly budget: Budget;
+  readonly budget: MemoryBudget;
   readonly entries = new Set<Entry>();
   /** Unpinned entries by kind, least recently used first: eviction takes the first. */
   private readonly lru = { cpu: new Set<Entry>(), gpu: new Set<Entry>() };
@@ -86,16 +101,16 @@ export class Memory {
   submissions = 0;
   evictions = 0;
 
-  constructor(budget: Partial<Budget> = {}) {
-    this.budget = {
-      cpuBytes: integer(budget.cpuBytes ?? 64 * 1024 ** 2, 'CPU budget', 1),
+  constructor(budget: Partial<MemoryBudget> = {}) {
+    this.budget = Object.freeze({
+      cpuBytes: integer(budget.cpuBytes ?? 128 * 1024 ** 2, 'CPU budget', 1),
       gpuBytes: integer(budget.gpuBytes ?? 256 * 1024 ** 2, 'GPU budget', 4),
-      stagingBytes: integer(budget.stagingBytes ?? 16 * 1024 ** 2, 'staging budget', 4),
-      entries: integer(budget.entries ?? 4096, 'cache entries', 1),
-    };
+      stagingBytes: integer(budget.stagingBytes ?? 24 * 1024 ** 2, 'Staging budget', 4),
+      entries: integer(budget.entries ?? 8192, 'Cache entries', 1),
+    });
   }
 
-  stats(): GpuStats {
+  stats(): MemoryStats {
     return {
       cpuBytes: this.cpu,
       gpuBytes: this.gpu,
@@ -125,14 +140,13 @@ export class Memory {
   ): Entry {
     const unique = [...new Set(backings)];
     if (metadata + unique.reduce((n, buffer) => n + buffer.byteLength, 0) > this.budget.cpuBytes)
-      throw new GpuError('resource-limit', 'Entry exceeds the CPU budget');
+      throw failure('resource-limit', 'Result exceeds the CPU budget');
     const cost = (): number =>
       metadata +
       unique.reduce((n, buffer) => n + (this.backings.has(buffer) ? 0 : buffer.byteLength), 0);
-    while (this.cpu + cost() > this.budget.cpuBytes || this.entries.size >= this.budget.entries) {
+    while (this.cpu + cost() > this.budget.cpuBytes || this.entries.size >= this.budget.entries)
       if (!this.evict())
-        throw new GpuError('resource-limit', 'CPU cache or entry budget exceeded by pinned data');
-    }
+        throw failure('resource-limit', 'CPU or entry budget exceeded by held results');
     for (const buffer of unique) {
       const existing = this.backings.get(buffer);
       if (existing) existing.count++;
@@ -149,13 +163,12 @@ export class Memory {
   }
 
   reserveGpu(bytes: number): void {
-    integer(bytes, 'GPU allocation bytes');
+    integer(bytes, 'GPU allocation bytes', 0);
     if (bytes > this.budget.gpuBytes)
-      throw new GpuError('resource-limit', 'Allocation exceeds the GPU budget');
-    while (this.gpu + bytes > this.budget.gpuBytes) {
+      throw failure('resource-limit', 'Allocation exceeds the GPU budget');
+    while (this.gpu + bytes > this.budget.gpuBytes)
       if (!this.evict('gpu'))
-        throw new GpuError('resource-limit', 'GPU budget exceeded by live or in-flight resources');
-    }
+        throw failure('resource-limit', 'GPU budget exceeded by live or in-flight resources');
     this.gpu += bytes;
     this.peakGpu = Math.max(this.peakGpu, this.gpu);
     this.allocations++;
@@ -165,29 +178,27 @@ export class Memory {
   }
 
   stage<T>(bytes: number, work: () => T): T {
-    if (this.staging + bytes > this.budget.stagingBytes)
-      throw new GpuError('resource-limit', 'Staging budget exceeded');
-    this.staging += bytes;
-    this.staged += bytes;
-    this.peakStaging = Math.max(this.peakStaging, this.staging);
+    this.reserveStaging(bytes);
     try {
       return work();
     } finally {
       this.staging -= bytes;
     }
   }
-
   async stageAsync<T>(bytes: number, work: () => Promise<T>): Promise<T> {
-    if (this.staging + bytes > this.budget.stagingBytes)
-      throw new GpuError('resource-limit', 'Staging budget exceeded');
-    this.staging += bytes;
-    this.staged += bytes;
-    this.peakStaging = Math.max(this.peakStaging, this.staging);
+    this.reserveStaging(bytes);
     try {
       return await work();
     } finally {
       this.staging -= bytes;
     }
+  }
+  private reserveStaging(bytes: number): void {
+    if (this.staging + bytes > this.budget.stagingBytes)
+      throw failure('resource-limit', 'Staging budget exceeded');
+    this.staging += bytes;
+    this.staged += bytes;
+    this.peakStaging = Math.max(this.peakStaging, this.staging);
   }
 
   /** An entry no longer held: the most recently used of the evictable. */
@@ -201,6 +212,7 @@ export class Memory {
   busy(entry: Entry): void {
     this.lru[entry.kind].delete(entry);
   }
+  /** Evict the least recently used entry, of either kind or only of GPU resources. */
   private evict(kind?: 'gpu'): boolean {
     const [gpu] = this.lru.gpu,
       [cpu] = kind ? [] : this.lru.cpu;
@@ -227,6 +239,7 @@ export class Memory {
     entry.dispose();
   }
 
+  /** Evict everything no one holds. */
   trim(): void {
     // Disposing an entry may release others, which then become evictable too.
     while (this.lru.cpu.size || this.lru.gpu.size)
@@ -235,4 +248,9 @@ export class Memory {
   destroy(): void {
     for (const entry of [...this.entries]) this.remove(entry);
   }
+}
+
+/** A memory pool to share between a reader and a Gpu, so one budget bounds both. */
+export function createMemory(budget?: Partial<MemoryBudget>): Memory {
+  return new Memory(budget);
 }

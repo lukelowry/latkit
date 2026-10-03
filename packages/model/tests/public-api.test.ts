@@ -6,9 +6,7 @@ it('exports values, local computation and explicit boundary validation', () => {
     'read',
     'locateSample',
     'appendedPages',
-    'samplePages',
     'sampleFrames',
-    'resolveRows',
     'createData',
     'appendData',
     'selectBatches',
@@ -22,10 +20,24 @@ it('exports values, local computation and explicit boundary validation', () => {
     'createReader',
     'sampleDomain',
     'failure',
+    'isFailure',
+    'sameItem',
+    'itemId',
     'sliceSamples',
   ])
     expect(api).toHaveProperty(name);
-  for (const name of ['retain', 'record', 'createRecording', 'transactions', 'validateDataEvent'])
+  for (const name of [
+    'retain',
+    'record',
+    'createRecording',
+    'transactions',
+    'validateDataEvent',
+    'resolveRows',
+    'samplePages',
+    'copyBuffers',
+    'sliceColumn',
+    'DEFAULT_BLOCK_BYTES',
+  ])
     expect(api).not.toHaveProperty(name);
 });
 function usage(data: Data) {

@@ -1,15 +1,20 @@
 import { expect, it, vi } from 'vitest';
-import { createComposition, createGpu, type Gpu, type SetOptions } from '../src/index.js';
+import {
+  createComposition,
+  createGpu,
+  type FrameInfo,
+  type Gpu,
+  type SetOptions,
+  type ViewConfig,
+  type ViewEvents,
+} from '../src/index.js';
 import {
   BaseView,
   createPresentation,
   hold,
   rendererOf,
   type Encoding,
-  type FrameInfo,
   type Preparation,
-  type ViewConfig,
-  type ViewEvents,
 } from '../src/kit.js';
 import { deferred, fakeDevice } from './fixtures/device.js';
 import { target } from './fixtures/render.js';
@@ -88,7 +93,14 @@ interface TestConfig extends ViewConfig {
   readonly input?:
     'navigate' | 'none' | { readonly mode?: 'navigate' | 'none'; readonly wheel?: string };
 }
-class TestView extends BaseView<TestConfig, ViewEvents, 'items', 'limits' | 'input' | 'camera'> {
+class TestView extends BaseView<
+  TestConfig,
+  ViewEvents,
+  TestConfig,
+  void,
+  'items',
+  'limits' | 'input' | 'camera'
+> {
   frames: FrameInfo[] = [];
   configured: { previous: TestConfig; next: TestConfig; options: SetOptions }[] = [];
   camera = { x: 0, y: 0 };
@@ -107,7 +119,7 @@ class TestView extends BaseView<TestConfig, ViewEvents, 'items', 'limits' | 'inp
   refresh(): void {
     this.invalidate();
   }
-  protected configure(previous: TestConfig, next: TestConfig, options: SetOptions): void {
+  protected configure(next: TestConfig, previous: TestConfig, options: SetOptions): void {
     this.configured.push({ previous, next, options });
     this.invalidate();
   }
@@ -291,7 +303,7 @@ it('preserves the original configuration failure during cleanup', async () => {
   fixture.context.unconfigure.mockImplementation(() => {
     throw new Error('cleanup');
   });
-  expect(() => createPresentation({ gpu, canvas: fixture.canvas })).toThrow('configuration');
+  expect(() => createPresentation(gpu, { canvas: fixture.canvas })).toThrow('configuration');
   gpu.destroy();
 });
 

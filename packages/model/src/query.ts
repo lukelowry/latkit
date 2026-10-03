@@ -9,7 +9,8 @@ import type {
 } from './data.js';
 import type { Domain, RequestOptions, Scalar } from './types.js';
 
-export const DEFAULT_BLOCK_BYTES = 256 * 1024;
+/** Bound of one block when a read names none, for `read` and the Reader alike. */
+export const BLOCK_BYTES = 1024 ** 2;
 
 export interface QueryOptions extends RequestOptions {
   /**
@@ -20,6 +21,7 @@ export interface QueryOptions extends RequestOptions {
    * Sparse gathers and ownership conversion may copy; zero-copy is permitted, never promised.
    */
   readonly buffers?: 'borrowed' | 'owned';
+  /** Bound of one block. Defaults to 1 MiB. */
   readonly maxBlockBytes?: number;
 }
 
