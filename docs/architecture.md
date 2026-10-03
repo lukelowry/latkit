@@ -66,7 +66,8 @@ const renderer: kit.Renderer = {
 };
 ```
 
-`kit.BaseView` handles capture and request coalescing for built-in views; `kit.BaseItemView` adds
-the camera, selection, picking, hover, style, and input that network, monitor, and diagram share,
-so each supplies only its geometry and gestures. Custom renderers must keep
+`kit.BaseView` handles capture and request coalescing for built-in views and carries each prepared
+frame from `prepare` to `encode` and `submitted`; `kit.BaseItemView` adds the camera, selection,
+picking, hover, clicks, shades, pipeline variants, and option checks that network, monitor, and
+diagram share, so each supplies only its geometry and gestures. Custom renderers must keep
 captured inputs stable until `release`; `submitted` and `discard` settle a prepared candidate once.
