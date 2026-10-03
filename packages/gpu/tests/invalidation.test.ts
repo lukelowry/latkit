@@ -68,6 +68,8 @@ it('notifies all views only after whole-frame submission and releases pins after
   expect(gpu.stats().gpuBytes).toBeGreaterThan(0);
   fake.finish();
   await gpu.idle();
+  // The frame's uniform buffer returns to the pool, which trim empties.
+  gpu.trim();
   expect(gpu.stats().gpuBytes).toBe(0);
   gpu.destroy();
 });

@@ -1,9 +1,14 @@
-import { failure } from '@latkit/model';
-import { interruptible } from '../error.js';
+import { interruptible, failure } from '@latkit/model';
 import type { TextRasterizer } from './text.js';
 
 /** Uses the browser's shaping engine, including ligatures, fallback fonts and bidirectional runs. */
 export function createTextRasterizer(): TextRasterizer {
+  let surface:
+    | {
+        readonly canvas: OffscreenCanvas | HTMLCanvasElement;
+        readonly context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+      }
+    | undefined;
   return {
     async rasterize(input, options) {
       const { pixelsPerEm, maxWidth, maxHeight, signal } = options;
@@ -15,15 +20,8 @@ export function createTextRasterizer(): TextRasterizer {
         (globalThis as typeof globalThis & { fonts?: FontFaceSet }).fonts ??
         globalThis.document?.fonts;
       if (fonts) await interruptible(fonts.load(font, input.text), signal);
-      const canvas =
-        typeof OffscreenCanvas !== 'undefined'
-          ? new OffscreenCanvas(1, 1)
-          : globalThis.document?.createElement('canvas');
-      if (!canvas)
-        throw failure('unavailable', 'Supply a TextRasterizer in environments without Canvas2D');
-      const context = canvas.getContext('2d', { willReadFrequently: true }) as
-        CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
-      if (!context) throw failure('unavailable', 'Canvas2D text rasterization is unavailable');
+      surface ??= canvas2d();
+      const { canvas, context } = surface;
       const configure = (): void => {
         context.font = font;
         context.textAlign = 'left';
@@ -62,4 +60,18 @@ export function createTextRasterizer(): TextRasterizer {
       };
     },
   };
+}
+
+/** One canvas a rasterizer draws every run on. */
+function canvas2d() {
+  const canvas =
+    typeof OffscreenCanvas !== 'undefined'
+      ? new OffscreenCanvas(1, 1)
+      : globalThis.document?.createElement('canvas');
+  if (!canvas)
+    throw failure('unavailable', 'Supply a TextRasterizer in environments without Canvas2D');
+  const context = canvas.getContext('2d', { willReadFrequently: true }) as
+    CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
+  if (!context) throw failure('unavailable', 'Canvas2D text rasterization is unavailable');
+  return { canvas, context };
 }

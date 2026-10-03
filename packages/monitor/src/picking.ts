@@ -1,5 +1,6 @@
-import { kit, type Point } from '@latkit/gpu';
+import type { Point } from '@latkit/gpu';
 import {
+  Work,
   bitAt,
   rowCount,
   rowAt,
@@ -82,7 +83,7 @@ class Nearest {
 /** Read only the pointer's coordinate interval; readings keep native identities and Float64 values. */
 export async function pick(request: PickRequest): Promise<Reading[]> {
   const { reads, data, bindings, plot, x, y, point, radius, limit } = request;
-  const work = new kit.Work(reads.signal, Infinity, 3);
+  const work = new Work(reads.signal, Infinity, 3);
   const coordinate = x[0] + ((point[0] - plot.x) / plot.width) * (x[1] - x[0]),
     delta = (radius / plot.width) * (x[1] - x[0]);
   const between: Domain = [Math.max(x[0], coordinate - delta), Math.min(x[1], coordinate + delta)];

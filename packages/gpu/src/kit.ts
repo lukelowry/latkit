@@ -6,7 +6,6 @@ export type { Framing, HoverSearch, ItemShape } from './view/item-view.js';
 export { resolveViewStyle } from './view/style.js';
 export type { ResolvedViewStyle } from './view/style.js';
 export { Attachments } from './view/attachments.js';
-export { Work } from './work.js';
 export type {
   Renderer,
   CapturedFrame,

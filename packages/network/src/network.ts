@@ -13,7 +13,7 @@ import {
   type Patch,
   type Viewport,
 } from '@latkit/gpu';
-import { failure, sameIndex, type Data } from '@latkit/model';
+import { Work, failure, sameIndex, type Data } from '@latkit/model';
 import type { Camera, Projection } from './camera.js';
 import { DEFAULT_CAMERA, checkCamera, fit, mixCamera, move, zoom } from './camera.js';
 import {
@@ -366,7 +366,7 @@ class NetworkView
     const task = this.indexing;
     if (task && !task.done) {
       task.now();
-      if (options.signal) await new kit.Work(options.signal).wait(task.built);
+      if (options.signal) await new Work(options.signal).wait(task.built);
       else await task.built;
     }
     return shown.picking.hit(
@@ -498,7 +498,7 @@ class NetworkView
     const pointer = this.pointerPoint;
     this.live();
     frame.signal.throwIfAborted();
-    const phases = picking.dashPhases(data, camera, frame.viewport, height);
+    const phases = picking.dashPhases(data, camera.projection === 'globe', height);
     const labels = await this.labels.prepare(
       frame,
       this.gpu,
@@ -588,7 +588,7 @@ class NetworkView
     const built = settled
       .then(() => {
         signal.throwIfAborted();
-        return picking.indexLater(data, options, new kit.Work(signal));
+        return picking.indexLater(data, options, new Work(signal));
       })
       .then(
         () => {

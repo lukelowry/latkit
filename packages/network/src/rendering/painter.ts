@@ -90,7 +90,11 @@ export class Painter {
     readonly hover: NetworkItem | null;
     readonly options: Style;
   };
-  private phases = new WeakMap<SegmentBatch, kit.BufferData>();
+  /** Each batch's dash prefixes, uploaded when they change. */
+  private phases = new WeakMap<
+    SegmentBatch,
+    { readonly buffer: kit.BufferData; readonly values: Float32Array }
+  >();
   private curves?: {
     capacity: number;
     instances: kit.BufferResource;
@@ -417,13 +421,15 @@ export class Painter {
         let phase: GPUBufferBinding | undefined;
         const values = state.phases.get(batch);
         if (values) {
-          let buffer = this.phases.get(batch);
-          if (!buffer) {
-            buffer = new kit.BufferData({ size: values.byteLength, label: 'network dash phases' });
-            this.phases.set(batch, buffer);
+          let phases = this.phases.get(batch);
+          if (phases?.values !== values) {
+            const buffer =
+              phases?.buffer ??
+              new kit.BufferData({ size: values.byteLength, label: 'network dash phases' });
+            buffer.write({ data: values });
+            this.phases.set(batch, (phases = { buffer, values }));
           }
-          buffer.write({ data: values });
-          phase = frame.buffer(buffer);
+          phase = frame.buffer(phases.buffer);
         }
         edges.push({
           group: group(

@@ -1,5 +1,12 @@
-import { failure, type Reader, type ReadScope, type MemoryEntry, type Memory } from '@latkit/model';
-import { integer, interruptible } from '../error.js';
+import {
+  interruptible,
+  failure,
+  type Reader,
+  type ReadScope,
+  type MemoryEntry,
+  type Memory,
+} from '@latkit/model';
+import { integer } from '../error.js';
 import type { CopyJob } from '../fields/pages.js';
 import type { Uploader, UploadScope } from '../fields/upload.js';
 import type { Colormaps } from '../colors/preparation.js';
@@ -10,6 +17,7 @@ import { TextureData } from '../memory/texture-data.js';
 import type { Textures } from '../memory/textures.js';
 import { shadeUniforms } from '../style/shade.js';
 import type { TextAtlas } from '../text/atlas.js';
+import type { Uniforms } from './uniforms.js';
 import {
   targetResources,
   type CapturedFrame,
@@ -26,6 +34,7 @@ export interface FrameOwner {
   readonly reader: Reader;
   readonly memory: Memory;
   readonly uploader: Uploader;
+  readonly uniforms: Uniforms;
   readonly colormaps: Colormaps;
   readonly text: TextAtlas;
   readonly images: Images;
@@ -87,6 +96,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
   });
   for (const renderer of renderers) owner.busy.add(renderer);
   const held = new Set<MemoryEntry>();
+  const uniforms = owner.uniforms.begin();
   const checks: (() => void)[] = [];
   const copies = new Set<CopyJob>();
   const snapshots: CapturedFrame[] = [];
@@ -120,6 +130,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
   const release = (): void => {
     for (const entry of held) entry.unpin();
     held.clear();
+    uniforms.release();
     for (const reads of scopes) reads.close();
   };
   const track = <T>(task: Promise<T>): Promise<T> => {
@@ -134,7 +145,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
     reader,
     shade: (request = {}) => {
       assertPreparing();
-      return owner.uploader.uniforms(shadeUniforms(request, info), scope);
+      return uniforms.add(shadeUniforms(request, info));
     },
     colormap: (value) => {
       assertPreparing();
@@ -156,7 +167,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
     },
     uniforms: (data) => {
       assertPreparing();
-      return owner.uploader.uniforms(data, scope);
+      return uniforms.add(data);
     },
     texture: (resource) => {
       assertPreparing();
@@ -221,6 +232,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
     if (extra && typeof (extra as PromiseLike<unknown>).then === 'function')
       throw failure('invalid-input', 'Final encoding must be synchronous');
     signal.throwIfAborted();
+    uniforms.flush();
     owner.device.queue.submit([encoder.finish()]);
     submitted = true;
     for (const job of encodedCopies) {

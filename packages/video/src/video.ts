@@ -1,4 +1,4 @@
-import { failure, type RequestOptions } from '@latkit/model';
+import { Work, failure, type RequestOptions } from '@latkit/model';
 import { kit, type View } from '@latkit/gpu';
 import { VideoSample } from 'mediabunny';
 import { settings, timeline } from './timing.js';
@@ -62,7 +62,7 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
     gpu.signal,
     ...(options.signal ? [options.signal] : []),
   ]);
-  const work = new kit.Work(signal);
+  const work = new Work(signal);
   const error = (event: GPUUncapturedErrorEvent) => stop.abort(event.error);
   gpu.device.addEventListener('uncapturederror', error);
   let release: (() => void) | undefined;

@@ -47,6 +47,11 @@ interface Resident {
   pages: readonly GpuPage[];
   copies: CopyJob[];
 }
+/** A block's pages as a view receives them, and the upload they come from. */
+interface Shaped {
+  readonly resident: Resident;
+  readonly pages: readonly GpuPage[];
+}
 interface MutableResident {
   entry: MemoryEntry;
   allocation: Allocation;
@@ -65,6 +70,8 @@ export class Uploader {
   >();
   private identities = new WeakMap<object, number>();
   private serial = 0;
+  /** A block's pages as views receive them, so a cache hit allocates nothing. */
+  private shaped = new WeakMap<FieldsBlock, Map<string, Shaped>>();
 
   constructor(
     private readonly allocator: Allocator,
@@ -90,12 +97,38 @@ export class Uploader {
     scope: UploadScope,
   ): readonly GpuPage[] {
     if (block.kind === 'envelope') return this.envelope(block, options, scope);
+    const key = this.key(options);
+    let shaped = this.shaped.get(block);
+    const hit = shaped?.get(key);
+    if (hit?.resident.entry.live) {
+      this.reuse(hit.resident, scope);
+      return hit.pages;
+    }
     // Field tiles are cached by the reader, so their columns identify resident pages.
-    return this.prepare(block, options, scope, block.columns).map((page) => ({
+    const resident = this.prepare(block, options, scope, block.columns, key);
+    if (!resident) return [];
+    const pages = resident.pages.map((page) => ({
       ...page,
       rowOffset: block.rowOffset + page.rowOffset,
       block,
     }));
+    if (!shaped) this.shaped.set(block, (shaped = new Map<string, Shaped>()));
+    shaped.set(key, { resident, pages });
+    return pages;
+  }
+  /** What identifies an upload of a block: its fields, their float64 policy, and its page bound. */
+  private key(options: UploadOptions): string {
+    const limit = Math.min(
+      this.pageBytes,
+      integer(options.maxPageBytes ?? this.pageBytes, 'page bytes', 4),
+    );
+    return JSON.stringify([options.select, options.float64, limit]);
+  }
+  /** Hold a resident upload for this frame. */
+  private reuse(resident: Resident, scope: UploadScope): void {
+    scope.use(resident.entry);
+    for (const copy of resident.copies) scope.copy(copy);
+    this.memory.uploadHits++;
   }
 
   private envelopes = new WeakMap<
@@ -181,12 +214,9 @@ export class Uploader {
       if (!aliases) throw failure('invalid-input', 'Missing envelope field: ' + name);
       return aliases;
     });
-    return this.prepare(
-      resolved.input,
-      { ...options, select: selected, float64: options.float64 ?? 'relative' },
-      scope,
-      block,
-    ).map((page) => ({
+    const policy = { ...options, select: selected, float64: options.float64 ?? 'relative' };
+    const resident = this.prepare(resolved.input, policy, scope, block, this.key(policy));
+    return (resident?.pages ?? []).map((page) => ({
       ...page,
       rowOffset: block.rowOffset + page.rowOffset,
       columns: Object.fromEntries(
@@ -205,7 +235,8 @@ export class Uploader {
     options: UploadOptions,
     scope: UploadScope,
     identity: object,
-  ): readonly GpuPage[] {
+    key: string,
+  ): Resident | undefined {
     if (new Set(options.select).size !== options.select.length)
       throw failure('invalid-input', 'Upload fields must be unique');
     const sampled = block.samples;
@@ -216,19 +247,16 @@ export class Uploader {
     }
     const count = rowCount(block.rows),
       frames = sampled?.coordinates.length ?? block.envelope?.count ?? 1;
-    if (!count || !frames) return [];
+    if (!count || !frames) return undefined;
     const limit = Math.min(
       this.pageBytes,
       integer(options.maxPageBytes ?? this.pageBytes, 'page bytes', 4),
     );
-    const key = JSON.stringify([options.select, options.float64, limit]);
     let cache = this.columns.get(identity);
     const cached = cache?.get(key);
     if (cached?.entry.live) {
-      scope.use(cached.entry);
-      for (const copy of cached.copies) scope.copy(copy);
-      this.memory.uploadHits++;
-      return cached.pages;
+      this.reuse(cached, scope);
+      return cached;
     }
     const views: [string, NumericView][] = options.select.map((name) => {
       const column = block.columns[name];
@@ -469,11 +497,12 @@ export class Uploader {
           );
         }
       }
-      ownCache.set(key, { entry, pages, copies });
+      const resident = { entry, pages, copies };
+      ownCache.set(key, resident);
       for (const copy of copies) scope.copy(copy);
       scope.use(entry);
       entry.unpin();
-      return pages;
+      return resident;
     } catch (error) {
       this.memory.remove(entry);
       for (const dependency of dependencies) if (!dependency.pins) this.memory.remove(dependency);
@@ -886,39 +915,6 @@ export class Uploader {
         throw failure('conflict', 'Renderer buffer changed during preparation');
     });
     return { ...resident.allocation.binding, size: align(Math.max(4, data.size), 4) };
-  }
-
-  uniforms(data: ArrayBufferView, scope: UploadScope): GPUBufferBinding {
-    const allocations: Allocation[] = [];
-    const entry = this.memory.add(
-      [],
-      64,
-      () => {
-        for (const allocation of allocations) allocation.release();
-      },
-      'gpu',
-    );
-    try {
-      const allocation = this.allocator.allocate(
-        data.byteLength,
-        GPUBufferUsage.UNIFORM,
-        'frame uniforms',
-      );
-      allocations.push(allocation);
-      this.writeBytes(
-        allocation.binding,
-        new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
-        0,
-        data.byteLength,
-      );
-      scope.use(entry);
-      entry.unpin();
-      entry.close();
-      return allocation.binding;
-    } catch (error) {
-      this.memory.remove(entry);
-      throw error;
-    }
   }
 
   private writeBytes(

@@ -13,6 +13,7 @@ import {
   type Viewport,
 } from '@latkit/gpu';
 import {
+  Work,
   failure,
   rowCount,
   sameIndex,
@@ -480,7 +481,7 @@ class MonitorView
     this.live();
     frame.signal.throwIfAborted();
     if (this.error) throw this.error as Error;
-    const work = new kit.Work(frame.signal);
+    const work = new Work(frame.signal);
     // Compile while traces resolve.
     const compiling = this.framePipelines(frame);
     void compiling.catch(() => {});
@@ -749,7 +750,7 @@ class MonitorView
   }
 
   // ── History ──
-  private async initialize(work: kit.Work) {
+  private async initialize(work: Work) {
     if (this.traces) return;
     if (!this.setup) {
       const control = new AbortController();

@@ -1,5 +1,4 @@
-import { failure } from '@latkit/model';
-import { kit } from '@latkit/gpu';
+import { Work, failure } from '@latkit/model';
 import type { Point, RouteEnd } from './data.js';
 import type { Scene, Vertex, Rect, End } from './scene.js';
 import type { Limits } from './options.js';
@@ -320,7 +319,7 @@ export async function geometry(
   limits: Required<Limits>,
   signal: AbortSignal,
   previous?: Scene,
-  work: kit.Work = new kit.Work(signal, limits.layoutMs),
+  work: Work = new Work(signal, limits.layoutMs),
 ): Promise<void> {
   scene.portSizePx = options.portSizePx;
   scene.bytes -= scene.routeBytes;

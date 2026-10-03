@@ -41,7 +41,6 @@ describe('public contract and allocation boundaries', () => {
         'resolveLimits',
         'resolveViewStyle',
         'Attachments',
-        'Work',
         'rendererOf',
         'gpuOf',
         'hold',

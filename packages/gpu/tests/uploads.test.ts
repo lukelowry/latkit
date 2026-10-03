@@ -301,6 +301,21 @@ describe('mutable and frame-local buffers', () => {
     await gpu.idle();
     expect(observed).toEqual([1, 2, 3]);
     expect(fake.queue.submit).toHaveBeenCalledTimes(1);
+    // One buffer holds the frame's uniforms, written once; the next frame reuses it.
+    const uniformBuffers = () =>
+      fake.native.createBuffer.mock.calls.filter(([d]) => d.label === 'frame uniforms').length;
+    expect(uniformBuffers()).toBe(1);
+    const writes = fake.queue.writeBuffer.mock.calls.length;
+    await gpu.render({
+      timeMs: 1,
+      views: [4, 5].map((value) => ({ renderer: make(value), target: target(fake.device) })),
+    });
+    await gpu.idle();
+    expect(observed).toEqual([1, 2, 3, 4, 5]);
+    expect(uniformBuffers()).toBe(1);
+    expect(fake.queue.writeBuffer.mock.calls.length - writes).toBe(1);
+    // The frame's uniform buffer returns to the pool, which trim empties.
+    gpu.trim();
     expect(gpu.stats().gpuBytes).toBe(0);
     gpu.destroy();
   });

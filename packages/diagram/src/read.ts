@@ -1,4 +1,5 @@
 import {
+  Work,
   failure,
   assertIndex,
   bitAt,
@@ -217,7 +218,7 @@ export async function readScene(
   options: Style,
   limits: Required<Limits>,
   measure: Measure,
-  work: kit.Work = new kit.Work(reader.signal, limits.layoutMs),
+  work: Work = new Work(reader.signal, limits.layoutMs),
 ): Promise<Scene> {
   const check = () => work.check();
   const scene: Scene = {

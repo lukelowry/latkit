@@ -1,7 +1,7 @@
-import { failure, type MemoryEntry, type Memory } from '@latkit/model';
+import { interruptible, failure, type MemoryEntry, type Memory } from '@latkit/model';
 import { BufferData } from '../memory/buffer-data.js';
 import { distanceField } from './distance-field.js';
-import { integer, interruptible } from '../error.js';
+import { integer } from '../error.js';
 import type { Images } from '../memory/images.js';
 import type { Textures, TextureResource } from '../memory/textures.js';
 import { createTextRasterizer } from './rasterizer.js';

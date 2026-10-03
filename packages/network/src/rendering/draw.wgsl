@@ -47,7 +47,7 @@ fn hidden()->Varying { var out:Varying;out.position=vec4f(2.0,2.0,2.0,1.0);retur
   var interval=vec2f(0.0,1.0);var split=0u;var phase=0.0;var primitive=i;
   if(NETWORK_CURVES){let instance=curveInstances[i];primitive=instance.x;interval=vec2f(bitcast<f32>(instance.y),bitcast<f32>(instance.z));split=instance.w&3u;phase=bitcast<f32>(instance.w&0xfffffffcu);}
   let segment=segments[primitive];
-  if(item.z>0u){phase+=dashPhases[primitive];}
+  var prefix=0.0;if(item.z>0u){prefix=dashPhases[primitive];}
   let ab=segment.x*5u;let bb=segment.y*5u;let es=segment.z*2u;
   var p=a[ab];var q=b[bb];let ai=a[ab+3u];let bi=b[bb+3u];let info=styles[es+1u];
   if(a[ab+4u].w<0.5||b[bb+4u].w<0.5||info.w<0.5){return hidden();}
@@ -63,6 +63,8 @@ fn hidden()->Varying { var out:Varying;out.position=vec4f(2.0,2.0,2.0,1.0);retur
   let halo=select(select(0.0,u.halo.z,f==1u),u.halo.w,f==2u);
   let width=u.style.y+halo;
   let sa=screen(p);let sb=screen(q);let delta=sb-sa;let lengthPx=max(0.001,length(delta));
+  // Earlier segments of a dashed edge, in world units, at this piece's own screen scale.
+  phase+=prefix*lengthPx/max(length(wb-wa)*(clipping.y-clipping.x),0.000001);
   let dir=delta/lengthPx;let perpendicular=vec2f(-dir.y,dir.x);let c=corner(v);
   let t=(c.x+1.0)*0.5;let offset=(dir*c.x+perpendicular*c.y)*width;
   var pos=mix(p,q,t);

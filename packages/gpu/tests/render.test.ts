@@ -63,6 +63,8 @@ describe('frame ownership', () => {
       }),
     ).rejects.toThrow('preparation failed');
     expect(fake.queue.submit).not.toHaveBeenCalled();
+    // The frame's uniform buffer returns to the pool, which trim empties.
+    gpu.trim();
     expect(gpu.stats().gpuBytes).toBe(0);
     gpu.destroy();
   });

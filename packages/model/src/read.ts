@@ -39,6 +39,7 @@ import {
 } from './columns.js';
 import { blockBuffers, blockByteLength } from './buffers.js';
 import { failure } from './error.js';
+import { yieldTask } from './work.js';
 import { IdIndex } from './ids.js';
 import { validateQuery, checkSampleWindow } from './validation/query.js';
 import { BLOCK_BYTES } from './query.js';
@@ -846,7 +847,7 @@ async function* aggregate(
       );
   for (const block of input) {
     if (performance.now() - yieldedAt > 8) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await yieldTask();
       yieldedAt = performance.now();
     }
     signal?.throwIfAborted();
@@ -947,7 +948,7 @@ async function* envelope(
       bound,
     )) {
       if (performance.now() - yieldedAt > 8) {
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await yieldTask();
         yieldedAt = performance.now();
       }
       signal?.throwIfAborted();

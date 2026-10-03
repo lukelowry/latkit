@@ -1,4 +1,5 @@
 import {
+  interruptible,
   failure,
   createMemory,
   createReader,
@@ -17,7 +18,8 @@ import { Images } from './memory/images.js';
 import { TextAtlas } from './text/atlas.js';
 import type { TextInput, TextMetrics, TextOptions } from './text/text.js';
 import { Allocator } from './memory/allocation.js';
-import { integer, interruptible } from './error.js';
+import { integer } from './error.js';
+import { Uniforms } from './frame/uniforms.js';
 import { Textures, type TextureResource } from './memory/textures.js';
 import { Uploader } from './fields/upload.js';
 
@@ -115,6 +117,7 @@ class Owner implements Gpu {
   private readonly text: TextAtlas;
   private readonly textures: Textures;
   private readonly buffers: Buffers;
+  private readonly uniforms: Uniforms;
   private readonly stopped = new AbortController();
   private readonly pending = new Set<Promise<void>>();
   private readonly modules = new Map<
@@ -155,11 +158,13 @@ class Owner implements Gpu {
       options.text,
     );
     this.textLayout = this.text.layout;
+    this.uniforms = new Uniforms(device, this.memory);
     this.frames = {
       device,
       reader: this.reader,
       memory: this.memory,
       uploader,
+      uniforms: this.uniforms,
       colormaps,
       text: this.text,
       images,
@@ -288,12 +293,14 @@ class Owner implements Gpu {
     await Promise.all([...this.pending]);
   }
   trim(): void {
+    this.uniforms.trim();
     this.memory.trim();
   }
   private stop(reason: unknown): void {
     if (this.stopped.signal.aborted) return;
     this.stopped.abort(reason);
     this.reader.destroy();
+    this.uniforms.destroy();
     this.memory.destroy();
     this.modules.clear();
   }

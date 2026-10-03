@@ -1,4 +1,4 @@
-import { failure, isFailure, sameItem, type FieldValues } from '@latkit/model';
+import { Work, failure, isFailure, sameItem, type FieldValues } from '@latkit/model';
 import {
   kit,
   type Gpu,
@@ -530,7 +530,7 @@ class DiagramView
     const compiling = this.framePipelines(frame);
     void compiling.catch(() => {});
     const { data, style, limits, layout } = this.resolved,
-      work = new kit.Work(frame.signal, limits.layoutMs),
+      work = new Work(frame.signal, limits.layoutMs),
       revision = this.revision,
       motion = !this.reducedMotion,
       at = this.resolved.sampled ? frame.at : undefined;

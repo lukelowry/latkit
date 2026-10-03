@@ -10,7 +10,7 @@ import { validateQuery } from '../validation/query.js';
 import { validateSchema } from '../validation/schema.js';
 import type { Keys } from './keys.js';
 import type { Entry, Memory } from '../memory.js';
-import { interruptible } from './signal.js';
+import { interruptible } from '../work.js';
 
 interface Chunk {
   value: QueryBlock;

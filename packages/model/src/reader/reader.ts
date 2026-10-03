@@ -7,7 +7,7 @@ import { Blocks } from './blocks.js';
 import { Fields, type FieldScope } from './fields.js';
 import { Keys } from './keys.js';
 import { Memory, type Entry, type MemoryStats } from '../memory.js';
-import { interruptible } from './signal.js';
+import { interruptible } from '../work.js';
 import type { ExtentRequest, FieldsBlock, FieldsRequest } from './types.js';
 
 export interface ReaderOptions {

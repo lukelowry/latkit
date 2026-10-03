@@ -1,4 +1,4 @@
-import { failure, type FieldValues, type RequestOptions } from '@latkit/model';
+import { Work, failure, type FieldValues, type RequestOptions } from '@latkit/model';
 import { kit, type Gpu } from '@latkit/gpu';
 import { expandedData, type Point } from './data.js';
 import type { DiagramConfig } from './diagram.js';
@@ -87,7 +87,7 @@ export async function arrange(
     style = resolveStyle(config, kit.resolveViewStyle(config));
   const reader = gpu.reader.open({ signal: options.signal, at: config.at ?? undefined });
   try {
-    const work = new kit.Work(reader.signal, limits.layoutMs);
+    const work = new Work(reader.signal, limits.layoutMs);
     const scene = await readScene(
       data,
       reader,
@@ -123,7 +123,7 @@ export async function place(
   grid: number,
   signal: AbortSignal,
   previous?: Scene,
-  work: kit.Work = new kit.Work(signal),
+  work: Work = new Work(signal),
 ): Promise<void> {
   work.check();
   const { vertices } = scene,
