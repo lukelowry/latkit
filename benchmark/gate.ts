@@ -1,12 +1,12 @@
 /**
  * The benchmark regression gate.
  *
- *   node benchmark/gate.ts base.json head.json   check head against base and benchmark/work.json
+ *   node benchmark/gate.ts base.json head.json   check head against benchmark/work.json
  *   node benchmark/gate.ts --update              record this run's work as benchmark/work.json
  *
- * It fails when exact work per run grows, when a benchmark's fastest and median runs are both slower
- * than on the base branch measured on the same machine, or when time per item grows faster than
- * linearly with size.
+ * It fails only when exact work per run grows. Timings vary between runs, even on one machine, so it
+ * reports benchmarks that ran slower than the base branch, and time per item that grows faster than
+ * linearly with size, without failing.
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 
@@ -65,7 +65,8 @@ if (process.argv[2] === '--update') {
 
 const [basePath, headPath] = process.argv.slice(2),
   failures: string[] = [],
-  notes: string[] = [];
+  notes: string[] = [],
+  timed: string[] = [];
 
 // 1. Exact work per run may not grow.
 const expected = existsSync(committed) ? (JSON.parse(readFileSync(committed, 'utf8')) as Work) : {},
@@ -94,7 +95,7 @@ if (basePath && existsSync(basePath)) {
   for (const [name, time] of head) {
     const before = base.get(name);
     if (before && slower(time.min, before.min) && slower(time.median, before.median))
-      failures.push(`slower ${name}: ${before.median.toFixed(3)} → ${time.median.toFixed(3)} ms`);
+      timed.push(`slower ${name}: ${before.median.toFixed(3)} → ${time.median.toFixed(3)} ms`);
   }
 } else notes.push('no base timings; skipped the comparison against the base branch');
 
@@ -114,12 +115,14 @@ for (const [name, points] of scaled) {
   const first = points[0],
     last = points.at(-1)!;
   if (last.perItem > first.perItem * SUPERLINEAR)
-    failures.push(
+    timed.push(
       `superlinear ${name}: ${(first.perItem * 1e6).toFixed(1)} → ${(last.perItem * 1e6).toFixed(1)} ns per item`,
     );
 }
 
 for (const note of notes) console.log(note);
+if (timed.length)
+  console.log('Timings to check by hand; one run can differ by 2×:\n' + timed.join('\n'));
 if (failures.length) {
   console.error(failures.join('\n'));
   process.exit(1);

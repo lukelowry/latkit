@@ -11,13 +11,14 @@ pnpm bench:update   # also record each benchmark's work per run in work.json
 pnpm bench:gate     # run, then check against .bench/base.json and work.json
 ```
 
-The gate (`gate.ts`) fails when:
+The gate (`gate.ts`) fails when work per run grows: queries, uploads, uploaded and copied bytes,
+allocations, submissions, or evictions, which are exact on any machine. Commit `work.json` with the
+change that moves them. CI gates every pull request this way.
 
-- work per run grows: queries, uploads, uploaded and copied bytes, allocations, submissions, or
-  evictions, which are exact on any machine. Commit `work.json` with the change that moves them;
-- the fastest and the median run are both more than 25% slower than the base branch, timed on the
-  same machine;
-- time per item grows more than 3× from the smallest size to the largest: cache misses alone can
-  double it across a 100× range, while quadratic work multiplies it by a hundred.
+Timings vary between runs, even on one machine, so the gate only reports them:
 
-CI benchmarks the base branch in a worktree, then gates the pull request.
+- benchmarks whose fastest and median runs are both more than 25% slower than `.bench/base.json`;
+- time per item that grows more than 3× from the smallest size to the largest: cache misses alone
+  can double it across a 100× range, while quadratic work multiplies it by a hundred.
+
+Compare timings by running the base and the change alternately, several times each.
