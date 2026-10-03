@@ -291,7 +291,9 @@ export async function show() {
   await render();
   const residentUploadedBytes = gpu.stats().uploadedBytes - before.uploadedBytes;
   if (residentUploadedBytes !== uniformBytes || gpu.stats().stagedBytes !== before.stagedBytes)
-    throw new Error('Unchanged fixture reuploaded data or text');
+    throw new Error(
+      `Unchanged fixture reuploaded data or text: ${residentUploadedBytes} bytes for ${uniformBytes} of uniforms, ${gpu.stats().stagedBytes - before.stagedBytes} staged`,
+    );
   // Read back real text pixels from the first canvas before handing control to the user.
   const pixels = gpu.buffer({
     size: 256 * 200,

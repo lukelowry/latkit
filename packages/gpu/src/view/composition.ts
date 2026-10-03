@@ -26,7 +26,6 @@ import {
   type ViewEvents,
 } from './view.js';
 
-type Region = readonly [x: number, y: number, width: number, height: number];
 export interface CompositionConfig extends ViewConfig {
   /**
    * Each view in a normalized region, top-left origin; later views draw over earlier ones. Pointer,
@@ -34,11 +33,12 @@ export interface CompositionConfig extends ViewConfig {
    */
   readonly views: readonly {
     readonly view: View<ViewConfig, ViewEvents>;
-    readonly region: Region;
+    readonly region: readonly [x: number, y: number, width: number, height: number];
   }[];
   /** Behind every region; `viewStyle.background` by default. */
   readonly background?: RGBA;
 }
+type Region = CompositionConfig['views'][number]['region'];
 
 /** Several views presented as one. */
 export type Composition = View<CompositionConfig>;

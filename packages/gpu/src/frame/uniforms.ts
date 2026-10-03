@@ -50,7 +50,9 @@ export class Uniforms {
   begin(): FrameUniforms {
     const chunks: Chunk[] = [];
     let current: Chunk | undefined,
-      released = false;
+      released = false,
+      // What views asked to upload; the alignment gaps between uniforms are not theirs.
+      written = 0;
     return {
       add: (data) => {
         const size = data.byteLength;
@@ -64,14 +66,15 @@ export class Uniforms {
         }
         current.bytes.set(new Uint8Array(data.buffer, data.byteOffset, size), offset);
         current.used = offset + size;
+        written += size;
         return { buffer: current.buffer, offset, size };
       },
       flush: () => {
         for (const chunk of chunks) {
           this.device.queue.writeBuffer(chunk.buffer, 0, chunk.bytes, 0, align(chunk.used, 4));
           this.memory.uploads++;
-          this.memory.uploadedBytes += chunk.used;
         }
+        this.memory.uploadedBytes += written;
       },
       release: () => {
         if (released) return;
