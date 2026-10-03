@@ -118,10 +118,11 @@ const FOCUS = new Set<keyof Style>(['selectedColor', 'selectedWidthPx']);
 /** A replacement for a new size waits until resizing pauses. */
 const RESIZE_MS = 120;
 interface Resolved {
-  readonly config: MonitorConfig;
+  readonly config: Omit<MonitorConfig, 'camera'>;
   readonly limits: Required<Limits>;
 }
-function resolve(config: MonitorConfig): Resolved {
+/** The config's options, checked; the camera lives on `camera`. */
+function resolve(config: Omit<MonitorConfig, 'camera'>): Resolved {
   for (const key of Object.keys(config)) if (!KEYS.has(key)) fail('Unknown monitor option: ' + key);
   validateData(monitorData(config));
   resolveStyle(config, viewStyle);
@@ -227,8 +228,28 @@ class Budget {
     return this.segments <= 0 || this.bytes <= 0 || this.blocks <= 0;
   }
 }
+/** History drawn for one output: the image shown, its replacement, and the selected rows. */
+interface Surface {
+  front?: Image;
+  back?: Image;
+  focus?: Image;
+  /** The selection the focus image draws. */
+  focusFor: readonly DataHit[];
+  /** The plot size and when it last changed, to wait out a resize. */
+  sized: { width: number; height: number; at: number };
+  /** Whether its images hold every frame their windows show. */
+  complete: boolean;
+}
+function surface(): Surface {
+  return { focusFor: [], sized: { width: 0, height: 0, at: 0 }, complete: false };
+}
+function destroySurface(value: Surface): void {
+  for (const image of new Set([value.front, value.back, value.focus])) destroyImage(image);
+  value.front = value.back = value.focus = undefined;
+}
 /** What a prepared frame draws, and how far each image gets once it is submitted. */
 interface Prepared {
+  readonly surface: Surface;
   readonly pipeline: Pipelines;
   readonly screen: Screen;
   readonly paint: Map<Image, Draw[]>;
@@ -250,8 +271,6 @@ class MonitorView
   extends kit.BaseItemView<MonitorConfig, MonitorEvents, DataHit, Reading, Camera, Records, Merged>
   implements Monitor
 {
-  protected readonly framed = ['values'] as const;
-  protected readonly inputMode = 'inspect';
   private data: MonitorData;
   private style: Style;
   private limits: Required<Limits>;
@@ -265,18 +284,16 @@ class MonitorView
   /** Changes whenever history pixels must be drawn again; focus has its own. */
   private generation = 0;
   private focusGeneration = 0;
-  /** The image on screen, its replacement, and the selected rows. */
-  private front?: Image;
-  private back?: Image;
-  private focus?: Image;
-  private focusFor: readonly DataHit[] = [];
-  /** The plot size and when it last changed, to wait out a resize. */
-  private sized = { width: 0, height: 0, at: 0 };
+  /** The history the canvas shows. */
+  private readonly presentedHistory = surface();
+  /** The history exports draw, such as video, kept until the view presents again. */
+  private exportedHistory?: Surface;
+  /** The history of the latest prepared frame, which `pending` and `animating` follow. */
+  private current = this.presentedHistory;
   private resizeTimer?: ReturnType<typeof setTimeout>;
   private drawnShade: Shade | null;
   private parameters = new Float32Array(64);
   private animate = false;
-  private complete = false;
   private pipeline?: Pipelines;
   private compiling?: {
     readonly format: GPUTextureFormat;
@@ -313,12 +330,14 @@ class MonitorView
   private readonly nearest: kit.HoverSearch<Reading> = (point, radius, { signal }) =>
     this.shown ? this.read(point, radius, 1, signal).then((hits) => hits[0] ?? null) : null;
   constructor(gpu: Gpu, config: MonitorConfig) {
-    super(
-      gpu,
-      config,
-      { records: ['traces'], merged: ['camera', 'input', 'limits'], fields: FIELD_OPTIONS },
-      VIEW_DEFAULTS,
-    );
+    super(gpu, config, {
+      records: ['traces'],
+      merged: ['camera', 'input', 'limits'],
+      fields: FIELD_OPTIONS,
+      framed: ['values'],
+      modes: ['inspect', 'navigate', 'none'],
+      style: VIEW_DEFAULTS,
+    });
     if (!config.camera?.window) fail('A monitor needs a camera window');
     this.limits = resolve(this.config).limits;
     this.style = resolveStyle(this.config, this.viewStyle);
@@ -332,8 +351,8 @@ class MonitorView
       ...super.stats(),
       rows: this.traces?.reduce((n, trace) => n + trace.count, 0) ?? 0,
       historyBytes: this.historyBytes(),
-      visible: !!this.front,
-      refining: !this.complete,
+      visible: !!this.presentedHistory.front,
+      refining: !this.presentedHistory.complete,
       pickingBytes: this.pickingBytes,
       drawCalls: this.drawCalls,
     };
@@ -420,8 +439,12 @@ class MonitorView
     const capacity = Math.max(1, Math.floor(this.limits.pickingBytes / READING_BYTES));
     return this.read(point, radiusPx, Math.min(options.limit, capacity), options.signal);
   }
-  protected compileShade(shade: Shade | null, format: GPUTextureFormat): Promise<unknown> {
-    return pipelines(this.gpu, format, this.viewStyle.msaa, shade?.wgsl);
+  protected compileShade(
+    shade: Shade | null,
+    format: GPUTextureFormat,
+    msaa: 1 | 4,
+  ): Promise<unknown> {
+    return pipelines(this.gpu, format, msaa, shade?.wgsl);
   }
   protected listen(canvas: HTMLCanvasElement, input: kit.CanvasInput): void {
     listen(canvas, input, this.gestures);
@@ -475,10 +498,10 @@ class MonitorView
   protected get pending(): Promise<void> | undefined {
     if (this.closed || this.error) return undefined;
     if (this.setup) return this.setup;
-    return this.complete ? undefined : Promise.resolve();
+    return this.current.complete ? undefined : Promise.resolve();
   }
   protected get animating(): boolean {
-    return super.animating || (!this.closed && (!this.complete || this.animate));
+    return super.animating || (!this.closed && (!this.current.complete || this.animate));
   }
   protected async prepare(frame: kit.Preparation): Promise<void> {
     this.live();
@@ -534,24 +557,23 @@ class MonitorView
         values: camera.values,
         generation: this.generation,
       };
-    if (this.sized.width !== wanted.width || this.sized.height !== wanted.height)
-      this.sized = { width: wanted.width, height: wanted.height, at: frame.timeMs };
+    // Exports draw their own history, so they never replace what the view presents.
+    const history = frame.presented ? this.presentedHistory : (this.exportedHistory ??= surface());
+    this.current = history;
+    if (history.sized.width !== wanted.width || history.sized.height !== wanted.height)
+      history.sized = { width: wanted.width, height: wanted.height, at: frame.timeMs };
     // A replacement draws behind the shown image; a new size waits until resizing pauses.
-    if (sameTransform(this.front, wanted)) {
-      destroyImage(this.back);
-      this.back = undefined;
-    } else if (!sameTransform(this.back, wanted) && this.resized(wanted, frame)) {
-      destroyImage(this.back);
-      this.back = undefined;
-      this.back = this.makeImage(wanted);
+    if (sameTransform(history.front, wanted)) {
+      destroyImage(history.back);
+      history.back = undefined;
+    } else if (!sameTransform(history.back, wanted) && this.resized(history, wanted, frame)) {
+      destroyImage(history.back);
+      history.back = undefined;
+      history.back = this.makeImage(wanted);
     }
     const selection = this.selection;
-    if (selection !== this.focusFor) {
-      this.focusFor = selection;
-      this.focusGeneration++;
-    }
     // The selection draws over the history being drawn, so it follows that image, not the request.
-    const basis = this.back ?? this.front ?? wanted;
+    const basis = history.back ?? history.front ?? wanted;
     const focusWanted: Transform = {
       width: basis.width,
       height: basis.height,
@@ -560,13 +582,14 @@ class MonitorView
       generation: this.focusGeneration,
     };
     if (!selection.length) {
-      destroyImage(this.focus);
-      this.focus = undefined;
-    } else if (!sameTransform(this.focus, focusWanted)) {
-      destroyImage(this.focus);
-      this.focus = undefined;
-      this.focus = this.makeImage(focusWanted);
+      destroyImage(history.focus);
+      history.focus = undefined;
+    } else if (selection !== history.focusFor || !sameTransform(history.focus, focusWanted)) {
+      destroyImage(history.focus);
+      history.focus = undefined;
+      history.focus = this.makeImage(focusWanted);
     }
+    history.focusFor = selection;
     const effect = this.gpu.device.createBindGroup({
       layout: pipeline.shade,
       entries: [
@@ -591,14 +614,14 @@ class MonitorView
       Math.max(1, Math.floor(this.gpu.budget.entries / 64)),
     );
     fill: for (const target of [
-      this.front?.generation === this.generation ? this.front : undefined,
-      this.focus,
-      this.back,
+      history.front?.generation === this.generation ? history.front : undefined,
+      history.focus,
+      history.back,
     ])
       if (target)
         for (const trace of traces) {
-          const only = target === this.focus ? rows(trace) : undefined;
-          if (target === this.focus && !only) continue;
+          const only = target === history.focus ? rows(trace) : undefined;
+          if (target === history.focus && !only) continue;
           await this.fill(frame, pipeline, target, trace, only, effect, budget, draws, advanced);
           if (budget.spent) break fill;
         }
@@ -606,7 +629,9 @@ class MonitorView
     frame.signal.throwIfAborted();
     // A replacement shows in the frame that completes it.
     const display =
-      this.back && complete(this.back, traces, advanced) ? this.back : (this.front ?? this.back!);
+      history.back && complete(history.back, traces, advanced)
+        ? history.back
+        : (history.front ?? history.back!);
     const key = JSON.stringify([frame.viewport, camera.window, camera.values, this.style]);
     if (!this.layout || key !== this.layoutKey) {
       this.layout = await axes(
@@ -621,13 +646,13 @@ class MonitorView
     }
     if (this.historyBytes() > this.limits.historyBytes)
       throw new GpuError('resource-limit', 'Monitor history exceeds historyBytes');
-    for (const value of [display, this.focus, ...draws.keys()]) if (value) enroll(frame, value);
+    for (const value of [display, history.focus, ...draws.keys()]) if (value) enroll(frame, value);
     const screen = await prepareScreen(
       this.gpu,
       frame,
       pipeline,
       display,
-      this.focus,
+      history.focus,
       camera.window,
       camera.values,
       this.layout,
@@ -637,6 +662,7 @@ class MonitorView
     frame.signal.throwIfAborted();
     this.hoverFrame(frame, this.nearest);
     this.prepared = {
+      surface: history,
       pipeline,
       screen,
       paint: draws,
@@ -668,7 +694,8 @@ class MonitorView
     if (!chunk && through !== undefined && through >= end - 1) return;
     const area = plot(frame.viewport, this.style),
       out = draws.get(target) ?? [],
-      focus = target === this.focus;
+      // Only a focus image draws a selection of rows.
+      focus = rows !== undefined;
     draws.set(target, out);
     const read = (offset: number, count: number) =>
       frame.reader.fields({
@@ -742,43 +769,52 @@ class MonitorView
     for (const [target, draws] of prepared.paint)
       calls += paint(frame, prepared.pipeline, target, draws);
     // A fresh image on screen with nothing drawn yet still clears.
-    for (const target of [this.front ?? this.back, this.focus])
+    const { surface: history } = prepared;
+    for (const target of [history.front ?? history.back, history.focus])
       if (target?.fresh && !prepared.paint.has(target)) paint(frame, prepared.pipeline, target, []);
     this.drawCalls = calls + composite(frame, prepared.pipeline, prepared.screen);
   }
-  protected submitted(): void {
+  protected submitted(frame: kit.FrameInfo): void {
     const prepared = this.prepared;
     if (!prepared) return;
     this.prepared = undefined;
-    for (const target of [...prepared.paint.keys(), this.front ?? this.back, this.focus])
+    const { surface: history } = prepared;
+    for (const target of [...prepared.paint.keys(), history.front ?? history.back, history.focus])
       if (target) target.fresh = false;
     for (const { target, trace, progress } of prepared.advanced)
       target.progress.set(trace, progress);
-    this.shown = prepared.shown;
     const traces = this.traces ?? [];
-    if (this.back && complete(this.back, traces)) {
-      destroyImage(this.front);
-      this.front = this.back;
-      this.back = undefined;
+    if (history.back && complete(history.back, traces)) {
+      destroyImage(history.front);
+      history.front = history.back;
+      history.back = undefined;
     }
-    if (!this.front && this.back) {
+    if (!history.front && history.back) {
       // The first image shows as it draws.
-      this.front = this.back;
-      this.back = undefined;
+      history.front = history.back;
+      history.back = undefined;
     }
-    this.complete =
-      !this.back &&
-      !!this.front &&
-      this.front.generation === this.generation &&
-      complete(this.front, traces) &&
-      (!this.focus || complete(this.focus, traces, [], (trace) => focused(this.focusFor, trace)));
+    history.complete =
+      !history.back &&
+      !!history.front &&
+      history.front.generation === this.generation &&
+      complete(history.front, traces) &&
+      (!history.focus ||
+        complete(history.focus, traces, [], (trace) => focused(history.focusFor, trace)));
+    // An exported frame leaves what pick and locate read.
+    if (!frame.presented) return;
+    this.shown = prepared.shown;
+    // Presenting again ends the exports, and the history they drew.
+    if (this.exportedHistory) destroySurface(this.exportedHistory);
+    this.exportedHistory = undefined;
   }
   protected release(): void {
     this.stop.abort(new DOMException('Monitor destroyed', 'AbortError'));
     if (this.resizeTimer !== undefined) clearTimeout(this.resizeTimer);
     this.inspection = undefined;
-    for (const value of new Set([this.front, this.back, this.focus])) destroyImage(value);
-    this.front = this.back = this.focus = undefined;
+    destroySurface(this.presentedHistory);
+    if (this.exportedHistory) destroySurface(this.exportedHistory);
+    this.exportedHistory = undefined;
     this.shown = undefined;
   }
 
@@ -813,8 +849,8 @@ class MonitorView
     if (this.error) throw this.error as Error;
   }
   /** Whether the plot size has held long enough to draw a replacement for it. */
-  private resized(wanted: Transform, frame: kit.Preparation): boolean {
-    const front = this.front;
+  private resized(history: Surface, wanted: Transform, frame: kit.Preparation): boolean {
+    const front = history.front;
     if (
       !front ||
       front.generation !== wanted.generation ||
@@ -824,7 +860,7 @@ class MonitorView
       front.values[1] !== wanted.values[1]
     )
       return true;
-    const waited = frame.timeMs - this.sized.at;
+    const waited = frame.timeMs - history.sized.at;
     if (waited >= RESIZE_MS) return true;
     if (this.resizeTimer === undefined)
       this.resizeTimer = setTimeout(() => {
@@ -846,11 +882,13 @@ class MonitorView
       );
     return image(this.gpu, transform, this.style.msaa);
   }
+  /** GPU memory the history images hold, the canvas's and any export's. */
   private historyBytes(): number {
-    return [this.front, this.back, this.focus].reduce(
-      (n, value) => n + (value ? imageBytes(value) : 0),
-      0,
-    );
+    let bytes = 0;
+    for (const history of [this.presentedHistory, this.exportedHistory])
+      for (const value of [history?.front, history?.back, history?.focus])
+        if (value) bytes += imageBytes(value);
+    return bytes;
   }
   /** Every recorded coordinate of every trace. */
   private recorded(): Domain | null {

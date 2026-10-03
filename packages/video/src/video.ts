@@ -4,7 +4,6 @@ import { VideoSample } from 'mediabunny';
 import { settings, timeline } from './timing.js';
 import { encoding } from './encoding.js';
 import { destination } from './output.js';
-import { observeLoss } from './loss.js';
 
 /** Positional writes. Bytes remain immutable after write resolves; the destination owns retention. */
 export interface VideoWrite {
@@ -44,7 +43,8 @@ export interface VideoResult {
 const active = new WeakSet<object>();
 /**
  * Record a view: one bounded pipeline of frame preparation, capture, encoding and destination
- * backpressure. The view's canvas pauses until the export settles.
+ * backpressure. The view's canvas pauses until the export settles; the export draws the view as it
+ * is and changes none of it.
  */
 export async function exportVideo(view: View, options: VideoOptions): Promise<VideoResult> {
   const gpu = kit.gpuOf(view),
@@ -54,9 +54,13 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
   options.signal?.throwIfAborted();
   active.add(view);
   const stop = new AbortController();
-  const signal = AbortSignal.any([stop.signal, ...(options.signal ? [options.signal] : [])]);
+  // A Gpu that stops, as on device loss, ends the export with its reason.
+  const signal = AbortSignal.any([
+    stop.signal,
+    gpu.signal,
+    ...(options.signal ? [options.signal] : []),
+  ]);
   const work = new kit.Work(signal);
-  const releaseLoss = observeLoss(gpu, stop);
   const error = (event: GPUUncapturedErrorEvent) => stop.abort(event.error);
   gpu.device.addEventListener('uncapturederror', error);
   let release: (() => void) | undefined;
@@ -94,7 +98,7 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
         completion: 'complete',
         signal,
         timeMs: frame.seconds * 1000,
-        views: [{ renderer, target: presentation, at, viewport }],
+        views: [{ renderer, target: presentation, at, viewport, presented: false }],
       });
       signal.throwIfAborted();
       const sample = new VideoSample(canvas, {
@@ -135,7 +139,6 @@ export async function exportVideo(view: View, options: VideoOptions): Promise<Vi
     await media?.cancel().catch(() => {});
     throw signal.aborted ? signal.reason : cause;
   } finally {
-    releaseLoss();
     presentation?.destroy();
     sink?.release();
     gpu.device.removeEventListener('uncapturederror', error);

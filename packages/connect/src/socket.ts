@@ -1,7 +1,15 @@
 import { failure } from '@latkit/model';
 import { deferred, errorOf, interrupt } from './core.js';
-import { subprotocol } from './frame.js';
-import type { Limits, WebSocketLike } from './types.js';
+import type { ConnectLimits, WebSocketLike } from './types.js';
+
+/** A WebSocket to exactly `url`, offering `subprotocol`. The platform turns HTTP(S) into WS(S). */
+export function dial(url: string | URL, subprotocol: string): WebSocketLike {
+  try {
+    return new WebSocket(url, subprotocol);
+  } catch (error) {
+    throw failure('invalid-input', errorOf(error).message);
+  }
+}
 
 /** Synchronous binary receive dispatch. All application queues live in Session. */
 export class Socket {
@@ -21,20 +29,25 @@ export class Socket {
     }
   };
   readonly #open = () => {
-    if (this.peer.protocol !== subprotocol) {
-      const error = failure('protocol', 'The peer must negotiate the latkit subprotocol.');
+    if (this.peer.protocol !== this.subprotocol) {
+      const error = failure(
+        'protocol',
+        `The peer must negotiate the ${this.subprotocol} subprotocol.`,
+      );
       this.ready.reject(error);
       this.ended(error);
     } else this.ready.resolve();
   };
-  readonly #end = () => {
-    const error = failure('disconnected', 'The model socket closed.');
+  /** The peer's close reason, when it gave one, says why: a server can turn a socket away with it. */
+  readonly #end = (event?: { readonly reason?: string }) => {
+    const error = failure('disconnected', event?.reason || 'The model socket closed.');
     this.ready.reject(error);
     if (!this.#stopped) this.ended(error);
   };
   constructor(
     private readonly peer: WebSocketLike,
-    private readonly getBounds: () => Limits,
+    private readonly subprotocol: string,
+    private readonly getBounds: () => ConnectLimits,
     private readonly receive: (bytes: Uint8Array) => void,
     private readonly ended: (error: Error) => void,
   ) {
@@ -46,7 +59,7 @@ export class Socket {
     if (peer.readyState === 1) queueMicrotask(this.#open);
     else if (peer.readyState > 1) queueMicrotask(this.#end);
   }
-  private get bounds(): Limits {
+  private get bounds(): ConnectLimits {
     return this.getBounds();
   }
   async waitForCapacity(bytes: number, signal: AbortSignal): Promise<void> {

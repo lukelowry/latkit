@@ -1,22 +1,13 @@
+/** Carry a model across a socket: one side connects it, the other accepts it, and either may dial. */
 export { connectModel } from './connect.js';
 export { acceptModel } from './accept.js';
 export type {
   AcceptOptions,
-  Command,
-  CommandContext,
   ConnectedModel,
   Connection,
+  ConnectLimits,
   ConnectOptions,
-  EncodedMonitorOptions,
-  EncodedPublication,
-  EncodedRunOptions,
-  Limits,
-  MonitorContext,
-  MonitorOptions,
-  Publication,
-  Publish,
-  RunOptions,
   WebSocketLike,
 } from './types.js';
-/** The binary wire codec, for gateways and other hosts. */
+/** The wire codec, for storage and gateways: frames, publications, and subprotocols. */
 export * as protocol from './protocol.js';

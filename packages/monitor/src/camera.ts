@@ -20,8 +20,6 @@ export const DEFAULT_CAMERA: Camera = Object.freeze({
 /** A valid, frozen camera of exactly the monitor's keys. */
 export function checkCamera(camera: Camera): Camera {
   if (typeof camera.fit !== 'boolean') fail('Invalid camera fit');
-  for (const key of Object.keys(camera))
-    if (key !== 'window' && key !== 'values' && key !== 'fit') fail('Unknown camera key: ' + key);
   return Object.freeze({
     window: domain(camera.window, 'coordinate window'),
     values: expanded(domain(camera.values, 'value domain')),

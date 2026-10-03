@@ -84,6 +84,7 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
       format: view.target.format,
       width: view.target.width,
       height: view.target.height,
+      presented: view.presented ?? true,
     };
   });
   for (const renderer of renderers) owner.busy.add(renderer);

@@ -279,7 +279,10 @@ it('rejects invalid options atomically and falls back from the globe for Cartesi
   expect(() => network.set({ edgeWidthPx: NaN })).toThrow();
   expect(() => network.set({ motion: 'broken' as 'auto' })).toThrow();
   expect(() => network.set({ unknown: 1 } as never)).toThrow('Unknown network option');
+  expect(() => network.set({ camera: { zoom: 2 } as never })).toThrow('Unknown camera option');
+  expect(() => network.set({ input: 'edit' })).toThrow('Unsupported input mode');
   expect(network.config).toBe(config);
+  expect(network.camera).not.toHaveProperty('zoom');
   network.set({ camera: { projection: 'globe' } });
   expect(network.camera.projection).toBe('globe');
   await gpu.render({
@@ -290,6 +293,42 @@ it('rejects invalid options atomically and falls back from the globe for Cartesi
   expect(network.camera.projection).toBe('flat');
   network.destroy();
   expect(() => network.set({ lines: false })).toThrow('destroyed');
+  gpu.destroy();
+});
+
+it('exports frames without moving what pick, locate, and the orbit see', async () => {
+  const { data, source } = fixture(),
+    gpu = await createGpu({ device: device().device });
+  const network = createNetwork(gpu, { ...data, hover: 'off' }),
+    surface = target(gpu),
+    vertex = { kind: 'vertex', source: source.data, index: source.index('node'), row: 12 } as const;
+  const camera = vi.fn();
+  await gpu.render({
+    timeMs: 0,
+    views: [{ renderer: kit.rendererOf(network), target: surface, at: 0 }],
+  });
+  const point = network.locate(vertex)!;
+  network.on('camera', camera);
+  network.set({ camera: { orbit: true } });
+  const turned = network.camera;
+  await gpu.render({
+    timeMs: 5000,
+    views: [
+      {
+        renderer: kit.rendererOf(network),
+        target: surface,
+        at: 1,
+        viewport: { width: 200, height: 600, pixelRatio: 1 },
+        presented: false,
+      },
+    ],
+  });
+  await Promise.resolve();
+  expect(network.locate(vertex)).toEqual(point);
+  expect(network.camera).toBe(turned);
+  expect(camera).not.toHaveBeenCalled();
+  expect((await network.pick(point))[0]).toMatchObject({ row: 12 });
+  network.destroy();
   gpu.destroy();
 });
 
@@ -568,7 +607,7 @@ it('builds hit-test indexes in the background once positions hold, within pickin
   await vi.advanceTimersByTimeAsync(1);
   expect(build).toHaveBeenCalledTimes(4);
   expect(network.stats().pickingBytes).toBe(full);
-  // An explicit pick builds at once, leaving nothing for the background.
+  // An explicit pick starts the build at once and waits for it, leaving nothing for later.
   network.set({ vertices: { node: { position: 'location' } } });
   await render();
   expect((await network.pick(point))[0]).toMatchObject({ row: 12 });

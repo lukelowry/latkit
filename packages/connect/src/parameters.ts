@@ -3,7 +3,6 @@ import type {
   Arguments,
   CommandDescription,
   FieldSelection,
-  InputValue,
   Parameter,
   Parameters,
   Schema,
@@ -158,7 +157,7 @@ export function argumentsOf(
 /** Files are bounded command attachments, not arbitrary serializable stream objects. */
 export async function encodeArguments(
   parameters: Parameters,
-  values: Readonly<Record<string, InputValue>>,
+  values: Readonly<Record<string, unknown>>,
   maxBytes: number,
   signal: AbortSignal,
 ): Promise<{ values: Record<string, unknown>; chunks: Uint8Array[] }> {

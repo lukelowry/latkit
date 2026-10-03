@@ -13,7 +13,7 @@ import { decode, Op, prepare } from './frame.js';
 import type { Frame, Opcode, Plan } from './frame.js';
 import { Socket } from './socket.js';
 import { Outbound } from './outbound.js';
-import type { Limits, WebSocketLike } from './types.js';
+import type { ConnectLimits, WebSocketLike } from './types.js';
 
 const ACK_BYTES = prepare(
   Op.ack,
@@ -39,7 +39,7 @@ export class Session {
   readonly closed = this.#done.promise;
   readonly socket: Socket;
   readonly outbound: Outbound;
-  bounds: Limits;
+  bounds: ConnectLimits;
   onControl: (frame: Frame) => void = () => {
     throw failure('protocol', 'Unexpected control message.');
   };
@@ -53,13 +53,15 @@ export class Session {
   #cleanup?: Promise<void>;
   #external?: AbortSignal;
   readonly #abort = () => this.end();
+  /** A session over `peer`, which must have negotiated `subprotocol`. */
   constructor(
     peer: WebSocketLike,
-    options: { limits?: Partial<Limits>; signal?: AbortSignal } = {},
+    options: { subprotocol: string; limits?: Partial<ConnectLimits>; signal?: AbortSignal },
   ) {
     this.bounds = limits(options.limits);
     this.socket = new Socket(
       peer,
+      options.subprotocol,
       () => this.bounds,
       (bytes) => this.receive(bytes),
       (error) => this.end(error),

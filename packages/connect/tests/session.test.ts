@@ -2,24 +2,24 @@ import { expect, it, vi } from 'vitest';
 import { Session } from '../src/session.js';
 import { defaults } from '../src/core.js';
 import { Op, decode, prepare } from '../src/frame.js';
-import type { Limits, WebSocketLike } from '../src/types.js';
+import type { ConnectLimits, WebSocketLike } from '../src/types.js';
 import { batch, schema, pause } from './fixture.js';
 import { preparePublication } from '../src/columns.js';
 
 class Socket implements WebSocketLike {
   readyState = 1;
-  protocol = 'latkit';
+  protocol = 'latkit.connect';
   binaryType = 'arraybuffer';
   bufferedAmount = 0;
   sent: Uint8Array[] = [];
-  listeners = new Map<string, Set<(event: { data: unknown }) => void>>();
+  listeners = new Map<string, Set<(event: { data: unknown; reason?: string }) => void>>();
   peer?: Socket;
-  addEventListener(type: string, listener: (event: { data: unknown }) => void) {
+  addEventListener(type: string, listener: (event: { data: unknown; reason?: string }) => void) {
     let set = this.listeners.get(type);
     if (!set) this.listeners.set(type, (set = new Set()));
     set.add(listener);
   }
-  removeEventListener(type: string, listener: (event: { data: unknown }) => void) {
+  removeEventListener(type: string, listener: (event: { data: unknown; reason?: string }) => void) {
     this.listeners.get(type)?.delete(listener);
   }
   send(data: Uint8Array<ArrayBuffer>) {
@@ -36,7 +36,7 @@ class Socket implements WebSocketLike {
     queueMicrotask(() => this.emit('close'));
   }
 }
-function sessions(overrides: Partial<Limits> = {}) {
+function sessions(overrides: Partial<ConnectLimits> = {}) {
   const a = new Socket(),
     b = new Socket();
   a.peer = b;
@@ -54,8 +54,8 @@ function sessions(overrides: Partial<Limits> = {}) {
   return {
     a,
     b,
-    producer: new Session(a, { limits: bounds }),
-    host: new Session(b, { limits: bounds }),
+    producer: new Session(a, { subprotocol: 'latkit.connect', limits: bounds }),
+    host: new Session(b, { subprotocol: 'latkit.connect', limits: bounds }),
   };
 }
 it('pipelines up to credit, holds one pending publish, and acknowledges consumption once', async () => {
@@ -136,7 +136,7 @@ it('orders bounded controls when the socket is stalled and wakes on disconnect',
 it('rejects malformed messages and missing negotiation', async () => {
   const socket = new Socket();
   socket.protocol = '';
-  const session = new Session(socket);
+  const session = new Session(socket, { subprotocol: 'latkit.connect' });
   await expect(session.closed).rejects.toThrow(/subprotocol/);
   const p = sessions();
   const rejected = expect(p.host.closed).rejects.toThrow();

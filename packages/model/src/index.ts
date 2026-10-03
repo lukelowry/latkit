@@ -1,4 +1,4 @@
-/** Immutable data, bounded local reads, and portable command descriptions. */
+/** Immutable data, bounded local reads, portable command descriptions, and the Model contract. */
 export type {
   Arguments,
   CommandDescription,
@@ -90,9 +90,10 @@ export type { ReadResult, SampleLocation } from './read.js';
 export { createData, appendData } from './assemble.js';
 export { textColumn, sliceColumn, sliceSamples, copyBuffers } from './columns.js';
 
+export type { Model, Command, MonitorContext, CommandContext, Publication } from './model.js';
 export { validateBatch } from './validation/batch.js';
 export { validateSelection } from './validation/selection.js';
-export { selectBatches } from './select.js';
+export { selectBatches, staticFields, sampledFields } from './select.js';
 export { DEFAULT_BLOCK_BYTES } from './query.js';
 
 export type { ColumnPages } from './pages.js';

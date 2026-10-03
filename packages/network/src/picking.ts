@@ -584,25 +584,20 @@ export class PickGeometry {
         continue;
       }
       // Each build works in its own storage, so admission is the index's size. Recount to admit:
-      // an explicit query may have built meanwhile.
+      // an earlier build may have finished meanwhile.
       const size = HitIndex.bytes(want.count);
       if (size > available || size > (available = this.byteLimit - this.bytes)) continue;
       available -= size;
       yield begin(want);
     }
   }
-  /** Build the missing queried indexes now, as an explicit query may. */
-  private index(data: NetworkData, options: Style): void {
-    for (const steps of this.builds(data, options)) while (!steps.next().done);
-  }
-  /** Build the missing queried indexes in cooperative slices. */
+  /** Build the missing queried indexes in cooperative slices; queries wait for this, never build. */
   async indexLater(data: NetworkData, options: Style, work: kit.Work): Promise<void> {
     for (const steps of this.builds(data, options)) {
       // Abort stops the build at once, freeing its bytes.
       const stop = () => void steps.return();
       work.signal.addEventListener('abort', stop, { once: true });
       try {
-        // An explicit pick may finish this build between slices; its steps then end here too.
         while (!steps.next().done) await work.step();
       } finally {
         work.signal.removeEventListener('abort', stop);
@@ -772,7 +767,6 @@ export class PickGeometry {
     options: Style,
     radius: number,
   ): readonly NetworkItem[] {
-    if (camera.projection === 'flat') this.index(data, options);
     const hits = [...this.hits(point, data, camera, viewport, height, options, radius, unchecked)];
     hits.sort(compare);
     const seen = new Set<string>();

@@ -17,7 +17,7 @@ describe.each(sizes)('connect %i buses', async (buses) => {
     for (let f = 0; !context.signal.aborted; f++)
       for (const part of parts) yield { ...part, firstFrame: f, coordinates: Float64Array.of(f) };
   });
-  const stream = model.monitor([{ from: 'Bus', select: ['voltage'] }]);
+  const stream = model.monitor!([{ from: 'Bus', select: ['voltage'] }]);
   await stream.next();
   afterAll(close);
   const measure = suite(`connect ${buses} buses`, buses);

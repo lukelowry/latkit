@@ -4,6 +4,8 @@ import type { TextColumn } from './data.js';
 import { bitAt, rowCount } from './access.js';
 
 const encoder = new TextEncoder();
+/** Shared by every lookup, which is synchronous: encodeInto writes at most three bytes per UTF-16 unit. */
+let scratch = new Uint8Array(256);
 
 /** Each ID's row, keyed by the UTF-8 bytes already in the ID pages: no string per row. As with a
  *  map, a later page wins a repeated ID, and null IDs are absent. */
@@ -40,8 +42,9 @@ export class IdIndex {
 
   /** The row holding `id`, if any. */
   row(id: string): number | undefined {
-    const key = encoder.encode(id);
-    const entry = this.slots[this.probe(key, 0, key.length)];
+    if (scratch.length < 3 * id.length) scratch = new Uint8Array(3 * id.length);
+    const { written } = encoder.encodeInto(id, scratch);
+    const entry = this.slots[this.probe(scratch, 0, written)];
     return entry ? this.rows[entry - 1] : undefined;
   }
 

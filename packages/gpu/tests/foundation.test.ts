@@ -179,7 +179,7 @@ it('reduces delivered samples after the transport and producer have closed', asy
   );
   let data;
   try {
-    const publications = await collect(h.model.monitor([{ from: 'node', select: ['value'] }]));
+    const publications = await collect(h.model.monitor!([{ from: 'node', select: ['value'] }]));
     data = createData(h.model.schema, publications.flat());
   } finally {
     await h.close();

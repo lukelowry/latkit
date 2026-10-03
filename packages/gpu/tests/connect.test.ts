@@ -19,7 +19,7 @@ it('reads and uploads the same native contract through connect without a rendere
   });
   let remote;
   try {
-    const publications = await collect(h.model.monitor(fields));
+    const publications = await collect(h.model.monitor!(fields));
     remote = createData(h.model.schema, publications.flat());
   } finally {
     await h.close();

@@ -188,7 +188,8 @@ describe('frame ownership', () => {
       frame.buffer(new BufferData({ size: 1024 }));
     });
     fake.lose();
-    await gpu.lost;
+    await fake.device.lost;
+    expect(gpu.signal.reason).toMatchObject({ code: 'device-lost' });
     await expect(draw(gpu, () => {})).rejects.toMatchObject({ code: 'device-lost' });
     expect(fake.buffers.every((buffer) => buffer.destroyed)).toBe(true);
     gpu.destroy();

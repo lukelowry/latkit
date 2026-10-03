@@ -1,11 +1,19 @@
 import { failure } from '@latkit/model';
-import type { Limits } from './types.js';
+import type { ConnectLimits } from './types.js';
 /** An error a peer reported. Its code is whatever the peer sent, not necessarily a local Failure code. */
 export function remoteFailure(code: string, message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code });
 }
 export function errorOf(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
+}
+/** The code and message an error crosses a connection with, within `messageLength` characters. */
+export function reasonOf(value: unknown, messageLength = 2048): { code: string; message: string } {
+  const error = errorOf(value);
+  return {
+    code: 'code' in error && typeof error.code === 'string' ? error.code.slice(0, 64) : 'internal',
+    message: error.message.slice(0, messageLength) || 'Operation failed.',
+  };
 }
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -38,7 +46,7 @@ export function validProgress(value: Readonly<Record<string, unknown>>): boolean
         domain[0] <= domain[1]))
   );
 }
-export const defaults: Limits = Object.freeze({
+export const defaults: ConnectLimits = Object.freeze({
   maxMessageBytes: 1024 * 1024,
   maxMetadataBytes: 64 * 1024,
   maxBufferedBytes: 16 * 1024 * 1024,
@@ -50,7 +58,7 @@ export const defaults: Limits = Object.freeze({
   maxLogs: 32,
   timeoutMs: 30000,
 });
-export function limits(input: Partial<Limits> = {}): Limits {
+export function limits(input: Partial<ConnectLimits> = {}): ConnectLimits {
   for (const key of Object.keys(input))
     if (!Object.hasOwn(defaults, key)) throw failure('invalid-input', 'Unknown limit: ' + key);
   const result = { ...defaults, ...input };
@@ -69,10 +77,10 @@ export function limits(input: Partial<Limits> = {}): Limits {
     );
   return Object.freeze(result);
 }
-export function negotiate(local: Limits, remote: unknown): Limits {
+export function negotiate(local: ConnectLimits, remote: unknown): ConnectLimits {
   const offered = record(remote),
     result = { ...local };
-  for (const key of Object.keys(defaults) as (keyof Limits)[])
+  for (const key of Object.keys(defaults) as (keyof ConnectLimits)[])
     result[key] = Math.min(
       local[key],
       integer(offered[key], 1, key === 'timeoutMs' ? 0x7fffffff : 0xffffffff),

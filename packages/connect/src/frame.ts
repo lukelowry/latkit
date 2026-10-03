@@ -1,9 +1,13 @@
 import { failure } from '@latkit/model';
 import { integer, record } from './core.js';
-import type { Limits } from './types.js';
+import type { ConnectLimits } from './types.js';
 
-/** The WebSocket subprotocol both endpoints select. */
-export const subprotocol = 'latkit';
+/** The WebSocket subprotocol a dialing side offers, named for what it does: `connect` when it
+ *  connects a model, `accept` when it accepts one. The answering side selects it. */
+export const subprotocols = Object.freeze({
+  connect: 'latkit.connect',
+  accept: 'latkit.accept',
+} as const);
 export const Op = Object.freeze({
   register: 1,
   registered: 2,
@@ -32,7 +36,7 @@ export interface Plan {
   readonly bytes: number;
   encode(sequence?: number): Uint8Array;
 }
-export type FrameLimits = Pick<Limits, 'maxMetadataBytes' | 'maxMessageBytes'>;
+export type FrameLimits = Pick<ConnectLimits, 'maxMetadataBytes' | 'maxMessageBytes'>;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const MAGIC = 0x4b54414c; // LATK
@@ -142,6 +146,26 @@ export function prepare(
         output.set(chunk, offset);
         offset += chunk.length;
       }
+      return output;
+    },
+  };
+}
+/** A publication frame for stream `id` around a received publication's `payload` (a frame from byte
+ *  16 on): only the first 16 bytes are new, so a publication goes on without being encoded again. */
+export function forward(id: number, payload: Uint8Array): Plan {
+  integer(id, 0, 0xffffffff);
+  const bytes = 16 + payload.byteLength;
+  return {
+    bytes,
+    encode(sequence = 0) {
+      integer(sequence, 0, 0xffffffff);
+      const output = new Uint8Array(bytes),
+        view = new DataView(output.buffer);
+      view.setUint32(0, MAGIC, true);
+      view.setUint32(4, Op.publication, true);
+      view.setUint32(8, id, true);
+      view.setUint32(12, sequence, true);
+      output.set(payload, 16);
       return output;
     },
   };

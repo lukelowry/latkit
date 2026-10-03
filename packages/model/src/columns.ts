@@ -1,6 +1,13 @@
 import { copyPages, isColumnPages } from './pages.js';
 import type { ColumnPage } from './materialized.js';
-import type { Column, NumericArray, RowAxis, SampleColumn, TextColumn } from './data.js';
+import type {
+  Column,
+  NumericArray,
+  NumericColumn,
+  RowAxis,
+  SampleColumn,
+  TextColumn,
+} from './data.js';
 import { assertIndex, bitAt, rowCount, setBit } from './access.js';
 import { failure } from './error.js';
 
@@ -39,27 +46,36 @@ export function containsRows(haystack: RowAxis, needle: RowAxis): boolean {
   return true;
 }
 
-/** Compact exposed views, preserving numeric backing and bitmap alignment. */
+/**
+ * Compact exposed views, preserving numeric backing and bitmap alignment. The slice has exactly its
+ * kind's keys: a sample column slices to a plain numeric one, and only `sliceSamples` keeps strides.
+ */
 export function sliceColumn(column: Column, start: number, count: number): Column {
   if (start < 0 || count < 0 || start + count > column.length)
     throw failure('invalid-input', 'Column slice exceeds its values.');
   const at = column.offset + start;
   if (column.kind === 'numeric' || column.kind === 'reference') {
     const base = column.validity ? at - (at & 7) : at;
-    return {
-      ...column,
+    const slice = {
       offset: at - base,
       length: count,
-      values: column.values.subarray(base, at + count),
       ...(column.validity
         ? { validity: column.validity.subarray(base / 8, Math.ceil((at + count) / 8)) }
         : {}),
-    } as Column;
+    };
+    return column.kind === 'numeric'
+      ? { kind: 'numeric', ...slice, values: column.values.subarray(base, at + count) }
+      : {
+          kind: 'reference',
+          ...slice,
+          index: column.index,
+          values: column.values.subarray(base, at + count),
+        };
   }
   if (column.kind === 'boolean') {
     const base = at >>> 3;
     return {
-      ...column,
+      kind: 'boolean',
       offset: at & 7,
       length: count,
       values: column.values.subarray(base, Math.ceil((at + count) / 8)),
@@ -71,9 +87,10 @@ export function sliceColumn(column: Column, start: number, count: number): Colum
   if (column.kind === 'vector') {
     const base = column.validity ? at - (at & 7) : at;
     return {
-      ...column,
+      kind: 'vector',
       offset: at - base,
       length: count,
+      size: column.size,
       values: sliceColumn(
         column.values,
         base * column.size,
@@ -113,10 +130,10 @@ export function sliceSamples(
   const length =
     rows && frames ? (rows - 1) * column.rowStride + (frames - 1) * column.frameStride + 1 : 0;
   return {
-    ...sliceColumn(column, start, length),
+    ...(sliceColumn(column, start, length) as NumericColumn),
     rowStride: column.rowStride,
     frameStride: column.frameStride,
-  } as SampleColumn;
+  };
 }
 
 export function copyValidity(column: Column, start: number, count: number): Uint8Array | undefined {
@@ -170,7 +187,9 @@ export function gather(cells: readonly (Cell | undefined)[], empty: Column): Col
       if (c.kind === 'reference' && first.kind === 'reference') assertIndex(c.index, first.index);
       values[i] = c.values[c.offset + cell.at];
     }
-    return { ...first, ...common, values } as Column;
+    return first.kind === 'numeric'
+      ? { kind: 'numeric', ...common, values }
+      : { kind: 'reference', ...common, index: first.index, values: values as Uint32Array };
   }
   if (first.kind === 'boolean') {
     const values = new Uint8Array(Math.ceil(count / 8));

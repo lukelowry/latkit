@@ -1,7 +1,9 @@
 import { expect, it } from 'vitest';
 import {
   createData,
+  sampledFields,
   selectBatches,
+  staticFields,
   validateBatch,
   validateSelection,
   validateSchema,
@@ -53,4 +55,30 @@ it('keeps delivery budgets out of schema and validates demand directly', () => {
   expect(validateSelection(schema, { from: 'Node', select: ['a'] })).toEqual([]);
   expect(validateSelection(schema, { from: 'Node', select: ['missing'] })).not.toEqual([]);
   expect(validateBatch(schema, batch(1, 'a'), { maxBlockBytes: 1 })).not.toEqual([]);
+});
+it('selects every static or every sampled field by type, omitting types with none', () => {
+  const grid: Schema = {
+    axis: { name: 'time' },
+    types: {
+      Bus: {
+        fields: {
+          name: { type: 'text' },
+          voltage: { type: 'float32', sampled: true },
+          angle: { type: 'float32', sampled: true },
+        },
+      },
+      Line: { fields: { from: { type: { kind: 'reference', to: 'Bus' } } } },
+      Meter: { fields: { reading: { type: 'float64', sampled: true } } },
+    },
+  };
+  expect(staticFields(grid)).toEqual([
+    { from: 'Bus', select: ['name'] },
+    { from: 'Line', select: ['from'] },
+  ]);
+  expect(sampledFields(grid)).toEqual([
+    { from: 'Bus', select: ['voltage', 'angle'] },
+    { from: 'Meter', select: ['reading'] },
+  ]);
+  expect(sampledFields(grid, ['Meter', 'Line'])).toEqual([{ from: 'Meter', select: ['reading'] }]);
+  expect(() => sampledFields(grid, ['Gen'])).toThrow('Unknown type: Gen');
 });

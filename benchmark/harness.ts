@@ -2,18 +2,14 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
 import { bench } from 'vitest';
 import { WebSocketServer } from 'ws';
-import {
-  acceptModel,
-  connectModel,
-  type ConnectedModel,
-  type ConnectOptions,
-} from '@latkit/connect';
+import { acceptModel, connectModel, type ConnectedModel } from '@latkit/connect';
 import {
   createData,
   textColumn,
   type Data,
   type DataBatch,
   type Index,
+  type Model,
   type SampleBatch,
 } from '@latkit/model';
 import type { Schema } from '@latkit/model';
@@ -158,19 +154,17 @@ export function split(frame: SampleBatch, rows: number): SampleBatch[] {
     };
   });
 }
-/** A producer and a host joined by a local WebSocket. */
-export async function connected(monitor: ConnectOptions['monitor']) {
+/** A model connected over a local WebSocket, and accepted at the other end. */
+export async function connected(monitor: Model['monitor']) {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1', perMessageDeflate: false });
   await new Promise((resolve) => server.once('listening', resolve));
   const accepted = new Promise<ConnectedModel>((resolve, reject) =>
-    server.once('connection', (socket) => void acceptModel(socket).then(resolve, reject)),
+    server.once('connection', (socket) => void acceptModel({ socket }).then(resolve, reject)),
   );
-  const connection = await connectModel({
-    url: 'http://127.0.0.1:' + (server.address() as AddressInfo).port,
-    name: 'grid',
-    schema,
-    monitor,
-  });
+  const connection = await connectModel(
+    { name: 'grid', schema, monitor },
+    { url: 'http://127.0.0.1:' + (server.address() as AddressInfo).port },
+  );
   const model = await accepted;
   return {
     model,

@@ -9,7 +9,7 @@ export type {
   Expanded,
 } from './view/view.js';
 export { BaseItemView } from './view/item-view.js';
-export type { HoverSearch } from './view/item-view.js';
+export type { HoverSearch, ItemShape } from './view/item-view.js';
 export { resolveViewStyle } from './view/style.js';
 export type { ResolvedViewStyle } from './view/style.js';
 export { Attachments } from './view/attachments.js';

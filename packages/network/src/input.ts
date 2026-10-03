@@ -6,7 +6,10 @@ type Mode = NonNullable<ViewInput['mode']>;
 export interface Gestures {
   pan(dx: number, dy: number): void;
   rotate(dx: number, dy: number): void;
-  hits(point: Point): readonly NetworkItem[];
+  /** Hits at a point, nearest first, once the shown frame can answer. */
+  hits(point: Point, signal: AbortSignal): Promise<readonly NetworkItem[]>;
+  /** Report a failure no caller awaits. */
+  fail(error: unknown): void;
   locate(item: NetworkItem): Point | null;
   neighborhood(item: NetworkItem): readonly NetworkItem[];
   reveal(item: NetworkItem): void;
@@ -28,19 +31,31 @@ export function listen(
     | { id: number; x: number; y: number; startX: number; startY: number; rotate: boolean }
     | undefined;
   let cycle = 0,
-    lastPoint: Point | undefined;
-  /** A modifier toggles the hit instead of replacing the selection. */
+    lastPoint: Point | undefined,
+    picking: AbortController | undefined;
+  /** A modifier toggles the hit instead of replacing the selection; a newer click wins. */
   const choose = (p: Point, toggle: boolean) => {
-    const hits = view.hits(p);
     cycle = lastPoint && Math.hypot(p[0] - lastPoint[0], p[1] - lastPoint[1]) < 3 ? cycle + 1 : 0;
     lastPoint = p;
-    const hit = hits.length ? hits[cycle % hits.length] : undefined;
-    if (!toggle) view.choose(hit ? [hit] : []);
-    else if (hit) {
-      const selection = view.selection(),
-        rest = selection.filter((item) => !sameItem(item, hit));
-      view.choose(rest.length === selection.length ? [...rest, hit] : rest);
-    }
+    const turn = cycle;
+    picking?.abort();
+    const own = (picking = new AbortController()),
+      stop = AbortSignal.any([signal, own.signal]);
+    view.hits(p, stop).then(
+      (hits) => {
+        if (stop.aborted) return;
+        const hit = hits.length ? hits[turn % hits.length] : undefined;
+        if (!toggle) view.choose(hit ? [hit] : []);
+        else if (hit) {
+          const selection = view.selection(),
+            rest = selection.filter((item) => !sameItem(item, hit));
+          view.choose(rest.length === selection.length ? [...rest, hit] : rest);
+        }
+      },
+      (error: unknown) => {
+        if (!stop.aborted) view.fail(error);
+      },
+    );
   };
   canvas.addEventListener(
     'pointerdown',

@@ -35,8 +35,11 @@ Renderer authors build on the `kit` namespace: extend `kit.BaseView`, prepare GP
 `prepare`, encode it in `encode`, and react to config changes in `configure`. The base presents on
 a canvas, schedules frames, attaches input, renders images, and keeps events. Views of selectable
 items extend `kit.BaseItemView`, which adds the shared camera, selection, picking, hover, style,
-and input; the view supplies its camera math, hit search, and own gestures. Frames provide the
-GPU's reader (`frame.reader`), field uploads, text, colormaps, and transient buffers.
+and input; the view describes itself once (`kit.ItemShape`: its framed camera keys, input modes,
+and style defaults) and supplies its camera math, hit search, and own gestures. Frames provide the
+GPU's reader (`frame.reader`), field uploads, text, colormaps, and transient buffers. A frame that
+is not `presented` is an export, such as video: draw the view's state into it and change none of
+it.
 
 [Views](https://latkit.readthedocs.io/en/latest/views.html) ·
 [Colors](https://latkit.readthedocs.io/en/latest/colormaps.html) ·

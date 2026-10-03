@@ -1,11 +1,16 @@
 import { failure, validateSchema } from '@latkit/model';
 import type {
+  Arguments,
+  CommandContext,
   CommandDescription,
   CommandResult,
   FieldSelection,
   InputValue,
   LogEntry,
+  MonitorContext,
+  Parameters,
   Progress,
+  Publication,
   Schema,
 } from '@latkit/model';
 import { decodePublication } from './columns.js';
@@ -20,30 +25,24 @@ import {
   text,
   validProgress,
 } from './core.js';
-import { checkTree, Op } from './frame.js';
+import { checkTree, Op, subprotocols } from './frame.js';
 import type { Frame } from './frame.js';
 import { definitions, encodeArguments, selections, demanded } from './parameters.js';
 import { Session } from './session.js';
+import { dial } from './socket.js';
 import type { Receiver } from './session.js';
-import type {
-  AcceptOptions,
-  ConnectedModel,
-  EncodedMonitorOptions,
-  EncodedPublication,
-  EncodedRunOptions,
-  MonitorOptions,
-  Publication,
-  RunOptions,
-  WebSocketLike,
-} from './types.js';
+import type { AcceptOptions, ConnectedModel } from './types.js';
 
-/** Accept one producer socket. Returns after metadata validation and registration, without requesting data. */
-export async function acceptModel(
-  socket: WebSocketLike,
-  options: AcceptOptions = {},
-): Promise<ConnectedModel> {
+/** Accept the model served at exactly `url`, or on a `socket` a server accepted. Resolves after
+ *  metadata validation and registration, without requesting data. */
+export async function acceptModel(options: AcceptOptions): Promise<ConnectedModel> {
   options.signal?.throwIfAborted();
-  const session = new Session(socket, options),
+  const socket = options.socket ?? dial(options.url, subprotocols.accept);
+  const session = new Session(socket, {
+      subprotocol: options.socket ? subprotocols.connect : subprotocols.accept,
+      limits: options.limits,
+      signal: options.signal,
+    }),
     registered = deferred<RemoteModel>();
   let seen = false;
   session.onControl = (frame) => {
@@ -60,7 +59,7 @@ export async function acceptModel(
     session.bounds = negotiate(session.bounds, m.limits);
     const model = new RemoteModel(session, name, schema, commands, m.monitoring);
     session.onControl = () => {
-      throw failure('protocol', 'Unexpected producer control message.');
+      throw failure('protocol', 'Unexpected control message from the model.');
     };
     session.track(
       session
@@ -83,6 +82,8 @@ export async function acceptModel(
 
 class RemoteModel implements ConnectedModel {
   readonly closed: Promise<void>;
+  declare readonly monitor?: ConnectedModel['monitor'];
+  readonly commands: ConnectedModel['commands'];
   #request = 0;
   #running = false;
   #preparing?: ReturnType<typeof encodeArguments>;
@@ -90,10 +91,25 @@ class RemoteModel implements ConnectedModel {
     private readonly session: Session,
     readonly name: string,
     readonly schema: Schema,
-    readonly commands: Readonly<Record<string, CommandDescription>>,
-    private readonly monitoring: boolean,
+    descriptions: Readonly<Record<string, CommandDescription>>,
+    monitoring: boolean,
   ) {
     this.closed = session.closed;
+    if (monitoring) this.monitor = (fields, context) => this.observe(fields, context);
+    this.commands = Object.freeze(
+      Object.fromEntries(
+        Object.entries(descriptions).map(([name, description]) => [
+          name,
+          Object.freeze({
+            ...description,
+            run: (
+              values: Arguments<Parameters> | Readonly<Record<string, InputValue>>,
+              context?: Partial<CommandContext>,
+            ) => this.execute(name, description, values, context),
+          }),
+        ]),
+      ),
+    );
   }
   close(reason?: { code: string; message: string }): Promise<void> {
     return this.session.close(reason);
@@ -101,41 +117,33 @@ class RemoteModel implements ConnectedModel {
   private id(): number {
     return (this.#request = integer(this.#request + 1, 1, 0xffffffff));
   }
-  monitor(
+  private observe(
     fields: readonly FieldSelection[],
-    options: EncodedMonitorOptions,
-  ): AsyncIterableIterator<EncodedPublication>;
-  monitor(
-    fields: readonly FieldSelection[],
-    options?: MonitorOptions,
-  ): AsyncIterableIterator<Publication>;
-  monitor(
-    fields: readonly FieldSelection[],
-    options: MonitorOptions | EncodedMonitorOptions = {},
-  ): AsyncIterableIterator<Publication | EncodedPublication> {
-    options.signal?.throwIfAborted();
-    if (!this.monitoring) throw failure('unsupported', 'This producer does not offer monitoring.');
+    context: Partial<MonitorContext> = {},
+  ): AsyncIterableIterator<Publication> {
+    context.signal?.throwIfAborted();
     checkTree(fields, this.session.bounds.maxMetadataBytes);
     selections(fields, this.schema);
-    if (!fields.length) throw failure('invalid-input', 'Monitoring requires field selections.');
+    // An empty selection reads nothing.
+    if (!fields.length) return (async function* () {})();
     const checkDemand = demanded(fields);
     const stream = this.session.receiver(this.id());
     const sent = this.session.control(Op.monitor, stream.id, { fields, window: stream.grant });
     void sent.catch((error) => {
       stream.fail(errorOf(error));
       this.session.release(stream);
-      options.signal?.removeEventListener('abort', abort);
+      context.signal?.removeEventListener('abort', abort);
     });
     const abort = () =>
       stream.cancel(
-        errorOf(options.signal?.reason ?? failure('aborted', 'Observation cancelled.')),
+        errorOf(context.signal?.reason ?? failure('aborted', 'Observation cancelled.')),
       );
-    options.signal?.addEventListener('abort', abort, { once: true });
-    if (options.signal?.aborted) abort();
+    context.signal?.addEventListener('abort', abort, { once: true });
+    if (context.signal?.aborted) abort();
     let finished = false;
     const cleanup = () => {
       finished = true;
-      options.signal?.removeEventListener('abort', abort);
+      context.signal?.removeEventListener('abort', abort);
     };
     return {
       [Symbol.asyncIterator]() {
@@ -153,10 +161,7 @@ class RemoteModel implements ConnectedModel {
               throw failure('protocol', 'Invalid observation terminal.');
             return { done: true, value: undefined };
           }
-          return {
-            done: false,
-            value: this.publication(next.value.frame, checkDemand, options.format),
-          };
+          return { done: false, value: this.publication(next.value.frame, checkDemand) };
         } catch (error) {
           cleanup();
           stream.cancel(errorOf(error));
@@ -175,40 +180,31 @@ class RemoteModel implements ConnectedModel {
       },
     };
   }
-  run(
+  private async execute(
     command: string,
-    values: Readonly<Record<string, InputValue>>,
-    options: EncodedRunOptions,
-  ): Promise<CommandResult>;
-  run(
-    command: string,
-    values: Readonly<Record<string, InputValue>>,
-    options?: RunOptions,
-  ): Promise<CommandResult>;
-  async run(
-    command: string,
-    values: Readonly<Record<string, InputValue>>,
-    options: RunOptions | EncodedRunOptions = {},
+    description: CommandDescription,
+    values: Arguments<Parameters> | Readonly<Record<string, InputValue>>,
+    context: Partial<CommandContext> = {},
   ): Promise<CommandResult> {
-    options.signal?.throwIfAborted();
+    context.signal?.throwIfAborted();
     this.session.lifetime.signal.throwIfAborted();
     if (this.#running || this.#preparing)
       throw failure('busy', 'Another command is still running.');
-    if (!Object.hasOwn(this.commands, command)) throw failure('invalid-input', 'Unknown command.');
-    const outputs = selections(options.outputs ?? [], this.schema);
+    const outputs = selections(context.outputs ?? [], this.schema);
     checkTree(outputs, this.session.bounds.maxMetadataBytes);
-    if (outputs.length && !options.onData)
-      throw failure('invalid-input', 'Requested outputs require onData.');
+    const publish = context.publish;
+    if (outputs.length && !publish)
+      throw failure('invalid-input', 'Requested outputs require publish.');
     const checkDemand = demanded(outputs);
     this.#running = true;
     let stream: Receiver | undefined;
-    const signal = options.signal
-      ? AbortSignal.any([options.signal, this.session.lifetime.signal])
+    const signal = context.signal
+      ? AbortSignal.any([context.signal, this.session.lifetime.signal])
       : this.session.lifetime.signal;
     const abort = () => stream?.cancel(errorOf(signal.reason));
     try {
       const preparing = (this.#preparing = encodeArguments(
-        this.commands[command].parameters,
+        description.parameters,
         values,
         this.session.bounds.maxMessageBytes - this.session.bounds.maxMetadataBytes - 64,
         signal,
@@ -227,16 +223,16 @@ class RemoteModel implements ConnectedModel {
       stream = this.session.receiver(this.id());
       stream.onTelemetry = (frame) => {
         try {
-          if (frame.op === Op.progress) notify(options.onProgress, progressOf(frame.metadata));
+          if (frame.op === Op.progress) notify(context.progress, progressOf(frame.metadata));
           else {
             const entries = frame.metadata.entries,
               dropped = integer(frame.metadata.dropped);
             if (!Array.isArray(entries) || entries.length > this.session.bounds.maxLogs)
               throw failure('protocol', 'Invalid diagnostic batch.');
             const logs = entries.map((entry: unknown) => logOf(entry));
-            for (const entry of logs) notify(options.onLog, entry);
+            for (const entry of logs) notify(context.log, entry);
             if (dropped)
-              notify(options.onLog, {
+              notify(context.log, {
                 severity: 'warning',
                 code: 'dropped',
                 message: 'Diagnostic messages were dropped.',
@@ -269,15 +265,8 @@ class RemoteModel implements ConnectedModel {
           checkTree(next.value.metadata.value, this.session.bounds.maxMetadataBytes);
           return next.value.metadata.value as CommandResult;
         }
-        if (!outputs.length || !options.onData)
-          throw failure('protocol', 'Unrequested execution data.');
-        const publication = this.publication(next.value.frame, checkDemand, options.format);
-        if (options.format === 'encoded')
-          await interrupt(
-            Promise.resolve(options.onData(publication as EncodedPublication)),
-            signal,
-          );
-        else await interrupt(Promise.resolve(options.onData(publication as Publication)), signal);
+        if (!outputs.length || !publish) throw failure('protocol', 'Unrequested execution data.');
+        await interrupt(publish(this.publication(next.value.frame, checkDemand)), signal);
       }
     } catch (error) {
       stream?.cancel(errorOf(error));
@@ -287,16 +276,11 @@ class RemoteModel implements ConnectedModel {
       this.#running = false;
     }
   }
-  private publication(
-    frame: Frame,
-    checkDemand: ReturnType<typeof demanded>,
-    format?: 'decoded' | 'encoded',
-  ): Publication | EncodedPublication {
-    const encoded = { bytes: frame.payload };
-    // Validate once at the trust boundary, even when forwarding encoded payload.
-    const batches = decodePublication(encoded, this.schema, this.session.bounds);
+  private publication(frame: Frame, checkDemand: ReturnType<typeof demanded>): Publication {
+    // Validated once at the trust boundary; served onward, it goes as it arrived.
+    const batches = decodePublication({ bytes: frame.payload }, this.schema, this.session.bounds);
     checkDemand(batches);
-    return format === 'encoded' ? encoded : batches;
+    return batches;
   }
 }
 function remoteError(metadata: Record<string, unknown>): Error {
@@ -339,7 +323,7 @@ function notify<T>(callback: ((value: T) => void) | undefined, value: T): void {
     void Promise.resolve(result).catch(() => {});
     throw failure(
       'invalid-input',
-      'Telemetry callbacks must be synchronous; await work in onData.',
+      'Telemetry callbacks must be synchronous; await work in publish.',
     );
   }
 }

@@ -1,48 +1,60 @@
 import { failure, validateSchema } from '@latkit/model';
-import type { CommandDescription, Diagnostic, Parameters, Progress } from '@latkit/model';
-import { preparePublications } from './columns.js';
+import type {
+  Command,
+  CommandContext,
+  CommandDescription,
+  LogEntry,
+  Model,
+  Parameters,
+  Progress,
+} from '@latkit/model';
+import { publicationPlans } from './columns.js';
 import {
   deferred,
   errorOf,
   integer,
   interrupt,
   negotiate,
+  reasonOf,
   record,
   text,
   validProgress,
 } from './core.js';
-import { checkTree, Op, subprotocol } from './frame.js';
+import { checkTree, Op, subprotocols } from './frame.js';
 import type { Frame } from './frame.js';
 import { argumentsOf, definitions, selections, demanded } from './parameters.js';
 import { Session } from './session.js';
+import { dial } from './socket.js';
 import type { Sender } from './session.js';
-import type { Command, ConnectOptions, Connection, Publish } from './types.js';
+import type { ConnectOptions, Connection } from './types.js';
 
-/** Register metadata only. Observations start when the host asks for them. */
+/**
+ * Serve `model` to whoever accepts it: dial exactly `url`, or answer on a `socket` a server accepted.
+ * Registers metadata only; reads and runs start when the other side asks for them. A model that is
+ * itself a connection, such as one `acceptModel` returned, is served until it closes, and its
+ * reason closes this connection too.
+ */
 export async function connectModel<const C extends Record<string, Parameters>>(
-  options: ConnectOptions<C>,
+  model: Model<C>,
+  options: ConnectOptions,
 ): Promise<Connection> {
   options.signal?.throwIfAborted();
-  text(options.name);
-  const issues = validateSchema(options.schema);
+  text(model.name);
+  const issues = validateSchema(model.schema);
   if (issues.length) throw failure('invalid-input', issues[0].message);
-  const url = new URL(options.url);
-  if (url.protocol === 'http:') url.protocol = 'ws:';
-  if (url.protocol === 'https:') url.protocol = 'wss:';
-  if (!['ws:', 'wss:'].includes(url.protocol) || url.hash || url.username || url.password)
-    throw failure(
-      'invalid-input',
-      'Use an HTTP(S) or WS(S) host URL without credentials or a fragment.',
-    );
-  url.pathname = url.pathname.replace(/\/$/, '') + '/models/' + encodeURIComponent(options.name);
+  const socket = options.socket ?? dial(options.url, subprotocols.connect);
   const ready = deferred<void>();
-  const session = new Session(new WebSocket(url.href, subprotocol), options);
-  const commands = options.commands as Readonly<Record<string, Command>> | undefined;
+  const session = new Session(socket, {
+    subprotocol: options.socket ? subprotocols.accept : subprotocols.connect,
+    limits: options.limits,
+    signal: options.signal,
+  });
+  const commands = model.commands as Readonly<Record<string, Command>> | undefined;
   let lastId = 0,
     registered = false,
     executing = false;
   try {
-    checkTree(options.schema, session.bounds.maxMetadataBytes);
+    checkTree(model.schema, session.bounds.maxMetadataBytes);
     const descriptions = Object.fromEntries(
       Object.entries(commands ?? {}).map(([name, command]) => {
         if (typeof command.run !== 'function')
@@ -58,7 +70,7 @@ export async function connectModel<const C extends Record<string, Parameters>>(
         ];
       }),
     );
-    const catalog = definitions(descriptions, options.schema, session.bounds.maxMetadataBytes);
+    const catalog = definitions(descriptions, model.schema, session.bounds.maxMetadataBytes);
     session.onControl = (frame) => {
       if (frame.op === Op.registered) {
         if (registered || frame.id)
@@ -69,7 +81,7 @@ export async function connectModel<const C extends Record<string, Parameters>>(
         return;
       }
       if (!registered || (frame.op !== Op.monitor && frame.op !== Op.run))
-        throw failure('protocol', 'Unexpected producer request.');
+        throw failure('protocol', 'Unexpected request to the model.');
       const id = integer(frame.id, lastId + 1, 0xffffffff);
       lastId = id;
       const grant = record(frame.metadata.window);
@@ -93,16 +105,10 @@ export async function connectModel<const C extends Record<string, Parameters>>(
     };
     async function report(sender: Sender, reason: unknown): Promise<void> {
       if (session.lifetime.signal.aborted) return;
-      const error = errorOf(reason);
-      await sender.finish(Op.error, {
-        code:
-          'code' in error && typeof error.code === 'string' ? error.code.slice(0, 64) : 'internal',
-        message:
-          error.message.slice(
-            0,
-            Math.min(2048, Math.floor((session.bounds.maxMetadataBytes - 512) / 6)),
-          ) || 'Operation failed.',
-      });
+      await sender.finish(
+        Op.error,
+        reasonOf(reason, Math.min(2048, Math.floor((session.bounds.maxMetadataBytes - 512) / 6))),
+      );
     }
     const context = (sender: Sender) => ({
       signal: sender.signal,
@@ -110,13 +116,12 @@ export async function connectModel<const C extends Record<string, Parameters>>(
     });
     async function observe(frame: Frame, sender: Sender): Promise<void> {
       try {
-        if (!options.monitor)
-          throw failure('unsupported', 'This producer does not offer monitoring.');
-        const fields = selections(frame.metadata.fields, options.schema);
-        if (!fields.length) throw failure('invalid-input', 'Monitoring requires field selections.');
+        if (!model.monitor) throw failure('unsupported', 'This model does not offer monitoring.');
+        const fields = selections(frame.metadata.fields, model.schema);
         const checkDemand = demanded(fields);
         sender.signal.throwIfAborted();
-        const source = options.monitor(fields, context(sender));
+        // An empty selection reads nothing.
+        const source = fields.length ? model.monitor(fields, context(sender)) : [];
         const iterator =
           Symbol.asyncIterator in source
             ? source[Symbol.asyncIterator]()
@@ -127,10 +132,10 @@ export async function connectModel<const C extends Record<string, Parameters>>(
             const next = await interrupt(Promise.resolve(iterator.next()), sender.signal);
             if (next.done) break;
             checkDemand(next.value);
-            for (const plan of preparePublications(
+            for (const plan of publicationPlans(
               next.value,
               sender.id,
-              options.schema,
+              model.schema,
               session.bounds,
             ))
               await sender.write(plan);
@@ -154,14 +159,14 @@ export async function connectModel<const C extends Record<string, Parameters>>(
       let accepting = true,
         pending: Promise<void> | undefined,
         publishFailure: Error | undefined;
-      const publish: Publish = (input) => {
+      const publish: CommandContext['publish'] = (input) => {
         let task: Promise<void>;
         try {
           sender.signal.throwIfAborted();
           if (!accepting) throw failure('closed', 'The command has already returned.');
           if (pending) throw failure('busy', 'Await publish before publishing again.');
           checkDemand(input);
-          const plans = preparePublications(input, sender.id, options.schema, session.bounds);
+          const plans = publicationPlans(input, sender.id, model.schema, session.bounds);
           task = (async () => {
             for (const plan of plans) await sender.write(plan);
           })();
@@ -184,13 +189,12 @@ export async function connectModel<const C extends Record<string, Parameters>>(
         const name = text(frame.metadata.command);
         if (!commands || !Object.hasOwn(commands, name))
           throw failure('invalid-input', 'Unknown command.');
-        const command = commands[name],
-          description = catalog[name] as CommandDescription;
+        const description = catalog[name] as CommandDescription;
         const values = argumentsOf(description.parameters, frame.metadata.values ?? {}, frame.body);
-        const outputs = selections(frame.metadata.outputs ?? [], options.schema);
+        const outputs = selections(frame.metadata.outputs ?? [], model.schema);
         checkDemand = demanded(outputs);
         sender.signal.throwIfAborted();
-        const value = await command.run(values, {
+        const value = await commands[name].run(values, {
           ...context(sender),
           outputs,
           publish,
@@ -224,16 +228,30 @@ export async function connectModel<const C extends Record<string, Parameters>>(
     );
     await interrupt(
       session.control(Op.register, 0, {
-        name: options.name,
-        schema: options.schema,
+        name: model.name,
+        schema: model.schema,
         commands: catalog,
-        monitoring: Boolean(options.monitor),
+        monitoring: Boolean(model.monitor),
         limits: session.bounds,
       }),
       session.lifetime.signal,
       session.bounds.timeoutMs,
     );
     await interrupt(ready.promise, session.lifetime.signal, session.bounds.timeoutMs);
+    const source = (model as Partial<Connection>).closed;
+    if (source instanceof Promise) {
+      // Held weakly: a connection that ended first is not kept until the model closes.
+      const served = new WeakRef(session);
+      const end = (error?: unknown) =>
+        void served
+          .deref()
+          ?.close(
+            error === undefined
+              ? { code: 'closed', message: `${model.name} closed.` }
+              : reasonOf(error),
+          );
+      void source.then(() => end(), end);
+    }
     return { closed: session.closed, close: (reason) => session.close(reason) };
   } catch (error) {
     session.end(errorOf(error));
@@ -244,7 +262,7 @@ export async function connectModel<const C extends Record<string, Parameters>>(
 /** At most one latest progress update and a fixed diagnostic ring per execution. */
 class Telemetry {
   #progress?: Progress;
-  #logs: Diagnostic[] = [];
+  #logs: LogEntry[] = [];
   #dropped = 0;
   #timer?: ReturnType<typeof setTimeout>;
   #sending?: Promise<void>;
@@ -272,10 +290,16 @@ class Telemetry {
     };
     this.schedule();
   }
-  log(value: Diagnostic): void {
+  log(value: LogEntry): void {
     if (this.#closed || this.sender.signal.aborted) return;
     if (!['info', 'warning', 'error'].includes(value.severity) || typeof value.message !== 'string')
       throw failure('invalid-input', 'Invalid diagnostic.');
+    // Losses reported upstream stay a count, so a model served onward reports them as its own.
+    if (value.dropped) {
+      this.#dropped = Math.min(Number.MAX_SAFE_INTEGER, this.#dropped + value.dropped);
+      this.schedule();
+      return;
+    }
     if (this.#logs.length >= this.session.bounds.maxLogs) {
       this.#dropped = Math.min(Number.MAX_SAFE_INTEGER, this.#dropped + 1);
       return;
@@ -310,7 +334,7 @@ class Telemetry {
         this.#progress = undefined;
         if (progress) await this.session.control(Op.progress, this.sender.id, { ...progress });
         // Split diagnostics by encoded metadata size, retaining at most one ring plus one message.
-        const entries: Diagnostic[] = [];
+        const entries: LogEntry[] = [];
         let cost = 64;
         while (this.#logs.length) {
           const entry = this.#logs[0];

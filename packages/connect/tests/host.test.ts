@@ -35,7 +35,7 @@ it('drains more than 128 publications and 64 MiB in order after consumer pressur
       arrived.resolve();
   });
   try {
-    const stream = p.model.monitor(fields);
+    const stream = p.model.monitor!(fields);
     await arrived.promise;
     let consumed = 0;
     for await (const publication of stream) {
@@ -46,7 +46,7 @@ it('drains more than 128 publications and 64 MiB in order after consumer pressur
       consumed++;
     }
     expect(consumed).toBe(count);
-    await expect(p.model.run('ping', {})).resolves.toBe('pong');
+    await expect(p.model.commands.ping.run({})).resolves.toBe('pong');
   } finally {
     await p.close();
   }
