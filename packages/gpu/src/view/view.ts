@@ -36,7 +36,7 @@ export interface ViewConfig {
   readonly paused?: boolean;
 }
 export interface ViewEvents {
-  /** A frame was drawn, on the canvas or offscreen. */
+  /** A frame was drawn: where the view presents, or exported when not `presented`. */
   readonly frame: FrameInfo;
   /** A failure no call could report, such as a frame that failed to render. */
   readonly error: unknown;
@@ -95,11 +95,14 @@ export interface View<
   Config extends ViewConfig = ViewConfig,
   Events extends ViewEvents = ViewEvents,
 > {
-  /** The config as given, with every patch applied. */
-  readonly config: Config;
+  /** The config as given, with every patch applied. Where the camera is lives on `camera`. */
+  readonly config: Omit<Config, 'camera'>;
   set(patch: Patch<Config>, options?: SetOptions): void;
   stats(): ViewStats;
-  /** Render offscreen at any size and coordinate; the canvas keeps presenting afterwards. */
+  /**
+   * Render at any size and coordinate. A view on a canvas or in a composition stays as it is; a
+   * view with neither presents in its images, so pick and locate follow the latest one.
+   */
   image(options?: ImageOptions): Promise<Blob>;
   on<K extends keyof Events>(event: K, listener: (value: Events[K]) => void): () => void;
   /** Releases its canvas, input, and GPU resources; never its Gpu or sources. */
@@ -176,13 +179,22 @@ export abstract class BaseView<
   #canvas?: CanvasState;
   #held = 0;
   #queue: Promise<void> = Promise.resolve();
+  /** Settles once the latest captured frame is released, and the renderer is free again. */
+  #released: Promise<void> = Promise.resolve();
   #composed = 0;
+  /** The Gpu stopped: stop drawing, and report anything but an intended close. */
+  readonly #stopped = (): void => {
+    const reason: unknown = this.gpu.signal.reason;
+    this.#stopFrame(reason);
+    if (!(reason instanceof GpuError && reason.code === 'closed')) this.fail(reason);
+  };
 
   constructor(
     protected readonly gpu: Gpu,
     config: Config,
     private readonly shape: ConfigShape = {},
   ) {
+    gpu.signal.throwIfAborted();
     // The camera is where a view starts, not state: set({ camera }) moves it and the view reports it.
     const { camera, ...rest } = config as Plain;
     void camera;
@@ -220,30 +232,35 @@ export abstract class BaseView<
         };
       },
     });
-    void gpu.lost.then((info) => {
-      if (this.#closed) return;
-      this.#stopFrame(info);
-      this.fail(new GpuError('device-lost', 'GPU device lost: ' + info.message, { cause: info }));
-    });
   }
-  /** Present on the config's canvas; call once the subclass is ready to render. */
+  /**
+   * Follow the Gpu and present on the config's canvas; call once the subclass is ready to render.
+   * A view whose construction throws first holds nothing.
+   */
   protected start(): void {
+    this.gpu.signal.addEventListener('abort', this.#stopped, { once: true });
     if (this.#config.canvas) this.#attach(this.#config.canvas);
   }
 
-  get config(): Config {
+  get config(): Omit<Config, 'camera'> {
     return this.#config;
   }
   set(patch: Patch<Config, Records, Merged>, options: SetOptions = {}): void {
     this.live();
     const { camera, ...rest } = patch as Plain;
-    const next = normalized(applyPatch(this.#config, rest, this.shape), this.shape);
     const previous = this.#config;
+    // Shorthands expand before merging, so `input: 'inspect'` keeps the other input options.
+    const next = normalized(
+      applyPatch(previous, normalized(rest as unknown as Config, this.shape), this.shape),
+      this.shape,
+    );
     if (next.canvas !== previous.canvas && next.canvas && this.#composed)
       throw new GpuError('invalid-input', 'A composed view presents through its composition');
     // Presentation keys are the base's alone, so playback's set({ at }) stays constant time.
     const own = Object.keys(rest).some((key) => !PRESENTATION.has(key));
     if (own) this.check(next);
+    // Every part of the patch is valid before any of it applies.
+    const move = camera === undefined ? undefined : this.cameraMove(camera as Plain | null);
     this.#config = next;
     if (own) {
       if (this.#captured) {
@@ -255,7 +272,7 @@ export abstract class BaseView<
         this.invalidate();
       } else this.#configure(previous, next, options);
     }
-    if (camera !== undefined) this.moveCamera(camera as Plain | null, options);
+    move?.(options);
     if (previous.canvas !== next.canvas) {
       this.#detach();
       if (next.canvas) this.#attach(next.canvas);
@@ -336,12 +353,15 @@ export abstract class BaseView<
     if (this.#captured) throw new GpuError('busy', 'View already has a captured frame');
     this.#captured = true;
     this.#frameConfig = this.#config;
+    let free!: () => void;
+    this.#released = new Promise<void>((resolve) => (free = resolve));
     let children: readonly CapturedFrame[];
     try {
       children = this.captureChildren();
     } catch (error) {
       this.#captured = false;
       this.#frameConfig = undefined;
+      free();
       throw error;
     }
     let released = false;
@@ -363,9 +383,10 @@ export abstract class BaseView<
             settled = true;
             this.#frames++;
             this.#prepareMs = prepareMs;
-            this.emit('frame', frame as Events['frame']);
+            this.emit('frame', frameInfo(frame) as Events['frame']);
             this.submitted(frame);
-            this.presented(frame);
+            // Exported frames draw the view's state; only presented ones advance it.
+            if (frame.presented) this.presented(frame);
           },
           discard: () => {
             if (settled) return;
@@ -377,36 +398,40 @@ export abstract class BaseView<
       release: () => {
         if (released) return;
         released = true;
-        const failures: unknown[] = [];
-        for (const child of children) {
-          try {
-            child.release();
-          } catch (error) {
-            failures.push(error);
-          }
-        }
-        this.#captured = false;
-        this.#frameConfig = undefined;
-        const configuration = this.#configuration;
-        const changes = [...this.#changes.values()];
-        this.#configuration = undefined;
-        this.#changes.clear();
-        if (!this.#closed) {
-          try {
-            if (configuration)
-              this.#configure(configuration.previous, configuration.next, configuration.options);
-          } catch (error) {
-            failures.push(error);
-          }
-          for (const change of changes) {
+        try {
+          const failures: unknown[] = [];
+          for (const child of children) {
             try {
-              change();
+              child.release();
             } catch (error) {
               failures.push(error);
             }
           }
+          this.#captured = false;
+          this.#frameConfig = undefined;
+          const configuration = this.#configuration;
+          const changes = [...this.#changes.values()];
+          this.#configuration = undefined;
+          this.#changes.clear();
+          if (!this.#closed) {
+            try {
+              if (configuration)
+                this.#configure(configuration.previous, configuration.next, configuration.options);
+            } catch (error) {
+              failures.push(error);
+            }
+            for (const change of changes) {
+              try {
+                change();
+              } catch (error) {
+                failures.push(error);
+              }
+            }
+          }
+          if (failures.length) throw new AggregateError(failures, 'Snapshot release failed');
+        } finally {
+          free();
         }
-        if (failures.length) throw new AggregateError(failures, 'Snapshot release failed');
       },
     };
   }
@@ -436,6 +461,8 @@ export abstract class BaseView<
             target,
             at: options.at ?? this.#config.at ?? undefined,
             viewport: { width: width / ratio, height: height / ratio, pixelRatio: ratio },
+            // A view that shows nowhere else presents in its images.
+            presented: !canvas && !this.#composed,
           },
         ],
       });
@@ -480,6 +507,8 @@ export abstract class BaseView<
       const active = this.#canvas?.frame;
       this.#canvas?.active?.abort(new DOMException('Canvas frame held', 'AbortError'));
       await active;
+      // An aborted frame may still be preparing; the renderer is free once its capture is released.
+      await this.#released;
     });
     this.#queue = turn.then(() => finished);
     return turn.then(() => {
@@ -497,6 +526,7 @@ export abstract class BaseView<
   destroy(): void {
     if (this.#closed) return;
     this.#closed = true;
+    this.gpu.signal.removeEventListener('abort', this.#stopped);
     try {
       this.#detach();
     } finally {
@@ -523,17 +553,19 @@ export abstract class BaseView<
     void next;
     void options;
   }
-  /** Base-class step after a frame is submitted; views implement submitted instead. */
+  /** Base-class step after a presented frame is submitted; views implement submitted instead. */
   protected presented(frame: FrameInfo): void {
     void frame;
   }
-  /** Move the camera by a partial camera, or reset it with null; views without one ignore it. */
-  protected moveCamera(
+  /**
+   * Validate a camera patch, a partial camera or null to follow the data, and return the move that
+   * applies it; throw on an invalid one. Views without a camera ignore it.
+   */
+  protected cameraMove(
     camera: Readonly<Record<string, unknown>> | null,
-    options: SetOptions,
-  ): void {
+  ): ((options: SetOptions) => void) | undefined {
     void camera;
-    void options;
+    return undefined;
   }
   /** Attach input to the canvas; return the detach. */
   protected attach(canvas: HTMLCanvasElement): (() => void) | undefined {
@@ -624,7 +656,15 @@ export abstract class BaseView<
   }
   #schedule(): void {
     const state = this.#canvas;
-    if (state && state.wanted && !state.raf && !this.#held && !this.#config.paused && !this.#closed)
+    if (
+      state &&
+      state.wanted &&
+      !state.raf &&
+      !this.#held &&
+      !this.#config.paused &&
+      !this.#closed &&
+      !this.gpu.signal.aborted
+    )
       state.raf = state.window.requestAnimationFrame((now) => this.#frame(state, now));
   }
   #frame(state: CanvasState, now: number): void {
@@ -720,6 +760,11 @@ interface CanvasState {
   ratio?: MediaQueryList;
   input?: () => void;
   cleanup?: () => void;
+}
+/** What a frame was, without what preparing it borrowed. */
+function frameInfo(frame: FrameInfo): FrameInfo {
+  const { width, height, at, timeMs, viewport, format, presented } = frame;
+  return { width, height, at, timeMs, viewport, format, presented };
 }
 /** Expand string shorthands; `input: 'edit'` always means `{ mode: 'edit' }`. */
 function normalized<C extends ViewConfig>(config: C, shape: ConfigShape): C {

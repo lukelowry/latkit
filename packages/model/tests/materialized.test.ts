@@ -13,7 +13,11 @@ import {
   validateBlock,
   blockBuffers,
   blockByteLength,
+  sliceColumn,
+  type Column,
   type NumericColumn,
+  type RowSelection,
+  type SampleColumn,
   type Schema,
   type DataBatch,
   type RowBatch,
@@ -284,6 +288,63 @@ it('resolves coordinate windows and context across gaps in stored frame numbers'
     collect(read(data, { ...base, window: { kind: 'frames', offset: 0, count: 6 } })),
   ).rejects.toMatchObject({ code: 'invalid-input' });
 });
+it('reads a sampled field at a coordinate as a plain column, sliced or gathered', async () => {
+  const rows = (offset: number, count: number) =>
+    ({ kind: 'range', offset, count }) satisfies RowAxis;
+  const data = createData(schema, [
+    {
+      kind: 'samples',
+      index,
+      rows: rows(0, 4),
+      firstFrame: 0,
+      coordinates: Float64Array.of(0, 1),
+      columns: {
+        output: {
+          kind: 'numeric',
+          offset: 0,
+          length: 8,
+          values: Float64Array.of(0, 1, 2, 3, 10, 11, 12, 13),
+          rowStride: 1,
+          frameStride: 4,
+        },
+      },
+    },
+  ]);
+  const at = async (selection: RowSelection) => {
+    const [block] = (
+      await collect(
+        read(data, { kind: 'rows', from: 'Node', select: ['output'], rows: selection, at: 1 }),
+      )
+    ).filter((b) => b.kind === 'rows');
+    return block.columns.output;
+  };
+  // A contiguous selection slices the page; a sparse one gathers. Both are plain numeric columns.
+  for (const column of [
+    await at({ kind: 'range', offset: 1, count: 2, index }),
+    await at({ kind: 'indices', index, values: Uint32Array.of(3, 1) }),
+  ])
+    expect(Object.keys(column).sort()).toEqual(['kind', 'length', 'offset', 'values']);
+  expect([...numericValues(await at({ kind: 'range', offset: 1, count: 2, index }))]).toEqual([
+    11, 12,
+  ]);
+  const sliced = sliceColumn(
+    {
+      kind: 'numeric',
+      offset: 0,
+      length: 8,
+      values: new Float64Array(8),
+      rowStride: 1,
+      frameStride: 4,
+    } as SampleColumn,
+    4,
+    2,
+  );
+  expect(sliced).not.toHaveProperty('frameStride');
+});
+function numericValues(column: Column): Float64Array {
+  if (column.kind !== 'numeric') throw new Error('Expected a numeric column');
+  return column.values.subarray(column.offset, column.offset + column.length) as Float64Array;
+}
 it('constructs replacement static data without mutating earlier application data', async () => {
   const previous = createData(schema, [batch]);
   const next = createData(schema, [

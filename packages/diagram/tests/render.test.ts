@@ -431,6 +431,45 @@ it('animates accepted positions with coherent picking and one native read per re
   }
 });
 
+it('exports a transition at its target positions without starting or ending it', async () => {
+  const f = await fixture();
+  const render = (timeMs: number, presented = true) =>
+    f.gpu.render({
+      views: [{ renderer: kit.rendererOf(f.diagram), target: f.target, presented }],
+      timeMs,
+    });
+  try {
+    f.diagram.set({ animationMs: 200, motion: 'full' });
+    f.diagram.set(data(f.source, true));
+    await render(0);
+    f.diagram.set({ camera: { fit: false } });
+    const shown = () => interaction(f.diagram).scene()!.vertices[0].y,
+      before = shown();
+    f.source.xy[1] += 80;
+    f.source.update();
+    f.diagram.set({ source: f.source.data });
+    f.diagram.set(data(f.source, true), { animate: true });
+    await render(20, false);
+    expect(shown()).toBe(before);
+    expect(animating(f.diagram)).toBe(false);
+    // The first presented frame starts the transition the export left waiting.
+    await render(20);
+    expect(shown()).toBe(before);
+    expect(animating(f.diagram)).toBe(true);
+    await render(120, false);
+    expect(shown()).toBe(before);
+    await render(120);
+    expect(shown()).toBeGreaterThan(before);
+    expect(shown()).toBeLessThan(before + 80);
+    await render(220);
+    expect(shown()).toBe(before + 80);
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+
 it('restores accepted positions when a drag interrupts and cancels a layout transition', async () => {
   const f = await fixture();
   const render = (timeMs: number) =>
@@ -568,6 +607,14 @@ it('shares the view style, stats, and limits', async () => {
       'Unknown diagram limit',
     );
     expect(() => f.diagram.set({ input: { dragThresholdPx: -1 } })).toThrow('dragThresholdPx');
+    expect(() => f.diagram.set({ input: { dragHandle: 1 } as never })).toThrow(
+      'Unknown input option',
+    );
+    expect(() => f.diagram.set({ input: { mode: 'drag' } as never })).toThrow(
+      'Unsupported input mode',
+    );
+    f.diagram.set({ input: 'edit' });
+    expect(f.diagram.config.input).toEqual({ mode: 'edit' });
     f.diagram.set({ limits: { layoutMs: 1000 } });
     expect(f.diagram.config.limits).toEqual({ layoutMs: 1000 });
   } finally {

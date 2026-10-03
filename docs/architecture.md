@@ -24,7 +24,11 @@ Discarding a candidate does not acknowledge observations. Ordinary invalidation 
 latest state; it does not cancel a valid captured frame. Explicit cancellation, detach, pause, and
 device loss still stop work.
 
-Network, monitor, diagram, composition, images, and video use this same lifecycle. Canvas views
+Network, monitor, diagram, composition, images, and video use this same lifecycle. A frame is
+`presented` where the view shows itself: its canvas, a composition, or, for a view with neither, its
+images. Video, and images of a view that presents elsewhere, are exports: a view draws its current
+state into them and advances none of it, and a monitor draws them into history of their own. Canvas
+views
 coalesce requests while preparation runs and admit the latest sampled animation tick as soon as
 preparation finishes. Compositions capture their children before preparing any child.
 

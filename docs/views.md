@@ -21,14 +21,15 @@ pointer and keyboard input, and redraws only after something changes. Without on
 ```ts
 network.set({ at: 12 }); // model coordinate shown, such as a time
 network.set({ paused: true }); // stop drawing; state is kept
-network.set({ input: 'inspect' }); // 'navigate', 'inspect', 'edit', or 'none'
+network.set({ input: 'inspect' }); // 'navigate', 'inspect', or 'none'; a diagram also has 'edit'
 network.on('frame', () => showStats(network.stats())); // after each drawn frame
 ```
 
-Every item view handles the same input: hover follows the pointer, the context menu key or
-Shift+F10 opens a menu at the selection, Escape ends a gesture or clears the selection, and, when
-navigating, the wheel zooms (or only with Ctrl or ⌘ under `input: { wheel: 'modifier' }`), Home fits
-the data, and + and − zoom. Each view adds its own gestures, such as dragging.
+Every item view handles the same input: hover follows the pointer, a right click opens a menu where
+the button comes up (a right drag never does), the context menu key or Shift+F10 opens a menu at
+the selection, Escape ends a gesture or clears the selection, and, when navigating, the wheel zooms
+(or only with Ctrl or ⌘ under `input: { wheel: 'modifier' }`), Home fits the data, and + and −
+zoom. Each view adds its own gestures, such as dragging.
 
 ## Update
 
@@ -50,8 +51,9 @@ network.set({
 Data updates are explicit: `view.set({ source: nextData })`. Views never subscribe to a model
 or request historical data. Share unchanged column pages when constructing the next value.
 
-An invalid patch throws `invalid-input` and changes nothing, including an unknown option or limit.
-`view.config` holds the current config.
+An invalid patch throws `invalid-input` and changes nothing: an unknown option, limit, camera
+option, or input option, or an input mode the view does not have. `view.config` holds the current
+config; the camera lives on `view.camera`.
 
 ## Style
 
@@ -108,7 +110,10 @@ Events arrive together after each drawn frame, in order: `frame`, `camera`, `hov
 const png = await network.image({ width: 2048, height: 1024, at: 12 });
 ```
 
-The image renders offscreen at any size; a canvas keeps presenting afterwards.
+An image renders at any size and coordinate. A view on a canvas or in a composition stays as it is:
+its camera, hover, selection, and what `pick` finds stay as presented. A view with neither presents
+in its images, so `pick` and `locate` follow the latest one. [Video](video.md) always draws the view
+as it is and changes nothing.
 
 ## Compose
 
@@ -138,4 +143,6 @@ gpu.destroy();
 GPU after its views.
 
 Failures inside a frame emit `error`, or reach the console when nothing listens. Limits fail with
-`resource-limit`. After device loss, views emit a `device-lost` error; recreate the GPU and its views.
+`resource-limit`. When the device is lost, `gpu.signal` aborts with a `device-lost` error, and each
+view emits it once and stops drawing; recreate the GPU and its views. Destroying the GPU stops its
+views without an error.

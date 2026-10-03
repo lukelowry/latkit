@@ -20,7 +20,7 @@ describe.each(sizes)('pipeline %i buses', async (buses) => {
     for (let f = frames; !context.signal.aborted; f++)
       for (const part of parts) yield { ...part, firstFrame: f, coordinates: Float64Array.of(f) };
   });
-  const stream = model.monitor([{ from: 'Bus', select: ['voltage'] }]);
+  const stream = model.monitor!([{ from: 'Bus', select: ['voltage'] }]);
   const network = createNetwork(device, {
     source: data,
     vertices: { Bus: { color: { field: 'voltage', domain: [0.95, 1.05] } } },

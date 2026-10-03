@@ -130,10 +130,23 @@ for await (const batch of selectBatches(data, [{ from: 'Bus', select: ['voltage'
 }
 ```
 
-It performs local work only. A network producer can return this iterable from
-`connectModel`'s `monitor`, or use it with a command's requested outputs. Live subscriptions,
-publication ownership, backpressure, and cancellation belong to `@latkit/connect`. This package
-has no polling Model, Commands service, begin/end event union, or transaction assembler.
+It performs local work only. A model can return this iterable from its `monitor`, or use it with
+a command's requested outputs. Live subscriptions, publication ownership, backpressure, and
+cancellation belong to `@latkit/connect`. This package has no polling service, begin/end event
+union, or transaction assembler.
+
+`staticFields(schema)` selects every field that is not sampled, of every type: what a model holds
+outside its runs. `sampledFields(schema, types?)` selects every sampled field of `types`, all types
+by default: what a run can record.
+
+## A model
+
+`Model` is the contract a model meets: a `name`, a `schema`, an optional `monitor(fields, context)`
+returning batches, and `commands`, each a `CommandDescription` with `run(values, context)`. A
+command's `CommandContext` carries its requested `outputs` and `publish`, `progress`, and `log`.
+The same context reaches a handler whether it is called in process or across `@latkit/connect`,
+where whoever runs a command supplies it, so a model accepted over a connection is itself a
+`Model`. `Publication` names batches published together.
 
 `CommandDescription` holds parameters and labels; `Arguments<typeof parameters>` infers
 handler arguments, including optional/defaulted values, choices, and multiple values. Parameters

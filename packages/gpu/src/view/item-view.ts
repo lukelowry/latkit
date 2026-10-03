@@ -26,7 +26,10 @@ import {
 } from './view.js';
 
 export interface ViewInput {
-  /** `navigate` moves the camera; `inspect` only hovers, selects, and opens menus. */
+  /**
+   * `navigate` moves the camera; `inspect` only hovers, selects, and opens menus; `edit`, where a
+   * view supports it, also changes the data.
+   */
   readonly mode?: 'navigate' | 'inspect' | 'edit' | 'none';
   /** Zoom on every wheel, or only with Ctrl or ⌘. */
   readonly wheel?: 'zoom' | 'modifier';
@@ -81,6 +84,16 @@ export interface ItemView<
   reveal(item: Item, options?: SetOptions): void;
 }
 
+/** What an item view is, fixed when it is created. */
+export interface ItemShape<Camera> extends ConfigShape {
+  /** Camera keys that framing sets; moving one by hand stops fitting. */
+  readonly framed: readonly (keyof Camera)[];
+  /** Input modes the view supports, its default first: `navigate`, `inspect`, and `none` by default. */
+  readonly modes?: readonly Mode[];
+  /** The view's own defaults for the shared style. */
+  readonly style?: Partial<ResolvedViewStyle>;
+}
+
 /** A hover search. Synchronous searches call `check`; asynchronous ones observe `signal`. */
 export type HoverSearch<Hit> = (
   point: Point,
@@ -110,8 +123,12 @@ interface Animation<Camera> {
   start?: number;
 }
 type Mode = NonNullable<ViewInput['mode']>;
+const MODES: readonly Mode[] = ['navigate', 'inspect', 'none'];
+const INPUT = new Set(['mode', 'wheel', 'keyboard']);
 /** Hover waits this long after the camera, positions, or data move. */
 const SETTLE_MS = 150;
+/** A press that moves farther than this is a drag, not a click. */
+const CLICK_PX = 4;
 
 /**
  * The base of every item view: the camera, selection, picking, hover, events, shade swaps, and the
@@ -127,10 +144,12 @@ export abstract class BaseItemView<
   Merged extends keyof Config = never,
 > extends BaseView<Config, Events, Records, Merged> {
   #style: ResolvedViewStyle;
-  #nextStyle?: ResolvedViewStyle;
+  /** The style a checked config resolves to, until that config applies. */
+  #checked?: { readonly config: Config; readonly style: ResolvedViewStyle };
   readonly #styleDefaults: Partial<ResolvedViewStyle>;
-  readonly #initial?: Partial<Camera>;
-  #target?: Camera;
+  readonly #framed: readonly (keyof Camera)[];
+  readonly #modes: readonly Mode[];
+  #target: Camera;
   #version = 0;
   #drawn?: Camera;
   #viewport?: Viewport;
@@ -158,22 +177,22 @@ export abstract class BaseItemView<
   #shadeSerial = 0;
   readonly #formats = new Set<GPUTextureFormat>();
 
-  constructor(
-    gpu: Gpu,
-    config: Config,
-    shape: ConfigShape = {},
-    styleDefaults: Partial<ResolvedViewStyle> = {},
-  ) {
+  /** Validates the shared style, input, and starting camera before a view allocates anything. */
+  constructor(gpu: Gpu, config: Config, shape: ItemShape<Camera>) {
     super(gpu, config, shape);
-    this.#initial = (config as { readonly camera?: Partial<Camera> }).camera;
-    this.#styleDefaults = styleDefaults;
-    this.#style = resolveViewStyle(this.config, styleDefaults);
-    this.#shade = this.config.shade ?? null;
+    this.#framed = shape.framed;
+    this.#modes = shape.modes ?? MODES;
+    this.#styleDefaults = shape.style ?? {};
+    this.#style = resolveViewStyle(config, this.#styleDefaults);
+    this.checkInput(inputOf(this.config as Config));
+    this.#shade = config.shade ?? null;
+    this.#target = this.#resolvePatch(
+      (config as { readonly camera?: Readonly<Record<string, unknown>> }).camera ?? {},
+      undefined,
+    );
   }
 
   // ── What a view supplies ──
-  /** Camera keys that framing sets; moving one by hand stops fitting. */
-  protected abstract readonly framed: readonly (keyof Camera)[];
   /** The camera of a view with no camera options. */
   protected abstract defaultCamera(): Camera;
   /** A valid, normalized camera replacing `current`, or the first one; throws on an invalid one. */
@@ -205,7 +224,11 @@ export abstract class BaseItemView<
     options: { readonly limit: number; readonly signal?: AbortSignal },
   ): readonly Hit[] | Promise<readonly Hit[]>;
   /** Build the pipelines a shade needs; the base orders compiles and swaps the shade on success. */
-  protected abstract compileShade(shade: Shade | null, format: GPUTextureFormat): Promise<unknown>;
+  protected abstract compileShade(
+    shade: Shade | null,
+    format: GPUTextureFormat,
+    msaa: 1 | 4,
+  ): Promise<unknown>;
   /** React to a compiled shade replacing the previous one. */
   protected shaded?(): void;
   /** The view's own gestures; return a detach. Shared input is attached already. */
@@ -214,12 +237,24 @@ export abstract class BaseItemView<
   protected key?(event: KeyboardEvent, mode: Mode): boolean;
   /** End a gesture in progress on Escape; return true when one ended. */
   protected cancel?(): boolean;
-  /** Input mode when the config names none. */
-  protected readonly inputMode: Mode = 'navigate';
+  /**
+   * Throw on input options the view cannot use. A view with options of its own checks them and
+   * passes the rest here, which rejects any it does not know.
+   */
+  protected checkInput(input: ViewInput): void {
+    for (const key of Object.keys(input))
+      if (!INPUT.has(key)) throw new GpuError('invalid-input', 'Unknown input option: ' + key);
+    if (input.mode !== undefined && !this.#modes.includes(input.mode))
+      throw new GpuError('invalid-input', 'Unsupported input mode: ' + String(input.mode));
+    if (input.wheel !== undefined && input.wheel !== 'zoom' && input.wheel !== 'modifier')
+      throw new GpuError('invalid-input', 'Invalid wheel');
+    if (input.keyboard !== undefined && typeof input.keyboard !== 'boolean')
+      throw new GpuError('invalid-input', 'Invalid keyboard');
+  }
 
   // ── The contract ──
   get camera(): Camera {
-    return (this.#target ??= this.#initialCamera());
+    return this.#target;
   }
   get selection(): readonly Item[] {
     return this.#selection;
@@ -304,7 +339,11 @@ export abstract class BaseItemView<
   protected get hovered(): Hit | null {
     return this.#hover;
   }
-  /** The camera this frame draws: framed while `fit` holds, eased while animating. Call once per prepare. */
+  /**
+   * The camera this frame draws: framed while `fit` holds, eased while animating. Call once per
+   * prepare. An exported frame frames its own size and draws where the camera is going, leaving the
+   * view's camera as it was.
+   */
   protected async frameCamera(frame: FrameInfo): Promise<Camera> {
     this.#formats.add(frame.format);
     let target = this.camera;
@@ -316,6 +355,7 @@ export abstract class BaseItemView<
           { ...target, ...framed, fit: !fitting?.items } as Camera,
           target,
         );
+        if (!frame.presented) return next;
         if (fitting && this.#fitting === fitting) {
           this.#fitting = undefined;
           this.#animation = this.#ease(fitting.options);
@@ -325,6 +365,7 @@ export abstract class BaseItemView<
         target = next;
       }
     }
+    if (!frame.presented) return target;
     let camera = target,
       finished = false;
     const animation = this.#animation;
@@ -352,9 +393,10 @@ export abstract class BaseItemView<
   /**
    * The item to draw as hovered this frame. A synchronous search lands in this frame; an
    * asynchronous one in the next. `moving` adds the view's own motion, such as a drag. Call once
-   * per prepare, after frameCamera.
+   * per prepare, after frameCamera. An exported frame draws the published hover and searches none.
    */
   protected hoverFrame(frame: FrameInfo, search: HoverSearch<Hit>, moving = false): Hit | null {
+    if (!frame.presented) return this.#hover;
     const drawn = this.#frames.get(frame),
       policy = this.#style.hover,
       now = performance.now();
@@ -512,27 +554,37 @@ export abstract class BaseItemView<
     );
   }
 
-  // ── Base steps ──
+  /** Move the camera by a partial camera, as `set({ camera })` does, or follow the data with null. */
   protected moveCamera(patch: Readonly<Record<string, unknown>> | null, options: SetOptions): void {
-    if (patch === null) return this.fit(undefined, options);
-    const defaults = this.defaultCamera() as unknown as Record<string, unknown>;
-    const values = Object.fromEntries(
-      Object.entries(patch).map(([key, value]) => [key, value ?? defaults[key]]),
-    );
+    this.cameraMove(patch)(options);
+  }
+
+  // ── Base steps ──
+  protected cameraMove(
+    patch: Readonly<Record<string, unknown>> | null,
+  ): (options: SetOptions) => void {
+    if (patch === null) return (options) => this.fit(undefined, options);
     const current = this.camera,
-      moved = this.framed.some((key) => key in values),
-      fit = (values.fit as boolean | undefined) ?? (moved ? false : current.fit);
-    this.#move(this.resolveCamera({ ...current, ...values, fit } as Camera, current), options);
-    if (values.fit === true && !current.fit) this.#fitting = { options };
+      next = this.#resolvePatch(patch, current);
+    return (options) => {
+      this.#move(next, options);
+      if (next.fit && !current.fit) this.#fitting = { options };
+    };
   }
   protected check(config: Config): void {
-    this.#nextStyle = resolveViewStyle(config, this.#styleDefaults);
+    const style = resolveViewStyle(config, this.#styleDefaults);
+    this.checkInput(inputOf(config));
+    // Keyed by config: a patch rejected after this check never applies its style.
+    this.#checked = { config, style };
   }
   protected changed(previous: Config, next: Config, options: SetOptions): void {
     void options;
     const style = this.#style;
-    this.#style = this.#nextStyle ?? resolveViewStyle(next, this.#styleDefaults);
-    this.#nextStyle = undefined;
+    this.#style =
+      this.#checked?.config === next
+        ? this.#checked.style
+        : resolveViewStyle(next, this.#styleDefaults);
+    this.#checked = undefined;
     if (previous.source !== next.source) this.#prune = true;
     if (
       previous.source !== next.source ||
@@ -577,9 +629,8 @@ export abstract class BaseItemView<
     return !!this.#animation;
   }
   protected attach(canvas: HTMLCanvasElement): () => void {
-    const config = this.config.input,
-      options: ViewInput = typeof config === 'string' ? { mode: config } : (config ?? {}),
-      mode = options.mode ?? this.inputMode,
+    const options = inputOf(this.config as Config),
+      mode = options.mode ?? this.#modes[0],
       navigate = mode !== 'inspect';
     const input = createCanvasInput({
         canvas,
@@ -587,7 +638,47 @@ export abstract class BaseItemView<
         touchAction: navigate ? 'none' : 'pan-x pan-y',
       }),
       { signal } = input;
-    canvas.addEventListener('pointermove', (event) => this.pointer(input.point(event)), { signal });
+    // A right press opens the menu where it is released in place; a right drag is a gesture. The
+    // browser asks for the menu on press (macOS, Linux) or after release (Windows).
+    let press: { readonly id: number; readonly point: Point; asked?: Modifiers } | undefined,
+      dragged = false;
+    canvas.addEventListener(
+      'pointerdown',
+      (event) => {
+        dragged = false;
+        if (event.button !== 2) return;
+        press = { id: event.pointerId, point: input.point(event) };
+        input.capture(event.pointerId);
+      },
+      { signal },
+    );
+    canvas.addEventListener(
+      'pointermove',
+      (event) => {
+        const point = input.point(event);
+        if (
+          press?.id === event.pointerId &&
+          Math.hypot(point[0] - press.point[0], point[1] - press.point[1]) > CLICK_PX
+        )
+          dragged = true;
+        this.pointer(point);
+      },
+      { signal },
+    );
+    canvas.addEventListener(
+      'pointerup',
+      (event) => {
+        if (event.button !== 2 || press?.id !== event.pointerId) return;
+        const asked = press.asked;
+        press = undefined;
+        input.release(event.pointerId);
+        if (!asked) return;
+        if (!dragged) void this.menu(input.point(event), 'pointer', asked);
+        dragged = false;
+      },
+      { signal },
+    );
+    canvas.addEventListener('pointercancel', () => (press = undefined), { signal });
     canvas.ownerDocument.defaultView
       ?.matchMedia?.('(prefers-reduced-motion: reduce)')
       .addEventListener('change', () => this.invalidate(), { signal });
@@ -596,7 +687,9 @@ export abstract class BaseItemView<
       'contextmenu',
       (event) => {
         event.preventDefault();
-        void this.menu(input.point(event), 'pointer', inputModifiers(event));
+        if (press) press.asked = inputModifiers(event);
+        else if (dragged) dragged = false;
+        else void this.menu(input.point(event), 'pointer', inputModifiers(event));
       },
       { signal },
     );
@@ -646,12 +739,25 @@ export abstract class BaseItemView<
     else return false;
     return true;
   }
-  #initialCamera(): Camera {
-    const given: Partial<Camera> = this.#initial ?? {},
-      moved = this.framed.some((key) => key in given);
+  /**
+   * The camera a patch moves to from `current`, or the starting camera without one. A null option
+   * takes its default; moving a framed key stops fitting. Throws on an unknown key or invalid camera.
+   */
+  #resolvePatch(patch: Readonly<Record<string, unknown>>, current: Camera | undefined): Camera {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch))
+      throw new GpuError('invalid-input', 'Invalid camera');
+    const defaults = this.defaultCamera() as unknown as Record<string, unknown>,
+      values: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(patch)) {
+      if (!Object.hasOwn(defaults, key))
+        throw new GpuError('invalid-input', 'Unknown camera option: ' + key);
+      values[key] = value ?? defaults[key];
+    }
+    const moved = this.#framed.some((key) => Object.hasOwn(values, key)),
+      fit = (values.fit as boolean | undefined) ?? (moved ? false : (current?.fit ?? true));
     return this.resolveCamera(
-      { ...this.defaultCamera(), ...given, fit: given.fit ?? !moved } as Camera,
-      undefined,
+      { ...(current ?? defaults), ...values, fit } as unknown as Camera,
+      current,
     );
   }
   #move(next: Camera, options: SetOptions): void {
@@ -710,8 +816,9 @@ export abstract class BaseItemView<
   }
   #compile(shade: Shade | null): void {
     const serial = ++this.#shadeSerial,
+      msaa = this.#style.msaa,
       formats: GPUTextureFormat[] = this.#formats.size ? [...this.#formats] : ['rgba8unorm'];
-    Promise.all(formats.map((format) => this.compileShade(shade, format))).then(
+    Promise.all(formats.map((format) => this.compileShade(shade, format, msaa))).then(
       () => {
         if (serial !== this.#shadeSerial || this.closed) return;
         this.#shade = shade;
@@ -725,6 +832,13 @@ export abstract class BaseItemView<
   }
 }
 
+/** A config's input options, which views keep expanded from a mode shorthand. */
+function inputOf(config: ItemViewConfig): ViewInput {
+  const input = config.input ?? {};
+  if (typeof input !== 'object' || Array.isArray(input))
+    throw new GpuError('invalid-input', 'Invalid input');
+  return input;
+}
 function isPoint(point: unknown): point is Point {
   return Array.isArray(point) && point.length === 2 && point.every(Number.isFinite);
 }

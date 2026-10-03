@@ -24,14 +24,16 @@ function failure(run: () => void): unknown {
 /** Drive the pointer as input does. */
 const pointer = (monitor: Monitor, point: readonly [number, number] | null) =>
   (monitor as unknown as { pointer(point: readonly [number, number] | null): void }).pointer(point);
-/** The last frame each image holds for a trace. */
-const through = (monitor: Monitor, image: 'front' | 'back' = 'front') =>
-  (
-    monitor as unknown as Record<
-      string,
-      { progress: Map<string, { through?: number }> } | undefined
-    >
-  )[image]?.progress.get('signal')?.through;
+type History = Record<string, { progress: Map<string, { through?: number }> } | undefined>;
+/** The last frame each image of the presented, or exported, history holds for a trace. */
+const through = (
+  monitor: Monitor,
+  image: 'front' | 'back' = 'front',
+  history: 'presentedHistory' | 'exportedHistory' = 'presentedHistory',
+) =>
+  (monitor as unknown as Record<string, History | undefined>)[history]?.[image]?.progress.get(
+    'signal',
+  )?.through;
 /** One read the monitor asked of a scope. */
 interface Request {
   readonly kind: string;
@@ -150,6 +152,31 @@ describe('history', () => {
     for (let i = 0; i < 6; i++) await h.render(true, i);
     expect(h.gpu.stats().queries).toBe(reads);
     expect(h.gpu.stats().uploadedBytes - uploads).toBeLessThan(8192);
+    h.close();
+  });
+  it('exports into its own history, leaving the presented images and picking as they were', async () => {
+    const h = await harness();
+    await h.render();
+    const [hit] = await h.monitor.pick(h.point(64), { radiusPx: 1, limit: 1 });
+    const front = (h.monitor as unknown as Record<string, { front?: object }>).presentedHistory
+      .front;
+    const exported = kit.createRenderTarget({ gpu: h.gpu, width: 256, height: 512 });
+    await h.gpu.render({
+      views: [{ renderer: h.renderer, target: exported, presented: false }],
+      timeMs: performance.now(),
+      completion: 'complete',
+    });
+    // The export drew everything at its own size, and the canvas's history is untouched.
+    expect(through(h.monitor, 'front', 'exportedHistory')).toBe(h.source.firstFrame + 127);
+    expect(
+      (h.monitor as unknown as Record<string, { front?: object }>).presentedHistory.front,
+    ).toBe(front);
+    expect(await h.monitor.pick(h.point(64), { radiusPx: 1, limit: 1 })).toEqual([hit]);
+    expect(h.monitor.stats().refining).toBe(false);
+    // Presenting again lets the export's history go.
+    await h.render();
+    expect(through(h.monitor, 'front', 'exportedHistory')).toBeUndefined();
+    exported.destroy();
     h.close();
   });
   it('appends draw only the new frames, joined to the last frame drawn', async () => {

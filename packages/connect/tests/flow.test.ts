@@ -1,9 +1,8 @@
 import { expect, it, vi } from 'vitest';
-import { appendData, createData, type SampleBatch } from '@latkit/model';
+import { appendData, createData, type Publication, type SampleBatch } from '@latkit/model';
 import { pair, fields, batch, pause, collect, schema } from './fixture.js';
 import { deferred } from '../src/core.js';
 import { Op } from '../src/frame.js';
-import type { Publication } from '../src/types.js';
 
 it('stops producer pulls at the credit window plus one pending publication while other operations remain usable', async () => {
   let produced = 0;
@@ -19,12 +18,12 @@ it('stops producer pulls at the credit window plus one pending publication while
     },
     commands: { ping: { parameters: {}, run: () => 'pong' } },
   });
-  const stream = p.model.monitor(fields);
+  const stream = p.model.monitor!(fields);
   try {
     await filled.promise;
     await pause(30);
     expect(produced).toBe(5);
-    await expect(p.model.run('ping', {})).resolves.toBe('pong');
+    await expect(p.model.commands.ping.run({})).resolves.toBe('pong');
     expect((await stream.next()).done).toBe(false);
     await pause(10);
     expect(produced).toBe(5);
@@ -65,12 +64,11 @@ it('delivers an oversized sample publish and monitor yield as whole-frame messag
   const output = [{ from: 'Node', select: ['output'] }];
   try {
     const published: Publication[] = [];
-    await p.model.run(
-      'stream',
+    await p.model.commands.stream.run(
       {},
-      { outputs: output, onData: (data) => void published.push(data) },
+      { outputs: output, publish: async (data) => void published.push(data as Publication) },
     );
-    for (const publications of [published, await collect(p.model.monitor(output))]) {
+    for (const publications of [published, await collect(p.model.monitor!(output))]) {
       expect(publications.length).toBeGreaterThan(1);
       let data = createData(schema, []);
       for (const publication of publications) data = appendData(data, publication as SampleBatch[]);
@@ -101,14 +99,13 @@ it('rejects concurrent publishes and sends only selected fields', async () => {
     },
   });
   try {
-    await expect(p.model.run('bad', {}, { outputs: fields, onData: () => {} })).rejects.toThrow(
-      /Await publish/,
-    );
     await expect(
-      p.model.run(
-        'extra',
+      p.model.commands.bad.run({}, { outputs: fields, publish: async () => {} }),
+    ).rejects.toThrow(/Await publish/);
+    await expect(
+      p.model.commands.extra.run(
         {},
-        { outputs: [{ from: 'Node', select: ['output'] }], onData: () => {} },
+        { outputs: [{ from: 'Node', select: ['output'] }], publish: async () => {} },
       ),
     ).rejects.toThrow(/unrequested/);
   } finally {
@@ -139,13 +136,12 @@ it('aborts an in-progress data callback promptly and retains the producer slot u
   });
   const controller = new AbortController();
   try {
-    const task = p.model.run(
-      'work',
+    const task = p.model.commands.work.run(
       {},
       {
         signal: controller.signal,
         outputs: fields,
-        onData: async () => {
+        publish: async () => {
           entered.resolve();
           await blocked.promise;
         },
@@ -156,7 +152,7 @@ it('aborts an in-progress data callback promptly and retains the producer slot u
     controller.abort();
     await rejection;
     await finished.promise;
-    expect(await collect(p.model.monitor(fields))).toHaveLength(1);
+    expect(await collect(p.model.monitor!(fields))).toHaveLength(1);
   } finally {
     blocked.resolve();
     await p.close();
@@ -173,7 +169,7 @@ it('keeps repeated empty and failed streams bounded', async () => {
   });
   try {
     for (let i = 0; i < 40; i++) {
-      const task = collect(p.model.monitor(fields));
+      const task = collect(p.model.monitor!(fields));
       if (i % 2) await expect(task).rejects.toThrow('source failed');
       else expect(await task).toEqual([]);
     }
@@ -194,7 +190,7 @@ it('propagates abrupt socket failure to a pending consumer', async () => {
     },
   });
   try {
-    const next = p.model.monitor(fields).next(),
+    const next = p.model.monitor!(fields).next(),
       rejected = expect(next).rejects.toThrow();
     await started.promise;
     p.socket.terminate();
@@ -221,10 +217,12 @@ it('returns bounded errors for oversized results and releases unsent command res
     },
   });
   try {
-    await expect(p.model.run('large', {})).rejects.toThrow(/large|budget/);
+    await expect(p.model.commands.large.run({})).rejects.toThrow(/large|budget/);
     for (let i = 0; i < 5; i++)
-      await expect(p.model.run('echo', { text: 'x'.repeat(4096) })).rejects.toThrow(/large|budget/);
-    await expect(p.model.run('ping', {})).resolves.toBe('pong');
+      await expect(p.model.commands.echo.run({ text: 'x'.repeat(4096) })).rejects.toThrow(
+        /large|budget/,
+      );
+    await expect(p.model.commands.ping.run({})).resolves.toBe('pong');
   } finally {
     await p.close();
   }
@@ -247,11 +245,10 @@ it('bounds worst-case escaped diagnostics under minimum metadata limits', async 
     dropped = 0;
   try {
     await expect(
-      p.model.run(
-        'log',
+      p.model.commands.log.run(
         {},
         {
-          onLog: (entry) => {
+          log: (entry) => {
             logs++;
             dropped += entry.dropped ?? 0;
           },
@@ -282,7 +279,7 @@ it('bounds cancellation and close when a handler ignores its signal', async () =
   });
   const stop = new AbortController();
   try {
-    const run = p.model.run('stuck', {}, { signal: stop.signal });
+    const run = p.model.commands.stuck.run({}, { signal: stop.signal });
     const cancelled = expect(run).rejects.toThrow();
     const closed = expect(p.model.closed).rejects.toThrow(/cancellation/);
     await entered.promise;
@@ -308,12 +305,11 @@ it('fails asynchronous telemetry callbacks explicitly without unhandled rejectio
   });
   try {
     await expect(
-      p.model.run(
-        'status',
+      p.model.commands.status.run(
         {},
         {
           // eslint-disable-next-line @typescript-eslint/no-misused-promises -- Exercise a JavaScript caller violating the synchronous callback contract.
-          onProgress: async () => {
+          progress: async () => {
             throw new Error('callback failed');
           },
         },
@@ -339,15 +335,15 @@ it('does not accumulate native File reads when callers abort preparation', async
   const stop = new AbortController(),
     file = new SlowFile(['x'], 'x');
   try {
-    const run = p.model.run('load', { file }, { signal: stop.signal });
+    const run = p.model.commands.load.run({ file }, { signal: stop.signal });
     const rejected = expect(run).rejects.toThrow();
     await started.promise;
     stop.abort();
     await rejected;
-    await expect(p.model.run('load', { file })).rejects.toThrow(/running/);
+    await expect(p.model.commands.load.run({ file })).rejects.toThrow(/running/);
     release.resolve(new ArrayBuffer(1));
     await pause();
-    await expect(p.model.run('load', { file: new File(['x'], 'x') })).resolves.toBe(true);
+    await expect(p.model.commands.load.run({ file: new File(['x'], 'x') })).resolves.toBe(true);
   } finally {
     release.resolve(new ArrayBuffer(1));
     await p.close();
@@ -367,15 +363,15 @@ it('cancels queued requests promptly without releasing their reservations before
     get: () => 16 * 1024 ** 2,
   });
   try {
-    const run = p.model.run('ping', {}, { signal: stop.signal });
+    const run = p.model.commands.ping.run({}, { signal: stop.signal });
     const rejectedRun = expect(run).rejects.toThrow();
-    const stream = p.model.monitor(fields);
+    const stream = p.model.monitor!(fields);
     const rejectedPull = expect(stream.next()).rejects.toThrow();
     await pause();
     stop.abort();
     await stream.return!();
     await Promise.all([rejectedRun, rejectedPull]);
-    expect(() => p.model.monitor(fields)).toThrow(/streams/);
+    expect(() => p.model.monitor!(fields)).toThrow(/streams/);
     await pause(150);
     expect(writes).not.toHaveBeenCalled();
     Reflect.deleteProperty(p.socket, 'bufferedAmount');
@@ -390,7 +386,7 @@ it('cancels queued requests promptly without releasing their reservations before
           ).length,
       )
       .toBe(2);
-    await expect(p.model.run('ping', {})).resolves.toBe('pong');
+    await expect(p.model.commands.ping.run({})).resolves.toBe('pong');
   } finally {
     Reflect.deleteProperty(p.socket, 'bufferedAmount');
     writes.mockRestore();

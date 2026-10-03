@@ -95,7 +95,7 @@ it('keeps about 21 bytes per item and queries an empty index', () => {
   expect([...single.query([2, 3, 2, 3], () => {})]).toEqual([0]);
   expect([...single.query([2.001, 3, 3, 4], () => {})]).toEqual([]);
 });
-it('lets an explicit query finish a background build and frees one aborted part way', async () => {
+it('builds an index in cooperative slices and frees one aborted part way', async () => {
   const count = 20000,
     index = { source: 'fixture', type: 'node', version: '1' },
     rows = { kind: 'range', offset: 0, count } as const;
@@ -146,12 +146,8 @@ it('lets an explicit query finish a background build and frees one aborted part 
   expect(stage(finished.picking)).toBe('building');
   expect(finished.picking.bytes).toBe(HitIndex.bytes(count));
   expect(finished.picking.indexable(data, style)).toBe(false);
-  (finished.picking as unknown as { index(data: NetworkData, style: Style): void }).index(
-    data,
-    style,
-  );
-  expect(stage(finished.picking)).toBe('built');
   await finished.later;
+  expect(stage(finished.picking)).toBe('built');
   expect(finished.picking.bytes).toBe(HitIndex.bytes(count));
   const aborted = start();
   await pause();

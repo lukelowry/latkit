@@ -23,6 +23,12 @@ export interface FrameInfo {
   readonly timeMs: number;
   readonly viewport: Viewport;
   readonly format: GPUTextureFormat;
+  /**
+   * Whether the frame shows the view where it presents: its canvas, a composition, or, for a view
+   * with neither, its images. False for video and other exports, which draw the view's current
+   * state and change none of it.
+   */
+  readonly presented: boolean;
 }
 
 /** Methods and returned GPU descriptors are scoped to this frame. Reads must be consumed. */
@@ -89,6 +95,8 @@ export interface RenderView {
   readonly target: RenderTarget;
   readonly at?: number;
   readonly viewport?: Viewport;
+  /** False to export the view, as video does; true by default. */
+  readonly presented?: boolean;
 }
 
 export interface RenderOptions {

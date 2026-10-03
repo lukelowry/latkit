@@ -1,4 +1,4 @@
-import { GpuError, kit, viewStyle, type RGBA } from '@latkit/gpu';
+import { GpuError, kit, viewStyle, type RGBA, type ViewInput } from '@latkit/gpu';
 import type { DiagramStyle, Limits } from './options.js';
 import type { DiagramData, VertexData, EdgeData } from './data.js';
 import type { DiagramInput } from './input.js';
@@ -82,21 +82,32 @@ export function resolveLimits(value: Limits = {}): Required<Limits> {
   }
   return Object.freeze(result) as Required<Limits>;
 }
-const MODES = ['edit', 'navigate', 'inspect', 'none'];
-/** Throw on input options the gestures cannot use. */
-export function checkInput(input: DiagramInput | undefined): void {
-  if (!input) return;
-  if (input.mode !== undefined && !MODES.includes(input.mode)) fail('Invalid input mode');
-  if (input.wheel !== undefined && !['zoom', 'modifier'].includes(input.wheel))
-    fail('Invalid wheel');
-  if (input.backgroundDrag !== undefined && !['pan', 'select'].includes(input.backgroundDrag))
+/** Throw on the diagram's own input options the gestures cannot use; return the shared rest. */
+export function checkInput(input: DiagramInput): ViewInput {
+  const {
+    backgroundDrag,
+    dragThresholdPx,
+    touchDragThresholdPx,
+    connectRadiusPx,
+    autoPan,
+    autoPanMarginPx,
+    autoPanSpeedPx,
+    canConnect,
+    ...shared
+  } = input;
+  if (backgroundDrag !== undefined && !['pan', 'select'].includes(backgroundDrag))
     fail('Invalid backgroundDrag');
-  for (const key of ['dragThresholdPx', 'touchDragThresholdPx', 'autoPanSpeedPx'] as const)
-    if (input[key] !== undefined) positive(input[key], key, true);
-  for (const key of ['connectRadiusPx', 'autoPanMarginPx'] as const)
-    if (input[key] !== undefined) positive(input[key], key);
-  if (input.canConnect !== undefined && typeof input.canConnect !== 'function')
-    fail('Invalid canConnect');
+  for (const [key, value] of Object.entries({
+    dragThresholdPx,
+    touchDragThresholdPx,
+    autoPanSpeedPx,
+  }))
+    if (value !== undefined) positive(value, key, true);
+  for (const [key, value] of Object.entries({ connectRadiusPx, autoPanMarginPx }))
+    if (value !== undefined) positive(value, key);
+  if (autoPan !== undefined && typeof autoPan !== 'boolean') fail('Invalid autoPan');
+  if (canConnect !== undefined && typeof canConnect !== 'function') fail('Invalid canConnect');
+  return shared;
 }
 function binding(value: VertexData | EdgeData) {
   if (value.labels) {

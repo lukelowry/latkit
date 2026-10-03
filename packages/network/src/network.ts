@@ -102,19 +102,21 @@ interface Resolved {
 }
 /** Hit-test indexes build once the shown positions have held this long, as hover settles. */
 const INDEX_SETTLE_MS = 150;
-/** Resolve after `ms`, or as soon as the signal aborts. */
-function settle(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
+/** Settles after `ms`, when `now` is called, or as soon as the signal aborts. */
+function settle(
+  ms: number,
+  signal: AbortSignal,
+): { readonly settled: Promise<void>; readonly now: () => void } {
+  let now!: () => void;
+  const settled = new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    now = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal.addEventListener('abort', now, { once: true });
   });
+  return { settled, now };
 }
 const KEYS = new Set([
   'canvas',
@@ -203,7 +205,6 @@ class NetworkView
   >
   implements Network
 {
-  protected readonly framed = ['projection', 'center', 'scale', 'pitch', 'bearing'] as const;
   private data: NetworkData;
   private style: Style;
   private limits: Required<Limits>;
@@ -216,10 +217,17 @@ class NetworkView
   private preparing?: { readonly geometry: Geometry; readonly picking: PickGeometry };
   private readonly painter: Painter;
   private readonly picking = new Picking();
-  /** Hit-test indexes building in the background for the shown positions. */
+  /**
+   * Hit-test indexes building for the shown positions: in the background once they hold still, or
+   * at once for a query that needs them.
+   */
   private indexing?: {
     readonly picking: PickGeometry;
     readonly stop: AbortController;
+    /** Start building now instead of waiting for the positions to settle. */
+    readonly now: () => void;
+    /** Settles when the build ends: built, out of budget, superseded, or failed. */
+    readonly built: Promise<void>;
     done: boolean;
   };
   private readonly paths = new Paths();
@@ -241,7 +249,8 @@ class NetworkView
         {},
       );
     },
-    hits: (point) => this.hit(point, this.viewStyle.pickRadiusPx),
+    hits: (point, signal) => this.hits(point, this.viewStyle.pickRadiusPx, { signal }),
+    fail: (error) => this.fail(error),
     locate: (item) => this.locate(item),
     neighborhood: (item) => this.neighborhood(item),
     reveal: (item) => this.reveal(item),
@@ -253,6 +262,7 @@ class NetworkView
       records: ['vertices', 'edges', 'paths'],
       merged: ['camera', 'input', 'limits'],
       fields: FIELD_OPTIONS,
+      framed: ['projection', 'center', 'scale', 'pitch', 'bearing'],
     });
     const resolved = resolve(this.config);
     this.data = resolved.data;
@@ -359,11 +369,36 @@ class NetworkView
           : bank.rows.values.includes(item.row)),
     );
   }
-  protected hits(point: Point, radiusPx: number): readonly NetworkItem[] {
-    return this.hit(point, radiusPx);
+  /** Hits in the shown frame, once the index its positions are building is ready. */
+  protected async hits(
+    point: Point,
+    radiusPx: number,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<readonly NetworkItem[]> {
+    const shown = this.shown;
+    if (!shown) return [];
+    const task = this.indexing;
+    if (task && !task.done) {
+      task.now();
+      if (options.signal) await new kit.Work(options.signal).wait(task.built);
+      else await task.built;
+    }
+    return shown.picking.hit(
+      point,
+      shown.data,
+      shown.camera,
+      shown.viewport,
+      shown.height,
+      shown.options,
+      Math.min(radiusPx, Math.hypot(shown.viewport.width, shown.viewport.height)),
+    );
   }
-  protected compileShade(shade: Shade | null, format: GPUTextureFormat): Promise<unknown> {
-    return pipelines(this.gpu, format, this.style.msaa, shade?.wgsl ?? kit.defaultShade);
+  protected compileShade(
+    shade: Shade | null,
+    format: GPUTextureFormat,
+    msaa: 1 | 4,
+  ): Promise<unknown> {
+    return pipelines(this.gpu, format, msaa, shade?.wgsl ?? kit.defaultShade);
   }
   protected listen(
     canvas: HTMLCanvasElement,
@@ -406,19 +441,6 @@ class NetworkView
   }
   protected get animating(): boolean {
     return super.animating || this.camera.orbit || this.shadeAnimating;
-  }
-  private hit(point: Point, radiusPx: number): readonly NetworkItem[] {
-    const shown = this.shown;
-    if (!shown) return [];
-    return shown.picking.hit(
-      point,
-      shown.data,
-      shown.camera,
-      shown.viewport,
-      shown.height,
-      shown.options,
-      Math.min(radiusPx, Math.hypot(shown.viewport.width, shown.viewport.height)),
-    );
   }
 
   protected async prepare(frame: kit.Preparation): Promise<void> {
@@ -485,7 +507,8 @@ class NetworkView
     const framed = camera;
     if (camera.projection === 'globe' && !geometry.geographic)
       camera = { ...camera, projection: 'flat', pitch: 0 };
-    if (camera.orbit) {
+    // Only presented frames turn the camera; an export draws it where it is.
+    if (camera.orbit && frame.presented) {
       const dt =
         this.orbitTime === undefined
           ? 0
@@ -576,10 +599,12 @@ class NetworkView
     const pending = this.pendingFrame;
     if (!pending) return;
     this.pendingFrame = undefined;
-    this.shown = pending;
     this.geometry = pending.geometry;
-    this.orbitTime = pending.camera.orbit ? frame.timeMs : undefined;
     this.painter.prune(pending.geometry);
+    // An exported frame leaves what pick, locate, selection, and the orbit see.
+    if (!frame.presented) return;
+    this.shown = pending;
+    this.orbitTime = pending.camera.orbit ? frame.timeMs : undefined;
     this.indexLater(pending);
     this.counts = {
       vertices: pending.geometry.vertexCount,
@@ -591,7 +616,7 @@ class NetworkView
   }
   /**
    * Build the shown frame's missing hit-test indexes in cooperative slices once its positions hold
-   * still, so pick and hover query them; new positions or destroy abort the build.
+   * still, or at once when a query needs them; new positions or destroy abort the build.
    */
   private indexLater({ picking, camera, data, options }: Presented): void {
     const running = this.indexing;
@@ -599,10 +624,10 @@ class NetworkView
     running?.stop.abort();
     this.indexing = undefined;
     if (camera.projection !== 'flat' || !picking.indexable(data, options)) return;
-    const task = { picking, stop: new AbortController(), done: false },
-      { signal } = task.stop;
-    this.indexing = task;
-    settle(INDEX_SETTLE_MS, signal)
+    const stop = new AbortController(),
+      { signal } = stop,
+      { settled, now } = settle(INDEX_SETTLE_MS, signal);
+    const built = settled
       .then(() => {
         signal.throwIfAborted();
         return picking.indexLater(data, options, new kit.Work(signal));
@@ -614,9 +639,12 @@ class NetworkView
           if (!signal.aborted) this.refreshHover();
         },
         (error: unknown) => {
+          task.done = true;
           if (!signal.aborted) this.fail(error);
         },
       );
+    const task = { picking, stop, now, built, done: false };
+    this.indexing = task;
   }
   protected release(): void {
     this.indexing?.stop.abort();

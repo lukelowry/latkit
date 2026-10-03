@@ -1,48 +1,21 @@
 import type {
   Arguments,
+  CommandContext,
   CommandDescription,
   CommandResult,
-  DataBatch,
-  Diagnostic,
   FieldSelection,
   InputValue,
-  LogEntry,
+  Model,
+  MonitorContext,
   Parameters,
-  Progress,
-  Schema,
+  Publication,
 } from '@latkit/model';
 
-/** Batches published together. A group within the negotiated message bounds arrives as one atomic
- *  message; a larger one arrives as several, in order, cutting sample batches only between frames. */
-export type Publication = readonly DataBatch[];
+/** A publication as it travels: the frame from byte 16 on (two lengths, metadata, padding, body). */
 export interface EncodedPublication {
   readonly bytes: Uint8Array;
 }
-export interface Publish {
-  /** Resolves once every message is encoded; its arrays may then be reused. */
-  (batch: DataBatch | Publication): Promise<void>;
-}
-export interface MonitorContext {
-  readonly signal: AbortSignal;
-  /** Preferred size of one batch, for selectBatches and other block producers. Larger sample
-   *  batches are cut between frames; a row batch must fit one message. */
-  readonly maxBlockBytes: number;
-}
-export interface CommandContext extends MonitorContext {
-  readonly outputs: readonly FieldSelection[];
-  readonly publish: Publish;
-  /** Coalesces pending updates. Does not block the solver. */
-  progress(value: Progress): void;
-  /** Bounded diagnostics; dropped entries are reported to the host. */
-  log(value: Diagnostic): void;
-}
-export interface Command<P extends Parameters = Parameters> extends CommandDescription<P> {
-  run(
-    values: Arguments<P>,
-    context: CommandContext,
-  ): CommandResult | void | Promise<CommandResult | void>;
-}
-export interface Limits {
+export interface ConnectLimits {
   readonly maxMessageBytes: number;
   readonly maxMetadataBytes: number;
   readonly maxBufferedBytes: number;
@@ -55,76 +28,44 @@ export interface Limits {
   /** Registration, cancellation response, close notification and cleanup deadlines; never a flow-control timeout. */
   readonly timeoutMs: number;
 }
-export interface ConnectOptions<C extends Record<string, Parameters> = Record<string, Parameters>> {
-  readonly url: string | URL;
-  readonly name: string;
-  readonly schema: Schema;
-  readonly monitor?: (
-    fields: readonly FieldSelection[],
-    context: MonitorContext,
-  ) => Iterable<DataBatch | Publication> | AsyncIterable<DataBatch | Publication>;
-  readonly commands?: {
-    readonly [K in keyof C]: {
-      readonly label?: string;
-      readonly description?: string;
-      readonly parameters: { readonly [P in keyof C[K]]: C[K][P] };
-      run(
-        values: Arguments<C[K]>,
-        context: CommandContext,
-      ): CommandResult | void | Promise<CommandResult | void>;
-    };
-  };
+interface Endpoint {
   readonly signal?: AbortSignal;
-  readonly limits?: Partial<Limits>;
+  readonly limits?: Partial<ConnectLimits>;
 }
+/** Dial exactly `url`, or answer on a `socket` a server accepted. */
+export type ConnectOptions = Endpoint &
+  (
+    | { readonly url: string | URL; readonly socket?: never }
+    | { readonly socket: WebSocketLike; readonly url?: never }
+  );
+/** Dial exactly `url`, or answer on a `socket` a server accepted. */
+export type AcceptOptions = ConnectOptions;
 export interface Connection {
   readonly closed: Promise<void>;
   close(reason?: { readonly code: string; readonly message: string }): Promise<void>;
 }
-export interface MonitorOptions {
-  readonly signal?: AbortSignal;
-  readonly format?: 'decoded';
-}
-export interface EncodedMonitorOptions {
-  readonly signal?: AbortSignal;
-  readonly format: 'encoded';
-}
-interface RunBase {
-  readonly signal?: AbortSignal;
-  readonly outputs?: readonly FieldSelection[];
-  readonly onProgress?: (value: Progress) => void;
-  readonly onLog?: (value: LogEntry) => void;
-}
-export interface RunOptions extends RunBase {
-  readonly format?: 'decoded';
-  readonly onData?: (publication: Publication) => void | Promise<void>;
-}
-export interface EncodedRunOptions extends RunBase {
-  readonly format: 'encoded';
-  readonly onData?: (publication: EncodedPublication) => void | Promise<void>;
-}
-export interface ConnectedModel extends Connection {
-  readonly name: string;
-  readonly schema: Schema;
-  readonly commands: Readonly<Record<string, CommandDescription>>;
-  monitor(
+/** The model a connection carries. Reading and running it go over the socket; connectModel serves
+ *  it onward as it is. */
+export interface ConnectedModel extends Model, Connection {
+  /** Absent when the model offers no reading. An empty selection reads nothing. */
+  readonly monitor?: (
     fields: readonly FieldSelection[],
-    options: EncodedMonitorOptions,
-  ): AsyncIterableIterator<EncodedPublication>;
-  monitor(
-    fields: readonly FieldSelection[],
-    options?: MonitorOptions,
-  ): AsyncIterableIterator<Publication>;
-  run(
-    command: string,
-    values: Readonly<Record<string, InputValue>>,
-    options: EncodedRunOptions,
-  ): Promise<CommandResult>;
-  run(
-    command: string,
-    values: Readonly<Record<string, InputValue>>,
-    options?: RunOptions,
-  ): Promise<CommandResult>;
+    context?: Partial<MonitorContext>,
+  ) => AsyncIterableIterator<Publication>;
+  /** Each run goes to the model, its values checked against the command's parameters; whoever runs
+   *  it supplies `publish` for the outputs it asks for, and may supply `progress`, `log`, and
+   *  `signal`. */
+  readonly commands: Readonly<
+    Record<
+      string,
+      CommandDescription & {
+        run(
+          values: Arguments<Parameters> | Readonly<Record<string, InputValue>>,
+          context?: Partial<CommandContext>,
+        ): Promise<CommandResult>;
+      }
+    >
+  >;
 }
 /** Structural subset shared by browser, Node built-in, and ws WebSockets. */
 export interface WebSocketLike {
@@ -135,11 +76,9 @@ export interface WebSocketLike {
   send(data: Uint8Array<ArrayBuffer>): void;
   close(code?: number, reason?: string): void;
   addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
-  addEventListener(type: 'open' | 'close' | 'error', listener: () => void): void;
+  addEventListener(type: 'close', listener: (event: { readonly reason?: string }) => void): void;
+  addEventListener(type: 'open' | 'error', listener: () => void): void;
   removeEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
-  removeEventListener(type: 'open' | 'close' | 'error', listener: () => void): void;
-}
-export interface AcceptOptions {
-  readonly signal?: AbortSignal;
-  readonly limits?: Partial<Limits>;
+  removeEventListener(type: 'close', listener: (event: { readonly reason?: string }) => void): void;
+  removeEventListener(type: 'open' | 'error', listener: () => void): void;
 }

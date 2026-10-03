@@ -1,5 +1,5 @@
 import type { Data } from '@latkit/model';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import {
   createGpu,
   GpuError,
@@ -47,19 +47,21 @@ class Dots extends BaseItemView<
   Plane,
   'marks'
 > {
-  protected readonly framed = ['center', 'scale'] as const;
   drawn?: Plane;
   searches = 0;
   /** Search for hover asynchronously, as views whose hits read data do. */
   async = false;
   constructor(gpu: Gpu, config: DotConfig) {
-    super(
-      gpu,
-      config,
-      { records: ['marks'], fields: ['color'] },
-      { animationMs: 100, hover: 'on' },
-    );
+    super(gpu, config, {
+      records: ['marks'],
+      fields: ['color'],
+      framed: ['center', 'scale'],
+      style: { animationMs: 100, hover: 'on' },
+    });
     this.start();
+  }
+  get style() {
+    return this.viewStyle;
   }
   move(point: Point | null): void {
     this.pointer(point);
@@ -124,14 +126,18 @@ class Dots extends BaseItemView<
   }
   protected hits(point: Point, radiusPx: number): readonly DotHit[] {
     return Object.keys(this.config.dots)
-      .map((id) => {
-        const p = this.position({ id })!;
-        return { id, distance: Math.hypot(p[0] - point[0], p[1] - point[1]) };
+      .flatMap((id) => {
+        const p = this.position({ id });
+        return p ? [{ id, distance: Math.hypot(p[0] - point[0], p[1] - point[1]) }] : [];
       })
       .filter((hit) => hit.distance <= radiusPx)
       .sort((a, b) => a.distance - b.distance);
   }
   protected async compileShade(): Promise<void> {}
+  protected check(config: DotConfig): void {
+    super.check(config);
+    if ('bad' in config.dots) throw new GpuError('invalid-input', 'Bad dot');
+  }
   protected configure(): void {
     this.invalidate();
   }
@@ -268,6 +274,157 @@ it('expands field shorthands once, keeping identity across unrelated patches', a
   expect(mark.color).toEqual({ field: 'load' });
   view.set({ hover: 'auto' });
   expect(view.config.marks!.a).toBe(mark);
+});
+
+it('draws exported frames at their own size without changing the view', async () => {
+  const { gpu, view, events, frame } = await setup();
+  await frame();
+  const camera = view.camera;
+  view.select([{ id: 'a' }]);
+  view.fit([{ id: 'b' }]);
+  events.length = 0;
+  await gpu.render({
+    timeMs: 0,
+    views: [
+      {
+        renderer: rendererOf(view),
+        target: target(gpu.device),
+        viewport: { width: 200, height: 100, pixelRatio: 1 },
+        presented: false,
+      },
+    ],
+  });
+  await Promise.resolve();
+  // The export frames what the view is going to show, and the view still waits to show it.
+  expect(view.drawn).toEqual({ center: [10, 0], scale: 50, fit: false });
+  expect(view.camera).toBe(camera);
+  expect(view.selection).toEqual([{ id: 'a' }]);
+  expect(events.map(([name]) => name)).toEqual(['frame']);
+  await frame();
+  expect(view.camera).toEqual({ center: [10, 0], scale: 50, fit: false });
+});
+
+it('rejects unknown camera and input options, and modes the view does not have', async () => {
+  const { gpu, view } = await setup();
+  expect(() => view.set({ camera: { zoom: 2 } as Partial<Plane> })).toThrow(
+    'Unknown camera option',
+  );
+  expect(() => view.set({ input: 'edit' })).toThrow('Unsupported input mode');
+  expect(() => view.set({ input: { mode: 'inspect', drag: true } as never })).toThrow(
+    'Unknown input option',
+  );
+  expect(view.config.input).toBeUndefined();
+  expect(() => new Dots(gpu, { source, dots: {}, camera: { zoom: 2 } as Partial<Plane> })).toThrow(
+    'Unknown camera option',
+  );
+  expect(() => new Dots(gpu, { source, dots: {}, input: { wheel: 'always' } as never })).toThrow(
+    'Invalid wheel',
+  );
+  expect(() => new Dots(gpu, { source, dots: {}, camera: { scale: 0 } })).toThrow('Invalid scale');
+});
+
+it('applies the style of a deferred patch, never that of a later rejected one', async () => {
+  const { view } = await setup();
+  const captured = rendererOf(view).capture();
+  view.set({ hoverWidthPx: 5 });
+  expect(() => view.set({ hoverWidthPx: 9, dots: { bad: [0, 0] } })).toThrow('Bad dot');
+  captured.release();
+  expect(view.style.hoverWidthPx).toBe(5);
+});
+
+/** A canvas that dispatches pointer events, with just enough DOM for a view to present on it. */
+function pointerCanvas(device: GPUDevice) {
+  vi.stubGlobal('navigator', { gpu: { getPreferredCanvasFormat: () => 'rgba8unorm' } });
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
+  const texture = device.createTexture({
+    size: [100, 100],
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+  const media = { matches: false, addEventListener() {}, removeEventListener() {} };
+  const window = Object.assign(new EventTarget(), {
+    devicePixelRatio: 1,
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame() {},
+    matchMedia: () => media,
+  });
+  const canvas = Object.assign(new EventTarget(), {
+    width: 100,
+    height: 100,
+    clientWidth: 100,
+    clientHeight: 100,
+    offsetWidth: 100,
+    offsetHeight: 100,
+    clientLeft: 0,
+    clientTop: 0,
+    tabIndex: -1,
+    style: {},
+    ownerDocument: { defaultView: window },
+    getContext: () => ({ configure() {}, unconfigure() {}, getCurrentTexture: () => texture }),
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }),
+    getAttribute: () => null,
+    setAttribute() {},
+    removeAttribute() {},
+    setPointerCapture() {},
+    releasePointerCapture() {},
+    hasPointerCapture: () => false,
+    focus() {},
+  });
+  const send = (type: string, x: number, button = 2) =>
+    canvas.dispatchEvent(
+      Object.assign(new Event(type, { cancelable: true }), {
+        button,
+        pointerId: 1,
+        clientX: x,
+        clientY: 50,
+        altKey: false,
+        ctrlKey: false,
+        metaKey: false,
+        shiftKey: false,
+      }),
+    );
+  return { canvas: canvas as unknown as HTMLCanvasElement, send };
+}
+
+it('opens the menu for a right click in place, never for a right drag, wherever it asks', async () => {
+  const gpu = await createGpu({ device: fakeDevice().device });
+  const { canvas, send } = pointerCanvas(gpu.device);
+  const view = new Dots(gpu, { source, dots: { a: [0, 0] }, canvas });
+  const menus: unknown[] = [];
+  view.on('contextmenu', (menu) => menus.push(menu));
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  // Asked on press, as on macOS and Linux: the release decides.
+  send('pointerdown', 10);
+  send('contextmenu', 10);
+  send('pointermove', 40);
+  send('pointerup', 40);
+  // Asked after release, as on Windows.
+  send('pointerdown', 10);
+  send('pointermove', 40);
+  send('pointerup', 40);
+  send('contextmenu', 40);
+  await settle();
+  expect(menus).toHaveLength(0);
+  send('pointerdown', 10);
+  send('contextmenu', 10);
+  send('pointerup', 11);
+  send('pointerdown', 10);
+  send('pointerup', 11);
+  send('contextmenu', 11);
+  await settle();
+  expect(menus).toMatchObject([
+    { point: [11, 50], trigger: 'pointer' },
+    { point: [11, 50], trigger: 'pointer' },
+  ]);
+  view.destroy();
+  vi.unstubAllGlobals();
+  gpu.destroy();
 });
 
 it('publishes an asynchronous hover once and reuses it while nothing moves', async () => {

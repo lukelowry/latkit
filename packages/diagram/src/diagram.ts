@@ -149,7 +149,6 @@ interface Resolved {
 }
 function resolve(config: DiagramConfig): Resolved {
   for (const key of Object.keys(config)) if (!KEYS.has(key)) fail('Unknown diagram option: ' + key);
-  checkInput(config.input as DiagramInput | undefined);
   resolveStyle(config);
   return {
     config,
@@ -207,7 +206,6 @@ class DiagramView
   >
   implements Diagram
 {
-  protected readonly framed = ['center', 'scale'] as const;
   private data: DiagramData;
   /** Whether the scene reads sampled fields; otherwise it is the same at every coordinate. */
   private sampled: boolean;
@@ -282,6 +280,8 @@ class DiagramView
       shorthands: { layout: 'algorithm' },
       fields: FIELD_OPTIONS,
       nested: ['ports'],
+      framed: ['center', 'scale'],
+      modes: ['navigate', 'edit', 'inspect', 'none'],
     });
     const resolved = resolve(this.config);
     this.data = resolved.data;
@@ -290,8 +290,6 @@ class DiagramView
     this.limits = resolved.limits;
     this.layout = resolved.layout;
     this.painter = new Painter(gpu);
-    // Reject an invalid starting camera now rather than at the first frame.
-    void this.camera;
     this.start();
   }
 
@@ -334,9 +332,7 @@ class DiagramView
     return DEFAULT_CAMERA;
   }
   protected resolveCamera(camera: Camera): Camera {
-    const { center, scale, fit, ...rest } = camera;
-    const unknown = Object.keys(rest)[0];
-    if (unknown !== undefined) fail('Unknown camera option: ' + unknown);
+    const { center, scale, fit } = camera;
     if (!Array.isArray(center) || center.length !== 2 || !center.every(Number.isFinite))
       fail('Invalid camera center');
     positive(scale, 'camera scale');
@@ -418,8 +414,15 @@ class DiagramView
       portsShown(this.style, shown.camera),
     );
   }
-  protected compileShade(shade: Shade | null, format: GPUTextureFormat): Promise<unknown> {
-    return this.painter.pipelines(format, this.style.msaa, shade);
+  protected compileShade(
+    shade: Shade | null,
+    format: GPUTextureFormat,
+    msaa: 1 | 4,
+  ): Promise<unknown> {
+    return this.painter.pipelines(format, msaa, shade);
+  }
+  protected checkInput(input: DiagramInput): void {
+    super.checkInput(checkInput(input));
   }
   protected listen(
     canvas: HTMLCanvasElement,
@@ -559,9 +562,12 @@ class DiagramView
       data = this.data,
       motion = !this.reducedMotion,
       at = this.sampled ? frame.at : undefined;
-    const base = this.stable ?? this.shown;
+    const base = this.stable ?? this.shown,
+      // An exported frame draws transitions at their targets and changes none of them.
+      presented = frame.presented;
     let scene: Scene, picking: Picking;
     if (
+      presented &&
       this.sceneTransition &&
       (this.sceneTransition.revision !== revision || this.sceneTransition.at !== at)
     )
@@ -629,6 +635,7 @@ class DiagramView
         throw new GpuError('resource-limit', 'Retained geometry exceeds budget');
     }
     if (
+      presented &&
       this.transitionRequested &&
       base &&
       !this.drag &&
@@ -656,10 +663,11 @@ class DiagramView
           start: frame.timeMs,
         };
     }
-    this.transitionRequested = false;
+    if (presented) this.transitionRequested = false;
     const movement = this.sceneTransition;
     let easing = false;
     if (
+      presented &&
       movement &&
       movement.revision === revision &&
       movement.at === at &&
@@ -772,6 +780,8 @@ class DiagramView
     if (!next || this.closed) return;
     next.off();
     this.staged = undefined;
+    // An exported frame leaves what pick, locate, drags, and layout start from.
+    if (!frame.presented) return;
     if (next.scene !== this.shown?.scene)
       this.flowing = next.scene.edges.some((edge) => edge.visible && edge.flow !== 0);
     this.shown = {

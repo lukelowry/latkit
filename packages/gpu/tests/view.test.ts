@@ -111,8 +111,9 @@ class TestView extends BaseView<TestConfig, ViewEvents, 'items', 'limits' | 'inp
     this.configured.push({ previous, next, options });
     this.invalidate();
   }
-  protected moveCamera(camera: Record<string, unknown> | null): void {
-    this.camera = camera ? { ...this.camera, ...camera } : { x: 0, y: 0 };
+  protected cameraMove(camera: Record<string, unknown> | null): () => void {
+    if (camera && 'z' in camera) throw new Error('Unknown camera option: z');
+    return () => (this.camera = camera ? { ...this.camera, ...camera } : { x: 0, y: 0 });
   }
   protected attach(): () => void {
     this.attached++;
@@ -199,9 +200,19 @@ it('merges records per entry and options, removes with null, and replaces everyt
     input: { mode: 'navigate', wheel: 'modifier' },
   });
   expect(view.camera).toEqual({ x: 5, y: 0 });
+  // A shorthand names one option, so it merges like the object it stands for.
+  view.set({ input: 'none' });
+  expect(view.config.input).toEqual({ mode: 'none', wheel: 'modifier' });
   view.set({ limits: null }, { animate: true });
   expect(view.config.limits).toBeUndefined();
   expect(view.configured.at(-1)?.options).toEqual({ animate: true });
+  // A patch with an invalid camera changes nothing.
+  const configured = view.configured.length;
+  expect(() =>
+    view.set({ items: { d: { size: 1 } }, camera: { z: 1 } as TestConfig['camera'] }),
+  ).toThrow('Unknown camera option');
+  expect(view.config.items).not.toHaveProperty('d');
+  expect(view.configured).toHaveLength(configured);
   view.destroy();
   gpu.destroy();
 });
@@ -234,11 +245,40 @@ it('reports device loss as an error and stops scheduling', async () => {
   fixture.tick();
   await settle();
   fake.lose('removed');
-  await gpu.lost;
+  await fake.device.lost;
   await settle();
+  expect(error).toHaveBeenCalledTimes(1);
   expect(error).toHaveBeenCalledWith(expect.objectContaining({ code: 'device-lost' }));
+  // A stopped Gpu draws nothing more, so later changes report nothing.
+  const frames = view.frames.length;
+  view.animate = true;
+  view.refresh();
+  expect(fixture.frames.size).toBe(0);
+  fixture.tick();
+  await settle();
+  expect(view.frames).toHaveLength(frames);
+  expect(error).toHaveBeenCalledTimes(1);
   view.destroy();
   gpu.destroy();
+});
+
+it('reports nothing when its Gpu is destroyed on purpose, and frees the view', async () => {
+  const fake = fakeDevice(),
+    gpu = await createGpu({ device: fake.device }),
+    fixture = canvasFixture(fake.device);
+  const view = new TestView(gpu, { canvas: fixture.canvas });
+  const error = vi.fn(),
+    remove = vi.spyOn(gpu.signal, 'removeEventListener');
+  view.on('error', error);
+  view.destroy();
+  expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
+  const other = new TestView(gpu, { canvas: fixture.canvas });
+  other.on('error', error);
+  gpu.destroy();
+  await settle();
+  expect(error).not.toHaveBeenCalled();
+  expect(() => new TestView(gpu, {})).toThrow('Gpu is closed');
+  other.destroy();
 });
 
 it('preserves the original configuration failure during cleanup', async () => {
@@ -329,6 +369,53 @@ it('lets a refresh finish, schedules animation, and holds the canvas while rende
   gpu.destroy();
 });
 
+it('presents in its images only when it presents nowhere else', async () => {
+  const fake = fakeDevice(),
+    gpu = await createGpu({ device: fake.device }),
+    fixture = canvasFixture(fake.device);
+  const render = vi.spyOn(gpu, 'render');
+  const view = new TestView(gpu, {});
+  // Reading pixels back needs a DOM; what matters here is the frame each image renders.
+  await view.image({ width: 4, height: 4 }).catch(() => {});
+  view.set({ canvas: fixture.canvas });
+  await view.image({ width: 4, height: 4 }).catch(() => {});
+  expect(render.mock.calls.map(([options]) => options.views[0].presented)).toEqual([true, false]);
+  expect(view.frames.map((frame) => frame.presented)).toEqual([true, false]);
+  view.destroy();
+  gpu.destroy();
+});
+
+it('holds a view once a canvas frame that ignores its abort has released it', async () => {
+  const fake = fakeDevice(),
+    gpu = await createGpu({ device: fake.device }),
+    fixture = canvasFixture(fake.device),
+    gate = deferred<void>();
+  let waits = 1;
+  const view = new TestView(gpu, { canvas: fixture.canvas }, async () => {
+    if (waits-- > 0) await gate.promise;
+  });
+  fixture.tick();
+  await settle();
+  let held = false;
+  const holding = hold(view).then((release) => {
+    held = true;
+    return release;
+  });
+  await settle();
+  // The aborted frame is still preparing, so its renderer is not free yet.
+  expect(held).toBe(false);
+  gate.resolve();
+  const release = await holding;
+  await gpu.render({
+    views: [{ renderer: rendererOf(view), target: target(fake.device), presented: false }],
+    timeMs: 0,
+  });
+  expect(view.frames.at(-1)?.presented).toBe(false);
+  release();
+  view.destroy();
+  gpu.destroy();
+});
+
 /** Enough render-pass surface for a composition to draw its panels. */
 function compositing(fake: ReturnType<typeof fakeDevice>): void {
   const device = fake.native as unknown as Record<string, (...args: never[]) => unknown>;
@@ -372,8 +459,15 @@ it('composes views into one view, and keeps composed views off their own canvase
     views: [{ renderer: rendererOf(composition), target: target(fake.device) }],
     timeMs: 0,
   });
-  expect(a.frames[0]).toMatchObject({ width: 16, height: 8 });
-  expect(b.frames[0]).toMatchObject({ width: 16, height: 8 });
+  expect(a.frames[0]).toMatchObject({ width: 16, height: 8, presented: true });
+  expect(b.frames[0]).toMatchObject({ width: 16, height: 8, presented: true });
+  // Exporting a composition exports its views.
+  await gpu.render({
+    views: [{ renderer: rendererOf(composition), target: target(fake.device), presented: false }],
+    timeMs: 0,
+  });
+  expect(a.frames[1].presented).toBe(false);
+  expect(b.frames[1].presented).toBe(false);
   composition.destroy();
   a.set({ canvas: fixture.canvas });
   a.destroy();
@@ -391,7 +485,16 @@ it('reports each drawn frame', async () => {
   fixture.tick();
   await settle();
   expect(frames).toHaveBeenCalledTimes(1);
-  expect(frames.mock.lastCall?.[0]).toMatchObject({ at: 3, width: 200, height: 160 });
+  // What the frame was, never what preparing it borrowed.
+  expect(frames.mock.lastCall?.[0]).toEqual({
+    at: 3,
+    width: 200,
+    height: 160,
+    timeMs: 1000,
+    viewport: { width: 100, height: 80, pixelRatio: 2 },
+    format: 'rgba8unorm',
+    presented: true,
+  });
   view.destroy();
   gpu.destroy();
 });

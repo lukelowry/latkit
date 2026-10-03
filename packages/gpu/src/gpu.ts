@@ -31,7 +31,11 @@ export interface GpuOptions {
 
 export interface Gpu {
   readonly device: GPUDevice;
-  readonly lost: Promise<GPUDeviceLostInfo>;
+  /**
+   * Aborts when this Gpu stops: with a `device-lost` GpuError when the device is lost, or `closed`
+   * after `destroy`. Views stop drawing then; after device loss, recreate the Gpu and its views.
+   */
+  readonly signal: AbortSignal;
   readonly budget: Budget;
   /** One bounded, memoized reader for every view, job, and layout on this Gpu. */
   readonly reader: Reader;
@@ -92,7 +96,6 @@ export async function createGpu(options: GpuOptions = {}): Promise<Gpu> {
 }
 
 class Owner implements Gpu {
-  readonly lost: Promise<GPUDeviceLostInfo>;
   readonly budget: Budget;
   readonly reader: Reader;
   readonly fieldLayout: GPUBindGroupLayout;
@@ -163,10 +166,17 @@ class Owner implements Gpu {
       maxFrames: integer(options.maxFramesInFlight ?? 2, 'frames in flight', 1, 64),
       stop: (reason) => this.stop(reason),
     };
-    this.lost = device.lost;
-    void this.lost.then((info) =>
-      this.stop(new GpuError('device-lost', info.message || 'GPU device lost')),
+    void device.lost.then((info) =>
+      this.stop(
+        new GpuError('device-lost', 'GPU device lost: ' + (info.message || info.reason), {
+          cause: info,
+        }),
+      ),
     );
+  }
+
+  get signal(): AbortSignal {
+    return this.stopped.signal;
   }
 
   measureText(

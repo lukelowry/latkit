@@ -218,6 +218,7 @@ class Composition extends BaseView<CompositionConfig, ViewEvents> {
         format: 'rgba8unorm',
         timeMs: frame.timeMs,
         at: frame.at,
+        presented: frame.presented,
         viewport: {
           width: width / frame.viewport.pixelRatio,
           height: height / frame.viewport.pixelRatio,

@@ -1,9 +1,16 @@
 import { failure, rowCount, sliceSamples, validateBatch } from '@latkit/model';
-import type { Column, DataBatch, SampleBatch, SampleColumn, Schema } from '@latkit/model';
+import type {
+  Column,
+  DataBatch,
+  Publication,
+  SampleBatch,
+  SampleColumn,
+  Schema,
+} from '@latkit/model';
 import { integer, record, text } from './core.js';
-import { align8, checkTree, HEADER, Op, prepare } from './frame.js';
+import { align8, checkTree, forward, HEADER, Op, prepare } from './frame.js';
 import type { FrameLimits, Plan } from './frame.js';
-import type { EncodedPublication, Limits, Publication } from './types.js';
+import type { ConnectLimits, EncodedPublication } from './types.js';
 
 const arrays = {
   uint8: Uint8Array,
@@ -23,7 +30,31 @@ function swapped(input: Uint8Array, width: number): Uint8Array {
   return output;
 }
 /** The limits a publication is encoded and decoded under. */
-export type PublicationLimits = FrameLimits & Pick<Limits, 'maxPublicationBatches'>;
+export type PublicationLimits = FrameLimits & Pick<ConnectLimits, 'maxPublicationBatches'>;
+
+/** The payload each publication decodePublication made arrived as. Its batches view the same
+ *  storage, so remembering it costs nothing. */
+const arrived = new WeakMap<Publication, Uint8Array>();
+
+/** The messages that carry `input` on stream `id`: a publication connect received goes on as it
+ *  arrived when it fits `bounds`, validated once already; anything else in the fewest new messages. */
+export function publicationPlans(
+  input: DataBatch | Publication,
+  id: number,
+  schema: Schema,
+  bounds: PublicationLimits,
+): Iterable<Plan> {
+  const payload = Array.isArray(input) ? arrived.get(input as Publication) : undefined;
+  if (
+    payload &&
+    16 + payload.byteLength <= bounds.maxMessageBytes &&
+    new DataView(payload.buffer, payload.byteOffset, 4).getUint32(0, true) <=
+      bounds.maxMetadataBytes &&
+    (input as Publication).length <= bounds.maxPublicationBatches
+  )
+    return [forward(id, payload)];
+  return preparePublications(input, id, schema, bounds);
+}
 
 /** One atomic publication message; throws when `input` does not fit the bounds. Prepares bounded
  *  metadata without copying numeric values: encode() owns the outgoing copy. */
@@ -328,7 +359,7 @@ export function decodePublication(
         throw failure('protocol', 'Unknown column kind.');
     }
   }
-  return metadata.batches.map((value: unknown) => {
+  const decoded: Publication = metadata.batches.map((value: unknown) => {
     const m = record(value),
       rows = record(m.rows);
     if (
@@ -354,4 +385,6 @@ export function decodePublication(
     if (issues.length) throw failure('protocol', issues[0].message);
     return batch as unknown as DataBatch;
   });
+  arrived.set(decoded, payload);
+  return decoded;
 }

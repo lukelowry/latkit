@@ -12,6 +12,8 @@ it('exports values, local computation and explicit boundary validation', () => {
     'createData',
     'appendData',
     'selectBatches',
+    'staticFields',
+    'sampledFields',
     'validateBatch',
     'validateSelection',
     'validateSchema',
