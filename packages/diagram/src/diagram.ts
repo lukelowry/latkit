@@ -38,7 +38,8 @@ import {
 } from './config.js';
 import { place, layoutOptions, type Layout, type LayoutOptions } from './layout.js';
 import { readScene, sampled } from './read.js';
-import { geometry } from './geometry.js';
+import { dragWires, geometry } from './geometry.js';
+import { dragMarks, moved, type DragDraw, type DragMarks } from './drag.js';
 import { positions, type Scene } from './scene.js';
 import { Picking } from './picking.js';
 import { union } from './spatial.js';
@@ -118,9 +119,11 @@ interface Presented {
   readonly picking: Picking;
   readonly camera: kit.Camera2D;
   readonly viewport: Viewport;
-  /** The scene's revision, or -1 for a drag preview. */
+  /** The scene's revision, or -1 when the next frame must read it again. */
   readonly revision: number;
   readonly at?: number;
+  /** A drag drawn over the scene, which `locate` follows. */
+  readonly drag?: DragDraw;
 }
 /** A prepared frame: what it shows, and what it draws. */
 interface Staged extends Presented {
@@ -207,7 +210,18 @@ class DiagramView
     at?: number;
     start: number;
   };
-  private drag?: { keys: Set<string>; delta: Point };
+  /** A drag in progress: the items it started with, what they move, and how far. */
+  private drag?: {
+    readonly items: readonly DiagramItem[];
+    readonly keys: ReadonlySet<string>;
+    readonly delta: Point;
+  };
+  /** What the drag moves in the scene it draws over, found once per drag and scene. */
+  private dragged?: {
+    readonly keys: ReadonlySet<string>;
+    readonly scene: Scene;
+    readonly marks: DragMarks;
+  };
   private interruptedTransition = false;
   private relayout = false;
   private gestures?: Gestures;
@@ -361,7 +375,10 @@ class DiagramView
   protected position(item: DiagramItem): Point | null {
     const p = this.shown;
     const at = p?.picking.locate(item);
-    return p && at ? kit.cameraPoint(p.camera, at, p.viewport) : null;
+    if (!p || !at) return null;
+    // A dragged item draws where the drag has taken it.
+    const drag = p.drag?.marks.moving.has(itemKey(item)) ? p.drag.delta : undefined;
+    return kit.cameraPoint(p.camera, drag ? [at[0] + drag[0], at[1] + drag[1]] : at, p.viewport);
   }
   protected identify(item: DiagramItem): string {
     return itemKey(item);
@@ -486,7 +503,10 @@ class DiagramView
     }
     this.sceneTransition = undefined;
     this.transitionRequested = false;
-    this.drag = delta ? { keys: this.movingKeys(items), delta } : undefined;
+    const drag = this.drag;
+    this.drag = delta
+      ? { items, keys: drag?.items === items ? drag.keys : this.movingKeys(items), delta }
+      : undefined;
     this.invalidate();
   }
   private movingKeys(items: readonly DiagramItem[]): Set<string> {
@@ -548,47 +568,35 @@ class DiagramView
     const transitioning =
       transition && transition.revision === revision && transition.at === at && !this.drag;
     const cached = base && base.revision === revision && base.at === at && !this.drag;
-    if (transitioning) {
+    let drag: DragDraw | null = null;
+    if (this.drag && base && base.revision === revision && base.at === at) {
+      // A drag draws over the accepted scene; only what it moves is placed and routed again.
+      scene = base.scene;
+      picking = base.picking;
+      drag = this.dragDraw(scene, this.drag, style, frame.signal);
+    } else if (transitioning) {
       scene = transition.target;
       picking = transition.picking;
     } else if (cached) {
       scene = base.scene;
       picking = base.picking;
     } else {
-      if (this.drag && base && base.revision === revision) {
-        scene = {
-          ...base.scene,
-          vertices: base.scene.vertices.map((n) => ({
-            ...n,
-            ports: n.ports.map((p) => ({ ...p })),
-          })),
-          edges: base.scene.edges.map((e) => ({ ...e })),
-          groups: base.scene.groups.map((g) => ({ ...g })),
-        };
-      } else {
-        scene = await readScene(
-          data,
-          frame.reader,
-          style,
-          limits,
-          (input, request) => this.gpu.measureText(input, request),
-          work,
-        );
-        await place(
-          scene,
-          layout,
-          style.gridPitch,
-          frame.signal,
-          this.relayout ? undefined : base?.scene,
-          work,
-        );
-      }
-      if (this.drag)
-        for (const vertex of scene.vertices)
-          if (this.drag.keys.has(itemKey(vertex.hit))) {
-            vertex.x += this.drag.delta[0];
-            vertex.y += this.drag.delta[1];
-          }
+      scene = await readScene(
+        data,
+        frame.reader,
+        style,
+        limits,
+        (input, request) => this.gpu.measureText(input, request),
+        work,
+      );
+      await place(
+        scene,
+        layout,
+        style.gridPitch,
+        frame.signal,
+        this.relayout ? undefined : base?.scene,
+        work,
+      );
       await geometry(scene, style, this.limits, frame.signal, base?.scene, work);
       picking = new Picking(scene, this.limits.pickingBytes);
       const scenes = new Set([
@@ -711,6 +719,7 @@ class DiagramView
       pipelines: await work.wait(compiling),
       shade: this.shadeFrame(frame),
       overlay: this.overlay,
+      drag,
       motion,
     });
     work.check();
@@ -720,9 +729,27 @@ class DiagramView
       picking,
       camera: drawn,
       viewport,
-      revision: this.drag ? -1 : revision,
+      revision,
       at,
+      drag: drag ?? undefined,
       paint,
+    };
+  }
+  /** The drag drawn over a scene: what it moves, found once, and the wires it reroutes. */
+  private dragDraw(
+    scene: Scene,
+    drag: { readonly keys: ReadonlySet<string>; readonly delta: Point },
+    style: Style,
+    signal: AbortSignal,
+  ): DragDraw {
+    let dragged = this.dragged;
+    if (dragged?.keys !== drag.keys || dragged.scene !== scene)
+      this.dragged = dragged = { keys: drag.keys, scene, marks: dragMarks(scene, drag.keys) };
+    const { marks } = dragged;
+    return {
+      marks,
+      delta: drag.delta,
+      wires: dragWires(scene, marks.edges, moved(scene, marks, drag.delta), style, signal),
     };
   }
   protected encode(frame: kit.Encoding, staged: Staged): void {
@@ -742,6 +769,7 @@ class DiagramView
       viewport: next.viewport,
       revision: next.revision,
       at: next.at,
+      drag: next.drag,
     };
     if (next.revision >= 0) this.stable = this.shown;
     if (

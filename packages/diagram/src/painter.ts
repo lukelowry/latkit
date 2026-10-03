@@ -4,6 +4,7 @@ import type { Scene, Label, Rect } from './scene.js';
 import type { Style } from './config.js';
 import type { DiagramItem, Point } from './data.js';
 import { itemKey } from './data.js';
+import type { DragDraw } from './drag.js';
 
 interface Bank {
   bounds: Rect;
@@ -52,6 +53,8 @@ export interface DrawState {
   /** The shade's uniforms for this frame. */
   readonly shade: GPUBufferBinding;
   readonly overlay: Overlay | null;
+  /** A drag drawn over the scene: what it moves, how far, and its rerouted wires. */
+  readonly drag: DragDraw | null;
   /** Flow animates; false under reduced motion. */
   readonly motion: boolean;
 }
@@ -67,7 +70,9 @@ export interface Paint {
 const shader = /* wgsl */ `
 struct View {
   camera:vec4f, viewport:vec4f, grid:vec4f, selected:vec4f, hovered:vec4f, dots:vec4f,
-  metrics:vec4f, background:vec4f, detail:vec4f
+  metrics:vec4f, background:vec4f, detail:vec4f,
+  /** A drag's offset in diagram units, for items flagged as moving. */
+  drag:vec4f
 }
 struct Item {
   position:vec4f, color:vec4f, outline:vec4f, style:vec4f, extra:vec4f,
@@ -76,25 +81,32 @@ struct Item {
 @group(0) @binding(0) var<uniform> view:View;
 @group(0) @binding(2) var<storage,read> items:array<Item>;
 @group(0) @binding(3) var<storage,read> focus:array<u32>;
-@group(0) @binding(4) var<storage,read> anchors:array<vec2f>;
+/** Each label's position and the focus slot of the item it labels. */
+@group(0) @binding(4) var<storage,read> anchors:array<vec4f>;
 struct Vertex { @builtin(position) position:vec4f, @location(0) uv:vec2f, @location(1) @interpolate(flat) index:u32, @location(2) @interpolate(flat) size:vec2f, @location(3) color:vec4f }
 fn screen(p:vec2f)->vec2f { return (p+view.camera.xy)*view.camera.zw+view.viewport.xy*0.5; }
 fn clip(p:vec2f)->vec4f { return vec4f(p/view.viewport.xy*vec2f(2.,-2.)+vec2f(-1.,1.),0.,1.); }
 fn corner(v:u32)->vec2f { let c=array<vec2f,6>(vec2f(0,0),vec2f(1,0),vec2f(0,1),vec2f(0,1),vec2f(1,0),vec2f(1,1));return c[v]; }
 fn aa(d:f32)->f32 { return 1.-smoothstep(-0.65,0.65,d); }
 fn chosen(color:vec4f)->vec4f { return select(view.selected,color,view.metrics.w!=0.); }
+/** Moving items follow the drag; rerouted ones hide while their new wires draw. */
+fn dragged(flags:u32)->vec2f { return select(vec2f(0.),view.drag.xy,(flags&64u)!=0u); }
+fn hidden(i:u32)->Vertex { return Vertex(vec4f(2.,2.,2.,1.),vec2f(0.),i,vec2f(0.),vec4f(0.)); }
 @vertex fn shape_vertex(@builtin(vertex_index) v:u32,@builtin(instance_index) i:u32)->Vertex {
   let item=items[i];let c=corner(v);let kind=u32(item.style.x);
+  let flags=focus[u32(item.style.w)];
+  if((flags&128u)!=0u){return hidden(i);}
+  let offset=dragged(flags);
   let pad=max(6.,max(view.metrics.y,view.metrics.z)+2.);
   if(kind==4u||kind==5u){
-    let start=screen(item.position.xy);let tip=screen(item.position.zw);let delta=tip-start;let direction=delta/max(length(delta),0.0001);
+    let start=screen(item.position.xy+offset);let tip=screen(item.position.zw+offset);let delta=tip-start;let direction=delta/max(length(delta),0.0001);
     let b=tip-direction*select(0.,view.detail.z*0.5+3.,kind==5u);
     let a=select(start,b-direction*8.,kind==5u);
     let len=max(length(b-a),0.0001);let dir=direction;let normal=vec2f(-dir.y,dir.x);let width=select(item.style.y*0.5+pad,10.+pad,kind==5u);
     let uv=vec2f(mix(-width,len+width,c.x),mix(-width,width,c.y));
     return Vertex(clip(a+dir*uv.x+normal*uv.y),uv,i,vec2f(len,width),vec4f(0.));
   }
-  let a=screen(item.position.xy);
+  let a=screen(item.position.xy+offset);
   let extent=select(item.position.zw*abs(view.camera.zw),item.position.zw,kind>=6u);
   let center=select(a+extent*vec2f(0.5,select(0.5,-0.5,view.camera.w<0.)),a,kind>=6u);
   let uv=(c*2.-1.)*(extent*0.5+vec2f(pad));
@@ -159,7 +171,9 @@ fn chosen(color:vec4f)->vec4f { return select(view.selected,color,view.metrics.w
   return result*opacity;
 }
 @vertex fn text_vertex(@builtin(vertex_index) v:u32,@builtin(instance_index) i:u32)->Vertex {
-  let t=textVertex(v,i);return Vertex(clip(screen(t.position+anchors[t.anchor])),t.uv,i,vec2f(0.),t.color);
+  let t=textVertex(v,i);let anchor=anchors[t.anchor];let flags=focus[u32(anchor.z)];
+  if((flags&128u)!=0u){return hidden(i);}
+  return Vertex(clip(screen(t.position+anchor.xy+dragged(flags))),t.uv,i,vec2f(0.),t.color);
 }
 @fragment fn text_fragment(v:Vertex)->@location(0) vec4f {return textColor(v.uv,v.color)*smoothstep(4.,8.,view.grid.w*min(abs(view.camera.z),abs(view.camera.w)));}
 @vertex fn grid_vertex(@builtin(vertex_index) v:u32)->Vertex {
@@ -238,7 +252,7 @@ export async function pipelines(
       { binding: 0, visibility: V | F, buffer: { type: 'uniform' } },
       { binding: 1, visibility: F, buffer: { type: 'uniform' } },
       { binding: 2, visibility: V | F, buffer: { type: 'read-only-storage' } },
-      { binding: 3, visibility: F, buffer: { type: 'read-only-storage' } },
+      { binding: 3, visibility: V | F, buffer: { type: 'read-only-storage' } },
       { binding: 4, visibility: V, buffer: { type: 'read-only-storage' } },
     ],
   });
@@ -279,10 +293,13 @@ export class Painter {
     readonly selection: readonly DiagramItem[];
     readonly hover: DiagramItem | null;
     readonly overlay: Overlay | null;
+    readonly drag: DragDraw['marks'] | null;
   };
   private readonly attachments: kit.Attachments;
   private dummy = buffer(new Float32Array(28), 'diagram empty');
   private gestureBuffer = buffer(new Float32Array(0), 'diagram gesture');
+  private dragBuffer = buffer(new Float32Array(0), 'diagram drag');
+  private dragAnchors = buffer(new Float32Array(0), 'diagram drag anchors');
   private emptyFocus = buffer(new Float32Array(1), 'diagram overlay focus');
   constructor(private readonly gpu: Gpu) {
     this.attachments = new kit.Attachments(gpu);
@@ -386,7 +403,7 @@ export class Painter {
         maxSize = 0;
       }
     };
-    const text = (label: Label, position: Point) => {
+    const text = (label: Label, position: Point, item: DiagramItem) => {
       if (!options.labels || !label.runs.length) return;
       if (textRuns.length >= 256) flushText();
       if (!textRuns.length) textOrigin = previous?.text[texts.length]?.origin ?? position;
@@ -395,8 +412,8 @@ export class Painter {
       textBounds[2] = Math.max(textBounds[2], position[0] + label.width);
       textBounds[3] = Math.max(textBounds[3], position[1] + label.height);
       for (const run of label.runs) maxSize = Math.max(maxSize, run.size);
-      const anchor = textAnchors.length / 2;
-      textAnchors.push(position[0] - textOrigin[0], position[1] - textOrigin[1]);
+      const anchor = textAnchors.length / 4;
+      textAnchors.push(position[0] - textOrigin[0], position[1] - textOrigin[1], index(item), 0);
       for (const run of label.runs) textRuns.push({ ...run, anchor });
     };
     for (const group of scene.groups) {
@@ -410,7 +427,7 @@ export class Painter {
         options.outlineColor,
         0,
       );
-      text(group.label, [b[0] + options.vertexPadding, b[1] + options.vertexPadding]);
+      text(group.label, [b[0] + options.vertexPadding, b[1] + options.vertexPadding], item);
     }
     for (const edge of scene.edges)
       if (edge.visible && edge.paths.length) {
@@ -462,7 +479,7 @@ export class Painter {
             edge.options.appearance === 'tag' ? edge.color : options.background,
             0,
           );
-          text(edge.label, [box[0] + 3, box[1] + 3]);
+          text(edge.label, [box[0] + 3, box[1] + 3], edge.hit);
         }
       }
     for (const vertex of scene.vertices)
@@ -480,23 +497,28 @@ export class Painter {
           vertex.radius,
           vertex.status,
         );
-        text(vertex.label, [
-          vertex.x + (vertex.width - vertex.label.width) / 2,
-          vertex.options.labelPosition !== 'header'
-            ? vertex.y + (vertex.height - vertex.label.height) / 2
-            : vertex.y +
-              (vertex.shape === 'diamond'
-                ? vertex.height / 4
-                : vertex.shape === 'ellipse'
-                  ? (vertex.height * (1 - Math.SQRT1_2)) / 2
-                  : 0) +
-              options.vertexPadding +
-              (vertex.ports.some((p) => p.side === 'top') ? options.fontSizePx * 1.5 : 0),
-        ]);
+        text(
+          vertex.label,
+          [
+            vertex.x + (vertex.width - vertex.label.width) / 2,
+            vertex.options.labelPosition !== 'header'
+              ? vertex.y + (vertex.height - vertex.label.height) / 2
+              : vertex.y +
+                (vertex.shape === 'diamond'
+                  ? vertex.height / 4
+                  : vertex.shape === 'ellipse'
+                    ? (vertex.height * (1 - Math.SQRT1_2)) / 2
+                    : 0) +
+                options.vertexPadding +
+                (vertex.ports.some((p) => p.side === 'top') ? options.fontSizePx * 1.5 : 0),
+          ],
+          vertex.hit,
+        );
         for (const port of vertex.ports) {
-          const p = port.position;
+          const p = port.position,
+            item: DiagramItem = { ...vertex.hit, kind: 'port', port: port.name };
           add(
-            { ...vertex.hit, kind: 'port', port: port.name },
+            item,
             [p[0], p[1], options.portSizePx, options.portSizePx],
             port.color,
             port.color,
@@ -540,7 +562,7 @@ export class Painter {
                     ? ((port.label.width + 12) * vertex.height) / (2 * vertex.width)
                     : 0)
                 : p[1] - port.label.height / 2;
-          text(port.label, [left, top]);
+          text(port.label, [left, top], item);
         }
       }
     flush();
@@ -603,6 +625,9 @@ export class Painter {
         options.gridMinSpacingPx,
         options.portSizePx,
         0,
+        ...(state.drag?.delta ?? [0, 0]),
+        0,
+        0,
       );
       return this.gpu.device.createBindGroup({
         layout: pipelines.layout,
@@ -635,6 +660,116 @@ export class Painter {
         group: group(bank.origin, bank.data),
         count: bank.count,
       }));
+    /** The labels of rerouted wires, drawn where their new routes put them. */
+    const dragText: { runs: kit.TextRun[]; anchors: number[]; maxSize: number } = {
+      runs: [],
+      anchors: [],
+      maxSize: 0,
+    };
+    if (state.drag?.wires.length) {
+      const records: number[] = [],
+        origin = camera.center;
+      const segment = (
+        a: Point,
+        b: Point,
+        kind: number,
+        color: RGBA,
+        width: number,
+        flow: number,
+        along: number,
+        shade: number,
+      ) =>
+        records.push(
+          a[0] - origin[0],
+          a[1] - origin[1],
+          b[0] - origin[0],
+          b[1] - origin[1],
+          ...color,
+          ...color,
+          kind,
+          width,
+          flow,
+          0,
+          along,
+          shade,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+        );
+      for (const { edge, paths, offsets, arrows } of state.drag.wires) {
+        paths.forEach((path, j) => {
+          let along = offsets[j] ?? 0;
+          for (let i = 1; i < path.length; i++) {
+            segment(path[i - 1], path[i], 4, edge.color, edge.width, edge.flow, along, edge.shade);
+            along += Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
+          }
+        });
+        for (const { point: p, direction: d } of arrows)
+          segment([p[0] - d[0] * 10, p[1] - d[1] * 10], p, 5, edge.color, 1, 0, 0, edge.shade);
+        const label = edge.label;
+        if (!options.labels || !label.runs.length || edge.options.appearance === 'tag') continue;
+        // Above the middle of the route's longest segment, as layout first tries.
+        let a: Point | undefined,
+          b: Point | undefined,
+          longest = -1;
+        for (const path of paths)
+          for (let i = 1; i < path.length; i++) {
+            const length = Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
+            if (length > longest) [a, b, longest] = [path[i - 1], path[i], length];
+          }
+        if (!a || !b) continue;
+        const x = (a[0] + b[0]) / 2 - label.width / 2,
+          y = (a[1] + b[1]) / 2 - 4 - label.height;
+        records.push(
+          x - 3 - origin[0],
+          y - 3 - origin[1],
+          label.width + 6,
+          label.height + 6,
+          ...options.background,
+          ...options.background,
+          0,
+          0,
+          0,
+          0,
+          0,
+          edge.shade,
+          options.cornerRadius,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+        );
+        const anchor = dragText.anchors.length / 4;
+        dragText.anchors.push(x - origin[0], y - origin[1], 0, 0);
+        for (const run of label.runs) {
+          dragText.runs.push({ ...run, anchor });
+          dragText.maxSize = Math.max(dragText.maxSize, run.size);
+        }
+      }
+      if (records.length)
+        banks.unshift({
+          group: group(
+            origin,
+            sync(Float32Array.from(records), 'diagram drag', this.dragBuffer),
+            this.dummy,
+            0,
+            frame.buffer(this.emptyFocus),
+          ),
+          count: records.length / 28,
+        });
+    }
     if (overlay) {
       const records: number[] = [],
         origin = camera.center;
@@ -696,6 +831,23 @@ export class Painter {
           group: group(bank.origin, this.dummy, bank.anchors, bank.maxSize),
           pages: await frame.text({ runs: bank.runs }),
         });
+    if (dragText.runs.length && dragText.maxSize * Math.min(...camera.scale) >= 3) {
+      this.dragAnchors = sync(
+        Float32Array.from(dragText.anchors),
+        'diagram drag anchors',
+        this.dragAnchors,
+      );
+      text.push({
+        group: group(
+          camera.center,
+          this.dummy,
+          this.dragAnchors,
+          dragText.maxSize,
+          frame.buffer(this.emptyFocus),
+        ),
+        pages: await frame.text({ runs: dragText.runs }),
+      });
+    }
     const msaa = this.attachments.prepare(frame, { msaa: options.msaa }).color;
     const gridLevel = Math.max(
       0,
@@ -755,15 +907,17 @@ export class Painter {
   /** Write each item's selection, hover, and gesture flags where they changed. */
   private focus(geometry: Geometry, state: DrawState): void {
     const { selection, hover, overlay } = state,
+      drag = state.drag?.marks ?? null,
       last = this.focused;
     if (
       last?.geometry === geometry &&
       last.selection === selection &&
       last.hover === hover &&
-      last.overlay === overlay
+      last.overlay === overlay &&
+      last.drag === drag
     )
       return;
-    this.focused = { geometry, selection, hover, overlay };
+    this.focused = { geometry, selection, hover, overlay, drag };
     const states = new Map<string, number>();
     const flag = (key: string, bit: number) => states.set(key, (states.get(key) ?? 0) | bit);
     for (const item of selection) flag(itemKey(item), 1);
@@ -771,6 +925,8 @@ export class Painter {
     for (const item of overlay?.compatible ?? []) flag(itemKey(item), 4);
     if (overlay?.target) flag(itemKey(overlay.target), 8);
     if (overlay?.muted) flag(overlay.muted, 32);
+    for (const key of drag?.moving ?? []) flag(key, 64);
+    for (const key of drag?.rerouted ?? []) flag(key, 128);
     const changed = new Set([...geometry.states.keys(), ...states.keys()]);
     const words = new Uint32Array(
       geometry.focus.bytes.buffer,

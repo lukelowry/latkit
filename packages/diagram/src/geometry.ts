@@ -1,10 +1,10 @@
 import { Work, failure } from '@latkit/model';
 import type { Point, RouteEnd } from './data.js';
-import type { Scene, Vertex, Rect, End } from './scene.js';
+import type { Scene, Vertex, Rect, End, Edge, GroupBox } from './scene.js';
 import type { Limits } from './options.js';
 import type { Style } from './config.js';
 import { rect } from './scene.js';
-import { SpatialIndex, union, expand } from './spatial.js';
+import { SpatialIndex, union, expand, intersects } from './spatial.js';
 import { rootEnd } from './layout.js';
 
 export function boundary(vertex: Vertex, toward: Point): Point {
@@ -372,64 +372,32 @@ export async function geometry(
       parent = groups.get(parent)?.parent;
     }
   }
-  const obstacles = new SpatialIndex(limits.pickingBytes),
-    owners: number[] = [];
+  const index = new SpatialIndex(limits.pickingBytes),
+    owners: number[] = [],
+    ownerBox = new Map<number, Rect>();
   scene.vertices.forEach((vertex, i) => {
     if (vertex.visible && !hidden.has(i)) {
-      obstacles.add(expand(rect(vertex), 2));
+      const box = expand(rect(vertex), 2);
+      index.add(box);
       owners.push(i);
+      ownerBox.set(i, box);
     }
   });
-  const proxyOwner = new Map<string, number>();
+  const proxyOwner = new Map<string, number>(),
+    proxyGroups: string[] = [];
   for (const group of scene.groups)
     if (group.collapsed && !hiddenGroups.has(group.id)) {
-      proxyOwner.set(group.id, scene.vertices.length + proxyOwner.size);
-      obstacles.add(expand(group.bounds, 2));
-      owners.push(proxyOwner.get(group.id)!);
+      const owner = scene.vertices.length + proxyGroups.length,
+        box = expand(group.bounds, 2);
+      proxyOwner.set(group.id, owner);
+      proxyGroups.push(group.id);
+      index.add(box);
+      owners.push(owner);
+      ownerBox.set(owner, box);
     }
-  const ownerBounds = new Map(owners.map((owner, i) => [owner, obstacles.boxes[i]]));
-  const routeEnd = (e: End, toward: Point): RouteEnd & { owner: number } => {
-    const vertex = scene.vertices[e.vertex],
-      group = proxy.get(e.vertex),
-      g = group && groups.get(group);
-    if (g) {
-      const box = g.bounds,
-        n = {
-          ...vertex,
-          x: box[0],
-          y: box[1],
-          width: box[2] - box[0],
-          height: box[3] - box[1],
-          shape: 'rectangle' as const,
-        },
-        p = boundary(n, toward),
-        dx = p[0] - (n.x + n.width / 2),
-        dy = p[1] - (n.y + n.height / 2);
-      return {
-        position: p,
-        normal:
-          Math.abs(dx / n.width) > Math.abs(dy / n.height)
-            ? [Math.sign(dx), 0]
-            : [0, Math.sign(dy)],
-        ...(e.direction ? { direction: e.direction } : {}),
-        owner: proxyOwner.get(g.id)!,
-      };
-    }
-    const port = e.port && vertex.ports.find((p) => p.name === e.port);
-    const p = port ? port.position : boundary(vertex, toward),
-      dx = p[0] - vertex.x - vertex.width / 2,
-      dy = p[1] - vertex.y - vertex.height / 2;
-    return {
-      position: p,
-      normal: port
-        ? port.normal
-        : Math.abs(dx / vertex.width) > Math.abs(dy / vertex.height)
-          ? [Math.sign(dx), 0]
-          : [0, Math.sign(dy)],
-      ...(e.direction ? { direction: e.direction } : {}),
-      owner: e.vertex,
-    };
-  };
+  // Kept with the scene, so a drag reroutes the wires it moves without rebuilding the rest.
+  scene.obstacles = { index, owners, ownerBox, proxy, proxyOwner, proxyGroups, groups };
+  const route = routing(scene, options, signal);
   const oldEdges = new Map(
     previous?.edges.map((e) => [JSON.stringify([e.hit.index.type, e.hit.id]), e]),
   );
@@ -489,9 +457,7 @@ export async function geometry(
     const ends = edge.ends.filter((e) => scene.vertices[e.vertex].visible);
     if (ends.length * 2 + routePoints > limits.routePoints)
       throw failure('resource-limit', 'Too many route points');
-    if (!edge.visible || ends.length < 2) continue;
-    if (ends.every((e) => proxy.get(e.vertex) && proxy.get(e.vertex) === proxy.get(ends[0].vertex)))
-      continue;
+    if (!routed(edge, ends, proxy)) continue;
     const old = oldEdges.get(JSON.stringify([edge.hit.index.type, edge.hit.id]));
     if (
       groupSame &&
@@ -513,118 +479,15 @@ export async function geometry(
         old.paths.flatMap((path) => path.map((p) => [p[0], p[1], p[0], p[1]] as Rect)),
       );
     } else {
-      const preferred = edge.ends[rootEnd(edge)];
-      const root = ends.includes(preferred) ? preferred : ends[0],
-        center = (e: End): Point => {
-          const n = scene.vertices[e.vertex];
-          return [n.x + n.width / 2, n.y + n.height / 2];
-        };
-      const targets = ends.filter((e) => e !== root),
-        rootPoint = routeEnd(root, center(targets[0]));
-      const all = [rootPoint, ...targets.map((e) => routeEnd(e, center(root)))];
-      let paths: readonly (readonly Point[])[];
-      if (typeof edge.options.route === 'object')
-        paths = edge.options.route.route({
-          ends: all,
-          obstacles: obstacles.boxes,
-          clearance: options.routeClearance,
-          signal,
-        });
-      else
-        paths = targets.map((target, j) => {
-          const a = rootPoint,
-            b = all[j + 1],
-            stub = options.routeClearance;
-          const stubPoint = (end: typeof a): Point => {
-            const own = ownerBounds.get(end.owner),
-              axis = end.normal[0] ? 0 : 1,
-              exit = own
-                ? Math.max(
-                    0,
-                    (own[end.normal[axis] > 0 ? axis + 2 : axis] - end.position[axis]) *
-                      end.normal[axis],
-                  )
-                : 0;
-            let length = exit + stub;
-            const far: Point = [
-              end.position[0] + end.normal[0] * length,
-              end.position[1] + end.normal[1] * length,
-            ];
-            const region: Rect = [
-              Math.min(end.position[0], far[0]),
-              Math.min(end.position[1], far[1]),
-              Math.max(end.position[0], far[0]),
-              Math.max(end.position[1], far[1]),
-            ];
-            for (const id of obstacles.query(region)) {
-              if (owners[id] === end.owner) continue;
-              const box = obstacles.boxes[id],
-                axis = end.normal[0] ? 0 : 1;
-              const distance =
-                (box[end.normal[axis] > 0 ? axis : axis + 2] - end.position[axis]) *
-                end.normal[axis];
-              if (distance > exit) length = Math.min(length, (exit + distance) * 0.5);
-            }
-            return [
-              end.position[0] + end.normal[0] * length,
-              end.position[1] + end.normal[1] * length,
-            ];
-          };
-          const ap = stubPoint(a),
-            bp = stubPoint(b);
-          if (edge.options.route === 'straight' && root.vertex !== target.vertex)
-            return [a.position, b.position];
-          const region = expand(
-            union([
-              [ap[0], ap[1], ap[0], ap[1]],
-              [bp[0], bp[1], bp[0], bp[1]],
-            ]),
-            stub * 4,
-          );
-          const boxes = obstacles.query(region).map((i) => obstacles.boxes[i]);
-          return simplify([
-            a.position,
-            ap,
-            ...orthogonal(ap, bp, boxes, stub, signal),
-            bp,
-            b.position,
-          ]);
-        });
-      if (paths.some((path) => path.some((p) => p.length !== 2 || !p.every(Number.isFinite))))
-        throw failure('invalid-input', 'Router returned invalid points');
-      const arrows: { point: Point; direction: Point }[] = [];
-      for (let i = 0; i < paths.length; i++) {
-        const p = paths[i],
-          end = all[Math.min(i + 1, all.length - 1)];
-        if (p.length > 1 && edge.options.arrows && end.direction === 'in') {
-          const a = p[p.length - 2],
-            b = p[p.length - 1],
-            d = Math.hypot(b[0] - a[0], b[1] - a[1]);
-          if (d) arrows.push({ point: b, direction: [(b[0] - a[0]) / d, (b[1] - a[1]) / d] });
-        }
-      }
-      if (edge.options.arrows && root.direction === 'in' && paths[0]?.length > 1) {
-        const [a, b] = paths[0],
-          d = Math.hypot(a[0] - b[0], a[1] - b[1]);
-        if (d) arrows.push({ point: a, direction: [(a[0] - b[0]) / d, (a[1] - b[1]) / d] });
-      }
-      if (paths.reduce((n, p) => n + p.length, 0) + routePoints > limits.routePoints)
+      const wired = wire(edge, ends, route);
+      if (wired.points + routePoints > limits.routePoints)
         throw failure('resource-limit', 'Too many route points');
-      const merged = segments(paths);
-      edge.paths = edge.options.appearance === 'tag' ? [] : merged.paths;
-      edge.offsets = edge.options.appearance === 'tag' ? all.map(() => 0) : merged.offsets;
-      edge.junctions = merged.junctions;
-      edge.arrows = arrows;
-      edge.anchor = all[0].position;
-      edge.bounds = union(paths.flatMap((p) => p.map((q) => [q[0], q[1], q[0], q[1]] as Rect)));
-      if (edge.options.appearance === 'tag')
-        edge.paths = all.map((p) => [
-          p.position,
-          [
-            p.position[0] + p.normal[0] * stubLength(options),
-            p.position[1] + p.normal[1] * stubLength(options),
-          ],
-        ]);
+      edge.paths = wired.paths;
+      edge.offsets = wired.offsets;
+      edge.junctions = wired.junctions;
+      edge.arrows = wired.arrows;
+      edge.anchor = wired.anchor;
+      edge.bounds = wired.bounds;
     }
     if (edge.options.appearance === 'tag')
       edge.bounds = union(
@@ -703,11 +566,262 @@ export async function geometry(
     ...scene.groups.filter((g) => g.bounds[0] !== g.bounds[2]).map((g) => g.bounds),
   ]);
   scene.routeClearance = options.routeClearance;
-  scene.routeBytes = routePoints * 24;
+  scene.routeBytes = routePoints * 24 + index.bytes;
   scene.bytes += scene.routeBytes;
   work.check();
   if (scene.bytes > limits.geometryBytes)
     throw failure('resource-limit', 'Route geometry exceeds budget');
+}
+/** A scene's obstacles, kept for routing the wires a drag moves. */
+export interface Obstacles {
+  readonly index: SpatialIndex;
+  /** The vertex, or collapsed group past the vertices, each box belongs to. */
+  readonly owners: readonly number[];
+  readonly ownerBox: ReadonlyMap<number, Rect>;
+  /** The collapsed group that stands in for each hidden vertex. */
+  readonly proxy: ReadonlyMap<number, string>;
+  readonly proxyOwner: ReadonlyMap<string, number>;
+  /** The group of each proxy owner, past the vertices. */
+  readonly proxyGroups: readonly string[];
+  readonly groups: ReadonlyMap<string, GroupBox>;
+}
+/** Vertices and groups a drag moves by one delta, drawn and routed where they are going. */
+export interface Moved {
+  readonly vertices: ReadonlyMap<number, Vertex>;
+  readonly groups: ReadonlySet<string>;
+  readonly delta: Point;
+}
+/** What routing reads of a scene: where each end leaves its vertex, and what wires avoid. */
+interface Routing {
+  readonly options: Style;
+  readonly signal: AbortSignal;
+  vertex(index: number): Vertex;
+  /** An end's anchor, normal, and owner, leaving toward a point. */
+  end(end: End, toward: Point): RouteEnd & { readonly owner: number };
+  /** Obstacle boxes meeting a region, and what each belongs to. */
+  query(region: Rect): readonly { readonly box: Rect; readonly owner: number }[];
+  /** Every obstacle, for routing strategies. */
+  boxes(): readonly Rect[];
+  bounds(owner: number): Rect | undefined;
+}
+/** The wires of one edge: its paths from the root, junctions, arrows, label anchor, and bounds. */
+export interface Wire {
+  readonly paths: readonly (readonly Point[])[];
+  readonly offsets: readonly number[];
+  readonly junctions: readonly Point[];
+  readonly arrows: readonly { point: Point; direction: Point }[];
+  readonly anchor: Point;
+  readonly bounds: Rect;
+  /** Route points it draws, for the route budget. */
+  readonly points: number;
+}
+/** Whether an edge draws wires between these ends: two or more, not all inside one collapsed group. */
+function routed(edge: Edge, ends: readonly End[], proxy: ReadonlyMap<number, string>): boolean {
+  if (!edge.visible || ends.length < 2) return false;
+  const first = proxy.get(ends[0].vertex);
+  return !first || !ends.every((e) => proxy.get(e.vertex) === first);
+}
+function shift(box: Rect, delta: Point): Rect {
+  return [box[0] + delta[0], box[1] + delta[1], box[2] + delta[0], box[3] + delta[1]];
+}
+/** Routing over a scene's obstacles, with what a drag moves where it is going. */
+function routing(scene: Scene, options: Style, signal: AbortSignal, moved?: Moved): Routing {
+  const o = scene.obstacles!,
+    count = scene.vertices.length;
+  const vertex = (i: number) => moved?.vertices.get(i) ?? scene.vertices[i];
+  const groupBounds = (id: string): Rect => {
+    const box = o.groups.get(id)!.bounds;
+    return moved?.groups.has(id) ? shift(box, moved.delta) : box;
+  };
+  const moves = (owner: number) =>
+    !!moved &&
+    (owner < count ? moved.vertices.has(owner) : moved.groups.has(o.proxyGroups[owner - count]));
+  const box = (owner: number): Rect | undefined => {
+    const own = o.ownerBox.get(owner);
+    return own && moves(owner) ? shift(own, moved!.delta) : own;
+  };
+  const shifted = moved
+    ? [...o.ownerBox.keys()].filter(moves).map((owner) => ({ box: box(owner)!, owner }))
+    : [];
+  return {
+    options,
+    signal,
+    vertex,
+    end(e, toward) {
+      const group = o.proxy.get(e.vertex);
+      if (group && o.groups.get(group)) {
+        const b = groupBounds(group),
+          n = {
+            ...vertex(e.vertex),
+            x: b[0],
+            y: b[1],
+            width: b[2] - b[0],
+            height: b[3] - b[1],
+            shape: 'rectangle' as const,
+          },
+          p = boundary(n, toward),
+          dx = p[0] - (n.x + n.width / 2),
+          dy = p[1] - (n.y + n.height / 2);
+        return {
+          position: p,
+          normal:
+            Math.abs(dx / n.width) > Math.abs(dy / n.height)
+              ? [Math.sign(dx), 0]
+              : [0, Math.sign(dy)],
+          ...(e.direction ? { direction: e.direction } : {}),
+          owner: o.proxyOwner.get(group)!,
+        };
+      }
+      const n = vertex(e.vertex),
+        port = e.port && n.ports.find((p) => p.name === e.port);
+      const p = port ? port.position : boundary(n, toward),
+        dx = p[0] - n.x - n.width / 2,
+        dy = p[1] - n.y - n.height / 2;
+      return {
+        position: p,
+        normal: port
+          ? port.normal
+          : Math.abs(dx / n.width) > Math.abs(dy / n.height)
+            ? [Math.sign(dx), 0]
+            : [0, Math.sign(dy)],
+        ...(e.direction ? { direction: e.direction } : {}),
+        owner: e.vertex,
+      };
+    },
+    query(region) {
+      const out: { box: Rect; owner: number }[] = [];
+      for (const id of o.index.query(region))
+        if (!moves(o.owners[id])) out.push({ box: o.index.boxes[id], owner: o.owners[id] });
+      for (const entry of shifted) if (intersects(entry.box, region)) out.push(entry);
+      return out;
+    },
+    boxes: () => o.index.boxes.map((own, id) => box(o.owners[id]) ?? own),
+    bounds: box,
+  };
+}
+/** Route one edge between its visible ends. */
+function wire(edge: Edge, ends: readonly End[], route: Routing): Wire {
+  const { options, signal } = route;
+  const preferred = edge.ends[rootEnd(edge)];
+  const root = ends.includes(preferred) ? preferred : ends[0],
+    center = (e: End): Point => {
+      const n = route.vertex(e.vertex);
+      return [n.x + n.width / 2, n.y + n.height / 2];
+    };
+  const targets = ends.filter((e) => e !== root),
+    rootPoint = route.end(root, center(targets[0]));
+  const all = [rootPoint, ...targets.map((e) => route.end(e, center(root)))];
+  let paths: readonly (readonly Point[])[];
+  if (typeof edge.options.route === 'object')
+    paths = edge.options.route.route({
+      ends: all,
+      obstacles: route.boxes(),
+      clearance: options.routeClearance,
+      signal,
+    });
+  else
+    paths = targets.map((target, j) => {
+      const a = rootPoint,
+        b = all[j + 1],
+        stub = options.routeClearance;
+      const stubPoint = (end: typeof a): Point => {
+        const own = route.bounds(end.owner),
+          axis = end.normal[0] ? 0 : 1,
+          exit = own
+            ? Math.max(
+                0,
+                (own[end.normal[axis] > 0 ? axis + 2 : axis] - end.position[axis]) *
+                  end.normal[axis],
+              )
+            : 0;
+        let length = exit + stub;
+        const far: Point = [
+          end.position[0] + end.normal[0] * length,
+          end.position[1] + end.normal[1] * length,
+        ];
+        const region: Rect = [
+          Math.min(end.position[0], far[0]),
+          Math.min(end.position[1], far[1]),
+          Math.max(end.position[0], far[0]),
+          Math.max(end.position[1], far[1]),
+        ];
+        for (const { box, owner } of route.query(region)) {
+          if (owner === end.owner) continue;
+          const distance =
+            (box[end.normal[axis] > 0 ? axis : axis + 2] - end.position[axis]) * end.normal[axis];
+          if (distance > exit) length = Math.min(length, (exit + distance) * 0.5);
+        }
+        return [end.position[0] + end.normal[0] * length, end.position[1] + end.normal[1] * length];
+      };
+      const ap = stubPoint(a),
+        bp = stubPoint(b);
+      if (edge.options.route === 'straight' && root.vertex !== target.vertex)
+        return [a.position, b.position];
+      const region = expand(
+        union([
+          [ap[0], ap[1], ap[0], ap[1]],
+          [bp[0], bp[1], bp[0], bp[1]],
+        ]),
+        stub * 4,
+      );
+      const boxes = route.query(region).map((entry) => entry.box);
+      return simplify([a.position, ap, ...orthogonal(ap, bp, boxes, stub, signal), bp, b.position]);
+    });
+  if (paths.some((path) => path.some((p) => p.length !== 2 || !p.every(Number.isFinite))))
+    throw failure('invalid-input', 'Router returned invalid points');
+  const arrows: { point: Point; direction: Point }[] = [];
+  for (let i = 0; i < paths.length; i++) {
+    const p = paths[i],
+      end = all[Math.min(i + 1, all.length - 1)];
+    if (p.length > 1 && edge.options.arrows && end.direction === 'in') {
+      const a = p[p.length - 2],
+        b = p[p.length - 1],
+        d = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (d) arrows.push({ point: b, direction: [(b[0] - a[0]) / d, (b[1] - a[1]) / d] });
+    }
+  }
+  if (edge.options.arrows && root.direction === 'in' && paths[0]?.length > 1) {
+    const [a, b] = paths[0],
+      d = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    if (d) arrows.push({ point: a, direction: [(a[0] - b[0]) / d, (a[1] - b[1]) / d] });
+  }
+  const merged = segments(paths),
+    tag = edge.options.appearance === 'tag';
+  return {
+    paths: tag
+      ? all.map((p) => [
+          p.position,
+          [
+            p.position[0] + p.normal[0] * stubLength(options),
+            p.position[1] + p.normal[1] * stubLength(options),
+          ],
+        ])
+      : merged.paths,
+    offsets: tag ? all.map(() => 0) : merged.offsets,
+    junctions: merged.junctions,
+    arrows,
+    anchor: all[0].position,
+    bounds: union(paths.flatMap((p) => p.map((q) => [q[0], q[1], q[0], q[1]] as Rect))),
+    points: paths.reduce((n, p) => n + p.length, 0),
+  };
+}
+/** The wires a drag reroutes: each edge touching what moves, routed where it is going. */
+export function dragWires(
+  scene: Scene,
+  edges: readonly number[],
+  moved: Moved,
+  options: Style,
+  signal: AbortSignal,
+): (Wire & { readonly edge: Edge })[] {
+  const route = routing(scene, options, signal, moved),
+    proxy = scene.obstacles!.proxy,
+    wires: (Wire & { readonly edge: Edge })[] = [];
+  for (const i of edges) {
+    const edge = scene.edges[i],
+      ends = edge.ends.filter((e) => scene.vertices[e.vertex].sourceVisible);
+    if (routed(edge, ends, proxy)) wires.push({ ...wire(edge, ends, route), edge });
+  }
+  return wires;
 }
 function stubLength(options: Style): number {
   return options.routeClearance;

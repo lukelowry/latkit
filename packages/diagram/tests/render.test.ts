@@ -4,6 +4,7 @@ import { createData } from '@latkit/model';
 import { createGpu, createComposition, kit } from '@latkit/gpu';
 import { createDiagram, type Diagram } from '../src/diagram.js';
 import type { Controls } from '../src/input.js';
+import type { DragDraw } from '../src/drag.js';
 import { Source, data, vertex as vertexOf } from './fixture.js';
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
 function device() {
@@ -31,6 +32,9 @@ function device() {
 }
 /** What input drives, without a canvas. */
 const interaction = (diagram: Diagram) => (diagram as unknown as { controls: Controls }).controls;
+/** The drag the latest frame drew over its scene. */
+const dragOf = (diagram: Diagram) =>
+  (diagram as unknown as { shown?: { drag?: DragDraw } }).shown?.drag;
 const animating = (diagram: Diagram) => kit.rendererOf(diagram).animating;
 async function fixture() {
   const fake = device(),
@@ -163,16 +167,22 @@ it('keeps drag previews separate from accepted positions', async () => {
   try {
     await f.draw();
     const ref = vertexOf(f.source, 'n0'),
-      api = interaction(f.diagram);
-    const before = api.scene()!.vertices[0].x;
+      api = interaction(f.diagram),
+      accepted = api.scene()!;
+    const before = accepted.vertices[0].x,
+      at = f.diagram.locate(ref)!,
+      scale = f.diagram.camera.scale;
     api.preview([ref], [24, 0]);
     await f.draw();
-    expect(api.scene()!.vertices[0].x).toBe(before + 24);
+    // The preview draws over the accepted scene and leaves it as it is; locate follows the drag.
+    expect(api.scene()).toBe(accepted);
+    expect(f.diagram.locate(ref)![0]).toBeCloseTo(at[0] + 24 * scale);
     api.preview([ref], [40, 0]);
     await f.draw();
-    expect(api.scene()!.vertices[0].x).toBe(before + 40);
+    expect(f.diagram.locate(ref)![0]).toBeCloseTo(at[0] + 40 * scale);
     api.preview([], null);
     await f.draw();
+    expect(f.diagram.locate(ref)).toEqual(at);
     expect(api.scene()!.vertices[0].x).toBe(before);
     const move = api.move([ref], [24, 8])!;
     expect(move.moves[0].position).toEqual([before + 24, api.scene()!.vertices[0].y + 8]);
@@ -281,18 +291,27 @@ it('moves nested collapsed groups without losing routes or accumulating geometry
     expect(api.move(refs, [0, 24])!.moves).toHaveLength(2);
     api.preview(refs, [0, 24]);
     await f.draw();
-    const moved = api.scene()!,
-      box = moved.groups.find((g) => g.id === 'outer')!.bounds;
-    expect(box[0]).toBe(bounds[0]);
-    expect(box[1]).toBe(bounds[1] + 24);
-    expect(moved.vertices.map((vertex) => vertex.visible)).toEqual([false, false, true, true]);
-    expect(moved.edges[1].paths.length).toBeGreaterThan(0);
-    expect(moved.bytes - moved.routeBytes).toBe(base.bytes - base.routeBytes);
+    // The groups move with their vertices, and the wires leaving them reroute where they go; the
+    // accepted scene stays as it is, so no geometry accumulates.
+    const drag = dragOf(f.diagram)!;
+    expect(api.scene()).toBe(base);
+    expect([...drag.marks.groups].sort()).toEqual(['inner', 'outer']);
+    expect(base.vertices.map((vertex) => vertex.visible)).toEqual([false, false, true, true]);
+    const wire = drag.wires.find((w) => w.edge === base.edges[1])!;
+    expect(wire.paths.length).toBeGreaterThan(0);
+    // The wire now leaves the group's box where the drag has taken it.
+    expect(
+      wire.paths.some((path) =>
+        path.some((p) => p[1] >= bounds[1] + 24 - 1e-9 && p[1] <= bounds[3] + 24 + 1e-9),
+      ),
+    ).toBe(true);
     api.preview(refs, [0, 48]);
     await f.draw();
-    expect(api.scene()!.vertices[0].y).toBe(base.vertices[0].y + 48);
+    expect(dragOf(f.diagram)!.delta).toEqual([0, 48]);
+    expect(api.scene()).toBe(base);
     api.preview([], null);
     await f.draw();
+    expect(dragOf(f.diagram)).toBeUndefined();
     expect(api.scene()!.groups.find((g) => g.id === 'outer')!.bounds).toEqual(bounds);
   } finally {
     f.diagram.destroy();
