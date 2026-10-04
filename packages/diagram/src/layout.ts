@@ -2,10 +2,10 @@ import { Work, failure, type FieldValues, type RequestOptions } from '@latkit/mo
 import { kit, type Gpu } from '@latkit/gpu';
 import { expandedData, type Point } from './data.js';
 import type { DiagramConfig } from './diagram.js';
-import { data as checkedData, resolveLimits, resolveStyle, positive } from './config.js';
+import { data as checkedData, resolveLimits, resolveStyle, positive, VIEW_DEFAULTS } from './config.js';
 import { readScene } from './read.js';
-import { positions, rect, type Scene } from './scene.js';
-import { SpatialIndex, expand, intersects } from './spatial.js';
+import { positions, rect, expand, intersects, type Rect, type Scene } from './scene.js';
+import { portPositions } from './geometry.js';
 export interface LayoutVertex {
   readonly id: string;
   readonly type: string;
@@ -84,7 +84,7 @@ export async function arrange(
 ): Promise<Readonly<Record<string, FieldValues>>> {
   const data = checkedData(expandedData(config)),
     limits = resolveLimits(config.limits),
-    style = resolveStyle(config, kit.resolveViewStyle(config));
+    style = resolveStyle(config, kit.resolveViewStyle(config, VIEW_DEFAULTS));
   const reader = gpu.reader.open({ signal: options.signal, at: config.at ?? undefined });
   try {
     const work = new Work(reader.signal, limits.layoutMs);
@@ -93,7 +93,7 @@ export async function arrange(
       reader,
       style,
       limits,
-      (input, request) => gpu.measureText(input, request),
+      (input) => gpu.layoutText(input, { signal: reader.signal }),
       work,
     );
     await place(
@@ -143,11 +143,16 @@ export async function place(
         vertex.pinned = true;
       }
     }
-  const pairs: [number, number][] = [];
+  const pairs: [number, number][] = [],
+    links: { a: number; b: number; from: string | null; to: string | null }[] = [];
   for (const edge of scene.edges) {
     const root = edge.ends[rootEnd(edge)];
     if (root)
-      for (const e of edge.ends) if (e.vertex !== root.vertex) pairs.push([root.vertex, e.vertex]);
+      for (const e of edge.ends)
+        if (e.vertex !== root.vertex) {
+          pairs.push([root.vertex, e.vertex]);
+          links.push({ a: root.vertex, b: e.vertex, from: root.port, to: e.port });
+        }
   }
   if (typeof config.algorithm === 'object') {
     const result = await config.algorithm.arrange(
@@ -280,9 +285,46 @@ export async function place(
   }
   const vertical = config.direction === 'down' || config.direction === 'up',
     reverse = config.direction === 'left' || config.direction === 'up';
-  const index = new SpatialIndex();
+  // Placed boxes in a uniform grid of their own, for the collision escape below.
+  const placedBoxes: Rect[] = [],
+    cells = new Map<number, number[]>(),
+    cell = 256;
+  const cellsOf = (box: Rect, visit: (key: number) => void) => {
+    for (let y = Math.floor(box[1] / cell); y <= Math.floor(box[3] / cell); y++)
+      for (let x = Math.floor(box[0] / cell); x <= Math.floor(box[2] / cell); x++)
+        visit((x + 0x2000000) * 0x4000000 + (y + 0x2000000));
+  };
+  const occupy = (box: Rect) => {
+    const id = placedBoxes.push(box) - 1;
+    cellsOf(box, (key) => {
+      const bucket = cells.get(key);
+      if (bucket) bucket.push(id);
+      else cells.set(key, [id]);
+    });
+  };
+  const hits = (box: Rect) => {
+    const found = new Set<number>();
+    cellsOf(box, (key) => {
+      for (const id of cells.get(key) ?? []) if (intersects(placedBoxes[id], box)) found.add(id);
+    });
+    return [...found];
+  };
   for (const vertex of vertices)
-    if (vertex.pinned) index.add(expand(rect(vertex), config.vertexGap / 2));
+    if (vertex.pinned) occupy(expand(rect(vertex), config.vertexGap / 2));
+  // Each port's offset from its vertex's corner, so wires between ports can run straight.
+  const offsets = vertices.map((vertex) => {
+    const { x, y } = vertex;
+    vertex.x = vertex.y = 0;
+    portPositions(vertex);
+    vertex.x = x;
+    vertex.y = y;
+    return new Map(vertex.ports.map((port) => [port.name, port.position]));
+  });
+  const across = (i: number, port: string | null) =>
+    (port ? offsets[i].get(port)?.[vertical ? 0 : 1] : undefined) ??
+    (vertical ? vertices[i].width : vertices[i].height) / 2;
+  const incoming = Array.from({ length: n }, () => [] as (typeof links)[number][]);
+  for (const link of links) if (link.a !== link.b) incoming[link.b].push(link);
   const placed = new Set<number>();
   const labelGaps = new Float64Array(n);
   for (const edge of scene.edges) {
@@ -302,32 +344,29 @@ export async function place(
     for (const i of list) {
       const vertex = vertices[i],
         along = vertical ? vertex.height : vertex.width,
-        across = vertical ? vertex.width : vertex.height;
+        span = vertical ? vertex.width : vertex.height;
       max = Math.max(max, along);
       if (vertex.pinned) continue;
       const a = reverse ? -major - along : major;
-      const incoming = back[i].filter((p) => placed.has(p));
-      const desired = incoming.length
-        ? incoming.reduce(
-            (sum, p) =>
-              sum +
-              (vertical
-                ? vertices[p].x + vertices[p].width / 2
-                : vertices[p].y + vertices[p].height / 2),
-            0,
-          ) /
-            incoming.length -
-          across / 2
-        : minor;
+      // Where each placed source would have this vertex sit for their ports to line up.
+      const wanted = incoming[i]
+        .filter((link) => placed.has(link.a))
+        .map(
+          (link) =>
+            (vertical ? vertices[link.a].x : vertices[link.a].y) +
+            across(link.a, link.from) -
+            across(i, link.to),
+        )
+        .sort((a, b) => a - b);
+      const desired = wanted.length ? wanted[(wanted.length - 1) >> 1] : minor;
       let b = Math.max(minor, desired);
       vertex.x = vertical ? b : a;
       vertex.y = vertical ? a : b;
       // Deterministic local collision escape; jump beyond obstacles, never scan huge coordinates.
       for (let attempt = 0; attempt <= vertices.length; attempt++) {
-        const box = expand(rect(vertex), config.vertexGap / 2),
-          hits = index.query(box).filter((j) => intersects(index.boxes[j], box));
-        if (!hits.length) break;
-        b = Math.max(...hits.map((j) => index.boxes[j][vertical ? 2 : 3])) + config.vertexGap;
+        const found = hits(expand(rect(vertex), config.vertexGap / 2));
+        if (!found.length) break;
+        b = Math.max(...found.map((j) => placedBoxes[j][vertical ? 2 : 3])) + config.vertexGap;
         vertex.x = vertical ? b : a;
         vertex.y = vertical ? a : b;
         if (attempt === vertices.length)
@@ -335,9 +374,9 @@ export async function place(
       }
       vertex.x = Math.round(vertex.x / grid) * grid;
       vertex.y = Math.round(vertex.y / grid) * grid;
-      index.add(expand(rect(vertex), config.vertexGap / 2));
+      occupy(expand(rect(vertex), config.vertexGap / 2));
       placed.add(i);
-      minor = b + across + config.vertexGap;
+      minor = b + span + config.vertexGap;
     }
     const labelGap = list.reduce((gap, i) => Math.max(gap, labelGaps[i]), 0);
     major += max + Math.max(config.rankGap, labelGap);

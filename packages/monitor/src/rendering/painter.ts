@@ -194,15 +194,7 @@ export function traceDraws(
       ],
       16,
     );
-    ints.set(
-      [
-        visible?.kind === 'value' ? visible.slot : 0xffffffff,
-        visible?.kind === 'value' && visible.type === 'boolean' ? 1 : 0,
-        interpolation,
-        0,
-      ],
-      20,
-    );
+    ints.set([visible?.kind === 'value' ? visible.slot : 0xffffffff, 0, interpolation, 0], 20);
     ints.set([rows, frames, 0, 0], 24);
     uniforms.set([shaded?.kind === 'value' ? (shaded.origin?.[0] ?? 0) : 0, 0, plot.x, plot.y], 28);
     const scale = (at: number, domain: Domain, origin: number | undefined, clamp = false) =>

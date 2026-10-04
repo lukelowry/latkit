@@ -11,12 +11,12 @@ export const DEFAULTS: Required<DiagramStyle> = Object.freeze({
   labels: true,
   junctions: true,
   vertexPadding: 10,
-  cornerRadius: 8,
+  cornerRadius: 6,
   outlineWidthPx: 1,
-  portSizePx: 8,
+  portSize: 8,
   portMarker: 'directional',
   portLabels: true,
-  portFontSizePx: 11,
+  portFontSize: 11,
   edgeWidthPx: 1.5,
   gridMinSpacingPx: 12,
   detail: 'auto',
@@ -29,6 +29,8 @@ export const DEFAULTS: Required<DiagramStyle> = Object.freeze({
   gridColor: [0.5, 0.55, 0.65, 0.2] as RGBA,
   groupColor: [0.45, 0.55, 0.7, 0.1] as RGBA,
 });
+/** Every geometry is antialiased in its shader, so multisampling adds nothing but bandwidth. */
+export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({ msaa: 1 });
 export const LIMITS: Required<Limits> = Object.freeze({
   vertices: 100000,
   edges: 200000,

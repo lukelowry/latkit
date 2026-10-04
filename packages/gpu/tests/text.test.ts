@@ -29,7 +29,7 @@ const run = (text = 'office العربية'): TextRun => ({
   color: [0.25, 0.5, 1, 0.8],
 });
 
-it('shares shaping, atlas regions, and text geometry across views and unchanged frames', async () => {
+it('shares glyphs, atlas regions, and text geometry across strings, views, and frames', async () => {
   const fake = fakeDevice(),
     raster = rasterizer(),
     gpu = await createGpu({ device: fake.device, text: { rasterizer: raster, atlasSize: 64 } });
@@ -49,12 +49,18 @@ it('shares shaping, atlas regions, and text geometry across views and unchanged 
     ],
   });
   await gpu.idle();
-  expect(raster.rasterize).toHaveBeenCalledTimes(1);
-  expect(raster.rasterize.mock.calls[0][0].text).toBe(runs[0].text);
-  expect(fake.queue.writeTexture).toHaveBeenCalledTimes(1);
-  expect(gpu.stats().uploads).toBe(2);
-  const metrics = await gpu.measureText(runs[0]);
-  expect(metrics.advance).toBe(runs[0].text.length / 2);
+  // One raster and one atlas region per distinct grapheme.
+  const graphemes = new Set(runs[0].text);
+  expect(raster.rasterize).toHaveBeenCalledTimes(graphemes.size);
+  expect(fake.queue.writeTexture).toHaveBeenCalledTimes(graphemes.size);
+  // Both views share the one text geometry: its pages upload once.
+  expect(gpu.stats().uploads).toBe(graphemes.size + pages.length);
+  const layout = await gpu.layoutText({ text: 'ice', size: 10 });
+  expect(raster.rasterize).toHaveBeenCalledTimes(graphemes.size);
+  expect(layout.width).toBe(15);
+  expect(layout.runs).toEqual([
+    expect.objectContaining({ text: 'ice', size: 10, position: [0, 7.5] }),
+  ]);
   const before = gpu.stats();
   await draw(gpu, async (frame) => {
     pages = await frame.text({ runs });
@@ -90,7 +96,7 @@ it('appends nonoverlapping atlas regions while prior frames remain in flight', a
       ],
     });
   const writes = fake.queue.writeTexture.mock.calls;
-  expect(writes).toHaveLength(2);
+  expect(writes).toHaveLength(new Set('firstsecond').size);
   expect(writes[0][0].texture).toBe(writes[1][0].texture);
   expect(writes[0][0].origin).not.toEqual(writes[1][0].origin);
   fake.finish();
@@ -117,15 +123,15 @@ it('font revision invalidates shaping and an aborted reader does not cancel anot
   });
   const gpu = await createGpu({ device: fake.device, text: { rasterizer: raster, atlasSize: 64 } }),
     controller = new AbortController();
-  const first = gpu.measureText(run(), { signal: controller.signal }),
-    second = gpu.measureText(run());
+  const first = gpu.layoutText({ ...run(), text: 'x' }, { signal: controller.signal }),
+    second = gpu.layoutText({ ...run(), text: 'x' });
   const rejection = expect(first).rejects.toMatchObject({ name: 'AbortError' });
   controller.abort();
   await rejection;
   gate.resolve();
   await second;
   expect(raster.rasterize).toHaveBeenCalledTimes(1);
-  await gpu.measureText({ ...run(), font: { family: 'sans-serif', revision: '2' } });
+  await gpu.layoutText({ ...run(), text: 'x', font: { family: 'sans-serif', revision: '2' } });
   expect(raster.rasterize).toHaveBeenCalledTimes(2);
   gpu.destroy();
 });
@@ -136,7 +142,7 @@ it('evicts bounded text caches and rebuilds cleanly after trim', async () => {
     gpu = await createGpu({
       device: fake.device,
       text: { rasterizer: raster, atlasSize: 64 },
-      budget: { gpuBytes: 16384 },
+      budget: { gpuBytes: 65536 },
     });
   const runs = [run()];
   await draw(gpu, async (frame) => {
@@ -144,10 +150,11 @@ it('evicts bounded text caches and rebuilds cleanly after trim', async () => {
   });
   gpu.trim();
   expect(gpu.stats().gpuBytes).toBe(0);
+  const glyphs = raster.rasterize.mock.calls.length;
   await draw(gpu, async (frame) => {
     await frame.text({ runs });
   });
-  expect(raster.rasterize).toHaveBeenCalledTimes(2);
+  expect(raster.rasterize.mock.calls.length).toBeGreaterThan(glyphs);
   gpu.destroy();
 });
 
@@ -185,5 +192,30 @@ it('rejects a renderer that leaves asynchronous text preparation unawaited', asy
   expect(fake.queue.submit).not.toHaveBeenCalled();
   gate.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
+  gpu.destroy();
+});
+
+it('wraps between words, ellipsizes by advances, and breaks lines', async () => {
+  const fake = fakeDevice(),
+    gpu = await createGpu({
+      device: fake.device,
+      text: { rasterizer: rasterizer(), atlasSize: 64 },
+    });
+  // Every grapheme advances half an em: 5 units at size 10.
+  const lines = (layout: { runs: readonly TextRun[] }) => layout.runs.map((r) => r.text);
+  expect(
+    lines(await gpu.layoutText({ text: 'aa bb cc', size: 10, maxWidth: 25, overflow: 'wrap' })),
+  ).toEqual(['aa bb', 'cc']);
+  expect(
+    lines(await gpu.layoutText({ text: 'abcdefgh', size: 10, maxWidth: 20, overflow: 'wrap' })),
+  ).toEqual(['abcd', 'efgh']);
+  const cut = await gpu.layoutText({ text: 'abcdefgh', size: 10, maxWidth: 20 });
+  expect(lines(cut)).toEqual(['abc…']);
+  expect(cut.width).toBe(20);
+  const two = await gpu.layoutText({ text: 'a\nbc', size: 10 });
+  expect(lines(two)).toEqual(['a', 'bc']);
+  expect(two.runs[1].position[1]).toBeGreaterThan(two.runs[0].position[1]);
+  expect(two.height).toBeCloseTo(2 * 10 * 1.2);
+  expect((await gpu.layoutText({ text: '', size: 10 })).runs).toEqual([]);
   gpu.destroy();
 });

@@ -114,11 +114,12 @@ export async function pick(request: PickRequest): Promise<Reading[]> {
           if (visible && bitAt(tile.presence.visible, r)) {
             const c = visible as typeof visible & { rowStride?: number; frameStride?: number },
               at = c.offset + r * (c.rowStride ?? 1) + f * (c.frameStride ?? 0);
+            // As drawn: a sample without a visibility value shows.
             if (
-              !bitAt(c.validity, at) ||
+              bitAt(c.validity, at) &&
               (c.kind === 'boolean'
                 ? !bitAt(c.values, at)
-                : c.kind === 'numeric' && (!Number.isFinite(c.values[at]) || c.values[at] === 0))
+                : c.kind === 'numeric' && c.values[at] === 0)
             )
               continue;
           }

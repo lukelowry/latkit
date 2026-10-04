@@ -1,5 +1,5 @@
 import { failure, textAt, bitAt, assertIndex, rowAt, rowCount, type Data } from '@latkit/model';
-import { type Gpu, kit, type TextMetrics } from '@latkit/gpu';
+import { type Gpu, kit, type TextLayout } from '@latkit/gpu';
 import type { NetworkData, NetworkLabels as LabelOptions } from '../data.js';
 import {
   edgeOptions,
@@ -22,33 +22,9 @@ interface Entry {
   defaults: readonly unknown[];
   revision: number;
   source: Data;
-  runsByRow: Map<number, { run: kit.TextRun; metrics: TextMetrics }>;
+  runsByRow: Map<number, { run: kit.TextRun; layout: TextLayout }>;
   runs: readonly kit.TextRun[];
   anchors: kit.BufferData;
-}
-/** Shared collision grid for vertex, edge, and path labels. */
-class Occupancy {
-  private cells = new Map<string, (readonly number[])[]>();
-  place(box: readonly number[]): boolean {
-    const keys: string[] = [];
-    for (let y = Math.floor(box[1] / 64); y <= Math.floor(box[3] / 64); y++)
-      for (let x = Math.floor(box[0] / 64); x <= Math.floor(box[2] / 64); x++) {
-        const key = x + ':' + y;
-        keys.push(key);
-        if (
-          this.cells
-            .get(key)
-            ?.some((b) => b[0] < box[2] && b[2] > box[0] && b[1] < box[3] && b[3] > box[1])
-        )
-          return false;
-      }
-    for (const key of keys) {
-      const cell = this.cells.get(key) ?? [];
-      cell.push(box);
-      this.cells.set(key, cell);
-    }
-    return true;
-  }
 }
 export class Labels {
   private cache = new WeakMap<object, Entry>();
@@ -65,7 +41,7 @@ export class Labels {
     style: Style,
   ): Promise<readonly LabelBatch[]> {
     const batches: LabelBatch[] = [],
-      occupied = new Occupancy(),
+      occupied = new kit.Occupancy(),
       counts = new Map<string, number>(),
       totals = new Map<string, number>();
     const banks: (VertexBank | EdgeBank)[] = [
@@ -178,17 +154,22 @@ export class Labels {
             const row = rowAt(block.rows, i);
             if (!lookup.has(row)) throw failure('invalid-input', 'Unexpected label row');
             const text = bitAt(block.presence.label, i) ? (textAt(column, i) ?? '') : '';
-            const run: kit.TextRun = {
-              text,
-              font: options.font ?? style.font,
-              size,
-              color: options.color ?? style.textColor,
-              position: [0, 4],
-              anchor: entry.runsByRow.size,
-            };
+            const layout = await gpu.layoutText(
+              {
+                text,
+                font: options.font ?? style.font,
+                size,
+                color: options.color ?? style.textColor,
+              },
+              { signal: frame.signal },
+            );
             entry.runsByRow.set(row, {
-              run,
-              metrics: await gpu.measureText(run, { signal: frame.signal }),
+              run: {
+                ...(layout.runs[0] ?? { text, size }),
+                position: [0, 4],
+                anchor: entry.runsByRow.size,
+              },
+              layout,
             });
           }
         }
@@ -200,14 +181,14 @@ export class Labels {
         if ((counts.get(key) ?? 0) >= max) break;
         const text = entry.runsByRow.get(candidate.row);
         if (!text?.run.text) continue;
-        const { metrics, run } = text,
+        const { layout, run } = text,
           { p } = candidate;
         const x = p.x + candidate.dx,
-          box = [
+          box: kit.Bounds2D = [
             x - 2,
-            p.y + 2 - metrics.ascent * size,
-            x + metrics.advance * size + 2,
-            p.y + 6 + metrics.descent * size,
+            p.y + 2 - layout.ascent,
+            x + layout.width + 2,
+            p.y + 6 + layout.descent,
           ];
         if (
           !box.every(Number.isFinite) ||

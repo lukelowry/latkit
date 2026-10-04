@@ -25,6 +25,24 @@ export interface TextRun extends TextInput {
   /** Renderer-local anchor identifier; a shader may use it to apply a dynamic transform. */
   readonly anchor?: number;
 }
+/** Text to lay out in the units of `size`, as a view sizes its labels. */
+export interface TextLayoutInput extends TextInput {
+  readonly size: number;
+  readonly color?: RGBA;
+  /** Lines longer than this wrap or end in an ellipsis. */
+  readonly maxWidth?: number;
+  /** `ellipsis` by default; `wrap` breaks between words, and inside one only when it alone is too long. */
+  readonly overflow?: 'wrap' | 'ellipsis';
+}
+/** Laid-out lines in the units of the input's `size`, the first line's top at zero. */
+export interface TextLayout {
+  /** One run per line, positioned at its baseline. */
+  readonly runs: readonly TextRun[];
+  readonly width: number;
+  readonly height: number;
+  readonly ascent: number;
+  readonly descent: number;
+}
 export interface TextRequest {
   /** Immutable identity caches geometry. Moving a view/anchor does not rebuild text. */
   readonly runs: readonly TextRun[];
@@ -33,7 +51,7 @@ export interface TextPage {
   readonly bindGroup: GPUBindGroup;
   readonly count: number;
 }
-/** Rasterizers preserve shaping within each whole, single-line run. Coverage is monochrome. */
+/** Rasterizes one grapheme at a time; the atlas keeps each once per font. Coverage is monochrome. */
 export interface TextRasterizer {
   rasterize(
     input: TextInput,

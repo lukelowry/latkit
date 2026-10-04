@@ -1,4 +1,4 @@
-import { type Gpu, type RGBA, kit, type Viewport } from '@latkit/gpu';
+import { type Gpu, type RGBA, type TextLayout, kit, type Viewport } from '@latkit/gpu';
 import { buffer } from './rendering/painter.js';
 import type { Domain } from '@latkit/model';
 import type { Style } from './config.js';
@@ -49,21 +49,24 @@ export async function axes(
     size = options.fontSizePx;
   const line = (a: number, b: number, c: number, d: number, color: RGBA) =>
     (color === options.gridColor ? grid : lines).push(a, b, c, d, ...color);
+  const measure = (text: string) =>
+    gpu.layoutText({ text, font: options.font, size, color: options.textColor }, { signal });
   const label = async (
     text: string,
     px: number,
     py: number,
     align: 'left' | 'center' | 'right',
+    layout?: TextLayout,
   ) => {
-    const metric = await gpu.measureText({ text, font: options.font }, { signal }),
-      width = metric.advance * size;
-    runs.push({
-      text,
-      font: options.font,
-      size,
-      position: [px - (align === 'center' ? width / 2 : align === 'right' ? width : 0), py],
-      color: options.textColor,
-    });
+    const {
+      runs: [run],
+      width,
+    } = layout ?? (await measure(text));
+    if (run)
+      runs.push({
+        ...run,
+        position: [px - (align === 'center' ? width / 2 : align === 'right' ? width : 0), py],
+      });
     return width;
   };
   if (options.coordinateAxis !== null) {
@@ -81,10 +84,10 @@ export async function axes(
       const px = kit.scaleValue(tick.value, sx)!;
       if (axis.grid !== false) line(px, area.y, px, area.y + area.height, options.gridColor);
       const text = tick.label ?? String(tick.value),
-        metric = await gpu.measureText({ text, font: options.font }, { signal }),
-        width = metric.advance * size;
+        layout = await measure(text),
+        width = layout.width;
       if (px - width / 2 >= end + 6) {
-        await label(text, px, area.y + area.height + size * 1.5, 'center');
+        await label(text, px, area.y + area.height + size * 1.5, 'center', layout);
         end = px + width / 2;
       }
     }

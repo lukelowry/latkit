@@ -1,5 +1,7 @@
 import { integer } from '../error.js';
 import { BANKS, FIELD_KIND } from './pages.js';
+import { scaleShader } from '../style/scale.js';
+import { colormapShader } from '../colors/shader.js';
 
 const banks = Array.from({ length: BANKS }, (_, bank) => bank);
 const kinds = Object.entries(FIELD_KIND)
@@ -11,8 +13,14 @@ const word = banks
   .map((bank) => `  if (bank == ${bank}u) { return latkitValues${bank}[offset]; }`)
   .join('\n');
 
-/** One layout for native columns, field bindings and sampled observations. */
-export function fieldShader(options: { readonly group: number }): string {
+/**
+ * One layout for native columns, field bindings and sampled observations, with the scales that map
+ * them; with `colormap`, that colormap group too, and `fieldColor`.
+ */
+export function fieldShader(options: {
+  readonly group: number;
+  readonly colormap?: number;
+}): string {
   const group = integer(options.group, 'field bind group', 0, 3);
   const values = banks
     .map(
@@ -97,5 +105,26 @@ fn fieldVec3f(slot: u32, row: u32, frame: u32) -> vec3f {
 fn fieldVec4f(slot: u32, row: u32, frame: u32) -> vec4f {
   return vec4f(fieldFloat(slot, row, frame, 0u), fieldFloat(slot, row, frame, 1u), fieldFloat(slot, row, frame, 2u), fieldFloat(slot, row, frame, 3u));
 }
-`;
+${scaleShader}
+/** A scalar field's value plus its upload origin; a boolean reads 0 or 1; no value reads fallback. */
+fn fieldNumber(slot: u32, row: u32, frame: u32, origin: f32, fallback: f32) -> f32 {
+  if (slot == 0xffffffffu || !fieldValid(slot, row, frame)) { return fallback; }
+  if (latkitFields.fields[slot].kind == FIELD_BOOLEAN) { return select(0.0, 1.0, fieldBool(slot, row, frame)); }
+  let value = fieldFloat(slot, row, frame, 0u);
+  return select(fallback, value + origin, scaleFinite(value));
 }
+/** A scale's output for a scalar field, or fallback without a value or a domain. */
+fn fieldScaled(slot: u32, row: u32, frame: u32, scale: LatkitScale, fallback: f32) -> f32 {
+  if (slot == 0xffffffffu) { return fallback; }
+  return scaleMapped(fieldFloat(slot, row, frame, 0u), fieldValid(slot, row, frame), scale, fallback);
+}
+${options.colormap === undefined ? '' : colormapShader({ group: options.colormap }) + colorHelper}`;
+}
+const colorHelper = /* wgsl */ `
+/** A colormapped field's color, or base without a value. */
+fn fieldColor(slot: u32, row: u32, frame: u32, scale: LatkitScale, base: vec4f) -> vec4f {
+  let t = fieldScaled(slot, row, frame, scale, -1.0);
+  if (t < 0.0) { return base; }
+  return colormapColor(t);
+}
+`;

@@ -3,7 +3,7 @@ struct View {
  size:vec4f, base:vec4f, focus:vec4f,
  style:vec4f,  // width, focused, pixel ratio, colored
  slots:vec4u,  // value, coordinate, color, shade fields
- mode:vec4u,   // visible field, boolean visibility, interpolation, unused
+ mode:vec4u,   // visible field, unused, interpolation, unused
  shape:vec4u,  // rows, frames
  extra:vec4f,  // shade origin, unused, plot offset
  x:LatkitScale, y:LatkitScale, color:LatkitScale,
@@ -17,13 +17,9 @@ fn point(row:u32,frame:u32)->Point {
  let value=fieldFloat(view.slots.x,row,frame,0u);
  let coordinate=fieldFloat(view.slots.y,0u,frame,0u);
  let x=scaleMapped(coordinate,true,view.x,0.0);let y=scaleMapped(value,valid,view.y,0.0);
- var visible=true;var color=-1.0;var shade=0.0;
- if(view.mode.x!=0xffffffffu && fieldPresent(view.mode.x,row,frame)) {
-   visible=fieldValid(view.mode.x,row,frame);
-   if(visible){if(view.mode.y!=0u){visible=fieldBool(view.mode.x,row,frame);}else{visible=fieldFloat(view.mode.x,row,frame,0u)!=0.0;}}
- }
- if(view.slots.z!=0xffffffffu){color=scaleMapped(fieldFloat(view.slots.z,row,frame,0u),fieldValid(view.slots.z,row,frame),view.color,-1.0);}
- if(view.slots.w!=0xffffffffu && fieldValid(view.slots.w,row,frame)){shade=fieldFloat(view.slots.w,row,frame,0u)+view.extra.x;}
+ let visible=fieldNumber(view.mode.x,row,frame,0.0,1.0)!=0.0;
+ let color=fieldScaled(view.slots.z,row,frame,view.color,-1.0);
+ let shade=fieldNumber(view.slots.w,row,frame,view.extra.x,0.0);
  return Point(vec2f(x,1.0-y)*view.size.xy,color,shade,valid&&visible&&scaleFinite(value)&&scaleFinite(coordinate));
 }
 fn corner(vertex:u32)->vec2f {return array<vec2f,6>(vec2f(0,-1),vec2f(1,-1),vec2f(0,1),vec2f(0,1),vec2f(1,-1),vec2f(1,1))[vertex];}

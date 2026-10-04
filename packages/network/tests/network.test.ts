@@ -5,7 +5,7 @@ import type { FieldValues } from '@latkit/model';
 import { createNetwork, type Network, type NetworkConfig } from '../src/index.js';
 import type { NetworkData } from '../src/data.js';
 import { readGeometry, DEFAULT_LIMITS } from '../src/geometry/topology.js';
-import { HitIndex, PickGeometry } from '../src/picking.js';
+import { PickGeometry } from '../src/picking.js';
 import { featureSource } from './paths-fixture.js';
 import { GraphSource } from './fixture.js';
 import { deferred, fakeDevice } from '../../gpu/tests/fixtures/device.js';
@@ -565,9 +565,9 @@ it('builds hit-test indexes in the background once positions hold, within pickin
   const { data, source } = fixture(),
     gpu = await createGpu({ device: device().device }),
     surface = target(gpu),
-    full = HitIndex.bytes(25) + HitIndex.bytes(source.from.length);
-  const build = vi.spyOn(HitIndex, 'build'),
-    query = vi.spyOn(HitIndex.prototype, 'query'),
+    full = kit.BoxIndex.bytes(25) + kit.BoxIndex.bytes(source.from.length);
+  const build = vi.spyOn(kit.BoxIndex, 'build'),
+    query = vi.spyOn(kit.BoxIndex.prototype, 'query'),
     hover = vi.fn();
   const show = async (config: Partial<NetworkConfig> = {}) => {
     const network = createNetwork(gpu, { ...data, hover: 'on', ...config });
@@ -616,11 +616,11 @@ it('builds hit-test indexes in the background once positions hold, within pickin
   expect(build).toHaveBeenCalledTimes(6);
   network.destroy();
   // Only what fits is admitted; destroy stops a build that has not started.
-  const bounded = await show({ limits: { pickingBytes: HitIndex.bytes(25) } });
+  const bounded = await show({ limits: { pickingBytes: kit.BoxIndex.bytes(25) } });
   await vi.advanceTimersByTimeAsync(150);
-  expect(bounded.network.stats().pickingBytes).toBe(HitIndex.bytes(25));
+  expect(bounded.network.stats().pickingBytes).toBe(kit.BoxIndex.bytes(25));
   await bounded.network.pick(point);
-  expect(bounded.network.stats().pickingBytes).toBe(HitIndex.bytes(25));
+  expect(bounded.network.stats().pickingBytes).toBe(kit.BoxIndex.bytes(25));
   bounded.network.destroy();
   const destroyed = await show();
   build.mockClear();

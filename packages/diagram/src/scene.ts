@@ -1,28 +1,20 @@
 import type { FieldValues, Index } from '@latkit/model';
-import type { kit, Point, RGBA } from '@latkit/gpu';
-import type { DiagramData, SceneItem, Shape, VertexData, EdgeData } from './data.js';
-import type { Obstacles } from './geometry.js';
+import type { Point, TextLayout } from '@latkit/gpu';
+import type { DiagramData, DiagramItem, SceneItem, Shape, VertexData, EdgeData } from './data.js';
+import type { Obstacles } from './route.js';
 export type Rect = readonly [number, number, number, number];
-export interface Label {
-  text: string;
-  width: number;
-  height: number;
-  ascent: number;
-  runs: readonly kit.TextRun[];
-}
 /** A reference field wiring its vertex to a drawn net. */
 export interface Port {
   name: string;
   /** The net type it references. */
   to: string;
   direction?: 'in' | 'out';
-  label: Label;
+  label: TextLayout;
   side: 'left' | 'right' | 'top' | 'bottom';
   order: number;
   marker: 'directional' | 'circle' | 'diamond';
   connected: boolean;
-  color: RGBA;
-  status?: RGBA;
+  /** Where the port meets its vertex's edge, and the way out of it. */
   position: Point;
   normal: Point;
 }
@@ -34,17 +26,17 @@ export interface Vertex {
   y: number;
   width: number;
   height: number;
+  /** The title band's height; zero for a centered title. */
   header: number;
   pinned: boolean;
   shape: Shape;
   radius: number;
   visible: boolean;
   sourceVisible: boolean;
-  color: RGBA;
-  status?: RGBA;
-  shade: number;
-  label: Label;
+  label: TextLayout;
   ports: Port[];
+  /** The slot of the first port; the others follow in order. */
+  portSlot: number;
   options: VertexData;
   group?: string;
 }
@@ -54,28 +46,40 @@ export interface End {
   port: string | null;
   direction?: 'in' | 'out';
 }
-export interface Edge {
+export interface Arrow {
+  readonly point: Point;
+  readonly direction: Point;
+}
+/** An edge's wire: polylines from its root, the distance along at each start, and its marks. */
+export interface Wire {
+  readonly paths: readonly (readonly Point[])[];
+  readonly offsets: readonly number[];
+  readonly junctions: readonly Point[];
+  readonly arrows: readonly Arrow[];
+  readonly bounds: Rect;
+}
+export interface Edge extends Wire {
   hit: SceneItem;
   ends: End[];
   visible: boolean;
-  color: RGBA;
-  width: number;
-  flow: number;
-  shade: number;
-  label: Label;
+  label: TextLayout;
   options: EdgeData;
   paths: readonly (readonly Point[])[];
   offsets: readonly number[];
-  labelBounds: readonly Rect[];
-  arrows: readonly { point: Point; direction: Point }[];
   junctions: readonly Point[];
-  anchor: Point;
+  arrows: readonly Arrow[];
   bounds: Rect;
+  /** The route before tracks set it apart from other nets: what an unchanged edge keeps. */
+  route: Wire | null;
+  /** Where its label draws, its top-left; empty without one. */
+  labels: readonly Point[];
 }
 export interface GroupBox {
   id: string;
-  label: Label;
+  label: TextLayout;
   bounds: Rect;
+  /** The title band's height. */
+  header: number;
   collapsed: boolean;
   members: readonly number[];
   parent?: string;
@@ -89,14 +93,64 @@ export interface Scene {
   bytes: number;
   routeBytes: number;
   routeClearance?: number;
-  portSizePx?: number;
+  portSize?: number;
   ends: number;
+  /** First slot of each kind: vertices from zero, then every port, edges, and groups. */
+  slots: { ports: number; edges: number; groups: number; count: number };
   /** What the routes avoid, once routed. */
   obstacles?: Obstacles;
+  /** Each item's slot by its key, built on first use. */
+  keys?: Map<string, number>;
 }
-export const emptyLabel: Label = { text: '', width: 0, height: 0, ascent: 0, runs: [] };
+export const emptyLabel: TextLayout = Object.freeze({
+  runs: [],
+  width: 0,
+  height: 0,
+  ascent: 0,
+  descent: 0,
+});
 export function rect(vertex: Vertex): Rect {
   return [vertex.x, vertex.y, vertex.x + vertex.width, vertex.y + vertex.height];
+}
+export function intersects(a: Rect, b: Rect): boolean {
+  return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+}
+export function union(rectangles: Iterable<Rect>): Rect {
+  let x = Infinity,
+    y = Infinity,
+    r = -Infinity,
+    b = -Infinity;
+  for (const q of rectangles) {
+    x = Math.min(x, q[0]);
+    y = Math.min(y, q[1]);
+    r = Math.max(r, q[2]);
+    b = Math.max(b, q[3]);
+  }
+  return x <= r ? [x, y, r, b] : [0, 0, 0, 0];
+}
+export function expand(r: Rect, n: number): Rect {
+  return [r[0] - n, r[1] - n, r[2] + n, r[3] + n];
+}
+/** The item a slot draws. */
+export function itemAt(scene: Scene, slot: number): DiagramItem | null {
+  const { slots, vertices } = scene;
+  if (slot < slots.ports) return vertices[slot]?.hit ?? null;
+  if (slot < slots.edges) {
+    // Ports are numbered in vertex order, so a binary search finds the vertex.
+    let lo = 0,
+      hi = vertices.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (vertices[mid].portSlot <= slot) lo = mid;
+      else hi = mid - 1;
+    }
+    const vertex = vertices[lo],
+      port = vertex?.ports[slot - vertex.portSlot];
+    return port ? { ...vertex.hit, kind: 'port', port: port.name } : null;
+  }
+  if (slot < slots.groups) return scene.edges[slot - slots.edges]?.hit ?? null;
+  const group = scene.groups[slot - slots.groups];
+  return group ? { kind: 'group', id: group.id } : null;
 }
 export function positions(
   vertices: readonly Vertex[],

@@ -100,7 +100,7 @@ export { validateSelection } from './validation/selection.js';
 export { selectBatches, staticFields, sampledFields } from './select.js';
 
 export type { ColumnPages } from './pages.js';
-export { appendedPages, sampleDomain } from './pages.js';
+export { appendedPages, sampleDomain, samePages } from './pages.js';
 export { sampleFrames } from './read.js';
 
 export { createReader } from './reader/reader.js';

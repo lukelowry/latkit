@@ -48,9 +48,7 @@ export async function pipelines(
   });
   const [module, screen, axes] = await Promise.all([
     gpu.shaderModule(
-      kit.fieldShader({ group: 0 }) +
-        kit.scaleShader() +
-        kit.colormapShader({ group: 2 }) +
+      kit.fieldShader({ group: 0, colormap: 2 }) +
         kit.strokeShader() +
         kit.shadeShader({ group: 3 }) +
         kit.outputShader() +

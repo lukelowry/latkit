@@ -81,11 +81,7 @@ export async function pipelines(
       'network adaptive geodesics',
     ),
     gpu.shaderModule(
-      common +
-        kit.scaleShader() +
-        kit.fieldShader({ group: 0 }) +
-        kit.colormapShader({ group: 2 }) +
-        prepare,
+      common + kit.fieldShader({ group: 0, colormap: 2 }) + prepare,
       'network field preparation',
     ),
     gpu.shaderModule(

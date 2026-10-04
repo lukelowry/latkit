@@ -13,7 +13,7 @@ import {
   type Patch,
   type Viewport,
 } from '@latkit/gpu';
-import { Work, failure, sameIndex, type Data } from '@latkit/model';
+import { Work, failure, sameIndex, type TypeDefinition } from '@latkit/model';
 import type { Camera, Projection } from './camera.js';
 import { DEFAULT_CAMERA, checkCamera, fit, mixCamera, move, zoom } from './camera.js';
 import {
@@ -171,7 +171,7 @@ function rewired(a: NetworkData, b: NetworkData): boolean {
     );
   };
   return (
-    topologyChanged(a.source, b.source) ||
+    !kit.sameValues(a.source, b.source, wiring) ||
     differ(a.vertices, b.vertices, ['rows']) ||
     differ(a.edges, b.edges, ['rows', 'ends', 'junction']) ||
     differ(a.paths, b.paths, ['rows', 'source'])
@@ -613,34 +613,10 @@ class NetworkView
   }
 }
 
-function topologyChanged(a: Data, b: Data): boolean {
-  if (a === b) return false;
-  if (a.schema !== b.schema || Object.keys(a.tables).length !== Object.keys(b.tables).length)
-    return true;
-  for (const [name, x] of Object.entries(a.tables)) {
-    const y = b.tables[name];
-    if (
-      !y ||
-      x.index.source !== y.index.source ||
-      x.index.type !== y.index.type ||
-      x.index.version !== y.index.version
-    )
-      return true;
-    if (
-      x.rows !== y.rows &&
-      (x.rows.kind !== 'range' ||
-        y.rows.kind !== 'range' ||
-        x.rows.offset !== y.rows.offset ||
-        x.rows.count !== y.rows.count)
-    )
-      return true;
-    for (const [field, definition] of Object.entries(a.schema.types[name].fields))
-      if (
-        typeof definition.type === 'object' &&
-        (definition.type.kind === 'reference' || definition.type.kind === 'list') &&
-        x.fields[field] !== y.fields[field]
-      )
-        return true;
-  }
-  return false;
+/** A type's wiring: its reference and list fields. */
+function wiring(_: string, definition: TypeDefinition): readonly string[] {
+  return Object.keys(definition.fields).filter((field) => {
+    const type = definition.fields[field].type;
+    return typeof type === 'object' && (type.kind === 'reference' || type.kind === 'list');
+  });
 }

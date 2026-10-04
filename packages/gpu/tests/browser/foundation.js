@@ -48,7 +48,6 @@ export async function checkFoundation(gpu, target) {
   const module = device.createShaderModule({
     code:
       kit.fieldShader({ group: 0 }) +
-      kit.scaleShader() +
       `
     struct Info {shape:vec4u,slots:vec4u}
     @group(1) @binding(0) var<storage,read_write> result:array<f32>;

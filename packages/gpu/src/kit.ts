@@ -39,7 +39,10 @@ export type { TextRun, TextRequest, TextPage } from './text/text.js';
 export { textShader } from './text/shader.js';
 export { fitCamera, cameraPoint, worldPoint, zoomCamera } from './view/camera.js';
 export type { Camera2D, Bounds2D } from './view/camera.js';
+export { BoxIndex, Occupancy } from './spatial/boxes.js';
+export type { BoxRead } from './spatial/boxes.js';
 export { wiring } from './view/wiring.js';
+export { sameValues } from './view/changes.js';
 export type { Wiring, End, Port } from './view/wiring.js';
 export { clipStroke, strokeShader } from './style/stroke.js';
 export type { ClipPoint } from './style/stroke.js';
@@ -47,13 +50,7 @@ export { clearColor, validateRgba } from './colors/color.js';
 export { sampleColormap } from './colors/sampling.js';
 export { colormapShader } from './colors/shader.js';
 export type { ScaleRequest, ResolvedScale } from './style/scale.js';
-export {
-  fieldScale,
-  resolveScale,
-  scaleValue,
-  scaleParameters,
-  scaleShader,
-} from './style/scale.js';
+export { fieldScale, resolveScale, scaleValue, scaleParameters } from './style/scale.js';
 export type { ShadeRequest } from './style/shade.js';
 export { shadeShader, defaultShade } from './style/shade.js';
 export { premultipliedBlend, outputShader } from './style/output.js';

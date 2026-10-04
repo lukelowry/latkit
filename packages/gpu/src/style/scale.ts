@@ -83,7 +83,7 @@ export function scaleValue(value: number | null, scale: ResolvedScale): number |
   if (scale.clamp) t = Math.max(0, Math.min(1, t));
   return (1 - t) * scale.range[0] + t * scale.range[1];
 }
-/** Two vec4 uniforms consumed by scaleShader. Rebase before narrowing to Float32. */
+/** Two vec4 uniforms a field shader's LatkitScale reads. Rebase before narrowing to Float32. */
 export function scaleParameters(
   scale: ResolvedScale,
   options: { readonly origin?: number } = {},
@@ -105,8 +105,8 @@ export function scaleParameters(
     throw failure('precision', 'Scale exceeds Float32 relative precision');
   return result;
 }
-export function scaleShader(): string {
-  return `
+/** The scale a field shader maps values through. */
+export const scaleShader = `
 struct LatkitScale { mapping: vec4f, options: vec4f }
 fn scaleFinite(v: f32) -> bool { return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u; }
 fn scaleMapped(value: f32, valid: bool, scale: LatkitScale, fallback: f32) -> f32 {
@@ -116,4 +116,3 @@ fn scaleMapped(value: f32, valid: bool, scale: LatkitScale, fallback: f32) -> f3
   if (scale.options.y != 0.0) { t = clamp(t, 0.0, 1.0); }
   return scale.mapping.z + t * scale.mapping.w;
 }`;
-}

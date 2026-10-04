@@ -1,6 +1,7 @@
 import type { ColumnPage } from './materialized.js';
 import type { Domain } from './types.js';
-import { rowAt, rowCount } from './access.js';
+import { rowAt, rowCount, sameIndex } from './access.js';
+import type { Column } from './data.js';
 import { Sequence } from './sequence.js';
 
 export interface FrameGroup {
@@ -132,4 +133,77 @@ export function appendedPages(
   const previous = storage(before),
     next = storage(after);
   return next.pages.startsWith(previous.pages) ? next.pages.range(before.length) : undefined;
+}
+/**
+ * Whether two collections hold the same rows and values, whatever their identity: a value
+ * republished unchanged reads as unchanged. Linear in their bytes; conservative across layouts.
+ */
+export function samePages(a: ColumnPages, b: ColumnPages): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a.at(i)!,
+      y = b.at(i)!;
+    if (x === y) continue;
+    if (!sameRows(x.rows, y.rows) || !sameColumn(x.column, y.column)) return false;
+    if (x.samples !== y.samples)
+      if (
+        !x.samples ||
+        !y.samples ||
+        x.samples.firstFrame !== y.samples.firstFrame ||
+        !sameArray(x.samples.coordinates, y.samples.coordinates)
+      )
+        return false;
+  }
+  return true;
+}
+function sameRows(a: ColumnPage['rows'], b: ColumnPage['rows']): boolean {
+  if (a.kind === 'range') return b.kind === 'range' && a.offset === b.offset && a.count === b.count;
+  return b.kind === 'indices' && sameArray(a.values, b.values);
+}
+function sameColumn(a: Column, b: Column): boolean {
+  if (a === b) return true;
+  if (a.kind !== b.kind || a.offset !== b.offset || a.length !== b.length) return false;
+  if (!sameArray(a.validity, b.validity)) return false;
+  switch (a.kind) {
+    case 'text':
+      return (
+        sameArray(a.offsets, (b as typeof a).offsets) && sameArray(a.bytes, (b as typeof a).bytes)
+      );
+    case 'vector':
+      return a.size === (b as typeof a).size && sameColumn(a.values, (b as typeof a).values);
+    case 'list':
+      return (
+        sameArray(a.offsets, (b as typeof a).offsets) &&
+        sameColumn(a.values, (b as typeof a).values)
+      );
+    case 'reference':
+      return (
+        sameIndex(a.index, (b as typeof a).index) && sameArray(a.values, (b as typeof a).values)
+      );
+    default: {
+      const x = a as { values: ArrayBufferView; rowStride?: number; frameStride?: number },
+        y = b as typeof x;
+      return (
+        x.values.constructor === y.values.constructor &&
+        x.rowStride === y.rowStride &&
+        x.frameStride === y.frameStride &&
+        sameArray(x.values, y.values)
+      );
+    }
+  }
+}
+function sameArray(a: ArrayBufferView | undefined, b: ArrayBufferView | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.byteLength !== b.byteLength) return false;
+  if (a.buffer === b.buffer && a.byteOffset === b.byteOffset) return true;
+  const aligned = a.byteOffset % 4 === 0 && b.byteOffset % 4 === 0 && a.byteLength % 4 === 0,
+    x = aligned
+      ? new Uint32Array(a.buffer, a.byteOffset, a.byteLength / 4)
+      : new Uint8Array(a.buffer, a.byteOffset, a.byteLength),
+    y = aligned
+      ? new Uint32Array(b.buffer, b.byteOffset, b.byteLength / 4)
+      : new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+  return true;
 }
