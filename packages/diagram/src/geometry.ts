@@ -7,7 +7,10 @@ import { rect, union, expand, intersects } from './scene.js';
 import { rootEnd } from './layout.js';
 import { Routing, obstacles, routeEdge, separate, draw, type Moved, type Route } from './route.js';
 
-export function boundary(vertex: Pick<Vertex, 'x' | 'y' | 'width' | 'height' | 'shape' | 'radius'>, toward: Point): Point {
+export function boundary(
+  vertex: Pick<Vertex, 'x' | 'y' | 'width' | 'height' | 'shape' | 'radius'>,
+  toward: Point,
+): Point {
   const cx = vertex.x + vertex.width / 2,
     cy = vertex.y + vertex.height / 2,
     dx = toward[0] - cx,
@@ -125,7 +128,8 @@ export async function geometry(
       .filter((i) => scene.vertices[i].visible)
       .map((i) => rect(scene.vertices[i]));
     for (const child of scene.groups)
-      if (child.parent === group.id && child.bounds[0] !== child.bounds[2]) boxes.push(child.bounds);
+      if (child.parent === group.id && child.bounds[0] !== child.bounds[2])
+        boxes.push(child.bounds);
     let box = boxes.length ? expand(union(boxes), pad) : ([0, 0, 0, 0] as Rect);
     if (boxes.length) box = [box[0], box[1] - group.header, box[2], box[3]];
     if (group.collapsed)
@@ -310,11 +314,21 @@ function label(scene: Scene, options: Style, hidden: ReadonlySet<number>): void 
     }
     const runs = edge.paths
       .flatMap((path) => path.slice(1).map((b, i) => [path[i], b] as const))
-      .map(([a, b]) => ({ a, b, level: a[1] === b[1], length: Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]) }))
+      .map(([a, b]) => ({
+        a,
+        b,
+        level: a[1] === b[1],
+        length: Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]),
+      }))
       .sort((u, v) => +v.level - +u.level || v.length - u.length)
       .slice(0, 4);
     let chosen: Point | undefined;
-    const box = (p: Point): Rect => [p[0] - margin, p[1] - margin, p[0] + width + margin, p[1] + height + margin];
+    const box = (p: Point): Rect => [
+      p[0] - margin,
+      p[1] - margin,
+      p[0] + width + margin,
+      p[1] + height + margin,
+    ];
     for (const { a, b, level } of runs) {
       const mx = (a[0] + b[0]) / 2,
         my = (a[1] + b[1]) / 2;
@@ -330,7 +344,10 @@ function label(scene: Scene, options: Style, hidden: ReadonlySet<number>): void 
       chosen = spots.find((p) => placed.free(box(p)));
       if (chosen) break;
     }
-    chosen ??= ((r) => [(r.a[0] + r.b[0]) / 2 - width / 2, (r.a[1] + r.b[1]) / 2 - gap - margin - height] as Point)(runs[0]);
+    chosen ??= ((r) =>
+      [(r.a[0] + r.b[0]) / 2 - width / 2, (r.a[1] + r.b[1]) / 2 - gap - margin - height] as Point)(
+      runs[0],
+    );
     placed.add(box(chosen));
     edge.labels = [chosen];
     edge.bounds = union([edge.bounds, box(chosen)]);
@@ -343,16 +360,16 @@ export function dragWires(
   moved: Moved,
   options: Style,
   signal: AbortSignal,
-): { readonly edge: Edge; readonly wire: Wire }[] {
+): (Wire & { readonly edge: Edge })[] {
   const route = new Routing(scene, options, signal, moved),
     proxy = scene.obstacles!.proxy,
-    out: { edge: Edge; wire: Wire }[] = [];
+    out: (Wire & { readonly edge: Edge })[] = [];
   for (const i of edges) {
     const edge = scene.edges[i],
       ends = edge.ends.filter((e) => scene.vertices[e.vertex].sourceVisible);
     if (!routed(edge, ends, proxy)) continue;
     const r = routeEdge(edge, ends, route, rootEnd(edge));
-    out.push({ edge, wire: edge.options.appearance === 'tag' ? tag(r) : draw(r) });
+    out.push({ edge, ...(edge.options.appearance === 'tag' ? tag(r) : draw(r)) });
   }
   return out;
 }

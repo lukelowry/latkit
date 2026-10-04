@@ -23,7 +23,7 @@ import type { Style } from './config.js';
 import { fail } from './config.js';
 
 export type Layout = (input: TextLayoutInput) => Promise<TextLayout>;
-function scalar(column: Column | undefined, row: number): number | null {
+export function scalar(column: Column | undefined, row: number): number | null {
   if (!column) return null;
   if (column.kind === 'numeric') return numberAt(column, row);
   if (column.kind === 'boolean')
@@ -67,8 +67,26 @@ export function sampled(data: DiagramData, type: string, input: FieldInput): boo
     : 'source' in input &&
         input.source.schema.types[input.from]?.fields[input.field]?.sampled === true;
 }
+/** Only sampled geometry, visibility, and text invalidate the scene. */
+export function sampledStructure(data: DiagramData): boolean {
+  return [...Object.entries(data.vertices), ...Object.entries(data.edges ?? {})].some(
+    ([type, options]) =>
+      Object.values(structure(options)).some((input) => sampled(data, type, input)),
+  );
+}
+export function sameStructure(a: DiagramData, b: DiagramData): boolean {
+  return (
+    a.vertices === b.vertices &&
+    a.edges === b.edges &&
+    a.groups === b.groups &&
+    (a.source === b.source ||
+      (local(a) && local(b) && kit.sameValues(a.source, b.source, structural(b))))
+  );
+}
 /** The fields of each type a scene reads, by name in the drawn source, for change detection. */
-export function structural(data: DiagramData): (type: string, definition: TypeDefinition) => string[] {
+export function structural(
+  data: DiagramData,
+): (type: string, definition: TypeDefinition) => string[] {
   const named = new Map<string, Set<string>>();
   const add = (type: string, input: FieldInput) => {
     if (typeof input !== 'string') return;
@@ -174,7 +192,12 @@ export async function readScene(
   const title = { font: { ...options.font, weight: 600 } },
     quiet = {
       size: options.portFontSize,
-      color: [...options.textColor.slice(0, 3), options.textColor[3] * 0.66] as const,
+      color: [
+        options.textColor[0],
+        options.textColor[1],
+        options.textColor[2],
+        options.textColor[3] * 0.66,
+      ] as const,
     };
   let portSlots = 0;
   for (const [type, option] of Object.entries(data.vertices)) {
@@ -308,6 +331,7 @@ export async function readScene(
     }
   }
   scene.slots.ports = scene.vertices.length;
+  for (const vertex of scene.vertices) vertex.portSlot += scene.slots.ports;
   const end = (edge: Edge, vertex: number, port: string | null, direction?: 'in' | 'out') => {
     if (++scene.ends > limits.ends) throw failure('resource-limit', 'Too many edge ends');
     charge(48);
@@ -466,7 +490,10 @@ function size(vertex: Vertex, options: Style): void {
   vertex.width ||= Math.max(
     96,
     (vertex.label.width + pad * 2) * scale,
-    widest(side('left')) + widest(side('right')) + pad * 3 + (header ? 0 : vertex.label.width + pad * 2),
+    widest(side('left')) +
+      widest(side('right')) +
+      pad * 3 +
+      (header ? 0 : vertex.label.width + pad * 2),
     across + pad * 2,
   );
   vertex.height ||=

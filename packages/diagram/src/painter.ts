@@ -1,10 +1,15 @@
-import { kit, type Gpu, type RGBA } from '@latkit/gpu';
-import { intersects } from './spatial.js';
-import type { Scene, Label, Rect } from './scene.js';
-import type { Style } from './config.js';
+import { kit, type Gpu, type RGBA, type TextLayout } from '@latkit/gpu';
+import { intersects, labelBounds, itemSlots } from './scene.js';
+import type { Values } from './values.js';
+import type { Scene, Rect } from './scene.js';
+import { STYLE_EFFECTS, type Style } from './config.js';
 import type { DiagramItem, Point } from './data.js';
 import { itemKey } from './data.js';
 import type { DragDraw } from './drag.js';
+
+const PAINT_STYLE = (Object.keys(STYLE_EFFECTS) as (keyof Style)[]).filter(
+  (key) => STYLE_EFFECTS[key] === 'paint',
+);
 
 interface Bank {
   bounds: Rect;
@@ -23,7 +28,7 @@ interface Geometry {
   banks: Bank[];
   text: TextBank[];
   focus: kit.BufferData;
-  keys: Map<string, number>;
+  keys: ReadonlyMap<string, number>;
   states: Map<string, number>;
   paddingPx: number;
 }
@@ -44,6 +49,7 @@ export interface Overlay {
 /** What one frame draws. */
 export interface DrawState {
   readonly scene: Scene;
+  readonly values: Values;
   readonly style: Style;
   readonly camera: kit.Camera2D;
   /** Replaced whenever it changes. */
@@ -72,7 +78,7 @@ struct View {
   camera:vec4f, viewport:vec4f, grid:vec4f, selected:vec4f, hovered:vec4f, dots:vec4f,
   metrics:vec4f, background:vec4f, detail:vec4f,
   /** A drag's offset in diagram units, for items flagged as moving. */
-  drag:vec4f
+  drag:vec4f, vertexColor:vec4f, edgeColor:vec4f
 }
 struct Item {
   position:vec4f, color:vec4f, outline:vec4f, style:vec4f, extra:vec4f,
@@ -87,7 +93,9 @@ struct Vertex { @builtin(position) position:vec4f, @location(0) uv:vec2f, @locat
 fn screen(p:vec2f)->vec2f { return (p+view.camera.xy)*view.camera.zw+view.viewport.xy*0.5; }
 fn clip(p:vec2f)->vec4f { return vec4f(p/view.viewport.xy*vec2f(2.,-2.)+vec2f(-1.,1.),0.,1.); }
 fn corner(v:u32)->vec2f { let c=array<vec2f,6>(vec2f(0,0),vec2f(1,0),vec2f(0,1),vec2f(0,1),vec2f(1,0),vec2f(1,1));return c[v]; }
-fn aa(d:f32)->f32 { return 1.-smoothstep(-0.65,0.65,d); }
+fn aa(d:f32)->f32 { return clamp(0.5-d*view.viewport.z,0.,1.); }
+fn width(item:Item)->f32 { return select(item.style.y,view.detail.w,item.style.y<0.); }
+fn baseColor(c:vec4f)->vec4f { if(c.a>=0.){return c;} return select(view.vertexColor,view.edgeColor,c.x>0.5); }
 fn chosen(color:vec4f)->vec4f { return select(view.selected,color,view.metrics.w!=0.); }
 /** Moving items follow the drag; rerouted ones hide while their new wires draw. */
 fn dragged(flags:u32)->vec2f { return select(vec2f(0.),view.drag.xy,(flags&64u)!=0u); }
@@ -102,18 +110,18 @@ fn hidden(i:u32)->Vertex { return Vertex(vec4f(2.,2.,2.,1.),vec2f(0.),i,vec2f(0.
     let start=screen(item.position.xy+offset);let tip=screen(item.position.zw+offset);let delta=tip-start;let direction=delta/max(length(delta),0.0001);
     let b=tip-direction*select(0.,view.detail.z*0.5+3.,kind==5u);
     let a=select(start,b-direction*8.,kind==5u);
-    let len=max(length(b-a),0.0001);let dir=direction;let normal=vec2f(-dir.y,dir.x);let width=select(item.style.y*0.5+pad,10.+pad,kind==5u);
+    let len=max(length(b-a),0.0001);let dir=direction;let normal=vec2f(-dir.y,dir.x);let width=select(width(item)*0.5+pad,10.+pad,kind==5u);
     let uv=vec2f(mix(-width,len+width,c.x),mix(-width,width,c.y));
     return Vertex(clip(a+dir*uv.x+normal*uv.y),uv,i,vec2f(len,width),vec4f(0.));
   }
   let a=screen(item.position.xy+offset);
-  let extent=select(item.position.zw*abs(view.camera.zw),item.position.zw,kind>=6u);
+  let extent=select(item.position.zw*abs(view.camera.zw),item.position.zw,kind>6u);
   let center=select(a+extent*vec2f(0.5,select(0.5,-0.5,view.camera.w<0.)),a,kind>=6u);
   let uv=(c*2.-1.)*(extent*0.5+vec2f(pad));
   return Vertex(clip(center+uv),uv,i,extent,vec4f(0.));
 }
 @fragment fn shape_fragment(v:Vertex)->@location(0) vec4f {
-  let item=items[v.index];let kind=u32(item.style.x);var d=0.;var color=item.color;
+  let item=items[v.index];let kind=u32(item.style.x);var d=0.;var color=baseColor(item.color);
   let flags=focus[u32(item.style.w)];
   let selected=(flags&1u)!=0u;let hovered=(flags&2u)!=0u;
   let compatible=(flags&4u)!=0u;let targeted=(flags&8u)!=0u;
@@ -123,7 +131,7 @@ fn hidden(i:u32)->Vertex { return Vertex(vec4f(2.,2.,2.,1.),vec2f(0.),i,vec2f(0.
   if(view.detail.x!=0. && (kind==5u||kind>=6u)){opacity*=smoothstep(0.2,0.55,scale);}
   if(kind==4u){
     let extra=select(select(0.,0.5,hovered),1.,selected||targeted);
-    d=stroke_distance(v.uv,v.size.x)-item.style.y*0.5-extra;
+    d=stroke_distance(v.uv,v.size.x)-width(item)*0.5-extra;
     if(item.style.z!=0.){
       let phase=v.uv.x+item.extra.x*scale-select(0.,view.viewport.w*item.style.z/1000.,view.grid.z!=0.);
       if(view.grid.z!=0. && fract(phase/14.)>0.62){discard;}
@@ -147,14 +155,14 @@ fn hidden(i:u32)->Vertex { return Vertex(vec4f(2.,2.,2.,1.),vec2f(0.),i,vec2f(0.
       }else if(item.marker.z==2.){
         d=(abs(v.uv.x)+abs(v.uv.y)-half.x)*0.707107;
       }else{d=length(v.uv)-half.x;}
-      if(item.extra.w==0.){color=mix(view.background,item.color,smoothstep(-1.8,-0.8,d));}
+      if(item.extra.w==0.){color=mix(view.background,baseColor(item.color),smoothstep(-1.8,-0.8,d));}
     }else if(kind==2u||kind==7u){d=(length(v.uv/max(half,vec2f(0.001)))-1.)*min(half.x,half.y);}
     else if(kind==3u){d=(dot(abs(v.uv)/max(half,vec2f(0.001)),vec2f(1.))-1.)*min(half.x,half.y)*0.707107;}
     else{
       let radius=select(0.,min(item.extra.z*scale,min(half.x,half.y)),kind==0u);
       let q=abs(v.uv)-half+radius;d=length(max(q,vec2f(0.)))+min(max(q.x,q.y),0.)-radius;
     }
-    if(kind<6u){color=mix(color,item.outline,smoothstep(-view.metrics.x-0.65,-view.metrics.x+0.65,d));}
+    if(kind<6u){color=mix(color,baseColor(item.outline),smoothstep(-view.metrics.x-0.65,-view.metrics.x+0.65,d));}
     if(item.status.a>0.){
       let ring=aa(abs(d+view.metrics.x+1.4)-1.);
       color=mix(color,item.status,ring*item.status.a);
@@ -164,8 +172,8 @@ fn hidden(i:u32)->Vertex { return Vertex(vec4f(2.,2.,2.,1.),vec2f(0.),i,vec2f(0.
   var result=outputColor(shaded,aa(d));
   var accent=view.hovered;var ring=0.;
   if(hovered){ring=0.35*(1.-smoothstep(0.,view.metrics.z,d));}
-  if(compatible){accent=chosen(item.color);ring=max(ring,0.28*(1.-smoothstep(0.,5.,d)));}
-  if(selected||targeted){accent=chosen(item.color);ring=max(ring,aa(d-view.metrics.y)*smoothstep(-0.5,0.5,d));}
+  if(compatible){accent=chosen(baseColor(item.color));ring=max(ring,0.28*(1.-smoothstep(0.,5.,d)));}
+  if(selected||targeted){accent=chosen(baseColor(item.color));ring=max(ring,aa(d-view.metrics.y)*smoothstep(-0.5,0.5,d));}
   let halo=outputColor(accent,ring);
   result=result+halo*(1.-result.a);
   return result*opacity;
@@ -287,7 +295,7 @@ export async function pipelines(
   return { shapes, text, grid, layout };
 }
 export class Painter {
-  private current?: { scene: Scene; geometry: Geometry };
+  private current?: { scene: Scene; values: Values; style: Style; geometry: Geometry };
   private focused?: {
     readonly geometry: Geometry;
     readonly selection: readonly DiagramItem[];
@@ -304,41 +312,33 @@ export class Painter {
   constructor(private readonly gpu: Gpu) {
     this.attachments = new kit.Attachments(gpu);
   }
-  private build(scene: Scene, options: Style, previous?: Geometry): Geometry {
-    const keys = new Map<string, number>(),
+  private build(scene: Scene, values: Values, options: Style, previous?: Geometry): Geometry {
+    const keys = itemSlots(scene),
       banks: Bank[] = [],
       texts: TextBank[] = [];
-    let records: number[] = [],
+    const records = new Float32Array(28 * 1024);
+    let used = 0,
       origin: Point = [0, 0],
       paddingPx = 16;
     let bankBounds: number[] = [Infinity, Infinity, -Infinity, -Infinity];
-    const index = (item: DiagramItem) => {
-      const key = itemKey(item);
-      let id = keys.get(key);
-      if (id === undefined) {
-        id = keys.size;
-        keys.set(key, id);
-      }
-      return id;
-    };
     const flush = () => {
-      if (records.length) {
+      if (used) {
         banks.push({
           origin,
           bounds: bankBounds as unknown as Rect,
           data: sync(
-            Float32Array.from(records),
+            records.subarray(0, used),
             'diagram instances',
             previous?.banks[banks.length]?.data,
           ),
-          count: records.length / 28,
+          count: used / 28,
         });
-        records = [];
+        used = 0;
         bankBounds = [Infinity, Infinity, -Infinity, -Infinity];
       }
     };
     const add = (
-      item: DiagramItem,
+      slot: number,
       p: readonly number[],
       color: RGBA,
       outline: RGBA,
@@ -353,33 +353,31 @@ export class Painter {
       connected = true,
     ) => {
       if (kind === 4) paddingPx = Math.max(paddingPx, width / 2 + 2);
-      if (records.length >= 28 * 1024) flush();
-      if (!records.length) origin = previous?.banks[banks.length]?.origin ?? [p[0], p[1]];
+      if (used === records.length) flush();
+      if (!used) origin = previous?.banks[banks.length]?.origin ?? [p[0], p[1]];
       const endX = kind === 4 || kind === 5 ? p[2] : p[0] + p[2],
         endY = kind === 4 || kind === 5 ? p[3] : p[1] + p[3];
       bankBounds[0] = Math.min(bankBounds[0], p[0], endX);
       bankBounds[1] = Math.min(bankBounds[1], p[1], endY);
       bankBounds[2] = Math.max(bankBounds[2], p[0], endX);
       bankBounds[3] = Math.max(bankBounds[3], p[1], endY);
-      const pos =
-        kind === 4 || kind === 5
-          ? [p[0] - origin[0], p[1] - origin[1], p[2] - origin[0], p[3] - origin[1]]
-          : [p[0] - origin[0], p[1] - origin[1], p[2], p[3]];
-      records.push(
-        ...pos,
-        ...color,
-        ...outline,
-        kind,
-        width,
-        flow,
-        index(item),
-        along,
-        shade,
-        radius,
-        +connected,
-        ...status,
-        ...marker,
-      );
+      records[used] = p[0] - origin[0];
+      records[used + 1] = p[1] - origin[1];
+      records[used + 2] = kind === 4 || kind === 5 ? p[2] - origin[0] : p[2];
+      records[used + 3] = kind === 4 || kind === 5 ? p[3] - origin[1] : p[3];
+      records.set(color, used + 4);
+      records.set(outline, used + 8);
+      records[used + 12] = kind;
+      records[used + 13] = width;
+      records[used + 14] = flow;
+      records[used + 15] = slot;
+      records[used + 16] = along;
+      records[used + 17] = shade;
+      records[used + 18] = radius;
+      records[used + 19] = +connected;
+      records.set(status, used + 20);
+      records.set(marker, used + 24);
+      used += 28;
     };
     let textRuns: kit.TextRun[] = [],
       textOrigin: Point = [0, 0],
@@ -403,7 +401,7 @@ export class Painter {
         maxSize = 0;
       }
     };
-    const text = (label: Label, position: Point, item: DiagramItem) => {
+    const text = (label: TextLayout, position: Point, slot: number) => {
       if (!options.labels || !label.runs.length) return;
       if (textRuns.length >= 256) flushText();
       if (!textRuns.length) textOrigin = previous?.text[texts.length]?.origin ?? position;
@@ -413,24 +411,25 @@ export class Painter {
       textBounds[3] = Math.max(textBounds[3], position[1] + label.height);
       for (const run of label.runs) maxSize = Math.max(maxSize, run.size);
       const anchor = textAnchors.length / 4;
-      textAnchors.push(position[0] - textOrigin[0], position[1] - textOrigin[1], index(item), 0);
+      textAnchors.push(position[0] - textOrigin[0], position[1] - textOrigin[1], slot, 0);
       for (const run of label.runs) textRuns.push({ ...run, anchor });
     };
-    for (const group of scene.groups) {
+    for (const [groupIndex, group] of scene.groups.entries()) {
       const b = group.bounds;
       if (b[0] === b[2]) continue;
-      const item: DiagramItem = { kind: 'group', id: group.id };
+      const slot = scene.slots.groups + groupIndex;
       add(
-        item,
+        slot,
         [b[0], b[1], b[2] - b[0], b[3] - b[1]],
         options.groupColor,
         options.outlineColor,
         0,
       );
-      text(group.label, [b[0] + options.vertexPadding, b[1] + options.vertexPadding], item);
+      text(group.label, [b[0] + options.vertexPadding, b[1] + options.vertexPadding], slot);
     }
-    for (const edge of scene.edges)
+    for (const [edgeIndex, edge] of scene.edges.entries())
       if (edge.visible && edge.paths.length) {
+        const visual = values.items[scene.slots.edges + edgeIndex];
         for (let pathIndex = 0; pathIndex < edge.paths.length; pathIndex++) {
           const path = edge.paths[pathIndex];
           let along = edge.offsets[pathIndex] ?? 0;
@@ -438,14 +437,14 @@ export class Painter {
             const a = path[i - 1],
               b = path[i];
             add(
-              edge.hit,
+              scene.slots.edges + edgeIndex,
               [...a, ...b],
-              edge.color,
-              edge.color,
+              visual.color,
+              visual.color,
               4,
-              edge.width,
-              edge.flow,
-              edge.shade,
+              visual.width,
+              visual.flow,
+              visual.shade,
               along,
             );
             along += Math.hypot(b[0] - a[0], b[1] - a[1]);
@@ -455,47 +454,59 @@ export class Painter {
           const p = arrow.point,
             d = arrow.direction;
           add(
-            edge.hit,
+            scene.slots.edges + edgeIndex,
             [p[0] - d[0] * 10, p[1] - d[1] * 10, ...p],
-            edge.color,
-            edge.color,
+            visual.color,
+            visual.color,
             5,
             1,
             0,
-            edge.shade,
+            visual.shade,
           );
         }
         if (options.junctions)
           for (const p of edge.junctions)
-            add(edge.hit, [p[0], p[1], 4, 4], edge.color, edge.color, 7, 0, 0, edge.shade);
+            add(
+              scene.slots.edges + edgeIndex,
+              [p[0], p[1], 4, 4],
+              visual.color,
+              visual.color,
+              7,
+              0,
+              0,
+              visual.shade,
+            );
       }
-    for (const edge of scene.edges)
+    for (const [edgeIndex, edge] of scene.edges.entries())
       if (edge.visible && edge.paths.length && options.labels && edge.label.runs.length) {
-        for (const box of edge.labelBounds) {
+        const visual = values.items[scene.slots.edges + edgeIndex];
+        for (const position of edge.labels) {
+          const box = labelBounds(edge, position);
           add(
-            edge.hit,
+            scene.slots.edges + edgeIndex,
             [box[0], box[1], box[2] - box[0], box[3] - box[1]],
             options.background,
-            edge.options.appearance === 'tag' ? edge.color : options.background,
+            edge.options.appearance === 'tag' ? visual.color : options.background,
             0,
           );
-          text(edge.label, [box[0] + 3, box[1] + 3], edge.hit);
+          text(edge.label, [box[0] + 3, box[1] + 3], scene.slots.edges + edgeIndex);
         }
       }
-    for (const vertex of scene.vertices)
+    for (const [vertexIndex, vertex] of scene.vertices.entries())
       if (vertex.visible) {
+        const visual = values.items[vertexIndex];
         add(
-          vertex.hit,
+          vertexIndex,
           [vertex.x, vertex.y, vertex.width, vertex.height],
-          vertex.color,
+          visual.color,
           options.outlineColor,
           ['rounded', 'rectangle', 'ellipse', 'diamond'].indexOf(vertex.shape),
           0,
           0,
-          vertex.shade,
+          visual.shade,
           0,
           vertex.radius,
-          vertex.status,
+          visual.status,
         );
         text(
           vertex.label,
@@ -512,23 +523,24 @@ export class Painter {
                 options.vertexPadding +
                 (vertex.ports.some((p) => p.side === 'top') ? options.fontSizePx * 1.5 : 0),
           ],
-          vertex.hit,
+          vertexIndex,
         );
-        for (const port of vertex.ports) {
+        for (const [portIndex, port] of vertex.ports.entries()) {
+          const portVisual = values.items[vertex.portSlot + portIndex];
           const p = port.position,
-            item: DiagramItem = { ...vertex.hit, kind: 'port', port: port.name };
+            slot = vertex.portSlot + portIndex;
           add(
-            item,
-            [p[0], p[1], options.portSizePx, options.portSizePx],
-            port.color,
-            port.color,
+            slot,
+            [p[0], p[1], options.portSize, options.portSize],
+            portVisual.color,
+            portVisual.color,
             6,
             0,
             0,
-            vertex.shade,
+            visual.shade,
             0,
             0,
-            port.status,
+            portVisual.status,
             [
               port.normal[0] * (port.direction === 'in' ? -1 : 1),
               port.normal[1] * (port.direction === 'in' ? -1 : 1),
@@ -562,7 +574,7 @@ export class Painter {
                     ? ((port.label.width + 12) * vertex.height) / (2 * vertex.width)
                     : 0)
                 : p[1] - port.label.height / 2;
-          text(port.label, [left, top], item);
+          text(port.label, [left, top], slot);
         }
       }
     flush();
@@ -584,11 +596,16 @@ export class Painter {
     };
   }
   async prepare(frame: kit.Preparation, state: DrawState): Promise<Paint> {
-    const { scene, style: options, camera, pipelines, shade: effect, overlay } = state;
-    let geometry = this.current?.scene === scene ? this.current.geometry : undefined;
+    const { scene, values, style: options, camera, pipelines, shade: effect, overlay } = state;
+    let geometry =
+      this.current?.scene === scene &&
+      this.current.values === values &&
+      PAINT_STYLE.every((key) => this.current!.style[key] === options[key])
+        ? this.current.geometry
+        : undefined;
     if (!geometry) {
-      geometry = this.build(scene, options, this.current?.geometry);
-      this.current = { scene, geometry };
+      geometry = this.build(scene, values, options, this.current?.geometry);
+      this.current = { scene, values, style: options, geometry };
     }
     this.focus(geometry, state);
     const focus = frame.buffer(geometry.focus),
@@ -623,11 +640,13 @@ export class Painter {
         ...options.background,
         +(options.detail === 'auto'),
         options.gridMinSpacingPx,
-        options.portSizePx,
-        0,
+        options.portSize,
+        options.edgeWidthPx,
         ...(state.drag?.delta ?? [0, 0]),
         0,
         0,
+        ...options.vertexBaseColor,
+        ...options.edgeBaseColor,
       );
       return this.gpu.device.createBindGroup({
         layout: pipelines.layout,
@@ -642,7 +661,8 @@ export class Painter {
     };
     const padding = Math.max(
       geometry.paddingPx,
-      options.portSizePx / 2 + 6,
+      Math.max(values.maxWidth, options.edgeWidthPx) / 2 + 6,
+      options.portSize / 2 + 6,
       options.hoverWidthPx + 2,
       options.selectedWidthPx + 2,
     );
@@ -704,15 +724,25 @@ export class Painter {
           0,
         );
       for (const { edge, paths, offsets, arrows } of state.drag.wires) {
+        const visual = values.items[geometry.keys.get(itemKey(edge.hit))!];
         paths.forEach((path, j) => {
           let along = offsets[j] ?? 0;
           for (let i = 1; i < path.length; i++) {
-            segment(path[i - 1], path[i], 4, edge.color, edge.width, edge.flow, along, edge.shade);
+            segment(
+              path[i - 1],
+              path[i],
+              4,
+              visual.color,
+              visual.width,
+              visual.flow,
+              along,
+              visual.shade,
+            );
             along += Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]);
           }
         });
         for (const { point: p, direction: d } of arrows)
-          segment([p[0] - d[0] * 10, p[1] - d[1] * 10], p, 5, edge.color, 1, 0, 0, edge.shade);
+          segment([p[0] - d[0] * 10, p[1] - d[1] * 10], p, 5, visual.color, 1, 0, 0, visual.shade);
         const label = edge.label;
         if (!options.labels || !label.runs.length || edge.options.appearance === 'tag') continue;
         // Above the middle of the route's longest segment, as layout first tries.
@@ -739,7 +769,7 @@ export class Painter {
           0,
           0,
           0,
-          edge.shade,
+          visual.shade,
           options.cornerRadius,
           1,
           0,

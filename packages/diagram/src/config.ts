@@ -4,6 +4,48 @@ import type { DiagramStyle, Limits } from './options.js';
 import type { DiagramData, VertexData, EdgeData } from './data.js';
 import type { DiagramInput } from './input.js';
 export type Style = Required<DiagramStyle> & kit.ResolvedViewStyle;
+/** Every new option must declare the work it invalidates. */
+export const STYLE_EFFECTS = {
+  gridPitch: 'scene',
+  grid: 'frame',
+  snap: 'frame',
+  labels: 'scene',
+  junctions: 'paint',
+  vertexPadding: 'scene',
+  cornerRadius: 'scene',
+  outlineWidthPx: 'frame',
+  portSize: 'scene',
+  portMarker: 'scene',
+  portLabels: 'scene',
+  portFontSize: 'scene',
+  edgeWidthPx: 'frame',
+  gridMinSpacingPx: 'frame',
+  detail: 'frame',
+  portSpacing: 'scene',
+  routeClearance: 'route',
+  animationMaxVertices: 'frame',
+  vertexBaseColor: 'frame',
+  edgeBaseColor: 'frame',
+  outlineColor: 'paint',
+  gridColor: 'frame',
+  groupColor: 'paint',
+  background: 'paint',
+  msaa: 'frame',
+  hover: 'frame',
+  hoverBudgetMs: 'frame',
+  pickRadiusPx: 'frame',
+  fitPaddingPx: 'frame',
+  revealPaddingPx: 'frame',
+  animationMs: 'frame',
+  motion: 'frame',
+  hoverColor: 'frame',
+  selectedColor: 'frame',
+  hoverWidthPx: 'frame',
+  selectedWidthPx: 'frame',
+  font: 'scene',
+  fontSizePx: 'scene',
+  textColor: 'scene',
+} as const satisfies Record<keyof Style, 'frame' | 'paint' | 'route' | 'scene'>;
 export const DEFAULTS: Required<DiagramStyle> = Object.freeze({
   gridPitch: 8,
   grid: true,
@@ -171,10 +213,5 @@ export function data(value: DiagramData): DiagramData {
       parent = entry.parent;
     }
   }
-  return {
-    ...value,
-    vertices: { ...value.vertices },
-    edges: { ...value.edges },
-    groups: { ...value.groups },
-  };
+  return value;
 }

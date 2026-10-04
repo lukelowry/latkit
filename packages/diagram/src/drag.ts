@@ -1,7 +1,7 @@
 import type { Point } from './data.js';
 import { itemKey } from './data.js';
-import type { Moved, Wire } from './geometry.js';
-import type { Edge, Scene, Vertex } from './scene.js';
+import type { Moved } from './route.js';
+import type { Edge, Scene, Vertex, Wire } from './scene.js';
 
 /** What a drag moves in one scene, found once when it starts. */
 export interface DragMarks {

@@ -2,7 +2,13 @@ import { Work, failure, type FieldValues, type RequestOptions } from '@latkit/mo
 import { kit, type Gpu } from '@latkit/gpu';
 import { expandedData, type Point } from './data.js';
 import type { DiagramConfig } from './diagram.js';
-import { data as checkedData, resolveLimits, resolveStyle, positive, VIEW_DEFAULTS } from './config.js';
+import {
+  data as checkedData,
+  resolveLimits,
+  resolveStyle,
+  positive,
+  VIEW_DEFAULTS,
+} from './config.js';
 import { readScene } from './read.js';
 import { positions, rect, expand, intersects, type Rect, type Scene } from './scene.js';
 import { portPositions } from './geometry.js';

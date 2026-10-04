@@ -54,7 +54,7 @@ const em = 48,
   padding = 8,
   ellipsis = '…';
 /** Whether a string holds only characters that are each their own grapheme. */
-const simple = /^[ -~ -˿]*$/;
+const simple = /^[ -~\u00a0-\u02ff]*$/;
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 function clusters(text: string): string[] {
   return simple.test(text) ? [...text] : Array.from(segmenter.segment(text), (s) => s.segment);
@@ -302,7 +302,7 @@ export class TextAtlas {
   ): Promise<readonly Glyph[]> | readonly Glyph[] {
     this.signal.throwIfAborted();
     const family = fontKey(font),
-      glyphs: Glyph[] = new Array(parts.length);
+      glyphs = new Array<Glyph>(parts.length);
     let missing: Promise<void>[] | undefined;
     for (let i = 0; i < parts.length; i++) {
       const key = family + '\u0000' + parts[i],

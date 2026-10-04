@@ -1,21 +1,26 @@
 import { kit, type Viewport } from '@latkit/gpu';
+import { failure } from '@latkit/model';
 import type { DiagramItem, Point } from './data.js';
 import { itemKey } from './data.js';
 import type { Scene, Rect } from './scene.js';
-import { rect } from './scene.js';
+import { rect, expand, union, labelBounds, edgeAnchor, itemAt, itemSlots } from './scene.js';
 import { contains, distance } from './geometry.js';
-import { SpatialIndex, expand } from './spatial.js';
+import type { Values } from './values.js';
+export interface HitStyle {
+  readonly edgeWidthPx: number;
+  readonly values: Values;
+}
 interface Entry {
-  hit: DiagramItem;
+  slot: number;
   vertex?: number;
   a?: Point;
   b?: Point;
   point?: Point;
   box: Rect;
-  radius?: number;
+  edgeSlot?: number;
 }
 interface Match {
-  readonly hit: DiagramItem;
+  readonly slot: number;
   readonly distance: number;
   /** Draw order: a later entry draws over an earlier one. */
   readonly order: number;
@@ -26,48 +31,44 @@ function compare(a: Match, b: Match): number {
   return a.distance - b.distance || b.order - a.order;
 }
 export class Picking {
-  readonly spatial: SpatialIndex;
+  readonly spatial: kit.BoxIndex;
   /** Visible vertices, which the data framing needs. */
   readonly drawn: number = 0;
   /** Entries in draw order: groups, wires, wire labels, then each vertex and its ports. */
   private entries: Entry[] = [];
-  private maxStroke = 0;
-  private anchors = new Map<string, Point>();
-  private identities = new Set<string>();
+  private anchors = new Map<number, Point>();
   constructor(
     readonly scene: Scene,
     maxBytes: number,
   ) {
-    this.spatial = new SpatialIndex(maxBytes);
-    this.maxStroke = (scene.portSizePx ?? 8) / 2;
-    for (const group of scene.groups) this.identities.add(itemKey({ kind: 'group', id: group.id }));
-    for (const edge of scene.edges) this.identities.add(itemKey(edge.hit));
-    for (const vertex of scene.vertices) {
-      this.identities.add(itemKey(vertex.hit));
-      for (const port of vertex.ports)
-        this.identities.add(itemKey({ ...vertex.hit, kind: 'port', port: port.name }));
-    }
     const add = (e: Entry) => {
-      this.spatial.add(e.box);
       this.entries.push(e);
+      if (
+        kit.BoxIndex.bytes(this.entries.length) +
+          this.entries.length * 80 +
+          (this.anchors.size + this.scene.slots.count) * 64 >
+        maxBytes
+      )
+        throw failure('resource-limit', 'Picking exceeds budget');
     };
-    scene.groups.forEach((g) => {
+    scene.groups.forEach((g, i) => {
       if (g.bounds[0] === g.bounds[2]) return;
-      const hit: DiagramItem = { kind: 'group', id: g.id };
-      add({ hit, box: g.bounds });
-      this.anchors.set(itemKey(hit), [(g.bounds[0] + g.bounds[2]) / 2, g.bounds[1] + 12]);
+      const slot = scene.slots.groups + i;
+      add({ slot, box: g.bounds });
+      this.anchors.set(slot, [(g.bounds[0] + g.bounds[2]) / 2, g.bounds[1] + 12]);
     });
-    const wires = scene.edges.filter((edge) => edge.visible && edge.paths.length);
-    for (const edge of wires) {
-      this.maxStroke = Math.max(this.maxStroke, edge.width / 2);
-      this.anchors.set(itemKey(edge.hit), edge.anchor);
+    const wires = scene.edges
+      .map((edge, i) => ({ edge, slot: scene.slots.edges + i }))
+      .filter(({ edge }) => edge.visible && edge.paths.length);
+    for (const { edge, slot } of wires) {
+      this.anchors.set(slot, edgeAnchor(edge));
       for (const path of edge.paths)
         for (let i = 1; i < path.length; i++) {
           const a = path[i - 1],
             b = path[i];
           add({
-            hit: edge.hit,
-            radius: edge.width / 2,
+            slot,
+            edgeSlot: slot,
             a,
             b,
             box: [
@@ -79,36 +80,41 @@ export class Picking {
           });
         }
     }
-    for (const edge of wires) for (const box of edge.labelBounds) add({ hit: edge.hit, box });
+    for (const { edge, slot } of wires)
+      for (const position of edge.labels) add({ slot, box: labelBounds(edge, position) });
     let drawn = 0;
     scene.vertices.forEach((vertex, i) => {
       if (!vertex.visible) return;
       drawn++;
-      add({ hit: vertex.hit, vertex: i, box: rect(vertex) });
-      this.anchors.set(itemKey(vertex.hit), [
-        vertex.x + vertex.width / 2,
-        vertex.y + vertex.height / 2,
-      ]);
-      for (const port of vertex.ports) {
-        const hit: DiagramItem = { ...vertex.hit, kind: 'port', port: port.name };
-        add({ hit, point: port.position, box: [...port.position, ...port.position] });
-        this.anchors.set(itemKey(hit), port.position);
+      add({ slot: i, vertex: i, box: rect(vertex) });
+      this.anchors.set(i, [vertex.x + vertex.width / 2, vertex.y + vertex.height / 2]);
+      for (const [j, port] of vertex.ports.entries()) {
+        const slot = vertex.portSlot + j;
+        add({ slot, point: port.position, box: [...port.position, ...port.position] });
+        this.anchors.set(slot, port.position);
       }
     });
     this.drawn = drawn;
+    this.spatial = kit.BoxIndex.of(
+      this.entries.length,
+      union(this.entries.map((entry) => entry.box)),
+      (i, box) => box.set(this.entries[i].box),
+    );
+    if (this.bytes > maxBytes) throw failure('resource-limit', 'Picking exceeds budget');
   }
   get bytes(): number {
     return (
       this.spatial.bytes +
       this.entries.length * 80 +
-      (this.anchors.size + this.identities.size) * 64
+      (this.anchors.size + this.scene.slots.count) * 64
     );
   }
   has(item: DiagramItem): boolean {
-    return this.identities.has(itemKey(item));
+    return itemSlots(this.scene).has(itemKey(item));
   }
   locate(item: DiagramItem): Point | null {
-    return this.anchors.get(itemKey(item)) ?? null;
+    const slot = itemSlots(this.scene).get(itemKey(item));
+    return slot === undefined ? null : (this.anchors.get(slot) ?? null);
   }
   /** Every item within the radius, nearest first and topmost breaking ties. */
   hit(
@@ -118,14 +124,24 @@ export class Picking {
     radius: number,
     ports = true,
     check: () => void = unchecked,
+    style?: HitStyle,
   ): readonly DiagramItem[] {
-    const matches = new Map<string, Match>();
-    this.scan(point, camera, viewport, radius, ports, check, (match) => {
-      const key = itemKey(match.hit),
-        old = matches.get(key);
-      if (!old || compare(match, old) < 0) matches.set(key, match);
-    });
-    return [...matches.values()].sort(compare).map((match) => match.hit);
+    const matches = new Map<number, Match>();
+    this.scan(
+      point,
+      camera,
+      viewport,
+      radius,
+      ports,
+      check,
+      (match) => {
+        const key = match.slot,
+          old = matches.get(key);
+        if (!old || compare(match, old) < 0) matches.set(key, match);
+      },
+      style,
+    );
+    return [...matches.values()].sort(compare).map((match) => itemAt(this.scene, match.slot)!);
   }
   /** The nearest item, without collecting the rest; `check` bounds the search. */
   nearest(
@@ -135,24 +151,34 @@ export class Picking {
     radius: number,
     ports: boolean,
     check: () => void,
+    style?: HitStyle,
   ): DiagramItem | null {
     let best: Match | undefined;
-    this.scan(point, camera, viewport, radius, ports, check, (match) => {
-      if (!best || compare(match, best) < 0) best = match;
-    });
-    return best?.hit ?? null;
+    this.scan(
+      point,
+      camera,
+      viewport,
+      radius,
+      ports,
+      check,
+      (match) => {
+        if (!best || compare(match, best) < 0) best = match;
+      },
+      style,
+    );
+    return best ? itemAt(this.scene, best.slot) : null;
   }
   marquee(box: Rect): readonly DiagramItem[] {
-    return this.spatial
-      .query(box)
+    return [...this.spatial.query(box)]
       .map((i) => this.entries[i])
       .filter((e) => e.vertex !== undefined)
-      .map((e) => e.hit);
+      .map((e) => itemAt(this.scene, e.slot)!);
   }
   bounds(items?: readonly DiagramItem[]): Rect[] {
     if (!items) return [this.scene.bounds];
-    const keys = new Set(items.map(itemKey));
-    return this.entries.filter((e) => keys.has(itemKey(e.hit))).map((e) => expand(e.box, 2));
+    const slots = itemSlots(this.scene);
+    const keys = new Set(items.map((item) => slots.get(itemKey(item))));
+    return this.entries.filter((e) => keys.has(e.slot)).map((e) => expand(e.box, 2));
   }
   private scan(
     point: Point,
@@ -162,10 +188,13 @@ export class Picking {
     ports: boolean,
     check: () => void,
     found: (match: Match) => void,
+    style?: HitStyle,
   ): void {
     const world = kit.worldPoint(camera, point, viewport),
-      dx = (radius + this.maxStroke) / camera.scale[0] + 3.5,
-      dy = (radius + this.maxStroke) / camera.scale[1] + 3.5;
+      stroke = Math.max(style?.edgeWidthPx ?? 1.5, style?.values.maxWidth ?? 0) / 2,
+      portRadius = (this.scene.portSize ?? 8) / 2,
+      dx = (radius + stroke) / camera.scale[0] + portRadius,
+      dy = (radius + stroke) / camera.scale[1] + portRadius;
     for (const id of this.spatial.query(
       [world[0] - dx, world[1] - dy, world[0] + dx, world[1] + dy],
       check,
@@ -178,7 +207,7 @@ export class Picking {
         const p = kit.cameraPoint(camera, e.point, viewport);
         d = Math.max(
           0,
-          Math.hypot(point[0] - p[0], point[1] - p[1]) - (this.scene.portSizePx ?? 8) / 2,
+          Math.hypot(point[0] - p[0], point[1] - p[1]) - portRadius * Math.max(...camera.scale),
         );
       } else if (e.a && e.b)
         d = Math.max(
@@ -187,7 +216,11 @@ export class Picking {
             point,
             kit.cameraPoint(camera, e.a, viewport),
             kit.cameraPoint(camera, e.b, viewport),
-          ) - (e.radius ?? 0),
+          ) -
+            (e.edgeSlot !== undefined && style && style.values.items[e.edgeSlot].width >= 0
+              ? style.values.items[e.edgeSlot].width
+              : (style?.edgeWidthPx ?? 1.5)) /
+              2,
         );
       else if (e.vertex !== undefined) {
         if (contains(this.scene.vertices[e.vertex], world)) d = 0;
@@ -198,7 +231,7 @@ export class Picking {
         world[1] <= e.box[3]
       )
         d = 0;
-      if (d <= radius) found({ hit: e.hit, distance: d, order: id });
+      if (d <= radius) found({ slot: e.slot, distance: d, order: id });
     }
   }
 }

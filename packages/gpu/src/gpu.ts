@@ -200,7 +200,7 @@ class Owner implements Gpu {
     this.assertLive();
     return this.text.layoutText(
       input,
-      AbortSignal.any([this.stopped.signal, ...(options.signal ? [options.signal] : [])]),
+      options.signal ? AbortSignal.any([this.stopped.signal, options.signal]) : this.stopped.signal,
     );
   }
 
@@ -217,10 +217,9 @@ class Owner implements Gpu {
     for (const renderer of renderers)
       if (this.rendering.has(renderer))
         throw failure('busy', 'Renderer already has a render in progress');
-    const signal = AbortSignal.any([
-      this.stopped.signal,
-      ...(options.signal ? [options.signal] : []),
-    ]);
+    const signal = options.signal
+      ? AbortSignal.any([this.stopped.signal, options.signal])
+      : this.stopped.signal;
     for (const renderer of renderers) this.rendering.add(renderer);
     try {
       const complete = options.completion === 'complete';

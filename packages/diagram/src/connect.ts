@@ -1,12 +1,13 @@
 import { isFailure } from '@latkit/model';
+import { kit } from '@latkit/gpu';
 import type { ConnectProposal } from './diagram.js';
 import type { DiagramItem, DiagramPort, DiagramRow, Point, SceneItem } from './data.js';
 import { itemKey, rowOf } from './data.js';
 import type { Vertex, Port, Scene } from './scene.js';
-import { rect } from './scene.js';
-import { boundary, orthogonal } from './geometry.js';
+import { rect, expand, union, type Rect } from './scene.js';
+import { boundary } from './geometry.js';
+import { orthogonal } from './route.js';
 import { rootEnd } from './layout.js';
-import { SpatialIndex, expand } from './spatial.js';
 
 export type ConnectStart = Pick<ConnectProposal, 'from' | 'replaces'>;
 /** A vertex or edge row, whichever kind names it. */
@@ -19,7 +20,8 @@ export class ConnectSession {
   readonly compatible: readonly DiagramItem[];
   private vertices = new Map<string, Vertex>();
   private edges = new Map<string, Scene['edges'][number]>();
-  private obstacles = new SpatialIndex();
+  private readonly obstacles: kit.BoxIndex;
+  private readonly boxes: Rect[] = [];
   private owners: Vertex[] = [];
   private source: Vertex;
   private port?: Port;
@@ -31,10 +33,13 @@ export class ConnectSession {
     for (const vertex of scene.vertices) {
       this.vertices.set(identity(vertex.hit), vertex);
       if (vertex.visible) {
-        this.obstacles.add(expand(rect(vertex), 2));
+        this.boxes.push(expand(rect(vertex), 2));
         this.owners.push(vertex);
       }
     }
+    this.obstacles = kit.BoxIndex.of(this.boxes.length, union(this.boxes), (i, box) =>
+      box.set(this.boxes[i]),
+    );
     for (const edge of scene.edges) this.edges.set(identity(edge.hit), edge);
     let source = this.vertices.get(identity(hit))!;
     let port = hit.kind === 'port' ? source.ports.find((p) => p.name === hit.port) : undefined;
@@ -131,10 +136,9 @@ export class ConnectSession {
       [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])],
       this.clearance * 4,
     );
-    const boxes = this.obstacles
-      .query(region)
+    const boxes = [...this.obstacles.query(region)]
       .filter((i) => this.owners[i] !== this.source && this.owners[i] !== vertex)
-      .map((i) => this.obstacles.boxes[i]);
+      .map((i) => this.boxes[i]);
     try {
       return [a, ap, ...orthogonal(ap, bp, boxes, this.clearance, signal), bp, b];
     } catch (error) {

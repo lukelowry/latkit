@@ -1,7 +1,8 @@
 import type { FieldValues, Index } from '@latkit/model';
 import type { Point, TextLayout } from '@latkit/gpu';
 import type { DiagramData, DiagramItem, SceneItem, Shape, VertexData, EdgeData } from './data.js';
-import type { Obstacles } from './route.js';
+import { itemKey } from './data.js';
+import type { Obstacles, Route } from './route.js';
 export type Rect = readonly [number, number, number, number];
 /** A reference field wiring its vertex to a drawn net. */
 export interface Port {
@@ -70,7 +71,7 @@ export interface Edge extends Wire {
   arrows: readonly Arrow[];
   bounds: Rect;
   /** The route before tracks set it apart from other nets: what an unchanged edge keeps. */
-  route: Wire | null;
+  route: Route | null;
   /** Where its label draws, its top-left; empty without one. */
   labels: readonly Point[];
 }
@@ -112,6 +113,31 @@ export const emptyLabel: TextLayout = Object.freeze({
 export function rect(vertex: Vertex): Rect {
   return [vertex.x, vertex.y, vertex.x + vertex.width, vertex.y + vertex.height];
 }
+/** Padded label geometry shared by drawing and picking. */
+export function labelBounds(edge: Edge, position: Point): Rect {
+  return [
+    position[0] - 3,
+    position[1] - 3,
+    position[0] + edge.label.width + 3,
+    position[1] + edge.label.height + 3,
+  ];
+}
+/** A stable point on the longest segment, for locate and reveal. */
+export function edgeAnchor(edge: Edge): Point {
+  let point: Point = [0, 0],
+    longest = -1;
+  for (const path of edge.paths)
+    for (let i = 1; i < path.length; i++) {
+      const a = path[i - 1],
+        b = path[i],
+        length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (length > longest) {
+        point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        longest = length;
+      }
+    }
+  return point;
+}
 export function intersects(a: Rect, b: Rect): boolean {
   return a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
 }
@@ -151,6 +177,24 @@ export function itemAt(scene: Scene, slot: number): DiagramItem | null {
   if (slot < slots.groups) return scene.edges[slot - slots.edges]?.hit ?? null;
   const group = scene.groups[slot - slots.groups];
   return group ? { kind: 'group', id: group.id } : null;
+}
+/** The shared lookup at API boundaries; geometry uses the scene's numeric slots directly. */
+export function itemSlots(scene: Scene): ReadonlyMap<string, number> {
+  if (!scene.keys) {
+    const keys = new Map<string, number>();
+    scene.vertices.forEach((vertex, slot) => {
+      keys.set(itemKey(vertex.hit), slot);
+      vertex.ports.forEach((port, i) =>
+        keys.set(itemKey({ ...vertex.hit, kind: 'port', port: port.name }), vertex.portSlot + i),
+      );
+    });
+    scene.edges.forEach((edge, i) => keys.set(itemKey(edge.hit), scene.slots.edges + i));
+    scene.groups.forEach((group, i) =>
+      keys.set(itemKey({ kind: 'group', id: group.id }), scene.slots.groups + i),
+    );
+    scene.keys = keys;
+  }
+  return scene.keys;
 }
 export function positions(
   vertices: readonly Vertex[],

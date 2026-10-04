@@ -67,6 +67,7 @@ describe('public contract and allocation boundaries', () => {
         'scaleParameters',
         'BoxIndex',
         'Occupancy',
+        'sameValues',
         'shadeShader',
         'defaultShade',
         'premultipliedBlend',

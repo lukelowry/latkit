@@ -229,12 +229,9 @@ export class BoxIndex {
       minY = bounds[1] - this.origin[1],
       maxX = bounds[2] - this.origin[0],
       maxY = bounds[3] - this.origin[1];
-    const meets = (node: number) =>
-      boxes[node * 4] <= maxX &&
-      boxes[node * 4 + 1] <= maxY &&
-      boxes[node * 4 + 2] >= minX &&
-      boxes[node * 4 + 3] >= minY;
-    if (!meets(root)) return;
+    const at = root * 4;
+    if (boxes[at] > maxX || boxes[at + 1] > maxY || boxes[at + 2] < minX || boxes[at + 3] < minY)
+      return;
     const stack = [root, top];
     while (stack.length) {
       check();
@@ -242,11 +239,18 @@ export class BoxIndex {
         node = stack.pop()!,
         first = starts[level - 1] + (node - starts[level]) * NODE,
         last = Math.min(first + NODE, starts[level]);
-      for (let child = first; child < last; child++)
-        if (meets(child)) {
+      for (let child = first; child < last; child++) {
+        const at = child * 4;
+        if (
+          boxes[at] <= maxX &&
+          boxes[at + 1] <= maxY &&
+          boxes[at + 2] >= minX &&
+          boxes[at + 3] >= minY
+        ) {
           if (level === 1) yield items[child];
           else stack.push(child, level - 1);
         }
+      }
     }
   }
 }

@@ -3,7 +3,18 @@ import { createComposition } from '@latkit/gpu';
 import { appendData, type SampleBatch } from '@latkit/model';
 import { createMonitor } from '@latkit/monitor';
 import { createNetwork } from '@latkit/network';
-import { connected, draw, frames, gpu, grid, sizes, split, suite, voltages } from './harness.ts';
+import {
+  connected,
+  counters,
+  draw,
+  frames,
+  gpu,
+  grid,
+  sizes,
+  split,
+  suite,
+  voltages,
+} from './harness.ts';
 
 /**
  * The integrated path for one published frame: a producer publishes it over a WebSocket, the host
@@ -47,7 +58,7 @@ describe.each(sizes)('pipeline %i buses', async (buses) => {
     monitor.destroy();
     await close();
   });
-  const measure = suite(`pipeline ${buses} buses`, buses, () => device.stats());
+  const measure = suite(`pipeline ${buses} buses`, buses, () => counters(device));
   measure('publication to frame', async () => {
     const batches: SampleBatch[] = [];
     do batches.push(...((await stream.next()).value as SampleBatch[]));

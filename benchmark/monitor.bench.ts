@@ -1,7 +1,7 @@
 import { describe } from 'vitest';
 import { appendData } from '@latkit/model';
 import { createMonitor, type MonitorConfig } from '@latkit/monitor';
-import { draw, frames, gpu, grid, suite, voltages } from './harness.ts';
+import { counters, draw, frames, gpu, grid, suite, voltages } from './harness.ts';
 
 /** A trace per row: monitors scale with the rows they draw. */
 describe.each([100, 1_000, 10_000])('monitor %i rows', async (rows) => {
@@ -15,7 +15,7 @@ describe.each([100, 1_000, 10_000])('monitor %i rows', async (rows) => {
   };
   const view = createMonitor(device, config);
   await draw(device, view, 0, 'complete');
-  const measure = suite(`monitor ${rows} rows`, rows, () => device.stats(), 12);
+  const measure = suite(`monitor ${rows} rows`, rows, () => counters(device), 12);
   measure('first frame', async () => {
     const fresh = createMonitor(device, config);
     await draw(device, fresh, 0, 'complete');

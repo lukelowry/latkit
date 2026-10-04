@@ -150,8 +150,14 @@ it('arranges through the new public headless API', async () => {
   // Arrangement only reads and measures text.
   const gpu = {
     reader: createReader(),
-    measureText: (input: { text: string }) =>
-      Promise.resolve({ advance: input.text.length * 0.6, ascent: 0.8, descent: 0.2 }),
+    layoutText: (input: { text: string; size?: number }) =>
+      Promise.resolve({
+        runs: [],
+        width: input.text.length * 0.6 * (input.size ?? 12),
+        height: input.size ?? 12,
+        ascent: 0.8 * (input.size ?? 12),
+        descent: 0.2 * (input.size ?? 12),
+      }),
   } as unknown as Gpu;
   const result = await arrange(
     gpu,

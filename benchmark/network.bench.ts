@@ -1,6 +1,6 @@
 import { describe } from 'vitest';
 import { createNetwork, type NetworkConfig } from '@latkit/network';
-import { draw, gpu, grid, sizes, suite } from './harness.ts';
+import { counters, draw, gpu, grid, sizes, suite } from './harness.ts';
 
 describe.each(sizes)('network %i buses', async (buses) => {
   const device = await gpu(),
@@ -12,7 +12,7 @@ describe.each(sizes)('network %i buses', async (buses) => {
   };
   const view = createNetwork(device, config);
   await draw(device, view);
-  const measure = suite(`network ${buses} buses`, buses, () => device.stats());
+  const measure = suite(`network ${buses} buses`, buses, () => counters(device));
   measure('first frame', async () => {
     const fresh = createNetwork(device, config);
     await draw(device, fresh);

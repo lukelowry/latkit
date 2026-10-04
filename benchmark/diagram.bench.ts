@@ -1,23 +1,30 @@
 import { describe } from 'vitest';
 import { createDiagram, type DiagramConfig } from '@latkit/diagram';
-import { draw, gpu, grid, suite } from './harness.ts';
+import { counters, draw, gpu, grid, suite } from './harness.ts';
 
 interface DragControls {
   preview(items: readonly unknown[], delta: readonly [number, number] | null): void;
 }
 
-/** Layered layout is the heavy part, so diagrams scale to ten thousand blocks. */
-describe.each([100, 1_000, 10_000])('diagram %i blocks', async (blocks) => {
+/** Include the large routed scene, with fewer repetitions at forty thousand blocks. */
+describe.each([100, 1_000, 10_000, 40_000])('diagram %i blocks', async (blocks) => {
   const device = await gpu(),
     data = grid(blocks, true);
   const config: DiagramConfig = {
     source: data,
     vertices: { Bus: {} },
     edges: { Branch: { ends: ['from', 'to'] } },
+    // Large stress scenes explicitly opt into a larger picking budget.
+    ...(blocks >= 40_000 ? { limits: { pickingBytes: 128 * 1024 ** 2 } } : {}),
   };
   const view = createDiagram(device, config);
   await draw(device, view, 0, 'complete');
-  const measure = suite(`diagram ${blocks} blocks`, blocks, () => device.stats(), 8);
+  const measure = suite(
+    `diagram ${blocks} blocks`,
+    blocks,
+    () => counters(device),
+    blocks >= 40_000 ? 3 : 8,
+  );
   measure('layout', async () => {
     const fresh = createDiagram(device, config);
     await draw(device, fresh, 0, 'complete');

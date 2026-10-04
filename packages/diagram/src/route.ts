@@ -2,7 +2,7 @@ import { failure } from '@latkit/model';
 import { kit, type Point } from '@latkit/gpu';
 import type { RouteEnd } from './data.js';
 import type { Arrow, Edge, End, GroupBox, Rect, Scene, Vertex, Wire } from './scene.js';
-import { union } from './scene.js';
+import { union, expand, intersects } from './scene.js';
 import { boundary } from './geometry.js';
 import type { Style } from './config.js';
 
@@ -105,7 +105,8 @@ export class Routing {
       shifted: Rect[] = [];
     if (moved)
       for (let owner = 0; owner < o.count; owner++)
-        if (this.moves(owner) && Number.isFinite(o.boxes[owner * 4])) shifted.push(this.box(owner)!);
+        if (this.moves(owner) && Number.isFinite(o.boxes[owner * 4]))
+          shifted.push(this.box(owner)!);
     this.shifted = shifted;
   }
   vertex(index: number): Vertex {
@@ -166,7 +167,13 @@ export class Routing {
     if (group && o.groups.get(group)) {
       const owner = o.proxyOwner.get(group)!,
         b = this.box(owner)!,
-        box = { x: b[0], y: b[1], width: b[2] - b[0], height: b[3] - b[1], shape: 'rectangle' as const },
+        box = {
+          x: b[0],
+          y: b[1],
+          width: b[2] - b[0],
+          height: b[3] - b[1],
+          shape: 'rectangle' as const,
+        },
         p = boundary({ ...this.vertex(e.vertex), ...box }, toward);
       return terminal(p, side(box, p), e, owner, p, false, arrow);
     }
@@ -292,7 +299,12 @@ class Tree {
 }
 
 /** Route one edge between its visible ends, from the end its flow leaves. */
-export function routeEdge(edge: Edge, ends: readonly End[], route: Routing, rootIndex: number): Route {
+export function routeEdge(
+  edge: Edge,
+  ends: readonly End[],
+  route: Routing,
+  rootIndex: number,
+): Route {
   const { options } = route,
     clearance = options.routeClearance,
     arrows = !!edge.options.arrows;
@@ -311,7 +323,10 @@ export function routeEdge(edge: Edge, ends: readonly End[], route: Routing, root
       typeof edge.options.route === 'object'
         ? edge.options.route.route({
             ends: all,
-            obstacles: route.query(union(all.map((e) => [...e.position, ...e.position] as Rect)), 0),
+            obstacles: route.query(
+              union(all.map((e) => [...e.position, ...e.position] as Rect)),
+              0,
+            ),
             clearance,
             signal: route.signal,
           })
@@ -466,7 +481,8 @@ function fits(
   for (let k = 0; k < tree.x.length; k++) {
     if (k !== tree.parent[joint] && tree.parent[k] !== joint) continue;
     const q = tree.point(k === tree.parent[joint] ? tree.parent[joint] : k);
-    if (Math.sign(q[0] - path[0][0]) === d[0] && Math.sign(q[1] - path[0][1]) === d[1]) return false;
+    if (Math.sign(q[0] - path[0][0]) === d[0] && Math.sign(q[1] - path[0][1]) === d[1])
+      return false;
   }
   return true;
 }
@@ -497,10 +513,15 @@ function search(
   a: Point,
   b: Point,
   around: readonly Rect[],
-  route: Routing,
+  route: {
+    readonly options: Pick<Style, 'routeClearance'>;
+    readonly query: Routing['query'];
+    readonly signal: AbortSignal;
+  },
   by: number,
   bend: number,
 ): Point[] | null {
+  route.signal.throwIfAborted();
   const margin = route.options.routeClearance * 2,
     frame = union([[...a, ...a] as Rect, [...b, ...b] as Rect, ...around]);
   const region: Rect = [frame[0] - margin, frame[1] - margin, frame[2] + margin, frame[3] + margin];
@@ -596,8 +617,27 @@ function search(
   }
   return null;
 }
+/** Connection previews use the same bounded search as routed nets. */
+export function orthogonal(
+  a: Point,
+  b: Point,
+  boxes: readonly Rect[],
+  clearance: number,
+  signal: AbortSignal,
+): readonly Point[] {
+  signal.throwIfAborted();
+  const route = {
+    options: { routeClearance: clearance },
+    signal,
+    query: (region: Rect, by: number) =>
+      boxes.filter((box) => intersects(box, region)).map((box) => expand(box, by)),
+  };
+  return search(a, b, [], route, clearance, clearance * 2) ?? simplify([a, [b[0], a[1]], b]);
+}
 function inside(p: Point, box: Rect): boolean {
-  return p[0] > box[0] + 1e-6 && p[0] < box[2] - 1e-6 && p[1] > box[1] + 1e-6 && p[1] < box[3] - 1e-6;
+  return (
+    p[0] > box[0] + 1e-6 && p[0] < box[2] - 1e-6 && p[1] > box[1] + 1e-6 && p[1] < box[3] - 1e-6
+  );
 }
 class Heap {
   private ids: number[] = [];
@@ -659,10 +699,22 @@ function trim(path: readonly Point[], length: number, arrows: Arrow[]): Point[] 
 
 /** A route as drawn: its paths, each from the root or a branch to a leaf, with marks and bounds. */
 export function draw(route: Route, x = route.x, y = route.y): Wire {
-  if (route.paths) return outline(route.paths, route.paths.map(() => 0), [], route.arrows);
+  if (route.paths)
+    return outline(
+      route.paths,
+      route.paths.map(() => 0),
+      [],
+      route.arrows,
+    );
   const n = x.length,
-    children: number[][] = Array.from({ length: n }, () => []);
-  for (let j = 1; j < n; j++) if (route.parent[j] >= 0) children[route.parent[j]].push(j);
+    children = new Int32Array(n).fill(-1),
+    siblings = new Int32Array(n).fill(-1);
+  for (let j = n - 1; j > 0; j--) {
+    const parent = route.parent[j];
+    if (parent < 0) continue;
+    siblings[j] = children[parent];
+    children[parent] = j;
+  }
   const along = new Float64Array(n),
     paths: Point[][] = [],
     offsets: number[] = [],
@@ -671,21 +723,27 @@ export function draw(route: Route, x = route.x, y = route.y): Wire {
   const point = (j: number): Point => [x[j], y[j]];
   while (stack.length) {
     const start = stack.pop()!;
-    if (children[start].length + (start ? 1 : 0) >= 3) junctions.push(point(start));
-    for (const first of children[start]) {
+    const firstChild = children[start];
+    if (
+      firstChild >= 0 &&
+      siblings[firstChild] >= 0 &&
+      (start !== 0 || siblings[siblings[firstChild]] >= 0)
+    )
+      junctions.push(point(start));
+    for (let first = firstChild; first >= 0; first = siblings[first]) {
       const path: Point[] = [point(start)];
       let prev = start,
         j = first;
       for (;;) {
         along[j] = along[prev] + Math.abs(x[j] - x[prev]) + Math.abs(y[j] - y[prev]);
         path.push(point(j));
-        if (children[j].length !== 1) break;
+        if (children[j] < 0 || siblings[children[j]] >= 0) break;
         prev = j;
-        j = children[j][0];
+        j = children[j];
       }
       paths.push(simplify(path));
       offsets.push(along[start]);
-      if (children[j].length) stack.push(j);
+      if (children[j] >= 0) stack.push(j);
     }
   }
   return outline(paths, offsets, junctions, route.arrows);
@@ -696,15 +754,24 @@ function outline(
   junctions: readonly Point[],
   arrows: readonly Arrow[],
 ): Wire {
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  const include = (p: Point) => {
+    minX = Math.min(minX, p[0]);
+    minY = Math.min(minY, p[1]);
+    maxX = Math.max(maxX, p[0]);
+    maxY = Math.max(maxY, p[1]);
+  };
+  for (const path of paths) for (const p of path) include(p);
+  for (const arrow of arrows) include(arrow.point);
   return {
     paths,
     offsets,
     junctions,
     arrows,
-    bounds: union([
-      ...paths.flatMap((p) => p.map((q) => [q[0], q[1], q[0], q[1]] as Rect)),
-      ...arrows.map((a) => [...a.point, ...a.point] as Rect),
-    ]),
+    bounds: minX <= maxX ? [minX, minY, maxX, maxY] : [0, 0, 0, 0],
   };
 }
 
@@ -725,12 +792,21 @@ export function separate(
   for (const axis of [0, 1] as const) {
     const coords = axis === 0 ? xs : ys,
       other = axis === 0 ? ys : xs;
-    const runs = collect(routes, coords, other, axis);
+    const runs = collect(routes, coords, other);
     for (const frame of frames)
       for (const fixed of [frame[axis], frame[axis + 2]])
-        runs.push({ net: -1, joints: [], fixed, lo: frame[1 - axis], hi: frame[3 - axis], turn: 0, low: fixed, high: fixed });
+        runs.push({
+          net: -1,
+          joints: [],
+          fixed,
+          lo: frame[1 - axis],
+          hi: frame[3 - axis],
+          turn: 0,
+          low: fixed,
+          high: fixed,
+        });
     runs.sort((a, b) => a.fixed - b.fixed || a.lo - b.lo);
-    for (let i = 0; i < runs.length; ) {
+    for (let i = 0; i < runs.length;) {
       let k = i + 1,
         hi = runs[i].hi;
       while (k < runs.length && runs[k].fixed - runs[i].fixed < 0.5 && runs[k].lo < hi)
@@ -764,7 +840,10 @@ export function separate(
       const fixed = cluster.findIndex((run) => run.low === run.high),
         step = Math.min(gap, Math.max(0, high - low) / Math.max(1, cluster.length - 1));
       let base = fixed >= 0 ? line - fixed * step : line - ((cluster.length - 1) * step) / 2;
-      base = Math.max(Math.min(low, line), Math.min(base, Math.max(high, line) - (cluster.length - 1) * step));
+      base = Math.max(
+        Math.min(low, line),
+        Math.min(base, Math.max(high, line) - (cluster.length - 1) * step),
+      );
       cluster.forEach((run, order) => {
         if (run.low === run.high) return;
         const at = Math.max(run.low, Math.min(run.high, base + order * step)),
@@ -792,39 +871,60 @@ function collect(
   routes: readonly (Route | null)[],
   coords: readonly (Float64Array | null)[],
   other: readonly (Float64Array | null)[],
-  axis: 0 | 1,
 ): Run[] {
   const runs: Run[] = [];
+  // Reuse compact adjacency storage across nets instead of allocating arrays per joint.
+  let component = new Int32Array(0),
+    head = new Int32Array(0),
+    neighbor = new Int32Array(0),
+    next = new Int32Array(0);
   routes.forEach((route, net) => {
     const c = coords[net],
       o = other[net];
     if (!route || !c || !o) return;
-    const n = c.length,
-      // Segment j joins j to its parent; it lies on this axis's lines when c is constant along it.
-      on = (j: number) =>
-        j > 0 && route.parent[j] >= 0 && c[j] === c[route.parent[j]] && o[j] !== o[route.parent[j]];
-    const component = new Int32Array(n).fill(-1),
-      neighbors: number[][] = Array.from({ length: n }, () => []),
-      children: number[][] = Array.from({ length: n }, () => []);
-    for (let j = 1; j < n; j++) if (route.parent[j] >= 0) children[route.parent[j]].push(j);
-    for (let j = 1; j < n; j++)
-      if (on(j)) {
-        neighbors[j].push(route.parent[j]);
-        neighbors[route.parent[j]].push(j);
-      }
+    const n = c.length;
+    if (component.length < n) {
+      component = new Int32Array(n);
+      head = new Int32Array(n);
+      neighbor = new Int32Array(n * 2);
+      next = new Int32Array(n * 2);
+    }
+    component.fill(-1, 0, n);
+    head.fill(-1, 0, n);
+    // Reverse insertion preserves the original ascending segment order at each joint.
+    for (let j = n - 1; j > 0; j--) {
+      const parent = route.parent[j];
+      if (parent < 0) continue;
+      const at = j * 2;
+      neighbor[at] = parent;
+      next[at] = head[j];
+      head[j] = at;
+      neighbor[at + 1] = j;
+      next[at + 1] = head[parent];
+      head[parent] = at + 1;
+    }
     for (let seed = 0; seed < n; seed++) {
-      if (component[seed] >= 0 || !neighbors[seed].length) continue;
+      if (component[seed] >= 0) continue;
+      let incident = head[seed];
+      while (
+        incident >= 0 &&
+        (c[seed] !== c[neighbor[incident]] || o[seed] === o[neighbor[incident]])
+      )
+        incident = next[incident];
+      if (incident < 0) continue;
       const joints: number[] = [],
         stack = [seed];
       component[seed] = seed;
       while (stack.length) {
         const j = stack.pop()!;
         joints.push(j);
-        for (const k of neighbors[j])
-          if (component[k] < 0) {
+        for (let at = head[j]; at >= 0; at = next[at]) {
+          const k = neighbor[at];
+          if (component[k] < 0 && c[j] === c[k] && o[j] !== o[k]) {
             component[k] = seed;
             stack.push(k);
           }
+        }
       }
       let lo = Infinity,
         hi = -Infinity,
@@ -846,9 +946,10 @@ function collect(
       }
       const turn = (j: number) => {
         let t = 0;
-        const p = route.parent[j];
-        if (p >= 0 && component[p] !== seed) t += Math.sign(c[p] - c[j]);
-        for (const k of children[j]) if (component[k] !== seed) t += Math.sign(c[k] - c[j]);
+        for (let at = head[j]; at >= 0; at = next[at]) {
+          const k = neighbor[at];
+          if (component[k] !== seed) t += Math.sign(c[k] - c[j]);
+        }
         return t;
       };
       runs.push({
