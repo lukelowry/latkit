@@ -42,6 +42,41 @@ export function shadeUniforms(request: ShadeRequest, frame: FrameInfo): Float32A
   if (request.parameters) values.set(request.parameters, 8);
   return values;
 }
+/**
+ * Rows whose `shade` is positive pulse toward `color` once every `periodMs`, as far as their value,
+ * from 0 to 1, times `strength`: alarms that draw the eye while the rest holds still.
+ */
+export function pulse(
+  options: {
+    readonly periodMs?: number;
+    readonly strength?: number;
+    readonly color?: readonly [number, number, number];
+  } = {},
+): Shade {
+  const { periodMs = 1200, strength = 0.6, color = [1, 1, 1] } = options;
+  if (
+    !Number.isFinite(periodMs) ||
+    periodMs <= 0 ||
+    !Number.isFinite(strength) ||
+    strength < 0 ||
+    strength > 1 ||
+    color.some((v) => !Number.isFinite(v) || v < 0 || v > 1)
+  )
+    throw failure('invalid-input', 'Invalid pulse');
+  return {
+    wgsl: `fn shade(f: ShadeFragment) -> vec4f {
+      let p = shadeContext.parameters[0];
+      let wave = 0.5 - 0.5 * cos(shadeContext.pointer.w / p.x * 6.283185307);
+      let k = wave * p.y * clamp(f.value, 0.0, 1.0);
+      return vec4f(mix(f.color.rgb, shadeContext.parameters[1].rgb, k), f.color.a);
+    }`,
+    tick(parameters) {
+      parameters.set([periodMs, strength, 0, 0, ...color, 1]);
+      // A pulse moves every frame.
+      return true;
+    },
+  };
+}
 export function spotlight(
   options: {
     readonly radiusPx?: number;

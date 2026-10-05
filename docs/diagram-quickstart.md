@@ -14,11 +14,11 @@ const diagram = createDiagram(gpu, {
 });
 diagram.on('move', ({ positions }) => savePositions(positions));
 diagram.on('connect', (proposal) => wire(proposal));
-diagram.on('delete', (ids) => remove(ids));
+diagram.on('delete', (rows) => remove(rows));
 ```
 
 The diagram proposes edits; your application changes the model, and the diagram redraws from it.
-Proposals name rows by `{ type, id }`.
+Proposals name rows as items, `{ source, index, row }`; `itemId(row)` gives a row's id.
 
 ## Ports and wires
 

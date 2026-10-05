@@ -8,7 +8,7 @@ import {
 import { kit } from '@latkit/gpu';
 import type { EdgeOptions, PathOptions, VertexOptions } from '../data.js';
 import type { VertexBank, EdgeBank } from '../geometry/topology.js';
-import { RADIUS_RANGE, WIDTH_RANGE } from '../options.js';
+import { FLOW_RANGE, RADIUS_RANGE, WIDTH_RANGE } from '../options.js';
 
 /** What a vertex reads, and how: a field spans the range, or reads as it is when raw. */
 export const VERTEX = {
@@ -19,8 +19,20 @@ export const VERTEX = {
   color: 'color',
   visible: 'raw',
   shade: 'raw',
+  // What a marker reads, its inputs in order.
+  input0: 'raw',
+  input1: 'raw',
+  input2: 'raw',
+  input3: 'raw',
+  input4: 'raw',
+  input5: 'raw',
+  input6: 'raw',
+  input7: 'raw',
 } as const satisfies Readonly<Record<string, kit.ChannelKind>>;
-/** What an edge or a path reads; an edge's x and y center a net's star. */
+/**
+ * What an edge or a path reads; an edge's x and y center a net's star, and its lane is its place
+ * among the edges joining the same two vertices, which the view finds.
+ */
 export const LINE = {
   x: 'raw',
   y: 'raw',
@@ -29,6 +41,8 @@ export const LINE = {
   visible: 'raw',
   shade: 'raw',
   dash: 'raw',
+  flowPx: FLOW_RANGE,
+  lane: 'raw',
 } as const satisfies Readonly<Record<string, kit.ChannelKind>>;
 export type ChannelName = keyof typeof VERTEX | keyof typeof LINE;
 const NAMES = [...new Set([...Object.keys(VERTEX), ...Object.keys(LINE)])] as ChannelName[];
@@ -50,23 +64,31 @@ const bindings = new Map<Kinds, WeakMap<object, kit.BoundChannels<ChannelName>>>
   [LINE, new WeakMap()],
 ]);
 /**
- * A type's channels, bound once per options object; `layout` holds every row's position for a
- * bank where layout placed any.
+ * A type's channels, bound once per options object. `local` holds what the view finds for one
+ * bank itself: every vertex's position where layout placed any, or every edge's lane.
  */
 export function channels(
   options: Options,
   kinds: Kinds,
-  layout?: FieldValues,
+  local?: FieldValues,
 ): kit.BoundChannels<ChannelName> {
   const cache = bindings.get(kinds)!,
-    key = layout ?? options;
+    key = local ?? options;
   let found = cache.get(key);
   if (!found) {
-    // A kind names only its own channels; the others stay unbound.
-    found = kit.bindChannels(
-      layout ? { ...options, x: { field: layout }, y: { field: layout, component: 1 } } : options,
-      kinds as Readonly<Record<ChannelName, kit.ChannelKind>>,
-    );
+    // A kind names only its own channels; the others stay unbound. A marker's inputs read as
+    // `input0` and on, in the order it names them.
+    const marker = 'marker' in options ? options.marker : undefined,
+      inputs = Object.fromEntries(
+        Object.values(marker?.inputs ?? {}).map((channel, i) => ['input' + i, channel]),
+      ),
+      own = !local
+        ? {}
+        : kinds === VERTEX
+          ? { x: { field: local }, y: { field: local, component: 1 } }
+          : { lane: { field: local } },
+      bound = { ...options, ...inputs, ...own };
+    found = kit.bindChannels(bound, kinds as Readonly<Record<ChannelName, kit.ChannelKind>>);
     cache.set(key, found);
   }
   return found;
@@ -130,9 +152,9 @@ export async function readFields(
   source: Data,
   bank: VertexBank | EdgeBank,
   options: Options,
-  layout?: FieldValues,
+  local?: FieldValues,
 ): Promise<FieldRead> {
-  const bound = channels(options, 'batches' in bank ? LINE : VERTEX, layout),
+  const bound = channels(options, 'batches' in bank ? LINE : VERTEX, local),
     select = Object.keys(bound.fields);
   const pages: ReadPage[] = [],
     native: FieldsBlock[] = [];

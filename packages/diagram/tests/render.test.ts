@@ -877,7 +877,7 @@ it('binds channels to fields in entries and their ports, as given', async () => 
 it('shares the view style, stats, and limits', async () => {
   const f = await fixture();
   try {
-    f.diagram.set({ selectedWidthPx: 4, background: [0, 0, 0, 1], selectedColor: null });
+    f.diagram.set({ selectedWidthPx: 4, background: [0, 0, 0, 1], selectedColor: 'none' });
     await f.draw();
     expect(f.diagram.stats()).toMatchObject({ frames: 1, hover: 'idle', hoverMs: 0 });
     expect(f.diagram.stats().pickingBytes).toBeGreaterThan(0);

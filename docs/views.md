@@ -48,6 +48,8 @@ gestures, such as dragging.
   pass all of it on every change, and the view rebuilds only what differs.
 - A channel such as `color`, `x`, or `widthPx` takes one value, a field name, or a scale; see
   [data bindings](topology-and-channels.md#channels).
+- `{ animate: true }` eases what the patch changes over `animationMs`: the camera, a diagram's
+  positions, and a network's positions, colors, sizes, widths, flow, and marker inputs.
 
 ```ts
 network.set({
@@ -98,7 +100,9 @@ Every item view takes the same style options, with one set of defaults in `viewS
 | `hoverWidthPx`, `selectedWidthPx` | `3`, `3`                 |                                                                                   |
 | `font`, `fontSizePx`, `textColor` | `system-ui`, `12`, light | monitor uses a monospace font                                                     |
 
-Each view adds its own options, such as a network's `edgeWidthPx` or a monitor's `yAxis`. Padding
+`shade` recolors every fragment by WGSL of your own, or `spotlight()` around the pointer, or
+`pulse()` for rows whose `shade` channel is positive. Each view adds its own options, such as a
+network's `edgeWidthPx` or a monitor's `yAxis`. Padding
 takes one number or `[top, right, bottom, left]`. `null` in a config or a patch always means unset,
 which restores the default.
 
@@ -131,7 +135,8 @@ events report what the user did, and `select` also reports items a new source no
 keep their source, `Index`, and row. `locate(item)` returns an item's canvas point, and
 `reveal(item)` pans until it shows.
 
-Events arrive together after each drawn frame, in order: `frame`, `camera`, `hover`, `select`.
+`frame`, `camera`, and `hover` arrive together after each drawn frame, in that order. `select`
+arrives as the user selects, and after the frame that drops items a new source no longer has.
 
 ## Images
 

@@ -57,7 +57,10 @@ export interface ViewStats {
   readonly hoverMs: number;
 }
 export interface SetOptions {
-  /** Ease camera and position changes. */
+  /**
+   * Ease what the change draws over `animationMs`: the camera, a diagram's positions, and a
+   * network's positions, colors, sizes, widths, flow, and marker inputs.
+   */
   readonly animate?: boolean;
   /**
    * `set` only: the patch is the whole config, so what it leaves out resets. The canvas, `at`,

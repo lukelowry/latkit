@@ -29,7 +29,6 @@ const WORDS = 12;
 const PAGE = 16384;
 /** No item: overlay and preview instances, which no focus or style reaches. */
 const NONE = 0xffffffff;
-const SHAPES = ['rounded', 'rectangle', 'ellipse', 'diamond'] as const;
 /** Up to a page of instances about one origin, and the box they cover for culling. */
 interface InstancePage {
   bounds: Rect;
@@ -281,6 +280,7 @@ export async function pipelines(
       kit.shadeShader({ group: 0, binding: 1 }) +
         kit.textShader({ group: 1 }) +
         kit.outputShader() +
+        kit.shapeShader() +
         kinds +
         '\n' +
         shader +
@@ -405,7 +405,7 @@ export class Painter {
         KIND.block,
         i,
         [vertex.x, vertex.y, vertex.width, vertex.height],
-        [vertex.radius, vertex.header, SHAPES.indexOf(vertex.shape)],
+        [vertex.radius, vertex.header, kit.SHAPES.indexOf(vertex.shape)],
         box,
       );
       text.add(i, vertex.label, titleAt(vertex, style), { slot: i });

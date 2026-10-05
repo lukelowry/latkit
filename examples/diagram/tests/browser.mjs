@@ -127,7 +127,7 @@ try {
     await writeFile(path.join(output, name + '.png'), Buffer.from(shot.data, 'base64'));
   };
   await evaluate(
-    `(async()=>{ const app=window.proofApp, frames=app.diagram.stats().frames; const el=document.getElementById('theme'); el.value='dark'; el.dispatchEvent(new Event('change')); await window.proofWait(()=>app.diagram.stats().frames>frames); })()`,
+    `(async()=>{ const app=window.proofApp, frames=app.diagram.stats().frames, config=app.diagram.config; const el=document.getElementById('theme'); el.value='dark'; el.dispatchEvent(new Event('change')); await window.proofWait(()=>app.diagram.config===config||app.diagram.stats().frames>frames); })()`,
   );
   await screenshot('desktop');
   const report = await evaluate(`(async () => {
@@ -135,6 +135,8 @@ try {
     const assert = (condition, text) => { if (!condition) throw new Error(text); };
     const change = async (id, value) => {
       const el = document.getElementById(id), frames = app.diagram.stats().frames;
+      // A value the control already holds changes nothing, so no frame would come.
+      assert((el.type === 'checkbox' ? el.checked : el.value) !== value, id + ' already holds ' + value);
       if (el.type === 'checkbox') el.checked = value; else el.value = value;
       el.dispatchEvent(new Event('change', { bubbles: true }));
       await wait(() => app.diagram.stats().frames > frames);
@@ -157,10 +159,11 @@ try {
     await change('flow', true); await change('flow', false);
     passed.push('routing, tags, scales, shades, flow');
     for (const id of ['grid','snap','labels','junctions','status']) { await change(id, false); await change(id, true); }
-    await change('msaa','1'); await change('msaa','4');
-    const version = app.source.version;
+    await change('msaa','4'); await change('msaa','1');
+    // Live values move the revision; the version numbers rows, which a simulation keeps.
+    const revision = app.source.revision;
     document.getElementById('simulate').checked = true;
-    await wait(() => app.source.version !== version);
+    await wait(() => app.source.revision !== revision);
     document.getElementById('simulate').checked = false;
     document.getElementById('simulate').dispatchEvent(new Event('change'));
     passed.push('live native values');

@@ -9,7 +9,7 @@
 
 TypeScript tools for WebGPU network views, time-series plots, block diagrams, and video export.
 
-[Documentation](https://latkit.readthedocs.io/en/latest/) ? [API reference](https://latkit.readthedocs.io/en/latest/api/index.html) ? [Examples](examples)
+[Documentation](https://latkit.readthedocs.io/en/latest/) · [API reference](https://latkit.readthedocs.io/en/latest/api/index.html) · [Examples](examples)
 
 ## Install
 

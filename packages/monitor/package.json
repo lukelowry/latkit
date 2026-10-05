@@ -25,7 +25,7 @@
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
-    "test:browser": "tsup tests/fixture.ts --config false --format esm --out-dir tests/browser/generated --external @latkit/model && node tests/browser/run.mjs"
+    "test:browser": "pnpm --filter @latkit/monitor... build && tsup tests/fixture.ts --config false --format esm --out-dir tests/browser/generated --external @latkit/model && node tests/browser/run.mjs"
   },
   "dependencies": {
     "@latkit/gpu": "workspace:^",

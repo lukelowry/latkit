@@ -1,7 +1,6 @@
 import type { Data, Item, RowSelection } from '@latkit/model';
-import type { Channel, ColorChannel, Labels, Point, Positions } from '@latkit/gpu';
-export type { Point, Positions };
-export type Shape = 'rectangle' | 'rounded' | 'ellipse' | 'diamond';
+import type { Channel, ColorChannel, Labels, Point, Positions, Shape } from '@latkit/gpu';
+export type { Point, Positions, Shape };
 /** Labels on a type's items, sized in diagram units so they zoom with the diagram. */
 export interface DiagramLabels extends Labels {
   /** In diagram units; the shared `fontSizePx` by default. */

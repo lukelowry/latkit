@@ -40,7 +40,7 @@ import {
 } from './geometry/topology.js';
 import { indexKey } from './geometry/rows.js';
 import { Placement, arrangeVertices, positions } from './geometry/layout.js';
-import { arrow, listen, type Gestures } from './input.js';
+import { arrow, type Gestures } from './input.js';
 import { DEFAULTS, VIEW_DEFAULTS, resolveStyle, type NetworkStyle, type Style } from './options.js';
 import { Picking, type PickGeometry } from './picking.js';
 import {
@@ -129,6 +129,8 @@ interface Presented {
 }
 interface Pending extends Presented {
   readonly paint: Paint;
+  /** Whether the frame begins the transition in progress. */
+  readonly begins: boolean;
 }
 /** What a config means to the network: its drawn data, limits, layout, and style. */
 interface Resolved {
@@ -137,7 +139,18 @@ interface Resolved {
   readonly limits: Required<Limits>;
   readonly layout: LayoutOptions;
   readonly style: Style;
+  /** Whether any line type moves dots along itself. */
+  readonly flowing: boolean;
 }
+/** Style a transition eases, as rows read it where they have no value of their own. */
+const EASED = [
+  'vertexColor',
+  'vertexRadiusPx',
+  'edgeColor',
+  'edgeWidthPx',
+  'pathColor',
+  'pathWidthPx',
+] as const;
 /** Hit-test indexes build once the shown positions have held this long, as hover settles. */
 const INDEX_SETTLE_MS = 150;
 /** Settles after `ms`, when `now` is called, or as soon as the signal aborts. */
@@ -160,7 +173,11 @@ function settle(
 function checkData(config: NetworkConfig): NetworkData {
   if (!config.vertices) throw failure('invalid-input', 'Invalid network data');
   const data = networkData(config);
-  for (const vertex of Object.values(data.vertices)) channels(vertex, VERTEX);
+  for (const vertex of Object.values(data.vertices)) {
+    if (vertex.marker !== undefined) kit.checkMarker(vertex.marker);
+    channels(vertex, VERTEX);
+    checkLabels(vertex.labels);
+  }
   for (const [type, edge] of Object.entries(data.edges ?? {})) {
     if (
       edge.ends &&
@@ -191,6 +208,17 @@ function checkLine(type: string, entry: LineOptions): void {
   if (entry.route && !['straight', 'geodesic'].includes(entry.route))
     throw failure('invalid-input', 'Invalid route: ' + type);
   channels(entry, LINE);
+  checkLabels(entry.labels);
+}
+/** A type's labels: the shared options, and the network's own sizes. */
+function checkLabels(value: VertexOptions['labels']): void {
+  const labels = kit.resolveLabels(value);
+  if (!labels) return;
+  const { fontSizePx, repeatSpacingPx } = labels;
+  if (fontSizePx !== undefined && !(Number.isFinite(fontSizePx) && fontSizePx > 0))
+    throw failure('invalid-input', 'Invalid label fontSizePx');
+  if (repeatSpacingPx !== undefined && !(Number.isFinite(repeatSpacingPx) && repeatSpacingPx >= 0))
+    throw failure('invalid-input', 'Invalid label repeatSpacingPx');
 }
 /** Whether a net centers its stars on its own x and y. */
 function centered(edge: EdgeOptions | undefined): boolean {
@@ -252,6 +280,13 @@ class NetworkView
   private readonly paths = new Paths();
   private readonly placement = new Placement();
   private readonly labels = new Labels();
+  /** An animated `set` eases its drawn values from what the next presented frame replaces. */
+  private transitionRequested = false;
+  /**
+   * The transition in progress: when it started, where picking saw rows as it did, and whether a
+   * frame has drawn its start.
+   */
+  private transition?: { readonly start: number; readonly from: PickGeometry; begun: boolean };
   private orbitTime?: number;
   private counts = { vertices: 0, edges: 0, segments: 0, geometryBytes: 0, drawCalls: 0 };
   private readonly gestures: Gestures = {
@@ -423,12 +458,21 @@ class NetworkView
   protected pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade): Promise<Pipelines> {
     return pipelines(this.gpu, format, msaa, shade.wgsl);
   }
-  protected listen(
-    canvas: HTMLCanvasElement,
-    input: kit.CanvasInput,
+  /** The right button, or Shift, turns the camera; any other press pans as every view does. */
+  protected grab(
+    event: PointerEvent,
+    point: Point,
     mode: NonNullable<ViewInput['mode']>,
-  ): void {
-    listen(canvas, input, mode, this.gestures);
+  ): kit.Grab | undefined {
+    if (mode === 'inspect' || (event.button !== 2 && !event.shiftKey)) return undefined;
+    let last = point;
+    return {
+      move: (next) => {
+        this.gestures.rotate(next[0] - last[0], next[1] - last[1]);
+        last = next;
+      },
+      end() {},
+    };
   }
   protected key(event: KeyboardEvent, mode: NonNullable<ViewInput['mode']>): boolean {
     return arrow(event, mode, this.gestures);
@@ -440,10 +484,25 @@ class NetworkView
       data: checkData(config),
       limits: kit.resolveLimits(config.limits, DEFAULT_LIMITS, 'network'),
       layout: checkLayout(config.layout),
+      flowing: [...Object.values(config.edges ?? {}), ...Object.values(config.paths ?? {})].some(
+        (line) => line.flowPx != null && line.flowPx !== 0,
+      ),
       style: resolveStyle(config, this.sharedStyle(config)),
     };
   }
-  protected configure(next: Resolved, previous: Resolved): void {
+  protected configure(next: Resolved, previous: Resolved, options: SetOptions): void {
+    const a = previous.data,
+      b = next.data;
+    if (
+      options.animate &&
+      (a.source !== b.source ||
+        a.vertices !== b.vertices ||
+        a.edges !== b.edges ||
+        a.paths !== b.paths ||
+        previous.layout !== next.layout ||
+        EASED.some((key) => String(previous.style[key]) !== String(next.style[key])))
+    )
+      this.transitionRequested = true;
     if (
       rewired(previous.data, next.data) ||
       Object.entries(next.limits).some(
@@ -455,13 +514,22 @@ class NetworkView
     }
     this.invalidate();
   }
+  /** Orbiting turns the camera, flow moves, and transitions and hover ease, each frame. */
   protected get animating(): boolean {
-    return super.animating || this.camera.orbit;
+    return (
+      super.animating ||
+      this.camera.orbit ||
+      !!this.transition ||
+      this.painter.growing ||
+      (this.resolved.flowing && this.style.lines && !this.reducedMotion)
+    );
   }
 
   protected async prepare(frame: kit.Preparation): Promise<Pending> {
     this.live();
     const { data, style, layout, limits } = this;
+    // Edges joining the same two vertices read their lanes once they draw apart.
+    const spaced = style.edgeSpacingPx > 0;
     const topology =
       this.geometry?.native ?? this.geometry ?? (await readGeometry(data, frame.reader, limits));
     // What the data draws: read, scaled, placed, and compiled once, until the data, its bindings,
@@ -476,6 +544,7 @@ class NetworkView
         data.paths,
         layout,
         this.resolved.config.limits,
+        spaced,
       ],
       async (f) => {
         let geometry = topology;
@@ -493,7 +562,13 @@ class NetworkView
         for (const bank of geometry.edges)
           edges.set(
             bank,
-            await readFields(f, bank.source ?? data.source, bank, edgeOptions(data, bank)),
+            await readFields(
+              f,
+              bank.source ?? data.source,
+              bank,
+              edgeOptions(data, bank),
+              spaced ? topology.adjacency.laneValues(bank) : undefined,
+            ),
           );
         await resolveDomains(f, data.source, vertices, (bank) =>
           vertexOptions(data, bank as VertexBank),
@@ -563,11 +638,27 @@ class NetworkView
     this.live();
     frame.signal.throwIfAborted();
     const phases = picking.dashPhases(data, camera.projection === 'globe', height);
+    // The first presented frame after an animated change eases from what was shown, as long as the
+    // style's animation lasts; an export draws every value where it is going.
+    const motion = !this.reducedMotion,
+      { presented, timeMs } = frame;
+    if (presented && this.transitionRequested) {
+      this.transitionRequested = false;
+      this.transition =
+        this.shown && motion && style.animationMs > 0
+          ? { start: timeMs, from: this.shown.picking, begun: false }
+          : undefined;
+    }
+    const transition = presented ? this.transition : undefined,
+      rest = transition
+        ? (1 - Math.min(1, Math.max(0, (timeMs - transition.start) / style.animationMs))) ** 3
+        : 0;
+    if (presented && rest === 0) this.transition = undefined;
     const labels = await this.labels.prepare(
       frame,
       this.gpu,
       geometry,
-      picking,
+      rest > 0 ? picking.easedFrom(transition!.from, rest) : picking,
       data,
       camera,
       height,
@@ -586,7 +677,7 @@ class NetworkView
       frame,
       (point, radius, { check }) =>
         picking.nearest(point, data, drawnCamera, frame.viewport, height, style, radius, check),
-      moving,
+      moving || rest > 0,
     );
     const paint = await this.painter.prepare(frame, {
       pipelines: await this.framePipelines(frame),
@@ -602,6 +693,8 @@ class NetworkView
       height,
       labels,
       phases,
+      motion,
+      transition: rest > 0 ? { rest, start: !transition!.begun } : null,
     });
     this.live();
     frame.signal.throwIfAborted();
@@ -614,6 +707,7 @@ class NetworkView
       data,
       options: style,
       paint,
+      begins: rest > 0 && !transition!.begun,
     };
   }
   protected encode(frame: kit.Encoding, pending: Pending): void {
@@ -623,6 +717,7 @@ class NetworkView
   protected submitted(frame: FrameInfo, pending: Pending): void {
     this.geometry = pending.geometry;
     this.painter.prune(pending.geometry);
+    if (pending.begins && this.transition) this.transition.begun = true;
     // An exported frame leaves what pick, locate, selection, and the orbit see.
     if (!frame.presented) return;
     this.shown = pending;

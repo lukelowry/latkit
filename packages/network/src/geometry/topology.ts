@@ -112,11 +112,6 @@ class Uints {
     }
     this.values[this.length++] = value;
   }
-  append(rows: RowAxis): void {
-    if (rows.kind === 'indices')
-      for (let i = 0; i < rows.values.length; i++) this.push(rows.values[i]);
-    else for (let i = 0; i < rows.count; i++) this.push(rows.offset + i);
-  }
   /** An exact-length copy; the builder stays reusable. */
   take(): Uint32Array {
     return this.values.slice(0, this.length);
@@ -270,25 +265,8 @@ export async function readGeometry(
     if (bytes > limits.geometryBytes)
       throw failure('resource-limit', 'Network geometry exceeds its CPU budget');
   };
-  const rowsOf = async (
-    source: Data,
-    type: string,
-    selection: VertexOptions['rows'],
-  ): Promise<{ index?: Index; rows: Uint32Array }> => {
-    const rows = new Uints();
-    let index: Index | undefined;
-    for await (const block of reader.read(source, {
-      kind: 'rows',
-      from: type,
-      select: [],
-      ...(selection ? { rows: selection } : {}),
-    })) {
-      if (index) assertIndex(index, block.index);
-      else index = block.index;
-      rows.append(block.rows);
-    }
-    return { index, rows: rows.take() };
-  };
+  const rowsOf = (source: Data, type: string, selection: VertexOptions['rows']) =>
+    kit.readRows(reader, source, type, selection);
 
   for (const [type, options] of Object.entries(data.vertices)) {
     const read = await rowsOf(data.source, type, options.rows);

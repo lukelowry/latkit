@@ -43,7 +43,7 @@ export { fitCamera, cameraPoint, worldPoint, zoomCamera } from './view/camera.js
 export type { Camera2D, Bounds2D } from './view/camera.js';
 export { BoxIndex, Occupancy } from './spatial/boxes.js';
 export type { BoxRead } from './spatial/boxes.js';
-export { wiring } from './view/wiring.js';
+export { wiring, readRows } from './view/wiring.js';
 export { Graph } from './layout/graph.js';
 export type { Runs, Parts } from './layout/graph.js';
 export { place, layoutOptions } from './layout/place.js';
@@ -73,8 +73,17 @@ export {
   channelOn,
   writeChannel,
 } from './style/channel.js';
+export {
+  checkMarker,
+  markerShader,
+  shapeShader,
+  markerAtlas,
+  SHAPES,
+  MARKER_INPUTS,
+} from './style/marker.js';
 export type { ShadeRequest } from './style/shade.js';
 export { shadeShader } from './style/shade.js';
 export { premultipliedBlend, outputShader } from './style/output.js';
 export type { CanvasInput } from './view/input.js';
+export type { Grab } from './view/item-view.js';
 export { inputModifiers } from './view/input.js';

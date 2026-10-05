@@ -255,9 +255,7 @@ class DiagramView
       this.invalidate();
     },
     hits: (p, radiusPx = this.viewStyle.pickRadiusPx) => this.hits(p, radiusPx),
-    menu: (p, modifiers) => void this.menu(p, 'pointer', modifiers),
     pan: (dx, dy) => this.pan(dx, dy),
-    zoom: (factor, anchor) => this.zoom(factor, anchor),
     stay: () => {
       if (this.camera.fit) this.moveCamera({ fit: false }, {});
     },
@@ -274,7 +272,6 @@ class DiagramView
       framed: ['center', 'scale'],
       modes: ['navigate', 'edit', 'inspect', 'none'],
       // Presses drag, wire, and marquee here; the gestures select through `click`.
-      clicks: false,
     });
     this.painter = new Painter(gpu);
     this.start();
@@ -453,6 +450,9 @@ class DiagramView
       gestures.detach();
       if (this.gestures === gestures) this.gestures = undefined;
     };
+  }
+  protected grab(event: PointerEvent, point: Point): kit.Grab | undefined {
+    return this.gestures?.grab(event, point);
   }
   protected key(event: KeyboardEvent): boolean {
     return this.gestures?.key(event) ?? false;

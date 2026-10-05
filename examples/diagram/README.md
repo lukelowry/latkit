@@ -15,7 +15,7 @@ Open http://127.0.0.1:5192. WebGPU requires a supported browser and graphics dev
 - Grouped plants: nested groups, collapse/expand, proxy routing, and group movement.
 - Shape atlas: rounded rectangles, rectangles, ellipses, and diamonds.
 - Scale study: 1,024 blocks, 992 wires, zoom-dependent text, and live render statistics.
-- Controls: layered/custom-grid layout, direction, orthogonal/straight/custom routing,
+- Controls: layered/stress/custom-grid layout, direction, orthogonal/straight/custom routing,
   tags, native color and width scales, status colors, live synthetic values, shared
   spotlight/custom shading, MSAA, snapping, labels, and reduced motion. Appearance controls
   include system/light/dark themes, density, title placement, corner radius, directional

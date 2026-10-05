@@ -1,0 +1,35 @@
+@font-face {
+  font-family: 'Jura';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url(/fonts/jura-latin-400-normal.woff2) format('woff2');
+}
+html,
+body.blackout {
+  margin: 0;
+  height: 100%;
+  background: #0a0a0a;
+  color: #fafafa;
+  font-family: 'Jura', sans-serif;
+  overflow: hidden;
+}
+.blackout canvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  background: #0a0a0a;
+  outline: none;
+}
+.blackout #error {
+  position: fixed;
+  inset: auto 16px 16px;
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid #ff1915;
+  background: #0a0a0a;
+  font:
+    13px/1.4 system-ui,
+    sans-serif;
+  white-space: pre-wrap;
+}

@@ -25,7 +25,8 @@
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --project @latkit/network",
-    "test:browser": "pnpm --filter @latkit/network... build && esbuild tests/fixture.ts tests/paths-fixture.ts --format=esm --outdir=dist && node tests/browser/run.mjs --headed --keep-open"
+    "test:browser": "pnpm --filter @latkit/network... build && esbuild tests/fixture.ts tests/paths-fixture.ts --format=esm --outdir=../../output/network-fixture && node tests/browser/run.mjs",
+    "test:browser:open": "pnpm run test:browser --headed --keep-open"
   },
   "dependencies": {
     "@latkit/gpu": "workspace:^",

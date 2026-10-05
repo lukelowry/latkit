@@ -13,7 +13,6 @@ export type {
   DiagramItem,
   DiagramRow,
   DiagramPort,
-  Shape,
   VertexOptions,
   EdgeOptions,
   PortOptions,

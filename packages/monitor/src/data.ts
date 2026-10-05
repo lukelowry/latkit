@@ -18,7 +18,7 @@ export interface Trace {
   readonly interpolation?: 'linear' | 'step-before' | 'step-after';
   /** A field colors over its extent in the window; the plotted field, over the values axis. */
   readonly color?: ColorChannel;
-  /** Line width in CSS pixels; a field spans 0.5 to 4. 1.25 by default. */
+  /** Line width in CSS pixels; a field spans 1 to 4. 1.25 by default. */
   readonly widthPx?: Channel;
   readonly visible?: Channel<boolean>;
   readonly shade?: Channel;

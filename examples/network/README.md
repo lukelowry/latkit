@@ -29,3 +29,8 @@ pressure, and shape matching, simulated in the page. Each drawn frame appends it
 and strain to one `Data` value, which the network draws and the monitor traces; drag the bunny to
 pull it, click to poke, or scrub to replay. The mesh is from the
 [Stanford 3D Scanning Repository](https://graphics.stanford.edu/data/3Dscanrep/).
+
+The BlackoutUSA map panel is at `/blackout.html`: Texas's substations as gauges of their output, a
+wedge in a plant's ring and a bar in a load's, and branches colored by loading, dashed once out,
+drawn apart when parallel, and carrying comets along their flow. A stand-in simulation ticks twice
+a second; each tick eases in, and trips pulse.

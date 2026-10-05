@@ -1,4 +1,4 @@
-import { rowAt } from '@latkit/model';
+import { rowAt, type FieldValues } from '@latkit/model';
 import { kit } from '@latkit/gpu';
 
 import type { NetworkData, NetworkItem } from '../data.js';
@@ -13,6 +13,8 @@ export class Adjacency {
   readonly bytes: number;
   /** Vertices, and edges by the vertices each joins once; paths join none. */
   readonly graph: kit.Graph;
+  #lanes?: ReadonlyMap<EdgeBank, Float32Array>;
+  #laneValues = new Map<EdgeBank, FieldValues>();
   private readonly vertexRows = new Map<string, RowLookup<VertexBank>>();
   private readonly edgeRows = new Map<string, RowLookup<EdgeBank>>();
   constructor(
@@ -50,6 +52,61 @@ export class Adjacency {
     // Found now, so neighborhoods never wait on it and its bytes count toward the geometry.
     void this.graph.incident;
     this.bytes = this.graph.bytes;
+  }
+  /**
+   * Each edge's lane among the edges joining the same two vertices, by bank: 0 alone, else spread
+   * about 0, signed so lanes stay apart whichever end each edge starts from. Found on first use, by
+   * each edge's own vertices' edges, so linear in the edges for bounded degree.
+   */
+  lanes(): ReadonlyMap<EdgeBank, Float32Array> {
+    if (this.#lanes) return this.#lanes;
+    const { offsets, items } = this.graph.ends,
+      incident = this.graph.incident,
+      out = new Map<EdgeBank, Float32Array>(),
+      pair = (e: number) => offsets[e + 1] - offsets[e] === 2;
+    for (const bank of this.edges) {
+      let lanes: Float32Array | undefined;
+      for (let i = 0; i < bank.count; i++) {
+        const e = bank.base + i;
+        if (!pair(e)) continue;
+        const a = items[offsets[e]],
+          b = items[offsets[e] + 1],
+          lo = Math.min(a, b),
+          hi = Math.max(a, b);
+        let count = 0,
+          index = 0;
+        for (let k = incident.offsets[lo]; k < incident.offsets[lo + 1]; k++) {
+          const f = incident.items[k];
+          if (!pair(f)) continue;
+          const c = items[offsets[f]],
+            d = items[offsets[f] + 1];
+          if (Math.min(c, d) !== lo || Math.max(c, d) !== hi) continue;
+          if (f < e) index++;
+          count++;
+        }
+        if (count < 2) continue;
+        (lanes ??= new Float32Array(bank.count))[i] =
+          (index - (count - 1) / 2) * (a === lo ? 1 : -1);
+      }
+      if (lanes) out.set(bank, lanes);
+    }
+    return (this.#lanes = out);
+  }
+  /** A bank's lanes as values its edges read, when any of them has one. */
+  laneValues(bank: EdgeBank): FieldValues | undefined {
+    const lanes = this.lanes().get(bank);
+    if (!lanes) return undefined;
+    let found = this.#laneValues.get(bank);
+    if (!found)
+      this.#laneValues.set(
+        bank,
+        (found = {
+          index: bank.index,
+          rows: bank.rows,
+          values: { kind: 'numeric', offset: 0, length: lanes.length, values: lanes },
+        }),
+      );
+    return found;
   }
   private rows<T>(map: Map<string, RowLookup<T>>, index: VertexBank['index']): RowLookup<T> {
     const key = indexKey(index);

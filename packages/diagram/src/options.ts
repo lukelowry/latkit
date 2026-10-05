@@ -10,7 +10,6 @@ export interface DiagramStyle {
   readonly labels?: boolean;
   readonly junctions?: boolean;
   readonly vertexPadding?: number;
-  /** Per-vertex bindings may override it. */
   /** The radius of every corner: blocks, groups, and wire bends; a vertex type's own overrides it. */
   readonly cornerRadius?: number;
   readonly outlineWidthPx?: number;

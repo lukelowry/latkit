@@ -1,6 +1,6 @@
 import { itemId, numberAt, rowAt, rowCount, type Schema, type TypeDefinition } from '@latkit/model';
-import type { Point, Positions } from '@latkit/gpu';
-import type { Group, Shape, ConnectProposal } from '@latkit/diagram';
+import type { Point, Positions, Shape } from '@latkit/gpu';
+import type { Group, ConnectProposal } from '@latkit/diagram';
 
 export const types = ['Input', 'Process', 'Control', 'Output'] as const;
 export type BlockType = (typeof types)[number];

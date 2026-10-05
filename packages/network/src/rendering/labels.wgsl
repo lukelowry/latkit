@@ -10,4 +10,4 @@ struct Label { @builtin(position) position:vec4f,@location(0) uv:vec2f,@location
   out.uv=text.uv;out.color=text.color;return out;
 }
 // A halo in the background keeps lines from cutting through a label.
-@fragment fn label_fragment(v:Label)->@location(0) vec4f {return textColor(v.uv,v.color,u.background,2.0);}
+@fragment fn label_fragment(v:Label)->@location(0) vec4f {return textColor(v.uv,v.color,u.background,u.labelHaloPx);}

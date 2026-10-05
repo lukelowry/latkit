@@ -115,16 +115,6 @@ fn rim() -> f32 { return max(6., max(view.metrics.y, view.metrics.z) + 2.); }
   let uv = (c * 2. - 1.) * (half + pad + select(0., 10., k == BLOCK));
   return Out(clip(center + uv), uv, i, vec4f(half, 0., 0.), vec4f(0.));
 }
-fn box(p: vec2f, half: vec2f, radius: f32) -> f32 {
-  let q = abs(p) - half + radius;
-  return length(max(q, vec2f(0.))) + min(max(q.x, q.y), 0.) - radius;
-}
-/** Signed distance in pixels to a block's outline: rounded, rectangle, ellipse, or diamond. */
-fn outline(p: vec2f, half: vec2f, radius: f32, shape: u32) -> f32 {
-  if (shape == 2u) { return (length(p / max(half, vec2f(0.001))) - 1.) * min(half.x, half.y); }
-  if (shape == 3u) { return (dot(abs(p) / max(half, vec2f(0.001)), vec2f(1.)) - 1.) * min(half.x, half.y) * 0.707107; }
-  return box(p, half, select(0., radius, shape == 0u));
-}
 /** Marching dashes along a flowing wire, or still chevrons under reduced motion. */
 fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
   if (flow == 0.) { return d; }
@@ -200,7 +190,7 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
     if (k == BLOCK) {
       let radius = min(item.b.x * scale(), min(half.x, half.y));
       let shape = u32(item.b.z);
-      d = outline(v.uv, half, radius, shape);
+      d = shapeDistance(shape, v.uv, half, radius);
       let header = item.b.y * scale();
       if (header > 0. && shape <= 1u) {
         // The title band, and the rule under it.
@@ -212,21 +202,21 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
         color = mix(color, style.status, aa(abs(d + view.metrics.x + 1.5) - 1.) * style.status.a);
       }
       // A soft shadow below the block, once it is large enough to cast one.
-      shadow = 0.16 * (1. - smoothstep(-2., 8., outline(v.uv - vec2f(0., 2.), half, radius, shape))) *
+      shadow = shadowAlpha(shapeDistance(shape, v.uv - vec2f(0., 2.), half, radius)) *
         smoothstep(0.3, 0.6, scale());
       if ((flags & 64u) != 0u) { opacity *= 0.88; }
     } else if (k == GROUP) {
-      d = box(v.uv, half, min(item.b.x * scale(), min(half.x, half.y)));
+      d = rectangleDistance(v.uv, half, min(item.b.x * scale(), min(half.x, half.y)));
       let header = item.b.y * scale();
       color = view.group;
       if (item.b.z != 0. || v.uv.y < header - half.y) { color.a = min(1., color.a * select(2.2, 4., item.b.z != 0.)); }
       color = mix(color, vec4f(view.outline.rgb, view.outline.a * 0.55), 1. - aa(d + 1.));
     } else if (k == LABEL) {
-      d = box(v.uv, half, min(half.y, 6.));
+      d = rectangleDistance(v.uv, half, min(half.y, 6.));
       color = vec4f(view.background.rgb, view.background.a * 0.92);
       if (item.b.x != 0.) { color = mix(color, style.color, 1. - aa(d + 1.)); }
     } else {
-      d = box(v.uv, half, 2.);
+      d = rectangleDistance(v.uv, half, 2.);
       color = mix(vec4f(view.selected.rgb, 0.12), view.selected, 1. - aa(d + 1.));
     }
   }

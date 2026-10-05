@@ -29,6 +29,8 @@ export { createComposition } from './view/composition.js';
 export type { Composition, CompositionConfig } from './view/composition.js';
 export type { Scale, ColorScale, Labels, Range, ScaleDomain } from './style/scale.js';
 export type { Channel, ColorChannel } from './style/channel.js';
+export { shape, gauge, pie, icon } from './style/marker.js';
+export type { Marker, MarkerImage, Shape } from './style/marker.js';
 export type {
   LayoutOptions,
   LayoutStrategy,
@@ -55,7 +57,7 @@ export { createColormap, reverseColormap } from './colors/colormap.js';
 export type { Colormap, ColormapKind, ColormapOptions, ColorStop } from './colors/colormap.js';
 export { parseColor, resolveColor, colorCss, colormapCss } from './colors/css.js';
 export type { RGBA } from './colors/color.js';
-export { spotlight } from './style/shade.js';
+export { spotlight, pulse } from './style/shade.js';
 export type { Shade, ShadeFrame } from './style/shade.js';
 /** Renderer authoring: the view base, frames, field uploads, shaders, text, and input. */
 export * as kit from './kit.js';

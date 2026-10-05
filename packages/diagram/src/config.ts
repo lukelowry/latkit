@@ -151,12 +151,6 @@ function binding(value: VertexOptions | EdgeOptions, edge: boolean) {
   if (labels) {
     if (labels.fontSize !== undefined) positive(labels.fontSize, 'label font size');
     if (labels.maxWidth !== undefined) positive(labels.maxWidth, 'label width');
-    if (
-      labels.maxCount !== undefined &&
-      (!Number.isSafeInteger(labels.maxCount) || labels.maxCount < 0)
-    )
-      fail('Invalid label count');
-    if (labels.color) kit.validateRgba(labels.color);
     if (labels.overflow && !['wrap', 'ellipsis'].includes(labels.overflow))
       fail('Invalid label overflow');
   }

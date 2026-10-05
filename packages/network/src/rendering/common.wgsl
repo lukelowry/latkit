@@ -4,8 +4,6 @@ struct Uniforms {
   rotation: vec4f,
   geo: vec4f,
   center: vec4f,
-  /** The dash period in CSS pixels, and whether markers draw. */
-  style: vec4f,
   hoverColor: vec4f,
   selectedColor: vec4f,
   halo: vec4f,
@@ -16,6 +14,23 @@ struct Uniforms {
   flags: vec4u,
   /** The view's background: the halo labels draw over lines. */
   background: vec4f,
+  flowColor: vec4f,
+  /** How far the camera center moved, in the data's units, since `previous` was drawn. */
+  easeShift: vec2f,
+  /** How much of `previous` a transition still shows: 1 as it starts, 0 at rest. */
+  ease: f32,
+  /** Seconds since the last presented frame, which flow moves by; 0 for an exported frame. */
+  dt: f32,
+  dashPeriodPx: f32,
+  edgeSpacingPx: f32,
+  flowSpacingPx: f32,
+  markers: u32,
+  shadows: u32,
+  hoverScale: f32,
+  labelHaloPx: f32,
+  /** The vertex hover grows, and the one it left, by dense address; how far each has grown. */
+  grown: vec2u,
+  growth: vec2f,
 }
 fn project_world(p: vec3f, u: Uniforms) -> vec4f {
   let rx = p.x * u.rotation.x + p.y * u.rotation.y;

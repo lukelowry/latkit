@@ -10,7 +10,13 @@ import {
   type Point,
   type Viewport,
 } from '../src/index.js';
-import { BaseItemView, rendererOf, type Encoding, type Preparation } from '../src/kit.js';
+import {
+  BaseItemView,
+  rendererOf,
+  type Encoding,
+  type Grab,
+  type Preparation,
+} from '../src/kit.js';
 import { fakeDevice } from './fixtures/device.js';
 import { target } from './fixtures/render.js';
 
@@ -583,6 +589,109 @@ it("routes a composition's input to the panel under the pointer, in that panel's
   composition.destroy();
   left.destroy();
   right.destroy();
+  vi.unstubAllGlobals();
+  gpu.destroy();
+});
+
+/** Dots whose plain left press drags what it lands on, as a diagram's blocks are dragged. */
+class Grabbing extends Dots {
+  readonly drags: (readonly [string, Point | null])[] = [];
+  protected grab(event: PointerEvent, point: Point): Grab | undefined {
+    if (event.button !== 0 || event.shiftKey) return undefined;
+    this.drags.push(['grab', point]);
+    return {
+      move: (next) => this.drags.push(['move', next]),
+      end: (at) => this.drags.push(['end', at]),
+    };
+  }
+}
+
+it('lets a view take a press before navigation, which pans with the rest', async () => {
+  const gpu = await createGpu({ device: fakeDevice().device });
+  const { canvas, send } = pointerCanvas(gpu.device);
+  const view = new Grabbing(gpu, { source, dots: { a: [0, 0] }, canvas });
+  // Navigation moves the camera of a drawn frame.
+  await gpu.render({
+    timeMs: 0,
+    views: [{ renderer: rendererOf(view), target: target(gpu.device), viewport }],
+  });
+  const clicks: unknown[] = [];
+  view.on('select', (items) => clicks.push(items));
+  const center = view.camera.center;
+  send('pointerdown', 10, 0);
+  send('pointermove', 40, 0);
+  send('pointerup', 40, 0);
+  expect(view.drags).toEqual([
+    ['grab', [10, 50]],
+    ['move', [40, 50]],
+    ['end', [40, 50]],
+  ]);
+  expect(view.camera.center).toEqual(center);
+  // A drag cut short ends nowhere; a press taken and released in place is no click.
+  send('pointerdown', 10, 0);
+  send('pointercancel', 10, 0);
+  expect(view.drags.at(-1)).toEqual(['end', null]);
+  send('pointerdown', 10, 0);
+  send('pointerup', 10, 0);
+  await settle();
+  expect(clicks).toHaveLength(0);
+  // A press the view leaves alone pans once past a click's reach.
+  send('pointerdown', 10, 0, { shiftKey: true });
+  send('pointermove', 40, 0, { shiftKey: true });
+  send('pointerup', 40, 0, { shiftKey: true });
+  expect(view.camera.center[0]).toBeCloseTo(center[0] - 30 / view.camera.scale);
+  view.destroy();
+  vi.unstubAllGlobals();
+  gpu.destroy();
+});
+
+it('opens the menu for a touch held in place, never for one that moves away', async () => {
+  const gpu = await createGpu({ device: fakeDevice().device });
+  const { canvas, send } = pointerCanvas(gpu.device);
+  const view = new Dots(gpu, { source, dots: { a: [0, 0] }, canvas });
+  const menus: unknown[] = [];
+  view.on('contextmenu', (menu) => menus.push(menu));
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  try {
+    const touch = { pointerType: 'touch' };
+    send('pointerdown', 10, 0, touch);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(menus).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(menus).toMatchObject([{ point: [10, 50], trigger: 'pointer' }]);
+    send('pointerup', 10, 0, touch);
+    send('pointerdown', 10, 0, touch);
+    send('pointermove', 40, 0, touch);
+    await vi.advanceTimersByTimeAsync(1000);
+    send('pointerup', 40, 0, touch);
+    expect(menus).toHaveLength(1);
+  } finally {
+    vi.useRealTimers();
+  }
+  view.destroy();
+  vi.unstubAllGlobals();
+  gpu.destroy();
+});
+
+it('leaves the page its scrolling in a view whose camera does not zoom', async () => {
+  class Fixed extends Dots {}
+  Object.defineProperty(Fixed.prototype, 'zoomed', { value: undefined });
+  const gpu = await createGpu({ device: fakeDevice().device });
+  const { canvas, send } = pointerCanvas(gpu.device);
+  const view = new Fixed(gpu, { source, dots: { a: [0, 0] }, canvas });
+  await gpu.render({
+    timeMs: 0,
+    views: [{ renderer: rendererOf(view), target: target(gpu.device), viewport }],
+  });
+  const center = view.camera.center,
+    scale = view.camera.scale;
+  send('pointerdown', 10, 0);
+  send('pointermove', 40, 0);
+  send('pointerup', 40, 0);
+  send('wheel', 40, 0, { deltaY: -100 });
+  expect(view.camera.center).toEqual(center);
+  expect(view.camera.scale).toBe(scale);
+  view.destroy();
   vi.unstubAllGlobals();
   gpu.destroy();
 });

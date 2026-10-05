@@ -9,6 +9,7 @@ import {
   type SegmentBatch,
 } from './geometry/topology.js';
 import { RowLookup } from './geometry/rows.js';
+import type { Adjacency } from './geometry/adjacency.js';
 import {
   DEG,
   project,
@@ -170,7 +171,7 @@ export class Picking {
   private cache = new WeakMap<VertexBank, Spatial>();
   private segments = new WeakMap<SegmentBatch, { a: Spatial; b: Spatial; spatial: Indexed }>();
   prepare(
-    geometry: Pick<Geometry, 'vertices' | 'edges'>,
+    geometry: Pick<Geometry, 'vertices' | 'edges' | 'adjacency'>,
     reads: Reads,
     byteLimit: number,
   ): PickGeometry {
@@ -221,6 +222,7 @@ export class Picking {
       edges,
       minX <= maxX ? [minX, minY, maxX, maxY] : [-1, -1, 1, 1],
       byteLimit,
+      geometry.adjacency,
     );
   }
 }
@@ -252,13 +254,29 @@ function near(
   index.some(bounds, (offset) => void out.push(offset), check);
   return out;
 }
+/** Where drawing shows vertices, and the anchors of edges' labels. */
+export type Projector = Pick<PickGeometry, 'projected' | 'edgeAnchor'>;
 export class PickGeometry {
   constructor(
     private readonly vertices: ReadonlyMap<VertexBank, CpuBank>,
     private readonly edges: readonly CpuSegment[],
     readonly bounds: kit.Bounds2D,
     private readonly byteLimit: number,
+    private readonly adjacency: Adjacency,
   ) {}
+  /** How far a straight edge draws beside the line between its vertices, in CSS pixels. */
+  private shift(batch: CpuSegment, row: number, options: Style): number {
+    if (!(options.edgeSpacingPx > 0)) return 0;
+    return (this.adjacency.lanes().get(batch.edge.bank)?.[row] ?? 0) * options.edgeSpacingPx;
+  }
+  /** The farthest any edge draws beside the line between its vertices. */
+  private widestShift(options: Style): number {
+    if (!(options.edgeSpacingPx > 0)) return 0;
+    let widest = 0;
+    for (const lanes of this.adjacency.lanes().values())
+      for (const lane of lanes) widest = Math.max(widest, Math.abs(lane));
+    return widest * options.edgeSpacingPx;
+  }
   /** Bytes the hit-test indexes hold, built or part way. */
   get bytes(): number {
     let bytes = 0;
@@ -275,6 +293,33 @@ export class PickGeometry {
     const mine = [...this.holders()],
       theirs = [...other.holders()];
     return mine.length === theirs.length && mine.every((holder, i) => holder === theirs[i]);
+  }
+  /**
+   * Where drawing shows rows while a transition eases them from `from`: `rest` of the way back to
+   * where it drew them, or where they are for rows it did not.
+   */
+  easedFrom(from: PickGeometry, rest: number): Projector {
+    const mix = <T extends Projected>(to: T, was: Projected | null): T =>
+      !to.visible || !was?.visible
+        ? to
+        : {
+            ...to,
+            x: to.x + (was.x - to.x) * rest,
+            y: to.y + (was.y - to.y) * rest,
+            depth: to.depth + (was.depth - to.depth) * rest,
+          };
+    return {
+      projected: (bank, offset, camera, viewport, height, radiusPx, marker) => {
+        const to = this.projected(bank, offset, camera, viewport, height, radiusPx, marker);
+        if (!from.vertices.has(bank)) return to;
+        const was = from.projected(bank, offset, camera, viewport, height, radiusPx, marker);
+        return { ...mix(to, was), radius: to.radius + (was.radius - to.radius) * rest };
+      },
+      edgeAnchor: (item, data, camera, viewport, height) => {
+        const to = this.edgeAnchor(item, data, camera, viewport, height);
+        return to && mix(to, from.edgeAnchor(item, data, camera, viewport, height));
+      },
+    };
   }
   samePositions(previous: PickGeometry): boolean {
     if (this.vertices.size !== previous.vertices.size) return false;
@@ -514,13 +559,24 @@ export class PickGeometry {
     viewport: Viewport,
     height: number,
     check: () => void,
+    shift = 0,
   ): Iterable<{ a: Projected; b: Projected; first: boolean; last: boolean }> {
     // Strokes need positions only; their markers' radii stay unread.
     const a = this.projected(batch.a.bank, ao, camera, viewport, height, undefined, false),
       b = this.projected(batch.b.bank, bo, camera, viewport, height, undefined, false);
     if (edgeOptions(data, batch.edge.bank).route !== 'geodesic') {
       const clip = projectedStroke(a, b, camera, viewport);
-      if (clip) yield { a: clip[0], b: clip[1], first: true, last: true };
+      if (!clip) return;
+      // A parallel edge draws in its lane, across the line on screen.
+      const length = Math.hypot(clip[1].x - clip[0].x, clip[1].y - clip[0].y) || 1,
+        sx = (-(clip[1].y - clip[0].y) / length) * shift,
+        sy = ((clip[1].x - clip[0].x) / length) * shift;
+      yield {
+        a: { ...clip[0], x: clip[0].x + sx, y: clip[0].y + sy },
+        b: { ...clip[1], x: clip[1].x + sx, y: clip[1].y + sy },
+        first: true,
+        last: true,
+      };
       return;
     }
     const start = raw(batch.a, ao),
@@ -636,7 +692,8 @@ export class PickGeometry {
           widest,
           largest(edge.read.channel('widthPx', lineWidthPx(edgeOptions(data, edge.bank), options))),
         );
-      const reach = (radius + widest + options.selectedWidthPx) / camera.scale;
+      const reach =
+        (radius + widest + options.selectedWidthPx + this.widestShift(options)) / camera.scale;
       bounds = [x - reach, y - reach, x + reach, y + reach];
     }
     if (options.markers || options.poles)
@@ -720,7 +777,18 @@ export class PickGeometry {
             );
             const prefix = this.phases.get(batch.batch)?.[offset] ?? 0;
             let phase = 0;
-            for (const piece of this.stroke(batch, ao, bo, data, camera, viewport, height, check)) {
+            const shift = this.shift(batch, eo, options);
+            for (const piece of this.stroke(
+              batch,
+              ao,
+              bo,
+              data,
+              camera,
+              viewport,
+              height,
+              check,
+              shift,
+            )) {
               const start = piece.a,
                 end = piece.b;
               const hit = segmentDistance(point[0], point[1], start.x, start.y, end.x, end.y);

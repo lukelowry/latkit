@@ -1,7 +1,7 @@
-import { createGpu, type LayoutOptions, type Point } from '@latkit/gpu';
+import { createGpu, type LayoutOptions, type Point, type Shape } from '@latkit/gpu';
 import { itemId } from '@latkit/model';
 import { createDiagram, arrange } from '@latkit/diagram';
-import type { DiagramConfig, DiagramInput, DiagramItem, Shape } from '@latkit/diagram';
+import type { DiagramConfig, DiagramInput, DiagramItem } from '@latkit/diagram';
 import { GraphSource } from './source.js';
 import {
   plugged,
@@ -131,7 +131,6 @@ async function boot() {
     flow: check('flow').checked,
     arrows: check('arrows').checked,
     status: check('status').checked,
-    labels: check('labels').checked,
     overflow: select('overflow').value as Settings['overflow'],
   });
   const options = (): Style => ({

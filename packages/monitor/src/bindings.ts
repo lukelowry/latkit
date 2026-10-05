@@ -22,6 +22,8 @@ const TRACE = {
   shade: 'raw',
 } as const satisfies Readonly<Record<string, kit.ChannelKind>>;
 export type TraceChannel = keyof typeof TRACE;
+/** A row selection with its ids resolved. */
+export type Rows = Exclude<RowSelection, { readonly kind: 'ids' }>;
 export interface Binding {
   readonly name: string;
   readonly trace: Trace;
@@ -29,7 +31,8 @@ export interface Binding {
   /** The field the trace plots. */
   readonly field: string;
   readonly schema: Schema;
-  readonly rows?: RowSelection;
+  /** The rows the trace draws, ids resolved; every row without one. */
+  readonly rows?: Rows;
   /** Rows the trace draws. */
   readonly count: number;
   /** What one read of the trace requests: its values as `y`, and each channel's field. */
@@ -116,8 +119,17 @@ export async function describeBindings(
           !other.rows &&
           (bound.channels.color.scale?.domain ?? 'auto') === 'auto';
     }
-    const rows = trace.rows ?? main.rows,
+    const selected = trace.rows ?? main.rows,
       table = main.source.tables[trace.from];
+    // Ids resolve once here, so fitting, picking, and reading all test the same rows.
+    let rows: Rows | undefined;
+    if (selected?.kind === 'ids') {
+      const read = await kit.readRows(reads, main.source, trace.from, selected),
+        index = read.index ?? table?.index;
+      rows = index
+        ? { kind: 'indices', index, values: read.rows }
+        : { kind: 'range', offset: 0, count: 0 };
+    } else rows = selected;
     const own = colorFollows
       ? {
           ...bound,
@@ -131,15 +143,7 @@ export async function describeBindings(
       // The style's trace width stands in for a width each draw reads.
       { y: NaN, visible: 1 },
     );
-    const count = !rows
-      ? table
-        ? rowCount(table.rows)
-        : 0
-      : rows.kind === 'ids'
-        ? rows.ids.length
-        : rows.kind === 'range'
-          ? rows.count
-          : rows.values.length;
+    const count = rows ? rowCount(rows) : table ? rowCount(table.rows) : 0;
     result.push({
       name,
       trace,

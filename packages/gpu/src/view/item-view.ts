@@ -99,8 +99,11 @@ export interface ItemShape<Camera> extends ConfigShape {
   readonly style?: Partial<ResolvedViewStyle>;
   /** The view's own options, beside the shared ones and its records and merged options. */
   readonly options?: readonly string[];
-  /** Whether a click selects what it hits; a view with its own press gestures selects itself. */
-  readonly clicks?: boolean;
+}
+/** A drag a view runs itself, from a press it takes: each move, and its end, null when cancelled. */
+export interface Grab {
+  move(point: Point): void;
+  end(point: Point | null): void;
 }
 /** The framed camera keys that show these items, or all the data; undefined until there is data. */
 export type Framing<Item, Camera> = (
@@ -170,6 +173,8 @@ const OPTIONS = ['canvas', 'at', 'paused', 'source', 'camera', 'input', 'shade']
 const SETTLE_MS = 150;
 /** A press that moves farther than this is a drag, not a click. */
 const CLICK_PX = 4;
+/** How long a touch holds in place to open the menu. */
+const LONG_PRESS_MS = 550;
 /** A touch picks at least this far around itself, about a fingertip. */
 const TOUCH_PX = 22;
 /** Pipeline variants a view kind keeps per Gpu: formats, MSAA, and shades in use. */
@@ -202,7 +207,6 @@ export abstract class BaseItemView<
   readonly #styleDefaults: Partial<ResolvedViewStyle>;
   readonly #framed: readonly (keyof Camera)[];
   readonly #modes: readonly Mode[];
-  readonly #clicks: boolean;
   #target: Camera;
   #version = 0;
   #drawn?: Camera;
@@ -243,7 +247,6 @@ export abstract class BaseItemView<
     this.#name = shape.name;
     this.#framed = shape.framed;
     this.#modes = shape.modes ?? MODES;
-    this.#clicks = shape.clicks ?? true;
     this.#styleDefaults = shape.style ?? {};
     this.#known = new Set([
       ...OPTIONS,
@@ -297,6 +300,12 @@ export abstract class BaseItemView<
   protected shaded?(): void;
   /** The view's own gestures; return a detach. Shared input is attached already. */
   protected listen?(canvas: HTMLCanvasElement, input: CanvasInput, mode: Mode): (() => void) | void;
+  /**
+   * Take a press before navigation, as dragging a block or turning the globe does, and run its drag;
+   * a press left alone clicks, pans past a click's reach, and pinches to zoom with a second pointer.
+   * A drag that ends where it began is the view's own click.
+   */
+  protected grab?(event: PointerEvent, point: Point, mode: Mode): Grab | undefined;
   /** The view's own keys, before the shared ones; return true when handled. */
   protected key?(event: KeyboardEvent, mode: Mode): boolean;
   /** End a gesture in progress on Escape; return true when one ended. */
@@ -757,11 +766,13 @@ export abstract class BaseItemView<
   protected attach(canvas: HTMLCanvasElement): () => void {
     const options = inputOf(this.config as Config),
       mode = options.mode ?? this.#modes[0],
-      navigate = mode !== 'inspect';
+      navigate = mode !== 'inspect',
+      // Only a view whose camera zooms moves by pointer; another leaves the page its scrolling.
+      moves = navigate && !!this.zoomed;
     const input = createCanvasInput({
         canvas,
         keyboard: options.keyboard,
-        touchAction: navigate ? 'none' : 'pan-x pan-y',
+        touchAction: moves ? 'none' : 'pan-x pan-y',
       }),
       { signal } = input;
     // A press is a click until it moves; a right press opens the menu where it is released in
@@ -773,21 +784,59 @@ export abstract class BaseItemView<
             readonly point: Point;
             readonly touch: boolean;
             asked?: Modifiers;
+            /** A press the view took runs its own click. */
+            grabbed?: boolean;
           }
         | undefined,
       dragged = false;
+    // Navigation, the same in every view that zooms: past a click's reach one pointer pans, and two
+    // pinch to zoom. A view takes a press first with `grab`; a touch held in place opens the menu.
+    const pointers = new Map<number, { readonly start: Point; last: Point }>();
+    let grabbed: { readonly id: number; readonly grab: Grab } | undefined,
+      panning = false,
+      longPress: ReturnType<typeof setTimeout> | undefined;
+    const settle = () => {
+      if (longPress) clearTimeout(longPress);
+      longPress = undefined;
+    };
+    /** End the view's drag: where it ends, or null when something cut it short. */
+    const drop = (point: Point | null) => {
+      const current = grabbed;
+      grabbed = undefined;
+      current?.grab.end(point);
+    };
     canvas.addEventListener(
       'pointerdown',
       (event) => {
         dragged = false;
-        if (event.button !== 0 && event.button !== 2) return;
-        press = {
-          id: event.pointerId,
-          button: event.button,
-          point: input.point(event),
-          touch: event.pointerType === 'touch',
-        };
-        if (event.button === 2) input.capture(event.pointerId);
+        if (event.button > 2) return;
+        const point = input.point(event),
+          touch = event.pointerType === 'touch';
+        canvas.focus({ preventScroll: true });
+        if (event.button !== 1) press = { id: event.pointerId, button: event.button, point, touch };
+        if (event.button !== 2) pointers.set(event.pointerId, { start: point, last: point });
+        if (pointers.size >= 2) {
+          // A second pointer pinches: the press it joins neither clicks nor drags.
+          press = undefined;
+          settle();
+          drop(null);
+          if (moves) input.capture(event.pointerId);
+          return;
+        }
+        if (touch && event.button === 0)
+          longPress = setTimeout(() => {
+            longPress = undefined;
+            press = undefined;
+            pointers.delete(event.pointerId);
+            drop(null);
+            void this.menu(point, 'pointer', inputModifiers(event));
+          }, LONG_PRESS_MS);
+        const grab = this.grab?.(event, point, mode);
+        if (grab) {
+          grabbed = { id: event.pointerId, grab };
+          if (press) press.grabbed = true;
+          input.capture(event.pointerId);
+        } else if (event.button === 2 || moves) input.capture(event.pointerId);
       },
       { signal },
     );
@@ -801,17 +850,58 @@ export abstract class BaseItemView<
         )
           dragged = true;
         this.pointer(point);
+        const entry = pointers.get(event.pointerId);
+        if (
+          longPress &&
+          entry &&
+          Math.hypot(point[0] - entry.start[0], point[1] - entry.start[1]) > CLICK_PX * 2
+        )
+          settle();
+        if (grabbed?.id === event.pointerId) {
+          grabbed.grab.move(point);
+          return;
+        }
+        if (!entry || !moves) return;
+        if (pointers.size >= 2) {
+          const other = [...pointers].find(([id]) => id !== event.pointerId)![1].last;
+          const before = Math.hypot(entry.last[0] - other[0], entry.last[1] - other[1]),
+            after = Math.hypot(point[0] - other[0], point[1] - other[1]);
+          if (before > 0 && after > 0)
+            this.zoom(after / before, [(point[0] + other[0]) / 2, (point[1] + other[1]) / 2]);
+          this.pan((point[0] - entry.last[0]) / 2, (point[1] - entry.last[1]) / 2);
+        } else if (
+          panning ||
+          Math.hypot(point[0] - entry.start[0], point[1] - entry.start[1]) > CLICK_PX
+        ) {
+          panning = true;
+          this.pan(point[0] - entry.last[0], point[1] - entry.last[1]);
+        } else return;
+        entry.last = point;
+      },
+      { signal },
+    );
+    const lift = (event: PointerEvent, point: Point | null) => {
+      settle();
+      if (grabbed?.id === event.pointerId) drop(point);
+      if (pointers.delete(event.pointerId)) input.release(event.pointerId);
+      if (!pointers.size) panning = false;
+    };
+    canvas.addEventListener(
+      'lostpointercapture',
+      (event) => {
+        if (grabbed?.id === event.pointerId) drop(null);
       },
       { signal },
     );
     canvas.addEventListener(
       'pointerup',
       (event) => {
+        lift(event, input.point(event));
         if (press?.id !== event.pointerId || event.button !== press.button) return;
-        const { asked, button, touch } = press;
+        const { asked, button, touch, grabbed: taken } = press;
         press = undefined;
         if (button === 0) {
-          if (!dragged && this.#clicks) {
+          if (!dragged && !taken) {
             this.#clicking?.abort();
             this.#clicking = new AbortController();
             const stop = AbortSignal.any([signal, this.#clicking.signal]);
@@ -831,7 +921,14 @@ export abstract class BaseItemView<
       },
       { signal },
     );
-    canvas.addEventListener('pointercancel', () => (press = undefined), { signal });
+    canvas.addEventListener(
+      'pointercancel',
+      (event) => {
+        press = undefined;
+        lift(event, null);
+      },
+      { signal },
+    );
     canvas.addEventListener(
       'dblclick',
       (event) =>
@@ -847,7 +944,13 @@ export abstract class BaseItemView<
       (event) => {
         event.preventDefault();
         if (press?.button === 2) press.asked = inputModifiers(event);
-        else if (dragged) dragged = false;
+        else if (press?.touch) {
+          // A touch the browser holds long enough for its menu opens ours once, there.
+          settle();
+          press = undefined;
+          drop(null);
+          void this.menu(input.point(event), 'pointer', inputModifiers(event));
+        } else if (dragged) dragged = false;
         else void this.menu(input.point(event), 'pointer', inputModifiers(event));
       },
       { signal },

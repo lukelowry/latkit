@@ -65,16 +65,9 @@ for (const page of pages) consume(page);
 ```
 
 Use `appendedPages(previousPages, nextPages)` to inspect just an appended suffix; it returns
-`undefined` for a replacement. `samplePages(pages, window)` visits only pages covering a sample
-window. Neither function retains a model or performs I/O. Construct data from batches rather
-than assigning arrays directly to `TableData.fields`. `copyBuffers(data)` preserves these indexes
-while copying payloads; `Data` itself is not a structured-clone transport format. Transport uses
-plain `DataBatch` values.
-
-`resolveRows(data, { from, select, rows, at })` resolves physical row identity and ordering without
-gathering field values. It uses the same sampled coverage rules as `read`, including independent
-field clocks, missing observations, and ID selections. These helpers are optional; views use them
-automatically.
+`undefined` for a replacement, and neither retains a model nor performs I/O. Construct data from
+batches rather than assigning arrays directly to `TableData.fields`; `Data` itself is not a
+structured-clone transport format. Transport uses plain `DataBatch` values.
 
 `locateSample(pages, at)` resolves the last observation at or before a finite coordinate without
 reading or copying its values. It returns `{ frame, coordinate, offset, pages }`, or `undefined`
@@ -170,8 +163,8 @@ frame numbers and Float64 coordinates, independently of their numeric field prec
 Schema declares column types, nullability, spatial meaning, and the sample axis. It does
 not declare transport limits or query capabilities. Use `validateSchema`, `validateSelection`,
 `validateBatch`, and `validateBlock` at trust boundaries. Batch/block validation applies a
-byte limit when explicitly supplied; local `read` and `selectBatches` default to
-`DEFAULT_BLOCK_BYTES` (256 KiB). Override through `QueryOptions.maxBlockBytes`.
+byte limit when explicitly supplied; local `read` and `selectBatches` yield blocks of at most
+1 MiB. Override through `QueryOptions.maxBlockBytes`.
 Storage helpers expect validated column layouts; they additionally check row-space compatibility,
 disjoint cells, and append boundaries without rescanning stored payloads.
 
@@ -183,7 +176,7 @@ have been supplied. They never ask a model for missing values.
 
 ## Breaking migration
 
-Remove `Model`, `Commands`, `Routine`, `MonitorOptions`, `DataEvent`,
+Remove `Commands`, `Routine`, `MonitorOptions`, `DataEvent`,
 `validateDataEvent`, and `transactions` imports. Use `connectModel` / `acceptModel`
 from connect for remote behavior, `CommandDescription` / `Parameters` for command metadata,
 and `validateBatch` for plain batches. Replace schema `limits` with per-operation query or
