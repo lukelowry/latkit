@@ -156,8 +156,9 @@ export class Picking {
   }
   marquee(box: Rect): readonly DiagramItem[] {
     const out: DiagramItem[] = [];
-    for (const i of this.spatial.query(box))
+    this.spatial.some(box, (i) => {
       if (this.kinds[i] === VERTEX) out.push(this.scene.vertices[this.slots[i]].hit);
+    });
     return out;
   }
   bounds(items?: readonly DiagramItem[]): Rect[] {
@@ -194,41 +195,42 @@ export class Picking {
       dx = (radius + widthPx / 2) / camera.scale[0] + portRadius,
       dy = (radius + widthPx / 2) / camera.scale[1] + portRadius,
       s = this.shapes;
-    for (const i of this.spatial.query(
+    this.spatial.some(
       [world[0] - dx, world[1] - dy, world[0] + dx, world[1] + dy],
+      (i) => {
+        check();
+        const kind = this.kinds[i],
+          at = i * 4;
+        let d = Infinity;
+        if (kind === PORT) {
+          if (!ports) return;
+          const p = kit.cameraPoint(camera, [s[at], s[at + 1]], viewport);
+          d = Math.max(
+            0,
+            Math.hypot(point[0] - p[0], point[1] - p[1]) - portRadius * camera.scale[0],
+          );
+        } else if (kind === SEGMENT)
+          d = Math.max(
+            0,
+            distance(
+              point,
+              kit.cameraPoint(camera, [s[at], s[at + 1]], viewport),
+              kit.cameraPoint(camera, [s[at + 2], s[at + 3]], viewport),
+            ) -
+              widthPx / 2,
+          );
+        else if (kind === VERTEX) {
+          if (contains(this.scene.vertices[this.slots[i]], world)) d = 0;
+        } else if (
+          world[0] >= s[at] &&
+          world[0] <= s[at + 2] &&
+          world[1] >= s[at + 1] &&
+          world[1] <= s[at + 3]
+        )
+          d = 0;
+        if (d <= radius) found({ slot: this.slots[i], distance: d, order: i });
+      },
       check,
-    )) {
-      check();
-      const kind = this.kinds[i],
-        at = i * 4;
-      let d = Infinity;
-      if (kind === PORT) {
-        if (!ports) continue;
-        const p = kit.cameraPoint(camera, [s[at], s[at + 1]], viewport);
-        d = Math.max(
-          0,
-          Math.hypot(point[0] - p[0], point[1] - p[1]) - portRadius * camera.scale[0],
-        );
-      } else if (kind === SEGMENT)
-        d = Math.max(
-          0,
-          distance(
-            point,
-            kit.cameraPoint(camera, [s[at], s[at + 1]], viewport),
-            kit.cameraPoint(camera, [s[at + 2], s[at + 3]], viewport),
-          ) -
-            widthPx / 2,
-        );
-      else if (kind === VERTEX) {
-        if (contains(this.scene.vertices[this.slots[i]], world)) d = 0;
-      } else if (
-        world[0] >= s[at] &&
-        world[0] <= s[at + 2] &&
-        world[1] >= s[at + 1] &&
-        world[1] <= s[at + 3]
-      )
-        d = 0;
-      if (d <= radius) found({ slot: this.slots[i], distance: d, order: i });
-    }
+    );
   }
 }

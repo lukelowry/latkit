@@ -12,4 +12,4 @@ struct T {@builtin(position) position:vec4f,@location(0) uv:vec2f,@location(1) c
 @vertex fn text_main(@builtin(vertex_index) vertex:u32,@builtin(instance_index) instance:u32)->T {
  let text=textVertex(vertex,instance);var v:T;v.position=vec4f(text.position/screen.size.xy*vec2f(2,-2)+vec2f(-1,1),0,1);v.uv=text.uv;v.color=text.color;return v;
 }
-@fragment fn text_color(v:T)->@location(0) vec4f{return textColor(v.uv,v.color);}
+@fragment fn text_color(v:T)->@location(0) vec4f{return textColor(v.uv,v.color,vec4f(0),0.0);}

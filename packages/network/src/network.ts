@@ -246,7 +246,7 @@ class NetworkView
     return this.resolved.limits;
   }
 
-  /** Globe needs geographic positions, which the model's spatial system declares once read. */
+  /** Globe needs geographic positions, which their fields' space declares once read. */
   get projections(): Readonly<Record<Projection, boolean>> {
     return { flat: true, tilt: true, globe: this.shown?.geometry.geographic ?? false };
   }
@@ -411,54 +411,62 @@ class NetworkView
       style = this.style;
     const topology =
       this.geometry?.native ?? this.geometry ?? (await readGeometry(data, frame, this.limits));
-    let geometry = topology;
-    const vertices = new Map<VertexBank, FieldRead>(),
-      edges = new Map<EdgeBank, FieldRead>();
-    for (const bank of geometry.vertices)
-      vertices.set(
-        bank,
-        await readFields(
-          frame,
-          data.source,
-          bank,
-          data.vertices[bank.type],
-          data.vertices[bank.type].position ?? bank.position,
-        ),
-      );
-    for (const bank of geometry.edges)
-      edges.set(
-        bank,
-        await readFields(
-          frame,
-          bank.source ?? data.source,
-          bank,
-          edgeOptions(data, bank),
-          undefined,
-        ),
-      );
-    await resolveDomains(frame, data.source, vertices, (bank) =>
-      vertexOptions(data, bank as VertexBank),
-    );
-    await resolveDomains(frame, data.source, edges, (bank) => edgeOptions(data, bank as EdgeBank));
-    const compiled = this.paths.prepare(topology, { vertices, edges }, data, this.limits);
-    geometry = compiled.geometry;
-    for (const [bank, original] of compiled.origins) edges.set(bank, edges.get(original)!);
-    for (const bank of geometry.vertices)
-      if (bank.synthetic)
-        vertices.set(
-          bank,
-          await readFields(frame, data.source, bank, bank.synthetic, bank.position),
+    // What the data draws: read, scaled, and compiled once, until the data, its bindings, or the
+    // coordinate of a sampled read change.
+    const { geometry, reads } = await frame.memo(
+      'reads',
+      [topology, data.source, data.vertices, data.edges, data.paths, this.resolved.config.limits],
+      async (f) => {
+        let geometry = topology;
+        const vertices = new Map<VertexBank, FieldRead>(),
+          edges = new Map<EdgeBank, FieldRead>();
+        for (const bank of geometry.vertices)
+          vertices.set(
+            bank,
+            await readFields(
+              f,
+              data.source,
+              bank,
+              data.vertices[bank.type],
+              data.vertices[bank.type].position ?? bank.position,
+            ),
+          );
+        for (const bank of geometry.edges)
+          edges.set(
+            bank,
+            await readFields(
+              f,
+              bank.source ?? data.source,
+              bank,
+              edgeOptions(data, bank),
+              undefined,
+            ),
+          );
+        await resolveDomains(f, data.source, vertices, (bank) =>
+          vertexOptions(data, bank as VertexBank),
         );
-    for (const bank of geometry.vertices)
-      if (bank.synthetic) {
-        const read = vertices.get(bank)!;
-        vertices.set(bank, {
-          ...read,
-          scales: { height: { domain: [0, 1], range: [0, 1], clamp: true } },
-        });
-      }
-    const reads: Reads = { vertices, edges },
-      picking = this.picking.prepare(geometry, reads, this.limits.pickingBytes);
+        await resolveDomains(f, data.source, edges, (bank) => edgeOptions(data, bank as EdgeBank));
+        const compiled = this.paths.prepare(topology, { vertices, edges }, data, this.limits);
+        geometry = compiled.geometry;
+        for (const [bank, original] of compiled.origins) edges.set(bank, edges.get(original)!);
+        for (const bank of geometry.vertices)
+          if (bank.synthetic)
+            vertices.set(
+              bank,
+              await readFields(f, data.source, bank, bank.synthetic, bank.position),
+            );
+        for (const bank of geometry.vertices)
+          if (bank.synthetic) {
+            const read = vertices.get(bank)!;
+            vertices.set(bank, {
+              ...read,
+              scales: { height: { domain: [0, 1], range: [0, 1], clamp: true } },
+            });
+          }
+        return { geometry, reads: { vertices, edges } satisfies Reads };
+      },
+    );
+    const picking = this.picking.prepare(geometry, reads, this.limits.pickingBytes);
     let camera = await this.frameCamera(frame, (items, current, viewport) =>
       this.framing(geometry, picking, items, current, viewport),
     );

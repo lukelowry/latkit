@@ -241,7 +241,9 @@ export const layoutText = (
     ],
     width: [...input.text].length * 0.6 * size,
     height: size,
-    ascent: size * 0.8,
-    descent: size * 0.2,
+    baseline: size * 0.8,
+    lineHeight: size,
+    capHeight: size * 0.7,
+    align: input.align ?? 'start',
   });
 };

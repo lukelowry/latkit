@@ -11,12 +11,19 @@ export interface TextInput {
   readonly font?: TextFont;
   readonly direction?: 'ltr' | 'rtl';
 }
-/** Metrics in em units. Positions use a left-origin, alphabetic baseline, y down. */
+/**
+ * Metrics in em units. Positions use a left-origin, alphabetic baseline, y down. `ascent` and
+ * `descent` are the font's line metrics, the same for every glyph of a font, never one glyph's ink.
+ */
 export interface TextMetrics {
   readonly advance: number;
   readonly ascent: number;
   readonly descent: number;
 }
+/** Which side of text a point names: where lines start, their center, or where they end. */
+export type TextAlign = 'start' | 'center' | 'end';
+/** Which height of text a point names; `middle` is halfway up the capitals, as text looks centered. */
+export type TextBaseline = 'top' | 'middle' | 'alphabetic' | 'bottom';
 export interface TextRun extends TextInput {
   readonly position: readonly [number, number];
   readonly size: number;
@@ -33,15 +40,23 @@ export interface TextLayoutInput extends TextInput {
   readonly maxWidth?: number;
   /** `ellipsis` by default; `wrap` breaks between words, and inside one only when it alone is too long. */
   readonly overflow?: 'wrap' | 'ellipsis';
+  /** How lines of different widths line up, and the side `textOrigin` places by default. */
+  readonly align?: TextAlign;
 }
-/** Laid-out lines in the units of the input's `size`, the first line's top at zero. */
+/**
+ * Laid-out lines in the units of the input's `size`, its box's top-left at the origin. Each line is
+ * as tall as the font's ascent and descent, so every string of a font shares one baseline.
+ */
 export interface TextLayout {
   /** One run per line, positioned at its baseline. */
   readonly runs: readonly TextRun[];
   readonly width: number;
   readonly height: number;
-  readonly ascent: number;
-  readonly descent: number;
+  /** The first line's baseline below the top. */
+  readonly baseline: number;
+  readonly lineHeight: number;
+  readonly capHeight: number;
+  readonly align: TextAlign;
 }
 export interface TextRequest {
   /** Immutable identity caches geometry. Moving a view/anchor does not rebuild text. */

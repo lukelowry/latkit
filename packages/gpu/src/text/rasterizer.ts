@@ -55,8 +55,9 @@ export function createTextRasterizer(): TextRasterizer {
         left: left / pixelsPerEm,
         top: top / pixelsPerEm,
         advance: metrics.width / pixelsPerEm,
-        ascent: metrics.actualBoundingBoxAscent / pixelsPerEm,
-        descent: metrics.actualBoundingBoxDescent / pixelsPerEm,
+        // The font's line, not this glyph's ink: every string of a font shares one baseline.
+        ascent: metrics.fontBoundingBoxAscent / pixelsPerEm,
+        descent: metrics.fontBoundingBoxDescent / pixelsPerEm,
       };
     },
   };

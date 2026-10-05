@@ -110,48 +110,47 @@ function inputs(options: VertexData | EdgeData, names: readonly string[]) {
 }
 
 /**
+ * The base words: a type's own base color, or zero for the view's. A new scene or new bindings
+ * write them again, so no word a pass no longer writes keeps an old value.
+ */
+function baseWords(scene: Scene): kit.BufferData {
+  const words = new Uint32Array(Math.max(4, scene.slots.count * 4)),
+    packed = (color: RGBA | undefined) =>
+      color
+        ? (Math.round(color[0] * 255) |
+            (Math.round(color[1] * 255) << 8) |
+            (Math.round(color[2] * 255) << 16) |
+            (Math.round(color[3] * 255) << 24)) >>>
+          0
+        : 0,
+    // Width -1 and flow 0 as two halves: 0xbc00 is -1.
+    halves = 0x0000bc00;
+  for (let slot = 0; slot < scene.slots.count; slot++) words[slot * 4 + 2] = halves;
+  scene.vertices.forEach((vertex, i) => (words[i * 4] = packed(vertex.options.baseColor)));
+  scene.edges.forEach(
+    (edge, i) => (words[(scene.slots.edges + i) * 4] = packed(edge.options.baseColor)),
+  );
+  const buffer = new kit.BufferData({ size: words.byteLength, label: 'diagram styles' });
+  buffer.write({ data: words });
+  return buffer;
+}
+/** Bytes of each pass's parameters: what it reads, where it writes, and its scales. */
+const PARAMETERS = 16 * 10;
+
+/**
  * The style words of one scene under one set of bindings, and the passes that write them. The
  * passes write a buffer of the view's own, since uploads share buffers with the field pages they
- * read; it is seeded from the uploaded base words whenever those change.
+ * read; it is seeded from the uploaded base words whenever those change. Words and passes are
+ * kept until the scene, the bindings, or a sampled field's coordinate change, and a frame whose
+ * passes already ran runs none.
  */
 export class Styles {
-  private base?: {
-    readonly scene: Scene;
-    readonly vertices: DiagramData['vertices'];
-    readonly edges: DiagramData['edges'];
-    readonly words: kit.BufferData;
-  };
   private target?: { readonly buffer: kit.BufferResource; holds?: kit.BufferData };
+  /** Each pass's parameters, rewritten only when the passes are built again. */
+  private readonly parameters: kit.BufferData[] = [];
+  /** The passes the words last ran, so an unchanged frame runs none. */
+  private encoded?: readonly Dispatch[];
   constructor(private readonly gpu: Gpu) {}
-  /**
-   * The base words: a type's own base color, or zero for the view's. A new scene or new bindings
-   * write them again, so no word a pass no longer writes keeps an old value.
-   */
-  private words(scene: Scene, data: DiagramData): kit.BufferData {
-    const base = this.base;
-    if (base?.scene === scene && base.vertices === data.vertices && base.edges === data.edges)
-      return base.words;
-    const words = new Uint32Array(Math.max(4, scene.slots.count * 4)),
-      packed = (color: RGBA | undefined) =>
-        color
-          ? (Math.round(color[0] * 255) |
-              (Math.round(color[1] * 255) << 8) |
-              (Math.round(color[2] * 255) << 16) |
-              (Math.round(color[3] * 255) << 24)) >>>
-            0
-          : 0,
-      // Width -1 and flow 0 as two halves: 0xbc00 is -1.
-      halves = 0x0000bc00;
-    for (let slot = 0; slot < scene.slots.count; slot++) words[slot * 4 + 2] = halves;
-    scene.vertices.forEach((vertex, i) => (words[i * 4] = packed(vertex.options.baseColor)));
-    scene.edges.forEach(
-      (edge, i) => (words[(scene.slots.edges + i) * 4] = packed(edge.options.baseColor)),
-    );
-    const buffer = new kit.BufferData({ size: words.byteLength, label: 'diagram styles' });
-    buffer.write({ data: words });
-    this.base = { scene, vertices: data.vertices, edges: data.edges, words: buffer };
-    return buffer;
-  }
   /** This frame's words, and its passes: each bound type's pages of fields at the frame's coordinate. */
   async prepare(
     frame: kit.Preparation,
@@ -159,7 +158,9 @@ export class Styles {
     data: DiagramData,
     layout: GPUBindGroupLayout,
   ): Promise<StyleFrame> {
-    const words = this.words(scene, data);
+    const words = await frame.memo('style words', [scene, data.vertices, data.edges], () =>
+      baseWords(scene),
+    );
     if (this.target?.buffer.buffer.size !== words.size) {
       this.target?.buffer.destroy();
       this.target = {
@@ -170,9 +171,24 @@ export class Styles {
         }),
       };
     }
-    const styles = frame.buffer(this.target.buffer),
-      seed = this.target.holds === words ? null : { from: frame.buffer(words), words },
-      out: Dispatch[] = [];
+    const target = this.target,
+      styles = frame.buffer(target.buffer),
+      seed = target.holds === words ? null : { from: frame.buffer(words), words },
+      dispatches = await frame.memo(
+        'style passes',
+        [scene, data.source, data.vertices, data.edges, target.buffer, layout],
+        (f) => this.dispatches(f, scene, data, styles, layout),
+      );
+    return { styles, seed, dispatches };
+  }
+  private async dispatches(
+    frame: kit.Preparation,
+    scene: Scene,
+    data: DiagramData,
+    styles: GPUBufferBinding,
+    layout: GPUBindGroupLayout,
+  ): Promise<readonly Dispatch[]> {
+    const out: Dispatch[] = [];
     const types = [
       ...[...scene.types.vertices].map(([type, at]) => ({
         type,
@@ -224,7 +240,7 @@ export class Styles {
             return field?.kind === 'value' ? field.slot : NONE;
           };
           list.forEach((pass, i) => {
-            const values = new ArrayBuffer(16 * 10),
+            const values = new ArrayBuffer(PARAMETERS),
               f = new Float32Array(values),
               u = new Uint32Array(values),
               shade = page.columns['s' + i],
@@ -257,13 +273,19 @@ export class Styles {
             scale(pass.color, 'c' + i, 16);
             scale(pass.width, 'w' + i, 24);
             scale(pass.flow, 'f' + i, 32);
+            const parameters = (this.parameters[out.length] ??= new kit.BufferData({
+              size: PARAMETERS,
+              usage: GPUBufferUsage.UNIFORM,
+              label: 'diagram style pass',
+            }));
+            parameters.write({ data: u });
             out.push({
               fields: page.bindGroup,
               colors: frame.colormap(pass.color?.colormap),
               group: this.gpu.device.createBindGroup({
                 layout,
                 entries: [
-                  { binding: 0, resource: frame.uniforms(f) },
+                  { binding: 0, resource: frame.buffer(parameters) },
                   { binding: 1, resource: styles },
                 ],
               }),
@@ -272,7 +294,7 @@ export class Styles {
           });
         }
     }
-    return { styles, seed, dispatches: out };
+    return out;
   }
   /** Seed the words if they changed, then run the passes, before any shape reads them. */
   encode(encoder: GPUCommandEncoder, pipeline: GPUComputePipeline, frame: StyleFrame): void {
@@ -287,7 +309,8 @@ export class Styles {
       );
       if (this.target) this.target.holds = words;
     }
-    if (!frame.dispatches.length) return;
+    if (!frame.dispatches.length || (!frame.seed && frame.dispatches === this.encoded)) return;
+    this.encoded = frame.dispatches;
     const pass = encoder.beginComputePass({ label: 'diagram styles' });
     pass.setPipeline(pipeline);
     for (const dispatch of frame.dispatches) {
@@ -301,6 +324,6 @@ export class Styles {
   destroy(): void {
     this.target?.buffer.destroy();
     this.target = undefined;
-    this.base = undefined;
+    this.encoded = undefined;
   }
 }

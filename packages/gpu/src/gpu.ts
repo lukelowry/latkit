@@ -176,6 +176,7 @@ class Owner implements Gpu {
       buffers: this.buffers,
       stopped: this.stopped.signal,
       busy: new Set(),
+      memos: new WeakMap(),
       pending: this.pending,
       maxFrames: integer(options.maxFramesInFlight ?? 2, 'frames in flight', 1, 64),
       stop: (reason) => this.stop(reason),

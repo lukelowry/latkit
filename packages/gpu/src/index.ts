@@ -37,6 +37,8 @@ export type {
   TextMetrics,
   TextLayout,
   TextLayoutInput,
+  TextAlign,
+  TextBaseline,
 } from './text/text.js';
 export { createTextRasterizer } from './text/rasterizer.js';
 export { colormaps } from './colors/catalog.js';

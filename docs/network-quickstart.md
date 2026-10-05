@@ -15,7 +15,7 @@ const network = createNetwork(gpu, {
 });
 ```
 
-Each `Bus` is drawn at its type's spatial field; each `Line` row references the two buses it joins
+Each `Bus` is drawn at its position field, whose `space` is geographic; each `Line` row references the two buses it joins
 through `from` and `to`. [Data bindings](topology-and-channels.md) covers nets, paths, and styling
 by field.
 

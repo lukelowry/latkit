@@ -73,7 +73,8 @@ export async function pipelines(
       uniform(6, C),
     ],
   });
-  const label = d.createBindGroupLayout({ entries: [uniform(0, V), storage(1, V)] });
+  // Labels read the background in their fragments, for the halo over lines.
+  const label = d.createBindGroupLayout({ entries: [uniform(0, V | F), storage(1, V)] });
   const bg = d.createBindGroupLayout({ entries: [uniform(0, V | F)] });
   const [tessModule, prep, shape, bgModule, axisModule, text] = await Promise.all([
     gpu.shaderModule(

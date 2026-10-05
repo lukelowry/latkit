@@ -218,12 +218,21 @@ export class BoxIndex {
     }
     return new BoxIndex(items, boxes, starts, [ox, oy]);
   }
-  /** Offsets of the items whose boxes may meet `bounds`; `check` runs once per node. */
-  *query(bounds: Bounds2D, check: () => void = unchecked): Iterable<number> {
+  /** The pending nodes of a query, two numbers each; a query inside a visit takes its own. */
+  private stack?: Int32Array;
+  /**
+   * Visit the offsets of the items whose boxes may meet `bounds` until `visit` returns true, and
+   * say whether it did. Nothing is allocated; `check` runs once per node.
+   */
+  some(
+    bounds: Bounds2D,
+    visit: (item: number) => boolean | void,
+    check: () => void = unchecked,
+  ): boolean {
     const { boxes, items, starts } = this,
       top = starts.length - 2,
       root = starts[top];
-    if (!items.length) return;
+    if (!items.length) return false;
     // Rounding is monotonic, so shifting both sides keeps every comparison conservative.
     const minX = bounds[0] - this.origin[0],
       minY = bounds[1] - this.origin[1],
@@ -231,26 +240,38 @@ export class BoxIndex {
       maxY = bounds[3] - this.origin[1];
     const at = root * 4;
     if (boxes[at] > maxX || boxes[at + 1] > maxY || boxes[at + 2] < minX || boxes[at + 3] < minY)
-      return;
-    const stack = [root, top];
-    while (stack.length) {
-      check();
-      const level = stack.pop()!,
-        node = stack.pop()!,
-        first = starts[level - 1] + (node - starts[level]) * NODE,
-        last = Math.min(first + NODE, starts[level]);
-      for (let child = first; child < last; child++) {
-        const at = child * 4;
-        if (
-          boxes[at] <= maxX &&
-          boxes[at + 1] <= maxY &&
-          boxes[at + 2] >= minX &&
-          boxes[at + 3] >= minY
-        ) {
-          if (level === 1) yield items[child];
-          else stack.push(child, level - 1);
+      return false;
+    // A level holds at most NODE pending children while the levels below it are visited.
+    const stack = this.stack ?? new Int32Array(2 * NODE * starts.length);
+    this.stack = undefined;
+    let size = 0;
+    stack[size++] = root;
+    stack[size++] = top;
+    try {
+      while (size) {
+        check();
+        const level = stack[--size],
+          node = stack[--size],
+          first = starts[level - 1] + (node - starts[level]) * NODE,
+          last = Math.min(first + NODE, starts[level]);
+        for (let child = first; child < last; child++) {
+          const at = child * 4;
+          if (
+            boxes[at] <= maxX &&
+            boxes[at + 1] <= maxY &&
+            boxes[at + 2] >= minX &&
+            boxes[at + 3] >= minY
+          ) {
+            if (level > 1) {
+              stack[size++] = child;
+              stack[size++] = level - 1;
+            } else if (visit(items[child])) return true;
+          }
         }
       }
+      return false;
+    } finally {
+      this.stack = stack;
     }
   }
 }

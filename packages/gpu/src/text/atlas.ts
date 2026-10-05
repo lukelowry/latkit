@@ -40,6 +40,12 @@ interface Glyph {
   ascent: number;
   descent: number;
 }
+/** A font's line ascent and descent and its cap height, in em units. */
+interface FontMetrics {
+  readonly ascent: number;
+  readonly descent: number;
+  readonly capHeight: number;
+}
 interface Geometry {
   atlas: Atlas;
   data: BufferData;
@@ -87,6 +93,7 @@ export class TextAtlas {
   private fonts = new Map<string, Map<string, Glyph>>();
   private pending = new Map<string, Promise<Glyph>>();
   private layouts = new Map<string, TextLayout>();
+  private metrics = new Map<string, Promise<FontMetrics>>();
   private geometry = new WeakMap<readonly TextRun[], Resident>();
   constructor(
     private readonly device: GPUDevice,
@@ -125,6 +132,7 @@ export class TextAtlas {
       input.maxWidth ?? '',
       input.overflow ?? '',
       input.direction ?? '',
+      input.align ?? '',
       input.color?.join() ?? '',
       input.text,
     ].join('\u0000');
@@ -135,19 +143,31 @@ export class TextAtlas {
     this.layouts.set(key, layout);
     return layout;
   }
+  /** A font's line metrics and cap height, measured once from its capital H, for every caller. */
+  private font(font: TextFont | undefined): Promise<FontMetrics> {
+    const key = fontKey(font);
+    let metrics = this.metrics.get(key);
+    if (!metrics) {
+      metrics = Promise.resolve(this.resolve(['H'], font, this.signal)).then(([h]) => ({
+        ascent: h.ascent,
+        descent: h.descent,
+        // A glyph's top includes its distance field's padding.
+        capHeight: h.atlas ? -(h.top + padding / em) : h.ascent * 0.7,
+      }));
+      this.metrics.set(key, metrics);
+      metrics.catch(() => this.metrics.delete(key));
+    }
+    return metrics;
+  }
   private async lay(input: TextLayoutInput, signal: AbortSignal): Promise<TextLayout> {
-    const size = input.size;
+    const size = input.size,
+      align = input.align ?? 'start';
     const max = input.maxWidth ?? Infinity,
       lines: { text: string; width: number }[] = [];
-    let ascent = 0,
-      descent = 0;
+    const font = await interruptible(this.font(input.font), signal);
     const measured = async (text: string) => {
       const parts = clusters(text),
         glyphs = await this.resolve(parts, input.font, signal);
-      for (const glyph of glyphs) {
-        ascent = Math.max(ascent, glyph.ascent);
-        descent = Math.max(descent, glyph.descent);
-      }
       return { parts, advances: glyphs.map((glyph) => glyph.advance * size) };
     };
     const dots = max < Infinity ? (await measured(ellipsis)).advances[0] : 0;
@@ -163,21 +183,29 @@ export class TextAtlas {
         lines.push({ text: parts.slice(0, fit).join('') + ellipsis, width: used + dots });
       }
     }
-    const lineHeight = Math.max(1, ascent + descent) * size * 1.2,
+    // A line is the font's own height; its baseline sits the font's ascent below the line's top.
+    const lineHeight = (font.ascent + font.descent) * size,
+      baseline = font.ascent * size,
+      width = lines.reduce((m, line) => Math.max(m, line.width), 0),
       runs = (input.text ? lines : []).map((line, i): TextRun => ({
         text: line.text,
         font: input.font,
         direction: input.direction,
         size,
         color: input.color,
-        position: [0, i * lineHeight + ascent * size],
+        position: [
+          align === 'center' ? (width - line.width) / 2 : align === 'end' ? width - line.width : 0,
+          baseline + i * lineHeight,
+        ],
       }));
     return {
       runs,
-      width: lines.reduce((m, line) => Math.max(m, line.width), 0),
-      height: input.text ? lines.length * lineHeight : 0,
-      ascent: ascent * size,
-      descent: descent * size,
+      width,
+      height: runs.length * lineHeight,
+      baseline,
+      lineHeight,
+      capHeight: font.capHeight * size,
+      align,
     };
   }
 

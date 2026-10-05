@@ -567,7 +567,7 @@ it('builds hit-test indexes in the background once positions hold, within pickin
     surface = target(gpu),
     full = kit.BoxIndex.bytes(25) + kit.BoxIndex.bytes(source.from.length);
   const build = vi.spyOn(kit.BoxIndex, 'build'),
-    query = vi.spyOn(kit.BoxIndex.prototype, 'query'),
+    query = vi.spyOn(kit.BoxIndex.prototype, 'some'),
     hover = vi.fn();
   const show = async (config: Partial<NetworkConfig> = {}) => {
     const network = createNetwork(gpu, { ...data, hover: 'on', ...config });

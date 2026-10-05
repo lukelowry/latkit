@@ -112,8 +112,10 @@ export const emptyLabel: TextLayout = Object.freeze({
   runs: [],
   width: 0,
   height: 0,
-  ascent: 0,
-  descent: 0,
+  baseline: 0,
+  lineHeight: 0,
+  capHeight: 0,
+  align: 'start',
 });
 export function rect(vertex: Vertex): Rect {
   return [vertex.x, vertex.y, vertex.x + vertex.width, vertex.y + vertex.height];

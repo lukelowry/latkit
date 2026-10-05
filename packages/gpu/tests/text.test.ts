@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { createGpu, type TextRasterizer } from '../src/index.js';
+import { createGpu, kit, type TextRasterizer } from '../src/index.js';
 import { type TextPage, type TextRun } from '../src/kit.js';
 import { distanceField } from '../src/text/distance-field.js';
 import { bytes, deferred, fakeDevice } from './fixtures/device.js';
@@ -56,7 +56,8 @@ it('shares glyphs, atlas regions, and text geometry across strings, views, and f
   // Both views share the one text geometry: its pages upload once.
   expect(gpu.stats().uploads).toBe(graphemes.size + pages.length);
   const layout = await gpu.layoutText({ text: 'ice', size: 10 });
-  expect(raster.rasterize).toHaveBeenCalledTimes(graphemes.size);
+  // Layout measures the font once, from its capital H.
+  expect(raster.rasterize).toHaveBeenCalledTimes(graphemes.size + 1);
   expect(layout.width).toBe(15);
   expect(layout.runs).toEqual([
     expect.objectContaining({ text: 'ice', size: 10, position: [0, 7.5] }),
@@ -130,9 +131,10 @@ it('font revision invalidates shaping and an aborted reader does not cancel anot
   await rejection;
   gate.resolve();
   await second;
-  expect(raster.rasterize).toHaveBeenCalledTimes(1);
-  await gpu.layoutText({ ...run(), text: 'x', font: { family: 'sans-serif', revision: '2' } });
+  // The font's H, measured once for every reader, then x.
   expect(raster.rasterize).toHaveBeenCalledTimes(2);
+  await gpu.layoutText({ ...run(), text: 'x', font: { family: 'sans-serif', revision: '2' } });
+  expect(raster.rasterize).toHaveBeenCalledTimes(4);
   gpu.destroy();
 });
 
@@ -215,7 +217,78 @@ it('wraps between words, ellipsizes by advances, and breaks lines', async () => 
   const two = await gpu.layoutText({ text: 'a\nbc', size: 10 });
   expect(lines(two)).toEqual(['a', 'bc']);
   expect(two.runs[1].position[1]).toBeGreaterThan(two.runs[0].position[1]);
-  expect(two.height).toBeCloseTo(2 * 10 * 1.2);
+  // Each line is the font's ascent and descent tall.
+  expect(two.lineHeight).toBeCloseTo(10 * (0.75 + 0.2));
+  expect(two.height).toBeCloseTo(2 * two.lineHeight);
   expect((await gpu.layoutText({ text: '', size: 10 })).runs).toEqual([]);
+  gpu.destroy();
+});
+
+it('places every string of a font on one baseline, centered by its capitals', async () => {
+  const fake = fakeDevice(),
+    gpu = await createGpu({
+      device: fake.device,
+      text: { rasterizer: rasterizer(), atlasSize: 64 },
+    });
+  const short = await gpu.layoutText({ text: 'in', size: 10 }),
+    tall = await gpu.layoutText({ text: 'Hg', size: 10, align: 'center' });
+  expect(short.baseline).toBe(tall.baseline);
+  expect(short.capHeight).toBeCloseTo(7.5);
+  // Middle puts the point halfway up the capitals; the other sides and heights are exact.
+  const [x, y] = kit.textOrigin(short, [100, 50], 'center', 'middle');
+  expect(x).toBeCloseTo(100 - short.width / 2);
+  expect(y + short.baseline - short.capHeight / 2).toBeCloseTo(50);
+  expect(kit.textOrigin(short, [100, 50], 'end', 'bottom')).toEqual([
+    100 - short.width,
+    50 - short.height,
+  ]);
+  expect(kit.textOrigin(short, [100, 50], 'start', 'alphabetic')).toEqual([
+    100,
+    50 - short.baseline,
+  ]);
+  expect(kit.textBox(short, [1, 2], 1)).toEqual([0, 1, 2 + short.width, 3 + short.height]);
+  gpu.destroy();
+});
+
+it('keeps the runs of a bank key and moves only its anchor, placing where nothing overlaps', async () => {
+  const fake = fakeDevice(),
+    gpu = await createGpu({
+      device: fake.device,
+      text: { rasterizer: rasterizer(), atlasSize: 64 },
+    });
+  const label = await gpu.layoutText({ text: 'ab', size: 10 }),
+    other = await gpu.layoutText({ text: 'cd', size: 10 });
+  const bank = new kit.TextBank('test text', true);
+  bank.add('a', label, [100, 200], 7);
+  const [first] = bank.flush();
+  expect(first.origin).toEqual([100, 200]);
+  expect(first.runs).toEqual([expect.objectContaining({ text: 'ab', anchor: 0 })]);
+  const anchors = () =>
+    new Float32Array(first.anchors.bytes.buffer, first.anchors.bytes.byteOffset, 4);
+  // The anchor is relative to the page; its slot is stored one up, so zero hides it.
+  expect([...anchors()]).toEqual([0, 0, 0, 8]);
+  bank.hide();
+  bank.add('a', label, [110, 205], 7, 0.5);
+  const [moved] = bank.flush();
+  expect(moved.runs).toBe(first.runs);
+  expect([...anchors()]).toEqual([10, 5, 0.5, 8]);
+  bank.hide();
+  expect([...bank.flush()[0].anchors.bytes.slice(12, 16)]).toEqual([0, 0, 0, 0]);
+  // Placement takes the first candidate whose box is free, and claims it.
+  const occupied = new kit.Occupancy(16);
+  occupied.add([0, 0, 50, 50]);
+  const at = bank.place(
+    'b',
+    other,
+    [
+      [10, 10, 'start', 'top'],
+      [60, 10, 'start', 'top'],
+    ],
+    occupied,
+    2,
+  );
+  expect(at).toEqual([60, 10]);
+  expect(bank.place('c', other, [[61, 11, 'start', 'top']], occupied)).toBeNull();
+  expect(bank.flush()[0].runs).toHaveLength(2);
   gpu.destroy();
 });

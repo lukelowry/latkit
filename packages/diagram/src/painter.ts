@@ -1,4 +1,4 @@
-import { kit, type Gpu, type RGBA, type TextLayout } from '@latkit/gpu';
+import { kit, type Gpu, type RGBA } from '@latkit/gpu';
 import type { DiagramData, DiagramItem, Point } from './data.js';
 import { itemKey } from './data.js';
 import type { Scene, Rect, Vertex, Wire } from './scene.js';
@@ -34,16 +34,9 @@ interface Bank {
   data: kit.BufferData;
   count: number;
 }
-interface TextBank {
-  bounds: Rect;
-  maxSize: number;
-  origin: Point;
-  runs: readonly kit.TextRun[];
-  anchors: kit.BufferData;
-}
 interface Geometry {
   banks: Bank[];
-  text: TextBank[];
+  text: readonly kit.TextBankPage[];
   focus: kit.BufferData;
   /** Each slot's flags, as last written. */
   states: Map<number, number>;
@@ -124,7 +117,7 @@ struct Style { color: vec4f, status: vec4f, width: f32, flow: f32, shade: f32 }
 @group(0) @binding(0) var<uniform> view: View;
 @group(0) @binding(2) var<storage, read> items: array<Item>;
 @group(0) @binding(3) var<storage, read> focus: array<u32>;
-/** Each label's position and the slot of the item it labels. */
+/** Each label's anchor, as a text bank writes it: its origin, and the slot of the item it labels. */
 @group(0) @binding(4) var<storage, read> anchors: array<vec4f>;
 @group(0) @binding(5) var<storage, read> styles: array<vec4u>;
 struct Out {
@@ -344,14 +337,13 @@ fn legible(color: vec4f, slot: u32) -> vec4f {
 }
 @vertex fn text_vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> Out {
   let t = textVertex(v, i);
-  let anchor = anchors[t.anchor];
-  let slot = u32(anchor.z);
-  let flags = flagsOf(slot);
-  if ((flags & 128u) != 0u) { return hidden(i); }
-  return Out(clip(screen(t.position + anchor.xy + dragged(flags))), t.uv, i, vec4f(0.), legible(t.color, slot));
+  let anchor = latkitAnchor(anchors[t.anchor]);
+  let flags = flagsOf(anchor.slot);
+  if (!anchor.shown || (flags & 128u) != 0u) { return hidden(i); }
+  return Out(clip(screen(t.position + anchor.position + dragged(flags))), t.uv, i, vec4f(0.), legible(t.color, anchor.slot));
 }
 @fragment fn text_fragment(v: Out) -> @location(0) vec4f {
-  return textColor(v.uv, v.color) * smoothstep(4., 8., view.grid.w * scale());
+  return textColor(v.uv, v.color, vec4f(0.), 0.) * smoothstep(4., 8., view.grid.w * scale());
 }
 @vertex fn grid_vertex(@builtin(vertex_index) v: u32) -> Out {
   let p = vec2f(f32((v << 1u) & 2u), f32(v & 2u));
@@ -390,25 +382,6 @@ function sync(values: Uint32Array, label: string, previous?: kit.BufferData): ki
     }
   }
   return previous;
-}
-function sameText(a: readonly kit.TextRun[], b: readonly kit.TextRun[]): boolean {
-  return (
-    a.length === b.length &&
-    a.every((run, i) => {
-      const next = b[i];
-      return (
-        run.text === next.text &&
-        run.size === next.size &&
-        run.anchor === next.anchor &&
-        run.direction === next.direction &&
-        run.position[0] === next.position[0] &&
-        run.position[1] === next.position[1] &&
-        run.font === next.font &&
-        (run.color === next.color ||
-          (!!run.color && !!next.color && run.color.every((v, j) => v === next.color![j])))
-      );
-    })
-  );
 }
 /** Instances written straight into typed storage, a bank at a time. */
 class Banks {
@@ -511,59 +484,11 @@ function wire(banks: Banks, slot: number, drawn: Wire, radius: number): void {
   for (const p of drawn.junctions)
     banks.push(KIND.junction, slot, [p[0], p[1], 0, 0], [], [p[0], p[1], p[0], p[1]]);
 }
-/** Labels gathered into banks of runs, each run anchored to a point and the slot it labels. */
-class Labels {
-  readonly banks: TextBank[] = [];
-  private runs: kit.TextRun[] = [];
-  private anchors: number[] = [];
-  private origin: Point = [0, 0];
-  private bounds = [Infinity, Infinity, -Infinity, -Infinity];
-  private maxSize = 0;
-  constructor(private readonly previous?: readonly TextBank[]) {}
-  add(label: TextLayout, at: Point, slot: number): void {
-    if (!label.runs.length) return;
-    if (this.runs.length >= 1024) this.flush();
-    if (!this.runs.length) this.origin = this.previous?.[this.banks.length]?.origin ?? at;
-    const r = this.bounds;
-    r[0] = Math.min(r[0], at[0]);
-    r[1] = Math.min(r[1], at[1]);
-    r[2] = Math.max(r[2], at[0] + label.width);
-    r[3] = Math.max(r[3], at[1] + label.height);
-    const anchor = this.anchors.length / 4;
-    this.anchors.push(at[0] - this.origin[0], at[1] - this.origin[1], slot, 0);
-    for (const run of label.runs) {
-      this.maxSize = Math.max(this.maxSize, run.size);
-      this.runs.push({ ...run, anchor });
-    }
-  }
-  flush(): TextBank[] {
-    if (this.runs.length) {
-      const old = this.previous?.[this.banks.length];
-      this.banks.push({
-        origin: this.origin,
-        bounds: this.bounds as unknown as Rect,
-        maxSize: this.maxSize,
-        runs: old && sameText(old.runs, this.runs) ? old.runs : this.runs,
-        anchors: sync(
-          new Uint32Array(Float32Array.from(this.anchors).buffer),
-          'diagram text anchors',
-          old?.anchors,
-        ),
-      });
-      this.runs = [];
-      this.anchors = [];
-      this.bounds = [Infinity, Infinity, -Infinity, -Infinity];
-      this.maxSize = 0;
-    }
-    return this.banks;
-  }
-}
-/** Where a vertex's title sits: in its band, or centered on it. */
+/** Where a vertex's title sits: centered by its capitals in its band, or on the vertex. */
 function titleAt(vertex: Vertex, style: Style): Point {
-  const label = vertex.label,
-    x = vertex.x + (vertex.width - label.width) / 2;
+  const x = vertex.x + vertex.width / 2;
   if (vertex.options.labelPosition !== 'header')
-    return [x, vertex.y + (vertex.height - label.height) / 2];
+    return kit.textOrigin(vertex.label, [x, vertex.y + vertex.height / 2], 'center', 'middle');
   const top = vertex.ports.some((p) => p.side === 'top') ? style.portFontSize * 1.5 : 0,
     inset =
       vertex.shape === 'diamond'
@@ -571,22 +496,29 @@ function titleAt(vertex: Vertex, style: Style): Point {
         : vertex.shape === 'ellipse'
           ? (vertex.height * (1 - Math.SQRT1_2)) / 2
           : 0;
-  return [x, vertex.y + inset + top + (vertex.header - top - label.height) / 2];
+  return kit.textOrigin(
+    vertex.label,
+    [x, vertex.y + inset + top + (vertex.header - top) / 2],
+    'center',
+    'middle',
+  );
 }
 /** Where a port's name sits: inside its vertex, a marker's half and a gap from the port. */
 function portNameAt(vertex: Vertex, port: Vertex['ports'][number], style: Style): Point {
-  const { width, height } = port.label,
-    p = port.position,
+  const label = port.label,
+    [x, y] = port.position,
     gap = style.portSize / 2 + 4,
     slant =
-      vertex.shape === 'diamond' ? ((width + gap * 2) * vertex.height) / (2 * vertex.width) : 0;
+      vertex.shape === 'diamond'
+        ? ((label.width + gap * 2) * vertex.height) / (2 * vertex.width)
+        : 0;
   return port.side === 'left'
-    ? [p[0] + gap, p[1] - height / 2]
+    ? kit.textOrigin(label, [x + gap, y], 'start', 'middle')
     : port.side === 'right'
-      ? [p[0] - gap - width, p[1] - height / 2]
+      ? kit.textOrigin(label, [x - gap, y], 'end', 'middle')
       : port.side === 'top'
-        ? [p[0] - width / 2, p[1] + gap + slant]
-        : [p[0] - width / 2, p[1] - gap - height - slant];
+        ? kit.textOrigin(label, [x, y + gap + slant], 'center', 'top')
+        : kit.textOrigin(label, [x, y - gap - slant], 'center', 'bottom');
 }
 /** Build the pipelines for one target format, MSAA, and shade; the view caches each variant. */
 export async function pipelines(
@@ -653,7 +585,6 @@ export async function pipelines(
   return { shapes, text, grid, styles, layout, styleLayout };
 }
 export class Painter {
-  private current?: { scene: Scene; geometry: Geometry };
   private focused?: {
     readonly geometry: Geometry;
     readonly selection: readonly DiagramItem[];
@@ -665,14 +596,19 @@ export class Painter {
   private readonly styles: Styles;
   private readonly empty = new kit.BufferData({ size: 16, label: 'diagram empty' });
   private gesture?: readonly Bank[];
-  private dragged?: { banks: readonly Bank[]; text: readonly TextBank[] };
+  private dragged?: readonly Bank[];
+  /** Every label, by the slot it names: a scene that keeps its text only moves anchors. */
+  private readonly text = new kit.TextBank('diagram text', true);
+  /** The labels of rerouted wires a drag draws. */
+  private readonly dragText = new kit.TextBank('diagram drag text', true);
   constructor(private readonly gpu: Gpu) {
     this.attachments = new kit.Attachments(gpu);
     this.styles = new Styles(gpu);
   }
   private build(scene: Scene, style: Style, previous?: Geometry): Geometry {
     const banks = new Banks('diagram instances', previous?.banks),
-      labels = new Labels(previous?.text);
+      text = this.text;
+    text.hide();
     scene.groups.forEach((group, i) => {
       const b = group.bounds;
       if (b[0] === b[2]) return;
@@ -683,10 +619,17 @@ export class Painter {
         [style.cornerRadius, group.header, +group.collapsed],
         b,
       );
-      labels.add(
+      const slot = scene.slots.groups + i;
+      text.add(
+        slot,
         group.label,
-        [b[0] + style.vertexPadding, b[1] + (group.header - group.label.height) / 2],
-        scene.slots.groups + i,
+        kit.textOrigin(
+          group.label,
+          [b[0] + style.vertexPadding, b[1] + group.header / 2],
+          'start',
+          'middle',
+        ),
+        slot,
       );
     });
     scene.edges.forEach((edge, i) => {
@@ -696,7 +639,7 @@ export class Painter {
     scene.edges.forEach((edge, i) => {
       if (!edge.visible || !edge.paths.length || !style.labels) return;
       const slot = scene.slots.edges + i;
-      for (const at of edge.labels) {
+      edge.labels.forEach((at, k) => {
         const b = labelBox(edge, at);
         banks.push(
           KIND.label,
@@ -705,8 +648,8 @@ export class Painter {
           [+(edge.options.appearance === 'tag')],
           b,
         );
-        labels.add(edge.label, at, slot);
-      }
+        text.add(slot + ':' + k, edge.label, at, slot);
+      });
     });
     scene.vertices.forEach((vertex, i) => {
       if (!vertex.visible) return;
@@ -718,7 +661,7 @@ export class Painter {
         [vertex.radius, vertex.header, SHAPES.indexOf(vertex.shape)],
         box,
       );
-      labels.add(vertex.label, titleAt(vertex, style), i);
+      text.add(i, vertex.label, titleAt(vertex, style), i);
       vertex.ports.forEach((port, k) => {
         const p = port.position,
           slot = vertex.portSlot + k,
@@ -737,13 +680,14 @@ export class Painter {
           ],
           [p[0], p[1], p[0], p[1]],
         );
-        labels.add(port.label, portNameAt(vertex, port, style), slot);
+        // A port's name sits on its block: it follows the block's drag and reads on its fill.
+        text.add(slot, port.label, portNameAt(vertex, port, style), i);
       });
     });
     const reuse = previous?.focus.size === Math.max(4, scene.slots.count * 4);
     return {
       banks: banks.flush(),
-      text: labels.flush(),
+      text: text.flush(),
       focus: reuse
         ? previous.focus
         : new kit.BufferData({ size: Math.max(4, scene.slots.count * 4), label: 'diagram focus' }),
@@ -752,11 +696,10 @@ export class Painter {
   }
   async prepare(frame: kit.Preparation, state: DrawState): Promise<Paint> {
     const { scene, style, camera, pipelines, shade: effect, overlay } = state;
-    let geometry = this.current?.scene === scene ? this.current.geometry : undefined;
-    if (!geometry) {
-      geometry = this.build(scene, style, this.current?.geometry);
-      this.current = { scene, geometry };
-    }
+    // A scene's instances and labels, built once; a new scene writes only what changed.
+    const geometry = await frame.memo('geometry', [scene], (_, previous: Geometry | undefined) =>
+      this.build(scene, style, previous),
+    );
     this.focus(scene, geometry, state);
     const restyle = await this.styles.prepare(frame, scene, state.data, pipelines.styleLayout),
       { styles } = restyle,
@@ -838,7 +781,7 @@ export class Painter {
             count: bank.count,
           });
     };
-    const write = async (list: readonly TextBank[], flags = focus) => {
+    const write = async (list: readonly kit.TextBankPage[], flags = focus) => {
       for (const bank of list)
         if (intersects(bank.bounds, visible) && bank.maxSize * camera.scale[0] >= 3)
           text.push({
@@ -856,19 +799,20 @@ export class Painter {
     await write(geometry.text);
     if (state.drag?.wires.length) {
       // Rerouted wires draw as they will be, past the focus that hides their old routes.
-      const moving = new Banks('diagram drag', this.dragged?.banks),
-        named = new Labels(this.dragged?.text);
+      const moving = new Banks('diagram drag', this.dragged),
+        named = this.dragText;
+      named.hide();
       for (const dragged of state.drag.wires) {
         wire(moving, dragged.slot, dragged, style.cornerRadius);
-        for (const at of dragged.labels) {
+        dragged.labels.forEach((at, k) => {
           const b = labelBox(dragged.edge, at);
           moving.push(KIND.label, dragged.slot, [b[0], b[1], b[2] - b[0], b[3] - b[1]], [], b);
-          named.add(dragged.edge.label, at, dragged.slot);
-        }
+          named.add(dragged.slot + ':' + k, dragged.edge.label, at, dragged.slot);
+        });
       }
-      this.dragged = { banks: moving.flush(), text: named.flush() };
-      draw(this.dragged.banks, empty);
-      await write(this.dragged.text, empty);
+      this.dragged = moving.flush();
+      draw(this.dragged, empty);
+      await write(named.flush(), empty);
     }
     if (overlay?.box || overlay?.wire) {
       const gesture = new Banks('diagram gesture', this.gesture);
@@ -993,9 +937,10 @@ export class Painter {
   destroy(): void {
     this.attachments.destroy();
     this.styles.destroy();
-    this.current = undefined;
     this.focused = undefined;
     this.dragged = undefined;
     this.gesture = undefined;
+    this.text.clear();
+    this.dragText.clear();
   }
 }

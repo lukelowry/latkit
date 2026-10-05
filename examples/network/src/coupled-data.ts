@@ -30,9 +30,8 @@ export function coupledData() {
     axis: { name: 'Time', unit: 's' },
     types: {
       Node: {
-        spatial: { field: 'position', system: 'cartesian' },
         fields: {
-          position: { type: { kind: 'vector', size: 2, items: 'float32' } },
+          position: { type: { kind: 'vector', size: 2, items: 'float32' }, space: 'cartesian' },
           signal: { type: 'float32', sampled: true },
         },
       },

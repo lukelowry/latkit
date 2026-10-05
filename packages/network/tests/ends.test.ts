@@ -36,12 +36,9 @@ class GridSource {
   constructor(system: 'geographic' | 'cartesian' = 'geographic') {
     this.schema = {
       types: {
-        Bus: { fields: { position: { type: lonlat } }, spatial: { field: 'position', system } },
+        Bus: { fields: { position: { type: lonlat, space: system } } },
         Branch: { fields: { bus1: bus, bus2: bus, rating: { type: 'float64' } } },
-        Load: {
-          fields: { bus, position: { type: lonlat } },
-          spatial: { field: 'position', system: 'geographic' },
-        },
+        Load: { fields: { bus, position: { type: lonlat, space: 'geographic' } } },
       },
     };
   }

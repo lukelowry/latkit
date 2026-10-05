@@ -128,24 +128,38 @@ export class Routing {
     const d = this.moves(owner) ? this.moved!.delta : [0, 0];
     return [b[at] + d[0], b[at + 1] + d[1], b[at + 2] + d[0], b[at + 3] + d[1]];
   }
+  /** One box the visits below reuse. */
+  private readonly scratch: [number, number, number, number] = [0, 0, 0, 0];
+  /**
+   * Visit the obstacle boxes meeting a region, grown by `by`, until `visit` returns true; whether
+   * it did. The box passed is reused: copy it to keep it.
+   */
+  some(region: Rect, by: number, visit: (box: Rect) => boolean | void): boolean {
+    const b = this.scene.obstacles!.boxes,
+      box = this.scratch;
+    const grown = (x0: number, y0: number, x1: number, y1: number) => {
+      if (x0 > region[2] || x1 < region[0] || y0 > region[3] || y1 < region[1]) return false;
+      box[0] = x0 - by;
+      box[1] = y0 - by;
+      box[2] = x1 + by;
+      box[3] = y1 + by;
+      return visit(box) === true;
+    };
+    if (
+      this.scene.obstacles!.index.some(region, (owner) => {
+        if (this.moved && this.moves(owner)) return false;
+        const at = owner * 4;
+        return grown(b[at], b[at + 1], b[at + 2], b[at + 3]);
+      })
+    )
+      return true;
+    for (const s of this.shifted) if (grown(s[0], s[1], s[2], s[3])) return true;
+    return false;
+  }
   /** Obstacle boxes meeting a region, grown by `by`. */
   query(region: Rect, by: number): Rect[] {
-    const out: Rect[] = [],
-      b = this.scene.obstacles!.boxes;
-    for (const owner of this.scene.obstacles!.index.query(region)) {
-      if (this.moved && this.moves(owner)) continue;
-      const at = owner * 4;
-      if (
-        b[at] <= region[2] &&
-        b[at + 2] >= region[0] &&
-        b[at + 1] <= region[3] &&
-        b[at + 3] >= region[1]
-      )
-        out.push([b[at] - by, b[at + 1] - by, b[at + 2] + by, b[at + 3] + by]);
-    }
-    for (const box of this.shifted)
-      if (box[0] <= region[2] && box[2] >= region[0] && box[1] <= region[3] && box[3] >= region[1])
-        out.push([box[0] - by, box[1] - by, box[2] + by, box[3] + by]);
+    const out: Rect[] = [];
+    this.some(region, by, (box) => void out.push([box[0], box[1], box[2], box[3]]));
     return out;
   }
   /** The way between two points around the obstacles, keeping as much clearance as it can. */
@@ -163,9 +177,7 @@ export class Routing {
       y0 = Math.min(a[1], b[1]),
       x1 = Math.max(a[0], b[0]),
       y1 = Math.max(a[1], b[1]);
-    for (const box of this.query([x0 - by, y0 - by, x1 + by, y1 + by], by))
-      if (crosses(a, b, box)) return false;
-    return true;
+    return !this.some([x0 - by, y0 - by, x1 + by, y1 + by], by, (box) => crosses(a, b, box));
   }
   /** Where an end's wire meets it, the way out, and its owner, leaving toward a point. */
   end(e: End, toward: Point, arrows: boolean): Terminal {
@@ -399,10 +411,10 @@ function stub(end: Terminal, route: Routing, clearance: number): Point {
     hi = Math.max(from, far),
     across = end.position[1 - axis];
   const region: Rect = axis === 0 ? [lo, across, hi, across] : [across, lo, across, hi];
-  for (const box of route.query(region, 0)) {
+  route.some(region, 0, (box) => {
     const near = ((sign > 0 ? box[axis] : box[axis + 2]) - from) * sign;
     if (near > exit + 1e-6 && near < length) length = Math.max(exit + 1, (exit + near) / 2);
-  }
+  });
   const p: [number, number] = [end.position[0], end.position[1]];
   p[axis] = from + sign * length;
   return p;
@@ -812,13 +824,14 @@ export function separate(
       const reach = gap * (cluster.length + 2);
       let low = line - reach,
         high = line + reach;
-      for (const box of route.query(
+      route.some(
         axis === 0 ? [line - reach, lo, line + reach, hi] : [lo, line - reach, hi, line + reach],
         0,
-      )) {
-        if (box[axis + 2] <= line + 1e-6) low = Math.max(low, box[axis + 2] + gap / 2);
-        else if (box[axis] >= line - 1e-6) high = Math.min(high, box[axis] - gap / 2);
-      }
+        (box) => {
+          if (box[axis + 2] <= line + 1e-6) low = Math.max(low, box[axis + 2] + gap / 2);
+          else if (box[axis] >= line - 1e-6) high = Math.min(high, box[axis] - gap / 2);
+        },
+      );
       cluster.sort(
         (a, b) =>
           a.turn - b.turn ||
@@ -921,8 +934,14 @@ function collect(
         low = -Infinity,
         high = Infinity;
       for (const j of joints) {
-        if (o[j] < lo) [lo, first] = [o[j], j];
-        if (o[j] > hi) [hi, last] = [o[j], j];
+        if (o[j] < lo) {
+          lo = o[j];
+          first = j;
+        }
+        if (o[j] > hi) {
+          hi = o[j];
+          last = j;
+        }
         if (route.kind[j] === 1) low = high = c[j];
         else if (route.kind[j] === 2) {
           // A stub only grows: its end stays a marker's length out from its port.

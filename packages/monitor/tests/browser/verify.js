@@ -88,6 +88,8 @@ function record(gpu) {
         return scope.fields(request);
       },
       extent: (request) => scope.extent(request),
+      recording: (record) => scope.recording(record),
+      hold: (entries) => scope.hold(entries),
       close: () => scope.close(),
     };
   };

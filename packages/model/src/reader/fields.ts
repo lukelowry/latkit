@@ -749,7 +749,8 @@ export class Fields {
     const batches = new Map<string, ColumnRead[]>();
     try {
       for (const group of groups) {
-        const found = this.lookup(group, index, rows, scope.at);
+        // Only a sampled read consults the coordinate, so a recording scope learns it depends on it.
+        const found = this.lookup(group, index, rows, group.sampled ? scope.at : undefined);
         if ('entry' in found) {
           resolved.set(group, found);
           continue;

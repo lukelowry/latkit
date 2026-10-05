@@ -30,17 +30,15 @@ export class PathSource {
             fields: Object.fromEntries(
               Object.entries(columns).map(([name, column]) => [
                 name,
-                { type: type(column), nullable: !!column.validity },
+                {
+                  type: type(column),
+                  nullable: !!column.validity,
+                  ...(name === 'position' || name === 'points'
+                    ? { space: 'geographic' as const }
+                    : {}),
+                },
               ]),
             ),
-            ...(columns.position || columns.points
-              ? {
-                  spatial: {
-                    field: columns.position ? 'position' : 'points',
-                    system: 'geographic' as const,
-                  },
-                }
-              : {}),
           },
         ]),
       ),

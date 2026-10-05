@@ -128,7 +128,7 @@ export class Painter {
       msaa: options.msaa,
       depth: 'depth32float',
     });
-    const bytes = new ArrayBuffer(16 * 16),
+    const bytes = new ArrayBuffer(17 * 16),
       f = new Float32Array(bytes),
       u = new Uint32Array(bytes);
     const scale = camera.scale / (camera.projection === 'globe' ? DEG : 1),
@@ -210,6 +210,7 @@ export class Painter {
     );
     f.set(options.gridColor, 56);
     u.set([0, options.graticule ? 1 : 0, 0, 0], 60);
+    f.set(options.background, 64);
     this.updateFocus(state);
     const focusedBinding = frame.buffer(this.focus);
     const uniform = frame.uniforms(f),

@@ -3,6 +3,7 @@ import {
   failure,
   type Reader,
   type ReadScope,
+  type ReadRecord,
   type MemoryEntry,
   type Memory,
 } from '@latkit/model';
@@ -28,6 +29,17 @@ import {
   type RenderOptions,
 } from './render.js';
 
+/** What memoized work held and bound, and what it depended on, as it was built. */
+interface Recording {
+  readonly held: Set<MemoryEntry>;
+  readonly buffers: Map<BufferData, number>;
+  readonly reads: ReadRecord;
+}
+export interface Memo extends Recording {
+  readonly deps: readonly unknown[];
+  readonly at: number | undefined;
+  readonly value: unknown;
+}
 /** What one frame borrows from its Gpu. */
 export interface FrameOwner {
   readonly device: GPUDevice;
@@ -43,6 +55,8 @@ export interface FrameOwner {
   readonly stopped: AbortSignal;
   /** Renderers with a preparation in progress. */
   readonly busy: Set<Renderer>;
+  /** Each renderer's memoized work, by slot. */
+  readonly memos: WeakMap<Renderer, Map<unknown, Memo>>;
   /** Submitted work not yet done. */
   readonly pending: Set<Promise<void>>;
   readonly maxFrames: number;
@@ -139,43 +153,114 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
     void task.then(settle, settle);
     return task;
   };
-  const makeFrame = (info: FrameInfo, reader: ReadScope): Preparation => ({
-    ...info,
-    signal,
-    reader,
-    shade: (request = {}) => {
-      assertPreparing();
-      return uniforms.add(shadeUniforms(request, info));
-    },
-    colormap: (value) => {
-      assertPreparing();
-      return owner.colormaps.prepare(value, scope);
-    },
-    text: (request) => {
-      assertPreparing();
-      return track(owner.text.prepare(request, scope, signal));
-    },
-    upload: (block, upload) => {
-      assertPreparing();
-      return owner.uploader.upload(block, upload, scope);
-    },
-    buffer: (data) => {
-      assertPreparing();
-      if (data instanceof BufferData) return owner.uploader.buffer(data, scope);
-      scope.use(owner.buffers.entry(data));
-      return { buffer: data.buffer, offset: 0, size: data.buffer.size };
-    },
-    uniforms: (data) => {
-      assertPreparing();
-      return uniforms.add(data);
-    },
-    texture: (resource) => {
-      assertPreparing();
-      if (resource instanceof TextureData) return owner.images.upload(resource, scope);
-      scope.use(owner.textures.entry(resource));
-      return resource.texture;
-    },
-  });
+  /**
+   * A view's frame. Inside memoized work, `records` note everything the work holds and binds, for
+   * every memo it is nested in.
+   */
+  const makeFrame = (
+    info: FrameInfo,
+    reader: ReadScope,
+    renderer: Renderer,
+    touched: Set<unknown>,
+    records: readonly Recording[] = [],
+  ): Preparation => {
+    const held: UploadScope = records.length
+      ? {
+          ...scope,
+          use: (entry) => {
+            scope.use(entry);
+            for (const record of records) record.held.add(entry);
+          },
+        }
+      : scope;
+    const perFrame = (what: string) => {
+      if (records.length)
+        throw failure('invalid-input', 'Memoized work cannot hold per-frame ' + what);
+    };
+    const frame: Preparation = {
+      ...info,
+      signal,
+      reader,
+      shade: (request = {}) => {
+        assertPreparing();
+        perFrame('shades');
+        return uniforms.add(shadeUniforms(request, info));
+      },
+      colormap: (value) => {
+        assertPreparing();
+        return owner.colormaps.prepare(value, held);
+      },
+      text: (request) => {
+        assertPreparing();
+        return track(owner.text.prepare(request, held, signal));
+      },
+      upload: (block, upload) => {
+        assertPreparing();
+        return owner.uploader.upload(block, upload, held);
+      },
+      buffer: (data) => {
+        assertPreparing();
+        if (data instanceof BufferData) {
+          for (const record of records) record.buffers.set(data, data.revision);
+          return owner.uploader.buffer(data, held);
+        }
+        held.use(owner.buffers.entry(data));
+        return { buffer: data.buffer, offset: 0, size: data.buffer.size };
+      },
+      uniforms: (data) => {
+        assertPreparing();
+        perFrame('uniforms');
+        return uniforms.add(data);
+      },
+      texture: (resource) => {
+        assertPreparing();
+        if (resource instanceof TextureData) return owner.images.upload(resource, held);
+        held.use(owner.textures.entry(resource));
+        return resource.texture;
+      },
+      memo: async <T>(
+        slot: unknown,
+        deps: readonly unknown[],
+        build: (frame: Preparation, previous: T | undefined) => Promise<T> | T,
+      ): Promise<T> => {
+        assertPreparing();
+        touched.add(slot);
+        let store = owner.memos.get(renderer);
+        if (!store) owner.memos.set(renderer, (store = new Map<unknown, Memo>()));
+        const old = store.get(slot);
+        if (
+          old &&
+          old.deps.length === deps.length &&
+          old.deps.every((dep, i) => Object.is(dep, deps[i])) &&
+          (!old.reads.sampled || old.at === info.at) &&
+          [...old.buffers].every(([data, revision]) => data.revision === revision) &&
+          [...old.held].every((entry) => entry.live && !entry.retire) &&
+          reader.hold(old.reads.entries)
+        ) {
+          // Holding again notes into the memos this one is nested in, as a build would.
+          for (const entry of old.held) held.use(entry);
+          for (const record of records) {
+            for (const [data, revision] of old.buffers) record.buffers.set(data, revision);
+            if (old.reads.sampled) record.reads.sampled = true;
+          }
+          return old.value as T;
+        }
+        const record: Recording = {
+          held: new Set(),
+          buffers: new Map(),
+          reads: { entries: new Set(), sampled: false },
+        };
+        const value = await build(
+          makeFrame(info, reader.recording(record.reads), renderer, touched, [...records, record]),
+          old?.value as T | undefined,
+        );
+        store.set(slot, { ...record, deps: [...deps], at: info.at, value });
+        return value;
+      },
+    };
+    return frame;
+  };
+  const touched = options.views.map(() => new Set<unknown>());
   try {
     for (const view of options.views) snapshots.push(view.renderer.capture());
     while (owner.pending.size >= owner.maxFrames)
@@ -183,7 +268,11 @@ export async function renderFrame(owner: FrameOwner, options: RenderOptions): Pr
     for (const info of infos) scopes.push(owner.reader.open({ signal, at: info.at }));
     const jobs = snapshots.map((snapshot, i) =>
       Promise.resolve().then(async () => {
-        prepared[i] = await snapshot.prepare(makeFrame(infos[i], scopes[i]));
+        const renderer = options.views[i].renderer;
+        prepared[i] = await snapshot.prepare(makeFrame(infos[i], scopes[i], renderer, touched[i]));
+        // A slot the view did not use this frame is no longer its work.
+        const store = owner.memos.get(renderer);
+        if (store) for (const slot of store.keys()) if (!touched[i].has(slot)) store.delete(slot);
       }),
     );
     preparation = Promise.allSettled(jobs);

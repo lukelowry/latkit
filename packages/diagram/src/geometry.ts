@@ -1,5 +1,5 @@
 import { Work, failure } from '@latkit/model';
-import { kit, type Point } from '@latkit/gpu';
+import { kit, type Point, type TextAlign, type TextBaseline } from '@latkit/gpu';
 import type { Scene, Vertex, Rect, Edge, End, Wire } from './scene.js';
 import type { DragWire } from './drag.js';
 import type { Limits } from './options.js';
@@ -203,10 +203,10 @@ export async function geometry(
       box.set(expand(previous.edges[i].bounds, options.routeClearance)),
     );
     for (const box of boxes)
-      for (const i of near.query(box)) {
+      near.some(box, (i) => {
         const edge = previous.edges[i];
         if (intersects(expand(edge.bounds, options.routeClearance), box)) affected.add(key(edge));
-      }
+      });
   }
   const reuse =
     sameGroups &&
@@ -309,11 +309,15 @@ export function labelBox(edge: Edge, at: Point): Rect {
  * beside its longest upright runs; a tag's past the end of each stub.
  */
 function spots(edge: Edge, paths: readonly (readonly Point[])[]): Point[][] {
-  const { width, height } = edge.label;
+  const text = edge.label,
+    at = (x: number, y: number, align: TextAlign, baseline: TextBaseline) =>
+      kit.textOrigin(text, [x, y], align, baseline);
   if (edge.options.appearance === 'tag')
     return [
       paths.map(([a, b]) =>
-        b[0] >= a[0] ? [b[0] + GAP, b[1] - height / 2] : [b[0] - GAP - width, b[1] - height / 2],
+        b[0] >= a[0]
+          ? at(b[0] + GAP + MARGIN, b[1], 'start', 'middle')
+          : at(b[0] - GAP - MARGIN, b[1], 'end', 'middle'),
       ),
     ];
   return paths
@@ -330,8 +334,14 @@ function spots(edge: Edge, paths: readonly (readonly Point[])[]): Point[][] {
       const mx = (a[0] + b[0]) / 2,
         my = (a[1] + b[1]) / 2;
       return level
-        ? [[[mx - width / 2, my - GAP - MARGIN - height]], [[mx - width / 2, my + GAP + MARGIN]]]
-        : [[[mx + GAP + MARGIN, my - height / 2]], [[mx - GAP - MARGIN - width, my - height / 2]]];
+        ? [
+            [at(mx, my - GAP - MARGIN, 'center', 'bottom')],
+            [at(mx, my + GAP + MARGIN, 'center', 'top')],
+          ]
+        : [
+            [at(mx + GAP + MARGIN, my, 'start', 'middle')],
+            [at(mx - GAP - MARGIN, my, 'end', 'middle')],
+          ];
     });
 }
 /** Place each edge's label at its best spot nothing placed overlaps, else at its best spot. */

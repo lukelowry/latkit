@@ -47,6 +47,18 @@ export interface Preparation extends FrameInfo {
   uniforms(data: ArrayBufferView): GPUBufferBinding;
   /** Protect an owned texture until submitted work completes. */
   texture(resource: TextureResource | TextureData): GPUTexture;
+  /**
+   * Work this view keeps across frames in `slot`: rebuilt only when `deps` change, when what its
+   * reads read changed (the coordinate, if it read sampled fields), when a buffer it bound was
+   * written, or when memory it held was evicted. Reuse holds that memory again and does nothing
+   * else. `build` gets a frame of its own, without per-frame uniforms or shades, and the value
+   * the slot held. Slots a frame leaves unused are dropped.
+   */
+  memo<T>(
+    slot: unknown,
+    deps: readonly unknown[],
+    build: (frame: Preparation, previous: T | undefined) => Promise<T> | T,
+  ): Promise<T>;
 }
 
 export interface Encoding extends FrameInfo {

@@ -1,4 +1,12 @@
-import { type Gpu, type Point, type RGBA, type TextLayout, kit, type Viewport } from '@latkit/gpu';
+import {
+  type Gpu,
+  type Point,
+  type RGBA,
+  type TextAlign,
+  type TextBaseline,
+  kit,
+  type Viewport,
+} from '@latkit/gpu';
 import { buffer } from './rendering/painter.js';
 import type { Domain } from '@latkit/model';
 import type { Style } from './config.js';
@@ -60,36 +68,34 @@ export async function axes(
   const area = plot(view, options),
     runs: kit.TextRun[] = [],
     lines: number[] = [],
-    grid: number[] = [];
+    grid: number[] = [],
+    // Tick labels skip where one already placed would overlap them.
+    occupied = new kit.Occupancy();
   const sx = kit.resolveScale({ range: [area.x, area.x + area.width] }, x),
     sy = kit.resolveScale({ range: [area.y + area.height, area.y] }, y),
     size = options.fontSizePx;
   const line = (a: number, b: number, c: number, d: number, color: RGBA) =>
     (color === options.gridColor ? grid : lines).push(a, b, c, d, ...color);
-  const measure = (text: string) =>
-    gpu.layoutText({ text, font: options.font, size, color: options.textColor }, { signal });
+  /** Text whose `align` side and `baseline` sit at `at`; with `spacing`, only where it is free. */
   const label = async (
     text: string,
-    px: number,
-    py: number,
-    align: 'left' | 'center' | 'right',
-    layout?: TextLayout,
+    at: Point,
+    align: TextAlign,
+    baseline: TextBaseline,
+    spacing?: number,
   ) => {
-    const {
-      runs: [run],
-      width,
-    } = layout ?? (await measure(text));
-    if (run)
-      runs.push({
-        ...run,
-        position: [px - (align === 'center' ? width / 2 : align === 'right' ? width : 0), py],
-      });
-    return width;
+    const layout = await gpu.layoutText(
+        { text, font: options.font, size, color: options.textColor },
+        { signal },
+      ),
+      [ox, oy] = kit.textOrigin(layout, at, align, baseline);
+    if (spacing !== undefined && !occupied.place(kit.textBox(layout, [ox, oy], spacing))) return;
+    for (const run of layout.runs)
+      runs.push({ ...run, position: [run.position[0] + ox, run.position[1] + oy] });
   };
   if (options.coordinateAxis !== null) {
     const axis = options.coordinateAxis,
       t = ticks(x, area.width, axis);
-    let end = -Infinity;
     line(
       area.x,
       area.y + area.height,
@@ -100,16 +106,16 @@ export async function axes(
     for (const tick of t.items) {
       const px = kit.scaleValue(tick.value, sx)!;
       if (axis.grid !== false) line(px, area.y, px, area.y + area.height, options.gridColor);
-      const text = tick.label ?? String(tick.value),
-        layout = await measure(text),
-        width = layout.width;
-      if (px - width / 2 >= end + 6) {
-        await label(text, px, area.y + area.height + size * 1.5, 'center', layout);
-        end = px + width / 2;
-      }
+      await label(
+        tick.label ?? String(tick.value),
+        [px, area.y + area.height + size * 0.5],
+        'center',
+        'top',
+        3,
+      );
     }
     const caption = [axis.label, t.offset ? '+' + String(t.offset) : ''].filter(Boolean).join('  ');
-    if (caption) await label(caption, area.x + area.width, view.height - 4, 'right');
+    if (caption) await label(caption, [area.x + area.width, view.height - 4], 'end', 'alphabetic');
   }
   if (options.valueAxis !== null) {
     const axis = options.valueAxis,
@@ -118,10 +124,10 @@ export async function axes(
     for (const tick of t.items) {
       const py = kit.scaleValue(tick.value, sy)!;
       if (axis.grid !== false) line(area.x, py, area.x + area.width, py, options.gridColor);
-      await label(tick.label ?? String(tick.value), area.x - 8, py + size * 0.3, 'right');
+      await label(tick.label ?? String(tick.value), [area.x - 8, py], 'end', 'middle');
     }
     const caption = [axis.label, t.offset ? '+' + String(t.offset) : ''].filter(Boolean).join('  ');
-    if (caption) await label(caption, area.x, Math.max(size, area.y - 8), 'left');
+    if (caption) await label(caption, [area.x, Math.max(size, area.y - 8)], 'start', 'alphabetic');
   }
   return {
     plot: area,

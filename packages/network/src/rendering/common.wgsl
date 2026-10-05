@@ -15,6 +15,8 @@ struct Uniforms {
   surface: vec4f,
   grid: vec4f,
   flags: vec4u,
+  /** The view's background: the halo labels draw over lines. */
+  background: vec4f,
 }
 fn finite(x: f32) -> bool { return abs(x) <= 3.402823e38; }
 fn project_world(p: vec3f, u: Uniforms) -> vec4f {

@@ -1,6 +1,7 @@
 import {
   Work,
   failure,
+  fieldDefinition,
   assertIndex,
   bitAt,
   numberAt,
@@ -62,10 +63,7 @@ export function structure(option: VertexData | EdgeData): Record<string, FieldIn
 }
 /** Whether a binding reads a sampled field, so it depends on the read coordinate. */
 function sampled(data: DiagramData, type: string, input: FieldInput): boolean {
-  return typeof input === 'string'
-    ? data.source.schema.types[type]?.fields[input]?.sampled === true
-    : 'source' in input &&
-        input.source.schema.types[input.from]?.fields[input.field]?.sampled === true;
+  return fieldDefinition(data.source, type, input)?.sampled === true;
 }
 /** Only sampled geometry, visibility, and text invalidate the scene. */
 export function sampledStructure(data: DiagramData): boolean {

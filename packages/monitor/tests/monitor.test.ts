@@ -72,6 +72,8 @@ function record(gpu: Gpu, requests: Request[]) {
         requests.push({ ...request, kind: 'extent' });
         return scope.extent(request);
       },
+      recording: (record) => scope.recording(record),
+      hold: (entries) => scope.hold(entries),
       close: () => scope.close(),
     };
     return recorded;

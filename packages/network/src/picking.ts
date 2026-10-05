@@ -264,6 +264,18 @@ function* offsets(count: number, check: () => void): Iterable<number> {
     yield i;
   }
 }
+/** The offsets an index finds within `bounds`, or every offset when there is no index to ask. */
+function near(
+  index: kit.BoxIndex | undefined | false,
+  bounds: kit.Bounds2D | undefined,
+  count: number,
+  check: () => void,
+): Iterable<number> {
+  if (!index || !bounds) return offsets(count, check);
+  const out: number[] = [];
+  index.some(bounds, (offset) => void out.push(offset), check);
+  return out;
+}
 export class PickGeometry {
   constructor(
     private readonly vertices: ReadonlyMap<VertexBank, CpuBank>,
@@ -661,8 +673,7 @@ export class PickGeometry {
     if (options.markers || options.poles)
       for (const [bank, cpu] of this.vertices)
         if (!bank.synthetic)
-          for (const offset of (bounds && cpu.spatial.index?.query(bounds, check)) ??
-            offsets(bank.count, check)) {
+          for (const offset of near(cpu.spatial.index, bounds, bank.count, check)) {
             check();
             const p = this.projected(
               bank,
@@ -701,10 +712,12 @@ export class PickGeometry {
     if (options.lines)
       for (const batch of this.edges)
         if (pickable(batch, data))
-          for (const offset of (bounds &&
-            edgeOptions(data, batch.edge.bank).route !== 'geodesic' &&
-            batch.spatial.index?.query(bounds, check)) ||
-            offsets(batch.batch.records.length / 4, check)) {
+          for (const offset of near(
+            edgeOptions(data, batch.edge.bank).route !== 'geodesic' && batch.spatial.index,
+            bounds,
+            batch.batch.records.length / 4,
+            check,
+          )) {
             check();
             const records = batch.batch.records,
               ao = records[offset * 4],

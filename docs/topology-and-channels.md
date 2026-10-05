@@ -12,8 +12,9 @@ const bus = { type: { kind: 'reference', to: 'Bus' } } as const;
 const schema = {
   types: {
     Bus: {
-      fields: { position: { type: { kind: 'vector', items: 'float64', size: 2 } } },
-      spatial: { field: 'position', system: 'geographic' },
+      fields: {
+        position: { type: { kind: 'vector', items: 'float64', size: 2 }, space: 'geographic' },
+      },
     },
     Branch: { fields: { bus1: bus, bus2: bus } },
     Load: { fields: { bus } },
@@ -29,10 +30,11 @@ net: each row joins the vertices whose references name it, so
 loads. A diagram draws those references as ports; `direction: 'in' | 'out'` on a
 reference field orients them.
 
-The drawn types' spatial system sets the coordinates: geographic positions are
-longitude/latitude in degrees, cartesian positions use application units.
-Positions default to the spatial field and can also be two-component vectors or
-separate `{ x: 'longitude', y: 'latitude' }` fields. Paths and bends use lists of
+A position field's `space` sets its coordinates: geographic positions are
+longitude/latitude in degrees, cartesian positions use application units. A
+network draws a type at its first geographic field, else its first cartesian
+one; `position` binds any two-component vector or separate
+`{ x: 'longitude', y: 'latitude' }` fields instead. Paths and bends use lists of
 two-component vectors.
 
 ## Style by field

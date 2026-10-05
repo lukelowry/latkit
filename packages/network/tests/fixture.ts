@@ -55,7 +55,10 @@ export class GraphSource {
       types: {
         node: {
           fields: {
-            location: { type: { kind: 'vector', items: 'float64', size: 2 } },
+            location: {
+              type: { kind: 'vector', items: 'float64', size: 2 },
+              space: geographic ? 'geographic' : 'cartesian',
+            },
             weight: { type: 'float32' },
             name: { type: 'text' },
             signal: { type: 'float32', sampled: true },
@@ -65,7 +68,6 @@ export class GraphSource {
             y: { type: 'float64', sampled: true },
             z: { type: 'float32', sampled: true },
           },
-          spatial: { field: 'location', system: geographic ? 'geographic' : 'cartesian' },
         },
         line: {
           fields: {

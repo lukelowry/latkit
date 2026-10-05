@@ -27,7 +27,8 @@ export type {
   ListColumn,
   ReferenceColumn,
 } from './data.js';
-export type { Schema, TypeDefinition, FieldDefinition } from './schema.js';
+export type { Schema, TypeDefinition, FieldDefinition, Space } from './schema.js';
+export { fieldDefinition, positionField } from './definitions.js';
 export type {
   FieldSelection,
   QueryOptions,
@@ -104,7 +105,7 @@ export { appendedPages, sampleDomain, samePages } from './pages.js';
 export { sampleFrames } from './read.js';
 
 export { createReader } from './reader/reader.js';
-export type { Reader, ReadScope, ReaderOptions } from './reader/reader.js';
+export type { Reader, ReadScope, ReadRecord, ReaderOptions } from './reader/reader.js';
 export { createMemory } from './memory.js';
 export type { Memory, Entry as MemoryEntry, MemoryBudget, MemoryStats } from './memory.js';
 export type {

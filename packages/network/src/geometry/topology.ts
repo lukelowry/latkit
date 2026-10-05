@@ -1,6 +1,8 @@
 import {
   bitAt,
   failure,
+  fieldDefinition,
+  positionField,
   assertIndex,
   type Column,
   type Index,
@@ -9,6 +11,7 @@ import {
   type Schema,
   type Data,
   type FieldValues,
+  type Space,
 } from '@latkit/model';
 import { kit, type Position2D } from '@latkit/gpu';
 import type { NetworkData, VertexData, EdgeData, PathData } from '../data.js';
@@ -119,6 +122,15 @@ class Uints {
 }
 
 /** A contiguous run as a range, so ranged reads and lookups never allocate index arrays. */
+/** The space a position binding's coordinates lie in: its vector field's, or its axes' when they agree. */
+function spaceOf(source: Data, from: string, position: Position2D): Space | undefined {
+  if (typeof position !== 'object' || !('x' in position))
+    return fieldDefinition(source, from, position)?.space;
+  const x = fieldDefinition(source, from, position.x)?.space,
+    y = fieldDefinition(source, from, position.y)?.space;
+  if (x !== y) throw failure('invalid-input', 'Position axes lie in different spaces');
+  return x;
+}
 function axis(rows: Uint32Array): RowAxis {
   const n = rows.length;
   if (!n) return { kind: 'range', offset: 0, count: 0 };
@@ -259,7 +271,9 @@ export async function readGeometry(
     const read = await rowsOf(data.source, type, options.rows);
     const definition = schema.types[type];
     if (!definition) throw failure('invalid-input', 'Unknown vertex type: ' + type);
-    if (definition.spatial) systems.add(definition.spatial.system);
+    const position = options.position ?? positionField(definition, ['geographic', 'cartesian']),
+      space = position === undefined ? undefined : spaceOf(data.source, type, position);
+    if (space) systems.add(space);
     if (vertexCount + read.rows.length > limits.vertices)
       throw failure('resource-limit', 'Network vertex limit exceeded');
     const addresses = new Addresses(read.rows, vertexCount, vertices.length);
@@ -275,7 +289,7 @@ export async function readGeometry(
         rows,
         count,
         base: vertexCount,
-        position: options.position ?? definition.spatial?.field,
+        position,
       };
       vertices.push(bank);
       table.add(rows, bank);
@@ -476,8 +490,8 @@ export async function readGeometry(
   for (const [type, options] of Object.entries(data.paths ?? {})) {
     const source = options.source ?? data.source;
     const read = await rowsOf(source, type, options.rows);
-    const spatial = source.schema.types[type]?.spatial;
-    if (spatial) systems.add(spatial.system);
+    const space = fieldDefinition(source, type, options.points)?.space;
+    if (space) systems.add(space);
     for (let first = 0; first < read.rows.length; first += BANK_ROWS) {
       const count = Math.min(BANK_ROWS, read.rows.length - first);
       edges.push({

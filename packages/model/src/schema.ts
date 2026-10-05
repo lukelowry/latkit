@@ -9,14 +9,14 @@ export interface Schema {
   readonly axis?: Axis;
 }
 
+/** Styling, layout, and inspector configuration belong to the host. */
 export interface TypeDefinition {
   readonly label?: string;
   readonly description?: string;
   readonly fields: Readonly<Record<string, FieldDefinition>>;
-  /** The field holding each row's position, a 2D/3D vector or a list of them. Styling, layout,
-   * and inspector configuration belong to the host. */
-  readonly spatial?: { readonly field: string; readonly system: 'geographic' | 'cartesian' };
 }
+/** The space a position's coordinates lie in: longitude and latitude, or plane coordinates. */
+export type Space = 'geographic' | 'cartesian';
 
 /** Both static and sampled fields may be monitored. Absent values
  * read as null and require nullable. Bounds describe scalar numeric data. */
@@ -28,6 +28,11 @@ export type FieldDefinition = {
   /** References only: the way it carries flow, such as a block's input or output. Omitted is
    * undirected. */
   readonly direction?: 'in' | 'out';
+  /**
+   * Positions only: the space a 2D/3D vector, a list of them, or one numeric axis of a position
+   * lies in. A view draws a type at its first positioned vector field unless bound elsewhere.
+   */
+  readonly space?: Space;
 } & (
   | { readonly sampled: true; readonly type: NumericType; readonly bounds?: never }
   | { readonly sampled?: false; readonly type: DataType; readonly bounds?: Bounds }

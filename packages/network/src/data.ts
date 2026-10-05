@@ -10,11 +10,16 @@ import type { kit, Labels, RGBA, ColorScale, Position2D, Scale } from '@latkit/g
 /** Labels beside a type's items, sized in CSS pixels; `fontSizePx` by default. */
 export interface NetworkLabels extends Labels {
   readonly sizePx?: number;
+  /**
+   * Leave out a label whose text repeats one placed within this many CSS pixels, as when buses
+   * of one substation share its name; 0, the default, labels every row it has room for.
+   */
+  readonly repeatSpacingPx?: number;
 }
 /** A field name stands for that field with defaults: `color: 'load'`, `labels: 'name'`. */
 export interface VertexOptions {
   readonly rows?: RowSelection;
-  /** Defaults to the type's spatial field. */
+  /** Defaults to the type's first positioned field: geographic, else cartesian. */
   readonly position?: Position2D;
   readonly color?: string | ColorScale | null;
   /** The color without a `color` field; `vertexBaseColor` by default. */

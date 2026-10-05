@@ -71,15 +71,17 @@ export class ExampleSource {
     visit(tables);
     this.bytes = [...buffers].reduce((sum, b) => sum + b.byteLength, 0);
     for (const [name, table] of Object.entries(tables)) {
-      const fields = Object.fromEntries(
-        Object.entries(table.columns).map(([name, column]) => [name, { type: type(column) }]),
-      );
       // Every example places its rows by longitude and latitude.
-      const spatial = table.columns.position ? 'position' : table.columns.points ? 'points' : null;
-      types[name] = {
-        fields,
-        ...(spatial ? { spatial: { field: spatial, system: 'geographic' as const } } : {}),
-      };
+      const fields = Object.fromEntries(
+        Object.entries(table.columns).map(([name, column]) => [
+          name,
+          {
+            type: type(column),
+            ...(name === 'position' || name === 'points' ? { space: 'geographic' as const } : {}),
+          },
+        ]),
+      );
+      types[name] = { fields };
     }
     this.schema = {
       types,
