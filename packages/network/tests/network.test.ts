@@ -869,3 +869,28 @@ it('submits a captured network while batches coalesce into the next snapshot', a
   network.destroy();
   gpu.destroy();
 });
+it('takes a whole config, changing nothing when it repeats the one held', async () => {
+  const gpu = await createGpu({ device: device().device }),
+    { data } = fixture();
+  const network = createNetwork(gpu, { ...data, vertexColor: [1, 0, 0, 1] });
+  const invalidated = vi.fn(),
+    off = invalidations(network)(invalidated);
+  try {
+    const held = network.config;
+    // Built afresh the same way, as an application builds its config on every change.
+    network.set(
+      { ...fixture().data, source: data.source, vertexColor: [1, 0, 0, 1] },
+      { replace: true },
+    );
+    expect(network.config).toBe(held);
+    expect(invalidated).not.toHaveBeenCalled();
+    network.set(data, { replace: true });
+    expect(network.config).not.toHaveProperty('vertexColor');
+    expect(network.config.vertices).toBe(held.vertices);
+    expect(invalidated).toHaveBeenCalled();
+  } finally {
+    off();
+    network.destroy();
+    gpu.destroy();
+  }
+});

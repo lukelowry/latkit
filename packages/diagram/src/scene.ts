@@ -129,6 +129,13 @@ export interface Scene {
   obstacles?: Obstacles;
   /** Each item's slot by its key, built on first use. */
   keys?: Map<string, number>;
+  /** Each vertex, edge, and part by its `sceneKey`, built on first use. */
+  rows?: SceneRows;
+}
+export interface SceneRows {
+  readonly vertices: ReadonlyMap<string, number>;
+  readonly edges: ReadonlyMap<string, number>;
+  readonly parts: ReadonlyMap<string, number>;
 }
 export const emptyLabel: TextLayout = Object.freeze({
   runs: [],
@@ -142,6 +149,14 @@ export const emptyLabel: TextLayout = Object.freeze({
 /** A row's type and id, which find it in every scene of its model. */
 export function sceneKey(hit: SceneItem): string {
   return hit.index.type + '\u0000' + hit.id;
+}
+/** Where each row of a scene is, by its key: built once, and shared by the copies of a scene. */
+export function sceneRows(scene: Scene): SceneRows {
+  return (scene.rows ??= {
+    vertices: new Map(scene.vertices.map((vertex, i) => [sceneKey(vertex.hit), i])),
+    edges: new Map(scene.edges.map((edge, i) => [sceneKey(edge.hit), i])),
+    parts: new Map(scene.parts.map((part, i) => [part.key, i])),
+  });
 }
 export function rect(vertex: Vertex): Rect {
   return [vertex.x, vertex.y, vertex.x + vertex.width, vertex.y + vertex.height];

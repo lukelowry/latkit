@@ -100,10 +100,19 @@ function clean(scene: Scene): void {
             },
           );
         }
-    for (const at of edge.labels)
+    for (const at of edge.labels) {
       index.some(labelBox(edge, at), (j) => {
         expect(overlap(labelBox(edge, at), boxes[j]), 'a label over a block').toBe(false);
       });
+      for (const group of scene.groups) {
+        const b = group.bounds;
+        if (group.collapsed || b[0] === b[2]) continue;
+        expect(
+          overlap(labelBox(edge, at), [b[0], b[1], b[2], b[1] + group.header]),
+          'a label over a group title',
+        ).toBe(false);
+      }
+    }
   }
   for (const group of scene.groups) {
     if (group.bounds[0] === group.bounds[2]) continue;

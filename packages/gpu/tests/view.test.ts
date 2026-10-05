@@ -253,9 +253,15 @@ it('keeps every value a patch repeats, and configures nothing when nothing chang
   expect(view.config.items!.b).toBe(before.items!.b);
   expect(view.config.shade).toBe(before.shade);
   expect(view.configured).toHaveLength(configured + 1);
-  // Data is new as itself, whatever it holds.
+  // Data is new as itself, whatever it holds, wherever a `source` holds it.
   view.set({ source: { schema: { types: {} }, tables: {} } } as TestConfig);
   expect(view.configured).toHaveLength(configured + 2);
+  const own = { a: { source: { schema: { types: {} }, tables: {} } } };
+  view.set({ items: own } as TestConfig);
+  view.set({ items: { a: { source: { schema: { types: {} }, tables: {} } } } } as TestConfig);
+  expect(view.configured).toHaveLength(configured + 4);
+  view.set({ items: own } as TestConfig);
+  expect(view.configured).toHaveLength(configured + 5);
   view.destroy();
   gpu.destroy();
 });

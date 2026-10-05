@@ -108,8 +108,11 @@ try {
     });
   await call('Page.enable');
   await call('Runtime.enable');
-  /** Load a page, await the global its script sets, and keep its result and a screenshot. */
-  const run = async (page, global, name) => {
+  /**
+   * Load a page, await the global its script sets, and keep its result and a screenshot, taken at
+   * once; `check` names a function of the page that then judges the screenshot.
+   */
+  const run = async (page, global, name, check) => {
     await call('Page.navigate', {
       url: 'http://127.0.0.1:' + port + '/packages/diagram/tests/browser/' + page,
     });
@@ -135,7 +138,28 @@ try {
       throw new Error(
         result.exceptionDetails.exception?.description ?? JSON.stringify(result.exceptionDetails),
       );
+    const screenshot = await call('Page.captureScreenshot', {
+      format: 'png',
+      captureBeyondViewport: true,
+    });
     const { images = {}, ...value } = result.result.value;
+    if (check) {
+      const judged = await call('Runtime.evaluate', {
+        expression:
+          'globalThis.' +
+          check +
+          '(' +
+          JSON.stringify('data:image/png;base64,' + screenshot.data) +
+          ')',
+        awaitPromise: true,
+        returnByValue: true,
+      });
+      if (judged.exceptionDetails)
+        throw new Error(
+          judged.exceptionDetails.exception?.description ?? JSON.stringify(judged.exceptionDetails),
+        );
+      value.screenshot = judged.result.value;
+    }
     await mkdir(path.join(root, 'output/playwright'), { recursive: true });
     await writeFile(
       path.join(root, 'output/' + name + '.json'),
@@ -151,17 +175,13 @@ try {
           Buffer.from(data.slice(data.indexOf(',') + 1), 'base64'),
         );
     }
-    const screenshot = await call('Page.captureScreenshot', {
-      format: 'png',
-      captureBeyondViewport: true,
-    });
     await writeFile(
       path.join(root, 'output/playwright/' + name + '.png'),
       Buffer.from(screenshot.data, 'base64'),
     );
   };
   await run('check.html', 'diagramCheck', 'diagram-browser');
-  await run('gallery.html', 'diagramGallery', 'diagram-gallery');
+  await run('gallery.html', 'diagramGallery', 'diagram-gallery', 'diagramTransitionCheck');
   if (keepOpen) {
     console.log(
       'Visible GPU fixture: http://127.0.0.1:' +

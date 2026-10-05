@@ -31,6 +31,7 @@ export type {
   LayoutGraph,
   LayoutVertex,
   LayoutEdge,
+  LayoutPort,
 } from './layout.js';
 export type { Limits as DiagramLimits } from './options.js';
 export type { DiagramInput } from './input.js';

@@ -121,17 +121,18 @@ function plain(value: unknown): value is Plain {
   return prototype === Object.prototype || prototype === null;
 }
 /**
- * Whether two option values are the same: plain objects and arrays by what they hold; data, typed
- * arrays, functions, and other instances only as themselves.
+ * Whether two option values are the same: plain objects and arrays by what they hold; typed
+ * arrays, functions, and other instances only as themselves. A `source` holds data, which is new
+ * as itself: the view decides what of new data is new.
  */
-function same(a: unknown, b: unknown): boolean {
+function same(a: unknown, b: unknown, key?: string): boolean {
   if (a === b) return true;
+  if (key === 'source') return false;
   if (Array.isArray(a))
     return Array.isArray(b) && a.length === b.length && a.every((v, i) => same(v, b[i]));
-  // Data compares as itself: a view decides what of new data is new.
-  if (!plain(a) || !plain(b) || 'tables' in a || 'tables' in b) return false;
-  for (const key of new Set([...Object.keys(a), ...Object.keys(b)]))
-    if (!same(a[key], b[key])) return false;
+  if (!plain(a) || !plain(b)) return false;
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)]))
+    if (!same(a[k], b[k], k)) return false;
   return true;
 }
 /**
@@ -142,8 +143,8 @@ function merge(
   base: Plain | undefined,
   patch: Plain,
   replace: boolean | ((key: string) => boolean),
-  each: (before: unknown, value: unknown, key: string) => unknown = (before, value) =>
-    same(before, value) ? before : value,
+  each: (before: unknown, value: unknown, key: string) => unknown = (before, value, key) =>
+    same(before, value, key) ? before : value,
 ): Plain | undefined {
   let next: Plain | undefined;
   const put = (key: string, value: unknown) => {
@@ -169,7 +170,7 @@ function applyPatch<C>(config: C, patch: Plain, shape: ConfigShape, replace: boo
       ? merge(before as Plain | undefined, value, replace, options)
       : plain(value) && shape.merged?.includes(key)
         ? merge(before as Plain | undefined, value, replace)
-        : same(before, value)
+        : same(before, value, key)
           ? before
           : value;
   const resets = replace && ((key: string) => !PRESENTATION.has(key));

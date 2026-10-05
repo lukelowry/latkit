@@ -40,10 +40,16 @@ import {
   type Style,
 } from './config.js';
 import { place, layoutOptions, type LayoutOptions } from './layout.js';
-import { readScene, sampledStructure, sameStructure } from './read.js';
+import {
+  readPlacement,
+  readScene,
+  sampledStructure,
+  samePlacement,
+  sameStructure,
+} from './read.js';
 import { dragWires, geometry } from './geometry.js';
 import { dragMarks, moved, type DragDraw, type DragMarks } from './drag.js';
-import { itemSlots, positions, sceneKey, union, type Scene } from './scene.js';
+import { itemSlots, positions, sceneRows, union, type Scene } from './scene.js';
 import { flowing, widestPx } from './styles.js';
 import { Picking } from './picking.js';
 import { Painter, pipelines, type Paint, type Overlay, type Pipelines } from './painter.js';
@@ -128,6 +134,7 @@ interface Presented {
   /** The scene's revision, or -1 when the next frame must read it again. */
   readonly revision: number;
   readonly structureRevision: number;
+  readonly placementRevision: number;
   readonly at?: number;
   /** A drag drawn over the scene. */
   readonly drag?: DragDraw;
@@ -168,11 +175,13 @@ function portsShown(style: Style, camera: kit.Camera2D): boolean {
 const KINDS = new Set(['vertex', 'edge', 'port']);
 /** Whether a vertex both scenes draw stands somewhere else in the second. */
 function moves(from: Scene, to: Scene): boolean {
-  const before = new Map(from.vertices.map((vertex) => [sceneKey(vertex.hit), vertex]));
-  return to.vertices.some((vertex) => {
-    const was = before.get(sceneKey(vertex.hit));
-    return !!was && (was.x !== vertex.x || was.y !== vertex.y);
-  });
+  const before = sceneRows(from).vertices;
+  for (const [key, i] of sceneRows(to).vertices) {
+    const was = from.vertices[before.get(key) ?? -1],
+      vertex = to.vertices[i];
+    if (was && (was.x !== vertex.x || was.y !== vertex.y)) return true;
+  }
+  return false;
 }
 
 class DiagramView
@@ -193,6 +202,7 @@ class DiagramView
   private readonly painter: Painter;
   private revision = 0;
   private structureRevision = 0;
+  private placementRevision = 0;
   /** The latest drawn frame: what pick, locate, selection, and drags see. */
   private shown?: Presented;
   private overlay: Overlay | null = null;
@@ -460,7 +470,7 @@ class DiagramView
     if (!sameStructure(before.data, resolved.data) || previous.limits !== next.limits) {
       this.reread(animate);
       this.pruneSelection();
-    }
+    } else if (!samePlacement(before.data, resolved.data)) this.reposition(animate);
     if (previous.layout !== next.layout) {
       this.reread(animate);
       this.relayout = true;
@@ -495,6 +505,14 @@ class DiagramView
     this.transition = undefined;
     this.revision++;
     this.structureRevision++;
+    this.drag = undefined;
+  }
+  /** Draw new positions on the scene as it stands: the next frame reads them and nothing else. */
+  private reposition(animate: boolean): void {
+    this.transitionRequested = animate;
+    this.transition = undefined;
+    this.revision++;
+    this.placementRevision++;
     this.drag = undefined;
   }
   /** Draw dragged vertices offset from their accepted positions, or stop with null. */
@@ -545,6 +563,7 @@ class DiagramView
       work = new Work(frame.signal, limits.layoutMs),
       revision = this.revision,
       structureRevision = this.structureRevision,
+      placementRevision = this.placementRevision,
       motion = !this.reducedMotion,
       at = this.resolved.sampled ? frame.at : undefined;
     const base = this.shown,
@@ -575,6 +594,8 @@ class DiagramView
           edges: base.scene.edges.map((edge) => ({ ...edge })),
           groups: base.scene.groups.map((group) => ({ ...group })),
         };
+        if (base.placementRevision !== placementRevision)
+          await readPlacement(scene, data, frame.reader, work);
       } else {
         scene = await readScene(
           data,
@@ -669,6 +690,7 @@ class DiagramView
       viewport,
       revision,
       structureRevision,
+      placementRevision,
       at: drawnAt,
       drag: drag ?? undefined,
       offsets: paint.offsets,
@@ -710,6 +732,7 @@ class DiagramView
       viewport: next.viewport,
       revision: next.revision,
       structureRevision: next.structureRevision,
+      placementRevision: next.placementRevision,
       at: next.at,
       drag: next.drag,
       offsets: next.offsets,

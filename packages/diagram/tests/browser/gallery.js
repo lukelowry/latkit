@@ -103,6 +103,37 @@ async function bright(blob) {
     if (pixels[i] > 90 || pixels[i + 1] > 90 || pixels[i + 2] > 90) count++;
   return count;
 }
+/**
+ * Check a screenshot taken mid-transition: the moving block covers where `locate` says it draws,
+ * and the canvas shows only its background where the block was and where it goes.
+ */
+globalThis.diagramTransitionCheck = async (url) => {
+  const { left, top, start, drawn, target } = globalThis.diagramTransition,
+    bitmap = await createImageBitmap(await (await fetch(url)).blob()),
+    context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d');
+  context.drawImage(bitmap, 0, 0);
+  /** The median color of a 5 × 5 patch about a canvas point, which a grid dot cannot sway. */
+  const at = ([x, y]) => {
+    const pixels = context.getImageData(
+        Math.round(left + x) - 2,
+        Math.round(top + y) - 2,
+        5,
+        5,
+      ).data,
+      channel = (c) =>
+        [0, 1, 2, 3, 4]
+          .flatMap((r) => [0, 1, 2, 3, 4].map((k) => pixels[(r * 5 + k) * 4 + c]))
+          .sort((a, b) => a - b)[12];
+    return [channel(0), channel(1), channel(2)];
+  };
+  const background = at([6, 6]),
+    plain = (point) => at(point).every((v, c) => Math.abs(v - background[c]) < 12);
+  const result = { block: !plain(drawn), left: plain(start), arrived: !plain(target) };
+  assert(result.block, 'The moving block does not draw where locate says');
+  assert(result.left, 'The moving block still draws where it was');
+  assert(!result.arrived, 'The moving block already draws where it goes');
+  return result;
+};
 globalThis.diagramGallery = (async () => {
   const errors = [];
   const gpu = await within(10000, 'GPU', createGpu());
@@ -128,9 +159,10 @@ globalThis.diagramGallery = (async () => {
       diagram.destroy();
     }
   }
-  // A transition on the canvas, slow enough that the runner's screenshot finds it between its ends.
+  // A transition on the canvas, slow enough that the runner's screenshot finds it between its ends:
+  // every block moves down, and the screenshot must show the first where `locate` says it draws.
   const canvas = document.querySelector('canvas'),
-    moving = clusters(8);
+    moving = clusters(2);
   const diagram = createDiagram(gpu, {
     ...data(moving, true),
     canvas,
@@ -149,12 +181,23 @@ globalThis.diagramGallery = (async () => {
     );
   };
   await frames(1);
-  moving.xy.forEach((_, i) => (moving.xy[i] += i % 2 ? 220 : 340));
+  diagram.set({ camera: { fit: false } });
+  await frames(1);
+  const ref = vertex(moving, 'n0'),
+    start = diagram.locate(ref),
+    scale = diagram.camera.scale;
+  moving.xy.forEach((_, i) => (moving.xy[i] += i % 2 ? 180 : 0));
   moving.update();
   diagram.set(data(moving, true), { animate: true });
-  await frames(30);
-  const n0 = diagram.locate(vertex(moving, 'n0'));
-  assert(n0, 'The moving vertex is not drawn');
+  await within(10000, 'transition', new Promise((resolve) => setTimeout(resolve, 2400)));
+  const drawn = diagram.locate(ref),
+    target = [start[0], start[1] + 180 * scale],
+    box = canvas.getBoundingClientRect();
+  assert(
+    drawn && drawn[1] > start[1] + 40 && drawn[1] < target[1] - 40,
+    'The moving block is not between its ends',
+  );
+  globalThis.diagramTransition = { left: box.left, top: box.top, start, drawn, target };
   await gpu.idle();
   assert(errors.length === 0, errors.join('\n'));
   const result = { status: 'passed', cases, errors };

@@ -1,13 +1,6 @@
 import { Work, failure, type RequestOptions } from '@latkit/model';
 import { kit, type Gpu } from '@latkit/gpu';
-import {
-  diagramData,
-  rowOf,
-  type DiagramItem,
-  type DiagramRow,
-  type Point,
-  type Positions,
-} from './data.js';
+import { diagramData, rowOf, type DiagramRow, type Point, type Positions } from './data.js';
 import type { DiagramConfig } from './diagram.js';
 import {
   data as checkedData,
@@ -25,6 +18,7 @@ import {
   union,
   groupFrame,
   sceneKey,
+  sceneRows,
   type Part,
   type Rect,
   type Scene,
@@ -40,7 +34,8 @@ export interface LayoutPort {
 /** A box layout places: a vertex, or a group arranged inside first, which moves as one. */
 export interface LayoutVertex {
   /** The vertex row, or the group. */
-  readonly item: DiagramItem;
+  readonly item:
+    (DiagramRow & { readonly kind: 'vertex' }) | { readonly kind: 'group'; readonly id: string };
   readonly size: Point;
   /** Its top-left corner while pinned, where it stays. */
   readonly position?: Point;
@@ -55,7 +50,7 @@ export interface LayoutEdge {
     readonly direction?: 'in' | 'out';
   }[];
   /** The room its labels take between its ends: a wire's label, or a tag's past each stub. */
-  readonly labelSize: Point;
+  readonly labelRoom: Point;
 }
 /** One part of the diagram or of a group: vertices edges join, and those edges. */
 export interface LayoutGraph {
@@ -163,10 +158,10 @@ export async function place(
 /** Pin each vertex drawn before where it was, so a new scene places only what is new. */
 function keep(scene: Scene, previous?: Scene): void {
   if (!previous) return;
-  const drawn = new Map(previous.vertices.map((vertex) => [sceneKey(vertex.hit), vertex]));
+  const drawn = sceneRows(previous).vertices;
   for (const vertex of scene.vertices)
     if (!vertex.pinned) {
-      const before = drawn.get(sceneKey(vertex.hit));
+      const before = previous.vertices[drawn.get(sceneKey(vertex.hit)) ?? -1];
       if (before) {
         vertex.x = before.x;
         vertex.y = before.y;
@@ -286,9 +281,8 @@ class Placement {
       if (piece.pinned) return;
       const dx = at[i]![0] - piece.bounds[0],
         dy = at[i]![1] - piece.bounds[1];
-      // A group moves by whole grid steps, so what is inside stays on the grid.
-      if (piece.vertex.item.kind === 'group') piece.move(this.snap(dx), this.snap(dy));
-      else piece.move(dx, dy);
+      // Everything moves by whole grid steps, so what was on the grid stays on it.
+      piece.move(this.snap(dx), this.snap(dy));
     });
   }
   private vertex(i: number): Piece {
@@ -297,7 +291,7 @@ class Placement {
     portPositions(vertex);
     return {
       vertex: {
-        item: rowOf(vertex.hit),
+        item: rowOf(vertex.hit) as DiagramRow & { readonly kind: 'vertex' },
         size: [vertex.width, vertex.height],
         ...(vertex.pinned ? { position: [vertex.x, vertex.y] as const } : {}),
         ports: vertex.ports.map((port) => ({
@@ -369,7 +363,7 @@ class Placement {
       parts.get(find(ends[0].vertex))!.edges.push({
         item: rowOf(drawn.hit),
         ends: ends.map((end) => ({ ...end, vertex: at[end.vertex] })),
-        labelSize: labelRoom(drawn, this.style),
+        labelRoom: labelRoom(drawn, this.style),
       });
     }
     return [...parts.values()];
@@ -612,7 +606,7 @@ async function ranked(
     if (root)
       labelGaps[root.vertex] = Math.max(
         labelGaps[root.vertex],
-        edge.labelSize[vertical ? 1 : 0] + grid * 3,
+        edge.labelRoom[vertical ? 1 : 0] + grid * 3,
       );
   }
   let major = 0;

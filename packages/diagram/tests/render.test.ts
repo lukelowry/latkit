@@ -391,6 +391,46 @@ it('proposes the laid out drawing on a move, and only what moved once positions 
     f.gpu.destroy();
   }
 });
+it('moves vertices on the scene as it stands, drawing what a fresh diagram draws', async () => {
+  const f = await fixture();
+  try {
+    f.diagram.set(data(f.source, true));
+    await f.draw();
+    const api = interaction(f.diagram),
+      before = api.scene()!;
+    // The last task moves down; its wire routes again, and the others keep theirs.
+    f.source.xy[6] = 720;
+    f.source.xy[7] = 320;
+    f.source.update();
+    f.diagram.set(data(f.source, true));
+    await f.draw();
+    const after = api.scene()!;
+    expect(after.parts).toBe(before.parts);
+    expect(after.vertices[3].label).toBe(before.vertices[3].label);
+    expect([after.vertices[3].x, after.vertices[3].y]).toEqual([720, 320]);
+    expect(after.edges[0].route).toBe(before.edges[0].route);
+    const fresh = createDiagram(f.gpu, data(f.source, true));
+    try {
+      await f.gpu.render({
+        views: [{ renderer: kit.rendererOf(fresh), target: f.target }],
+        timeMs: 0,
+      });
+      const again = interaction(fresh).scene()!;
+      expect(after.vertices.map((v) => [v.x, v.y, v.placed])).toEqual(
+        again.vertices.map((v) => [v.x, v.y, v.placed]),
+      );
+      expect(after.edges.map((e) => [e.paths, e.labels])).toEqual(
+        again.edges.map((e) => [e.paths, e.labels]),
+      );
+    } finally {
+      fresh.destroy();
+    }
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
 it('keeps its scene when a whole config replaces one equal to it', async () => {
   const f = await fixture();
   try {

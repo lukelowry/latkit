@@ -603,3 +603,26 @@ it('formats fractional and large-offset ticks without duplicate labels', () => {
   expect(large.offset).toBe(2 ** 40);
   expect(large.items.length).toBeGreaterThan(2);
 });
+it('takes a whole config, changing nothing when it repeats the one held', async () => {
+  const h = await harness();
+  const invalidated = vi.fn(),
+    off = h.renderer.on!('invalidate', invalidated);
+  try {
+    const held = h.monitor.config,
+      config = () => ({
+        source: h.source.data,
+        traces: { signal: { from: 'signal', y: 'value' } },
+        xAxis: false as const,
+        yAxis: false as const,
+      });
+    h.monitor.set(config(), { replace: true });
+    expect(h.monitor.config).toBe(held);
+    expect(invalidated).not.toHaveBeenCalled();
+    h.monitor.set({ ...config(), yAxis: undefined }, { replace: true });
+    expect(h.monitor.config).not.toHaveProperty('yAxis');
+    expect(invalidated).toHaveBeenCalled();
+  } finally {
+    off();
+    h.close();
+  }
+});

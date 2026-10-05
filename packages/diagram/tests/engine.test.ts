@@ -204,10 +204,10 @@ it('arranges each part with a custom strategy, then packs the parts', async () =
     const values = result.Task[axis].values;
     return values.kind === 'numeric' ? [...values.values] : [];
   };
-  // The strategy places within its part; packing puts the part at the origin.
+  // The strategy places within its part, on the 8-unit grid; packing puts the part at the origin.
   expect([lane('x'), lane('y')]).toEqual([
-    [0, 500],
-    [3, 3],
+    [0, 504],
+    [0, 0],
   ]);
 });
 it('bounds memory and honors cancellation', async () => {
@@ -370,7 +370,7 @@ it('passes ports, hyperedges, labels, and groups as vertices to a custom layout'
     { vertex: 0, port: 'output', direction: 'out' },
     { vertex: 1, port: 'input', direction: 'in' },
   ]);
-  expect(inside.edges[0].labelSize[0]).toBeGreaterThan(0);
+  expect(inside.edges[0].labelRoom[0]).toBeGreaterThan(0);
   expect(outside.vertices.map((vertex) => vertex.item)).toMatchObject([
     { kind: 'vertex', row: 2 },
     { kind: 'group', id: 'pair' },

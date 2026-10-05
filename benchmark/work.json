@@ -222,7 +222,7 @@
   },
   "diagram 1000 blocks in rings > move": {
     "queries": 0,
-    "queryHits": 3,
+    "queryHits": 0,
     "uploads": 4,
     "uploadedBytes": 128811.5,
     "uploadHits": 2,
@@ -352,7 +352,7 @@
   },
   "diagram 10000 blocks in rings > move": {
     "queries": 0,
-    "queryHits": 3,
+    "queryHits": 0,
     "uploads": 5.125,
     "uploadedBytes": 1281262,
     "uploadHits": 2.5,

@@ -4,7 +4,7 @@ import type { Scene, Vertex, Rect, Edge, End, Wire, Part } from './scene.js';
 import type { DragWire } from './drag.js';
 import type { Limits } from './options.js';
 import type { Style } from './config.js';
-import { rect, union, expand, groupFrame, sceneKey } from './scene.js';
+import { rect, union, expand, groupFrame, intersects, sceneRows } from './scene.js';
 import { rootEnd } from './layout.js';
 import { Routing, obstacles, routeEdge, separate, draw, type Moved, type Route } from './route.js';
 
@@ -152,9 +152,9 @@ export async function geometry(
     kept = previous?.routing === routing(options) ? new Kept(scene, previous, options) : undefined;
   for (const edge of scene.edges) clear(edge);
   let points = 0;
-  for (const part of scene.parts) {
+  for (const [k, part] of scene.parts.entries()) {
     await work.step();
-    const old = kept?.part(part);
+    const old = kept?.part(part, k);
     if (old) adopt(scene, part, previous!, old);
     else {
       const routes: (Route | null)[] = [];
@@ -163,7 +163,7 @@ export async function geometry(
         const edge = scene.edges[e],
           ends = edge.ends.filter((end) => scene.vertices[end.vertex].visible);
         edge.route = routed(edge, ends, scene.obstacles.proxy)
-          ? (kept?.route(edge) ?? routeEdge(edge, ends, route, rootEnd(edge)))
+          ? (kept?.route(e) ?? routeEdge(edge, ends, route, rootEnd(edge)))
           : null;
         routes.push(edge.route);
       }
@@ -217,17 +217,18 @@ function adopt(scene: Scene, part: Part, previous: Scene, old: Part): void {
     Object.assign(scene.edges[e], { route, paths, offsets, junctions, arrows, bounds, labels });
   });
 }
-/** What of the previous scene still holds: its vertices by key, and what moved since. */
+/** What of the previous scene still holds: where its rows went, and what moved since. */
 class Kept {
-  /** Each vertex's index in the previous scene; -1 when new. */
+  /** Each vertex's and edge's index in the previous scene; -1 when new. */
   private readonly was: Int32Array;
+  private readonly edgeWas: Int32Array;
   private readonly changed: Uint8Array;
-  /** Previous edges near anything that moved, by key. */
-  private readonly affected = new Set<string>();
-  private readonly edges: Map<string, Edge>;
-  private readonly parts: Map<string, Part>;
+  /** Previous edges near anything that moved. */
+  private readonly affected = new Set<number>();
   /** Whether every group frames and hides what it did, so proxies route as they did. */
   private readonly groups: boolean;
+  /** A copy of the previous scene, which numbers its rows and parts alike. */
+  private readonly copy: boolean;
   constructor(
     private readonly scene: Scene,
     private readonly previous: Scene,
@@ -243,16 +244,18 @@ class Kept {
           group.bounds.every((v, j) => v === before.bounds[j])
         );
       });
-    const prior = new Map(previous.vertices.map((vertex, i) => [sceneKey(vertex.hit), i])),
-      seen = new Uint8Array(previous.vertices.length),
+    this.copy = scene.parts === previous.parts;
+    const now = this.copy ? undefined : sceneRows(scene),
+      then = this.copy ? undefined : sceneRows(previous);
+    this.was = indices(scene.vertices.length, now?.vertices, then?.vertices);
+    this.edgeWas = indices(scene.edges.length, now?.edges, then?.edges);
+    const seen = new Uint8Array(previous.vertices.length),
       by = options.routeClearance * 2,
       moved: Rect[] = [];
-    this.was = new Int32Array(scene.vertices.length);
     this.changed = new Uint8Array(scene.vertices.length);
     scene.vertices.forEach((vertex, i) => {
-      const at = prior.get(sceneKey(vertex.hit)) ?? -1,
+      const at = this.was[i],
         before = previous.vertices[at];
-      this.was[i] = at;
       if (at >= 0) seen[at] = 1;
       if (before && sameVertex(vertex, before)) return;
       this.changed[i] = 1;
@@ -268,40 +271,37 @@ class Kept {
       );
       for (const box of moved)
         near.some(box, (i) => {
-          this.affected.add(sceneKey(previous.edges[i].hit));
+          this.affected.add(i);
         });
     }
-    this.edges = new Map(previous.edges.map((edge) => [sceneKey(edge.hit), edge]));
-    this.parts = new Map(previous.parts.map((part) => [part.key, part]));
   }
   /** The previous route of an edge whose ends and neighbourhood did not change. */
-  route(edge: Edge): Route | undefined {
-    const before = this.edges.get(sceneKey(edge.hit));
+  route(e: number): Route | undefined {
+    const at = this.edgeWas[e],
+      before = this.previous.edges[at];
     return this.groups &&
       before?.route &&
-      this.same(edge, before) &&
-      !edge.ends.some((end) => this.changed[end.vertex])
+      this.same(e, at) &&
+      !this.scene.edges[e].ends.some((end) => this.changed[end.vertex])
       ? before.route
       : undefined;
   }
   /** The previous part, when nothing in it or near it changed. */
-  part(part: Part): Part | undefined {
+  part(part: Part, k: number): Part | undefined {
     const { scene, previous } = this,
-      old = this.parts.get(part.key);
+      old = this.copy
+        ? previous.parts[k]
+        : previous.parts[sceneRows(previous).parts.get(part.key)!];
     if (
       !old ||
       old.vertices.length !== part.vertices.length ||
       old.edges.length !== part.edges.length ||
       old.groups.length !== part.groups.length ||
-      part.vertices.some((v, k) => this.changed[v] || this.was[v] !== old.vertices[k]) ||
-      part.edges.some((e, k) => {
-        const edge = scene.edges[e],
-          before = previous.edges[old.edges[k]];
-        return sceneKey(edge.hit) !== sceneKey(before.hit) || !this.same(edge, before);
-      }) ||
-      part.groups.some((g, k) => {
+      part.vertices.some((v, j) => this.changed[v] || this.was[v] !== old.vertices[j]) ||
+      part.edges.some((e, j) => this.edgeWas[e] !== old.edges[j] || !this.same(e, old.edges[j])) ||
+      part.groups.some((g, j) => {
         const group = scene.groups[g],
-          before = previous.groups[old.groups[k]];
+          before = previous.groups[old.groups[j]];
         return (
           group.id !== before.id ||
           group.collapsed !== before.collapsed ||
@@ -313,8 +313,11 @@ class Kept {
     return old;
   }
   /** Whether an edge draws as it did: the same ends, options, and label, and nothing moved near it. */
-  private same(edge: Edge, before: Edge): boolean {
+  private same(e: number, at: number): boolean {
+    const edge = this.scene.edges[e],
+      before = this.previous.edges[at];
     return (
+      !!before &&
       edge.visible === before.visible &&
       edge.options.route === before.options.route &&
       edge.options.arrows === before.options.arrows &&
@@ -328,9 +331,24 @@ class Kept {
           end.port === before.ends[i].port &&
           end.direction === before.ends[i].direction,
       ) &&
-      !this.affected.has(sceneKey(edge.hit))
+      !this.affected.has(at)
     );
   }
+}
+/** Each row's index in another scene: itself in a copy, else found by key; -1 when it is new. */
+function indices(
+  count: number,
+  now?: ReadonlyMap<string, number>,
+  then?: ReadonlyMap<string, number>,
+): Int32Array {
+  const out = new Int32Array(count);
+  if (!now || !then) {
+    for (let i = 0; i < count; i++) out[i] = i;
+    return out;
+  }
+  out.fill(-1);
+  for (const [key, i] of now) out[i] = then.get(key) ?? -1;
+  return out;
 }
 /** Whether a vertex routes as it did: the same box, shape, visibility, and ports. */
 function sameVertex(a: Vertex, b: Vertex): boolean {
@@ -392,21 +410,22 @@ export function labelRoom(edge: Edge, options: Style): Point {
 /** How many steps a label may slide each way from a run's middle: half its length, or a quarter of the run. */
 const SLIDES = 16;
 /**
- * Where an edge's label may go, best first: above or below the middle of its longest level runs,
- * else beside its longest upright runs, then sliding out along them; a tag's past each stub.
+ * Where an edge's label may go, best first and made only when asked for: above or below the middle
+ * of its longest level runs, else beside its longest upright runs, then sliding out along them; a
+ * tag's past each stub.
  */
-function spots(edge: Edge, paths: readonly (readonly Point[])[]): Point[][] {
+function* spots(edge: Edge, paths: readonly (readonly Point[])[]): Generator<Point[], void> {
   const text = edge.label,
     at = (x: number, y: number, align: TextAlign, baseline: TextBaseline) =>
       kit.textOrigin(text, [x, y], align, baseline);
-  if (edge.options.appearance === 'tag')
-    return [
-      paths.map(([a, b]) =>
-        b[0] >= a[0]
-          ? at(b[0] + GAP + MARGIN, b[1], 'start', 'middle')
-          : at(b[0] - GAP - MARGIN, b[1], 'end', 'middle'),
-      ),
-    ];
+  if (edge.options.appearance === 'tag') {
+    yield paths.map(([a, b]) =>
+      b[0] >= a[0]
+        ? at(b[0] + GAP + MARGIN, b[1], 'start', 'middle')
+        : at(b[0] - GAP - MARGIN, b[1], 'end', 'middle'),
+    );
+    return;
+  }
   const runs = paths
     .flatMap((path) => path.slice(1).map((b, i) => [path[i], b] as const))
     .map(([a, b]) => ({
@@ -417,7 +436,6 @@ function spots(edge: Edge, paths: readonly (readonly Point[])[]): Point[][] {
     }))
     .sort((u, v) => +v.level - +u.level || v.length - u.length)
     .slice(0, 4);
-  const out: Point[][] = [];
   for (let k = 0; k <= SLIDES; k++)
     for (const { a, b, level, length } of runs) {
       const step = Math.min((level ? text.width : text.height) / 2 + MARGIN, length / 4),
@@ -426,37 +444,47 @@ function spots(edge: Edge, paths: readonly (readonly Point[])[]): Point[][] {
       for (const t of k ? [0.5 - reach, 0.5 + reach] : [0.5]) {
         const x = a[0] + (b[0] - a[0]) * t,
           y = a[1] + (b[1] - a[1]) * t;
-        if (level)
-          out.push(
-            [at(x, y - GAP - MARGIN, 'center', 'bottom')],
-            [at(x, y + GAP + MARGIN, 'center', 'top')],
-          );
-        else
-          out.push(
-            [at(x + GAP + MARGIN, y, 'start', 'middle')],
-            [at(x - GAP - MARGIN, y, 'end', 'middle')],
-          );
+        if (level) {
+          yield [at(x, y - GAP - MARGIN, 'center', 'bottom')];
+          yield [at(x, y + GAP + MARGIN, 'center', 'top')];
+        } else {
+          yield [at(x + GAP + MARGIN, y, 'start', 'middle')];
+          yield [at(x - GAP - MARGIN, y, 'end', 'middle')];
+        }
       }
     }
-  return out;
 }
 /**
- * Place each label of a part at its best spot clear of blocks and its other labels, else clear of
- * blocks, else at its best spot.
+ * Place each label of a part at its best spot clear of blocks, group titles, and its other labels,
+ * else clear of blocks and titles, else at its best spot. Spots are tried in one pass, best first.
  */
 function label(scene: Scene, part: Part, options: Style, route: Routing): void {
   const placed = new kit.Occupancy(64),
-    clear = (box: Rect) => !route.some(box, 0, () => true),
-    free = (box: Rect) => placed.free(box) && clear(box);
+    titles = part.groups
+      .map((g) => scene.groups[g])
+      .filter((group) => !group.collapsed && group.bounds[0] !== group.bounds[2])
+      .map((group): Rect => {
+        const b = group.bounds;
+        return [b[0], b[1], b[2], b[1] + group.header];
+      }),
+    clear = (box: Rect) =>
+      !route.some(box, 0, () => true) && !titles.some((title) => intersects(title, box));
   for (const e of part.edges) {
     const edge = scene.edges[e];
     edge.labels = [];
     if (!edge.visible || !options.labels || !edge.label.runs.length || !edge.paths.length) continue;
-    const choices = spots(edge, edge.paths),
-      chosen =
-        choices.find((points) => points.every((p) => free(labelBox(edge, p)))) ??
-        choices.find((points) => points.every((p) => clear(labelBox(edge, p)))) ??
-        choices[0];
+    let chosen: Point[] | undefined, unblocked: Point[] | undefined, first: Point[] | undefined;
+    for (const points of spots(edge, edge.paths)) {
+      first ??= points;
+      const boxes = points.map((p) => labelBox(edge, p));
+      if (!boxes.every(clear)) continue;
+      if (boxes.every((box) => placed.free(box))) {
+        chosen = points;
+        break;
+      }
+      unblocked ??= points;
+    }
+    chosen ??= unblocked ?? first!;
     for (const p of chosen) placed.add(labelBox(edge, p));
     edge.labels = chosen;
     edge.bounds = union([edge.bounds, ...chosen.map((p) => labelBox(edge, p))]);
@@ -479,8 +507,8 @@ export function dragWires(
     if (!routed(edge, ends, proxy)) continue;
     const r = routeEdge(edge, ends, route, rootEnd(edge));
     const wire = edge.options.appearance === 'tag' ? tag(r) : draw(r),
-      labels = options.labels && edge.label.runs.length ? (spots(edge, wire.paths)[0] ?? []) : [];
-    out.push({ ...wire, edge, slot: scene.slots.edges + i, labels });
+      [best] = options.labels && edge.label.runs.length ? spots(edge, wire.paths) : [];
+    out.push({ ...wire, edge, slot: scene.slots.edges + i, labels: best ?? [] });
   }
   return out;
 }

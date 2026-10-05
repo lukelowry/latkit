@@ -2,7 +2,7 @@ import { kit, type Gpu, type RGBA } from '@latkit/gpu';
 import type { DiagramData, DiagramItem, Point } from './data.js';
 import { itemKey } from './data.js';
 import type { Scene, Rect, Vertex, Wire } from './scene.js';
-import { intersects, itemSlots, sceneKey } from './scene.js';
+import { intersects, itemSlots, sceneKey, sceneRows } from './scene.js';
 import type { Style } from './config.js';
 import type { DragDraw } from './drag.js';
 import { labelBox } from './geometry.js';
@@ -342,7 +342,12 @@ export class Painter {
     readonly values: Float32Array;
   };
   /** The wires a transition leaves, built once as it starts. */
-  private faded?: { readonly from: Scene; readonly pages: readonly InstancePage[] };
+  private faded?: {
+    readonly from: Scene;
+    readonly scene: Scene;
+    readonly pages: readonly InstancePage[];
+    readonly styled: boolean;
+  };
   constructor(private readonly gpu: Gpu) {
     this.attachments = new kit.Attachments(gpu);
     this.styles = new Styles(gpu);
@@ -554,12 +559,11 @@ export class Painter {
     // Above nothing moves; drawn things stay where they are.
     const still: DrawBinding = { flags: empty, offsets: empty };
     if (rest > 0) {
-      // The wires a transition leaves fade out as the new ones fade in. Their own styles apply
-      // while both scenes number their slots alike.
-      const from = transition!.from;
-      draw(this.fades(from, style), {
+      // The wires a transition leaves fade out as the new ones fade in.
+      const faded = this.fades(transition!.from, scene, style);
+      draw(faded.pages, {
         ...still,
-        styles: from.slots.count === scene.slots.count ? restyle.styles : empty,
+        styles: faded.styled ? restyle.styles : empty,
         opacity: rest,
         fading: true,
       });
@@ -652,15 +656,16 @@ export class Painter {
       };
     if (drag) for (const slot of drag.moving) set(slot, 1, 1);
     else if (from) {
-      const before = new Map(from.vertices.map((vertex) => [sceneKey(vertex.hit), vertex]));
-      scene.vertices.forEach((vertex, i) => {
-        const was = before.get(sceneKey(vertex.hit));
-        if (!was || (was.x === vertex.x && was.y === vertex.y)) return;
+      const before = sceneRows(from).vertices;
+      for (const [key, i] of sceneRows(scene).vertices) {
+        const vertex = scene.vertices[i],
+          was = from.vertices[before.get(key) ?? -1];
+        if (!was || (was.x === vertex.x && was.y === vertex.y)) continue;
         const dx = was.x - vertex.x,
           dy = was.y - vertex.y;
         set(i, dx, dy);
         for (let k = 0; k < vertex.ports.length; k++) set(vertex.portSlot + k, dx, dy);
-      });
+      }
       const frames = new Map(from.groups.map((group) => [group.id, group.bounds]));
       scene.groups.forEach((group, g) => {
         const was = frames.get(group.id);
@@ -672,17 +677,24 @@ export class Painter {
     this.shifted = { scene, drag, from, values };
     return values;
   }
-  /** The wires of a scene a transition leaves. */
-  private fades(from: Scene, style: Style): readonly InstancePage[] {
-    if (this.faded?.from !== from) {
+  /**
+   * The wires of a scene a transition leaves, and whether they keep their own styles: they do when
+   * the scene it goes to holds the same edges in the same slots.
+   */
+  private fades(from: Scene, scene: Scene, style: Style): NonNullable<Painter['faded']> {
+    if (this.faded?.from !== from || this.faded.scene !== scene) {
       const instances = new Instances('diagram fading', this.faded?.pages);
       from.edges.forEach((edge, i) => {
         if (edge.visible && edge.paths.length)
           wire(instances, from.slots.edges + i, edge, style.cornerRadius);
       });
-      this.faded = { from, pages: instances.flush() };
+      const styled =
+        from.slots.edges === scene.slots.edges &&
+        from.edges.length === scene.edges.length &&
+        from.edges.every((edge, i) => sceneKey(edge.hit) === sceneKey(scene.edges[i].hit));
+      this.faded = { from, scene, pages: instances.flush(), styled };
     }
-    return this.faded.pages;
+    return this.faded;
   }
   encode(frame: kit.Encoding, paint: Paint): void {
     this.styles.encode(frame.encoder, paint.pipelines.styles, paint.restyle);
