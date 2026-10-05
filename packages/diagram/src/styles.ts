@@ -3,45 +3,13 @@ import { kit, type ColorScale, type Gpu, type RGBA, type Scale } from '@latkit/g
 import type { DiagramData, EdgeData, VertexData } from './data.js';
 import type { Scene } from './scene.js';
 
-/**
- * Each slot's style as four words: its color and status, packed; its width and flow as two halves;
- * and its shade value. A zero color draws the view's base color for the item's kind, and a
- * negative width its default; unbound items keep the base words, bound ones are written each
- * frame on the GPU from the fields they read.
- */
+// Each slot's style is four words: its color and status, packed; its width and flow as two halves;
+// and its shade value. A zero color draws the view's base color for the item's kind, and a
+// negative width its default; unbound items keep the base words, and styles.wgsl writes bound
+// ones on the GPU from the fields they read.
+
+/** A field a pass does not read. */
 const NONE = 0xffffffff;
-export const styleShader = /* wgsl */ `
-struct Page {
-  /** Color, width, flow, and shade field slots. */
-  fields: vec4u,
-  /** Rows, first slot, slot stride, and the color word: 0 the color, 1 the status. */
-  place: vec4u,
-  origin: vec4f,
-  base: vec4f,
-  color: LatkitScale,
-  width: LatkitScale,
-  flow: LatkitScale,
-}
-@group(1) @binding(0) var<uniform> page: Page;
-@group(1) @binding(1) var<storage, read_write> styles: array<vec4u>;
-@compute @workgroup_size(64) fn style_main(@builtin(global_invocation_id) id: vec3u) {
-  let row = id.x;
-  if (row >= page.place.x) { return; }
-  let at = page.place.y + row * page.place.z;
-  if (page.fields.x != 0xffffffffu) {
-    let color = pack4x8unorm(fieldColor(page.fields.x, row, 0u, page.color, page.base));
-    if (page.place.w == 0u) { styles[at].x = color; } else { styles[at].y = color; }
-  }
-  if (page.fields.y != 0xffffffffu || page.fields.z != 0xffffffffu) {
-    styles[at].z = pack2x16float(vec2f(
-      fieldScaled(page.fields.y, row, 0u, page.width, -1.0),
-      fieldScaled(page.fields.z, row, 0u, page.flow, 0.0)));
-  }
-  if (page.fields.w != 0xffffffffu) {
-    styles[at].w = bitcast<u32>(fieldNumber(page.fields.w, row, 0u, page.origin.x, 0.0));
-  }
-}
-`;
 /** One pass over a type's rows: which fields it reads, where it writes, and through what. */
 interface Pass {
   readonly color?: ColorScale | null;

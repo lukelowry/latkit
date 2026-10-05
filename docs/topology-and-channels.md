@@ -13,14 +13,18 @@ const schema = {
   types: {
     Bus: {
       fields: {
-        position: { type: { kind: 'vector', items: 'float64', size: 2 }, space: 'geographic' },
+        position: { type: { kind: 'vector', items: 'float64', size: 2 }, geographic: true },
       },
     },
     Branch: { fields: { bus1: bus, bus2: bus } },
     Load: { fields: { bus } },
   },
 };
-const data = { source, vertices: { Bus: {} }, edges: { Branch: { ends: ['bus1', 'bus2'] } } };
+const data = {
+  source,
+  vertices: { Bus: { position: 'position' } },
+  edges: { Branch: { ends: ['bus1', 'bus2'] } },
+};
 ```
 
 Vertex and edge are what a view draws, not what a type is. An edge with `ends`
@@ -30,12 +34,11 @@ net: each row joins the vertices whose references name it, so
 loads. A diagram draws those references as ports; `direction: 'in' | 'out'` on a
 reference field orients them.
 
-A position field's `space` sets its coordinates: geographic positions are
-longitude/latitude in degrees, cartesian positions use application units. A
-network draws a type at its first geographic field, else its first cartesian
-one; `position` binds any two-component vector or separate
-`{ x: 'longitude', y: 'latitude' }` fields instead. Paths and bends use lists of
-two-component vectors.
+`position` binds where each row draws: a two-component vector field or separate
+`{ x: 'longitude', y: 'latitude' }` fields, like any other binding. A position
+field marked `geographic` holds longitude/latitude in degrees, which the globe
+and geodesic routes need; otherwise its coordinates are plane units. Paths and
+bends use lists of two-component vectors.
 
 ## Style by field
 

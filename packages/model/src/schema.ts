@@ -15,9 +15,6 @@ export interface TypeDefinition {
   readonly description?: string;
   readonly fields: Readonly<Record<string, FieldDefinition>>;
 }
-/** The space a position's coordinates lie in: longitude and latitude, or plane coordinates. */
-export type Space = 'geographic' | 'cartesian';
-
 /** Both static and sampled fields may be monitored. Absent values
  * read as null and require nullable. Bounds describe scalar numeric data. */
 export type FieldDefinition = {
@@ -29,10 +26,10 @@ export type FieldDefinition = {
    * undirected. */
   readonly direction?: 'in' | 'out';
   /**
-   * Positions only: the space a 2D/3D vector, a list of them, or one numeric axis of a position
-   * lies in. A view draws a type at its first positioned vector field unless bound elsewhere.
+   * Longitude and latitude in degrees, rather than plane coordinates: a 2D/3D vector, a list of
+   * them, or one numeric axis of a position.
    */
-  readonly space?: Space;
+  readonly geographic?: boolean;
 } & (
   | { readonly sampled: true; readonly type: NumericType; readonly bounds?: never }
   | { readonly sampled?: false; readonly type: DataType; readonly bounds?: Bounds }

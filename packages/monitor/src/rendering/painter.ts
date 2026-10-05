@@ -251,7 +251,11 @@ export interface Screen {
   readonly image: GPUBindGroup;
   readonly axis: GPUBindGroup;
   readonly cursor?: GPUBindGroup;
-  readonly text: readonly kit.TextPage[];
+  /** Each text page's glyphs, with the axis group that holds its anchors. */
+  readonly text: readonly {
+    readonly axis: GPUBindGroup;
+    readonly pages: readonly kit.TextPage[];
+  }[];
   readonly lines: number;
   readonly grid: number;
 }
@@ -299,32 +303,42 @@ export async function prepareScreen(
     at === undefined
       ? null
       : kit.scaleValue(at, kit.resolveScale({ range: [p.x, p.x + p.width], clamp: false }, window));
-  const axis = (data: kit.BufferData) =>
+  const screen = frame.uniforms(Float32Array.of(frame.viewport.width, frame.viewport.height, 0, 0));
+  // Lines read no anchors, so their groups bind their own data there.
+  const axis = (data: GPUBufferBinding, anchors = data) =>
     gpu.device.createBindGroup({
       layout: pipelines.axis,
       entries: [
-        {
-          binding: 0,
-          resource: frame.uniforms(
-            Float32Array.of(frame.viewport.width, frame.viewport.height, 0, 0),
-          ),
-        },
-        { binding: 1, resource: frame.buffer(data) },
+        { binding: 0, resource: screen },
+        { binding: 1, resource: data },
+        { binding: 2, resource: anchors },
       ],
+    });
+  // Lines and the first page of text share one group, as one page holds every axis label.
+  const lines = frame.buffer(layout.lines),
+    labelled = layout.text.filter((page) => page.runs.length),
+    first = axis(lines, labelled.length ? frame.buffer(labelled[0].anchors) : lines),
+    text: Screen['text'][number][] = [];
+  for (const [i, page] of labelled.entries())
+    text.push({
+      axis: i ? axis(lines, frame.buffer(page.anchors)) : first,
+      pages: await frame.text({ runs: page.runs }),
     });
   return {
     image,
-    axis: axis(layout.lines),
+    axis: first,
     cursor:
       cursor !== null && cursor >= p.x && cursor <= p.x + p.width
         ? axis(
-            buffer(
-              Float32Array.of(cursor, p.y, cursor, p.y + p.height, ...style.cursorColor),
-              'monitor playhead',
+            frame.buffer(
+              buffer(
+                Float32Array.of(cursor, p.y, cursor, p.y + p.height, ...style.cursorColor),
+                'monitor playhead',
+              ),
             ),
           )
         : undefined,
-    text: await frame.text({ runs: layout.runs }),
+    text,
     lines: layout.lineCount,
     grid: layout.gridCount,
   };
@@ -366,12 +380,14 @@ export function composite(frame: kit.Encoding, pipelines: Pipelines, screen: Scr
     pass.draw(6, 1);
     calls++;
   }
-  for (const text of screen.text) {
-    pass.setPipeline(pipelines.text);
-    pass.setBindGroup(0, text.bindGroup);
-    pass.setBindGroup(1, screen.axis);
-    pass.draw(6, text.count);
-    calls++;
+  pass.setPipeline(pipelines.text);
+  for (const { axis, pages } of screen.text) {
+    pass.setBindGroup(1, axis);
+    for (const page of pages) {
+      pass.setBindGroup(0, page.bindGroup);
+      pass.draw(6, page.count);
+      calls++;
+    }
   }
   pass.end();
   return calls;

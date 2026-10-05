@@ -36,9 +36,9 @@ class GridSource {
   constructor(system: 'geographic' | 'cartesian' = 'geographic') {
     this.schema = {
       types: {
-        Bus: { fields: { position: { type: lonlat, space: system } } },
+        Bus: { fields: { position: { type: lonlat, geographic: system === 'geographic' } } },
         Branch: { fields: { bus1: bus, bus2: bus, rating: { type: 'float64' } } },
-        Load: { fields: { bus, position: { type: lonlat, space: 'geographic' } } },
+        Load: { fields: { bus, position: { type: lonlat, geographic: true } } },
       },
     };
   }
@@ -148,7 +148,7 @@ async function geometryOf(gpu: Gpu, data: NetworkData): Promise<Geometry> {
 }
 const branches = (source: GridSource): NetworkData => ({
   source: source.data,
-  vertices: { Bus: {} },
+  vertices: { Bus: { position: 'position' } },
   edges: { Branch: { ends: ['bus1', 'bus2'] } },
 });
 
@@ -158,7 +158,7 @@ it('draws each row between the vertices its two references name', async () => {
   const source = new GridSource();
   const gpu = await createGpu({ device: device().device });
   const geometry = await geometryOf(gpu, branches(source));
-  // Buses are placed by their spatial field, whose system makes the network geographic.
+  // Buses are placed by their position field, which the schema marks geographic.
   expect(geometry.geographic).toBe(true);
   expect(geometry.vertices.map(({ type, count }) => [type, count])).toEqual([['Bus', 4]]);
   // Every branch is an edge; the one with an end unwired has no segment.
@@ -236,12 +236,15 @@ it('refuses ends that are not two distinct references to vertex types', async ()
   gpu.destroy();
 });
 
-it('reads the coordinate system from the drawn types, which must agree', async () => {
+it('reads whether positions are geographic from their fields, which must agree', async () => {
   const gpu = await createGpu({ device: device().device });
   const planar = new GridSource('cartesian');
   expect((await geometryOf(gpu, branches(planar))).geographic).toBe(false);
   await expect(
-    geometryOf(gpu, { ...branches(planar), vertices: { Bus: {}, Load: {} } }),
-  ).rejects.toThrow('disagree on their coordinate system');
+    geometryOf(gpu, {
+      ...branches(planar),
+      vertices: { Bus: { position: 'position' }, Load: { position: 'position' } },
+    }),
+  ).rejects.toThrow('mix geographic and plane coordinates');
   gpu.destroy();
 });

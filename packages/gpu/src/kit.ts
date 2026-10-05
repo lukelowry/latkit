@@ -38,7 +38,7 @@ export type { Canvas, Presentation } from './view/presentation.js';
 export type { TextRun, TextRequest, TextPage } from './text/text.js';
 export { textShader } from './text/shader.js';
 export { TextBank, textOrigin, textBox } from './text/bank.js';
-export type { TextBankPage, TextCandidate } from './text/bank.js';
+export type { TextBankPage, TextCandidate, TextPlacement } from './text/bank.js';
 export { fitCamera, cameraPoint, worldPoint, zoomCamera } from './view/camera.js';
 export type { Camera2D, Bounds2D } from './view/camera.js';
 export { BoxIndex, Occupancy } from './spatial/boxes.js';

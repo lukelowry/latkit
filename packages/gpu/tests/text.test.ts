@@ -258,8 +258,8 @@ it('keeps the runs of a bank key and moves only its anchor, placing where nothin
     });
   const label = await gpu.layoutText({ text: 'ab', size: 10 }),
     other = await gpu.layoutText({ text: 'cd', size: 10 });
-  const bank = new kit.TextBank('test text', true);
-  bank.add('a', label, [100, 200], 7);
+  const bank = new kit.TextBank({ label: 'test text', local: true });
+  bank.add('a', label, [100, 200], { slot: 7 });
   const [first] = bank.flush();
   expect(first.origin).toEqual([100, 200]);
   expect(first.runs).toEqual([expect.objectContaining({ text: 'ab', anchor: 0 })]);
@@ -268,7 +268,7 @@ it('keeps the runs of a bank key and moves only its anchor, placing where nothin
   // The anchor is relative to the page; its slot is stored one up, so zero hides it.
   expect([...anchors()]).toEqual([0, 0, 0, 8]);
   bank.hide();
-  bank.add('a', label, [110, 205], 7, 0.5);
+  bank.add('a', label, [110, 205], { slot: 7, depth: 0.5 });
   const [moved] = bank.flush();
   expect(moved.runs).toBe(first.runs);
   expect([...anchors()]).toEqual([10, 5, 0.5, 8]);
@@ -285,7 +285,7 @@ it('keeps the runs of a bank key and moves only its anchor, placing where nothin
       [60, 10, 'start', 'top'],
     ],
     occupied,
-    2,
+    { margin: 2 },
   );
   expect(at).toEqual([60, 10]);
   expect(bank.place('c', other, [[61, 11, 'start', 'top']], occupied)).toBeNull();

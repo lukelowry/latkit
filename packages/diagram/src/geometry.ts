@@ -295,14 +295,9 @@ function tag(route: Route): Wire {
 /** Room kept between a label and its wire, and around its text inside its pill. */
 const GAP = 4,
   MARGIN = 3;
-/** The pill a label at this top-left fills. */
+/** The pill a label with its origin here fills: its text's box and margin. */
 export function labelBox(edge: Edge, at: Point): Rect {
-  return [
-    at[0] - MARGIN,
-    at[1] - MARGIN,
-    at[0] + edge.label.width + MARGIN,
-    at[1] + edge.label.height + MARGIN,
-  ];
+  return kit.textBox(edge.label, at, MARGIN);
 }
 /**
  * Where an edge's label may go, best first: above its longest level runs, then below them, then

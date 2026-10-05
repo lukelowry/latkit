@@ -246,7 +246,7 @@ class NetworkView
     return this.resolved.limits;
   }
 
-  /** Globe needs geographic positions, which their fields' space declares once read. */
+  /** Globe needs geographic positions, which their fields declare once read. */
   get projections(): Readonly<Record<Projection, boolean>> {
     return { flat: true, tilt: true, globe: this.shown?.geometry.geographic ?? false };
   }

@@ -19,7 +19,7 @@ export interface NetworkLabels extends Labels {
 /** A field name stands for that field with defaults: `color: 'load'`, `labels: 'name'`. */
 export interface VertexOptions {
   readonly rows?: RowSelection;
-  /** Defaults to the type's first positioned field: geographic, else cartesian. */
+  /** Where each row draws; without one, rows sit on a circle. */
   readonly position?: Position2D;
   readonly color?: string | ColorScale | null;
   /** The color without a `color` field; `vertexBaseColor` by default. */

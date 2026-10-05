@@ -38,22 +38,19 @@ export function validateSchema(value: unknown): readonly Problem[] {
           c.issue([...p, 'bounds'], 'Bounds require a scalar numeric field.');
         bounds(c, field.bounds, [...p, 'bounds']);
       }
-      if (own(field, 'space')) {
-        c.enum(field.space, ['geographic', 'cartesian'], [...p, 'space']);
+      if (own(field, 'geographic')) {
+        c.bool(field.geographic, [...p, 'geographic']);
         const type = field.type,
           vector = record(type) && type.kind === 'list' ? type.items : type;
         const axis = typeof type === 'string' && numeric.includes(type),
           position =
             record(vector) && vector.kind === 'vector' && (vector.size === 2 || vector.size === 3);
         if (!axis && !position)
-          c.issue(
-            [...p, 'space'],
-            'Only a 2D/3D vector, a list of them, or a numeric axis has a space.',
-          );
+          c.issue([...p, 'geographic'], 'Only a position field is geographic.');
       }
     }
     if (own(definition, 'spatial'))
-      c.issue([...path, 'spatial'], 'A position field declares its own space.');
+      c.issue([...path, 'spatial'], 'A position field says whether it is geographic.');
   }
   if (
     own(schema, 'axis') ||

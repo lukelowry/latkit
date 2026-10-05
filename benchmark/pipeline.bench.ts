@@ -34,7 +34,7 @@ describe.each(sizes)('pipeline %i buses', async (buses) => {
   const stream = model.monitor!([{ from: 'Bus', select: ['voltage'] }]);
   const network = createNetwork(device, {
     source: data,
-    vertices: { Bus: { color: { field: 'voltage', domain: [0.95, 1.05] } } },
+    vertices: { Bus: { position: 'position', color: { field: 'voltage', domain: [0.95, 1.05] } } },
     edges: { Branch: { ends: ['from', 'to'] } },
   });
   // A fixed window with room for the run, as a model that declares its domain gives.

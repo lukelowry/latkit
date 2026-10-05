@@ -121,7 +121,7 @@ export class Labels {
           source,
           revision,
           layouts: new Map(),
-          bank: new kit.TextBank('network labels'),
+          bank: new kit.TextBank({ label: 'network labels' }),
         };
         this.cache.set(bank.rows, entry);
       }
@@ -221,7 +221,7 @@ export class Labels {
         const spots: readonly kit.TextCandidate[] =
           r > 0 ? around(p, r) : [[p.x, p.y, 'center', 'middle']];
         const depth = Math.max(0, p.depth - 0.000001);
-        if (!entry.bank.place(row, layout, spots, occupied, 2, 0, depth)) continue;
+        if (!entry.bank.place(row, layout, spots, occupied, { margin: 2, depth })) continue;
         counts.set(key, (counts.get(key) ?? 0) + 1);
         if (twins) named.set(text, [...twins, p]);
       }

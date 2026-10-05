@@ -26,7 +26,7 @@ export const schema: Schema = {
   types: {
     Bus: {
       fields: {
-        position: { type: { kind: 'vector', items: 'float64', size: 2 }, space: 'cartesian' },
+        position: { type: { kind: 'vector', items: 'float64', size: 2 } },
         load: { type: 'float32' },
         voltage: { type: 'float32', sampled: true },
       },

@@ -64,8 +64,8 @@ describe('schema and query boundaries', () => {
             output: { type: 'float64', sampled: true, bounds: { lower: { value: 0 } } },
             flow: { type: 'float64', direction: 'in' },
             wire: { type: { kind: 'reference', to: 'Hub' }, direction: 'both' },
-            position: { type: { kind: 'vector', items: 'float64', size: 2 }, space: 'local' },
-            name: { type: 'text', space: 'cartesian' },
+            position: { type: { kind: 'vector', items: 'float64', size: 2 }, geographic: 'yes' },
+            name: { type: 'text', geographic: true },
           },
           spatial: { field: 'position', system: 'cartesian' },
         },
@@ -77,8 +77,8 @@ describe('schema and query boundaries', () => {
       { kind: 'path', path: ['types', 'Bad', 'fields', 'output', 'bounds'] },
       { kind: 'path', path: ['types', 'Bad', 'fields', 'flow', 'direction'] },
       { kind: 'path', path: ['types', 'Bad', 'fields', 'wire', 'direction'] },
-      { kind: 'path', path: ['types', 'Bad', 'fields', 'position', 'space'] },
-      { kind: 'path', path: ['types', 'Bad', 'fields', 'name', 'space'] },
+      { kind: 'path', path: ['types', 'Bad', 'fields', 'position', 'geographic'] },
+      { kind: 'path', path: ['types', 'Bad', 'fields', 'name', 'geographic'] },
       { kind: 'path', path: ['types', 'Bad', 'spatial'] },
     ]);
   });

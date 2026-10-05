@@ -77,7 +77,7 @@ export class ExampleSource {
           name,
           {
             type: type(column),
-            ...(name === 'position' || name === 'points' ? { space: 'geographic' as const } : {}),
+            ...(name === 'position' || name === 'points' ? { geographic: true } : {}),
           },
         ]),
       );

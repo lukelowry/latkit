@@ -33,9 +33,7 @@ export class PathSource {
                 {
                   type: type(column),
                   nullable: !!column.validity,
-                  ...(name === 'position' || name === 'points'
-                    ? { space: 'geographic' as const }
-                    : {}),
+                  ...(name === 'position' || name === 'points' ? { geographic: true } : {}),
                 },
               ]),
             ),

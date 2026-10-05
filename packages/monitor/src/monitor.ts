@@ -291,6 +291,8 @@ class MonitorView
   private resizeTimer?: ReturnType<typeof setTimeout>;
   private layout?: Axes;
   private layoutKey = '';
+  /** Axis labels by text: a tick that stays as the window moves keeps its glyphs. */
+  private readonly labels = new kit.TextBank({ label: 'monitor axes' });
   private shown?: Shown;
   private inspection?: {
     readonly point: Point;
@@ -583,6 +585,7 @@ class MonitorView
         camera.values,
         this.style,
         frame.signal,
+        this.labels,
       );
       this.layoutKey = key;
     }
@@ -751,6 +754,8 @@ class MonitorView
     if (this.exportedHistory) destroySurface(this.exportedHistory);
     this.exportedHistory = undefined;
     this.shown = undefined;
+    this.layout = undefined;
+    this.labels.clear();
   }
 
   // ── History ──

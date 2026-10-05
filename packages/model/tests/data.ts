@@ -24,7 +24,6 @@ export const schema: Schema = {
         route: {
           type: { kind: 'list', items: { kind: 'vector', items: 'float64', size: 2 } },
           nullable: true,
-          space: 'cartesian',
         },
         parent: { type: { kind: 'reference', to: 'Node' }, nullable: true },
         hub: { type: { kind: 'reference', to: 'Hub' }, direction: 'out' },

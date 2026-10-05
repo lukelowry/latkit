@@ -7,7 +7,13 @@ describe.each(sizes)('network %i buses', async (buses) => {
     data = grid(buses);
   const config: NetworkConfig = {
     source: data,
-    vertices: { Bus: { color: { field: 'voltage', domain: [0.95, 1.05] }, sizePx: 'load' } },
+    vertices: {
+      Bus: {
+        position: 'position',
+        color: { field: 'voltage', domain: [0.95, 1.05] },
+        sizePx: 'load',
+      },
+    },
     edges: { Branch: { ends: ['from', 'to'] } },
   };
   const view = createNetwork(device, config);

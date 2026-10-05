@@ -66,6 +66,26 @@ export class BufferData {
     this.touch({ offset, size: options.data.byteLength });
   }
 
+  /**
+   * Hold exactly `values`, resizing to fit, and mark only the words that differ as changed, so a
+   * consumer uploads what moved rather than everything.
+   */
+  update(values: ArrayBufferView): void {
+    if (values.byteLength % 4 || values.byteOffset % 4)
+      throw failure('invalid-input', 'Updates are whole, aligned words');
+    this.resize(Math.max(4, values.byteLength));
+    const next = new Uint32Array(values.buffer, values.byteOffset, values.byteLength / 4),
+      held = new Uint32Array(this.storage.buffer, this.storage.byteOffset, next.length);
+    for (let i = 0, start = -1; i <= next.length; i++)
+      if (i < next.length && held[i] !== next[i]) {
+        if (start < 0) start = i;
+        held[i] = next[i];
+      } else if (start >= 0) {
+        this.touch({ offset: start * 4, size: (i - start) * 4 });
+        start = -1;
+      }
+  }
+
   /** Call after editing bytes directly. Empty touches still advance the revision. */
   touch(range: ByteRange = { offset: 0, size: this.used }): void {
     integer(range.offset, 'dirty offset', 0, this.used);

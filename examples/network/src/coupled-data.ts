@@ -31,7 +31,7 @@ export function coupledData() {
     types: {
       Node: {
         fields: {
-          position: { type: { kind: 'vector', size: 2, items: 'float32' }, space: 'cartesian' },
+          position: { type: { kind: 'vector', size: 2, items: 'float32' } },
           signal: { type: 'float32', sampled: true },
         },
       },

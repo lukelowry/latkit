@@ -4,6 +4,11 @@ import type { Bounds2D } from '../view/camera.js';
 import type { TextAlign, TextBaseline, TextLayout, TextRun } from './text.js';
 
 type Point = readonly [number, number];
+/** Where a placed text belongs to the view: the slot it names, and its depth. */
+export interface TextPlacement {
+  readonly slot?: number;
+  readonly depth?: number;
+}
 /** A place to try: a point, and which side and height of the text it names. */
 export type TextCandidate = readonly [
   x: number,
@@ -79,16 +84,18 @@ export class TextBank {
   private readonly entries = new Map<unknown, { page: Page; anchor: number; layout: TextLayout }>();
   /** Anchors whose key took another layout: hidden runs that compaction drops. */
   private stale = 0;
+  private readonly label: string;
+  private readonly local: boolean;
   /**
    * `local` pages keep anchors about the first text placed on them, for views in world units;
    * otherwise anchors are absolute, as for text placed in screen pixels.
    */
-  constructor(
-    private readonly label: string,
-    private readonly local = false,
-  ) {}
-  /** Show `key`'s text with its origin at `origin`, tagged with a slot and a depth for the view. */
-  add(key: unknown, layout: TextLayout, origin: Point, slot = 0, depth = 0): void {
+  constructor(options: { readonly label: string; readonly local?: boolean }) {
+    this.label = options.label;
+    this.local = options.local ?? false;
+  }
+  /** Show `key`'s text with its origin at `origin`. */
+  add(key: unknown, layout: TextLayout, origin: Point, placement: TextPlacement = {}): void {
     if (!layout.runs.length) return;
     let entry = this.entries.get(key);
     if (entry?.layout !== layout) {
@@ -118,8 +125,8 @@ export class TextBank {
       anchor,
       origin[0] - page.origin[0],
       origin[1] - page.origin[1],
-      depth,
-      slot + 1,
+      placement.depth ?? 0,
+      (placement.slot ?? 0) + 1,
     );
   }
   /**
@@ -131,14 +138,12 @@ export class TextBank {
     layout: TextLayout,
     candidates: readonly TextCandidate[],
     occupied: Occupancy,
-    margin = 2,
-    slot = 0,
-    depth = 0,
+    options: TextPlacement & { readonly margin?: number } = {},
   ): [number, number] | null {
     for (const [x, y, align, baseline] of candidates) {
       const origin = textOrigin(layout, [x, y], align, baseline);
-      if (occupied.place(textBox(layout, origin, margin))) {
-        this.add(key, layout, origin, slot, depth);
+      if (occupied.place(textBox(layout, origin, options.margin ?? 2))) {
+        this.add(key, layout, origin, options);
         return origin;
       }
     }
@@ -163,19 +168,8 @@ export class TextBank {
       if (page.published.length !== page.runs.length) page.published = [...page.runs];
       if (!page.changed) continue;
       page.changed = false;
-      const size = Math.max(16, page.count * 16),
-        values = new Uint32Array(page.values.buffer, 0, page.count * 4);
-      page.data.resize(size);
-      const before = new Uint32Array(page.data.bytes.buffer, page.data.bytes.byteOffset, size / 4);
-      let start = -1;
-      for (let i = 0; i <= values.length; i++)
-        if (i < values.length && before[i] !== values[i]) {
-          if (start < 0) start = i;
-          before[i] = values[i];
-        } else if (start >= 0) {
-          page.data.touch({ offset: start * 4, size: (i - start) * 4 });
-          start = -1;
-        }
+      // At least one anchor, as an array<vec4f> binding needs.
+      page.data.update(page.values.subarray(0, Math.max(1, page.count) * 4));
       const b = [Infinity, Infinity, -Infinity, -Infinity];
       for (let anchor = 0; anchor < page.count; anchor++) {
         const at = anchor * 4;
@@ -212,7 +206,7 @@ export class TextBank {
     });
     this.clear();
     for (const { key, layout, origin, depth, shown } of live) {
-      this.add(key, layout, origin, Math.max(0, shown - 1), depth);
+      this.add(key, layout, origin, { slot: Math.max(0, shown - 1), depth });
       if (!shown) {
         const entry = this.entries.get(key)!;
         this.write(entry.page, entry.anchor, 0, 0, 0, 0);

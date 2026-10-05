@@ -20,7 +20,8 @@ export interface Plot {
 }
 export interface Axes {
   plot: Plot;
-  runs: readonly kit.TextRun[];
+  /** Tick labels and captions, as the monitor's text bank last placed them. */
+  text: readonly kit.TextBankPage[];
   lines: kit.BufferData;
   lineCount: number;
   gridCount: number;
@@ -64,9 +65,11 @@ export async function axes(
   y: Domain,
   options: Style,
   signal: AbortSignal,
+  /** The monitor's labels by text, so ticks that stay keep their glyphs as the window moves. */
+  text: kit.TextBank,
 ): Promise<Axes> {
+  text.hide();
   const area = plot(view, options),
-    runs: kit.TextRun[] = [],
     lines: number[] = [],
     grid: number[] = [],
     // Tick labels skip where one already placed would overlap them.
@@ -76,22 +79,21 @@ export async function axes(
     size = options.fontSizePx;
   const line = (a: number, b: number, c: number, d: number, color: RGBA) =>
     (color === options.gridColor ? grid : lines).push(a, b, c, d, ...color);
-  /** Text whose `align` side and `baseline` sit at `at`; with `spacing`, only where it is free. */
+  /** `value` with its `align` side and `baseline` at `at`; with `spacing`, only where it is free. */
   const label = async (
-    text: string,
+    key: string,
+    value: string,
     at: Point,
     align: TextAlign,
     baseline: TextBaseline,
     spacing?: number,
   ) => {
     const layout = await gpu.layoutText(
-        { text, font: options.font, size, color: options.textColor },
-        { signal },
-      ),
-      [ox, oy] = kit.textOrigin(layout, at, align, baseline);
-    if (spacing !== undefined && !occupied.place(kit.textBox(layout, [ox, oy], spacing))) return;
-    for (const run of layout.runs)
-      runs.push({ ...run, position: [run.position[0] + ox, run.position[1] + oy] });
+      { text: value, font: options.font, size, color: options.textColor },
+      { signal },
+    );
+    if (spacing === undefined) text.add(key, layout, kit.textOrigin(layout, at, align, baseline));
+    else text.place(key, layout, [[at[0], at[1], align, baseline]], occupied, { margin: spacing });
   };
   if (options.coordinateAxis !== null) {
     const axis = options.coordinateAxis,
@@ -106,16 +108,18 @@ export async function axes(
     for (const tick of t.items) {
       const px = kit.scaleValue(tick.value, sx)!;
       if (axis.grid !== false) line(px, area.y, px, area.y + area.height, options.gridColor);
-      await label(
-        tick.label ?? String(tick.value),
-        [px, area.y + area.height + size * 0.5],
-        'center',
-        'top',
-        3,
-      );
+      const value = tick.label ?? String(tick.value);
+      await label('x' + value, value, [px, area.y + area.height + size * 0.5], 'center', 'top', 3);
     }
     const caption = [axis.label, t.offset ? '+' + String(t.offset) : ''].filter(Boolean).join('  ');
-    if (caption) await label(caption, [area.x + area.width, view.height - 4], 'end', 'alphabetic');
+    if (caption)
+      await label(
+        'x caption',
+        caption,
+        [area.x + area.width, view.height - 4],
+        'end',
+        'alphabetic',
+      );
   }
   if (options.valueAxis !== null) {
     const axis = options.valueAxis,
@@ -124,14 +128,22 @@ export async function axes(
     for (const tick of t.items) {
       const py = kit.scaleValue(tick.value, sy)!;
       if (axis.grid !== false) line(area.x, py, area.x + area.width, py, options.gridColor);
-      await label(tick.label ?? String(tick.value), [area.x - 8, py], 'end', 'middle');
+      const value = tick.label ?? String(tick.value);
+      await label('y' + value, value, [area.x - 8, py], 'end', 'middle');
     }
     const caption = [axis.label, t.offset ? '+' + String(t.offset) : ''].filter(Boolean).join('  ');
-    if (caption) await label(caption, [area.x, Math.max(size, area.y - 8)], 'start', 'alphabetic');
+    if (caption)
+      await label(
+        'y caption',
+        caption,
+        [area.x, Math.max(size, area.y - 8)],
+        'start',
+        'alphabetic',
+      );
   }
   return {
     plot: area,
-    runs,
+    text: text.flush(),
     lines: buffer(new Float32Array([...grid, ...lines]), 'monitor axes'),
     gridCount: grid.length / 8,
     lineCount: lines.length / 8,

@@ -2,7 +2,6 @@ import {
   bitAt,
   failure,
   fieldDefinition,
-  positionField,
   assertIndex,
   type Column,
   type Index,
@@ -10,8 +9,8 @@ import {
   type RowAxis,
   type Schema,
   type Data,
+  type FieldInput,
   type FieldValues,
-  type Space,
 } from '@latkit/model';
 import { kit, type Position2D } from '@latkit/gpu';
 import type { NetworkData, VertexData, EdgeData, PathData } from '../data.js';
@@ -122,14 +121,13 @@ class Uints {
 }
 
 /** A contiguous run as a range, so ranged reads and lookups never allocate index arrays. */
-/** The space a position binding's coordinates lie in: its vector field's, or its axes' when they agree. */
-function spaceOf(source: Data, from: string, position: Position2D): Space | undefined {
-  if (typeof position !== 'object' || !('x' in position))
-    return fieldDefinition(source, from, position)?.space;
-  const x = fieldDefinition(source, from, position.x)?.space,
-    y = fieldDefinition(source, from, position.y)?.space;
-  if (x !== y) throw failure('invalid-input', 'Position axes lie in different spaces');
-  return x;
+/** Whether a position binding reads longitude and latitude; separate axes must agree. */
+function geographic(source: Data, from: string, position: Position2D): boolean {
+  const of = (input: FieldInput) => fieldDefinition(source, from, input)?.geographic === true;
+  if (typeof position !== 'object' || !('x' in position)) return of(position);
+  if (of(position.x) !== of(position.y))
+    throw failure('invalid-input', 'Position axes disagree on whether they are geographic');
+  return of(position.x);
 }
 function axis(rows: Uint32Array): RowAxis {
   const n = rows.length;
@@ -235,7 +233,8 @@ export async function readGeometry(
     edges: EdgeBank[] = [],
     lookup = new Map<string, RowLookup<VertexBank>>(),
     drawn = new Map<string, Drawn>(),
-    systems = new Set<string>(),
+    // Whether each drawn position is geographic: every one must agree.
+    kinds = new Set<boolean>(),
     segments = { count: 0 };
   let vertexCount = 0,
     edgeCount = 0,
@@ -271,9 +270,8 @@ export async function readGeometry(
     const read = await rowsOf(data.source, type, options.rows);
     const definition = schema.types[type];
     if (!definition) throw failure('invalid-input', 'Unknown vertex type: ' + type);
-    const position = options.position ?? positionField(definition, ['geographic', 'cartesian']),
-      space = position === undefined ? undefined : spaceOf(data.source, type, position);
-    if (space) systems.add(space);
+    const position = options.position;
+    if (position) kinds.add(geographic(data.source, type, position));
     if (vertexCount + read.rows.length > limits.vertices)
       throw failure('resource-limit', 'Network vertex limit exceeded');
     const addresses = new Addresses(read.rows, vertexCount, vertices.length);
@@ -490,8 +488,7 @@ export async function readGeometry(
   for (const [type, options] of Object.entries(data.paths ?? {})) {
     const source = options.source ?? data.source;
     const read = await rowsOf(source, type, options.rows);
-    const space = fieldDefinition(source, type, options.points)?.space;
-    if (space) systems.add(space);
+    kinds.add(geographic(source, type, options.points));
     for (let first = 0; first < read.rows.length; first += BANK_ROWS) {
       const count = Math.min(BANK_ROWS, read.rows.length - first);
       edges.push({
@@ -510,12 +507,12 @@ export async function readGeometry(
     }
   }
   frame.signal.throwIfAborted();
-  if (systems.size > 1)
-    throw failure('invalid-input', 'Drawn types disagree on their coordinate system');
-  const geographic = systems.has('geographic');
+  if (kinds.size > 1)
+    throw failure('invalid-input', 'Drawn positions mix geographic and plane coordinates');
+  const lonlat = kinds.has(true);
   for (const bank of vertices)
     if (!bank.position) {
-      if (geographic) throw failure('invalid-input', 'Geographic vertices require positions');
+      if (lonlat) throw failure('invalid-input', 'Geographic vertices require positions');
       const values = new Float32Array(bank.count * 2);
       for (let i = 0; i < bank.count; i++) {
         const a = (2 * Math.PI * (bank.base + i)) / Math.max(1, vertexCount);
@@ -557,7 +554,7 @@ export async function readGeometry(
     pathCount,
     segmentCount: segments.count,
     schema,
-    geographic,
+    geographic: lonlat,
     bytes,
     adjacency,
   };

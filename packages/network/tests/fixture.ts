@@ -57,7 +57,7 @@ export class GraphSource {
           fields: {
             location: {
               type: { kind: 'vector', items: 'float64', size: 2 },
-              space: geographic ? 'geographic' : 'cartesian',
+              geographic,
             },
             weight: { type: 'float32' },
             name: { type: 'text' },

@@ -27,8 +27,8 @@ export type {
   ListColumn,
   ReferenceColumn,
 } from './data.js';
-export type { Schema, TypeDefinition, FieldDefinition, Space } from './schema.js';
-export { fieldDefinition, positionField } from './definitions.js';
+export type { Schema, TypeDefinition, FieldDefinition } from './schema.js';
+export { fieldDefinition } from './definitions.js';
 export type {
   FieldSelection,
   QueryOptions,
