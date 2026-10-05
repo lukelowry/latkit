@@ -32,9 +32,10 @@ async function main() {
     at: 0,
     vertices: {
       Node: {
-        position: 'position',
+        x: 'position',
+        y: { field: 'position', component: 1 },
+        z: { field: 'signal', domain: [0, 1], range: [0, 3] },
         color,
-        height: { field: 'signal', domain: [0, 1], range: [0, 3] },
       },
     },
     edges: { Link: { ends: ['from', 'to'] } },
@@ -55,7 +56,7 @@ async function main() {
   } as const;
   const trace = (all: boolean): Trace => ({
     from: 'Node',
-    field: 'signal',
+    y: 'signal',
     color,
     widthPx: all ? 0.8 : 1.5,
     ...(all ? {} : { rows: subset }),
@@ -65,9 +66,9 @@ async function main() {
     source: history.data,
     at: 0,
     traces: { signal: trace(false) },
-    camera: { window: [0, history.duration], values: [0, 1], fit: false },
-    coordinateAxis: 'Time (s)',
-    valueAxis: 'Signal',
+    camera: { x: [0, history.duration], y: [0, 1], fit: false },
+    xAxis: 'Time (s)',
+    yAxis: 'Signal',
     cursorColor: [1, 0.9, 0.83, 1],
     background: [0.035, 0.047, 0.067, 1],
   });

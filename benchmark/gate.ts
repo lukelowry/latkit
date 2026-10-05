@@ -50,8 +50,11 @@ function timings(path: string): Map<string, Benchmark> {
   for (const file of report.files)
     for (const group of file.groups) {
       const name = group.fullName.split(' > ').at(-1)!;
-      for (const benchmark of group.benchmarks)
+      for (const benchmark of group.benchmarks) {
+        if (!Number.isFinite(benchmark.min) || !Number.isFinite(benchmark.median))
+          throw new Error(`Benchmark did not complete: ${name} > ${benchmark.name}`);
         result.set(name + ' > ' + benchmark.name, benchmark);
+      }
     }
   return result;
 }

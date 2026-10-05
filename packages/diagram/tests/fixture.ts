@@ -224,12 +224,29 @@ export function data(source = new Source(), position = false): DiagramData {
   return {
     source: source.data,
     vertices: {
-      Task: { labels: { field: 'name' }, ...(position ? { position: 'position' } : {}) },
+      Task: {
+        labels: { field: 'name' },
+        ...(position ? { x: 'position', y: { field: 'position', component: 1 } } : {}),
+      },
     },
     edges: {
       Dependency: { route: 'orthogonal', arrows: true, labels: { field: 'name' } },
     },
   };
 }
-export const measure = (input: { text: string }) =>
-  Promise.resolve({ advance: [...input.text].length * 0.6, ascent: 0.8, descent: 0.2 });
+export const layoutText = (
+  input: import('@latkit/gpu').TextLayoutInput,
+): Promise<import('@latkit/gpu').TextLayout> => {
+  const size = input.size ?? 12;
+  return Promise.resolve({
+    runs: [
+      { text: input.text, font: input.font, color: input.color, size, position: [0, size * 0.8] },
+    ],
+    width: [...input.text].length * 0.6 * size,
+    height: size,
+    baseline: size * 0.8,
+    lineHeight: size,
+    capHeight: size * 0.7,
+    align: input.align ?? 'start',
+  });
+};

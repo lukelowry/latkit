@@ -1,5 +1,8 @@
 import type { RGBA } from '@latkit/gpu';
-/** How a diagram draws, beyond the shared view style; every option has a default. */
+/**
+ * How a diagram draws, beyond the shared view style; every option has a default. Sizes without a
+ * `Px` suffix are diagram units and zoom with the blocks; `Px` sizes stay constant on screen.
+ */
 export interface DiagramStyle {
   readonly gridPitch?: number;
   readonly grid?: boolean;
@@ -7,23 +10,25 @@ export interface DiagramStyle {
   readonly labels?: boolean;
   readonly junctions?: boolean;
   readonly vertexPadding?: number;
-  /** Corner radius in diagram units. Per-vertex bindings may override it. */
+  /** Per-vertex bindings may override it. */
+  /** The radius of every corner: blocks, groups, and wire bends; a vertex type's own overrides it. */
   readonly cornerRadius?: number;
-  /** Stroke, focus, and port sizes stay constant in CSS pixels while zooming. */
   readonly outlineWidthPx?: number;
-  readonly portSizePx?: number;
+  /** Port markers, arrowheads, and junctions. */
+  readonly portSize?: number;
   readonly portMarker?: 'directional' | 'circle' | 'diamond';
   readonly portLabels?: boolean;
-  readonly portFontSizePx?: number;
+  readonly portFontSize?: number;
   readonly edgeWidthPx?: number;
   readonly gridMinSpacingPx?: number;
   readonly detail?: 'auto' | 'full';
   readonly portSpacing?: number;
+  /** Space wires keep from blocks, and the length of the stub out of each port. */
   readonly routeClearance?: number;
   /** Bounds CPU route interpolation; larger scenes settle immediately. Default: 512 vertices. */
   readonly animationMaxVertices?: number;
-  readonly vertexBaseColor?: RGBA;
-  readonly edgeBaseColor?: RGBA;
+  readonly vertexColor?: RGBA;
+  readonly edgeColor?: RGBA;
   readonly outlineColor?: RGBA;
   readonly gridColor?: RGBA;
   readonly groupColor?: RGBA;

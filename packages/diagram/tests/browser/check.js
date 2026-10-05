@@ -121,8 +121,8 @@ globalThis.diagramCheck = (async () => {
   diagram.on('move', (proposal) => {
     moved = proposal;
     moveCount++;
-    for (const [type, position] of Object.entries(proposal.positions))
-      diagram.set({ vertices: { [type]: { position } } });
+    for (const [type, positions] of Object.entries(proposal.positions))
+      diagram.set({ vertices: { [type]: positions } });
   });
   pointer('pointerdown', point);
   pointer('pointermove', [point[0], point[1] + 32]);

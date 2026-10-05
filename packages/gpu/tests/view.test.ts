@@ -450,6 +450,41 @@ function compositing(fake: ReturnType<typeof fakeDevice>): void {
   );
 }
 
+it('keeps the memos of each composed view apart from those of a sibling of its kind', async () => {
+  const fake = fakeDevice(),
+    gpu = await createGpu({ device: fake.device });
+  compositing(fake);
+  const built: string[] = [],
+    seen: Record<string, string[]> = { a: [], b: [] };
+  const memoized = (name: string) => async (frame: Preparation) => {
+    // Nested memos are the view's own too.
+    const value = await frame.memo('work', [], (inner) =>
+      inner.memo('inner', [], () => {
+        built.push(name);
+        return name;
+      }),
+    );
+    seen[name].push(value);
+  };
+  const a = new TestView(gpu, {}, memoized('a')),
+    b = new TestView(gpu, {}, memoized('b'));
+  const composition = createComposition(gpu, {
+    views: [
+      { view: a, region: [0, 0, 1, 0.5] },
+      { view: b, region: [0, 0.5, 1, 0.5] },
+    ],
+  });
+  for (let i = 0; i < 2; i++)
+    await gpu.render({
+      views: [{ renderer: rendererOf(composition), target: target(fake.device) }],
+      timeMs: i,
+    });
+  expect(seen).toEqual({ a: ['a', 'a'], b: ['b', 'b'] });
+  expect(built.sort()).toEqual(['a', 'b']);
+  composition.destroy();
+  gpu.destroy();
+});
+
 it('composes views into one view, and keeps composed views off their own canvases', async () => {
   const fake = fakeDevice(),
     gpu = await createGpu({ device: fake.device }),

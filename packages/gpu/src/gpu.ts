@@ -16,7 +16,7 @@ import { Buffers, type BufferResource } from './memory/buffers.js';
 import { Colormaps } from './colors/preparation.js';
 import { Images } from './memory/images.js';
 import { TextAtlas } from './text/atlas.js';
-import type { TextInput, TextMetrics, TextOptions } from './text/text.js';
+import type { TextLayout, TextLayoutInput, TextOptions } from './text/text.js';
 import { Allocator } from './memory/allocation.js';
 import { integer } from './error.js';
 import { Uniforms } from './frame/uniforms.js';
@@ -52,7 +52,11 @@ export interface Gpu {
   readonly fieldLayout: GPUBindGroupLayout;
   readonly textLayout: GPUBindGroupLayout;
   readonly colormapLayout: GPUBindGroupLayout;
-  measureText(input: TextInput, options?: { readonly signal?: AbortSignal }): Promise<TextMetrics>;
+  /** Lines of text, measured and broken as the input says, ready to draw as runs. */
+  layoutText(
+    input: TextLayoutInput,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<TextLayout>;
   stats(): MemoryStats;
   render(options: RenderOptions): Promise<void>;
   buffer(descriptor: GPUBufferDescriptor): BufferResource;
@@ -172,6 +176,7 @@ class Owner implements Gpu {
       buffers: this.buffers,
       stopped: this.stopped.signal,
       busy: new Set(),
+      memos: new WeakMap(),
       pending: this.pending,
       maxFrames: integer(options.maxFramesInFlight ?? 2, 'frames in flight', 1, 64),
       stop: (reason) => this.stop(reason),
@@ -189,14 +194,14 @@ class Owner implements Gpu {
     return this.stopped.signal;
   }
 
-  measureText(
-    input: TextInput,
+  layoutText(
+    input: TextLayoutInput,
     options: { readonly signal?: AbortSignal } = {},
-  ): Promise<TextMetrics> {
+  ): Promise<TextLayout> {
     this.assertLive();
-    return this.text.measure(
+    return this.text.layoutText(
       input,
-      AbortSignal.any([this.stopped.signal, ...(options.signal ? [options.signal] : [])]),
+      options.signal ? AbortSignal.any([this.stopped.signal, options.signal]) : this.stopped.signal,
     );
   }
 
@@ -213,10 +218,9 @@ class Owner implements Gpu {
     for (const renderer of renderers)
       if (this.rendering.has(renderer))
         throw failure('busy', 'Renderer already has a render in progress');
-    const signal = AbortSignal.any([
-      this.stopped.signal,
-      ...(options.signal ? [options.signal] : []),
-    ]);
+    const signal = options.signal
+      ? AbortSignal.any([this.stopped.signal, options.signal])
+      : this.stopped.signal;
     for (const renderer of renderers) this.rendering.add(renderer);
     try {
       const complete = options.completion === 'complete';

@@ -13,22 +13,21 @@ import {
   type Patch,
   type Viewport,
 } from '@latkit/gpu';
-import { Work, failure, sameIndex, type Data } from '@latkit/model';
+import { Work, failure, sameIndex, type TypeDefinition } from '@latkit/model';
 import type { Camera, Projection } from './camera.js';
 import { DEFAULT_CAMERA, checkCamera, fit, mixCamera, move, zoom } from './camera.js';
 import {
-  FIELD_OPTIONS,
   networkData,
-  type EdgeData,
   type EdgeOptions,
+  type LineOptions,
   type NetworkData,
   type NetworkItem,
-  type PathData,
   type PathOptions,
   type VertexOptions,
 } from './data.js';
 import {
   DEFAULT_LIMITS,
+  placement,
   readGeometry,
   vertexOptions,
   edgeOptions,
@@ -41,7 +40,14 @@ import { indexKey } from './geometry/rows.js';
 import { arrow, listen, type Gestures } from './input.js';
 import { DEFAULTS, VIEW_DEFAULTS, resolveStyle, type NetworkStyle, type Style } from './options.js';
 import { Picking, type PickGeometry } from './picking.js';
-import { readFields, resolveDomains, type FieldRead } from './rendering/fields.js';
+import {
+  LINE,
+  VERTEX,
+  channels,
+  readFields,
+  resolveDomains,
+  type FieldRead,
+} from './rendering/fields.js';
 import { Labels } from './rendering/labels.js';
 import { Paths } from './geometry/paths.js';
 import { Painter, type Paint, type Reads } from './rendering/painter.js';
@@ -127,6 +133,7 @@ function settle(
 function checkData(config: NetworkConfig): NetworkData {
   if (!config.vertices) throw failure('invalid-input', 'Invalid network data');
   const data = networkData(config);
+  for (const vertex of Object.values(data.vertices)) channels(vertex, VERTEX);
   for (const [type, edge] of Object.entries(data.edges ?? {})) {
     if (
       edge.ends &&
@@ -135,8 +142,8 @@ function checkData(config: NetworkConfig): NetworkData {
         edge.ends[0] === edge.ends[1])
     )
       throw failure('invalid-input', 'Edge ends must be two distinct fields: ' + type);
-    if (edge.ends && edge.junction)
-      throw failure('invalid-input', 'A junction centers a net, which has no ends: ' + type);
+    if (edge.ends && (edge.x != null || edge.y != null))
+      throw failure('invalid-input', 'A star center belongs to a net, which has no ends: ' + type);
     if (!edge.ends && edge.bends) throw failure('invalid-input', 'Bends require ends: ' + type);
     checkLine(type, edge);
   }
@@ -144,37 +151,35 @@ function checkData(config: NetworkConfig): NetworkData {
     if (!path.points) throw failure('invalid-input', 'A path needs points: ' + type);
     checkLine(type, path);
   }
-  for (const vertex of Object.values(data.vertices))
-    if (vertex.baseColor) kit.validateRgba(vertex.baseColor);
   return data;
 }
 /** An edge's or path's own line options. */
-function checkLine(type: string, entry: EdgeData | PathData): void {
+function checkLine(type: string, entry: LineOptions): void {
   if (entry.route && !['straight', 'geodesic'].includes(entry.route))
     throw failure('invalid-input', 'Invalid route: ' + type);
-  if (entry.widthPx !== undefined && !(entry.widthPx >= 0 && Number.isFinite(entry.widthPx)))
-    throw failure('invalid-input', 'Invalid widthPx: ' + type);
-  if (entry.baseColor) kit.validateRgba(entry.baseColor);
+  channels(entry, LINE);
 }
-/** Whether drawn rows or their wiring differ, which rebuilds geometry. */
+/** Whether a net centers its stars on its own x and y. */
+function centered(edge: EdgeOptions | undefined): boolean {
+  return edge?.x != null || edge?.y != null;
+}
+/**
+ * Whether drawn rows, their wiring, or how they are placed differ, which rebuilds geometry. New
+ * positions of the same kind, as a live simulation binds each frame, never do.
+ */
 function rewired(a: NetworkData, b: NetworkData): boolean {
-  const differ = <T extends object>(
-    x: Readonly<Record<string, T>> | undefined,
-    y: Readonly<Record<string, T>> | undefined,
-    keys: readonly (keyof T)[],
-  ) => {
-    const xs = Object.keys(x ?? {}),
-      ys = Object.keys(y ?? {});
-    return (
-      xs.length !== ys.length ||
-      xs.some((type, i) => type !== ys[i] || keys.some((key) => x![type][key] !== y![type][key]))
-    );
-  };
-  return (
-    topologyChanged(a.source, b.source) ||
-    differ(a.vertices, b.vertices, ['rows']) ||
-    differ(a.edges, b.edges, ['rows', 'ends', 'junction']) ||
-    differ(a.paths, b.paths, ['rows', 'source'])
+  return !(
+    kit.sameValues(a.source, b.source, wiring) &&
+    kit.sameRecords(a.vertices, b.vertices, ['rows']) &&
+    kit.sameRecords(a.edges, b.edges, ['rows', 'ends']) &&
+    kit.sameRecords(a.paths, b.paths, ['rows', 'source']) &&
+    Object.keys(b.vertices).every(
+      (type) =>
+        placement(a.source, type, a.vertices[type]) === placement(b.source, type, b.vertices[type]),
+    ) &&
+    Object.keys(b.edges ?? {}).every(
+      (type) => centered(a.edges?.[type]) === centered(b.edges![type]),
+    )
   );
 }
 
@@ -240,7 +245,6 @@ class NetworkView
       name: 'network',
       records: ['vertices', 'edges', 'paths'],
       merged: ['camera', 'input', 'limits'],
-      fields: FIELD_OPTIONS,
       options: Object.keys(DEFAULTS),
       framed: ['projection', 'center', 'scale', 'pitch', 'bearing'],
       style: VIEW_DEFAULTS,
@@ -258,7 +262,7 @@ class NetworkView
     return this.resolved.limits;
   }
 
-  /** Globe needs geographic positions, which the model's spatial system declares once read. */
+  /** Globe needs geographic positions, which their fields declare once read. */
   get projections(): Readonly<Record<Projection, boolean>> {
     return { flat: true, tilt: true, globe: this.shown?.geometry.geographic ?? false };
   }
@@ -423,54 +427,45 @@ class NetworkView
       style = this.style;
     const topology =
       this.geometry?.native ?? this.geometry ?? (await readGeometry(data, frame, this.limits));
-    let geometry = topology;
-    const vertices = new Map<VertexBank, FieldRead>(),
-      edges = new Map<EdgeBank, FieldRead>();
-    for (const bank of geometry.vertices)
-      vertices.set(
-        bank,
-        await readFields(
-          frame,
-          data.source,
-          bank,
-          data.vertices[bank.type],
-          data.vertices[bank.type].position ?? bank.position,
-        ),
-      );
-    for (const bank of geometry.edges)
-      edges.set(
-        bank,
-        await readFields(
-          frame,
-          bank.source ?? data.source,
-          bank,
-          edgeOptions(data, bank),
-          undefined,
-        ),
-      );
-    await resolveDomains(frame, data.source, vertices, (bank) =>
-      vertexOptions(data, bank as VertexBank),
-    );
-    await resolveDomains(frame, data.source, edges, (bank) => edgeOptions(data, bank as EdgeBank));
-    const compiled = this.paths.prepare(topology, { vertices, edges }, data, this.limits);
-    geometry = compiled.geometry;
-    for (const [bank, original] of compiled.origins) edges.set(bank, edges.get(original)!);
-    for (const bank of geometry.vertices)
-      if (bank.synthetic)
-        vertices.set(
-          bank,
-          await readFields(frame, data.source, bank, bank.synthetic, bank.position),
+    // What the data draws: read, scaled, and compiled once, until the data, its bindings, or the
+    // coordinate of a sampled read change.
+    const { geometry, reads } = await frame.memo(
+      'reads',
+      [topology, data.source, data.vertices, data.edges, data.paths, this.resolved.config.limits],
+      async (f) => {
+        let geometry = topology;
+        const vertices = new Map<VertexBank, FieldRead>(),
+          edges = new Map<EdgeBank, FieldRead>();
+        for (const bank of geometry.vertices)
+          vertices.set(
+            bank,
+            await readFields(f, data.source, bank, data.vertices[bank.type], bank.layout),
+          );
+        for (const bank of geometry.edges)
+          edges.set(
+            bank,
+            await readFields(f, bank.source ?? data.source, bank, edgeOptions(data, bank)),
+          );
+        await resolveDomains(f, data.source, vertices, (bank) =>
+          vertexOptions(data, bank as VertexBank),
         );
-    for (const bank of geometry.vertices)
-      if (bank.synthetic) {
-        const read = vertices.get(bank)!;
-        vertices.set(bank, {
-          ...read,
-          scales: { height: { domain: [0, 1], range: [0, 1], clamp: true } },
-        });
-      }
-    const reads: Reads = { vertices, edges },
-      picking = this.picking.prepare(geometry, reads, this.limits.pickingBytes);
+        await resolveDomains(f, data.source, edges, (bank) => edgeOptions(data, bank as EdgeBank));
+        const compiled = this.paths.prepare(topology, { vertices, edges }, data, this.limits);
+        geometry = compiled.geometry;
+        for (const [bank, original] of compiled.origins) edges.set(bank, edges.get(original)!);
+        // A path's private points carry their own positions and heights, scaled from 0 to 1.
+        const points = new Map<VertexBank, FieldRead>();
+        for (const bank of geometry.vertices)
+          if (bank.synthetic)
+            points.set(bank, await readFields(f, data.source, bank, bank.synthetic));
+        await resolveDomains(f, data.source, points, (bank) =>
+          vertexOptions(data, bank as VertexBank),
+        );
+        for (const [bank, read] of points) vertices.set(bank, read);
+        return { geometry, reads: { vertices, edges } satisfies Reads };
+      },
+    );
+    const picking = this.picking.prepare(geometry, reads, this.limits.pickingBytes);
     let camera = await this.frameCamera(frame, (items, current, viewport) =>
       this.framing(geometry, picking, items, current, viewport),
     );
@@ -487,7 +482,7 @@ class NetworkView
     }
     if (camera !== framed) this.drawCamera(frame, camera);
     const height =
-      style.heightScale *
+      style.zScale *
       (camera.projection === 'globe'
         ? 0.08
         : Math.max(
@@ -515,7 +510,7 @@ class NetworkView
       (!picking.samePositions(previous.picking) ||
         height !== previous.height ||
         Object.keys(data.vertices).some(
-          (key) => data.vertices[key].height !== previous.data.vertices[key]?.height,
+          (key) => data.vertices[key].z !== previous.data.vertices[key]?.z,
         ));
     const drawnCamera = camera;
     const hover = this.hoverFrame(
@@ -613,34 +608,10 @@ class NetworkView
   }
 }
 
-function topologyChanged(a: Data, b: Data): boolean {
-  if (a === b) return false;
-  if (a.schema !== b.schema || Object.keys(a.tables).length !== Object.keys(b.tables).length)
-    return true;
-  for (const [name, x] of Object.entries(a.tables)) {
-    const y = b.tables[name];
-    if (
-      !y ||
-      x.index.source !== y.index.source ||
-      x.index.type !== y.index.type ||
-      x.index.version !== y.index.version
-    )
-      return true;
-    if (
-      x.rows !== y.rows &&
-      (x.rows.kind !== 'range' ||
-        y.rows.kind !== 'range' ||
-        x.rows.offset !== y.rows.offset ||
-        x.rows.count !== y.rows.count)
-    )
-      return true;
-    for (const [field, definition] of Object.entries(a.schema.types[name].fields))
-      if (
-        typeof definition.type === 'object' &&
-        (definition.type.kind === 'reference' || definition.type.kind === 'list') &&
-        x.fields[field] !== y.fields[field]
-      )
-        return true;
-  }
-  return false;
+/** A type's wiring: its reference and list fields. */
+function wiring(_: string, definition: TypeDefinition): readonly string[] {
+  return Object.keys(definition.fields).filter((field) => {
+    const type = definition.fields[field].type;
+    return typeof type === 'object' && (type.kind === 'reference' || type.kind === 'list');
+  });
 }

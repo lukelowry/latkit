@@ -1,14 +1,6 @@
 import { defineConfig } from 'vitest/config';
-import { readFile } from 'node:fs/promises';
+import { wgsl } from '../../vitest.wgsl';
 export default defineConfig({
-  plugins: [
-    {
-      name: 'wgsl',
-      async load(id) {
-        if (id.endsWith('.wgsl'))
-          return 'export default ' + JSON.stringify(await readFile(id, 'utf8'));
-      },
-    },
-  ],
+  plugins: [wgsl],
   test: { name: '@latkit/network', include: ['tests/**/*.test.ts'] },
 });

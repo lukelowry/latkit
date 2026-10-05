@@ -1,12 +1,10 @@
-import { isFailure } from '@latkit/model';
 import type { ConnectProposal } from './diagram.js';
 import type { DiagramItem, DiagramPort, DiagramRow, Point, SceneItem } from './data.js';
 import { itemKey, rowOf } from './data.js';
-import type { Vertex, Port, Scene } from './scene.js';
-import { rect } from './scene.js';
-import { boundary, orthogonal } from './geometry.js';
+import type { Port, Scene } from './scene.js';
+import type { Style } from './config.js';
+import { Routing } from './route.js';
 import { rootEnd } from './layout.js';
-import { SpatialIndex, expand } from './spatial.js';
 
 export type ConnectStart = Pick<ConnectProposal, 'from' | 'replaces'>;
 /** A vertex or edge row, whichever kind names it. */
@@ -17,40 +15,34 @@ const identity = (item: Exclude<DiagramItem, { kind: 'group' }>) =>
 export class ConnectSession {
   readonly start: ConnectStart;
   readonly compatible: readonly DiagramItem[];
-  private vertices = new Map<string, Vertex>();
+  private vertices = new Map<string, number>();
   private edges = new Map<string, Scene['edges'][number]>();
-  private obstacles = new SpatialIndex();
-  private owners: Vertex[] = [];
-  private source: Vertex;
+  private source: number;
   private port?: Port;
   constructor(
     private readonly scene: Scene,
     hit: Exclude<DiagramItem, { kind: 'group' }>,
-    private readonly clearance: number,
+    private readonly options: Style,
   ) {
-    for (const vertex of scene.vertices) {
-      this.vertices.set(identity(vertex.hit), vertex);
-      if (vertex.visible) {
-        this.obstacles.add(expand(rect(vertex), 2));
-        this.owners.push(vertex);
-      }
-    }
+    scene.vertices.forEach((vertex, i) => this.vertices.set(identity(vertex.hit), i));
     for (const edge of scene.edges) this.edges.set(identity(edge.hit), edge);
     let source = this.vertices.get(identity(hit))!;
-    let port = hit.kind === 'port' ? source.ports.find((p) => p.name === hit.port) : undefined;
-    this.start = { from: endOf(source.hit, port?.name) };
+    let port =
+      hit.kind === 'port'
+        ? scene.vertices[source].ports.find((p) => p.name === hit.port)
+        : undefined;
+    this.start = { from: endOf(scene.vertices[source].hit, port?.name) };
     // Dragging a wired input moves it: the new wiring starts from its net's source.
     if (port?.direction === 'in') {
-      const vertexIndex = scene.vertices.indexOf(source),
-        moved = endOf(source.hit, port.name) as DiagramPort;
+      const moved = endOf(scene.vertices[source].hit, port.name) as DiagramPort;
       for (const edge of scene.edges) {
-        const end = edge.ends.find((e) => e.vertex === vertexIndex && e.port === moved.port);
+        const end = edge.ends.find((e) => e.vertex === source && e.port === moved.port);
         const root = edge.ends[rootEnd(edge)];
         if (!end || !root || root === end) continue;
-        source = scene.vertices[root.vertex];
-        port = source.ports.find((p) => p.name === root.port);
+        source = root.vertex;
+        port = scene.vertices[source].ports.find((p) => p.name === root.port);
         this.start = {
-          from: endOf(source.hit, root.port ?? undefined),
+          from: endOf(scene.vertices[source].hit, root.port ?? undefined),
           replaces: { edge: rowOf(edge.hit), end: moved },
         };
         break;
@@ -80,15 +72,14 @@ export class ConnectSession {
         !!edge &&
         !!this.port &&
         edge.hit.index.type === this.port.to &&
-        !edge.ends.some(
-          (end) => this.scene.vertices[end.vertex] === this.source && end.port === this.port!.name,
-        )
+        !edge.ends.some((end) => end.vertex === this.source && end.port === this.port!.name)
       );
     }
-    const vertex = this.vertices.get(identity(item));
+    const index = this.vertices.get(identity(item)),
+      vertex = index === undefined ? undefined : this.scene.vertices[index];
     if (!vertex || !vertex.visible) return false;
     const port = item.kind === 'port' ? vertex.ports.find((p) => p.name === item.port) : undefined;
-    if (vertex === this.source && port === this.port) return false;
+    if (index === this.source && port === this.port) return false;
     if (item.kind === 'port' && !port) return false;
     // Two ports wire together through a net they both reference, and never input to input.
     const a = this.port,
@@ -96,11 +87,7 @@ export class ConnectSession {
     if (a && b && (a.to !== b.to || (a.direction && a.direction === b.direction))) return false;
     if (this.start.replaces) {
       const edge = this.edges.get(identity(this.start.replaces.edge))!;
-      if (
-        edge.ends.some(
-          (end) => this.scene.vertices[end.vertex] === vertex && end.port === (port?.name ?? null),
-        )
-      )
+      if (edge.ends.some((end) => end.vertex === index && end.port === (port?.name ?? null)))
         return false;
     }
     return true;
@@ -113,37 +100,28 @@ export class ConnectSession {
       to: item && item.kind !== 'group' ? item : null,
     };
   }
+  /** The wire as it would route: out of its start, around the blocks, into the target. */
   preview(point: Point, target: DiagramItem | null, signal: AbortSignal): readonly Point[] {
-    const vertex =
-      target && target.kind !== 'edge' && target.kind !== 'group'
-        ? this.vertices.get(identity(target))
-        : undefined;
-    const port =
-      target?.kind === 'port' ? vertex?.ports.find((p) => p.name === target.port) : undefined;
-    const a = this.port?.position ?? boundary(this.source, point);
-    const b = port?.position ?? (vertex ? boundary(vertex, a) : point);
-    const normal = this.port?.normal ?? [Math.sign(b[0] - a[0]) || 1, 0];
-    const ap: Point = [a[0] + normal[0] * this.clearance, a[1] + normal[1] * this.clearance];
-    const bp: Point = port
-      ? [b[0] + port.normal[0] * this.clearance, b[1] + port.normal[1] * this.clearance]
-      : b;
-    const region = expand(
-      [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[0], b[0]), Math.max(a[1], b[1])],
-      this.clearance * 4,
-    );
-    const boxes = this.obstacles
-      .query(region)
-      .filter((i) => this.owners[i] !== this.source && this.owners[i] !== vertex)
-      .map((i) => this.obstacles.boxes[i]);
-    try {
-      return [a, ap, ...orthogonal(ap, bp, boxes, this.clearance, signal), bp, b];
-    } catch (error) {
-      signal.throwIfAborted();
-      // Overlapping blocks can temporarily enclose the pointer. Keep the gesture cancellable.
-      if (!isFailure(error) || !['invalid-input', 'resource-limit'].includes(error.code))
-        throw error;
-      return [a, ap, [bp[0], ap[1]], bp, b];
-    }
+    const route = new Routing(this.scene, this.options, signal),
+      clearance = this.options.routeClearance,
+      index =
+        target && target.kind !== 'edge' && target.kind !== 'group'
+          ? this.vertices.get(identity(target))
+          : undefined,
+      port = target?.kind === 'port' ? target.port : null;
+    const a = route.end({ vertex: this.source, port: this.port?.name ?? null }, point, false);
+    const b =
+      index === undefined ? undefined : route.end({ vertex: index, port }, a.position, false);
+    const ap: Point = [
+      a.position[0] + a.normal[0] * clearance,
+      a.position[1] + a.normal[1] * clearance,
+    ];
+    if (!b) return [a.position, ap, ...route.between(ap, point).slice(1)];
+    const bp: Point = [
+      b.position[0] + b.normal[0] * clearance,
+      b.position[1] + b.normal[1] * clearance,
+    ];
+    return [a.position, ...route.between(ap, bp), b.position];
   }
   get detached(): string | undefined {
     return this.start.replaces ? itemKey(this.start.replaces.edge) : undefined;

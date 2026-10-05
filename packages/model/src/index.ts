@@ -28,6 +28,7 @@ export type {
   ReferenceColumn,
 } from './data.js';
 export type { Schema, TypeDefinition, FieldDefinition } from './schema.js';
+export { fieldDefinition } from './definitions.js';
 export type {
   FieldSelection,
   QueryOptions,
@@ -100,11 +101,11 @@ export { validateSelection } from './validation/selection.js';
 export { selectBatches, staticFields, sampledFields } from './select.js';
 
 export type { ColumnPages } from './pages.js';
-export { appendedPages, sampleDomain } from './pages.js';
+export { appendedPages, sampleDomain, samePages } from './pages.js';
 export { sampleFrames } from './read.js';
 
 export { createReader } from './reader/reader.js';
-export type { Reader, ReadScope, ReaderOptions } from './reader/reader.js';
+export type { Reader, ReadScope, ReadRecord, ReaderOptions } from './reader/reader.js';
 export { createMemory } from './memory.js';
 export type { Memory, Entry as MemoryEntry, MemoryBudget, MemoryStats } from './memory.js';
 export type {

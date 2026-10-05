@@ -71,3 +71,16 @@ frame from `prepare` to `encode` and `submitted`; `kit.BaseItemView` adds the ca
 picking, hover, clicks, shades, pipeline variants, and option checks that network, monitor, and
 diagram share, so each supplies only its geometry and gestures. Custom renderers must keep
 captured inputs stable until `release`; `submitted` and `discard` settle a prepared candidate once.
+
+A frame's work that depends only on its inputs belongs in `frame.memo(slot, deps, build)`. It is
+reused until `deps` change, a sampled field it read is read at another coordinate, a buffer it bound
+is written, or memory it held is evicted; reuse only holds that memory again, so a frame where
+nothing changed costs no reads or uploads. Text goes through `kit.TextBank`, which lays each key's
+runs out once and moves only anchors, and `kit.textOrigin`, which places text by its side and
+height: `middle` centers it by its capitals.
+
+Every per-row option is a [channel](topology-and-channels.md#channels). `kit.bindChannels` binds a
+type's options to the columns of one fields read, sharing a column between channels of one field;
+`kit.resolveChannels` resolves their scales. A shader reads each through the field shader's
+`LatkitChannel`, which `kit.writeChannel` fills per page, with `channelNumber` and `channelColor`;
+`kit.channelValue` and `kit.channelOn` read a row on the CPU as `channelNumber` and `channelOn` do on the GPU, for picking and layout.

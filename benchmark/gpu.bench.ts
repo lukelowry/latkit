@@ -1,7 +1,7 @@
 import { describe } from 'vitest';
 import { kit } from '@latkit/gpu';
 import type { Data, FieldInput } from '@latkit/model';
-import { draw, frames, gpu, grid, sizes, suite } from './harness.ts';
+import { counters, draw, frames, gpu, grid, sizes, suite } from './harness.ts';
 
 /** A renderer that reads fields and uploads them each frame, as every view does. */
 function uploads(data: Data, fields: Readonly<Record<string, FieldInput>>): kit.Renderer {
@@ -9,7 +9,7 @@ function uploads(data: Data, fields: Readonly<Record<string, FieldInput>>): kit.
     capture: () => ({
       prepare: async (frame) => {
         for await (const block of frame.reader.fields({ source: data, from: 'Bus', fields }))
-          frame.upload(block, { select: Object.keys(fields) });
+          frame.upload(block, { select: Object.keys(fields), float64: 'relative' });
         return { encode() {}, submitted() {}, discard() {} };
       },
       release() {},
@@ -23,7 +23,7 @@ describe.each(sizes)('gpu %i buses', async (buses) => {
     data = grid(buses);
   const staticFields = uploads(data, { load: 'load', position: 'position' }),
     sampled = uploads(data, { voltage: 'voltage' });
-  const measure = suite(`gpu ${buses} buses`, buses, () => device.stats());
+  const measure = suite(`gpu ${buses} buses`, buses, () => counters(device));
   measure('cold upload', () => {
     device.trim();
     return draw(device, staticFields);

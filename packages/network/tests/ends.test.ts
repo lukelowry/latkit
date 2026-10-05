@@ -18,6 +18,8 @@ import { readGeometry, DEFAULT_LIMITS, type Geometry } from '../src/geometry/top
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
 
 const lonlat = { kind: 'vector', items: 'float64', size: 2 } as const;
+/** Both lanes of a position field. */
+const lonlat2 = { x: 'position', y: { field: 'position', component: 1 } } as const;
 const bus = { type: { kind: 'reference', to: 'Bus' }, nullable: true } as const;
 
 /** Buses placed by longitude/latitude, branches wired to two of them, and loads wired to one. */
@@ -36,12 +38,9 @@ class GridSource {
   constructor(system: 'geographic' | 'cartesian' = 'geographic') {
     this.schema = {
       types: {
-        Bus: { fields: { position: { type: lonlat } }, spatial: { field: 'position', system } },
+        Bus: { fields: { position: { type: lonlat, geographic: system === 'geographic' } } },
         Branch: { fields: { bus1: bus, bus2: bus, rating: { type: 'float64' } } },
-        Load: {
-          fields: { bus, position: { type: lonlat } },
-          spatial: { field: 'position', system: 'geographic' },
-        },
+        Load: { fields: { bus, position: { type: lonlat, geographic: true } } },
       },
     };
   }
@@ -151,7 +150,7 @@ async function geometryOf(gpu: Gpu, data: NetworkData): Promise<Geometry> {
 }
 const branches = (source: GridSource): NetworkData => ({
   source: source.data,
-  vertices: { Bus: {} },
+  vertices: { Bus: { x: 'position', y: { field: 'position', component: 1 } } },
   edges: { Branch: { ends: ['bus1', 'bus2'] } },
 });
 
@@ -161,7 +160,7 @@ it('draws each row between the vertices its two references name', async () => {
   const source = new GridSource();
   const gpu = await createGpu({ device: device().device });
   const geometry = await geometryOf(gpu, branches(source));
-  // Buses are placed by their spatial field, whose system makes the network geographic.
+  // Buses are placed by their position field, which the schema marks geographic.
   expect(geometry.geographic).toBe(true);
   expect(geometry.vertices.map(({ type, count }) => [type, count])).toEqual([['Bus', 4]]);
   // Every branch is an edge; the one with an end unwired has no segment.
@@ -220,9 +219,9 @@ it('refuses ends that are not two distinct references to vertex types', async ()
   expect(() =>
     createNetwork(gpu, {
       ...branches(source),
-      edges: { Branch: { ends: ['bus1', 'bus2'], junction: 'x' } },
+      edges: { Branch: { ends: ['bus1', 'bus2'], x: 'x' } },
     }),
-  ).toThrow('A junction centers a net');
+  ).toThrow('A star center belongs to a net');
   expect(() =>
     createNetwork(gpu, { ...branches(source), edges: { Bus: { bends: 'route' } } }),
   ).toThrow('Bends require ends');
@@ -239,12 +238,15 @@ it('refuses ends that are not two distinct references to vertex types', async ()
   gpu.destroy();
 });
 
-it('reads the coordinate system from the drawn types, which must agree', async () => {
+it('reads whether positions are geographic from their fields, which must agree', async () => {
   const gpu = await createGpu({ device: device().device });
   const planar = new GridSource('cartesian');
   expect((await geometryOf(gpu, branches(planar))).geographic).toBe(false);
   await expect(
-    geometryOf(gpu, { ...branches(planar), vertices: { Bus: {}, Load: {} } }),
-  ).rejects.toThrow('disagree on their coordinate system');
+    geometryOf(gpu, {
+      ...branches(planar),
+      vertices: { Bus: lonlat2, Load: lonlat2 },
+    }),
+  ).rejects.toThrow('mix geographic and plane coordinates');
   gpu.destroy();
 });

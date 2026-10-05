@@ -76,10 +76,6 @@ export type Patch<C, Records extends keyof C = never, Merged extends keyof C = n
 };
 /** Some of an object's options, each of which may be null to reset it. */
 export type OptionsPatch<T> = T extends object ? { readonly [K in keyof T]?: T[K] | null } : T;
-/** Options as a view reads them: `ConfigShape.fields` shorthands are already `{ field }` objects. */
-export type Expanded<T, K extends PropertyKey> = {
-  readonly [P in keyof T]: P extends K ? Exclude<T[P], string> : T[P];
-};
 
 /** What every latkit view shares. */
 export interface View<
@@ -108,10 +104,6 @@ export interface ConfigShape {
   readonly merged?: readonly string[];
   /** Keys whose string value names one option, such as `layout: 'layered'` for its algorithm. */
   readonly shorthands?: Readonly<Record<string, string>>;
-  /** Options of record entries whose string value names a field: `color: 'load'` is `{ field: 'load' }`. */
-  readonly fields?: readonly string[];
-  /** Records nested in entries that take the same field shorthands, such as diagram `ports`. */
-  readonly nested?: readonly string[];
 }
 
 type Listener = (value: never) => void;
@@ -127,7 +119,7 @@ function merge(base: unknown, patch: Plain): Plain {
   return next;
 }
 /** The config with a patch applied, following the view's shape. */
-export function applyPatch<C>(config: C, patch: object, shape: ConfigShape): C {
+function applyPatch<C>(config: C, patch: object, shape: ConfigShape): C {
   const next: Plain = { ...(config as Plain) };
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue;
@@ -824,41 +816,7 @@ function normalized<C extends ViewConfig>(config: C, shape: ConfigShape): C {
   let result = config as Plain;
   for (const [key, option] of Object.entries({ input: 'mode', ...shape.shorthands }))
     if (typeof result[key] === 'string') result = { ...result, [key]: { [option]: result[key] } };
-  if (shape.fields?.length)
-    for (const key of shape.records ?? []) {
-      const record = result[key];
-      if (!record || typeof record !== 'object') continue;
-      const next = expandRecord(record as Plain, shape);
-      if (next !== record) result = { ...result, [key]: next };
-    }
   return result as C;
-}
-const expansions = new WeakMap<object, object>();
-/** Expand an entry once, keeping its identity when nothing changes so caches keyed on it survive. */
-function expand(entry: Plain, shape: ConfigShape): Plain {
-  let found = expansions.get(entry) as Plain | undefined;
-  if (found) return found;
-  let next: Plain | undefined;
-  for (const key of shape.fields ?? [])
-    if (typeof entry[key] === 'string') (next ??= { ...entry })[key] = { field: entry[key] };
-  for (const key of shape.nested ?? []) {
-    const nested = entry[key];
-    if (!nested || typeof nested !== 'object') continue;
-    const record = expandRecord(nested as Plain, shape);
-    if (record !== nested) (next ??= { ...entry })[key] = record;
-  }
-  found = next ? Object.freeze(next) : entry;
-  expansions.set(entry, found);
-  return found;
-}
-function expandRecord(record: Plain, shape: ConfigShape): Plain {
-  let next: Plain | undefined;
-  for (const [name, entry] of Object.entries(record)) {
-    if (!entry || typeof entry !== 'object') continue;
-    const expanded = expand(entry as Plain, shape);
-    if (expanded !== entry) (next ??= { ...record })[name] = expanded;
-  }
-  return next ?? record;
 }
 interface Internals {
   readonly gpu: Gpu;

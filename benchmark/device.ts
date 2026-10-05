@@ -1,3 +1,29 @@
+/** Copy exactly the source range accepted by queue.writeBuffer. */
+export function copyUpload(
+  data: Parameters<GPUQueue['writeBuffer']>[2],
+  dataOffset = 0,
+  size?: number,
+): Uint8Array {
+  const view = ArrayBuffer.isView(data),
+    unit = view && 'BYTES_PER_ELEMENT' in data ? Number(data.BYTES_PER_ELEMENT) : 1,
+    bytes = view
+      ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+      : new Uint8Array(data),
+    elements = bytes.byteLength / unit,
+    count = size ?? elements - dataOffset;
+  if (
+    !Number.isSafeInteger(dataOffset) ||
+    !Number.isSafeInteger(count) ||
+    dataOffset < 0 ||
+    count < 0 ||
+    dataOffset > elements ||
+    count > elements - dataOffset
+  )
+    throw new RangeError('Invalid upload source range');
+  if ((count * unit) % 4) throw new RangeError('Upload size must be a multiple of four bytes');
+  return bytes.slice(dataOffset * unit, (dataOffset + count) * unit);
+}
+
 /** A WebGPU device that does no GPU work: benchmarks time the JavaScript a frame costs. */
 export function nullDevice(): GPUDevice {
   Object.assign(globalThis, {
@@ -32,8 +58,13 @@ export function nullDevice(): GPUDevice {
     lost: new Promise(() => {}),
     queue: {
       // Copies as a real queue does, so upload cost stays in the measurement.
-      writeBuffer: (_buffer: GPUBuffer, _offset: number, data: BufferSource) =>
-        void new Uint8Array(ArrayBuffer.isView(data) ? data.buffer : data).slice(),
+      writeBuffer: (
+        _buffer: GPUBuffer,
+        _offset: number,
+        data: Parameters<GPUQueue['writeBuffer']>[2],
+        dataOffset = 0,
+        size?: number,
+      ) => void copyUpload(data, dataOffset, size),
       writeTexture() {},
       copyExternalImageToTexture() {},
       submit() {},

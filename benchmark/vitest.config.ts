@@ -3,7 +3,7 @@ import { defineProject } from 'vitest/config';
 export default defineProject({
   test: {
     name: 'benchmark',
-    include: [],
+    include: ['*.test.ts'],
     benchmark: { include: ['*.bench.ts'] },
   },
 });

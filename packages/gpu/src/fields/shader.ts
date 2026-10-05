@@ -1,5 +1,7 @@
 import { integer } from '../error.js';
 import { BANKS, FIELD_KIND } from './pages.js';
+import { channelShader, channelColorShader } from '../style/channel.js';
+import { colormapShader } from '../colors/shader.js';
 
 const banks = Array.from({ length: BANKS }, (_, bank) => bank);
 const kinds = Object.entries(FIELD_KIND)
@@ -11,8 +13,14 @@ const word = banks
   .map((bank) => `  if (bank == ${bank}u) { return latkitValues${bank}[offset]; }`)
   .join('\n');
 
-/** One layout for native columns, field bindings and sampled observations. */
-export function fieldShader(options: { readonly group: number }): string {
+/**
+ * One layout for native columns, field bindings and sampled observations, with the channels that
+ * read them; with `colormap`, that colormap group too, and `channelColor`.
+ */
+export function fieldShader(options: {
+  readonly group: number;
+  readonly colormap?: number;
+}): string {
   const group = integer(options.group, 'field bind group', 0, 3);
   const values = banks
     .map(
@@ -97,5 +105,6 @@ fn fieldVec3f(slot: u32, row: u32, frame: u32) -> vec3f {
 fn fieldVec4f(slot: u32, row: u32, frame: u32) -> vec4f {
   return vec4f(fieldFloat(slot, row, frame, 0u), fieldFloat(slot, row, frame, 1u), fieldFloat(slot, row, frame, 2u), fieldFloat(slot, row, frame, 3u));
 }
-`;
+${channelShader}
+${options.colormap === undefined ? '' : colormapShader({ group: options.colormap }) + channelColorShader}`;
 }

@@ -40,10 +40,22 @@ export interface ReadScope {
   read<Q extends Query>(data: Data, query: Q): AsyncIterable<ReadResult<Q>>;
   fields(request: FieldsRequest): AsyncIterable<FieldsBlock>;
   extent(request: ExtentRequest): Promise<Domain | null>;
+  /**
+   * The same scope, noting in `record` what its reads hold and whether any read sampled fields at
+   * the scope's coordinate: what work derived from the reads depends on.
+   */
+  recording(record: ReadRecord): ReadScope;
+  /** Hold results again, as reused work derived from them does; false if any was evicted. */
+  hold(entries: Iterable<Entry>): boolean;
   /** Iterators not yet finished, or extents still pending. */
   readonly busy: boolean;
   /** Stop reads and release every result this scope held. Idempotent. */
   close(): void;
+}
+/** What reads through a recording scope held, and whether they read at its coordinate. */
+export interface ReadRecord {
+  readonly entries: Set<Entry>;
+  sampled: boolean;
 }
 
 export function createReader(options: ReaderOptions = {}): Reader {
@@ -89,18 +101,12 @@ class Cache implements Reader {
       iterators = new Set<AsyncIterator<unknown>>();
     let pending = 0,
       closed = false;
-    const fieldScope: FieldScope = {
-      signal,
-      at: options.at,
-      read: <Q extends Query>(data: Data, query: Q) =>
-        this.#blocks.read(data, query, signal) as AsyncIterable<ReadResult<Q>>,
-      use: (entry) => {
-        if (closed) throw failure('closed', 'Read scope is closed');
-        if (!held.has(entry)) {
-          entry.pin();
-          held.add(entry);
-        }
-      },
+    const use = (entry: Entry) => {
+      if (closed) throw failure('closed', 'Read scope is closed');
+      if (!held.has(entry)) {
+        entry.pin();
+        held.add(entry);
+      }
     };
     const guard = <T>(items: () => AsyncIterable<T>): AsyncIterable<T> => ({
       async *[Symbol.asyncIterator]() {
@@ -120,30 +126,55 @@ class Cache implements Reader {
       },
     });
     const fields = this.#fields;
-    return {
-      signal,
-      at: options.at,
-      read: (data, query) => guard(() => fieldScope.read(data, query)),
-      fields: (request) => guard(() => fields.read(request, fieldScope)),
-      extent(request) {
-        signal.throwIfAborted();
-        const work = fields.extent(request, fieldScope);
-        pending++;
-        const settle = () => void pending--;
-        void work.then(settle, settle);
-        return interruptible(work, signal);
-      },
-      get busy() {
-        return iterators.size > 0 || pending > 0;
-      },
-      close() {
-        if (closed) return;
-        closed = true;
-        stop.abort(new DOMException('Read scope closed', 'AbortError'));
-        for (const entry of held) entry.unpin();
-        held.clear();
-      },
+    /** The scope, noting into each record what its reads hold and whether they read at `at`. */
+    const scope = (records: readonly ReadRecord[]): ReadScope => {
+      const fieldScope: FieldScope = {
+        signal,
+        get at() {
+          for (const record of records) record.sampled = true;
+          return options.at;
+        },
+        read: <Q extends Query>(data: Data, query: Q) =>
+          this.#blocks.read(data, query, signal) as AsyncIterable<ReadResult<Q>>,
+        use: (entry) => {
+          use(entry);
+          for (const record of records) record.entries.add(entry);
+        },
+      };
+      return {
+        signal,
+        at: options.at,
+        read: (data, query) => guard(() => fieldScope.read(data, query)),
+        fields: (request) => guard(() => fields.read(request, fieldScope)),
+        extent(request) {
+          signal.throwIfAborted();
+          const work = fields.extent(request, fieldScope);
+          pending++;
+          const settle = () => void pending--;
+          void work.then(settle, settle);
+          return interruptible(work, signal);
+        },
+        recording: (record) => scope([...records, record]),
+        hold(entries) {
+          for (const entry of entries) {
+            if (!entry.live || entry.retire) return false;
+            fieldScope.use(entry);
+          }
+          return true;
+        },
+        get busy() {
+          return iterators.size > 0 || pending > 0;
+        },
+        close() {
+          if (closed) return;
+          closed = true;
+          stop.abort(new DOMException('Read scope closed', 'AbortError'));
+          for (const entry of held) entry.unpin();
+          held.clear();
+        },
+      };
     };
+    return scope([]);
   }
 
   stats(): MemoryStats {

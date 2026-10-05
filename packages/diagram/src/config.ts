@@ -1,9 +1,53 @@
 import { failure } from '@latkit/model';
 import { kit, viewStyle, type RGBA, type ViewInput } from '@latkit/gpu';
 import type { DiagramStyle, Limits } from './options.js';
-import type { DiagramData, VertexData, EdgeData } from './data.js';
+import type { DiagramData, VertexOptions, EdgeOptions } from './data.js';
 import type { DiagramInput } from './input.js';
+import { structure } from './read.js';
+import { checkStyle } from './styles.js';
 export type Style = Required<DiagramStyle> & kit.ResolvedViewStyle;
+/** Every new option must declare the work it invalidates. */
+export const STYLE_EFFECTS = {
+  gridPitch: 'scene',
+  grid: 'frame',
+  snap: 'frame',
+  labels: 'scene',
+  junctions: 'frame',
+  vertexPadding: 'scene',
+  cornerRadius: 'scene',
+  outlineWidthPx: 'frame',
+  portSize: 'route',
+  portMarker: 'scene',
+  portLabels: 'scene',
+  portFontSize: 'scene',
+  edgeWidthPx: 'frame',
+  gridMinSpacingPx: 'frame',
+  detail: 'frame',
+  portSpacing: 'scene',
+  routeClearance: 'route',
+  animationMaxVertices: 'frame',
+  vertexColor: 'frame',
+  edgeColor: 'frame',
+  outlineColor: 'frame',
+  gridColor: 'frame',
+  groupColor: 'frame',
+  background: 'frame',
+  msaa: 'frame',
+  hover: 'frame',
+  hoverBudgetMs: 'frame',
+  pickRadiusPx: 'frame',
+  fitPaddingPx: 'frame',
+  revealPaddingPx: 'frame',
+  animationMs: 'frame',
+  motion: 'frame',
+  hoverColor: 'frame',
+  selectedColor: 'frame',
+  hoverWidthPx: 'frame',
+  selectedWidthPx: 'frame',
+  font: 'scene',
+  fontSizePx: 'scene',
+  textColor: 'scene',
+} as const satisfies Record<keyof Style, 'frame' | 'route' | 'scene'>;
 export const DEFAULTS: Required<DiagramStyle> = Object.freeze({
   gridPitch: 8,
   grid: true,
@@ -11,24 +55,26 @@ export const DEFAULTS: Required<DiagramStyle> = Object.freeze({
   labels: true,
   junctions: true,
   vertexPadding: 10,
-  cornerRadius: 8,
+  cornerRadius: 6,
   outlineWidthPx: 1,
-  portSizePx: 8,
+  portSize: 8,
   portMarker: 'directional',
   portLabels: true,
-  portFontSizePx: 11,
+  portFontSize: 11,
   edgeWidthPx: 1.5,
   gridMinSpacingPx: 12,
   detail: 'auto',
   portSpacing: 22,
   routeClearance: 16,
   animationMaxVertices: 512,
-  vertexBaseColor: [0.16, 0.19, 0.25, 1] as RGBA,
-  edgeBaseColor: [0.6, 0.65, 0.73, 1] as RGBA,
+  vertexColor: [0.16, 0.19, 0.25, 1] as RGBA,
+  edgeColor: [0.6, 0.65, 0.73, 1] as RGBA,
   outlineColor: [0.4, 0.47, 0.58, 1] as RGBA,
   gridColor: [0.5, 0.55, 0.65, 0.2] as RGBA,
   groupColor: [0.45, 0.55, 0.7, 0.1] as RGBA,
 });
+/** Every geometry is antialiased in its shader, so multisampling adds nothing but bandwidth. */
+export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({ msaa: 1 });
 export const LIMITS: Required<Limits> = Object.freeze({
   vertices: 100000,
   edges: 200000,
@@ -103,26 +149,29 @@ export function checkInput(input: DiagramInput): ViewInput {
   if (canConnect !== undefined && typeof canConnect !== 'function') fail('Invalid canConnect');
   return shared;
 }
-function binding(value: VertexData | EdgeData) {
-  if (value.labels) {
-    if (value.labels.size !== undefined) positive(value.labels.size, 'label size');
-    if (value.labels.maxWidth !== undefined) positive(value.labels.maxWidth, 'label width');
+/** A type's labels and channels: what it reads, and how it draws. */
+function binding(value: VertexOptions | EdgeOptions, edge: boolean) {
+  const labels = kit.resolveLabels(value.labels);
+  if (labels) {
+    if (labels.fontSize !== undefined) positive(labels.fontSize, 'label font size');
+    if (labels.maxWidth !== undefined) positive(labels.maxWidth, 'label width');
     if (
-      value.labels.maxCount !== undefined &&
-      (!Number.isSafeInteger(value.labels.maxCount) || value.labels.maxCount < 0)
+      labels.maxCount !== undefined &&
+      (!Number.isSafeInteger(labels.maxCount) || labels.maxCount < 0)
     )
       fail('Invalid label count');
-    if (value.labels.color) kit.validateRgba(value.labels.color);
-    if (value.labels.overflow && !['wrap', 'ellipsis'].includes(value.labels.overflow))
+    if (labels.color) kit.validateRgba(labels.color);
+    if (labels.overflow && !['wrap', 'ellipsis'].includes(labels.overflow))
       fail('Invalid label overflow');
   }
+  structure(value, edge);
+  checkStyle(value, edge);
 }
 export function data(value: DiagramData): DiagramData {
   if (!value.source?.schema || !value.source.tables) fail('A Data source is required');
   if (!value.vertices) fail('Vertex bindings are required');
   for (const vertex of Object.values(value.vertices)) {
-    binding(vertex);
-    if (vertex.baseColor) kit.validateRgba(vertex.baseColor);
+    binding(vertex, false);
     if (vertex.cornerRadius !== undefined) positive(vertex.cornerRadius, 'cornerRadius', true);
     if (vertex.labelPosition && !['header', 'center'].includes(vertex.labelPosition))
       fail('Invalid labelPosition');
@@ -137,8 +186,7 @@ export function data(value: DiagramData): DiagramData {
     }
   }
   for (const [type, edge] of Object.entries(value.edges ?? {})) {
-    binding(edge);
-    if (edge.baseColor) kit.validateRgba(edge.baseColor);
+    binding(edge, true);
     if (
       edge.ends &&
       (edge.ends.length !== 2 ||
@@ -169,10 +217,5 @@ export function data(value: DiagramData): DiagramData {
       parent = entry.parent;
     }
   }
-  return {
-    ...value,
-    vertices: { ...value.vertices },
-    edges: { ...value.edges },
-    groups: { ...value.groups },
-  };
+  return value;
 }

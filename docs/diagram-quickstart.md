@@ -33,7 +33,8 @@ A vertex's reference fields that name a drawn net are its ports, oriented by the
 
 ```ts
 diagram.set({ layout: { direction: 'down' } }, { animate: true });
-const positions = await arrange(gpu, config); // positions by type, without drawing
+const positions = await arrange(gpu, config); // { x, y } by type, without drawing
+diagram.set({ layout: 'manual', vertices: { Task: positions.Task } });
 ```
 
 `groups` gather vertices under a label; collapsing one routes its wires to its boundary, and moving

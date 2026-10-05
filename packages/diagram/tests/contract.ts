@@ -1,6 +1,6 @@
-import { createDiagram, arrange, type Diagram } from '../src/index.js';
+import { createDiagram, arrange, type Diagram, type Positions } from '../src/index.js';
 import type { Gpu, ColorScale } from '@latkit/gpu';
-import { itemId, type Data, type FieldValues } from '@latkit/model';
+import { itemId, type Data } from '@latkit/model';
 export async function usage(
   gpu: Gpu,
   model: Data,
@@ -19,14 +19,14 @@ export async function usage(
     canvas,
     input: 'edit',
     layout: 'manual',
-    vertices: { vertex: { ...config.vertices.vertex, position: positions.vertex } },
+    vertices: { vertex: { ...config.vertices.vertex, ...positions.vertex } },
   });
   // Rows name what to delete; their ids are how an application writes the change back.
   diagram.on('delete', (rows) => {
     void remove(rows.map(itemId));
   });
   diagram.on('move', ({ positions }) => {
-    const fields: Readonly<Record<string, FieldValues>> = positions;
+    const fields: Readonly<Record<string, Positions>> = positions;
     void fields;
   });
   diagram.set({ layout: { direction: 'down' }, camera: { scale: 2 } }, { animate: true });

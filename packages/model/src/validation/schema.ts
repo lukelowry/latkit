@@ -38,22 +38,19 @@ export function validateSchema(value: unknown): readonly Problem[] {
           c.issue([...p, 'bounds'], 'Bounds require a scalar numeric field.');
         bounds(c, field.bounds, [...p, 'bounds']);
       }
-    }
-    if (own(definition, 'spatial')) {
-      const p = [...path, 'spatial'];
-      const spatial = c.object(definition.spatial, p);
-      c.enum(spatial.system, ['geographic', 'cartesian'], [...p, 'system']);
-      if (c.text(spatial.field, [...p, 'field'])) {
-        const field = fields[spatial.field];
-        const type = record(field) ? field.type : undefined;
-        const vector = record(type) && type.kind === 'list' ? type.items : type;
-        if (!record(vector) || vector.kind !== 'vector' || (vector.size !== 2 && vector.size !== 3))
-          c.issue(
-            [...p, 'field'],
-            'Spatial field must be a 2D/3D vector or a list of those vectors.',
-          );
+      if (own(field, 'geographic')) {
+        c.bool(field.geographic, [...p, 'geographic']);
+        const type = field.type,
+          vector = record(type) && type.kind === 'list' ? type.items : type;
+        const axis = typeof type === 'string' && numeric.includes(type),
+          position =
+            record(vector) && vector.kind === 'vector' && (vector.size === 2 || vector.size === 3);
+        if (!axis && !position)
+          c.issue([...p, 'geographic'], 'Only a position field is geographic.');
       }
     }
+    if (own(definition, 'spatial'))
+      c.issue([...path, 'spatial'], 'A position field says whether it is geographic.');
   }
   if (
     own(schema, 'axis') ||

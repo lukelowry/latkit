@@ -18,14 +18,14 @@ globalThis.monitorCheck = (async () => {
     traces: {
       signal: {
         from: 'signal',
-        field: 'value',
+        y: 'value',
         color: { field: 'weight', domain: [0, 63], colormap: 'viridis' },
         widthPx: 1.1,
       },
     },
-    camera: { window: [0, 41], values: [-1.4, 1.4] },
-    coordinateAxis: 'Coordinate',
-    valueAxis: 'Value',
+    camera: { x: [0, 41], y: [-1.4, 1.4] },
+    xAxis: 'Coordinate',
+    yAxis: 'Value',
     limits: { historyBytes: 96 * 1024 ** 2 },
   });
   monitor.on('error', (error) => {
@@ -48,7 +48,7 @@ globalThis.monitorCheck = (async () => {
       : 'Hover to inspect an exact observation.';
   });
   document.querySelector('#reset').onclick = () =>
-    monitor.set({ camera: { window: [0, source.coordinate(source.frames + 31)] } });
+    monitor.set({ camera: { x: [0, source.coordinate(source.frames + 31)] } });
   document.querySelector('#clear').onclick = () => monitor.select([]);
   document.querySelector('#append').onclick = () => {
     source.append(32);
@@ -56,8 +56,8 @@ globalThis.monitorCheck = (async () => {
   };
   document.querySelector('#axes').onchange = (event) =>
     monitor.set({
-      coordinateAxis: event.target.checked ? 'Coordinate' : false,
-      valueAxis: event.target.checked ? 'Value' : false,
+      xAxis: event.target.checked ? 'Coordinate' : false,
+      yAxis: event.target.checked ? 'Value' : false,
     });
   document.querySelector('#palette').onchange = (event) =>
     monitor.set({
@@ -83,7 +83,7 @@ globalThis.monitorCheck = (async () => {
       traces: {
         signal: {
           from: 'signal',
-          field: 'value',
+          y: 'value',
           color: {
             field: 'weight',
             domain: [0, Math.max(1, source.count - 1)],
@@ -92,7 +92,7 @@ globalThis.monitorCheck = (async () => {
           widthPx: value === 'many' ? 0.7 : 1.1,
         },
       },
-      camera: { window: [0, source.coordinate(source.frames + 31)] },
+      camera: { x: [0, source.coordinate(source.frames + 31)] },
     });
   };
 
@@ -118,12 +118,12 @@ globalThis.monitorCheck = (async () => {
       traces: {
         signal: {
           from: 'signal',
-          field: 'value',
+          y: 'value',
           color: { field: 'weight', domain: [0, 7], colormap: 'viridis' },
           widthPx: null,
         },
       },
-      camera: { window: [0, 10] },
+      camera: { x: [0, 10] },
     });
     streaming = setInterval(() => {
       source.append(1);

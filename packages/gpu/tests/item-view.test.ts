@@ -6,6 +6,7 @@ import {
   type Gpu,
   type ItemEvents,
   type ItemViewConfig,
+  type ColorChannel,
   type Point,
   type Viewport,
 } from '../src/index.js';
@@ -26,9 +27,7 @@ interface DotHit extends Dot {
 }
 interface DotConfig extends ItemViewConfig {
   readonly dots: Readonly<Record<string, readonly [number, number]>>;
-  readonly marks?: Readonly<
-    Record<string, { readonly color?: string | { readonly field: string } }>
-  >;
+  readonly marks?: Readonly<Record<string, { readonly color?: ColorChannel }>>;
   readonly camera?: Partial<Plane>;
 }
 const source = { schema: { tables: {} }, tables: {} } as unknown as Data;
@@ -53,7 +52,6 @@ class Dots extends BaseItemView<
     super(gpu, config, {
       name: 'dots',
       records: ['marks'],
-      fields: ['color'],
       options: ['dots'],
       framed: ['center', 'scale'],
       style: { animationMs: 100, hover: 'on' },
@@ -274,10 +272,10 @@ it('reports hover once per change and clears it on leave', async () => {
   expect(view.stats().hover).toBe('off');
 });
 
-it('expands field shorthands once, keeping identity across unrelated patches', async () => {
+it('keeps record entries as given, and their identity across unrelated patches', async () => {
   const { view } = await setup({ marks: { a: { color: 'load' } } });
   const mark = view.config.marks!.a;
-  expect(mark.color).toEqual({ field: 'load' });
+  expect(mark.color).toBe('load');
   view.set({ hover: 'auto' });
   expect(view.config.marks!.a).toBe(mark);
 });

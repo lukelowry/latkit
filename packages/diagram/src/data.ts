@@ -1,11 +1,11 @@
-import type { Data, FieldInput, Item, RowSelection } from '@latkit/model';
-import type { kit, Labels, Point, RGBA, ColorScale, Position2D, Scale } from '@latkit/gpu';
+import type { Data, FieldValues, Item, RowSelection } from '@latkit/model';
+import type { Channel, ColorChannel, Labels, Point } from '@latkit/gpu';
 export type { Point };
 export type Shape = 'rectangle' | 'rounded' | 'ellipse' | 'diamond';
 /** Labels on a type's items, sized in diagram units so they zoom with the diagram. */
 export interface DiagramLabels extends Labels {
-  /** `fontSizePx` by default. */
-  readonly size?: number;
+  /** In diagram units; the shared `fontSizePx` by default. */
+  readonly fontSize?: number;
   readonly maxWidth?: number;
   readonly overflow?: 'wrap' | 'ellipsis';
 }
@@ -14,27 +14,40 @@ export interface PortOptions {
   readonly order?: number;
   readonly marker?: 'directional' | 'circle' | 'diamond';
   readonly label?: string;
-  readonly color?: string | ColorScale | null;
-  readonly status?: string | ColorScale | null;
+  readonly color?: ColorChannel;
+  readonly status?: ColorChannel;
 }
+/**
+ * How a type's vertices draw. Each channel takes one value for every row, a field, or a scale:
+ * `color: 'load'`, `width: 120`. A field name labels by that field.
+ */
 export interface VertexOptions {
   readonly rows?: RowSelection;
-  readonly position?: Position2D | null;
-  readonly size?: FieldInput | null;
+  /** Where each block's top-left corner sits, in diagram units; the layout places rows without. */
+  readonly x?: Channel;
+  readonly y?: Channel;
+  /** A block's size in diagram units; it fits its title and ports without one. */
+  readonly width?: Channel;
+  readonly height?: Channel;
   readonly shape?: Shape;
   readonly cornerRadius?: number;
   /** Automatic sizing reserves room around the title. Default: center. */
   readonly labelPosition?: 'header' | 'center';
-  /** A field name stands for that field with defaults: `color: 'load'`, `labels: 'name'`. */
-  readonly color?: string | ColorScale | null;
-  /** The color without a `color` field; `vertexBaseColor` by default. */
-  readonly baseColor?: RGBA;
-  readonly status?: string | ColorScale | null;
-  readonly visible?: FieldInput | null;
-  readonly shade?: FieldInput | null;
+  /** `vertexColor` by default. */
+  readonly color?: ColorChannel;
+  /** A ring around the block. */
+  readonly status?: ColorChannel;
+  /** Shown where true or positive; every row by default. */
+  readonly visible?: Channel<boolean>;
+  readonly shade?: Channel;
   readonly labels?: string | DiagramLabels | null;
   /** Keyed by reference field. Each field naming a drawn net is a port. */
   readonly ports?: Readonly<Record<string, PortOptions>>;
+}
+/** Where a type's vertices sit: x and y values to spread into the type's options. */
+export interface Positions {
+  readonly x: FieldValues;
+  readonly y: FieldValues;
 }
 export interface EdgeOptions {
   readonly rows?: RowSelection;
@@ -45,15 +58,15 @@ export interface EdgeOptions {
   readonly ends?: readonly [source: string, target: string];
   readonly route?: 'orthogonal' | 'straight' | RouteStrategy;
   readonly appearance?: 'wire' | 'tag';
-  readonly color?: string | ColorScale | null;
-  /** The color without a `color` field; `edgeBaseColor` by default. */
-  readonly baseColor?: RGBA;
-  /** Line width from a field; `edgeWidthPx` without one. */
-  readonly widthPx?: string | Scale | null;
-  /** CSS pixels per second. */
-  readonly flow?: string | Scale | null;
-  readonly visible?: FieldInput | null;
-  readonly shade?: FieldInput | null;
+  /** `edgeColor` by default. */
+  readonly color?: ColorChannel;
+  /** Line width in CSS pixels; a field spans 1 to 4. `edgeWidthPx` by default. */
+  readonly widthPx?: Channel;
+  /** How far dashes move along the wire each second, in CSS pixels; a field spans 0 to 40. */
+  readonly flowPx?: Channel;
+  /** Shown where true or positive; every row by default. */
+  readonly visible?: Channel<boolean>;
+  readonly shade?: Channel;
   readonly labels?: string | DiagramLabels | null;
   /** Arrowheads where flow arrives: a row's target end, or a net's input ports. */
   readonly arrows?: boolean;
@@ -115,48 +128,14 @@ export function itemKey(item: DiagramItem): string {
   );
 }
 
-/** Option keys whose string value names a field, in entries and their ports. */
-export const FIELD_OPTIONS = ['color', 'status', 'labels', 'widthPx', 'flow'] as const;
-type Full<T> = kit.Expanded<T, (typeof FIELD_OPTIONS)[number]>;
-export type PortData = Full<PortOptions>;
-export type VertexData = Omit<Full<VertexOptions>, 'ports'> & {
-  readonly ports?: Readonly<Record<string, PortData>>;
-};
-export type EdgeData = Full<EdgeOptions>;
-/** What the renderer draws, with every shorthand expanded. */
+/** What the renderer draws. */
 export interface DiagramData {
-  readonly source: Data;
-  readonly vertices: Readonly<Record<string, VertexData>>;
-  readonly edges?: Readonly<Record<string, EdgeData>>;
-  readonly groups?: Readonly<Record<string, Group>>;
-}
-interface Drawn {
   readonly source: Data;
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;
   readonly groups?: Readonly<Record<string, Group>>;
 }
-/** The drawn records of a config whose field shorthands the view already expanded. */
-export function diagramData(config: Drawn): DiagramData {
-  const { source, vertices, edges, groups } = config as DiagramData;
+/** The drawn records of a config. */
+export function diagramData({ source, vertices, edges, groups }: DiagramData): DiagramData {
   return { source, vertices, edges, groups };
-}
-function expand(entry: object): object {
-  const next: Record<string, unknown> = { ...entry };
-  for (const key of FIELD_OPTIONS)
-    if (typeof next[key] === 'string') next[key] = { field: next[key] };
-  if (next.ports) next.ports = expandRecord(next.ports as Readonly<Record<string, object>>);
-  return next;
-}
-function expandRecord(record: Readonly<Record<string, object>> | undefined) {
-  return record && Object.fromEntries(Object.entries(record).map(([k, v]) => [k, expand(v)]));
-}
-/** The drawn records of a config no view normalized, such as one `arrange` takes. */
-export function expandedData(config: Drawn): DiagramData {
-  return {
-    source: config.source,
-    vertices: expandRecord(config.vertices) as DiagramData['vertices'],
-    edges: expandRecord(config.edges) as DiagramData['edges'],
-    groups: config.groups,
-  };
 }

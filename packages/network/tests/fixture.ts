@@ -55,17 +55,19 @@ export class GraphSource {
       types: {
         node: {
           fields: {
-            location: { type: { kind: 'vector', items: 'float64', size: 2 } },
+            location: {
+              type: { kind: 'vector', items: 'float64', size: 2 },
+              geographic,
+            },
             weight: { type: 'float32' },
             name: { type: 'text' },
             signal: { type: 'float32', sampled: true },
-            baseX: { type: 'float64' },
-            baseY: { type: 'float64' },
-            x: { type: 'float64', sampled: true },
-            y: { type: 'float64', sampled: true },
+            baseX: { type: 'float64', geographic },
+            baseY: { type: 'float64', geographic },
+            x: { type: 'float64', sampled: true, geographic },
+            y: { type: 'float64', sampled: true, geographic },
             z: { type: 'float32', sampled: true },
           },
-          spatial: { field: 'location', system: geographic ? 'geographic' : 'cartesian' },
         },
         line: {
           fields: {

@@ -93,7 +93,7 @@ function trace(): Trace {
   const signal = SIGNALS[currentSignal];
   return {
     from: 'sensor',
-    field: signal.id,
+    y: signal.id,
     widthPx: 1.4,
     color: { field: signal.id, domain: signal.range, colormap: palette },
     shade: signal.id,
@@ -127,9 +127,9 @@ async function main(): Promise<void> {
     canvas: stage,
     source: source.data,
     traces: { telemetry: trace() },
-    camera: { window: FULL_WINDOW, values: signalRange(currentSignal) },
-    coordinateAxis: 'Time (s)',
-    valueAxis: { label: 'Temperature (C)', precision: 1 },
+    camera: { x: FULL_WINDOW, y: signalRange(currentSignal) },
+    xAxis: 'Time (s)',
+    yAxis: { label: 'Temperature (C)', precision: 1 },
     unselectedAlpha: 0.35,
   });
   monitor.on('error', (error) => {
@@ -320,8 +320,8 @@ function valueAt(signal: number, _frame: number, element: number): number {
 function applyRange(): void {
   const signal = SIGNALS[currentSignal];
   monitor.set({
-    camera: autoRangeInput.checked ? { fit: true } : { values: signalRange(currentSignal) },
-    valueAxis: { label: `${signal.label} (${signal.unit})`, precision: signal.decimals },
+    camera: autoRangeInput.checked ? { fit: true } : { y: signalRange(currentSignal) },
+    yAxis: { label: `${signal.label} (${signal.unit})`, precision: signal.decimals },
   });
 }
 
@@ -334,7 +334,7 @@ function applyWindow(): void {
     step = WINDOW_S / 2,
     start = Math.max(0, (Math.floor(end / step) - 1) * step);
   monitor.set({
-    camera: { window: windowInput.checked ? [start, start + WINDOW_S] : FULL_WINDOW },
+    camera: { x: windowInput.checked ? [start, start + WINDOW_S] : FULL_WINDOW },
   });
 }
 

@@ -26,9 +26,28 @@ function device() {
           setViewport: vi.fn(),
         }) as unknown as GPURenderPassEncoder,
     );
+    encoder.beginComputePass = vi.fn(
+      () =>
+        ({
+          setPipeline: vi.fn(),
+          setBindGroup: vi.fn(),
+          dispatchWorkgroups: vi.fn(),
+          end: vi.fn(),
+        }) as unknown as GPUComputePassEncoder,
+    );
     return encoder;
   });
   return fake;
+}
+/** Whether a write since the last clear holds this value for every task: a style page's field. */
+function wrote(fake: ReturnType<typeof device>, count: number, value: number): boolean {
+  return fake.queue.writeBuffer.mock.calls.some(([, , data]) => {
+    const bytes = ArrayBuffer.isView(data) ? data : new Uint8Array(data);
+    const floats = new Float32Array(
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + (bytes.byteLength & ~3)),
+    );
+    return floats.filter((v) => v === value).length >= count;
+  });
 }
 /** What input drives, without a canvas. */
 const interaction = (diagram: Diagram) => (diagram as unknown as { controls: Controls }).controls;
@@ -36,6 +55,18 @@ const interaction = (diagram: Diagram) => (diagram as unknown as { controls: Con
 const dragOf = (diagram: Diagram) =>
   (diagram as unknown as { shown?: { drag?: DragDraw } }).shown?.drag;
 const animating = (diagram: Diagram) => kit.rendererOf(diagram).animating;
+const presentedOf = (diagram: Diagram) =>
+  (
+    diagram as unknown as {
+      shown: {
+        scene: import('../src/scene.js').Scene;
+        picking: import('../src/picking.js').Picking;
+        widthPx: number;
+        camera: kit.Camera2D;
+        viewport: import('@latkit/gpu').Viewport;
+      };
+    }
+  ).shown;
 async function fixture() {
   const fake = device(),
     source = new Source();
@@ -93,6 +124,102 @@ function load(source: Source) {
   );
 }
 afterEach(() => vi.restoreAllMocks());
+it('restyles widths without reads, geometry uploads, or stale hit-test radii', async () => {
+  const f = await fixture();
+  try {
+    f.diagram.set({ labels: false, edgeWidthPx: 1 });
+    await f.draw();
+    await f.gpu.idle();
+    const before = presentedOf(f.diagram),
+      counts = f.gpu.stats();
+    const edge = before.scene.edges[0];
+    const segments = edge.paths
+      .flatMap((path) => path.slice(1).map((b, i) => ({ a: path[i], b })))
+      .sort(
+        (u, v) =>
+          Math.hypot(v.b[0] - v.a[0], v.b[1] - v.a[1]) -
+          Math.hypot(u.b[0] - u.a[0], u.b[1] - u.a[1]),
+      );
+    const { a, b } = segments[0];
+    const point = kit.cameraPoint(
+      before.camera,
+      [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2],
+      before.viewport,
+    );
+    const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const beside: readonly [number, number] = [
+      point[0] - ((b[1] - a[1]) / length) * 5,
+      point[1] + ((b[0] - a[0]) / length) * 5,
+    ];
+    const hits = () => {
+      const p = presentedOf(f.diagram);
+      return p.picking
+        .hit(beside, p.camera, p.viewport, 0, true, undefined, p.widthPx)
+        .some((item) => item.kind === 'edge' && item.row === edge.hit.row);
+    };
+    expect(hits()).toBe(false);
+    f.diagram.set({ edgeWidthPx: 16, vertexColor: [0.2, 0.4, 0.6, 1] });
+    expect(hits()).toBe(false); // Pending configuration cannot change presented picking.
+    await f.draw();
+    await f.gpu.idle();
+    const after = presentedOf(f.diagram);
+    expect(after.scene).toBe(before.scene);
+    expect(after.picking).toBe(before.picking);
+    expect(hits()).toBe(true);
+    expect(f.gpu.stats().queries).toBe(counts.queries);
+    expect(f.gpu.stats().queryHits).toBe(counts.queryHits);
+    expect(f.gpu.stats().uploadedBytes - counts.uploadedBytes).toBeLessThan(4096);
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+it('reroutes clearance changes without rereading fields or changing accepted positions', async () => {
+  const f = await fixture();
+  try {
+    await f.draw();
+    const before = presentedOf(f.diagram),
+      counts = f.gpu.stats();
+    f.diagram.set({ routeClearance: 32 });
+    await f.draw();
+    const after = presentedOf(f.diagram);
+    expect(after.scene).not.toBe(before.scene);
+    expect(after.scene.vertices.map(({ x, y }) => [x, y])).toEqual(
+      before.scene.vertices.map(({ x, y }) => [x, y]),
+    );
+    expect(f.gpu.stats().queries).toBe(counts.queries);
+    expect(f.gpu.stats().queryHits).toBe(counts.queryHits);
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+it('keeps structural geometry when identical data is republished and reacquires evicted uploads', async () => {
+  const f = await fixture();
+  try {
+    await f.draw();
+    await f.gpu.idle();
+    const before = presentedOf(f.diagram);
+    f.source.update();
+    f.diagram.set({ source: f.source.data });
+    await f.draw();
+    await f.gpu.idle();
+    expect(presentedOf(f.diagram).scene).toBe(before.scene);
+    expect(presentedOf(f.diagram).picking).toBe(before.picking);
+    f.gpu.trim();
+    const uploads = f.gpu.stats().uploads;
+    await f.draw();
+    expect(f.gpu.stats().uploads).toBeGreaterThan(uploads);
+    expect(presentedOf(f.diagram).scene).toBe(before.scene);
+    expect(f.diagram.locate(vertexOf(f.source, 'n0'))).not.toBeNull();
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
 it('renders through the unified owner and publishes picking after submission', async () => {
   const f = await fixture();
   try {
@@ -234,7 +361,7 @@ it('accepts sparse movement without moving uncovered vertices', async () => {
     const api = interaction(f.diagram),
       before = api.scene()!.vertices.map((n) => [n.x, n.y]);
     const proposal = api.move([vertexOf(f.source, 'n0')], [0, 24])!;
-    f.diagram.set({ vertices: { Task: { position: proposal.positions.Task } } });
+    f.diagram.set({ vertices: { Task: proposal.positions.Task } });
     await f.draw();
     expect(
       api
@@ -350,7 +477,8 @@ it('invalidates routes when shapes, port anchors, or routing clearance change', 
     await f.draw();
     const changed = api.scene()!;
     expect(changed.edges[0].paths).not.toBe(original);
-    const end = changed.vertices[0].ports.find((port) => port.name === 'output')!.position;
+    const output = changed.vertices[0].ports.find((port) => port.name === 'output')!;
+    const end = output.position.map((v, i) => v + (output.normal[i] * changed.portSize!) / 2);
     expect(
       changed.edges[0].paths.flat().some((point) => point[0] === end[0] && point[1] === end[1]),
     ).toBe(true);
@@ -367,7 +495,11 @@ it('invalidates routes when shapes, port anchors, or routing clearance change', 
         expect(
           edge.paths
             .flat()
-            .some((point) => point[0] === port.position[0] && point[1] === port.position[1]),
+            .some(
+              (point) =>
+                point[0] === port.position[0] + (port.normal[0] * rewired.portSize!) / 2 &&
+                point[1] === port.position[1] + (port.normal[1] * rewired.portSize!) / 2,
+            ),
         ).toBe(true);
       }
     const before = rewired.edges[0].paths;
@@ -590,7 +722,7 @@ it('fits items once and follows all the data otherwise', async () => {
     f.gpu.destroy();
   }
 });
-it('expands field shorthands in entries and their ports', async () => {
+it('binds channels to fields in entries and their ports, as given', async () => {
   const f = await fixture();
   try {
     f.diagram.set({
@@ -598,12 +730,16 @@ it('expands field shorthands in entries and their ports', async () => {
       edges: { Dependency: { widthPx: 'weight' } },
     });
     const task = f.diagram.config.vertices.Task;
-    expect(task.color).toEqual({ field: 'weight' });
-    expect(task.ports?.input.color).toEqual({ field: 'weight' });
+    expect(task.color).toBe('weight');
+    expect(task.ports?.input.color).toBe('weight');
     expect(task.ports?.input.side).toBe('top');
-    expect(f.diagram.config.edges?.Dependency.widthPx).toEqual({ field: 'weight' });
     await f.draw();
-    expect(interaction(f.diagram).scene()!.edges[0].width).toBeGreaterThan(0);
+    // Wires pick within the widest a bound width draws.
+    expect(presentedOf(f.diagram).widthPx).toBe(4);
+    // A constant width is the widest.
+    f.diagram.set({ edges: { Dependency: { widthPx: 6 } } });
+    await f.draw();
+    expect(presentedOf(f.diagram).widthPx).toBe(6);
   } finally {
     f.diagram.destroy();
     f.target.destroy();
@@ -641,13 +777,15 @@ it('shares the view style, stats, and limits', async () => {
     f.gpu.destroy();
   }
 });
-it('rereads the scene at a new coordinate only when a binding is sampled', async () => {
+it('restyles at a new coordinate on the GPU, rereading the scene only for sampled structure', async () => {
   const f = await fixture();
-  const render = (at: number) =>
-    f.gpu.render({
+  const render = (at: number) => {
+    f.fake.queue.writeBuffer.mockClear();
+    return f.gpu.render({
       views: [{ renderer: kit.rendererOf(f.diagram), target: f.target, at }],
       timeMs: 0,
     });
+  };
   try {
     await render(0);
     const still = interaction(f.diagram).scene();
@@ -658,9 +796,38 @@ it('rereads the scene at a new coordinate only when a binding is sampled', async
     });
     await render(0);
     const before = interaction(f.diagram).scene()!;
-    expect(before.vertices[0].shade).toBe(0.25);
+    expect(wrote(f.fake, f.source.count, 0.25)).toBe(true);
     await render(1);
-    expect(interaction(f.diagram).scene()!.vertices[0].shade).toBe(0.75);
+    expect(interaction(f.diagram).scene()).toBe(before);
+    expect(wrote(f.fake, f.source.count, 0.75)).toBe(true);
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+
+it('freezes sampled structure throughout a drag while its styles play on', async () => {
+  const f = await fixture();
+  const render = (at: number) => {
+    f.fake.queue.writeBuffer.mockClear();
+    return f.gpu.render({
+      views: [{ renderer: kit.rendererOf(f.diagram), target: f.target, at }],
+      timeMs: 0,
+    });
+  };
+  try {
+    const field = { source: load(f.source), from: 'Task', field: 'load' };
+    f.diagram.set({ vertices: { Task: { visible: field, shade: field } } });
+    await render(0);
+    const before = presentedOf(f.diagram);
+    interaction(f.diagram).preview([before.scene.vertices[0].hit], [8, 0]);
+    await render(1);
+    expect(presentedOf(f.diagram).scene).toBe(before.scene);
+    expect(wrote(f.fake, f.source.count, 0.75)).toBe(true);
+    interaction(f.diagram).preview([], null);
+    await render(1);
+    expect(presentedOf(f.diagram).scene).not.toBe(before.scene);
   } finally {
     f.diagram.destroy();
     f.target.destroy();

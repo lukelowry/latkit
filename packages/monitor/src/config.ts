@@ -2,15 +2,17 @@ import { failure, type Domain } from '@latkit/model';
 import { kit, type RGBA, type Insets } from '@latkit/gpu';
 import type { MonitorStyle, Limits, AxisOptions } from './options.js';
 
-type Own = Required<Omit<MonitorStyle, 'coordinateAxis' | 'valueAxis'>> & {
-  readonly coordinateAxis: AxisOptions | null;
-  readonly valueAxis: AxisOptions | null;
+type Own = Required<Omit<MonitorStyle, 'xAxis' | 'yAxis'>> & {
+  readonly xAxis: AxisOptions | null;
+  readonly yAxis: AxisOptions | null;
 };
 /** The monitor's own style over the shared view style, every option resolved. */
 export type Style = Own & kit.ResolvedViewStyle;
 export const DEFAULTS: Own = Object.freeze({
-  coordinateAxis: {},
-  valueAxis: {},
+  xAxis: {},
+  yAxis: {},
+  traceColor: [0.23, 0.72, 0.88, 0.7] as RGBA,
+  traceWidthPx: 1.25,
   domainPadding: 0.1,
   axisColor: [0.48, 0.58, 0.67, 0.8] as RGBA,
   gridColor: [0.4, 0.5, 0.6, 0.13] as RGBA,
@@ -28,7 +30,7 @@ export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({
   animationMs: 0,
   font: Object.freeze({ family: 'ui-monospace, monospace' }),
   textColor: [0.78, 0.84, 0.91, 1] as RGBA,
-  selectedColor: null,
+  selectedColor: 'none',
 });
 export const LIMITS: Required<Limits> = Object.freeze({
   rows: 100000,
@@ -86,13 +88,15 @@ export function resolveStyle(config: MonitorStyle, view: kit.ResolvedViewStyle):
     ...view,
     ...DEFAULTS,
     ...own,
-    coordinateAxis: axis(config.coordinateAxis, DEFAULTS.coordinateAxis),
-    valueAxis: axis(config.valueAxis, DEFAULTS.valueAxis),
+    xAxis: axis(config.xAxis, DEFAULTS.xAxis),
+    yAxis: axis(config.yAxis, DEFAULTS.yAxis),
   };
   finite(out.unselectedAlpha, 'unselectedAlpha', 0, 1);
+  finite(out.traceWidthPx, 'traceWidthPx', 0.1, 64);
   finite(out.domainPadding, 'domainPadding', 0, 10);
-  for (const color of [out.axisColor, out.gridColor, out.cursorColor]) kit.validateRgba(color);
-  for (const axis of [out.coordinateAxis, out.valueAxis]) checkAxis(axis);
+  for (const color of [out.traceColor, out.axisColor, out.gridColor, out.cursorColor])
+    kit.validateRgba(color);
+  for (const axis of [out.xAxis, out.yAxis]) checkAxis(axis);
   insets(out.paddingPx);
   return Object.freeze(out);
 }

@@ -3,49 +3,53 @@
     "queries": 0,
     "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 608,
-    "uploadHits": 5,
+    "uploadedBytes": 736,
+    "uploadHits": 3,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 100 blocks > drag end": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 608,
-    "uploadHits": 5,
+    "uploadedBytes": 736,
+    "uploadHits": 3,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 100 blocks > drag frame": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 608,
-    "uploadHits": 5,
+    "uploadedBytes": 736,
+    "uploadHits": 3,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 100 blocks > layout": {
     "queries": 0,
     "queryHits": 3,
-    "uploads": 4,
-    "uploadedBytes": 63440,
-    "uploadHits": 2,
+    "uploads": 5,
+    "uploadedBytes": 37072,
+    "uploadHits": 0,
     "gpuCopiedBytes": 0,
     "allocations": 1,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 100 blocks > pick": {
     "queries": 0,
@@ -57,79 +61,99 @@
     "allocations": 0,
     "submissions": 0,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 100 blocks > playback frame": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 608,
+    "uploadedBytes": 736,
+    "uploadHits": 3,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "diagram 100 blocks > restyle": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 1,
+    "uploadedBytes": 736,
+    "uploadHits": 3,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "diagram 100 blocks > styled playback": {
+    "queries": 2,
+    "queryHits": 0,
+    "uploads": 4,
+    "uploadedBytes": 1388,
     "uploadHits": 5,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
-  },
-  "diagram 100 blocks > restyle": {
-    "queries": 0,
-    "queryHits": 3,
-    "uploads": 2,
-    "uploadedBytes": 62208,
-    "uploadHits": 4,
-    "gpuCopiedBytes": 0,
-    "allocations": 0,
-    "submissions": 1,
-    "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 1000 blocks > cached frame": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 1408,
-    "uploadHits": 15,
+    "uploadedBytes": 736,
+    "uploadHits": 3,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 1000 blocks > drag end": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 1408,
-    "uploadHits": 15,
+    "uploadedBytes": 736,
+    "uploadHits": 3,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 1000 blocks > drag frame": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 1408,
-    "uploadHits": 15,
+    "uploadedBytes": 736,
+    "uploadHits": 3,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 1000 blocks > layout": {
     "queries": 0,
     "queryHits": 3,
-    "uploads": 9,
-    "uploadedBytes": 664656,
-    "uploadHits": 7,
+    "uploads": 5,
+    "uploadedBytes": 386256,
+    "uploadHits": 0,
     "gpuCopiedBytes": 0,
     "allocations": 1.25,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 1000 blocks > pick": {
     "queries": 0,
@@ -141,79 +165,99 @@
     "allocations": 0,
     "submissions": 0,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 1000 blocks > playback frame": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 1408,
-    "uploadHits": 15,
+    "uploadedBytes": 736,
+    "uploadHits": 3,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 1000 blocks > restyle": {
     "queries": 0,
-    "queryHits": 3,
-    "uploads": 6,
-    "uploadedBytes": 574848,
-    "uploadHits": 10,
+    "queryHits": 0,
+    "uploads": 1,
+    "uploadedBytes": 736,
+    "uploadHits": 3,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "diagram 1000 blocks > styled playback": {
+    "queries": 2,
+    "queryHits": 0,
+    "uploads": 4,
+    "uploadedBytes": 4988,
+    "uploadHits": 5,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 10000 blocks > cached frame": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 9888,
-    "uploadHits": 121,
+    "uploadedBytes": 1632,
+    "uploadHits": 7,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 10000 blocks > drag end": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 9888,
-    "uploadHits": 121,
+    "uploadedBytes": 1632,
+    "uploadHits": 7,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 10000 blocks > drag frame": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 9888,
-    "uploadHits": 121,
+    "uploadedBytes": 1632,
+    "uploadHits": 7,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 10000 blocks > layout": {
     "queries": 0,
     "queryHits": 3,
-    "uploads": 62,
-    "uploadedBytes": 6793200,
-    "uploadHits": 60,
+    "uploads": 9,
+    "uploadedBytes": 3928848,
+    "uploadHits": 0,
     "gpuCopiedBytes": 0,
-    "allocations": 1.375,
+    "allocations": 1.125,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 10000 blocks > pick": {
     "queries": 0,
@@ -225,31 +269,164 @@
     "allocations": 0,
     "submissions": 0,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 10000 blocks > playback frame": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 9888,
-    "uploadHits": 121,
+    "uploadedBytes": 1632,
+    "uploadHits": 7,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "diagram 10000 blocks > restyle": {
     "queries": 0,
-    "queryHits": 3,
-    "uploads": 50,
-    "uploadedBytes": 5629600,
-    "uploadHits": 72,
+    "queryHits": 0,
+    "uploads": 1,
+    "uploadedBytes": 1632,
+    "uploadHits": 7,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "diagram 10000 blocks > styled playback": {
+    "queries": 2,
+    "queryHits": 0,
+    "uploads": 4,
+    "uploadedBytes": 41884,
+    "uploadHits": 9,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "diagram 40000 blocks > cached frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 1,
+    "uploadedBytes": 4544,
+    "uploadHits": 20,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "diagram 40000 blocks > drag end": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 1,
+    "uploadedBytes": 4544,
+    "uploadHits": 20,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "diagram 40000 blocks > drag frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 1,
+    "uploadedBytes": 4544,
+    "uploadHits": 20,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "diagram 40000 blocks > layout": {
+    "queries": 0,
+    "queryHits": 3,
+    "uploads": 22,
+    "uploadedBytes": 15778960,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 1.667,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "diagram 40000 blocks > pick": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 0,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "diagram 40000 blocks > playback frame": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 1,
+    "uploadedBytes": 4544,
+    "uploadHits": 20,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "diagram 40000 blocks > restyle": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 1,
+    "uploadedBytes": 4544,
+    "uploadHits": 20,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "diagram 40000 blocks > styled playback": {
+    "queries": 2,
+    "queryHits": 0,
+    "uploads": 4,
+    "uploadedBytes": 164796,
+    "uploadHits": 22,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "gpu 10000 buses > cold upload": {
+    "queries": 1,
+    "queryHits": 0,
+    "uploads": 3,
+    "uploadedBytes": 120156,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 1,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 80000,
+    "rasterized": 0
   },
   "gpu 10000 buses > field scale": {
     "queries": 0,
@@ -261,7 +438,8 @@
     "allocations": 0,
     "submissions": 0,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "gpu 10000 buses > playback frame": {
     "queries": 1,
@@ -273,7 +451,34 @@
     "allocations": 0.042,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "gpu 10000 buses > resident redraw": {
+    "queries": 0,
+    "queryHits": 2,
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 1,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "gpu 100000 buses > cold upload": {
+    "queries": 3,
+    "queryHits": 0,
+    "uploads": 9,
+    "uploadedBytes": 1200468,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 2,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 800000,
+    "rasterized": 0
   },
   "gpu 100000 buses > field scale": {
     "queries": 0,
@@ -285,7 +490,8 @@
     "allocations": 0,
     "submissions": 0,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "gpu 100000 buses > playback frame": {
     "queries": 2,
@@ -294,10 +500,37 @@
     "uploadedBytes": 400184,
     "uploadHits": 0,
     "gpuCopiedBytes": 0,
-    "allocations": 0.25,
+    "allocations": 0.167,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "gpu 100000 buses > resident redraw": {
+    "queries": 0,
+    "queryHits": 6,
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 3,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "gpu 1000000 buses > cold upload": {
+    "queries": 29,
+    "queryHits": 0,
+    "uploads": 87,
+    "uploadedBytes": 12004524,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 5,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 8000000,
+    "rasterized": 0
   },
   "gpu 1000000 buses > field scale": {
     "queries": 0,
@@ -309,7 +542,8 @@
     "allocations": 0,
     "submissions": 0,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "gpu 1000000 buses > playback frame": {
     "queries": 13,
@@ -318,10 +552,50 @@
     "uploadedBytes": 4001196,
     "uploadHits": 0,
     "gpuCopiedBytes": 0,
-    "allocations": 0.333,
+    "allocations": 0.167,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "gpu 1000000 buses > resident redraw": {
+    "queries": 0,
+    "queryHits": 58,
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 29,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
+  },
+  "gpu text 1000 labels > cold text": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 15,
+    "uploadedBytes": 449024,
+    "uploadHits": 0,
+    "gpuCopiedBytes": 0,
+    "allocations": 2,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 5307568,
+    "rasterized": 14
+  },
+  "gpu text 1000 labels > resident text": {
+    "queries": 0,
+    "queryHits": 0,
+    "uploads": 0,
+    "uploadedBytes": 0,
+    "uploadHits": 1,
+    "gpuCopiedBytes": 0,
+    "allocations": 0,
+    "submissions": 1,
+    "evictions": 0,
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "model 10000 buses > appendData frame": {
     "queries": 0,
@@ -651,37 +925,40 @@
     "queries": 0,
     "queryHits": 0,
     "uploads": 2,
-    "uploadedBytes": 448,
-    "uploadHits": 2,
+    "uploadedBytes": 432,
+    "uploadHits": 3,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 100 rows > change window": {
     "queries": 0,
     "queryHits": 1,
-    "uploads": 5,
-    "uploadedBytes": 3276,
-    "uploadHits": 4,
+    "uploads": 6,
+    "uploadedBytes": 1888,
+    "uploadHits": 5,
     "gpuCopiedBytes": 0,
     "allocations": 1,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 100 rows > first frame": {
     "queries": 0,
     "queryHits": 1,
-    "uploads": 5,
-    "uploadedBytes": 3228,
+    "uploads": 6,
+    "uploadedBytes": 6668,
     "uploadHits": 4,
     "gpuCopiedBytes": 0,
     "allocations": 1,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 100 rows > pick": {
     "queries": 0,
@@ -693,67 +970,73 @@
     "allocations": 0,
     "submissions": 0,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 100 rows > playhead": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 2,
-    "uploadedBytes": 448,
-    "uploadHits": 2,
+    "uploadedBytes": 432,
+    "uploadHits": 3,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 100 rows > stream frame": {
     "queries": 1,
     "queryHits": 0,
     "uploads": 5,
-    "uploadedBytes": 1668,
-    "uploadHits": 4,
+    "uploadedBytes": 1652,
+    "uploadHits": 5,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 8
+    "stagedBytes": 8,
+    "rasterized": 0
   },
   "monitor 1000 rows > cached frame": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 2,
-    "uploadedBytes": 448,
-    "uploadHits": 2,
+    "uploadedBytes": 432,
+    "uploadHits": 3,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 1000 rows > change window": {
     "queries": 0,
     "queryHits": 1,
-    "uploads": 6,
-    "uploadedBytes": 3688,
-    "uploadHits": 5,
+    "uploads": 7,
+    "uploadedBytes": 2300,
+    "uploadHits": 6,
     "gpuCopiedBytes": 0,
     "allocations": 1,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 1000 rows > first frame": {
     "queries": 0,
     "queryHits": 1,
-    "uploads": 5,
-    "uploadedBytes": 3228,
+    "uploads": 6,
+    "uploadedBytes": 6668,
     "uploadHits": 4,
     "gpuCopiedBytes": 0,
     "allocations": 1,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 1000 rows > pick": {
     "queries": 0,
@@ -765,67 +1048,73 @@
     "allocations": 0,
     "submissions": 0,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 1000 rows > playhead": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 2,
-    "uploadedBytes": 448,
-    "uploadHits": 2,
+    "uploadedBytes": 432,
+    "uploadHits": 3,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 1000 rows > stream frame": {
     "queries": 1.083,
     "queryHits": 0,
     "uploads": 5.583,
-    "uploadedBytes": 23515.333,
-    "uploadHits": 4,
+    "uploadedBytes": 23383.667,
+    "uploadHits": 5,
     "gpuCopiedBytes": 0,
     "allocations": 0.083,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 1768.667
+    "stagedBytes": 1768.667,
+    "rasterized": 0
   },
   "monitor 10000 rows > cached frame": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 2,
-    "uploadedBytes": 448,
-    "uploadHits": 2,
+    "uploadedBytes": 432,
+    "uploadHits": 3,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 10000 rows > change window": {
     "queries": 0,
     "queryHits": 1,
-    "uploads": 20,
-    "uploadedBytes": 9552,
-    "uploadHits": 25,
+    "uploads": 21,
+    "uploadedBytes": 8100,
+    "uploadHits": 26,
     "gpuCopiedBytes": 0,
     "allocations": 1,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 10000 rows > first frame": {
     "queries": 0,
     "queryHits": 1,
-    "uploads": 15,
-    "uploadedBytes": 7444,
+    "uploads": 16,
+    "uploadedBytes": 11092,
     "uploadHits": 17,
     "gpuCopiedBytes": 0,
     "allocations": 1,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 10000 rows > pick": {
     "queries": 0,
@@ -837,67 +1126,73 @@
     "allocations": 0,
     "submissions": 0,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 10000 rows > playhead": {
     "queries": 0,
     "queryHits": 0,
     "uploads": 2,
-    "uploadedBytes": 448,
-    "uploadHits": 2,
+    "uploadedBytes": 432,
+    "uploadHits": 3,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "monitor 10000 rows > stream frame": {
     "queries": 1,
     "queryHits": 0,
     "uploads": 5,
-    "uploadedBytes": 80868,
-    "uploadHits": 4,
+    "uploadedBytes": 80852,
+    "uploadHits": 5,
     "gpuCopiedBytes": 0,
     "allocations": 0.083,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 8
+    "stagedBytes": 8,
+    "rasterized": 0
   },
   "network 10000 buses > cached frame": {
     "queries": 0,
-    "queryHits": 4,
+    "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 1168,
-    "uploadHits": 12,
+    "uploadedBytes": 576,
+    "uploadHits": 10,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 10000 buses > camera move": {
     "queries": 0,
-    "queryHits": 4,
+    "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 1168,
-    "uploadHits": 12,
+    "uploadedBytes": 576,
+    "uploadHits": 10,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 10000 buses > first frame": {
     "queries": 0,
     "queryHits": 6,
-    "uploads": 4,
-    "uploadedBytes": 325424,
+    "uploads": 5,
+    "uploadedBytes": 325600,
     "uploadHits": 9,
     "gpuCopiedBytes": 0,
     "allocations": 6.125,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 10000 buses > pick": {
     "queries": 0,
@@ -909,67 +1204,73 @@
     "allocations": 0,
     "submissions": 0,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 10000 buses > playback frame": {
     "queries": 1,
     "queryHits": 3,
     "uploads": 3,
-    "uploadedBytes": 41388,
-    "uploadHits": 13,
+    "uploadedBytes": 40796,
+    "uploadHits": 14,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 10000 buses > restyle": {
     "queries": 0,
     "queryHits": 3,
-    "uploads": 1,
-    "uploadedBytes": 1168,
+    "uploads": 2,
+    "uploadedBytes": 832,
     "uploadHits": 12,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 100000 buses > cached frame": {
     "queries": 0,
-    "queryHits": 28,
+    "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 4896,
-    "uploadHits": 86,
+    "uploadedBytes": 1040,
+    "uploadHits": 67,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 100000 buses > camera move": {
     "queries": 0,
-    "queryHits": 28,
+    "queryHits": 0,
     "uploads": 1,
-    "uploadedBytes": 4896,
-    "uploadHits": 86,
+    "uploadedBytes": 1040,
+    "uploadHits": 67,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 100000 buses > first frame": {
     "queries": 0,
     "queryHits": 30,
-    "uploads": 27,
-    "uploadedBytes": 3269616,
+    "uploads": 28,
+    "uploadedBytes": 3270880,
     "uploadHits": 60,
     "gpuCopiedBytes": 0,
     "allocations": 23.25,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 100000 buses > pick": {
     "queries": 0,
@@ -981,67 +1282,73 @@
     "allocations": 0,
     "submissions": 0,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 100000 buses > playback frame": {
     "queries": 7,
     "queryHits": 21,
     "uploads": 15,
-    "uploadedBytes": 406436,
-    "uploadHits": 93,
+    "uploadedBytes": 402580,
+    "uploadHits": 94,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 100000 buses > restyle": {
     "queries": 0,
     "queryHits": 21,
-    "uploads": 1,
-    "uploadedBytes": 4896,
+    "uploads": 2,
+    "uploadedBytes": 2832,
     "uploadHits": 86,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 1000000 buses > cached frame": {
     "queries": 0,
-    "queryHits": 248,
+    "queryHits": 0,
     "uploads": 2,
-    "uploadedBytes": 40768,
-    "uploadHits": 797,
+    "uploadedBytes": 5424,
+    "uploadHits": 614,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 1000000 buses > camera move": {
     "queries": 0,
-    "queryHits": 248,
+    "queryHits": 0,
     "uploads": 2,
-    "uploadedBytes": 40768,
-    "uploadHits": 797,
+    "uploadedBytes": 5424,
+    "uploadHits": 614,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 1000000 buses > first frame": {
     "queries": 0,
     "queryHits": 250,
-    "uploads": 247,
-    "uploadedBytes": 32758272,
+    "uploads": 248,
+    "uploadedBytes": 32770032,
     "uploadHits": 552,
     "gpuCopiedBytes": 0,
     "allocations": 189,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 1000000 buses > pick": {
     "queries": 0,
@@ -1053,66 +1360,72 @@
     "allocations": 0,
     "submissions": 0,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 1000000 buses > playback frame": {
     "queries": 62,
     "queryHits": 186,
     "uploads": 126,
-    "uploadedBytes": 4054408,
-    "uploadHits": 859,
+    "uploadedBytes": 4019064,
+    "uploadHits": 860,
     "gpuCopiedBytes": 0,
     "allocations": 0.333,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "network 1000000 buses > restyle": {
     "queries": 0,
     "queryHits": 186,
-    "uploads": 2,
-    "uploadedBytes": 40768,
+    "uploads": 3,
+    "uploadedBytes": 21296,
     "uploadHits": 797,
     "gpuCopiedBytes": 0,
     "allocations": 0,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 0
+    "stagedBytes": 0,
+    "rasterized": 0
   },
   "pipeline 10000 buses > publication to frame": {
     "queries": 2,
     "queryHits": 1,
     "uploads": 7,
-    "uploadedBytes": 42992,
-    "uploadHits": 16,
+    "uploadedBytes": 42384,
+    "uploadHits": 18,
     "gpuCopiedBytes": 0,
     "allocations": 0.042,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 8
+    "stagedBytes": 8,
+    "rasterized": 0
   },
   "pipeline 100000 buses > publication to frame": {
     "queries": 8,
     "queryHits": 7,
     "uploads": 19,
-    "uploadedBytes": 407656,
-    "uploadHits": 90,
+    "uploadedBytes": 403784,
+    "uploadHits": 92,
     "gpuCopiedBytes": 0,
     "allocations": 0.083,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 8
+    "stagedBytes": 8,
+    "rasterized": 0
   },
   "pipeline 1000000 buses > publication to frame": {
     "queries": 63,
     "queryHits": 62,
     "uploads": 138,
-    "uploadedBytes": 4053500,
-    "uploadHits": 813,
+    "uploadedBytes": 4017372,
+    "uploadHits": 807,
     "gpuCopiedBytes": 0,
     "allocations": 0.167,
     "submissions": 1,
     "evictions": 0,
-    "stagedBytes": 8
+    "stagedBytes": 8,
+    "rasterized": 0
   }
 }

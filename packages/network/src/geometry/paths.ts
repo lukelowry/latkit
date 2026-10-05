@@ -1,17 +1,17 @@
-import { failure, rowAt, type FieldsBlock, type FieldValues } from '@latkit/model';
-import type { NetworkData, EdgeData } from '../data.js';
+import { bitAt, failure, rowAt, type FieldsBlock, type FieldValues } from '@latkit/model';
+import { kit } from '@latkit/gpu';
+import type { NetworkData, EdgeOptions } from '../data.js';
 import {
   BANK_ROWS,
   edgeOptions,
-  vertexOptions,
   segmentBatch,
   type Geometry,
   type VertexBank,
   type EdgeBank,
   type Limits,
 } from './topology.js';
-import { nativeValue, value, bit, RowLookup } from './rows.js';
-import { scaledValue, type FieldRead } from '../rendering/fields.js';
+import { value, RowLookup } from './rows.js';
+import type { ChannelName, FieldRead } from '../rendering/fields.js';
 import type { Reads } from '../rendering/painter.js';
 
 type Point = readonly [number, number, number];
@@ -58,36 +58,41 @@ function lookup(read: FieldRead): RowLookup<FieldsBlock> {
   result.seal();
   return result;
 }
+/** Whether a net type centers its stars on its own x and y. */
+function centered(options: EdgeOptions): boolean {
+  return options.x != null || options.y != null;
+}
 function signature(reads: Reads, data: NetworkData): unknown[] {
   const key: unknown[] = [];
-  const column = (v: unknown): void => {
+  const add = (v: unknown): void => {
     if (ArrayBuffer.isView(v)) {
       key.push(v.buffer, v.byteOffset, v.byteLength);
       return;
     }
     if (v && typeof v === 'object') {
-      for (const child of Object.values(v)) column(child);
+      for (const child of Object.values(v)) add(child);
     } else key.push(v);
   };
-  for (const [bank, read] of reads.vertices) {
-    column(vertexOptions(data, bank).height?.range);
-    column(read.scales.height?.domain);
+  /** What a read's channels place: their columns, lanes, scales, and constants. */
+  const channels = (read: FieldRead, names: readonly ChannelName[], lists: readonly string[]) => {
+    const columns = [...lists];
+    for (const name of names) {
+      const channel = read.channel(name);
+      key.push(channel.column, channel.component, channel.fallback);
+      add(channel.scale);
+      if (channel.column !== undefined) columns.push(channel.column);
+    }
     for (const tile of read.native)
-      for (const name of ['position', 'x', 'y', 'height']) {
-        column(tile.columns[name]);
-        column(tile.presence[name]);
+      for (const name of columns) {
+        add(tile.columns[name]);
+        add(tile.presence[name]);
       }
-  }
+  };
+  for (const read of reads.vertices.values()) channels(read, ['x', 'y', 'z'], []);
   for (const [bank, read] of reads.edges) {
-    key.push(
-      (edgeOptions(data, bank) as EdgeData).route,
-      !!(edgeOptions(data, bank) as EdgeData).junction,
-    );
-    for (const tile of read.native)
-      for (const name of ['points', 'bends', 'junction', 'junctionX', 'junctionY']) {
-        column(tile.columns[name]);
-        column(tile.presence[name]);
-      }
+    const options = edgeOptions(data, bank) as EdgeOptions;
+    key.push(options.route, centered(options));
+    channels(read, ['x', 'y'], ['points', 'bends']);
   }
   return key;
 }
@@ -109,7 +114,7 @@ export class Paths {
     limits: Required<Limits>,
   ): { geometry: Geometry; origins: ReadonlyMap<EdgeBank, EdgeBank> } {
     const needed = native.edges.some(
-      (bank) => bank.kind || bank.stars || (edgeOptions(data, bank) as EdgeData).bends,
+      (bank) => bank.kind || bank.stars || (edgeOptions(data, bank) as EdgeOptions).bends,
     );
     if (!needed) {
       this.cached = undefined;
@@ -120,7 +125,7 @@ export class Paths {
     if (
       cached?.native === native &&
       key.length === cached.key.length &&
-      key.every((v, i) => v === cached.key[i])
+      key.every((v, i) => Object.is(v, cached.key[i]))
     )
       return cached;
     const vertices = [...native.vertices],
@@ -142,9 +147,9 @@ export class Paths {
       const read = reads.vertices.get(bank)!,
         found = lookups.get(bank)!.get(rowAt(bank.rows, offset))!;
       return [
-        nativeValue(found.value, read.vector ? 'position' : 'x', found.offset),
-        nativeValue(found.value, read.vector ? 'position' : 'y', found.offset, read.vector ? 1 : 0),
-        scaledValue(read, 'height', found.value, found.offset, vertexOptions(data, bank).height, 0),
+        kit.channelValue(read.channels.x, found.value, found.offset),
+        kit.channelValue(read.channels.y, found.value, found.offset),
+        kit.channelValue(read.channels.z, found.value, found.offset),
       ];
     };
     const address = (dense: number): Address => {
@@ -160,7 +165,7 @@ export class Paths {
       return { bank, offset, point: point(bank, offset) };
     };
     for (const original of native.edges) {
-      const options = edgeOptions(data, original) as EdgeData;
+      const options = edgeOptions(data, original) as EdgeOptions;
       if (!original.kind && !options.bends && !original.stars) {
         edges.push(original);
         segments += original.batches.reduce((n, b) => n + b.records.length / 4, 0);
@@ -201,7 +206,8 @@ export class Paths {
       }
       const firstVertex = vertices.length,
         beforeBytes = bytes;
-      const fields = lookup(reads.edges.get(original)!);
+      const read = reads.edges.get(original)!,
+        fields = lookup(read);
       const groups = new Map<
         string,
         { a: VertexBank; b: VertexBank; values: number[]; order: number[] }
@@ -239,21 +245,18 @@ export class Paths {
             values: { kind: 'numeric', offset: 0, length: values.length, values },
           },
         };
+        const height: FieldValues = {
+          index: active.index,
+          rows,
+          values: { kind: 'numeric', offset: 0, length: count, values: h },
+        };
         Object.assign(active, {
           rows,
           count,
-          position,
           synthetic: {
-            position,
-            height: {
-              field: {
-                index: active.index,
-                rows,
-                values: { kind: 'numeric', offset: 0, length: count, values: h },
-              },
-              domain: [0, 1],
-              range: [0, 1],
-            },
+            x: { field: position },
+            y: { field: position, component: 1 },
+            z: { field: height, domain: [0, 1], range: [0, 1] },
           },
         });
         points += count;
@@ -345,7 +348,7 @@ export class Paths {
         if (column?.kind !== 'list' || column.values.kind !== 'vector' || column.values.size !== 2)
           throw failure('invalid-input', 'Paths require lists of two-component vectors');
         const at = column.offset + row;
-        if (!bit(tile.presence[name], row) || !bit(column.validity, at)) return [];
+        if (!bitAt(tile.presence[name], row) || !bitAt(column.validity, at)) return [];
         const result: Point[] = [];
         for (let i = column.offsets[at]; i < column.offsets[at + 1]; i++)
           result.push([value(column.values, i), value(column.values, i, 1), 0]);
@@ -364,21 +367,15 @@ export class Paths {
           ),
           address,
         );
-        if (options.junction ? ends.length : ends.length > 2) {
+        if (centered(options) ? ends.length : ends.length > 2) {
           let center: Point;
-          if (options.junction) {
-            const vector = !!found.value.columns.junction;
+          if (centered(options))
             center = [
-              nativeValue(found.value, vector ? 'junction' : 'junctionX', found.offset),
-              nativeValue(
-                found.value,
-                vector ? 'junction' : 'junctionY',
-                found.offset,
-                vector ? 1 : 0,
-              ),
+              kit.channelValue(read.channels.x, found.value, found.offset),
+              kit.channelValue(read.channels.y, found.value, found.offset),
               0,
             ];
-          } else {
+          else {
             const valid = ends.filter((end) => end.point.every(Number.isFinite));
             if (!valid.length) continue;
             const sum = [0, 0, 0];

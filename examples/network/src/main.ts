@@ -69,12 +69,13 @@ async function main(): Promise<void> {
   const fields = (): VertexOptions => {
     const radius = large() ? 1.4 : 4;
     return {
-      position: 'position',
+      x: 'position',
+      y: { field: 'position', component: 1 },
       color: { field: 'load', domain: [0, 1], colormap: colors },
-      sizePx: current.tables.Bus!.columns.degree
+      radiusPx: current.tables.Bus!.columns.degree
         ? { field: 'degree', domain: [0, 1], range: [radius * 0.6, radius * 2] }
         : null,
-      height: heightOn ? { field: 'load', domain: [0, 1], range: [0, 0.18] } : null,
+      z: heightOn ? { field: 'load', domain: [0, 1], range: [0, 0.18] } : null,
     };
   };
   const gpu = await createGpu();
@@ -91,11 +92,11 @@ async function main(): Promise<void> {
     },
     msaa: 4,
     daylight: true,
-    graticule: false,
+    grid: false,
     hover: 'auto',
     poles: false,
     fitPaddingPx: [48, 48, 48, window.innerWidth > 640 ? 320 : 48],
-    vertexBaseColor: [0.36, 0.4, 0.46, 1],
+    vertexColor: [0.36, 0.4, 0.46, 1],
   });
   net.on('error', fail);
   const report = (): void => {
@@ -152,7 +153,7 @@ async function main(): Promise<void> {
                     source: borders?.data,
                     points: 'points',
                     widthPx: 0.8,
-                    baseColor: [0.4, 0.55, 0.65, 0.7],
+                    color: [0.4, 0.55, 0.65, 0.7],
                   }
                 : null,
             },
@@ -250,21 +251,21 @@ function wireToggles(net: Network, setHeight: (on: boolean) => void, extra: Togg
     ...extra,
     { label: 'vertices', on: true, apply: (v) => net.set({ markers: v }) },
     { label: 'edges', on: true, apply: (v) => net.set({ lines: v }) },
-    { label: 'graticule', on: false, apply: (v) => net.set({ graticule: v }) },
+    { label: 'grid', on: false, apply: (v) => net.set({ grid: v }) },
     { label: 'earth axis', on: true, apply: (v) => net.set({ earthAxis: v }) },
     { label: 'daylight', on: true, apply: (v) => net.set({ daylight: v }) },
     // A pinned sun holds the terminator still; null follows the clock.
     {
       label: 'noon sun',
       on: false,
-      apply: (v) => net.set({ sunTime: v ? Date.UTC(2026, 5, 21, 12) : null }),
+      apply: (v) => net.set({ sunTime: v ? Date.UTC(2026, 5, 21, 12) : 'now' }),
     },
     { label: 'height', on: false, apply: setHeight },
     // A base edge color replaces the endpoint-color average.
     {
       label: 'muted edges',
       on: false,
-      apply: (v) => net.set({ edgeBaseColor: v ? [0.3, 0.32, 0.36, 1] : null }),
+      apply: (v) => net.set({ edgeColor: v ? [0.3, 0.32, 0.36, 1] : 'ends' }),
     },
   ];
   const row = document.getElementById('toggles') as HTMLElement;

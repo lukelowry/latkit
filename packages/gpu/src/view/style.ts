@@ -1,7 +1,7 @@
 import { failure } from '@latkit/model';
 import { validateRgba, type RGBA } from '../colors/color.js';
 import type { TextFont } from '../text/text.js';
-import type { Insets } from './camera.js';
+import { insetSides, type Insets } from './camera.js';
 
 /** Style every item view understands, with one set of defaults. */
 export interface ViewStyle {
@@ -12,13 +12,14 @@ export interface ViewStyle {
   readonly hoverBudgetMs?: number;
   readonly pickRadiusPx?: number;
   readonly fitPaddingPx?: Insets;
-  readonly revealPaddingPx?: number;
+  /** Reveal centers an item closer than this to the canvas edge. */
+  readonly revealPaddingPx?: Insets;
   readonly animationMs?: number;
   /** `auto` follows the reduced-motion preference. */
   readonly motion?: 'auto' | 'reduce' | 'full';
   readonly hoverColor?: RGBA;
-  /** Null keeps each selected item's own color. */
-  readonly selectedColor?: RGBA | null;
+  /** `none` keeps each selected item's own color. */
+  readonly selectedColor?: RGBA | 'none';
   readonly hoverWidthPx?: number;
   readonly selectedWidthPx?: number;
   readonly font?: TextFont;
@@ -56,7 +57,7 @@ export function resolveViewStyle(
   for (const key of keys) {
     const value = config[key];
     if (value === undefined) continue;
-    if (key === 'selectedColor' && value === null) {
+    if (key === 'selectedColor' && value === 'none') {
       // Selection keeps item colors.
     } else if (key.endsWith('Color') || key === 'background') validateRgba(value as RGBA);
     else if (key === 'msaa') {
@@ -67,15 +68,8 @@ export function resolveViewStyle(
       if (!['auto', 'reduce', 'full'].includes(value as string)) fail('Invalid motion');
     } else if (key === 'font') {
       if (typeof (value as TextFont).family !== 'string') fail('Invalid font');
-    } else if (key === 'fitPaddingPx') {
-      const values = typeof value === 'number' ? [value] : (value as readonly number[]);
-      if (
-        !Array.isArray(values) ||
-        (values.length !== 1 && values.length !== 4) ||
-        values.some((v) => !Number.isFinite(v) || v < 0)
-      )
-        fail('Invalid fit padding');
-    } else if (key === 'hoverBudgetMs' || key === 'fontSizePx') {
+    } else if (key === 'fitPaddingPx' || key === 'revealPaddingPx') insetSides(value as Insets);
+    else if (key === 'hoverBudgetMs' || key === 'fontSizePx') {
       if (!Number.isFinite(value) || (value as number) <= 0) fail('Invalid ' + key);
     } else if (!Number.isFinite(value) || (value as number) < 0) fail('Invalid ' + key);
     style[key] = value;

@@ -94,7 +94,7 @@ function sampleTail(pages: ColumnPages): Tail {
 }
 
 /** Rectangular row tiles and sparse selections must not overwrite the same cells. */
-export function checkRows(axes: readonly RowAxis[]): void {
+function checkRows(axes: readonly RowAxis[]): void {
   // Already ordered dense tiles are the common case. Avoid sorting or allocating
   // a flattened range list unless the incoming physical row order requires it.
   let end = -Infinity;

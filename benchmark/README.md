@@ -5,6 +5,12 @@ Each `*.bench.ts` times one package, or the packages together, through public en
 so these time the JavaScript a frame costs and need no GPU. Real GPU timings live in each package's
 browser check.
 
+Diagram workloads cover 100 through 40,000 blocks, including playback of a sampled color, which the
+GPU restyles without rereading the scene. The 40,000-block stress case explicitly uses a
+128 MiB picking budget; the library default remains 32 MiB. Text workloads measure cold glyph
+creation and resident reuse across 1,000 labels. The fake rasterizer measures reuse and call counts,
+not browser font shaping or rasterization speed.
+
 ```sh
 pnpm bench          # build, then run every benchmark
 pnpm bench:update   # also record each benchmark's work per run in work.json
@@ -12,7 +18,8 @@ pnpm bench:gate     # run, then check against .bench/base.json and work.json
 ```
 
 The gate (`gate.ts`) fails when work per run grows: queries, uploads, uploaded and copied bytes,
-allocations, submissions, or evictions, which are exact on any machine. Commit `work.json` with the
+allocations, submissions, evictions, or rasterizations, which are exact on any machine. It also
+rejects incomplete timing reports. Commit `work.json` with the
 change that moves them. CI gates every pull request this way.
 
 Timings vary between runs, even on one machine, so the gate only reports them:

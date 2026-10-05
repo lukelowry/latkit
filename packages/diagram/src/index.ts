@@ -18,6 +18,7 @@ export type {
   EdgeOptions,
   PortOptions,
   DiagramLabels,
+  Positions,
   Group,
   RouteStrategy,
   RouteRequest,

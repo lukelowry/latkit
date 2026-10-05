@@ -1,13 +1,17 @@
 import { Work, failure } from '@latkit/model';
-import type { Point, RouteEnd } from './data.js';
-import type { Scene, Vertex, Rect, End, Edge, GroupBox } from './scene.js';
+import { kit, type Point, type TextAlign, type TextBaseline } from '@latkit/gpu';
+import type { Scene, Vertex, Rect, Edge, End, Wire } from './scene.js';
+import type { DragWire } from './drag.js';
 import type { Limits } from './options.js';
 import type { Style } from './config.js';
-import { rect } from './scene.js';
-import { SpatialIndex, union, expand, intersects } from './spatial.js';
+import { rect, union, expand, intersects } from './scene.js';
 import { rootEnd } from './layout.js';
+import { Routing, obstacles, routeEdge, separate, draw, type Moved, type Route } from './route.js';
 
-export function boundary(vertex: Vertex, toward: Point): Point {
+export function boundary(
+  vertex: Pick<Vertex, 'x' | 'y' | 'width' | 'height' | 'shape' | 'radius'>,
+  toward: Point,
+): Point {
   const cx = vertex.x + vertex.width / 2,
     cy = vertex.y + vertex.height / 2,
     dx = toward[0] - cx,
@@ -62,21 +66,20 @@ export function distance(p: Point, a: Point, b: Point): number {
     : 0;
   return Math.hypot(p[0] - a[0] - dx * t, p[1] - a[1] - dy * t);
 }
+/** Spread each side's ports evenly along it, below a title band. */
 export function portPositions(vertex: Vertex): void {
   for (const side of ['left', 'right', 'top', 'bottom'] as const) {
     const ports = vertex.ports
       .filter((p) => p.side === side)
       .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
     ports.forEach((p, i) => {
-      const t = (i + 1) / (ports.length + 1);
+      const t = (i + 1) / (ports.length + 1),
+        y = vertex.y + vertex.header + (vertex.height - vertex.header) * t;
       p.position =
         side === 'left'
-          ? [vertex.x, vertex.y + vertex.header + (vertex.height - vertex.header) * t]
+          ? [vertex.x, y]
           : side === 'right'
-            ? [
-                vertex.x + vertex.width,
-                vertex.y + vertex.header + (vertex.height - vertex.header) * t,
-              ]
+            ? [vertex.x + vertex.width, y]
             : side === 'top'
               ? [vertex.x + vertex.width * t, vertex.y]
               : [vertex.x + vertex.width * t, vertex.y + vertex.height];
@@ -87,232 +90,18 @@ export function portPositions(vertex: Vertex): void {
     });
   }
 }
-function blocked(a: Point, b: Point, box: Rect): boolean {
-  if (a[0] === b[0])
-    return (
-      a[0] > box[0] + 1e-6 &&
-      a[0] < box[2] - 1e-6 &&
-      Math.max(a[1], b[1]) > box[1] + 1e-6 &&
-      Math.min(a[1], b[1]) < box[3] - 1e-6
-    );
-  return (
-    a[1] > box[1] + 1e-6 &&
-    a[1] < box[3] - 1e-6 &&
-    Math.max(a[0], b[0]) > box[0] + 1e-6 &&
-    Math.min(a[0], b[0]) < box[2] - 1e-6
-  );
+/** Whether an edge draws wires between these ends: two or more, not all inside one collapsed group. */
+function routed(edge: Edge, ends: readonly End[], proxy: ReadonlyMap<number, string>): boolean {
+  if (!edge.visible || ends.length < 2) return false;
+  const first = proxy.get(ends[0].vertex);
+  return !first || !ends.every((e) => proxy.get(e.vertex) === first);
 }
-class Heap {
-  private items: { id: number; cost: number }[] = [];
-  push(id: number, cost: number) {
-    let i = this.items.length;
-    this.items.push({ id, cost });
-    while (i) {
-      const p = (i - 1) >> 1;
-      if (this.items[p].cost <= cost) break;
-      this.items[i] = this.items[p];
-      i = p;
-    }
-    this.items[i] = { id, cost };
-  }
-  pop(): { id: number; cost: number } | undefined {
-    const first = this.items[0],
-      last = this.items.pop();
-    if (!this.items.length || !last) return first;
-    let i = 0;
-    while (i * 2 + 1 < this.items.length) {
-      let j = i * 2 + 1;
-      if (j + 1 < this.items.length && this.items[j + 1].cost < this.items[j].cost) j++;
-      if (this.items[j].cost >= last.cost) break;
-      this.items[i] = this.items[j];
-      i = j;
-    }
-    this.items[i] = last;
-    return first;
-  }
-}
-export function orthogonal(
-  a: Point,
-  b: Point,
-  obstacles: readonly Rect[],
-  clearance: number,
-  signal: AbortSignal,
-): readonly Point[] {
-  const clear = (p: readonly Point[]) =>
-    p.slice(1).every((q, i) => !obstacles.some((r) => blocked(p[i], q, r)));
-  const candidates: Point[][] = [
-    [a, [b[0], a[1]], b],
-    [a, [a[0], b[1]], b],
-    [a, [(a[0] + b[0]) / 2, a[1]], [(a[0] + b[0]) / 2, b[1]], b],
-  ];
-  for (const p of candidates) if (clear(p)) return simplify(p);
-  // Sparse rectilinear visibility grid; A* visits only needed intersections.
-  const xs = new Set([a[0], b[0]]),
-    ys = new Set([a[1], b[1]]);
-  for (const box of obstacles) {
-    xs.add(box[0]);
-    xs.add(box[2]);
-    ys.add(box[1]);
-    ys.add(box[3]);
-  }
-  xs.add(Math.min(a[0], b[0], ...obstacles.map((r) => r[0])) - clearance);
-  xs.add(Math.max(a[0], b[0], ...obstacles.map((r) => r[2])) + clearance);
-  ys.add(Math.min(a[1], b[1], ...obstacles.map((r) => r[1])) - clearance);
-  ys.add(Math.max(a[1], b[1], ...obstacles.map((r) => r[3])) + clearance);
-  const x = [...xs].sort((a, b) => a - b),
-    y = [...ys].sort((a, b) => a - b),
-    width = x.length;
-  const start = y.indexOf(a[1]) * width + x.indexOf(a[0]),
-    end = y.indexOf(b[1]) * width + x.indexOf(b[0]);
-  const heap = new Heap(),
-    costs = new Map<number, number>([[start * 3, 0]]),
-    prev = new Map<number, number>();
-  heap.push(start * 3, 0);
-  let visits = 0;
-  for (let current = heap.pop(); current; current = heap.pop()) {
-    if ((visits++ & 63) === 0) signal.throwIfAborted();
-    if (visits > 32768) throw failure('resource-limit', 'Orthogonal route search exceeded budget');
-    const id = current.id,
-      cost = costs.get(id)!;
-    const vertex = Math.floor(id / 3),
-      direction = id % 3;
-    if (vertex === end) {
-      const path: Point[] = [];
-      for (let at: number | undefined = id; at !== undefined; at = prev.get(at))
-        path.push([x[Math.floor(at / 3) % width], y[Math.floor(Math.floor(at / 3) / width)]]);
-      return simplify(path.reverse());
-    }
-    const ix = vertex % width,
-      iy = Math.floor(vertex / width),
-      p: Point = [x[ix], y[iy]];
-    for (const [nx, ny] of [
-      [ix - 1, iy],
-      [ix + 1, iy],
-      [ix, iy - 1],
-      [ix, iy + 1],
-    ]) {
-      if (nx < 0 || ny < 0 || nx >= width || ny >= y.length) continue;
-      const q: Point = [x[nx], y[ny]],
-        axis = nx === ix ? 2 : 1,
-        nid = (ny * width + nx) * 3 + axis;
-      if (obstacles.some((r) => blocked(p, q, r))) continue;
-      const next =
-        cost +
-        Math.abs(q[0] - p[0]) +
-        Math.abs(q[1] - p[1]) +
-        (direction && direction !== axis ? clearance : 0);
-      if (next >= (costs.get(nid) ?? Infinity)) continue;
-      costs.set(nid, next);
-      prev.set(nid, id);
-      heap.push(nid, next + Math.abs(b[0] - q[0]) + Math.abs(b[1] - q[1]));
-    }
-  }
-  throw failure('invalid-input', 'No orthogonal route between the specified ends');
-}
-function simplify(path: readonly Point[]): Point[] {
-  const out: Point[] = [];
-  for (const p of path) {
-    const b = out.at(-1),
-      a = out.at(-2);
-    if (b && p[0] === b[0] && p[1] === b[1]) continue;
-    if (a && b && ((a[0] === b[0] && b[0] === p[0]) || (a[1] === b[1] && b[1] === p[1]))) out.pop();
-    out.push(p);
-  }
-  return out;
-}
-/** Merge shared trunks while retaining distance and direction from each route's root. */
-function segments(paths: readonly (readonly Point[])[]): {
-  paths: Point[][];
-  offsets: number[];
-  junctions: Point[];
-} {
-  type Part = { start: number; end: number; offset: number };
-  const lines = new Map<string, { axis: number; fixed: number; parts: Part[] }>(),
-    out: Point[][] = [],
-    offsets: number[] = [];
-  for (const path of paths) {
-    let offset = 0;
-    for (let i = 1; i < path.length; i++) {
-      const a = path[i - 1],
-        b = path[i],
-        length = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      if (!length) continue;
-      if (a[0] !== b[0] && a[1] !== b[1]) {
-        out.push([a, b]);
-        offsets.push(offset);
-      } else {
-        const axis = a[0] === b[0] ? 1 : 0,
-          fixed = a[1 - axis],
-          key = axis + ':' + fixed;
-        const line = lines.get(key) ?? { axis, fixed, parts: [] };
-        line.parts.push({ start: a[axis], end: b[axis], offset });
-        lines.set(key, line);
-      }
-      offset += length;
-    }
-  }
-  for (const line of lines.values()) {
-    const events = new Map<number, { add: Part[]; remove: Part[] }>();
-    const event = (at: number) => {
-      let value = events.get(at);
-      if (!value) {
-        value = { add: [], remove: [] };
-        events.set(at, value);
-      }
-      return value;
-    };
-    for (const part of line.parts) {
-      event(Math.min(part.start, part.end)).add.push(part);
-      event(Math.max(part.start, part.end)).remove.push(part);
-    }
-    const points = [...events.keys()].sort((a, b) => a - b),
-      active = new Set<Part>();
-    for (let i = 0; i < points.length - 1; i++) {
-      const value = events.get(points[i])!;
-      for (const part of value.remove) active.delete(part);
-      for (const part of value.add) active.add(part);
-      let chosen: Part | undefined,
-        distance = Infinity;
-      for (const part of active) {
-        const start = part.start < part.end ? points[i] : points[i + 1];
-        const next = part.offset + Math.abs(start - part.start);
-        if (next < distance) {
-          chosen = part;
-          distance = next;
-        }
-      }
-      if (!chosen) continue;
-      const a = chosen.start < chosen.end ? points[i] : points[i + 1];
-      const b = chosen.start < chosen.end ? points[i + 1] : points[i];
-      out.push(
-        line.axis === 0
-          ? [
-              [a, line.fixed],
-              [b, line.fixed],
-            ]
-          : [
-              [line.fixed, a],
-              [line.fixed, b],
-            ],
-      );
-      offsets.push(distance);
-    }
-  }
-  const degree = new Map<string, { p: Point; n: number }>();
-  for (const path of out)
-    for (const p of path) {
-      const key = p.join(','),
-        value = degree.get(key) ?? { p, n: 0 };
-      value.n++;
-      degree.set(key, value);
-    }
-  return {
-    paths: out,
-    offsets,
-    junctions: [...degree.values()].filter((v) => v.n >= 3).map((v) => v.p),
-  };
-}
+const key = (edge: Edge) => edge.hit.index.type + '\u0000' + edge.hit.id;
 
+/**
+ * Place a scene's ports, frame its groups, and route and label its edges. Edges whose ends and
+ * neighbourhood did not change keep their routes from `previous`; tracks are set apart anew.
+ */
 export async function geometry(
   scene: Scene,
   options: Style,
@@ -321,7 +110,7 @@ export async function geometry(
   previous?: Scene,
   work: Work = new Work(signal, limits.layoutMs),
 ): Promise<void> {
-  scene.portSizePx = options.portSizePx;
+  scene.portSize = options.portSize;
   scene.bytes -= scene.routeBytes;
   scene.routeBytes = 0;
   for (const vertex of scene.vertices) {
@@ -334,75 +123,41 @@ export async function geometry(
     for (let p = groups.get(id)?.parent; p; p = groups.get(p)?.parent) n++;
     return n;
   };
-  const hidden = new Set<number>(),
-    hiddenGroups = new Set<string>();
+  const pad = options.vertexPadding;
   for (const group of [...scene.groups].sort((a, b) => depth(b.id) - depth(a.id))) {
     const boxes = group.members
       .filter((i) => scene.vertices[i].visible)
       .map((i) => rect(scene.vertices[i]));
-    for (const child of scene.groups) if (child.parent === group.id) boxes.push(child.bounds);
-    let box = expand(union(boxes), options.vertexPadding);
-    box = [box[0], box[1] - group.label.height - options.vertexPadding, box[2], box[3]];
+    for (const child of scene.groups)
+      if (child.parent === group.id && child.bounds[0] !== child.bounds[2])
+        boxes.push(child.bounds);
+    let box = boxes.length ? expand(union(boxes), pad) : ([0, 0, 0, 0] as Rect);
+    if (boxes.length) box = [box[0], box[1] - group.header, box[2], box[3]];
     if (group.collapsed)
       box = [
         box[0],
         box[1],
-        box[0] + Math.max(120, group.label.width + options.vertexPadding * 2),
-        box[1] + Math.max(56, group.label.height + options.vertexPadding * 2),
+        box[0] + Math.max(120, group.label.width + pad * 2),
+        box[1] + Math.max(group.header + pad * 2, 56),
       ];
     group.bounds = box;
   }
-  const proxy = new Map<number, string>();
-  for (let i = 0; i < scene.vertices.length; i++) {
-    let group = scene.vertices[i].group,
-      collapsed: string | undefined;
-    while (group) {
-      if (groups.get(group)?.collapsed) collapsed = group;
-      group = groups.get(group)?.parent;
-    }
-    if (collapsed) {
-      hidden.add(i);
-      proxy.set(i, collapsed);
-    }
-  }
-  for (const group of scene.groups) {
-    let parent = group.parent;
-    while (parent) {
-      if (groups.get(parent)?.collapsed) hiddenGroups.add(group.id);
-      parent = groups.get(parent)?.parent;
-    }
-  }
-  const index = new SpatialIndex(limits.pickingBytes),
-    owners: number[] = [],
-    ownerBox = new Map<number, Rect>();
-  scene.vertices.forEach((vertex, i) => {
-    if (vertex.visible && !hidden.has(i)) {
-      const box = expand(rect(vertex), 2);
-      index.add(box);
-      owners.push(i);
-      ownerBox.set(i, box);
-    }
-  });
-  const proxyOwner = new Map<string, number>(),
-    proxyGroups: string[] = [];
+  const hidden = new Set<number>(),
+    hiddenGroups = new Set<string>();
+  for (let i = 0; i < scene.vertices.length; i++)
+    for (let g = scene.vertices[i].group; g; g = groups.get(g)?.parent)
+      if (groups.get(g)?.collapsed) hidden.add(i);
   for (const group of scene.groups)
-    if (group.collapsed && !hiddenGroups.has(group.id)) {
-      const owner = scene.vertices.length + proxyGroups.length,
-        box = expand(group.bounds, 2);
-      proxyOwner.set(group.id, owner);
-      proxyGroups.push(group.id);
-      index.add(box);
-      owners.push(owner);
-      ownerBox.set(owner, box);
-    }
-  // Kept with the scene, so a drag reroutes the wires it moves without rebuilding the rest.
-  scene.obstacles = { index, owners, ownerBox, proxy, proxyOwner, proxyGroups, groups };
-  const route = routing(scene, options, signal);
-  const oldEdges = new Map(
-    previous?.edges.map((e) => [JSON.stringify([e.hit.index.type, e.hit.id]), e]),
-  );
-  const changedBoxes: Rect[] = [];
-  const changedVertices = new Set<number>();
+    for (let p = group.parent; p; p = groups.get(p)?.parent)
+      if (groups.get(p)?.collapsed) hiddenGroups.add(group.id);
+  for (const id of hiddenGroups) groups.get(id)!.bounds = [0, 0, 0, 0];
+  scene.obstacles = obstacles(scene, hidden);
+  const route = new Routing(scene, options, signal),
+    proxy = scene.obstacles.proxy;
+  // Which old routes still hold: an edge keeps its route unless an end or a box near it moved.
+  const old = new Map(previous?.edges.map((e) => [key(e), e]));
+  const changed = new Set<number>(),
+    boxes: Rect[] = [];
   scene.vertices.forEach((n, i) => {
     const p = previous?.vertices[i];
     if (
@@ -421,18 +176,20 @@ export async function geometry(
         const before = p.ports[j];
         return (
           port.name !== before.name ||
-          port.position.some((v, axis) => v !== before.position[axis]) ||
-          port.normal.some((v, axis) => v !== before.normal[axis])
+          port.position[0] !== before.position[0] ||
+          port.position[1] !== before.position[1] ||
+          port.normal[0] !== before.normal[0] ||
+          port.normal[1] !== before.normal[1]
         );
       })
     ) {
-      changedVertices.add(i);
-      changedBoxes.push(expand(rect(n), options.routeClearance));
-      if (p) changedBoxes.push(expand(rect(p), options.routeClearance));
+      changed.add(i);
+      boxes.push(expand(rect(n), options.routeClearance * 2));
+      if (p) boxes.push(expand(rect(p), options.routeClearance * 2));
     }
   });
-  const groupSame =
-    previous &&
+  const sameGroups =
+    !!previous &&
     scene.groups.length === previous.groups.length &&
     scene.groups.every(
       (g, i) =>
@@ -441,369 +198,163 @@ export async function geometry(
         g.bounds.every((v, j) => v === previous.groups[i].bounds[j]),
     );
   const affected = new Set<string>();
-  if (previous && changedBoxes.length) {
-    const routes = new SpatialIndex(limits.pickingBytes);
-    previous.edges.forEach((e) => routes.add(expand(e.bounds, options.routeClearance)));
-    for (const box of changedBoxes)
-      for (const i of routes.query(box))
-        affected.add(JSON.stringify([previous.edges[i].hit.index.type, previous.edges[i].hit.id]));
-  }
-  let routePoints = 0;
-  for (const edge of scene.edges) {
-    await work.step();
-    edge.paths = [];
-    edge.arrows = [];
-    edge.junctions = [];
-    const ends = edge.ends.filter((e) => scene.vertices[e.vertex].visible);
-    if (ends.length * 2 + routePoints > limits.routePoints)
-      throw failure('resource-limit', 'Too many route points');
-    if (!routed(edge, ends, proxy)) continue;
-    const old = oldEdges.get(JSON.stringify([edge.hit.index.type, edge.hit.id]));
-    if (
-      groupSame &&
-      previous?.routeClearance === options.routeClearance &&
-      !edge.ends.some((e) => changedVertices.has(e.vertex)) &&
-      !affected.has(JSON.stringify([edge.hit.index.type, edge.hit.id])) &&
-      old &&
-      old.options.route === edge.options.route &&
-      old.options.arrows === edge.options.arrows &&
-      old.options.appearance === edge.options.appearance &&
-      JSON.stringify(old.ends) === JSON.stringify(edge.ends)
-    ) {
-      edge.paths = old.paths;
-      edge.offsets = old.offsets;
-      edge.arrows = old.arrows;
-      edge.junctions = old.junctions;
-      edge.anchor = old.anchor;
-      edge.bounds = union(
-        old.paths.flatMap((path) => path.map((p) => [p[0], p[1], p[0], p[1]] as Rect)),
-      );
-    } else {
-      const wired = wire(edge, ends, route);
-      if (wired.points + routePoints > limits.routePoints)
-        throw failure('resource-limit', 'Too many route points');
-      edge.paths = wired.paths;
-      edge.offsets = wired.offsets;
-      edge.junctions = wired.junctions;
-      edge.arrows = wired.arrows;
-      edge.anchor = wired.anchor;
-      edge.bounds = wired.bounds;
-    }
-    if (edge.options.appearance === 'tag')
-      edge.bounds = union(
-        edge.paths.flatMap((path) => {
-          const p = path.at(-1)!;
-          return [
-            [path[0][0], path[0][1], path[0][0], path[0][1]],
-            [p[0], p[1] - edge.label.height - 3, p[0] + edge.label.width + 6, p[1] + 3],
-          ] as Rect[];
-        }),
-      );
-    routePoints += edge.paths.reduce((n, p) => n + p.length, 0);
-    if (routePoints > limits.routePoints) throw failure('resource-limit', 'Too many route points');
-  }
-  for (const edge of scene.edges) {
-    edge.labelBounds = [];
-    if (!edge.visible || !options.labels || !edge.label.runs.length) continue;
-    if (edge.options.appearance === 'tag')
-      edge.labelBounds = edge.paths.map((path) => {
-        const p = path.at(-1)!;
-        return [p[0], p[1] - edge.label.height - 3, p[0] + edge.label.width + 6, p[1] + 3];
+  if (previous && boxes.length && previous.edges.length) {
+    const near = kit.BoxIndex.of(previous.edges.length, union(boxes), (i, box) =>
+      box.set(expand(previous.edges[i].bounds, options.routeClearance)),
+    );
+    for (const box of boxes)
+      near.some(box, (i) => {
+        const edge = previous.edges[i];
+        if (intersects(expand(edge.bounds, options.routeClearance), box)) affected.add(key(edge));
       });
   }
-  const labels = new SpatialIndex(limits.pickingBytes);
-  for (let i = 0; i < scene.vertices.length; i++)
-    if (scene.vertices[i].visible && !hidden.has(i)) labels.add(rect(scene.vertices[i]));
-  for (const edge of scene.edges)
-    if (
-      edge.visible &&
-      options.labels &&
-      edge.paths.length &&
-      edge.label.runs.length &&
-      edge.options.appearance !== 'tag'
-    ) {
-      const candidates = edge.paths
-        .flatMap((path) =>
-          path.slice(1).map((b, i) => ({
-            a: path[i],
-            b,
-            length: Math.hypot(b[0] - path[i][0], b[1] - path[i][1]),
-          })),
-        )
-        .sort((a, b) => b.length - a.length);
-      let anchor: Point = edge.anchor,
-        chosen: Rect | undefined;
-      for (let offset = 0; offset < 64 && !chosen; offset++)
-        for (const { a, b } of candidates) {
-          const x = (a[0] + b[0]) / 2 - edge.label.width / 2,
-            y = (a[1] + b[1]) / 2 - 4 - edge.label.height - offset * (edge.label.height + 4);
-          const box: Rect = [x, y, x + edge.label.width, y + edge.label.height];
-          if (!labels.query(expand(box, 3)).length) {
-            chosen = box;
-            anchor = [x - 4, y + edge.label.height + 4];
-            break;
-          }
-        }
-      edge.anchor = anchor;
-      const box = chosen ?? [
-        anchor[0] + 4,
-        anchor[1] - edge.label.height - 4,
-        anchor[0] + edge.label.width + 4,
-        anchor[1] - 4,
-      ];
-      edge.labelBounds = [expand(box, 3)];
-      labels.add(box);
-      edge.bounds = union([edge.bounds, ...edge.labelBounds]);
+  const reuse =
+    sameGroups &&
+    previous?.routeClearance === options.routeClearance &&
+    previous.portSize === options.portSize;
+  const routes: (Route | null)[] = [];
+  let points = 0;
+  for (const edge of scene.edges) {
+    await work.step();
+    const ends = edge.ends.filter((e) => scene.vertices[e.vertex].visible);
+    let result: Route | null = null;
+    if (routed(edge, ends, proxy)) {
+      const before = old.get(key(edge));
+      result =
+        reuse &&
+        before?.route &&
+        !edge.ends.some((e) => changed.has(e.vertex)) &&
+        !affected.has(key(edge)) &&
+        before.options.route === edge.options.route &&
+        before.options.arrows === edge.options.arrows &&
+        before.options.appearance === edge.options.appearance &&
+        sameEnds(before.ends, edge.ends)
+          ? before.route
+          : routeEdge(edge, ends, route, rootEnd(edge));
+      points += result.points;
+      if (points > limits.routePoints) throw failure('resource-limit', 'Too many route points');
     }
-  for (const i of hidden) scene.vertices[i].visible = false;
-  for (const id of hiddenGroups) {
-    const g = groups.get(id)!;
-    g.bounds = [0, 0, 0, 0];
+    edge.route = result;
+    routes.push(result);
   }
+  const frames = scene.groups
+    .filter((g) => !g.collapsed && g.bounds[0] !== g.bounds[2])
+    .map((g) => g.bounds);
+  const wires = separate(
+    routes.map((r, i) => (scene.edges[i].options.appearance === 'tag' ? null : r)),
+    route,
+    frames,
+  );
+  scene.edges.forEach((edge, i) => {
+    const r = routes[i],
+      wire = r && edge.options.appearance === 'tag' ? tag(r) : wires[i];
+    edge.paths = wire?.paths ?? [];
+    edge.offsets = wire?.offsets ?? [];
+    edge.junctions = wire?.junctions ?? [];
+    edge.arrows = wire?.arrows ?? [];
+    edge.bounds = wire?.bounds ?? [0, 0, 0, 0];
+  });
+  label(scene, options, hidden);
+  for (const i of hidden) scene.vertices[i].visible = false;
   scene.bounds = union([
     ...scene.vertices.filter((n) => n.visible).map(rect),
     ...scene.edges.filter((e) => e.visible && e.paths.length).map((e) => e.bounds),
     ...scene.groups.filter((g) => g.bounds[0] !== g.bounds[2]).map((g) => g.bounds),
   ]);
   scene.routeClearance = options.routeClearance;
-  scene.routeBytes = routePoints * 24 + index.bytes;
+  scene.routeBytes = points * 24 + scene.obstacles.index.bytes + scene.obstacles.boxes.byteLength;
   scene.bytes += scene.routeBytes;
   work.check();
   if (scene.bytes > limits.geometryBytes)
     throw failure('resource-limit', 'Route geometry exceeds budget');
 }
-/** A scene's obstacles, kept for routing the wires a drag moves. */
-export interface Obstacles {
-  readonly index: SpatialIndex;
-  /** The vertex, or collapsed group past the vertices, each box belongs to. */
-  readonly owners: readonly number[];
-  readonly ownerBox: ReadonlyMap<number, Rect>;
-  /** The collapsed group that stands in for each hidden vertex. */
-  readonly proxy: ReadonlyMap<number, string>;
-  readonly proxyOwner: ReadonlyMap<string, number>;
-  /** The group of each proxy owner, past the vertices. */
-  readonly proxyGroups: readonly string[];
-  readonly groups: ReadonlyMap<string, GroupBox>;
+function sameEnds(a: readonly End[], b: readonly End[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every(
+      (e, i) => e.vertex === b[i].vertex && e.port === b[i].port && e.direction === b[i].direction,
+    )
+  );
 }
-/** Vertices and groups a drag moves by one delta, drawn and routed where they are going. */
-export interface Moved {
-  readonly vertices: ReadonlyMap<number, Vertex>;
-  readonly groups: ReadonlySet<string>;
-  readonly delta: Point;
-}
-/** What routing reads of a scene: where each end leaves its vertex, and what wires avoid. */
-interface Routing {
-  readonly options: Style;
-  readonly signal: AbortSignal;
-  vertex(index: number): Vertex;
-  /** An end's anchor, normal, and owner, leaving toward a point. */
-  end(end: End, toward: Point): RouteEnd & { readonly owner: number };
-  /** Obstacle boxes meeting a region, and what each belongs to. */
-  query(region: Rect): readonly { readonly box: Rect; readonly owner: number }[];
-  /** Every obstacle, for routing strategies. */
-  boxes(): readonly Rect[];
-  bounds(owner: number): Rect | undefined;
-}
-/** The wires of one edge: its paths from the root, junctions, arrows, label anchor, and bounds. */
-export interface Wire {
-  readonly paths: readonly (readonly Point[])[];
-  readonly offsets: readonly number[];
-  readonly junctions: readonly Point[];
-  readonly arrows: readonly { point: Point; direction: Point }[];
-  readonly anchor: Point;
-  readonly bounds: Rect;
-  /** Route points it draws, for the route budget. */
-  readonly points: number;
-}
-/** Whether an edge draws wires between these ends: two or more, not all inside one collapsed group. */
-function routed(edge: Edge, ends: readonly End[], proxy: ReadonlyMap<number, string>): boolean {
-  if (!edge.visible || ends.length < 2) return false;
-  const first = proxy.get(ends[0].vertex);
-  return !first || !ends.every((e) => proxy.get(e.vertex) === first);
-}
-function shift(box: Rect, delta: Point): Rect {
-  return [box[0] + delta[0], box[1] + delta[1], box[2] + delta[0], box[3] + delta[1]];
-}
-/** Routing over a scene's obstacles, with what a drag moves where it is going. */
-function routing(scene: Scene, options: Style, signal: AbortSignal, moved?: Moved): Routing {
-  const o = scene.obstacles!,
-    count = scene.vertices.length;
-  const vertex = (i: number) => moved?.vertices.get(i) ?? scene.vertices[i];
-  const groupBounds = (id: string): Rect => {
-    const box = o.groups.get(id)!.bounds;
-    return moved?.groups.has(id) ? shift(box, moved.delta) : box;
-  };
-  const moves = (owner: number) =>
-    !!moved &&
-    (owner < count ? moved.vertices.has(owner) : moved.groups.has(o.proxyGroups[owner - count]));
-  const box = (owner: number): Rect | undefined => {
-    const own = o.ownerBox.get(owner);
-    return own && moves(owner) ? shift(own, moved!.delta) : own;
-  };
-  const shifted = moved
-    ? [...o.ownerBox.keys()].filter(moves).map((owner) => ({ box: box(owner)!, owner }))
-    : [];
-  return {
-    options,
-    signal,
-    vertex,
-    end(e, toward) {
-      const group = o.proxy.get(e.vertex);
-      if (group && o.groups.get(group)) {
-        const b = groupBounds(group),
-          n = {
-            ...vertex(e.vertex),
-            x: b[0],
-            y: b[1],
-            width: b[2] - b[0],
-            height: b[3] - b[1],
-            shape: 'rectangle' as const,
-          },
-          p = boundary(n, toward),
-          dx = p[0] - (n.x + n.width / 2),
-          dy = p[1] - (n.y + n.height / 2);
-        return {
-          position: p,
-          normal:
-            Math.abs(dx / n.width) > Math.abs(dy / n.height)
-              ? [Math.sign(dx), 0]
-              : [0, Math.sign(dy)],
-          ...(e.direction ? { direction: e.direction } : {}),
-          owner: o.proxyOwner.get(group)!,
-        };
-      }
-      const n = vertex(e.vertex),
-        port = e.port && n.ports.find((p) => p.name === e.port);
-      const p = port ? port.position : boundary(n, toward),
-        dx = p[0] - n.x - n.width / 2,
-        dy = p[1] - n.y - n.height / 2;
-      return {
-        position: p,
-        normal: port
-          ? port.normal
-          : Math.abs(dx / n.width) > Math.abs(dy / n.height)
-            ? [Math.sign(dx), 0]
-            : [0, Math.sign(dy)],
-        ...(e.direction ? { direction: e.direction } : {}),
-        owner: e.vertex,
-      };
-    },
-    query(region) {
-      const out: { box: Rect; owner: number }[] = [];
-      for (const id of o.index.query(region))
-        if (!moves(o.owners[id])) out.push({ box: o.index.boxes[id], owner: o.owners[id] });
-      for (const entry of shifted) if (intersects(entry.box, region)) out.push(entry);
-      return out;
-    },
-    boxes: () => o.index.boxes.map((own, id) => box(o.owners[id]) ?? own),
-    bounds: box,
-  };
-}
-/** Route one edge between its visible ends. */
-function wire(edge: Edge, ends: readonly End[], route: Routing): Wire {
-  const { options, signal } = route;
-  const preferred = edge.ends[rootEnd(edge)];
-  const root = ends.includes(preferred) ? preferred : ends[0],
-    center = (e: End): Point => {
-      const n = route.vertex(e.vertex);
-      return [n.x + n.width / 2, n.y + n.height / 2];
-    };
-  const targets = ends.filter((e) => e !== root),
-    rootPoint = route.end(root, center(targets[0]));
-  const all = [rootPoint, ...targets.map((e) => route.end(e, center(root)))];
-  let paths: readonly (readonly Point[])[];
-  if (typeof edge.options.route === 'object')
-    paths = edge.options.route.route({
-      ends: all,
-      obstacles: route.boxes(),
-      clearance: options.routeClearance,
-      signal,
-    });
-  else
-    paths = targets.map((target, j) => {
-      const a = rootPoint,
-        b = all[j + 1],
-        stub = options.routeClearance;
-      const stubPoint = (end: typeof a): Point => {
-        const own = route.bounds(end.owner),
-          axis = end.normal[0] ? 0 : 1,
-          exit = own
-            ? Math.max(
-                0,
-                (own[end.normal[axis] > 0 ? axis + 2 : axis] - end.position[axis]) *
-                  end.normal[axis],
-              )
-            : 0;
-        let length = exit + stub;
-        const far: Point = [
-          end.position[0] + end.normal[0] * length,
-          end.position[1] + end.normal[1] * length,
-        ];
-        const region: Rect = [
-          Math.min(end.position[0], far[0]),
-          Math.min(end.position[1], far[1]),
-          Math.max(end.position[0], far[0]),
-          Math.max(end.position[1], far[1]),
-        ];
-        for (const { box, owner } of route.query(region)) {
-          if (owner === end.owner) continue;
-          const distance =
-            (box[end.normal[axis] > 0 ? axis : axis + 2] - end.position[axis]) * end.normal[axis];
-          if (distance > exit) length = Math.min(length, (exit + distance) * 0.5);
-        }
-        return [end.position[0] + end.normal[0] * length, end.position[1] + end.normal[1] * length];
-      };
-      const ap = stubPoint(a),
-        bp = stubPoint(b);
-      if (edge.options.route === 'straight' && root.vertex !== target.vertex)
-        return [a.position, b.position];
-      const region = expand(
-        union([
-          [ap[0], ap[1], ap[0], ap[1]],
-          [bp[0], bp[1], bp[0], bp[1]],
-        ]),
-        stub * 4,
-      );
-      const boxes = route.query(region).map((entry) => entry.box);
-      return simplify([a.position, ap, ...orthogonal(ap, bp, boxes, stub, signal), bp, b.position]);
-    });
-  if (paths.some((path) => path.some((p) => p.length !== 2 || !p.every(Number.isFinite))))
-    throw failure('invalid-input', 'Router returned invalid points');
-  const arrows: { point: Point; direction: Point }[] = [];
-  for (let i = 0; i < paths.length; i++) {
-    const p = paths[i],
-      end = all[Math.min(i + 1, all.length - 1)];
-    if (p.length > 1 && edge.options.arrows && end.direction === 'in') {
-      const a = p[p.length - 2],
-        b = p[p.length - 1],
-        d = Math.hypot(b[0] - a[0], b[1] - a[1]);
-      if (d) arrows.push({ point: b, direction: [(b[0] - a[0]) / d, (b[1] - a[1]) / d] });
-    }
+/** A tag edge draws only each end's stub, out from its port; its label names the net at each. */
+function tag(route: Route): Wire {
+  const wire = draw(route);
+  if (route.paths) return wire;
+  const stubs: Point[][] = [];
+  for (let j = 0; j < route.x.length; j++) {
+    if (route.kind[j] !== 1) continue;
+    const out = route.parent[j] >= 0 ? route.parent[j] : route.parent.indexOf(j);
+    if (out >= 0)
+      stubs.push([
+        [route.x[j], route.y[j]],
+        [route.x[out], route.y[out]],
+      ]);
   }
-  if (edge.options.arrows && root.direction === 'in' && paths[0]?.length > 1) {
-    const [a, b] = paths[0],
-      d = Math.hypot(a[0] - b[0], a[1] - b[1]);
-    if (d) arrows.push({ point: a, direction: [(a[0] - b[0]) / d, (a[1] - b[1]) / d] });
+  return { ...wire, paths: stubs, offsets: stubs.map(() => 0), junctions: [] };
+}
+/** Room kept between a label and its wire, and around its text inside its pill. */
+const GAP = 4,
+  MARGIN = 3;
+/** The pill a label with its origin here fills: its text's box and margin. */
+export function labelBox(edge: Edge, at: Point): Rect {
+  return kit.textBox(edge.label, at, MARGIN);
+}
+/**
+ * Where an edge's label may go, best first: above its longest level runs, then below them, then
+ * beside its longest upright runs; a tag's past the end of each stub.
+ */
+function spots(edge: Edge, paths: readonly (readonly Point[])[]): Point[][] {
+  const text = edge.label,
+    at = (x: number, y: number, align: TextAlign, baseline: TextBaseline) =>
+      kit.textOrigin(text, [x, y], align, baseline);
+  if (edge.options.appearance === 'tag')
+    return [
+      paths.map(([a, b]) =>
+        b[0] >= a[0]
+          ? at(b[0] + GAP + MARGIN, b[1], 'start', 'middle')
+          : at(b[0] - GAP - MARGIN, b[1], 'end', 'middle'),
+      ),
+    ];
+  return paths
+    .flatMap((path) => path.slice(1).map((b, i) => [path[i], b] as const))
+    .map(([a, b]) => ({
+      a,
+      b,
+      level: a[1] === b[1],
+      length: Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]),
+    }))
+    .sort((u, v) => +v.level - +u.level || v.length - u.length)
+    .slice(0, 4)
+    .flatMap(({ a, b, level }): Point[][] => {
+      const mx = (a[0] + b[0]) / 2,
+        my = (a[1] + b[1]) / 2;
+      return level
+        ? [
+            [at(mx, my - GAP - MARGIN, 'center', 'bottom')],
+            [at(mx, my + GAP + MARGIN, 'center', 'top')],
+          ]
+        : [
+            [at(mx + GAP + MARGIN, my, 'start', 'middle')],
+            [at(mx - GAP - MARGIN, my, 'end', 'middle')],
+          ];
+    });
+}
+/** Place each edge's label at its best spot nothing placed overlaps, else at its best spot. */
+function label(scene: Scene, options: Style, hidden: ReadonlySet<number>): void {
+  const placed = new kit.Occupancy(64);
+  scene.vertices.forEach((vertex, i) => {
+    if (vertex.visible && !hidden.has(i)) placed.add(rect(vertex));
+  });
+  for (const edge of scene.edges) {
+    edge.labels = [];
+    if (!edge.visible || !options.labels || !edge.label.runs.length || !edge.paths.length) continue;
+    const choices = spots(edge, edge.paths),
+      chosen =
+        choices.find((points) => points.every((p) => placed.free(labelBox(edge, p)))) ?? choices[0];
+    for (const p of chosen) placed.add(labelBox(edge, p));
+    edge.labels = chosen;
+    edge.bounds = union([edge.bounds, ...chosen.map((p) => labelBox(edge, p))]);
   }
-  const merged = segments(paths),
-    tag = edge.options.appearance === 'tag';
-  return {
-    paths: tag
-      ? all.map((p) => [
-          p.position,
-          [
-            p.position[0] + p.normal[0] * stubLength(options),
-            p.position[1] + p.normal[1] * stubLength(options),
-          ],
-        ])
-      : merged.paths,
-    offsets: tag ? all.map(() => 0) : merged.offsets,
-    junctions: merged.junctions,
-    arrows,
-    anchor: all[0].position,
-    bounds: union(paths.flatMap((p) => p.map((q) => [q[0], q[1], q[0], q[1]] as Rect))),
-    points: paths.reduce((n, p) => n + p.length, 0),
-  };
 }
 /** The wires a drag reroutes: each edge touching what moves, routed where it is going. */
 export function dragWires(
@@ -812,17 +363,18 @@ export function dragWires(
   moved: Moved,
   options: Style,
   signal: AbortSignal,
-): (Wire & { readonly edge: Edge })[] {
-  const route = routing(scene, options, signal, moved),
+): DragWire[] {
+  const route = new Routing(scene, options, signal, moved),
     proxy = scene.obstacles!.proxy,
-    wires: (Wire & { readonly edge: Edge })[] = [];
+    out: DragWire[] = [];
   for (const i of edges) {
     const edge = scene.edges[i],
       ends = edge.ends.filter((e) => scene.vertices[e.vertex].sourceVisible);
-    if (routed(edge, ends, proxy)) wires.push({ ...wire(edge, ends, route), edge });
+    if (!routed(edge, ends, proxy)) continue;
+    const r = routeEdge(edge, ends, route, rootEnd(edge));
+    const wire = edge.options.appearance === 'tag' ? tag(r) : draw(r),
+      labels = options.labels && edge.label.runs.length ? (spots(edge, wire.paths)[0] ?? []) : [];
+    out.push({ ...wire, edge, slot: scene.slots.edges + i, labels });
   }
-  return wires;
-}
-function stubLength(options: Style): number {
-  return options.routeClearance;
+  return out;
 }

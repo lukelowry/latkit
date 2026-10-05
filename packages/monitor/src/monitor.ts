@@ -26,7 +26,6 @@ import {
   type RowSelection,
 } from '@latkit/model';
 import {
-  FIELD_OPTIONS,
   continues,
   monitorData,
   type MonitorData,
@@ -46,7 +45,7 @@ import {
 } from './config.js';
 import { DEFAULT_CAMERA, checkCamera, mixCamera, move, type Camera } from './camera.js';
 import { binding, describeBindings, validateData, type Binding } from './bindings.js';
-import { axes, plot, type Axes, type Plot } from './axes.js';
+import { axes, onPlot, plot, plotCoordinate, plotX, plotY, type Axes, type Plot } from './axes.js';
 import { Fit, mergeDomain, tracePages } from './extents.js';
 import { pipelines, type Pipelines } from './rendering/pipelines.js';
 import {
@@ -71,8 +70,8 @@ import { pick } from './picking.js';
 export interface MonitorConfig extends ItemViewConfig, MonitorStyle {
   /** Lines by name; several may read one type. */
   readonly traces: Readonly<Record<string, Trace>>;
-  /** Where the camera starts; `monitor.camera` is where it is. Values fit the data by default. */
-  readonly camera: Partial<Camera> & { readonly window: Domain };
+  /** Where the camera starts; `monitor.camera` is where it is. y fits the data by default. */
+  readonly camera: Partial<Camera> & { readonly x: Domain };
   readonly limits?: Limits;
 }
 export type MonitorEvents = ItemEvents<MonitorItem, Reading, Camera>;
@@ -88,7 +87,7 @@ export interface MonitorStats extends ViewStats {
 type Records = 'traces';
 type Merged = 'camera' | 'input' | 'limits';
 /**
- * Selects rows, each narrowed to one trace when it names a `field`, and picks exact readings.
+ * Selects rows, each narrowed to one trace when it names a `trace`, and picks exact readings.
  * `at` draws the playhead.
  */
 export interface Monitor extends ItemView<
@@ -99,6 +98,8 @@ export interface Monitor extends ItemView<
   MonitorEvents
 > {
   set(patch: Patch<MonitorConfig, Records, Merged>, options?: SetOptions): void;
+  /** The coordinate under a canvas point of the latest drawn plot; null off the plot or before a frame. */
+  coordinateAt(point: Point): number | null;
   stats(): MonitorStats;
 }
 
@@ -107,7 +108,7 @@ export function createMonitor(gpu: Gpu, config: MonitorConfig): Monitor {
   return new MonitorView(gpu, config);
 }
 /** Style drawn into history pixels; the rest is composited, or changes no pixels at all. */
-const HISTORY = new Set<keyof Style>(['msaa']);
+const HISTORY = new Set<keyof Style>(['msaa', 'traceColor', 'traceWidthPx']);
 /** Style drawn into the focus image. */
 const FOCUS = new Set<keyof Style>(['selectedColor', 'selectedWidthPx']);
 /** A replacement for a new size waits until resizing pauses. */
@@ -119,7 +120,7 @@ interface Resolved {
   readonly limits: Required<Limits>;
   readonly style: Style;
 }
-/** The window and values that show readings: their coordinates and values, padded. */
+/** The camera that shows readings: their coordinates and values, padded. */
 function frameReadings(
   items: readonly MonitorItem[],
   camera: Camera,
@@ -140,12 +141,12 @@ function frameReadings(
       high = Math.max(high, value);
     }
   }
-  const half = (camera.window[1] - camera.window[0]) / 2;
+  const half = (camera.x[1] - camera.x[0]) / 2;
   return {
     ...(lo <= hi
-      ? { window: hi > lo ? expanded([lo, hi], padding) : ([lo - half, lo + half] as Domain) }
+      ? { x: hi > lo ? expanded([lo, hi], padding) : ([lo - half, lo + half] as Domain) }
       : {}),
-    ...(low <= high ? { values: expanded([low, high], padding) } : {}),
+    ...(low <= high ? { y: expanded([low, high], padding) } : {}),
   };
 }
 function includes(rows: RowAxis, row: number): boolean {
@@ -289,6 +290,8 @@ class MonitorView
   private resizeTimer?: ReturnType<typeof setTimeout>;
   private layout?: Axes;
   private layoutKey = '';
+  /** Axis labels by text: a tick that stays as the window moves keeps its glyphs. */
+  private readonly labels = new kit.TextBank({ label: 'monitor axes' });
   private shown?: Shown;
   private inspection?: {
     readonly point: Point;
@@ -307,13 +310,12 @@ class MonitorView
       name: 'monitor',
       records: ['traces'],
       merged: ['camera', 'input', 'limits'],
-      fields: FIELD_OPTIONS,
       options: Object.keys(DEFAULTS),
-      framed: ['values'],
+      framed: ['y'],
       modes: ['inspect', 'navigate', 'none'],
       style: VIEW_DEFAULTS,
     });
-    if (!config.camera?.window) fail('A monitor needs a camera window');
+    if (!config.camera?.x) fail('A monitor needs the coordinates its camera shows in x');
     this.start();
   }
   private get data(): MonitorData {
@@ -326,6 +328,12 @@ class MonitorView
     return this.resolved.limits;
   }
 
+  coordinateAt(point: Point): number | null {
+    const shown = this.shown;
+    return shown && onPlot(shown.plot, point)
+      ? plotCoordinate(shown.plot, shown.window, point[0])
+      : null;
+  }
   stats(): MonitorStats {
     return {
       ...super.stats(),
@@ -341,7 +349,7 @@ class MonitorView
     this.live();
     if (!items?.length) {
       const recorded = this.recorded();
-      if (recorded) this.moveCamera({ window: recorded }, options);
+      if (recorded) this.moveCamera({ x: recorded }, options);
     }
     super.fit(items, options);
   }
@@ -359,8 +367,8 @@ class MonitorView
     camera: Camera,
   ): Partial<Camera> | undefined {
     if (items) return frameReadings(items, camera, this.style.domainPadding);
-    const values = this.traces && this.extents.values(this.traces, camera.window);
-    return values ? { values: expanded(values, this.style.domainPadding) } : undefined;
+    const values = this.traces && this.extents.values(this.traces, camera.x);
+    return values ? { y: expanded(values, this.style.domainPadding) } : undefined;
   }
   protected interpolate(from: Camera, to: Camera, t: number): Camera {
     return mixCamera(from, to, t);
@@ -375,11 +383,7 @@ class MonitorView
     const shown = this.shown,
       { coordinate, value } = item as Partial<Reading>;
     if (!shown || coordinate === undefined || value === undefined) return null;
-    const { plot: p, window: x, values: y } = shown;
-    return [
-      p.x + ((coordinate - x[0]) / (x[1] - x[0])) * p.width,
-      p.y + ((y[1] - value) / (y[1] - y[0])) * p.height,
-    ];
+    return [plotX(shown.plot, shown.window, coordinate), plotY(shown.plot, shown.values, value)];
   }
   protected identify(item: MonitorItem): string {
     return JSON.stringify([
@@ -445,7 +449,7 @@ class MonitorView
       // Drawn frames stand: the next frame draws only what arrived. Traces named by field follow
       // the source; explicit bindings keep theirs.
       this.traces = this.traces!.map((trace) =>
-        typeof trace.trace.field === 'string' ? { ...trace, source: next.source } : trace,
+        typeof trace.trace.y === 'string' ? { ...trace, source: next.source } : trace,
       );
       // New observations change what lies under the pointer.
       this.refreshHover();
@@ -500,8 +504,8 @@ class MonitorView
       wanted: Transform = {
         width: Math.max(1, Math.ceil(area.width * frame.viewport.pixelRatio)),
         height: Math.max(1, Math.ceil(area.height * frame.viewport.pixelRatio)),
-        window: camera.window,
-        values: camera.values,
+        window: camera.x,
+        values: camera.y,
         generation: this.generation,
       };
     // Exports draw their own history, so they never replace what the view presents.
@@ -570,15 +574,16 @@ class MonitorView
       history.back && complete(history.back, traces, advanced)
         ? history.back
         : (history.front ?? history.back!);
-    const key = JSON.stringify([frame.viewport, camera.window, camera.values, this.style]);
+    const key = JSON.stringify([frame.viewport, camera.x, camera.y, this.style]);
     if (!this.layout || key !== this.layoutKey) {
       this.layout = await axes(
         this.gpu,
         frame.viewport,
-        camera.window,
-        camera.values,
+        camera.x,
+        camera.y,
         this.style,
         frame.signal,
+        this.labels,
       );
       this.layoutKey = key;
     }
@@ -591,8 +596,8 @@ class MonitorView
       pipeline,
       display,
       history.focus,
-      camera.window,
-      camera.values,
+      camera.x,
+      camera.y,
       this.layout,
       this.style,
       frame.at,
@@ -605,7 +610,7 @@ class MonitorView
       screen,
       paint: draws,
       advanced,
-      shown: { window: camera.window, values: camera.values, plot: this.layout.plot },
+      shown: { window: camera.x, values: camera.y, plot: this.layout.plot },
     };
   }
   /**
@@ -747,6 +752,8 @@ class MonitorView
     if (this.exportedHistory) destroySurface(this.exportedHistory);
     this.exportedHistory = undefined;
     this.shown = undefined;
+    this.layout = undefined;
+    this.labels.clear();
   }
 
   // ── History ──
@@ -760,7 +767,7 @@ class MonitorView
       const task = (async () => {
         const reads = this.gpu.reader.open({ signal });
         try {
-          const traces = await describeBindings(reads, data, this.camera.window);
+          const traces = await describeBindings(reads, data, this.camera.x);
           if (control.signal.aborted || this.closed) return;
           if (traces.reduce((n, trace) => n + trace.count, 0) > this.limits.rows)
             throw failure('resource-limit', 'Monitor row limit exceeded');
@@ -825,7 +832,7 @@ class MonitorView
   private recorded(): Domain | null {
     let recorded: Domain | null = null;
     for (const trace of Object.values(this.data.traces)) {
-      const main = binding(trace.field, this.data.source, trace.from);
+      const main = binding(trace.y, this.data.source, trace.from);
       if (main)
         recorded = mergeDomain(
           recorded,
@@ -848,8 +855,7 @@ class MonitorView
       traces = this.traces;
     if (!shown || !traces) return [];
     const p = shown.plot;
-    if (point[0] < p.x || point[0] > p.x + p.width || point[1] < p.y || point[1] > p.y + p.height)
-      return [];
+    if (!onPlot(p, point)) return [];
     signal?.throwIfAborted();
     // The latest answer at this point stands while the data and what is shown stand.
     const cached = this.inspection,
@@ -891,7 +897,7 @@ class MonitorView
     const config = this.config,
       sources = new Set([config.source]);
     for (const trace of Object.values(config.traces))
-      if (typeof trace.field === 'object') sources.add(trace.field.source);
+      if (typeof trace.y === 'object') sources.add(trace.y.source);
     for (const source of sources) {
       const table = source.tables[item.index?.type];
       if (table && sameIndex(table.index, item.index)) return table;

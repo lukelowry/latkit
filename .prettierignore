@@ -7,6 +7,8 @@ pnpm-lock.yaml
 packages/*/dist
 examples/*/dist
 .impeccable/
+.bench/
+benchmark/.results/
 
 output/
 .playwright-cli/

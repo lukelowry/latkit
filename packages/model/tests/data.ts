@@ -28,7 +28,6 @@ export const schema: Schema = {
         parent: { type: { kind: 'reference', to: 'Node' }, nullable: true },
         hub: { type: { kind: 'reference', to: 'Hub' }, direction: 'out' },
       },
-      spatial: { field: 'position', system: 'cartesian' },
     },
     Hub: { fields: {} },
     Settings: { fields: { value: { type: 'float64' } } },

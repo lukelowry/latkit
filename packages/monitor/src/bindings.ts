@@ -10,35 +10,52 @@ import {
   type FieldInput,
   type ReadScope,
 } from '@latkit/model';
-import type { MonitorData, TraceData as Trace } from './data.js';
+import type { MonitorData, Trace } from './data.js';
 import { domain, finite, fail } from './config.js';
+
+/** What a trace reads: its values, and its channels; colors and widths map over their extents. */
+const TRACE = {
+  y: 'raw',
+  color: 'color',
+  widthPx: [1, 4],
+  visible: 'raw',
+  shade: 'raw',
+} as const satisfies Readonly<Record<string, kit.ChannelKind>>;
+export type TraceChannel = keyof typeof TRACE;
 export interface Binding {
   readonly name: string;
   readonly trace: Trace;
   readonly source: Data;
+  /** The field the trace plots. */
   readonly field: string;
   readonly schema: Schema;
   readonly rows?: RowSelection;
   /** Rows the trace draws. */
   readonly count: number;
+  /** What one read of the trace requests: its values as `y`, and each channel's field. */
   readonly fields: Readonly<Record<string, FieldInput>>;
-  readonly colorDomain: Domain | null;
+  readonly bound: kit.BoundChannels<TraceChannel>;
+  /** Each channel ready to read; a color of the plotted field maps over the values axis. */
+  readonly channels: Readonly<Record<TraceChannel, kit.ResolvedChannel>>;
+  /** Whether the color follows the values axis rather than a domain of its own. */
+  readonly colorFollows: boolean;
 }
 export function validateData(data: MonitorData): void {
   if (!data.source?.schema || !data.source.tables) fail('Monitor requires materialized data');
   for (const [name, trace] of Object.entries(data.traces)) {
-    if (!name || !trace.from || !trace.field) fail('Trace requires a name, type and sampled field');
-    if (typeof trace.field !== 'string' && !('field' in trace.field))
+    if (!name || !trace.from || !trace.y) fail('Trace requires a name, type and sampled field');
+    if (typeof trace.y !== 'string' && !('field' in trace.y))
       fail('Trace requires a sampled field binding');
-    if (trace.baseColor) kit.validateRgba(trace.baseColor);
-    if (trace.widthPx !== undefined) finite(trace.widthPx, 'trace width', 0.1, 64);
     if (
       trace.interpolation &&
       !['linear', 'step-before', 'step-after'].includes(trace.interpolation)
     )
       fail('Invalid interpolation');
-    if (trace.color?.domain && Array.isArray(trace.color.domain))
-      domain(trace.color.domain as Domain);
+    const { channels } = kit.bindChannels(trace, TRACE),
+      { scale } = channels.color;
+    if (Array.isArray(scale?.domain)) domain(scale.domain as Domain);
+    if (typeof channels.widthPx.constant === 'number')
+      finite(channels.widthPx.constant, 'trace width', 0.1, 64);
   }
 }
 export function binding(input: FieldInput, source: Data, from: string): FieldBinding | undefined {
@@ -48,26 +65,17 @@ export function binding(input: FieldInput, source: Data, from: string): FieldBin
       ? input
       : undefined;
 }
-/** The traces as the monitor reads them; sampled color domains fit `window`. */
+/** The traces as the monitor reads them; sampled domains fit `window`. */
 export async function describeBindings(
   reads: ReadScope,
   data: MonitorData,
   window: Domain,
 ): Promise<Binding[]> {
-  const schemas = new Map<Data, Schema>();
-  const describe = (source: Data) => {
-    let schema = schemas.get(source);
-    if (!schema) {
-      schema = source.schema;
-      schemas.set(source, schema);
-    }
-    return schema;
-  };
   const result: Binding[] = [];
   for (const [name, trace] of Object.entries(data.traces)) {
-    const main = binding(trace.field, data.source, trace.from)!;
+    const main = binding(trace.y, data.source, trace.from)!;
     if (main.from !== trace.from) fail('Trace and field must belong to the same type');
-    const schema = describe(main.source),
+    const schema = main.source.schema,
       field = fields(schema, trace.from)[main.field];
     if (
       !field?.sampled ||
@@ -76,22 +84,19 @@ export async function describeBindings(
       fail('Trace field must be sampled numeric data');
     if (trace.rows && main.rows && JSON.stringify(trace.rows) !== JSON.stringify(main.rows))
       fail('Specify the trace row selection once');
-    let colorValue = false;
     // A field name reads the request's source, so a trace named by field follows appends.
-    const mapped: Record<string, FieldInput> = {
-      value: typeof trace.field === 'string' ? trace.field : { ...main, rows: undefined },
-    };
-    for (const [alias, input] of [
-      ['color', trace.color?.field],
-      ['visible', trace.visible],
-      ['shade', trace.shade],
-    ] as const) {
-      if (input == null) continue;
-      mapped[alias] = input;
+    const bound = kit.bindChannels(
+      { ...trace, y: typeof trace.y === 'string' ? trace.y : { ...main, rows: undefined } },
+      TRACE,
+    );
+    let colorFollows = false;
+    for (const alias of ['color', 'widthPx', 'visible', 'shade'] as const) {
+      const input = bound.channels[alias].field;
+      if (input === undefined) continue;
       const other = binding(input, data.source, trace.from);
       if (!other) continue;
       if (other.from !== trace.from) fail('Visual fields must use the trace type');
-      const definition = fields(describe(other.source), other.from)[other.field];
+      const definition = fields(other.source.schema, other.from)[other.field];
       if (!definition) fail('Unknown visual field ' + other.field);
       if (
         ![
@@ -103,33 +108,29 @@ export async function describeBindings(
         ].includes(definition.type as string)
       )
         fail('Visual fields must be scalar numeric data, or boolean visibility');
+      // Colored by what it plots, a trace colors over the values axis unless given a domain.
       if (alias === 'color')
-        colorValue = other.source === main.source && other.field === main.field && !other.rows;
-    }
-    let colorDomain: Domain | null = null;
-    const specified = trace.color?.domain;
-    if (specified && Array.isArray(specified)) colorDomain = specified as unknown as Domain;
-    else if (trace.color) {
-      const input = trace.color.field,
-        other = binding(input, data.source, trace.from);
-      const sampled = other
-        ? !!fields(describe(other.source), other.from)[other.field]?.sampled
-        : false;
-      if (!colorValue || (specified && typeof specified === 'object'))
-        colorDomain = await reads.extent({
-          source: data.source,
-          from: trace.from,
-          rows: trace.rows ?? main.rows,
-          field: input,
-          window: sampled
-            ? specified && typeof specified === 'object' && 'window' in specified
-              ? specified.window
-              : { kind: 'range', between: window }
-            : undefined,
-        });
+        colorFollows =
+          other.source === main.source &&
+          other.field === main.field &&
+          !other.rows &&
+          (bound.channels.color.scale?.domain ?? 'auto') === 'auto';
     }
     const rows = trace.rows ?? main.rows,
       table = main.source.tables[trace.from];
+    const own = colorFollows
+      ? {
+          ...bound,
+          channels: { ...bound.channels, color: { ...bound.channels.color, scale: undefined } },
+        }
+      : bound;
+    const channels = await kit.resolveChannels(
+      reads,
+      { source: data.source, from: trace.from, rows, window: { kind: 'range', between: window } },
+      own,
+      // The style's trace width stands in for a width each draw reads.
+      { y: NaN, visible: 1 },
+    );
     const count = !rows
       ? table
         ? rowCount(table.rows)
@@ -147,8 +148,10 @@ export async function describeBindings(
       schema,
       rows,
       count,
-      fields: mapped,
-      colorDomain,
+      fields: bound.fields,
+      bound,
+      channels,
+      colorFollows,
     });
   }
   return result;

@@ -3,11 +3,13 @@ import { createReader } from '@latkit/model';
 import type { Gpu } from '@latkit/gpu';
 import { arrange, layoutOptions, place, rootEnd } from '../src/layout.js';
 import { readScene } from '../src/read.js';
-import { geometry, orthogonal, contains, boundary } from '../src/geometry.js';
+import { geometry, contains, boundary, labelBox } from '../src/geometry.js';
 import { resolveStyle, resolveLimits } from '../src/config.js';
-import { data, edge as edgeOf, port, Source, measure } from './fixture.js';
+import { data, edge as edgeOf, port, Source, layoutText } from './fixture.js';
 /** Arrangement only reads and measures text. */
-const gpu = { reader: createReader(), measureText: measure } as unknown as Gpu;
+const gpu = { reader: createReader(), layoutText } as unknown as Gpu;
+import { Routing } from '../src/route.js';
+import { rect, itemAt, itemSlots } from '../src/scene.js';
 import { Picking } from '../src/picking.js';
 async function scene(source = new Source(), position = false) {
   const reader = gpu.reader.open();
@@ -17,7 +19,7 @@ async function scene(source = new Source(), position = false) {
       reader,
       resolveStyle(),
       resolveLimits(),
-      measure,
+      layoutText,
     );
     await place(result, layoutOptions(), 8, reader.signal);
     await geometry(result, resolveStyle(), resolveLimits(), reader.signal);
@@ -32,8 +34,8 @@ it('arranges native rows deterministically without GPU or DOM', async () => {
   const a = await arrange(gpu, config),
     b = await arrange(gpu, config);
   expect(a).toEqual(b);
-  expect(a.Task.index).toEqual(source.index('Task'));
-  expect(a.Task.values.kind).toBe('vector');
+  expect(a.Task.x.index).toEqual(source.index('Task'));
+  expect(a.Task.y.values.kind).toBe('numeric');
   const result = await scene(source);
   for (let i = 0; i < result.vertices.length; i++)
     for (let j = i + 1; j < result.vertices.length; j++) {
@@ -47,6 +49,22 @@ it('arranges native rows deterministically without GPU or DOM', async () => {
       ).toBe(true);
     }
 });
+it('numbers vertices, ports, edges, and groups in disjoint scene slots', async () => {
+  const result = await scene();
+  const slots = itemSlots(result);
+  expect(new Set(slots.values()).size).toBe(result.slots.count);
+  for (let i = 0; i < result.slots.count; i++) expect(itemAt(result, i)).not.toBeNull();
+  result.vertices.forEach((vertex, i) => {
+    expect(itemAt(result, i)).toBe(vertex.hit);
+    vertex.ports.forEach((port, j) =>
+      expect(itemAt(result, vertex.portSlot + j)).toMatchObject({
+        kind: 'port',
+        row: vertex.row,
+        port: port.name,
+      }),
+    );
+  });
+});
 it('joins every port whose reference names a net', async () => {
   const source = new Source(5);
   source.ends = [
@@ -59,7 +77,7 @@ it('joins every port whose reference names a net', async () => {
   expect(result.edges[0].ends.map((e) => e.vertex)).toEqual([0, 1, 2, 3, 4]);
   expect(result.edges[0].ends.map((e) => e.direction)).toEqual(['out', 'in', 'in', 'in', 'in']);
   expect(result.edges[0].ends.slice(1).every((e) => e.port === 'input')).toBe(true);
-  expect(result.edges[0].arrows).toHaveLength(4);
+  expect(result.edges[0].arrows).toHaveLength(0);
 });
 it('draws each row between the vertices its two references name', async () => {
   const source = new Source(3),
@@ -71,7 +89,7 @@ it('draws each row between the vertices its two references name', async () => {
       reader,
       resolveStyle(),
       resolveLimits(),
-      measure,
+      layoutText,
     );
     await place(result, layoutOptions(), 8, reader.signal);
     await geometry(result, resolveStyle(), resolveLimits(), reader.signal);
@@ -112,7 +130,7 @@ it('honors sparse row selections and returns physical row identities', async () 
     ...d,
     vertices: { Task: { rows: { kind: 'ids', ids: ['n3', 'n1'] }, labels: 'name' } },
   });
-  expect(result.Task.rows).toEqual({ kind: 'indices', values: Uint32Array.of(3, 1) });
+  expect(result.Task.x.rows).toEqual({ kind: 'indices', values: Uint32Array.of(3, 1) });
 });
 it('handles cycles and self-loops', async () => {
   const source = new Source(4);
@@ -137,15 +155,21 @@ it('handles cycles and self-loops', async () => {
   const result = await scene(source);
   expect(result.edges.every((e) => e.paths.length > 0)).toBe(true);
 });
-it('routes around obstacles', () => {
-  const path = orthogonal([0, 0], [200, 0], [[80, -30, 120, 30]], 16, new AbortController().signal);
+it('routes around obstacles', async () => {
+  const result = await scene(new Source(1), true),
+    [x0, y0, x1, y1] = rect(result.vertices[0]),
+    y = (y0 + y1) / 2;
+  const path = new Routing(result, resolveStyle(), new AbortController().signal).between(
+    [x0 - 60, y],
+    [x1 + 60, y],
+  );
   expect(path.length).toBeGreaterThan(2);
   for (let i = 1; i < path.length; i++) {
     const a = path[i - 1],
       b = path[i];
     expect(a[0] === b[0] || a[1] === b[1]).toBe(true);
-    if (a[1] === b[1] && Math.min(a[0], b[0]) < 120 && Math.max(a[0], b[0]) > 80)
-      expect(Math.abs(a[1])).toBeGreaterThanOrEqual(30);
+    if (a[1] === b[1] && Math.min(a[0], b[0]) < x1 && Math.max(a[0], b[0]) > x0)
+      expect(a[1] <= y0 || a[1] >= y1).toBe(true);
   }
 });
 it('uses identical geometry for shape boundaries and picking', async () => {
@@ -176,8 +200,13 @@ it('supports headless custom layout and routing strategies', async () => {
       algorithm: { arrange: (graph) => graph.vertices.map((_, i) => [i * 500, 123] as const) },
     },
   });
-  expect(result.Task.values.kind === 'vector' && [...result.Task.values.values.values]).toEqual([
-    0, 123, 500, 123,
+  const lane = (axis: 'x' | 'y') => {
+    const values = result.Task[axis].values;
+    return values.kind === 'numeric' ? [...values.values] : [];
+  };
+  expect([lane('x'), lane('y')]).toEqual([
+    [0, 500],
+    [123, 123],
   ]);
 });
 it('bounds memory and honors cancellation', async () => {
@@ -213,7 +242,7 @@ it('collapses groups into proxies for their external ends', async () => {
         },
       },
     };
-    const result = await readScene(d, reader, resolveStyle(), resolveLimits(), measure);
+    const result = await readScene(d, reader, resolveStyle(), resolveLimits(), layoutText);
     await place(result, layoutOptions(), 8, reader.signal);
     await geometry(result, resolveStyle(), resolveLimits(), reader.signal);
     expect(result.vertices.map((n) => n.visible)).toEqual([false, false, true]);
@@ -244,10 +273,10 @@ it('keeps labels apart when a net fans out beside other edges', async () => {
       const a = result.edges[i],
         b = result.edges[j];
       if (!a.paths.length || !b.paths.length) continue;
-      const ax = a.anchor[0] + 4,
-        ay = a.anchor[1] - a.label.height - 4,
-        bx = b.anchor[0] + 4,
-        by = b.anchor[1] - b.label.height - 4;
+      const ax = a.labels[0][0],
+        ay = a.labels[0][1],
+        bx = b.labels[0][0],
+        by = b.labels[0][1];
       expect(
         ax + a.label.width <= bx ||
           bx + b.label.width <= ax ||
@@ -336,11 +365,11 @@ it('orients flow toward targets even when a wire runs left', async () => {
   source.xy = Float64Array.of(400, 0, 0, 160);
   const result = await scene(source, true),
     edge = result.edges[0];
-  const start = result.vertices[0].ports.find((port) => port.name === 'output')!.position;
+  const port = result.vertices[0].ports.find((port) => port.name === 'output')!;
+  const start = port.position.map((v, i) => v + (port.normal[i] * resolveStyle().portSize) / 2);
   const first = edge.paths[edge.offsets.indexOf(0)];
   expect(first[0]).toEqual(start);
-  const left = edge.paths.find((path) => path[0][0] > path[1][0]);
-  expect(left).toBeDefined();
+  expect(edge.paths.some((path) => path.some((p, i) => i > 0 && path[i - 1][0] > p[0]))).toBe(true);
   expect(edge.offsets.every((distance) => distance >= 0)).toBe(true);
 });
 it('reconnects a wired input from the source of its net and rejects duplicate ends', async () => {
@@ -357,7 +386,7 @@ it('reconnects a wired input from the source of its net and rejects duplicate en
   const gesture = new ConnectSession(
     result,
     { ...result.vertices[1].hit, kind: 'port', port: 'input' },
-    16,
+    resolveStyle(),
   );
   expect(gesture.start.from).toEqual(port(source, 'n0', 'output'));
   expect(gesture.start.replaces).toEqual({
@@ -367,9 +396,11 @@ it('reconnects a wired input from the source of its net and rejects duplicate en
   expect(gesture.accepts(port(source, 'n2', 'input'))).toBe(false);
   expect(gesture.accepts(port(source, 'n3', 'input'))).toBe(true);
   expect(gesture.accepts(port(source, 'n3', 'output'))).toBe(false);
-  const preview = gesture.preview([400, 200], null, new AbortController().signal);
+  // The preview leaves its port where a routed wire does.
+  const preview = gesture.preview([400, 200], null, new AbortController().signal),
+    out = result.vertices[0].ports.find((port) => port.name === 'output')!;
   expect(preview[0]).toEqual(
-    result.vertices[0].ports.find((port) => port.name === 'output')!.position,
+    out.position.map((v, i) => v + (out.normal[i] * resolveStyle().portSize) / 2),
   );
 });
 
@@ -386,7 +417,7 @@ it('picks nearest first, the topmost item breaking ties', async () => {
   const on = picking.hit([200, 150], camera, viewport, 8).map((hit) => hit.kind);
   expect(on[0]).toBe('port');
   expect(on.indexOf('vertex')).toBeLessThan(on.indexOf('edge'));
-  expect(picking.nearest([200, 150], camera, viewport, 8, true, () => {})?.kind).toBe('port');
+  expect(picking.nearest([200, 150], camera, viewport, 8, true, () => {}, 1.5)?.kind).toBe('port');
   expect(picking.hit([200, 150], camera, viewport, 8, false)[0].kind).not.toBe('port');
 });
 it('rejects unknown limits', async () => {
@@ -395,19 +426,19 @@ it('rejects unknown limits', async () => {
   ).rejects.toMatchObject({ code: 'invalid-input' });
   expect(resolveLimits({ layoutMs: 5 }).layoutMs).toBe(5);
 });
-it('expands field shorthands for headless arrangement', async () => {
+it('arranges headlessly with channels bound to fields', async () => {
   const source = new Source(3),
     d = data(source);
   const result = await arrange(gpu, {
     ...d,
     vertices: { Task: { labels: 'name', color: 'weight', ports: { input: { color: 'weight' } } } },
   });
-  expect(result.Task.rows).toEqual({ kind: 'indices', values: Uint32Array.of(0, 1, 2) });
+  expect(result.Task.y.rows).toEqual({ kind: 'indices', values: Uint32Array.of(0, 1, 2) });
 });
 it('picks edge labels using their rendered bounds', async () => {
   const result = await scene(),
     edge = result.edges[0],
-    box = edge.labelBounds[0];
+    box = labelBox(edge, edge.labels[0]);
   const picking = new Picking(result, resolveLimits().pickingBytes);
   const hit = picking.hit(
     [50, 50],

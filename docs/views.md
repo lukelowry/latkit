@@ -41,11 +41,12 @@ gestures, such as dragging.
 - Keyed records (`vertices`, `edges`, `paths`, `traces`, `groups`) merge per entry, then per option.
 - `camera`, `input`, `limits`, and `layout` merge per option.
 - `null` removes an entry or resets an option. Any other value replaces.
-- A field name stands for that field with defaults: `color: 'load'` is `color: { field: 'load' }`.
+- A channel such as `color`, `x`, or `widthPx` takes one value, a field name, or a scale; see
+  [data bindings](topology-and-channels.md#channels).
 
 ```ts
 network.set({
-  vertices: { Bus: { sizePx: { field: 'capacity', range: [3, 12] } } },
+  vertices: { Bus: { radiusPx: { field: 'capacity', range: [3, 12] } } },
   paths: { Border: null },
   edgeWidthPx: 2,
 });
@@ -62,19 +63,21 @@ config; the camera lives on `view.camera`.
 
 Every item view takes the same style options, with one set of defaults in `viewStyle`:
 
-| Option                            | Default                  |                                                         |
-| --------------------------------- | ------------------------ | ------------------------------------------------------- |
-| `background`                      | dark blue-gray           |                                                         |
-| `msaa`                            | `4`                      | monitor `1`: its history images would cost 4×           |
-| `hover`, `hoverBudgetMs`          | `'auto'`, `2`            | `auto` searches within the budget once motion stops     |
-| `pickRadiusPx`                    | `8`                      |                                                         |
-| `fitPaddingPx`, `revealPaddingPx` | `32`, `48`               |                                                         |
-| `animationMs`, `motion`           | `300`, `'auto'`          | monitor `0`; `auto` follows reduced motion              |
-| `hoverColor`, `selectedColor`     | amber, orange            | monitor `null`, keeping trace colors; it draws no hover |
-| `hoverWidthPx`, `selectedWidthPx` | `3`, `3`                 |                                                         |
-| `font`, `fontSizePx`, `textColor` | `system-ui`, `12`, light | monitor uses a monospace font                           |
+| Option                            | Default                  |                                                                                   |
+| --------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
+| `background`                      | dark blue-gray           |                                                                                   |
+| `msaa`                            | `4`                      | monitor `1`: its history images would cost 4×; diagram `1`: its shaders antialias |
+| `hover`, `hoverBudgetMs`          | `'auto'`, `2`            | `auto` searches within the budget once motion stops                               |
+| `pickRadiusPx`                    | `8`                      |                                                                                   |
+| `fitPaddingPx`, `revealPaddingPx` | `32`, `48`               |                                                                                   |
+| `animationMs`, `motion`           | `300`, `'auto'`          | monitor `0`; `auto` follows reduced motion                                        |
+| `hoverColor`, `selectedColor`     | amber, orange            | monitor `'none'`, keeping trace colors; it draws no hover                         |
+| `hoverWidthPx`, `selectedWidthPx` | `3`, `3`                 |                                                                                   |
+| `font`, `fontSizePx`, `textColor` | `system-ui`, `12`, light | monitor uses a monospace font                                                     |
 
-Each view adds its own options, such as a network's `edgeWidthPx` or a monitor's `valueAxis`.
+Each view adds its own options, such as a network's `edgeWidthPx` or a monitor's `yAxis`. Padding
+takes one number or `[top, right, bottom, left]`. `null` in a config or a patch always means unset,
+which restores the default.
 
 ## Camera
 

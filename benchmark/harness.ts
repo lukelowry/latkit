@@ -30,7 +30,6 @@ export const schema: Schema = {
         load: { type: 'float32' },
         voltage: { type: 'float32', sampled: true },
       },
-      spatial: { field: 'position', system: 'cartesian' },
     },
     Branch: {
       fields: {
@@ -195,12 +194,27 @@ const rasterizer: TextRasterizer = {
     descent: 0.2,
   }),
 };
-export function gpu(): Promise<Gpu> {
-  return createGpu({
+const rasterizations = new WeakMap<Gpu, () => number>();
+export async function gpu(): Promise<Gpu> {
+  let count = 0;
+  const device = await createGpu({
     device: nullDevice(),
-    text: { rasterizer },
+    text: {
+      rasterizer: {
+        rasterize: (input, options) => {
+          count++;
+          return rasterizer.rasterize(input, options);
+        },
+      },
+    },
     budget: { cpuBytes: 512 * 1024 ** 2, gpuBytes: 2 * 1024 ** 3, entries: 100_000 },
   });
+  rasterizations.set(device, () => count);
+  return device;
+}
+/** Work is scoped to each benchmark GPU, including its text rasterizer. */
+export function counters(device: Gpu) {
+  return { ...device.stats(), rasterized: rasterizations.get(device)?.() ?? 0 };
 }
 
 const surfaces = new WeakMap<Gpu, kit.RenderTarget>();
@@ -261,6 +275,7 @@ const COUNTERS = [
   'submissions',
   'evictions',
   'stagedBytes',
+  'rasterized',
 ] as const;
 type Counters = Partial<Record<(typeof COUNTERS)[number], number>>;
 const work: Record<string, Record<string, number>> = {};

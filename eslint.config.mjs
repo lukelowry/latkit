@@ -17,6 +17,8 @@ export default defineConfig([
       'output/**',
       'packages/monitor/tests/browser/generated/**',
       '.playwright-cli/**',
+      '.bench/**',
+      'benchmark/.results/**',
     ],
   },
   {

@@ -1,6 +1,6 @@
 import { failure, textAt, bitAt, assertIndex, rowAt, rowCount, type Data } from '@latkit/model';
-import { type Gpu, kit, type TextMetrics } from '@latkit/gpu';
-import type { NetworkData, NetworkLabels as LabelOptions } from '../data.js';
+import { type Gpu, kit, type TextLayout } from '@latkit/gpu';
+import type { NetworkData, NetworkLabels } from '../data.js';
 import {
   edgeOptions,
   vertexOptions,
@@ -17,38 +17,33 @@ export interface LabelBatch {
   readonly anchors: kit.BufferData;
 }
 interface Entry {
-  options: LabelOptions;
-  /** The style's text defaults the runs were built with. */
+  /** The labels option as configured: a field name, or labels. */
+  options: string | NetworkLabels;
+  /** The style's text defaults the layouts were built with. */
   defaults: readonly unknown[];
   revision: number;
   source: Data;
-  runsByRow: Map<number, { run: kit.TextRun; metrics: TextMetrics }>;
-  runs: readonly kit.TextRun[];
-  anchors: kit.BufferData;
+  /** Each row's text, laid out once. */
+  layouts: Map<number, TextLayout>;
+  /** The rows' runs, laid into pages once; each frame moves and hides only their anchors. */
+  bank: kit.TextBank;
 }
-/** Shared collision grid for vertex, edge, and path labels. */
-class Occupancy {
-  private cells = new Map<string, (readonly number[])[]>();
-  place(box: readonly number[]): boolean {
-    const keys: string[] = [];
-    for (let y = Math.floor(box[1] / 64); y <= Math.floor(box[3] / 64); y++)
-      for (let x = Math.floor(box[0] / 64); x <= Math.floor(box[2] / 64); x++) {
-        const key = x + ':' + y;
-        keys.push(key);
-        if (
-          this.cells
-            .get(key)
-            ?.some((b) => b[0] < box[2] && b[2] > box[0] && b[1] < box[3] && b[3] > box[1])
-        )
-          return false;
-      }
-    for (const key of keys) {
-      const cell = this.cells.get(key) ?? [];
-      cell.push(box);
-      this.cells.set(key, cell);
-    }
-    return true;
-  }
+/** Room between a marker and its label. */
+const GAP = 4;
+/** Around a marker of radius `r`, best first: right, left, above, below. */
+function around(p: Projected, r: number): kit.TextCandidate[] {
+  return [
+    [p.x + r + GAP, p.y, 'start', 'middle'],
+    [p.x - r - GAP, p.y, 'end', 'middle'],
+    [p.x, p.y - r - GAP, 'center', 'bottom'],
+    [p.x, p.y + r + GAP, 'center', 'top'],
+  ];
+}
+interface Candidate {
+  readonly row: number;
+  readonly p: Projected;
+  /** A marker's radius; zero for a line's label, which centers on its anchor. */
+  readonly r: number;
 }
 export class Labels {
   private cache = new WeakMap<object, Entry>();
@@ -65,7 +60,7 @@ export class Labels {
     style: Style,
   ): Promise<readonly LabelBatch[]> {
     const batches: LabelBatch[] = [],
-      occupied = new Occupancy(),
+      occupied = new kit.Occupancy(),
       counts = new Map<string, number>(),
       totals = new Map<string, number>();
     const banks: (VertexBank | EdgeBank)[] = [
@@ -78,16 +73,32 @@ export class Labels {
       const key = kind(bank) + ':' + bank.type;
       totals.set(key, (totals.get(key) ?? 0) + bank.count);
     }
+    // Candidates and their text first: markers claim their room before any label is placed.
+    const pending: {
+      key: string;
+      entry: Entry;
+      candidates: Candidate[];
+      max: number;
+      repeat: number;
+    }[] = [];
     for (const bank of banks) {
       const edge = 'batches' in bank,
         type = kind(bank),
         key = type + ':' + bank.type;
-      const config = edge ? edgeOptions(data, bank) : vertexOptions(data, bank),
-        options = config.labels;
-      if (!options || (!edge && !style.markers) || (edge && !style.lines)) continue;
+      const configured = (edge ? edgeOptions(data, bank) : vertexOptions(data, bank)).labels,
+        options = kit.resolveLabels(configured);
+      if (!configured || !options || (!edge && !style.markers) || (edge && !style.lines)) continue;
       const max = options.maxCount ?? 200,
-        size = options.sizePx ?? style.fontSizePx;
-      if (!Number.isSafeInteger(max) || max < 0 || !Number.isFinite(size) || size <= 0)
+        size = options.fontSizePx ?? style.fontSizePx,
+        repeat = options.repeatSpacingPx ?? 0;
+      if (
+        !Number.isSafeInteger(max) ||
+        max < 0 ||
+        !Number.isFinite(size) ||
+        size <= 0 ||
+        !Number.isFinite(repeat) ||
+        repeat < 0
+      )
         throw failure('invalid-input', 'Invalid label options');
       const count = Math.min(
         bank.count,
@@ -100,23 +111,23 @@ export class Labels {
       const defaults = [style.font, style.fontSizePx, style.textColor];
       if (
         !entry ||
-        entry.options !== options ||
+        entry.options !== configured ||
         entry.source !== source ||
         entry.revision !== revision ||
         entry.defaults.some((value, i) => value !== defaults[i])
       ) {
         entry = {
-          options,
+          options: configured,
           defaults,
           source,
           revision,
-          runsByRow: new Map(),
-          runs: [],
-          anchors: new kit.BufferData({ size: 16, label: 'network label anchors' }),
+          layouts: new Map(),
+          bank: new kit.TextBank({ label: 'network labels' }),
         };
         this.cache.set(bank.rows, entry);
       }
-      const candidates: { row: number; offset: number; p: Projected; dx: number }[] = [];
+      entry.bank.hide();
+      const candidates: Candidate[] = [];
       // Geometry determines candidates before text is queried; offscreen labels cost no text IO.
       for (let i = 0; i < count; i++) {
         const offset = Math.floor((i * bank.count) / count),
@@ -129,15 +140,7 @@ export class Labels {
               frame.viewport,
               height,
             )
-          : picking.projected(
-              bank,
-              offset,
-              camera,
-              frame.viewport,
-              height,
-              config,
-              style.vertexRadiusPx,
-            );
+          : picking.projected(bank, offset, camera, frame.viewport, height, style.vertexRadiusPx);
         if (
           !p?.visible ||
           p.x < 0 ||
@@ -148,19 +151,19 @@ export class Labels {
           continue;
         candidates.push({
           row,
-          offset,
           p,
-          dx: edge ? 0 : ('radius' in p ? (p.radius as number) : style.vertexRadiusPx) + 4,
+          r: edge ? 0 : 'radius' in p ? (p.radius as number) : style.vertexRadiusPx,
         });
       }
-      const missing = candidates.filter((c) => !entry!.runsByRow.has(c.row));
+      const missing = candidates.filter((c) => !entry.layouts.has(c.row));
       if (missing.length) {
-        // Bound retained strings/runs as the view moves; the shared atlas owns glyph resources.
-        if (entry.runsByRow.size + missing.length > count * 4) {
-          entry.runsByRow.clear();
+        // Bound retained strings and runs as the view moves; the shared atlas owns glyphs.
+        if (entry.layouts.size + missing.length > count * 4) {
+          entry.layouts.clear();
+          entry.bank.clear();
           missing.splice(0, missing.length, ...candidates);
         }
-        const lookup = new Map(candidates.map((c) => [c.row, c]));
+        const wanted = new Set(missing.map((c) => c.row));
         for await (const block of frame.reader.fields({
           source,
           from: bank.type,
@@ -176,53 +179,47 @@ export class Labels {
           if (column?.kind !== 'text') throw failure('invalid-input', 'Labels require text fields');
           for (let i = 0; i < rowCount(block.rows); i++) {
             const row = rowAt(block.rows, i);
-            if (!lookup.has(row)) throw failure('invalid-input', 'Unexpected label row');
+            if (!wanted.has(row)) throw failure('invalid-input', 'Unexpected label row');
             const text = bitAt(block.presence.label, i) ? (textAt(column, i) ?? '') : '';
-            const run: kit.TextRun = {
-              text,
-              font: options.font ?? style.font,
-              size,
-              color: options.color ?? style.textColor,
-              position: [0, 4],
-              anchor: entry.runsByRow.size,
-            };
-            entry.runsByRow.set(row, {
-              run,
-              metrics: await gpu.measureText(run, { signal: frame.signal }),
-            });
+            entry.layouts.set(
+              row,
+              await gpu.layoutText(
+                {
+                  text,
+                  font: options.font ?? style.font,
+                  size,
+                  color: options.color ?? style.textColor,
+                },
+                { signal: frame.signal },
+              ),
+            );
           }
         }
-        entry.runs = [...entry.runsByRow.values()].map((v) => v.run);
-        entry.anchors.resize(Math.max(16, entry.runs.length * 16));
       }
-      const anchors = new Float32Array(Math.max(4, entry.runs.length * 4));
-      for (const candidate of candidates) {
+      pending.push({ key, entry, candidates, max, repeat });
+    }
+    // A marker claims its room, so no label covers a vertex it does not name.
+    for (const { candidates } of pending)
+      for (const { p, r } of candidates)
+        if (r > 0) occupied.add([p.x - r, p.y - r, p.x + r, p.y + r]);
+    for (const { key, entry, candidates, max, repeat } of pending) {
+      const named = new Map<string, Projected[]>();
+      for (const { row, p, r } of candidates) {
         if ((counts.get(key) ?? 0) >= max) break;
-        const text = entry.runsByRow.get(candidate.row);
-        if (!text?.run.text) continue;
-        const { metrics, run } = text,
-          { p } = candidate;
-        const x = p.x + candidate.dx,
-          box = [
-            x - 2,
-            p.y + 2 - metrics.ascent * size,
-            x + metrics.advance * size + 2,
-            p.y + 6 + metrics.descent * size,
-          ];
-        if (
-          !box.every(Number.isFinite) ||
-          box[0] < 0 ||
-          box[1] < 0 ||
-          box[2] > frame.viewport.width ||
-          box[3] > frame.viewport.height ||
-          !occupied.place(box)
-        )
-          continue;
-        anchors.set([x, p.y, Math.max(0, p.depth - 0.000001), 1], run.anchor! * 4);
+        const layout = entry.layouts.get(row);
+        if (!layout?.runs.length) continue;
+        const text = layout.runs[0].text,
+          twins = repeat > 0 ? (named.get(text) ?? []) : undefined;
+        if (twins?.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < repeat)) continue;
+        const spots: readonly kit.TextCandidate[] =
+          r > 0 ? around(p, r) : [[p.x, p.y, 'center', 'middle']];
+        const depth = Math.max(0, p.depth - 0.000001);
+        if (!entry.bank.place(row, layout, spots, occupied, { margin: 2, depth })) continue;
         counts.set(key, (counts.get(key) ?? 0) + 1);
+        if (twins) named.set(text, [...twins, p]);
       }
-      entry.anchors.write({ data: anchors });
-      if (entry.runs.length) batches.push({ runs: entry.runs, anchors: entry.anchors });
+      for (const page of entry.bank.flush())
+        if (page.runs.length) batches.push({ runs: page.runs, anchors: page.anchors });
     }
     return batches;
   }

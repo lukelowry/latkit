@@ -1,7 +1,7 @@
 import { describe } from 'vitest';
 import { appendData } from '@latkit/model';
 import { createMonitor, type MonitorConfig } from '@latkit/monitor';
-import { draw, frames, gpu, grid, suite, voltages } from './harness.ts';
+import { counters, draw, frames, gpu, grid, suite, voltages } from './harness.ts';
 
 /** A trace per row: monitors scale with the rows they draw. */
 describe.each([100, 1_000, 10_000])('monitor %i rows', async (rows) => {
@@ -10,12 +10,12 @@ describe.each([100, 1_000, 10_000])('monitor %i rows', async (rows) => {
   // A fixed window with room for the stream, as a run that declares its domain uses.
   const config: MonitorConfig = {
     source: data,
-    traces: { voltage: { from: 'Bus', field: 'voltage' } },
-    camera: { window: [0, frames * 4] },
+    traces: { voltage: { from: 'Bus', y: 'voltage' } },
+    camera: { x: [0, frames * 4] },
   };
   const view = createMonitor(device, config);
   await draw(device, view, 0, 'complete');
-  const measure = suite(`monitor ${rows} rows`, rows, () => device.stats(), 12);
+  const measure = suite(`monitor ${rows} rows`, rows, () => counters(device), 12);
   measure('first frame', async () => {
     const fresh = createMonitor(device, config);
     await draw(device, fresh, 0, 'complete');
@@ -34,7 +34,7 @@ describe.each([100, 1_000, 10_000])('monitor %i rows', async (rows) => {
   });
   // A new window redraws history behind the shown image.
   measure('change window', async (i) => {
-    view.set({ camera: { window: [0, frames * 4 + 1 + (i % 2)] } });
+    view.set({ camera: { x: [0, frames * 4 + 1 + (i % 2)] } });
     await draw(device, view, 0, 'complete');
   });
 });

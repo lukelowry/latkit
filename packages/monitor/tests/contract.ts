@@ -11,13 +11,13 @@ export function usage(
     canvas,
     at: 5,
     source: recording,
-    traces: { temperature: { from: 'node', field: 'temperature', color } },
-    camera: { window: [0, 10] },
-    valueAxis: 'Temperature',
+    traces: { temperature: { from: 'node', y: 'temperature', color } },
+    camera: { x: [0, 10] },
+    yAxis: 'Temperature',
     hover: 'auto',
   });
   monitor.on('select', (readings) => monitor.fit(readings, { animate: true }));
-  monitor.set({ camera: { window: [5, 15] }, traces: { temperature: { color: 'temperature' } } });
+  monitor.set({ camera: { x: [5, 15] }, traces: { temperature: { color: 'temperature' } } });
   // @ts-expect-error Frame preparation stays inside the view.
   void monitor.prepare;
   // @ts-expect-error Sources are borrowed, never closed by a view.

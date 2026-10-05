@@ -42,6 +42,13 @@ export function worldPoint(
     camera.center[1] + (direction(camera) * (point[1] - viewport.height / 2)) / camera.scale[1],
   ];
 }
+/** Top, right, bottom, and left of an inset; throws on a negative or nonfinite side. */
+export function insetSides(padding: Insets): readonly [number, number, number, number] {
+  const p = typeof padding === 'number' ? [padding, padding, padding, padding] : padding;
+  if (!Array.isArray(p) || p.length !== 4 || !p.every((v) => Number.isFinite(v) && v >= 0))
+    throw failure('invalid-input', 'Invalid padding');
+  return p as unknown as readonly [number, number, number, number];
+}
 export function fitCamera(
   bounds: Bounds2D,
   viewport: Pick<Viewport, 'width' | 'height'>,
@@ -51,13 +58,11 @@ export function fitCamera(
     readonly yDirection?: Camera2D['yDirection'];
   } = {},
 ): Camera2D {
-  const p = typeof padding === 'number' ? [padding, padding, padding, padding] : padding;
+  const p = insetSides(padding);
   if (
     !bounds.every(Number.isFinite) ||
     bounds[2] < bounds[0] ||
     bounds[3] < bounds[1] ||
-    p.length !== 4 ||
-    !p.every((v) => Number.isFinite(v) && v >= 0) ||
     ![viewport.width, viewport.height].every((v) => Number.isFinite(v) && v > 0)
   )
     throw failure('invalid-input', 'Invalid camera bounds, viewport, or padding');

@@ -216,6 +216,8 @@ class CompositionView extends BaseView<
     { texture: GPUTexture; view: GPUTextureView; group: GPUBindGroup } | undefined
   )[] = [];
   private captures: CapturedFrame[] = [];
+  /** Each panel renderer's memo slots, kept apart from a sibling's of the same kind. */
+  private readonly slots = new WeakMap<Renderer, Map<unknown, object>>();
   /** The canvas whose input the panels receive, while one is attached. */
   private canvas?: HTMLCanvasElement;
   constructor(gpu: Gpu, config: CompositionConfig) {
@@ -388,7 +390,7 @@ class CompositionView extends BaseView<
     const results = await Promise.allSettled(
       layouts.map(({ info }, i) =>
         this.captures[i].prepare({
-          ...frame,
+          ...this.scoped(frame, this.panels[i].renderer),
           ...info,
           // The same shared uniform layout, with the panel's actual viewport.
           shade: (request = {}) => frame.uniforms(shadeUniforms(request, info)),
@@ -404,6 +406,24 @@ class CompositionView extends BaseView<
       ...layout,
       candidate: (results[i] as PromiseFulfilledResult<PreparedFrame>).value,
     }));
+  }
+  /** A frame whose memos, and theirs in turn, are one panel renderer's own. */
+  private scoped(frame: Preparation, renderer: Renderer): Preparation {
+    let slots = this.slots.get(renderer);
+    if (!slots) this.slots.set(renderer, (slots = new Map<unknown, object>()));
+    const own = slots;
+    const key = (slot: unknown) => {
+      let found = own.get(slot);
+      if (!found) own.set(slot, (found = { slot }));
+      return found;
+    };
+    return {
+      ...frame,
+      memo: (slot, deps, build) =>
+        frame.memo(key(slot), deps, (inner, previous) =>
+          build(this.scoped(inner, renderer), previous),
+        ),
+    };
   }
   private async compositor(format: GPUTextureFormat): Promise<GPURenderPipeline> {
     if (this.pipeline && this.format === format) return this.pipeline;

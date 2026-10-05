@@ -67,7 +67,7 @@ export async function show() {
       if (item.anchor != 0u) { position.x += sin(view.phase) * 6.0; }
       return Vertex(vec4f(position / view.size * vec2f(2,-2) + vec2f(-1,1),0,1), item.uv, item.color);
     }
-    @fragment fn fs(input: Vertex) -> @location(0) vec4f { return textColor(input.uv,input.color); }
+    @fragment fn fs(input: Vertex) -> @location(0) vec4f { return textColor(input.uv,input.color,vec4f(0),0.0); }
   `,
   });
   const blend = {

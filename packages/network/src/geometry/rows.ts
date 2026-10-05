@@ -1,20 +1,14 @@
-import { failure, rowCount, rowAt } from '@latkit/model';
-import type { Column, FieldsBlock, Index, RowAxis } from '@latkit/model';
-export function bit(bytes: Uint8Array | undefined, index: number): boolean {
-  return !bytes || !!(bytes[index >>> 3] & (1 << (index & 7)));
-}
+import { bitAt, failure } from '@latkit/model';
+import type { Column, Index, RowAxis } from '@latkit/model';
 export function value(column: Column | undefined, row: number, component = 0): number {
   if (!column || row < 0 || row >= column.length) return NaN;
   const at = column.offset + row;
-  if (!bit(column.validity, at)) return NaN;
+  if (!bitAt(column.validity, at)) return NaN;
   if (column.kind === 'numeric') return column.values[at];
-  if (column.kind === 'boolean') return bit(column.values, at) ? 1 : 0;
+  if (column.kind === 'boolean') return bitAt(column.values, at) ? 1 : 0;
   if (column.kind === 'vector')
     return column.values.values[column.values.offset + at * column.size + component];
   return NaN;
-}
-export function nativeValue(native: FieldsBlock, name: string, row: number, component = 0): number {
-  return bit(native.presence[name], row) ? value(native.columns[name], row, component) : NaN;
 }
 export function indexKey(index: Index): string {
   return JSON.stringify([index.source, index.type, index.version]);
@@ -57,11 +51,4 @@ export class RowLookup<T> {
   get(row: number): { value: T; offset: number } | undefined {
     return this.sparse.get(row) ?? this.range(row);
   }
-}
-export function rowsEqual(a: RowAxis, b: RowAxis): boolean {
-  if (a === b) return true;
-  if (a.kind === 'range' && b.kind === 'range') return a.offset === b.offset && a.count === b.count;
-  if (rowCount(a) !== rowCount(b)) return false;
-  for (let i = 0; i < rowCount(a); i++) if (rowAt(a, i) !== rowAt(b, i)) return false;
-  return true;
 }

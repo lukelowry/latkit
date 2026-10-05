@@ -15,19 +15,28 @@ import type { TextFont } from '../text/text.js';
 /** Output endpoints may descend. Model domains remain ordered. */
 export type Range = readonly [start: number, end: number];
 export type ScaleDomain = Domain | 'auto' | { readonly window: SampleWindow };
+/** A field read through a mapping from its domain onto a range. */
 export interface Scale {
   readonly field: FieldInput;
+  /** The lane of a vector field; 0 by default. */
+  readonly component?: number;
   readonly domain?: ScaleDomain;
+  /** The channel's own range by default; a position reads its field as it is without one. */
   readonly range?: Range;
   readonly clamp?: boolean;
+  /** The value of rows the field leaves empty; the view's default otherwise. */
+  readonly missing?: number;
 }
+/** A field read through a colormap. */
 export interface ColorScale {
   readonly field: FieldInput;
+  readonly component?: number;
   readonly domain?: ScaleDomain;
   /** A colormap or a catalog name such as `viridis`. */
   readonly colormap?: Colormap | ColormapName;
+  /** The color of rows the field leaves empty; the view's default otherwise. */
+  readonly missing?: RGBA;
 }
-export type Position2D = FieldInput | { readonly x: FieldInput; readonly y: FieldInput };
 /** Text from a field beside each drawn item; views add how it is sized. */
 export interface Labels {
   readonly field: FieldInput;
@@ -37,9 +46,19 @@ export interface Labels {
   /** At most this many labels of the type draw at once. */
   readonly maxCount?: number;
 }
-export interface ScaleRequest extends Scale {
+/** A type's labels as a view reads them: a field name labels by that field with defaults. */
+export function resolveLabels<L extends Labels>(
+  labels: string | L | null | undefined,
+): L | undefined {
+  return typeof labels === 'string' ? ({ field: labels } as L) : (labels ?? undefined);
+}
+export interface ScaleRequest {
   readonly source: Data;
   readonly from: string;
+  readonly field: FieldInput;
+  readonly domain?: ScaleDomain;
+  readonly range?: Range;
+  readonly clamp?: boolean;
   readonly rows?: RowSelection;
   readonly window?: SampleWindow;
 }
@@ -49,7 +68,7 @@ export interface ResolvedScale {
   readonly clamp: boolean;
 }
 export function resolveScale(
-  scale: Pick<Scale, 'range' | 'clamp'>,
+  scale: { readonly range?: Range; readonly clamp?: boolean },
   domain: Domain | null,
 ): ResolvedScale {
   if (domain && (domain.length !== 2 || !domain.every(Number.isFinite) || domain[1] < domain[0]))
@@ -82,38 +101,4 @@ export function scaleValue(value: number | null, scale: ResolvedScale): number |
         : (value / 2 - lo / 2) / (hi / 2 - lo / 2);
   if (scale.clamp) t = Math.max(0, Math.min(1, t));
   return (1 - t) * scale.range[0] + t * scale.range[1];
-}
-/** Two vec4 uniforms consumed by scaleShader. Rebase before narrowing to Float32. */
-export function scaleParameters(
-  scale: ResolvedScale,
-  options: { readonly origin?: number } = {},
-): Float32Array {
-  if (!scale.domain) return new Float32Array(8);
-  const [lo, hi] = scale.domain,
-    span = hi - lo;
-  const result = Float32Array.of(
-    lo - (options.origin ?? 0),
-    span === 0 ? 0 : 1 / span,
-    scale.range[0],
-    scale.range[1] - scale.range[0],
-    span === 0 ? 2 : 1,
-    scale.clamp ? 1 : 0,
-    0,
-    0,
-  );
-  if (!result.every(Number.isFinite))
-    throw failure('precision', 'Scale exceeds Float32 relative precision');
-  return result;
-}
-export function scaleShader(): string {
-  return `
-struct LatkitScale { mapping: vec4f, options: vec4f }
-fn scaleFinite(v: f32) -> bool { return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u; }
-fn scaleMapped(value: f32, valid: bool, scale: LatkitScale, fallback: f32) -> f32 {
-  if (!valid || !scaleFinite(value) || scale.options.x == 0.0) { return fallback; }
-  var t = 0.5;
-  if (scale.options.x == 1.0) { t = (value - scale.mapping.x) * scale.mapping.y; }
-  if (scale.options.y != 0.0) { t = clamp(t, 0.0, 1.0); }
-  return scale.mapping.z + t * scale.mapping.w;
-}`;
 }

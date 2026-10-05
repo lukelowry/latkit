@@ -44,13 +44,12 @@ export async function pipelines(
     entries: [
       { binding: 0, visibility: both, buffer: { type: 'uniform' } },
       { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
+      { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'read-only-storage' } },
     ],
   });
   const [module, screen, axes] = await Promise.all([
     gpu.shaderModule(
-      kit.fieldShader({ group: 0 }) +
-        kit.scaleShader() +
-        kit.colormapShader({ group: 2 }) +
+      kit.fieldShader({ group: 0, colormap: 2 }) +
         kit.strokeShader() +
         kit.shadeShader({ group: 3 }) +
         kit.outputShader() +

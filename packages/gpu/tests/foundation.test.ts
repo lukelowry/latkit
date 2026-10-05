@@ -17,7 +17,7 @@ import {
   type SampleColumn,
 } from '@latkit/model';
 import { createGpu } from '../src/index.js';
-import { resolveScale, scaleValue, scaleParameters, type GpuPage } from '../src/kit.js';
+import { resolveScale, scaleValue, type GpuPage } from '../src/kit.js';
 import { withinBudget } from '../src/view/input.js';
 import { fakeDevice } from './fixtures/device.js';
 import { field } from './fixtures/fields.js';
@@ -193,10 +193,6 @@ it('keeps null, constant, reversed output ranges and relative Float64 scale sema
   expect(scaleValue(NaN, resolveScale({}, [0, 1]))).toBeNull();
   expect(scaleValue(9, resolveScale({ range: [8, 2] }, [5, 5]))).toBe(5);
   expect(scaleValue(1e12 + 0.25, resolveScale({ range: [2, 0] }, [1e12, 1e12 + 1]))).toBe(1.5);
-  const params = scaleParameters(resolveScale({ range: [2, 0] }, [1e12, 1e12 + 1]), {
-    origin: 1e12,
-  });
-  expect([...params]).toEqual([0, 1, 2, -2, 1, 1, 0, 0]);
   expect(scaleValue(2, resolveScale({ clamp: false }, [0, 1]))).toBe(2);
   expect(scaleValue(Number.MIN_VALUE, resolveScale({}, [0, Number.MIN_VALUE]))).toBe(1);
   expect(scaleValue(0, resolveScale({}, [-Number.MAX_VALUE, Number.MAX_VALUE]))).toBe(0.5);
