@@ -37,6 +37,9 @@ export interface Vertex {
   height: number;
   /** The title band's height; zero for a centered title. */
   header: number;
+  /** Whether its data gives its position. */
+  placed: boolean;
+  /** Whether layout keeps it where it is: placed, or drawn there before. */
   pinned: boolean;
   shape: Shape;
   radius: number;
@@ -93,15 +96,26 @@ export interface GroupBox {
   members: readonly number[];
   parent?: string;
 }
+/** A connected part of a scene: no edge joins it to another, so it lays out and routes alone. */
+export interface Part {
+  /** Its first vertex's key, which finds the same part in another scene. */
+  readonly key: string;
+  readonly vertices: readonly number[];
+  readonly edges: readonly number[];
+  readonly groups: readonly number[];
+}
 export interface Scene {
   data: DiagramData;
   vertices: Vertex[];
   edges: Edge[];
   groups: GroupBox[];
+  /** Its parts, as layout found them. */
+  parts: readonly Part[];
   bounds: Rect;
   bytes: number;
   routeBytes: number;
-  routeClearance?: number;
+  /** The style its routes and labels were made with. */
+  routing?: string;
   portSize?: number;
   ends: number;
   /** First slot of each kind: vertices from zero, then every port, edges, and groups. */
@@ -125,6 +139,10 @@ export const emptyLabel: TextLayout = Object.freeze({
   capHeight: 0,
   align: 'start',
 });
+/** A row's type and id, which find it in every scene of its model. */
+export function sceneKey(hit: SceneItem): string {
+  return hit.index.type + '\u0000' + hit.id;
+}
 export function rect(vertex: Vertex): Rect {
   return [vertex.x, vertex.y, vertex.x + vertex.width, vertex.y + vertex.height];
 }
@@ -162,6 +180,19 @@ export function union(rectangles: Iterable<Rect>): Rect {
 }
 export function expand(r: Rect, n: number): Rect {
   return [r[0] - n, r[1] - n, r[2] + n, r[3] + n];
+}
+/** A group's frame about the boxes inside it, padded under its title band; collapsed, its title alone. */
+export function groupFrame(inside: Rect, group: GroupBox, padding: number): Rect {
+  const box = expand(inside, padding),
+    top = box[1] - group.header;
+  return group.collapsed
+    ? [
+        box[0],
+        top,
+        box[0] + Math.max(120, group.label.width + padding * 2),
+        top + Math.max(group.header + padding * 2, 56),
+      ]
+    : [box[0], top, box[2], box[3]];
 }
 /** The item a slot draws. */
 export function itemAt(scene: Scene, slot: number): DiagramItem | null {
@@ -205,11 +236,11 @@ export function itemSlots(scene: Scene): ReadonlyMap<string, number> {
 /** Where vertices sit, by type: x and y values to spread into each type's options. */
 export function positions(
   vertices: readonly Vertex[],
-  only?: ReadonlySet<number>,
+  only: (vertex: Vertex, i: number) => boolean = () => true,
 ): Readonly<Record<string, Positions>> {
   const grouped = new Map<string, Vertex[]>();
   vertices.forEach((vertex, i) => {
-    if (!only || only.has(i)) {
+    if (only(vertex, i)) {
       const type = vertex.index.type;
       const entries = grouped.get(type) ?? [];
       entries.push(vertex);

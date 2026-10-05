@@ -108,46 +108,60 @@ try {
     });
   await call('Page.enable');
   await call('Runtime.enable');
-  await call('Page.navigate', {
-    url: 'http://127.0.0.1:' + port + '/packages/diagram/tests/browser/check.html',
-  });
-  let ready = false;
-  for (let i = 0; i < 200; i++) {
+  /** Load a page, await the global its script sets, and keep its result and a screenshot. */
+  const run = async (page, global, name) => {
+    await call('Page.navigate', {
+      url: 'http://127.0.0.1:' + port + '/packages/diagram/tests/browser/' + page,
+    });
+    let ready = false;
+    for (let i = 0; i < 200; i++) {
+      const result = await call('Runtime.evaluate', {
+        expression: 'typeof globalThis.' + global + ' !== "undefined"',
+        returnByValue: true,
+      });
+      if (result.result.value) {
+        ready = true;
+        break;
+      }
+      await sleep(50);
+    }
+    if (!ready) throw new Error('Browser fixture did not load: ' + page);
     const result = await call('Runtime.evaluate', {
-      expression: 'typeof globalThis.diagramCheck !== "undefined"',
+      expression: 'globalThis.' + global,
+      awaitPromise: true,
       returnByValue: true,
     });
-    if (result.result.value) {
-      ready = true;
-      break;
-    }
-    await sleep(50);
-  }
-  if (!ready) throw new Error('Browser fixture did not load');
-  const result = await call('Runtime.evaluate', {
-    expression: 'globalThis.diagramCheck',
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  if (result.exceptionDetails)
-    throw new Error(
-      result.exceptionDetails.exception?.description ?? JSON.stringify(result.exceptionDetails),
+    if (result.exceptionDetails)
+      throw new Error(
+        result.exceptionDetails.exception?.description ?? JSON.stringify(result.exceptionDetails),
+      );
+    const { images = {}, ...value } = result.result.value;
+    await mkdir(path.join(root, 'output/playwright'), { recursive: true });
+    await writeFile(
+      path.join(root, 'output/' + name + '.json'),
+      JSON.stringify(value, null, 2) + '\n',
     );
-  await mkdir(path.join(root, 'output'), { recursive: true });
-  await writeFile(
-    path.join(root, 'output/diagram-browser.json'),
-    JSON.stringify(result.result.value, null, 2) + '\n',
-  );
-  console.log(JSON.stringify(result.result.value, null, 2));
-  await mkdir(path.join(root, 'output/playwright'), { recursive: true });
-  const screenshot = await call('Page.captureScreenshot', {
-    format: 'png',
-    captureBeyondViewport: true,
-  });
-  await writeFile(
-    path.join(root, 'output/playwright/diagram.png'),
-    Buffer.from(screenshot.data, 'base64'),
-  );
+    console.log(JSON.stringify(value, null, 2));
+    if (Object.keys(images).length) {
+      const folder = path.join(root, 'output', name);
+      await mkdir(folder, { recursive: true });
+      for (const [title, data] of Object.entries(images))
+        await writeFile(
+          path.join(folder, title.replace(/[^a-z0-9]+/gi, '-').toLowerCase() + '.png'),
+          Buffer.from(data.slice(data.indexOf(',') + 1), 'base64'),
+        );
+    }
+    const screenshot = await call('Page.captureScreenshot', {
+      format: 'png',
+      captureBeyondViewport: true,
+    });
+    await writeFile(
+      path.join(root, 'output/playwright/' + name + '.png'),
+      Buffer.from(screenshot.data, 'base64'),
+    );
+  };
+  await run('check.html', 'diagramCheck', 'diagram-browser');
+  await run('gallery.html', 'diagramGallery', 'diagram-gallery');
   if (keepOpen) {
     console.log(
       'Visible GPU fixture: http://127.0.0.1:' +

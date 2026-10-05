@@ -18,7 +18,6 @@ export async function usage(
     ...config,
     canvas,
     input: 'edit',
-    layout: 'manual',
     vertices: { vertex: { ...config.vertices.vertex, ...positions.vertex } },
   });
   // Rows name what to delete; their ids are how an application writes the change back.

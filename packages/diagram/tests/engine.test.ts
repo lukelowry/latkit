@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { createReader } from '@latkit/model';
+import { Work, createReader } from '@latkit/model';
 import type { Gpu } from '@latkit/gpu';
 import { arrange, layoutOptions, place, rootEnd } from '../src/layout.js';
 import { readScene } from '../src/read.js';
@@ -21,7 +21,7 @@ async function scene(source = new Source(), position = false) {
       resolveLimits(),
       layoutText,
     );
-    await place(result, layoutOptions(), 8, reader.signal);
+    await place(result, layoutOptions(), resolveStyle(), new Work(reader.signal));
     await geometry(result, resolveStyle(), resolveLimits(), reader.signal);
     return result;
   } finally {
@@ -91,7 +91,7 @@ it('draws each row between the vertices its two references name', async () => {
       resolveLimits(),
       layoutText,
     );
-    await place(result, layoutOptions(), 8, reader.signal);
+    await place(result, layoutOptions(), resolveStyle(), new Work(reader.signal));
     await geometry(result, resolveStyle(), resolveLimits(), reader.signal);
     expect(result.edges.map((edge) => edge.ends)).toEqual([
       [
@@ -191,22 +191,23 @@ it('uses identical geometry for shape boundaries and picking', async () => {
     picking.hit([200, 150], camera, { width: 400, height: 300, pixelRatio: 2 }, 8)[0],
   ).toMatchObject({ kind: 'vertex', row: 0 });
 });
-it('supports headless custom layout and routing strategies', async () => {
+it('arranges each part with a custom strategy, then packs the parts', async () => {
   const source = new Source(2),
     d = data(source);
   const result = await arrange(gpu, {
     ...d,
     layout: {
-      algorithm: { arrange: (graph) => graph.vertices.map((_, i) => [i * 500, 123] as const) },
+      algorithm: { arrange: (part) => part.vertices.map((_, i) => [i * 500, 123] as const) },
     },
   });
   const lane = (axis: 'x' | 'y') => {
     const values = result.Task[axis].values;
     return values.kind === 'numeric' ? [...values.values] : [];
   };
+  // The strategy places within its part; packing puts the part at the origin.
   expect([lane('x'), lane('y')]).toEqual([
     [0, 500],
-    [123, 123],
+    [3, 3],
   ]);
 });
 it('bounds memory and honors cancellation', async () => {
@@ -243,7 +244,7 @@ it('collapses groups into proxies for their external ends', async () => {
       },
     };
     const result = await readScene(d, reader, resolveStyle(), resolveLimits(), layoutText);
-    await place(result, layoutOptions(), 8, reader.signal);
+    await place(result, layoutOptions(), resolveStyle(), new Work(reader.signal));
     await geometry(result, resolveStyle(), resolveLimits(), reader.signal);
     expect(result.vertices.map((n) => n.visible)).toEqual([false, false, true]);
     expect(result.edges[0].paths).toHaveLength(0);
@@ -335,7 +336,7 @@ it('spreads feedback cycles across ranks, rooted at their outputs', async () => 
   expect(feedback.ends.map((end) => end.vertex)).toEqual([0, 3]);
   expect(feedback.ends[rootEnd(feedback)].vertex).toBe(3);
 });
-it('passes ports, hyperedges, labels and groups to a custom layout', async () => {
+it('passes ports, hyperedges, labels, and groups as vertices to a custom layout', async () => {
   const source = new Source(3);
   source.ends = [
     [
@@ -344,13 +345,11 @@ it('passes ports, hyperedges, labels and groups to a custom layout', async () =>
       { vertex: 2, port: 'input' },
     ],
   ];
+  const parts: import('../src/layout.js').LayoutGraph[] = [];
   const algorithm = {
-    arrange: vi.fn((graph: import('../src/layout.js').LayoutGraph) => {
-      expect(graph.vertices[0].ports.map((port) => port.name)).toContain('output');
-      expect(graph.edges[0].ends).toHaveLength(3);
-      expect(graph.edges[0].labelSize[0]).toBeGreaterThan(0);
-      expect(graph.groups[0].members).toHaveLength(2);
-      return graph.vertices.map((_, i) => [i * 240, 0] as const);
+    arrange: vi.fn((part: import('../src/layout.js').LayoutGraph) => {
+      parts.push(part);
+      return part.vertices.map((_, i) => [i * 240, 0] as const);
     }),
   };
   await arrange(gpu, {
@@ -358,7 +357,32 @@ it('passes ports, hyperedges, labels and groups to a custom layout', async () =>
     groups: { pair: { vertices: { Task: { kind: 'ids', ids: ['n0', 'n1'] } } } },
     layout: { algorithm },
   });
-  expect(algorithm.arrange).toHaveBeenCalledOnce();
+  // The group's inside is one part, wired port to port; outside, the group is one vertex.
+  const [inside, outside] = parts;
+  expect(inside.vertices.map((vertex) => vertex.item)).toMatchObject([
+    { kind: 'vertex', row: 0 },
+    { kind: 'vertex', row: 1 },
+  ]);
+  expect(inside.vertices[0].ports.find((port) => port.name === 'output')?.offset[0]).toBe(
+    inside.vertices[0].size[0],
+  );
+  expect(inside.edges[0].ends).toEqual([
+    { vertex: 0, port: 'output', direction: 'out' },
+    { vertex: 1, port: 'input', direction: 'in' },
+  ]);
+  expect(inside.edges[0].labelSize[0]).toBeGreaterThan(0);
+  expect(outside.vertices.map((vertex) => vertex.item)).toMatchObject([
+    { kind: 'vertex', row: 2 },
+    { kind: 'group', id: 'pair' },
+  ]);
+  expect(outside.vertices[1].ports).toEqual([]);
+  // The net's three ends meet the group once for its two members.
+  expect(outside.edges[0].ends).toEqual([
+    { vertex: 1, port: null, direction: 'out' },
+    { vertex: 1, port: null, direction: 'in' },
+    { vertex: 0, port: 'input', direction: 'in' },
+  ]);
+  expect(algorithm.arrange).toHaveBeenCalledTimes(2);
 });
 it('orients flow toward targets even when a wire runs left', async () => {
   const source = new Source(2);

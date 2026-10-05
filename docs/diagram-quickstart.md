@@ -12,7 +12,7 @@ const diagram = createDiagram(gpu, {
   vertices: { Task: { labels: 'name' } },
   edges: { Dependency: { ends: ['from', 'to'], route: 'orthogonal', arrows: true } },
 });
-diagram.on('move', ({ moves }) => savePositions(moves));
+diagram.on('move', ({ positions }) => savePositions(positions));
 diagram.on('connect', (proposal) => wire(proposal));
 diagram.on('delete', (ids) => remove(ids));
 ```
@@ -28,17 +28,20 @@ A vertex's reference fields that name a drawn net are its ports, oriented by the
 
 ## Layout
 
-`layout` is `'layered'` (the default), `'manual'` to keep model positions, or
-`{ algorithm, direction, rankGap, vertexGap }` with a custom `LayoutStrategy` as the algorithm.
+A vertex with `x` and `y` stays where they put it; `layout` places the rest. Vertices that edges
+join form a part, arranged on its own by `algorithm` (`'layered'`, or a `LayoutStrategy` called
+once per part), and the parts nothing pins pack into rows of about `aspect` (16 / 9) below the
+pinned ones. A group is arranged inside first, then moves as one vertex of its part.
 
 ```ts
 diagram.set({ layout: { direction: 'down' } }, { animate: true });
 const positions = await arrange(gpu, config); // { x, y } by type, without drawing
-diagram.set({ layout: 'manual', vertices: { Task: positions.Task } });
+diagram.set({ vertices: { Task: positions.Task } }); // pinned where arranged
 ```
 
-`groups` gather vertices under a label; collapsing one routes its wires to its boundary, and moving
-it moves its vertices.
+A move proposes the drawing as it stands: each dragged vertex and each the layout placed, so
+writing `positions` keeps every block where it is drawn. Collapsing a group routes its wires to its
+boundary, and moving it moves its vertices.
 
 ## Input
 

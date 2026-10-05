@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" /><title>Diagram gallery</title>
+  <style>
+    body {
+      margin: 0;
+      background: #0e121b;
+      color: #eef2fa;
+      font: 15px system-ui;
+    }
+    header {
+      padding: 20px 28px;
+      border-bottom: 1px solid #303744;
+    }
+    h1 {
+      font-size: 22px;
+      margin: 0 0 6px;
+    }
+    p {
+      margin: 0;
+      color: #a8b3c8;
+    }
+    canvas {
+      display: block;
+      width: 1000px;
+      height: 620px;
+    }
+    #result {
+      padding: 20px;
+      white-space: pre-wrap;
+    }
+  </style>
+  <header>
+    <h1>Diagram gallery</h1>
+    <p>Every layout edge case, rendered; a transition in progress below</p>
+  </header>
+  <canvas id="diagram"></canvas>
+  <pre id="result">Checking…</pre>
+  <script type="importmap">
+    {
+      "imports": {
+        "culori/fn": "/packages/gpu/node_modules/culori/src/index-fn.js",
+        "@latkit/gpu": "/packages/gpu/dist/index.js",
+        "@latkit/model": "/packages/model/dist/index.js"
+      }
+    }
+  </script>
+  <script type="module" src="./gallery.js"></script>
+</html>

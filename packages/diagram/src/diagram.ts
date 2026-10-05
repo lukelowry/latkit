@@ -1,4 +1,4 @@
-import { Work, failure, isFailure, sameItem } from '@latkit/model';
+import { Work, failure, sameItem } from '@latkit/model';
 import {
   kit,
   type Gpu,
@@ -39,11 +39,11 @@ import {
   resolveStyle,
   type Style,
 } from './config.js';
-import { place, layoutOptions, type Layout, type LayoutOptions } from './layout.js';
+import { place, layoutOptions, type LayoutOptions } from './layout.js';
 import { readScene, sampledStructure, sameStructure } from './read.js';
 import { dragWires, geometry } from './geometry.js';
 import { dragMarks, moved, type DragDraw, type DragMarks } from './drag.js';
-import { itemSlots, positions, union, type Scene } from './scene.js';
+import { itemSlots, positions, sceneKey, union, type Scene } from './scene.js';
 import { flowing, widestPx } from './styles.js';
 import { Picking } from './picking.js';
 import { Painter, pipelines, type Paint, type Overlay, type Pipelines } from './painter.js';
@@ -59,11 +59,13 @@ export interface ConnectProposal {
   readonly position: Point;
   readonly point: Point;
 }
-/** Vertices the user dragged; write the positions to the model to accept them. */
+/** Where the drawing stands after a drag; write the positions to the model to accept it. */
 export interface MoveProposal {
-  /** Moved positions by vertex type, to spread into its options or write to the model. */
+  /**
+   * By vertex type, to spread into its options: each dragged vertex, and each the layout placed,
+   * so the drawing stays as shown once they are written.
+   */
   readonly positions: Readonly<Record<string, Positions>>;
-  readonly moves: readonly { readonly vertex: DiagramRow; readonly position: Point }[];
 }
 export interface Camera extends ViewCamera {
   /** Diagram units at the canvas center. */
@@ -76,8 +78,8 @@ export interface DiagramConfig extends ItemViewConfig, DiagramStyle {
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;
   readonly groups?: Readonly<Record<string, Group>>;
-  /** How vertices are placed; `layered` by default, `manual` keeps model positions. */
-  readonly layout?: Layout;
+  /** How vertices without a position are placed. */
+  readonly layout?: LayoutOptions;
   /** Where the camera starts; `diagram.camera` is where it is. Fits the diagram by default. */
   readonly camera?: Partial<Camera>;
   /** Pointer and keyboard control of the canvas; `navigate` by default. */
@@ -127,8 +129,11 @@ interface Presented {
   readonly revision: number;
   readonly structureRevision: number;
   readonly at?: number;
-  /** A drag drawn over the scene, which `locate` follows. */
+  /** A drag drawn over the scene. */
   readonly drag?: DragDraw;
+  /** Where each slot drew from its place, which `locate` follows: offsets that `motion` scales. */
+  readonly offsets: Float32Array | null;
+  readonly motion: Point;
 }
 /** A prepared frame: what it shows, and what it draws. */
 interface Staged extends Presented {
@@ -161,6 +166,14 @@ function portsShown(style: Style, camera: kit.Camera2D): boolean {
   return style.detail === 'full' || camera.scale[0] > 0.2;
 }
 const KINDS = new Set(['vertex', 'edge', 'port']);
+/** Whether a vertex both scenes draw stands somewhere else in the second. */
+function moves(from: Scene, to: Scene): boolean {
+  const before = new Map(from.vertices.map((vertex) => [sceneKey(vertex.hit), vertex]));
+  return to.vertices.some((vertex) => {
+    const was = before.get(sceneKey(vertex.hit));
+    return !!was && (was.x !== vertex.x || was.y !== vertex.y);
+  });
+}
 
 class DiagramView
   extends kit.BaseItemView<
@@ -180,20 +193,17 @@ class DiagramView
   private readonly painter: Painter;
   private revision = 0;
   private structureRevision = 0;
-  /** The latest drawn frame: what pick, locate, and selection see. */
+  /** The latest drawn frame: what pick, locate, selection, and drags see. */
   private shown?: Presented;
-  /** The latest drawn frame of accepted positions, which drags start from. */
-  private stable?: Presented;
   private overlay: Overlay | null = null;
   private counts = { vertices: 0, edges: 0, ends: 0, geometryBytes: 0, drawCalls: 0 };
   private transitionRequested = false;
-  private sceneTransition?: {
-    target: Scene;
-    picking: Picking;
-    from: ReadonlyMap<string, Point>;
-    revision: number;
-    at?: number;
-    start: number;
+  /** Vertices easing from where a scene drew them to where the shown one has them. */
+  private transition?: {
+    readonly from: Scene;
+    readonly revision: number;
+    readonly at?: number;
+    readonly start: number;
   };
   /** A drag in progress: the items it started with, what they move, and how far. */
   private drag?: {
@@ -207,7 +217,6 @@ class DiagramView
     readonly scene: Scene;
     readonly marks: DragMarks;
   };
-  private interruptedTransition = false;
   private relayout = false;
   private gestures?: Gestures;
   private readonly controls: Controls = {
@@ -250,7 +259,6 @@ class DiagramView
       style: VIEW_DEFAULTS,
       records: ['vertices', 'edges', 'groups'],
       merged: ['camera', 'input', 'limits', 'layout'],
-      shorthands: { layout: 'algorithm' },
       options: Object.keys(DEFAULTS),
       framed: ['center', 'scale'],
       modes: ['navigate', 'edit', 'inspect', 'none'],
@@ -360,10 +368,16 @@ class DiagramView
     const p = this.shown;
     const at = p?.picking.locate(item);
     if (!p || !at) return null;
-    // A dragged item draws where the drag has taken it.
-    const slot = itemSlots(p.scene).get(itemKey(item)),
-      drag = slot !== undefined && p.drag?.marks.moving.has(slot) ? p.drag.delta : undefined;
-    return kit.cameraPoint(p.camera, drag ? [at[0] + drag[0], at[1] + drag[1]] : at, p.viewport);
+    // An item draws where a drag or a transition has it.
+    const slot = p.offsets ? itemSlots(p.scene).get(itemKey(item)) : undefined,
+      drawn: Point =
+        slot === undefined
+          ? at
+          : [
+              at[0] + p.offsets![slot * 2] * p.motion[0],
+              at[1] + p.offsets![slot * 2 + 1] * p.motion[1],
+            ];
+    return kit.cameraPoint(p.camera, drawn, p.viewport);
   }
   protected identify(item: DiagramItem): string {
     return itemKey(item);
@@ -462,7 +476,7 @@ class DiagramView
     if (effects.has('scene')) this.reread(false);
     else if (effects.has('route')) {
       this.revision++;
-      this.sceneTransition = undefined;
+      this.transition = undefined;
       this.drag = undefined;
     }
     this.invalidate();
@@ -471,14 +485,14 @@ class DiagramView
     return (
       !this.closed &&
       (super.animating ||
-        !!this.sceneTransition ||
+        !!this.transition ||
         (this.resolved.flowing && !!this.shown && !this.reducedMotion))
     );
   }
 
   private reread(animate: boolean): void {
     this.transitionRequested = animate;
-    this.sceneTransition = undefined;
+    this.transition = undefined;
     this.revision++;
     this.structureRevision++;
     this.drag = undefined;
@@ -486,13 +500,8 @@ class DiagramView
   /** Draw dragged vertices offset from their accepted positions, or stop with null. */
   private preview(items: readonly DiagramItem[], delta: Point | null): void {
     if (this.defer('preview', () => this.preview(items, delta))) return;
-    if (this.sceneTransition) this.interruptedTransition = true;
-    if (!delta && this.interruptedTransition) {
-      // The drag starts from what was shown; cancellation must reread accepted positions.
-      this.stable = this.stable ? { ...this.stable, revision: -1 } : undefined;
-      this.interruptedTransition = false;
-    }
-    this.sceneTransition = undefined;
+    // A drag starts from accepted positions, so a transition under way ends where it was going.
+    this.transition = undefined;
     this.transitionRequested = false;
     const drag = this.drag;
     this.drag = delta
@@ -502,7 +511,7 @@ class DiagramView
   }
   private movingKeys(items: readonly DiagramItem[]): Set<string> {
     const keys = new Set(items.map(itemKey));
-    const scene = this.stable?.scene ?? this.shown?.scene;
+    const scene = this.shown?.scene;
     if (!scene) return keys;
     const groups = new Map(scene.groups.map((g) => [g.id, g]));
     const selected = new Set(items.filter((i) => i.kind === 'group').map((i) => i.id));
@@ -515,25 +524,17 @@ class DiagramView
     return keys;
   }
   private move(items: readonly DiagramItem[], delta: Point): MoveProposal | undefined {
-    const scene = this.stable?.scene ?? this.shown?.scene;
+    const scene = this.shown?.scene;
     if (!scene) return;
     const keys = this.movingKeys(items),
-      indices = new Set<number>(),
+      moving = new Set<number>(),
       vertices = scene.vertices.map((vertex, i) => {
-        if (keys.has(itemKey(vertex.hit))) {
-          indices.add(i);
-          return { ...vertex, x: vertex.x + delta[0], y: vertex.y + delta[1] };
-        }
-        return vertex;
+        if (!keys.has(itemKey(vertex.hit))) return vertex;
+        moving.add(i);
+        return { ...vertex, x: vertex.x + delta[0], y: vertex.y + delta[1] };
       });
-    if (!indices.size) return;
-    return {
-      positions: positions(vertices, indices),
-      moves: [...indices].map((i) => ({
-        vertex: rowOf(vertices[i].hit),
-        position: [vertices[i].x, vertices[i].y],
-      })),
-    };
+    if (!moving.size) return;
+    return { positions: positions(vertices, (vertex, i) => moving.has(i) || !vertex.placed) };
   }
   protected async prepare(frame: kit.Preparation): Promise<Staged> {
     this.live();
@@ -546,21 +547,12 @@ class DiagramView
       structureRevision = this.structureRevision,
       motion = !this.reducedMotion,
       at = this.resolved.sampled ? frame.at : undefined;
-    const base = this.stable ?? this.shown,
+    const base = this.shown,
       // An exported frame draws transitions at their targets and changes none of them.
       presented = frame.presented;
-    let scene: Scene, picking: Picking;
-    if (
-      presented &&
-      this.sceneTransition &&
-      (this.sceneTransition.revision !== revision || this.sceneTransition.at !== at)
-    )
-      this.sceneTransition = undefined;
-    const transition = this.sceneTransition;
-    const transitioning =
-      transition && transition.revision === revision && transition.at === at && !this.drag;
-    const cached = base && base.revision === revision && base.at === at && !this.drag;
-    let drag: DragDraw | null = null,
+    let scene: Scene,
+      picking: Picking,
+      drag: DragDraw | null = null,
       drawnAt = at;
     if (this.drag && base && base.revision === revision) {
       // A drag draws over the accepted scene, even while the coordinate plays on; only what it
@@ -569,19 +561,11 @@ class DiagramView
       picking = base.picking;
       drawnAt = base.at;
       drag = this.dragDraw(scene, this.drag, style, frame.signal);
-    } else if (transitioning) {
-      scene = transition.target;
-      picking = transition.picking;
-    } else if (cached) {
+    } else if (base && base.revision === revision && base.at === at && !this.drag) {
       scene = base.scene;
       picking = base.picking;
     } else {
-      if (
-        base &&
-        base.revision >= 0 &&
-        base.structureRevision === structureRevision &&
-        base.at === at
-      ) {
+      if (base && base.structureRevision === structureRevision && base.at === at) {
         scene = {
           ...base.scene,
           vertices: base.scene.vertices.map((vertex) => ({
@@ -600,112 +584,44 @@ class DiagramView
           (input) => this.gpu.layoutText(input, { signal: work.signal }),
           work,
         );
-        await place(
-          scene,
-          layout,
-          style.gridPitch,
-          frame.signal,
-          this.relayout ? undefined : base?.scene,
-          work,
-        );
+        await place(scene, layout, style, work, this.relayout ? undefined : base?.scene);
       }
       await geometry(scene, style, this.limits, frame.signal, base?.scene, work);
       picking = new Picking(scene, this.limits.pickingBytes);
-      const scenes = new Set([
-        scene,
-        ...(this.stable ? [this.stable.scene] : []),
-        ...(this.shown ? [this.shown.scene] : []),
-      ]);
-      const indices = new Set([
-        picking,
-        ...(this.stable ? [this.stable.picking] : []),
-        ...(this.shown ? [this.shown.picking] : []),
-      ]);
-      if ([...indices].reduce((n, index) => n + index.bytes, 0) > this.limits.pickingBytes)
+      const retained = new Set([scene, base?.scene, this.transition?.from]);
+      if (picking.bytes + (base?.picking.bytes ?? 0) > this.limits.pickingBytes)
         throw failure('resource-limit', 'Retained picking exceeds budget');
-      if ([...scenes].reduce((n, value) => n + value.bytes, 0) > this.limits.geometryBytes)
+      if (
+        [...retained].reduce((n, value) => n + (value?.bytes ?? 0), 0) > this.limits.geometryBytes
+      )
         throw failure('resource-limit', 'Retained geometry exceeds budget');
     }
     if (
       presented &&
+      this.transition &&
+      (this.transition.revision !== revision || this.transition.at !== at)
+    )
+      this.transition = undefined;
+    // The first presented frame of an animated change eases from what was shown.
+    if (
+      presented &&
       this.transitionRequested &&
       base &&
+      scene !== base.scene &&
       !this.drag &&
       motion &&
       style.animationMs > 0 &&
-      scene.vertices.length <= style.animationMaxVertices &&
-      scene.bytes * 3 + base.scene.bytes <= this.limits.geometryBytes &&
-      picking.bytes * 3 + base.picking.bytes <= this.limits.pickingBytes
-    ) {
-      const from = new Map(
-        base.scene.vertices.map((vertex) => [itemKey(vertex.hit), [vertex.x, vertex.y] as Point]),
-      );
-      if (
-        scene.vertices.some((vertex) => {
-          const p = from.get(itemKey(vertex.hit));
-          return p && (p[0] !== vertex.x || p[1] !== vertex.y);
-        })
-      )
-        this.sceneTransition = {
-          target: scene,
-          picking,
-          from,
-          revision,
-          at,
-          start: frame.timeMs,
-        };
-    }
+      base.scene.bytes + scene.bytes <= this.limits.geometryBytes &&
+      moves(base.scene, scene)
+    )
+      this.transition = { from: base.scene, revision, at, start: frame.timeMs };
     if (presented) this.transitionRequested = false;
-    const movement = this.sceneTransition;
-    let easing = false;
-    if (
-      presented &&
-      movement &&
-      movement.revision === revision &&
-      movement.at === at &&
-      motion &&
-      style.animationMs > 0
-    ) {
-      const t = Math.min(1, Math.max(0, (frame.timeMs - movement.start) / style.animationMs));
-      if (t < 1) {
-        const ease = 1 - (1 - t) ** 3;
-        scene = {
-          ...movement.target,
-          vertices: movement.target.vertices.map((vertex) => {
-            const from = movement.from.get(itemKey(vertex.hit));
-            return {
-              ...vertex,
-              ports: vertex.ports.map((port) => ({ ...port })),
-              x: from ? from[0] + (vertex.x - from[0]) * ease : vertex.x,
-              y: from ? from[1] + (vertex.y - from[1]) * ease : vertex.y,
-            };
-          }),
-          edges: movement.target.edges.map((edge) => ({ ...edge })),
-          groups: movement.target.groups.map((group) => ({ ...group })),
-        };
-        easing = true;
-        try {
-          await geometry(scene, style, this.limits, frame.signal, base?.scene, work);
-          picking = new Picking(scene, this.limits.pickingBytes);
-          const retained = new Set([scene, movement.target, ...(base ? [base.scene] : [])]);
-          const indices = new Set([picking, movement.picking, ...(base ? [base.picking] : [])]);
-          if (
-            [...retained].reduce((sum, item) => sum + item.bytes, 0) > this.limits.geometryBytes ||
-            [...indices].reduce((sum, item) => sum + item.bytes, 0) > this.limits.pickingBytes
-          )
-            throw failure('resource-limit', 'Transition exceeds retained budgets');
-        } catch (error) {
-          frame.signal.throwIfAborted();
-          if (!isFailure(error) || !['invalid-input', 'resource-limit'].includes(error.code))
-            throw error;
-          // Intermediate positions may overlap even when both layouts are valid.
-          scene = movement.target;
-          picking = movement.picking;
-          this.sceneTransition = undefined;
-          easing = false;
-        }
-      }
-    }
+    const transition = this.transition,
+      rest =
+        presented && transition && !this.drag && motion && style.animationMs > 0
+          ? (1 - Math.min(1, Math.max(0, (frame.timeMs - transition.start) / style.animationMs))) **
+            3
+          : 0;
     frame.signal.throwIfAborted();
     this.live();
     const widthPx = Math.max(
@@ -726,7 +642,7 @@ class DiagramView
         inside(p, viewport)
           ? found.nearest(p, drawn, viewport, radius, ports, check, widthPx)
           : null,
-      !!this.drag || easing,
+      !!this.drag || rest > 0,
     );
     const paint = await this.painter.prepare(frame, {
       scene,
@@ -739,6 +655,7 @@ class DiagramView
       shade: this.shadeFrame(frame),
       overlay: this.overlay,
       drag,
+      transition: rest > 0 ? { from: transition!.from, rest } : null,
       motion,
     });
     work.check();
@@ -754,6 +671,8 @@ class DiagramView
       structureRevision,
       at: drawnAt,
       drag: drag ?? undefined,
+      offsets: paint.offsets,
+      motion: paint.motion,
       paint,
     };
   }
@@ -793,13 +712,14 @@ class DiagramView
       structureRevision: next.structureRevision,
       at: next.at,
       drag: next.drag,
+      offsets: next.offsets,
+      motion: next.motion,
     };
-    if (next.revision >= 0) this.stable = this.shown;
     if (
-      this.sceneTransition &&
-      (this.reducedMotion || frame.timeMs >= this.sceneTransition.start + this.style.animationMs)
+      this.transition &&
+      (this.reducedMotion || frame.timeMs >= this.transition.start + this.style.animationMs)
     )
-      this.sceneTransition = undefined;
+      this.transition = undefined;
     this.relayout = false;
     this.counts = {
       vertices: next.scene.vertices.length,
@@ -811,8 +731,7 @@ class DiagramView
   }
   protected release(): void {
     this.shown = undefined;
-    this.stable = undefined;
-    this.sceneTransition = undefined;
+    this.transition = undefined;
     this.transitionRequested = false;
     this.painter.destroy();
   }

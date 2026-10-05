@@ -40,7 +40,12 @@ gestures, such as dragging.
 
 - Keyed records (`vertices`, `edges`, `paths`, `traces`, `groups`) merge per entry, then per option.
 - `camera`, `input`, `limits`, and `layout` merge per option.
-- `null` removes an entry or resets an option. Any other value replaces.
+- `null` removes an entry or resets an option. Any other value replaces, unless it equals what is
+  there: plain objects and arrays compare by what they hold, data by identity, and a patch that
+  changes nothing does nothing, `animate` included.
+- `{ replace: true }` takes the patch as the whole config: what it leaves out resets, except the
+  canvas, `at`, `paused`, and camera. An application that builds its config from its state can
+  pass all of it on every change, and the view rebuilds only what differs.
 - A channel such as `color`, `x`, or `widthPx` takes one value, a field name, or a scale; see
   [data bindings](topology-and-channels.md#channels).
 

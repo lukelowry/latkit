@@ -229,6 +229,69 @@ it('merges records per entry and options, removes with null, and replaces everyt
   gpu.destroy();
 });
 
+it('keeps every value a patch repeats, and configures nothing when nothing changes', async () => {
+  const gpu = await createGpu({ device: fakeDevice().device });
+  const data = { schema: { types: {} }, tables: {} };
+  const view = new TestView(gpu, {
+    items: { a: { color: 'red', size: 2 }, b: { size: 1 } },
+    limits: { bytes: 8 },
+    shade: { wgsl: 'a' },
+    source: data,
+  } as TestConfig);
+  const before = view.config,
+    configured = view.configured.length;
+  // Equal plain values keep the objects already held, so nothing downstream rebuilds.
+  view.set({
+    items: { a: { color: 'red', size: 2 } },
+    limits: { bytes: 8 },
+    shade: { wgsl: 'a' },
+    source: data,
+  } as TestConfig);
+  expect(view.config).toBe(before);
+  expect(view.configured).toHaveLength(configured);
+  view.set({ items: { a: { size: 3 } } });
+  expect(view.config.items!.b).toBe(before.items!.b);
+  expect(view.config.shade).toBe(before.shade);
+  expect(view.configured).toHaveLength(configured + 1);
+  // Data is new as itself, whatever it holds.
+  view.set({ source: { schema: { types: {} }, tables: {} } } as TestConfig);
+  expect(view.configured).toHaveLength(configured + 2);
+  view.destroy();
+  gpu.destroy();
+});
+it('replaces the whole config, resetting what it leaves out and keeping what it repeats', async () => {
+  const gpu = await createGpu({ device: fakeDevice().device }),
+    fixture = canvasFixture(gpu.device);
+  const view = new TestView(gpu, {
+    canvas: fixture.canvas,
+    at: 4,
+    items: { a: { color: 'red', size: 2 }, b: { size: 1 } },
+    limits: { bytes: 8, rows: 4 },
+    shade: { wgsl: 'a' },
+    input: { mode: 'navigate', wheel: 'modifier' },
+  });
+  const before = view.config;
+  view.set(
+    { items: { a: { color: 'red' } }, limits: { bytes: 8, rows: 4 }, input: 'navigate' },
+    { replace: true },
+  );
+  expect(view.config).toEqual({
+    canvas: fixture.canvas,
+    at: 4,
+    items: { a: { color: 'red' } },
+    limits: { bytes: 8, rows: 4 },
+    input: { mode: 'navigate' },
+  });
+  expect(view.config.limits).toBe(before.limits);
+  const configured = view.configured.length;
+  view.set(
+    { items: { a: { color: 'red' } }, limits: { bytes: 8, rows: 4 }, input: 'navigate' },
+    { replace: true },
+  );
+  expect(view.configured).toHaveLength(configured);
+  view.destroy();
+  gpu.destroy();
+});
 it('reattaches input when the canvas or input changes, and attaches none for mode none', async () => {
   const fake = fakeDevice(),
     gpu = await createGpu({ device: fake.device }),

@@ -25,6 +25,12 @@ export type {
   RouteEnd,
 } from './data.js';
 export { arrange } from './layout.js';
-export type { Layout, LayoutOptions, LayoutStrategy, LayoutGraph, LayoutVertex } from './layout.js';
+export type {
+  LayoutOptions,
+  LayoutStrategy,
+  LayoutGraph,
+  LayoutVertex,
+  LayoutEdge,
+} from './layout.js';
 export type { Limits as DiagramLimits } from './options.js';
 export type { DiagramInput } from './input.js';

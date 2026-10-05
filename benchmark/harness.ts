@@ -52,21 +52,35 @@ const branchIndex = (buses: number): Index => ({
 
 /**
  * Buses on a √n lattice, branches to their right and lower neighbours, `frames` of voltages. `ids`
- * names every row, as views that propose edits need.
+ * names every row, as views that propose edits need. With `ring`, branches instead close each run
+ * of that many buses into a loop, as a grid case's generators and their controllers are, with no
+ * branch between loops.
  */
-export function grid(buses: number, ids = false): Data {
-  return createData(schema, batches(buses, ids));
+export function grid(buses: number, ids = false, ring = 0): Data {
+  return createData(schema, batches(buses, ids, ring));
 }
 /** Every batch of a grid: its rows, then each frame. */
-export function batches(buses: number, ids = false): DataBatch[] {
-  return [...topology(buses, ids), ...Array.from({ length: frames }, (_, f) => voltages(buses, f))];
+export function batches(buses: number, ids = false, ring = 0): DataBatch[] {
+  return [
+    ...topology(buses, ids, ring),
+    ...Array.from({ length: frames }, (_, f) => voltages(buses, f)),
+  ];
 }
 /** The static rows of a grid. */
-export function topology(buses: number, ids = false): DataBatch[] {
+export function topology(buses: number, ids = false, ring = 0): DataBatch[] {
   const width = Math.ceil(Math.sqrt(buses)),
     from: number[] = [],
     to: number[] = [];
   for (let i = 0; i < buses; i++) {
+    if (ring) {
+      const first = i - (i % ring),
+        next = first + ((i - first + 1) % ring);
+      if (next !== i && next < buses) {
+        from.push(i);
+        to.push(next);
+      }
+      continue;
+    }
     if ((i + 1) % width && i + 1 < buses) {
       from.push(i);
       to.push(i + 1);

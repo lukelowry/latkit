@@ -1,9 +1,10 @@
 import { describe } from 'vitest';
-import { createDiagram, type DiagramConfig } from '@latkit/diagram';
-import { counters, draw, gpu, grid, suite } from './harness.ts';
+import { createDiagram, type DiagramConfig, type MoveProposal } from '@latkit/diagram';
+import { busIndex, counters, draw, gpu, grid, suite } from './harness.ts';
 
 interface DragControls {
   preview(items: readonly unknown[], delta: readonly [number, number] | null): void;
+  move(items: readonly unknown[], delta: readonly [number, number]): MoveProposal | undefined;
 }
 
 /** Include the large routed scene, with fewer repetitions at forty thousand blocks. */
@@ -53,4 +54,29 @@ describe.each([100, 1_000, 10_000, 40_000])('diagram %i blocks', async (blocks) 
   const styled = createDiagram(device, { ...config, vertices: { Bus: { color: 'voltage' } } });
   await draw(device, styled, 0, 'complete');
   measure('styled playback', (i) => draw(device, styled, i));
+});
+/** Rings of four blocks, as a grid case's generators: parts that pack, and that route alone. */
+describe.each([1_000, 10_000])('diagram %i blocks in rings', async (blocks) => {
+  const device = await gpu(),
+    config: DiagramConfig = {
+      source: grid(blocks, true, 4),
+      vertices: { Bus: {} },
+      edges: { Branch: { ends: ['from', 'to'] } },
+    };
+  const view = createDiagram(device, config);
+  await draw(device, view, 0, 'complete');
+  const measure = suite(`diagram ${blocks} blocks in rings`, blocks, () => counters(device), 8);
+  measure('layout', async () => {
+    const fresh = createDiagram(device, config);
+    await draw(device, fresh, 0, 'complete');
+    fresh.destroy();
+  });
+  // Accepting a move reads the positions again, and only the part that moved routes again.
+  const controls = (view as unknown as { readonly controls: DragControls }).controls,
+    moved = [{ kind: 'vertex', source: config.source, index: busIndex(blocks), row: 0 }];
+  measure('move', (i) => {
+    const proposal = controls.move(moved, [8 * (1 + (i % 4)), 0])!;
+    view.set({ vertices: { Bus: proposal.positions.Bus } });
+    return draw(device, view);
+  });
 });

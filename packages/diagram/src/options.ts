@@ -25,8 +25,6 @@ export interface DiagramStyle {
   readonly portSpacing?: number;
   /** Space wires keep from blocks, and the length of the stub out of each port. */
   readonly routeClearance?: number;
-  /** Bounds CPU route interpolation; larger scenes settle immediately. Default: 512 vertices. */
-  readonly animationMaxVertices?: number;
   readonly vertexColor?: RGBA;
   readonly edgeColor?: RGBA;
   readonly outlineColor?: RGBA;

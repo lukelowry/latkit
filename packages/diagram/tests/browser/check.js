@@ -1,5 +1,6 @@
 /* global document, PointerEvent, KeyboardEvent, MouseEvent, WheelEvent, OffscreenCanvas, createImageBitmap, requestAnimationFrame */
 import { createGpu, createComposition, kit } from '@latkit/gpu';
+import { rowAt, rowCount } from '@latkit/model';
 import { createDiagram } from '../../dist/index.js';
 import { Source, data, vertex, port as portOf } from '/output/diagram-fixture.js';
 const assert = (condition, message) => {
@@ -11,6 +12,9 @@ const is = (item, id) =>
   item.kind !== 'group' &&
   item.index.type === (id[0] === 'n' ? 'Task' : 'Dependency') &&
   item.row === Number(id.slice(1));
+/** The rows a move proposes for a type. */
+const rows = (positions) =>
+  Array.from({ length: rowCount(positions.x.rows) }, (_, i) => rowAt(positions.x.rows, i));
 /** Views report events on a microtask; let them arrive. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 /** An image's RGBA bytes, row by row. */
@@ -128,7 +132,8 @@ globalThis.diagramCheck = (async () => {
   pointer('pointermove', [point[0], point[1] + 32]);
   pointer('pointerup', [point[0], point[1] + 32]);
   await settle();
-  assert(moved?.moves.length === 1, 'Move proposal failed');
+  // The layout placed every block, so the first move proposes them all.
+  assert(moved && rows(moved.positions.Task).length === 5, 'Move proposal failed');
   // The canvas stops presenting; each step below renders an image at the canvas's size.
   diagram.set({ paused: true });
   const render = () => diagram.image({ width: 1000, height: 620, pixelRatio: 1 });
@@ -195,7 +200,7 @@ globalThis.diagramCheck = (async () => {
   diagram.select([ref]);
   key('ArrowDown');
   await settle();
-  assert(moveCount === 2 && is(moved.moves[0].vertex, 'n0'), 'Keyboard movement failed');
+  assert(moveCount === 2 && rows(moved.positions.Task).includes(0), 'Keyboard movement failed');
   let opened, removed;
   diagram.on('open', (item) => {
     opened = item;
