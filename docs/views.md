@@ -41,7 +41,8 @@ gestures, such as dragging.
 - Keyed records (`vertices`, `edges`, `paths`, `traces`, `groups`) merge per entry, then per option.
 - `camera`, `input`, `limits`, and `layout` merge per option.
 - `null` removes an entry or resets an option. Any other value replaces.
-- A field name stands for that field with defaults: `color: 'load'` is `color: { field: 'load' }`.
+- A channel such as `color`, `x`, or `widthPx` takes one value, a field name, or a scale; see
+  [data bindings](topology-and-channels.md#channels).
 
 ```ts
 network.set({

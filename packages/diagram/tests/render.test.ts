@@ -361,7 +361,7 @@ it('accepts sparse movement without moving uncovered vertices', async () => {
     const api = interaction(f.diagram),
       before = api.scene()!.vertices.map((n) => [n.x, n.y]);
     const proposal = api.move([vertexOf(f.source, 'n0')], [0, 24])!;
-    f.diagram.set({ vertices: { Task: { position: proposal.positions.Task } } });
+    f.diagram.set({ vertices: { Task: proposal.positions.Task } });
     await f.draw();
     expect(
       api
@@ -722,7 +722,7 @@ it('fits items once and follows all the data otherwise', async () => {
     f.gpu.destroy();
   }
 });
-it('expands field shorthands in entries and their ports', async () => {
+it('binds channels to fields in entries and their ports, as given', async () => {
   const f = await fixture();
   try {
     f.diagram.set({
@@ -730,13 +730,16 @@ it('expands field shorthands in entries and their ports', async () => {
       edges: { Dependency: { widthPx: 'weight' } },
     });
     const task = f.diagram.config.vertices.Task;
-    expect(task.color).toEqual({ field: 'weight' });
-    expect(task.ports?.input.color).toEqual({ field: 'weight' });
+    expect(task.color).toBe('weight');
+    expect(task.ports?.input.color).toBe('weight');
     expect(task.ports?.input.side).toBe('top');
-    expect(f.diagram.config.edges?.Dependency.widthPx).toEqual({ field: 'weight' });
     await f.draw();
     // Wires pick within the widest a bound width draws.
     expect(presentedOf(f.diagram).widthPx).toBe(4);
+    // A constant width is the widest.
+    f.diagram.set({ edges: { Dependency: { widthPx: 6 } } });
+    await f.draw();
+    expect(presentedOf(f.diagram).widthPx).toBe(6);
   } finally {
     f.diagram.destroy();
     f.target.destroy();

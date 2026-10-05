@@ -93,7 +93,7 @@ function trace(): Trace {
   const signal = SIGNALS[currentSignal];
   return {
     from: 'sensor',
-    field: signal.id,
+    y: signal.id,
     widthPx: 1.4,
     color: { field: signal.id, domain: signal.range, colormap: palette },
     shade: signal.id,

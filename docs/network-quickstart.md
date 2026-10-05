@@ -10,7 +10,8 @@ const network = createNetwork(gpu, {
   source,
   vertices: {
     Bus: {
-      position: 'position',
+      x: 'longitude',
+      y: 'latitude',
       color: { field: 'load', domain: [0, 1], colormap: 'viridis' },
       labels: 'name',
     },
@@ -19,8 +20,8 @@ const network = createNetwork(gpu, {
 });
 ```
 
-Each `Bus` is drawn at its `position` field, which the schema marks `geographic`; each `Line` row references the two buses it joins
-through `from` and `to`. [Data bindings](topology-and-channels.md) covers nets, paths, and styling
+Each `Bus` is drawn at its `longitude` and `latitude` fields, which the schema marks `geographic`; each `Line` row
+references the two buses it joins through `from` and `to`. [Data bindings](topology-and-channels.md) covers nets, paths, and styling
 by field.
 
 ## Camera

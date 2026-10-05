@@ -2,23 +2,26 @@ import {
   appendedPages,
   type Data,
   type FieldBinding,
-  type FieldInput,
   type Item,
   type RowSelection,
 } from '@latkit/model';
-import type { kit, Point, RGBA, ColorScale } from '@latkit/gpu';
-/** A sampled field of one type's rows, drawn as a line per row. */
+import type { Channel, ColorChannel, Point } from '@latkit/gpu';
+/**
+ * A sampled field of one type's rows, drawn as a line per row over the coordinate. Each channel
+ * takes one value for every row, a field, or a scale: `color: 'voltage'`, `widthPx: 2`.
+ */
 export interface Trace {
   readonly from: string;
   readonly rows?: RowSelection;
-  readonly field: string | FieldBinding;
+  /** The sampled field each row draws, against the values axis. */
+  readonly y: string | FieldBinding;
   readonly interpolation?: 'linear' | 'step-before' | 'step-after';
-  /** A field name colors by that field with defaults. */
-  readonly color?: string | ColorScale | null;
-  readonly baseColor?: RGBA;
-  readonly widthPx?: number;
-  readonly visible?: FieldInput | null;
-  readonly shade?: FieldInput | null;
+  /** A field colors over its extent in the window; the plotted field, over the values axis. */
+  readonly color?: ColorChannel;
+  /** Line width in CSS pixels; a field spans 0.5 to 4. 1.25 by default. */
+  readonly widthPx?: Channel;
+  readonly visible?: Channel<boolean>;
+  readonly shade?: Channel;
 }
 /** A row a monitor draws: selected in every trace of its type, or in one when it names `trace`. */
 export interface MonitorItem extends Item {
@@ -33,23 +36,14 @@ export interface Reading extends MonitorItem {
   readonly value: number;
   readonly point: Point;
 }
-/** Trace options whose string value names a field. */
-export const FIELD_OPTIONS = ['color'] as const;
-export type TraceData = kit.Expanded<Trace, (typeof FIELD_OPTIONS)[number]>;
 /** What the monitor draws. */
 export interface MonitorData {
   readonly source: Data;
-  readonly traces: Readonly<Record<string, TraceData>>;
-}
-/** The drawn traces of a config whose field shorthands the view already expanded. */
-export function monitorData(config: {
-  readonly source: Data;
   readonly traces: Readonly<Record<string, Trace>>;
-}): MonitorData {
-  return {
-    source: config.source,
-    traces: (config.traces ?? {}) as Readonly<Record<string, TraceData>>,
-  };
+}
+/** The drawn traces of a config. */
+export function monitorData({ source, traces }: MonitorData): MonitorData {
+  return { source, traces: traces ?? {} };
 }
 /** Whether `after` only appends observations to `before`: every drawn frame stands. */
 export function continues(before: Data, after: Data): boolean {

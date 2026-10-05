@@ -3,10 +3,12 @@ import { Work, type FieldsBlock, type RowAxis } from '@latkit/model';
 import type { NetworkData } from '../src/data.js';
 import type { VertexBank } from '../src/geometry/topology.js';
 import type { Style } from '../src/options.js';
-import type { FieldRead } from '../src/rendering/fields.js';
+import { FieldRead, VERTEX, channels } from '../src/rendering/fields.js';
 import { kit } from '@latkit/gpu';
 import { Picking, type PickGeometry } from '../src/picking.js';
 
+/** A two-lane position field, read as the column of its x. */
+const position = channels({ x: 'p', y: { field: 'p', component: 1 } }, VERTEX);
 it.each<RowAxis>([
   { kind: 'range', offset: 1, count: 2 },
   { kind: 'indices', values: Uint32Array.of(2, 1) },
@@ -20,7 +22,7 @@ it.each<RowAxis>([
     presence: {},
     rowOffset: 0,
     columns: {
-      position: {
+      x: {
         kind: 'vector',
         offset: 0,
         length: 4,
@@ -34,7 +36,7 @@ it.each<RowAxis>([
       },
     },
   };
-  const read: FieldRead = { pages: [], native: [native], vector: true, scales: {} };
+  const read = new FieldRead([], [native], position);
   const result = new Picking().prepare(
     { vertices: [bank], edges: [] },
     { vertices: new Map([[bank, read]]), edges: new Map() },
@@ -58,7 +60,7 @@ it('builds an index in cooperative slices and frees one aborted part way', async
     presence: {},
     rowOffset: 0,
     columns: {
-      position: {
+      x: {
         kind: 'vector',
         offset: 0,
         length: count,
@@ -67,7 +69,7 @@ it('builds an index in cooperative slices and frees one aborted part way', async
       },
     },
   };
-  const read: FieldRead = { pages: [], native: [native], vector: true, scales: {} };
+  const read = new FieldRead([], [native], position);
   const data = {} as NetworkData,
     style = { markers: true, lines: false } as Style;
   // Each build pauses after every step.

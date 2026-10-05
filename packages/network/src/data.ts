@@ -5,7 +5,7 @@ import {
   type Item,
   type RowSelection,
 } from '@latkit/model';
-import type { kit, Labels, RGBA, ColorScale, Position2D, Scale } from '@latkit/gpu';
+import type { Channel, ColorChannel, Labels } from '@latkit/gpu';
 
 /** Labels beside a type's items, sized in CSS pixels; `fontSizePx` by default. */
 export interface NetworkLabels extends Labels {
@@ -16,23 +16,41 @@ export interface NetworkLabels extends Labels {
    */
   readonly repeatSpacingPx?: number;
 }
-/** A field name stands for that field with defaults: `color: 'load'`, `labels: 'name'`. */
+/**
+ * How a type's vertices draw. Each channel takes one value for every row, a field, or a scale:
+ * `color: 'load'`, `sizePx: { field: 'load', range: [2, 12] }`. A field name labels by that field.
+ */
 export interface VertexOptions {
   readonly rows?: RowSelection;
-  /** Where each row draws; without one, rows sit on a circle. */
-  readonly position?: Position2D;
-  readonly color?: string | ColorScale | null;
-  /** The color without a `color` field; `vertexBaseColor` by default. */
-  readonly baseColor?: RGBA;
-  /** Marker radius in CSS pixels, from a field; `vertexRadiusPx` without one. */
-  readonly sizePx?: string | Scale | null;
-  readonly height?: string | Scale | null;
-  readonly visible?: FieldInput | null;
-  readonly shade?: FieldInput | null;
+  /** Where each row draws, in the data's coordinates; without either, rows sit on a circle. */
+  readonly x?: Channel;
+  readonly y?: Channel;
+  /** Height above the drawing as a share of `heightScale`; a field spans 0 to 1. */
+  readonly z?: Channel;
+  /** `vertexBaseColor` by default. */
+  readonly color?: ColorChannel;
+  /** Marker radius in CSS pixels; a field spans 2 to 8. `vertexRadiusPx` by default. */
+  readonly sizePx?: Channel;
+  readonly visible?: Channel<boolean>;
+  readonly shade?: Channel;
   readonly labels?: string | NetworkLabels | null;
 }
-export interface EdgeOptions {
+/** How the lines of edges and paths draw. */
+export interface LineOptions {
   readonly rows?: RowSelection;
+  /** `straight` in the data's coordinates, or `geodesic` along great circles. */
+  readonly route?: 'straight' | 'geodesic';
+  /** Line width in CSS pixels; a field spans 1 to 4. */
+  readonly widthPx?: Channel;
+  /** An edge's `edgeBaseColor`, or the colors of its ends, by default. */
+  readonly color?: ColorChannel;
+  /** Dashed where true or nonzero. */
+  readonly dash?: Channel<boolean>;
+  readonly visible?: Channel<boolean>;
+  readonly shade?: Channel;
+  readonly labels?: string | NetworkLabels | null;
+}
+export interface EdgeOptions extends LineOptions {
   /**
    * Two reference fields naming the vertices each row joins, such as a branch's two buses.
    * Omitted, the type is a net: each row joins the vertices whose references name it, drawn as a
@@ -41,31 +59,14 @@ export interface EdgeOptions {
   readonly ends?: readonly [source: string, target: string];
   /** Intermediate bends, a native list of two-component floating-point vectors; requires ends. */
   readonly bends?: FieldInput;
-  /** `straight` in the data's coordinates, or `geodesic` along great circles. */
-  readonly route?: 'straight' | 'geodesic';
-  /** A net's star center; otherwise the centroid of its vertices. */
-  readonly junction?: Position2D;
-  /** `edgeWidthPx` by default. */
-  readonly widthPx?: number;
-  readonly color?: string | ColorScale | null;
-  /** The color without a `color` field; `edgeBaseColor`, or the colors of its ends, by default. */
-  readonly baseColor?: RGBA;
-  readonly dash?: FieldInput | null;
-  readonly visible?: FieldInput | null;
-  readonly shade?: FieldInput | null;
-  readonly labels?: string | NetworkLabels | null;
+  /** Where a net's star meets, drawing every net as a star; otherwise the centroid of its ends. */
+  readonly x?: Channel;
+  readonly y?: Channel;
 }
-export interface PathOptions {
+export interface PathOptions extends LineOptions {
   /** Defaults to the network's source. */
   readonly source?: Data;
-  readonly rows?: RowSelection;
   readonly points: FieldInput;
-  readonly route?: 'straight' | 'geodesic';
-  readonly widthPx?: number;
-  readonly color?: string | ColorScale | null;
-  readonly baseColor?: RGBA;
-  readonly visible?: FieldInput | null;
-  readonly labels?: string | NetworkLabels | null;
   /** Decorative paths do not participate in picking by default. */
   readonly pickable?: boolean;
 }
@@ -77,27 +78,14 @@ export interface NetworkItem extends Item {
 export function sameItem(a: NetworkItem | null, b: NetworkItem | null): boolean {
   return a === b || (!!a && !!b && a.kind === b.kind && sameRow(a, b));
 }
-/** Option keys whose string value names a field. */
-export const FIELD_OPTIONS = ['color', 'sizePx', 'height', 'labels'] as const;
-type Full<T> = kit.Expanded<T, (typeof FIELD_OPTIONS)[number]>;
-export type VertexData = Full<VertexOptions>;
-export type EdgeData = Full<EdgeOptions>;
-export type PathData = Full<PathOptions>;
 /** What the renderer draws. Positions are longitude/latitude in degrees for geographic data. */
 export interface NetworkData {
-  readonly source: Data;
-  readonly vertices: Readonly<Record<string, VertexData>>;
-  readonly edges?: Readonly<Record<string, EdgeData>>;
-  readonly paths?: Readonly<Record<string, PathData>>;
-}
-
-/** The drawn records of a config whose field shorthands the view already expanded. */
-export function networkData(config: {
   readonly source: Data;
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;
   readonly paths?: Readonly<Record<string, PathOptions>>;
-}): NetworkData {
-  const { source, vertices, edges, paths } = config as NetworkData;
+}
+/** The drawn records of a config. */
+export function networkData({ source, vertices, edges, paths }: NetworkData): NetworkData {
   return { source, vertices, edges, paths };
 }

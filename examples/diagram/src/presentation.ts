@@ -97,7 +97,7 @@ export function data(source: GraphSource, settings: Settings, automatic = false)
       types.map((type) => [
         type,
         {
-          ...(!automatic ? { position: 'position' } : {}),
+          ...(!automatic ? { x: 'position', y: { field: 'position', component: 1 } } : {}),
           shape: settings.shape === 'mixed' ? shapes[type] : settings.shape,
           labels: {
             field: 'name',

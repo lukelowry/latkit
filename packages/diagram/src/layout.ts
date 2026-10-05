@@ -1,6 +1,6 @@
-import { Work, failure, type FieldValues, type RequestOptions } from '@latkit/model';
+import { Work, failure, type RequestOptions } from '@latkit/model';
 import { kit, type Gpu } from '@latkit/gpu';
-import { expandedData, type Point } from './data.js';
+import { diagramData, type Point, type Positions } from './data.js';
 import type { DiagramConfig } from './diagram.js';
 import {
   data as checkedData,
@@ -87,8 +87,8 @@ export async function arrange(
   gpu: Gpu,
   config: DiagramConfig,
   options: RequestOptions = {},
-): Promise<Readonly<Record<string, FieldValues>>> {
-  const data = checkedData(expandedData(config)),
+): Promise<Readonly<Record<string, Positions>>> {
+  const data = checkedData(diagramData(config)),
     limits = resolveLimits(config.limits),
     style = resolveStyle(config, kit.resolveViewStyle(config, VIEW_DEFAULTS));
   const reader = gpu.reader.open({ signal: options.signal, at: config.at ?? undefined });

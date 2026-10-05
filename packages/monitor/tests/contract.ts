@@ -11,7 +11,7 @@ export function usage(
     canvas,
     at: 5,
     source: recording,
-    traces: { temperature: { from: 'node', field: 'temperature', color } },
+    traces: { temperature: { from: 'node', y: 'temperature', color } },
     camera: { window: [0, 10] },
     valueAxis: 'Temperature',
     hover: 'auto',

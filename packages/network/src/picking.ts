@@ -1,15 +1,14 @@
 import { kit, type Viewport } from '@latkit/gpu';
 import { Work, rowAt, sameIndex, type FieldsBlock } from '@latkit/model';
-import type { NetworkData, NetworkItem, VertexData } from './data.js';
+import type { NetworkData, NetworkItem } from './data.js';
 import {
-  vertexOptions,
   edgeOptions,
   type Geometry,
   type VertexBank,
   type EdgeBank,
   type SegmentBatch,
 } from './geometry/topology.js';
-import { nativeValue, RowLookup } from './geometry/rows.js';
+import { RowLookup } from './geometry/rows.js';
 import {
   DEG,
   project,
@@ -19,9 +18,9 @@ import {
   type Projected,
 } from './camera.js';
 import { geodesic } from './geometry/paths.js';
-import { scaledValue, type FieldRead } from './rendering/fields.js';
+import type { ChannelName, FieldRead } from './rendering/fields.js';
 import type { Reads } from './rendering/painter.js';
-import { lineWidthPx, SIZE_RANGE, type Style } from './options.js';
+import { lineWidthPx, type Style } from './options.js';
 
 /** Where a hit-test index lives: built, or part way with the bytes it already holds. */
 interface Indexed {
@@ -77,11 +76,19 @@ function readLookup(read: FieldRead): RowLookup<FieldsBlock> {
   lookup.seal();
   return lookup;
 }
-function identity(read: FieldRead, fields = ['position', 'x', 'y']): unknown[] {
-  const key: unknown[] = [read.vector];
+/** What a read's channels place, by identity: their lanes, scales, constants, and columns. */
+function identity(read: FieldRead, names: readonly ChannelName[] = ['x', 'y']): unknown[] {
+  const key: unknown[] = [],
+    fields = new Set<string>();
   const view = (value?: ArrayBufferView) => {
     key.push(value?.buffer, value?.byteOffset, value?.byteLength, value?.constructor);
   };
+  for (const name of names) {
+    const channel = read.channel(name);
+    key.push(channel.column, channel.component, channel.fallback, ...(channel.scale?.domain ?? []));
+    key.push(...(channel.scale?.range ?? []), channel.scale?.clamp);
+    if (channel.column !== undefined) fields.add(channel.column);
+  }
   for (const tile of read.native) {
     key.push(tile.rows.kind);
     if (tile.rows.kind === 'range') key.push(tile.rows.offset, tile.rows.count);
@@ -100,7 +107,7 @@ function identity(read: FieldRead, fields = ['position', 'x', 'y']): unknown[] {
   return key;
 }
 function equal(a: readonly unknown[], b: readonly unknown[]): boolean {
-  return a.length === b.length && a.every((v, i) => v === b[i]);
+  return a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
 }
 /** A position in world units: the data's own on a plane, or on the unit globe. */
 function world(
@@ -120,24 +127,25 @@ function raw(bank: CpuBank, offset: number): readonly [number, number] {
   const row = rowAt(bank.bank.rows, offset),
     found = bank.lookup.get(row);
   if (!found) return [NaN, NaN];
-  return bank.read.vector
-    ? [
-        nativeValue(found.value, 'position', found.offset),
-        nativeValue(found.value, 'position', found.offset, 1),
-      ]
-    : [nativeValue(found.value, 'x', found.offset), nativeValue(found.value, 'y', found.offset)];
+  const { x, y } = bank.read.channels;
+  return [
+    kit.channelValue(x, found.value, found.offset),
+    kit.channelValue(y, found.value, found.offset),
+  ];
 }
 /** Write a vertex's position into `out` at `at`; NaN when its row has none. */
 function place(bank: CpuBank, offset: number, out: Float64Array, at: number): void {
   const found = bank.lookup.get(rowAt(bank.bank.rows, offset));
   if (!found) out[at] = out[at + 1] = NaN;
-  else if (bank.read.vector) {
-    out[at] = nativeValue(found.value, 'position', found.offset);
-    out[at + 1] = nativeValue(found.value, 'position', found.offset, 1);
-  } else {
-    out[at] = nativeValue(found.value, 'x', found.offset);
-    out[at + 1] = nativeValue(found.value, 'y', found.offset);
+  else {
+    const { x, y } = bank.read.channels;
+    out[at] = kit.channelValue(x, found.value, found.offset);
+    out[at + 1] = kit.channelValue(y, found.value, found.offset);
   }
+}
+/** The largest a channel reads: its range's top, or its fallback. */
+function largest(channel: kit.ChannelRead): number {
+  return channel.scale ? Math.max(...channel.scale.range) : channel.fallback;
 }
 /** Paths are hit only when they ask to be. */
 function pickable(batch: CpuSegment, data: NetworkData): boolean {
@@ -166,14 +174,15 @@ function readBounds(
     minY = Infinity,
     maxX = -Infinity,
     maxY = -Infinity;
+  const { x, y } = read.channels;
   const include = (tile: FieldsBlock, i: number) => {
-    const x = nativeValue(tile, read.vector ? 'position' : 'x', i);
-    const y = nativeValue(tile, read.vector ? 'position' : 'y', i, read.vector ? 1 : 0);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
+    const px = kit.channelValue(x, tile, i),
+      py = kit.channelValue(y, tile, i);
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return;
+    minX = Math.min(minX, px);
+    minY = Math.min(minY, py);
+    maxX = Math.max(maxX, px);
+    maxY = Math.max(maxY, py);
   };
   if (bank.rows.kind === 'range' && read.native.every((tile) => tile.rows.kind === 'range')) {
     for (const tile of read.native) {
@@ -219,7 +228,7 @@ export class Picking {
         read,
         lookup,
         spatial,
-        heightIdentity: [...identity(read, ['height']), ...(read.scales.height?.domain ?? [])],
+        heightIdentity: identity(read, ['z']),
       });
       if (bank.synthetic && geometry.vertices.some((v) => !v.synthetic)) continue;
       minX = Math.min(minX, spatial.bounds[0]);
@@ -395,31 +404,37 @@ export class PickGeometry {
   position(bank: VertexBank, offset: number): readonly [number, number] {
     return raw(this.vertices.get(bank)!, offset);
   }
+  /**
+   * A vertex as drawing projects it, and its marker's radius when given the style's default; a
+   * vertex a marker hides is not visible unless `marker` is false.
+   */
   projected(
     bank: VertexBank,
     offset: number,
     camera: Camera,
     viewport: Viewport,
     height: number,
-    options: VertexData,
-    radiusPx: number,
+    radiusPx?: number,
     marker = true,
   ): Projected & { radius: number; visible: boolean } {
     const cpu = this.vertices.get(bank)!,
-      row = rowAt(bank.rows, offset),
-      found = cpu.lookup.get(row)!;
-    const [x, y] = raw(cpu, offset);
-    const h =
-      scaledValue(cpu.read, 'height', found.value, found.offset, options.height, 0) * height;
-    const projected = project(camera, viewport, x, y, h);
-    const visible = nativeValue(found.value, 'visible', found.offset);
+      found = cpu.lookup.get(rowAt(bank.rows, offset))!,
+      { x, y, z, visible: shown } = cpu.read.channels;
+    const projected = project(
+      camera,
+      viewport,
+      kit.channelValue(x, found.value, found.offset),
+      kit.channelValue(y, found.value, found.offset),
+      kit.channelValue(z, found.value, found.offset) * height,
+    );
+    const visible = kit.channelValue(shown, found.value, found.offset) > 0;
     return {
       ...projected,
-      visible: projected.visible && (!marker || !Number.isFinite(visible) || visible > 0),
+      visible: projected.visible && (!marker || visible),
       radius:
-        bank.synthetic || (Number.isFinite(visible) && visible <= 0)
+        radiusPx === undefined || bank.synthetic || !visible
           ? 0
-          : scaledValue(cpu.read, 'size', found.value, found.offset, options.sizePx, radiusPx),
+          : kit.channelValue(cpu.read.channel('sizePx', radiusPx), found.value, found.offset),
     };
   }
   private phases = new Map<SegmentBatch, Float32Array>();
@@ -452,10 +467,7 @@ export class PickGeometry {
     this.phases = new Map();
     const groups = new Map<EdgeBank, CpuSegment[]>();
     for (const batch of this.edges)
-      if (
-        batch.edge.bank.order &&
-        (edgeOptions(data, batch.edge.bank) as import('./data.js').EdgeData).dash
-      ) {
+      if (batch.edge.bank.order && batch.edge.read.has('dash')) {
         const group = groups.get(batch.edge.bank) ?? [];
         group.push(batch);
         groups.set(batch.edge.bank, group);
@@ -481,7 +493,8 @@ export class PickGeometry {
           phase = 0;
         }
         const found = batch.edge.lookup.get(rowAt(bank.rows, owner))!;
-        if (!(nativeValue(found.value, 'dash', found.offset) > 0)) continue;
+        if (!(kit.channelValue(batch.edge.read.channels.dash, found.value, found.offset) > 0))
+          continue;
         outputs[group][offset] = phase;
         phase += this.worldLength(batch, records[at], records[at + 1], data, globe, height);
       }
@@ -497,8 +510,8 @@ export class PickGeometry {
     globe: boolean,
     height: number,
   ): number {
-    const a = this.place(batch.a, ao, vertexOptions(data, batch.a.bank), height),
-      b = this.place(batch.b, bo, vertexOptions(data, batch.b.bank), height);
+    const a = this.place(batch.a, ao, height),
+      b = this.place(batch.b, bo, height);
     if (![...a, ...b].every(Number.isFinite)) return 0;
     if (edgeOptions(data, batch.edge.bank).route !== 'geodesic')
       return distance(world(a, globe), world(b, globe));
@@ -516,20 +529,11 @@ export class PickGeometry {
     return length;
   }
   /** A vertex's coordinates and height, as drawing places it. */
-  private place(
-    cpu: CpuBank,
-    offset: number,
-    options: VertexData,
-    height: number,
-  ): readonly [number, number, number] {
+  private place(cpu: CpuBank, offset: number, height: number): readonly [number, number, number] {
     const found = cpu.lookup.get(rowAt(cpu.bank.rows, offset));
     if (!found) return [NaN, NaN, NaN];
     const [x, y] = raw(cpu, offset);
-    return [
-      x,
-      y,
-      scaledValue(cpu.read, 'height', found.value, found.offset, options.height, 0) * height,
-    ];
+    return [x, y, kit.channelValue(cpu.read.channels.z, found.value, found.offset) * height];
   }
   private *stroke(
     batch: CpuSegment,
@@ -541,11 +545,9 @@ export class PickGeometry {
     height: number,
     check: () => void,
   ): Iterable<{ a: Projected; b: Projected; first: boolean; last: boolean }> {
-    const ac = vertexOptions(data, batch.a.bank),
-      bc = vertexOptions(data, batch.b.bank);
     // Strokes need positions only; their markers' radii stay unread.
-    const a = this.projected(batch.a.bank, ao, camera, viewport, height, ac, 0, false),
-      b = this.projected(batch.b.bank, bo, camera, viewport, height, bc, 0, false);
+    const a = this.projected(batch.a.bank, ao, camera, viewport, height, undefined, false),
+      b = this.projected(batch.b.bank, bo, camera, viewport, height, undefined, false);
     if (edgeOptions(data, batch.edge.bank).route !== 'geodesic') {
       const clip = projectedStroke(a, b, camera, viewport);
       if (clip) yield { a: clip[0], b: clip[1], first: true, last: true };
@@ -656,18 +658,15 @@ export class PickGeometry {
         b = (camera.bearing * Math.PI) / 180;
       const x = camera.center[0] + dx * Math.cos(b) - dy * Math.sin(b),
         y = camera.center[1] + dx * Math.sin(b) + dy * Math.cos(b);
-      const reach =
-        (radius +
-          Math.max(
-            ...Object.values(data.vertices).map((v) =>
-              v.sizePx ? Math.max(...(v.sizePx.range ?? SIZE_RANGE)) : options.vertexRadiusPx,
-            ),
-            ...[...Object.values(data.edges ?? {}), ...Object.values(data.paths ?? {})].map(
-              (line) => lineWidthPx(line, options),
-            ),
-          ) +
-          options.selectedWidthPx) /
-        camera.scale;
+      let widest = 0;
+      for (const cpu of this.vertices.values())
+        widest = Math.max(widest, largest(cpu.read.channel('sizePx', options.vertexRadiusPx)));
+      for (const { edge } of this.edges)
+        widest = Math.max(
+          widest,
+          largest(edge.read.channel('widthPx', lineWidthPx(edgeOptions(data, edge.bank), options))),
+        );
+      const reach = (radius + widest + options.selectedWidthPx) / camera.scale;
       bounds = [x - reach, y - reach, x + reach, y + reach];
     }
     if (options.markers || options.poles)
@@ -681,7 +680,6 @@ export class PickGeometry {
               camera,
               viewport,
               height,
-              data.vertices[bank.type],
               options.vertexRadiusPx,
             );
             if (!p.visible) continue;
@@ -724,16 +722,20 @@ export class PickGeometry {
               bo = records[offset * 4 + 1],
               eo = records[offset * 4 + 2];
             const edgeRow = rowAt(batch.edge.bank.rows, eo),
-              ef = batch.edge.lookup.get(edgeRow)!;
-            const visible = nativeValue(ef.value, 'visible', ef.offset);
-            if (Number.isFinite(visible) && visible <= 0) continue;
+              ef = batch.edge.lookup.get(edgeRow)!,
+              line = batch.edge.read;
+            if (!(kit.channelValue(line.channels.visible, ef.value, ef.offset) > 0)) continue;
+            const width = kit.channelValue(
+              line.channel('widthPx', lineWidthPx(edgeOptions(data, batch.edge.bank), options)),
+              ef.value,
+              ef.offset,
+            );
             const a = this.projected(
               batch.a.bank,
               ao,
               camera,
               viewport,
               height,
-              vertexOptions(data, batch.a.bank),
               options.vertexRadiusPx,
               false,
             );
@@ -743,7 +745,6 @@ export class PickGeometry {
               camera,
               viewport,
               height,
-              vertexOptions(data, batch.b.bank),
               options.vertexRadiusPx,
               false,
             );
@@ -757,7 +758,6 @@ export class PickGeometry {
               const dashStart =
                 phase + (prefix * hit.length) / Math.max(1e-6, distance(start.world, end.world));
               phase += hit.length;
-              const width = lineWidthPx(edgeOptions(data, batch.edge.bank), options);
               if (hit.distance > radius + width / 2) continue;
               let world = start.world.map(
                 (v, i) => v + (end.world[i] - v) * hit.t,
@@ -773,7 +773,7 @@ export class PickGeometry {
                 world = [sphere[0] * k, sphere[1] * k, sphere[2] * k - 1];
               }
               if (!worldVisible(world, camera, viewport)) continue;
-              const dash = nativeValue(ef.value, 'dash', ef.offset);
+              const dash = kit.channelValue(line.channels.dash, ef.value, ef.offset);
               if (
                 dash > 0 &&
                 ((dashStart + hit.t * hit.length) / Math.max(1, options.dashPeriodPx)) % 1 > 0.55
@@ -810,24 +810,9 @@ export class PickGeometry {
         if (bank.synthetic || !sameIndex(bank.index, item.index)) continue;
         const found = cpu.lookup.get(item.row);
         if (!found) continue;
-        const [x, y] = cpu.read.vector
-          ? [
-              nativeValue(found.value, 'position', found.offset),
-              nativeValue(found.value, 'position', found.offset, 1),
-            ]
-          : [
-              nativeValue(found.value, 'x', found.offset),
-              nativeValue(found.value, 'y', found.offset),
-            ];
-        const h =
-          scaledValue(
-            cpu.read,
-            'height',
-            found.value,
-            found.offset,
-            data.vertices[bank.type].height,
-            0,
-          ) * height;
+        const x = kit.channelValue(cpu.read.channels.x, found.value, found.offset),
+          y = kit.channelValue(cpu.read.channels.y, found.value, found.offset),
+          h = kit.channelValue(cpu.read.channels.z, found.value, found.offset) * height;
         const p = project(camera, viewport, x, y, h);
         return Number.isFinite(p.x) && Number.isFinite(p.y) ? [p.x, p.y] : null;
       }
@@ -874,7 +859,7 @@ export class PickGeometry {
     for (const { batch, offset } of segments) {
       const records = batch.batch.records,
         ef = batch.edge.lookup.get(item.row)!;
-      if (nativeValue(ef.value, 'visible', ef.offset) <= 0) continue;
+      if (!(kit.channelValue(batch.edge.read.channels.visible, ef.value, ef.offset) > 0)) continue;
       for (const piece of this.stroke(
         batch,
         records[offset],

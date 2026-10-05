@@ -27,7 +27,8 @@ export type { Insets } from './view/camera.js';
 export type { ContextMenu, Modifiers, HoverState } from './view/input.js';
 export { createComposition } from './view/composition.js';
 export type { Composition, CompositionConfig } from './view/composition.js';
-export type { Scale, ColorScale, Position2D, Labels, Range, ScaleDomain } from './style/scale.js';
+export type { Scale, ColorScale, Labels, Range, ScaleDomain } from './style/scale.js';
+export type { Channel, ColorChannel } from './style/channel.js';
 export type {
   TextOptions,
   TextRasterizer,

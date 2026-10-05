@@ -224,7 +224,10 @@ export function data(source = new Source(), position = false): DiagramData {
   return {
     source: source.data,
     vertices: {
-      Task: { labels: { field: 'name' }, ...(position ? { position: 'position' } : {}) },
+      Task: {
+        labels: { field: 'name' },
+        ...(position ? { x: 'position', y: { field: 'position', component: 1 } } : {}),
+      },
     },
     edges: {
       Dependency: { route: 'orthogonal', arrows: true, labels: { field: 'name' } },

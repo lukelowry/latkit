@@ -9,7 +9,8 @@ describe.each(sizes)('network %i buses', async (buses) => {
     source: data,
     vertices: {
       Bus: {
-        position: 'position',
+        x: 'position',
+        y: { field: 'position', component: 1 },
         color: { field: 'voltage', domain: [0.95, 1.05] },
         sizePx: 'load',
       },

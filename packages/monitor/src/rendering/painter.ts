@@ -1,6 +1,6 @@
-import { type Gpu, kit } from '@latkit/gpu';
+import { type Gpu, type RGBA, kit } from '@latkit/gpu';
 import { failure, rowCount, type Domain, type FieldsBlock } from '@latkit/model';
-import type { Binding } from '../bindings.js';
+import { TRACE_COLOR, type Binding } from '../bindings.js';
 import type { Style } from '../config.js';
 import type { Axes, Plot } from '../axes.js';
 import type { Pipelines } from './pipelines.js';
@@ -89,14 +89,15 @@ export function buffer(values: ArrayBufferView, label: string): kit.BufferData {
 export interface Draw {
   readonly page: kit.GpuPage;
   /** This draw's view uniforms, bound by `bindDraws`. */
-  readonly uniforms: Float32Array;
+  readonly uniforms: Uint32Array;
   view?: GPUBindGroup;
   readonly colors: GPUBindGroup;
   readonly shade: GPUBindGroup;
   /** Instances: a line per row and frame step, two for stepped interpolation. */
   readonly instances: number;
 }
-const VIEW_BYTES = 224;
+/** A draw's view, in one 256-byte slot: its sizes, colors, plot, and interpolation, then six 32-byte channels. */
+const VIEW_BYTES = 4 * 16 + 6 * 32;
 /** Bind every draw's uniforms from shared buffers: one per buffer's worth of draws, not one each. */
 export function bindDraws(
   gpu: Gpu,
@@ -111,7 +112,7 @@ export function bindDraws(
     per = Math.max(1, Math.floor(limits.maxUniformBufferBindingSize / stride));
   for (let first = 0; first < draws.length; first += per) {
     const chunk = draws.slice(first, first + per),
-      packed = new Float32Array((chunk.length * stride) / 4);
+      packed = new Uint32Array((chunk.length * stride) / 4);
     chunk.forEach((draw, i) => packed.set(draw.uniforms, (i * stride) / 4));
     const binding = frame.uniforms(packed);
     chunk.forEach((draw, i) => {
@@ -153,58 +154,50 @@ export function traceDraws(
     float64: 'relative',
     maxPageBytes: 256 * 1024,
   });
-  const colors = frame.colormap(trace.trace.color?.colormap),
-    colorDomain = trace.colorDomain ?? target.values,
+  const { bound, channels } = trace,
+    tint = bound.channels.color;
+  const colors = frame.colormap(tint.colormap),
     interpolation = { linear: 0, 'step-before': 1, 'step-after': 2 }[
       trace.trace.interpolation ?? 'linear'
     ],
-    width = trace.trace.widthPx ?? 1.25;
+    base = Array.isArray(tint.constant) ? (tint.constant as RGBA) : (tint.missing ?? TRACE_COLOR);
+  // The coordinate and values map onto the image as its window and values place them.
+  const x: kit.ChannelRead = {
+      component: 0,
+      scale: kit.resolveScale({ clamp: false }, target.window),
+      fallback: NaN,
+    },
+    y: kit.ChannelRead = {
+      ...channels.y,
+      scale: kit.resolveScale({ clamp: false }, target.values),
+    },
+    color = trace.colorFollows
+      ? kit.channelRead(tint, kit.resolveScale({}, target.values), -1)
+      : channels.color;
   const draws: Draw[] = [];
   let segments = 0;
   for (const page of pages) {
     const frames = page.samples!.count,
       rows = rowCount(page.rows);
     if (frames < 2 && !dots) continue;
-    const value = page.columns.value,
-      coordinate = page.samples!.coordinates,
-      color = page.columns.color,
-      shaded = page.columns.shade,
-      visible = page.columns.visible;
-    if (value.kind !== 'value') throw failure('invalid-input', 'Trace field must be scalar');
-    const uniforms = new Float32Array(56),
-      ints = new Uint32Array(uniforms.buffer);
-    uniforms.set([target.width, target.height, plot.width, plot.height], 0);
-    uniforms.set(trace.trace.baseColor ?? [0.23, 0.72, 0.88, 0.7], 4);
-    uniforms.set(focus && style.selectedColor ? style.selectedColor : [0, 0, 0, -1], 8);
-    uniforms.set(
-      [
-        focus ? Math.max(width, style.selectedWidthPx) : width,
-        focus ? 1 : 0,
-        frame.viewport.pixelRatio,
-        trace.trace.color ? 1 : 0,
-      ],
-      12,
+    if (page.columns[y.column!]?.kind !== 'value')
+      throw failure('invalid-input', 'Trace field must be scalar');
+    const uniforms = new Uint32Array(VIEW_BYTES / 4),
+      floats = new Float32Array(uniforms.buffer);
+    floats.set(
+      [target.width, target.height, frame.viewport.pixelRatio, focus ? style.selectedWidthPx : 0],
+      0,
     );
-    ints.set(
-      [
-        value.slot,
-        coordinate.slot,
-        color?.kind === 'value' ? color.slot : 0xffffffff,
-        shaded?.kind === 'value' ? shaded.slot : 0xffffffff,
-      ],
-      16,
-    );
-    ints.set([visible?.kind === 'value' ? visible.slot : 0xffffffff, 0, interpolation, 0], 20);
-    ints.set([rows, frames, 0, 0], 24);
-    uniforms.set([shaded?.kind === 'value' ? (shaded.origin?.[0] ?? 0) : 0, 0, plot.x, plot.y], 28);
-    const scale = (at: number, domain: Domain, origin: number | undefined, clamp = false) =>
-      uniforms.set(
-        kit.scaleParameters(kit.resolveScale({ clamp }, domain), { origin: origin ?? 0 }),
-        at,
-      );
-    scale(32, target.window, coordinate.origin?.[0]);
-    scale(40, target.values, value.origin?.[0]);
-    scale(48, colorDomain, color?.kind === 'value' ? color.origin?.[0] : 0, true);
+    floats.set(base, 4);
+    floats.set(focus ? (style.selectedColor ?? [0, 0, 0, -1]) : [0, 0, 0, -2], 8);
+    floats.set([plot.x, plot.y], 12);
+    uniforms[14] = interpolation;
+    kit.writeChannel(uniforms, 16, x, page.samples!.coordinates);
+    kit.writeChannel(uniforms, 24, y, page);
+    kit.writeChannel(uniforms, 32, color, page);
+    kit.writeChannel(uniforms, 40, channels.widthPx, page);
+    kit.writeChannel(uniforms, 48, channels.visible, page);
+    kit.writeChannel(uniforms, 56, channels.shade, page);
     const steps = rows * Math.max(1, frames - 1);
     segments += steps;
     draws.push({

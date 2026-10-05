@@ -67,23 +67,31 @@ export class BufferData {
   }
 
   /**
-   * Hold exactly `values`, resizing to fit, and mark only the words that differ as changed, so a
-   * consumer uploads what moved rather than everything.
+   * Hold exactly `values`, resizing to fit, and mark only what differs as changed, so a consumer
+   * uploads what moved rather than everything. `stride` bytes compare as one record: a record with
+   * any changed word changes whole, and changed neighbors join one range. One revision records it.
    */
-  update(values: ArrayBufferView): void {
-    if (values.byteLength % 4 || values.byteOffset % 4)
+  update(values: ArrayBufferView, stride = 4): void {
+    if (values.byteLength % 4 || values.byteOffset % 4 || stride % 4 || stride <= 0)
       throw failure('invalid-input', 'Updates are whole, aligned words');
     this.resize(Math.max(4, values.byteLength));
     const next = new Uint32Array(values.buffer, values.byteOffset, values.byteLength / 4),
-      held = new Uint32Array(this.storage.buffer, this.storage.byteOffset, next.length);
-    for (let i = 0, start = -1; i <= next.length; i++)
-      if (i < next.length && held[i] !== next[i]) {
-        if (start < 0) start = i;
-        held[i] = next[i];
-      } else if (start >= 0) {
-        this.touch({ offset: start * 4, size: (i - start) * 4 });
-        start = -1;
-      }
+      held = new Uint32Array(this.storage.buffer, this.storage.byteOffset, next.length),
+      step = stride / 4,
+      ranges: { offset: number; size: number }[] = [];
+    for (let record = 0; record < next.length; record += step) {
+      const end = Math.min(record + step, next.length);
+      let same = true;
+      for (let i = record; same && i < end; i++) same = held[i] === next[i];
+      if (same) continue;
+      held.set(next.subarray(record, end), record);
+      const last = ranges.at(-1);
+      if (last && last.offset + last.size === record * 4) last.size += (end - record) * 4;
+      else ranges.push({ offset: record * 4, size: (end - record) * 4 });
+    }
+    if (!ranges.length) return;
+    this.history.push({ revision: ++this.serial, ranges });
+    if (this.history.length > 64) this.history.shift();
   }
 
   /** Call after editing bytes directly. Empty touches still advance the revision. */

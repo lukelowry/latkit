@@ -4,19 +4,23 @@ import {
   fieldDefinition,
   assertIndex,
   bitAt,
-  numberAt,
   textAt,
   rowAt,
   rowCount,
   type Column,
   type FieldInput,
-  type FieldsBlock,
   type Index,
   type ReadScope,
   type TypeDefinition,
 } from '@latkit/model';
 import { kit, type TextLayout, type TextLayoutInput } from '@latkit/gpu';
-import type { DiagramData, VertexData, EdgeData, DiagramLabels, PortData } from './data.js';
+import type {
+  DiagramData,
+  VertexOptions,
+  EdgeOptions,
+  DiagramLabels,
+  PortOptions,
+} from './data.js';
 import type { Scene, Vertex, Edge, Port } from './scene.js';
 import { emptyLabel } from './scene.js';
 import type { Limits } from './options.js';
@@ -24,42 +28,52 @@ import type { Style } from './config.js';
 import { fail } from './config.js';
 
 export type Layout = (input: TextLayoutInput) => Promise<TextLayout>;
-function scalar(column: Column | undefined, row: number): number | null {
-  if (!column) return null;
-  if (column.kind === 'numeric') return numberAt(column, row);
-  if (column.kind === 'boolean')
-    return bitAt(column.validity, column.offset + row)
-      ? +bitAt(column.values, column.offset + row)
-      : null;
-  fail('Expected a scalar numeric or boolean field');
-}
-function vector(column: Column | undefined, row: number): readonly [number, number] | null {
-  if (!column) return null;
-  if (column.kind !== 'vector' || column.size !== 2) fail('Expected a two-lane vector field');
-  if (!bitAt(column.validity, column.offset + row)) return null;
-  const at = (column.offset + row) * 2;
-  const x = numberAt(column.values, at),
-    y = numberAt(column.values, at + 1);
-  return x !== null && y !== null && Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null;
-}
 function text(column: Column | undefined, row: number): string {
   if (!column) return '';
   if (column.kind !== 'text') fail('Expected a text label field');
   return textAt(column, row) ?? '';
 }
-/** The fields a type's structure reads: what is drawn where, and its text. */
-export function structure(option: VertexData | EdgeData): Record<string, FieldInput> {
-  const out: Record<string, FieldInput> = {};
-  if (option.visible) out.visible = option.visible;
-  if (option.labels) out.label = option.labels.field;
-  if ('position' in option && option.position) {
-    if (typeof option.position === 'object' && 'x' in option.position) {
-      out.x = option.position.x;
-      out.y = option.position.y;
-    } else out.position = option.position;
+/** What a vertex's structure reads: where it sits, its size, and whether it shows. */
+const VERTEX_SHAPE = {
+  x: 'raw',
+  y: 'raw',
+  width: 'raw',
+  height: 'raw',
+  visible: 'raw',
+} as const satisfies Readonly<Record<string, kit.ChannelKind>>;
+const EDGE_SHAPE = { visible: 'raw' } as const satisfies Readonly<Record<string, kit.ChannelKind>>;
+type ShapeName = keyof typeof VERTEX_SHAPE;
+/** Rows without a value: unplaced, sized to fit, and shown. */
+const UNPLACED = { x: NaN, y: NaN, width: NaN, height: NaN, visible: 1 } as const;
+interface Structure {
+  readonly channels: kit.BoundChannels<ShapeName>;
+  /** The channels' fields, and the labels' text as `label`. */
+  readonly fields: Readonly<Record<string, FieldInput>>;
+}
+const structures = new WeakMap<object, Structure>();
+/** What a type's structure reads, bound once per options object. */
+export function structure(option: VertexOptions | EdgeOptions, edge: boolean): Structure {
+  let found = structures.get(option);
+  if (!found) {
+    const channels = kit.bindChannels(
+      option,
+      (edge ? EDGE_SHAPE : VERTEX_SHAPE) as Readonly<Record<ShapeName, kit.ChannelKind>>,
+    );
+    const labels = kit.labelOptions(option.labels);
+    found = {
+      channels,
+      fields: { ...channels.fields, ...(labels ? { label: labels.field } : {}) },
+    };
+    structures.set(option, found);
   }
-  if ('size' in option && option.size) out.size = option.size;
-  return out;
+  return found;
+}
+/** Every drawn type's options, and whether it is an edge type. */
+function types(data: DiagramData): [string, VertexOptions | EdgeOptions, boolean][] {
+  return [
+    ...Object.entries(data.vertices).map(([type, option]) => [type, option, false] as const),
+    ...Object.entries(data.edges ?? {}).map(([type, option]) => [type, option, true] as const),
+  ] as [string, VertexOptions | EdgeOptions, boolean][];
 }
 /** Whether a binding reads a sampled field, so it depends on the read coordinate. */
 function sampled(data: DiagramData, type: string, input: FieldInput): boolean {
@@ -67,23 +81,24 @@ function sampled(data: DiagramData, type: string, input: FieldInput): boolean {
 }
 /** Only sampled geometry, visibility, and text invalidate the scene. */
 export function sampledStructure(data: DiagramData): boolean {
-  return [...Object.entries(data.vertices), ...Object.entries(data.edges ?? {})].some(
-    ([type, options]) =>
-      Object.values(structure(options)).some((input) => sampled(data, type, input)),
+  return types(data).some(([type, options, edge]) =>
+    Object.values(structure(options, edge).fields).some((input) => sampled(data, type, input)),
   );
 }
 /** What a scene is made of in each entry; every other option is a style the GPU reads. */
 const VERTEX = [
   'rows',
-  'position',
-  'size',
+  'x',
+  'y',
+  'width',
+  'height',
   'shape',
   'cornerRadius',
   'labelPosition',
   'visible',
   'labels',
-] as const satisfies readonly (keyof VertexData)[];
-const PORT = ['side', 'order', 'marker', 'label'] as const satisfies readonly (keyof PortData)[];
+] as const satisfies readonly (keyof VertexOptions)[];
+const PORT = ['side', 'order', 'marker', 'label'] as const satisfies readonly (keyof PortOptions)[];
 const EDGE = [
   'rows',
   'ends',
@@ -92,7 +107,7 @@ const EDGE = [
   'appearance',
   'visible',
   'labels',
-] as const satisfies readonly (keyof EdgeData)[];
+] as const satisfies readonly (keyof EdgeOptions)[];
 /** Whether two diagrams have one structure, so only styles changed between them. */
 export function sameStructure(a: DiagramData, b: DiagramData): boolean {
   return (
@@ -117,11 +132,8 @@ export function structural(
     if (!fields) named.set(type, (fields = new Set()));
     fields.add(input);
   };
-  for (const [type, option] of [
-    ...Object.entries(data.vertices),
-    ...Object.entries(data.edges ?? {}),
-  ] as const)
-    for (const input of Object.values(structure(option))) add(type, input);
+  for (const [type, option, edge] of types(data))
+    for (const input of Object.values(structure(option, edge).fields)) add(type, input);
   return (type, definition) => [
     ...(named.get(type) ?? []),
     ...Object.keys(definition.fields).filter((field) => {
@@ -132,21 +144,8 @@ export function structural(
 }
 /** Whether the structure reads only the drawn source, so its tables say when it changed. */
 export function local(data: DiagramData): boolean {
-  return [...Object.values(data.vertices), ...Object.values(data.edges ?? {})].every((option) =>
-    Object.values(structure(option)).every((input) => typeof input === 'string'),
-  );
-}
-interface Values {
-  [name: string]: number | null;
-}
-function values(tile: FieldsBlock, row: number, names: readonly string[]): Values {
-  return Object.fromEntries(
-    names.map((name) => [
-      name,
-      tile.presence[name] && !bitAt(tile.presence[name], row)
-        ? null
-        : scalar(tile.columns[name], row),
-    ]),
+  return types(data).every(([, option, edge]) =>
+    Object.values(structure(option, edge).fields).every((input) => typeof input === 'string'),
   );
 }
 function label(
@@ -239,15 +238,20 @@ export async function readScene(
       ports: portSlots,
       names: ports.map((port) => port.field),
     });
-    const aliases = structure(option);
-    const numeric = Object.keys(aliases).filter((k) => !['label', 'position', 'size'].includes(k));
+    const { channels, fields } = structure(option, false),
+      read = await kit.readChannels(
+        reader,
+        { source: data.source, from: type, rows: option.rows },
+        channels,
+        UNPLACED,
+      );
     const rows = new Map<number, number>();
     byType.set(type, rows);
     for await (const tile of reader.fields({
       source: data.source,
       from: type,
       rows: option.rows,
-      fields: aliases,
+      fields,
       ids: true,
     })) {
       if (!tile.ids) fail('Vertex IDs were not returned');
@@ -262,29 +266,24 @@ export async function readScene(
         if (rows.has(row)) fail('Duplicate vertex row');
         const id = textAt(tile.ids, i);
         if (id === null) fail('Missing vertex identity');
-        const vals = values(tile, i, numeric);
-        const xy = aliases.position
-          ? !tile.presence.position || bitAt(tile.presence.position, i)
-            ? vector(tile.columns.position, i)
-            : null
-          : vals.x !== null && vals.y !== null && Number.isFinite(vals.x) && Number.isFinite(vals.y)
-            ? ([vals.x!, vals.y!] as const)
-            : null;
-        const size =
-          !tile.presence.size || bitAt(tile.presence.size, i) ? vector(tile.columns.size, i) : null;
-        if (size && (size[0] <= 0 || size[1] <= 0)) fail('Vertex size must be positive');
-        const shown = vals.visible === undefined || vals.visible === null || vals.visible !== 0;
+        const x = kit.channelValue(read.x, tile, i),
+          y = kit.channelValue(read.y, tile, i),
+          width = kit.channelValue(read.width, tile, i),
+          height = kit.channelValue(read.height, tile, i),
+          placed = Number.isFinite(x) && Number.isFinite(y);
+        if (width <= 0 || height <= 0) fail('Vertex size must be positive');
+        const shown = kit.channelValue(read.visible, tile, i) !== 0;
         texts.push(text(tile.columns.label, i));
         const vertex: Vertex = {
           hit: { kind: 'vertex', id, source: data.source, index: tile.index, row },
           index: tile.index,
           row,
-          x: xy?.[0] ?? 0,
-          y: xy?.[1] ?? 0,
-          width: size?.[0] ?? 0,
-          height: size?.[1] ?? 0,
+          x: placed ? x : 0,
+          y: placed ? y : 0,
+          width: width || 0,
+          height: height || 0,
           header: 0,
-          pinned: !!xy,
+          pinned: placed,
           shape: option.shape ?? 'rounded',
           radius: option.cornerRadius ?? options.cornerRadius,
           visible: shown,
@@ -348,11 +347,12 @@ export async function readScene(
       const text = option.ports?.[port.field]?.label ?? definition.fields[port.field].label;
       portLabels.set(port.field, await label(text ?? port.field, null, options, layout, quiet));
     }
-    const maxCount = option.labels?.maxCount ?? Infinity;
+    const labels = kit.labelOptions(option.labels),
+      maxCount = labels?.maxCount ?? Infinity;
     for (let i = start; i < scene.vertices.length; i++) {
       const vertex = scene.vertices[i];
       if (i - start < maxCount)
-        vertex.label = await label(texts[i - start], option.labels, options, layout, title);
+        vertex.label = await label(texts[i - start], labels, options, layout, title);
       for (const port of vertex.ports) port.label = portLabels.get(port.name) ?? emptyLabel;
       size(vertex, options);
       charge(vertex.label.runs.length * 128);
@@ -374,13 +374,18 @@ export async function readScene(
       texts: string[] = [];
     scene.types.edges.set(type, { first: start });
     let index: Index | undefined;
-    const aliases = structure(option),
-      numeric = Object.keys(aliases).filter((k) => k !== 'label');
+    const { channels, fields } = structure(option, true),
+      read = await kit.readChannels(
+        reader,
+        { source: data.source, from: type, rows: option.rows },
+        channels,
+        UNPLACED,
+      );
     for await (const tile of reader.fields({
       source: data.source,
       from: type,
       rows: option.rows,
-      fields: aliases,
+      fields,
       ids: true,
     })) {
       if (!tile.ids) fail('Edge IDs were not returned');
@@ -391,15 +396,14 @@ export async function readScene(
         if (scene.edges.length >= limits.edges)
           throw failure('resource-limit', 'Too many diagram edges');
         charge(384);
-        const v = values(tile, i, numeric),
-          row = rowAt(tile.rows, i),
+        const row = rowAt(tile.rows, i),
           id = textAt(tile.ids, i);
         if (id === null || edgeRows.has(row)) fail('Missing or duplicate edge identity');
         texts.push(text(tile.columns.label, i));
         const edge: Edge = {
           hit: { kind: 'edge', id, source: data.source, index: tile.index, row },
           ends: [],
-          visible: v.visible === undefined || v.visible === null || v.visible !== 0,
+          visible: kit.channelValue(read.visible, tile, i) !== 0,
           label: emptyLabel,
           options: option,
           paths: [],
@@ -455,9 +459,10 @@ export async function readScene(
         end(edge, vertex, port.name, port.direction);
       }
     }
-    const maxCount = option.labels?.maxCount ?? Infinity;
+    const labels = kit.labelOptions(option.labels),
+      maxCount = labels?.maxCount ?? Infinity;
     for (let i = start; i < Math.min(scene.edges.length, start + maxCount); i++) {
-      scene.edges[i].label = await label(texts[i - start], option.labels, options, layout, {
+      scene.edges[i].label = await label(texts[i - start], labels, options, layout, {
         size: options.portFontSize,
       });
       charge(scene.edges[i].label.runs.length * 128);

@@ -69,12 +69,13 @@ async function main(): Promise<void> {
   const fields = (): VertexOptions => {
     const radius = large() ? 1.4 : 4;
     return {
-      position: 'position',
+      x: 'position',
+      y: { field: 'position', component: 1 },
       color: { field: 'load', domain: [0, 1], colormap: colors },
       sizePx: current.tables.Bus!.columns.degree
         ? { field: 'degree', domain: [0, 1], range: [radius * 0.6, radius * 2] }
         : null,
-      height: heightOn ? { field: 'load', domain: [0, 1], range: [0, 0.18] } : null,
+      z: heightOn ? { field: 'load', domain: [0, 1], range: [0, 0.18] } : null,
     };
   };
   const gpu = await createGpu();
@@ -152,7 +153,7 @@ async function main(): Promise<void> {
                     source: borders?.data,
                     points: 'points',
                     widthPx: 0.8,
-                    baseColor: [0.4, 0.55, 0.65, 0.7],
+                    color: [0.4, 0.55, 0.65, 0.7],
                   }
                 : null,
             },

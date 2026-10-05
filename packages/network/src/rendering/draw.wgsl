@@ -49,8 +49,9 @@ fn hidden()->Varying { var out:Varying;out.position=vec4f(2.0,2.0,2.0,1.0);retur
   let segment=segments[primitive];
   var prefix=0.0;if(item.z>0u){prefix=dashPhases[primitive];}
   let ab=segment.x*5u;let bb=segment.y*5u;let es=segment.z*2u;
-  var p=a[ab];var q=b[bb];let ai=a[ab+3u];let bi=b[bb+3u];let info=styles[es+1u];
-  if(a[ab+4u].w<0.5||b[bb+4u].w<0.5||info.w<0.5){return hidden();}
+  // Half its width, its shade, its row, and flags: 1 shown, 2 dashed.
+  var p=a[ab];var q=b[bb];let ai=a[ab+3u];let bi=b[bb+3u];let info=styles[es+1u];let flags=bitcast<u32>(info.w);
+  if(a[ab+4u].w<0.5||b[bb+4u].w<0.5||(flags&1u)==0u){return hidden();}
   var wa=a[ab+4u].xyz;var wb=b[bb+4u].xyz;
   if(NETWORK_CURVES){
     let start=wa;wa=curve_world(start,wb,interval.x,u);wb=curve_world(start,wb,interval.y,u);
@@ -61,7 +62,7 @@ fn hidden()->Varying { var out:Varying;out.position=vec4f(2.0,2.0,2.0,1.0);retur
   let start=p;p=mix(start,q,clipping.x);q=mix(start,q,clipping.y);
   let row=bitcast<u32>(info.z);let f=focus(item.x+segment.z);
   let halo=select(select(0.0,u.halo.z,f==1u),u.halo.w,f==2u);
-  let width=u.style.y+halo;
+  let width=info.x+halo;
   let sa=screen(p);let sb=screen(q);let delta=sb-sa;let lengthPx=max(0.001,length(delta));
   // Earlier segments of a dashed edge, in world units, at this piece's own screen scale.
   phase+=prefix*lengthPx/max(length(wb-wa)*(clipping.y-clipping.x),0.000001);
@@ -71,11 +72,11 @@ fn hidden()->Varying { var out:Varying;out.position=vec4f(2.0,2.0,2.0,1.0);retur
   pos.x+=offset.x*2.0/u.view.x*pos.w;pos.y-=offset.y*2.0/u.view.y*pos.w;
   var color=styles[es];if(color.a<0.0){color=(a[ab+2u]+b[bb+2u])*0.5;}
   var out:Varying;out.position=pos;out.uv=vec2f(mix(-width,lengthPx+width,t),c.y*width);
-  out.dimensions=vec4f(lengthPx,width,u.style.y,info.x);out.color=color;
+  out.dimensions=vec4f(lengthPx,width,info.x,select(0.0,1.0,(flags&2u)!=0u));out.color=color;
   out.identity=vec4u(1u,row,f,0u);out.world=mix(wa,wb,mix(clipping.x,clipping.y,t));
   out.extra=vec4f(info.y,select(0.0,1.0,segment.w>0u||NETWORK_CURVES),phase,0.0);
-  out.discA=vec3f(sa,select(0.0,ai.x,u.style.w>0.5&&ai.w>0.5&&interval.x==0.0));
-  out.discB=vec3f(sb,select(0.0,bi.x,u.style.w>0.5&&bi.w>0.5&&interval.y==1.0));return out;
+  out.discA=vec3f(sa,select(0.0,ai.x,u.style.y>0.5&&ai.w>0.5&&interval.x==0.0));
+  out.discB=vec3f(sb,select(0.0,bi.x,u.style.y>0.5&&bi.w>0.5&&interval.y==1.0));return out;
 }
 @vertex fn pole_main(@builtin(vertex_index) v:u32,@builtin(instance_index) i:u32)->Varying {
   let base=i*5u;let p=a[base+1u];let q=a[base];let info=a[base+3u];
@@ -97,7 +98,7 @@ struct PaintOut { @location(0) color:vec4f, @builtin(frag_depth) depth:f32 }
     if(v.identity.x==1u){
       if(v.discA.z>0.0&&distance(px,v.discA.xy)<v.discA.z){discard;}
       if(v.discB.z>0.0&&distance(px,v.discB.xy)<v.discB.z){discard;}
-      if(v.dimensions.w>0.0&&!stroke_dash(v.uv.x+v.extra.z,u.style.z)){discard;}
+      if(v.dimensions.w>0.0&&!stroke_dash(v.uv.x+v.extra.z,u.style.x)){discard;}
     }
   }
   let aa=max(fwidth(distanceTo),0.01);let alpha=1.0-smoothstep(outer-aa,outer+aa,distanceTo);

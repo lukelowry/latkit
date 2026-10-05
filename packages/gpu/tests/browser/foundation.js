@@ -52,7 +52,7 @@ export async function checkFoundation(gpu, target) {
     struct Info {shape:vec4u,slots:vec4u}
     @group(1) @binding(0) var<storage,read_write> result:array<f32>;
     @group(1) @binding(1) var<uniform> info:Info;
-    @group(1) @binding(2) var<uniform> scale:LatkitScale;
+    @group(1) @binding(2) var<uniform> channels:array<LatkitChannel,3>;
     @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id:vec3u) {
       if(id.x>=info.shape.x*info.shape.y){return;}
       let row=id.x%info.shape.x;let bucket=id.x/info.shape.x;
@@ -63,9 +63,9 @@ export async function checkFoundation(gpu, target) {
         result[to+8u+lane]=fieldFloat(info.slots.z,row,bucket,lane);
       }
       result[to+12u]=select(0.0,1.0,fieldBool(info.slots.w,row,bucket));
-      result[to+13u]=scaleMapped(fieldFloat(info.slots.x,row,bucket,0u),fieldValid(info.slots.x,row,bucket),scale,-99.0);
-      result[to+14u]=scaleMapped(100.0,true,LatkitScale(vec4f(0,0,2,6),vec4f(2,1,0,0)),-99.0);
-      result[to+15u]=scaleMapped(100.0,true,LatkitScale(vec4f(0),vec4f(0)),-99.0);
+      result[to+13u]=channelNumber(channels[0],row,bucket);
+      result[to+14u]=channelNumber(channels[1],row,bucket);
+      result[to+15u]=channelNumber(channels[2],row,bucket);
     }`,
   });
   const errors = (await module.getCompilationInfo()).messages.filter((m) => m.type === 'error');
@@ -76,6 +76,22 @@ export async function checkFoundation(gpu, target) {
   });
   let draws = [],
     expected = new Float32Array(rows * buckets * 16);
+  // A linear scale over a relative Float64 domain, a constant domain's midpoint, and an empty one.
+  const channelWords = (values) => {
+    const words = new Uint32Array(24);
+    for (const [i, domain, range] of [
+      [0, [1e12, 1e12 + 100], [0, 1]],
+      [1, [5, 5], [2, 8]],
+      [2, null, [0, 1]],
+    ])
+      kit.writeChannel(
+        words,
+        i * 8,
+        { component: 0, scale: kit.resolveScale({ range }, domain), fallback: -99 },
+        values,
+      );
+    return words;
+  };
   const renderer = {
     ...snapshotRenderer(
       async (frame) => {
@@ -107,11 +123,7 @@ export async function checkFoundation(gpu, target) {
               },
               {
                 binding: 2,
-                resource: frame.uniforms(
-                  kit.scaleParameters(kit.resolveScale({}, [1e12, 1e12 + 100]), {
-                    origin: field.values.origin?.[0],
-                  }),
-                ),
+                resource: frame.uniforms(channelWords(field.values)),
               },
             ],
           });
@@ -165,7 +177,7 @@ export async function checkFoundation(gpu, target) {
       throw new Error('Shared effect ABI did not compile');
     return [
       'native envelope GPU paging / values / coordinates / exact-relative frame identities / continuity',
-      'CPU-WGSL scale agreement / constant / empty domains',
+      'CPU-WGSL channel agreement / constant / empty domains',
       'shared shade context and premultiplied output shader',
     ];
   } finally {

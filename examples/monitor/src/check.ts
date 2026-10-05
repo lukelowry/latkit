@@ -28,7 +28,7 @@ async function check(): Promise<void> {
         traces: {
           value: {
             from: 'sensor',
-            field: 'value',
+            y: 'value',
             color: { field: 'value', domain: [-1, 1], colormap: 'viridis' },
           },
         },

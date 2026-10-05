@@ -78,3 +78,9 @@ is written, or memory it held is evicted; reuse only holds that memory again, so
 nothing changed costs no reads or uploads. Text goes through `kit.TextBank`, which lays each key's
 runs out once and moves only anchors, and `kit.textOrigin`, which places text by its side and
 height: `middle` centers it by its capitals.
+
+Every per-row option is a [channel](topology-and-channels.md#channels). `kit.bindChannels` binds a
+type's options to the columns of one fields read, sharing a column between channels of one field;
+`kit.readChannels` resolves their scales. A shader reads each through the field shader's
+`LatkitChannel`, which `kit.writeChannel` fills per page, with `channelNumber` and `channelColor`;
+`kit.channelValue` reads a row on the CPU as the shader does, for picking and layout.

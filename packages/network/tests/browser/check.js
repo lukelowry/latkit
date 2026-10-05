@@ -22,7 +22,8 @@ function data(source, labels = true) {
     source: source.data,
     vertices: {
       node: {
-        position: 'location',
+        x: 'location',
+        y: { field: 'location', component: 1 },
         color: { field: 'signal', domain: [0, 1], colormap: colormaps.viridis },
         sizePx: { field: 'weight', domain: [0, 1], range: [2.8, 6] },
         labels: labels ? { field: 'name', sizePx: 11, maxCount: 45 } : null,
@@ -35,7 +36,7 @@ function data(source, labels = true) {
               source: borders.data,
               points: 'points',
               widthPx: 0.8,
-              baseColor: [0.45, 0.62, 0.68, 0.72],
+              color: [0.45, 0.62, 0.68, 0.72],
             },
           }
         : undefined,
@@ -50,11 +51,9 @@ function data(source, labels = true) {
 }
 function channelBindings() {
   return {
-    position: {
-      x: el('channel-x').checked ? 'x' : 'baseX',
-      y: el('channel-y').checked ? 'y' : 'baseY',
-    },
-    height: el('channel-z').checked ? { field: 'z', domain: [0, 1], range: [0, 1] } : null,
+    x: el('channel-x').checked ? 'x' : 'baseX',
+    y: el('channel-y').checked ? 'y' : 'baseY',
+    z: el('channel-z').checked ? { field: 'z', domain: [0, 1], range: [0, 1] } : null,
     color: el('channel-color').checked
       ? { field: 'signal', domain: [0, 1], colormap: colormaps.viridis }
       : null,
@@ -246,10 +245,9 @@ async function benchmarkHover(count = 100000) {
       for (const moving of [false, true]) {
         view.set({
           vertices: {
-            node: {
-              position: moving ? { x: 'x', y: 'y' } : 'location',
-              height: moving ? { field: 'z', domain: [0, 1] } : null,
-            },
+            node: moving
+              ? { x: 'x', y: 'y', z: { field: 'z', domain: [0, 1] } }
+              : { x: 'location', y: { field: 'location', component: 1 }, z: null },
           },
         });
         // Warm the same coordinates for both policies before measuring.
@@ -354,7 +352,7 @@ async function checks() {
     assert((await view.pick(tilt))[0]?.row === 12, 'Tilt picking differs from geometry');
     const ends = fixture.endsQueries;
     view.set({
-      vertices: { node: { position: { x: 'x', y: 'y' }, height: { field: 'z', domain: [0, 1] } } },
+      vertices: { node: { x: 'x', y: 'y', z: { field: 'z', domain: [0, 1] } } },
     });
     await view.image({ ...size, at: 2 });
     const moving = view.locate(item);
@@ -383,7 +381,13 @@ async function checks() {
   const features = featureSource();
   const featureView = createNetwork(gpu, {
     source: features.data,
-    vertices: { node: { position: 'position', labels: { field: 'name', maxCount: 4 } } },
+    vertices: {
+      node: {
+        x: 'position',
+        y: { field: 'position', component: 1 },
+        labels: { field: 'name', maxCount: 4 },
+      },
+    },
     edges: {
       route: { ends: ['from', 'to'], route: 'geodesic', labels: { field: 'name' } },
       star: {},
@@ -432,7 +436,7 @@ async function checks() {
   });
   const seamView = createNetwork(gpu, {
     source: seamSource.data,
-    vertices: { node: { position: 'position' } },
+    vertices: { node: { x: 'position', y: { field: 'position', component: 1 } } },
     edges: { route: { ends: ['from', 'to'], route: 'geodesic' } },
     camera: { center: [0, 20], scale: 1.2 },
     markers: false,
@@ -586,7 +590,9 @@ async function showFeatures(reset = true) {
     canvas: el('graph'),
     at: 0,
     source: source.data,
-    vertices: { node: { position: 'position', labels: { field: 'name' } } },
+    vertices: {
+      node: { x: 'position', y: { field: 'position', component: 1 }, labels: { field: 'name' } },
+    },
     edges: {
       bend: { ends: ['from', 'to'], bends: 'points', labels: { field: 'name' } },
       star: { labels: { field: 'name' } },
@@ -603,11 +609,11 @@ async function showFeatures(reset = true) {
               source: borders.data,
               points: 'points',
               widthPx: 0.8,
-              baseColor: [0.3, 0.48, 0.58, 0.75],
+              color: [0.3, 0.48, 0.58, 0.75],
             },
           }
         : {}),
-      seam: { points: 'points', pickable: true, widthPx: 2, baseColor: [1, 0.6, 0.25, 1] },
+      seam: { points: 'points', pickable: true, widthPx: 2, color: [1, 0.6, 0.25, 1] },
     },
     camera: { center: [-35, 5], scale: 4, projection: 'globe', pitch: 0 },
     poles: el('poles').checked,
@@ -634,8 +640,12 @@ async function benchmarkPaths(count = 100000, moving = false) {
         const input = data(fixture, false);
         input.edges.line.route = route;
         if (moving) {
-          input.vertices.node.position = { x: 'x', y: 'y' };
-          input.vertices.node.height = { field: 'z', domain: [0, 1] };
+          input.vertices.node = {
+            ...input.vertices.node,
+            x: 'x',
+            y: 'y',
+            z: { field: 'z', domain: [0, 1] },
+          };
         }
         input.paths = detailed
           ? { border: { source: borders.data, points: 'points', widthPx: 0.8 } }

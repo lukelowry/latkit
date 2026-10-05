@@ -18,7 +18,7 @@ globalThis.monitorCheck = (async () => {
     traces: {
       signal: {
         from: 'signal',
-        field: 'value',
+        y: 'value',
         color: { field: 'weight', domain: [0, 63], colormap: 'viridis' },
         widthPx: 1.1,
       },
@@ -83,7 +83,7 @@ globalThis.monitorCheck = (async () => {
       traces: {
         signal: {
           from: 'signal',
-          field: 'value',
+          y: 'value',
           color: {
             field: 'weight',
             domain: [0, Math.max(1, source.count - 1)],
@@ -118,7 +118,7 @@ globalThis.monitorCheck = (async () => {
       traces: {
         signal: {
           from: 'signal',
-          field: 'value',
+          y: 'value',
           color: { field: 'weight', domain: [0, 7], colormap: 'viridis' },
           widthPx: null,
         },

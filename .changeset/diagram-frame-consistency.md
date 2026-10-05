@@ -20,7 +20,7 @@ Added
 
 Changed
 
-- network: `position` is bound like every other field; without one, rows sit on a circle. Whether positions are longitude and latitude comes from the bound field's `geographic`.
+- network: positions are bound like every other field; without them, rows sit on a circle. Whether they are longitude and latitude comes from the bound fields' `geographic`.
 - Text draws from one glyph atlas, one SDF per font and grapheme, and repeated layouts are cached. Lines are the font's ascent and descent tall, so every string of a font shares one baseline, and titles, port names, wire labels, and axis ticks center by their capitals.
 - Every view draws its labels through `kit.TextBank`: a label's glyphs are prepared once, and frames move or hide only its anchor.
 - `TextBitmap.ascent` and `descent` are the font's line metrics; the rasterizer reports `fontBoundingBox` values.
@@ -39,5 +39,5 @@ Renamed
 
 Removed
 
-- model: `TypeDefinition.spatial`. A position field says whether it is `geographic`, and a view binds `position` itself. Schemas cross connect, so peers upgrade together.
+- model: `TypeDefinition.spatial`. A position field says whether it is `geographic`, and a view binds its positions itself. Schemas cross connect, so peers upgrade together.
 - gpu: `TextLayout.ascent` and `descent`; `kit.scaleShader` (in `kit.fieldShader`), `kit.defaultShade`, and `kit.localPoint`.

@@ -18,6 +18,8 @@ import { readGeometry, DEFAULT_LIMITS, type Geometry } from '../src/geometry/top
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
 
 const lonlat = { kind: 'vector', items: 'float64', size: 2 } as const;
+/** Both lanes of a position field. */
+const lonlat2 = { x: 'position', y: { field: 'position', component: 1 } } as const;
 const bus = { type: { kind: 'reference', to: 'Bus' }, nullable: true } as const;
 
 /** Buses placed by longitude/latitude, branches wired to two of them, and loads wired to one. */
@@ -148,7 +150,7 @@ async function geometryOf(gpu: Gpu, data: NetworkData): Promise<Geometry> {
 }
 const branches = (source: GridSource): NetworkData => ({
   source: source.data,
-  vertices: { Bus: { position: 'position' } },
+  vertices: { Bus: { x: 'position', y: { field: 'position', component: 1 } } },
   edges: { Branch: { ends: ['bus1', 'bus2'] } },
 });
 
@@ -217,9 +219,9 @@ it('refuses ends that are not two distinct references to vertex types', async ()
   expect(() =>
     createNetwork(gpu, {
       ...branches(source),
-      edges: { Branch: { ends: ['bus1', 'bus2'], junction: 'x' } },
+      edges: { Branch: { ends: ['bus1', 'bus2'], x: 'x' } },
     }),
-  ).toThrow('A junction centers a net');
+  ).toThrow('A star center belongs to a net');
   expect(() =>
     createNetwork(gpu, { ...branches(source), edges: { Bus: { bends: 'route' } } }),
   ).toThrow('Bends require ends');
@@ -243,7 +245,7 @@ it('reads whether positions are geographic from their fields, which must agree',
   await expect(
     geometryOf(gpu, {
       ...branches(planar),
-      vertices: { Bus: { position: 'position' }, Load: { position: 'position' } },
+      vertices: { Bus: lonlat2, Load: lonlat2 },
     }),
   ).rejects.toThrow('mix geographic and plane coordinates');
   gpu.destroy();

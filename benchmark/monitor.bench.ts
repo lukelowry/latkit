@@ -10,7 +10,7 @@ describe.each([100, 1_000, 10_000])('monitor %i rows', async (rows) => {
   // A fixed window with room for the stream, as a run that declares its domain uses.
   const config: MonitorConfig = {
     source: data,
-    traces: { voltage: { from: 'Bus', field: 'voltage' } },
+    traces: { voltage: { from: 'Bus', y: 'voltage' } },
     camera: { window: [0, frames * 4] },
   };
   const view = createMonitor(device, config);

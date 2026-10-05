@@ -8,7 +8,7 @@ import { createMonitor } from '@latkit/monitor';
 const monitor = createMonitor(gpu, {
   canvas,
   source: observations,
-  traces: { temperature: { from: 'sensor', field: 'temperature', widthPx: 1.5 } },
+  traces: { temperature: { from: 'sensor', y: 'temperature', widthPx: 1.5 } },
   camera: { window: [0, 30], values: [0, 100] },
   coordinateAxis: 'Time (s)',
   valueAxis: 'Temperature',
@@ -16,8 +16,9 @@ const monitor = createMonitor(gpu, {
 });
 ```
 
-`observations` is application-owned data supplying sampled numeric `sensor.temperature`. A trace draws one line per row; `rows`
-narrows them. `at` places the playhead, and moving it never rereads history.
+`observations` is application-owned data supplying sampled numeric `sensor.temperature`. A trace draws one line per row
+of its `y` field against the coordinate; `rows` narrows them. `color`, `widthPx`, `visible`, and `shade` are
+[channels](topology-and-channels.md#channels). `at` places the playhead, and moving it never rereads history.
 
 ## Window
 
@@ -39,7 +40,7 @@ the last minute, advance it in steps rather than every frame. Gaps stay gaps.
 
 Hover, click, and `pick` report exact observations as `Reading`s; hover arrives a frame after the
 pointer moves. `monitor.select(rows)` highlights rows, each narrowed to one trace when it names a
-`field`, and fades the rest to `unselectedAlpha`. Selected traces keep their colors unless
+`trace`, and fades the rest to `unselectedAlpha`. Selected traces keep their colors unless
 `selectedColor` is set. `fit(readings)` frames readings once, and `reveal(reading)` moves the window
 to one outside it. A click selects; the monitor has no pointer navigation, so the page keeps wheel
 and touch scrolling. Selection, events, and the style options every view shares are under

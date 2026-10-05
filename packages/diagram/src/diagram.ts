@@ -1,4 +1,4 @@
-import { Work, failure, isFailure, sameItem, type FieldValues } from '@latkit/model';
+import { Work, failure, isFailure, sameItem } from '@latkit/model';
 import {
   kit,
   type Gpu,
@@ -22,9 +22,10 @@ import type {
   DiagramPort,
   DiagramRow,
   Point,
+  Positions,
   Group,
 } from './data.js';
-import { FIELD_OPTIONS, diagramData, itemKey, rowOf } from './data.js';
+import { diagramData, itemKey, rowOf } from './data.js';
 import type { DiagramStyle, Limits } from './options.js';
 import {
   DEFAULTS,
@@ -43,6 +44,7 @@ import { readScene, sampledStructure, sameStructure } from './read.js';
 import { dragWires, geometry } from './geometry.js';
 import { dragMarks, moved, type DragDraw, type DragMarks } from './drag.js';
 import { itemSlots, positions, union, type Scene } from './scene.js';
+import { flowing, widestPx } from './styles.js';
 import { Picking } from './picking.js';
 import { Painter, pipelines, type Paint, type Overlay, type Pipelines } from './painter.js';
 import { listen, type Controls, type DiagramInput, type Gestures } from './input.js';
@@ -59,8 +61,8 @@ export interface ConnectProposal {
 }
 /** Vertices the user dragged; write the positions to the model to accept them. */
 export interface MoveProposal {
-  /** Moved positions by vertex type. */
-  readonly positions: Readonly<Record<string, FieldValues>>;
+  /** Moved positions by vertex type, to spread into its options or write to the model. */
+  readonly positions: Readonly<Record<string, Positions>>;
   readonly moves: readonly { readonly vertex: DiagramRow; readonly position: Point }[];
 }
 export interface Camera extends ViewCamera {
@@ -251,8 +253,6 @@ class DiagramView
       records: ['vertices', 'edges', 'groups'],
       merged: ['camera', 'input', 'limits', 'layout'],
       shorthands: { layout: 'algorithm' },
-      fields: FIELD_OPTIONS,
-      nested: ['ports'],
       options: Object.keys(DEFAULTS),
       framed: ['center', 'scale'],
       modes: ['navigate', 'edit', 'inspect', 'none'],
@@ -435,7 +435,7 @@ class DiagramView
       config,
       data,
       sampled: sampledStructure(data),
-      flowing: Object.values(data.edges ?? {}).some((edge) => !!edge.flow),
+      flowing: Object.values(data.edges ?? {}).some(flowing),
       limits: resolveLimits(config.limits),
       layout: layoutOptions(config.layout),
       style: resolveStyle(config, this.sharedStyle(config)),
@@ -712,9 +712,7 @@ class DiagramView
     this.live();
     const widthPx = Math.max(
       style.edgeWidthPx,
-      ...Object.values(data.edges ?? {}).map((edge) =>
-        edge.widthPx ? Math.max(...(edge.widthPx.range ?? [1, 4])) : 0,
-      ),
+      ...Object.values(data.edges ?? {}).map((edge) => widestPx(edge, style.edgeWidthPx)),
     );
     const framed = scene,
       found = picking;

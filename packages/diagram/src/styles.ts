@@ -1,26 +1,176 @@
-import { rowCount, type FieldInput } from '@latkit/model';
-import { kit, type ColorScale, type Gpu, type RGBA, type Scale } from '@latkit/gpu';
-import type { DiagramData, EdgeData, VertexData } from './data.js';
+import { rowCount } from '@latkit/model';
+import { kit, type Gpu, type RGBA } from '@latkit/gpu';
+import type { DiagramData, EdgeOptions, VertexOptions } from './data.js';
 import type { Scene } from './scene.js';
 
 // Each slot's style is four words: its color and status, packed; its width and flow as two halves;
-// and its shade value. A zero color draws the view's base color for the item's kind, and a
-// negative width its default; unbound items keep the base words, and styles.wgsl writes bound
-// ones on the GPU from the fields they read.
+// and its shade. A zero color draws the view's base color for the item's kind, and a negative width
+// its default. A scene writes every constant into the base words once; styles.wgsl writes the
+// channels bound to fields on the GPU.
 
-/** A field a pass does not read. */
-const NONE = 0xffffffff;
-/** One pass over a type's rows: which fields it reads, where it writes, and through what. */
+/** Line widths in CSS pixels that a `widthPx` field spans, and speeds a `flow` field spans. */
+const WIDTH_RANGE = [1, 4] as const,
+  FLOW_RANGE = [0, 40] as const;
+/** Each options object's style channels, by the port names they bind. */
+const styles = new WeakMap<object, Map<string, kit.BoundChannels<string>>>();
+/** A type's style channels: its own, and each port's color and status as `color:name`. */
+function typeStyle(
+  options: VertexOptions | EdgeOptions,
+  edge: boolean,
+  ports: readonly string[] = [],
+): kit.BoundChannels<string> {
+  let byPorts = styles.get(options);
+  if (!byPorts) styles.set(options, (byPorts = new Map<string, kit.BoundChannels<string>>()));
+  const key = ports.join(','),
+    found = byPorts.get(key);
+  if (found) return found;
+  const values: Record<string, unknown> = { color: options.color, shade: options.shade },
+    kinds: Record<string, kit.ChannelKind> = { color: 'color', shade: 'raw' };
+  if (edge) {
+    const { widthPx, flow } = options as EdgeOptions;
+    Object.assign(values, { widthPx, flow });
+    Object.assign(kinds, { widthPx: WIDTH_RANGE, flow: FLOW_RANGE });
+  } else {
+    const vertex = options as VertexOptions;
+    values.status = vertex.status;
+    kinds.status = 'color';
+    for (const name of ports) {
+      values['color:' + name] = vertex.ports?.[name]?.color;
+      values['status:' + name] = vertex.ports?.[name]?.status;
+      kinds['color:' + name] = kinds['status:' + name] = 'color';
+    }
+  }
+  const bound = kit.bindChannels(values, kinds);
+  byPorts.set(key, bound);
+  return bound;
+}
+/** Check a type's style channels, so a config with an invalid one is rejected when set. */
+export function checkStyle(options: VertexOptions | EdgeOptions, edge: boolean): void {
+  typeStyle(options, edge, edge ? [] : Object.keys((options as VertexOptions).ports ?? {}).sort());
+}
+/** Whether a type's wires flow: a flow field, or a nonzero speed. */
+export function flowing(options: EdgeOptions): boolean {
+  const flow = typeStyle(options, true).channels.flow;
+  return flow.field !== undefined || (typeof flow.constant === 'number' && flow.constant !== 0);
+}
+/** The widest a type's wires draw, in CSS pixels. */
+export function widestPx(options: EdgeOptions, fallback: number): number {
+  const width = kit.channelRead(typeStyle(options, true).channels.widthPx, null, fallback);
+  return width.scale ? Math.max(...width.scale.range) : width.fallback;
+}
+
+const float = new Float32Array(1),
+  bits = new Uint32Array(float.buffer);
+/** A number's float16 bits, as WGSL's pack2x16float writes them. */
+function half(value: number): number {
+  float[0] = value;
+  const x = bits[0],
+    sign = (x >>> 16) & 0x8000,
+    exponent = ((x >>> 23) & 0xff) - 112,
+    mantissa = x & 0x7fffff;
+  if (exponent >= 31) return sign | 0x7c00;
+  if (exponent <= 0)
+    return exponent < -10
+      ? sign
+      : sign | ((((mantissa | 0x800000) >> (1 - exponent)) + 0x1000) >> 13);
+  return (sign | (exponent << 10)) + ((mantissa + 0x1000) >> 13);
+}
+/** A constant color packed as unorm bytes; zero, the view's base color, without one. */
+function packed(channel: kit.BoundChannel | undefined): number {
+  const color = channel?.constant;
+  if (!Array.isArray(color)) return 0;
+  return (
+    (Math.round(color[0] * 255) |
+      (Math.round(color[1] * 255) << 8) |
+      (Math.round(color[2] * 255) << 16) |
+      (Math.round(color[3] * 255) << 24)) >>>
+    0
+  );
+}
+function constant(channel: kit.BoundChannel | undefined, fallback: number): number {
+  return typeof channel?.constant === 'number' ? channel.constant : fallback;
+}
+/** The base words: every slot's constants, and the view's defaults where it has none. */
+function baseWords(scene: Scene): kit.BufferData {
+  const words = new Uint32Array(Math.max(4, scene.slots.count * 4)),
+    floats = new Float32Array(words.buffer);
+  const write = (slot: number, channels: Readonly<Record<string, kit.BoundChannel>>) => {
+    words[slot * 4] = packed(channels.color);
+    words[slot * 4 + 1] = packed(channels.status);
+    // Width -1 and flow 0, as two halves, unless the type sets them.
+    words[slot * 4 + 2] =
+      half(constant(channels.widthPx, -1)) | (half(constant(channels.flow, 0)) << 16);
+    floats[slot * 4 + 3] = constant(channels.shade, 0);
+  };
+  for (let slot = 0; slot < scene.slots.count; slot++) words[slot * 4 + 2] = 0x0000bc00;
+  // Each type's rows run from its first to the next type's.
+  const vertices = [...scene.types.vertices],
+    edges = [...scene.types.edges];
+  vertices.forEach(([type, at], t) => {
+    const { channels } = typeStyle(scene.data.vertices[type], false, at.names),
+      end = vertices[t + 1]?.[1].first ?? scene.vertices.length;
+    for (let i = at.first; i < end; i++) {
+      write(i, channels);
+      const slot = scene.vertices[i].portSlot;
+      at.names.forEach((name, k) =>
+        write(slot + k, { color: channels['color:' + name], status: channels['status:' + name] }),
+      );
+    }
+  });
+  edges.forEach(([type, at], t) => {
+    const { channels } = typeStyle(scene.data.edges![type], true),
+      end = edges[t + 1]?.[1].first ?? scene.edges.length;
+    for (let i = at.first; i < end; i++) write(scene.slots.edges + i, channels);
+  });
+  const buffer = new kit.BufferData({ size: words.byteLength, label: 'diagram styles' });
+  buffer.write({ data: words });
+  return buffer;
+}
+
+/** One pass over a type's rows: the channels it writes, and where. */
 interface Pass {
-  readonly color?: ColorScale | null;
-  readonly width?: Scale | null;
-  readonly flow?: Scale | null;
-  readonly shade?: FieldInput | null;
-  /** Writes the status word rather than the color. */
-  readonly status?: boolean;
-  readonly base: RGBA;
+  /** The color channel it writes, if any; into the status word when `status`. */
+  readonly color?: string;
+  readonly status: boolean;
+  /** Whether it writes the widths and flows, and the shades. */
+  readonly lines: boolean;
+  readonly shade: boolean;
   readonly first: number;
   readonly stride: number;
+}
+/** Every pass a type's fields need, over the slots its rows hold. */
+function passes(
+  bound: kit.BoundChannels<string>,
+  first: number,
+  ports?: { readonly first: number; readonly names: readonly string[] },
+): Pass[] {
+  const field = (name: string) => bound.channels[name]?.field !== undefined,
+    out: Pass[] = [];
+  const own: Pass = {
+    ...(field('color') ? { color: 'color' } : {}),
+    status: false,
+    lines: field('widthPx') || field('flow'),
+    shade: field('shade'),
+    first,
+    stride: 1,
+  };
+  if (own.color || own.lines || own.shade) out.push(own);
+  const only = (color: string, status: boolean, first: number, stride: number): Pass => ({
+    color,
+    status,
+    lines: false,
+    shade: false,
+    first,
+    stride,
+  });
+  if (field('status')) out.push(only('status', true, first, 1));
+  ports?.names.forEach((name, k) => {
+    const at = ports.first + k,
+      stride = ports.names.length;
+    if (field('color:' + name)) out.push(only('color:' + name, false, at, stride));
+    if (field('status:' + name)) out.push(only('status:' + name, true, at, stride));
+  });
+  return out;
 }
 interface Dispatch {
   readonly fields: GPUBindGroup;
@@ -35,75 +185,9 @@ export interface StyleFrame {
   readonly seed: { readonly from: GPUBufferBinding; readonly words: kit.BufferData } | null;
   readonly dispatches: readonly Dispatch[];
 }
-const CLEAR: RGBA = [0, 0, 0, 0];
-/** Every pass a type's bindings need, over the slots its rows hold. */
-function passes(
-  options: VertexData | EdgeData,
-  first: number,
-  ports?: { readonly first: number; readonly names: readonly string[] },
-): Pass[] {
-  const base = options.baseColor ?? CLEAR,
-    out: Pass[] = [];
-  const own: Pass = {
-    color: options.color,
-    width: 'widthPx' in options ? options.widthPx : null,
-    flow: 'flow' in options ? options.flow : null,
-    shade: options.shade,
-    base,
-    first,
-    stride: 1,
-  };
-  if (own.color || own.width || own.flow || own.shade) out.push(own);
-  if ('status' in options && options.status)
-    out.push({ color: options.status, status: true, base: CLEAR, first, stride: 1 });
-  if (ports && 'ports' in options)
-    ports.names.forEach((name, k) => {
-      const port = options.ports?.[name],
-        at = { first: ports.first + k, stride: ports.names.length };
-      if (port?.color) out.push({ color: port.color, base: CLEAR, ...at });
-      if (port?.status) out.push({ color: port.status, status: true, base: CLEAR, ...at });
-    });
-  return out;
-}
-/** The fields one type's passes read, each by a name the passes find again. */
-function inputs(options: VertexData | EdgeData, names: readonly string[]) {
-  const out: Record<string, FieldInput> = {};
-  for (const [i, pass] of passes(options, 0, { first: 0, names }).entries()) {
-    if (pass.color) out['c' + i] = pass.color.field;
-    if (pass.width) out['w' + i] = pass.width.field;
-    if (pass.flow) out['f' + i] = pass.flow.field;
-    if (pass.shade) out['s' + i] = pass.shade;
-  }
-  return out;
-}
-
-/**
- * The base words: a type's own base color, or zero for the view's. A new scene or new bindings
- * write them again, so no word a pass no longer writes keeps an old value.
- */
-function baseWords(scene: Scene): kit.BufferData {
-  const words = new Uint32Array(Math.max(4, scene.slots.count * 4)),
-    packed = (color: RGBA | undefined) =>
-      color
-        ? (Math.round(color[0] * 255) |
-            (Math.round(color[1] * 255) << 8) |
-            (Math.round(color[2] * 255) << 16) |
-            (Math.round(color[3] * 255) << 24)) >>>
-          0
-        : 0,
-    // Width -1 and flow 0 as two halves: 0xbc00 is -1.
-    halves = 0x0000bc00;
-  for (let slot = 0; slot < scene.slots.count; slot++) words[slot * 4 + 2] = halves;
-  scene.vertices.forEach((vertex, i) => (words[i * 4] = packed(vertex.options.baseColor)));
-  scene.edges.forEach(
-    (edge, i) => (words[(scene.slots.edges + i) * 4] = packed(edge.options.baseColor)),
-  );
-  const buffer = new kit.BufferData({ size: words.byteLength, label: 'diagram styles' });
-  buffer.write({ data: words });
-  return buffer;
-}
-/** Bytes of each pass's parameters: what it reads, where it writes, and its scales. */
-const PARAMETERS = 16 * 10;
+/** Words of each pass's parameters: where it writes, the missing color, and four channels. */
+const PARAMETERS = 8 + 4 * 8;
+const UNSET: kit.ChannelRead = { component: 0, fallback: 0 };
 
 /**
  * The style words of one scene under one set of bindings, and the passes that write them. The
@@ -160,96 +244,65 @@ export class Styles {
     const types = [
       ...[...scene.types.vertices].map(([type, at]) => ({
         type,
-        options: data.vertices[type] as VertexData | EdgeData,
+        options: data.vertices[type] as VertexOptions | EdgeOptions,
+        bound: typeStyle(data.vertices[type], false, at.names),
         first: at.first,
         ports: { first: at.ports, names: at.names },
       })),
       ...[...scene.types.edges].map(([type, at]) => ({
         type,
-        options: data.edges![type] as VertexData | EdgeData,
+        options: data.edges![type] as VertexOptions | EdgeOptions,
+        bound: typeStyle(data.edges![type], true),
         first: scene.slots.edges + at.first,
         ports: undefined,
       })),
     ];
-    for (const { type, options, first, ports } of types) {
-      const list = passes(options, first, ports);
+    for (const { type, options, bound, first, ports } of types) {
+      const list = passes(bound, first, ports);
       if (!list.length) continue;
-      const fields = inputs(options, ports?.names ?? []),
-        scales = new Map<object, kit.ResolvedScale>();
-      for (const pass of list)
-        for (const [mapping, range] of [
-          [pass.color, [0, 1]],
-          [pass.width, [1, 4]],
-          [pass.flow, [0, 40]],
-        ] as const)
-          if (mapping && !scales.has(mapping))
-            scales.set(
-              mapping,
-              await kit.fieldScale(frame.reader, {
-                ...mapping,
-                source: data.source,
-                from: type,
-                rows: options.rows,
-                range: ('range' in mapping ? mapping.range : undefined) ?? range,
-              }),
-            );
+      const reads = await kit.readChannels(
+        frame.reader,
+        { source: data.source, from: type, rows: options.rows },
+        bound,
+        { widthPx: -1 },
+      );
       for await (const tile of frame.reader.fields({
         source: data.source,
         from: type,
         rows: options.rows,
-        fields,
+        fields: bound.fields,
       }))
         for (const page of frame.upload(tile, {
-          select: Object.keys(fields),
+          select: Object.keys(bound.fields),
           float64: 'relative',
-        })) {
-          const slot = (name: string) => {
-            const field = page.columns[name];
-            return field?.kind === 'value' ? field.slot : NONE;
-          };
-          list.forEach((pass, i) => {
-            const values = new ArrayBuffer(PARAMETERS),
-              f = new Float32Array(values),
-              u = new Uint32Array(values),
-              shade = page.columns['s' + i],
-              scale = (
-                mapping: Scale | ColorScale | null | undefined,
-                name: string,
-                at: number,
-              ) => {
-                const field = page.columns[name];
-                if (mapping)
-                  f.set(
-                    kit.scaleParameters(scales.get(mapping)!, {
-                      origin: field?.kind === 'value' ? field.origin?.[0] : undefined,
-                    }),
-                    at,
-                  );
-              };
-            u.set([slot('c' + i), slot('w' + i), slot('f' + i), slot('s' + i)], 0);
-            u.set(
+        }))
+          for (const pass of list) {
+            const words = new Uint32Array(PARAMETERS),
+              floats = new Float32Array(words.buffer);
+            words.set(
               [
                 rowCount(page.rows),
                 pass.first + page.rowOffset * pass.stride,
                 pass.stride,
                 pass.status ? 1 : 0,
               ],
-              4,
+              0,
             );
-            f[8] = shade?.kind === 'value' ? (shade.origin?.[0] ?? 0) : 0;
-            f.set(pass.base, 12);
-            scale(pass.color, 'c' + i, 16);
-            scale(pass.width, 'w' + i, 24);
-            scale(pass.flow, 'f' + i, 32);
+            const color = pass.color === undefined ? undefined : bound.channels[pass.color];
+            floats.set(color?.missing ?? ([0, 0, 0, 0] as RGBA), 4);
+            kit.writeChannel(words, 8, pass.color ? reads[pass.color] : UNSET, page);
+            kit.writeChannel(words, 16, pass.lines ? reads.widthPx : UNSET, page);
+            kit.writeChannel(words, 24, pass.lines ? reads.flow : UNSET, page);
+            kit.writeChannel(words, 32, pass.shade ? reads.shade : UNSET, page);
             const parameters = (this.parameters[out.length] ??= new kit.BufferData({
-              size: PARAMETERS,
+              size: PARAMETERS * 4,
               usage: GPUBufferUsage.UNIFORM,
               label: 'diagram style pass',
             }));
-            parameters.write({ data: u });
+            parameters.write({ data: words });
             out.push({
               fields: page.bindGroup,
-              colors: frame.colormap(pass.color?.colormap),
+              colors: frame.colormap(color?.colormap),
               group: this.gpu.device.createBindGroup({
                 layout,
                 entries: [
@@ -259,8 +312,7 @@ export class Styles {
               }),
               count: rowCount(page.rows),
             });
-          });
-        }
+          }
     }
     return out;
   }

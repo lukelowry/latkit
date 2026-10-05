@@ -4,8 +4,7 @@ struct Uniforms {
   rotation: vec4f,
   geo: vec4f,
   center: vec4f,
-  vertexColor: vec4f,
-  edgeColor: vec4f,
+  /** The dash period in CSS pixels, and whether markers draw. */
   style: vec4f,
   hoverColor: vec4f,
   selectedColor: vec4f,
@@ -18,7 +17,6 @@ struct Uniforms {
   /** The view's background: the halo labels draw over lines. */
   background: vec4f,
 }
-fn finite(x: f32) -> bool { return abs(x) <= 3.402823e38; }
 fn project_world(p: vec3f, u: Uniforms) -> vec4f {
   let rx = p.x * u.rotation.x + p.y * u.rotation.y;
   let ry = -p.x * u.rotation.y + p.y * u.rotation.x;

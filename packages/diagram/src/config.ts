@@ -1,8 +1,10 @@
 import { failure } from '@latkit/model';
 import { kit, viewStyle, type RGBA, type ViewInput } from '@latkit/gpu';
 import type { DiagramStyle, Limits } from './options.js';
-import type { DiagramData, VertexData, EdgeData } from './data.js';
+import type { DiagramData, VertexOptions, EdgeOptions } from './data.js';
 import type { DiagramInput } from './input.js';
+import { structure } from './read.js';
+import { checkStyle } from './styles.js';
 export type Style = Required<DiagramStyle> & kit.ResolvedViewStyle;
 /** Every new option must declare the work it invalidates. */
 export const STYLE_EFFECTS = {
@@ -147,26 +149,29 @@ export function checkInput(input: DiagramInput): ViewInput {
   if (canConnect !== undefined && typeof canConnect !== 'function') fail('Invalid canConnect');
   return shared;
 }
-function binding(value: VertexData | EdgeData) {
-  if (value.labels) {
-    if (value.labels.size !== undefined) positive(value.labels.size, 'label size');
-    if (value.labels.maxWidth !== undefined) positive(value.labels.maxWidth, 'label width');
+/** A type's labels and channels: what it reads, and how it draws. */
+function binding(value: VertexOptions | EdgeOptions, edge: boolean) {
+  const labels = kit.labelOptions(value.labels);
+  if (labels) {
+    if (labels.size !== undefined) positive(labels.size, 'label size');
+    if (labels.maxWidth !== undefined) positive(labels.maxWidth, 'label width');
     if (
-      value.labels.maxCount !== undefined &&
-      (!Number.isSafeInteger(value.labels.maxCount) || value.labels.maxCount < 0)
+      labels.maxCount !== undefined &&
+      (!Number.isSafeInteger(labels.maxCount) || labels.maxCount < 0)
     )
       fail('Invalid label count');
-    if (value.labels.color) kit.validateRgba(value.labels.color);
-    if (value.labels.overflow && !['wrap', 'ellipsis'].includes(value.labels.overflow))
+    if (labels.color) kit.validateRgba(labels.color);
+    if (labels.overflow && !['wrap', 'ellipsis'].includes(labels.overflow))
       fail('Invalid label overflow');
   }
+  structure(value, edge);
+  checkStyle(value, edge);
 }
 export function data(value: DiagramData): DiagramData {
   if (!value.source?.schema || !value.source.tables) fail('A Data source is required');
   if (!value.vertices) fail('Vertex bindings are required');
   for (const vertex of Object.values(value.vertices)) {
-    binding(vertex);
-    if (vertex.baseColor) kit.validateRgba(vertex.baseColor);
+    binding(vertex, false);
     if (vertex.cornerRadius !== undefined) positive(vertex.cornerRadius, 'cornerRadius', true);
     if (vertex.labelPosition && !['header', 'center'].includes(vertex.labelPosition))
       fail('Invalid labelPosition');
@@ -181,8 +186,7 @@ export function data(value: DiagramData): DiagramData {
     }
   }
   for (const [type, edge] of Object.entries(value.edges ?? {})) {
-    binding(edge);
-    if (edge.baseColor) kit.validateRgba(edge.baseColor);
+    binding(edge, true);
     if (
       edge.ends &&
       (edge.ends.length !== 2 ||

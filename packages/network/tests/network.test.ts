@@ -1,7 +1,7 @@
 import { renderer as testRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createGpu, kit } from '@latkit/gpu';
-import type { FieldValues } from '@latkit/model';
+import type { FieldInput, FieldValues } from '@latkit/model';
 import { createNetwork, type Network, type NetworkConfig } from '../src/index.js';
 import type { NetworkData } from '../src/data.js';
 import { readGeometry, DEFAULT_LIMITS } from '../src/geometry/topology.js';
@@ -10,11 +10,13 @@ import { featureSource } from './paths-fixture.js';
 import { GraphSource } from './fixture.js';
 import { deferred, fakeDevice } from '../../gpu/tests/fixtures/device.js';
 
+/** Both lanes of a two-component position field. */
+const lanes = (field: FieldInput) => ({ x: field, y: { field, component: 1 } });
 function fixture(count = 25, blockRows = 8) {
   const source = new GraphSource(count, blockRows);
   const data: NetworkData = {
     source: source.data,
-    vertices: { node: { position: 'location', color: { field: 'signal', domain: [0, 1] } } },
+    vertices: { node: { ...lanes('location'), color: { field: 'signal', domain: [0, 1] } } },
     edges: { line: { ends: ['from', 'to'] } },
   };
   return { source, data };
@@ -200,7 +202,7 @@ it('rebinds immutable live positions without rereading topology and picks immedi
     },
   };
   const requests = source.queries;
-  network.set({ vertices: { node: { position } } });
+  network.set({ vertices: { node: lanes(position) } });
   await gpu.render({
     timeMs: 1,
     views: [{ renderer: kit.rendererOf(network), target: surface, at: 0 }],
@@ -230,19 +232,17 @@ it('preserves an explicit initial camera and rejects incompatible position ident
   expect(network.camera).toMatchObject(camera);
   network.set({
     vertices: {
-      node: {
-        position: {
-          index: { ...source.index('node'), version: 'wrong' },
-          rows: { kind: 'range', offset: 0, count: 25 },
-          values: {
-            kind: 'vector',
-            size: 2,
-            offset: 0,
-            length: 25,
-            values: { kind: 'numeric', offset: 0, length: 50, values: source.positions },
-          },
+      node: lanes({
+        index: { ...source.index('node'), version: 'wrong' },
+        rows: { kind: 'range', offset: 0, count: 25 },
+        values: {
+          kind: 'vector',
+          size: 2,
+          offset: 0,
+          length: 25,
+          values: { kind: 'numeric', offset: 0, length: 50, values: source.positions },
         },
-      },
+      }),
     },
   });
   await expect(
@@ -405,8 +405,9 @@ it('aborts automatic searches without a partial hit and suspends them until posi
     vertices: {
       node: {
         ...data.vertices.node,
-        position: { x: 'x', y: 'y' },
-        height: { field: 'z', domain: [0, 1] },
+        x: 'x',
+        y: 'y',
+        z: { field: 'z', domain: [0, 1] },
       },
     },
     camera: { projection: 'tilt', pitch: 45 },
@@ -463,7 +464,7 @@ it('pauses auto hover during coordinate and camera motion, then wakes after sett
     gpu = await createGpu({ device: device().device });
   const movingData: NetworkData = {
     ...data,
-    vertices: { node: { ...data.vertices.node, position: { x: 'x', y: 'y' } } },
+    vertices: { node: { ...data.vertices.node, x: 'x', y: 'y' } },
   };
   const network = createNetwork(gpu, movingData),
     surface = target(gpu);
@@ -597,7 +598,7 @@ it('builds hit-test indexes in the background once positions hold, within pickin
   expect(query).toHaveBeenCalled();
   expect(hover).toHaveBeenCalledTimes(1);
   // Positions that move again before they hold build nothing; the last ones build once settled.
-  network.set({ vertices: { node: { position: { x: 'x', y: 'y' } } } });
+  network.set({ vertices: { node: { x: 'x', y: 'y' } } });
   await render(1);
   await vi.advanceTimersByTimeAsync(100);
   await render(2);
@@ -608,7 +609,7 @@ it('builds hit-test indexes in the background once positions hold, within pickin
   expect(build).toHaveBeenCalledTimes(4);
   expect(network.stats().pickingBytes).toBe(full);
   // An explicit pick starts the build at once and waits for it, leaving nothing for later.
-  network.set({ vertices: { node: { position: 'location' } } });
+  network.set({ vertices: { node: lanes('location') } });
   await render();
   expect((await network.pick(point))[0]).toMatchObject({ row: 12 });
   expect(build).toHaveBeenCalledTimes(6);
@@ -664,7 +665,7 @@ it('renders bends, nets as stars, geodesics, and native paths with original iden
     gpu = await createGpu({ device: device().device });
   const data: NetworkData = {
     source: source.data,
-    vertices: { node: { position: 'position' } },
+    vertices: { node: lanes('position') },
     edges: {
       bend: { ends: ['from', 'to'], bends: 'points' },
       star: {},
@@ -729,12 +730,44 @@ it('keeps edges pickable when only their vertex markers are hidden', async () =>
   gpu.destroy();
 });
 
+it('reads every channel as one value for all rows, a field, or a field through a scale', async () => {
+  const { source, data } = fixture(2),
+    gpu = await createGpu({ device: device().device });
+  const network = createNetwork(gpu, {
+    ...data,
+    // A constant axis lays rows along the other; a constant visibility hides every marker.
+    vertices: { node: { x: 'location', y: 0, visible: false } },
+    // Each line draws as wide as its own field's value: row 0's signal maps to 6 CSS pixels.
+    edges: {
+      line: { ends: ['from', 'to'], widthPx: { field: 'signal', domain: [0, 1], range: [0, 12] } },
+    },
+  });
+  await gpu.render({
+    timeMs: 0,
+    views: [{ renderer: kit.rendererOf(network), target: target(gpu), at: 0 }],
+  });
+  const vertex = (row: number) =>
+      ({ kind: 'vertex', source: source.data, index: source.index('node'), row }) as const,
+    line = { kind: 'edge', source: source.data, index: source.index('line'), row: 0 } as const;
+  const [a, b] = [network.locate(vertex(0))!, network.locate(vertex(1))!],
+    middle = network.locate(line)!;
+  expect(a[1]).toBeCloseTo(b[1]);
+  expect(middle[1]).toBeCloseTo(a[1]);
+  const hit = async (dy: number) =>
+    (await network.pick([middle[0], middle[1] + dy], { radiusPx: 0 })).map((item) => item.kind);
+  expect(await hit(0)).toEqual(['edge']);
+  expect(await hit(2.5)).toEqual(['edge']);
+  expect(await hit(4.5)).toEqual([]);
+  network.destroy();
+  gpu.destroy();
+});
+
 it('picks a geodesic arc at its visible arc-length midpoint in every projection', async () => {
   const source = featureSource(),
     gpu = await createGpu({ device: device().device });
   const network = createNetwork(gpu, {
     source: source.data,
-    vertices: { node: { position: 'position' } },
+    vertices: { node: lanes('position') },
     edges: { route: { ends: ['from', 'to'], route: 'geodesic' } },
     camera: { center: [-30, 5], scale: 4 },
     markers: false,
@@ -756,12 +789,12 @@ it('picks a geodesic arc at its visible arc-length midpoint in every projection'
   gpu.destroy();
 });
 
-it('halos every selected item and its ends, expands shorthands, and reports camera changes', async () => {
+it('halos every selected item and its ends, binds field names, and reports camera changes', async () => {
   const { source, data } = fixture(),
     gpu = await createGpu({ device: device().device });
   const network = createNetwork(gpu, {
     ...data,
-    vertices: { node: { position: 'location', color: { field: 'signal', colormap: 'viridis' } } },
+    vertices: { node: { ...lanes('location'), color: { field: 'signal', colormap: 'viridis' } } },
     edges: { line: { ends: ['from', 'to'], color: 'signal' } },
   });
   const render = () =>

@@ -68,15 +68,14 @@ export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({
   selectedColor: [1, 0.4, 0.24, 0.9] as RGBA,
 });
 /** A path's line where its options leave it unset; a path has no ends to color it by. */
-export const PATH_LINE = Object.freeze({ widthPx: 1, baseColor: [0.52, 0.6, 0.68, 0.6] as RGBA });
+export const PATH_LINE = Object.freeze({ widthPx: 1, color: [0.52, 0.6, 0.68, 0.6] as RGBA });
 /** Marker radii in CSS pixels that a `sizePx` field spans by default. */
 export const SIZE_RANGE: readonly [number, number] = [2, 8];
-/** The width a type's lines draw at, in CSS pixels. */
-export function lineWidthPx(
-  entry: { readonly widthPx?: number; readonly points?: unknown },
-  style: Style,
-): number {
-  return entry.widthPx ?? ('points' in entry ? PATH_LINE.widthPx : style.edgeWidthPx);
+/** Line widths in CSS pixels that a `widthPx` field spans by default. */
+export const WIDTH_RANGE: readonly [number, number] = [1, 4];
+/** The width, in CSS pixels, of a type's lines its `widthPx` leaves unset. */
+export function lineWidthPx(entry: object, style: Style): number {
+  return 'points' in entry ? PATH_LINE.widthPx : style.edgeWidthPx;
 }
 const UNIT = new Set(['nightFloor', 'surfaceNightFloor', 'terminatorWidth']);
 /** The style a config describes: its own options over the defaults, on the shared view style. */

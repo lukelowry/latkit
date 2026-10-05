@@ -19,7 +19,7 @@ export interface Camera {
   readonly orbit: boolean;
 }
 export const DEG = Math.PI / 180;
-export function turn(a: number, b: number): number {
+function turn(a: number, b: number): number {
   return ((((b - a) % 360) + 540) % 360) - 180;
 }
 export const DEFAULT_CAMERA: Camera = Object.freeze({

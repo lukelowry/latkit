@@ -1,6 +1,6 @@
 import { failure, textAt, bitAt, assertIndex, rowAt, rowCount, type Data } from '@latkit/model';
 import { type Gpu, kit, type TextLayout } from '@latkit/gpu';
-import type { NetworkData, NetworkLabels as LabelOptions } from '../data.js';
+import type { NetworkData, NetworkLabels } from '../data.js';
 import {
   edgeOptions,
   vertexOptions,
@@ -17,7 +17,8 @@ export interface LabelBatch {
   readonly anchors: kit.BufferData;
 }
 interface Entry {
-  options: LabelOptions;
+  /** The labels option as configured: a field name, or labels. */
+  options: string | NetworkLabels;
   /** The style's text defaults the layouts were built with. */
   defaults: readonly unknown[];
   revision: number;
@@ -84,9 +85,9 @@ export class Labels {
       const edge = 'batches' in bank,
         type = kind(bank),
         key = type + ':' + bank.type;
-      const config = edge ? edgeOptions(data, bank) : vertexOptions(data, bank),
-        options = config.labels;
-      if (!options || (!edge && !style.markers) || (edge && !style.lines)) continue;
+      const configured = (edge ? edgeOptions(data, bank) : vertexOptions(data, bank)).labels,
+        options = kit.labelOptions(configured);
+      if (!configured || !options || (!edge && !style.markers) || (edge && !style.lines)) continue;
       const max = options.maxCount ?? 200,
         size = options.sizePx ?? style.fontSizePx,
         repeat = options.repeatSpacingPx ?? 0;
@@ -110,13 +111,13 @@ export class Labels {
       const defaults = [style.font, style.fontSizePx, style.textColor];
       if (
         !entry ||
-        entry.options !== options ||
+        entry.options !== configured ||
         entry.source !== source ||
         entry.revision !== revision ||
         entry.defaults.some((value, i) => value !== defaults[i])
       ) {
         entry = {
-          options,
+          options: configured,
           defaults,
           source,
           revision,
@@ -139,15 +140,7 @@ export class Labels {
               frame.viewport,
               height,
             )
-          : picking.projected(
-              bank,
-              offset,
-              camera,
-              frame.viewport,
-              height,
-              config,
-              style.vertexRadiusPx,
-            );
+          : picking.projected(bank, offset, camera, frame.viewport, height, style.vertexRadiusPx);
         if (
           !p?.visible ||
           p.x < 0 ||

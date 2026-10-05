@@ -1,6 +1,14 @@
 import type { FieldValues, Index } from '@latkit/model';
 import type { Point, TextLayout } from '@latkit/gpu';
-import type { DiagramData, DiagramItem, SceneItem, Shape, VertexData, EdgeData } from './data.js';
+import type {
+  DiagramData,
+  DiagramItem,
+  Positions,
+  SceneItem,
+  Shape,
+  VertexOptions,
+  EdgeOptions,
+} from './data.js';
 import { itemKey } from './data.js';
 import type { Obstacles, Route } from './route.js';
 export type Rect = readonly [number, number, number, number];
@@ -38,7 +46,7 @@ export interface Vertex {
   ports: Port[];
   /** The slot of the first port; the others follow in order. */
   portSlot: number;
-  options: VertexData;
+  options: VertexOptions;
   group?: string;
 }
 /** One vertex an edge joins: through a port for a net, or directly for a row's own end. */
@@ -64,7 +72,7 @@ export interface Edge extends Wire {
   ends: End[];
   visible: boolean;
   label: TextLayout;
-  options: EdgeData;
+  options: EdgeOptions;
   paths: readonly (readonly Point[])[];
   offsets: readonly number[];
   junctions: readonly Point[];
@@ -194,10 +202,11 @@ export function itemSlots(scene: Scene): ReadonlyMap<string, number> {
   }
   return scene.keys;
 }
+/** Where vertices sit, by type: x and y values to spread into each type's options. */
 export function positions(
   vertices: readonly Vertex[],
   only?: ReadonlySet<number>,
-): Readonly<Record<string, FieldValues>> {
+): Readonly<Record<string, Positions>> {
   const grouped = new Map<string, Vertex[]>();
   vertices.forEach((vertex, i) => {
     if (!only || only.has(i)) {
@@ -209,20 +218,18 @@ export function positions(
   });
   return Object.fromEntries(
     [...grouped].map(([type, entries]) => {
-      const values = Float64Array.from(entries.flatMap((vertex) => [vertex.x, vertex.y]));
+      const rows = { kind: 'indices', values: Uint32Array.from(entries, (v) => v.row) } as const;
+      const axis = (values: Float64Array): FieldValues => ({
+        index: entries[0].index,
+        rows,
+        values: { kind: 'numeric', offset: 0, length: values.length, values },
+      });
       return [
         type,
         {
-          index: entries[0].index,
-          rows: { kind: 'indices', values: Uint32Array.from(entries, (vertex) => vertex.row) },
-          values: {
-            kind: 'vector',
-            offset: 0,
-            length: entries.length,
-            size: 2,
-            values: { kind: 'numeric', offset: 0, length: values.length, values },
-          },
-        } satisfies FieldValues,
+          x: axis(Float64Array.from(entries, (v) => v.x)),
+          y: axis(Float64Array.from(entries, (v) => v.y)),
+        },
       ];
     }),
   );

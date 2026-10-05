@@ -88,7 +88,8 @@ const diagram = createDiagram(gpu, {
   source: model.data,
   vertices: {
     Process: {
-      position: 'position',
+      x: 'position',
+      y: { field: 'position', component: 1 },
       labels: 'name',
     },
   },
@@ -483,14 +484,13 @@ async function boot() {
         return;
       }
       const updated = new Map<string, Point>();
-      for (const [type, field] of Object.entries(fields)) {
-        if (field.values.kind !== 'vector') continue;
-        const values = field.values;
+      for (const [type, { x, y }] of Object.entries(fields)) {
+        if (x.values.kind !== 'numeric' || y.values.kind !== 'numeric') continue;
         const blocks = history.current.blocks.filter((block) => block.type === type);
-        for (let i = 0; i < rowCount(field.rows); i++)
-          updated.set(blocks[rowAt(field.rows, i)].id, [
-            numberAt(values.values, i * 2)!,
-            numberAt(values.values, i * 2 + 1)!,
+        for (let i = 0; i < rowCount(x.rows); i++)
+          updated.set(blocks[rowAt(x.rows, i)].id, [
+            numberAt(x.values, i)!,
+            numberAt(y.values, i)!,
           ]);
       }
       commit(

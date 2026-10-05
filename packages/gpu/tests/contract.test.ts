@@ -67,7 +67,12 @@ describe('public contract and allocation boundaries', () => {
         'fieldScale',
         'resolveScale',
         'scaleValue',
-        'scaleParameters',
+        'labelOptions',
+        'bindChannels',
+        'readChannels',
+        'channelRead',
+        'channelValue',
+        'writeChannel',
         'BoxIndex',
         'Occupancy',
         'sameRecords',
@@ -196,6 +201,25 @@ describe('public contract and allocation boundaries', () => {
     data.resize(4096);
     expect(data.bytes[4000]).toBe(0);
     expect(() => data.write({ data: new Uint8Array(8), offset: 4095 })).toThrow();
+  });
+
+  it('updates whole records in one revision, and an unchanged update in none', () => {
+    fakeDevice();
+    const data = new api.kit.BufferData({ size: 4 }),
+      records = new Uint32Array(64 * 100);
+    data.update(records, 256);
+    const revision = data.revision;
+    data.update(records, 256);
+    expect(data.revision).toBe(revision);
+    // A word in each of many records changes one revision, and changed neighbors join a range.
+    for (let record = 0; record < 80; record++) records[record * 64 + 3] = record + 1;
+    records[95 * 64] = 7;
+    data.update(records, 256);
+    expect(data.revision).toBe(revision + 1);
+    expect(data.changesSince(revision)).toEqual([
+      { offset: 0, size: 80 * 256 },
+      { offset: 95 * 256, size: 256 },
+    ]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { bitAt, failure } from '@latkit/model';
-import type { Column, FieldsBlock, Index, RowAxis } from '@latkit/model';
+import type { Column, Index, RowAxis } from '@latkit/model';
 export function value(column: Column | undefined, row: number, component = 0): number {
   if (!column || row < 0 || row >= column.length) return NaN;
   const at = column.offset + row;
@@ -9,9 +9,6 @@ export function value(column: Column | undefined, row: number, component = 0): n
   if (column.kind === 'vector')
     return column.values.values[column.values.offset + at * column.size + component];
   return NaN;
-}
-export function nativeValue(native: FieldsBlock, name: string, row: number, component = 0): number {
-  return bitAt(native.presence[name], row) ? value(native.columns[name], row, component) : NaN;
 }
 export function indexKey(index: Index): string {
   return JSON.stringify([index.source, index.type, index.version]);

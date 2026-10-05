@@ -21,7 +21,7 @@ export function scene(gpu: Gpu, kind: ExampleView) {
     traces: {
       response: {
         from: 'sensor',
-        field: 'response',
+        y: 'response',
         color: { field: 'response', domain: [-1, 1], colormap: 'turbo' },
       },
     },
@@ -33,7 +33,8 @@ export function scene(gpu: Gpu, kind: ExampleView) {
     source: geometry.data,
     vertices: {
       Bus: {
-        position: 'position',
+        x: 'position',
+        y: { field: 'position', component: 1 },
         color: { field: 'load', domain: [0, 1], colormap: 'turbo' },
       },
     },

@@ -34,8 +34,8 @@ it('arranges native rows deterministically without GPU or DOM', async () => {
   const a = await arrange(gpu, config),
     b = await arrange(gpu, config);
   expect(a).toEqual(b);
-  expect(a.Task.index).toEqual(source.index('Task'));
-  expect(a.Task.values.kind).toBe('vector');
+  expect(a.Task.x.index).toEqual(source.index('Task'));
+  expect(a.Task.y.values.kind).toBe('numeric');
   const result = await scene(source);
   for (let i = 0; i < result.vertices.length; i++)
     for (let j = i + 1; j < result.vertices.length; j++) {
@@ -130,7 +130,7 @@ it('honors sparse row selections and returns physical row identities', async () 
     ...d,
     vertices: { Task: { rows: { kind: 'ids', ids: ['n3', 'n1'] }, labels: 'name' } },
   });
-  expect(result.Task.rows).toEqual({ kind: 'indices', values: Uint32Array.of(3, 1) });
+  expect(result.Task.x.rows).toEqual({ kind: 'indices', values: Uint32Array.of(3, 1) });
 });
 it('handles cycles and self-loops', async () => {
   const source = new Source(4);
@@ -200,8 +200,13 @@ it('supports headless custom layout and routing strategies', async () => {
       algorithm: { arrange: (graph) => graph.vertices.map((_, i) => [i * 500, 123] as const) },
     },
   });
-  expect(result.Task.values.kind === 'vector' && [...result.Task.values.values.values]).toEqual([
-    0, 123, 500, 123,
+  const lane = (axis: 'x' | 'y') => {
+    const values = result.Task[axis].values;
+    return values.kind === 'numeric' ? [...values.values] : [];
+  };
+  expect([lane('x'), lane('y')]).toEqual([
+    [0, 500],
+    [123, 123],
   ]);
 });
 it('bounds memory and honors cancellation', async () => {
@@ -421,14 +426,14 @@ it('rejects unknown limits', async () => {
   ).rejects.toMatchObject({ code: 'invalid-input' });
   expect(resolveLimits({ layoutMs: 5 }).layoutMs).toBe(5);
 });
-it('expands field shorthands for headless arrangement', async () => {
+it('arranges headlessly with channels bound to fields', async () => {
   const source = new Source(3),
     d = data(source);
   const result = await arrange(gpu, {
     ...d,
     vertices: { Task: { labels: 'name', color: 'weight', ports: { input: { color: 'weight' } } } },
   });
-  expect(result.Task.rows).toEqual({ kind: 'indices', values: Uint32Array.of(0, 1, 2) });
+  expect(result.Task.y.rows).toEqual({ kind: 'indices', values: Uint32Array.of(0, 1, 2) });
 });
 it('picks edge labels using their rendered bounds', async () => {
   const result = await scene(),

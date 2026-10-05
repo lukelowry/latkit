@@ -26,7 +26,6 @@ import {
   type RowSelection,
 } from '@latkit/model';
 import {
-  FIELD_OPTIONS,
   continues,
   monitorData,
   type MonitorData,
@@ -88,7 +87,7 @@ export interface MonitorStats extends ViewStats {
 type Records = 'traces';
 type Merged = 'camera' | 'input' | 'limits';
 /**
- * Selects rows, each narrowed to one trace when it names a `field`, and picks exact readings.
+ * Selects rows, each narrowed to one trace when it names a `trace`, and picks exact readings.
  * `at` draws the playhead.
  */
 export interface Monitor extends ItemView<
@@ -311,7 +310,6 @@ class MonitorView
       name: 'monitor',
       records: ['traces'],
       merged: ['camera', 'input', 'limits'],
-      fields: FIELD_OPTIONS,
       options: Object.keys(DEFAULTS),
       framed: ['values'],
       modes: ['inspect', 'navigate', 'none'],
@@ -451,7 +449,7 @@ class MonitorView
       // Drawn frames stand: the next frame draws only what arrived. Traces named by field follow
       // the source; explicit bindings keep theirs.
       this.traces = this.traces!.map((trace) =>
-        typeof trace.trace.field === 'string' ? { ...trace, source: next.source } : trace,
+        typeof trace.trace.y === 'string' ? { ...trace, source: next.source } : trace,
       );
       // New observations change what lies under the pointer.
       this.refreshHover();
@@ -834,7 +832,7 @@ class MonitorView
   private recorded(): Domain | null {
     let recorded: Domain | null = null;
     for (const trace of Object.values(this.data.traces)) {
-      const main = binding(trace.field, this.data.source, trace.from);
+      const main = binding(trace.y, this.data.source, trace.from);
       if (main)
         recorded = mergeDomain(
           recorded,
@@ -899,7 +897,7 @@ class MonitorView
     const config = this.config,
       sources = new Set([config.source]);
     for (const trace of Object.values(config.traces))
-      if (typeof trace.field === 'object') sources.add(trace.field.source);
+      if (typeof trace.y === 'object') sources.add(trace.y.source);
     for (const source of sources) {
       const table = source.tables[item.index?.type];
       if (table && sameIndex(table.index, item.index)) return table;

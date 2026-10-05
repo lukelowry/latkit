@@ -17,13 +17,11 @@ import { Work, failure, sameIndex, type TypeDefinition } from '@latkit/model';
 import type { Camera, Projection } from './camera.js';
 import { DEFAULT_CAMERA, checkCamera, fit, mixCamera, move, zoom } from './camera.js';
 import {
-  FIELD_OPTIONS,
   networkData,
-  type EdgeData,
   type EdgeOptions,
+  type LineOptions,
   type NetworkData,
   type NetworkItem,
-  type PathData,
   type PathOptions,
   type VertexOptions,
 } from './data.js';
@@ -41,7 +39,14 @@ import { indexKey } from './geometry/rows.js';
 import { arrow, listen, type Gestures } from './input.js';
 import { DEFAULTS, VIEW_DEFAULTS, resolveStyle, type NetworkStyle, type Style } from './options.js';
 import { Picking, type PickGeometry } from './picking.js';
-import { readFields, resolveDomains, type FieldRead } from './rendering/fields.js';
+import {
+  LINE,
+  VERTEX,
+  channels,
+  readFields,
+  resolveDomains,
+  type FieldRead,
+} from './rendering/fields.js';
 import { Labels } from './rendering/labels.js';
 import { Paths } from './geometry/paths.js';
 import { Painter, type Paint, type Reads } from './rendering/painter.js';
@@ -127,6 +132,7 @@ function settle(
 function checkData(config: NetworkConfig): NetworkData {
   if (!config.vertices) throw failure('invalid-input', 'Invalid network data');
   const data = networkData(config);
+  for (const vertex of Object.values(data.vertices)) channels(vertex, VERTEX);
   for (const [type, edge] of Object.entries(data.edges ?? {})) {
     if (
       edge.ends &&
@@ -135,8 +141,8 @@ function checkData(config: NetworkConfig): NetworkData {
         edge.ends[0] === edge.ends[1])
     )
       throw failure('invalid-input', 'Edge ends must be two distinct fields: ' + type);
-    if (edge.ends && edge.junction)
-      throw failure('invalid-input', 'A junction centers a net, which has no ends: ' + type);
+    if (edge.ends && (edge.x != null || edge.y != null))
+      throw failure('invalid-input', 'A star center belongs to a net, which has no ends: ' + type);
     if (!edge.ends && edge.bends) throw failure('invalid-input', 'Bends require ends: ' + type);
     checkLine(type, edge);
   }
@@ -144,24 +150,20 @@ function checkData(config: NetworkConfig): NetworkData {
     if (!path.points) throw failure('invalid-input', 'A path needs points: ' + type);
     checkLine(type, path);
   }
-  for (const vertex of Object.values(data.vertices))
-    if (vertex.baseColor) kit.validateRgba(vertex.baseColor);
   return data;
 }
 /** An edge's or path's own line options. */
-function checkLine(type: string, entry: EdgeData | PathData): void {
+function checkLine(type: string, entry: LineOptions): void {
   if (entry.route && !['straight', 'geodesic'].includes(entry.route))
     throw failure('invalid-input', 'Invalid route: ' + type);
-  if (entry.widthPx !== undefined && !(entry.widthPx >= 0 && Number.isFinite(entry.widthPx)))
-    throw failure('invalid-input', 'Invalid widthPx: ' + type);
-  if (entry.baseColor) kit.validateRgba(entry.baseColor);
+  channels(entry, LINE);
 }
-/** Whether drawn rows or their wiring differ, which rebuilds geometry. */
+/** Whether drawn rows, where they draw, or their wiring differ, which rebuilds geometry. */
 function rewired(a: NetworkData, b: NetworkData): boolean {
   return !(
     kit.sameValues(a.source, b.source, wiring) &&
-    kit.sameRecords(a.vertices, b.vertices, ['rows']) &&
-    kit.sameRecords(a.edges, b.edges, ['rows', 'ends', 'junction']) &&
+    kit.sameRecords(a.vertices, b.vertices, ['rows', 'x', 'y']) &&
+    kit.sameRecords(a.edges, b.edges, ['rows', 'ends', 'x', 'y']) &&
     kit.sameRecords(a.paths, b.paths, ['rows', 'source'])
   );
 }
@@ -228,7 +230,6 @@ class NetworkView
       name: 'network',
       records: ['vertices', 'edges', 'paths'],
       merged: ['camera', 'input', 'limits'],
-      fields: FIELD_OPTIONS,
       options: Object.keys(DEFAULTS),
       framed: ['projection', 'center', 'scale', 'pitch', 'bearing'],
       style: VIEW_DEFAULTS,
@@ -423,24 +424,12 @@ class NetworkView
         for (const bank of geometry.vertices)
           vertices.set(
             bank,
-            await readFields(
-              f,
-              data.source,
-              bank,
-              data.vertices[bank.type],
-              data.vertices[bank.type].position ?? bank.position,
-            ),
+            await readFields(f, data.source, bank, data.vertices[bank.type], bank.layout),
           );
         for (const bank of geometry.edges)
           edges.set(
             bank,
-            await readFields(
-              f,
-              bank.source ?? data.source,
-              bank,
-              edgeOptions(data, bank),
-              undefined,
-            ),
+            await readFields(f, bank.source ?? data.source, bank, edgeOptions(data, bank)),
           );
         await resolveDomains(f, data.source, vertices, (bank) =>
           vertexOptions(data, bank as VertexBank),
@@ -449,20 +438,15 @@ class NetworkView
         const compiled = this.paths.prepare(topology, { vertices, edges }, data, this.limits);
         geometry = compiled.geometry;
         for (const [bank, original] of compiled.origins) edges.set(bank, edges.get(original)!);
+        // A path's private points carry their own positions and heights, scaled from 0 to 1.
+        const points = new Map<VertexBank, FieldRead>();
         for (const bank of geometry.vertices)
           if (bank.synthetic)
-            vertices.set(
-              bank,
-              await readFields(f, data.source, bank, bank.synthetic, bank.position),
-            );
-        for (const bank of geometry.vertices)
-          if (bank.synthetic) {
-            const read = vertices.get(bank)!;
-            vertices.set(bank, {
-              ...read,
-              scales: { height: { domain: [0, 1], range: [0, 1], clamp: true } },
-            });
-          }
+            points.set(bank, await readFields(f, data.source, bank, bank.synthetic));
+        await resolveDomains(f, data.source, points, (bank) =>
+          vertexOptions(data, bank as VertexBank),
+        );
+        for (const [bank, read] of points) vertices.set(bank, read);
         return { geometry, reads: { vertices, edges } satisfies Reads };
       },
     );
@@ -511,7 +495,7 @@ class NetworkView
       (!picking.samePositions(previous.picking) ||
         height !== previous.height ||
         Object.keys(data.vertices).some(
-          (key) => data.vertices[key].height !== previous.data.vertices[key]?.height,
+          (key) => data.vertices[key].z !== previous.data.vertices[key]?.z,
         ));
     const drawnCamera = camera;
     const hover = this.hoverFrame(

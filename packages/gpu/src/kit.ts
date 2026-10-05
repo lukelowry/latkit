@@ -1,6 +1,6 @@
 /** What renderer packages build on: the view base, frames, field uploads, shaders, text, and input. */
 export { BaseView, rendererOf, gpuOf, hold } from './view/view.js';
-export type { ConfigShape, Expanded } from './view/view.js';
+export type { ConfigShape } from './view/view.js';
 export { BaseItemView, resolveLimits } from './view/item-view.js';
 export type { Framing, HoverSearch, ItemShape } from './view/item-view.js';
 export { resolveViewStyle } from './view/style.js';
@@ -52,7 +52,21 @@ export { clearColor, validateRgba } from './colors/color.js';
 export { sampleColormap } from './colors/sampling.js';
 export { colormapShader } from './colors/shader.js';
 export type { ScaleRequest, ResolvedScale } from './style/scale.js';
-export { fieldScale, resolveScale, scaleValue, scaleParameters } from './style/scale.js';
+export { fieldScale, resolveScale, scaleValue, labelOptions } from './style/scale.js';
+export type {
+  ChannelKind,
+  ChannelScale,
+  BoundChannel,
+  BoundChannels,
+  ChannelRead,
+} from './style/channel.js';
+export {
+  bindChannels,
+  readChannels,
+  channelRead,
+  channelValue,
+  writeChannel,
+} from './style/channel.js';
 export type { ShadeRequest } from './style/shade.js';
 export { shadeShader } from './style/shade.js';
 export { premultipliedBlend, outputShader } from './style/output.js';

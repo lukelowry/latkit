@@ -45,7 +45,11 @@ it('uses the whole selected type for automatic domains across native blocks and 
       },
       311,
     );
-  const options = { position: 'position', sizePx: { field: 'weight', range: [8, 2] as const } };
+  const options = {
+    x: 'position',
+    y: { field: 'position', component: 1 },
+    sizePx: { field: 'weight', range: [8, 2] as const },
+  };
   const data = { source: source.data, vertices: { node: options } };
   const gpu = await createGpu({ device: fakeDevice().device });
   await draw(gpu, async (frame) => {
@@ -53,9 +57,9 @@ it('uses the whole selected type for automatic domains across native blocks and 
       reads = new Map<VertexBank, FieldRead>();
     expect(geometry.vertices).toHaveLength(2);
     for (const bank of geometry.vertices)
-      reads.set(bank, await readFields(frame, source.data, bank, options, 'position'));
+      reads.set(bank, await readFields(frame, source.data, bank, options));
     await resolveDomains(frame, source.data, reads, () => options);
-    for (const read of reads.values()) expect(read.scales.size.domain).toEqual([0, count - 1]);
+    for (const read of reads.values()) expect(read.scales.sizePx?.domain).toEqual([0, count - 1]);
   });
   gpu.destroy();
 });

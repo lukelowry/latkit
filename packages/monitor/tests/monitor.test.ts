@@ -99,7 +99,7 @@ async function harness(source = new SignalSource(4, 128), options: Partial<Monit
   const target = kit.createTextureTarget(gpu, { width: 512, height: 256 });
   const monitor = createMonitor(gpu, {
     source: source.data,
-    traces: { signal: { from: 'signal', field: 'value' } },
+    traces: { signal: { from: 'signal', y: 'value' } },
     camera: {
       window: [source.coordinate(source.before), source.coordinate(source.frames + 127)],
       values: [(source.options.valueOrigin ?? 0) - 2, (source.options.valueOrigin ?? 0) + 2],
@@ -274,7 +274,7 @@ describe('history', () => {
       original = source.data;
     const h = await harness(source, {
       traces: {
-        signal: { from: 'signal', field: { source: original, from: 'signal', field: 'value' } },
+        signal: { from: 'signal', y: { source: original, from: 'signal', field: 'value' } },
       },
     });
     await h.render();
@@ -290,7 +290,7 @@ describe('history', () => {
     h.monitor.destroy();
     const view = createMonitor(h.gpu, {
       source: h.source.data,
-      traces: { a: { from: 'signal', field: 'value' } },
+      traces: { a: { from: 'signal', y: 'value' } },
       camera: { window: [0, 2], values: [-2, 2] },
       limits: { rows: 1 },
       coordinateAxis: false,
@@ -402,8 +402,8 @@ describe('fitted values', () => {
       longer = new SignalSource(2, 96, { coordinateOrigin: 3 });
     const h = await harness(source, {
       traces: {
-        signal: { from: 'signal', field: 'value' },
-        longer: { from: 'signal', field: { source: longer.data, from: 'signal', field: 'value' } },
+        signal: { from: 'signal', y: 'value' },
+        longer: { from: 'signal', y: { source: longer.data, from: 'signal', field: 'value' } },
       },
       camera: { window: [0, 1], values: [-2, 2] },
     });
@@ -561,8 +561,8 @@ describe('inspection', () => {
   it('drops selected readings whose trace is no longer drawn', async () => {
     const h = await harness(undefined, {
       traces: {
-        signal: { from: 'signal', field: 'value' },
-        other: { from: 'signal', field: 'other' },
+        signal: { from: 'signal', y: 'value' },
+        other: { from: 'signal', y: 'other' },
       },
     });
     const selected = vi.fn();

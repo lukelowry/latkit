@@ -10,7 +10,14 @@ const gpu = await createGpu();
 const network = createNetwork(gpu, {
   canvas,
   source,
-  vertices: { Bus: { color: { field: 'load', colormap: 'viridis' }, labels: 'name' } },
+  vertices: {
+    Bus: {
+      x: 'longitude',
+      y: 'latitude',
+      color: { field: 'load', colormap: 'viridis' },
+      labels: 'name',
+    },
+  },
   edges: { Line: { ends: ['from', 'to'] } },
 });
 network.set({ camera: { projection: 'globe' } }, { animate: true });

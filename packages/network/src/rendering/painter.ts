@@ -1,17 +1,9 @@
-import { kit, type Gpu } from '@latkit/gpu';
+import { kit, type Gpu, type RGBA } from '@latkit/gpu';
 import { failure, rowCount } from '@latkit/model';
 import type { Camera } from '../camera.js';
-import { DEG, turn } from '../camera.js';
+import { DEG } from '../camera.js';
+import { sameItem, type NetworkData, type NetworkItem } from '../data.js';
 import {
-  sameItem,
-  type NetworkData,
-  type NetworkItem,
-  type VertexData,
-  type EdgeData,
-  type PathData,
-} from '../data.js';
-import {
-  vertexOptions,
   edgeOptions,
   type Geometry,
   type VertexBank,
@@ -22,6 +14,25 @@ import { lineWidthPx, PATH_LINE, type Style } from '../options.js';
 import type { LabelBatch } from './labels.js';
 import type { FieldRead } from './fields.js';
 import type { Pipelines } from './pipelines.js';
+
+/** Bytes of a page's uniform slot: a vertex page's rows, origin, color, and seven channels. */
+const SLOT = 256;
+const SLOT_WORDS = SLOT / 4;
+/** Bytes a line page binds: its rows, color, and five channels. */
+const LINE_BYTES = 192;
+/** A path's private points draw no markers. */
+const HIDDEN: kit.ChannelRead = { component: 0, fallback: 0 };
+/** The upload origin a raw axis reads relative to; a scaled or constant axis is absolute. */
+function rebase(channel: kit.ChannelRead, page: kit.GpuPage): number {
+  const field = channel.column === undefined ? undefined : page.columns[channel.column];
+  return !channel.scale && field?.kind === 'value' ? (field.origin?.[channel.component] ?? 0) : 0;
+}
+/** A type's color for rows without one: its constant, its scale's missing color, or `fallback`. */
+function typeColor(read: FieldRead, fallback: RGBA | null): RGBA {
+  const color = read.bound.channels.color;
+  if (Array.isArray(color?.constant)) return color.constant as RGBA;
+  return color?.missing ?? fallback ?? [0, 0, 0, -1];
+}
 
 export interface Reads {
   readonly vertices: ReadonlyMap<VertexBank, FieldRead>;
@@ -100,6 +111,12 @@ export class Painter {
     instances: kit.BufferResource;
     indirect: kit.BufferResource;
   };
+  /**
+   * Every page's uniform slot, written here each frame and held in chunks of one binding's size,
+   * so a frame uploads only the words that changed.
+   */
+  private slots = new Uint32Array(0);
+  private readonly chunks: kit.BufferData[] = [];
   constructor(private readonly gpu: Gpu) {
     this.attachments = new kit.Attachments(gpu);
     this.dummy = gpu.buffer({
@@ -128,9 +145,8 @@ export class Painter {
       msaa: options.msaa,
       depth: 'depth32float',
     });
-    const bytes = new ArrayBuffer(17 * 16),
-      f = new Float32Array(bytes),
-      u = new Uint32Array(bytes);
+    const f = new Float32Array(60),
+      u = new Uint32Array(f.buffer);
     const scale = camera.scale / (camera.projection === 'globe' ? DEG : 1),
       distance = Math.max(1e-9, (frame.viewport.height * 1.5) / scale);
     f.set(
@@ -170,19 +186,9 @@ export class Painter {
       ],
       16,
     );
-    f.set(options.vertexBaseColor, 20);
-    f.set(options.edgeBaseColor ?? [0, 0, 0, -1], 24);
-    f.set(
-      [
-        options.vertexRadiusPx,
-        options.edgeWidthPx / 2,
-        options.dashPeriodPx,
-        options.markers ? 1 : 0,
-      ],
-      28,
-    );
-    f.set(options.hoverColor, 32);
-    f.set(options.selectedColor ?? [0, 0, 0, 0], 36);
+    f.set([options.dashPeriodPx, options.markers ? 1 : 0, 0, 0], 20);
+    f.set(options.hoverColor, 24);
+    f.set(options.selectedColor ?? [0, 0, 0, 0], 28);
     f.set(
       [
         options.hoverWidthPx,
@@ -190,7 +196,7 @@ export class Painter {
         options.hoverWidthPx,
         options.selectedWidthPx,
       ],
-      40,
+      32,
     );
     f.set(
       [
@@ -198,122 +204,131 @@ export class Painter {
         options.nightFloor,
         Math.max(0.0001, options.terminatorWidth),
       ],
-      44,
+      36,
     );
     f.set(
       [...sun(options.sunTime ?? Date.now()), options.daylight && geometry.geographic ? 1 : 0],
-      48,
+      40,
     );
     f.set(
       [...options.surfaceColor.slice(0, 3), options.daylight ? options.surfaceNightFloor : 1],
-      52,
+      44,
     );
-    f.set(options.gridColor, 56);
-    u.set([0, options.graticule ? 1 : 0, 0, 0], 60);
-    f.set(options.background, 64);
+    f.set(options.gridColor, 48);
+    u.set([0, options.graticule ? 1 : 0, 0, 0], 52);
+    f.set(options.background, 56);
     this.updateFocus(state);
     const focusedBinding = frame.buffer(this.focus);
     const uniform = frame.uniforms(f),
       host = state.shade,
       empty = frame.buffer(this.dummy);
-    /** A type's own base color and width over the style; types without them share the uniforms. */
-    const styles = new Map<VertexBank | EdgeBank, GPUBufferBinding>();
-    const typeStyle = (bank: VertexBank | EdgeBank, config: VertexData | EdgeData | PathData) => {
-      let style = styles.get(bank);
-      if (style) return style;
-      const path = 'points' in config,
-        line = 'batches' in bank,
-        color = config.baseColor ?? (path ? PATH_LINE.baseColor : undefined),
-        width = line ? (config as EdgeData | PathData).widthPx : undefined;
-      if (!color && width === undefined && !path) style = uniform;
-      else {
-        const values = f.slice();
-        if (color) values.set(color, line ? 24 : 20);
-        if (line) values[29] = lineWidthPx(config as EdgeData | PathData, options) / 2;
-        style = frame.uniforms(values);
-      }
-      styles.set(bank, style);
-      return style;
-    };
     const vertexBuffers = new Map<VertexBank, GPUBufferBinding>(),
       edgeBuffers = new Map<EdgeBank, GPUBufferBinding>();
     for (const bank of geometry.vertices)
       vertexBuffers.set(bank, frame.buffer(this.output(bank, bank.count * 80)));
     for (const bank of geometry.edges)
       edgeBuffers.set(bank, frame.buffer(this.output(bank, bank.count * 32)));
-    const compute: Compute[] = [];
-    const makeCompute = (
-      bank: VertexBank | EdgeBank,
-      read: FieldRead,
-      config: VertexData | EdgeData | PathData,
-      edge: boolean,
-    ) => {
+    // Write each page's slot, then bind them from the chunks that hold them.
+    const pages: {
+      readonly page: kit.GpuPage;
+      readonly colors: GPUBindGroup;
+      readonly output: GPUBufferBinding;
+      readonly edge: boolean;
+    }[] = [];
+    let slots = 0;
+    for (const bank of geometry.vertices) slots += reads.vertices.get(bank)!.pages.length;
+    for (const bank of geometry.edges) slots += reads.edges.get(bank)!.pages.length;
+    if (this.slots.length < slots * SLOT_WORDS) this.slots = new Uint32Array(slots * SLOT_WORDS);
+    const words = this.slots.subarray(0, slots * SLOT_WORDS).fill(0),
+      floats = new Float32Array(words.buffer, words.byteOffset, words.length);
+    /** One compute dispatch per page: a vertex bank's, or the bank of a `line` type's options. */
+    const write = (bank: VertexBank | EdgeBank, read: FieldRead, line?: object) => {
+      const color = line
+          ? typeColor(read, 'points' in line ? PATH_LINE.color : options.edgeBaseColor)
+          : typeColor(read, options.vertexBaseColor),
+        colors = frame.colormap(read.bound.channels.color?.colormap),
+        output = line ? edgeBuffers.get(bank as EdgeBank)! : vertexBuffers.get(bank as VertexBank)!,
+        hidden = 'synthetic' in bank && !!bank.synthetic;
       for (const { page, offset } of read.pages) {
-        const data = new ArrayBuffer(12 * 16),
-          pf = new Float32Array(data),
-          pu = new Uint32Array(data);
-        const slot = (name: string) => {
-          const field = page.columns[name];
-          return field && 'slot' in field ? field.slot : 0xffffffff;
-        };
-        const origin = (name: string, lane = 0) => {
-          const field = page.columns[name];
-          return field?.kind === 'value' ? (field.origin?.[lane] ?? 0) : 0;
-        };
-        pu.set(
-          [
-            slot(read.vector ? 'position' : 'x'),
-            slot(read.vector ? 'position' : 'y'),
-            slot('size'),
-            slot('height'),
-          ],
-          0,
-        );
-        pu.set([slot('color'), slot('visible'), slot('shade'), slot('dash')], 4);
-        pu.set([rowCount(page.rows), offset, read.vector ? 2 : 1, 'synthetic' in bank ? 1 : 0], 8);
-        const ox = origin(read.vector ? 'position' : 'x'),
-          oy = origin(read.vector ? 'position' : 'y', read.vector ? 1 : 0);
-        const longitude = turn(camera.center[0], ox) * DEG,
-          latitude = oy * DEG;
-        pf.set(
-          [ox - camera.center[0], oy - camera.center[1], Math.sin(longitude), Math.cos(longitude)],
-          12,
-        );
-        pf.set([Math.sin(latitude), Math.cos(latitude), 0, 0], 16);
-        for (const [name, at] of [
-          ['color', 20],
-          ['size', 28],
-          ['height', 36],
-        ] as const) {
-          const field = page.columns[name];
-          pf.set(
-            kit.scaleParameters(read.scales[name] ?? kit.resolveScale({}, null), {
-              origin: field?.kind === 'value' ? field.origin?.[0] : undefined,
-            }),
-            at,
+        const at = pages.length * SLOT_WORDS;
+        pages.push({ page, colors, output, edge: !!line });
+        words[at] = rowCount(page.rows);
+        words[at + 1] = offset;
+        floats.set(color, at + 4);
+        if (line) {
+          kit.writeChannel(words, at + 8, read.channel('color'), page);
+          kit.writeChannel(
+            words,
+            at + 16,
+            read.channel('widthPx', lineWidthPx(line, options)),
+            page,
           );
+          kit.writeChannel(words, at + 24, read.channel('visible'), page);
+          kit.writeChannel(words, at + 32, read.channel('shade'), page);
+          kit.writeChannel(words, at + 40, read.channel('dash'), page);
+          continue;
         }
-        pf.set([origin('visible'), origin('shade'), origin('dash'), 0], 44);
-        const colors = frame.colormap(config.color?.colormap);
-        const output = edge
-          ? edgeBuffers.get(bank as EdgeBank)!
-          : vertexBuffers.get(bank as VertexBank)!;
-        const styleUniform = typeStyle(bank, config);
-        const group = gpu.device.createBindGroup({
-          layout: pipeline.compute,
-          entries: [
-            { binding: 0, resource: styleUniform },
-            { binding: 1, resource: frame.uniforms(pf) },
-            { binding: 2, resource: output },
-          ],
-        });
-        compute.push({ colors, fields: page.bindGroup, group, count: rowCount(page.rows), edge });
+        // Positions read relative to their upload origin, rebased here to the camera center.
+        const x = read.channel('x'),
+          y = read.channel('y');
+        floats[at + 2] = rebase(x, page) - camera.center[0];
+        floats[at + 3] = rebase(y, page) - camera.center[1];
+        kit.writeChannel(words, at + 8, x, page, 0);
+        kit.writeChannel(words, at + 16, y, page, 0);
+        kit.writeChannel(words, at + 24, read.channel('z'), page);
+        kit.writeChannel(
+          words,
+          at + 32,
+          hidden ? HIDDEN : read.channel('sizePx', options.vertexRadiusPx),
+          page,
+        );
+        kit.writeChannel(words, at + 40, read.channel('color'), page);
+        kit.writeChannel(words, at + 48, hidden ? HIDDEN : read.channel('visible'), page);
+        kit.writeChannel(words, at + 56, read.channel('shade'), page);
       }
     };
-    for (const bank of geometry.vertices)
-      makeCompute(bank, reads.vertices.get(bank)!, vertexOptions(data, bank), false);
-    for (const bank of geometry.edges)
-      makeCompute(bank, reads.edges.get(bank)!, edgeOptions(data, bank), true);
+    for (const bank of geometry.vertices) write(bank, reads.vertices.get(bank)!);
+    for (const bank of geometry.edges) write(bank, reads.edges.get(bank)!, edgeOptions(data, bank));
+    const perChunk = Math.floor(gpu.device.limits.maxUniformBufferBindingSize / SLOT),
+      held = Math.ceil(slots / perChunk);
+    this.chunks.length = Math.min(this.chunks.length, held);
+    const bindings: GPUBufferBinding[] = [];
+    for (let k = 0; k < held; k++) {
+      const chunk = (this.chunks[k] ??= new kit.BufferData({
+        size: SLOT,
+        usage: GPUBufferUsage.UNIFORM,
+        label: 'network pages',
+      }));
+      chunk.update(
+        words.subarray(k * perChunk * SLOT_WORDS, (k + 1) * perChunk * SLOT_WORDS),
+        SLOT,
+      );
+      bindings.push(frame.buffer(chunk));
+    }
+    const compute: Compute[] = pages.map(({ page, colors, output, edge }, i) => {
+      const chunk = bindings[Math.floor(i / perChunk)];
+      return {
+        colors,
+        fields: page.bindGroup,
+        group: gpu.device.createBindGroup({
+          layout: pipeline.compute,
+          entries: [
+            { binding: 0, resource: uniform },
+            {
+              binding: 1,
+              resource: {
+                buffer: chunk.buffer,
+                offset: (chunk.offset ?? 0) + (i % perChunk) * SLOT,
+                size: edge ? LINE_BYTES : SLOT,
+              },
+            },
+            { binding: 2, resource: output },
+          ],
+        }),
+        count: rowCount(page.rows),
+        edge,
+      };
+    });
     const curveCount = Math.max(
       0,
       ...geometry.edges
@@ -355,13 +370,12 @@ export class Painter {
       segments: GPUBufferBinding,
       styles: GPUBufferBinding,
       base: number,
-      style = uniform,
       phase?: GPUBufferBinding,
     ) =>
       gpu.device.createBindGroup({
         layout: pipeline.draw,
         entries: [
-          { binding: 0, resource: style },
+          { binding: 0, resource: uniform },
           { binding: 1, resource: a },
           { binding: 2, resource: b },
           { binding: 3, resource: segments },
@@ -381,22 +395,14 @@ export class Painter {
     for (const bank of geometry.vertices)
       if (!bank.synthetic)
         vertices.push({
-          group: group(
-            vertexBuffers.get(bank)!,
-            empty,
-            empty,
-            empty,
-            bank.base,
-            typeStyle(bank, vertexOptions(data, bank)),
-          ),
+          group: group(vertexBuffers.get(bank)!, empty, empty, empty, bank.base),
           count: bank.count,
         });
     for (const bank of geometry.edges) {
-      const style = typeStyle(bank, edgeOptions(data, bank));
+      const curved = edgeOptions(data, bank).route === 'geodesic',
+        dashed = reads.edges.get(bank)!.has('dash');
       for (const batch of bank.batches) {
-        const config = edgeOptions(data, bank);
-        const curved = config.route === 'geodesic',
-          count = batch.records.length / 4;
+        const count = batch.records.length / 4;
         const a = vertexBuffers.get(batch.a)!,
           b = vertexBuffers.get(batch.b)!,
           segments = frame.buffer(batch.data);
@@ -412,9 +418,7 @@ export class Painter {
                 { binding: 5, resource: curveIndirect! },
                 {
                   binding: 6,
-                  resource: frame.uniforms(
-                    Uint32Array.of(count, 'dash' in config && config.dash ? 1 : 0, 0, 0),
-                  ),
+                  resource: frame.uniforms(Uint32Array.of(count, dashed ? 1 : 0, 0, 0)),
                 },
               ],
             })
@@ -439,7 +443,6 @@ export class Painter {
             segments,
             edgeBuffers.get(bank)!,
             geometry.vertexCount + bank.base,
-            style,
             phase,
           ),
           count,
@@ -639,6 +642,7 @@ export class Painter {
       }
   }
   destroy(): void {
+    this.chunks.length = 0;
     for (const buffer of this.buffers.values()) buffer.destroy();
     this.buffers.clear();
     this.attachments.destroy();

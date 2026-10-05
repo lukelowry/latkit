@@ -115,9 +115,9 @@ export async function verify(gpu) {
       traces: {
         a: {
           from: 'signal',
-          field: 'value',
+          y: 'value',
           widthPx: 2.5,
-          baseColor: [1, 0.25, 0.05, 1],
+          color: [1, 0.25, 0.05, 1],
           ...trace,
         },
       },
@@ -332,7 +332,7 @@ export async function verify(gpu) {
   const delivered = createData(local.schema, received);
   const connected = createMonitor(gpu, {
     source: delivered,
-    traces: { a: { from: 'signal', field: 'value' } },
+    traces: { a: { from: 'signal', y: 'value' } },
     camera: { window: [0, 1.27], values: [-2, 2] },
     coordinateAxis: false,
     valueAxis: false,
@@ -387,7 +387,7 @@ export async function benchmark(gpu) {
     const view = createMonitor(gpu, {
       source: source.data,
       traces: {
-        signal: { from: 'signal', field: 'value', widthPx: 1, baseColor: [0.2, 0.7, 0.9, 0.15] },
+        signal: { from: 'signal', y: 'value', widthPx: 1, color: [0.2, 0.7, 0.9, 0.15] },
       },
       camera: { window: [0, source.coordinate(frames + 32)], values: [-1.4, 1.4] },
       coordinateAxis: 'Coordinate',
@@ -496,7 +496,7 @@ export async function canvasLatency(gpu) {
   const monitor = createMonitor(gpu, {
     canvas,
     source: source.data,
-    traces: { a: { from: 'signal', field: 'value', baseColor: [0, 1, 0, 1], widthPx: 3 } },
+    traces: { a: { from: 'signal', y: 'value', color: [0, 1, 0, 1], widthPx: 3 } },
     camera: { window: [0, 41], values: [-2, 2] },
     coordinateAxis: false,
     valueAxis: false,
