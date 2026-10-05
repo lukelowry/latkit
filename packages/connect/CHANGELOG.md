@@ -1,5 +1,13 @@
 # @latkit/connect
 
+## 4.0.1
+
+### Patch Changes
+
+- Updated dependencies [df714d5]
+- Updated dependencies [df714d5]
+  - @latkit/model@4.0.0
+
 ## 4.0.0
 
 ### Major Changes
