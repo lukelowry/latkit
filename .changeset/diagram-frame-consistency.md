@@ -1,5 +1,5 @@
 ---
-'@latkit/model': minor
+'@latkit/model': major
 '@latkit/gpu': minor
 '@latkit/network': minor
 '@latkit/monitor': minor

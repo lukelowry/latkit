@@ -28,6 +28,7 @@ Changed
 - gpu: `revealPaddingPx` takes insets, like `fitPaddingPx`.
 - gpu: the views of a composition keep their memoized work apart.
 - gpu: `BufferData.update` records one revision for all it changed, so a consumer uploads those ranges rather than everything.
+- network: positions that change keep the drawn topology; only a type moving between circle, plane, and geographic placement rebuilds it.
 - network: each page's uniform stays on the GPU between frames, and a frame uploads only the pages that changed; a frame where nothing moved uploads about an eighth of what it did at a million buses.
 
 Renamed
