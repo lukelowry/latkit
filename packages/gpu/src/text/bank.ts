@@ -1,9 +1,9 @@
 import { BufferData } from '../memory/buffer-data.js';
 import type { Occupancy } from '../spatial/boxes.js';
 import type { Bounds2D } from '../view/camera.js';
+import type { Point } from '../view/view.js';
 import type { TextAlign, TextBaseline, TextLayout, TextRun } from './text.js';
 
-type Point = readonly [number, number];
 /** Where a placed text belongs to the view: the slot it names, and its depth. */
 export interface TextPlacement {
   readonly slot?: number;
