@@ -137,6 +137,20 @@ function geographic(
     throw failure('invalid-input', 'Position axes disagree on whether they are geographic');
   return kinds.size ? kinds.has(true) : undefined;
 }
+/**
+ * Where a vertex type's rows draw: around a circle without x or y, or at plane or geographic
+ * coordinates. Only a change of this rebuilds the topology; new positions do not.
+ */
+export function placement(
+  source: Data,
+  type: string,
+  options: VertexOptions,
+): 'circle' | 'plane' | 'geographic' {
+  const { x, y } = channels(options, VERTEX).channels;
+  if ([x, y].every((axis) => axis.field === undefined && axis.constant === undefined))
+    return 'circle';
+  return geographic(source, type, [x.field, y.field]) ? 'geographic' : 'plane';
+}
 /** A contiguous run as a range, so ranged reads and lookups never allocate index arrays. */
 function axis(rows: Uint32Array): RowAxis {
   const n = rows.length;
@@ -281,10 +295,8 @@ export async function readGeometry(
     const read = await rowsOf(data.source, type, options.rows);
     const definition = schema.types[type];
     if (!definition) throw failure('invalid-input', 'Unknown vertex type: ' + type);
-    const { x, y } = channels(options, VERTEX).channels,
-      placed = [x, y].some((axis) => axis.field !== undefined || axis.constant !== undefined),
-      lonlat = geographic(data.source, type, [x.field, y.field]);
-    if (lonlat !== undefined) kinds.add(lonlat);
+    const placed = placement(data.source, type, options);
+    if (placed !== 'circle') kinds.add(placed === 'geographic');
     if (vertexCount + read.rows.length > limits.vertices)
       throw failure('resource-limit', 'Network vertex limit exceeded');
     const addresses = new Addresses(read.rows, vertexCount, vertices.length);
@@ -302,7 +314,7 @@ export async function readGeometry(
         base: vertexCount,
       };
       vertices.push(bank);
-      if (!placed) unplaced.push(bank);
+      if (placed === 'circle') unplaced.push(bank);
       table.add(rows, bank);
       vertexCount += count;
       charge(256 + (rows.kind === 'indices' ? count * 36 : 0));

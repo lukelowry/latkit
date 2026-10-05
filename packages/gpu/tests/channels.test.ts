@@ -2,7 +2,8 @@ import { expect, it } from 'vitest';
 import type { FieldsBlock, FieldValues } from '@latkit/model';
 import {
   bindChannels,
-  channelRead,
+  channelOn,
+  resolveChannel,
   channelValue,
   resolveScale,
   writeChannel,
@@ -81,20 +82,34 @@ it('reads a row as the shader does: lanes, booleans, presence, scales, and the f
       },
     },
   } as unknown as FieldsBlock;
-  const y = channelRead({ column: 'x', component: 1 }, undefined, Infinity);
+  const y = resolveChannel({ column: 'x', component: 1 }, undefined, Infinity);
   expect([0, 1, 2].map((row) => channelValue(y, block, row))).toEqual([2, 4, Infinity]);
-  const on = channelRead({ column: 'on', component: 0 }, undefined, 1);
+  const on = resolveChannel({ column: 'on', component: 0 }, undefined, 1);
   expect([0, 1, 2].map((row) => channelValue(on, block, row))).toEqual([1, 0, 1]);
-  const size = channelRead(
+  expect([0, 1, 2].map((row) => channelOn(on, block, row))).toEqual([true, false, true]);
+  // A boolean channel is on only where positive.
+  expect(channelOn(resolveChannel({ component: 0, constant: -1 }, null, 1), block, 0)).toBe(false);
+  // A scale's `missing` fills rows its field leaves empty.
+  const missing = resolveChannel(
+    { column: 'load', component: 0, scale: { range: [2, 8] }, missing: 1 },
+    resolveScale({ range: [2, 8] }, [0, 10]),
+    4,
+  );
+  expect(channelValue(missing, block, 0)).toBe(1);
+  const size = resolveChannel(
     { column: 'load', component: 0, scale: { range: [2, 8] } },
     resolveScale({ range: [2, 8] }, [0, 10]),
     4,
   );
   expect([0, 1, 2].map((row) => channelValue(size, block, row))).toEqual([4, 5, 8]);
   // A scale whose domain is unknown, and a constant, read their fallbacks.
-  const unknown = channelRead({ column: 'load', component: 0, scale: { range: [2, 8] } }, null, 3);
+  const unknown = resolveChannel(
+    { column: 'load', component: 0, scale: { range: [2, 8] } },
+    null,
+    3,
+  );
   expect(channelValue(unknown, block, 1)).toBe(3);
-  expect(channelValue(channelRead({ component: 0, constant: 7 }, null, 3), block, 1)).toBe(7);
+  expect(channelValue(resolveChannel({ component: 0, constant: 7 }, null, 3), block, 1)).toBe(7);
 });
 
 it('writes a channel as a field shader reads it: slot, lane, mapping, origin, and fallback', () => {
@@ -111,7 +126,7 @@ it('writes a channel as a field shader reads it: slot, lane, mapping, origin, an
   writeChannel(
     words,
     0,
-    channelRead(
+    resolveChannel(
       { column: 'p', component: 0, scale: { range: [2, 0] } },
       resolveScale({ range: [2, 0] }, [1e12, 1e12 + 1]),
       -1,
@@ -121,14 +136,14 @@ it('writes a channel as a field shader reads it: slot, lane, mapping, origin, an
   expect([...floats.slice(0, 4)]).toEqual([0, 1, 2, -2]);
   expect([words[4], words[5], floats[7]]).toEqual([3, 1 | 4, -1]);
   // A raw lane adds its own origin, or the one the view rebases to.
-  writeChannel(words, 0, channelRead({ column: 'p', component: 1 }, null, 0), field);
+  writeChannel(words, 0, resolveChannel({ column: 'p', component: 1 }, null, 0), field);
   expect([words[5], floats[6]]).toEqual([1 << 4, 5]);
-  writeChannel(words, 0, channelRead({ column: 'p', component: 1 }, null, 0), field, 0);
+  writeChannel(words, 0, resolveChannel({ column: 'p', component: 1 }, null, 0), field, 0);
   expect(floats[6]).toBe(0);
   // Without a field, the shader reads only the fallback.
-  writeChannel(words, 0, channelRead({ component: 0, constant: 9 }, null, 0), undefined);
+  writeChannel(words, 0, resolveChannel({ component: 0, constant: 9 }, null, 0), undefined);
   expect([words[4], words[5] & 3, floats[7]]).toEqual([0xffffffff, 3, 9]);
   expect(() =>
-    writeChannel(words, 0, channelRead({ column: 'p', component: 2 }, null, 0), field),
+    writeChannel(words, 0, resolveChannel({ column: 'p', component: 2 }, null, 0), field),
   ).toThrow();
 });

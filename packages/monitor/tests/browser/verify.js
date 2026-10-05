@@ -121,9 +121,9 @@ export async function verify(gpu) {
           ...trace,
         },
       },
-      camera: { window: [lo, hi], values: [origin - 2, origin + 2] },
-      coordinateAxis: false,
-      valueAxis: false,
+      camera: { x: [lo, hi], y: [origin - 2, origin + 2] },
+      xAxis: false,
+      yAxis: false,
       paddingPx: 12,
       background: [0, 0, 0, 1],
       ...extra,
@@ -242,16 +242,16 @@ export async function verify(gpu) {
   assert(gpu.stats().queries === resizeReads, 'Resize burst rebuilt source history');
   await draw(stable.view);
   await checkStable();
-  const [lo, hi] = stable.view.camera.window,
+  const [lo, hi] = stable.view.camera.x,
     center = { coordinate: (lo + hi) / 2, value: 0 },
     presented = stable.view.locate(center);
-  stable.view.set({ camera: { window: [0.2, 1.4] } });
+  stable.view.set({ camera: { x: [0.2, 1.4] } });
   await draw(stable.view, false);
   await checkStable();
   // The axes and the stretched image show the new window at once, and so does locate.
   const moved = stable.view.locate(center);
   assert(moved && moved[0] !== presented[0], 'Locate does not follow the drawn camera');
-  stable.view.set({ camera: { window: [0.4, 1.6] } });
+  stable.view.set({ camera: { x: [0.4, 1.6] } });
   for (let i = 0; i < 300; i++) {
     await draw(stable.view, false);
     await checkStable();
@@ -333,9 +333,9 @@ export async function verify(gpu) {
   const connected = createMonitor(gpu, {
     source: delivered,
     traces: { a: { from: 'signal', y: 'value' } },
-    camera: { window: [0, 1.27], values: [-2, 2] },
-    coordinateAxis: false,
-    valueAxis: false,
+    camera: { x: [0, 1.27], y: [-2, 2] },
+    xAxis: false,
+    yAxis: false,
   });
   try {
     await draw(connected);
@@ -389,9 +389,9 @@ export async function benchmark(gpu) {
       traces: {
         signal: { from: 'signal', y: 'value', widthPx: 1, color: [0.2, 0.7, 0.9, 0.15] },
       },
-      camera: { window: [0, source.coordinate(frames + 32)], values: [-1.4, 1.4] },
-      coordinateAxis: 'Coordinate',
-      valueAxis: 'Value',
+      camera: { x: [0, source.coordinate(frames + 32)], y: [-1.4, 1.4] },
+      xAxis: 'Coordinate',
+      yAxis: 'Value',
       limits: { historyBytes: 96 * 1024 ** 2 },
     });
     const renderer = kit.rendererOf(view);
@@ -497,9 +497,9 @@ export async function canvasLatency(gpu) {
     canvas,
     source: source.data,
     traces: { a: { from: 'signal', y: 'value', color: [0, 1, 0, 1], widthPx: 3 } },
-    camera: { window: [0, 41], values: [-2, 2] },
-    coordinateAxis: false,
-    valueAxis: false,
+    camera: { x: [0, 41], y: [-2, 2] },
+    xAxis: false,
+    yAxis: false,
   });
   let live,
     selected = false;
@@ -567,7 +567,7 @@ export async function canvasLatency(gpu) {
       phase = 'empty';
       live = new SignalSource(1, 0);
       live.value = () => 0;
-      monitor.set({ source: live.data, camera: { window: [0, 1] } });
+      monitor.set({ source: live.data, camera: { x: [0, 1] } });
     } else if (phase === 'empty' && !monitor.stats().refining) {
       phase = 'stream';
       timer = setInterval(() => {

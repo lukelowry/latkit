@@ -62,8 +62,8 @@ export function theme(light: boolean): Style {
     ? {
         ...base,
         background: [0.96, 0.97, 0.98, 1],
-        vertexBaseColor: [1, 1, 1, 1],
-        edgeBaseColor: [0.34, 0.43, 0.55, 1],
+        vertexColor: [1, 1, 1, 1],
+        edgeColor: [0.34, 0.43, 0.55, 1],
         outlineColor: [0.61, 0.68, 0.76, 1],
         textColor: [0.13, 0.2, 0.29, 1],
         gridColor: [0.35, 0.44, 0.56, 0.24],
@@ -75,8 +75,8 @@ export function theme(light: boolean): Style {
 }
 const base: Style = {
   background: [0.063, 0.082, 0.106, 1],
-  vertexBaseColor: [0.1, 0.13, 0.17, 1],
-  edgeBaseColor: [0.46, 0.57, 0.65, 1],
+  vertexColor: [0.1, 0.13, 0.17, 1],
+  edgeColor: [0.46, 0.57, 0.65, 1],
   outlineColor: [0.34, 0.43, 0.5, 1],
   textColor: [0.91, 0.94, 0.96, 1],
   gridColor: [0.35, 0.43, 0.52, 0.26],
@@ -101,7 +101,7 @@ export function data(source: GraphSource, settings: Settings, automatic = false)
           shape: settings.shape === 'mixed' ? shapes[type] : settings.shape,
           labels: {
             field: 'name',
-            size: settings.density === 'compact' ? 12 : 13,
+            fontSize: settings.density === 'compact' ? 12 : 13,
             maxWidth: 180,
             overflow: settings.overflow,
           },
@@ -133,9 +133,9 @@ export function data(source: GraphSource, settings: Settings, automatic = false)
       Signal: {
         route: settings.route === 'elbow' ? elbow : settings.route,
         appearance: settings.appearance,
-        labels: { field: 'name', size: 12, maxWidth: 140, overflow: 'ellipsis' },
+        labels: { field: 'name', fontSize: 12, maxWidth: 140, overflow: 'ellipsis' },
         arrows: settings.arrows,
-        flow: settings.flow ? { field: 'signal', domain: [0, 1], range: [20, 48] } : null,
+        flowPx: settings.flow ? { field: 'signal', domain: [0, 1], range: [20, 48] } : null,
         widthPx: { field: 'signal', domain: [0, 1], range: [1.5, 2.5] },
       },
     },

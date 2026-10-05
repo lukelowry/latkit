@@ -11,8 +11,8 @@ const monitor = createMonitor(gpu, {
   canvas,
   source: observations,
   traces: { temperature: { from: 'sensor', y: 'temperature' } },
-  camera: { window: [0, 30] },
-  valueAxis: 'Temperature',
+  camera: { x: [0, 30] },
+  yAxis: 'Temperature',
 });
 ```
 

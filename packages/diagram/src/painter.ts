@@ -420,7 +420,7 @@ export class Painter {
       { styles } = restyle,
       focus = frame.buffer(geometry.focus),
       empty = frame.buffer(this.empty),
-      accent = style.selectedColor ?? style.hoverColor;
+      accent = style.selectedColor === 'none' ? style.hoverColor : style.selectedColor;
     const group = (
       origin: Point,
       data: GPUBufferBinding,
@@ -453,7 +453,7 @@ export class Painter {
                 style.outlineWidthPx,
                 style.selectedWidthPx,
                 style.hoverWidthPx,
-                +(style.selectedColor === null),
+                +(style.selectedColor === 'none'),
                 ...style.background,
                 +(style.detail === 'auto'),
                 style.gridMinSpacingPx,
@@ -462,8 +462,8 @@ export class Painter {
                 ...(state.drag?.delta ?? [0, 0]),
                 +style.junctions,
                 scene.slots.ports,
-                ...style.vertexBaseColor,
-                ...style.edgeBaseColor,
+                ...style.vertexColor,
+                ...style.edgeColor,
                 ...style.outlineColor,
                 ...style.groupColor,
               ),

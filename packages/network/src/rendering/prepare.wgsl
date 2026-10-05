@@ -64,7 +64,7 @@ fn vertices(@builtin(global_invocation_id) id: vec3u) {
     let lat=(y+vertexPage.origin.y+u.center.y)*0.017453292519943295;
     normal=vec3f(cos(lat)*cos(lon),sin(lat),-cos(lat)*sin(lon));
   }
-  let visible=placed && facing && channelNumber(vertexPage.visible,row,0u)>0.0;
+  let visible=placed && facing && channelOn(vertexPage.visible,row,0u);
   let pos=project_world(world,u);
   var ground=world; if(u.view.w>1.5) { ground=(world+vec3f(0,0,1))/(1.0+height)-vec3f(0,0,1); } else { ground.z=0.0; }
   var c=channelColor(vertexPage.tint,row,0u,vertexPage.color); c=vec4f(c.rgb*daylight(normal,u),c.a);
@@ -79,7 +79,7 @@ fn vertices(@builtin(global_invocation_id) id: vec3u) {
 fn edges(@builtin(global_invocation_id) id: vec3u) {
   let row=id.x; if(row>=linePage.rows){return;}
   let out=(linePage.first+row)*2u;
-  let flags=select(0u,1u,channelNumber(linePage.visible,row,0u)>0.0)|select(0u,2u,channelNumber(linePage.dash,row,0u)>0.0);
+  let flags=select(0u,1u,channelOn(linePage.visible,row,0u))|select(0u,2u,channelOn(linePage.dash,row,0u));
   output[out]=channelColor(linePage.tint,row,0u,linePage.color);
   output[out+1u]=vec4f(channelNumber(linePage.width,row,0u)*0.5,channelNumber(linePage.shade,row,0u),bitcast<f32>(fieldRow(row)),bitcast<f32>(flags));
 }

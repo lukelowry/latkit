@@ -26,8 +26,8 @@ export const STYLE_EFFECTS = {
   portSpacing: 'scene',
   routeClearance: 'route',
   animationMaxVertices: 'frame',
-  vertexBaseColor: 'frame',
-  edgeBaseColor: 'frame',
+  vertexColor: 'frame',
+  edgeColor: 'frame',
   outlineColor: 'frame',
   gridColor: 'frame',
   groupColor: 'frame',
@@ -67,8 +67,8 @@ export const DEFAULTS: Required<DiagramStyle> = Object.freeze({
   portSpacing: 22,
   routeClearance: 16,
   animationMaxVertices: 512,
-  vertexBaseColor: [0.16, 0.19, 0.25, 1] as RGBA,
-  edgeBaseColor: [0.6, 0.65, 0.73, 1] as RGBA,
+  vertexColor: [0.16, 0.19, 0.25, 1] as RGBA,
+  edgeColor: [0.6, 0.65, 0.73, 1] as RGBA,
   outlineColor: [0.4, 0.47, 0.58, 1] as RGBA,
   gridColor: [0.5, 0.55, 0.65, 0.2] as RGBA,
   groupColor: [0.45, 0.55, 0.7, 0.1] as RGBA,
@@ -151,9 +151,9 @@ export function checkInput(input: DiagramInput): ViewInput {
 }
 /** A type's labels and channels: what it reads, and how it draws. */
 function binding(value: VertexOptions | EdgeOptions, edge: boolean) {
-  const labels = kit.labelOptions(value.labels);
+  const labels = kit.resolveLabels(value.labels);
   if (labels) {
-    if (labels.size !== undefined) positive(labels.size, 'label size');
+    if (labels.fontSize !== undefined) positive(labels.fontSize, 'label font size');
     if (labels.maxWidth !== undefined) positive(labels.maxWidth, 'label width');
     if (
       labels.maxCount !== undefined &&

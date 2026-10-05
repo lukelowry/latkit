@@ -3,7 +3,12 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   build: {
     rollupOptions: {
-      input: { network: 'index.html', colors: 'colors.html', coupled: 'coupled.html' },
+      input: {
+        network: 'index.html',
+        colors: 'colors.html',
+        coupled: 'coupled.html',
+        bunny: 'bunny.html',
+      },
     },
   },
   server: {

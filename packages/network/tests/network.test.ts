@@ -201,8 +201,11 @@ it('rebinds immutable live positions without rereading topology and picks immedi
       values: { kind: 'numeric', offset: 0, length: values.length, values },
     },
   };
-  const requests = source.queries;
+  const requests = source.queries,
+    topology = (network as unknown as { geometry?: object }).geometry;
   network.set({ vertices: { node: lanes(position) } });
+  // Positions of the same kind keep the topology.
+  expect((network as unknown as { geometry?: object }).geometry).toBe(topology);
   await gpu.render({
     timeMs: 1,
     views: [{ renderer: kit.rendererOf(network), target: surface, at: 0 }],

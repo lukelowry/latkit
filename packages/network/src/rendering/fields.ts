@@ -8,14 +8,14 @@ import {
 import { kit } from '@latkit/gpu';
 import type { EdgeOptions, PathOptions, VertexOptions } from '../data.js';
 import type { VertexBank, EdgeBank } from '../geometry/topology.js';
-import { SIZE_RANGE, WIDTH_RANGE } from '../options.js';
+import { RADIUS_RANGE, WIDTH_RANGE } from '../options.js';
 
 /** What a vertex reads, and how: a field spans the range, or reads as it is when raw. */
 export const VERTEX = {
   x: 'raw',
   y: 'raw',
   z: [0, 1],
-  sizePx: SIZE_RANGE,
+  radiusPx: RADIUS_RANGE,
   color: 'color',
   visible: 'raw',
   shade: 'raw',
@@ -79,9 +79,9 @@ export interface ReadPage {
 /** A bank's fields, uploaded, and its channels ready to read. */
 export class FieldRead {
   /** Each channel ready to read, rows without a value reading its default. */
-  readonly channels: Readonly<Record<ChannelName, kit.ChannelRead>>;
+  readonly channels: Readonly<Record<ChannelName, kit.ResolvedChannel>>;
   /** Channels read with fallbacks of the caller's, such as a style's marker radius. */
-  private readonly custom = new Map<ChannelName, Map<number, kit.ChannelRead>>();
+  private readonly custom = new Map<ChannelName, Map<number, kit.ResolvedChannel>>();
   constructor(
     readonly pages: readonly ReadPage[],
     readonly native: readonly FieldsBlock[],
@@ -89,7 +89,7 @@ export class FieldRead {
     /** Each scaled channel's domain, resolved across its type's banks. */
     readonly scales: Readonly<Partial<Record<ChannelName, kit.ResolvedScale>>> = {},
   ) {
-    const channels = {} as Record<ChannelName, kit.ChannelRead>;
+    const channels = {} as Record<ChannelName, kit.ResolvedChannel>;
     for (const name of NAMES) channels[name] = this.read(name, FALLBACK[name] ?? 0);
     this.channels = channels;
   }
@@ -99,19 +99,19 @@ export class FieldRead {
     return !!channel && (channel.field !== undefined || channel.constant !== undefined);
   }
   /** A channel ready to read; rows without a value read `fallback`, or its default. */
-  channel(name: ChannelName, fallback?: number): kit.ChannelRead {
+  channel(name: ChannelName, fallback?: number): kit.ResolvedChannel {
     if (fallback === undefined) return this.channels[name];
     let reads = this.custom.get(name);
-    if (!reads) this.custom.set(name, (reads = new Map<number, kit.ChannelRead>()));
+    if (!reads) this.custom.set(name, (reads = new Map<number, kit.ResolvedChannel>()));
     let read = reads.get(fallback);
     if (!read) reads.set(fallback, (read = this.read(name, fallback)));
     return read;
   }
   /** An unset axis reads 0, so one bound axis lays rows along it. */
-  private read(name: ChannelName, fallback: number): kit.ChannelRead {
+  private read(name: ChannelName, fallback: number): kit.ResolvedChannel {
     const bound = this.bound.channels[name] ?? UNSET,
       own = (name === 'x' || name === 'y') && bound.field === undefined ? 0 : fallback;
-    return kit.channelRead(bound, this.scales[name], own);
+    return kit.resolveChannel(bound, this.scales[name], own);
   }
   scaled(scales: Readonly<Partial<Record<ChannelName, kit.ResolvedScale>>>): FieldRead {
     return new FieldRead(this.pages, this.native, this.bound, scales);

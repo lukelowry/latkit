@@ -4,8 +4,8 @@ export type { Point };
 export type Shape = 'rectangle' | 'rounded' | 'ellipse' | 'diamond';
 /** Labels on a type's items, sized in diagram units so they zoom with the diagram. */
 export interface DiagramLabels extends Labels {
-  /** `fontSizePx` by default. */
-  readonly size?: number;
+  /** In diagram units; the shared `fontSizePx` by default. */
+  readonly fontSize?: number;
   readonly maxWidth?: number;
   readonly overflow?: 'wrap' | 'ellipsis';
 }
@@ -33,10 +33,11 @@ export interface VertexOptions {
   readonly cornerRadius?: number;
   /** Automatic sizing reserves room around the title. Default: center. */
   readonly labelPosition?: 'header' | 'center';
-  /** `vertexBaseColor` by default. */
+  /** `vertexColor` by default. */
   readonly color?: ColorChannel;
   /** A ring around the block. */
   readonly status?: ColorChannel;
+  /** Shown where true or positive; every row by default. */
   readonly visible?: Channel<boolean>;
   readonly shade?: Channel;
   readonly labels?: string | DiagramLabels | null;
@@ -57,12 +58,13 @@ export interface EdgeOptions {
   readonly ends?: readonly [source: string, target: string];
   readonly route?: 'orthogonal' | 'straight' | RouteStrategy;
   readonly appearance?: 'wire' | 'tag';
-  /** `edgeBaseColor` by default. */
+  /** `edgeColor` by default. */
   readonly color?: ColorChannel;
   /** Line width in CSS pixels; a field spans 1 to 4. `edgeWidthPx` by default. */
   readonly widthPx?: Channel;
-  /** How fast dashes move along the wire, in CSS pixels per second; a field spans 0 to 40. */
-  readonly flow?: Channel;
+  /** How far dashes move along the wire each second, in CSS pixels; a field spans 0 to 40. */
+  readonly flowPx?: Channel;
+  /** Shown where true or positive; every row by default. */
   readonly visible?: Channel<boolean>;
   readonly shade?: Channel;
   readonly labels?: string | DiagramLabels | null;

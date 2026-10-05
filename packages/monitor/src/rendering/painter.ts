@@ -1,6 +1,6 @@
 import { type Gpu, type RGBA, kit } from '@latkit/gpu';
 import { failure, rowCount, type Domain, type FieldsBlock } from '@latkit/model';
-import { TRACE_COLOR, type Binding } from '../bindings.js';
+import type { Binding } from '../bindings.js';
 import type { Style } from '../config.js';
 import type { Axes, Plot } from '../axes.js';
 import type { Pipelines } from './pipelines.js';
@@ -160,19 +160,24 @@ export function traceDraws(
     interpolation = { linear: 0, 'step-before': 1, 'step-after': 2 }[
       trace.trace.interpolation ?? 'linear'
     ],
-    base = Array.isArray(tint.constant) ? (tint.constant as RGBA) : (tint.missing ?? TRACE_COLOR);
+    base = Array.isArray(tint.constant)
+      ? (tint.constant as RGBA)
+      : Array.isArray(tint.missing)
+        ? (tint.missing as RGBA)
+        : style.traceColor,
+    width = kit.resolveChannel(bound.channels.widthPx, channels.widthPx.scale, style.traceWidthPx);
   // The coordinate and values map onto the image as its window and values place them.
-  const x: kit.ChannelRead = {
+  const x: kit.ResolvedChannel = {
       component: 0,
       scale: kit.resolveScale({ clamp: false }, target.window),
       fallback: NaN,
     },
-    y: kit.ChannelRead = {
+    y: kit.ResolvedChannel = {
       ...channels.y,
       scale: kit.resolveScale({ clamp: false }, target.values),
     },
     color = trace.colorFollows
-      ? kit.channelRead(tint, kit.resolveScale({}, target.values), -1)
+      ? kit.resolveChannel(tint, kit.resolveScale({}, target.values), -1)
       : channels.color;
   const draws: Draw[] = [];
   let segments = 0;
@@ -189,13 +194,20 @@ export function traceDraws(
       0,
     );
     floats.set(base, 4);
-    floats.set(focus ? (style.selectedColor ?? [0, 0, 0, -1]) : [0, 0, 0, -2], 8);
+    floats.set(
+      focus
+        ? style.selectedColor === 'none'
+          ? [0, 0, 0, -1]
+          : style.selectedColor
+        : [0, 0, 0, -2],
+      8,
+    );
     floats.set([plot.x, plot.y], 12);
     uniforms[14] = interpolation;
     kit.writeChannel(uniforms, 16, x, page.samples!.coordinates);
     kit.writeChannel(uniforms, 24, y, page);
     kit.writeChannel(uniforms, 32, color, page);
-    kit.writeChannel(uniforms, 40, channels.widthPx, page);
+    kit.writeChannel(uniforms, 40, width, page);
     kit.writeChannel(uniforms, 48, channels.visible, page);
     kit.writeChannel(uniforms, 56, channels.shade, page);
     const steps = rows * Math.max(1, frames - 1);

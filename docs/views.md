@@ -46,7 +46,7 @@ gestures, such as dragging.
 
 ```ts
 network.set({
-  vertices: { Bus: { sizePx: { field: 'capacity', range: [3, 12] } } },
+  vertices: { Bus: { radiusPx: { field: 'capacity', range: [3, 12] } } },
   paths: { Border: null },
   edgeWidthPx: 2,
 });
@@ -71,11 +71,13 @@ Every item view takes the same style options, with one set of defaults in `viewS
 | `pickRadiusPx`                    | `8`                      |                                                                                   |
 | `fitPaddingPx`, `revealPaddingPx` | `32`, `48`               |                                                                                   |
 | `animationMs`, `motion`           | `300`, `'auto'`          | monitor `0`; `auto` follows reduced motion                                        |
-| `hoverColor`, `selectedColor`     | amber, orange            | monitor `null`, keeping trace colors; it draws no hover                           |
+| `hoverColor`, `selectedColor`     | amber, orange            | monitor `'none'`, keeping trace colors; it draws no hover                         |
 | `hoverWidthPx`, `selectedWidthPx` | `3`, `3`                 |                                                                                   |
 | `font`, `fontSizePx`, `textColor` | `system-ui`, `12`, light | monitor uses a monospace font                                                     |
 
-Each view adds its own options, such as a network's `edgeWidthPx` or a monitor's `valueAxis`.
+Each view adds its own options, such as a network's `edgeWidthPx` or a monitor's `yAxis`. Padding
+takes one number or `[top, right, bottom, left]`. `null` in a config or a patch always means unset,
+which restores the default.
 
 ## Camera
 

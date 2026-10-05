@@ -25,9 +25,9 @@ export function scene(gpu: Gpu, kind: ExampleView) {
         color: { field: 'response', domain: [-1, 1], colormap: 'turbo' },
       },
     },
-    camera: { window: [0, 6], values: [-1, 1] },
-    coordinateAxis: 'Time (s)',
-    valueAxis: 'Response',
+    camera: { x: [0, 6], y: [-1, 1] },
+    xAxis: 'Time (s)',
+    yAxis: 'Response',
   });
   const network = createNetwork(gpu, {
     source: geometry.data,

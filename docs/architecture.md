@@ -81,6 +81,6 @@ height: `middle` centers it by its capitals.
 
 Every per-row option is a [channel](topology-and-channels.md#channels). `kit.bindChannels` binds a
 type's options to the columns of one fields read, sharing a column between channels of one field;
-`kit.readChannels` resolves their scales. A shader reads each through the field shader's
+`kit.resolveChannels` resolves their scales. A shader reads each through the field shader's
 `LatkitChannel`, which `kit.writeChannel` fills per page, with `channelNumber` and `channelColor`;
-`kit.channelValue` reads a row on the CPU as the shader does, for picking and layout.
+`kit.channelValue` and `kit.channelOn` read a row on the CPU as `channelNumber` and `channelOn` do on the GPU, for picking and layout.

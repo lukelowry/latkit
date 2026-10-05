@@ -4,6 +4,7 @@ export type { Network, NetworkConfig, NetworkEvents, NetworkStats } from './netw
 export type {
   NetworkItem,
   VertexOptions,
+  LineOptions,
   EdgeOptions,
   PathOptions,
   NetworkLabels,

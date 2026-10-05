@@ -27,6 +27,7 @@ import {
 } from './data.js';
 import {
   DEFAULT_LIMITS,
+  placement,
   readGeometry,
   vertexOptions,
   edgeOptions,
@@ -158,13 +159,27 @@ function checkLine(type: string, entry: LineOptions): void {
     throw failure('invalid-input', 'Invalid route: ' + type);
   channels(entry, LINE);
 }
-/** Whether drawn rows, where they draw, or their wiring differ, which rebuilds geometry. */
+/** Whether a net centers its stars on its own x and y. */
+function centered(edge: EdgeOptions | undefined): boolean {
+  return edge?.x != null || edge?.y != null;
+}
+/**
+ * Whether drawn rows, their wiring, or how they are placed differ, which rebuilds geometry. New
+ * positions of the same kind, as a live simulation binds each frame, never do.
+ */
 function rewired(a: NetworkData, b: NetworkData): boolean {
   return !(
     kit.sameValues(a.source, b.source, wiring) &&
-    kit.sameRecords(a.vertices, b.vertices, ['rows', 'x', 'y']) &&
-    kit.sameRecords(a.edges, b.edges, ['rows', 'ends', 'x', 'y']) &&
-    kit.sameRecords(a.paths, b.paths, ['rows', 'source'])
+    kit.sameRecords(a.vertices, b.vertices, ['rows']) &&
+    kit.sameRecords(a.edges, b.edges, ['rows', 'ends']) &&
+    kit.sameRecords(a.paths, b.paths, ['rows', 'source']) &&
+    Object.keys(b.vertices).every(
+      (type) =>
+        placement(a.source, type, a.vertices[type]) === placement(b.source, type, b.vertices[type]),
+    ) &&
+    Object.keys(b.edges ?? {}).every(
+      (type) => centered(a.edges?.[type]) === centered(b.edges![type]),
+    )
   );
 }
 
@@ -467,7 +482,7 @@ class NetworkView
     }
     if (camera !== framed) this.drawCamera(frame, camera);
     const height =
-      style.heightScale *
+      style.zScale *
       (camera.projection === 'globe'
         ? 0.08
         : Math.max(

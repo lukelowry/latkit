@@ -144,7 +144,7 @@ function place(bank: CpuBank, offset: number, out: Float64Array, at: number): vo
   }
 }
 /** The largest a channel reads: its range's top, or its fallback. */
-function largest(channel: kit.ChannelRead): number {
+function largest(channel: kit.ResolvedChannel): number {
   return channel.scale ? Math.max(...channel.scale.range) : channel.fallback;
 }
 /** Paths are hit only when they ask to be. */
@@ -427,14 +427,14 @@ export class PickGeometry {
       kit.channelValue(y, found.value, found.offset),
       kit.channelValue(z, found.value, found.offset) * height,
     );
-    const visible = kit.channelValue(shown, found.value, found.offset) > 0;
+    const visible = kit.channelOn(shown, found.value, found.offset);
     return {
       ...projected,
       visible: projected.visible && (!marker || visible),
       radius:
         radiusPx === undefined || bank.synthetic || !visible
           ? 0
-          : kit.channelValue(cpu.read.channel('sizePx', radiusPx), found.value, found.offset),
+          : kit.channelValue(cpu.read.channel('radiusPx', radiusPx), found.value, found.offset),
     };
   }
   private phases = new Map<SegmentBatch, Float32Array>();
@@ -493,8 +493,7 @@ export class PickGeometry {
           phase = 0;
         }
         const found = batch.edge.lookup.get(rowAt(bank.rows, owner))!;
-        if (!(kit.channelValue(batch.edge.read.channels.dash, found.value, found.offset) > 0))
-          continue;
+        if (!kit.channelOn(batch.edge.read.channels.dash, found.value, found.offset)) continue;
         outputs[group][offset] = phase;
         phase += this.worldLength(batch, records[at], records[at + 1], data, globe, height);
       }
@@ -660,7 +659,7 @@ export class PickGeometry {
         y = camera.center[1] + dx * Math.sin(b) + dy * Math.cos(b);
       let widest = 0;
       for (const cpu of this.vertices.values())
-        widest = Math.max(widest, largest(cpu.read.channel('sizePx', options.vertexRadiusPx)));
+        widest = Math.max(widest, largest(cpu.read.channel('radiusPx', options.vertexRadiusPx)));
       for (const { edge } of this.edges)
         widest = Math.max(
           widest,
@@ -724,7 +723,7 @@ export class PickGeometry {
             const edgeRow = rowAt(batch.edge.bank.rows, eo),
               ef = batch.edge.lookup.get(edgeRow)!,
               line = batch.edge.read;
-            if (!(kit.channelValue(line.channels.visible, ef.value, ef.offset) > 0)) continue;
+            if (!kit.channelOn(line.channels.visible, ef.value, ef.offset)) continue;
             const width = kit.channelValue(
               line.channel('widthPx', lineWidthPx(edgeOptions(data, batch.edge.bank), options)),
               ef.value,
@@ -773,9 +772,8 @@ export class PickGeometry {
                 world = [sphere[0] * k, sphere[1] * k, sphere[2] * k - 1];
               }
               if (!worldVisible(world, camera, viewport)) continue;
-              const dash = kit.channelValue(line.channels.dash, ef.value, ef.offset);
               if (
-                dash > 0 &&
+                kit.channelOn(line.channels.dash, ef.value, ef.offset) &&
                 ((dashStart + hit.t * hit.length) / Math.max(1, options.dashPeriodPx)) % 1 > 0.55
               )
                 continue;
@@ -859,7 +857,7 @@ export class PickGeometry {
     for (const { batch, offset } of segments) {
       const records = batch.batch.records,
         ef = batch.edge.lookup.get(item.row)!;
-      if (!(kit.channelValue(batch.edge.read.channels.visible, ef.value, ef.offset) > 0)) continue;
+      if (!kit.channelOn(batch.edge.read.channels.visible, ef.value, ef.offset)) continue;
       for (const piece of this.stroke(
         batch,
         records[offset],

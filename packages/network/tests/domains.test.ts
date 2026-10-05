@@ -48,7 +48,7 @@ it('uses the whole selected type for automatic domains across native blocks and 
   const options = {
     x: 'position',
     y: { field: 'position', component: 1 },
-    sizePx: { field: 'weight', range: [8, 2] as const },
+    radiusPx: { field: 'weight', range: [8, 2] as const },
   };
   const data = { source: source.data, vertices: { node: options } };
   const gpu = await createGpu({ device: fakeDevice().device });
@@ -59,7 +59,7 @@ it('uses the whole selected type for automatic domains across native blocks and 
     for (const bank of geometry.vertices)
       reads.set(bank, await readFields(frame, source.data, bank, options));
     await resolveDomains(frame, source.data, reads, () => options);
-    for (const read of reads.values()) expect(read.scales.sizePx?.domain).toEqual([0, count - 1]);
+    for (const read of reads.values()) expect(read.scales.radiusPx?.domain).toEqual([0, count - 1]);
   });
   gpu.destroy();
 });

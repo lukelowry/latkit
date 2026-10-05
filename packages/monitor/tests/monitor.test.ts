@@ -101,11 +101,11 @@ async function harness(source = new SignalSource(4, 128), options: Partial<Monit
     source: source.data,
     traces: { signal: { from: 'signal', y: 'value' } },
     camera: {
-      window: [source.coordinate(source.before), source.coordinate(source.frames + 127)],
-      values: [(source.options.valueOrigin ?? 0) - 2, (source.options.valueOrigin ?? 0) + 2],
+      x: [source.coordinate(source.before), source.coordinate(source.frames + 127)],
+      y: [(source.options.valueOrigin ?? 0) - 2, (source.options.valueOrigin ?? 0) + 2],
     },
-    coordinateAxis: false,
-    valueAxis: false,
+    xAxis: false,
+    yAxis: false,
     ...options,
   });
   const requests: Request[] = [];
@@ -119,7 +119,7 @@ async function harness(source = new SignalSource(4, 128), options: Partial<Monit
     });
   /** The canvas point of a reading under the latest camera; the plot spans 12 to 500 by 12 to 244. */
   const point = (frame: number, row = 0) => {
-    const { window, values } = monitor.camera;
+    const { x: window, y: values } = monitor.camera;
     return [
       12 + ((source.coordinate(frame) - window[0]) / (window[1] - window[0])) * 488,
       12 + ((values[1] - source.value(row, frame)) / (values[1] - values[0])) * 232,
@@ -200,7 +200,7 @@ describe('history', () => {
   it('draws every frame streamed into a fixed window at epoch coordinates', async () => {
     const source = new SignalSource(16, 1, { coordinateOrigin: 1.7e9, step: 0.1 });
     const h = await harness(source, {
-      camera: { window: [1.7e9, 1.7e9 + 60], values: [-2, 2] },
+      camera: { x: [1.7e9, 1.7e9 + 60], y: [-2, 2] },
     });
     await h.render();
     for (let i = 0; i < 300; i++) {
@@ -217,7 +217,7 @@ describe('history', () => {
   });
   it('streams into a monitor created before any samples arrive', async () => {
     const source = new SignalSource(8, 0);
-    const h = await harness(source, { camera: { window: [0, 4] } });
+    const h = await harness(source, { camera: { x: [0, 4] } });
     await h.render();
     expect(h.monitor.stats().refining).toBe(false);
     for (let i = 0; i < 200; i++) {
@@ -232,7 +232,7 @@ describe('history', () => {
   it('keeps drawing arrivals into the shown image while a replacement draws behind it', async () => {
     const h = await harness(new SignalSource(64, 4096), { limits: { segmentsPerFrame: 4096 } });
     await h.render();
-    h.monitor.set({ camera: { window: [h.source.coordinate(0), h.source.coordinate(5000)] } });
+    h.monitor.set({ camera: { x: [h.source.coordinate(0), h.source.coordinate(5000)] } });
     await h.render(false);
     expect(through(h.monitor, 'back')).toBeLessThan(h.source.firstFrame + 4095);
     h.source.append(4);
@@ -291,10 +291,10 @@ describe('history', () => {
     const view = createMonitor(h.gpu, {
       source: h.source.data,
       traces: { a: { from: 'signal', y: 'value' } },
-      camera: { window: [0, 2], values: [-2, 2] },
+      camera: { x: [0, 2], y: [-2, 2] },
       limits: { rows: 1 },
-      coordinateAxis: false,
-      valueAxis: false,
+      xAxis: false,
+      yAxis: false,
     });
     await expect(
       h.gpu.render({
@@ -377,9 +377,9 @@ describe('history', () => {
 describe('fitted values', () => {
   it('fit the window as frames append, and grow without rereading history', async () => {
     const source = new SignalSource(4, 64);
-    const h = await harness(source, { camera: { window: [0, 2] } });
+    const h = await harness(source, { camera: { x: [0, 2] } });
     await h.render();
-    const fitted = h.monitor.camera.values;
+    const fitted = h.monitor.camera.y;
     let lo = Infinity,
       hi = -Infinity;
     for (let r = 0; r < 4; r++)
@@ -405,12 +405,12 @@ describe('fitted values', () => {
         signal: { from: 'signal', y: 'value' },
         longer: { from: 'signal', y: { source: longer.data, from: 'signal', field: 'value' } },
       },
-      camera: { window: [0, 1], values: [-2, 2] },
+      camera: { x: [0, 1], y: [-2, 2] },
     });
     await h.render();
     h.monitor.fit();
     expect(h.monitor.camera).toMatchObject({
-      window: [source.coordinate(0), longer.coordinate(95)],
+      x: [source.coordinate(0), longer.coordinate(95)],
       fit: true,
     });
     await h.render();
@@ -495,10 +495,10 @@ describe('inspection', () => {
     expect(
       focused.every((q) => q.rows?.kind === 'indices' && [...q.rows.values].join() === '0,2'),
     ).toBe(true);
-    h.monitor.set({ camera: { window: [1, 2] } });
-    expect(h.monitor.camera).toMatchObject({ window: [1, 2], fit: false });
+    h.monitor.set({ camera: { x: [1, 2] } });
+    expect(h.monitor.camera).toMatchObject({ x: [1, 2], fit: false });
     await h.render();
-    expect(cameras).toHaveBeenLastCalledWith(expect.objectContaining({ window: [1, 2] }));
+    expect(cameras).toHaveBeenLastCalledWith(expect.objectContaining({ x: [1, 2] }));
     h.close();
   });
   it('reads the coordinate under a canvas point of the drawn plot', async () => {
@@ -546,16 +546,16 @@ describe('inspection', () => {
     await h.render();
     const framed = h.monitor.camera;
     expect(framed.fit).toBe(false);
-    expect((framed.window[0] + framed.window[1]) / 2).toBeCloseTo(hit.coordinate, 9);
-    expect(framed.values[0]).toBeLessThan(hit.value);
-    expect(framed.values[1]).toBeGreaterThan(hit.value);
-    h.monitor.set({ camera: { window: [10, 11], values: [-2, 2] } });
+    expect((framed.x[0] + framed.x[1]) / 2).toBeCloseTo(hit.coordinate, 9);
+    expect(framed.y[0]).toBeLessThan(hit.value);
+    expect(framed.y[1]).toBeGreaterThan(hit.value);
+    h.monitor.set({ camera: { x: [10, 11], y: [-2, 2] } });
     await h.render();
     expect(h.monitor.locate(hit)![0]).toBeLessThan(0);
     h.monitor.reveal(hit);
     const shown = h.monitor.camera;
-    expect((shown.window[0] + shown.window[1]) / 2).toBeCloseTo(hit.coordinate, 9);
-    expect(shown.window[1] - shown.window[0]).toBeCloseTo(1, 9);
+    expect((shown.x[0] + shown.x[1]) / 2).toBeCloseTo(hit.coordinate, 9);
+    expect(shown.x[1] - shown.x[0]).toBeCloseTo(1, 9);
     h.close();
   });
   it('drops selected readings whose trace is no longer drawn', async () => {
@@ -585,7 +585,7 @@ it('rejects unknown options and limits, and invalid cameras', async () => {
   expect(() => h.monitor.set({ limits: { frameMs: 3 } as never })).toThrow('Unknown monitor limit');
   expect(() => h.monitor.set({ detail: 'full' } as never)).toThrow('Unknown monitor option');
   h.monitor.set({ selectedColor: [0, 1, 0, 1], limits: { segmentsPerFrame: 9 } });
-  expect(failure(() => h.monitor.set({ camera: { window: [2, 1] } }))).toMatchObject({
+  expect(failure(() => h.monitor.set({ camera: { x: [2, 1] } }))).toMatchObject({
     code: 'invalid-input',
   });
   expect(failure(() => h.monitor.set({ camera: { follow: 1 } as never }))).toMatchObject({

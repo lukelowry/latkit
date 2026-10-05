@@ -23,3 +23,9 @@ slider or press Play. Choose 16 representative traces or all 400 nodes. Playback
 `requestAnimationFrame`; the frame-event counters report submitted frames and each view's actual
 drawn coordinate, so differences remain visible. This is a local-history rendering demo, not a
 transport or streaming-ingestion benchmark.
+
+The soft-body demo is at `/bunny.html`: the Stanford bunny's 1,839 vertices as springs, a volume
+pressure, and shape matching, simulated in the page. Each drawn frame appends its x, y, z, speed,
+and strain to one `Data` value, which the network draws and the monitor traces; drag the bunny to
+pull it, click to poke, or scrub to replay. The mesh is from the
+[Stanford 3D Scanning Repository](https://graphics.stanford.edu/data/3Dscanrep/).

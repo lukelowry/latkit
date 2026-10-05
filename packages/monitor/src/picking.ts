@@ -111,7 +111,7 @@ export async function pick(request: PickRequest): Promise<Reading[]> {
           const value = sampleAt(column, r, f);
           if (value === null || !Number.isFinite(value)) continue;
           // As drawn: a sample without a visibility value shows.
-          if (kit.channelValue(visible, tile, r, f) === 0) continue;
+          if (!kit.channelOn(visible, tile, r, f)) continue;
           const px = plotX(plot, x, samples.coordinates[f]),
             py = plotY(plot, y, value),
             distance = (px - point[0]) ** 2 + (py - point[1]) ** 2;

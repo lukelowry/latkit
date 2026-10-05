@@ -11,7 +11,7 @@ describe.each([100, 1_000, 10_000])('monitor %i rows', async (rows) => {
   const config: MonitorConfig = {
     source: data,
     traces: { voltage: { from: 'Bus', y: 'voltage' } },
-    camera: { window: [0, frames * 4] },
+    camera: { x: [0, frames * 4] },
   };
   const view = createMonitor(device, config);
   await draw(device, view, 0, 'complete');
@@ -34,7 +34,7 @@ describe.each([100, 1_000, 10_000])('monitor %i rows', async (rows) => {
   });
   // A new window redraws history behind the shown image.
   measure('change window', async (i) => {
-    view.set({ camera: { window: [0, frames * 4 + 1 + (i % 2)] } });
+    view.set({ camera: { x: [0, frames * 4 + 1 + (i % 2)] } });
     await draw(device, view, 0, 'complete');
   });
 });

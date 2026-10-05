@@ -155,7 +155,7 @@ export function sliceSamples(
   };
 }
 
-export function copyValidity(column: Column, start: number, count: number): Uint8Array | undefined {
+function copyValidity(column: Column, start: number, count: number): Uint8Array | undefined {
   if (!column.validity) return undefined;
   const bits = new Uint8Array(Math.ceil(count / 8));
   for (let i = 0; i < count; i++)

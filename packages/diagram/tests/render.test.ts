@@ -158,7 +158,7 @@ it('restyles widths without reads, geometry uploads, or stale hit-test radii', a
         .some((item) => item.kind === 'edge' && item.row === edge.hit.row);
     };
     expect(hits()).toBe(false);
-    f.diagram.set({ edgeWidthPx: 16, vertexBaseColor: [0.2, 0.4, 0.6, 1] });
+    f.diagram.set({ edgeWidthPx: 16, vertexColor: [0.2, 0.4, 0.6, 1] });
     expect(hits()).toBe(false); // Pending configuration cannot change presented picking.
     await f.draw();
     await f.gpu.idle();

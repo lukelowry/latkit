@@ -86,10 +86,10 @@ export class Labels {
         type = kind(bank),
         key = type + ':' + bank.type;
       const configured = (edge ? edgeOptions(data, bank) : vertexOptions(data, bank)).labels,
-        options = kit.labelOptions(configured);
+        options = kit.resolveLabels(configured);
       if (!configured || !options || (!edge && !style.markers) || (edge && !style.lines)) continue;
       const max = options.maxCount ?? 200,
-        size = options.sizePx ?? style.fontSizePx,
+        size = options.fontSizePx ?? style.fontSizePx,
         repeat = options.repeatSpacingPx ?? 0;
       if (
         !Number.isSafeInteger(max) ||

@@ -119,7 +119,7 @@ function merge(base: unknown, patch: Plain): Plain {
   return next;
 }
 /** The config with a patch applied, following the view's shape. */
-export function applyPatch<C>(config: C, patch: object, shape: ConfigShape): C {
+function applyPatch<C>(config: C, patch: object, shape: ConfigShape): C {
   const next: Plain = { ...(config as Plain) };
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue;

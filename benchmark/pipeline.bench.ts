@@ -49,7 +49,7 @@ describe.each(sizes)('pipeline %i buses', async (buses) => {
     traces: {
       voltage: { from: 'Bus', y: 'voltage', rows: { kind: 'range', offset: 0, count: 100 } },
     },
-    camera: { window: [0, frames * 4] },
+    camera: { x: [0, frames * 4] },
   });
   const composition = createComposition(device, {
     views: [

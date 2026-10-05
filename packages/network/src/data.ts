@@ -7,9 +7,10 @@ import {
 } from '@latkit/model';
 import type { Channel, ColorChannel, Labels } from '@latkit/gpu';
 
-/** Labels beside a type's items, sized in CSS pixels; `fontSizePx` by default. */
+/** Labels beside a type's items. */
 export interface NetworkLabels extends Labels {
-  readonly sizePx?: number;
+  /** The shared `fontSizePx` by default. */
+  readonly fontSizePx?: number;
   /**
    * Leave out a label whose text repeats one placed within this many CSS pixels, as when buses
    * of one substation share its name; 0, the default, labels every row it has room for.
@@ -18,19 +19,20 @@ export interface NetworkLabels extends Labels {
 }
 /**
  * How a type's vertices draw. Each channel takes one value for every row, a field, or a scale:
- * `color: 'load'`, `sizePx: { field: 'load', range: [2, 12] }`. A field name labels by that field.
+ * `color: 'load'`, `radiusPx: { field: 'load', range: [2, 12] }`. A field name labels by that field.
  */
 export interface VertexOptions {
   readonly rows?: RowSelection;
   /** Where each row draws, in the data's coordinates; without either, rows sit on a circle. */
   readonly x?: Channel;
   readonly y?: Channel;
-  /** Height above the drawing as a share of `heightScale`; a field spans 0 to 1. */
+  /** Height above the drawing, from 0 to 1 of `zScale`; a field spans 0 to 1. */
   readonly z?: Channel;
-  /** `vertexBaseColor` by default. */
+  /** `vertexColor` by default. */
   readonly color?: ColorChannel;
   /** Marker radius in CSS pixels; a field spans 2 to 8. `vertexRadiusPx` by default. */
-  readonly sizePx?: Channel;
+  readonly radiusPx?: Channel;
+  /** Shown where true or positive; every row by default. */
   readonly visible?: Channel<boolean>;
   readonly shade?: Channel;
   readonly labels?: string | NetworkLabels | null;
@@ -40,12 +42,13 @@ export interface LineOptions {
   readonly rows?: RowSelection;
   /** `straight` in the data's coordinates, or `geodesic` along great circles. */
   readonly route?: 'straight' | 'geodesic';
-  /** Line width in CSS pixels; a field spans 1 to 4. */
+  /** Line width in CSS pixels; a field spans 1 to 4. `edgeWidthPx` or `pathWidthPx` by default. */
   readonly widthPx?: Channel;
-  /** An edge's `edgeBaseColor`, or the colors of its ends, by default. */
+  /** `edgeColor` or `pathColor` by default. */
   readonly color?: ColorChannel;
-  /** Dashed where true or nonzero. */
+  /** Dashed where true or positive. */
   readonly dash?: Channel<boolean>;
+  /** Shown where true or positive; every row by default. */
   readonly visible?: Channel<boolean>;
   readonly shade?: Channel;
   readonly labels?: string | NetworkLabels | null;

@@ -52,19 +52,20 @@ export { clearColor, validateRgba } from './colors/color.js';
 export { sampleColormap } from './colors/sampling.js';
 export { colormapShader } from './colors/shader.js';
 export type { ScaleRequest, ResolvedScale } from './style/scale.js';
-export { fieldScale, resolveScale, scaleValue, labelOptions } from './style/scale.js';
+export { fieldScale, resolveScale, scaleValue, resolveLabels } from './style/scale.js';
 export type {
   ChannelKind,
   ChannelScale,
   BoundChannel,
   BoundChannels,
-  ChannelRead,
+  ResolvedChannel,
 } from './style/channel.js';
 export {
   bindChannels,
-  readChannels,
-  channelRead,
+  resolveChannels,
+  resolveChannel,
   channelValue,
+  channelOn,
   writeChannel,
 } from './style/channel.js';
 export type { ShadeRequest } from './style/shade.js';

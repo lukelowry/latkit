@@ -13,9 +13,12 @@ export interface AxisOptions {
 }
 /** How a monitor draws, beyond the shared view style; every option has a default. */
 export interface MonitorStyle {
+  /** A trace's `color` and `widthPx` where it leaves them unset. */
+  readonly traceColor?: RGBA;
+  readonly traceWidthPx?: number;
   /** A label, axis options, or false to hide the axis. */
-  readonly coordinateAxis?: string | AxisOptions | false;
-  readonly valueAxis?: string | AxisOptions | false;
+  readonly xAxis?: string | AxisOptions | false;
+  readonly yAxis?: string | AxisOptions | false;
   /** Fraction of the fitted value range added on each side. */
   readonly domainPadding?: number;
   readonly axisColor?: RGBA;

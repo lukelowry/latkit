@@ -59,7 +59,7 @@ export function structure(option: VertexOptions | EdgeOptions, edge: boolean): S
       option,
       (edge ? EDGE_SHAPE : VERTEX_SHAPE) as Readonly<Record<ShapeName, kit.ChannelKind>>,
     );
-    const labels = kit.labelOptions(option.labels);
+    const labels = kit.resolveLabels(option.labels);
     found = {
       channels,
       fields: { ...channels.fields, ...(labels ? { label: labels.field } : {}) },
@@ -159,7 +159,7 @@ function label(
   return layout({
     text: value,
     font: config?.font ?? defaults.font ?? options.font,
-    size: config?.size ?? defaults.size ?? options.fontSizePx,
+    size: config?.fontSize ?? defaults.size ?? options.fontSizePx,
     color: config?.color ?? defaults.color ?? options.textColor,
     maxWidth: config?.maxWidth,
     overflow: config?.overflow,
@@ -239,7 +239,7 @@ export async function readScene(
       names: ports.map((port) => port.field),
     });
     const { channels, fields } = structure(option, false),
-      read = await kit.readChannels(
+      read = await kit.resolveChannels(
         reader,
         { source: data.source, from: type, rows: option.rows },
         channels,
@@ -272,7 +272,7 @@ export async function readScene(
           height = kit.channelValue(read.height, tile, i),
           placed = Number.isFinite(x) && Number.isFinite(y);
         if (width <= 0 || height <= 0) fail('Vertex size must be positive');
-        const shown = kit.channelValue(read.visible, tile, i) !== 0;
+        const shown = kit.channelOn(read.visible, tile, i);
         texts.push(text(tile.columns.label, i));
         const vertex: Vertex = {
           hit: { kind: 'vertex', id, source: data.source, index: tile.index, row },
@@ -347,7 +347,7 @@ export async function readScene(
       const text = option.ports?.[port.field]?.label ?? definition.fields[port.field].label;
       portLabels.set(port.field, await label(text ?? port.field, null, options, layout, quiet));
     }
-    const labels = kit.labelOptions(option.labels),
+    const labels = kit.resolveLabels(option.labels),
       maxCount = labels?.maxCount ?? Infinity;
     for (let i = start; i < scene.vertices.length; i++) {
       const vertex = scene.vertices[i];
@@ -375,7 +375,7 @@ export async function readScene(
     scene.types.edges.set(type, { first: start });
     let index: Index | undefined;
     const { channels, fields } = structure(option, true),
-      read = await kit.readChannels(
+      read = await kit.resolveChannels(
         reader,
         { source: data.source, from: type, rows: option.rows },
         channels,
@@ -403,7 +403,7 @@ export async function readScene(
         const edge: Edge = {
           hit: { kind: 'edge', id, source: data.source, index: tile.index, row },
           ends: [],
-          visible: kit.channelValue(read.visible, tile, i) !== 0,
+          visible: kit.channelOn(read.visible, tile, i),
           label: emptyLabel,
           options: option,
           paths: [],
@@ -459,7 +459,7 @@ export async function readScene(
         end(edge, vertex, port.name, port.direction);
       }
     }
-    const labels = kit.labelOptions(option.labels),
+    const labels = kit.resolveLabels(option.labels),
       maxCount = labels?.maxCount ?? Infinity;
     for (let i = start; i < Math.min(scene.edges.length, start + maxCount); i++) {
       scene.edges[i].label = await label(texts[i - start], labels, options, layout, {

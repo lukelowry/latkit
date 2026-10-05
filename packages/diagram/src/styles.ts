@@ -8,7 +8,7 @@ import type { Scene } from './scene.js';
 // its default. A scene writes every constant into the base words once; styles.wgsl writes the
 // channels bound to fields on the GPU.
 
-/** Line widths in CSS pixels that a `widthPx` field spans, and speeds a `flow` field spans. */
+/** Line widths in CSS pixels that a `widthPx` field spans, and speeds a `flowPx` field spans. */
 const WIDTH_RANGE = [1, 4] as const,
   FLOW_RANGE = [0, 40] as const;
 /** Each options object's style channels, by the port names they bind. */
@@ -27,9 +27,9 @@ function typeStyle(
   const values: Record<string, unknown> = { color: options.color, shade: options.shade },
     kinds: Record<string, kit.ChannelKind> = { color: 'color', shade: 'raw' };
   if (edge) {
-    const { widthPx, flow } = options as EdgeOptions;
-    Object.assign(values, { widthPx, flow });
-    Object.assign(kinds, { widthPx: WIDTH_RANGE, flow: FLOW_RANGE });
+    const { widthPx, flowPx } = options as EdgeOptions;
+    Object.assign(values, { widthPx, flowPx });
+    Object.assign(kinds, { widthPx: WIDTH_RANGE, flowPx: FLOW_RANGE });
   } else {
     const vertex = options as VertexOptions;
     values.status = vertex.status;
@@ -50,12 +50,12 @@ export function checkStyle(options: VertexOptions | EdgeOptions, edge: boolean):
 }
 /** Whether a type's wires flow: a flow field, or a nonzero speed. */
 export function flowing(options: EdgeOptions): boolean {
-  const flow = typeStyle(options, true).channels.flow;
+  const flow = typeStyle(options, true).channels.flowPx;
   return flow.field !== undefined || (typeof flow.constant === 'number' && flow.constant !== 0);
 }
 /** The widest a type's wires draw, in CSS pixels. */
 export function widestPx(options: EdgeOptions, fallback: number): number {
-  const width = kit.channelRead(typeStyle(options, true).channels.widthPx, null, fallback);
+  const width = kit.resolveChannel(typeStyle(options, true).channels.widthPx, null, fallback);
   return width.scale ? Math.max(...width.scale.range) : width.fallback;
 }
 
@@ -99,7 +99,7 @@ function baseWords(scene: Scene): kit.BufferData {
     words[slot * 4 + 1] = packed(channels.status);
     // Width -1 and flow 0, as two halves, unless the type sets them.
     words[slot * 4 + 2] =
-      half(constant(channels.widthPx, -1)) | (half(constant(channels.flow, 0)) << 16);
+      half(constant(channels.widthPx, -1)) | (half(constant(channels.flowPx, 0)) << 16);
     floats[slot * 4 + 3] = constant(channels.shade, 0);
   };
   for (let slot = 0; slot < scene.slots.count; slot++) words[slot * 4 + 2] = 0x0000bc00;
@@ -149,7 +149,7 @@ function passes(
   const own: Pass = {
     ...(field('color') ? { color: 'color' } : {}),
     status: false,
-    lines: field('widthPx') || field('flow'),
+    lines: field('widthPx') || field('flowPx'),
     shade: field('shade'),
     first,
     stride: 1,
@@ -187,7 +187,9 @@ export interface StyleFrame {
 }
 /** Words of each pass's parameters: where it writes, the missing color, and four channels. */
 const PARAMETERS = 8 + 4 * 8;
-const UNSET: kit.ChannelRead = { component: 0, fallback: 0 };
+const UNSET: kit.ResolvedChannel = { component: 0, fallback: 0 };
+/** A pass's color for rows without one: zero draws the view's. */
+const CLEAR: RGBA = [0, 0, 0, 0];
 
 /**
  * The style words of one scene under one set of bindings, and the passes that write them. The
@@ -260,7 +262,7 @@ export class Styles {
     for (const { type, options, bound, first, ports } of types) {
       const list = passes(bound, first, ports);
       if (!list.length) continue;
-      const reads = await kit.readChannels(
+      const reads = await kit.resolveChannels(
         frame.reader,
         { source: data.source, from: type, rows: options.rows },
         bound,
@@ -289,10 +291,10 @@ export class Styles {
               0,
             );
             const color = pass.color === undefined ? undefined : bound.channels[pass.color];
-            floats.set(color?.missing ?? ([0, 0, 0, 0] as RGBA), 4);
+            floats.set(Array.isArray(color?.missing) ? color.missing : CLEAR, 4);
             kit.writeChannel(words, 8, pass.color ? reads[pass.color] : UNSET, page);
             kit.writeChannel(words, 16, pass.lines ? reads.widthPx : UNSET, page);
-            kit.writeChannel(words, 24, pass.lines ? reads.flow : UNSET, page);
+            kit.writeChannel(words, 24, pass.lines ? reads.flowPx : UNSET, page);
             kit.writeChannel(words, 32, pass.shade ? reads.shade : UNSET, page);
             const parameters = (this.parameters[out.length] ??= new kit.BufferData({
               size: PARAMETERS * 4,

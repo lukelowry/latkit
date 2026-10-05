@@ -161,12 +161,7 @@ export function bytes(c: Check, value: unknown, path: Path): Uint8Array | undefi
   c.issue(path, 'Expected Uint8Array.');
 }
 
-export function uints(
-  c: Check,
-  value: unknown,
-  path: Path,
-  length?: number,
-): Uint32Array | undefined {
+function uints(c: Check, value: unknown, path: Path, length?: number): Uint32Array | undefined {
   if (!(value instanceof Uint32Array)) {
     c.issue(path, 'Expected Uint32Array.');
     return;
@@ -176,7 +171,7 @@ export function uints(
   return value;
 }
 
-export function offsetsOf(
+function offsetsOf(
   c: Check,
   value: unknown,
   start: number,

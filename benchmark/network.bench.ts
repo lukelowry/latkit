@@ -12,7 +12,7 @@ describe.each(sizes)('network %i buses', async (buses) => {
         x: 'position',
         y: { field: 'position', component: 1 },
         color: { field: 'voltage', domain: [0.95, 1.05] },
-        sizePx: 'load',
+        radiusPx: 'load',
       },
     },
     edges: { Branch: { ends: ['from', 'to'] } },
@@ -30,7 +30,7 @@ describe.each(sizes)('network %i buses', async (buses) => {
   // Before anything moves the fitted camera.
   measure('pick', () => view.pick([640, 360]));
   measure('restyle', (i) => {
-    view.set({ vertices: { Bus: { sizePx: i % 2 ? 'load' : null } } });
+    view.set({ vertices: { Bus: { radiusPx: i % 2 ? 'load' : null } } });
     return draw(device, view);
   });
   measure('camera move', (i) => {

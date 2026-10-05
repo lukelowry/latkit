@@ -17,14 +17,11 @@ import { domain, finite, fail } from './config.js';
 const TRACE = {
   y: 'raw',
   color: 'color',
-  widthPx: [0.5, 4],
+  widthPx: [1, 4],
   visible: 'raw',
   shade: 'raw',
 } as const satisfies Readonly<Record<string, kit.ChannelKind>>;
 export type TraceChannel = keyof typeof TRACE;
-/** A trace's color without one, and its width. */
-export const TRACE_COLOR = [0.23, 0.72, 0.88, 0.7] as const,
-  TRACE_WIDTH_PX = 1.25;
 export interface Binding {
   readonly name: string;
   readonly trace: Trace;
@@ -39,7 +36,7 @@ export interface Binding {
   readonly fields: Readonly<Record<string, FieldInput>>;
   readonly bound: kit.BoundChannels<TraceChannel>;
   /** Each channel ready to read; a color of the plotted field maps over the values axis. */
-  readonly channels: Readonly<Record<TraceChannel, kit.ChannelRead>>;
+  readonly channels: Readonly<Record<TraceChannel, kit.ResolvedChannel>>;
   /** Whether the color follows the values axis rather than a domain of its own. */
   readonly colorFollows: boolean;
 }
@@ -127,11 +124,12 @@ export async function describeBindings(
           channels: { ...bound.channels, color: { ...bound.channels.color, scale: undefined } },
         }
       : bound;
-    const channels = await kit.readChannels(
+    const channels = await kit.resolveChannels(
       reads,
       { source: data.source, from: trace.from, rows, window: { kind: 'range', between: window } },
       own,
-      { y: NaN, widthPx: TRACE_WIDTH_PX, visible: 1 },
+      // The style's trace width stands in for a width each draw reads.
+      { y: NaN, visible: 1 },
     );
     const count = !rows
       ? table

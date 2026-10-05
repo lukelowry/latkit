@@ -13,6 +13,7 @@ import {
   type Modifiers,
 } from './input.js';
 import { resolveViewStyle, viewStyle, type ResolvedViewStyle, type ViewStyle } from './style.js';
+import { insetSides } from './camera.js';
 import {
   BaseView,
   type ConfigShape,
@@ -358,13 +359,13 @@ export abstract class BaseItemView<
     this.live();
     const point = this.position(item),
       viewport = this.#viewport,
-      inset = this.#style.revealPaddingPx;
+      [top, right, bottom, left] = insetSides(this.#style.revealPaddingPx);
     if (!point || !viewport) return;
     if (
-      point[0] >= inset &&
-      point[1] >= inset &&
-      point[0] <= viewport.width - inset &&
-      point[1] <= viewport.height - inset
+      point[0] >= left &&
+      point[1] >= top &&
+      point[0] <= viewport.width - right &&
+      point[1] <= viewport.height - bottom
     )
       return;
     const moved = this.panned(

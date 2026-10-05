@@ -85,8 +85,6 @@ export interface DiagramConfig extends ItemViewConfig, DiagramStyle {
   readonly limits?: Limits;
 }
 export interface DiagramEvents extends ItemEvents<DiagramItem, DiagramItem, Camera> {
-  /** Double click or Enter. */
-  readonly open: DiagramItem;
   readonly connect: ConnectProposal;
   readonly move: MoveProposal;
   /** Delete or Backspace in edit mode: the selected vertex and edge rows. */

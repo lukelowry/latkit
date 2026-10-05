@@ -14,7 +14,7 @@ struct Vertex { @builtin(position) position:vec4f, @location(0) uv:vec2f,
  @location(1) length:f32, @location(2) color:f32,@location(3) shade:f32,@location(4) width:f32 }
 fn point(row:u32,frame:u32)->Point {
  let x=channelNumber(view.x,0u,frame);let y=channelNumber(view.y,row,frame);
- let visible=channelNumber(view.visible,row,frame)!=0.0;
+ let visible=channelOn(view.visible,row,frame);
  let width=max(channelNumber(view.width,row,frame),view.size.w);
  return Point(vec2f(x,1.0-y)*view.size.xy,channelNumber(view.color,row,frame),channelNumber(view.shade,row,frame),width,visible&&finiteValue(x)&&finiteValue(y));
 }

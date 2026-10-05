@@ -52,8 +52,8 @@ export interface BoundChannel {
   /** Whether it reads a color: a position in its colormap, or -1 without a value. */
   readonly color?: boolean;
   readonly colormap?: Colormap | ColormapName;
-  /** The color of rows the field leaves empty. */
-  readonly missing?: RGBA;
+  /** The value of rows the field leaves empty: a number, or a color. */
+  readonly missing?: number | RGBA;
   /** Every row's value without a field: a number, 0 or 1 for a boolean, or a color. */
   readonly constant?: number | RGBA;
 }
@@ -63,7 +63,7 @@ export interface BoundChannels<K extends string> {
   readonly channels: Readonly<Record<K, BoundChannel>>;
 }
 /** A bound channel ready to read: its scale resolved, and the value of rows without one. */
-export interface ChannelRead {
+export interface ResolvedChannel {
   readonly column?: string;
   readonly component: number;
   readonly scale?: ResolvedScale;
@@ -104,6 +104,8 @@ function bind(name: string, value: unknown, kind: ChannelKind): BoundChannel {
   const component = scale.component ?? 0;
   if (!scale.field || !Number.isInteger(component) || component < 0 || component >= COMPONENTS)
     throw invalid();
+  if (kind !== 'color' && scale.missing !== undefined && !Number.isFinite(scale.missing))
+    throw invalid();
   if (kind === 'color') {
     if (scale.missing) validateRgba(scale.missing, name + ' missing');
     return {
@@ -120,6 +122,7 @@ function bind(name: string, value: unknown, kind: ChannelKind): BoundChannel {
     field: scale.field,
     component,
     ...(range ? { scale: { domain: scale.domain, range, clamp: scale.clamp } } : {}),
+    ...(scale.missing !== undefined ? { missing: scale.missing } : {}),
   };
 }
 /**
@@ -148,28 +151,35 @@ export function bindChannels<K extends string>(
   return { fields, channels };
 }
 /**
- * A bound channel ready to read; a scale whose domain is still unknown reads the fallback. A color
- * reads -1 without a value, so a shader draws its constant color instead.
+ * A bound channel ready to read; a scale whose domain is still unknown reads the fallback. Rows
+ * without a value read the channel's constant, its scale's `missing`, or `fallback`; a color reads
+ * -1, so a shader draws its constant color instead.
  */
-export function channelRead(
+export function resolveChannel(
   bound: BoundChannel,
   scale: ResolvedScale | null | undefined,
   fallback: number,
-): ChannelRead {
+): ResolvedChannel {
   return {
     column: bound.column,
     component: bound.component,
     scale: bound.scale
       ? (scale ?? { domain: null, range: bound.scale.range, clamp: bound.scale.clamp ?? true })
       : undefined,
-    fallback: bound.color ? -1 : typeof bound.constant === 'number' ? bound.constant : fallback,
+    fallback: bound.color
+      ? -1
+      : typeof bound.constant === 'number'
+        ? bound.constant
+        : typeof bound.missing === 'number'
+          ? bound.missing
+          : fallback,
   };
 }
 /**
  * A type's channels ready to read, each scaled one's domain resolved over the rows it reads, and
  * over `window` for a sampled field. Rows without a value read their channel's `fallbacks`, or 0.
  */
-export async function readChannels<K extends string>(
+export async function resolveChannels<K extends string>(
   reader: ReadScope,
   request: {
     readonly source: Data;
@@ -179,9 +189,9 @@ export async function readChannels<K extends string>(
   },
   bound: BoundChannels<K>,
   fallbacks: Readonly<Partial<Record<K, number>>> = {} as Readonly<Partial<Record<K, number>>>,
-): Promise<Record<K, ChannelRead>> {
+): Promise<Record<K, ResolvedChannel>> {
   const { source, from, rows, window } = request,
-    out = {} as Record<K, ChannelRead>;
+    out = {} as Record<K, ResolvedChannel>;
   for (const name of Object.keys(bound.channels) as K[]) {
     const channel = bound.channels[name],
       field = channel.field;
@@ -196,7 +206,7 @@ export async function readChannels<K extends string>(
             window: window && fieldDefinition(source, from, field)?.sampled ? window : undefined,
           })
         : undefined;
-    out[name] = channelRead(channel, scale, fallbacks[name] ?? 0);
+    out[name] = resolveChannel(channel, scale, fallbacks[name] ?? 0);
   }
   return out;
 }
@@ -215,7 +225,7 @@ function word(value: number): number {
 export function writeChannel(
   words: Uint32Array,
   at: number,
-  channel: ChannelRead,
+  channel: ResolvedChannel,
   source: GpuPage | GpuField | undefined,
   origin?: number,
 ): void {
@@ -278,7 +288,7 @@ function lane(column: Column | undefined, row: number, frame: number, component:
 }
 /** A channel's value at a row, and frame, of a fields block: as a shader reads it. */
 export function channelValue(
-  channel: ChannelRead,
+  channel: ResolvedChannel,
   block: FieldsBlock,
   row: number,
   frame = 0,
@@ -288,6 +298,15 @@ export function channelValue(
   const value = lane(block.columns[name], row, frame, channel.component);
   if (!Number.isFinite(value)) return channel.fallback;
   return channel.scale ? (scaleValue(value, channel.scale) ?? channel.fallback) : value;
+}
+/** Whether a boolean channel is on at a row, and frame: where it reads true or positive. */
+export function channelOn(
+  channel: ResolvedChannel,
+  block: FieldsBlock,
+  row: number,
+  frame = 0,
+): boolean {
+  return channelValue(channel, block, row, frame) > 0;
 }
 
 /** The channel a field shader reads, after the field accessors. */
@@ -316,7 +335,9 @@ fn channelNumber(c: LatkitChannel, row: u32, frame: u32) -> f32 {
   if (mapping == 1u) { t = (value - c.map.x) * c.map.y; }
   if ((c.mode & 4u) != 0u) { t = clamp(t, 0.0, 1.0); }
   return c.map.z + t * c.map.w;
-}`;
+}
+/** Whether a boolean channel is on: where it reads true or positive. */
+fn channelOn(c: LatkitChannel, row: u32, frame: u32) -> bool { return channelNumber(c, row, frame) > 0.0; }`;
 /** A colormapped channel's color, or `constant` without a value; after the colormap shader. */
 export const channelColorShader = /* wgsl */ `
 fn channelColor(c: LatkitChannel, row: u32, frame: u32, constant: vec4f) -> vec4f {

@@ -66,9 +66,9 @@ async function main() {
     source: history.data,
     at: 0,
     traces: { signal: trace(false) },
-    camera: { window: [0, history.duration], values: [0, 1], fit: false },
-    coordinateAxis: 'Time (s)',
-    valueAxis: 'Signal',
+    camera: { x: [0, history.duration], y: [0, 1], fit: false },
+    xAxis: 'Time (s)',
+    yAxis: 'Signal',
     cursorColor: [1, 0.9, 0.83, 1],
     background: [0.035, 0.047, 0.067, 1],
   });

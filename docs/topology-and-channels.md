@@ -56,7 +56,7 @@ network.set({
         colormap: 'thermal',
         missing: [0.4, 0.4, 0.4, 1],
       },
-      sizePx: { field: 'capacity', domain: [0, 1000], range: [3, 12] },
+      radiusPx: { field: 'capacity', domain: [0, 1000], range: [3, 12] },
       z: 'load',
       visible: true,
       labels: { field: 'name', maxCount: 100 },
@@ -68,10 +68,12 @@ network.set({
 
 A string names a field of the mapping's own source and type. A binding object reads another
 source, whose indices and sampled coordinates must align. A field reads through its channel's
-scale: positions as they are, colors through a colormap, and sizes, widths, `z`, and `flow` from
+scale: positions as they are, colors through a colormap, and radii, widths, `z`, and `flowPx` from
 their field's extent onto the channel's range. `domain` and `range` replace those; omitted domains
 fit the displayed values, and explicit ones keep colors stable during playback. Rows a field leaves
-empty take the channel's default, or a color scale's `missing` color.
+empty take the scale's `missing` value, or else the view's default for that channel, named after
+it: `vertexColor`, `vertexRadiusPx`, `edgeWidthPx`, `traceColor`. A boolean channel such as
+`visible` or `dash` is on where it reads true or positive.
 
 Selections and hits keep source, index, and physical row. Do not reuse rows after their source's
 index version changes.

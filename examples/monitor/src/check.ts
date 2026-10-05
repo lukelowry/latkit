@@ -32,7 +32,7 @@ async function check(): Promise<void> {
             color: { field: 'value', domain: [-1, 1], colormap: 'viridis' },
           },
         },
-        camera: { window: [0, 100], values: [-1.1, 1.1] },
+        camera: { x: [0, 100], y: [-1.1, 1.1] },
       });
       const renderer = kit.rendererOf(monitor);
       try {

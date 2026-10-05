@@ -29,16 +29,13 @@ export interface Axes {
 export function plot(view: Viewport, options: Style): Plot {
   const [top, right, bottom, left] = insets(options.paddingPx),
     size = options.fontSizePx;
-  const x = left + (options.valueAxis === null ? 0 : Math.max(64, size * 7)),
-    y = top + (options.valueAxis?.label ? size * 1.8 : 0);
+  const x = left + (options.yAxis === null ? 0 : Math.max(64, size * 7)),
+    y = top + (options.yAxis?.label ? size * 1.8 : 0);
   return {
     x,
     y,
     width: Math.max(1, view.width - x - right),
-    height: Math.max(
-      1,
-      view.height - y - bottom - (options.coordinateAxis === null ? 0 : size * 3),
-    ),
+    height: Math.max(1, view.height - y - bottom - (options.xAxis === null ? 0 : size * 3)),
   };
 }
 /** Whether a canvas point lies on a plot. */
@@ -95,8 +92,8 @@ export async function axes(
     if (spacing === undefined) text.add(key, layout, kit.textOrigin(layout, at, align, baseline));
     else text.place(key, layout, [[at[0], at[1], align, baseline]], occupied, { margin: spacing });
   };
-  if (options.coordinateAxis !== null) {
-    const axis = options.coordinateAxis,
+  if (options.xAxis !== null) {
+    const axis = options.xAxis,
       t = ticks(x, area.width, axis);
     line(
       area.x,
@@ -121,8 +118,8 @@ export async function axes(
         'alphabetic',
       );
   }
-  if (options.valueAxis !== null) {
-    const axis = options.valueAxis,
+  if (options.yAxis !== null) {
+    const axis = options.yAxis,
       t = ticks(y, area.height, { minSpacingPx: 40, ...axis });
     line(area.x, area.y, area.x, area.y + area.height, options.axisColor);
     for (const tick of t.items) {

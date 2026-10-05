@@ -24,6 +24,8 @@ export interface Scale {
   /** The channel's own range by default; a position reads its field as it is without one. */
   readonly range?: Range;
   readonly clamp?: boolean;
+  /** The value of rows the field leaves empty; the view's default otherwise. */
+  readonly missing?: number;
 }
 /** A field read through a colormap. */
 export interface ColorScale {
@@ -32,7 +34,7 @@ export interface ColorScale {
   readonly domain?: ScaleDomain;
   /** A colormap or a catalog name such as `viridis`. */
   readonly colormap?: Colormap | ColormapName;
-  /** The color of rows the field leaves empty; the view's base color by default. */
+  /** The color of rows the field leaves empty; the view's default otherwise. */
   readonly missing?: RGBA;
 }
 /** Text from a field beside each drawn item; views add how it is sized. */
@@ -45,7 +47,7 @@ export interface Labels {
   readonly maxCount?: number;
 }
 /** A type's labels as a view reads them: a field name labels by that field with defaults. */
-export function labelOptions<L extends Labels>(
+export function resolveLabels<L extends Labels>(
   labels: string | L | null | undefined,
 ): L | undefined {
   return typeof labels === 'string' ? ({ field: labels } as L) : (labels ?? undefined);

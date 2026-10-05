@@ -10,7 +10,7 @@ import {
   type EdgeBank,
   type SegmentBatch,
 } from '../geometry/topology.js';
-import { lineWidthPx, PATH_LINE, type Style } from '../options.js';
+import { lineColor, lineWidthPx, type Style } from '../options.js';
 import type { LabelBatch } from './labels.js';
 import type { FieldRead } from './fields.js';
 import type { Pipelines } from './pipelines.js';
@@ -21,17 +21,18 @@ const SLOT_WORDS = SLOT / 4;
 /** Bytes a line page binds: its rows, color, and five channels. */
 const LINE_BYTES = 192;
 /** A path's private points draw no markers. */
-const HIDDEN: kit.ChannelRead = { component: 0, fallback: 0 };
+const HIDDEN: kit.ResolvedChannel = { component: 0, fallback: 0 };
 /** The upload origin a raw axis reads relative to; a scaled or constant axis is absolute. */
-function rebase(channel: kit.ChannelRead, page: kit.GpuPage): number {
+function rebase(channel: kit.ResolvedChannel, page: kit.GpuPage): number {
   const field = channel.column === undefined ? undefined : page.columns[channel.column];
   return !channel.scale && field?.kind === 'value' ? (field.origin?.[channel.component] ?? 0) : 0;
 }
 /** A type's color for rows without one: its constant, its scale's missing color, or `fallback`. */
 function typeColor(read: FieldRead, fallback: RGBA | null): RGBA {
-  const color = read.bound.channels.color;
-  if (Array.isArray(color?.constant)) return color.constant as RGBA;
-  return color?.missing ?? fallback ?? [0, 0, 0, -1];
+  const { constant, missing } = read.bound.channels.color ?? {};
+  if (Array.isArray(constant)) return constant as RGBA;
+  if (Array.isArray(missing)) return missing as RGBA;
+  return fallback ?? [0, 0, 0, -1];
 }
 
 export interface Reads {
@@ -188,7 +189,7 @@ export class Painter {
     );
     f.set([options.dashPeriodPx, options.markers ? 1 : 0, 0, 0], 20);
     f.set(options.hoverColor, 24);
-    f.set(options.selectedColor ?? [0, 0, 0, 0], 28);
+    f.set(options.selectedColor === 'none' ? [0, 0, 0, 0] : options.selectedColor, 28);
     f.set(
       [
         options.hoverWidthPx,
@@ -207,7 +208,10 @@ export class Painter {
       36,
     );
     f.set(
-      [...sun(options.sunTime ?? Date.now()), options.daylight && geometry.geographic ? 1 : 0],
+      [
+        ...sun(options.sunTime === 'now' ? Date.now() : options.sunTime),
+        options.daylight && geometry.geographic ? 1 : 0,
+      ],
       40,
     );
     f.set(
@@ -215,7 +219,7 @@ export class Painter {
       44,
     );
     f.set(options.gridColor, 48);
-    u.set([0, options.graticule ? 1 : 0, 0, 0], 52);
+    u.set([0, options.grid ? 1 : 0, 0, 0], 52);
     f.set(options.background, 56);
     this.updateFocus(state);
     const focusedBinding = frame.buffer(this.focus);
@@ -244,8 +248,8 @@ export class Painter {
     /** One compute dispatch per page: a vertex bank's, or the bank of a `line` type's options. */
     const write = (bank: VertexBank | EdgeBank, read: FieldRead, line?: object) => {
       const color = line
-          ? typeColor(read, 'points' in line ? PATH_LINE.color : options.edgeBaseColor)
-          : typeColor(read, options.vertexBaseColor),
+          ? typeColor(read, lineColor(line, options))
+          : typeColor(read, options.vertexColor),
         colors = frame.colormap(read.bound.channels.color?.colormap),
         output = line ? edgeBuffers.get(bank as EdgeBank)! : vertexBuffers.get(bank as VertexBank)!,
         hidden = 'synthetic' in bank && !!bank.synthetic;
@@ -279,7 +283,7 @@ export class Painter {
         kit.writeChannel(
           words,
           at + 32,
-          hidden ? HIDDEN : read.channel('sizePx', options.vertexRadiusPx),
+          hidden ? HIDDEN : read.channel('radiusPx', options.vertexRadiusPx),
           page,
         );
         kit.writeChannel(words, at + 40, read.channel('color'), page);
