@@ -40,12 +40,10 @@ import {
 } from './config.js';
 import { place, layoutOptions, type Layout, type LayoutOptions } from './layout.js';
 import { readScene, sampledStructure, sameStructure } from './read.js';
-import { readValues, sampledValues, type Values } from './values.js';
 import { dragWires, geometry } from './geometry.js';
 import { dragMarks, moved, type DragDraw, type DragMarks } from './drag.js';
-import { positions, type Scene } from './scene.js';
+import { itemSlots, positions, union, type Scene } from './scene.js';
 import { Picking } from './picking.js';
-import { union } from './scene.js';
 import { Painter, pipelines, type Paint, type Overlay, type Pipelines } from './painter.js';
 import { listen, type Controls, type DiagramInput, type Gestures } from './input.js';
 /** A wiring the user drew; the application decides which references change. */
@@ -118,10 +116,8 @@ export function createDiagram(gpu: Gpu, config: DiagramConfig): Diagram {
   return new DiagramView(gpu, config);
 }
 interface Presented {
-  readonly values: Values;
-  readonly valueData: DiagramData;
-  readonly valueAt?: number;
-  readonly edgeWidthPx: number;
+  /** Wires pick within this width, the widest they may draw. */
+  readonly widthPx: number;
   readonly ports: boolean;
   readonly scene: Scene;
   readonly picking: Picking;
@@ -144,7 +140,8 @@ interface Resolved {
   readonly data: DiagramData;
   /** Whether the scene reads sampled fields; otherwise it is the same at every coordinate. */
   readonly sampled: boolean;
-  readonly sampledValues: boolean;
+  /** Whether a wire's flow moves, so frames keep coming. */
+  readonly flowing: boolean;
   readonly limits: Required<Limits>;
   readonly layout: Required<LayoutOptions>;
   readonly style: Style;
@@ -189,8 +186,6 @@ class DiagramView
   private stable?: Presented;
   private overlay: Overlay | null = null;
   private counts = { vertices: 0, edges: 0, ends: 0, geometryBytes: 0, drawCalls: 0 };
-  /** Whether the shown scene has wires whose flow moves. */
-  private flowing = false;
   private transitionRequested = false;
   private sceneTransition?: {
     target: Scene;
@@ -368,7 +363,8 @@ class DiagramView
     const at = p?.picking.locate(item);
     if (!p || !at) return null;
     // A dragged item draws where the drag has taken it.
-    const drag = p.drag?.marks.moving.has(itemKey(item)) ? p.drag.delta : undefined;
+    const slot = itemSlots(p.scene).get(itemKey(item)),
+      drag = slot !== undefined && p.drag?.marks.moving.has(slot) ? p.drag.delta : undefined;
     return kit.cameraPoint(p.camera, drag ? [at[0] + drag[0], at[1] + drag[1]] : at, p.viewport);
   }
   protected identify(item: DiagramItem): string {
@@ -399,7 +395,7 @@ class DiagramView
       radiusPx,
       shown.ports,
       undefined,
-      shown,
+      shown.widthPx,
     );
   }
   protected pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade): Promise<Pipelines> {
@@ -439,7 +435,7 @@ class DiagramView
       config,
       data,
       sampled: sampledStructure(data),
-      sampledValues: sampledValues(data),
+      flowing: Object.values(data.edges ?? {}).some((edge) => !!edge.flow),
       limits: resolveLimits(config.limits),
       layout: layoutOptions(config.layout),
       style: resolveStyle(config, this.sharedStyle(config)),
@@ -476,7 +472,9 @@ class DiagramView
   protected get animating(): boolean {
     return (
       !this.closed &&
-      (super.animating || !!this.sceneTransition || (this.flowing && !this.reducedMotion))
+      (super.animating ||
+        !!this.sceneTransition ||
+        (this.resolved.flowing && !!this.shown && !this.reducedMotion))
     );
   }
 
@@ -712,40 +710,12 @@ class DiagramView
     }
     frame.signal.throwIfAborted();
     this.live();
-    const valueAt = this.resolved.sampledValues
-      ? this.drag
-        ? base?.valueAt
-        : frame.at
-      : undefined;
-    const valueData = this.drag && base ? base.valueData : data;
-    const values =
-      base &&
-      (drag ||
-        (base.structureRevision === structureRevision &&
-          base.at === at &&
-          base.valueAt === valueAt &&
-          base.valueData.source === valueData.source &&
-          base.valueData.vertices === valueData.vertices &&
-          base.valueData.edges === valueData.edges))
-        ? base.values
-        : await readValues(scene, valueData, frame.reader, work);
-    const retainedValues = new Set([
-      values,
-      ...(this.stable ? [this.stable.values] : []),
-      ...(this.shown ? [this.shown.values] : []),
-    ]);
-    const retainedScenes = new Set([
-      scene,
-      ...(this.stable ? [this.stable.scene] : []),
-      ...(this.shown ? [this.shown.scene] : []),
-    ]);
-    if (
-      [...retainedValues].reduce((sum, value) => sum + value.bytes, 0) +
-        [...retainedScenes].reduce((sum, value) => sum + value.bytes, 0) >
-      limits.geometryBytes
-    )
-      throw failure('resource-limit', 'Retained geometry and values exceed budget');
-    const hitStyle = { values, edgeWidthPx: style.edgeWidthPx };
+    const widthPx = Math.max(
+      style.edgeWidthPx,
+      ...Object.values(data.edges ?? {}).map((edge) =>
+        edge.widthPx ? Math.max(...(edge.widthPx.range ?? [1, 4])) : 0,
+      ),
+    );
     const framed = scene,
       found = picking;
     const camera = await this.frameCamera(frame, (items, _, viewport) =>
@@ -758,13 +728,13 @@ class DiagramView
       frame,
       (p, radius, { check }) =>
         inside(p, viewport)
-          ? found.nearest(p, drawn, viewport, radius, ports, check, hitStyle)
+          ? found.nearest(p, drawn, viewport, radius, ports, check, widthPx)
           : null,
       !!this.drag || easing,
     );
     const paint = await this.painter.prepare(frame, {
       scene,
-      values,
+      data,
       style,
       camera: drawn,
       selection: this.selection,
@@ -779,10 +749,7 @@ class DiagramView
     this.live();
     return {
       scene,
-      values,
-      valueData,
-      valueAt,
-      edgeWidthPx: style.edgeWidthPx,
+      widthPx,
       ports,
       picking,
       camera: drawn,
@@ -819,12 +786,8 @@ class DiagramView
     if (this.closed) return;
     // An exported frame leaves what pick, locate, drags, and layout start from.
     if (!frame.presented) return;
-    this.flowing = next.values.flowing;
     this.shown = {
-      values: next.values,
-      valueData: next.valueData,
-      valueAt: next.valueAt,
-      edgeWidthPx: next.edgeWidthPx,
+      widthPx: next.widthPx,
       ports: next.ports,
       scene: next.scene,
       picking: next.picking,
@@ -846,7 +809,7 @@ class DiagramView
       vertices: next.scene.vertices.length,
       edges: next.scene.edges.length,
       ends: next.scene.ends,
-      geometryBytes: next.scene.bytes + next.values.bytes,
+      geometryBytes: next.scene.bytes,
       drawCalls: next.paint.drawCalls,
     };
   }

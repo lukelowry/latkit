@@ -46,7 +46,7 @@ import {
 } from './config.js';
 import { DEFAULT_CAMERA, checkCamera, mixCamera, move, type Camera } from './camera.js';
 import { binding, describeBindings, validateData, type Binding } from './bindings.js';
-import { axes, plot, type Axes, type Plot } from './axes.js';
+import { axes, onPlot, plot, plotCoordinate, plotX, plotY, type Axes, type Plot } from './axes.js';
 import { Fit, mergeDomain, tracePages } from './extents.js';
 import { pipelines, type Pipelines } from './rendering/pipelines.js';
 import {
@@ -99,6 +99,8 @@ export interface Monitor extends ItemView<
   MonitorEvents
 > {
   set(patch: Patch<MonitorConfig, Records, Merged>, options?: SetOptions): void;
+  /** The coordinate under a canvas point of the latest drawn plot; null off the plot or before a frame. */
+  coordinateAt(point: Point): number | null;
   stats(): MonitorStats;
 }
 
@@ -326,6 +328,12 @@ class MonitorView
     return this.resolved.limits;
   }
 
+  coordinateAt(point: Point): number | null {
+    const shown = this.shown;
+    return shown && onPlot(shown.plot, point)
+      ? plotCoordinate(shown.plot, shown.window, point[0])
+      : null;
+  }
   stats(): MonitorStats {
     return {
       ...super.stats(),
@@ -375,11 +383,7 @@ class MonitorView
     const shown = this.shown,
       { coordinate, value } = item as Partial<Reading>;
     if (!shown || coordinate === undefined || value === undefined) return null;
-    const { plot: p, window: x, values: y } = shown;
-    return [
-      p.x + ((coordinate - x[0]) / (x[1] - x[0])) * p.width,
-      p.y + ((y[1] - value) / (y[1] - y[0])) * p.height,
-    ];
+    return [plotX(shown.plot, shown.window, coordinate), plotY(shown.plot, shown.values, value)];
   }
   protected identify(item: MonitorItem): string {
     return JSON.stringify([
@@ -848,8 +852,7 @@ class MonitorView
       traces = this.traces;
     if (!shown || !traces) return [];
     const p = shown.plot;
-    if (point[0] < p.x || point[0] > p.x + p.width || point[1] < p.y || point[1] > p.y + p.height)
-      return [];
+    if (!onPlot(p, point)) return [];
     signal?.throwIfAborted();
     // The latest answer at this point stands while the data and what is shown stand.
     const cached = this.inspection,

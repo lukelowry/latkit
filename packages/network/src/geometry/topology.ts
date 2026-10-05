@@ -1,4 +1,5 @@
 import {
+  bitAt,
   failure,
   assertIndex,
   type Column,
@@ -12,7 +13,7 @@ import {
 import { kit, type Position2D } from '@latkit/gpu';
 import type { NetworkData, VertexData, EdgeData, PathData } from '../data.js';
 import { Adjacency } from './adjacency.js';
-import { RowLookup, bit, indexKey } from './rows.js';
+import { RowLookup, indexKey } from './rows.js';
 
 /** Rows per bank. A power of two, so a type's dense address splits into bank and offset by shifts. */
 export const BANK_ROWS = 16384;
@@ -360,8 +361,8 @@ export async function readGeometry(
           rows.push(range ? offset + i : values![i]);
           const at = from.offset + i,
             bt = to.offset + i;
-          const va = ta && bit(from.validity, at) ? ta.get(from.values[at]) : -1,
-            vb = tb && bit(to.validity, bt) ? tb.get(to.values[bt]) : -1;
+          const va = ta && bitAt(from.validity, at) ? ta.get(from.values[at]) : -1,
+            vb = tb && bitAt(to.validity, bt) ? tb.get(to.values[bt]) : -1;
           if (va >= 0) incidence.push(va);
           if (vb >= 0) incidence.push(vb);
           offsets.push(incidence.length);
@@ -409,7 +410,7 @@ export async function readGeometry(
           if (nets.index) assertIndex(nets.index, column.index);
           for (let i = 0; i < n; i++) {
             const at = column.offset + i;
-            if (!bit(column.validity, at)) continue;
+            if (!bitAt(column.validity, at)) continue;
             const v = own.addresses.get(range ? offset + i : values![i]),
               e = local.get(column.values[at]);
             if (v < 0 || e < 0) continue;

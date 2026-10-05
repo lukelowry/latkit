@@ -1,12 +1,31 @@
 ---
-'@latkit/diagram': patch
+'@latkit/model': minor
 '@latkit/gpu': minor
+'@latkit/network': patch
+'@latkit/monitor': minor
+'@latkit/diagram': minor
 ---
 
-Complete diagram integration with shared text layout, routing, and spatial indexing. Keep sampled
-visual values separate from structural geometry, use frame uniforms for default colors and edge
-width, and keep picking aligned with the submitted frame. Preserve connect and reconnect gestures
-and reacquire GPU resources through each frame after trimming.
+One text layout, spatial index, and change test for every view; diagram styles on the GPU.
 
-Reduce temporary allocations in routing, spatial queries, and geometry encoding. Expose the shared
-text layout operation on `Gpu` and avoid composing an abort signal when no caller signal is supplied.
+Added
+
+- model: `samePages`.
+- gpu: `gpu.layoutText`; `kit.BoxIndex`, `kit.Occupancy`, `kit.sameValues`, and `kit.sameRecords`; `kit.fieldShader({ colormap })` adds `fieldColor`, and the field shader carries the scale WGSL.
+- monitor: `coordinateAt(point)`, the coordinate under a canvas point of the drawn plot.
+
+Changed
+
+- Text draws from one glyph atlas, one SDF per font and grapheme, and repeated layouts are cached.
+- diagram: bound colors, widths, flow, shade, and status are written on the GPU each frame, so restyling or playing them never rereads or reroutes the scene, and styles keep playing during a drag.
+- diagram: wires route as net trees with separated tracks and rounded bends; ports, arrowheads, and junctions scale with the blocks; blocks draw a header band, outline, status ring, and shadow; picking holds typed arrays.
+- diagram: `msaa` defaults to `1`, since every shape antialiases in its shader.
+- monitor: a null visibility shows the trace; shade defaults to `0`.
+
+Renamed
+
+- diagram: `portSizePx` to `portSize` and `portFontSizePx` to `portFontSize`, in diagram units.
+
+Removed
+
+- gpu: `kit.scaleShader` (in `kit.fieldShader`), `kit.defaultShade`, and `kit.localPoint`.

@@ -1,6 +1,7 @@
 import { Work, failure } from '@latkit/model';
 import { kit, type Point } from '@latkit/gpu';
 import type { Scene, Vertex, Rect, Edge, End, Wire } from './scene.js';
+import type { DragWire } from './drag.js';
 import type { Limits } from './options.js';
 import type { Style } from './config.js';
 import { rect, union, expand, intersects } from './scene.js';
@@ -291,66 +292,63 @@ function tag(route: Route): Wire {
   }
   return { ...wire, paths: stubs, offsets: stubs.map(() => 0), junctions: [] };
 }
+/** Room kept between a label and its wire, and around its text inside its pill. */
+const GAP = 4,
+  MARGIN = 3;
+/** The pill a label at this top-left fills. */
+export function labelBox(edge: Edge, at: Point): Rect {
+  return [
+    at[0] - MARGIN,
+    at[1] - MARGIN,
+    at[0] + edge.label.width + MARGIN,
+    at[1] + edge.label.height + MARGIN,
+  ];
+}
 /**
- * Place each edge's label where it reads with its wire and overlaps nothing placed: above its
- * longest level run, then below, then beside its longest upright run; a tag's at each stub.
+ * Where an edge's label may go, best first: above its longest level runs, then below them, then
+ * beside its longest upright runs; a tag's past the end of each stub.
  */
+function spots(edge: Edge, paths: readonly (readonly Point[])[]): Point[][] {
+  const { width, height } = edge.label;
+  if (edge.options.appearance === 'tag')
+    return [
+      paths.map(([a, b]) =>
+        b[0] >= a[0] ? [b[0] + GAP, b[1] - height / 2] : [b[0] - GAP - width, b[1] - height / 2],
+      ),
+    ];
+  return paths
+    .flatMap((path) => path.slice(1).map((b, i) => [path[i], b] as const))
+    .map(([a, b]) => ({
+      a,
+      b,
+      level: a[1] === b[1],
+      length: Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]),
+    }))
+    .sort((u, v) => +v.level - +u.level || v.length - u.length)
+    .slice(0, 4)
+    .flatMap(({ a, b, level }): Point[][] => {
+      const mx = (a[0] + b[0]) / 2,
+        my = (a[1] + b[1]) / 2;
+      return level
+        ? [[[mx - width / 2, my - GAP - MARGIN - height]], [[mx - width / 2, my + GAP + MARGIN]]]
+        : [[[mx + GAP + MARGIN, my - height / 2]], [[mx - GAP - MARGIN - width, my - height / 2]]];
+    });
+}
+/** Place each edge's label at its best spot nothing placed overlaps, else at its best spot. */
 function label(scene: Scene, options: Style, hidden: ReadonlySet<number>): void {
-  const placed = new kit.Occupancy(64),
-    gap = 4,
-    margin = 3;
+  const placed = new kit.Occupancy(64);
   scene.vertices.forEach((vertex, i) => {
     if (vertex.visible && !hidden.has(i)) placed.add(rect(vertex));
   });
   for (const edge of scene.edges) {
     edge.labels = [];
-    const { width, height } = edge.label;
     if (!edge.visible || !options.labels || !edge.label.runs.length || !edge.paths.length) continue;
-    if (edge.options.appearance === 'tag') {
-      edge.labels = edge.paths.map(([a, b]) =>
-        b[0] >= a[0] ? [b[0] + gap, b[1] - height / 2] : [b[0] - gap - width, b[1] - height / 2],
-      );
-      continue;
-    }
-    const runs = edge.paths
-      .flatMap((path) => path.slice(1).map((b, i) => [path[i], b] as const))
-      .map(([a, b]) => ({
-        a,
-        b,
-        level: a[1] === b[1],
-        length: Math.abs(b[0] - a[0]) + Math.abs(b[1] - a[1]),
-      }))
-      .sort((u, v) => +v.level - +u.level || v.length - u.length)
-      .slice(0, 4);
-    let chosen: Point | undefined;
-    const box = (p: Point): Rect => [
-      p[0] - margin,
-      p[1] - margin,
-      p[0] + width + margin,
-      p[1] + height + margin,
-    ];
-    for (const { a, b, level } of runs) {
-      const mx = (a[0] + b[0]) / 2,
-        my = (a[1] + b[1]) / 2;
-      const spots: Point[] = level
-        ? [
-            [mx - width / 2, my - gap - margin - height],
-            [mx - width / 2, my + gap + margin],
-          ]
-        : [
-            [mx + gap + margin, my - height / 2],
-            [mx - gap - margin - width, my - height / 2],
-          ];
-      chosen = spots.find((p) => placed.free(box(p)));
-      if (chosen) break;
-    }
-    chosen ??= ((r) =>
-      [(r.a[0] + r.b[0]) / 2 - width / 2, (r.a[1] + r.b[1]) / 2 - gap - margin - height] as Point)(
-      runs[0],
-    );
-    placed.add(box(chosen));
-    edge.labels = [chosen];
-    edge.bounds = union([edge.bounds, box(chosen)]);
+    const choices = spots(edge, edge.paths),
+      chosen =
+        choices.find((points) => points.every((p) => placed.free(labelBox(edge, p)))) ?? choices[0];
+    for (const p of chosen) placed.add(labelBox(edge, p));
+    edge.labels = chosen;
+    edge.bounds = union([edge.bounds, ...chosen.map((p) => labelBox(edge, p))]);
   }
 }
 /** The wires a drag reroutes: each edge touching what moves, routed where it is going. */
@@ -360,16 +358,18 @@ export function dragWires(
   moved: Moved,
   options: Style,
   signal: AbortSignal,
-): (Wire & { readonly edge: Edge })[] {
+): DragWire[] {
   const route = new Routing(scene, options, signal, moved),
     proxy = scene.obstacles!.proxy,
-    out: (Wire & { readonly edge: Edge })[] = [];
+    out: DragWire[] = [];
   for (const i of edges) {
     const edge = scene.edges[i],
       ends = edge.ends.filter((e) => scene.vertices[e.vertex].sourceVisible);
     if (!routed(edge, ends, proxy)) continue;
     const r = routeEdge(edge, ends, route, rootEnd(edge));
-    out.push({ edge, ...(edge.options.appearance === 'tag' ? tag(r) : draw(r)) });
+    const wire = edge.options.appearance === 'tag' ? tag(r) : draw(r),
+      labels = options.labels && edge.label.runs.length ? (spots(edge, wire.paths)[0] ?? []) : [];
+    out.push({ ...wire, edge, slot: scene.slots.edges + i, labels });
   }
   return out;
 }

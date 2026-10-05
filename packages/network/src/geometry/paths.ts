@@ -1,4 +1,4 @@
-import { failure, rowAt, type FieldsBlock, type FieldValues } from '@latkit/model';
+import { bitAt, failure, rowAt, type FieldsBlock, type FieldValues } from '@latkit/model';
 import type { NetworkData, EdgeData } from '../data.js';
 import {
   BANK_ROWS,
@@ -10,7 +10,7 @@ import {
   type EdgeBank,
   type Limits,
 } from './topology.js';
-import { nativeValue, value, bit, RowLookup } from './rows.js';
+import { nativeValue, value, RowLookup } from './rows.js';
 import { scaledValue, type FieldRead } from '../rendering/fields.js';
 import type { Reads } from '../rendering/painter.js';
 
@@ -345,7 +345,7 @@ export class Paths {
         if (column?.kind !== 'list' || column.values.kind !== 'vector' || column.values.size !== 2)
           throw failure('invalid-input', 'Paths require lists of two-component vectors');
         const at = column.offset + row;
-        if (!bit(tile.presence[name], row) || !bit(column.validity, at)) return [];
+        if (!bitAt(tile.presence[name], row) || !bitAt(column.validity, at)) return [];
         const result: Point[] = [];
         for (let i = column.offsets[at]; i < column.offsets[at + 1]; i++)
           result.push([value(column.values, i), value(column.values, i, 1), 0]);

@@ -89,7 +89,6 @@ const base: Style = {
   portSpacing: 24,
   routeClearance: 16,
   fitPaddingPx: 44,
-  msaa: 4,
 };
 export function data(source: GraphSource, settings: Settings, automatic = false): Drawn {
   return {

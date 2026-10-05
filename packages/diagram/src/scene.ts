@@ -98,6 +98,11 @@ export interface Scene {
   ends: number;
   /** First slot of each kind: vertices from zero, then every port, edges, and groups. */
   slots: { ports: number; edges: number; groups: number; count: number };
+  /** Where each type's rows start among its kind, in read order; a vertex type's first port slot. */
+  types: {
+    vertices: Map<string, { first: number; ports: number; names: readonly string[] }>;
+    edges: Map<string, { first: number }>;
+  };
   /** What the routes avoid, once routed. */
   obstacles?: Obstacles;
   /** Each item's slot by its key, built on first use. */
@@ -112,15 +117,6 @@ export const emptyLabel: TextLayout = Object.freeze({
 });
 export function rect(vertex: Vertex): Rect {
   return [vertex.x, vertex.y, vertex.x + vertex.width, vertex.y + vertex.height];
-}
-/** Padded label geometry shared by drawing and picking. */
-export function labelBounds(edge: Edge, position: Point): Rect {
-  return [
-    position[0] - 3,
-    position[1] - 3,
-    position[0] + edge.label.width + 3,
-    position[1] + edge.label.height + 3,
-  ];
 }
 /** A stable point on the longest segment, for locate and reveal. */
 export function edgeAnchor(edge: Edge): Point {

@@ -49,4 +49,8 @@ describe.each([100, 1_000, 10_000, 40_000])('diagram %i blocks', async (blocks) 
     view.set({ edgeWidthPx: 1 + (i % 2) });
     return draw(device, view);
   });
+  // A sampled color restyles on the GPU at each coordinate and never rereads the scene.
+  const styled = createDiagram(device, { ...config, vertices: { Bus: { color: 'voltage' } } });
+  await draw(device, styled, 0, 'complete');
+  measure('styled playback', (i) => draw(device, styled, i));
 });

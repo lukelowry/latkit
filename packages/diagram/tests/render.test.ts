@@ -26,9 +26,28 @@ function device() {
           setViewport: vi.fn(),
         }) as unknown as GPURenderPassEncoder,
     );
+    encoder.beginComputePass = vi.fn(
+      () =>
+        ({
+          setPipeline: vi.fn(),
+          setBindGroup: vi.fn(),
+          dispatchWorkgroups: vi.fn(),
+          end: vi.fn(),
+        }) as unknown as GPUComputePassEncoder,
+    );
     return encoder;
   });
   return fake;
+}
+/** Whether a write since the last clear holds this value for every task: a style page's field. */
+function wrote(fake: ReturnType<typeof device>, count: number, value: number): boolean {
+  return fake.queue.writeBuffer.mock.calls.some(([, , data]) => {
+    const bytes = ArrayBuffer.isView(data) ? data : new Uint8Array(data);
+    const floats = new Float32Array(
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + (bytes.byteLength & ~3)),
+    );
+    return floats.filter((v) => v === value).length >= count;
+  });
 }
 /** What input drives, without a canvas. */
 const interaction = (diagram: Diagram) => (diagram as unknown as { controls: Controls }).controls;
@@ -41,9 +60,8 @@ const presentedOf = (diagram: Diagram) =>
     diagram as unknown as {
       shown: {
         scene: import('../src/scene.js').Scene;
-        values: import('../src/values.js').Values;
         picking: import('../src/picking.js').Picking;
-        edgeWidthPx: number;
+        widthPx: number;
         camera: kit.Camera2D;
         viewport: import('@latkit/gpu').Viewport;
       };
@@ -136,7 +154,7 @@ it('restyles widths without reads, geometry uploads, or stale hit-test radii', a
     const hits = () => {
       const p = presentedOf(f.diagram);
       return p.picking
-        .hit(beside, p.camera, p.viewport, 0, true, undefined, p)
+        .hit(beside, p.camera, p.viewport, 0, true, undefined, p.widthPx)
         .some((item) => item.kind === 'edge' && item.row === edge.hit.row);
     };
     expect(hits()).toBe(false);
@@ -147,7 +165,6 @@ it('restyles widths without reads, geometry uploads, or stale hit-test radii', a
     const after = presentedOf(f.diagram);
     expect(after.scene).toBe(before.scene);
     expect(after.picking).toBe(before.picking);
-    expect(after.values).toBe(before.values);
     expect(hits()).toBe(true);
     expect(f.gpu.stats().queries).toBe(counts.queries);
     expect(f.gpu.stats().queryHits).toBe(counts.queryHits);
@@ -168,7 +185,6 @@ it('reroutes clearance changes without rereading fields or changing accepted pos
     await f.draw();
     const after = presentedOf(f.diagram);
     expect(after.scene).not.toBe(before.scene);
-    expect(after.values).toBe(before.values);
     expect(after.scene.vertices.map(({ x, y }) => [x, y])).toEqual(
       before.scene.vertices.map(({ x, y }) => [x, y]),
     );
@@ -719,9 +735,8 @@ it('expands field shorthands in entries and their ports', async () => {
     expect(task.ports?.input.side).toBe('top');
     expect(f.diagram.config.edges?.Dependency.widthPx).toEqual({ field: 'weight' });
     await f.draw();
-    expect(
-      presentedOf(f.diagram).values.items[interaction(f.diagram).scene()!.slots.edges].width,
-    ).toBeGreaterThan(0);
+    // Wires pick within the widest a bound width draws.
+    expect(presentedOf(f.diagram).widthPx).toBe(4);
   } finally {
     f.diagram.destroy();
     f.target.destroy();
@@ -759,13 +774,15 @@ it('shares the view style, stats, and limits', async () => {
     f.gpu.destroy();
   }
 });
-it('rereads the scene at a new coordinate only when a binding is sampled', async () => {
+it('restyles at a new coordinate on the GPU, rereading the scene only for sampled structure', async () => {
   const f = await fixture();
-  const render = (at: number) =>
-    f.gpu.render({
+  const render = (at: number) => {
+    f.fake.queue.writeBuffer.mockClear();
+    return f.gpu.render({
       views: [{ renderer: kit.rendererOf(f.diagram), target: f.target, at }],
       timeMs: 0,
     });
+  };
   try {
     await render(0);
     const still = interaction(f.diagram).scene();
@@ -776,11 +793,10 @@ it('rereads the scene at a new coordinate only when a binding is sampled', async
     });
     await render(0);
     const before = interaction(f.diagram).scene()!;
-    const values = () => presentedOf(f.diagram).values;
-    expect(values().items[0].shade).toBe(0.25);
+    expect(wrote(f.fake, f.source.count, 0.25)).toBe(true);
     await render(1);
     expect(interaction(f.diagram).scene()).toBe(before);
-    expect(values().items[0].shade).toBe(0.75);
+    expect(wrote(f.fake, f.source.count, 0.75)).toBe(true);
   } finally {
     f.diagram.destroy();
     f.target.destroy();
@@ -788,13 +804,15 @@ it('rereads the scene at a new coordinate only when a binding is sampled', async
   }
 });
 
-it('freezes sampled structure and values together throughout a drag', async () => {
+it('freezes sampled structure throughout a drag while its styles play on', async () => {
   const f = await fixture();
-  const render = (at: number) =>
-    f.gpu.render({
+  const render = (at: number) => {
+    f.fake.queue.writeBuffer.mockClear();
+    return f.gpu.render({
       views: [{ renderer: kit.rendererOf(f.diagram), target: f.target, at }],
       timeMs: 0,
     });
+  };
   try {
     const field = { source: load(f.source), from: 'Task', field: 'load' };
     f.diagram.set({ vertices: { Task: { visible: field, shade: field } } });
@@ -803,11 +821,10 @@ it('freezes sampled structure and values together throughout a drag', async () =
     interaction(f.diagram).preview([before.scene.vertices[0].hit], [8, 0]);
     await render(1);
     expect(presentedOf(f.diagram).scene).toBe(before.scene);
-    expect(presentedOf(f.diagram).values).toBe(before.values);
-    expect(presentedOf(f.diagram).values.items[0].shade).toBe(0.25);
+    expect(wrote(f.fake, f.source.count, 0.75)).toBe(true);
     interaction(f.diagram).preview([], null);
     await render(1);
-    expect(presentedOf(f.diagram).values.items[0].shade).toBe(0.75);
+    expect(presentedOf(f.diagram).scene).not.toBe(before.scene);
   } finally {
     f.diagram.destroy();
     f.target.destroy();

@@ -26,9 +26,6 @@ export function checkCamera(camera: Camera): Camera {
     fit: camera.fit,
   });
 }
-export function sameDomain(a: Domain, b: Domain): boolean {
-  return a[0] === b[0] && a[1] === b[1];
-}
 export function mixCamera(from: Camera, to: Camera, t: number): Camera {
   const mix = (a: Domain, b: Domain): Domain => [
     a[0] + (b[0] - a[0]) * t,

@@ -1,5 +1,19 @@
 import { samePages, sameIndex, type Data, type TypeDefinition } from '@latkit/model';
 
+/** Whether two keyed records name the same entries in order, each the same under `keys`. */
+export function sameRecords<T extends object>(
+  a: Readonly<Record<string, T>> | undefined,
+  b: Readonly<Record<string, T>> | undefined,
+  keys: readonly (keyof T)[],
+): boolean {
+  if (a === b) return true;
+  const xs = Object.keys(a ?? {}),
+    ys = Object.keys(b ?? {});
+  return (
+    xs.length === ys.length &&
+    xs.every((type, i) => type === ys[i] && keys.every((key) => a![type][key] === b![type][key]))
+  );
+}
 /**
  * Whether two Data values number the same rows, under the same ids, and hold the same values in
  * the fields `fields` names for each type, whatever their identity: a value republished unchanged

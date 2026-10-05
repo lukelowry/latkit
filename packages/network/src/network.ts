@@ -158,23 +158,11 @@ function checkLine(type: string, entry: EdgeData | PathData): void {
 }
 /** Whether drawn rows or their wiring differ, which rebuilds geometry. */
 function rewired(a: NetworkData, b: NetworkData): boolean {
-  const differ = <T extends object>(
-    x: Readonly<Record<string, T>> | undefined,
-    y: Readonly<Record<string, T>> | undefined,
-    keys: readonly (keyof T)[],
-  ) => {
-    const xs = Object.keys(x ?? {}),
-      ys = Object.keys(y ?? {});
-    return (
-      xs.length !== ys.length ||
-      xs.some((type, i) => type !== ys[i] || keys.some((key) => x![type][key] !== y![type][key]))
-    );
-  };
-  return (
-    !kit.sameValues(a.source, b.source, wiring) ||
-    differ(a.vertices, b.vertices, ['rows']) ||
-    differ(a.edges, b.edges, ['rows', 'ends', 'junction']) ||
-    differ(a.paths, b.paths, ['rows', 'source'])
+  return !(
+    kit.sameValues(a.source, b.source, wiring) &&
+    kit.sameRecords(a.vertices, b.vertices, ['rows']) &&
+    kit.sameRecords(a.edges, b.edges, ['rows', 'ends', 'junction']) &&
+    kit.sameRecords(a.paths, b.paths, ['rows', 'source'])
   );
 }
 

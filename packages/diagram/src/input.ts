@@ -287,11 +287,7 @@ export function listen(
           current.hit.kind !== 'group' &&
           api.scene()
         )
-          current.session = new ConnectSession(
-            api.scene()!,
-            current.hit,
-            api.options().routeClearance,
-          );
+          current.session = new ConnectSession(api.scene()!, current.hit, api.options());
         canvas.style.cursor =
           current.kind === 'pan' || current.kind === 'move' ? 'grabbing' : 'crosshair';
       }

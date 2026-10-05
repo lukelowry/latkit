@@ -2,7 +2,7 @@ import { failure } from '@latkit/model';
 import { kit, type Point } from '@latkit/gpu';
 import type { RouteEnd } from './data.js';
 import type { Arrow, Edge, End, GroupBox, Rect, Scene, Vertex, Wire } from './scene.js';
-import { union, expand, intersects } from './scene.js';
+import { union } from './scene.js';
 import { boundary } from './geometry.js';
 import type { Style } from './config.js';
 
@@ -147,6 +147,15 @@ export class Routing {
       if (box[0] <= region[2] && box[2] >= region[0] && box[1] <= region[3] && box[3] >= region[1])
         out.push([box[0] - by, box[1] - by, box[2] + by, box[3] + by]);
     return out;
+  }
+  /** The way between two points around the obstacles, keeping as much clearance as it can. */
+  between(a: Point, b: Point): Point[] {
+    const clearance = this.options.routeClearance;
+    for (const by of [clearance, clearance / 2, 0]) {
+      const path = search(a, b, [], this, by, clearance * 2);
+      if (path) return path;
+    }
+    return simplify([a, [b[0], a[1]], b]);
   }
   /** Whether an axis-aligned segment keeps out of every obstacle grown by `by`. */
   clear(a: Point, b: Point, by: number): boolean {
@@ -513,11 +522,7 @@ function search(
   a: Point,
   b: Point,
   around: readonly Rect[],
-  route: {
-    readonly options: Pick<Style, 'routeClearance'>;
-    readonly query: Routing['query'];
-    readonly signal: AbortSignal;
-  },
+  route: Routing,
   by: number,
   bend: number,
 ): Point[] | null {
@@ -616,23 +621,6 @@ function search(
     }
   }
   return null;
-}
-/** Connection previews use the same bounded search as routed nets. */
-export function orthogonal(
-  a: Point,
-  b: Point,
-  boxes: readonly Rect[],
-  clearance: number,
-  signal: AbortSignal,
-): readonly Point[] {
-  signal.throwIfAborted();
-  const route = {
-    options: { routeClearance: clearance },
-    signal,
-    query: (region: Rect, by: number) =>
-      boxes.filter((box) => intersects(box, region)).map((box) => expand(box, by)),
-  };
-  return search(a, b, [], route, clearance, clearance * 2) ?? simplify([a, [b[0], a[1]], b]);
 }
 function inside(p: Point, box: Rect): boolean {
   return (

@@ -15,7 +15,7 @@ import {
   type TypeDefinition,
 } from '@latkit/model';
 import { kit, type TextLayout, type TextLayoutInput } from '@latkit/gpu';
-import type { DiagramData, VertexData, EdgeData, DiagramLabels } from './data.js';
+import type { DiagramData, VertexData, EdgeData, DiagramLabels, PortData } from './data.js';
 import type { Scene, Vertex, Edge, Port } from './scene.js';
 import { emptyLabel } from './scene.js';
 import type { Limits } from './options.js';
@@ -23,7 +23,7 @@ import type { Style } from './config.js';
 import { fail } from './config.js';
 
 export type Layout = (input: TextLayoutInput) => Promise<TextLayout>;
-export function scalar(column: Column | undefined, row: number): number | null {
+function scalar(column: Column | undefined, row: number): number | null {
   if (!column) return null;
   if (column.kind === 'numeric') return numberAt(column, row);
   if (column.kind === 'boolean')
@@ -61,7 +61,7 @@ export function structure(option: VertexData | EdgeData): Record<string, FieldIn
   return out;
 }
 /** Whether a binding reads a sampled field, so it depends on the read coordinate. */
-export function sampled(data: DiagramData, type: string, input: FieldInput): boolean {
+function sampled(data: DiagramData, type: string, input: FieldInput): boolean {
   return typeof input === 'string'
     ? data.source.schema.types[type]?.fields[input]?.sampled === true
     : 'source' in input &&
@@ -74,10 +74,35 @@ export function sampledStructure(data: DiagramData): boolean {
       Object.values(structure(options)).some((input) => sampled(data, type, input)),
   );
 }
+/** What a scene is made of in each entry; every other option is a style the GPU reads. */
+const VERTEX = [
+  'rows',
+  'position',
+  'size',
+  'shape',
+  'cornerRadius',
+  'labelPosition',
+  'visible',
+  'labels',
+] as const satisfies readonly (keyof VertexData)[];
+const PORT = ['side', 'order', 'marker', 'label'] as const satisfies readonly (keyof PortData)[];
+const EDGE = [
+  'rows',
+  'ends',
+  'route',
+  'arrows',
+  'appearance',
+  'visible',
+  'labels',
+] as const satisfies readonly (keyof EdgeData)[];
+/** Whether two diagrams have one structure, so only styles changed between them. */
 export function sameStructure(a: DiagramData, b: DiagramData): boolean {
   return (
-    a.vertices === b.vertices &&
-    a.edges === b.edges &&
+    kit.sameRecords(a.vertices, b.vertices, VERTEX) &&
+    Object.keys(a.vertices).every((type) =>
+      kit.sameRecords(a.vertices[type].ports, b.vertices[type].ports, PORT),
+    ) &&
+    kit.sameRecords(a.edges, b.edges, EDGE) &&
     a.groups === b.groups &&
     (a.source === b.source ||
       (local(a) && local(b) && kit.sameValues(a.source, b.source, structural(b))))
@@ -163,6 +188,7 @@ export async function readScene(
     routeBytes: 0,
     ends: 0,
     slots: { ports: 0, edges: 0, groups: 0, count: 0 },
+    types: { vertices: new Map(), edges: new Map() },
   };
   const { schema } = data.source;
   const charge = (bytes: number) => {
@@ -210,6 +236,11 @@ export async function readScene(
       if (!ports.some((port) => port.field === name)) fail('Unknown port: ' + type + '.' + name);
     const start = scene.vertices.length,
       texts: string[] = [];
+    scene.types.vertices.set(type, {
+      first: start,
+      ports: portSlots,
+      names: ports.map((port) => port.field),
+    });
     const aliases = structure(option);
     const numeric = Object.keys(aliases).filter((k) => !['label', 'position', 'size'].includes(k));
     const rows = new Map<number, number>();
@@ -332,6 +363,7 @@ export async function readScene(
   }
   scene.slots.ports = scene.vertices.length;
   for (const vertex of scene.vertices) vertex.portSlot += scene.slots.ports;
+  for (const at of scene.types.vertices.values()) at.ports += scene.slots.ports;
   const end = (edge: Edge, vertex: number, port: string | null, direction?: 'in' | 'out') => {
     if (++scene.ends > limits.ends) throw failure('resource-limit', 'Too many edge ends');
     charge(48);
@@ -342,6 +374,7 @@ export async function readScene(
     const edgeRows = new Map<number, Edge>(),
       start = scene.edges.length,
       texts: string[] = [];
+    scene.types.edges.set(type, { first: start });
     let index: Index | undefined;
     const aliases = structure(option),
       numeric = Object.keys(aliases).filter((k) => k !== 'label');

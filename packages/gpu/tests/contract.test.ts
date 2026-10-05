@@ -67,13 +67,12 @@ describe('public contract and allocation boundaries', () => {
         'scaleParameters',
         'BoxIndex',
         'Occupancy',
+        'sameRecords',
         'sameValues',
         'shadeShader',
-        'defaultShade',
         'premultipliedBlend',
         'outputShader',
         'inputModifiers',
-        'localPoint',
       ].sort(),
     );
   });

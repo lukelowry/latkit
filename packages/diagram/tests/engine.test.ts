@@ -3,13 +3,13 @@ import { createReader } from '@latkit/model';
 import type { Gpu } from '@latkit/gpu';
 import { arrange, layoutOptions, place, rootEnd } from '../src/layout.js';
 import { readScene } from '../src/read.js';
-import { geometry, contains, boundary } from '../src/geometry.js';
+import { geometry, contains, boundary, labelBox } from '../src/geometry.js';
 import { resolveStyle, resolveLimits } from '../src/config.js';
 import { data, edge as edgeOf, port, Source, layoutText } from './fixture.js';
 /** Arrangement only reads and measures text. */
 const gpu = { reader: createReader(), layoutText } as unknown as Gpu;
-import { orthogonal } from '../src/route.js';
-import { labelBounds, itemAt, itemSlots } from '../src/scene.js';
+import { Routing } from '../src/route.js';
+import { rect, itemAt, itemSlots } from '../src/scene.js';
 import { Picking } from '../src/picking.js';
 async function scene(source = new Source(), position = false) {
   const reader = gpu.reader.open();
@@ -155,15 +155,21 @@ it('handles cycles and self-loops', async () => {
   const result = await scene(source);
   expect(result.edges.every((e) => e.paths.length > 0)).toBe(true);
 });
-it('routes around obstacles', () => {
-  const path = orthogonal([0, 0], [200, 0], [[80, -30, 120, 30]], 16, new AbortController().signal);
+it('routes around obstacles', async () => {
+  const result = await scene(new Source(1), true),
+    [x0, y0, x1, y1] = rect(result.vertices[0]),
+    y = (y0 + y1) / 2;
+  const path = new Routing(result, resolveStyle(), new AbortController().signal).between(
+    [x0 - 60, y],
+    [x1 + 60, y],
+  );
   expect(path.length).toBeGreaterThan(2);
   for (let i = 1; i < path.length; i++) {
     const a = path[i - 1],
       b = path[i];
     expect(a[0] === b[0] || a[1] === b[1]).toBe(true);
-    if (a[1] === b[1] && Math.min(a[0], b[0]) < 120 && Math.max(a[0], b[0]) > 80)
-      expect(Math.abs(a[1])).toBeGreaterThanOrEqual(30);
+    if (a[1] === b[1] && Math.min(a[0], b[0]) < x1 && Math.max(a[0], b[0]) > x0)
+      expect(a[1] <= y0 || a[1] >= y1).toBe(true);
   }
 });
 it('uses identical geometry for shape boundaries and picking', async () => {
@@ -375,7 +381,7 @@ it('reconnects a wired input from the source of its net and rejects duplicate en
   const gesture = new ConnectSession(
     result,
     { ...result.vertices[1].hit, kind: 'port', port: 'input' },
-    16,
+    resolveStyle(),
   );
   expect(gesture.start.from).toEqual(port(source, 'n0', 'output'));
   expect(gesture.start.replaces).toEqual({
@@ -385,9 +391,11 @@ it('reconnects a wired input from the source of its net and rejects duplicate en
   expect(gesture.accepts(port(source, 'n2', 'input'))).toBe(false);
   expect(gesture.accepts(port(source, 'n3', 'input'))).toBe(true);
   expect(gesture.accepts(port(source, 'n3', 'output'))).toBe(false);
-  const preview = gesture.preview([400, 200], null, new AbortController().signal);
+  // The preview leaves its port where a routed wire does.
+  const preview = gesture.preview([400, 200], null, new AbortController().signal),
+    out = result.vertices[0].ports.find((port) => port.name === 'output')!;
   expect(preview[0]).toEqual(
-    result.vertices[0].ports.find((port) => port.name === 'output')!.position,
+    out.position.map((v, i) => v + (out.normal[i] * resolveStyle().portSize) / 2),
   );
 });
 
@@ -404,7 +412,7 @@ it('picks nearest first, the topmost item breaking ties', async () => {
   const on = picking.hit([200, 150], camera, viewport, 8).map((hit) => hit.kind);
   expect(on[0]).toBe('port');
   expect(on.indexOf('vertex')).toBeLessThan(on.indexOf('edge'));
-  expect(picking.nearest([200, 150], camera, viewport, 8, true, () => {})?.kind).toBe('port');
+  expect(picking.nearest([200, 150], camera, viewport, 8, true, () => {}, 1.5)?.kind).toBe('port');
   expect(picking.hit([200, 150], camera, viewport, 8, false)[0].kind).not.toBe('port');
 });
 it('rejects unknown limits', async () => {
@@ -425,7 +433,7 @@ it('expands field shorthands for headless arrangement', async () => {
 it('picks edge labels using their rendered bounds', async () => {
   const result = await scene(),
     edge = result.edges[0],
-    box = labelBounds(edge, edge.labels[0]);
+    box = labelBox(edge, edge.labels[0]);
   const picking = new Picking(result, resolveLimits().pickingBytes);
   const hit = picking.hit(
     [50, 50],

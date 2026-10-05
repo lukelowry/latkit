@@ -5,7 +5,8 @@ Each `*.bench.ts` times one package, or the packages together, through public en
 so these time the JavaScript a frame costs and need no GPU. Real GPU timings live in each package's
 browser check.
 
-Diagram workloads cover 100 through 40,000 blocks. The 40,000-block stress case explicitly uses a
+Diagram workloads cover 100 through 40,000 blocks, including playback of a sampled color, which the
+GPU restyles without rereading the scene. The 40,000-block stress case explicitly uses a
 128 MiB picking budget; the library default remains 32 MiB. Text workloads measure cold glyph
 creation and resident reuse across 1,000 labels. The fake rasterizer measures reuse and call counts,
 not browser font shaping or rasterization speed.

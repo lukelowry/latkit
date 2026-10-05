@@ -1,4 +1,4 @@
-import { type Gpu, type RGBA, type TextLayout, kit, type Viewport } from '@latkit/gpu';
+import { type Gpu, type Point, type RGBA, type TextLayout, kit, type Viewport } from '@latkit/gpu';
 import { buffer } from './rendering/painter.js';
 import type { Domain } from '@latkit/model';
 import type { Style } from './config.js';
@@ -31,6 +31,23 @@ export function plot(view: Viewport, options: Style): Plot {
       view.height - y - bottom - (options.coordinateAxis === null ? 0 : size * 3),
     ),
   };
+}
+/** Whether a canvas point lies on a plot. */
+export function onPlot(p: Plot, point: Point): boolean {
+  return (
+    point[0] >= p.x && point[0] <= p.x + p.width && point[1] >= p.y && point[1] <= p.y + p.height
+  );
+}
+/** The canvas x of a coordinate on a plot of `window`, and its inverse. */
+export function plotX(p: Plot, window: Domain, coordinate: number): number {
+  return p.x + ((coordinate - window[0]) / (window[1] - window[0])) * p.width;
+}
+export function plotCoordinate(p: Plot, window: Domain, x: number): number {
+  return window[0] + ((x - p.x) / p.width) * (window[1] - window[0]);
+}
+/** The canvas y of a value on a plot of `values`. */
+export function plotY(p: Plot, values: Domain, value: number): number {
+  return p.y + ((values[1] - value) / (values[1] - values[0])) * p.height;
 }
 export async function axes(
   gpu: Gpu,

@@ -499,6 +499,15 @@ describe('inspection', () => {
     expect(cameras).toHaveBeenLastCalledWith(expect.objectContaining({ window: [1, 2] }));
     h.close();
   });
+  it('reads the coordinate under a canvas point of the drawn plot', async () => {
+    const h = await harness();
+    expect(h.monitor.coordinateAt([256, 128])).toBeNull();
+    await h.render();
+    expect(h.monitor.coordinateAt(h.point(40))).toBeCloseTo(h.source.coordinate(40), 6);
+    expect(h.monitor.coordinateAt([4, 128])).toBeNull();
+    expect(h.monitor.coordinateAt([256, 250])).toBeNull();
+    h.close();
+  });
   it('keeps selected rows through appends and prunes them with their row space', async () => {
     const source = new SignalSource(3, 32);
     const h = await harness(source);

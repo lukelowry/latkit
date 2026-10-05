@@ -62,17 +62,17 @@ config; the camera lives on `view.camera`.
 
 Every item view takes the same style options, with one set of defaults in `viewStyle`:
 
-| Option                            | Default                  |                                                         |
-| --------------------------------- | ------------------------ | ------------------------------------------------------- |
-| `background`                      | dark blue-gray           |                                                         |
-| `msaa`                            | `4`                      | monitor `1`: its history images would cost 4×           |
-| `hover`, `hoverBudgetMs`          | `'auto'`, `2`            | `auto` searches within the budget once motion stops     |
-| `pickRadiusPx`                    | `8`                      |                                                         |
-| `fitPaddingPx`, `revealPaddingPx` | `32`, `48`               |                                                         |
-| `animationMs`, `motion`           | `300`, `'auto'`          | monitor `0`; `auto` follows reduced motion              |
-| `hoverColor`, `selectedColor`     | amber, orange            | monitor `null`, keeping trace colors; it draws no hover |
-| `hoverWidthPx`, `selectedWidthPx` | `3`, `3`                 |                                                         |
-| `font`, `fontSizePx`, `textColor` | `system-ui`, `12`, light | monitor uses a monospace font                           |
+| Option                            | Default                  |                                                                                   |
+| --------------------------------- | ------------------------ | --------------------------------------------------------------------------------- |
+| `background`                      | dark blue-gray           |                                                                                   |
+| `msaa`                            | `4`                      | monitor `1`: its history images would cost 4×; diagram `1`: its shaders antialias |
+| `hover`, `hoverBudgetMs`          | `'auto'`, `2`            | `auto` searches within the budget once motion stops                               |
+| `pickRadiusPx`                    | `8`                      |                                                                                   |
+| `fitPaddingPx`, `revealPaddingPx` | `32`, `48`               |                                                                                   |
+| `animationMs`, `motion`           | `300`, `'auto'`          | monitor `0`; `auto` follows reduced motion                                        |
+| `hoverColor`, `selectedColor`     | amber, orange            | monitor `null`, keeping trace colors; it draws no hover                           |
+| `hoverWidthPx`, `selectedWidthPx` | `3`, `3`                 |                                                                                   |
+| `font`, `fontSizePx`, `textColor` | `system-ui`, `12`, light | monitor uses a monospace font                                                     |
 
 Each view adds its own options, such as a network's `edgeWidthPx` or a monitor's `valueAxis`.
 

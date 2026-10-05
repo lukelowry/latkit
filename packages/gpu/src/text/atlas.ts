@@ -24,7 +24,8 @@ interface Atlas {
   x: number;
   y: number;
   height: number;
-  keys: Set<string>;
+  /** Each glyph drawn on the page, with the font map that holds it. */
+  glyphs: Set<{ readonly font: Map<string, Glyph>; readonly part: string }>;
 }
 /** One grapheme of one font: its atlas region, if it has ink, and its metrics in em units. */
 interface Glyph {
@@ -59,14 +60,21 @@ const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 function clusters(text: string): string[] {
   return simple.test(text) ? [...text] : Array.from(segmenter.segment(text), (s) => s.segment);
 }
+/** Font keys by font object: a view's runs share their style's font. */
+const fontKeys = new WeakMap<TextFont, string>();
 function fontKey(font: TextFont | undefined): string {
-  return [
-    font?.family ?? 'sans-serif',
-    font?.weight ?? 400,
-    font?.style ?? 'normal',
-    font?.revision ?? '',
-  ].join('\u0000');
+  if (!font) return 'sans-serif\u0000400\u0000normal\u0000';
+  let key = fontKeys.get(font);
+  if (key === undefined) {
+    key = [font.family, font.weight ?? 400, font.style ?? 'normal', font.revision ?? ''].join(
+      '\u0000',
+    );
+    fontKeys.set(font, key);
+  }
+  return key;
 }
+/** Layouts kept for text laid out again, such as axis ticks and port names. */
+const LAYOUTS = 8192;
 
 /** One SDF per grapheme and font, shared by every string; atlas regions stay immutable in flight. */
 export class TextAtlas {
@@ -75,8 +83,10 @@ export class TextAtlas {
   private readonly rasterizer: TextRasterizer;
   private readonly size: number;
   private atlases = new Set<Atlas>();
-  private glyphs = new Map<string, Glyph>();
+  /** Glyphs by font, then grapheme. */
+  private fonts = new Map<string, Map<string, Glyph>>();
   private pending = new Map<string, Promise<Glyph>>();
+  private layouts = new Map<string, TextLayout>();
   private geometry = new WeakMap<readonly TextRun[], Resident>();
   constructor(
     private readonly device: GPUDevice,
@@ -107,8 +117,26 @@ export class TextAtlas {
 
   /** Lines of text in the units of `size`: broken to `maxWidth` as `overflow` says, each a run. */
   async layoutText(input: TextLayoutInput, signal: AbortSignal): Promise<TextLayout> {
+    if (!Number.isFinite(input.size) || input.size <= 0)
+      throw failure('invalid-input', 'Invalid text size');
+    const key = [
+      fontKey(input.font),
+      input.size,
+      input.maxWidth ?? '',
+      input.overflow ?? '',
+      input.direction ?? '',
+      input.color?.join() ?? '',
+      input.text,
+    ].join('\u0000');
+    const cached = this.layouts.get(key);
+    if (cached) return cached;
+    const layout = await this.lay(input, signal);
+    if (this.layouts.size >= LAYOUTS) this.layouts.clear();
+    this.layouts.set(key, layout);
+    return layout;
+  }
+  private async lay(input: TextLayoutInput, signal: AbortSignal): Promise<TextLayout> {
     const size = input.size;
-    if (!Number.isFinite(size) || size <= 0) throw failure('invalid-input', 'Invalid text size');
     const max = input.maxWidth ?? Infinity,
       lines: { text: string; width: number }[] = [];
     let ascent = 0,
@@ -303,18 +331,20 @@ export class TextAtlas {
     this.signal.throwIfAborted();
     const family = fontKey(font),
       glyphs = new Array<Glyph>(parts.length);
-    let missing: Promise<void>[] | undefined;
+    let known = this.fonts.get(family),
+      missing: Promise<void>[] | undefined;
+    if (!known) this.fonts.set(family, (known = new Map<string, Glyph>()));
     for (let i = 0; i < parts.length; i++) {
-      const key = family + '\u0000' + parts[i],
-        cached = this.glyphs.get(key);
+      const cached = known.get(parts[i]);
       if (cached && (!cached.atlas || cached.atlas.entry.live)) {
         cached.atlas?.entry.touch();
         glyphs[i] = cached;
         continue;
       }
+      const key = family + '\u0000' + parts[i];
       let pending = this.pending.get(key);
       if (!pending) {
-        pending = this.rasterize({ text: parts[i], font }, key).finally(() =>
+        pending = this.rasterize({ text: parts[i], font }, known, parts[i]).finally(() =>
           this.pending.delete(key),
         );
         this.pending.set(key, pending);
@@ -328,7 +358,11 @@ export class TextAtlas {
     return missing ? interruptible(Promise.all(missing), signal).then(() => glyphs) : glyphs;
   }
 
-  private async rasterize(input: TextInput, key: string): Promise<Glyph> {
+  private async rasterize(
+    input: TextInput,
+    font: Map<string, Glyph>,
+    part: string,
+  ): Promise<Glyph> {
     const maxWidth = Math.min(this.size - padding * 2, em * 8),
       maxHeight = Math.min(this.size - padding * 2, em * 4);
     const bitmap = await this.memory.stageAsync(maxWidth * maxHeight * 5, () =>
@@ -351,7 +385,8 @@ export class TextAtlas {
     )
       throw failure('invalid-input', 'Invalid text rasterization result');
     const { advance, ascent, descent } = bitmap,
-      glyph: Glyph = { x: 0, y: 0, width: 0, height: 0, left: 0, top: 0, advance, ascent, descent };
+      glyph: Glyph = { x: 0, y: 0, width: 0, height: 0, left: 0, top: 0, advance, ascent, descent },
+      owned = { font, part };
     if (bitmap.coverage.some((value) => value > 0)) {
       const width = bitmap.width + padding * 2,
         height = bitmap.height + padding * 2;
@@ -391,18 +426,18 @@ export class TextAtlas {
         });
         atlas.x += width;
         atlas.height = Math.max(atlas.height, height);
-        atlas.keys.add(key);
+        atlas.glyphs.add(owned);
       } finally {
         atlas.entry.unpin();
       }
     }
     // Glyph metadata is charged separately, so a page full of small glyphs is bounded too.
-    const metadata = this.memory.add([], 128 + key.length * 2, () => {
-      if (this.glyphs.get(key) === glyph) this.glyphs.delete(key);
-      glyph.atlas?.keys.delete(key);
+    const metadata = this.memory.add([], 128 + part.length * 2, () => {
+      if (font.get(part) === glyph) font.delete(part);
+      glyph.atlas?.glyphs.delete(owned);
     });
     metadata.unpin();
-    this.glyphs.set(key, glyph);
+    font.set(part, glyph);
     return glyph;
   }
 
@@ -421,11 +456,11 @@ export class TextAtlas {
         () => {
           resource.destroy();
           this.atlases.delete(atlas);
-          for (const key of atlas.keys) this.glyphs.delete(key);
+          for (const { font, part } of atlas.glyphs) font.delete(part);
         },
         'gpu',
       );
-      atlas = { resource, entry, x: 0, y: 0, height: 0, keys: new Set() };
+      atlas = { resource, entry, x: 0, y: 0, height: 0, glyphs: new Set() };
       this.atlases.add(atlas);
       entry.unpin();
       return atlas;

@@ -11,7 +11,7 @@ import {
 } from '@latkit/model';
 import type { Binding } from './bindings.js';
 import type { MonitorData, Reading } from './data.js';
-import type { Plot } from './axes.js';
+import { plotCoordinate, plotX, plotY, type Plot } from './axes.js';
 
 export interface PickRequest {
   readonly reads: ReadScope;
@@ -84,7 +84,7 @@ class Nearest {
 export async function pick(request: PickRequest): Promise<Reading[]> {
   const { reads, data, bindings, plot, x, y, point, radius, limit } = request;
   const work = new Work(reads.signal, Infinity, 3);
-  const coordinate = x[0] + ((point[0] - plot.x) / plot.width) * (x[1] - x[0]),
+  const coordinate = plotCoordinate(plot, x, point[0]),
     delta = (radius / plot.width) * (x[1] - x[0]);
   const between: Domain = [Math.max(x[0], coordinate - delta), Math.min(x[1], coordinate + delta)];
   const nearest = new Nearest(limit);
@@ -123,8 +123,8 @@ export async function pick(request: PickRequest): Promise<Reading[]> {
             )
               continue;
           }
-          const px = plot.x + ((samples.coordinates[f] - x[0]) / (x[1] - x[0])) * plot.width,
-            py = plot.y + ((y[1] - value) / (y[1] - y[0])) * plot.height,
+          const px = plotX(plot, x, samples.coordinates[f]),
+            py = plotY(plot, y, value),
             distance = (px - point[0]) ** 2 + (py - point[1]) ** 2;
           if (distance > radius * radius || !nearest.admits(distance, order)) continue;
           const reading: Reading = {
