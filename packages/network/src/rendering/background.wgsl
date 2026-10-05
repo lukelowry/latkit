@@ -9,15 +9,13 @@ struct BackgroundOut { @location(0) color:vec4f, @builtin(frag_depth) depth:f32 
   let globe=u.view.w>1.5;
   var world=vec3f(0.0);var normal=vec3f(0.0,0.0,1.0);
   let right=vec3f(u.rotation.x,u.rotation.y,0.0);
-  let up=vec3f(-u.rotation.y*u.rotation.z,u.rotation.x*u.rotation.z,u.rotation.w);
   let front=vec3f(u.rotation.y*u.rotation.w,-u.rotation.x*u.rotation.w,u.rotation.z);
   let eye=front*u.pose.y;
+  let up=vec3f(-u.rotation.y*u.rotation.z,u.rotation.x*u.rotation.z,u.rotation.w);
   let direction=right*v.xy.x*u.view.x/(2.0*u.pose.x)+up*v.xy.y*u.view.y/(2.0*u.pose.x)-front*u.pose.y;
   if(globe){
-    let center=vec3f(0,0,-1);let oc=eye-center;let aa=dot(direction,direction);let bb=dot(oc,direction);
-    let disc=bb*bb-aa*(dot(oc,oc)-1.0);if(disc<0.0){discard;}
-    let t=(-bb-sqrt(disc))/aa;if(t<0.0){discard;}world=eye+direction*t;
-    let n=world-center;let lat=n.y*u.geo.y+n.z*u.geo.x;
+    let hit=globePoint(v.xy,u);if(hit.w==0.0){discard;}world=hit.xyz;
+    let n=world-vec3f(0,0,-1);let lat=n.y*u.geo.y+n.z*u.geo.x;
     let localX=n.z*u.geo.y-n.y*u.geo.x;
     normal=vec3f(localX*u.center.w-n.x*u.center.z,lat,-(localX*u.center.z+n.x*u.center.w));
     let clip=project_world(world,u);out.depth=clip.z/clip.w;

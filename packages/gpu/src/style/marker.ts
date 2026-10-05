@@ -13,7 +13,8 @@ export type MarkerImage =
 /**
  * How each row of a type draws: WGSL defining `fn marker(f: MarkerFragment) -> MarkerColor` in CSS
  * pixels, from the shapes and markers of the shared library, the channels it reads by name, and
- * images it samples. Every marker keeps the view's antialiasing, halos, shadows, shade, and picking.
+ * images it samples. It returns its color, each layer covered as `filled` covers it, and the
+ * distance to its outline, which the view's halos and shadows follow.
  */
 export interface Marker {
   readonly wgsl: string;
@@ -31,7 +32,7 @@ export interface Marker {
 export const MARKER_INPUTS = 8;
 /** Images a marker samples: a sixteen by sixteen atlas. */
 const MARKER_IMAGES = 256;
-const RESERVED = new Set(['p', 'radiusPx', 'color', 'background']);
+const RESERVED = new Set(['p', 'radiusPx', 'color']);
 const NAME = /^[a-z][A-Za-z0-9]*$/;
 
 /** Throw unless a marker is one a view can draw. */
@@ -80,14 +81,14 @@ const color = (rgba: RGBA) =>
 export function shape(name: Shape = 'ellipse'): Marker {
   return {
     wgsl: `fn marker(f: MarkerFragment) -> MarkerColor {
-  return MarkerColor(f.color, shapeDistance(${code(name)}, f.p, vec2f(f.radiusPx), f.radiusPx * 0.25));
+  return filled(f.color, shapeDistance(${code(name)}, f.p, vec2f(f.radiusPx), f.radiusPx * 0.25));
 }`,
   };
 }
 /**
  * A fraction of a whole: a ring of the row's color, a gap, and `fill` of the shape inside, a wedge
- * clockwise from 12 o'clock in an ellipse, a bar from the bottom otherwise. The rest shows the view's
- * background.
+ * clockwise from 12 o'clock in an ellipse, a bar from the bottom otherwise. What it leaves open shows
+ * what lies below, as a pie's hole does.
  */
 export function gauge(options: {
   readonly fill: Channel;
@@ -152,8 +153,8 @@ export function icon(options: {
     inputs: { image: options.image },
     steps: ['image'],
     wgsl: `fn marker(f: MarkerFragment) -> MarkerColor {
-  let back = MarkerColor(f.color, shapeDistance(${code(options.shape ?? 'ellipse')}, f.p, vec2f(f.radiusPx), f.radiusPx * 0.25));
-  return over(MarkerColor(markerImage(f.image, f.p / f.radiusPx), back.distance), back);
+  let back = filled(f.color, shapeDistance(${code(options.shape ?? 'ellipse')}, f.p, vec2f(f.radiusPx), f.radiusPx * 0.25));
+  return over(filled(markerImage(f.image, f.p / f.radiusPx), back.distance), back);
 }`,
   };
 }
@@ -206,19 +207,21 @@ export function markerShader(
   return `diagnostic(off, derivative_uniformity);
 /**
  * One pixel of a row's marker: where, in CSS pixels from its center with y up, its radius, its
- * color and the view's background, and what the row reads.
+ * color, and what the row reads.
  */
 struct MarkerFragment {
   p: vec2f,
   radiusPx: f32,
   color: vec4f,
-  background: vec4f,
 ${names.map((name) => `  ${name}: f32,`).join('\n')}
 }
-/** What a marker draws at a pixel: a color, and how far outside its shape, in CSS pixels. */
+/**
+ * What a marker draws at a pixel: its color, with what of the pixel it covers in its alpha, and how
+ * far outside its outline, in CSS pixels. Holes inside the outline are in the alpha alone.
+ */
 struct MarkerColor { color: vec4f, distance: f32 }
-fn markerFragment(p: vec2f, radiusPx: f32, color: vec4f, background: vec4f, a: vec4f, b: vec4f) -> MarkerFragment {
-  return MarkerFragment(p, radiusPx, color, background${names.map((_, i) => ', ' + lane(i)).join('')});
+fn markerFragment(p: vec2f, radiusPx: f32, color: vec4f, a: vec4f, b: vec4f) -> MarkerFragment {
+  return MarkerFragment(p, radiusPx, color${names.map((_, i) => ', ' + lane(i)).join('')});
 }
 @group(${group}) @binding(${binding}) var markerAtlas: texture_2d<f32>;
 @group(${group}) @binding(${binding + 1}) var markerSampler: sampler;
@@ -227,17 +230,16 @@ const MARKER_IMAGES: f32 = ${float(marker.images?.length ?? 0, 'images')};
 ${shapeShader()}
 /** How much of a pixel a shape covers, from its distance. */
 fn coverage(d: f32) -> f32 { return clamp(0.5 - d / max(fwidth(d), 0.000001), 0.0, 1.0); }
-/**
- * \`top\` over \`bottom\`, each covering its own shape, outlined by both: its alpha is over the
- * outline's coverage, which the view applies once.
- */
+/** \`color\` where the shape \`d\` outlines covers the pixel, antialiased at its edge. */
+fn filled(color: vec4f, d: f32) -> MarkerColor {
+  return MarkerColor(vec4f(color.rgb, color.a * coverage(d)), d);
+}
+/** \`top\` over \`bottom\`, outlined by both. */
 fn over(top: MarkerColor, bottom: MarkerColor) -> MarkerColor {
-  let a = top.color.a * coverage(top.distance);
-  let b = bottom.color.a * coverage(bottom.distance);
-  let alpha = a + b * (1.0 - a);
-  let rgb = (top.color.rgb * a + bottom.color.rgb * b * (1.0 - a)) / max(alpha, 0.000001);
-  let outline = min(top.distance, bottom.distance);
-  return MarkerColor(vec4f(rgb, min(1.0, alpha / max(coverage(outline), 0.000001))), outline);
+  let a = top.color.a;
+  let alpha = a + bottom.color.a * (1.0 - a);
+  let rgb = (top.color.rgb * a + bottom.color.rgb * bottom.color.a * (1.0 - a)) / max(alpha, 0.000001);
+  return MarkerColor(vec4f(rgb, alpha), min(top.distance, bottom.distance));
 }
 /**
  * Signed distance to the sector from 12 o'clock clockwise through \`fraction\` of a turn, of any
@@ -273,33 +275,38 @@ fn markerImage(index: f32, uv: vec2f) -> vec4f {
   return vec4f(sum.rgb / max(sum.a, 0.000001), sum.a);
 }
 /**
- * A ring of the row's color \`ringPx\` wide, a \`gapPx\` gap of the background, and \`fill\` of the
- * shape inside: a wedge clockwise from 12 o'clock in an ellipse, a bar from the bottom otherwise.
+ * A ring of the row's color \`ringPx\` wide, an open \`gapPx\` gap, and \`fill\` of the shape inside:
+ * a wedge clockwise from 12 o'clock in an ellipse, a bar from the bottom otherwise. Its outline is
+ * the ring's outer edge.
  */
 fn gaugeMarker(f: MarkerFragment, shape: u32, fill: f32, ringPx: f32, gapPx: f32) -> MarkerColor {
   let r = f.radiusPx;
-  let edge = shapeDistance(shape, f.p, vec2f(r), r * 0.25);
-  let inner = r - ringPx - gapPx;
+  let outline = shapeDistance(shape, f.p, vec2f(r), r * 0.25);
+  let within = r - ringPx;
+  let ring = filled(f.color, max(outline, -shapeDistance(shape, f.p, vec2f(within), within * 0.25)));
+  let inner = within - gapPx;
   let part = clamp(fill, 0.0, 1.0);
-  let filled = select(
+  let share = select(
     f.p.y - (2.0 * part - 1.0) * inner,
     sectorDistance(f.p, part),
     shape == SHAPE_ELLIPSE,
   );
-  let core = shapeDistance(shape, f.p, vec2f(inner), inner * 0.25);
-  let output = MarkerColor(f.color, max(core, filled));
-  let gap = MarkerColor(f.background, shapeDistance(shape, f.p, vec2f(r - ringPx), (r - ringPx) * 0.25));
-  return over(output, over(gap, MarkerColor(f.color, edge)));
+  let core = filled(f.color, max(shapeDistance(shape, f.p, vec2f(inner), inner * 0.25), share));
+  return MarkerColor(over(core, ring).color, outline);
 }
-/** Slices clockwise from 12 o'clock, each \`slices[i]\` of their sum, in \`colors[i]\`. */
+/**
+ * Slices clockwise from 12 o'clock, each \`slices[i]\` of their sum, in \`colors[i]\`, open in the
+ * middle \`hole\` of the radius. Its outline is the rim.
+ */
 fn pieMarker(f: MarkerFragment, slices: array<f32, ${MARKER_INPUTS}>, colors: array<vec4f, ${MARKER_INPUTS}>, count: u32, hole: f32) -> MarkerColor {
   var s = slices;
   var c = colors;
   var total = 0.0;
   for (var i = 0u; i < count; i++) { total += max(s[i], 0.0); }
   let r = length(f.p);
-  let edge = max(r - f.radiusPx, hole * f.radiusPx - r);
-  if (total <= 0.0) { return MarkerColor(vec4f(0.0), edge); }
+  let outline = r - f.radiusPx;
+  let cover = coverage(max(outline, hole * f.radiusPx - r));
+  if (total <= 0.0) { return MarkerColor(vec4f(0.0), outline); }
   let along = turns(f.p);
   var start = 0.0;
   for (var i = 0u; i < count; i++) {
@@ -317,11 +324,11 @@ fn pieMarker(f: MarkerFragment, slices: array<f32, ${MARKER_INPUTS}>, colors: ar
       var color = c[i];
       color = mix(next, color, clamp(0.5 + toEnd, 0.0, 1.0));
       color = mix(previous, color, clamp(0.5 + toStart, 0.0, 1.0));
-      return MarkerColor(color, edge);
+      return MarkerColor(vec4f(color.rgb, color.a * cover), outline);
     }
     start = end;
   }
-  return MarkerColor(c[0], edge);
+  return MarkerColor(vec4f(c[0].rgb, c[0].a * cover), outline);
 }
 ${marker.wgsl}
 `;

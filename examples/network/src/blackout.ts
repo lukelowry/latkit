@@ -100,7 +100,7 @@ const schema: Schema = {
   types: {
     Substation: {
       fields: {
-        location: { type: { kind: 'vector', items: 'float64', size: 2 } },
+        location: { type: { kind: 'vector', items: 'float64', size: 2 }, geographic: true },
         name: { type: 'text' },
         radius: { type: 'float32' },
         load: { type: 'float32' },
@@ -121,7 +121,10 @@ const schema: Schema = {
     },
     Border: {
       fields: {
-        points: { type: { kind: 'list', items: { kind: 'vector', items: 'float64', size: 2 } } },
+        points: {
+          type: { kind: 'list', items: { kind: 'vector', items: 'float64', size: 2 } },
+          geographic: true,
+        },
       },
     },
   },

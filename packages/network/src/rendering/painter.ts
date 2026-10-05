@@ -27,21 +27,20 @@ const LINE_BYTES = 48;
 const GROW_MS = 160;
 /** No vertex, as a dense address. */
 const NONE = 0xffffffff;
-/** Words of the uniforms' named members after their fifteen vec4, as `Uniforms` lays them out. */
+/** Words of the uniforms' named members after their fourteen vec4, as `Uniforms` lays them out. */
 const U = {
-  easeShift: 60,
-  ease: 62,
-  dt: 63,
-  dashPeriodPx: 64,
-  edgeSpacingPx: 65,
-  flowSpacingPx: 66,
-  markers: 67,
-  shadows: 68,
-  hoverScale: 69,
-  labelHaloPx: 70,
-  grown: 72,
-  growth: 74,
-  words: 76,
+  easeShift: 56,
+  ease: 58,
+  dt: 59,
+  dashPeriodPx: 60,
+  edgeSpacingPx: 61,
+  flowSpacingPx: 62,
+  markers: 63,
+  hoverScale: 64,
+  labelHaloPx: 65,
+  grown: 66,
+  growth: 68,
+  words: 72,
 } as const;
 /** A path's private points draw no markers. */
 const HIDDEN: kit.ResolvedChannel = { component: 0, fallback: 0 };
@@ -63,6 +62,12 @@ function stepsOf(marker: Marker): number {
   return (marker.steps ?? []).reduce((bits, name) => bits | (1 << names.indexOf(name)), 0);
 }
 const easeOut = (t: number) => 1 - (1 - t) ** 3;
+/** How a bank's rows draw: their type's marker, or a disc; a path's private points as discs. */
+function markerOf(data: NetworkData, bank: VertexBank): Marker {
+  return bank.synthetic ? DISC : (vertexOptions(data, bank).marker ?? DISC);
+}
+const inputCount = (data: NetworkData, bank: VertexBank) =>
+  Object.keys(markerOf(data, bank).inputs ?? {}).length;
 
 export interface Reads {
   readonly vertices: ReadonlyMap<VertexBank, FieldRead>;
@@ -84,6 +89,8 @@ export interface DrawFrame {
   readonly shade: GPUBufferBinding;
   readonly labels: readonly LabelBatch[];
   readonly phases: ReadonlyMap<SegmentBatch, Float32Array>;
+  /** Each bank's records, and what a transition eases them from, as `Painter.records` made them. */
+  readonly records: Records;
   /** Whether flow moves and hover grows over time; false under reduced motion. */
   readonly motion: boolean;
   /**
@@ -98,6 +105,8 @@ interface Command {
   readonly tessellation?: GPUBindGroup;
   /** A vertex bank's marker; discs draw with the shared vertex pipeline. */
   readonly pipeline?: GPURenderPipeline;
+  /** Its markers' shadows, drawn beneath every marker when the style casts them. */
+  readonly shadows?: GPURenderPipeline;
 }
 interface Compute {
   readonly pipeline: GPUComputePipeline;
@@ -106,12 +115,25 @@ interface Compute {
   readonly group: GPUBindGroup;
   readonly count: number;
 }
+/**
+ * What this frame's compute pass eases from, made ready before it: banks' records copied as a
+ * transition begins, snapshots cleared for banks new to the drawing, and every bank it eases.
+ */
+interface Easing {
+  readonly copies: readonly { readonly from: GPUBuffer; readonly to: GPUBuffer }[];
+  readonly clears: readonly GPUBuffer[];
+  readonly eased: ReadonlySet<object>;
+}
+/** A frame's drawn records: each bank's, and what a transition eases them from. */
+export interface Records {
+  readonly outputs: ReadonlyMap<object, kit.BufferResource>;
+  /** Undefined at rest, and when the GPU budget cannot hold what a transition eases from. */
+  readonly easing?: Easing;
+}
 export interface Paint {
   readonly pipelines: Pipelines;
-  /** What each bank drew, copied before this frame's compute pass as a transition begins. */
-  readonly snapshots: readonly { readonly from: GPUBuffer; readonly to: GPUBuffer }[];
-  /** The banks a transition beginning with this frame eases. */
-  readonly eased?: ReadonlySet<object>;
+  /** What a transition in progress eases from; undefined at rest, or when the budget cannot hold it. */
+  readonly easing?: Easing;
   readonly compute: readonly Compute[];
   readonly vertices: readonly Command[];
   readonly edges: readonly Command[];
@@ -141,9 +163,9 @@ interface Growth {
 export class Painter {
   /** Each bank's drawn records, and a marked bank's inputs after them. */
   private buffers = new Map<object, kit.BufferResource>();
-  /** What a bank drew as the latest transition began, kept while it lives to ease the next. */
+  /** What each bank drew as the transition in progress began; released as it ends. */
   private readonly previous = new Map<object, kit.BufferResource>();
-  /** The banks the transition in progress eases: those that drew before it began. */
+  /** The banks whose snapshots hold what the transition in progress eases from. */
   private eased: ReadonlySet<object> = new Set();
   /** Each marker's images, laid into an atlas once. */
   private readonly atlases = new WeakMap<readonly MarkerImage[], kit.TextureData>();
@@ -151,8 +173,6 @@ export class Painter {
   private readonly sampler: GPUSampler;
   private readonly attachments: kit.Attachments;
   private readonly dummy: kit.BufferResource;
-  /** What a bank without `previous` binds in its place: one vec4, shorter than any output. */
-  private readonly none: kit.BufferResource;
   /** Two bits per drawn row: what the selection and hover halo. */
   private readonly focus = new kit.BufferData({ size: 16, label: 'network focus' });
   private focusWords = new Map<number, number>();
@@ -194,11 +214,6 @@ export class Painter {
       usage: GPUBufferUsage.STORAGE,
       label: 'network empty binding',
     });
-    this.none = gpu.buffer({
-      size: 16,
-      usage: GPUBufferUsage.STORAGE,
-      label: 'network no transition',
-    });
     this.sampler = gpu.device.createSampler({
       magFilter: 'linear',
       minFilter: 'linear',
@@ -235,18 +250,46 @@ export class Painter {
     }
     return result;
   }
-  /** Where a bank's records are copied as a transition begins, as large as they are. */
-  private snapshot(key: object, output: kit.BufferResource): kit.BufferResource {
-    let result = this.previous.get(key);
-    if (!result) {
-      result = this.gpu.buffer({
-        size: output.buffer.size,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-        label: 'network transition start',
-      });
-      this.previous.set(key, result);
+  /**
+   * What each bank's compute pass eases from while a transition runs: what it drew as the transition
+   * began, copied then, or nothing for a bank new to the drawing, whose rows ease in. Undefined when
+   * the GPU budget cannot hold the snapshots, and the change steps instead, as a diagram's does.
+   */
+  private easing(
+    start: boolean,
+    outputs: ReadonlyMap<object, kit.BufferResource>,
+    made: ReadonlySet<object>,
+  ): Easing | undefined {
+    const copies: { from: GPUBuffer; to: GPUBuffer }[] = [],
+      clears: GPUBuffer[] = [],
+      eased = new Set<object>();
+    try {
+      for (const [bank, output] of outputs) {
+        let into = this.previous.get(bank);
+        if (!into) {
+          into = this.gpu.buffer({
+            size: output.buffer.size,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            label: 'network transition start',
+          });
+          this.previous.set(bank, into);
+        }
+        if (start && !made.has(bank)) copies.push({ from: output.buffer, to: into.buffer });
+        else if (start || made.has(bank) || !this.eased.has(bank)) clears.push(into.buffer);
+        eased.add(bank);
+      }
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'resource-limit') throw error;
+      this.release();
+      return undefined;
     }
-    return result;
+    return { copies, clears, eased };
+  }
+  /** Let go of what a finished transition eased from. */
+  private release(): void {
+    for (const buffer of this.previous.values()) buffer.destroy();
+    this.previous.clear();
+    this.eased = new Set();
   }
   /**
    * The vertices hover grows and lets go, and how far each has: grown over `GROW_MS` as motion
@@ -274,6 +317,34 @@ export class Painter {
           (this.shrink.dense !== NONE && timeMs - this.shrink.since < GROW_MS));
     } else if (presented) this.growing = false;
     return [this.grow.dense, this.shrink.dense, at(this.grow, 1), at(this.shrink, 0)];
+  }
+  /**
+   * Each bank's drawn records for a frame, made again when their size changes, and what a
+   * transition eases them from; the transition steps when the GPU budget cannot hold that. A
+   * presented frame at rest lets go of what the last transition eased from.
+   */
+  records(
+    geometry: Geometry,
+    data: NetworkData,
+    transition: { readonly start: boolean } | null,
+    presented: boolean,
+  ): Records {
+    const outputs = new Map<object, kit.BufferResource>(),
+      made = new Set<object>();
+    const prepare = (bank: VertexBank | EdgeBank, bytes: number) => {
+      const before = this.buffers.get(bank),
+        output = this.output(bank, bytes);
+      if (output !== before) made.add(bank);
+      outputs.set(bank, output);
+    };
+    for (const bank of geometry.vertices)
+      prepare(bank, bank.count * (VERTEX_BYTES + (inputCount(data, bank) ? INPUT_BYTES : 0)));
+    for (const bank of geometry.edges) prepare(bank, bank.count * LINE_BYTES);
+    if (!transition && presented && this.previous.size) this.release();
+    return {
+      outputs,
+      easing: transition ? this.easing(transition.start, outputs, made) : undefined,
+    };
   }
   async prepare(frame: kit.Preparation, state: DrawFrame): Promise<Paint> {
     const { gpu } = this,
@@ -357,16 +428,16 @@ export class Painter {
     );
     f.set(options.gridColor, 44);
     u.set([0, options.grid ? 1 : 0, 0, 0], 48);
-    f.set(options.background, 52);
-    f.set(options.flowColor, 56);
-    // A transition mixes in what was drawn as it began, around the center it was drawn around.
+    f.set(options.flowColor, 52);
+    const { outputs, easing } = state.records;
     if (transition?.start) this.easedCenter = this.drawnCenter ?? camera.center;
-    if (transition)
-      f.set(
-        [this.easedCenter[0] - camera.center[0], this.easedCenter[1] - camera.center[1]],
-        U.easeShift,
-      );
-    f[U.ease] = transition?.rest ?? 0;
+    if (transition && easing) {
+      // Around the center the snapshot was drawn around; on a globe, the short way round.
+      let dx = this.easedCenter[0] - camera.center[0];
+      if (camera.projection === 'globe') dx -= 360 * Math.round(dx / 360);
+      f.set([dx, this.easedCenter[1] - camera.center[1]], U.easeShift);
+      f[U.ease] = transition.rest;
+    }
     // Flow moves by the time since the latest presented frame, at most a tenth of a second.
     f[U.dt] =
       presented && state.motion && this.presentedAt !== undefined
@@ -377,7 +448,6 @@ export class Painter {
     f[U.edgeSpacingPx] = options.edgeSpacingPx;
     f[U.flowSpacingPx] = options.flowSpacingPx;
     u[U.markers] = options.markers ? 1 : 0;
-    u[U.shadows] = options.shadows ? 1 : 0;
     f[U.hoverScale] = options.hoverScale;
     f[U.labelHaloPx] = options.labelHaloPx;
     const [grown, left, growth, shrink] = this.growth(state, timeMs, presented);
@@ -387,36 +457,16 @@ export class Painter {
     const focusedBinding = frame.buffer(this.focus);
     const uniform = frame.uniforms(f),
       host = state.shade,
-      empty = frame.buffer(this.dummy),
-      none = frame.buffer(this.none);
-    const markerOf = (bank: VertexBank): Marker =>
-      bank.synthetic ? DISC : (vertexOptions(data, bank).marker ?? DISC);
-    const inputCount = (bank: VertexBank) => Object.keys(markerOf(bank).inputs ?? {}).length;
-    // Each bank's records, and what it drew as a transition began: copied as it begins, from the
-    // banks that drew before it.
-    const begun = transition?.start ? new Set<object>() : undefined,
-      easing = begun ?? this.eased;
-    const outputs = new Map<
-        object,
-        { readonly output: GPUBufferBinding; previous: GPUBufferBinding }
-      >(),
-      snapshots: { from: GPUBuffer; to: GPUBuffer }[] = [];
-    const prepareOutput = (bank: VertexBank | EdgeBank, bytes: number) => {
-      const drew = this.buffers.get(bank)?.buffer.size === Math.max(80, bytes),
-        output = this.output(bank, bytes);
-      if (begun && drew) {
-        snapshots.push({ from: output.buffer, to: this.snapshot(bank, output).buffer });
-        begun.add(bank);
-      }
-      const previous = easing.has(bank) && this.previous.get(bank);
-      outputs.set(bank, {
+      empty = frame.buffer(this.dummy);
+    const bound = new Map<
+      object,
+      { readonly output: GPUBufferBinding; previous: GPUBufferBinding }
+    >();
+    for (const [bank, output] of outputs)
+      bound.set(bank, {
         output: frame.buffer(output),
-        previous: transition && previous ? frame.buffer(previous) : none,
+        previous: easing ? frame.buffer(this.previous.get(bank)!) : empty,
       });
-    };
-    for (const bank of geometry.vertices)
-      prepareOutput(bank, bank.count * (VERTEX_BYTES + (inputCount(bank) ? INPUT_BYTES : 0)));
-    for (const bank of geometry.edges) prepareOutput(bank, bank.count * LINE_BYTES);
     // Write each page's slot, then bind them from the chunks that hold them.
     const pages: {
       readonly page: kit.GpuPage;
@@ -428,7 +478,7 @@ export class Painter {
     }[] = [];
     let slots = 0;
     for (const bank of geometry.vertices)
-      slots += reads.vertices.get(bank)!.pages.length * (inputCount(bank) ? 2 : 1);
+      slots += reads.vertices.get(bank)!.pages.length * (inputCount(data, bank) ? 2 : 1);
     for (const bank of geometry.edges) slots += reads.edges.get(bank)!.pages.length;
     if (this.slots.length < slots * SLOT_WORDS) this.slots = new Uint32Array(slots * SLOT_WORDS);
     const words = this.slots.subarray(0, slots * SLOT_WORDS).fill(0),
@@ -441,7 +491,7 @@ export class Painter {
           : typeColor(read, options.vertexColor),
         colors = frame.colormap(read.bound.channels.color?.colormap),
         hidden = 'synthetic' in bank && !!bank.synthetic,
-        marked = !line && inputCount(bank as VertexBank) > 0;
+        marked = !line && inputCount(data, bank as VertexBank) > 0;
       for (const { page, offset } of read.pages) {
         const at = used++ * SLOT_WORDS;
         words[at] = rowCount(page.rows);
@@ -523,7 +573,7 @@ export class Painter {
     const compute: Compute[] = pages.map(({ page, colors, bank, edge, inputs }) => {
       const own = slot;
       slot += inputs === undefined ? 1 : 2;
-      const { output, previous } = outputs.get(bank)!,
+      const { output, previous } = bound.get(bank)!,
         entries: GPUBindGroupEntry[] = [
           { binding: 0, resource: uniform },
           { binding: 1, resource: slotBinding(own) },
@@ -537,7 +587,7 @@ export class Painter {
           markedBanks.set(
             vertexBank,
             (marked = frame.uniforms(
-              Uint32Array.of(vertexBank.count, stepsOf(markerOf(vertexBank)), 0, 0),
+              Uint32Array.of(vertexBank.count, stepsOf(markerOf(data, vertexBank)), 0, 0),
             )),
           );
         entries.push(
@@ -591,14 +641,13 @@ export class Painter {
     const curveInstances = curveCount ? frame.buffer(this.curves!.instances) : empty;
     const curveIndirect = curveCount ? frame.buffer(this.curves!.indirect) : undefined;
     const noImages = frame.texture(this.noImages).createView();
-    /** `base` is the dense address of the bank's first row, for focus; `rows` its rows. */
+    /** `draw` is what the shader's `VertexDraw` or `EdgeDraw` reads. */
     const group = (
       a: GPUBufferBinding,
       b: GPUBufferBinding,
       segments: GPUBufferBinding,
       styles: GPUBufferBinding,
-      base: number,
-      rows: number,
+      draw: readonly [number, number, number, number],
       phase?: GPUBufferBinding,
       images: GPUTextureView = noImages,
     ) =>
@@ -612,7 +661,7 @@ export class Painter {
           { binding: 4, resource: styles },
           {
             binding: 5,
-            resource: frame.uniforms(Uint32Array.of(base, rows, phase ? 1 : 0, 0)),
+            resource: frame.uniforms(Uint32Array.from(draw)),
           },
           { binding: 6, resource: host },
           { binding: 7, resource: focusedBinding },
@@ -626,21 +675,21 @@ export class Painter {
       edges: Command[] = [];
     for (const bank of geometry.vertices) {
       if (bank.synthetic) continue;
-      const marker = markerOf(bank),
+      const marker = markerOf(data, bank),
         images = marker.images?.length ? frame.texture(this.atlas(marker)).createView() : noImages;
       vertices.push({
         group: group(
-          outputs.get(bank)!.output,
+          bound.get(bank)!.output,
           empty,
           empty,
           empty,
-          bank.base,
-          bank.count,
+          [bank.base, bank.count, 0, 0],
           undefined,
           images,
         ),
         count: bank.count,
         pipeline: await markerPipeline(pipeline, marker),
+        shadows: options.shadows ? await markerPipeline(pipeline, marker, true) : undefined,
       });
     }
     for (const bank of geometry.edges) {
@@ -648,8 +697,8 @@ export class Painter {
         dashed = reads.edges.get(bank)!.has('dash');
       for (const batch of bank.batches) {
         const count = batch.records.length / 4;
-        const a = outputs.get(batch.a)!.output,
-          b = outputs.get(batch.b)!.output,
+        const a = bound.get(batch.a)!.output,
+          b = bound.get(batch.b)!.output,
           segments = frame.buffer(batch.data);
         const tessellation = curved
           ? gpu.device.createBindGroup({
@@ -686,9 +735,8 @@ export class Painter {
             a,
             b,
             segments,
-            outputs.get(bank)!.output,
-            geometry.vertexCount + bank.base,
-            bank.count,
+            bound.get(bank)!.output,
+            [geometry.vertexCount + bank.base, phase ? 1 : 0, batch.a.base, batch.b.base],
             phase,
           ),
           count,
@@ -717,8 +765,7 @@ export class Painter {
     });
     return {
       pipelines: pipeline,
-      snapshots,
-      eased: begun,
+      easing,
       indirect: curveIndirect?.buffer,
       compute,
       vertices,
@@ -733,7 +780,7 @@ export class Painter {
       drawCalls:
         1 +
         (camera.projection === 'globe' && options.earthAxis ? 1 : 0) +
-        (options.markers ? vertices.length : 0) +
+        (options.markers ? vertices.length * (options.shadows ? 2 : 1) : 0) +
         (options.poles ? vertices.length : 0) +
         (options.lines ? edges.length : 0) +
         labels.reduce((n, v) => n + v.pages.length, 0),
@@ -798,9 +845,13 @@ export class Painter {
   }
   encode(frame: kit.Encoding, paint: Paint): void {
     // What each bank drew, kept as a transition begins; the compute pass then eases from it.
-    for (const { from, to } of paint.snapshots)
-      frame.encoder.copyBufferToBuffer(from, 0, to, 0, from.size);
-    if (paint.eased) this.eased = paint.eased;
+    const easing = paint.easing;
+    if (easing) {
+      for (const { from, to } of easing.copies)
+        frame.encoder.copyBufferToBuffer(from, 0, to, 0, from.size);
+      for (const buffer of easing.clears) frame.encoder.clearBuffer(buffer);
+      this.eased = easing.eased;
+    }
     this.drawnCenter = paint.center;
     const compute = frame.encoder.beginComputePass({ label: 'network native fields to geometry' });
     for (const command of paint.compute) {
@@ -870,12 +921,20 @@ export class Painter {
         pass.draw(6, item.count);
       }
     }
-    if (paint.options.markers)
+    if (paint.options.markers) {
+      // Every marker's shadow first, so none darkens another marker.
+      for (const item of paint.vertices)
+        if (item.shadows) {
+          pass.setPipeline(item.shadows);
+          pass.setBindGroup(0, item.group);
+          pass.draw(6, item.count);
+        }
       for (const item of paint.vertices) {
         pass.setPipeline(item.pipeline ?? paint.pipelines.vertices);
         pass.setBindGroup(0, item.group);
         pass.draw(6, item.count);
       }
+    }
     pass.setPipeline(paint.pipelines.text);
     for (const item of paint.labels) {
       pass.setBindGroup(0, item.group);
@@ -903,7 +962,6 @@ export class Painter {
     }
     this.attachments.destroy();
     this.dummy.destroy();
-    this.none.destroy();
     this.curves?.instances.destroy();
     this.curves?.indirect.destroy();
   }

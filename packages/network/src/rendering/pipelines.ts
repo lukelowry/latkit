@@ -222,11 +222,16 @@ export async function pipelines(
 
 const markerPipelines = new WeakMap<Pipelines, Map<string, Promise<GPURenderPipeline>>>();
 /**
- * The pipeline a marker draws vertices with, built once for each set of network pipelines: one per
- * distinct marker, sharing the draw group's layout so a bank switches only its pipeline.
+ * The pipeline a marker draws vertices with, or their shadows beneath every marker, built once for
+ * each set of network pipelines: one per distinct marker, sharing the draw group's layout so a bank
+ * switches only its pipeline.
  */
-export function markerPipeline(pipelines: Pipelines, marker: Marker): Promise<GPURenderPipeline> {
-  if (marker === DISC) return Promise.resolve(pipelines.vertices);
+export function markerPipeline(
+  pipelines: Pipelines,
+  marker: Marker,
+  shadows = false,
+): Promise<GPURenderPipeline> {
+  if (marker === DISC && !shadows) return Promise.resolve(pipelines.vertices);
   let byKey = markerPipelines.get(pipelines);
   if (!byKey)
     markerPipelines.set(pipelines, (byKey = new Map<string, Promise<GPURenderPipeline>>()));
@@ -234,6 +239,7 @@ export function markerPipeline(pipelines: Pipelines, marker: Marker): Promise<GP
     marker.wgsl,
     Object.keys(marker.inputs ?? {}),
     marker.images?.length ?? 0,
+    shadows,
   ]);
   let found = byKey.get(key);
   if (!found) {
@@ -241,16 +247,20 @@ export function markerPipeline(pipelines: Pipelines, marker: Marker): Promise<GP
     found = geometryModule(gpu, marker, shade, 'network marker').then((module) =>
       gpu.renderPipeline({
         layout: gpu.device.createPipelineLayout({ bindGroupLayouts: [pipelines.draw] }),
-        vertex: { module, entryPoint: 'marker_vertex', constants: { NETWORK_CURVES: 0 } },
+        vertex: {
+          module,
+          entryPoint: 'marker_vertex',
+          constants: { NETWORK_CURVES: 0, MARKER_SHADOWS: shadows ? 1 : 0 },
+        },
         fragment: {
           module,
-          entryPoint: 'marker_fragment',
+          entryPoint: shadows ? 'marker_shadow' : 'marker_fragment',
           targets: [{ format, blend: kit.premultipliedBlend }],
         },
         primitive: { topology: 'triangle-list' },
         depthStencil: {
           format: 'depth32float',
-          depthWriteEnabled: true,
+          depthWriteEnabled: !shadows,
           depthCompare: 'less-equal',
         },
         multisample: { count: msaa },

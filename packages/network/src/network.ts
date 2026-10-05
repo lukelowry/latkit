@@ -404,7 +404,7 @@ class NetworkView
   }
   protected position(item: NetworkItem): Point | null {
     const p = this.shown;
-    return p ? p.picking.locate(item, p.data, p.camera, p.viewport, p.height) : null;
+    return p ? p.picking.locate(item, p.data, p.camera, p.viewport, p.height, p.options) : null;
   }
   protected identify(item: NetworkItem): string {
     return item.kind + ':' + indexKey(item.index) + ':' + item.row;
@@ -567,7 +567,7 @@ class NetworkView
               bank.source ?? data.source,
               bank,
               edgeOptions(data, bank),
-              spaced ? topology.adjacency.laneValues(bank) : undefined,
+              spaced ? topology.adjacency.laneValues(bank, data) : undefined,
             ),
           );
         await resolveDomains(f, data.source, vertices, (bank) =>
@@ -649,16 +649,25 @@ class NetworkView
           ? { start: timeMs, from: this.shown.picking, begun: false }
           : undefined;
     }
-    const transition = presented ? this.transition : undefined,
-      rest = transition
-        ? (1 - Math.min(1, Math.max(0, (timeMs - transition.start) / style.animationMs))) ** 3
-        : 0;
+    const transition = presented ? this.transition : undefined;
+    let rest = transition
+      ? (1 - Math.min(1, Math.max(0, (timeMs - transition.start) / style.animationMs))) ** 3
+      : 0;
+    // The frame's records, and what a transition eases them from; one the GPU budget cannot hold
+    // steps, as a diagram's does past its geometry budget.
+    const records = this.painter.records(
+      geometry,
+      data,
+      rest > 0 ? { start: !transition!.begun } : null,
+      presented,
+    );
+    if (rest > 0 && !records.easing) rest = 0;
     if (presented && rest === 0) this.transition = undefined;
     const labels = await this.labels.prepare(
       frame,
       this.gpu,
       geometry,
-      rest > 0 ? picking.easedFrom(transition!.from, rest) : picking,
+      rest > 0 ? picking.easedFrom(transition!.from, rest, camera.projection === 'globe') : picking,
       data,
       camera,
       height,
@@ -693,6 +702,7 @@ class NetworkView
       height,
       labels,
       phases,
+      records,
       motion,
       transition: rest > 0 ? { rest, start: !transition!.begun } : null,
     });

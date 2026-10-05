@@ -184,6 +184,7 @@ export class Labels {
               camera,
               frame.viewport,
               height,
+              style,
             )
           : picking.projected(bank, offset, camera, frame.viewport, height, style.vertexRadiusPx);
         if (

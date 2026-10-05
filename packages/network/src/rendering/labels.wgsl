@@ -9,5 +9,10 @@ struct Label { @builtin(position) position:vec4f,@location(0) uv:vec2f,@location
   if(!anchor.shown){out.position=vec4f(2,2,2,1);}
   out.uv=text.uv;out.color=text.color;return out;
 }
-// A halo in the background keeps lines from cutting through a label.
-@fragment fn label_fragment(v:Label)->@location(0) vec4f {return textColor(v.uv,v.color,u.background,u.labelHaloPx);}
+struct LabelOut { @location(0) color:vec4f, @builtin(frag_depth) depth:f32 }
+// A halo of the ground the label lies on keeps lines from cutting through it, and the globe's
+// surface never cuts the label.
+@fragment fn label_fragment(v:Label)->LabelOut {
+  var out:LabelOut;out.color=textColor(v.uv,v.color,vec4f(u.surface.rgb,1.0),u.labelHaloPx);
+  out.depth=billboardDepth(v.position,u);return out;
+}

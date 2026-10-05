@@ -80,14 +80,13 @@ describe('markers', () => {
     );
     expect(module.startsWith('diagnostic(off, derivative_uniformity);')).toBe(true);
     expect(module).toContain('  load: f32,\n  kind: f32,');
-    expect(module).toContain(
-      'MarkerFragment(p, radiusPx, color, background, a.x, a.y, a.z, a.w, b.x)',
-    );
+    expect(module).toContain('MarkerFragment(p, radiusPx, color, a.x, a.y, a.z, a.w, b.x)');
     expect(module).toContain('@group(0) @binding(11) var markerAtlas');
     expect(module).toContain('@group(0) @binding(12) var markerSampler');
     expect(module).toContain('const MARKER_COLUMNS: f32 = 2.0;');
-    // Layers keep the outline's coverage out of their alpha, so the view applies it once.
-    expect(module).toContain('alpha / max(coverage(outline), 0.000001)');
+    // Each layer carries its own coverage; the outline is what halos and shadows follow.
+    expect(module).toContain('fn filled(color: vec4f, d: f32) -> MarkerColor');
+    expect(module).not.toContain('background');
     expect(codeOf(() => kit.markerShader({ wgsl: '' }, { group: 0, binding: 0, columns: 1 }))).toBe(
       'invalid-input',
     );

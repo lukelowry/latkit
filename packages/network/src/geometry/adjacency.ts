@@ -13,8 +13,9 @@ export class Adjacency {
   readonly bytes: number;
   /** Vertices, and edges by the vertices each joins once; paths join none. */
   readonly graph: kit.Graph;
-  #lanes?: ReadonlyMap<EdgeBank, Float32Array>;
-  #laneValues = new Map<EdgeBank, FieldValues>();
+  /** Lanes by which banks follow their own routes, as `lanes` finds them. */
+  #lanes = new Map<string, ReadonlyMap<EdgeBank, Float32Array>>();
+  #laneValues = new WeakMap<Float32Array, FieldValues>();
   private readonly vertexRows = new Map<string, RowLookup<VertexBank>>();
   private readonly edgeRows = new Map<string, RowLookup<EdgeBank>>();
   constructor(
@@ -55,16 +56,25 @@ export class Adjacency {
   }
   /**
    * Each edge's lane among the edges joining the same two vertices, by bank: 0 alone, else spread
-   * about 0, signed so lanes stay apart whichever end each edge starts from. Found on first use, by
-   * each edge's own vertices' edges, so linear in the edges for bounded degree.
+   * about 0, signed so lanes stay apart whichever end each edge starts from. An edge type with
+   * `bends` follows its own routes: its edges take no lane, nor count toward others'. Found once for
+   * each set of such types, by each edge's own vertices' edges, so linear in the edges for bounded
+   * degree.
    */
-  lanes(): ReadonlyMap<EdgeBank, Float32Array> {
-    if (this.#lanes) return this.#lanes;
+  lanes(data: NetworkData): ReadonlyMap<EdgeBank, Float32Array> {
+    const routed = new Set(this.edges.filter((bank) => data.edges?.[bank.type]?.bends != null)),
+      key = this.edges.map((bank) => (routed.has(bank) ? 1 : 0)).join('');
+    const cached = this.#lanes.get(key);
+    if (cached) return cached;
     const { offsets, items } = this.graph.ends,
       incident = this.graph.incident,
-      out = new Map<EdgeBank, Float32Array>(),
-      pair = (e: number) => offsets[e + 1] - offsets[e] === 2;
+      out = new Map<EdgeBank, Float32Array>();
+    let own: Uint8Array | undefined;
+    for (const bank of routed)
+      (own ??= new Uint8Array(offsets.length - 1)).fill(1, bank.base, bank.base + bank.count);
+    const pair = (e: number) => offsets[e + 1] - offsets[e] === 2 && !own?.[e];
     for (const bank of this.edges) {
+      if (routed.has(bank)) continue;
       let lanes: Float32Array | undefined;
       for (let i = 0; i < bank.count; i++) {
         const e = bank.base + i;
@@ -90,16 +100,17 @@ export class Adjacency {
       }
       if (lanes) out.set(bank, lanes);
     }
-    return (this.#lanes = out);
+    this.#lanes.set(key, out);
+    return out;
   }
   /** A bank's lanes as values its edges read, when any of them has one. */
-  laneValues(bank: EdgeBank): FieldValues | undefined {
-    const lanes = this.lanes().get(bank);
+  laneValues(bank: EdgeBank, data: NetworkData): FieldValues | undefined {
+    const lanes = this.lanes(data).get(bank);
     if (!lanes) return undefined;
-    let found = this.#laneValues.get(bank);
+    let found = this.#laneValues.get(lanes);
     if (!found)
       this.#laneValues.set(
-        bank,
+        lanes,
         (found = {
           index: bank.index,
           rows: bank.rows,

@@ -37,15 +37,13 @@ struct MarkedBank { rows: u32, steps: u32 }
 @group(1) @binding(1) var<uniform> vertexPage: VertexPage;
 @group(1) @binding(1) var<uniform> linePage: LinePage;
 @group(1) @binding(2) var<storage, read_write> output: array<vec4f>;
-/** What the bank drew as a transition began, as `output` holds it; a vec4 alone without one. */
+/** What the bank drew as a transition began, as `output` holds it, while one runs. */
 @group(1) @binding(3) var<storage, read> previous: array<vec4f>;
 @group(1) @binding(4) var<uniform> markerPage: MarkerPage;
 @group(1) @binding(5) var<uniform> marked: MarkedBank;
 
-/** How much of `previous` this frame mixes in: none at rest, or for a bank without it. */
-fn easing() -> f32 {
-  return select(0.0, u.ease, u.ease > 0.0 && arrayLength(&previous) == arrayLength(&output));
-}
+/** How much of `previous` this frame mixes in: none at rest. */
+fn easing() -> f32 { return u.ease; }
 /**
  * Position, then ground and color, size, shade, row, and opacity, and where it is in the world. A
  * transition mixes position, color, size, and opacity from what the bank drew as it began.
@@ -64,7 +62,10 @@ fn vertex(row: u32) {
   if (remain > 0.0) {
     let before = previous[out + 1u];
     if (before.w > 0.5 && placed) {
-      local = mix(local + origin, before.xy + u.easeShift, remain);
+      // On a globe, the short way round.
+      var delta = before.xy + u.easeShift - local - origin;
+      if (u.view.w > 1.5) { delta.x -= 360.0 * round(delta.x / 360.0); }
+      local = local + origin + delta * remain;
       origin = vec2f(0.0);
       z = mix(z, before.z, remain);
     }

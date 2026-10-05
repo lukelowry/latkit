@@ -1,9 +1,18 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { createGpu, icon, kit, shape, type MarkerImage } from '@latkit/gpu';
-import { createData, type Column, type Data, type FieldValues } from '@latkit/model';
+import { createGpu, gauge, icon, kit, shape, type MarkerImage } from '@latkit/gpu';
+import {
+  createData,
+  failure,
+  type Column,
+  type Data,
+  type FieldValues,
+  type Schema,
+} from '@latkit/model';
 import { createNetwork, type Network, type NetworkConfig } from '../src/index.js';
 import { readGeometry, DEFAULT_LIMITS, type EdgeBank } from '../src/geometry/topology.js';
 import { LINE, channels } from '../src/rendering/fields.js';
+import { project } from '../src/camera.js';
+import type { PickGeometry } from '../src/picking.js';
 import { GraphSource } from './fixture.js';
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
 import { renderer as testRenderer } from '../../gpu/tests/fixtures/public-render.js';
@@ -12,11 +21,16 @@ type Fake = ReturnType<typeof fakeDevice>;
 interface FakeBuffer {
   readonly size: number;
   readonly bytes: Uint8Array;
+  readonly destroyed: boolean;
 }
-/** A device whose passes record nothing, and whose copies are listed. */
-function device(): Fake & { copies: { from: FakeBuffer; to: FakeBuffer }[] } {
+/** A device whose passes record nothing, and whose copies and clears are listed. */
+function device(): Fake & {
+  copies: { from: FakeBuffer; to: FakeBuffer }[];
+  clears: FakeBuffer[];
+} {
   const fake = fakeDevice(),
-    copies: { from: FakeBuffer; to: FakeBuffer }[] = [];
+    copies: { from: FakeBuffer; to: FakeBuffer }[] = [],
+    clears: FakeBuffer[] = [];
   fake.device.createPipelineLayout = vi.fn(() => ({}) as GPUPipelineLayout);
   const original = fake.device.createCommandEncoder.bind(fake.device);
   fake.device.createCommandEncoder = vi.fn(() => {
@@ -30,7 +44,9 @@ function device(): Fake & { copies: { from: FakeBuffer; to: FakeBuffer }[] } {
       drawIndirect: vi.fn(),
       end: vi.fn(),
     };
-    encoder.clearBuffer = vi.fn();
+    encoder.clearBuffer = vi.fn(
+      (buffer: GPUBuffer) => void clears.push(buffer as unknown as FakeBuffer),
+    );
     encoder.beginComputePass = vi.fn(() => pass as unknown as GPUComputePassEncoder);
     encoder.beginRenderPass = vi.fn(() => pass as unknown as GPURenderPassEncoder);
     encoder.copyBufferToBuffer = ((...args: unknown[]) => {
@@ -39,7 +55,14 @@ function device(): Fake & { copies: { from: FakeBuffer; to: FakeBuffer }[] } {
     }) as GPUCommandEncoder['copyBufferToBuffer'];
     return encoder;
   });
-  return Object.assign(fake, { copies });
+  return Object.assign(fake, { copies, clears });
+}
+/** The buffers made with a label. */
+function made(fake: Fake, label: string): FakeBuffer[] {
+  const calls = fake.native.createBuffer.mock;
+  return calls.results
+    .filter((_, i) => calls.calls[i][0].label === label)
+    .map((result) => result.value as FakeBuffer);
 }
 /** A buffer's label, as it was made. */
 function labelOf(fake: Fake, buffer: unknown): string | undefined {
@@ -66,14 +89,15 @@ function uniforms(fake: Fake): { readonly f: Float32Array; readonly u: Uint32Arr
     return entries.length === 1 && entries[0].visibility === 3;
   })!;
   const { buffer, offset = 0 } = surface.entries[0].resource as GPUBufferBinding,
-    bytes = (buffer as unknown as FakeBuffer).bytes.slice(offset, offset + 304);
+    bytes = (buffer as unknown as FakeBuffer).bytes.slice(offset, offset + 288);
   return { f: new Float32Array(bytes.buffer), u: new Uint32Array(bytes.buffer) };
 }
 /** Words of `Uniforms`, as the painter writes them. */
-const EASE = 62,
-  DT = 63,
-  GROWN = 72,
-  GROWTH = 74;
+const SHIFT = 56,
+  EASE = 58,
+  DT = 59,
+  GROWN = 66,
+  GROWTH = 68;
 const NONE = 0xffffffff;
 function target(gpu: Awaited<ReturnType<typeof createGpu>>) {
   const texture = gpu.device.createTexture({
@@ -92,9 +116,10 @@ function target(gpu: Awaited<ReturnType<typeof createGpu>>) {
 async function view(
   fake: Fake,
   config: (source: GraphSource) => Partial<NetworkConfig> = () => ({}),
+  geographic = false,
 ) {
   const gpu = await createGpu({ device: fake.device }),
-    source = new GraphSource(25, 8),
+    source = new GraphSource(25, 8, geographic),
     network = createNetwork(gpu, {
       source: source.data,
       vertices: { node: { x: 'location', y: { field: 'location', component: 1 } } },
@@ -154,10 +179,12 @@ it('eases an animated change from what was drawn, on the GPU, for as long as the
   await render(400);
   expect(uniforms(fake).f[EASE]).toBe(0);
   expect(animating(network)).toBe(false);
+  // At rest a bank eases from nothing, and what the transition eased from is let go.
   expect(computeGroups().slice(-2).map(previous)).toEqual([
-    'network no transition',
-    'network no transition',
+    'network empty binding',
+    'network empty binding',
   ]);
+  expect(made(fake, 'network transition start').every((buffer) => buffer.destroyed)).toBe(true);
   // Without `animate`, a change steps.
   network.set({ vertices: { node: { radiusPx: 5 } } });
   await render(500);
@@ -168,6 +195,57 @@ it('eases an animated change from what was drawn, on the GPU, for as long as the
   network.set({ vertices: { node: { radiusPx: 6 } } }, { animate: true });
   await render(600);
   expect(fake.copies).toHaveLength(2);
+  network.destroy();
+  gpu.destroy();
+});
+
+it('eases rows new to the drawing in from nothing, and steps when the budget cannot hold the start', async () => {
+  const fake = device(),
+    { gpu, network, render } = await view(fake);
+  await render(0);
+  // A marker that reads inputs makes the vertices' records anew: they ease in, as the lines ease on.
+  network.set({ vertices: { node: { marker: gauge({ fill: 'signal' }) } } }, { animate: true });
+  await render(100);
+  expect(fake.copies.map(({ to }) => labelOf(fake, to))).toEqual(['network transition start']);
+  expect(fake.clears.map((buffer) => labelOf(fake, buffer))).toEqual(['network transition start']);
+  expect(uniforms(fake).f[EASE]).toBe(1);
+  await render(500);
+  // A start the GPU budget cannot hold steps: nothing is copied and nothing eases.
+  const buffer = gpu.buffer.bind(gpu);
+  vi.spyOn(gpu, 'buffer').mockImplementation((descriptor) => {
+    if (descriptor.label === 'network transition start')
+      throw failure('resource-limit', 'GPU budget exceeded by live or in-flight resources');
+    return buffer(descriptor);
+  });
+  fake.copies.length = 0;
+  network.set({ vertices: { node: { radiusPx: 9 } } }, { animate: true });
+  await render(600);
+  expect(fake.copies).toHaveLength(0);
+  expect(uniforms(fake).f[EASE]).toBe(0);
+  expect(animating(network)).toBe(false);
+  network.destroy();
+  gpu.destroy();
+});
+
+it('eases around the globe the short way', async () => {
+  const fake = device(),
+    { gpu, source, network, render } = await view(
+      fake,
+      () => ({
+        camera: { projection: 'globe', center: [180, 0], scale: 200, fit: false },
+      }),
+      true,
+    );
+  void source;
+  await render(0);
+  network.set({ camera: { center: [-179, 0] } });
+  await render(10);
+  // The camera crosses the seam at once while the vertices ease from where they drew.
+  network.set({ camera: { center: [179, 0] } });
+  network.set({ vertices: { node: { radiusPx: 6 } } }, { animate: true });
+  await render(20);
+  // The shift the snapshot eases across is two degrees, not three hundred and fifty-eight.
+  expect(uniforms(fake).f[SHIFT]).toBeCloseTo(2, 3);
   network.destroy();
   gpu.destroy();
 });
@@ -287,7 +365,9 @@ it('reads each edge’s lane among parallel ones as a channel, once edges draw a
       vertices: { Station: { x: 'location', y: { field: 'location', component: 1 } } },
       edges: { Line: { ends: ['from', 'to'] as const } },
     };
-  let lanes: FieldValues | undefined, bank!: EdgeBank;
+  let lanes: FieldValues | undefined,
+    bank!: EdgeBank,
+    bent = -1;
   await gpu.render({
     timeMs: 0,
     views: [
@@ -296,7 +376,12 @@ it('reads each edge’s lane among parallel ones as a channel, once edges draw a
         renderer: testRenderer(async (frame) => {
           const geometry = await readGeometry(config, frame.reader, DEFAULT_LIMITS);
           bank = geometry.edges[0];
-          lanes = geometry.adjacency.laneValues(bank);
+          lanes = geometry.adjacency.laneValues(bank, config);
+          // A type with bends follows its own routes: it takes no lanes.
+          bent = geometry.adjacency.lanes({
+            ...config,
+            edges: { Line: { ends: ['from', 'to'], bends: 'route' } },
+          }).size;
         }),
       },
     ],
@@ -305,6 +390,7 @@ it('reads each edge’s lane among parallel ones as a channel, once edges draw a
   const values = lanes!.values as { values: Float32Array };
   expect([...values.values].map((v) => v + 0)).toEqual([-1, 0, 1, 0]);
   expect(lanes).toMatchObject({ index: bank.index, rows: bank.rows });
+  expect(bent).toBe(0);
   const bound = channels(config.edges.Line, LINE, lanes);
   expect(Object.values(bound.fields)).toContain(lanes);
   expect(channels(config.edges.Line, LINE).channels.lane?.field).toBeUndefined();
@@ -365,6 +451,140 @@ it('reads a marked bank’s inputs with its vertices, after their records, stepp
   const after = groups(fake).slice(before);
   expect(after.some((group) => group.entries.length === 6)).toBe(false);
   expect(after.some((group) => group.entries.length === 4)).toBe(true);
+  network.destroy();
+  gpu.destroy();
+});
+
+it('picks a geodesic edge in its lane, which follows the curve as drawing does', async () => {
+  const index = (type: string) => ({ source: 'routes', type, version: '1' });
+  const reference = (values: number[]): Column => ({
+    kind: 'reference',
+    index: index('City'),
+    offset: 0,
+    length: values.length,
+    values: Uint32Array.from(values),
+  });
+  const source = createData(
+    {
+      types: {
+        City: {
+          fields: {
+            at: { type: { kind: 'vector', items: 'float64', size: 2 }, geographic: true },
+          },
+        },
+        Route: {
+          fields: {
+            from: { type: { kind: 'reference', to: 'City' } },
+            to: { type: { kind: 'reference', to: 'City' } },
+          },
+        },
+      },
+    },
+    [
+      {
+        kind: 'rows',
+        index: index('City'),
+        rows: { kind: 'range', offset: 0, count: 2 },
+        columns: {
+          at: {
+            kind: 'vector',
+            size: 2,
+            offset: 0,
+            length: 2,
+            values: { kind: 'numeric', offset: 0, length: 4, values: Float64Array.of(0, 0, 10, 0) },
+          },
+        },
+      },
+      {
+        kind: 'rows',
+        index: index('Route'),
+        rows: { kind: 'range', offset: 0, count: 2 },
+        columns: { from: reference([0, 0]), to: reference([1, 1]) },
+      },
+    ],
+  );
+  const gpu = await createGpu({ device: device().device }),
+    network = createNetwork(gpu, {
+      source,
+      vertices: { City: { x: 'at', y: { field: 'at', component: 1 } } },
+      edges: { Route: { ends: ['from', 'to'], route: 'geodesic' } },
+      edgeSpacingPx: 20,
+      markers: false,
+      camera: { projection: 'flat', center: [5, 0], scale: 30, fit: false },
+    });
+  await gpu.render({
+    timeMs: 0,
+    views: [{ renderer: kit.rendererOf(network), target: target(gpu), at: 0 }],
+  });
+  // Along the equator the curve runs straight across: lanes sit 10 px above and below it.
+  const rowAt = async (y: number) =>
+    (await network.pick([200, y], { radiusPx: 3 })).find((hit) => hit.kind === 'edge')?.row;
+  expect(await rowAt(140)).toBe(0);
+  expect(await rowAt(160)).toBe(1);
+  expect(await rowAt(150)).toBeUndefined();
+  network.destroy();
+  gpu.destroy();
+});
+
+const stations: Schema = {
+  types: {
+    Station: {
+      fields: { at: { type: { kind: 'vector', items: 'float64', size: 2 }, geographic: true } },
+    },
+  },
+};
+/** One station at a longitude on the equator, geographic, in the same row space every time. */
+function station(lon: number): Data {
+  const index = { source: 'station', type: 'Station', version: '1' };
+  return createData(stations, [
+    {
+      kind: 'rows',
+      index,
+      rows: { kind: 'range', offset: 0, count: 1 },
+      columns: {
+        at: {
+          kind: 'vector',
+          size: 2,
+          offset: 0,
+          length: 1,
+          values: { kind: 'numeric', offset: 0, length: 2, values: Float64Array.of(lon, 0) },
+        },
+      },
+    },
+  ]);
+}
+
+it('places labels as the GPU eases what they name: in the data, the short way round a globe', async () => {
+  const gpu = await createGpu({ device: device().device }),
+    network = createNetwork(gpu, {
+      source: station(179),
+      vertices: { Station: { x: 'at', y: { field: 'at', component: 1 } } },
+      camera: { projection: 'globe', center: [180, 0], scale: 200, fit: false },
+    });
+  type Shown = {
+    readonly picking: PickGeometry;
+    readonly geometry: { readonly vertices: readonly Parameters<PickGeometry['projected']>[0][] };
+    readonly camera: Parameters<typeof project>[0];
+    readonly viewport: Parameters<typeof project>[1];
+    readonly height: number;
+  };
+  const shown = () => (network as unknown as { shown: Shown }).shown;
+  const draw = (timeMs: number) =>
+    gpu.render({
+      timeMs,
+      views: [{ renderer: kit.rendererOf(network), target: target(gpu), at: 0 }],
+    });
+  await draw(0);
+  const before = shown().picking;
+  network.set({ source: station(-179) });
+  await draw(10);
+  const { picking, geometry, camera, viewport, height } = shown(),
+    eased = picking
+      .easedFrom(before, 0.5, true)
+      .projected(geometry.vertices[0], 0, camera, viewport, height),
+    seam = project(camera, viewport, 180, 0, 0);
+  expect(eased.x).toBeCloseTo(seam.x, 3);
+  expect(eased.y).toBeCloseTo(seam.y, 3);
   network.destroy();
   gpu.destroy();
 });
