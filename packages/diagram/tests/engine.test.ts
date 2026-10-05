@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { Work, createReader } from '@latkit/model';
-import type { Gpu } from '@latkit/gpu';
+import type { Gpu, LayoutPart } from '@latkit/gpu';
 import { arrange, layoutOptions, place, rootEnd } from '../src/layout.js';
 import { readScene } from '../src/read.js';
 import { geometry, contains, boundary, labelBox } from '../src/geometry.js';
@@ -197,7 +197,7 @@ it('arranges each part with a custom strategy, then packs the parts', async () =
   const result = await arrange(gpu, {
     ...d,
     layout: {
-      algorithm: { arrange: (part) => part.vertices.map((_, i) => [i * 500, 123] as const) },
+      algorithm: { arrange: (part) => Array.from(part.vertices).flatMap((_, i) => [i * 500, 123]) },
     },
   });
   const lane = (axis: 'x' | 'y') => {
@@ -311,9 +311,9 @@ it('enforces one preparation deadline across native reads and custom layout', as
         limits: { layoutMs: 10 },
         layout: {
           algorithm: {
-            arrange: (graph) => {
+            arrange: (part) => {
               now.mockReturnValue(11);
-              return graph.vertices.map((_, i) => [i * 200, 0] as const);
+              return Array.from(part.vertices).flatMap((_, i) => [i * 200, 0]);
             },
           },
         },
@@ -345,11 +345,11 @@ it('passes ports, hyperedges, labels, and groups as vertices to a custom layout'
       { vertex: 2, port: 'input' },
     ],
   ];
-  const parts: import('../src/layout.js').LayoutGraph[] = [];
+  const parts: LayoutPart[] = [];
   const algorithm = {
-    arrange: vi.fn((part: import('../src/layout.js').LayoutGraph) => {
+    arrange: vi.fn((part: LayoutPart) => {
       parts.push(part);
-      return part.vertices.map((_, i) => [i * 240, 0] as const);
+      return Array.from(part.vertices).flatMap((_, i) => [i * 240, 0]);
     }),
   };
   await arrange(gpu, {
@@ -357,30 +357,35 @@ it('passes ports, hyperedges, labels, and groups as vertices to a custom layout'
     groups: { pair: { vertices: { Task: { kind: 'ids', ids: ['n0', 'n1'] } } } },
     layout: { algorithm },
   });
+  /** An edge's ends: each one's vertex, direction, and where it meets its vertex. */
+  const ends = (part: LayoutPart, e: number) => {
+    const { offsets, items } = part.graph.ends,
+      { directions, ports } = part.input;
+    return Array.from({ length: offsets[e + 1] - offsets[e] }, (_, k) => {
+      const end = offsets[e] + k;
+      return [items[end], directions![end], ports![end * 2], ports![end * 2 + 1]];
+    });
+  };
   // The group's inside is one part, wired port to port; outside, the group is one vertex.
   const [inside, outside] = parts;
-  expect(inside.vertices.map((vertex) => vertex.item)).toMatchObject([
+  expect(Array.from(inside.vertices, (v) => inside.item(v))).toMatchObject([
     { kind: 'vertex', row: 0 },
     { kind: 'vertex', row: 1 },
   ]);
-  expect(inside.vertices[0].ports.find((port) => port.name === 'output')?.offset[0]).toBe(
-    inside.vertices[0].size[0],
-  );
-  expect(inside.edges[0].ends).toEqual([
-    { vertex: 0, port: 'output', direction: 'out' },
-    { vertex: 1, port: 'input', direction: 'in' },
-  ]);
-  expect(inside.edges[0].labelRoom[0]).toBeGreaterThan(0);
-  expect(outside.vertices.map((vertex) => vertex.item)).toMatchObject([
-    { kind: 'vertex', row: 2 },
+  const [output, input] = ends(inside, inside.edges[0]);
+  expect(output.slice(0, 3)).toEqual([0, 1, inside.input.sizes![0]]);
+  expect(input.slice(0, 3)).toEqual([1, -1, 0]);
+  expect(inside.input.labelRooms![inside.edges[0] * 2]).toBeGreaterThan(0);
+  // Outside, in read order: the group, whose first member reads first, then the third vertex.
+  expect(Array.from(outside.vertices, (v) => outside.item(v))).toMatchObject([
     { kind: 'group', id: 'pair' },
+    { kind: 'vertex', row: 2 },
   ]);
-  expect(outside.vertices[1].ports).toEqual([]);
-  // The net's three ends meet the group once for its two members.
-  expect(outside.edges[0].ends).toEqual([
-    { vertex: 1, port: null, direction: 'out' },
-    { vertex: 1, port: null, direction: 'in' },
-    { vertex: 0, port: 'input', direction: 'in' },
+  // The net's three ends meet the group once for each of its two members, at its center.
+  expect(ends(outside, outside.edges[0]).map(([v, direction, x]) => [v, direction, x])).toEqual([
+    [0, 1, NaN],
+    [0, -1, NaN],
+    [1, -1, 0],
   ]);
   expect(algorithm.arrange).toHaveBeenCalledTimes(2);
 });

@@ -138,7 +138,7 @@ async function geometryOf(gpu: Gpu, data: NetworkData): Promise<Geometry> {
         renderer: {
           ...snapshotRenderer(
             async (frame) => {
-              geometry = await readGeometry(data, frame, DEFAULT_LIMITS);
+              geometry = await readGeometry(data, frame.reader, DEFAULT_LIMITS);
             },
             () => {},
           ),

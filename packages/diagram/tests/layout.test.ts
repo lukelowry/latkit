@@ -1,13 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import { Work, createReader } from '@latkit/model';
-import { kit, type Gpu } from '@latkit/gpu';
-import {
-  arrange,
-  layoutOptions,
-  place,
-  type LayoutGraph,
-  type LayoutOptions,
-} from '../src/layout.js';
+import { kit, type Gpu, type LayoutOptions, type LayoutPart } from '@latkit/gpu';
+import { arrange, layoutOptions, place } from '../src/layout.js';
 import { readScene } from '../src/read.js';
 import { geometry, labelBox } from '../src/geometry.js';
 import { resolveStyle, resolveLimits } from '../src/config.js';
@@ -434,25 +428,23 @@ it('stacks groups a net from outside reaches alike in one rank', async () => {
 
 it('calls a custom strategy once per part, with pinned vertices where they are', async () => {
   const source = unplace(clusters(3), [4, 5, 6, 7, 8, 9, 10, 11]),
-    parts: LayoutGraph[] = [];
+    parts: LayoutPart[] = [];
+  const pinned = (part: LayoutPart, v: number) => Number.isFinite(part.input.pinned[v * 2]);
   const algorithm = {
-    arrange: vi.fn((part: LayoutGraph) => {
+    arrange: vi.fn((part: LayoutPart) => {
       parts.push(part);
-      return part.vertices.map((vertex, i) => vertex.position ?? ([i * 200, 0] as const));
+      return Array.from(part.vertices).flatMap((v, i) =>
+        pinned(part, v) ? [part.input.pinned[v * 2], part.input.pinned[v * 2 + 1]] : [i * 200, 0],
+      );
     }),
   };
   // The pinned part needs no arranging.
   await arrange(gpu, { ...data(source, true), layout: { algorithm } });
   expect(parts.map((part) => part.vertices.length)).toEqual([4, 4]);
-  expect(parts.every((part) => part.vertices.every((vertex) => !vertex.position))).toBe(true);
-  const invalid: (readonly (readonly [number, number])[])[] = [
-    [[0, 0]],
-    [
-      [NaN, 0],
-      [0, 0],
-      [0, 0],
-      [0, 0],
-    ],
+  expect(parts.every((part) => part.vertices.every((v) => !pinned(part, v)))).toBe(true);
+  const invalid: number[][] = [
+    [0, 0],
+    [NaN, 0, 0, 0, 0, 0, 0, 0],
   ];
   for (const result of invalid)
     await expect(

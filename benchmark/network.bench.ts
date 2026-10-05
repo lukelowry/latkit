@@ -38,3 +38,29 @@ describe.each(sizes)('network %i buses', async (buses) => {
     return draw(device, view);
   });
 });
+
+// Positions from layout alone: stress places every bus by its branches once, then frames reuse it.
+describe.each(sizes.filter((buses) => buses <= 100_000))(
+  'network %i buses unpositioned',
+  async (buses) => {
+    const device = await gpu(),
+      config: NetworkConfig = {
+        source: grid(buses),
+        vertices: { Bus: { radiusPx: 'load' } },
+        edges: { Branch: { ends: ['from', 'to'] } },
+      };
+    const view = createNetwork(device, config);
+    await draw(device, view);
+    const measure = suite(`network ${buses} buses unpositioned`, buses, () => counters(device));
+    measure('first frame', async () => {
+      const fresh = createNetwork(device, config);
+      await draw(device, fresh);
+      fresh.destroy();
+    });
+    measure('cached frame', () => draw(device, view));
+    measure('restyle', (i) => {
+      view.set({ vertices: { Bus: { radiusPx: i % 2 ? 'load' : null } } });
+      return draw(device, view);
+    });
+  },
+);

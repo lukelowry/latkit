@@ -10,10 +10,12 @@ import {
   type ViewInput,
   type ViewStats,
   type FrameInfo,
+  type LayoutOptions,
   type Patch,
+  type Positions,
   type Viewport,
 } from '@latkit/gpu';
-import { Work, failure, sameIndex, type TypeDefinition } from '@latkit/model';
+import { Work, failure, sameIndex, type RequestOptions, type TypeDefinition } from '@latkit/model';
 import type { Camera, Projection } from './camera.js';
 import { DEFAULT_CAMERA, checkCamera, fit, mixCamera, move, zoom } from './camera.js';
 import {
@@ -37,6 +39,7 @@ import {
   type VertexBank,
 } from './geometry/topology.js';
 import { indexKey } from './geometry/rows.js';
+import { Placement, arrangeVertices, positions } from './geometry/layout.js';
 import { arrow, listen, type Gestures } from './input.js';
 import { DEFAULTS, VIEW_DEFAULTS, resolveStyle, type NetworkStyle, type Style } from './options.js';
 import { Picking, type PickGeometry } from './picking.js';
@@ -58,6 +61,11 @@ export interface NetworkConfig extends ItemViewConfig, NetworkStyle {
   readonly vertices: Readonly<Record<string, VertexOptions>>;
   readonly edges?: Readonly<Record<string, EdgeOptions>>;
   readonly paths?: Readonly<Record<string, PathOptions>>;
+  /**
+   * How vertices without a position are placed: by `stress` by default, each edge as long as the
+   * positioned ones' median, or 1 without any.
+   */
+  readonly layout?: LayoutOptions;
   /** Where the camera starts; `network.camera` is where it is. Fits the data by default. */
   readonly camera?: Partial<Camera>;
   readonly limits?: Limits;
@@ -71,7 +79,7 @@ export interface NetworkStats extends ViewStats {
   readonly geometryBytes: number;
 }
 type Records = 'vertices' | 'edges' | 'paths';
-type Merged = 'camera' | 'input' | 'limits';
+type Merged = 'camera' | 'input' | 'limits' | 'layout';
 export interface Network extends ItemView<
   NetworkConfig,
   NetworkItem,
@@ -91,6 +99,24 @@ export interface Network extends ItemView<
 export function createNetwork(gpu: Gpu, config: NetworkConfig): Network {
   return new NetworkView(gpu, config);
 }
+/** Place a network's vertices as it would, without drawing: positions by vertex type. */
+export async function arrange(
+  gpu: Gpu,
+  config: NetworkConfig,
+  options: RequestOptions = {},
+): Promise<Readonly<Record<string, Positions>>> {
+  const data = checkData(config),
+    limits = kit.resolveLimits(config.limits, DEFAULT_LIMITS, 'network'),
+    layout = checkLayout(config.layout),
+    reader = gpu.reader.open({ signal: options.signal, at: config.at ?? undefined });
+  try {
+    const work = new Work(reader.signal, limits.layoutMs),
+      topology = await readGeometry(data, reader, limits);
+    return positions(topology, await arrangeVertices(reader, topology, data, layout, work));
+  } finally {
+    reader.close();
+  }
+}
 
 interface Presented {
   readonly geometry: Geometry;
@@ -104,11 +130,12 @@ interface Presented {
 interface Pending extends Presented {
   readonly paint: Paint;
 }
-/** What a config means to the network: its drawn data, limits, and style. */
+/** What a config means to the network: its drawn data, limits, layout, and style. */
 interface Resolved {
   readonly config: NetworkConfig;
   readonly data: NetworkData;
   readonly limits: Required<Limits>;
+  readonly layout: LayoutOptions;
   readonly style: Style;
 }
 /** Hit-test indexes build once the shown positions have held this long, as hover settles. */
@@ -152,6 +179,12 @@ function checkData(config: NetworkConfig): NetworkData {
     checkLine(type, path);
   }
   return data;
+}
+const NO_LAYOUT: LayoutOptions = Object.freeze({});
+/** The layout options, checked. */
+function checkLayout(layout: LayoutOptions | undefined): LayoutOptions {
+  kit.layoutOptions(layout, { algorithm: 'stress', vertexGap: 1, rankGap: 3 });
+  return layout ?? NO_LAYOUT;
 }
 /** An edge's or path's own line options. */
 function checkLine(type: string, entry: LineOptions): void {
@@ -217,6 +250,7 @@ class NetworkView
     done: boolean;
   };
   private readonly paths = new Paths();
+  private readonly placement = new Placement();
   private readonly labels = new Labels();
   private orbitTime?: number;
   private counts = { vertices: 0, edges: 0, segments: 0, geometryBytes: 0, drawCalls: 0 };
@@ -244,7 +278,7 @@ class NetworkView
     super(gpu, config, {
       name: 'network',
       records: ['vertices', 'edges', 'paths'],
-      merged: ['camera', 'input', 'limits'],
+      merged: ['camera', 'input', 'limits', 'layout'],
       options: Object.keys(DEFAULTS),
       framed: ['projection', 'center', 'scale', 'pitch', 'bearing'],
       style: VIEW_DEFAULTS,
@@ -260,6 +294,9 @@ class NetworkView
   }
   private get limits(): Required<Limits> {
     return this.resolved.limits;
+  }
+  private get layout(): LayoutOptions {
+    return this.resolved.layout;
   }
 
   /** Globe needs geographic positions, which their fields declare once read. */
@@ -402,6 +439,7 @@ class NetworkView
       config,
       data: checkData(config),
       limits: kit.resolveLimits(config.limits, DEFAULT_LIMITS, 'network'),
+      layout: checkLayout(config.layout),
       style: resolveStyle(config, this.sharedStyle(config)),
     };
   }
@@ -423,24 +461,35 @@ class NetworkView
 
   protected async prepare(frame: kit.Preparation): Promise<Pending> {
     this.live();
-    const data = this.data,
-      style = this.style;
+    const { data, style, layout, limits } = this;
     const topology =
-      this.geometry?.native ?? this.geometry ?? (await readGeometry(data, frame, this.limits));
-    // What the data draws: read, scaled, and compiled once, until the data, its bindings, or the
-    // coordinate of a sampled read change.
+      this.geometry?.native ?? this.geometry ?? (await readGeometry(data, frame.reader, limits));
+    // What the data draws: read, scaled, placed, and compiled once, until the data, its bindings,
+    // the layout, or the coordinate of a sampled read change.
     const { geometry, reads } = await frame.memo(
       'reads',
-      [topology, data.source, data.vertices, data.edges, data.paths, this.resolved.config.limits],
+      [
+        topology,
+        data.source,
+        data.vertices,
+        data.edges,
+        data.paths,
+        layout,
+        this.resolved.config.limits,
+      ],
       async (f) => {
         let geometry = topology;
         const vertices = new Map<VertexBank, FieldRead>(),
-          edges = new Map<EdgeBank, FieldRead>();
-        for (const bank of geometry.vertices)
-          vertices.set(
-            bank,
-            await readFields(f, data.source, bank, data.vertices[bank.type], bank.layout),
+          edges = new Map<EdgeBank, FieldRead>(),
+          free = new Set(
+            Object.keys(data.vertices).filter(
+              (type) => placement(data.source, type, data.vertices[type]) === 'free',
+            ),
           );
+        // A type without x or y reads where layout places it, below.
+        for (const bank of geometry.vertices)
+          if (!free.has(bank.type))
+            vertices.set(bank, await readFields(f, data.source, bank, data.vertices[bank.type]));
         for (const bank of geometry.edges)
           edges.set(
             bank,
@@ -450,6 +499,26 @@ class NetworkView
           vertexOptions(data, bank as VertexBank),
         );
         await resolveDomains(f, data.source, edges, (bank) => edgeOptions(data, bank as EdgeBank));
+        // Each bank holding a vertex without a position reads every row's from layout instead,
+        // scaled as its type's other banks are.
+        const placed = await this.placement.prepare(
+            topology,
+            data,
+            vertices,
+            layout,
+            new Work(f.signal, limits.layoutMs),
+          ),
+          laid = new Map<VertexBank, FieldRead>();
+        for (const [bank, values] of placed) {
+          const read = await readFields(f, data.source, bank, data.vertices[bank.type], values),
+            before = vertices.get(bank);
+          if (before) vertices.set(bank, read.scaled(before.scales));
+          else laid.set(bank, read);
+        }
+        await resolveDomains(f, data.source, laid, (bank) =>
+          vertexOptions(data, bank as VertexBank),
+        );
+        for (const [bank, read] of laid) vertices.set(bank, read);
         const compiled = this.paths.prepare(topology, { vertices, edges }, data, this.limits);
         geometry = compiled.geometry;
         for (const [bank, original] of compiled.origins) edges.set(bank, edges.get(original)!);

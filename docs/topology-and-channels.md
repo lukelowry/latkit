@@ -39,6 +39,7 @@ reference field orients them.
 marked `geographic` holds longitude or latitude in degrees, which the globe and
 geodesic routes need; otherwise its coordinates are plane units. A vector field
 binds one lane per axis: `x: 'position', y: { field: 'position', component: 1 }`.
+A row without a position is placed by [layout](views.md#layout).
 Paths and bends use lists of two-component vectors.
 
 ## Channels

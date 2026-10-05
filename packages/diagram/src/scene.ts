@@ -1,9 +1,8 @@
 import type { FieldValues, Index } from '@latkit/model';
-import type { Point, TextLayout } from '@latkit/gpu';
+import { kit, type Point, type Positions, type TextLayout } from '@latkit/gpu';
 import type {
   DiagramData,
   DiagramItem,
-  Positions,
   SceneItem,
   Shape,
   VertexOptions,
@@ -131,6 +130,8 @@ export interface Scene {
   keys?: Map<string, number>;
   /** Each vertex, edge, and part by its `sceneKey`, built on first use. */
   rows?: SceneRows;
+  /** Its vertices and the vertices each edge joins, end by end, built on first use. */
+  graph?: kit.Graph;
 }
 export interface SceneRows {
   readonly vertices: ReadonlyMap<string, number>;
@@ -157,6 +158,16 @@ export function sceneRows(scene: Scene): SceneRows {
     edges: new Map(scene.edges.map((edge, i) => [sceneKey(edge.hit), i])),
     parts: new Map(scene.parts.map((part, i) => [part.key, i])),
   });
+}
+/** The vertices each edge joins, end by end: built once, and shared by the copies of a scene. */
+export function sceneGraph(scene: Scene): kit.Graph {
+  if (scene.graph) return scene.graph;
+  const { vertices, edges } = scene,
+    offsets = new Uint32Array(edges.length + 1);
+  edges.forEach((edge, e) => (offsets[e + 1] = offsets[e] + edge.ends.length));
+  const ends = new Uint32Array(offsets[edges.length]);
+  edges.forEach((edge, e) => edge.ends.forEach((end, k) => (ends[offsets[e] + k] = end.vertex)));
+  return (scene.graph = new kit.Graph(vertices.length, { offsets, items: ends }));
 }
 export function rect(vertex: Vertex): Rect {
   return [vertex.x, vertex.y, vertex.x + vertex.width, vertex.y + vertex.height];

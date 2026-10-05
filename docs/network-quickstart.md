@@ -36,6 +36,16 @@ geographic positions; `network.projections` says which projections the data supp
 Drag to pan, right- or Shift-drag to turn, and scroll to zoom. Shift-, Ctrl-, or ⌘-click adds to the
 selection. Home fits; arrows pan, or step between neighbors with `input: 'inspect'`.
 
+## Layout
+
+A vertex without a position is placed by `'stress'` among the vertices it joins, each edge as long
+as the positioned ones' median; see [layout](views.md#layout).
+
+```ts
+network.set({ layout: { vertexGap: 0.5 } }); // places them anew
+const positions = await arrange(gpu, config); // { x, y } by type, without drawing
+```
+
 ## Style
 
 Style options sit on the config beside the data:
@@ -53,7 +63,8 @@ Omitted domains fit the displayed values; give a `domain` for stable colors duri
 
 ## Limits
 
-`limits: { vertices, segments, geometryBytes, pickingBytes }` bound what a network reads and keeps.
+`limits: { vertices, segments, geometryBytes, pickingBytes, layoutMs }` bound what a network reads,
+keeps, and spends placing vertices.
 On a flat camera, `pick` and hover query hit-test indexes, about 21 bytes per vertex or edge, built
 in the background once positions hold still; the default 64 MiB `pickingBytes` fits a million
 vertices and two million edges. Past it, they scan every item.

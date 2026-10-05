@@ -18,7 +18,7 @@ import {
   type Projected,
 } from './camera.js';
 import { geodesic } from './geometry/paths.js';
-import type { ChannelName, FieldRead } from './rendering/fields.js';
+import { readIdentity, sameIdentity, type FieldRead } from './rendering/fields.js';
 import type { Reads } from './rendering/painter.js';
 import { lineWidthPx, type Style } from './options.js';
 
@@ -75,39 +75,6 @@ function readLookup(read: FieldRead): RowLookup<FieldsBlock> {
   for (const tile of read.native) lookup.add(tile.rows, tile);
   lookup.seal();
   return lookup;
-}
-/** What a read's channels place, by identity: their lanes, scales, constants, and columns. */
-function identity(read: FieldRead, names: readonly ChannelName[] = ['x', 'y']): unknown[] {
-  const key: unknown[] = [],
-    fields = new Set<string>();
-  const view = (value?: ArrayBufferView) => {
-    key.push(value?.buffer, value?.byteOffset, value?.byteLength, value?.constructor);
-  };
-  for (const name of names) {
-    const channel = read.channel(name);
-    key.push(channel.column, channel.component, channel.fallback, ...(channel.scale?.domain ?? []));
-    key.push(...(channel.scale?.range ?? []), channel.scale?.clamp);
-    if (channel.column !== undefined) fields.add(channel.column);
-  }
-  for (const tile of read.native) {
-    key.push(tile.rows.kind);
-    if (tile.rows.kind === 'range') key.push(tile.rows.offset, tile.rows.count);
-    else view(tile.rows.values);
-    for (const field of fields) {
-      const column = tile.columns[field];
-      key.push(column?.kind, column?.offset, column?.length);
-      view(column?.validity);
-      view(tile.presence[field]);
-      if (column?.kind === 'vector') {
-        key.push(column.size, column.values.offset, column.values.length);
-        view(column.values.values);
-      } else if (column && column.kind !== 'list' && column.kind !== 'text') view(column.values);
-    }
-  }
-  return key;
-}
-function equal(a: readonly unknown[], b: readonly unknown[]): boolean {
-  return a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
 }
 /** A position in world units: the data's own on a plane, or on the unit globe. */
 function world(
@@ -215,11 +182,11 @@ export class Picking {
       maxY = -Infinity;
     for (const bank of geometry.vertices) {
       const read = reads.vertices.get(bank)!,
-        key = identity(read),
+        key = readIdentity(read),
         previous = this.cache.get(bank),
         lookup = readLookup(read);
       const spatial =
-        previous && equal(key, previous.identity)
+        previous && sameIdentity(key, previous.identity)
           ? previous
           : { identity: key, bounds: readBounds(bank, read, lookup) };
       this.cache.set(bank, spatial);
@@ -228,7 +195,7 @@ export class Picking {
         read,
         lookup,
         spatial,
-        heightIdentity: identity(read, ['z']),
+        heightIdentity: readIdentity(read, ['z']),
       });
       if (bank.synthetic && geometry.vertices.some((v) => !v.synthetic)) continue;
       minX = Math.min(minX, spatial.bounds[0]);
@@ -313,7 +280,11 @@ export class PickGeometry {
     if (this.vertices.size !== previous.vertices.size) return false;
     for (const [bank, cpu] of this.vertices) {
       const old = previous.vertices.get(bank);
-      if (!old || old.spatial !== cpu.spatial || !equal(old.heightIdentity, cpu.heightIdentity))
+      if (
+        !old ||
+        old.spatial !== cpu.spatial ||
+        !sameIdentity(old.heightIdentity, cpu.heightIdentity)
+      )
         return false;
     }
     return true;

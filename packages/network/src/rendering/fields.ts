@@ -50,8 +50,8 @@ const bindings = new Map<Kinds, WeakMap<object, kit.BoundChannels<ChannelName>>>
   [LINE, new WeakMap()],
 ]);
 /**
- * A type's channels, bound once per options object; `layout` places rows that bind neither x nor
- * y, as a circle does.
+ * A type's channels, bound once per options object; `layout` holds every row's position for a
+ * bank where layout placed any.
  */
 export function channels(
   options: Options,
@@ -196,4 +196,40 @@ export async function resolveDomains(
     }
     for (const bank of banks) reads.set(bank, reads.get(bank)!.scaled(scales));
   }
+}
+/** What a read's channels place, by identity: their lanes, scales, constants, and columns. */
+export function readIdentity(
+  read: FieldRead,
+  names: readonly ChannelName[] = ['x', 'y'],
+): unknown[] {
+  const key: unknown[] = [],
+    fields = new Set<string>();
+  const view = (value?: ArrayBufferView) => {
+    key.push(value?.buffer, value?.byteOffset, value?.byteLength, value?.constructor);
+  };
+  for (const name of names) {
+    const channel = read.channel(name);
+    key.push(channel.column, channel.component, channel.fallback, ...(channel.scale?.domain ?? []));
+    key.push(...(channel.scale?.range ?? []), channel.scale?.clamp);
+    if (channel.column !== undefined) fields.add(channel.column);
+  }
+  for (const tile of read.native) {
+    key.push(tile.rows.kind);
+    if (tile.rows.kind === 'range') key.push(tile.rows.offset, tile.rows.count);
+    else view(tile.rows.values);
+    for (const field of fields) {
+      const column = tile.columns[field];
+      key.push(column?.kind, column?.offset, column?.length);
+      view(column?.validity);
+      view(tile.presence[field]);
+      if (column?.kind === 'vector') {
+        key.push(column.size, column.values.offset, column.values.length);
+        view(column.values.values);
+      } else if (column && column.kind !== 'list' && column.kind !== 'text') view(column.values);
+    }
+  }
+  return key;
+}
+export function sameIdentity(a: readonly unknown[], b: readonly unknown[]): boolean {
+  return a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
 }

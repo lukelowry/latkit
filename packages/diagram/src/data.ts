@@ -1,6 +1,6 @@
-import type { Data, FieldValues, Item, RowSelection } from '@latkit/model';
-import type { Channel, ColorChannel, Labels, Point } from '@latkit/gpu';
-export type { Point };
+import type { Data, Item, RowSelection } from '@latkit/model';
+import type { Channel, ColorChannel, Labels, Point, Positions } from '@latkit/gpu';
+export type { Point, Positions };
 export type Shape = 'rectangle' | 'rounded' | 'ellipse' | 'diamond';
 /** Labels on a type's items, sized in diagram units so they zoom with the diagram. */
 export interface DiagramLabels extends Labels {
@@ -43,11 +43,6 @@ export interface VertexOptions {
   readonly labels?: string | DiagramLabels | null;
   /** Keyed by reference field. Each field naming a drawn net is a port. */
   readonly ports?: Readonly<Record<string, PortOptions>>;
-}
-/** Where a type's vertices sit: x and y values to spread into the type's options. */
-export interface Positions {
-  readonly x: FieldValues;
-  readonly y: FieldValues;
 }
 export interface EdgeOptions {
   readonly rows?: RowSelection;

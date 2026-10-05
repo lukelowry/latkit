@@ -299,6 +299,50 @@ export function channelValue(
   if (!Number.isFinite(value)) return channel.fallback;
   return channel.scale ? (scaleValue(value, channel.scale) ?? channel.fallback) : value;
 }
+/**
+ * A channel's value at every row of a fields block, and frame, as `channelValue` reads each: row
+ * `i`'s into `out[at + i * stride]`, in one pass over a numeric or vector column.
+ */
+export function channelValues(
+  channel: ResolvedChannel,
+  block: FieldsBlock,
+  out: Float64Array,
+  at = 0,
+  stride = 1,
+  frame = 0,
+): void {
+  const rows = block.rows.kind === 'range' ? block.rows.count : block.rows.values.length,
+    name = channel.column,
+    column = name === undefined ? undefined : block.columns[name];
+  if (column?.kind !== 'numeric' && column?.kind !== 'vector') {
+    for (let i = 0; i < rows; i++) out[at + i * stride] = channelValue(channel, block, i, frame);
+    return;
+  }
+  const strides = column as { readonly rowStride?: number; readonly frameStride?: number },
+    step = strides.rowStride ?? 1,
+    first = column.offset + frame * (strides.frameStride ?? 0),
+    vector = column.kind === 'vector',
+    values = vector ? column.values.values : column.values,
+    lane = vector ? column.values.offset + channel.component : 0,
+    size = vector ? column.size : 1,
+    presence = block.presence[name!],
+    validity = column.validity,
+    { scale, fallback } = channel;
+  // Bits read inline: a call a row costs more than the read.
+  for (let i = 0; i < rows; i++) {
+    const cell = first + i * step,
+      value =
+        (!presence || (presence[i >>> 3] & (1 << (i & 7))) !== 0) &&
+        (!validity || (validity[cell >>> 3] & (1 << (cell & 7))) !== 0)
+          ? values[lane + cell * size]
+          : NaN;
+    out[at + i * stride] = !Number.isFinite(value)
+      ? fallback
+      : scale
+        ? (scaleValue(value, scale) ?? fallback)
+        : value;
+  }
+}
 /** Whether a boolean channel is on at a row, and frame: where it reads true or positive. */
 export function channelOn(
   channel: ResolvedChannel,

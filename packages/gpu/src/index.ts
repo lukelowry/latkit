@@ -30,6 +30,13 @@ export type { Composition, CompositionConfig } from './view/composition.js';
 export type { Scale, ColorScale, Labels, Range, ScaleDomain } from './style/scale.js';
 export type { Channel, ColorChannel } from './style/channel.js';
 export type {
+  LayoutOptions,
+  LayoutStrategy,
+  LayoutPart,
+  LayoutItem,
+  Positions,
+} from './layout/place.js';
+export type {
   TextOptions,
   TextRasterizer,
   TextBitmap,

@@ -28,10 +28,8 @@ A vertex's reference fields that name a drawn net are its ports, oriented by the
 
 ## Layout
 
-A vertex with `x` and `y` stays where they put it; `layout` places the rest. Vertices that edges
-join form a part, arranged on its own by `algorithm` (`'layered'`, or a `LayoutStrategy` called
-once per part), and the parts nothing pins pack into rows of about `aspect` (16 / 9) below the
-pinned ones. A group is arranged inside first, then moves as one vertex of its part.
+A vertex with `x` and `y` stays where they put it; [layout](views.md#layout) places the rest,
+`'layered'` by default. A group is arranged inside first, then moves as one vertex of its part.
 
 ```ts
 diagram.set({ layout: { direction: 'down' } }, { animate: true });

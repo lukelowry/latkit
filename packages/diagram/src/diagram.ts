@@ -1,4 +1,4 @@
-import { Work, failure, sameItem } from '@latkit/model';
+import { Work, failure } from '@latkit/model';
 import {
   kit,
   type Gpu,
@@ -11,6 +11,7 @@ import {
   type ViewInput,
   type ViewStats,
   type FrameInfo,
+  type LayoutOptions,
   type Patch,
   type Viewport,
 } from '@latkit/gpu';
@@ -39,7 +40,7 @@ import {
   resolveStyle,
   type Style,
 } from './config.js';
-import { place, layoutOptions, type LayoutOptions } from './layout.js';
+import { place, layoutOptions } from './layout.js';
 import {
   readPlacement,
   readScene,
@@ -49,7 +50,7 @@ import {
 } from './read.js';
 import { dragWires, geometry } from './geometry.js';
 import { dragMarks, moved, type DragDraw, type DragMarks } from './drag.js';
-import { itemSlots, positions, sceneRows, union, type Scene } from './scene.js';
+import { itemSlots, positions, sceneGraph, sceneRows, union, type Scene } from './scene.js';
 import { flowing, widestPx } from './styles.js';
 import { Picking } from './picking.js';
 import { Painter, pipelines, type Paint, type Overlay, type Pipelines } from './painter.js';
@@ -292,26 +293,35 @@ class DiagramView
     const scene = this.shown?.scene;
     if (!scene) return [];
     const result = new Map<string, DiagramItem>([[itemKey(item), item]]),
-      vertices = new Set<number>();
-    scene.vertices.forEach((n, i) => {
-      if (
-        item.kind === 'group' ? n.group === item.id : item.kind !== 'edge' && sameItem(n.hit, item)
-      )
-        vertices.add(i);
-    });
-    for (const e of scene.edges)
-      if (
-        (item.kind === 'edge' && sameItem(item, e.hit)) ||
-        e.ends.some((end) => vertices.has(end.vertex))
-      ) {
-        result.set(itemKey(e.hit), rowOf(e.hit));
-        for (const end of e.ends) {
-          const n = scene.vertices[end.vertex];
-          result.set(itemKey(n.hit), rowOf(n.hit));
-        }
-      }
-    for (const i of vertices)
-      result.set(itemKey(scene.vertices[i].hit), rowOf(scene.vertices[i].hit));
+      graph = sceneGraph(scene),
+      slots = itemSlots(scene),
+      add = (row: DiagramRow) => result.set(itemKey(row), row),
+      edge = (e: number) => {
+        add(rowOf(scene.edges[e].hit));
+        for (const v of graph.endsOf(e)) add(rowOf(scene.vertices[v].hit));
+      };
+    if (item.kind === 'edge') {
+      const slot = slots.get(itemKey(item));
+      if (slot !== undefined) edge(slot - scene.slots.edges);
+      return [...result.values()];
+    }
+    // A group's own vertices, or the vertex of a row or port.
+    const slot =
+        item.kind === 'group'
+          ? undefined
+          : slots.get(
+              itemKey({ kind: 'vertex', source: item.source, index: item.index, row: item.row }),
+            ),
+      vertices =
+        item.kind === 'group'
+          ? (scene.groups.find((group) => group.id === item.id)?.members ?? [])
+          : slot === undefined
+            ? []
+            : [slot];
+    for (const v of vertices) {
+      for (const e of graph.edgesOf(v)) edge(e);
+      add(rowOf(scene.vertices[v].hit));
+    }
     return [...result.values()];
   }
   stats(): DiagramStats {

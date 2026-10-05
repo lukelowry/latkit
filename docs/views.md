@@ -64,6 +64,24 @@ An invalid patch throws `invalid-input` and changes nothing: an unknown option, 
 option, or input option, or an input mode the view does not have. `view.config` holds the current
 config; the camera lives on `view.camera`.
 
+## Layout
+
+A network or diagram places each vertex its data gives no position: every row of a type without
+`x` and `y`, and each row whose position reads no number. Positioned vertices stay where they
+are. Vertices that edges join form a part, arranged alone by `layout.algorithm`, and the parts
+nothing positions pack into rows of about `aspect` (16 / 9) below the rest, `rankGap` apart.
+Placed vertices stay where they are as the data changes; new `layout` options place them anew.
+
+- `'layered'`, the diagram's default, puts vertices in ranks along `direction`, `rankGap` apart,
+  in the order `sweeps` passes find to cross less.
+- `'stress'`, the network's default, keeps each part's graph distances, an edge `vertexGap` long.
+- A `LayoutStrategy` of your own arranges a `LayoutPart`: its vertices and edges by index into a
+  graph, with columns of pins, sizes, end directions, ports, and label room. It returns each
+  vertex's top-left corner, two numbers a vertex.
+
+`arrange(gpu, config)` in `@latkit/network` and `@latkit/diagram` places a view's vertices without
+drawing and returns `Positions` by type: an `x` and a `y` field to spread into the type's options.
+
 ## Style
 
 Every item view takes the same style options, with one set of defaults in `viewStyle`:

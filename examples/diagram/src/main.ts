@@ -1,13 +1,7 @@
-import { createGpu, type Point } from '@latkit/gpu';
+import { createGpu, type LayoutOptions, type Point } from '@latkit/gpu';
 import { itemId } from '@latkit/model';
 import { createDiagram, arrange } from '@latkit/diagram';
-import type {
-  DiagramConfig,
-  DiagramInput,
-  DiagramItem,
-  LayoutOptions,
-  Shape,
-} from '@latkit/diagram';
+import type { DiagramConfig, DiagramInput, DiagramItem, Shape } from '@latkit/diagram';
 import { GraphSource } from './source.js';
 import {
   plugged,
@@ -444,20 +438,28 @@ async function boot() {
     button.disabled = true;
     button.textContent = 'Arranging…';
     try {
-      const algorithm: LayoutOptions['algorithm'] =
-        select('algorithm').value === 'grid'
-          ? {
-              arrange: ({ vertices }) => {
-                const columns = Math.ceil(Math.sqrt(vertices.length));
-                const width = Math.max(220, ...vertices.map((vertex) => vertex.size[0] + 64));
-                const height = Math.max(160, ...vertices.map((vertex) => vertex.size[1] + 64));
-                return vertices.map((_, i) => [
-                  (i % columns) * width,
-                  Math.floor(i / columns) * height,
-                ]);
-              },
-            }
-          : 'layered';
+      const choice = select('algorithm').value,
+        algorithm: LayoutOptions['algorithm'] =
+          choice === 'grid'
+            ? {
+                // Each part's blocks in rows, a cell as large as its largest block.
+                arrange: ({ vertices, input }) => {
+                  const columns = Math.ceil(Math.sqrt(vertices.length));
+                  let width = 220,
+                    height = 160;
+                  for (const v of vertices) {
+                    width = Math.max(width, input.sizes![v * 2] + 64);
+                    height = Math.max(height, input.sizes![v * 2 + 1] + 64);
+                  }
+                  return Array.from(vertices).flatMap((_, i) => [
+                    (i % columns) * width,
+                    Math.floor(i / columns) * height,
+                  ]);
+                },
+              }
+            : choice === 'stress'
+              ? 'stress'
+              : 'layered';
       const fields = await arrange(gpu, {
         ...binding(true),
         ...options(),

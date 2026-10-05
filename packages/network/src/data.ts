@@ -23,7 +23,7 @@ export interface NetworkLabels extends Labels {
  */
 export interface VertexOptions {
   readonly rows?: RowSelection;
-  /** Where each row draws, in the data's coordinates; without either, rows sit on a circle. */
+  /** Where each row draws, in the data's coordinates; layout places rows without, as `layout` says. */
   readonly x?: Channel;
   readonly y?: Channel;
   /** Height above the drawing, from 0 to 1 of `zScale`; a field spans 0 to 1. */

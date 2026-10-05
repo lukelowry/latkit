@@ -44,6 +44,10 @@ export type { Camera2D, Bounds2D } from './view/camera.js';
 export { BoxIndex, Occupancy } from './spatial/boxes.js';
 export type { BoxRead } from './spatial/boxes.js';
 export { wiring } from './view/wiring.js';
+export { Graph } from './layout/graph.js';
+export type { Runs, Parts } from './layout/graph.js';
+export { place, layoutOptions } from './layout/place.js';
+export type { LayoutInput } from './layout/place.js';
 export { sameRecords, sameValues } from './view/changes.js';
 export type { Wiring, End, Port } from './view/wiring.js';
 export { clipStroke, strokeShader } from './style/stroke.js';
@@ -65,6 +69,7 @@ export {
   resolveChannels,
   resolveChannel,
   channelValue,
+  channelValues,
   channelOn,
   writeChannel,
 } from './style/channel.js';

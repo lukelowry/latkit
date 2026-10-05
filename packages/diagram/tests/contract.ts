@@ -1,5 +1,5 @@
-import { createDiagram, arrange, type Diagram, type Positions } from '../src/index.js';
-import type { Gpu, ColorScale } from '@latkit/gpu';
+import { createDiagram, arrange, type Diagram } from '../src/index.js';
+import type { Gpu, ColorScale, Positions } from '@latkit/gpu';
 import { itemId, type Data } from '@latkit/model';
 export async function usage(
   gpu: Gpu,

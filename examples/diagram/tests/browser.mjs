@@ -190,6 +190,10 @@ try {
     frames = app.diagram.stats().frames;
     document.querySelector('[data-action="arrange"]').click(); await wait(() => app.diagram.stats().frames > frames && !document.querySelector('[data-action="arrange"]').disabled);
     passed.push('custom headless arrangement');
+    document.getElementById('algorithm').value = 'stress';
+    frames = app.diagram.stats().frames;
+    document.querySelector('[data-action="arrange"]').click(); await wait(() => app.diagram.stats().frames > frames && !document.querySelector('[data-action="arrange"]').disabled);
+    passed.push('stress arrangement');
     await change('flow', true);
     const blob = await app.exportImage(false);
     await change('flow', false);

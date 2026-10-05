@@ -1,19 +1,18 @@
 import { rowAt } from '@latkit/model';
+import { kit } from '@latkit/gpu';
 
 import type { NetworkData, NetworkItem } from '../data.js';
 import type { VertexBank, EdgeBank } from './topology.js';
 import { RowLookup, indexKey } from './rows.js';
 
 /**
- * CSR adjacency over renderer-local dense addresses: vertices, then edges, then paths. Public results
- * always use native identities.
+ * The drawn graph over renderer-local dense addresses: vertices, then edges, then paths. Public
+ * results always use native identities.
  */
 export class Adjacency {
   readonly bytes: number;
-  private readonly offsets: Uint32Array;
-  private readonly incident: Uint32Array;
-  private readonly edgeOffsets: Uint32Array;
-  private readonly ends: Uint32Array;
+  /** Vertices, and edges by the vertices each joins once; paths join none. */
+  readonly graph: kit.Graph;
   private readonly vertexRows = new Map<string, RowLookup<VertexBank>>();
   private readonly edgeRows = new Map<string, RowLookup<EdgeBank>>();
   constructor(
@@ -23,43 +22,34 @@ export class Adjacency {
     private readonly vertexCount: number,
     edgeCount: number,
   ) {
-    this.offsets = new Uint32Array(vertexCount + 1);
-    this.edgeOffsets = new Uint32Array(edgeCount + 1);
-    const all = new Uint32Array(edges.reduce((n, bank) => n + bank.incidence.vertices.length, 0));
+    const offsets = new Uint32Array(edgeCount + 1),
+      ends = new Uint32Array(edges.reduce((n, bank) => n + bank.incidence.vertices.length, 0));
     let written = 0;
     for (const bank of vertices) this.rows(this.vertexRows, bank.index).add(bank.rows, bank);
     for (const rows of this.vertexRows.values()) rows.seal();
     for (const bank of edges) {
       this.rows(this.edgeRows, bank.index).add(bank.rows, bank);
+      const input = bank.incidence.vertices;
       for (let i = 0; i < bank.count; i++) {
         const start = bank.incidence.offsets[i],
-          end = bank.incidence.offsets[i + 1],
-          input = bank.incidence.vertices;
-        const append = (vertex: number) => {
-          all[written++] = vertex;
-          this.offsets[vertex + 1]++;
-        };
+          end = bank.incidence.offsets[i + 1];
         if (end - start <= 2) {
-          if (start < end) append(input[start]);
-          if (start + 1 < end && input[start + 1] !== input[start]) append(input[start + 1]);
-        } else for (const vertex of new Set(input.subarray(start, end))) append(vertex);
-        this.edgeOffsets[bank.base + i + 1] = written;
+          if (start < end) ends[written++] = input[start];
+          if (start + 1 < end && input[start + 1] !== input[start])
+            ends[written++] = input[start + 1];
+        } else for (const vertex of new Set(input.subarray(start, end))) ends[written++] = vertex;
+        offsets[bank.base + i + 1] = written;
       }
     }
     for (const bank of paths) this.rows(this.edgeRows, bank.index).add(bank.rows, bank);
     for (const rows of this.edgeRows.values()) rows.seal();
-    this.ends = all;
-    for (let i = 1; i < this.offsets.length; i++) this.offsets[i] += this.offsets[i - 1];
-    this.incident = new Uint32Array(written);
-    const fill = this.offsets.slice(0, vertexCount);
-    for (let edge = 0; edge < edgeCount; edge++)
-      for (let i = this.edgeOffsets[edge]; i < this.edgeOffsets[edge + 1]; i++)
-        this.incident[fill[this.ends[i]]++] = edge;
-    this.bytes =
-      this.offsets.byteLength +
-      this.edgeOffsets.byteLength +
-      this.ends.byteLength +
-      this.incident.byteLength;
+    this.graph = new kit.Graph(vertexCount, {
+      offsets,
+      items: written === ends.length ? ends : ends.slice(0, written),
+    });
+    // Found now, so neighborhoods never wait on it and its bytes count toward the geometry.
+    void this.graph.incident;
+    this.bytes = this.graph.bytes;
   }
   private rows<T>(map: Map<string, RowLookup<T>>, index: VertexBank['index']): RowLookup<T> {
     const key = indexKey(index);
@@ -117,13 +107,11 @@ export class Adjacency {
         seen.add(key);
         result.push({ kind: 'edge', source: data.source, index: bank.index, row });
       }
-      for (let i = this.edgeOffsets[dense]; i < this.edgeOffsets[dense + 1]; i++)
-        addVertex(this.ends[i]);
+      for (const vertex of this.graph.endsOf(dense)) addVertex(vertex);
     };
     const dense = found.value.base + found.offset;
     if (item.kind === 'edge') addEdge(dense);
-    else
-      for (let i = this.offsets[dense]; i < this.offsets[dense + 1]; i++) addEdge(this.incident[i]);
+    else for (const edge of this.graph.edgesOf(dense)) addEdge(edge);
     return result;
   }
 }

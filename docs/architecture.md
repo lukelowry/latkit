@@ -83,4 +83,8 @@ Every per-row option is a [channel](topology-and-channels.md#channels). `kit.bin
 type's options to the columns of one fields read, sharing a column between channels of one field;
 `kit.resolveChannels` resolves their scales. A shader reads each through the field shader's
 `LatkitChannel`, which `kit.writeChannel` fills per page, with `channelNumber` and `channelColor`;
-`kit.channelValue` and `kit.channelOn` read a row on the CPU as `channelNumber` and `channelOn` do on the GPU, for picking and layout.
+`kit.channelValue` and `kit.channelOn` read a row on the CPU as `channelNumber` and `channelOn` do on the GPU, and `kit.channelValues` every row of a block, for picking and layout.
+
+A view's drawn graph is a `kit.Graph`: each edge's vertices, with each vertex's edges and the
+graph's parts found on first use. `kit.place` places the vertices nothing pins, part by part, with a
+`LayoutStrategy`, and packs the parts nothing pins below the rest.
