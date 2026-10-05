@@ -1,6 +1,6 @@
 {
   "name": "@latkit/network",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Native model network rendering over the shared Latkit GPU pipeline.",
   "type": "module",
   "repository": {

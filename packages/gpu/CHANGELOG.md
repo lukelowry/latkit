@@ -1,5 +1,89 @@
 # @latkit/gpu
 
+## 0.15.0
+
+### Minor Changes
+
+- df714d5: Every per-row option is a channel: one value for every row, a field, or a field through a scale. Positions are `x`, `y`, and `z` channels, every view reads its channels through one shader struct, and a view's defaults are named after the channels they stand in for.
+
+  Added
+
+  - gpu: `Channel` and `ColorChannel`; `component` on `Scale` and `ColorScale`, and `missing` on both.
+  - gpu: `kit.bindChannels`, `kit.resolveChannels`, `kit.resolveChannel`, `kit.channelValue`, `kit.channelOn`, `kit.writeChannel`, and `kit.resolveLabels`; `LatkitChannel`, `channelNumber`, `channelOn`, `channelColor`, and `finiteValue` in `kit.fieldShader`.
+  - gpu: `stride` on `BufferData.update`, which compares whole records.
+  - network: `x`, `y`, and `z` on vertices; `x` and `y` on a net, where its star meets; `dash` and `shade` on paths; `pathColor` and `pathWidthPx`; `LineOptions`, the options edges and paths share.
+  - diagram: `x`, `y`, `width`, and `height` on vertices; `Positions`.
+  - monitor: a trace's `y`; `traceColor` and `traceWidthPx`.
+
+  Changed
+
+  - network, diagram, and monitor: `radiusPx`, `widthPx`, `flowPx`, `visible`, `shade`, `dash`, and `status` each take one value, a field name, or a scale. A `widthPx` field draws each network and monitor line at its own width, and spans 1 to 4 CSS pixels in every view.
+  - `color` takes one color for every row, in place of `baseColor`; a scale's `missing` fills rows its field leaves empty.
+  - A boolean channel is on where it reads true or positive in every view; the diagram and monitor showed negative values.
+  - `null` in a config means unset everywhere: options that used it as a value take `'ends'`, `'now'`, or `'none'`.
+  - A view keeps a field name as given: `config` holds `color: 'load'`, not `{ field: 'load' }`.
+  - diagram: `arrange` and a move proposal's `positions` give each type's `{ x, y }`, to spread into its options.
+  - gpu: `revealPaddingPx` takes insets, like `fitPaddingPx`.
+  - gpu: the views of a composition keep their memoized work apart.
+  - gpu: `BufferData.update` records one revision for all it changed, so a consumer uploads those ranges rather than everything.
+  - network: positions that change keep the drawn topology; only a type moving between circle, plane, and geographic placement rebuilds it.
+  - network: each page's uniform stays on the GPU between frames, and a frame uploads only the pages that changed; a frame where nothing moved uploads about an eighth of what it did at a million buses.
+
+  Renamed
+
+  - network: vertex `height` to `z`, `sizePx` to `radiusPx`, and an edge's `junction` to `x` and `y`; `vertexBaseColor` to `vertexColor`, `edgeBaseColor` to `edgeColor` (`'ends'` for `null`), `heightScale` to `zScale`, and `graticule` to `grid`; a label's `sizePx` to `fontSizePx`.
+  - diagram: `vertexBaseColor` to `vertexColor`, `edgeBaseColor` to `edgeColor`, `flow` to `flowPx`, and a label's `size` to `fontSize`.
+  - monitor: a trace's `field` to `y`; the camera's `window` and `values` to `x` and `y`; `coordinateAxis` and `valueAxis` to `xAxis` and `yAxis`.
+  - gpu: `selectedColor: null` to `'none'`; network `sunTime: null` to `'now'`.
+
+  Removed
+
+  - network and diagram: `position` and `baseColor`. diagram: `size`, now `width` and `height`. monitor: `baseColor`.
+  - gpu: `Position2D`, `kit.Expanded`, `ConfigShape.fields` and `nested`, and `kit.scaleParameters`; `LatkitScale`, `scaleMapped`, `fieldNumber`, `fieldScaled`, and `fieldColor` in shaders.
+  - diagram: `DiagramEvents.open`, which every item view's events already carry.
+
+- df714d5: One text system, spatial index, memo, and change test for every view; schemas state facts and views bind every field; diagram styles on the GPU.
+
+  Added
+
+  - model: `samePages`; `fieldDefinition`; `geographic` on a position field; `ReadScope.recording` and `ReadScope.hold`, with `ReadRecord`.
+  - gpu: `gpu.layoutText`; `kit.BoxIndex`, `kit.Occupancy`, `kit.sameValues`, and `kit.sameRecords`; `kit.fieldShader({ colormap })` adds `fieldColor`, and the field shader carries the scale WGSL.
+  - gpu: `frame.memo(slot, deps, build)`, reused until its deps, the coordinate of a sampled read, a bound buffer, or held memory change.
+  - gpu: `kit.TextBank`, `kit.textOrigin`, and `kit.textBox`, with `TextCandidate` and `TextPlacement`; `TextAlign` and `TextBaseline`; `align` on `TextLayoutInput`; `baseline`, `lineHeight`, `capHeight`, and `align` on `TextLayout`; `latkitAnchor` and a pixel halo in `kit.textShader`.
+  - gpu: `BufferData.update(values)`, which marks only the words that changed.
+  - monitor: `coordinateAt(point)`, the coordinate under a canvas point of the drawn plot.
+  - network: `repeatSpacingPx` on labels.
+
+  Changed
+
+  - network: positions are bound like every other field; without them, rows sit on a circle. Whether they are longitude and latitude comes from the bound fields' `geographic`.
+  - Text draws from one glyph atlas, one SDF per font and grapheme, and repeated layouts are cached. Lines are the font's ascent and descent tall, so every string of a font shares one baseline, and titles, port names, wire labels, and axis ticks center by their capitals.
+  - Every view draws its labels through `kit.TextBank`: a label's glyphs are prepared once, and frames move or hide only its anchor.
+  - `TextBitmap.ascent` and `descent` are the font's line metrics; the rasterizer reports `fontBoundingBox` values.
+  - `textColor(uv, color, halo, haloPx)` in `kit.textShader` takes a halo.
+  - network: labels try right, left, above, and below a marker, never over another marker, with a halo over lines; line labels center on their line.
+  - network and diagram: field reads, scales, style passes, and scene geometry are memoized, so a frame where nothing changed reads and uploads nothing.
+  - diagram: bound colors, widths, flow, shade, and status are written on the GPU, so restyling or playing them never rereads or reroutes the scene, and styles keep playing during a drag.
+  - diagram: wires route as net trees with separated tracks and rounded bends; ports, arrowheads, and junctions scale with the blocks; blocks draw a header band, outline, status ring, and shadow; titles read on any fill; picking holds typed arrays.
+  - diagram: `msaa` defaults to `1`, since every shape antialiases in its shader.
+  - monitor: a null visibility shows the trace; shade defaults to `0`.
+
+  Renamed
+
+  - diagram: `portSizePx` to `portSize` and `portFontSizePx` to `portFontSize`, in diagram units.
+  - gpu: `kit.BoxIndex.query` to `kit.BoxIndex.some`, which visits until told to stop and allocates nothing.
+
+  Removed
+
+  - model: `TypeDefinition.spatial`. A position field says whether it is `geographic`, and a view binds its positions itself. Schemas cross connect, so peers upgrade together.
+  - gpu: `TextLayout.ascent` and `descent`; `kit.scaleShader` (in `kit.fieldShader`), `kit.defaultShade`, and `kit.localPoint`.
+
+### Patch Changes
+
+- Updated dependencies [df714d5]
+- Updated dependencies [df714d5]
+  - @latkit/model@4.0.0
+
 ## 0.14.0
 
 ### Minor Changes
