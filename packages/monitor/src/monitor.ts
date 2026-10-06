@@ -45,27 +45,41 @@ import {
   type Style,
 } from './config.js';
 import { DEFAULT_CAMERA, checkCamera, mixCamera, move, type Camera } from './camera.js';
-import { binding, describeBindings, validateData, type Binding } from './bindings.js';
+import {
+  binding,
+  describeBindings,
+  relook,
+  sameReads,
+  validateData,
+  type Binding,
+} from './bindings.js';
 import { axes, onPlot, plot, plotCoordinate, plotX, plotY, type Axes, type Plot } from './axes.js';
 import { Fit, mergeDomain, tracePages } from './extents.js';
 import { pipelines, type Pipelines } from './rendering/pipelines.js';
 import {
   bindDraws,
   composite,
+  paint,
+  prepareScreen,
+  traceDraws,
+  type Composited,
+  type Draw,
+  type Screen,
+} from './rendering/painter.js';
+import {
   destroyImage,
   enroll,
   image,
   imageBytes,
-  paint,
-  prepareScreen,
+  plan,
+  reconcile,
   sameTransform,
-  traceDraws,
-  type Draw,
+  type Group,
   type Image,
+  type Layer,
   type Progress,
-  type Screen,
   type Transform,
-} from './rendering/painter.js';
+} from './rendering/history.js';
 import { pick } from './picking.js';
 
 export interface MonitorConfig extends ItemViewConfig, MonitorStyle {
@@ -84,6 +98,8 @@ export interface MonitorStats extends ViewStats {
   readonly visible: boolean;
   /** Whether some frame in the window is not drawn yet. */
   readonly refining: boolean;
+  /** Line segments drawn into history so far; a new domain or colormap draws none. */
+  readonly segments: number;
 }
 type Records = 'traces';
 type Merged = 'camera' | 'input' | 'limits';
@@ -108,10 +124,6 @@ export interface Monitor extends ItemView<
 export function createMonitor(gpu: Gpu, config: MonitorConfig): Monitor {
   return new MonitorView(gpu, config);
 }
-/** Style drawn into history pixels; the rest is composited, or changes no pixels at all. */
-const HISTORY = new Set<keyof Style>(['msaa', 'traceColor', 'traceWidthPx']);
-/** Style drawn into the focus image. */
-const FOCUS = new Set<keyof Style>(['selectedColor', 'selectedWidthPx']);
 /** A replacement for a new size waits until resizing pauses. */
 const RESIZE_MS = 120;
 /** What a config means to the monitor: its traces, limits, and style. */
@@ -187,20 +199,26 @@ function span(trace: Binding, target: Image): readonly [number, number] | undefi
   });
   return first < end ? [first, end] : undefined;
 }
-/** Whether an image holds every frame its window shows, once `advanced` lands. */
-function complete(
-  target: Image,
-  traces: readonly Binding[],
-  advanced: Prepared['advanced'] = [],
-  rows?: (trace: Binding) => unknown,
-) {
-  return traces.every((trace) => {
-    if (rows && !rows(trace)) return true;
-    let progress = target.progress.get(trace.name);
-    for (const item of advanced)
-      if (item.target === target && item.trace === trace.name) progress = item.progress;
-    const frames = span(trace, target);
-    return !frames || (!progress?.chunk && (progress?.through ?? -Infinity) >= frames[1] - 1);
+/** An image's groups, and the layer each has in it. */
+interface Planned {
+  readonly groups: readonly Group[];
+  readonly layers: readonly (Layer | undefined)[];
+}
+/** Whether an image's layers hold every frame its window shows of their traces, once `advanced` lands. */
+function complete(target: Image, planned: Planned, advanced: Prepared['advanced'] = []): boolean {
+  return planned.groups.every((group, i) => {
+    const layer = planned.layers[i];
+    return (
+      !!layer &&
+      group.traces.every((trace) => {
+        const frames = span(trace, target);
+        if (!frames) return true;
+        let progress = layer.progress.get(trace.name);
+        for (const item of advanced)
+          if (item.layer === layer && item.trace === trace.name) progress = item.progress;
+        return !progress?.chunk && (progress?.through ?? -Infinity) >= frames[1] - 1;
+      })
+    );
   });
 }
 /**
@@ -245,17 +263,23 @@ function destroySurface(value: Surface): void {
   for (const image of new Set([value.front, value.back, value.focus])) destroyImage(image);
   value.front = value.back = value.focus = undefined;
 }
-/** What a prepared frame draws, and how far each image gets once it is submitted. */
+/** What a prepared frame draws, and how far each layer gets once it is submitted. */
 interface Prepared {
   readonly surface: Surface;
   readonly pipeline: Pipelines;
   readonly screen: Screen;
-  readonly paint: Map<Image, Draw[]>;
+  /** Each image's groups, and their layers. */
+  readonly plans: ReadonlyMap<Image, Planned>;
+  readonly paint: Map<Layer, Draw[]>;
+  /** The layers the screen shows; a fresh one still clears. */
+  readonly composed: readonly Layer[];
   readonly advanced: {
-    readonly target: Image;
+    readonly layer: Layer;
     readonly trace: string;
     readonly progress: Progress;
   }[];
+  /** Line segments its draws add to history. */
+  readonly segments: number;
   readonly shown: Shown;
 }
 /** The camera and plot of the latest submitted frame: what pick and locate read. */
@@ -281,13 +305,21 @@ class MonitorView
   implements Monitor
 {
   private traces?: Binding[];
+  /** Traces whose config changed since they were described: to read again, or only to look again. */
+  private readonly stale = new Map<string, 'read' | 'look'>();
   private setup?: Promise<void>;
   private setupStop?: AbortController;
   private error?: unknown;
   private extents = new Fit();
-  /** Changes whenever history pixels must be drawn again; focus has its own. */
-  private generation = 0;
-  private focusGeneration = 0;
+  /** Counts shades: color layers bake theirs, so a new or animated one draws them again. */
+  private shading = 0;
+  /** Line segments drawn into history, all time. */
+  private segments = 0;
+  /** The latest groups of history images, and of the selection's, and what they were planned for. */
+  private readonly planned = new Map<
+    boolean,
+    { readonly key: readonly unknown[]; readonly groups: readonly Group[] }
+  >();
   /** The history the canvas shows. */
   private readonly presentedHistory = surface();
   /** The history exports draw, such as video, kept until the view presents again. */
@@ -348,6 +380,7 @@ class MonitorView
       historyBytes: this.historyBytes(),
       visible: !!this.presentedHistory.front,
       refining: !this.presentedHistory.complete,
+      segments: this.segments,
       drawCalls: this.drawCalls,
     };
   }
@@ -434,9 +467,9 @@ class MonitorView
   protected pipelines(format: GPUTextureFormat, msaa: 1 | 4, shade: Shade): Promise<Pipelines> {
     return pipelines(this.gpu, format, msaa, shade.wgsl);
   }
-  /** A new shade's parameters draw into history, so history draws again. */
+  /** A new shade bakes into color layers; value layers shade as they compose. */
   protected shaded(): void {
-    this.redraw();
+    this.shading++;
   }
 
   // ── Config ──
@@ -451,45 +484,97 @@ class MonitorView
     };
   }
   protected configure(resolved: Resolved, before: Resolved): void {
-    const { config: next, style: after } = resolved,
-      { config: previous, style } = before;
-    const appended =
-      previous.source !== next.source &&
-      previous.traces === next.traces &&
-      !!this.traces &&
-      continues(previous.source, next.source);
-    if (appended) {
-      // Drawn frames stand: the next frame draws only what arrived. Traces named by field follow
-      // the source; explicit bindings keep theirs.
-      this.traces = this.traces!.map((trace) =>
-        typeof trace.trace.y === 'string' ? { ...trace, source: next.source } : trace,
-      );
-      // New observations change what lies under the pointer.
-      this.refreshHover();
-    } else if (previous.source !== next.source || previous.traces !== next.traces) {
-      this.setupStop?.abort(new DOMException('Monitor traces superseded', 'AbortError'));
-      this.setup = undefined;
-      this.traces = undefined;
-      this.error = undefined;
-      this.extents = new Fit();
-      this.redraw();
+    const { config: next } = resolved,
+      { config: previous } = before;
+    if (previous.source !== next.source) {
+      if (continues(previous.source, next.source)) {
+        // Drawn frames stand, whatever else changed with them: the next frame draws only what
+        // arrived. Traces named by field follow the source; explicit bindings keep theirs.
+        if (this.traces)
+          this.traces = this.traces.map((trace) =>
+            typeof trace.trace.y === 'string' ? { ...trace, source: next.source } : trace,
+          );
+        // New observations change what lies under the pointer.
+        this.refreshHover();
+      } else this.restart();
     }
-    if (previous.traces !== next.traces) this.pruneSelection();
-    if ([...HISTORY].some((key) => style[key] !== after[key])) this.redraw();
-    if ([...FOCUS].some((key) => style[key] !== after[key])) this.focusGeneration++;
+    if (previous.traces !== next.traces) {
+      this.retrace(previous.traces, next.traces);
+      this.pruneSelection();
+    }
     this.invalidate();
   }
-  /** History pixels no longer match: images draw again behind what is shown. */
-  private redraw(): void {
-    this.generation++;
-    this.focusGeneration++;
+  /** Other data: every trace is described again, as versions no layer holds. */
+  private restart(): void {
+    this.setupStop?.abort(new DOMException('Monitor traces superseded', 'AbortError'));
+    this.setup = undefined;
+    this.traces = undefined;
+    this.stale.clear();
+    this.error = undefined;
+    this.extents = new Fit();
+  }
+  /** A changed trace looks again when it reads the same, and is described again otherwise. */
+  private retrace(before: MonitorData['traces'], after: MonitorData['traces']): void {
+    for (const [name, trace] of Object.entries(after)) {
+      const was = before[name];
+      if (was === trace) continue;
+      this.stale.set(
+        name,
+        was && this.stale.get(name) !== 'read' && sameReads(was, trace) ? 'look' : 'read',
+      );
+    }
+    for (const name of [...this.stale.keys()]) if (!(name in after)) this.stale.delete(name);
+    if (this.traces) {
+      const named = new Map(this.traces.map((trace) => [trace.name, trace]));
+      this.traces = Object.keys(after).flatMap((name) => named.get(name) ?? []);
+    }
+    // What is underway described the old traces.
+    this.setupStop?.abort(new DOMException('Monitor traces superseded', 'AbortError'));
+    this.setup = undefined;
+    this.error = undefined;
+  }
+  /** The groups of history images, or of the selection's, kept while their traces and style stand. */
+  private planOf(
+    traces: readonly Binding[],
+    focus: boolean,
+    selection: readonly MonitorItem[],
+    selected: ReadonlyMap<string, RowSelection | undefined>,
+  ): readonly Group[] {
+    const drawn = this.drawnWith(focus),
+      baked = this.bakedWith(focus),
+      key = [traces, focus ? selection : undefined, JSON.stringify([drawn, baked])],
+      held = this.planned.get(focus);
+    if (held && held.key.every((value, i) => value === key[i])) return held.groups;
+    const groups = plan(
+      focus ? traces.filter((trace) => selected.get(trace.name)) : traces,
+      drawn,
+      baked,
+    );
+    this.planned.set(focus, { key, groups });
+    return groups;
+  }
+  /** What every layer of an image draws lines with: their width, and a selection's. */
+  private drawnWith(focus: boolean): unknown {
+    return focus ? [this.style.traceWidthPx, this.style.selectedWidthPx] : this.style.traceWidthPx;
+  }
+  /** What a color layer bakes beyond its traces' colors: the default color, a selection's, and the shade. */
+  private bakedWith(focus: boolean): unknown {
+    return [this.style.traceColor, focus ? this.style.selectedColor : null, this.shading];
+  }
+  /** Admit `bytes` more history, or fail as history past its limit does. */
+  private reserve(bytes: number): void {
+    if (this.historyBytes() + bytes > this.limits.historyBytes)
+      throw failure(
+        'resource-limit',
+        'Monitor history exceeds historyBytes; reduce viewport or MSAA, or increase its limit',
+      );
   }
 
   // ── Frames ──
   protected get pending(): Promise<void> | undefined {
     if (this.closed || this.error) return undefined;
     if (this.setup) return this.setup;
-    return this.current.complete ? undefined : Promise.resolve();
+    return this.current.complete && !this.stale.size ? undefined : Promise.resolve();
   }
   protected get animating(): boolean {
     return super.animating || (!this.closed && !this.current.complete);
@@ -511,8 +596,9 @@ class MonitorView
     const camera = await this.frameCamera(frame, (items, current, viewport) =>
       this.framing(items, current, viewport),
     );
-    // An animated shade bakes its parameters into history, which then draws every frame.
-    if (this.shadeAnimating) this.redraw();
+    // Color layers bake the shade, so an animated one draws them each frame; value layers shade as
+    // they compose.
+    if (this.shadeAnimating) this.shading++;
     const shading = this.shadeFrame(frame);
     const pipeline = await work.wait(compiling),
       area = plot(frame.viewport, this.style),
@@ -521,7 +607,7 @@ class MonitorView
         height: Math.max(1, Math.ceil(area.height * frame.viewport.pixelRatio)),
         window: camera.x,
         values: camera.y,
-        generation: this.generation,
+        msaa: this.style.msaa,
       };
     // Exports draw their own history, so they never replace what the view presents.
     const history = frame.presented ? this.presentedHistory : (this.exportedHistory ??= surface());
@@ -534,59 +620,85 @@ class MonitorView
       history.back = undefined;
     } else if (!sameTransform(history.back, wanted) && this.resized(history, wanted, frame)) {
       destroyImage(history.back);
-      history.back = undefined;
-      history.back = this.makeImage(wanted);
+      history.back = image(wanted);
     }
     const selection = this.selection;
     // The selection draws over the history being drawn, so it follows that image, not the request.
     const basis = history.back ?? history.front ?? wanted;
-    const focusWanted: Transform = {
-      width: basis.width,
-      height: basis.height,
-      window: basis.window,
-      values: basis.values,
-      generation: this.focusGeneration,
-    };
     if (!selection.length) {
       destroyImage(history.focus);
       history.focus = undefined;
-    } else if (selection !== history.focusFor || !sameTransform(history.focus, focusWanted)) {
+    } else if (selection !== history.focusFor || !sameTransform(history.focus, basis)) {
       destroyImage(history.focus);
-      history.focus = undefined;
-      history.focus = this.makeImage(focusWanted);
+      history.focus = image(basis);
     }
     history.focusFor = selection;
     const effect = this.gpu.device.createBindGroup({
       layout: pipeline.shade,
       entries: [{ binding: 0, resource: shading }],
     });
+    // Each image's layers follow its groups: traces that look alike share one. A shown image whose
+    // replacement draws behind it starts nothing over, as the replacement draws it all.
+    const selected = new Map(
+        traces.map((trace) => [trace.name, focused(selection, trace)] as const),
+      ),
+      images = [
+        [history.front, false],
+        [history.focus, true],
+        [history.back, false],
+      ] as const,
+      plans = new Map<Image, Planned>();
+    for (const [target, focus] of images) {
+      if (!target) continue;
+      const groups = this.planOf(traces, focus, selection, selected);
+      plans.set(target, {
+        groups,
+        layers: reconcile(
+          this.gpu,
+          target,
+          groups,
+          (bytes) => this.reserve(bytes),
+          target !== history.front || !history.back,
+        ),
+      });
+    }
     // What has arrived reaches the shown image first, then the selection, then a replacement.
-    const draws = new Map<Image, Draw[]>(),
+    const draws = new Map<Layer, Draw[]>(),
       advanced: Prepared['advanced'] = [];
-    const rows = (trace: Binding) => focused(selection, trace);
     const budget = new Budget(
       this.limits.segmentsPerFrame,
       this.gpu.budget.cpuBytes / 4,
       // Each block pins its reads, uploads, and pages until the frame is submitted.
       Math.max(1, Math.floor(this.gpu.budget.entries / 64)),
     );
-    fill: for (const target of [
-      history.front?.generation === this.generation ? history.front : undefined,
-      history.focus,
-      history.back,
-    ])
-      if (target)
-        for (const trace of traces) {
-          const only = target === history.focus ? rows(trace) : undefined;
-          if (target === history.focus && !only) continue;
-          await this.fill(frame, pipeline, target, trace, only, effect, budget, draws, advanced);
-          if (budget.spent) break fill;
+    let segments = 0;
+    fill: for (const [target, focus] of images) {
+      const planned = target && plans.get(target);
+      if (planned)
+        for (const [i, group] of planned.groups.entries()) {
+          const layer = planned.layers[i];
+          if (layer)
+            for (const trace of group.traces) {
+              segments += await this.fill(
+                frame,
+                target,
+                layer,
+                trace,
+                focus ? selected.get(trace.name) : undefined,
+                effect,
+                budget,
+                draws,
+                advanced,
+              );
+              if (budget.spent) break fill;
+            }
         }
+    }
     bindDraws(this.gpu, frame, pipeline, [...draws.values()].flat());
     frame.signal.throwIfAborted();
     // A replacement shows in the frame that completes it.
     const display =
-      history.back && complete(history.back, traces, advanced)
+      history.back && complete(history.back, plans.get(history.back)!, advanced)
         ? history.back
         : (history.front ?? history.back!);
     const key = JSON.stringify([frame.viewport, camera.x, camera.y, this.style]);
@@ -604,18 +716,34 @@ class MonitorView
     }
     if (this.historyBytes() > this.limits.historyBytes)
       throw failure('resource-limit', 'Monitor history exceeds historyBytes');
-    for (const value of [display, history.focus, ...draws.keys()]) if (value) enroll(frame, value);
+    // The selection fades the rest, and draws over it.
+    const fade = history.focus ? this.style.unselectedAlpha : 1,
+      layers: Composited[] = [];
+    for (const [target, focus] of [
+      [display, false],
+      [history.focus, true],
+    ] as const)
+      for (const layer of target?.layers ?? [])
+        layers.push({
+          image: target!,
+          layer,
+          look: layer.look,
+          focus,
+          alpha: focus ? 1 : fade,
+        });
+    const composed = layers.map((entry) => entry.layer);
+    for (const layer of new Set([...composed, ...draws.keys()])) enroll(frame, layer);
     const screen = await prepareScreen(
       this.gpu,
       frame,
       pipeline,
-      display,
-      history.focus,
+      layers,
       camera.x,
       camera.y,
       this.layout,
       this.style,
       frame.at,
+      effect,
     );
     frame.signal.throwIfAborted();
     this.hoverFrame(frame, this.nearest);
@@ -623,38 +751,41 @@ class MonitorView
       surface: history,
       pipeline,
       screen,
+      plans,
       paint: draws,
+      composed,
       advanced,
+      segments,
       shown: { window: camera.x, values: camera.y, plot: this.layout.plot },
     };
   }
   /**
-   * Draw the frames of a trace an image is missing. Each read starts at the last frame drawn, so its
-   * first line joins the one before, and draws only its first chunk; a chunk may stop between row
-   * blocks and finish next frame.
+   * Draw the frames of a trace its layer is missing; returns the segments drawn. Each read starts at
+   * the last frame drawn, so its first line joins the one before, and draws only its first chunk; a
+   * chunk may stop between row blocks and finish next frame.
    */
   private async fill(
     frame: kit.Preparation,
-    pipeline: Pipelines,
     target: Image,
+    layer: Layer,
     trace: Binding,
     rows: RowSelection | undefined,
     effect: GPUBindGroup,
     budget: Budget,
-    draws: Map<Image, Draw[]>,
+    draws: Map<Layer, Draw[]>,
     advanced: Prepared['advanced'],
-  ): Promise<void> {
+  ): Promise<number> {
     const frames = span(trace, target);
-    if (!frames) return;
+    if (!frames) return 0;
     const [first, end] = frames,
-      before = target.progress.get(trace.name) ?? {};
+      before = layer.progress.get(trace.name) ?? {};
     let { through, chunk } = before;
-    if (!chunk && through !== undefined && through >= end - 1) return;
+    if (!chunk && through !== undefined && through >= end - 1) return 0;
     const area = plot(frame.viewport, this.style),
-      out = draws.get(target) ?? [],
-      // Only a focus image draws a selection of rows.
+      out = draws.get(layer) ?? [],
+      // Only a focus layer draws a selection of rows.
       focus = rows !== undefined;
-    draws.set(target, out);
+    draws.set(layer, out);
     const read = (offset: number, count: number) =>
       frame.reader.fields({
         source: this.data.source,
@@ -663,7 +794,8 @@ class MonitorView
         fields: trace.fields,
         window: { kind: 'frames', offset, count },
       });
-    let joined = through !== undefined;
+    let joined = through !== undefined,
+      segments = 0;
     while (!budget.spent && (chunk || through === undefined || through < end - 1)) {
       const start =
           chunk?.start ?? (through === undefined ? first : joined ? through : through + 1),
@@ -683,12 +815,11 @@ class MonitorView
         // A lone frame already drawn adds nothing; a frame after a gap draws as a dot.
         if (length > 1 || start !== through) {
           const result = traceDraws(
-            this.gpu,
             frame,
-            pipeline,
             block,
             trace,
             target,
+            layer,
             area,
             this.style,
             focus,
@@ -697,6 +828,7 @@ class MonitorView
           );
           out.push(...result.draws);
           budget.spend(block, result.segments);
+          segments += result.segments;
         }
         drawn = after;
       }
@@ -715,28 +847,30 @@ class MonitorView
       joined = true;
     }
     if (through !== before.through || chunk !== before.chunk)
-      advanced.push({ target, trace: trace.name, progress: { through, chunk } });
+      advanced.push({ layer, trace: trace.name, progress: { through, chunk } });
+    return segments;
   }
   protected encode(frame: kit.Encoding, prepared: Prepared | undefined): void {
     if (!prepared) return;
     let calls = 0;
-    for (const [target, draws] of prepared.paint)
-      calls += paint(frame, prepared.pipeline, target, draws);
-    // A fresh image on screen with nothing drawn yet still clears.
-    const { surface: history } = prepared;
-    for (const target of [history.front ?? history.back, history.focus])
-      if (target?.fresh && !prepared.paint.has(target)) paint(frame, prepared.pipeline, target, []);
+    for (const [layer, draws] of prepared.paint)
+      if (draws.length || layer.fresh) calls += paint(frame, prepared.pipeline, layer, draws);
+    // A fresh layer on screen with nothing drawn yet still clears.
+    for (const layer of prepared.composed)
+      if (layer.fresh && !prepared.paint.has(layer)) paint(frame, prepared.pipeline, layer, []);
     this.drawCalls = calls + composite(frame, prepared.pipeline, prepared.screen);
   }
   protected submitted(frame: FrameInfo, prepared: Prepared | undefined): void {
     if (!prepared) return;
-    const { surface: history } = prepared;
-    for (const target of [...prepared.paint.keys(), history.front ?? history.back, history.focus])
-      if (target) target.fresh = false;
-    for (const { target, trace, progress } of prepared.advanced)
-      target.progress.set(trace, progress);
-    const traces = this.traces ?? [];
-    if (history.back && complete(history.back, traces)) {
+    const { surface: history, plans } = prepared;
+    for (const layer of [...prepared.paint.keys(), ...prepared.composed]) layer.fresh = false;
+    for (const { layer, trace, progress } of prepared.advanced) layer.progress.set(trace, progress);
+    this.segments += prepared.segments;
+    const done = (target: Image | undefined) => {
+      const planned = target && plans.get(target);
+      return !!planned && complete(target, planned);
+    };
+    if (history.back && done(history.back)) {
       destroyImage(history.front);
       history.front = history.back;
       history.back = undefined;
@@ -747,12 +881,7 @@ class MonitorView
       history.back = undefined;
     }
     history.complete =
-      !history.back &&
-      !!history.front &&
-      history.front.generation === this.generation &&
-      complete(history.front, traces) &&
-      (!history.focus ||
-        complete(history.focus, traces, [], (trace) => focused(history.focusFor, trace)));
+      !history.back && done(history.front) && (!history.focus || done(history.focus));
     // An exported frame leaves what pick and locate read.
     if (!frame.presented) return;
     this.shown = prepared.shown;
@@ -772,21 +901,51 @@ class MonitorView
   }
 
   // ── History ──
+  /**
+   * Describe what is new: every trace at first and after other data, then only traces that read
+   * differently. A trace whose look alone changed keeps what it reads and resolves its look again.
+   */
   private async initialize(work: Work) {
-    if (this.traces) return;
+    if (this.traces && !this.stale.size) return;
     if (!this.setup) {
       const control = new AbortController();
       this.setupStop = control;
       const signal = AbortSignal.any([this.signal, control.signal]),
-        data = this.data;
+        data = this.data,
+        window = this.camera.x,
+        whole = !this.traces,
+        kept = new Map((this.traces ?? []).map((trace) => [trace.name, trace])),
+        stale = new Map(this.stale);
       const task = (async () => {
         const reads = this.gpu.reader.open({ signal });
         try {
-          const traces = await describeBindings(reads, data, this.camera.x);
+          const names = Object.keys(data.traces),
+            described = await describeBindings(
+              reads,
+              data,
+              window,
+              names.filter((name) => whole || stale.get(name) === 'read' || !kept.has(name)),
+            ),
+            fresh = new Map(described.map((trace) => [trace.name, trace]));
+          for (const [name, kind] of stale)
+            if (kind === 'look' && kept.has(name) && !fresh.has(name))
+              fresh.set(
+                name,
+                await relook(reads, data, kept.get(name)!, data.traces[name], window),
+              );
           if (control.signal.aborted || this.closed) return;
+          // Frames appended meanwhile belong to traces named by field, as an append's do.
+          const source = this.data.source,
+            traces = names.map((name) => {
+              const trace = fresh.get(name) ?? kept.get(name)!;
+              return typeof trace.trace.y === 'string' && trace.source !== source
+                ? { ...trace, source }
+                : trace;
+            });
           if (traces.reduce((n, trace) => n + trace.count, 0) > this.limits.rows)
             throw failure('resource-limit', 'Monitor row limit exceeded');
           this.traces = traces;
+          this.stale.clear();
         } catch (error) {
           if (!control.signal.aborted) this.error = error;
         } finally {
@@ -806,7 +965,7 @@ class MonitorView
     const front = history.front;
     if (
       !front ||
-      front.generation !== wanted.generation ||
+      front.msaa !== wanted.msaa ||
       front.window[0] !== wanted.window[0] ||
       front.window[1] !== wanted.window[1] ||
       front.values[0] !== wanted.values[0] ||
@@ -822,20 +981,7 @@ class MonitorView
       }, RESIZE_MS - waited);
     return false;
   }
-  private makeImage(transform: Transform): Image {
-    const bytes = imageBytes({
-      width: transform.width,
-      height: transform.height,
-      msaa: this.style.msaa === 4 ? ({} as kit.TextureResource) : undefined,
-    });
-    if (this.historyBytes() + bytes > this.limits.historyBytes)
-      throw failure(
-        'resource-limit',
-        'Monitor history exceeds historyBytes; reduce viewport or MSAA, or increase its limit',
-      );
-    return image(this.gpu, transform, this.style.msaa);
-  }
-  /** GPU memory the history images hold, the canvas's and any export's. */
+  /** GPU memory the history layers hold, the canvas's and any export's. */
   private historyBytes(): number {
     let bytes = 0;
     for (const history of [this.presentedHistory, this.exportedHistory])

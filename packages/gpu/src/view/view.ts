@@ -1,5 +1,6 @@
 import { failure, isFailure } from '@latkit/model';
 import type { Gpu } from '../gpu.js';
+import { plain, same } from './changes.js';
 import { createPresentation, type Presentation } from './presentation.js';
 import { createTextureTarget, type TextureTarget } from './target.js';
 import type {
@@ -32,7 +33,7 @@ export interface ViewEvents {
 }
 const IMAGE_FORMATS: readonly string[] = ['png', 'jpeg', 'webp'];
 export interface ImageOptions {
-  /** Output size in pixels. Defaults to the canvas's, else 1280 × 720. */
+  /** Output size in pixels. Defaults to the canvas's, else 1280 Ã— 720. */
   readonly width?: number;
   readonly height?: number;
   /** Pixels per CSS pixel. Defaults to the canvas's, else 1. */
@@ -71,8 +72,8 @@ export interface SetOptions {
 /**
  * A set() argument. Keyed records, such as `vertices`, merge per entry and each entry per option;
  * camera, input, and limits merge per option. `null` removes an entry or resets an option. Any other
- * value replaces, unless it equals what is there: plain objects and arrays compare by what they
- * hold, so a view keeps what it built from them.
+ * value replaces, unless it equals what is there: plain objects, arrays, and typed arrays compare by
+ * what they hold, so a view keeps what it built from them.
  */
 export type Patch<C, Records extends keyof C = never, Merged extends keyof C = never> = {
   readonly [K in keyof C]?:
@@ -118,26 +119,6 @@ type Queued = readonly [event: PropertyKey, value: unknown];
 const PRESENTATION = new Set(['canvas', 'at', 'paused']);
 type Plain = Record<string, unknown>;
 
-function plain(value: unknown): value is Plain {
-  if (typeof value !== 'object' || value === null) return false;
-  const prototype: unknown = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-/**
- * Whether two option values are the same: plain objects and arrays by what they hold; typed
- * arrays, functions, and other instances only as themselves. A `source` holds data, which is new
- * as itself: the view decides what of new data is new.
- */
-function same(a: unknown, b: unknown, key?: string): boolean {
-  if (a === b) return true;
-  if (key === 'source') return false;
-  if (Array.isArray(a))
-    return Array.isArray(b) && a.length === b.length && a.every((v, i) => same(v, b[i]));
-  if (!plain(a) || !plain(b)) return false;
-  for (const k of new Set([...Object.keys(a), ...Object.keys(b)]))
-    if (!same(a[k], b[k], k)) return false;
-  return true;
-}
 /**
  * An object with a patch's options applied, each through `each`; `replace` resets those the patch
  * leaves out. `base` itself when nothing changes, so what keys on it stays.

@@ -92,6 +92,7 @@ describe('public contract and allocation boundaries', () => {
         'Graph',
         'place',
         'layoutOptions',
+        'sameReads',
         'sameRecords',
         'sameValues',
         'shadeShader',

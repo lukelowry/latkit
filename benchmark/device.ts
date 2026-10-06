@@ -24,6 +24,12 @@ export function copyUpload(
   return bytes.slice(dataOffset * unit, (dataOffset + count) * unit);
 }
 
+/** Vertices each null device was asked to draw: the GPU work its frames would cost. */
+const drawn = new WeakMap<GPUDevice, { vertices: number }>();
+export function drawnVertices(device: GPUDevice): number {
+  return drawn.get(device)?.vertices ?? 0;
+}
+
 /** A WebGPU device that does no GPU work: benchmarks time the JavaScript a frame costs. */
 export function nullDevice(): GPUDevice {
   Object.assign(globalThis, {
@@ -34,13 +40,25 @@ export function nullDevice(): GPUDevice {
     GPUShaderStage: bits('VERTEX FRAGMENT COMPUTE'),
     GPUMapMode: bits('READ WRITE'),
   });
-  // Encoders and passes accept any call; everything else is a distinct object, as on a real device.
+  // Encoders and passes accept any call and count the vertices each draw asks for; everything else
+  // is a distinct object, as on a real device.
+  const work = { vertices: 0 };
   const sink: object = new Proxy(
     {},
-    { get: (_, key) => (key === 'then' ? undefined : () => sink) },
+    {
+      get: (_, key) =>
+        key === 'then'
+          ? undefined
+          : key === 'draw'
+            ? (vertices: number, instances = 1) => {
+                work.vertices += vertices * instances;
+                return sink;
+              }
+            : () => sink,
+    },
   );
   const done = Promise.resolve();
-  return {
+  const device = {
     limits: {
       maxBufferSize: 1 << 30,
       maxStorageBufferBindingSize: 1 << 30,
@@ -108,6 +126,8 @@ export function nullDevice(): GPUDevice {
     removeEventListener() {},
     destroy() {},
   } as unknown as GPUDevice;
+  drawn.set(device, work);
+  return device;
 }
 const bits = (names: string) =>
   Object.fromEntries(names.split(' ').map((name, i) => [name, 1 << i]));

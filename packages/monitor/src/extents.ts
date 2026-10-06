@@ -73,16 +73,21 @@ function extent(page: ColumnPage, rows: Selection, window: Domain): Domain | nul
 export class Fit {
   #window?: Domain;
   #extent: Domain | null = null;
-  readonly #folded = new Map<Binding['trace'], { pages: ColumnPages; rows: Selection }>();
+  /** What each trace folded in, by name; a trace gone, or described again, measures the window again. */
+  readonly #folded = new Map<string, { version: number; pages: ColumnPages; rows: Selection }>();
   values(traces: readonly Binding[], window: Domain): Domain | null {
-    if (!this.#window || this.#window[0] !== window[0] || this.#window[1] !== window[1]) {
+    const stale = [...this.#folded].some(
+      ([name, folded]) =>
+        !traces.some((trace) => trace.name === name && trace.version === folded.version),
+    );
+    if (stale || !this.#window || this.#window[0] !== window[0] || this.#window[1] !== window[1]) {
       this.#window = window;
       this.#extent = null;
       this.#folded.clear();
     }
     for (const trace of traces) {
       const pages = tracePages(trace),
-        folded = this.#folded.get(trace.trace);
+        folded = this.#folded.get(trace.name);
       if (!pages || pages === folded?.pages) continue;
       const added = folded && appendedPages(folded.pages, pages);
       if (folded && !added) {
@@ -93,7 +98,7 @@ export class Fit {
       const rows = folded?.rows ?? selection(trace.rows);
       for (const page of added ?? pages)
         this.#extent = mergeDomain(this.#extent, extent(page, rows, window));
-      this.#folded.set(trace.trace, { pages, rows });
+      this.#folded.set(trace.name, { version: trace.version, pages, rows });
     }
     return this.#extent;
   }

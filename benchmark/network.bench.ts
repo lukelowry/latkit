@@ -33,6 +33,15 @@ describe.each(sizes)('network %i buses', async (buses) => {
     view.set({ vertices: { Bus: { radiusPx: i % 2 ? 'load' : null } } });
     return draw(device, view);
   });
+  // A wider color domain, as a live run's extremes grow: the same reads, new uniforms.
+  measure('recolor', (i) => {
+    view.set({
+      vertices: {
+        Bus: { color: { field: 'voltage', domain: [0.95 - i * 1e-3, 1.05 + i * 1e-3] } },
+      },
+    });
+    return draw(device, view);
+  });
   measure('camera move', (i) => {
     view.set({ camera: { scale: 1 + (i % 8) } });
     return draw(device, view);
