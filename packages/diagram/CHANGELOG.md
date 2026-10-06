@@ -1,5 +1,12 @@
 # @latkit/diagram
 
+## 0.10.1
+
+### Patch Changes
+
+- Updated dependencies [d36979c]
+  - @latkit/gpu@0.17.0
+
 ## 0.10.0
 
 ### Minor Changes
