@@ -1,5 +1,12 @@
 # @latkit/video
 
+## 0.6.3
+
+### Patch Changes
+
+- Updated dependencies [d36979c]
+  - @latkit/gpu@0.17.0
+
 ## 0.6.2
 
 ### Patch Changes
