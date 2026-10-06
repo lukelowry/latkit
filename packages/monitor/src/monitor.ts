@@ -564,22 +564,34 @@ class MonitorView
     this.setup = undefined;
     this.error = undefined;
   }
-  /** The groups of history images, or of the selection's, kept while their traces and style stand. */
+  /**
+   * The groups of history images, or of the selection's, kept while their traces, size, and style
+   * stand. Each image keeps looks apart within a share of history memory: a monitor holds up to
+   * four images, the shown one, its replacement, the selection's, and an export's.
+   */
   private planOf(
     traces: readonly Binding[],
     focus: boolean,
     selection: readonly MonitorItem[],
     selected: ReadonlyMap<string, RowSelection | undefined>,
+    target: Transform,
   ): readonly Group[] {
     const drawn = this.drawnWith(focus),
       baked = this.bakedWith(focus),
-      key = [traces, focus ? selection : undefined, JSON.stringify([drawn, baked])],
+      bytes = this.limits.historyBytes / 4,
+      key = [
+        traces,
+        focus ? selection : undefined,
+        JSON.stringify([drawn, baked, target.width, target.height, target.msaa, bytes]),
+      ],
       held = this.planned.get(focus);
     if (held && held.key.every((value, i) => value === key[i])) return held.groups;
     const groups = plan(
       focus ? traces.filter((trace) => selected.get(trace.name)) : traces,
       drawn,
       baked,
+      target,
+      bytes,
     );
     this.planned.set(focus, { key, groups });
     return groups;
@@ -681,7 +693,7 @@ class MonitorView
       plans = new Map<Image, Planned>();
     for (const [target, focus] of images) {
       if (!target) continue;
-      const groups = this.planOf(traces, focus, selection, selected);
+      const groups = this.planOf(traces, focus, selection, selected, target);
       plans.set(target, {
         groups,
         layers: reconcile(

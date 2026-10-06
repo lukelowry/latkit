@@ -70,15 +70,35 @@ export function sameTransform(a: Transform | undefined, b: Transform): boolean {
 export function image({ width, height, window, values, msaa }: Transform): Image {
   return { width, height, window, values, msaa, layers: [] };
 }
+/** Looks an image keeps apart, each a composition pass every frame. */
+const APART = 4;
 /**
  * The layers an image draws, in trace order. Traces whose color is fixed share one layer of their
  * colors. Traces a look maps share a layer for each look, which composition colors, so a new domain
- * or colormap draws nothing. Layers grow with looks, never with traces.
+ * or colormap draws nothing: the first few looks, while their layers fit `bytes`. Later looks bake
+ * into the color layer, as every look once did, so an image keeps few layers however many looks
+ * its traces have.
  */
-export function plan(traces: readonly Binding[], drawn: unknown, baked: unknown): Group[] {
-  const groups = new Map<string, { kind: LayerKind; traces: Binding[]; look: Look }>();
+export function plan(
+  traces: readonly Binding[],
+  drawn: unknown,
+  baked: unknown,
+  target: Pick<Transform, 'width' | 'height' | 'msaa'>,
+  bytes: number,
+): Group[] {
+  const apart = new Set<string>();
+  let room = bytes - layerBytes(target, 'color');
   for (const trace of traces) {
     const kind = trace.look.layer,
+      cost = layerBytes(target, kind);
+    if (kind === 'color' || apart.has(trace.lookKey) || apart.size === APART || cost > room)
+      continue;
+    apart.add(trace.lookKey);
+    room -= cost;
+  }
+  const groups = new Map<string, { kind: LayerKind; traces: Binding[]; look: Look }>();
+  for (const trace of traces) {
+    const kind = apart.has(trace.lookKey) ? trace.look.layer : 'color',
       by = kind === 'color' ? kind : trace.lookKey;
     let group = groups.get(by);
     if (!group) groups.set(by, (group = { kind, traces: [], look: trace.look }));
@@ -91,13 +111,15 @@ export function plan(traces: readonly Binding[], drawn: unknown, baked: unknown)
       group.traces.map((trace) => [
         trace.name,
         trace.version,
-        group.kind === 'color' ? trace.look.base : null,
+        ...(group.kind === 'color' ? [trace.look.base, baking(trace) ? trace.lookKey : null] : []),
       ]),
       drawn,
       group.kind === 'color' ? baked : null,
     ]),
   }));
 }
+/** Whether a trace's look maps its values, so the color layer bakes that look in. */
+export const baking = (trace: Binding) => trace.look.layer !== 'color';
 /** The domain a look colors over in an image; the values axis is the image's own. */
 export function domainOf(look: Look, target: Transform): Domain | null {
   return look.domain === 'values' ? target.values : look.domain;

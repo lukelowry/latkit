@@ -3,7 +3,14 @@ import { failure, rowCount, type Domain, type FieldsBlock } from '@latkit/model'
 import type { Binding, Look } from '../bindings.js';
 import type { Style } from '../config.js';
 import type { Axes, Plot } from '../axes.js';
-import { domainOf, type Image, type Layer, type LayerKind, type Transform } from './history.js';
+import {
+  baking,
+  domainOf,
+  type Image,
+  type Layer,
+  type LayerKind,
+  type Transform,
+} from './history.js';
 import type { Pipelines } from './pipelines.js';
 
 export function buffer(values: ArrayBufferView, label: string): kit.BufferData {
@@ -18,6 +25,8 @@ export interface Draw {
   readonly uniforms: Uint32Array;
   view?: GPUBindGroup;
   readonly shade: GPUBindGroup;
+  /** The colormap of a look baked into a color layer. */
+  readonly colors?: GPUBindGroup;
   /** Instances: a line per row and frame step, two for stepped interpolation. */
   readonly instances: number;
 }
@@ -93,15 +102,22 @@ export function traceDraws(
       ...channels.y,
       scale: kit.resolveScale({ clamp: false }, target.values),
     },
-    // A value layer stores color values against its domain, unclamped; rows without one read NaN.
+    // A value layer stores color values against its domain, unclamped; a color layer baking a look
+    // maps them through it. Rows without one read NaN.
+    baked = layer.kind === 'color' && baking(trace),
     color: kit.ResolvedChannel = {
       ...kit.resolveChannel(
         bound.channels.color,
-        layer.kind === 'value' ? kit.resolveScale({ clamp: false }, layer.stored) : null,
+        layer.kind === 'value'
+          ? kit.resolveScale({ clamp: false }, layer.stored)
+          : baked
+            ? kit.resolveScale({ clamp: trace.look.clamp }, domainOf(trace.look, target))
+            : null,
         NaN,
       ),
       fallback: NaN,
-    };
+    },
+    colors = baked ? frame.colormap(trace.look.colormap) : undefined;
   const draws: Draw[] = [];
   let segments = 0;
   for (const page of pages) {
@@ -135,7 +151,7 @@ export function traceDraws(
     kit.writeChannel(uniforms, 56, channels.shade, page);
     const steps = rows * Math.max(1, frames - 1);
     segments += steps;
-    draws.push({ page, uniforms, shade, instances: steps * (interpolation ? 2 : 1) });
+    draws.push({ page, uniforms, shade, colors, instances: steps * (interpolation ? 2 : 1) });
   }
   return { draws, segments };
 }
@@ -157,11 +173,14 @@ export function paint(
       },
     ],
   });
-  pass.setPipeline(pipelines.draw[layer.kind]);
+  let pipeline: GPURenderPipeline | undefined;
   for (const draw of draws) {
+    const next = draw.colors ? pipelines.bake : pipelines.draw[layer.kind];
+    if (next !== pipeline) pass.setPipeline((pipeline = next));
     pass.setBindGroup(0, draw.page.bindGroup);
     pass.setBindGroup(1, draw.view!);
     pass.setBindGroup(2, draw.shade);
+    if (draw.colors) pass.setBindGroup(3, draw.colors);
     pass.draw(6, draw.instances);
   }
   pass.end();

@@ -458,6 +458,43 @@ describe('looks', () => {
     expect(h.monitor.stats().segments).toBe(segments);
     h.close();
   });
+  it('keeps a few looks apart and bakes the rest, within the default memory', async () => {
+    const looks = (n: number, shift = 0) =>
+      Object.fromEntries(
+        Array.from({ length: n }, (_, i) => [
+          't' + i,
+          {
+            from: 'signal',
+            y: 'value',
+            color: { field: 'other', domain: [-1 - i * 0.1 - shift, 1] as const },
+          },
+        ]),
+      );
+    const h = await harness(undefined, { traces: looks(8) });
+    await h.render();
+    expect(historyOf(h.monitor, 'presentedHistory')?.front?.layers.map((l) => l.kind)).toEqual([
+      'value',
+      'value',
+      'value',
+      'value',
+      'color',
+    ]);
+    // A look kept apart recolors as it composes; a baked one draws its layer again.
+    const { segments } = h.monitor.stats();
+    h.monitor.set({ traces: { t0: looks(1, 0.05).t0 } });
+    await h.render();
+    expect(h.monitor.stats().segments).toBe(segments);
+    h.monitor.set({ traces: { t5: { ...looks(8, 0.5).t5 } } });
+    await h.render();
+    expect(h.monitor.stats().segments).toBeGreaterThan(segments);
+    // Sixteen looks and a new window hold within the default limit.
+    h.monitor.set({ traces: looks(16) });
+    await h.render();
+    h.monitor.set({ camera: { x: [h.source.coordinate(0), h.source.coordinate(200)] } });
+    await h.render();
+    expect(h.monitor.stats().refining).toBe(false);
+    h.close();
+  });
   it('grows fitted values with headroom as new extremes arrive, drawing history a few times', async () => {
     /** Values that swing wider each frame, as a disturbance grows. */
     class Swelling extends SignalSource {

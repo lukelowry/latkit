@@ -144,6 +144,25 @@ const SCENARIOS: Record<
         ['a', 'b', 'c', 'd'].map((name, i) => [name, mapped(look, part(rows, i, 4), i * 0.01)]),
       ),
   },
+  // Past the looks an image keeps apart, the rest bake into its color layer.
+  'eight traces colored by another field, eight looks': {
+    traces: (rows, look) =>
+      Object.fromEntries(
+        Array.from({ length: 8 }, (_, i) => [
+          't' + i,
+          {
+            from: 'Bus',
+            y: 'voltage',
+            rows: part(rows, i, 8),
+            color: {
+              field: 'load',
+              domain: [look.domain[0] - 0.95 - i * 0.01, look.domain[1] - 0.05] as const,
+              colormap: look.colormap,
+            },
+          },
+        ]),
+      ),
+  },
   'two fixed, two mapped traces': {
     traces: (rows, look) => ({
       a: fixed(look.color, part(rows, 0, 4)),

@@ -8,6 +8,8 @@ const KINDS = ['color', 'coverage', 'value'] as const satisfies readonly LayerKi
 export interface Pipelines {
   /** Lines into a layer of each kind. */
   readonly draw: Readonly<Record<LayerKind, GPURenderPipeline>>;
+  /** Lines into a color layer in a look baked in, which reads a colormap in group 3. */
+  readonly bake: GPURenderPipeline;
   /** A layer of each kind onto the screen. */
   readonly compose: Readonly<Record<LayerKind, GPURenderPipeline>>;
   readonly lines: GPURenderPipeline;
@@ -56,6 +58,7 @@ export async function pipelines(
       kit.fieldShader({ group: 0 }) +
         kit.strokeShader() +
         kit.shadeShader({ group: 2 }) +
+        kit.colormapShader({ group: 3 }) +
         kit.outputShader() +
         shade +
         traceCode,
@@ -76,21 +79,26 @@ export async function pipelines(
       value: looked,
     },
     target = { format, blend: kit.premultipliedBlend };
-  const [draw, compose, lines, text] = await Promise.all([
-    Promise.all(
-      KINDS.map((kind) =>
-        gpu.renderPipeline({
-          layout: drawn,
-          vertex: { module, entryPoint: 'trace_main' },
-          fragment: {
-            module,
-            entryPoint: kind + '_main',
-            targets: [{ format: LAYER_FORMATS[kind], blend: kit.premultipliedBlend }],
-          },
-          primitive: { topology: 'triangle-list' },
-          multisample: { count: msaa },
-        }),
-      ),
+  const lineInto = (kind: LayerKind, entryPoint: string, layout: GPUPipelineLayout) =>
+    gpu.renderPipeline({
+      layout,
+      vertex: { module, entryPoint: 'trace_main' },
+      fragment: {
+        module,
+        entryPoint,
+        targets: [{ format: LAYER_FORMATS[kind], blend: kit.premultipliedBlend }],
+      },
+      primitive: { topology: 'triangle-list' },
+      multisample: { count: msaa },
+    });
+  const [draw, bake, compose, lines, text] = await Promise.all([
+    Promise.all(KINDS.map((kind) => lineInto(kind, kind + '_main', drawn))),
+    lineInto(
+      'color',
+      'bake_main',
+      d.createPipelineLayout({
+        bindGroupLayouts: [gpu.fieldLayout, view, effects, gpu.colormapLayout],
+      }),
     ),
     Promise.all(
       KINDS.map((kind) =>
@@ -114,6 +122,7 @@ export async function pipelines(
   ]);
   return {
     draw: { color: draw[0], coverage: draw[1], value: draw[2] },
+    bake,
     compose: { color: compose[0], coverage: compose[1], value: compose[2] },
     lines,
     text,

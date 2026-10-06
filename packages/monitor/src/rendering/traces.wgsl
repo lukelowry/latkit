@@ -47,12 +47,21 @@ fn stroke(vertex:u32,leg:u32,originalA:Point,originalB:Point)->Vertex {
  return stroke(vertex,instance%factor,point(row,frame),point(row,min(frame+1u,latkitFields.frames-1u)));
 }
 fn coverage(v:Vertex)->f32 {return clamp(1.0-smoothstep(v.width-0.7,v.width+0.7,stroke_distance(v.uv,v.length)),0.0,1.0);}
-// A color layer: each line's fixed color, selected or not, shaded as it draws.
-@fragment fn color_main(v:Vertex)->@location(0) vec4f {
- let alpha=coverage(v);if(alpha<=0.0){discard;}
- var tint=view.base;
+// A color layer's line in `color`, selected or not, shaded as it draws.
+fn painted(v:Vertex,color:vec4f,alpha:f32)->vec4f {
+ var tint=color;
  if(view.focus.a>-1.5){if(view.focus.a>=0.0){tint=view.focus;}else{tint=vec4f(min(vec3f(1),tint.rgb*1.25),tint.a);}}
  tint=shade(ShadeFragment(tint,v.position.xy/view.size.z+view.plot,v.shade));return outputColor(tint,alpha);
+}
+// A color layer: each line's fixed color.
+@fragment fn color_main(v:Vertex)->@location(0) vec4f {
+ let alpha=coverage(v);if(alpha<=0.0){discard;}
+ return painted(v,view.base,alpha);
+}
+// A color layer's line in a look baked in, past the looks an image keeps apart.
+@fragment fn bake_main(v:Vertex)->@location(0) vec4f {
+ let alpha=coverage(v);if(alpha<=0.0){discard;}
+ return painted(v,select(view.base,colormapColor(v.color),v.colored>0.0),alpha);
 }
 // A coverage layer: each line's coverage alone, which composition colors by where it lies.
 @fragment fn coverage_main(v:Vertex)->@location(0) vec4f {
