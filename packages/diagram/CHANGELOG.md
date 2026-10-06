@@ -1,5 +1,87 @@
 # @latkit/diagram
 
+## 0.10.0
+
+### Minor Changes
+
+- 7e03209: A diagram lays out, packs, and routes each connected part on its own, so a case of many separate parts reads as a grid of them; motion is drawn on the GPU at any size; and `set` keeps what a patch repeats.
+
+  Added
+
+  - diagram: `aspect` in `LayoutOptions`, the shape of the rows parts pack into.
+  - gpu: `replace` in `SetOptions`: the patch is the whole config, and what it leaves out resets.
+
+  Changed
+
+  - diagram: vertices that edges join form a part. Each part is arranged alone, and the parts nothing pins pack into rows below the pinned ones; a group is arranged inside first and then moves as one vertex of its part. The 2,000-bus Texas case routes in 0.16 s rather than 1.4 s, its wires a 26th as long; 10,000 buses route in 0.46 s rather than 27 s.
+  - diagram: a `LayoutStrategy` arranges one part at a time, and its vertices are vertex rows or groups. Every vertex the layout places moves by whole grid steps, a strategy's included.
+  - diagram: a vertex with `x` and `y` is always pinned, and the layout places only the rest. Positions are read apart from the structure, so new positions alone reread nothing else: accepting a move at 10,000 blocks takes about half as long.
+  - diagram: a move proposal's `positions` hold each dragged vertex and each the layout placed, so writing them keeps the drawing as shown.
+  - diagram: transitions ease vertices on the GPU and fade wires between their routes, at any size, so no frame reroutes; picking holds the target, as it holds accepted positions during a drag.
+  - diagram: a part that did not change keeps its wires and labels, and edges keep their routes by row identity, so a row read earlier no longer routes every later one again.
+  - diagram: labels slide along their wire to a spot clear of blocks and group titles, and the layout leaves room for a tag's label at each end.
+  - gpu: a patch value equal to the one held keeps the held one, so a view rebuilds nothing from it, and a patch that changes nothing does nothing, `animate` included. Plain objects compare by what they hold; data under a `source` compares as itself.
+
+  Removed
+
+  - diagram: `'manual'` layout, now that positions pin; the `layout` string shorthand and the `Layout` type; `MoveProposal.moves`; `animationMaxVertices`.
+  - gpu: `ConfigShape.shorthands`.
+
+- 7e03209: Every view places vertices without a position through one layout: a network spreads them among the vertices they join, where it drew them on a circle, and a diagram ranks them as before.
+
+  Added
+
+  - gpu: `LayoutOptions`, `LayoutStrategy`, `LayoutPart`, `LayoutItem`, and `Positions`, shared by the views; `kit.Graph`, `kit.place`, and `kit.layoutOptions`, which place a graph's vertices part by part; `kit.channelValues`, a channel's value at every row of a fields block in one pass.
+  - gpu: the `'stress'` layout, which keeps each part's graph distances, an edge `vertexGap` long, with pinned vertices fixed. It is linear in the part: a 100,000-bus network without positions draws its first frame in under half a second.
+  - network: `layout` in the config, `layoutMs` in `limits`, and `arrange`, which places a network's vertices without drawing: positions by vertex type.
+
+  Changed
+
+  - network: a type without `x` or `y`, and each row whose position reads no number, is placed by `'stress'` among the positioned vertices it joins, each edge as long as theirs; parts nothing positions pack below. Geographic data may hold such rows. Placed vertices stay where they were as the data changes, until the layout options do, and a network that positions every vertex reads nothing more.
+  - diagram: a `LayoutStrategy` arranges a `LayoutPart`: its vertices and edges by index into a graph, with columns of pins, sizes, end directions, ports, and label room. It returns two numbers a vertex.
+  - diagram: in a group, flow runs from the outputs inside it, so a net whose source is outside orders its other ends only by their own directions.
+  - diagram: layout takes about a tenth less time, and `neighborhood` and drags read each vertex's own edges rather than every edge.
+
+  Removed
+
+  - diagram: `LayoutOptions`, `LayoutStrategy`, and `Positions`, now in `@latkit/gpu`; `LayoutGraph`, `LayoutVertex`, `LayoutEdge`, and `LayoutPort`, which `LayoutPart` replaces.
+  - network: placement on a circle, and the error for geographic data with vertices that have no position.
+
+- 7e03209: A network draws each vertex with a marker: a shape, gauge, pie, or icon, or WGSL of your own, in CSS pixels. Animated changes ease on the GPU, flow moves as comets, and every view that zooms navigates the same way.
+
+  Added
+
+  - gpu: `shape`, `gauge`, `pie`, and `icon`, with the `Marker`, `MarkerImage`, and `Shape` types; `pulse`, a shade for rows whose `shade` is positive.
+  - gpu: `kit.checkMarker`, `kit.markerShader`, `kit.shapeShader`, `kit.markerAtlas`, `kit.SHAPES`, and `kit.MARKER_INPUTS`; `kit.readRows`; `kit.Grab`, which a view's `grab` returns to take a press before navigation.
+  - gpu: marker WGSL: `MarkerFragment` and `MarkerColor`, and the shared `shapeDistance`, `filled`, `over`, `gaugeMarker`, `pieMarker`, and `markerImage`. A marker's layers carry their own coverage; its distance is its outline, which halos and shadows follow.
+  - network: a vertex type's `marker`; `flowPx` on edges and paths, with `flowColor` and `flowSpacingPx`; `shadows`, `hoverScale`, and `labelHaloPx`.
+  - network: `edgeSpacingPx`, which draws edges joining the same two vertices apart, straight or geodesic, in drawing, picking, and labels; a type with `bends` follows its own routes.
+  - Every view that zooms: a touch held in place opens the context menu, and two pointers pinch.
+
+  Changed
+
+  - network: `set(…, { animate: true })` eases positions, colors, sizes, widths, flow, and marker inputs over `animationMs`, on the GPU, the short way round a globe; labels follow as the GPU mixes. Rows new to the drawing ease in from nothing, and a transition the GPU budget cannot hold steps. Per-frame CPU work stays the same.
+  - network: labels' halo takes the color of the ground they lie on, `surfaceColor`, in place of `background`.
+  - network: on a globe, the surface no longer cuts markers and labels where it bulges toward the camera across them.
+  - network: a marker's shade colors what the row draws, and its hover and selected halos draw over that, as a diagram's do; a line's do too.
+  - network: hover grows a vertex's marker by `hoverScale`, 1.25 by default.
+  - network: a vertex's label sits in the widest gap between its edges.
+  - diagram: blocks draw with the shared shapes and shadow, and drag through the views' `grab`.
+  - monitor: a fit leaves `fitPaddingPx` clear around the values, in pixels, as every view's fit does. The monitor has no pointer navigation, so the page keeps wheel and touch scrolling.
+
+  Removed
+
+  - monitor: `domainPadding`; use `fitPaddingPx`.
+  - diagram: `Shape`, now in `@latkit/gpu`.
+  - gpu: `clicks` in a view's definition; a view takes the presses it handles with `grab`.
+
+### Patch Changes
+
+- Updated dependencies [7e03209]
+- Updated dependencies [7e03209]
+- Updated dependencies [7e03209]
+  - @latkit/gpu@0.16.0
+
 ## 0.9.0
 
 ### Minor Changes
