@@ -48,7 +48,7 @@ export { Graph } from './layout/graph.js';
 export type { Runs, Parts } from './layout/graph.js';
 export { place, layoutOptions } from './layout/place.js';
 export type { LayoutInput } from './layout/place.js';
-export { sameRecords, sameValues } from './view/changes.js';
+export { sameReads, sameRecords, sameValues } from './view/changes.js';
 export type { Wiring, End, Port } from './view/wiring.js';
 export { clipStroke, strokeShader } from './style/stroke.js';
 export type { ClipPoint } from './style/stroke.js';

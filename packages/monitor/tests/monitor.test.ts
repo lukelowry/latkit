@@ -1,5 +1,6 @@
 import {
   type Data,
+  type Domain,
   type FieldInput,
   type ReadScope,
   type RowSelection,
@@ -7,7 +8,7 @@ import {
 } from '@latkit/model';
 import { renderer as testRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { describe, it, expect, vi } from 'vitest';
-import { createGpu, kit, type Gpu } from '@latkit/gpu';
+import { createGpu, kit, pulse, type Gpu } from '@latkit/gpu';
 import { createMonitor, type Monitor, type MonitorConfig } from '../src/index.js';
 import { SignalSource } from './fixture.js';
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
@@ -25,16 +26,21 @@ function failure(run: () => void): unknown {
 /** Drive the pointer as input does. */
 const pointer = (monitor: Monitor, point: readonly [number, number] | null) =>
   (monitor as unknown as { pointer(point: readonly [number, number] | null): void }).pointer(point);
-type History = Record<string, { progress: Map<string, { through?: number }> } | undefined>;
+type History = Record<
+  string,
+  { layers: readonly { kind: string; progress: Map<string, { through?: number }> }[] } | undefined
+>;
+const historyOf = (monitor: Monitor, which: 'presentedHistory' | 'exportedHistory') =>
+  (monitor as unknown as Record<string, History | undefined>)[which];
 /** The last frame each image of the presented, or exported, history holds for a trace. */
 const through = (
   monitor: Monitor,
   image: 'front' | 'back' = 'front',
   history: 'presentedHistory' | 'exportedHistory' = 'presentedHistory',
 ) =>
-  (monitor as unknown as Record<string, History | undefined>)[history]?.[image]?.progress.get(
-    'signal',
-  )?.through;
+  historyOf(monitor, history)
+    ?.[image]?.layers.find((layer) => layer.progress.has('signal'))
+    ?.progress.get('signal')?.through;
 /** One read the monitor asked of a scope. */
 interface Request {
   readonly kind: string;
@@ -372,6 +378,192 @@ describe('history', () => {
     h.close();
     expect(source.data).toBe(value);
     expect(value.tables.signal.fields.value.at(0)!.column.length).toBe(64);
+  });
+});
+
+describe('looks', () => {
+  /** A trace colored by what it plots, over a domain the application keeps. */
+  const colored = (domain: Domain, colormap: 'viridis' | 'magma' = 'viridis') => ({
+    signal: { from: 'signal', y: 'value', color: { field: 'value', domain, colormap } },
+  });
+  it('recolors history without drawing or reading any of it again', async () => {
+    const h = await harness(undefined, { traces: colored([-1, 1]) });
+    await h.render();
+    const { segments } = h.monitor.stats(),
+      queries = h.gpu.stats().queries;
+    expect(segments).toBeGreaterThan(0);
+    for (let i = 1; i <= 8; i++) {
+      h.monitor.set({ traces: colored([-1 - i, 1 + i], i % 2 ? 'magma' : 'viridis') });
+      await h.render();
+    }
+    expect(h.monitor.stats()).toMatchObject({ segments, refining: false });
+    expect(h.gpu.stats().queries).toBe(queries);
+    h.close();
+  });
+  it('draws only arrivals when a domain widens with them', async () => {
+    const plain = await harness(),
+      widening = await harness(undefined, { traces: colored([-1, 1]) });
+    await plain.render();
+    await widening.render();
+    const start = [plain.monitor.stats().segments, widening.monitor.stats().segments];
+    for (let i = 1; i <= 16; i++) {
+      plain.source.append(1);
+      widening.source.append(1);
+      plain.monitor.set({ source: plain.source.data });
+      widening.monitor.set({ source: widening.source.data, traces: colored([-1 - i, 1 + i]) });
+      await plain.render();
+      await widening.render();
+    }
+    expect(widening.monitor.stats().segments - start[1]).toBe(
+      plain.monitor.stats().segments - start[0],
+    );
+    expect(through(widening.monitor)).toBe(widening.source.firstFrame + 143);
+    plain.close();
+    widening.close();
+  });
+  it('shades mapped traces as they compose, never in history', async () => {
+    const h = await harness(undefined, { hover: 'off', shade: pulse(), traces: colored([-1, 1]) });
+    await h.render();
+    const { segments } = h.monitor.stats();
+    for (let i = 0; i < 6; i++) await h.render(false);
+    expect(h.monitor.stats().segments).toBe(segments);
+    h.close();
+  });
+  it('shares one layer among fixed colors, and one per look among mapped traces', async () => {
+    const fixed = { from: 'signal', y: 'value' } as const,
+      other = (domain: Domain) => ({ ...fixed, color: { field: 'other', domain } });
+    const h = await harness(undefined, {
+      traces: {
+        a: fixed,
+        b: { ...fixed, color: [1, 0, 0, 1] },
+        c: { ...fixed, color: [0, 1, 0, 1] },
+        d: colored([-1, 1]).signal,
+        e: colored([-1, 1]).signal,
+        f: colored([-2, 2]).signal,
+        g: other([-1, 1]),
+        h: other([-1, 1]),
+      },
+    });
+    await h.render();
+    // Traces colored by what they plot keep coverage alone; by another field, its values.
+    expect(historyOf(h.monitor, 'presentedHistory')?.front?.layers.map((l) => l.kind)).toEqual([
+      'color',
+      'coverage',
+      'coverage',
+      'value',
+    ]);
+    const { segments } = h.monitor.stats();
+    h.monitor.set({ traces: { g: other([-3, 3]), h: other([-3, 3]) } });
+    await h.render();
+    expect(h.monitor.stats().segments).toBe(segments);
+    h.close();
+  });
+  it('keeps a few looks apart and bakes the rest, within the default memory', async () => {
+    const looks = (n: number, shift = 0) =>
+      Object.fromEntries(
+        Array.from({ length: n }, (_, i) => [
+          't' + i,
+          {
+            from: 'signal',
+            y: 'value',
+            color: { field: 'other', domain: [-1 - i * 0.1 - shift, 1] as const },
+          },
+        ]),
+      );
+    const h = await harness(undefined, { traces: looks(8) });
+    await h.render();
+    expect(historyOf(h.monitor, 'presentedHistory')?.front?.layers.map((l) => l.kind)).toEqual([
+      'value',
+      'value',
+      'value',
+      'value',
+      'color',
+    ]);
+    // A look kept apart recolors as it composes; a baked one draws its layer again.
+    const { segments } = h.monitor.stats();
+    h.monitor.set({ traces: { t0: looks(1, 0.05).t0 } });
+    await h.render();
+    expect(h.monitor.stats().segments).toBe(segments);
+    h.monitor.set({ traces: { t5: { ...looks(8, 0.5).t5 } } });
+    await h.render();
+    expect(h.monitor.stats().segments).toBeGreaterThan(segments);
+    // Sixteen looks and a new window hold within the default limit.
+    h.monitor.set({ traces: looks(16) });
+    await h.render();
+    h.monitor.set({ camera: { x: [h.source.coordinate(0), h.source.coordinate(200)] } });
+    await h.render();
+    expect(h.monitor.stats().refining).toBe(false);
+    h.close();
+  });
+  it('grows fitted values with headroom as new extremes arrive, drawing history a few times', async () => {
+    /** Values that swing wider each frame, as a disturbance grows. */
+    class Swelling extends SignalSource {
+      value(row: number, frame: number, field = 'value') {
+        return super.value(row, frame, field) * (1 + frame * 0.02);
+      }
+    }
+    const source = new Swelling(4, 32),
+      h = await harness(source, {
+        camera: { x: [source.coordinate(0), source.coordinate(400)] },
+      });
+    await h.render();
+    let redraws = 0;
+    for (let i = 0; i < 200; i++) {
+      const before = h.monitor.stats().segments;
+      source.append(1);
+      h.monitor.set({ source: source.data });
+      await h.render();
+      // An append draws one segment a row; more draws history again.
+      if (h.monitor.stats().segments - before > 4) redraws++;
+    }
+    expect(redraws).toBeGreaterThan(0);
+    expect(redraws).toBeLessThan(20);
+    let lo = Infinity,
+      hi = -Infinity;
+    for (let r = 0; r < 4; r++)
+      for (let f = 0; f < source.frames; f++) {
+        lo = Math.min(lo, source.value(r, f));
+        hi = Math.max(hi, source.value(r, f));
+      }
+    const grownY = h.monitor.camera.y;
+    expect(grownY[0]).toBeLessThan(lo);
+    expect(grownY[1]).toBeGreaterThan(hi);
+    // A new window fits tightly again.
+    h.monitor.set({ camera: { x: [source.coordinate(0), source.coordinate(401)] } });
+    await h.render();
+    const tight = h.monitor.camera.y;
+    expect(tight[0]).toBeLessThan(lo);
+    expect(tight[1]).toBeGreaterThan(hi);
+    expect(tight[1] - tight[0]).toBeLessThan(grownY[1] - grownY[0]);
+    h.close();
+  });
+  it('draws a trace again when what it reads changes', async () => {
+    const h = await harness(undefined, { traces: colored([-1, 1]) });
+    await h.render();
+    const { segments } = h.monitor.stats();
+    h.monitor.set({
+      traces: { signal: { ...colored([-1, 1]).signal, interpolation: 'step-after' } },
+    });
+    await h.render();
+    expect(h.monitor.stats().segments).toBeGreaterThan(segments);
+    h.close();
+  });
+  it('keeps history when equal rows arrive as a new array', async () => {
+    const source = new SignalSource(4, 128),
+      rows = () => ({
+        kind: 'indices' as const,
+        index: source.index,
+        values: Uint32Array.of(0, 2),
+      }),
+      h = await harness(source, {
+        traces: { signal: { from: 'signal', y: 'value', rows: rows() } },
+      });
+    await h.render();
+    const { segments } = h.monitor.stats();
+    h.monitor.set({ traces: { signal: { from: 'signal', y: 'value', rows: rows() } } });
+    await h.render();
+    expect(h.monitor.stats().segments).toBe(segments);
+    h.close();
   });
 });
 

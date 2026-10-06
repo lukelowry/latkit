@@ -7,7 +7,10 @@ import { domain, expanded, fail } from './config.js';
 export interface Camera extends ViewCamera {
   readonly x: Domain;
   readonly y: Domain;
-  /** Fit y to the data in x as it changes. Setting y turns it off. */
+  /**
+   * Fit y to the data in x: tightly for each window, then with headroom as data arrives in it, so
+   * new extremes draw history again a few times rather than at each. Setting y turns it off.
+   */
   readonly fit: boolean;
 }
 export const DEFAULT_CAMERA: Camera = Object.freeze({

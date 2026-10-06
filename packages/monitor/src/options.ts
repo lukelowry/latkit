@@ -32,6 +32,11 @@ export interface Limits {
   readonly rows?: number;
   /** Line segments drawn per frame; what is drawn is never drawn again. */
   readonly segmentsPerFrame?: number;
-  /** GPU memory for history images. */
+  /**
+   * GPU memory for history: 4 bytes a pixel for traces of fixed colors, 1 for each look of traces
+   * colored by what they plot, and 8 for each look of traces colored by another field; five times
+   * each under MSAA. An image keeps up to four looks apart within a quarter of it, and bakes the
+   * rest with the fixed colors.
+   */
   readonly historyBytes?: number;
 }

@@ -34,9 +34,10 @@ preparation finishes. Compositions capture their children before preparing any c
 
 Monitor append progress is tracked per trace and field, including disjoint frame ranges. Pending
 ranges pass to a bounded job only after cancellable domain preparation succeeds, and the job
-consumes queued geometry only on submission. Each trace draws into history images bounded by the
-monitor's history budget, and a fit measures each sample page's extent once. This does not add
-retention or replay to models or transport: applications continue to own observation history.
+consumes queued geometry only on submission. Traces draw into history images bounded by the
+monitor's history budget, a layer for each look holding only what composition cannot recover, and
+a fit measures each sample page's extent once. This does not add retention or replay to models or
+transport: applications continue to own observation history.
 
 Renderer authors implement the lifecycle through `kit.Renderer`:
 

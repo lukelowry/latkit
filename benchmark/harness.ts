@@ -14,7 +14,7 @@ import {
 } from '@latkit/model';
 import type { Schema } from '@latkit/model';
 import { createGpu, kit, type Gpu, type TextRasterizer, type View } from '@latkit/gpu';
-import { nullDevice } from './device.ts';
+import { drawnVertices, nullDevice } from './device.ts';
 
 /** Every scalable benchmark runs at these sizes; the gate checks growth across them. */
 export const sizes = [10_000, 100_000, 1_000_000];
@@ -226,9 +226,13 @@ export async function gpu(): Promise<Gpu> {
   rasterizations.set(device, () => count);
   return device;
 }
-/** Work is scoped to each benchmark GPU, including its text rasterizer. */
+/** Work is scoped to each benchmark GPU, including its text rasterizer and the vertices it draws. */
 export function counters(device: Gpu) {
-  return { ...device.stats(), rasterized: rasterizations.get(device)?.() ?? 0 };
+  return {
+    ...device.stats(),
+    rasterized: rasterizations.get(device)?.() ?? 0,
+    vertices: drawnVertices(device.device),
+  };
 }
 
 const surfaces = new WeakMap<Gpu, kit.RenderTarget>();
@@ -290,6 +294,7 @@ const COUNTERS = [
   'evictions',
   'stagedBytes',
   'rasterized',
+  'vertices',
 ] as const;
 type Counters = Partial<Record<(typeof COUNTERS)[number], number>>;
 const work: Record<string, Record<string, number>> = {};

@@ -34,8 +34,14 @@ monitor.fit(); // every recorded frame, with fitted values
 Each frame draws what has arrived since the last, so a fixed window streams at the cost of the new
 frames alone. A changed window or value range redraws history behind the shown image, at most
 `limits.segmentsPerFrame` lines per frame; meanwhile the shown image stretches to the new axes.
-Setting `y` turns `fit` off; fitted values grow as data arrives. For a moving window, such as
-the last minute, advance it in steps rather than every frame. Gaps stay gaps.
+Setting `y` turns `fit` off. Fitted values fit each window tightly, then grow with headroom as data
+arrives, so a run of new extremes redraws history a few times rather than at each. For a moving
+window, such as the last minute, advance it in steps rather than every frame. Gaps stay gaps.
+
+A trace colored by a field recolors without redrawing: a new `domain` or colormap, such as a live
+run's growing global range, or an animated shade, changes only how history composes. History keeps
+coverage alone for a trace colored by what it plots, and the color values for one colored by
+another field; an image keeps up to four such looks apart and bakes the rest with the fixed colors.
 
 ## Inspect
 

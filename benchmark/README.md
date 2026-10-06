@@ -18,9 +18,14 @@ pnpm bench:gate     # run, then check against .bench/base.json and work.json
 ```
 
 The gate (`gate.ts`) fails when work per run grows: queries, uploads, uploaded and copied bytes,
-allocations, submissions, evictions, or rasterizations, which are exact on any machine. It also
-rejects incomplete timing reports. Commit `work.json` with the
-change that moves them. CI gates every pull request this way.
+allocations, submissions, evictions, rasterizations, or vertices drawn, which are exact on any
+machine. The null device counts each draw's vertices times its instances, the GPU work a frame
+asks for; indirect draws count none. It also rejects incomplete timing reports. Commit `work.json`
+with the change that moves them. CI gates every pull request this way.
+
+Monitor workloads run each trace setup, fixed colors and colors mapped from a field, one trace or
+four, through the changes an application makes: streaming, recoloring, selecting, moving the
+window, and animating a shade.
 
 Timings vary between runs, even on one machine, so the gate only reports them:
 
