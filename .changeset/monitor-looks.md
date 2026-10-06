@@ -3,7 +3,7 @@
 '@latkit/gpu': minor
 ---
 
-A monitor's history holds what traces colored by a field read, not their colors: a new domain or colormap, or an animated shade, recolors it without drawing a line again.
+A monitor draws history only when lines move: a new domain or colormap, or an animated shade, recolors traces colored by a field without drawing a line again, and fitted values grow with headroom, so a live run's new extremes draw history again a few times rather than at each.
 
 Added
 
@@ -12,7 +12,7 @@ Added
 
 Changed
 
-- monitor: history keeps a layer per look. Traces of fixed colors share one layer of colors, as before; traces colored by a field share a layer of values for each look, which the monitor colors as it composes.
+- monitor: history keeps a layer per look, holding only what composition cannot recover. Traces of fixed colors share one layer of colors, as before. Traces colored by what they plot keep coverage alone, at 1 byte a pixel, as the value of a line is where it lies. Traces colored by another field keep their color values, at 8 bytes a pixel for each look.
+- monitor: `camera.fit` fits each window tightly, then grows the values by half the data's span past each side new data overflows.
 - monitor: an appending source keeps drawn history even when the same `set` changes traces. A trace that reads differently draws its layer again, and nothing else.
-- monitor: history costs 8 bytes a pixel for each look of traces colored by a field, against 4 for all traces of fixed colors.
 - gpu: `set()` compares typed arrays by what they hold, so equal rows keep what a view built.

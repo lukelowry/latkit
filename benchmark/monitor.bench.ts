@@ -1,8 +1,22 @@
 import { describe } from 'vitest';
-import { appendData, type Data, type Domain } from '@latkit/model';
+import { appendData, type Data, type Domain, type SampleBatch } from '@latkit/model';
 import { pulse, type ColormapName, type RGBA } from '@latkit/gpu';
 import { createMonitor, type Monitor, type MonitorConfig } from '@latkit/monitor';
 import { busIndex, counters, draw, frames, gpu, grid, suite, voltages } from './harness.ts';
+
+/** A frame of voltages swinging wider than any before, as a disturbance grows: every frame is a new extreme. */
+function swelling(buses: number, frame: number): SampleBatch {
+  const batch = voltages(buses, frame),
+    swing = 0.05 + frame * 0.01,
+    values = Float32Array.from(
+      { length: buses },
+      (_, i) => 1 + Math.sin(i * 0.01 + frame * 0.2) * swing,
+    );
+  return {
+    ...batch,
+    columns: { voltage: { ...batch.columns.voltage, values } },
+  };
+}
 
 /** A trace per row: monitors scale with the rows they draw. */
 describe.each([100, 1_000, 10_000])('monitor %i rows', async (rows) => {
@@ -37,6 +51,15 @@ describe.each([100, 1_000, 10_000])('monitor %i rows', async (rows) => {
   measure('change window', async (i) => {
     view.set({ camera: { x: [0, frames * 4 + 1 + (i % 2)] } });
     await draw(device, view, 0, 'complete');
+  });
+  // Each new frame a new extreme, with the values fitted: the fit grows, history stands.
+  let swollen = grid(rows);
+  const growing = createMonitor(device, { ...config, source: swollen });
+  await draw(device, growing, 0, 'complete');
+  measure('stream frame, growing extremes', async (i) => {
+    swollen = appendData(swollen, [swelling(rows, frames + i)]);
+    growing.set({ source: swollen });
+    await draw(device, growing, frames + i, 'complete');
   });
 });
 
@@ -82,6 +105,19 @@ const SCENARIOS: Record<
 > = {
   'one fixed trace': { traces: (_, look) => ({ a: fixed(look.color) }) },
   'one mapped trace': { traces: (_, look) => ({ a: mapped(look) }) },
+  'one trace colored by another field': {
+    traces: (_, look) => ({
+      a: {
+        from: 'Bus',
+        y: 'voltage',
+        color: {
+          field: 'load',
+          domain: [look.domain[0] - 0.95, look.domain[1] - 0.05] as const,
+          colormap: look.colormap,
+        },
+      },
+    }),
+  },
   'one following trace': {
     traces: (_, look) => ({
       a: { from: 'Bus', y: 'voltage', color: { field: 'voltage', colormap: look.colormap } },
@@ -183,6 +219,18 @@ describe.each(
     live = appendData(live, [voltages(rows, frames + i)]);
     both.set({ source: live, traces: traces(rows, lookAt(i + 1)) });
     await draw(device, both, frames + i, 'complete');
+  });
+  // A live run of growing extremes with fitted values, as Studio streams one: mapped traces' global
+  // domain widens with each frame, and fixed colors stay as they are.
+  let swollen = grid(rows);
+  const growing = await ready();
+  measure('stream frame, growing extremes', async (i) => {
+    swollen = appendData(swollen, [swelling(rows, frames + i)]);
+    growing.set({
+      source: swollen,
+      traces: traces(rows, { ...lookAt(i + 1), color: lookAt(0).color }),
+    });
+    await draw(device, growing, frames + i, 'complete');
   });
   // Selecting a row draws it over the rest; clearing removes it.
   const select = await ready();

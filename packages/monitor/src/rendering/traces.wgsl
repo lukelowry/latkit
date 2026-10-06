@@ -54,6 +54,11 @@ fn coverage(v:Vertex)->f32 {return clamp(1.0-smoothstep(v.width-0.7,v.width+0.7,
  if(view.focus.a>-1.5){if(view.focus.a>=0.0){tint=view.focus;}else{tint=vec4f(min(vec3f(1),tint.rgb*1.25),tint.a);}}
  tint=shade(ShadeFragment(tint,v.position.xy/view.size.z+view.plot,v.shade));return outputColor(tint,alpha);
 }
+// A coverage layer: each line's coverage alone, which composition colors by where it lies.
+@fragment fn coverage_main(v:Vertex)->@location(0) vec4f {
+ let alpha=coverage(v);if(alpha<=0.0){discard;}
+ return vec4f(alpha,0.0,0.0,alpha);
+}
 // A value layer: under each line's coverage, its color value, its shade value, and whether it has
 // a color value, premultiplied as colors are so overlapping lines blend.
 @fragment fn value_main(v:Vertex)->@location(0) vec4f {

@@ -430,7 +430,8 @@ describe('looks', () => {
     h.close();
   });
   it('shares one layer among fixed colors, and one per look among mapped traces', async () => {
-    const fixed = { from: 'signal', y: 'value' } as const;
+    const fixed = { from: 'signal', y: 'value' } as const,
+      other = (domain: Domain) => ({ ...fixed, color: { field: 'other', domain } });
     const h = await harness(undefined, {
       traces: {
         a: fixed,
@@ -439,14 +440,64 @@ describe('looks', () => {
         d: colored([-1, 1]).signal,
         e: colored([-1, 1]).signal,
         f: colored([-2, 2]).signal,
+        g: other([-1, 1]),
+        h: other([-1, 1]),
       },
     });
     await h.render();
+    // Traces colored by what they plot keep coverage alone; by another field, its values.
     expect(historyOf(h.monitor, 'presentedHistory')?.front?.layers.map((l) => l.kind)).toEqual([
       'color',
-      'value',
+      'coverage',
+      'coverage',
       'value',
     ]);
+    const { segments } = h.monitor.stats();
+    h.monitor.set({ traces: { g: other([-3, 3]), h: other([-3, 3]) } });
+    await h.render();
+    expect(h.monitor.stats().segments).toBe(segments);
+    h.close();
+  });
+  it('grows fitted values with headroom as new extremes arrive, drawing history a few times', async () => {
+    /** Values that swing wider each frame, as a disturbance grows. */
+    class Swelling extends SignalSource {
+      value(row: number, frame: number, field = 'value') {
+        return super.value(row, frame, field) * (1 + frame * 0.02);
+      }
+    }
+    const source = new Swelling(4, 32),
+      h = await harness(source, {
+        camera: { x: [source.coordinate(0), source.coordinate(400)] },
+      });
+    await h.render();
+    let redraws = 0;
+    for (let i = 0; i < 200; i++) {
+      const before = h.monitor.stats().segments;
+      source.append(1);
+      h.monitor.set({ source: source.data });
+      await h.render();
+      // An append draws one segment a row; more draws history again.
+      if (h.monitor.stats().segments - before > 4) redraws++;
+    }
+    expect(redraws).toBeGreaterThan(0);
+    expect(redraws).toBeLessThan(20);
+    let lo = Infinity,
+      hi = -Infinity;
+    for (let r = 0; r < 4; r++)
+      for (let f = 0; f < source.frames; f++) {
+        lo = Math.min(lo, source.value(r, f));
+        hi = Math.max(hi, source.value(r, f));
+      }
+    const grownY = h.monitor.camera.y;
+    expect(grownY[0]).toBeLessThan(lo);
+    expect(grownY[1]).toBeGreaterThan(hi);
+    // A new window fits tightly again.
+    h.monitor.set({ camera: { x: [source.coordinate(0), source.coordinate(401)] } });
+    await h.render();
+    const tight = h.monitor.camera.y;
+    expect(tight[0]).toBeLessThan(lo);
+    expect(tight[1]).toBeGreaterThan(hi);
+    expect(tight[1] - tight[0]).toBeLessThan(grownY[1] - grownY[0]);
     h.close();
   });
   it('draws a trace again when what it reads changes', async () => {

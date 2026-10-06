@@ -17,13 +17,18 @@ export interface Progress {
   /** A chunk drawn for its first `rows` rows, which finishes before anything later. */
   readonly chunk?: { readonly start: number; readonly frames: number; readonly rows: number };
 }
-/** What a layer holds: the colors of traces whose color is fixed, or values a look maps. */
-export type LayerKind = 'color' | 'value';
+/**
+ * What a layer holds, which is only what composition cannot recover: the colors of traces whose
+ * color is fixed; the coverage of traces colored by what they plot, whose value is where a line
+ * lies; or the color values of traces colored by another field.
+ */
+export type LayerKind = 'color' | 'coverage' | 'value';
 export const LAYER_FORMATS: Readonly<Record<LayerKind, GPUTextureFormat>> = {
   color: 'rgba8unorm',
+  coverage: 'r8unorm',
   value: 'rgba16float',
 };
-const TEXEL_BYTES: Readonly<Record<LayerKind, number>> = { color: 4, value: 8 };
+const TEXEL_BYTES: Readonly<Record<LayerKind, number>> = { color: 4, coverage: 1, value: 8 };
 /** Traces drawn into one layer, and the look composition gives a value layer. */
 export interface Group {
   /** What the layer's pixels depend on; a layer of another key starts over. */
@@ -67,13 +72,13 @@ export function image({ width, height, window, values, msaa }: Transform): Image
 }
 /**
  * The layers an image draws, in trace order. Traces whose color is fixed share one layer of their
- * colors. Traces a look maps share a layer of values for each look, which composition colors, so a
- * new domain or colormap draws nothing. Layers grow with looks, never with traces.
+ * colors. Traces a look maps share a layer for each look, which composition colors, so a new domain
+ * or colormap draws nothing. Layers grow with looks, never with traces.
  */
 export function plan(traces: readonly Binding[], drawn: unknown, baked: unknown): Group[] {
   const groups = new Map<string, { kind: LayerKind; traces: Binding[]; look: Look }>();
   for (const trace of traces) {
-    const kind: LayerKind = trace.look.domain === null ? 'color' : 'value',
+    const kind = trace.look.layer,
       by = kind === 'color' ? kind : trace.lookKey;
     let group = groups.get(by);
     if (!group) groups.set(by, (group = { kind, traces: [], look: trace.look }));

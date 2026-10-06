@@ -181,7 +181,7 @@ export interface Composited {
 export interface Screen {
   /** The background, premultiplied, which the pass clears to. */
   readonly background: GPUColor;
-  /** Each shown layer in draw order: its kind, image group, and a value layer's colormap. */
+  /** Each shown layer in draw order: its kind, image group, and the colormap of one a look maps. */
   readonly layers: readonly {
     readonly kind: LayerKind;
     readonly image: GPUBindGroup;
@@ -209,8 +209,15 @@ function mapping(image: Transform, window: Domain, values: Domain): readonly num
     (values[1] - values[0]) / iv,
   ];
 }
-/** Where a value stored against `stored` falls in the colormap of `domain`: x·value + y; z colors, w clamps. */
-function remap(stored: Domain, domain: Domain | null, clamp: boolean): readonly number[] {
+/**
+ * Where a value from 0 to 1 across `stored` falls in the colormap of `domain`: x·value + y; z
+ * colors, w clamps. `stored` may run either way.
+ */
+function remap(
+  stored: readonly [number, number],
+  domain: Domain | null,
+  clamp: boolean,
+): readonly number[] {
   if (!domain) return [0, 0, 0, 0];
   const span = domain[1] - domain[0],
     clamps = clamp ? 1 : 0;
@@ -246,7 +253,15 @@ export async function prepareScreen(
     uniforms.set(mapping(entry.image, window, values), 8);
     uniforms.set(entry.look.base ?? style.traceColor, 12);
     uniforms.set(entry.focus ? selected : [0, 0, 0, -2], 16);
-    uniforms.set(remap(entry.layer.stored, domain, entry.look.clamp), 20);
+    // A coverage layer's value is the camera's at its height in the plot, from top to bottom.
+    uniforms.set(
+      remap(
+        entry.layer.kind === 'coverage' ? [values[1], values[0]] : entry.layer.stored,
+        domain,
+        entry.look.clamp,
+      ),
+      20,
+    );
     return {
       kind: entry.layer.kind,
       image: gpu.device.createBindGroup({
@@ -257,7 +272,7 @@ export async function prepareScreen(
           { binding: 2, resource: pipelines.sampler },
         ],
       }),
-      ...(entry.layer.kind === 'value' && { colors: frame.colormap(entry.look.colormap) }),
+      ...(entry.layer.kind !== 'color' && { colors: frame.colormap(entry.look.colormap) }),
     };
   });
   const cursor =

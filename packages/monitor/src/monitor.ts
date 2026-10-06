@@ -168,6 +168,19 @@ function frameReadings(
     ...(low <= high ? { y: expanded([low, high], bottom, top, area.height) } : {}),
   };
 }
+const sameDomain = (a: Domain, b: Domain) => a[0] === b[0] && a[1] === b[1];
+/**
+ * The values a fit shows as data grows in one window: those shown while the data fits inside them,
+ * else wider by half the data's span past each side it overflows.
+ */
+function grown(wanted: Domain, shown: Domain): Domain {
+  if (wanted[0] >= shown[0] && wanted[1] <= shown[1]) return shown;
+  const half = (wanted[1] - wanted[0]) / 2;
+  return [
+    wanted[0] < shown[0] ? wanted[0] - half : shown[0],
+    wanted[1] > shown[1] ? wanted[1] + half : shown[1],
+  ];
+}
 function includes(rows: RowAxis, row: number): boolean {
   return rows.kind === 'range'
     ? row >= rows.offset && row < rows.offset + rows.count
@@ -315,6 +328,8 @@ class MonitorView
   private shading = 0;
   /** Line segments drawn into history, all time. */
   private segments = 0;
+  /** The window and values the latest fit framed: while both stand, arriving data grows the values. */
+  private fitted?: { readonly x: Domain; readonly y: Domain };
   /** The latest groups of history images, and of the selection's, and what they were planned for. */
   private readonly planned = new Map<
     boolean,
@@ -387,6 +402,8 @@ class MonitorView
   /** Readings frame once; no readings fit the values and show every recorded coordinate. */
   fit(items?: readonly MonitorItem[], options: SetOptions = {}): void {
     this.live();
+    // Asked for, a fit is tight.
+    this.fitted = undefined;
     if (!items?.length) {
       const recorded = this.recorded();
       if (recorded) this.moveCamera({ x: recorded }, options);
@@ -414,7 +431,17 @@ class MonitorView
       padding = insets(this.style.fitPaddingPx);
     if (items) return frameReadings(items, camera, area, padding);
     const values = this.traces && this.extents.values(this.traces, camera.x);
-    return values ? { y: expanded(values, padding[2], padding[0], area.height) } : undefined;
+    if (!values) return undefined;
+    // A window fits tightly; data arriving in it grows the values with headroom, so a run of new
+    // extremes draws history again a few times, not at each.
+    const tight = expanded(values, padding[2], padding[0], area.height),
+      held = this.fitted,
+      y =
+        held && sameDomain(held.x, camera.x) && sameDomain(held.y, camera.y)
+          ? grown(tight, camera.y)
+          : tight;
+    this.fitted = { x: camera.x, y };
+    return { y };
   }
   protected interpolate(from: Camera, to: Camera, t: number): Camera {
     return mixCamera(from, to, t);
@@ -512,6 +539,7 @@ class MonitorView
     this.stale.clear();
     this.error = undefined;
     this.extents = new Fit();
+    this.fitted = undefined;
   }
   /** A changed trace looks again when it reads the same, and is described again otherwise. */
   private retrace(before: MonitorData['traces'], after: MonitorData['traces']): void {
@@ -524,6 +552,9 @@ class MonitorView
       );
     }
     for (const name of [...this.stale.keys()]) if (!(name in after)) this.stale.delete(name);
+    // Other reads frame other values: the next fit is tight.
+    if ([...this.stale.values()].includes('read') || Object.keys(before).some((n) => !(n in after)))
+      this.fitted = undefined;
     if (this.traces) {
       const named = new Map(this.traces.map((trace) => [trace.name, trace]));
       this.traces = Object.keys(after).flatMap((name) => named.get(name) ?? []);

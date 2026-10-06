@@ -4,7 +4,7 @@ import compositeCode from './composite.wgsl';
 import axesCode from './axes.wgsl';
 import { LAYER_FORMATS, type LayerKind } from './history.js';
 
-const KINDS = ['color', 'value'] as const satisfies readonly LayerKind[];
+const KINDS = ['color', 'coverage', 'value'] as const satisfies readonly LayerKind[];
 export interface Pipelines {
   /** Lines into a layer of each kind. */
   readonly draw: Readonly<Record<LayerKind, GPURenderPipeline>>;
@@ -67,11 +67,13 @@ export async function pipelines(
     ),
     gpu.shaderModule(kit.textShader({ group: 0 }) + axesCode, 'monitor axes'),
   ]);
-  // A color layer composes as it is; only a value layer reads a colormap and the shade.
+  // A color layer composes as it is; the others read a colormap and the shade.
   const drawn = d.createPipelineLayout({ bindGroupLayouts: [gpu.fieldLayout, view, effects] }),
+    looked = d.createPipelineLayout({ bindGroupLayouts: [image, gpu.colormapLayout, effects] }),
     composed: Record<LayerKind, GPUPipelineLayout> = {
       color: d.createPipelineLayout({ bindGroupLayouts: [image] }),
-      value: d.createPipelineLayout({ bindGroupLayouts: [image, gpu.colormapLayout, effects] }),
+      coverage: looked,
+      value: looked,
     },
     target = { format, blend: kit.premultipliedBlend };
   const [draw, compose, lines, text] = await Promise.all([
@@ -111,8 +113,8 @@ export async function pipelines(
     }),
   ]);
   return {
-    draw: { color: draw[0], value: draw[1] },
-    compose: { color: compose[0], value: compose[1] },
+    draw: { color: draw[0], coverage: draw[1], value: draw[2] },
+    compose: { color: compose[0], coverage: compose[1], value: compose[2] },
     lines,
     text,
     view,

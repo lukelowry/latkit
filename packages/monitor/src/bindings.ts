@@ -13,6 +13,7 @@ import {
 } from '@latkit/model';
 import type { MonitorData, Trace } from './data.js';
 import { domain, finite, fail } from './config.js';
+import type { LayerKind } from './rendering/history.js';
 
 /** What a trace reads: its values, and its channels; colors and widths map over their extents. */
 const TRACE = {
@@ -33,6 +34,11 @@ export interface Look {
   /** The color of rows without a color value: the trace's own, or the style's `traceColor` when null. */
   readonly base: RGBA | null;
   readonly clamp: boolean;
+  /**
+   * What history keeps for it: colors when the color is fixed; coverage alone when the color reads
+   * the plotted field, whose value is where a line lies; else the color values themselves.
+   */
+  readonly layer: LayerKind;
 }
 export interface Binding {
   readonly name: string;
@@ -96,17 +102,21 @@ function bindTrace(trace: Trace, main: FieldBinding): kit.BoundChannels<TraceCha
     TRACE,
   );
 }
-/**
- * Check a trace's visual fields; whether its color follows the values axis, as one colored by what
- * it plots does without a domain of its own.
- */
+/** How a trace's color reads its values: the plotted field, and over the values axis too. */
+interface Colored {
+  /** The color reads the field the trace plots. */
+  readonly own: boolean;
+  /** And without a domain of its own, so it follows the values axis. */
+  readonly follows: boolean;
+}
+/** Check a trace's visual fields, and how its color reads them. */
 function visuals(
   bound: kit.BoundChannels<TraceChannel>,
   data: MonitorData,
   from: string,
   main: FieldBinding,
-): boolean {
-  let follows = false;
+): Colored {
+  let own = false;
   for (const alias of ['color', 'widthPx', 'visible', 'shade'] as const) {
     const input = bound.channels[alias].field;
     if (input === undefined) continue;
@@ -126,13 +136,9 @@ function visuals(
     )
       fail('Visual fields must be scalar numeric data, or boolean visibility');
     if (alias === 'color')
-      follows =
-        other.source === main.source &&
-        other.field === main.field &&
-        !other.rows &&
-        (bound.channels.color.scale?.domain ?? 'auto') === 'auto';
+      own = other.source === main.source && other.field === main.field && !other.rows;
   }
-  return follows;
+  return { own, follows: own && (bound.channels.color.scale?.domain ?? 'auto') === 'auto' };
 }
 /** The traces `names` names as the monitor reads them; sampled domains fit `window`. */
 export async function describeBindings(
@@ -156,7 +162,7 @@ export async function describeBindings(
     if (trace.rows && main.rows && JSON.stringify(trace.rows) !== JSON.stringify(main.rows))
       fail('Specify the trace row selection once');
     const bound = bindTrace(trace, main),
-      colorFollows = visuals(bound, data, trace.from, main),
+      colored = visuals(bound, data, trace.from, main),
       selected = trace.rows ?? main.rows,
       table = main.source.tables[trace.from];
     // Ids resolve once here, so fitting, picking, and reading all test the same rows.
@@ -180,7 +186,7 @@ export async function describeBindings(
       // The style's trace width stands in for a width each draw reads.
       { y: NaN, visible: 1 },
     );
-    const look = await lookOf(reads, data.source, trace.from, rows, bound, colorFollows, window);
+    const look = await lookOf(reads, data.source, trace.from, rows, bound, colored, window);
     result.push({
       name,
       trace,
@@ -192,7 +198,7 @@ export async function describeBindings(
       fields: bound.fields,
       bound,
       channels,
-      colorFollows,
+      colorFollows: colored.follows,
       version: ++versions,
       look,
       lookKey: lookKey(look),
@@ -210,9 +216,16 @@ export async function relook(
 ): Promise<Binding> {
   const main = binding(trace.y, data.source, trace.from)!,
     bound = bindTrace(trace, main),
-    colorFollows = visuals(bound, data, trace.from, main),
-    look = await lookOf(reads, data.source, trace.from, previous.rows, bound, colorFollows, window);
-  return { ...previous, trace, bound, colorFollows, look, lookKey: lookKey(look) };
+    colored = visuals(bound, data, trace.from, main),
+    look = await lookOf(reads, data.source, trace.from, previous.rows, bound, colored, window);
+  return {
+    ...previous,
+    trace,
+    bound,
+    colorFollows: colored.follows,
+    look,
+    lookKey: lookKey(look),
+  };
 }
 async function lookOf(
   reads: ReadScope,
@@ -220,18 +233,24 @@ async function lookOf(
   from: string,
   rows: Rows | undefined,
   bound: kit.BoundChannels<TraceChannel>,
-  colorFollows: boolean,
+  colored: Colored,
   window: Domain,
 ): Promise<Look> {
   const tint = bound.channels.color,
+    shade = bound.channels.shade,
     base = Array.isArray(tint.constant)
       ? (tint.constant as RGBA)
       : Array.isArray(tint.missing)
         ? (tint.missing as RGBA)
         : null,
-    look = { base, colormap: tint.colormap, clamp: tint.scale?.clamp ?? true };
-  if (tint.field === undefined || !tint.scale) return { ...look, domain: null };
-  if (colorFollows) return { ...look, domain: 'values' };
+    look = { base, colormap: tint.colormap, clamp: tint.scale?.clamp ?? true },
+    // A line's place is its value only when it shades by nothing a pixel must remember.
+    mapped: LayerKind =
+      colored.own && shade.field === undefined && shade.constant === undefined
+        ? 'coverage'
+        : 'value';
+  if (tint.field === undefined || !tint.scale) return { ...look, domain: null, layer: 'color' };
+  if (colored.follows) return { ...look, domain: 'values', layer: mapped };
   const scale = await kit.fieldScale(reads, {
     ...tint.scale,
     source,
@@ -242,7 +261,7 @@ async function lookOf(
       ? { kind: 'range', between: window }
       : undefined,
   });
-  return { ...look, domain: scale.domain };
+  return { ...look, domain: scale.domain, layer: scale.domain ? mapped : 'color' };
 }
 const colormapIds = new WeakMap<object, number>();
 let colormapCount = 0;
@@ -253,7 +272,7 @@ function lookKey(look: Look): string {
     if (id === undefined) colormapIds.set(colormap, (id = ++colormapCount));
     colormap = id;
   }
-  return JSON.stringify([look.domain, colormap, look.base, look.clamp]);
+  return JSON.stringify([look.layer, look.domain, colormap, look.base, look.clamp]);
 }
 export function fields(schema: Schema, type: string) {
   const result = schema.types[type]?.fields;
