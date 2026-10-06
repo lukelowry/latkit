@@ -1,8 +1,9 @@
 import { renderer as snapshotRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { afterEach, expect, it, vi } from 'vitest';
-import { createData } from '@latkit/model';
+import { createData, numberAt, rowAt, rowCount, type NumericColumn } from '@latkit/model';
 import { createGpu, createComposition, kit } from '@latkit/gpu';
 import { createDiagram, type Diagram } from '../src/diagram.js';
+import type { Positions } from '../src/data.js';
 import type { Controls } from '../src/input.js';
 import type { DragDraw } from '../src/drag.js';
 import { Source, data, vertex as vertexOf } from './fixture.js';
@@ -55,6 +56,14 @@ const interaction = (diagram: Diagram) => (diagram as unknown as { controls: Con
 const dragOf = (diagram: Diagram) =>
   (diagram as unknown as { shown?: { drag?: DragDraw } }).shown?.drag;
 const animating = (diagram: Diagram) => kit.rendererOf(diagram).animating;
+/** Each row of a type's positions with its x and y. */
+function lanes({ x, y }: Positions): number[][] {
+  return Array.from({ length: rowCount(x.rows) }, (_, i) => [
+    rowAt(x.rows, i),
+    numberAt(x.values as NumericColumn, i)!,
+    numberAt(y.values as NumericColumn, i)!,
+  ]);
+}
 const presentedOf = (diagram: Diagram) =>
   (
     diagram as unknown as {
@@ -311,8 +320,15 @@ it('keeps drag previews separate from accepted positions', async () => {
     await f.draw();
     expect(f.diagram.locate(ref)).toEqual(at);
     expect(api.scene()!.vertices[0].x).toBe(before);
-    const move = api.move([ref], [24, 8])!;
-    expect(move.moves[0].position).toEqual([before + 24, api.scene()!.vertices[0].y + 8]);
+    // The layout placed every vertex, so the proposal holds them all, the dragged one moved.
+    const { Task } = api.move([ref], [24, 8])!.positions;
+    expect(lanes(Task)).toEqual(
+      api
+        .scene()!
+        .vertices.map((vertex, i) =>
+          i ? [vertex.row, vertex.x, vertex.y] : [0, before + 24, vertex.y + 8],
+        ),
+    );
   } finally {
     f.diagram.destroy();
     f.target.destroy();
@@ -354,6 +370,97 @@ it('leaves application data usable after releasing GPU resources', async () => {
   expect(Object.keys(value.tables).length).toBeGreaterThan(0);
 });
 
+it('proposes the laid out drawing on a move, and only what moved once positions are written', async () => {
+  const f = await fixture();
+  try {
+    await f.draw();
+    const api = interaction(f.diagram),
+      ref = vertexOf(f.source, 'n1');
+    const first = api.move([ref], [0, 16])!.positions.Task;
+    expect(lanes(first).map(([row]) => row)).toEqual([0, 1, 2, 3]);
+    // Written back, every position pins its vertex, and the next move proposes just its own.
+    f.diagram.set({ vertices: { Task: first } });
+    await f.draw();
+    expect(api.scene()!.vertices.every((vertex) => vertex.placed)).toBe(true);
+    expect(lanes(api.move([ref], [0, 16])!.positions.Task)).toEqual([
+      [1, api.scene()!.vertices[1].x, api.scene()!.vertices[1].y + 16],
+    ]);
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+it('moves vertices on the scene as it stands, drawing what a fresh diagram draws', async () => {
+  const f = await fixture();
+  try {
+    f.diagram.set(data(f.source, true));
+    await f.draw();
+    const api = interaction(f.diagram),
+      before = api.scene()!;
+    // The last task moves down; its wire routes again, and the others keep theirs.
+    f.source.xy[6] = 720;
+    f.source.xy[7] = 320;
+    f.source.update();
+    f.diagram.set(data(f.source, true));
+    await f.draw();
+    const after = api.scene()!;
+    expect(after.parts).toBe(before.parts);
+    expect(after.vertices[3].label).toBe(before.vertices[3].label);
+    expect([after.vertices[3].x, after.vertices[3].y]).toEqual([720, 320]);
+    expect(after.edges[0].route).toBe(before.edges[0].route);
+    const fresh = createDiagram(f.gpu, data(f.source, true));
+    try {
+      await f.gpu.render({
+        views: [{ renderer: kit.rendererOf(fresh), target: f.target }],
+        timeMs: 0,
+      });
+      const again = interaction(fresh).scene()!;
+      expect(after.vertices.map((v) => [v.x, v.y, v.placed])).toEqual(
+        again.vertices.map((v) => [v.x, v.y, v.placed]),
+      );
+      expect(after.edges.map((e) => [e.paths, e.labels])).toEqual(
+        again.edges.map((e) => [e.paths, e.labels]),
+      );
+    } finally {
+      fresh.destroy();
+    }
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
+it('keeps its scene when a whole config replaces one equal to it', async () => {
+  const f = await fixture();
+  try {
+    await f.draw();
+    const scene = interaction(f.diagram).scene(),
+      reads = f.source.queries;
+    // A fresh config built the same way, as an application builds one on every change.
+    f.diagram.set(data(f.source), { replace: true });
+    await f.draw();
+    expect(interaction(f.diagram).scene()).toBe(scene);
+    expect(f.source.queries).toBe(reads);
+    // What it leaves out resets: the arrows go, and the wires route again.
+    const d = data(f.source);
+    f.diagram.set(
+      { ...d, edges: { Dependency: { ...d.edges!.Dependency, arrows: undefined } } },
+      { replace: true },
+    );
+    expect(f.diagram.config.edges!.Dependency).not.toHaveProperty('arrows');
+    await f.draw();
+    expect(
+      interaction(f.diagram)
+        .scene()!
+        .edges.every((edge) => !edge.arrows.length),
+    ).toBe(true);
+  } finally {
+    f.diagram.destroy();
+    f.target.destroy();
+    f.gpu.destroy();
+  }
+});
 it('accepts sparse movement without moving uncovered vertices', async () => {
   const f = await fixture();
   try {
@@ -415,7 +522,9 @@ it('moves nested collapsed groups without losing routes or accumulating geometry
       base = api.scene()!;
     const bounds = [...base.groups.find((g) => g.id === 'outer')!.bounds];
     const refs = [{ kind: 'group' as const, id: 'outer' }, vertexOf(f.source, 'n0')];
-    expect(api.move(refs, [0, 24])!.moves).toHaveLength(2);
+    expect(lanes(api.move(refs, [0, 24])!.positions.Task)).toEqual(
+      base.vertices.map((vertex, i) => [vertex.row, vertex.x, vertex.y + (i < 2 ? 24 : 0)]),
+    );
     api.preview(refs, [0, 24]);
     await f.draw();
     // The groups move with their vertices, and the wires leaving them reroute where they go; the
@@ -535,7 +644,7 @@ it('updates uniform-only presentation without querying or rebuilding geometry', 
     f.gpu.destroy();
   }
 });
-it('animates accepted positions with coherent picking and one native read per revision', async () => {
+it('eases accepted positions on the GPU while the scene, picking, and reads hold the target', async () => {
   const f = await fixture();
   const render = (timeMs: number) =>
     f.gpu.render({ views: [{ renderer: kit.rendererOf(f.diagram), target: f.target }], timeMs });
@@ -544,35 +653,45 @@ it('animates accepted positions with coherent picking and one native read per re
     f.diagram.set(data(f.source, true));
     await render(0);
     f.diagram.set({ camera: { fit: false } });
-    const ref = vertexOf(f.source, 'n0');
-    const before = interaction(f.diagram).scene()!.vertices[0].y;
+    const ref = vertexOf(f.source, 'n0'),
+      api = interaction(f.diagram),
+      before = api.scene()!.vertices[0].y,
+      [x, y] = f.diagram.locate(ref)!,
+      scale = f.diagram.camera.scale;
     f.source.xy[1] += 80;
     f.source.update();
-    f.diagram.set({ source: f.source.data });
     f.diagram.set(data(f.source, true), { animate: true });
     await render(20);
-    const reads = f.source.queries;
-    expect(interaction(f.diagram).scene()!.vertices[0].y).toBe(before);
+    // The scene holds the target at once; the vertex draws where it was.
+    const target = api.scene()!,
+      reads = f.source.queries,
+      uploaded = f.gpu.stats().uploadedBytes;
+    expect(target.vertices[0].y).toBe(before + 80);
+    expect(f.diagram.locate(ref)![1]).toBeCloseTo(y);
+    expect(animating(f.diagram)).toBe(true);
     await render(120);
-    const vertex = interaction(f.diagram).scene()!.vertices[0];
-    expect(vertex.y).toBeGreaterThan(before);
-    expect(vertex.y).toBeLessThan(before + 80);
+    const between = f.diagram.locate(ref)![1];
+    expect(between).toBeGreaterThan(y + 1);
+    expect(between).toBeLessThan(y + 80 * scale - 1);
+    // A frame between reads, places, routes, and uploads nothing but its uniforms.
+    expect(api.scene()).toBe(target);
+    expect(f.source.queries).toBe(reads);
+    expect(f.gpu.stats().uploadedBytes - uploaded).toBeLessThan(8192);
+    // Picking holds the target, as it holds accepted positions during a drag.
     expect(
-      (await f.diagram.pick(f.diagram.locate(ref)!)).some(
+      (await f.diagram.pick([x, y + 80 * scale])).some(
         (hit) => hit.kind === 'vertex' && hit.row === 0,
       ),
     ).toBe(true);
     await render(220);
-    expect(interaction(f.diagram).scene()!.vertices[0].y).toBe(before + 80);
-    expect(f.source.queries).toBe(reads);
+    expect(f.diagram.locate(ref)![1]).toBeCloseTo(y + 80 * scale);
     expect(animating(f.diagram)).toBe(false);
     f.diagram.set({ motion: 'reduce' });
     f.source.xy[1] += 80;
     f.source.update();
-    f.diagram.set({ source: f.source.data });
     f.diagram.set(data(f.source, true), { animate: true });
     await render(240);
-    expect(interaction(f.diagram).scene()!.vertices[0].y).toBe(before + 160);
+    expect(f.diagram.locate(ref)![1]).toBeCloseTo(y + 160 * scale);
     expect(animating(f.diagram)).toBe(false);
   } finally {
     f.diagram.destroy();
@@ -593,26 +712,27 @@ it('exports a transition at its target positions without starting or ending it',
     f.diagram.set(data(f.source, true));
     await render(0);
     f.diagram.set({ camera: { fit: false } });
-    const shown = () => interaction(f.diagram).scene()!.vertices[0].y,
-      before = shown();
+    const ref = vertexOf(f.source, 'n0'),
+      drawn = () => f.diagram.locate(ref)![1],
+      before = drawn(),
+      scale = f.diagram.camera.scale;
     f.source.xy[1] += 80;
     f.source.update();
-    f.diagram.set({ source: f.source.data });
     f.diagram.set(data(f.source, true), { animate: true });
     await render(20, false);
-    expect(shown()).toBe(before);
+    expect(drawn()).toBe(before);
     expect(animating(f.diagram)).toBe(false);
     // The first presented frame starts the transition the export left waiting.
     await render(20);
-    expect(shown()).toBe(before);
+    expect(drawn()).toBeCloseTo(before);
     expect(animating(f.diagram)).toBe(true);
     await render(120, false);
-    expect(shown()).toBe(before);
+    expect(drawn()).toBeCloseTo(before);
     await render(120);
-    expect(shown()).toBeGreaterThan(before);
-    expect(shown()).toBeLessThan(before + 80);
+    expect(drawn()).toBeGreaterThan(before + 1);
+    expect(drawn()).toBeLessThan(before + 80 * scale - 1);
     await render(220);
-    expect(shown()).toBe(before + 80);
+    expect(drawn()).toBeCloseTo(before + 80 * scale);
   } finally {
     f.diagram.destroy();
     f.target.destroy();
@@ -632,7 +752,6 @@ it('restores accepted positions when a drag interrupts and cancels a layout tran
     await render(0);
     f.source.xy[1] = 80;
     f.source.update();
-    f.diagram.set({ source: f.source.data });
     f.diagram.set(data(f.source, true), { animate: true });
     await render(20);
     await render(100);
@@ -648,21 +767,29 @@ it('restores accepted positions when a drag interrupts and cancels a layout tran
     f.gpu.destroy();
   }
 });
-it('settles immediately when animation is disabled or above its configured size limit', async () => {
-  const f = await fixture();
+it('animates a diagram of any size, and settles at once without motion', async () => {
+  const f = await fixture(),
+    source = new Source(1200);
+  const render = (timeMs: number) =>
+    f.gpu.render({ views: [{ renderer: kit.rendererOf(f.diagram), target: f.target }], timeMs });
   try {
-    f.diagram.set(data(f.source, true));
-    await f.draw();
-    f.diagram.set({ animationMaxVertices: 2, motion: 'full', animationMs: 0 });
-    f.diagram.fit(undefined, { animate: true });
-    await f.draw();
-    expect(Number.isFinite(f.diagram.camera.scale)).toBe(true);
-    f.diagram.set({ animationMs: 200 });
-    f.source.xy[1] = 80;
-    f.source.update();
-    f.diagram.set({ source: f.source.data });
-    f.diagram.set(data(f.source, true), { animate: true });
-    await f.draw();
+    f.diagram.set({ ...data(source, true), animationMs: 200, motion: 'full' });
+    await render(0);
+    source.xy.forEach((_, i) => (source.xy[i] += i % 2 ? 40 : 0));
+    source.update();
+    f.diagram.set(data(source, true), { animate: true });
+    await render(10);
+    expect(animating(f.diagram)).toBe(true);
+    const scene = interaction(f.diagram).scene();
+    await render(100);
+    expect(interaction(f.diagram).scene()).toBe(scene);
+    await render(300);
+    expect(animating(f.diagram)).toBe(false);
+    f.diagram.set({ animationMs: 0 });
+    source.xy[1] = 80;
+    source.update();
+    f.diagram.set(data(source, true), { animate: true });
+    await render(320);
     expect(interaction(f.diagram).scene()!.vertices[0].y).toBe(80);
     expect(animating(f.diagram)).toBe(false);
   } finally {
@@ -671,13 +798,14 @@ it('settles immediately when animation is disabled or above its configured size 
     f.gpu.destroy();
   }
 });
-it('merges layout shorthands and camera patches, and reports the presented camera', async () => {
+it('merges layout and camera patches, and reports the presented camera', async () => {
   const f = await fixture();
   try {
     const cameras = vi.fn();
     f.diagram.on('camera', cameras);
-    f.diagram.set({ layout: 'layered' });
+    f.diagram.set({ layout: { algorithm: 'layered' } });
     f.diagram.set({ layout: { direction: 'down' } });
+    expect(() => f.diagram.set({ layout: 'manual' as never })).toThrow(/layout/);
     expect(f.diagram.config.layout).toEqual({ algorithm: 'layered', direction: 'down' });
     await f.draw();
     await Promise.resolve();
@@ -749,7 +877,7 @@ it('binds channels to fields in entries and their ports, as given', async () => 
 it('shares the view style, stats, and limits', async () => {
   const f = await fixture();
   try {
-    f.diagram.set({ selectedWidthPx: 4, background: [0, 0, 0, 1], selectedColor: null });
+    f.diagram.set({ selectedWidthPx: 4, background: [0, 0, 0, 1], selectedColor: 'none' });
     await f.draw();
     expect(f.diagram.stats()).toMatchObject({ frames: 1, hover: 'idle', hoverMs: 0 });
     expect(f.diagram.stats().pickingBytes).toBeGreaterThan(0);

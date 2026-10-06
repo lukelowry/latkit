@@ -2,7 +2,7 @@ import { kit, type Gpu, type RGBA } from '@latkit/gpu';
 import type { DiagramData, DiagramItem, Point } from './data.js';
 import { itemKey } from './data.js';
 import type { Scene, Rect, Vertex, Wire } from './scene.js';
-import { intersects, itemSlots } from './scene.js';
+import { intersects, itemSlots, sceneKey, sceneRows } from './scene.js';
 import type { Style } from './config.js';
 import type { DragDraw } from './drag.js';
 import { labelBox } from './geometry.js';
@@ -29,7 +29,6 @@ const WORDS = 12;
 const PAGE = 16384;
 /** No item: overlay and preview instances, which no focus or style reaches. */
 const NONE = 0xffffffff;
-const SHAPES = ['rounded', 'rectangle', 'ellipse', 'diamond'] as const;
 /** Up to a page of instances about one origin, and the box they cover for culling. */
 interface InstancePage {
   bounds: Rect;
@@ -75,6 +74,8 @@ export interface DrawState {
   readonly overlay: Overlay | null;
   /** A drag drawn over the scene: what it moves, how far, and its rerouted wires. */
   readonly drag: DragDraw | null;
+  /** A transition from another scene, and how much of the way is left: 1 at its start. */
+  readonly transition: { readonly from: Scene; readonly rest: number } | null;
   /** Flow animates; false under reduced motion. */
   readonly motion: boolean;
 }
@@ -87,6 +88,20 @@ export interface Paint {
   msaa?: GPUTextureView;
   background: RGBA;
   drawCalls: number;
+  /** Each slot's offset, two values a slot, which `motion` scales; null when nothing moves. */
+  offsets: Float32Array | null;
+  motion: Point;
+}
+/** How one draw binds: what it labels, its flags, offsets, and styles, and how its wires show. */
+interface DrawBinding {
+  readonly anchors?: GPUBufferBinding;
+  readonly textSize?: number;
+  readonly flags?: GPUBufferBinding;
+  readonly offsets?: GPUBufferBinding;
+  readonly styles?: GPUBufferBinding;
+  readonly opacity?: number;
+  /** Only wires draw, as a transition leaves them. */
+  readonly fading?: boolean;
 }
 /** The kinds as WGSL constants, ahead of the shader that branches on them. */
 const kinds = Object.entries(KIND)
@@ -251,6 +266,7 @@ export async function pipelines(
       { binding: 3, visibility: V | F, buffer: { type: 'read-only-storage' } },
       { binding: 4, visibility: V, buffer: { type: 'read-only-storage' } },
       { binding: 5, visibility: V | F, buffer: { type: 'read-only-storage' } },
+      { binding: 6, visibility: V, buffer: { type: 'read-only-storage' } },
     ],
   });
   const styleLayout = d.createBindGroupLayout({
@@ -264,6 +280,7 @@ export async function pipelines(
       kit.shadeShader({ group: 0, binding: 1 }) +
         kit.textShader({ group: 1 }) +
         kit.outputShader() +
+        kit.shapeShader() +
         kinds +
         '\n' +
         shader +
@@ -316,6 +333,21 @@ export class Painter {
   private readonly text = new kit.TextBank({ label: 'diagram text', local: true });
   /** The labels of rerouted wires a drag draws. */
   private readonly dragText = new kit.TextBank({ label: 'diagram drag text', local: true });
+  /** Each slot's offset, written when what moves changes, never per frame. */
+  private readonly offsets = new kit.BufferData({ size: 16, label: 'diagram offsets' });
+  private shifted?: {
+    readonly scene: Scene;
+    readonly drag: DragDraw['marks'] | null;
+    readonly from: Scene | null;
+    readonly values: Float32Array;
+  };
+  /** The wires a transition leaves, built once as it starts. */
+  private faded?: {
+    readonly from: Scene;
+    readonly scene: Scene;
+    readonly pages: readonly InstancePage[];
+    readonly styled: boolean;
+  };
   constructor(private readonly gpu: Gpu) {
     this.attachments = new kit.Attachments(gpu);
     this.styles = new Styles(gpu);
@@ -373,7 +405,7 @@ export class Painter {
         KIND.block,
         i,
         [vertex.x, vertex.y, vertex.width, vertex.height],
-        [vertex.radius, vertex.header, SHAPES.indexOf(vertex.shape)],
+        [vertex.radius, vertex.header, kit.SHAPES.indexOf(vertex.shape)],
         box,
       );
       text.add(i, vertex.label, titleAt(vertex, style), { slot: i });
@@ -417,16 +449,26 @@ export class Painter {
     );
     this.focus(scene, geometry, state);
     const restyle = await this.styles.prepare(frame, scene, state.data, pipelines.styleLayout),
-      { styles } = restyle,
       focus = frame.buffer(geometry.focus),
       empty = frame.buffer(this.empty),
-      accent = style.selectedColor === 'none' ? style.hoverColor : style.selectedColor;
+      accent = style.selectedColor === 'none' ? style.hoverColor : style.selectedColor,
+      { transition, drag } = state,
+      rest = transition?.rest ?? 0,
+      shifts = this.shifts(scene, drag?.marks ?? null, rest > 0 ? transition!.from : null),
+      offsets = shifts ? frame.buffer(this.offsets) : empty,
+      motion: Point = drag ? drag.delta : [rest, rest];
     const group = (
       origin: Point,
       data: GPUBufferBinding,
-      anchors = empty,
-      textSize = 0,
-      flags = focus,
+      {
+        anchors = empty,
+        textSize = 0,
+        flags = focus,
+        offsets: shifting = offsets,
+        styles = restyle.styles,
+        opacity = 1 - rest,
+        fading = false,
+      }: DrawBinding = {},
     ) =>
       this.gpu.device.createBindGroup({
         layout: pipelines.layout,
@@ -459,9 +501,13 @@ export class Painter {
                 style.gridMinSpacingPx,
                 style.portSize,
                 style.edgeWidthPx,
-                ...(state.drag?.delta ?? [0, 0]),
+                ...motion,
+                opacity,
+                +fading,
                 +style.junctions,
                 scene.slots.ports,
+                scene.slots.edges,
+                scene.slots.groups,
                 ...style.vertexColor,
                 ...style.edgeColor,
                 ...style.outlineColor,
@@ -474,6 +520,7 @@ export class Painter {
           { binding: 3, resource: flags },
           { binding: 4, resource: anchors },
           { binding: 5, resource: styles },
+          { binding: 6, resource: shifting },
         ],
       });
     // Culling keeps the rims, shadows, and markers of what lies just off the canvas.
@@ -488,29 +535,39 @@ export class Painter {
       ];
     const shapes: Paint['shapes'] = [],
       text: Paint['text'] = [];
-    const draw = (pages: readonly InstancePage[], flags = focus) => {
+    const draw = (pages: readonly InstancePage[], binding?: DrawBinding) => {
       for (const page of pages)
         if (intersects(page.bounds, visible))
           shapes.push({
-            group: group(page.origin, frame.buffer(page.data), empty, 0, flags),
+            group: group(page.origin, frame.buffer(page.data), binding),
             count: page.count,
           });
     };
     // Text too small to read is left out.
-    const write = async (pages: readonly kit.TextBankPage[], flags = focus) => {
+    const write = async (pages: readonly kit.TextBankPage[], binding?: DrawBinding) => {
       for (const page of pages)
         if (intersects(page.bounds, visible) && page.maxSize * camera.scale[0] >= 3)
           text.push({
-            group: group(
-              page.origin,
-              frame.buffer(this.empty),
-              frame.buffer(page.anchors),
-              page.maxSize,
-              flags,
-            ),
+            group: group(page.origin, frame.buffer(this.empty), {
+              ...binding,
+              anchors: frame.buffer(page.anchors),
+              textSize: page.maxSize,
+            }),
             pages: await frame.text({ runs: page.runs }),
           });
     };
+    // Above nothing moves; drawn things stay where they are.
+    const still: DrawBinding = { flags: empty, offsets: empty };
+    if (rest > 0) {
+      // The wires a transition leaves fade out as the new ones fade in.
+      const faded = this.fades(transition!.from, scene, style);
+      draw(faded.pages, {
+        ...still,
+        styles: faded.styled ? restyle.styles : empty,
+        opacity: rest,
+        fading: true,
+      });
+    }
     draw(geometry.instances);
     await write(geometry.text);
     if (state.drag?.wires.length) {
@@ -527,8 +584,8 @@ export class Painter {
         });
       }
       this.dragged = moving.flush();
-      draw(this.dragged, empty);
-      await write(named.flush(), empty);
+      draw(this.dragged, still);
+      await write(named.flush(), still);
     }
     if (overlay?.box || overlay?.wire) {
       const gesture = new Instances('diagram gesture', this.gesture);
@@ -550,7 +607,7 @@ export class Painter {
         along += Math.hypot(b[0] - a[0], b[1] - a[1]);
       }
       this.gesture = gesture.flush();
-      draw(this.gesture, empty);
+      draw(this.gesture, still);
     }
     const msaa = this.attachments.prepare(frame, { msaa: style.msaa }).color;
     const level = Math.max(
@@ -576,7 +633,68 @@ export class Painter {
       msaa,
       background: style.background,
       drawCalls: 1 + shapes.length + text.reduce((n, page) => n + page.pages.length, 0),
+      offsets: shifts,
+      motion,
     };
+  }
+  /**
+   * Each slot's offset while something moves: (1, 1) for a drag's slots, which its delta scales,
+   * or where each vertex, port, and group was before a transition. Written once for each.
+   */
+  private shifts(
+    scene: Scene,
+    drag: DragDraw['marks'] | null,
+    from: Scene | null,
+  ): Float32Array | null {
+    if (!drag && !from) return null;
+    const last = this.shifted;
+    if (last?.scene === scene && last.drag === drag && last.from === from) return last.values;
+    const values = new Float32Array(Math.max(4, scene.slots.count * 2)),
+      set = (slot: number, dx: number, dy: number) => {
+        values[slot * 2] = dx;
+        values[slot * 2 + 1] = dy;
+      };
+    if (drag) for (const slot of drag.moving) set(slot, 1, 1);
+    else if (from) {
+      const before = sceneRows(from).vertices;
+      for (const [key, i] of sceneRows(scene).vertices) {
+        const vertex = scene.vertices[i],
+          was = from.vertices[before.get(key) ?? -1];
+        if (!was || (was.x === vertex.x && was.y === vertex.y)) continue;
+        const dx = was.x - vertex.x,
+          dy = was.y - vertex.y;
+        set(i, dx, dy);
+        for (let k = 0; k < vertex.ports.length; k++) set(vertex.portSlot + k, dx, dy);
+      }
+      const frames = new Map(from.groups.map((group) => [group.id, group.bounds]));
+      scene.groups.forEach((group, g) => {
+        const was = frames.get(group.id);
+        if (was && was[0] !== was[2] && group.bounds[0] !== group.bounds[2])
+          set(scene.slots.groups + g, was[0] - group.bounds[0], was[1] - group.bounds[1]);
+      });
+    }
+    this.offsets.update(values);
+    this.shifted = { scene, drag, from, values };
+    return values;
+  }
+  /**
+   * The wires of a scene a transition leaves, and whether they keep their own styles: they do when
+   * the scene it goes to holds the same edges in the same slots.
+   */
+  private fades(from: Scene, scene: Scene, style: Style): NonNullable<Painter['faded']> {
+    if (this.faded?.from !== from || this.faded.scene !== scene) {
+      const instances = new Instances('diagram fading', this.faded?.pages);
+      from.edges.forEach((edge, i) => {
+        if (edge.visible && edge.paths.length)
+          wire(instances, from.slots.edges + i, edge, style.cornerRadius);
+      });
+      const styled =
+        from.slots.edges === scene.slots.edges &&
+        from.edges.length === scene.edges.length &&
+        from.edges.every((edge, i) => sceneKey(edge.hit) === sceneKey(scene.edges[i].hit));
+      this.faded = { from, scene, pages: instances.flush(), styled };
+    }
+    return this.faded;
   }
   encode(frame: kit.Encoding, paint: Paint): void {
     this.styles.encode(frame.encoder, paint.pipelines.styles, paint.restyle);
@@ -656,6 +774,8 @@ export class Painter {
     this.focused = undefined;
     this.dragged = undefined;
     this.gesture = undefined;
+    this.shifted = undefined;
+    this.faded = undefined;
     this.text.clear();
     this.dragText.clear();
   }

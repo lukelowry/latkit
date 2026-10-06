@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
-import { createReader } from '@latkit/model';
-import type { Gpu } from '@latkit/gpu';
+import { Work, createReader } from '@latkit/model';
+import type { Gpu, LayoutPart } from '@latkit/gpu';
 import { arrange, layoutOptions, place, rootEnd } from '../src/layout.js';
 import { readScene } from '../src/read.js';
 import { geometry, contains, boundary, labelBox } from '../src/geometry.js';
@@ -21,7 +21,7 @@ async function scene(source = new Source(), position = false) {
       resolveLimits(),
       layoutText,
     );
-    await place(result, layoutOptions(), 8, reader.signal);
+    await place(result, layoutOptions(), resolveStyle(), new Work(reader.signal));
     await geometry(result, resolveStyle(), resolveLimits(), reader.signal);
     return result;
   } finally {
@@ -91,7 +91,7 @@ it('draws each row between the vertices its two references name', async () => {
       resolveLimits(),
       layoutText,
     );
-    await place(result, layoutOptions(), 8, reader.signal);
+    await place(result, layoutOptions(), resolveStyle(), new Work(reader.signal));
     await geometry(result, resolveStyle(), resolveLimits(), reader.signal);
     expect(result.edges.map((edge) => edge.ends)).toEqual([
       [
@@ -191,22 +191,23 @@ it('uses identical geometry for shape boundaries and picking', async () => {
     picking.hit([200, 150], camera, { width: 400, height: 300, pixelRatio: 2 }, 8)[0],
   ).toMatchObject({ kind: 'vertex', row: 0 });
 });
-it('supports headless custom layout and routing strategies', async () => {
+it('arranges each part with a custom strategy, then packs the parts', async () => {
   const source = new Source(2),
     d = data(source);
   const result = await arrange(gpu, {
     ...d,
     layout: {
-      algorithm: { arrange: (graph) => graph.vertices.map((_, i) => [i * 500, 123] as const) },
+      algorithm: { arrange: (part) => Array.from(part.vertices).flatMap((_, i) => [i * 500, 123]) },
     },
   });
   const lane = (axis: 'x' | 'y') => {
     const values = result.Task[axis].values;
     return values.kind === 'numeric' ? [...values.values] : [];
   };
+  // The strategy places within its part, on the 8-unit grid; packing puts the part at the origin.
   expect([lane('x'), lane('y')]).toEqual([
-    [0, 500],
-    [123, 123],
+    [0, 504],
+    [0, 0],
   ]);
 });
 it('bounds memory and honors cancellation', async () => {
@@ -243,7 +244,7 @@ it('collapses groups into proxies for their external ends', async () => {
       },
     };
     const result = await readScene(d, reader, resolveStyle(), resolveLimits(), layoutText);
-    await place(result, layoutOptions(), 8, reader.signal);
+    await place(result, layoutOptions(), resolveStyle(), new Work(reader.signal));
     await geometry(result, resolveStyle(), resolveLimits(), reader.signal);
     expect(result.vertices.map((n) => n.visible)).toEqual([false, false, true]);
     expect(result.edges[0].paths).toHaveLength(0);
@@ -310,9 +311,9 @@ it('enforces one preparation deadline across native reads and custom layout', as
         limits: { layoutMs: 10 },
         layout: {
           algorithm: {
-            arrange: (graph) => {
+            arrange: (part) => {
               now.mockReturnValue(11);
-              return graph.vertices.map((_, i) => [i * 200, 0] as const);
+              return Array.from(part.vertices).flatMap((_, i) => [i * 200, 0]);
             },
           },
         },
@@ -335,7 +336,7 @@ it('spreads feedback cycles across ranks, rooted at their outputs', async () => 
   expect(feedback.ends.map((end) => end.vertex)).toEqual([0, 3]);
   expect(feedback.ends[rootEnd(feedback)].vertex).toBe(3);
 });
-it('passes ports, hyperedges, labels and groups to a custom layout', async () => {
+it('passes ports, hyperedges, labels, and groups as vertices to a custom layout', async () => {
   const source = new Source(3);
   source.ends = [
     [
@@ -344,13 +345,11 @@ it('passes ports, hyperedges, labels and groups to a custom layout', async () =>
       { vertex: 2, port: 'input' },
     ],
   ];
+  const parts: LayoutPart[] = [];
   const algorithm = {
-    arrange: vi.fn((graph: import('../src/layout.js').LayoutGraph) => {
-      expect(graph.vertices[0].ports.map((port) => port.name)).toContain('output');
-      expect(graph.edges[0].ends).toHaveLength(3);
-      expect(graph.edges[0].labelSize[0]).toBeGreaterThan(0);
-      expect(graph.groups[0].members).toHaveLength(2);
-      return graph.vertices.map((_, i) => [i * 240, 0] as const);
+    arrange: vi.fn((part: LayoutPart) => {
+      parts.push(part);
+      return Array.from(part.vertices).flatMap((_, i) => [i * 240, 0]);
     }),
   };
   await arrange(gpu, {
@@ -358,7 +357,37 @@ it('passes ports, hyperedges, labels and groups to a custom layout', async () =>
     groups: { pair: { vertices: { Task: { kind: 'ids', ids: ['n0', 'n1'] } } } },
     layout: { algorithm },
   });
-  expect(algorithm.arrange).toHaveBeenCalledOnce();
+  /** An edge's ends: each one's vertex, direction, and where it meets its vertex. */
+  const ends = (part: LayoutPart, e: number) => {
+    const { offsets, items } = part.graph.ends,
+      { directions, ports } = part.input;
+    return Array.from({ length: offsets[e + 1] - offsets[e] }, (_, k) => {
+      const end = offsets[e] + k;
+      return [items[end], directions![end], ports![end * 2], ports![end * 2 + 1]];
+    });
+  };
+  // The group's inside is one part, wired port to port; outside, the group is one vertex.
+  const [inside, outside] = parts;
+  expect(Array.from(inside.vertices, (v) => inside.item(v))).toMatchObject([
+    { kind: 'vertex', row: 0 },
+    { kind: 'vertex', row: 1 },
+  ]);
+  const [output, input] = ends(inside, inside.edges[0]);
+  expect(output.slice(0, 3)).toEqual([0, 1, inside.input.sizes![0]]);
+  expect(input.slice(0, 3)).toEqual([1, -1, 0]);
+  expect(inside.input.labelRooms![inside.edges[0] * 2]).toBeGreaterThan(0);
+  // Outside, in read order: the group, whose first member reads first, then the third vertex.
+  expect(Array.from(outside.vertices, (v) => outside.item(v))).toMatchObject([
+    { kind: 'group', id: 'pair' },
+    { kind: 'vertex', row: 2 },
+  ]);
+  // The net's three ends meet the group once for each of its two members, at its center.
+  expect(ends(outside, outside.edges[0]).map(([v, direction, x]) => [v, direction, x])).toEqual([
+    [0, 1, NaN],
+    [0, -1, NaN],
+    [1, -1, 0],
+  ]);
+  expect(algorithm.arrange).toHaveBeenCalledTimes(2);
 });
 it('orients flow toward targets even when a wire runs left', async () => {
   const source = new Source(2);

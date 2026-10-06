@@ -43,20 +43,26 @@ function measured(): Work {
     ),
   ) as Work;
 }
-/** Timings in milliseconds by `group > benchmark`. */
-function timings(path: string): Map<string, Benchmark> {
+/**
+ * Timings in milliseconds by `group > benchmark`, and the benchmarks that did not complete: this
+ * run fails on one, while a base run's only goes uncompared.
+ */
+function timings(path: string): {
+  readonly times: Map<string, Benchmark>;
+  readonly incomplete: readonly string[];
+} {
   const report = JSON.parse(readFileSync(path, 'utf8')) as Report,
-    result = new Map<string, Benchmark>();
+    times = new Map<string, Benchmark>(),
+    incomplete: string[] = [];
   for (const file of report.files)
     for (const group of file.groups) {
-      const name = group.fullName.split(' > ').at(-1)!;
-      for (const benchmark of group.benchmarks) {
-        if (!Number.isFinite(benchmark.min) || !Number.isFinite(benchmark.median))
-          throw new Error(`Benchmark did not complete: ${name} > ${benchmark.name}`);
-        result.set(name + ' > ' + benchmark.name, benchmark);
-      }
+      const name = group.fullName.split(' > ').at(-1)! + ' > ';
+      for (const benchmark of group.benchmarks)
+        if (Number.isFinite(benchmark.min) && Number.isFinite(benchmark.median))
+          times.set(name + benchmark.name, benchmark);
+        else incomplete.push(name + benchmark.name);
     }
-  return result;
+  return { times, incomplete };
 }
 
 if (process.argv[2] === '--update') {
@@ -91,10 +97,12 @@ for (const name of Object.keys(work))
 
 // 2. Time against the base branch, measured on the same machine. Noise rarely slows both the fastest
 // and the median run.
-const head = timings(headPath);
+const { times: head, incomplete } = timings(headPath);
+for (const name of incomplete) failures.push('did not complete: ' + name);
 if (basePath && existsSync(basePath)) {
-  const base = timings(basePath),
-    slower = (now: number, before: number) => now > before * SLOWER + SLACK_MS;
+  const { times: base, incomplete: uncompared } = timings(basePath);
+  for (const name of uncompared) notes.push('no base timing to compare: ' + name);
+  const slower = (now: number, before: number) => now > before * SLOWER + SLACK_MS;
   for (const [name, time] of head) {
     const before = base.get(name);
     if (before && slower(time.min, before.min) && slower(time.median, before.median))

@@ -15,7 +15,7 @@ const diagram = createDiagram(gpu, {
   vertices: { Task: { labels: 'name' } },
   edges: { Dependency: { ends: ['from', 'to'], arrows: true } },
 });
-diagram.on('move', ({ moves }) => savePositions(moves));
+diagram.on('move', ({ positions }) => savePositions(positions));
 ```
 
 Run the [diagram studio](https://github.com/lukelowry/latkit/tree/main/examples/diagram) with `pnpm --filter @latkit/diagram-example dev`.

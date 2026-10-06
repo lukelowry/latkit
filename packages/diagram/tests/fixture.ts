@@ -220,6 +220,27 @@ export function edge(source: Source, id: string): DiagramRow {
 export function port(source: Source, id: string, name: string): DiagramPort {
   return { ...vertex(source, id), kind: 'port', port: name };
 }
+/**
+ * Parts of `size` tasks wired around a cycle, as a generator and its controllers are in a grid
+ * case: one part per cluster, and no wire between parts.
+ */
+export function clusters(count: number, size = 4): Source {
+  const source = new Source(count * size);
+  source.ends = [];
+  for (let c = 0; c < count; c++)
+    for (let k = 0; k < size; k++)
+      source.ends.push([
+        { vertex: c * size + k, port: 'output' },
+        { vertex: c * size + ((k + 1) % size), port: 'input' },
+      ]);
+  return source;
+}
+/** Leave the given tasks without a position, so the layout places them among the rest. */
+export function unplace(source: Source, tasks: Iterable<number>): Source {
+  for (const task of tasks) source.xy[task * 2] = source.xy[task * 2 + 1] = NaN;
+  source.update();
+  return source;
+}
 export function data(source = new Source(), position = false): DiagramData {
   return {
     source: source.data,

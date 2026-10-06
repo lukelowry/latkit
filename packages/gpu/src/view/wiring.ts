@@ -1,4 +1,48 @@
-import { failure, type Schema } from '@latkit/model';
+import {
+  assertIndex,
+  failure,
+  rowCount,
+  type Data,
+  type Index,
+  type ReadScope,
+  type RowSelection,
+  type Schema,
+} from '@latkit/model';
+
+/**
+ * The rows a selection names, ids included, in the order the source holds them, and their index;
+ * every rows of the type without one. Views resolve a selection once, here, and test rows against it.
+ */
+export async function readRows(
+  reader: ReadScope,
+  source: Data,
+  from: string,
+  rows?: RowSelection,
+): Promise<{ readonly index?: Index; readonly rows: Uint32Array }> {
+  let index: Index | undefined,
+    out = new Uint32Array(64),
+    length = 0;
+  for await (const block of reader.read(source, {
+    kind: 'rows',
+    from,
+    select: [],
+    ...(rows ? { rows } : {}),
+  })) {
+    if (index) assertIndex(index, block.index);
+    else index = block.index;
+    const n = rowCount(block.rows);
+    if (length + n > out.length) {
+      const grown = new Uint32Array(Math.max(out.length * 2, length + n));
+      grown.set(out.subarray(0, length));
+      out = grown;
+    }
+    if (block.rows.kind === 'range')
+      for (let i = 0; i < n; i++) out[length + i] = block.rows.offset + i;
+    else out.set(block.rows.values, length);
+    length += n;
+  }
+  return { index, rows: out.slice(0, length) };
+}
 
 /** One end of an edge: the edge type's reference field and the vertex type it names. */
 export interface End {

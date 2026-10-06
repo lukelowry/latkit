@@ -53,7 +53,7 @@ it('uses the whole selected type for automatic domains across native blocks and 
   const data = { source: source.data, vertices: { node: options } };
   const gpu = await createGpu({ device: fakeDevice().device });
   await draw(gpu, async (frame) => {
-    const geometry = await readGeometry(data, frame, DEFAULT_LIMITS),
+    const geometry = await readGeometry(data, frame.reader, DEFAULT_LIMITS),
       reads = new Map<VertexBank, FieldRead>();
     expect(geometry.vertices).toHaveLength(2);
     for (const bank of geometry.vertices)

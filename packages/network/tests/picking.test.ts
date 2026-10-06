@@ -6,6 +6,10 @@ import type { Style } from '../src/options.js';
 import { FieldRead, VERTEX, channels } from '../src/rendering/fields.js';
 import { kit } from '@latkit/gpu';
 import { Picking, type PickGeometry } from '../src/picking.js';
+import { Adjacency } from '../src/geometry/adjacency.js';
+
+/** No edges: nothing to draw apart. */
+const adjacency = new Adjacency([], [], [], 0, 0);
 
 /** A two-lane position field, read as the column of its x. */
 const position = channels({ x: 'p', y: { field: 'p', component: 1 } }, VERTEX);
@@ -38,7 +42,7 @@ it.each<RowAxis>([
   };
   const read = new FieldRead([], [native], position);
   const result = new Picking().prepare(
-    { vertices: [bank], edges: [] },
+    { vertices: [bank], edges: [], adjacency },
     { vertices: new Map([[bank, read]]), edges: new Map() },
     0,
   );
@@ -75,7 +79,7 @@ it('builds an index in cooperative slices and frees one aborted part way', async
   // Each build pauses after every step.
   const start = () => {
     const picking = new Picking().prepare(
-        { vertices: [bank], edges: [] },
+        { vertices: [bank], edges: [], adjacency },
         { vertices: new Map([[bank, read]]), edges: new Map() },
         64 * 1024 ** 2,
       ),

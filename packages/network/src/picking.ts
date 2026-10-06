@@ -9,6 +9,7 @@ import {
   type SegmentBatch,
 } from './geometry/topology.js';
 import { RowLookup } from './geometry/rows.js';
+import type { Adjacency } from './geometry/adjacency.js';
 import {
   DEG,
   project,
@@ -18,7 +19,7 @@ import {
   type Projected,
 } from './camera.js';
 import { geodesic } from './geometry/paths.js';
-import type { ChannelName, FieldRead } from './rendering/fields.js';
+import { readIdentity, sameIdentity, type FieldRead } from './rendering/fields.js';
 import type { Reads } from './rendering/painter.js';
 import { lineWidthPx, type Style } from './options.js';
 
@@ -75,39 +76,6 @@ function readLookup(read: FieldRead): RowLookup<FieldsBlock> {
   for (const tile of read.native) lookup.add(tile.rows, tile);
   lookup.seal();
   return lookup;
-}
-/** What a read's channels place, by identity: their lanes, scales, constants, and columns. */
-function identity(read: FieldRead, names: readonly ChannelName[] = ['x', 'y']): unknown[] {
-  const key: unknown[] = [],
-    fields = new Set<string>();
-  const view = (value?: ArrayBufferView) => {
-    key.push(value?.buffer, value?.byteOffset, value?.byteLength, value?.constructor);
-  };
-  for (const name of names) {
-    const channel = read.channel(name);
-    key.push(channel.column, channel.component, channel.fallback, ...(channel.scale?.domain ?? []));
-    key.push(...(channel.scale?.range ?? []), channel.scale?.clamp);
-    if (channel.column !== undefined) fields.add(channel.column);
-  }
-  for (const tile of read.native) {
-    key.push(tile.rows.kind);
-    if (tile.rows.kind === 'range') key.push(tile.rows.offset, tile.rows.count);
-    else view(tile.rows.values);
-    for (const field of fields) {
-      const column = tile.columns[field];
-      key.push(column?.kind, column?.offset, column?.length);
-      view(column?.validity);
-      view(tile.presence[field]);
-      if (column?.kind === 'vector') {
-        key.push(column.size, column.values.offset, column.values.length);
-        view(column.values.values);
-      } else if (column && column.kind !== 'list' && column.kind !== 'text') view(column.values);
-    }
-  }
-  return key;
-}
-function equal(a: readonly unknown[], b: readonly unknown[]): boolean {
-  return a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
 }
 /** A position in world units: the data's own on a plane, or on the unit globe. */
 function world(
@@ -203,7 +171,7 @@ export class Picking {
   private cache = new WeakMap<VertexBank, Spatial>();
   private segments = new WeakMap<SegmentBatch, { a: Spatial; b: Spatial; spatial: Indexed }>();
   prepare(
-    geometry: Pick<Geometry, 'vertices' | 'edges'>,
+    geometry: Pick<Geometry, 'vertices' | 'edges' | 'adjacency'>,
     reads: Reads,
     byteLimit: number,
   ): PickGeometry {
@@ -215,11 +183,11 @@ export class Picking {
       maxY = -Infinity;
     for (const bank of geometry.vertices) {
       const read = reads.vertices.get(bank)!,
-        key = identity(read),
+        key = readIdentity(read),
         previous = this.cache.get(bank),
         lookup = readLookup(read);
       const spatial =
-        previous && equal(key, previous.identity)
+        previous && sameIdentity(key, previous.identity)
           ? previous
           : { identity: key, bounds: readBounds(bank, read, lookup) };
       this.cache.set(bank, spatial);
@@ -228,7 +196,7 @@ export class Picking {
         read,
         lookup,
         spatial,
-        heightIdentity: identity(read, ['z']),
+        heightIdentity: readIdentity(read, ['z']),
       });
       if (bank.synthetic && geometry.vertices.some((v) => !v.synthetic)) continue;
       minX = Math.min(minX, spatial.bounds[0]);
@@ -254,6 +222,7 @@ export class Picking {
       edges,
       minX <= maxX ? [minX, minY, maxX, maxY] : [-1, -1, 1, 1],
       byteLimit,
+      geometry.adjacency,
     );
   }
 }
@@ -285,13 +254,67 @@ function near(
   index.some(bounds, (offset) => void out.push(offset), check);
   return out;
 }
+/** Where drawing shows vertices, and the anchors of edges' labels. */
+export type Projector = Pick<PickGeometry, 'projected' | 'edgeAnchor'>;
+/**
+ * A transition drawing rows `rest` of the way back to where `from` placed them, mixed as the GPU
+ * mixes them: positions, heights, and radii, the short way round on a globe.
+ */
+interface Blend {
+  readonly from: PickGeometry;
+  readonly rest: number;
+  readonly globe: boolean;
+}
 export class PickGeometry {
+  /** The lanes drawing reads for the latest data asked about. */
+  private laneCache?: {
+    readonly data: NetworkData;
+    readonly lanes: ReadonlyMap<EdgeBank, Float32Array>;
+  };
   constructor(
     private readonly vertices: ReadonlyMap<VertexBank, CpuBank>,
     private readonly edges: readonly CpuSegment[],
     readonly bounds: kit.Bounds2D,
     private readonly byteLimit: number,
+    private readonly adjacency: Adjacency,
+    private readonly blend?: Blend,
   ) {}
+  private lanes(data: NetworkData): ReadonlyMap<EdgeBank, Float32Array> {
+    if (this.laneCache?.data !== data) this.laneCache = { data, lanes: this.adjacency.lanes(data) };
+    return this.laneCache.lanes;
+  }
+  /** How far an edge draws beside the line between its vertices, in CSS pixels: its lane. */
+  private shift(batch: CpuSegment, row: number, data: NetworkData, options: Style): number {
+    if (!(options.edgeSpacingPx > 0)) return 0;
+    return (this.lanes(data).get(batch.edge.bank)?.[row] ?? 0) * options.edgeSpacingPx;
+  }
+  /** The farthest any edge draws beside the line between its vertices. */
+  private widestShift(data: NetworkData, options: Style): number {
+    if (!(options.edgeSpacingPx > 0)) return 0;
+    let widest = 0;
+    for (const lanes of this.lanes(data).values())
+      for (const lane of lanes) widest = Math.max(widest, Math.abs(lane));
+    return widest * options.edgeSpacingPx;
+  }
+  /**
+   * A row's position and height channel as drawing places it, from 0 to 1 of the height: mixed with
+   * where `from` placed it while a transition eases, as the GPU mixes them.
+   */
+  private coordinates(cpu: CpuBank, offset: number): readonly [number, number, number] {
+    const found = cpu.lookup.get(rowAt(cpu.bank.rows, offset));
+    if (!found) return [NaN, NaN, NaN];
+    const [x, y] = raw(cpu, offset),
+      z = kit.channelValue(cpu.read.channels.z, found.value, found.offset),
+      blend = this.blend,
+      before = blend?.from.vertices.get(cpu.bank);
+    if (!blend || !before) return [x, y, z];
+    const was = blend.from.coordinates(before, offset);
+    if (![x, y, ...was].every(Number.isFinite)) return [x, y, z];
+    let dx = was[0] - x;
+    if (blend.globe) dx -= 360 * Math.round(dx / 360);
+    const { rest } = blend;
+    return [x + dx * rest, y + (was[1] - y) * rest, z + (was[2] - z) * rest];
+  }
   /** Bytes the hit-test indexes hold, built or part way. */
   get bytes(): number {
     let bytes = 0;
@@ -309,11 +332,33 @@ export class PickGeometry {
       theirs = [...other.holders()];
     return mine.length === theirs.length && mine.every((holder, i) => holder === theirs[i]);
   }
+  /**
+   * Where drawing shows rows while a transition eases them from `from`: `rest` of the way back to
+   * where it placed them, mixed as the GPU mixes them, so labels follow what they name.
+   */
+  easedFrom(from: PickGeometry, rest: number, globe: boolean): Projector {
+    return new PickGeometry(
+      this.vertices,
+      this.edges,
+      this.bounds,
+      this.byteLimit,
+      this.adjacency,
+      {
+        from,
+        rest,
+        globe,
+      },
+    );
+  }
   samePositions(previous: PickGeometry): boolean {
     if (this.vertices.size !== previous.vertices.size) return false;
     for (const [bank, cpu] of this.vertices) {
       const old = previous.vertices.get(bank);
-      if (!old || old.spatial !== cpu.spatial || !equal(old.heightIdentity, cpu.heightIdentity))
+      if (
+        !old ||
+        old.spatial !== cpu.spatial ||
+        !sameIdentity(old.heightIdentity, cpu.heightIdentity)
+      )
         return false;
     }
     return true;
@@ -419,23 +464,26 @@ export class PickGeometry {
   ): Projected & { radius: number; visible: boolean } {
     const cpu = this.vertices.get(bank)!,
       found = cpu.lookup.get(rowAt(bank.rows, offset))!,
-      { x, y, z, visible: shown } = cpu.read.channels;
-    const projected = project(
-      camera,
-      viewport,
-      kit.channelValue(x, found.value, found.offset),
-      kit.channelValue(y, found.value, found.offset),
-      kit.channelValue(z, found.value, found.offset) * height,
-    );
-    const visible = kit.channelOn(shown, found.value, found.offset);
+      [x, y, z] = this.coordinates(cpu, offset);
+    const projected = project(camera, viewport, x, y, z * height);
+    const visible = kit.channelOn(cpu.read.channels.visible, found.value, found.offset);
     return {
       ...projected,
       visible: projected.visible && (!marker || visible),
       radius:
         radiusPx === undefined || bank.synthetic || !visible
           ? 0
-          : kit.channelValue(cpu.read.channel('radiusPx', radiusPx), found.value, found.offset),
+          : this.radius(cpu, offset, radiusPx),
     };
+  }
+  /** A vertex marker's radius, mixed as positions are while a transition eases. */
+  private radius(cpu: CpuBank, offset: number, radiusPx: number): number {
+    const found = cpu.lookup.get(rowAt(cpu.bank.rows, offset))!,
+      now = kit.channelValue(cpu.read.channel('radiusPx', radiusPx), found.value, found.offset),
+      before = this.blend?.from.vertices.get(cpu.bank);
+    if (!this.blend || !before) return now;
+    const was = this.blend.from.radius(before, offset, radiusPx);
+    return Number.isFinite(was) ? now + (was - now) * this.blend.rest : now;
   }
   private phases = new Map<SegmentBatch, Float32Array>();
   /** What the dash prefixes were measured for; they hold until one of these changes. */
@@ -529,31 +577,46 @@ export class PickGeometry {
   }
   /** A vertex's coordinates and height, as drawing places it. */
   private place(cpu: CpuBank, offset: number, height: number): readonly [number, number, number] {
-    const found = cpu.lookup.get(rowAt(cpu.bank.rows, offset));
-    if (!found) return [NaN, NaN, NaN];
-    const [x, y] = raw(cpu, offset);
-    return [x, y, kit.channelValue(cpu.read.channels.z, found.value, found.offset) * height];
+    const [x, y, z] = this.coordinates(cpu, offset);
+    return [x, y, z * height];
   }
+  /**
+   * The pieces an edge draws as on screen, in its lane: across a straight line, or along a curve's
+   * normal at each point, so pieces meet as drawing's do.
+   */
   private *stroke(
     batch: CpuSegment,
     ao: number,
     bo: number,
+    eo: number,
     data: NetworkData,
     camera: Camera,
     viewport: Viewport,
     height: number,
+    options: Style,
     check: () => void,
   ): Iterable<{ a: Projected; b: Projected; first: boolean; last: boolean }> {
+    const shift = this.shift(batch, eo, data, options);
     // Strokes need positions only; their markers' radii stay unread.
     const a = this.projected(batch.a.bank, ao, camera, viewport, height, undefined, false),
       b = this.projected(batch.b.bank, bo, camera, viewport, height, undefined, false);
     if (edgeOptions(data, batch.edge.bank).route !== 'geodesic') {
       const clip = projectedStroke(a, b, camera, viewport);
-      if (clip) yield { a: clip[0], b: clip[1], first: true, last: true };
+      if (!clip) return;
+      // A parallel edge draws in its lane, across the line on screen.
+      const length = Math.hypot(clip[1].x - clip[0].x, clip[1].y - clip[0].y) || 1,
+        sx = (-(clip[1].y - clip[0].y) / length) * shift,
+        sy = ((clip[1].x - clip[0].x) / length) * shift;
+      yield {
+        a: { ...clip[0], x: clip[0].x + sx, y: clip[0].y + sy },
+        b: { ...clip[1], x: clip[1].x + sx, y: clip[1].y + sy },
+        first: true,
+        last: true,
+      };
       return;
     }
-    const start = raw(batch.a, ao),
-      end = raw(batch.b, bo);
+    const start = this.coordinates(batch.a, ao),
+      end = this.coordinates(batch.b, bo);
     const ah =
       camera.projection === 'globe'
         ? Math.hypot(a.world[0], a.world[1], a.world[2] + 1) - 1
@@ -568,11 +631,34 @@ export class PickGeometry {
         Math.sin(start[1] * rad) * Math.sin(end[1] * rad) +
         Math.cos(start[1] * rad) * Math.cos(end[1] * rad) * Math.cos((end[0] - start[0]) * rad);
     const steps = Math.max(1, Math.ceil(Math.acos(Math.max(-1, Math.min(1, cosine))) / rad));
+    const from = [start[0], start[1], ah] as const,
+      to = [end[0], end[1], bh] as const;
+    /** The curve's screen normal at `t`, as long as the lane; a flat map's seam is no turn. */
+    const normal = (t: number): readonly [number, number] => {
+      if (!shift) return [0, 0];
+      const before = geodesic(from, to, Math.max(0, t - 0.001)),
+        after = geodesic(from, to, Math.min(1, t + 0.001)),
+        at = geodesic(from, to, t);
+      let dx = after[0] - before[0];
+      dx -= 360 * Math.round(dx / 360);
+      const dy = after[1] - before[1],
+        dz = after[2] - before[2],
+        p = project(camera, viewport, at[0] - dx / 2, at[1] - dy / 2, at[2] - dz / 2),
+        q = project(camera, viewport, at[0] + dx / 2, at[1] + dy / 2, at[2] + dz / 2),
+        sx = q.x - p.x,
+        sy = q.y - p.y,
+        l = Math.hypot(sx, sy);
+      return l > 1e-9 ? [(-sy / l) * shift, (sx / l) * shift] : [0, 0];
+    };
+    const moved = (p: Projected, n: readonly [number, number]): Projected =>
+      n[0] || n[1] ? { ...p, x: p.x + n[0], y: p.y + n[1] } : p;
     let previous: Projected = a;
-    let previousXY: readonly [number, number] = start;
+    let previousXY: readonly [number, number] = start as unknown as readonly [number, number];
+    let previousNormal = normal(0);
     for (let i = 1; i <= steps; i++) {
       check();
-      const p = geodesic([start[0], start[1], ah], [end[0], end[1], bh], i / steps);
+      const p = geodesic(from, to, i / steps),
+        nextNormal = normal(i / steps);
       const next = project(camera, viewport, p[0], p[1], p[2]);
       if (camera.projection !== 'globe' && Math.abs(p[0] - previousXY[0]) > 180) {
         const seam = previousXY[0] > 0 ? 180 : -180,
@@ -592,14 +678,33 @@ export class PickGeometry {
           camera,
           viewport,
         );
-        if (left) yield { a: left[0], b: left[1], first: i === 1, last: false };
-        if (right) yield { a: right[0], b: right[1], first: false, last: i === steps };
+        if (left)
+          yield {
+            a: moved(left[0], previousNormal),
+            b: moved(left[1], previousNormal),
+            first: i === 1,
+            last: false,
+          };
+        if (right)
+          yield {
+            a: moved(right[0], nextNormal),
+            b: moved(right[1], nextNormal),
+            first: false,
+            last: i === steps,
+          };
       } else {
         const clip = projectedStroke(previous, next, camera, viewport);
-        if (clip) yield { a: clip[0], b: clip[1], first: i === 1, last: i === steps };
+        if (clip)
+          yield {
+            a: moved(clip[0], previousNormal),
+            b: moved(clip[1], nextNormal),
+            first: i === 1,
+            last: i === steps,
+          };
       }
       previous = next;
       previousXY = [p[0], p[1]];
+      previousNormal = nextNormal;
     }
   }
   hit(
@@ -665,7 +770,9 @@ export class PickGeometry {
           widest,
           largest(edge.read.channel('widthPx', lineWidthPx(edgeOptions(data, edge.bank), options))),
         );
-      const reach = (radius + widest + options.selectedWidthPx) / camera.scale;
+      const reach =
+        (radius + widest + options.selectedWidthPx + this.widestShift(data, options)) /
+        camera.scale;
       bounds = [x - reach, y - reach, x + reach, y + reach];
     }
     if (options.markers || options.poles)
@@ -749,7 +856,18 @@ export class PickGeometry {
             );
             const prefix = this.phases.get(batch.batch)?.[offset] ?? 0;
             let phase = 0;
-            for (const piece of this.stroke(batch, ao, bo, data, camera, viewport, height, check)) {
+            for (const piece of this.stroke(
+              batch,
+              ao,
+              bo,
+              eo,
+              data,
+              camera,
+              viewport,
+              height,
+              options,
+              check,
+            )) {
               const start = piece.a,
                 end = piece.b;
               const hit = segmentDistance(point[0], point[1], start.x, start.y, end.x, end.y);
@@ -802,6 +920,7 @@ export class PickGeometry {
     camera: Camera,
     viewport: Viewport,
     height: number,
+    options: Style,
   ): readonly [number, number] | null {
     if (item.kind === 'vertex')
       for (const [bank, cpu] of this.vertices) {
@@ -814,15 +933,17 @@ export class PickGeometry {
         const p = project(camera, viewport, x, y, h);
         return Number.isFinite(p.x) && Number.isFinite(p.y) ? [p.x, p.y] : null;
       }
-    const anchor = this.edgeAnchor(item, data, camera, viewport, height);
+    const anchor = this.edgeAnchor(item, data, camera, viewport, height, options);
     return anchor ? [anchor.x, anchor.y] : null;
   }
+  /** Where an edge's or path's label centers: the middle of what it draws on screen, in its lane. */
   edgeAnchor(
     item: NetworkItem,
     data: NetworkData,
     camera: Camera,
     viewport: Viewport,
     height: number,
+    options: Style,
   ): Projected | null {
     const segments: { batch: CpuSegment; offset: number }[] = [];
     for (const batch of this.edges) {
@@ -862,10 +983,12 @@ export class PickGeometry {
         batch,
         records[offset],
         records[offset + 1],
+        records[offset + 2],
         data,
         camera,
         viewport,
         height,
+        options,
         unchecked,
       )) {
         const start = piece.a,

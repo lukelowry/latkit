@@ -5,7 +5,7 @@ import {
   type Item,
   type RowSelection,
 } from '@latkit/model';
-import type { Channel, ColorChannel, Labels } from '@latkit/gpu';
+import type { Channel, ColorChannel, Labels, Marker } from '@latkit/gpu';
 
 /** Labels beside a type's items. */
 export interface NetworkLabels extends Labels {
@@ -23,7 +23,7 @@ export interface NetworkLabels extends Labels {
  */
 export interface VertexOptions {
   readonly rows?: RowSelection;
-  /** Where each row draws, in the data's coordinates; without either, rows sit on a circle. */
+  /** Where each row draws, in the data's coordinates; layout places rows without, as `layout` says. */
   readonly x?: Channel;
   readonly y?: Channel;
   /** Height above the drawing, from 0 to 1 of `zScale`; a field spans 0 to 1. */
@@ -32,6 +32,8 @@ export interface VertexOptions {
   readonly color?: ColorChannel;
   /** Marker radius in CSS pixels; a field spans 2 to 8. `vertexRadiusPx` by default. */
   readonly radiusPx?: Channel;
+  /** How each row draws in its radius: a disc, `shape('ellipse')`, by default. */
+  readonly marker?: Marker;
   /** Shown where true or positive; every row by default. */
   readonly visible?: Channel<boolean>;
   readonly shade?: Channel;
@@ -48,6 +50,11 @@ export interface LineOptions {
   readonly color?: ColorChannel;
   /** Dashed where true or positive. */
   readonly dash?: Channel<boolean>;
+  /**
+   * How far comets move along the line each second, in CSS pixels, from its first end toward its
+   * second; negative runs the other way, and 0 draws none. A field spans 0 to 40.
+   */
+  readonly flowPx?: Channel;
   /** Shown where true or positive; every row by default. */
   readonly visible?: Channel<boolean>;
   readonly shade?: Channel;

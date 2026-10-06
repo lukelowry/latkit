@@ -1,19 +1,21 @@
-import { rowAt } from '@latkit/model';
+import { rowAt, type FieldValues } from '@latkit/model';
+import { kit } from '@latkit/gpu';
 
 import type { NetworkData, NetworkItem } from '../data.js';
 import type { VertexBank, EdgeBank } from './topology.js';
 import { RowLookup, indexKey } from './rows.js';
 
 /**
- * CSR adjacency over renderer-local dense addresses: vertices, then edges, then paths. Public results
- * always use native identities.
+ * The drawn graph over renderer-local dense addresses: vertices, then edges, then paths. Public
+ * results always use native identities.
  */
 export class Adjacency {
   readonly bytes: number;
-  private readonly offsets: Uint32Array;
-  private readonly incident: Uint32Array;
-  private readonly edgeOffsets: Uint32Array;
-  private readonly ends: Uint32Array;
+  /** Vertices, and edges by the vertices each joins once; paths join none. */
+  readonly graph: kit.Graph;
+  /** Lanes by which banks follow their own routes, as `lanes` finds them. */
+  #lanes = new Map<string, ReadonlyMap<EdgeBank, Float32Array>>();
+  #laneValues = new WeakMap<Float32Array, FieldValues>();
   private readonly vertexRows = new Map<string, RowLookup<VertexBank>>();
   private readonly edgeRows = new Map<string, RowLookup<EdgeBank>>();
   constructor(
@@ -23,43 +25,99 @@ export class Adjacency {
     private readonly vertexCount: number,
     edgeCount: number,
   ) {
-    this.offsets = new Uint32Array(vertexCount + 1);
-    this.edgeOffsets = new Uint32Array(edgeCount + 1);
-    const all = new Uint32Array(edges.reduce((n, bank) => n + bank.incidence.vertices.length, 0));
+    const offsets = new Uint32Array(edgeCount + 1),
+      ends = new Uint32Array(edges.reduce((n, bank) => n + bank.incidence.vertices.length, 0));
     let written = 0;
     for (const bank of vertices) this.rows(this.vertexRows, bank.index).add(bank.rows, bank);
     for (const rows of this.vertexRows.values()) rows.seal();
     for (const bank of edges) {
       this.rows(this.edgeRows, bank.index).add(bank.rows, bank);
+      const input = bank.incidence.vertices;
       for (let i = 0; i < bank.count; i++) {
         const start = bank.incidence.offsets[i],
-          end = bank.incidence.offsets[i + 1],
-          input = bank.incidence.vertices;
-        const append = (vertex: number) => {
-          all[written++] = vertex;
-          this.offsets[vertex + 1]++;
-        };
+          end = bank.incidence.offsets[i + 1];
         if (end - start <= 2) {
-          if (start < end) append(input[start]);
-          if (start + 1 < end && input[start + 1] !== input[start]) append(input[start + 1]);
-        } else for (const vertex of new Set(input.subarray(start, end))) append(vertex);
-        this.edgeOffsets[bank.base + i + 1] = written;
+          if (start < end) ends[written++] = input[start];
+          if (start + 1 < end && input[start + 1] !== input[start])
+            ends[written++] = input[start + 1];
+        } else for (const vertex of new Set(input.subarray(start, end))) ends[written++] = vertex;
+        offsets[bank.base + i + 1] = written;
       }
     }
     for (const bank of paths) this.rows(this.edgeRows, bank.index).add(bank.rows, bank);
     for (const rows of this.edgeRows.values()) rows.seal();
-    this.ends = all;
-    for (let i = 1; i < this.offsets.length; i++) this.offsets[i] += this.offsets[i - 1];
-    this.incident = new Uint32Array(written);
-    const fill = this.offsets.slice(0, vertexCount);
-    for (let edge = 0; edge < edgeCount; edge++)
-      for (let i = this.edgeOffsets[edge]; i < this.edgeOffsets[edge + 1]; i++)
-        this.incident[fill[this.ends[i]]++] = edge;
-    this.bytes =
-      this.offsets.byteLength +
-      this.edgeOffsets.byteLength +
-      this.ends.byteLength +
-      this.incident.byteLength;
+    this.graph = new kit.Graph(vertexCount, {
+      offsets,
+      items: written === ends.length ? ends : ends.slice(0, written),
+    });
+    // Found now, so neighborhoods never wait on it and its bytes count toward the geometry.
+    void this.graph.incident;
+    this.bytes = this.graph.bytes;
+  }
+  /**
+   * Each edge's lane among the edges joining the same two vertices, by bank: 0 alone, else spread
+   * about 0, signed so lanes stay apart whichever end each edge starts from. An edge type with
+   * `bends` follows its own routes: its edges take no lane, nor count toward others'. Found once for
+   * each set of such types, by each edge's own vertices' edges, so linear in the edges for bounded
+   * degree.
+   */
+  lanes(data: NetworkData): ReadonlyMap<EdgeBank, Float32Array> {
+    const routed = new Set(this.edges.filter((bank) => data.edges?.[bank.type]?.bends != null)),
+      key = this.edges.map((bank) => (routed.has(bank) ? 1 : 0)).join('');
+    const cached = this.#lanes.get(key);
+    if (cached) return cached;
+    const { offsets, items } = this.graph.ends,
+      incident = this.graph.incident,
+      out = new Map<EdgeBank, Float32Array>();
+    let own: Uint8Array | undefined;
+    for (const bank of routed)
+      (own ??= new Uint8Array(offsets.length - 1)).fill(1, bank.base, bank.base + bank.count);
+    const pair = (e: number) => offsets[e + 1] - offsets[e] === 2 && !own?.[e];
+    for (const bank of this.edges) {
+      if (routed.has(bank)) continue;
+      let lanes: Float32Array | undefined;
+      for (let i = 0; i < bank.count; i++) {
+        const e = bank.base + i;
+        if (!pair(e)) continue;
+        const a = items[offsets[e]],
+          b = items[offsets[e] + 1],
+          lo = Math.min(a, b),
+          hi = Math.max(a, b);
+        let count = 0,
+          index = 0;
+        for (let k = incident.offsets[lo]; k < incident.offsets[lo + 1]; k++) {
+          const f = incident.items[k];
+          if (!pair(f)) continue;
+          const c = items[offsets[f]],
+            d = items[offsets[f] + 1];
+          if (Math.min(c, d) !== lo || Math.max(c, d) !== hi) continue;
+          if (f < e) index++;
+          count++;
+        }
+        if (count < 2) continue;
+        (lanes ??= new Float32Array(bank.count))[i] =
+          (index - (count - 1) / 2) * (a === lo ? 1 : -1);
+      }
+      if (lanes) out.set(bank, lanes);
+    }
+    this.#lanes.set(key, out);
+    return out;
+  }
+  /** A bank's lanes as values its edges read, when any of them has one. */
+  laneValues(bank: EdgeBank, data: NetworkData): FieldValues | undefined {
+    const lanes = this.lanes(data).get(bank);
+    if (!lanes) return undefined;
+    let found = this.#laneValues.get(lanes);
+    if (!found)
+      this.#laneValues.set(
+        lanes,
+        (found = {
+          index: bank.index,
+          rows: bank.rows,
+          values: { kind: 'numeric', offset: 0, length: lanes.length, values: lanes },
+        }),
+      );
+    return found;
   }
   private rows<T>(map: Map<string, RowLookup<T>>, index: VertexBank['index']): RowLookup<T> {
     const key = indexKey(index);
@@ -117,13 +175,11 @@ export class Adjacency {
         seen.add(key);
         result.push({ kind: 'edge', source: data.source, index: bank.index, row });
       }
-      for (let i = this.edgeOffsets[dense]; i < this.edgeOffsets[dense + 1]; i++)
-        addVertex(this.ends[i]);
+      for (const vertex of this.graph.endsOf(dense)) addVertex(vertex);
     };
     const dense = found.value.base + found.offset;
     if (item.kind === 'edge') addEdge(dense);
-    else
-      for (let i = this.offsets[dense]; i < this.offsets[dense + 1]; i++) addEdge(this.incident[i]);
+    else for (const edge of this.graph.edgesOf(dense)) addEdge(edge);
     return result;
   }
 }

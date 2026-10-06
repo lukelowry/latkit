@@ -15,8 +15,10 @@ struct View {
   background: vec4f,
   /** Detail fades, the grid's least spacing, port size, and the default edge width. */
   detail: vec4f,
-  /** A drag's offset in diagram units, junctions shown, and the first port slot: below it, blocks. */
-  drag: vec4f,
+  /** What scales each slot's offset on each axis, the wires' opacity, and whether only wires draw. */
+  motion: vec4f,
+  /** Junctions shown, then the first port, edge, and group slots; below the first port, blocks. */
+  slots: vec4f,
   vertexColor: vec4f,
   edgeColor: vec4f,
   outline: vec4f,
@@ -30,6 +32,8 @@ struct Style { color: vec4f, status: vec4f, width: f32, flow: f32, shade: f32 }
 /** Each label's anchor, as a text bank writes it: its origin, and the slot of the item it labels. */
 @group(0) @binding(4) var<storage, read> anchors: array<vec4f>;
 @group(0) @binding(5) var<storage, read> styles: array<vec4u>;
+/** Each slot's offset, which `motion` scales: (1, 1) where a drag moves, or from minus to. */
+@group(0) @binding(6) var<storage, read> offsets: array<vec2f>;
 struct Out {
   @builtin(position) position: vec4f,
   @location(0) uv: vec2f,
@@ -58,8 +62,12 @@ fn styleOf(slot: u32, kind: u32) -> Style {
 fn chosen(color: vec4f) -> vec4f { return select(view.selected, color, view.metrics.w != 0.); }
 /** How far a fading mark shows at a size in pixels; detail 'full' always shows it. */
 fn fold(px: f32) -> f32 { return select(1., smoothstep(1., 3., px), view.detail.x != 0.); }
-/** Moving items follow the drag; rerouted ones hide while their new wires draw. */
-fn dragged(flags: u32) -> vec2f { return select(vec2f(0.), view.drag.xy, (flags & 64u) != 0u); }
+/** Where an item draws from its place: following a drag, or easing in from where it was. */
+fn shifted(slot: u32) -> vec2f {
+  if (slot >= arrayLength(&offsets)) { return vec2f(0.); }
+  return offsets[slot] * view.motion.xy;
+}
+fn wired(k: u32) -> bool { return k == SEGMENT || k == CORNER || k == ARROW || k == JUNCTION; }
 fn hidden(i: u32) -> Out { return Out(vec4f(2., 2., 2., 1.), vec2f(0.), i, vec4f(0.), vec4f(0.)); }
 /** The rim selection and hover draw past a shape, in pixels. */
 fn rim() -> f32 { return max(6., max(view.metrics.y, view.metrics.z) + 2.); }
@@ -67,9 +75,10 @@ fn rim() -> f32 { return max(6., max(view.metrics.y, view.metrics.z) + 2.); }
   let item = items[i];
   let c = corner(v);
   let flags = flagsOf(item.slot);
-  if ((flags & 128u) != 0u) { return hidden(i); }
-  let offset = dragged(flags);
   let k = item.kind;
+  // Rerouted wires hide while their new ones draw; wires a transition leaves draw alone.
+  if ((flags & 128u) != 0u || (view.motion.w != 0. && !wired(k))) { return hidden(i); }
+  let offset = shifted(item.slot);
   let pad = rim();
   if (k == SEGMENT || k == PREVIEW) {
     let a = screen(item.a.xy + offset);
@@ -106,16 +115,6 @@ fn rim() -> f32 { return max(6., max(view.metrics.y, view.metrics.z) + 2.); }
   let uv = (c * 2. - 1.) * (half + pad + select(0., 10., k == BLOCK));
   return Out(clip(center + uv), uv, i, vec4f(half, 0., 0.), vec4f(0.));
 }
-fn box(p: vec2f, half: vec2f, radius: f32) -> f32 {
-  let q = abs(p) - half + radius;
-  return length(max(q, vec2f(0.))) + min(max(q.x, q.y), 0.) - radius;
-}
-/** Signed distance in pixels to a block's outline: rounded, rectangle, ellipse, or diamond. */
-fn outline(p: vec2f, half: vec2f, radius: f32, shape: u32) -> f32 {
-  if (shape == 2u) { return (length(p / max(half, vec2f(0.001))) - 1.) * min(half.x, half.y); }
-  if (shape == 3u) { return (dot(abs(p) / max(half, vec2f(0.001)), vec2f(1.)) - 1.) * min(half.x, half.y) * 0.707107; }
-  return box(p, half, select(0., radius, shape == 0u));
-}
 /** Marching dashes along a flowing wire, or still chevrons under reduced motion. */
 fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
   if (flow == 0.) { return d; }
@@ -135,8 +134,8 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
   let hovered = (flags & 2u) != 0u;
   let compatible = (flags & 4u) != 0u;
   let targeted = (flags & 8u) != 0u;
-  let wire = k == SEGMENT || k == CORNER || k == ARROW || k == JUNCTION;
-  var opacity = select(1., 0.22, (flags & 32u) != 0u);
+  let wire = wired(k);
+  var opacity = select(1., 0.22, (flags & 32u) != 0u) * select(1., view.motion.z, wire || k == LABEL);
   var color = style.color;
   var d = 0.;
   var shadow = 0.;
@@ -173,7 +172,7 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
     if (selected || targeted) { color = chosen(color); } else if (hovered) { color = mix(color, view.hovered, 0.65); }
   } else if (k == JUNCTION) {
     d = length(v.uv) - v.size.x;
-    opacity *= fold(v.size.x * 2.) * view.drag.z;
+    opacity *= fold(v.size.x * 2.) * view.slots.x;
     if (selected || targeted) { color = chosen(color); }
   } else if (k == PORT) {
     let half = v.size.x;
@@ -191,7 +190,7 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
     if (k == BLOCK) {
       let radius = min(item.b.x * scale(), min(half.x, half.y));
       let shape = u32(item.b.z);
-      d = outline(v.uv, half, radius, shape);
+      d = shapeDistance(shape, v.uv, half, radius);
       let header = item.b.y * scale();
       if (header > 0. && shape <= 1u) {
         // The title band, and the rule under it.
@@ -203,21 +202,21 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
         color = mix(color, style.status, aa(abs(d + view.metrics.x + 1.5) - 1.) * style.status.a);
       }
       // A soft shadow below the block, once it is large enough to cast one.
-      shadow = 0.16 * (1. - smoothstep(-2., 8., outline(v.uv - vec2f(0., 2.), half, radius, shape))) *
+      shadow = shadowAlpha(shapeDistance(shape, v.uv - vec2f(0., 2.), half, radius)) *
         smoothstep(0.3, 0.6, scale());
       if ((flags & 64u) != 0u) { opacity *= 0.88; }
     } else if (k == GROUP) {
-      d = box(v.uv, half, min(item.b.x * scale(), min(half.x, half.y)));
+      d = rectangleDistance(v.uv, half, min(item.b.x * scale(), min(half.x, half.y)));
       let header = item.b.y * scale();
       color = view.group;
       if (item.b.z != 0. || v.uv.y < header - half.y) { color.a = min(1., color.a * select(2.2, 4., item.b.z != 0.)); }
       color = mix(color, vec4f(view.outline.rgb, view.outline.a * 0.55), 1. - aa(d + 1.));
     } else if (k == LABEL) {
-      d = box(v.uv, half, min(half.y, 6.));
+      d = rectangleDistance(v.uv, half, min(half.y, 6.));
       color = vec4f(view.background.rgb, view.background.a * 0.92);
       if (item.b.x != 0.) { color = mix(color, style.color, 1. - aa(d + 1.)); }
     } else {
-      d = box(v.uv, half, 2.);
+      d = rectangleDistance(v.uv, half, 2.);
       color = mix(vec4f(view.selected.rgb, 0.12), view.selected, 1. - aa(d + 1.));
     }
   }
@@ -239,7 +238,7 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
 }
 /** A block's title in its own color where that reads on the block's fill, else dark or light. */
 fn legible(color: vec4f, slot: u32) -> vec4f {
-  if (slot >= u32(view.drag.w)) { return color; }
+  if (slot >= u32(view.slots.y)) { return color; }
   let luma = vec3f(0.2126, 0.7152, 0.0722);
   let fill = dot(styleOf(slot, BLOCK).color.rgb, luma);
   if (abs(dot(color.rgb, luma) - fill) >= 0.4) { return color; }
@@ -250,7 +249,11 @@ fn legible(color: vec4f, slot: u32) -> vec4f {
   let anchor = latkitAnchor(anchors[t.anchor]);
   let flags = flagsOf(anchor.slot);
   if (!anchor.shown || (flags & 128u) != 0u) { return hidden(i); }
-  return Out(clip(screen(t.position + anchor.position + dragged(flags))), t.uv, i, vec4f(0.), legible(t.color, anchor.slot));
+  // A wire's label fades with its wire.
+  let wire = anchor.slot >= u32(view.slots.z) && anchor.slot < u32(view.slots.w);
+  var color = legible(t.color, anchor.slot);
+  color.a *= select(1., view.motion.z, wire);
+  return Out(clip(screen(t.position + anchor.position + shifted(anchor.slot))), t.uv, i, vec4f(0.), color);
 }
 @fragment fn text_fragment(v: Out) -> @location(0) vec4f {
   return textColor(v.uv, v.color, vec4f(0.), 0.) * smoothstep(4., 8., view.grid.w * scale());

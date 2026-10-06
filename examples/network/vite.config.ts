@@ -8,6 +8,7 @@ export default defineConfig({
         colors: 'colors.html',
         coupled: 'coupled.html',
         bunny: 'bunny.html',
+        blackout: 'blackout.html',
       },
     },
   },

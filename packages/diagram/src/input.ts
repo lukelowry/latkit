@@ -38,16 +38,16 @@ export interface Controls {
   overlay(value: Overlay | null): void;
   /** Hits near a canvas point, nearest first. */
   hits(point: Point, radiusPx?: number): readonly DiagramItem[];
-  menu(point: Point, modifiers: Modifiers): void;
   pan(dx: number, dy: number): void;
-  zoom(factor: number, anchor?: Point): void;
   /** Stop fitting: the camera stays where it is shown. */
   stay(): void;
   reveal(item: DiagramItem): void;
   invalidated(listener: () => void): () => void;
 }
-/** A diagram's gestures on one canvas: the view forwards keys and Escape to them. */
+/** A diagram's gestures on one canvas: the view forwards presses, keys, and Escape to them. */
 export interface Gestures {
+  /** Take a press that moves, wires, or marquee-selects; the view clicks, pans, and pinches the rest. */
+  grab(event: PointerEvent, point: Point): kit.Grab | undefined;
   /** Handle a key before the shared ones; true when handled. */
   key(event: KeyboardEvent): boolean;
   /** End a gesture in progress; true when one ended. */
@@ -59,10 +59,13 @@ interface Drag {
   start: Point;
   last: Point;
   world: Point;
-  kind: 'press' | 'pan' | 'move' | 'marquee' | 'connect';
+  kind: 'move' | 'marquee' | 'connect';
   moved: boolean;
   threshold: number;
   additive: boolean;
+  /** How the press began, for the click it makes if it never moves. */
+  modifiers: Modifiers;
+  touch: boolean;
   hit?: DiagramItem;
   selection: readonly DiagramItem[];
   revision: number;
@@ -71,8 +74,8 @@ interface Drag {
   blocked: boolean;
 }
 /**
- * Drag moves, wires, marquee-selects, or pans; click selects; two pointers pinch. Hover, wheel,
- * double clicks, context menus, and the shared keys belong to the view.
+ * Drag moves, wires, or marquee-selects. Clicks, pans, pinches, hover, wheel, double clicks, context
+ * menus, and the shared keys belong to the view.
  */
 export function listen(
   canvas: HTMLCanvasElement,
@@ -92,18 +95,13 @@ export function listen(
   let drag: Drag | undefined,
     space = false,
     closed = false;
-  let longPress: ReturnType<typeof setTimeout> | undefined,
-    raf = 0,
+  let raf = 0,
     lastPan = 0;
-  const pointers = new Map<number, Point>();
-  let pinch: { distance: number; center: Point } | undefined;
   const merge = (a: readonly DiagramItem[], b: readonly DiagramItem[]) => [
     ...new Map([...a, ...b].map((item) => [itemKey(item), item])).values(),
   ];
   /** End any gesture; true when one was in progress. */
   const cancel = () => {
-    if (longPress) clearTimeout(longPress);
-    longPress = undefined;
     if (raf) view.cancelAnimationFrame(raf);
     raf = 0;
     lastPan = 0;
@@ -191,176 +189,108 @@ export function listen(
     }
     raf = view.requestAnimationFrame(panAtEdge);
   };
-  canvas.addEventListener(
-    'pointerdown',
-    (event) => {
-      if (event.button !== 0 && event.button !== 1) return;
-      const p = input.point(event);
-      pointers.set(event.pointerId, p);
-      if (mode !== 'inspect') input.capture(event.pointerId);
-      canvas.focus({ preventScroll: true });
-      if (pointers.size === 2 && mode !== 'inspect') {
-        cancel();
-        const [a, b] = [...pointers.values()];
-        pinch = {
-          distance: Math.hypot(b[0] - a[0], b[1] - a[1]),
-          center: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2],
-        };
-        return;
-      }
-      const world = api.world(p);
-      if (!world || drag) return;
-      const touch = event.pointerType === 'touch';
-      const hit = api.hits(p, touch ? 22 : undefined)[0];
-      const additive = event.shiftKey || event.ctrlKey || event.metaKey;
-      const kind =
-        mode === 'inspect'
-          ? 'press'
-          : space || event.button === 1
-            ? 'pan'
-            : mode === 'edit' && (hit?.kind === 'port' || (event.altKey && hit?.kind === 'vertex'))
-              ? 'connect'
-              : mode === 'edit' && (hit?.kind === 'vertex' || hit?.kind === 'group')
-                ? 'move'
-                : !touch &&
-                    (event.shiftKey ||
-                      (mode === 'edit' && (options.backgroundDrag ?? 'select') === 'select'))
-                  ? 'marquee'
-                  : 'pan';
-      drag = {
-        id: event.pointerId,
-        start: p,
-        last: p,
-        world,
-        kind,
-        moved: false,
-        threshold: touch ? touchThreshold : threshold,
-        additive,
-        hit,
-        selection: api.selection(),
-        revision: api.revision(),
-        target: null,
-        blocked: false,
-      };
-      if (touch)
-        longPress = setTimeout(() => {
-          api.menu(p, kit.inputModifiers(event));
-          cancel();
-        }, 550);
-    },
-    { signal },
-  );
-  canvas.addEventListener(
-    'pointermove',
-    (event) => {
-      const p = input.point(event);
-      if (pointers.has(event.pointerId)) pointers.set(event.pointerId, p);
-      if (pinch && pointers.size === 2) {
-        const [a, b] = [...pointers.values()],
-          center: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-        const distance = Math.hypot(b[0] - a[0], b[1] - a[1]);
-        if (distance > 0 && pinch.distance > 0) api.zoom(distance / pinch.distance, center);
-        api.pan(center[0] - pinch.center[0], center[1] - pinch.center[1]);
-        pinch = { distance, center };
-        return;
-      }
-      const current = drag;
-      if (!current || current.id !== event.pointerId) return;
-      if (
-        !current.moved &&
-        Math.hypot(p[0] - current.start[0], p[1] - current.start[1]) > current.threshold
-      ) {
-        current.moved = true;
-        if (longPress) clearTimeout(longPress);
-        longPress = undefined;
-        if (current.kind !== 'press') api.stay();
-        if (current.kind === 'move' && current.hit) {
-          if (!current.selection.some((item) => itemKey(item) === itemKey(current.hit!)))
-            current.selection = current.additive
-              ? merge(current.selection, [current.hit])
-              : [current.hit];
-          api.choose(current.selection);
-        }
+  /** A press the diagram drags itself: on a port to wire, on a block to move, or to marquee-select. */
+  const grab = (event: PointerEvent, p: Point): kit.Grab | undefined => {
+    if (mode === 'inspect' || event.button !== 0 || space || drag) return undefined;
+    const world = api.world(p);
+    if (!world) return undefined;
+    const touch = event.pointerType === 'touch';
+    const hit = api.hits(p, touch ? 22 : undefined)[0];
+    const kind: Drag['kind'] | undefined =
+      mode === 'edit' && (hit?.kind === 'port' || (event.altKey && hit?.kind === 'vertex'))
+        ? 'connect'
+        : mode === 'edit' && (hit?.kind === 'vertex' || hit?.kind === 'group')
+          ? 'move'
+          : !touch &&
+              (event.shiftKey ||
+                (mode === 'edit' && (options.backgroundDrag ?? 'select') === 'select'))
+            ? 'marquee'
+            : undefined;
+    if (!kind) return undefined;
+    const current: Drag = {
+      id: event.pointerId,
+      start: p,
+      last: p,
+      world,
+      kind,
+      moved: false,
+      threshold: touch ? touchThreshold : threshold,
+      additive: event.shiftKey || event.ctrlKey || event.metaKey,
+      modifiers: kit.inputModifiers(event),
+      touch,
+      hit,
+      selection: api.selection(),
+      revision: api.revision(),
+      target: null,
+      blocked: false,
+    };
+    drag = current;
+    return {
+      move: (p) => {
+        if (drag !== current) return;
         if (
-          current.kind === 'connect' &&
-          current.hit &&
-          current.hit.kind !== 'group' &&
-          api.scene()
-        )
-          current.session = new ConnectSession(api.scene()!, current.hit, api.options());
-        canvas.style.cursor =
-          current.kind === 'pan' || current.kind === 'move' ? 'grabbing' : 'crosshair';
-      }
-      if (!current.moved) return;
-      if (current.kind === 'pan') api.pan(p[0] - current.last[0], p[1] - current.last[1]);
-      current.last = p;
-      follow();
-      if (!raf) raf = view.requestAnimationFrame(panAtEdge);
-    },
-    { signal },
-  );
-  canvas.addEventListener(
-    'pointerup',
-    (event) => {
-      const p = input.point(event);
-      pointers.delete(event.pointerId);
-      if (pinch) {
-        input.release(event.pointerId);
-        if (pointers.size < 2) pinch = undefined;
-        cancel();
-        return;
-      }
-      const current = drag;
-      if (!current || current.id !== event.pointerId) {
-        input.release(event.pointerId);
-        return;
-      }
-      current.last = p;
-      follow();
-      const world = api.world(p);
-      cancel();
-      if (!current.moved) api.click(p, kit.inputModifiers(event), event.pointerType === 'touch');
-      else if (
-        current.kind === 'connect' &&
-        current.session &&
-        world &&
-        !current.blocked &&
-        p[0] >= 0 &&
-        p[1] >= 0 &&
-        p[0] <= canvas.clientWidth &&
-        p[1] <= canvas.clientHeight
-      ) {
-        const proposal = current.session.proposal(current.target, snapped(world), p);
-        if (options.canConnect?.(proposal) ?? true) api.emit('connect', proposal);
-      } else if (current.kind === 'move' && world) {
-        const delta = snapped([world[0] - current.world[0], world[1] - current.world[1]]);
-        if (delta[0] || delta[1]) {
-          const proposal = api.move(current.selection, delta);
-          if (proposal) api.emit('move', proposal);
+          !current.moved &&
+          Math.hypot(p[0] - current.start[0], p[1] - current.start[1]) > current.threshold
+        ) {
+          current.moved = true;
+          api.stay();
+          if (current.kind === 'move' && current.hit) {
+            if (!current.selection.some((item) => itemKey(item) === itemKey(current.hit!)))
+              current.selection = current.additive
+                ? merge(current.selection, [current.hit])
+                : [current.hit];
+            api.choose(current.selection);
+          }
+          if (
+            current.kind === 'connect' &&
+            current.hit &&
+            current.hit.kind !== 'group' &&
+            api.scene()
+          )
+            current.session = new ConnectSession(api.scene()!, current.hit, api.options());
+          canvas.style.cursor = current.kind === 'move' ? 'grabbing' : 'crosshair';
         }
-      } else if (current.kind === 'marquee' && world) {
-        const items = api.marquee(current.world, world);
-        api.choose(current.additive ? merge(current.selection, items) : items);
-      }
-    },
-    { signal },
-  );
-  canvas.addEventListener(
-    'pointercancel',
-    (event) => {
-      pointers.delete(event.pointerId);
-      pinch = undefined;
-      cancel();
-    },
-    { signal },
-  );
-  canvas.addEventListener(
-    'lostpointercapture',
-    (event) => {
-      if (drag?.id === event.pointerId) cancel();
-    },
-    { signal },
-  );
+        if (!current.moved) return;
+        current.last = p;
+        follow();
+        if (!raf) raf = view.requestAnimationFrame(panAtEdge);
+      },
+      end: (p) => {
+        if (drag !== current) return;
+        if (!p) {
+          cancel();
+          return;
+        }
+        current.last = p;
+        follow();
+        const world = api.world(p);
+        cancel();
+        if (!current.moved) api.click(p, current.modifiers, current.touch);
+        else if (
+          current.kind === 'connect' &&
+          current.session &&
+          world &&
+          !current.blocked &&
+          p[0] >= 0 &&
+          p[1] >= 0 &&
+          p[0] <= canvas.clientWidth &&
+          p[1] <= canvas.clientHeight
+        ) {
+          const proposal = current.session.proposal(current.target, snapped(world), p);
+          if (options.canConnect?.(proposal) ?? true) api.emit('connect', proposal);
+        } else if (current.kind === 'move' && world) {
+          const delta = snapped([world[0] - current.world[0], world[1] - current.world[1]]);
+          if (delta[0] || delta[1]) {
+            const proposal = api.move(current.selection, delta);
+            if (proposal) api.emit('move', proposal);
+          }
+        } else if (current.kind === 'marquee' && world) {
+          const items = api.marquee(current.world, world);
+          api.choose(current.additive ? merge(current.selection, items) : items);
+        }
+      },
+    };
+  };
   if (options.keyboard !== false) {
     canvas.addEventListener(
       'keyup',
@@ -414,6 +344,7 @@ export function listen(
     return true;
   };
   return {
+    grab,
     key,
     cancel,
     detach() {

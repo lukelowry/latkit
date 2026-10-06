@@ -1,6 +1,6 @@
 import { createColormap, colormaps, spotlight } from '@latkit/gpu';
-import type { DiagramConfig, Shape, RouteStrategy } from '@latkit/diagram';
-import type { Shade } from '@latkit/gpu';
+import type { DiagramConfig, RouteStrategy } from '@latkit/diagram';
+import type { Shade, Shape } from '@latkit/gpu';
 import { types, shapes } from './graph.js';
 import type { GraphSource } from './source.js';
 export interface Settings {
@@ -11,7 +11,6 @@ export interface Settings {
   flow: boolean;
   arrows: boolean;
   status: boolean;
-  labels: boolean;
   light: boolean;
   density: 'compact' | 'comfortable' | 'spacious';
   titlePosition: 'header' | 'center';

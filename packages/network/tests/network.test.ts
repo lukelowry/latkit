@@ -1,8 +1,8 @@
 import { renderer as testRenderer } from '../../gpu/tests/fixtures/public-render.js';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createGpu, kit } from '@latkit/gpu';
-import type { FieldInput, FieldValues } from '@latkit/model';
-import { createNetwork, type Network, type NetworkConfig } from '../src/index.js';
+import { createData, type FieldInput, type FieldValues, type NumericColumn } from '@latkit/model';
+import { arrange, createNetwork, type Network, type NetworkConfig } from '../src/index.js';
 import type { NetworkData } from '../src/data.js';
 import { readGeometry, DEFAULT_LIMITS } from '../src/geometry/topology.js';
 import { PickGeometry } from '../src/picking.js';
@@ -89,7 +89,7 @@ it('keeps model identities across pages and uses CSR neighborhoods', async () =>
       {
         target: target(gpu),
         renderer: testRenderer(async (frame) => {
-          geometry = await readGeometry(data, frame, DEFAULT_LIMITS);
+          geometry = await readGeometry(data, frame.reader, DEFAULT_LIMITS);
         }),
       },
     ],
@@ -284,6 +284,8 @@ it('rejects invalid options atomically and falls back from the globe for Cartesi
   expect(() => network.set({ unknown: 1 } as never)).toThrow('Unknown network option');
   expect(() => network.set({ camera: { zoom: 2 } as never })).toThrow('Unknown camera option');
   expect(() => network.set({ input: 'edit' })).toThrow('Unsupported input mode');
+  expect(() => network.set({ layout: { vertexGap: -1 } })).toThrow('Invalid vertexGap');
+  expect(() => network.set({ layout: { algorithm: 'circle' as 'stress' } })).toThrow();
   expect(network.config).toBe(config);
   expect(network.camera).not.toHaveProperty('zoom');
   network.set({ camera: { projection: 'globe' } });
@@ -868,4 +870,245 @@ it('submits a captured network while batches coalesce into the next snapshot', a
   expect(network.stats().vertices).toBe(30);
   network.destroy();
   gpu.destroy();
+});
+it('takes a whole config, changing nothing when it repeats the one held', async () => {
+  const gpu = await createGpu({ device: device().device }),
+    { data } = fixture();
+  const network = createNetwork(gpu, { ...data, vertexColor: [1, 0, 0, 1] });
+  const invalidated = vi.fn(),
+    off = invalidations(network)(invalidated);
+  try {
+    const held = network.config;
+    // Built afresh the same way, as an application builds its config on every change.
+    network.set(
+      { ...fixture().data, source: data.source, vertexColor: [1, 0, 0, 1] },
+      { replace: true },
+    );
+    expect(network.config).toBe(held);
+    expect(invalidated).not.toHaveBeenCalled();
+    network.set(data, { replace: true });
+    expect(network.config).not.toHaveProperty('vertexColor');
+    expect(network.config.vertices).toBe(held.vertices);
+    expect(invalidated).toHaveBeenCalled();
+  } finally {
+    off();
+    network.destroy();
+    gpu.destroy();
+  }
+});
+
+/**
+ * Four buses a degree apart along latitude 30, joined in a line by branches, and three plants
+ * without a position: the first feeds bus 0, the second bus 3, the third nothing.
+ */
+function stations() {
+  const index = (type: string) => ({ source: 'stations', type, version: '1' }),
+    rows = (count: number) => ({ kind: 'range' as const, offset: 0, count }),
+    reference = (type: string, values: number[]) => ({
+      kind: 'reference' as const,
+      index: index(type),
+      offset: 0,
+      length: values.length,
+      values: Uint32Array.from(values),
+    }),
+    to = (type: string) => ({ type: { kind: 'reference' as const, to: type } });
+  const source = createData(
+    {
+      types: {
+        bus: {
+          fields: {
+            location: { type: { kind: 'vector', items: 'float64', size: 2 }, geographic: true },
+          },
+        },
+        plant: { fields: { output: { type: 'float32' } } },
+        branch: { fields: { from: to('bus'), to: to('bus') } },
+        feed: { fields: { plant: to('plant'), bus: to('bus') } },
+      },
+    },
+    [
+      {
+        kind: 'rows',
+        index: index('bus'),
+        rows: rows(4),
+        columns: {
+          location: {
+            kind: 'vector',
+            size: 2,
+            offset: 0,
+            length: 4,
+            values: {
+              kind: 'numeric',
+              offset: 0,
+              length: 8,
+              values: Float64Array.of(-100, 30, -99, 30, -98, 30, -97, 30),
+            },
+          },
+        },
+      },
+      {
+        kind: 'rows',
+        index: index('plant'),
+        rows: rows(3),
+        columns: {
+          output: { kind: 'numeric', offset: 0, length: 3, values: Float32Array.of(1, 2, 3) },
+        },
+      },
+      {
+        kind: 'rows',
+        index: index('branch'),
+        rows: rows(3),
+        columns: { from: reference('bus', [0, 1, 2]), to: reference('bus', [1, 2, 3]) },
+      },
+      {
+        kind: 'rows',
+        index: index('feed'),
+        rows: rows(2),
+        columns: { plant: reference('plant', [0, 1]), bus: reference('bus', [0, 3]) },
+      },
+    ],
+  );
+  const config: NetworkConfig = {
+    source,
+    vertices: { bus: lanes('location'), plant: {} },
+    edges: { branch: { ends: ['from', 'to'] }, feed: { ends: ['plant', 'bus'] } },
+  };
+  return { source, config, index };
+}
+/** A row's position as arrange placed it. */
+function placedAt(
+  positions: Awaited<ReturnType<typeof arrange>>,
+  type: string,
+  row: number,
+): [number, number] {
+  const { x, y } = positions[type];
+  return [(x.values as NumericColumn).values[row], (y.values as NumericColumn).values[row]];
+}
+it('places vertices without a position by their edges, among geographic ones that stay', async () => {
+  const gpu = await createGpu({ device: device().device }),
+    { config } = stations();
+  try {
+    const placed = await arrange(gpu, config);
+    expect([0, 1, 2, 3].map((row) => placedAt(placed, 'bus', row))).toEqual([
+      [-100, 30],
+      [-99, 30],
+      [-98, 30],
+      [-97, 30],
+    ]);
+    // Each fed plant sits about a branch from its bus, a branch being a degree.
+    for (const [plant, bus] of [
+      [0, 0],
+      [1, 3],
+    ]) {
+      const [px, py] = placedAt(placed, 'plant', plant),
+        [bx, by] = placedAt(placed, 'bus', bus);
+      expect(Math.hypot(px - bx, py - by)).toBeGreaterThan(0.3);
+      expect(Math.hypot(px - bx, py - by)).toBeLessThan(3);
+    }
+    // The plant nothing feeds packs below the rest, and every placement is the same.
+    const lowest = Math.min(...[0, 1].map((row) => placedAt(placed, 'plant', row)[1]), 30);
+    expect(placedAt(placed, 'plant', 2)[1]).toBeLessThan(lowest);
+    expect(await arrange(gpu, config)).toEqual(placed);
+    // Drawn, the positions stay geographic.
+    const network = createNetwork(gpu, config);
+    await gpu.render({
+      timeMs: 0,
+      views: [{ renderer: kit.rendererOf(network), target: target(gpu), at: 0 }],
+    });
+    expect(network.projections.globe).toBe(true);
+    expect(network.stats().vertices).toBe(7);
+    network.destroy();
+  } finally {
+    gpu.destroy();
+  }
+});
+it('places each row whose position reads no number among its positioned neighbours', async () => {
+  const source = new GraphSource(25, 8);
+  // The middle of the five by five grid, whose four neighbours sit 10 away.
+  source.positions[24] = NaN;
+  const data: NetworkData = {
+      source: source.data,
+      vertices: { node: lanes('location') },
+      edges: { line: { ends: ['from', 'to'] } },
+    },
+    gpu = await createGpu({ device: device().device });
+  try {
+    const placed = await arrange(gpu, data),
+      [x, y] = placedAt(placed, 'node', 12);
+    expect(Math.hypot(x - (1e9 + 20), y - (1e9 + 20))).toBeLessThan(5);
+    for (let row = 0; row < 25; row++)
+      if (row !== 12)
+        expect(placedAt(placed, 'node', row)).toEqual([
+          source.positions[row * 2],
+          source.positions[row * 2 + 1],
+        ]);
+    const network = createNetwork(gpu, {
+        ...data,
+        camera: { center: [1e9 + 20, 1e9 + 20], scale: 4, fit: false },
+      }),
+      surface = target(gpu),
+      draw = (timeMs: number) =>
+        gpu.render({ timeMs, views: [{ renderer: kit.rendererOf(network), target: surface }] }),
+      node = (row: number) =>
+        network.locate({ kind: 'vertex', source: source.data, index: source.index('node'), row })!;
+    await draw(0);
+    // Drawn where arrange places it: 4 pixels a unit, y down the screen.
+    expect(node(12)[0] - node(13)[0]).toBeCloseTo((x - source.positions[26]) * 4, 3);
+    expect(node(12)[1] - node(13)[1]).toBeCloseTo((source.positions[27] - y) * 4, 3);
+    // Given a position, the row draws there.
+    const values = source.positions.slice();
+    values[24] = 1e9 + 25;
+    network.set({
+      vertices: {
+        node: lanes({
+          index: source.index('node'),
+          rows: { kind: 'range', offset: 0, count: 25 },
+          values: {
+            kind: 'vector',
+            size: 2,
+            offset: 0,
+            length: 25,
+            values: { kind: 'numeric', offset: 0, length: 50, values },
+          },
+        }),
+      },
+    });
+    await draw(1);
+    expect(node(12)[0] - node(13)[0]).toBeCloseTo(-20);
+    expect(node(12)[1]).toBeCloseTo(node(13)[1]);
+    network.destroy();
+  } finally {
+    gpu.destroy();
+  }
+});
+it('keeps placed vertices as the drawing changes, and places them anew for new layout options', async () => {
+  const gpu = await createGpu({ device: device().device }),
+    { config, source, index } = stations(),
+    surface = target(gpu);
+  const network = createNetwork(gpu, {
+      ...config,
+      edges: { branch: config.edges!.branch },
+      camera: { center: [-98.5, 28], scale: 20, fit: false },
+    }),
+    draw = (timeMs: number) =>
+      gpu.render({ timeMs, views: [{ renderer: kit.rendererOf(network), target: surface }] }),
+    vertex = (type: string, row: number) =>
+      network.locate({ kind: 'vertex', source, index: index(type), row })!;
+  try {
+    await draw(0);
+    const loose = vertex('plant', 0);
+    // New edges keep the plants where they were.
+    network.set({ edges: config.edges });
+    await draw(1);
+    expect(vertex('plant', 0)).toEqual(loose);
+    // New layout options place them anew, beside the buses they feed.
+    network.set({ layout: { vertexGap: 0.5 } });
+    await draw(2);
+    const fed = vertex('plant', 0),
+      bus = vertex('bus', 0);
+    expect(fed).not.toEqual(loose);
+    expect(Math.hypot(fed[0] - bus[0], fed[1] - bus[1])).toBeLessThan(30);
+  } finally {
+    network.destroy();
+    gpu.destroy();
+  }
 });

@@ -1,13 +1,7 @@
-import { createGpu, type Point } from '@latkit/gpu';
-import { itemId, numberAt, rowAt, rowCount } from '@latkit/model';
+import { createGpu, type LayoutOptions, type Point, type Shape } from '@latkit/gpu';
+import { itemId } from '@latkit/model';
 import { createDiagram, arrange } from '@latkit/diagram';
-import type {
-  DiagramConfig,
-  DiagramInput,
-  DiagramItem,
-  LayoutOptions,
-  Shape,
-} from '@latkit/diagram';
+import type { DiagramConfig, DiagramInput, DiagramItem } from '@latkit/diagram';
 import { GraphSource } from './source.js';
 import {
   plugged,
@@ -18,11 +12,11 @@ import {
   addBlock,
   connectGraph,
   deleteItems,
-  moveGraph,
+  placeGraph,
 } from './graph.js';
 import type { BlockType, Graph, Preset } from './graph.js';
 import { data, effect, theme } from './presentation.js';
-import type { Drawn, Settings, Style } from './presentation.js';
+import type { Settings, Style } from './presentation.js';
 import './style.css';
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) =>
   document.querySelector<T>(selector)!;
@@ -104,21 +98,6 @@ const diagram = createDiagram(gpu, {
 diagram.on('move', acceptMove);
 diagram.on('connect', acceptWire);`;
 $('#api-code').textContent = code;
-/** A record patch that replaces each entry: entries and options the next record lacks are removed. */
-function replace<T extends object>(
-  previous: Readonly<Record<string, T>> | undefined,
-  next: Readonly<Record<string, T>>,
-) {
-  type Entry = { [K in keyof T]?: T[K] | null };
-  const patch: Record<string, Entry | null> = {};
-  for (const [id, entry] of Object.entries(previous ?? {}))
-    patch[id] =
-      id in next
-        ? (Object.fromEntries(Object.keys(entry).map((key) => [key, null])) as Entry)
-        : null;
-  for (const [id, entry] of Object.entries(next)) patch[id] = { ...patch[id], ...entry };
-  return patch;
-}
 const shapeIcon = (type: BlockType) => {
   const drawing =
     type === 'Input'
@@ -152,7 +131,6 @@ async function boot() {
     flow: check('flow').checked,
     arrows: check('arrows').checked,
     status: check('status').checked,
-    labels: check('labels').checked,
     overflow: select('overflow').value as Settings['overflow'],
   });
   const options = (): Style => ({
@@ -180,14 +158,22 @@ async function boot() {
     backgroundDrag: select('background-drag').value as DiagramInput['backgroundDrag'],
     autoPan: check('auto-pan').checked,
   });
-  document.documentElement.dataset.theme = lightTheme() ? 'light' : 'dark';
-  const diagram = createDiagram(gpu, { ...binding(), ...options(), canvas, input: input() });
-  /** Replace what the diagram draws with a new binding. */
-  const drawn = (next: Drawn) => ({
-    vertices: replace(diagram.config.vertices, next.vertices),
-    edges: replace(diagram.config.edges, next.edges),
-    groups: replace(diagram.config.groups, next.groups),
+  const shades = new Map<string, ReturnType<typeof effect>>();
+  const shade = (name: string) => {
+    if (!shades.has(name)) shades.set(name, effect(name));
+    return shades.get(name)!;
+  };
+  /** Everything the diagram draws, from the document and the page's controls. */
+  const config = () => ({
+    ...binding(),
+    ...options(),
+    input: input(),
+    shade: shade(select('shade').value),
   });
+  document.documentElement.dataset.theme = lightTheme() ? 'light' : 'dark';
+  const diagram = createDiagram(gpu, { ...config(), canvas });
+  /** Draw what the document and controls say; the diagram keeps whatever stays the same. */
+  const show = (animate = false) => diagram.set(config(), { replace: true, animate });
   /** A canvas point in diagram units, on the grid when snapping. */
   const world = (point: Point): Point => {
     const { center, scale } = diagram.camera,
@@ -206,7 +192,7 @@ async function boot() {
     syncMetrics();
   });
   const bindInput = () => {
-    diagram.set({ input: input() });
+    show();
     message(select('mode').selectedOptions[0].text + ' mode');
   };
   for (const id of ['mode', 'background-drag', 'auto-pan']) $('#' + id).onchange = bindInput;
@@ -221,8 +207,7 @@ async function boot() {
   function refresh(animate = false) {
     $('#error').hidden = true;
     source.publish(history.current);
-    diagram.set({ source: source.data });
-    diagram.set(drawn(binding()), { animate });
+    show(animate);
     historyButtons();
     showGroups();
     inspect();
@@ -390,10 +375,7 @@ async function boot() {
     $('#hovered').textContent = items.length ? items.length + ' selected' : 'No selection';
   });
   diagram.on('move', (proposal) =>
-    commit(
-      moveGraph(history.current, proposal),
-      'Moved ' + proposal.moves.length + (proposal.moves.length === 1 ? ' block' : ' blocks'),
-    ),
+    commit(placeGraph(history.current, proposal.positions), 'Moved blocks'),
   );
   diagram.on('connect', (proposal) => {
     try {
@@ -455,20 +437,28 @@ async function boot() {
     button.disabled = true;
     button.textContent = 'Arranging…';
     try {
-      const algorithm: LayoutOptions['algorithm'] =
-        select('algorithm').value === 'grid'
-          ? {
-              arrange: ({ vertices }) => {
-                const columns = Math.ceil(Math.sqrt(vertices.length));
-                const width = Math.max(220, ...vertices.map((vertex) => vertex.size[0] + 64));
-                const height = Math.max(160, ...vertices.map((vertex) => vertex.size[1] + 64));
-                return vertices.map((_, i) => [
-                  (i % columns) * width,
-                  Math.floor(i / columns) * height,
-                ]);
-              },
-            }
-          : 'layered';
+      const choice = select('algorithm').value,
+        algorithm: LayoutOptions['algorithm'] =
+          choice === 'grid'
+            ? {
+                // Each part's blocks in rows, a cell as large as its largest block.
+                arrange: ({ vertices, input }) => {
+                  const columns = Math.ceil(Math.sqrt(vertices.length));
+                  let width = 220,
+                    height = 160;
+                  for (const v of vertices) {
+                    width = Math.max(width, input.sizes![v * 2] + 64);
+                    height = Math.max(height, input.sizes![v * 2 + 1] + 64);
+                  }
+                  return Array.from(vertices).flatMap((_, i) => [
+                    (i % columns) * width,
+                    Math.floor(i / columns) * height,
+                  ]);
+                },
+              }
+            : choice === 'stress'
+              ? 'stress'
+              : 'layered';
       const fields = await arrange(gpu, {
         ...binding(true),
         ...options(),
@@ -483,24 +473,8 @@ async function boot() {
         message('Scene changed during layout. Arrange again.');
         return;
       }
-      const updated = new Map<string, Point>();
-      for (const [type, { x, y }] of Object.entries(fields)) {
-        if (x.values.kind !== 'numeric' || y.values.kind !== 'numeric') continue;
-        const blocks = history.current.blocks.filter((block) => block.type === type);
-        for (let i = 0; i < rowCount(x.rows); i++)
-          updated.set(blocks[rowAt(x.rows, i)].id, [
-            numberAt(x.values, i)!,
-            numberAt(y.values, i)!,
-          ]);
-      }
       commit(
-        {
-          ...history.current,
-          blocks: history.current.blocks.map((block) => ({
-            ...block,
-            position: updated.get(block.id) ?? block.position,
-          })),
-        },
+        placeGraph(history.current, fields),
         'Applied ' + select('algorithm').selectedOptions[0].text.toLowerCase() + ' layout',
         true,
       );
@@ -603,7 +577,7 @@ async function boot() {
     'title-position',
   ])
     $('#' + id).onchange = () => {
-      diagram.set(drawn(binding()));
+      show();
       message('Updated ' + id);
     };
   for (const id of [
@@ -620,18 +594,18 @@ async function boot() {
     'detail',
   ])
     $('#' + id).onchange = () => {
-      diagram.set(options());
+      show();
       message('Updated ' + id);
     };
   const updateTheme = () => {
     document.documentElement.dataset.theme = lightTheme() ? 'light' : 'dark';
-    diagram.set({ ...options(), ...drawn(binding()) });
+    show();
   };
   select('theme').onchange = updateTheme;
   systemTheme.addEventListener('change', updateTheme);
-  select('density').onchange = () => diagram.set({ ...options(), ...drawn(binding()) });
+  select('density').onchange = () => show();
   select('shade').onchange = () => {
-    diagram.set({ shade: effect(select('shade').value) });
+    show();
     message('Updated shade');
   };
   check('simulate').onchange = () => {
@@ -685,7 +659,7 @@ async function boot() {
     }
   }, 250);
   const resize = () => {
-    diagram.set({ fitPaddingPx: compact.matches ? [24, 28, 60, 28] : 44 });
+    show();
     if (!history.canUndo) choosePreset(active);
   };
   compact.addEventListener('change', resize);

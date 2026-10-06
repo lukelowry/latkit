@@ -34,11 +34,9 @@ preparation finishes. Compositions capture their children before preparing any c
 
 Monitor append progress is tracked per trace and field, including disjoint frame ranges. Pending
 ranges pass to a bounded job only after cancellable domain preparation succeeds, and the job
-consumes queued geometry only on submission. Camera-independent tiles reuse derived geometry and
-exact extrema across domain changes; partial summary buckets are refined against application data.
-The cache is bounded by the monitor's history budget and falls back to local data queries when
-coverage, resolution, or capacity is insufficient. This does not add retention or replay to models
-or transport: applications continue to own observation history.
+consumes queued geometry only on submission. Each trace draws into history images bounded by the
+monitor's history budget, and a fit measures each sample page's extent once. This does not add
+retention or replay to models or transport: applications continue to own observation history.
 
 Renderer authors implement the lifecycle through `kit.Renderer`:
 
@@ -83,4 +81,8 @@ Every per-row option is a [channel](topology-and-channels.md#channels). `kit.bin
 type's options to the columns of one fields read, sharing a column between channels of one field;
 `kit.resolveChannels` resolves their scales. A shader reads each through the field shader's
 `LatkitChannel`, which `kit.writeChannel` fills per page, with `channelNumber` and `channelColor`;
-`kit.channelValue` and `kit.channelOn` read a row on the CPU as `channelNumber` and `channelOn` do on the GPU, for picking and layout.
+`kit.channelValue` and `kit.channelOn` read a row on the CPU as `channelNumber` and `channelOn` do on the GPU, and `kit.channelValues` every row of a block, for picking and layout.
+
+A view's drawn graph is a `kit.Graph`: each edge's vertices, with each vertex's edges and the
+graph's parts found on first use. `kit.place` places the vertices nothing pins, part by part, with a
+`LayoutStrategy`, and packs the parts nothing pins below the rest.

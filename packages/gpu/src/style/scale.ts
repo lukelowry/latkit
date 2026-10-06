@@ -9,7 +9,7 @@ import {
 } from '@latkit/model';
 import type { Colormap } from '../colors/colormap.js';
 import type { ColormapName } from '../colors/catalog.js';
-import type { RGBA } from '../colors/color.js';
+import { validateRgba, type RGBA } from '../colors/color.js';
 import type { TextFont } from '../text/text.js';
 
 /** Output endpoints may descend. Model domains remain ordered. */
@@ -46,11 +46,24 @@ export interface Labels {
   /** At most this many labels of the type draw at once. */
   readonly maxCount?: number;
 }
-/** A type's labels as a view reads them: a field name labels by that field with defaults. */
+/**
+ * A type's labels as a view reads them, checked: a field name labels by that field with defaults.
+ * Views check the options they add to `Labels` themselves.
+ */
 export function resolveLabels<L extends Labels>(
   labels: string | L | null | undefined,
 ): L | undefined {
-  return typeof labels === 'string' ? ({ field: labels } as L) : (labels ?? undefined);
+  if (labels === null || labels === undefined) return undefined;
+  if (typeof labels === 'string') return { field: labels } as L;
+  if (typeof labels !== 'object' || labels.field === undefined)
+    throw failure('invalid-input', 'Invalid labels');
+  if (labels.color !== undefined) validateRgba(labels.color);
+  if (
+    labels.maxCount !== undefined &&
+    (!Number.isSafeInteger(labels.maxCount) || labels.maxCount < 0)
+  )
+    throw failure('invalid-input', 'Invalid label count');
+  return labels;
 }
 export interface ScaleRequest {
   readonly source: Data;

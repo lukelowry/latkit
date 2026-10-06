@@ -10,7 +10,7 @@ import {
   type Schema,
   type Data,
   type FieldInput,
-  type FieldValues,
+  type ReadScope,
 } from '@latkit/model';
 import { kit } from '@latkit/gpu';
 import type { NetworkData, VertexOptions, EdgeOptions, PathOptions } from '../data.js';
@@ -28,8 +28,6 @@ export interface VertexBank {
   readonly rows: RowAxis;
   readonly count: number;
   readonly base: number;
-  /** Where rows of a type that binds neither x nor y draw: around a circle. */
-  layout?: FieldValues;
   /** Private control points share field upload/projection, but are never model vertices. */
   readonly synthetic?: VertexOptions;
 }
@@ -80,12 +78,15 @@ export interface Limits {
   readonly geometryBytes?: number;
   /** CPU memory for hit-test indexes; hover and pick fall back to scans past it. */
   readonly pickingBytes?: number;
+  /** Time to place vertices without a position, in milliseconds. */
+  readonly layoutMs?: number;
 }
 export const DEFAULT_LIMITS = Object.freeze({
   vertices: 2_000_000,
   segments: 8_000_000,
   geometryBytes: 256 * 1024 ** 2,
   pickingBytes: 64 * 1024 ** 2,
+  layoutMs: 30000,
 });
 export function vertexOptions(data: NetworkData, bank: VertexBank): VertexOptions {
   return bank.synthetic ?? data.vertices[bank.type];
@@ -111,11 +112,6 @@ class Uints {
     }
     this.values[this.length++] = value;
   }
-  append(rows: RowAxis): void {
-    if (rows.kind === 'indices')
-      for (let i = 0; i < rows.values.length; i++) this.push(rows.values[i]);
-    else for (let i = 0; i < rows.count; i++) this.push(rows.offset + i);
-  }
   /** An exact-length copy; the builder stays reusable. */
   take(): Uint32Array {
     return this.values.slice(0, this.length);
@@ -138,17 +134,17 @@ function geographic(
   return kinds.size ? kinds.has(true) : undefined;
 }
 /**
- * Where a vertex type's rows draw: around a circle without x or y, or at plane or geographic
- * coordinates. Only a change of this rebuilds the topology; new positions do not.
+ * Where a vertex type's rows draw: where the layout places them without x or y, or at plane or
+ * geographic coordinates. Only a change of this rebuilds the topology; new positions do not.
  */
 export function placement(
   source: Data,
   type: string,
   options: VertexOptions,
-): 'circle' | 'plane' | 'geographic' {
+): 'free' | 'plane' | 'geographic' {
   const { x, y } = channels(options, VERTEX).channels;
   if ([x, y].every((axis) => axis.field === undefined && axis.constant === undefined))
-    return 'circle';
+    return 'free';
   return geographic(source, type, [x.field, y.field]) ? 'geographic' : 'plane';
 }
 /** A contiguous run as a range, so ranged reads and lookups never allocate index arrays. */
@@ -249,7 +245,7 @@ class Segments {
 
 export async function readGeometry(
   data: NetworkData,
-  frame: kit.Preparation,
+  reader: ReadScope,
   limits: Required<Limits>,
 ): Promise<Geometry> {
   const vertices: VertexBank[] = [],
@@ -258,8 +254,6 @@ export async function readGeometry(
     drawn = new Map<string, Drawn>(),
     // Whether each drawn position is geographic: every one must agree.
     kinds = new Set<boolean>(),
-    // Banks of types that bind neither x nor y, which sit on a circle.
-    unplaced: VertexBank[] = [],
     segments = { count: 0 };
   let vertexCount = 0,
     edgeCount = 0,
@@ -271,32 +265,15 @@ export async function readGeometry(
     if (bytes > limits.geometryBytes)
       throw failure('resource-limit', 'Network geometry exceeds its CPU budget');
   };
-  const rowsOf = async (
-    source: Data,
-    type: string,
-    selection: VertexOptions['rows'],
-  ): Promise<{ index?: Index; rows: Uint32Array }> => {
-    const rows = new Uints();
-    let index: Index | undefined;
-    for await (const block of frame.reader.read(source, {
-      kind: 'rows',
-      from: type,
-      select: [],
-      ...(selection ? { rows: selection } : {}),
-    })) {
-      if (index) assertIndex(index, block.index);
-      else index = block.index;
-      rows.append(block.rows);
-    }
-    return { index, rows: rows.take() };
-  };
+  const rowsOf = (source: Data, type: string, selection: VertexOptions['rows']) =>
+    kit.readRows(reader, source, type, selection);
 
   for (const [type, options] of Object.entries(data.vertices)) {
     const read = await rowsOf(data.source, type, options.rows);
     const definition = schema.types[type];
     if (!definition) throw failure('invalid-input', 'Unknown vertex type: ' + type);
     const placed = placement(data.source, type, options);
-    if (placed !== 'circle') kinds.add(placed === 'geographic');
+    if (placed !== 'free') kinds.add(placed === 'geographic');
     if (vertexCount + read.rows.length > limits.vertices)
       throw failure('resource-limit', 'Network vertex limit exceeded');
     const addresses = new Addresses(read.rows, vertexCount, vertices.length);
@@ -314,7 +291,6 @@ export async function readGeometry(
         base: vertexCount,
       };
       vertices.push(bank);
-      if (placed === 'circle') unplaced.push(bank);
       table.add(rows, bank);
       vertexCount += count;
       charge(256 + (rows.kind === 'indices' ? count * 36 : 0));
@@ -377,7 +353,7 @@ export async function readGeometry(
         offsets.push(0);
         incidence.length = 0;
       };
-      for await (const block of frame.reader.read(data.source, {
+      for await (const block of reader.read(data.source, {
         kind: 'rows',
         from: type,
         select: [a, b],
@@ -432,7 +408,7 @@ export async function readGeometry(
     for (const [vertexType, fields] of ports) {
       const own = drawn.get(vertexType)!,
         selection = data.vertices[vertexType].rows;
-      for await (const block of frame.reader.read(data.source, {
+      for await (const block of reader.read(data.source, {
         kind: 'rows',
         from: vertexType,
         select: fields,
@@ -532,31 +508,10 @@ export async function readGeometry(
       charge(256 + count * 12);
     }
   }
-  frame.signal.throwIfAborted();
+  reader.signal.throwIfAborted();
   if (kinds.size > 1)
     throw failure('invalid-input', 'Drawn positions mix geographic and plane coordinates');
   const lonlat = kinds.has(true);
-  for (const bank of unplaced) {
-    if (lonlat) throw failure('invalid-input', 'Geographic vertices require positions');
-    const values = new Float32Array(bank.count * 2);
-    for (let i = 0; i < bank.count; i++) {
-      const a = (2 * Math.PI * (bank.base + i)) / Math.max(1, vertexCount);
-      values[i * 2] = Math.cos(a);
-      values[i * 2 + 1] = Math.sin(a);
-    }
-    bank.layout = {
-      index: bank.index,
-      rows: bank.rows,
-      values: {
-        kind: 'vector',
-        offset: 0,
-        length: bank.count,
-        size: 2,
-        values: { kind: 'numeric', offset: 0, length: values.length, values },
-      },
-    } satisfies FieldValues;
-    charge(values.byteLength);
-  }
   const connected = edges.filter((bank) => !bank.kind);
   const adjacencyBytes =
     (vertexCount + edgeCount + 2) * 4 +

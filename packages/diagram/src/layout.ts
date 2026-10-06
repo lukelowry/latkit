@@ -1,86 +1,31 @@
-import { Work, failure, type RequestOptions } from '@latkit/model';
-import { kit, type Gpu } from '@latkit/gpu';
-import { diagramData, type Point, type Positions } from './data.js';
+import { Work, type RequestOptions } from '@latkit/model';
+import { kit, type Gpu, type LayoutItem, type LayoutOptions, type Positions } from '@latkit/gpu';
+import { diagramData, rowOf } from './data.js';
 import type { DiagramConfig } from './diagram.js';
 import {
   data as checkedData,
   resolveLimits,
   resolveStyle,
-  positive,
   VIEW_DEFAULTS,
+  type Style,
 } from './config.js';
 import { readScene } from './read.js';
-import { positions, rect, expand, intersects, type Rect, type Scene } from './scene.js';
-import { portPositions } from './geometry.js';
-export interface LayoutVertex {
-  readonly id: string;
-  readonly type: string;
-  readonly size: Point;
-  readonly position?: Point;
-  readonly group?: string;
-  readonly ports: readonly {
-    readonly name: string;
-    readonly direction?: 'in' | 'out';
-    readonly side: 'left' | 'right' | 'top' | 'bottom';
-  }[];
-}
-export interface LayoutGraph {
-  readonly vertices: readonly LayoutVertex[];
-  /** Each edge as vertex pairs, from its source end to each other end. */
-  readonly pairs: readonly (readonly [number, number])[];
-  /** Edges with their ends' ports and directions, for custom algorithms. */
-  readonly edges: readonly {
-    readonly id: string;
-    readonly type: string;
-    readonly ends: readonly {
-      readonly vertex: number;
-      readonly port: string | null;
-      readonly direction?: 'in' | 'out';
-    }[];
-    readonly labelSize: Point;
-  }[];
-  readonly groups: readonly {
-    readonly id: string;
-    readonly parent?: string;
-    readonly members: readonly number[];
-  }[];
-}
-export interface LayoutStrategy {
-  arrange(
-    graph: LayoutGraph,
-    context: { readonly signal: AbortSignal },
-  ): readonly Point[] | Promise<readonly Point[]>;
-}
-export interface LayoutOptions {
-  readonly algorithm?: 'layered' | 'manual' | LayoutStrategy;
-  readonly direction?: 'right' | 'left' | 'down' | 'up';
-  readonly vertexGap?: number;
-  readonly rankGap?: number;
-  /** Crossing-reduction passes, from 0 to 12. Default: 4. */
-  readonly sweeps?: number;
-}
-/** An algorithm name stands for that algorithm with defaults. */
-export type Layout = 'layered' | 'manual' | LayoutOptions;
-export function layoutOptions(layout: Layout = {}): Required<LayoutOptions> {
-  const value = typeof layout === 'string' ? { algorithm: layout } : layout;
-  const result = {
-    algorithm: value.algorithm ?? 'layered',
-    direction: value.direction ?? 'right',
-    vertexGap: value.vertexGap ?? 24,
-    rankGap: value.rankGap ?? 64,
-    sweeps: value.sweeps ?? 4,
-  };
-  if (!Number.isInteger(result.sweeps) || result.sweeps < 0 || result.sweeps > 12)
-    throw failure('invalid-input', 'Layout sweeps must be an integer from 0 to 12');
-  positive(result.vertexGap, 'vertexGap', true);
-  positive(result.rankGap, 'rankGap', true);
-  if (!['right', 'left', 'down', 'up'].includes(result.direction))
-    throw failure('invalid-input', 'Invalid layout direction');
-  if (typeof result.algorithm === 'string' && !['layered', 'manual'].includes(result.algorithm))
-    throw failure('invalid-input', 'Invalid layout algorithm');
-  if (typeof result.algorithm === 'object' && typeof result.algorithm.arrange !== 'function')
-    throw failure('invalid-input', 'Invalid layout strategy');
-  return result;
+import {
+  positions,
+  groupFrame,
+  sceneGraph,
+  sceneKey,
+  sceneRows,
+  union,
+  type Part,
+  type Scene,
+  type Vertex,
+} from './scene.js';
+import { labelRoom, portPositions } from './geometry.js';
+
+/** Layout options over the diagram's defaults: ranks along the flow, with room for blocks. */
+export function layoutOptions(layout?: LayoutOptions): Required<LayoutOptions> {
+  return kit.layoutOptions(layout, { algorithm: 'layered', vertexGap: 24, rankGap: 64 });
 }
 /** Place a diagram's vertices as its layout would, without drawing: positions by vertex type. */
 export async function arrange(
@@ -102,14 +47,7 @@ export async function arrange(
       (input) => gpu.layoutText(input, { signal: reader.signal }),
       work,
     );
-    await place(
-      scene,
-      layoutOptions(config.layout),
-      style.gridPitch,
-      reader.signal,
-      undefined,
-      work,
-    );
+    await place(scene, layoutOptions(config.layout), style, work);
     work.check();
     return positions(scene.vertices);
   } finally {
@@ -117,274 +55,252 @@ export async function arrange(
   }
 }
 /** The end flow leaves from: the first output, else the first end. */
-export function rootEnd(edge: Scene['edges'][number]): number {
+export function rootEnd(edge: {
+  readonly ends: readonly { readonly direction?: 'in' | 'out' }[];
+}): number {
   return Math.max(
     0,
     edge.ends.findIndex((e) => e.direction === 'out'),
   );
 }
+/**
+ * Place every vertex nothing pins, and find the scene's parts. Each group is arranged inside first
+ * and then moves as one vertex of its parent; vertices drawn in `previous` stay where they were.
+ */
 export async function place(
   scene: Scene,
-  config: Required<LayoutOptions>,
-  grid: number,
-  signal: AbortSignal,
+  layout: Required<LayoutOptions>,
+  style: Style,
+  work: Work,
   previous?: Scene,
-  work: Work = new Work(signal),
 ): Promise<void> {
   work.check();
-  const { vertices } = scene,
-    n = vertices.length;
-  const old = new Map(
-    previous?.vertices.map((vertex) => [
-      JSON.stringify([vertex.index.type, vertex.hit.id]),
-      vertex,
-    ]),
-  );
-  for (const vertex of vertices)
+  keep(scene, previous);
+  const placement = new Placement(scene, layout, style, work),
+    { pieces, graph } = await placement.arrange(levels(scene));
+  scene.parts = placement.parts(pieces, graph);
+}
+/** Pin each vertex drawn before where it was, so a new scene places only what is new. */
+function keep(scene: Scene, previous?: Scene): void {
+  if (!previous) return;
+  const drawn = sceneRows(previous).vertices;
+  for (const vertex of scene.vertices)
     if (!vertex.pinned) {
-      const prev = old.get(JSON.stringify([vertex.index.type, vertex.hit.id]));
-      if (prev) {
-        vertex.x = prev.x;
-        vertex.y = prev.y;
+      const before = previous.vertices[drawn.get(sceneKey(vertex.hit)) ?? -1];
+      if (before) {
+        vertex.x = before.x;
+        vertex.y = before.y;
         vertex.pinned = true;
       }
     }
-  const pairs: [number, number][] = [],
-    links: { a: number; b: number; from: string | null; to: string | null }[] = [];
-  for (const edge of scene.edges) {
-    const root = edge.ends[rootEnd(edge)];
-    if (root)
-      for (const e of edge.ends)
-        if (e.vertex !== root.vertex) {
-          pairs.push([root.vertex, e.vertex]);
-          links.push({ a: root.vertex, b: e.vertex, from: root.port, to: e.port });
-        }
-  }
-  if (typeof config.algorithm === 'object') {
-    const result = await config.algorithm.arrange(
-      {
-        vertices: vertices.map((vertex) => ({
-          id: vertex.hit.id,
-          type: vertex.hit.index.type,
-          size: [vertex.width, vertex.height],
-          position: vertex.pinned ? [vertex.x, vertex.y] : undefined,
-          group: vertex.group,
-          ports: vertex.ports.map((port) => ({
-            name: port.name,
-            side: port.side,
-            ...(port.direction ? { direction: port.direction } : {}),
-          })),
-        })),
-        pairs,
-        edges: scene.edges.map((edge) => ({
-          id: edge.hit.id,
-          type: edge.hit.index.type,
-          ends: edge.ends,
-          labelSize: [edge.label.width, edge.label.height],
-        })),
-        groups: scene.groups.map((group) => ({
-          id: group.id,
-          parent: group.parent,
-          members: group.members,
-        })),
-      },
-      { signal },
+}
+/** The scene, or one of its groups, as layout descends it. */
+interface Level {
+  readonly group?: number;
+  readonly vertices: number[];
+  readonly children: Level[];
+}
+function levels(scene: Scene): Level {
+  const root: Level = { vertices: [], children: [] },
+    groups = new Map<string, Level>(
+      scene.groups.map((group, g) => [group.id, { group: g, vertices: [], children: [] }]),
     );
-    work.check();
-    if (result.length !== n || result.some((p) => p.length !== 2 || !p.every(Number.isFinite)))
-      throw failure('invalid-input', 'Layout returned invalid positions');
-    vertices.forEach((vertex, i) => {
-      if (!vertex.pinned) {
-        vertex.x = result[i][0];
-        vertex.y = result[i][1];
-      }
+  for (const group of scene.groups)
+    ((group.parent && groups.get(group.parent)) || root).children.push(groups.get(group.id)!);
+  scene.vertices.forEach((vertex, i) =>
+    ((vertex.group && groups.get(vertex.group)) || root).vertices.push(i),
+  );
+  return root;
+}
+type Box = [number, number, number, number];
+/** What layout moves as one: a vertex, or a group with everything inside it. */
+interface Piece {
+  readonly item: LayoutItem;
+  /** The scene vertex it is; a group is none. */
+  readonly vertex?: Vertex;
+  /** Its first scene vertex in read order, which orders its level. */
+  readonly first: number;
+  readonly members: readonly number[];
+  readonly groups: readonly number[];
+  readonly pinned: boolean;
+  /** The vertex's box, or the group's frame. */
+  readonly bounds: Box;
+  move(dx: number, dy: number): void;
+}
+class Placement {
+  /** Each scene vertex's piece in the level being arranged; -1 outside it. */
+  private readonly owner: Int32Array;
+  /** The level that last took each edge, so each level takes it once. */
+  private readonly taken: Int32Array;
+  private readonly graph: kit.Graph;
+  private level = 0;
+  private readonly snap: (value: number) => number;
+  constructor(
+    private readonly scene: Scene,
+    private readonly layout: Required<LayoutOptions>,
+    private readonly style: Style,
+    private readonly work: Work,
+  ) {
+    this.owner = new Int32Array(scene.vertices.length).fill(-1);
+    this.taken = new Int32Array(scene.edges.length);
+    this.graph = sceneGraph(scene);
+    this.snap = (value) => Math.round(value / style.gridPitch) * style.gridPitch;
+  }
+  /** Arrange a level's pieces, each group's inside first; the graph joins them. */
+  async arrange(level: Level): Promise<{ pieces: Piece[]; graph: kit.Graph }> {
+    const pieces = level.vertices.map((i) => this.vertex(i));
+    for (const child of level.children) {
+      const inside = (await this.arrange(child)).pieces;
+      if (inside.length) pieces.push(this.group(child.group!, inside));
+    }
+    // In read order, so parts number and pack by their first vertices.
+    pieces.sort((a, b) => a.first - b.first);
+    const { graph, input } = this.lift(pieces),
+      at = await kit.place(graph, input, this.layout, this.work);
+    pieces.forEach((piece, p) => {
+      // Everything moves by whole grid steps, so what was on the grid stays on it.
+      if (!piece.pinned)
+        piece.move(
+          this.snap(at[p * 2] - piece.bounds[0]),
+          this.snap(at[p * 2 + 1] - piece.bounds[1]),
+        );
     });
-    return;
+    return { pieces, graph };
   }
-  if (config.algorithm === 'manual') {
-    if (vertices.some((vertex) => !vertex.pinned))
-      throw failure('invalid-input', 'Manual layout requires all vertex positions');
-    return;
-  }
-  const next = Array.from({ length: n }, () => [] as number[]),
-    back = Array.from({ length: n }, () => [] as number[]);
-  for (const [a, b] of pairs)
-    if (a !== b) {
-      next[a].push(b);
-      back[b].push(a);
-    }
-  const keys = vertices.map((vertex) =>
-    JSON.stringify([vertex.group ?? '', vertex.hit.index.type, vertex.hit.id]),
-  );
-  const compare = (a: number, b: number) => (keys[a] < keys[b] ? -1 : keys[a] > keys[b] ? 1 : 0);
-  for (const list of next) list.sort(compare);
-  // Iterative DFS classifies feedback edges without collapsing an entire cycle into one column.
-  // Topology remains intact; only ranking ignores back edges.
-  const color = new Uint8Array(n),
-    forward = Array.from({ length: n }, () => [] as number[]);
-  const roots = Array.from({ length: n }, (_, i) => i).sort(
-    (a, b) => Number(back[a].length > 0) - Number(back[b].length > 0) || compare(a, b),
-  );
-  for (const root of roots)
-    if (!color[root]) {
-      const stack: [number, number][] = [[root, 0]];
-      color[root] = 1;
-      while (stack.length) {
-        await work.step();
-        const top = stack[stack.length - 1],
-          a = top[0];
-        if (top[1] === next[a].length) {
-          color[a] = 2;
-          stack.pop();
-          continue;
-        }
-        const b = next[a][top[1]++];
-        if (color[b] === 1) continue;
-        forward[a].push(b);
-        if (!color[b]) {
-          color[b] = 1;
-          stack.push([b, 0]);
-        }
-      }
-    }
-  const degree = new Uint32Array(n),
-    rank = new Uint32Array(n);
-  for (const list of forward) for (const b of list) degree[b]++;
-  const queue = roots.filter((i) => !degree[i]);
-  for (let i = 0; i < queue.length; i++)
-    for (const b of forward[queue[i]]) {
-      rank[b] = Math.max(rank[b], rank[queue[i]] + 1);
-      if (!--degree[b]) queue.push(b);
-    }
-  const levels = new Map<number, number[]>();
-  vertices.forEach((_, i) => {
-    const list = levels.get(rank[i]) ?? [];
-    list.push(i);
-    levels.set(rank[i], list);
-  });
-  const ordered = [...levels].sort((a, b) => a[0] - b[0]).map(([, list]) => list.sort(compare));
-  const slots = new Float64Array(n);
-  const score = (i: number, neighbors: readonly number[]) => {
-    if (!neighbors.length) return slots[i];
-    return neighbors.reduce((sum, other) => sum + slots[other], 0) / neighbors.length;
-  };
-  // Bounded alternating barycenter sweeps reduce crossings while retaining group contiguity.
-  for (let sweep = 0; sweep < config.sweeps; sweep++) {
-    await work.step();
-    for (const list of ordered)
-      list.forEach((i, position) => {
-        slots[i] = position;
-      });
-    const sequence = sweep % 2 ? [...ordered].reverse() : ordered;
-    for (const list of sequence) {
-      const scores = new Map(list.map((i) => [i, score(i, (sweep % 2 ? next : back)[i])]));
-      list.sort(
-        (a, b) =>
-          (vertices[a].group ?? '').localeCompare(vertices[b].group ?? '') ||
-          scores.get(a)! - scores.get(b)! ||
-          compare(a, b),
-      );
-      list.forEach((i, position) => {
-        slots[i] = position;
+  /** The scene's parts from its own level's: every vertex, edge, and group inside each. */
+  parts(pieces: readonly Piece[], graph: kit.Graph): Part[] {
+    const { count, vertices: runs } = graph.parts,
+      { scene } = this,
+      out: Part[] = [];
+    for (let k = 0; k < count; k++) {
+      const inside = [...runs.items.subarray(runs.offsets[k], runs.offsets[k + 1])].map(
+          (p) => pieces[p],
+        ),
+        vertices = inside.flatMap((piece) => piece.members).sort((a, b) => a - b),
+        edges = new Set<number>();
+      for (const v of vertices) for (const e of this.graph.edgesOf(v)) edges.add(e);
+      out.push({
+        key: sceneKey(scene.vertices[vertices[0]].hit),
+        vertices,
+        edges: [...edges].sort((a, b) => a - b),
+        groups: inside.flatMap((piece) => piece.groups).sort((a, b) => a - b),
       });
     }
+    return out;
   }
-  const vertical = config.direction === 'down' || config.direction === 'up',
-    reverse = config.direction === 'left' || config.direction === 'up';
-  // Placed boxes in a uniform grid of their own, for the collision escape below.
-  const placedBoxes: Rect[] = [],
-    cells = new Map<number, number[]>(),
-    cell = 256;
-  const cellsOf = (box: Rect, visit: (key: number) => void) => {
-    for (let y = Math.floor(box[1] / cell); y <= Math.floor(box[3] / cell); y++)
-      for (let x = Math.floor(box[0] / cell); x <= Math.floor(box[2] / cell); x++)
-        visit((x + 0x2000000) * 0x4000000 + (y + 0x2000000));
-  };
-  const occupy = (box: Rect) => {
-    const id = placedBoxes.push(box) - 1;
-    cellsOf(box, (key) => {
-      const bucket = cells.get(key);
-      if (bucket) bucket.push(id);
-      else cells.set(key, [id]);
-    });
-  };
-  const hits = (box: Rect) => {
-    const found = new Set<number>();
-    cellsOf(box, (key) => {
-      for (const id of cells.get(key) ?? []) if (intersects(placedBoxes[id], box)) found.add(id);
-    });
-    return [...found];
-  };
-  for (const vertex of vertices)
-    if (vertex.pinned) occupy(expand(rect(vertex), config.vertexGap / 2));
-  // Each port's offset from its vertex's corner, so wires between ports can run straight.
-  const offsets = vertices.map((vertex) => {
-    const { x, y } = vertex;
-    vertex.x = vertex.y = 0;
+  private vertex(i: number): Piece {
+    const vertex = this.scene.vertices[i],
+      bounds: Box = [vertex.x, vertex.y, vertex.x + vertex.width, vertex.y + vertex.height];
     portPositions(vertex);
-    vertex.x = x;
-    vertex.y = y;
-    return new Map(vertex.ports.map((port) => [port.name, port.position]));
-  });
-  const across = (i: number, port: string | null) =>
-    (port ? offsets[i].get(port)?.[vertical ? 0 : 1] : undefined) ??
-    (vertical ? vertices[i].width : vertices[i].height) / 2;
-  const incoming = Array.from({ length: n }, () => [] as (typeof links)[number][]);
-  for (const link of links) if (link.a !== link.b) incoming[link.b].push(link);
-  const placed = new Set<number>();
-  const labelGaps = new Float64Array(n);
-  for (const edge of scene.edges) {
-    const root = edge.ends[rootEnd(edge)];
-    if (root)
-      labelGaps[root.vertex] = Math.max(
-        labelGaps[root.vertex],
-        (vertical ? edge.label.height : edge.label.width) + grid * 3,
-      );
+    return {
+      item: rowOf(vertex.hit),
+      vertex,
+      first: i,
+      members: [i],
+      groups: [],
+      pinned: vertex.pinned,
+      bounds,
+      move(dx, dy) {
+        vertex.x += dx;
+        vertex.y += dy;
+        shift(bounds, dx, dy);
+      },
+    };
   }
-  let major = 0;
-  for (const list of ordered) {
-    await work.step();
-
-    let minor = 0,
-      max = 0;
-    for (const i of list) {
-      const vertex = vertices[i],
-        along = vertical ? vertex.height : vertex.width,
-        span = vertical ? vertex.width : vertex.height;
-      max = Math.max(max, along);
-      if (vertex.pinned) continue;
-      const a = reverse ? -major - along : major;
-      // Where each placed source would have this vertex sit for their ports to line up.
-      const wanted = incoming[i]
-        .filter((link) => placed.has(link.a))
-        .map(
-          (link) =>
-            (vertical ? vertices[link.a].x : vertices[link.a].y) +
-            across(link.a, link.from) -
-            across(i, link.to),
-        )
-        .sort((a, b) => a - b);
-      const desired = wanted.length ? wanted[(wanted.length - 1) >> 1] : minor;
-      let b = Math.max(minor, desired);
-      vertex.x = vertical ? b : a;
-      vertex.y = vertical ? a : b;
-      // Deterministic local collision escape; jump beyond obstacles, never scan huge coordinates.
-      for (let attempt = 0; attempt <= vertices.length; attempt++) {
-        const found = hits(expand(rect(vertex), config.vertexGap / 2));
-        if (!found.length) break;
-        b = Math.max(...found.map((j) => placedBoxes[j][vertical ? 2 : 3])) + config.vertexGap;
-        vertex.x = vertical ? b : a;
-        vertex.y = vertical ? a : b;
-        if (attempt === vertices.length)
-          throw failure('resource-limit', 'Layout collision budget exceeded');
+  private group(g: number, inside: readonly Piece[]): Piece {
+    const group = this.scene.groups[g],
+      frame = groupFrame(
+        union(inside.map((piece) => piece.bounds)),
+        group,
+        this.style.vertexPadding,
+      ),
+      bounds: Box = [frame[0], frame[1], frame[2], frame[3]];
+    return {
+      item: { kind: 'group', id: group.id },
+      first: inside.reduce((first, piece) => Math.min(first, piece.first), Infinity),
+      members: inside.flatMap((piece) => piece.members),
+      groups: [g, ...inside.flatMap((piece) => piece.groups)],
+      pinned: inside.some((piece) => piece.pinned),
+      bounds,
+      move(dx, dy) {
+        for (const piece of inside) piece.move(dx, dy);
+        shift(bounds, dx, dy);
+      },
+    };
+  }
+  /**
+   * A level's pieces as layout reads them: the edges joining two or more, each end at the piece
+   * holding its vertex, meeting a vertex at its port and a group at its center.
+   */
+  private lift(pieces: readonly Piece[]): { graph: kit.Graph; input: kit.LayoutInput } {
+    const { owner, taken, scene, style, graph } = this,
+      level = ++this.level,
+      found: number[] = [];
+    pieces.forEach((piece, p) => {
+      for (const v of piece.members) {
+        owner[v] = p;
+        for (const e of graph.edgesOf(v))
+          if (taken[e] !== level) {
+            taken[e] = level;
+            found.push(e);
+          }
       }
-      vertex.x = Math.round(vertex.x / grid) * grid;
-      vertex.y = Math.round(vertex.y / grid) * grid;
-      occupy(expand(rect(vertex), config.vertexGap / 2));
-      placed.add(i);
-      minor = b + span + config.vertexGap;
+    });
+    const offsets = [0],
+      ends: number[] = [],
+      directions: number[] = [],
+      ports: number[] = [],
+      rooms: number[] = [];
+    for (const e of found.sort((a, b) => a - b)) {
+      const edge = scene.edges[e],
+        first = ends.length;
+      let joins = false;
+      for (const end of edge.ends) {
+        const p = owner[end.vertex];
+        if (p < 0) continue;
+        joins ||= p !== ends[first];
+        ends.push(p);
+        directions.push(end.direction === 'out' ? 1 : end.direction === 'in' ? -1 : 0);
+        const vertex = pieces[p].vertex,
+          port = end.port === null ? undefined : vertex?.ports.find((q) => q.name === end.port);
+        if (port) ports.push(port.position[0] - vertex!.x, port.position[1] - vertex!.y);
+        else ports.push(NaN, NaN);
+      }
+      if (!joins) {
+        ends.length = directions.length = first;
+        ports.length = first * 2;
+        continue;
+      }
+      offsets.push(ends.length);
+      rooms.push(...labelRoom(edge, style));
     }
-    const labelGap = list.reduce((gap, i) => Math.max(gap, labelGaps[i]), 0);
-    major += max + Math.max(config.rankGap, labelGap);
+    for (const piece of pieces) for (const v of piece.members) owner[v] = -1;
+    const pinned = new Float64Array(pieces.length * 2).fill(NaN),
+      sizes = new Float32Array(pieces.length * 2);
+    pieces.forEach(({ pinned: fixed, bounds }, p) => {
+      if (fixed) pinned.set([bounds[0], bounds[1]], p * 2);
+      sizes.set([bounds[2] - bounds[0], bounds[3] - bounds[1]], p * 2);
+    });
+    return {
+      graph: new kit.Graph(pieces.length, {
+        offsets: Uint32Array.from(offsets),
+        items: Uint32Array.from(ends),
+      }),
+      input: {
+        pinned,
+        sizes,
+        directions: Int8Array.from(directions),
+        ports: Float32Array.from(ports),
+        labelRooms: Float32Array.from(rooms),
+        grid: style.gridPitch,
+        item: (p) => pieces[p].item,
+      },
+    };
   }
+}
+function shift(box: Box, dx: number, dy: number): void {
+  box[0] += dx;
+  box[1] += dy;
+  box[2] += dx;
+  box[3] += dy;
 }

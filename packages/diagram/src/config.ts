@@ -25,7 +25,6 @@ export const STYLE_EFFECTS = {
   detail: 'frame',
   portSpacing: 'scene',
   routeClearance: 'route',
-  animationMaxVertices: 'frame',
   vertexColor: 'frame',
   edgeColor: 'frame',
   outlineColor: 'frame',
@@ -66,7 +65,6 @@ export const DEFAULTS: Required<DiagramStyle> = Object.freeze({
   detail: 'auto',
   portSpacing: 22,
   routeClearance: 16,
-  animationMaxVertices: 512,
   vertexColor: [0.16, 0.19, 0.25, 1] as RGBA,
   edgeColor: [0.6, 0.65, 0.73, 1] as RGBA,
   outlineColor: [0.4, 0.47, 0.58, 1] as RGBA,
@@ -111,8 +109,6 @@ export function resolveStyle(
       if (!choices.includes(value as string)) fail('Invalid ' + key);
     } else if (typeof DEFAULTS[key] === 'boolean') {
       if (typeof value !== 'boolean') fail('Invalid ' + key);
-    } else if (key === 'animationMaxVertices') {
-      if (!Number.isSafeInteger(value) || (value as number) < 0) fail('Invalid ' + key);
     } else positive(value as number, key, ZERO.has(key));
     style[key] = value;
   }
@@ -155,12 +151,6 @@ function binding(value: VertexOptions | EdgeOptions, edge: boolean) {
   if (labels) {
     if (labels.fontSize !== undefined) positive(labels.fontSize, 'label font size');
     if (labels.maxWidth !== undefined) positive(labels.maxWidth, 'label width');
-    if (
-      labels.maxCount !== undefined &&
-      (!Number.isSafeInteger(labels.maxCount) || labels.maxCount < 0)
-    )
-      fail('Invalid label count');
-    if (labels.color) kit.validateRgba(labels.color);
     if (labels.overflow && !['wrap', 'ellipsis'].includes(labels.overflow))
       fail('Invalid label overflow');
   }

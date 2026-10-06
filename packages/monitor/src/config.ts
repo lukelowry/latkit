@@ -13,7 +13,6 @@ export const DEFAULTS: Own = Object.freeze({
   yAxis: {},
   traceColor: [0.23, 0.72, 0.88, 0.7] as RGBA,
   traceWidthPx: 1.25,
-  domainPadding: 0.1,
   axisColor: [0.48, 0.58, 0.67, 0.8] as RGBA,
   gridColor: [0.4, 0.5, 0.6, 0.13] as RGBA,
   cursorColor: [1, 0.71, 0.25, 0.9] as RGBA,
@@ -59,11 +58,16 @@ export function domain(value: Domain, name = 'domain'): Domain {
     fail('Invalid ' + name);
   return [value[0], value[1]];
 }
-export function expanded(value: Domain, padding = 0): Domain {
+/**
+ * A domain grown so it fills `sizePx` pixels less `beforePx` and `afterPx` at its ends, as a fit
+ * leaves `fitPaddingPx` clear; an empty domain grows by a hair.
+ */
+export function expanded(value: Domain, beforePx = 0, afterPx = 0, sizePx = 1): Domain {
   const d = value[1] - value[0],
-    extra = d > 0 ? d * padding : Math.max(Math.abs(value[0]) * 1e-6, 1e-6);
-  const lo = value[0] - extra,
-    hi = value[1] + extra;
+    unit = d / Math.max(1, sizePx - beforePx - afterPx),
+    tiny = Math.max(Math.abs(value[0]) * 1e-6, 1e-6);
+  const lo = value[0] - (d > 0 ? unit * beforePx : tiny),
+    hi = value[1] + (d > 0 ? unit * afterPx : tiny);
   if (!Number.isFinite(lo) || !Number.isFinite(hi) || !(hi > lo))
     fail('Domain cannot be represented');
   return [lo, hi];
@@ -93,7 +97,6 @@ export function resolveStyle(config: MonitorStyle, view: kit.ResolvedViewStyle):
   };
   finite(out.unselectedAlpha, 'unselectedAlpha', 0, 1);
   finite(out.traceWidthPx, 'traceWidthPx', 0.1, 64);
-  finite(out.domainPadding, 'domainPadding', 0, 10);
   for (const color of [out.traceColor, out.axisColor, out.gridColor, out.cursorColor])
     kit.validateRgba(color);
   for (const axis of [out.xAxis, out.yAxis]) checkAxis(axis);

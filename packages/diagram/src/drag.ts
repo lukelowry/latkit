@@ -1,7 +1,7 @@
 import type { Point } from './data.js';
 import { itemKey } from './data.js';
 import type { Moved } from './route.js';
-import type { Edge, Scene, Vertex, Wire } from './scene.js';
+import { itemSlots, sceneGraph, type Edge, type Scene, type Vertex, type Wire } from './scene.js';
 
 /** What a drag moves in one scene, found once when it starts. */
 export interface DragMarks {
@@ -41,21 +41,24 @@ export function dragMarks(scene: Scene, keys: ReadonlySet<string>): DragMarks {
         break;
       }
   });
-  const vertices: number[] = [];
-  scene.vertices.forEach((vertex, i) => {
-    if (!keys.has(itemKey(vertex.hit))) return;
-    vertices.push(i);
+  // The dragged vertices by their slots, and the edges at them by the scene's graph.
+  const slots = itemSlots(scene),
+    graph = sceneGraph(scene),
+    vertices: number[] = [],
+    at = new Set<number>();
+  for (const key of keys) {
+    const slot = slots.get(key);
+    if (slot !== undefined && slot < scene.slots.ports) vertices.push(slot);
+  }
+  vertices.sort((a, b) => a - b);
+  for (const i of vertices) {
+    const vertex = scene.vertices[i];
     moving.add(i);
     for (let k = 0; k < vertex.ports.length; k++) moving.add(vertex.portSlot + k);
-  });
-  const moved = new Set(vertices),
-    edges: number[] = [],
-    rerouted = new Set<number>();
-  scene.edges.forEach((edge, i) => {
-    if (!edge.ends.some((end) => moved.has(end.vertex))) return;
-    edges.push(i);
-    rerouted.add(scene.slots.edges + i);
-  });
+    for (const e of graph.edgesOf(i)) at.add(e);
+  }
+  const edges = [...at].sort((a, b) => a - b),
+    rerouted = new Set(edges.map((e) => scene.slots.edges + e));
   return { vertices, groups, edges, moving, rerouted };
 }
 

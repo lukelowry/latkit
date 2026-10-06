@@ -6,10 +6,9 @@ import {
   type ColumnPage,
   type ColumnPages,
   type Domain,
-  type RowSelection,
   type SampleColumn,
 } from '@latkit/model';
-import type { Binding } from './bindings.js';
+import type { Binding, Rows } from './bindings.js';
 
 export function mergeDomain(a: Domain | null, b: Domain | null): Domain | null {
   return !a ? b : !b ? a : [Math.min(a[0], b[0]), Math.max(a[1], b[1])];
@@ -23,7 +22,7 @@ interface Selection {
   readonly key: string;
   has(row: number): boolean;
 }
-function selection(rows: RowSelection | undefined): Selection {
+function selection(rows: Rows | undefined): Selection {
   if (rows?.kind === 'range')
     return {
       key: 'range:' + rows.offset + ':' + rows.count,

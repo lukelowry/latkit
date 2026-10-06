@@ -19,8 +19,6 @@ export interface MonitorStyle {
   /** A label, axis options, or false to hide the axis. */
   readonly xAxis?: string | AxisOptions | false;
   readonly yAxis?: string | AxisOptions | false;
-  /** Fraction of the fitted value range added on each side. */
-  readonly domainPadding?: number;
   readonly axisColor?: RGBA;
   readonly gridColor?: RGBA;
   /** The playhead at `at`. */

@@ -1,6 +1,6 @@
-import { itemId, type Schema, type TypeDefinition } from '@latkit/model';
-import type { Point } from '@latkit/gpu';
-import type { Group, Shape, ConnectProposal, MoveProposal } from '@latkit/diagram';
+import { itemId, numberAt, rowAt, rowCount, type Schema, type TypeDefinition } from '@latkit/model';
+import type { Point, Positions, Shape } from '@latkit/gpu';
+import type { Group, ConnectProposal } from '@latkit/diagram';
 
 export const types = ['Input', 'Process', 'Control', 'Output'] as const;
 export type BlockType = (typeof types)[number];
@@ -232,13 +232,20 @@ function prune(graph: Graph): Graph {
     ),
   };
 }
-export function moveGraph(graph: Graph, proposal: MoveProposal): Graph {
-  const positions = new Map(proposal.moves.map((m) => [itemId(m.vertex), m.position]));
+/** The graph with each block where positions put it, as a move proposes or a layout arranges. */
+export function placeGraph(graph: Graph, positions: Readonly<Record<string, Positions>>): Graph {
+  const placed = new Map<string, Point>();
+  for (const [type, { x, y }] of Object.entries(positions)) {
+    if (x.values.kind !== 'numeric' || y.values.kind !== 'numeric') continue;
+    const blocks = graph.blocks.filter((block) => block.type === type);
+    for (let i = 0; i < rowCount(x.rows); i++)
+      placed.set(blocks[rowAt(x.rows, i)].id, [numberAt(x.values, i)!, numberAt(y.values, i)!]);
+  }
   return {
     ...graph,
     blocks: graph.blocks.map((block) => ({
       ...block,
-      position: positions.get(block.id) ?? block.position,
+      position: placed.get(block.id) ?? block.position,
     })),
   };
 }

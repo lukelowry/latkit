@@ -12,6 +12,7 @@ import { createMonitor, type Monitor, type MonitorConfig } from '../src/index.js
 import { SignalSource } from './fixture.js';
 import { fakeDevice } from '../../gpu/tests/fixtures/device.js';
 import { ticks } from '../src/ticks.js';
+import { expanded } from '../src/config.js';
 
 /** What a call throws. */
 function failure(run: () => void): unknown {
@@ -595,6 +596,16 @@ it('rejects unknown options and limits, and invalid cameras', async () => {
   expect(h.monitor.stats()).toMatchObject({ rows: 4, visible: true, refining: false });
   h.close();
 });
+it('frames a domain with fitPaddingPx clear on each side, in pixels of the plot', () => {
+  // 100 units across the 100 pixels the padding leaves: one unit a pixel.
+  expect(expanded([0, 100], 10, 20, 130)).toEqual([-10, 120]);
+  expect(expanded([0, 100])).toEqual([0, 100]);
+  // An empty domain grows by a hair, so it still has a span.
+  const [lo, hi] = expanded([5, 5], 10, 10, 100);
+  expect(lo).toBeLessThan(5);
+  expect(hi).toBeGreaterThan(5);
+  expect(hi - lo).toBeLessThan(1e-4);
+});
 it('formats fractional and large-offset ticks without duplicate labels', () => {
   const small = ticks([0, 0.1], 320, {});
   expect(new Set(small.items.map((t) => t.label)).size).toBe(small.items.length);
@@ -602,4 +613,27 @@ it('formats fractional and large-offset ticks without duplicate labels', () => {
   const large = ticks([2 ** 40, 2 ** 40 + 1], 640, {});
   expect(large.offset).toBe(2 ** 40);
   expect(large.items.length).toBeGreaterThan(2);
+});
+it('takes a whole config, changing nothing when it repeats the one held', async () => {
+  const h = await harness();
+  const invalidated = vi.fn(),
+    off = h.renderer.on!('invalidate', invalidated);
+  try {
+    const held = h.monitor.config,
+      config = () => ({
+        source: h.source.data,
+        traces: { signal: { from: 'signal', y: 'value' } },
+        xAxis: false as const,
+        yAxis: false as const,
+      });
+    h.monitor.set(config(), { replace: true });
+    expect(h.monitor.config).toBe(held);
+    expect(invalidated).not.toHaveBeenCalled();
+    h.monitor.set({ ...config(), yAxis: undefined }, { replace: true });
+    expect(h.monitor.config).not.toHaveProperty('yAxis');
+    expect(invalidated).toHaveBeenCalled();
+  } finally {
+    off();
+    h.close();
+  }
 });

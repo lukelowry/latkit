@@ -7,7 +7,7 @@ const run = document.querySelector<HTMLButtonElement>('#run')!;
 run.onclick = () => void check();
 async function check(): Promise<void> {
   run.disabled = true;
-  result.textContent = 'Checking short and long histories?';
+  result.textContent = 'Checking short and long histories…';
   const report: unknown[] = [];
   let gpu: Awaited<ReturnType<typeof createGpu>> | undefined;
   let target: ReturnType<typeof kit.createTextureTarget> | undefined;

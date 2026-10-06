@@ -1,8 +1,13 @@
 /* global document, OffscreenCanvas, createImageBitmap */
 import { createGpu, colormaps, kit } from '@latkit/gpu';
 import { createNetwork } from '@latkit/network';
-import { PathSource, featureSource, references, vectors } from '../../dist/paths-fixture.js';
-import { GraphSource } from '../../dist/fixture.js';
+import {
+  PathSource,
+  featureSource,
+  references,
+  vectors,
+} from '/output/network-fixture/paths-fixture.js';
+import { GraphSource } from '/output/network-fixture/fixture.js';
 
 const el = (id) => document.getElementById(id);
 const errors = [];

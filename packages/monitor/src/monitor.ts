@@ -41,6 +41,7 @@ import {
   LIMITS,
   expanded,
   fail,
+  insets,
   type Style,
 } from './config.js';
 import { DEFAULT_CAMERA, checkCamera, mixCamera, move, type Camera } from './camera.js';
@@ -124,7 +125,8 @@ interface Resolved {
 function frameReadings(
   items: readonly MonitorItem[],
   camera: Camera,
-  padding: number,
+  area: Plot,
+  [top, right, bottom, left]: readonly number[],
 ): Partial<Camera> {
   let lo = Infinity,
     hi = -Infinity,
@@ -144,9 +146,14 @@ function frameReadings(
   const half = (camera.x[1] - camera.x[0]) / 2;
   return {
     ...(lo <= hi
-      ? { x: hi > lo ? expanded([lo, hi], padding) : ([lo - half, lo + half] as Domain) }
+      ? {
+          x:
+            hi > lo
+              ? expanded([lo, hi], left, right, area.width)
+              : ([lo - half, lo + half] as Domain),
+        }
       : {}),
-    ...(low <= high ? { y: expanded([low, high], padding) } : {}),
+    ...(low <= high ? { y: expanded([low, high], bottom, top, area.height) } : {}),
   };
 }
 function includes(rows: RowAxis, row: number): boolean {
@@ -361,14 +368,20 @@ class MonitorView
   protected resolveCamera(camera: Camera): Camera {
     return checkCamera(camera);
   }
-  /** Readings frame their coordinates and values; otherwise the values fit the window's data. */
+  /**
+   * Readings frame their coordinates and values; otherwise the values fit the window's data. Either
+   * leaves `fitPaddingPx` clear around what it frames, as every view's fit does.
+   */
   private framing(
     items: readonly MonitorItem[] | undefined,
     camera: Camera,
+    viewport: Viewport,
   ): Partial<Camera> | undefined {
-    if (items) return frameReadings(items, camera, this.style.domainPadding);
+    const area = plot(viewport, this.style),
+      padding = insets(this.style.fitPaddingPx);
+    if (items) return frameReadings(items, camera, area, padding);
     const values = this.traces && this.extents.values(this.traces, camera.x);
-    return values ? { y: expanded(values, this.style.domainPadding) } : undefined;
+    return values ? { y: expanded(values, padding[2], padding[0], area.height) } : undefined;
   }
   protected interpolate(from: Camera, to: Camera, t: number): Camera {
     return mixCamera(from, to, t);
@@ -403,11 +416,11 @@ class MonitorView
   protected contains(item: MonitorItem): boolean {
     const rows = this.table(item)?.rows;
     if (!rows || !includes(rows, item.row)) return false;
-    const traces = this.config.traces;
-    return (item.trace === undefined ? Object.values(traces) : [traces[item.trace]]).some(
+    return (this.traces ?? []).some(
       (trace) =>
-        trace?.from === item.index.type &&
-        (!trace.rows || trace.rows.kind === 'ids' || includes(trace.rows, item.row)),
+        (item.trace === undefined || trace.name === item.trace) &&
+        trace.trace.from === item.index.type &&
+        (!trace.rows || includes(trace.rows, item.row)),
     );
   }
   /** The nearest `limit` readings. */
@@ -495,7 +508,9 @@ class MonitorView
       this.invalidate();
       return undefined;
     }
-    const camera = await this.frameCamera(frame, (items, current) => this.framing(items, current));
+    const camera = await this.frameCamera(frame, (items, current, viewport) =>
+      this.framing(items, current, viewport),
+    );
     // An animated shade bakes its parameters into history, which then draws every frame.
     if (this.shadeAnimating) this.redraw();
     const shading = this.shadeFrame(frame);

@@ -26,6 +26,17 @@ export interface NetworkStyle {
   /** How high a `z` of 1 draws: 15% of the data's extent on a plane, and 8% of the globe's radius, times this. */
   readonly zScale?: number;
   readonly dashPeriodPx?: number;
+  /** Edges joining the same two vertices draw this many CSS pixels apart; 0 draws them over each other. */
+  readonly edgeSpacingPx?: number;
+  /** The comets `flowPx` moves along a line, `flowSpacingPx` apart; 0 draws none. */
+  readonly flowColor?: RGBA;
+  readonly flowSpacingPx?: number;
+  /** Soft shadows below markers, lifting them off the lines. */
+  readonly shadows?: boolean;
+  /** How much hover grows a vertex's marker, eased; 1 keeps its size. */
+  readonly hoverScale?: number;
+  /** How far the background's halo reaches around label text, in CSS pixels. */
+  readonly labelHaloPx?: number;
   readonly surfaceColor?: RGBA;
   readonly gridColor?: RGBA;
   /** Light the globe by the sun at `sunTime`. */
@@ -57,6 +68,12 @@ export const DEFAULTS: Required<NetworkStyle> = Object.freeze({
   pathWidthPx: 1,
   zScale: 1,
   dashPeriodPx: 12,
+  edgeSpacingPx: 0,
+  flowColor: [0.95, 0.97, 1, 0.9] as RGBA,
+  flowSpacingPx: 32,
+  shadows: false,
+  hoverScale: 1.25,
+  labelHaloPx: 2,
   surfaceColor: [0.07, 0.1, 0.15, 1] as RGBA,
   gridColor: [0.3, 0.38, 0.46, 0.4] as RGBA,
   daylight: false,
@@ -79,6 +96,8 @@ export const VIEW_DEFAULTS: Partial<kit.ResolvedViewStyle> = Object.freeze({
 export const RADIUS_RANGE: readonly [number, number] = [2, 8];
 /** Line widths in CSS pixels that a `widthPx` field spans by default. */
 export const WIDTH_RANGE: readonly [number, number] = [1, 4];
+/** Speeds in CSS pixels a second that a `flowPx` field spans by default, as in a diagram. */
+export const FLOW_RANGE: readonly [number, number] = [0, 40];
 /** The width, in CSS pixels, of a type's lines its `widthPx` leaves unset: an edge's or a path's. */
 export function lineWidthPx(entry: object, style: Style): number {
   return 'points' in entry ? style.pathWidthPx : style.edgeWidthPx;

@@ -175,7 +175,6 @@ it('arranges through the new public headless API', async () => {
         flow: false,
         arrows: true,
         status: true,
-        labels: true,
       },
       true,
     ),

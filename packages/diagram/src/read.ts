@@ -33,26 +33,30 @@ function text(column: Column | undefined, row: number): string {
   if (column.kind !== 'text') fail('Expected a text label field');
   return textAt(column, row) ?? '';
 }
-/** What a vertex's structure reads: where it sits, its size, and whether it shows. */
+/** What a vertex's structure reads: its size, and whether it shows. */
 const VERTEX_SHAPE = {
-  x: 'raw',
-  y: 'raw',
   width: 'raw',
   height: 'raw',
   visible: 'raw',
 } as const satisfies Readonly<Record<string, kit.ChannelKind>>;
 const EDGE_SHAPE = { visible: 'raw' } as const satisfies Readonly<Record<string, kit.ChannelKind>>;
+/** Where a vertex sits: read apart from its structure, so moving one rereads nothing else. */
+const VERTEX_PLACE = { x: 'raw', y: 'raw' } as const satisfies Readonly<
+  Record<string, kit.ChannelKind>
+>;
 type ShapeName = keyof typeof VERTEX_SHAPE;
+type PlaceName = keyof typeof VERTEX_PLACE;
 /** Rows without a value: unplaced, sized to fit, and shown. */
 const UNPLACED = { x: NaN, y: NaN, width: NaN, height: NaN, visible: 1 } as const;
-interface Structure {
-  readonly channels: kit.BoundChannels<ShapeName>;
-  /** The channels' fields, and the labels' text as `label`. */
+interface Bindings<K extends string> {
+  readonly channels: kit.BoundChannels<K>;
+  /** The channels' fields, and for a structure the labels' text as `label`. */
   readonly fields: Readonly<Record<string, FieldInput>>;
 }
-const structures = new WeakMap<object, Structure>();
+const structures = new WeakMap<object, Bindings<ShapeName>>(),
+  placements = new WeakMap<object, Bindings<PlaceName>>();
 /** What a type's structure reads, bound once per options object. */
-export function structure(option: VertexOptions | EdgeOptions, edge: boolean): Structure {
+export function structure(option: VertexOptions | EdgeOptions, edge: boolean): Bindings<ShapeName> {
   let found = structures.get(option);
   if (!found) {
     const channels = kit.bindChannels(
@@ -68,6 +72,16 @@ export function structure(option: VertexOptions | EdgeOptions, edge: boolean): S
   }
   return found;
 }
+/** Where a vertex type's rows sit, bound once per options object. */
+function placement(option: VertexOptions): Bindings<PlaceName> {
+  let found = placements.get(option);
+  if (!found) {
+    const channels = kit.bindChannels(option, VERTEX_PLACE);
+    found = { channels, fields: channels.fields };
+    placements.set(option, found);
+  }
+  return found;
+}
 /** Every drawn type's options, and whether it is an edge type. */
 function types(data: DiagramData): [string, VertexOptions | EdgeOptions, boolean][] {
   return [
@@ -79,17 +93,18 @@ function types(data: DiagramData): [string, VertexOptions | EdgeOptions, boolean
 function sampled(data: DiagramData, type: string, input: FieldInput): boolean {
   return fieldDefinition(data.source, type, input)?.sampled === true;
 }
-/** Only sampled geometry, visibility, and text invalidate the scene. */
+/** Only sampled positions, geometry, visibility, and text invalidate the scene. */
 export function sampledStructure(data: DiagramData): boolean {
   return types(data).some(([type, options, edge]) =>
-    Object.values(structure(options, edge).fields).some((input) => sampled(data, type, input)),
+    [
+      ...Object.values(structure(options, edge).fields),
+      ...(edge ? [] : Object.values(placement(options).fields)),
+    ].some((input) => sampled(data, type, input)),
   );
 }
 /** What a scene is made of in each entry; every other option is a style the GPU reads. */
 const VERTEX = [
   'rows',
-  'x',
-  'y',
   'width',
   'height',
   'shape',
@@ -108,7 +123,8 @@ const EDGE = [
   'visible',
   'labels',
 ] as const satisfies readonly (keyof EdgeOptions)[];
-/** Whether two diagrams have one structure, so only styles changed between them. */
+const PLACE = ['x', 'y'] as const satisfies readonly (keyof VertexOptions)[];
+/** Whether two diagrams have one structure, so only positions and styles changed between them. */
 export function sameStructure(a: DiagramData, b: DiagramData): boolean {
   return (
     kit.sameRecords(a.vertices, b.vertices, VERTEX) &&
@@ -120,6 +136,20 @@ export function sameStructure(a: DiagramData, b: DiagramData): boolean {
     (a.source === b.source ||
       (local(a) && local(b) && kit.sameValues(a.source, b.source, structural(b))))
   );
+}
+/** Whether two diagrams of one structure place their vertices alike. */
+export function samePlacement(a: DiagramData, b: DiagramData): boolean {
+  if (!kit.sameRecords(a.vertices, b.vertices, PLACE)) return false;
+  if (a.source === b.source) return true;
+  const named = new Map<string, string[]>();
+  for (const [type, option] of Object.entries(b.vertices))
+    named.set(
+      type,
+      Object.values(placement(option).fields).filter(
+        (input): input is string => typeof input === 'string',
+      ),
+    );
+  return kit.sameValues(a.source, b.source, (type) => named.get(type) ?? []);
 }
 /** The fields of each type a scene reads, by name in the drawn source, for change detection. */
 export function structural(
@@ -141,6 +171,50 @@ export function structural(
       return typeof kind === 'object' && kind.kind === 'reference';
     }),
   ];
+}
+/**
+ * Read where a scene's vertices sit again, its structure standing: a vertex its data places moves
+ * there, and one without stays where it was drawn.
+ */
+export async function readPlacement(
+  scene: Scene,
+  data: DiagramData,
+  reader: ReadScope,
+  work: Work,
+): Promise<void> {
+  for (const [type, option] of Object.entries(data.vertices)) {
+    const first = scene.types.vertices.get(type)?.first;
+    if (first === undefined) continue;
+    const { channels, fields } = placement(option),
+      read = await kit.resolveChannels(
+        reader,
+        { source: data.source, from: type, rows: option.rows },
+        channels,
+        UNPLACED,
+      );
+    let i = first;
+    for await (const tile of reader.fields({
+      source: data.source,
+      from: type,
+      rows: option.rows,
+      fields,
+    })) {
+      await work.step();
+      for (let k = 0; k < rowCount(tile.rows); k++, i++) {
+        const vertex = scene.vertices[i];
+        if (vertex?.index.type !== type || vertex.row !== rowAt(tile.rows, k))
+          throw failure('conflict', 'Rows changed without the structure');
+        const x = kit.channelValue(read.x, tile, k),
+          y = kit.channelValue(read.y, tile, k);
+        vertex.placed = Number.isFinite(x) && Number.isFinite(y);
+        if (vertex.placed) {
+          vertex.x = x;
+          vertex.y = y;
+        }
+        vertex.pinned = true;
+      }
+    }
+  }
 }
 /** Whether the structure reads only the drawn source, so its tables say when it changed. */
 export function local(data: DiagramData): boolean {
@@ -180,6 +254,7 @@ export async function readScene(
     vertices: [],
     edges: [],
     groups: [],
+    parts: [],
     bounds: [0, 0, 0, 0],
     bytes: 0,
     routeBytes: 0,
@@ -238,20 +313,16 @@ export async function readScene(
       ports: portSlots,
       names: ports.map((port) => port.field),
     });
-    const { channels, fields } = structure(option, false),
-      read = await kit.resolveChannels(
-        reader,
-        { source: data.source, from: type, rows: option.rows },
-        channels,
-        UNPLACED,
-      );
+    const shape = structure(option, false),
+      place = placement(option),
+      scope = { source: data.source, from: type, rows: option.rows },
+      read = await kit.resolveChannels(reader, scope, shape.channels, UNPLACED),
+      at = await kit.resolveChannels(reader, scope, place.channels, UNPLACED);
     const rows = new Map<number, number>();
     byType.set(type, rows);
     for await (const tile of reader.fields({
-      source: data.source,
-      from: type,
-      rows: option.rows,
-      fields,
+      ...scope,
+      fields: { ...shape.fields, ...place.fields },
       ids: true,
     })) {
       if (!tile.ids) fail('Vertex IDs were not returned');
@@ -266,8 +337,8 @@ export async function readScene(
         if (rows.has(row)) fail('Duplicate vertex row');
         const id = textAt(tile.ids, i);
         if (id === null) fail('Missing vertex identity');
-        const x = kit.channelValue(read.x, tile, i),
-          y = kit.channelValue(read.y, tile, i),
+        const x = kit.channelValue(at.x, tile, i),
+          y = kit.channelValue(at.y, tile, i),
           width = kit.channelValue(read.width, tile, i),
           height = kit.channelValue(read.height, tile, i),
           placed = Number.isFinite(x) && Number.isFinite(y);
@@ -283,6 +354,7 @@ export async function readScene(
           width: width || 0,
           height: height || 0,
           header: 0,
+          placed,
           pinned: placed,
           shape: option.shape ?? 'rounded',
           radius: option.cornerRadius ?? options.cornerRadius,

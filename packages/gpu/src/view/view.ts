@@ -57,13 +57,22 @@ export interface ViewStats {
   readonly hoverMs: number;
 }
 export interface SetOptions {
-  /** Ease camera and position changes. */
+  /**
+   * Ease what the change draws over `animationMs`: the camera, a diagram's positions, and a
+   * network's positions, colors, sizes, widths, flow, and marker inputs.
+   */
   readonly animate?: boolean;
+  /**
+   * `set` only: the patch is the whole config, so what it leaves out resets. The canvas, `at`,
+   * `paused`, and camera change only when given.
+   */
+  readonly replace?: boolean;
 }
 /**
  * A set() argument. Keyed records, such as `vertices`, merge per entry and each entry per option;
  * camera, input, and limits merge per option. `null` removes an entry or resets an option. Any other
- * value replaces.
+ * value replaces, unless it equals what is there: plain objects and arrays compare by what they
+ * hold, so a view keeps what it built from them.
  */
 export type Patch<C, Records extends keyof C = never, Merged extends keyof C = never> = {
   readonly [K in keyof C]?:
@@ -102,8 +111,6 @@ export interface ConfigShape {
   readonly records?: readonly string[];
   /** Objects that merge per option, such as `camera`. */
   readonly merged?: readonly string[];
-  /** Keys whose string value names one option, such as `layout: 'layered'` for its algorithm. */
-  readonly shorthands?: Readonly<Record<string, string>>;
 }
 
 type Listener = (value: never) => void;
@@ -111,30 +118,66 @@ type Queued = readonly [event: PropertyKey, value: unknown];
 const PRESENTATION = new Set(['canvas', 'at', 'paused']);
 type Plain = Record<string, unknown>;
 
-function merge(base: unknown, patch: Plain): Plain {
-  const next: Plain = { ...(base as Plain | undefined) };
-  for (const [key, value] of Object.entries(patch))
-    if (value === null) delete next[key];
-    else if (value !== undefined) next[key] = value;
-  return next;
+function plain(value: unknown): value is Plain {
+  if (typeof value !== 'object' || value === null) return false;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
-/** The config with a patch applied, following the view's shape. */
-function applyPatch<C>(config: C, patch: object, shape: ConfigShape): C {
-  const next: Plain = { ...(config as Plain) };
-  for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined) continue;
-    if (value === null) delete next[key];
-    else if (shape.records?.includes(key)) {
-      const record: Plain = { ...(next[key] as Plain | undefined) };
-      for (const [entry, options] of Object.entries(value as Plain))
-        if (options === null) delete record[entry];
-        else if (options !== undefined) record[entry] = merge(record[entry], options as Plain);
-      next[key] = record;
-    } else if (shape.merged?.includes(key) && typeof value === 'object' && !Array.isArray(value))
-      next[key] = merge(next[key], value as Plain);
+/**
+ * Whether two option values are the same: plain objects and arrays by what they hold; typed
+ * arrays, functions, and other instances only as themselves. A `source` holds data, which is new
+ * as itself: the view decides what of new data is new.
+ */
+function same(a: unknown, b: unknown, key?: string): boolean {
+  if (a === b) return true;
+  if (key === 'source') return false;
+  if (Array.isArray(a))
+    return Array.isArray(b) && a.length === b.length && a.every((v, i) => same(v, b[i]));
+  if (!plain(a) || !plain(b)) return false;
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)]))
+    if (!same(a[k], b[k], k)) return false;
+  return true;
+}
+/**
+ * An object with a patch's options applied, each through `each`; `replace` resets those the patch
+ * leaves out. `base` itself when nothing changes, so what keys on it stays.
+ */
+function merge(
+  base: Plain | undefined,
+  patch: Plain,
+  replace: boolean | ((key: string) => boolean),
+  each: (before: unknown, value: unknown, key: string) => unknown = (before, value, key) =>
+    same(before, value, key) ? before : value,
+): Plain | undefined {
+  let next: Plain | undefined;
+  const put = (key: string, value: unknown) => {
+    if (value == null ? !(base && key in base) : value === base?.[key]) return;
+    next ??= { ...base };
+    if (value == null) delete next[key];
     else next[key] = value;
-  }
-  return next as C;
+  };
+  for (const [key, value] of Object.entries(patch))
+    if (value !== undefined) put(key, value === null ? null : each(base?.[key], value, key));
+  if (replace && base)
+    for (const key of Object.keys(base))
+      if (patch[key] === undefined && (replace === true || replace(key))) put(key, null);
+  return next ?? base;
+}
+/** The config with a patch applied, following the view's shape, keeping every value that stays. */
+function applyPatch<C>(config: C, patch: Plain, shape: ConfigShape, replace: boolean): C {
+  // A record merges each entry, and each entry and merged object per option.
+  const options = (before: unknown, value: unknown) =>
+    plain(value) ? (merge(before as Plain | undefined, value, replace) ?? {}) : value;
+  const option = (before: unknown, value: unknown, key: string) =>
+    plain(value) && shape.records?.includes(key)
+      ? merge(before as Plain | undefined, value, replace, options)
+      : plain(value) && shape.merged?.includes(key)
+        ? merge(before as Plain | undefined, value, replace)
+        : same(before, value, key)
+          ? before
+          : value;
+  const resets = replace && ((key: string) => !PRESENTATION.has(key));
+  return (merge(config as Plain, patch, resets, option) ?? config) as C;
 }
 
 /**
@@ -191,7 +234,7 @@ export abstract class BaseView<
     // The camera is where a view starts, not state: set({ camera }) moves it and the view reports it.
     const { camera, ...rest } = config as Plain;
     void camera;
-    this.#config = normalized(rest as unknown as Config, shape);
+    this.#config = normalized(rest as unknown as Config);
     const view = this as BaseView<Config, Events, Resolved, Prepared, Records, Merged>;
     this.#renderer = {
       get pending() {
@@ -255,15 +298,22 @@ export abstract class BaseView<
     void this.resolved;
     const { camera, ...rest } = patch as Plain;
     const previous = this.#config;
-    // Shorthands expand before merging, so `input: 'inspect'` keeps the other input options.
-    const next = normalized(
-      applyPatch(previous, normalized(rest as unknown as Config, this.shape), this.shape),
+    // The input shorthand expands before merging, so `input: 'inspect'` keeps the other options.
+    const next = applyPatch(
+      previous,
+      normalized(rest as unknown as Config) as Plain,
       this.shape,
+      options.replace === true,
     );
     if (next.canvas !== previous.canvas && next.canvas && this.#composed)
       throw failure('invalid-input', 'A composed view presents through its composition');
-    // Presentation keys are the base's alone, so playback's set({ at }) stays constant time.
-    const own = Object.keys(rest).some((key) => !PRESENTATION.has(key));
+    // Presentation keys are the base's alone, so playback's set({ at }) stays constant time; a
+    // patch that changes nothing else configures nothing.
+    const own =
+      next !== previous &&
+      [...Object.keys(rest), ...(options.replace ? Object.keys(previous) : [])].some(
+        (key) => !PRESENTATION.has(key) && (next as Plain)[key] !== (previous as Plain)[key],
+      );
     if (own) {
       this.check(next);
       // Keyed by config: a patch rejected after this never applies what it resolved to.
@@ -811,12 +861,10 @@ function frameInfo(frame: FrameInfo): FrameInfo {
   const { width, height, at, timeMs, viewport, format, presented } = frame;
   return { width, height, at, timeMs, viewport, format, presented };
 }
-/** Expand string shorthands; `input: 'edit'` always means `{ mode: 'edit' }`. */
-function normalized<C extends ViewConfig>(config: C, shape: ConfigShape): C {
-  let result = config as Plain;
-  for (const [key, option] of Object.entries({ input: 'mode', ...shape.shorthands }))
-    if (typeof result[key] === 'string') result = { ...result, [key]: { [option]: result[key] } };
-  return result as C;
+/** Expand the input shorthand: `input: 'edit'` means `{ mode: 'edit' }`. */
+function normalized<C extends ViewConfig>(config: C): C {
+  const input = (config as Plain).input;
+  return (typeof input === 'string' ? { ...config, input: { mode: input } } : config) as C;
 }
 interface Internals {
   readonly gpu: Gpu;

@@ -10,7 +10,6 @@ export interface DiagramStyle {
   readonly labels?: boolean;
   readonly junctions?: boolean;
   readonly vertexPadding?: number;
-  /** Per-vertex bindings may override it. */
   /** The radius of every corner: blocks, groups, and wire bends; a vertex type's own overrides it. */
   readonly cornerRadius?: number;
   readonly outlineWidthPx?: number;
@@ -25,8 +24,6 @@ export interface DiagramStyle {
   readonly portSpacing?: number;
   /** Space wires keep from blocks, and the length of the stub out of each port. */
   readonly routeClearance?: number;
-  /** Bounds CPU route interpolation; larger scenes settle immediately. Default: 512 vertices. */
-  readonly animationMaxVertices?: number;
   readonly vertexColor?: RGBA;
   readonly edgeColor?: RGBA;
   readonly outlineColor?: RGBA;

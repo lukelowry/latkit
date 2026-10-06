@@ -13,18 +13,15 @@ export type {
   DiagramItem,
   DiagramRow,
   DiagramPort,
-  Shape,
   VertexOptions,
   EdgeOptions,
   PortOptions,
   DiagramLabels,
-  Positions,
   Group,
   RouteStrategy,
   RouteRequest,
   RouteEnd,
 } from './data.js';
 export { arrange } from './layout.js';
-export type { Layout, LayoutOptions, LayoutStrategy, LayoutGraph, LayoutVertex } from './layout.js';
 export type { Limits as DiagramLimits } from './options.js';
 export type { DiagramInput } from './input.js';

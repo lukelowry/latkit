@@ -40,9 +40,16 @@ gestures, such as dragging.
 
 - Keyed records (`vertices`, `edges`, `paths`, `traces`, `groups`) merge per entry, then per option.
 - `camera`, `input`, `limits`, and `layout` merge per option.
-- `null` removes an entry or resets an option. Any other value replaces.
+- `null` removes an entry or resets an option. Any other value replaces, unless it equals what is
+  there: plain objects and arrays compare by what they hold, data by identity, and a patch that
+  changes nothing does nothing, `animate` included.
+- `{ replace: true }` takes the patch as the whole config: what it leaves out resets, except the
+  canvas, `at`, `paused`, and camera. An application that builds its config from its state can
+  pass all of it on every change, and the view rebuilds only what differs.
 - A channel such as `color`, `x`, or `widthPx` takes one value, a field name, or a scale; see
   [data bindings](topology-and-channels.md#channels).
+- `{ animate: true }` eases what the patch changes over `animationMs`: the camera, a diagram's
+  positions, and a network's positions, colors, sizes, widths, flow, and marker inputs.
 
 ```ts
 network.set({
@@ -58,6 +65,24 @@ or request historical data. Share unchanged column pages when constructing the n
 An invalid patch throws `invalid-input` and changes nothing: an unknown option, limit, camera
 option, or input option, or an input mode the view does not have. `view.config` holds the current
 config; the camera lives on `view.camera`.
+
+## Layout
+
+A network or diagram places each vertex its data gives no position: every row of a type without
+`x` and `y`, and each row whose position reads no number. Positioned vertices stay where they
+are. Vertices that edges join form a part, arranged alone by `layout.algorithm`, and the parts
+nothing positions pack into rows of about `aspect` (16 / 9) below the rest, `rankGap` apart.
+Placed vertices stay where they are as the data changes; new `layout` options place them anew.
+
+- `'layered'`, the diagram's default, puts vertices in ranks along `direction`, `rankGap` apart,
+  in the order `sweeps` passes find to cross less.
+- `'stress'`, the network's default, keeps each part's graph distances, an edge `vertexGap` long.
+- A `LayoutStrategy` of your own arranges a `LayoutPart`: its vertices and edges by index into a
+  graph, with columns of pins, sizes, end directions, ports, and label room. It returns each
+  vertex's top-left corner, two numbers a vertex.
+
+`arrange(gpu, config)` in `@latkit/network` and `@latkit/diagram` places a view's vertices without
+drawing and returns `Positions` by type: an `x` and a `y` field to spread into the type's options.
 
 ## Style
 
@@ -75,7 +100,9 @@ Every item view takes the same style options, with one set of defaults in `viewS
 | `hoverWidthPx`, `selectedWidthPx` | `3`, `3`                 |                                                                                   |
 | `font`, `fontSizePx`, `textColor` | `system-ui`, `12`, light | monitor uses a monospace font                                                     |
 
-Each view adds its own options, such as a network's `edgeWidthPx` or a monitor's `yAxis`. Padding
+`shade` recolors every fragment by WGSL of your own, or `spotlight()` around the pointer, or
+`pulse()` for rows whose `shade` channel is positive. Each view adds its own options, such as a
+network's `edgeWidthPx` or a monitor's `yAxis`. Padding
 takes one number or `[top, right, bottom, left]`. `null` in a config or a patch always means unset,
 which restores the default.
 
@@ -108,7 +135,8 @@ events report what the user did, and `select` also reports items a new source no
 keep their source, `Index`, and row. `locate(item)` returns an item's canvas point, and
 `reveal(item)` pans until it shows.
 
-Events arrive together after each drawn frame, in order: `frame`, `camera`, `hover`, `select`.
+`frame`, `camera`, and `hover` arrive together after each drawn frame, in that order. `select`
+arrives as the user selects, and after the frame that drops items a new source no longer has.
 
 ## Images
 

@@ -1,5 +1,5 @@
 /** Draw a model as a network: vertices, edges, and paths, flat, tilted, or on a globe. */
-export { createNetwork } from './network.js';
+export { createNetwork, arrange } from './network.js';
 export type { Network, NetworkConfig, NetworkEvents, NetworkStats } from './network.js';
 export type {
   NetworkItem,
