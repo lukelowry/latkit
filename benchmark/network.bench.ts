@@ -1,6 +1,6 @@
 import { describe } from 'vitest';
 import { createNetwork, type NetworkConfig } from '@latkit/network';
-import { counters, draw, gpu, grid, sizes, suite } from './harness.ts';
+import { branchIndex, busIndex, counters, draw, gpu, grid, sizes, suite } from './harness.ts';
 
 describe.each(sizes)('network %i buses', async (buses) => {
   const device = await gpu(),
@@ -44,6 +44,18 @@ describe.each(sizes)('network %i buses', async (buses) => {
   });
   measure('camera move', (i) => {
     view.set({ camera: { scale: 1 + (i % 8) } });
+    return draw(device, view);
+  });
+  // A bus and a branch selected draw over the rest; clearing them draws as before.
+  measure('select', (i) => {
+    view.select(
+      i % 2
+        ? []
+        : [
+            { kind: 'vertex', source: data, index: busIndex(buses), row: 7 },
+            { kind: 'edge', source: data, index: branchIndex(buses), row: 7 },
+          ],
+    );
     return draw(device, view);
   });
 });

@@ -43,6 +43,7 @@ export const STYLE_EFFECTS = {
   selectedColor: 'frame',
   hoverWidthPx: 'frame',
   selectedWidthPx: 'frame',
+  unselectedAlpha: 'frame',
   font: 'scene',
   fontSizePx: 'scene',
   textColor: 'scene',

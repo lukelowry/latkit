@@ -2,9 +2,10 @@ import { kit, type Gpu, type Marker, type MarkerImage, type RGBA } from '@latkit
 import { failure, rowCount } from '@latkit/model';
 import type { Camera } from '../camera.js';
 import { DEG } from '../camera.js';
-import { sameItem, type NetworkData, type NetworkItem } from '../data.js';
+import { networkKey, type NetworkData, type NetworkItem } from '../data.js';
 import {
   edgeOptions,
+  ownerSegments,
   vertexOptions,
   type Geometry,
   type VertexBank,
@@ -27,6 +28,34 @@ const LINE_BYTES = 48;
 const GROW_MS = 160;
 /** No vertex, as a dense address. */
 const NONE = 0xffffffff;
+/** Focus levels, as draw.wgsl reads them; the higher wins. */
+const END = 1,
+  HOVERED = 2,
+  SELECTED = 3;
+/**
+ * A focus draw's instances start here, so its shader tells it from the scene's: the scene draws
+ * every row but the focused, and the focus draw only those, over it.
+ */
+const FOCUSED = 0x80000000;
+/** Past this many runs of focused instances, the focus draw takes every row, keeping the focused. */
+const RANGES = 64;
+/** Changed focus words this close upload in one write: on the GPU, a write costs about as much. */
+const WRITE_BYTES = 4096;
+/** Instances as `[first, count]` runs; `all` past `RANGES` of them. */
+type Focused = readonly (readonly [number, number])[] | 'all';
+/** The runs of ascending instances. */
+function focusRuns(instances: readonly number[]): Focused | undefined {
+  if (!instances.length) return undefined;
+  const out: [number, number][] = [];
+  for (const i of instances) {
+    const last = out.at(-1);
+    if (last && i <= last[0] + last[1]) last[1] = Math.max(last[1], i + 1 - last[0]);
+    else out.push([i, 1]);
+  }
+  return out.length > RANGES ? 'all' : out;
+}
+const sameHover = (a: NetworkItem | null, b: NetworkItem | null) =>
+  a === b || (!!a && !!b && networkKey(a) === networkKey(b));
 /** Words of the uniforms' named members after their fourteen vec4, as `Uniforms` lays them out. */
 const U = {
   easeShift: 56,
@@ -107,6 +136,16 @@ interface Command {
   readonly pipeline?: GPURenderPipeline;
   /** Its markers' shadows, drawn beneath every marker when the style casts them. */
   readonly shadows?: GPURenderPipeline;
+  /** Its focused instances, which draw again over the rest. */
+  readonly focused?: Focused;
+  /** A curved batch's span of focused segments, tessellated alone to draw over the rest. */
+  readonly focusTessellation?: { readonly group: GPUBindGroup; readonly count: number };
+}
+/** The draws a command takes: the scene's, then its focused instances'. */
+function drawsOf(item: Command): number {
+  if (item.tessellation) return item.focusTessellation ? 2 : 1;
+  const focused = item.focused;
+  return 1 + (!focused ? 0 : focused === 'all' ? 1 : focused.length);
 }
 interface Compute {
   readonly pipeline: GPUComputePipeline;
@@ -176,6 +215,8 @@ export class Painter {
   /** Two bits per drawn row: what the selection and hover halo. */
   private readonly focus = new kit.BufferData({ size: 16, label: 'network focus' });
   private focusWords = new Map<number, number>();
+  /** The dense addresses of focused rows, ascending. */
+  private focusedRows: readonly number[] = [];
   private focused?: {
     readonly geometry: Geometry;
     readonly selection: readonly NetworkItem[];
@@ -397,13 +438,14 @@ export class Painter {
       16,
     );
     f.set(options.hoverColor, 20);
-    f.set(options.selectedColor === 'none' ? [0, 0, 0, 0] : options.selectedColor, 24);
+    // `none` glows in each item's own color.
+    f.set(options.selectedColor === 'none' ? [0, 0, 0, -1] : options.selectedColor, 24);
     f.set(
       [
         options.hoverWidthPx,
         options.selectedWidthPx,
-        options.hoverWidthPx,
-        options.selectedWidthPx,
+        state.selection.length ? options.unselectedAlpha : 1,
+        0,
       ],
       28,
     );
@@ -673,6 +715,21 @@ export class Painter {
       });
     const vertices: Command[] = [],
       edges: Command[] = [];
+    /** The focused rows among `count` dense addresses from `base`, as ascending offsets from it. */
+    const focusedIn = (base: number, count: number): readonly number[] => {
+      const rows = this.focusedRows;
+      if (!rows.length) return rows;
+      const out: number[] = [];
+      let lo = 0,
+        hi = rows.length;
+      while (lo < hi) {
+        const m = (lo + hi) >>> 1;
+        if (rows[m] < base) lo = m + 1;
+        else hi = m;
+      }
+      for (let i = lo; i < rows.length && rows[i] < base + count; i++) out.push(rows[i] - base);
+      return out;
+    };
     for (const bank of geometry.vertices) {
       if (bank.synthetic) continue;
       const marker = markerOf(data, bank),
@@ -690,33 +747,53 @@ export class Painter {
         count: bank.count,
         pipeline: await markerPipeline(pipeline, marker),
         shadows: options.shadows ? await markerPipeline(pipeline, marker, true) : undefined,
+        focused: focusRuns(focusedIn(bank.base, bank.count)),
       });
     }
     for (const bank of geometry.edges) {
       const curved = edgeOptions(data, bank).route === 'geodesic',
-        dashed = reads.edges.get(bank)!.has('dash');
+        dashed = reads.edges.get(bank)!.has('dash'),
+        owners = focusedIn(geometry.vertexCount + bank.base, bank.count);
       for (const batch of bank.batches) {
         const count = batch.records.length / 4;
         const a = bound.get(batch.a)!.output,
           b = bound.get(batch.b)!.output,
           segments = frame.buffer(batch.data);
-        const tessellation = curved
-          ? gpu.device.createBindGroup({
-              layout: pipeline.tessellation,
-              entries: [
-                { binding: 0, resource: uniform },
-                { binding: 1, resource: a },
-                { binding: 2, resource: b },
-                { binding: 3, resource: segments },
-                { binding: 4, resource: curveInstances },
-                { binding: 5, resource: curveIndirect! },
-                {
-                  binding: 6,
-                  resource: frame.uniforms(Uint32Array.of(count, dashed ? 1 : 0, 0, 0)),
-                },
-              ],
-            })
-          : undefined;
+        /** Tessellate `count` segments from `first`, each instance marked with `flag`. */
+        const tessellate = (count: number, first: number, flag: number) =>
+          gpu.device.createBindGroup({
+            layout: pipeline.tessellation,
+            entries: [
+              { binding: 0, resource: uniform },
+              { binding: 1, resource: a },
+              { binding: 2, resource: b },
+              { binding: 3, resource: segments },
+              { binding: 4, resource: curveInstances },
+              { binding: 5, resource: curveIndirect! },
+              {
+                binding: 6,
+                resource: frame.uniforms(Uint32Array.of(count, dashed ? 1 : 0, first, flag)),
+              },
+            ],
+          });
+        const tessellation = curved ? tessellate(count, 0, 0) : undefined;
+        let focused: Focused | undefined, focusTessellation: Command['focusTessellation'];
+        if (owners.length) {
+          // The segments of focused rows, ascending as their owners are, which draw again over
+          // the rest.
+          const focusedSegments: number[] = [];
+          for (const owner of owners) {
+            const [first, end] = ownerSegments(batch.records, owner);
+            for (let s = first; s < end; s++) focusedSegments.push(s);
+          }
+          focused = focusRuns(focusedSegments);
+          if (curved && focused) {
+            // A curve's pieces come from the tessellation, so its focused span tessellates alone.
+            const first = focusedSegments[0],
+              count = focusedSegments.at(-1)! - first + 1;
+            focusTessellation = { group: tessellate(count, first, FOCUSED), count };
+          }
+        }
         let phase: GPUBufferBinding | undefined;
         const values = state.phases.get(batch);
         if (values) {
@@ -741,6 +818,8 @@ export class Painter {
           ),
           count,
           tessellation,
+          focused: curved ? undefined : focused,
+          focusTessellation,
         });
       }
     }
@@ -780,13 +859,19 @@ export class Painter {
       drawCalls:
         1 +
         (camera.projection === 'globe' && options.earthAxis ? 1 : 0) +
-        (options.markers ? vertices.length * (options.shadows ? 2 : 1) : 0) +
+        (options.markers
+          ? vertices.reduce((n, item) => n + drawsOf(item), 0) +
+            (options.shadows ? vertices.length : 0)
+          : 0) +
         (options.poles ? vertices.length : 0) +
-        (options.lines ? edges.length : 0) +
+        (options.lines ? edges.reduce((n, item) => n + drawsOf(item), 0) : 0) +
         labels.reduce((n, v) => n + v.pages.length, 0),
     };
   }
-  /** Rewrite only the focus words that changed, and only when selection, hover, or geometry do. */
+  /**
+   * Rewrite only the focus words that changed, and only when selection, hover, or geometry do; and
+   * list the focused rows, which draw again over the rest.
+   */
   private updateFocus(state: DrawFrame): void {
     const { geometry, options, data } = state,
       native = geometry.native ?? geometry,
@@ -794,7 +879,7 @@ export class Painter {
     if (
       last?.geometry === native &&
       last.selection === state.selection &&
-      sameItem(last.hover, state.hover) &&
+      sameHover(last.hover, state.hover) &&
       last.options.selectedEnds === options.selectedEnds &&
       last.options.hoverEnds === options.hoverEnds
     )
@@ -812,30 +897,43 @@ export class Painter {
     };
     const focus = (item: NetworkItem, level: number) => {
       mark(item, level);
-      if (item.kind === 'edge' && (level === 2 ? options.selectedEnds : options.hoverEnds))
+      if (item.kind === 'edge' && (level === SELECTED ? options.selectedEnds : options.hoverEnds))
         for (const vertex of adjacency.neighborhood(item, data))
-          if (vertex.kind === 'vertex') mark(vertex, level);
+          if (vertex.kind === 'vertex') mark(vertex, END);
     };
-    for (const item of state.selection) focus(item, 2);
-    if (state.hover) focus(state.hover, 1);
+    for (const item of state.selection) focus(item, SELECTED);
+    if (state.hover) focus(state.hover, HOVERED);
     // Sixteen rows per word, padded to whole 16-byte rows.
     const rows = native.vertexCount + native.edgeCount + native.pathCount,
       size = Math.max(16, Math.ceil(rows / 64) * 16);
     if (this.focus.size !== size) this.focus.resize(size);
     const bytes = this.focus.bytes,
-      words = new Uint32Array(bytes.buffer, bytes.byteOffset, size / 4);
-    let lo = Infinity,
-      hi = -1;
+      words = new Uint32Array(bytes.buffer, bytes.byteOffset, size / 4),
+      changed: number[] = [];
     const write = (word: number, value: number) => {
       if (word >= words.length || words[word] === value) return;
       words[word] = value;
-      lo = Math.min(lo, word);
-      hi = Math.max(hi, word);
+      changed.push(word);
     };
     for (const word of this.focusWords.keys()) if (!next.has(word)) write(word, 0);
     for (const [word, value] of next) write(word, value);
-    if (hi >= lo) this.focus.touch({ offset: lo * 4, size: (hi - lo + 1) * 4 });
+    // Words far apart, as a selected edge and its ends are, upload apart rather than with every
+    // word between them.
+    changed.sort((x, y) => x - y);
+    const edited: { offset: number; size: number }[] = [];
+    for (const word of changed) {
+      const last = edited.at(-1);
+      if (last && word * 4 - (last.offset + last.size) < WRITE_BYTES)
+        last.size = word * 4 + 4 - last.offset;
+      else edited.push({ offset: word * 4, size: 4 });
+    }
+    if (edited.length) this.focus.touch(edited);
     this.focusWords = next;
+    const dense: number[] = [];
+    for (const word of [...next.keys()].sort((x, y) => x - y))
+      for (let k = 0, bits = next.get(word)!; k < 16; k++)
+        if ((bits >>> (k * 2)) & 3) dense.push(word * 16 + k);
+    this.focusedRows = dense;
     this.focused = {
       geometry: native,
       selection: state.selection,
@@ -882,6 +980,29 @@ export class Painter {
         },
       });
     let pass = begin(false);
+    /** Tessellate a curved batch's segments into the shared indirect draw, then draw it. */
+    const curve = (item: Command, tessellation: GPUBindGroup, count: number) => {
+      pass.end();
+      frame.encoder.clearBuffer(paint.indirect!);
+      const prepare = frame.encoder.beginComputePass({
+        label: 'network adaptive curve tessellation',
+      });
+      prepare.setPipeline(paint.pipelines.tessellate);
+      prepare.setBindGroup(0, tessellation);
+      prepare.dispatchWorkgroups(Math.ceil(count / 64));
+      prepare.end();
+      pass = begin(true);
+      pass.setPipeline(paint.pipelines.curves);
+      pass.setBindGroup(0, item.group);
+      pass.drawIndirect(paint.indirect!, 0);
+    };
+    /** A command's focused instances, over the rest. */
+    const over = (item: Command) => {
+      const focused = item.focused;
+      if (focused === 'all') pass.draw(6, item.count, 0, FOCUSED);
+      else if (focused)
+        for (const [first, count] of focused) pass.draw(6, count, 0, FOCUSED + first);
+    };
     pass.setPipeline(paint.pipelines.surface);
     pass.setBindGroup(0, paint.background);
     pass.draw(3);
@@ -894,19 +1015,7 @@ export class Painter {
       pass.setPipeline(paint.pipelines.edges);
       for (const item of paint.edges) {
         if (item.tessellation) {
-          pass.end();
-          frame.encoder.clearBuffer(paint.indirect!);
-          const prepare = frame.encoder.beginComputePass({
-            label: 'network adaptive curve tessellation',
-          });
-          prepare.setPipeline(paint.pipelines.tessellate);
-          prepare.setBindGroup(0, item.tessellation);
-          prepare.dispatchWorkgroups(Math.ceil(item.count / 64));
-          prepare.end();
-          pass = begin(true);
-          pass.setPipeline(paint.pipelines.curves);
-          pass.setBindGroup(0, item.group);
-          pass.drawIndirect(paint.indirect!, 0);
+          curve(item, item.tessellation, item.count);
           continue;
         }
         pass.setPipeline(paint.pipelines.edges);
@@ -935,6 +1044,24 @@ export class Painter {
         pass.draw(6, item.count);
       }
     }
+    // Focused rows draw again over everything but labels: nothing covers them, and their glow lights
+    // their neighbors.
+    if (paint.options.lines)
+      for (const item of paint.edges)
+        if (item.focusTessellation)
+          curve(item, item.focusTessellation.group, item.focusTessellation.count);
+        else if (item.focused) {
+          pass.setPipeline(paint.pipelines.edges);
+          pass.setBindGroup(0, item.group);
+          over(item);
+        }
+    if (paint.options.markers)
+      for (const item of paint.vertices)
+        if (item.focused) {
+          pass.setPipeline(item.pipeline ?? paint.pipelines.vertices);
+          pass.setBindGroup(0, item.group);
+          over(item);
+        }
     pass.setPipeline(paint.pipelines.text);
     for (const item of paint.labels) {
       pass.setBindGroup(0, item.group);

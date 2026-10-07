@@ -26,8 +26,10 @@ network.on('frame', () => showStats(network.stats())); // after each drawn frame
 ```
 
 Every item view handles the same input: hover follows the pointer; a click selects what it hits,
-and clicking again in place cycles through overlapping hits; Shift, Ctrl, or ⌘ toggles the topmost
-hit; a double click or Enter reports `open`, and a double click on nothing fits the data while
+and clicking again in place cycles through overlapping hits while they stay the same; Shift, Ctrl, or
+⌘ toggles the topmost hit; a click, double click, or menu answers with what the presented frame draws
+there, and a later one supersedes one still finding its hits; a double click or Enter reports
+`open`, and a double click on nothing fits the data while
 navigating; a right click opens a menu where the button comes up (a right drag never does); the
 context menu key or Shift+F10 opens a menu at the selection; Escape ends a gesture or clears the
 selection; and, when navigating, the wheel zooms (or only with Ctrl or ⌘ under
@@ -96,8 +98,9 @@ Every item view takes the same style options, with one set of defaults in `viewS
 | `pickRadiusPx`                    | `8`                      |                                                                                   |
 | `fitPaddingPx`, `revealPaddingPx` | `32`, `48`               |                                                                                   |
 | `animationMs`, `motion`           | `300`, `'auto'`          | monitor `0`; `auto` follows reduced motion                                        |
-| `hoverColor`, `selectedColor`     | amber, orange            | monitor `'none'`, keeping trace colors; it draws no hover                         |
-| `hoverWidthPx`, `selectedWidthPx` | `3`, `3`                 |                                                                                   |
+| `hoverColor`, `selectedColor`     | amber, orange            | the glow's color, alpha its strength; `'none'` glows in each item's own color     |
+| `hoverWidthPx`, `selectedWidthPx` | `6`, `8`                 | how far the glow reaches past an item; the monitor draws no hover                 |
+| `unselectedAlpha`                 | `1`                      | every other item's opacity while something is selected; monitor `0.25`            |
 | `font`, `fontSizePx`, `textColor` | `system-ui`, `12`, light | monitor uses a monospace font                                                     |
 
 `shade` recolors every fragment by WGSL of your own, or `spotlight()` around the pointer, or
@@ -129,11 +132,14 @@ network.on('hover', (item) => tooltip(item));
 network.on('contextmenu', ({ point, items }) => openMenu(point, items));
 ```
 
-`pick` returns hits nearest first, the item drawn on top winning ties, at most `limit` (16 by
-default). `select` replaces the selection without reporting it; `select`, `hover`, and `contextmenu`
-events report what the user did, and `select` also reports items a new source no longer has. Items
-keep their source, `Index`, and row. `locate(item)` returns an item's canvas point, and
-`reveal(item)` pans until it shows.
+`pick` returns what the presented frame draws near a point: one hit per item, nearest first, the
+item drawn on top winning ties, at most `limit` (16 by default). `select` replaces the selection
+without reporting it, and does nothing when the items are the same; `select`, `hover`, and
+`contextmenu` events report what the user did, and `select` also reports items a new source no
+longer has. `hover` reports again when the same item is found with other detail, such as a monitor
+reading another sample. Items keep their source, `Index`, and row; the `Index` names the rows, so an
+item outlives the appends that replace its `Data`, as `sameItem` and `itemKey` in `@latkit/model`
+compare it. `locate(item)` returns an item's canvas point, and `reveal(item)` pans until it shows.
 
 `frame`, `camera`, and `hover` arrive together after each drawn frame, in that order. `select`
 arrives as the user selects, and after the frame that drops items a new source no longer has.

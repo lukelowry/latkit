@@ -10,7 +10,11 @@ struct View {
   selected: vec4f,
   hovered: vec4f,
   dots: vec4f,
-  /** Outline, selection, and hover widths in pixels; 1 keeps an item's own color selected. */
+  /**
+   * The outline's width, and how far the selection's and hover's glow reach, in pixels; then the
+   * rest's opacity while something is selected, plus one: negative when selected items glow in
+   * their own color.
+   */
   metrics: vec4f,
   background: vec4f,
   /** Detail fades, the grid's least spacing, port size, and the default edge width. */
@@ -59,7 +63,11 @@ fn styleOf(slot: u32, kind: u32) -> Style {
   if (s.x == 0u) { color = select(view.edgeColor, view.vertexColor, kind == BLOCK); }
   return Style(color, unpack4x8unorm(s.y), select(view.detail.w, wf.x, wf.x >= 0.), wf.y, bitcast<f32>(s.w));
 }
-fn chosen(color: vec4f) -> vec4f { return select(view.selected, color, view.metrics.w != 0.); }
+fn chosen(color: vec4f) -> vec4f { return select(view.selected, color, view.metrics.w < 0.); }
+/** The opacity of what is not lit while something is selected. */
+fn others() -> f32 { return abs(view.metrics.w) - 1.; }
+/** Selected and hovered items, a block's ports with it, and a gesture's marks: what stays lit. */
+fn lit(flags: u32) -> bool { return (flags & 31u) != 0u; }
 /** How far a fading mark shows at a size in pixels; detail 'full' always shows it. */
 fn fold(px: f32) -> f32 { return select(1., smoothstep(1., 3., px), view.detail.x != 0.); }
 /** Where an item draws from its place: following a drag, or easing in from where it was. */
@@ -69,8 +77,13 @@ fn shifted(slot: u32) -> vec2f {
 }
 fn wired(k: u32) -> bool { return k == SEGMENT || k == CORNER || k == ARROW || k == JUNCTION; }
 fn hidden(i: u32) -> Out { return Out(vec4f(2., 2., 2., 1.), vec2f(0.), i, vec4f(0.), vec4f(0.)); }
-/** The rim selection and hover draw past a shape, in pixels. */
-fn rim() -> f32 { return max(6., max(view.metrics.y, view.metrics.z) + 2.); }
+/** How far past a shape its quad reaches: a selected, targeted, or hovered item's glow, else its rings. */
+fn rim(flags: u32) -> f32 {
+  var reach = 4.;
+  if ((flags & 9u) != 0u) { reach = max(reach, view.metrics.y); }
+  if ((flags & 2u) != 0u) { reach = max(reach, view.metrics.z); }
+  return reach + 2.;
+}
 @vertex fn shape_vertex(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> Out {
   let item = items[i];
   let c = corner(v);
@@ -79,7 +92,7 @@ fn rim() -> f32 { return max(6., max(view.metrics.y, view.metrics.z) + 2.); }
   // Rerouted wires hide while their new ones draw; wires a transition leaves draw alone.
   if ((flags & 128u) != 0u || (view.motion.w != 0. && !wired(k))) { return hidden(i); }
   let offset = shifted(item.slot);
-  let pad = rim();
+  let pad = rim(flags);
   if (k == SEGMENT || k == PREVIEW) {
     let a = screen(item.a.xy + offset);
     let b = screen(item.a.zw + offset);
@@ -135,7 +148,9 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
   let compatible = (flags & 4u) != 0u;
   let targeted = (flags & 8u) != 0u;
   let wire = wired(k);
-  var opacity = select(1., 0.22, (flags & 32u) != 0u) * select(1., view.motion.z, wire || k == LABEL);
+  // The rest fade while something is selected.
+  var opacity = select(1., 0.22, (flags & 32u) != 0u) * select(1., view.motion.z, wire || k == LABEL) *
+    select(others(), 1., lit(flags) || k == BOX || k == PREVIEW);
   var color = style.color;
   var d = 0.;
   var shadow = 0.;
@@ -160,20 +175,20 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
       d = abs(across) - 0.75;
       if (fract((along) / 10.) > 0.6) { discard; }
     } else {
-      let extra = select(select(0., 0.5, hovered), 1., selected || targeted);
+      // A connection's target widens and takes the selection's color; what is selected glows.
+      let extra = select(0., 1., targeted);
       d = flowing(abs(across) - style.width * 0.5 - extra, along, across, style.flow);
-      if (hovered) { color = mix(color, view.hovered, 0.65); }
-      if (selected || targeted) { color = chosen(color); }
+      if (targeted) { color = chosen(color); }
     }
   } else if (k == ARROW) {
     let slope = v.size.y / v.size.x;
     d = max((abs(v.uv.y) - v.uv.x * slope) / sqrt(1. + slope * slope), v.uv.x - v.size.x);
     opacity *= fold(v.size.x);
-    if (selected || targeted) { color = chosen(color); } else if (hovered) { color = mix(color, view.hovered, 0.65); }
+    if (targeted) { color = chosen(color); }
   } else if (k == JUNCTION) {
     d = length(v.uv) - v.size.x;
     opacity *= fold(v.size.x * 2.) * view.slots.x;
-    if (selected || targeted) { color = chosen(color); }
+    if (targeted) { color = chosen(color); }
   } else if (k == PORT) {
     let half = v.size.x;
     let n = item.a.zw;
@@ -223,16 +238,13 @@ fn flowing(d: f32, along: f32, across: f32, flow: f32) -> f32 {
   let shaded = shade(ShadeFragment(color, v.position.xy / view.viewport.z, style.shade));
   var result = outputColor(shaded, aa(d));
   if (shadow > 0.) { result = result + vec4f(0., 0., 0., shadow * (1. - aa(d))) * (1. - result.a); }
-  var accent = view.hovered;
+  // Beneath it, a glow: soft for a connection's compatible ends, whole for what is selected or
+  // targeted, in its own color for `none`, and for what is hovered.
+  var accent = chosen(style.color);
   var ring = 0.;
-  if (!wire && k != PREVIEW && k != BOX) {
-    if (hovered) { ring = 0.35 * (1. - smoothstep(0., view.metrics.z, d)); }
-    if (compatible) { accent = chosen(style.color); ring = max(ring, 0.28 * (1. - smoothstep(0., 5., d))); }
-    if (selected || targeted) { accent = chosen(style.color); ring = max(ring, aa(d - view.metrics.y) * smoothstep(-0.5, 0.5, d)); }
-  } else if (compatible) {
-    accent = chosen(style.color);
-    ring = 0.28 * (1. - smoothstep(0., 5., d));
-  }
+  if (compatible) { ring = 0.28 * (1. - smoothstep(0., 5., d)); }
+  if (selected || targeted) { ring = max(ring, glowAlpha(d, view.metrics.y)); }
+  else if (hovered) { accent = view.hovered; ring = max(ring, glowAlpha(d, view.metrics.z)); }
   result = result + outputColor(accent, ring) * (1. - result.a);
   return result * opacity;
 }
@@ -252,7 +264,7 @@ fn legible(color: vec4f, slot: u32) -> vec4f {
   // A wire's label fades with its wire.
   let wire = anchor.slot >= u32(view.slots.z) && anchor.slot < u32(view.slots.w);
   var color = legible(t.color, anchor.slot);
-  color.a *= select(1., view.motion.z, wire);
+  color.a *= select(1., view.motion.z, wire) * select(others(), 1., lit(flags));
   return Out(clip(screen(t.position + anchor.position + shifted(anchor.slot))), t.uv, i, vec4f(0.), color);
 }
 @fragment fn text_fragment(v: Out) -> @location(0) vec4f {

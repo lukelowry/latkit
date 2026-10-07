@@ -242,6 +242,36 @@ describe('mutable and frame-local buffers', () => {
     gpu.destroy();
   });
 
+  it('records several touched ranges as one revision, however many', async () => {
+    const fake = fakeDevice(),
+      gpu = await createGpu({ device: fake.device });
+    const data = new BufferData({ size: 8192 });
+    await draw(gpu, (frame) => {
+      frame.buffer(data);
+    });
+    const revision = data.revision;
+    let { uploads, uploadedBytes } = gpu.stats();
+    data.touch([
+      { offset: 0, size: 4 },
+      { offset: 4096, size: 8 },
+    ]);
+    expect(data.revision).toBe(revision + 1);
+    await draw(gpu, (frame) => {
+      frame.buffer(data);
+    });
+    expect(gpu.stats().uploads - uploads).toBe(2);
+    expect(gpu.stats().uploadedBytes - uploadedBytes).toBe(12);
+    // More ranges than the change journal holds still upload only the bytes between them.
+    ({ uploads, uploadedBytes } = gpu.stats());
+    data.touch(Array.from({ length: 100 }, (_, i) => ({ offset: i * 80, size: 4 })));
+    await draw(gpu, (frame) => {
+      frame.buffer(data);
+    });
+    expect(gpu.stats().uploads - uploads).toBe(1);
+    expect(gpu.stats().uploadedBytes - uploadedBytes).toBe(99 * 80 + 4);
+    gpu.destroy();
+  });
+
   it('uses copy-on-write while earlier submissions hold a mutable buffer', async () => {
     const fake = fakeDevice({ deferCompletion: true }),
       gpu = await createGpu({ device: fake.device });

@@ -211,6 +211,11 @@ describe.each(
   measure('cached frame', () => draw(device, cached));
   measure('playhead', (i) => draw(device, cached, i % frames));
   measure('pick', () => cached.pick([280, 360], { radiusPx: 24 }));
+  // The pointer rests while the playhead moves: what was drawn stands, and so does its answer.
+  measure('pick during playback', async (i) => {
+    await draw(device, cached, i % frames);
+    return cached.pick([280, 360], { radiusPx: 24 });
+  });
 
   // A live run: each new frame draws alone, joined to the last.
   let streamed = grid(rows);

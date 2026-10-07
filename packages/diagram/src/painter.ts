@@ -495,7 +495,10 @@ export class Painter {
                 style.outlineWidthPx,
                 style.selectedWidthPx,
                 style.hoverWidthPx,
-                +(style.selectedColor === 'none'),
+                // The rest's opacity while something is selected, plus one; negative when selected
+                // items glow in their own color.
+                (style.selectedColor === 'none' ? -1 : 1) *
+                  (1 + (state.selection.length ? style.unselectedAlpha : 1)),
                 ...style.background,
                 +(style.detail === 'auto'),
                 style.gridMinSpacingPx,
@@ -746,8 +749,15 @@ export class Painter {
     const flag = (slot: number | undefined, bit: number) => {
       if (slot !== undefined) states.set(slot, (states.get(slot) ?? 0) | bit);
     };
-    for (const item of selection) flag(slots.get(itemKey(item)), 1);
-    if (hover && !overlay?.wire) flag(slots.get(itemKey(hover)), 2);
+    /** A selected or hovered item, and its ports when it is a block, which stay lit with it. */
+    const focus = (slot: number | undefined, bit: number) => {
+      flag(slot, bit);
+      const vertex =
+        slot !== undefined && slot < scene.slots.ports ? scene.vertices[slot] : undefined;
+      if (vertex) for (let k = 0; k < vertex.ports.length; k++) flag(vertex.portSlot + k, 16);
+    };
+    for (const item of selection) focus(slots.get(itemKey(item)), 1);
+    if (hover && !overlay?.wire) focus(slots.get(itemKey(hover)), 2);
     for (const item of overlay?.compatible ?? []) flag(slots.get(itemKey(item)), 4);
     if (overlay?.target) flag(slots.get(itemKey(overlay.target)), 8);
     if (overlay?.muted) flag(slots.get(overlay.muted), 32);
@@ -758,14 +768,16 @@ export class Painter {
       geometry.focus.bytes.byteOffset,
       geometry.focus.size / 4,
     );
+    const edited: { offset: number; size: number }[] = [];
     const write = (slot: number, value: number) => {
       if (slot < words.length && words[slot] !== value) {
         words[slot] = value;
-        geometry.focus.touch({ offset: slot * 4, size: 4 });
+        edited.push({ offset: slot * 4, size: 4 });
       }
     };
     for (const slot of geometry.states.keys()) if (!states.has(slot)) write(slot, 0);
     for (const [slot, value] of states) write(slot, value);
+    if (edited.length) geometry.focus.touch(edited);
     geometry.states = states;
   }
   destroy(): void {

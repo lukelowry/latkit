@@ -260,6 +260,11 @@ it('reuses geometry and uploads on camera and focus changes', async () => {
     f.diagram.select([vertexOf(f.source, 'n0')]);
     await f.draw();
     expect(f.source.queries).toBe(reads);
+    // A row of another row space belongs to another source, as in every view.
+    const vertex = vertexOf(f.source, 'n0');
+    expect(() =>
+      f.diagram.select([{ ...vertex, index: { ...vertex.index, version: 'elsewhere' } }]),
+    ).toThrow('Selection belongs to another source');
   } finally {
     f.diagram.destroy();
     f.target.destroy();

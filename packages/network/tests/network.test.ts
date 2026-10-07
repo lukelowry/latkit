@@ -110,6 +110,44 @@ it('keeps model identities across pages and uses CSR neighborhoods', async () =>
       .sort((a, b) => a - b),
   ).toEqual([45, 54, 55, 56, 65]);
   expect(neighbors.filter((item) => item.kind === 'edge')).toHaveLength(4);
+  // The index names the rows, so an item from an earlier Data value, as before an append, has them.
+  expect(geometry.adjacency.neighborhood({ ...item, source: { ...source.data } }, data)).toEqual(
+    neighbors,
+  );
+  gpu.destroy();
+});
+
+it('draws the scene as before and each focused row again, over the rest', async () => {
+  const { source, data } = fixture(100, 3),
+    fake = device(),
+    gpu = await createGpu({ device: fake.device }),
+    network = createNetwork(gpu, data),
+    surface = target(gpu);
+  const render = () =>
+    gpu.render({
+      timeMs: 0,
+      views: [{ renderer: kit.rendererOf(network), target: surface, at: 0 }],
+    });
+  /** The latest frame's draws: instances and the first one, a focus draw's from 2³¹. */
+  const draws = () => {
+    const encoders = vi.mocked(fake.device.createCommandEncoder).mock.results,
+      encoder = encoders.at(-1)!.value as GPUCommandEncoder,
+      pass = vi.mocked(encoder.beginRenderPass).mock.results.at(-1)!.value as GPURenderPassEncoder;
+    return vi.mocked(pass.draw).mock.calls.map(([, instances = 1, , first = 0]) => ({
+      instances,
+      first,
+    }));
+  };
+  await render();
+  const plain = draws();
+  network.select([{ kind: 'vertex', source: source.data, index: source.index('node'), row: 12 }]);
+  await render();
+  const focused = draws(),
+    over = focused.filter((draw) => draw.first >= 0x80000000);
+  expect(over).toEqual([{ instances: 1, first: 0x80000000 + 12 }]);
+  // The scene's draws stand, its shader leaving out row 12, which the focus draw adds.
+  expect(focused.filter((draw) => draw.first < 0x80000000)).toEqual(plain);
+  network.destroy();
   gpu.destroy();
 });
 
@@ -794,7 +832,7 @@ it('picks a geodesic arc at its visible arc-length midpoint in every projection'
   gpu.destroy();
 });
 
-it('halos every selected item and its ends, binds field names, and reports camera changes', async () => {
+it('lights every selected item and draws its ends over the rest, binds field names, and reports camera changes', async () => {
   const { source, data } = fixture(),
     gpu = await createGpu({ device: device().device });
   const network = createNetwork(gpu, {
@@ -822,11 +860,12 @@ it('halos every selected item and its ends, binds field names, and reports camer
     line = { kind: 'edge', source: source.data, index: source.index('line'), row: 0 } as const;
   network.select([node(12), node(20), line]);
   await render();
-  // Vertices come first, then edges: line 0 is dense address 25.
-  expect([12, 20, 25, source.from[0], source.to[0]].map(level)).toEqual([2, 2, 2, 2, 2]);
+  // Vertices come first, then edges: line 0 is dense address 25. Selected rows are level 3, and
+  // the ends a selected edge joins level 1: they draw over the rest without a glow of their own.
+  expect([12, 20, 25, source.from[0], source.to[0]].map(level)).toEqual([3, 3, 3, 1, 1]);
   network.select([node(20)]);
   await render();
-  expect([12, 20, 25].map(level)).toEqual([0, 2, 0]);
+  expect([12, 20, 25].map(level)).toEqual([0, 3, 0]);
   expect(network.selection).toEqual([node(20)]);
   expect(cameras).toHaveBeenCalledTimes(1);
   network.set({ camera: { scale: network.camera.scale * 2 } });

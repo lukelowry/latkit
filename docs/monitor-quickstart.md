@@ -45,13 +45,17 @@ another field; an image keeps up to four such looks apart and bakes the rest wit
 
 ## Inspect
 
-Hover, click, and `pick` report exact observations as `Reading`s; hover arrives a frame after the
-pointer moves. `monitor.select(rows)` highlights rows, each narrowed to one trace when it names a
-`trace`, and fades the rest to `unselectedAlpha`. Selected traces keep their colors while
-`selectedColor` is `'none'`, its default here. `traceColor` and `traceWidthPx` set what a trace's
-`color` and `widthPx` leave unset. `fit(readings)` frames readings once, and `reveal(reading)` moves the window
-to one outside it. A click selects; the monitor has no pointer navigation, so the page keeps wheel
-and touch scrolling. Selection, events, and the style options every view shares are under
-[views](views.md).
+Hover, click, and `pick` report exact observations as `Reading`s, one for each row a line near the
+pointer draws: anywhere along it, steps and width included, each reading the recorded sample whose
+value that part shows. Hover arrives a frame after the pointer moves, and reports again as it moves
+along a line to another sample. `monitor.select(rows)` highlights rows, each narrowed to one trace
+when it names a `trace`, draws them over the rest with a glow `selectedWidthPx` wide, and fades the
+rest to `unselectedAlpha`. Selected traces and their glow keep their colors while `selectedColor` is
+`'none'`, its default here, and take it otherwise. A reading selects its row: clicking another part
+of a selected line keeps it, and a toggle there deselects it. `traceColor` and `traceWidthPx` set
+what a trace's `color` and `widthPx` leave unset. `fit(readings)` frames readings once, and
+`reveal(reading)` moves the window to one outside it. A click selects; the monitor has no pointer
+navigation, so the page keeps wheel and touch scrolling. Selection, events, and the style options
+every view shares are under [views](views.md).
 
 [API](https://latkit.readthedocs.io/en/latest/api/reference/monitor/index.html)

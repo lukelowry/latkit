@@ -29,6 +29,8 @@ export interface Draw {
   readonly colors?: GPUBindGroup;
   /** Instances: a line per row and frame step, two for stepped interpolation. */
   readonly instances: number;
+  /** The first instance: past a page's first frame when it only shows where lines came from. */
+  readonly first: number;
 }
 /** A draw's view, in one 256-byte slot: its sizes, colors, plot, and interpolation, then six 32-byte channels. */
 const VIEW_BYTES = 4 * 16 + 6 * 32;
@@ -69,6 +71,7 @@ export function bindDraws(
 /**
  * Draws for one block of a trace into a layer: a line per row through every frame of each GPU
  * page, whose pages keep all frames of their rows. A single frame draws a dot only when `dots` is set.
+ * With `context`, the block's first frame only shows where the lines drawn before came from.
  */
 export function traceDraws(
   frame: kit.Preparation,
@@ -81,6 +84,7 @@ export function traceDraws(
   focus: boolean,
   shade: GPUBindGroup,
   dots: boolean,
+  context = false,
 ): { readonly draws: Draw[]; readonly segments: number } {
   const pages = frame.upload(block, {
     select: Object.keys(block.columns),
@@ -122,8 +126,10 @@ export function traceDraws(
   let segments = 0;
   for (const page of pages) {
     const frames = page.samples!.count,
-      rows = rowCount(page.rows);
-    if (frames < 2 && !dots) continue;
+      rows = rowCount(page.rows),
+      skip = context && page.samples!.firstFrame === block.samples!.firstFrame ? 1 : 0,
+      steps = rows * (Math.max(1, frames - 1) - skip);
+    if ((frames < 2 && !dots) || steps <= 0) continue;
     if (page.columns[y.column!]?.kind !== 'value')
       throw failure('invalid-input', 'Trace field must be scalar');
     const uniforms = new Uint32Array(VIEW_BYTES / 4),
@@ -142,16 +148,25 @@ export function traceDraws(
       8,
     );
     floats.set([plot.x, plot.y], 12);
-    uniforms[14] = interpolation;
+    // A page that joins lines drawn before draws no dot at its first frame; one that starts a frame
+    // earlier draws nothing from that frame, which only shows where they came from.
+    uniforms[14] = interpolation | (dots ? 0 : 4) | (skip ? 8 : 0);
     kit.writeChannel(uniforms, 16, x, page.samples!.coordinates);
     kit.writeChannel(uniforms, 24, y, page);
     kit.writeChannel(uniforms, 32, color, page);
     kit.writeChannel(uniforms, 40, width, page);
     kit.writeChannel(uniforms, 48, channels.visible, page);
     kit.writeChannel(uniforms, 56, channels.shade, page);
-    const steps = rows * Math.max(1, frames - 1);
+    const factor = interpolation ? 2 : 1;
     segments += steps;
-    draws.push({ page, uniforms, shade, colors, instances: steps * (interpolation ? 2 : 1) });
+    draws.push({
+      page,
+      uniforms,
+      shade,
+      colors,
+      instances: steps * factor,
+      first: rows * skip * factor,
+    });
   }
   return { draws, segments };
 }
@@ -181,7 +196,7 @@ export function paint(
     pass.setBindGroup(1, draw.view!);
     pass.setBindGroup(2, draw.shade);
     if (draw.colors) pass.setBindGroup(3, draw.colors);
-    pass.draw(6, draw.instances);
+    pass.draw(6, draw.instances, 0, draw.first);
   }
   pass.end();
   return draws.length;

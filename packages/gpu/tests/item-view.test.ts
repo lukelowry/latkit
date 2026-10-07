@@ -431,6 +431,7 @@ it('opens the menu for a right click in place, never for a right drag, wherever 
   send('pointerdown', 10);
   send('contextmenu', 10);
   send('pointerup', 11);
+  await settle();
   send('pointerdown', 10);
   send('pointerup', 11);
   send('contextmenu', 11);
@@ -439,6 +440,16 @@ it('opens the menu for a right click in place, never for a right drag, wherever 
     { point: [11, 50], trigger: 'pointer' },
     { point: [11, 50], trigger: 'pointer' },
   ]);
+  // A menu asked while another still finds its hits supersedes it.
+  menus.length = 0;
+  send('pointerdown', 10);
+  send('contextmenu', 10);
+  send('pointerup', 11);
+  send('pointerdown', 20);
+  send('contextmenu', 20);
+  send('pointerup', 21);
+  await settle();
+  expect(menus).toMatchObject([{ point: [21, 50], trigger: 'pointer' }]);
   view.destroy();
   vi.unstubAllGlobals();
   gpu.destroy();
@@ -511,8 +522,91 @@ it('cycles overlapping hits on clicks in place, toggles the topmost with a modif
   await click(75, { ctrlKey: true });
   await click(50);
   expect(selections).toEqual([['a'], ['b'], ['a'], [], ['a'], ['a', 'c'], ['a'], []]);
+  // Clicking in place again starts over when other items lie there: `a` again, not `d`.
+  await click(25);
+  view.set({ dots: { a: [0, 0], d: [0.05, 0], c: [10, 0] } });
+  await drawOnce(gpu, view);
+  await click(25);
+  expect(selections.at(-1)).toEqual(['a']);
+  expect(view.selection.map((item) => item.id)).toEqual(['a']);
   view.destroy();
   vi.unstubAllGlobals();
+  gpu.destroy();
+});
+
+it('answers picks and clicks with what the presented frame draws, and selects again only on a change', async () => {
+  const { view, frame } = await setup();
+  await frame();
+  const clicks = view as unknown as {
+    click(point: Point, modifiers: object): Promise<void>;
+  };
+  const none = { shift: false, control: false, meta: false, alt: false };
+  // Hits found while a frame presents that no longer draws one come back without it, and select
+  // nothing of it.
+  let found!: () => void;
+  const hits = new Promise((resolve) => {
+    found = () =>
+      resolve([
+        { id: 'b', distance: 0 },
+        { id: 'a', distance: 1 },
+      ]);
+  });
+  Object.assign(view, { hits: () => hits });
+  const picked = view.pick([25, 50]),
+    clicked = clicks.click([25, 50], none);
+  view.set({ dots: { a: [0, 0] } });
+  await frame();
+  found();
+  expect((await picked).map((hit) => hit.id)).toEqual(['a']);
+  await clicked;
+  expect(view.selection.map((item) => item.id)).toEqual(['a']);
+  view.set({ dots: { a: [0, 0], b: [10, 0] } });
+  await frame();
+  // A click that a later one supersedes while it finds its hits selects nothing.
+  let release!: () => void;
+  Object.assign(view, {
+    hits: (point: Point) =>
+      point[0] === 1
+        ? new Promise((resolve) => (release = () => resolve([{ id: 'b', distance: 0 }])))
+        : [{ id: 'a', distance: 0 }],
+  });
+  const first = clicks.click([1, 50], none);
+  await clicks.click([25, 50], { ...none, shift: true });
+  release();
+  await first;
+  expect(view.selection.map((item) => item.id)).toEqual([]);
+  // The same selection again changes nothing; another does.
+  const invalidate = vi.spyOn(view as unknown as { invalidate(): void }, 'invalidate');
+  view.select([{ id: 'a' }]);
+  view.select([{ id: 'a' }]);
+  expect(invalidate).toHaveBeenCalledOnce();
+  view.select([{ id: 'b' }]);
+  expect(invalidate).toHaveBeenCalledTimes(2);
+});
+
+it('reports hover again when the same item is found with other detail', async () => {
+  class Detailed extends Dots {
+    protected detail(hit: DotHit): string {
+      return String(Math.round(hit.distance));
+    }
+  }
+  const gpu = await createGpu({ device: fakeDevice().device });
+  const view = new Detailed(gpu, { source, dots: { a: [0, 0], b: [10, 0] } }),
+    hovers: unknown[] = [];
+  view.on('hover', (hit) => hovers.push(hit));
+  const frame = () => drawOnce(gpu, view).then(() => Promise.resolve());
+  await frame();
+  view.move([25, 50]);
+  await frame();
+  view.move([25.2, 50]);
+  await frame();
+  view.move([27, 50]);
+  await frame();
+  expect(hovers).toEqual([
+    { id: 'a', distance: 0 },
+    { id: 'a', distance: 2 },
+  ]);
+  view.destroy();
   gpu.destroy();
 });
 

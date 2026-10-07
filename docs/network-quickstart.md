@@ -65,7 +65,7 @@ vertices: {
 A marker of your own is WGSL defining `fn marker(f: MarkerFragment) -> MarkerColor`: `f.p` is the
 pixel in CSS pixels from the vertex, y up, `f.radiusPx` its radius, `f.color` its color, and each of
 up to eight `inputs` a channel read as `f.<name>`. It returns its color, each layer covered as
-`filled(color, distance)` covers it, and the signed distance to its outline, which halos and shadows
+`filled(color, distance)` covers it, and the signed distance to its outline, which glows and shadows
 follow; a hole, such as a gauge's gap or a pie's middle, is in the alpha alone and shows what lies
 below. The shared shapes and markers, `shapeDistance`, `filled`, `over`, `gaugeMarker`,
 `pieMarker`, and `markerImage`, compose:
@@ -108,8 +108,10 @@ colors an edge by the vertices it joins), `edgeWidthPx`, `pathColor`, and `pathW
 sets how high a `z` of 1 draws. `edgeSpacingPx` draws edges joining the same two vertices apart,
 straight or geodesic, while a type with `bends` follows its own routes; `shadows` lifts markers off
 the lines, and `labelHaloPx` sets the halo around labels, in the color of the ground they lie on.
-The options every
-view shares, such as `background` and `selectedColor`, are listed under [views](views.md#style).
+Selected and hovered rows draw again over everything but labels, lit by their glow, so a crowded
+part of the drawing never covers them; `selectedEnds` and `hoverEnds` draw the vertices a focused
+edge joins over the rest too. The options every view shares, such as `background`, `selectedColor`,
+and `unselectedAlpha`, are listed under [views](views.md#style).
 Omitted domains fit the displayed values; give a `domain` for stable colors during playback.
 
 ## Limits

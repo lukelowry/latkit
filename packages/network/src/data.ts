@@ -1,10 +1,4 @@
-import {
-  sameItem as sameRow,
-  type Data,
-  type FieldInput,
-  type Item,
-  type RowSelection,
-} from '@latkit/model';
+import { itemKey, type Data, type FieldInput, type Item, type RowSelection } from '@latkit/model';
 import type { Channel, ColorChannel, Labels, Marker } from '@latkit/gpu';
 
 /** Labels beside a type's items. */
@@ -84,9 +78,9 @@ export interface PathOptions extends LineOptions {
 export interface NetworkItem extends Item {
   readonly kind: 'vertex' | 'edge' | 'path';
 }
-/** Items are their kind and row; the index names the row space. */
-export function sameItem(a: NetworkItem | null, b: NetworkItem | null): boolean {
-  return a === b || (!!a && !!b && a.kind === b.kind && sameRow(a, b));
+/** An item's identity: its kind, row space, and row; appends keep it. */
+export function networkKey(item: NetworkItem): string {
+  return itemKey(item, item.kind);
 }
 /** What the renderer draws. Positions are longitude/latitude in degrees for geographic data. */
 export interface NetworkData {

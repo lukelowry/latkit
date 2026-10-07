@@ -237,9 +237,12 @@ export abstract class BaseItemView<
   readonly #parameters = new Float32Array(64);
   #shadeAnimating = false;
   readonly #formats = new Set<GPUTextureFormat>();
-  /** Where the last click landed and which of its overlapping hits it chose. */
-  #clicked?: { readonly point: Point; readonly turn: number };
-  #clicking?: AbortController;
+  /** Where the last click landed, what it found there, and which of it it chose. */
+  #clicked?: { readonly point: Point; readonly found: string; readonly turn: number };
+  /** The click, double click, or menu still finding what it hit; the next one supersedes it. */
+  #asking?: AbortController;
+  /** Frames presented so far: hits found while another presents may name items it no longer draws. */
+  #presented = 0;
 
   /** Checks every option, the input, and the starting camera before a view allocates anything. */
   constructor(gpu: Gpu, config: Config, shape: ItemShape<Camera>) {
@@ -278,13 +281,18 @@ export abstract class BaseItemView<
   protected zoomed?(camera: Camera, factor: number, anchor: Point, viewport: Viewport): Camera;
   /** An item's canvas point in the latest drawn frame. */
   protected abstract position(item: Item): Point | null;
-  /** Stable identity, for selection and hover changes. */
+  /** An item's identity, for selection, hover, and clicks: `itemKey` and what the view adds. */
   protected abstract identify(item: Item): string;
-  /** Throw when an item cannot be selected here, such as one of another source. */
+  /** What a hit found beyond its item, such as a reading's frame: hover reports a change in it. */
+  protected detail?(hit: Hit): string;
+  /** Throw when the current config cannot select an item, such as one of another source. */
   protected accept?(item: Item): void;
-  /** Whether a selected item is still drawn, after a new source or `pruneSelection()`. */
+  /** Whether the presented frame draws an item. */
   protected abstract contains(item: Item): boolean;
-  /** Hits within the radius, nearest first, topmost breaking ties; past `limit` may be dropped. */
+  /**
+   * Items within a radius of a point in the presented frame: one hit per item, nearest first, the
+   * item drawn on top breaking ties, at most `limit`.
+   */
   protected abstract hits(
     point: Point,
     radiusPx: number,
@@ -335,8 +343,7 @@ export abstract class BaseItemView<
   select(items: readonly Item[]): void {
     this.live();
     for (const item of items) this.accept?.(item);
-    this.#selection = this.#unique(items);
-    this.invalidate();
+    this.#replace(items);
   }
   async pick(point: Point, options: PickOptions = {}): Promise<readonly Hit[]> {
     this.live();
@@ -351,8 +358,10 @@ export abstract class BaseItemView<
     )
       throw failure('invalid-input', 'Invalid pick');
     options.signal?.throwIfAborted();
-    const hits = await this.hits(point, radius, { limit, signal: options.signal });
-    return hits.length > limit ? hits.slice(0, limit) : hits;
+    const presented = this.#presented,
+      hits = await this.hits(point, radius, { limit, signal: options.signal });
+    options.signal?.throwIfAborted();
+    return this.#still(hits, presented, limit);
   }
   locate(item: Item): Point | null {
     return this.position(item);
@@ -606,41 +615,37 @@ export abstract class BaseItemView<
   protected pruneSelection(): void {
     this.#prune = true;
   }
-  /** Select as the user did: report it when it changed. */
+  /** Select what the user chose among drawn items: report it when it changed. */
   protected choose(items: readonly Item[]): void {
-    const next = this.#unique(items);
-    if (
-      next.length === this.#selection.length &&
-      next.every((item, i) => this.identify(item) === this.identify(this.#selection[i]))
-    )
-      return;
-    for (const item of next) this.accept?.(item);
-    this.#selection = next;
-    this.invalidate();
-    this.emit('select', next);
+    if (this.#replace(items)) this.emit('select', this.#selection);
   }
   /**
-   * Select what a click at a point hits. Clicking again in place cycles through the hits there; a
-   * modifier toggles the topmost hit in the selection; clicking nothing clears the selection. A
-   * touch picks farther around itself.
+   * Select what a click at a point hits. Clicking again in place cycles through the hits there while
+   * they stay the same; a modifier toggles the topmost hit in the selection; clicking nothing clears
+   * the selection. A touch picks farther around itself. A later click, double click, or menu
+   * supersedes one still finding its hits.
    */
   protected async click(
     point: Point,
     modifiers: Modifiers,
-    options: { readonly touch?: boolean; readonly signal?: AbortSignal } = {},
+    options: { readonly touch?: boolean } = {},
   ): Promise<void> {
-    const { touch, signal } = options,
-      radius = touch ? Math.max(TOUCH_PX, this.#style.pickRadiusPx) : this.#style.pickRadiusPx;
-    const hits = await this.hits(point, radius, { limit: 16, signal });
-    if (signal?.aborted || this.closed) return;
+    const radius = options.touch
+        ? Math.max(TOUCH_PX, this.#style.pickRadiusPx)
+        : this.#style.pickRadiusPx,
+      hits = await this.#ask(point, radius, 16);
+    if (!hits) return;
     const additive = modifiers.shift || modifiers.control || modifiers.meta,
+      found = hits.map((hit) => this.identify(hit)).join('\n'),
       last = this.#clicked,
       turn =
-        !additive && last && Math.hypot(point[0] - last.point[0], point[1] - last.point[1]) < 3
+        !additive &&
+        last?.found === found &&
+        Math.hypot(point[0] - last.point[0], point[1] - last.point[1]) < 3
           ? last.turn + 1
           : 0;
     // A toggle ends the cycle, so the next plain click starts from the topmost hit.
-    this.#clicked = additive ? undefined : { point, turn };
+    this.#clicked = additive ? undefined : { point, found, turn };
     const hit = hits.length ? hits[turn % hits.length] : undefined;
     if (!additive) this.choose(hit ? [hit] : []);
     else if (hit) {
@@ -649,15 +654,15 @@ export abstract class BaseItemView<
       this.choose(rest.length === this.#selection.length ? [...rest, hit] : rest);
     }
   }
-  /** Report a context menu at a canvas point with the hits there. */
+  /** Report a context menu at a canvas point with the hits there, unless a later gesture came first. */
   protected async menu(
     point: Point,
     trigger: 'pointer' | 'keyboard',
     modifiers: Modifiers,
   ): Promise<void> {
     try {
-      const items = await this.hits(point, this.#style.pickRadiusPx, { limit: 16 });
-      if (!this.closed)
+      const items = await this.#ask(point, this.#style.pickRadiusPx, 16);
+      if (items)
         this.emit('contextmenu', { point, items, trigger, modifiers } as Events['contextmenu']);
     } catch (error) {
       this.fail(error);
@@ -733,6 +738,7 @@ export abstract class BaseItemView<
     if (previous.shade !== next.shade) this.#compile(next.shade ?? defaultShade);
   }
   protected presented(frame: FrameInfo): void {
+    this.#presented++;
     const drawn = this.#frames.get(frame);
     if (!drawn) return;
     this.#frames.delete(frame);
@@ -901,17 +907,10 @@ export abstract class BaseItemView<
         const { asked, button, touch, grabbed: taken } = press;
         press = undefined;
         if (button === 0) {
-          if (!dragged && !taken) {
-            this.#clicking?.abort();
-            this.#clicking = new AbortController();
-            const stop = AbortSignal.any([signal, this.#clicking.signal]);
-            void this.click(input.point(event), inputModifiers(event), {
-              touch,
-              signal: stop,
-            }).catch((error: unknown) => {
-              if (!stop.aborted) this.fail(error);
-            });
-          }
+          if (!dragged && !taken)
+            void this.click(input.point(event), inputModifiers(event), { touch }).catch(
+              (error: unknown) => this.fail(error),
+            );
           return;
         }
         input.release(event.pointerId);
@@ -978,7 +977,7 @@ export abstract class BaseItemView<
     const own = this.listen?.(canvas, input, mode);
     return () => {
       own?.();
-      this.#clicking?.abort();
+      this.#asking?.abort();
       input.destroy();
       this.pointer(null);
     };
@@ -1008,10 +1007,45 @@ export abstract class BaseItemView<
   }
   /** Open the item under a double click; a double click on nothing fits the data while navigating. */
   async #open(point: Point, navigate: boolean): Promise<void> {
-    const [hit] = await this.hits(point, this.#style.pickRadiusPx, { limit: 1 });
-    if (this.closed) return;
-    if (hit !== undefined) this.emit('open', hit);
+    const hits = await this.#ask(point, this.#style.pickRadiusPx, 1);
+    if (!hits) return;
+    if (hits.length) this.emit('open', hits[0]);
     else if (navigate) this.fit(undefined, { animate: true });
+  }
+  /**
+   * Of hits found since the `presented`th frame, those the presented frame draws, at most `limit`:
+   * all of them unless another frame presented meanwhile.
+   */
+  #still(hits: readonly Hit[], presented: number, limit: number): readonly Hit[] {
+    const drawn = presented === this.#presented ? hits : hits.filter((hit) => this.contains(hit));
+    return drawn.length > limit ? drawn.slice(0, limit) : drawn;
+  }
+  /** What a gesture hit; undefined once a later gesture, or destroying the view, supersedes it. */
+  async #ask(point: Point, radiusPx: number, limit: number): Promise<readonly Hit[] | undefined> {
+    this.#asking?.abort();
+    const asking = (this.#asking = new AbortController()),
+      signal = AbortSignal.any([this.signal, asking.signal]),
+      presented = this.#presented;
+    try {
+      const hits = await this.hits(point, radiusPx, { limit, signal });
+      return signal.aborted ? undefined : this.#still(hits, presented, limit);
+    } catch (error) {
+      if (signal.aborted) return undefined;
+      throw error;
+    }
+  }
+  /** Replace the selection with distinct items; whether it changed. */
+  #replace(items: readonly Item[]): boolean {
+    const next = this.#unique(items),
+      last = this.#selection;
+    if (
+      next.length === last.length &&
+      next.every((item, i) => this.identify(item) === this.identify(last[i]))
+    )
+      return false;
+    this.#selection = next;
+    this.invalidate();
+    return true;
   }
   /**
    * The camera a patch moves to from `current`, or the starting camera without one. A null option
@@ -1054,7 +1088,10 @@ export abstract class BaseItemView<
     const before = this.#hover;
     if (
       before === item ||
-      (before !== null && item !== null && this.identify(before) === this.identify(item))
+      (before !== null &&
+        item !== null &&
+        this.identify(before) === this.identify(item) &&
+        this.detail?.(before) === this.detail?.(item))
     )
       return;
     this.#hover = item;
