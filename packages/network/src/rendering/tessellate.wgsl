@@ -5,7 +5,7 @@
 @group(0) @binding(4) var<storage,read_write> instances:array<vec4u>;
 struct Indirect { vertices:u32,count:atomic<u32>,firstVertex:u32,firstInstance:u32 }
 @group(0) @binding(5) var<storage,read_write> indirect:Indirect;
-/** Segments to tessellate, whether they read dash phases, the first, and a flag for each instance. */
+/** Segments to tessellate, whether they read dash phases, and the first. */
 @group(0) @binding(6) var<uniform> params:vec4u;
 var<workgroup> starts:array<u32,64>;
 var<workgroup> groupBase:u32;
@@ -48,8 +48,8 @@ fn tessellate(@builtin(global_invocation_id) id:vec3u,@builtin(local_invocation_
     }
     let out=base+s+select(0u,1u,s>split);
     let phaseBits=bitcast<u32>(phase)&0xfffffffcu;
-    instances[out]=vec4u(i|params.w,bitcast<u32>(t0),bitcast<u32>(t1),phaseBits|side);
-    if(side>0u){instances[out+1u]=vec4u(i|params.w,bitcast<u32>(t0),bitcast<u32>(t1),(bitcast<u32>(secondPhase)&0xfffffffcu)|2u);}
+    instances[out]=vec4u(i,bitcast<u32>(t0),bitcast<u32>(t1),phaseBits|side);
+    if(side>0u){instances[out+1u]=vec4u(i,bitcast<u32>(t0),bitcast<u32>(t1),(bitcast<u32>(secondPhase)&0xfffffffcu)|2u);}
     phase=nextPhase;
   }
 }

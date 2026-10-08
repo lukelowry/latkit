@@ -56,7 +56,7 @@ import {
 } from './bindings.js';
 import { axes, onPlot, plot, plotCoordinate, plotX, plotY, type Axes, type Plot } from './axes.js';
 import { Fit, mergeDomain, tracePages } from './extents.js';
-import { pipelines, type Pipelines } from './rendering/pipelines.js';
+import { pipelines, type Lines, type Pipelines } from './rendering/pipelines.js';
 import {
   bindDraws,
   composite,
@@ -284,6 +284,8 @@ function destroySurface(value: Surface): void {
 interface Prepared {
   readonly surface: Surface;
   readonly pipeline: Pipelines;
+  /** Selected lines' pipelines, while there is a selection. */
+  readonly focus?: Lines;
   readonly screen: Screen;
   /** Each image's groups, and their layers. */
   readonly plans: ReadonlyMap<Image, Planned>;
@@ -811,6 +813,7 @@ class MonitorView
     return {
       surface: history,
       pipeline,
+      focus: history.focus ? await pipeline.focus : undefined,
       screen,
       plans,
       paint: draws,
@@ -919,7 +922,8 @@ class MonitorView
     if (!prepared) return;
     let calls = 0;
     for (const [layer, draws] of prepared.paint)
-      if (draws.length || layer.fresh) calls += paint(frame, prepared.pipeline, layer, draws);
+      if (draws.length || layer.fresh)
+        calls += paint(frame, prepared.pipeline, layer, draws, prepared.focus);
     // A fresh layer on screen with nothing drawn yet still clears.
     for (const layer of prepared.composed)
       if (layer.fresh && !prepared.paint.has(layer)) paint(frame, prepared.pipeline, layer, []);

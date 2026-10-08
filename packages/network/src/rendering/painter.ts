@@ -15,7 +15,7 @@ import {
 import { lineColor, lineWidthPx, type Style } from '../options.js';
 import type { LabelBatch } from './labels.js';
 import type { FieldRead } from './fields.js';
-import { DISC, markerPipeline, type Pipelines } from './pipelines.js';
+import { DISC, linePipeline, markerPipeline, type Pipelines } from './pipelines.js';
 
 /** Bytes of a page's uniform slot: its header and seven channels, or a marker's eight inputs. */
 const SLOT = 256;
@@ -32,12 +32,7 @@ const NONE = 0xffffffff;
 const END = 1,
   HOVERED = 2,
   SELECTED = 3;
-/**
- * A focus draw's instances start here, so its shader tells it from the scene's: the scene draws
- * every row but the focused, and the focus draw only those, over it.
- */
-const FOCUSED = 0x80000000;
-/** Past this many runs of focused instances, the focus draw takes every row, keeping the focused. */
+/** Past this many runs of focused instances, a focus draw takes every row, keeping the focused. */
 const RANGES = 64;
 /** Changed focus words this close upload in one write: on the GPU, a write costs about as much. */
 const WRITE_BYTES = 4096;
@@ -136,16 +131,24 @@ interface Command {
   readonly pipeline?: GPURenderPipeline;
   /** Its markers' shadows, drawn beneath every marker when the style casts them. */
   readonly shadows?: GPURenderPipeline;
-  /** Its focused instances, which draw again over the rest. */
-  readonly focused?: Focused;
-  /** A curved batch's span of focused segments, tessellated alone to draw over the rest. */
-  readonly focusTessellation?: { readonly group: GPUBindGroup; readonly count: number };
+  readonly focus?: Focus;
 }
+/**
+ * A command's focused instances, which draw again over the rest with their pipeline: runs of its
+ * instances, or a curved batch's span of focused segments, tessellated alone.
+ */
+type Focus =
+  | { readonly pipeline: GPURenderPipeline; readonly runs: Focused }
+  | {
+      readonly pipeline: GPURenderPipeline;
+      readonly tessellation: GPUBindGroup;
+      readonly count: number;
+    };
 /** The draws a command takes: the scene's, then its focused instances'. */
 function drawsOf(item: Command): number {
-  if (item.tessellation) return item.focusTessellation ? 2 : 1;
-  const focused = item.focused;
-  return 1 + (!focused ? 0 : focused === 'all' ? 1 : focused.length);
+  const focus = item.focus;
+  if (!focus) return 1;
+  return 1 + ('tessellation' in focus || focus.runs === 'all' ? 1 : focus.runs.length);
 }
 interface Compute {
   readonly pipeline: GPUComputePipeline;
@@ -733,7 +736,8 @@ export class Painter {
     for (const bank of geometry.vertices) {
       if (bank.synthetic) continue;
       const marker = markerOf(data, bank),
-        images = marker.images?.length ? frame.texture(this.atlas(marker)).createView() : noImages;
+        images = marker.images?.length ? frame.texture(this.atlas(marker)).createView() : noImages,
+        runs = focusRuns(focusedIn(bank.base, bank.count));
       vertices.push({
         group: group(
           bound.get(bank)!.output,
@@ -746,8 +750,8 @@ export class Painter {
         ),
         count: bank.count,
         pipeline: await markerPipeline(pipeline, marker),
-        shadows: options.shadows ? await markerPipeline(pipeline, marker, true) : undefined,
-        focused: focusRuns(focusedIn(bank.base, bank.count)),
+        shadows: options.shadows ? await markerPipeline(pipeline, marker, 'shadows') : undefined,
+        focus: runs && { pipeline: await markerPipeline(pipeline, marker, 'focus'), runs },
       });
     }
     for (const bank of geometry.edges) {
@@ -759,8 +763,8 @@ export class Painter {
         const a = bound.get(batch.a)!.output,
           b = bound.get(batch.b)!.output,
           segments = frame.buffer(batch.data);
-        /** Tessellate `count` segments from `first`, each instance marked with `flag`. */
-        const tessellate = (count: number, first: number, flag: number) =>
+        /** Tessellate `count` segments from `first`. */
+        const tessellate = (count: number, first: number) =>
           gpu.device.createBindGroup({
             layout: pipeline.tessellation,
             entries: [
@@ -772,12 +776,12 @@ export class Painter {
               { binding: 5, resource: curveIndirect! },
               {
                 binding: 6,
-                resource: frame.uniforms(Uint32Array.of(count, dashed ? 1 : 0, first, flag)),
+                resource: frame.uniforms(Uint32Array.of(count, dashed ? 1 : 0, first, 0)),
               },
             ],
           });
-        const tessellation = curved ? tessellate(count, 0, 0) : undefined;
-        let focused: Focused | undefined, focusTessellation: Command['focusTessellation'];
+        const tessellation = curved ? tessellate(count, 0) : undefined;
+        let focus: Focus | undefined;
         if (owners.length) {
           // The segments of focused rows, ascending as their owners are, which draw again over
           // the rest.
@@ -786,12 +790,15 @@ export class Painter {
             const [first, end] = ownerSegments(batch.records, owner);
             for (let s = first; s < end; s++) focusedSegments.push(s);
           }
-          focused = focusRuns(focusedSegments);
-          if (curved && focused) {
+          const runs = focusRuns(focusedSegments);
+          if (runs) {
+            const lines = await linePipeline(pipeline, curved, 'focus'),
+              first = focusedSegments[0],
+              span = focusedSegments.at(-1)! - first + 1;
             // A curve's pieces come from the tessellation, so its focused span tessellates alone.
-            const first = focusedSegments[0],
-              count = focusedSegments.at(-1)! - first + 1;
-            focusTessellation = { group: tessellate(count, first, FOCUSED), count };
+            focus = curved
+              ? { pipeline: lines, tessellation: tessellate(span, first), count: span }
+              : { pipeline: lines, runs };
           }
         }
         let phase: GPUBufferBinding | undefined;
@@ -818,8 +825,7 @@ export class Painter {
           ),
           count,
           tessellation,
-          focused: curved ? undefined : focused,
-          focusTessellation,
+          focus,
         });
       }
     }
@@ -980,8 +986,13 @@ export class Painter {
         },
       });
     let pass = begin(false);
-    /** Tessellate a curved batch's segments into the shared indirect draw, then draw it. */
-    const curve = (item: Command, tessellation: GPUBindGroup, count: number) => {
+    /** Tessellate a curved batch's segments into the shared indirect draw, then draw them. */
+    const curve = (
+      item: Command,
+      pipeline: GPURenderPipeline,
+      tessellation: GPUBindGroup,
+      count: number,
+    ) => {
       pass.end();
       frame.encoder.clearBuffer(paint.indirect!);
       const prepare = frame.encoder.beginComputePass({
@@ -992,16 +1003,22 @@ export class Painter {
       prepare.dispatchWorkgroups(Math.ceil(count / 64));
       prepare.end();
       pass = begin(true);
-      pass.setPipeline(paint.pipelines.curves);
+      pass.setPipeline(pipeline);
       pass.setBindGroup(0, item.group);
       pass.drawIndirect(paint.indirect!, 0);
     };
     /** A command's focused instances, over the rest. */
     const over = (item: Command) => {
-      const focused = item.focused;
-      if (focused === 'all') pass.draw(6, item.count, 0, FOCUSED);
-      else if (focused)
-        for (const [first, count] of focused) pass.draw(6, count, 0, FOCUSED + first);
+      const focus = item.focus;
+      if (!focus) return;
+      if ('tessellation' in focus) {
+        curve(item, focus.pipeline, focus.tessellation, focus.count);
+        return;
+      }
+      pass.setPipeline(focus.pipeline);
+      pass.setBindGroup(0, item.group);
+      if (focus.runs === 'all') pass.draw(6, item.count);
+      else for (const [first, count] of focus.runs) pass.draw(6, count, 0, first);
     };
     pass.setPipeline(paint.pipelines.surface);
     pass.setBindGroup(0, paint.background);
@@ -1015,7 +1032,7 @@ export class Painter {
       pass.setPipeline(paint.pipelines.edges);
       for (const item of paint.edges) {
         if (item.tessellation) {
-          curve(item, item.tessellation, item.count);
+          curve(item, paint.pipelines.curves, item.tessellation, item.count);
           continue;
         }
         pass.setPipeline(paint.pipelines.edges);
@@ -1046,22 +1063,8 @@ export class Painter {
     }
     // Focused rows draw again over everything but labels: nothing covers them, and their glow lights
     // their neighbors.
-    if (paint.options.lines)
-      for (const item of paint.edges)
-        if (item.focusTessellation)
-          curve(item, item.focusTessellation.group, item.focusTessellation.count);
-        else if (item.focused) {
-          pass.setPipeline(paint.pipelines.edges);
-          pass.setBindGroup(0, item.group);
-          over(item);
-        }
-    if (paint.options.markers)
-      for (const item of paint.vertices)
-        if (item.focused) {
-          pass.setPipeline(item.pipeline ?? paint.pipelines.vertices);
-          pass.setBindGroup(0, item.group);
-          over(item);
-        }
+    if (paint.options.lines) for (const item of paint.edges) over(item);
+    if (paint.options.markers) for (const item of paint.vertices) over(item);
     pass.setPipeline(paint.pipelines.text);
     for (const item of paint.labels) {
       pass.setBindGroup(0, item.group);

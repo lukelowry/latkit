@@ -1,6 +1,12 @@
 override NETWORK_CURVES:bool=false;
 /** Whether a marker pipeline draws shadows, beneath every marker, rather than the markers. */
 override MARKER_SHADOWS:bool=false;
+/**
+ * Whether a pipeline draws the focused rows, lit by their glow over the rest, rather than the rest.
+ * A line's glow takes entry points of its own, `edge_focus` and `fragment_focus`, so the scene's
+ * pipelines build without it.
+ */
+override FOCUS:bool=false;
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var<storage,read> a: array<vec4f>;
 @group(0) @binding(2) var<storage,read> b: array<vec4f>;
@@ -39,8 +45,6 @@ fn corner(v:u32)->vec2f {
   let c=array<vec2f,6>(vec2f(-1,-1),vec2f(1,-1),vec2f(-1,1),vec2f(-1,1),vec2f(1,-1),vec2f(1,1));
   return c[v];
 }
-/** A focus draw's instances start here: the rest of the index is the instance's own. */
-const FOCUSED:u32=0x80000000u;
 /**
  * Focus of a drawn row: 3 selected, 2 hovered, 1 the end of a focused edge; two bits per row,
  * vertices then edges then paths. Focused rows draw in focus draws only, over the rest.
@@ -75,31 +79,29 @@ struct MarkerVarying {
   /** Its radius, its glow's reach, and its opacity. */
   @location(1) @interpolate(flat) size:vec3f,
   @location(2) @interpolate(flat) color:vec4f,
-  /** Its focus, plus 4 in a focus draw. */
   @location(3) @interpolate(flat) focus:u32,
   @location(4) @interpolate(flat) shade:f32,
   @location(5) @interpolate(flat) inputs0:vec4f,
   @location(6) @interpolate(flat) inputs1:vec4f,
 }
 /** A vertex's square, reaching its glow and shadow; its marker decides what in it draws. */
-@vertex fn marker_vertex(@builtin(vertex_index) v:u32,@builtin(instance_index) drawn:u32)->MarkerVarying {
+@vertex fn marker_vertex(@builtin(vertex_index) v:u32,@builtin(instance_index) i:u32)->MarkerVarying {
   var out:MarkerVarying;
-  let focusing=drawn>=FOCUSED;let i=drawn&~FOCUSED;
   let base=i*5u;let p=a[base];let info=a[base+3u];
   if(info.w<=0.001||p.w<=0.0){out.position=vec4f(2.0,2.0,2.0,1.0);return out;}
   let dense=vertexDraw.base+i;let f=focus(dense);
   // Every marker casts its shadow beneath the rest; a focused one draws in a focus draw alone.
-  if(!MARKER_SHADOWS&&(f>0u)!=focusing){out.position=vec4f(2.0,2.0,2.0,1.0);return out;}
-  let glow=select(0.0,glowReach(f),focusing);
+  if(!MARKER_SHADOWS&&(f>0u)!=FOCUS){out.position=vec4f(2.0,2.0,2.0,1.0);return out;}
+  let glow=select(0.0,glowReach(f),FOCUS);
   let radius=grown(max(0.1,info.x),dense);
   // Its outline's own edge bounds it, as fill costs: an axis-aligned edge needs no margin to read smooth.
   let reach=radius+glow+select(0.0,SHADOW_REACH,MARKER_SHADOWS);
   let q=corner(v);
   out.position=p+vec4f(q.x*reach*2.0/u.view.x*p.w,q.y*reach*2.0/u.view.y*p.w,0.0,0.0);
   // A focused marker draws over its neighbors.
-  if(focusing){out.position.z=max(0.0,out.position.z-FOCUS_LIFT*p.w);}
+  if(FOCUS){out.position.z=max(0.0,out.position.z-FOCUS_LIFT*p.w);}
   out.p=q*reach;out.size=vec3f(radius,glow,info.w);out.color=a[base+2u];
-  out.focus=f|select(0u,4u,focusing);out.shade=info.y;
+  out.focus=f;out.shade=info.y;
   let inputs=vertexDraw.rows*5u+i*2u;
   if(arrayLength(&a)>=inputs+2u){out.inputs0=a[inputs];out.inputs1=a[inputs+1u];}
   return out;
@@ -111,11 +113,10 @@ struct MarkerVarying {
 @fragment fn marker_fragment(v:MarkerVarying)->PaintOut {
   let m=marker(markerFragment(v.p,v.size.x,v.color,v.inputs0,v.inputs1));
   let top=shade(ShadeFragment(m.color,v.position.xy/u.view.z,v.shade));
-  let alpha=top.a*v.size.z*select(u.glow.z,1.0,v.focus>=4u);
+  let alpha=top.a*v.size.z*select(u.glow.z,1.0,FOCUS);
   var color=vec4f(top.rgb*alpha,alpha);
-  if(v.size.y>0.0){
-    let f=v.focus&3u;
-    color=color+outputColor(glowTint(f,m.color),glowAlpha(m.distance,v.size.y)*v.size.z)*(1.0-color.a);
+  if(FOCUS&&v.size.y>0.0){
+    color=color+outputColor(glowTint(v.focus,m.color),glowAlpha(m.distance,v.size.y)*v.size.z)*(1.0-color.a);
   }
   if(color.a<=0.001){discard;}
   var result:PaintOut;result.color=color;
@@ -174,16 +175,18 @@ fn leaving(primitive:u32,segment:vec4u)->vec2f {
 }
 /** How far a neighbor along a focused line reaches: as a line of its direction where it meets this one. */
 const ONWARD:f32=10000.0;
-@vertex fn edge_main(@builtin(vertex_index) v:u32,@builtin(instance_index) drawn:u32)->Varying {
-  var interval=vec2f(0.0,1.0);var split=0u;var phase=0.0;
-  var focusing=drawn>=FOCUSED;var primitive=drawn&~FOCUSED;
-  if(NETWORK_CURVES){let instance=curveInstances[drawn];focusing=instance.x>=FOCUSED;primitive=instance.x&~FOCUSED;interval=vec2f(bitcast<f32>(instance.y),bitcast<f32>(instance.z));split=instance.w&3u;phase=bitcast<f32>(instance.w&0xfffffffcu);}
+/** A line's piece: its vertex, whether it draws, and where its line runs, for a focused piece's neighbors. */
+struct EdgePiece {out:Varying,drawn:bool,primitive:u32,segment:vec4u,ends:mat2x3f,interval:vec2f,split:u32,clipping:vec2f,dir:vec2f}
+fn edge(v:u32,drawn:u32)->EdgePiece {
+  var piece:EdgePiece;piece.out=hidden();
+  var interval=vec2f(0.0,1.0);var split=0u;var phase=0.0;var primitive=drawn;
+  if(NETWORK_CURVES){let instance=curveInstances[drawn];primitive=instance.x;interval=vec2f(bitcast<f32>(instance.y),bitcast<f32>(instance.z));split=instance.w&3u;phase=bitcast<f32>(instance.w&0xfffffffcu);}
   let segment=segments[primitive];
   var prefix=0.0;if(edgeDraw.dashed>0u){prefix=dashPhases[primitive];}
   let ab=segment.x*5u;let bb=segment.y*5u;let es=segment.z*3u;
   var p=a[ab];var q=b[bb];let ai=a[ab+3u];let bi=b[bb+3u];
   let info=styles[es+1u];let motion=styles[es+2u];
-  if(a[ab+4u].w<0.5||b[bb+4u].w<0.5||motion.w<=0.001){return hidden();}
+  if(a[ab+4u].w<0.5||b[bb+4u].w<0.5||motion.w<=0.001){return piece;}
   var wa=a[ab+4u].xyz;var wb=b[bb+4u].xyz;
   let ends=mat2x3f(wa,wb);
   if(NETWORK_CURVES){
@@ -191,12 +194,12 @@ const ONWARD:f32=10000.0;
     let pair=curve_segment(wa,wb,split,u);wa=pair[0];wb=pair[1];
     p=project_world(wa,u);q=project_world(wb,u);
   }
-  let clipping=stroke_clip(p,q);if(clipping.x>clipping.y){return hidden();}
+  let clipping=stroke_clip(p,q);if(clipping.x>clipping.y){return piece;}
   let start=p;p=mix(start,q,clipping.x);q=mix(start,q,clipping.y);
   let row=bitcast<u32>(info.z);let f=focus(edgeDraw.base+segment.z);
   // A focused row draws in a focus draw alone, over the rest.
-  if((f>0u)!=focusing){return hidden();}
-  let glow=select(0.0,glowReach(f),focusing);
+  if((f>0u)!=FOCUS){return piece;}
+  let glow=select(0.0,glowReach(f),FOCUS);
   let width=info.x;
   // A flowing line's quad reaches its comets' heads, and a focused one its glow.
   let head=max(info.x*1.6,2.0);
@@ -225,28 +228,11 @@ const ONWARD:f32=10000.0;
   let t=(c.x+1.0)*0.5;let offset=(dir*c.x+perpendicular*c.y)*reach;
   var pos=mix(p,q,t);
   pos.x+=offset.x*2.0/u.view.x*pos.w;pos.y-=offset.y*2.0/u.view.y*pos.w;
-  if(focusing){pos.z=max(0.0,pos.z-FOCUS_LIFT*pos.w);}
+  if(FOCUS){pos.z=max(0.0,pos.z-FOCUS_LIFT*pos.w);}
   var color=styles[es];if(color.a<0.0){color=(a[ab+2u]+b[bb+2u])*0.5;}
   var out:Varying;out.position=pos;out.uv=vec2f(mix(-reach,lengthPx+reach,t),c.y*reach);
   out.dimensions=vec4f(lengthPx,width,glow,info.w);out.color=color;
-  out.identity=vec4u(1u,row,select(0u,f,focusing),0u);out.world=mix(wa,wb,mix(clipping.x,clipping.y,t));
-  if(focusing){
-    // The pieces beside this one along its line: within a curve, along the curve; across a joint,
-    // the segment on the other side. A piece clipped, or split at the map's seam, ends there alone.
-    let across=vec2f(-dir.y,dir.x);
-    var before=vec2f(STROKE_NONE,0.0);var after=vec2f(STROKE_NONE,0.0);
-    if(split!=2u&&clipping.x==0.0){
-      var arrives=arriving(primitive,segment);
-      if(interval.x>0.0){arrives=heading(ends[0],ends[1],interval.x);}
-      if(any(arrives!=vec2f(0.0))){before=-vec2f(dot(arrives,dir),dot(arrives,across))*ONWARD;}
-    }
-    if(split!=1u&&clipping.y==1.0){
-      var leaves=leaving(primitive,segment);
-      if(interval.y<1.0){leaves=heading(ends[0],ends[1],interval.y);}
-      if(any(leaves!=vec2f(0.0))){after=vec2f(lengthPx,0.0)+vec2f(dot(leaves,dir),dot(leaves,across))*ONWARD;}
-    }
-    out.beside=vec4f(before,after);
-  }
+  out.identity=vec4u(1u,row,f,0u);out.world=mix(wa,wb,mix(clipping.x,clipping.y,t));
   out.extra=vec4f(info.y,select(0.0,1.0,segment.w>0u||NETWORK_CURVES),phase,motion.w);
   // A marker at a true end, as hover has grown it, hides the line under it, and comets fade before
   // reaching it.
@@ -255,7 +241,34 @@ const ONWARD:f32=10000.0;
   out.discA=vec3f(ea,select(-1.0,markerA,ai.w>0.5&&interval.x==0.0));
   out.discB=vec3f(eb,select(-1.0,markerB,bi.w>0.5&&interval.y==1.0));
   out.flow=vec3f(select(0.0,motion.y,flowing),motion.z,head);
-  return out;
+  return EdgePiece(out,true,primitive,segment,ends,interval,split,clipping,dir);
+}
+@vertex fn edge_main(@builtin(vertex_index) v:u32,@builtin(instance_index) drawn:u32)->Varying {
+  return edge(v,drawn).out;
+}
+/**
+ * A focused line's piece, which also carries the pieces beside it along its line: within a curve,
+ * along the curve; across a joint, the segment on the other side. A piece clipped, or split at the
+ * map's seam, ends there alone.
+ */
+@vertex fn edge_focus(@builtin(vertex_index) v:u32,@builtin(instance_index) drawn:u32)->Varying {
+  var piece=edge(v,drawn);
+  if(!piece.drawn){return piece.out;}
+  let dir=piece.dir;let across=vec2f(-dir.y,dir.x);let lengthPx=piece.out.dimensions.x;
+  let ends=piece.ends;let interval=piece.interval;
+  var before=vec2f(STROKE_NONE,0.0);var after=vec2f(STROKE_NONE,0.0);
+  if(piece.split!=2u&&piece.clipping.x==0.0){
+    var arrives=arriving(piece.primitive,piece.segment);
+    if(interval.x>0.0){arrives=heading(ends[0],ends[1],interval.x);}
+    if(any(arrives!=vec2f(0.0))){before=-vec2f(dot(arrives,dir),dot(arrives,across))*ONWARD;}
+  }
+  if(piece.split!=1u&&piece.clipping.y==1.0){
+    var leaves=leaving(piece.primitive,piece.segment);
+    if(interval.y<1.0){leaves=heading(ends[0],ends[1],interval.y);}
+    if(any(leaves!=vec2f(0.0))){after=vec2f(lengthPx,0.0)+vec2f(dot(leaves,dir),dot(leaves,across))*ONWARD;}
+  }
+  piece.out.beside=vec4f(before,after);
+  return piece.out;
 }
 @vertex fn pole_main(@builtin(vertex_index) v:u32,@builtin(instance_index) i:u32)->Varying {
   let base=i*5u;let q=a[base];let info=a[base+3u];let world=a[base+4u].xyz;
@@ -289,7 +302,9 @@ fn clearOf(px:vec2f,end:vec3f)->f32 {
   if(end.z<0.0){return 1.0;}
   return smoothstep(end.z+1.0,end.z+8.0,distance(px,end.xy));
 }
-@fragment fn fragment_main(v:Varying)->PaintOut {
+/** A line's color at a pixel, premultiplied, and how far past its edge the pixel lies. */
+struct Lit {color:vec4f,outside:f32}
+fn lit(v:Varying)->Lit {
   let px=v.position.xy/u.view.z;
   var distanceTo=length(v.uv);
   var outer=1.0;
@@ -304,29 +319,36 @@ fn clearOf(px:vec2f,end:vec3f)->f32 {
   }
   let aa=max(fwidth(distanceTo),0.01);
   let line=1.0-smoothstep(outer-aa,outer+aa,distanceTo);
-  var lit=0.0;
+  var comets=0.0;
   if(v.identity.x==1u&&v.flow.x!=0.0){
-    lit=comet(v.uv.x+v.extra.z,v.uv.y,v.identity.y,v.flow,aa)*clearOf(px,v.discA)*clearOf(px,v.discB)*u.flowColor.a;
+    comets=comet(v.uv.x+v.extra.z,v.uv.y,v.identity.y,v.flow,aa)*clearOf(px,v.discA)*clearOf(px,v.discB)*u.flowColor.a;
   }
   // The line and its comets in its shade; the rest fade while something is selected, and a focused
-  // line draws whole, lit from beneath by its glow.
-  var color=vec4f(mix(v.color.rgb,u.flowColor.rgb,lit),mix(v.color.a,1.0,lit));
+  // line draws whole.
+  var color=vec4f(mix(v.color.rgb,u.flowColor.rgb,comets),mix(v.color.a,1.0,comets));
   color=shade(ShadeFragment(color,px,v.extra.x));
-  var result:PaintOut;
-  result.color=outputColor(color,max(line,lit)*v.extra.w*select(u.glow.z,1.0,v.identity.z>0u));
-  // A focused line glows once at each pixel, from the piece nearest it.
-  if(v.dimensions.z>0.0&&stroke_nearest(v.uv,v.dimensions.x,v.beside.xy,v.beside.zw)){
-    let glow=glowAlpha(distanceTo-outer,v.dimensions.z)*v.extra.w;
-    result.color=result.color+outputColor(glowTint(v.identity.z,v.color),glow)*(1.0-result.color.a);
-  }
-  if(result.color.a<=0.001){discard;}
+  return Lit(outputColor(color,max(line,comets)*v.extra.w*select(u.glow.z,1.0,FOCUS)),distanceTo-outer);
+}
+/** A line's pixel at its depth, lifted where it would sink into the globe. */
+fn painted(v:Varying,color:vec4f)->PaintOut {
+  if(color.a<=0.001){discard;}
+  var result:PaintOut;result.color=color;
   result.depth=v.position.z;
   if(u.view.w>1.5&&v.extra.y>0.5){
     let sphere=v.world+vec3f(0,0,1);let radius=length(sphere);
     let world=sphere*max(1.0,radius)/max(radius,0.000001)-vec3f(0,0,1);
     let clip=project_world(world,u);
-    let lift=select(0.0,FOCUS_LIFT,v.identity.z>0u);
+    let lift=select(0.0,FOCUS_LIFT,FOCUS);
     result.depth=clamp(clip.z/clip.w-0.0000001-lift,0.0,1.0);
   }
   return result;
+}
+@fragment fn fragment_main(v:Varying)->PaintOut {return painted(v,lit(v).color);}
+/** A focused line, lit from beneath by its glow once at each pixel, from the piece nearest it. */
+@fragment fn fragment_focus(v:Varying)->PaintOut {
+  let l=lit(v);var color=l.color;
+  if(v.dimensions.z>0.0&&stroke_nearest(v.uv,v.dimensions.x,v.beside.xy,v.beside.zw)){
+    color=color+outputColor(glowTint(v.identity.z,v.color),glowAlpha(l.outside,v.dimensions.z)*v.extra.w)*(1.0-color.a);
+  }
+  return painted(v,color);
 }

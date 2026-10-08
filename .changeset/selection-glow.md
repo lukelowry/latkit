@@ -6,7 +6,7 @@
 '@latkit/monitor': minor
 ---
 
-Every view answers the pointer with what it drew, and lights what is selected: selected and hovered items glow, a network draws them over the rest so a crowded region never covers them, and the rest can fade.
+Every view answers the pointer with what it drew, and lights what is selected: selected and hovered items glow, a network draws them over the rest so a crowded region never covers them, and the rest can fade. A network's and a monitor's glow draws with pipelines of its own, built after the rest, so the first frame never waits on it.
 
 Added
 

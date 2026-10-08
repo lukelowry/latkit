@@ -128,25 +128,34 @@ it('draws the scene as before and each focused row again, over the rest', async 
       timeMs: 0,
       views: [{ renderer: kit.rendererOf(network), target: surface, at: 0 }],
     });
-  /** The latest frame's draws: instances and the first one, a focus draw's from 2³¹. */
+  /** The latest frame's draws: instances, the first one, and the pipeline each draws with. */
   const draws = () => {
     const encoders = vi.mocked(fake.device.createCommandEncoder).mock.results,
       encoder = encoders.at(-1)!.value as GPUCommandEncoder,
-      pass = vi.mocked(encoder.beginRenderPass).mock.results.at(-1)!.value as GPURenderPassEncoder;
-    return vi.mocked(pass.draw).mock.calls.map(([, instances = 1, , first = 0]) => ({
-      instances,
-      first,
-    }));
+      pass = vi.mocked(encoder.beginRenderPass).mock.results.at(-1)!.value as GPURenderPassEncoder,
+      set = vi.mocked(pass.setPipeline).mock,
+      drawn = vi.mocked(pass.draw).mock;
+    return drawn.calls.map(([, instances = 1, , first = 0], k) => {
+      let pipeline: unknown;
+      set.invocationCallOrder.forEach((at, j) => {
+        if (at < drawn.invocationCallOrder[k]) pipeline = set.calls[j][0];
+      });
+      return { instances, first, pipeline };
+    });
   };
   await render();
-  const plain = draws();
+  const plain = draws(),
+    scene = new Set(plain.map((draw) => draw.pipeline));
   network.select([{ kind: 'vertex', source: source.data, index: source.index('node'), row: 12 }]);
   await render();
-  const focused = draws(),
-    over = focused.filter((draw) => draw.first >= 0x80000000);
-  expect(over).toEqual([{ instances: 1, first: 0x80000000 + 12 }]);
-  // The scene's draws stand, its shader leaving out row 12, which the focus draw adds.
-  expect(focused.filter((draw) => draw.first < 0x80000000)).toEqual(plain);
+  const focused = draws();
+  // The scene's draws stand, its shader leaving out row 12, which a focus pipeline draws again.
+  expect(focused.filter((draw) => scene.has(draw.pipeline))).toEqual(plain);
+  expect(
+    focused
+      .filter((draw) => !scene.has(draw.pipeline))
+      .map(({ instances, first }) => ({ instances, first })),
+  ).toEqual([{ instances: 1, first: 12 }]);
   network.destroy();
   gpu.destroy();
 });

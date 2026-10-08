@@ -11,7 +11,7 @@ import {
   type LayerKind,
   type Transform,
 } from './history.js';
-import type { Pipelines } from './pipelines.js';
+import type { Lines, Pipelines } from './pipelines.js';
 
 export function buffer(values: ArrayBufferView, label: string): kit.BufferData {
   const data = new kit.BufferData({ size: Math.max(16, values.byteLength), label });
@@ -31,6 +31,8 @@ export interface Draw {
   readonly instances: number;
   /** The first instance: past a page's first frame when it only shows where lines came from. */
   readonly first: number;
+  /** Selected lines, which draw with their glow. */
+  readonly focus: boolean;
 }
 /** A draw's view, in one 256-byte slot: its sizes, colors, plot, and interpolation, then six 32-byte channels. */
 const VIEW_BYTES = 4 * 16 + 6 * 32;
@@ -166,16 +168,18 @@ export function traceDraws(
       colors,
       instances: steps * factor,
       first: rows * skip * factor,
+      focus,
     });
   }
   return { draws, segments };
 }
-/** Draw into a layer, clearing it first when fresh. */
+/** Draw into a layer, clearing it first when fresh; selected lines draw with `focus`. */
 export function paint(
   frame: kit.Encoding,
   pipelines: Pipelines,
   layer: Layer,
   draws: readonly Draw[],
+  focus?: Lines,
 ): number {
   const pass = frame.encoder.beginRenderPass({
     colorAttachments: [
@@ -190,7 +194,8 @@ export function paint(
   });
   let pipeline: GPURenderPipeline | undefined;
   for (const draw of draws) {
-    const next = draw.colors ? pipelines.bake : pipelines.draw[layer.kind];
+    const lines = draw.focus ? focus! : pipelines,
+      next = draw.colors ? lines.bake : lines.draw[layer.kind];
     if (next !== pipeline) pass.setPipeline((pipeline = next));
     pass.setBindGroup(0, draw.page.bindGroup);
     pass.setBindGroup(1, draw.view!);
