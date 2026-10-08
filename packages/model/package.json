@@ -1,6 +1,6 @@
 {
   "name": "@latkit/model",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "Columnar values, passive observation, and local computation for Latkit.",
   "type": "module",
   "repository": {

@@ -1,5 +1,13 @@
 # @latkit/video
 
+## 0.6.4
+
+### Patch Changes
+
+- Updated dependencies [6ebb914]
+  - @latkit/model@4.1.0
+  - @latkit/gpu@0.18.0
+
 ## 0.6.3
 
 ### Patch Changes
